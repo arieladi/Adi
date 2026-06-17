@@ -7660,7 +7660,9 @@ function osKeystroke(token) {
   const platform = os.platform();
 
   if (platform === "win32") {
-    const send = ({ decimal: "{DECIMAL}", enter: "{ENTER}" })[token] ?? token;
+    // SendKeys has no {DECIMAL} keyword (only {ADD}/{SUBTRACT}/{MULTIPLY}/{DIVIDE}),
+    // so send a literal "." for the decimal point. {ENTER} is valid.
+    const send = ({ decimal: ".", enter: "{ENTER}" })[token] ?? token;
     const ps = "Add-Type -AssemblyName System.Windows.Forms; " +
                `[System.Windows.Forms.SendKeys]::SendWait('${send}')`;
     execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], errLog);
