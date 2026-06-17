@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/layout.json",
+  "id": "bpm",
+  "items": [
+    {
+      "key": "title",
+      "type": "text",
+      "rect": [0, 4, 200, 16],
+      "text": "BPM",
+      "font": { "size": 13, "weight": 600 },
+      "alignment": "center",
+      "color": "#9aa0a6"
+    },
+    {
+      "key": "value",
+      "type": "text",
+      "rect": [0, 22, 200, 44],
+      "text": "143",
+      "font": { "size": 34, "weight": 700 },
+      "alignment": "center",
+      "color": "#ffffff"
+    },
+    {
+      "key": "hintminus",
+      "type": "text",
+      "rect": [0, 74, 100, 22],
+      "text": "\u2212",
+      "font": { "size": 18, "weight": 700 },
+      "alignment": "center",
+      "color": "#5f6368"
+    },
+    {
+      "key": "hintplus",
+      "type": "text",
+      "rect": [100, 74, 100, 22],
+      "text": "+",
+      "font": { "size": 18, "weight": 700 },
+      "alignment": "center",
+      "color": "#5f6368"
+    }
+  ]
+}
