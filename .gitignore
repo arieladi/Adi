@@ -1,2 +1,2 @@
-# Ignore .db_store files
-*.db_store
+# Ignore macOS Finder metadata files
+.DS_Store
