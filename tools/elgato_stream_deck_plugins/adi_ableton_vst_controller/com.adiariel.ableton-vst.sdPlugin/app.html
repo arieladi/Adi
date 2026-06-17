@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' 'unsafe-inline' blob: data:; connect-src ws: wss: 'self'; img-src 'self' data: blob:;" />
+  <title>Adi Ableton VST Controller — plugin host</title>
+  <style>html,body{margin:0;background:#0c0f12;color:#6b7682;font:11px/1.4 monospace}.h{padding:10px}</style>
+</head>
+<body>
+  <div class="h">adi_ableton_vst_controller — Stream Deck plugin host (offscreen). Talks to Stream Deck and to the Ableton bridge on ws://127.0.0.1:9006.</div>
+
+  <!-- load order matters: each file augments window.AVC -->
+  <script src="js/sd-client.js"></script>
+  <script src="js/bridge.js"></script>
+  <script src="js/controllers/DeviceController.js"></script>
+  <script src="js/controllers/GenericController.js"></script>
+  <script src="js/controllers/EQ8Controller.js"></script>
+  <script src="js/controllers/registry.js"></script>
+  <script src="js/touchscreen.js"></script>
+  <script src="js/keys.js"></script>
+  <script src="js/plugin.js"></script>
+</body>
+</html>

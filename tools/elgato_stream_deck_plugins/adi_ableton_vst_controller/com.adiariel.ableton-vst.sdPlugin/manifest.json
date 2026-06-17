@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "Adi Ableton VST Controller",
+  "Version": "1.0.0.0",
+  "Author": "Adi Ariel",
+  "URL": "https://github.com/adiariel/Adi",
+  "Description": "Master VST controller for Ableton Live. Tracks the selected channel + device and maps it to 6 dials, a touchscreen and 36 keys. Generic 6-parameter mode for any device (incl. VST3), with predefined layouts starting with EQ Eight.",
+  "Category": "Adi Ableton VST",
+  "CategoryIcon": "imgs/plugin/category",
+  "Icon": "imgs/plugin/icon",
+  "CodePath": "app.html",
+  "PropertyInspectorPath": "pi/inspector.html",
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.5" },
+  "OS": [
+    { "Platform": "mac", "MinimumVersion": "10.15" },
+    { "Platform": "windows", "MinimumVersion": "10" }
+  ],
+  "Actions": [
+    {
+      "Name": "VST Dial",
+      "UUID": "com.adiariel.ableton-vst.dial",
+      "Icon": "imgs/actions/dial/icon",
+      "Tooltip": "One of the 6 dials. Rotate = parameter / EQ band frequency; press = recenter / toggle band. The touchscreen slot shows this dial's zone.",
+      "PropertyInspectorPath": "pi/inspector.html",
+      "Controllers": ["Encoder"],
+      "Encoder": {
+        "layout": "layouts/dial.json",
+        "StackColor": "#0c0f12",
+        "TriggerDescription": {
+          "Rotate": "Adjust parameter / band frequency",
+          "Push": "Recenter parameter / toggle band",
+          "Touch": "Context control (EQ8: band / pagination)",
+          "LongTouch": "Cutoff mode (EQ8)"
+        }
+      },
+      "States": [{ "Image": "imgs/actions/dial/icon", "TitleAlignment": "top" }]
+    },
+    {
+      "Name": "VST Key",
+      "UUID": "com.adiariel.ableton-vst.key",
+      "Icon": "imgs/actions/key/icon",
+      "Tooltip": "A controller key. Set its role (EQ8 launcher, preset slot, or track/device navigation) in the inspector.",
+      "PropertyInspectorPath": "pi/inspector.html",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/actions/key/icon", "TitleAlignment": "middle" }]
+    }
+  ]
+}

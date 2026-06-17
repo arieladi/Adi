@@ -1,0 +1,23 @@
+# Packaged plugin output
+/release/
+*.streamDeckPlugin
+
+# Python bytecode (Remote Script)
+__pycache__/
+*.pyc
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# Node (only if a JS toolchain is added later)
+node_modules/
+npm-debug.log*
+
+# Logs
+*.log
