@@ -1,0 +1,119 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "Adi Ariel Console",
+  "Version": "1.0.0.0",
+  "Author": "Adi Ariel",
+  "CodePath": "bin/plugin.js",
+  "Description": "BPM-driven delay/reverb calculator, OS numpad with a standalone calculator, and an A4=442 Hz note frequency / wavelength tool for Stream Deck + XL.",
+  "URL": "https://adiariel.com",
+  "Icon": "imgs/plugin/marketplace",
+  "Category": "Adi Ariel Console",
+  "CategoryIcon": "imgs/plugin/category",
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.6" },
+  "OS": [
+    { "Platform": "mac", "MinimumVersion": "13" },
+    { "Platform": "windows", "MinimumVersion": "11" }
+  ],
+  "Nodejs": { "Version": "20", "Debug": "enabled" },
+  "UUID": "com.adiariel.console",
+  "Profiles": [
+    {
+      "Name": "AdiArielConsole",
+      "DeviceType": 13,
+      "Readonly": false,
+      "DontAutoSwitchWhenInstalled": true
+    }
+  ],
+  "Actions": [
+    {
+      "Name": "Launch Adi Ariel Console",
+      "UUID": "com.adiariel.console.launcher",
+      "Icon": "imgs/actions/launcher/icon",
+      "Tooltip": "Single click takes the device over with the Adi Ariel Console profile (all screens).",
+      "Controllers": ["Keypad"],
+      "UserTitleEnabled": false,
+      "States": [
+        { "Image": "imgs/actions/launcher/icon", "Title": "Adi Ariel", "TitleAlignment": "bottom" }
+      ]
+    },
+    {
+      "Name": "BPM",
+      "UUID": "com.adiariel.console.bpm",
+      "Icon": "imgs/actions/bpm/icon",
+      "Tooltip": "Global BPM (default 143). Rotate = ±1, push = reset, long-push = sweep to 300. Touch ± / hold = sweep.",
+      "Controllers": ["Encoder"],
+      "Encoder": {
+        "layout": "layouts/bpm.json",
+        "Icon": "imgs/actions/bpm/icon",
+        "TriggerDescription": {
+          "Rotate": "BPM \u00b11",
+          "Push": "Reset to 143",
+          "Touch": "BPM \u00b11",
+          "LongTouch": "Sweep 1 \u2194 300"
+        }
+      },
+      "States": [{ "Image": "imgs/actions/bpm/icon" }]
+    },
+    {
+      "Name": "Delay Range Dial",
+      "UUID": "com.adiariel.console.range",
+      "Icon": "imgs/actions/range/icon",
+      "Tooltip": "Shifts the visible note window (1/1 \u2192 1/128) for one delay category. Set the category in the property inspector.",
+      "Controllers": ["Encoder"],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "Encoder": {
+        "layout": "layouts/range.json",
+        "Icon": "imgs/actions/range/icon",
+        "TriggerDescription": {
+          "Rotate": "Shift note range",
+          "Touch": "Shift note range"
+        }
+      },
+      "States": [{ "Image": "imgs/actions/range/icon" }]
+    },
+    {
+      "Name": "Acoustic / Calc Dial",
+      "UUID": "com.adiariel.console.acoustic",
+      "Icon": "imgs/actions/acoustic/icon",
+      "Tooltip": "Numpad mode: scroll note (axis=note) or octave (axis=octave). Calculator mode: operator / equals / clear and the LCD.",
+      "Controllers": ["Encoder"],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "Encoder": {
+        "layout": "layouts/acoustic.json",
+        "Icon": "imgs/actions/acoustic/icon",
+        "TriggerDescription": {
+          "Rotate": "Note/Octave \u2022 Operator/Backspace",
+          "Push": "Commit op \u2022 Equals",
+          "Touch": "Note/Octave \u2022 Operator/Equals"
+        }
+      },
+      "States": [{ "Image": "imgs/actions/acoustic/icon" }]
+    },
+    {
+      "Name": "Delay Cell",
+      "UUID": "com.adiariel.console.delaycell",
+      "Icon": "imgs/actions/delay/icon",
+      "Tooltip": "Display cell for the delay/reverb grid. Configure category (straight/triplet/dotted), field (ms/hz) and row 0-3.",
+      "Controllers": ["Keypad"],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "DisableAutomaticStates": true,
+      "UserTitleEnabled": false,
+      "States": [
+        { "Image": "imgs/actions/delay/icon", "TitleAlignment": "middle", "FontSize": "14" }
+      ]
+    },
+    {
+      "Name": "Numpad Key",
+      "UUID": "com.adiariel.console.numpad",
+      "Icon": "imgs/actions/numpad/icon",
+      "Tooltip": "Sends an OS numpad keystroke (State A) or feeds the internal calculator (State B). The toggle key long-presses to switch.",
+      "Controllers": ["Keypad"],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "UserTitleEnabled": false,
+      "States": [
+        { "Image": "imgs/actions/numpad/icon", "TitleAlignment": "middle", "FontSize": "20" }
+      ]
+    }
+  ]
+}

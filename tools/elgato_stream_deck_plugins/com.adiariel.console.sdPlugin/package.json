@@ -1,0 +1,20 @@
+{
+  "name": "com.adiariel.console",
+  "version": "1.0.0",
+  "description": "Adi Ariel Console - BPM-driven delay/reverb calculator, OS numpad + standalone calculator, and an A4=442 Hz note frequency / wavelength tool for Stream Deck +.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "rollup -c",
+    "watch": "rollup -c -w"
+  },
+  "dependencies": {
+    "@elgato/streamdeck": "^1.0.0"
+  },
+  "devDependencies": {
+    "@elgato/cli": "^1.0.0",
+    "@rollup/plugin-commonjs": "^25.0.0",
+    "@rollup/plugin-node-resolve": "^15.2.3",
+    "rollup": "^4.9.0"
+  }
+}

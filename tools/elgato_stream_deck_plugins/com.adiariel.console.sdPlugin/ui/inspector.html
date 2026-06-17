@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Adi Ariel Console</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { font: 13px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif; color: #d7d8db; background: #2d2d2d; margin: 0; padding: 12px; }
+    .row { display: flex; align-items: center; margin-bottom: 10px; }
+    .lbl { flex: 0 0 110px; text-align: right; padding-right: 10px; color: #9aa0a6; }
+    .ctl { flex: 1; }
+    select { width: 100%; padding: 5px 6px; background: #3d3d3d; color: #fff; border: 1px solid #4a4a4a; border-radius: 4px; }
+    input[type=checkbox] { vertical-align: middle; margin-right: 6px; }
+    .muted { color: #8a8d91; }
+    label.chk { cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div id="wrap"></div>
+  <script>
+    let ws, uuid, actionUUID, settings = {};
+
+    function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, actionInfo) {
+      uuid = inUUID;
+      const ai = JSON.parse(actionInfo);
+      actionUUID = ai.action;
+      settings = (ai.payload && ai.payload.settings) || {};
+      ws = new WebSocket("ws://127.0.0.1:" + port);
+      ws.onopen = function () {
+        ws.send(JSON.stringify({ event: registerEvent, uuid: inUUID }));
+        render();
+      };
+    }
+
+    function save() {
+      ws.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
+    }
+
+    function field(label, html) {
+      return '<div class="row"><div class="lbl">' + label + '</div><div class="ctl">' + html + '</div></div>';
+    }
+    function sel(key, opts, val) {
+      return '<select data-key="' + key + '">' +
+        opts.map(function (o) {
+          return '<option value="' + o[0] + '"' + (String(val) === String(o[0]) ? ' selected' : '') + '>' + o[1] + '</option>';
+        }).join('') + '</select>';
+    }
+
+    function render() {
+      const w = document.getElementById('wrap');
+      let h = '';
+
+      if (actionUUID === 'com.adiariel.console.delaycell') {
+        h += field('Category', sel('category', [['straight','Straight'],['triplet','Triplet'],['dotted','Dotted']], settings.category || 'straight'));
+        h += field('Field', sel('field', [['ms','Delay (ms)'],['hz','Frequency (Hz)']], settings.field || 'ms'));
+        h += field('Row', sel('row', [['0','Row 0 (top)'],['1','Row 1'],['2','Row 2'],['3','Row 3 (bottom)']], settings.row != null ? settings.row : '0'));
+      } else if (actionUUID === 'com.adiariel.console.numpad') {
+        h += field('Key', sel('token', [
+          ['0','0'],['1','1'],['2','2'],['3','3'],['4','4'],['5','5'],['6','6'],['7','7'],['8','8'],['9','9'],
+          ['decimal','. (decimal)'],['enter','Enter / =']
+        ], settings.token || '0'));
+        h += field('Toggle key', '<label class="chk"><input type="checkbox" data-key="toggle"' + (settings.toggle ? ' checked' : '') + '> long-press switches State A / B</label>');
+      } else if (actionUUID === 'com.adiariel.console.range') {
+        h += field('Category', sel('category', [['straight','Straight'],['triplet','Triplet'],['dotted','Dotted']], settings.category || 'straight'));
+      } else if (actionUUID === 'com.adiariel.console.acoustic') {
+        h += field('Axis', sel('axis', [['note','Note (scroll C..B)'],['octave','Octave (scroll 0..8)']], settings.axis || 'note'));
+      } else {
+        h += '<p class="muted">No settings for this action.</p>';
+      }
+
+      w.innerHTML = h;
+
+      w.querySelectorAll('select').forEach(function (el) {
+        el.addEventListener('change', function (e) { settings[e.target.dataset.key] = e.target.value; save(); });
+      });
+      w.querySelectorAll('input[type=checkbox]').forEach(function (el) {
+        el.addEventListener('change', function (e) { settings[e.target.dataset.key] = e.target.checked; save(); });
+      });
+    }
+  </script>
+</body>
+</html>
