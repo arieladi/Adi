@@ -1,0 +1,46 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build bundle (src/plugin.js -> bin/plugin.js)
+        run: npm run build
+
+      - name: Verify bundle is present and valid
+        shell: bash
+        run: |
+          test -f bin/plugin.js
+          node --check bin/plugin.js
+          echo "bundle built and validated on ${{ matrix.os }}"
+
+      # The bundle is platform-agnostic JS, so one upload (from Linux) is enough.
+      - name: Upload installable plugin folder
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: com.adiariel.console.sdPlugin
+          path: |
+            .
+            !node_modules
+            !.git
