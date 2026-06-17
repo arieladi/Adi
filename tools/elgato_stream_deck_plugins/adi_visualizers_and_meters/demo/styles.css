@@ -1,0 +1,324 @@
+/* =========================================================================
+   adi_visualizers_and_meters — browser demo theme (high-end audio-plugin dark)
+   The .deck is 800 x 100 logical px (the Stream Deck + touch-strip resolution)
+   and is visually zoomed for browser testing via --preview-scale.
+   ========================================================================= */
+
+:root{
+  --preview-scale: 2;          /* set to 1 to see the real device size */
+
+  --bg:        #0b0d10;
+  --deck-bg:   #0c0f12;
+  --panel:     #0e1216;
+  --line-weak: rgba(255,255,255,0.06);
+  --line:      rgba(255,255,255,0.12);
+  --text:      #c9d2dc;
+  --text-dim:  #6b7682;
+  --accent:    #6fe3c4;
+
+  --spectrum:  #d6ff7a;
+  --scope:     #46e0c8;
+  --waveform:  #ff8a3d;
+  --gonio:     #38f0a0;
+
+  --ok:   #4ad27a;
+  --warn: #ffd166;
+  --bad:  #ff5d5d;
+
+  --mono: "SF Mono", "JetBrains Mono", "Roboto Mono", ui-monospace, Menlo, Consolas, monospace;
+  --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+*{ box-sizing: border-box; }
+
+html,body{
+  margin:0;
+  height:100%;
+  background:
+    radial-gradient(1200px 600px at 50% -10%, #11161b 0%, var(--bg) 60%) fixed;
+  color:var(--text);
+  font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;
+}
+
+.stage{
+  min-height:100%;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:40px 16px;
+}
+
+/* ---- the device ---- */
+.deck{
+  position:relative;
+  width:800px;
+  height:100px;
+  flex:0 0 auto;
+  display:flex;
+  background:linear-gradient(180deg,#11151a 0%, var(--deck-bg) 100%);
+  border:1px solid var(--line);
+  border-radius:12px;
+  overflow:hidden;
+  transform:scale(var(--preview-scale));
+  transform-origin:center;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.05) inset,
+    0 30px 80px rgba(0,0,0,0.6),
+    0 2px 8px rgba(0,0,0,0.5);
+}
+
+.left{
+  position:relative;
+  flex:1 1 0;
+  min-width:0;
+}
+#leftCanvas{
+  display:block;
+  width:100%;
+  height:100%;
+  touch-action:none;          /* gestures handled in JS */
+}
+
+.viewlabel{
+  position:absolute;
+  top:5px; left:6px;
+  font-family:var(--mono);
+  font-size:7px;
+  letter-spacing:0.14em;
+  color:var(--text-dim);
+  padding:2px 5px;
+  border:1px solid var(--line-weak);
+  border-radius:5px;
+  background:rgba(0,0,0,0.35);
+  pointer-events:none;
+  text-transform:uppercase;
+}
+
+.gear{
+  position:absolute;
+  top:4px; right:5px;
+  width:18px; height:18px;
+  display:grid; place-items:center;
+  color:var(--text-dim);
+  background:rgba(0,0,0,0.35);
+  border:1px solid var(--line-weak);
+  border-radius:6px;
+  cursor:pointer;
+  padding:0;
+  transition:color .15s ease, border-color .15s ease;
+}
+.gear:hover{ color:var(--accent); border-color:var(--line); }
+
+.divider{
+  width:1px;
+  background:linear-gradient(180deg,transparent, var(--line), transparent);
+  flex:0 0 1px;
+}
+
+/* ---- meters side ---- */
+.right{
+  flex:1 1 0;
+  min-width:0;
+  display:flex;
+  gap:6px;
+  padding:6px;
+}
+.m-meters{ width:62px;  flex:0 0 62px; }
+.m-bands{  flex:1 1 0; min-width:0; }
+.m-stereo{
+  width:86px; flex:0 0 86px;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.right canvas{ display:block; width:100%; }
+.m-meters canvas, .m-bands canvas{ height:100%; }
+.gonio{ flex:1 1 0; min-height:0; }
+.thinbar{ height:13px; flex:0 0 13px; }
+
+/* ---- start overlay ---- */
+.start{
+  position:absolute; inset:0;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  background:rgba(8,10,13,0.92);
+  backdrop-filter:blur(2px);
+  z-index:5;
+}
+.start.hidden{ display:none; }
+.start-btn{
+  font-family:var(--sans);
+  font-size:11px;
+  font-weight:600;
+  letter-spacing:0.02em;
+  color:#06251d;
+  background:linear-gradient(180deg, #8ff0d4, var(--accent));
+  border:none;
+  border-radius:7px;
+  padding:6px 14px;
+  cursor:pointer;
+  box-shadow:0 2px 10px rgba(111,227,196,0.35);
+}
+.start-btn:hover{ filter:brightness(1.06); }
+.start-sub{
+  font-family:var(--mono);
+  font-size:6.5px;
+  color:var(--text-dim);
+  max-width:340px;
+  text-align:center;
+  line-height:1.5;
+  padding:0 10px;
+}
+
+/* =========================================================================
+   Settings modal — normal page modal, comfortably readable
+   ========================================================================= */
+.modal-bg{
+  position:fixed; inset:0;
+  background:rgba(4,6,8,0.66);
+  backdrop-filter:blur(3px);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  z-index:50;
+  padding:20px;
+}
+.modal-bg[hidden]{ display:none; }
+
+.modal{
+  width:100%;
+  max-width:360px;
+  max-height:86vh;
+  overflow:auto;
+  background:linear-gradient(180deg,#12171c, #0d1115);
+  border:1px solid var(--line);
+  border-radius:14px;
+  box-shadow:0 30px 90px rgba(0,0,0,0.7);
+}
+.modal-head{
+  position:sticky; top:0;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:14px 16px;
+  background:linear-gradient(180deg,#141a20,#12171c);
+  border-bottom:1px solid var(--line-weak);
+}
+.modal-head h2{
+  margin:0;
+  font-size:13px;
+  font-weight:600;
+  letter-spacing:0.08em;
+  text-transform:uppercase;
+  color:var(--text);
+}
+.modal-close{
+  width:26px; height:26px;
+  display:grid; place-items:center;
+  font-size:18px; line-height:1;
+  color:var(--text-dim);
+  background:transparent;
+  border:1px solid var(--line-weak);
+  border-radius:7px;
+  cursor:pointer;
+}
+.modal-close:hover{ color:var(--text); border-color:var(--line); }
+
+.modal-body{ padding:14px 16px 18px; }
+
+/* control rows */
+.ctrl{ margin:0 0 14px; }
+.ctrl:last-child{ margin-bottom:0; }
+.ctrl-head{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  margin-bottom:6px;
+}
+.ctrl-label{
+  font-size:11px;
+  color:var(--text);
+  letter-spacing:0.02em;
+}
+.ctrl-val{
+  font-family:var(--mono);
+  font-size:11px;
+  color:var(--accent);
+}
+
+input[type=range]{
+  -webkit-appearance:none; appearance:none;
+  width:100%;
+  height:4px;
+  border-radius:4px;
+  background:#1c242b;
+  outline:none;
+  cursor:pointer;
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none; appearance:none;
+  width:14px; height:14px;
+  border-radius:50%;
+  background:var(--accent);
+  border:2px solid #0c0f12;
+  box-shadow:0 0 0 1px rgba(111,227,196,0.5);
+}
+input[type=range]::-moz-range-thumb{
+  width:14px; height:14px; border:2px solid #0c0f12;
+  border-radius:50%; background:var(--accent);
+}
+
+select{
+  width:100%;
+  font-family:var(--sans);
+  font-size:12px;
+  color:var(--text);
+  background:#161c22;
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:7px 9px;
+  cursor:pointer;
+}
+select:focus{ border-color:var(--accent); outline:none; }
+
+input[type=color]{
+  width:100%;
+  height:30px;
+  background:#161c22;
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:3px;
+  cursor:pointer;
+}
+
+.seg{
+  display:inline-flex;
+  border:1px solid var(--line);
+  border-radius:8px;
+  overflow:hidden;
+}
+.seg button{
+  font-family:var(--sans);
+  font-size:11px;
+  color:var(--text-dim);
+  background:#161c22;
+  border:none;
+  padding:6px 14px;
+  cursor:pointer;
+}
+.seg button + button{ border-left:1px solid var(--line); }
+.seg button.on{
+  color:#06251d;
+  background:var(--accent);
+  font-weight:600;
+}
+
+/* mobile: shrink the preview so the strip fits narrow screens */
+@media (max-width:680px){
+  :root{ --preview-scale:1; }
+  .stage{ padding:24px 8px; }
+}

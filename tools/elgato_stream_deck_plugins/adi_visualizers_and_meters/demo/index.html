@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Adi Visualizers &amp; Meters — browser demo</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!--
+    .deck is the LOGICAL Stream Deck + touch strip: 800 x 100 px (its real
+    resolution). It is visually zoomed for browser testing via --preview-scale.
+    This page is the hardware-free demo; the same engine.js drives the plugin.
+  -->
+  <main class="stage">
+    <div class="deck" id="deck">
+
+      <!-- LEFT: visualizers (Spectrum / Oscilloscope / Waveform) -->
+      <section class="left">
+        <canvas id="leftCanvas"></canvas>
+        <div class="viewlabel" id="viewLabel">SPECTRUM</div>
+        <button class="gear" id="gear" title="View settings" aria-label="View settings">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+            <path fill="currentColor" d="M19.14 12.94a7.49 7.49 0 0 0 .06-.94 7.49 7.49 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.3 7.3 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.61.22L2.74 8.8a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.62-.06.94 0 .32.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.24.42.32.61.22l2.39-.96c.49.38 1.03.7 1.62.94l.36 2.54c.05.24.25.42.5.42h3.84c.25 0 .45-.18.5-.42l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.24.1.48 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z"/>
+          </svg>
+        </button>
+      </section>
+
+      <div class="divider"></div>
+
+      <!-- RIGHT: meters -->
+      <section class="right">
+        <div class="m-meters"><canvas id="meterCanvas"></canvas></div>
+        <div class="m-bands"><canvas id="bandCanvas"></canvas></div>
+        <div class="m-stereo">
+          <canvas id="gonioCanvas" class="gonio"></canvas>
+          <canvas id="corrCanvas" class="thinbar"></canvas>
+          <canvas id="balCanvas" class="thinbar"></canvas>
+        </div>
+      </section>
+
+      <!-- Start overlay (a user gesture is required to open the mic + AudioContext) -->
+      <div class="start" id="start">
+        <button class="start-btn" id="startBtn">Start analyzer</button>
+        <div class="start-sub" id="startSub">Uses your default audio input. For system audio, pick a loopback device (VB-Cable / BlackHole).</div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Settings modal (a normal centered page modal; an 800x100 overlay is impractical on-device) -->
+  <div class="modal-bg" id="modalBg" hidden>
+    <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <header class="modal-head">
+        <h2 id="modalTitle">Settings</h2>
+        <button class="modal-close" id="modalClose" aria-label="Close">×</button>
+      </header>
+      <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+
+  <!-- Shared engine (canonical copy lives in the .sdPlugin folder) -->
+  <script src="../com.adi.visualizers-and-meters.sdPlugin/js/engine.js"></script>
+  <script src="demo.js"></script>
+</body>
+</html>

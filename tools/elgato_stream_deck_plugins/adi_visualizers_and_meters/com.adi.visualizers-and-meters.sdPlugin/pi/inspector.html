@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Audio View — settings</title>
+  <link rel="stylesheet" href="sdpi.css" />
+</head>
+<body>
+  <div class="pi">
+    <div class="section">
+      <div class="section-title">View</div>
+      <div id="viewPicker"></div>
+    </div>
+    <div class="section" id="viewSettings">
+      <div class="section-title" id="viewSettingsTitle">Settings</div>
+      <div id="controls"></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Audio (shared)</div>
+      <div id="globalControls"></div>
+    </div>
+  </div>
+
+  <!-- Reuse the engine's defaults + view list so the PI never drifts from the plugin -->
+  <script src="../js/engine.js"></script>
+  <script src="inspector.js"></script>
+</body>
+</html>

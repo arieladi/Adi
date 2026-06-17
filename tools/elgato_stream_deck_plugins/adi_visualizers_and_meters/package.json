@@ -1,0 +1,32 @@
+{
+  "name": "adi-visualizers-and-meters",
+  "version": "1.0.0",
+  "description": "Stream Deck + plugin: real-time audio spectrum, oscilloscope, waveform, peak/RMS meters, octave bands, goniometer and stereo correlation. Pure Web Audio + Canvas, zero runtime dependencies.",
+  "private": true,
+  "license": "MIT",
+  "author": "Adi Ariel",
+  "homepage": "https://github.com/adiariel/adi_visualizers_and_meters",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/adiariel/adi_visualizers_and_meters.git"
+  },
+  "keywords": [
+    "stream-deck",
+    "elgato",
+    "audio",
+    "spectrum-analyzer",
+    "oscilloscope",
+    "vu-meter",
+    "goniometer",
+    "web-audio"
+  ],
+  "scripts": {
+    "icons": "python3 scripts/gen_icons.py",
+    "validate": "python3 scripts/validate.py",
+    "demo": "python3 -m http.server 8777 && echo 'open http://localhost:8777/demo/'",
+    "install:mac": "bash scripts/install-mac.sh",
+    "install:win": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
+    "pack:mac": "bash scripts/pack.sh",
+    "pack:win": "powershell -ExecutionPolicy Bypass -File scripts/pack.ps1"
+  }
+}

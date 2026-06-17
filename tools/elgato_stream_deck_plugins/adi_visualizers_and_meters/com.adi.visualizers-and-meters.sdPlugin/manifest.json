@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "Adi Visualizers & Meters",
+  "Version": "1.0.0.0",
+  "Author": "Adi Ariel",
+  "URL": "https://github.com/adiariel/adi_visualizers_and_meters",
+  "Description": "Real-time audio spectrum, oscilloscope, waveform, peak/RMS meters, octave bands, goniometer and stereo correlation — rendered live on Stream Deck + dials or any key.",
+  "Category": "Adi Visualizers & Meters",
+  "CategoryIcon": "imgs/plugin/category",
+  "Icon": "imgs/plugin/icon",
+  "CodePath": "app.html",
+  "PropertyInspectorPath": "pi/inspector.html",
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "6.5"
+  },
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "10.15"
+    },
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Actions": [
+    {
+      "Name": "Audio View",
+      "UUID": "com.adi.visualizers-and-meters.view",
+      "Icon": "imgs/actions/view/icon",
+      "Tooltip": "Live audio view — spectrum, scope, waveform, meters, bands, goniometer or correlation. Press / touch to cycle; rotate to adjust.",
+      "PropertyInspectorPath": "pi/inspector.html",
+      "Controllers": ["Keypad", "Encoder"],
+      "Encoder": {
+        "layout": "layouts/visualizer.json",
+        "StackColor": "#0c0f12",
+        "TriggerDescription": {
+          "Rotate": "Adjust view parameter",
+          "Push": "Cycle to next view",
+          "Touch": "Cycle to next view",
+          "LongTouch": "Reset view"
+        }
+      },
+      "States": [
+        {
+          "Image": "imgs/actions/view/key",
+          "TitleAlignment": "top"
+        }
+      ]
+    }
+  ]
+}
