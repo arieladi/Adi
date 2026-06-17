@@ -1,0 +1,22 @@
+Place icon PNGs here. The Stream Deck app references these paths from manifest.json
+(filenames are given WITHOUT extension; provide @1x .png and @2x .png for each):
+
+  pluginIcon.png            / pluginIcon@2x.png            (plugin icon, ~256x256)
+  categoryIcon.png          / categoryIcon@2x.png          (category icon, ~28x28 / 56x56)
+
+  actions/drum/icon.png     / actions/drum/icon@2x.png     (action list icon, ~20x20 / 40x40)
+  actions/drum/key.png      / actions/drum/key@2x.png      (key image, 72x72 / 144x144)
+
+  actions/numpad/icon.png   / actions/numpad/icon@2x.png
+  actions/numpad/key.png    / actions/numpad/key@2x.png
+
+  actions/selector/icon.png / actions/selector/icon@2x.png
+  actions/selector/key.png  / actions/selector/key@2x.png
+
+  actions/dial/icon.png     / actions/dial/icon@2x.png
+  actions/dial/key.png      / actions/dial/key@2x.png
+
+  actions/scale/icon.png    / actions/scale/icon@2x.png
+  actions/scale/key.png     / actions/scale/key@2x.png
+
+The plugin will not load in the Stream Deck app until these images exist.

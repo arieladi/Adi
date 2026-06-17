@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; connect-src ws://127.0.0.1:*; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" />
+    <title>Scale Touch Settings</title>
+    <style>
+      body { font-family: -apple-system, "Segoe UI", sans-serif; font-size: 13px; color: #ddd;
+             background: #2d2d2d; margin: 0; padding: 12px; }
+      .row { display: flex; align-items: center; margin-bottom: 10px; }
+      .row label { width: 90px; color: #9c9c9c; }
+      select, input { flex: 1; background: #3d3d3d; color: #fff; border: 1px solid #555;
+                      border-radius: 4px; padding: 5px; }
+      .hint { color: #777; font-size: 11px; margin-top: 6px; line-height: 1.4; }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <label for="root">Root note</label>
+      <select id="root"></select>
+    </div>
+    <div class="row">
+      <label for="scale">Scale</label>
+      <select id="scale"></select>
+    </div>
+    <div class="row">
+      <label for="channel">MIDI channel</label>
+      <input id="channel" type="number" min="1" max="16" value="1" />
+    </div>
+    <div class="hint">
+      These settings apply to the whole touch keyboard (all segments share one root + scale).
+      7-note scales fill zones 1-7 with zone 8 = root +1 octave; 8-note scales fill all 8 zones.
+    </div>
+
+    <script>
+      const CHROMATIC = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+      const SCALES = ["Major","Minor","Harmonic Minor","Melodic Minor","Dorian","Phrygian",
+                      "Lydian","Mixolydian","Locrian","Diminished","Whole Tone",
+                      "Major Pentatonic","Minor Pentatonic","Blues"];
+
+      let pi = { ws: null, uuid: null };
+
+      const rootSel = document.getElementById("root");
+      const scaleSel = document.getElementById("scale");
+      const chanInp = document.getElementById("channel");
+      CHROMATIC.forEach(n => rootSel.add(new Option(n, n)));
+      SCALES.forEach(s => scaleSel.add(new Option(s, s)));
+
+      function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, inInfo, inActionInfo) {
+        pi.uuid = inUUID;
+        pi.ws = new WebSocket("ws://127.0.0.1:" + inPort);
+        pi.ws.onopen = () => {
+          pi.ws.send(JSON.stringify({ event: inRegisterEvent, uuid: inUUID }));
+          pi.ws.send(JSON.stringify({ event: "getGlobalSettings", context: inUUID }));
+        };
+        pi.ws.onmessage = (e) => {
+          const j = JSON.parse(e.data);
+          if (j.event === "didReceiveGlobalSettings") {
+            const s = j.payload.settings || {};
+            rootSel.value = s.rootNote || "C";
+            scaleSel.value = s.selectedScale || "Minor";
+            chanInp.value = s.midiChannel || 1;
+          }
+        };
+      }
+
+      function push() {
+        const settings = {
+          rootNote: rootSel.value,
+          selectedScale: scaleSel.value,
+          midiChannel: Math.min(16, Math.max(1, parseInt(chanInp.value || "1", 10)))
+        };
+        // Stored globally so every touch segment uses the same keyboard config.
+        pi.ws.send(JSON.stringify({ event: "setGlobalSettings", context: pi.uuid, payload: settings }));
+      }
+
+      rootSel.onchange = push;
+      scaleSel.onchange = push;
+      chanInp.onchange = push;
+    </script>
+  </body>
+</html>
