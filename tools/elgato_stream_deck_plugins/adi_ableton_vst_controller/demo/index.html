@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Adi Ableton VST Controller — demo</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <h1>Adi Ableton VST Controller — touchscreen demo</h1>
+    <p class="sub">Hardware-free preview using the real controller strategies. The wide canvas is the 6-dial touchscreen (1200×100), sliced per dial on the device. Mock Ableton state — no Live required.</p>
+
+    <div class="toggle" id="modeToggle">
+      <button data-mode="eq8" class="on">EQ Eight</button>
+      <button data-mode="generic">Generic VST</button>
+    </div>
+
+    <div class="block">
+      <h2 id="screenTitle">Touchscreen</h2>
+      <div class="screen">
+        <canvas id="screen" width="1200" height="100"></canvas>
+        <div class="slots"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+      </div>
+      <div class="dials" id="dials"></div>
+      <div class="hint" id="hint"></div>
+    </div>
+
+    <div class="block">
+      <h2>Keys (EQ8 launcher + preset folder)</h2>
+      <div class="keys" id="keys"></div>
+      <div class="hint">Click the EQ8 key to toggle the preset folder view.</div>
+    </div>
+  </div>
+
+  <!-- real controller strategies (shared with the plugin) -->
+  <script src="../com.adiariel.ableton-vst.sdPlugin/js/controllers/DeviceController.js"></script>
+  <script src="../com.adiariel.ableton-vst.sdPlugin/js/controllers/GenericController.js"></script>
+  <script src="../com.adiariel.ableton-vst.sdPlugin/js/controllers/EQ8Controller.js"></script>
+  <script src="../com.adiariel.ableton-vst.sdPlugin/js/controllers/registry.js"></script>
+  <script src="demo.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+:root{
+  --bg:#0b0d10; --panel:#0e1216; --line:rgba(255,255,255,0.10); --text:#c9d2dc; --dim:#6b7682; --accent:#6fe3c4;
+  --sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:radial-gradient(1200px 600px at 50% -10%, #11161b 0%, var(--bg) 60%) fixed;color:var(--text);font-family:var(--sans)}
+.wrap{max-width:1280px;margin:0 auto;padding:28px 20px 60px}
+h1{font-size:18px;font-weight:700;margin:0 0 4px}
+.sub{color:var(--dim);font-size:13px;margin:0 0 22px}
+.block{margin:0 0 26px}
+.block h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin:0 0 8px}
+.screen{position:relative;width:1200px;max-width:100%;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#0c0f12}
+.screen canvas{display:block;width:1200px;max-width:100%;height:auto;touch-action:none;cursor:pointer}
+.slots{position:absolute;inset:0;display:grid;grid-template-columns:repeat(6,1fr);pointer-events:none}
+.slots div{border-right:1px dashed rgba(255,255,255,0.08)}
+.slots div:last-child{border-right:none}
+.dials{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.dials button{font:600 12px var(--sans);color:var(--text);background:#161c22;border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer}
+.dials button:hover{border-color:var(--accent)}
+.keys{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.keys canvas{width:84px;height:84px;border-radius:10px;border:1px solid var(--line);background:#0c0f12;cursor:pointer}
+.hint{color:var(--dim);font-size:12px;margin-top:8px;font-family:var(--mono)}
+.toggle{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:14px}
+.toggle button{font:600 12px var(--sans);color:var(--dim);background:#161c22;border:none;padding:7px 16px;cursor:pointer}
+.toggle button.on{color:#06251d;background:var(--accent);font-weight:700}

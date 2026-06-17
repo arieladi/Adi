@@ -1,0 +1,16 @@
+{
+  "name": "adi-ableton-vst-controller",
+  "version": "1.0.0",
+  "description": "Stream Deck master VST controller for Ableton Live: tracks the selected channel/device, generic 6-parameter mode for any device (incl. VST3), and predefined per-VST layouts starting with EQ Eight. Modular Strategy-pattern controllers + a dependency-free Python Remote Script bridge.",
+  "private": true,
+  "license": "MIT",
+  "author": "Adi Ariel",
+  "keywords": ["stream-deck", "elgato", "ableton", "ableton-live", "remote-script", "eq-eight", "vst3", "midi-controller"],
+  "scripts": {
+    "icons": "python3 scripts/gen_icons.py",
+    "validate": "python3 scripts/validate.py",
+    "demo": "python3 -m http.server 8799",
+    "install:mac": "bash scripts/install-mac.sh",
+    "install:win": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1"
+  }
+}
