@@ -1,0 +1,19 @@
+# Packaged plugin output
+/release/
+*.streamDeckPlugin
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# Node (only if you later add a build toolchain)
+node_modules/
+npm-debug.log*
+
+# Logs
+*.log

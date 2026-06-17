@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' 'unsafe-inline' blob:; connect-src ws: wss: 'self'; media-src 'self' blob: mediastream:; img-src 'self' data: blob:;" />
+  <title>Adi Visualizers &amp; Meters — plugin host</title>
+  <style>
+    html, body { margin: 0; background: #0c0f12; color: #6b7682; font: 11px/1.4 monospace; }
+    /* The plugin host window is hidden by Stream Deck; this is only visible if
+       you happen to open app.html directly while debugging. */
+    .host { padding: 10px; }
+  </style>
+</head>
+<body>
+  <div class="host" id="host">adi_visualizers_and_meters — Stream Deck plugin host (offscreen rendering).</div>
+
+  <!-- Shared analysis + drawing engine (also used by the browser demo) -->
+  <script src="js/engine.js"></script>
+  <!-- Stream Deck registration, audio capture and per-action rendering -->
+  <script src="js/plugin.js"></script>
+</body>
+</html>
