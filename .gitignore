@@ -1,0 +1,2 @@
+# Ignore .db_store files
+*.db_store
