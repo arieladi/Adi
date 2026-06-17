@@ -1,0 +1,93 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "Adi Ariel MIDI Control",
+  "Version": "1.0.0.0",
+  "Author": "Adi Ariel",
+  "URL": "https://adiariel.com",
+  "Description": "Turns Stream Deck + / XL into a multi-bank MIDI controller for Ableton Live: drum pads, scaled touch keyboard, MIDI-learn dials with 3 banks, plus an OS numpad.",
+  "Category": "Adi Ariel MIDI Control",
+  "CategoryIcon": "imgs/categoryIcon",
+  "Icon": "imgs/pluginIcon",
+  "CodePath": "index.html",
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.5" },
+  "OS": [
+    { "Platform": "windows", "MinimumVersion": "10" }
+  ],
+  "ApplicationsToMonitor": {
+    "windows": ["Ableton Live 12 Suite.exe", "Ableton Live 11 Suite.exe", "Ableton Live.exe"]
+  },
+  "Actions": [
+    {
+      "Name": "Drum Pad",
+      "UUID": "com.adiariel.midicontrol.drum",
+      "Icon": "imgs/actions/drum/icon",
+      "Tooltip": "Momentary MIDI note pad (C1..D#2). Place as a 4x4 block.",
+      "Controllers": ["Keypad"],
+      "States": [
+        { "Image": "imgs/actions/drum/key", "TitleColor": "#ffffff", "TitleAlignment": "middle", "FontSize": "16" }
+      ]
+    },
+    {
+      "Name": "Num Pad Key",
+      "UUID": "com.adiariel.midicontrol.numpad",
+      "Icon": "imgs/actions/numpad/icon",
+      "Tooltip": "OS keystroke (0-9 . + - x / Enter Clear). Place as a 5x4 block.",
+      "Controllers": ["Keypad"],
+      "States": [
+        { "Image": "imgs/actions/numpad/key", "TitleColor": "#ffffff", "TitleAlignment": "middle", "FontSize": "28" }
+      ]
+    },
+    {
+      "Name": "Set Selector",
+      "UUID": "com.adiariel.midicontrol.setselector",
+      "Icon": "imgs/actions/selector/icon",
+      "Tooltip": "Cycles the 6 dials through banks of CC numbers.",
+      "Controllers": ["Keypad"],
+      "States": [
+        { "Image": "imgs/actions/selector/key", "TitleColor": "#ffd400", "TitleAlignment": "middle", "FontSize": "14" }
+      ]
+    },
+    {
+      "Name": "MIDI Dial",
+      "UUID": "com.adiariel.midicontrol.dial",
+      "Icon": "imgs/actions/dial/icon",
+      "Tooltip": "MIDI-learn CC dial. Rotate = absolute CC value, push = reset to center.",
+      "Controllers": ["Encoder"],
+      "Encoder": {
+        "layout": "$B1",
+        "StackColor": "#0a84ff",
+        "TriggerDescription": {
+          "Rotate": "Adjust CC value",
+          "Push": "Reset to 64 (center)",
+          "Touch": "Show CC mapping",
+          "LongTouch": ""
+        }
+      },
+      "States": [
+        { "Image": "imgs/actions/dial/key", "TitleColor": "#ffffff", "TitleAlignment": "middle", "FontSize": "12" }
+      ]
+    },
+    {
+      "Name": "Scale Touch",
+      "UUID": "com.adiariel.midicontrol.scaletouch",
+      "Icon": "imgs/actions/scale/icon",
+      "PropertyInspectorPath": "pi.html",
+      "Tooltip": "Scaled touch keyboard. Place across the touch strip. Configure root note + scale in settings.",
+      "Controllers": ["Encoder"],
+      "Encoder": {
+        "layout": "$A1",
+        "StackColor": "#34c759",
+        "TriggerDescription": {
+          "Rotate": "",
+          "Push": "",
+          "Touch": "Play scale note",
+          "LongTouch": "Play scale note"
+        }
+      },
+      "States": [
+        { "Image": "imgs/actions/scale/key", "TitleColor": "#ffffff", "TitleAlignment": "middle", "FontSize": "12" }
+      ]
+    }
+  ]
+}
