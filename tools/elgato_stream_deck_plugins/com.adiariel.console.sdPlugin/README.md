@@ -59,7 +59,7 @@ What makes it portable, and how it's enforced here:
 - **`.gitattributes`** forces LF line endings so a Windows checkout doesn't introduce CRLF churn.
 - **`CodePath`** (not `CodePathWin` / `CodePathMac`) — those split keys are only for compiled C++/C# plugins; a Node bundle is identical on both OSes, so one `CodePath` is correct.
 
-CI (`.github/workflows/build.yml`) builds and validates the bundle on `ubuntu-latest`, `windows-latest`, and `macos-latest` on every push, so cross-platform breakage is caught automatically.
+CI (`.github/workflows/console-plugin.yml`, at the **repo root** — GitHub only runs workflows from there) builds and validates the bundle on `ubuntu-latest`, `windows-latest`, and `macos-latest` on every push that touches this folder, so cross-platform breakage is caught automatically.
 
 ---
 
@@ -168,7 +168,6 @@ com.adiariel.console.sdPlugin/
 ├─ .gitignore               # ignores node_modules, *.streamDeckPlugin, logs
 ├─ .gitattributes           # forces LF line endings (Win/Mac parity)
 ├─ LICENSE                  # MIT (Adi Ariel) — change if you prefer another
-├─ .github/workflows/       # CI: build + validate on Linux / Windows / macOS
 ├─ src/plugin.js            # all state, math, long-press, keystrokes, calculator, handlers
 ├─ bin/plugin.js            # built bundle (committed; regenerate via npm run build)
 ├─ ui/inspector.html        # shared Property Inspector (vanilla, no deps)

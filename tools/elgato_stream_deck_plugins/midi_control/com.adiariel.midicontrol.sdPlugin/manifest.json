@@ -12,10 +12,12 @@
   "SDKVersion": 2,
   "Software": { "MinimumVersion": "6.5" },
   "OS": [
-    { "Platform": "windows", "MinimumVersion": "10" }
+    { "Platform": "windows", "MinimumVersion": "10" },
+    { "Platform": "mac", "MinimumVersion": "11" }
   ],
   "ApplicationsToMonitor": {
-    "windows": ["Ableton Live 12 Suite.exe", "Ableton Live 11 Suite.exe", "Ableton Live.exe"]
+    "windows": ["Ableton Live 12 Suite.exe", "Ableton Live 11 Suite.exe", "Ableton Live.exe"],
+    "mac": ["com.ableton.live"]
   },
   "Actions": [
     {

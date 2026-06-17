@@ -1,0 +1,51 @@
+name: midi-helper
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'tools/elgato_stream_deck_plugins/midi_control/**'
+      - '.github/workflows/midi-helper.yml'
+  pull_request:
+    paths:
+      - 'tools/elgato_stream_deck_plugins/midi_control/**'
+      - '.github/workflows/midi-helper.yml'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: tools/elgato_stream_deck_plugins/midi_control
+
+# The Stream Deck app runs only on Windows and macOS, so the native helper is
+# compiled on exactly those two. (teVirtualMIDI on Windows; CoreMIDI on macOS.)
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Windows / x64 - teVirtualMIDI is x64-only)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build -A x64
+
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Verify helper binary exists
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            test -f build/Release/StreamDeckMidiHelper.exe
+          else
+            test -f build/StreamDeckMidiHelper
+          fi
+          echo "helper built on ${{ matrix.os }}"

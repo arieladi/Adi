@@ -10,34 +10,71 @@ Turns the device into a multi-bank MIDI controller for Ableton Live, plus an OS 
 | Bottom dials (×6) | MIDI-learn CC dials, 3 banks (**CC 20–37**) |
 | Bottom-right key | **Set Selector** — cycles `DIALS 1-6 / 7-12 / 13-18` |
 
+## How it works (Windows + macOS)
+
+The Stream Deck plugin itself (`index.html` + `plugin.js`) is plain HTML/JS and runs identically on
+both OSes. It forwards MIDI / keystroke commands as JSON over `ws://127.0.0.1:9234` to a small
+**native helper** (`StreamDeckMidiHelper`) that you build and run alongside it. Only the helper is
+platform-specific, and it's the same source file (`main.cpp`) compiled per OS:
+
+| | Virtual MIDI port | Keystrokes |
+|---|---|---|
+| **Windows** | teVirtualMIDI driver (ships with loopMIDI) | `SendInput` |
+| **macOS** | CoreMIDI virtual source — **built in, no driver** | `CGEvent` |
+
 ## ⚠️ Two things you must know first
 
 1. **Hardware:** No single Elgato product has 6 dials + a 35-key matrix + an 8-zone strip. This
    plugin is **coordinate-driven** — drop the actions where your hardware has them and the code
    auto-detects positions. On a Stream Deck + (4 dials), the 8 touch zones map 2-per-segment.
-2. **Windows virtual MIDI:** Windows has no built-in virtual-MIDI API and **RtMidi cannot create
-   virtual ports on Windows**. The native helper uses the **teVirtualMIDI** driver, which installs
-   for free with **loopMIDI** (https://www.tobias-erichsen.de/software/loopmidi.html).
+2. **Virtual MIDI differs by OS:** Windows has no built-in virtual-MIDI API (and RtMidi can't create
+   virtual ports there), so it needs the **teVirtualMIDI** driver, which installs for free with
+   **loopMIDI** (https://www.tobias-erichsen.de/software/loopmidi.html). **macOS needs nothing** —
+   the helper creates a CoreMIDI virtual source directly.
 
-## Install
+In both cases the helper creates its own port named **`Stream Deck MIDI Control`** — you do not need
+to create any loopMIDI / IAC port yourself.
 
-1. **Install loopMIDI** (provides the teVirtualMIDI driver). You do *not* need to create a loopMIDI
-   port — the helper creates its own port named **`Stream Deck MIDI Control`**.
+## Install — common steps
+
+1. **Add icon PNGs** under `imgs/…` (paths referenced in `manifest.json`): plugin/category icons,
+   and per-action `icon`/`key` images (`@1x` + `@2x`). The plugin won't load without them.
+2. **Install the plugin:** the `com.adiariel.midicontrol.sdPlugin` folder (with `manifest.json`,
+   `index.html`, `pi.html`, `plugin.js`, and `imgs/`) goes in the Stream Deck plugins directory,
+   then restart the Stream Deck app.
+3. **Build + run the native helper** for your OS (below). The plugin auto-reconnects, so launch
+   order doesn't matter.
+
+### Windows
+
+1. **Install loopMIDI** (provides the teVirtualMIDI driver). No loopMIDI port needed.
 2. **Get the teVirtualMIDI SDK** and copy it into `third_party/teVirtualMIDI/` as
    `include/teVirtualMIDI.h`, `lib/x64/teVirtualMIDI64.lib`, `bin/x64/teVirtualMIDI64.dll`.
-3. **Build the helper:**
+3. **Build:**
    ```
    cmake -S . -B build -A x64
    cmake --build build --config Release
    ```
    → `build/Release/StreamDeckMidiHelper.exe` (with `teVirtualMIDI64.dll` beside it).
-4. **Add icon PNGs** under `imgs/…` (paths referenced in `manifest.json`): plugin/category icons,
-   and per-action `icon`/`key` images (`@1x` + `@2x`). The plugin won't load without them.
-5. **Install the plugin:** the `com.adiariel.midicontrol.sdPlugin` folder (with `manifest.json`,
-   `index.html`, `pi.html`, `plugin.js`, and `imgs/`) goes in the Stream Deck plugins directory,
-   then restart the Stream Deck app.
-6. **Run the helper** (`StreamDeckMidiHelper.exe`). The plugin auto-reconnects, so launch order
-   doesn't matter; add it to Windows startup (Task Scheduler / Startup folder) to make it persistent.
+4. **Run** `StreamDeckMidiHelper.exe`. Add it to Windows startup (Task Scheduler / Startup folder)
+   to make it persistent.
+
+### macOS
+
+No driver to install — CoreMIDI is part of the OS.
+
+1. **Build:**
+   ```
+   cmake -S . -B build
+   cmake --build build --config Release
+   ```
+   → `build/StreamDeckMidiHelper`.
+2. **Grant Accessibility permission:** the num-pad keys synthesize keystrokes via `CGEvent`, which
+   macOS gates behind **System Settings → Privacy & Security → Accessibility**. Add the
+   `StreamDeckMidiHelper` binary (or the terminal you launch it from) there, or the num-pad keys
+   silently do nothing. *MIDI output needs no permission.*
+3. **Run** `./build/StreamDeckMidiHelper`. To make it persistent, add a **Login Item** or a
+   `launchd` agent.
 
 ## Lay out the controls
 
@@ -68,6 +105,7 @@ CC 20-25 / 26-31 / 32-37, and each bank remembers its own values.
   tap fires Note On followed by a timed Note Off (`TOUCH_NOTE_MS`, default 280 ms). 7-note scales
   fill zones 1-7 with zone 8 = root + 1 octave; 8-note scales (e.g. Diminished) fill all 8 zones.
 - **Dials:** rotation sends absolute CC (step 2 per tick); pressing a dial resets it to 64.
-- **Numpad:** keystrokes are injected via `SendInput` (numpad virtual-keys); `Clear` = Esc.
+- **Numpad:** keystrokes use numpad keys — `SendInput` on Windows, `CGEvent` on macOS (needs
+  Accessibility permission); `Clear` = Esc on both.
 - All tunables (base notes, velocities, CC banks, ports) live at the top of `plugin.js` and
   `main.cpp`.

@@ -1,10 +1,20 @@
-name: build
+name: console-plugin
 
 on:
   push:
     branches: [main, master]
+    paths:
+      - 'tools/elgato_stream_deck_plugins/com.adiariel.console.sdPlugin/**'
+      - '.github/workflows/console-plugin.yml'
   pull_request:
+    paths:
+      - 'tools/elgato_stream_deck_plugins/com.adiariel.console.sdPlugin/**'
+      - '.github/workflows/console-plugin.yml'
   workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: tools/elgato_stream_deck_plugins/com.adiariel.console.sdPlugin
 
 jobs:
   build:
@@ -19,7 +29,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
@@ -35,12 +45,12 @@ jobs:
           echo "bundle built and validated on ${{ matrix.os }}"
 
       # The bundle is platform-agnostic JS, so one upload (from Linux) is enough.
+      # upload-artifact paths are relative to the repo root, not working-directory.
       - name: Upload installable plugin folder
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: com.adiariel.console.sdPlugin
           path: |
-            .
-            !node_modules
-            !.git
+            tools/elgato_stream_deck_plugins/com.adiariel.console.sdPlugin
+            !**/node_modules
