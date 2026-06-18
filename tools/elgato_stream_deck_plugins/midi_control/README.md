@@ -37,8 +37,9 @@ to create any loopMIDI / IAC port yourself.
 
 ## Install — common steps
 
-1. **Add icon PNGs** under `imgs/…` (paths referenced in `manifest.json`): plugin/category icons,
-   and per-action `icon`/`key` images (`@1x` + `@2x`). The plugin won't load without them.
+1. **Icons** are included under `imgs/…` (all `@1x` + `@2x` paths referenced in `manifest.json`).
+   Regenerate them any time with `python3 scripts/gen_icons.py`; check completeness with
+   `python3 scripts/validate.py`.
 2. **Install the plugin:** the `com.adiariel.midicontrol.sdPlugin` folder (with `manifest.json`,
    `index.html`, `pi.html`, `plugin.js`, and `imgs/`) goes in the Stream Deck plugins directory,
    then restart the Stream Deck app.
