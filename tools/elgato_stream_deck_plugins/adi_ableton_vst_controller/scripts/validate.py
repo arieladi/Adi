@@ -66,8 +66,8 @@ def main():
 
     js = ["js/sd-client.js", "js/bridge.js", "js/touchscreen.js", "js/keys.js", "js/plugin.js",
           "js/controllers/DeviceController.js", "js/controllers/GenericController.js",
-          "js/controllers/EQ8Controller.js", "js/controllers/registry.js",
-          "pi/inspector.js", "pi/sdpi.css"]
+          "js/controllers/EQ8Controller.js", "js/controllers/PulsarMassiveController.js",
+          "js/controllers/registry.js", "pi/inspector.js", "pi/sdpi.css"]
     for f in js:
         need(PLUGIN, f, "js/pi source")
 

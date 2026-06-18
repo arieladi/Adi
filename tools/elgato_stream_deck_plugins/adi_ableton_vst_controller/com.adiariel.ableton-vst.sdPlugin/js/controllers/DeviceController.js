@@ -63,14 +63,28 @@ AVC.DeviceController.prototype = {
    predefined VST controller keyed on its Live class_name), then by the generic
    controller hint the bridge sends, then fall back to Generic. */
 AVC.registry = {
-  byClass: {},          // e.g. { 'Eq8': AVC.EQ8Controller, 'PulsarModular': AVC.PulsarController }
-  byHint: {},           // e.g. { 'generic': AVC.GenericController, 'eq8': AVC.EQ8Controller }
+  byClass: {},          // native devices, keyed by Live class_name (e.g. 'Eq8')
+  byName: [],           // VST/AU plugins, matched on device.name: [{patterns, ctor}]
+  byHint: {},           // bridge controller hint: { 'generic':…, 'eq8':… }
   register: function (opts) {
     if (opts.classNames) opts.classNames.forEach(function (c) { AVC.registry.byClass[c] = opts.ctor; });
+    if (opts.names) AVC.registry.byName.push({ patterns: opts.names, ctor: opts.ctor });
     if (opts.hint) AVC.registry.byHint[opts.hint] = opts.ctor;
   },
+  // Resolve order: native class_name → plugin name match → bridge hint → Generic.
+  // (VST3 plugins all report class_name "PluginDevice", so they must match by name.)
   resolve: function (state) {
     var d = state.device || {};
-    return AVC.registry.byClass[d.class_name] || AVC.registry.byHint[d.controller] || AVC.GenericController;
+    if (AVC.registry.byClass[d.class_name]) return AVC.registry.byClass[d.class_name];
+    var name = String(d.name || ''), lower = name.toLowerCase();
+    for (var i = 0; i < AVC.registry.byName.length; i++) {
+      var pats = AVC.registry.byName[i].patterns;
+      for (var p = 0; p < pats.length; p++) {
+        var pat = pats[p];
+        var hit = (pat instanceof RegExp) ? pat.test(name) : lower.indexOf(String(pat).toLowerCase()) >= 0;
+        if (hit) return AVC.registry.byName[i].ctor;
+      }
+    }
+    return AVC.registry.byHint[d.controller] || AVC.GenericController;
   },
 };

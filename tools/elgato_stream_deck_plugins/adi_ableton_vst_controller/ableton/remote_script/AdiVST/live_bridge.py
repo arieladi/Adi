@@ -61,6 +61,7 @@ class LiveBridge(object):
         self._eq8_focus = 1           # first band the 6 dials control (1..3)
         self._listened = []           # [(subject, name, fn)] for clean teardown
         self._preset_items = {}       # {id: BrowserItem}
+        self._watch = []              # [(parameter, fn)] watched by predefined controllers
 
     # ============================================================ lifecycle
     def setup(self):
@@ -153,6 +154,7 @@ class LiveBridge(object):
         for key, p in self._eq8_params.items():
             self._unlisten(p, "value", self._eq8_listener(key))
         self._eq8_params = {}
+        self._clear_watch()
 
     # ============================================================ GENERIC mode
     def _build_generic_map(self):
@@ -473,6 +475,96 @@ class LiveBridge(object):
             i = 0
         i = max(0, min(len(devs) - 1, i + (1 if direction >= 0 else -1)))
         self._select_device(track, devs[i])
+
+    # ===================================================== named-parameter channel
+    # Used by predefined VST controllers (e.g. Pulsar Massive) that need the full
+    # parameter list and to address parameters by index rather than slot.
+    def _param(self, i):
+        if not self._device:
+            return None
+        params = self._device.parameters
+        return params[i] if 0 <= i < len(params) else None
+
+    def cmd_get_all_params(self):
+        out = []
+        if self._device:
+            for i, p in enumerate(self._device.parameters):
+                try:
+                    items = list(p.value_items)
+                except Exception:
+                    items = []
+                out.append({
+                    "i": i, "name": p.name, "value": p.value, "min": p.min, "max": p.max,
+                    "quantized": bool(getattr(p, "is_quantized", False)), "items": items,
+                    "disp": _fmt_generic(p),
+                })
+        self.send({"t": "all_params", "params": out})
+
+    def cmd_watch(self, indices):
+        self._clear_watch()
+        for i in indices:
+            p = self._param(i)
+            if p is None:
+                continue
+            fn = self._watch_listener(i)
+            try:
+                p.add_value_listener(fn)
+                self._watch.append((p, fn))
+            except Exception as e:
+                self.log("watch %d failed: %s" % (i, e))
+
+    def _watch_listener(self, i):
+        return self._cache_fn(("watch", i), lambda: (lambda: self._emit_p(i)))
+
+    def _emit_p(self, i):
+        p = self._param(i)
+        if p is not None:
+            self.send({"t": "p", "i": i, "value": p.value, "disp": _fmt_generic(p)})
+
+    def _clear_watch(self):
+        for p, fn in self._watch:
+            try:
+                p.remove_value_listener(fn)
+            except Exception:
+                pass
+        self._watch = []
+
+    def cmd_set_index(self, i, norm):
+        p = self._param(i)
+        if p is not None:
+            self._safe_set(p, p.min + max(0.0, min(1.0, norm)) * (p.max - p.min))
+
+    def cmd_delta_index(self, i, delta):
+        p = self._param(i)
+        if p is not None:
+            self._safe_set(p, p.value + delta * ((p.max - p.min) or 1.0))
+
+    def cmd_step_index(self, i, direction, steps=0):
+        p = self._param(i)
+        if p is None:
+            return
+        d = 1 if direction >= 0 else -1
+        if getattr(p, "is_quantized", False):
+            try:
+                n = len(p.value_items)
+            except Exception:
+                n = 0
+            if n <= 0:
+                n = int(round(p.max - p.min)) + 1
+            cur = int(round(p.value - p.min))
+            self._safe_set(p, p.min + ((cur + d) % max(1, n)))      # wrap (cycle)
+        elif steps and steps > 1:
+            stepsize = ((p.max - p.min) or 1.0) / (steps - 1)
+            cur = int(round((p.value - p.min) / stepsize))
+            self._safe_set(p, p.min + ((cur + d) % steps) * stepsize)  # wrap
+        else:
+            self._safe_set(p, p.value + d * ((p.max - p.min) or 1.0) * 0.04)
+
+    def cmd_toggle_index(self, i):
+        p = self._param(i)
+        if p is not None:
+            mid = (p.min + p.max) / 2.0
+            self._safe_set(p, p.min if p.value > mid else p.max)
 
     def resend_all(self):
         try:

@@ -108,6 +108,18 @@ class AdiVST(ControlSurface):
             b.cmd_select_track(int(m.get("dir", 1)))
         elif c == "select_device":
             b.cmd_select_device(int(m.get("dir", 1)))
+        elif c == "get_all_params":
+            b.cmd_get_all_params()
+        elif c == "watch":
+            b.cmd_watch([int(x) for x in m.get("indices", [])])
+        elif c == "set_index":
+            b.cmd_set_index(int(m["i"]), float(m["norm"]))
+        elif c == "delta_index":
+            b.cmd_delta_index(int(m["i"]), float(m["delta"]))
+        elif c == "step_index":
+            b.cmd_step_index(int(m["i"]), int(m.get("dir", 1)), int(m.get("steps", 0)))
+        elif c == "toggle_index":
+            b.cmd_toggle_index(int(m["i"]))
         elif c == "ping":
             b.resend_all()
 

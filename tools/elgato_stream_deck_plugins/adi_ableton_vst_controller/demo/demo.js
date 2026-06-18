@@ -33,6 +33,38 @@
     ],
   };
 
+  // ---- Pulsar Massive mock parameters (names match the controller's role patterns) ----
+  var FREQS = {
+    1: ['22', '27', '33', '39', '47', '56', '68', '82', '100', '120', '150'],
+    2: ['82', '100', '120', '150', '180', '220', '270', '330', '390', '470', '560'],
+    3: ['560', '680', '820', '1k', '1.2k', '1.5k', '1.8k', '2.2k', '2.7k', '3.3k', '3.9k'],
+    4: ['3.9k', '4.7k', '5.6k', '6.8k', '8.2k', '10k', '12k', '15k', '18k', '22k', '27k'],
+  };
+  var pp = [], _pi = 0;
+  function padd(o) { o.i = _pi++; pp.push(o); return o; }
+  for (var bb = 1; bb <= 4; bb++) {
+    padd({ name: 'Band ' + bb + ' In', min: 0, max: 1, quantized: true, items: ['Out', 'In'], value: 1 });
+    padd({ name: 'Band ' + bb + ' Shelf', min: 0, max: 1, quantized: true, items: ['Bell', 'Shelf'], value: bb === 1 ? 1 : 0 });
+    padd({ name: 'Band ' + bb + ' Gain', min: -20, max: 20, quantized: false, items: [], value: [3, -2, 2, 4][bb - 1] });
+    padd({ name: 'Band ' + bb + ' Freq', min: 0, max: FREQS[bb].length - 1, quantized: true, items: FREQS[bb], value: [8, 5, 4, 5][bb - 1] });
+  }
+  padd({ name: 'Drive', min: 0, max: 1, quantized: false, items: [], value: 0.35 });
+  padd({ name: 'Auto Gain', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 0 });
+  padd({ name: 'Master Gain', min: -20, max: 20, quantized: false, items: [], value: -1.5 });
+  padd({ name: 'Transfo', min: 0, max: 2, quantized: true, items: ['1', 'OFF', '2'], value: 1 });
+  padd({ name: 'Low Pass', min: 2000, max: 40000, quantized: false, items: [], value: 30000 });
+  padd({ name: 'High Pass', min: 10, max: 1000, quantized: false, items: [], value: 22 });
+
+  function dispOf(p) {
+    if (p.items && p.items.length) return p.items[Math.max(0, Math.min(p.items.length - 1, Math.round(p.value - p.min)))];
+    if (Math.abs(p.value) >= 100) return Math.round(p.value) + '';
+    return (Math.round(p.value * 100) / 100) + '';
+  }
+  function paramByI(i) { for (var k = 0; k < pp.length; k++) if (pp[k].i === i) return pp[k]; return null; }
+  state.allParams = pp;
+  state.pv = {};
+  pp.forEach(function (p) { state.pv[p.i] = { value: p.value, disp: dispOf(p) }; });
+
   function findParam(slot) { for (var i = 0; i < state.params.length; i++) if (state.params[i].slot === slot) return state.params[i]; return null; }
   function findBand(i) { var b = state.eq8.bands; for (var k = 0; k < b.length; k++) if (b[k].i === i) return b[k]; return null; }
 
@@ -46,6 +78,18 @@
       eq8CycleType: function (band, dir) { var b = findBand(band); if (b) { var i = (b.type + (dir >= 0 ? 1 : TYPES.length - 1)) % TYPES.length; b.type = i; b.type_name = TYPES[i]; } render(); },
       eq8Page: function (dir) { state.eq8.focus = clamp(state.eq8.focus + (dir >= 0 ? 1 : -1), 1, 3); render(); },
       eq8Key: function () {}, listPresets: function () {}, loadPreset: function () {}, newPreset: function () {}, selectTrack: function () {}, selectDevice: function () {},
+      // named-parameter channel (Pulsar Massive + future predefined VSTs)
+      getAllParams: function () {}, watch: function () {},
+      setIndex: function (i, norm) { var p = paramByI(i); if (!p) return; p.value = p.min + clamp(norm, 0, 1) * (p.max - p.min); state.pv[i] = { value: p.value, disp: dispOf(p) }; render(); },
+      deltaIndex: function (i, d) { var p = paramByI(i); if (!p) return; p.value = clamp(p.value + d * (p.max - p.min), p.min, p.max); state.pv[i] = { value: p.value, disp: dispOf(p) }; render(); },
+      stepIndex: function (i, dir, steps) {
+        var p = paramByI(i); if (!p) return; var d = dir >= 0 ? 1 : -1;
+        if (p.quantized) { var n = p.items.length || (Math.round(p.max - p.min) + 1); var cur = Math.round(p.value - p.min); p.value = p.min + ((cur + d) % n + n) % n; }
+        else if (steps && steps > 1) { var ss = (p.max - p.min) / (steps - 1); var c2 = Math.round((p.value - p.min) / ss); p.value = p.min + ((((c2 + d) % steps) + steps) % steps) * ss; }
+        else { p.value = clamp(p.value + d * (p.max - p.min) * 0.04, p.min, p.max); }
+        state.pv[i] = { value: p.value, disp: dispOf(p) }; render();
+      },
+      toggleIndex: function (i) { var p = paramByI(i); if (!p) return; var mid = (p.min + p.max) / 2; p.value = p.value > mid ? p.min : p.max; state.pv[i] = { value: p.value, disp: dispOf(p) }; render(); },
     },
   };
 
@@ -53,6 +97,7 @@
   var services = { bridge: Bridge, sd: { log: function (m) { console.log(m); } }, layout: layout };
   var generic = new AVC.GenericController(services);
   var eq8 = new AVC.EQ8Controller(services);
+  var pulsar = new AVC.PulsarMassiveController(services);
   var mode = 'eq8', active = eq8;
 
   var screen = document.getElementById('screen');
@@ -61,13 +106,18 @@
 
   function setMode(m) {
     mode = m;
-    if (m === 'eq8') { state.device.controller = 'eq8'; state.device.class_name = 'Eq8'; state.device.name = 'EQ Eight'; active = eq8; }
-    else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; active = generic; }
+    if (m === 'eq8') { state.device.controller = 'eq8'; state.device.class_name = 'Eq8'; state.device.name = 'EQ Eight'; state.device.index = 2; active = eq8; }
+    else if (m === 'pulsar') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Pulsar Massive'; state.device.index = 3; active = pulsar; }
+    else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; }
     document.querySelectorAll('#modeToggle button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
-    document.getElementById('screenTitle').textContent = m === 'eq8' ? 'Touchscreen — EQ Eight (split screen)' : 'Touchscreen — Generic (6 zones)';
-    hint.textContent = m === 'eq8'
-      ? 'Scroll a zone = band frequency. Click right-half cells: top=enable, bottom=cutoff mode (shift-click=prev). ◀ ▶ paginate band focus.'
-      : 'Scroll a zone to turn that dial. Click a zone to recenter.';
+    var titles = { eq8: 'Touchscreen — EQ Eight (split screen)', pulsar: 'Touchscreen — Pulsar Massive (6 zones)', generic: 'Touchscreen — Generic (6 zones)' };
+    document.getElementById('screenTitle').textContent = titles[m] || titles.generic;
+    var hints = {
+      eq8: 'Scroll a zone = band frequency. Click right-half cells: top=enable, bottom=cutoff mode (shift-click=prev). ◀ ▶ paginate band focus.',
+      pulsar: 'Bands 1-4: tap top-left = IN, top-right = Bell/Shelf, bottom-left/right = Freq step. Zone 5: Auto Gain + Low Pass. Zone 6: Transfo + High Pass. Scroll a zone = gain/drive/master.',
+      generic: 'Scroll a zone to turn that dial. Click a zone to recenter.',
+    };
+    hint.textContent = hints[m] || hints.generic;
     buildDials(); render();
   }
 
