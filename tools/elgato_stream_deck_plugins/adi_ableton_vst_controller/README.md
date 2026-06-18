@@ -20,6 +20,10 @@ adding a new VST is one small file + one registration line.
   the selected device to the 6 dials; the touchscreen shows **6 zones**, one per
   dial, each with the parameter name + live value. Works on native devices and on
   VST2/VST3/AU plugins.
+- **Pulsar Massive mode** (predefined VST3) — stereo-linked, Left-channel only:
+  6 dials = 4 band gains + Master Drive + Master Gain; the touchscreen splits into
+  6 zones (per-band IN / Shelf-Bell toggles + stepped frequency; Auto Gain + Low
+  Pass; Transfo + High Pass). See [docs/PULSAR_MASSIVE.md](docs/PULSAR_MASSIVE.md).
 - **EQ Eight mode** (predefined) — overrides generic with a custom layout:
   - touchscreen **split exactly in half**: left = EQ response graph, right =
     per-band enable + cutoff-mode cells with **◀ ▶ pagination**;
@@ -50,6 +54,7 @@ adi_ableton_vst_controller/
 │   │       ├── DeviceController.js       base + registry + gfx
 │   │       ├── GenericController.js      6-parameter mode
 │   │       ├── EQ8Controller.js          EQ Eight split-screen
+│   │       ├── PulsarMassiveController.js Pulsar Massive (MP.EQ), 6 zones
 │   │       └── registry.js               strategy registration
 │   ├── pi/                               Property Inspector (roles, slots, port)
 │   └── layouts/dial.json                 encoder touchscreen layout

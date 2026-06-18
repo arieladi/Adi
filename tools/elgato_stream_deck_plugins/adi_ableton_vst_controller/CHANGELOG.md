@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.1.0.0] — 2026-06-18
+
+### Added
+- **PulsarMassiveController** — predefined strategy for Pulsar Audio "Pulsar
+  Massive" (MP.EQ), a stereo-linked VST3. Maps the 6 dials to 4 band gains +
+  Master Drive + Master Gain (Left channel only), with a 6-zone touchscreen:
+  per-band IN / Shelf-Bell toggles + stepped frequency, Auto Gain + Low Pass,
+  and a Transfo (1/OFF/2) cycle + High Pass. Resolves VST3 parameters by name
+  with an overridable map; see docs/PULSAR_MASSIVE.md.
+- **Named-parameter bridge channel** (general, reusable by any predefined VST):
+  `get_all_params`/`all_params`, `watch`/`p`, and index-addressed
+  `set_index`/`delta_index`/`step_index`/`toggle_index`.
+- Registry now resolves VST/AU plugins by **device name** (they all report
+  class_name "PluginDevice"); patterns avoid catching NI's "Massive" synth.
+- Pulsar Massive mode added to the browser demo.
+
 ## [1.0.0.0] — 2026-06-17
 
 ### Added

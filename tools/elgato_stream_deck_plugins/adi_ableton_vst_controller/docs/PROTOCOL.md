@@ -21,6 +21,8 @@ I/O) and this bridge (Live state). Keep the two mentally separate.
 | `eq8_band` | `i`, + any band fields | Real-time single-band update. |
 | `eq8_state` | `count`, `selected_is_eq8`, `selected_index` | How many EQ8s on the track + whether the selected device is one (drives the EQ8 key glyph). |
 | `presets` | `items:[{id,name}]` | EQ8 preset list (from the configured User Library folder). |
+| `all_params` | `params:[{i,name,value,min,max,quantized,items,disp}]` | Full parameter list for a predefined VST controller (reply to `get_all_params`). |
+| `p` | `i`, `value`, `disp` | Real-time update for a single watched parameter (by index). |
 | `error` | `message` | Non-fatal bridge error (shown via the plugin log / alert). |
 
 ## Plugin → bridge (commands)
@@ -40,7 +42,15 @@ I/O) and this bridge (Live state). Keep the two mentally separate.
 | `eq8_new_preset` | `id` | Drop a **new** EQ8 instance using that preset. |
 | `select_track` | `dir` (±1) | Move track selection. |
 | `select_device` | `dir` (±1) | Move device selection on the track. |
+| `get_all_params` | — | Request the full parameter list (predefined VST controllers). Bridge replies `all_params`. |
+| `watch` | `indices:[…]` | Add live listeners on those parameter indices; bridge then emits `p` on change. |
+| `set_index` | `i`, `norm` (0..1) | Set parameter `i` to an absolute normalized value. |
+| `delta_index` | `i`, `delta` | Nudge parameter `i` by `delta` normalized units. |
+| `step_index` | `i`, `dir` (±1), `steps?` | Step a parameter: quantized → wrap through value_items; `steps` given → wrap through N positions; else fine continuous. |
+| `toggle_index` | `i` | Flip a parameter between its min and max (boolean-style). |
 | `ping` | — | Keep-alive; bridge replies `hello`. |
+
+These index-addressed commands are the **named-parameter channel** used by predefined VST controllers (e.g. Pulsar Massive), which resolve the parameters they care about by name from `all_params` and then drive them by index.
 
 ### EQ8 key conditions
 

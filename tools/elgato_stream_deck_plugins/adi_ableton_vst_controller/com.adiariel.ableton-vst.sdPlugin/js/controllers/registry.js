@@ -16,3 +16,10 @@ window.AVC = window.AVC || {};
 
 AVC.registry.register({ ctor: AVC.GenericController, hint: 'generic' });
 AVC.registry.register({ ctor: AVC.EQ8Controller, hint: 'eq8', classNames: ['Eq8'] });
+
+// VST3 plugins are matched by device name (they all share class_name "PluginDevice").
+// Patterns are specific enough not to catch NI's "Massive" synth.
+AVC.registry.register({
+  ctor: AVC.PulsarMassiveController,
+  names: [/pulsar\s*massive/i, /massive\s*passive/i, /\bmp[.\s-]?eq\b/i],
+});

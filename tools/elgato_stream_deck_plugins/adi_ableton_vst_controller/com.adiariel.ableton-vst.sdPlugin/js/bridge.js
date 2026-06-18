@@ -18,6 +18,8 @@ AVC.Bridge = (function () {
     track: { name: '—', index: -1 },
     device: { name: '', class_name: '', controller: 'generic', has_device: false, index: -1, param_count: 0 },
     params: [],                 // generic mode: [{slot,name,value,min,max,disp}]
+    allParams: [],              // predefined mode: full list [{i,name,value,min,max,quantized,items,disp}]
+    pv: {},                     // live values by index: { index: {value, disp} }
     eq8: { focus: 1, output: 0, bands: [] },
     eq8_state: { count: 0, selected_is_eq8: false, selected_index: -1 },
     presets: [],
@@ -58,7 +60,16 @@ AVC.Bridge = (function () {
       case 'track': state.track = { name: m.name, index: m.index, color: m.color }; emit('track', state.track); emit('state', state); break;
       case 'device':
         state.device = { name: m.name, class_name: m.class_name, controller: m.controller, has_device: m.has_device, index: m.index, param_count: m.param_count };
+        state.allParams = []; state.pv = {};        // invalidate named-param cache on device change
         emit('device', state.device); emit('state', state); break;
+      case 'all_params':
+        state.allParams = m.params || [];
+        state.pv = {};
+        for (var ap = 0; ap < state.allParams.length; ap++) { var P = state.allParams[ap]; state.pv[P.i] = { value: P.value, disp: P.disp }; }
+        emit('all_params', state.allParams); emit('state', state); break;
+      case 'p':                                       // live single-parameter update by index
+        state.pv[m.i] = { value: m.value, disp: m.disp };
+        emit('p', m); emit('state', state); break;
       case 'params': state.params = m.params || []; emit('params', state.params); emit('state', state); break;
       case 'param':
         for (var i = 0; i < state.params.length; i++) if (state.params[i].slot === m.slot) { state.params[i].value = m.value; state.params[i].disp = m.disp; }
@@ -88,6 +99,13 @@ AVC.Bridge = (function () {
     newPreset: function (id) { send({ c: 'eq8_new_preset', id: id }); },
     selectTrack: function (dir) { send({ c: 'select_track', dir: dir }); },
     selectDevice: function (dir) { send({ c: 'select_device', dir: dir }); },
+    // named-parameter channel (used by predefined VST controllers, e.g. Pulsar Massive)
+    getAllParams: function () { send({ c: 'get_all_params' }); },
+    watch: function (indices) { send({ c: 'watch', indices: indices }); },
+    setIndex: function (i, norm) { send({ c: 'set_index', i: i, norm: norm }); },
+    deltaIndex: function (i, delta) { send({ c: 'delta_index', i: i, delta: delta }); },
+    stepIndex: function (i, dir, steps) { send({ c: 'step_index', i: i, dir: dir, steps: steps || 0 }); },
+    toggleIndex: function (i) { send({ c: 'toggle_index', i: i }); },
   };
 
   return {
