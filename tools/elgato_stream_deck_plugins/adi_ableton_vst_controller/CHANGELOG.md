@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0.0] — 2026-06-18
+
+### Added
+- **SpectreController** — predefined strategy for Wavesfactory Spectre (VST3),
+  a fixed 5-band enhancer. Dials 1-5 drive bands 1-5, each with an independent
+  FREQ/GAIN dial mode; **dial 6 is a dynamic Q** that follows the last-touched
+  band (`activeBand`). Touchscreen per band: shape (tap-cycle), stacked
+  Freq/Gain/Q with the active mode highlighted, and one global setting anchored
+  per column (Quality, Color, Presets, Mode, Processing); zone 6 shows the Q
+  target + value and a Bypass toggle. Resolves VST3 params by name with an
+  overridable map; see docs/SPECTRE.md.
+- Spectre mode added to the browser demo.
+
 ## [1.2.0.0] — 2026-06-18
 
 ### Added
