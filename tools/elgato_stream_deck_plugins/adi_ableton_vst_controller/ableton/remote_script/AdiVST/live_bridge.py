@@ -539,6 +539,18 @@ class LiveBridge(object):
         if p is not None:
             self._safe_set(p, p.value + delta * ((p.max - p.min) or 1.0))
 
+    def cmd_delta_log_index(self, i, delta):
+        # Geometric (musical) nudge — for log-perceived params like frequency / Q.
+        # Falls back to linear if the current value is <= 0 (can't scale through 0).
+        p = self._param(i)
+        if p is None:
+            return
+        v = p.value
+        if v > 0:
+            self._safe_set(p, v * (2.0 ** (delta * 4.0)))
+        else:
+            self._safe_set(p, v + delta * ((p.max - p.min) or 1.0))
+
     def cmd_step_index(self, i, direction, steps=0):
         p = self._param(i)
         if p is None:

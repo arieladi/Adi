@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0.0] — 2026-06-18
+
+### Added
+- **ProQ3Controller** — predefined strategy for FabFilter Pro-Q 3 (VST3),
+  assuming a static 6-band preset (band 1 Low Cut, band 6 High Cut, bands 2-5
+  bells). **Multi-functional dials**: each column has an independent dial mode
+  cycling FREQ/GAIN/Q. 6-band touchscreen per column: power, dial-mode selector,
+  live value, Shape | Slope cycles, and Stereo Placement. Resolves VST3
+  parameters by name with an overridable map; see docs/PROQ3.md.
+- **`delta_log_index`** bridge command — geometric (musical) parameter nudge for
+  log-perceived params like frequency and Q; general/reusable by any controller.
+- Pro-Q 3 mode added to the browser demo.
+
 ## [1.1.0.0] — 2026-06-18
 
 ### Added

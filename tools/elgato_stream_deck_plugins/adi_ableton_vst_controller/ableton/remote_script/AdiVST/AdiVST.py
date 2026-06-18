@@ -116,6 +116,8 @@ class AdiVST(ControlSurface):
             b.cmd_set_index(int(m["i"]), float(m["norm"]))
         elif c == "delta_index":
             b.cmd_delta_index(int(m["i"]), float(m["delta"]))
+        elif c == "delta_log_index":
+            b.cmd_delta_log_index(int(m["i"]), float(m["delta"]))
         elif c == "step_index":
             b.cmd_step_index(int(m["i"]), int(m.get("dir", 1)), int(m.get("steps", 0)))
         elif c == "toggle_index":

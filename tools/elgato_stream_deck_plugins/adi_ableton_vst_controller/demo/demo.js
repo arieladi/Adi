@@ -55,15 +55,35 @@
   padd({ name: 'Low Pass', min: 2000, max: 40000, quantized: false, items: [], value: 30000 });
   padd({ name: 'High Pass', min: 10, max: 1000, quantized: false, items: [], value: 22 });
 
+  // ---- Pro-Q 3 mock parameters (band 1 Low Cut & band 6 High Cut bypassed; 2-5 active bells) ----
+  var SHAPES = ['Bell', 'Low Shelf', 'Low Cut', 'High Shelf', 'High Cut', 'Notch', 'Band Pass', 'Tilt Shelf'];
+  var SLOPES = ['6', '12', '18', '24', '30', '36', '48', '72', '96'];
+  var STEREO = ['Stereo', 'L', 'R', 'M', 'S'];
+  var pq = [], _qi = 0;
+  function qadd(o) { o.i = _qi++; pq.push(o); return o; }
+  var QF = [40, 120, 500, 2000, 6000, 16000], QG = [0, 3, -4, 2, -3, 0], QQ = [0.71, 1.0, 1.2, 1.5, 2.0, 0.71];
+  var QSHAPE = [2, 0, 0, 0, 0, 4];   // b1 Low Cut · b2-5 Bell · b6 High Cut
+  for (var qb = 1; qb <= 6; qb++) {
+    qadd({ name: 'Band ' + qb + ' Used', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: (qb === 1 || qb === 6) ? 0 : 1 });
+    qadd({ name: 'Band ' + qb + ' Frequency', min: 10, max: 30000, quantized: false, items: [], value: QF[qb - 1] });
+    qadd({ name: 'Band ' + qb + ' Gain', min: -30, max: 30, quantized: false, items: [], value: QG[qb - 1] });
+    qadd({ name: 'Band ' + qb + ' Q', min: 0.1, max: 40, quantized: false, items: [], value: QQ[qb - 1] });
+    qadd({ name: 'Band ' + qb + ' Shape', min: 0, max: SHAPES.length - 1, quantized: true, items: SHAPES, value: QSHAPE[qb - 1] });
+    qadd({ name: 'Band ' + qb + ' Slope', min: 0, max: SLOPES.length - 1, quantized: true, items: SLOPES, value: 3 });
+    qadd({ name: 'Band ' + qb + ' Stereo Placement', min: 0, max: STEREO.length - 1, quantized: true, items: STEREO, value: 0 });
+  }
+
   function dispOf(p) {
     if (p.items && p.items.length) return p.items[Math.max(0, Math.min(p.items.length - 1, Math.round(p.value - p.min)))];
     if (Math.abs(p.value) >= 100) return Math.round(p.value) + '';
     return (Math.round(p.value * 100) / 100) + '';
   }
-  function paramByI(i) { for (var k = 0; k < pp.length; k++) if (pp[k].i === i) return pp[k]; return null; }
-  state.allParams = pp;
-  state.pv = {};
-  pp.forEach(function (p) { state.pv[p.i] = { value: p.value, disp: dispOf(p) }; });
+  function paramByI(i) { var a = state.allParams || []; for (var k = 0; k < a.length; k++) if (a[k].i === i) return a[k]; return null; }
+  function loadParams(set) {
+    state.allParams = set; state.pv = {};
+    for (var k = 0; k < set.length; k++) state.pv[set[k].i] = { value: set[k].value, disp: dispOf(set[k]) };
+  }
+  loadParams(pp);
 
   function findParam(slot) { for (var i = 0; i < state.params.length; i++) if (state.params[i].slot === slot) return state.params[i]; return null; }
   function findBand(i) { var b = state.eq8.bands; for (var k = 0; k < b.length; k++) if (b[k].i === i) return b[k]; return null; }
@@ -82,6 +102,7 @@
       getAllParams: function () {}, watch: function () {},
       setIndex: function (i, norm) { var p = paramByI(i); if (!p) return; p.value = p.min + clamp(norm, 0, 1) * (p.max - p.min); state.pv[i] = { value: p.value, disp: dispOf(p) }; render(); },
       deltaIndex: function (i, d) { var p = paramByI(i); if (!p) return; p.value = clamp(p.value + d * (p.max - p.min), p.min, p.max); state.pv[i] = { value: p.value, disp: dispOf(p) }; render(); },
+      deltaLogIndex: function (i, d) { var p = paramByI(i); if (!p) return; p.value = p.value > 0 ? clamp(p.value * Math.pow(2, d * 4), p.min, p.max) : clamp(p.value + d * (p.max - p.min), p.min, p.max); state.pv[i] = { value: p.value, disp: dispOf(p) }; render(); },
       stepIndex: function (i, dir, steps) {
         var p = paramByI(i); if (!p) return; var d = dir >= 0 ? 1 : -1;
         if (p.quantized) { var n = p.items.length || (Math.round(p.max - p.min) + 1); var cur = Math.round(p.value - p.min); p.value = p.min + ((cur + d) % n + n) % n; }
@@ -98,6 +119,7 @@
   var generic = new AVC.GenericController(services);
   var eq8 = new AVC.EQ8Controller(services);
   var pulsar = new AVC.PulsarMassiveController(services);
+  var proq = new AVC.ProQ3Controller(services);
   var mode = 'eq8', active = eq8;
 
   var screen = document.getElementById('screen');
@@ -106,15 +128,17 @@
 
   function setMode(m) {
     mode = m;
-    if (m === 'eq8') { state.device.controller = 'eq8'; state.device.class_name = 'Eq8'; state.device.name = 'EQ Eight'; state.device.index = 2; active = eq8; }
-    else if (m === 'pulsar') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Pulsar Massive'; state.device.index = 3; active = pulsar; }
-    else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; }
+    if (m === 'eq8') { state.device.controller = 'eq8'; state.device.class_name = 'Eq8'; state.device.name = 'EQ Eight'; state.device.index = 2; active = eq8; loadParams([]); }
+    else if (m === 'pulsar') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Pulsar Massive'; state.device.index = 3; active = pulsar; loadParams(pp); }
+    else if (m === 'proq') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'FabFilter Pro-Q 3'; state.device.index = 4; active = proq; loadParams(pq); }
+    else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; loadParams([]); }
     document.querySelectorAll('#modeToggle button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
-    var titles = { eq8: 'Touchscreen — EQ Eight (split screen)', pulsar: 'Touchscreen — Pulsar Massive (6 zones)', generic: 'Touchscreen — Generic (6 zones)' };
+    var titles = { eq8: 'Touchscreen — EQ Eight (split screen)', pulsar: 'Touchscreen — Pulsar Massive (6 zones)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', generic: 'Touchscreen — Generic (6 zones)' };
     document.getElementById('screenTitle').textContent = titles[m] || titles.generic;
     var hints = {
       eq8: 'Scroll a zone = band frequency. Click right-half cells: top=enable, bottom=cutoff mode (shift-click=prev). ◀ ▶ paginate band focus.',
       pulsar: 'Bands 1-4: tap top-left = IN, top-right = Bell/Shelf, bottom-left/right = Freq step. Zone 5: Auto Gain + Low Pass. Zone 6: Transfo + High Pass. Scroll a zone = gain/drive/master.',
+      proq: 'Tap row 1 = band power · row 2 = cycle dial mode (FREQ/GAIN/Q) · row 4 = Shape | Slope · row 5 = Stereo (shift-click = prev). Scroll a zone = the active mode\'s param.',
       generic: 'Scroll a zone to turn that dial. Click a zone to recenter.',
     };
     hint.textContent = hints[m] || hints.generic;
@@ -128,8 +152,8 @@
     var r = screen.getBoundingClientRect();
     return { x: (e.clientX - r.left) * (layout.W / r.width), y: (e.clientY - r.top) * (layout.H / r.height) };
   }
-  screen.addEventListener('click', function (e) { var p = evToCanvas(e); active.onTouch(p.x, p.y, e.shiftKey); });
-  screen.addEventListener('contextmenu', function (e) { e.preventDefault(); var p = evToCanvas(e); active.onTouch(p.x, p.y, true); });
+  screen.addEventListener('click', function (e) { var p = evToCanvas(e); active.onTouch(p.x, p.y, e.shiftKey); render(); });
+  screen.addEventListener('contextmenu', function (e) { e.preventDefault(); var p = evToCanvas(e); active.onTouch(p.x, p.y, true); render(); });
   screen.addEventListener('wheel', function (e) {
     e.preventDefault();
     var p = evToCanvas(e); var slot = clamp(Math.floor(p.x / layout.slotW), 0, 5);
