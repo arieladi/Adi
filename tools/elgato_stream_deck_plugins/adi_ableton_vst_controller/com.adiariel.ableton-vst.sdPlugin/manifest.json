@@ -1,7 +1,7 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "Adi Ableton VST Controller",
-  "Version": "1.1.0.0",
+  "Version": "1.2.0.0",
   "Author": "Adi Ariel",
   "URL": "https://github.com/adiariel/Adi",
   "Description": "Master VST controller for Ableton Live. Tracks the selected channel + device and maps it to 6 dials, a touchscreen and 36 keys. Generic 6-parameter mode for any device (incl. VST3), with predefined layouts starting with EQ Eight.",

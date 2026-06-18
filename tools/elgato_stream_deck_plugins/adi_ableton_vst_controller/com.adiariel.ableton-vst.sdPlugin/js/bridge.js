@@ -104,6 +104,7 @@ AVC.Bridge = (function () {
     watch: function (indices) { send({ c: 'watch', indices: indices }); },
     setIndex: function (i, norm) { send({ c: 'set_index', i: i, norm: norm }); },
     deltaIndex: function (i, delta) { send({ c: 'delta_index', i: i, delta: delta }); },
+    deltaLogIndex: function (i, delta) { send({ c: 'delta_log_index', i: i, delta: delta }); },
     stepIndex: function (i, dir, steps) { send({ c: 'step_index', i: i, dir: dir, steps: steps || 0 }); },
     toggleIndex: function (i) { send({ c: 'toggle_index', i: i }); },
   };

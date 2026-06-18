@@ -45,7 +45,8 @@ I/O) and this bridge (Live state). Keep the two mentally separate.
 | `get_all_params` | — | Request the full parameter list (predefined VST controllers). Bridge replies `all_params`. |
 | `watch` | `indices:[…]` | Add live listeners on those parameter indices; bridge then emits `p` on change. |
 | `set_index` | `i`, `norm` (0..1) | Set parameter `i` to an absolute normalized value. |
-| `delta_index` | `i`, `delta` | Nudge parameter `i` by `delta` normalized units. |
+| `delta_index` | `i`, `delta` | Nudge parameter `i` by `delta` normalized units (linear). |
+| `delta_log_index` | `i`, `delta` | Geometric nudge: `value *= 2^(delta*4)` — for log-perceived params (frequency, Q). Falls back to linear if value ≤ 0. |
 | `step_index` | `i`, `dir` (±1), `steps?` | Step a parameter: quantized → wrap through value_items; `steps` given → wrap through N positions; else fine continuous. |
 | `toggle_index` | `i` | Flip a parameter between its min and max (boolean-style). |
 | `ping` | — | Keep-alive; bridge replies `hello`. |

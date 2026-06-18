@@ -23,3 +23,9 @@ AVC.registry.register({
   ctor: AVC.PulsarMassiveController,
   names: [/pulsar\s*massive/i, /massive\s*passive/i, /\bmp[.\s-]?eq\b/i],
 });
+
+// FabFilter Pro-Q 3 (VST3) — matched by device name.
+AVC.registry.register({
+  ctor: AVC.ProQ3Controller,
+  names: [/pro-?q\s*3/i, /fabfilter.*pro.?q/i, /\bpro-?q\b/i],
+});
