@@ -102,8 +102,9 @@ Set up the device in Stream Deck: drop **6 × VST Dial** across the dials and a
 ## Demo (no hardware / no Live)
 
 ```bash
-python3 -m http.server 8799    # then open http://localhost:8799/demo/
+python3 -m http.server 8799    # Windows: python -m http.server 8799  (or npm run demo:win)
 ```
+Then open <http://localhost:8799/demo/>.
 Toggle EQ Eight / Generic, scroll a zone to turn a dial, click the EQ8 controls,
 and click the EQ8 key to open the preset folder — all driven by the real
 controller code with mock Live state.
