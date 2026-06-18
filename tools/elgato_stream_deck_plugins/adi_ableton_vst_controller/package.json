@@ -8,9 +8,14 @@
   "keywords": ["stream-deck", "elgato", "ableton", "ableton-live", "remote-script", "eq-eight", "vst3", "midi-controller"],
   "scripts": {
     "icons": "python3 scripts/gen_icons.py",
+    "icons:win": "python scripts/gen_icons.py",
     "validate": "python3 scripts/validate.py",
+    "validate:win": "python scripts/validate.py",
     "demo": "python3 -m http.server 8799",
+    "demo:win": "python -m http.server 8799",
     "install:mac": "bash scripts/install-mac.sh",
-    "install:win": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1"
+    "install:win": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
+    "pack:mac": "bash scripts/pack.sh",
+    "pack:win": "powershell -ExecutionPolicy Bypass -File scripts/pack.ps1"
   }
 }

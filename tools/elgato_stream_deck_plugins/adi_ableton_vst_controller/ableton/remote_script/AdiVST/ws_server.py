@@ -17,7 +17,6 @@ touches Live onto Live's main thread. Outbound messages are queued with
 
 import base64
 import collections
-import errno
 import hashlib
 import select
 import socket
@@ -146,10 +145,10 @@ class WSServer(threading.Thread):
             return
         try:
             data = c.sock.recv(65536)
-        except socket.error as e:
-            if e.args and e.args[0] in (errno.EWOULDBLOCK, errno.EAGAIN):
-                return
-            c.alive = False
+        except BlockingIOError:
+            return                       # would-block (EWOULDBLOCK / Windows WSAEWOULDBLOCK)
+        except OSError:
+            c.alive = False              # reset / hard error -> drop
             return
         if not data:
             c.alive = False
@@ -169,9 +168,9 @@ class WSServer(threading.Thread):
         try:
             sent = c.sock.send(c.out_buf)
             del c.out_buf[:sent]
-        except socket.error as e:
-            if e.args and e.args[0] in (errno.EWOULDBLOCK, errno.EAGAIN):
-                return
+        except BlockingIOError:
+            return                       # socket buffer full; retry next loop
+        except OSError:
             c.alive = False
 
     def _flush_outbox(self):

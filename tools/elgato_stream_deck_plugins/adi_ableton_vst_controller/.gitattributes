@@ -1,0 +1,24 @@
+# Normalize line endings so the repo behaves the same on macOS and Windows.
+* text=auto eol=lf
+
+# Shell + Python + web sources must stay LF (they run on macOS and in Live's CPython)
+*.sh    text eol=lf
+*.py    text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.md    text eol=lf
+
+# Windows scripts use CRLF (Windows PowerShell 5.1 is happiest with it)
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Binary assets — never touch them
+*.png            binary
+*.jpg            binary
+*.gif            binary
+*.streamDeckPlugin binary
+*.adv            binary
+*.amxd           binary
