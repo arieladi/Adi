@@ -94,6 +94,22 @@
   sadd({ name: 'Processing', min: 0, max: SP_PROC.length - 1, quantized: true, items: SP_PROC, value: 0 });
   sadd({ name: 'Bypass', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 0 });
 
+  // ---- INDEQ mock parameters (6 knobs + 6 toggles) ----
+  var iq = [], _ii = 0;
+  function iadd(o) { o.i = _ii++; iq.push(o); return o; }
+  iadd({ name: 'Low Gain', min: -10, max: 10, quantized: false, items: [], value: 3 });
+  iadd({ name: 'Low Frequency', min: 0, max: 3, quantized: true, items: ['35Hz', '60Hz', '100Hz', '220Hz'], value: 2 });
+  iadd({ name: 'Mid Gain', min: -10, max: 10, quantized: false, items: [], value: -2 });
+  iadd({ name: 'Mid Frequency', min: 0, max: 5, quantized: true, items: ['.2kHz', '.35kHz', '.7kHz', '1.5kHz', '3kHz', '6kHz'], value: 3 });
+  iadd({ name: 'High Gain', min: -10, max: 10, quantized: false, items: [], value: 4 });
+  iadd({ name: 'Output', min: -10, max: 10, quantized: false, items: [], value: 0 });
+  iadd({ name: 'Highpass Filter', min: 0, max: 1, quantized: true, items: ['OFF', 'ON'], value: 0 });
+  iadd({ name: 'Low Band Shape', min: 0, max: 1, quantized: true, items: ['Shelf', 'Peak'], value: 0 });
+  iadd({ name: 'Mid Bandwidth', min: 0, max: 1, quantized: true, items: ['Normal', 'High'], value: 1 });
+  iadd({ name: 'High Band Shape', min: 0, max: 1, quantized: true, items: ['Shelf', 'Peak'], value: 1 });
+  iadd({ name: 'High Frequency', min: 0, max: 1, quantized: true, items: ['8kHz', '16kHz'], value: 0 });
+  iadd({ name: 'Bypass', min: 0, max: 1, quantized: true, items: ['In', 'Byp'], value: 0 });
+
   function dispOf(p) {
     if (p.items && p.items.length) return p.items[Math.max(0, Math.min(p.items.length - 1, Math.round(p.value - p.min)))];
     if (Math.abs(p.value) >= 100) return Math.round(p.value) + '';
@@ -142,6 +158,7 @@
   var pulsar = new AVC.PulsarMassiveController(services);
   var proq = new AVC.ProQ3Controller(services);
   var spectre = new AVC.SpectreController(services);
+  var indeq = new AVC.IndeqController(services);
   var mode = 'eq8', active = eq8;
 
   var screen = document.getElementById('screen');
@@ -154,15 +171,17 @@
     else if (m === 'pulsar') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Pulsar Massive'; state.device.index = 3; active = pulsar; loadParams(pp); }
     else if (m === 'proq') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'FabFilter Pro-Q 3'; state.device.index = 4; active = proq; loadParams(pq); }
     else if (m === 'spectre') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Spectre'; state.device.index = 5; active = spectre; loadParams(sp); }
+    else if (m === 'indeq') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'INDEQ'; state.device.index = 6; active = indeq; loadParams(iq); }
     else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; loadParams([]); }
     document.querySelectorAll('#modeToggle button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
-    var titles = { eq8: 'Touchscreen — EQ Eight (split screen)', pulsar: 'Touchscreen — Pulsar Massive (6 zones)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (5 bands + dynamic Q)', generic: 'Touchscreen — Generic (6 zones)' };
+    var titles = { eq8: 'Touchscreen — EQ Eight (split screen)', pulsar: 'Touchscreen — Pulsar Massive (6 zones)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (5 bands + dynamic Q)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', generic: 'Touchscreen — Generic (6 zones)' };
     document.getElementById('screenTitle').textContent = titles[m] || titles.generic;
     var hints = {
       eq8: 'Scroll a zone = band frequency. Click right-half cells: top=enable, bottom=cutoff mode (shift-click=prev). ◀ ▶ paginate band focus.',
       pulsar: 'Bands 1-4: tap top-left = IN, top-right = Bell/Shelf, bottom-left/right = Freq step. Zone 5: Auto Gain + Low Pass. Zone 6: Transfo + High Pass. Scroll a zone = gain/drive/master.',
       proq: 'Tap row 1 = band power · row 2 = cycle dial mode (FREQ/GAIN/Q) · row 4 = Shape | Slope · row 5 = Stereo (shift-click = prev). Scroll a zone = the active mode\'s param.',
       spectre: 'Bands 1-5: tap top = shape, middle = Freq/Gain mode, bottom = global setting. Scroll a band = active mode (and sets the Q target). Zone 6 scroll = target band\'s Q; bottom = bypass.',
+      indeq: 'Dials = Low/Mid/High gain, Low/Mid freq (stepped), Output. Tap top buttons = HPF / shapes / bandwidth / bypass; zone 5 bottom = High Freq (8/16k). Scroll a freq zone to step it.',
       generic: 'Scroll a zone to turn that dial. Click a zone to recenter.',
     };
     hint.textContent = hints[m] || hints.generic;

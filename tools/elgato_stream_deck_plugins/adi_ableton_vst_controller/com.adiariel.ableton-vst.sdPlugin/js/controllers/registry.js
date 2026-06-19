@@ -35,3 +35,9 @@ AVC.registry.register({
   ctor: AVC.SpectreController,
   names: [/\bspectre\b/i, /wavesfactory.*spectre/i],
 });
+
+// Analog Obsession INDEQ (VST3) — matched by device name.
+AVC.registry.register({
+  ctor: AVC.IndeqController,
+  names: [/\bindeq\b/i, /analog\s*obsession.*indeq/i],
+});
