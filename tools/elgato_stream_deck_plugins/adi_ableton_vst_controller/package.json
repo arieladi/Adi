@@ -1,6 +1,6 @@
 {
   "name": "adi-ableton-vst-controller",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Stream Deck master VST controller for Ableton Live: tracks the selected channel/device, generic 6-parameter mode for any device (incl. VST3), and predefined per-VST layouts starting with EQ Eight. Modular Strategy-pattern controllers + a dependency-free Python Remote Script bridge.",
   "private": true,
   "license": "MIT",

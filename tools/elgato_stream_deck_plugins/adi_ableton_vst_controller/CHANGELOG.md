@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.2.0] — 2026-06-18
+
+### Added
+- **Pro-Q 3: real Shape / Slope / Stereo Placement switches** on every band (tap
+  to cycle the plugin's actual option lists), now that those parameters are
+  exposed via Ableton's Configure. Bands 1 & 6 restored (Freq + switches).
+- **Shape-aware dial modes** — the dial's FREQ/GAIN/Q tabs follow each band's
+  current Shape: no Gain for Low Cut/High Cut/Notch/Band Pass; no Q for Low/High
+  Cut, Low/High Shelf, Tilt Shelf, Flat Tilt — updating live as the Shape changes.
+  See docs/PROQ3.md.
+
 ## [1.4.1.0] — 2026-06-18
 
 ### Fixed
