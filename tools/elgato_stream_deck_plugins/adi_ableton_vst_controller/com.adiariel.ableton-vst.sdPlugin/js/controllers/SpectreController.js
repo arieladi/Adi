@@ -139,17 +139,18 @@ AVC.SpectreController.ROLES = (function () {
   };
   proto._fmtFreq = function (role) {
     if (!role) return '—';
-    var v = this._value(role);
-    if (role.max >= 1000) return v >= 1000 ? (Math.round(v / 10) / 100) + 'k' : Math.round(v) + '';
-    return this._disp(role);
+    var v = this._value(role), fb = v >= 1000 ? (Math.round(v / 10) / 100) + 'k' : Math.round(v) + '';
+    return AVC.showVal((this.state.pv[role.index] || {}).disp, fb);
   };
   proto._fmtGain = function (role) {
     if (!role) return '—';
-    var v = this._value(role);
-    if (role.min < 0 && role.max <= 40) return (v >= 0 ? '+' : '') + (Math.round(v * 10) / 10);
-    return this._disp(role);
+    var v = this._value(role), fb = (v >= 0 ? '+' : '') + (Math.round(v * 10) / 10);
+    return AVC.showVal((this.state.pv[role.index] || {}).disp, fb);
   };
-  proto._fmtQ = function (role) { return role ? (Math.round(this._value(role) * 1000) / 1000) + '' : '—'; };
+  proto._fmtQ = function (role) {
+    if (!role) return '—';
+    return AVC.showVal((this.state.pv[role.index] || {}).disp, (Math.round(this._value(role) * 1000) / 1000) + '');
+  };
 
   function kindOf(name) {
     var n = String(name || '').toLowerCase();

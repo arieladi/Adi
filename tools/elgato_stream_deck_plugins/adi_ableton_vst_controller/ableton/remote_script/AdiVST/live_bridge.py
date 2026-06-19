@@ -32,7 +32,21 @@ def _fmt_hz(hz):
 
 
 def _fmt_generic(p):
-    """Best-effort display string for an arbitrary parameter."""
+    """Display string for a parameter.
+
+    Prefer Ableton's OWN formatting via DeviceParameter.str_for_value(): it returns
+    the exact text Live shows for the current value (e.g. "47.924 Hz", "0.00 dB",
+    "8kHz", "Bell"). This makes the touchscreen mirror Ableton precisely, and is
+    correct whether Live reports the raw value in engineering units OR normalized
+    0..1 (the conversion happens inside Live). Fall back to a numeric format only
+    if str_for_value is unavailable.
+    """
+    try:
+        s = p.str_for_value(p.value)
+        if s is not None and str(s) != "":
+            return str(s)
+    except Exception:
+        pass
     try:
         if p.is_quantized and p.value_items:
             return str(p.value_items[int(round(p.value))])
