@@ -1,0 +1,16 @@
+# Native helper build output (machine-specific; CMake re-fetches deps + recompiles)
+/build/
+build/
+
+# CMake leftovers
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.obj
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/

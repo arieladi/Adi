@@ -43,8 +43,41 @@ to create any loopMIDI / IAC port yourself.
 2. **Install the plugin:** the `com.adiariel.midicontrol.sdPlugin` folder (with `manifest.json`,
    `index.html`, `pi.html`, `plugin.js`, and `imgs/`) goes in the Stream Deck plugins directory,
    then restart the Stream Deck app.
-3. **Build + run the native helper** for your OS (below). The plugin auto-reconnects, so launch
-   order doesn't matter.
+3. **Run the native helper** for your OS. **Prebuilt binaries are committed in `bin/`:**
+   `bin/macos/StreamDeckMidiHelper` (Apple Silicon / arm64) and
+   `bin/windows/StreamDeckMidiHelper.exe` (x64, with `teVirtualMIDI64.dll` beside it). Just run
+   the one for your machine — you only need to build from source (below) if you change `main.cpp`
+   or need a different CPU architecture. The plugin auto-reconnects, so launch order doesn't matter.
+
+## First run (prebuilt binaries — NO build needed)
+
+This is the path for anyone downloading the repo. There is **no CMake** for end users on
+**Apple Silicon Mac** or **x64 (Intel/AMD) Windows** — just run the binary in `bin/`. Because the
+binaries are **unsigned** (free hobby app), the OS asks you to allow them **once**:
+
+**macOS (Apple Silicon):**
+1. Allow the unsigned binary once — run:
+   ```
+   xattr -dr com.apple.quarantine bin/macos/StreamDeckMidiHelper
+   ```
+   *(or try to launch it, then click "Open Anyway" in System Settings → Privacy & Security).*
+2. Grant **Accessibility** (System Settings → Privacy & Security → Accessibility) so the numpad
+   keys can send keystrokes. *(MIDI output needs no permission.)*
+3. Run `./bin/macos/StreamDeckMidiHelper` — add a **Login Item** / `launchd` agent to autostart.
+   *Intel Macs aren't covered by the prebuilt binary — build from source below.*
+
+**Windows (x64):**
+1. Install **loopMIDI** once — https://www.tobias-erichsen.de/software/loopmidi.html (provides the
+   teVirtualMIDI driver; you don't create a port).
+2. Run `bin\windows\StreamDeckMidiHelper.exe` (keep `teVirtualMIDI64.dll` beside it). If SmartScreen
+   warns, click **More info → Run anyway** (one time). Add to **Startup** to autostart.
+
+> **To remove the security prompts entirely** (fully seamless for downloaders), the binaries must be
+> **code-signed + notarized** — Apple Developer Program (~$99/yr) for macOS and a code-signing
+> certificate for Windows. That's optional and paid; without it the one-time "allow" above is the
+> same step every unsigned indie tool requires.
+
+## Build from source (optional — only to edit `main.cpp` or target another CPU)
 
 ### Windows
 
@@ -57,8 +90,11 @@ to create any loopMIDI / IAC port yourself.
    cmake --build build --config Release
    ```
    → `build/Release/StreamDeckMidiHelper.exe` (with `teVirtualMIDI64.dll` beside it).
-4. **Run** `StreamDeckMidiHelper.exe`. Add it to Windows startup (Task Scheduler / Startup folder)
-   to make it persistent.
+4. **(once) copy it into the repo so you never rebuild on this PC again:** copy
+   `build\Release\StreamDeckMidiHelper.exe` into `bin\windows\` (next to the `teVirtualMIDI64.dll`
+   already there) and commit it.
+5. **Run** `bin\windows\StreamDeckMidiHelper.exe`. Add it to Windows startup (Task Scheduler /
+   Startup folder) to make it persistent.
 
 ### macOS
 
@@ -74,8 +110,8 @@ No driver to install — CoreMIDI is part of the OS.
    macOS gates behind **System Settings → Privacy & Security → Accessibility**. Add the
    `StreamDeckMidiHelper` binary (or the terminal you launch it from) there, or the num-pad keys
    silently do nothing. *MIDI output needs no permission.*
-3. **Run** `./build/StreamDeckMidiHelper`. To make it persistent, add a **Login Item** or a
-   `launchd` agent.
+3. **Run** the helper — the committed `./bin/macos/StreamDeckMidiHelper` (arm64), or your own
+   `./build/StreamDeckMidiHelper`. To make it persistent, add a **Login Item** or a `launchd` agent.
 
 ## Lay out the controls
 
