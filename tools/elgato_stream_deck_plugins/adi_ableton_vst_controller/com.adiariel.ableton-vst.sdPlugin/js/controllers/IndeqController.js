@@ -119,12 +119,8 @@ AVC.IndeqController.ROLES = [
   // gain / output (dB)
   proto._fmtDb = function (role) {
     if (!role) return '—';
-    var pv = this.state && this.state.pv;
-    if (pv && pv[role.index] != null && pv[role.index].disp != null && !(role.min < 0 && role.max <= 40)) {
-      return String(pv[role.index].disp);
-    }
-    var v = this._value(role);
-    return (v >= 0 ? '+' : '') + (Math.round(v * 10) / 10) + ' dB';
+    var v = this._value(role), fb = (v >= 0 ? '+' : '') + (Math.round(v * 10) / 10) + ' dB';
+    return AVC.showVal((this.state && this.state.pv && (this.state.pv[role.index] || {}).disp), fb);
   };
   // stepped frequency (uses Live's value_items if present, else our labels)
   proto._fmtStep = function (role) {

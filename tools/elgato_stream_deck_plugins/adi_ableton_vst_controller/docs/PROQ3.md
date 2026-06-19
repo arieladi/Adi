@@ -1,65 +1,59 @@
 # FabFilter Pro-Q 3 controller
 
 `ProQ3Controller` (`js/controllers/ProQ3Controller.js`) is a predefined strategy
-for **FabFilter Pro-Q 3 (VST3)**. It resolves parameters by **name** from the
-bridge's `all_params` list, so it tolerates version-specific parameter indexes.
+for **FabFilter Pro-Q 3 (VST3)**. It is built around what Pro-Q 3 actually
+exposes to Ableton in its **default device configuration** — verified against a
+live instance.
 
-## Static 6-band preset (required)
+## What the default Pro-Q 3 exposes (important)
 
-Pro-Q 3 allocates bands dynamically, which the Live API can't address reliably.
-Save a preset with **exactly 6 bands instantiated** and select it before use:
+Ableton's default Pro-Q 3 device surfaces **16 parameters** — per band only
+**Frequency, Gain, Q** — and the two cut bands expose **no Gain**:
 
-| Band | Role in the default layout |
-|------|----------------------------|
-| 1 | Low Cut (bypassed by default) |
-| 2-5 | Active bells |
-| 6 | High Cut (bypassed by default) |
+| Band | Exposed params | Role |
+|------|----------------|------|
+| 1 | `Band 1 Frequency`, `Band 1 Q` | low cut (no gain) |
+| 2 | `Band 2 Frequency`, `Band 2 Gain`, `Band 2 Q` | bell |
+| 3 | `Band 3 Frequency`, `Band 3 Gain`, `Band 3 Q` | bell |
+| 4 | `Band 4 Frequency`, `Band 4 Gain`, `Band 4 Q` | bell |
+| 5 | `Band 5 Frequency`, `Band 5 Gain`, `Band 5 Q` | bell |
+| 6 | `Band 6 Frequency`, `Band 6 Q` | high cut (no gain) |
 
-The controller maps the **first 6 band parameter groups** Live exposes.
+Pro-Q 3 does **not** expose Shape, Slope, Stereo Placement or band-enable by
+default — those only appear if you add them manually via Ableton's **Configure**.
+This controller therefore does not depend on them; it focuses on the always-present
+Freq/Gain/Q. (If you later Configure extra params, they're simply ignored here.)
 
-## Multi-functional dials
+## Dials — multi-functional
 
-Each of the 6 columns has an independent **dial mode** cycling **FREQ → GAIN → Q**
-(`this._dialMode[slot]`). Turning a dial sends the parameter for *that column's*
-current mode. Change the mode by tapping row 2 of the column, or by pressing the
-dial. Modes are per-column and don't affect each other.
+Each column has its own **dial mode**:
+- **Bell bands (2-5):** FREQ → GAIN → Q
+- **Cut bands (1, 6):** FREQ → Q (no gain)
 
-- FREQ → `delta_log_index` (geometric / musical)
-- GAIN → `delta_index` (linear)
-- Q → `delta_log_index` (geometric)
+Turning the dial drives the active mode — Frequency and Q use a geometric/log
+nudge (`delta_log_index`), Gain is linear (`delta_index`). **Press the dial** to
+cycle the mode; **tap a mode tab or a value row** on the touchscreen to pick it.
 
-## Expected parameter names (per band *n* = 1..6)
+## Touchscreen, per band column
 
-The fuzzy resolver matches these (normalized, case-insensitive; first match wins).
-Pin exact names/indexes in `ProQ3Controller.OVERRIDES` if your build differs.
+```
+TOP     B<n>  [ FREQ ][ GAIN ][ Q ]      ← mode tabs (cut bands show FREQ | Q)
+MIDDLE  FREQ   150 Hz                      ← Freq / Gain / Q stacked,
+        GAIN   +0.0 dB                       the active (dial) mode highlighted
+        Q      1.00
+BOTTOM  BELL                                ← band-type hint (context only)
+```
 
-| Role | dial/touch | Expected name(s) | Live type |
-|------|-----------|------------------|-----------|
-| `b{n}_used`   | row 1 power (tap toggle) | `Band n Used` / `Enabled` / `Active` / `On` / `Bypass` | quantized |
-| `b{n}_freq`   | dial (FREQ mode) | `Band n Frequency` / `Band n Freq` | continuous |
-| `b{n}_gain`   | dial (GAIN mode) | `Band n Gain` | continuous |
-| `b{n}_q`      | dial (Q mode) | `Band n Q` / `Resonance` | continuous |
-| `b{n}_shape`  | row 4 left (tap cycle) | `Band n Shape` / `Type` / `Filter Type` | quantized |
-| `b{n}_slope`  | row 4 right (tap cycle) | `Band n Slope` / `Order` | quantized |
-| `b{n}_stereo` | row 5 (tap cycle) | `Band n Stereo Placement` / `Placement` / `Stereo` | quantized |
+## Verifying / overriding
 
-Typical value lists Pro-Q 3 reports (read live via `all_params.items`):
-- **Shape:** Bell, Low Shelf, Low Cut, High Shelf, High Cut, Notch, Band Pass, Tilt Shelf, Flat Tilt
-- **Slope:** 6, 12, 18, 24, 30, 36, 48, 72, 96 (dB/oct)
-- **Stereo Placement:** Stereo, L, R, M, S
+The resolver matches `Band N Frequency` / `Band N Gain` / `Band N Q`
+case-insensitively (Ableton truncates the label to `Band N ...quency` in the
+Configure grid, but the full name is `Band N Frequency`). If your build names
+them differently, pin them:
 
-## Verifying / overriding names
+```js
+AVC.ProQ3Controller.OVERRIDES = { b1_freq: 'Band 1 Frequency', b2_gain: 12 };
+```
 
-1. Select Pro-Q 3 in Live; the plugin logs any **unresolved roles** to Live's
-   `Log.txt`.
-2. To see every exposed name, the bridge's `get_all_params` returns them; or read
-   them in Live's device view. FabFilter VST3s sometimes expose a parameter only
-   after you **Configure** it (device title-bar → Configure → wiggle the control).
-3. Override in your setup, e.g.:
-   ```js
-   AVC.ProQ3Controller.OVERRIDES = { b2_freq: 'Band 2 Frequency', b1_used: 12 };
-   ```
-
-> Value units (Hz / dB) depend on how Live surfaces the VST3 parameter. The
-> controller formats Hz/dB when the reported range looks like engineering units
-> (e.g. a freq whose max ≥ 1000) and otherwise shows the raw value.
+Unresolved roles are logged to Live's `Log.txt`. Frequency reads back in Hz/kHz,
+Gain in dB, Q as a number — matching the values shown in Ableton.

@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.4.1.0] — 2026-06-18
+
+### Fixed
+- **Pro-Q 3 now matches Ableton's default device exposure** — only Frequency /
+  Gain / Q per band, and the cut bands (1 = low cut, 6 = high cut) expose no
+  Gain. ProQ3Controller was rewritten around that (dial mode adapts: FREQ/GAIN/Q
+  for bells, FREQ/Q for cuts) and the Shape/Slope/Stereo/enable controls that
+  Live doesn't expose by default were removed. Verified against a live instance.
+- **Touchscreen values now mirror Ableton exactly.** The bridge formats each
+  parameter with Live's `DeviceParameter.str_for_value()` (e.g. "47.924 Hz",
+  "0.00 dB", "Bell"); all controllers display that string verbatim, using their
+  own numeric format only as a fallback. Fixes potentially wrong units for VST3
+  parameters Live reports as normalized 0..1.
+
 ## [1.4.0.0] — 2026-06-18
 
 ### Added

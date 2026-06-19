@@ -55,22 +55,16 @@
   padd({ name: 'Low Pass', min: 2000, max: 40000, quantized: false, items: [], value: 30000 });
   padd({ name: 'High Pass', min: 10, max: 1000, quantized: false, items: [], value: 22 });
 
-  // ---- Pro-Q 3 mock parameters (band 1 Low Cut & band 6 High Cut bypassed; 2-5 active bells) ----
-  var SHAPES = ['Bell', 'Low Shelf', 'Low Cut', 'High Shelf', 'High Cut', 'Notch', 'Band Pass', 'Tilt Shelf'];
-  var SLOPES = ['6', '12', '18', '24', '30', '36', '48', '72', '96'];
-  var STEREO = ['Stereo', 'L', 'R', 'M', 'S'];
+  // ---- Pro-Q 3 mock parameters: EXACTLY what Ableton's default Pro-Q 3 exposes
+  // (Freq/Gain/Q per band; bands 1 & 6 are cuts with NO Gain). Values + names
+  // mirror a real default instance. 16 params total. ----
   var pq = [], _qi = 0;
   function qadd(o) { o.i = _qi++; pq.push(o); return o; }
-  var QF = [40, 120, 500, 2000, 6000, 16000], QG = [0, 3, -4, 2, -3, 0], QQ = [0.71, 1.0, 1.2, 1.5, 2.0, 0.71];
-  var QSHAPE = [2, 0, 0, 0, 0, 4];   // b1 Low Cut · b2-5 Bell · b6 High Cut
+  var QF = [47.924, 150.81, 369.04, 799.91, 2817.1, 16797];   // default Freq per band
   for (var qb = 1; qb <= 6; qb++) {
-    qadd({ name: 'Band ' + qb + ' Used', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: (qb === 1 || qb === 6) ? 0 : 1 });
     qadd({ name: 'Band ' + qb + ' Frequency', min: 10, max: 30000, quantized: false, items: [], value: QF[qb - 1] });
-    qadd({ name: 'Band ' + qb + ' Gain', min: -30, max: 30, quantized: false, items: [], value: QG[qb - 1] });
-    qadd({ name: 'Band ' + qb + ' Q', min: 0.1, max: 40, quantized: false, items: [], value: QQ[qb - 1] });
-    qadd({ name: 'Band ' + qb + ' Shape', min: 0, max: SHAPES.length - 1, quantized: true, items: SHAPES, value: QSHAPE[qb - 1] });
-    qadd({ name: 'Band ' + qb + ' Slope', min: 0, max: SLOPES.length - 1, quantized: true, items: SLOPES, value: 3 });
-    qadd({ name: 'Band ' + qb + ' Stereo Placement', min: 0, max: STEREO.length - 1, quantized: true, items: STEREO, value: 0 });
+    if (qb !== 1 && qb !== 6) qadd({ name: 'Band ' + qb + ' Gain', min: -30, max: 30, quantized: false, items: [], value: 0 });
+    qadd({ name: 'Band ' + qb + ' Q', min: 0.025, max: 40, quantized: false, items: [], value: 1.0 });
   }
 
   // ---- Spectre mock parameters (5 bands + 5 globals + bypass) ----
@@ -179,7 +173,7 @@
     var hints = {
       eq8: 'Scroll a zone = band frequency. Click right-half cells: top=enable, bottom=cutoff mode (shift-click=prev). ◀ ▶ paginate band focus.',
       pulsar: 'Bands 1-4: tap top-left = IN, top-right = Bell/Shelf, bottom-left/right = Freq step. Zone 5: Auto Gain + Low Pass. Zone 6: Transfo + High Pass. Scroll a zone = gain/drive/master.',
-      proq: 'Tap row 1 = band power · row 2 = cycle dial mode (FREQ/GAIN/Q) · row 4 = Shape | Slope · row 5 = Stereo (shift-click = prev). Scroll a zone = the active mode\'s param.',
+      proq: 'Each band exposes Freq/Gain/Q (cut bands 1 & 6 = Freq/Q only — no gain). Tap a mode tab or a value row to pick the dial\'s target; scroll a zone to change it. Dial press cycles the mode.',
       spectre: 'Bands 1-5: tap top = shape, middle = Freq/Gain mode, bottom = global setting. Scroll a band = active mode (and sets the Q target). Zone 6 scroll = target band\'s Q; bottom = bypass.',
       indeq: 'Dials = Low/Mid/High gain, Low/Mid freq (stepped), Output. Tap top buttons = HPF / shapes / bandwidth / bypass; zone 5 bottom = High Freq (8/16k). Scroll a freq zone to step it.',
       generic: 'Scroll a zone to turn that dial. Click a zone to recenter.',

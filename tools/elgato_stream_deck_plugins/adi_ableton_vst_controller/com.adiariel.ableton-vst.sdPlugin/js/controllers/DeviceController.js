@@ -35,6 +35,14 @@ AVC.gfx = {
 
 AVC.STEP = 0.02;   // normalized parameter change per dial tick
 
+// Show Ableton's own value string when it carries a unit/label (has letters or %),
+// e.g. "47.924 Hz", "0.00 dB", "Bell" (from the bridge's str_for_value); otherwise
+// fall back to the controller's own numeric format. Keeps the touchscreen showing
+// exactly what Ableton shows, never a reinvented number.
+AVC.showVal = function (disp, fallback) {
+  return (disp != null && /[a-zA-Z%]/.test(String(disp))) ? String(disp) : fallback;
+};
+
 AVC.DeviceController = function DeviceController(services) {
   this.bridge = services.bridge;
   this.sd = services.sd;

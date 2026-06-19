@@ -200,7 +200,7 @@ AVC.PulsarMassiveController.ROLES = [
     var shelf = shp && this._on(shp);
     this._btn(ctx, x + 104, TOP[0], 92, TOP[1] - TOP[0], shp ? (shelf ? 'SHELF' : 'BELL') : 'SHP?', !!shelf, '#9775fa');
     // MID: name + gain value
-    this._mid(ctx, x, P.BANDS[slot] + ' Gain', gain ? (this._fmtGain(this._value(gain))) : '—', color);
+    this._mid(ctx, x, P.BANDS[slot] + ' Gain', gain ? this._fmtGain(gain) : '—', color);
     // BOT: stepped frequency
     this._stepRow(ctx, x, 'FREQ', frq ? this._stepName(frq) : '—');
   };
@@ -215,11 +215,15 @@ AVC.PulsarMassiveController.ROLES = [
   proto._drawMaster = function (ctx, x) {
     var mg = this._role('master_gain'), tr = this._role('transfo'), hp = this._role('high_pass');
     this._btn(ctx, x + 4, TOP[0], SLOT - 8, TOP[1] - TOP[0], tr ? ('TRANSFO ' + this._stepName(tr)) : 'TRANSFO?', tr && this._stepName(tr) !== 'OFF', '#4dabf7');
-    this._mid(ctx, x, 'Master Gain', mg ? this._fmtGain(this._value(mg)) : '—', gfx.accent);
+    this._mid(ctx, x, 'Master Gain', mg ? this._fmtGain(mg) : '—', gfx.accent);
     this._stepRow(ctx, x, 'HIGH PASS', hp ? this._disp(hp) : '—');
   };
 
-  proto._fmtGain = function (v) { var lv = v; return (lv >= 0 ? '+' : '') + (Math.round(lv * 10) / 10); };
+  proto._fmtGain = function (role) {
+    if (!role) return '—';
+    var v = this._value(role), fb = (v >= 0 ? '+' : '') + (Math.round(v * 10) / 10);
+    return AVC.showVal((this.state.pv[role.index] || {}).disp, fb);   // Ableton's "x.x dB" when present
+  };
 
   // ================================================================= input
   // dials 1-4 = band gains, 5 = drive, 6 = master gain
@@ -262,9 +266,9 @@ AVC.PulsarMassiveController.ROLES = [
   };
 
   proto.dialTitle = function (slot) {
-    if (slot < 4) { var g = this._role('b' + (slot + 1) + '_gain'); return P.BANDS[slot] + (g ? ' ' + this._fmtGain(this._value(g)) : ''); }
+    if (slot < 4) { var g = this._role('b' + (slot + 1) + '_gain'); return P.BANDS[slot] + (g ? ' ' + this._fmtGain(g) : ''); }
     if (slot === 4) { var d = this._role('drive'); return 'Drive' + (d ? ' ' + this._disp(d) : ''); }
-    var m = this._role('master_gain'); return 'Gain' + (m ? ' ' + this._fmtGain(this._value(m)) : '');
+    var m = this._role('master_gain'); return 'Gain' + (m ? ' ' + this._fmtGain(m) : '');
   };
 
   function inY(y, sec) { return y >= sec[0] && y <= sec[1]; }
