@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.0.0] — 2026-06-18
+
+### Added
+- **IndeqController** — predefined strategy for Analog Obsession INDEQ (VST3),
+  a fixed 3-band EQ. 6 dials = Low/Mid/High Gain, Low/Mid Freq (stepped) and
+  Output; 6 touch toggles = Highpass Filter, Low/High Band Shape, Mid Bandwidth,
+  High Frequency (8/16k) and Bypass, with each toggle's label drawn from the
+  plugin's own value list. Resolves VST3 params by name with an overridable map;
+  see docs/INDEQ.md.
+- INDEQ mode added to the browser demo.
+
 ## [1.3.0.0] — 2026-06-18
 
 ### Added
