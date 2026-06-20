@@ -135,6 +135,32 @@
   iadd({ name: 'High Frequency', min: 0, max: 1, quantized: true, items: ['8kHz', '16kHz'], value: 0 });
   iadd({ name: 'Bypass', min: 0, max: 1, quantized: true, items: ['In', 'Byp'], value: 0 });
 
+  // ---- ValhallaRoom mock — real Ableton param names (reverb, paged dials).
+  //      No preset param exists, so the controller's preset role stays unmapped. ----
+  var VR_MODES = ['Large Room', 'Medium Room', 'Small Room', 'Big Hall', 'Bright Hall', 'Chamber', 'Dark Room'];
+  var vr = [], _vi = 0;
+  function vadd(o) { o.i = _vi++; vr.push(o); return o; }
+  vadd({ name: 'mix', min: 0, max: 100, quantized: false, items: [], value: 100 });
+  vadd({ name: 'predelay', min: 0, max: 500, quantized: false, items: [], value: 10 });
+  vadd({ name: 'decay', min: 0.1, max: 70, quantized: false, items: [], value: 2 });
+  vadd({ name: 'HighCut', min: 200, max: 20000, quantized: false, items: [], value: 8000 });
+  vadd({ name: 'diffusion', min: 0, max: 1, quantized: false, items: [], value: 0.1 });
+  vadd({ name: 'earlyLateMix', min: 0, max: 100, quantized: false, items: [], value: 50 });
+  vadd({ name: 'earlySize', min: 0, max: 100, quantized: false, items: [], value: 30 });
+  vadd({ name: 'earlyCross', min: 0, max: 1, quantized: false, items: [], value: 0.1 });
+  vadd({ name: 'earlyModRate', min: 0, max: 5, quantized: false, items: [], value: 0.5 });
+  vadd({ name: 'earlyModDepth', min: 0, max: 1, quantized: false, items: [], value: 0 });
+  vadd({ name: 'earlySend', min: 0, max: 1, quantized: false, items: [], value: 0 });
+  vadd({ name: 'lateSize', min: 0, max: 1, quantized: false, items: [], value: 0.5 });
+  vadd({ name: 'lateCross', min: 0, max: 1, quantized: false, items: [], value: 0.5 });
+  vadd({ name: 'lateModRate', min: 0, max: 5, quantized: false, items: [], value: 1.0 });
+  vadd({ name: 'lateModDepth', min: 0, max: 1, quantized: false, items: [], value: 0.5 });
+  vadd({ name: 'RTBassMultiply', min: 0.25, max: 4, quantized: false, items: [], value: 1.0 });
+  vadd({ name: 'RTXover', min: 100, max: 2000, quantized: false, items: [], value: 1000 });
+  vadd({ name: 'RTHighMultiply', min: 0.25, max: 2, quantized: false, items: [], value: 0.5 });
+  vadd({ name: 'RTHighXover', min: 1000, max: 20000, quantized: false, items: [], value: 8000 });
+  vadd({ name: 'type', min: 0, max: VR_MODES.length - 1, quantized: true, items: VR_MODES, value: 0 });
+
   function dispOf(p) {
     if (p.items && p.items.length) return p.items[Math.max(0, Math.min(p.items.length - 1, Math.round(p.value - p.min)))];
     if (Math.abs(p.value) >= 100) return Math.round(p.value) + '';
@@ -191,6 +217,7 @@
   var proq = new AVC.ProQ3Controller(services);
   var spectre = new AVC.SpectreController(services);
   var indeq = new AVC.IndeqController(services);
+  var valhalla = new AVC.ValhallaRoomController(services);
   var mode = 'eq8', active = eq8;
 
   var screen = document.getElementById('screen');
@@ -204,9 +231,10 @@
     else if (m === 'proq') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'FabFilter Pro-Q 3'; state.device.index = 4; active = proq; loadParams(pq); }
     else if (m === 'spectre') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Spectre'; state.device.index = 5; active = spectre; loadParams(sp); }
     else if (m === 'indeq') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'INDEQ'; state.device.index = 6; active = indeq; loadParams(iq); }
+    else if (m === 'valhalla') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'ValhallaRoom'; state.device.index = 7; active = valhalla; loadParams(vr); }
     else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; loadParams([]); }
     document.querySelectorAll('#modeToggle button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
-    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', generic: 'Touchscreen — Generic (6 zones)' };
+    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', valhalla: 'Touchscreen — ValhallaRoom (MAIN/EARLY/LATE/RT pages)', generic: 'Touchscreen — Generic (6 zones)' };
     document.getElementById('screenTitle').textContent = titles[m] || titles.generic;
     var hints = {
       eq8: 'Tap top tabs = FREQ/GAIN/Q/GLOB (sets all 6 dials). Scroll a zone = that param for its band. Bottom-left = enable, bottom-right = cycle type (shift=prev); dial press = enable. ◀ ▶ (zones 1 & 6, middle row) paginate 1-6 / 2-7 / 3-8. GLOB: dial 1 = Output, dial 2 = Scale; the response graph fills the right.',
@@ -214,6 +242,7 @@
       proq: 'Dial does FREQ/GAIN/Q — modes adapt to each band\'s Shape (cuts/shelves hide Q; cuts/notch/band-pass hide Gain). Bottom: tap SHAPE / SLOPE / STEREO to cycle (shift-click = prev). Tap a mode tab or press the dial to switch mode; scroll to change.',
       spectre: 'Tap top tabs = GAIN/FREQ/Q (sets dials 1-5 = Lo Shelf / Peak 1-3 / Hi Shelf). Scroll a band zone = that param. Bottom-left = Color, bottom-right = Processing (cycle); dial press = Switch on/off. Dial 6 = Output (press = cycle Mode). Zone 6: tap top = Mode, bottom = Mix step.',
       indeq: 'Dials = Low/Mid/High gain, Low/Mid freq (stepped), Output. Tap top buttons = HPF / shapes / bandwidth / bypass; zone 5 bottom = High Freq (8/16k). Scroll a freq zone to step it.',
+      valhalla: 'Tap top tabs = MAIN / EARLY / LATE / RT (re-pages the 6 dials). Scroll a zone = that param. Bottom bar: left = Reverb Mode (tap cycle, shift=prev), right = Preset (◀ ▶, if exposed). Dial press = next page.',
       generic: 'Scroll a zone to turn that dial. Click a zone to recenter.',
     };
     hint.textContent = hints[m] || hints.generic;

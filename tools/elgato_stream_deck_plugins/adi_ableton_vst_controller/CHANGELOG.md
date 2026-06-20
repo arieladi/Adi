@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.5.0.0] — 2026-06-20
+
+### Added
+- **New predefined controller: ValhallaRoom** (Valhalla DSP, VST3 reverb) — the
+  first non-EQ controller. The 6 dials are **paged** (tap MAIN / EARLY / LATE / RT
+  tabs, or press a dial to advance):
+  - MAIN: Mix · Predelay · Decay · High Cut · Diffusion · Early/Late Mix
+  - EARLY: Early Size/Cross/Mod Rate/Mod Depth/Send · Mix
+  - LATE: Late Size/Cross/Mod Rate/Mod Depth · Decay · Mix
+  - RT: Bass Mult/Xover · High Mult/Xover · Decay · Mix
+  A full-width bottom bar holds Reverb Mode (`type`, cycles the algorithm) and a
+  Preset stepper (graceful "— (not exposed)" when the build has no preset param).
+  Params resolve by name (mix/predelay/decay/HighCut/diffusion/earlyLateMix/early*/
+  late*/RTBassMultiply/RTXover/RTHighMultiply/RTHighXover/type); values shown via
+  Ableton's `str_for_value`. Registered in registry.js by device name
+  (`/valhalla\s*room/i`). See docs/VALHALLA_ROOM.md.
+
 ## [1.4.5.0] — 2026-06-20
 
 ### Changed
