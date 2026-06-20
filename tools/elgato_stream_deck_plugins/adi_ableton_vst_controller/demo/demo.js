@@ -92,26 +92,32 @@
     qadd({ name: 'Band ' + qb + ' Stereo Placement', min: 0, max: Q_STEREO.length - 1, quantized: true, items: Q_STEREO, value: 2 });
   }
 
-  // ---- Spectre mock parameters (5 bands + 5 globals + bypass) ----
-  var SP_SHAPE = ['Bell', 'Low Shelf', 'High Shelf', 'Low Cut', 'High Cut'];
-  var SP_QUALITY = ['Draft', 'Good', 'Best'], SP_COLOR = ['Clean', 'Tube', 'Tape', 'Transistor'];
-  var SP_PRESETS = ['Default', 'Thicker', 'Wider', 'Brighter'], SP_MODE = ['Subtle', 'Normal', 'Aggressive'];
-  var SP_PROC = ['Stereo', 'Mono', 'Mid', 'Side'];
+  // ---- Spectre mock — real Ableton Configure names: named bands (LowShelf /
+  //      Peak 01-03 / HighShelf) × Frequency/Gain/Q/Switch/Color/Processing,
+  //      plus globals. Extra globals are present to prove the controller only
+  //      maps Output / Dry Wet / Mode. ----
+  var SP_BANDS = ['LowShelf', 'Peak 01', 'Peak 02', 'Peak 03', 'HighShelf'];
+  var SP_COLOR = ['Solid', 'Smooth', 'Bright', 'Warm'];
+  var SP_PROC = ['Stereo', 'Mid', 'Side', 'Left', 'Right'];
+  var SP_MODE = ['Subtle', 'Modern', 'Vintage'], SP_QUALITY = ['Eco', 'Normal', 'High'];
+  var SF = [42.08, 164.0, 632.5, 2460, 9600];
   var sp = [], _si = 0;
   function sadd(o) { o.i = _si++; sp.push(o); return o; }
-  var SF = [80, 300, 1000, 3000, 9000], SG = [2, -1, 3, -2, 4], SQ = [0.7, 1.0, 1.2, 1.0, 0.8], SSHAPE = [1, 0, 0, 0, 2];
-  for (var sb = 1; sb <= 5; sb++) {
-    sadd({ name: 'Band ' + sb + ' Frequency', min: 20, max: 20000, quantized: false, items: [], value: SF[sb - 1] });
-    sadd({ name: 'Band ' + sb + ' Gain', min: -18, max: 18, quantized: false, items: [], value: SG[sb - 1] });
-    sadd({ name: 'Band ' + sb + ' Q', min: 0.1, max: 10, quantized: false, items: [], value: SQ[sb - 1] });
-    sadd({ name: 'Band ' + sb + ' Shape', min: 0, max: SP_SHAPE.length - 1, quantized: true, items: SP_SHAPE, value: SSHAPE[sb - 1] });
-  }
-  sadd({ name: 'Quality', min: 0, max: SP_QUALITY.length - 1, quantized: true, items: SP_QUALITY, value: 2 });
-  sadd({ name: 'Color', min: 0, max: SP_COLOR.length - 1, quantized: true, items: SP_COLOR, value: 1 });
-  sadd({ name: 'Preset', min: 0, max: SP_PRESETS.length - 1, quantized: true, items: SP_PRESETS, value: 1 });
+  SP_BANDS.forEach(function (bn, i) {
+    sadd({ name: bn + ' Frequency', min: 20, max: 20000, quantized: false, items: [], value: SF[i] });
+    sadd({ name: bn + ' Gain', min: -18, max: 18, quantized: false, items: [], value: 0 });
+    sadd({ name: bn + ' Q', min: 0.1, max: 10, quantized: false, items: [], value: 0.71 });
+    sadd({ name: bn + ' Switch', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 1 });
+    sadd({ name: bn + ' Color', min: 0, max: SP_COLOR.length - 1, quantized: true, items: SP_COLOR, value: 0 });
+    sadd({ name: bn + ' Processing', min: 0, max: SP_PROC.length - 1, quantized: true, items: SP_PROC, value: 0 });
+  });
+  sadd({ name: 'Output', min: -18, max: 18, quantized: false, items: [], value: 0 });
+  sadd({ name: 'Dry Wet', min: 0, max: 100, quantized: false, items: [], value: 100 });
+  sadd({ name: 'Stereo Input', min: -18, max: 18, quantized: false, items: [], value: 0 });
   sadd({ name: 'Mode', min: 0, max: SP_MODE.length - 1, quantized: true, items: SP_MODE, value: 0 });
+  sadd({ name: 'Quality', min: 0, max: SP_QUALITY.length - 1, quantized: true, items: SP_QUALITY, value: 1 });
+  sadd({ name: 'De-Emphasis', min: 0, max: 1, quantized: true, items: ['Disabled', 'Enabled'], value: 0 });
   sadd({ name: 'Processing', min: 0, max: SP_PROC.length - 1, quantized: true, items: SP_PROC, value: 0 });
-  sadd({ name: 'Bypass', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 0 });
 
   // ---- INDEQ mock parameters (6 knobs + 6 toggles) ----
   var iq = [], _ii = 0;
@@ -200,13 +206,13 @@
     else if (m === 'indeq') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'INDEQ'; state.device.index = 6; active = indeq; loadParams(iq); }
     else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; loadParams([]); }
     document.querySelectorAll('#modeToggle button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
-    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (5 bands + dynamic Q)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', generic: 'Touchscreen — Generic (6 zones)' };
+    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', generic: 'Touchscreen — Generic (6 zones)' };
     document.getElementById('screenTitle').textContent = titles[m] || titles.generic;
     var hints = {
       eq8: 'Tap top tabs = FREQ/GAIN/Q/GLOB (sets all 6 dials). Scroll a zone = that param for its band. Bottom-left = enable, bottom-right = cycle type (shift=prev); dial press = enable. ◀ ▶ (zones 1 & 6, middle row) paginate 1-6 / 2-7 / 3-8. GLOB: dial 1 = Output, dial 2 = Scale; the response graph fills the right.',
       pulsar: 'Tap top tabs = GAIN/FREQ/WIDTH (sets dials 1-4 = Low/Warmth/Presence/Air). Scroll a band zone = that param. Bottom-left = IN/OUT, bottom-right = Bell/Shelf; dial press = IN/OUT. Dial 5 = Drive, dial 6 = channel Gain. Zone 5: tap top = Auto Gain, bottom = Low Pass step. Zone 6: tap top = Transformer (Off/1/2), bottom = High Pass step.',
       proq: 'Dial does FREQ/GAIN/Q — modes adapt to each band\'s Shape (cuts/shelves hide Q; cuts/notch/band-pass hide Gain). Bottom: tap SHAPE / SLOPE / STEREO to cycle (shift-click = prev). Tap a mode tab or press the dial to switch mode; scroll to change.',
-      spectre: 'Bands 1-5: tap top = shape, middle = Freq/Gain mode, bottom = global setting. Scroll a band = active mode (and sets the Q target). Zone 6 scroll = target band\'s Q; bottom = bypass.',
+      spectre: 'Tap top tabs = GAIN/FREQ/Q (sets dials 1-5 = Lo Shelf / Peak 1-3 / Hi Shelf). Scroll a band zone = that param. Bottom-left = Color, bottom-right = Processing (cycle); dial press = Switch on/off. Dial 6 = Output (press = cycle Mode). Zone 6: tap top = Mode, bottom = Mix step.',
       indeq: 'Dials = Low/Mid/High gain, Low/Mid freq (stepped), Output. Tap top buttons = HPF / shapes / bandwidth / bypass; zone 5 bottom = High Freq (8/16k). Scroll a freq zone to step it.',
       generic: 'Scroll a zone to turn that dial. Click a zone to recenter.',
     };

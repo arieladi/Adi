@@ -2,55 +2,71 @@
 
 `SpectreController` (`js/controllers/SpectreController.js`) is a predefined
 strategy for **Wavesfactory Spectre (VST3)**, a fixed 5-band enhancer/EQ.
-Parameters are resolved by **name** from the bridge's `all_params` list (VST3
-indexes aren't version-stable); override with `SpectreController.OVERRIDES`.
+Resolved by device name `/\bspectre\b/i`. Parameters resolve by **name** from the
+bridge's `all_params` (VST3 indexes aren't version-stable); pin with
+`SpectreController.OVERRIDES`.
 
-## Dials
+## Bands are named (not numbered) with fixed shapes
 
-- **Dials 1-5 → bands 1-5.** Each column has its own dial mode cycling **FREQ ↔ GAIN**.
-  FREQ uses `delta_log_index` (geometric), GAIN uses `delta_index` (linear).
-- **Dial 6 → dynamic Q.** It controls the Q of `activeBand`. Turning any band
-  dial (or tapping a band's shape/middle) sets `activeBand` to that band, so dial
-  6 instantly *follows* the last-touched band. Zone 6 shows `Target: Band N`.
+The 5 bands and their fixed shapes:
 
-## Touchscreen
+| # | Band (Live name) | Shape |
+|---|------------------|-------|
+| 1 | `LowShelf` | low shelf |
+| 2 | `Peak 01` | bell |
+| 3 | `Peak 02` | bell |
+| 4 | `Peak 03` | bell |
+| 5 | `HighShelf` | high shelf |
 
-| Zone | Top | Middle | Bottom |
-|------|-----|--------|--------|
-| 1 | Shape (tap cycle) | Freq/Gain/Q stacked, active mode highlighted (tap = cycle mode) | **Quality** |
-| 2 | Shape | … | **Color** |
-| 3 | Shape | … | **Presets** |
-| 4 | Shape | … | **Mode** |
-| 5 | Shape | … | **Processing** |
-| 6 | Target: Band N | active band's **Q** value | **Bypass** toggle |
+There is **no per-band shape parameter** — the shape is fixed. Each band instead
+exposes a saturation **Color** and a **Processing** (stereo placement).
 
-Bottom-row global settings cycle on tap (hold / right-tap = previous). The Q line
-in a band's middle row is highlighted when that band is the active (dial-6) target.
+## Verified parameter names (from the Ableton Configure view)
 
-## Expected parameter names
+Per band (anchored, e.g. `^lowshelf frequency$`):
 
-Per band *n* = 1..5 (continuous unless noted):
+| Role | Live name | Control |
+|------|-----------|---------|
+| `bN_freq` | `<Band> Frequency` | FREQ dial mode |
+| `bN_gain` | `<Band> Gain` | GAIN dial mode |
+| `bN_q` | `<Band> Q` | Q dial mode |
+| `bN_switch` | `<Band> Switch` | dial press (on/off) |
+| `bN_color` | `<Band> Color` | tap bottom-left (cycle) |
+| `bN_proc` | `<Band> Processing` | tap bottom-right (cycle) |
 
-| Role | Expected name(s) |
-|------|------------------|
-| `b{n}_freq`  | `Band n Frequency` / `Band n Freq` |
-| `b{n}_gain`  | `Band n Gain` / `Band n Amount` |
-| `b{n}_q`     | `Band n Q` / `Band n Bandwidth` |
-| `b{n}_shape` | `Band n Shape` / `Band n Type` (quantized) |
+Globals:
 
-Globals (quantized / toggle):
+| Role | Live name | Control |
+|------|-----------|---------|
+| `output` | `Output` | dial 6 |
+| `mix` | `Dry Wet` | zone 6 bottom (step) |
+| `mode` | `Mode` | zone 6 top (cycle) / dial 6 press |
 
-| Role | Column | Expected name(s) |
-|------|--------|------------------|
-| `quality`    | 1 bottom | `Quality` / `Oversampling` |
-| `color`      | 2 bottom | `Color` / `Character` |
-| `presets`    | 3 bottom | `Preset` / `Program` |
-| `mode`       | 4 bottom | `Mode` / `Algorithm` / `Style` |
-| `processing` | 5 bottom | `Processing` / `Channel Mode` / `Routing` |
-| `bypass`     | zone 6 bottom | `Bypass` / `Enabled` / `Active` |
+> Other Spectre globals (`Stereo Input`, `Input Compensation`, `Quality`,
+> `De-Emphasis`, global `Processing`) are intentionally not mapped — set them in
+> Ableton. Add them via `OVERRIDES` / new roles if you want them on the device.
 
-> Spectre's exact parameter names and value lists depend on the plugin
-> build/version and on whether Live has **Configured** them. Unresolved roles are
-> logged to Live's `Log.txt`; set `SpectreController.OVERRIDES = { b1_freq: 'Band 1 Frequency', quality: 12 }`
-> to pin names or indexes. "Presets" is only mappable if Spectre exposes a
-> selectable preset/program parameter; otherwise that column logs as unresolved.
+## Dials + touch (Stream Deck + XL)
+
+A strip-wide **mode** (tap the `GAIN | FREQ | Q` tabs) sets what the 5 band dials
+adjust:
+
+| Dial | Role |
+|------|------|
+| 1-5 | active mode (Gain / Freq / Q) for Lo Shelf / Peak 1 / Peak 2 / Peak 3 / Hi Shelf |
+| 6 | Output (press = cycle Mode) |
+
+Per band zone: top = mode tabs, middle = shape glyph + band name + value, bottom =
+**Color** (left) and **Processing** (right) cycle pills. Dial press toggles the
+band's **Switch** (the zone dims when off). Zone 6: top = **Mode** (cycle), middle
+= **Output** value, bottom = **Mix** (Dry/Wet) step. Every value is shown via
+Ableton's own `str_for_value` string through `AVC.showVal`.
+
+## How it was verified
+
+- Names taken from the user's Ableton Configure screenshot.
+- Headless resolution test against the full real param list: all 5 bands ×
+  (freq/gain/q/switch/color/proc) and output/mix/mode resolve with no unresolved
+  roles, and the unmapped globals stay unmapped.
+- `scripts/validate.py`, headless `app.html` load (clean console), demo
+  screenshots in each dial mode.

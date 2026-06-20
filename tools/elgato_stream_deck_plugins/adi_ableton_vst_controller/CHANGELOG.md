@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.4.5.0] — 2026-06-20
+
+### Changed
+- **Spectre: verified parameter names + full per-band control.** Rewrote the
+  controller around the real Ableton Configure names — the 5 named bands
+  (LowShelf / Peak 01 / Peak 02 / Peak 03 / HighShelf), each with `Frequency`,
+  `Gain`, `Q`, `Switch`, `Color`, `Processing`; globals `Output`, `Dry Wet` (Mix),
+  `Mode`. (The old controller guessed `Band N …`, a non-existent per-band Shape,
+  and treated Color/Processing as globals.)
+- **Strip-wide GAIN / FREQ / Q dial modes** — dials 1-5 adjust the active mode's
+  param for the 5 bands; dial 6 = Output (press = cycle Mode). Per band: dial
+  press = Switch (on/off), tap = cycle Color / Processing. Zone 6 = Mode + Mix.
+  Fixed shape glyphs (shelf/bell/bell/bell/shelf); all values via Ableton's
+  `str_for_value`. See docs/SPECTRE.md.
+
 ## [1.4.4.0] — 2026-06-20
 
 ### Changed
