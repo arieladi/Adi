@@ -41,3 +41,9 @@ AVC.registry.register({
   ctor: AVC.IndeqController,
   names: [/\bindeq\b/i, /analog\s*obsession.*indeq/i],
 });
+
+// Valhalla DSP ValhallaRoom (VST3 reverb) — matched by device name.
+AVC.registry.register({
+  ctor: AVC.ValhallaRoomController,
+  names: [/valhalla\s*room/i, /\bvalhallaroom\b/i],
+});
