@@ -1,92 +1,89 @@
 'use strict';
 /* =============================================================================
    PulsarMassiveController — predefined strategy for Pulsar Audio "Pulsar Massive"
-   (Massive Passive / MP.EQ style EQ), a VST3 plugin device.
+   (Massive Passive style EQ), a VST3 plugin device.
 
-   Stereo-linked: the default preset links L↔R, so we map ONLY the Left-channel
-   parameters — moving them drives the Right automatically. No dual controls.
+   A-channel only. The plugin is used L↔R stereo-linked (Stereo Mode left at its
+   default), so we map ONLY the "A" parameters — the B channel and Stereo Mode are
+   intentionally not exposed. Names are the real Ableton Configure names, anchored
+   to the "A" suffix so the B parameter is never matched:
+     Band N Gain A · Band N Freq A · Band N Bandwidth A · Band N Active A ·
+     Band N Type A          (N = 1..4 → Low / Warmth / Presence / Air)
+   plus the centre section: Drive A · Gain A · Low Pass Freq A · High Pass Freq A ·
+     Auto Gain · Transformer.
 
-   Dials (6):  1 Low Gain · 2 Warmth Gain · 3 Presence Gain · 4 Air Gain
-               5 Master Drive · 6 Master Gain
-   Touchscreen: 6 vertical zones aligned to the dials (see _ZONES below).
+   Layout — 4 band zones + Drive + Gain, with a strip-wide dial MODE (like the
+   EQ Eight / Pro-Q 3 controllers), cycled by tapping the GAIN / FREQ / WIDTH tabs:
+     dials 1-4 = the focused mode's param for Low/Warmth/Presence/Air
+     dial 5    = Drive          dial 6 = channel Gain
+   Per band: tap bottom-left = IN/OUT (Active), bottom-right = Bell/Shelf (Type);
+   dial press = IN/OUT. Zone 5: Auto Gain (top) + Low Pass (bottom step). Zone 6:
+   Transformer (top, cycles Off/1/2) + High Pass (bottom step).
 
-   Parameter resolution: a VST3's parameter INDEXES are not stable across
-   versions, so we resolve each logical role to an index by NAME at device-bind
-   time (fuzzy, case-insensitive), using the full parameter list the bridge sends
-   (t:"all_params"). Pin exact names/indexes in PulsarMassiveController.OVERRIDES
-   if your build names them differently — unresolved roles are logged so you can
-   read the real names from Live's Log.txt. See docs/PULSAR_MASSIVE.md.
+   VST3 indexes aren't stable, so each role resolves by NAME from the bridge's
+   all_params; pin exact names/indexes in PulsarMassiveController.OVERRIDES if a
+   build differs. See docs/PULSAR_MASSIVE.md.
    ============================================================================= */
 
 window.AVC = window.AVC || {};
 
 AVC.PulsarMassiveController = function PulsarMassiveController(services) {
   AVC.DeviceController.call(this, services);
-  this._sig = null;            // device signature; re-resolve when it changes
+  this._sig = null;
   this._resolved = false;
-  this._roles = {};            // roleKey -> { index, name, min, max, quantized, items, steps }
+  this._roles = {};
   this._missing = [];
+  this.mode = 'gain';          // strip-wide band dial mode: gain | freq | width
 };
 AVC.PulsarMassiveController.prototype = Object.create(AVC.DeviceController.prototype);
 AVC.PulsarMassiveController.prototype.id = 'pulsar-massive';
 
 /* user nicknames for the 4 bands (display only; Live exposes them by number) */
 AVC.PulsarMassiveController.BANDS = ['Low', 'Warmth', 'Presence', 'Air'];
+AVC.PulsarMassiveController.MODES = ['gain', 'freq', 'width'];
+AVC.PulsarMassiveController.MODE_LABEL = { gain: 'GAIN', freq: 'FREQ', width: 'WIDTH' };
 
-/* Optional hard overrides: roleKey -> exact Live parameter NAME or numeric index.
-   e.g. AVC.PulsarMassiveController.OVERRIDES = { b1_gain: 'L Band 1 Gain', drive: 41 } */
+/* Optional hard overrides: roleKey -> exact Live parameter NAME or numeric index. */
 AVC.PulsarMassiveController.OVERRIDES = {};
 
-/* Role table. `match` = ordered candidate patterns (lowercased substrings or
-   RegExp) tested against normalized parameter names; first hit wins, so put the
-   most specific / Left-channel-preferred patterns first. `steps` = number of
-   stepped positions for non-quantized "stepped" knobs (used only when Live does
-   not report the param as quantized). */
-AVC.PulsarMassiveController.ROLES = [
-  // band gains (dials 1-4)
-  { key: 'b1_gain', band: 0, match: ['l band 1 gain', 'band 1 gain l', 'band 1 gain', 'low gain', 'gain 1'] },
-  { key: 'b2_gain', band: 1, match: ['l band 2 gain', 'band 2 gain l', 'band 2 gain', 'warmth gain', 'gain 2'] },
-  { key: 'b3_gain', band: 2, match: ['l band 3 gain', 'band 3 gain l', 'band 3 gain', 'presence gain', 'gain 3'] },
-  { key: 'b4_gain', band: 3, match: ['l band 4 gain', 'band 4 gain l', 'band 4 gain', 'air gain', 'gain 4'] },
-  // per-band IN (bypass) toggles
-  { key: 'b1_in', band: 0, match: ['l band 1 in', 'band 1 in', 'band 1 active', 'band 1 on', 'in 1'] },
-  { key: 'b2_in', band: 1, match: ['l band 2 in', 'band 2 in', 'band 2 active', 'band 2 on', 'in 2'] },
-  { key: 'b3_in', band: 2, match: ['l band 3 in', 'band 3 in', 'band 3 active', 'band 3 on', 'in 3'] },
-  { key: 'b4_in', band: 3, match: ['l band 4 in', 'band 4 in', 'band 4 active', 'band 4 on', 'in 4'] },
-  // per-band Shape/Curve (Shelf vs Bell)
-  { key: 'b1_shape', band: 0, match: ['l band 1 shelf', 'band 1 shelf', 'band 1 bell', 'band 1 curve', 'band 1 shape', 'shelf 1'] },
-  { key: 'b2_shape', band: 1, match: ['l band 2 shelf', 'band 2 shelf', 'band 2 bell', 'band 2 curve', 'band 2 shape', 'shelf 2'] },
-  { key: 'b3_shape', band: 2, match: ['l band 3 shelf', 'band 3 shelf', 'band 3 bell', 'band 3 curve', 'band 3 shape', 'shelf 3'] },
-  { key: 'b4_shape', band: 3, match: ['l band 4 shelf', 'band 4 shelf', 'band 4 bell', 'band 4 curve', 'band 4 shape', 'shelf 4'] },
-  // per-band stepped Frequency
-  { key: 'b1_freq', band: 0, steps: 11, match: ['l band 1 freq', 'band 1 freq', 'band 1 frequency', 'freq 1'] },
-  { key: 'b2_freq', band: 1, steps: 11, match: ['l band 2 freq', 'band 2 freq', 'band 2 frequency', 'freq 2'] },
-  { key: 'b3_freq', band: 2, steps: 11, match: ['l band 3 freq', 'band 3 freq', 'band 3 frequency', 'freq 3'] },
-  { key: 'b4_freq', band: 3, steps: 11, match: ['l band 4 freq', 'band 4 freq', 'band 4 frequency', 'freq 4'] },
-  // master / center section
-  { key: 'drive', match: ['drive', 'l drive', 'master drive', 'saturation'] },
-  { key: 'master_gain', match: ['master gain', 'output gain', 'l gain', 'gain', 'trim'] },
-  { key: 'auto_gain', match: ['auto gain', 'autogain', 'auto-gain', 'agc'] },
-  { key: 'transfo', steps: 3, match: ['transfo', 'transformer', 'xfmr', 'transfo mode'] },
-  { key: 'low_pass', match: ['low pass', 'lp freq', 'lpf', 'low pass freq', 'lowpass', 'lp'] },
-  { key: 'high_pass', match: ['high pass', 'hp freq', 'hpf', 'high pass freq', 'highpass', 'hp'] },
-];
+/* Role table. `match` = ordered candidate patterns (RegExp anchored to the A-side
+   normalized name, or lowercased substrings) tested against normalized parameter
+   names; first hit wins. `steps` = stepped-knob positions when Live doesn't report
+   the param as quantized. */
+AVC.PulsarMassiveController.ROLES = (function () {
+  var roles = [];
+  for (var b = 1; b <= 4; b++) {
+    roles.push({ key: 'b' + b + '_gain',  band: b - 1, match: [new RegExp('^band ' + b + ' gain a$'), 'band ' + b + ' gain a'] });
+    roles.push({ key: 'b' + b + '_freq',  band: b - 1, steps: 11, match: [new RegExp('^band ' + b + ' freq a$'), 'band ' + b + ' freq a', 'band ' + b + ' frequency a'] });
+    roles.push({ key: 'b' + b + '_width', band: b - 1, match: [new RegExp('^band ' + b + ' bandwidth a$'), 'band ' + b + ' bandwidth a', 'band ' + b + ' width a'] });
+    roles.push({ key: 'b' + b + '_active', band: b - 1, match: [new RegExp('^band ' + b + ' active a$'), 'band ' + b + ' active a', 'band ' + b + ' in a'] });
+    roles.push({ key: 'b' + b + '_type',  band: b - 1, match: [new RegExp('^band ' + b + ' type a$'), 'band ' + b + ' type a', 'band ' + b + ' shape a'] });
+  }
+  // centre section (A channel) — anchored so band "Gain A" etc. can't be grabbed
+  roles.push({ key: 'drive',     match: [/^drive a$/, 'master drive'] });
+  roles.push({ key: 'gain',      match: [/^gain a$/, 'output gain', 'master gain'] });
+  roles.push({ key: 'low_pass',  match: [/^low pass freq a$/, 'low pass freq a', 'low pass a'] });
+  roles.push({ key: 'high_pass', match: [/^high pass freq a$/, 'high pass freq a', 'high pass a'] });
+  roles.push({ key: 'auto_gain', match: [/^auto gain$/, 'auto gain', 'autogain'] });
+  roles.push({ key: 'transfo',   steps: 3, match: [/^transformer$/, 'transformer', 'transfo'] });
+  return roles;
+})();
 
 (function (P) {
   var proto = P.prototype, gfx = AVC.gfx;
   var SLOT = 200, SLOTS = 6;
-
-  // section bands (y) within a 100px-tall zone
-  var TOP = [3, 30], MID = [34, 62], BOT = [66, 97];
+  var TAB = [2, 17], MID = [20, 60], BOT = [63, 96];          // band zone rows
+  var GTOP = [3, 28], GMID = [33, 62], GBOT = [66, 96];        // global zone rows (5,6)
 
   function norm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+  function inY(y, sec) { return y >= sec[0] && y <= sec[1]; }
 
   // ------------------------------------------------------------- resolution
   proto.onState = function (state) {
     this.state = state;
     var d = state.device || {};
     var sig = d.index + '|' + d.class_name + '|' + d.name;
-    if (sig !== this._sig) {                       // device changed -> reset + fetch params
+    if (sig !== this._sig) {
       this._sig = sig; this._resolved = false; this._roles = {}; this._missing = [];
       if (d.has_device) this.bridge.cmd.getAllParams();
     }
@@ -94,26 +91,18 @@ AVC.PulsarMassiveController.ROLES = [
   };
 
   proto._resolve = function (params) {
-    var byName = {}, i;
-    for (i = 0; i < params.length; i++) byName[norm(params[i].name)] = params[i];
     var roles = {}, missing = [], overrides = P.OVERRIDES || {};
-
     P.ROLES.forEach(function (role) {
       var found = null;
-      // 1) explicit override (exact name or numeric index)
       if (overrides[role.key] != null) {
         var ov = overrides[role.key];
-        if (typeof ov === 'number') found = params[ov];
-        else found = byName[norm(ov)];
+        found = (typeof ov === 'number') ? params[ov] : firstByName(params, norm(ov));
       }
-      // 2) ordered fuzzy patterns: first pattern that matches any param wins
-      if (!found) {
-        for (var pi = 0; pi < role.match.length && !found; pi++) {
-          var pat = role.match[pi];
-          for (var k = 0; k < params.length; k++) {
-            var nm = norm(params[k].name);
-            if (pat instanceof RegExp ? pat.test(nm) : nm.indexOf(pat) >= 0) { found = params[k]; break; }
-          }
+      for (var pi = 0; !found && pi < role.match.length; pi++) {
+        var pat = role.match[pi];
+        for (var k = 0; k < params.length; k++) {
+          var nm = norm(params[k].name);
+          if (pat instanceof RegExp ? pat.test(nm) : nm.indexOf(pat) >= 0) { found = params[k]; break; }
         }
       }
       if (found) {
@@ -121,40 +110,45 @@ AVC.PulsarMassiveController.ROLES = [
           index: found.i, name: found.name, min: found.min, max: found.max,
           quantized: !!found.quantized, items: found.items || [], steps: role.steps || 0,
         };
-      } else {
-        missing.push(role.key);
-      }
+      } else { missing.push(role.key); }
     });
-
     this._roles = roles; this._missing = missing; this._resolved = true;
     var watch = Object.keys(roles).map(function (k) { return roles[k].index; });
     if (watch.length) this.bridge.cmd.watch(watch);
-    if (missing.length) {
-      this.bridge.sdLog && this.bridge.sdLog('PulsarMassive: unresolved roles: ' + missing.join(', '));
-      AVC.SD && AVC.SD.log('PulsarMassive unresolved: ' + missing.join(', ') +
+    if (missing.length && this.sd && this.sd.log) {
+      this.sd.log('PulsarMassive unresolved roles: ' + missing.join(', ') +
         ' — check param names in Live Log.txt and set PulsarMassiveController.OVERRIDES');
     }
   };
+  function firstByName(params, n) { for (var i = 0; i < params.length; i++) if (norm(params[i].name) === n) return params[i]; return null; }
 
   // ---------------------------------------------------------- value access
   proto._role = function (key) { return this._roles[key] || null; };
-  proto._live = function (role) {
+  proto._value = function (role) {
     var pv = this.state && this.state.pv;
-    return (pv && pv[role.index] != null) ? pv[role.index] : null;
+    if (pv && role && pv[role.index] != null) return pv[role.index].value;
+    return role ? role.min : 0;
   };
-  proto._value = function (role) { var lv = this._live(role); return lv ? lv.value : 0; };
-  proto._disp = function (role) {
-    var lv = this._live(role);
-    if (lv && lv.disp != null) return String(lv.disp);
-    if (role.quantized && role.items.length) return String(role.items[Math.round(this._value(role))] || '');
-    var v = this._value(role); return (Math.round(v * 100) / 100) + '';
-  };
-  // boolean-ish "on" for toggles (value past midpoint)
-  proto._on = function (role) { return this._value(role) > (role.min + role.max) / 2; };
-  // stepped state index (for Transfo / freq labels)
+  proto._disp = function (role) { var pv = this.state && this.state.pv; return (pv && role && pv[role.index]) ? pv[role.index].disp : null; };
+  proto._on = function (role) { return !!role && this._value(role) > (role.min + role.max) / 2; };
   proto._stepName = function (role) {
+    if (!role) return '—';
     if (role.quantized && role.items.length) return String(role.items[Math.round(this._value(role))] || '');
-    return this._disp(role);
+    return AVC.showVal(this._disp(role), (Math.round(this._value(role) * 100) / 100) + '');
+  };
+  proto._fmtGain = function (role) {
+    if (!role) return '—';
+    var v = this._value(role), fb = (v >= 0 ? '+' : '') + (Math.round(v * 10) / 10);
+    return AVC.showVal(this._disp(role), fb);
+  };
+  // band value for the active mode
+  proto._bandRole = function (b, mode) { return this._role('b' + b + '_' + (mode === 'width' ? 'width' : mode)); };
+  proto._bandText = function (b, mode) {
+    var r = this._bandRole(b, mode);
+    if (!r) return '—';
+    if (mode === 'gain') return this._fmtGain(r);
+    if (mode === 'freq') return this._stepName(r);
+    return AVC.showVal(this._disp(r), (Math.round(this._value(r) * 100) / 100) + '');   // width
   };
 
   // ============================================================== rendering
@@ -169,96 +163,118 @@ AVC.PulsarMassiveController.ROLES = [
       if (slot > 0) { ctx.strokeStyle = gfx.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + 0.5, 6); ctx.lineTo(x + 0.5, L.H - 6); ctx.stroke(); }
       if (slot < 4) this._drawBand(ctx, x, slot);
       else if (slot === 4) this._drawDrive(ctx, x);
-      else this._drawMaster(ctx, x);
+      else this._drawGain(ctx, x);
     }
   };
 
+  proto._drawTabs = function (ctx, x, color) {
+    var modes = P.MODES, tw = (SLOT - 8) / modes.length;
+    for (var i = 0; i < modes.length; i++) {
+      var act = modes[i] === this.mode;
+      gfx.roundRect(ctx, x + 4 + i * tw + 1, TAB[0], tw - 2, TAB[1] - TAB[0], 3);
+      ctx.fillStyle = act ? (color || gfx.accent) : 'rgba(255,255,255,0.05)'; ctx.fill();
+      gfx.text2(ctx, P.MODE_LABEL[modes[i]], x + 4 + i * tw + tw / 2, TAB[1] - 4,
+        act ? '800 8px Inter, sans-serif' : '600 7px Inter, sans-serif', act ? '#06251d' : gfx.dim, 'center');
+    }
+  };
+  proto._tabHit = function (lx, ly) {
+    if (!inY(ly, TAB)) return null;
+    var tw = (SLOT - 8) / P.MODES.length, seg = Math.floor((lx - 4) / tw);
+    return (seg >= 0 && seg < P.MODES.length) ? P.MODES[seg] : null;
+  };
+
+  proto._pill = function (ctx, x, y, w, h, label, on, color) {
+    gfx.roundRect(ctx, x, y, w, h, 4);
+    ctx.fillStyle = on ? (color || gfx.accent) : 'rgba(255,255,255,0.06)'; ctx.fill();
+    gfx.text2(ctx, label, x + w / 2, y + h / 2 + 3.5, '700 9px Inter, sans-serif', on ? '#06251d' : gfx.dim, 'center');
+  };
   proto._btn = function (ctx, x, y, w, h, label, on, color) {
-    color = color || gfx.accent;
     gfx.roundRect(ctx, x, y, w, h, 5);
-    ctx.fillStyle = on ? color : 'rgba(255,255,255,0.06)'; ctx.fill();
+    ctx.fillStyle = on ? (color || gfx.accent) : 'rgba(255,255,255,0.06)'; ctx.fill();
     gfx.text2(ctx, label, x + w / 2, y + h / 2 + 4, '700 10px Inter, sans-serif', on ? '#06251d' : gfx.dim, 'center');
   };
-  proto._mid = function (ctx, x, name, disp, color) {
-    gfx.text2(ctx, name, x + SLOT / 2, MID[0] + 9, '600 10px Inter, sans-serif', gfx.dim, 'center');
-    gfx.text2(ctx, disp, x + SLOT / 2, MID[1], '700 17px "SF Mono", monospace', color || gfx.text, 'center');
-  };
   proto._stepRow = function (ctx, x, label, disp) {
-    gfx.text2(ctx, '◂', x + 12, BOT[1] - 2, '700 13px Inter, sans-serif', gfx.accent, 'center');
-    gfx.text2(ctx, '▸', x + SLOT - 12, BOT[1] - 2, '700 13px Inter, sans-serif', gfx.accent, 'center');
-    gfx.text2(ctx, label, x + SLOT / 2, BOT[0] + 8, '600 8px Inter, sans-serif', gfx.dim, 'center');
-    gfx.text2(ctx, disp, x + SLOT / 2, BOT[1] - 1, '700 12px "SF Mono", monospace', gfx.text, 'center');
+    gfx.text2(ctx, '◂', x + 12, GBOT[1] - 2, '700 13px Inter, sans-serif', gfx.accent, 'center');
+    gfx.text2(ctx, '▸', x + SLOT - 12, GBOT[1] - 2, '700 13px Inter, sans-serif', gfx.accent, 'center');
+    gfx.text2(ctx, label, x + SLOT / 2, GBOT[0] + 8, '600 8px Inter, sans-serif', gfx.dim, 'center');
+    gfx.text2(ctx, disp, x + SLOT / 2, GBOT[1] - 1, '700 12px "SF Mono", monospace', gfx.text, 'center');
   };
 
   proto._drawBand = function (ctx, x, slot) {
-    var b = slot + 1;
-    var gain = this._role('b' + b + '_gain'), inn = this._role('b' + b + '_in'),
-        shp = this._role('b' + b + '_shape'), frq = this._role('b' + b + '_freq');
-    var color = gfx.bandColors[slot % 8];
-    // TOP: IN (left) + SHAPE (right)
-    this._btn(ctx, x + 4, TOP[0], 92, TOP[1] - TOP[0], inn ? (this._on(inn) ? 'IN' : 'OUT') : 'IN?', inn && this._on(inn), color);
-    var shelf = shp && this._on(shp);
-    this._btn(ctx, x + 104, TOP[0], 92, TOP[1] - TOP[0], shp ? (shelf ? 'SHELF' : 'BELL') : 'SHP?', !!shelf, '#9775fa');
-    // MID: name + gain value
-    this._mid(ctx, x, P.BANDS[slot] + ' Gain', gain ? this._fmtGain(gain) : '—', color);
-    // BOT: stepped frequency
-    this._stepRow(ctx, x, 'FREQ', frq ? this._stepName(frq) : '—');
+    var b = slot + 1, color = gfx.bandColors[slot % 8];
+    var active = this._role('b' + b + '_active'), type = this._role('b' + b + '_type');
+    this._drawTabs(ctx, x, color);
+    // MID — band name + active-mode value
+    var on = active ? this._on(active) : true;
+    ctx.globalAlpha = on ? 1 : 0.45;
+    gfx.text2(ctx, P.BANDS[slot], x + SLOT / 2, MID[0] + 10, '700 9px Inter, sans-serif', color, 'center');
+    gfx.text2(ctx, this._bandText(b, this.mode), x + SLOT / 2, MID[1] - 4, '800 17px "SF Mono", monospace', gfx.text, 'center');
+    ctx.globalAlpha = 1;
+    // BOT — IN/OUT | BELL/SHELF
+    var ew = (SLOT - 12) * 0.46, tw = (SLOT - 12) - ew - 4;
+    this._pill(ctx, x + 4, BOT[0], ew, BOT[1] - BOT[0], active ? (on ? 'IN' : 'OUT') : 'IN?', on, color);
+    var shelf = type && this._on(type);
+    this._pill(ctx, x + 8 + ew, BOT[0], tw, BOT[1] - BOT[0], type ? (shelf ? 'SHELF' : 'BELL') : 'SHP?', !!shelf, '#9775fa');
   };
 
   proto._drawDrive = function (ctx, x) {
     var drive = this._role('drive'), ag = this._role('auto_gain'), lp = this._role('low_pass');
-    this._btn(ctx, x + 4, TOP[0], SLOT - 8, TOP[1] - TOP[0], ag ? ('AUTO GAIN ' + (this._on(ag) ? 'ON' : 'OFF')) : 'AUTO GAIN?', ag && this._on(ag), '#ffd166');
-    this._mid(ctx, x, 'Drive', drive ? this._disp(drive) : '—', '#ffd166');
-    this._stepRow(ctx, x, 'LOW PASS', lp ? this._disp(lp) : '—');
+    this._btn(ctx, x + 4, GTOP[0], SLOT - 8, GTOP[1] - GTOP[0], ag ? ('AUTO GAIN ' + (this._on(ag) ? 'ON' : 'OFF')) : 'AUTO GAIN?', ag && this._on(ag), '#ffd166');
+    gfx.text2(ctx, 'Drive', x + SLOT / 2, GMID[0] + 8, '600 10px Inter, sans-serif', gfx.dim, 'center');
+    gfx.text2(ctx, drive ? this._fmtGain(drive) : '—', x + SLOT / 2, GMID[1], '700 17px "SF Mono", monospace', '#ffd166', 'center');
+    this._stepRow(ctx, x, 'LOW PASS', lp ? this._stepName(lp) : '—');
   };
 
-  proto._drawMaster = function (ctx, x) {
-    var mg = this._role('master_gain'), tr = this._role('transfo'), hp = this._role('high_pass');
-    this._btn(ctx, x + 4, TOP[0], SLOT - 8, TOP[1] - TOP[0], tr ? ('TRANSFO ' + this._stepName(tr)) : 'TRANSFO?', tr && this._stepName(tr) !== 'OFF', '#4dabf7');
-    this._mid(ctx, x, 'Master Gain', mg ? this._fmtGain(mg) : '—', gfx.accent);
-    this._stepRow(ctx, x, 'HIGH PASS', hp ? this._disp(hp) : '—');
-  };
-
-  proto._fmtGain = function (role) {
-    if (!role) return '—';
-    var v = this._value(role), fb = (v >= 0 ? '+' : '') + (Math.round(v * 10) / 10);
-    return AVC.showVal((this.state.pv[role.index] || {}).disp, fb);   // Ableton's "x.x dB" when present
+  proto._drawGain = function (ctx, x) {
+    var gain = this._role('gain'), tr = this._role('transfo'), hp = this._role('high_pass');
+    this._btn(ctx, x + 4, GTOP[0], SLOT - 8, GTOP[1] - GTOP[0], tr ? ('TRANSFO ' + this._stepName(tr)) : 'TRANSFO?', tr && /1|2/.test(this._stepName(tr)), '#4dabf7');
+    gfx.text2(ctx, 'Gain', x + SLOT / 2, GMID[0] + 8, '600 10px Inter, sans-serif', gfx.dim, 'center');
+    gfx.text2(ctx, gain ? this._fmtGain(gain) : '—', x + SLOT / 2, GMID[1], '700 17px "SF Mono", monospace', gfx.accent, 'center');
+    this._stepRow(ctx, x, 'HIGH PASS', hp ? this._stepName(hp) : '—');
   };
 
   // ================================================================= input
-  // dials 1-4 = band gains, 5 = drive, 6 = master gain
   proto.onDial = function (slot, ticks) {
-    var role = (slot < 4) ? this._role('b' + (slot + 1) + '_gain') : (slot === 4 ? this._role('drive') : this._role('master_gain'));
-    if (role) this.bridge.cmd.deltaIndex(role.index, ticks * AVC.STEP);
+    if (slot < 4) {
+      var role = this._bandRole(slot + 1, this.mode); if (!role) return;
+      if (this.mode === 'freq') this.bridge.cmd.stepIndex(role.index, ticks >= 0 ? 1 : -1, role.quantized ? 0 : (role.steps || 11));
+      else this.bridge.cmd.deltaIndex(role.index, ticks * AVC.STEP);          // gain / width (continuous)
+      return;
+    }
+    var r = (slot === 4) ? this._role('drive') : this._role('gain');
+    if (r) this.bridge.cmd.deltaIndex(r.index, ticks * AVC.STEP);
   };
-  // dial press mirrors the top button of each zone
+
   proto.onDialPress = function (slot) {
-    if (slot < 4) { var r = this._role('b' + (slot + 1) + '_in'); if (r) this.bridge.cmd.toggleIndex(r.index); }
+    if (slot < 4) { var a = this._role('b' + (slot + 1) + '_active'); if (a) this.bridge.cmd.toggleIndex(a.index); }
     else if (slot === 4) { var ag = this._role('auto_gain'); if (ag) this.bridge.cmd.toggleIndex(ag.index); }
     else { var tr = this._role('transfo'); if (tr) this.bridge.cmd.stepIndex(tr.index, 1, tr.steps); }
   };
 
   proto.onTouch = function (gx, gy, hold) {
-    var slot = Math.floor(gx / SLOT), lx = gx - slot * SLOT, ly = gy;
-    var left = lx < SLOT / 2;
-    if (slot < 0 || slot > 5) return;
-
+    var slot = Math.floor(gx / SLOT); if (slot < 0 || slot > 5) return;
+    var lx = gx - slot * SLOT, ly = gy, left = lx < SLOT / 2;
     if (slot < 4) {
-      var b = slot + 1;
-      if (inY(ly, TOP)) { this._toggle(left ? 'b' + b + '_in' : 'b' + b + '_shape'); return; }
-      if (inY(ly, BOT)) { this._step('b' + b + '_freq', left ? -1 : 1); return; }
-    } else if (slot === 4) {
-      if (inY(ly, TOP)) { this._toggle('auto_gain'); return; }
-      if (inY(ly, BOT)) { this._step('low_pass', left ? -1 : 1); return; }
+      var tab = this._tabHit(lx, ly);
+      if (tab) { this.mode = tab; return; }
+      if (inY(ly, BOT)) {
+        var b = slot + 1, ew = (SLOT - 12) * 0.46;
+        if (lx < 4 + ew + 2) this._toggle('b' + b + '_active');
+        else this._toggle('b' + b + '_type');
+      }
+      return;
+    }
+    if (slot === 4) {
+      if (inY(ly, GTOP)) { this._toggle('auto_gain'); return; }
+      if (inY(ly, GBOT)) { this._step('low_pass', left ? -1 : 1); return; }
     } else {
-      if (inY(ly, TOP)) { this._cycle('transfo', hold ? -1 : 1); return; }
-      if (inY(ly, BOT)) { this._step('high_pass', left ? -1 : 1); return; }
+      if (inY(ly, GTOP)) { this._cycle('transfo', hold ? -1 : 1); return; }
+      if (inY(ly, GBOT)) { this._step('high_pass', left ? -1 : 1); return; }
     }
   };
 
   proto._toggle = function (key) { var r = this._role(key); if (r) this.bridge.cmd.toggleIndex(r.index); };
   proto._cycle = function (key, dir) { var r = this._role(key); if (r) this.bridge.cmd.stepIndex(r.index, dir, r.steps); };
-  // stepped/continuous adjust: quantized or `steps` -> stepIndex (wraps); else fine delta
   proto._step = function (key, dir) {
     var r = this._role(key); if (!r) return;
     if (r.quantized || r.steps) this.bridge.cmd.stepIndex(r.index, dir, r.steps);
@@ -266,10 +282,8 @@ AVC.PulsarMassiveController.ROLES = [
   };
 
   proto.dialTitle = function (slot) {
-    if (slot < 4) { var g = this._role('b' + (slot + 1) + '_gain'); return P.BANDS[slot] + (g ? ' ' + this._fmtGain(g) : ''); }
-    if (slot === 4) { var d = this._role('drive'); return 'Drive' + (d ? ' ' + this._disp(d) : ''); }
-    var m = this._role('master_gain'); return 'Gain' + (m ? ' ' + this._fmtGain(m) : '');
+    if (slot < 4) return P.BANDS[slot] + ' ' + P.MODE_LABEL[this.mode] + ' ' + this._bandText(slot + 1, this.mode);
+    if (slot === 4) { var d = this._role('drive'); return 'Drive' + (d ? ' ' + this._fmtGain(d) : ''); }
+    var g = this._role('gain'); return 'Gain' + (g ? ' ' + this._fmtGain(g) : '');
   };
-
-  function inY(y, sec) { return y >= sec[0] && y <= sec[1]; }
 })(AVC.PulsarMassiveController);
