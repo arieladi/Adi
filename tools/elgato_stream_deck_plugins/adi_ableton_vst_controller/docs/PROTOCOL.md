@@ -17,8 +17,9 @@ I/O) and this bridge (Live state). Keep the two mentally separate.
 | `device` | `name`, `class_name`, `index`, `has_device`, `controller` (`"eq8"`/`"generic"`), `param_count` | Selected device changed. `controller` tells the client which `DeviceController` strategy to use. |
 | `params` | `page`, `pages`, `params:[{slot,pidx,name,value,min,max,disp,quantized}]` | Generic-mode parameter snapshot (the 6 mapped, non-quantized params). |
 | `param` | `slot`, `value`, `disp` | Real-time single-parameter update (dial move or automation). |
-| `eq8` | `page`, `focus`, `output`, `bands:[{i,on,freq,gain,q,type,type_name,type_items}]` | Full EQ Eight snapshot. `focus` = first band (1-based) the 6 dials control. |
-| `eq8_band` | `i`, + any band fields | Real-time single-band update. |
+| `eq8` | `page`, `focus`, `output`, `output_disp`, `scale`, `scale_disp`, `bands:[{i,on,freq,freq_disp,gain,gain_disp,q,q_disp,type,type_name,type_items}]` | Full EQ Eight snapshot. `focus` = first band (1-based) the 6 dials control. `*_disp` = Ableton's own `str_for_value` string. |
+| `eq8_band` | `i`, + any band fields (incl. `freq_disp`/`gain_disp`/`q_disp`) | Real-time single-band update. |
+| `eq8_globals` | `output`, `output_disp`, `scale`, `scale_disp` | Real-time update of the EQ Eight Output Gain / Scale globals. |
 | `eq8_state` | `count`, `selected_is_eq8`, `selected_index` | How many EQ8s on the track + whether the selected device is one (drives the EQ8 key glyph). |
 | `presets` | `items:[{id,name}]` | EQ8 preset list (from the configured User Library folder). |
 | `all_params` | `params:[{i,name,value,min,max,quantized,items,disp}]` | Full parameter list for a predefined VST controller (reply to `get_all_params`). |
@@ -33,6 +34,9 @@ I/O) and this bridge (Live state). Keep the two mentally separate.
 | `param_delta` | `slot`, `delta` | Generic: nudge mapped parameter `slot` by `delta` *normalized* units (ticks × step). Bridge maps to `[min,max]`. |
 | `param_set` | `slot`, `norm` | Generic: set mapped parameter `slot` to absolute normalized `norm` (0..1). |
 | `eq8_freq_delta` | `band`, `delta` | Nudge band frequency (normalized, log-mapped by the bridge). |
+| `eq8_gain_delta` | `band`, `delta` | Nudge band gain (linear, dB). |
+| `eq8_q_delta` | `band`, `delta` | Nudge band Q / Resonance (geometric, log-mapped). |
+| `eq8_global_delta` | `which` (`"output"`/`"scale"`), `delta` | Nudge the Output Gain or Scale global (linear). |
 | `eq8_toggle_band` | `band` | Toggle a band's enable. |
 | `eq8_cycle_type` | `band`, `dir` (±1) | Step the band's filter type / cutoff mode. |
 | `eq8_page` | `dir` (±1) | Shift the 6-dial focus window (bands 1-6 → 2-7 → 3-8). |

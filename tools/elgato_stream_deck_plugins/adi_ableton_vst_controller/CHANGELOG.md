@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.4.3.0] — 2026-06-20
+
+### Added
+- **EQ Eight: full per-band control + global Output Gain & Scale.** The 6 dials
+  now have strip-wide **FREQ / GAIN / Q** modes (tap the top tabs), driving the
+  focused 6-band window (◀ ▶ paginate 1-6 → 2-7 → 3-8). A new **GLOB** mode puts
+  Output Gain on dial 1 and Scale on dial 2, with the summed frequency-response
+  graph filling the rest of the strip. Per band: tap = enable / cycle filter
+  type; dial press = enable.
+- New bridge commands `eq8_gain_delta`, `eq8_q_delta`, `eq8_global_delta` and an
+  `eq8_globals` state message (Output Gain + Scale), plus per-band `freq_disp` /
+  `gain_disp` / `q_disp` strings. See docs/EQ8.md.
+
+### Changed
+- **EQ Eight values now mirror Ableton exactly** — every reading (band Freq/Gain/
+  Q, Output Gain, Scale) is shown via Live's own `str_for_value` string through
+  `AVC.showVal`, replacing the controller's reinvented Hz formatting.
+- Verified the EQ Eight parameter names against a real Ableton Configure view
+  (`<N> Frequency/Gain/Resonance/Filter Type/Filter On A`, `Output Gain`, `Scale`);
+  the band-name resolution (`_BAND_RE`) was already correct. The dial focus window
+  now resets to band 1 when a different EQ Eight is selected.
+
 ## [1.4.2.0] — 2026-06-18
 
 ### Added

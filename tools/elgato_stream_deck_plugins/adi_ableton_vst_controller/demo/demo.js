@@ -4,6 +4,12 @@
   var TYPES = ['Low Cut 48', 'Low Cut 12', 'Low Shelf', 'Bell', 'Notch', 'High Shelf', 'High Cut 12', 'High Cut 48'];
   var clamp = AVC.gfx.clamp;
 
+  // EQ8 disp formatters — mimic Ableton's str_for_value (the real bridge uses Live's own).
+  function eqHz(f) { return f >= 1000 ? (Math.round(f / 10) / 100) + ' kHz' : Math.round(f) + ' Hz'; }
+  function eqDb(v) { return (Math.round(v * 100) / 100).toFixed(2) + ' dB'; }
+  function eqQv(v) { return (Math.round(v * 100) / 100).toFixed(2); }
+  function eqPct(v) { return Math.round(v) + ' %'; }
+
   var state = {
     device: { has_device: true, class_name: 'Eq8', controller: 'eq8', name: 'EQ Eight', index: 2, param_count: 90 },
     params: [
@@ -15,7 +21,7 @@
       { slot: 5, name: 'Dry/Wet', value: 0.80, min: 0, max: 1, disp: '80%' },
     ],
     eq8: {
-      focus: 1, output: 0, bands: [
+      focus: 1, output: 0, output_disp: '0.00 dB', scale: 100, scale_disp: '100 %', bands: [
         { i: 1, on: true, freq: 40, gain: 0, q: 0.7, type: 0, type_name: 'Low Cut 48', type_items: TYPES },
         { i: 2, on: true, freq: 120, gain: 3, q: 0.7, type: 2, type_name: 'Low Shelf', type_items: TYPES },
         { i: 3, on: true, freq: 350, gain: -4, q: 1.2, type: 3, type_name: 'Bell', type_items: TYPES },
@@ -32,6 +38,9 @@
       { id: 3, name: 'Mix Tilt' }, { id: 4, name: 'De-Mud' }, { id: 5, name: 'Bright Master' },
     ],
   };
+
+  // give each EQ8 band Ableton-style disp strings (the controller shows these)
+  state.eq8.bands.forEach(function (b) { b.freq_disp = eqHz(b.freq); b.gain_disp = eqDb(b.gain); b.q_disp = eqQv(b.q); });
 
   // ---- Pulsar Massive mock parameters (names match the controller's role patterns) ----
   var FREQS = {
@@ -132,7 +141,14 @@
     cmd: {
       paramDelta: function (slot, d) { var p = findParam(slot); if (p) { p.value = clamp(p.value + d * (p.max - p.min), p.min, p.max); p.disp = (Math.round(p.value * 100) / 100) + ''; } render(); },
       paramSet: function (slot, n) { var p = findParam(slot); if (p) { p.value = p.min + n * (p.max - p.min); p.disp = (Math.round(p.value * 100) / 100) + ''; } render(); },
-      eq8FreqDelta: function (band, d) { var b = findBand(band); if (b) b.freq = clamp(b.freq * Math.pow(2, d * 4), 20, 22000); render(); },
+      eq8FreqDelta: function (band, d) { var b = findBand(band); if (b) { b.freq = clamp(b.freq * Math.pow(2, d * 4), 20, 22000); b.freq_disp = eqHz(b.freq); } render(); },
+      eq8GainDelta: function (band, d) { var b = findBand(band); if (b) { b.gain = clamp(b.gain + d * 30, -15, 15); b.gain_disp = eqDb(b.gain); } render(); },
+      eq8QDelta: function (band, d) { var b = findBand(band); if (b) { b.q = clamp(b.q * Math.pow(2, d * 4), 0.1, 18); b.q_disp = eqQv(b.q); } render(); },
+      eq8GlobalDelta: function (which, d) {
+        if (which === 'scale') { state.eq8.scale = clamp(state.eq8.scale + d * 100, 0, 200); state.eq8.scale_disp = eqPct(state.eq8.scale); }
+        else { state.eq8.output = clamp(state.eq8.output + d * 30, -15, 15); state.eq8.output_disp = eqDb(state.eq8.output); }
+        render();
+      },
       eq8ToggleBand: function (band) { var b = findBand(band); if (b) b.on = !b.on; render(); },
       eq8CycleType: function (band, dir) { var b = findBand(band); if (b) { var i = (b.type + (dir >= 0 ? 1 : TYPES.length - 1)) % TYPES.length; b.type = i; b.type_name = TYPES[i]; } render(); },
       eq8Page: function (dir) { state.eq8.focus = clamp(state.eq8.focus + (dir >= 0 ? 1 : -1), 1, 3); render(); },
@@ -176,10 +192,10 @@
     else if (m === 'indeq') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'INDEQ'; state.device.index = 6; active = indeq; loadParams(iq); }
     else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; loadParams([]); }
     document.querySelectorAll('#modeToggle button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
-    var titles = { eq8: 'Touchscreen — EQ Eight (split screen)', pulsar: 'Touchscreen — Pulsar Massive (6 zones)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (5 bands + dynamic Q)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', generic: 'Touchscreen — Generic (6 zones)' };
+    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (6 zones)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (5 bands + dynamic Q)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', generic: 'Touchscreen — Generic (6 zones)' };
     document.getElementById('screenTitle').textContent = titles[m] || titles.generic;
     var hints = {
-      eq8: 'Scroll a zone = band frequency. Click right-half cells: top=enable, bottom=cutoff mode (shift-click=prev). ◀ ▶ paginate band focus.',
+      eq8: 'Tap top tabs = FREQ/GAIN/Q/GLOB (sets all 6 dials). Scroll a zone = that param for its band. Bottom-left = enable, bottom-right = cycle type (shift=prev); dial press = enable. ◀ ▶ (zones 1 & 6, middle row) paginate 1-6 / 2-7 / 3-8. GLOB: dial 1 = Output, dial 2 = Scale; the response graph fills the right.',
       pulsar: 'Bands 1-4: tap top-left = IN, top-right = Bell/Shelf, bottom-left/right = Freq step. Zone 5: Auto Gain + Low Pass. Zone 6: Transfo + High Pass. Scroll a zone = gain/drive/master.',
       proq: 'Dial does FREQ/GAIN/Q — modes adapt to each band\'s Shape (cuts/shelves hide Q; cuts/notch/band-pass hide Gain). Bottom: tap SHAPE / SLOPE / STEREO to cycle (shift-click = prev). Tap a mode tab or press the dial to switch mode; scroll to change.',
       spectre: 'Bands 1-5: tap top = shape, middle = Freq/Gain mode, bottom = global setting. Scroll a band = active mode (and sets the Q target). Zone 6 scroll = target band\'s Q; bottom = bypass.',

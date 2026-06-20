@@ -90,6 +90,12 @@ class AdiVST(ControlSurface):
             b.cmd_param_set(int(m["slot"]), float(m["norm"]))
         elif c == "eq8_freq_delta":
             b.cmd_eq8_freq_delta(int(m["band"]), float(m["delta"]))
+        elif c == "eq8_gain_delta":
+            b.cmd_eq8_gain_delta(int(m["band"]), float(m["delta"]))
+        elif c == "eq8_q_delta":
+            b.cmd_eq8_q_delta(int(m["band"]), float(m["delta"]))
+        elif c == "eq8_global_delta":
+            b.cmd_eq8_global_delta(str(m.get("which", "output")), float(m["delta"]))
         elif c == "eq8_toggle_band":
             b.cmd_eq8_toggle_band(int(m["band"]))
         elif c == "eq8_cycle_type":

@@ -228,6 +228,7 @@ class LiveBridge(object):
     # ============================================================== EQ8 mode
     def _build_eq8_model(self):
         self._eq8_params = {}
+        self._eq8_focus = 1            # fresh device → start the 6-dial window at band 1
         for p in self._device.parameters:
             m = _BAND_RE.match(p.name)
             if not m:
@@ -241,8 +242,19 @@ class LiveBridge(object):
             }[m.group(2)]
             self._eq8_params[(band, field)] = p
             self._listen(p, "value", self._eq8_listener((band, field)))
+        # Global params (adjustable + displayed). Stored under band 0 so the normal
+        # teardown loop removes their listeners too; the listener emits eq8_globals.
+        for p in self._device.parameters:
+            if p.name == "Output Gain" and (0, "output") not in self._eq8_params:
+                self._eq8_params[(0, "output")] = p
+                self._listen(p, "value", self._eq8_listener((0, "output")))
+            elif p.name == "Scale" and (0, "scale") not in self._eq8_params:
+                self._eq8_params[(0, "scale")] = p
+                self._listen(p, "value", self._eq8_listener((0, "scale")))
 
     def _eq8_listener(self, key):
+        if key[0] == 0:    # global param (Output Gain / Scale)
+            return self._cache_fn(("eq8", key), lambda: (lambda: self._emit_eq8_globals()))
         return self._cache_fn(("eq8", key), lambda: (lambda: self._emit_eq8_band(key[0])))
 
     def _eq8_get(self, band, field):
@@ -269,27 +281,37 @@ class LiveBridge(object):
             "i": band,
             "on": bool(round(on.value)) if on else True,
             "freq": freq.value if freq else 0.0,
+            "freq_disp": _fmt_generic(freq) if freq else "",
             "gain": gain.value if gain else 0.0,
+            "gain_disp": _fmt_generic(gain) if gain else "",
             "q": q.value if q else 0.0,
+            "q_disp": _fmt_generic(q) if q else "",
             "type": type_val,
             "type_name": type_name,
             "type_items": type_items,
         }
 
+    def _eq8_globals_dict(self):
+        out = self._eq8_get(0, "output")
+        sc = self._eq8_get(0, "scale")
+        return {
+            "output": out.value if out else 0.0,
+            "output_disp": _fmt_generic(out) if out else "",
+            "scale": sc.value if sc else 100.0,
+            "scale_disp": _fmt_generic(sc) if sc else "",
+        }
+
     def _emit_eq8_full(self):
         bands = [self._band_dict(b) for b in range(1, EQ8_BANDS + 1)]
-        out = self._eq8_output()
-        self.send({"t": "eq8", "page": self._eq8_focus, "focus": self._eq8_focus,
-                   "output": out, "bands": bands})
+        msg = {"t": "eq8", "page": self._eq8_focus, "focus": self._eq8_focus, "bands": bands}
+        msg.update(self._eq8_globals_dict())
+        self.send(msg)
 
     def _emit_eq8_band(self, band):
         self.send(dict({"t": "eq8_band"}, **self._band_dict(band)))
 
-    def _eq8_output(self):
-        for p in (self._device.parameters if self._device else []):
-            if p.name in ("Output Gain", "Gain"):
-                return p.value
-        return 0.0
+    def _emit_eq8_globals(self):
+        self.send(dict({"t": "eq8_globals"}, **self._eq8_globals_dict()))
 
     def cmd_eq8_freq_delta(self, band, delta):
         p = self._eq8_get(band, "freq")
@@ -298,6 +320,27 @@ class LiveBridge(object):
         # geometric (musical) frequency nudge; freq value is always > 0
         new = p.value * (2.0 ** (delta * 4.0))
         self._safe_set(p, new)
+
+    def cmd_eq8_gain_delta(self, band, delta):
+        p = self._eq8_get(band, "gain")
+        if p is not None:
+            self._safe_set(p, p.value + delta * ((p.max - p.min) or 1.0))   # linear (dB)
+
+    def cmd_eq8_q_delta(self, band, delta):
+        p = self._eq8_get(band, "q")
+        if p is None:
+            return
+        v = p.value
+        if v > 0:
+            self._safe_set(p, v * (2.0 ** (delta * 4.0)))                   # geometric (Q)
+        else:
+            self._safe_set(p, v + delta * ((p.max - p.min) or 1.0))
+
+    def cmd_eq8_global_delta(self, which, delta):
+        # which: "scale" or "output" (Output Gain). Both are linear nudges.
+        p = self._eq8_get(0, "scale" if which == "scale" else "output")
+        if p is not None:
+            self._safe_set(p, p.value + delta * ((p.max - p.min) or 1.0))
 
     def cmd_eq8_toggle_band(self, band):
         p = self._eq8_get(band, "on")
@@ -321,9 +364,7 @@ class LiveBridge(object):
                                      self._eq8_focus + (1 if direction >= 0 else -1)))
         # re-emit so the client knows the new dial->band window
         if self._device is not None and self._device.class_name == EQ8_CLASS:
-            self.send({"t": "eq8", "page": self._eq8_focus, "focus": self._eq8_focus,
-                       "output": self._eq8_output(),
-                       "bands": [self._band_dict(b) for b in range(1, EQ8_BANDS + 1)]})
+            self._emit_eq8_full()
 
     # =========================================================== EQ8 KEY logic
     def _eq8_instances(self, track):

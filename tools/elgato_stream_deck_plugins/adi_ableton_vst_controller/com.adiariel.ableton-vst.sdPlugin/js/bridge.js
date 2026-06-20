@@ -20,7 +20,7 @@ AVC.Bridge = (function () {
     params: [],                 // generic mode: [{slot,name,value,min,max,disp}]
     allParams: [],              // predefined mode: full list [{i,name,value,min,max,quantized,items,disp}]
     pv: {},                     // live values by index: { index: {value, disp} }
-    eq8: { focus: 1, output: 0, bands: [] },
+    eq8: { focus: 1, output: 0, output_disp: '', scale: 100, scale_disp: '', bands: [] },
     eq8_state: { count: 0, selected_is_eq8: false, selected_index: -1 },
     presets: [],
   };
@@ -74,10 +74,16 @@ AVC.Bridge = (function () {
       case 'param':
         for (var i = 0; i < state.params.length; i++) if (state.params[i].slot === m.slot) { state.params[i].value = m.value; state.params[i].disp = m.disp; }
         emit('param', m); emit('state', state); break;
-      case 'eq8': state.eq8 = { focus: m.focus, output: m.output, bands: m.bands || [] }; emit('eq8', state.eq8); emit('state', state); break;
+      case 'eq8': state.eq8 = { focus: m.focus, output: m.output, output_disp: m.output_disp || '', scale: m.scale, scale_disp: m.scale_disp || '', bands: m.bands || [] }; emit('eq8', state.eq8); emit('state', state); break;
       case 'eq8_band':
-        for (var b = 0; b < state.eq8.bands.length; b++) if (state.eq8.bands[b].i === m.i) state.eq8.bands[b] = m;
+        var matched = false;
+        for (var b = 0; b < state.eq8.bands.length; b++) if (state.eq8.bands[b].i === m.i) { state.eq8.bands[b] = m; matched = true; }
+        if (!matched) state.eq8.bands.push(m);   // tolerate a band update arriving before the full snapshot
         emit('eq8_band', m); emit('state', state); break;
+      case 'eq8_globals':
+        state.eq8.output = m.output; state.eq8.output_disp = m.output_disp || '';
+        state.eq8.scale = m.scale; state.eq8.scale_disp = m.scale_disp || '';
+        emit('eq8', state.eq8); emit('state', state); break;
       case 'eq8_state': state.eq8_state = { count: m.count, selected_is_eq8: m.selected_is_eq8, selected_index: m.selected_index }; emit('eq8_state', state.eq8_state); break;
       case 'presets': state.presets = m.items || []; emit('presets', state.presets); break;
       case 'error': emit('error', m.message); break;
@@ -90,6 +96,9 @@ AVC.Bridge = (function () {
     paramDelta: function (slot, delta) { send({ c: 'param_delta', slot: slot, delta: delta }); },
     paramSet: function (slot, norm) { send({ c: 'param_set', slot: slot, norm: norm }); },
     eq8FreqDelta: function (band, delta) { send({ c: 'eq8_freq_delta', band: band, delta: delta }); },
+    eq8GainDelta: function (band, delta) { send({ c: 'eq8_gain_delta', band: band, delta: delta }); },
+    eq8QDelta: function (band, delta) { send({ c: 'eq8_q_delta', band: band, delta: delta }); },
+    eq8GlobalDelta: function (which, delta) { send({ c: 'eq8_global_delta', which: which, delta: delta }); },
     eq8ToggleBand: function (band) { send({ c: 'eq8_toggle_band', band: band }); },
     eq8CycleType: function (band, dir) { send({ c: 'eq8_cycle_type', band: band, dir: dir }); },
     eq8Page: function (dir) { send({ c: 'eq8_page', dir: dir }); },
