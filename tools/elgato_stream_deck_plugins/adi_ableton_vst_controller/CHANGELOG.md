@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.4.4.0] — 2026-06-20
+
+### Changed
+- **Pulsar Massive: verified parameter names + full per-band control (A-channel).**
+  Replaced the guessed names with the real Ableton Configure names, anchored to the
+  `A` suffix so the B parameter is never matched: per band (Low / Warmth / Presence
+  / Air) `Band N Gain A`, `Band N Freq A`, `Band N Bandwidth A`, `Band N Active A`,
+  `Band N Type A`; centre `Drive A`, `Gain A`, `Low Pass Freq A`, `High Pass Freq A`,
+  `Auto Gain`, `Transformer`. The B channel, Stereo Mode and ChannelA Active are
+  intentionally not mapped (stereo-linked workflow).
+- **Strip-wide GAIN / FREQ / WIDTH dial modes** (tap the tabs) — dials 1-4 adjust
+  the active mode's param for the 4 bands, adding the previously-missing **Bandwidth**
+  control. Dial 5 = Drive, dial 6 = channel Gain. Per band: tap = IN/OUT and
+  Bell/Shelf; dial press = IN/OUT. Zone 5 = Auto Gain + Low Pass; zone 6 = Transformer
+  (Off/1/2) + High Pass. All values shown via Ableton's `str_for_value` string. See
+  docs/PULSAR_MASSIVE.md.
+
 ## [1.4.3.0] — 2026-06-20
 
 ### Added

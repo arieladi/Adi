@@ -42,27 +42,35 @@
   // give each EQ8 band Ableton-style disp strings (the controller shows these)
   state.eq8.bands.forEach(function (b) { b.freq_disp = eqHz(b.freq); b.gain_disp = eqDb(b.gain); b.q_disp = eqQv(b.q); });
 
-  // ---- Pulsar Massive mock parameters (names match the controller's role patterns) ----
-  var FREQS = {
-    1: ['22', '27', '33', '39', '47', '56', '68', '82', '100', '120', '150'],
-    2: ['82', '100', '120', '150', '180', '220', '270', '330', '390', '470', '560'],
-    3: ['560', '680', '820', '1k', '1.2k', '1.5k', '1.8k', '2.2k', '2.7k', '3.3k', '3.9k'],
-    4: ['3.9k', '4.7k', '5.6k', '6.8k', '8.2k', '10k', '12k', '15k', '18k', '22k', '27k'],
+  // ---- Pulsar Massive mock — real Ableton Configure names. BOTH A and B params are
+  //      present to prove the controller resolves the A-channel only. Bands:
+  //      Low / Warmth / Presence / Air. ----
+  var PM_FREQS = {
+    1: ['33', '47', '68', '100', '150', '220', '330', '470', '680', '1K'],
+    2: ['120', '180', '270', '390', '560', '820', '1K', '1K8', '2K7', '3K9'],
+    3: ['560', '820', '1K', '1K2', '1K5', '1K8', '2K2', '3K3', '4K7', '6K8', '10K'],
+    4: ['560', '820', '1K2', '1K8', '2K7', '3K9', '5K6', '6K8', '8K2', '10K', '12K', '16K', '27K'],
   };
+  var PM_FVAL = { 1: 4, 2: 3, 3: 6, 4: 10 };   // 150 / 390 / 2K2 / 12K
+  var PM_TYPE = { 1: 1, 2: 0, 3: 0, 4: 1 };     // Shelf / Bell / Bell / Shelf (matches GUI)
   var pp = [], _pi = 0;
   function padd(o) { o.i = _pi++; pp.push(o); return o; }
-  for (var bb = 1; bb <= 4; bb++) {
-    padd({ name: 'Band ' + bb + ' In', min: 0, max: 1, quantized: true, items: ['Out', 'In'], value: 1 });
-    padd({ name: 'Band ' + bb + ' Shelf', min: 0, max: 1, quantized: true, items: ['Bell', 'Shelf'], value: bb === 1 ? 1 : 0 });
-    padd({ name: 'Band ' + bb + ' Gain', min: -20, max: 20, quantized: false, items: [], value: [3, -2, 2, 4][bb - 1] });
-    padd({ name: 'Band ' + bb + ' Freq', min: 0, max: FREQS[bb].length - 1, quantized: true, items: FREQS[bb], value: [8, 5, 4, 5][bb - 1] });
-  }
-  padd({ name: 'Drive', min: 0, max: 1, quantized: false, items: [], value: 0.35 });
-  padd({ name: 'Auto Gain', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 0 });
-  padd({ name: 'Master Gain', min: -20, max: 20, quantized: false, items: [], value: -1.5 });
-  padd({ name: 'Transfo', min: 0, max: 2, quantized: true, items: ['1', 'OFF', '2'], value: 1 });
-  padd({ name: 'Low Pass', min: 2000, max: 40000, quantized: false, items: [], value: 30000 });
-  padd({ name: 'High Pass', min: 10, max: 1000, quantized: false, items: [], value: 22 });
+  ['A', 'B'].forEach(function (ch) {
+    for (var bb = 1; bb <= 4; bb++) {
+      padd({ name: 'Band ' + bb + ' Active ' + ch, min: 0, max: 1, quantized: true, items: ['Inactive', 'Active'], value: 1 });
+      padd({ name: 'Band ' + bb + ' Type ' + ch, min: 0, max: 1, quantized: true, items: ['Bell', 'Shelf'], value: PM_TYPE[bb] });
+      padd({ name: 'Band ' + bb + ' Gain ' + ch, min: -20, max: 20, quantized: false, items: [], value: [0, 0, 3, 3][bb - 1] });
+      padd({ name: 'Band ' + bb + ' Bandwidth ' + ch, min: 0, max: 20, quantized: false, items: [], value: [6, 5.95, 6, 3][bb - 1] });
+      padd({ name: 'Band ' + bb + ' Freq ' + ch, min: 0, max: PM_FREQS[bb].length - 1, quantized: true, items: PM_FREQS[bb], value: PM_FVAL[bb] });
+    }
+    padd({ name: 'Drive ' + ch, min: -20, max: 20, quantized: false, items: [], value: 0 });
+    padd({ name: 'Gain ' + ch, min: -20, max: 20, quantized: false, items: [], value: 0 });
+    padd({ name: 'Low Pass Freq ' + ch, min: 0, max: 1, quantized: false, items: [], value: 1 });
+    padd({ name: 'High Pass Freq ' + ch, min: 0, max: 1, quantized: false, items: [], value: 0 });
+  });
+  padd({ name: 'Auto Gain', min: 0, max: 1, quantized: true, items: ['Inactive', 'Active'], value: 0 });
+  padd({ name: 'Transformer', min: 0, max: 2, quantized: true, items: ['Off', 'Transformer 1', 'Transformer 2'], value: 1 });
+  padd({ name: 'Stereo Mode', min: 0, max: 1, quantized: true, items: ['L-R', 'M-S'], value: 0 });
 
   // ---- Pro-Q 3 mock: mirrors a Configured instance — Freq/Q/Shape/Slope/Stereo
   // per band (+ Gain for bells 2-5; cut bands 1 & 6 expose no Gain). Values, shapes
@@ -192,11 +200,11 @@
     else if (m === 'indeq') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'INDEQ'; state.device.index = 6; active = indeq; loadParams(iq); }
     else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; loadParams([]); }
     document.querySelectorAll('#modeToggle button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
-    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (6 zones)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (5 bands + dynamic Q)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', generic: 'Touchscreen — Generic (6 zones)' };
+    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (5 bands + dynamic Q)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', generic: 'Touchscreen — Generic (6 zones)' };
     document.getElementById('screenTitle').textContent = titles[m] || titles.generic;
     var hints = {
       eq8: 'Tap top tabs = FREQ/GAIN/Q/GLOB (sets all 6 dials). Scroll a zone = that param for its band. Bottom-left = enable, bottom-right = cycle type (shift=prev); dial press = enable. ◀ ▶ (zones 1 & 6, middle row) paginate 1-6 / 2-7 / 3-8. GLOB: dial 1 = Output, dial 2 = Scale; the response graph fills the right.',
-      pulsar: 'Bands 1-4: tap top-left = IN, top-right = Bell/Shelf, bottom-left/right = Freq step. Zone 5: Auto Gain + Low Pass. Zone 6: Transfo + High Pass. Scroll a zone = gain/drive/master.',
+      pulsar: 'Tap top tabs = GAIN/FREQ/WIDTH (sets dials 1-4 = Low/Warmth/Presence/Air). Scroll a band zone = that param. Bottom-left = IN/OUT, bottom-right = Bell/Shelf; dial press = IN/OUT. Dial 5 = Drive, dial 6 = channel Gain. Zone 5: tap top = Auto Gain, bottom = Low Pass step. Zone 6: tap top = Transformer (Off/1/2), bottom = High Pass step.',
       proq: 'Dial does FREQ/GAIN/Q — modes adapt to each band\'s Shape (cuts/shelves hide Q; cuts/notch/band-pass hide Gain). Bottom: tap SHAPE / SLOPE / STEREO to cycle (shift-click = prev). Tap a mode tab or press the dial to switch mode; scroll to change.',
       spectre: 'Bands 1-5: tap top = shape, middle = Freq/Gain mode, bottom = global setting. Scroll a band = active mode (and sets the Q target). Zone 6 scroll = target band\'s Q; bottom = bypass.',
       indeq: 'Dials = Low/Mid/High gain, Low/Mid freq (stepped), Output. Tap top buttons = HPF / shapes / bandwidth / bypass; zone 5 bottom = High Freq (8/16k). Scroll a freq zone to step it.',
