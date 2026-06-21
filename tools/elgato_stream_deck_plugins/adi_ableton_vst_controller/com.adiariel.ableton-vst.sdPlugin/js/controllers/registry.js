@@ -47,3 +47,9 @@ AVC.registry.register({
   ctor: AVC.ValhallaRoomController,
   names: [/valhalla\s*room/i, /\bvalhallaroom\b/i],
 });
+
+// Valhalla DSP ValhallaVintageVerb (VST3 reverb) — matched by device name.
+AVC.registry.register({
+  ctor: AVC.ValhallaVintageVerbController,
+  names: [/valhalla\s*vintage\s*verb/i, /vintage\s*verb/i, /\bvintageverb\b/i],
+});

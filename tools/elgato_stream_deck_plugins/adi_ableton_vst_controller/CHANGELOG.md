@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.5.1.0] — 2026-06-20
+
+### Added
+- **New predefined controller: ValhallaVintageVerb** (Valhalla DSP, VST3 reverb).
+  Same paged design as ValhallaRoom; the 6 dials page across **MAIN / DAMP /
+  SHAPE** (tap tabs or press a dial to advance):
+  - MAIN: Mix · Predelay · Decay · Size · High Cut · Low Cut
+  - DAMP: High Freq · High Shelf · Bass Xover · Bass Mult · Decay · Mix
+  - SHAPE: Attack · Early Diffusion · Late Diffusion · Mod Rate · Mod Depth · Size
+  The bottom bar holds the two selectors — Reverb Mode (`ReverbMode`, the
+  algorithm) and Color Mode (`ColorMode`, the era voicing). Params resolve by name
+  (mix/predelay/decay/size/attack/highfreq/highshelf/bassxover/bassmult/
+  earlydiffusion/latediffusion/modrate/moddepth/highcut/lowcut + the two modes);
+  values shown via Ableton's `str_for_value`. Registered by device name
+  (`/vintage\s*verb/i`, no collision with ValhallaRoom). See
+  docs/VALHALLA_VINTAGE_VERB.md.
+
 ## [1.5.0.0] — 2026-06-20
 
 ### Added
