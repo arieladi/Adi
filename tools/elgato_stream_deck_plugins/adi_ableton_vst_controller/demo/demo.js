@@ -185,6 +185,30 @@
   vvadd({ name: 'ReverbMode', min: 0, max: VV_MODES.length - 1, quantized: true, items: VV_MODES, value: 0 });
   vvadd({ name: 'ColorMode', min: 0, max: VV_COLOR.length - 1, quantized: true, items: VV_COLOR, value: 0 });
 
+  // ---- Eventide Blackhole mock — real Ableton param names (paged reverb +
+  //      Kill/Freeze/HotSwitch/TempoSync switches). ----
+  var BH_TS = ['Manual', 'Sync', 'Off'];
+  var bh = [], _bhi = 0;
+  function bhadd(o) { o.i = _bhi++; bh.push(o); return o; }
+  bhadd({ name: 'Mix', min: 0, max: 100, quantized: false, items: [], value: 50 });
+  bhadd({ name: 'Gravity', min: -100, max: 100, quantized: false, items: [], value: 12 });
+  bhadd({ name: 'Size', min: 0, max: 100, quantized: false, items: [], value: 90 });
+  bhadd({ name: 'Predelay', min: 0, max: 500, quantized: false, items: [], value: 0 });
+  bhadd({ name: 'Low Level', min: -100, max: 100, quantized: false, items: [], value: -10 });
+  bhadd({ name: 'Hi Level', min: -100, max: 100, quantized: false, items: [], value: 0 });
+  bhadd({ name: 'Mod Depth', min: 0, max: 100, quantized: false, items: [], value: 43 });
+  bhadd({ name: 'Mod Rate', min: 0, max: 100, quantized: false, items: [], value: 58 });
+  bhadd({ name: 'Feedback', min: 0, max: 100, quantized: false, items: [], value: 0 });
+  bhadd({ name: 'Resonance', min: 0, max: 100, quantized: false, items: [], value: 0 });
+  bhadd({ name: 'In Level', min: -60, max: 12, quantized: false, items: [], value: 0 });
+  bhadd({ name: 'Out Level', min: -60, max: 12, quantized: false, items: [], value: 0 });
+  bhadd({ name: 'TempoSync', min: 0, max: 2, quantized: true, items: BH_TS, value: 2 });
+  bhadd({ name: 'Tempo', min: 0, max: 1, quantized: false, items: [], value: 0 });
+  bhadd({ name: 'Kill', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 0 });
+  bhadd({ name: 'Freeze', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 0 });
+  bhadd({ name: 'HotSwitch', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 0 });
+  bhadd({ name: 'Ribbon Controller', min: 0, max: 100, quantized: false, items: [], value: 50 });
+
   function dispOf(p) {
     if (p.items && p.items.length) return p.items[Math.max(0, Math.min(p.items.length - 1, Math.round(p.value - p.min)))];
     if (Math.abs(p.value) >= 100) return Math.round(p.value) + '';
@@ -243,6 +267,7 @@
   var indeq = new AVC.IndeqController(services);
   var valhalla = new AVC.ValhallaRoomController(services);
   var valhallavv = new AVC.ValhallaVintageVerbController(services);
+  var blackhole = new AVC.BlackholeController(services);
   var mode = 'eq8', active = eq8;
 
   var screen = document.getElementById('screen');
@@ -258,9 +283,10 @@
     else if (m === 'indeq') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'INDEQ'; state.device.index = 6; active = indeq; loadParams(iq); }
     else if (m === 'valhalla') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'ValhallaRoom'; state.device.index = 7; active = valhalla; loadParams(vr); }
     else if (m === 'valhallavv') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'ValhallaVintageVerb'; state.device.index = 8; active = valhallavv; loadParams(vv); }
+    else if (m === 'blackhole') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Blackhole'; state.device.index = 9; active = blackhole; loadParams(bh); }
     else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; loadParams([]); }
     document.querySelectorAll('#modeToggle button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
-    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', valhalla: 'Touchscreen — ValhallaRoom (MAIN/EARLY/LATE/RT pages)', valhallavv: 'Touchscreen — ValhallaVintageVerb (MAIN/DAMP/SHAPE pages)', generic: 'Touchscreen — Generic (6 zones)' };
+    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', valhalla: 'Touchscreen — ValhallaRoom (MAIN/EARLY/LATE/RT pages)', valhallavv: 'Touchscreen — ValhallaVintageVerb (MAIN/DAMP/SHAPE pages)', blackhole: 'Touchscreen — Blackhole (MAIN/MOD pages + Kill/Freeze/HotSwitch)', generic: 'Touchscreen — Generic (6 zones)' };
     document.getElementById('screenTitle').textContent = titles[m] || titles.generic;
     var hints = {
       eq8: 'Tap top tabs = FREQ/GAIN/Q/GLOB (sets all 6 dials). Scroll a zone = that param for its band. Bottom-left = enable, bottom-right = cycle type (shift=prev); dial press = enable. ◀ ▶ (zones 1 & 6, middle row) paginate 1-6 / 2-7 / 3-8. GLOB: dial 1 = Output, dial 2 = Scale; the response graph fills the right.',
@@ -270,6 +296,7 @@
       indeq: 'Dials = Low/Mid/High gain, Low/Mid freq (stepped), Output. Tap top buttons = HPF / shapes / bandwidth / bypass; zone 5 bottom = High Freq (8/16k). Scroll a freq zone to step it.',
       valhalla: 'Tap top tabs = MAIN / EARLY / LATE / RT (re-pages the 6 dials). Scroll a zone = that param. Bottom bar: left = Reverb Mode (tap cycle, shift=prev), right = Preset (◀ ▶, if exposed). Dial press = next page.',
       valhallavv: 'Tap top tabs = MAIN / DAMP / SHAPE (re-pages the 6 dials). Scroll a zone = that param. Bottom bar: left = Reverb Mode, right = Color Mode (tap cycle, shift=prev). Dial press = next page.',
+      blackhole: 'Tap top tabs = MAIN / MOD (re-pages the 6 dials). Scroll a zone = that param. Bottom bar: tap Kill / Freeze / HotSwitch to toggle, Tempo to cycle (Manual/Sync/Off). Dial press = next page.',
       generic: 'Scroll a zone to turn that dial. Click a zone to recenter.',
     };
     hint.textContent = hints[m] || hints.generic;

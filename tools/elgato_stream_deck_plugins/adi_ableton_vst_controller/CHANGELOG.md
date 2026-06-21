@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.5.2.0] — 2026-06-20
+
+### Added
+- **New predefined controller: Blackhole** (Eventide, H9 series VST3/AU reverb).
+  Paged 6 dials across **MAIN / MOD** (tap tabs or press a dial to advance):
+  - MAIN: Mix · Gravity · Size · Predelay · Low (EQ) · Hi (EQ)
+  - MOD: Mod Depth · Mod Rate · Feedback · Resonance · In Level · Out Level
+  A full-width bottom bar holds Blackhole's signature switches — **Kill · Freeze ·
+  HotSwitch** (tap to toggle) and **TempoSync** (tap to cycle Manual/Sync/Off).
+  Params resolve by name (mix/gravity/size/predelay/low level/hi level/mod depth/
+  mod rate/feedback/resonance/in level/out level + the four switches); values via
+  Ableton's `str_for_value`. Ribbon Controller + Tempo left to the GUI. Registered
+  by device name (`/\bblackhole\b/i`). See docs/BLACKHOLE.md.
+
 ## [1.5.1.0] — 2026-06-20
 
 ### Added

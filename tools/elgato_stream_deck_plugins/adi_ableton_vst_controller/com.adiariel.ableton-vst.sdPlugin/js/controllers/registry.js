@@ -53,3 +53,9 @@ AVC.registry.register({
   ctor: AVC.ValhallaVintageVerbController,
   names: [/valhalla\s*vintage\s*verb/i, /vintage\s*verb/i, /\bvintageverb\b/i],
 });
+
+// Eventide Blackhole (H9 series reverb) — matched by device name.
+AVC.registry.register({
+  ctor: AVC.BlackholeController,
+  names: [/\bblackhole\b/i, /eventide.*blackhole/i],
+});
