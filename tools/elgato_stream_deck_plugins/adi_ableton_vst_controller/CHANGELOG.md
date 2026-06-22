@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.4.0] — 2026-06-20
+
+### Added
+- **New predefined controller: dBComp** (Analog Obsession compressor/limiter,
+  VST3/AU). Fixed layout: dials 1-5 = **Threshold · Compression · Output Gain ·
+  HPF · Mix**; zone 6 holds the two switches — **Oversampling** (scroll dial 6 /
+  tap top) and **Bypass** (press dial 6 / tap bottom). Params resolve by name;
+  values via Ableton's `str_for_value`. The unused `Parameter #6/#7` placeholders
+  and Ableton's wrapper Gain/Sidechain are not mapped. Registered by device name
+  (`/\bd[bB]\s*comp\b/i`). See docs/DBCOMP.md.
+
 ## [1.5.3.0] — 2026-06-20
 
 ### Added

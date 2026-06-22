@@ -65,3 +65,9 @@ AVC.registry.register({
   ctor: AVC.HDelayController,
   names: [/\bh[-\s]?delay\b/i, /hdelay/i],
 });
+
+// Analog Obsession dBComp (compressor/limiter) — matched by device name.
+AVC.registry.register({
+  ctor: AVC.DbCompController,
+  names: [/\bd[bB]\s*comp\b/i, /analog\s*obsession.*comp/i],
+});
