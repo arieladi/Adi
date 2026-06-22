@@ -59,3 +59,9 @@ AVC.registry.register({
   ctor: AVC.BlackholeController,
   names: [/\bblackhole\b/i, /eventide.*blackhole/i],
 });
+
+// Waves H-Delay (Hybrid Line delay; Stereo / Mono-Stereo / Mono) — by device name.
+AVC.registry.register({
+  ctor: AVC.HDelayController,
+  names: [/\bh[-\s]?delay\b/i, /hdelay/i],
+});

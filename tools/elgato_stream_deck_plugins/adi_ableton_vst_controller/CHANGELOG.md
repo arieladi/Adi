@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.3.0] — 2026-06-20
+
+### Added
+- **New predefined controller: H-Delay** (Waves Hybrid Line delay; Stereo /
+  Mono-Stereo / Mono variants). Fixed 6-dial layout (no paging) over the small
+  Configured param set: **Mix · Delay BPM (note division) · Feedback · HiPass ·
+  LoPass · PingPong (routing mode)**. Continuous params nudge (`delta_index`);
+  Delay and PingPong are stepped — turn the dial, press it, or tap the zone to
+  cycle (shift/right = previous). Values via Ableton's `str_for_value`. Registered
+  by device name (`/\bh[-\s]?delay\b/i`). See docs/H_DELAY.md.
+
 ## [1.5.2.0] — 2026-06-20
 
 ### Added
