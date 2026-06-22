@@ -209,6 +209,18 @@
   bhadd({ name: 'HotSwitch', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 0 });
   bhadd({ name: 'Ribbon Controller', min: 0, max: 100, quantized: false, items: [], value: 50 });
 
+  // ---- Waves H-Delay mock — the small Configured set (fixed 6 dials). ----
+  var HD_DELAY = ['1/64T', '1/64', '1/32T', '1/32', '1/16T', '1/16', '1/8T', '1/8D', '1/8', '1/4T', '1/4D', '1/4', '1/2', '1 Bar', '2 Bar'];
+  var HD_PP = ['ØL', 'Ping Pong', 'ØR', 'Stereo'];
+  var hd = [], _hdi = 0;
+  function hdadd(o) { o.i = _hdi++; hd.push(o); return o; }
+  hdadd({ name: 'Mix', min: 0, max: 100, quantized: false, items: [], value: 34 });
+  hdadd({ name: 'Delay BPM', min: 0, max: HD_DELAY.length - 1, quantized: true, items: HD_DELAY, value: 7 });
+  hdadd({ name: 'Feedback', min: 0, max: 200, quantized: false, items: [], value: 89 });
+  hdadd({ name: 'HiPass', min: 20, max: 20000, quantized: false, items: [], value: 132 });
+  hdadd({ name: 'LoPass', min: 20, max: 20000, quantized: false, items: [], value: 18800 });
+  hdadd({ name: 'PingPong', min: 0, max: HD_PP.length - 1, quantized: true, items: HD_PP, value: 3 });
+
   function dispOf(p) {
     if (p.items && p.items.length) return p.items[Math.max(0, Math.min(p.items.length - 1, Math.round(p.value - p.min)))];
     if (Math.abs(p.value) >= 100) return Math.round(p.value) + '';
@@ -268,6 +280,7 @@
   var valhalla = new AVC.ValhallaRoomController(services);
   var valhallavv = new AVC.ValhallaVintageVerbController(services);
   var blackhole = new AVC.BlackholeController(services);
+  var hdelay = new AVC.HDelayController(services);
   var mode = 'eq8', active = eq8;
 
   var screen = document.getElementById('screen');
@@ -284,9 +297,10 @@
     else if (m === 'valhalla') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'ValhallaRoom'; state.device.index = 7; active = valhalla; loadParams(vr); }
     else if (m === 'valhallavv') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'ValhallaVintageVerb'; state.device.index = 8; active = valhallavv; loadParams(vv); }
     else if (m === 'blackhole') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Blackhole'; state.device.index = 9; active = blackhole; loadParams(bh); }
+    else if (m === 'hdelay') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'H-Delay Stereo'; state.device.index = 10; active = hdelay; loadParams(hd); }
     else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; loadParams([]); }
     document.querySelectorAll('#modeToggle button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
-    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', valhalla: 'Touchscreen — ValhallaRoom (MAIN/EARLY/LATE/RT pages)', valhallavv: 'Touchscreen — ValhallaVintageVerb (MAIN/DAMP/SHAPE pages)', blackhole: 'Touchscreen — Blackhole (MAIN/MOD pages + Kill/Freeze/HotSwitch)', generic: 'Touchscreen — Generic (6 zones)' };
+    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', valhalla: 'Touchscreen — ValhallaRoom (MAIN/EARLY/LATE/RT pages)', valhallavv: 'Touchscreen — ValhallaVintageVerb (MAIN/DAMP/SHAPE pages)', blackhole: 'Touchscreen — Blackhole (MAIN/MOD pages + Kill/Freeze/HotSwitch)', hdelay: 'Touchscreen — H-Delay (6 fixed dials)', generic: 'Touchscreen — Generic (6 zones)' };
     document.getElementById('screenTitle').textContent = titles[m] || titles.generic;
     var hints = {
       eq8: 'Tap top tabs = FREQ/GAIN/Q/GLOB (sets all 6 dials). Scroll a zone = that param for its band. Bottom-left = enable, bottom-right = cycle type (shift=prev); dial press = enable. ◀ ▶ (zones 1 & 6, middle row) paginate 1-6 / 2-7 / 3-8. GLOB: dial 1 = Output, dial 2 = Scale; the response graph fills the right.',
@@ -297,6 +311,7 @@
       valhalla: 'Tap top tabs = MAIN / EARLY / LATE / RT (re-pages the 6 dials). Scroll a zone = that param. Bottom bar: left = Reverb Mode (tap cycle, shift=prev), right = Preset (◀ ▶, if exposed). Dial press = next page.',
       valhallavv: 'Tap top tabs = MAIN / DAMP / SHAPE (re-pages the 6 dials). Scroll a zone = that param. Bottom bar: left = Reverb Mode, right = Color Mode (tap cycle, shift=prev). Dial press = next page.',
       blackhole: 'Tap top tabs = MAIN / MOD (re-pages the 6 dials). Scroll a zone = that param. Bottom bar: tap Kill / Freeze / HotSwitch to toggle, Tempo to cycle (Manual/Sync/Off). Dial press = next page.',
+      hdelay: 'Fixed 6 dials = Mix · Delay (note division) · Feedback · HiPass · LoPass · PingPong. Scroll to adjust. Delay & PingPong are stepped — scroll, or tap their zone to cycle (shift-click = previous).',
       generic: 'Scroll a zone to turn that dial. Click a zone to recenter.',
     };
     hint.textContent = hints[m] || hints.generic;
