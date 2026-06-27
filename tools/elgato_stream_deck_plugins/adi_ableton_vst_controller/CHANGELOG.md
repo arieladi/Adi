@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.5.7.0] — 2026-06-27
+
+### Added
+- **New predefined controller: Saturate** (Newfangled Audio spectral clipper /
+  saturation, VST3/AU). Fixed 6-dial layout (no paging) over the audio-meaningful
+  Configured params — **Input · Drive (Clipper Drive) · Shape (Clipper Shape,
+  Soft↔Hard) · Detail (Clipper Detail, None↔All) · Output · Out Comp (Output
+  Compensation)** — plus a full-width bottom switch bar: **METER** (Meter Selector
+  — Gain Curve / Waveform, tap cycles) · **OUT MODE** (Output Level Select —
+  Automatic / Manual, tap cycles) · **LOCK** (Gain Lock, tap toggles). Continuous
+  dials nudge (`delta_index`); values shown via Ableton's `str_for_value`. Params
+  resolve by name with anchored regex (e.g. `^clipper drive$`, so the per-module
+  `Clipper … Active` enables are never grabbed) + fallbacks + `OVERRIDES`. The
+  cosmetic params (Active / Color Scheme / UI Scale / Meters On / Use OpenGL /
+  Show Meters / Draw Curve) and the three `Clipper … Active` toggles are
+  intentionally not mapped. Registered by device name (`/newfangled\s*saturate/i`,
+  `/\bsaturate\b/i` — anchored so it won't catch Ableton's native Saturator). See
+  docs/SATURATE.md.
+
 ## [1.5.6.0] — 2026-06-20
 
 ### Changed

@@ -257,6 +257,36 @@
   opadd({ name: 'Line', min: 0, max: 1, quantized: true, items: ['In', 'Out'], value: 0 });
   opadd({ name: 'Power', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 1 });
 
+  // ---- Newfangled Saturate mock — real Ableton Configure names (fixed 6 dials +
+  //      Meter / Out-Mode / Gain-Lock bar). Cosmetic params (Active / Color Scheme /
+  //      UI Scale / Meters On / Use OpenGL / Show Meters / Draw Curve) and the
+  //      per-module "Clipper … Active" enables are present to prove the controller
+  //      maps only the audio controls + the three switches. ----
+  var SAT_METER = ['Gain Curve', 'Waveform'];
+  var SAT_OUTSEL = ['Automatic', 'Manual'];
+  var SAT_SCHEME = ['MODERN', 'CLASSIC', 'MONO'];
+  var st = [], _sti = 0;
+  function stadd(o) { o.i = _sti++; st.push(o); return o; }
+  stadd({ name: 'Active', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 1 });
+  stadd({ name: 'Color Scheme', min: 0, max: SAT_SCHEME.length - 1, quantized: true, items: SAT_SCHEME, value: 0 });
+  stadd({ name: 'Meters On', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 1 });
+  stadd({ name: 'UI Scale', min: 0.5, max: 2, quantized: false, items: [], value: 1.0 });
+  stadd({ name: 'Use OpenGL', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 1 });
+  stadd({ name: 'Gain Lock', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 0 });
+  stadd({ name: 'Show Meters', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 1 });
+  stadd({ name: 'Draw Curve', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 1 });
+  stadd({ name: 'Input Level', min: -24, max: 24, quantized: false, items: [], value: 0 });
+  stadd({ name: 'Output Level', min: -24, max: 24, quantized: false, items: [], value: 0 });
+  stadd({ name: 'Output Compensation', min: -24, max: 24, quantized: false, items: [], value: 0 });
+  stadd({ name: 'Output Level Select', min: 0, max: 1, quantized: true, items: SAT_OUTSEL, value: 0 });
+  stadd({ name: 'Clipper Drive Active', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 1 });
+  stadd({ name: 'Clipper Drive', min: 0, max: 24, quantized: false, items: [], value: 3 });
+  stadd({ name: 'Clipper Shape Active', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 1 });
+  stadd({ name: 'Clipper Shape', min: 0, max: 100, quantized: false, items: [], value: 0 });
+  stadd({ name: 'Clipper Detail Active', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 1 });
+  stadd({ name: 'Clipper Detail', min: 0, max: 100, quantized: false, items: [], value: 100 });
+  stadd({ name: 'Meter Selector', min: 0, max: SAT_METER.length - 1, quantized: true, items: SAT_METER, value: 0 });
+
   function dispOf(p) {
     if (p.items && p.items.length) return p.items[Math.max(0, Math.min(p.items.length - 1, Math.round(p.value - p.min)))];
     if (Math.abs(p.value) >= 100) return Math.round(p.value) + '';
@@ -319,6 +349,7 @@
   var hdelay = new AVC.HDelayController(services);
   var dbcomp = new AVC.DbCompController(services);
   var omnipressor = new AVC.OmnipressorController(services);
+  var saturate = new AVC.SaturateController(services);
   var mode = 'eq8', active = eq8;
 
   var screen = document.getElementById('screen');
@@ -338,9 +369,10 @@
     else if (m === 'hdelay') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'H-Delay Stereo'; state.device.index = 10; active = hdelay; loadParams(hd); }
     else if (m === 'dbcomp') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'dBComp'; state.device.index = 11; active = dbcomp; loadParams(db); }
     else if (m === 'omnipressor') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Omnipressor'; state.device.index = 12; active = omnipressor; loadParams(op); }
+    else if (m === 'saturate') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Newfangled Saturate'; state.device.index = 13; active = saturate; loadParams(st); }
     else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; loadParams([]); }
     document.querySelectorAll('#modeToggle button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
-    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', valhalla: 'Touchscreen — ValhallaRoom (MAIN/EARLY/LATE/RT pages)', valhallavv: 'Touchscreen — ValhallaVintageVerb (MAIN/DAMP/SHAPE pages)', blackhole: 'Touchscreen — Blackhole (MAIN/MOD pages + Kill/Freeze/HotSwitch)', hdelay: 'Touchscreen — H-Delay (6 fixed dials)', dbcomp: 'Touchscreen — dBComp (5 knobs + switches)', omnipressor: 'Touchscreen — Omnipressor (MAIN/IO pages + switch bar)', generic: 'Touchscreen — Generic (6 zones)' };
+    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', valhalla: 'Touchscreen — ValhallaRoom (MAIN/EARLY/LATE/RT pages)', valhallavv: 'Touchscreen — ValhallaVintageVerb (MAIN/DAMP/SHAPE pages)', blackhole: 'Touchscreen — Blackhole (MAIN/MOD pages + Kill/Freeze/HotSwitch)', hdelay: 'Touchscreen — H-Delay (6 fixed dials)', dbcomp: 'Touchscreen — dBComp (5 knobs + switches)', omnipressor: 'Touchscreen — Omnipressor (MAIN/IO pages + switch bar)', saturate: 'Touchscreen — Saturate (6 dials + Meter/OutMode/Lock bar)', generic: 'Touchscreen — Generic (6 zones)' };
     document.getElementById('screenTitle').textContent = titles[m] || titles.generic;
     var hints = {
       eq8: 'Tap top tabs = FREQ/GAIN/Q/GLOB (sets all 6 dials). Scroll a zone = that param for its band. Bottom-left = enable, bottom-right = cycle type (shift=prev); dial press = enable. ◀ ▶ (zones 1 & 6, middle row) paginate 1-6 / 2-7 / 3-8. GLOB: dial 1 = Output, dial 2 = Scale; the response graph fills the right.',
@@ -354,6 +386,7 @@
       hdelay: 'Fixed 6 dials = Mix · Delay (note division) · Feedback · HiPass · LoPass · PingPong. Scroll to adjust. Delay & PingPong are stepped — scroll, or tap their zone to cycle (shift-click = previous).',
       dbcomp: 'Dials 1-5 = Threshold · Compression · Output · HPF · Mix. Zone 6 = switches: tap top (or scroll dial 6) = Oversampling, tap bottom (or press dial 6) = Bypass.',
       omnipressor: 'Tap top tabs = MAIN / I/O (re-pages the 6 dials). MAIN = Threshold/Attack/Release/Function/Atten/GainLim; I/O = In·Out Gain/Level + Mix. Scroll a zone = that param; dial press = next page. Bottom bar: tap Bass / Meter (cycles) / SC / Line / Power.',
+      saturate: 'Fixed 6 dials = Input · Drive · Shape · Detail · Output · Out Comp. Scroll to adjust. Bottom bar: tap METER (Gain Curve/Waveform) / OUT MODE (Automatic/Manual) to cycle (shift-click = previous), LOCK to toggle Gain Lock.',
       generic: 'Scroll a zone to turn that dial. Click a zone to recenter.',
     };
     hint.textContent = hints[m] || hints.generic;
