@@ -77,3 +77,10 @@ AVC.registry.register({
   ctor: AVC.OmnipressorController,
   names: [/omnipressor/i, /eventide.*omnipressor/i],
 });
+
+// Newfangled Audio Saturate (spectral clipper / saturation) — matched by device
+// name. Anchored so it won't catch Ableton's native "Saturator" (class Saturator).
+AVC.registry.register({
+  ctor: AVC.SaturateController,
+  names: [/newfangled\s*saturate/i, /\bsaturate\b/i],
+});
