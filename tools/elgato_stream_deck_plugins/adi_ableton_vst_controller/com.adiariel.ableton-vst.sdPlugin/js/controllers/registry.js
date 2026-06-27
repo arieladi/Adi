@@ -84,3 +84,9 @@ AVC.registry.register({
   ctor: AVC.SaturateController,
   names: [/newfangled\s*saturate/i, /\bsaturate\b/i],
 });
+
+// RJ Studios SideMinder ME2 (dynamic stereo-width maximizer) — by device name.
+AVC.registry.register({
+  ctor: AVC.SideMinderController,
+  names: [/sideminder/i, /side\s*minder/i],
+});
