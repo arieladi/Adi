@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.5.5.0] — 2026-06-20
+
+### Added
+- **New predefined controller: Omnipressor** (Eventide dynamics — expander / gate
+  / compressor / limiter, VST3/AU). 16 params, paged like Blackhole:
+  - MAIN: Threshold · Attack · Release · Function (EXP↔COMP ratio) · Atten Limit ·
+    Gain Limit
+  - I/O: Input Gain · Output Gain · In Level · Out Level · Mix · Function
+  A full-width bottom bar holds the five switches — **Bass** (Norm/Cut) · **Meter**
+  (Input/Gain/Output, cycles) · **Sidechain** · **Line** (In/Out) · **Power**.
+  Params resolve by name; values via Ableton's `str_for_value`. Registered by
+  device name (`/omnipressor/i`). See docs/OMNIPRESSOR.md.
+
+### Changed
+- **`AVC.showVal` now passes through ratio strings** (e.g. `1:1`, `2:1`) in
+  addition to unit/label values, so Omnipressor's Function (and any ratio param)
+  mirrors Ableton exactly instead of falling back to a raw number. Additive — plain
+  numbers still fall back and unit strings are unchanged, so no effect on the other
+  controllers.
+
 ## [1.5.4.0] — 2026-06-20
 
 ### Added

@@ -236,6 +236,27 @@
   dbadd({ name: 'Parameter #6', min: 0, max: 1, quantized: false, items: [], value: 0 });
   dbadd({ name: 'Parameter #7', min: 0, max: 1, quantized: false, items: [], value: 0 });
 
+  // ---- Eventide Omnipressor mock — 11 knobs (paged) + 5 switches. ----
+  var OP_METER = ['Input', 'Gain', 'Output'];
+  var op = [], _opi = 0;
+  function opadd(o) { o.i = _opi++; op.push(o); return o; }
+  opadd({ name: 'Threshold', min: -60, max: 0, quantized: false, items: [], value: -20 });
+  opadd({ name: 'Attack', min: 0.1, max: 100, quantized: false, items: [], value: 10 });
+  opadd({ name: 'Release', min: 1, max: 1000, quantized: false, items: [], value: 100 });
+  opadd({ name: 'Function', min: -10, max: 10, quantized: false, items: [], value: 0 });
+  opadd({ name: 'Atten Limit', min: -30, max: 0, quantized: false, items: [], value: -30 });
+  opadd({ name: 'Gain Limit', min: 0, max: 30, quantized: false, items: [], value: 30 });
+  opadd({ name: 'Input Gain', min: -20, max: 20, quantized: false, items: [], value: 0 });
+  opadd({ name: 'Output Gain', min: -20, max: 20, quantized: false, items: [], value: 0 });
+  opadd({ name: 'In Level', min: -20, max: 20, quantized: false, items: [], value: 0 });
+  opadd({ name: 'Out Level', min: -20, max: 20, quantized: false, items: [], value: 0 });
+  opadd({ name: 'Mix', min: 0, max: 100, quantized: false, items: [], value: 100 });
+  opadd({ name: 'Bass Switch', min: 0, max: 1, quantized: true, items: ['Norm', 'Cut'], value: 0 });
+  opadd({ name: 'Meter Select', min: 0, max: 2, quantized: true, items: OP_METER, value: 1 });
+  opadd({ name: 'Sidechain Enable', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 0 });
+  opadd({ name: 'Line', min: 0, max: 1, quantized: true, items: ['In', 'Out'], value: 0 });
+  opadd({ name: 'Power', min: 0, max: 1, quantized: true, items: ['Off', 'On'], value: 1 });
+
   function dispOf(p) {
     if (p.items && p.items.length) return p.items[Math.max(0, Math.min(p.items.length - 1, Math.round(p.value - p.min)))];
     if (Math.abs(p.value) >= 100) return Math.round(p.value) + '';
@@ -297,6 +318,7 @@
   var blackhole = new AVC.BlackholeController(services);
   var hdelay = new AVC.HDelayController(services);
   var dbcomp = new AVC.DbCompController(services);
+  var omnipressor = new AVC.OmnipressorController(services);
   var mode = 'eq8', active = eq8;
 
   var screen = document.getElementById('screen');
@@ -315,9 +337,10 @@
     else if (m === 'blackhole') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Blackhole'; state.device.index = 9; active = blackhole; loadParams(bh); }
     else if (m === 'hdelay') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'H-Delay Stereo'; state.device.index = 10; active = hdelay; loadParams(hd); }
     else if (m === 'dbcomp') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'dBComp'; state.device.index = 11; active = dbcomp; loadParams(db); }
+    else if (m === 'omnipressor') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Omnipressor'; state.device.index = 12; active = omnipressor; loadParams(op); }
     else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; loadParams([]); }
     document.querySelectorAll('#modeToggle button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
-    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', valhalla: 'Touchscreen — ValhallaRoom (MAIN/EARLY/LATE/RT pages)', valhallavv: 'Touchscreen — ValhallaVintageVerb (MAIN/DAMP/SHAPE pages)', blackhole: 'Touchscreen — Blackhole (MAIN/MOD pages + Kill/Freeze/HotSwitch)', hdelay: 'Touchscreen — H-Delay (6 fixed dials)', dbcomp: 'Touchscreen — dBComp (5 knobs + switches)', generic: 'Touchscreen — Generic (6 zones)' };
+    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', valhalla: 'Touchscreen — ValhallaRoom (MAIN/EARLY/LATE/RT pages)', valhallavv: 'Touchscreen — ValhallaVintageVerb (MAIN/DAMP/SHAPE pages)', blackhole: 'Touchscreen — Blackhole (MAIN/MOD pages + Kill/Freeze/HotSwitch)', hdelay: 'Touchscreen — H-Delay (6 fixed dials)', dbcomp: 'Touchscreen — dBComp (5 knobs + switches)', omnipressor: 'Touchscreen — Omnipressor (MAIN/IO pages + switch bar)', generic: 'Touchscreen — Generic (6 zones)' };
     document.getElementById('screenTitle').textContent = titles[m] || titles.generic;
     var hints = {
       eq8: 'Tap top tabs = FREQ/GAIN/Q/GLOB (sets all 6 dials). Scroll a zone = that param for its band. Bottom-left = enable, bottom-right = cycle type (shift=prev); dial press = enable. ◀ ▶ (zones 1 & 6, middle row) paginate 1-6 / 2-7 / 3-8. GLOB: dial 1 = Output, dial 2 = Scale; the response graph fills the right.',
@@ -330,6 +353,7 @@
       blackhole: 'Tap top tabs = MAIN / MOD (re-pages the 6 dials). Scroll a zone = that param. Bottom bar: tap Kill / Freeze / HotSwitch to toggle, Tempo to cycle (Manual/Sync/Off). Dial press = next page.',
       hdelay: 'Fixed 6 dials = Mix · Delay (note division) · Feedback · HiPass · LoPass · PingPong. Scroll to adjust. Delay & PingPong are stepped — scroll, or tap their zone to cycle (shift-click = previous).',
       dbcomp: 'Dials 1-5 = Threshold · Compression · Output · HPF · Mix. Zone 6 = switches: tap top (or scroll dial 6) = Oversampling, tap bottom (or press dial 6) = Bypass.',
+      omnipressor: 'Tap top tabs = MAIN / I/O (re-pages the 6 dials). MAIN = Threshold/Attack/Release/Function/Atten/GainLim; I/O = In·Out Gain/Level + Mix. Scroll a zone = that param; dial press = next page. Bottom bar: tap Bass / Meter (cycles) / SC / Line / Power.',
       generic: 'Scroll a zone to turn that dial. Click a zone to recenter.',
     };
     hint.textContent = hints[m] || hints.generic;

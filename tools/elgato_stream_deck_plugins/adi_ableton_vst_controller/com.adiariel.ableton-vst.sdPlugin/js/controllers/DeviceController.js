@@ -40,7 +40,9 @@ AVC.STEP = 0.02;   // normalized parameter change per dial tick
 // fall back to the controller's own numeric format. Keeps the touchscreen showing
 // exactly what Ableton shows, never a reinvented number.
 AVC.showVal = function (disp, fallback) {
-  return (disp != null && /[a-zA-Z%]/.test(String(disp))) ? String(disp) : fallback;
+  // show Ableton's string when it carries a unit/label/symbol — letters, %, or a
+  // ratio colon (e.g. "1:1", "2:1" for Omnipressor's Function); else fall back.
+  return (disp != null && /[a-zA-Z%:]/.test(String(disp))) ? String(disp) : fallback;
 };
 
 AVC.DeviceController = function DeviceController(services) {
