@@ -287,6 +287,38 @@
   stadd({ name: 'Clipper Detail', min: 0, max: 100, quantized: false, items: [], value: 100 });
   stadd({ name: 'Meter Selector', min: 0, max: SAT_METER.length - 1, quantized: true, items: SAT_METER, value: 0 });
 
+  // ---- RJ Studios SideMinder ME2 mock — real Ableton Configure names (3-band
+  //      width maximizer, paged dials + global switch bar). The per-band Width-Out /
+  //      Limiter / Solo toggles and the bass/meter/advanced params are present to
+  //      prove the controller maps only the intended 18 dials + 6 global switches. ----
+  var SM_BANDS = ['1-Band', '2-Bands', '3-Bands'];
+  var SM_LINK = ['Independent', 'Relative', 'Ganged'];
+  var sm = [], _smi = 0;
+  function smadd(o) { o.i = _smi++; sm.push(o); return o; }
+  smadd({ name: '#Bands', min: 0, max: 2, quantized: true, items: SM_BANDS, value: 2 });
+  smadd({ name: 'BandLink', min: 0, max: 2, quantized: true, items: SM_LINK, value: 0 });
+  smadd({ name: 'LMXovr', min: 40, max: 1000, quantized: false, items: [], value: 300 });
+  smadd({ name: 'MHXovr', min: 1000, max: 16000, quantized: false, items: [], value: 3000 });
+  ['L', 'M', 'H'].forEach(function (b) {
+    smadd({ name: b + '-Width', min: 0, max: 200, quantized: false, items: [], value: 100 });
+    smadd({ name: b + '-Width Out', min: 0, max: 1, quantized: true, items: ['Out', 'On'], value: 1 });
+    smadd({ name: b + '-Limiter', min: 0, max: 1, quantized: true, items: ['Out', 'Limit'], value: 1 });
+    smadd({ name: b + '-Release', min: 0, max: 1, quantized: false, items: [], value: 0.5 });
+    smadd({ name: b + '-Ratio', min: 1, max: 20, quantized: false, items: [], value: 10 });
+    smadd({ name: b + '-Offset', min: -12, max: 12, quantized: false, items: [], value: 0 });
+    smadd({ name: b + '-Solo', min: 0, max: 1, quantized: true, items: ['Normal', 'Solo'], value: 0 });
+    smadd({ name: b + '-Trim', min: -12, max: 12, quantized: false, items: [], value: 0 });
+  });
+  smadd({ name: 'Bypass', min: 0, max: 1, quantized: true, items: ['Process', 'Bypass'], value: 0 });
+  smadd({ name: 'Output Mono', min: 0, max: 1, quantized: true, items: ['Stereo', 'Mono'], value: 0 });
+  smadd({ name: 'Norm/Delta', min: 0, max: 1, quantized: true, items: ['Normal', 'Delta'], value: 0 });
+  smadd({ name: 'ExtSC', min: 0, max: 1, quantized: true, items: ['Normal', 'Ext SC'], value: 0 });
+  smadd({ name: 'Advanced', min: 0, max: 1, quantized: true, items: ['Basic', 'Advanced'], value: 0 });
+  smadd({ name: 'Bass Mono', min: 0, max: 1, quantized: true, items: ['Stereo', 'BassMono'], value: 1 });
+  smadd({ name: 'B-Mono', min: 20, max: 200, quantized: false, items: [], value: 90 });
+  smadd({ name: 'Cmeter', min: 0, max: 1, quantized: true, items: ['Input', 'Output'], value: 1 });
+  smadd({ name: 'IO Trim', min: -12, max: 12, quantized: false, items: [], value: 0 });
+
   function dispOf(p) {
     if (p.items && p.items.length) return p.items[Math.max(0, Math.min(p.items.length - 1, Math.round(p.value - p.min)))];
     if (Math.abs(p.value) >= 100) return Math.round(p.value) + '';
@@ -350,6 +382,7 @@
   var dbcomp = new AVC.DbCompController(services);
   var omnipressor = new AVC.OmnipressorController(services);
   var saturate = new AVC.SaturateController(services);
+  var sideminder = new AVC.SideMinderController(services);
   var mode = 'eq8', active = eq8;
 
   var screen = document.getElementById('screen');
@@ -370,9 +403,10 @@
     else if (m === 'dbcomp') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'dBComp'; state.device.index = 11; active = dbcomp; loadParams(db); }
     else if (m === 'omnipressor') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Omnipressor'; state.device.index = 12; active = omnipressor; loadParams(op); }
     else if (m === 'saturate') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'Newfangled Saturate'; state.device.index = 13; active = saturate; loadParams(st); }
+    else if (m === 'sideminder') { state.device.controller = 'generic'; state.device.class_name = 'PluginDevice'; state.device.name = 'SideMinderME2'; state.device.index = 14; active = sideminder; loadParams(sm); }
     else { state.device.controller = 'generic'; state.device.class_name = 'Wavetable'; state.device.name = 'Wavetable'; state.device.index = 1; active = generic; loadParams([]); }
     document.querySelectorAll('#modeToggle button').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
-    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', valhalla: 'Touchscreen — ValhallaRoom (MAIN/EARLY/LATE/RT pages)', valhallavv: 'Touchscreen — ValhallaVintageVerb (MAIN/DAMP/SHAPE pages)', blackhole: 'Touchscreen — Blackhole (MAIN/MOD pages + Kill/Freeze/HotSwitch)', hdelay: 'Touchscreen — H-Delay (6 fixed dials)', dbcomp: 'Touchscreen — dBComp (5 knobs + switches)', omnipressor: 'Touchscreen — Omnipressor (MAIN/IO pages + switch bar)', saturate: 'Touchscreen — Saturate (6 dials + Meter/OutMode/Lock bar)', generic: 'Touchscreen — Generic (6 zones)' };
+    var titles = { eq8: 'Touchscreen — EQ Eight (FREQ/GAIN/Q/GLOB dials)', pulsar: 'Touchscreen — Pulsar Massive (GAIN/FREQ/WIDTH dials, A-channel)', proq: 'Touchscreen — Pro-Q 3 (6 bands, multi-mode dials)', spectre: 'Touchscreen — Spectre (GAIN/FREQ/Q dials, named bands)', indeq: 'Touchscreen — INDEQ (6 knobs + 6 toggles)', valhalla: 'Touchscreen — ValhallaRoom (MAIN/EARLY/LATE/RT pages)', valhallavv: 'Touchscreen — ValhallaVintageVerb (MAIN/DAMP/SHAPE pages)', blackhole: 'Touchscreen — Blackhole (MAIN/MOD pages + Kill/Freeze/HotSwitch)', hdelay: 'Touchscreen — H-Delay (6 fixed dials)', dbcomp: 'Touchscreen — dBComp (5 knobs + switches)', omnipressor: 'Touchscreen — Omnipressor (MAIN/IO pages + switch bar)', saturate: 'Touchscreen — Saturate (6 dials + Meter/OutMode/Lock bar)', sideminder: 'Touchscreen — SideMinder ME2 (WIDTH/LIMIT/TRIM pages + global bar)', generic: 'Touchscreen — Generic (6 zones)' };
     document.getElementById('screenTitle').textContent = titles[m] || titles.generic;
     var hints = {
       eq8: 'Tap top tabs = FREQ/GAIN/Q/GLOB (sets all 6 dials). Scroll a zone = that param for its band. Bottom-left = enable, bottom-right = cycle type (shift=prev); dial press = enable. ◀ ▶ (zones 1 & 6, middle row) paginate 1-6 / 2-7 / 3-8. GLOB: dial 1 = Output, dial 2 = Scale; the response graph fills the right.',
@@ -387,6 +421,7 @@
       dbcomp: 'Dials 1-5 = Threshold · Compression · Output · HPF · Mix. Zone 6 = switches: tap top (or scroll dial 6) = Oversampling, tap bottom (or press dial 6) = Bypass.',
       omnipressor: 'Tap top tabs = MAIN / I/O (re-pages the 6 dials). MAIN = Threshold/Attack/Release/Function/Atten/GainLim; I/O = In·Out Gain/Level + Mix. Scroll a zone = that param; dial press = next page. Bottom bar: tap Bass / Meter (cycles) / SC / Line / Power.',
       saturate: 'Fixed 6 dials = Input · Drive · Shape · Detail · Output · Out Comp. Scroll to adjust. Bottom bar: tap METER (Gain Curve/Waveform) / OUT MODE (Automatic/Manual) to cycle (shift-click = previous), LOCK to toggle Gain Lock.',
+      sideminder: 'Tap top tabs = WIDTH / LIMIT / TRIM (re-pages the 6 dials). WIDTH = L/M/H Width + LM/MH crossovers + I/O Trim; LIMIT = L/M/H Release + Ratio; TRIM = L/M/H Side-Mid Offset + Level Trim. Scroll a zone = that param (crossovers are log); dial press = next page. Bottom bar: tap BANDS / LINK (cycle, shift=prev) · MONO / DELTA / EXT SC / BYPASS (toggle).',
       generic: 'Scroll a zone to turn that dial. Click a zone to recenter.',
     };
     hint.textContent = hints[m] || hints.generic;

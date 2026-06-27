@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.5.8.0] — 2026-06-27
+
+### Added
+- **New predefined controller: SideMinder ME2** (RJ Studios — SideMinder
+  Mastering Edition, 3-band dynamic stereo-width maximizer, VST3/AU). The 6 dials
+  are **paged** (tap WIDTH / LIMIT / TRIM tabs, or press a dial, to advance):
+  - WIDTH: L-Width · M-Width · H-Width · LM Xover · MH Xover · I/O Trim
+  - LIMIT: L-Release · M-Release · H-Release · L-Ratio · M-Ratio · H-Ratio
+  - TRIM:  L-Offset · M-Offset · H-Offset · L-Trim · M-Trim · H-Trim
+  (L/M/H = Low/Mid/High band; Width = Static Width Adjust %, Offset = Side-Mid
+  Offset.) Crossovers nudge geometrically (`delta_log_index`), everything else
+  linearly (`delta_index`). A full-width bottom bar holds the globals — **BANDS**
+  (#Bands 1/2/3, cycles) · **LINK** (Control Link Indep/Relative/Ganged, cycles) ·
+  **MONO** (Output Mono) · **DELTA** (Output Delta) · **EXT SC** · **BYPASS**.
+  Params resolve by name with anchored regex (e.g. `^l width$`, `(?! out)`-guarded
+  so the per-band `…-Width Out` toggles are never grabbed) + fallbacks +
+  `OVERRIDES`; values via Ableton's `str_for_value`. The per-band Width-Out /
+  Limiter / Solo toggles and the Bass-Narrow/Bass-Mono/meter/Advanced controls are
+  left to the GUI. Registered by device name (`/sideminder/i`). See
+  docs/SIDEMINDER.md.
+
 ## [1.5.7.0] — 2026-06-27
 
 ### Added
