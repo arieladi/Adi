@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.6.0] — 2026-06-20
+
+### Changed
+- **Handoff docs brought current to v1.5.5.0.** Updated `../HANDOFF.md` (project-
+  wide) and `docs/HANDOFF.md` (VST detail): parameter-verification status is now
+  ✅ ALL VERIFIED (11 predefined controllers across EQ / reverb / delay / dynamics
+  + Generic), with the established layout patterns, the `AVC.showVal` ratio/unit
+  behaviour, the load-order list (incl. the six new controllers), the "serve the
+  demo from the plugin root" note, and the dev-env permissions/verify-loop notes.
+  Documentation only — no code changes.
+
 ## [1.5.5.0] — 2026-06-20
 
 ### Added

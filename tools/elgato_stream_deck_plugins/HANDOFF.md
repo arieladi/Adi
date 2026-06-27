@@ -25,7 +25,7 @@ focus is the Ableton VST controller, but all four are active.
 
 | Folder | Name | Ver | Type | Status |
 |--------|------|-----|------|--------|
-| `adi_ableton_vst_controller` | Adi Ableton VST Controller | 1.4.2.0 | HTML/CEF + Python Remote Script | **main**, active |
+| `adi_ableton_vst_controller` | Adi Ableton VST Controller | 1.5.5.0 | HTML/CEF + Python Remote Script | **main**, active — 11 predefined controllers, all verified |
 | `adi_visualizers_and_meters` | Adi Visualizers & Meters | 1.0.0.0 | HTML/CEF (Web Audio) | complete, can extend |
 | `com.adiariel.console.sdPlugin` | Adi Ariel Console | 1.0.0.0 | Node (`@elgato/streamdeck`) | bundled, runs as-is |
 | `midi_control` | Adi Ariel MIDI Control | 1.1.0.0 | HTML/CEF + native C++ helper | mac done, Windows binary pending |
@@ -47,27 +47,40 @@ touching this plugin. In brief:
   device-name regex / hint. Adding a predefined VST is a documented recipe (see
   the detailed handoff §6).
 
-### ⚠️ Parameter-verification status (IMPORTANT — open work)
+### Parameter-verification status — ✅ ALL VERIFIED (v1.5.5.0)
 
-Predefined controllers resolve Ableton params **by name**. Two were verified
-against the user's real Ableton "Configure" screenshots; three were written from
-best-guess names and **need the user's real values** before they can be trusted:
+Predefined controllers resolve Ableton params **by name** (anchored regex like
+`/^band 1 gain a$/` + looser fallbacks + an `OVERRIDES` map; unresolved roles are
+logged; every value shown via Ableton's `str_for_value` through `AVC.showVal`).
+All 11 were built/verified against the user's real Ableton "Configure" screenshots:
 
-| Controller | Param names | Status |
-|-----------|-------------|--------|
-| ProQ3Controller (FabFilter Pro-Q 3) | verified vs real Configure | ✅ correct |
-| IndeqController (Analog Obsession INDEQ) | verified vs real Configure | ✅ correct |
-| **EQ8Controller** (Ableton EQ Eight) | guessed (`"<n> Frequency A"`, etc. in `live_bridge._BAND_RE`) | ⚠️ needs real values |
-| **PulsarMassiveController** (Pulsar Massive) | guessed role match patterns | ⚠️ needs real values |
-| **SpectreController** (Wavesfactory Spectre) | guessed role match patterns | ⚠️ needs real values |
+| Controller | Plugin | Type | Layout | Ver |
+|-----------|--------|------|--------|-----|
+| ProQ3Controller | FabFilter Pro-Q 3 | EQ | per-band, FREQ/GAIN/Q multi-mode | (prior) |
+| IndeqController | Analog Obsession INDEQ | EQ | fixed 6 dials + 6 toggles | (prior) |
+| EQ8Controller | Ableton EQ Eight (native) | EQ | FREQ/GAIN/Q/GLOB modes + graph | 1.4.3.0 |
+| PulsarMassiveController | Pulsar Massive (A-channel) | EQ | GAIN/FREQ/WIDTH modes | 1.4.4.0 |
+| SpectreController | Wavesfactory Spectre | EQ | GAIN/FREQ/Q modes, named bands | 1.4.5.0 |
+| ValhallaRoomController | Valhalla ValhallaRoom | reverb | paged MAIN/EARLY/LATE/RT + Mode/Preset bar | 1.5.0.0 |
+| ValhallaVintageVerbController | Valhalla VintageVerb | reverb | paged MAIN/DAMP/SHAPE + ReverbMode/Color bar | 1.5.1.0 |
+| BlackholeController | Eventide Blackhole | reverb | paged MAIN/MOD + Kill/Freeze/HotSwitch/Tempo bar | 1.5.2.0 |
+| HDelayController | Waves H-Delay | delay | fixed 6 dials (Delay/PingPong stepped) | 1.5.3.0 |
+| DbCompController | Analog Obsession dBComp | comp | 5 knobs + Oversampling/Bypass switch zone | 1.5.4.0 |
+| OmnipressorController | Eventide Omnipressor | dynamics | paged MAIN/I/O + Bass/Meter/SC/Line/Power bar | 1.5.5.0 |
 
-To fix each: get the plugin GUI + Ableton Configure screenshots, correct the role
-match names (and per-band/param availability rules), update the demo mock + docs,
-re-verify, bump version, commit. Same process used for Pro-Q 3 and INDEQ.
+**Layout patterns** (reuse for new controllers): EQ → per-band zones + multi-mode
+dial tabs; reverb/large → paged dials (tap tabs / press dial to advance) + a
+full-width bottom switch bar; small Configured set (delay/comp) → fixed 6-dial with
+stepped params on turn/tap; dynamics → paged + multi-cell switch bar.
 
-Note EQ Eight is a **native** Live device using its own bridge messages
-(`eq8`/`eq8_band`/`eq8_state`) and the `_BAND_RE` regex in `live_bridge.py` — its
-fix touches the Python side, not just a JS controller.
+EQ Eight is the only **native** device — it uses its own bridge messages
+(`eq8` / `eq8_band` / `eq8_globals`) + the `_BAND_RE` regex in `live_bridge.py`,
+not the named channel; its server side gained Output Gain/Scale globals and
+per-band gain/Q commands in v1.4.3.0.
+
+`AVC.showVal(disp, fallback)` shows Ableton's string when it has a letter, `%`, or
+`:` (ratios, e.g. Omnipressor Function `1:1`); else the numeric fallback — so
+UNITLESS params (Blackhole Gravity, dBComp Compression) display the raw value.
 
 ---
 
@@ -126,8 +139,17 @@ port and synthesizes keystrokes (the plugin's sandbox can't). See its detailed
 
 ## 6. Open work across the project
 
-1. **VST controller — fix guessed parameter values** for EQ Eight, Pulsar Massive,
-   Spectre (the user will supply Ableton Configure screenshots, per-plugin).
+1. **VST controller — add more predefined controllers** as the user sends plugin
+   GUI + Ableton Configure screenshots (per-plugin process; detailed handoff §6).
+   All 11 current controllers are verified. Next version: 1.5.6.0+.
 2. **midi_control — build + commit the Windows helper `.exe`** (user, on Windows).
 3. (Optional) add `validate.py` to the console plugin; package `.streamDeckPlugin`
    builds; per-plugin feature work.
+
+**Permissions (dev env):** `~/.claude/settings.json` has a tool-level allow-list
+(Bash/Edit/Write/Read + the Claude_Preview MCP tools) so the desktop app stops
+prompting, plus a `deny` on `Bash(git push:*)` backstopping the never-push rule.
+
+**Demo:** serve from the PLUGIN ROOT — `cd adi_ableton_vst_controller &&
+python3 -m http.server 8000` → `http://localhost:8000/demo/index.html`. Serving
+from `demo/`, or opening the file directly, breaks the `../` controller paths.

@@ -1,6 +1,7 @@
 # Handoff — Adi Ableton VST Controller (state + how to extend)
 
-Snapshot for continuing development in a fresh session. Current version **1.4.2.0**.
+Snapshot for continuing development in a fresh session. Current version **1.5.5.0**
+(11 predefined controllers, all verified against real Ableton Configure screenshots).
 
 ## 0. Repo + ground rules
 
@@ -56,9 +57,11 @@ adi_ableton_vst_controller/
 │   │   └── controllers/
 │   │       ├── DeviceController.js  base Strategy + AVC.gfx + AVC.STEP + AVC.showVal + AVC.registry
 │   │       ├── GenericController.js first 6 non-quantized params
-│   │       ├── EQ8Controller.js     native "Eq8" (split-screen graph)
-│   │       ├── PulsarMassiveController.js / ProQ3Controller.js / SpectreController.js / IndeqController.js
-│   │       └── registry.js          registers all controllers
+│   │       ├── EQ8Controller.js     native "Eq8" (FREQ/GAIN/Q/GLOB modes + graph)
+│   │       ├── PulsarMassiveController.js ProQ3Controller.js SpectreController.js IndeqController.js
+│   │       ├── ValhallaRoomController.js ValhallaVintageVerbController.js BlackholeController.js
+│   │       ├── HDelayController.js DbCompController.js OmnipressorController.js
+│   │       └── registry.js          registers all 11 + Generic
 │   ├── pi/ inspector.html|js, sdpi.css      Property Inspector (key role, dial slot, bridge port)
 │   ├── layouts/dial.json                    encoder touchscreen layout (one pixmap "full" 200×100)
 │   └── imgs/                                 generated icons
@@ -70,12 +73,16 @@ adi_ableton_vst_controller/
 ├── ableton/max_for_live/       M4L alternative (placeholder)
 ├── demo/                       hardware-free browser preview (mock bridge) — index.html, demo.js, styles.css
 ├── scripts/ gen_icons.py validate.py install-{mac,windows} pack.{sh,ps1}
-└── docs/ PROTOCOL ARCHITECTURE ABLETON_SETUP PROQ3 SPECTRE INDEQ PULSAR_MASSIVE HANDOFF
+└── docs/ PROTOCOL ARCHITECTURE ABLETON_SETUP HANDOFF + per-controller:
+         PROQ3 INDEQ EQ8 PULSAR_MASSIVE SPECTRE VALHALLA_ROOM VALHALLA_VINTAGE_VERB
+         BLACKHOLE H_DELAY DBCOMP OMNIPRESSOR
 ```
 
 `app.html` load order (matters; each augments `window.AVC`):
 sd-client → bridge → DeviceController → Generic → EQ8 → PulsarMassive → ProQ3 →
-Spectre → Indeq → registry → touchscreen → keys → plugin.
+Spectre → Indeq → ValhallaRoom → ValhallaVintageVerb → Blackhole → HDelay →
+DbComp → Omnipressor → registry → touchscreen → keys → plugin.
+(New controllers go after DeviceController, before registry, in BOTH app.html AND demo/index.html.)
 
 ## 4. The named-parameter bridge channel (THE reusable mechanism)
 
@@ -176,17 +183,27 @@ params exist and their exact names — only Configured params are controllable.
 5. Confirm no registry regressions (other VSTs still resolve), all-LF, no console errors.
 6. Bump version, commit scoped (no push), tell the user to push.
 
-## 8. Current predefined controllers (reference implementations)
+## 8. Current predefined controllers (11, all verified — v1.5.5.0)
 
-- **EQ8Controller** — native Ableton EQ Eight (`class_name "Eq8"`); split-screen
-  freq-response graph + band controls + pagination. Uses its own bridge messages
-  (`eq8`, `eq8_band`, `eq8_state`) + EQ8-specific commands, not the named channel.
-- **PulsarMassiveController** — Pulsar Massive (MP.EQ), stereo-linked (L only).
-- **ProQ3Controller** — FabFilter Pro-Q 3; real Shape/Slope/Stereo switches +
-  shape-aware FREQ/GAIN/Q dial modes (needs Configure to expose those params).
-- **SpectreController** — Wavesfactory Spectre; 5 bands + dial 6 = dynamic Q that
-  follows the last-touched band (`activeBand`).
-- **IndeqController** — Analog Obsession INDEQ; fixed 6 dials + 6 toggles.
+Status table + versions in `../HANDOFF.md` §2. By family:
+- **EQs:** EQ8 (native; own `eq8`/`eq8_band`/`eq8_globals` msgs + `_BAND_RE`;
+  FREQ/GAIN/Q/GLOB dial modes), Pulsar Massive (A-channel only; GAIN/FREQ/WIDTH),
+  Spectre (named bands LowShelf/Peak 01-03/HighShelf; GAIN/FREQ/Q), plus prior
+  ProQ3 (shape-aware FREQ/GAIN/Q) and INDEQ (fixed 6 + toggles).
+- **Reverbs:** ValhallaRoom (MAIN/EARLY/LATE/RT pages + Mode/Preset bar),
+  ValhallaVintageVerb (MAIN/DAMP/SHAPE + ReverbMode/ColorMode bar), Blackhole
+  (MAIN/MOD + Kill/Freeze/HotSwitch/TempoSync bar).
+- **Delay:** HDelay (fixed 6 dials; Delay note-division + PingPong stepped).
+- **Dynamics:** dBComp (5 knobs + Oversampling/Bypass switch zone), Omnipressor
+  (MAIN/I/O pages + Bass/Meter/SC/Line/Power bar).
+
+Resolution uses **anchored regex** (`/^band 1 gain a$/`) + looser fallbacks +
+`OVERRIDES` (so Pulsar resolves only the A-channel, Spectre's named bands resolve
+exactly). `AVC.showVal` shows Ableton's string when it has a letter, `%`, or `:`
+(ratios like Omnipressor `1:1`); else a numeric fallback (unitless params show the
+raw value). Layout patterns: EQ → per-band zones + multi-mode dial tabs;
+reverb/large → paged dials (tap tabs / press dial) + bottom switch bar; small
+Configured set → fixed 6-dial; dynamics → paged + multi-switch bar.
 
 ## 9. Ableton bridge install (for runtime testing)
 
@@ -195,3 +212,19 @@ Copy `ableton/remote_script/AdiVST` to Live's User Library Remote Scripts
 Control Surface. Port 9006 (matches `PORT` in `AdiVST.py` and the PI). The user
 runs this; the dev environment can't run Ableton, so LOM code is verified against
 documented APIs + the user's screenshots, and tuned in-Live by the user.
+
+## 10. Demo & dev-env notes
+
+- **Run the demo from the PLUGIN ROOT** (it loads the real controllers via
+  `../com.adiariel.ableton-vst.sdPlugin/js/…`): `python3 -m http.server 8000` from
+  `adi_ableton_vst_controller/`, then open `http://localhost:8000/demo/index.html`.
+  Opening the file directly (`file://`) or serving from `demo/` breaks the `../`
+  paths → blank, unstyled page.
+- **Permissions (dev env):** `~/.claude/settings.json` has a tool-level allow-list
+  (Bash/Edit/Write/Read + the Claude_Preview MCP tools) so the desktop app stops
+  prompting, plus a `deny` on `Bash(git push:*)` backstopping the never-push rule.
+- **Verify-loop gotcha:** the Claude Preview MCP browser caches JS aggressively —
+  when re-testing an edited controller/registry, hot-reload it with a
+  `?v=` + Math.random() query so you don't get the stale copy.
+- `scripts/validate.py` checks a SUBSET of JS files (not every controller); the
+  real load path is `app.html`, which the headless-load step covers.
