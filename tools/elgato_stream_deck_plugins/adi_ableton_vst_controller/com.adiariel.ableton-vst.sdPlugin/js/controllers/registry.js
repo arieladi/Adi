@@ -71,3 +71,9 @@ AVC.registry.register({
   ctor: AVC.DbCompController,
   names: [/\bd[bB]\s*comp\b/i, /analog\s*obsession.*comp/i],
 });
+
+// Eventide Omnipressor (dynamics) — matched by device name.
+AVC.registry.register({
+  ctor: AVC.OmnipressorController,
+  names: [/omnipressor/i, /eventide.*omnipressor/i],
+});
