@@ -1,0 +1,22 @@
+{
+  "name": "com.adiariel.rekordbox",
+  "version": "1.0.0",
+  "description": "Adi Ariel RekordBox MIDI - class-compliant virtual MIDI controller for rekordbox PERFORMANCE mode on the Stream Deck + XL (dual-deck hot cues + shift layer, transport, jog nudge, browser, volume/filter/BPM dials, beat-jump touch strip).",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "rollup -c",
+    "watch": "rollup -c -w",
+    "vendor": "node scripts/vendor.mjs",
+    "smoke": "node scripts/midi_smoke.mjs"
+  },
+  "dependencies": {
+    "@elgato/streamdeck": "^1.0.0",
+    "easymidi": "^3.2.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^25.0.0",
+    "@rollup/plugin-node-resolve": "^15.2.3",
+    "rollup": "^4.9.0"
+  }
+}

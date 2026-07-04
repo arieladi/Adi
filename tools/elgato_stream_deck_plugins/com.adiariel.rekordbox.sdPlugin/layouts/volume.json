@@ -1,0 +1,94 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/layout.json",
+  "id": "rbvolume",
+  "items": [
+    {
+      "key": "title",
+      "type": "text",
+      "rect": [
+        0,
+        2,
+        200,
+        18
+      ],
+      "font": {
+        "size": 13,
+        "weight": 600
+      },
+      "alignment": "center",
+      "color": "#ff8d8d",
+      "value": "VOL"
+    },
+    {
+      "key": "indicator",
+      "type": "bar",
+      "rect": [
+        12,
+        30,
+        176,
+        24
+      ],
+      "value": 100,
+      "range": {
+        "min": 0,
+        "max": 127
+      },
+      "subtype": 0,
+      "border_w": 1,
+      "bar_bg_c": "#1b1e23",
+      "bar_border_c": "#3a3f46",
+      "bar_fill_c": "#ff5d5d"
+    },
+    {
+      "key": "value",
+      "type": "text",
+      "rect": [
+        0,
+        60,
+        200,
+        32
+      ],
+      "font": {
+        "size": 22,
+        "weight": 700
+      },
+      "alignment": "center",
+      "color": "#ffffff",
+      "value": "100%"
+    },
+    {
+      "key": "hintl",
+      "type": "text",
+      "rect": [
+        2,
+        76,
+        40,
+        20
+      ],
+      "font": {
+        "size": 12,
+        "weight": 600
+      },
+      "alignment": "center",
+      "color": "#5f6368",
+      "value": "◀"
+    },
+    {
+      "key": "hintr",
+      "type": "text",
+      "rect": [
+        158,
+        76,
+        40,
+        20
+      ],
+      "font": {
+        "size": 12,
+        "weight": 600
+      },
+      "alignment": "center",
+      "color": "#5f6368",
+      "value": "▶"
+    }
+  ]
+}

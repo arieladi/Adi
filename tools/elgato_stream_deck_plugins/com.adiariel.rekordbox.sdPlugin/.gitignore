@@ -1,0 +1,8 @@
+# Root node_modules only — vendor/node_modules IS committed (prebuilt natives).
+/node_modules/
+*.streamDeckPlugin
+*.log
+/logs/
+npm-debug.log*
+.DS_Store
+Thumbs.db

@@ -1,0 +1,11 @@
+# Normalize all text files to LF so Windows checkouts don't introduce CRLF
+* text=auto eol=lf
+
+# Binary assets — never touch
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.node binary
+*.streamDeckProfile binary
+*.streamDeckPlugin binary
