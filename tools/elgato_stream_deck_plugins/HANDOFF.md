@@ -1,8 +1,8 @@
 # Elgato Stream Deck Plugins — Project Handoff
 
 Project-wide handoff for `~/Documents/GitHub/Adi/tools/elgato_stream_deck_plugins/`.
-Covers all four plugins, shared conventions, and what's left to do. The main
-focus is the Ableton VST controller, but all four are active.
+Covers all five plugins, shared conventions, and what's left to do. The main
+focus is the Ableton VST controller, but all five are active.
 
 ## 0. Ground rules (apply to every plugin)
 
@@ -21,7 +21,7 @@ focus is the Ableton VST controller, but all four are active.
   param names / device specifics, the **user's Ableton "Configure" screenshots are
   ground truth.**
 
-## 1. The four plugins
+## 1. The five plugins
 
 | Folder | Name | Ver | Type | Status |
 |--------|------|-----|------|--------|
@@ -29,6 +29,7 @@ focus is the Ableton VST controller, but all four are active.
 | `adi_visualizers_and_meters` | Adi Visualizers & Meters | 1.0.0.0 | HTML/CEF (Web Audio) | complete, can extend |
 | `com.adiariel.console.sdPlugin` | Adi Ariel Console | 1.0.0.0 | Node (`@elgato/streamdeck`) | bundled, runs as-is |
 | `midi_control` | Adi Ariel MIDI Control | 1.1.0.0 | HTML/CEF + native C++ helper | mac done, Windows binary pending |
+| `com.adiariel.rekordbox.sdPlugin` | Adi Ariel RekordBox MIDI | 1.0.0.0 | Node (`@elgato/streamdeck` 1.4.x) + vendored MIDI natives | complete; verified headless (validate + 19-msg MIDI loopback) |
 
 ---
 
@@ -137,13 +138,46 @@ port and synthesizes keystrokes (the plugin's sandbox can't). See its detailed
 - To continue: edit `plugin.js` (UI/MIDI logic) and/or `main.cpp` (native); rebuild
   the helper only if `main.cpp` changed.
 
+## 5b. com.adiariel.rekordbox.sdPlugin
+
+Class-compliant **virtual MIDI controller for rekordbox PERFORMANCE mode** on the
+Stream Deck **+ XL** (device type 13 — 9×4 keys, 6 dials, 1200×100 strip = six
+200×100 touch zones). Node plugin like the console one (rollup `src/` →
+committed `bin/plugin.js`), plus a **committed `vendor/node_modules`** carrying
+easymidi → `@julusian/midi` prebuilt N-API 7 binaries (darwin-arm64/x64,
+win32-x64/arm64) loaded via `createRequire(vendor/_resolve_.cjs)` — end users
+never compile. macOS creates the virtual port "Adi RekordBox Controller";
+Windows attaches to a loopMIDI port (RtMidi can't create virtual ports there —
+and fails silently, hence the explicit platform branch + retry loop).
+
+- Control matrix in `src/midimap.js` (Ch1=Deck A, Ch2=Deck B, Ch3=browser):
+  hot cues 16-23 / delete 24-31 (local **shift layer**, 2 shift keys), play/cue
+  + shifted variants, held nudge notes, load-on-volume-push, beat jump 40/41
+  from touch taps, browse 50-52; absolute 7-bit CC 20/21/22 = volume/filter/
+  tempo with per-deck accumulators shown on the LCD (layouts/*.json bar/gbar).
+- README has the full MIDI chart **incl. type-in-able 4-digit hex codes**, the
+  rekordbox 7 MIDI-LEARN walkthrough and pitfalls (⚠ MIDI LEARN needs Core plan
+  or Hardware Unlock — "Free Plus" does NOT include it; TempoSlider Type must
+  be switched 14-bit→7-bit; nudge = PitchBendUp/Down, CSV-import fallback).
+- Gotcha discovered building it: in `@elgato/streamdeck` **1.4.x**
+  `onDidReceiveSettings` lives on `streamDeck.settings`, NOT
+  `streamDeck.actions` (console plugin's src targets an older 1.x — its
+  committed bundle still runs, but it will break if rebuilt against 1.4.x).
+- Manifest needs Stream Deck app **7.3+** (first with device type 13 profiles).
+- Verify: `python3 scripts/validate.py`, `npm run smoke` (real virtual-port
+  loopback, 19 messages, mac/linux), `node bin/plugin.js` must fail only with
+  the "missing -port/-pluginUUID" registration error.
+
 ## 6. Open work across the project
 
 1. **VST controller — add more predefined controllers** as the user sends plugin
    GUI + Ableton Configure screenshots (per-plugin process; detailed handoff §6).
    All 11 current controllers are verified. Next version: 1.5.6.0+.
 2. **midi_control — build + commit the Windows helper `.exe`** (user, on Windows).
-3. (Optional) add `validate.py` to the console plugin; package `.streamDeckPlugin`
+3. **rekordbox plugin — on-hardware pass** (user): export the `AdiRekordBox`
+   profile into the plugin root, map in rekordbox per the README chart (needs
+   Core plan or Hardware Unlock), verify loopMIDI flow on Windows.
+4. (Optional) add `validate.py` to the console plugin; package `.streamDeckPlugin`
    builds; per-plugin feature work.
 
 **Permissions (dev env):** `~/.claude/settings.json` has a tool-level allow-list
