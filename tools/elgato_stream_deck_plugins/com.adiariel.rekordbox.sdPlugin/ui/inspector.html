@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Adi Ariel RekordBox MIDI</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { font: 13px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif; color: #d7d8db; background: #2d2d2d; margin: 0; padding: 12px; }
+    .row { display: flex; align-items: center; margin-bottom: 10px; }
+    .lbl { flex: 0 0 110px; text-align: right; padding-right: 10px; color: #9aa0a6; }
+    .ctl { flex: 1; }
+    select, input[type=text] { width: 100%; padding: 5px 6px; background: #3d3d3d; color: #fff; border: 1px solid #4a4a4a; border-radius: 4px; box-sizing: border-box; }
+    .muted { color: #8a8d91; }
+    .hint { font-size: 11px; color: #8a8d91; margin: 2px 0 10px 120px; }
+    hr { border: 0; border-top: 1px solid #444; margin: 12px 0; }
+  </style>
+</head>
+<body>
+  <div id="wrap"></div>
+  <hr>
+  <div id="globalwrap"></div>
+  <script>
+    let ws, uuid, actionUUID, settings = {}, globalSettings = {}, gotGlobals = false;
+
+    function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, actionInfo) {
+      uuid = inUUID;
+      const ai = JSON.parse(actionInfo);
+      actionUUID = ai.action;
+      settings = (ai.payload && ai.payload.settings) || {};
+      ws = new WebSocket("ws://127.0.0.1:" + port);
+      ws.onopen = function () {
+        ws.send(JSON.stringify({ event: registerEvent, uuid: inUUID }));
+        ws.send(JSON.stringify({ event: "getGlobalSettings", context: inUUID }));
+        render();
+      };
+      ws.onmessage = function (msg) {
+        const ev = JSON.parse(msg.data);
+        if (ev.event === "didReceiveGlobalSettings") {
+          globalSettings = (ev.payload && ev.payload.settings) || {};
+          gotGlobals = true;
+          // The plugin also writes global settings (debounced dial-level saves),
+          // which echoes this event — don't rebuild the field mid-edit or when
+          // the shown value is already current, or typing gets wiped.
+          const inp = document.getElementById('portname');
+          const port = globalSettings.portName || 'Adi RekordBox Controller';
+          if (inp && (document.activeElement === inp || inp.value === port)) return;
+          renderGlobal();
+        }
+      };
+    }
+
+    function save() {
+      ws.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
+    }
+    function saveGlobal() {
+      // Preserve unknown keys (the plugin stores encoder levels here too).
+      ws.send(JSON.stringify({ event: "setGlobalSettings", context: uuid, payload: globalSettings }));
+    }
+
+    function field(label, html) {
+      return '<div class="row"><div class="lbl">' + label + '</div><div class="ctl">' + html + '</div></div>';
+    }
+    function esc(s) { // & first, then < and " — for attribute interpolation
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+    }
+    function sel(key, opts, val) {
+      return '<select data-key="' + key + '">' +
+        opts.map(function (o) {
+          return '<option value="' + o[0] + '"' + (String(val) === String(o[0]) ? ' selected' : '') + '>' + o[1] + '</option>';
+        }).join('') + '</select>';
+    }
+    const DECK = [['A', 'Deck A (left)'], ['B', 'Deck B (right)']];
+    function sensOpts(def) {
+      const o = [];
+      for (let i = 1; i <= 8; i++) o.push([String(i), String(i) + (i === def ? ' (default)' : '')]);
+      return o;
+    }
+
+    function render() {
+      const w = document.getElementById('wrap');
+      let h = '';
+
+      if (actionUUID === 'com.adiariel.rekordbox.hotcue') {
+        h += field('Deck', sel('deck', DECK, settings.deck || 'A'));
+        h += field('Hot cue', sel('slot', [1,2,3,4,5,6,7,8].map(function (n) { return [String(n), 'Hot Cue ' + n]; }), settings.slot || '1'));
+        h += '<div class="hint">Hold a Shift key to send the DELETE variant.</div>';
+      } else if (actionUUID === 'com.adiariel.rekordbox.transport') {
+        h += field('Deck', sel('deck', DECK, settings.deck || 'A'));
+        h += field('Role', sel('role', [['play', 'Play / Pause'], ['cue', 'CUE (master cue)']], settings.role || 'play'));
+        h += '<div class="hint">Shift sends the secondary MIDI note (map it in rekordbox).</div>';
+      } else if (actionUUID === 'com.adiariel.rekordbox.nudge') {
+        h += field('Deck', sel('deck', DECK, settings.deck || 'A'));
+        h += field('Direction', sel('direction', [['fwd', 'Nudge forward (+)'], ['back', 'Nudge backward (−)']], settings.direction || 'fwd'));
+        h += '<div class="hint">Held = sustained nudge (Note On while pressed), like leaning on the jog.</div>';
+      } else if (actionUUID === 'com.adiariel.rekordbox.browse') {
+        h += field('Role', sel('role', [['up', 'Scroll up'], ['down', 'Scroll down'], ['toggle', 'Tree ⇄ track list']], settings.role || 'down'));
+        h += '<div class="hint">Hold up/down to auto-repeat.</div>';
+      } else if (actionUUID === 'com.adiariel.rekordbox.volume') {
+        h += field('Deck', sel('deck', DECK, settings.deck || 'A'));
+        h += field('Sensitivity', sel('sens', sensOpts(3), settings.sens || '3'));
+        h += '<div class="hint">Push = load selected track to this deck. Touch tap = beat jump ◀/▶.</div>';
+      } else if (actionUUID === 'com.adiariel.rekordbox.filter') {
+        h += field('Deck', sel('deck', DECK, settings.deck || 'A'));
+        h += field('Sensitivity', sel('sens', sensOpts(2), settings.sens || '2'));
+        h += '<div class="hint">Push = snap to center (64). Touch tap = beat jump ◀/▶.</div>';
+      } else if (actionUUID === 'com.adiariel.rekordbox.tempo') {
+        h += field('Deck', sel('deck', DECK, settings.deck || 'A'));
+        h += field('Sensitivity', sel('sens', sensOpts(1), settings.sens || '1'));
+        h += '<div class="hint">Strictly BPM (tempo fader CC) — map WITHOUT key/pitch. Push is disabled on purpose.</div>';
+      } else if (actionUUID === 'com.adiariel.rekordbox.shift') {
+        h += '<p class="muted">Local shift modifier — sends no MIDI itself. While held, hot cues become DELETE and transport keys send their shifted note. You can place two of these (one per hand).</p>';
+      } else {
+        h += '<p class="muted">No settings for this action.</p>';
+      }
+
+      w.innerHTML = h;
+
+      w.querySelectorAll('select').forEach(function (el) {
+        el.addEventListener('change', function (e) { settings[e.target.dataset.key] = e.target.value; save(); });
+      });
+    }
+
+    function renderGlobal() {
+      const w = document.getElementById('globalwrap');
+      const port = globalSettings.portName || 'Adi RekordBox Controller';
+      let h = field('MIDI port', '<input type="text" id="portname" value="' + esc(port) + '">');
+      h += '<div class="hint">macOS: virtual port is created automatically with this name.<br>' +
+           'Windows: create a loopMIDI port with exactly this name; the plugin attaches to it.</div>';
+      w.innerHTML = h;
+      const inp = document.getElementById('portname');
+      inp.addEventListener('change', function () {
+        if (!gotGlobals) return;
+        globalSettings.portName = inp.value.trim() || 'Adi RekordBox Controller';
+        saveGlobal();
+      });
+    }
+  </script>
+</body>
+</html>

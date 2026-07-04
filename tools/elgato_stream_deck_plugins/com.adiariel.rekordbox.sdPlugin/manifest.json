@@ -1,0 +1,158 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "Adi Ariel RekordBox MIDI",
+  "Version": "1.0.0.0",
+  "Author": "Adi Ariel",
+  "CodePath": "bin/plugin.js",
+  "Description": "Class-compliant virtual MIDI controller for rekordbox PERFORMANCE mode on the Stream Deck + XL: dual-deck hot cues with a shift/delete layer, transport, jog nudge, browser, and volume/filter/BPM dials with beat-jump touch zones.",
+  "URL": "https://adiariel.com",
+  "Icon": "imgs/plugin/marketplace",
+  "Category": "Adi Ariel RekordBox",
+  "CategoryIcon": "imgs/plugin/category",
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "7.3" },
+  "OS": [
+    { "Platform": "mac", "MinimumVersion": "13" },
+    { "Platform": "windows", "MinimumVersion": "10" }
+  ],
+  "Nodejs": { "Version": "20" },
+  "UUID": "com.adiariel.rekordbox",
+  "Profiles": [
+    {
+      "Name": "AdiRekordBox",
+      "DeviceType": 13,
+      "Readonly": false,
+      "DontAutoSwitchWhenInstalled": true,
+      "AutoInstall": false
+    }
+  ],
+  "Actions": [
+    {
+      "Name": "Launch RekordBox Controller",
+      "UUID": "com.adiariel.rekordbox.launcher",
+      "Icon": "imgs/actions/launcher/icon",
+      "Tooltip": "Switches the Stream Deck + XL to the AdiRekordBox profile (see README for the one-time profile export).",
+      "Controllers": ["Keypad"],
+      "UserTitleEnabled": false,
+      "States": [
+        { "Image": "imgs/actions/launcher/key", "Title": "RekordBox", "TitleAlignment": "bottom" }
+      ]
+    },
+    {
+      "Name": "Hot Cue",
+      "UUID": "com.adiariel.rekordbox.hotcue",
+      "Icon": "imgs/actions/hotcue/icon",
+      "Tooltip": "Triggers hot cue 1-8 on deck A or B. Hold a Shift key to send the delete variant instead.",
+      "Controllers": ["Keypad"],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "UserTitleEnabled": false,
+      "States": [
+        { "Image": "imgs/actions/hotcue/key", "TitleAlignment": "bottom", "FontSize": 14 }
+      ]
+    },
+    {
+      "Name": "Transport",
+      "UUID": "com.adiariel.rekordbox.transport",
+      "Tooltip": "Play/pause toggle or CUE for deck A or B. Shift sends the secondary MIDI message.",
+      "Icon": "imgs/actions/transport/icon",
+      "Controllers": ["Keypad"],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "UserTitleEnabled": false,
+      "States": [
+        { "Image": "imgs/actions/transport/key", "TitleAlignment": "bottom", "FontSize": 14 }
+      ]
+    },
+    {
+      "Name": "Jog Nudge",
+      "UUID": "com.adiariel.rekordbox.nudge",
+      "Tooltip": "Momentary pitch-bend nudge for phase alignment: Note On while held, Note Off on release.",
+      "Icon": "imgs/actions/nudge/icon",
+      "Controllers": ["Keypad"],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "UserTitleEnabled": false,
+      "States": [
+        { "Image": "imgs/actions/nudge/key", "TitleAlignment": "bottom", "FontSize": 14 }
+      ]
+    },
+    {
+      "Name": "Shift",
+      "UUID": "com.adiariel.rekordbox.shift",
+      "Tooltip": "Local modifier (no MIDI of its own). While held, hot cues send DELETE and transport sends its shifted message.",
+      "Icon": "imgs/actions/shift/icon",
+      "Controllers": ["Keypad"],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "UserTitleEnabled": false,
+      "States": [
+        { "Image": "imgs/actions/shift/key" }
+      ]
+    },
+    {
+      "Name": "Browser",
+      "UUID": "com.adiariel.rekordbox.browse",
+      "Tooltip": "Library navigation: scroll up / scroll down (hold to auto-repeat) or toggle tree/track-list focus.",
+      "Icon": "imgs/actions/browse/icon",
+      "Controllers": ["Keypad"],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "UserTitleEnabled": false,
+      "States": [
+        { "Image": "imgs/actions/browse/key" }
+      ]
+    },
+    {
+      "Name": "Volume Dial",
+      "UUID": "com.adiariel.rekordbox.volume",
+      "Tooltip": "Channel fader for deck A or B (absolute CC). Push = load selected track to this deck. Touch strip tap = beat jump.",
+      "Icon": "imgs/actions/volume/icon",
+      "Controllers": ["Encoder"],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "Encoder": {
+        "layout": "layouts/volume.json",
+        "Icon": "imgs/actions/volume/icon",
+        "StackColor": "#ff5d5d",
+        "TriggerDescription": {
+          "Rotate": "Channel fader",
+          "Push": "Load track to deck",
+          "Touch": "Beat jump ◀ / ▶"
+        }
+      },
+      "States": [{ "Image": "imgs/actions/volume/icon" }]
+    },
+    {
+      "Name": "Filter Dial",
+      "UUID": "com.adiariel.rekordbox.filter",
+      "Tooltip": "CFX / filter knob for deck A or B (absolute CC, 64 = center). Push = snap back to center. Touch strip tap = beat jump.",
+      "Icon": "imgs/actions/filter/icon",
+      "Controllers": ["Encoder"],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "Encoder": {
+        "layout": "layouts/filter.json",
+        "Icon": "imgs/actions/filter/icon",
+        "StackColor": "#222428",
+        "TriggerDescription": {
+          "Rotate": "CFX / filter",
+          "Push": "Reset filter to center",
+          "Touch": "Beat jump ◀ / ▶"
+        }
+      },
+      "States": [{ "Image": "imgs/actions/filter/icon" }]
+    },
+    {
+      "Name": "BPM Dial",
+      "UUID": "com.adiariel.rekordbox.tempo",
+      "Tooltip": "Tempo fader for deck A or B (absolute CC, 64 = 0%). Strictly BPM — no pitch/key control. Touch strip tap = beat jump.",
+      "Icon": "imgs/actions/tempo/icon",
+      "Controllers": ["Encoder"],
+      "PropertyInspectorPath": "ui/inspector.html",
+      "Encoder": {
+        "layout": "layouts/tempo.json",
+        "Icon": "imgs/actions/tempo/icon",
+        "StackColor": "#8a9096",
+        "TriggerDescription": {
+          "Rotate": "Tempo / BPM",
+          "Touch": "Beat jump ◀ / ▶"
+        }
+      },
+      "States": [{ "Image": "imgs/actions/tempo/icon" }]
+    }
+  ]
+}
