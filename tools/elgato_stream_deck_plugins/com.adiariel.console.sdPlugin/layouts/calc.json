@@ -6,7 +6,7 @@
       "key": "line1",
       "type": "text",
       "rect": [6, 14, 188, 38],
-      "text": "0",
+      "value": "0",
       "font": { "size": 28, "weight": 700 },
       "alignment": "right",
       "color": "#e8eaed"
@@ -15,7 +15,7 @@
       "key": "line2",
       "type": "text",
       "rect": [6, 56, 188, 24],
-      "text": "",
+      "value": "",
       "font": { "size": 16, "weight": 500 },
       "alignment": "right",
       "color": "#9aa0a6"

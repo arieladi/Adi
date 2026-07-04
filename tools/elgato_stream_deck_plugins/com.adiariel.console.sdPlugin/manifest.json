@@ -1,7 +1,7 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "Adi Ariel Console",
-  "Version": "1.0.0.0",
+  "Version": "1.0.1.0",
   "Author": "Adi Ariel",
   "CodePath": "bin/plugin.js",
   "Description": "BPM-driven delay/reverb calculator, OS numpad with a standalone calculator, and an A4=442 Hz note frequency / wavelength tool for Stream Deck + XL.",
@@ -100,7 +100,7 @@
       "DisableAutomaticStates": true,
       "UserTitleEnabled": false,
       "States": [
-        { "Image": "imgs/actions/delay/icon", "TitleAlignment": "middle", "FontSize": "14" }
+        { "Image": "imgs/actions/delay/icon", "TitleAlignment": "middle", "FontSize": 14 }
       ]
     },
     {
@@ -112,7 +112,7 @@
       "PropertyInspectorPath": "ui/inspector.html",
       "UserTitleEnabled": false,
       "States": [
-        { "Image": "imgs/actions/numpad/icon", "TitleAlignment": "middle", "FontSize": "20" }
+        { "Image": "imgs/actions/numpad/icon", "TitleAlignment": "middle", "FontSize": 20 }
       ]
     }
   ]

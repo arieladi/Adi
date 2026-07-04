@@ -6,7 +6,7 @@
       "key": "title",
       "type": "text",
       "rect": [0, 6, 200, 18],
-      "text": "Straight",
+      "value": "Straight",
       "font": { "size": 14, "weight": 600 },
       "alignment": "center",
       "color": "#9aa0a6"
@@ -15,7 +15,7 @@
       "key": "value",
       "type": "text",
       "rect": [0, 28, 200, 34],
-      "text": "1/4 \u2013 1/32",
+      "value": "1/4 \u2013 1/32",
       "font": { "size": 22, "weight": 700 },
       "alignment": "center",
       "color": "#ffffff"
@@ -24,7 +24,7 @@
       "key": "hintleft",
       "type": "text",
       "rect": [0, 72, 100, 22],
-      "text": "\u25c0",
+      "value": "\u25c0",
       "font": { "size": 15, "weight": 700 },
       "alignment": "center",
       "color": "#5f6368"
@@ -33,7 +33,7 @@
       "key": "hintright",
       "type": "text",
       "rect": [100, 72, 100, 22],
-      "text": "\u25b6",
+      "value": "\u25b6",
       "font": { "size": 15, "weight": 700 },
       "alignment": "center",
       "color": "#5f6368"

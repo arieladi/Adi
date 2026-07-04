@@ -6,7 +6,7 @@
       "key": "line1",
       "type": "text",
       "rect": [0, 14, 200, 38],
-      "text": "C0",
+      "value": "C0",
       "font": { "size": 27, "weight": 700 },
       "alignment": "center",
       "color": "#ffffff"
@@ -15,7 +15,7 @@
       "key": "line2",
       "type": "text",
       "rect": [0, 56, 200, 26],
-      "text": "16.43 Hz",
+      "value": "16.43 Hz",
       "font": { "size": 18, "weight": 500 },
       "alignment": "center",
       "color": "#9aa0a6"
