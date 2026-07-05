@@ -9,8 +9,11 @@ Emits, under imgs/:
   actions/<act>/key(.png/@2x)   72   default key/dial images
   keys/<name>.png               144  runtime setImage() variants (single res)
 
-Colors follow the annotated reference photo: hot cues green, transport blue,
-nudge purple, shift yellow, browser grey, volume red, filter white, BPM grey.
+Colors follow the annotated reference photo — hot cues green, nudge purple,
+shift yellow, browser grey, volume red, filter white, BPM grey — except the
+transport keys, which use CDJ/OMNIS-DUO button colors: PLAY/PAUSE is the green
+►❚❚ glyph, CUE is the orange-lit button (with a real "CUE" label when Pillow
+is available; falls back to a glyph-only button otherwise).
 
 Run:  python3 scripts/gen_icons.py
 """
@@ -19,17 +22,25 @@ import os
 import struct
 import zlib
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    HAVE_PIL = True
+except ImportError:  # stdlib-only fallback: glyphs without text labels
+    HAVE_PIL = False
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMGS = os.path.join(HERE, "..", "imgs")
 
 BG = (0x0c, 0x0f, 0x12)
 COL = {
     "launcher": (0x21, 0xc7, 0xe0), "hotcue": (0x3d, 0xdc, 0x84),
-    "transport": (0x4d, 0xab, 0xf7), "nudge": (0xb5, 0x7b, 0xee),
+    "transport": (0x30, 0xdd, 0x7c), "nudge": (0xb5, 0x7b, 0xee),
     "shift": (0xff, 0xb4, 0x3b), "browse": (0x9a, 0xa0, 0xa6),
     "volume": (0xff, 0x5d, 0x5d), "filter": (0xe8, 0xee, 0xf3),
     "tempo": (0xc0, 0xc6, 0xcc), "plugin": (0x21, 0xc7, 0xe0),
     "category": (0x21, 0xc7, 0xe0), "del": (0xff, 0x5d, 0x5d),
+    # CDJ / OMNIS-DUO transport button colors
+    "play": (0x30, 0xdd, 0x7c), "cue": (0xff, 0x9f, 0x2a),
 }
 
 
@@ -177,17 +188,49 @@ def g_hotcue_del(buf, S, p, c):
     line(buf, S, S, S * 0.78, S * 0.30, S * 0.30, S * 0.78, t, d)
 
 
+def draw_text(buf, S, text, color, cy_ratio=0.5, size_ratio=0.24):
+    """Center text onto the RGBA buffer via Pillow (no-op without PIL)."""
+    if not HAVE_PIL:
+        return False
+    font = None
+    for path in (
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "C:/Windows/Fonts/arialbd.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ):
+        try:
+            font = ImageFont.truetype(path, int(S * size_ratio))
+            break
+        except Exception:
+            continue
+    if font is None:
+        return False
+    im = Image.frombytes("RGBA", (S, S), bytes(buf))
+    ImageDraw.Draw(im).text((S / 2.0, S * cy_ratio), text, font=font,
+                            fill=(color[0], color[1], color[2], 255), anchor="mm")
+    buf[:] = im.tobytes()
+    return True
+
+
 def g_play(buf, S, p, c):
-    # play triangle + pause bar = play/pause toggle
-    tri(buf, S, S, (p, p), (S * 0.62, S / 2.0), (p, S - p), c)
-    frect(buf, S, S, S * 0.72, p, S * 0.86, S - p, c, r=max(1, int(S * 0.03)))
+    # CDJ-style PLAY/PAUSE: ► + ❚❚ side by side
+    tri(buf, S, S, (p, p), (S * 0.52, S / 2.0), (p, S - p), c)
+    bw = S * 0.085
+    frect(buf, S, S, S * 0.62, p, S * 0.62 + bw, S - p, c, r=max(1, int(S * 0.025)))
+    frect(buf, S, S, S * 0.78, p, S * 0.78 + bw, S - p, c, r=max(1, int(S * 0.025)))
 
 
 def g_cue(buf, S, p, c):
+    # CDJ-style CUE: orange-lit round button with a "CUE" label (glyph-only
+    # center dot when the label can't be rendered, e.g. tiny sizes / no PIL)
     cx = cy = S / 2.0
     rad = (S - 2 * p) / 2.0
     ring(buf, S, S, cx, cy, rad, max(2, S * 0.06), c)
-    disc(buf, S, S, cx, cy, rad * 0.38, c)
+    disc(buf, S, S, cx, cy, rad * 0.80, c, a=0.16)  # inner glow
+    if S < 96 or not draw_text(buf, S, "CUE", c, cy_ratio=0.5, size_ratio=0.21):
+        disc(buf, S, S, cx, cy, rad * 0.38, c)
 
 
 def g_chevrons(buf, S, p, c, forward=True):
@@ -307,8 +350,8 @@ def main():
     # runtime setImage() variants
     emit_key("hotcue", "hotcue")
     emit_key("hotcue_del", "hotcue", glyph=g_hotcue_del)
-    emit_key("play", "transport", glyph=g_play)
-    emit_key("cue", "transport", glyph=g_cue)
+    emit_key("play", "play", glyph=g_play)
+    emit_key("cue", "cue", glyph=g_cue)
     emit_key("nudge_fwd", "nudge", glyph=lambda b, S, p, c: g_chevrons(b, S, p, c, True))
     emit_key("nudge_back", "nudge", glyph=lambda b, S, p, c: g_chevrons(b, S, p, c, False))
     emit_key("shift_off", "shift", glyph=lambda b, S, p, c: g_shift(b, S, p, c, False))

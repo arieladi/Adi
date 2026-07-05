@@ -1,6 +1,6 @@
 {
   "name": "com.adiariel.rekordbox",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Adi Ariel RekordBox MIDI - class-compliant virtual MIDI controller for rekordbox PERFORMANCE mode on the Stream Deck + XL (dual-deck hot cues + shift layer, transport, jog nudge, browser, volume/filter/BPM dials, beat-jump touch strip).",
   "type": "module",
   "private": true,

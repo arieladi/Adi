@@ -1,5 +1,17 @@
 # Changelog — Adi Ariel RekordBox MIDI
 
+## 1.0.1.0 — 2026-07-05
+
+- CDJ/OMNIS-DUO transport visuals: PLAY/PAUSE key is now the green ►❚❚
+  glyph and CUE the orange-lit round button with a rendered "CUE" label
+  (gen_icons.py draws the label via Pillow when installed; glyph-only
+  fallback otherwise). Transport action icons regenerated to match.
+- Completeness audit for mac + Windows distribution: all 51 images
+  (marketplace/category, per-action icon+key at 1x/2x, 11 runtime key
+  variants), 3 touch-strip layouts, bundle, PI, and the 4 committed native
+  prebuilds (darwin-arm64/x64 Mach-O, win32-x64/arm64 PE32+) verified
+  straight from git — nothing requires compilation on either OS.
+
 ## 1.0.0.0 — 2026-07-05
 
 Initial release: class-compliant virtual MIDI controller for rekordbox
