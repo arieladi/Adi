@@ -1,7 +1,7 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "Adi Ariel RekordBox MIDI",
-  "Version": "1.0.0.0",
+  "Version": "1.0.1.0",
   "Author": "Adi Ariel",
   "CodePath": "bin/plugin.js",
   "Description": "Class-compliant virtual MIDI controller for rekordbox PERFORMANCE mode on the Stream Deck + XL: dual-deck hot cues with a shift/delete layer, transport, jog nudge, browser, and volume/filter/BPM dials with beat-jump touch zones.",

@@ -59,7 +59,7 @@ col:     0      1      2      3      4      5      6      7      8
 row0   [Lnch] [ ▲ ]  [ ▼ ]  [ ⊞ ]  [    ] [    ] [    ] [    ] [    ]   browser (unmarked)
 row1   [A1]   [A2]   [A3]   [A4]   [SHIFT][B1]   [B2]   [B3]   [B4]    hot cues (green) + shift (yellow)
 row2   [A5]   [A6]   [A7]   [A8]   [SHIFT][B5]   [B6]   [B7]   [B8]
-row3   [◀◀A]  [▶▶A]  [PLAY A][CUE A][    ][CUE B][PLAY B][◀◀B] [▶▶B]   nudge (purple) + transport (blue)
+row3   [◀◀A]  [▶▶A]  [PLAY A][CUE A][    ][CUE B][PLAY B][◀◀B] [▶▶B]   nudge (purple) + transport (CDJ colors)
 
 dials   BPM A   FLT A   VOL A  │  VOL B   FLT B   BPM B                 grey · black · red │ red · black · grey
 touch   each dial's 200px zone: tap left half = Beat Jump ◀, right half = Beat Jump ▶ (that dial's deck)
@@ -68,6 +68,9 @@ touch   each dial's 200px zone: tap left half = Beat Jump ◀, right half = Beat
 Set each action's **Deck** (A/B) and role/slot in its property inspector.
 `▲/▼` = library scroll (hold to auto-repeat), `⊞` = tree ⇄ track-list focus toggle.
 Both SHIFT keys are equivalent — hold either with any hand.
+Transport keys use CDJ/OMNIS-DUO button visuals: PLAY/PAUSE is the green ►❚❚,
+CUE is the orange-lit round button with a CUE label. (One-way MIDI has no
+feedback channel, so the keys can't light with rekordbox's play state.)
 
 ### One-time profile export (the launcher key)
 
@@ -156,7 +159,7 @@ function.
 npm install            # deps incl. easymidi (prebuilt native binding — no compiler)
 npm run build          # rollup: src/*.js -> bin/plugin.js (committed)
 npm run vendor         # copy the runtime MIDI stack into vendor/ (committed)
-python3 scripts/gen_icons.py   # regenerate imgs/ (stdlib-only PNG writer)
+python3 scripts/gen_icons.py   # regenerate imgs/ (stdlib PNG writer; uses Pillow for the CUE label if installed)
 python3 scripts/validate.py    # manifest + assets + vendor sanity (exit 0 = OK)
 npm run smoke          # REAL virtual-port loopback test (mac/linux): 19 messages
 ```
