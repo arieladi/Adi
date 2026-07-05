@@ -4,6 +4,15 @@ All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is the four-part
 scheme Stream Deck expects in the manifest (`MAJOR.MINOR.PATCH.BUILD`).
 
+## [1.0.1.0] — 2026-07-05
+
+### Fixed
+- **manifest.json: added the required top-level `UUID`**
+  (`com.adi.visualizers-and-meters`). The app inferred it from the folder
+  name, but the official manifest schema marks UUID required and
+  `streamdeck validate`/`pack` fail without it. Validated: 0 errors against
+  @elgato/schemas (Draft-7). No behavior change.
+
 ## [1.0.0.0] — 2026-06-17
 
 ### Added
