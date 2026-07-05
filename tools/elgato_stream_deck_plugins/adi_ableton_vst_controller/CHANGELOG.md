@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.5.9.0] — 2026-07-05
+
+### Fixed
+- **manifest.json: added the required top-level `UUID`** (`com.adiariel.ableton-vst`).
+  The Stream Deck app inferred it from the folder name, but the official
+  manifest schema marks UUID required and `streamdeck validate`/`pack` fail
+  without it. Validated: 0 errors against @elgato/schemas (Draft-7).
+  No behavior change.
+
 ## [1.5.8.0] — 2026-06-27
 
 ### Added
