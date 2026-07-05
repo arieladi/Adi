@@ -1,8 +1,9 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "Adi Ariel MIDI Control",
-  "Version": "1.1.0.0",
+  "Version": "1.1.1.0",
   "Author": "Adi Ariel",
+  "UUID": "com.adiariel.midicontrol",
   "URL": "https://adiariel.com",
   "Description": "Turns Stream Deck + / XL into a multi-bank MIDI controller for Ableton Live: drum pads, scaled touch keyboard, MIDI-learn dials with 3 banks, plus an OS numpad.",
   "Category": "Adi Ariel MIDI Control",
@@ -27,7 +28,7 @@
       "Tooltip": "Momentary MIDI note pad (C1..D#2). Place as a 4x4 block.",
       "Controllers": ["Keypad"],
       "States": [
-        { "Image": "imgs/actions/drum/key", "TitleColor": "#ffffff", "TitleAlignment": "middle", "FontSize": "16" }
+        { "Image": "imgs/actions/drum/key", "TitleColor": "#ffffff", "TitleAlignment": "middle", "FontSize": 16 }
       ]
     },
     {
@@ -37,7 +38,7 @@
       "Tooltip": "OS keystroke (0-9 . + - x / Enter Clear). Place as a 5x4 block.",
       "Controllers": ["Keypad"],
       "States": [
-        { "Image": "imgs/actions/numpad/key", "TitleColor": "#ffffff", "TitleAlignment": "middle", "FontSize": "28" }
+        { "Image": "imgs/actions/numpad/key", "TitleColor": "#ffffff", "TitleAlignment": "middle", "FontSize": 28 }
       ]
     },
     {
@@ -47,7 +48,7 @@
       "Tooltip": "Cycles the 6 dials through banks of CC numbers.",
       "Controllers": ["Keypad"],
       "States": [
-        { "Image": "imgs/actions/selector/key", "TitleColor": "#ffd400", "TitleAlignment": "middle", "FontSize": "14" }
+        { "Image": "imgs/actions/selector/key", "TitleColor": "#ffd400", "TitleAlignment": "middle", "FontSize": 14 }
       ]
     },
     {
@@ -67,7 +68,7 @@
         }
       },
       "States": [
-        { "Image": "imgs/actions/dial/key", "TitleColor": "#ffffff", "TitleAlignment": "middle", "FontSize": "12" }
+        { "Image": "imgs/actions/dial/key", "TitleColor": "#ffffff", "TitleAlignment": "middle", "FontSize": 12 }
       ]
     },
     {
@@ -88,7 +89,7 @@
         }
       },
       "States": [
-        { "Image": "imgs/actions/scale/key", "TitleColor": "#ffffff", "TitleAlignment": "middle", "FontSize": "12" }
+        { "Image": "imgs/actions/scale/key", "TitleColor": "#ffffff", "TitleAlignment": "middle", "FontSize": 12 }
       ]
     }
   ]
