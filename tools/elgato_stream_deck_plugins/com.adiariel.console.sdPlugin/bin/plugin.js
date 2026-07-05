@@ -7754,7 +7754,9 @@ async function paint(ev) {
 
 streamDeck.actions.onWillAppear((ev) => { remember(ev); paint(ev); });
 streamDeck.actions.onWillDisappear((ev) => { forget(ev); holdCancel(ev.action.id); });
-streamDeck.actions.onDidReceiveSettings((ev) => { setSettings(ev); paint(ev); });
+// NB: since @elgato/streamdeck 1.4.x this event lives on the settings service,
+// not on actions — rebuilding with the old call crashes at startup.
+streamDeck.settings.onDidReceiveSettings((ev) => { setSettings(ev); paint(ev); });
 
 // ---------------------------------------------------------------------------
 // Keypad events
