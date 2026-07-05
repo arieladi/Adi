@@ -1,8 +1,9 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "Adi Visualizers & Meters",
-  "Version": "1.0.0.0",
+  "Version": "1.0.1.0",
   "Author": "Adi Ariel",
+  "UUID": "com.adi.visualizers-and-meters",
   "URL": "https://github.com/adiariel/adi_visualizers_and_meters",
   "Description": "Real-time audio spectrum, oscilloscope, waveform, peak/RMS meters, octave bands, goniometer and stereo correlation — rendered live on Stream Deck + dials or any key.",
   "Category": "Adi Visualizers & Meters",
