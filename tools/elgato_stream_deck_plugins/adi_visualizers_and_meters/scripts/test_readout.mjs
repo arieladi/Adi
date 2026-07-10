@@ -73,5 +73,23 @@ check('bin-refined note exact', r3.note.label + ' ' + r3.note.cents, 'A2 0');
 check('markerX 0 col', R.spectrumReadout(W, Object.assign({}, C, { markerX: 0, snap: false })).x, 0);
 check('markerX 1 col', R.spectrumReadout(W, Object.assign({}, C, { markerX: 1, snap: false })).x, W - 1);
 
-console.log(failed ? `\n${failed} FAILURES` : '\nPASS — readout math verified (note names, mapping, snap).');
+// --- all-view readout helpers (v1.2.0.0) ----------------------------------
+// scope: tapping one period into a 220 Hz wave reads A3
+const scopeHz = 1000 / (1000 / 220);
+check('scope period->note', AVM.noteFor(scopeHz, 440).label, 'A3');
+check('scope period->cents', AVM.noteFor(scopeHz, 440).cents, 0);
+// bands: ISO centers vs nearest notes
+check('band 125 note', AVM.noteFor(125, 440).label, 'B2');
+check('band 1000 note', AVM.noteFor(1000, 440).label, 'B5');
+check('band 31.5 note', AVM.noteFor(31.5, 440).label, 'B0');
+// formatting helpers
+check('fmtNote ±0', AVM.fmtNote(AVM.noteFor(110, 440)), 'A2 ±0¢');
+check('fmtNote +21', AVM.fmtNote(AVM.noteFor(1000, 440)), 'B5 +21¢');
+check('fmtBal center', AVM.fmtBal(0), 'C');
+check('fmtBal right', AVM.fmtBal(0.04), 'R +4%');
+check('fmtBal left', AVM.fmtBal(-0.31), 'L +31%');
+// ring test hook exists (used by the hardware-free visual tests)
+check('_ringPush exported', typeof AVM._ringPush, 'function');
+
+console.log(failed ? `\n${failed} FAILURES` : '\nPASS — readout math verified (note names, mapping, snap, all-view helpers).');
 process.exit(failed ? 1 : 0);

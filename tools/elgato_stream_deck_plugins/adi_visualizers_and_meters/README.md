@@ -98,21 +98,31 @@ Double-click the resulting `.streamDeckPlugin` to install.
 2. Open the action's settings (Property Inspector) to pick the view and tune it.
 3. On a real Stream Deck:
    - **Press a key** / **press a dial** → cycle to the next view.
-   - **Tap the touchscreen** → *spectrum view:* place the **SPAN-style readout**
-     (see below). *Other views:* cycle to the next view.
+   - **Tap the touchscreen** → place the **tap readout** for the current view
+     (see below).
    - **Rotate a dial** → adjust the view's main parameter (spectrum → averaging
      time, scope → time base, waveform → window length).
-   - **Long-touch** the touchscreen → *spectrum:* clear the readout (reset to
-     defaults when none is shown). *Other views:* reset to defaults.
+   - **Long-touch** the touchscreen → clear the readout (reset the view to
+     defaults when none is shown).
 4. **Refresh rate** and **input device** are shared across all instances and set
    once in any action's Property Inspector (default 15 fps; 5–30).
 
-### Spectrum tap readout (SPAN-style)
+### Tap readout (every view)
 
-Tap anywhere on the spectrum and the strip shows what SPAN shows on mouse
-hover: **frequency, nearest note ± cents, and level** — e.g. `110Hz A2 ±0¢
--18.2dB` — with a dashed hairline and a dot marking the point on the curve.
-Compensations for the small 200 × 100 touch slot:
+Tapping the touch strip shows a header readout for the tapped spot — the
+marker auto-hides after **Readout hold** seconds (default 6, per view):
+
+| View | Tap shows |
+|------|-----------|
+| **Spectrum** | SPAN's mouse-hover readout: **frequency, nearest note ± cents, level** — e.g. `110Hz A2 ±0¢ -18.2dB` — with a hairline + dot on the curve |
+| **Scope** | time from trigger + the **equivalent period frequency + note** (tap one cycle in to read the pitch) + level at that instant |
+| **Waveform** | how far back that moment is (`-380ms`) + that column's peak level |
+| **Octave bands** | tapped band's center frequency, nearest note, live L/R levels (band highlighted) |
+| **Meters** | tapped channel's exact numbers: `L rms -12.4 pk -6.0dB` |
+| **Goniometer** | live correlation + balance numbers |
+| **Correlation / Balance** | the exact value the needle points at |
+
+Compensations for the small 200 × 100 touch slot (spectrum):
 
 - **Snap to peak** (default on): the tap snaps to the strongest column within
   ~±8 px, so touching *near* your kick reads the kick, not the valley next to
@@ -120,9 +130,8 @@ Compensations for the small 200 × 100 touch slot:
 - **True-peak frequency**: the readout refines the coarse 200-column grid to
   the actual FFT peak bin with parabolic interpolation — sub-Hz accuracy at
   110 Hz instead of the ~60-cent column quantization.
-- The readout text scales with the surface and auto-hides after **Readout
-  hold** seconds (default 6). **Tuning A4** (440 SPAN-default / 442 / 432)
-  sets the note reference.
+- The readout text scales with the surface. **Tuning A4** (440 / 442 / 432)
+  sets the note reference on the spectrum, scope and bands views.
 
 > The very first time, grant Stream Deck microphone access when the OS prompts
 > (macOS: System Settings → Privacy & Security → Microphone → enable Stream Deck).

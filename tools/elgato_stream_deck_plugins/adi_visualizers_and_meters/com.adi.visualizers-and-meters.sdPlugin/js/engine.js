@@ -46,12 +46,14 @@
     scope: {
       channel: 'left', trigger: 'rising', threshold: 0.0, timeMs: 20, amp: 1.0,
       color: '#46e0c8', showCursors: false, cursorX: 0.5, cursorY: 0.5,
+      tuneA4: 440, markerHold: 6,
     },
     waveform: {
       channel: 'mono', windowMs: 1500, filled: true, color: '#ff8a3d', fill: 0.22,
+      markerHold: 6,
     },
     meters: { color: '#7fe06a' },
-    bands: {},
+    bands: { tuneA4: 440, markerHold: 6 },
     gonio: { color: '#38f0a0' },
     corr: {},
     bal: {},
@@ -183,6 +185,44 @@
     if (f < 100) return f.toFixed(1) + 'Hz';
     if (f < 1000) return Math.round(f) + 'Hz';
     return (f / 1000).toFixed(f < 10000 ? 2 : 1) + 'kHz';
+  }
+  function fmtNote(n) {
+    if (!n) return '';
+    return n.label + ' ' + (n.cents === 0 ? '±0' : (n.cents > 0 ? '+' : '') + n.cents) + '¢';
+  }
+
+  // Shared tap-readout header: dark backing strip + text, font scaled to the
+  // render surface so it stays legible on the 100px touch slot AND on keys.
+  function drawReadout(ctx, w, h, txt) {
+    const fs = Math.max(8, Math.round(h * 0.09));
+    ctx.font = '600 ' + fs + 'px "SF Mono", monospace';
+    const pad = 3;
+    const tw = ctx.measureText(txt).width;
+    const bh = fs + 2 * pad;
+    ctx.fillStyle = 'rgba(6,8,10,0.78)';
+    ctx.fillRect(0, 0, Math.min(w, tw + 2 * pad + 2), bh);
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(txt, pad, bh / 2 + 0.5);
+    ctx.textBaseline = 'alphabetic';
+  }
+  // Signed balance for readouts: + = right-heavy ("R +4%"), centered = "C".
+  function fmtBal(v) {
+    const pct = Math.round(Math.abs(v) * 100);
+    if (pct === 0) return 'C';
+    return (v > 0 ? 'R +' : 'L +') + pct + '%';
+  }
+  // Marker hairline + emphasis dot shared by the positional views.
+  function drawMarkerDot(ctx, x, y, h, color) {
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = hexA(color, 0.75);
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = hexA(color, 0.45);
+    ctx.beginPath(); ctx.arc(x, y, 4, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(x, y, 1.8, 0, 2 * Math.PI); ctx.fill();
   }
 
   const DB_TOP = 6, DB_BOT = -60;                   // peak/RMS meter scale
@@ -399,36 +439,8 @@
       if (!r) return;
       const top = C.rangeHi, bot = C.rangeLo, span = (top - bot) || 1;
       const y = h - clamp((r.db - bot) / span, 0, 1) * h;
-      const x = r.x + 0.5;
-
-      ctx.setLineDash([3, 3]);
-      ctx.strokeStyle = hexA(C.color, 0.75);
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-      ctx.setLineDash([]);
-
-      // dot on the curve: colored halo + white core, sized to read on the strip
-      ctx.fillStyle = hexA(C.color, 0.45);
-      ctx.beginPath(); ctx.arc(x, y, 4, 0, 2 * Math.PI); ctx.fill();
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath(); ctx.arc(x, y, 1.8, 0, 2 * Math.PI); ctx.fill();
-
-      // header readout — font scales with the surface so it stays legible on
-      // the 100px-tall touch slot AND on 144px keys (SPAN's header line, shrunk)
-      const n = r.note;
-      const cents = n ? (n.cents === 0 ? '±0' : (n.cents > 0 ? '+' : '') + n.cents) : '';
-      const txt = fmtFreq(r.f) + '  ' + (n ? n.label + ' ' + cents + '¢' : '') + '  ' + r.db.toFixed(1) + 'dB';
-      const fs = Math.max(8, Math.round(h * 0.09));
-      ctx.font = '600 ' + fs + 'px "SF Mono", monospace';
-      const pad = 3;
-      const tw = ctx.measureText(txt).width;
-      const bh = fs + 2 * pad;
-      ctx.fillStyle = 'rgba(6,8,10,0.78)';
-      ctx.fillRect(0, 0, Math.min(w, tw + 2 * pad + 2), bh);
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(txt, pad, bh / 2 + 0.5);
-      ctx.textBaseline = 'alphabetic';
+      drawMarkerDot(ctx, r.x + 0.5, y, h, C.color);
+      drawReadout(ctx, w, h, fmtFreq(r.f) + '  ' + fmtNote(r.note) + '  ' + r.db.toFixed(1) + 'dB');
     }
 
     /* ----------------------------------------------------------- oscilloscope */
@@ -487,6 +499,23 @@
         ctx.fillText(hz.toFixed(1) + ' Hz', tx, 12);
         ctx.fillText(lin.toFixed(3) + '  ' + db.toFixed(1) + ' dB', tx, 21);
       }
+
+      // tap readout: time from trigger -> equivalent period frequency + note
+      // (tap one cycle-length into the wave to read its pitch), plus the
+      // signal level at that instant. Marker dot rides the trace itself.
+      if (S.markerX != null) {
+        const x01 = clamp(S.markerX, 0, 1);
+        const px = Math.round(x01 * (w - 1));
+        const idx = t0 + ((px / w) * N | 0);
+        const v = buf[idx];
+        drawMarkerDot(ctx, px + 0.5, mid - v * amp * halfH, h, S.color);
+        const tMs2 = x01 * S.timeMs;
+        const hz2 = tMs2 > 0 ? 1000 / tMs2 : 0;
+        const note = (hz2 >= 16 && hz2 <= 20000) ? noteFor(hz2, S.tuneA4 || 440) : null;
+        drawReadout(ctx, w, h,
+          tMs2.toFixed(2) + 'ms  ' + (hz2 > 0 ? fmtFreq(hz2) : '—') +
+          (note ? ' ' + fmtNote(note) : '') + '  ' + lin2db(Math.abs(v)).toFixed(1) + 'dB');
+      }
     }
 
     /* --------------------------------------------------------------- waveform */
@@ -519,6 +548,17 @@
       ctx.closePath();
       if (W.filled) { ctx.fillStyle = hexA(W.color, W.fill); ctx.fill(); }
       ctx.strokeStyle = W.color; ctx.lineWidth = 1; ctx.stroke();
+
+      // tap readout: how far back in the history + that column's peak level
+      if (W.markerX != null) {
+        const x01 = clamp(W.markerX, 0, 1);
+        const px = Math.round(x01 * (w - 1));
+        const pk = Math.max(Math.abs(mn[px]), Math.abs(mx[px]));
+        drawMarkerDot(ctx, px + 0.5, mid - mx[px] * halfH, h, W.color);
+        const back = (1 - x01) * W.windowMs;
+        const tTxt = back >= 1000 ? '-' + (back / 1000).toFixed(2) + 's' : '-' + Math.round(back) + 'ms';
+        drawReadout(ctx, w, h, tTxt + '  ' + lin2db(pk).toFixed(1) + 'dB');
+      }
     }
 
     /* ------------------------------------------------------ peak / RMS meters */
@@ -534,7 +574,7 @@
       if (H.pkR >= H.holdR) { H.holdR = H.pkR; H.holdTR = 0; }
       else { H.holdTR += dt; if (H.holdTR > 1.5) H.holdR -= 18 * dt; }
     }
-    drawMeters(ctx, w, h, dt) {
+    drawMeters(ctx, w, h, dt, M) {
       this.updateMeters(dt);
       const H = this.hold;
       ctx.clearRect(0, 0, w, h);
@@ -556,6 +596,15 @@
       const x0 = scaleW + gap;
       this._bar(ctx, x0, pad, barW, h - 2 * pad, H.rmsL, H.pkL, H.holdL, yOf, 'L');
       this._bar(ctx, x0 + barW + gap, pad, barW, h - 2 * pad, H.rmsR, H.pkR, H.holdR, yOf, 'R');
+
+      // tap readout: exact numbers for the tapped channel (left/right half)
+      if (M && M.markerX != null) {
+        const left = clamp(M.markerX, 0, 1) < 0.5;
+        const txt = left
+          ? 'L  rms ' + H.rmsL.toFixed(1) + '  pk ' + H.pkL.toFixed(1) + 'dB'
+          : 'R  rms ' + H.rmsR.toFixed(1) + '  pk ' + H.pkR.toFixed(1) + 'dB';
+        drawReadout(ctx, w, h, txt);
+      }
     }
     _bar(ctx, x, y, bw, bh, rmsDb, pkDb, holdDb, yOf, label) {
       ctx.fillStyle = 'rgba(255,255,255,0.04)';
@@ -581,7 +630,7 @@
     }
 
     /* ---------------------------------------------------- correlation / balance */
-    drawCorr(ctx, w, h) {
+    drawCorr(ctx, w, h, C) {
       ctx.clearRect(0, 0, w, h);
       const pad = 2, mid = h / 2, usable = w - 2 * pad;
       const g = ctx.createLinearGradient(pad, 0, w - pad, 0);
@@ -597,8 +646,12 @@
       ctx.font = '6px "SF Mono", monospace'; ctx.fillStyle = 'rgba(150,160,170,0.7)';
       ctx.textBaseline = 'middle';
       ctx.fillText('-1', pad, mid); ctx.fillText('+1', w - pad - 8, mid);
+      // tap readout: the number the needle is pointing at
+      if (C && C.markerX != null) {
+        drawReadout(ctx, w, h, 'corr ' + (v >= 0 ? '+' : '') + v.toFixed(2));
+      }
     }
-    drawBal(ctx, w, h) {
+    drawBal(ctx, w, h, C) {
       ctx.clearRect(0, 0, w, h);
       const pad = 2, mid = h / 2, usable = w - 2 * pad;
       ctx.fillStyle = 'rgba(255,255,255,0.05)';
@@ -612,6 +665,9 @@
       ctx.font = '6px "SF Mono", monospace'; ctx.fillStyle = 'rgba(150,160,170,0.7)';
       ctx.textBaseline = 'middle';
       ctx.fillText('L', pad, mid); ctx.fillText('R', w - pad - 5, mid);
+      if (C && C.markerX != null) {
+        drawReadout(ctx, w, h, 'bal ' + fmtBal(v));
+      }
     }
 
     /* ----------------------------------------------------------- goniometer
@@ -642,11 +698,17 @@
       }
       ctx.fillStyle = hexA((G && G.color) || '#38f0a0', 0.7);
       ctx.fill(p);
+
+      // tap readout: live correlation + balance numbers over the vectorscope
+      if (G && G.markerX != null) {
+        drawReadout(ctx, w, h,
+          'corr ' + (METER.corr >= 0 ? '+' : '') + METER.corr.toFixed(2) + '  bal ' + fmtBal(clamp(METER.bal, -1, 1)));
+      }
     }
 
     /* -------------------------------------------------------- octave bands
        Reads the shared AnalyserNodes (created by the AudioEngine). */
-    drawBands(ctx, w, h) {
+    drawBands(ctx, w, h, B) {
       ctx.clearRect(0, 0, w, h);
       if (!analyserL) return;
       analyserL.getFloatFrequencyData(dataL);
@@ -678,6 +740,21 @@
           ctx.fillText(t, cx - t.length * 1.8, h - 1);
         }
       }
+
+      // tap readout: the tapped band's center frequency, nearest note, and
+      // live L/R levels; the band's slot gets a subtle highlight frame.
+      if (B && B.markerX != null) {
+        const i = Math.min(n - 1, Math.floor(clamp(B.markerX, 0, 1) * n));
+        const f = BANDS[i];
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(i * slot + 0.5, 1.5, slot - 1, usableH + 1);
+        const lDb = this._bandLevel(dataL, NF, binHz, f);
+        const rDb = this._bandLevel(dataR, NF, binHz, f);
+        drawReadout(ctx, w, h,
+          fmtHz(f) + 'Hz ' + fmtNote(noteFor(f, B.tuneA4 || 440)) +
+          '  L' + lDb.toFixed(1) + ' R' + rDb.toFixed(1) + 'dB');
+      }
     }
     _bandLevel(data, NF, binHz, f) {
       const lo = clamp(Math.floor(f / Math.SQRT2 / binHz), 0, NF - 1);
@@ -707,11 +784,11 @@
         case 'spectrum': return this.drawSpectrum(ctx, w, h, cfg, dt);
         case 'scope':    return this.drawScope(ctx, w, h, cfg);
         case 'waveform': return this.drawWaveform(ctx, w, h, cfg);
-        case 'meters':   return this.drawMeters(ctx, w, h, dt);
-        case 'bands':    return this.drawBands(ctx, w, h);
+        case 'meters':   return this.drawMeters(ctx, w, h, dt, cfg);
+        case 'bands':    return this.drawBands(ctx, w, h, cfg);
         case 'gonio':    return this.drawGonio(ctx, w, h, cfg, resized);
-        case 'corr':     return this.drawCorr(ctx, w, h);
-        case 'bal':      return this.drawBal(ctx, w, h);
+        case 'corr':     return this.drawCorr(ctx, w, h, cfg);
+        case 'bal':      return this.drawBal(ctx, w, h, cfg);
         default:         return this.drawSpectrum(ctx, w, h, cfg, dt);
       }
     }
@@ -860,9 +937,12 @@ registerProcessor('meter-processor', MeterProcessor);
   root.AVM = {
     RING, VIEWS, DEFAULTS,
     FFT, Renderer, AudioEngine,
-    clamp, lin2db, hexA, makeWindow, fmtHz, noteFor, fmtFreq,
+    clamp, lin2db, hexA, makeWindow, fmtHz, noteFor, fmtFreq, fmtNote, fmtBal,
     get SR() { return SR; },
     get METER() { return METER; },
+    // test hook: inject synthetic PCM into the shared ring buffers (headless
+    // verification + hardware-free visual tests; not used by the plugin).
+    _ringPush: ringPush,
   };
 
 })(typeof window !== 'undefined' ? window : globalThis);

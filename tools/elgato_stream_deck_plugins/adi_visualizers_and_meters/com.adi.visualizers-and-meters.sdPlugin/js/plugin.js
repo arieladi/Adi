@@ -161,7 +161,7 @@
       resized = true;
     }
     var cfg = cfgFor(inst);
-    if (view === 'spectrum' && inst.markerX != null) {
+    if (inst.markerX != null) {
       cfg = Object.assign({}, cfg, { markerX: inst.markerX });
     }
     try {
@@ -179,12 +179,13 @@
   }
 
   /* --------------------------------------------------------------- interaction */
-  // SPAN-style tap readout marker (spectrum view, touch strip only). Transient:
-  // lives on the instance, never persisted, auto-hides after spectrum.markerHold s.
+  // Tap readout marker (touch strip, every view — SPAN-style on the spectrum,
+  // per-view readouts elsewhere). Transient: lives on the instance, never
+  // persisted, auto-hides after the active view's markerHold seconds.
   function setMarker(inst, x01) {
     inst.markerX = AVM.clamp(x01, 0, 1);
     if (inst.markerTimer) clearTimeout(inst.markerTimer);
-    var holdS = clampNum(inst.settings.spectrum.markerHold, 2, 30, 6);
+    var holdS = clampNum(cfgFor(inst).markerHold, 2, 30, 6);
     inst.markerTimer = setTimeout(function () {
       inst.markerX = null;
       inst.markerTimer = null;
@@ -278,8 +279,11 @@
         }
         case 'didReceiveSettings': {
           if (instances[ctx]) {
+            var prevV = instances[ctx].settings.view;
             instances[ctx].settings = normalizeSettings(msg.payload && msg.payload.settings);
             instances[ctx].clear = true;
+            // view switched from the PI: don't leak the old view's marker
+            if (instances[ctx].settings.view !== prevV) clearMarker(instances[ctx]);
           }
           break;
         }
@@ -305,20 +309,16 @@
           var ti = instances[ctx];
           if (!ti) break;
           var hold = !!(msg.payload && msg.payload.hold);
-          if (ti.settings.view === 'spectrum') {
-            // SPAN-style readout: tap places/moves the marker at the touched
-            // frequency; tap-and-hold clears it (or resets the view if none).
-            // View cycling stays on the dial press.
-            if (hold) {
-              if (ti.markerX != null) clearMarker(ti);
-              else resetView(ti);
-            } else {
-              var tp = (msg.payload && msg.payload.tapPos) || [0, 0];
-              setMarker(ti, tp[0] / ti.w);
-            }
+          // Every view: tap places/moves the readout marker at the touched
+          // spot (SPAN-style on the spectrum; time/band/level readouts on the
+          // others). Tap-and-hold clears it, or resets the view when none is
+          // shown. View cycling stays on the dial press.
+          if (hold) {
+            if (ti.markerX != null) clearMarker(ti);
+            else resetView(ti);
           } else {
-            if (hold) resetView(ti);
-            else cycleView(ti);
+            var tp = (msg.payload && msg.payload.tapPos) || [0, 0];
+            setMarker(ti, tp[0] / ti.w);
           }
           break;
         }

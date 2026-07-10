@@ -4,6 +4,35 @@ All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is the four-part
 scheme Stream Deck expects in the manifest (`MAJOR.MINOR.PATCH.BUILD`).
 
+## [1.2.0.0] — 2026-07-05
+
+### Added
+- **Tap readout on every view** (touch strip). The v1.1.0.0 SPAN-style
+  spectrum readout now has per-view siblings, all with the same interaction
+  (tap = place/move, tap-and-hold = clear or reset, dial press = cycle
+  views, auto-hide after the view's Readout hold seconds):
+  - **Scope**: time from trigger + equivalent period frequency + note (tap
+    one cycle into the wave to read its pitch) + level at that instant,
+    with the marker dot riding the trace.
+  - **Waveform**: how far back that moment is (e.g. `-380ms`) + the
+    column's peak level.
+  - **Octave bands**: tapped band's center frequency, nearest note and live
+    L/R levels; the band's slot is highlighted.
+  - **Meters**: exact numbers for the tapped channel (`L rms -12.4 pk
+    -6.0dB`).
+  - **Goniometer**: live correlation + balance numbers.
+  - **Correlation / Balance**: the exact value the needle points at.
+- New PI options: Tuning A4 + Readout hold on scope and bands, Readout hold
+  on waveform; notes on the other views document the tap.
+- Engine: shared `drawReadout`/`drawMarkerDot` helpers, `fmtNote`/`fmtBal`
+  exports, and an `AVM._ringPush` test hook for injecting synthetic PCM
+  (hardware-free verification of scope/waveform readouts).
+- Verified: extended `scripts/test_readout.mjs` (scope period→A3, band
+  center notes, formatting helpers) + a six-panel visual render with
+  injected PCM/meter values — every readout matched the injected ground
+  truth (220 Hz sine → `4.55ms 220Hz A3 ±0¢`; meters → `L rms -12.4 pk
+  -6.0dB`; `corr +0.73`; `bal R +4%`).
+
 ## [1.1.0.0] — 2026-07-05
 
 ### Added

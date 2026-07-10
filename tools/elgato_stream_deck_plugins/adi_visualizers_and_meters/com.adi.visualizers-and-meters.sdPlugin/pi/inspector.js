@@ -173,6 +173,11 @@
       addRange($controls, 'Amplitude', Sc, 'amp', 0.1, 4, 0.05, function (x) { return x.toFixed(2) + '×'; });
       addToggle($controls, 'Cursors', Sc, 'showCursors');
       addColor($controls, 'Color', Sc, 'color');
+      addSelect($controls, 'Tuning A4', Sc, 'tuneA4', [
+        { v: 440, t: '440 Hz' }, { v: 442, t: '442 Hz' }, { v: 432, t: '432 Hz' },
+      ]);
+      addRange($controls, 'Readout hold', Sc, 'markerHold', 2, 30, 1, function (x) { return x.toFixed(0) + ' s'; });
+      addNote($controls, 'Touch strip: tap to read time from trigger, the equivalent period frequency + note (tap one cycle in to read pitch), and the level there. Tap-and-hold clears it.');
     } else if (v === 'waveform') {
       var W = settings.waveform;
       addSelect($controls, 'Channel', W, 'channel', [{ v: 'mono', t: 'Mono' }, { v: 'left', t: 'Left' }, { v: 'right', t: 'Right' }]);
@@ -180,17 +185,24 @@
       addToggle($controls, 'Filled', W, 'filled');
       addRange($controls, 'Fill opacity', W, 'fill', 0, 0.5, 0.01, function (x) { return x.toFixed(2); });
       addColor($controls, 'Color', W, 'color');
+      addRange($controls, 'Readout hold', W, 'markerHold', 2, 30, 1, function (x) { return x.toFixed(0) + ' s'; });
+      addNote($controls, 'Touch strip: tap to read how far back that moment is and its peak level. Tap-and-hold clears it.');
     } else if (v === 'gonio') {
       addColor($controls, 'Color', settings.gonio, 'color');
-      addNote($controls, 'Vectorscope of the stereo field with phosphor persistence. Mono content traces a vertical line.');
+      addNote($controls, 'Vectorscope of the stereo field with phosphor persistence. Mono content traces a vertical line. Touch strip: tap to show live correlation + balance numbers.');
     } else if (v === 'meters') {
-      addNote($controls, 'Stereo peak + RMS with peak-hold. Scale −60…+6 dBFS. No extra options.');
+      addNote($controls, 'Stereo peak + RMS with peak-hold. Scale −60…+6 dBFS. Touch strip: tap the left/right half to read that channel’s exact RMS and peak numbers.');
     } else if (v === 'bands') {
-      addNote($controls, 'Ten ISO octave bands (31 Hz…16 kHz), left and right shown side by side.');
+      var B = settings.bands;
+      addSelect($controls, 'Tuning A4', B, 'tuneA4', [
+        { v: 440, t: '440 Hz' }, { v: 442, t: '442 Hz' }, { v: 432, t: '432 Hz' },
+      ]);
+      addRange($controls, 'Readout hold', B, 'markerHold', 2, 30, 1, function (x) { return x.toFixed(0) + ' s'; });
+      addNote($controls, 'Ten ISO octave bands (31 Hz…16 kHz), left and right side by side. Touch strip: tap a band to read its center frequency, nearest note and live L/R levels.');
     } else if (v === 'corr') {
-      addNote($controls, 'Stereo correlation: +1 mono / in-phase, 0 wide, −1 out-of-phase.');
+      addNote($controls, 'Stereo correlation: +1 mono / in-phase, 0 wide, −1 out-of-phase. Touch strip: tap to show the exact number.');
     } else if (v === 'bal') {
-      addNote($controls, 'Left / right RMS balance.');
+      addNote($controls, 'Left / right RMS balance. Touch strip: tap to show the exact number.');
     }
   }
 
