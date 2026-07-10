@@ -38,6 +38,10 @@
       window: 'hann', blockSize: 2048, overlap: 0.598, avgTime: 1057, slope: 4.5,
       freqLo: 15.2, freqHi: 20000, rangeLo: -78, rangeHi: 0,
       filled: true, pivot: 1000, color: '#d6ff7a', fill: 0.16,
+      // tap readout (SPAN-style mouse hover): tuning for the note name, snap to
+      // the strongest nearby column (fat-finger aid), seconds before auto-hide.
+      // markerX (0..1, transient) is injected by the consumer, never persisted.
+      tuneA4: 440, snap: true, markerHold: 6,
     },
     scope: {
       channel: 'left', trigger: 'rising', threshold: 0.0, timeMs: 20, amp: 1.0,
@@ -161,6 +165,25 @@
   const NICE_FREQS = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
   const LABEL_FREQS = new Set([100, 1000, 10000]);
   function fmtHz(f) { return f >= 1000 ? (f / 1000) + 'k' : '' + f; }
+
+  // Nearest equal-tempered note for a frequency (a4 = tuning reference in Hz).
+  const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  function noteFor(freq, a4) {
+    a4 = a4 || 440;
+    if (!(freq > 0)) return null;
+    const m = 69 + 12 * Math.log2(freq / a4);
+    const nearest = Math.round(m);
+    const cents = Math.round((m - nearest) * 100);
+    const name = NOTE_NAMES[((nearest % 12) + 12) % 12];
+    const octave = Math.floor(nearest / 12) - 1;
+    return { midi: nearest, name: name, octave: octave, cents: cents, label: name + octave };
+  }
+  // Compact frequency for the tap readout ("62.4Hz", "110.0Hz", "742Hz", "2.45kHz").
+  function fmtFreq(f) {
+    if (f < 100) return f.toFixed(1) + 'Hz';
+    if (f < 1000) return Math.round(f) + 'Hz';
+    return (f / 1000).toFixed(f < 10000 ? 2 : 1) + 'kHz';
+  }
 
   const DB_TOP = 6, DB_BOT = -60;                   // peak/RMS meter scale
   const BANDS = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
@@ -324,6 +347,88 @@
       ctx.strokeStyle = C.color;
       ctx.lineWidth = 1.2;
       ctx.stroke();
+
+      if (C.markerX != null) this.drawSpectrumMarker(ctx, w, h, C);
+    }
+
+    /* ------------------------------------- spectrum: tap readout (SPAN-style)
+       Resolve the transient marker (C.markerX 0..1) to a column / frequency /
+       displayed dB, optionally snapping to the strongest column nearby so a
+       fingertip on the 200px touch slot lands on the actual peak. */
+    spectrumReadout(w, C) {
+      if (C.markerX == null || !this.col || this.cols !== w) return null;
+      let x = Math.round(clamp(C.markerX, 0, 1) * (w - 1));
+      if (C.snap !== false) {
+        const R = Math.max(2, Math.round(w * 0.04));   // ~±8px on a 200px slot
+        let best = x;
+        for (let i = Math.max(0, x - R); i <= Math.min(w - 1, x + R); i++) {
+          if (this.col[i] > this.col[best]) best = i;
+        }
+        x = best;
+      }
+      let f = this.fmin * Math.exp(this.lr * ((x + 0.5) / w));
+      // Refine with the last FFT power spectrum when available: the 200px
+      // column grid alone is ~60 cents wide in the bass — too coarse for a
+      // note readout. Find the true peak bin (climbing out of the column if
+      // the peak straddles its edge) + log-domain parabolic interpolation,
+      // which is exact for a gaussian-ish windowed peak (sub-Hz at 110 Hz).
+      const p = this.power;
+      const n = C.blockSize;
+      if (p && this.binLo && this.cols === w) {
+        const half = n >> 1;
+        let k = this.binLo[x];
+        for (let i = this.binLo[x]; i <= this.binHi[x]; i++) if (p[i] > p[k]) k = i;
+        while (k + 1 <= half && p[k + 1] > p[k]) k++;
+        while (k - 1 >= 1 && p[k - 1] > p[k]) k--;
+        if (p[k] > 0) {
+          let kk = k;
+          if (k >= 1 && k + 1 <= half && p[k - 1] > 0 && p[k + 1] > 0) {
+            const y0 = Math.log(p[k - 1]), y1 = Math.log(p[k]), y2 = Math.log(p[k + 1]);
+            const den = y0 - 2 * y1 + y2;
+            const d = den !== 0 ? 0.5 * (y0 - y2) / den : 0;
+            if (d > -1 && d < 1) kk = k + d;
+          }
+          const fr = kk * SR / n;
+          if (fr > 0) f = fr;
+        }
+      }
+      return { x: x, f: f, db: this.col[x], note: noteFor(f, C.tuneA4 || 440) };
+    }
+    drawSpectrumMarker(ctx, w, h, C) {
+      const r = this.spectrumReadout(w, C);
+      if (!r) return;
+      const top = C.rangeHi, bot = C.rangeLo, span = (top - bot) || 1;
+      const y = h - clamp((r.db - bot) / span, 0, 1) * h;
+      const x = r.x + 0.5;
+
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = hexA(C.color, 0.75);
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+      ctx.setLineDash([]);
+
+      // dot on the curve: colored halo + white core, sized to read on the strip
+      ctx.fillStyle = hexA(C.color, 0.45);
+      ctx.beginPath(); ctx.arc(x, y, 4, 0, 2 * Math.PI); ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.arc(x, y, 1.8, 0, 2 * Math.PI); ctx.fill();
+
+      // header readout — font scales with the surface so it stays legible on
+      // the 100px-tall touch slot AND on 144px keys (SPAN's header line, shrunk)
+      const n = r.note;
+      const cents = n ? (n.cents === 0 ? '±0' : (n.cents > 0 ? '+' : '') + n.cents) : '';
+      const txt = fmtFreq(r.f) + '  ' + (n ? n.label + ' ' + cents + '¢' : '') + '  ' + r.db.toFixed(1) + 'dB';
+      const fs = Math.max(8, Math.round(h * 0.09));
+      ctx.font = '600 ' + fs + 'px "SF Mono", monospace';
+      const pad = 3;
+      const tw = ctx.measureText(txt).width;
+      const bh = fs + 2 * pad;
+      ctx.fillStyle = 'rgba(6,8,10,0.78)';
+      ctx.fillRect(0, 0, Math.min(w, tw + 2 * pad + 2), bh);
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(txt, pad, bh / 2 + 0.5);
+      ctx.textBaseline = 'alphabetic';
     }
 
     /* ----------------------------------------------------------- oscilloscope */
@@ -755,7 +860,7 @@ registerProcessor('meter-processor', MeterProcessor);
   root.AVM = {
     RING, VIEWS, DEFAULTS,
     FFT, Renderer, AudioEngine,
-    clamp, lin2db, hexA, makeWindow, fmtHz,
+    clamp, lin2db, hexA, makeWindow, fmtHz, noteFor, fmtFreq,
     get SR() { return SR; },
     get METER() { return METER; },
   };

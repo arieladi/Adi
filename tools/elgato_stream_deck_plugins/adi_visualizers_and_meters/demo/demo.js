@@ -98,6 +98,7 @@
       var isDrag = down.target && down.moved;
       var tapped = !down.moved;
       var target = down.target;
+      var tapX = down.x;
       down = null;
       if (isDrag) return;
       if (!tapped) return;
@@ -107,6 +108,12 @@
         lastTap = now;
         if (target) return;
         setTimeout(function () { if (lastTap === now) cycleView(); }, 290);
+      } else if (STATE.view === 'spectrum') {
+        // Mirror the device: single tap places the SPAN-style readout marker;
+        // double tap clears it and cycles to the next view.
+        if (now - lastTap < 280) { CFG.spectrum.markerX = null; lastTap = 0; cycleView(); return; }
+        lastTap = now;
+        setTimeout(function () { if (lastTap === now) CFG.spectrum.markerX = AVM.clamp(tapX, 0, 1); }, 290);
       } else {
         cycleView();
       }
