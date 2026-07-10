@@ -1,7 +1,7 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "Adi Visualizers & Meters",
-  "Version": "1.1.0.0",
+  "Version": "1.2.0.0",
   "Author": "Adi Ariel",
   "UUID": "com.adi.visualizers-and-meters",
   "URL": "https://github.com/adiariel/adi_visualizers_and_meters",
