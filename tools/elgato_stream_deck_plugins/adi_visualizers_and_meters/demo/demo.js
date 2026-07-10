@@ -10,7 +10,7 @@
 (function () {
   var AVM = window.AVM;
 
-  var VIEWS = ['spectrum', 'scope', 'waveform'];
+  var VIEWS = ['spectrum', 'scope', 'waveform', 'rme'];
   var STATE = { running: false, view: 'spectrum' };
 
   // One config object for the whole demo, seeded from engine defaults.
@@ -18,6 +18,7 @@
     spectrum: Object.assign({}, AVM.DEFAULTS.spectrum),
     scope: Object.assign({}, AVM.DEFAULTS.scope, { showCursors: true }),
     waveform: Object.assign({}, AVM.DEFAULTS.waveform),
+    rme: Object.assign({}, AVM.DEFAULTS.rme),
     gonio: Object.assign({}, AVM.DEFAULTS.gonio),
   };
 
@@ -203,6 +204,15 @@
       addToggle('Filled', S, 'filled');
       addRange('Fill opacity', S, 'fill', 0, 0.5, 0.01, function (v) { return v.toFixed(2); });
       addColor('Color', S, 'color');
+    } else if (STATE.view === 'rme') {
+      modalTitle.textContent = 'RME analyzer';
+      var RM = CFG.rme;
+      addRange('Avg time', RM, 'avgTime', 0, 2000, 1, function (v) { return v.toFixed(0) + ' ms'; });
+      addRange('Range low', RM, 'rangeLo', -80, -30, 1, function (v) { return v.toFixed(0) + ' dB'; });
+      addRange('Range high', RM, 'rangeHi', -30, 0, 1, function (v) { return v.toFixed(0) + ' dB'; });
+      addSelect('Block size', RM, 'blockSize', [
+        { v: 2048, t: '2048' }, { v: 4096, t: '4096' }, { v: 8192, t: '8192' },
+      ]);
     } else if (STATE.view === 'scope') {
       modalTitle.textContent = 'Oscilloscope';
       var Sc = CFG.scope;

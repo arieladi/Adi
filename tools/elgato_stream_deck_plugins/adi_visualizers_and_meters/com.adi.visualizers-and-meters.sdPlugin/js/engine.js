@@ -29,7 +29,7 @@
   const RMASK = RING - 1;
 
   // All selectable views (the plugin lets each action pick one of these)
-  const VIEWS = ['spectrum', 'scope', 'waveform', 'meters', 'bands', 'gonio', 'corr', 'bal'];
+  const VIEWS = ['spectrum', 'scope', 'waveform', 'meters', 'bands', 'rme', 'gonio', 'corr', 'bal'];
 
   // Default config for each view. Cloned per action instance by the consumer.
   const DEFAULTS = {
@@ -52,12 +52,30 @@
       channel: 'mono', windowMs: 1500, filled: true, color: '#ff8a3d', fill: 0.22,
       markerHold: 6,
     },
-    meters: { color: '#7fe06a' },
+    meters: { color: '#7fe06a', style: 'classic' },   // 'classic' | 'rme'
     bands: { tuneA4: 440, markerHold: 6 },
+    // RME DIGICheck-style spectral analyzer: 27 x 1/3-octave segmented LED
+    // bands (50 Hz..20 kHz) + RMS L / Peak / RMS R meter trio on the right.
+    rme: {
+      window: 'hann', blockSize: 4096, overlap: 0.5, avgTime: 300,
+      rangeLo: -50, rangeHi: -10,      // band display range, like the reference
+      tuneA4: 440, markerHold: 6,
+    },
     gonio: { color: '#38f0a0' },
     corr: {},
     bal: {},
   };
+
+  // ISO 1/3-octave centers for the RME view. The log-uniform column mapping
+  // (ensureMap) with these edges lands each column on a 1/3-octave center
+  // (log-uniform IS 1/3-octave: per-column ratio = 2^(1/3), within ~0.3%).
+  const RME_BANDS = [50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800,
+    1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
+  const RME_FLO = 50 * Math.pow(2, -1 / 6);
+  const RME_FHI = 20000 * Math.pow(2, 1 / 6);
+  const RME_LABELS = { 63: '63', 250: '250', 1000: '1k', 4000: '4k', 16000: '16k' };
+  // DIGICheck colorway
+  const RME_LIT = '#6fe9c9', RME_OFF = '#17352b', RME_MARK = '#ffe066', RME_MARK_OFF = '#4e481f';
 
   /* --------------------------------------------- shared (single-capture) state */
   let SR = 48000;                                   // live sample rate
@@ -212,6 +230,39 @@
     if (pct === 0) return 'C';
     return (v > 0 ? 'R +' : 'L +') + pct + '%';
   }
+  // Segmented "LED" column (RME style). db in [lo..hi] lights rows bottom-up;
+  // markRows (Set) draws the yellow grid rows; zone=true adds the meter
+  // red/yellow top zoning (rowDb > -5 red, > -10 yellow).
+  function drawSegColumn(ctx, x, cw, top, bot, db, lo, hi, markRows, zone) {
+    const segH = 3;
+    const rows = Math.max(4, Math.floor((bot - top) / segH));
+    const lit = Math.round(clamp((db - lo) / ((hi - lo) || 1), 0, 1) * rows);
+    for (let r = 0; r < rows; r++) {
+      const y = bot - (r + 1) * segH;
+      const isLit = r < lit;
+      let c = isLit ? RME_LIT : RME_OFF;
+      if (zone && isLit) {
+        const rowDb = lo + ((r + 0.5) / rows) * (hi - lo);
+        if (rowDb > -5) c = '#ff5d5d';
+        else if (rowDb > -10) c = '#ffd166';
+      }
+      if (markRows && markRows.has(r)) c = isLit ? RME_MARK : RME_MARK_OFF;
+      ctx.fillStyle = c;
+      ctx.fillRect(x, y, cw, segH - 1);
+    }
+    return rows;
+  }
+  function segMarkRows(top, bot, lo, hi, marks) {
+    const segH = 3;
+    const rows = Math.max(4, Math.floor((bot - top) / segH));
+    const s = new Set();
+    for (let i = 0; i < marks.length; i++) {
+      const r = Math.floor(((marks[i] - lo) / ((hi - lo) || 1)) * rows);
+      if (r >= 0 && r < rows) s.add(r);
+    }
+    return s;
+  }
+
   // Marker hairline + emphasis dot shared by the positional views.
   function drawMarkerDot(ctx, x, y, h, color) {
     ctx.setLineDash([3, 3]);
@@ -576,8 +627,17 @@
     }
     drawMeters(ctx, w, h, dt, M) {
       this.updateMeters(dt);
-      const H = this.hold;
       ctx.clearRect(0, 0, w, h);
+      // Live numbers are ALWAYS visible (RME-style) — no tap needed. The bars
+      // get the left portion, the numeric block the right.
+      const numW = 74;
+      const mw = Math.max(40, w - numW);
+      if (M && M.style === 'rme') this._metersRME(ctx, mw, h);
+      else this._metersClassic(ctx, mw, h);
+      this._meterNumbers(ctx, h, mw + 4);
+    }
+    _metersClassic(ctx, w, h) {
+      const H = this.hold;
       const pad = 3, scaleW = 15;
       const yOf = (db) => h - pad - clamp((db - DB_BOT) / (DB_TOP - DB_BOT), 0, 1) * (h - 2 * pad);
 
@@ -596,15 +656,46 @@
       const x0 = scaleW + gap;
       this._bar(ctx, x0, pad, barW, h - 2 * pad, H.rmsL, H.pkL, H.holdL, yOf, 'L');
       this._bar(ctx, x0 + barW + gap, pad, barW, h - 2 * pad, H.rmsR, H.pkR, H.holdR, yOf, 'R');
-
-      // tap readout: exact numbers for the tapped channel (left/right half)
-      if (M && M.markerX != null) {
-        const left = clamp(M.markerX, 0, 1) < 0.5;
-        const txt = left
-          ? 'L  rms ' + H.rmsL.toFixed(1) + '  pk ' + H.pkL.toFixed(1) + 'dB'
-          : 'R  rms ' + H.rmsR.toFixed(1) + '  pk ' + H.pkR.toFixed(1) + 'dB';
-        drawReadout(ctx, w, h, txt);
+    }
+    // RME DIGICheck-style segmented trio: RMS L | Peak | RMS R over 0..-40
+    // with the red/yellow top zone, yellow grid rows and an OVR strip.
+    _metersRME(ctx, mw, h) {
+      const H = this.hold;
+      const top = 4, bot = h - 8, gap = 4;
+      const cw = (mw - 4 * gap) / 3;
+      const marks = segMarkRows(top, bot, -40, 0, [-10, -20, -30]);
+      const vals = [H.rmsL, Math.max(H.pkL, H.pkR), H.rmsR];
+      const labels = ['L', 'PK', 'R'];
+      ctx.font = '6px "SF Mono", monospace';
+      for (let i = 0; i < 3; i++) {
+        const x = gap + i * (cw + gap);
+        drawSegColumn(ctx, x, cw, top, bot, vals[i], -40, 0, marks, true);
+        ctx.fillStyle = 'rgba(150,160,170,0.7)';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(labels[i], x + cw / 2 - labels[i].length * 1.8, h - 1);
       }
+      const ovr = Math.max(H.pkL, H.pkR) > -0.3;
+      ctx.fillStyle = ovr ? '#ff2d2d' : RME_OFF;
+      ctx.fillRect(gap, 0, 3 * cw + 2 * gap, 2.5);
+    }
+    // Always-on numeric block (PEAK / RMS, L R) in LCD green, RME style.
+    _meterNumbers(ctx, h, x0) {
+      const H = this.hold;
+      const fs = Math.max(8, Math.round(h * 0.10));
+      const lh = fs + 3;
+      const num = (v) => (v <= -120 ? '-inf' : v.toFixed(1));
+      ctx.font = '600 ' + fs + 'px "SF Mono", monospace';
+      ctx.textBaseline = 'middle';
+      let y = h / 2 - 1.5 * lh;
+      ctx.fillStyle = 'rgba(150,160,170,0.85)';
+      ctx.fillText('PEAK', x0, y);
+      ctx.fillStyle = '#3ad98a';
+      ctx.fillText(num(H.pkL) + ' ' + num(H.pkR), x0, y + lh);
+      ctx.fillStyle = 'rgba(150,160,170,0.85)';
+      ctx.fillText('RMS', x0, y + 2 * lh);
+      ctx.fillStyle = '#3ad98a';
+      ctx.fillText(num(H.rmsL) + ' ' + num(H.rmsR), x0, y + 3 * lh);
+      ctx.textBaseline = 'alphabetic';
     }
     _bar(ctx, x, y, bw, bh, rmsDb, pkDb, holdDb, yOf, label) {
       ctx.fillStyle = 'rgba(255,255,255,0.04)';
@@ -646,10 +737,8 @@
       ctx.font = '6px "SF Mono", monospace'; ctx.fillStyle = 'rgba(150,160,170,0.7)';
       ctx.textBaseline = 'middle';
       ctx.fillText('-1', pad, mid); ctx.fillText('+1', w - pad - 8, mid);
-      // tap readout: the number the needle is pointing at
-      if (C && C.markerX != null) {
-        drawReadout(ctx, w, h, 'corr ' + (v >= 0 ? '+' : '') + v.toFixed(2));
-      }
+      // always-on numeric value (RME style — the number the needle points at)
+      drawReadout(ctx, w, h, 'corr ' + (v >= 0 ? '+' : '') + v.toFixed(2));
     }
     drawBal(ctx, w, h, C) {
       ctx.clearRect(0, 0, w, h);
@@ -665,9 +754,8 @@
       ctx.font = '6px "SF Mono", monospace'; ctx.fillStyle = 'rgba(150,160,170,0.7)';
       ctx.textBaseline = 'middle';
       ctx.fillText('L', pad, mid); ctx.fillText('R', w - pad - 5, mid);
-      if (C && C.markerX != null) {
-        drawReadout(ctx, w, h, 'bal ' + fmtBal(v));
-      }
+      // always-on numeric value
+      drawReadout(ctx, w, h, 'bal ' + fmtBal(v));
     }
 
     /* ----------------------------------------------------------- goniometer
@@ -776,6 +864,69 @@
       ctx.fillRect(x, y, bw, baseY - y);
     }
 
+    /* ----------------------------------------- RME DIGICheck spectral analyzer
+       27 x 1/3-octave segmented LED bands (50 Hz..20 kHz, computed through the
+       same FFT pipeline as the spectrum on 27 log columns) + the RMS L / Peak /
+       RMS R segmented meter trio with OVR strip, like the reference layout. */
+    drawRME(ctx, w, h, C, dt) {
+      ctx.clearRect(0, 0, w, h);
+      if (!this._rmeCfg) this._rmeCfg = {};
+      const C2 = Object.assign(this._rmeCfg, C, { freqLo: RME_FLO, freqHi: RME_FHI, slope: 0, pivot: 1000 });
+      const n = RME_BANDS.length;
+      this.computeSpectrum(n, C2, dt);
+      const col = this.col;
+
+      const meterW = Math.max(34, Math.round(w * 0.18));
+      const bandsW = w - meterW - 5;
+      const top = 4, bot = h - 8;
+      const lo = C.rangeLo, hi = C.rangeHi;
+      const bw = bandsW / n;
+      const marks = segMarkRows(top, bot, lo, hi, [-20, -30, -40]);
+
+      ctx.font = '6px "SF Mono", monospace';
+      for (let i = 0; i < n; i++) {
+        drawSegColumn(ctx, i * bw, Math.max(1, bw - 1), top, bot, col[i], lo, hi, marks, false);
+        const lab = RME_LABELS[RME_BANDS[i]];
+        if (lab) {
+          ctx.fillStyle = 'rgba(150,160,170,0.6)';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(lab, i * bw + bw / 2 - lab.length * 1.8, h - 1);
+        }
+      }
+
+      this.updateMeters(dt);
+      const H = this.hold;
+      const mgap = 2;
+      const mx0 = bandsW + 5;
+      const cw = (meterW - 2 * mgap) / 3;
+      const mmarks = segMarkRows(top, bot, -40, 0, [-10, -20, -30]);
+      const vals = [H.rmsL, Math.max(H.pkL, H.pkR), H.rmsR];
+      for (let i = 0; i < 3; i++) {
+        drawSegColumn(ctx, mx0 + i * (cw + mgap), Math.max(1, cw - 1), top, bot, vals[i], -40, 0, mmarks, true);
+      }
+      const ovr = Math.max(H.pkL, H.pkR) > -0.3;
+      ctx.fillStyle = ovr ? '#ff2d2d' : RME_OFF;
+      ctx.fillRect(mx0, 0, meterW - 5, 2.5);
+
+      // tap: bands area -> band center + note + level; meter area -> numbers
+      if (C.markerX != null) {
+        const px = clamp(C.markerX, 0, 1) * (w - 1);
+        if (px < bandsW) {
+          const i = Math.min(n - 1, Math.floor(px / bw));
+          ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(i * bw + 0.5, top - 1.5, Math.max(1, bw - 1), (bot - top) + 3);
+          drawReadout(ctx, w, h,
+            fmtHz(RME_BANDS[i]) + 'Hz ' + fmtNote(noteFor(RME_BANDS[i], C.tuneA4 || 440)) +
+            '  ' + col[i].toFixed(1) + 'dB');
+        } else {
+          drawReadout(ctx, w, h,
+            'PK ' + H.pkL.toFixed(1) + '/' + H.pkR.toFixed(1) +
+            '  RMS ' + H.rmsL.toFixed(1) + '/' + H.rmsR.toFixed(1));
+        }
+      }
+    }
+
     /* ------------------------------------------------------------- dispatch */
     // Draw any view. `cfg` is the per-view config object; `dt` seconds since last
     // frame; `resized` true when the backing surface changed (resets gonio trail).
@@ -786,6 +937,7 @@
         case 'waveform': return this.drawWaveform(ctx, w, h, cfg);
         case 'meters':   return this.drawMeters(ctx, w, h, dt, cfg);
         case 'bands':    return this.drawBands(ctx, w, h, cfg);
+        case 'rme':      return this.drawRME(ctx, w, h, cfg, dt);
         case 'gonio':    return this.drawGonio(ctx, w, h, cfg, resized);
         case 'corr':     return this.drawCorr(ctx, w, h, cfg);
         case 'bal':      return this.drawBal(ctx, w, h, cfg);
@@ -938,6 +1090,7 @@ registerProcessor('meter-processor', MeterProcessor);
     RING, VIEWS, DEFAULTS,
     FFT, Renderer, AudioEngine,
     clamp, lin2db, hexA, makeWindow, fmtHz, noteFor, fmtFreq, fmtNote, fmtBal,
+    RME_BANDS, RME_FLO, RME_FHI,
     get SR() { return SR; },
     get METER() { return METER; },
     // test hook: inject synthetic PCM into the shared ring buffers (headless
