@@ -22,8 +22,9 @@ Deck key as well. Pure Web Audio + HTML5 Canvas, **zero runtime dependencies**.
 | **Spectrum** | Log-frequency FFT with selectable window, block size, overlap, averaging time, pink-noise slope, frequency/dB ranges and fill. |
 | **Oscilloscope** | Triggered time-domain trace (rising / falling / free), per-channel, with adjustable time base, amplitude and measurement cursors. |
 | **Waveform** | Min/max envelope over a configurable window (Bitwig-style filled trace). |
-| **Peak / RMS meters** | True per-channel RMS + peak with peak-hold ballistics, −60…+6 dBFS. |
+| **Peak / RMS meters** | True per-channel RMS + peak with peak-hold ballistics, −60…+6 dBFS. Live **PEAK/RMS numbers always shown**; classic bars or **RME LED-segment style**. |
 | **Octave bands** | Ten ISO bands (31 Hz…16 kHz), left & right side by side. |
+| **RME analyzer** | DIGICheck-style: **27 × 1/3-octave segmented LED bands** (50 Hz…20 kHz) with yellow grid rows + the **RMS L / Peak / RMS R** meter trio with OVR strip — the reference layout in one view. |
 | **Goniometer** | Stereo vectorscope with phosphor persistence (mono = vertical). |
 | **Correlation** | Inter-channel phase: +1 mono, 0 wide, −1 out-of-phase. |
 | **Balance** | Left/right RMS balance. |
@@ -118,9 +119,10 @@ marker auto-hides after **Readout hold** seconds (default 6, per view):
 | **Scope** | time from trigger + the **equivalent period frequency + note** (tap one cycle in to read the pitch) + level at that instant |
 | **Waveform** | how far back that moment is (`-380ms`) + that column's peak level |
 | **Octave bands** | tapped band's center frequency, nearest note, live L/R levels (band highlighted) |
-| **Meters** | tapped channel's exact numbers: `L rms -12.4 pk -6.0dB` |
+| **RME analyzer** | tap a band → its frequency, note and level; tap the meter side → exact PEAK/RMS numbers |
+| **Meters** | *no tap needed* — live PEAK/RMS numbers are always shown next to the bars |
 | **Goniometer** | live correlation + balance numbers |
-| **Correlation / Balance** | the exact value the needle points at |
+| **Correlation / Balance** | *no tap needed* — the exact value is always shown |
 
 Compensations for the small 200 × 100 touch slot (spectrum):
 

@@ -27,7 +27,7 @@
   var DEFAULT_FPS = 15;          // device-friendly frame rate (5..30)
 
   // Views the dial/key cycles through, in order.
-  var CYCLE = ['spectrum', 'scope', 'waveform', 'meters', 'bands', 'gonio'];
+  var CYCLE = ['spectrum', 'scope', 'waveform', 'meters', 'bands', 'rme', 'gonio'];
 
   /* ------------------------------------------------------------------- state */
   var sd = null;                 // WebSocket
@@ -57,7 +57,7 @@
       view: AVM.VIEWS.indexOf(s.view) >= 0 ? s.view : 'spectrum',
     };
     // every view gets a config merged over defaults
-    var views = ['spectrum', 'scope', 'waveform', 'meters', 'bands', 'gonio', 'corr', 'bal'];
+    var views = ['spectrum', 'scope', 'waveform', 'meters', 'bands', 'rme', 'gonio', 'corr', 'bal'];
     for (var i = 0; i < views.length; i++) {
       var v = views[i];
       out[v] = Object.assign(clone(AVM.DEFAULTS[v] || {}), s[v] || {});
@@ -210,7 +210,7 @@
   function adjustView(inst, ticks) {
     var view = inst.settings.view;
     var c = inst.settings[view];
-    if (view === 'spectrum') c.avgTime = clampNum(c.avgTime + ticks * 25, 0, 2000, c.avgTime);
+    if (view === 'spectrum' || view === 'rme') c.avgTime = clampNum(c.avgTime + ticks * 25, 0, 2000, c.avgTime);
     else if (view === 'scope') c.timeMs = clampNum(c.timeMs + ticks, 1, 100, c.timeMs);
     else if (view === 'waveform') c.windowMs = clampNum(c.windowMs + ticks * 50, 200, 4000, c.windowMs);
     else return; // meters / bands / gonio / corr / bal: nothing to rotate

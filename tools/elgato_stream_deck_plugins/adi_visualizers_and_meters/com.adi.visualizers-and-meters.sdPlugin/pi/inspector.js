@@ -25,7 +25,7 @@
   function normalize(s) {
     s = s || {};
     var out = { view: AVM.VIEWS.indexOf(s.view) >= 0 ? s.view : 'spectrum' };
-    var views = ['spectrum', 'scope', 'waveform', 'meters', 'bands', 'gonio', 'corr', 'bal'];
+    var views = ['spectrum', 'scope', 'waveform', 'meters', 'bands', 'rme', 'gonio', 'corr', 'bal'];
     for (var i = 0; i < views.length; i++) {
       var v = views[i];
       out[v] = Object.assign(clone(DEFAULTS[v] || {}), s[v] || {});
@@ -122,6 +122,7 @@
       { v: 'waveform', t: 'Waveform' },
       { v: 'meters', t: 'Peak / RMS meters' },
       { v: 'bands', t: 'Octave bands' },
+      { v: 'rme', t: 'RME spectral analyzer (bands + meters)' },
       { v: 'gonio', t: 'Goniometer (vectorscope)' },
       { v: 'corr', t: 'Stereo correlation' },
       { v: 'bal', t: 'Balance' },
@@ -133,8 +134,8 @@
     var v = settings.view;
     $viewTitle.textContent = ({
       spectrum: 'Spectrum', scope: 'Oscilloscope', waveform: 'Waveform',
-      meters: 'Meters', bands: 'Octave bands', gonio: 'Goniometer',
-      corr: 'Correlation', bal: 'Balance',
+      meters: 'Meters', bands: 'Octave bands', rme: 'RME analyzer',
+      gonio: 'Goniometer', corr: 'Correlation', bal: 'Balance',
     })[v] || 'Settings';
 
     if (v === 'spectrum') {
@@ -191,7 +192,23 @@
       addColor($controls, 'Color', settings.gonio, 'color');
       addNote($controls, 'Vectorscope of the stereo field with phosphor persistence. Mono content traces a vertical line. Touch strip: tap to show live correlation + balance numbers.');
     } else if (v === 'meters') {
-      addNote($controls, 'Stereo peak + RMS with peak-hold. Scale −60…+6 dBFS. Touch strip: tap the left/right half to read that channel’s exact RMS and peak numbers.');
+      addSelect($controls, 'Style', settings.meters, 'style', [
+        { v: 'classic', t: 'Classic bars' }, { v: 'rme', t: 'RME LED segments' },
+      ]);
+      addNote($controls, 'Stereo peak + RMS with peak-hold. Live PEAK / RMS numbers are always shown next to the meters (no tap needed).');
+    } else if (v === 'rme') {
+      var RM = settings.rme;
+      addRange($controls, 'Avg time', RM, 'avgTime', 0, 2000, 1, function (x) { return x.toFixed(0) + ' ms'; });
+      addRange($controls, 'Range low', RM, 'rangeLo', -80, -30, 1, function (x) { return x.toFixed(0) + ' dB'; });
+      addRange($controls, 'Range high', RM, 'rangeHi', -30, 0, 1, function (x) { return x.toFixed(0) + ' dB'; });
+      addSelect($controls, 'Block size', RM, 'blockSize', [
+        { v: 2048, t: '2048' }, { v: 4096, t: '4096' }, { v: 8192, t: '8192' },
+      ]);
+      addSelect($controls, 'Tuning A4', RM, 'tuneA4', [
+        { v: 440, t: '440 Hz' }, { v: 442, t: '442 Hz' }, { v: 432, t: '432 Hz' },
+      ]);
+      addRange($controls, 'Readout hold', RM, 'markerHold', 2, 30, 1, function (x) { return x.toFixed(0) + ' s'; });
+      addNote($controls, 'RME DIGICheck-style: 27 × 1/3-octave LED bands (50 Hz…20 kHz) + RMS L / Peak / RMS R meters with OVR. Touch strip: tap a band to read its frequency, note and level; tap the meter side for exact PEAK/RMS numbers.');
     } else if (v === 'bands') {
       var B = settings.bands;
       addSelect($controls, 'Tuning A4', B, 'tuneA4', [
@@ -200,9 +217,9 @@
       addRange($controls, 'Readout hold', B, 'markerHold', 2, 30, 1, function (x) { return x.toFixed(0) + ' s'; });
       addNote($controls, 'Ten ISO octave bands (31 Hz…16 kHz), left and right side by side. Touch strip: tap a band to read its center frequency, nearest note and live L/R levels.');
     } else if (v === 'corr') {
-      addNote($controls, 'Stereo correlation: +1 mono / in-phase, 0 wide, −1 out-of-phase. Touch strip: tap to show the exact number.');
+      addNote($controls, 'Stereo correlation: +1 mono / in-phase, 0 wide, −1 out-of-phase. The exact number is always shown.');
     } else if (v === 'bal') {
-      addNote($controls, 'Left / right RMS balance. Touch strip: tap to show the exact number.');
+      addNote($controls, 'Left / right RMS balance. The exact number is always shown.');
     }
   }
 

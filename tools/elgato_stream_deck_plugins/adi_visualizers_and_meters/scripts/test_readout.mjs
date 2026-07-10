@@ -91,5 +91,26 @@ check('fmtBal left', AVM.fmtBal(-0.31), 'L +31%');
 // ring test hook exists (used by the hardware-free visual tests)
 check('_ringPush exported', typeof AVM._ringPush, 'function');
 
+// --- RME view (v1.3.0.0): 1/3-octave column mapping ------------------------
+check('rme in VIEWS', AVM.VIEWS.indexOf('rme') >= 0, true);
+check('rme defaults exist', typeof AVM.DEFAULTS.rme, 'object');
+check('rme band count', AVM.RME_BANDS.length, 27);
+{
+  // ensureMap over the RME edges must center every column on its ISO
+  // 1/3-octave band (log-uniform == 1/3-octave; tolerance covers the
+  // nominal-vs-exact ISO rounding, e.g. 315 vs 314.98, 1250 vs 1259.9).
+  const R2 = new AVM.Renderer();
+  const C3 = { blockSize: 4096, freqLo: AVM.RME_FLO, freqHi: AVM.RME_FHI };
+  R2.ensureMap(27, C3);
+  let worst = 0;
+  for (let i = 0; i < 27; i++) {
+    const fc = R2.fmin * Math.exp(R2.lr * ((i + 0.5) / 27));
+    const err = Math.abs(fc - AVM.RME_BANDS[i]) / AVM.RME_BANDS[i];
+    if (err > worst) worst = err;
+  }
+  check('rme columns on 1/3-oct centers (<1.5%)', worst < 0.015, true);
+}
+check('rme meters style default', AVM.DEFAULTS.meters.style, 'classic');
+
 console.log(failed ? `\n${failed} FAILURES` : '\nPASS — readout math verified (note names, mapping, snap, all-view helpers).');
 process.exit(failed ? 1 : 0);

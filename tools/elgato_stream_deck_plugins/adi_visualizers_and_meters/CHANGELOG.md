@@ -4,6 +4,37 @@ All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is the four-part
 scheme Stream Deck expects in the manifest (`MAJOR.MINOR.PATCH.BUILD`).
 
+## [1.3.0.0] — 2026-07-05
+
+### Added
+- **RME analyzer view** ("rme") — DIGICheck-style, modeled on the reference
+  screenshot: **27 × 1/3-octave segmented LED bands** (50 Hz…20 kHz, computed
+  through the same FFT pipeline as the spectrum on 27 log columns — each
+  column verified to land on its ISO band center) in the aqua-on-dark-green
+  colorway with yellow grid rows, plus the **RMS L / Peak / RMS R** segmented
+  meter trio (0…−40 dB, red/yellow top zone, OVR strip) on the right. Tap a
+  band → frequency + nearest note + level (band highlighted); tap the meter
+  side → exact PEAK/RMS numbers. PI options: Avg time, Range low/high, Block
+  size, Tuning A4, Readout hold. Dial rotate = averaging time.
+- **Meters style option**: Classic bars or **RME LED segments** (segmented
+  trio with zone colors + OVR).
+
+### Changed
+- **Meters / Correlation / Balance now ALWAYS show their live numbers** — no
+  tap needed (per feedback): meters get an RME-style PEAK/RMS numeric block
+  in LCD green beside the bars; corr/bal show the exact value permanently.
+  The tap readout on these views is gone (tap-and-hold still resets).
+- Fixed: switching the view from the Property Inspector no longer leaks the
+  previous view's tap marker.
+
+### Verified
+- test_readout.mjs extended (RME in VIEWS/defaults, 27 bands, every log
+  column on its 1/3-octave center <1.5%, meters style default) — PASS.
+- Hardware-free visual render through the REAL FFT path: injected sine mix
+  lit exactly the right bands; tap on the 100 Hz band read "100Hz G2 +35¢
+  −16.8dB"; meters numbers matched injected ground truth (PEAK −0.9/−1.4,
+  RMS −12.4/−13.2); corr +0.66; bal L +2%.
+
 ## [1.2.0.0] — 2026-07-05
 
 ### Added
