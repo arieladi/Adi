@@ -111,6 +111,8 @@
       settings: normalizeSettings(rec.payload && rec.payload.settings),
       prevView: null,
       clear: true,
+      markerX: null,       // transient SPAN-style tap readout position (0..1)
+      markerTimer: null,
     };
   }
 
@@ -158,8 +160,12 @@
       inst.clear = false;
       resized = true;
     }
+    var cfg = cfgFor(inst);
+    if (view === 'spectrum' && inst.markerX != null) {
+      cfg = Object.assign({}, cfg, { markerX: inst.markerX });
+    }
     try {
-      inst.renderer.draw(view, inst.ctx, inst.w, inst.h, cfgFor(inst), dt, resized);
+      inst.renderer.draw(view, inst.ctx, inst.w, inst.h, cfg, dt, resized);
     } catch (e) {
       log('draw error (' + view + '): ' + e.message);
       return;
@@ -173,10 +179,27 @@
   }
 
   /* --------------------------------------------------------------- interaction */
+  // SPAN-style tap readout marker (spectrum view, touch strip only). Transient:
+  // lives on the instance, never persisted, auto-hides after spectrum.markerHold s.
+  function setMarker(inst, x01) {
+    inst.markerX = AVM.clamp(x01, 0, 1);
+    if (inst.markerTimer) clearTimeout(inst.markerTimer);
+    var holdS = clampNum(inst.settings.spectrum.markerHold, 2, 30, 6);
+    inst.markerTimer = setTimeout(function () {
+      inst.markerX = null;
+      inst.markerTimer = null;
+    }, holdS * 1000);
+  }
+  function clearMarker(inst) {
+    if (inst.markerTimer) { clearTimeout(inst.markerTimer); inst.markerTimer = null; }
+    inst.markerX = null;
+  }
+
   function cycleView(inst) {
     var idx = CYCLE.indexOf(inst.settings.view);
     inst.settings.view = CYCLE[(idx + 1 + CYCLE.length) % CYCLE.length];
     inst.clear = true;
+    clearMarker(inst);
     setSettings(inst.context, inst.settings);
     if (inst.controller === 'Encoder') setFeedback(inst.context, { title: inst.settings.view.toUpperCase() });
     pushToPIIfActive(inst);
@@ -198,6 +221,7 @@
     var view = inst.settings.view;
     inst.settings[view] = clone(AVM.DEFAULTS[view] || {});
     inst.clear = true;
+    clearMarker(inst);
     setSettings(inst.context, inst.settings);
     pushToPIIfActive(inst);
   }
@@ -248,6 +272,7 @@
           break;
         }
         case 'willDisappear': {
+          if (instances[ctx]) clearMarker(instances[ctx]);
           delete instances[ctx];
           break;
         }
@@ -277,9 +302,23 @@
         }
         case 'touchTap': {
           if (!engine.running) { ensureAudio(); break; }
-          if (instances[ctx]) {
-            if (msg.payload && msg.payload.hold) resetView(instances[ctx]);
-            else cycleView(instances[ctx]);
+          var ti = instances[ctx];
+          if (!ti) break;
+          var hold = !!(msg.payload && msg.payload.hold);
+          if (ti.settings.view === 'spectrum') {
+            // SPAN-style readout: tap places/moves the marker at the touched
+            // frequency; tap-and-hold clears it (or resets the view if none).
+            // View cycling stays on the dial press.
+            if (hold) {
+              if (ti.markerX != null) clearMarker(ti);
+              else resetView(ti);
+            } else {
+              var tp = (msg.payload && msg.payload.tapPos) || [0, 0];
+              setMarker(ti, tp[0] / ti.w);
+            }
+          } else {
+            if (hold) resetView(ti);
+            else cycleView(ti);
           }
           break;
         }

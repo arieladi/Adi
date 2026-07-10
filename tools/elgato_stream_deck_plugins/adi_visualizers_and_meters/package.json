@@ -1,6 +1,6 @@
 {
   "name": "adi-visualizers-and-meters",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Stream Deck + plugin: real-time audio spectrum, oscilloscope, waveform, peak/RMS meters, octave bands, goniometer and stereo correlation. Pure Web Audio + Canvas, zero runtime dependencies.",
   "private": true,
   "license": "MIT",

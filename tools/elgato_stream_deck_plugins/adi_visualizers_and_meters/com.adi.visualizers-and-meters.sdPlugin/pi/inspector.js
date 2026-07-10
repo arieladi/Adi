@@ -158,6 +158,12 @@
       addToggle($controls, 'Filled', S, 'filled');
       addRange($controls, 'Fill opacity', S, 'fill', 0, 0.5, 0.01, function (x) { return x.toFixed(2); });
       addColor($controls, 'Color', S, 'color');
+      addSelect($controls, 'Tuning A4', S, 'tuneA4', [
+        { v: 440, t: '440 Hz (SPAN default)' }, { v: 442, t: '442 Hz' }, { v: 432, t: '432 Hz' },
+      ]);
+      addToggle($controls, 'Tap snap to peak', S, 'snap');
+      addRange($controls, 'Readout hold', S, 'markerHold', 2, 30, 1, function (x) { return x.toFixed(0) + ' s'; });
+      addNote($controls, 'Touch strip: tap the spectrum to read Hz / note / dB at that spot, like SPAN’s mouse readout — a dot marks the point on the curve. Tap-and-hold clears it. Press the dial to change views.');
     } else if (v === 'scope') {
       var Sc = settings.scope;
       addSelect($controls, 'Channel', Sc, 'channel', [{ v: 'left', t: 'Left' }, { v: 'right', t: 'Right' }, { v: 'mono', t: 'Mono' }]);
