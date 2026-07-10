@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rekordbox Cue Counter</title>
+<meta name="description" content="Cue in / cue out set-time calculator for DJ sets. Saves lists to GitHub.">
+<meta name="theme-color" content="#0e1116">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="21" fill="none" stroke="var(--accent)" stroke-width="3"/><circle cx="24" cy="24" r="13" fill="none" stroke="var(--accent)" stroke-width="2" opacity=".45"/><path d="M20 16.5v15l13-7.5z" fill="var(--accent)"/></svg>
+    <h1>Rekordbox <span>Cue&nbsp;Counter</span></h1>
+  </div>
+  <div class="account" id="accountArea"></div>
+</header>
+
+<div class="listbar">
+  <select id="listSelect" aria-label="Saved lists"></select>
+  <button id="btnNew" class="btn" title="Create a new list">＋ New</button>
+  <button id="btnSave" class="btn primary" title="Save this list to GitHub">Save</button>
+  <div class="moreWrap">
+    <button id="btnMore" class="btn icon" aria-label="List actions" aria-haspopup="menu">⋯</button>
+    <div id="moreMenu" class="menu" hidden>
+      <button data-act="refresh">↻ Refresh from GitHub</button>
+      <button data-act="duplicate">⧉ Duplicate list</button>
+      <button data-act="delete" class="danger">🗑 Delete list…</button>
+      <hr>
+      <button data-act="settings">⚙ GitHub settings…</button>
+      <button data-act="help">? How it works</button>
+    </div>
+  </div>
+</div>
+
+<section class="summary" aria-live="polite">
+  <div class="chip"><span>Tracks</span><b id="sumTracks">0</b></div>
+  <div class="chip green"><span>Set play time</span><b id="sumTotal">0</b></div>
+  <div class="chip blue"><span>Set time</span><b id="sumClock">0:00:00</b></div>
+  <div class="chip status" id="sumStatus"><b>—</b></div>
+</section>
+
+<main>
+  <div class="thead" aria-hidden="true">
+    <b>#</b><b>Track</b><b>Cue in</b><b>Cue out</b><b>Play</b><b>Total</b><b>Set time</b><b></b>
+  </div>
+  <div id="rows"></div>
+  <button id="btnAdd" class="addtrack">＋ Add track</button>
+</main>
+
+<footer class="help">
+  <b>mm.ss</b> — type <code>6.53</code> for 6&nbsp;min&nbsp;53&nbsp;s · Play&nbsp;=&nbsp;Cue&nbsp;out&nbsp;−&nbsp;Cue&nbsp;in · same formula as the Excel
+</footer>
+
+<dialog id="dlgSetup">
+  <form method="dialog" class="dlg">
+    <h2>Connect GitHub</h2>
+    <p class="note">Saving writes the list into <code>tools/rekordbox_que_counter/lists/</code> in your repo.
+    You need a GitHub <b>fine-grained token</b>: <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">create one here</a> —
+    Repository access: <b>only this repo</b> · Permissions → Contents: <b>Read and write</b>.</p>
+    <label>GitHub token
+      <input type="password" id="suToken" autocomplete="off" placeholder="github_pat_…" required>
+    </label>
+    <label>Choose a password <small>(locks the token on this device)</small>
+      <input type="password" id="suPass" autocomplete="new-password" required minlength="4">
+    </label>
+    <label>Repeat password
+      <input type="password" id="suPass2" autocomplete="new-password" required minlength="4">
+    </label>
+    <details>
+      <summary>Repository settings</summary>
+      <div class="grid2">
+        <label>Owner<input id="suOwner"></label>
+        <label>Repo<input id="suRepo"></label>
+        <label>Branch<input id="suBranch"></label>
+        <label>Folder<input id="suDir"></label>
+      </div>
+    </details>
+    <p class="err" id="suErr" hidden></p>
+    <div class="dlgBtns">
+      <button value="ok" class="btn primary" id="suOk">Verify &amp; save</button>
+      <button value="anyway" class="btn" id="suAnyway" hidden formnovalidate>Save anyway</button>
+      <button value="cancel" class="btn" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgUnlock">
+  <form method="dialog" class="dlg">
+    <h2>Unlock</h2>
+    <p class="note">Enter your password to unlock GitHub saving on this device.</p>
+    <label>Password
+      <input type="password" id="ulPass" autocomplete="current-password" required>
+    </label>
+    <label class="check"><input type="checkbox" id="ulRemember" checked> Stay unlocked until this tab closes</label>
+    <p class="err" id="ulErr" hidden></p>
+    <div class="dlgBtns">
+      <button value="ok" class="btn primary">Unlock</button>
+      <button value="cancel" class="btn" formnovalidate>Cancel</button>
+      <button value="forget" class="btn danger" formnovalidate>Forget this device</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgName">
+  <form method="dialog" class="dlg">
+    <h2 id="nmTitle">New list</h2>
+    <label>List name
+      <input id="nmInput" required maxlength="80" placeholder="e.g. Forest 3h set">
+    </label>
+    <div class="dlgBtns">
+      <button value="ok" class="btn primary">Create</button>
+      <button value="cancel" class="btn" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgConfirm">
+  <form method="dialog" class="dlg">
+    <h2 id="cfTitle">Are you sure?</h2>
+    <p class="note" id="cfText"></p>
+    <div class="dlgBtns">
+      <button value="ok" class="btn danger" id="cfOk">Delete</button>
+      <button value="cancel" class="btn" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgHelp">
+  <form method="dialog" class="dlg">
+    <h2>How it works</h2>
+    <p class="note">
+      Times use the <b>mm.ss</b> convention from the Excel sheet: <code>6.53</code> means 6&nbsp;minutes&nbsp;53&nbsp;seconds.<br><br>
+      <b>Play</b> = Cue&nbsp;out − Cue&nbsp;in (plain decimal subtraction, like column&nbsp;D).<br>
+      <b>Total</b> = running sum of Play (column&nbsp;E).<br>
+      <b>Set time</b> = Total read as minutes + hundredths-as-seconds, carried into h:mm:ss (column&nbsp;F).<br><br>
+      Lists autosave to this device as you type. <b>Save</b> commits the list to your GitHub repo —
+      the first save asks for a GitHub token, then locks it behind your password.
+    </p>
+    <div class="dlgBtns"><button value="ok" class="btn primary">Got it</button></div>
+  </form>
+</dialog>
+
+<div id="toast" hidden></div>
+
+<script src="seed.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
