@@ -150,8 +150,8 @@ main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
 
 /* ---------- footer / help ---------- */
 .help { text-align: center; color: var(--dim); font-size: 13px; padding: 6px 18px 26px; }
-.help small { display: block; margin-top: 6px; font-size: 12px; opacity: .85; }
-.help code { background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; font-family: var(--mono); }
+.help a { color: var(--accent); text-decoration: none; }
+.help a:hover { text-decoration: underline; }
 
 /* ---------- dialogs ---------- */
 dialog {
