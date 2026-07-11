@@ -31,10 +31,12 @@ after a one-time setup it never asks anything again. Two ways to set it up:
    (Repository access: only this repo · Contents: Read and write). It's stored
    on that device only; "Remove token" forgets it.
 2. **For everyone (5 min, recommended):** deploy [`relay-worker.js`](relay-worker.js)
-   to Cloudflare Workers (free) — it keeps the token server-side and only
-   accepts `lists/<user>/*.json` writes. Put the worker URL in
+   to Cloudflare Workers (free) — it keeps the token server-side. List writes
+   are open (so **every visitor saves with zero setup**); `users.json` writes
+   require the admin's login password. Put the worker URL in
    ⋯ → GitHub sync → Sync relay URL (or bake it into `DEFAULT_CONFIG.syncUrl`
-   in `app.js`). Then **every visitor can save with zero setup**.
+   in `app.js`). With the relay live, **adi manages users and saves with only
+   the login password — no token anywhere.**
 
 ## Users
 
@@ -49,8 +51,11 @@ client-side gate, not server-grade auth; don't reuse valuable passwords.
   always asks a password (the user's own; Public uses the dedicated delete
   password).
 - **Admin (adi):** log in as `adi` → ⋯ → Users… to add accounts, reset
-  passwords, or remove users. Admin changes commit `users.json` and need the
-  GitHub token on the device (the relay refuses non-list files on purpose).
+  passwords, or remove users — with just the login password, no token. Admin
+  changes commit `users.json`; the relay authorizes them by verifying the
+  password against the admin user in `users.json` itself (a device GitHub token
+  also works if you prefer). The relay accepts `users.json` writes **only** with
+  a valid admin password — anonymous callers can write list files only.
 - Every track has a **▶ link** — YouTube search for the track name by default,
   or any custom link set via ✎.
 
