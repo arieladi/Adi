@@ -173,9 +173,8 @@ try {
 <dialog id="dlgUsers">
   <form method="dialog" class="dlg">
     <h2>Users</h2>
-    <p class="note">Admin panel — changes are committed to <code>users.json</code> in the repo,
-    authorized with your login password (via the sync relay) or the GitHub token if this device has one.
-    Type an existing username to reset its password.</p>
+    <p class="note">Admin panel — accounts are stored privately on the sync server and never in the public repo.
+    Changes are authorized with your admin login password. Type an existing username to reset its password.</p>
     <div id="usersList"></div>
     <div class="grid2">
       <label>Username<input id="auId" autocapitalize="none" spellcheck="false"></label>
@@ -192,7 +191,7 @@ try {
 <dialog id="dlgAdmin">
   <form method="dialog" class="dlg">
     <h2>Confirm it's you</h2>
-    <p class="note">Enter your admin login password to save this change to GitHub.</p>
+    <p class="note">Enter your admin login password to authorize this change.</p>
     <label>Password
       <input type="password" id="adPass" autocomplete="current-password">
     </label>

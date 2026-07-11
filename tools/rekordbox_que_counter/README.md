@@ -22,40 +22,41 @@ All of these mean 6 minutes 10.2 seconds (where tenths apply):
 | `6.10.2` | Excel convention + tenths |
 | `1:02:37` | h:mm:ss (for hour-long values) |
 
-## Saving — no passwords, no questions
+## Saving & auth — the sync Worker
 
-Lists autosave to the browser as you type. **Save** commits to this repo, and
-after a one-time setup it never asks anything again. Two ways to set it up:
+Everything talks to a **Cloudflare Worker** ([`relay-worker.js`](relay-worker.js))
+that holds the GitHub token and the user registry server-side, so **no secrets
+live in this public repo**. Its URL is baked into `DEFAULT_CONFIG.syncUrl` in
+`app.js`.
 
-1. **Per device (2 min):** ⋯ → GitHub sync → paste a fine-grained token
-   (Repository access: only this repo · Contents: Read and write). It's stored
-   on that device only; "Remove token" forgets it.
-2. **For everyone (5 min, recommended):** deploy [`relay-worker.js`](relay-worker.js)
-   to Cloudflare Workers (free) — it keeps the token server-side. List writes
-   are open (so **every visitor saves with zero setup**); `users.json` writes
-   require the admin's login password. Put the worker URL in
-   ⋯ → GitHub sync → Sync relay URL (or bake it into `DEFAULT_CONFIG.syncUrl`
-   in `app.js`). With the relay live, **adi manages users and saves with only
-   the login password — no token anywhere.**
+- **Saving** just works with zero setup — list files (`lists/<user>/*.json`)
+  are open, so every visitor can save. (A device GitHub token via ⋯ → GitHub
+  sync is an optional fallback.)
+- **Auth** is server-side. The Worker keeps usernames + salted PBKDF2 hashes in
+  **Cloudflare KV** (private), and verifies every login, the public delete
+  password, and all admin changes. The browser never receives a hash.
+  > Note: Cloudflare Workers cap PBKDF2 at **100,000 iterations** — the KV
+  > registry must use ≤ that (it uses 100k). Higher counts throw at runtime.
+
+Worker setup (one time): create a KV namespace, bind it as `USERS_KV`, set
+`GH_TOKEN`/`OWNER`/`REPO`/`BRANCH`/`ALLOW_ORIGIN`, deploy, then load the
+registry once with a `{op:"seed"}` call (only works while KV is empty). Full
+steps are in the header of `relay-worker.js`.
 
 ## Users
 
 Default page is **Public** — open to everyone. The 👤 button opens a
-username + password login (users are not listed anywhere in the UI).
-Accounts live in [`users.json`](users.json) as PBKDF2-SHA256 hashes — a
-client-side gate, not server-grade auth; don't reuse valuable passwords.
+username + password login; the Worker verifies it and returns only the public
+profile (`{id,label,admin}`). Users are never listed in the public UI or repo.
 
 - Lists per user in `lists/<user>/` + `index.json` manifest.
 - Limits: **100 lists per user**, **500 tracks per list**.
-- Rename with the ✎ next to the list name; ⧉ duplicates; 🗑 deletes — deleting
-  always asks a password (the user's own; Public uses the dedicated delete
-  password).
+- Rename with the ✎ next to the list name; ⧉ duplicates; 🗑 deletes — a
+  logged-in user just confirms; **Public** deletion needs the dedicated delete
+  password (Worker-verified).
 - **Admin (adi):** log in as `adi` → ⋯ → Users… to add accounts, reset
-  passwords, or remove users — with just the login password, no token. Admin
-  changes commit `users.json`; the relay authorizes them by verifying the
-  password against the admin user in `users.json` itself (a device GitHub token
-  also works if you prefer). The relay accepts `users.json` writes **only** with
-  a valid admin password — anonymous callers can write list files only.
+  passwords, or remove users — authorized by the admin login password, checked
+  by the Worker against the admin user in KV. No token, nothing in the repo.
 - Every track has a **▶ link** — YouTube search for the track name by default,
   or any custom link set via ✎.
 
@@ -69,10 +70,10 @@ text size, row height. Saved per device, works on mobile and desktop.
 
 - `index.html` / `style.css` / `app.js` — the app (no build step, no dependencies)
 - `cuemath.js` — time parsing/formatting, shared with the Node test script
-- `relay-worker.js` — optional Cloudflare Worker for zero-setup saving
-- `seed.js` — generated: embedded users + seed lists so the app works offline
-- `users.json` — user registry with password hashes (adi has `admin: true`)
-- `lists/<user>/*.json` — saved lists + per-user `index.json`
+- `relay-worker.js` — Cloudflare Worker: holds the GitHub token + user registry
+  (KV), does saving and all auth. Deploy per its header comment.
+- `seed.js` — generated: embedded seed list only (no credentials) for offline use
+- `lists/<user>/*.json` — saved lists + per-user `index.json` (no secrets)
 - `icon.svg`, `manifest.webmanifest` — add-to-home-screen support
 
 Local dev: `python3 -m http.server` in this folder, then open `http://localhost:8000`.
