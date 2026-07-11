@@ -4,18 +4,22 @@ DJ'ing Set Timer — enter each track's cue in & cue out to calculate the play t
 and how long the overall set will be. Live at
 **https://adiariel.com/tools/rekordbox_que_counter/** (GitHub Pages).
 
-## Time formats
+## Cues & time formats
 
-All of these mean 5 minutes 18 seconds:
+Take the times straight from the rekordbox cues: **Cue in** is where you start
+the track (e.g. hot cue A at `00:27.4`), **Cue out** is where you start the
+*next* track (e.g. hot cue C at `06:10.2`) — that way the mix time between
+tracks is counted in the set. **Play Time** = Cue out − Cue in (here `5:42.8`),
+**Set time** = true running total, shown as h:mm:ss.
+
+All of these mean 6 minutes 10 seconds:
 
 | Input | Style |
 |---|---|
-| `5:18.6` | rekordbox (m:ss.t — tenths of a second) |
-| `5:18` | m:ss |
-| `5.18` | the old Excel convention (fraction digits = seconds) |
-| `1:02:37` | h:mm:ss |
-
-**Play Time** = Cue out − Cue in. **Set time** = true running total, shown as h:mm:ss.
+| `6:10.2` | rekordbox (m:ss.t — tenths of a second) |
+| `6:10` | m:ss |
+| `6.10` | the old Excel convention (fraction digits = seconds) |
+| `1:02:37` | h:mm:ss (for hour-long values) |
 
 > v2 formula change: math is now real time arithmetic (in tenths of a second),
 > not the Excel's decimal trick. The Excel borrowed at 100 instead of 60, which

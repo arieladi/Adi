@@ -209,8 +209,8 @@ function rowTemplate(i, t) {
   row.innerHTML =
     `<div class="f idx"><b>${i + 1}</b></div>` +
     `<label class="f title"><span>Track</span><input class="tt" placeholder="Track name" enterkeyhint="next"></label>` +
-    `<label class="f cin"><span>Cue in</span><input class="cue ci" inputmode="decimal" placeholder="0:00" enterkeyhint="next"></label>` +
-    `<label class="f cout"><span>Cue out</span><input class="cue co" inputmode="decimal" placeholder="0:00" enterkeyhint="next"></label>` +
+    `<label class="f cin"><span>Cue in</span><input class="cue ci" inputmode="decimal" placeholder="0:27.4" enterkeyhint="next"></label>` +
+    `<label class="f cout"><span>Cue out</span><input class="cue co" inputmode="decimal" placeholder="6:10.2" enterkeyhint="next"></label>` +
     `<div class="f play"><span>Play Time</span><b>—</b></div>` +
     `<div class="f stime"><span>Set time</span><b>—</b></div>` +
     `<div class="f link"><span>Link</span>` +
