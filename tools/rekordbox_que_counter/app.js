@@ -1,17 +1,13 @@
-/* Rekordbox Cue Counter v3
-   ------------------------
+/* Rekordbox Cue Counter v4 — server-side auth
+   -------------------------------------------
    - Times: true time arithmetic in tenths of a second (see cuemath.js).
-     Accepts 5:18.6, 5:18, 5.18, 5.18.6 and 1:02:37.
-   - Saving "just works": no passwords, no dialogs. Writes go through
-     either a sync relay (config.syncUrl — a tiny Cloudflare Worker that
-     holds the GitHub token server-side, see relay-worker.js) or a GitHub
-     token pasted ONCE per device (stored in localStorage, plain — this is
-     the owner's own device/domain; remove it any time in ⋯ → GitHub sync).
-   - Users: public is default. Login is a username+password dialog (no
-     user list shown). users.json holds PBKDF2 hashes. The admin user
-     (admin: true, i.e. adi) gets a Users panel to add/remove accounts and
-     reset passwords — those writes need the device token (the relay only
-     accepts list files).
+   - SAVING "just works" with zero setup via the sync relay (config.syncUrl,
+     a Cloudflare Worker holding the GitHub token; see relay-worker.js). A
+     device GitHub token is still an optional fallback for list I/O.
+   - AUTH is server-side: the relay/Worker holds the user registry (usernames
+     + salted hashes) in private Cloudflare KV. The browser NEVER sees a hash.
+     Login, the public delete password, and admin user-management are all
+     verified by the Worker. Nothing secret lives in this public repo.
    - Limits: 100 lists per user, 500 tracks per list.
 */
 'use strict';
@@ -24,7 +20,7 @@ const DEFAULT_CONFIG = {
   repo: 'Adi',
   branch: 'main',
   dir: 'tools/rekordbox_que_counter',
-  syncUrl: 'https://restless-firefly-5a76.adidatabase.workers.dev' // relay (relay-worker.js) — saving works with zero setup
+  syncUrl: 'https://restless-firefly-5a76.adidatabase.workers.dev' // relay (relay-worker.js) — saving + auth
 };
 (function () {
   const h = location.hostname, seg = location.pathname.split('/').filter(Boolean);
@@ -40,17 +36,16 @@ const SAFE_FILE = /^[a-z0-9][a-z0-9-]*\.json$/;
 const SAFE_USER = /^[a-z0-9][a-z0-9-]{0,19}$/;
 
 const LSK = {
-  store: 'rqc.store.v2', user: 'rqc.user.v2', users: 'rqc.users.v2',
-  theme: 'rqc.theme.v2', token: 'rqc.ghtoken.v3', config: 'rqc.config.v1'
+  store: 'rqc.store.v2', user: 'rqc.user.v2', theme: 'rqc.theme.v2',
+  token: 'rqc.ghtoken.v3', config: 'rqc.config.v1'
 };
-const SSK_UNLOCKED = 'rqc.unlockedUsers.v2';
+const SSK_SESSION = 'rqc.session.v4';
 
 let config = { ...DEFAULT_CONFIG };
 try { config = { ...config, ...(JSON.parse(localStorage.getItem(LSK.config)) || {}) }; } catch { }
-// a stored config from before the relay existed would have an empty syncUrl —
-// fall back to the baked-in default so the relay applies without re-saving settings
 if (!config.syncUrl) config.syncUrl = DEFAULT_CONFIG.syncUrl;
-try { localStorage.removeItem('rqc.auth.v1'); } catch { } // v2's encrypted token blob — obsolete
+// clean up obsolete client-side credential stores from earlier versions
+for (const k of ['rqc.users.v2', 'rqc.auth.v1', 'rqc.unlockedUsers.v2']) { try { localStorage.removeItem(k); sessionStorage.removeItem(k); } catch { } }
 
 /* ---------------- theme & appearance engine ---------------- */
 const THEME_PRESETS = {
@@ -80,27 +75,22 @@ function applyTheme() {
 function saveTheme() { try { localStorage.setItem(LSK.theme, JSON.stringify(theme)); } catch { } }
 applyTheme();
 
-/* ---------------- users registry ---------------- */
-function fallbackUsers() { return { version: 2, kdf: { iterations: 150000 }, users: [{ id: 'public', label: 'Public', salt: null, hash: null }] }; }
-function loadUsers() {
-  try { const u = JSON.parse(localStorage.getItem(LSK.users)); if (u && Array.isArray(u.users) && u.users.length) return u; } catch { }
-  if (window.RQC_SEED && RQC_SEED.users && Array.isArray(RQC_SEED.users.users)) return RQC_SEED.users;
-  return fallbackUsers();
-}
-let usersReg = loadUsers();
-let currentUser = 'public';
-let unlocked = new Set();
-try { unlocked = new Set(JSON.parse(sessionStorage.getItem(SSK_UNLOCKED)) || []); } catch { }
-function userById(id) { return usersReg.users.find(x => x.id === id); }
-function saveUnlocked() { try { sessionStorage.setItem(SSK_UNLOCKED, JSON.stringify([...unlocked])); } catch { } }
-const isAdmin = () => { const u = userById(currentUser); return !!(u && u.admin); };
+/* ---------------- session (who is logged in) ---------------- */
+// sessionUser: null = Public; else { id, label, admin }. Persisted in
+// sessionStorage — a UX convenience only; real checks happen in the Worker.
+let sessionUser = null;
+try { const s = JSON.parse(sessionStorage.getItem(SSK_SESSION)); if (s && s.id) sessionUser = s; } catch { }
+let adminSecret = null; // admin's login password, memory only, for user-management calls
+let roster = [{ id: 'public', label: 'Public', admin: false }]; // filled from the Worker on demand
+
+const currentUserId = () => (sessionUser ? sessionUser.id : 'public');
+const currentLabel = () => (sessionUser ? sessionUser.label : 'Public');
+const isAdmin = () => !!(sessionUser && sessionUser.admin);
 
 /* ---------------- state ---------------- */
 let store = { workspaces: {} };
 let token = null;
 try { token = localStorage.getItem(LSK.token) || null; } catch { }
-let pending = null; // action waiting for sync setup
-let adminSecret = null; // admin's login password, cached in memory so relay-authorized user-management needs no token
 
 const relayUrl = () => String(config.syncUrl || '').trim().replace(/\/+$/, '');
 const writable = () => !!token || !!relayUrl();
@@ -115,14 +105,11 @@ function ensureWorkspace(id) {
   if (!store.workspaces[id]) store.workspaces[id] = { order: [], lists: {}, indexSha: null, current: null };
   return store.workspaces[id];
 }
-const ws = () => ensureWorkspace(currentUser);
+const ws = () => ensureWorkspace(currentUserId());
 const cur = () => { const w = ws(); return w.current ? w.lists[w.current] : null; };
 
 function loadStore() {
-  try {
-    const s = JSON.parse(localStorage.getItem(LSK.store));
-    if (s && s.workspaces) return s;
-  } catch { }
+  try { const s = JSON.parse(localStorage.getItem(LSK.store)); if (s && s.workspaces) return s; } catch { }
   return null;
 }
 let persistTimer = null;
@@ -130,10 +117,16 @@ function persist() {
   clearTimeout(persistTimer); persistTimer = null;
   try {
     localStorage.setItem(LSK.store, JSON.stringify(store));
-    localStorage.setItem(LSK.user, currentUser);
+    localStorage.setItem(LSK.user, currentUserId());
   } catch (e) { console.warn('persist failed', e); }
 }
 function persistSoon() { clearTimeout(persistTimer); persistTimer = setTimeout(persist, 250); }
+function saveSession() {
+  try {
+    if (sessionUser) sessionStorage.setItem(SSK_SESSION, JSON.stringify(sessionUser));
+    else sessionStorage.removeItem(SSK_SESSION);
+  } catch { }
+}
 
 /* ---------------- DOM handles ---------------- */
 const $ = id => document.getElementById(id);
@@ -143,8 +136,6 @@ const dlgSetup = $('dlgSetup'), dlgName = $('dlgName'), dlgConfirm = $('dlgConfi
   dlgHelp = $('dlgHelp'), dlgUserLogin = $('dlgUserLogin'), dlgDelete = $('dlgDelete'), dlgTheme = $('dlgTheme'),
   dlgLink = $('dlgLink'), dlgUsers = $('dlgUsers'), dlgAdmin = $('dlgAdmin');
 
-// Some engines skip the 'close' event when a method="dialog" form submission
-// closes the dialog — poll dlg.open as a fallback so promises always settle.
 function dialogClosed(dlg) {
   return new Promise(res => {
     let done = false, iv = null;
@@ -153,14 +144,9 @@ function dialogClosed(dlg) {
     iv = setInterval(() => { if (!dlg.open) finish(); }, 120);
   });
 }
-function openDialog(dlg) {
-  dlg.returnValue = '';
-  dlg.showModal();
-  return dialogClosed(dlg);
-}
+function openDialog(dlg) { dlg.returnValue = ''; dlg.showModal(); return dialogClosed(dlg); }
 const isEditingRows = () => document.activeElement && rowsEl.contains(document.activeElement);
 
-/* ---------------- crypto helpers (user passwords) ---------------- */
 const te = new TextEncoder(), td = new TextDecoder();
 function b64(buf) {
   const b = new Uint8Array(buf); let s = '';
@@ -169,26 +155,19 @@ function b64(buf) {
 }
 const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 
-async function pbkdf2B64(pass, saltB64, iterations) {
-  const km = await crypto.subtle.importKey('raw', te.encode(pass), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: unb64(saltB64), iterations, hash: 'SHA-256' }, km, 256);
-  return b64(bits);
-}
-async function checkPassword(pass, saltB64, hashB64) {
-  if (!saltB64 || !hashB64) return false;
-  const iter = (usersReg.kdf && usersReg.kdf.iterations) || 150000;
-  try { return (await pbkdf2B64(pass, saltB64, iter)) === hashB64; } catch { return false; }
-}
-async function makeCred(pass) {
-  const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
-  const iter = (usersReg.kdf && usersReg.kdf.iterations) || 150000;
-  return { salt, hash: await pbkdf2B64(pass, salt, iter) };
+/* ---------------- relay: auth + list I/O ---------------- */
+// Auth call: never throws on 4xx — returns {status, ...json} so callers can
+// read {ok:false} / 403 cleanly.
+async function authCall(payload) {
+  if (!relayUrl()) throw new Error('sync is not configured');
+  const r = await fetch(relayUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  const j = await r.json().catch(() => ({}));
+  return { status: r.status, ...j };
 }
 
 /* ---------------- rendering ---------------- */
 function renderUserBtn() {
-  const u = userById(currentUser);
-  userBtn.textContent = '👤 ' + (u ? u.label : 'Public');
+  userBtn.textContent = '👤 ' + currentLabel();
   $('menuUsers').hidden = !isAdmin();
 }
 
@@ -385,12 +364,12 @@ function addTrack() {
 }
 $('btnAdd').onclick = addTrack;
 
-/* ---------------- login (username + password, no user list shown) ---------------- */
+/* ---------------- login / logout (verified by the Worker) ---------------- */
 userBtn.onclick = () => openLogin();
 
 function openLogin() {
-  const named = currentUser !== 'public';
-  $('luTitle').textContent = named ? `Logged in — ${userById(currentUser).label}` : 'Log in';
+  const named = !!sessionUser;
+  $('luTitle').textContent = named ? `Logged in — ${sessionUser.label}` : 'Log in';
   $('luUser').value = ''; $('luPass').value = ''; $('luErr').hidden = true;
   $('luLogout').hidden = !named;
   dlgUserLogin.showModal();
@@ -400,31 +379,33 @@ dlgUserLogin.querySelector('form').addEventListener('submit', async e => {
   const v = e.submitter && e.submitter.value;
   if (v === 'cancel') { e.preventDefault(); dlgUserLogin.close('cancel'); return; }
   if (v === 'logout') {
-    unlocked.delete(currentUser); saveUnlocked();
-    adminSecret = null;
-    currentUser = 'public'; ensureWorkspace('public');
+    sessionUser = null; adminSecret = null; saveSession();
     persist(); renderAll(); refreshFromRemote(false);
     toast('Logged out — back to Public', 'ok');
-    return; // dialog closes with returnValue "logout"
+    return;
   }
   e.preventDefault();
   const id = $('luUser').value.trim().toLowerCase();
-  const u = userById(id);
+  const pass = $('luPass').value;
   const okBtn = e.target.querySelector('button[value=ok]');
+  const showErr = m => { const el = $('luErr'); el.textContent = m; el.hidden = false; $('luPass').select(); };
+  if (!id || !pass) return showErr('Enter a username and password.');
   okBtn.disabled = true;
-  const ok = u && u.hash && await checkPassword($('luPass').value, u.salt, u.hash);
-  okBtn.disabled = false;
-  if (ok) {
-    unlocked.add(u.id); saveUnlocked();
-    adminSecret = u.admin ? $('luPass').value : null; // cached for tokenless user-management via relay
-    dlgUserLogin.close('done');
-    currentUser = u.id;
-    ensureWorkspace(u.id);
-    persist(); renderAll(); refreshFromRemote(false);
-    toast(`Logged in as ${u.label} ✓`, 'ok');
-  } else {
-    const el = $('luErr'); el.textContent = 'Wrong username or password.'; el.hidden = false;
-    $('luPass').select();
+  try {
+    const res = await authCall({ op: 'login', user: id, pass });
+    okBtn.disabled = false;
+    if (res.ok && res.user) {
+      sessionUser = res.user; adminSecret = res.user.admin ? pass : null; saveSession();
+      dlgUserLogin.close('done');
+      ensureWorkspace(res.user.id);
+      persist(); renderAll(); refreshFromRemote(false);
+      toast(`Logged in as ${res.user.label} ✓`, 'ok');
+    } else {
+      showErr('Wrong username or password.');
+    }
+  } catch (err) {
+    okBtn.disabled = false;
+    showErr('Could not reach the login server. Check your connection.');
   }
 });
 
@@ -503,63 +484,59 @@ moreMenu.addEventListener('click', e => {
   else if (act === 'help') openDialog(dlgHelp);
 });
 
-/* ---------------- delete list (password-confirmed) ---------------- */
+/* ---------------- delete list ---------------- */
+// Public lists need the public delete password (checked by the Worker).
+// A logged-in user deleting their own list just confirms.
 $('btnDelete').onclick = () => deleteCurrentList();
 
-function deleteConfirmFlow(u, L) {
-  const isPublic = u.id === 'public';
-  const hasPass = isPublic ? !!(u.deleteSalt && u.deleteHash) : !!(u.salt && u.hash);
+async function confirmDelete(L) {
+  if (currentUserId() !== 'public') {
+    $('cfTitle').textContent = `Delete “${L.name}”?`;
+    $('cfText').textContent = L.remote
+      ? 'This removes the list from this device and from GitHub.'
+      : 'This list was never saved to GitHub — it is removed from this device.';
+    return (await openDialog(dlgConfirm)) === 'ok';
+  }
+  // public: require the delete password, verified by the Worker
   $('dlTitle').textContent = `Delete “${L.name}”?`;
-  $('dlText').textContent =
-    (L.remote ? 'This removes the list from this device AND from GitHub. ' : 'This list was never saved to GitHub — it is removed from this device. ') +
-    (!hasPass ? 'This cannot be undone.' :
-      isPublic ? 'Enter the public delete password to confirm.' : `Enter ${u.label}'s password to confirm.`);
-  $('dlPassLabel').hidden = !hasPass;
+  $('dlText').textContent = (L.remote ? 'This removes the list from this device AND from GitHub. ' : 'This list is on this device only. ') + 'Enter the public delete password to confirm.';
   $('dlPass').value = ''; $('dlErr').hidden = true;
   dlgDelete.returnValue = '';
   dlgDelete.showModal();
-  if (hasPass) $('dlPass').focus();
-  return dialogClosed(dlgDelete).then(v => v === 'done');
+  $('dlPass').focus();
+  return (await dialogClosed(dlgDelete)) === 'done';
 }
 dlgDelete.querySelector('form').addEventListener('submit', async e => {
   const v = e.submitter && e.submitter.value;
   if (v === 'cancel') { e.preventDefault(); dlgDelete.close('cancel'); return; }
   e.preventDefault();
-  const u = userById(currentUser);
-  const isPublic = u.id === 'public';
-  const hasPass = isPublic ? !!(u.deleteSalt && u.deleteHash) : !!(u.salt && u.hash);
-  if (!hasPass) { dlgDelete.close('done'); return; }
   const okBtn = e.target.querySelector('button[value=ok]');
   okBtn.disabled = true;
-  const pass = $('dlPass').value;
-  const ok = isPublic
-    ? await checkPassword(pass, u.deleteSalt, u.deleteHash)
-    : await checkPassword(pass, u.salt, u.hash);
-  okBtn.disabled = false;
-  if (ok) dlgDelete.close('done');
-  else { const el = $('dlErr'); el.textContent = 'Wrong password.'; el.hidden = false; $('dlPass').select(); }
+  try {
+    const res = await authCall({ op: 'publicdelete', pass: $('dlPass').value });
+    okBtn.disabled = false;
+    if (res.ok) dlgDelete.close('done');
+    else { const el = $('dlErr'); el.textContent = 'Wrong password.'; el.hidden = false; $('dlPass').select(); }
+  } catch { okBtn.disabled = false; const el = $('dlErr'); el.textContent = 'Could not reach the server.'; el.hidden = false; }
 });
 
 async function deleteCurrentList() {
-  const user = currentUser, w = ws(), file = w.current, L = cur();
+  const user = currentUserId(), w = ws(), file = w.current, L = cur();
   if (!L) { toast('No list to delete', 'err'); return; }
-  const u = userById(user);
-  if (!await deleteConfirmFlow(u, L)) return;
+  if (!await confirmDelete(L)) return;
   if (L.remote) {
-    ensureWritable(async () => {
-      try {
-        setStatus('Deleting…');
-        const path = cfgPath(`lists/${user}/${file}`);
-        let sha = L.sha;
-        if (!sha) { const ex = await repoGet(path); sha = ex && ex.sha; }
-        if (sha) await repoDelete(path, `cue counter — ${user}: delete "${L.name}"`, sha);
-        removeLocal(user, file);
-        await saveIndexJson(user, file);
-        persist();
-        toast(`Deleted “${L.name}”`, 'ok');
-      } catch (e) { toast('Delete failed: ' + e.message, 'err'); }
-      setStatusAuto();
-    });
+    try {
+      setStatus('Deleting…');
+      const path = cfgPath(`lists/${user}/${file}`);
+      let sha = L.sha;
+      if (!sha) { const ex = await repoGet(path); sha = ex && ex.sha; }
+      if (sha) await repoDelete(path, `cue counter — ${user}: delete "${L.name}"`, sha);
+      removeLocal(user, file);
+      await saveIndexJson(user, file);
+      persist();
+      toast(`Deleted “${L.name}”`, 'ok');
+    } catch (e) { toast('Delete failed: ' + e.message, 'err'); }
+    setStatusAuto();
   } else {
     removeLocal(user, file); persist(); toast(`Deleted “${L.name}”`, 'ok');
   }
@@ -569,14 +546,11 @@ function removeLocal(user, file) {
   delete w.lists[file];
   w.order = w.order.filter(f => f !== file);
   if (w.current === file) w.current = w.order[0] || null;
-  if (user === currentUser) { renderSelect(); rebuildRows(); setStatusAuto(); }
+  if (user === currentUserId()) { renderSelect(); rebuildRows(); setStatusAuto(); }
 }
 
 /* ---------------- appearance dialog (theme + sizes) ---------------- */
-function openThemeDialog() {
-  syncThemeDialog();
-  openDialog(dlgTheme);
-}
+function openThemeDialog() { syncThemeDialog(); openDialog(dlgTheme); }
 function syncThemeDialog() {
   const m = themeMerged();
   dlgTheme.querySelectorAll('.themePick').forEach(b => b.classList.toggle('active', b.dataset.base === theme.base && !Object.keys(theme.colors).length));
@@ -588,10 +562,7 @@ function syncThemeDialog() {
   }
 }
 dlgTheme.querySelectorAll('.themePick').forEach(b => {
-  b.onclick = () => {
-    theme = { ...theme, base: b.dataset.base, colors: {} }; // keep sizes, reset colors
-    applyTheme(); saveTheme(); syncThemeDialog();
-  };
+  b.onclick = () => { theme = { ...theme, base: b.dataset.base, colors: {} }; applyTheme(); saveTheme(); syncThemeDialog(); };
 });
 dlgTheme.querySelectorAll('#themeColors input[type=color]').forEach(inp => {
   inp.oninput = () => {
@@ -610,17 +581,23 @@ for (const [id, key, unit] of [['szZoom', 'zoom', '%'], ['szFont', 'font', 'px']
 }
 $('sizeReset').onclick = () => { theme.size = { ...SIZE_DEFAULT }; applyTheme(); saveTheme(); syncThemeDialog(); };
 
-/* ---------------- users admin (adi only) ---------------- */
-function openUsersDialog() {
+/* ---------------- users admin (adi only, verified by the Worker) ---------------- */
+async function openUsersDialog() {
   if (!isAdmin()) return;
-  renderUsersList();
   $('auId').value = ''; $('auPass').value = ''; $('auErr').hidden = true;
-  openDialog(dlgUsers);
+  $('usersList').textContent = 'Loading…';
+  const p = openDialog(dlgUsers);
+  try {
+    const res = await authCall({ op: 'roster' });
+    if (Array.isArray(res.users)) roster = res.users;
+  } catch { }
+  renderUsersList();
+  await p;
 }
 function renderUsersList() {
   const box = $('usersList');
   box.innerHTML = '';
-  for (const u of usersReg.users) {
+  for (const u of roster) {
     const row = document.createElement('div');
     row.className = 'urow';
     const name = document.createElement('b');
@@ -635,128 +612,83 @@ function renderUsersList() {
     box.appendChild(row);
   }
 }
-// The admin (adi) reconfirms with the login password when it isn't already
-// cached (e.g. after a page reload) — used to authorize relay writes to users.json.
-function promptAdminSecret() {
-  if (adminSecret) return Promise.resolve(adminSecret);
-  const u = userById(currentUser);
-  if (!u || !u.hash) return Promise.resolve(null);
+// Ensure we have the admin password to authorize a Worker call.
+async function getAdminPass() {
+  if (adminSecret) return adminSecret;
   $('adPass').value = ''; $('adErr').hidden = true;
   dlgAdmin.returnValue = '';
   dlgAdmin.showModal();
   $('adPass').focus();
-  return dialogClosed(dlgAdmin).then(v => (v === 'done' ? adminSecret : null));
+  const r = await dialogClosed(dlgAdmin);
+  return r === 'done' ? adminSecret : null;
 }
-dlgAdmin.querySelector('form').addEventListener('submit', async e => {
+dlgAdmin.querySelector('form').addEventListener('submit', e => {
   const v = e.submitter && e.submitter.value;
   if (v === 'cancel') { e.preventDefault(); dlgAdmin.close('cancel'); return; }
   e.preventDefault();
-  const u = userById(currentUser);
-  const okBtn = e.target.querySelector('button[value=ok]');
-  okBtn.disabled = true;
-  const ok = u && await checkPassword($('adPass').value, u.salt, u.hash);
-  okBtn.disabled = false;
-  if (ok) { adminSecret = $('adPass').value; dlgAdmin.close('done'); }
-  else { const el = $('adErr'); el.textContent = 'Wrong password.'; el.hidden = false; $('adPass').select(); }
+  const p = $('adPass').value;
+  if (!p) { const el = $('adErr'); el.textContent = 'Enter your password.'; el.hidden = false; return; }
+  adminSecret = p; // validated by the Worker on the actual call
+  dlgAdmin.close('done');
 });
 
-async function adminWriteUsers(mutate, message) {
-  if (!writable()) {
-    toast('Set up GitHub sync first (⋯ → GitHub sync)', 'err');
-    openSetup();
-    return false;
-  }
-  // With the relay, user-management is authorized by the admin's login password;
-  // with a device token, the token authorizes it directly.
-  let auth = null;
-  if (!token) { auth = await promptAdminSecret(); if (!auth) return false; }
-  const path = cfgPath('users.json');
-  let remote = null;
-  try { remote = await repoGet(path); } catch { }
-  const reg = remote ? JSON.parse(remote.text) : JSON.parse(JSON.stringify(usersReg));
-  const next = await mutate(reg);
-  if (!next) return false;
-  await repoPut(path, JSON.stringify(next, null, 2) + '\n', message, remote ? remote.sha : undefined, auth);
-  usersReg = next;
-  try { localStorage.setItem(LSK.users, JSON.stringify(next)); } catch { }
-  renderUserBtn(); renderUsersList();
-  return true;
-}
 $('auAdd').onclick = async () => {
-  const raw = $('auId').value.trim().toLowerCase();
+  const id = $('auId').value.trim().toLowerCase();
   const pass = $('auPass').value;
   const err = m => { const el = $('auErr'); el.textContent = m; el.hidden = false; };
   $('auErr').hidden = true;
-  if (!SAFE_USER.test(raw)) return err('Username: 1–20 chars, a–z, 0–9, dashes.');
+  if (!SAFE_USER.test(id)) return err('Username: 1–20 chars, a–z, 0–9, dashes.');
   if (pass.length < 4) return err('Password must be at least 4 characters.');
-  const exists = userById(raw);
+  const adminPass = await getAdminPass();
+  if (!adminPass) return;
+  $('auAdd').disabled = true;
   try {
-    $('auAdd').disabled = true;
-    const cred = await makeCred(pass);
-    const okDone = await adminWriteUsers(async reg => {
-      const hit = reg.users.find(x => x.id === raw);
-      if (hit) { if (hit.id === 'public') { err('Public has no password.'); return null; } Object.assign(hit, cred); return reg; }
-      reg.users.push({ id: raw, label: raw.charAt(0).toUpperCase() + raw.slice(1), ...cred });
-      return reg;
-    }, exists ? `cue counter — admin: reset password for ${raw}` : `cue counter — admin: add user ${raw}`);
-    if (okDone && !exists) {
-      try { await repoPut(cfgPath(`lists/${raw}/index.json`), JSON.stringify({ version: 2, lists: [] }, null, 2) + '\n', `cue counter — admin: init lists for ${raw}`); } catch { }
-      ensureWorkspace(raw);
-    }
-    if (okDone) {
+    const res = await authCall({ op: 'adduser', user: id, pass, adminPass });
+    $('auAdd').disabled = false;
+    if (res.ok) {
+      roster = res.users || roster;
+      renderUsersList();
       $('auId').value = ''; $('auPass').value = '';
-      toast(exists ? `Password updated for ${raw} ✓` : `User ${raw} added ✓`, 'ok');
-    }
-  } catch (e) { err('Failed: ' + e.message); }
-  finally { $('auAdd').disabled = false; }
+      ensureWorkspace(id);
+      toast(`User ${id} saved ✓`, 'ok');
+    } else if (res.status === 403) {
+      adminSecret = null; err('Admin password was wrong — try again.');
+    } else err(res.message || 'Failed.');
+  } catch (e) { $('auAdd').disabled = false; err('Could not reach the server.'); }
 };
 async function removeUser(id) {
   $('cfTitle').textContent = `Remove user “${id}”?`;
   $('cfText').textContent = 'Their saved lists stay in the repo (lists/' + id + '/), but the account can no longer log in.';
-  if (await openDialog(dlgConfirm) !== 'ok') { dlgUsers.showModal(); return; }
+  const ok = (await openDialog(dlgConfirm)) === 'ok';
   dlgUsers.showModal();
+  if (!ok) return;
+  const adminPass = await getAdminPass();
+  if (!adminPass) { dlgUsers.showModal(); return; }
   try {
-    await adminWriteUsers(async reg => {
-      reg.users = reg.users.filter(x => x.id !== id);
-      return reg;
-    }, `cue counter — admin: remove user ${id}`);
-    if (currentUser === id) { currentUser = 'public'; renderAll(); }
-    toast(`User ${id} removed`, 'ok');
-  } catch (e) { toast('Failed: ' + e.message, 'err'); }
+    const res = await authCall({ op: 'deluser', user: id, adminPass });
+    if (res.ok) { roster = res.users || roster; renderUsersList(); toast(`User ${id} removed`, 'ok'); }
+    else if (res.status === 403) { adminSecret = null; toast('Admin password was wrong', 'err'); }
+    else toast(res.message || 'Failed', 'err');
+  } catch { toast('Could not reach the server', 'err'); }
+  if (!dlgUsers.open) dlgUsers.showModal();
 }
 
-/* ---------------- sync setup (token or relay — no passwords) ---------------- */
-function ensureWritable(action) {
-  if (writable()) { action(); return; }
-  pending = action;
-  openSetup();
-}
-function runPending() { const p = pending; pending = null; if (p) p(); }
-dlgSetup.addEventListener('close', () => { if (dlgSetup.returnValue !== 'done') pending = null; });
-
+/* ---------------- optional device GitHub token (advanced) ---------------- */
 function openSetup() {
   $('suOwner').value = config.owner; $('suRepo').value = config.repo;
   $('suBranch').value = config.branch; $('suDir').value = config.dir;
   $('suSync').value = config.syncUrl || '';
   $('suToken').value = '';
   $('suErr').hidden = true; $('suAnyway').hidden = true;
-  $('suToken').placeholder = token ? 'token saved ✓ — leave empty to keep it' : 'github_pat_…';
+  $('suToken').placeholder = token ? 'token saved ✓ — leave empty to keep it' : 'optional — saving already works';
   $('suForget').hidden = !token;
   dlgSetup.showModal();
   $('suToken').focus();
 }
 dlgSetup.querySelector('form').addEventListener('submit', async e => {
   const v = e.submitter && e.submitter.value;
-  if (v === 'cancel') { e.preventDefault(); pending = null; dlgSetup.close('cancel'); return; }
-  if (v === 'forget') {
-    e.preventDefault();
-    pending = null;
-    token = null;
-    try { localStorage.removeItem(LSK.token); } catch { }
-    toast('Token removed from this device');
-    dlgSetup.close('cancel');
-    return;
-  }
+  if (v === 'cancel') { e.preventDefault(); dlgSetup.close('cancel'); return; }
+  if (v === 'forget') { e.preventDefault(); token = null; try { localStorage.removeItem(LSK.token); } catch { } toast('Token removed'); dlgSetup.close('cancel'); return; }
   e.preventDefault();
   const tok = $('suToken').value.trim();
   const err = m => { const el = $('suErr'); el.textContent = m; el.hidden = false; };
@@ -765,29 +697,22 @@ dlgSetup.querySelector('form').addEventListener('submit', async e => {
     repo: $('suRepo').value.trim() || DEFAULT_CONFIG.repo,
     branch: $('suBranch').value.trim() || DEFAULT_CONFIG.branch,
     dir: $('suDir').value.trim().replace(/^\/+|\/+$/g, ''),
-    syncUrl: $('suSync').value.trim()
+    syncUrl: $('suSync').value.trim() || DEFAULT_CONFIG.syncUrl
   };
   localStorage.setItem(LSK.config, JSON.stringify(config));
-
   if (tok) {
     if (v !== 'anyway') {
       $('suOk').disabled = true; $('suOk').textContent = 'Verifying…';
       try { await verifyToken(tok); }
-      catch (ex) {
-        $('suOk').disabled = false; $('suOk').textContent = 'Verify & save';
-        $('suAnyway').hidden = false;
-        return err('Could not verify: ' + ex.message + ' — fix it, or “Save anyway”.');
-      }
-      $('suOk').disabled = false; $('suOk').textContent = 'Verify & save';
+      catch (ex) { $('suOk').disabled = false; $('suOk').textContent = 'Save'; $('suAnyway').hidden = false; return err('Could not verify: ' + ex.message + ' — fix it, or “Save anyway”.'); }
+      $('suOk').disabled = false; $('suOk').textContent = 'Save';
     }
     token = tok;
     try { localStorage.setItem(LSK.token, tok); } catch { }
   }
   dlgSetup.close('done');
-  toast(writable() ? 'Sync ready ✓ — saving is now one click, no questions' : 'Settings saved', writable() ? 'ok' : undefined);
-  if (writable()) runPending(); else pending = null;
+  toast('Settings saved', 'ok');
 });
-
 async function verifyToken(tok) {
   const h = { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + tok };
   const ru = await fetch('https://api.github.com/user', { headers: h });
@@ -797,24 +722,15 @@ async function verifyToken(tok) {
   return (await ru.json()).login;
 }
 
-/* ---------------- repo I/O: direct GitHub API or relay ---------------- */
+/* ---------------- repo I/O: relay (default) or device token ---------------- */
 const encPath = p => p.split('/').map(encodeURIComponent).join('/');
 const cfgPath = rel => (config.dir ? config.dir + '/' : '') + rel;
 async function safeJson(r) { try { return await r.json(); } catch { return null; } }
-function ghErr(r, j) {
-  const e = new Error((j && j.message) ? `${j.message} (${r.status})` : `GitHub error ${r.status}`);
-  e.status = r.status;
-  return e;
-}
+function ghErr(r, j) { const e = new Error((j && j.message) ? `${j.message} (${r.status})` : `GitHub error ${r.status}`); e.status = r.status; return e; }
 async function ghApi(path, opt = {}) {
   return fetch('https://api.github.com' + path, {
     ...opt,
-    headers: {
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...(token ? { Authorization: 'Bearer ' + token } : {}),
-      ...(opt.headers || {})
-    }
+    headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(opt.headers || {}) }
   });
 }
 async function ghGetFile(path) {
@@ -839,26 +755,21 @@ async function ghDeleteFile(path, message, sha) {
   return j;
 }
 async function relayCall(payload) {
-  const r = await fetch(relayUrl(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  const r = await fetch(relayUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
   const j = await safeJson(r);
   if (r.status === 404) return null;
   if (!r.ok) throw ghErr(r, j);
   return j;
 }
-// Unified repo ops: prefer the device token, else the relay (lists only).
 async function repoGet(path) {
   if (token || !relayUrl()) return ghGetFile(path);
   const j = await relayCall({ op: 'get', path });
   if (!j) return null;
   return { sha: j.sha, text: td.decode(unb64(String(j.content || '').replace(/\n/g, ''))) };
 }
-async function repoPut(path, content, message, sha, auth) {
+async function repoPut(path, content, message, sha) {
   if (token) return ghPutFile(path, content, message, sha);
-  if (relayUrl()) return relayCall({ op: 'put', path, content, message, ...(sha ? { sha } : {}), ...(auth ? { auth } : {}) });
+  if (relayUrl()) return relayCall({ op: 'put', path, content, message, ...(sha ? { sha } : {}) });
   throw new Error('sync is not set up');
 }
 async function repoDelete(path, message, sha) {
@@ -870,11 +781,12 @@ async function repoDelete(path, message, sha) {
 /* ---------------- save / refresh ---------------- */
 saveBtn.onclick = () => {
   if (!cur()) { toast('Nothing to save — create a list first', 'err'); return; }
-  ensureWritable(doSave);
+  if (!writable()) { toast('Saving is not configured', 'err'); return; }
+  doSave();
 };
 
 async function doSave() {
-  const user = currentUser, w = ws(), file = w.current, L = cur();
+  const user = currentUserId(), w = ws(), file = w.current, L = cur();
   if (!L) return;
   setStatus('Saving…'); saveBtn.disabled = true;
   try {
@@ -887,24 +799,21 @@ async function doSave() {
     let res;
     try { res = await repoPut(path, body, msg, sha); }
     catch (e) {
-      if (e.status === 409 || e.status === 422) {
-        const ex = await repoGet(path);
-        res = await repoPut(path, body, msg, ex ? ex.sha : undefined);
-      } else throw e;
+      if (e.status === 409 || e.status === 422) { const ex = await repoGet(path); res = await repoPut(path, body, msg, ex ? ex.sha : undefined); }
+      else throw e;
     }
     L.sha = res && res.content && res.content.sha;
     L.dirty = false; L.remote = true;
     L.created = L.created || now.slice(0, 10); L.updated = now;
     let indexWarn = '';
-    try { await saveIndexJson(user); }
-    catch (e) { indexWarn = ' (list saved, but the index update failed — press Save again)'; }
+    try { await saveIndexJson(user); } catch (e) { indexWarn = ' (list saved, but the index update failed — press Save again)'; }
     persist();
-    if (user === currentUser) { renderSelect(); setStatusAuto(); updateComputed(); }
+    if (user === currentUserId()) { renderSelect(); setStatusAuto(); updateComputed(); }
     const url = res && res.commit && res.commit.html_url;
     toastHTML(`Saved “${esc(L.name)}” ✓${url ? ` — <a href="${esc(url)}" target="_blank" rel="noopener">view commit</a>` : ''}${esc(indexWarn)}`, indexWarn ? 'err' : 'ok');
   } catch (e) {
-    if (user === currentUser) setStatusAuto();
-    if (e.status === 401) toast('GitHub rejected the token (401). Open ⋯ → GitHub sync and reconnect.', 'err');
+    if (user === currentUserId()) setStatusAuto();
+    if (e.status === 401) toast('GitHub rejected the token (401). Open ⋯ → GitHub sync.', 'err');
     else toast('Save failed: ' + e.message, 'err');
   } finally { saveBtn.disabled = false; }
 }
@@ -914,12 +823,7 @@ async function saveIndexJson(user, removeFile) {
   const path = cfgPath(`lists/${user}/index.json`);
   const remote = await repoGet(path);
   let entries = [];
-  if (remote) {
-    try {
-      const parsed = JSON.parse(remote.text);
-      if (parsed && Array.isArray(parsed.lists)) entries = parsed.lists.filter(x => x && SAFE_FILE.test(String(x.file || '')));
-    } catch { }
-  }
+  if (remote) { try { const parsed = JSON.parse(remote.text); if (parsed && Array.isArray(parsed.lists)) entries = parsed.lists.filter(x => x && SAFE_FILE.test(String(x.file || ''))); } catch { } }
   const byFile = new Map(entries.map(x => [x.file, x]));
   for (const f of w.order) {
     const L = w.lists[f];
@@ -935,59 +839,31 @@ async function saveIndexJson(user, removeFile) {
     const res = await repoPut(path, body, msg, remote ? remote.sha : undefined);
     w.indexSha = res && res.content && res.content.sha;
   } catch (e) {
-    if (e.status === 409 || e.status === 422) {
-      const ex = await repoGet(path);
-      const res = await repoPut(path, body, msg, ex ? ex.sha : undefined);
-      w.indexSha = res && res.content && res.content.sha;
-    } else throw e;
+    if (e.status === 409 || e.status === 422) { const ex = await repoGet(path); const res = await repoPut(path, body, msg, ex ? ex.sha : undefined); w.indexSha = res && res.content && res.content.sha; }
+    else throw e;
   }
 }
 
 async function fetchIndex(user) {
-  if (token) {
-    const f = await ghGetFile(cfgPath(`lists/${user}/index.json`));
-    if (f) { ensureWorkspace(user).indexSha = f.sha; return JSON.parse(f.text); }
-    return null;
-  }
-  if (relayUrl()) {
-    try { const f = await repoGet(cfgPath(`lists/${user}/index.json`)); if (f) return JSON.parse(f.text); } catch { }
-  }
-  try {
-    const r = await fetch(`lists/${encodeURIComponent(user)}/index.json?ts=` + Date.now(), { cache: 'no-store' });
-    if (r.ok) return await r.json();
-  } catch { }
-  try {
-    const f = await ghGetFile(cfgPath(`lists/${user}/index.json`));
-    if (f) { ensureWorkspace(user).indexSha = f.sha; return JSON.parse(f.text); }
-  } catch { }
+  if (token) { const f = await ghGetFile(cfgPath(`lists/${user}/index.json`)); if (f) { ensureWorkspace(user).indexSha = f.sha; return JSON.parse(f.text); } return null; }
+  try { const r = await fetch(`lists/${encodeURIComponent(user)}/index.json?ts=` + Date.now(), { cache: 'no-store' }); if (r.ok) return await r.json(); } catch { }
+  if (relayUrl()) { try { const f = await repoGet(cfgPath(`lists/${user}/index.json`)); if (f) return JSON.parse(f.text); } catch { } }
   return null;
 }
 async function fetchList(user, file) {
-  if (token) {
-    const f = await ghGetFile(cfgPath(`lists/${user}/${file}`));
-    return f ? { data: JSON.parse(f.text), sha: f.sha } : null;
-  }
-  if (relayUrl()) {
-    try { const f = await repoGet(cfgPath(`lists/${user}/${file}`)); if (f) return { data: JSON.parse(f.text), sha: f.sha }; } catch { }
-  }
-  try {
-    const r = await fetch(`lists/${encodeURIComponent(user)}/${encodeURIComponent(file)}?ts=` + Date.now(), { cache: 'no-store' });
-    if (r.ok) return { data: await r.json(), sha: null };
-  } catch { }
-  try {
-    const f = await ghGetFile(cfgPath(`lists/${user}/${file}`));
-    return f ? { data: JSON.parse(f.text), sha: f.sha } : null;
-  } catch { }
+  if (token) { const f = await ghGetFile(cfgPath(`lists/${user}/${file}`)); return f ? { data: JSON.parse(f.text), sha: f.sha } : null; }
+  try { const r = await fetch(`lists/${encodeURIComponent(user)}/${encodeURIComponent(file)}?ts=` + Date.now(), { cache: 'no-store' }); if (r.ok) return { data: await r.json(), sha: null }; } catch { }
+  if (relayUrl()) { try { const f = await repoGet(cfgPath(`lists/${user}/${file}`)); if (f) return { data: JSON.parse(f.text), sha: f.sha }; } catch { } }
   return null;
 }
 
 async function refreshFromRemote(manual) {
-  const user = currentUser, w = ws();
+  const user = currentUserId(), w = ws();
   if (manual) setStatus('Syncing…');
   let idx = null;
   try { idx = await fetchIndex(user); } catch { }
   if (!idx || !Array.isArray(idx.lists)) {
-    if (user === currentUser) setStatusAuto();
+    if (user === currentUserId()) setStatusAuto();
     if (manual) toast('Could not load lists from GitHub', 'err');
     return;
   }
@@ -996,7 +872,7 @@ async function refreshFromRemote(manual) {
     if (!e || !e.file || !SAFE_FILE.test(String(e.file))) continue;
     const local = w.lists[e.file];
     if (local && local.dirty) continue;
-    if (user === currentUser && e.file === w.current && isEditingRows()) continue;
+    if (user === currentUserId() && e.file === w.current && isEditingRows()) continue;
     if (!local || (e.updated || '') > (local.updated || '') || manual) {
       try {
         const got = await fetchList(user, e.file);
@@ -1004,58 +880,27 @@ async function refreshFromRemote(manual) {
         if (nowLocal && nowLocal.dirty) continue;
         if (got && got.data && Array.isArray(got.data.tracks)) {
           w.lists[e.file] = {
-            name: got.data.name || e.name || e.file,
-            created: got.data.created || null,
-            updated: got.data.updated || e.updated || '',
-            tracks: got.data.tracks.slice(0, MAX_TRACKS * 2).map(normTrack),
-            dirty: false, remote: true,
-            sha: got.sha || (nowLocal ? nowLocal.sha : null)
+            name: got.data.name || e.name || e.file, created: got.data.created || null, updated: got.data.updated || e.updated || '',
+            tracks: got.data.tracks.slice(0, MAX_TRACKS * 2).map(normTrack), dirty: false, remote: true, sha: got.sha || (nowLocal ? nowLocal.sha : null)
           };
           if (!w.order.includes(e.file)) w.order.push(e.file);
           changed = true;
         }
       } catch { }
-    } else {
-      local.remote = true;
-      if (!w.order.includes(e.file)) w.order.push(e.file);
-    }
+    } else { local.remote = true; if (!w.order.includes(e.file)) w.order.push(e.file); }
   }
   const remoteFiles = new Set(idx.lists.map(e => e && e.file).filter(Boolean));
   for (const f of [...w.order]) {
     const L = w.lists[f];
     if (L && L.remote && !L.dirty && !remoteFiles.has(f)) {
-      try {
-        const still = await fetchList(user, f);
-        if (still) continue;
-      } catch { continue; }
-      delete w.lists[f];
-      w.order = w.order.filter(x => x !== f);
-      changed = true;
+      try { const still = await fetchList(user, f); if (still) continue; } catch { continue; }
+      delete w.lists[f]; w.order = w.order.filter(x => x !== f); changed = true;
     }
   }
   if (!w.current || !w.lists[w.current]) w.current = w.order[0] || null;
-  if (changed && user === currentUser) {
-    persist();
-    renderSelect();
-    if (!isEditingRows()) rebuildRows();
-  }
-  if (user === currentUser) setStatusAuto();
+  if (changed && user === currentUserId()) { persist(); renderSelect(); if (!isEditingRows()) rebuildRows(); }
+  if (user === currentUserId()) setStatusAuto();
   if (manual) toast('Refreshed from GitHub ✓', 'ok');
-}
-
-async function refreshUsers() {
-  let u = null;
-  try {
-    const r = await fetch('users.json?ts=' + Date.now(), { cache: 'no-store' });
-    if (r.ok) u = await r.json();
-  } catch { }
-  if (!u) { try { const f = await ghGetFile(cfgPath('users.json')); if (f) u = JSON.parse(f.text); } catch { } }
-  if (u && Array.isArray(u.users) && u.users.length && u.users.some(x => x.id === 'public')) {
-    usersReg = u;
-    try { localStorage.setItem(LSK.users, JSON.stringify(u)); } catch { }
-    if (!userById(currentUser)) { currentUser = 'public'; ensureWorkspace('public'); renderAll(); }
-    else renderUserBtn();
-  }
 }
 
 /* ---------------- toast ---------------- */
@@ -1075,7 +920,8 @@ toastEl.onclick = () => { toastEl.hidden = true; };
 /* ---------------- boot ---------------- */
 (function boot() {
   store = loadStore() || { workspaces: {} };
-  for (const u of usersReg.users) ensureWorkspace(u.id);
+  ensureWorkspace('public');
+  if (sessionUser) ensureWorkspace(sessionUser.id);
 
   if (window.RQC_SEED && RQC_SEED.workspaces) {
     for (const [uid, lists] of Object.entries(RQC_SEED.workspaces)) {
@@ -1083,24 +929,16 @@ toastEl.onclick = () => { toastEl.hidden = true; };
       if (w.order.length) continue;
       for (const [file, data] of Object.entries(lists)) {
         if (!data || !Array.isArray(data.tracks) || !SAFE_FILE.test(file)) continue;
-        w.lists[file] = {
-          name: data.name || file, created: data.created || null, updated: data.updated || '',
-          tracks: data.tracks.map(normTrack), dirty: false, remote: true, sha: null
-        };
+        w.lists[file] = { name: data.name || file, created: data.created || null, updated: data.updated || '', tracks: data.tracks.map(normTrack), dirty: false, remote: true, sha: null };
         w.order.push(file);
       }
       w.current = w.order[0] || null;
     }
   }
 
-  const lastUser = localStorage.getItem(LSK.user);
-  const lu = lastUser && userById(lastUser);
-  currentUser = (lu && (!lu.hash || unlocked.has(lu.id))) ? lastUser : 'public';
-  ensureWorkspace(currentUser);
   const w = ws();
   if (!w.current || !w.lists[w.current]) w.current = w.order[0] || null;
 
   renderAll();
-  refreshUsers();
   refreshFromRemote(false);
 })();
