@@ -97,6 +97,7 @@ let store = { workspaces: {} };
 let token = null;
 try { token = localStorage.getItem(LSK.token) || null; } catch { }
 let pending = null; // action waiting for sync setup
+let adminSecret = null; // admin's login password, cached in memory so relay-authorized user-management needs no token
 
 const relayUrl = () => String(config.syncUrl || '').trim().replace(/\/+$/, '');
 const writable = () => !!token || !!relayUrl();
@@ -137,7 +138,7 @@ const rowsEl = $('rows'), listSelect = $('listSelect'), userBtn = $('userBtn'), 
 const sumTracks = $('sumTracks'), sumClock = $('sumClock'), sumStatus = $('sumStatus');
 const dlgSetup = $('dlgSetup'), dlgName = $('dlgName'), dlgConfirm = $('dlgConfirm'),
   dlgHelp = $('dlgHelp'), dlgUserLogin = $('dlgUserLogin'), dlgDelete = $('dlgDelete'), dlgTheme = $('dlgTheme'),
-  dlgLink = $('dlgLink'), dlgUsers = $('dlgUsers');
+  dlgLink = $('dlgLink'), dlgUsers = $('dlgUsers'), dlgAdmin = $('dlgAdmin');
 
 // Some engines skip the 'close' event when a method="dialog" form submission
 // closes the dialog — poll dlg.open as a fallback so promises always settle.
@@ -397,6 +398,7 @@ dlgUserLogin.querySelector('form').addEventListener('submit', async e => {
   if (v === 'cancel') { e.preventDefault(); dlgUserLogin.close('cancel'); return; }
   if (v === 'logout') {
     unlocked.delete(currentUser); saveUnlocked();
+    adminSecret = null;
     currentUser = 'public'; ensureWorkspace('public');
     persist(); renderAll(); refreshFromRemote(false);
     toast('Logged out — back to Public', 'ok');
@@ -411,6 +413,7 @@ dlgUserLogin.querySelector('form').addEventListener('submit', async e => {
   okBtn.disabled = false;
   if (ok) {
     unlocked.add(u.id); saveUnlocked();
+    adminSecret = u.admin ? $('luPass').value : null; // cached for tokenless user-management via relay
     dlgUserLogin.close('done');
     currentUser = u.id;
     ensureWorkspace(u.id);
@@ -629,19 +632,48 @@ function renderUsersList() {
     box.appendChild(row);
   }
 }
+// The admin (adi) reconfirms with the login password when it isn't already
+// cached (e.g. after a page reload) — used to authorize relay writes to users.json.
+function promptAdminSecret() {
+  if (adminSecret) return Promise.resolve(adminSecret);
+  const u = userById(currentUser);
+  if (!u || !u.hash) return Promise.resolve(null);
+  $('adPass').value = ''; $('adErr').hidden = true;
+  dlgAdmin.returnValue = '';
+  dlgAdmin.showModal();
+  $('adPass').focus();
+  return dialogClosed(dlgAdmin).then(v => (v === 'done' ? adminSecret : null));
+}
+dlgAdmin.querySelector('form').addEventListener('submit', async e => {
+  const v = e.submitter && e.submitter.value;
+  if (v === 'cancel') { e.preventDefault(); dlgAdmin.close('cancel'); return; }
+  e.preventDefault();
+  const u = userById(currentUser);
+  const okBtn = e.target.querySelector('button[value=ok]');
+  okBtn.disabled = true;
+  const ok = u && await checkPassword($('adPass').value, u.salt, u.hash);
+  okBtn.disabled = false;
+  if (ok) { adminSecret = $('adPass').value; dlgAdmin.close('done'); }
+  else { const el = $('adErr'); el.textContent = 'Wrong password.'; el.hidden = false; $('adPass').select(); }
+});
+
 async function adminWriteUsers(mutate, message) {
-  if (!token) {
-    toast('User management needs the GitHub token on this device (⋯ → GitHub sync)', 'err');
+  if (!writable()) {
+    toast('Set up GitHub sync first (⋯ → GitHub sync)', 'err');
     openSetup();
     return false;
   }
+  // With the relay, user-management is authorized by the admin's login password;
+  // with a device token, the token authorizes it directly.
+  let auth = null;
+  if (!token) { auth = await promptAdminSecret(); if (!auth) return false; }
   const path = cfgPath('users.json');
   let remote = null;
-  try { remote = await ghGetFile(path); } catch { }
+  try { remote = await repoGet(path); } catch { }
   const reg = remote ? JSON.parse(remote.text) : JSON.parse(JSON.stringify(usersReg));
   const next = await mutate(reg);
   if (!next) return false;
-  await ghPutFile(path, JSON.stringify(next, null, 2) + '\n', message, remote ? remote.sha : undefined);
+  await repoPut(path, JSON.stringify(next, null, 2) + '\n', message, remote ? remote.sha : undefined, auth);
   usersReg = next;
   try { localStorage.setItem(LSK.users, JSON.stringify(next)); } catch { }
   renderUserBtn(); renderUsersList();
@@ -665,7 +697,7 @@ $('auAdd').onclick = async () => {
       return reg;
     }, exists ? `cue counter — admin: reset password for ${raw}` : `cue counter — admin: add user ${raw}`);
     if (okDone && !exists) {
-      try { await ghPutFile(cfgPath(`lists/${raw}/index.json`), JSON.stringify({ version: 2, lists: [] }, null, 2) + '\n', `cue counter — admin: init lists for ${raw}`); } catch { }
+      try { await repoPut(cfgPath(`lists/${raw}/index.json`), JSON.stringify({ version: 2, lists: [] }, null, 2) + '\n', `cue counter — admin: init lists for ${raw}`); } catch { }
       ensureWorkspace(raw);
     }
     if (okDone) {
@@ -821,9 +853,9 @@ async function repoGet(path) {
   if (!j) return null;
   return { sha: j.sha, text: td.decode(unb64(String(j.content || '').replace(/\n/g, ''))) };
 }
-async function repoPut(path, content, message, sha) {
+async function repoPut(path, content, message, sha, auth) {
   if (token) return ghPutFile(path, content, message, sha);
-  if (relayUrl()) return relayCall({ op: 'put', path, content, message, ...(sha ? { sha } : {}) });
+  if (relayUrl()) return relayCall({ op: 'put', path, content, message, ...(sha ? { sha } : {}), ...(auth ? { auth } : {}) });
   throw new Error('sync is not set up');
 }
 async function repoDelete(path, message, sha) {
