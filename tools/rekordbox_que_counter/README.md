@@ -1,55 +1,65 @@
 # Rekordbox Cue Counter
 
-Cue in / cue out set-time calculator for DJ sets — a web version of the Excel sheet,
-with the exact same formulas. Live at **https://adiariel.com/tools/rekordbox_que_counter/**
-(once pushed; served by GitHub Pages).
+DJ'ing Set Timer — enter each track's cue in & cue out to calculate the play time
+and how long the overall set will be. Live at
+**https://adiariel.com/tools/rekordbox_que_counter/** (GitHub Pages).
 
-## Time convention (same as the Excel)
+## Time formats
 
-Values are **mm.ss**: `6.53` = 6 minutes 53 seconds.
+All of these mean 5 minutes 18 seconds:
 
-| Column | Meaning | Excel |
-|---|---|---|
-| Play | `Cue out − Cue in`, plain decimal subtraction | D (`=SUM(C2)-B2`) |
-| Total | running decimal sum of Play | E (`=SUM(D2)`, `=E2+D3`, …) |
-| Set time | `int(Total)` minutes + `frac(Total)×100` seconds, carried into `h:mm:ss` | F |
+| Input | Style |
+|---|---|
+| `5:18.6` | rekordbox (m:ss.t — tenths of a second) |
+| `5:18` | m:ss |
+| `5.18` | the old Excel convention (fraction digits = seconds) |
+| `1:02:37` | h:mm:ss |
 
-The math runs on integer hundredths, so there is no floating-point drift and the
-output matches the spreadsheet cell-for-cell (verified against the *Avastha 4h set*,
-39 tracks → Total `240.91` → Set time `4:01:31`).
+**Play Time** = Cue out − Cue in. **Set time** = true running total, shown as h:mm:ss.
 
-> Note (inherited from the Excel formula): the decimal subtraction borrows at 100,
-> not at 60, so *Set time* can differ from real wall-clock elapsed time by ±40 s
-> per row until a later carry absorbs it. Kept as-is on purpose — same numbers as
-> the sheet.
+> v2 formula change: math is now real time arithmetic (in tenths of a second),
+> not the Excel's decimal trick. The Excel borrowed at 100 instead of 60, which
+> drifted ±40 s on some rows — e.g. the Avastha set is really **4:02:11**, the
+> sheet said 4:01:31. Unit tests in the build script pin the parser and totals.
 
-## Saved lists
+## Users
 
-- Lists live in [`lists/`](lists/) as JSON; [`lists/index.json`](lists/index.json) is the manifest.
-- The app autosaves your edits to the browser (`localStorage`) as you type.
-- **Save** commits the list to this repo through the GitHub Contents API
-  (one commit for the list, one for the manifest).
-- Anonymous visitors can view lists (read via the Pages site / public API); saving
-  requires login.
+Workspaces are defined in [`users.json`](users.json) (PBKDF2-SHA256 password
+hashes — a client-side gate, not server-grade auth; don't reuse valuable
+passwords). Default page is **Public**: everyone can view and build lists there.
+Named users unlock their own workspace with a password.
 
-## Login
+- Each user's lists live in `lists/<user>/` with an `index.json` manifest.
+- Limits: **100 lists per user**, **500 tracks per list** (enforced in the UI).
+- Rename a list with the ✎ button next to its name (works on mobile and desktop).
+- Every track has a **▶ link button** — opens a YouTube search for the track
+  name in a new tab, or any custom link (YouTube/SoundCloud/…) set via ✎.
+- Deleting a list always asks for a password: the user's own password, or for
+  Public the dedicated delete password (hash in users.json).
+- To add a user: generate a salt + PBKDF2-SHA256 hash (150k iterations, 32
+  bytes, base64) and append to `users.json` — the build script in the repo
+  history shows the recipe.
 
-Static site — there is no server, so "login" works like this:
+## Saving to GitHub
 
-1. First save asks for a **fine-grained GitHub token**
-   (github.com → Settings → Developer settings → Fine-grained tokens:
-   Repository access = only `Adi`, Permissions → **Contents: Read and write**).
-2. You pick a password. The token is encrypted with it (PBKDF2 310k → AES-GCM)
-   and stored only in this browser. The password never leaves the device.
-3. Next time, **Unlock** with the password. "Forget this device" wipes the stored token.
+Lists autosave to the browser as you type. **Save** commits the list to this
+repo through the GitHub Contents API — that needs a one-time per-device setup
+(⋯ → GitHub sync): paste a fine-grained token (Repository access: only this
+repo; Contents: Read and write), lock it behind a device password. The token is
+AES-GCM encrypted and never leaves the device.
 
-Anyone can *view* the page; only someone with a valid token can write to the repo.
+## Themes
+
+⋯ → Theme: Dark / Light presets plus custom colors (background, cards, lines,
+text, muted text, accent). Stored per device; applies to mobile and desktop.
 
 ## Files
 
 - `index.html` / `style.css` / `app.js` — the app (no build step, no dependencies)
-- `seed.js` — embedded copy of the Avastha list so the app works offline / before first push
-- `lists/*.json` — saved lists + `index.json` manifest
+- `cuemath.js` — time parsing/formatting, shared with the Node test script
+- `seed.js` — generated: embedded users + seed lists so the app works offline
+- `users.json` — user registry with password hashes
+- `lists/<user>/*.json` — saved lists + per-user `index.json`
 - `icon.svg`, `manifest.webmanifest` — add-to-home-screen support
 
 Local dev: `python3 -m http.server` in this folder, then open `http://localhost:8000`.

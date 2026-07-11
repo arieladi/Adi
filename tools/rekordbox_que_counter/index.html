@@ -4,8 +4,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Rekordbox Cue Counter</title>
-<meta name="description" content="Cue in / cue out set-time calculator for DJ sets. Saves lists to GitHub.">
-<meta name="theme-color" content="#0e1116">
+<meta name="description" content="DJ'ing Set Timer — cue in / cue out play-time and set-length calculator.">
+<meta name="theme-color" content="#0e1116" id="metaTheme">
+<script>
+/* theme preboot: apply the saved theme before first paint (no dark flash) */
+try {
+  var _t = JSON.parse(localStorage.getItem('rqc.theme.v2')) || { base: 'dark', colors: {} };
+  var _P = {
+    dark:  { bg:'#0e1116', panel:'#161c25', line:'#232c3a', text:'#e8eef5', dim:'#8b98a9', accent:'#35b6ff', neg:'#ff7b72', warn:'#f0b429', onAccent:'#04121c' },
+    light: { bg:'#f2f5f9', panel:'#ffffff', line:'#d7dfe9', text:'#182230', dim:'#5c6a7c', accent:'#0b7fd1', neg:'#c9382f', warn:'#9a6700', onAccent:'#ffffff' }
+  };
+  var _m = Object.assign({}, _P[_t.base] || _P.dark, _t.colors || {});
+  var _s = document.documentElement.style;
+  _s.setProperty('--bg', _m.bg); _s.setProperty('--panel', _m.panel); _s.setProperty('--line', _m.line);
+  _s.setProperty('--text', _m.text); _s.setProperty('--dim', _m.dim); _s.setProperty('--accent', _m.accent);
+  _s.setProperty('--neg', _m.neg); _s.setProperty('--warn', _m.warn); _s.setProperty('--on-accent', _m.onAccent);
+} catch (e) { }
+</script>
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon.svg">
 <link rel="manifest" href="manifest.webmanifest">
@@ -18,59 +33,136 @@
     <svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="21" fill="none" stroke="var(--accent)" stroke-width="3"/><circle cx="24" cy="24" r="13" fill="none" stroke="var(--accent)" stroke-width="2" opacity=".45"/><path d="M20 16.5v15l13-7.5z" fill="var(--accent)"/></svg>
     <h1>Rekordbox <span>Cue&nbsp;Counter</span></h1>
   </div>
-  <div class="account" id="accountArea"></div>
+  <div class="account">
+    <span class="userIcon" aria-hidden="true">👤</span>
+    <select id="userSelect" aria-label="User"></select>
+  </div>
 </header>
 
 <div class="listbar">
   <select id="listSelect" aria-label="Saved lists"></select>
-  <button id="btnNew" class="btn" title="Create a new list">＋ New</button>
-  <button id="btnSave" class="btn primary" title="Save this list to GitHub">Save</button>
-  <div class="moreWrap">
-    <button id="btnMore" class="btn icon" aria-label="List actions" aria-haspopup="menu">⋯</button>
-    <div id="moreMenu" class="menu" hidden>
-      <button data-act="refresh">↻ Refresh from GitHub</button>
-      <button data-act="duplicate">⧉ Duplicate list</button>
-      <button data-act="delete" class="danger">🗑 Delete list…</button>
-      <hr>
-      <button data-act="settings">⚙ GitHub settings…</button>
-      <button data-act="help">? How it works</button>
+  <button id="btnRename" class="btn icon" title="Rename this list" aria-label="Rename this list">✎</button>
+  <div class="listbtns">
+    <button id="btnNew" class="btn" title="Create a new list">＋ New</button>
+    <button id="btnDup" class="btn" title="Duplicate this list">⧉ Duplicate</button>
+    <button id="btnSave" class="btn primary" title="Save this list to GitHub">Save</button>
+    <button id="btnDelete" class="btn icon danger" title="Delete this list" aria-label="Delete this list">🗑</button>
+    <div class="moreWrap">
+      <button id="btnMore" class="btn icon" aria-label="More actions" aria-haspopup="menu">⋯</button>
+      <div id="moreMenu" class="menu" hidden>
+        <button data-act="refresh">↻ Refresh from GitHub</button>
+        <button data-act="theme">🎨 Theme…</button>
+        <button data-act="settings">⚙ GitHub sync…</button>
+        <button data-act="help">? How it works</button>
+      </div>
     </div>
   </div>
 </div>
 
 <section class="summary" aria-live="polite">
   <div class="chip"><span>Tracks</span><b id="sumTracks">0</b></div>
-  <div class="chip green"><span>Set play time</span><b id="sumTotal">0</b></div>
   <div class="chip blue"><span>Set time</span><b id="sumClock">0:00:00</b></div>
   <div class="chip status" id="sumStatus"><b>—</b></div>
 </section>
 
 <main>
   <div class="thead" aria-hidden="true">
-    <b>#</b><b>Track</b><b>Cue in</b><b>Cue out</b><b>Play</b><b>Total</b><b>Set time</b><b></b>
+    <b>#</b><b>Track</b><b>Cue in</b><b>Cue out</b><b>Play Time</b><b>Set time</b><b>Link</b><b></b>
   </div>
   <div id="rows"></div>
   <button id="btnAdd" class="addtrack">＋ Add track</button>
 </main>
 
 <footer class="help">
-  <b>mm.ss</b> — type <code>6.53</code> for 6&nbsp;min&nbsp;53&nbsp;s · Play&nbsp;=&nbsp;Cue&nbsp;out&nbsp;−&nbsp;Cue&nbsp;in · same formula as the Excel
+  DJ'ing Set Timer — enter each track's cue in &amp; cue out to calculate how long the play time and overall set will be.
+  <small>Time formats: <code>5:18.6</code> (rekordbox) · <code>5.18</code> (5 min 18 s) · <code>1:02:37</code></small>
 </footer>
+
+<dialog id="dlgLink">
+  <form method="dialog" class="dlg">
+    <h2>Track link</h2>
+    <p class="note" id="lkNote"></p>
+    <label>Link
+      <input id="lkInput" inputmode="url" autocomplete="off" placeholder="https://…">
+    </label>
+    <div class="dlgBtns">
+      <button value="ok" class="btn primary">Save</button>
+      <button value="clear" class="btn" formnovalidate>Use YouTube search</button>
+      <button value="cancel" class="btn" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgUserLogin">
+  <form method="dialog" class="dlg">
+    <h2 id="luTitle">Log in</h2>
+    <p class="note" id="luText"></p>
+    <label>Password
+      <input type="password" id="luPass" autocomplete="current-password">
+    </label>
+    <p class="err" id="luErr" hidden></p>
+    <div class="dlgBtns">
+      <button value="ok" class="btn primary">Log in</button>
+      <button value="cancel" class="btn" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgDelete">
+  <form method="dialog" class="dlg">
+    <h2 id="dlTitle">Delete list?</h2>
+    <p class="note" id="dlText"></p>
+    <label id="dlPassLabel">Password to confirm
+      <input type="password" id="dlPass" autocomplete="off">
+    </label>
+    <p class="err" id="dlErr" hidden></p>
+    <div class="dlgBtns">
+      <button value="ok" class="btn danger">Delete</button>
+      <button value="cancel" class="btn" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgTheme">
+  <form method="dialog" class="dlg">
+    <h2>Theme</h2>
+    <div class="themeBase" role="radiogroup" aria-label="Base theme">
+      <button type="button" class="btn themePick" data-base="dark">🌙 Dark</button>
+      <button type="button" class="btn themePick" data-base="light">☀️ Light</button>
+    </div>
+    <details id="themeCustom">
+      <summary>Customize colors</summary>
+      <div class="grid2" id="themeColors">
+        <label>Background<input type="color" data-var="bg"></label>
+        <label>Cards<input type="color" data-var="panel"></label>
+        <label>Lines<input type="color" data-var="line"></label>
+        <label>Text<input type="color" data-var="text"></label>
+        <label>Muted text<input type="color" data-var="dim"></label>
+        <label>Accent<input type="color" data-var="accent"></label>
+      </div>
+      <button type="button" class="btn small" id="themeReset">Reset colors to base</button>
+    </details>
+    <p class="note">Changes apply live and are saved on this device.</p>
+    <div class="dlgBtns">
+      <button value="ok" class="btn primary">Done</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="dlgSetup">
   <form method="dialog" class="dlg">
-    <h2>Connect GitHub</h2>
-    <p class="note">Saving writes the list into <code>tools/rekordbox_que_counter/lists/</code> in your repo.
-    You need a GitHub <b>fine-grained token</b>: <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">create one here</a> —
-    Repository access: <b>only this repo</b> · Permissions → Contents: <b>Read and write</b>.</p>
+    <h2>GitHub sync</h2>
+    <p class="note">Saving writes lists into <code>tools/rekordbox_que_counter/lists/</code> in the repo.
+    One-time setup per device: create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>
+    — Repository access: <b>only this repo</b> · Permissions → Contents: <b>Read and write</b>.</p>
     <label>GitHub token
-      <input type="password" id="suToken" autocomplete="off" placeholder="github_pat_…" required>
+      <input type="password" id="suToken" autocomplete="off" placeholder="github_pat_…">
     </label>
-    <label>Choose a password <small>(locks the token on this device)</small>
-      <input type="password" id="suPass" autocomplete="new-password" required minlength="4">
+    <label>Device password <small>(locks the token on this device)</small>
+      <input type="password" id="suPass" autocomplete="new-password">
     </label>
     <label>Repeat password
-      <input type="password" id="suPass2" autocomplete="new-password" required minlength="4">
+      <input type="password" id="suPass2" autocomplete="new-password">
     </label>
     <details>
       <summary>Repository settings</summary>
@@ -92,10 +184,10 @@
 
 <dialog id="dlgUnlock">
   <form method="dialog" class="dlg">
-    <h2>Unlock</h2>
-    <p class="note">Enter your password to unlock GitHub saving on this device.</p>
-    <label>Password
-      <input type="password" id="ulPass" autocomplete="current-password" required>
+    <h2>Unlock GitHub sync</h2>
+    <p class="note">Enter this device's sync password to save to GitHub.</p>
+    <label>Device password
+      <input type="password" id="ulPass" autocomplete="current-password">
     </label>
     <label class="check"><input type="checkbox" id="ulRemember" checked> Stay unlocked until this tab closes</label>
     <p class="err" id="ulErr" hidden></p>
@@ -114,7 +206,7 @@
       <input id="nmInput" required maxlength="80" placeholder="e.g. Forest 3h set">
     </label>
     <div class="dlgBtns">
-      <button value="ok" class="btn primary">Create</button>
+      <button value="ok" class="btn primary" id="nmOk">Create</button>
       <button value="cancel" class="btn" formnovalidate>Cancel</button>
     </div>
   </form>
@@ -125,7 +217,7 @@
     <h2 id="cfTitle">Are you sure?</h2>
     <p class="note" id="cfText"></p>
     <div class="dlgBtns">
-      <button value="ok" class="btn danger" id="cfOk">Delete</button>
+      <button value="ok" class="btn danger" id="cfOk">Confirm</button>
       <button value="cancel" class="btn" formnovalidate>Cancel</button>
     </div>
   </form>
@@ -135,12 +227,15 @@
   <form method="dialog" class="dlg">
     <h2>How it works</h2>
     <p class="note">
-      Times use the <b>mm.ss</b> convention from the Excel sheet: <code>6.53</code> means 6&nbsp;minutes&nbsp;53&nbsp;seconds.<br><br>
-      <b>Play</b> = Cue&nbsp;out − Cue&nbsp;in (plain decimal subtraction, like column&nbsp;D).<br>
-      <b>Total</b> = running sum of Play (column&nbsp;E).<br>
-      <b>Set time</b> = Total read as minutes + hundredths-as-seconds, carried into h:mm:ss (column&nbsp;F).<br><br>
-      Lists autosave to this device as you type. <b>Save</b> commits the list to your GitHub repo —
-      the first save asks for a GitHub token, then locks it behind your password.
+      Enter each track's <b>Cue in</b> and <b>Cue out</b> — the point where you bring a track in and out of the mix.
+      <b>Play Time</b> = Cue out − Cue in, and <b>Set time</b> is the running length of the whole set.<br><br>
+      Time formats: <code>5:18.6</code> (rekordbox, tenths), <code>5:18</code>, <code>5.18</code> (5&nbsp;min&nbsp;18&nbsp;s, like the old Excel), or <code>1:02:37</code>.<br><br>
+      <b>▶</b> opens the track in a new tab — a YouTube search for the track name by default,
+      or any link you set with <b>✎</b> (YouTube, SoundCloud, …). Rename the list with the <b>✎</b> next to its name.<br><br>
+      <b>Users:</b> Public is open to everyone. Named users have a password and their own lists.
+      Each user can keep up to 100 lists, 500 tracks per list.<br><br>
+      Lists autosave to this device as you type. <b>Save</b> commits them to GitHub —
+      one-time device setup with a GitHub token (⋯ → GitHub sync).
     </p>
     <div class="dlgBtns"><button value="ok" class="btn primary">Got it</button></div>
   </form>
@@ -148,6 +243,7 @@
 
 <div id="toast" hidden></div>
 
+<script src="cuemath.js"></script>
 <script src="seed.js"></script>
 <script src="app.js"></script>
 </body>

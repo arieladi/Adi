@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "kdf": {
+    "algo": "PBKDF2-SHA256",
+    "iterations": 150000,
+    "bytes": 32
+  },
+  "users": [
+    {
+      "id": "public",
+      "label": "Public",
+      "salt": null,
+      "hash": null,
+      "deleteSalt": "pIuTbZ/DoSoFPnyjMTcuhQ==",
+      "deleteHash": "j443bsn28n4vf6mNjNW5700nnxO1d5XPDSlvJffimis="
+    },
+    {
+      "id": "avastha",
+      "label": "Avastha",
+      "salt": "2Km9z/RETvsYXAV2Tw9k4A==",
+      "hash": "YdQb8bApSISq5WWRZrKB5/fy/SHOIJtdr7Y02QGomZA="
+    },
+    {
+      "id": "adi",
+      "label": "Adi",
+      "salt": "YE9hU3Dp3MJ74uXLFs9U6w==",
+      "hash": "CsZBNY4QfiN9QkLzX5p9HUVyzb8KZiUzSmYkvC7cxSI="
+    },
+    {
+      "id": "valentin",
+      "label": "Valentin",
+      "salt": "EYNYyd1jNai91KJJJcDXMw==",
+      "hash": "qf0PksZThBH5p19+4IzcdRZOJhnNgafe4GyjvL6ntY4="
+    }
+  ]
+}
