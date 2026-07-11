@@ -11,18 +11,20 @@
      password, and it stays correct even if that password is later changed.
 
    Deploy (≈5 minutes, free):
-   1. https://dash.cloudflare.com → Workers & Pages → Create → Worker.
-   2. Paste this file as the worker code, deploy.
-   3. Worker → Settings → Variables and Secrets:
+   1. https://dash.cloudflare.com → Workers & Pages → Create → Worker →
+      Start with Hello World → Deploy. Then "Edit code", paste THIS whole file
+      over the starter, and click Deploy.
+   2. Worker → Settings → Variables and Secrets:
         GH_TOKEN     (secret) = fine-grained token, repo "Adi" only, Contents: Read and write
         OWNER        = arieladi
         REPO         = Adi
         BRANCH       = main
         DIR          = tools/rekordbox_que_counter   (optional; this is the default)
         ALLOW_ORIGIN = https://adiariel.com          (optional; * if unset)
-   4. Copy the worker URL (https://<name>.<acct>.workers.dev) into the app:
-      ⋯ → GitHub sync → Repository settings → Sync relay URL — save once.
-      To make it the default for everyone, set DEFAULT_CONFIG.syncUrl in app.js.
+   3. Copy the worker URL into the app: ⋯ → GitHub sync → Repository settings →
+      Sync relay URL — or bake it into DEFAULT_CONFIG.syncUrl in app.js.
+
+   Quick test after deploy: open the worker URL in a browser → {"message":"POST only"}.
 */
 export default {
   async fetch(req, env) {
@@ -37,80 +39,95 @@ export default {
     if (req.method === 'OPTIONS') return new Response(null, { headers: cors });
     if (req.method !== 'POST') return json({ message: 'POST only' }, 405);
 
-    let b;
-    try { b = await req.json(); } catch { return json({ message: 'bad json' }, 400); }
-    const { op, path, content, message, sha, auth } = b || {};
+    try {
+      let b;
+      try { b = await req.json(); } catch { return json({ message: 'bad json' }, 400); }
+      const { op, path, content, message, sha, auth } = b || {};
 
-    const DIR = env.DIR || 'tools/rekordbox_que_counter';
-    const LISTS = DIR + '/lists/';
-    const USERS = DIR + '/users.json';
+      const DIR = env.DIR || 'tools/rekordbox_que_counter';
+      const LISTS = DIR + '/lists/';
+      const USERS = DIR + '/users.json';
 
-    // Decide what kind of file this is and whether the request is allowed.
-    let kind = null;
-    if (path === USERS) kind = 'users';
-    else if (typeof path === 'string' && path.startsWith(LISTS) &&
-      /^[a-z0-9][a-z0-9-]{0,20}\/[a-z0-9][a-z0-9-]{0,80}\.json$/.test(path.slice(LISTS.length))) kind = 'list';
-    if (!kind) return json({ message: 'path not allowed' }, 400);
+      // Decide what kind of file this is and whether the request is allowed.
+      let kind = null;
+      if (path === USERS) kind = 'users';
+      else if (typeof path === 'string' && path.startsWith(LISTS) &&
+        /^[a-z0-9][a-z0-9-]{0,20}\/[a-z0-9][a-z0-9-]{0,80}\.json$/.test(path.slice(LISTS.length))) kind = 'list';
+      if (!kind) return json({ message: 'path not allowed' }, 400);
 
-    if (kind === 'users' && op !== 'get') {
-      if (!await verifyAdmin(auth, env)) return json({ message: 'admin password required' }, 403);
+      if (kind === 'users' && op !== 'get') {
+        if (!await verifyAdmin(auth, env)) return json({ message: 'admin password required' }, 403);
+      }
+      if (op === 'put' && (typeof content !== 'string' || content.length > 400000))
+        return json({ message: 'content missing or too large' }, 400);
+
+      const branch = env.BRANCH || 'main';
+      const api = `https://api.github.com/repos/${env.OWNER}/${env.REPO}/contents/` +
+        path.split('/').map(encodeURIComponent).join('/');
+      const H = {
+        Authorization: 'Bearer ' + env.GH_TOKEN,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'rqc-relay',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json'
+      };
+
+      let r;
+      if (op === 'get') {
+        r = await fetch(`${api}?ref=${encodeURIComponent(branch)}`, { headers: H });
+      } else if (op === 'put') {
+        r = await fetch(api, {
+          method: 'PUT', headers: H,
+          body: JSON.stringify({ message: String(message || 'cue counter save').slice(0, 200), branch, content: b64utf8(content), ...(sha ? { sha } : {}) })
+        });
+      } else if (op === 'delete') {
+        if (!sha) return json({ message: 'sha required' }, 400);
+        r = await fetch(api, {
+          method: 'DELETE', headers: H,
+          body: JSON.stringify({ message: String(message || 'cue counter delete').slice(0, 200), branch, sha })
+        });
+      } else {
+        return json({ message: 'bad op' }, 400);
+      }
+      const out = await r.json().catch(() => ({}));
+      return json(out, r.status);
+    } catch (e) {
+      return json({ message: 'relay error: ' + ((e && e.message) || String(e)) }, 500);
     }
-    if (op === 'put' && (typeof content !== 'string' || content.length > 400000))
-      return json({ message: 'content missing or too large' }, 400);
-
-    const branch = env.BRANCH || 'main';
-    const api = `https://api.github.com/repos/${env.OWNER}/${env.REPO}/contents/` +
-      path.split('/').map(encodeURIComponent).join('/');
-    const H = {
-      Authorization: 'Bearer ' + env.GH_TOKEN,
-      Accept: 'application/vnd.github+json',
-      'User-Agent': 'rqc-relay',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'Content-Type': 'application/json'
-    };
-
-    let r;
-    if (op === 'get') {
-      r = await fetch(`${api}?ref=${encodeURIComponent(branch)}`, { headers: H });
-    } else if (op === 'put') {
-      r = await fetch(api, {
-        method: 'PUT', headers: H,
-        body: JSON.stringify({ message: String(message || 'cue counter save').slice(0, 200), branch, content: b64utf8(content), ...(sha ? { sha } : {}) })
-      });
-    } else if (op === 'delete') {
-      if (!sha) return json({ message: 'sha required' }, 400);
-      r = await fetch(api, {
-        method: 'DELETE', headers: H,
-        body: JSON.stringify({ message: String(message || 'cue counter delete').slice(0, 200), branch, sha })
-      });
-    } else {
-      return json({ message: 'bad op' }, 400);
-    }
-    const out = await r.json().catch(() => ({}));
-    return json(out, r.status);
   }
 };
 
 // Verify a password against the admin user(s) in the repo's users.json.
+// Uses the same JSON+base64 read the rest of the worker uses; fully guarded.
 async function verifyAdmin(pass, env) {
   if (typeof pass !== 'string' || !pass) return false;
-  const DIR = env.DIR || 'tools/rekordbox_que_counter';
-  const api = `https://api.github.com/repos/${env.OWNER}/${env.REPO}/contents/` +
-    (DIR + '/users.json').split('/').map(encodeURIComponent).join('/') +
-    `?ref=${encodeURIComponent(env.BRANCH || 'main')}`;
-  let reg;
   try {
-    const r = await fetch(api, { headers: { Authorization: 'Bearer ' + env.GH_TOKEN, Accept: 'application/vnd.github.raw', 'User-Agent': 'rqc-relay' } });
+    const DIR = env.DIR || 'tools/rekordbox_que_counter';
+    const api = `https://api.github.com/repos/${env.OWNER}/${env.REPO}/contents/` +
+      (DIR + '/users.json').split('/').map(encodeURIComponent).join('/') +
+      `?ref=${encodeURIComponent(env.BRANCH || 'main')}`;
+    const r = await fetch(api, {
+      headers: {
+        Authorization: 'Bearer ' + env.GH_TOKEN,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'rqc-relay',
+        'X-GitHub-Api-Version': '2022-11-28'
+      }
+    });
     if (!r.ok) return false;
-    reg = await r.json();
-  } catch { return false; }
-  const iter = (reg.kdf && reg.kdf.iterations) || 150000;
-  const admins = (reg.users || []).filter(u => u.admin && u.salt && u.hash);
-  for (const u of admins) {
-    const got = await pbkdf2b64(pass, u.salt, iter);
-    if (timingEq(got, u.hash)) return true;
+    const j = await r.json();
+    const bytes = Uint8Array.from(atob(String(j.content || '').replace(/[^A-Za-z0-9+/=]/g, '')), c => c.charCodeAt(0));
+    const reg = JSON.parse(new TextDecoder().decode(bytes));
+    const iter = (reg.kdf && reg.kdf.iterations) || 150000;
+    for (const u of (reg.users || [])) {
+      if (!u.admin || !u.salt || !u.hash) continue;
+      const got = await pbkdf2b64(pass, u.salt, iter);
+      if (timingEq(got, u.hash)) return true;
+    }
+    return false;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 async function pbkdf2b64(pass, saltB64, iterations) {

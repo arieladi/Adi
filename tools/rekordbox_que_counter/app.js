@@ -24,7 +24,7 @@ const DEFAULT_CONFIG = {
   repo: 'Adi',
   branch: 'main',
   dir: 'tools/rekordbox_que_counter',
-  syncUrl: '' // optional relay endpoint (see relay-worker.js); makes saving work with zero setup
+  syncUrl: 'https://restless-firefly-5a76.adidatabase.workers.dev' // relay (relay-worker.js) — saving works with zero setup
 };
 (function () {
   const h = location.hostname, seg = location.pathname.split('/').filter(Boolean);
@@ -47,6 +47,9 @@ const SSK_UNLOCKED = 'rqc.unlockedUsers.v2';
 
 let config = { ...DEFAULT_CONFIG };
 try { config = { ...config, ...(JSON.parse(localStorage.getItem(LSK.config)) || {}) }; } catch { }
+// a stored config from before the relay existed would have an empty syncUrl —
+// fall back to the baked-in default so the relay applies without re-saving settings
+if (!config.syncUrl) config.syncUrl = DEFAULT_CONFIG.syncUrl;
 try { localStorage.removeItem('rqc.auth.v1'); } catch { } // v2's encrypted token blob — obsolete
 
 /* ---------------- theme & appearance engine ---------------- */
