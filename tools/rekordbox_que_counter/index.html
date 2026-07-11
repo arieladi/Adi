@@ -264,19 +264,27 @@ try {
   <form method="dialog" class="dlg">
     <h2>How it works</h2>
     <p class="note">
-      Take the times straight from your rekordbox cues:<br>
-      <b>Cue in</b> — where you start the track (e.g. hot cue&nbsp;A at <code>00:27.4</code> → type <code>0:27.4</code>).<br>
-      <b>Cue out</b> — where you start the <i>next</i> track (e.g. hot cue&nbsp;C at <code>06:10.2</code> → type <code>6:10.2</code>),
-      so the mix time between tracks is counted in the set.<br>
-      <b>Play Time</b> = Cue out − Cue in (here <code>5:42.8</code>), and <b>Set time</b> is the running length of the whole set.<br><br>
-      Time formats: <code>6:10.2</code> (rekordbox, tenths), <code>6:10</code>, <code>6.10</code> (6&nbsp;min&nbsp;10&nbsp;s, like the old Excel),
-      <code>6.10.2</code> (Excel style + tenths), or <code>1:02:37</code>.<br><br>
+      Take the times straight from your rekordbox cues.
+      <b>Cue in</b> is where you start the track (hot cue&nbsp;A), and <b>Cue out</b> is where you start the
+      <i>next</i> track (hot cue&nbsp;C) — so the mix time between tracks is counted in the set.
+    </p>
+    <figure class="helpfig">
+      <img src="img/cue-in-example.jpg" alt="Rekordbox: hot cue A at 0:26.4 — the cue in">
+      <figcaption><b>Cue in</b> — hot cue&nbsp;A here reads <code>00:26.4</code> → type <code>0:26.4</code></figcaption>
+    </figure>
+    <figure class="helpfig">
+      <img src="img/cue-out-example.jpg" alt="Rekordbox: hot cue C at 5:57.4 — the cue out (next track start)">
+      <figcaption><b>Cue out</b> — hot cue&nbsp;C here reads <code>05:57.4</code> → type <code>5:57.4</code></figcaption>
+    </figure>
+    <p class="note">
+      <b>Play Time</b> = Cue out − Cue in (here <code>5:31.0</code>), and <b>Set time</b> is the running length of the whole set.<br><br>
+      Time formats: <code>5:57.4</code> (rekordbox, tenths), <code>5:57</code>, <code>5.57</code> (5&nbsp;min&nbsp;57&nbsp;s, like the old Excel),
+      <code>5.57.4</code> (Excel style + tenths), or <code>1:02:37</code>.<br><br>
       <b>▶</b> opens the track in a new tab — a YouTube search for the track name by default,
       or any link you set with <b>✎</b> (YouTube, SoundCloud, …). Rename the list with the <b>✎</b> next to its name.<br><br>
       <b>Users:</b> Public is open to everyone. Log in (👤 button) with a username and password for your own lists —
       accounts are made by Adi. Up to 100 lists per user, 500 tracks per list.<br><br>
-      Lists autosave to this device as you type. <b>Save</b> commits them to GitHub with no questions asked
-      once sync is set up (⋯ → GitHub sync — one time per device, or never with the relay).
+      Lists autosave to this device as you type. <b>Save</b> commits them to GitHub — no setup needed.
     </p>
     <div class="dlgBtns"><button value="ok" class="btn primary">Got it</button></div>
   </form>
