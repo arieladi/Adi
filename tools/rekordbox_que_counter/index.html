@@ -7,18 +7,21 @@
 <meta name="description" content="DJ'ing Set Timer — cue in / cue out play-time and set-length calculator.">
 <meta name="theme-color" content="#0e1116" id="metaTheme">
 <script>
-/* theme preboot: apply the saved theme before first paint (no dark flash) */
+/* appearance preboot: apply the saved theme + sizes before first paint */
 try {
-  var _t = JSON.parse(localStorage.getItem('rqc.theme.v2')) || { base: 'dark', colors: {} };
+  var _t = JSON.parse(localStorage.getItem('rqc.theme.v2')) || { base: 'dark', colors: {}, size: {} };
   var _P = {
     dark:  { bg:'#0e1116', panel:'#161c25', line:'#232c3a', text:'#e8eef5', dim:'#8b98a9', accent:'#35b6ff', neg:'#ff7b72', warn:'#f0b429', onAccent:'#04121c' },
     light: { bg:'#f2f5f9', panel:'#ffffff', line:'#d7dfe9', text:'#182230', dim:'#5c6a7c', accent:'#0b7fd1', neg:'#c9382f', warn:'#9a6700', onAccent:'#ffffff' }
   };
   var _m = Object.assign({}, _P[_t.base] || _P.dark, _t.colors || {});
+  var _z = Object.assign({ zoom: 100, font: 16, pad: 10 }, _t.size || {});
   var _s = document.documentElement.style;
   _s.setProperty('--bg', _m.bg); _s.setProperty('--panel', _m.panel); _s.setProperty('--line', _m.line);
   _s.setProperty('--text', _m.text); _s.setProperty('--dim', _m.dim); _s.setProperty('--accent', _m.accent);
   _s.setProperty('--neg', _m.neg); _s.setProperty('--warn', _m.warn); _s.setProperty('--on-accent', _m.onAccent);
+  _s.setProperty('--fs', _z.font + 'px'); _s.setProperty('--cell-pad', _z.pad + 'px');
+  _s.zoom = _z.zoom / 100;
 } catch (e) { }
 </script>
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -34,8 +37,7 @@ try {
     <h1>Rekordbox <span>Cue&nbsp;Counter</span></h1>
   </div>
   <div class="account">
-    <span class="userIcon" aria-hidden="true">👤</span>
-    <select id="userSelect" aria-label="User"></select>
+    <button id="userBtn" class="btn" title="Log in / log out">👤 Public</button>
   </div>
 </header>
 
@@ -51,7 +53,8 @@ try {
       <button id="btnMore" class="btn icon" aria-label="More actions" aria-haspopup="menu">⋯</button>
       <div id="moreMenu" class="menu" hidden>
         <button data-act="refresh">↻ Refresh from GitHub</button>
-        <button data-act="theme">🎨 Theme…</button>
+        <button data-act="theme">🎨 Theme &amp; size…</button>
+        <button data-act="users" id="menuUsers" hidden>👥 Users…</button>
         <button data-act="settings">⚙ GitHub sync…</button>
         <button data-act="help">? How it works</button>
       </div>
@@ -95,7 +98,10 @@ try {
 <dialog id="dlgUserLogin">
   <form method="dialog" class="dlg">
     <h2 id="luTitle">Log in</h2>
-    <p class="note" id="luText"></p>
+    <p class="note">Each user has their own lists. Accounts are made by Adi.</p>
+    <label>Username
+      <input id="luUser" autocomplete="username" autocapitalize="none" spellcheck="false">
+    </label>
     <label>Password
       <input type="password" id="luPass" autocomplete="current-password">
     </label>
@@ -103,6 +109,7 @@ try {
     <div class="dlgBtns">
       <button value="ok" class="btn primary">Log in</button>
       <button value="cancel" class="btn" formnovalidate>Cancel</button>
+      <button value="logout" class="btn danger" id="luLogout" formnovalidate hidden>Log out</button>
     </div>
   </form>
 </dialog>
@@ -124,7 +131,7 @@ try {
 
 <dialog id="dlgTheme">
   <form method="dialog" class="dlg">
-    <h2>Theme</h2>
+    <h2>Theme &amp; size</h2>
     <div class="themeBase" role="radiogroup" aria-label="Base theme">
       <button type="button" class="btn themePick" data-base="dark">🌙 Dark</button>
       <button type="button" class="btn themePick" data-base="light">☀️ Light</button>
@@ -141,6 +148,21 @@ try {
       </div>
       <button type="button" class="btn small" id="themeReset">Reset colors to base</button>
     </details>
+    <details open>
+      <summary>Size</summary>
+      <div class="sliders">
+        <label>Overall size <output id="szZoomVal">100%</output>
+          <input type="range" id="szZoom" min="80" max="130" step="5">
+        </label>
+        <label>Text size <output id="szFontVal">16px</output>
+          <input type="range" id="szFont" min="13" max="20" step="1">
+        </label>
+        <label>Row height <output id="szPadVal">10px</output>
+          <input type="range" id="szPad" min="5" max="16" step="1">
+        </label>
+      </div>
+      <button type="button" class="btn small" id="sizeReset">Reset sizes</button>
+    </details>
     <p class="note">Changes apply live and are saved on this device.</p>
     <div class="dlgBtns">
       <button value="ok" class="btn primary">Done</button>
@@ -148,20 +170,34 @@ try {
   </form>
 </dialog>
 
+<dialog id="dlgUsers">
+  <form method="dialog" class="dlg">
+    <h2>Users</h2>
+    <p class="note">Admin panel — changes are committed to <code>users.json</code> in the repo
+    (needs the GitHub token on this device). Type an existing username to reset its password.</p>
+    <div id="usersList"></div>
+    <div class="grid2">
+      <label>Username<input id="auId" autocapitalize="none" spellcheck="false"></label>
+      <label>Password<input id="auPass" type="password" autocomplete="new-password"></label>
+    </div>
+    <p class="err" id="auErr" hidden></p>
+    <div class="dlgBtns">
+      <button value="ok" class="btn">Close</button>
+      <button type="button" id="auAdd" class="btn primary">＋ Add / reset</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="dlgSetup">
   <form method="dialog" class="dlg">
     <h2>GitHub sync</h2>
-    <p class="note">Saving writes lists into <code>tools/rekordbox_que_counter/lists/</code> in the repo.
-    One-time setup per device: create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>
-    — Repository access: <b>only this repo</b> · Permissions → Contents: <b>Read and write</b>.</p>
+    <p class="note">One-time setup so saving just works. Either paste a
+    <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>
+    (Repository access: <b>only this repo</b> · Permissions → Contents: <b>Read and write</b>) —
+    it stays on this device and you will never be asked again — or set a sync relay URL under
+    Repository settings (then nobody needs a token at all; see README).</p>
     <label>GitHub token
       <input type="password" id="suToken" autocomplete="off" placeholder="github_pat_…">
-    </label>
-    <label>Device password <small>(locks the token on this device)</small>
-      <input type="password" id="suPass" autocomplete="new-password">
-    </label>
-    <label>Repeat password
-      <input type="password" id="suPass2" autocomplete="new-password">
     </label>
     <details>
       <summary>Repository settings</summary>
@@ -171,29 +207,16 @@ try {
         <label>Branch<input id="suBranch"></label>
         <label>Folder<input id="suDir"></label>
       </div>
+      <label>Sync relay URL <small>(optional — saves without any token)</small>
+        <input id="suSync" inputmode="url" placeholder="https://rqc-relay.yourname.workers.dev">
+      </label>
     </details>
     <p class="err" id="suErr" hidden></p>
     <div class="dlgBtns">
       <button value="ok" class="btn primary" id="suOk">Verify &amp; save</button>
       <button value="anyway" class="btn" id="suAnyway" hidden formnovalidate>Save anyway</button>
       <button value="cancel" class="btn" formnovalidate>Cancel</button>
-    </div>
-  </form>
-</dialog>
-
-<dialog id="dlgUnlock">
-  <form method="dialog" class="dlg">
-    <h2>Unlock GitHub sync</h2>
-    <p class="note">Enter this device's sync password to save to GitHub.</p>
-    <label>Device password
-      <input type="password" id="ulPass" autocomplete="current-password">
-    </label>
-    <label class="check"><input type="checkbox" id="ulRemember" checked> Stay unlocked until this tab closes</label>
-    <p class="err" id="ulErr" hidden></p>
-    <div class="dlgBtns">
-      <button value="ok" class="btn primary">Unlock</button>
-      <button value="cancel" class="btn" formnovalidate>Cancel</button>
-      <button value="forget" class="btn danger" formnovalidate>Forget this device</button>
+      <button value="forget" class="btn danger" id="suForget" hidden formnovalidate>Remove token</button>
     </div>
   </form>
 </dialog>
@@ -231,13 +254,14 @@ try {
       <b>Cue out</b> — where you start the <i>next</i> track (e.g. hot cue&nbsp;C at <code>06:10.2</code> → type <code>6:10.2</code>),
       so the mix time between tracks is counted in the set.<br>
       <b>Play Time</b> = Cue out − Cue in (here <code>5:42.8</code>), and <b>Set time</b> is the running length of the whole set.<br><br>
-      Time formats: <code>6:10.2</code> (rekordbox, tenths), <code>6:10</code>, <code>6.10</code> (6&nbsp;min&nbsp;10&nbsp;s, like the old Excel), or <code>1:02:37</code>.<br><br>
+      Time formats: <code>6:10.2</code> (rekordbox, tenths), <code>6:10</code>, <code>6.10</code> (6&nbsp;min&nbsp;10&nbsp;s, like the old Excel),
+      <code>6.10.2</code> (Excel style + tenths), or <code>1:02:37</code>.<br><br>
       <b>▶</b> opens the track in a new tab — a YouTube search for the track name by default,
       or any link you set with <b>✎</b> (YouTube, SoundCloud, …). Rename the list with the <b>✎</b> next to its name.<br><br>
-      <b>Users:</b> Public is open to everyone. Named users have a password and their own lists.
-      Each user can keep up to 100 lists, 500 tracks per list.<br><br>
-      Lists autosave to this device as you type. <b>Save</b> commits them to GitHub —
-      one-time device setup with a GitHub token (⋯ → GitHub sync).
+      <b>Users:</b> Public is open to everyone. Log in (👤 button) with a username and password for your own lists —
+      accounts are made by Adi. Up to 100 lists per user, 500 tracks per list.<br><br>
+      Lists autosave to this device as you type. <b>Save</b> commits them to GitHub with no questions asked
+      once sync is set up (⋯ → GitHub sync — one time per device, or never with the relay).
     </p>
     <div class="dlgBtns"><button value="ok" class="btn primary">Got it</button></div>
   </form>

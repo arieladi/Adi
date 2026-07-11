@@ -1,15 +1,19 @@
 /* Cue time math — shared by the app (browser) and the build/test script (Node).
    Internal unit: integer TENTHS OF A SECOND (rekordbox shows m:ss.t).
 
-   Accepted input formats (all mean 5 min 18 s):
+   Accepted input formats (all mean 5 min 18.6 s where tenths apply):
      5:18      m:ss        (rekordbox)
      5:18.6    m:ss.t      (rekordbox, tenths)
      5.18      mm.ss       (the old Excel convention: fraction = seconds)
+     5.18.6    mm.ss.t     (Excel convention + tenths)
      1:02:37   h:mm:ss
-   Play Time = Cue out − Cue in, Set time = true running total.
+   Play Time = Cue out − Cue in, Set time = true running total
+   (shown as h:mm:ss, with .t appended when the total has tenths).
 */
 (function (root) {
   'use strict';
+
+  const DOTDOT = /^(\d+)\.(\d{1,2})\.(\d{1,3})$/; // mm.ss.t
 
   // Parse a cue string into tenths of a second. Empty/invalid -> 0.
   function parseCue(v) {
@@ -28,11 +32,16 @@
         ? nums[0] * 60 + nums[1]
         : nums[0] * 3600 + nums[1] * 60 + nums[2];
     } else {
-      const n = Number(s);
-      if (!Number.isFinite(n) || n < 0) return 0;
-      const min = Math.trunc(n);
-      const frac = Math.round((n - min) * 100); // Excel mm.ss: fraction digits are seconds
-      sec = min * 60 + frac;
+      const m3 = s.match(DOTDOT); // 5.18.6 = 5 min 18 s + 0.6 s
+      if (m3) {
+        sec = (+m3[1]) * 60 + (+m3[2]) + Number('0.' + m3[3]);
+      } else {
+        const n = Number(s);
+        if (!Number.isFinite(n) || n < 0) return 0;
+        const min = Math.trunc(n);
+        const frac = Math.round((n - min) * 100); // Excel mm.ss: fraction digits are seconds
+        sec = min * 60 + frac;
+      }
     }
     return (neg ? -1 : 1) * Math.round(sec * 10);
   }
@@ -53,6 +62,8 @@
       const mm = parts.length === 3 ? nums[1] : NaN;
       return ss >= 60 || (Number.isFinite(mm) && mm >= 60);
     }
+    const m3 = s.match(DOTDOT);
+    if (m3) return (+m3[2]) >= 60;
     const n = Number(s);
     if (!Number.isFinite(n) || n < 0) return true;
     return Math.round(Math.abs(n - Math.trunc(n)) * 100) >= 60;
@@ -66,12 +77,12 @@
     return `${neg}${m}:${String(s).padStart(2, '0')}${tenth ? '.' + tenth : ''}`;
   }
 
-  // Set time display: h:mm:ss (tenths rounded to the nearest second).
+  // Set time display: h:mm:ss, plus .t when the running total has tenths.
   function fmtClock(t) {
-    const neg = t < 0 ? '-' : '';
-    const total = Math.round(Math.abs(t) / 10);
+    const neg = t < 0 ? '-' : ''; t = Math.abs(Math.round(t));
+    const tenth = t % 10, total = (t - tenth) / 10;
     const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
-    return `${neg}${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    return `${neg}${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}${tenth ? '.' + tenth : ''}`;
   }
 
   function computeRows(tracks) {

@@ -14,26 +14,27 @@ window.RQC_SEED = {
         "label": "Public",
         "salt": null,
         "hash": null,
-        "deleteSalt": "pIuTbZ/DoSoFPnyjMTcuhQ==",
-        "deleteHash": "j443bsn28n4vf6mNjNW5700nnxO1d5XPDSlvJffimis="
+        "deleteSalt": "8KJiEHjLyjjYgpDUqTswmg==",
+        "deleteHash": "ETCHgacyQ87upgx10jac7UQnCgSzGYSZ/csLYlTp9hc="
       },
       {
         "id": "avastha",
         "label": "Avastha",
-        "salt": "2Km9z/RETvsYXAV2Tw9k4A==",
-        "hash": "YdQb8bApSISq5WWRZrKB5/fy/SHOIJtdr7Y02QGomZA="
+        "salt": "BCNjGlWYOsSKmW/lmY8SBA==",
+        "hash": "mBF5JmA0k8kSpqy7rekcCMbz/EcRaq++3P2iy0rNboU="
       },
       {
         "id": "adi",
         "label": "Adi",
-        "salt": "YE9hU3Dp3MJ74uXLFs9U6w==",
-        "hash": "CsZBNY4QfiN9QkLzX5p9HUVyzb8KZiUzSmYkvC7cxSI="
+        "admin": true,
+        "salt": "cg9DyHSX/DbxG2DaiwXBEw==",
+        "hash": "Bh0CH3Y6v6jkFD82UlnkBS+FrlX+/XXGch37CnwgLUw="
       },
       {
         "id": "valentin",
         "label": "Valentin",
-        "salt": "EYNYyd1jNai91KJJJcDXMw==",
-        "hash": "qf0PksZThBH5p19+4IzcdRZOJhnNgafe4GyjvL6ntY4="
+        "salt": "CoxW+oHZxXzbvuPHHFKkZg==",
+        "hash": "H2PDkvGq/+QntAv4VBNjEjrOq9f6rhaVbWczR6kRTj4="
       }
     ]
   },

@@ -1,16 +1,18 @@
-/* Rekordbox Cue Counter v2
+/* Rekordbox Cue Counter v3
    ------------------------
    - Times: true time arithmetic in tenths of a second (see cuemath.js).
-     Accepts 5:18.6 (rekordbox), 5:18, 5.18 (Excel mm.ss) and 1:02:37.
-   - Users: workspaces defined in users.json. "public" is open to everyone
-     and is the default; named users unlock their workspace with a password
-     (PBKDF2 hash compare in the browser — a gate, not server-grade auth).
-   - Every workspace saves its lists to lists/<user>/ in the GitHub repo.
-     Limits: 100 lists per user, 500 tracks per list.
-   - Saving requires the one-time device GitHub token setup (the token is
-     AES-GCM encrypted with a device password and never stored in plain).
-   - Async workspace safety: every save/delete/refresh captures its user id
-     up front; UI is only re-rendered when that user is still the one shown.
+     Accepts 5:18.6, 5:18, 5.18, 5.18.6 and 1:02:37.
+   - Saving "just works": no passwords, no dialogs. Writes go through
+     either a sync relay (config.syncUrl — a tiny Cloudflare Worker that
+     holds the GitHub token server-side, see relay-worker.js) or a GitHub
+     token pasted ONCE per device (stored in localStorage, plain — this is
+     the owner's own device/domain; remove it any time in ⋯ → GitHub sync).
+   - Users: public is default. Login is a username+password dialog (no
+     user list shown). users.json holds PBKDF2 hashes. The admin user
+     (admin: true, i.e. adi) gets a Users panel to add/remove accounts and
+     reset passwords — those writes need the device token (the relay only
+     accepts list files).
+   - Limits: 100 lists per user, 500 tracks per list.
 */
 'use strict';
 
@@ -21,7 +23,8 @@ const DEFAULT_CONFIG = {
   owner: 'arieladi',
   repo: 'Adi',
   branch: 'main',
-  dir: 'tools/rekordbox_que_counter'
+  dir: 'tools/rekordbox_que_counter',
+  syncUrl: '' // optional relay endpoint (see relay-worker.js); makes saving work with zero setup
 };
 (function () {
   const h = location.hostname, seg = location.pathname.split('/').filter(Boolean);
@@ -33,25 +36,30 @@ const DEFAULT_CONFIG = {
 
 const MAX_LISTS = 100;
 const MAX_TRACKS = 500;
-const SAFE_FILE = /^[a-z0-9][a-z0-9-]*\.json$/; // list file names we accept from remote data
+const SAFE_FILE = /^[a-z0-9][a-z0-9-]*\.json$/;
+const SAFE_USER = /^[a-z0-9][a-z0-9-]{0,19}$/;
 
 const LSK = {
   store: 'rqc.store.v2', user: 'rqc.user.v2', users: 'rqc.users.v2',
-  theme: 'rqc.theme.v2', auth: 'rqc.auth.v1', config: 'rqc.config.v1'
+  theme: 'rqc.theme.v2', token: 'rqc.ghtoken.v3', config: 'rqc.config.v1'
 };
-const SSK_TOKEN = 'rqc.token.v1';
 const SSK_UNLOCKED = 'rqc.unlockedUsers.v2';
 
 let config = { ...DEFAULT_CONFIG };
 try { config = { ...config, ...(JSON.parse(localStorage.getItem(LSK.config)) || {}) }; } catch { }
+try { localStorage.removeItem('rqc.auth.v1'); } catch { } // v2's encrypted token blob — obsolete
 
-/* ---------------- theme engine ---------------- */
+/* ---------------- theme & appearance engine ---------------- */
 const THEME_PRESETS = {
   dark: { bg: '#0e1116', panel: '#161c25', line: '#232c3a', text: '#e8eef5', dim: '#8b98a9', accent: '#35b6ff', neg: '#ff7b72', warn: '#f0b429', onAccent: '#04121c' },
   light: { bg: '#f2f5f9', panel: '#ffffff', line: '#d7dfe9', text: '#182230', dim: '#5c6a7c', accent: '#0b7fd1', neg: '#c9382f', warn: '#9a6700', onAccent: '#ffffff' }
 };
-let theme = { base: 'dark', colors: {} };
-try { const t = JSON.parse(localStorage.getItem(LSK.theme)); if (t && THEME_PRESETS[t.base]) theme = { base: t.base, colors: t.colors || {} }; } catch { }
+const SIZE_DEFAULT = { zoom: 100, font: 16, pad: 10 };
+let theme = { base: 'dark', colors: {}, size: { ...SIZE_DEFAULT } };
+try {
+  const t = JSON.parse(localStorage.getItem(LSK.theme));
+  if (t && THEME_PRESETS[t.base]) theme = { base: t.base, colors: t.colors || {}, size: { ...SIZE_DEFAULT, ...(t.size || {}) } };
+} catch { }
 
 function themeMerged() { return { ...THEME_PRESETS[theme.base], ...theme.colors }; }
 function applyTheme() {
@@ -59,6 +67,10 @@ function applyTheme() {
   s.setProperty('--bg', m.bg); s.setProperty('--panel', m.panel); s.setProperty('--line', m.line);
   s.setProperty('--text', m.text); s.setProperty('--dim', m.dim); s.setProperty('--accent', m.accent);
   s.setProperty('--neg', m.neg); s.setProperty('--warn', m.warn); s.setProperty('--on-accent', m.onAccent);
+  const z = theme.size || SIZE_DEFAULT;
+  s.setProperty('--fs', (z.font || 16) + 'px');
+  s.setProperty('--cell-pad', (z.pad != null ? z.pad : 10) + 'px');
+  s.zoom = (z.zoom || 100) / 100;
   const meta = document.getElementById('metaTheme');
   if (meta) meta.content = m.bg;
 }
@@ -78,12 +90,16 @@ let unlocked = new Set();
 try { unlocked = new Set(JSON.parse(sessionStorage.getItem(SSK_UNLOCKED)) || []); } catch { }
 function userById(id) { return usersReg.users.find(x => x.id === id); }
 function saveUnlocked() { try { sessionStorage.setItem(SSK_UNLOCKED, JSON.stringify([...unlocked])); } catch { } }
+const isAdmin = () => { const u = userById(currentUser); return !!(u && u.admin); };
 
 /* ---------------- state ---------------- */
 let store = { workspaces: {} };
-let token = null;      // decrypted GitHub token (device-level), memory/session only
-let ghUser = null;
-let pending = null;    // action waiting for device-token auth
+let token = null;
+try { token = localStorage.getItem(LSK.token) || null; } catch { }
+let pending = null; // action waiting for sync setup
+
+const relayUrl = () => String(config.syncUrl || '').trim().replace(/\/+$/, '');
+const writable = () => !!token || !!relayUrl();
 
 const blankTrack = () => ({ title: '', cueIn: '', cueOut: '', link: '' });
 const normTrack = t => ({
@@ -117,22 +133,30 @@ function persistSoon() { clearTimeout(persistTimer); persistTimer = setTimeout(p
 
 /* ---------------- DOM handles ---------------- */
 const $ = id => document.getElementById(id);
-const rowsEl = $('rows'), listSelect = $('listSelect'), userSelect = $('userSelect'), saveBtn = $('btnSave');
+const rowsEl = $('rows'), listSelect = $('listSelect'), userBtn = $('userBtn'), saveBtn = $('btnSave');
 const sumTracks = $('sumTracks'), sumClock = $('sumClock'), sumStatus = $('sumStatus');
-const dlgSetup = $('dlgSetup'), dlgUnlock = $('dlgUnlock'), dlgName = $('dlgName'), dlgConfirm = $('dlgConfirm'),
+const dlgSetup = $('dlgSetup'), dlgName = $('dlgName'), dlgConfirm = $('dlgConfirm'),
   dlgHelp = $('dlgHelp'), dlgUserLogin = $('dlgUserLogin'), dlgDelete = $('dlgDelete'), dlgTheme = $('dlgTheme'),
-  dlgLink = $('dlgLink');
+  dlgLink = $('dlgLink'), dlgUsers = $('dlgUsers');
 
-function openDialog(dlg) {
+// Some engines skip the 'close' event when a method="dialog" form submission
+// closes the dialog — poll dlg.open as a fallback so promises always settle.
+function dialogClosed(dlg) {
   return new Promise(res => {
-    dlg.returnValue = '';
-    dlg.showModal();
-    dlg.addEventListener('close', () => res(dlg.returnValue), { once: true });
+    let done = false, iv = null;
+    const finish = () => { if (done) return; done = true; clearInterval(iv); res(dlg.returnValue); };
+    dlg.addEventListener('close', finish, { once: true });
+    iv = setInterval(() => { if (!dlg.open) finish(); }, 120);
   });
+}
+function openDialog(dlg) {
+  dlg.returnValue = '';
+  dlg.showModal();
+  return dialogClosed(dlg);
 }
 const isEditingRows = () => document.activeElement && rowsEl.contains(document.activeElement);
 
-/* ---------------- crypto helpers ---------------- */
+/* ---------------- crypto helpers (user passwords) ---------------- */
 const te = new TextEncoder(), td = new TextDecoder();
 function b64(buf) {
   const b = new Uint8Array(buf); let s = '';
@@ -151,37 +175,17 @@ async function checkPassword(pass, saltB64, hashB64) {
   const iter = (usersReg.kdf && usersReg.kdf.iterations) || 150000;
   try { return (await pbkdf2B64(pass, saltB64, iter)) === hashB64; } catch { return false; }
 }
-
-async function deriveKey(pass, salt) {
-  const km = await crypto.subtle.importKey('raw', te.encode(pass), 'PBKDF2', false, ['deriveKey']);
-  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' }, km,
-    { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+async function makeCred(pass) {
+  const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
+  const iter = (usersReg.kdf && usersReg.kdf.iterations) || 150000;
+  return { salt, hash: await pbkdf2B64(pass, salt, iter) };
 }
-async function encryptToken(pass, tok) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await deriveKey(pass, salt);
-  const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, te.encode(tok));
-  return { salt: b64(salt), iv: b64(iv), data: b64(data) };
-}
-async function decryptToken(pass, blob) {
-  const key = await deriveKey(pass, unb64(blob.salt));
-  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(blob.iv) }, key, unb64(blob.data));
-  return td.decode(plain);
-}
-function getAuthBlob() { try { return JSON.parse(localStorage.getItem(LSK.auth)); } catch { return null; } }
-function lockDevice() { token = null; try { sessionStorage.removeItem(SSK_TOKEN); } catch { } }
 
 /* ---------------- rendering ---------------- */
-function renderUserSelect() {
-  userSelect.innerHTML = '';
-  for (const u of usersReg.users) {
-    const o = document.createElement('option');
-    o.value = u.id;
-    o.textContent = u.hash && !unlocked.has(u.id) ? `${u.label} 🔒` : u.label;
-    userSelect.appendChild(o);
-  }
-  userSelect.value = currentUser;
+function renderUserBtn() {
+  const u = userById(currentUser);
+  userBtn.textContent = '👤 ' + (u ? u.label : 'Public');
+  $('menuUsers').hidden = !isAdmin();
 }
 
 function renderSelect() {
@@ -278,7 +282,7 @@ function setStatusAuto() {
 }
 
 function renderAll() {
-  renderUserSelect();
+  renderUserBtn();
   renderSelect();
   rebuildRows();
   setStatusAuto();
@@ -367,7 +371,7 @@ rowsEl.addEventListener('click', e => {
 
 function addTrack() {
   let L = cur();
-  if (!L) { createList('New set'); return; } // empty workspace: create a list with its first blank track
+  if (!L) { createList('New set'); return; }
   if (L.tracks.length >= MAX_TRACKS) { toast(`Track limit reached — max ${MAX_TRACKS} tracks per list`, 'err'); return; }
   L.tracks.push(blankTrack());
   markDirty();
@@ -377,53 +381,43 @@ function addTrack() {
 }
 $('btnAdd').onclick = addTrack;
 
-/* ---------------- user switching ---------------- */
-userSelect.onchange = () => { switchUser(userSelect.value); };
+/* ---------------- login (username + password, no user list shown) ---------------- */
+userBtn.onclick = () => openLogin();
 
-async function switchUser(id) {
-  const u = userById(id);
-  if (!u) { userSelect.value = currentUser; return; }
-  if (u.hash && !unlocked.has(id)) {
-    const ok = await userLoginFlow(u);
-    if (!ok) { renderUserSelect(); return; }
-  }
-  currentUser = id;
-  ensureWorkspace(id);
-  persist();
-  renderAll();
-  refreshFromRemote(false);
-}
-
-let loginTarget = null; // captured at dialog open; userSelect can re-render meanwhile
-function userLoginFlow(u) {
-  return new Promise(resolve => {
-    loginTarget = u;
-    $('luTitle').textContent = `Log in — ${u.label}`;
-    $('luText').textContent = `Enter the password for “${u.label}” to open their lists.`;
-    $('luPass').value = ''; $('luErr').hidden = true;
-    dlgUserLogin.returnValue = '';
-    dlgUserLogin.showModal();
-    $('luPass').focus();
-    dlgUserLogin.addEventListener('close', () => {
-      loginTarget = null;
-      resolve(dlgUserLogin.returnValue === 'done');
-    }, { once: true });
-  });
+function openLogin() {
+  const named = currentUser !== 'public';
+  $('luTitle').textContent = named ? `Logged in — ${userById(currentUser).label}` : 'Log in';
+  $('luUser').value = ''; $('luPass').value = ''; $('luErr').hidden = true;
+  $('luLogout').hidden = !named;
+  dlgUserLogin.showModal();
+  $('luUser').focus();
 }
 dlgUserLogin.querySelector('form').addEventListener('submit', async e => {
   const v = e.submitter && e.submitter.value;
-  if (v === 'cancel') return;
+  if (v === 'cancel') { e.preventDefault(); dlgUserLogin.close('cancel'); return; }
+  if (v === 'logout') {
+    unlocked.delete(currentUser); saveUnlocked();
+    currentUser = 'public'; ensureWorkspace('public');
+    persist(); renderAll(); refreshFromRemote(false);
+    toast('Logged out — back to Public', 'ok');
+    return; // dialog closes with returnValue "logout"
+  }
   e.preventDefault();
-  const u = loginTarget;
+  const id = $('luUser').value.trim().toLowerCase();
+  const u = userById(id);
   const okBtn = e.target.querySelector('button[value=ok]');
   okBtn.disabled = true;
-  const ok = u && await checkPassword($('luPass').value, u.salt, u.hash);
+  const ok = u && u.hash && await checkPassword($('luPass').value, u.salt, u.hash);
   okBtn.disabled = false;
   if (ok) {
     unlocked.add(u.id); saveUnlocked();
     dlgUserLogin.close('done');
+    currentUser = u.id;
+    ensureWorkspace(u.id);
+    persist(); renderAll(); refreshFromRemote(false);
+    toast(`Logged in as ${u.label} ✓`, 'ok');
   } else {
-    const el = $('luErr'); el.textContent = 'Wrong password.'; el.hidden = false;
+    const el = $('luErr'); el.textContent = 'Wrong username or password.'; el.hidden = false;
     $('luPass').select();
   }
 });
@@ -498,6 +492,7 @@ moreMenu.addEventListener('click', e => {
   moreMenu.hidden = true;
   if (act === 'refresh') refreshFromRemote(true);
   else if (act === 'theme') openThemeDialog();
+  else if (act === 'users') openUsersDialog();
   else if (act === 'settings') openSetup();
   else if (act === 'help') openDialog(dlgHelp);
 });
@@ -515,21 +510,19 @@ function deleteConfirmFlow(u, L) {
       isPublic ? 'Enter the public delete password to confirm.' : `Enter ${u.label}'s password to confirm.`);
   $('dlPassLabel').hidden = !hasPass;
   $('dlPass').value = ''; $('dlErr').hidden = true;
-  return new Promise(resolve => {
-    dlgDelete.returnValue = '';
-    dlgDelete.showModal();
-    if (hasPass) $('dlPass').focus();
-    dlgDelete.addEventListener('close', () => resolve(dlgDelete.returnValue === 'done'), { once: true });
-  });
+  dlgDelete.returnValue = '';
+  dlgDelete.showModal();
+  if (hasPass) $('dlPass').focus();
+  return dialogClosed(dlgDelete).then(v => v === 'done');
 }
 dlgDelete.querySelector('form').addEventListener('submit', async e => {
   const v = e.submitter && e.submitter.value;
-  if (v === 'cancel') return;
+  if (v === 'cancel') { e.preventDefault(); dlgDelete.close('cancel'); return; }
   e.preventDefault();
   const u = userById(currentUser);
   const isPublic = u.id === 'public';
   const hasPass = isPublic ? !!(u.deleteSalt && u.deleteHash) : !!(u.salt && u.hash);
-  if (!hasPass) { dlgDelete.close('done'); return; } // no password configured (fallback registry)
+  if (!hasPass) { dlgDelete.close('done'); return; }
   const okBtn = e.target.querySelector('button[value=ok]');
   okBtn.disabled = true;
   const pass = $('dlPass').value;
@@ -547,13 +540,13 @@ async function deleteCurrentList() {
   const u = userById(user);
   if (!await deleteConfirmFlow(u, L)) return;
   if (L.remote) {
-    requireAuth(async () => {
+    ensureWritable(async () => {
       try {
         setStatus('Deleting…');
         const path = cfgPath(`lists/${user}/${file}`);
         let sha = L.sha;
-        if (!sha) { const ex = await ghGetFile(path); sha = ex && ex.sha; }
-        if (sha) await ghDeleteFile(path, `cue counter — ${user}: delete "${L.name}"`, sha);
+        if (!sha) { const ex = await repoGet(path); sha = ex && ex.sha; }
+        if (sha) await repoDelete(path, `cue counter — ${user}: delete "${L.name}"`, sha);
         removeLocal(user, file);
         await saveIndexJson(user, file);
         persist();
@@ -573,19 +566,24 @@ function removeLocal(user, file) {
   if (user === currentUser) { renderSelect(); rebuildRows(); setStatusAuto(); }
 }
 
-/* ---------------- theme dialog ---------------- */
+/* ---------------- appearance dialog (theme + sizes) ---------------- */
 function openThemeDialog() {
   syncThemeDialog();
   openDialog(dlgTheme);
 }
 function syncThemeDialog() {
   const m = themeMerged();
-  dlgTheme.querySelectorAll('.themePick').forEach(b => b.classList.toggle('active', b.dataset.base === theme.base));
+  dlgTheme.querySelectorAll('.themePick').forEach(b => b.classList.toggle('active', b.dataset.base === theme.base && !Object.keys(theme.colors).length));
   dlgTheme.querySelectorAll('#themeColors input[type=color]').forEach(inp => { inp.value = m[inp.dataset.var]; });
+  const z = theme.size;
+  for (const [id, key, unit] of [['szZoom', 'zoom', '%'], ['szFont', 'font', 'px'], ['szPad', 'pad', 'px']]) {
+    $(id).value = z[key];
+    $(id + 'Val').textContent = z[key] + unit;
+  }
 }
 dlgTheme.querySelectorAll('.themePick').forEach(b => {
   b.onclick = () => {
-    theme = { base: b.dataset.base, colors: {} }; // picking a base resets custom colors
+    theme = { ...theme, base: b.dataset.base, colors: {} }; // keep sizes, reset colors
     applyTheme(); saveTheme(); syncThemeDialog();
   };
 });
@@ -597,121 +595,174 @@ dlgTheme.querySelectorAll('#themeColors input[type=color]').forEach(inp => {
   };
 });
 $('themeReset').onclick = () => { theme.colors = {}; applyTheme(); saveTheme(); syncThemeDialog(); };
+for (const [id, key, unit] of [['szZoom', 'zoom', '%'], ['szFont', 'font', 'px'], ['szPad', 'pad', 'px']]) {
+  $(id).oninput = () => {
+    theme.size[key] = +$(id).value;
+    $(id + 'Val').textContent = $(id).value + unit;
+    applyTheme(); saveTheme();
+  };
+}
+$('sizeReset').onclick = () => { theme.size = { ...SIZE_DEFAULT }; applyTheme(); saveTheme(); syncThemeDialog(); };
 
-/* ---------------- device GitHub auth ---------------- */
-function requireAuth(action) {
+/* ---------------- users admin (adi only) ---------------- */
+function openUsersDialog() {
+  if (!isAdmin()) return;
+  renderUsersList();
+  $('auId').value = ''; $('auPass').value = ''; $('auErr').hidden = true;
+  openDialog(dlgUsers);
+}
+function renderUsersList() {
+  const box = $('usersList');
+  box.innerHTML = '';
+  for (const u of usersReg.users) {
+    const row = document.createElement('div');
+    row.className = 'urow';
+    const name = document.createElement('b');
+    name.textContent = u.label + (u.admin ? ' (admin)' : '') + (u.id === 'public' ? ' — open to everyone' : '');
+    row.appendChild(name);
+    if (u.id !== 'public' && u.id !== 'adi') {
+      const del = document.createElement('button');
+      del.type = 'button'; del.className = 'rb del'; del.title = 'Remove user'; del.textContent = '✕';
+      del.onclick = () => removeUser(u.id);
+      row.appendChild(del);
+    }
+    box.appendChild(row);
+  }
+}
+async function adminWriteUsers(mutate, message) {
+  if (!token) {
+    toast('User management needs the GitHub token on this device (⋯ → GitHub sync)', 'err');
+    openSetup();
+    return false;
+  }
+  const path = cfgPath('users.json');
+  let remote = null;
+  try { remote = await ghGetFile(path); } catch { }
+  const reg = remote ? JSON.parse(remote.text) : JSON.parse(JSON.stringify(usersReg));
+  const next = await mutate(reg);
+  if (!next) return false;
+  await ghPutFile(path, JSON.stringify(next, null, 2) + '\n', message, remote ? remote.sha : undefined);
+  usersReg = next;
+  try { localStorage.setItem(LSK.users, JSON.stringify(next)); } catch { }
+  renderUserBtn(); renderUsersList();
+  return true;
+}
+$('auAdd').onclick = async () => {
+  const raw = $('auId').value.trim().toLowerCase();
+  const pass = $('auPass').value;
+  const err = m => { const el = $('auErr'); el.textContent = m; el.hidden = false; };
+  $('auErr').hidden = true;
+  if (!SAFE_USER.test(raw)) return err('Username: 1–20 chars, a–z, 0–9, dashes.');
+  if (pass.length < 4) return err('Password must be at least 4 characters.');
+  const exists = userById(raw);
+  try {
+    $('auAdd').disabled = true;
+    const cred = await makeCred(pass);
+    const okDone = await adminWriteUsers(async reg => {
+      const hit = reg.users.find(x => x.id === raw);
+      if (hit) { if (hit.id === 'public') { err('Public has no password.'); return null; } Object.assign(hit, cred); return reg; }
+      reg.users.push({ id: raw, label: raw.charAt(0).toUpperCase() + raw.slice(1), ...cred });
+      return reg;
+    }, exists ? `cue counter — admin: reset password for ${raw}` : `cue counter — admin: add user ${raw}`);
+    if (okDone && !exists) {
+      try { await ghPutFile(cfgPath(`lists/${raw}/index.json`), JSON.stringify({ version: 2, lists: [] }, null, 2) + '\n', `cue counter — admin: init lists for ${raw}`); } catch { }
+      ensureWorkspace(raw);
+    }
+    if (okDone) {
+      $('auId').value = ''; $('auPass').value = '';
+      toast(exists ? `Password updated for ${raw} ✓` : `User ${raw} added ✓`, 'ok');
+    }
+  } catch (e) { err('Failed: ' + e.message); }
+  finally { $('auAdd').disabled = false; }
+};
+async function removeUser(id) {
+  $('cfTitle').textContent = `Remove user “${id}”?`;
+  $('cfText').textContent = 'Their saved lists stay in the repo (lists/' + id + '/), but the account can no longer log in.';
+  if (await openDialog(dlgConfirm) !== 'ok') { dlgUsers.showModal(); return; }
+  dlgUsers.showModal();
+  try {
+    await adminWriteUsers(async reg => {
+      reg.users = reg.users.filter(x => x.id !== id);
+      return reg;
+    }, `cue counter — admin: remove user ${id}`);
+    if (currentUser === id) { currentUser = 'public'; renderAll(); }
+    toast(`User ${id} removed`, 'ok');
+  } catch (e) { toast('Failed: ' + e.message, 'err'); }
+}
+
+/* ---------------- sync setup (token or relay — no passwords) ---------------- */
+function ensureWritable(action) {
+  if (writable()) { action(); return; }
   pending = action;
-  if (token) return runPending();
-  if (getAuthBlob()) openUnlock(); else openSetup();
+  openSetup();
 }
 function runPending() { const p = pending; pending = null; if (p) p(); }
-// Esc/cancel on the auth dialogs must drop the queued action, or a stale
-// save/delete would fire the next time a dialog completes.
 dlgSetup.addEventListener('close', () => { if (dlgSetup.returnValue !== 'done') pending = null; });
-dlgUnlock.addEventListener('close', () => { if (dlgUnlock.returnValue !== 'done') pending = null; });
 
 function openSetup() {
   $('suOwner').value = config.owner; $('suRepo').value = config.repo;
   $('suBranch').value = config.branch; $('suDir').value = config.dir;
-  $('suToken').value = ''; $('suPass').value = ''; $('suPass2').value = '';
+  $('suSync').value = config.syncUrl || '';
+  $('suToken').value = '';
   $('suErr').hidden = true; $('suAnyway').hidden = true;
-  $('suToken').placeholder = getAuthBlob() ? 'leave empty to keep current token' : 'github_pat_…';
+  $('suToken').placeholder = token ? 'token saved ✓ — leave empty to keep it' : 'github_pat_…';
+  $('suForget').hidden = !token;
   dlgSetup.showModal();
   $('suToken').focus();
 }
 dlgSetup.querySelector('form').addEventListener('submit', async e => {
   const v = e.submitter && e.submitter.value;
-  if (v === 'cancel') return;
+  if (v === 'cancel') { e.preventDefault(); pending = null; dlgSetup.close('cancel'); return; }
+  if (v === 'forget') {
+    e.preventDefault();
+    pending = null;
+    token = null;
+    try { localStorage.removeItem(LSK.token); } catch { }
+    toast('Token removed from this device');
+    dlgSetup.close('cancel');
+    return;
+  }
   e.preventDefault();
   const tok = $('suToken').value.trim();
-  const pass = $('suPass').value, pass2 = $('suPass2').value;
-  const newCfg = {
+  const err = m => { const el = $('suErr'); el.textContent = m; el.hidden = false; };
+  config = {
     owner: $('suOwner').value.trim() || DEFAULT_CONFIG.owner,
     repo: $('suRepo').value.trim() || DEFAULT_CONFIG.repo,
     branch: $('suBranch').value.trim() || DEFAULT_CONFIG.branch,
-    dir: $('suDir').value.trim().replace(/^\/+|\/+$/g, '')
+    dir: $('suDir').value.trim().replace(/^\/+|\/+$/g, ''),
+    syncUrl: $('suSync').value.trim()
   };
-  const err = m => { const el = $('suErr'); el.textContent = m; el.hidden = false; };
-
-  if (!tok && getAuthBlob()) { // settings-only save
-    config = newCfg;
-    localStorage.setItem(LSK.config, JSON.stringify(config));
-    dlgSetup.close('done');
-    toast('Settings saved', 'ok');
-    return;
-  }
-  if (!tok) return err('Paste a GitHub token (or Cancel).');
-  if (pass.length < 4) return err('Password must be at least 4 characters.');
-  if (pass !== pass2) return err('Passwords do not match.');
-
-  config = newCfg;
   localStorage.setItem(LSK.config, JSON.stringify(config));
 
-  if (v !== 'anyway') {
-    $('suOk').disabled = true; $('suOk').textContent = 'Verifying…';
-    try {
-      ghUser = await verifyToken(tok);
-    } catch (ex) {
+  if (tok) {
+    if (v !== 'anyway') {
+      $('suOk').disabled = true; $('suOk').textContent = 'Verifying…';
+      try { await verifyToken(tok); }
+      catch (ex) {
+        $('suOk').disabled = false; $('suOk').textContent = 'Verify & save';
+        $('suAnyway').hidden = false;
+        return err('Could not verify: ' + ex.message + ' — fix it, or “Save anyway”.');
+      }
       $('suOk').disabled = false; $('suOk').textContent = 'Verify & save';
-      $('suAnyway').hidden = false;
-      return err('Could not verify: ' + ex.message + ' — fix it, or “Save anyway”.');
     }
-    $('suOk').disabled = false; $('suOk').textContent = 'Verify & save';
+    token = tok;
+    try { localStorage.setItem(LSK.token, tok); } catch { }
   }
-
-  const blob = await encryptToken(pass, tok);
-  blob.user = ghUser;
-  localStorage.setItem(LSK.auth, JSON.stringify(blob));
-  token = tok;
-  try { sessionStorage.setItem(SSK_TOKEN, tok); } catch { }
   dlgSetup.close('done');
-  toast('GitHub sync connected ✓', 'ok');
-  runPending();
+  toast(writable() ? 'Sync ready ✓ — saving is now one click, no questions' : 'Settings saved', writable() ? 'ok' : undefined);
+  if (writable()) runPending(); else pending = null;
 });
 
 async function verifyToken(tok) {
   const h = { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + tok };
   const ru = await fetch('https://api.github.com/user', { headers: h });
   if (!ru.ok) throw new Error(`token rejected (${ru.status})`);
-  const u = await ru.json();
   const rr = await fetch(`https://api.github.com/repos/${config.owner}/${config.repo}`, { headers: h });
   if (!rr.ok) throw new Error(`repo ${config.owner}/${config.repo} not reachable (${rr.status})`);
-  return u.login;
+  return (await ru.json()).login;
 }
 
-function openUnlock() {
-  $('ulPass').value = ''; $('ulErr').hidden = true;
-  dlgUnlock.showModal();
-  $('ulPass').focus();
-}
-dlgUnlock.querySelector('form').addEventListener('submit', async e => {
-  const v = e.submitter && e.submitter.value;
-  if (v === 'cancel') return;
-  if (v === 'forget') {
-    e.preventDefault();
-    $('cfTitle').textContent = 'Forget this device?';
-    $('cfText').textContent = 'The saved (encrypted) GitHub token is removed. You will need to paste a token again to save.';
-    dlgUnlock.close('cancel');
-    if (await openDialog(dlgConfirm) === 'ok') {
-      localStorage.removeItem(LSK.auth); lockDevice(); toast('Device forgotten');
-    }
-    return;
-  }
-  e.preventDefault();
-  try {
-    const blob = getAuthBlob();
-    token = await decryptToken($('ulPass').value, blob);
-    ghUser = blob.user || null;
-    if ($('ulRemember').checked) { try { sessionStorage.setItem(SSK_TOKEN, token); } catch { } }
-    dlgUnlock.close('done');
-    toast('GitHub sync unlocked ✓', 'ok');
-    runPending();
-  } catch {
-    const el = $('ulErr'); el.textContent = 'Wrong password.'; el.hidden = false;
-  }
-});
-
-/* ---------------- GitHub API ---------------- */
+/* ---------------- repo I/O: direct GitHub API or relay ---------------- */
 const encPath = p => p.split('/').map(encodeURIComponent).join('/');
 const cfgPath = rel => (config.dir ? config.dir + '/' : '') + rel;
 async function safeJson(r) { try { return await r.json(); } catch { return null; } }
@@ -752,15 +803,42 @@ async function ghDeleteFile(path, message, sha) {
   if (!r.ok) throw ghErr(r, j);
   return j;
 }
+async function relayCall(payload) {
+  const r = await fetch(relayUrl(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const j = await safeJson(r);
+  if (r.status === 404) return null;
+  if (!r.ok) throw ghErr(r, j);
+  return j;
+}
+// Unified repo ops: prefer the device token, else the relay (lists only).
+async function repoGet(path) {
+  if (token || !relayUrl()) return ghGetFile(path);
+  const j = await relayCall({ op: 'get', path });
+  if (!j) return null;
+  return { sha: j.sha, text: td.decode(unb64(String(j.content || '').replace(/\n/g, ''))) };
+}
+async function repoPut(path, content, message, sha) {
+  if (token) return ghPutFile(path, content, message, sha);
+  if (relayUrl()) return relayCall({ op: 'put', path, content, message, ...(sha ? { sha } : {}) });
+  throw new Error('sync is not set up');
+}
+async function repoDelete(path, message, sha) {
+  if (token) return ghDeleteFile(path, message, sha);
+  if (relayUrl()) return relayCall({ op: 'delete', path, message, sha });
+  throw new Error('sync is not set up');
+}
 
 /* ---------------- save / refresh ---------------- */
 saveBtn.onclick = () => {
   if (!cur()) { toast('Nothing to save — create a list first', 'err'); return; }
-  requireAuth(doSave);
+  ensureWritable(doSave);
 };
 
 async function doSave() {
-  // capture everything up front — the user can switch workspaces mid-flight
   const user = currentUser, w = ws(), file = w.current, L = cur();
   if (!L) return;
   setStatus('Saving…'); saveBtn.disabled = true;
@@ -770,16 +848,16 @@ async function doSave() {
     const path = cfgPath(`lists/${user}/${file}`);
     const msg = `cue counter — ${user}: save "${L.name}"`;
     let sha = L.sha;
-    if (!sha) { const ex = await ghGetFile(path); sha = ex ? ex.sha : undefined; }
+    if (!sha) { const ex = await repoGet(path); sha = ex ? ex.sha : undefined; }
     let res;
-    try { res = await ghPutFile(path, body, msg, sha); }
+    try { res = await repoPut(path, body, msg, sha); }
     catch (e) {
-      if (e.status === 409 || e.status === 422) { // stale sha — refetch once and overwrite
-        const ex = await ghGetFile(path);
-        res = await ghPutFile(path, body, msg, ex ? ex.sha : undefined);
+      if (e.status === 409 || e.status === 422) {
+        const ex = await repoGet(path);
+        res = await repoPut(path, body, msg, ex ? ex.sha : undefined);
       } else throw e;
     }
-    L.sha = res.content && res.content.sha;
+    L.sha = res && res.content && res.content.sha;
     L.dirty = false; L.remote = true;
     L.created = L.created || now.slice(0, 10); L.updated = now;
     let indexWarn = '';
@@ -787,7 +865,7 @@ async function doSave() {
     catch (e) { indexWarn = ' (list saved, but the index update failed — press Save again)'; }
     persist();
     if (user === currentUser) { renderSelect(); setStatusAuto(); updateComputed(); }
-    const url = res.commit && res.commit.html_url;
+    const url = res && res.commit && res.commit.html_url;
     toastHTML(`Saved “${esc(L.name)}” ✓${url ? ` — <a href="${esc(url)}" target="_blank" rel="noopener">view commit</a>` : ''}${esc(indexWarn)}`, indexWarn ? 'err' : 'ok');
   } catch (e) {
     if (user === currentUser) setStatusAuto();
@@ -796,13 +874,10 @@ async function doSave() {
   } finally { saveBtn.disabled = false; }
 }
 
-// Rewrites lists/<user>/index.json. Merges with the remote index so lists
-// saved from another device are never dropped; removeFile (optional) is
-// explicitly taken out (used by delete).
 async function saveIndexJson(user, removeFile) {
   const w = ensureWorkspace(user);
   const path = cfgPath(`lists/${user}/index.json`);
-  const remote = await ghGetFile(path); // fresh sha + entries every time
+  const remote = await repoGet(path);
   let entries = [];
   if (remote) {
     try {
@@ -822,24 +897,25 @@ async function saveIndexJson(user, removeFile) {
   const body = JSON.stringify({ version: 2, lists: [...byFile.values()] }, null, 2) + '\n';
   const msg = `cue counter — ${user}: update list index`;
   try {
-    const res = await ghPutFile(path, body, msg, remote ? remote.sha : undefined);
-    w.indexSha = res.content && res.content.sha;
+    const res = await repoPut(path, body, msg, remote ? remote.sha : undefined);
+    w.indexSha = res && res.content && res.content.sha;
   } catch (e) {
     if (e.status === 409 || e.status === 422) {
-      const ex = await ghGetFile(path);
-      const res = await ghPutFile(path, body, msg, ex ? ex.sha : undefined);
-      w.indexSha = res.content && res.content.sha;
+      const ex = await repoGet(path);
+      const res = await repoPut(path, body, msg, ex ? ex.sha : undefined);
+      w.indexSha = res && res.content && res.content.sha;
     } else throw e;
   }
 }
 
-// Reads: with a token use the API (fresh, private-repo capable); anonymous uses
-// same-origin fetch (GitHub Pages) then unauthenticated API as fallback.
 async function fetchIndex(user) {
   if (token) {
     const f = await ghGetFile(cfgPath(`lists/${user}/index.json`));
     if (f) { ensureWorkspace(user).indexSha = f.sha; return JSON.parse(f.text); }
     return null;
+  }
+  if (relayUrl()) {
+    try { const f = await repoGet(cfgPath(`lists/${user}/index.json`)); if (f) return JSON.parse(f.text); } catch { }
   }
   try {
     const r = await fetch(`lists/${encodeURIComponent(user)}/index.json?ts=` + Date.now(), { cache: 'no-store' });
@@ -855,6 +931,9 @@ async function fetchList(user, file) {
   if (token) {
     const f = await ghGetFile(cfgPath(`lists/${user}/${file}`));
     return f ? { data: JSON.parse(f.text), sha: f.sha } : null;
+  }
+  if (relayUrl()) {
+    try { const f = await repoGet(cfgPath(`lists/${user}/${file}`)); if (f) return { data: JSON.parse(f.text), sha: f.sha }; } catch { }
   }
   try {
     const r = await fetch(`lists/${encodeURIComponent(user)}/${encodeURIComponent(file)}?ts=` + Date.now(), { cache: 'no-store' });
@@ -881,13 +960,11 @@ async function refreshFromRemote(manual) {
   for (const e of idx.lists) {
     if (!e || !e.file || !SAFE_FILE.test(String(e.file))) continue;
     const local = w.lists[e.file];
-    if (local && local.dirty) continue; // never clobber local edits
-    // never swap out the list the user is looking at while they're typing in it
+    if (local && local.dirty) continue;
     if (user === currentUser && e.file === w.current && isEditingRows()) continue;
     if (!local || (e.updated || '') > (local.updated || '') || manual) {
       try {
         const got = await fetchList(user, e.file);
-        // re-check after the await: edits may have started while fetching
         const nowLocal = w.lists[e.file];
         if (nowLocal && nowLocal.dirty) continue;
         if (got && got.data && Array.isArray(got.data.tracks)) {
@@ -908,15 +985,13 @@ async function refreshFromRemote(manual) {
       if (!w.order.includes(e.file)) w.order.push(e.file);
     }
   }
-  // drop non-dirty remote lists that were really deleted on GitHub
-  // (verified with a direct fetch so an incomplete index can't cause data loss)
   const remoteFiles = new Set(idx.lists.map(e => e && e.file).filter(Boolean));
   for (const f of [...w.order]) {
     const L = w.lists[f];
     if (L && L.remote && !L.dirty && !remoteFiles.has(f)) {
       try {
         const still = await fetchList(user, f);
-        if (still) continue; // index was incomplete — keep the list
+        if (still) continue;
       } catch { continue; }
       delete w.lists[f];
       w.order = w.order.filter(x => x !== f);
@@ -944,7 +1019,7 @@ async function refreshUsers() {
     usersReg = u;
     try { localStorage.setItem(LSK.users, JSON.stringify(u)); } catch { }
     if (!userById(currentUser)) { currentUser = 'public'; ensureWorkspace('public'); renderAll(); }
-    else renderUserSelect();
+    else renderUserBtn();
   }
 }
 
@@ -967,7 +1042,6 @@ toastEl.onclick = () => { toastEl.hidden = true; };
   store = loadStore() || { workspaces: {} };
   for (const u of usersReg.users) ensureWorkspace(u.id);
 
-  // seed embedded lists into empty workspaces (first run / fresh device)
   if (window.RQC_SEED && RQC_SEED.workspaces) {
     for (const [uid, lists] of Object.entries(RQC_SEED.workspaces)) {
       const w = ensureWorkspace(uid);
@@ -984,18 +1058,12 @@ toastEl.onclick = () => { toastEl.hidden = true; };
     }
   }
 
-  // default page = public; restore last user only if still unlocked (or public)
   const lastUser = localStorage.getItem(LSK.user);
   const lu = lastUser && userById(lastUser);
   currentUser = (lu && (!lu.hash || unlocked.has(lu.id))) ? lastUser : 'public';
   ensureWorkspace(currentUser);
   const w = ws();
   if (!w.current || !w.lists[w.current]) w.current = w.order[0] || null;
-
-  try {
-    const t = sessionStorage.getItem(SSK_TOKEN);
-    if (t) { token = t; const blob = getAuthBlob(); ghUser = blob && blob.user || null; }
-  } catch { }
 
   renderAll();
   refreshUsers();
