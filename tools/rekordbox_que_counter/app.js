@@ -481,8 +481,8 @@ moreMenu.addEventListener('click', e => {
   else if (act === 'theme') openThemeDialog();
   else if (act === 'users') openUsersDialog();
   else if (act === 'settings') openSetup();
-  else if (act === 'help') openDialog(dlgHelp);
 });
+$('footHelp').onclick = () => openDialog(dlgHelp);
 
 /* ---------------- delete list ---------------- */
 // Public lists need the public delete password (checked by the Worker).

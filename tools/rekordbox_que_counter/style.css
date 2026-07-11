@@ -156,6 +156,11 @@ main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
 .help { text-align: center; color: var(--dim); font-size: .8125rem; padding: 6px 18px 26px; }
 .help a { color: var(--accent); text-decoration: none; }
 .help a:hover { text-decoration: underline; }
+.helplink {
+  margin-top: 8px; background: var(--panel); border: 1px solid var(--line);
+  color: var(--accent); border-radius: 999px; padding: 5px 14px; font-size: .8125rem;
+}
+.helplink:hover { background: var(--panel2); }
 
 /* ---------- dialogs ---------- */
 dialog {
