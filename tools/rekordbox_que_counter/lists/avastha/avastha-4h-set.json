@@ -2,7 +2,7 @@
   "version": 2,
   "name": "Avastha 4h set",
   "created": "2026-07-11",
-  "updated": "2026-07-12T11:44:39.000Z",
+  "updated": "2026-07-12T11:49:01.000Z",
   "tracks": [
     {
       "title": "F# 110 BPM fast version 140",
@@ -199,7 +199,7 @@
     {
       "title": "Kick G# Major 145 BPM 401",
       "bpm": "145",
-      "key": "D#",
+      "key": "G#",
       "cueIn": "0.26",
       "cueOut": "7.33",
       "link": ""
