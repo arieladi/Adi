@@ -60,29 +60,20 @@ a{color:inherit}
   opacity:.85;transition:opacity .25s,border-color .25s}
 .intro-skip:hover{opacity:1;border-color:rgba(255,255,255,.65)}
 
-/* nav */
-.nav{position:fixed;top:0;left:0;right:0;z-index:10;background:rgba(8,8,13,.72);
-  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom:1px solid var(--line);
-  opacity:0;transform:translateY(-100%);transition:opacity .6s ease,transform .6s cubic-bezier(.16,1,.3,1)}
-body.built .nav{opacity:1;transform:none}
-.navrow{display:flex;align-items:center;justify-content:space-between;height:62px}
-.brand{font-family:var(--mono);font-size:15px;letter-spacing:.02em;text-decoration:none;color:var(--text)}
-.brand em{font-style:normal;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-.brand .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--c3);margin-left:3px;vertical-align:baseline}
-.nav nav{display:flex;gap:26px}
-.nav nav a{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
-  color:var(--muted);text-decoration:none;transition:color .25s}
-.nav nav a:hover{color:var(--text)}
-
-/* hero + banner */
-.hero{padding:104px 0 64px;text-align:center}
-.hero-banner{position:relative;width:100%;height:clamp(200px,40vh,430px);border-radius:var(--r);
-  overflow:hidden;margin-bottom:38px;border:1px solid var(--line);background:#05060a;
-  box-shadow:0 20px 60px rgba(0,0,0,.5)}
-.hero-banner:empty{display:none}
-.hero-banner::after{content:'';position:absolute;inset:0;pointer-events:none;
-  background:linear-gradient(180deg,transparent 45%,rgba(8,8,13,.6))}
+/* full-width banner — sits at the very top, replaces the nav (no menu) */
+.site-banner{position:relative;width:100%;height:clamp(140px,24vh,280px);overflow:hidden;background:#05060a}
+.site-banner:empty{display:none}
 .banner-vid{width:100%;height:100%;object-fit:cover;object-position:center 40%;display:block}
+/* embedded look: fade the edges into the page bg + a themed accent hairline */
+.site-banner::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:1;
+  background:
+    linear-gradient(180deg,rgba(8,8,13,.45),transparent 20%,transparent 55%,rgba(8,8,13,.99)),
+    linear-gradient(90deg,rgba(8,8,13,.7),transparent 9%,transparent 91%,rgba(8,8,13,.7))}
+.site-banner::before{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;z-index:2;
+  background:var(--grad);opacity:.5}
+
+/* hero */
+.hero{padding:46px 0 60px;text-align:center}
 .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.34em;text-transform:uppercase;color:var(--muted);margin:0 0 18px}
 .hero h1{margin:0;font-size:clamp(3rem,9vw,6.2rem);font-weight:700;letter-spacing:-.035em;line-height:1.02;
   background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
@@ -110,7 +101,7 @@ body.built .nav{opacity:1;transform:none}
 .pill .ico{width:15px;height:15px}
 
 /* sections */
-.sec{padding:clamp(64px,8vw,104px) 0;scroll-margin-top:70px}
+.sec{padding:clamp(64px,8vw,104px) 0;scroll-margin-top:24px}
 .sec-head{display:flex;align-items:center;gap:16px;margin-bottom:10px}
 .num{font-family:var(--mono);font-size:.85rem;background:var(--grad);
   -webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:.1em}
@@ -192,7 +183,6 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 @media (prefers-reduced-motion:reduce){
   html{scroll-behavior:auto}
   .rv{opacity:1;transform:none;transition:none}
-  .nav{opacity:1;transform:none;transition:none}
   .card,.btn,.pill{transition:none}
   .intro{transition:none}
 }
@@ -214,17 +204,13 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
   <button class="intro-skip" id="introSkip" type="button">Skip intro ↦</button>
 </div>
 
-<header class="nav"><div class="wrap navrow">
-<a class="brand" href="#top">adi<em>ariel</em><span class="dot"></span></a>
-<nav aria-label="Sections">
-<a href="#music">Music</a><a href="#coding">Coding</a><a href="#support">Support</a><a href="#contact">Contact</a>
-</nav></div></header>
+<!-- full-width banner at the very top (the intro video lands here) -->
+<div class="site-banner" id="heroBanner"></div>
 
 <main id="top">
 
 <!-- hero -->
 <section class="hero"><div class="wrap">
-<div class="hero-banner" id="heroBanner"></div>
 <p class="kicker rv" data-c="hero.kicker">PSYTRANCE · COLLABS · FREE TOOLS</p>
 <h1 class="rv" data-c="hero.title">Adi Ariel</h1>
 <p class="tagline rv" data-c="hero.tagline">Psytrance producer, DJ, and vibe coder.</p>
