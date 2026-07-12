@@ -285,6 +285,7 @@ function renderAll() {
   renderSelect();
   rebuildRows();
   setStatusAuto();
+  updateHistBtns();
 }
 
 function markDirty() {
@@ -293,6 +294,65 @@ function markDirty() {
   setStatusAuto();
   persistSoon();
 }
+
+/* ---------------- undo / redo ---------------- */
+// Per-list history of the tracks array. Snapshots are taken of the state
+// BEFORE a change: structural ops (add/delete/move/link) snapshot immediately,
+// while typing is coalesced into a single burst so a word isn't 5 undo steps.
+const undoBtn = $('btnUndo'), redoBtn = $('btnRedo');
+let hist = { key: null, undo: [], redo: [], typing: false, timer: null };
+const cloneTracks = ts => ts.map(t => ({ ...t }));
+const histKey = () => currentUserId() + '/' + (ws().current || '');
+function histSync() {
+  const k = histKey();
+  if (k !== hist.key) { hist.key = k; hist.undo = []; hist.redo = []; endTyping(); }
+}
+function updateHistBtns() {
+  histSync();
+  const live = hist.typing;
+  undoBtn.disabled = !(hist.undo.length || live);
+  redoBtn.disabled = !hist.redo.length;
+}
+// Record the current (pre-change) tracks as an undo point — for structural ops.
+function pushUndo() {
+  histSync(); endTyping();
+  const L = cur(); if (!L) return;
+  hist.undo.push(cloneTracks(L.tracks)); hist.redo = [];
+  updateHistBtns();
+}
+// Begin (or extend) a typing burst — snapshots once at the burst's start.
+function beginTyping() {
+  histSync();
+  const L = cur(); if (!L) return;
+  if (!hist.typing) { hist.undo.push(cloneTracks(L.tracks)); hist.redo = []; hist.typing = true; }
+  clearTimeout(hist.timer); hist.timer = setTimeout(endTyping, 700);
+  updateHistBtns();
+}
+function endTyping() { hist.typing = false; clearTimeout(hist.timer); hist.timer = null; }
+function applyHist(from, to) {
+  histSync(); endTyping();
+  const L = cur(); if (!L || !from.length) return;
+  to.push(cloneTracks(L.tracks));
+  L.tracks = from.pop();
+  if (!L.tracks.length) L.tracks.push(blankTrack());
+  L.dirty = true;
+  renderSelect(); setStatusAuto(); persistSoon();
+  rebuildRows(); updateHistBtns();
+}
+const undo = () => applyHist(hist.undo, hist.redo);
+const redo = () => applyHist(hist.redo, hist.undo);
+undoBtn.onclick = undo;
+redoBtn.onclick = redo;
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
+    if (isEditingRows()) return; // let inputs keep native text undo
+    e.preventDefault();
+    if (e.shiftKey) redo(); else undo();
+  } else if ((e.metaKey || e.ctrlKey) && (e.key === 'y' || e.key === 'Y')) {
+    if (isEditingRows()) return;
+    e.preventDefault(); redo();
+  }
+});
 
 /* ---------------- track links ---------------- */
 function trackLink(t) {
@@ -316,8 +376,8 @@ async function editTrackLink(i) {
     ? `Leave empty to open a YouTube search for “${title}”. Paste any link — YouTube, SoundCloud, whatever.`
     : 'Leave empty to open a YouTube search for the track name. Paste any link — YouTube, SoundCloud, whatever.';
   const r = await openDialog(dlgLink);
-  if (r === 'ok') t.link = $('lkInput').value.trim();
-  else if (r === 'clear') t.link = '';
+  if (r === 'ok') { pushUndo(); t.link = $('lkInput').value.trim(); }
+  else if (r === 'clear') { pushUndo(); t.link = ''; }
   else return;
   markDirty();
   const row = rowsEl.children[i];
@@ -330,6 +390,7 @@ rowsEl.addEventListener('input', e => {
   const row = e.target.closest('.row'); if (!row) return;
   const L = cur(); if (!L) return;
   const t = L.tracks[+row.dataset.i]; if (!t) return;
+  beginTyping();
   if (e.target.classList.contains('tt')) t.title = e.target.value;
   else if (e.target.classList.contains('bp')) t.bpm = e.target.value;
   else if (e.target.classList.contains('ky')) t.key = e.target.value;
@@ -367,11 +428,14 @@ rowsEl.addEventListener('click', e => {
   if (btn.classList.contains('pl')) { openTrackLink(i); return; }
   if (btn.classList.contains('pe')) { editTrackLink(i); return; }
   if (btn.classList.contains('del')) {
+    pushUndo();
     L.tracks.splice(i, 1);
     if (!L.tracks.length) L.tracks.push(blankTrack());
   } else if (btn.classList.contains('up') && i > 0) {
+    pushUndo();
     [L.tracks[i - 1], L.tracks[i]] = [L.tracks[i], L.tracks[i - 1]];
   } else if (btn.classList.contains('down') && i < L.tracks.length - 1) {
+    pushUndo();
     [L.tracks[i + 1], L.tracks[i]] = [L.tracks[i], L.tracks[i + 1]];
   } else return;
   markDirty();
@@ -382,6 +446,7 @@ function addTrack() {
   let L = cur();
   if (!L) { createList('New set'); return; }
   if (L.tracks.length >= MAX_TRACKS) { toast(`Track limit reached — max ${MAX_TRACKS} tracks per list`, 'err'); return; }
+  pushUndo();
   L.tracks.push(blankTrack());
   markDirty();
   rebuildRows();
@@ -458,7 +523,7 @@ function createList(name, tracks) {
 listSelect.onchange = () => {
   const w = ws();
   if (listSelect.value && w.lists[listSelect.value]) w.current = listSelect.value;
-  persist(); rebuildRows(); setStatusAuto();
+  persist(); rebuildRows(); setStatusAuto(); updateHistBtns();
 };
 
 async function nameDialog(title, button, prefill) {
