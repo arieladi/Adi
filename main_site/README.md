@@ -39,9 +39,20 @@ the KV namespace — the next login re-seeds it from `DEFAULT_PASS`.
 
 ## Still to do
 
-- Set the real **Patreon URL** (admin → Content → Music → “Patreon — URL”;
-  ships with a placeholder `https://www.patreon.com`).
-- Banner / photos / audio — upload via the Assets tab and use the worker URLs.
+- Set the real **Patreon URL** — admin → Content → **Gigs & Support** → “Patreon — URL”
+  (ships with a placeholder `https://www.patreon.com`). This one field feeds every
+  “support” link on the site: the hero button, the bio note, and the support card.
+- Photos / audio — upload via the Assets tab and use the worker URLs.
+
+## Intro video
+
+`index.html` plays `media/adi_welcome.mp4` full-screen on the first visit of a
+session, then morphs the final frame into the hero banner and reveals the page.
+It's `muted` + `autoplay` + `playsinline` (browsers only allow autoplay muted).
+Repeat visits in the same session skip the animation and show the last frame as
+the banner immediately; `prefers-reduced-motion` also skips straight to the banner.
+The video is served by GitHub Pages from `/media/` (2.3 MB) — swap the file (keep
+the name) to change the intro.
 
 ## Local dev
 

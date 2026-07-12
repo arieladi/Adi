@@ -55,18 +55,18 @@ const ALLOWED_ORIGINS = [
 /* ---------------- default site content (every field editable in /admin) ---- */
 const DEFAULT_CONTENT = {
   meta: {
-    title: 'Adi Ariel — IT Expertise × Electronic Music Production',
-    description: 'Adi Ariel: PC technician, custom audio-workstation builder and IT consultant — and one half of the psytrance duo Avastha.'
+    title: 'Adi Ariel — Psytrance, Collaborations & Free Tools',
+    description: 'Adi Ariel — one half of the psytrance duo Avastha. Music, collaborations, DJ gigs, and free tools built for the love of it. Support the lab on Patreon.'
   },
   hero: {
-    kicker: 'IT · MUSIC · CODE',
+    kicker: 'PSYTRANCE · COLLABS · FREE TOOLS',
     title: 'Adi Ariel',
-    tagline: 'Bridging IT expertise and electronic music production.',
-    intro: 'I’m Adi — a hands-on PC technician and IT consultant, and one half of the psytrance duo Avastha. I build the machines, tune them for real-time audio, and then make music on them.'
+    tagline: 'Psytrance producer, DJ, and vibe coder.',
+    intro: 'One half of the psytrance duo Avastha. I make music, play gigs, team up with other artists, and build little tools for the pure joy of it — all free. If any of it moves you, Patreon is what keeps it going.'
   },
   music: {
     heading: 'Music',
-    intro: 'Psytrance production — as Avastha and solo.',
+    intro: 'Psytrance, first and always — as Avastha and solo.',
     avastha: {
       name: 'Avastha',
       body: 'My psytrance duo. Deep, driving night music — featured on the Sol Music compilation.',
@@ -81,26 +81,15 @@ const DEFAULT_CONTENT = {
         { label: 'adiariel', url: 'https://soundcloud.com/adiariel' }
       ]
     },
-    patreon: {
-      heading: 'Support my solo lab sessions & projects',
-      body: 'Patrons directly fuel the lab: works in progress, new tracks and the tools I build around them.',
-      label: 'Become a patron',
-      url: 'https://www.patreon.com'
+    collab: {
+      heading: 'Let’s make something together',
+      body: 'I’m always open to collaborations, remixes and B2B sets. If you make music I’d vibe with — or you want to book me for a gig — reach out. Patrons hear the works-in-progress first.'
     }
   },
-  services: {
-    heading: 'IT & Consulting',
-    intro: 'Hands-on, no-nonsense tech help — from a single PC to a full studio.',
-    items: [
-      { title: 'PC Technician', body: 'Diagnostics, repairs, upgrades and clean installs. Hardware and software sorted properly — the first time.' },
-      { title: 'Custom Audio Workstations', body: 'Purpose-built DAW machines: quiet, stable and tuned end-to-end for low-latency, real-time audio.' },
-      { title: 'IT Consulting', body: 'Practical guidance for homes, studios and small businesses: networks, backups, workflows and smart buying decisions.' }
-    ],
-    ctaLabel: 'Get a quote'
-  },
-  code: {
-    heading: 'Code',
-    intro: 'Tools I build and actually use — open source on GitHub.',
+  bio: {
+    heading: 'Vibe Coding',
+    body: 'Away from the studio I’m a vibe coder — I build small, useful tools for the fun of it and release every one of them free, no strings attached.',
+    note: 'They’ll stay free, always. If a tool saves you time, chipping in on Patreon is what keeps them free and keeps new ones coming.',
     githubUrl: 'https://github.com/arieladi',
     items: [
       {
@@ -125,10 +114,24 @@ const DEFAULT_CONTENT = {
       }
     ]
   },
+  support: {
+    heading: 'Gigs & Support',
+    intro: 'I’m an artist, not a consultancy. Two ways to be part of the journey:',
+    gigs: {
+      title: 'Book a gig',
+      body: 'DJ sets and live psytrance for clubs, festivals and private events. Reach out with your dates and let’s make it happen.'
+    },
+    patreon: {
+      heading: 'Support the lab',
+      body: 'Patreon is the single biggest way to help: it funds studio time, new music and the free tools. Even a little goes a long way — and it genuinely means the world.',
+      label: 'Become a patron',
+      url: 'https://www.patreon.com'
+    }
+  },
   contact: {
     heading: 'Contact',
     email: 'office@adiariel.com',
-    emailNote: 'Gigs, tech services and consulting.',
+    emailNote: 'Bookings, collaborations and hellos.',
     facebook: 'https://www.facebook.com/profile.php?id=61578996476561'
   }
 };
