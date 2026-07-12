@@ -110,8 +110,7 @@ function normalizeKey(v) {
   let idx = SHARP_KEYS.indexOf(m[1].toUpperCase());
   if (m[2] === '#' || m[2] === '\u266f') idx = (idx + 1) % 12;
   else if (m[2] === 'b' || m[2] === '\u266d') idx = (idx + 11) % 12;
-  const minor = /^m(in(or)?)?$/i.test(m[3] || '');
-  return SHARP_KEYS[idx] + (minor ? 'm' : '');
+  return SHARP_KEYS[idx]; // bare 12-note system — no minor/major suffix
 }
 
 function ensureWorkspace(id) {
@@ -210,7 +209,7 @@ function rowTemplate(i, t) {
     `<div class="f idx"><b>${i + 1}</b></div>` +
     `<label class="f title"><span>Track</span><input class="tt" placeholder="Track name" enterkeyhint="next"></label>` +
     `<label class="f bpm"><span>BPM</span><input class="bp" inputmode="decimal" placeholder="145" enterkeyhint="next"></label>` +
-    `<label class="f key"><span>Key</span><input class="ky" placeholder="Am" enterkeyhint="next" autocapitalize="characters"></label>` +
+    `<label class="f key"><span>Key</span><input class="ky" placeholder="A#" enterkeyhint="next" autocapitalize="characters"></label>` +
     `<label class="f cin"><span>Cue in</span><input class="cue ci" inputmode="decimal" placeholder="0:27.4" enterkeyhint="next"></label>` +
     `<label class="f cout"><span>Cue out</span><input class="cue co" inputmode="decimal" placeholder="6:10.2" enterkeyhint="next"></label>` +
     `<div class="f play"><span>Play Time</span><b>—</b></div>` +

@@ -2,12 +2,12 @@
   "version": 2,
   "name": "Avastha 4h set",
   "created": "2026-07-11",
-  "updated": "2026-07-12T12:12:45.345Z",
+  "updated": "2026-07-12T13:02:59.000Z",
   "tracks": [
     {
       "title": "F# 110 BPM fast version 140",
       "bpm": "140",
-      "key": "F#m",
+      "key": "F#",
       "cueIn": "0",
       "cueOut": "5.18",
       "link": "https://soundcloud.com/avastha_music/f-110-bpm-fast-version-140-f-1/s-sEn8rxYUh3A?in=avastha_music/sets/unreleased_playlist/s-8CqRb87NFkI&si=65c944fd22744d1f87064de1f9f2bfaf&utm_source=clipboard&utm_medium=text&utm_campaign=social_sharing"
@@ -15,7 +15,7 @@
     {
       "title": "Ace Ventura, Protonica Nova (Original Mix)",
       "bpm": "140",
-      "key": "Fm",
+      "key": "F",
       "cueIn": "0.54",
       "cueOut": "6.53",
       "link": ""
@@ -23,7 +23,7 @@
     {
       "title": "Ace Ventura, Volcano S1Mulat1On Nat1On (Original Mix)",
       "bpm": "140",
-      "key": "A#m",
+      "key": "A#",
       "cueIn": "1.22",
       "cueOut": "5.15",
       "link": ""
@@ -31,7 +31,7 @@
     {
       "title": "In Your Thought 2.10.2021 - Complete WAV Mas",
       "bpm": "140",
-      "key": "Gm",
+      "key": "G",
       "cueIn": "0.41",
       "cueOut": "8.27",
       "link": ""
@@ -39,7 +39,7 @@
     {
       "title": "Avastha - Oscilation Master Fix 22.5.26 v3",
       "bpm": "140",
-      "key": "Gm",
+      "key": "G",
       "cueIn": "0.27",
       "cueOut": "6.1",
       "link": ""
@@ -47,7 +47,7 @@
     {
       "title": "Lifeforms Ahead of Us (Original Mix)",
       "bpm": "140",
-      "key": "C#m",
+      "key": "C#",
       "cueIn": "1.04",
       "cueOut": "7.19",
       "link": ""
@@ -55,7 +55,7 @@
     {
       "title": "Acid Punks Synergy (Original mix)",
       "bpm": "142",
-      "key": "Em",
+      "key": "E",
       "cueIn": "0.4",
       "cueOut": "7.53",
       "link": ""
@@ -63,7 +63,7 @@
     {
       "title": "143BPM Antinomy & Asgard - Tree of Souls (Adi Edit)",
       "bpm": "142",
-      "key": "Bm",
+      "key": "B",
       "cueIn": "0",
       "cueOut": "3.51",
       "link": ""
@@ -71,7 +71,7 @@
     {
       "title": "Blazy Dystopia",
       "bpm": "143",
-      "key": "Gm",
+      "key": "G",
       "cueIn": "0.46",
       "cueOut": "3.54",
       "link": ""
@@ -79,7 +79,7 @@
     {
       "title": "Transforming triplet rise with melody13",
       "bpm": "143",
-      "key": "Gm",
+      "key": "G",
       "cueIn": "0",
       "cueOut": "5.28",
       "link": ""
@@ -87,7 +87,7 @@
     {
       "title": "DMT And Signals-v6 2025-1",
       "bpm": "143",
-      "key": "Em",
+      "key": "E",
       "cueIn": "1.07",
       "cueOut": "9.5",
       "link": ""
@@ -95,7 +95,7 @@
     {
       "title": "Spinal Fusion, Starlab (IN), Kamya The Great Awakening Feat. Kamya (Original Mix)",
       "bpm": "143",
-      "key": "F#m",
+      "key": "F#",
       "cueIn": "0.26",
       "cueOut": "6.02",
       "link": ""
@@ -103,7 +103,7 @@
     {
       "title": "E Minor 143 BPM (E, F#, G, A, B, C, D) 458 Premaster WAV",
       "bpm": "143",
-      "key": "Em",
+      "key": "E",
       "cueIn": "0.26",
       "cueOut": "9.23",
       "link": ""
@@ -111,7 +111,7 @@
     {
       "title": "Man With No Name Possessed (Acid Punks remix)",
       "bpm": "143",
-      "key": "Am",
+      "key": "A",
       "cueIn": "0.53",
       "cueOut": "8.57",
       "link": ""
@@ -119,7 +119,7 @@
     {
       "title": "The Good, The Bad & The Ugly Mescalito (Imagine Mars Remix)",
       "bpm": "144",
-      "key": "Em",
+      "key": "E",
       "cueIn": "0.39",
       "cueOut": "5.26",
       "link": ""
@@ -127,7 +127,7 @@
     {
       "title": "AvasthA Kick B Phrygy 144 BPM B C D E F# G-2",
       "bpm": "144",
-      "key": "Bm",
+      "key": "B",
       "cueIn": "0.15",
       "cueOut": "6.34",
       "link": ""
@@ -143,7 +143,7 @@
     {
       "title": "G MinoR 144 BPM 119 APC-1",
       "bpm": "144",
-      "key": "Gm",
+      "key": "G",
       "cueIn": "0.26",
       "cueOut": "7",
       "link": ""
@@ -151,7 +151,7 @@
     {
       "title": "Amstex Spirit (Original Mix)",
       "bpm": "145",
-      "key": "Gm",
+      "key": "G",
       "cueIn": "0.52",
       "cueOut": "7.5",
       "link": ""
@@ -159,7 +159,7 @@
     {
       "title": "Outsiders & Mind Spin - Agents Of Time v2 16Bit Master 25-12-2025",
       "bpm": "145",
-      "key": "Em",
+      "key": "E",
       "cueIn": "0.34",
       "cueOut": "8.04",
       "link": ""
@@ -167,7 +167,7 @@
     {
       "title": "Drop Of BLS A minor 145 BPM 197",
       "bpm": "145",
-      "key": "Am",
+      "key": "A",
       "cueIn": "0",
       "cueOut": "7.56",
       "link": ""
@@ -175,7 +175,7 @@
     {
       "title": "Major Experience F Major 145 (F, G, A, A#, C, D, E)  208",
       "bpm": "145",
-      "key": "Fm",
+      "key": "F",
       "cueIn": "1.19",
       "cueOut": "7.35",
       "link": ""
@@ -183,7 +183,7 @@
     {
       "title": "Avastha - The Right Choice",
       "bpm": "145",
-      "key": "Fm",
+      "key": "F",
       "cueIn": "0.26",
       "cueOut": "5.57",
       "link": ""
@@ -191,7 +191,7 @@
     {
       "title": "Life Experiences",
       "bpm": "145",
-      "key": "Fm",
+      "key": "F",
       "cueIn": "0.26",
       "cueOut": "6.57",
       "link": ""
@@ -207,7 +207,7 @@
     {
       "title": "A MinoR 145 BPM Avastha 199 APC-1",
       "bpm": "145",
-      "key": "Am",
+      "key": "A",
       "cueIn": "0.52",
       "cueOut": "7.56",
       "link": ""
@@ -215,7 +215,7 @@
     {
       "title": "Relativ, MoRsei Awakened (Original Mix)",
       "bpm": "145",
-      "key": "A#m",
+      "key": "A#",
       "cueIn": "0.26",
       "cueOut": "4.31",
       "link": ""
@@ -223,7 +223,7 @@
     {
       "title": "Mindala Freedom A# Minor 145",
       "bpm": "145",
-      "key": "A#m",
+      "key": "A#",
       "cueIn": "0.52",
       "cueOut": "8.23",
       "link": ""
@@ -239,7 +239,7 @@
     {
       "title": "Becker,_Avan7_Meru_C_Major2",
       "bpm": "145",
-      "key": "Cm",
+      "key": "C",
       "cueIn": "0.58",
       "cueOut": "7.42",
       "link": ""
@@ -255,7 +255,7 @@
     {
       "title": "Avan7 Biological Connection (Original Mix)",
       "bpm": "146",
-      "key": "Gm",
+      "key": "G",
       "cueIn": "1.32",
       "cueOut": "6.54",
       "link": ""
@@ -271,7 +271,7 @@
     {
       "title": "Vom - 5 Days In Sunlight 16Bit Master 05-03-2019",
       "bpm": "146",
-      "key": "F#m",
+      "key": "F#",
       "cueIn": "0.26",
       "cueOut": "7",
       "link": ""
@@ -287,7 +287,7 @@
     {
       "title": "Technical_Hitch_Mama_India_B_Major",
       "bpm": "147",
-      "key": "Bm",
+      "key": "B",
       "cueIn": "1.08",
       "cueOut": "7.51",
       "link": ""
@@ -295,7 +295,7 @@
     {
       "title": "Electric_Universe,_Mad_Tribe_Party_Planners_2.1_G_Major",
       "bpm": "147",
-      "key": "Gm",
+      "key": "G",
       "cueIn": "0.26",
       "cueOut": "7.09",
       "link": ""
@@ -303,7 +303,7 @@
     {
       "title": "Volcano Spiritual Voices (Original Mix)",
       "bpm": "147",
-      "key": "Dm",
+      "key": "D",
       "cueIn": "0.26",
       "cueOut": "7.2",
       "link": ""
@@ -311,7 +311,7 @@
     {
       "title": "Adi - Will Of D",
       "bpm": "147",
-      "key": "D#m",
+      "key": "D#",
       "cueIn": "0.26",
       "cueOut": "6.31",
       "link": ""
