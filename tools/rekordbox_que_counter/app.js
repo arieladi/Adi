@@ -95,11 +95,24 @@ try { token = localStorage.getItem(LSK.token) || null; } catch { }
 const relayUrl = () => String(config.syncUrl || '').trim().replace(/\/+$/, '');
 const writable = () => !!token || !!relayUrl();
 
-const blankTrack = () => ({ title: '', cueIn: '', cueOut: '', link: '' });
+const blankTrack = () => ({ title: '', bpm: '', key: '', cueIn: '', cueOut: '', link: '' });
 const normTrack = t => ({
-  title: String(t && t.title || ''), cueIn: String(t && t.cueIn || ''),
+  title: String(t && t.title || ''), bpm: String(t && t.bpm || ''),
+  key: normalizeKey(String(t && t.key || '')), cueIn: String(t && t.cueIn || ''),
   cueOut: String(t && t.cueOut || ''), link: String(t && t.link || '')
 });
+
+/* Keys are shown sharps-only: Db -> C#, Eb -> D#, Gb -> F#, Ab -> G#, Bb -> A# */
+const SHARP_KEYS = ['A', 'A#', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#'];
+function normalizeKey(v) {
+  const m = String(v || '').trim().match(/^([A-Ga-g])\s*([#b\u266f\u266d]?)\s*(m|min|minor|maj|major)?\.?$/i);
+  if (!m) return String(v || '').trim();
+  let idx = SHARP_KEYS.indexOf(m[1].toUpperCase());
+  if (m[2] === '#' || m[2] === '\u266f') idx = (idx + 1) % 12;
+  else if (m[2] === 'b' || m[2] === '\u266d') idx = (idx + 11) % 12;
+  const minor = /^m(in(or)?)?$/i.test(m[3] || '');
+  return SHARP_KEYS[idx] + (minor ? 'm' : '');
+}
 
 function ensureWorkspace(id) {
   if (!store.workspaces[id]) store.workspaces[id] = { order: [], lists: {}, indexSha: null, current: null };
@@ -196,6 +209,8 @@ function rowTemplate(i, t) {
   row.innerHTML =
     `<div class="f idx"><b>${i + 1}</b></div>` +
     `<label class="f title"><span>Track</span><input class="tt" placeholder="Track name" enterkeyhint="next"></label>` +
+    `<label class="f bpm"><span>BPM</span><input class="bp" inputmode="decimal" placeholder="145" enterkeyhint="next"></label>` +
+    `<label class="f key"><span>Key</span><input class="ky" placeholder="Am" enterkeyhint="next" autocapitalize="characters"></label>` +
     `<label class="f cin"><span>Cue in</span><input class="cue ci" inputmode="decimal" placeholder="0:27.4" enterkeyhint="next"></label>` +
     `<label class="f cout"><span>Cue out</span><input class="cue co" inputmode="decimal" placeholder="6:10.2" enterkeyhint="next"></label>` +
     `<div class="f play"><span>Play Time</span><b>—</b></div>` +
@@ -210,6 +225,8 @@ function rowTemplate(i, t) {
     `<button type="button" class="rb del" title="Delete track" aria-label="Delete track">✕</button>` +
     `</div>`;
   row.querySelector('.tt').value = t.title;
+  row.querySelector('.bp').value = t.bpm || '';
+  row.querySelector('.ky').value = t.key || '';
   row.querySelector('.ci').value = t.cueIn;
   row.querySelector('.co').value = t.cueOut;
   row.querySelector('.pl').classList.toggle('custom', !!(t.link && t.link.trim()));
@@ -315,20 +332,30 @@ rowsEl.addEventListener('input', e => {
   const L = cur(); if (!L) return;
   const t = L.tracks[+row.dataset.i]; if (!t) return;
   if (e.target.classList.contains('tt')) t.title = e.target.value;
+  else if (e.target.classList.contains('bp')) t.bpm = e.target.value;
+  else if (e.target.classList.contains('ky')) t.key = e.target.value;
   else if (e.target.classList.contains('ci')) t.cueIn = e.target.value;
   else if (e.target.classList.contains('co')) t.cueOut = e.target.value;
   markDirty();
   updateComputed();
 });
 
+rowsEl.addEventListener('change', e => {
+  if (!e.target.classList.contains('ky')) return;
+  const row = e.target.closest('.row'); if (!row) return;
+  const L = cur(); const t = L && L.tracks[+row.dataset.i]; if (!t) return;
+  const norm = normalizeKey(e.target.value);
+  if (norm !== e.target.value) { e.target.value = norm; t.key = norm; markDirty(); }
+});
+
 rowsEl.addEventListener('keydown', e => {
   if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
   const row = e.target.closest('.row'); if (!row) return;
   e.preventDefault();
-  const fields = ['tt', 'ci', 'co'];
+  const fields = ['tt', 'bp', 'ky', 'ci', 'co'];
   const pos = fields.findIndex(c => e.target.classList.contains(c));
   if (pos === -1) return;
-  if (pos < 2) { row.querySelector('.' + fields[pos + 1]).focus(); return; }
+  if (pos < fields.length - 1) { row.querySelector('.' + fields[pos + 1]).focus(); return; }
   const next = row.nextElementSibling;
   if (next) next.querySelector('.tt').focus();
   else addTrack();
@@ -482,7 +509,11 @@ moreMenu.addEventListener('click', e => {
   else if (act === 'users') openUsersDialog();
   else if (act === 'settings') openSetup();
 });
-$('footHelp').onclick = () => openDialog(dlgHelp);
+$('footHelp').onclick = () => {
+  history.pushState({ rqcHelp: 1 }, '');
+  openDialog(dlgHelp).then(() => { if (history.state && history.state.rqcHelp) history.back(); });
+};
+window.addEventListener('popstate', () => { if (dlgHelp.open) dlgHelp.close('cancel'); });
 
 /* ---------------- delete list ---------------- */
 // Public lists need the public delete password (checked by the Worker).

@@ -106,14 +106,14 @@ select {
 
 /* ---------- table ---------- */
 main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
-.thead, .row { display: grid; grid-template-columns: 38px minmax(160px, 1fr) 90px 90px 100px 112px 64px 92px; align-items: stretch; }
+.thead, .row { display: grid; grid-template-columns: 38px minmax(140px, 1fr) 60px 56px 84px 84px 96px 108px 64px 92px; align-items: stretch; }
 .thead {
   position: sticky; top: 54px; z-index: 20;
   background: var(--bg); border-bottom: 2px solid var(--line);
 }
 .thead b { padding: 8px 8px; font-size: .6875rem; color: var(--dim); text-transform: uppercase; letter-spacing: .6px; align-self: end; }
 .thead b:nth-child(n+3) { text-align: right; }
-.thead b:nth-child(7) { text-align: center; }
+.thead b:nth-child(9) { text-align: center; }
 
 .row .f { display: contents; }
 .row .f > span { display: none; }
@@ -130,6 +130,8 @@ main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
 }
 .row input:focus { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; background: var(--panel); }
 .row input.cue, .row .f > b { font-family: var(--mono); text-align: right; font-size: .90625rem; }
+.row input.bp { font-family: var(--mono); text-align: right; }
+.row input.ky { font-family: var(--mono); text-align: center; }
 .row .f.idx > b { color: var(--dim); text-align: left; font-size: .75rem; padding-top: calc(var(--cell-pad) + 2px); }
 .row .f.stime > b { color: var(--accent); font-weight: 700; }
 .row b.neg { color: var(--neg) !important; }
@@ -247,10 +249,12 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
   .row .f.ops { order: 2; flex: 0 0 auto; flex-direction: row; align-items: flex-end; border: 0; padding: 0 0 4px; }
   .row .f.link { order: 3; flex: 0 0 auto; flex-direction: row; align-items: flex-end; border: 0; padding: 0 0 3px; }
   .row .f.link > span { display: none; }
-  .row .f.cin  { order: 4; flex: 1 1 24%; }
-  .row .f.cout { order: 5; flex: 1 1 24%; }
-  .row .f.play { order: 6; flex: 1 1 24%; }
-  .row .f.stime{ order: 7; flex: 1 1 100%; }
+  .row .f.bpm  { order: 4; flex: 1 1 18%; }
+  .row .f.key  { order: 5; flex: 1 1 18%; }
+  .row .f.cin  { order: 6; flex: 1 1 24%; }
+  .row .f.cout { order: 7; flex: 1 1 24%; }
+  .row .f.play { order: 8; flex: 1 1 24%; }
+  .row .f.stime{ order: 9; flex: 1 1 100%; }
   .row .f.stime > b { text-align: right; }
   .rb { width: 34px; height: 34px; font-size: .9375rem; }
   .rb.pl { font-size: .8125rem; }
