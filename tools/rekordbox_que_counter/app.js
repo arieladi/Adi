@@ -296,51 +296,70 @@ function markDirty() {
 }
 
 /* ---------------- undo / redo ---------------- */
-// Per-list history of the tracks array. Snapshots are taken of the state
-// BEFORE a change: structural ops (add/delete/move/link) snapshot immediately,
-// while typing is coalesced into a single burst so a word isn't 5 undo steps.
+// Per-list history of {name, tracks}. Snapshots are taken of the state
+// BEFORE a change: structural ops (add/delete/move/link/rename) snapshot
+// immediately, while typing is coalesced into a single burst so a word isn't
+// 5 undo steps. Histories are kept per list in memory for the whole page
+// session — saving or switching lists does NOT clear them.
 const undoBtn = $('btnUndo'), redoBtn = $('btnRedo');
-let hist = { key: null, undo: [], redo: [], typing: false, timer: null };
+const HIST_MAX = 200; // snapshots kept per stack
+const histories = new Map(); // 'user/file' -> {undo:[], redo:[]} — lives until the tab closes
+let hist = { undo: [], redo: [] };
+let histKeyCur = null, typingBurst = false, typingTimer = null;
 const cloneTracks = ts => ts.map(t => ({ ...t }));
+const snapState = L => ({ name: L.name, tracks: cloneTracks(L.tracks) });
 const histKey = () => currentUserId() + '/' + (ws().current || '');
 function histSync() {
   const k = histKey();
-  if (k !== hist.key) { hist.key = k; hist.undo = []; hist.redo = []; endTyping(); }
+  if (k === histKeyCur) return;
+  endTyping();
+  histKeyCur = k;
+  let h = histories.get(k);
+  if (!h) { h = { undo: [], redo: [] }; histories.set(k, h); }
+  hist = h;
 }
 function updateHistBtns() {
   histSync();
-  const live = hist.typing;
-  undoBtn.disabled = !(hist.undo.length || live);
+  undoBtn.disabled = !(hist.undo.length || typingBurst);
   redoBtn.disabled = !hist.redo.length;
 }
-// Record the current (pre-change) tracks as an undo point — for structural ops.
+function pushSnap() {
+  const L = cur(); if (!L) return false;
+  hist.undo.push(snapState(L));
+  if (hist.undo.length > HIST_MAX) hist.undo.shift();
+  hist.redo.length = 0;
+  return true;
+}
+// Record the current (pre-change) state as an undo point — for structural ops
+// (add / delete / move / link / rename).
 function pushUndo() {
   histSync(); endTyping();
-  const L = cur(); if (!L) return;
-  hist.undo.push(cloneTracks(L.tracks)); hist.redo = [];
+  pushSnap();
   updateHistBtns();
 }
 // Begin (or extend) a typing burst — snapshots once at the burst's start.
 function beginTyping() {
   histSync();
-  const L = cur(); if (!L) return;
-  if (!hist.typing) { hist.undo.push(cloneTracks(L.tracks)); hist.redo = []; hist.typing = true; }
-  clearTimeout(hist.timer); hist.timer = setTimeout(endTyping, 700);
+  if (!typingBurst && pushSnap()) typingBurst = true;
+  clearTimeout(typingTimer); typingTimer = setTimeout(endTyping, 700);
   updateHistBtns();
 }
-function endTyping() { hist.typing = false; clearTimeout(hist.timer); hist.timer = null; }
+function endTyping() { typingBurst = false; clearTimeout(typingTimer); typingTimer = null; }
 function applyHist(from, to) {
-  histSync(); endTyping();
+  endTyping();
   const L = cur(); if (!L || !from.length) return;
-  to.push(cloneTracks(L.tracks));
-  L.tracks = from.pop();
+  to.push(snapState(L));
+  if (to.length > HIST_MAX) to.shift();
+  const s = from.pop();
+  L.name = s.name || L.name;
+  L.tracks = s.tracks;
   if (!L.tracks.length) L.tracks.push(blankTrack());
   L.dirty = true;
   renderSelect(); setStatusAuto(); persistSoon();
   rebuildRows(); updateHistBtns();
 }
-const undo = () => applyHist(hist.undo, hist.redo);
-const redo = () => applyHist(hist.redo, hist.undo);
+function undo() { histSync(); applyHist(hist.undo, hist.redo); }
+function redo() { histSync(); applyHist(hist.redo, hist.undo); }
 undoBtn.onclick = undo;
 redoBtn.onclick = redo;
 document.addEventListener('keydown', e => {
@@ -515,7 +534,7 @@ function createList(name, tracks) {
   w.lists[file] = { name, created: null, updated: '', tracks: tracks || [blankTrack()], dirty: true, remote: false, sha: null };
   w.order.push(file);
   w.current = file;
-  persist(); renderSelect(); rebuildRows(); setStatusAuto();
+  persist(); renderSelect(); rebuildRows(); setStatusAuto(); updateHistBtns();
   if (!tracks) { const first = rowsEl.querySelector('.tt'); if (first) first.focus(); }
   return true;
 }
@@ -548,6 +567,7 @@ $('btnRename').onclick = async () => {
   if (!L) { toast('No list to rename — create one first', 'err'); return; }
   const name = await nameDialog('Rename list', 'Rename', L.name);
   if (!name || name === L.name) return;
+  pushUndo();
   L.name = name;
   markDirty();
   renderSelect();
@@ -641,7 +661,7 @@ function removeLocal(user, file) {
   delete w.lists[file];
   w.order = w.order.filter(f => f !== file);
   if (w.current === file) w.current = w.order[0] || null;
-  if (user === currentUserId()) { renderSelect(); rebuildRows(); setStatusAuto(); }
+  if (user === currentUserId()) { renderSelect(); rebuildRows(); setStatusAuto(); updateHistBtns(); }
 }
 
 /* ---------------- appearance dialog (theme + sizes) ---------------- */
