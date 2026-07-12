@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Adi Ariel — IT Expertise × Electronic Music Production</title>
+<meta name="description" content="Adi Ariel: PC technician, custom audio-workstation builder and IT consultant — and one half of the psytrance duo Avastha.">
+<link rel="canonical" href="https://adiariel.com/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Adi Ariel — IT Expertise × Electronic Music Production">
+<meta property="og:description" content="Adi Ariel: PC technician, custom audio-workstation builder and IT consultant — and one half of the psytrance duo Avastha.">
+<meta property="og:url" content="https://adiariel.com/">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#08080d">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* Static twin of the worker-rendered site — hosted on GitHub Pages.
+   Live content is hydrated from the adiariel-site-worker API (see script below). */
+:root{
+  --bg:#08080d; --panel:#0d0e16; --line:rgba(255,255,255,.08); --line-2:rgba(255,255,255,.16);
+  --text:#e9eaf2; --muted:#9aa3b8;
+  --c1:#38bdf8; --c2:#a78bfa; --c3:#f472b6;
+  --grad:linear-gradient(90deg,var(--c1),var(--c2) 55%,var(--c3));
+  --r:18px;
+  --sans:'Space Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+::selection{background:rgba(167,139,250,.35)}
+body::before{content:'';position:fixed;inset:0;z-index:-2;pointer-events:none;
+  background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+  background-size:44px 44px;
+  -webkit-mask-image:radial-gradient(ellipse 90% 65% at 50% -5%,#000 25%,transparent 78%);
+  mask-image:radial-gradient(ellipse 90% 65% at 50% -5%,#000 25%,transparent 78%)}
+.orbs{position:fixed;inset:0;z-index:-3;overflow:hidden;pointer-events:none}
+.orbs i{position:absolute;border-radius:50%}
+.o1{width:60vw;height:60vw;left:-18vw;top:-22vw;background:radial-gradient(circle,rgba(167,139,250,.17),rgba(167,139,250,.06) 40%,transparent 68%)}
+.o2{width:54vw;height:54vw;right:-16vw;bottom:-20vw;background:radial-gradient(circle,rgba(56,189,248,.15),rgba(56,189,248,.05) 40%,transparent 68%)}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+a{color:inherit}
+.ico{width:18px;height:18px;flex:none}
+
+/* nav */
+.nav{position:fixed;top:0;left:0;right:0;z-index:10;background:rgba(8,8,13,.72);
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+.navrow{display:flex;align-items:center;justify-content:space-between;height:62px}
+.brand{font-family:var(--mono);font-size:15px;letter-spacing:.02em;text-decoration:none;color:var(--text)}
+.brand em{font-style:normal;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.brand .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--c3);margin-left:3px;vertical-align:baseline}
+.nav nav{display:flex;gap:26px}
+.nav nav a{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);text-decoration:none;transition:color .25s}
+.nav nav a:hover{color:var(--text)}
+
+/* hero */
+.hero{min-height:100svh;display:grid;align-items:center;text-align:center;padding:120px 0 60px}
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.34em;text-transform:uppercase;color:var(--muted);margin:0 0 18px}
+.hero h1{margin:0;font-size:clamp(3.2rem,10vw,6.8rem);font-weight:700;letter-spacing:-.035em;line-height:1.02;
+  background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
+  filter:drop-shadow(0 0 34px rgba(167,139,250,.25))}
+.tagline{font-size:clamp(1.05rem,2.4vw,1.4rem);color:var(--text);margin:22px auto 10px;max-width:38ch}
+.intro{color:var(--muted);max-width:62ch;margin:0 auto 34px}
+.cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+
+/* buttons & pills */
+.btn{display:inline-flex;align-items:center;gap:9px;padding:.78rem 1.35rem;border-radius:999px;
+  font-weight:600;font-size:.95rem;text-decoration:none;border:1px solid var(--line-2);
+  transition:transform .3s,box-shadow .3s,border-color .3s,background .3s}
+.btn.primary{background:var(--grad);color:#08080d;border-color:transparent}
+.btn.primary:hover{transform:translateY(-2px);box-shadow:0 8px 34px rgba(167,139,250,.4)}
+.btn.ghost{color:var(--text);background:rgba(255,255,255,.02)}
+.btn.ghost:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.34)}
+.pills{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+.pills.center{justify-content:center}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:.5rem .95rem;border:1px solid var(--line-2);
+  border-radius:999px;font-family:var(--mono);font-size:.8rem;color:var(--muted);text-decoration:none;
+  transition:color .25s,border-color .25s,transform .25s}
+.pill:hover{color:var(--text);border-color:rgba(255,255,255,.4);transform:translateY(-1px)}
+.pill .ico{width:15px;height:15px}
+
+/* sections */
+.sec{padding:clamp(70px,9vw,110px) 0;scroll-margin-top:70px}
+.sec-head{display:flex;align-items:center;gap:16px;margin-bottom:10px}
+.num{font-family:var(--mono);font-size:.85rem;background:var(--grad);
+  -webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:.1em}
+.sec-head h2{margin:0;font-size:clamp(1.7rem,4vw,2.4rem);letter-spacing:-.02em}
+.rule{flex:1;height:1px;background:linear-gradient(90deg,var(--line-2),transparent)}
+.sec-intro{color:var(--muted);margin:0 0 36px;max-width:62ch}
+
+/* cards */
+.grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+.grid.two{grid-template-columns:repeat(2,1fr)}
+@media (max-width:760px){.grid.two{grid-template-columns:1fr}}
+.card{position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.012));
+  border:1px solid var(--line);border-radius:var(--r);padding:26px 26px 24px;
+  transition:transform .35s,border-color .35s,box-shadow .35s}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--grad);
+  opacity:0;transition:opacity .35s}
+.card:hover{transform:translateY(-4px);border-color:var(--line-2);box-shadow:0 16px 48px rgba(0,0,0,.5)}
+.card:hover::before{opacity:.9}
+.card h3{margin:0 0 8px;font-size:1.12rem;letter-spacing:-.01em}
+.card p{margin:0;color:var(--muted);font-size:.95rem}
+.card .btn{margin-top:18px}
+.badge{width:44px;height:44px;border-radius:13px;display:grid;place-items:center;margin-bottom:16px;
+  border:1px solid var(--line);background:rgba(255,255,255,.03)}
+.badge .ico{width:20px;height:20px}
+.badge.a1{color:var(--c1)}.badge.a2{color:var(--c2)}.badge.a3{color:var(--c3)}
+.grid .card:nth-child(3n+2) .badge{color:var(--c2)}
+.grid .card:nth-child(3n) .badge{color:var(--c3)}
+.idx{font-family:var(--mono);font-size:.8rem;color:var(--muted);opacity:.7;margin-bottom:12px}
+.cardlink{display:inline-flex;align-items:center;gap:6px;margin-top:16px;font-family:var(--mono);
+  font-size:.8rem;letter-spacing:.06em;color:var(--c1);text-decoration:none}
+.cardlink:hover{text-decoration:underline}
+.cardlink .ico{width:14px;height:14px}
+.aftergrid{margin:26px 0 0;text-align:center}
+
+/* avastha feature */
+.card.feature{grid-column:1/-1;padding:clamp(28px,5vw,48px);margin-bottom:18px}
+.feature-txt{position:relative;z-index:1;max-width:56ch}
+.chip{display:inline-flex;align-items:center;gap:8px;padding:5px 13px;border:1px solid var(--line-2);
+  border-radius:999px;font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--muted);margin-bottom:18px}
+.cdot{width:6px;height:6px;border-radius:50%;background:var(--grad)}
+h3.avastha{font-size:clamp(2rem,5.5vw,3.2rem);letter-spacing:.28em;text-transform:uppercase;
+  margin:0 0 12px;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.card.feature p{max-width:52ch;font-size:1rem}
+.watermark{position:absolute;right:-1%;bottom:-14%;font-size:clamp(4rem,13vw,9rem);font-weight:700;
+  letter-spacing:.18em;text-transform:uppercase;color:transparent;
+  -webkit-text-stroke:1px rgba(255,255,255,.055);pointer-events:none;white-space:nowrap;z-index:0}
+.card.patreon{background:linear-gradient(135deg,rgba(56,189,248,.10),rgba(167,139,250,.12) 50%,rgba(244,114,182,.10))}
+
+/* contact */
+.contactcard{text-align:center;margin-bottom:0}
+.say{font-family:var(--mono);font-size:.72rem;letter-spacing:.34em;color:var(--muted);margin:0 0 14px}
+.bigmail{display:inline-block;font-size:clamp(1.3rem,4.4vw,2.3rem);font-weight:600;letter-spacing:-.02em;
+  text-decoration:none;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
+  border-bottom:1px solid var(--line-2);padding-bottom:6px;transition:filter .3s}
+.bigmail:hover{filter:brightness(1.25)}
+.mailnote{color:var(--muted);margin:14px 0 8px}
+
+/* footer */
+footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
+  font-family:var(--mono);font-size:.78rem;color:var(--muted)}
+.adminlink{color:var(--muted);opacity:.55;text-decoration:none}
+.adminlink:hover{opacity:1;color:var(--text)}
+
+/* reveal */
+.rv{opacity:0;transform:translateY(16px);transition:opacity .7s ease,transform .7s cubic-bezier(.16,1,.3,1)}
+.rv.in{opacity:1;transform:none}
+.grid .rv:nth-child(2){transition-delay:.07s}
+.grid .rv:nth-child(3){transition-delay:.14s}
+.grid .rv:nth-child(4){transition-delay:.21s}
+:focus-visible{outline:2px solid var(--c1);outline-offset:3px;border-radius:4px}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .rv{opacity:1;transform:none;transition:none}
+  .card,.btn,.pill{transition:none}
+}
+@media (max-width:640px){
+  .nav nav{gap:16px}
+  .nav nav a{font-size:10.5px;letter-spacing:.1em}
+  .hero{min-height:92svh}
+  .watermark{display:none}
+}
+</style>
+</head>
+<body>
+<div class="orbs" aria-hidden="true"><i class="o1"></i><i class="o2"></i></div>
+
+<header class="nav"><div class="wrap navrow">
+<a class="brand" href="#top">adi<em>ariel</em><span class="dot"></span></a>
+<nav aria-label="Sections">
+<a href="#music">Music</a><a href="#services">Services</a><a href="#code">Code</a><a href="#contact">Contact</a>
+</nav></div></header>
+
+<main id="top">
+
+<!-- hero -->
+<section class="hero"><div class="wrap">
+<p class="kicker rv" data-c="hero.kicker">IT · MUSIC · CODE</p>
+<h1 class="rv" data-c="hero.title">Adi Ariel</h1>
+<p class="tagline rv" data-c="hero.tagline">Bridging IT expertise and electronic music production.</p>
+<p class="intro rv" data-c="hero.intro">I’m Adi — a hands-on PC technician and IT consultant, and one half of the psytrance duo Avastha. I build the machines, tune them for real-time audio, and then make music on them.</p>
+<div class="cta rv">
+<a class="btn primary" href="#music"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg>Listen to the music</a>
+<a class="btn ghost" href="#services">Work with me <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a>
+</div>
+</div></section>
+
+<!-- music -->
+<section id="music" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">01</span><h2 data-c="music.heading">Music</h2><span class="rule"></span></div>
+<p class="sec-intro rv" data-c="music.intro">Psytrance production — as Avastha and solo.</p>
+<article class="card feature rv"><div class="feature-txt">
+<span class="chip"><i class="cdot"></i><span data-c="music.avastha.badge">Sol Music compilation</span></span>
+<h3 class="avastha" data-c="music.avastha.name">Avastha</h3>
+<p data-c="music.avastha.body">My psytrance duo. Deep, driving night music — featured on the Sol Music compilation.</p>
+<a class="btn primary" data-href="music.avastha.url" href="https://avastha.info" target="_blank" rel="noopener">avastha.info <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a>
+</div><span class="watermark" aria-hidden="true" data-c="music.avastha.name">Avastha</span></article>
+<div class="grid two">
+<article class="card rv"><div class="badge a1"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg></div>
+<h3 data-c="music.solo.title">Solo — lab sessions &amp; sets</h3><p data-c="music.solo.body">Tracks, experiments and DJ sets under my own name, on SoundCloud.</p>
+<div class="pills" id="sc-pills">
+<a class="pill" href="https://soundcloud.com/music_adi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>music_adi</span></a>
+<a class="pill" href="https://soundcloud.com/adiariel" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>adiariel</span></a>
+</div></article>
+<article class="card patreon rv"><div class="badge a3"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></div>
+<h3 data-c="music.patreon.heading">Support my solo lab sessions &amp; projects</h3><p data-c="music.patreon.body">Patrons directly fuel the lab: works in progress, new tracks and the tools I build around them.</p>
+<a class="btn primary" data-href="music.patreon.url" href="https://www.patreon.com" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span data-c="music.patreon.label">Become a patron</span></a></article>
+</div>
+</div></section>
+
+<!-- services -->
+<section id="services" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">02</span><h2 data-c="services.heading">IT &amp; Consulting</h2><span class="rule"></span></div>
+<p class="sec-intro rv" data-c="services.intro">Hands-on, no-nonsense tech help — from a single PC to a full studio.</p>
+<div class="grid" id="svc-grid">
+<article class="card rv"><div class="badge a1"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></div>
+<h3>PC Technician</h3><p>Diagnostics, repairs, upgrades and clean installs. Hardware and software sorted properly — the first time.</p></article>
+<article class="card rv"><div class="badge a2"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></div>
+<h3>Custom Audio Workstations</h3><p>Purpose-built DAW machines: quiet, stable and tuned end-to-end for low-latency, real-time audio.</p></article>
+<article class="card rv"><div class="badge a3"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m16.24 7.76-2.12 6.36-6.36 2.12 2.12-6.36 6.36-2.12z"/></svg></div>
+<h3>IT Consulting</h3><p>Practical guidance for homes, studios and small businesses: networks, backups, workflows and smart buying decisions.</p></article>
+</div>
+<p class="aftergrid rv"><a class="btn ghost" id="quote-btn" href="mailto:office@adiariel.com"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></svg><span data-c="services.ctaLabel">Get a quote</span></a></p>
+</div></section>
+
+<!-- code -->
+<section id="code" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">03</span><h2 data-c="code.heading">Code</h2><span class="rule"></span></div>
+<p class="sec-intro rv" data-c="code.intro">Tools I build and actually use — open source on GitHub.</p>
+<div class="grid two" id="code-grid">
+<article class="card rv"><div class="idx">01</div>
+<h3>Console — Stream Deck plugin</h3><p>BPM-driven delay/reverb calculator, OS-level numpad and note-frequency tools for the Stream Deck + XL.</p>
+<a class="cardlink" href="https://github.com/arieladi/Adi/tree/main/tools/elgato_stream_deck_plugins/com.adiariel.console.sdPlugin" target="_blank" rel="noopener">View source <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
+<article class="card rv"><div class="idx">02</div>
+<h3>RekordBox MIDI — Stream Deck plugin</h3><p>Turns the Stream Deck + XL into a virtual MIDI controller for rekordbox PERFORMANCE mode: hot cues, transport, jog nudge and mixer dials.</p>
+<a class="cardlink" href="https://github.com/arieladi/Adi/tree/main/tools/elgato_stream_deck_plugins/com.adiariel.rekordbox.sdPlugin" target="_blank" rel="noopener">View source <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
+<article class="card rv"><div class="idx">03</div>
+<h3>RTL/LTR Auto Direction — Chrome extension</h3><p>Automatically switches text direction to match the language you type. Zero permissions.</p>
+<a class="cardlink" href="https://github.com/arieladi/Adi/tree/main/tools/chrome/rtl_extension" target="_blank" rel="noopener">View source <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
+<article class="card rv"><div class="idx">04</div>
+<h3>Rekordbox Cue Counter — web tool</h3><p>A DJ set timer built around rekordbox cue sheets — live countdown for the booth.</p>
+<a class="cardlink" href="https://github.com/arieladi/Adi/tree/main/tools/rekordbox_que_counter" target="_blank" rel="noopener">View source <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
+</div>
+<p class="aftergrid rv"><a class="btn ghost" data-href="code.githubUrl" href="https://github.com/arieladi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>More on GitHub <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></p>
+</div></section>
+
+<!-- contact -->
+<section id="contact" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">04</span><h2 data-c="contact.heading">Contact</h2><span class="rule"></span></div>
+<article class="card feature contactcard rv">
+<p class="say">SAY HI</p>
+<a class="bigmail" id="bigmail" href="mailto:office@adiariel.com" data-c="contact.email">office@adiariel.com</a>
+<p class="mailnote" data-c="contact.emailNote">Gigs, tech services and consulting.</p>
+<div class="pills center" id="contact-pills">
+<a class="pill" href="https://www.facebook.com/profile.php?id=61578996476561" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg><span>Facebook</span></a>
+<a class="pill" href="https://soundcloud.com/music_adi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>music_adi</span></a>
+<a class="pill" href="https://soundcloud.com/adiariel" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>adiariel</span></a>
+<a class="pill" href="https://github.com/arieladi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg><span>GitHub</span></a>
+</div></article>
+</div></section>
+
+</main>
+<footer><div class="wrap">&copy; <span id="yr"></span> Adi Ariel &middot; GitHub Pages + a Cloudflare Worker &middot; <a class="adminlink" href="/admin">admin</a></div></footer>
+
+<script>
+(function () {
+  'use strict';
+  /* The worker is the content backend (same account as the avastha-materials
+     worker). If it is unreachable the baked-in text above simply stays. */
+  var WORKER = 'https://adiariel-site-worker.adidatabase.workers.dev';
+
+  var yr = document.getElementById('yr');
+  if (yr) yr.textContent = new Date().getFullYear();
+
+  /* reveal-on-scroll */
+  var io = null;
+  function watchReveal(root) {
+    var els = (root || document).querySelectorAll('.rv:not(.in)');
+    if (!('IntersectionObserver' in window)) {
+      els.forEach(function (e) { e.classList.add('in'); });
+      return;
+    }
+    if (!io) {
+      io = new IntersectionObserver(function (es) {
+        es.forEach(function (e) {
+          if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+        });
+      }, { threshold: 0.12 });
+    }
+    els.forEach(function (el) { io.observe(el); });
+  }
+  watchReveal(document);
+
+  /* ---------- hydration from the worker ---------- */
+  var ICON = {
+    arrow: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg>',
+    wave: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg>',
+    tool: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
+    sliders: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>',
+    compass: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m16.24 7.76-2.12 6.36-6.36 2.12 2.12-6.36 6.36-2.12z"/></svg>',
+    fb: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>',
+    github: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>'
+  };
+
+  function get(o, p) {
+    var ks = p.split('.');
+    for (var i = 0; i < ks.length; i++) { if (o == null) return undefined; o = o[ks[i]]; }
+    return o;
+  }
+  function safeUrl(u) {
+    var s = String(u == null ? '' : u).trim();
+    if (/^(#|\/)/.test(s)) return s;
+    if (/^(https?:\/\/|mailto:)/i.test(s)) return s;
+    return '#';
+  }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function icon(n, name) { n.insertAdjacentHTML('beforeend', ICON[name]); return n; }
+  function pill(url, label, iconName) {
+    var a = el('a', 'pill');
+    a.href = safeUrl(url); a.target = '_blank'; a.rel = 'noopener';
+    icon(a, iconName);
+    a.appendChild(el('span', '', label));
+    return a;
+  }
+  function scLabel(s) { return s.label || String(s.url || '').replace(/^https?:\/\/(www\.)?/, ''); }
+
+  function hydrate(c) {
+    document.title = get(c, 'meta.title') || document.title;
+    var md = document.querySelector('meta[name="description"]');
+    if (md && get(c, 'meta.description')) md.content = c.meta.description;
+
+    document.querySelectorAll('[data-c]').forEach(function (n) {
+      var v = get(c, n.getAttribute('data-c'));
+      if (v != null && typeof v !== 'object') n.textContent = String(v);
+    });
+    document.querySelectorAll('[data-href]').forEach(function (n) {
+      var v = get(c, n.getAttribute('data-href'));
+      if (v) n.href = safeUrl(v);
+    });
+    var email = get(c, 'contact.email');
+    if (email) {
+      var bm = document.getElementById('bigmail'); if (bm) bm.href = 'mailto:' + email;
+      var qb = document.getElementById('quote-btn'); if (qb) qb.href = 'mailto:' + email;
+    }
+
+    /* soundcloud pills (music card) */
+    var scs = get(c, 'music.solo.soundclouds');
+    var scBox = document.getElementById('sc-pills');
+    if (scBox && Array.isArray(scs)) {
+      scBox.textContent = '';
+      scs.forEach(function (s) { scBox.appendChild(pill(s.url, scLabel(s), 'wave')); });
+    }
+
+    /* service cards */
+    var svc = get(c, 'services.items');
+    var svcGrid = document.getElementById('svc-grid');
+    if (svcGrid && Array.isArray(svc) && svc.length) {
+      svcGrid.textContent = '';
+      var badges = ['tool', 'sliders', 'compass'];
+      svc.forEach(function (it, i) {
+        var card = el('article', 'card rv');
+        card.appendChild(icon(el('div', 'badge a' + (i % 3 + 1)), badges[i % 3]));
+        card.appendChild(el('h3', '', it.title || ''));
+        card.appendChild(el('p', '', it.body || ''));
+        svcGrid.appendChild(card);
+      });
+    }
+
+    /* code cards */
+    var code = get(c, 'code.items');
+    var codeGrid = document.getElementById('code-grid');
+    if (codeGrid && Array.isArray(code) && code.length) {
+      codeGrid.textContent = '';
+      code.forEach(function (it, i) {
+        var card = el('article', 'card rv');
+        card.appendChild(el('div', 'idx', String(i + 1).padStart(2, '0')));
+        card.appendChild(el('h3', '', it.title || ''));
+        card.appendChild(el('p', '', it.body || ''));
+        var a = el('a', 'cardlink', 'View source ');
+        a.href = safeUrl(it.url); a.target = '_blank'; a.rel = 'noopener';
+        icon(a, 'arrow');
+        card.appendChild(a);
+        codeGrid.appendChild(card);
+      });
+    }
+
+    /* contact pills: facebook + soundclouds + github */
+    var cp = document.getElementById('contact-pills');
+    if (cp) {
+      cp.textContent = '';
+      cp.appendChild(pill(get(c, 'contact.facebook'), 'Facebook', 'fb'));
+      (Array.isArray(scs) ? scs : []).forEach(function (s) { cp.appendChild(pill(s.url, scLabel(s), 'wave')); });
+      cp.appendChild(pill(get(c, 'code.githubUrl'), 'GitHub', 'github'));
+    }
+
+    watchReveal(document); /* observe any rebuilt .rv cards */
+  }
+
+  fetch(WORKER + '/api/content')
+    .then(function (r) { return r.json(); })
+    .then(function (j) { if (j && j.ok && j.content) hydrate(j.content); })
+    .catch(function () { /* offline / worker unreachable — baked content stays */ });
+})();
+</script>
+</body>
+</html>

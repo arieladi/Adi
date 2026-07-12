@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Admin — adiariel.com</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+/* Static admin page (GitHub Pages) — talks to the adiariel-site-worker API with
+   a Bearer token, exactly like the avastha-materials admin. */
+:root{--bg:#08080d;--panel:#0e0f18;--line:rgba(255,255,255,.09);--line2:rgba(255,255,255,.18);
+--text:#e9eaf2;--muted:#9aa3b8;--c1:#38bdf8;--c2:#a78bfa;--c3:#f472b6;--ok:#34d399;--bad:#f87171;
+--grad:linear-gradient(90deg,var(--c1),var(--c2) 55%,var(--c3));
+--mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+font:15px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:880px;margin:0 auto;padding:0 20px}
+h1{font-size:1.15rem;margin:0}
+h1 em{font-style:normal;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+a{color:var(--c1)}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 0;
+border-bottom:1px solid var(--line);margin-bottom:22px;flex-wrap:wrap}
+.topbar .links{display:flex;gap:14px;align-items:center;font-family:var(--mono);font-size:.78rem}
+button{font:inherit;cursor:pointer}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:.6rem 1.1rem;border-radius:10px;border:1px solid var(--line2);
+background:rgba(255,255,255,.03);color:var(--text);transition:border-color .2s,transform .2s}
+.btn:hover{border-color:rgba(255,255,255,.4)}
+.btn.primary{background:var(--grad);color:#08080d;border-color:transparent;font-weight:600}
+.btn.danger{color:var(--bad);border-color:rgba(248,113,113,.4)}
+.btn.small{padding:.35rem .7rem;font-size:.78rem;border-radius:8px}
+.tabs{display:flex;gap:8px;margin-bottom:22px;flex-wrap:wrap}
+.tab{padding:.5rem 1rem;border-radius:999px;border:1px solid var(--line);background:none;color:var(--muted);
+font-family:var(--mono);font-size:.78rem;letter-spacing:.08em;text-transform:uppercase}
+.tab.active{color:#08080d;background:var(--grad);border-color:transparent;font-weight:600}
+.panel{display:none}.panel.active{display:block}
+fieldset{border:1px solid var(--line);border-radius:14px;padding:18px 18px 6px;margin:0 0 18px;background:var(--panel)}
+legend{font-family:var(--mono);font-size:.72rem;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);padding:0 8px}
+label{display:block;margin:0 0 14px}
+label span{display:block;font-size:.78rem;color:var(--muted);margin-bottom:5px}
+input[type=text],input[type=url],input[type=email],input[type=password],textarea{width:100%;
+background:#070810;border:1px solid var(--line);border-radius:9px;color:var(--text);
+padding:.6rem .75rem;font:inherit}
+textarea{min-height:70px;resize:vertical}
+textarea.list{font-family:var(--mono);font-size:.82rem;min-height:96px}
+input:focus,textarea:focus{outline:none;border-color:var(--c2)}
+.hint{font-size:.72rem;color:var(--muted);opacity:.8;margin:-8px 0 14px}
+.savebar{position:sticky;bottom:0;background:rgba(8,8,13,.9);backdrop-filter:blur(10px);
+border-top:1px solid var(--line);padding:14px 0;margin-top:8px;display:flex;gap:14px;align-items:center}
+.toast{font-family:var(--mono);font-size:.8rem;color:var(--ok)}
+.toast.err{color:var(--bad)}
+.banner{border:1px solid rgba(244,114,182,.45);background:rgba(244,114,182,.08);border-radius:12px;
+padding:12px 16px;margin-bottom:20px;font-size:.85rem}
+table{width:100%;border-collapse:collapse;font-size:.84rem}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);word-break:break-all}
+th{font-family:var(--mono);font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+td .btn{margin-right:6px}
+.uprow{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
+.uprow input[type=text]{max-width:220px}
+.muted{color:var(--muted)}
+.login{min-height:100vh;display:grid;place-items:center;padding:20px}
+.logincard{width:100%;max-width:360px;background:var(--panel);border:1px solid var(--line);
+border-radius:16px;padding:30px;text-align:center}
+.logincard h1{margin-bottom:6px;font-size:1.3rem}
+.logincard p{color:var(--muted);font-size:.82rem;margin:0 0 20px}
+.logincard input{margin-bottom:14px;text-align:center}
+.err{color:var(--bad);font-size:.8rem;min-height:1.2em;margin:10px 0 0}
+[hidden]{display:none !important}
+</style>
+</head>
+<body>
+
+<div class="login" id="login-view">
+  <form class="logincard" id="login-form">
+    <h1>adiariel<em>.com</em></h1><p>admin panel</p>
+    <input type="password" id="pw" placeholder="password" autocomplete="current-password" autofocus>
+    <button class="btn primary" type="submit" style="width:100%">Sign in</button>
+    <div class="err" id="login-err"></div>
+  </form>
+</div>
+
+<div class="wrap" id="panel-view" hidden>
+
+  <div class="topbar"><h1>adiariel<em>.com</em> <span class="muted">admin</span></h1>
+    <div class="links"><a href="/" target="_blank" rel="noopener">view site &nearr;</a>
+      <button class="btn small" id="logout">Sign out</button></div></div>
+
+  <div class="banner" id="bootbanner" hidden>You are still using the bootstrap password
+    (<code>DEFAULT_PASS</code>). Change it in the <b>Security</b> tab.</div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="content">Content</button>
+    <button class="tab" data-tab="assets">Assets</button>
+    <button class="tab" data-tab="security">Security</button>
+  </div>
+
+  <!-- content tab -->
+  <div class="panel active" id="panel-content">
+    <fieldset><legend>Meta</legend>
+      <label><span>Browser title</span><input type="text" data-path="meta.title"></label>
+      <label><span>Search / share description</span><textarea data-path="meta.description"></textarea></label>
+    </fieldset>
+    <fieldset><legend>Hero</legend>
+      <label><span>Kicker (small line above the name)</span><input type="text" data-path="hero.kicker"></label>
+      <label><span>Title</span><input type="text" data-path="hero.title"></label>
+      <label><span>Tagline</span><input type="text" data-path="hero.tagline"></label>
+      <label><span>Intro paragraph</span><textarea data-path="hero.intro"></textarea></label>
+    </fieldset>
+    <fieldset><legend>Music</legend>
+      <label><span>Section heading</span><input type="text" data-path="music.heading"></label>
+      <label><span>Section intro</span><input type="text" data-path="music.intro"></label>
+      <label><span>Avastha — name</span><input type="text" data-path="music.avastha.name"></label>
+      <label><span>Avastha — text</span><textarea data-path="music.avastha.body"></textarea></label>
+      <label><span>Avastha — link</span><input type="url" data-path="music.avastha.url"></label>
+      <label><span>Avastha — badge (chip above the name)</span><input type="text" data-path="music.avastha.badge"></label>
+      <label><span>Solo card — title</span><input type="text" data-path="music.solo.title"></label>
+      <label><span>Solo card — text</span><textarea data-path="music.solo.body"></textarea></label>
+      <label><span>SoundCloud links</span><textarea class="list" id="sc-list"></textarea></label>
+      <p class="hint">One per line: <code>label | url</code></p>
+      <label><span>Patreon — heading</span><input type="text" data-path="music.patreon.heading"></label>
+      <label><span>Patreon — text</span><textarea data-path="music.patreon.body"></textarea></label>
+      <label><span>Patreon — button label</span><input type="text" data-path="music.patreon.label"></label>
+      <label><span>Patreon — URL</span><input type="url" data-path="music.patreon.url"></label>
+    </fieldset>
+    <fieldset><legend>IT &amp; Consulting</legend>
+      <label><span>Section heading</span><input type="text" data-path="services.heading"></label>
+      <label><span>Section intro</span><input type="text" data-path="services.intro"></label>
+      <label><span>Service cards</span><textarea class="list" id="svc-list"></textarea></label>
+      <p class="hint">One per line: <code>Title :: description</code></p>
+      <label><span>Quote button label</span><input type="text" data-path="services.ctaLabel"></label>
+    </fieldset>
+    <fieldset><legend>Code</legend>
+      <label><span>Section heading</span><input type="text" data-path="code.heading"></label>
+      <label><span>Section intro</span><input type="text" data-path="code.intro"></label>
+      <label><span>GitHub profile URL</span><input type="url" data-path="code.githubUrl"></label>
+      <label><span>Project cards</span><textarea class="list" id="code-list"></textarea></label>
+      <p class="hint">One per line: <code>Title :: description :: url</code></p>
+    </fieldset>
+    <fieldset><legend>Contact</legend>
+      <label><span>Section heading</span><input type="text" data-path="contact.heading"></label>
+      <label><span>Email</span><input type="email" data-path="contact.email"></label>
+      <label><span>Email note</span><input type="text" data-path="contact.emailNote"></label>
+      <label><span>Facebook URL</span><input type="url" data-path="contact.facebook"></label>
+    </fieldset>
+    <div class="savebar"><button class="btn primary" id="save">Save &amp; publish</button>
+      <span class="toast" id="toast"></span></div>
+  </div>
+
+  <!-- assets tab -->
+  <div class="panel" id="panel-assets">
+    <div class="uprow">
+      <input type="text" id="up-prefix" placeholder="folder (e.g. images)" value="images">
+      <input type="file" id="up-file" multiple>
+      <button class="btn primary" id="up-go">Upload</button>
+      <span class="toast" id="up-status"></span></div>
+    <p class="hint">Files are served publicly from the worker at <code id="assets-base"></code> — use those URLs for banners, images and audio.</p>
+    <table><thead><tr><th>Key</th><th>Size</th><th></th></tr></thead><tbody id="asset-rows"></tbody></table>
+    <p class="muted" id="asset-empty" hidden>No assets yet.</p>
+  </div>
+
+  <!-- security tab -->
+  <div class="panel" id="panel-security">
+    <fieldset><legend>Change password</legend>
+      <label><span>Current password</span><input type="password" id="pw-cur" autocomplete="current-password"></label>
+      <label><span>New password (min 8 chars)</span><input type="password" id="pw-new" autocomplete="new-password"></label>
+      <label><span>Repeat new password</span><input type="password" id="pw-rep" autocomplete="new-password"></label>
+    </fieldset>
+    <button class="btn primary" id="pw-go">Change password</button>
+    <span class="toast" id="pw-status"></span>
+    <p class="hint" style="margin-top:14px">Changing the password signs out every other device.
+      Forgot it? Delete the <code>auth:admin</code> key in the KV namespace — the next login re-seeds from <code>DEFAULT_PASS</code>.</p>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var WORKER = 'https://adiariel-site-worker.adidatabase.workers.dev';
+  var TOK_KEY = 'aa_admin_tok';
+  var token = '';
+  try { token = sessionStorage.getItem(TOK_KEY) || ''; } catch (e) { }
+  var content = null;
+
+  function $(s) { return document.querySelector(s); }
+  function $all(s) { return Array.prototype.slice.call(document.querySelectorAll(s)); }
+
+  function saveToken(t) {
+    token = t || '';
+    try { token ? sessionStorage.setItem(TOK_KEY, token) : sessionStorage.removeItem(TOK_KEY); } catch (e) { }
+  }
+  function showLogin() {
+    saveToken('');
+    $('#panel-view').hidden = true;
+    $('#login-view').hidden = false;
+    $('#pw').focus();
+  }
+  function showPanel() {
+    $('#login-view').hidden = true;
+    $('#panel-view').hidden = false;
+  }
+
+  function api(method, path, body, raw) {
+    var h = { 'x-admin': '1' };
+    if (token) h['Authorization'] = 'Bearer ' + token;
+    var opts = { method: method, headers: h };
+    if (body !== undefined && !raw) { h['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    if (raw) opts.body = body;
+    return fetch(WORKER + path, opts).then(function (r) {
+      if (r.status === 401) { showLogin(); throw new Error('signed out'); }
+      return r.json();
+    });
+  }
+  function getPath(o, p) { var ks = p.split('.'); for (var i = 0; i < ks.length; i++) { if (o == null) return undefined; o = o[ks[i]]; } return o; }
+  function setPath(o, p, v) {
+    var ks = p.split('.'); var t = o;
+    for (var i = 0; i < ks.length - 1; i++) { if (typeof t[ks[i]] !== 'object' || t[ks[i]] === null) t[ks[i]] = {}; t = t[ks[i]]; }
+    t[ks[ks.length - 1]] = v;
+  }
+  function toast(el, msg, bad) {
+    el.textContent = msg; el.classList.toggle('err', !!bad);
+    setTimeout(function () { el.textContent = ''; }, 4000);
+  }
+
+  /* ---------- login ---------- */
+  $('#login-form').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    $('#login-err').textContent = '';
+    fetch(WORKER + '/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: $('#pw').value })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j.ok && j.token) {
+        saveToken(j.token);
+        $('#pw').value = '';
+        $('#bootbanner').hidden = !j.bootstrap;
+        boot();
+      } else {
+        $('#login-err').textContent = j.message || 'login failed';
+      }
+    }).catch(function () { $('#login-err').textContent = 'network error — is the worker deployed?'; });
+  });
+
+  $('#logout').addEventListener('click', function () {
+    api('POST', '/api/logout', {}).catch(function () { });
+    showLogin();
+  });
+
+  /* ---------- tabs ---------- */
+  $all('.tab').forEach(function (b) {
+    b.addEventListener('click', function () {
+      $all('.tab').forEach(function (x) { x.classList.remove('active'); }); b.classList.add('active');
+      $all('.panel').forEach(function (p) { p.classList.remove('active'); });
+      $('#panel-' + b.getAttribute('data-tab')).classList.add('active');
+      if (b.getAttribute('data-tab') === 'assets') refreshAssets();
+    });
+  });
+
+  /* ---------- content ---------- */
+  function fill() {
+    $all('[data-path]').forEach(function (el) {
+      var v = getPath(content, el.getAttribute('data-path'));
+      el.value = v == null ? '' : String(v);
+    });
+    $('#sc-list').value = (getPath(content, 'music.solo.soundclouds') || []).map(function (s) { return (s.label || '') + ' | ' + (s.url || ''); }).join('\n');
+    $('#svc-list').value = (getPath(content, 'services.items') || []).map(function (s) { return (s.title || '') + ' :: ' + (s.body || ''); }).join('\n');
+    $('#code-list').value = (getPath(content, 'code.items') || []).map(function (s) { return (s.title || '') + ' :: ' + (s.body || '') + ' :: ' + (s.url || ''); }).join('\n');
+  }
+  function parseLines(txt, sep) {
+    return txt.split('\n').map(function (l) { return l.trim(); }).filter(Boolean).map(function (l) {
+      return l.split(sep === '|' ? '|' : '::').map(function (x) { return x.trim(); });
+    });
+  }
+  $('#save').addEventListener('click', function () {
+    var doc = JSON.parse(JSON.stringify(content));
+    $all('[data-path]').forEach(function (el) { setPath(doc, el.getAttribute('data-path'), el.value); });
+    setPath(doc, 'music.solo.soundclouds', parseLines($('#sc-list').value, '|').map(function (s) { return { label: s[0] || '', url: s[1] || s[0] || '' }; }));
+    setPath(doc, 'services.items', parseLines($('#svc-list').value, '::').map(function (s) { return { title: s[0] || '', body: s[1] || '' }; }));
+    setPath(doc, 'code.items', parseLines($('#code-list').value, '::').map(function (s) { return { title: s[0] || '', body: s[1] || '', url: s[2] || '' }; }));
+    api('PUT', '/api/content', doc).then(function (j) {
+      if (j.ok) { content = doc; toast($('#toast'), 'saved ✓ — live on adiariel.com'); }
+      else { toast($('#toast'), j.message || 'save failed', true); }
+    }).catch(function (e) { toast($('#toast'), String(e.message || e), true); });
+  });
+
+  /* ---------- assets ---------- */
+  function fmtSize(n) { if (n > 1048576) return (n / 1048576).toFixed(1) + ' MB'; if (n > 1024) return (n / 1024).toFixed(1) + ' KB'; return n + ' B'; }
+  function encKey(k) { return k.split('/').map(encodeURIComponent).join('/'); }
+  function assetUrl(k) { return WORKER + '/assets/' + encKey(k); }
+  function refreshAssets() {
+    api('GET', '/api/assets').then(function (j) {
+      var tb = $('#asset-rows'); tb.textContent = '';
+      $('#asset-empty').hidden = !!(j.objects && j.objects.length);
+      (j.objects || []).forEach(function (o) {
+        var tr = document.createElement('tr');
+        var td1 = document.createElement('td'); var a = document.createElement('a');
+        a.href = assetUrl(o.key); a.target = '_blank'; a.rel = 'noopener'; a.textContent = o.key; td1.appendChild(a);
+        var td2 = document.createElement('td'); td2.textContent = fmtSize(o.size);
+        var td3 = document.createElement('td');
+        var bc = document.createElement('button'); bc.className = 'btn small'; bc.textContent = 'copy URL';
+        bc.addEventListener('click', function () {
+          navigator.clipboard.writeText(assetUrl(o.key));
+          bc.textContent = 'copied ✓'; setTimeout(function () { bc.textContent = 'copy URL'; }, 1500);
+        });
+        var bd = document.createElement('button'); bd.className = 'btn small danger'; bd.textContent = 'delete';
+        bd.addEventListener('click', function () {
+          if (!confirm('Delete ' + o.key + '?')) return;
+          api('DELETE', '/api/assets/' + encKey(o.key)).then(refreshAssets);
+        });
+        td3.appendChild(bc); td3.appendChild(bd);
+        tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tb.appendChild(tr);
+      });
+    }).catch(function () { });
+  }
+  $('#up-go').addEventListener('click', function () {
+    var files = $('#up-file').files;
+    if (!files.length) { toast($('#up-status'), 'pick a file first', true); return; }
+    var prefix = $('#up-prefix').value.trim().replace(/^\/+|\/+$/g, '');
+    var queue = Array.prototype.slice.call(files); var done = 0;
+    function next() {
+      if (!queue.length) { toast($('#up-status'), done + ' uploaded ✓'); $('#up-file').value = ''; refreshAssets(); return; }
+      var f = queue.shift(); var key = (prefix ? prefix + '/' : '') + f.name;
+      $('#up-status').textContent = 'uploading ' + f.name + '…';
+      var h = { 'x-admin': '1', 'Content-Type': f.type || 'application/octet-stream' };
+      if (token) h['Authorization'] = 'Bearer ' + token;
+      fetch(WORKER + '/api/assets/' + encKey(key), { method: 'POST', headers: h, body: f })
+        .then(function (r) { if (r.status === 401) { showLogin(); throw new Error('signed out'); } return r.json(); })
+        .then(function (j) { if (!j.ok) throw new Error(j.message || 'upload failed'); done++; next(); })
+        .catch(function (e) { toast($('#up-status'), String(e.message || e), true); });
+    }
+    next();
+  });
+
+  /* ---------- security ---------- */
+  $('#pw-go').addEventListener('click', function () {
+    var cur = $('#pw-cur').value, nw = $('#pw-new').value, rep = $('#pw-rep').value;
+    if (nw.length < 8) { toast($('#pw-status'), 'new password too short (min 8)', true); return; }
+    if (nw !== rep) { toast($('#pw-status'), 'passwords do not match', true); return; }
+    api('POST', '/api/password', { current: cur, next: nw }).then(function (j) {
+      if (j.ok) {
+        if (j.token) saveToken(j.token); /* gen bumped — keep THIS device signed in */
+        toast($('#pw-status'), j.message || 'changed ✓');
+        $('#pw-cur').value = $('#pw-new').value = $('#pw-rep').value = '';
+        $('#bootbanner').hidden = true;
+      } else { toast($('#pw-status'), j.message || 'failed', true); }
+    }).catch(function () { });
+  });
+
+  /* ---------- boot ---------- */
+  function boot() {
+    showPanel();
+    $('#assets-base').textContent = WORKER + '/assets/…';
+    api('GET', '/api/content').then(function (j) {
+      if (j.ok) { content = j.content; fill(); $('#bootbanner').hidden = !j.bootstrap; }
+    }).catch(function () { });
+  }
+  if (token) boot(); else showLogin();
+})();
+</script>
+</body>
+</html>
