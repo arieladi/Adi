@@ -49,10 +49,13 @@ the KV namespace — the next login re-seeds it from `DEFAULT_PASS`.
 `index.html` plays `media/adi_welcome.mp4` on load (`muted autoplay playsinline`).
 The whole entrance is choreographed so nothing cuts abruptly:
 
-1. During the **last ~3s of playback** the still-playing frame eases (crops +
-   settles) into the top banner shape/place — so there's no hard switch at the end.
-2. Once it hands off to the banner, the **drop shadow + edge fades** come in
-   (`.lit`), then the **green accent line draws in** (`.lined`).
+1. During the **last ~3s of playback**, the still-playing frame (`.intro-frame`,
+   which wraps the video) does everything at once: it crops + settles into the
+   banner shape/place, the **drop shadow + edge fades cast in slowly** (`.lit`),
+   and the **green accent line draws itself left→right** (`.lined`). So it visibly
+   *turns into* the banner as the video finishes — no hard switch at the end.
+2. At the video's end the frame's video is handed to `#heroBanner`, which already
+   shows the same shadow/fades/line statically, so there's no visible change.
 3. A welcome line **types itself** below the banner at a readable pace ("Welcome
    to Adi's site — the home for all Adi Ariel stuff"), holds a beat, then **fades
    away and collapses**.
