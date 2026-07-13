@@ -49,15 +49,15 @@ body::before{content:'';position:fixed;inset:0;z-index:-2;pointer-events:none;
 a{color:inherit}
 .ico{width:18px;height:18px;flex:none}
 
-/* ---- intro video overlay (morphs into the banner) ---- */
-.intro{position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:9999;overflow:hidden;background:#0a0d0b;
+/* ---- intro video (plays, then crops + rises into the banner) ----
+   The overlay is a static dark backdrop; the VIDEO is the animated element.
+   During playback it's a full-width 16:9 box centered vertically, so the whole
+   frame shows at a sane size on any device (no fullscreen-cover zoom on phones).
+   The morph then shrinks its height to the banner strip and lifts it to top. */
+.intro{position:fixed;inset:0;z-index:9999;overflow:hidden;background:#0a0d0b}
+.intro-vid{position:absolute;left:0;width:100vw;height:56.25vw;top:calc(50vh - 28.125vw);
+  object-fit:cover;object-position:center 45%;display:block;
   transition:top .72s cubic-bezier(.55,0,.25,1),height .72s cubic-bezier(.55,0,.25,1)}
-.intro-vid{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 45%;display:block}
-.intro-skip{position:absolute;right:20px;bottom:18px;z-index:2;display:inline-flex;align-items:center;gap:8px;
-  padding:.5rem 1rem;border-radius:999px;border:1px solid rgba(255,255,255,.3);
-  background:rgba(8,8,13,.45);backdrop-filter:blur(6px);color:#fff;font:600 .85rem/1 var(--sans);cursor:pointer;
-  opacity:.85;transition:opacity .25s,border-color .25s}
-.intro-skip:hover{opacity:1;border-color:rgba(255,255,255,.65)}
 
 /* full-width banner — sits at the very top, replaces the nav (no menu).
    aspect-ratio keeps the whole "ADI" in frame at every width; it scales on
@@ -186,7 +186,7 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
   html{scroll-behavior:auto}
   .rv{opacity:1;transform:none;transition:none}
   .card,.btn,.pill{transition:none}
-  .intro{transition:none}
+  .intro-vid{transition:none}
 }
 @media (max-width:640px){
   .nav nav{gap:16px}
@@ -200,10 +200,9 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 
 <!-- intro video overlay: plays, then morphs into #heroBanner -->
 <div class="intro" id="intro">
-  <video class="intro-vid" id="introVid" playsinline muted preload="auto" autoplay>
+  <video class="intro-vid" id="introVid" playsinline muted preload="auto">
     <source src="media/adi_welcome.mp4" type="video/mp4">
   </video>
-  <button class="intro-skip" id="introSkip" type="button">Skip intro ↦</button>
 </div>
 
 <!-- full-width banner at the very top (the intro video lands here) -->
@@ -326,7 +325,6 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
     var overlay = document.getElementById('intro');
     var vid = document.getElementById('introVid');
     var banner = document.getElementById('heroBanner');
-    var skip = document.getElementById('introSkip');
     var body = document.body;
     var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     // must mirror the .site-banner CSS (aspect-ratio 3.7/1, max 58vh, min 120px)
@@ -364,20 +362,20 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
       build();
     }
 
-    // The end-of-video effect: crop the frozen frame to a centered banner
-    // strip, then lift it straight up to the top where it becomes the banner,
-    // then the rest of the page builds itself.
+    // End-of-video effect: crop the frozen frame to a centered banner strip
+    // (shrink the video's height), then lift it up to the very top where it
+    // becomes the banner, then the rest of the page builds itself.
     function morph() {
       if (settled || morphing) return;
-      if (!overlay || !banner) return finish();
+      if (!overlay || !banner || !vid) return finish();
       morphing = true;
       vid.pause(); // freeze the last frame
       var H = bannerHeight();
-      // Phase A — crop: collapse the fullscreen frame to a centered strip.
-      overlay.style.height = H + 'px';
-      overlay.style.top = Math.round((window.innerHeight - H) / 2) + 'px';
-      // Phase B — rise: lift the strip up to the very top.
-      setTimeout(function () { if (!settled) overlay.style.top = '0px'; }, 760);
+      // Phase A — crop: shrink the (centered) video box to the banner height.
+      vid.style.height = H + 'px';
+      vid.style.top = Math.round((window.innerHeight - H) / 2) + 'px';
+      // Phase B — rise: lift it to the top.
+      setTimeout(function () { if (!settled) vid.style.top = '0px'; }, 760);
       // Phase C — settle: hand off to the banner and build the page.
       setTimeout(finish, 1560);
     }
@@ -389,14 +387,27 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 
     body.classList.add('intro-active');
     window.scrollTo(0, 0);
+    vid.muted = true; vid.defaultMuted = true; // guarantee muted so autoplay is allowed
 
     vid.addEventListener('ended', morph);
     vid.addEventListener('error', fail);
-    if (skip) skip.addEventListener('click', finish); // skip = jump straight to the banner
-    guard = setTimeout(morph, 14000); // backstop if 'ended' never fires (video is ~10s)
+    guard = setTimeout(morph, 30000); // absolute backstop
+    // once playback truly starts, retarget the backstop to just past the end
+    vid.addEventListener('playing', function () {
+      if (settled || morphing) return;
+      if (guard) clearTimeout(guard);
+      var remain = isFinite(vid.duration) ? (vid.duration - vid.currentTime) : 11;
+      guard = setTimeout(morph, Math.max(3000, remain * 1000 + 2500));
+    });
 
-    var p = vid.play();
-    if (p && p.catch) p.catch(function () { finish(); }); // autoplay blocked → show the banner frame
+    // Play via JS only (no autoplay attribute) so the attribute and this call
+    // can't race and reject each other. If the browser still blocks muted
+    // autoplay, kick it off on the first user interaction — never skip the video.
+    function tryPlay() { if (!settled && vid.paused) { var p = vid.play(); if (p && p.catch) p.catch(function () { }); } }
+    tryPlay();
+    ['pointerdown', 'touchstart', 'keydown', 'wheel', 'mousemove'].forEach(function (ev) {
+      window.addEventListener(ev, tryPlay, { once: true, passive: true });
+    });
   })();
 
   /* ---------- hydration from the worker ---------- */
