@@ -47,12 +47,19 @@ the KV namespace — the next login re-seeds it from `DEFAULT_PASS`.
 ## Intro video → banner
 
 `index.html` plays `media/adi_welcome.mp4` on load (`muted autoplay playsinline`).
-When it ends, the frozen last frame **crops down and settles into the top banner**
-in one ~0.6s motion (always animates — no reduced-motion short-circuit). Then a
-welcome line **types itself** below the banner ("Welcome to Adi's site — the home
-for all Adi Ariel stuff"), holds a beat, then **fades away and collapses** so the
-rest of the site **writes itself into its place** — the hero staggers in and the
-sections fade in as you scroll. There is no nav menu — visitors scroll.
+The whole entrance is choreographed so nothing cuts abruptly:
+
+1. During the **last ~3s of playback** the still-playing frame eases (crops +
+   settles) into the top banner shape/place — so there's no hard switch at the end.
+2. Once it hands off to the banner, the **drop shadow + edge fades** come in
+   (`.lit`), then the **green accent line draws in** (`.lined`).
+3. A welcome line **types itself** below the banner at a readable pace ("Welcome
+   to Adi's site — the home for all Adi Ariel stuff"), holds a beat, then **fades
+   away and collapses**.
+4. The rest of the site **writes itself into its place** — the hero staggers in,
+   and the sections fade in as you scroll.
+
+Always animates (no reduced-motion short-circuit). There is no nav menu — visitors scroll.
 
 - During playback the video is a **full-width 16:9 box centered vertically**, so
   the whole frame shows at a sane size on any device (portrait phones letterbox

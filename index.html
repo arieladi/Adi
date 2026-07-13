@@ -63,16 +63,21 @@ a{color:inherit}
    aspect-ratio keeps the whole "ADI" in frame at every width; it scales on
    resize. 3.7:1 is tuned to the logo's bounding box in the 16:9 video. */
 .site-banner{position:relative;width:100%;aspect-ratio:3.7/1;max-height:58vh;min-height:120px;
-  overflow:hidden;background:#0a0d0b}
+  overflow:hidden;background:#0a0d0b;box-shadow:0 0 0 rgba(0,0,0,0);transition:box-shadow .8s ease}
 .site-banner:empty{display:none}
 .banner-vid{width:100%;height:100%;object-fit:cover;object-position:center 45%;display:block}
-/* embedded look: fade the edges into the page bg + a themed accent hairline */
-.site-banner::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:1;
+/* embedded look — revealed in stages after the crop settles:
+   .lit = drop shadow + edge fades; .lined = the themed accent hairline draws in */
+.site-banner.lit{box-shadow:0 26px 70px -12px rgba(0,0,0,.72)}
+.site-banner::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:1;opacity:0;transition:opacity .8s ease;
   background:
-    linear-gradient(180deg,rgba(8,8,13,.45),transparent 20%,transparent 55%,rgba(8,8,13,.99)),
-    linear-gradient(90deg,rgba(8,8,13,.7),transparent 9%,transparent 91%,rgba(8,8,13,.7))}
+    linear-gradient(180deg,rgba(10,13,11,.45),transparent 20%,transparent 55%,rgba(10,13,11,.99)),
+    linear-gradient(90deg,rgba(10,13,11,.7),transparent 9%,transparent 91%,rgba(10,13,11,.7))}
+.site-banner.lit::after{opacity:1}
 .site-banner::before{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;z-index:2;
-  background:var(--grad);opacity:.5}
+  background:var(--grad);opacity:0;transform:scaleX(0);transform-origin:center;
+  transition:opacity .5s ease,transform .8s cubic-bezier(.5,0,.2,1)}
+.site-banner.lined::before{opacity:.75;transform:scaleX(1)}
 
 /* welcome line — types itself in below the banner, greets, then fades away
    and collapses so the site builds itself in its place */
@@ -346,7 +351,8 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 
   function buildSite() {
     document.body.classList.add('built');
-    typeWelcome(function () { setTimeout(dismissWelcome, 1000); });
+    // greet at a readable pace, hold a beat, then make way for the site
+    typeWelcome(function () { setTimeout(dismissWelcome, reduce ? 0 : 1600); });
   }
   function typeWelcome(done) {
     var txt = document.getElementById('welcomeTxt');
@@ -355,27 +361,27 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
     var i = 0;
     (function tick() {
       txt.textContent = WELCOME.slice(0, i);
-      if (i++ < WELCOME.length) setTimeout(tick, 34);
+      if (i++ < WELCOME.length) setTimeout(tick, 52); // slow enough to read
       else done();
     })();
   }
-  // Greet, then fade the welcome away and collapse it so the rest of the site
-  // writes itself into its place.
+  // Fade the welcome away and collapse it, so the rest of the site writes
+  // itself into its place.
   function dismissWelcome() {
     var wrap = document.getElementById('welcome');
     if (!wrap) { revealInWaves(); return; }
     wrap.classList.add('bye');
-    setTimeout(function () { wrap.style.display = 'none'; revealInWaves(); }, reduce ? 0 : 560);
+    setTimeout(function () { wrap.style.display = 'none'; revealInWaves(); }, reduce ? 0 : 620);
   }
-  // Build the site: the hero staggers in, then sections fade in as they scroll
-  // into view — so it keeps "building" as you move down.
+  // Build the site: the hero staggers in gently, then sections fade in as they
+  // scroll into view — so it keeps "building" as you move down.
   function revealInWaves() {
     var hero = document.querySelector('#top > .hero');
-    if (hero) hero.querySelectorAll('.rv').forEach(function (el, i) { setTimeout(function () { el.classList.add('in'); }, reduce ? 0 : 90 + i * 120); });
+    if (hero) hero.querySelectorAll('.rv').forEach(function (el, i) { setTimeout(function () { el.classList.add('in'); }, reduce ? 0 : 120 + i * 160); });
     watchReveal(document);
   }
 
-  /* ---------- intro video → crop → rise into the top banner ---------- */
+  /* ---------- intro video → (crop begins mid-playback) → banner → stages → build ---------- */
   (function intro() {
     var overlay = document.getElementById('intro');
     var vid = document.getElementById('introVid');
@@ -383,12 +389,29 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
     var body = document.body;
     // must mirror the .site-banner CSS (aspect-ratio 3.7/1, max 58vh, min 120px)
     var ASPECT = 3.7, MAXVH = 0.58, MINH = 120;
-    var settled = false, morphing = false, guard = null;
+    var settled = false, cropStarted = false, guard = null;
 
     function bannerHeight() { return Math.max(MINH, Math.min(window.innerWidth / ASPECT, MAXVH * window.innerHeight)); }
     function seekEnd() { try { if (vid.duration && isFinite(vid.duration)) vid.currentTime = Math.max(0, vid.duration - 0.06); } catch (e) { } }
 
-    function finish() {
+    // Begin cropping the (still-playing) frame down into the banner shape + place,
+    // over `dur` seconds — so it eases into position instead of cutting at the end.
+    function startCrop(dur) {
+      if (cropStarted || !vid) return; cropStarted = true;
+      var H = bannerHeight();
+      vid.style.transition = 'top ' + dur + 's cubic-bezier(.4,0,.2,1), height ' + dur + 's cubic-bezier(.4,0,.2,1)';
+      vid.style.height = H + 'px';
+      vid.style.top = '0px';
+    }
+
+    // Video finished (or backstop): make sure the crop ran, hand the frame to the
+    // banner, then light it up in stages and build the page.
+    function settle() {
+      if (settled) return;
+      if (!cropStarted) { startCrop(0.6); setTimeout(reveal, 680); return; }
+      reveal();
+    }
+    function reveal() {
       if (settled) return; settled = true;
       if (guard) clearTimeout(guard);
       if (vid && banner) {
@@ -397,7 +420,10 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
       }
       if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
       body.classList.remove('intro-active');
-      buildSite();
+      // stage: shadow + edge fades → the green line draws in → welcome + build
+      requestAnimationFrame(function () { if (banner) banner.classList.add('lit'); });
+      setTimeout(function () { if (banner) banner.classList.add('lined'); }, reduce ? 0 : 650);
+      setTimeout(buildSite, reduce ? 0 : 1250);
     }
     function fail() {
       if (settled) return; settled = true;
@@ -407,32 +433,26 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
       body.classList.remove('intro-active');
       buildSite();
     }
-    // Crop the frozen frame down to the banner strip and settle it at the top
-    // in one smooth motion (~0.6s), then hand off to the banner and build.
-    function morph() {
-      if (settled || morphing) return;
-      if (!banner || !vid) return finish();
-      morphing = true;
-      vid.pause();
-      var H = bannerHeight();
-      vid.style.height = H + 'px';
-      vid.style.top = '0px';
-      setTimeout(finish, 720);
-    }
 
     if (!vid || !banner) { fail(); return; }
     body.classList.add('intro-active');
     window.scrollTo(0, 0);
     vid.muted = true; vid.defaultMuted = true;
 
-    vid.addEventListener('ended', morph);
+    // Start the crop during the last ~3s of playback so there's no hard cut.
+    vid.addEventListener('timeupdate', function () {
+      if (cropStarted || settled || !isFinite(vid.duration) || vid.duration <= 0) return;
+      var remain = vid.duration - vid.currentTime;
+      if (remain <= 3) startCrop(Math.min(2.6, Math.max(1, remain - 0.15)));
+    });
+    vid.addEventListener('ended', settle);
     vid.addEventListener('error', fail);
-    guard = setTimeout(morph, 30000); // absolute backstop
+    guard = setTimeout(settle, 30000); // absolute backstop
     vid.addEventListener('playing', function () {
-      if (settled || morphing) return;
+      if (settled) return;
       if (guard) clearTimeout(guard);
       var remain = isFinite(vid.duration) ? (vid.duration - vid.currentTime) : 11;
-      guard = setTimeout(morph, Math.max(3000, remain * 1000 + 2500));
+      guard = setTimeout(settle, Math.max(4000, remain * 1000 + 3000));
     });
 
     // The `autoplay` attribute drives playback (most reliable, no race with a
