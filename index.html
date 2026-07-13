@@ -57,7 +57,7 @@ a{color:inherit}
 .intro{position:fixed;inset:0;z-index:9999;overflow:hidden;background:#0a0d0b}
 .intro-vid{position:absolute;left:0;width:100vw;height:56.25vw;top:calc(50vh - 28.125vw);
   object-fit:cover;object-position:center 45%;display:block;
-  transition:top .5s cubic-bezier(.55,0,.25,1),height .5s cubic-bezier(.55,0,.25,1)}
+  transition:top .6s cubic-bezier(.5,0,.2,1),height .6s cubic-bezier(.5,0,.2,1)}
 
 /* full-width banner — sits at the very top, replaces the nav (no menu).
    aspect-ratio keeps the whole "ADI" in frame at every width; it scales on
@@ -74,12 +74,14 @@ a{color:inherit}
 .site-banner::before{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;z-index:2;
   background:var(--grad);opacity:.5}
 
-/* welcome line (types itself in below the banner before the site builds) */
-.welcome{margin:0 auto;max-width:1120px;padding:36px 24px 0;text-align:center;font-family:var(--mono);
-  font-size:clamp(.9rem,2.1vw,1.2rem);letter-spacing:.02em;color:var(--muted);min-height:1.8em}
+/* welcome line — types itself in below the banner, greets, then fades away
+   and collapses so the site builds itself in its place */
+.welcome{margin:0 auto;max-width:1120px;padding:64px 24px;text-align:center;font-family:var(--mono);
+  font-size:clamp(1rem,2.6vw,1.55rem);letter-spacing:.02em;color:var(--muted);min-height:2.2em;overflow:hidden;
+  transition:opacity .55s ease,transform .55s ease,padding .55s ease,min-height .55s ease}
 .welcome .welcome-txt{color:var(--text)}
-.welcome .caret{color:var(--c2);margin-left:1px;animation:blink 1.05s step-end infinite}
-.welcome.done .caret{display:none}
+.welcome .caret{display:inline-block;width:.55ch;color:var(--c2);margin-left:2px;animation:blink 1.05s step-end infinite}
+.welcome.bye{opacity:0;transform:translateY(-12px);padding-top:0;padding-bottom:0;min-height:0;pointer-events:none}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
 @media (prefers-reduced-motion:reduce){.welcome .caret{animation:none}}
 
@@ -195,7 +197,6 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
   html{scroll-behavior:auto}
   .rv{opacity:1;transform:none;transition:none}
   .card,.btn,.pill{transition:none}
-  .intro-vid{transition:none}
 }
 @media (max-width:640px){
   .nav nav{gap:16px}
@@ -345,26 +346,32 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 
   function buildSite() {
     document.body.classList.add('built');
-    typeWelcome(revealInWaves);
+    typeWelcome(function () { setTimeout(dismissWelcome, 1000); });
   }
   function typeWelcome(done) {
     var txt = document.getElementById('welcomeTxt');
-    var wrap = document.getElementById('welcome');
     if (!txt) { done(); return; }
-    if (reduce) { txt.textContent = WELCOME; if (wrap) wrap.classList.add('done'); done(); return; }
+    if (reduce) { txt.textContent = WELCOME; done(); return; }
     var i = 0;
     (function tick() {
       txt.textContent = WELCOME.slice(0, i);
       if (i++ < WELCOME.length) setTimeout(tick, 34);
-      else { done(); setTimeout(function () { if (wrap) wrap.classList.add('done'); }, 1200); }
+      else done();
     })();
   }
-  // Reveal the hero right away (staggered), then let the sections fade in as
-  // they scroll into view — so the site keeps "building" as you move down.
+  // Greet, then fade the welcome away and collapse it so the rest of the site
+  // writes itself into its place.
+  function dismissWelcome() {
+    var wrap = document.getElementById('welcome');
+    if (!wrap) { revealInWaves(); return; }
+    wrap.classList.add('bye');
+    setTimeout(function () { wrap.style.display = 'none'; revealInWaves(); }, reduce ? 0 : 560);
+  }
+  // Build the site: the hero staggers in, then sections fade in as they scroll
+  // into view — so it keeps "building" as you move down.
   function revealInWaves() {
-    if (reduce) { document.querySelectorAll('.rv').forEach(function (e) { e.classList.add('in'); }); return; }
     var hero = document.querySelector('#top > .hero');
-    if (hero) hero.querySelectorAll('.rv').forEach(function (el, i) { setTimeout(function () { el.classList.add('in'); }, i * 130); });
+    if (hero) hero.querySelectorAll('.rv').forEach(function (el, i) { setTimeout(function () { el.classList.add('in'); }, reduce ? 0 : 90 + i * 120); });
     watchReveal(document);
   }
 
@@ -400,18 +407,17 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
       body.classList.remove('intro-active');
       buildSite();
     }
-    // Crop the frozen frame to a centered strip, then lift it to the top.
+    // Crop the frozen frame down to the banner strip and settle it at the top
+    // in one smooth motion (~0.6s), then hand off to the banner and build.
     function morph() {
       if (settled || morphing) return;
-      if (!overlay || !banner || !vid) return finish();
+      if (!banner || !vid) return finish();
       morphing = true;
       vid.pause();
-      if (reduce) { finish(); return; } // no crop/rise animation for reduced motion
       var H = bannerHeight();
       vid.style.height = H + 'px';
-      vid.style.top = Math.round((window.innerHeight - H) / 2) + 'px';
-      setTimeout(function () { if (!settled) vid.style.top = '0px'; }, 520);
-      setTimeout(finish, 1080);
+      vid.style.top = '0px';
+      setTimeout(finish, 720);
     }
 
     if (!vid || !banner) { fail(); return; }
