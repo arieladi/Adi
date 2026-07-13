@@ -46,10 +46,12 @@ the KV namespace — the next login re-seeds it from `DEFAULT_PASS`.
 
 ## Intro video → banner
 
-`index.html` plays `media/adi_welcome.mp4` full-screen on load (`muted` +
-`autoplay` + `playsinline`). When it ends, the frozen last frame **crops to a
-centered strip, then rises to the top** to become the site banner, and the rest
-of the page reveals itself. There is no nav menu — visitors scroll.
+`index.html` plays `media/adi_welcome.mp4` on load (`muted autoplay playsinline`).
+When it ends, the frozen last frame **crops to a centered strip, then rises to the
+top** to become the site banner (~0.5s each). Then a welcome line **types itself**
+below the banner ("Welcome to Adi's site — the home for all Adi Ariel stuff") and
+the page **builds itself** — the hero staggers in and the sections fade in as you
+scroll. There is no nav menu — visitors scroll.
 
 - During playback the video is a **full-width 16:9 box centered vertically**, so
   the whole frame shows at a sane size on any device (portrait phones letterbox
@@ -58,12 +60,21 @@ of the page reveals itself. There is no nav menu — visitors scroll.
   scales on any resize / resolution. The morph math mirrors those numbers
   (`ASPECT`, `MAXVH`, `MINH`).
 - Plays on **every load** (no skip button, no once-per-session gate). Playback is
-  driven by JS `.play()` only — the `autoplay` attribute was removed because it
-  raced the JS call and made `.play()` reject on cached loads, which skipped the
-  intro. If a browser still blocks muted autoplay, the first user interaction
-  starts it; `prefers-reduced-motion` lands straight on the banner frame.
+  driven by the declarative **`autoplay` attribute** — NOT a JS `.play()` at load,
+  because the two raced and made `.play()` reject on cached loads, which skipped
+  the intro on desktop. JS only nudges `.play()` after a beat / on first
+  interaction if a browser blocks muted autoplay, and never skips the video.
+  `prefers-reduced-motion` plays the video but skips the crop/rise + typewriter.
 - Served by GitHub Pages from `/media/` (2.3 MB) — swap the file (keep the name)
   to change it.
+
+## Sections
+
+Five sections, revealed top-to-bottom: **01 Electronic Music** (Avastha + solo),
+**02 Collabs** (collaborations + gig bookings), **03 Tools** (free tools + a
+Patreon note), **04 About** (bio + contact/socials), **05 Support** (the dedicated
+Patreon call-to-action). Patreon touchpoints: hero button, Tools note, Support
+section — all driven by one `support.url` field in `/admin`.
 
 ## Theme
 

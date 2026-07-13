@@ -57,7 +57,7 @@ a{color:inherit}
 .intro{position:fixed;inset:0;z-index:9999;overflow:hidden;background:#0a0d0b}
 .intro-vid{position:absolute;left:0;width:100vw;height:56.25vw;top:calc(50vh - 28.125vw);
   object-fit:cover;object-position:center 45%;display:block;
-  transition:top .72s cubic-bezier(.55,0,.25,1),height .72s cubic-bezier(.55,0,.25,1)}
+  transition:top .5s cubic-bezier(.55,0,.25,1),height .5s cubic-bezier(.55,0,.25,1)}
 
 /* full-width banner — sits at the very top, replaces the nav (no menu).
    aspect-ratio keeps the whole "ADI" in frame at every width; it scales on
@@ -74,8 +74,17 @@ a{color:inherit}
 .site-banner::before{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;z-index:2;
   background:var(--grad);opacity:.5}
 
+/* welcome line (types itself in below the banner before the site builds) */
+.welcome{margin:0 auto;max-width:1120px;padding:36px 24px 0;text-align:center;font-family:var(--mono);
+  font-size:clamp(.9rem,2.1vw,1.2rem);letter-spacing:.02em;color:var(--muted);min-height:1.8em}
+.welcome .welcome-txt{color:var(--text)}
+.welcome .caret{color:var(--c2);margin-left:1px;animation:blink 1.05s step-end infinite}
+.welcome.done .caret{display:none}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+@media (prefers-reduced-motion:reduce){.welcome .caret{animation:none}}
+
 /* hero */
-.hero{padding:46px 0 60px;text-align:center}
+.hero{padding:30px 0 60px;text-align:center}
 .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.34em;text-transform:uppercase;color:var(--muted);margin:0 0 18px}
 .hero h1{margin:0;font-size:clamp(3rem,9vw,6.2rem);font-weight:700;letter-spacing:-.035em;line-height:1.02;
   background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
@@ -200,7 +209,7 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 
 <!-- intro video overlay: plays, then morphs into #heroBanner -->
 <div class="intro" id="intro">
-  <video class="intro-vid" id="introVid" playsinline muted preload="auto">
+  <video class="intro-vid" id="introVid" playsinline muted autoplay preload="auto">
     <source src="media/adi_welcome.mp4" type="video/mp4">
   </video>
 </div>
@@ -210,6 +219,8 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 
 <main id="top">
 
+<p class="welcome" id="welcome" aria-label="Welcome to Adi's site — the home for all Adi Ariel stuff"><span class="welcome-txt" id="welcomeTxt"></span><span class="caret" id="welcomeCaret" aria-hidden="true">▌</span></p>
+
 <!-- hero -->
 <section class="hero"><div class="wrap">
 <p class="kicker rv" data-c="hero.kicker">ELECTRONIC MUSIC · COLLABS · FREE TOOLS</p>
@@ -218,38 +229,49 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 <p class="intro-copy rv" data-c="hero.intro">One half of the duo Avastha and a solo electronic music producer. I make music, play gigs, team up with other artists, and build little tools for the pure joy of it — all free. If any of it moves you, Patreon is what keeps it going.</p>
 <div class="cta rv">
 <a class="btn primary" href="#music"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg>Listen to the music</a>
-<a class="btn heart" data-href="support.patreon.url" href="https://www.patreon.com" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Support me on Patreon</a>
+<a class="btn heart" data-href="support.url" href="https://www.patreon.com" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Support me on Patreon</a>
 </div>
 </div></section>
 
-<!-- music -->
+<!-- 01 electronic music -->
 <section id="music" class="sec"><div class="wrap">
-<div class="sec-head rv"><span class="num">01</span><h2 data-c="music.heading">Music</h2><span class="rule"></span></div>
-<p class="sec-intro rv" data-c="music.intro">Electronic music — as Avastha and solo.</p>
+<div class="sec-head rv"><span class="num">01</span><h2 data-c="music.heading">Electronic Music</h2><span class="rule"></span></div>
+<p class="sec-intro rv" data-c="music.intro">As Avastha and solo — psytrance nights and solo studio sessions.</p>
 <article class="card feature rv"><div class="feature-txt">
 <span class="chip"><i class="cdot"></i><span data-c="music.avastha.badge">Sol Music compilation</span></span>
 <h3 class="avastha" data-c="music.avastha.name">Avastha</h3>
 <p data-c="music.avastha.body">My psytrance duo. Deep, driving night music — featured on the Sol Music compilation.</p>
 <a class="btn primary" data-href="music.avastha.url" href="https://avastha.info" target="_blank" rel="noopener">avastha.info <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a>
 </div><span class="watermark" aria-hidden="true" data-c="music.avastha.name">Avastha</span></article>
-<div class="grid two">
+<div class="grid">
 <article class="card rv"><div class="badge a1"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg></div>
 <h3 data-c="music.solo.title">Solo — lab sessions &amp; sets</h3><p data-c="music.solo.body">Tracks, experiments and DJ sets under my own name, on SoundCloud.</p>
 <div class="pills" id="sc-pills">
 <a class="pill" href="https://soundcloud.com/music_adi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>music_adi</span></a>
 <a class="pill" href="https://soundcloud.com/adiariel" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>adiariel</span></a>
 </div></article>
-<article class="card collab rv"><div class="badge a2"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
-<h3 data-c="music.collab.heading">Let’s make something together</h3><p data-c="music.collab.body">I’m always open to collaborations, remixes and B2B sets. If you make music I’d vibe with — or you want to book me for a gig — reach out. Patrons hear the works-in-progress first.</p>
-<a class="btn ghost" href="#contact">Get in touch <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
 </div>
 </div></section>
 
-<!-- coding / bio -->
-<section id="coding" class="sec"><div class="wrap">
-<div class="sec-head rv"><span class="num">02</span><h2 data-c="bio.heading">Vibe Coding</h2><span class="rule"></span></div>
-<p class="bio-lead rv" data-c="bio.body">Away from the studio I’m a vibe coder — I build small, useful tools for the fun of it and release every one of them free, no strings attached.</p>
-<div class="grid two" id="bio-grid">
+<!-- 02 collabs -->
+<section id="collabs" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">02</span><h2 data-c="collabs.heading">Collabs</h2><span class="rule"></span></div>
+<p class="sec-intro rv" data-c="collabs.intro">Let’s make something — or play somewhere — together.</p>
+<div class="grid two">
+<article class="card collab rv"><div class="badge a2"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+<h3 data-c="collabs.collab.title">Collaborations &amp; remixes</h3><p data-c="collabs.collab.body">Open to collaborations, remixes and B2B sets. If you make music I’d vibe with, reach out — patrons hear the works-in-progress first.</p>
+<a class="btn ghost" href="#about">Get in touch <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
+<article class="card rv"><div class="badge a1"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13M9 9l12-2M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 19a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/></svg></div>
+<h3 data-c="collabs.gig.title">Book a gig</h3><p data-c="collabs.gig.body">DJ sets and live shows for clubs, festivals and private events. Send me your dates and let’s make it happen.</p>
+<a class="btn ghost" id="gig-btn" href="mailto:office@adiariel.com"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></svg>Book me</a></article>
+</div>
+</div></section>
+
+<!-- 03 tools -->
+<section id="tools" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">03</span><h2 data-c="tools.heading">Tools</h2><span class="rule"></span></div>
+<p class="bio-lead rv" data-c="tools.body">I’m a vibe coder too — I build small, useful tools for the fun of it and release every one of them free, no strings attached.</p>
+<div class="grid two" id="tools-grid">
 <article class="card rv"><div class="idx">01</div>
 <h3>Console — Stream Deck plugin</h3><p>BPM-driven delay/reverb calculator, OS-level numpad and note-frequency tools for the Stream Deck + XL.</p>
 <a class="cardlink" href="https://github.com/arieladi/Adi/tree/main/tools/elgato_stream_deck_plugins/com.adiariel.console.sdPlugin" target="_blank" rel="noopener">View source <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
@@ -263,37 +285,34 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 <h3>Rekordbox Cue Counter — web tool</h3><p>A DJ set timer built around rekordbox cue sheets — live countdown for the booth.</p>
 <a class="cardlink" href="https://github.com/arieladi/Adi/tree/main/tools/rekordbox_que_counter" target="_blank" rel="noopener">View source <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
 </div>
-<p class="bio-note rv"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span data-c="bio.note">They’ll stay free, always. If a tool saves you time, chipping in on Patreon is what keeps them free and keeps new ones coming.</span>&nbsp;<a data-href="support.patreon.url" href="https://www.patreon.com" target="_blank" rel="noopener">Back me →</a></p>
-<p class="aftergrid rv"><a class="btn ghost" data-href="bio.githubUrl" href="https://github.com/arieladi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>All my tools on GitHub <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></p>
+<p class="bio-note rv"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span data-c="tools.note">They’ll stay free, always. If a tool saves you time, chipping in on Patreon is what keeps them free and keeps new ones coming.</span>&nbsp;<a data-href="support.url" href="https://www.patreon.com" target="_blank" rel="noopener">Back me →</a></p>
+<p class="aftergrid rv"><a class="btn ghost" data-href="tools.githubUrl" href="https://github.com/arieladi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>All my tools on GitHub <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></p>
 </div></section>
 
-<!-- support & gigs -->
-<section id="support" class="sec"><div class="wrap">
-<div class="sec-head rv"><span class="num">03</span><h2 data-c="support.heading">Gigs &amp; Support</h2><span class="rule"></span></div>
-<p class="sec-intro rv" data-c="support.intro">I’m an artist, not a consultancy. Two ways to be part of the journey:</p>
-<div class="grid two">
-<article class="card rv"><div class="badge a1"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13M9 9l12-2M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 19a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/></svg></div>
-<h3 data-c="support.gigs.title">Book a gig</h3><p data-c="support.gigs.body">DJ sets and live psytrance for clubs, festivals and private events. Reach out with your dates and let’s make it happen.</p>
-<a class="btn ghost" id="gig-btn" href="mailto:office@adiariel.com"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></svg>Book me</a></article>
-<article class="card patreon rv"><div class="badge a3"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></div>
-<h3 data-c="support.patreon.heading">Support the lab</h3><p data-c="support.patreon.body">Patreon is the single biggest way to help: it funds studio time, new music and the free tools. Even a little goes a long way — and it genuinely means the world.</p>
-<a class="btn primary" data-href="support.patreon.url" href="https://www.patreon.com" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span data-c="support.patreon.label">Become a patron</span></a></article>
-</div>
-</div></section>
-
-<!-- contact -->
-<section id="contact" class="sec"><div class="wrap">
-<div class="sec-head rv"><span class="num">04</span><h2 data-c="contact.heading">Contact</h2><span class="rule"></span></div>
+<!-- 04 about -->
+<section id="about" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">04</span><h2 data-c="about.heading">About</h2><span class="rule"></span></div>
+<p class="sec-intro rv" data-c="about.body">Adi Ariel — electronic music producer and DJ, one half of the psytrance duo Avastha, and a hands-on vibe coder. Music, gigs, collaborations, and free tools — this site is the home for all of it.</p>
 <article class="card feature contactcard rv">
 <p class="say">SAY HI</p>
-<a class="bigmail" id="bigmail" href="mailto:office@adiariel.com" data-c="contact.email">office@adiariel.com</a>
-<p class="mailnote" data-c="contact.emailNote">Bookings, collaborations and hellos.</p>
+<a class="bigmail" id="bigmail" href="mailto:office@adiariel.com" data-c="about.email">office@adiariel.com</a>
+<p class="mailnote" data-c="about.emailNote">Bookings, collaborations and hellos.</p>
 <div class="pills center" id="contact-pills">
 <a class="pill" href="https://www.facebook.com/profile.php?id=61578996476561" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg><span>Facebook</span></a>
 <a class="pill" href="https://soundcloud.com/music_adi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>music_adi</span></a>
 <a class="pill" href="https://soundcloud.com/adiariel" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>adiariel</span></a>
 <a class="pill" href="https://github.com/arieladi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg><span>GitHub</span></a>
 </div></article>
+</div></section>
+
+<!-- 05 support -->
+<section id="support" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">05</span><h2 data-c="support.heading">Support</h2><span class="rule"></span></div>
+<article class="card patreon feature contactcard rv">
+<div class="badge a3" style="margin:0 auto 18px"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></div>
+<p class="mailnote" data-c="support.body" style="max-width:56ch;margin:0 auto 22px">Patreon is the single biggest way to help — it funds studio time, new music and the free tools. Even a little goes a long way, and it genuinely means the world.</p>
+<a class="btn primary" data-href="support.url" href="https://www.patreon.com" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span data-c="support.label">Become a patron</span></a>
+</article>
 </div></section>
 
 </main>
@@ -320,79 +339,89 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
     els.forEach(function (el) { io.observe(el); });
   }
 
-  /* ---------- intro video → crop → rise into the top banner → build ---------- */
+  /* ---------- the page "builds itself": welcome types, then sections reveal ---------- */
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var WELCOME = "Welcome to Adi's site — the home for all Adi Ariel stuff";
+
+  function buildSite() {
+    document.body.classList.add('built');
+    typeWelcome(revealInWaves);
+  }
+  function typeWelcome(done) {
+    var txt = document.getElementById('welcomeTxt');
+    var wrap = document.getElementById('welcome');
+    if (!txt) { done(); return; }
+    if (reduce) { txt.textContent = WELCOME; if (wrap) wrap.classList.add('done'); done(); return; }
+    var i = 0;
+    (function tick() {
+      txt.textContent = WELCOME.slice(0, i);
+      if (i++ < WELCOME.length) setTimeout(tick, 34);
+      else { done(); setTimeout(function () { if (wrap) wrap.classList.add('done'); }, 1200); }
+    })();
+  }
+  // Reveal the hero right away (staggered), then let the sections fade in as
+  // they scroll into view — so the site keeps "building" as you move down.
+  function revealInWaves() {
+    if (reduce) { document.querySelectorAll('.rv').forEach(function (e) { e.classList.add('in'); }); return; }
+    var hero = document.querySelector('#top > .hero');
+    if (hero) hero.querySelectorAll('.rv').forEach(function (el, i) { setTimeout(function () { el.classList.add('in'); }, i * 130); });
+    watchReveal(document);
+  }
+
+  /* ---------- intro video → crop → rise into the top banner ---------- */
   (function intro() {
     var overlay = document.getElementById('intro');
     var vid = document.getElementById('introVid');
     var banner = document.getElementById('heroBanner');
     var body = document.body;
-    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     // must mirror the .site-banner CSS (aspect-ratio 3.7/1, max 58vh, min 120px)
     var ASPECT = 3.7, MAXVH = 0.58, MINH = 120;
     var settled = false, morphing = false, guard = null;
 
-    function bannerHeight() {
-      return Math.max(MINH, Math.min(window.innerWidth / ASPECT, MAXVH * window.innerHeight));
-    }
-    function build() { body.classList.add('built'); watchReveal(document); }
+    function bannerHeight() { return Math.max(MINH, Math.min(window.innerWidth / ASPECT, MAXVH * window.innerHeight)); }
     function seekEnd() { try { if (vid.duration && isFinite(vid.duration)) vid.currentTime = Math.max(0, vid.duration - 0.06); } catch (e) { } }
 
-    // Hand the (last-frame) video to the top banner, drop the overlay, reveal.
     function finish() {
       if (settled) return; settled = true;
       if (guard) clearTimeout(guard);
       if (vid && banner) {
-        vid.pause();
-        vid.className = 'banner-vid';
-        vid.removeAttribute('style');
-        banner.appendChild(vid);
+        vid.pause(); vid.className = 'banner-vid'; vid.removeAttribute('style'); banner.appendChild(vid);
         if (vid.readyState >= 1) seekEnd(); else vid.addEventListener('loadedmetadata', seekEnd, { once: true });
       }
       if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
       body.classList.remove('intro-active');
-      build();
+      buildSite();
     }
-    // Video couldn't load → no banner, just show the page.
     function fail() {
       if (settled) return; settled = true;
       if (guard) clearTimeout(guard);
       if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
       if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
       body.classList.remove('intro-active');
-      build();
+      buildSite();
     }
-
-    // End-of-video effect: crop the frozen frame to a centered banner strip
-    // (shrink the video's height), then lift it up to the very top where it
-    // becomes the banner, then the rest of the page builds itself.
+    // Crop the frozen frame to a centered strip, then lift it to the top.
     function morph() {
       if (settled || morphing) return;
       if (!overlay || !banner || !vid) return finish();
       morphing = true;
-      vid.pause(); // freeze the last frame
+      vid.pause();
+      if (reduce) { finish(); return; } // no crop/rise animation for reduced motion
       var H = bannerHeight();
-      // Phase A — crop: shrink the (centered) video box to the banner height.
       vid.style.height = H + 'px';
       vid.style.top = Math.round((window.innerHeight - H) / 2) + 'px';
-      // Phase B — rise: lift it to the top.
-      setTimeout(function () { if (!settled) vid.style.top = '0px'; }, 760);
-      // Phase C — settle: hand off to the banner and build the page.
-      setTimeout(finish, 1560);
+      setTimeout(function () { if (!settled) vid.style.top = '0px'; }, 520);
+      setTimeout(finish, 1080);
     }
 
     if (!vid || !banner) { fail(); return; }
-
-    // Reduced motion → skip the show, land straight on the banner frame.
-    if (reduce) { finish(); return; }
-
     body.classList.add('intro-active');
     window.scrollTo(0, 0);
-    vid.muted = true; vid.defaultMuted = true; // guarantee muted so autoplay is allowed
+    vid.muted = true; vid.defaultMuted = true;
 
     vid.addEventListener('ended', morph);
     vid.addEventListener('error', fail);
     guard = setTimeout(morph, 30000); // absolute backstop
-    // once playback truly starts, retarget the backstop to just past the end
     vid.addEventListener('playing', function () {
       if (settled || morphing) return;
       if (guard) clearTimeout(guard);
@@ -400,13 +429,13 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
       guard = setTimeout(morph, Math.max(3000, remain * 1000 + 2500));
     });
 
-    // Play via JS only (no autoplay attribute) so the attribute and this call
-    // can't race and reject each other. If the browser still blocks muted
-    // autoplay, kick it off on the first user interaction — never skip the video.
-    function tryPlay() { if (!settled && vid.paused) { var p = vid.play(); if (p && p.catch) p.catch(function () { }); } }
-    tryPlay();
-    ['pointerdown', 'touchstart', 'keydown', 'wheel', 'mousemove'].forEach(function (ev) {
-      window.addEventListener(ev, tryPlay, { once: true, passive: true });
+    // The `autoplay` attribute drives playback (most reliable, no race with a
+    // JS play() call). Nudge it after a beat and on first interaction if a
+    // browser still blocks muted autoplay — but never skip the video.
+    function kick() { if (!settled && vid.paused) { var p = vid.play(); if (p && p.catch) p.catch(function () { }); } }
+    setTimeout(kick, 400);
+    ['pointerdown', 'touchstart', 'keydown', 'wheel'].forEach(function (ev) {
+      window.addEventListener(ev, kick, { once: true, passive: true });
     });
   })();
 
@@ -437,7 +466,7 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
       var v = get(c, n.getAttribute('data-href'));
       if (v) n.href = safeUrl(v);
     });
-    var email = get(c, 'contact.email');
+    var email = get(c, 'about.email');
     if (email) {
       var bm = document.getElementById('bigmail'); if (bm) bm.href = 'mailto:' + email;
       var gb = document.getElementById('gig-btn'); if (gb) gb.href = 'mailto:' + email;
@@ -447,28 +476,29 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
     var scBox = document.getElementById('sc-pills');
     if (scBox && Array.isArray(scs)) { scBox.textContent = ''; scs.forEach(function (s) { scBox.appendChild(pill(s.url, scLabel(s), 'wave')); }); }
 
-    var tools = get(c, 'bio.items');
-    var bioGrid = document.getElementById('bio-grid');
-    if (bioGrid && Array.isArray(tools) && tools.length) {
-      bioGrid.textContent = '';
+    var tools = get(c, 'tools.items');
+    var toolsGrid = document.getElementById('tools-grid');
+    if (toolsGrid && Array.isArray(tools) && tools.length) {
+      toolsGrid.textContent = '';
+      var builtNow = document.body.classList.contains('built');
       tools.forEach(function (it, i) {
-        var card = el('article', 'card rv');
+        var card = el('article', 'card rv' + (builtNow ? ' in' : ''));
         card.appendChild(el('div', 'idx', String(i + 1).padStart(2, '0')));
         card.appendChild(el('h3', '', it.title || ''));
         card.appendChild(el('p', '', it.body || ''));
         var a = el('a', 'cardlink', 'View source ');
         a.href = safeUrl(it.url); a.target = '_blank'; a.rel = 'noopener'; icon(a, 'arrow');
         card.appendChild(a);
-        bioGrid.appendChild(card);
+        toolsGrid.appendChild(card);
       });
     }
 
     var cp = document.getElementById('contact-pills');
     if (cp) {
       cp.textContent = '';
-      cp.appendChild(pill(get(c, 'contact.facebook'), 'Facebook', 'fb'));
+      cp.appendChild(pill(get(c, 'about.facebook'), 'Facebook', 'fb'));
       (Array.isArray(scs) ? scs : []).forEach(function (s) { cp.appendChild(pill(s.url, scLabel(s), 'wave')); });
-      cp.appendChild(pill(get(c, 'bio.githubUrl'), 'GitHub', 'github'));
+      cp.appendChild(pill(get(c, 'tools.githubUrl'), 'GitHub', 'github'));
     }
 
     if (document.body.classList.contains('built')) watchReveal(document);

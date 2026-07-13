@@ -65,8 +65,8 @@ const DEFAULT_CONTENT = {
     intro: 'One half of the duo Avastha and a solo electronic music producer. I make music, play gigs, team up with other artists, and build little tools for the pure joy of it — all free. If any of it moves you, Patreon is what keeps it going.'
   },
   music: {
-    heading: 'Music',
-    intro: 'Electronic music — as Avastha and solo.',
+    heading: 'Electronic Music',
+    intro: 'As Avastha and solo — psytrance nights and solo studio sessions.',
     avastha: {
       name: 'Avastha',
       body: 'My psytrance duo. Deep, driving night music — featured on the Sol Music compilation.',
@@ -80,15 +80,23 @@ const DEFAULT_CONTENT = {
         { label: 'music_adi', url: 'https://soundcloud.com/music_adi' },
         { label: 'adiariel', url: 'https://soundcloud.com/adiariel' }
       ]
-    },
-    collab: {
-      heading: 'Let’s make something together',
-      body: 'I’m always open to collaborations, remixes and B2B sets. If you make music I’d vibe with — or you want to book me for a gig — reach out. Patrons hear the works-in-progress first.'
     }
   },
-  bio: {
-    heading: 'Vibe Coding',
-    body: 'Away from the studio I’m a vibe coder — I build small, useful tools for the fun of it and release every one of them free, no strings attached.',
+  collabs: {
+    heading: 'Collabs',
+    intro: 'Let’s make something — or play somewhere — together.',
+    collab: {
+      title: 'Collaborations & remixes',
+      body: 'Open to collaborations, remixes and B2B sets. If you make music I’d vibe with, reach out — patrons hear the works-in-progress first.'
+    },
+    gig: {
+      title: 'Book a gig',
+      body: 'DJ sets and live shows for clubs, festivals and private events. Send me your dates and let’s make it happen.'
+    }
+  },
+  tools: {
+    heading: 'Tools',
+    body: 'I’m a vibe coder too — I build small, useful tools for the fun of it and release every one of them free, no strings attached.',
     note: 'They’ll stay free, always. If a tool saves you time, chipping in on Patreon is what keeps them free and keeps new ones coming.',
     githubUrl: 'https://github.com/arieladi',
     items: [
@@ -114,25 +122,18 @@ const DEFAULT_CONTENT = {
       }
     ]
   },
-  support: {
-    heading: 'Gigs & Support',
-    intro: 'I’m an artist, not a consultancy. Two ways to be part of the journey:',
-    gigs: {
-      title: 'Book a gig',
-      body: 'DJ sets and live psytrance for clubs, festivals and private events. Reach out with your dates and let’s make it happen.'
-    },
-    patreon: {
-      heading: 'Support the lab',
-      body: 'Patreon is the single biggest way to help: it funds studio time, new music and the free tools. Even a little goes a long way — and it genuinely means the world.',
-      label: 'Become a patron',
-      url: 'https://www.patreon.com'
-    }
-  },
-  contact: {
-    heading: 'Contact',
+  about: {
+    heading: 'About',
+    body: 'Adi Ariel — electronic music producer and DJ, one half of the psytrance duo Avastha, and a hands-on vibe coder. Music, gigs, collaborations, and free tools — this site is the home for all of it.',
     email: 'office@adiariel.com',
     emailNote: 'Bookings, collaborations and hellos.',
     facebook: 'https://www.facebook.com/profile.php?id=61578996476561'
+  },
+  support: {
+    heading: 'Support',
+    body: 'Patreon is the single biggest way to help — it funds studio time, new music and the free tools. Even a little goes a long way, and it genuinely means the world.',
+    label: 'Become a patron',
+    url: 'https://www.patreon.com'
   }
 };
 
