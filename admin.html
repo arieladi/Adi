@@ -107,7 +107,7 @@ border-radius:16px;padding:30px;text-align:center}
       <label><span>Tagline</span><input type="text" data-path="hero.tagline"></label>
       <label><span>Intro paragraph</span><textarea data-path="hero.intro"></textarea></label>
     </fieldset>
-    <fieldset><legend>Music</legend>
+    <fieldset><legend>01 · Electronic Music</legend>
       <label><span>Section heading</span><input type="text" data-path="music.heading"></label>
       <label><span>Section intro</span><input type="text" data-path="music.intro"></label>
       <label><span>Avastha — name</span><input type="text" data-path="music.avastha.name"></label>
@@ -118,33 +118,36 @@ border-radius:16px;padding:30px;text-align:center}
       <label><span>Solo card — text</span><textarea data-path="music.solo.body"></textarea></label>
       <label><span>SoundCloud links</span><textarea class="list" id="sc-list"></textarea></label>
       <p class="hint">One per line: <code>label | url</code></p>
-      <label><span>Collaborations — heading</span><input type="text" data-path="music.collab.heading"></label>
-      <label><span>Collaborations — text</span><textarea data-path="music.collab.body"></textarea></label>
     </fieldset>
-    <fieldset><legend>Vibe Coding (bio)</legend>
-      <label><span>Section heading</span><input type="text" data-path="bio.heading"></label>
-      <label><span>Bio paragraph</span><textarea data-path="bio.body"></textarea></label>
-      <label><span>Free-tools / Patreon note</span><textarea data-path="bio.note"></textarea></label>
-      <label><span>GitHub profile URL</span><input type="url" data-path="bio.githubUrl"></label>
-      <label><span>Tool cards</span><textarea class="list" id="bio-list"></textarea></label>
+    <fieldset><legend>02 · Collabs</legend>
+      <label><span>Section heading</span><input type="text" data-path="collabs.heading"></label>
+      <label><span>Section intro</span><input type="text" data-path="collabs.intro"></label>
+      <label><span>Collaborations card — title</span><input type="text" data-path="collabs.collab.title"></label>
+      <label><span>Collaborations card — text</span><textarea data-path="collabs.collab.body"></textarea></label>
+      <label><span>Gig card — title</span><input type="text" data-path="collabs.gig.title"></label>
+      <label><span>Gig card — text</span><textarea data-path="collabs.gig.body"></textarea></label>
+    </fieldset>
+    <fieldset><legend>03 · Tools</legend>
+      <label><span>Section heading</span><input type="text" data-path="tools.heading"></label>
+      <label><span>Intro paragraph</span><textarea data-path="tools.body"></textarea></label>
+      <label><span>Free-tools / Patreon note</span><textarea data-path="tools.note"></textarea></label>
+      <label><span>GitHub profile URL</span><input type="url" data-path="tools.githubUrl"></label>
+      <label><span>Tool cards</span><textarea class="list" id="tools-list"></textarea></label>
       <p class="hint">One per line: <code>Title :: description :: url</code></p>
     </fieldset>
-    <fieldset><legend>Gigs &amp; Support</legend>
-      <label><span>Section heading</span><input type="text" data-path="support.heading"></label>
-      <label><span>Section intro</span><input type="text" data-path="support.intro"></label>
-      <label><span>Gigs card — title</span><input type="text" data-path="support.gigs.title"></label>
-      <label><span>Gigs card — text</span><textarea data-path="support.gigs.body"></textarea></label>
-      <label><span>Patreon — heading</span><input type="text" data-path="support.patreon.heading"></label>
-      <label><span>Patreon — text</span><textarea data-path="support.patreon.body"></textarea></label>
-      <label><span>Patreon — button label</span><input type="text" data-path="support.patreon.label"></label>
-      <label><span>Patreon — URL</span><input type="url" data-path="support.patreon.url"></label>
-      <p class="hint">The Patreon URL here feeds every “support” link on the site (hero, bio note, this card).</p>
+    <fieldset><legend>04 · About</legend>
+      <label><span>Section heading</span><input type="text" data-path="about.heading"></label>
+      <label><span>Bio paragraph</span><textarea data-path="about.body"></textarea></label>
+      <label><span>Email</span><input type="email" data-path="about.email"></label>
+      <label><span>Email note</span><input type="text" data-path="about.emailNote"></label>
+      <label><span>Facebook URL</span><input type="url" data-path="about.facebook"></label>
     </fieldset>
-    <fieldset><legend>Contact</legend>
-      <label><span>Section heading</span><input type="text" data-path="contact.heading"></label>
-      <label><span>Email</span><input type="email" data-path="contact.email"></label>
-      <label><span>Email note</span><input type="text" data-path="contact.emailNote"></label>
-      <label><span>Facebook URL</span><input type="url" data-path="contact.facebook"></label>
+    <fieldset><legend>05 · Support (Patreon)</legend>
+      <label><span>Section heading</span><input type="text" data-path="support.heading"></label>
+      <label><span>Support text</span><textarea data-path="support.body"></textarea></label>
+      <label><span>Button label</span><input type="text" data-path="support.label"></label>
+      <label><span>Patreon URL</span><input type="url" data-path="support.url"></label>
+      <p class="hint">This Patreon URL feeds every “support” link on the site (hero button, Tools note, this section).</p>
     </fieldset>
     <div class="savebar"><button class="btn primary" id="save">Save &amp; publish</button>
       <span class="toast" id="toast"></span></div>
@@ -267,7 +270,7 @@ border-radius:16px;padding:30px;text-align:center}
       el.value = v == null ? '' : String(v);
     });
     $('#sc-list').value = (getPath(content, 'music.solo.soundclouds') || []).map(function (s) { return (s.label || '') + ' | ' + (s.url || ''); }).join('\n');
-    $('#bio-list').value = (getPath(content, 'bio.items') || []).map(function (s) { return (s.title || '') + ' :: ' + (s.body || '') + ' :: ' + (s.url || ''); }).join('\n');
+    $('#tools-list').value = (getPath(content, 'tools.items') || []).map(function (s) { return (s.title || '') + ' :: ' + (s.body || '') + ' :: ' + (s.url || ''); }).join('\n');
   }
   function parseLines(txt, sep) {
     return txt.split('\n').map(function (l) { return l.trim(); }).filter(Boolean).map(function (l) {
@@ -278,7 +281,7 @@ border-radius:16px;padding:30px;text-align:center}
     var doc = JSON.parse(JSON.stringify(content));
     $all('[data-path]').forEach(function (el) { setPath(doc, el.getAttribute('data-path'), el.value); });
     setPath(doc, 'music.solo.soundclouds', parseLines($('#sc-list').value, '|').map(function (s) { return { label: s[0] || '', url: s[1] || s[0] || '' }; }));
-    setPath(doc, 'bio.items', parseLines($('#bio-list').value, '::').map(function (s) { return { title: s[0] || '', body: s[1] || '', url: s[2] || '' }; }));
+    setPath(doc, 'tools.items', parseLines($('#tools-list').value, '::').map(function (s) { return { title: s[0] || '', body: s[1] || '', url: s[2] || '' }; }));
     api('PUT', '/api/content', doc).then(function (j) {
       if (j.ok) { content = doc; toast($('#toast'), 'saved ✓ — live on adiariel.com'); }
       else { toast($('#toast'), j.message || 'save failed', true); }
