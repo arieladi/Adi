@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Adi Ariel — Psytrance, Collaborations & Free Tools</title>
-<meta name="description" content="Adi Ariel — one half of the psytrance duo Avastha. Music, collaborations, DJ gigs, and free tools built for the love of it. Support the lab on Patreon.">
+<title>Adi Ariel — Electronic Music, Collaborations & Free Tools</title>
+<meta name="description" content="Adi Ariel — electronic music producer and DJ, one half of the duo Avastha. Music, collaborations, gigs, and free tools built for the love of it. Support on Patreon.">
 <link rel="canonical" href="https://adiariel.com/">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Adi Ariel — Psytrance, Collaborations & Free Tools">
-<meta property="og:description" content="Psytrance producer, DJ and vibe coder. Music, collaborations, gigs and free tools — support the lab on Patreon.">
+<meta property="og:title" content="Adi Ariel — Electronic Music, Collaborations & Free Tools">
+<meta property="og:description" content="Electronic music producer, DJ and vibe coder. Music, collaborations, gigs and free tools — support on Patreon.">
 <meta property="og:url" content="https://adiariel.com/">
 <meta name="twitter:card" content="summary">
-<meta name="theme-color" content="#08080d">
+<meta name="theme-color" content="#0a0d0b">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -22,10 +22,10 @@
    On first visit an intro video plays, then morphs into the hero banner and the
    page reveals itself. */
 :root{
-  --bg:#08080d; --panel:#0d0e16; --line:rgba(255,255,255,.08); --line-2:rgba(255,255,255,.16);
-  --text:#e9eaf2; --muted:#9aa3b8;
-  --c1:#38bdf8; --c2:#a78bfa; --c3:#f472b6;
-  --grad:linear-gradient(90deg,var(--c1),var(--c2) 55%,var(--c3));
+  --bg:#0a0d0b; --panel:#0f1310; --line:rgba(255,255,255,.08); --line-2:rgba(255,255,255,.16);
+  --text:#eaf1ec; --muted:#9aa89c;
+  --c1:#5eead4; --c2:#10b981; --c3:#c08a57;
+  --grad:linear-gradient(90deg,var(--c1),var(--c2) 50%,var(--c3));
   --r:18px;
   --sans:'Space Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
   --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -34,7 +34,7 @@
 html{scroll-behavior:smooth}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
 body.intro-active{overflow:hidden}
-::selection{background:rgba(167,139,250,.35)}
+::selection{background:rgba(16,185,129,.35)}
 body::before{content:'';position:fixed;inset:0;z-index:-2;pointer-events:none;
   background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
     linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
@@ -43,27 +43,29 @@ body::before{content:'';position:fixed;inset:0;z-index:-2;pointer-events:none;
   mask-image:radial-gradient(ellipse 90% 65% at 50% -5%,#000 25%,transparent 78%)}
 .orbs{position:fixed;inset:0;z-index:-3;overflow:hidden;pointer-events:none}
 .orbs i{position:absolute;border-radius:50%}
-.o1{width:60vw;height:60vw;left:-18vw;top:-22vw;background:radial-gradient(circle,rgba(167,139,250,.17),rgba(167,139,250,.06) 40%,transparent 68%)}
-.o2{width:54vw;height:54vw;right:-16vw;bottom:-20vw;background:radial-gradient(circle,rgba(56,189,248,.15),rgba(56,189,248,.05) 40%,transparent 68%)}
+.o1{width:60vw;height:60vw;left:-18vw;top:-22vw;background:radial-gradient(circle,rgba(16,185,129,.17),rgba(16,185,129,.06) 40%,transparent 68%)}
+.o2{width:54vw;height:54vw;right:-16vw;bottom:-20vw;background:radial-gradient(circle,rgba(192,138,87,.14),rgba(192,138,87,.05) 40%,transparent 68%)}
 .wrap{max-width:1120px;margin:0 auto;padding:0 24px}
 a{color:inherit}
 .ico{width:18px;height:18px;flex:none}
 
 /* ---- intro video overlay (morphs into the banner) ---- */
-.intro{position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:9999;overflow:hidden;background:#05060a;
-  transition:top .95s cubic-bezier(.7,0,.15,1),left .95s cubic-bezier(.7,0,.15,1),
-    width .95s cubic-bezier(.7,0,.15,1),height .95s cubic-bezier(.7,0,.15,1),border-radius .9s ease}
-.intro-vid{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 40%;display:block}
+.intro{position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:9999;overflow:hidden;background:#0a0d0b;
+  transition:top .72s cubic-bezier(.55,0,.25,1),height .72s cubic-bezier(.55,0,.25,1)}
+.intro-vid{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 45%;display:block}
 .intro-skip{position:absolute;right:20px;bottom:18px;z-index:2;display:inline-flex;align-items:center;gap:8px;
   padding:.5rem 1rem;border-radius:999px;border:1px solid rgba(255,255,255,.3);
   background:rgba(8,8,13,.45);backdrop-filter:blur(6px);color:#fff;font:600 .85rem/1 var(--sans);cursor:pointer;
   opacity:.85;transition:opacity .25s,border-color .25s}
 .intro-skip:hover{opacity:1;border-color:rgba(255,255,255,.65)}
 
-/* full-width banner — sits at the very top, replaces the nav (no menu) */
-.site-banner{position:relative;width:100%;height:clamp(140px,24vh,280px);overflow:hidden;background:#05060a}
+/* full-width banner — sits at the very top, replaces the nav (no menu).
+   aspect-ratio keeps the whole "ADI" in frame at every width; it scales on
+   resize. 3.7:1 is tuned to the logo's bounding box in the 16:9 video. */
+.site-banner{position:relative;width:100%;aspect-ratio:3.7/1;max-height:58vh;min-height:120px;
+  overflow:hidden;background:#0a0d0b}
 .site-banner:empty{display:none}
-.banner-vid{width:100%;height:100%;object-fit:cover;object-position:center 40%;display:block}
+.banner-vid{width:100%;height:100%;object-fit:cover;object-position:center 45%;display:block}
 /* embedded look: fade the edges into the page bg + a themed accent hairline */
 .site-banner::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:1;
   background:
@@ -77,7 +79,7 @@ a{color:inherit}
 .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.34em;text-transform:uppercase;color:var(--muted);margin:0 0 18px}
 .hero h1{margin:0;font-size:clamp(3rem,9vw,6.2rem);font-weight:700;letter-spacing:-.035em;line-height:1.02;
   background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
-  filter:drop-shadow(0 0 34px rgba(167,139,250,.25))}
+  filter:drop-shadow(0 0 34px rgba(16,185,129,.25))}
 .tagline{font-size:clamp(1.05rem,2.4vw,1.4rem);color:var(--text);margin:22px auto 10px;max-width:40ch}
 .intro-copy{color:var(--muted);max-width:64ch;margin:0 auto 34px}
 .cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
@@ -86,12 +88,12 @@ a{color:inherit}
 .btn{display:inline-flex;align-items:center;gap:9px;padding:.78rem 1.35rem;border-radius:999px;
   font-weight:600;font-size:.95rem;text-decoration:none;border:1px solid var(--line-2);cursor:pointer;
   transition:transform .3s,box-shadow .3s,border-color .3s,background .3s}
-.btn.primary{background:var(--grad);color:#08080d;border-color:transparent}
-.btn.primary:hover{transform:translateY(-2px);box-shadow:0 8px 34px rgba(167,139,250,.4)}
+.btn.primary{background:var(--grad);color:#08120c;border-color:transparent;font-weight:700}
+.btn.primary:hover{transform:translateY(-2px);box-shadow:0 8px 34px rgba(16,185,129,.4)}
 .btn.ghost{color:var(--text);background:rgba(255,255,255,.02)}
 .btn.ghost:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.34)}
-.btn.heart{color:var(--c3);background:rgba(244,114,182,.08);border-color:rgba(244,114,182,.4)}
-.btn.heart:hover{transform:translateY(-2px);background:rgba(244,114,182,.16)}
+.btn.heart{color:var(--c3);background:rgba(192,138,87,.08);border-color:rgba(192,138,87,.4)}
+.btn.heart:hover{transform:translateY(-2px);background:rgba(192,138,87,.16)}
 .pills{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
 .pills.center{justify-content:center}
 .pill{display:inline-flex;align-items:center;gap:8px;padding:.5rem .95rem;border:1px solid var(--line-2);
@@ -147,13 +149,13 @@ h3.avastha{font-size:clamp(2rem,5.5vw,3.2rem);letter-spacing:.28em;text-transfor
 .watermark{position:absolute;right:-1%;bottom:-14%;font-size:clamp(4rem,13vw,9rem);font-weight:700;
   letter-spacing:.18em;text-transform:uppercase;color:transparent;
   -webkit-text-stroke:1px rgba(255,255,255,.055);pointer-events:none;white-space:nowrap;z-index:0}
-.card.collab{background:linear-gradient(135deg,rgba(56,189,248,.08),rgba(167,139,250,.10) 55%,rgba(244,114,182,.08))}
-.card.patreon{background:linear-gradient(135deg,rgba(56,189,248,.10),rgba(167,139,250,.12) 50%,rgba(244,114,182,.12))}
+.card.collab{background:linear-gradient(135deg,rgba(94,234,212,.08),rgba(16,185,129,.10) 55%,rgba(192,138,87,.08))}
+.card.patreon{background:linear-gradient(135deg,rgba(94,234,212,.10),rgba(16,185,129,.12) 50%,rgba(192,138,87,.12))}
 
 /* bio / vibe coding */
 .bio-lead{color:var(--muted);max-width:64ch;margin:0 0 28px;font-size:1.02rem}
-.bio-note{margin:26px 0 0;padding:16px 20px;border:1px solid rgba(244,114,182,.35);border-radius:14px;
-  background:rgba(244,114,182,.06);color:var(--text);font-size:.95rem;display:flex;gap:12px;align-items:flex-start}
+.bio-note{margin:26px 0 0;padding:16px 20px;border:1px solid rgba(192,138,87,.35);border-radius:14px;
+  background:rgba(192,138,87,.06);color:var(--text);font-size:.95rem;display:flex;gap:12px;align-items:flex-start}
 .bio-note .ico{color:var(--c3);margin-top:2px}
 .bio-note a{color:var(--c3);font-weight:600;text-decoration:none;white-space:nowrap}
 .bio-note a:hover{text-decoration:underline}
@@ -211,10 +213,10 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 
 <!-- hero -->
 <section class="hero"><div class="wrap">
-<p class="kicker rv" data-c="hero.kicker">PSYTRANCE · COLLABS · FREE TOOLS</p>
+<p class="kicker rv" data-c="hero.kicker">ELECTRONIC MUSIC · COLLABS · FREE TOOLS</p>
 <h1 class="rv" data-c="hero.title">Adi Ariel</h1>
-<p class="tagline rv" data-c="hero.tagline">Psytrance producer, DJ, and vibe coder.</p>
-<p class="intro-copy rv" data-c="hero.intro">One half of the psytrance duo Avastha. I make music, play gigs, team up with other artists, and build little tools for the pure joy of it — all free. If any of it moves you, Patreon is what keeps it going.</p>
+<p class="tagline rv" data-c="hero.tagline">Electronic music producer, DJ, and vibe coder.</p>
+<p class="intro-copy rv" data-c="hero.intro">One half of the duo Avastha and a solo electronic music producer. I make music, play gigs, team up with other artists, and build little tools for the pure joy of it — all free. If any of it moves you, Patreon is what keeps it going.</p>
 <div class="cta rv">
 <a class="btn primary" href="#music"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg>Listen to the music</a>
 <a class="btn heart" data-href="support.patreon.url" href="https://www.patreon.com" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Support me on Patreon</a>
@@ -224,7 +226,7 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 <!-- music -->
 <section id="music" class="sec"><div class="wrap">
 <div class="sec-head rv"><span class="num">01</span><h2 data-c="music.heading">Music</h2><span class="rule"></span></div>
-<p class="sec-intro rv" data-c="music.intro">Psytrance, first and always — as Avastha and solo.</p>
+<p class="sec-intro rv" data-c="music.intro">Electronic music — as Avastha and solo.</p>
 <article class="card feature rv"><div class="feature-txt">
 <span class="chip"><i class="cdot"></i><span data-c="music.avastha.badge">Sol Music compilation</span></span>
 <h3 class="avastha" data-c="music.avastha.name">Avastha</h3>
@@ -319,38 +321,40 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
     els.forEach(function (el) { io.observe(el); });
   }
 
-  /* ---------- intro video → banner morph, then reveal ---------- */
+  /* ---------- intro video → crop → rise into the top banner → build ---------- */
   (function intro() {
     var overlay = document.getElementById('intro');
     var vid = document.getElementById('introVid');
     var banner = document.getElementById('heroBanner');
     var skip = document.getElementById('introSkip');
     var body = document.body;
-    var KEY = 'aa_intro_played';
     var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    var settled = false, guard = null;
+    // must mirror the .site-banner CSS (aspect-ratio 3.7/1, max 58vh, min 120px)
+    var ASPECT = 3.7, MAXVH = 0.58, MINH = 120;
+    var settled = false, morphing = false, guard = null;
 
+    function bannerHeight() {
+      return Math.max(MINH, Math.min(window.innerWidth / ASPECT, MAXVH * window.innerHeight));
+    }
     function build() { body.classList.add('built'); watchReveal(document); }
     function seekEnd() { try { if (vid.duration && isFinite(vid.duration)) vid.currentTime = Math.max(0, vid.duration - 0.06); } catch (e) { } }
 
-    // Put the video into the banner as the final frame, drop the overlay, reveal.
-    function finish(reachedEnd) {
+    // Hand the (last-frame) video to the top banner, drop the overlay, reveal.
+    function finish() {
       if (settled) return; settled = true;
       if (guard) clearTimeout(guard);
-      try { sessionStorage.setItem(KEY, '1'); } catch (e) { }
       if (vid && banner) {
         vid.pause();
         vid.className = 'banner-vid';
         vid.removeAttribute('style');
         banner.appendChild(vid);
-        if (!reachedEnd) { if (vid.readyState >= 1) seekEnd(); else vid.addEventListener('loadedmetadata', seekEnd, { once: true }); }
+        if (vid.readyState >= 1) seekEnd(); else vid.addEventListener('loadedmetadata', seekEnd, { once: true });
       }
       if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
       body.classList.remove('intro-active');
       build();
     }
-
-    // Video unavailable → no banner, just show the site.
+    // Video couldn't load → no banner, just show the page.
     function fail() {
       if (settled) return; settled = true;
       if (guard) clearTimeout(guard);
@@ -360,43 +364,39 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
       build();
     }
 
-    // Animate the fullscreen overlay down into the banner's box, then swap.
+    // The end-of-video effect: crop the frozen frame to a centered banner
+    // strip, then lift it straight up to the top where it becomes the banner,
+    // then the rest of the page builds itself.
     function morph() {
-      if (settled || !overlay || !banner) return finish(true);
-      var r = banner.getBoundingClientRect();
-      var cs = window.getComputedStyle(banner);
-      // lock current fullscreen box, then transition to the banner box
-      overlay.style.top = '0px'; overlay.style.left = '0px';
-      overlay.style.width = window.innerWidth + 'px'; overlay.style.height = window.innerHeight + 'px';
-      /* force reflow so the transition has a starting point */
-      void overlay.offsetWidth;
-      overlay.style.top = r.top + 'px'; overlay.style.left = r.left + 'px';
-      overlay.style.width = r.width + 'px'; overlay.style.height = r.height + 'px';
-      overlay.style.borderRadius = cs.borderRadius;
-      var swapped = false;
-      var swap = function () { if (swapped) return; swapped = true; finish(true); };
-      overlay.addEventListener('transitionend', swap, { once: true });
-      setTimeout(swap, 1200); // safety if transitionend doesn't fire
+      if (settled || morphing) return;
+      if (!overlay || !banner) return finish();
+      morphing = true;
+      vid.pause(); // freeze the last frame
+      var H = bannerHeight();
+      // Phase A — crop: collapse the fullscreen frame to a centered strip.
+      overlay.style.height = H + 'px';
+      overlay.style.top = Math.round((window.innerHeight - H) / 2) + 'px';
+      // Phase B — rise: lift the strip up to the very top.
+      setTimeout(function () { if (!settled) overlay.style.top = '0px'; }, 760);
+      // Phase C — settle: hand off to the banner and build the page.
+      setTimeout(finish, 1560);
     }
 
     if (!vid || !banner) { fail(); return; }
 
-    var played = false;
-    try { played = sessionStorage.getItem(KEY) === '1'; } catch (e) { }
-
-    // Repeat visit / reduced motion → skip straight to the banner frame.
-    if (played || reduce) { finish(false); return; }
+    // Reduced motion → skip the show, land straight on the banner frame.
+    if (reduce) { finish(); return; }
 
     body.classList.add('intro-active');
     window.scrollTo(0, 0);
 
-    vid.addEventListener('ended', function () { morph(); });
+    vid.addEventListener('ended', morph);
     vid.addEventListener('error', fail);
-    if (skip) skip.addEventListener('click', function () { morph(); });
-    guard = setTimeout(function () { morph(); }, 22000); // absolute backstop
+    if (skip) skip.addEventListener('click', finish); // skip = jump straight to the banner
+    guard = setTimeout(morph, 14000); // backstop if 'ended' never fires (video is ~10s)
 
     var p = vid.play();
-    if (p && p.catch) p.catch(function () { finish(false); }); // autoplay blocked
+    if (p && p.catch) p.catch(function () { finish(); }); // autoplay blocked → show the banner frame
   })();
 
   /* ---------- hydration from the worker ---------- */
