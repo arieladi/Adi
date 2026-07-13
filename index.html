@@ -55,29 +55,38 @@ a{color:inherit}
    frame shows at a sane size on any device (no fullscreen-cover zoom on phones).
    The morph then shrinks its height to the banner strip and lifts it to top. */
 .intro{position:fixed;inset:0;z-index:9999;overflow:hidden;background:#0a0d0b}
-.intro-vid{position:absolute;left:0;width:100vw;height:56.25vw;top:calc(50vh - 28.125vw);
-  object-fit:cover;object-position:center 45%;display:block;
-  transition:top .6s cubic-bezier(.5,0,.2,1),height .6s cubic-bezier(.5,0,.2,1)}
-
-/* full-width banner — sits at the very top, replaces the nav (no menu).
-   aspect-ratio keeps the whole "ADI" in frame at every width; it scales on
-   resize. 3.7:1 is tuned to the logo's bounding box in the 16:9 video. */
-.site-banner{position:relative;width:100%;aspect-ratio:3.7/1;max-height:58vh;min-height:120px;
-  overflow:hidden;background:#0a0d0b;box-shadow:0 0 0 rgba(0,0,0,0);transition:box-shadow 1.7s ease}
-.site-banner:empty{display:none}
-.banner-vid{width:100%;height:100%;object-fit:cover;object-position:center 45%;display:block}
-/* embedded look — revealed in stages after the crop settles:
-   .lit = drop shadow + edge fades; .lined = the themed accent hairline draws in */
-.site-banner.lit{box-shadow:0 26px 70px -12px rgba(0,0,0,.72)}
-.site-banner::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:1;opacity:0;transition:opacity 1.7s ease;
+/* the frame is the box that plays, then crops into the banner. It carries the
+   shadow + edge fades + accent line so they BUILD during the crop (last ~3s),
+   turning the video into the banner — not snapped on afterwards. */
+.intro-frame{position:absolute;left:0;width:100vw;height:56.25vw;top:calc(50vh - 28.125vw);overflow:hidden;
+  box-shadow:0 0 0 rgba(0,0,0,0);
+  transition:top .6s cubic-bezier(.5,0,.2,1),height .6s cubic-bezier(.5,0,.2,1),box-shadow 1.7s ease}
+.intro-vid{width:100%;height:100%;object-fit:cover;object-position:center 45%;display:block}
+.intro-frame.lit{box-shadow:0 26px 70px -12px rgba(0,0,0,.72)}
+.intro-frame::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:1;opacity:0;transition:opacity 1.7s ease;
   background:
     linear-gradient(180deg,rgba(10,13,11,.45),transparent 20%,transparent 55%,rgba(10,13,11,.99)),
     linear-gradient(90deg,rgba(10,13,11,.7),transparent 9%,transparent 91%,rgba(10,13,11,.7))}
-.site-banner.lit::after{opacity:1}
-.site-banner::before{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;z-index:2;
+.intro-frame.lit::after{opacity:1}
+.intro-frame::before{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;z-index:2;
   background:var(--grad);opacity:.75;transform:scaleX(0);transform-origin:left center;
   transition:transform 1s cubic-bezier(.4,0,.2,1)}
-.site-banner.lined::before{transform:scaleX(1)}
+.intro-frame.lined::before{transform:scaleX(1)}
+
+/* full-width banner — the video lands here after the crop; the shadow, edge
+   fades and accent line are already "on" (they built during the crop on the
+   frame), so the handoff is seamless. aspect-ratio 3.7:1 keeps the whole "ADI"
+   in frame and scales on resize. */
+.site-banner{position:relative;width:100%;aspect-ratio:3.7/1;max-height:58vh;min-height:120px;
+  overflow:hidden;background:#0a0d0b;box-shadow:0 26px 70px -12px rgba(0,0,0,.72)}
+.site-banner:empty{display:none}
+.banner-vid{width:100%;height:100%;object-fit:cover;object-position:center 45%;display:block}
+.site-banner::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:1;
+  background:
+    linear-gradient(180deg,rgba(10,13,11,.45),transparent 20%,transparent 55%,rgba(10,13,11,.99)),
+    linear-gradient(90deg,rgba(10,13,11,.7),transparent 9%,transparent 91%,rgba(10,13,11,.7))}
+.site-banner::before{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;z-index:2;
+  background:var(--grad);opacity:.75}
 
 /* welcome line — types itself in below the banner, greets, then fades away
    and collapses so the site builds itself in its place */
@@ -215,9 +224,11 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 
 <!-- intro video overlay: plays, then morphs into #heroBanner -->
 <div class="intro" id="intro">
-  <video class="intro-vid" id="introVid" playsinline muted autoplay preload="auto">
-    <source src="media/adi_welcome.mp4" type="video/mp4">
-  </video>
+  <div class="intro-frame" id="introFrame">
+    <video class="intro-vid" id="introVid" playsinline muted autoplay preload="auto">
+      <source src="media/adi_welcome.mp4" type="video/mp4">
+    </video>
+  </div>
 </div>
 
 <!-- full-width banner at the very top (the intro video lands here) -->
@@ -384,6 +395,7 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
   /* ---------- intro video → (crop begins mid-playback) → banner → stages → build ---------- */
   (function intro() {
     var overlay = document.getElementById('intro');
+    var frame = document.getElementById('introFrame');
     var vid = document.getElementById('introVid');
     var banner = document.getElementById('heroBanner');
     var body = document.body;
@@ -394,14 +406,17 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
     function bannerHeight() { return Math.max(MINH, Math.min(window.innerWidth / ASPECT, MAXVH * window.innerHeight)); }
     function seekEnd() { try { if (vid.duration && isFinite(vid.duration)) vid.currentTime = Math.max(0, vid.duration - 0.06); } catch (e) { } }
 
-    // Begin cropping the (still-playing) frame down into the banner shape + place,
-    // over `dur` seconds — so it eases into position instead of cutting at the end.
+    // During the last ~3s of playback: crop the (still-playing) frame into the
+    // banner AND build its shadow + accent line at the same time — so the frame
+    // elegantly turns into the banner as the video finishes (no hard cut).
     function startCrop(dur) {
-      if (cropStarted || !vid) return; cropStarted = true;
+      if (cropStarted || !frame) return; cropStarted = true;
       var H = bannerHeight();
-      vid.style.transition = 'top ' + dur + 's cubic-bezier(.4,0,.2,1), height ' + dur + 's cubic-bezier(.4,0,.2,1)';
-      vid.style.height = H + 'px';
-      vid.style.top = '0px';
+      frame.style.transition = 'top ' + dur + 's cubic-bezier(.4,0,.2,1),height ' + dur + 's cubic-bezier(.4,0,.2,1),box-shadow 1.7s ease';
+      frame.style.height = H + 'px';
+      frame.style.top = '0px';
+      requestAnimationFrame(function () { frame.classList.add('lit'); });          // shadow + edge fades cast in slowly
+      setTimeout(function () { frame.classList.add('lined'); }, reduce ? 0 : 500); // accent line draws left→right
     }
 
     // Video finished (or backstop): make sure the crop ran, hand the frame to the
@@ -414,17 +429,16 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
     function reveal() {
       if (settled) return; settled = true;
       if (guard) clearTimeout(guard);
+      // hand the video to the banner — which already shows the same shadow, edge
+      // fades and accent line the frame built during the crop, so there's no
+      // visible switch — then drop the overlay and build the page.
       if (vid && banner) {
         vid.pause(); vid.className = 'banner-vid'; vid.removeAttribute('style'); banner.appendChild(vid);
         if (vid.readyState >= 1) seekEnd(); else vid.addEventListener('loadedmetadata', seekEnd, { once: true });
       }
       if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
       body.classList.remove('intro-active');
-      // stage it: the shadow casts in slowly (~1.7s), THEN the green line draws
-      // left→right (~1s), THEN the welcome types and the site builds.
-      requestAnimationFrame(function () { if (banner) banner.classList.add('lit'); });
-      setTimeout(function () { if (banner) banner.classList.add('lined'); }, reduce ? 0 : 1500);
-      setTimeout(buildSite, reduce ? 0 : 2650);
+      setTimeout(buildSite, reduce ? 0 : 500); // a brief beat, then welcome + build
     }
     function fail() {
       if (settled) return; settled = true;
@@ -435,7 +449,7 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
       buildSite();
     }
 
-    if (!vid || !banner) { fail(); return; }
+    if (!vid || !frame || !banner) { fail(); return; }
     body.classList.add('intro-active');
     window.scrollTo(0, 0);
     vid.muted = true; vid.defaultMuted = true;
