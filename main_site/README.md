@@ -44,15 +44,27 @@ the KV namespace — the next login re-seeds it from `DEFAULT_PASS`.
   “support” link on the site: the hero button, the bio note, and the support card.
 - Photos / audio — upload via the Assets tab and use the worker URLs.
 
-## Intro video
+## Intro video → banner
 
-`index.html` plays `media/adi_welcome.mp4` full-screen on the first visit of a
-session, then morphs the final frame into the hero banner and reveals the page.
-It's `muted` + `autoplay` + `playsinline` (browsers only allow autoplay muted).
-Repeat visits in the same session skip the animation and show the last frame as
-the banner immediately; `prefers-reduced-motion` also skips straight to the banner.
-The video is served by GitHub Pages from `/media/` (2.3 MB) — swap the file (keep
-the name) to change the intro.
+`index.html` plays `media/adi_welcome.mp4` full-screen on load (`muted` +
+`autoplay` + `playsinline`). When it ends, the frozen last frame **crops to a
+centered strip, then rises to the top** to become the site banner, and the rest
+of the page reveals itself. There is no nav menu — visitors scroll.
+
+- The banner is full-bleed and uses `aspect-ratio: 3.7/1` (max 58vh) so the whole
+  "ADI" logo stays in frame and scales on any resize / resolution. The morph math
+  in the intro script mirrors those numbers (`ASPECT`, `MAXVH`, `MINH`).
+- Plays on **every load**. `prefers-reduced-motion` and blocked autoplay skip
+  straight to the banner frame; the "Skip intro" button jumps there too. (To make
+  it once-per-session instead, gate the intro on a `sessionStorage` flag.)
+- Served by GitHub Pages from `/media/` (2.3 MB) — swap the file (keep the name)
+  to change it.
+
+## Theme
+
+Palette is **emerald & walnut** on near-black (`--c1 #5eead4`, `--c2 #10b981`,
+`--c3 #c08a57`, `--bg #0a0d0b`) — pulled from the banner (chrome/foliage/wood).
+Change the `:root` variables in `index.html` (and `admin.html`) to reskin.
 
 ## Local dev
 

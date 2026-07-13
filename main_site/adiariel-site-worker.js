@@ -55,18 +55,18 @@ const ALLOWED_ORIGINS = [
 /* ---------------- default site content (every field editable in /admin) ---- */
 const DEFAULT_CONTENT = {
   meta: {
-    title: 'Adi Ariel — Psytrance, Collaborations & Free Tools',
-    description: 'Adi Ariel — one half of the psytrance duo Avastha. Music, collaborations, DJ gigs, and free tools built for the love of it. Support the lab on Patreon.'
+    title: 'Adi Ariel — Electronic Music, Collaborations & Free Tools',
+    description: 'Adi Ariel — electronic music producer and DJ, one half of the duo Avastha. Music, collaborations, gigs, and free tools built for the love of it. Support on Patreon.'
   },
   hero: {
-    kicker: 'PSYTRANCE · COLLABS · FREE TOOLS',
+    kicker: 'ELECTRONIC MUSIC · COLLABS · FREE TOOLS',
     title: 'Adi Ariel',
-    tagline: 'Psytrance producer, DJ, and vibe coder.',
-    intro: 'One half of the psytrance duo Avastha. I make music, play gigs, team up with other artists, and build little tools for the pure joy of it — all free. If any of it moves you, Patreon is what keeps it going.'
+    tagline: 'Electronic music producer, DJ, and vibe coder.',
+    intro: 'One half of the duo Avastha and a solo electronic music producer. I make music, play gigs, team up with other artists, and build little tools for the pure joy of it — all free. If any of it moves you, Patreon is what keeps it going.'
   },
   music: {
     heading: 'Music',
-    intro: 'Psytrance, first and always — as Avastha and solo.',
+    intro: 'Electronic music — as Avastha and solo.',
     avastha: {
       name: 'Avastha',
       body: 'My psytrance duo. Deep, driving night music — featured on the Sol Music compilation.',
