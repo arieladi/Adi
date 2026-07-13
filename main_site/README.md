@@ -51,12 +51,17 @@ the KV namespace — the next login re-seeds it from `DEFAULT_PASS`.
 centered strip, then rises to the top** to become the site banner, and the rest
 of the page reveals itself. There is no nav menu — visitors scroll.
 
-- The banner is full-bleed and uses `aspect-ratio: 3.7/1` (max 58vh) so the whole
-  "ADI" logo stays in frame and scales on any resize / resolution. The morph math
-  in the intro script mirrors those numbers (`ASPECT`, `MAXVH`, `MINH`).
-- Plays on **every load**. `prefers-reduced-motion` and blocked autoplay skip
-  straight to the banner frame; the "Skip intro" button jumps there too. (To make
-  it once-per-session instead, gate the intro on a `sessionStorage` flag.)
+- During playback the video is a **full-width 16:9 box centered vertically**, so
+  the whole frame shows at a sane size on any device (portrait phones letterbox
+  it instead of a fullscreen-cover zoom). The banner it settles into is full-bleed
+  `aspect-ratio: 3.7/1` (max 58vh) so the whole "ADI" logo stays in frame and
+  scales on any resize / resolution. The morph math mirrors those numbers
+  (`ASPECT`, `MAXVH`, `MINH`).
+- Plays on **every load** (no skip button, no once-per-session gate). Playback is
+  driven by JS `.play()` only — the `autoplay` attribute was removed because it
+  raced the JS call and made `.play()` reject on cached loads, which skipped the
+  intro. If a browser still blocks muted autoplay, the first user interaction
+  starts it; `prefers-reduced-motion` lands straight on the banner frame.
 - Served by GitHub Pages from `/media/` (2.3 MB) — swap the file (keep the name)
   to change it.
 
