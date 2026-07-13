@@ -63,21 +63,21 @@ a{color:inherit}
    aspect-ratio keeps the whole "ADI" in frame at every width; it scales on
    resize. 3.7:1 is tuned to the logo's bounding box in the 16:9 video. */
 .site-banner{position:relative;width:100%;aspect-ratio:3.7/1;max-height:58vh;min-height:120px;
-  overflow:hidden;background:#0a0d0b;box-shadow:0 0 0 rgba(0,0,0,0);transition:box-shadow .8s ease}
+  overflow:hidden;background:#0a0d0b;box-shadow:0 0 0 rgba(0,0,0,0);transition:box-shadow 1.7s ease}
 .site-banner:empty{display:none}
 .banner-vid{width:100%;height:100%;object-fit:cover;object-position:center 45%;display:block}
 /* embedded look — revealed in stages after the crop settles:
    .lit = drop shadow + edge fades; .lined = the themed accent hairline draws in */
 .site-banner.lit{box-shadow:0 26px 70px -12px rgba(0,0,0,.72)}
-.site-banner::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:1;opacity:0;transition:opacity .8s ease;
+.site-banner::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:1;opacity:0;transition:opacity 1.7s ease;
   background:
     linear-gradient(180deg,rgba(10,13,11,.45),transparent 20%,transparent 55%,rgba(10,13,11,.99)),
     linear-gradient(90deg,rgba(10,13,11,.7),transparent 9%,transparent 91%,rgba(10,13,11,.7))}
 .site-banner.lit::after{opacity:1}
 .site-banner::before{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;z-index:2;
-  background:var(--grad);opacity:0;transform:scaleX(0);transform-origin:center;
-  transition:opacity .5s ease,transform .8s cubic-bezier(.5,0,.2,1)}
-.site-banner.lined::before{opacity:.75;transform:scaleX(1)}
+  background:var(--grad);opacity:.75;transform:scaleX(0);transform-origin:left center;
+  transition:transform 1s cubic-bezier(.4,0,.2,1)}
+.site-banner.lined::before{transform:scaleX(1)}
 
 /* welcome line — types itself in below the banner, greets, then fades away
    and collapses so the site builds itself in its place */
@@ -93,9 +93,9 @@ a{color:inherit}
 /* hero */
 .hero{padding:30px 0 60px;text-align:center}
 .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.34em;text-transform:uppercase;color:var(--muted);margin:0 0 18px}
-.hero h1{margin:0;font-size:clamp(3rem,9vw,6.2rem);font-weight:700;letter-spacing:-.035em;line-height:1.02;
+.wordmark{margin:0 0 .15em;font-size:clamp(2.4rem,6vw,4.4rem);font-weight:700;letter-spacing:-.035em;line-height:1.02;
   background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
-  filter:drop-shadow(0 0 34px rgba(16,185,129,.25))}
+  filter:drop-shadow(0 0 30px rgba(16,185,129,.22))}
 .tagline{font-size:clamp(1.05rem,2.4vw,1.4rem);color:var(--text);margin:22px auto 10px;max-width:40ch}
 .intro-copy{color:var(--muted);max-width:64ch;margin:0 auto 34px}
 .cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
@@ -230,7 +230,6 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 <!-- hero -->
 <section class="hero"><div class="wrap">
 <p class="kicker rv" data-c="hero.kicker">ELECTRONIC MUSIC · COLLABS · FREE TOOLS</p>
-<h1 class="rv" data-c="hero.title">Adi Ariel</h1>
 <p class="tagline rv" data-c="hero.tagline">Electronic music producer, DJ, and vibe coder.</p>
 <p class="intro-copy rv" data-c="hero.intro">One half of the duo Avastha and a solo electronic music producer. I make music, play gigs, team up with other artists, and build little tools for the pure joy of it — all free. If any of it moves you, Patreon is what keeps it going.</p>
 <div class="cta rv">
@@ -298,6 +297,7 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 <!-- 04 about -->
 <section id="about" class="sec"><div class="wrap">
 <div class="sec-head rv"><span class="num">04</span><h2 data-c="about.heading">About</h2><span class="rule"></span></div>
+<h1 class="wordmark rv" data-c="hero.title">Adi Ariel</h1>
 <p class="sec-intro rv" data-c="about.body">Adi Ariel — electronic music producer and DJ, one half of the psytrance duo Avastha, and a hands-on vibe coder. Music, gigs, collaborations, and free tools — this site is the home for all of it.</p>
 <article class="card feature contactcard rv">
 <p class="say">SAY HI</p>
@@ -361,7 +361,7 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
     var i = 0;
     (function tick() {
       txt.textContent = WELCOME.slice(0, i);
-      if (i++ < WELCOME.length) setTimeout(tick, 52); // slow enough to read
+      if (i++ < WELCOME.length) setTimeout(tick, 72); // slow enough to read comfortably
       else done();
     })();
   }
@@ -420,10 +420,11 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
       }
       if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
       body.classList.remove('intro-active');
-      // stage: shadow + edge fades → the green line draws in → welcome + build
+      // stage it: the shadow casts in slowly (~1.7s), THEN the green line draws
+      // left→right (~1s), THEN the welcome types and the site builds.
       requestAnimationFrame(function () { if (banner) banner.classList.add('lit'); });
-      setTimeout(function () { if (banner) banner.classList.add('lined'); }, reduce ? 0 : 650);
-      setTimeout(buildSite, reduce ? 0 : 1250);
+      setTimeout(function () { if (banner) banner.classList.add('lined'); }, reduce ? 0 : 1500);
+      setTimeout(buildSite, reduce ? 0 : 2650);
     }
     function fail() {
       if (settled) return; settled = true;
