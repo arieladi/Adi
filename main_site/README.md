@@ -77,7 +77,10 @@ Always animates (no reduced-motion short-circuit). There is no nav menu — visi
   interaction if a browser blocks muted autoplay, and never skips the video.
   `prefers-reduced-motion` plays the video but skips the crop/rise + typewriter.
 - Served by GitHub Pages from `/media/` (2.3 MB) — swap the file (keep the name)
-  to change it.
+  to change it. A `poster` (`media/adi_welcome_poster.jpg`, the video's first
+  frame) shows instantly while the video buffers, so the first load opens on the
+  scene instead of a blank dark screen. Regenerate it after swapping the video:
+  `ffmpeg -ss 0 -i media/adi_welcome.mp4 -frames:v 1 -q:v 4 media/adi_welcome_poster.jpg -y`.
 
 ## Sections
 
