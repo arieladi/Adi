@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "HEB ENG MIX FIX",
+  "version": "1.0.0",
+  "description": "Auto-fixes Hebrew text accidentally typed with an English keyboard layout (e.g. \"tbh nkl vguko\" → \"אני מלך העולם\").",
+  "permissions": ["storage"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "HEB ENG MIX FIX",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["hebrew_dict.js", "hebrew_map.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

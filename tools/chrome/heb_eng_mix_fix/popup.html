@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HEB ENG MIX FIX</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="head">
+    <img src="icons/icon48.png" alt="" class="logo" />
+    <div class="titles">
+      <h1>HEB ENG MIX FIX</h1>
+      <p class="sub">אנגלית → עברית</p>
+    </div>
+  </header>
+
+  <!-- Master ON/OFF -->
+  <div class="row">
+    <label for="enabled" class="row-label">
+      <span class="row-title">Enabled</span>
+      <span class="row-desc">Auto-fix mistyped Hebrew</span>
+    </label>
+    <label class="switch">
+      <input type="checkbox" id="enabled" />
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <!-- Manual / Automatic mode -->
+  <div class="row">
+    <label for="manual" class="row-label">
+      <span class="row-title">Manual mode</span>
+      <span class="row-desc">Off: fix as you type · On: select + <kbd>Ctrl</kbd>+<kbd>E</kbd></span>
+    </label>
+    <label class="switch">
+      <input type="checkbox" id="manual" />
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <!-- Aggressive mode (automatic mode only) -->
+  <div class="row">
+    <label for="aggressive" class="row-label">
+      <span class="row-title">Aggressive mode</span>
+      <span class="row-desc">Convert any word, not just dictionary matches</span>
+    </label>
+    <label class="switch">
+      <input type="checkbox" id="aggressive" />
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <footer class="foot" id="status">Loading…</footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
