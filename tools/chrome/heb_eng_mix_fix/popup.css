@@ -1,0 +1,83 @@
+/* popup.css — HEB ENG MIX FIX */
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a2e;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --border: #e5e7eb;
+  --panel: #f8fafc;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14151a;
+    --fg: #f1f2f6;
+    --muted: #9aa0ac;
+    --accent: #4f8cff;
+    --border: #2a2c33;
+    --panel: #1c1e26;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 300px;
+  margin: 0;
+  padding: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.logo { width: 34px; height: 34px; border-radius: 8px; }
+.titles h1 { margin: 0; font-size: 15px; letter-spacing: .2px; }
+.sub { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 8px;
+}
+.row-label { display: flex; flex-direction: column; cursor: pointer; }
+.row-title { font-size: 13px; font-weight: 600; }
+.row-desc { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+/* iOS-style toggle */
+.switch { position: relative; display: inline-block; width: 42px; height: 24px; flex: 0 0 auto; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute; inset: 0; cursor: pointer;
+  background: var(--border); border-radius: 24px; transition: background .18s;
+}
+.slider::before {
+  content: ""; position: absolute; height: 18px; width: 18px; left: 3px; top: 3px;
+  background: #fff; border-radius: 50%; transition: transform .18s;
+  box-shadow: 0 1px 2px rgba(0,0,0,.3);
+}
+.switch input:checked + .slider { background: var(--accent); }
+.switch input:checked + .slider::before { transform: translateX(18px); }
+.switch input:disabled + .slider { opacity: .45; cursor: not-allowed; }
+
+kbd {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.foot { margin-top: 10px; font-size: 11px; color: var(--muted); text-align: center; min-height: 14px; }
