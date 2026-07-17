@@ -20,16 +20,20 @@ sentences.
 
 ## Layer B — the idle spell-checker (Grammarly-style)
 
-**3 seconds after you pause typing**, the recent text (last ~300 chars) goes to
-the service worker, which queries the **Google Suggest API**
-(`suggestqueries.google.com`, `client=chrome&hl=iw`) with the whole phrase —
-single words only produce autocomplete noise ("helo"→"helos"), but phrases get
-real corrections ("helo wrold how are yu" → "hello world how are you").
+**3 seconds after you pause typing**, the recent text (last ~300 chars) is
+split into **overlapping 3-word chunks** and each unseen chunk is checked via
+the **Google Suggest API** (`suggestqueries.google.com`, `client=chrome&hl=iw`).
+Chunking matters, probed live: single words only produce autocomplete noise
+("helo"→"helos") and long conversational sentences return nothing at all —
+but short query-like chunks get real corrections ("now chec the"→"now check").
+Chunks are cached, so pausing again only re-checks text that changed
+(≤6 API calls per pause, newest text first).
 
-The response is then **word-diffed (LCS alignment)** against what you typed, so
+Each response is **word-diffed (LCS alignment)** against what you typed, so
 ALL misspelled words come back as individual fixes while Google's habit of
-appending words ("… spam emails") or dropping them never leaks in — only
-similar replacement blocks survive. Works for English and Hebrew typos alike.
+appending words ("… spam emails") or dropping them ("the spel why"→"the spell")
+never leaks in — within a changed block, the fix targets only the best-matching
+sub-range. Works for English and Hebrew typos alike.
 
 A floating panel below the caret lists every fix:
 

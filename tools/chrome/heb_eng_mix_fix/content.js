@@ -67,8 +67,10 @@
   let idleCtx = null;                 // context the timer was armed for
   let pending = null;                 // {el,isField,node,phrase,fixes:[...]} behind the panel
   let applying = false;               // our own edits must not re-arm the timer
-  const phraseCache = new Map();      // phrase -> fixes|null (avoid re-querying)
+  let passId = 0;                     // invalidates stale async pass results
+  const chunkCache = new Map();       // chunk text -> fixes|null (avoid re-querying)
   const dismissed = new Set();        // "bad→good" keys the user ✕-ed away
+  const MAX_CHUNK_QUERIES = 6;        // API calls allowed per idle pass
 
   // ---- element helpers ------------------------------------------------------
 
@@ -322,33 +324,80 @@
     return { phrase, base, node };
   }
 
-  /** The idle pass: query background, then show every misspelling found. */
+  /**
+   * Split a phrase into overlapping 3-word chunks (stride 2). Probed live:
+   * Google Suggest only spell-corrects SHORT query-like phrases — a whole
+   * conversational sentence returns nothing, but "now chec the" → "now check".
+   * Overlap gives every interior word a chunk where it has context both sides.
+   */
+  function chunkPhrase(phrase) {
+    const words = [];
+    const re = /\S+/g;
+    let m;
+    while ((m = re.exec(phrase))) words.push({ w: m[0], i: m.index });
+    const chunks = [];
+    for (let i = 0; i < words.length; i += 2) {
+      const grp = words.slice(i, i + 3);
+      if (grp.length < 2 && chunks.length) break; // lone trailing word: covered
+      const start = grp[0].i;
+      const end = grp[grp.length - 1].i + grp[grp.length - 1].w.length;
+      const text = phrase.slice(start, end);
+      if (/[a-zA-Zא-ת]/.test(text)) chunks.push({ text, offset: start });
+      if (grp.length < 3) break;
+    }
+    return chunks;
+  }
+
+  /** The idle pass: check each chunk, then show every misspelling found. */
   function runSpellcheck() {
     const ctx = idleCtx;
     if (!ctx || !settings.enabled || settings.manual || !settings.online) return;
     if (mode === "override" || UI.badgeVisible()) return;
-    if (document.activeElement !== ctx.el &&
-        !(ctx.el.contains && ctx.el.contains(document.activeElement))) return;
+    // The focused element may be an ANCESTOR of the editable (custom elements
+    // with delegatesFocus, e.g. Gemini's rich-textarea) — accept both shapes.
+    const ae = document.activeElement;
+    const focusOk = ae && (ae === ctx.el ||
+      (ctx.el.contains && ctx.el.contains(ae)) ||
+      (ae.contains && ae.contains(ctx.el)));
+    if (!focusOk) return;
 
     const snap = snapshotPhrase(ctx);
     if (!snap) return;
 
-    const deliver = (fixes) => {
-      if (!fixes || !fixes.length) return;
-      if (mode === "override") return;
+    const chunks = chunkPhrase(snap.phrase);
+    if (!chunks.length) return;
+
+    const myPass = ++passId;
+    const collected = [];
+    let waiting = 0;
+    let budget = MAX_CHUNK_QUERIES;
+
+    const finish = () => {
+      if (waiting > 0 || myPass !== passId) return;
+      if (mode === "override" || !collected.length) return;
       // The text must not have changed while we were fetching.
       const nowFull = ctx.isField ? ctx.el.value : snap.node && snap.node.data;
-      if (!nowFull || nowFull.slice(snap.base, snap.base + snap.phrase.length) !== snap.phrase) return;
+      if (!nowFull ||
+          nowFull.slice(snap.base, snap.base + snap.phrase.length) !== snap.phrase) return;
 
-      const usable = fixes
-        .map((f) => ({
+      // Merge: absolute offsets, first-wins on identical/overlapping spans.
+      collected.sort((a, b) => a.start - b.start || a.end - b.end);
+      const usable = [];
+      let lastEnd = -1;
+      for (const f of collected) {
+        if (f.start < lastEnd) continue;                    // overlaps previous
+        const bad = snap.phrase.slice(f.start, f.end);
+        const fix = {
           start: snap.base + f.start,
           end: snap.base + f.end,
-          bad: snap.phrase.slice(f.start, f.end),
+          bad,
           text: f.text,
-          key: snap.phrase.slice(f.start, f.end) + "→" + f.text
-        }))
-        .filter((f) => !dismissed.has(f.key) && f.bad !== f.text);
+          key: bad + "→" + f.text
+        };
+        if (dismissed.has(fix.key) || fix.bad === fix.text) continue;
+        usable.push(fix);
+        lastEnd = f.end;
+      }
       if (!usable.length) return;
 
       pending = { el: ctx.el, isField: ctx.isField, node: snap.node, fixes: usable };
@@ -359,20 +408,44 @@
       });
     };
 
-    if (phraseCache.has(snap.phrase)) {
-      deliver(phraseCache.get(snap.phrase));
-      return;
-    }
-    try {
-      chrome.runtime.sendMessage(
-        { type: "hebfix-suggest", text: snap.phrase },
-        (fixes) => {
-          if (chrome.runtime.lastError) return;
-          phraseCache.set(snap.phrase, fixes || null);
-          deliver(fixes);
+    const absorb = (chunk, fixes) => {
+      if (fixes) {
+        for (const f of fixes) {
+          collected.push({
+            start: chunk.offset + f.start,
+            end: chunk.offset + f.end,
+            text: f.text
+          });
         }
-      );
-    } catch (e) { /* extension reloaded mid-page — ignore */ }
+      }
+    };
+
+    // Newest text first: if the query budget runs out, the chunks nearest the
+    // caret still get checked.
+    for (const chunk of chunks.slice().reverse()) {
+      if (chunkCache.has(chunk.text)) {
+        absorb(chunk, chunkCache.get(chunk.text));
+        continue;
+      }
+      if (budget-- <= 0) continue;
+      waiting++;
+      try {
+        chrome.runtime.sendMessage(
+          { type: "hebfix-suggest", text: chunk.text },
+          (fixes) => {
+            waiting--;
+            if (!chrome.runtime.lastError) {
+              chunkCache.set(chunk.text, fixes || null);
+              absorb(chunk, fixes);
+            }
+            finish();
+          }
+        );
+      } catch (e) {
+        waiting--; // extension reloaded mid-page — ignore
+      }
+    }
+    finish(); // covers the all-cached case
   }
 
   /** Current text of a fix's range, to confirm the DOM hasn't moved on. */
