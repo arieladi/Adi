@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>עדי אריאל — מוזיקה אלקטרונית, קולבורציות וכלים חינמיים</title>
+<meta name="description" content="עדי אריאל — מפיק ודי-ג'יי של מוזיקה אלקטרונית, חצי מהצמד אווסטה. מוזיקה, קולבורציות, הופעות וכלים חינמיים שנבנו מאהבה. תמיכה ב-Patreon.">
+<link rel="canonical" href="https://adiariel.com/he/">
+<link rel="alternate" hreflang="en" href="https://adiariel.com/">
+<link rel="alternate" hreflang="he" href="https://adiariel.com/he/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="עדי אריאל — מוזיקה אלקטרונית, קולבורציות וכלים חינמיים">
+<meta property="og:description" content="מפיק מוזיקה אלקטרונית, די-ג'יי ו-vibe coder. מוזיקה, קולבורציות, הופעות וכלים חינמיים — תמיכה ב-Patreon.">
+<meta property="og:url" content="https://adiariel.com/he/">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#080c14">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* adiariel.com/he — Hebrew (RTL) mirror of the English GitHub Pages site.
+   Same layout, typography scale and intro→banner choreography; blue palette
+   pulled from the Hebrew logo video, and a globe language toggle to the English
+   site. Text is static Hebrew; only shared link URLs hydrate from the worker. */
+:root{
+  --bg:#080c14; --panel:#0d121c; --line:rgba(255,255,255,.08); --line-2:rgba(255,255,255,.16);
+  --text:#e9eef7; --muted:#93a2b8;
+  --c1:#5cc8ff; --c2:#2f7ef0; --c3:#b58cff;
+  --grad:linear-gradient(90deg,var(--c1),var(--c2) 50%,var(--c3));
+  --r:18px;
+  --sans:'Heebo',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+body.intro-active{overflow:hidden}
+::selection{background:rgba(47,126,240,.35)}
+body::before{content:'';position:fixed;inset:0;z-index:-2;pointer-events:none;
+  background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+  background-size:44px 44px;
+  -webkit-mask-image:radial-gradient(ellipse 90% 65% at 50% -5%,#000 25%,transparent 78%);
+  mask-image:radial-gradient(ellipse 90% 65% at 50% -5%,#000 25%,transparent 78%)}
+.orbs{position:fixed;inset:0;z-index:-3;overflow:hidden;pointer-events:none}
+.orbs i{position:absolute;border-radius:50%}
+.o1{width:60vw;height:60vw;left:-18vw;top:-22vw;background:radial-gradient(circle,rgba(47,126,240,.18),rgba(47,126,240,.06) 40%,transparent 68%)}
+.o2{width:54vw;height:54vw;right:-16vw;bottom:-20vw;background:radial-gradient(circle,rgba(181,140,255,.14),rgba(181,140,255,.05) 40%,transparent 68%)}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+a{color:inherit}
+.ico{width:18px;height:18px;flex:none}
+
+/* language toggle (to the English site) */
+.langswitch{position:fixed;top:14px;inset-inline-end:16px;z-index:30;display:inline-flex;align-items:center;gap:7px;
+  padding:.42rem .85rem;border:1px solid var(--line-2);border-radius:999px;background:rgba(8,12,20,.6);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);font-family:var(--mono);font-size:.74rem;
+  letter-spacing:.06em;color:var(--muted);text-decoration:none;opacity:0;transition:opacity .6s ease,color .25s,border-color .25s}
+body.built .langswitch{opacity:1}
+.langswitch:hover{color:var(--text);border-color:rgba(255,255,255,.4)}
+.langswitch .ico{width:14px;height:14px}
+
+/* ---- intro video (plays, then crops + rises into the banner) ---- */
+.intro{position:fixed;inset:0;z-index:9999;overflow:hidden;background:#080c14}
+.intro-frame{position:absolute;left:0;width:100vw;height:56.25vw;top:calc(50vh - 28.125vw);overflow:hidden;
+  box-shadow:0 0 0 rgba(0,0,0,0);
+  transition:top .6s cubic-bezier(.5,0,.2,1),height .6s cubic-bezier(.5,0,.2,1),box-shadow 1.7s ease}
+.intro-vid{width:100%;height:100%;object-fit:cover;object-position:center 50%;display:block}
+.intro-frame.lit{box-shadow:0 26px 70px -12px rgba(0,0,0,.72)}
+.intro-frame::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:1;opacity:0;transition:opacity 1.7s ease;
+  background:
+    linear-gradient(180deg,rgba(8,12,20,.45),transparent 20%,transparent 55%,rgba(8,12,20,.99)),
+    linear-gradient(90deg,rgba(8,12,20,.7),transparent 9%,transparent 91%,rgba(8,12,20,.7))}
+.intro-frame.lit::after{opacity:1}
+.intro-frame::before{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;z-index:2;
+  background:var(--grad);opacity:.75;transform:scaleX(0);transform-origin:left center;
+  transition:transform 1s cubic-bezier(.4,0,.2,1)}
+.intro-frame.lined::before{transform:scaleX(1)}
+
+/* full-width banner — the video lands here after the crop */
+.site-banner{position:relative;width:100%;aspect-ratio:3.7/1;max-height:58vh;min-height:120px;
+  overflow:hidden;background:#080c14;box-shadow:0 26px 70px -12px rgba(0,0,0,.72)}
+.site-banner:empty{display:none}
+.banner-vid,.banner-img{width:100%;height:100%;object-fit:cover;object-position:center 50%;display:block}
+.site-banner::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:1;
+  background:
+    linear-gradient(180deg,rgba(8,12,20,.45),transparent 20%,transparent 55%,rgba(8,12,20,.99)),
+    linear-gradient(90deg,rgba(8,12,20,.7),transparent 9%,transparent 91%,rgba(8,12,20,.7))}
+.site-banner::before{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;z-index:2;
+  background:var(--grad);opacity:.75}
+
+/* welcome line — types itself in below the banner, greets, then fades away */
+.welcome{margin:0 auto;max-width:1120px;padding:64px 24px;text-align:center;font-family:var(--mono);
+  font-size:clamp(1rem,2.6vw,1.55rem);letter-spacing:.01em;color:var(--muted);min-height:2.2em;overflow:hidden;
+  transition:opacity .55s ease,transform .55s ease,padding .55s ease,min-height .55s ease}
+.welcome .welcome-txt{color:var(--text)}
+.welcome .caret{display:inline-block;width:.55ch;color:var(--c2);margin-right:2px;animation:blink 1.05s step-end infinite}
+.welcome.bye{opacity:0;transform:translateY(-12px);padding-top:0;padding-bottom:0;min-height:0;pointer-events:none}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+@media (prefers-reduced-motion:reduce){.welcome .caret{animation:none}}
+
+/* hero */
+.hero{padding:30px 0 60px;text-align:center}
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.14em;color:var(--muted);margin:0 0 18px}
+.wordmark{margin:0 0 .15em;font-size:clamp(2.4rem,6vw,4.4rem);font-weight:700;letter-spacing:-.01em;line-height:1.06;
+  background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
+  filter:drop-shadow(0 0 30px rgba(47,126,240,.22))}
+.tagline{font-size:clamp(1.05rem,2.4vw,1.4rem);color:var(--text);margin:22px auto 10px;max-width:44ch}
+.intro-copy{color:var(--muted);max-width:64ch;margin:0 auto 34px}
+.cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+
+/* buttons & pills */
+.btn{display:inline-flex;align-items:center;gap:9px;padding:.78rem 1.35rem;border-radius:999px;
+  font-weight:600;font-size:.95rem;text-decoration:none;border:1px solid var(--line-2);cursor:pointer;
+  transition:transform .3s,box-shadow .3s,border-color .3s,background .3s}
+.btn.primary{background:var(--grad);color:#06101f;border-color:transparent;font-weight:700}
+.btn.primary:hover{transform:translateY(-2px);box-shadow:0 8px 34px rgba(47,126,240,.4)}
+.btn.ghost{color:var(--text);background:rgba(255,255,255,.02)}
+.btn.ghost:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.34)}
+.btn.heart{color:var(--c3);background:rgba(181,140,255,.08);border-color:rgba(181,140,255,.4)}
+.btn.heart:hover{transform:translateY(-2px);background:rgba(181,140,255,.16)}
+.pills{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+.pills.center{justify-content:center}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:.5rem .95rem;border:1px solid var(--line-2);
+  border-radius:999px;font-family:var(--mono);font-size:.8rem;color:var(--muted);text-decoration:none;
+  transition:color .25s,border-color .25s,transform .25s}
+.pill:hover{color:var(--text);border-color:rgba(255,255,255,.4);transform:translateY(-1px)}
+.pill .ico{width:15px;height:15px}
+
+/* sections */
+.sec{padding:clamp(64px,8vw,104px) 0;scroll-margin-top:24px}
+.sec-head{display:flex;align-items:center;gap:16px;margin-bottom:10px}
+.num{font-family:var(--mono);font-size:.85rem;background:var(--grad);
+  -webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:.1em}
+.sec-head h2{margin:0;font-size:clamp(1.7rem,4vw,2.4rem);letter-spacing:-.01em}
+.rule{flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--line-2))}
+.sec-intro{color:var(--muted);margin:0 0 36px;max-width:64ch}
+
+/* cards */
+.grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+.grid.two{grid-template-columns:repeat(2,1fr)}
+@media (max-width:760px){.grid.two{grid-template-columns:1fr}}
+.card{position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.012));
+  border:1px solid var(--line);border-radius:var(--r);padding:26px 26px 24px;
+  transition:transform .35s,border-color .35s,box-shadow .35s}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--grad);
+  opacity:0;transition:opacity .35s}
+.card:hover{transform:translateY(-4px);border-color:var(--line-2);box-shadow:0 16px 48px rgba(0,0,0,.5)}
+.card:hover::before{opacity:.9}
+.card h3{margin:0 0 8px;font-size:1.12rem;letter-spacing:-.01em}
+.card p{margin:0;color:var(--muted);font-size:.95rem}
+.card .btn{margin-top:18px}
+.badge{width:44px;height:44px;border-radius:13px;display:grid;place-items:center;margin-bottom:16px;
+  border:1px solid var(--line);background:rgba(255,255,255,.03)}
+.badge .ico{width:20px;height:20px}
+.badge.a1{color:var(--c1)}.badge.a2{color:var(--c2)}.badge.a3{color:var(--c3)}
+.idx{font-family:var(--mono);font-size:.8rem;color:var(--muted);opacity:.7;margin-bottom:12px}
+.cardlink{display:inline-flex;align-items:center;gap:6px;margin-top:16px;font-family:var(--mono);
+  font-size:.8rem;letter-spacing:.06em;color:var(--c1);text-decoration:none}
+.cardlink:hover{text-decoration:underline}
+.cardlink .ico{width:14px;height:14px}
+.aftergrid{margin:26px 0 0;text-align:center}
+
+/* feature (avastha) */
+.card.feature{grid-column:1/-1;padding:clamp(28px,5vw,48px);margin-bottom:18px}
+.feature-txt{position:relative;z-index:1;max-width:56ch}
+.chip{display:inline-flex;align-items:center;gap:8px;padding:5px 13px;border:1px solid var(--line-2);
+  border-radius:999px;font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;
+  color:var(--muted);margin-bottom:18px}
+.cdot{width:6px;height:6px;border-radius:50%;background:var(--grad)}
+h3.avastha{font-size:clamp(2rem,5.5vw,3.2rem);letter-spacing:.28em;text-transform:uppercase;direction:ltr;
+  margin:0 0 12px;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.card.feature p{max-width:52ch;font-size:1rem}
+.watermark{position:absolute;left:-1%;bottom:-14%;font-size:clamp(4rem,13vw,9rem);font-weight:700;
+  letter-spacing:.18em;text-transform:uppercase;direction:ltr;color:transparent;
+  -webkit-text-stroke:1px rgba(255,255,255,.055);pointer-events:none;white-space:nowrap;z-index:0}
+.card.collab{background:linear-gradient(135deg,rgba(92,200,255,.08),rgba(47,126,240,.10) 55%,rgba(181,140,255,.08))}
+.card.patreon{background:linear-gradient(135deg,rgba(92,200,255,.10),rgba(47,126,240,.12) 50%,rgba(181,140,255,.12))}
+
+/* bio / tools */
+.bio-lead{color:var(--muted);max-width:64ch;margin:0 0 28px;font-size:1.02rem}
+.bio-note{margin:26px 0 0;padding:16px 20px;border:1px solid rgba(181,140,255,.35);border-radius:14px;
+  background:rgba(181,140,255,.06);color:var(--text);font-size:.95rem;display:flex;gap:12px;align-items:flex-start}
+.bio-note .ico{color:var(--c3);margin-top:2px}
+.bio-note a{color:var(--c3);font-weight:600;text-decoration:none;white-space:nowrap}
+.bio-note a:hover{text-decoration:underline}
+
+/* contact */
+.contactcard{text-align:center;margin-bottom:0}
+.say{font-family:var(--mono);font-size:.72rem;letter-spacing:.18em;color:var(--muted);margin:0 0 14px}
+.bigmail{display:inline-block;font-size:clamp(1.3rem,4.4vw,2.3rem);font-weight:600;letter-spacing:-.02em;direction:ltr;
+  text-decoration:none;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
+  border-bottom:1px solid var(--line-2);padding-bottom:6px;transition:filter .3s}
+.bigmail:hover{filter:brightness(1.25)}
+.mailnote{color:var(--muted);margin:14px 0 8px}
+
+/* footer */
+footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
+  font-family:var(--mono);font-size:.78rem;color:var(--muted)}
+.adminlink{color:var(--muted);opacity:.55;text-decoration:none}
+.adminlink:hover{opacity:1;color:var(--text)}
+
+/* reveal */
+.rv{opacity:0;transform:translateY(16px);transition:opacity .7s ease,transform .7s cubic-bezier(.16,1,.3,1)}
+.rv.in{opacity:1;transform:none}
+.grid .rv:nth-child(2){transition-delay:.07s}
+.grid .rv:nth-child(3){transition-delay:.14s}
+.grid .rv:nth-child(4){transition-delay:.21s}
+:focus-visible{outline:2px solid var(--c1);outline-offset:3px;border-radius:4px}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .rv{opacity:1;transform:none;transition:none}
+  .card,.btn,.pill{transition:none}
+}
+@media (max-width:640px){
+  .watermark{display:none}
+}
+</style>
+</head>
+<body>
+<div class="orbs" aria-hidden="true"><i class="o1"></i><i class="o2"></i></div>
+
+<a class="langswitch" href="/" aria-label="English site" hreflang="en"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"/></svg>EN</a>
+
+<!-- intro video overlay: plays, then morphs into #heroBanner -->
+<div class="intro" id="intro">
+  <div class="intro-frame" id="introFrame">
+    <video class="intro-vid" id="introVid" playsinline muted autoplay preload="auto" poster="/media/adi_heb_logo_poster.jpg">
+      <source src="/media/adi_heb_logo.mp4" type="video/mp4">
+    </video>
+  </div>
+</div>
+
+<!-- full-width banner at the very top: the still of the video's final frame (your
+     5.00s cut). The intro video crops down onto exactly this frame, then the
+     overlay drops — so the handoff is seamless and the banner never depends on
+     the video playing/seeking. -->
+<div class="site-banner" id="heroBanner"><img class="banner-img" src="/media/adi_heb_logo_end.jpg" alt="עדי אריאל"></div>
+
+<main id="top">
+
+<p class="welcome" id="welcome" aria-label="ברוכים הבאים לאתר של עדי — הבית לכל מה שקשור לעדי אריאל"><span class="welcome-txt" id="welcomeTxt"></span><span class="caret" id="welcomeCaret" aria-hidden="true">▌</span></p>
+
+<!-- hero -->
+<section class="hero"><div class="wrap">
+<p class="kicker rv">מוזיקה אלקטרונית · קולבורציות · כלים חינמיים</p>
+<p class="tagline rv">מפיק מוזיקה אלקטרונית, די-ג'יי ו-vibe coder.</p>
+<p class="intro-copy rv">חצי מהצמד אווסטה ומפיק סולו של מוזיקה אלקטרונית. אני יוצר מוזיקה, מנגן בהופעות, משתף פעולה עם אמנים אחרים ובונה כלים קטנים מתוך אהבה טהורה — הכול חינם. אם משהו מכל זה מדבר אליכם, Patreon הוא מה שמחזיק את הכול.</p>
+<div class="cta rv">
+<a class="btn primary" href="#music"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg>להאזנה למוזיקה</a>
+<a class="btn heart" data-href="support.url" href="https://www.patreon.com" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>לתמיכה ב-Patreon</a>
+</div>
+</div></section>
+
+<!-- 01 מוזיקה אלקטרונית -->
+<section id="music" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">01</span><h2>מוזיקה אלקטרונית</h2><span class="rule"></span></div>
+<p class="sec-intro rv">כאווסטה ובסולו — לילות פסיטראנס וסשנים באולפן.</p>
+<article class="card feature rv"><div class="feature-txt">
+<span class="chip"><i class="cdot"></i><span>מתוך האוסף Sol Music</span></span>
+<h3 class="avastha">Avastha</h3>
+<p>צמד הפסיטראנס שלי. מוזיקת לילה עמוקה ודוחפת — נכללה באוסף Sol Music.</p>
+<a class="btn primary" data-href="music.avastha.url" href="https://avastha.info" target="_blank" rel="noopener">avastha.info <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a>
+</div><span class="watermark" aria-hidden="true">Avastha</span></article>
+<div class="grid">
+<article class="card rv"><div class="badge a1"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg></div>
+<h3>סולו — סשנים וסטים</h3><p>טראקים, ניסויים וסטים של די-ג'יי תחת השם שלי, ב-SoundCloud.</p>
+<div class="pills" id="sc-pills">
+<a class="pill" href="https://soundcloud.com/music_adi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>music_adi</span></a>
+<a class="pill" href="https://soundcloud.com/adiariel" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>adiariel</span></a>
+</div></article>
+</div>
+</div></section>
+
+<!-- 02 קולבורציות -->
+<section id="collabs" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">02</span><h2>קולבורציות</h2><span class="rule"></span></div>
+<p class="sec-intro rv">בואו ניצור משהו — או ננגן איפשהו — ביחד.</p>
+<div class="grid two">
+<article class="card collab rv"><div class="badge a2"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+<h3>שיתופי פעולה ורמיקסים</h3><p>פתוח לשיתופי פעולה, רמיקסים וסטים B2B. אם אתם יוצרים מוזיקה שמדברת אליי — דברו איתי. תומכים שומעים את היצירות בתהליך ראשונים.</p>
+<a class="btn ghost" href="#about">ליצירת קשר <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
+<article class="card rv"><div class="badge a1"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13M9 9l12-2M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 19a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/></svg></div>
+<h3>הזמנת הופעה</h3><p>סטים של די-ג'יי והופעות חיות למועדונים, פסטיבלים ואירועים פרטיים. שלחו לי תאריכים ונגרום לזה לקרות.</p>
+<a class="btn ghost" id="gig-btn" href="mailto:office@adiariel.com"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></svg>להזמנה</a></article>
+</div>
+</div></section>
+
+<!-- 03 כלים -->
+<section id="tools" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">03</span><h2>כלים</h2><span class="rule"></span></div>
+<p class="bio-lead rv">אני גם vibe coder — בונה כלים קטנים ושימושיים מתוך כיף, ומשחרר כל אחד מהם בחינם, בלי שום תנאי.</p>
+<div class="grid two">
+<article class="card rv"><div class="idx">01</div>
+<h3>Console — תוסף Stream Deck</h3><p>מחשבון דיליי/ריברב מבוסס BPM, נומפד ברמת מערכת וכלי תדרים לתווים ל-Stream Deck + XL.</p>
+<a class="cardlink" href="https://github.com/arieladi/Adi/tree/main/tools/elgato_stream_deck_plugins/com.adiariel.console.sdPlugin" target="_blank" rel="noopener">לקוד המקור <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
+<article class="card rv"><div class="idx">02</div>
+<h3>RekordBox MIDI — תוסף Stream Deck</h3><p>הופך את ה-Stream Deck + XL לשלט MIDI וירטואלי ל-rekordbox במצב PERFORMANCE: hot cues, טרנספורט, jog nudge ודיסקיות מיקסר.</p>
+<a class="cardlink" href="https://github.com/arieladi/Adi/tree/main/tools/elgato_stream_deck_plugins/com.adiariel.rekordbox.sdPlugin" target="_blank" rel="noopener">לקוד המקור <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
+<article class="card rv"><div class="idx">03</div>
+<h3>RTL/LTR Auto Direction — תוסף לכרום</h3><p>מחליף אוטומטית את כיוון הטקסט לפי השפה שאתם מקלידים. אפס הרשאות.</p>
+<a class="cardlink" href="https://github.com/arieladi/Adi/tree/main/tools/chrome/rtl_extension" target="_blank" rel="noopener">לקוד המקור <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
+<article class="card rv"><div class="idx">04</div>
+<h3>Rekordbox Cue Counter — כלי ווב</h3><p>טיימר לסט של די-ג'יי סביב דפי cue של rekordbox — ספירה לאחור חיה לבוט'.</p>
+<a class="cardlink" href="https://github.com/arieladi/Adi/tree/main/tools/rekordbox_que_counter" target="_blank" rel="noopener">לקוד המקור <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
+</div>
+<p class="bio-note rv"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span>הם יישארו חינמיים, תמיד. אם כלי חוסך לכם זמן, תרומה ב-Patreon היא מה ששומר עליהם חינמיים ומביא חדשים.</span>&nbsp;<a data-href="support.url" href="https://www.patreon.com" target="_blank" rel="noopener">לתמיכה →</a></p>
+<p class="aftergrid rv"><a class="btn ghost" data-href="tools.githubUrl" href="https://github.com/arieladi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>כל הכלים שלי ב-GitHub <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></p>
+</div></section>
+
+<!-- 04 אודות -->
+<section id="about" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">04</span><h2>אודות</h2><span class="rule"></span></div>
+<h1 class="wordmark rv">עדי אריאל</h1>
+<p class="sec-intro rv">עדי אריאל — מפיק ודי-ג'יי של מוזיקה אלקטרונית, חצי מצמד הפסיטראנס אווסטה, ו-vibe coder בידיים. מוזיקה, הופעות, קולבורציות וכלים חינמיים — האתר הזה הוא הבית לכל זה.</p>
+<article class="card feature contactcard rv">
+<p class="say">צרו קשר</p>
+<a class="bigmail" id="bigmail" href="mailto:office@adiariel.com">office@adiariel.com</a>
+<p class="mailnote">הזמנות, שיתופי פעולה, וגם סתם שלום.</p>
+<div class="pills center" id="contact-pills">
+<a class="pill" data-href="about.facebook" href="https://www.facebook.com/profile.php?id=61578996476561" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg><span>Facebook</span></a>
+<a class="pill" href="https://soundcloud.com/music_adi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>music_adi</span></a>
+<a class="pill" href="https://soundcloud.com/adiariel" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>adiariel</span></a>
+<a class="pill" data-href="tools.githubUrl" href="https://github.com/arieladi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg><span>GitHub</span></a>
+</div></article>
+</div></section>
+
+<!-- 05 תמיכה -->
+<section id="support" class="sec"><div class="wrap">
+<div class="sec-head rv"><span class="num">05</span><h2>תמיכה</h2><span class="rule"></span></div>
+<article class="card patreon feature contactcard rv">
+<div class="badge a3" style="margin:0 auto 18px"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></div>
+<p class="mailnote" style="max-width:56ch;margin:0 auto 22px">Patreon היא הדרך המשמעותית ביותר לעזור — היא מממנת זמן אולפן, מוזיקה חדשה ואת הכלים החינמיים. גם קצת עושה דרך ארוכה, וזה באמת אומר לי עולם ומלואו.</p>
+<a class="btn primary" data-href="support.url" href="https://www.patreon.com" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span>להצטרפות כתומך</span></a>
+</article>
+</div></section>
+
+</main>
+<footer><div class="wrap">&copy; <span id="yr"></span> עדי אריאל &middot; GitHub Pages ו-Cloudflare Worker &middot; <a class="adminlink" href="/admin">ניהול</a></div></footer>
+
+<script>
+(function () {
+  'use strict';
+  var WORKER = 'https://adiariel-site-worker.adidatabase.workers.dev';
+
+  var yr = document.getElementById('yr');
+  if (yr) yr.textContent = new Date().getFullYear();
+
+  /* ---------- reveal-on-scroll (only after the page has "built") ---------- */
+  var io = null;
+  function watchReveal(root) {
+    var els = (root || document).querySelectorAll('.rv:not(.in)');
+    if (!('IntersectionObserver' in window)) { els.forEach(function (e) { e.classList.add('in'); }); return; }
+    if (!io) {
+      io = new IntersectionObserver(function (es) {
+        es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+      }, { threshold: 0.12 });
+    }
+    els.forEach(function (el) { io.observe(el); });
+  }
+
+  /* ---------- the page "builds itself": welcome types, then sections reveal ---------- */
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var WELCOME = "ברוכים הבאים לאתר של עדי — הבית לכל מה שקשור לעדי אריאל";
+
+  function buildSite() {
+    document.body.classList.add('built');
+    typeWelcome(function () { setTimeout(dismissWelcome, reduce ? 0 : 1600); });
+  }
+  function typeWelcome(done) {
+    var txt = document.getElementById('welcomeTxt');
+    if (!txt) { done(); return; }
+    if (reduce) { txt.textContent = WELCOME; done(); return; }
+    var chars = Array.from(WELCOME), i = 0;
+    (function tick() {
+      txt.textContent = chars.slice(0, i).join('');
+      if (i++ < chars.length) setTimeout(tick, 72);
+      else done();
+    })();
+  }
+  function dismissWelcome() {
+    var wrap = document.getElementById('welcome');
+    if (!wrap) { revealInWaves(); return; }
+    wrap.classList.add('bye');
+    setTimeout(function () { wrap.style.display = 'none'; revealInWaves(); }, reduce ? 0 : 620);
+  }
+  function revealInWaves() {
+    var hero = document.querySelector('#top > .hero');
+    if (hero) hero.querySelectorAll('.rv').forEach(function (el, i) { setTimeout(function () { el.classList.add('in'); }, reduce ? 0 : 120 + i * 160); });
+    watchReveal(document);
+  }
+
+  /* ---------- intro video → (crop begins mid-playback) → banner → stages → build ---------- */
+  (function intro() {
+    var overlay = document.getElementById('intro');
+    var frame = document.getElementById('introFrame');
+    var vid = document.getElementById('introVid');
+    var banner = document.getElementById('heroBanner');
+    var body = document.body;
+    var ASPECT = 3.7, MAXVH = 0.58, MINH = 120;
+    var settled = false, cropStarted = false, guard = null;
+
+    function bannerHeight() { return Math.max(MINH, Math.min(window.innerWidth / ASPECT, MAXVH * window.innerHeight)); }
+
+    function startCrop(dur) {
+      if (cropStarted || !frame) return; cropStarted = true;
+      var H = bannerHeight();
+      frame.style.transition = 'top ' + dur + 's cubic-bezier(.4,0,.2,1),height ' + dur + 's cubic-bezier(.4,0,.2,1),box-shadow 1.7s ease';
+      frame.style.height = H + 'px';
+      frame.style.top = '0px';
+      requestAnimationFrame(function () { frame.classList.add('lit'); });
+      setTimeout(function () { frame.classList.add('lined'); }, reduce ? 0 : 500);
+    }
+
+    function settle() {
+      if (settled) return;
+      if (!cropStarted) { startCrop(0.6); setTimeout(reveal, 680); return; }
+      reveal();
+    }
+    function reveal() {
+      if (settled) return; settled = true;
+      if (guard) clearTimeout(guard);
+      // the banner already shows the end-frame still (identical to the video's
+      // last frame), so we just stop the video and drop the overlay — no
+      // reparenting or seeking, which is what silently failed in restrictive
+      // browsers. Seamless in a normal browser; robust everywhere.
+      if (vid) { try { vid.pause(); } catch (e) { } }
+      if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      body.classList.remove('intro-active');
+      setTimeout(buildSite, reduce ? 0 : 500);
+    }
+    function fail() {
+      if (settled) return; settled = true;
+      if (guard) clearTimeout(guard);
+      // even on video error we keep the banner — it's a still image, not the video.
+      if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      body.classList.remove('intro-active');
+      buildSite();
+    }
+
+    if (!vid || !frame || !banner) { fail(); return; }
+    body.classList.add('intro-active');
+    window.scrollTo(0, 0);
+    vid.muted = true; vid.defaultMuted = true;
+
+    vid.addEventListener('timeupdate', function () {
+      if (cropStarted || settled || !isFinite(vid.duration) || vid.duration <= 0) return;
+      var remain = vid.duration - vid.currentTime;
+      if (remain <= 3) startCrop(Math.min(2.6, Math.max(1, remain - 0.15)));
+    });
+    vid.addEventListener('ended', settle);
+    vid.addEventListener('error', fail);
+    guard = setTimeout(settle, 30000);
+    vid.addEventListener('playing', function () {
+      if (settled) return;
+      if (guard) clearTimeout(guard);
+      var remain = isFinite(vid.duration) ? (vid.duration - vid.currentTime) : 11;
+      guard = setTimeout(settle, Math.max(4000, remain * 1000 + 3000));
+    });
+
+    function kick() { if (!settled && vid.paused) { var p = vid.play(); if (p && p.catch) p.catch(function () { }); } }
+    setTimeout(kick, 400);
+    ['pointerdown', 'touchstart', 'keydown', 'wheel'].forEach(function (ev) {
+      window.addEventListener(ev, kick, { once: true, passive: true });
+    });
+  })();
+
+  /* ---------- link-only hydration ----------
+     The Hebrew copy is static; only shared link URLs (Patreon, avastha, GitHub,
+     email, Facebook) are pulled from the worker so they stay in sync with what's
+     set in /admin. No text or card grids are rebuilt (that content is English). */
+  function get(o, p) { var ks = p.split('.'); for (var i = 0; i < ks.length; i++) { if (o == null) return undefined; o = o[ks[i]]; } return o; }
+  function safeUrl(u) { var s = String(u == null ? '' : u).trim(); if (/^(#|\/)/.test(s)) return s; if (/^(https?:\/\/|mailto:)/i.test(s)) return s; return '#'; }
+
+  fetch(WORKER + '/api/content')
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!j || !j.ok || !j.content) return;
+      var c = j.content;
+      document.querySelectorAll('[data-href]').forEach(function (n) {
+        var v = get(c, n.getAttribute('data-href'));
+        if (v) n.href = safeUrl(v);
+      });
+      var email = get(c, 'about.email');
+      if (email) {
+        var bm = document.getElementById('bigmail'); if (bm) bm.href = 'mailto:' + email;
+        var gb = document.getElementById('gig-btn'); if (gb) gb.href = 'mailto:' + email;
+      }
+    })
+    .catch(function () { /* worker unreachable — static links stay */ });
+})();
+</script>
+</body>
+</html>

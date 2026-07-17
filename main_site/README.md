@@ -96,8 +96,44 @@ Palette is **emerald & walnut** on near-black (`--c1 #5eead4`, `--c2 #10b981`,
 `--c3 #c08a57`, `--bg #0a0d0b`) — pulled from the banner (chrome/foliage/wood).
 Change the `:root` variables in `index.html` (and `admin.html`) to reskin.
 
+## Hebrew site — adiariel.com/he
+
+`/he/index.html` is the Hebrew (RTL) version, served by GitHub Pages at
+`adiariel.com/he/`. Same layout, typography scale and intro→banner
+choreography as the English site; a **globe language toggle** (top corner)
+switches between the two, and `<link rel="alternate" hreflang>` ties them
+together for search engines.
+
+- **Palette is blue** (`--c1 #5cc8ff`, `--c2 #2f7ef0`, `--c3 #b58cff`) — pulled
+  from the Hebrew logo video, not the emerald/walnut of the English site, so the
+  banner and the page read as one piece. Font is **Heebo** (Hebrew + Latin).
+- **Intro video → banner is different (and more robust):** the banner is a
+  **still image** of the video's final frame (`media/adi_heb_logo_end.jpg`), not
+  the paused video. The intro video (`media/adi_heb_logo.mp4`) still plays
+  fullscreen and crops down onto that exact frame, then the overlay drops — so
+  the handoff is seamless, and the banner never depends on the video
+  playing/seeking (which fails silently in restrictive browsers). To reframe the
+  logo, change `object-position` (currently `center 50%`).
+- **Content is static Hebrew.** Only shared link URLs (Patreon `support.url`,
+  `music.avastha.url`, `tools.githubUrl`, email, Facebook) hydrate from the
+  worker via `data-href`, so those stay in sync with what's set in `/admin`. All
+  text is baked in — the `/admin` panel edits the **English** site only.
+
+### The Hebrew intro video
+
+`media/adi_heb_logo.mp4` is the source `adi_heb_logo.mp4` **trimmed to its
+first 121 frames (0 → 5.00 s at 24 fps)** — the settled "עדי" logo frame Adi
+picked; the original keeps animating (the logo breaks apart) after that, so it's
+cut there. Poster is the first frame; `adi_heb_logo_end.jpg` is that last frame
+(the banner still). To recut:
+`ffmpeg -i <source>.mp4 -frames:v <N> -an -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p -movflags +faststart media/adi_heb_logo.mp4`
+then regenerate the end still:
+`ffmpeg -sseof -0.05 -i media/adi_heb_logo.mp4 -frames:v 1 -q:v 3 media/adi_heb_logo_end.jpg -y`.
+
 ## Local dev
 
 Node test suite for the worker (mock KV/R2) lives in the Claude scratchpad —
 ask Claude to “run the adiariel-site worker tests” and it will recreate it;
-nothing extra is committed here.
+nothing extra is committed here. For the pages themselves, serve the repo root
+(`python3 -m http.server`) — the Hebrew page uses absolute paths (`/media/…`,
+`/he/`) so it must be served from the site root, not the `/he` folder.
