@@ -1,60 +1,62 @@
-# HEB ENG MIX FIX
+# HEB ENG MIX FIX (v2)
 
-A Manifest V3 Chrome extension that automatically fixes Hebrew text accidentally
-typed with the **English keyboard layout**.
+A Manifest V3 Chrome extension that detects Hebrew typed with the **English
+keyboard layout** and takes over with live conversion until you switch back.
 
-> Type `tbh nkl vguko` → get `אני מלך העולם`
+> Type `nts bjns` → the extension backtracks to `מאד נחמד`, flashes a yellow
+> alert, and converts everything you keep typing — until you hit Alt+Shift.
 
-When you forget to switch your keyboard to Hebrew, the keys you press still land
-as Latin gibberish. This extension detects those tokens as you finish each word
-(on <kbd>Space</kbd> or <kbd>Enter</kbd>) and rewrites just that word in place —
-without interrupting your typing flow.
+## The state machine
 
-## How it works
+v2 is a bidirectional, 4-state machine rather than a one-shot word fixer:
 
-- **`hebrew_map.js`** — the SI‑1452 US‑QWERTY → Hebrew key map and the pure
-  detection logic (`toHebrew`, `evaluate`, `inDictionary`). Position‑agnostic
-  transliteration of keystrokes, including final letter forms (ך=l, ם=o, ן=i,
-  ף=;, ץ=.).
-- **`hebrew_dict.js`** — a curated set of common Hebrew words used as a
-  **precision gate**: in the default mode a token is only converted when its
-  mapped form is a real Hebrew word (prefixes ה/ו/ב/ל/כ/מ/ש are stripped when
-  matching), so ordinary English is never mangled.
-- **`content.js`** — a single delegated `keydown` listener (capture phase) on
-  `document`. Work happens only at the Space/Enter word boundary, so steady‑state
-  typing stays cheap. Handles `<input>`, `<textarea>`, and `contenteditable`.
-- **`background.js`** — MV3 service worker; only seeds default settings on install.
-- **`popup.html` / `popup.css` / `popup.js`** — ON/OFF, *Manual / Automatic*,
-  and *Aggressive mode* toggles, persisted in `chrome.storage.local`. Changes
-  apply live to open tabs.
+| State | Name | What happens |
+|-------|------|--------------|
+| **1** | **Monitoring** (passive) | Watches word boundaries (Space/Enter). When **two consecutive words** are gibberish in English but valid Hebrew once mapped, it fires. (One word in *Aggressive mode*.) |
+| **2** | **Active override** | Backtracks and converts the trigger words, then **intercepts every keystroke** and injects its Hebrew glyph before it lands. |
+| **3** | **Visual alert** | A pulsing **yellow tooltip** pinned above the caret ("Auto-Fixing Hebrew — press Alt+Shift to switch") plus a **yellow glow** around the field. |
+| **4** | **Reset** | Leaves override the instant you switch layout — **Alt+Shift**, or a **real Hebrew keystroke** arrives — or you press **Escape** / leave the field. |
 
-### Manual vs. Automatic
+### Why two words?
 
-Toggle in the popup:
+Mapping a single English word to Hebrew glyphs almost always produces
+*something*, so a one-word trigger would wreck normal English typing. Requiring
+**two consecutive** wrong-layout words (each either a known Hebrew word or a
+token with no English vowel — an impossible shape for English) makes false
+positives vanishingly rare. *Aggressive mode* trades that guard for a faster,
+one-word takeover.
 
-| Mode | Behavior |
-|------|----------|
-| **Automatic** (default) | Fixes each word as you finish it (Space / Enter). |
-| **Manual** | Nothing happens as you type. Select any text and press <kbd>Ctrl</kbd>+<kbd>E</kbd> to convert exactly that selection. |
+## Files
 
-### Aggressive gate (Automatic mode only)
+- **`hebrew_map.js`** — pure, testable core: the **bidirectional** SI-1452 key
+  map (`toHebrew` / `fromHebrew`), single-key live translation (`keyToHeb`), the
+  Hebrew-Unicode detector for STATE 4, and the wrong-layout heuristics.
+- **`hebrew_dict.js`** — curated common-word set; strengthens detection and lets
+  known words match even with attached prefixes (ה/ו/ב/ל/כ/מ/ש).
+- **`ui.js`** — STATE 3 visuals. Caret coordinates via the "mirror div"
+  technique for `<input>`/`<textarea>`, and the Selection rectangle for
+  `contenteditable`.
+- **`overlay.css`** — tooltip + field-glow styles, injected into every page.
+- **`content.js`** — the state machine: one delegated capture-phase `keydown`
+  listener driving passive detection, override interception, and reset.
+- **`background.js`** — MV3 service worker; seeds defaults on install.
+- **`popup.*`** — ON/OFF, Manual/Automatic, and Aggressive toggles.
 
-| Setting | Behavior |
-|---------|----------|
-| **Off** (default) | Converts only dictionary‑confirmed Hebrew words (highest precision). |
-| **Aggressive** | Converts any mappable token that isn't a common English word (higher recall). |
+## Modes (popup)
 
-*Manual mode ignores the dictionary entirely — the selection is an explicit
-request, so it is transliterated verbatim.*
+| Toggle | Effect |
+|--------|--------|
+| **Enabled** | Master on/off. |
+| **Manual mode** | Turns the machine off. Nothing happens as you type; select text and press **Ctrl+E** to convert it. |
+| **Aggressive mode** | (Automatic only) Enter override after **one** wrong word instead of two. |
 
 ## Install (unpacked)
 
-1. Open `chrome://extensions`.
-2. Enable **Developer mode** (top‑right).
-3. Click **Load unpacked** and select this `heb_eng_mix_fix` folder.
-4. Click the extension icon to toggle it on/off.
+1. Open `chrome://extensions` → enable **Developer mode**.
+2. **Load unpacked** → select this `heb_eng_mix_fix` folder.
+3. Click the icon to toggle modes.
 
 ## Extending the dictionary
 
-Add words to `HEB_WORDS_LIST` in `hebrew_dict.js` (stored in a `Set` for O(1)
-lookup), or enable *Aggressive mode* for full coverage without a dictionary.
+Add words to `HEB_WORDS_LIST` in `hebrew_dict.js` (a `Set`, O(1) lookup).
+The no-vowel heuristic already catches most wrong-layout tokens without it.
