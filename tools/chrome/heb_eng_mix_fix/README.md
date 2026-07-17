@@ -18,45 +18,61 @@ sentences.
 | **3 Alert** | Yellow caret tooltip + field glow while overriding. |
 | **4 Reset** | Exits on Alt+Shift, a keystroke that natively matches the target language, Escape, or blur. |
 
-## Layer B — the idle spell-checker (Grammarly-style)
+## Layer B — Grammarly-style word-level spell-check
 
-**3 seconds after you pause typing**, the recent text (last ~300 chars) is
-split into **overlapping 3-word chunks** and each unseen chunk is checked via
-the **Google Suggest API** (`suggestqueries.google.com`, `client=chrome&hl=iw`).
-Chunking matters, probed live: single words only produce autocomplete noise
-("helo"→"helos") and long conversational sentences return nothing at all —
-but short query-like chunks get real corrections ("now chec the"→"now check").
-Chunks are cached, so pausing again only re-checks text that changed
-(≤6 API calls per pause, newest text first).
+**A few seconds after you pause typing**, the recent text is scanned with a
+**sliding window**: it is split into small overlapping windows (~3 words) and
+each is sent to the **Google Suggest API** (`client=chrome&hl=iw`). Short
+windows are what make Suggest behave as a spell-checker and they sidestep its
+length limit entirely (probed live: 3-word windows catch every typo in a
+sentence; 5-8 word windows miss most). Windows are cached, newest-first, capped
+per pause.
 
-Each response is **word-diffed (LCS alignment)** against what you typed, so
-ALL misspelled words come back as individual fixes while Google's habit of
-appending words ("… spam emails") or dropping them ("the spel why"→"the spell")
-never leaks in — within a changed block, the fix targets only the best-matching
-sub-range. Works for English and Hebrew typos alike.
+`background.js` runs a **word-level LCS diff** of each window against Google's
+suggestion and returns granular **correction objects**
+`{ original, corrected, index, start, end }` — one per misspelled word (a
+merge like "recieve alot" → "receive a lot" stays a single object; dropped
+words are never swallowed).
 
-A floating panel below the caret lists every fix:
+### The transparent overlay (the hard part)
 
-- **click a row** — fix just that word;
-- **Tab or "Fix all"** — fix everything (with `input` + `change` dispatched
-  for React/Vue);
-- **✕** — dismiss; those exact suggestions won't be offered again;
-- keep typing — the panel steps aside and re-evaluates at the next pause.
+Native `<input>`/`<textarea>` can't wrap their own text in tags, so each flagged
+word is highlighted through a **transparent mirror overlay**:
 
-**Charset gotcha:** with `hl=iw` the API responds in `windows-1255`, not UTF-8.
-The worker decodes the raw bytes with the declared charset — `res.json()`
-would silently mangle every Hebrew suggestion.
+- a `<div>` pinned over the field's **padding box**, `pointer-events:none` so
+  typing and clicking pass straight through;
+- **content-box width = `clientWidth − paddingLeft − paddingRight`** (clientWidth
+  already excludes the scrollbar) with the field's exact paddings and copied
+  typography, so text wraps into the **same pixels** — getting width from
+  clientWidth (not offsetWidth) is what prevents scrollbar-induced drift;
+- `scrollTop`/`scrollLeft` mirrored so it tracks the field's internal scroll;
+- misspelled words wrapped in `<mark>` (invisible text, red wavy underline).
 
-**Privacy note:** Layer B sends the text you pause on to Google. The popup's
+For `contenteditable`, real geometry exists, so squiggles are drawn off
+`Range.getClientRects()` instead. Measured alignment: within ~2–6px.
+
+### Fixing
+
+Hovering a flagged word shows a badge (`original → corrected`):
+
+- **Fix** — replace just that word, carefully adjusting the caret;
+- **Fix all (Tab)** — replace every current correction at once;
+- **✕** — ignore that suggestion.
+
+Edits are re-validated on every keystroke (a highlight whose word changed is
+dropped), and applied with the native setter + `input`/`change` events so
+React/Vue register them.
+
+**Privacy note:** Layer B sends the windows you pause on to Google. The popup's
 *Spell check* toggle turns it off; Layer A is fully local.
 
 ## Files
 
 - `hebrew_map.js` — bidirectional key map + heuristics (pure, Node-testable)
 - `hebrew_dict.js` / `english_dict.js` — precision gates per direction
-- `content.js` — the state machine, idle debounce, fix-panel apply/dismiss
-- `ui.js` — caret math, override tooltip, multi-fix panel
-- `content.css` — tooltip, glow, and badge styles
+- `content.js` — the state machine, sliding-window scan, correction model, fix/apply
+- `ui.js` — caret math, override tooltip, transparent overlay + squiggles + hover badge
+- `content.css` — tooltip, glow, overlay/mark/squiggle, and hover-badge styles
 - `background.js` — Suggest API fetcher + validation (service worker)
 - `popup.*` — Enabled / Manual / Sentence-suggestions toggles
 

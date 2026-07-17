@@ -70,18 +70,15 @@
   pointer-events: auto;
 }
 
-/* One row per misspelled word: click to apply just that fix. */
+/* The "original → corrected" pair shown at the top of the hover badge. */
 .hebfix-fix-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 5px 8px;
-  border-radius: 7px;
-  cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
 }
-.hebfix-fix-row:hover { background: #eef4ff; }
 
 .hebfix-bad {
   color: #b91c1c;
@@ -110,6 +107,7 @@
   border-top: 1px solid #eef0f3;
 }
 
+.hebfix-fixone,
 .hebfix-fixall {
   display: inline-flex;
   align-items: center;
@@ -119,6 +117,7 @@
   border-radius: 7px;
   font-weight: 600;
 }
+.hebfix-fixone:hover,
 .hebfix-fixall:hover { background: #ecfdf3; }
 
 .hebfix-check {
@@ -152,3 +151,41 @@
   border-radius: 6px;
 }
 .hebfix-badge-close:hover { background: #f3f4f6; color: #374151; }
+
+/* ---- Transparent highlight overlay (textarea / input) --------------------- */
+/* Most geometry is set inline by ui.js (it must mirror the field exactly).
+   These are the invariants that must never be overridden by page styles. */
+.hebfix-overlay {
+  position: fixed;
+  margin: 0;
+  pointer-events: none;              /* clicks & caret pass through to the field */
+  color: transparent;               /* only the squiggles are visible */
+  background: transparent;
+  z-index: 2147483646;
+  -webkit-text-fill-color: transparent;
+}
+
+/* A flagged word inside the overlay: invisible text, red wavy underline that
+   lands directly under the real word showing through beneath. Adds NO box
+   metrics (no padding/border/margin) so it can't shift the mirrored layout. */
+.hebfix-mark {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background: rgba(224, 72, 61, .10);
+  text-decoration: underline wavy #e0483d;
+  -webkit-text-decoration: underline wavy #e0483d;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 2px;
+}
+
+/* ---- Squiggle layer (contenteditable) ------------------------------------ */
+.hebfix-squiggle-layer { position: fixed; left: 0; top: 0; pointer-events: none; }
+.hebfix-squiggle {
+  position: fixed;
+  pointer-events: none;
+  background: rgba(224, 72, 61, .10);
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='6'%20height='4'%3E%3Cpath%20d='M0%203%20Q1.5%201%203%203%20T6%203'%20fill='none'%20stroke='%23e0483d'%20stroke-width='1'/%3E%3C/svg%3E");
+  background-repeat: repeat-x;
+  background-position: left bottom;
+  background-size: 6px 4px;
+}
