@@ -53,7 +53,7 @@
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
     for (const k in changes) settings[k] = changes[k].newValue;
-    if (!settings.enabled || settings.manual) { exitOverride(); hidePanel(); }
+    if (!settings.enabled || settings.manual) { exitOverride(); clearSpellcheck(); }
   });
 
   // ---- machine state --------------------------------------------------------
@@ -65,12 +65,22 @@
   // Layer B state.
   let idleTimer = 0;
   let idleCtx = null;                 // context the timer was armed for
-  let pending = null;                 // {el,isField,node,phrase,fixes:[...]} behind the panel
   let applying = false;               // our own edits must not re-arm the timer
   let passId = 0;                     // invalidates stale async pass results
+  // The live set of highlighted corrections for the focused field:
+  //   { start, end, original, corrected, key }  (absolute offsets)
+  let corrections = [];
+  let hlEl = null;                    // element the corrections belong to
+  let hlIsField = false;
+  let hlNode = null;                  // CE text node (contenteditable only)
   const chunkCache = new Map();       // chunk text -> fixes|null (avoid re-querying)
   const dismissed = new Set();        // "bad→good" keys the user ✕-ed away
-  const MAX_CHUNK_QUERIES = 6;        // API calls allowed per idle pass
+  const MAX_CHUNK_QUERIES = 8;        // API calls allowed per idle pass
+  // Sliding-window size. Probed live: Google Suggest returns the cleanest,
+  // highest-recall spelling diffs on SHORT windows — 3 words catches every
+  // typo in a sentence, while 5-8 words miss most (Suggest reworders/drops).
+  const WINDOW_WORDS = 3;
+  const WINDOW_STRIDE = 2;            // overlap 1 so boundary words get context
 
   // ---- element helpers ------------------------------------------------------
 
@@ -226,7 +236,7 @@
   // ---- LAYER A / STATES 2+3: enter / leave override --------------------------
 
   function enterOverride(ctx, dir) {
-    hidePanel();
+    clearSpellcheck();
     mode = "override";
     direction = dir;
     overrideEl = ctx.el;
@@ -288,7 +298,7 @@
 
   // ---- LAYER B: idle spell-check pass -----------------------------------------
 
-  /** (Re)arm the 3-second idle timer for the field being edited. */
+  /** (Re)arm the idle timer for the field being edited. */
   function armIdleTimer(ctx) {
     idleCtx = ctx;
     clearTimeout(idleTimer);
@@ -316,19 +326,17 @@
       base += firstSpace >= 0 ? firstSpace + 1 : 0;
       phrase = full.slice(base);
     }
-    // Trim trailing whitespace but keep offsets anchored to `base`.
     phrase = phrase.replace(/\s+$/, "");
-    if (phrase.length < 5) return null;
-    if (phrase.split(/\s+/).length < 2) return null;  // 1-word queries only
-    if (!/[a-zA-Zא-ת]/.test(phrase)) return null;     // get autocomplete noise
+    if (phrase.length < 4) return null;
+    if (!/[a-zA-Zא-ת]/.test(phrase)) return null;
     return { phrase, base, node };
   }
 
   /**
-   * Split a phrase into overlapping 3-word chunks (stride 2). Probed live:
-   * Google Suggest only spell-corrects SHORT query-like phrases — a whole
-   * conversational sentence returns nothing, but "now chec the" → "now check".
-   * Overlap gives every interior word a chunk where it has context both sides.
+   * The "sliding window": split the recent text into small overlapping windows
+   * (WINDOW_WORDS words, stride WINDOW_STRIDE). Short windows are what make
+   * Google Suggest behave as a spell-checker, and they sidestep its length
+   * limit entirely. Overlap gives interior words context on both sides.
    */
   function chunkPhrase(phrase) {
     const words = [];
@@ -336,23 +344,51 @@
     let m;
     while ((m = re.exec(phrase))) words.push({ w: m[0], i: m.index });
     const chunks = [];
-    for (let i = 0; i < words.length; i += 2) {
-      const grp = words.slice(i, i + 3);
+    for (let i = 0; i < words.length; i += WINDOW_STRIDE) {
+      const grp = words.slice(i, i + WINDOW_WORDS);
       if (grp.length < 2 && chunks.length) break; // lone trailing word: covered
       const start = grp[0].i;
       const end = grp[grp.length - 1].i + grp[grp.length - 1].w.length;
       const text = phrase.slice(start, end);
       if (/[a-zA-Zא-ת]/.test(text)) chunks.push({ text, offset: start });
-      if (grp.length < 3) break;
+      if (grp.length < WINDOW_WORDS) break;
     }
     return chunks;
   }
 
-  /** The idle pass: check each chunk, then show every misspelling found. */
+  /** Read the current text of an absolute range, or null if it moved. */
+  function rangeText(start, end) {
+    try {
+      return hlIsField
+        ? hlEl.value.slice(start, end)
+        : hlNode.data.slice(start, end);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** Drop corrections whose underlying text no longer matches (edits shifted). */
+  function revalidateCorrections() {
+    if (!hlEl) return;
+    const before = corrections.length;
+    corrections = corrections.filter((c) => rangeText(c.start, c.end) === c.original);
+    if (corrections.length !== before) renderHighlights();
+  }
+
+  function renderHighlights() {
+    if (!hlEl || !corrections.length) { UI.clearHighlights(); return; }
+    UI.renderHighlights(hlEl, hlIsField, hlNode, corrections, {
+      onFix: applyFix,
+      onFixAll: applyAllFixes,
+      onDismiss: dismissOne
+    });
+  }
+
+  /** The idle pass: check each sliding window, then highlight every typo found. */
   function runSpellcheck() {
     const ctx = idleCtx;
     if (!ctx || !settings.enabled || settings.manual || !settings.online) return;
-    if (mode === "override" || UI.badgeVisible()) return;
+    if (mode === "override") return;
     // The focused element may be an ANCESTOR of the editable (custom elements
     // with delegatesFocus, e.g. Gemini's rich-textarea) — accept both shapes.
     const ae = document.activeElement;
@@ -374,59 +410,53 @@
 
     const finish = () => {
       if (waiting > 0 || myPass !== passId) return;
-      if (mode === "override" || !collected.length) return;
-      // The text must not have changed while we were fetching.
+      if (mode === "override") return;
+      // The scanned text must not have changed while we were fetching.
       const nowFull = ctx.isField ? ctx.el.value : snap.node && snap.node.data;
       if (!nowFull ||
           nowFull.slice(snap.base, snap.base + snap.phrase.length) !== snap.phrase) return;
 
-      // Merge: absolute offsets, first-wins on identical/overlapping spans.
+      // Turn window-relative diffs into absolute corrections; first-wins on
+      // overlapping spans (the same word appears in two overlapping windows).
       collected.sort((a, b) => a.start - b.start || a.end - b.end);
-      const usable = [];
+      const fresh = [];
       let lastEnd = -1;
       for (const f of collected) {
-        if (f.start < lastEnd) continue;                    // overlaps previous
-        const bad = snap.phrase.slice(f.start, f.end);
-        const fix = {
-          start: snap.base + f.start,
-          end: snap.base + f.end,
-          bad,
-          text: f.text,
-          key: bad + "→" + f.text
-        };
-        if (dismissed.has(fix.key) || fix.bad === fix.text) continue;
-        usable.push(fix);
+        if (f.start < lastEnd) continue;
+        const start = snap.base + f.start;
+        const end = snap.base + f.end;
+        const original = snap.phrase.slice(f.start, f.end);
+        const key = original + "→" + f.corrected;
+        if (dismissed.has(key) || original === f.corrected) continue;
+        fresh.push({ start, end, original, corrected: f.corrected, key });
         lastEnd = f.end;
       }
-      if (!usable.length) return;
 
-      pending = { el: ctx.el, isField: ctx.isField, node: snap.node, fixes: usable };
-      UI.showFixes(ctx.el, ctx.isField, usable, {
-        onFix: applyFix,
-        onFixAll: applyAllFixes,
-        onDismiss: dismissPanel
-      });
+      // Merge into the live set: replace everything inside the scanned span with
+      // the fresh results, keep corrections outside it (earlier in a long doc).
+      const spanStart = snap.base, spanEnd = snap.base + snap.phrase.length;
+      hlEl = ctx.el; hlIsField = ctx.isField; hlNode = snap.node;
+      corrections = corrections
+        .filter((c) => c.end <= spanStart || c.start >= spanEnd)
+        .concat(fresh)
+        .sort((a, b) => a.start - b.start);
+      renderHighlights();
     };
 
     const absorb = (chunk, fixes) => {
-      if (fixes) {
-        for (const f of fixes) {
-          collected.push({
-            start: chunk.offset + f.start,
-            end: chunk.offset + f.end,
-            text: f.text
-          });
-        }
+      if (!fixes) return;
+      for (const f of fixes) {
+        collected.push({
+          start: chunk.offset + f.start,
+          end: chunk.offset + f.end,
+          corrected: f.corrected
+        });
       }
     };
 
-    // Newest text first: if the query budget runs out, the chunks nearest the
-    // caret still get checked.
+    // Newest text first: if the budget runs out, chunks nearest the caret win.
     for (const chunk of chunks.slice().reverse()) {
-      if (chunkCache.has(chunk.text)) {
-        absorb(chunk, chunkCache.get(chunk.text));
-        continue;
-      }
+      if (chunkCache.has(chunk.text)) { absorb(chunk, chunkCache.get(chunk.text)); continue; }
       if (budget-- <= 0) continue;
       waiting++;
       try {
@@ -448,78 +478,58 @@
     finish(); // covers the all-cached case
   }
 
-  /** Current text of a fix's range, to confirm the DOM hasn't moved on. */
-  function fixIntact(f) {
-    try {
-      const t = pending.isField
-        ? pending.el.value.slice(f.start, f.end)
-        : pending.node.data.slice(f.start, f.end);
-      return t === f.bad;
-    } catch (e) {
-      return false;
+  // ---- applying corrections --------------------------------------------------
+
+  /** Replace one correction's word; shift the offsets of those after it. */
+  function applyOne(c) {
+    if (rangeText(c.start, c.end) !== c.original) return false;
+    const delta = c.corrected.length - (c.end - c.start);
+    if (hlIsField) {
+      hlEl.focus();
+      const caret = hlEl.selectionStart;
+      const newCaret = caret >= c.end ? caret + delta
+        : caret > c.start ? c.start + c.corrected.length : caret;
+      spliceField(hlEl, c.start, c.end, c.corrected, newCaret);
+    } else {
+      spliceNode(hlNode, c.start, c.end, c.corrected);
     }
+    corrections = corrections.filter((x) => x !== c);
+    for (const x of corrections) {
+      if (x.start >= c.end) { x.start += delta; x.end += delta; }
+    }
+    return true;
   }
 
-  /** Apply one fix; shift the offsets of the fixes that follow it. */
-  function applyFix(fix) {
-    if (!pending || !fixIntact(fix)) { hidePanel(); return; }
-    const delta = fix.text.length - (fix.end - fix.start);
-
-    if (pending.isField) {
-      const el = pending.el;
-      el.focus();
-      const caret = el.selectionStart;
-      const newCaret = caret >= fix.end ? caret + delta : caret;
-      spliceField(el, fix.start, fix.end, fix.text, newCaret);
-    } else {
-      spliceNode(pending.node, fix.start, fix.end, fix.text);
-    }
-
-    pending.fixes = pending.fixes.filter((f) => f !== fix);
-    for (const f of pending.fixes) {
-      if (f.start >= fix.end) { f.start += delta; f.end += delta; }
-    }
-    if (pending.fixes.length) {
-      UI.showFixes(pending.el, pending.isField, pending.fixes, {
-        onFix: applyFix,
-        onFixAll: applyAllFixes,
-        onDismiss: dismissPanel
-      });
-    } else {
-      hidePanel();
-    }
+  /** Single Fix: replace only this word. */
+  function applyFix(c) {
+    UI.hideHoverBadge();
+    applyOne(c);
+    renderHighlights();
   }
 
-  /** Apply every remaining fix, last-to-first so offsets stay valid. */
+  /** Fix All (Tab): replace every current correction, last-to-first. */
   function applyAllFixes() {
-    if (!pending) return;
-    const list = pending.fixes.slice().sort((a, b) => b.start - a.start);
-    for (const f of list) {
-      if (!fixIntact(f)) continue;
-      if (pending.isField) {
-        const el = pending.el;
-        el.focus();
-        const caret = el.selectionStart;
-        const delta = f.text.length - (f.end - f.start);
-        const newCaret = caret >= f.end ? caret + delta : caret;
-        spliceField(el, f.start, f.end, f.text, newCaret);
-      } else {
-        spliceNode(pending.node, f.start, f.end, f.text);
-      }
+    UI.hideHoverBadge();
+    for (const c of corrections.slice().sort((a, b) => b.start - a.start)) {
+      applyOne(c);
     }
-    hidePanel();
+    corrections = [];
+    renderHighlights();
   }
 
-  /** ✕: the user doesn't want THESE suggestions again. */
-  function dismissPanel() {
-    if (pending) for (const f of pending.fixes) dismissed.add(f.key);
-    hidePanel();
+  /** ✕: ignore this specific correction (won't be re-offered). */
+  function dismissOne(c) {
+    dismissed.add(c.key);
+    corrections = corrections.filter((x) => x !== c);
+    UI.hideHoverBadge();
+    renderHighlights();
   }
 
-  /** Hide without recording anything (e.g. the user resumed typing). */
-  function hidePanel() {
-    pending = null;
-    UI.hideBadge();
+  /** Drop all highlights for the current field (blur / disable / resumed typing). */
+  function clearSpellcheck() {
+    corrections = [];
+    hlEl = null; hlNode = null;
+    UI.clearHighlights();
   }
 
   // ---- Manual mode: Ctrl+E converts the selection (both directions) ----------
@@ -563,17 +573,17 @@
       return;
     }
 
-    // Fix-panel hotkeys: Tab fixes all; typing on just hides the panel.
-    if (UI.badgeVisible()) {
+    // Spell-check hotkeys (only while this field has live corrections).
+    if (corrections.length && hlEl && getContext(e.target) &&
+        getContext(e.target).el === hlEl) {
+      // Tab = Fix all.
       if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
         applyAllFixes();
         return;
       }
-      if (e.key === "Escape") { hidePanel(); return; }
-      if (e.key.length === 1 || e.key === "Backspace" || e.key === "Enter") {
-        hidePanel();
-      }
+      // Escape just dismisses the hover badge if one is open.
+      if (e.key === "Escape" && UI.badgeVisible()) { UI.hideHoverBadge(); return; }
     }
 
     if (mode === "override") { handleOverrideKey(e); return; }
@@ -590,12 +600,15 @@
     // Never preventDefault here: Space/Enter keep their native behavior.
   }
 
-  /** Every real edit (typing, paste, cut) re-arms the 3s spell-check timer. */
+  /** Every real edit (typing, paste, cut) re-arms the idle timer. */
   function onInput(e) {
     if (applying) return;                       // our own splices don't count
     if (!settings.enabled || settings.manual || !settings.online) return;
     const ctx = getContext(e.target);
-    if (ctx) armIdleTimer(ctx);
+    if (!ctx) return;
+    // Keep existing highlights honest as the text shifts under them.
+    if (hlEl === ctx.el) revalidateCorrections();
+    armIdleTimer(ctx);
   }
 
   document.addEventListener("keydown", onKeydown, true);
@@ -605,11 +618,17 @@
     "blur",
     (e) => {
       if (mode === "override" && e.target === overrideEl) exitOverride();
-      if (pending && e.target === pending.el) hidePanel();
+      if (hlEl && e.target === hlEl) clearSpellcheck();
       if (idleCtx && e.target === idleCtx.el) { clearTimeout(idleTimer); idleCtx = null; }
     },
     true
   );
-  window.addEventListener("scroll", scheduleReposition, true);
-  window.addEventListener("resize", scheduleReposition);
+
+  // Keep the tooltip and the highlight overlay glued to the field as it moves.
+  function onViewportChange() {
+    scheduleReposition();
+    UI.repositionHighlights();
+  }
+  window.addEventListener("scroll", onViewportChange, true);
+  window.addEventListener("resize", onViewportChange);
 })();

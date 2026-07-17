@@ -74,14 +74,26 @@ function tokenize(phrase) {
 }
 
 /**
- * Word-level LCS diff of `original` vs Google's `suggestion`.
- * Returns per-word replacement fixes (offsets into `original`), or null.
+ * Word-level LCS diff of `original` chunk vs Google's `suggestion`.
+ * Returns an array of granular "correction objects", or null:
  *
- *   • matched words       -> untouched
- *   • suggestion-only run -> skipped (that's autocomplete padding)
- *   • original-only run   -> skipped (Google dropped it; keep the user's word)
- *   • replacement block   -> a fix, but only when the two sides are ≥50%
- *                            similar (rejects unrelated popular queries)
+ *   { original, corrected, index, start, end }
+ *     original  — the exact substring of the chunk to replace
+ *     corrected — what to replace it with
+ *     index     — word index within the chunk (indexInChunk, per spec)
+ *     start,end — char offsets within the chunk (used by content.js for
+ *                 precise absolute positioning; ambiguity-free vs. index)
+ *
+ * Alignment rules (LCS over normalized words):
+ *   • matched words          -> untouched
+ *   • suggestion-only run     -> skipped (autocomplete padding like "spam")
+ *   • original-only run       -> skipped (Google dropped a word; keep it)
+ *   • replacement block:
+ *       - equal word counts   -> emit ONE correction PER mismatched word
+ *                                (maximum granularity, the common typo case)
+ *       - unequal counts      -> emit the best-matching sub-range as one
+ *                                correction ("recieve alot" -> "receive a lot"),
+ *                                only if ≥60% similar (rejects unrelated queries)
  */
 function diffFixes(original, suggestion) {
   if (typeof suggestion !== "string" || !suggestion) return null;
@@ -102,43 +114,60 @@ function diffFixes(original, suggestion) {
     }
   }
 
-  // Walk the alignment; gaps between matches become candidate blocks.
   const fixes = [];
   let i = 0, j = 0, bi = 0, bj = 0; // block start cursors
+
+  function pushFix(word, corrected) {
+    if (word.norm === normWord(corrected)) return; // no real change
+    fixes.push({
+      original: original.slice(word.start, word.end),
+      corrected,
+      index: o.indexOf(word),
+      start: word.start,
+      end: word.end
+    });
+  }
+
   function flushBlock(oEnd, sEnd) {
     const oWords = o.slice(bi, oEnd);
     const sWords = s.slice(bj, sEnd);
-    if (oWords.length && sWords.length) {
-      const suggText = sWords.map((w) => w.raw).join(" ");
-      const b = suggText.toLowerCase();
+    bi = oEnd; bj = sEnd;
+    if (!oWords.length || !sWords.length) return; // pure insert/delete: skip
 
-      // Google often DROPS words inside a block ("the spel why"→"the spell").
-      // Blaming the whole block would swallow the dropped word, so pick the
-      // contiguous sub-range of original words that best matches the
-      // suggestion and leave the rest untouched.
-      let best = null;
-      for (let from = 0; from < oWords.length; from++) {
-        for (let to = from; to < oWords.length; to++) {
-          const a = original
-            .slice(oWords[from].start, oWords[to].end)
-            .toLowerCase();
-          const dist = levenshtein(a, b);
-          const ratio = dist / Math.max(a.length, b.length);
-          if (!best || ratio < best.ratio) {
-            best = { from, to, dist, ratio };
-          }
+    // Equal counts -> per-word corrections (the granular, common case).
+    if (oWords.length === sWords.length) {
+      for (let k = 0; k < oWords.length; k++) {
+        const a = oWords[k].norm, b = sWords[k].norm;
+        // Only accept a word pair that is genuinely a typo of each other.
+        if (a !== b && levenshtein(a, b) / Math.max(a.length, b.length) <= 0.5) {
+          pushFix(oWords[k], sWords[k].raw);
         }
       }
-      if (best && best.dist > 0 && best.ratio <= 0.4) {
-        fixes.push({
-          start: oWords[best.from].start,
-          end: oWords[best.to].end,
-          text: suggText
-        });
+      return;
+    }
+
+    // Unequal counts (merge/split) -> best-matching contiguous sub-range.
+    const suggText = sWords.map((w) => w.raw).join(" ");
+    const b = suggText.toLowerCase();
+    let best = null;
+    for (let from = 0; from < oWords.length; from++) {
+      for (let to = from; to < oWords.length; to++) {
+        const a = original.slice(oWords[from].start, oWords[to].end).toLowerCase();
+        const ratio = levenshtein(a, b) / Math.max(a.length, b.length);
+        if (!best || ratio < best.ratio) best = { from, to, ratio };
       }
     }
-    bi = oEnd; bj = sEnd;
+    if (best && best.ratio > 0 && best.ratio <= 0.4) {
+      fixes.push({
+        original: original.slice(oWords[best.from].start, oWords[best.to].end),
+        corrected: suggText,
+        index: o.indexOf(oWords[best.from]),
+        start: oWords[best.from].start,
+        end: oWords[best.to].end
+      });
+    }
   }
+
   while (i < m && j < n) {
     if (o[i].norm === s[j].norm) {
       flushBlock(i, j);
@@ -151,7 +180,7 @@ function diffFixes(original, suggestion) {
   }
   flushBlock(m, n);
 
-  return fixes.length ? fixes.slice(0, 6) : null;
+  return fixes.length ? fixes.slice(0, 8) : null;
 }
 
 // ---- fetching -----------------------------------------------------------------
