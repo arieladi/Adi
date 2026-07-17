@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "HEB ENG MIX FIX",
-  "version": "1.0.0",
-  "description": "Auto-fixes Hebrew text accidentally typed with an English keyboard layout (e.g. \"tbh nkl vguko\" → \"אני מלך העולם\").",
+  "version": "2.0.0",
+  "description": "Detects Hebrew typed on an English layout and takes over with live conversion + a yellow alert until you switch languages.",
   "permissions": ["storage"],
   "action": {
     "default_popup": "popup.html",
@@ -19,7 +19,8 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["hebrew_dict.js", "hebrew_map.js", "content.js"],
+      "js": ["hebrew_dict.js", "hebrew_map.js", "ui.js", "content.js"],
+      "css": ["overlay.css"],
       "run_at": "document_idle",
       "all_frames": true
     }
