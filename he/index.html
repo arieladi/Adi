@@ -231,11 +231,13 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
   </div>
 </div>
 
-<!-- full-width banner at the very top: the still of the video's final frame (your
-     5.00s cut). The intro video crops down onto exactly this frame, then the
-     overlay drops — so the handoff is seamless and the banner never depends on
-     the video playing/seeking. -->
-<div class="site-banner" id="heroBanner"><img class="banner-img" src="/media/adi_heb_logo_end.jpg" alt="עדי אריאל"></div>
+<!-- full-width banner at the very top. The intro (adi_heb_logo.mp4, 0→~6.1s)
+     crops down onto its final frame, then the overlay drops and this looping
+     clip takes over: adi_heb_logo_loop.mp4 is a seamless boomerang of the
+     6.1s↔4.6s window (logo settled, light trails drifting), so the banner
+     stays gently animated. Poster is the settled frame, so if a browser blocks
+     autoplay the banner still shows the logo. -->
+<div class="site-banner" id="heroBanner"><video class="banner-vid" id="bannerVid" loop muted playsinline autoplay preload="auto" poster="/media/adi_heb_logo_end.jpg"><source src="/media/adi_heb_logo_loop.mp4" type="video/mp4"></video></div>
 
 <main id="top">
 
@@ -243,9 +245,9 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 
 <!-- hero -->
 <section class="hero"><div class="wrap">
-<p class="kicker rv">מוזיקה אלקטרונית · קולבורציות · כלים חינמיים</p>
-<p class="tagline rv">מפיק מוזיקה אלקטרונית, די-ג'יי ו-vibe coder.</p>
-<p class="intro-copy rv">חצי מהצמד אווסטה ומפיק סולו של מוזיקה אלקטרונית. אני יוצר מוזיקה, מנגן בהופעות, משתף פעולה עם אמנים אחרים ובונה כלים קטנים מתוך אהבה טהורה — הכול חינם. אם משהו מכל זה מדבר אליכם, Patreon הוא מה שמחזיק את הכול.</p>
+<p class="kicker rv" data-c="hero.kicker">מוזיקה אלקטרונית · קולבורציות · כלים חינמיים</p>
+<p class="tagline rv" data-c="hero.tagline">מפיק מוזיקה אלקטרונית, די-ג'יי ו-vibe coder.</p>
+<p class="intro-copy rv" data-c="hero.intro">חצי מהצמד אווסטה ומפיק סולו של מוזיקה אלקטרונית. אני יוצר מוזיקה, מנגן בהופעות, משתף פעולה עם אמנים אחרים ובונה כלים קטנים מתוך אהבה טהורה — הכול חינם. אם משהו מכל זה מדבר אליכם, Patreon הוא מה שמחזיק את הכול.</p>
 <div class="cta rv">
 <a class="btn primary" href="#music"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg>להאזנה למוזיקה</a>
 <a class="btn heart" data-href="support.url" href="https://www.patreon.com" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>לתמיכה ב-Patreon</a>
@@ -254,17 +256,17 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 
 <!-- 01 מוזיקה אלקטרונית -->
 <section id="music" class="sec"><div class="wrap">
-<div class="sec-head rv"><span class="num">01</span><h2>מוזיקה אלקטרונית</h2><span class="rule"></span></div>
-<p class="sec-intro rv">כאווסטה ובסולו — לילות פסיטראנס וסשנים באולפן.</p>
+<div class="sec-head rv"><span class="num">01</span><h2 data-c="music.heading">מוזיקה אלקטרונית</h2><span class="rule"></span></div>
+<p class="sec-intro rv" data-c="music.intro">כאווסטה ובסולו — לילות פסיטראנס וסשנים באולפן.</p>
 <article class="card feature rv"><div class="feature-txt">
-<span class="chip"><i class="cdot"></i><span>מתוך האוסף Sol Music</span></span>
-<h3 class="avastha">Avastha</h3>
-<p>צמד הפסיטראנס שלי. מוזיקת לילה עמוקה ודוחפת — נכללה באוסף Sol Music.</p>
+<span class="chip"><i class="cdot"></i><span data-c="music.avastha.badge">מתוך האוסף Sol Music</span></span>
+<h3 class="avastha" data-c="music.avastha.name">Avastha</h3>
+<p data-c="music.avastha.body">צמד הפסיטראנס שלי. מוזיקת לילה עמוקה ודוחפת — נכללה באוסף Sol Music.</p>
 <a class="btn primary" data-href="music.avastha.url" href="https://avastha.info" target="_blank" rel="noopener">avastha.info <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a>
-</div><span class="watermark" aria-hidden="true">Avastha</span></article>
+</div><span class="watermark" aria-hidden="true" data-c="music.avastha.name">Avastha</span></article>
 <div class="grid">
 <article class="card rv"><div class="badge a1"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg></div>
-<h3>סולו — סשנים וסטים</h3><p>טראקים, ניסויים וסטים של די-ג'יי תחת השם שלי, ב-SoundCloud.</p>
+<h3 data-c="music.solo.title">סולו — סשנים וסטים</h3><p data-c="music.solo.body">טראקים, ניסויים וסטים של די-ג'יי תחת השם שלי, ב-SoundCloud.</p>
 <div class="pills" id="sc-pills">
 <a class="pill" href="https://soundcloud.com/music_adi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>music_adi</span></a>
 <a class="pill" href="https://soundcloud.com/adiariel" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>adiariel</span></a>
@@ -274,23 +276,23 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 
 <!-- 02 קולבורציות -->
 <section id="collabs" class="sec"><div class="wrap">
-<div class="sec-head rv"><span class="num">02</span><h2>קולבורציות</h2><span class="rule"></span></div>
-<p class="sec-intro rv">בואו ניצור משהו — או ננגן איפשהו — ביחד.</p>
+<div class="sec-head rv"><span class="num">02</span><h2 data-c="collabs.heading">קולבורציות</h2><span class="rule"></span></div>
+<p class="sec-intro rv" data-c="collabs.intro">בואו ניצור משהו — או ננגן איפשהו — ביחד.</p>
 <div class="grid two">
 <article class="card collab rv"><div class="badge a2"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
-<h3>שיתופי פעולה ורמיקסים</h3><p>פתוח לשיתופי פעולה, רמיקסים וסטים B2B. אם אתם יוצרים מוזיקה שמדברת אליי — דברו איתי. תומכים שומעים את היצירות בתהליך ראשונים.</p>
+<h3 data-c="collabs.collab.title">שיתופי פעולה ורמיקסים</h3><p data-c="collabs.collab.body">פתוח לשיתופי פעולה, רמיקסים וסטים B2B. אם אתם יוצרים מוזיקה שמדברת אליי — דברו איתי. תומכים שומעים את היצירות בתהליך ראשונים.</p>
 <a class="btn ghost" href="#about">ליצירת קשר <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
 <article class="card rv"><div class="badge a1"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13M9 9l12-2M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 19a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/></svg></div>
-<h3>הזמנת הופעה</h3><p>סטים של די-ג'יי והופעות חיות למועדונים, פסטיבלים ואירועים פרטיים. שלחו לי תאריכים ונגרום לזה לקרות.</p>
+<h3 data-c="collabs.gig.title">הזמנת הופעה</h3><p data-c="collabs.gig.body">סטים של די-ג'יי והופעות חיות למועדונים, פסטיבלים ואירועים פרטיים. שלחו לי תאריכים ונגרום לזה לקרות.</p>
 <a class="btn ghost" id="gig-btn" href="mailto:office@adiariel.com"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></svg>להזמנה</a></article>
 </div>
 </div></section>
 
 <!-- 03 כלים -->
 <section id="tools" class="sec"><div class="wrap">
-<div class="sec-head rv"><span class="num">03</span><h2>כלים</h2><span class="rule"></span></div>
-<p class="bio-lead rv">אני גם vibe coder — בונה כלים קטנים ושימושיים מתוך כיף, ומשחרר כל אחד מהם בחינם, בלי שום תנאי.</p>
-<div class="grid two">
+<div class="sec-head rv"><span class="num">03</span><h2 data-c="tools.heading">כלים</h2><span class="rule"></span></div>
+<p class="bio-lead rv" data-c="tools.body">אני גם vibe coder — בונה כלים קטנים ושימושיים מתוך כיף, ומשחרר כל אחד מהם בחינם, בלי שום תנאי.</p>
+<div class="grid two" id="tools-grid">
 <article class="card rv"><div class="idx">01</div>
 <h3>Console — תוסף Stream Deck</h3><p>מחשבון דיליי/ריברב מבוסס BPM, נומפד ברמת מערכת וכלי תדרים לתווים ל-Stream Deck + XL.</p>
 <a class="cardlink" href="https://github.com/arieladi/Adi/tree/main/tools/elgato_stream_deck_plugins/com.adiariel.console.sdPlugin" target="_blank" rel="noopener">לקוד המקור <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
@@ -304,19 +306,19 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 <h3>Rekordbox Cue Counter — כלי ווב</h3><p>טיימר לסט של די-ג'יי סביב דפי cue של rekordbox — ספירה לאחור חיה לבוט'.</p>
 <a class="cardlink" href="https://github.com/arieladi/Adi/tree/main/tools/rekordbox_que_counter" target="_blank" rel="noopener">לקוד המקור <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></article>
 </div>
-<p class="bio-note rv"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span>הם יישארו חינמיים, תמיד. אם כלי חוסך לכם זמן, תרומה ב-Patreon היא מה ששומר עליהם חינמיים ומביא חדשים.</span>&nbsp;<a data-href="support.url" href="https://www.patreon.com" target="_blank" rel="noopener">לתמיכה →</a></p>
+<p class="bio-note rv"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span data-c="tools.note">הם יישארו חינמיים, תמיד. אם כלי חוסך לכם זמן, תרומה ב-Patreon היא מה ששומר עליהם חינמיים ומביא חדשים.</span>&nbsp;<a data-href="support.url" href="https://www.patreon.com" target="_blank" rel="noopener">לתמיכה →</a></p>
 <p class="aftergrid rv"><a class="btn ghost" data-href="tools.githubUrl" href="https://github.com/arieladi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>כל הכלים שלי ב-GitHub <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></p>
 </div></section>
 
 <!-- 04 אודות -->
 <section id="about" class="sec"><div class="wrap">
-<div class="sec-head rv"><span class="num">04</span><h2>אודות</h2><span class="rule"></span></div>
-<h1 class="wordmark rv">עדי אריאל</h1>
-<p class="sec-intro rv">עדי אריאל — מפיק ודי-ג'יי של מוזיקה אלקטרונית, חצי מצמד הפסיטראנס אווסטה, ו-vibe coder בידיים. מוזיקה, הופעות, קולבורציות וכלים חינמיים — האתר הזה הוא הבית לכל זה.</p>
+<div class="sec-head rv"><span class="num">04</span><h2 data-c="about.heading">אודות</h2><span class="rule"></span></div>
+<h1 class="wordmark rv" data-c="hero.title">עדי אריאל</h1>
+<p class="sec-intro rv" data-c="about.body">עדי אריאל — מפיק ודי-ג'יי של מוזיקה אלקטרונית, חצי מצמד הפסיטראנס אווסטה, ו-vibe coder בידיים. מוזיקה, הופעות, קולבורציות וכלים חינמיים — האתר הזה הוא הבית לכל זה.</p>
 <article class="card feature contactcard rv">
 <p class="say">צרו קשר</p>
-<a class="bigmail" id="bigmail" href="mailto:office@adiariel.com">office@adiariel.com</a>
-<p class="mailnote">הזמנות, שיתופי פעולה, וגם סתם שלום.</p>
+<a class="bigmail" id="bigmail" href="mailto:office@adiariel.com" data-c="about.email">office@adiariel.com</a>
+<p class="mailnote" data-c="about.emailNote">הזמנות, שיתופי פעולה, וגם סתם שלום.</p>
 <div class="pills center" id="contact-pills">
 <a class="pill" data-href="about.facebook" href="https://www.facebook.com/profile.php?id=61578996476561" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg><span>Facebook</span></a>
 <a class="pill" href="https://soundcloud.com/music_adi" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg><span>music_adi</span></a>
@@ -327,16 +329,16 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 
 <!-- 05 תמיכה -->
 <section id="support" class="sec"><div class="wrap">
-<div class="sec-head rv"><span class="num">05</span><h2>תמיכה</h2><span class="rule"></span></div>
+<div class="sec-head rv"><span class="num">05</span><h2 data-c="support.heading">תמיכה</h2><span class="rule"></span></div>
 <article class="card patreon feature contactcard rv">
 <div class="badge a3" style="margin:0 auto 18px"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></div>
-<p class="mailnote" style="max-width:56ch;margin:0 auto 22px">Patreon היא הדרך המשמעותית ביותר לעזור — היא מממנת זמן אולפן, מוזיקה חדשה ואת הכלים החינמיים. גם קצת עושה דרך ארוכה, וזה באמת אומר לי עולם ומלואו.</p>
-<a class="btn primary" data-href="support.url" href="https://www.patreon.com" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span>להצטרפות כתומך</span></a>
+<p class="mailnote" data-c="support.body" style="max-width:56ch;margin:0 auto 22px">Patreon היא הדרך המשמעותית ביותר לעזור — היא מממנת זמן אולפן, מוזיקה חדשה ואת הכלים החינמיים. גם קצת עושה דרך ארוכה, וזה באמת אומר לי עולם ומלואו.</p>
+<a class="btn primary" data-href="support.url" href="https://www.patreon.com" target="_blank" rel="noopener"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span data-c="support.label">להצטרפות כתומך</span></a>
 </article>
 </div></section>
 
 </main>
-<footer><div class="wrap">&copy; <span id="yr"></span> עדי אריאל &middot; GitHub Pages ו-Cloudflare Worker &middot; <a class="adminlink" href="/admin">ניהול</a></div></footer>
+<footer><div class="wrap">&copy; <span id="yr"></span> עדי אריאל &middot; GitHub Pages ו-Cloudflare Worker &middot; <a class="adminlink" href="/he/admin">ניהול</a></div></footer>
 
 <script>
 (function () {
@@ -417,14 +419,22 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
       if (!cropStarted) { startCrop(0.6); setTimeout(reveal, 680); return; }
       reveal();
     }
+    // Start the looping banner clip from its first frame (the ~6.1s settled
+    // frame — the same frame the intro ends on), so the hand-off is seamless.
+    // If autoplay is blocked the poster (that same frame) stays put.
+    function startBannerLoop() {
+      var loop = document.getElementById('bannerVid');
+      if (!loop) return;
+      try { loop.currentTime = 0; var p = loop.play(); if (p && p.catch) p.catch(function () { }); } catch (e) { }
+    }
     function reveal() {
       if (settled) return; settled = true;
       if (guard) clearTimeout(guard);
-      // the banner already shows the end-frame still (identical to the video's
-      // last frame), so we just stop the video and drop the overlay — no
-      // reparenting or seeking, which is what silently failed in restrictive
-      // browsers. Seamless in a normal browser; robust everywhere.
+      // the intro's last frame == the loop clip's first frame, so we just stop
+      // the intro, kick off the banner loop, and drop the overlay — no
+      // reparenting or seeking (which silently failed in restrictive browsers).
       if (vid) { try { vid.pause(); } catch (e) { } }
+      startBannerLoop();
       if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
       body.classList.remove('intro-active');
       setTimeout(buildSite, reduce ? 0 : 500);
@@ -432,7 +442,9 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
     function fail() {
       if (settled) return; settled = true;
       if (guard) clearTimeout(guard);
-      // even on video error we keep the banner — it's a still image, not the video.
+      // even on intro error we keep the banner (it's its own looping video with
+      // a poster) and try to start it.
+      startBannerLoop();
       if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
       body.classList.remove('intro-active');
       buildSite();
@@ -458,36 +470,92 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
       guard = setTimeout(settle, Math.max(4000, remain * 1000 + 3000));
     });
 
-    function kick() { if (!settled && vid.paused) { var p = vid.play(); if (p && p.catch) p.catch(function () { }); } }
+    function kick() {
+      if (!settled && vid.paused) { var p = vid.play(); if (p && p.catch) p.catch(function () { }); }
+      if (settled) { var loop = document.getElementById('bannerVid'); if (loop && loop.paused) { var q = loop.play(); if (q && q.catch) q.catch(function () { }); } }
+    }
     setTimeout(kick, 400);
     ['pointerdown', 'touchstart', 'keydown', 'wheel'].forEach(function (ev) {
       window.addEventListener(ev, kick, { once: true, passive: true });
     });
   })();
 
-  /* ---------- link-only hydration ----------
-     The Hebrew copy is static; only shared link URLs (Patreon, avastha, GitHub,
-     email, Facebook) are pulled from the worker so they stay in sync with what's
-     set in /admin. No text or card grids are rebuilt (that content is English). */
+  /* ---------- hydration from the worker (Hebrew content: ?lang=he) ----------
+     Same shape as the English site, but reads/writes the `content:site:he` KV
+     record via ?lang=he, so /he/admin edits this page. The baked Hebrew text is
+     the fallback and stays if the worker is unreachable. */
+  var ICON = {
+    arrow: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg>',
+    wave: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 10v4M7 7v10M11 4v16M15 7v10M19 10v4"/></svg>',
+    fb: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>',
+    github: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>'
+  };
   function get(o, p) { var ks = p.split('.'); for (var i = 0; i < ks.length; i++) { if (o == null) return undefined; o = o[ks[i]]; } return o; }
   function safeUrl(u) { var s = String(u == null ? '' : u).trim(); if (/^(#|\/)/.test(s)) return s; if (/^(https?:\/\/|mailto:)/i.test(s)) return s; return '#'; }
+  function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+  function icon(n, name) { n.insertAdjacentHTML('beforeend', ICON[name]); return n; }
+  function pill(url, label, iconName) { var a = el('a', 'pill'); a.href = safeUrl(url); a.target = '_blank'; a.rel = 'noopener'; icon(a, iconName); a.appendChild(el('span', '', label)); return a; }
+  function scLabel(s) { return s.label || String(s.url || '').replace(/^https?:\/\/(www\.)?/, ''); }
 
-  fetch(WORKER + '/api/content')
-    .then(function (r) { return r.json(); })
-    .then(function (j) {
-      if (!j || !j.ok || !j.content) return;
-      var c = j.content;
-      document.querySelectorAll('[data-href]').forEach(function (n) {
-        var v = get(c, n.getAttribute('data-href'));
-        if (v) n.href = safeUrl(v);
+  function hydrate(c) {
+    document.title = get(c, 'meta.title') || document.title;
+    var md = document.querySelector('meta[name="description"]');
+    if (md && get(c, 'meta.description')) md.content = c.meta.description;
+
+    document.querySelectorAll('[data-c]').forEach(function (n) {
+      var v = get(c, n.getAttribute('data-c'));
+      if (v != null && typeof v !== 'object') n.textContent = String(v);
+    });
+    document.querySelectorAll('[data-href]').forEach(function (n) {
+      var v = get(c, n.getAttribute('data-href'));
+      if (v) n.href = safeUrl(v);
+    });
+    var email = get(c, 'about.email');
+    if (email) {
+      var bm = document.getElementById('bigmail'); if (bm) bm.href = 'mailto:' + email;
+      var gb = document.getElementById('gig-btn'); if (gb) gb.href = 'mailto:' + email;
+    }
+
+    var scs = get(c, 'music.solo.soundclouds');
+    var scBox = document.getElementById('sc-pills');
+    if (scBox && Array.isArray(scs)) { scBox.textContent = ''; scs.forEach(function (s) { scBox.appendChild(pill(s.url, scLabel(s), 'wave')); }); }
+
+    var tools = get(c, 'tools.items');
+    var toolsGrid = document.getElementById('tools-grid');
+    if (toolsGrid && Array.isArray(tools) && tools.length) {
+      toolsGrid.textContent = '';
+      var builtNow = document.body.classList.contains('built');
+      tools.forEach(function (it, i) {
+        var card = el('article', 'card rv' + (builtNow ? ' in' : ''));
+        card.appendChild(el('div', 'idx', String(i + 1).padStart(2, '0')));
+        card.appendChild(el('h3', '', it.title || ''));
+        card.appendChild(el('p', '', it.body || ''));
+        var a = el('a', 'cardlink', (get(c, 'tools.viewLabel') || 'לקוד המקור') + ' ');
+        a.href = safeUrl(it.url); a.target = '_blank'; a.rel = 'noopener'; icon(a, 'arrow');
+        card.appendChild(a);
+        toolsGrid.appendChild(card);
       });
-      var email = get(c, 'about.email');
-      if (email) {
-        var bm = document.getElementById('bigmail'); if (bm) bm.href = 'mailto:' + email;
-        var gb = document.getElementById('gig-btn'); if (gb) gb.href = 'mailto:' + email;
-      }
-    })
-    .catch(function () { /* worker unreachable — static links stay */ });
+    }
+
+    var cp = document.getElementById('contact-pills');
+    if (cp) {
+      cp.textContent = '';
+      cp.appendChild(pill(get(c, 'about.facebook'), 'Facebook', 'fb'));
+      (Array.isArray(scs) ? scs : []).forEach(function (s) { cp.appendChild(pill(s.url, scLabel(s), 'wave')); });
+      cp.appendChild(pill(get(c, 'tools.githubUrl'), 'GitHub', 'github'));
+    }
+
+    if (document.body.classList.contains('built')) watchReveal(document);
+  }
+
+  fetch(WORKER + '/api/content?lang=he')
+    .then(function (r) { return r.json(); })
+    // Only hydrate when the worker confirms it served the Hebrew record
+    // (j.lang === 'he'). An older worker without locale support returns the
+    // English content and no `lang` field — in that case we keep the baked
+    // Hebrew text instead of letting English overwrite it.
+    .then(function (j) { if (j && j.ok && j.lang === 'he' && j.content) hydrate(j.content); })
+    .catch(function () { /* worker unreachable — baked Hebrew content stays */ });
 })();
 </script>
 </body>
