@@ -107,28 +107,58 @@ together for search engines.
 - **Palette is blue** (`--c1 #5cc8ff`, `--c2 #2f7ef0`, `--c3 #b58cff`) — pulled
   from the Hebrew logo video, not the emerald/walnut of the English site, so the
   banner and the page read as one piece. Font is **Heebo** (Hebrew + Latin).
-- **Intro video → banner is different (and more robust):** the banner is a
-  **still image** of the video's final frame (`media/adi_heb_logo_end.jpg`), not
-  the paused video. The intro video (`media/adi_heb_logo.mp4`) still plays
-  fullscreen and crops down onto that exact frame, then the overlay drops — so
-  the handoff is seamless, and the banner never depends on the video
-  playing/seeking (which fails silently in restrictive browsers). To reframe the
-  logo, change `object-position` (currently `center 50%`).
-- **Content is static Hebrew.** Only shared link URLs (Patreon `support.url`,
-  `music.avastha.url`, `tools.githubUrl`, email, Facebook) hydrate from the
-  worker via `data-href`, so those stay in sync with what's set in `/admin`. All
-  text is baked in — the `/admin` panel edits the **English** site only.
+- **Intro → animated looping banner.** The intro (`media/adi_heb_logo.mp4`,
+  0 → ~6.1 s) plays fullscreen and crops down onto its final frame; then the
+  overlay drops and a separate **boomerang loop** (`media/adi_heb_logo_loop.mp4`)
+  takes over the banner and plays forever. The intro's last frame == the loop's
+  first frame, so the hand-off is seamless. The loop's poster
+  (`media/adi_heb_logo_end.jpg`) is that same frame, so if a browser blocks
+  autoplay the banner still shows the settled logo. To reframe, change
+  `object-position` (currently `center 50%`).
+- **Content is editable in Hebrew** via **`/he/admin`** — see below. The baked
+  Hebrew text is the fallback (renders if the worker is down); the page hydrates
+  the live Hebrew record on load. Hydration only applies when the worker confirms
+  `lang: "he"`, so an un-updated worker can't overwrite the page with English.
 
-### The Hebrew intro video
+### The Hebrew intro + loop videos
 
-`media/adi_heb_logo.mp4` is the source `adi_heb_logo.mp4` **trimmed to its
-first 121 frames (0 → 5.00 s at 24 fps)** — the settled "עדי" logo frame Adi
-picked; the original keeps animating (the logo breaks apart) after that, so it's
-cut there. Poster is the first frame; `adi_heb_logo_end.jpg` is that last frame
-(the banner still). To recut:
-`ffmpeg -i <source>.mp4 -frames:v <N> -an -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p -movflags +faststart media/adi_heb_logo.mp4`
-then regenerate the end still:
-`ffmpeg -sseof -0.05 -i media/adi_heb_logo.mp4 -frames:v 1 -q:v 3 media/adi_heb_logo_end.jpg -y`.
+Both are cut from the source `adi_heb_logo.mp4` (1280×720, 24 fps, 10 s):
+
+- **Intro** `media/adi_heb_logo.mp4` = frames 0–146 (0 → ~6.1 s). "Plays until
+  ~6 s" then hands off to the loop. (The source keeps animating and the logo
+  breaks apart after ~6.5 s, so it's cut before that.)
+- **Loop** `media/adi_heb_logo_loop.mp4` = a seamless **boomerang** of the
+  6.1 s ↔ 4.6 s window: `reverse(4.6→6.1)` + `forward(4.6→6.1)`, i.e.
+  6.1 → 4.6 → 6.1, ~3 s, native `loop`. The logo stays settled while the light
+  trails drift. Rebuild:
+  ```
+  # forward window (frames 110..146 ≈ 4.6..6.1s)
+  ffmpeg -i <src>.mp4 -vf "select='gte(n\,110)*lte(n\,146)',setpts=PTS-STARTPTS" -frames:v 37 -an -c:v libx264 -crf 18 -pix_fmt yuv420p fwd.mp4
+  # boomerang (reverse then forward), starts+ends on the 6.1s frame
+  ffmpeg -i fwd.mp4 -filter_complex "[0:v]reverse[r];[r][0:v]concat=n=2:v=1,setpts=PTS-STARTPTS[v]" -map "[v]" -an -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p -movflags +faststart media/adi_heb_logo_loop.mp4
+  # poster / autoplay-blocked fallback = the 6.1s frame
+  ffmpeg -i <src>.mp4 -vf "select='eq(n\,146)'" -frames:v 1 -q:v 3 media/adi_heb_logo_end.jpg -y
+  ```
+
+## Hebrew admin — adiariel.com/he/admin
+
+`/he/admin.html` is the RTL Hebrew admin (blue theme). Same worker, same login
+(one password for both languages), but its **Content** tab reads/writes
+`?lang=he` → the worker's separate KV record **`content:site:he`**. The
+**Assets** tab is shared (one R2 bucket). English `/admin` and Hebrew `/he/admin`
+edit their own text independently — including URLs like Patreon, so set those in
+**both** if you want them to match.
+
+Worker locale support: `GET/PUT /api/content?lang=he` (no `?lang` = English, so
+the English path is unchanged). Hebrew defaults live in `DEFAULT_CONTENT_HE` in
+the worker.
+
+> **⚠️ Deploy order:** this needs the updated worker. **Redeploy
+> `adiariel-site-worker` (paste `main_site/adiariel-site-worker.js`) before/at the
+> same time as pushing the Pages files.** Both the Hebrew page and the Hebrew
+> admin guard on `lang: "he"`, so an old worker won't corrupt anything — the
+> Hebrew page just keeps its baked text and the admin refuses to edit — but the
+> Hebrew admin only works once the new worker is live.
 
 ## Local dev
 

@@ -39,7 +39,8 @@ const PBKDF2_ITER = 100000;            // Workers cap PBKDF2 at 100k iterations
 const SESSION_TTL = 60 * 60 * 24 * 7;  // 7 days
 const MAX_UPLOAD = 95 * 1024 * 1024;   // stay under the 100 MB request limit
 const MAX_CONTENT_BYTES = 200000;      // editable-content JSON size cap
-const CONTENT_KEY = 'content:site';
+const CONTENT_KEY = 'content:site';        // English (default)
+const CONTENT_KEY_HE = 'content:site:he';  // Hebrew (?lang=he) — adiariel.com/he
 const AUTH_KEY = 'auth:admin';
 const SITE_ORIGIN = 'https://adiariel.com';
 
@@ -48,8 +49,10 @@ const ALLOWED_ORIGINS = [
   'https://adiariel.com',
   'https://www.adiariel.com',
   'https://arieladi.github.io',
-  'http://localhost:8788',   // local test harness
-  'http://127.0.0.1:8788'
+  'http://localhost:8788',   // local test harness (worker dev-server)
+  'http://127.0.0.1:8788',
+  'http://localhost:8799',   // local test harness (pages preview: EN + /he)
+  'http://127.0.0.1:8799'
 ];
 
 /* ---------------- default site content (every field editable in /admin) ---- */
@@ -137,6 +140,103 @@ const DEFAULT_CONTENT = {
   }
 };
 
+/* ---------------- Hebrew (RTL) default content — adiariel.com/he ------------
+   Same shape as DEFAULT_CONTENT; edited independently via /he/admin (?lang=he,
+   KV `content:site:he`). URLs mirror the English defaults so the two start in
+   sync; each language is then edited separately. */
+const DEFAULT_CONTENT_HE = {
+  meta: {
+    title: 'עדי אריאל — מוזיקה אלקטרונית, קולבורציות וכלים חינמיים',
+    description: 'עדי אריאל — מפיק ודי-ג\'יי של מוזיקה אלקטרונית, חצי מהצמד אווסטה. מוזיקה, קולבורציות, הופעות וכלים חינמיים שנבנו מאהבה. תמיכה ב-Patreon.'
+  },
+  hero: {
+    kicker: 'מוזיקה אלקטרונית · קולבורציות · כלים חינמיים',
+    title: 'עדי אריאל',
+    tagline: 'מפיק מוזיקה אלקטרונית, די-ג\'יי ו-vibe coder.',
+    intro: 'חצי מהצמד אווסטה ומפיק סולו של מוזיקה אלקטרונית. אני יוצר מוזיקה, מנגן בהופעות, משתף פעולה עם אמנים אחרים ובונה כלים קטנים מתוך אהבה טהורה — הכול חינם. אם משהו מכל זה מדבר אליכם, Patreon הוא מה שמחזיק את הכול.'
+  },
+  music: {
+    heading: 'מוזיקה אלקטרונית',
+    intro: 'כאווסטה ובסולו — לילות פסיטראנס וסשנים באולפן.',
+    avastha: {
+      name: 'Avastha',
+      body: 'צמד הפסיטראנס שלי. מוזיקת לילה עמוקה ודוחפת — נכללה באוסף Sol Music.',
+      url: 'https://avastha.info',
+      badge: 'מתוך האוסף Sol Music'
+    },
+    solo: {
+      title: 'סולו — סשנים וסטים',
+      body: 'טראקים, ניסויים וסטים של די-ג\'יי תחת השם שלי, ב-SoundCloud.',
+      soundclouds: [
+        { label: 'music_adi', url: 'https://soundcloud.com/music_adi' },
+        { label: 'adiariel', url: 'https://soundcloud.com/adiariel' }
+      ]
+    }
+  },
+  collabs: {
+    heading: 'קולבורציות',
+    intro: 'בואו ניצור משהו — או ננגן איפשהו — ביחד.',
+    collab: {
+      title: 'שיתופי פעולה ורמיקסים',
+      body: 'פתוח לשיתופי פעולה, רמיקסים וסטים B2B. אם אתם יוצרים מוזיקה שמדברת אליי — דברו איתי. תומכים שומעים את היצירות בתהליך ראשונים.'
+    },
+    gig: {
+      title: 'הזמנת הופעה',
+      body: 'סטים של די-ג\'יי והופעות חיות למועדונים, פסטיבלים ואירועים פרטיים. שלחו לי תאריכים ונגרום לזה לקרות.'
+    }
+  },
+  tools: {
+    heading: 'כלים',
+    body: 'אני גם vibe coder — בונה כלים קטנים ושימושיים מתוך כיף, ומשחרר כל אחד מהם בחינם, בלי שום תנאי.',
+    note: 'הם יישארו חינמיים, תמיד. אם כלי חוסך לכם זמן, תרומה ב-Patreon היא מה ששומר עליהם חינמיים ומביא חדשים.',
+    viewLabel: 'לקוד המקור',
+    githubUrl: 'https://github.com/arieladi',
+    items: [
+      {
+        title: 'Console — תוסף Stream Deck',
+        body: 'מחשבון דיליי/ריברב מבוסס BPM, נומפד ברמת מערכת וכלי תדרים לתווים ל-Stream Deck + XL.',
+        url: 'https://github.com/arieladi/Adi/tree/main/tools/elgato_stream_deck_plugins/com.adiariel.console.sdPlugin'
+      },
+      {
+        title: 'RekordBox MIDI — תוסף Stream Deck',
+        body: 'הופך את ה-Stream Deck + XL לשלט MIDI וירטואלי ל-rekordbox במצב PERFORMANCE: hot cues, טרנספורט, jog nudge ודיסקיות מיקסר.',
+        url: 'https://github.com/arieladi/Adi/tree/main/tools/elgato_stream_deck_plugins/com.adiariel.rekordbox.sdPlugin'
+      },
+      {
+        title: 'RTL/LTR Auto Direction — תוסף לכרום',
+        body: 'מחליף אוטומטית את כיוון הטקסט לפי השפה שאתם מקלידים. אפס הרשאות.',
+        url: 'https://github.com/arieladi/Adi/tree/main/tools/chrome/rtl_extension'
+      },
+      {
+        title: 'Rekordbox Cue Counter — כלי ווב',
+        body: 'טיימר לסט של די-ג\'יי סביב דפי cue של rekordbox — ספירה לאחור חיה לבוט\'.',
+        url: 'https://github.com/arieladi/Adi/tree/main/tools/rekordbox_que_counter'
+      }
+    ]
+  },
+  about: {
+    heading: 'אודות',
+    body: 'עדי אריאל — מפיק ודי-ג\'יי של מוזיקה אלקטרונית, חצי מצמד הפסיטראנס אווסטה, ו-vibe coder בידיים. מוזיקה, הופעות, קולבורציות וכלים חינמיים — האתר הזה הוא הבית לכל זה.',
+    email: 'office@adiariel.com',
+    emailNote: 'הזמנות, שיתופי פעולה, וגם סתם שלום.',
+    facebook: 'https://www.facebook.com/profile.php?id=61578996476561'
+  },
+  support: {
+    heading: 'תמיכה',
+    body: 'Patreon היא הדרך המשמעותית ביותר לעזור — היא מממנת זמן אולפן, מוזיקה חדשה ואת הכלים החינמיים. גם קצת עושה דרך ארוכה, וזה באמת אומר לי עולם ומלואו.',
+    label: 'להצטרפות כתומך',
+    url: 'https://www.patreon.com'
+  }
+};
+
+const LOCALES = {
+  en: { key: CONTENT_KEY, def: DEFAULT_CONTENT },
+  he: { key: CONTENT_KEY_HE, def: DEFAULT_CONTENT_HE }
+};
+function localeOf(req) {
+  try { return new URL(req.url).searchParams.get('lang') === 'he' ? 'he' : 'en'; } catch { return 'en'; }
+}
+
 /* =========================================================================== */
 
 export default {
@@ -198,12 +298,13 @@ function deepMerge(def, over) {
   }
   return out;
 }
-async function getContent(env) {
+async function getContent(env, lang) {
+  const loc = LOCALES[lang] || LOCALES.en;
   let stored = null;
   if (env.ADIARIEL_SITE_KV) {
-    try { stored = await env.ADIARIEL_SITE_KV.get(CONTENT_KEY, 'json'); } catch { stored = null; }
+    try { stored = await env.ADIARIEL_SITE_KV.get(loc.key, 'json'); } catch { stored = null; }
   }
-  return deepMerge(DEFAULT_CONTENT, isObj(stored) ? stored : {});
+  return deepMerge(loc.def, isObj(stored) ? stored : {});
 }
 
 /* ---------------- auth: PBKDF2 record + Bearer sessions in KV ---------------- */
@@ -274,10 +375,10 @@ async function handleApi(req, env, path) {
     }, 200, pubCors());
   }
 
-  /* public content read — the static site hydrates from this */
+  /* public content read — the static site hydrates from this (?lang=he for Hebrew) */
   if (path === '/api/content' && req.method === 'GET') {
     const authed = await sessionOk(req, env);
-    const out = { ok: true, content: await getContent(env) };
+    const out = { ok: true, lang: localeOf(req), content: await getContent(env, localeOf(req)) };
     if (authed) {
       const auth = await getAuth(env);
       out.bootstrap = !!(auth && auth.bootstrap);
@@ -307,7 +408,7 @@ async function handleApi(req, env, path) {
     if (!isObj(body)) return json({ ok: false, message: 'content must be an object' }, 400, adminCors(req));
     const s = JSON.stringify(body);
     if (s.length > MAX_CONTENT_BYTES) return json({ ok: false, message: 'content too large' }, 413, adminCors(req));
-    await env.ADIARIEL_SITE_KV.put(CONTENT_KEY, s);
+    await env.ADIARIEL_SITE_KV.put((LOCALES[localeOf(req)] || LOCALES.en).key, s);
     return json({ ok: true }, 200, adminCors(req));
   }
 

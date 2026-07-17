@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>ניהול — adiariel.com/he</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+/* Hebrew (RTL) admin — same worker API as the English admin, but the Content
+   tab reads/writes ?lang=he (KV content:site:he). Shared password + assets. */
+:root{--bg:#080c14;--panel:#0d121c;--line:rgba(255,255,255,.09);--line2:rgba(255,255,255,.18);
+--text:#e9eef7;--muted:#93a2b8;--c1:#5cc8ff;--c2:#2f7ef0;--c3:#b58cff;--ok:#34d399;--bad:#f87171;
+--grad:linear-gradient(90deg,var(--c1),var(--c2) 50%,var(--c3));
+--mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+font:15px/1.6 system-ui,-apple-system,'Segoe UI','Heebo',sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:880px;margin:0 auto;padding:0 20px}
+h1{font-size:1.15rem;margin:0}
+h1 em{font-style:normal;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+a{color:var(--c1)}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 0;
+border-bottom:1px solid var(--line);margin-bottom:22px;flex-wrap:wrap}
+.topbar .links{display:flex;gap:14px;align-items:center;font-family:var(--mono);font-size:.78rem}
+button{font:inherit;cursor:pointer}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:.6rem 1.1rem;border-radius:10px;border:1px solid var(--line2);
+background:rgba(255,255,255,.03);color:var(--text);transition:border-color .2s,transform .2s}
+.btn:hover{border-color:rgba(255,255,255,.4)}
+.btn.primary{background:var(--grad);color:#06101f;border-color:transparent;font-weight:600}
+.btn.danger{color:var(--bad);border-color:rgba(248,113,113,.4)}
+.btn.small{padding:.35rem .7rem;font-size:.78rem;border-radius:8px}
+.tabs{display:flex;gap:8px;margin-bottom:22px;flex-wrap:wrap}
+.tab{padding:.5rem 1rem;border-radius:999px;border:1px solid var(--line);background:none;color:var(--muted);
+font-family:var(--mono);font-size:.78rem;letter-spacing:.04em}
+.tab.active{color:#06101f;background:var(--grad);border-color:transparent;font-weight:600}
+.panel{display:none}.panel.active{display:block}
+fieldset{border:1px solid var(--line);border-radius:14px;padding:18px 18px 6px;margin:0 0 18px;background:var(--panel)}
+legend{font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;color:var(--muted);padding:0 8px}
+label{display:block;margin:0 0 14px}
+label span{display:block;font-size:.78rem;color:var(--muted);margin-bottom:5px}
+input[type=text],input[type=url],input[type=email],input[type=password],textarea{width:100%;
+background:#05080f;border:1px solid var(--line);border-radius:9px;color:var(--text);
+padding:.6rem .75rem;font:inherit}
+textarea{min-height:70px;resize:vertical}
+textarea.list{font-family:var(--mono);font-size:.82rem;min-height:96px}
+input:focus,textarea:focus{outline:none;border-color:var(--c2)}
+.hint{font-size:.72rem;color:var(--muted);opacity:.8;margin:-8px 0 14px}
+.savebar{position:sticky;bottom:0;background:rgba(8,12,20,.9);backdrop-filter:blur(10px);
+border-top:1px solid var(--line);padding:14px 0;margin-top:8px;display:flex;gap:14px;align-items:center}
+.toast{font-family:var(--mono);font-size:.8rem;color:var(--ok)}
+.toast.err{color:var(--bad)}
+.banner{border:1px solid rgba(181,140,255,.45);background:rgba(181,140,255,.08);border-radius:12px;
+padding:12px 16px;margin-bottom:20px;font-size:.85rem}
+.note{border:1px solid var(--line);background:rgba(255,255,255,.02);border-radius:12px;
+padding:11px 15px;margin-bottom:20px;font-size:.82rem;color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:.84rem}
+th,td{text-align:right;padding:9px 10px;border-bottom:1px solid var(--line);word-break:break-all}
+th{font-family:var(--mono);font-size:.7rem;letter-spacing:.06em;color:var(--muted)}
+td .btn{margin-left:6px}
+.uprow{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
+.uprow input[type=text]{max-width:220px}
+.muted{color:var(--muted)}
+.login{min-height:100vh;display:grid;place-items:center;padding:20px}
+.logincard{width:100%;max-width:360px;background:var(--panel);border:1px solid var(--line);
+border-radius:16px;padding:30px;text-align:center}
+.logincard h1{margin-bottom:6px;font-size:1.3rem}
+.logincard p{color:var(--muted);font-size:.82rem;margin:0 0 20px}
+.logincard input{margin-bottom:14px;text-align:center}
+.err{color:var(--bad);font-size:.8rem;min-height:1.2em;margin:10px 0 0}
+[hidden]{display:none !important}
+</style>
+</head>
+<body>
+
+<div class="login" id="login-view">
+  <form class="logincard" id="login-form">
+    <h1>adiariel<em>.com/he</em></h1><p>פאנל ניהול</p>
+    <input type="password" id="pw" placeholder="סיסמה" autocomplete="current-password" autofocus>
+    <button class="btn primary" type="submit" style="width:100%">כניסה</button>
+    <div class="err" id="login-err"></div>
+  </form>
+</div>
+
+<div class="wrap" id="panel-view" hidden>
+
+  <div class="topbar"><h1>adiariel<em>.com/he</em> <span class="muted">ניהול</span></h1>
+    <div class="links"><a href="/he/" target="_blank" rel="noopener">צפייה באתר &nearr;</a>
+      <a href="/admin" target="_blank" rel="noopener">English admin &nearr;</a>
+      <button class="btn small" id="logout">התנתקות</button></div></div>
+
+  <div class="banner" id="bootbanner" hidden>אתם עדיין משתמשים בסיסמת ברירת המחדל
+    (<code>DEFAULT_PASS</code>). שנו אותה בלשונית <b>אבטחה</b>.</div>
+
+  <div class="note">זהו ניהול <b>הגרסה העברית</b> (adiariel.com/he). הטקסטים והקישורים כאן נפרדים
+    מהאתר האנגלי — כתובת ה-Patreon וקישורים אחרים נערכים בכל שפה בנפרד.</div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="content">תוכן</button>
+    <button class="tab" data-tab="assets">מדיה</button>
+    <button class="tab" data-tab="security">אבטחה</button>
+  </div>
+
+  <!-- content tab -->
+  <div class="panel active" id="panel-content">
+    <fieldset><legend>מטא</legend>
+      <label><span>כותרת בדפדפן</span><input type="text" data-path="meta.title"></label>
+      <label><span>תיאור לחיפוש / שיתוף</span><textarea data-path="meta.description"></textarea></label>
+    </fieldset>
+    <fieldset><legend>פתיח (Hero)</legend>
+      <label><span>שורת פתיח (מעל השם)</span><input type="text" data-path="hero.kicker"></label>
+      <label><span>כותרת (שם)</span><input type="text" data-path="hero.title"></label>
+      <label><span>שורת תיאור (tagline)</span><input type="text" data-path="hero.tagline"></label>
+      <label><span>פסקת פתיחה</span><textarea data-path="hero.intro"></textarea></label>
+    </fieldset>
+    <fieldset><legend>01 · מוזיקה אלקטרונית</legend>
+      <label><span>כותרת הקטע</span><input type="text" data-path="music.heading"></label>
+      <label><span>תת-כותרת</span><input type="text" data-path="music.intro"></label>
+      <label><span>Avastha — שם</span><input type="text" data-path="music.avastha.name"></label>
+      <label><span>Avastha — טקסט</span><textarea data-path="music.avastha.body"></textarea></label>
+      <label><span>Avastha — קישור</span><input type="url" data-path="music.avastha.url"></label>
+      <label><span>Avastha — תגית (מעל השם)</span><input type="text" data-path="music.avastha.badge"></label>
+      <label><span>כרטיס סולו — כותרת</span><input type="text" data-path="music.solo.title"></label>
+      <label><span>כרטיס סולו — טקסט</span><textarea data-path="music.solo.body"></textarea></label>
+      <label><span>קישורי SoundCloud</span><textarea class="list" id="sc-list"></textarea></label>
+      <p class="hint">שורה לכל אחד: <code>label | url</code></p>
+    </fieldset>
+    <fieldset><legend>02 · קולבורציות</legend>
+      <label><span>כותרת הקטע</span><input type="text" data-path="collabs.heading"></label>
+      <label><span>תת-כותרת</span><input type="text" data-path="collabs.intro"></label>
+      <label><span>כרטיס שיתופי פעולה — כותרת</span><input type="text" data-path="collabs.collab.title"></label>
+      <label><span>כרטיס שיתופי פעולה — טקסט</span><textarea data-path="collabs.collab.body"></textarea></label>
+      <label><span>כרטיס הופעה — כותרת</span><input type="text" data-path="collabs.gig.title"></label>
+      <label><span>כרטיס הופעה — טקסט</span><textarea data-path="collabs.gig.body"></textarea></label>
+    </fieldset>
+    <fieldset><legend>03 · כלים</legend>
+      <label><span>כותרת הקטע</span><input type="text" data-path="tools.heading"></label>
+      <label><span>פסקת פתיחה</span><textarea data-path="tools.body"></textarea></label>
+      <label><span>הערת כלים / Patreon</span><textarea data-path="tools.note"></textarea></label>
+      <label><span>תווית קישור בכרטיס (למשל "לקוד המקור")</span><input type="text" data-path="tools.viewLabel"></label>
+      <label><span>כתובת פרופיל GitHub</span><input type="url" data-path="tools.githubUrl"></label>
+      <label><span>כרטיסי כלים</span><textarea class="list" id="tools-list"></textarea></label>
+      <p class="hint">שורה לכל אחד: <code>כותרת :: תיאור :: קישור</code></p>
+    </fieldset>
+    <fieldset><legend>04 · אודות</legend>
+      <label><span>כותרת הקטע</span><input type="text" data-path="about.heading"></label>
+      <label><span>פסקת ביוגרפיה</span><textarea data-path="about.body"></textarea></label>
+      <label><span>אימייל</span><input type="email" data-path="about.email"></label>
+      <label><span>הערת אימייל</span><input type="text" data-path="about.emailNote"></label>
+      <label><span>כתובת פייסבוק</span><input type="url" data-path="about.facebook"></label>
+    </fieldset>
+    <fieldset><legend>05 · תמיכה (Patreon)</legend>
+      <label><span>כותרת הקטע</span><input type="text" data-path="support.heading"></label>
+      <label><span>טקסט תמיכה</span><textarea data-path="support.body"></textarea></label>
+      <label><span>טקסט כפתור</span><input type="text" data-path="support.label"></label>
+      <label><span>כתובת Patreon</span><input type="url" data-path="support.url"></label>
+      <p class="hint">כתובת ה-Patreon הזו מזינה את כל קישורי "התמיכה" בעמוד (כפתור הפתיח, הערת הכלים, הקטע הזה).</p>
+    </fieldset>
+    <div class="savebar"><button class="btn primary" id="save">שמירה ופרסום</button>
+      <span class="toast" id="toast"></span></div>
+  </div>
+
+  <!-- assets tab -->
+  <div class="panel" id="panel-assets">
+    <div class="uprow">
+      <input type="text" id="up-prefix" placeholder="תיקייה (למשל images)" value="images">
+      <input type="file" id="up-file" multiple>
+      <button class="btn primary" id="up-go">העלאה</button>
+      <span class="toast" id="up-status"></span></div>
+    <p class="hint">הקבצים משותפים לשני האתרים ומוגשים מה-worker בכתובת <code id="assets-base"></code> — השתמשו בכתובות האלה לבאנרים, תמונות ואודיו.</p>
+    <table><thead><tr><th>מפתח</th><th>גודל</th><th></th></tr></thead><tbody id="asset-rows"></tbody></table>
+    <p class="muted" id="asset-empty" hidden>אין קבצים עדיין.</p>
+  </div>
+
+  <!-- security tab -->
+  <div class="panel" id="panel-security">
+    <fieldset><legend>שינוי סיסמה</legend>
+      <label><span>סיסמה נוכחית</span><input type="password" id="pw-cur" autocomplete="current-password"></label>
+      <label><span>סיסמה חדשה (לפחות 8 תווים)</span><input type="password" id="pw-new" autocomplete="new-password"></label>
+      <label><span>אימות סיסמה חדשה</span><input type="password" id="pw-rep" autocomplete="new-password"></label>
+    </fieldset>
+    <button class="btn primary" id="pw-go">שינוי סיסמה</button>
+    <span class="toast" id="pw-status"></span>
+    <p class="hint" style="margin-top:14px">הסיסמה משותפת לניהול העברי והאנגלי. שינוי הסיסמה מנתק כל מכשיר אחר.
+      שכחתם? מחקו את המפתח <code>auth:admin</code> ב-KV — הכניסה הבאה תזרע מחדש מ-<code>DEFAULT_PASS</code>.</p>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var WORKER = 'https://adiariel-site-worker.adidatabase.workers.dev';
+  var LANG = '?lang=he';
+  var TOK_KEY = 'aa_admin_tok'; /* shared with the English admin — one login */
+  var token = '';
+  try { token = sessionStorage.getItem(TOK_KEY) || ''; } catch (e) { }
+  var content = null;
+
+  function $(s) { return document.querySelector(s); }
+  function $all(s) { return Array.prototype.slice.call(document.querySelectorAll(s)); }
+
+  function saveToken(t) {
+    token = t || '';
+    try { token ? sessionStorage.setItem(TOK_KEY, token) : sessionStorage.removeItem(TOK_KEY); } catch (e) { }
+  }
+  function showLogin() {
+    saveToken('');
+    $('#panel-view').hidden = true;
+    $('#login-view').hidden = false;
+    $('#pw').focus();
+  }
+  function showPanel() {
+    $('#login-view').hidden = true;
+    $('#panel-view').hidden = false;
+  }
+
+  function api(method, path, body, raw) {
+    var h = { 'x-admin': '1' };
+    if (token) h['Authorization'] = 'Bearer ' + token;
+    var opts = { method: method, headers: h };
+    if (body !== undefined && !raw) { h['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    if (raw) opts.body = body;
+    return fetch(WORKER + path, opts).then(function (r) {
+      if (r.status === 401) { showLogin(); throw new Error('signed out'); }
+      return r.json();
+    });
+  }
+  function getPath(o, p) { var ks = p.split('.'); for (var i = 0; i < ks.length; i++) { if (o == null) return undefined; o = o[ks[i]]; } return o; }
+  function setPath(o, p, v) {
+    var ks = p.split('.'); var t = o;
+    for (var i = 0; i < ks.length - 1; i++) { if (typeof t[ks[i]] !== 'object' || t[ks[i]] === null) t[ks[i]] = {}; t = t[ks[i]]; }
+    t[ks[ks.length - 1]] = v;
+  }
+  function toast(el, msg, bad) {
+    el.textContent = msg; el.classList.toggle('err', !!bad);
+    setTimeout(function () { el.textContent = ''; }, 4000);
+  }
+
+  /* ---------- login ---------- */
+  $('#login-form').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    $('#login-err').textContent = '';
+    fetch(WORKER + '/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: $('#pw').value })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j.ok && j.token) {
+        saveToken(j.token);
+        $('#pw').value = '';
+        $('#bootbanner').hidden = !j.bootstrap;
+        boot();
+      } else {
+        $('#login-err').textContent = j.message || 'הכניסה נכשלה';
+      }
+    }).catch(function () { $('#login-err').textContent = 'שגיאת רשת — האם ה-worker פרוס?'; });
+  });
+
+  $('#logout').addEventListener('click', function () {
+    api('POST', '/api/logout', {}).catch(function () { });
+    showLogin();
+  });
+
+  /* ---------- tabs ---------- */
+  $all('.tab').forEach(function (b) {
+    b.addEventListener('click', function () {
+      $all('.tab').forEach(function (x) { x.classList.remove('active'); }); b.classList.add('active');
+      $all('.panel').forEach(function (p) { p.classList.remove('active'); });
+      $('#panel-' + b.getAttribute('data-tab')).classList.add('active');
+      if (b.getAttribute('data-tab') === 'assets') refreshAssets();
+    });
+  });
+
+  /* ---------- content (?lang=he) ---------- */
+  function fill() {
+    $all('[data-path]').forEach(function (el) {
+      var v = getPath(content, el.getAttribute('data-path'));
+      el.value = v == null ? '' : String(v);
+    });
+    $('#sc-list').value = (getPath(content, 'music.solo.soundclouds') || []).map(function (s) { return (s.label || '') + ' | ' + (s.url || ''); }).join('\n');
+    $('#tools-list').value = (getPath(content, 'tools.items') || []).map(function (s) { return (s.title || '') + ' :: ' + (s.body || '') + ' :: ' + (s.url || ''); }).join('\n');
+  }
+  function parseLines(txt, sep) {
+    return txt.split('\n').map(function (l) { return l.trim(); }).filter(Boolean).map(function (l) {
+      return l.split(sep === '|' ? '|' : '::').map(function (x) { return x.trim(); });
+    });
+  }
+  $('#save').addEventListener('click', function () {
+    var doc = JSON.parse(JSON.stringify(content));
+    $all('[data-path]').forEach(function (el) { setPath(doc, el.getAttribute('data-path'), el.value); });
+    setPath(doc, 'music.solo.soundclouds', parseLines($('#sc-list').value, '|').map(function (s) { return { label: s[0] || '', url: s[1] || s[0] || '' }; }));
+    setPath(doc, 'tools.items', parseLines($('#tools-list').value, '::').map(function (s) { return { title: s[0] || '', body: s[1] || '', url: s[2] || '' }; }));
+    api('PUT', '/api/content' + LANG, doc).then(function (j) {
+      if (j.ok) { content = doc; toast($('#toast'), 'נשמר ✓ — עלה ל-adiariel.com/he'); }
+      else { toast($('#toast'), j.message || 'השמירה נכשלה', true); }
+    }).catch(function (e) { toast($('#toast'), String(e.message || e), true); });
+  });
+
+  /* ---------- assets (shared) ---------- */
+  function fmtSize(n) { if (n > 1048576) return (n / 1048576).toFixed(1) + ' MB'; if (n > 1024) return (n / 1024).toFixed(1) + ' KB'; return n + ' B'; }
+  function encKey(k) { return k.split('/').map(encodeURIComponent).join('/'); }
+  function assetUrl(k) { return WORKER + '/assets/' + encKey(k); }
+  function refreshAssets() {
+    api('GET', '/api/assets').then(function (j) {
+      var tb = $('#asset-rows'); tb.textContent = '';
+      $('#asset-empty').hidden = !!(j.objects && j.objects.length);
+      (j.objects || []).forEach(function (o) {
+        var tr = document.createElement('tr');
+        var td1 = document.createElement('td'); var a = document.createElement('a');
+        a.href = assetUrl(o.key); a.target = '_blank'; a.rel = 'noopener'; a.textContent = o.key; td1.appendChild(a);
+        var td2 = document.createElement('td'); td2.textContent = fmtSize(o.size);
+        var td3 = document.createElement('td');
+        var bc = document.createElement('button'); bc.className = 'btn small'; bc.textContent = 'העתקת כתובת';
+        bc.addEventListener('click', function () {
+          navigator.clipboard.writeText(assetUrl(o.key));
+          bc.textContent = 'הועתק ✓'; setTimeout(function () { bc.textContent = 'העתקת כתובת'; }, 1500);
+        });
+        var bd = document.createElement('button'); bd.className = 'btn small danger'; bd.textContent = 'מחיקה';
+        bd.addEventListener('click', function () {
+          if (!confirm('למחוק את ' + o.key + '?')) return;
+          api('DELETE', '/api/assets/' + encKey(o.key)).then(refreshAssets);
+        });
+        td3.appendChild(bc); td3.appendChild(bd);
+        tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tb.appendChild(tr);
+      });
+    }).catch(function () { });
+  }
+  $('#up-go').addEventListener('click', function () {
+    var files = $('#up-file').files;
+    if (!files.length) { toast($('#up-status'), 'בחרו קובץ קודם', true); return; }
+    var prefix = $('#up-prefix').value.trim().replace(/^\/+|\/+$/g, '');
+    var queue = Array.prototype.slice.call(files); var done = 0;
+    function next() {
+      if (!queue.length) { toast($('#up-status'), done + ' הועלו ✓'); $('#up-file').value = ''; refreshAssets(); return; }
+      var f = queue.shift(); var key = (prefix ? prefix + '/' : '') + f.name;
+      $('#up-status').textContent = 'מעלה ' + f.name + '…';
+      var h = { 'x-admin': '1', 'Content-Type': f.type || 'application/octet-stream' };
+      if (token) h['Authorization'] = 'Bearer ' + token;
+      fetch(WORKER + '/api/assets/' + encKey(key), { method: 'POST', headers: h, body: f })
+        .then(function (r) { if (r.status === 401) { showLogin(); throw new Error('signed out'); } return r.json(); })
+        .then(function (j) { if (!j.ok) throw new Error(j.message || 'ההעלאה נכשלה'); done++; next(); })
+        .catch(function (e) { toast($('#up-status'), String(e.message || e), true); });
+    }
+    next();
+  });
+
+  /* ---------- security ---------- */
+  $('#pw-go').addEventListener('click', function () {
+    var cur = $('#pw-cur').value, nw = $('#pw-new').value, rep = $('#pw-rep').value;
+    if (nw.length < 8) { toast($('#pw-status'), 'הסיסמה החדשה קצרה מדי (לפחות 8)', true); return; }
+    if (nw !== rep) { toast($('#pw-status'), 'הסיסמאות אינן תואמות', true); return; }
+    api('POST', '/api/password', { current: cur, next: nw }).then(function (j) {
+      if (j.ok) {
+        if (j.token) saveToken(j.token);
+        toast($('#pw-status'), j.message || 'שונתה ✓');
+        $('#pw-cur').value = $('#pw-new').value = $('#pw-rep').value = '';
+        $('#bootbanner').hidden = true;
+      } else { toast($('#pw-status'), j.message || 'נכשל', true); }
+    }).catch(function () { });
+  });
+
+  /* ---------- boot ---------- */
+  function boot() {
+    showPanel();
+    $('#assets-base').textContent = WORKER + '/assets/…';
+    api('GET', '/api/content' + LANG).then(function (j) {
+      if (!j.ok) return;
+      // Guard: an older worker without locale support returns English content and
+      // no `lang` field. Refuse to load it here so we never overwrite the English
+      // record from the Hebrew admin — tell the user to redeploy the worker first.
+      if (j.lang !== 'he') {
+        $('#bootbanner').hidden = false;
+        $('#bootbanner').innerHTML = 'ה-worker עדיין לא תומך בעברית. פרסו מחדש את <code>adiariel-site-worker</code> (הגרסה החדשה) לפני עריכת התוכן העברי, אחרת השמירה עלולה לדרוס את התוכן האנגלי.';
+        $('#save').disabled = true;
+        return;
+      }
+      content = j.content; fill(); $('#bootbanner').hidden = !j.bootstrap;
+    }).catch(function () { });
+  }
+  if (token) boot(); else showLogin();
+})();
+</script>
+</body>
+</html>
