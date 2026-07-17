@@ -1,5 +1,5 @@
 /*
- * popup.js — HEB ENG MIX FIX
+ * popup.js — HEB ENG MIX FIX (v3)
  * Reads/writes the toggles from chrome.storage.local. The content script
  * listens for storage changes, so toggling here takes effect live in open tabs.
  */
@@ -8,13 +8,13 @@
 
   const enabledEl = document.getElementById("enabled");
   const manualEl = document.getElementById("manual");
-  const aggressiveEl = document.getElementById("aggressive");
+  const onlineEl = document.getElementById("online");
   const statusEl = document.getElementById("status");
 
   function render(enabled, manual) {
     manualEl.disabled = !enabled;
-    // Aggressive only applies to automatic mode.
-    aggressiveEl.disabled = !enabled || manual;
+    // Sentence suggestions only run in automatic mode.
+    onlineEl.disabled = !enabled || manual;
 
     if (!enabled) {
       statusEl.textContent = "Turned off";
@@ -27,11 +27,11 @@
 
   // Hydrate UI from storage.
   chrome.storage.local.get(
-    { enabled: true, aggressive: false, manual: false },
+    { enabled: true, manual: false, online: true },
     (s) => {
       enabledEl.checked = s.enabled;
       manualEl.checked = s.manual;
-      aggressiveEl.checked = s.aggressive;
+      onlineEl.checked = s.online;
       render(s.enabled, s.manual);
     }
   );
@@ -46,7 +46,7 @@
     render(enabledEl.checked, manualEl.checked);
   });
 
-  aggressiveEl.addEventListener("change", () => {
-    chrome.storage.local.set({ aggressive: aggressiveEl.checked });
+  onlineEl.addEventListener("change", () => {
+    chrome.storage.local.set({ online: onlineEl.checked });
   });
 })();

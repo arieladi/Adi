@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "HEB ENG MIX FIX",
-  "version": "2.0.0",
-  "description": "Detects Hebrew typed on an English layout and takes over with live conversion + a yellow alert until you switch languages.",
-  "permissions": ["storage"],
+  "version": "3.1.0",
+  "description": "Fixes wrong-keyboard-layout typing both ways (EN↔HE), live — plus idle spell-check with per-word fixes via Google Suggest.",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["https://suggestqueries.google.com/*"],
   "action": {
     "default_popup": "popup.html",
     "default_title": "HEB ENG MIX FIX",
@@ -19,8 +20,14 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["hebrew_dict.js", "hebrew_map.js", "ui.js", "content.js"],
-      "css": ["overlay.css"],
+      "js": [
+        "english_dict.js",
+        "hebrew_dict.js",
+        "hebrew_map.js",
+        "ui.js",
+        "content.js"
+      ],
+      "css": ["content.css"],
       "run_at": "document_idle",
       "all_frames": true
     }
