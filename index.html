@@ -6,6 +6,8 @@
 <title>Adi Ariel — Electronic Music, Collaborations & Free Tools</title>
 <meta name="description" content="Adi Ariel — electronic music producer and DJ, one half of the duo Avastha. Music, collaborations, gigs, and free tools built for the love of it. Support on Patreon.">
 <link rel="canonical" href="https://adiariel.com/">
+<link rel="alternate" hreflang="en" href="https://adiariel.com/">
+<link rel="alternate" hreflang="he" href="https://adiariel.com/he/">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Adi Ariel — Electronic Music, Collaborations & Free Tools">
 <meta property="og:description" content="Electronic music producer, DJ and vibe coder. Music, collaborations, gigs and free tools — support on Patreon.">
@@ -48,6 +50,15 @@ body::before{content:'';position:fixed;inset:0;z-index:-2;pointer-events:none;
 .wrap{max-width:1120px;margin:0 auto;padding:0 24px}
 a{color:inherit}
 .ico{width:18px;height:18px;flex:none}
+
+/* language toggle (to the Hebrew site) */
+.langswitch{position:fixed;top:14px;inset-inline-end:16px;z-index:30;display:inline-flex;align-items:center;gap:7px;
+  padding:.42rem .85rem;border:1px solid var(--line-2);border-radius:999px;background:rgba(10,13,11,.6);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);font-family:var(--mono);font-size:.74rem;
+  letter-spacing:.06em;color:var(--muted);text-decoration:none;opacity:0;transition:opacity .6s ease,color .25s,border-color .25s}
+body.built .langswitch{opacity:1}
+.langswitch:hover{color:var(--text);border-color:rgba(255,255,255,.4)}
+.langswitch .ico{width:14px;height:14px}
 
 /* ---- intro video (plays, then crops + rises into the banner) ----
    The overlay is a static dark backdrop; the VIDEO is the animated element.
@@ -221,6 +232,8 @@ footer{border-top:1px solid var(--line);padding:34px 0 44px;text-align:center;
 </head>
 <body>
 <div class="orbs" aria-hidden="true"><i class="o1"></i><i class="o2"></i></div>
+
+<a class="langswitch" href="/he/" aria-label="אתר בעברית" hreflang="he"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"/></svg>עברית</a>
 
 <!-- intro video overlay: plays, then morphs into #heroBanner -->
 <div class="intro" id="intro">
