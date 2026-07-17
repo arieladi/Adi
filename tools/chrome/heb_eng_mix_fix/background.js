@@ -109,14 +109,30 @@ function diffFixes(original, suggestion) {
     const oWords = o.slice(bi, oEnd);
     const sWords = s.slice(bj, sEnd);
     if (oWords.length && sWords.length) {
-      const origText = original.slice(oWords[0].start, oWords[oWords.length - 1].end);
       const suggText = sWords.map((w) => w.raw).join(" ");
-      const a = origText.toLowerCase(), b = suggText.toLowerCase();
-      const dist = levenshtein(a, b);
-      if (dist > 0 && dist / Math.max(a.length, b.length) <= 0.5) {
+      const b = suggText.toLowerCase();
+
+      // Google often DROPS words inside a block ("the spel why"→"the spell").
+      // Blaming the whole block would swallow the dropped word, so pick the
+      // contiguous sub-range of original words that best matches the
+      // suggestion and leave the rest untouched.
+      let best = null;
+      for (let from = 0; from < oWords.length; from++) {
+        for (let to = from; to < oWords.length; to++) {
+          const a = original
+            .slice(oWords[from].start, oWords[to].end)
+            .toLowerCase();
+          const dist = levenshtein(a, b);
+          const ratio = dist / Math.max(a.length, b.length);
+          if (!best || ratio < best.ratio) {
+            best = { from, to, dist, ratio };
+          }
+        }
+      }
+      if (best && best.dist > 0 && best.ratio <= 0.4) {
         fixes.push({
-          start: oWords[0].start,
-          end: oWords[oWords.length - 1].end,
+          start: oWords[best.from].start,
+          end: oWords[best.to].end,
           text: suggText
         });
       }
