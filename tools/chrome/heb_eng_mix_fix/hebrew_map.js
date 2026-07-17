@@ -1,10 +1,14 @@
 /*
- * hebrew_map.js — HEB ENG MIX FIX (v2)
+ * hebrew_map.js — HEB ENG MIX FIX (v3)
  * ----------------------------------------------------------------------------
  * Shared, PURE data + helpers: the bidirectional US-QWERTY <-> Hebrew key map,
- * single-key translation for live interception, phrase transliteration, the
- * reverse direction, and the "wrong-layout" heuristics used by the state
- * machine. No DOM, no events — trivially testable in Node.
+ * single-key translation for live interception (both directions), and the
+ * wrong-layout heuristics for BOTH directions:
+ *
+ *   EN→HE  "nts bjns"                  → the user meant "מאד נחמד"
+ *   HE→EN  "מקקג אם ןצפרםהק"           → the user meant "need to improve"
+ *
+ * No DOM, no events — trivially testable in Node.
  * ----------------------------------------------------------------------------
  */
 (function (root, factory) {
@@ -16,8 +20,8 @@
 
   /**
    * US-QWERTY key -> Standard Israeli (SI-1452) Hebrew glyph (unshifted layer).
-   * Straight, position-agnostic transliteration of physical keystrokes,
-   * including final forms which live on their own keys (ך=l ם=o ן=i ף=; ץ=.).
+   * Position-agnostic transliteration of physical keystrokes, including final
+   * forms which live on their own keys (ך=l ם=o ן=i ף=; ץ=.).
    */
   const KEY_TO_HEB = {
     // top letter row
@@ -35,25 +39,23 @@
   // unique, so the inversion is unambiguous.
   const HEB_TO_KEY = {};
   for (const k in KEY_TO_HEB) HEB_TO_KEY[KEY_TO_HEB[k]] = k;
+  // macOS Hebrew layouts emit U+05F3 HEBREW GERESH (׳) for the W key instead of
+  // an ASCII apostrophe — alias it so "יקנרק׳" still reverses to "hebrew".
+  HEB_TO_KEY["׳"] = "w";
 
-  // Anything in the Hebrew Unicode block (used to detect a real layout switch).
-  const HEBREW_CHAR = /[֐-׿]/;
+  // Character classes.
+  const HEBREW_CHAR = /[֐-׿]/;          // anything in the Hebrew block
+  const HEB_LETTER = /[א-ת]/;           // א..ת including finals
+  const LATIN_LETTER = /[a-zA-Z]/;
+  const FINAL_LETTERS = /[ךםןףץ]/;
 
-  // Characters that can be part of a wrong-layout Hebrew token: letters plus the
-  // punctuation keys that actually produce Hebrew letters (,=ת .=ץ ;=ף).
-  const TOKEN_CHAR = /[a-zA-Z,.;']/;
+  // Characters allowed inside a candidate token, per direction.
+  const EN_TOKEN = /^[a-zA-Z',.;/]+$/;
+  const HE_TOKEN = /^[א-ת'׳,./]+$/;
 
-  // Keys that produce a real Hebrew *letter* (for the "enough letters" check).
-  const HEB_LETTER_KEYS = new Set(
-    "ertyuiopasdfghjklzxcvbnm".split("").concat([",", ".", ";"])
-  );
+  // ---- single-key live translation (STATE 2) --------------------------------
 
-  /**
-   * Translate ONE typed character to its Hebrew glyph, or null if this key is
-   * not affected by the layout (so the caller lets it through untouched).
-   * Handles case: Shift+letter yields the same caseless Hebrew consonant.
-   * @param {string} ch single character (e.g. a KeyboardEvent.key)
-   */
+  /** English keystroke -> Hebrew glyph, or null when the key is layout-neutral. */
   function keyToHeb(ch) {
     if (typeof ch !== "string" || ch.length !== 1) return null;
     const lower = ch.toLowerCase();
@@ -62,14 +64,28 @@
       : null;
   }
 
-  /** Transliterate a run of English keystrokes -> Hebrew (unknown chars pass). */
+  /**
+   * Hebrew keystroke -> English character, or null when layout-neutral.
+   * Hebrew has no case, so Shift intent is signalled by the event's shiftKey —
+   * pass it to get the uppercase letter the user actually wanted.
+   */
+  function hebKeyToEn(ch, shift) {
+    if (typeof ch !== "string" || ch.length !== 1) return null;
+    if (!Object.prototype.hasOwnProperty.call(HEB_TO_KEY, ch)) return null;
+    const key = HEB_TO_KEY[ch];
+    return shift && LATIN_LETTER.test(key) ? key.toUpperCase() : key;
+  }
+
+  // ---- whole-string transliteration ------------------------------------------
+
+  /** English keystrokes -> the Hebrew they were meant to be (unknown chars pass). */
   function toHebrew(text) {
     let out = "";
     for (const ch of text) out += keyToHeb(ch) || ch;
     return out;
   }
 
-  /** Reverse: Hebrew glyphs -> the English keys that produce them. */
+  /** Hebrew glyphs -> the English keys that produce them (unknown chars pass). */
   function fromHebrew(text) {
     let out = "";
     for (const ch of text) {
@@ -80,7 +96,7 @@
     return out;
   }
 
-  // ---- heuristics -----------------------------------------------------------
+  // ---- heuristics: EN→HE direction ------------------------------------------
 
   // Common English words we must never treat as wrong-layout Hebrew.
   const ENGLISH_STOP = new Set([
@@ -95,15 +111,8 @@
     "with","from","into","over","just","like","time","know","people","think"
   ]);
 
-  /** Does the token contain an English vowel (y/w count, to spare cry/why/two)? */
   function hasEnglishVowel(word) {
     return /[aeiouyw]/i.test(word);
-  }
-
-  /** Is every character of the token mappable to the Hebrew layout? */
-  function isMappable(word) {
-    for (const ch of word) if (!TOKEN_CHAR.test(ch)) return false;
-    return true;
   }
 
   // Single-letter Hebrew prefixes (ה/ו/ב/ל/כ/מ/ש) that attach to words.
@@ -121,48 +130,85 @@
     return false;
   }
 
+  /** Strip edge punctuation and lowercase, for EN-typed token analysis. */
+  function enCore(word) {
+    return word.replace(/^[^a-zA-Z]+|[^a-zA-Z]+$/g, "").toLowerCase();
+  }
+
   /**
-   * Core heuristic: is this raw English token really Hebrew typed on the wrong
-   * layout?  True when it is all-mappable, not common English, and EITHER maps
-   * to a known Hebrew word OR has no English vowel at all (an impossible shape
-   * for English but normal once mapped — e.g. "nts"->מאד, "bjns"->נחמד).
+   * Is this English-typed token really Hebrew on the wrong layout?
+   * True when it is mappable, not common English, and EITHER maps to a known
+   * Hebrew word OR has no English vowel (impossible shape for real English).
    */
   function isWrongLayoutHebrew(word, hebWords) {
-    const core = word.replace(/^[,.;']+|[,.;']+$/g, "").toLowerCase();
-    if (core.length < 2 || !isMappable(core)) return false;
+    const core = enCore(word);
+    if (core.length < 2 || !EN_TOKEN.test(core)) return false;
     if (ENGLISH_STOP.has(core)) return false;
-
-    let letters = 0;
-    for (const ch of core) if (HEB_LETTER_KEYS.has(ch)) letters++;
-    if (letters < 2) return false;
-
     if (inDictionary(toHebrew(core), hebWords)) return true;
     return !hasEnglishVowel(core);
   }
 
+  // ---- heuristics: HE→EN direction (the reverse) -----------------------------
+
+  /** Strip edge chars that can't be part of a Hebrew-typed token. */
+  function heCore(word) {
+    return word.replace(
+      /^[^א-ת'׳]+|[^א-ת'׳]+$/g, ""
+    );
+  }
+
   /**
-   * Single-word gate for the silent auto-fix. In default mode a token is only
-   * converted when it maps to a dictionary word; aggressive mode drops that and
-   * converts any non-English mappable token.
-   * @returns {string|null} the Hebrew replacement, or null to leave as-is.
+   * Hebrew final letters (ך ם ן ף ץ) may ONLY appear at the end of a word.
+   * A final anywhere earlier (e.g. ןצפרםהק) is impossible Hebrew — and exactly
+   * what English typed on a Hebrew layout produces (i→ן, o→ם mid-word).
    */
-  function evaluate(word, hebWords, aggressive) {
-    const core = word.replace(/^[,.;']+|[,.;']+$/g, "").toLowerCase();
-    if (core.length < 2 || !isMappable(core)) return null;
-    if (ENGLISH_STOP.has(core)) return null;
+  function hasFinalViolation(word) {
+    return FINAL_LETTERS.test(word.slice(0, -1));
+  }
 
+  /**
+   * Is this Hebrew-typed token really English on the wrong layout?
+   * Vetoed when it's a real Hebrew word. Accepted when its reverse-mapped form
+   * is a known English word, or when it breaks final-letter orthography AND
+   * reverses to something vowel-bearing (English-shaped).
+   */
+  function isWrongLayoutEnglish(word, hebWords, enWords) {
+    const core = heCore(word);
+    if (core.length < 2 || !HE_TOKEN.test(core)) return false;
     let letters = 0;
-    for (const ch of core) if (HEB_LETTER_KEYS.has(ch)) letters++;
-    if (letters < 2) return null;
+    for (const ch of core) if (HEB_LETTER.test(ch)) letters++;
+    if (letters < 2) return false;
+    if (inDictionary(core, hebWords)) return false;   // real Hebrew — hands off
+    const rev = fromHebrew(core);
+    if (enWords && enWords.has(rev)) return true;
+    return hasFinalViolation(core) && /[aeiouy]/.test(rev);
+  }
 
-    const hebrew = toHebrew(core);
-    if (aggressive) return hebrew;
-    return inDictionary(hebrew, hebWords) ? hebrew : null;
+  /**
+   * Relaxed HE→EN check used only to EXTEND an already-confirmed run backwards:
+   * once two words have proven the layout mix-up, a preceding token like "אם"
+   * (a real Hebrew word, but reversing to "to") almost certainly belongs to the
+   * same mistake — so the dictionary veto is dropped for the walk-back.
+   */
+  function isLikelyWrongEnglish(word, hebWords, enWords) {
+    const core = heCore(word);
+    if (core.length < 1 || !HE_TOKEN.test(core)) return false;
+    const rev = fromHebrew(core);
+    if (enWords && enWords.has(rev)) return true;
+    return hasFinalViolation(core) && /[aeiouy]/.test(rev);
+  }
+
+  /** Relaxed EN→HE twin for the walk-back (same rules; kept for symmetry). */
+  function isLikelyWrongHebrew(word, hebWords) {
+    return isWrongLayoutHebrew(word, hebWords);
   }
 
   return {
-    KEY_TO_HEB, HEB_TO_KEY, HEBREW_CHAR, TOKEN_CHAR, ENGLISH_STOP,
-    keyToHeb, toHebrew, fromHebrew,
-    hasEnglishVowel, isMappable, inDictionary, isWrongLayoutHebrew, evaluate
+    KEY_TO_HEB, HEB_TO_KEY,
+    HEBREW_CHAR, HEB_LETTER, LATIN_LETTER,
+    keyToHeb, hebKeyToEn, toHebrew, fromHebrew,
+    hasEnglishVowel, hasFinalViolation, inDictionary,
+    isWrongLayoutHebrew, isWrongLayoutEnglish,
+    isLikelyWrongHebrew, isLikelyWrongEnglish
   };
 });
