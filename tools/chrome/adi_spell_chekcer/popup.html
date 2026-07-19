@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>adi spell chekcer</title>
+  <style>
+    :root {
+      --bg: #ffffff; --fg: #1a1a2e; --muted: #6b7280;
+      --green: #16a34a; --green-dark: #15803d; --red: #b91c1c;
+      --border: #e5e7eb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #14151a; --fg: #f1f2f6; --muted: #9aa0ac; --border: #2a2c33; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      width: 240px; margin: 0; padding: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--fg);
+    }
+    .head { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
+    .head img { width: 30px; height: 30px; }
+    .head h1 { margin: 0; font-size: 14px; }
+    .head p { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
+
+    #fixall {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; padding: 11px 10px;
+      font-size: 14px; font-weight: 700; color: #fff;
+      background: var(--green); border: 0; border-radius: 10px; cursor: pointer;
+      transition: background .12s ease;
+    }
+    #fixall:hover { background: var(--green-dark); }
+    #fixall:disabled { background: #64748b; cursor: progress; }
+
+    #status {
+      margin-top: 10px; min-height: 16px;
+      font-size: 12px; text-align: center; color: var(--muted);
+    }
+    #status.err { color: var(--red); font-weight: 600; }
+    #status.ok { color: var(--green); font-weight: 600; }
+
+    .hint {
+      margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
+      font-size: 10.5px; color: var(--muted); text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <header class="head">
+    <img src="icons/icon48.png" alt="" />
+    <div>
+      <h1>adi spell chekcer</h1>
+      <p>LanguageTool, free API</p>
+    </div>
+  </header>
+
+  <button id="fixall">✓ Fix All</button>
+  <div id="status"></div>
+
+  <div class="hint">Click inside a text box on the page, then hit Fix All.</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
