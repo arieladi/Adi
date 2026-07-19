@@ -1,6 +1,6 @@
-/* overlay.css — HEB ENG MIX FIX (v2) — injected into every page for STATE 3 */
+/* content.css — HEB ENG MIX FIX (v5) — injected into every page */
 
-/* Floating yellow tooltip pinned above the caret while override is active. */
+/* ---- Layer A: floating yellow tooltip pinned above the caret -------------- */
 .hebfix-tooltip {
   position: fixed;
   z-index: 2147483647;                 /* above virtually everything */
@@ -36,156 +36,10 @@
   100% { box-shadow: 0 0 0 0 rgba(230, 167, 0, 0); }
 }
 
-/* Soft yellow glow on the field currently being auto-fixed. */
+/* Soft yellow glow on the field currently being auto-fixed (Layer A only —
+   Layer B never touches the field's appearance). */
 .hebfix-active {
   background-color: rgba(255, 221, 51, .18) !important;
   box-shadow: 0 0 0 2px #ffdd33, 0 0 8px rgba(255, 221, 51, .8) !important;
   transition: box-shadow .12s ease, background-color .12s ease;
-}
-
-/* ---- Fix panel (Grammarly-style, all misspellings at once) ---------------- */
-.hebfix-badge {
-  position: fixed;
-  z-index: 2147483647;
-  display: none;                        /* shown via .hebfix-visible */
-  flex-direction: column;
-  min-width: 180px;
-  max-width: 380px;
-  padding: 4px;
-  font: 500 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: #1a1a2e;
-  background: #ffffff;
-  border: 1px solid #d7dbe0;
-  border-radius: 10px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, .18);
-  opacity: 0;
-  transform: translateY(-3px);
-  transition: opacity .12s ease, transform .12s ease;
-  pointer-events: none;                 /* never block the page while hidden */
-}
-.hebfix-badge.hebfix-visible {
-  display: inline-flex;
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
-}
-
-/* The "original → corrected" pair shown at the top of the hover badge. */
-.hebfix-fix-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  white-space: nowrap;
-  overflow: hidden;
-}
-
-.hebfix-bad {
-  color: #b91c1c;
-  text-decoration: line-through;
-  text-decoration-thickness: 1px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 150px;
-}
-.hebfix-arrow { color: #9aa3af; flex: 0 0 auto; }
-.hebfix-good {
-  color: #15803d;
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 170px;
-}
-
-/* Footer: fix-all action + dismiss. */
-.hebfix-panel-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 2px;
-  padding: 4px 6px 2px;
-  border-top: 1px solid #eef0f3;
-}
-
-.hebfix-fixone,
-.hebfix-fixall {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  padding: 3px 7px;
-  border-radius: 7px;
-  font-weight: 600;
-}
-.hebfix-fixone:hover,
-.hebfix-fixall:hover { background: #ecfdf3; }
-
-.hebfix-check {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  background: #16a34a;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 800;
-  flex: 0 0 auto;
-}
-
-.hebfix-badge kbd {
-  font: 600 10px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: #5b6472;
-  background: #f1f3f5;
-  border: 1px solid #d7dbe0;
-  border-bottom-width: 2px;
-  border-radius: 4px;
-  padding: 2px 5px;
-}
-
-.hebfix-badge-close {
-  cursor: pointer;
-  color: #9aa3af;
-  font-size: 12px;
-  padding: 3px 7px;
-  border-radius: 6px;
-}
-.hebfix-badge-close:hover { background: #f3f4f6; color: #374151; }
-
-/* ---- Transparent highlight overlay (textarea / input) --------------------- */
-/* Most geometry is set inline by ui.js (it must mirror the field exactly).
-   These are the invariants that must never be overridden by page styles. */
-.hebfix-overlay {
-  position: fixed;
-  margin: 0;
-  pointer-events: none;              /* clicks & caret pass through to the field */
-  color: transparent;               /* only the squiggles are visible */
-  background: transparent;
-  z-index: 2147483646;
-  -webkit-text-fill-color: transparent;
-}
-
-/* A flagged word inside the overlay: invisible text, red wavy underline that
-   lands directly under the real word showing through beneath. Adds NO box
-   metrics (no padding/border/margin) so it can't shift the mirrored layout. */
-.hebfix-mark {
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-  background: rgba(224, 72, 61, .10);
-  text-decoration: underline wavy #e0483d;
-  -webkit-text-decoration: underline wavy #e0483d;
-  text-decoration-skip-ink: none;
-  text-underline-offset: 2px;
-}
-
-/* ---- Squiggle layer (contenteditable) ------------------------------------ */
-.hebfix-squiggle-layer { position: fixed; left: 0; top: 0; pointer-events: none; }
-.hebfix-squiggle {
-  position: fixed;
-  pointer-events: none;
-  background: rgba(224, 72, 61, .10);
-  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='6'%20height='4'%3E%3Cpath%20d='M0%203%20Q1.5%201%203%203%20T6%203'%20fill='none'%20stroke='%23e0483d'%20stroke-width='1'/%3E%3C/svg%3E");
-  background-repeat: repeat-x;
-  background-position: left bottom;
-  background-size: 6px 4px;
 }

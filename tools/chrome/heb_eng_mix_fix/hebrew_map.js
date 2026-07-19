@@ -136,16 +136,68 @@
   }
 
   /**
+   * Would `mapped` be a legal-LOOKING Hebrew word? Two hard orthography rules:
+   *   • final letters (ך ם ן ף ץ) may appear ONLY as the last letter — the
+   *     keys l/o/i/;/. mid-word instantly betray English ("llm"→ךךצ);
+   *   • a word must not END in a regular כ/מ/נ/צ — real Hebrew uses the final
+   *     form there (פ is allowed: loanwords like ג'יפ end in regular פ).
+   */
+  function validHebrewShape(mapped) {
+    if (/[ךםןףץ]/.test(mapped.slice(0, -1))) return false;
+    if (/[כמנצ]$/.test(mapped)) return false;
+    return true;
+  }
+
+  /**
    * Is this English-typed token really Hebrew on the wrong layout?
-   * True when it is mappable, not common English, and EITHER maps to a known
-   * Hebrew word OR has no English vowel (impossible shape for real English).
+   *
+   * Hardened against tech-English false positives ("100mb", "3ghz", "llm"):
+   *   • tokens containing ANY digit are never candidates — Hebrew words don't
+   *     embed digits, tech units/model names do;
+   *   • the mapped form must be orthographically plausible Hebrew
+   *     (validHebrewShape) — this kills consonant acronyms like llm→ךךצ
+   *     and mb→צנ;
+   *   • dictionary hit (strong) OR no-English-vowel (weak) — the weak path
+   *     additionally requires ≥3 letters so stray two-letter fragments
+   *     ("mb", "kg", "js") can never fire it.
    */
   function isWrongLayoutHebrew(word, hebWords) {
+    if (/\d/.test(word)) return false;          // 100mb, 3ghz, x86…
     const core = enCore(word);
     if (core.length < 2 || !EN_TOKEN.test(core)) return false;
     if (ENGLISH_STOP.has(core)) return false;
-    if (inDictionary(toHebrew(core), hebWords)) return true;
-    return !hasEnglishVowel(core);
+    const mapped = toHebrew(core);
+    if (!validHebrewShape(mapped)) return false;
+    if (inDictionary(mapped, hebWords)) return true;
+    return core.length >= 3 && !hasEnglishVowel(core);
+  }
+
+  /**
+   * Sentence-level sanity gate for the EN→HE trigger: even when two adjacent
+   * tokens look like wrong-layout Hebrew, DON'T fire inside text that is
+   * clearly an English sentence (numbers, acronyms, ordinary words around).
+   *
+   * Looks at the last few tokens before the caret and compares densities:
+   * fire only when the mixed-up-Hebrew candidates are at least as many as the
+   * plainly-English tokens. "cpu runs at ghz xkz" → 3 English vs 2 candidates
+   * → blocked; "send me tbh nkl" → 2 vs 2 → fires; "tbh nkl vguko" → 0 vs 3
+   * → fires. Hebrew-script tokens are already the target language and count
+   * for neither side; digit tokens are neutral.
+   */
+  function contextAllowsHebrewFix(before, hebWords) {
+    const tokens = before.trim().split(/\s+/).slice(-8);
+    let candidates = 0;
+    let english = 0;
+    for (const t of tokens) {
+      if (HEBREW_CHAR.test(t)) continue;        // already Hebrew — neutral
+      if (/\d/.test(t)) continue;               // numbers/units — neutral
+      const core = enCore(t);
+      if (!core) continue;                      // pure punctuation
+      if (isWrongLayoutHebrew(t, hebWords)) { candidates++; continue; }
+      if (ENGLISH_STOP.has(core) || hasEnglishVowel(core)) { english++; continue; }
+      english++;                                // vowel-less leftovers (acronyms)
+    }
+    return candidates >= 2 && english <= candidates;
   }
 
   // ---- heuristics: HE→EN direction (the reverse) -----------------------------
@@ -207,8 +259,9 @@
     KEY_TO_HEB, HEB_TO_KEY,
     HEBREW_CHAR, HEB_LETTER, LATIN_LETTER,
     keyToHeb, hebKeyToEn, toHebrew, fromHebrew,
-    hasEnglishVowel, hasFinalViolation, inDictionary,
+    hasEnglishVowel, hasFinalViolation, inDictionary, validHebrewShape,
     isWrongLayoutHebrew, isWrongLayoutEnglish,
-    isLikelyWrongHebrew, isLikelyWrongEnglish
+    isLikelyWrongHebrew, isLikelyWrongEnglish,
+    contextAllowsHebrewFix
   };
 });
