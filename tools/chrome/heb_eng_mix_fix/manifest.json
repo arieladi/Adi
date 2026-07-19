@@ -1,10 +1,9 @@
 {
   "manifest_version": 3,
   "name": "HEB ENG MIX FIX",
-  "version": "4.0.0",
-  "description": "Fixes wrong-keyboard-layout typing both ways (EN↔HE), live — plus Grammarly-style word-level spell-check with a transparent highlight overlay.",
-  "permissions": ["storage", "activeTab", "scripting"],
-  "host_permissions": ["https://suggestqueries.google.com/*"],
+  "version": "7.0.0",
+  "description": "Fixes wrong-keyboard-layout typing both ways (EN↔HE), live and fully offline.",
+  "permissions": ["storage"],
   "action": {
     "default_popup": "popup.html",
     "default_title": "HEB ENG MIX FIX",
