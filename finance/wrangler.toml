@@ -42,12 +42,8 @@ binding = "AI"
 [triggers]
 crons = ["17 3 * * *"]
 
-# Email alerts are INERT until a send_email binding exists. To light them up:
-#   npx wrangler email sending enable adiariel.com     (one-time domain onboarding)
-# then uncomment the block below and redeploy. runDueAlerts() already guards on env.EMAIL,
-# so no code change is needed.
-# [[send_email]]
-# name = "EMAIL"
+# Outbound mail goes through Resend (RESEND_API_KEY secret), not Cloudflare Email
+# Sending — no domain onboarding step, and the DNS records are already verified.
 
 [vars]
 # Gemini model for Hebrew document extraction, tried in order — Google retires
@@ -59,6 +55,10 @@ GEMINI_FALLBACKS = "gemini-flash-latest,gemini-3.5-flash,gemini-2.0-flash"
 AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 AI_FALLBACKS = "@cf/qwen/qwen3-30b-a3b-fp8,@cf/meta/llama-3.1-8b-instruct"
 ALLOWED_ORIGINS = "https://adiariel.com,https://www.adiariel.com,https://arieladi.github.io,http://localhost:8801,http://127.0.0.1:8801"
+
+# Outbound mail. Overridable without a code change.
+MAIL_FROM = "Adi Hub <office@adiariel.com>"
+MAIL_TO = "adidatabase@gmail.com"
 
 # --- Cloudflare Access -----------------------------------------------------
 # When both are set, a valid Access JWT authenticates a request and the UI stops

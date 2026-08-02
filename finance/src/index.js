@@ -13,8 +13,14 @@
  * financial data unauthenticated.
  */
 
+import * as XLSX from 'xlsx';
+
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024; // Gemini inline_data ceiling ~20MB total
 const GEMINI_TIMEOUT_MS = 60_000;
+
+const SHEET_EXT = /\.(xlsx|xlsm|xls|csv)$/i;
+const SHEET_MIME = /(spreadsheet|excel|csv)/i;
+const isSpreadsheet = (name, mime) => SHEET_EXT.test(name || '') || SHEET_MIME.test(mime || '');
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -369,6 +375,220 @@ async function geminiExtract(env, file) {
 }
 
 // ---------------------------------------------------------------------------
+// Spreadsheet import (bank transaction exports)
+// ---------------------------------------------------------------------------
+//
+// Deliberately NOT "hand the sheet to the AI". A 500-row export sent to an LLM is
+// slow, expensive, and asks it to transcribe hundreds of numbers — exactly where
+// hallucination shows up. Instead: parse deterministically, ask the model only to
+// map the COLUMNS (a tiny prompt), then do the arithmetic in code.
+
+/** Israeli bank CSVs are frequently Windows-1255, not UTF-8. */
+function decodeText(buffer) {
+  const utf8 = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
+  // U+FFFD replacements clustered in the output mean it was not really UTF-8.
+  const bad = (utf8.match(/�/g) || []).length;
+  if (bad > 3) {
+    for (const enc of ['windows-1255', 'iso-8859-8']) {
+      try { return new TextDecoder(enc).decode(buffer); } catch { /* try next */ }
+    }
+  }
+  return utf8;
+}
+
+/** → { rows: string[][], sheetName } with dates already real Dates, not serials. */
+function parseSheet(buffer, filename) {
+  const isCsv = /\.csv$/i.test(filename || '');
+  const wb = isCsv
+    ? XLSX.read(decodeText(buffer), { type: 'string', cellDates: true, raw: false })
+    : XLSX.read(new Uint8Array(buffer), { type: 'array', cellDates: true });
+  const sheetName = wb.SheetNames[0];
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], {
+    header: 1, blankrows: false, defval: '', raw: false, dateNF: 'yyyy-mm-dd',
+  });
+  return { rows: rows.map((r) => r.map((c) => (c == null ? '' : String(c).trim()))), sheetName };
+}
+
+const COLUMN_MAP_PROMPT = `You are given the first rows of a bank-account transaction export,
+which may be in Hebrew. Identify the layout. Return ONLY JSON:
+
+{
+  "header_row": <0-based index of the row containing the column headers>,
+  "first_data_row": <0-based index of the first real transaction row>,
+  "columns": {
+    "date": <col index or null>,
+    "description": <col index or null>,
+    "reference": <col index or null>,
+    "debit": <col index or null>,     // money OUT of the account
+    "credit": <col index or null>,    // money IN to the account
+    "amount": <col index or null>,    // ONLY if there is a single signed column instead
+    "balance": <col index or null>
+  },
+  "amount_sign": "debit_credit" | "signed" | "negative_is_expense",
+  "confidence": 0.0-1.0
+}
+
+Hebrew header hints: תאריך=date, תאריך ערך=value date, הפעולה/תיאור/פרטים=description,
+אסמכתא=reference, חובה=debit (money out), זכות=credit (money in), יתרה=balance,
+סכום=amount, עבור/לטובת=payee.
+
+Rules:
+- The header row is often NOT row 0 — exports usually start with a title and an account number.
+- If there are separate debit and credit columns, set amount_sign to "debit_credit" and
+  leave "amount" null. Never map the same column to both debit and credit.
+- Prefer the transaction date over the value date for "date".
+- Use 0-based indices into the arrays exactly as given.`;
+
+async function mapSheetColumns(env, rows) {
+  const preview = rows.slice(0, 8).map((r, i) => `${i}: ${JSON.stringify(r)}`).join('\n');
+  const user = `ROWS:\n${preview}\n\nTotal rows in sheet: ${rows.length}`;
+
+  // Gemini first: this is a small prompt and it reads mixed Hebrew headers best.
+  try {
+    const models = [env.GEMINI_MODEL, ...(env.GEMINI_FALLBACKS || '').split(',')]
+      .map((s) => (s || '').trim()).filter(Boolean);
+    for (const model of models) {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: `${COLUMN_MAP_PROMPT}\n\n${user}` }] }],
+            generationConfig: { temperature: 0, responseMimeType: 'application/json' },
+          }),
+          signal: AbortSignal.timeout(30_000),
+        },
+      );
+      if (res.ok) {
+        const payload = await res.json();
+        const parsed = parseLooseJson(
+          payload?.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join(''),
+        );
+        if (parsed?.columns) { parsed._model = model; return parsed; }
+      }
+      if (res.status !== 404 && res.status !== 429) break;
+    }
+  } catch (err) {
+    console.warn('column_map_gemini', String(err?.message || err));
+  }
+
+  // Edge fallback keeps imports working if Gemini is down or out of quota.
+  const { text } = await runEdgeModel(env, 'llama', COLUMN_MAP_PROMPT, user);
+  const parsed = parseLooseJson(text);
+  if (!parsed?.columns) throw new Error('column_mapping_failed');
+  parsed._model = 'llama';
+  return parsed;
+}
+
+const cell = (row, idx) => (idx === null || idx === undefined || idx < 0 ? '' : (row[idx] ?? '').trim());
+
+/** '1,234.56 ₪' / '(123.45)' / '-12' → agorot. Returns 0 for blanks. */
+function moneyToAgorot(raw) {
+  if (!raw) return 0;
+  let s = String(raw).replace(/[^\d.,()-]/g, '').trim();
+  if (!s) return 0;
+  const negative = /^\(.*\)$/.test(s) || s.startsWith('-');
+  s = s.replace(/[()-]/g, '');
+  // Strip thousands separators; keep the last dot as the decimal point.
+  const lastDot = s.lastIndexOf('.');
+  s = lastDot === -1 ? s.replace(/,/g, '')
+    : s.slice(0, lastDot).replace(/[,.]/g, '') + '.' + s.slice(lastDot + 1).replace(/[^\d]/g, '');
+  const n = parseFloat(s);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 100) * (negative ? -1 : 1);
+}
+
+/** Accepts real dates, ISO strings, dd/mm/yyyy, and bare Excel serials. */
+function toIsoDate(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = /^(\d{1,2})[\/.](\d{1,2})[\/.](\d{2,4})$/.exec(s);   // Israeli dd/mm/yyyy
+  if (m) {
+    const y = m[3].length === 2 ? `20${m[3]}` : m[3];
+    return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  }
+  if (/^\d{5}(\.\d+)?$/.test(s)) {                          // Excel serial
+    const ms = (parseFloat(s) - 25569) * 86400000;          // 1899-12-30 epoch
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
+
+/**
+ * Stable per-row fingerprint. Exports overlap month to month, so without this a
+ * re-import double-counts every shared transaction. File-level SHA-256 does not
+ * help — a wider export is a different file containing the same rows.
+ */
+async function rowHash(date, agorot, description) {
+  return (await sha256Hex(new TextEncoder().encode(
+    `${date}|${agorot}|${String(description || '').replace(/\s+/g, ' ').trim()}`,
+  ).buffer)).slice(0, 32);
+}
+
+async function importTransactions(env, docId, rows, mapping) {
+  const cols = mapping.columns || {};
+  const start = Number.isInteger(mapping.first_data_row)
+    ? mapping.first_data_row
+    : (Number.isInteger(mapping.header_row) ? mapping.header_row + 1 : 1);
+
+  const stmts = [];
+  let expenses = 0, income = 0, skipped = 0;
+
+  for (const row of rows.slice(start)) {
+    const iso = toIsoDate(cell(row, cols.date));
+    if (!iso) { skipped++; continue; }
+
+    const debit = moneyToAgorot(cell(row, cols.debit));
+    const credit = moneyToAgorot(cell(row, cols.credit));
+    const single = moneyToAgorot(cell(row, cols.amount));
+
+    // Prefer the debit/credit pair when present — it is unambiguous.
+    let agorot, isExpense;
+    if (debit || credit) { isExpense = debit > 0; agorot = Math.abs(debit || credit); }
+    else if (single) { isExpense = single < 0; agorot = Math.abs(single); }
+    else { skipped++; continue; }
+    if (!agorot) { skipped++; continue; }
+
+    const desc = [cell(row, cols.description), cell(row, cols.reference)]
+      .filter(Boolean).join(' · ').slice(0, 300);
+    const hash = await rowHash(iso, isExpense ? -agorot : agorot, desc);
+    const period = iso.slice(0, 7);
+
+    // INSERT OR IGNORE + a partial UNIQUE index on row_hash makes re-import idempotent.
+    if (isExpense) {
+      expenses++;
+      stmts.push(env.DB.prepare(
+        `INSERT OR IGNORE INTO expenses (id, doc_id, category, vendor, description, amount,
+                                         spent_on, period, row_hash)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+      ).bind(uuid(), docId, 'bank', cell(row, cols.description).slice(0, 120) || null,
+             desc || null, agorot, iso, period, hash));
+    } else {
+      income++;
+      stmts.push(env.DB.prepare(
+        `INSERT OR IGNORE INTO income (id, doc_id, source, employer, period, pay_date, gross, net, notes, row_hash)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      ).bind(uuid(), docId, 'other', cell(row, cols.description).slice(0, 120) || null,
+             period, iso, agorot, agorot, desc || null, hash));
+    }
+  }
+
+  // D1 caps statements per batch; chunk so a large export still lands in one go.
+  let written = 0;
+  for (let i = 0; i < stmts.length; i += 50) {
+    const res = await env.DB.batch(stmts.slice(i, i + 50));
+    written += res.reduce((a, r) => a + (r.meta?.changes || 0), 0);
+  }
+  return { rows_seen: rows.length - start, expenses, income, skipped,
+           inserted: written, duplicates_ignored: stmts.length - written };
+}
+
+// ---------------------------------------------------------------------------
 // persistence
 // ---------------------------------------------------------------------------
 
@@ -472,6 +692,35 @@ async function handleUpload(request, env) {
      VALUES (?,?,?,?,?,?,?,?,'pending')`,
   ).bind(docId, r2Key, file.name || safeName, mime, file.size, hash,
          form.get('doc_type') || 'unknown', hintedPeriod).run();
+
+  // Spreadsheets take the deterministic path: parse in code, AI maps columns only.
+  if (isSpreadsheet(file.name, mime)) {
+    try {
+      const { rows, sheetName } = parseSheet(buffer, file.name);
+      if (!rows.length) throw new Error('sheet_empty');
+      const mapping = await mapSheetColumns(env, rows);
+      const stats = await importTransactions(env, docId, rows, mapping);
+
+      // doc_type stays inside its legacy CHECK set; doc_kind carries the real type.
+      await env.DB.prepare(
+        `UPDATE documents SET status='extracted', doc_type='unknown', doc_kind='bank_statement',
+                extracted_json=?, processed_at=datetime('now') WHERE id=?`,
+      ).bind(JSON.stringify({ sheet: sheetName, mapping, stats }), docId).run();
+
+      return json({ ok: true, id: docId, r2_key: r2Key, doc_type: 'bank_statement', sheet: sheetName,
+                    mapping: { ...mapping.columns, header_row: mapping.header_row,
+                               sign: mapping.amount_sign, model: mapping._model },
+                    counts: { income: stats.income, expenses: stats.expenses, investments: 0 },
+                    stats });
+    } catch (err) {
+      const message = String(err?.message || err);
+      await env.DB.prepare(
+        `UPDATE documents SET status='failed', error=?, processed_at=datetime('now') WHERE id=?`,
+      ).bind(message.slice(0, 500), docId).run();
+      return json({ ok: false, id: docId, r2_key: r2Key, stored: true,
+                    error: 'spreadsheet_import_failed', detail: message }, 207);
+    }
+  }
 
   // Extract. A failure here must not lose the file — it is already in R2.
   try {
@@ -1541,11 +1790,40 @@ async function runPurge(env) {
   return { tasks: taskIds.length, notes: noteIds.length };
 }
 
+// ---------------------------------------------------------------------------
+// Email via Resend
+// ---------------------------------------------------------------------------
+
+const MAIL_FROM = 'Adi Hub <office@adiariel.com>';
+const MAIL_TO = 'adidatabase@gmail.com';
+
 /**
- * Due-date email alerts. Inert until an EMAIL binding exists — the column, the cron and the
- * query all ship now, and the feature lights up with no code change once the sending domain
- * is onboarded (`npx wrangler email sending enable adiariel.com`).
+ * Single choke point for outbound mail. Everything goes through here so there is
+ * exactly one place that can send, and no endpoint accepts an arbitrary recipient —
+ * an open send-anything route is an abuse magnet if auth ever regresses.
  */
+async function sendMail(env, { subject, text, html }) {
+  if (!env.RESEND_API_KEY) return { sent: false, skipped: 'no_resend_key' };
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      from: env.MAIL_FROM || MAIL_FROM,
+      to: [env.MAIL_TO || MAIL_TO],
+      subject, text,
+      ...(html ? { html } : {}),
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`resend_${res.status}: ${JSON.stringify(body).slice(0, 200)}`);
+  return { sent: true, id: body.id };
+}
+
+const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/** Due-date email alerts. alerted_at stops the nightly cron re-sending the same task. */
 async function runDueAlerts(env) {
   const { results } = await env.DB.prepare(
     `SELECT id, text, due_date FROM tasks
@@ -1557,22 +1835,31 @@ async function runDueAlerts(env) {
   const due = results || [];
   if (!due.length) return { sent: 0, skipped: 'none_due' };
 
-  if (!env.EMAIL) {
+  if (!env.RESEND_API_KEY) {
     await env.DB.batch(due.map((r) =>
-      logStmt(env, 'task', r.id, 'alert', r.text, { due: r.due_date, sent: false, why: 'no_email_binding' })));
-    return { sent: 0, skipped: 'no_email_binding', would_have_sent: due.length };
+      logStmt(env, 'task', r.id, 'alert', r.text, { due: r.due_date, sent: false, why: 'no_resend_key' })));
+    return { sent: 0, skipped: 'no_resend_key', would_have_sent: due.length };
   }
 
-  await env.EMAIL.send({
-    to: env.ALERT_TO || 'computers@ricor.com',
-    from: { email: env.ALERT_FROM || 'alerts@adiariel.com', name: 'Adi Hub' },
-    subject: `${due.length} משימות להיום`,
-    text: due.map((r) => `• ${r.text} — ${r.due_date}`).join('\n'),
+  const today = new Date().toISOString().slice(0, 10);
+  const overdue = due.filter((r) => r.due_date < today);
+  await sendMail(env, {
+    subject: `${due.length} משימות להיום${overdue.length ? ` · ${overdue.length} באיחור` : ''}`,
+    text: due.map((r) => `• ${r.text} — ${r.due_date}${r.due_date < today ? ' (באיחור)' : ''}`).join('\n'),
+    html: `<div dir="rtl" style="font-family:Heebo,Arial,sans-serif;font-size:15px;line-height:1.7">
+      <h2 style="margin:0 0 12px">משימות להיום</h2><ul style="padding-inline-start:20px">${
+      due.map((r) => `<li>${escHtml(r.text)} — <code>${r.due_date}</code>${
+        r.due_date < today ? ' <strong style="color:#b3261e">באיחור</strong>' : ''}</li>`).join('')
+      }</ul><p style="color:#667;font-size:13px">adiariel.com/me</p></div>`,
   });
+
   const marks = due.map(() => '?').join(',');
-  await env.DB.prepare(`UPDATE tasks SET alerted_at=datetime('now') WHERE id IN (${marks})`)
-    .bind(...due.map((r) => r.id)).run();
-  return { sent: due.length };
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE tasks SET alerted_at=datetime('now') WHERE id IN (${marks})`)
+      .bind(...due.map((r) => r.id)),
+    ...due.map((r) => logStmt(env, 'task', r.id, 'alert', r.text, { due: r.due_date, sent: true })),
+  ]);
+  return { sent: due.length, overdue: overdue.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -1671,6 +1958,25 @@ export default {
       }
       if (url.pathname === '/api/chat/finance' && request.method === 'POST') {
         return withCors(await handleChatFinance(request, env));
+      }
+
+      // Fixed recipient and subject — deliberately not a general "send anything" route.
+      if (url.pathname === '/api/email/test' && request.method === 'POST') {
+        try {
+          const r = await sendMail(env, {
+            subject: 'בדיקה · Adi Hub',
+            text: 'If you are reading this, Resend is wired correctly.',
+            html: '<div dir="rtl" style="font-family:Heebo,Arial,sans-serif">' +
+                  '<h2>Resend מחובר ✓</h2><p>ההתראות היומיות יישלחו לכאן.</p></div>',
+          });
+          return withCors(json({ ok: true, ...r, from: env.MAIL_FROM || MAIL_FROM, to: env.MAIL_TO || MAIL_TO }));
+        } catch (err) {
+          return withCors(json({ ok: false, error: 'send_failed', detail: String(err?.message || err) }, 502));
+        }
+      }
+      // Lets the nightly job be exercised on demand rather than waiting for 03:17.
+      if (url.pathname === '/api/cron/run' && request.method === 'POST') {
+        return withCors(json({ ok: true, purged: await runPurge(env), alerts: await runDueAlerts(env) }));
       }
 
       const attachMatch = /^\/api\/notes\/([\w-]+)\/attach$/.exec(url.pathname);

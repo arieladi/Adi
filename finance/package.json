@@ -1,0 +1,9 @@
+{
+  "name": "adi-finance-worker",
+  "private": true,
+  "type": "module",
+  "description": "Backend for adiariel.com/me. Wrangler bundles these deps; there is no separate build step.",
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  }
+}

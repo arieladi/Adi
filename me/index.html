@@ -352,8 +352,8 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
           <h2 data-i18n="uploadDoc">העלאת מסמך</h2>
           <div id="drop">
             <div class="big" data-i18n="dropBig">גרור לכאן תלוש שכר, דף קיבוץ או חשבונית</div>
-            <div class="small" data-i18n="dropSmall">PDF, JPG או PNG · עד 15MB</div>
-            <input type="file" id="file" hidden multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*">
+            <div class="small" data-i18n="dropSmall">PDF, JPG, PNG, XLSX או CSV · עד 15MB</div>
+            <input type="file" id="file" hidden multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xlsm,.xls,.csv,application/pdf,image/*">
           </div>
           <div class="fields">
             <select id="dtype">
@@ -576,7 +576,7 @@ const I18N = {
     noData:'אין נתונים', itemsTracked:'פריטים', ofNet:'מההכנסה נטו', accounts:'חשבונות',
     noStatementsShort:'אין דוחות',
     uploadDoc:'העלאת מסמך', dropBig:'גרור לכאן תלוש שכר, דף קיבוץ או חשבונית',
-    dropSmall:'PDF, JPG או PNG · עד 15MB', autoDetect:'זיהוי אוטומטי',
+    dropSmall:'PDF, JPG, PNG, XLSX או CSV · עד 15MB', autoDetect:'זיהוי אוטומטי',
     cashflow:'תזרים חודשי', noRecords:'אין עדיין רשומות.',
     breakdown:'פילוח הוצאות', last6:'6 חודשים אחרונים', noExpenses:'אין עדיין הוצאות.',
     aiInsights:'תובנות AI', noStatements:'אין עדיין דוחות.', documents:'מסמכים',
@@ -620,7 +620,7 @@ const I18N = {
     noData:'no data', itemsTracked:'items tracked', ofNet:'of net income', accounts:'account(s)',
     noStatementsShort:'no statements',
     uploadDoc:'Upload document', dropBig:'Drop a payslip, kibbutz sheet or invoice',
-    dropSmall:'PDF, JPG or PNG · max 15 MB', autoDetect:'Auto-detect type',
+    dropSmall:'PDF, JPG, PNG, XLSX or CSV · max 15 MB', autoDetect:'Auto-detect type',
     cashflow:'Monthly cashflow', noRecords:'No records yet.',
     breakdown:'Spending breakdown', last6:'last 6 months', noExpenses:'No expenses recorded yet.',
     aiInsights:'AI insights', noStatements:'No statements yet.', documents:'Documents',
