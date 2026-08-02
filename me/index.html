@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="he" dir="rtl">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -8,7 +8,7 @@
 <link rel="icon" href="/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Heebo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root{
   --bg:#0a0d0b; --panel:#0f1310; --line:rgba(255,255,255,.08); --line-2:rgba(255,255,255,.16);
@@ -17,6 +17,7 @@
   --grad:linear-gradient(90deg,var(--c1),var(--c2) 50%,var(--c3));
   --r:18px;
   --sans:'Space Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --heb:'Heebo',system-ui,-apple-system,'Segoe UI',sans-serif;
   --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
   --ok:#10b981; --warn:#e0a458; --bad:#e5645e;
 }
@@ -24,8 +25,9 @@
 html,body{margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.5;
   -webkit-font-smoothing:antialiased;min-height:100vh}
+html[lang=he] body{font-family:var(--heb)}
 a{color:var(--c1)}
-.wrap{max-width:1140px;margin:0 auto;padding:28px 20px 80px}
+.wrap{max-width:1180px;margin:0 auto;padding:24px 20px 80px}
 
 /* ---------- gate ---------- */
 #gate{position:fixed;inset:0;background:var(--bg);z-index:50;display:grid;place-items:center;padding:24px}
@@ -33,23 +35,37 @@ a{color:var(--c1)}
   border-radius:var(--r);padding:28px}
 #gate h1{margin:0 0 6px;font-size:1.25rem}
 #gate p{margin:0 0 18px;color:var(--muted);font-size:.9rem}
-input[type=password],input[type=text],input[type=month],select{
+input[type=password],input[type=text],input[type=month],textarea,select{
   width:100%;background:#0a0e0c;border:1px solid var(--line-2);color:var(--text);
-  border-radius:12px;padding:11px 13px;font-family:var(--mono);font-size:.9rem}
-input:focus,select:focus{outline:none;border-color:var(--c2)}
-.btn{border:0;border-radius:12px;padding:11px 18px;font-family:var(--sans);font-weight:600;
-  font-size:.9rem;cursor:pointer;background:var(--grad);color:#04140e;transition:opacity .15s}
+  border-radius:12px;padding:11px 13px;font-size:.9rem;font-family:inherit}
+input[type=password],input[type=text].mono{font-family:var(--mono)}
+textarea{resize:vertical;min-height:120px;line-height:1.6}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--c2)}
+.btn{border:0;border-radius:12px;padding:10px 18px;font-family:inherit;font-weight:600;
+  font-size:.88rem;cursor:pointer;background:var(--grad);color:#04140e;transition:opacity .15s}
 .btn:hover{opacity:.88}
 .btn[disabled]{opacity:.45;cursor:not-allowed}
 .btn.ghost{background:transparent;border:1px solid var(--line-2);color:var(--text)}
+.btn.sm{padding:6px 12px;font-size:.8rem;border-radius:9px}
+.btn.danger{background:transparent;border:1px solid rgba(229,100,94,.4);color:var(--bad)}
 .err{color:var(--bad);font-size:.85rem;margin-top:10px;min-height:1.2em}
 
 /* ---------- header ---------- */
-header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;
-  padding-bottom:18px;border-bottom:1px solid var(--line);margin-bottom:24px;flex-wrap:wrap}
-header h1{margin:0;font-size:1.5rem;letter-spacing:-.02em}
-header h1 span{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-.sub{color:var(--muted);font-size:.85rem;font-family:var(--mono)}
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:20px;flex-wrap:wrap}
+.brand h1{margin:0;font-size:1.4rem;letter-spacing:-.02em}
+.brand h1 span{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.sub{color:var(--muted);font-size:.8rem;font-family:var(--mono);direction:ltr}
+html[dir=rtl] .sub{text-align:right}
+.hdr-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+/* ---------- tabs ---------- */
+.tabs{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);
+  border-radius:14px;padding:4px}
+.tab{border:0;background:transparent;color:var(--muted);font-family:inherit;font-weight:600;
+  font-size:.88rem;padding:8px 18px;border-radius:10px;cursor:pointer;transition:.15s}
+.tab:hover{color:var(--text)}
+.tab.on{background:var(--grad);color:#04140e}
 
 /* ---------- layout ---------- */
 .grid{display:grid;gap:16px}
@@ -57,9 +73,12 @@ header h1 span{background:var(--grad);-webkit-background-clip:text;background-cl
 .cols{grid-template-columns:1.35fr .95fr;align-items:start}
 @media(max-width:900px){.cols{grid-template-columns:1fr}}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:20px}
-.card h2{margin:0 0 14px;font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
-.kpi .label{font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
-.kpi .val{font-family:var(--mono);font-size:1.6rem;margin-top:6px;letter-spacing:-.02em}
+.card h2{margin:0 0 14px;font-size:.78rem;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+html[lang=he] .card h2{letter-spacing:.04em}
+.kpi .label{font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.kpi .val{font-family:var(--mono);font-size:1.6rem;margin-top:6px;letter-spacing:-.02em;direction:ltr}
+html[dir=rtl] .kpi .val{text-align:right}
 .kpi .val.pos{color:var(--ok)} .kpi .val.neg{color:var(--bad)}
 .kpi .foot{font-size:.75rem;color:var(--muted);margin-top:4px}
 
@@ -67,18 +86,18 @@ header h1 span{background:var(--grad);-webkit-background-clip:text;background-cl
 .row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:7px 0}
 .row + .row{border-top:1px solid var(--line)}
 .row .name{font-size:.88rem}
-.row .amt{font-family:var(--mono);font-size:.85rem;color:var(--muted)}
+.row .amt{font-family:var(--mono);font-size:.85rem;color:var(--muted);direction:ltr}
 .bar{height:6px;border-radius:99px;background:rgba(255,255,255,.06);overflow:hidden;margin-top:6px;grid-column:1/-1}
 .bar i{display:block;height:100%;border-radius:99px;background:var(--grad)}
 .mrow{display:grid;grid-template-columns:74px 1fr;gap:12px;align-items:center;padding:9px 0}
 .mrow + .mrow{border-top:1px solid var(--line)}
-.mrow .per{font-family:var(--mono);font-size:.8rem;color:var(--muted)}
+.mrow .per{font-family:var(--mono);font-size:.8rem;color:var(--muted);direction:ltr}
 .stack{display:flex;height:22px;border-radius:7px;overflow:hidden;background:rgba(255,255,255,.05)}
 .stack i{display:block;height:100%}
 .stack .in{background:linear-gradient(90deg,var(--c1),var(--c2))}
 .stack .out{background:var(--c3);opacity:.85}
 .legend{display:flex;gap:16px;font-size:.75rem;color:var(--muted);margin-top:10px;flex-wrap:wrap}
-.legend b{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:middle}
+.legend b{display:inline-block;width:9px;height:9px;border-radius:3px;margin-inline-end:5px;vertical-align:middle}
 
 /* ---------- upload ---------- */
 #drop{border:1.5px dashed var(--line-2);border-radius:14px;padding:26px 18px;text-align:center;
@@ -92,16 +111,63 @@ header h1 span{background:var(--grad);-webkit-background-clip:text;background-cl
 .uplog div{padding:6px 0;border-top:1px solid var(--line);display:flex;gap:8px}
 .uplog .s-ok{color:var(--ok)} .uplog .s-bad{color:var(--bad)} .uplog .s-run{color:var(--warn)}
 
-/* ---------- insights ---------- */
-#insight{white-space:pre-wrap;font-size:.92rem;line-height:1.65}
-#insight ul{margin:0;padding-left:18px}
+/* ---------- tasks ---------- */
+.addrow{display:flex;gap:8px;margin-bottom:12px}
+.addrow input{flex:1}
+.tasklist{max-height:340px;overflow:auto}
+.t{display:flex;gap:10px;align-items:flex-start;padding:9px 0}
+.t + .t{border-top:1px solid var(--line)}
+.t .chk{width:19px;height:19px;border-radius:6px;border:1.5px solid var(--line-2);
+  flex:0 0 auto;cursor:pointer;display:grid;place-items:center;margin-top:2px;transition:.15s}
+.t .chk:hover{border-color:var(--c2)}
+.t.done .chk{background:var(--c2);border-color:var(--c2)}
+.t .chk svg{width:11px;height:11px;opacity:0}
+.t.done .chk svg{opacity:1}
+.t .txt{flex:1;font-size:.92rem;word-break:break-word;cursor:text}
+.t.done .txt{color:var(--muted);text-decoration:line-through}
+.t .when{font-family:var(--mono);font-size:.68rem;color:var(--muted);white-space:nowrap;direction:ltr}
+.t .x{background:none;border:0;color:var(--muted);cursor:pointer;font-size:1rem;padding:0 4px;opacity:0}
+.t:hover .x{opacity:1}
+.t .x:hover{color:var(--bad)}
+
+/* ---------- notes ---------- */
+.notelist{display:grid;gap:10px;max-height:420px;overflow:auto}
+.note{border:1px solid var(--line);border-radius:14px;padding:13px 15px;cursor:pointer;transition:.15s}
+.note:hover{border-color:var(--line-2)}
+.note.open{border-color:var(--c2);cursor:default}
+.note .nt{font-weight:600;font-size:.94rem;display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.note .nd{font-family:var(--mono);font-size:.68rem;color:var(--muted);white-space:nowrap;direction:ltr}
+.note .np{color:var(--muted);font-size:.84rem;margin-top:5px;overflow:hidden;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.md{font-size:.88rem;line-height:1.7;margin-top:8px}
+.md h1,.md h2,.md h3{font-size:1rem;margin:.7em 0 .3em}
+.md ul,.md ol{padding-inline-start:20px;margin:.4em 0}
+.md code{font-family:var(--mono);font-size:.85em;background:rgba(255,255,255,.07);
+  padding:1px 5px;border-radius:5px}
+.md p{margin:.5em 0}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:.74rem;padding:4px 9px;
+  border-radius:99px;border:1px solid var(--line-2);color:var(--muted);text-decoration:none}
+.chip:hover{border-color:var(--c2);color:var(--text)}
+.chip .x{background:none;border:0;color:inherit;cursor:pointer;padding:0;font-size:.9rem;opacity:.6}
+.chip .x:hover{opacity:1;color:var(--bad)}
+.noteActions{display:flex;gap:8px;margin-top:11px;flex-wrap:wrap}
+
+/* ---------- agent ---------- */
+.agent{background:linear-gradient(160deg,rgba(94,234,212,.07),rgba(192,138,87,.05));
+  border:1px solid rgba(94,234,212,.2)}
+#agentOut{white-space:pre-wrap;font-size:.92rem;line-height:1.7;min-height:60px}
+#agentOut strong{color:var(--c1)}
+.route{font-family:var(--mono);font-size:.7rem;color:var(--muted);margin-top:12px;
+  padding-top:10px;border-top:1px solid var(--line);direction:ltr;text-align:start}
 .badge{display:inline-block;font-family:var(--mono);font-size:.66rem;padding:3px 8px;border-radius:99px;
-  border:1px solid var(--line-2);color:var(--muted);margin-left:8px;vertical-align:middle}
+  border:1px solid var(--line-2);color:var(--muted);vertical-align:middle;direction:ltr}
+
 .docs{font-size:.85rem}
 .docs .d{display:grid;grid-template-columns:1fr auto;gap:8px;padding:8px 0;align-items:center}
 .docs .d + .d{border-top:1px solid var(--line)}
 .docs .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.docs .meta{font-family:var(--mono);font-size:.72rem;color:var(--muted)}
+.docs .meta{font-family:var(--mono);font-size:.72rem;color:var(--muted);direction:ltr}
 .pill{font-family:var(--mono);font-size:.68rem;padding:2px 7px;border-radius:99px}
 .pill.extracted{background:rgba(16,185,129,.14);color:var(--ok)}
 .pill.failed{background:rgba(229,100,94,.14);color:var(--bad)}
@@ -112,126 +178,283 @@ header h1 span{background:var(--grad);-webkit-background-clip:text;background-cl
 @keyframes sp{to{transform:rotate(360deg)}}
 footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
   color:var(--muted);font-size:.78rem;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+[hidden]{display:none !important}
 </style>
 </head>
 <body>
 
-<!-- ============ token gate ============ -->
-<!-- Hidden until we know whether Cloudflare Access already authenticated us,
-     so the token prompt never flashes for a signed-in visitor. -->
+<!-- ============ gate ============ -->
 <div id="gate" style="display:none">
   <div class="box">
-    <h1>Personal hub</h1>
-    <p id="gateHint">Sign in to continue.</p>
+    <h1 data-i18n="hubTitle">מרכז אישי</h1>
+    <p id="gateHint" data-i18n="signInHint">התחבר כדי להמשיך.</p>
     <form id="gateForm" autocomplete="on">
-      <input type="text" id="user" name="username" placeholder="User" autocomplete="username"
-             autocapitalize="none" autocorrect="off" spellcheck="false" value="adi">
-      <input type="password" id="pass" name="password" placeholder="Password"
-             autocomplete="current-password" style="margin-top:10px" required>
+      <input type="text" id="user" name="username" data-i18n-ph="user" placeholder="משתמש"
+             autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
+             value="adi" class="mono" dir="ltr">
+      <input type="password" id="pass" name="password" data-i18n-ph="password" placeholder="סיסמה"
+             autocomplete="current-password" style="margin-top:10px" dir="ltr" required>
       <div class="err" id="gateErr"></div>
-      <button class="btn" style="width:100%;margin-top:12px" type="submit" id="gateBtn">Sign in</button>
+      <button class="btn" style="width:100%;margin-top:12px" type="submit" id="gateBtn"
+              data-i18n="signIn">כניסה</button>
     </form>
+    <div style="margin-top:14px;text-align:center">
+      <button class="btn ghost sm" id="langGate" type="button">English</button>
+    </div>
   </div>
 </div>
 
 <!-- ============ app ============ -->
 <div class="wrap" id="app" hidden>
   <header>
-    <div>
-      <h1><span>Adi</span> · financials</h1>
-      <div class="sub" id="stamp">loading…</div>
+    <div class="brand">
+      <h1><span>Adi</span> · <em data-i18n="hub" style="font-style:normal">מרכז אישי</em></h1>
+      <div class="sub" id="stamp">…</div>
     </div>
-    <div style="display:flex;gap:8px">
-      <button class="btn ghost" id="refresh">Refresh</button>
-      <button class="btn ghost" id="lock">Lock</button>
+    <div class="tabs" role="tablist">
+      <button class="tab on" id="tabFinance" data-i18n="finance" role="tab">פיננסים</button>
+      <button class="tab" id="tabTasks" data-i18n="tasksNotes" role="tab">משימות ופתקים</button>
+    </div>
+    <div class="hdr-actions">
+      <button class="btn ghost sm" id="lang">English</button>
+      <button class="btn ghost sm" id="refresh" data-i18n="refresh">רענן</button>
+      <button class="btn ghost sm" id="lock" data-i18n="lock">נעל</button>
     </div>
   </header>
 
-  <div class="grid kpis" id="kpis"></div>
+  <!-- ---------- FINANCE ---------- -->
+  <section id="viewFinance">
+    <div class="grid kpis" id="kpis"></div>
 
-  <div class="grid cols">
-    <div class="grid" style="gap:16px">
+    <div class="grid cols">
+      <div class="grid" style="gap:16px">
+        <section class="card">
+          <h2 data-i18n="uploadDoc">העלאת מסמך</h2>
+          <div id="drop">
+            <div class="big" data-i18n="dropBig">גרור לכאן תלוש שכר, דף קיבוץ או חשבונית</div>
+            <div class="small" data-i18n="dropSmall">PDF, JPG או PNG · עברית או אנגלית · עד 15MB</div>
+            <input type="file" id="file" hidden multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*">
+          </div>
+          <div class="fields">
+            <select id="dtype">
+              <option value="" data-i18n="autoDetect">זיהוי אוטומטי</option>
+              <option value="salary">תלוש שכר</option>
+              <option value="kibbutz">דף קיבוץ</option>
+              <option value="invoice">חשבונית</option>
+              <option value="investment">קרן השתלמות</option>
+            </select>
+            <input type="month" id="period">
+          </div>
+          <div class="uplog" id="uplog"></div>
+        </section>
 
-      <section class="card">
-        <h2>Upload document</h2>
-        <div id="drop">
-          <div class="big">Drop a payslip, kibbutz sheet or invoice</div>
-          <div class="small">PDF, JPG or PNG · Hebrew or English · max 15 MB</div>
-          <input type="file" id="file" hidden multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*">
-        </div>
-        <div class="fields">
-          <select id="dtype">
-            <option value="">Auto-detect type</option>
-            <option value="salary">תלוש שכר · Payslip</option>
-            <option value="kibbutz">דף קיבוץ · Kibbutz sheet</option>
-            <option value="invoice">חשבונית · Invoice</option>
-            <option value="investment">קרן השתלמות · Investment</option>
+        <section class="card">
+          <h2 data-i18n="cashflow">תזרים חודשי</h2>
+          <div id="monthly"><div class="empty" data-i18n="noRecords">אין עדיין רשומות.</div></div>
+          <div class="legend">
+            <span><b style="background:linear-gradient(90deg,var(--c1),var(--c2))"></b><em data-i18n="netIncome" style="font-style:normal">הכנסה נטו</em></span>
+            <span><b style="background:var(--c3)"></b><em data-i18n="spending" style="font-style:normal">הוצאות</em></span>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2><em data-i18n="breakdown" style="font-style:normal">פילוח הוצאות</em> <span class="badge" data-i18n="last6">6 חודשים</span></h2>
+          <div id="cats"><div class="empty" data-i18n="noExpenses">אין עדיין הוצאות.</div></div>
+        </section>
+      </div>
+
+      <div class="grid" style="gap:16px">
+        <section class="card">
+          <h2><em data-i18n="aiInsights" style="font-style:normal">תובנות AI</em> <span class="badge" id="aimodel">workers ai</span></h2>
+          <div id="insight"><span class="spin"></span></div>
+        </section>
+
+        <section class="card">
+          <h2><em data-i18n="investments" style="font-style:normal">השקעות</em> <span class="badge">קרן השתלמות</span></h2>
+          <div id="inv"><div class="empty" data-i18n="noStatements">אין עדיין דוחות.</div></div>
+        </section>
+
+        <section class="card">
+          <h2 data-i18n="documents">מסמכים</h2>
+          <div class="docs" id="docs"><div class="empty" data-i18n="nothingUploaded">לא הועלה דבר.</div></div>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- TASKS & NOTES ---------- -->
+  <section id="viewTasks" hidden>
+    <div class="grid cols">
+      <div class="grid" style="gap:16px">
+
+        <section class="card">
+          <h2><em data-i18n="tasks" style="font-style:normal">משימות</em> <span class="badge" id="taskCount">0</span></h2>
+          <form class="addrow" id="taskForm">
+            <input type="text" id="taskInput" data-i18n-ph="newTask" placeholder="משימה חדשה…" maxlength="2000">
+            <button class="btn" type="submit" data-i18n="add">הוסף</button>
+          </form>
+          <div class="tasklist" id="tasks"><div class="empty" data-i18n="noTasks">אין משימות. נקי.</div></div>
+        </section>
+
+        <section class="card">
+          <h2>
+            <em data-i18n="notes" style="font-style:normal">פתקים</em>
+            <span class="badge" id="noteCount">0</span>
+            <button class="btn sm" id="newNote" style="margin-inline-start:auto" data-i18n="newNote">פתק חדש</button>
+          </h2>
+
+          <div id="noteEditor" hidden style="margin-bottom:14px">
+            <input type="text" id="noteTitle" data-i18n-ph="noteTitle" placeholder="כותרת" maxlength="300">
+            <textarea id="noteContent" data-i18n-ph="noteContent"
+                      placeholder="תוכן (Markdown נתמך)" style="margin-top:9px"></textarea>
+            <div class="noteActions">
+              <button class="btn sm" id="saveNote" data-i18n="save">שמור</button>
+              <button class="btn ghost sm" id="cancelNote" data-i18n="cancel">בטל</button>
+              <button class="btn ghost sm" id="attachBtn" data-i18n="attach">צרף קובץ</button>
+              <input type="file" id="noteFile" hidden multiple>
+              <span id="attachState" class="badge" hidden></span>
+            </div>
+          </div>
+
+          <div class="notelist" id="notes"><div class="empty" data-i18n="noNotes">אין עדיין פתקים.</div></div>
+        </section>
+      </div>
+
+      <div class="grid" style="gap:16px">
+        <section class="card agent">
+          <h2 data-i18n="currentState">מצב נוכחי ועדיפויות</h2>
+          <select id="agentModel" style="margin-bottom:12px">
+            <option value="auto" data-i18n="autoRoute">אוטומטי (ניתוב חכם)</option>
+            <option value="llama">Llama 3.3 70B</option>
+            <option value="deepseek">DeepSeek R1</option>
+            <option value="qwen">Qwen3 30B</option>
+            <option value="mistral">Mistral Small 3.1</option>
+            <option value="gemini">Google Gemini</option>
           </select>
-          <input type="month" id="period" title="Period the document covers (optional)">
-        </div>
-        <div class="uplog" id="uplog"></div>
-      </section>
-
-      <section class="card">
-        <h2>Monthly cashflow</h2>
-        <div id="monthly"><div class="empty">No records yet.</div></div>
-        <div class="legend">
-          <span><b style="background:linear-gradient(90deg,var(--c1),var(--c2))"></b>Net income</span>
-          <span><b style="background:var(--c3)"></b>Spending</span>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>Spending breakdown <span class="badge">last 6 months</span></h2>
-        <div id="cats"><div class="empty">No expenses recorded yet.</div></div>
-      </section>
+          <div id="agentOut"><span class="empty" data-i18n="agentIdle">לחץ "נתח" כדי לקבל תמונת מצב.</span></div>
+          <div class="noteActions">
+            <button class="btn" id="runAgent" data-i18n="analyse">נתח</button>
+          </div>
+          <div class="route" id="agentRoute" hidden></div>
+        </section>
+      </div>
     </div>
-
-    <div class="grid" style="gap:16px">
-      <section class="card">
-        <h2>AI insights <span class="badge" id="aimodel">workers ai</span></h2>
-        <div id="insight"><span class="spin"></span></div>
-      </section>
-
-      <section class="card">
-        <h2>Investments <span class="badge">קרן השתלמות</span></h2>
-        <div id="inv"><div class="empty">No statements yet.</div></div>
-      </section>
-
-      <section class="card">
-        <h2>Documents</h2>
-        <div class="docs" id="docs"><div class="empty">Nothing uploaded yet.</div></div>
-      </section>
-    </div>
-  </div>
+  </section>
 
   <footer>
-    <span>Private · Cloudflare Worker + D1 + R2</span>
+    <span data-i18n="footPrivate">פרטי · Cloudflare Worker + D1 + R2</span>
     <span class="sub" id="apibase"></span>
   </footer>
 </div>
 
 <script>
-// Served from the site means the API is same-origin and Cloudflare Access is in
-// front of it. Absolute URL only for local preview, where Access does not apply.
+// ===================== i18n =====================
+const I18N = {
+  he: {
+    hub:'מרכז אישי', hubTitle:'מרכז אישי', signInHint:'התחבר כדי להמשיך.',
+    signedInGoogle:'מחובר עם Google. הזן סיסמה כדי להמשיך.',
+    expired:'ההתחברות פגה. הזן סיסמה כדי להמשיך.',
+    user:'משתמש', password:'סיסמה', signIn:'כניסה', wrongCreds:'שם משתמש או סיסמה שגויים.',
+    noServer:'לא ניתן להתחבר לשרת.', signingIn:'מתחבר…',
+    finance:'פיננסים', tasksNotes:'משימות ופתקים',
+    refresh:'רענן', lock:'נעל', signOut:'התנתק',
+    netIncome:'הכנסה נטו', spending:'הוצאות', saved:'נחסך', investments:'השקעות',
+    noData:'אין נתונים', itemsTracked:'פריטים', ofNet:'מההכנסה נטו', accounts:'חשבונות',
+    noStatementsShort:'אין דוחות',
+    uploadDoc:'העלאת מסמך', dropBig:'גרור לכאן תלוש שכר, דף קיבוץ או חשבונית',
+    dropSmall:'PDF, JPG או PNG · עברית או אנגלית · עד 15MB', autoDetect:'זיהוי אוטומטי',
+    cashflow:'תזרים חודשי', noRecords:'אין עדיין רשומות.',
+    breakdown:'פילוח הוצאות', last6:'6 חודשים אחרונים', noExpenses:'אין עדיין הוצאות.',
+    aiInsights:'תובנות AI', noStatements:'אין עדיין דוחות.', documents:'מסמכים',
+    nothingUploaded:'לא הועלה דבר.',
+    tasks:'משימות', newTask:'משימה חדשה…', add:'הוסף', noTasks:'אין משימות. נקי.',
+    notes:'פתקים', newNote:'פתק חדש', noNotes:'אין עדיין פתקים.',
+    noteTitle:'כותרת', noteContent:'תוכן (Markdown נתמך)',
+    save:'שמור', cancel:'בטל', attach:'צרף קובץ', del:'מחק', edit:'ערוך', untitled:'ללא כותרת',
+    confirmDelNote:'למחוק את הפתק והקבצים המצורפים?',
+    currentState:'מצב נוכחי ועדיפויות', autoRoute:'אוטומטי (ניתוב חכם)',
+    analyse:'נתח', analysing:'מנתח…', agentIdle:'לחץ "נתח" כדי לקבל תמונת מצב.',
+    agentFail:'הסוכן נכשל', uploading:'מעלה…',
+    footPrivate:'פרטי · Cloudflare Worker + D1 + R2',
+    docsWord:'מסמכים', incomeWord:'הכנסות', expensesWord:'הוצאות', statementsWord:'דוחות',
+  },
+  en: {
+    hub:'Personal hub', hubTitle:'Personal hub', signInHint:'Sign in to continue.',
+    signedInGoogle:'Signed in with Google. Enter your password to continue.',
+    expired:'Session expired. Enter your password to continue.',
+    user:'User', password:'Password', signIn:'Sign in', wrongCreds:'Wrong user or password.',
+    noServer:'Could not reach the server.', signingIn:'Signing in…',
+    finance:'Finance', tasksNotes:'Tasks & Notes',
+    refresh:'Refresh', lock:'Lock', signOut:'Sign out',
+    netIncome:'Net income', spending:'Spending', saved:'Saved', investments:'Investments',
+    noData:'no data', itemsTracked:'items tracked', ofNet:'of net income', accounts:'account(s)',
+    noStatementsShort:'no statements',
+    uploadDoc:'Upload document', dropBig:'Drop a payslip, kibbutz sheet or invoice',
+    dropSmall:'PDF, JPG or PNG · Hebrew or English · max 15 MB', autoDetect:'Auto-detect type',
+    cashflow:'Monthly cashflow', noRecords:'No records yet.',
+    breakdown:'Spending breakdown', last6:'last 6 months', noExpenses:'No expenses recorded yet.',
+    aiInsights:'AI insights', noStatements:'No statements yet.', documents:'Documents',
+    nothingUploaded:'Nothing uploaded yet.',
+    tasks:'Tasks', newTask:'New task…', add:'Add', noTasks:'No tasks. All clear.',
+    notes:'Notes', newNote:'New note', noNotes:'No notes yet.',
+    noteTitle:'Title', noteContent:'Content (Markdown supported)',
+    save:'Save', cancel:'Cancel', attach:'Attach file', del:'Delete', edit:'Edit', untitled:'untitled',
+    confirmDelNote:'Delete this note and its attachments?',
+    currentState:'Current state & priorities', autoRoute:'Auto (Smart Routing)',
+    analyse:'Analyse', analysing:'Analysing…', agentIdle:'Hit "Analyse" for a read on where things stand.',
+    agentFail:'Agent failed', uploading:'Uploading…',
+    footPrivate:'Private · Cloudflare Worker + D1 + R2',
+    docsWord:'docs', incomeWord:'income', expensesWord:'expenses', statementsWord:'statements',
+  },
+};
+let lang = localStorage.getItem('adi_lang') || 'he';
+const t = (k) => (I18N[lang] && I18N[lang][k]) || I18N.en[k] || k;
+
+function applyLang() {
+  document.documentElement.lang = lang;
+  document.documentElement.dir = lang === 'he' ? 'rtl' : 'ltr';
+  for (const el of document.querySelectorAll('[data-i18n]')) el.textContent = t(el.dataset.i18n);
+  for (const el of document.querySelectorAll('[data-i18n-ph]')) el.placeholder = t(el.dataset.i18nPh);
+  const other = lang === 'he' ? 'English' : 'עברית';
+  for (const id of ['lang', 'langGate']) { const b = $('#' + id); if (b) b.textContent = other; }
+  $('#lock').textContent = accessMode ? t('signOut') : t('lock');
+  localStorage.setItem('adi_lang', lang);
+}
+
+// ===================== plumbing =====================
 const ON_SITE = /(^|\.)adiariel\.com$/.test(location.hostname);
 const API = ON_SITE ? '' : 'https://finance.adidatabase.workers.dev';
-const KEY = 'adi_fin_sess';   // app session token from /api/login
+const KEY = 'adi_fin_sess';
 const LEGACY_KEY = 'adi_fin_tok';
-let accessMode = ON_SITE;     // Google sign-in handled upstream by Access
+let accessMode = ON_SITE;
 const $ = (s) => document.querySelector(s);
+const token = () => sessionStorage.getItem(KEY) || '';
 
-const ils = (agorot, dp = 0) =>
-  '₪' + (agorot / 100).toLocaleString('en-IL', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-function token(){ return sessionStorage.getItem(KEY) || ''; }
+const ils = (agorot) =>
+  '₪' + (agorot / 100).toLocaleString('en-IL', { maximumFractionDigits: 0 });
+
+/** Minimal markdown. Escapes first, so no raw HTML can ever reach the DOM. */
+function md(src) {
+  let h = esc(src || '');
+  h = h.replace(/^### (.*)$/gm, '<h3>$1</h3>')
+       .replace(/^## (.*)$/gm, '<h2>$1</h2>')
+       .replace(/^# (.*)$/gm, '<h1>$1</h1>')
+       .replace(/`([^`]+)`/g, '<code>$1</code>')
+       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+       .replace(/(^|\W)\*([^*\n]+)\*/g, '$1<em>$2</em>')
+       .replace(/^\s*[-*] (.*)$/gm, '<li>$1</li>')
+       .replace(/(<li>[\s\S]*?<\/li>)/g, (m) => `<ul>${m}</ul>`)
+       .replace(/<\/ul>\s*<ul>/g, '');
+  return h.split(/\n{2,}/).map((p) => (/^<(h\d|ul)/.test(p) ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`)).join('');
+}
 
 async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
   if (token()) headers['X-App-Session'] = token();
   const res = await fetch(API + path, { ...opts, headers, credentials: 'same-origin' });
-  // An expired Access session answers with a redirect to the login page rather
-  // than a 401. Reload so the browser follows it as a normal navigation.
   if (accessMode && (res.redirected || !/json/i.test(res.headers.get('content-type') || ''))) {
     location.reload();
     throw new Error('access_session_expired');
@@ -239,122 +462,118 @@ async function api(path, opts = {}) {
   if (res.status === 401) { lock(); throw new Error('unauthorized'); }
   return res;
 }
+const apiJson = async (path, opts) => (await api(path, opts)).json();
+const postJson = (path, body, method = 'POST') =>
+  apiJson(path, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
-/** Soft: drop the app session and show the password form again. */
 function lock() {
   sessionStorage.removeItem(KEY);
   $('#app').hidden = true;
   $('#gate').style.display = 'grid';
-  $('#gateHint').textContent = 'Session expired. Enter your password to continue.';
+  $('#gateHint').textContent = t('expired');
   $('#pass').focus();
 }
-
-/** Hard: also end the Cloudflare Access session, so Google is re-checked too. */
 function signOut() {
   sessionStorage.removeItem(KEY);
   if (accessMode) { location.href = '/cdn-cgi/access/logout'; return; }
   lock();
 }
 
-// ---------------- gate ----------------
+// ===================== gate =====================
 $('#gateForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const user = $('#user').value.trim();
   const pass = $('#pass').value;
   if (!user || !pass) return;
-
   $('#gateErr').textContent = '';
   $('#gateBtn').disabled = true;
-  $('#gateBtn').textContent = 'Signing in…';
-
+  $('#gateBtn').textContent = t('signingIn');
   try {
     const res = await fetch(API + '/api/login', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ user, pass }),
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin', body: JSON.stringify({ user, pass }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.token) {
-      $('#gateErr').textContent = res.status === 401 ? 'Wrong user or password.'
-        : data.hint || ('Server error ' + res.status);
+      $('#gateErr').textContent = res.status === 401 ? t('wrongCreds') : (data.hint || 'Error ' + res.status);
       return;
     }
     sessionStorage.setItem(KEY, data.token);
     $('#pass').value = '';
     enterApp();
   } catch {
-    $('#gateErr').textContent = 'Could not reach the server.';
+    $('#gateErr').textContent = t('noServer');
   } finally {
     $('#gateBtn').disabled = false;
-    $('#gateBtn').textContent = 'Sign in';
+    $('#gateBtn').textContent = t('signIn');
   }
 });
 
+for (const id of ['#lang', '#langGate']) {
+  $(id).addEventListener('click', () => { lang = lang === 'he' ? 'en' : 'he'; applyLang(); rerender(); });
+}
 $('#lock').addEventListener('click', signOut);
-$('#refresh').addEventListener('click', () => { loadSummary(); loadInsights(); });
+$('#refresh').addEventListener('click', () => { loadFinance(); loadTasks(); loadNotes(); loadInsights(); });
 
-// ---------------- render ----------------
+// ===================== tabs =====================
+function showTab(name) {
+  const fin = name === 'finance';
+  $('#viewFinance').hidden = !fin;
+  $('#viewTasks').hidden = fin;
+  $('#tabFinance').classList.toggle('on', fin);
+  $('#tabTasks').classList.toggle('on', !fin);
+  localStorage.setItem('adi_tab', name);
+  if (!fin && !tasksLoaded) { loadTasks(); loadNotes(); tasksLoaded = true; }
+}
+$('#tabFinance').addEventListener('click', () => showTab('finance'));
+$('#tabTasks').addEventListener('click', () => showTab('tasks'));
+
+// ===================== finance render =====================
+let lastSummary = null;
+
 function renderKpis(s) {
   const latest = s.monthly[0];
   const invTotal = s.investments.reduce((sum, i) => sum + (i.balance || 0), 0);
-  const keren = s.investments
-    .filter((i) => i.kind === 'keren_hishtalmut')
+  const keren = s.investments.filter((i) => i.kind === 'keren_hishtalmut')
     .reduce((sum, i) => sum + (i.balance || 0), 0);
   const saved = latest ? latest.income_net - latest.spend : 0;
   const rate = latest && latest.income_net > 0 ? Math.round((saved / latest.income_net) * 100) : null;
 
   const tiles = [
-    { label: 'Net income', val: latest ? ils(latest.income_net) : '—',
-      foot: latest ? latest.period : 'no data' },
-    { label: 'Spending', val: latest ? ils(latest.spend) : '—',
-      foot: latest ? `${s.totals.expense_rows} items tracked` : 'no data' },
-    { label: 'Saved', val: latest ? ils(saved) : '—', cls: saved > 0 ? 'pos' : saved < 0 ? 'neg' : '',
-      foot: rate === null ? 'no data' : `${rate}% of net income` },
-    { label: 'Investments', val: invTotal ? ils(invTotal) : '—',
-      foot: keren
-        ? `Keren ${ils(keren)} · ${s.investments.length} account(s)`
-        : s.investments.length ? `${s.investments.length} account(s)` : 'no statements' },
+    { label: t('netIncome'), val: latest ? ils(latest.income_net) : '—', foot: latest ? latest.period : t('noData') },
+    { label: t('spending'), val: latest ? ils(latest.spend) : '—',
+      foot: latest ? `${s.totals.expense_rows} ${t('itemsTracked')}` : t('noData') },
+    { label: t('saved'), val: latest ? ils(saved) : '—', cls: saved > 0 ? 'pos' : saved < 0 ? 'neg' : '',
+      foot: rate === null ? t('noData') : `${rate}% ${t('ofNet')}` },
+    { label: t('investments'), val: invTotal ? ils(invTotal) : '—',
+      foot: keren ? `Keren ${ils(keren)} · ${s.investments.length} ${t('accounts')}`
+        : s.investments.length ? `${s.investments.length} ${t('accounts')}` : t('noStatementsShort') },
   ];
-
-  $('#kpis').innerHTML = tiles.map((t) => `
-    <div class="card kpi">
-      <div class="label">${t.label}</div>
-      <div class="val ${t.cls || ''}">${t.val}</div>
-      <div class="foot">${t.foot}</div>
-    </div>`).join('');
+  $('#kpis').innerHTML = tiles.map((x) => `
+    <div class="card kpi"><div class="label">${esc(x.label)}</div>
+      <div class="val ${x.cls || ''}">${x.val}</div><div class="foot">${esc(x.foot)}</div></div>`).join('');
 }
 
 function renderMonthly(rows) {
-  if (!rows.length) { $('#monthly').innerHTML = '<div class="empty">No records yet.</div>'; return; }
+  if (!rows.length) { $('#monthly').innerHTML = `<div class="empty">${t('noRecords')}</div>`; return; }
   const peak = Math.max(...rows.map((r) => Math.max(r.income_net, r.spend)), 1);
   $('#monthly').innerHTML = rows.map((r) => `
-    <div class="mrow">
-      <div class="per">${r.period}</div>
-      <div>
-        <div class="stack">
-          <i class="in" style="width:${(r.income_net / peak) * 100}%" title="Net ${ils(r.income_net)}"></i>
-        </div>
-        <div class="stack" style="margin-top:3px;height:14px">
-          <i class="out" style="width:${(r.spend / peak) * 100}%" title="Spend ${ils(r.spend)}"></i>
-        </div>
-      </div>
-    </div>`).join('');
+    <div class="mrow"><div class="per">${r.period}</div><div>
+      <div class="stack"><i class="in" style="width:${(r.income_net / peak) * 100}%" title="${ils(r.income_net)}"></i></div>
+      <div class="stack" style="margin-top:3px;height:14px"><i class="out" style="width:${(r.spend / peak) * 100}%" title="${ils(r.spend)}"></i></div>
+    </div></div>`).join('');
 }
 
 function renderCats(rows) {
-  if (!rows.length) { $('#cats').innerHTML = '<div class="empty">No expenses recorded yet.</div>'; return; }
+  if (!rows.length) { $('#cats').innerHTML = `<div class="empty">${t('noExpenses')}</div>`; return; }
   const peak = Math.max(...rows.map((r) => r.total), 1);
   $('#cats').innerHTML = rows.map((r) => `
-    <div class="row">
-      <div class="name">${esc(r.category)}</div>
-      <div class="amt">${ils(r.total)}</div>
-      <div class="bar"><i style="width:${(r.total / peak) * 100}%"></i></div>
-    </div>`).join('');
+    <div class="row"><div class="name">${esc(r.category)}</div><div class="amt">${ils(r.total)}</div>
+      <div class="bar"><i style="width:${(r.total / peak) * 100}%"></i></div></div>`).join('');
 }
 
 function renderInv(rows) {
-  if (!rows.length) { $('#inv').innerHTML = '<div class="empty">No statements yet.</div>'; return; }
+  if (!rows.length) { $('#inv').innerHTML = `<div class="empty">${t('noStatements')}</div>`; return; }
   const names = { keren_hishtalmut: 'Keren Hishtalmut', pension: 'Pension', gemel: 'Gemel',
                   savings: 'Savings', other: 'Other' };
   $('#inv').innerHTML = rows.map((r) => `
@@ -362,57 +581,261 @@ function renderInv(rows) {
       <div class="name">${names[r.kind] || esc(r.kind)}${r.provider ? ` <span class="badge">${esc(r.provider)}</span>` : ''}</div>
       <div class="amt">${ils(r.balance)}</div>
       <div class="amt" style="grid-column:1/-1;font-size:.74rem">
-        ${r.yield_pct != null ? `yield ${r.yield_pct}%` : ''}
-        ${r.fees_pct != null ? ` · fees ${r.fees_pct}%` : ''}
-        ${r.liquid_from ? ` · liquid ${r.liquid_from}` : ''}
-        ${r.as_of ? ` · as of ${r.as_of}` : ''}
-      </div>
-    </div>`).join('');
+        ${r.yield_pct != null ? `yield ${r.yield_pct}%` : ''}${r.fees_pct != null ? ` · fees ${r.fees_pct}%` : ''}
+        ${r.liquid_from ? ` · liquid ${r.liquid_from}` : ''}${r.as_of ? ` · ${r.as_of}` : ''}
+      </div></div>`).join('');
 }
 
 function renderDocs(rows) {
-  if (!rows.length) { $('#docs').innerHTML = '<div class="empty">Nothing uploaded yet.</div>'; return; }
+  if (!rows.length) { $('#docs').innerHTML = `<div class="empty">${t('nothingUploaded')}</div>`; return; }
   $('#docs').innerHTML = rows.map((d) => `
-    <div class="d">
-      <div>
-        <div class="nm"><a href="${API}/api/doc/${d.id}" target="_blank" rel="noopener">${esc(d.filename)}</a></div>
-        <div class="meta">${esc(d.doc_type)}${d.period ? ' · ' + d.period : ''} · ${d.uploaded_at}</div>
-      </div>
-      <span class="pill ${d.status}">${d.status}</span>
-    </div>`).join('');
+    <div class="d"><div>
+      <div class="nm"><a href="${API}/api/doc/${d.id}" target="_blank" rel="noopener">${esc(d.filename)}</a></div>
+      <div class="meta">${esc(d.doc_type)}${d.period ? ' · ' + d.period : ''} · ${d.uploaded_at}</div>
+    </div><span class="pill ${d.status}">${d.status}</span></div>`).join('');
 }
 
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
-  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-// ---------------- data ----------------
-async function loadSummary() {
-  const res = await api('/api/summary');
-  const s = await res.json();
+async function loadFinance() {
+  const s = await apiJson('/api/summary');
+  lastSummary = s;
   renderKpis(s); renderMonthly(s.monthly); renderCats(s.by_category);
-  renderInv(s.investments); renderDocs(s.documents);
+  renderInv(s.investments); renderDocs(s.documents); renderStamp(s);
+  $('#apibase').textContent = API ? new URL(API).host : location.host;
+}
+
+function renderStamp(s) {
+  if (!s?.totals) return;
   $('#stamp').textContent =
-    `${s.totals.documents} docs · ${s.totals.income_rows} income · ${s.totals.expense_rows} expenses · ${s.totals.investment_rows} statements`;
-  $('#apibase').textContent = new URL(API).host;
+    `${s.totals.documents} ${t('docsWord')} · ${s.totals.income_rows} ${t('incomeWord')} · ` +
+    `${s.totals.expense_rows} ${t('expensesWord')} · ${s.totals.investment_rows} ${t('statementsWord')}`;
 }
 
 async function loadInsights() {
   $('#insight').innerHTML = '<span class="spin"></span>';
   try {
-    const res = await api('/api/insights');
-    const d = await res.json();
+    const d = await apiJson('/api/insights');
     $('#aimodel').textContent = (d.model || 'workers ai').replace('@cf/', '');
-    const text = d.insight || (d.error ? 'Insights unavailable: ' + d.error : 'No insight returned.');
+    const text = d.insight || (d.error ? 'Unavailable: ' + d.error : '—');
     const bullets = text.split('\n').map((l) => l.replace(/^[\s*\-•]+/, '').trim()).filter(Boolean);
     $('#insight').innerHTML = bullets.length > 1
-      ? '<ul>' + bullets.map((b) => `<li>${esc(b)}</li>`).join('') + '</ul>'
-      : esc(text);
-  } catch {
-    $('#insight').textContent = 'Could not reach the insights endpoint.';
-  }
+      ? '<ul>' + bullets.map((b) => `<li>${esc(b)}</li>`).join('') + '</ul>' : esc(text);
+  } catch { $('#insight').textContent = '—'; }
 }
 
-// ---------------- upload ----------------
+// ===================== tasks =====================
+let tasksLoaded = false;
+let allTasks = [];
+
+const CHECK = '<svg viewBox="0 0 12 12" fill="none"><path d="M1 6l3.5 3.5L11 2" stroke="#04140e" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function renderTasks() {
+  $('#taskCount').textContent = allTasks.filter((x) => x.status === 'pending').length;
+  if (!allTasks.length) { $('#tasks').innerHTML = `<div class="empty">${t('noTasks')}</div>`; return; }
+  $('#tasks').innerHTML = allTasks.map((x) => `
+    <div class="t ${x.status === 'completed' ? 'done' : ''}" data-id="${x.id}">
+      <div class="chk" data-act="toggle">${CHECK}</div>
+      <div class="txt" data-act="edit" title="${esc(t('edit'))}">${esc(x.text)}</div>
+      <div class="when">${String(x.created_at || '').slice(5, 10)}</div>
+      <button class="x" data-act="del" aria-label="${esc(t('del'))}">✕</button>
+    </div>`).join('');
+}
+
+async function loadTasks() {
+  const d = await apiJson('/api/tasks');
+  allTasks = d.tasks || [];
+  renderTasks();
+}
+
+$('#taskForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = $('#taskInput').value.trim();
+  if (!text) return;
+  $('#taskInput').value = '';
+  const d = await postJson('/api/tasks', { text });
+  if (d.task) { allTasks.unshift(d.task); renderTasks(); }
+});
+
+$('#tasks').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const row = e.target.closest('.t');
+  const id = row?.dataset.id;
+  const task = allTasks.find((x) => x.id === id);
+  if (!task) return;
+
+  if (btn.dataset.act === 'toggle') {
+    const status = task.status === 'completed' ? 'pending' : 'completed';
+    task.status = status; renderTasks();
+    await postJson(`/api/tasks/${id}`, { status }, 'PUT').catch(() => loadTasks());
+  } else if (btn.dataset.act === 'del') {
+    allTasks = allTasks.filter((x) => x.id !== id); renderTasks();
+    await api(`/api/tasks/${id}`, { method: 'DELETE' }).catch(() => loadTasks());
+  } else if (btn.dataset.act === 'edit') {
+    const next = prompt(t('edit'), task.text);
+    if (next === null || !next.trim() || next === task.text) return;
+    task.text = next.trim(); renderTasks();
+    await postJson(`/api/tasks/${id}`, { text: task.text }, 'PUT').catch(() => loadTasks());
+  }
+});
+
+// ===================== notes =====================
+let allNotes = [];
+let editingId = null;   // null = closed, '' = new note, else note id
+
+function renderNotes() {
+  $('#noteCount').textContent = allNotes.length;
+  if (!allNotes.length) { $('#notes').innerHTML = `<div class="empty">${t('noNotes')}</div>`; return; }
+  $('#notes').innerHTML = allNotes.map((n) => {
+    const open = n.id === editingId;
+    return `<div class="note ${open ? 'open' : ''}" data-id="${n.id}">
+      <div class="nt"><span>${esc(n.title || t('untitled'))}</span>
+        <span class="nd">${String(n.updated_at || '').slice(0, 10)}</span></div>
+      ${open ? `<div class="md">${md(n.content)}</div>` : `<div class="np">${esc((n.content || '').slice(0, 160))}</div>`}
+      ${n.attachments?.length ? `<div class="chips">${n.attachments.map((a) => `
+        <a class="chip" href="${API}/api/attachment/${a.id}" target="_blank" rel="noopener">
+          📎 ${esc(a.filename)}
+          <button class="x" data-act="unattach" data-aid="${a.id}" aria-label="${esc(t('del'))}">✕</button>
+        </a>`).join('')}</div>` : ''}
+      ${open ? `<div class="noteActions">
+          <button class="btn sm" data-act="editnote">${esc(t('edit'))}</button>
+          <button class="btn ghost sm" data-act="attachnote">${esc(t('attach'))}</button>
+          <button class="btn danger sm" data-act="delnote">${esc(t('del'))}</button>
+        </div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+async function loadNotes() {
+  const d = await apiJson('/api/notes');
+  allNotes = d.notes || [];
+  renderNotes();
+}
+
+function openEditor(note) {
+  editingId = note ? note.id : '';
+  $('#noteEditor').hidden = false;
+  $('#noteTitle').value = note?.title || '';
+  $('#noteContent').value = note?.content || '';
+  $('#noteTitle').focus();
+}
+function closeEditor() {
+  editingId = null;
+  $('#noteEditor').hidden = true;
+  $('#attachState').hidden = true;
+  renderNotes();
+}
+
+$('#newNote').addEventListener('click', () => openEditor(null));
+$('#cancelNote').addEventListener('click', closeEditor);
+
+$('#saveNote').addEventListener('click', async () => {
+  const payload = { title: $('#noteTitle').value.trim(), content: $('#noteContent').value };
+  if (!payload.title && !payload.content.trim()) return;
+  const existing = editingId && allNotes.find((n) => n.id === editingId);
+  const d = existing
+    ? await postJson(`/api/notes/${editingId}`, payload, 'PUT')
+    : await postJson('/api/notes', payload);
+  if (d.note) {
+    if (existing) Object.assign(existing, d.note);
+    else allNotes.unshift({ ...d.note, attachments: [] });
+  }
+  closeEditor();
+});
+
+$('#notes').addEventListener('click', async (e) => {
+  const act = e.target.closest('[data-act]');
+  const card = e.target.closest('.note');
+  if (!card) return;
+  const id = card.dataset.id;
+  const note = allNotes.find((n) => n.id === id);
+  if (!note) return;
+
+  if (act?.dataset.act === 'unattach') {
+    e.preventDefault(); e.stopPropagation();
+    note.attachments = (note.attachments || []).filter((a) => a.id !== act.dataset.aid);
+    renderNotes();
+    await api(`/api/attachment/${act.dataset.aid}`, { method: 'DELETE' }).catch(() => loadNotes());
+    return;
+  }
+  if (act?.dataset.act === 'editnote') { openEditor(note); return; }
+  if (act?.dataset.act === 'attachnote') { pendingAttachNote = id; $('#noteFile').click(); return; }
+  if (act?.dataset.act === 'delnote') {
+    if (!confirm(t('confirmDelNote'))) return;
+    allNotes = allNotes.filter((n) => n.id !== id);
+    editingId = null; $('#noteEditor').hidden = true; renderNotes();
+    await api(`/api/notes/${id}`, { method: 'DELETE' }).catch(() => loadNotes());
+    return;
+  }
+  // Plain click on a card expands it (and collapses the editor).
+  editingId = editingId === id ? null : id;
+  $('#noteEditor').hidden = true;
+  renderNotes();
+});
+
+let pendingAttachNote = null;
+$('#attachBtn').addEventListener('click', async () => {
+  // Attaching to an unsaved note needs an id first — save it silently.
+  if (!editingId) {
+    const d = await postJson('/api/notes', {
+      title: $('#noteTitle').value.trim(), content: $('#noteContent').value,
+    });
+    if (!d.note) return;
+    editingId = d.note.id;
+    allNotes.unshift({ ...d.note, attachments: [] });
+  }
+  pendingAttachNote = editingId;
+  $('#noteFile').click();
+});
+
+$('#noteFile').addEventListener('change', async () => {
+  const files = [...$('#noteFile').files];
+  $('#noteFile').value = '';
+  const noteId = pendingAttachNote;
+  if (!files.length || !noteId) return;
+
+  $('#attachState').hidden = false;
+  $('#attachState').textContent = t('uploading');
+  for (const f of files) {
+    const fd = new FormData();
+    fd.append('file', f);
+    try {
+      const d = await apiJson(`/api/notes/${noteId}/attach`, { method: 'POST', body: fd });
+      if (d.attachment) {
+        const n = allNotes.find((x) => x.id === noteId);
+        if (n) (n.attachments = n.attachments || []).push(d.attachment);
+      }
+    } catch { /* surfaced by the badge below */ }
+  }
+  $('#attachState').textContent = '✓';
+  setTimeout(() => { $('#attachState').hidden = true; }, 1500);
+  renderNotes();
+});
+
+// ===================== agent =====================
+$('#runAgent').addEventListener('click', async () => {
+  const btn = $('#runAgent');
+  btn.disabled = true;
+  btn.textContent = t('analysing');
+  $('#agentOut').innerHTML = '<span class="spin"></span>';
+  $('#agentRoute').hidden = true;
+  try {
+    const d = await postJson('/api/agent/summary', { model: $('#agentModel').value, lang });
+    $('#agentOut').innerHTML = d.summary ? md(d.summary) : `<span class="empty">${esc(d.error || '—')}</span>`;
+    if (d.routed) {
+      $('#agentRoute').hidden = false;
+      $('#agentRoute').textContent =
+        `→ ${d.routed}${d.model ? ' · ' + d.model.replace('@cf/', '') : ''} · ${d.reason}` +
+        `${d.fallback_from ? ` · fell back from ${d.fallback_from}` : ''}`;
+    }
+  } catch (err) {
+    $('#agentOut').innerHTML = `<span class="empty">${t('agentFail')}: ${esc(err.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = t('analyse');
+  }
+});
+
+// ===================== upload (finance) =====================
 const drop = $('#drop'), fileInput = $('#file');
 drop.addEventListener('click', () => fileInput.click());
 drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
@@ -448,50 +871,49 @@ async function upload(files) {
         line.querySelector('.st').innerHTML =
           `<span class="s-ok">${d.doc_type} · ${n.income || 0}i ${n.expenses || 0}e ${n.investments || 0}v</span>`;
         line.querySelector('.s-run').outerHTML = '<span class="s-ok">✓</span>';
-      } else if (res.status === 409) {
-        line.querySelector('.st').innerHTML = '<span class="s-bad">duplicate</span>';
-        line.querySelector('.s-run').outerHTML = '<span class="s-bad">!</span>';
       } else {
         line.querySelector('.st').innerHTML =
-          `<span class="s-bad">${esc(d.error || res.status)}</span>`;
+          `<span class="s-bad">${esc(res.status === 409 ? 'duplicate' : (d.error || res.status))}</span>`;
         line.querySelector('.s-run').outerHTML = '<span class="s-bad">✕</span>';
       }
     } catch (err) {
       line.querySelector('.st').innerHTML = `<span class="s-bad">${esc(err.message)}</span>`;
     }
   }
-  await loadSummary();
+  await loadFinance();
   await loadInsights();
 }
 
-// ---------------- boot ----------------
-function boot(){ loadSummary().catch(() => {}); loadInsights(); }
+// ===================== boot =====================
+function rerender() {
+  if (lastSummary) { renderKpis(lastSummary); renderMonthly(lastSummary.monthly);
+                     renderCats(lastSummary.by_category); renderInv(lastSummary.investments);
+                     renderDocs(lastSummary.documents); renderStamp(lastSummary); }
+  renderTasks(); renderNotes();
+}
 
 function enterApp() {
   $('#gate').style.display = 'none';
   $('#app').hidden = false;
-  boot();
+  applyLang();
+  showTab(localStorage.getItem('adi_tab') || 'finance');
+  loadFinance().catch(() => {});
+  loadInsights();
 }
 
 (async function start() {
-  sessionStorage.removeItem(LEGACY_KEY); // retired API-token gate
+  sessionStorage.removeItem(LEGACY_KEY);
+  applyLang();
 
-  if (accessMode) $('#lock').textContent = 'Sign out';
-
-  // Reuse a still-valid session from this tab.
   if (token()) {
     try {
       const res = await fetch(API + '/api/summary', { headers: { 'X-App-Session': token() } });
       if (res.ok) { enterApp(); return; }
-    } catch { /* fall through to the form */ }
+    } catch { /* fall through */ }
     sessionStorage.removeItem(KEY);
   }
 
-  // Otherwise ask for the password. On the live site, getting this far already
-  // means Access let us through Google, so the form is the second factor.
-  $('#gateHint').textContent = accessMode
-    ? 'Signed in with Google. Enter your password to continue.'
-    : 'Sign in to continue.';
+  $('#gateHint').textContent = accessMode ? t('signedInGoogle') : t('signInHint');
   $('#gate').style.display = 'grid';
   $('#pass').focus();
 })();
