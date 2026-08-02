@@ -1,2 +1,5 @@
 # Ignore macOS Finder metadata files
 .DS_Store
+
+# Wrangler local state and cache
+.wrangler/

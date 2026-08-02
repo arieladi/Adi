@@ -1,0 +1,41 @@
+name = "finance"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+account_id = "84bfab8d23e7751df724a1ee31dcfcc6"
+
+# Private financial API — do not mint per-version public preview URLs.
+preview_urls = false
+
+# Structured logs + traces in the dashboard (Workers Observability).
+[observability]
+enabled = true
+
+# --- D1: financial records -------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "finance"
+database_id = "e90ec1a7-be5f-4faf-9ecf-bc2981ff2fe2"
+
+# --- R2: private document store (never public) -----------------------------
+[[r2_buckets]]
+binding = "DOCS_BUCKET"
+bucket_name = "adi-docs"
+
+# --- Workers AI: dashboard insights ----------------------------------------
+[ai]
+binding = "AI"
+
+[vars]
+# Gemini model for Hebrew document extraction, tried in order — Google retires
+# models continuously and ListModels over-reports (it advertises models that
+# generateContent then 404s), so the worker walks this chain on 404/429.
+GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_FALLBACKS = "gemini-flash-latest,gemini-3.5-flash,gemini-2.0-flash"
+# Workers AI model for insights. First that responds wins (see AI_FALLBACKS).
+AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+AI_FALLBACKS = "@cf/qwen/qwen3-30b-a3b-fp8,@cf/meta/llama-3.1-8b-instruct"
+ALLOWED_ORIGINS = "https://adiariel.com,https://www.adiariel.com,https://arieladi.github.io,http://localhost:8801,http://127.0.0.1:8801"
+
+# Secrets (set with `npx wrangler secret put <NAME> --name finance`):
+#   GEMINI_API_KEY  — already set
+#   API_TOKEN       — REQUIRED. The worker fails closed (503) without it.
