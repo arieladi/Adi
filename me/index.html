@@ -1,8 +1,8 @@
 <!doctype html>
-<html lang="he" dir="rtl">
+<html lang="he" dir="rtl" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow">
 <title>Adi · Personal Hub</title>
 <link rel="icon" href="/favicon.svg">
@@ -10,62 +10,107 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Heebo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-:root{
+/* ===================== THEMES =====================
+   Every colour in this file must come from a token below. The one deliberate
+   exception is the canvas PAPER colour — see #noteCanvas. */
+:root, :root[data-theme="dark"]{
   --bg:#0a0d0b; --panel:#0f1310; --line:rgba(255,255,255,.08); --line-2:rgba(255,255,255,.16);
   --text:#eaf1ec; --muted:#9aa89c;
   --c1:#5eead4; --c2:#10b981; --c3:#c08a57;
+  --ok:#10b981; --warn:#e0a458; --bad:#e5645e;
+  --on-accent:#04140e;                    /* text ON a gradient/accent fill */
+  --field:#0a0e0c;                        /* input background */
+  --track:rgba(255,255,255,.06);          /* empty bar/stack track */
+  --accent-wash:rgba(16,185,129,.06);     /* hover tint */
+  --agent-1:rgba(94,234,212,.07); --agent-2:rgba(192,138,87,.05); --agent-line:rgba(94,234,212,.2);
+  --ok-soft:rgba(16,185,129,.14); --warn-soft:rgba(224,164,88,.14); --bad-soft:rgba(229,100,94,.14);
+  --scrim:rgba(0,0,0,.55); --shadow:0 8px 34px rgba(0,0,0,.5);
+}
+:root[data-theme="light"]{
+  --bg:#f6f8f6; --panel:#ffffff; --line:rgba(12,28,20,.10); --line-2:rgba(12,28,20,.20);
+  --text:#0f1f19; --muted:#55655c;
+  --c1:#0f766e; --c2:#047857; --c3:#9a6414;
+  --ok:#047857; --warn:#a55f10; --bad:#b3261e;
+  --on-accent:#ffffff;
+  --field:#f1f4f2;
+  --track:rgba(12,28,20,.08);
+  --accent-wash:rgba(4,120,87,.06);
+  --agent-1:rgba(15,118,110,.06); --agent-2:rgba(154,100,20,.05); --agent-line:rgba(15,118,110,.25);
+  --ok-soft:rgba(4,120,87,.13); --warn-soft:rgba(165,95,16,.13); --bad-soft:rgba(179,38,30,.11);
+  --scrim:rgba(18,32,26,.38); --shadow:0 8px 34px rgba(18,40,30,.16);
+}
+:root[data-theme="medium"]{
+  --bg:#1a1714; --panel:#232019; --line:rgba(255,238,214,.09); --line-2:rgba(255,238,214,.19);
+  --text:#f2e9db; --muted:#ab9d89;
+  --c1:#f0b429; --c2:#d98324; --c3:#c2703a;
+  --ok:#8fbf6b; --warn:#f0b429; --bad:#e2705f;
+  --on-accent:#1c1206;
+  --field:#171410;
+  --track:rgba(255,238,214,.07);
+  --accent-wash:rgba(240,180,41,.07);
+  --agent-1:rgba(240,180,41,.08); --agent-2:rgba(194,112,58,.06); --agent-line:rgba(240,180,41,.22);
+  --ok-soft:rgba(143,191,107,.15); --warn-soft:rgba(240,180,41,.15); --bad-soft:rgba(226,112,95,.15);
+  --scrim:rgba(0,0,0,.58); --shadow:0 8px 34px rgba(0,0,0,.55);
+}
+:root{
+  /* --grad re-derives automatically: var() in a custom property resolves on the element
+     that declares it, and every [data-theme] block above is that same :root element. */
   --grad:linear-gradient(90deg,var(--c1),var(--c2) 50%,var(--c3));
   --r:18px;
   --sans:'Space Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
   --heb:'Heebo',system-ui,-apple-system,'Segoe UI',sans-serif;
   --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
-  --ok:#10b981; --warn:#e0a458; --bad:#e5645e;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.5;
-  -webkit-font-smoothing:antialiased;min-height:100vh}
+  -webkit-font-smoothing:antialiased;min-height:100vh;transition:background .2s,color .2s}
 html[lang=he] body{font-family:var(--heb)}
 a{color:var(--c1)}
-.wrap{max-width:1180px;margin:0 auto;padding:24px 20px 80px}
+.wrap{max-width:1180px;margin:0 auto;padding:22px 18px 90px}
 
 /* ---------- gate ---------- */
-#gate{position:fixed;inset:0;background:var(--bg);z-index:50;display:grid;place-items:center;padding:24px}
+#gate{position:fixed;inset:0;background:var(--bg);z-index:80;display:grid;place-items:center;padding:24px}
 #gate .box{width:min(420px,100%);background:var(--panel);border:1px solid var(--line);
   border-radius:var(--r);padding:28px}
 #gate h1{margin:0 0 6px;font-size:1.25rem}
 #gate p{margin:0 0 18px;color:var(--muted);font-size:.9rem}
-input[type=password],input[type=text],input[type=month],textarea,select{
-  width:100%;background:#0a0e0c;border:1px solid var(--line-2);color:var(--text);
+input[type=password],input[type=text],input[type=month],input[type=date],input[type=search],
+textarea,select{
+  width:100%;background:var(--field);border:1px solid var(--line-2);color:var(--text);
   border-radius:12px;padding:11px 13px;font-size:.9rem;font-family:inherit}
-input[type=password],input[type=text].mono{font-family:var(--mono)}
-textarea{resize:vertical;min-height:120px;line-height:1.6}
-input:focus,select:focus,textarea:focus{outline:none;border-color:var(--c2)}
+textarea{resize:vertical;min-height:110px;line-height:1.6}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--c2);outline-offset:-1px;border-color:var(--c2)}
 .btn{border:0;border-radius:12px;padding:10px 18px;font-family:inherit;font-weight:600;
-  font-size:.88rem;cursor:pointer;background:var(--grad);color:#04140e;transition:opacity .15s}
+  font-size:.88rem;cursor:pointer;background:var(--grad);color:var(--on-accent);transition:opacity .15s}
 .btn:hover{opacity:.88}
 .btn[disabled]{opacity:.45;cursor:not-allowed}
 .btn.ghost{background:transparent;border:1px solid var(--line-2);color:var(--text)}
 .btn.sm{padding:6px 12px;font-size:.8rem;border-radius:9px}
-.btn.danger{background:transparent;border:1px solid rgba(229,100,94,.4);color:var(--bad)}
+.btn.danger{background:transparent;border:1px solid var(--bad);color:var(--bad)}
 .err{color:var(--bad);font-size:.85rem;margin-top:10px;min-height:1.2em}
 
 /* ---------- header ---------- */
-header{display:flex;align-items:center;justify-content:space-between;gap:16px;
-  padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:20px;flex-wrap:wrap}
-.brand h1{margin:0;font-size:1.4rem;letter-spacing:-.02em}
+header{display:flex;align-items:center;justify-content:space-between;gap:14px;
+  padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:18px;flex-wrap:wrap}
+.brand h1{margin:0;font-size:1.35rem;letter-spacing:-.02em}
 .brand h1 span{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-.sub{color:var(--muted);font-size:.8rem;font-family:var(--mono);direction:ltr}
+.sub{color:var(--muted);font-size:.78rem;font-family:var(--mono);direction:ltr}
 html[dir=rtl] .sub{text-align:right}
-.hdr-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.hdr-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
 
-/* ---------- tabs ---------- */
-.tabs{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);
+/* ---------- tabs + segmented control ---------- */
+.tabs,.seg{display:flex;gap:5px;background:var(--panel);border:1px solid var(--line);
   border-radius:14px;padding:4px}
 .tab{border:0;background:transparent;color:var(--muted);font-family:inherit;font-weight:600;
-  font-size:.88rem;padding:8px 18px;border-radius:10px;cursor:pointer;transition:.15s}
+  font-size:.87rem;padding:8px 16px;border-radius:10px;cursor:pointer;transition:.15s}
 .tab:hover{color:var(--text)}
-.tab.on{background:var(--grad);color:#04140e}
+.tab.on{background:var(--grad);color:var(--on-accent)}
+.seg{padding:3px;border-radius:11px}
+.seg button{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:.95rem;
+  line-height:1;padding:6px 9px;border-radius:8px;transition:.15s}
+.seg button:hover{color:var(--text)}
+.seg button.on{background:var(--grad);color:var(--on-accent)}
 
 /* ---------- layout ---------- */
 .grid{display:grid;gap:16px}
@@ -75,7 +120,7 @@ html[dir=rtl] .sub{text-align:right}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:20px}
 .card h2{margin:0 0 14px;font-size:.78rem;letter-spacing:.12em;text-transform:uppercase;
   color:var(--muted);font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-html[lang=he] .card h2{letter-spacing:.04em}
+html[lang=he] .card h2{letter-spacing:.03em}
 .kpi .label{font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
 .kpi .val{font-family:var(--mono);font-size:1.6rem;margin-top:6px;letter-spacing:-.02em;direction:ltr}
 html[dir=rtl] .kpi .val{text-align:right}
@@ -87,12 +132,12 @@ html[dir=rtl] .kpi .val{text-align:right}
 .row + .row{border-top:1px solid var(--line)}
 .row .name{font-size:.88rem}
 .row .amt{font-family:var(--mono);font-size:.85rem;color:var(--muted);direction:ltr}
-.bar{height:6px;border-radius:99px;background:rgba(255,255,255,.06);overflow:hidden;margin-top:6px;grid-column:1/-1}
+.bar{height:6px;border-radius:99px;background:var(--track);overflow:hidden;margin-top:6px;grid-column:1/-1}
 .bar i{display:block;height:100%;border-radius:99px;background:var(--grad)}
 .mrow{display:grid;grid-template-columns:74px 1fr;gap:12px;align-items:center;padding:9px 0}
 .mrow + .mrow{border-top:1px solid var(--line)}
 .mrow .per{font-family:var(--mono);font-size:.8rem;color:var(--muted);direction:ltr}
-.stack{display:flex;height:22px;border-radius:7px;overflow:hidden;background:rgba(255,255,255,.05)}
+.stack{display:flex;height:22px;border-radius:7px;overflow:hidden;background:var(--track)}
 .stack i{display:block;height:100%}
 .stack .in{background:linear-gradient(90deg,var(--c1),var(--c2))}
 .stack .out{background:var(--c3);opacity:.85}
@@ -100,35 +145,68 @@ html[dir=rtl] .kpi .val{text-align:right}
 .legend b{display:inline-block;width:9px;height:9px;border-radius:3px;margin-inline-end:5px;vertical-align:middle}
 
 /* ---------- upload ---------- */
-#drop{border:1.5px dashed var(--line-2);border-radius:14px;padding:26px 18px;text-align:center;
+#drop{border:1.5px dashed var(--line-2);border-radius:14px;padding:24px 18px;text-align:center;
   cursor:pointer;transition:border-color .15s,background .15s}
-#drop:hover,#drop.over{border-color:var(--c2);background:rgba(16,185,129,.05)}
+#drop:hover,#drop.over{border-color:var(--c2);background:var(--accent-wash)}
 #drop .big{font-size:.95rem;font-weight:600}
 #drop .small{font-size:.78rem;color:var(--muted);margin-top:5px}
 .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
 @media(max-width:520px){.fields{grid-template-columns:1fr}}
-.uplog{margin-top:12px;font-family:var(--mono);font-size:.78rem;max-height:190px;overflow:auto}
+.uplog{margin-top:12px;font-family:var(--mono);font-size:.78rem;max-height:180px;overflow:auto}
 .uplog div{padding:6px 0;border-top:1px solid var(--line);display:flex;gap:8px}
 .uplog .s-ok{color:var(--ok)} .uplog .s-bad{color:var(--bad)} .uplog .s-run{color:var(--warn)}
 
 /* ---------- tasks ---------- */
 .addrow{display:flex;gap:8px;margin-bottom:12px}
 .addrow input{flex:1}
-.tasklist{max-height:340px;overflow:auto}
-.t{display:flex;gap:10px;align-items:flex-start;padding:9px 0}
-.t + .t{border-top:1px solid var(--line)}
+.tasklist{max-height:420px;overflow:auto}
+.t{display:flex;gap:9px;align-items:flex-start;padding:9px 0;border-top:1px solid var(--line)}
+.t:first-child{border-top:0}
+/* Indent children with a logical property so RTL mirrors automatically. */
+.t[data-depth="1"]{padding-inline-start:26px}
+.t[data-depth="2"]{padding-inline-start:52px}
 .t .chk{width:19px;height:19px;border-radius:6px;border:1.5px solid var(--line-2);
   flex:0 0 auto;cursor:pointer;display:grid;place-items:center;margin-top:2px;transition:.15s}
 .t .chk:hover{border-color:var(--c2)}
 .t.done .chk{background:var(--c2);border-color:var(--c2)}
 .t .chk svg{width:11px;height:11px;opacity:0}
-.t.done .chk svg{opacity:1}
-.t .txt{flex:1;font-size:.92rem;word-break:break-word;cursor:text}
+.t.done .chk svg{opacity:1;stroke:var(--on-accent)}
+.t .body{flex:1;min-width:0}
+.t .txt{font-size:.92rem;word-break:break-word;cursor:pointer}
 .t.done .txt{color:var(--muted);text-decoration:line-through}
-.t .when{font-family:var(--mono);font-size:.68rem;color:var(--muted);white-space:nowrap;direction:ltr}
-.t .x{background:none;border:0;color:var(--muted);cursor:pointer;font-size:1rem;padding:0 4px;opacity:0}
-.t:hover .x{opacity:1}
-.t .x:hover{color:var(--bad)}
+.t .tmeta{display:flex;gap:8px;flex-wrap:wrap;margin-top:3px}
+.tag{font-family:var(--mono);font-size:.67rem;padding:2px 7px;border-radius:99px;
+  border:1px solid var(--line-2);color:var(--muted);direction:ltr}
+.tag.due{border-color:var(--warn);color:var(--warn)}
+.tag.overdue{border-color:var(--bad);color:var(--bad)}
+.t .acts{display:flex;gap:2px;flex:0 0 auto}
+/* Always visible: an invisible-until-hover destructive control is untappable on touch. */
+.t .ic{background:none;border:0;color:var(--muted);cursor:pointer;font-size:.95rem;
+  padding:3px 5px;border-radius:7px;line-height:1;opacity:.55;transition:.15s}
+.t .ic:hover,.t .ic:focus-visible{opacity:1;background:var(--track);color:var(--text)}
+.t .ic.del:hover{color:var(--bad)}
+@media(hover:none){.t .ic{opacity:.85}}
+
+/* ---------- drawer ---------- */
+#scrim{position:fixed;inset:0;background:var(--scrim);z-index:60;opacity:0;pointer-events:none;
+  transition:opacity .18s}
+#scrim.on{opacity:1;pointer-events:auto}
+#drawer{position:fixed;inset-block:0;inset-inline-end:0;width:min(460px,100%);background:var(--panel);
+  border-inline-start:1px solid var(--line);z-index:70;padding:22px;overflow-y:auto;
+  transform:translateX(100%);transition:transform .22s ease;box-shadow:var(--shadow)}
+html[dir=rtl] #drawer{transform:translateX(-100%)}
+#drawer.on{transform:none !important}
+#drawer h3{margin:0 0 4px;font-size:1.05rem}
+#drawer .fieldset{margin-top:16px}
+#drawer label{display:block;font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);margin-bottom:6px;font-weight:600}
+html[lang=he] #drawer label{letter-spacing:.02em}
+.switch{display:flex;align-items:center;gap:10px;cursor:pointer;font-size:.88rem}
+.switch input{width:auto;margin:0;accent-color:var(--c2);width:18px;height:18px}
+.subrow{display:flex;gap:8px;align-items:center;padding:7px 0;border-top:1px solid var(--line);font-size:.88rem}
+.cmt{padding:9px 0;border-top:1px solid var(--line)}
+.cmt .cb{font-size:.88rem;white-space:pre-wrap;word-break:break-word}
+.cmt .cw{font-family:var(--mono);font-size:.67rem;color:var(--muted);margin-top:3px;direction:ltr}
 
 /* ---------- notes ---------- */
 .notelist{display:grid;gap:10px;max-height:420px;overflow:auto}
@@ -136,47 +214,84 @@ html[dir=rtl] .kpi .val{text-align:right}
 .note:hover{border-color:var(--line-2)}
 .note.open{border-color:var(--c2);cursor:default}
 .note .nt{font-weight:600;font-size:.94rem;display:flex;justify-content:space-between;gap:10px;align-items:baseline}
-.note .nd{font-family:var(--mono);font-size:.68rem;color:var(--muted);white-space:nowrap;direction:ltr}
+.note .nd{font-family:var(--mono);font-size:.67rem;color:var(--muted);white-space:nowrap;direction:ltr}
 .note .np{color:var(--muted);font-size:.84rem;margin-top:5px;overflow:hidden;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.note img.thumb{max-width:100%;border-radius:9px;margin-top:8px;border:1px solid var(--line)}
 .md{font-size:.88rem;line-height:1.7;margin-top:8px}
 .md h1,.md h2,.md h3{font-size:1rem;margin:.7em 0 .3em}
 .md ul,.md ol{padding-inline-start:20px;margin:.4em 0}
-.md code{font-family:var(--mono);font-size:.85em;background:rgba(255,255,255,.07);
-  padding:1px 5px;border-radius:5px}
+.md code{font-family:var(--mono);font-size:.85em;background:var(--track);padding:1px 5px;border-radius:5px}
 .md p{margin:.5em 0}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
 .chip{display:inline-flex;align-items:center;gap:6px;font-size:.74rem;padding:4px 9px;
-  border-radius:99px;border:1px solid var(--line-2);color:var(--muted);text-decoration:none}
+  border-radius:99px;border:1px solid var(--line-2);color:var(--muted);text-decoration:none;cursor:pointer}
 .chip:hover{border-color:var(--c2);color:var(--text)}
 .chip .x{background:none;border:0;color:inherit;cursor:pointer;padding:0;font-size:.9rem;opacity:.6}
 .chip .x:hover{opacity:1;color:var(--bad)}
-.noteActions{display:flex;gap:8px;margin-top:11px;flex-wrap:wrap}
+.noteActions{display:flex;gap:8px;margin-top:11px;flex-wrap:wrap;align-items:center}
 
-/* ---------- agent ---------- */
-.agent{background:linear-gradient(160deg,rgba(94,234,212,.07),rgba(192,138,87,.05));
-  border:1px solid rgba(94,234,212,.2)}
+/* ---------- canvas ---------- */
+.canvasWrap{position:relative;width:100%;aspect-ratio:4/3;border:1px solid var(--line-2);
+  border-radius:12px;overflow:hidden;margin-top:9px}
+#noteCanvas{width:100%;height:100%;display:block;cursor:crosshair;
+  /* Stops the browser panning/zooming the page while the pen is down. */
+  touch-action:none;overscroll-behavior:contain;
+  /* Deliberately NOT a theme token: the eraser paints in this colour and it is baked
+     into the exported PNG. Theme it and every erased stroke becomes a visible scar. */
+  background:#fbf8f1}
+.tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:9px}
+.swatch{width:22px;height:22px;border-radius:50%;border:2px solid var(--line-2);cursor:pointer;padding:0}
+.swatch.on{border-color:var(--text);transform:scale(1.14)}
+
+/* ---------- chat bar ---------- */
+.chatbar{position:sticky;bottom:12px;margin-top:18px;background:var(--panel);
+  border:1px solid var(--agent-line);border-radius:16px;padding:12px 14px;box-shadow:var(--shadow);z-index:20}
+.chatbar form{display:flex;gap:8px}
+.chatbar input{flex:1}
+.chatans{font-size:.9rem;line-height:1.65;margin-bottom:10px;white-space:pre-wrap}
+.chatans strong{color:var(--c1)}
+.chatmeta{font-family:var(--mono);font-size:.67rem;color:var(--muted);margin-top:8px;direction:ltr;text-align:start}
+
+/* ---------- agent widget ---------- */
+.agent{background:linear-gradient(160deg,var(--agent-1),var(--agent-2));border:1px solid var(--agent-line)}
 #agentOut{white-space:pre-wrap;font-size:.92rem;line-height:1.7;min-height:60px}
 #agentOut strong{color:var(--c1)}
-.route{font-family:var(--mono);font-size:.7rem;color:var(--muted);margin-top:12px;
+.route{font-family:var(--mono);font-size:.68rem;color:var(--muted);margin-top:12px;
   padding-top:10px;border-top:1px solid var(--line);direction:ltr;text-align:start}
 .badge{display:inline-block;font-family:var(--mono);font-size:.66rem;padding:3px 8px;border-radius:99px;
   border:1px solid var(--line-2);color:var(--muted);vertical-align:middle;direction:ltr}
 
+/* ---------- history ---------- */
+.hfilters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+.hfilters input[type=search]{flex:1;min-width:180px}
+.hitem{padding:11px 0;border-top:1px solid var(--line)}
+.hitem:first-child{border-top:0}
+.hhead{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.hitem .htxt{font-size:.92rem}
+.hitem.gone .htxt{text-decoration:line-through;color:var(--muted)}
+.hwhen{font-family:var(--mono);font-size:.68rem;color:var(--muted);white-space:nowrap;direction:ltr}
+
+/* ---------- misc ---------- */
 .docs{font-size:.85rem}
 .docs .d{display:grid;grid-template-columns:1fr auto;gap:8px;padding:8px 0;align-items:center}
 .docs .d + .d{border-top:1px solid var(--line)}
 .docs .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .docs .meta{font-family:var(--mono);font-size:.72rem;color:var(--muted);direction:ltr}
 .pill{font-family:var(--mono);font-size:.68rem;padding:2px 7px;border-radius:99px}
-.pill.extracted{background:rgba(16,185,129,.14);color:var(--ok)}
-.pill.failed{background:rgba(229,100,94,.14);color:var(--bad)}
-.pill.pending{background:rgba(224,164,88,.14);color:var(--warn)}
+.pill.extracted{background:var(--ok-soft);color:var(--ok)}
+.pill.failed{background:var(--bad-soft);color:var(--bad)}
+.pill.pending{background:var(--warn-soft);color:var(--warn)}
 .empty{color:var(--muted);font-size:.85rem;font-style:italic}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line-2);
   border-top-color:var(--c1);border-radius:50%;animation:sp .7s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
-footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
+#toast{position:fixed;inset-block-end:22px;inset-inline-start:50%;transform:translateX(-50%) translateY(140%);
+  background:var(--panel);border:1px solid var(--line-2);border-radius:13px;padding:11px 16px;
+  display:flex;gap:14px;align-items:center;box-shadow:var(--shadow);z-index:90;transition:transform .22s;
+  font-size:.88rem}
+#toast.on{transform:translateX(-50%)}
+footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
   color:var(--muted);font-size:.78rem;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
 [hidden]{display:none !important}
 </style>
@@ -191,7 +306,7 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
     <form id="gateForm" autocomplete="on">
       <input type="text" id="user" name="username" data-i18n-ph="user" placeholder="משתמש"
              autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
-             value="adi" class="mono" dir="ltr">
+             value="adi" dir="ltr">
       <input type="password" id="pass" name="password" data-i18n-ph="password" placeholder="סיסמה"
              autocomplete="current-password" style="margin-top:10px" dir="ltr" required>
       <div class="err" id="gateErr"></div>
@@ -212,27 +327,32 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
       <div class="sub" id="stamp">…</div>
     </div>
     <div class="tabs" role="tablist">
-      <button class="tab on" id="tabFinance" data-i18n="finance" role="tab">פיננסים</button>
+      <button class="tab on" id="tabFinance" data-i18n="finance" role="tab">כספים</button>
       <button class="tab" id="tabTasks" data-i18n="tasksNotes" role="tab">משימות ופתקים</button>
+      <button class="tab" id="tabHistory" data-i18n="history" role="tab">היסטוריה</button>
     </div>
     <div class="hdr-actions">
+      <div class="seg" id="themeSeg" role="group">
+        <button data-theme-set="dark"   title="Dark">◗</button>
+        <button data-theme-set="medium" title="Medium">◐</button>
+        <button data-theme-set="light"  title="Light">◯</button>
+      </div>
       <button class="btn ghost sm" id="lang">English</button>
       <button class="btn ghost sm" id="refresh" data-i18n="refresh">רענן</button>
       <button class="btn ghost sm" id="lock" data-i18n="lock">נעל</button>
     </div>
   </header>
 
-  <!-- ---------- FINANCE ---------- -->
+  <!-- ---------- כספים ---------- -->
   <section id="viewFinance">
     <div class="grid kpis" id="kpis"></div>
-
     <div class="grid cols">
       <div class="grid" style="gap:16px">
         <section class="card">
           <h2 data-i18n="uploadDoc">העלאת מסמך</h2>
           <div id="drop">
             <div class="big" data-i18n="dropBig">גרור לכאן תלוש שכר, דף קיבוץ או חשבונית</div>
-            <div class="small" data-i18n="dropSmall">PDF, JPG או PNG · עברית או אנגלית · עד 15MB</div>
+            <div class="small" data-i18n="dropSmall">PDF, JPG או PNG · עד 15MB</div>
             <input type="file" id="file" hidden multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*">
           </div>
           <div class="fields">
@@ -247,7 +367,6 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
           </div>
           <div class="uplog" id="uplog"></div>
         </section>
-
         <section class="card">
           <h2 data-i18n="cashflow">תזרים חודשי</h2>
           <div id="monthly"><div class="empty" data-i18n="noRecords">אין עדיין רשומות.</div></div>
@@ -256,37 +375,37 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
             <span><b style="background:var(--c3)"></b><em data-i18n="spending" style="font-style:normal">הוצאות</em></span>
           </div>
         </section>
-
         <section class="card">
           <h2><em data-i18n="breakdown" style="font-style:normal">פילוח הוצאות</em> <span class="badge" data-i18n="last6">6 חודשים</span></h2>
           <div id="cats"><div class="empty" data-i18n="noExpenses">אין עדיין הוצאות.</div></div>
         </section>
       </div>
-
       <div class="grid" style="gap:16px">
         <section class="card">
           <h2><em data-i18n="aiInsights" style="font-style:normal">תובנות AI</em> <span class="badge" id="aimodel">workers ai</span></h2>
           <div id="insight"><span class="spin"></span></div>
         </section>
-
         <section class="card">
           <h2><em data-i18n="investments" style="font-style:normal">השקעות</em> <span class="badge">קרן השתלמות</span></h2>
           <div id="inv"><div class="empty" data-i18n="noStatements">אין עדיין דוחות.</div></div>
         </section>
-
         <section class="card">
           <h2 data-i18n="documents">מסמכים</h2>
           <div class="docs" id="docs"><div class="empty" data-i18n="nothingUploaded">לא הועלה דבר.</div></div>
         </section>
       </div>
     </div>
+    <div class="chatbar" data-chat="finance">
+      <div class="chatans" hidden></div>
+      <form><input type="text" data-i18n-ph="askFinance" placeholder="שאל על הכספים שלך…"><button class="btn" type="submit" data-i18n="ask">שאל</button></form>
+      <div class="chatmeta" hidden></div>
+    </div>
   </section>
 
-  <!-- ---------- TASKS & NOTES ---------- -->
+  <!-- ---------- משימות ופתקים ---------- -->
   <section id="viewTasks" hidden>
     <div class="grid cols">
       <div class="grid" style="gap:16px">
-
         <section class="card">
           <h2><em data-i18n="tasks" style="font-style:normal">משימות</em> <span class="badge" id="taskCount">0</span></h2>
           <form class="addrow" id="taskForm">
@@ -302,11 +421,27 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
             <span class="badge" id="noteCount">0</span>
             <button class="btn sm" id="newNote" style="margin-inline-start:auto" data-i18n="newNote">פתק חדש</button>
           </h2>
-
           <div id="noteEditor" hidden style="margin-bottom:14px">
             <input type="text" id="noteTitle" data-i18n-ph="noteTitle" placeholder="כותרת" maxlength="300">
-            <textarea id="noteContent" data-i18n-ph="noteContent"
-                      placeholder="תוכן (Markdown נתמך)" style="margin-top:9px"></textarea>
+            <div class="noteActions" style="margin-top:9px">
+              <div class="seg" id="modeSeg">
+                <button data-mode="markdown" data-i18n="modeText">טקסט</button>
+                <button data-mode="drawing" data-i18n="modeDraw">ציור</button>
+              </div>
+            </div>
+            <textarea id="noteContent" data-i18n-ph="noteContent" placeholder="תוכן (Markdown נתמך)" style="margin-top:9px"></textarea>
+            <div id="canvasBox" hidden>
+              <div class="canvasWrap"><canvas id="noteCanvas"></canvas></div>
+              <div class="tools">
+                <button class="swatch on" data-ink="#12160f" style="background:#12160f"></button>
+                <button class="swatch" data-ink="#0f766e" style="background:#0f766e"></button>
+                <button class="swatch" data-ink="#b45309" style="background:#b45309"></button>
+                <button class="swatch" data-ink="#b91c1c" style="background:#b91c1c"></button>
+                <button class="btn ghost sm" id="eraserBtn" data-i18n="eraser">מחק</button>
+                <button class="btn ghost sm" id="undoBtn" data-i18n="undo">בטל</button>
+                <button class="btn ghost sm" id="clearBtn" data-i18n="clearAll">נקה</button>
+              </div>
+            </div>
             <div class="noteActions">
               <button class="btn sm" id="saveNote" data-i18n="save">שמור</button>
               <button class="btn ghost sm" id="cancelNote" data-i18n="cancel">בטל</button>
@@ -315,7 +450,6 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
               <span id="attachState" class="badge" hidden></span>
             </div>
           </div>
-
           <div class="notelist" id="notes"><div class="empty" data-i18n="noNotes">אין עדיין פתקים.</div></div>
         </section>
       </div>
@@ -332,12 +466,40 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
             <option value="gemini">Google Gemini</option>
           </select>
           <div id="agentOut"><span class="empty" data-i18n="agentIdle">לחץ "נתח" כדי לקבל תמונת מצב.</span></div>
-          <div class="noteActions">
-            <button class="btn" id="runAgent" data-i18n="analyse">נתח</button>
-          </div>
+          <div class="noteActions"><button class="btn" id="runAgent" data-i18n="analyse">נתח</button></div>
           <div class="route" id="agentRoute" hidden></div>
         </section>
       </div>
+    </div>
+    <div class="chatbar" data-chat="tasks">
+      <div class="chatans" hidden></div>
+      <form><input type="text" data-i18n-ph="askTasks" placeholder="שאל על המשימות וההיסטוריה…"><button class="btn" type="submit" data-i18n="ask">שאל</button></form>
+      <div class="chatmeta" hidden></div>
+    </div>
+  </section>
+
+  <!-- ---------- היסטוריה ---------- -->
+  <section id="viewHistory" hidden>
+    <section class="card">
+      <h2><em data-i18n="history" style="font-style:normal">היסטוריה</em> <span class="badge" id="histCount">0</span></h2>
+      <div class="hfilters">
+        <input type="search" id="histQ" data-i18n-ph="searchHistory" placeholder="חיפוש בהיסטוריה…">
+        <div class="seg" id="histScope">
+          <button data-scope="all" class="on" data-i18n="scopeAll">הכל</button>
+          <button data-scope="completed" data-i18n="scopeDone">הושלמו</button>
+          <button data-scope="deleted" data-i18n="scopeDeleted">נמחקו</button>
+        </div>
+      </div>
+      <div id="histList"><div class="empty" data-i18n="noHistory">אין עדיין היסטוריה.</div></div>
+    </section>
+    <section class="card" style="margin-top:16px">
+      <h2 data-i18n="activityLog">יומן פעילות</h2>
+      <div id="histLog"><div class="empty" data-i18n="noHistory">אין עדיין היסטוריה.</div></div>
+    </section>
+    <div class="chatbar" data-chat="tasks">
+      <div class="chatans" hidden></div>
+      <form><input type="text" data-i18n-ph="askTasks" placeholder="שאל על המשימות וההיסטוריה…"><button class="btn" type="submit" data-i18n="ask">שאל</button></form>
+      <div class="chatmeta" hidden></div>
     </div>
   </section>
 
@@ -346,6 +508,58 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
     <span class="sub" id="apibase"></span>
   </footer>
 </div>
+
+<!-- ============ task drawer ============ -->
+<div id="scrim"></div>
+<aside id="drawer" role="dialog" aria-modal="true" aria-labelledby="dTitle">
+  <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+    <h3 id="dTitle">—</h3>
+    <button class="btn ghost sm" id="dClose" aria-label="Close">✕</button>
+  </div>
+  <div class="sub" id="dWhen"></div>
+
+  <div class="fieldset">
+    <label data-i18n="taskText">משימה</label>
+    <textarea id="dText" style="min-height:64px"></textarea>
+  </div>
+  <div class="fieldset">
+    <label data-i18n="detail">פירוט</label>
+    <textarea id="dDetail" data-i18n-ph="detailPh" placeholder="הערות, קישורים, הקשר…"></textarea>
+  </div>
+  <div class="fieldset">
+    <label data-i18n="dueDate">תאריך יעד</label>
+    <input type="date" id="dDue">
+  </div>
+  <div class="fieldset">
+    <label class="switch"><input type="checkbox" id="dAlert"><em data-i18n="emailAlert" style="font-style:normal">התראה במייל</em></label>
+    <div class="sub" id="alertNote" data-i18n="alertInert" style="margin-top:5px">נשמר. שליחת מיילים תופעל לאחר אימות הדומיין.</div>
+  </div>
+
+  <div class="fieldset">
+    <label><em data-i18n="subtasks" style="font-style:normal">תת-משימות</em></label>
+    <div id="dSubs"></div>
+    <form class="addrow" id="dSubForm" style="margin-top:9px">
+      <input type="text" id="dSubInput" data-i18n-ph="newSubtask" placeholder="תת-משימה חדשה…">
+      <button class="btn sm" type="submit" data-i18n="add">הוסף</button>
+    </form>
+  </div>
+
+  <div class="fieldset">
+    <label><em data-i18n="comments" style="font-style:normal">תגובות</em></label>
+    <div id="dComments"></div>
+    <form class="addrow" id="dCmtForm" style="margin-top:9px">
+      <input type="text" id="dCmtInput" data-i18n-ph="newComment" placeholder="הוסף תגובה…">
+      <button class="btn sm" type="submit" data-i18n="add">הוסף</button>
+    </form>
+  </div>
+
+  <div class="noteActions" style="margin-top:22px">
+    <button class="btn" id="dSave" data-i18n="save">שמור</button>
+    <button class="btn danger sm" id="dDelete" data-i18n="del">מחק</button>
+  </div>
+</aside>
+
+<div id="toast"><span id="toastMsg"></span><button class="btn ghost sm" id="toastUndo" data-i18n="undo">בטל</button></div>
 
 <script>
 // ===================== i18n =====================
@@ -356,13 +570,13 @@ const I18N = {
     expired:'ההתחברות פגה. הזן סיסמה כדי להמשיך.',
     user:'משתמש', password:'סיסמה', signIn:'כניסה', wrongCreds:'שם משתמש או סיסמה שגויים.',
     noServer:'לא ניתן להתחבר לשרת.', signingIn:'מתחבר…',
-    finance:'פיננסים', tasksNotes:'משימות ופתקים',
+    finance:'כספים', tasksNotes:'משימות ופתקים', history:'היסטוריה',
     refresh:'רענן', lock:'נעל', signOut:'התנתק',
     netIncome:'הכנסה נטו', spending:'הוצאות', saved:'נחסך', investments:'השקעות',
     noData:'אין נתונים', itemsTracked:'פריטים', ofNet:'מההכנסה נטו', accounts:'חשבונות',
     noStatementsShort:'אין דוחות',
     uploadDoc:'העלאת מסמך', dropBig:'גרור לכאן תלוש שכר, דף קיבוץ או חשבונית',
-    dropSmall:'PDF, JPG או PNG · עברית או אנגלית · עד 15MB', autoDetect:'זיהוי אוטומטי',
+    dropSmall:'PDF, JPG או PNG · עד 15MB', autoDetect:'זיהוי אוטומטי',
     cashflow:'תזרים חודשי', noRecords:'אין עדיין רשומות.',
     breakdown:'פילוח הוצאות', last6:'6 חודשים אחרונים', noExpenses:'אין עדיין הוצאות.',
     aiInsights:'תובנות AI', noStatements:'אין עדיין דוחות.', documents:'מסמכים',
@@ -371,12 +585,28 @@ const I18N = {
     notes:'פתקים', newNote:'פתק חדש', noNotes:'אין עדיין פתקים.',
     noteTitle:'כותרת', noteContent:'תוכן (Markdown נתמך)',
     save:'שמור', cancel:'בטל', attach:'צרף קובץ', del:'מחק', edit:'ערוך', untitled:'ללא כותרת',
-    confirmDelNote:'למחוק את הפתק והקבצים המצורפים?',
+    confirmDelNote:'למחוק את הפתק?',
     currentState:'מצב נוכחי ועדיפויות', autoRoute:'אוטומטי (ניתוב חכם)',
     analyse:'נתח', analysing:'מנתח…', agentIdle:'לחץ "נתח" כדי לקבל תמונת מצב.',
     agentFail:'הסוכן נכשל', uploading:'מעלה…',
     footPrivate:'פרטי · Cloudflare Worker + D1 + R2',
     docsWord:'מסמכים', incomeWord:'הכנסות', expensesWord:'הוצאות', statementsWord:'דוחות',
+    // v2
+    taskText:'משימה', detail:'פירוט', detailPh:'הערות, קישורים, הקשר…',
+    dueDate:'תאריך יעד', emailAlert:'התראה במייל',
+    alertInert:'נשמר. שליחת מיילים תופעל לאחר אימות הדומיין.',
+    subtasks:'תת-משימות', newSubtask:'תת-משימה חדשה…', comments:'תגובות', newComment:'הוסף תגובה…',
+    noComments:'אין תגובות.', noSubtasks:'אין תת-משימות.',
+    deleted:'נמחק', undo:'בטל', restored:'שוחזר', restore:'שחזר',
+    searchHistory:'חיפוש בהיסטוריה…', scopeAll:'הכל', scopeDone:'הושלמו', scopeDeleted:'נמחקו',
+    noHistory:'אין עדיין היסטוריה.', activityLog:'יומן פעילות',
+    ask:'שאל', askTasks:'שאל על המשימות וההיסטוריה…', askFinance:'שאל על הכספים שלך…',
+    thinking:'חושב…', chatFail:'השאלה נכשלה',
+    modeText:'טקסט', modeDraw:'ציור', eraser:'מחק', clearAll:'נקה', drawing:'ציור',
+    overdue:'באיחור', due:'יעד', comment:'תגובה', subtask:'תת-משימה',
+    actCreate:'נוצר', actEdit:'נערך', actComplete:'הושלם', actReopen:'נפתח מחדש',
+    actDelete:'נמחק', actRestore:'שוחזר', actComment:'תגובה', actAttach:'צורף קובץ',
+    actMove:'הועבר', actAlert:'התראה',
   },
   en: {
     hub:'Personal hub', hubTitle:'Personal hub', signInHint:'Sign in to continue.',
@@ -384,13 +614,13 @@ const I18N = {
     expired:'Session expired. Enter your password to continue.',
     user:'User', password:'Password', signIn:'Sign in', wrongCreds:'Wrong user or password.',
     noServer:'Could not reach the server.', signingIn:'Signing in…',
-    finance:'Finance', tasksNotes:'Tasks & Notes',
+    finance:'Finance', tasksNotes:'Tasks & Notes', history:'History',
     refresh:'Refresh', lock:'Lock', signOut:'Sign out',
     netIncome:'Net income', spending:'Spending', saved:'Saved', investments:'Investments',
     noData:'no data', itemsTracked:'items tracked', ofNet:'of net income', accounts:'account(s)',
     noStatementsShort:'no statements',
     uploadDoc:'Upload document', dropBig:'Drop a payslip, kibbutz sheet or invoice',
-    dropSmall:'PDF, JPG or PNG · Hebrew or English · max 15 MB', autoDetect:'Auto-detect type',
+    dropSmall:'PDF, JPG or PNG · max 15 MB', autoDetect:'Auto-detect type',
     cashflow:'Monthly cashflow', noRecords:'No records yet.',
     breakdown:'Spending breakdown', last6:'last 6 months', noExpenses:'No expenses recorded yet.',
     aiInsights:'AI insights', noStatements:'No statements yet.', documents:'Documents',
@@ -399,27 +629,31 @@ const I18N = {
     notes:'Notes', newNote:'New note', noNotes:'No notes yet.',
     noteTitle:'Title', noteContent:'Content (Markdown supported)',
     save:'Save', cancel:'Cancel', attach:'Attach file', del:'Delete', edit:'Edit', untitled:'untitled',
-    confirmDelNote:'Delete this note and its attachments?',
+    confirmDelNote:'Delete this note?',
     currentState:'Current state & priorities', autoRoute:'Auto (Smart Routing)',
     analyse:'Analyse', analysing:'Analysing…', agentIdle:'Hit "Analyse" for a read on where things stand.',
     agentFail:'Agent failed', uploading:'Uploading…',
     footPrivate:'Private · Cloudflare Worker + D1 + R2',
     docsWord:'docs', incomeWord:'income', expensesWord:'expenses', statementsWord:'statements',
+    taskText:'Task', detail:'Detail', detailPh:'Notes, links, context…',
+    dueDate:'Due date', emailAlert:'Email alert',
+    alertInert:'Saved. Email sending activates once the domain is verified.',
+    subtasks:'Sub-tasks', newSubtask:'New sub-task…', comments:'Comments', newComment:'Add a comment…',
+    noComments:'No comments.', noSubtasks:'No sub-tasks.',
+    deleted:'Deleted', undo:'Undo', restored:'Restored', restore:'Restore',
+    searchHistory:'Search history…', scopeAll:'All', scopeDone:'Completed', scopeDeleted:'Deleted',
+    noHistory:'Nothing in history yet.', activityLog:'Activity log',
+    ask:'Ask', askTasks:'Ask about your tasks and history…', askFinance:'Ask about your finances…',
+    thinking:'Thinking…', chatFail:'Question failed',
+    modeText:'Text', modeDraw:'Draw', eraser:'Eraser', clearAll:'Clear', drawing:'Drawing',
+    overdue:'overdue', due:'due', comment:'comment', subtask:'sub-task',
+    actCreate:'created', actEdit:'edited', actComplete:'completed', actReopen:'reopened',
+    actDelete:'deleted', actRestore:'restored', actComment:'commented', actAttach:'attached',
+    actMove:'moved', actAlert:'alert',
   },
 };
 let lang = localStorage.getItem('adi_lang') || 'he';
 const t = (k) => (I18N[lang] && I18N[lang][k]) || I18N.en[k] || k;
-
-function applyLang() {
-  document.documentElement.lang = lang;
-  document.documentElement.dir = lang === 'he' ? 'rtl' : 'ltr';
-  for (const el of document.querySelectorAll('[data-i18n]')) el.textContent = t(el.dataset.i18n);
-  for (const el of document.querySelectorAll('[data-i18n-ph]')) el.placeholder = t(el.dataset.i18nPh);
-  const other = lang === 'he' ? 'English' : 'עברית';
-  for (const id of ['lang', 'langGate']) { const b = $('#' + id); if (b) b.textContent = other; }
-  $('#lock').textContent = accessMode ? t('signOut') : t('lock');
-  localStorage.setItem('adi_lang', lang);
-}
 
 // ===================== plumbing =====================
 const ON_SITE = /(^|\.)adiariel\.com$/.test(location.hostname);
@@ -428,26 +662,21 @@ const KEY = 'adi_fin_sess';
 const LEGACY_KEY = 'adi_fin_tok';
 let accessMode = ON_SITE;
 const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
 const token = () => sessionStorage.getItem(KEY) || '';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ils = (agorot) => '₪' + (agorot / 100).toLocaleString('en-IL', { maximumFractionDigits: 0 });
 
-const ils = (agorot) =>
-  '₪' + (agorot / 100).toLocaleString('en-IL', { maximumFractionDigits: 0 });
-
-/** Minimal markdown. Escapes first, so no raw HTML can ever reach the DOM. */
 function md(src) {
   let h = esc(src || '');
-  h = h.replace(/^### (.*)$/gm, '<h3>$1</h3>')
-       .replace(/^## (.*)$/gm, '<h2>$1</h2>')
-       .replace(/^# (.*)$/gm, '<h1>$1</h1>')
-       .replace(/`([^`]+)`/g, '<code>$1</code>')
+  h = h.replace(/^### (.*)$/gm, '<h3>$1</h3>').replace(/^## (.*)$/gm, '<h2>$1</h2>')
+       .replace(/^# (.*)$/gm, '<h1>$1</h1>').replace(/`([^`]+)`/g, '<code>$1</code>')
        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
        .replace(/(^|\W)\*([^*\n]+)\*/g, '$1<em>$2</em>')
        .replace(/^\s*[-*] (.*)$/gm, '<li>$1</li>')
-       .replace(/(<li>[\s\S]*?<\/li>)/g, (m) => `<ul>${m}</ul>`)
-       .replace(/<\/ul>\s*<ul>/g, '');
+       .replace(/(<li>[\s\S]*?<\/li>)/g, (m) => `<ul>${m}</ul>`).replace(/<\/ul>\s*<ul>/g, '');
   return h.split(/\n{2,}/).map((p) => (/^<(h\d|ul)/.test(p) ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`)).join('');
 }
 
@@ -459,6 +688,14 @@ async function api(path, opts = {}) {
     location.reload();
     throw new Error('access_session_expired');
   }
+  if (res.status === 401) { lock(); throw new Error('unauthorized'); }
+  return res;
+}
+/** Binary/non-JSON responses. api() would see image/png and reload the page forever. */
+async function apiRaw(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (token()) headers['X-App-Session'] = token();
+  const res = await fetch(API + path, { ...opts, headers, credentials: 'same-origin' });
   if (res.status === 401) { lock(); throw new Error('unauthorized'); }
   return res;
 }
@@ -479,11 +716,37 @@ function signOut() {
   lock();
 }
 
+// ===================== theme =====================
+// Placed AFTER `$` is initialised — a top-level listener above the const would hit the
+// temporal dead zone and kill the whole script.
+let theme = localStorage.getItem('adi_theme') || 'dark';
+function applyTheme() {
+  document.documentElement.dataset.theme = theme;
+  for (const b of $$('#themeSeg button')) b.classList.toggle('on', b.dataset.themeSet === theme);
+  localStorage.setItem('adi_theme', theme);
+}
+$('#themeSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-theme-set]');
+  if (!b) return;
+  theme = b.dataset.themeSet;
+  applyTheme();
+});
+
+function applyLang() {
+  document.documentElement.lang = lang;
+  document.documentElement.dir = lang === 'he' ? 'rtl' : 'ltr';
+  for (const el of $$('[data-i18n]')) el.textContent = t(el.dataset.i18n);
+  for (const el of $$('[data-i18n-ph]')) el.placeholder = t(el.dataset.i18nPh);
+  const other = lang === 'he' ? 'English' : 'עברית';
+  for (const id of ['#lang', '#langGate']) { const b = $(id); if (b) b.textContent = other; }
+  $('#lock').textContent = accessMode ? t('signOut') : t('lock');
+  localStorage.setItem('adi_lang', lang);
+}
+
 // ===================== gate =====================
 $('#gateForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const user = $('#user').value.trim();
-  const pass = $('#pass').value;
+  const user = $('#user').value.trim(), pass = $('#pass').value;
   if (!user || !pass) return;
   $('#gateErr').textContent = '';
   $('#gateBtn').disabled = true;
@@ -501,44 +764,60 @@ $('#gateForm').addEventListener('submit', async (e) => {
     sessionStorage.setItem(KEY, data.token);
     $('#pass').value = '';
     enterApp();
-  } catch {
-    $('#gateErr').textContent = t('noServer');
-  } finally {
-    $('#gateBtn').disabled = false;
-    $('#gateBtn').textContent = t('signIn');
-  }
+  } catch { $('#gateErr').textContent = t('noServer'); }
+  finally { $('#gateBtn').disabled = false; $('#gateBtn').textContent = t('signIn'); }
 });
 
 for (const id of ['#lang', '#langGate']) {
   $(id).addEventListener('click', () => { lang = lang === 'he' ? 'en' : 'he'; applyLang(); rerender(); });
 }
 $('#lock').addEventListener('click', signOut);
-$('#refresh').addEventListener('click', () => { loadFinance(); loadTasks(); loadNotes(); loadInsights(); });
+$('#refresh').addEventListener('click', () => {
+  loadFinance(); loadTasks(); loadNotes(); loadInsights();
+  if (!$('#viewHistory').hidden) loadHistory();
+});
 
 // ===================== tabs =====================
 function showTab(name) {
-  const fin = name === 'finance';
-  $('#viewFinance').hidden = !fin;
-  $('#viewTasks').hidden = fin;
-  $('#tabFinance').classList.toggle('on', fin);
-  $('#tabTasks').classList.toggle('on', !fin);
+  $('#viewFinance').hidden = name !== 'finance';
+  $('#viewTasks').hidden = name !== 'tasks';
+  $('#viewHistory').hidden = name !== 'history';
+  $('#tabFinance').classList.toggle('on', name === 'finance');
+  $('#tabTasks').classList.toggle('on', name === 'tasks');
+  $('#tabHistory').classList.toggle('on', name === 'history');
   localStorage.setItem('adi_tab', name);
-  if (!fin && !tasksLoaded) { loadTasks(); loadNotes(); tasksLoaded = true; }
+  if (name === 'tasks' && !tasksLoaded) { loadTasks(); loadNotes(); tasksLoaded = true; }
+  if (name === 'history') loadHistory();
 }
 $('#tabFinance').addEventListener('click', () => showTab('finance'));
 $('#tabTasks').addEventListener('click', () => showTab('tasks'));
+$('#tabHistory').addEventListener('click', () => showTab('history'));
+
+// ===================== toast (undo) =====================
+let toastTimer = 0, toastAction = null;
+function showToast(msg, action) {
+  toastAction = action || null;
+  $('#toastMsg').textContent = msg;
+  $('#toastUndo').hidden = !action;
+  $('#toast').classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(dismissToast, 7000);
+}
+function dismissToast() { $('#toast').classList.remove('on'); toastAction = null; }
+$('#toastUndo').addEventListener('click', async () => {
+  const fn = toastAction; dismissToast();
+  if (fn) await fn();
+});
 
 // ===================== finance render =====================
 let lastSummary = null;
 
 function renderKpis(s) {
   const latest = s.monthly[0];
-  const invTotal = s.investments.reduce((sum, i) => sum + (i.balance || 0), 0);
-  const keren = s.investments.filter((i) => i.kind === 'keren_hishtalmut')
-    .reduce((sum, i) => sum + (i.balance || 0), 0);
+  const invTotal = s.investments.reduce((a, i) => a + (i.balance || 0), 0);
+  const keren = s.investments.filter((i) => i.kind === 'keren_hishtalmut').reduce((a, i) => a + (i.balance || 0), 0);
   const saved = latest ? latest.income_net - latest.spend : 0;
   const rate = latest && latest.income_net > 0 ? Math.round((saved / latest.income_net) * 100) : null;
-
   const tiles = [
     { label: t('netIncome'), val: latest ? ils(latest.income_net) : '—', foot: latest ? latest.period : t('noData') },
     { label: t('spending'), val: latest ? ils(latest.spend) : '—',
@@ -553,7 +832,6 @@ function renderKpis(s) {
     <div class="card kpi"><div class="label">${esc(x.label)}</div>
       <div class="val ${x.cls || ''}">${x.val}</div><div class="foot">${esc(x.foot)}</div></div>`).join('');
 }
-
 function renderMonthly(rows) {
   if (!rows.length) { $('#monthly').innerHTML = `<div class="empty">${t('noRecords')}</div>`; return; }
   const peak = Math.max(...rows.map((r) => Math.max(r.income_net, r.spend)), 1);
@@ -563,7 +841,6 @@ function renderMonthly(rows) {
       <div class="stack" style="margin-top:3px;height:14px"><i class="out" style="width:${(r.spend / peak) * 100}%" title="${ils(r.spend)}"></i></div>
     </div></div>`).join('');
 }
-
 function renderCats(rows) {
   if (!rows.length) { $('#cats').innerHTML = `<div class="empty">${t('noExpenses')}</div>`; return; }
   const peak = Math.max(...rows.map((r) => r.total), 1);
@@ -571,28 +848,29 @@ function renderCats(rows) {
     <div class="row"><div class="name">${esc(r.category)}</div><div class="amt">${ils(r.total)}</div>
       <div class="bar"><i style="width:${(r.total / peak) * 100}%"></i></div></div>`).join('');
 }
-
 function renderInv(rows) {
   if (!rows.length) { $('#inv').innerHTML = `<div class="empty">${t('noStatements')}</div>`; return; }
-  const names = { keren_hishtalmut: 'Keren Hishtalmut', pension: 'Pension', gemel: 'Gemel',
-                  savings: 'Savings', other: 'Other' };
+  const names = { keren_hishtalmut: 'Keren Hishtalmut', pension: 'Pension', gemel: 'Gemel', savings: 'Savings', other: 'Other' };
   $('#inv').innerHTML = rows.map((r) => `
-    <div class="row">
-      <div class="name">${names[r.kind] || esc(r.kind)}${r.provider ? ` <span class="badge">${esc(r.provider)}</span>` : ''}</div>
+    <div class="row"><div class="name">${names[r.kind] || esc(r.kind)}${r.provider ? ` <span class="badge">${esc(r.provider)}</span>` : ''}</div>
       <div class="amt">${ils(r.balance)}</div>
       <div class="amt" style="grid-column:1/-1;font-size:.74rem">
         ${r.yield_pct != null ? `yield ${r.yield_pct}%` : ''}${r.fees_pct != null ? ` · fees ${r.fees_pct}%` : ''}
-        ${r.liquid_from ? ` · liquid ${r.liquid_from}` : ''}${r.as_of ? ` · ${r.as_of}` : ''}
-      </div></div>`).join('');
+        ${r.liquid_from ? ` · liquid ${r.liquid_from}` : ''}${r.as_of ? ` · ${r.as_of}` : ''}</div></div>`).join('');
 }
-
 function renderDocs(rows) {
   if (!rows.length) { $('#docs').innerHTML = `<div class="empty">${t('nothingUploaded')}</div>`; return; }
   $('#docs').innerHTML = rows.map((d) => `
     <div class="d"><div>
-      <div class="nm"><a href="${API}/api/doc/${d.id}" target="_blank" rel="noopener">${esc(d.filename)}</a></div>
+      <div class="nm"><a href="#" data-doc="${d.id}">${esc(d.filename)}</a></div>
       <div class="meta">${esc(d.doc_type)}${d.period ? ' · ' + d.period : ''} · ${d.uploaded_at}</div>
     </div><span class="pill ${d.status}">${d.status}</span></div>`).join('');
+}
+function renderStamp(s) {
+  if (!s?.totals) return;
+  $('#stamp').textContent =
+    `${s.totals.documents} ${t('docsWord')} · ${s.totals.income_rows} ${t('incomeWord')} · ` +
+    `${s.totals.expense_rows} ${t('expensesWord')} · ${s.totals.investment_rows} ${t('statementsWord')}`;
 }
 
 async function loadFinance() {
@@ -602,14 +880,6 @@ async function loadFinance() {
   renderInv(s.investments); renderDocs(s.documents); renderStamp(s);
   $('#apibase').textContent = API ? new URL(API).host : location.host;
 }
-
-function renderStamp(s) {
-  if (!s?.totals) return;
-  $('#stamp').textContent =
-    `${s.totals.documents} ${t('docsWord')} · ${s.totals.income_rows} ${t('incomeWord')} · ` +
-    `${s.totals.expense_rows} ${t('expensesWord')} · ${s.totals.investment_rows} ${t('statementsWord')}`;
-}
-
 async function loadInsights() {
   $('#insight').innerHTML = '<span class="spin"></span>';
   try {
@@ -622,28 +892,83 @@ async function loadInsights() {
   } catch { $('#insight').textContent = '—'; }
 }
 
+/** Documents and attachments need auth, so an <a href> would render a 401 JSON blob. */
+async function openProtected(path) {
+  const res = await apiRaw(path);
+  if (!res.ok) { showToast('✕ ' + res.status); return; }
+  const url = URL.createObjectURL(await res.blob());
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+$('#docs').addEventListener('click', (e) => {
+  const a = e.target.closest('[data-doc]');
+  if (!a) return;
+  e.preventDefault();
+  openProtected(`/api/doc/${a.dataset.doc}`);
+});
+
 // ===================== tasks =====================
 let tasksLoaded = false;
 let allTasks = [];
+const MAX_DEPTH = 2;
+const CHECK = '<svg viewBox="0 0 12 12" fill="none"><path d="M1 6l3.5 3.5L11 2" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-const CHECK = '<svg viewBox="0 0 12 12" fill="none"><path d="M1 6l3.5 3.5L11 2" stroke="#04140e" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+/** Flat rows -> depth-ordered list. Orphans re-root; cycles are broken by `seen`. */
+function buildTaskTree(rows) {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const kids = new Map();
+  const roots = [];
+  for (const r of rows) {
+    const pid = r.parent_id && byId.has(r.parent_id) ? r.parent_id : null;
+    if (pid) { if (!kids.has(pid)) kids.set(pid, []); kids.get(pid).push(r); }
+    else roots.push(r);
+  }
+  for (const list of kids.values()) {
+    list.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  }
+  const out = [];
+  const seen = new Set();
+  const walk = (row, depth) => {
+    if (seen.has(row.id)) return;
+    seen.add(row.id);
+    out.push({ row, depth: Math.min(depth, MAX_DEPTH) });
+    for (const k of kids.get(row.id) || []) walk(k, depth + 1);
+  };
+  for (const r of roots) walk(r, 0);
+  for (const r of rows) if (!seen.has(r.id)) walk(r, 0);   // cycle survivors
+  return out;
+}
+
+const todayISO = () => new Date().toISOString().slice(0, 10);
 
 function renderTasks() {
   $('#taskCount').textContent = allTasks.filter((x) => x.status === 'pending').length;
   if (!allTasks.length) { $('#tasks').innerHTML = `<div class="empty">${t('noTasks')}</div>`; return; }
-  $('#tasks').innerHTML = allTasks.map((x) => `
-    <div class="t ${x.status === 'completed' ? 'done' : ''}" data-id="${x.id}">
-      <div class="chk" data-act="toggle">${CHECK}</div>
-      <div class="txt" data-act="edit" title="${esc(t('edit'))}">${esc(x.text)}</div>
-      <div class="when">${String(x.created_at || '').slice(5, 10)}</div>
-      <button class="x" data-act="del" aria-label="${esc(t('del'))}">✕</button>
-    </div>`).join('');
+  $('#tasks').innerHTML = buildTaskTree(allTasks).map(({ row: x, depth }) => {
+    const overdue = x.due_date && x.status !== 'completed' && x.due_date < todayISO();
+    const tags = [];
+    if (x.due_date) tags.push(`<span class="tag ${overdue ? 'overdue' : 'due'}">${overdue ? t('overdue') + ' ' : ''}${x.due_date}</span>`);
+    if (x.email_alert) tags.push('<span class="tag">✉</span>');
+    if (x.comment_count) tags.push(`<span class="tag">💬 ${x.comment_count}</span>`);
+    return `<div class="t ${x.status === 'completed' ? 'done' : ''}" data-id="${x.id}" data-depth="${depth}">
+      <div class="chk" data-act="toggle" role="checkbox" aria-checked="${x.status === 'completed'}" tabindex="0">${CHECK}</div>
+      <div class="body">
+        <div class="txt" data-act="open">${esc(x.text)}</div>
+        ${tags.length ? `<div class="tmeta">${tags.join('')}</div>` : ''}
+      </div>
+      <div class="acts">
+        <button class="ic" data-act="quickcomment" title="${esc(t('comment'))}">💬</button>
+        <button class="ic del" data-act="del" title="${esc(t('del'))}">✕</button>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 async function loadTasks() {
   const d = await apiJson('/api/tasks');
   allTasks = d.tasks || [];
   renderTasks();
+  if (drawerId) renderDrawerSubs();
 }
 
 $('#taskForm').addEventListener('submit', async (e) => {
@@ -662,25 +987,254 @@ $('#tasks').addEventListener('click', async (e) => {
   const id = row?.dataset.id;
   const task = allTasks.find((x) => x.id === id);
   if (!task) return;
+  const act = btn.dataset.act;
 
-  if (btn.dataset.act === 'toggle') {
+  if (act === 'toggle') {
     const status = task.status === 'completed' ? 'pending' : 'completed';
     task.status = status; renderTasks();
     await postJson(`/api/tasks/${id}`, { status }, 'PUT').catch(() => loadTasks());
-  } else if (btn.dataset.act === 'del') {
-    allTasks = allTasks.filter((x) => x.id !== id); renderTasks();
-    await api(`/api/tasks/${id}`, { method: 'DELETE' }).catch(() => loadTasks());
-  } else if (btn.dataset.act === 'edit') {
-    const next = prompt(t('edit'), task.text);
-    if (next === null || !next.trim() || next === task.text) return;
-    task.text = next.trim(); renderTasks();
-    await postJson(`/api/tasks/${id}`, { text: task.text }, 'PUT').catch(() => loadTasks());
+  } else if (act === 'del') {
+    allTasks = allTasks.filter((x) => x.id !== id && x.parent_id !== id);
+    renderTasks();
+    const res = await postJson(`/api/tasks/${id}`, {}, 'DELETE').catch(() => null);
+    showToast(`${t('deleted')}: ${task.text.slice(0, 30)}`, async () => {
+      await api(`/api/tasks/${id}/restore`, { method: 'POST' }).catch(() => {});
+      await loadTasks();
+      showToast(t('restored'));
+    });
+    if (res && !res.ok) loadTasks();
+  } else if (act === 'quickcomment') {
+    const body = prompt(t('newComment'));
+    if (!body || !body.trim()) return;
+    await postJson(`/api/tasks/${id}/comments`, { body: body.trim() });
+    await loadTasks();
+  } else if (act === 'open') {
+    openDrawer(task);
+  }
+});
+$('#tasks').addEventListener('keydown', (e) => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('chk')) {
+    e.preventDefault(); e.target.click();
   }
 });
 
-// ===================== notes =====================
+// ===================== drawer =====================
+let drawerId = null;
+let drawerDirty = false;
+
+function openDrawer(task) {
+  drawerId = task.id;
+  drawerDirty = false;
+  $('#dTitle').textContent = task.text.slice(0, 60);
+  $('#dWhen').textContent = `${task.created_at}${task.completed_at ? ' → ' + task.completed_at : ''}`;
+  $('#dText').value = task.text || '';
+  $('#dDetail').value = task.detail || '';
+  $('#dDue').value = task.due_date || '';
+  $('#dAlert').checked = !!task.email_alert;
+  $('#drawer').classList.add('on');
+  $('#scrim').classList.add('on');
+  renderDrawerSubs();
+  loadDrawerComments();
+  $('#dText').focus();
+}
+function closeDrawer() {
+  drawerId = null;
+  $('#drawer').classList.remove('on');
+  $('#scrim').classList.remove('on');
+}
+$('#dClose').addEventListener('click', closeDrawer);
+$('#scrim').addEventListener('click', closeDrawer);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (toastAction) { dismissToast(); return; }   // toast first, then drawer
+  if (drawerId) closeDrawer();
+});
+for (const sel of ['#dText', '#dDetail', '#dDue', '#dAlert']) {
+  $(sel).addEventListener('input', () => { drawerDirty = true; });
+}
+
+function renderDrawerSubs() {
+  const subs = allTasks.filter((x) => x.parent_id === drawerId);
+  $('#dSubs').innerHTML = subs.length
+    ? subs.map((s) => `<div class="subrow" data-id="${s.id}">
+        <div class="chk" data-act="toggle" style="width:16px;height:16px">${CHECK}</div>
+        <span style="flex:1${s.status === 'completed' ? ';text-decoration:line-through;color:var(--muted)' : ''}">${esc(s.text)}</span>
+        <button class="ic del" data-act="del" style="background:none;border:0;color:var(--muted);cursor:pointer">✕</button>
+      </div>`).join('')
+    : `<div class="empty">${t('noSubtasks')}</div>`;
+}
+$('#dSubs').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const id = e.target.closest('[data-id]')?.dataset.id;
+  const sub = allTasks.find((x) => x.id === id);
+  if (!sub) return;
+  if (btn.dataset.act === 'toggle') {
+    await postJson(`/api/tasks/${id}`, { status: sub.status === 'completed' ? 'pending' : 'completed' }, 'PUT');
+  } else {
+    await postJson(`/api/tasks/${id}`, {}, 'DELETE');
+  }
+  await loadTasks();
+});
+$('#dSubForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = $('#dSubInput').value.trim();
+  if (!text || !drawerId) return;
+  $('#dSubInput').value = '';
+  const d = await postJson('/api/tasks', { text, parent_id: drawerId });
+  if (d.error) { showToast('✕ ' + d.error); return; }
+  await loadTasks();
+});
+
+async function loadDrawerComments() {
+  if (!drawerId) return;
+  const d = await apiJson(`/api/tasks/${drawerId}/comments`);
+  const list = d.comments || [];
+  $('#dComments').innerHTML = list.length
+    ? list.map((c) => `<div class="cmt"><div class="cb">${esc(c.body)}</div>
+        <div class="cw">${c.created_at} · <a href="#" data-cmt="${c.id}">${esc(t('del'))}</a></div></div>`).join('')
+    : `<div class="empty">${t('noComments')}</div>`;
+}
+$('#dComments').addEventListener('click', async (e) => {
+  const a = e.target.closest('[data-cmt]');
+  if (!a) return;
+  e.preventDefault();
+  await api(`/api/tasks/${drawerId}/comments/${a.dataset.cmt}`, { method: 'DELETE' });
+  await loadDrawerComments();
+  await loadTasks();
+});
+$('#dCmtForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = $('#dCmtInput').value.trim();
+  if (!body || !drawerId) return;
+  $('#dCmtInput').value = '';
+  await postJson(`/api/tasks/${drawerId}/comments`, { body });
+  await loadDrawerComments();
+  await loadTasks();
+});
+
+$('#dSave').addEventListener('click', async () => {
+  if (!drawerId) return;
+  const d = await postJson(`/api/tasks/${drawerId}`, {
+    text: $('#dText').value.trim(), detail: $('#dDetail').value,
+    due_date: $('#dDue').value || null, email_alert: $('#dAlert').checked,
+  }, 'PUT');
+  if (d.error) { showToast('✕ ' + d.error); return; }
+  drawerDirty = false;
+  closeDrawer();
+  await loadTasks();
+});
+$('#dDelete').addEventListener('click', async () => {
+  if (!drawerId) return;
+  const id = drawerId, text = $('#dText').value;
+  closeDrawer();
+  await postJson(`/api/tasks/${id}`, {}, 'DELETE');
+  await loadTasks();
+  showToast(`${t('deleted')}: ${text.slice(0, 30)}`, async () => {
+    await api(`/api/tasks/${id}/restore`, { method: 'POST' }).catch(() => {});
+    await loadTasks();
+    showToast(t('restored'));
+  });
+});
+
+// ===================== notes + canvas =====================
 let allNotes = [];
-let editingId = null;   // null = closed, '' = new note, else note id
+let editingId = null;
+let noteMode = 'markdown';
+const blobCache = new Map();
+
+// Touch/stylus devices open straight into the canvas; a mouse-and-keyboard machine
+// gets the markdown editor with a toggle. coarse pointer + no hover is the reliable
+// composite signal — maxTouchPoints alone misfires on touchscreen laptops.
+const IS_TOUCH = matchMedia('(pointer:coarse)').matches && matchMedia('(hover:none)').matches;
+
+const PAPER = '#fbf8f1';
+let ink = '#12160f', erasing = false;
+let strokes = [], current = null, drawingDirty = false;
+const cv = $('#noteCanvas');
+const ctx = cv.getContext('2d', { willReadFrequently: false });
+
+function fitCanvas() {
+  const dpr = Math.min(devicePixelRatio || 1, 3);
+  const r = cv.getBoundingClientRect();
+  if (!r.width || !r.height) return false;      // not laid out yet — the observer retries
+  const w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+  if (cv.width === w && cv.height === h) return true;
+  cv.width = w; cv.height = h;                  // resizing clears the bitmap…
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  repaint();                                    // …so replay the vector strokes
+  return true;
+}
+// Strokes are stored in normalised 0..1 coordinates, so a resize, an orientation
+// change, or the panel simply gaining width all re-render losslessly. rAF alone is
+// not enough: it never fires in a background tab, leaving a 300x150 default canvas.
+new ResizeObserver(() => { if (!$('#canvasBox').hidden) fitCanvas(); }).observe(cv);
+function repaint() {
+  const r = cv.getBoundingClientRect();
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = PAPER; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.restore();
+  for (const s of strokes) drawStroke(s, r.width, r.height);
+}
+function drawStroke(s, w, h) {
+  if (s.pts.length < 2) return;
+  ctx.strokeStyle = s.color; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (let i = 1; i < s.pts.length; i++) {
+    const a = s.pts[i - 1], b = s.pts[i];
+    ctx.beginPath();
+    ctx.lineWidth = s.width * (0.35 + b.p * 1.3);
+    ctx.moveTo(a.x * w, a.y * h);
+    ctx.lineTo(b.x * w, b.y * h);
+    ctx.stroke();
+  }
+}
+// Normalised 0..1 coords, so a resize or orientation change never loses the drawing.
+function pt(e, r) {
+  return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height,
+           p: e.pressure > 0 && e.pressure !== 0.5 ? e.pressure : 0.5 };
+}
+cv.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'touch' && e.isPrimary === false) return;   // palm rejection
+  cv.setPointerCapture(e.pointerId);
+  const r = cv.getBoundingClientRect();
+  current = { color: erasing ? PAPER : ink, width: erasing ? 14 : 2.6, pts: [pt(e, r)] };
+  strokes.push(current);
+  drawingDirty = true;
+});
+cv.addEventListener('pointermove', (e) => {
+  if (!current) return;
+  const r = cv.getBoundingClientRect();
+  // Coalesced events give a smooth line from a fast stylus. The fallback matters:
+  // getCoalescedEvents() returns an EMPTY list for untrusted events, and some
+  // browsers return empty for a non-coalesced move — without this the stroke is lost.
+  let events = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+  if (!events.length) events = [e];
+  for (const ev of events) current.pts.push(pt(ev, r));
+  drawStroke({ ...current, pts: current.pts.slice(-3) }, r.width, r.height);
+});
+for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) {
+  cv.addEventListener(ev, () => { current = null; });
+}
+$$('.swatch').forEach((b) => b.addEventListener('click', () => {
+  ink = b.dataset.ink; erasing = false;
+  $$('.swatch').forEach((x) => x.classList.toggle('on', x === b));
+}));
+$('#eraserBtn').addEventListener('click', () => { erasing = !erasing; $('#eraserBtn').classList.toggle('ghost', !erasing); });
+$('#undoBtn').addEventListener('click', () => { strokes.pop(); drawingDirty = true; repaint(); });
+$('#clearBtn').addEventListener('click', () => { strokes = []; drawingDirty = true; repaint(); });
+addEventListener('resize', () => { if (!$('#canvasBox').hidden) fitCanvas(); });
+
+function setMode(mode) {
+  noteMode = mode;
+  $('#noteContent').hidden = mode !== 'markdown';
+  $('#canvasBox').hidden = mode !== 'drawing';
+  for (const b of $$('#modeSeg button')) b.classList.toggle('on', b.dataset.mode === mode);
+  if (mode === 'drawing' && !fitCanvas()) requestAnimationFrame(fitCanvas);
+}
+$('#modeSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-mode]');
+  if (b) setMode(b.dataset.mode);
+});
 
 function renderNotes() {
   $('#noteCount').textContent = allNotes.length;
@@ -688,14 +1242,15 @@ function renderNotes() {
   $('#notes').innerHTML = allNotes.map((n) => {
     const open = n.id === editingId;
     return `<div class="note ${open ? 'open' : ''}" data-id="${n.id}">
-      <div class="nt"><span>${esc(n.title || t('untitled'))}</span>
+      <div class="nt"><span>${esc(n.title || t('untitled'))}${n.mode === 'drawing' ? ' 🖌' : ''}</span>
         <span class="nd">${String(n.updated_at || '').slice(0, 10)}</span></div>
-      ${open ? `<div class="md">${md(n.content)}</div>` : `<div class="np">${esc((n.content || '').slice(0, 160))}</div>`}
+      ${n.mode === 'drawing' && n.drawing_key
+        ? `<img class="thumb" data-draw="${n.id}" alt="${esc(t('drawing'))}">`
+        : open ? `<div class="md">${md(n.content)}</div>`
+               : `<div class="np">${esc((n.content || '').slice(0, 160))}</div>`}
       ${n.attachments?.length ? `<div class="chips">${n.attachments.map((a) => `
-        <a class="chip" href="${API}/api/attachment/${a.id}" target="_blank" rel="noopener">
-          📎 ${esc(a.filename)}
-          <button class="x" data-act="unattach" data-aid="${a.id}" aria-label="${esc(t('del'))}">✕</button>
-        </a>`).join('')}</div>` : ''}
+        <span class="chip" data-att="${a.id}">📎 ${esc(a.filename)}
+          <button class="x" data-act="unattach" data-aid="${a.id}">✕</button></span>`).join('')}</div>` : ''}
       ${open ? `<div class="noteActions">
           <button class="btn sm" data-act="editnote">${esc(t('edit'))}</button>
           <button class="btn ghost sm" data-act="attachnote">${esc(t('attach'))}</button>
@@ -703,6 +1258,22 @@ function renderNotes() {
         </div>` : ''}
     </div>`;
   }).join('');
+  for (const img of $$('img[data-draw]')) loadDrawingInto(img, img.dataset.draw);
+}
+
+/** Auth'd fetch -> blob: URL. A plain <img src="/api/…"> would 401. */
+async function loadDrawingInto(img, noteId) {
+  const note = allNotes.find((n) => n.id === noteId);
+  const ck = `${noteId}|${note?.drawing_updated_at || ''}`;
+  if (blobCache.has(ck)) { img.src = blobCache.get(ck); return; }
+  try {
+    const res = await apiRaw(`/api/notes/${noteId}/drawing`);
+    if (!res.ok) return;
+    const url = URL.createObjectURL(await res.blob());
+    for (const [k, v] of blobCache) if (k.startsWith(noteId + '|')) { URL.revokeObjectURL(v); blobCache.delete(k); }
+    blobCache.set(ck, url);
+    img.src = url;
+  } catch { /* leave the placeholder */ }
 }
 
 async function loadNotes() {
@@ -716,7 +1287,18 @@ function openEditor(note) {
   $('#noteEditor').hidden = false;
   $('#noteTitle').value = note?.title || '';
   $('#noteContent').value = note?.content || '';
+  strokes = []; drawingDirty = false;
+  setMode(note ? (note.mode || 'markdown') : (IS_TOUCH ? 'drawing' : 'markdown'));
+  if (note?.drawing_key) loadStrokes(note.id);
   $('#noteTitle').focus();
+}
+async function loadStrokes(noteId) {
+  try {
+    const res = await apiRaw(`/api/notes/${noteId}/drawing.json`);
+    if (!res.ok) return;
+    strokes = await res.json();
+    repaint();
+  } catch { /* a drawing with no vector sidecar stays view-only */ }
 }
 function closeEditor() {
   editingId = null;
@@ -724,21 +1306,41 @@ function closeEditor() {
   $('#attachState').hidden = true;
   renderNotes();
 }
-
 $('#newNote').addEventListener('click', () => openEditor(null));
 $('#cancelNote').addEventListener('click', closeEditor);
 
-$('#saveNote').addEventListener('click', async () => {
-  const payload = { title: $('#noteTitle').value.trim(), content: $('#noteContent').value };
-  if (!payload.title && !payload.content.trim()) return;
+async function persistNote() {
+  const payload = { title: $('#noteTitle').value.trim(), content: $('#noteContent').value, mode: noteMode };
   const existing = editingId && allNotes.find((n) => n.id === editingId);
   const d = existing
     ? await postJson(`/api/notes/${editingId}`, payload, 'PUT')
     : await postJson('/api/notes', payload);
   if (d.note) {
+    editingId = d.note.id;
     if (existing) Object.assign(existing, d.note);
     else allNotes.unshift({ ...d.note, attachments: [] });
   }
+  return editingId;
+}
+async function saveDrawing(noteId) {
+  const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+  if (!blob) return;
+  const fd = new FormData();
+  fd.append('file', blob, 'drawing.png');
+  fd.append('strokes', JSON.stringify(strokes).slice(0, 1_900_000));
+  fd.append('w', String(Math.round(cv.getBoundingClientRect().width)));
+  fd.append('h', String(Math.round(cv.getBoundingClientRect().height)));
+  const d = await apiJson(`/api/notes/${noteId}/drawing`, { method: 'PUT', body: fd });
+  if (d.note) {
+    const n = allNotes.find((x) => x.id === noteId);
+    if (n) Object.assign(n, d.note);
+  }
+}
+$('#saveNote').addEventListener('click', async () => {
+  const hasText = $('#noteTitle').value.trim() || $('#noteContent').value.trim();
+  if (!hasText && !strokes.length) return;
+  const id = await persistNote();
+  if (noteMode === 'drawing' && strokes.length && drawingDirty) await saveDrawing(id);
   closeEditor();
 });
 
@@ -757,16 +1359,21 @@ $('#notes').addEventListener('click', async (e) => {
     await api(`/api/attachment/${act.dataset.aid}`, { method: 'DELETE' }).catch(() => loadNotes());
     return;
   }
+  const chip = e.target.closest('[data-att]');
+  if (chip && !act) { openProtected(`/api/attachment/${chip.dataset.att}`); return; }
   if (act?.dataset.act === 'editnote') { openEditor(note); return; }
   if (act?.dataset.act === 'attachnote') { pendingAttachNote = id; $('#noteFile').click(); return; }
   if (act?.dataset.act === 'delnote') {
-    if (!confirm(t('confirmDelNote'))) return;
     allNotes = allNotes.filter((n) => n.id !== id);
     editingId = null; $('#noteEditor').hidden = true; renderNotes();
-    await api(`/api/notes/${id}`, { method: 'DELETE' }).catch(() => loadNotes());
+    await postJson(`/api/notes/${id}`, {}, 'DELETE');
+    showToast(`${t('deleted')}: ${(note.title || t('untitled')).slice(0, 30)}`, async () => {
+      await api(`/api/notes/${id}/restore`, { method: 'POST' }).catch(() => {});
+      await loadNotes();
+      showToast(t('restored'));
+    });
     return;
   }
-  // Plain click on a card expands it (and collapses the editor).
   editingId = editingId === id ? null : id;
   $('#noteEditor').hidden = true;
   renderNotes();
@@ -774,25 +1381,14 @@ $('#notes').addEventListener('click', async (e) => {
 
 let pendingAttachNote = null;
 $('#attachBtn').addEventListener('click', async () => {
-  // Attaching to an unsaved note needs an id first — save it silently.
-  if (!editingId) {
-    const d = await postJson('/api/notes', {
-      title: $('#noteTitle').value.trim(), content: $('#noteContent').value,
-    });
-    if (!d.note) return;
-    editingId = d.note.id;
-    allNotes.unshift({ ...d.note, attachments: [] });
-  }
-  pendingAttachNote = editingId;
+  pendingAttachNote = await persistNote();
   $('#noteFile').click();
 });
-
 $('#noteFile').addEventListener('change', async () => {
   const files = [...$('#noteFile').files];
   $('#noteFile').value = '';
   const noteId = pendingAttachNote;
   if (!files.length || !noteId) return;
-
   $('#attachState').hidden = false;
   $('#attachState').textContent = t('uploading');
   for (const f of files) {
@@ -804,7 +1400,7 @@ $('#noteFile').addEventListener('change', async () => {
         const n = allNotes.find((x) => x.id === noteId);
         if (n) (n.attachments = n.attachments || []).push(d.attachment);
       }
-    } catch { /* surfaced by the badge below */ }
+    } catch { /* shown by the badge */ }
   }
   $('#attachState').textContent = '✓';
   setTimeout(() => { $('#attachState').hidden = true; }, 1500);
@@ -814,8 +1410,7 @@ $('#noteFile').addEventListener('change', async () => {
 // ===================== agent =====================
 $('#runAgent').addEventListener('click', async () => {
   const btn = $('#runAgent');
-  btn.disabled = true;
-  btn.textContent = t('analysing');
+  btn.disabled = true; btn.textContent = t('analysing');
   $('#agentOut').innerHTML = '<span class="spin"></span>';
   $('#agentRoute').hidden = true;
   try {
@@ -823,16 +1418,90 @@ $('#runAgent').addEventListener('click', async () => {
     $('#agentOut').innerHTML = d.summary ? md(d.summary) : `<span class="empty">${esc(d.error || '—')}</span>`;
     if (d.routed) {
       $('#agentRoute').hidden = false;
-      $('#agentRoute').textContent =
-        `→ ${d.routed}${d.model ? ' · ' + d.model.replace('@cf/', '') : ''} · ${d.reason}` +
+      $('#agentRoute').textContent = `→ ${d.routed}${d.model ? ' · ' + d.model.replace('@cf/', '') : ''} · ${d.reason}` +
         `${d.fallback_from ? ` · fell back from ${d.fallback_from}` : ''}`;
     }
   } catch (err) {
     $('#agentOut').innerHTML = `<span class="empty">${t('agentFail')}: ${esc(err.message)}</span>`;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = t('analyse');
-  }
+  } finally { btn.disabled = false; btn.textContent = t('analyse'); }
+});
+
+// ===================== chat bars =====================
+for (const bar of $$('.chatbar')) {
+  const scope = bar.dataset.chat;
+  bar.querySelector('form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = bar.querySelector('input');
+    const q = input.value.trim();
+    if (!q) return;
+    const ans = bar.querySelector('.chatans'), meta = bar.querySelector('.chatmeta');
+    const btn = bar.querySelector('button');
+    ans.hidden = false; ans.innerHTML = '<span class="spin"></span>';
+    meta.hidden = true; btn.disabled = true;
+    try {
+      const d = await postJson(`/api/chat/${scope}`, { message: q, lang });
+      ans.innerHTML = d.answer ? md(d.answer) : `<span class="empty">${esc(d.detail || d.error || '—')}</span>`;
+      if (d.routed) {
+        meta.hidden = false;
+        meta.textContent = `→ ${d.routed}${d.model ? ' · ' + String(d.model).replace('@cf/', '') : ''}` +
+          ` · ${d.est_tokens} tok${d.filtered ? ' · subset' : ''}`;
+      }
+      input.value = '';
+    } catch (err) {
+      ans.innerHTML = `<span class="empty">${t('chatFail')}: ${esc(err.message)}</span>`;
+    } finally { btn.disabled = false; }
+  });
+}
+
+// ===================== history =====================
+let histScope = 'all';
+let histTimer = 0;
+
+function actLabel(a) { return t('act' + a.charAt(0).toUpperCase() + a.slice(1)) || a; }
+
+async function loadHistory() {
+  const q = $('#histQ').value.trim();
+  const d = await apiJson(`/api/history?scope=${histScope}&q=${encodeURIComponent(q)}`);
+  const items = [
+    ...d.tasks.map((x) => ({ kind: 'task', ...x })),
+    ...d.notes.map((x) => ({ kind: 'note', ...x, text: x.title || t('untitled') })),
+  ].sort((a, b) => String(b.deleted_at || b.completed_at || '').localeCompare(String(a.deleted_at || a.completed_at || '')));
+
+  $('#histCount').textContent = items.length;
+  $('#histList').innerHTML = items.length ? items.map((x) => `
+    <div class="hitem ${x.deleted_at ? 'gone' : ''}">
+      <div class="hhead">
+        <span class="htxt">${x.kind === 'note' ? '📝 ' : ''}${esc(x.text)}</span>
+        <span class="hwhen">${x.deleted_at ? t('deleted') + ' ' + x.deleted_at : x.completed_at || ''}</span>
+      </div>
+      ${x.comments?.length ? `<div style="margin-top:5px">${x.comments.map((c) =>
+        `<div class="cw" style="margin-top:2px">💬 ${esc(c.body)} <span style="opacity:.7">${c.created_at}</span></div>`).join('')}</div>` : ''}
+      ${x.deleted_at ? `<div style="margin-top:6px"><button class="btn ghost sm"
+          data-restore="${x.kind}:${x.id}">${esc(t('restore'))}</button></div>` : ''}
+    </div>`).join('') : `<div class="empty">${t('noHistory')}</div>`;
+
+  $('#histLog').innerHTML = d.log.length ? d.log.map((l) => `
+    <div class="hitem"><div class="hhead">
+      <span class="htxt"><span class="tag">${esc(actLabel(l.action))}</span> ${esc(l.title || l.entity_id)}</span>
+      <span class="hwhen">${l.at}</span>
+    </div></div>`).join('') : `<div class="empty">${t('noHistory')}</div>`;
+}
+$('#histQ').addEventListener('input', () => { clearTimeout(histTimer); histTimer = setTimeout(loadHistory, 250); });
+$('#histScope').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-scope]');
+  if (!b) return;
+  histScope = b.dataset.scope;
+  for (const x of $$('#histScope button')) x.classList.toggle('on', x === b);
+  loadHistory();
+});
+$('#histList').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-restore]');
+  if (!b) return;
+  const [kind, id] = b.dataset.restore.split(':');
+  await api(`/api/${kind === 'note' ? 'notes' : 'tasks'}/${id}/restore`, { method: 'POST' });
+  showToast(t('restored'));
+  await loadHistory();
+  if (kind === 'note') loadNotes(); else loadTasks();
 });
 
 // ===================== upload (finance) =====================
@@ -848,14 +1517,12 @@ fileInput.addEventListener('change', () => {
   if (fileInput.files.length) upload([...fileInput.files]);
   fileInput.value = '';
 });
-
 function logLine(name) {
   const el = document.createElement('div');
   el.innerHTML = `<span class="s-run">▸</span><span style="flex:1">${esc(name)}</span><span class="st">…</span>`;
   $('#uplog').prepend(el);
   return el;
 }
-
 async function upload(files) {
   for (const file of files) {
     const line = logLine(file.name);
@@ -876,9 +1543,7 @@ async function upload(files) {
           `<span class="s-bad">${esc(res.status === 409 ? 'duplicate' : (d.error || res.status))}</span>`;
         line.querySelector('.s-run').outerHTML = '<span class="s-bad">✕</span>';
       }
-    } catch (err) {
-      line.querySelector('.st').innerHTML = `<span class="s-bad">${esc(err.message)}</span>`;
-    }
+    } catch (err) { line.querySelector('.st').innerHTML = `<span class="s-bad">${esc(err.message)}</span>`; }
   }
   await loadFinance();
   await loadInsights();
@@ -890,8 +1555,8 @@ function rerender() {
                      renderCats(lastSummary.by_category); renderInv(lastSummary.investments);
                      renderDocs(lastSummary.documents); renderStamp(lastSummary); }
   renderTasks(); renderNotes();
+  if (!$('#viewHistory').hidden) loadHistory();
 }
-
 function enterApp() {
   $('#gate').style.display = 'none';
   $('#app').hidden = false;
@@ -903,7 +1568,9 @@ function enterApp() {
 
 (async function start() {
   sessionStorage.removeItem(LEGACY_KEY);
+  applyTheme();
   applyLang();
+  if (accessMode) $('#lock').textContent = t('signOut');
 
   if (token()) {
     try {
@@ -912,7 +1579,6 @@ function enterApp() {
     } catch { /* fall through */ }
     sessionStorage.removeItem(KEY);
   }
-
   $('#gateHint').textContent = accessMode ? t('signedInGoogle') : t('signInHint');
   $('#gate').style.display = 'grid';
   $('#pass').focus();

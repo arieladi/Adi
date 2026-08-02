@@ -23,6 +23,11 @@ enabled = true
 binding = "DB"
 database_name = "finance"
 database_id = "e90ec1a7-be5f-4faf-9ecf-bc2981ff2fe2"
+# The d1_migrations ledger IS the idempotency, at file granularity — which is why the
+# ALTER statements need no IF NOT EXISTS gymnastics (SQLite has no such form anyway).
+# schema.sql is now only the fresh-database baseline; migrations are the source of truth.
+migrations_dir = "migrations"
+migrations_table = "d1_migrations"
 
 # --- R2: private document store (never public) -----------------------------
 [[r2_buckets]]
@@ -32,6 +37,17 @@ bucket_name = "adi-docs"
 # --- Workers AI: dashboard insights ----------------------------------------
 [ai]
 binding = "AI"
+
+# Nightly: purge soft-deletes past their 30-day window, then send due-date alerts.
+[triggers]
+crons = ["17 3 * * *"]
+
+# Email alerts are INERT until a send_email binding exists. To light them up:
+#   npx wrangler email sending enable adiariel.com     (one-time domain onboarding)
+# then uncomment the block below and redeploy. runDueAlerts() already guards on env.EMAIL,
+# so no code change is needed.
+# [[send_email]]
+# name = "EMAIL"
 
 [vars]
 # Gemini model for Hebrew document extraction, tried in order — Google retires
