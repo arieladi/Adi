@@ -47,12 +47,89 @@ function safeEqual(a, b) {
   return diff === 0;
 }
 
+// --- Cloudflare Access JWT verification ------------------------------------
+
+const b64urlToBytes = (s) => {
+  const pad = s.replace(/-/g, '+').replace(/_/g, '/');
+  const bin = atob(pad + '='.repeat((4 - (pad.length % 4)) % 4));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+};
+const b64urlToJson = (s) => JSON.parse(new TextDecoder().decode(b64urlToBytes(s)));
+
+let jwksCache = { url: null, keys: null, at: 0 };
+const JWKS_TTL_MS = 60 * 60 * 1000;
+
+async function getAccessKeys(teamDomain) {
+  const url = `https://${teamDomain}.cloudflareaccess.com/cdn-cgi/access/certs`;
+  const fresh = jwksCache.url === url && jwksCache.keys && Date.now() - jwksCache.at < JWKS_TTL_MS;
+  if (fresh) return jwksCache.keys;
+
+  const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+  if (!res.ok) throw new Error(`jwks_${res.status}`);
+  const { keys } = await res.json();
+  jwksCache = { url, keys, at: Date.now() };
+  return keys;
+}
+
+/**
+ * Verify the JWT Cloudflare Access injects on authenticated requests.
+ * Returns the caller's email on success, or null if the token is absent/invalid.
+ * Never throws — a bad Access token simply falls through to the Bearer check.
+ */
+async function verifyAccessJwt(request, env) {
+  const team = (env.ACCESS_TEAM_DOMAIN || '').trim();
+  const aud = (env.ACCESS_AUD || '').trim();
+  if (!team || !aud) return null;
+
+  const raw = request.headers.get('Cf-Access-Jwt-Assertion')
+    || (/CF_Authorization=([^;]+)/.exec(request.headers.get('Cookie') || '') || [])[1];
+  if (!raw) return null;
+
+  try {
+    const [h, p, s] = raw.split('.');
+    if (!h || !p || !s) return null;
+    const header = b64urlToJson(h);
+    const payload = b64urlToJson(p);
+
+    // Claims first — cheaper than a signature check, and rules out replay.
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.iss !== `https://${team}.cloudflareaccess.com`) return null;
+    const audList = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+    if (!audList.includes(aud)) return null;
+    if (typeof payload.exp !== 'number' || payload.exp < now) return null;
+    if (typeof payload.nbf === 'number' && payload.nbf > now + 60) return null;
+
+    const jwk = (await getAccessKeys(team)).find((k) => k.kid === header.kid);
+    if (!jwk) return null;
+
+    const key = await crypto.subtle.importKey(
+      'jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify'],
+    );
+    const ok = await crypto.subtle.verify(
+      'RSASSA-PKCS1-v1_5', key, b64urlToBytes(s),
+      new TextEncoder().encode(`${h}.${p}`),
+    );
+    if (!ok) return null;
+
+    return payload.email || payload.common_name || 'access-user';
+  } catch (err) {
+    console.error('access_jwt', String(err?.message || err));
+    return null;
+  }
+}
+
 /**
  * Fail-closed auth. Returns null when authorised, or a Response when not.
- * Cloudflare Access (once enabled) sits in front and adds a second, stronger
- * layer — this token is the origin-level backstop for direct workers.dev hits.
+ *
+ * Two accepted identities:
+ *   1. A valid Cloudflare Access JWT — how the browser authenticates once the
+ *      app sits behind Access. No shared secret involved.
+ *   2. The API_TOKEN Bearer header — for curl/CLI, and the fallback while
+ *      Access is not yet configured.
  */
-function requireAuth(request, env) {
+async function requireAuth(request, env) {
+  if (await verifyAccessJwt(request, env)) return null;
+
   if (!env.API_TOKEN) {
     return json(
       { error: 'not_configured', hint: 'Set the API_TOKEN secret: npx wrangler secret put API_TOKEN --name finance' },
@@ -510,7 +587,8 @@ export default {
           ok: true,
           service: 'finance',
           configured: { api_token: !!env.API_TOKEN, gemini: !!env.GEMINI_API_KEY,
-                        db: !!env.DB, r2: !!env.DOCS_BUCKET, ai: !!env.AI },
+                        db: !!env.DB, r2: !!env.DOCS_BUCKET, ai: !!env.AI,
+                        access: !!(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD) },
         }));
       }
 
@@ -518,7 +596,7 @@ export default {
         return withCors(json({ error: 'not_found', hint: 'API only. UI lives at https://adiariel.com/me' }, 404));
       }
 
-      const denied = requireAuth(request, env);
+      const denied = await requireAuth(request, env);
       if (denied) return withCors(denied);
 
       if (url.pathname === '/api/upload' && request.method === 'POST') {

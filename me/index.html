@@ -117,7 +117,9 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
 <body>
 
 <!-- ============ token gate ============ -->
-<div id="gate">
+<!-- Hidden until we know whether Cloudflare Access already authenticated us,
+     so the token prompt never flashes for a signed-in visitor. -->
+<div id="gate" style="display:none">
   <div class="box">
     <h1>Personal hub</h1>
     <p>Enter your API token to unlock. Stored for this tab only.</p>
@@ -207,8 +209,12 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
 </div>
 
 <script>
-const API = 'https://finance.adidatabase.workers.dev';
+// Same origin when served from the site, so Cloudflare Access can attach your
+// identity to API calls and no token is needed. Absolute URL only for local preview.
+const API = /(^|\.)adiariel\.com$/.test(location.hostname)
+  ? '' : 'https://finance.adidatabase.workers.dev';
 const KEY = 'adi_fin_tok';
+let accessMode = false; // true once Cloudflare Access has authenticated us
 const $ = (s) => document.querySelector(s);
 
 const ils = (agorot, dp = 0) =>
@@ -217,15 +223,26 @@ const ils = (agorot, dp = 0) =>
 function token(){ return sessionStorage.getItem(KEY) || ''; }
 
 async function api(path, opts = {}) {
-  const res = await fetch(API + path, {
-    ...opts,
-    headers: { Authorization: 'Bearer ' + token(), ...(opts.headers || {}) },
-  });
+  const headers = { ...(opts.headers || {}) };
+  if (!accessMode && token()) headers.Authorization = 'Bearer ' + token();
+  const res = await fetch(API + path, { ...opts, headers, credentials: 'same-origin' });
+  // An expired Access session answers with a redirect to the login page rather
+  // than a 401. Reload so the browser follows it as a normal navigation.
+  if (accessMode && (res.redirected || !/json/i.test(res.headers.get('content-type') || ''))) {
+    location.reload();
+    throw new Error('access_session_expired');
+  }
   if (res.status === 401) { lock(); throw new Error('unauthorized'); }
   return res;
 }
 
-function lock(){ sessionStorage.removeItem(KEY); $('#app').hidden = true; $('#gate').style.display = 'grid'; }
+function lock() {
+  // Under Access the real session belongs to Cloudflare, so sign out there.
+  if (accessMode) { location.href = '/cdn-cgi/access/logout'; return; }
+  sessionStorage.removeItem(KEY);
+  $('#app').hidden = true;
+  $('#gate').style.display = 'grid';
+}
 
 // ---------------- gate ----------------
 $('#gateForm').addEventListener('submit', async (e) => {
@@ -421,11 +438,37 @@ async function upload(files) {
 // ---------------- boot ----------------
 function boot(){ loadSummary().catch(() => {}); loadInsights(); }
 
-if (token()) {
-  fetch(API + '/api/summary', { headers: { Authorization: 'Bearer ' + token() } })
-    .then((r) => { if (r.ok) { $('#gate').style.display = 'none'; $('#app').hidden = false; boot(); } })
-    .catch(() => {});
+function enterApp() {
+  $('#gate').style.display = 'none';
+  $('#app').hidden = false;
+  boot();
 }
+
+(async function start() {
+  // 1. Cloudflare Access already vouching for us? Then there is no token step.
+  try {
+    const res = await fetch(API + '/api/summary', { credentials: 'same-origin' });
+    if (res.ok) {
+      accessMode = true;
+      $('#lock').textContent = 'Sign out';
+      enterApp();
+      return;
+    }
+  } catch { /* offline or blocked — fall through to the token path */ }
+
+  // 2. Otherwise reuse a token from this tab.
+  if (token()) {
+    try {
+      const res = await fetch(API + '/api/summary', { headers: { Authorization: 'Bearer ' + token() } });
+      if (res.ok) { enterApp(); return; }
+    } catch { /* fall through */ }
+    sessionStorage.removeItem(KEY);
+  }
+
+  // 3. Neither — ask for a token.
+  $('#gate').style.display = 'grid';
+  $('#tok').focus();
+})();
 </script>
 </body>
 </html>

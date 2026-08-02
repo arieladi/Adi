@@ -6,6 +6,14 @@ account_id = "84bfab8d23e7751df724a1ee31dcfcc6"
 # Private financial API — do not mint per-version public preview URLs.
 preview_urls = false
 
+# Same-origin API. adiariel.com is proxied, so this route intercepts /api/*
+# before it reaches GitHub Pages; Pages still serves everything else.
+# Same origin means Cloudflare Access can attach the caller's identity to these
+# requests, which is what lets the UI drop its token prompt.
+[[routes]]
+pattern = "adiariel.com/api/*"
+zone_name = "adiariel.com"
+
 # Structured logs + traces in the dashboard (Workers Observability).
 [observability]
 enabled = true
@@ -35,6 +43,16 @@ GEMINI_FALLBACKS = "gemini-flash-latest,gemini-3.5-flash,gemini-2.0-flash"
 AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 AI_FALLBACKS = "@cf/qwen/qwen3-30b-a3b-fp8,@cf/meta/llama-3.1-8b-instruct"
 ALLOWED_ORIGINS = "https://adiariel.com,https://www.adiariel.com,https://arieladi.github.io,http://localhost:8801,http://127.0.0.1:8801"
+
+# --- Cloudflare Access -----------------------------------------------------
+# When both are set, a valid Access JWT authenticates a request and the UI stops
+# asking for a token. Leave blank to fall back to Bearer-only.
+#   ACCESS_TEAM_DOMAIN — Zero Trust > Settings > Custom Pages (e.g. "adiariel")
+#   ACCESS_AUD         — Access > Applications > your app > Overview > AUD tag
+# NOTE: if you rename the team domain in Zero Trust > Settings, update this —
+# it is the JWT issuer, and a mismatch silently falls back to the token prompt.
+ACCESS_TEAM_DOMAIN = "wild-band-1bba"
+ACCESS_AUD = "4f55ba0a1eeb3be3c6365cadb2e3f4e7bfe59c3b010a53359104144698d72fce"
 
 # Secrets (set with `npx wrangler secret put <NAME> --name finance`):
 #   GEMINI_API_KEY  — already set
