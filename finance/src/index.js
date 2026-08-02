@@ -593,63 +593,99 @@ async function importTransactions(env, docId, rows, mapping) {
 // persistence
 // ---------------------------------------------------------------------------
 
-/** Fan the extracted JSON out into income / expenses / investments rows. */
+/**
+ * Fan the extracted JSON out into income / expenses / investments rows.
+ *
+ * Every row carries a content fingerprint written through the same partial UNIQUE
+ * index used by the spreadsheet importer, so INSERT OR IGNORE makes re-ingestion
+ * idempotent. This is what stops a payslip being counted twice when the same month
+ * arrives again — a second email from HR, a re-forward, or a manual upload of a file
+ * that was already emailed. File-level SHA-256 cannot catch those: a re-scan or a
+ * re-generated PDF is different bytes carrying identical figures.
+ *
+ * The payslip key is period + employer + net. Employer matters: Ricor and the kibbutz
+ * both pay in the same month, and on period+net alone the second one to arrive would
+ * be silently swallowed as a duplicate of the first.
+ */
 async function persistExtraction(env, docId, data, fallbackPeriod) {
   const period = toPeriod(data.period) || fallbackPeriod || toPeriod(new Date().toISOString());
   const statements = [];
+  const attempted = { income: 0, expenses: 0, investments: 0 };
 
   for (const row of Array.isArray(data.income) ? data.income : []) {
+    attempted.income++;
+    const rowPeriod = toPeriod(row.pay_date) || period;
+    const hash = await rowHash(
+      `payslip:${rowPeriod}`, toAgorot(row.net), `${row.source || 'salary'}|${row.employer || ''}`);
     statements.push(
       env.DB.prepare(
-        `INSERT INTO income (id, doc_id, source, employer, period, pay_date, gross, net,
-           income_tax, national_ins, health_tax, pension_empl, pension_emplr, notes)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT OR IGNORE INTO income (id, doc_id, source, employer, period, pay_date, gross, net,
+           income_tax, national_ins, health_tax, pension_empl, pension_emplr, notes, row_hash)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       ).bind(
         uuid(), docId, row.source || 'salary', row.employer || null,
-        toPeriod(row.pay_date) || period, row.pay_date || null,
+        rowPeriod, row.pay_date || null,
         toAgorot(row.gross), toAgorot(row.net), toAgorot(row.income_tax),
         toAgorot(row.national_ins), toAgorot(row.health_tax),
-        toAgorot(row.pension_empl), toAgorot(row.pension_emplr), row.notes || null,
+        toAgorot(row.pension_empl), toAgorot(row.pension_emplr), row.notes || null, hash,
       ),
     );
   }
 
   for (const row of Array.isArray(data.expenses) ? data.expenses : []) {
+    attempted.expenses++;
     const spentOn = row.spent_on || `${period}-01`;
+    const hash = await rowHash(spentOn, toAgorot(row.amount),
+      `${row.vendor || ''}|${row.description || ''}`);
     statements.push(
       env.DB.prepare(
-        `INSERT INTO expenses (id, doc_id, category, vendor, description, amount, spent_on, period, recurring)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
+        `INSERT OR IGNORE INTO expenses (id, doc_id, category, vendor, description, amount,
+           spent_on, period, recurring, row_hash)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
       ).bind(
         uuid(), docId, row.category || 'other', row.vendor || null, row.description || null,
-        toAgorot(row.amount), spentOn, toPeriod(spentOn) || period, row.recurring ? 1 : 0,
+        toAgorot(row.amount), spentOn, toPeriod(spentOn) || period, row.recurring ? 1 : 0, hash,
       ),
     );
   }
 
   for (const row of Array.isArray(data.investments) ? data.investments : []) {
+    attempted.investments++;
+    const asOf = row.as_of || `${period}-01`;
+    const hash = await rowHash(`inv:${asOf}`, toAgorot(row.balance),
+      `${row.kind || 'keren_hishtalmut'}|${row.provider || ''}`);
     statements.push(
       env.DB.prepare(
-        `INSERT INTO investments (id, doc_id, kind, provider, account_ref, balance, deposits_total,
-           employer_contrib, employee_contrib, yield_pct, fees_pct, liquid_from, as_of)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT OR IGNORE INTO investments (id, doc_id, kind, provider, account_ref, balance,
+           deposits_total, employer_contrib, employee_contrib, yield_pct, fees_pct,
+           liquid_from, as_of, row_hash)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       ).bind(
         uuid(), docId, row.kind || 'keren_hishtalmut', row.provider || null, row.account_ref || null,
         toAgorot(row.balance), toAgorot(row.deposits_total),
         toAgorot(row.employer_contrib), toAgorot(row.employee_contrib),
         Number.isFinite(row.yield_pct) ? row.yield_pct : null,
         Number.isFinite(row.fees_pct) ? row.fees_pct : null,
-        row.liquid_from || null, row.as_of || `${period}-01`,
+        row.liquid_from || null, asOf, hash,
       ),
     );
   }
 
-  if (statements.length) await env.DB.batch(statements);
-  return { period, counts: {
-    income: (data.income || []).length,
-    expenses: (data.expenses || []).length,
-    investments: (data.investments || []).length,
-  } };
+  let inserted = 0;
+  for (let i = 0; i < statements.length; i += 50) {
+    const res = await env.DB.batch(statements.slice(i, i + 50));
+    inserted += res.reduce((a, r) => a + (r.meta?.changes || 0), 0);
+  }
+  const total = attempted.income + attempted.expenses + attempted.investments;
+  return {
+    period,
+    counts: attempted,
+    inserted,
+    duplicates: total - inserted,
+    // Every row already present, and there was something to insert: this document has
+    // been ingested before. Callers surface it in the UI and swallow it over email.
+    all_duplicates: total > 0 && inserted === 0,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -750,15 +786,18 @@ async function handleUpload(request, env) {
   // Extract. A failure here must not lose the file — it is already in R2.
   try {
     const extracted = await geminiExtract(env, { base64: toBase64(buffer), mimeType: mime });
-    const { period, counts } = await persistExtraction(env, docId, extracted, hintedPeriod);
+    const { period, counts, inserted, duplicates, all_duplicates } =
+      await persistExtraction(env, docId, extracted, hintedPeriod);
 
     await env.DB.prepare(
-      `UPDATE documents SET status='extracted', doc_type=?, period=?, extracted_json=?, processed_at=datetime('now')
-       WHERE id=?`,
-    ).bind(extracted.doc_type || 'unknown', period, JSON.stringify(extracted), docId).run();
+      `UPDATE documents SET status='extracted', doc_type=?, doc_kind=?, period=?, extracted_json=?,
+              processed_at=datetime('now') WHERE id=?`,
+    ).bind(extracted.doc_type || 'unknown', all_duplicates ? 'duplicate' : (extracted.doc_type || null),
+           period, JSON.stringify(extracted), docId).run();
 
     return json({ ok: true, id: docId, r2_key: r2Key, doc_type: extracted.doc_type,
-                  period, counts, confidence: extracted.confidence ?? null, decryption, extracted });
+                  period, counts, inserted, duplicates, duplicate: !!all_duplicates,
+                  confidence: extracted.confidence ?? null, decryption, extracted });
   } catch (err) {
     const message = String(err?.message || err);
     await env.DB.prepare(
@@ -951,7 +990,7 @@ async function handleTasks(request, env, url) {
   if (request.method === 'GET') {
     // Ordering is unchanged from v1 on purpose ('pending' > 'completed' lexically);
     // only the soft-delete filter is new. Children sort oldest-first — checklist order.
-    const [tasks, counts] = await Promise.all([
+    const [tasks, counts, links] = await Promise.all([
       env.DB.prepare(
         `SELECT * FROM tasks WHERE deleted_at IS NULL
           ORDER BY (status='completed') ASC, created_at DESC`,
@@ -959,11 +998,23 @@ async function handleTasks(request, env, url) {
       env.DB.prepare(
         `SELECT task_id, COUNT(*) n FROM task_comments WHERE deleted_at IS NULL GROUP BY task_id`,
       ).all(),
+      env.DB.prepare(
+        `SELECT tc.task_id, c.id, c.display_name, c.primary_phone, c.primary_email
+           FROM task_contacts tc JOIN contacts c ON c.id = tc.contact_id
+          WHERE c.deleted_at IS NULL`,
+      ).all(),
     ]);
     const byTask = new Map((counts.results || []).map((r) => [r.task_id, r.n]));
+    const contactsByTask = new Map();
+    for (const r of links.results || []) {
+      if (!contactsByTask.has(r.task_id)) contactsByTask.set(r.task_id, []);
+      contactsByTask.get(r.task_id).push(r);
+    }
     return json({
       ok: true,
-      tasks: (tasks.results || []).map((t) => ({ ...t, comment_count: byTask.get(t.id) || 0 })),
+      tasks: (tasks.results || []).map((t) => ({
+        ...t, comment_count: byTask.get(t.id) || 0, contacts: contactsByTask.get(t.id) || [],
+      })),
     });
   }
 
@@ -1512,6 +1563,192 @@ async function handleAgentSummary(request, env) {
 }
 
 // ---------------------------------------------------------------------------
+// Contacts
+// ---------------------------------------------------------------------------
+
+const contactChildren = async (env, ids) => {
+  if (!ids.length) return { emails: new Map(), phones: new Map(), addresses: new Map() };
+  const marks = ids.map(() => '?').join(',');
+  const [e, p, a] = await Promise.all([
+    env.DB.prepare(`SELECT * FROM contact_emails    WHERE contact_id IN (${marks})`).bind(...ids).all(),
+    env.DB.prepare(`SELECT * FROM contact_phones    WHERE contact_id IN (${marks})`).bind(...ids).all(),
+    env.DB.prepare(`SELECT * FROM contact_addresses WHERE contact_id IN (${marks})`).bind(...ids).all(),
+  ]);
+  const group = (rows) => {
+    const m = new Map();
+    for (const r of rows || []) { if (!m.has(r.contact_id)) m.set(r.contact_id, []); m.get(r.contact_id).push(r); }
+    return m;
+  };
+  return { emails: group(e.results), phones: group(p.results), addresses: group(a.results) };
+};
+
+/** Rewrites the child rows and refreshes the denormalised primaries. */
+function childStatements(env, contactId, body) {
+  const stmts = [
+    env.DB.prepare('DELETE FROM contact_emails    WHERE contact_id=?').bind(contactId),
+    env.DB.prepare('DELETE FROM contact_phones    WHERE contact_id=?').bind(contactId),
+    env.DB.prepare('DELETE FROM contact_addresses WHERE contact_id=?').bind(contactId),
+  ];
+  for (const [i, em] of (body.emails || []).entries()) {
+    if (!em?.value) continue;
+    stmts.push(env.DB.prepare(
+      'INSERT INTO contact_emails (id, contact_id, value, type, is_primary) VALUES (?,?,?,?,?)',
+    ).bind(uuid(), contactId, trimStr(em.value, 200), trimStr(em.type, 40), em.is_primary || i === 0 ? 1 : 0));
+  }
+  for (const [i, ph] of (body.phones || []).entries()) {
+    if (!ph?.value) continue;
+    stmts.push(env.DB.prepare(
+      'INSERT INTO contact_phones (id, contact_id, value, type, is_primary) VALUES (?,?,?,?,?)',
+    ).bind(uuid(), contactId, trimStr(ph.value, 60), trimStr(ph.type, 40), ph.is_primary || i === 0 ? 1 : 0));
+  }
+  for (const ad of body.addresses || []) {
+    if (!ad || !(ad.formatted || ad.street || ad.city)) continue;
+    stmts.push(env.DB.prepare(
+      `INSERT INTO contact_addresses (id, contact_id, formatted, street, city, region, postal_code, country, type)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).bind(uuid(), contactId, trimStr(ad.formatted, 300), trimStr(ad.street, 200), trimStr(ad.city, 100),
+           trimStr(ad.region, 100), trimStr(ad.postal_code, 30), trimStr(ad.country, 80), trimStr(ad.type, 40)));
+  }
+  return stmts;
+}
+
+const displayNameOf = (b) =>
+  (b.display_name || [b.given_name, b.family_name].filter(Boolean).join(' ') || b.organization || '').trim();
+
+async function handleContacts(request, env, url) {
+  const id = (/^\/api\/contacts\/([\w-]+)$/.exec(url.pathname) || [])[1];
+
+  if (request.method === 'GET' && !id) {
+    const q = (url.searchParams.get('q') || '').trim();
+    const like = `%${q}%`;
+    const rows = q
+      ? await env.DB.prepare(
+          `SELECT * FROM contacts WHERE deleted_at IS NULL
+             AND (display_name LIKE ?1 OR primary_email LIKE ?1 OR primary_phone LIKE ?1
+                  OR organization LIKE ?1 OR description LIKE ?1)
+           ORDER BY display_name LIMIT 500`).bind(like).all()
+      : await env.DB.prepare(
+          'SELECT * FROM contacts WHERE deleted_at IS NULL ORDER BY display_name LIMIT 500').all();
+    const list = rows.results || [];
+    const kids = await contactChildren(env, list.map((c) => c.id));
+    return json({
+      ok: true,
+      contacts: list.map((c) => ({
+        ...c, raw_json: undefined,                       // large; only needed by the sync path
+        emails: kids.emails.get(c.id) || [],
+        phones: kids.phones.get(c.id) || [],
+        addresses: kids.addresses.get(c.id) || [],
+      })),
+    });
+  }
+
+  if (request.method === 'POST') {
+    const body = await readJson(request);
+    const name = displayNameOf(body);
+    if (!name) return json({ error: 'name_required' }, 400);
+    const cid = uuid();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO contacts (id, display_name, given_name, family_name, nickname, primary_email,
+           primary_phone, organization, job_title, birthday, description, starred, dirty)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)`,
+      ).bind(cid, name, trimStr(body.given_name, 100), trimStr(body.family_name, 100),
+             trimStr(body.nickname, 100), trimStr(body.emails?.[0]?.value ?? body.email, 200),
+             trimStr(body.phones?.[0]?.value ?? body.phone, 60), trimStr(body.organization, 200),
+             trimStr(body.job_title, 150), trimStr(body.birthday, 10),
+             trimStr(body.description, 20_000), body.starred ? 1 : 0),
+      ...childStatements(env, cid, body),
+      logStmt(env, 'note', cid, 'create', name, { kind: 'contact' }),
+    ]);
+    return json({ ok: true, contact: await env.DB.prepare('SELECT * FROM contacts WHERE id=?').bind(cid).first() }, 201);
+  }
+
+  if (!id) return json({ error: 'id_required' }, 400);
+
+  if (request.method === 'GET') {
+    const c = await env.DB.prepare('SELECT * FROM contacts WHERE id=?').bind(id).first();
+    if (!c) return json({ error: 'not_found' }, 404);
+    const kids = await contactChildren(env, [id]);
+    const tasks = await env.DB.prepare(
+      `SELECT t.id, t.text, t.status, t.due_date FROM tasks t
+         JOIN task_contacts tc ON tc.task_id = t.id
+        WHERE tc.contact_id = ? AND t.deleted_at IS NULL ORDER BY t.created_at DESC`,
+    ).bind(id).all();
+    return json({ ok: true, contact: { ...c, emails: kids.emails.get(id) || [],
+      phones: kids.phones.get(id) || [], addresses: kids.addresses.get(id) || [] },
+      tasks: tasks.results || [] });
+  }
+
+  if (request.method === 'PUT') {
+    const body = await readJson(request);
+    const before = await env.DB.prepare('SELECT * FROM contacts WHERE id=?').bind(id).first();
+    if (!before) return json({ error: 'not_found' }, 404);
+    const name = displayNameOf({ ...before, ...body });
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE contacts SET display_name=?, given_name=?, family_name=?, nickname=?, primary_email=?,
+                primary_phone=?, organization=?, job_title=?, birthday=?, description=?, starred=?,
+                dirty=1, updated_at=datetime('now') WHERE id=?`,
+      ).bind(name, trimStr(body.given_name ?? before.given_name, 100),
+             trimStr(body.family_name ?? before.family_name, 100),
+             trimStr(body.nickname ?? before.nickname, 100),
+             trimStr(body.emails?.[0]?.value ?? body.email ?? before.primary_email, 200),
+             trimStr(body.phones?.[0]?.value ?? body.phone ?? before.primary_phone, 60),
+             trimStr(body.organization ?? before.organization, 200),
+             trimStr(body.job_title ?? before.job_title, 150),
+             trimStr(body.birthday ?? before.birthday, 10),
+             trimStr(body.description ?? before.description, 20_000),
+             (body.starred ?? before.starred) ? 1 : 0, id),
+      ...(body.emails || body.phones || body.addresses ? childStatements(env, id, body) : []),
+      logStmt(env, 'note', id, 'edit', name, { kind: 'contact' }),
+    ]);
+    return json({ ok: true, contact: await env.DB.prepare('SELECT * FROM contacts WHERE id=?').bind(id).first() });
+  }
+
+  if (request.method === 'DELETE') {
+    const c = await env.DB.prepare('SELECT display_name FROM contacts WHERE id=? AND deleted_at IS NULL')
+      .bind(id).first();
+    if (!c) return json({ error: 'not_found' }, 404);
+    await env.DB.batch([
+      env.DB.prepare("UPDATE contacts SET deleted_at=datetime('now') WHERE id=?").bind(id),
+      logStmt(env, 'note', id, 'delete', c.display_name, { kind: 'contact' }),
+    ]);
+    return json({ ok: true, deleted: id, restorable_days: PURGE_AFTER_DAYS });
+  }
+
+  return json({ error: 'method_not_allowed' }, 405);
+}
+
+/** Link / unlink a contact to a task. */
+async function handleTaskContacts(request, env, taskId, contactId) {
+  if (request.method === 'GET') {
+    const { results } = await env.DB.prepare(
+      `SELECT c.id, c.display_name, c.primary_email, c.primary_phone, c.organization, tc.role
+         FROM task_contacts tc JOIN contacts c ON c.id = tc.contact_id
+        WHERE tc.task_id = ? AND c.deleted_at IS NULL ORDER BY c.display_name`,
+    ).bind(taskId).all();
+    return json({ ok: true, contacts: results || [] });
+  }
+  if (request.method === 'POST') {
+    const body = await readJson(request);
+    const cid = body.contact_id;
+    if (!cid) return json({ error: 'contact_id_required' }, 400);
+    const c = await env.DB.prepare('SELECT display_name FROM contacts WHERE id=?').bind(cid).first();
+    if (!c) return json({ error: 'contact_not_found' }, 404);
+    await env.DB.prepare(
+      'INSERT OR IGNORE INTO task_contacts (task_id, contact_id, role) VALUES (?,?,?)',
+    ).bind(taskId, cid, trimStr(body.role, 40)).run();
+    return json({ ok: true, linked: cid, name: c.display_name }, 201);
+  }
+  if (request.method === 'DELETE' && contactId) {
+    const res = await env.DB.prepare('DELETE FROM task_contacts WHERE task_id=? AND contact_id=?')
+      .bind(taskId, contactId).run();
+    return res.meta.changes ? json({ ok: true, unlinked: contactId }) : json({ error: 'not_found' }, 404);
+  }
+  return json({ error: 'method_not_allowed' }, 405);
+}
+
+// ---------------------------------------------------------------------------
 // History — completed, deleted, and the audit trail
 // ---------------------------------------------------------------------------
 
@@ -1610,7 +1847,7 @@ ${lang === 'he' ? 'ענה בעברית בלבד.' : 'Answer in English.'}`;
  * Line format, not JSON: measured ~4-5x cheaper in tokens for the same information,
  * and json() here pretty-prints with 2-space indent which makes it worse still.
  */
-function serialiseTaskHistory(tasks, commentsByTask) {
+function serialiseTaskHistory(tasks, commentsByTask, contactsByTask = new Map()) {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const lines = [];
   for (const t of tasks) {
@@ -1621,6 +1858,12 @@ function serialiseTaskHistory(tasks, commentsByTask) {
       ? ` | subtask-of: ${byId.get(t.parent_id).text.slice(0, 60)}` : '';
     const due = t.due_date ? ` | due ${t.due_date}` : '';
     lines.push(`- [${state}] ${t.text}${due} | created ${t.created_at}${parent}`);
+    // Named people, so "the task with Galina" resolves to a person with a phone number
+    // rather than a substring match against the task text.
+    for (const p of contactsByTask.get(t.id) || []) {
+      lines.push(`    person: ${p.display_name}${p.primary_phone ? ` | tel ${p.primary_phone}` : ''}` +
+                 `${p.primary_email ? ` | ${p.primary_email}` : ''}`);
+    }
     if (t.detail) lines.push(`    detail: ${String(t.detail).slice(0, 800)}`);
     for (const c of commentsByTask.get(t.id) || []) {
       lines.push(`    comment ${c.created_at}: ${c.body}`);
@@ -1647,15 +1890,24 @@ async function handleChatTasks(request, env) {
   const lang = body.lang === 'he' ? 'he' : 'en';
   if (!question || !question.trim()) return json({ error: 'message_required' }, 400);
 
-  const [taskRows, commentRows] = await Promise.all([
+  const [taskRows, commentRows, linkRows] = await Promise.all([
     env.DB.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all(),          // incl. deleted
     env.DB.prepare('SELECT * FROM task_comments WHERE deleted_at IS NULL ORDER BY created_at ASC').all(),
+    env.DB.prepare(
+      `SELECT tc.task_id, c.display_name, c.primary_phone, c.primary_email
+         FROM task_contacts tc JOIN contacts c ON c.id = tc.contact_id`,
+    ).all(),
   ]);
   let tasks = taskRows.results || [];
   const commentsByTask = new Map();
   for (const c of commentRows.results || []) {
     if (!commentsByTask.has(c.task_id)) commentsByTask.set(c.task_id, []);
     commentsByTask.get(c.task_id).push(c);
+  }
+  const contactsByTask = new Map();
+  for (const r of linkRows.results || []) {
+    if (!contactsByTask.has(r.task_id)) contactsByTask.set(r.task_id, []);
+    contactsByTask.get(r.task_id).push(r);
   }
 
   if (!tasks.length) {
@@ -1664,7 +1916,7 @@ async function handleChatTasks(request, env) {
   }
 
   const system = chatSystemPrompt(lang);
-  let records = serialiseTaskHistory(tasks, commentsByTask);
+  let records = serialiseTaskHistory(tasks, commentsByTask, contactsByTask);
   let filtered = false;
 
   // Only ever filter when the full history physically will not fit. A keyword filter that
@@ -1679,7 +1931,7 @@ async function handleChatTasks(request, env) {
     }));
     scored.sort((a, b) => b.s - a.s || String(b.t.created_at).localeCompare(String(a.t.created_at)));
     tasks = scored.slice(0, 120).map((x) => x.t);
-    records = serialiseTaskHistory(tasks, commentsByTask);
+    records = serialiseTaskHistory(tasks, commentsByTask, contactsByTask);
     filtered = true;
   }
 
@@ -1772,6 +2024,157 @@ ${lang === 'he' ? 'ענה בעברית בלבד.' : 'Answer in English.'}`;
     } catch (err2) {
       return json({ ok: false, error: 'chat_failed', detail: String(err2?.message || err2), ...meta }, 502);
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Inbound email — payslips arriving automatically
+// ---------------------------------------------------------------------------
+//
+// This is the ONLY unauthenticated entry point into the system: anyone who learns the
+// address can deliver a message. It is therefore strict by construction —
+//   1. the sender must be on an allowlist (envelope sender OR the original sender
+//      recovered from the forwarded body, since an O365 "forward" rewrites the From);
+//   2. only PDF attachments are considered, under the normal size ceiling;
+//   3. the PDF must decrypt with PDF_PASS, which no third party can produce.
+// Anything else is dropped and logged. Nothing is ever executed from the message.
+
+const ALLOWED_SENDERS = [
+  'hr@hargal.co.il',
+  'dalia-b@ricor.com',
+  'adidatabase@gmail.com',   // Adi forwarding something manually
+  'computers@ricor.com',
+];
+
+const emailAddr = (s) => {
+  const m = /<([^>]+)>/.exec(String(s || ''));
+  return (m ? m[1] : String(s || '')).trim().toLowerCase();
+};
+
+/**
+ * An Office 365 *forward* rewrites the envelope sender to the forwarding mailbox, so
+ * the real origin only survives inside the body ("From: hr@…") or as an attached
+ * message/rfc822 part. Check both, or genuine payslips get rejected.
+ */
+function findOriginalSender(parsed, envelopeFrom) {
+  const candidates = [envelopeFrom, emailAddr(parsed?.from?.address || parsed?.from)];
+  const body = `${parsed?.text || ''}\n${parsed?.html || ''}`;
+  for (const m of body.matchAll(/[\w.+-]+@[\w.-]+\.\w+/g)) candidates.push(m[0].toLowerCase());
+  for (const h of ['x-forwarded-for', 'x-original-sender', 'reply-to', 'return-path']) {
+    const v = parsed?.headers?.find?.((x) => x.key === h)?.value;
+    if (v) candidates.push(emailAddr(v));
+  }
+  const allowed = candidates.find((c) => c && ALLOWED_SENDERS.includes(c));
+  return { allowed: !!allowed, matched: allowed || null, seen: [...new Set(candidates.filter(Boolean))].slice(0, 8) };
+}
+
+async function handleInboundEmail(message, env, ctx) {
+  const envelopeFrom = emailAddr(message.from);
+  const log = (action, title, meta) =>
+    env.DB.prepare(
+      'INSERT INTO activity_log (id, entity, entity_id, action, title, meta_json) VALUES (?,?,?,?,?,?)',
+    ).bind(uuid(), 'task', 'inbound-email', action, trimStr(title, 300), JSON.stringify(meta)).run()
+      .catch((e) => console.error('log_failed', String(e)));
+
+  if (message.rawSize > 25 * 1024 * 1024) {
+    await log('alert', 'inbound rejected: too large', { from: envelopeFrom, size: message.rawSize });
+    return message.setReject('Message too large');
+  }
+
+  const { default: PostalMime } = await import('postal-mime');
+  const parsed = await new PostalMime().parse(await new Response(message.raw).arrayBuffer());
+  const origin = findOriginalSender(parsed, envelopeFrom);
+
+  if (!origin.allowed) {
+    await log('alert', 'inbound rejected: sender not allowed',
+      { envelope_from: envelopeFrom, subject: parsed.subject, seen: origin.seen });
+    return message.setReject('Sender not permitted');
+  }
+
+  const pdfs = (parsed.attachments || []).filter(
+    (a) => /pdf/i.test(a.mimeType || '') || /\.pdf$/i.test(a.filename || ''));
+  if (!pdfs.length) {
+    await log('alert', 'inbound: no pdf attachment',
+      { from: origin.matched, subject: parsed.subject, attachments: (parsed.attachments || []).length });
+    return;   // accept and drop — an HR mail with no payslip is not an error
+  }
+
+  const results = [];
+  for (const att of pdfs.slice(0, 5)) {
+    try {
+      results.push(await ingestPdfBuffer(env, att.content, att.filename || 'payslip.pdf',
+                                         { via: 'email', sender: origin.matched, subject: parsed.subject }));
+    } catch (err) {
+      results.push({ filename: att.filename, ok: false, error: String(err?.message || err) });
+    }
+  }
+
+  await log('attach', `inbound payslip from ${origin.matched}`,
+    { subject: parsed.subject, results });
+  console.log('inbound_email', JSON.stringify({ from: origin.matched, results }));
+
+  // Silence is the spec for the background path: a duplicate is normal, not a failure.
+  const fresh = results.filter((r) => r.ok && !r.duplicate);
+  if (fresh.length && env.RESEND_API_KEY) {
+    ctx.waitUntil(sendMail(env, {
+      subject: `תלוש חדש נקלט · ${fresh.map((r) => r.period || '').filter(Boolean).join(', ')}`,
+      text: fresh.map((r) => `${r.filename}: ${r.doc_type || ''} ${r.period || ''} — ${r.inserted} רשומות`).join('\n'),
+    }).catch((e) => console.error('notify_failed', String(e))));
+  }
+}
+
+/** Shared ingestion used by both the HTTP upload and the email handler. */
+async function ingestPdfBuffer(env, bytes, filename, meta = {}) {
+  let buffer = bytes instanceof ArrayBuffer ? bytes : bytes.buffer.slice(
+    bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const hash = await sha256Hex(buffer);
+
+  const dupeFile = await env.DB.prepare('SELECT id, period FROM documents WHERE sha256 = ?')
+    .bind(hash).first();
+  if (dupeFile) {
+    return { filename, ok: true, duplicate: true, reason: 'identical_file',
+             existing_id: dupeFile.id, period: dupeFile.period, inserted: 0 };
+  }
+
+  let decryption = null;
+  if (detectPdfEncryption(buffer)) {
+    if (!env.PDF_PASS) return { filename, ok: false, error: 'no_pdf_pass_secret' };
+    const res = decryptPdf(buffer, env.PDF_PASS);
+    decryption = res.ok ? { ok: true, cipher: `RC4-${res.bits}` } : { ok: false, error: res.error };
+    if (!res.ok) return { filename, ok: false, error: res.error };
+    buffer = res.bytes.buffer;
+  }
+
+  const docId = uuid();
+  const now = new Date();
+  const safeName = filename.replace(/[^\w.\-֐-׿]/g, '_').slice(0, 120);
+  const r2Key = `docs/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, '0')}/${docId}-${safeName}`;
+
+  await env.DOCS_BUCKET.put(r2Key, buffer, {
+    httpMetadata: { contentType: 'application/pdf' },
+    customMetadata: { docId, originalName: filename, sha256: hash, via: meta.via || 'upload' },
+  });
+  await env.DB.prepare(
+    `INSERT INTO documents (id, r2_key, filename, mime, size_bytes, sha256, doc_type, status)
+     VALUES (?,?,?,?,?,?,'unknown','pending')`,
+  ).bind(docId, r2Key, filename, 'application/pdf', buffer.byteLength, hash).run();
+
+  try {
+    const extracted = await geminiExtract(env, { base64: toBase64(buffer), mimeType: 'application/pdf' });
+    const r = await persistExtraction(env, docId, extracted, null);
+    await env.DB.prepare(
+      `UPDATE documents SET status='extracted', doc_type=?, doc_kind=?, period=?, extracted_json=?,
+              processed_at=datetime('now') WHERE id=?`,
+    ).bind(extracted.doc_type || 'unknown', r.all_duplicates ? 'duplicate' : (extracted.doc_type || null),
+           r.period, JSON.stringify(extracted), docId).run();
+    return { filename, ok: true, id: docId, doc_type: extracted.doc_type, period: r.period,
+             inserted: r.inserted, duplicates: r.duplicates, duplicate: !!r.all_duplicates, decryption };
+  } catch (err) {
+    const m = String(err?.message || err);
+    await env.DB.prepare(
+      `UPDATE documents SET status='failed', error=?, processed_at=datetime('now') WHERE id=?`,
+    ).bind(m.slice(0, 500), docId).run();
+    return { filename, ok: false, id: docId, stored: true, error: 'extraction_failed', detail: m };
   }
 }
 
@@ -1955,6 +2358,13 @@ export default {
       if (taskComments) {
         return withCors(await handleComments(request, env, taskComments[1], taskComments[2]));
       }
+      const taskContacts = /^\/api\/tasks\/([\w-]+)\/contacts(?:\/([\w-]+))?$/.exec(url.pathname);
+      if (taskContacts) {
+        return withCors(await handleTaskContacts(request, env, taskContacts[1], taskContacts[2]));
+      }
+      if (/^\/api\/contacts(\/[\w-]+)?$/.test(url.pathname)) {
+        return withCors(await handleContacts(request, env, url));
+      }
       const restoreNote = /^\/api\/notes\/([\w-]+)\/restore$/.exec(url.pathname);
       if (restoreNote && request.method === 'POST') {
         return withCors(await handleNoteRestore(env, restoreNote[1]));
@@ -2057,6 +2467,15 @@ export default {
     } catch (err) {
       console.error('unhandled', err?.stack || err);
       return withCors(json({ error: 'internal', detail: String(err?.message || err) }, 500));
+    }
+  },
+
+  async email(message, env, ctx) {
+    try {
+      await handleInboundEmail(message, env, ctx);
+    } catch (err) {
+      // Never throw out of here: an unhandled error bounces the message back to HR.
+      console.error('email_handler_failed', err?.stack || err);
     }
   },
 
