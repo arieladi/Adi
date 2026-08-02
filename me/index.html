@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Adi · Personal Hub</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0d0b; --panel:#0f1310; --line:rgba(255,255,255,.08); --line-2:rgba(255,255,255,.16);
+  --text:#eaf1ec; --muted:#9aa89c;
+  --c1:#5eead4; --c2:#10b981; --c3:#c08a57;
+  --grad:linear-gradient(90deg,var(--c1),var(--c2) 50%,var(--c3));
+  --r:18px;
+  --sans:'Space Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --ok:#10b981; --warn:#e0a458; --bad:#e5645e;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.5;
+  -webkit-font-smoothing:antialiased;min-height:100vh}
+a{color:var(--c1)}
+.wrap{max-width:1140px;margin:0 auto;padding:28px 20px 80px}
+
+/* ---------- gate ---------- */
+#gate{position:fixed;inset:0;background:var(--bg);z-index:50;display:grid;place-items:center;padding:24px}
+#gate .box{width:min(420px,100%);background:var(--panel);border:1px solid var(--line);
+  border-radius:var(--r);padding:28px}
+#gate h1{margin:0 0 6px;font-size:1.25rem}
+#gate p{margin:0 0 18px;color:var(--muted);font-size:.9rem}
+input[type=password],input[type=text],input[type=month],select{
+  width:100%;background:#0a0e0c;border:1px solid var(--line-2);color:var(--text);
+  border-radius:12px;padding:11px 13px;font-family:var(--mono);font-size:.9rem}
+input:focus,select:focus{outline:none;border-color:var(--c2)}
+.btn{border:0;border-radius:12px;padding:11px 18px;font-family:var(--sans);font-weight:600;
+  font-size:.9rem;cursor:pointer;background:var(--grad);color:#04140e;transition:opacity .15s}
+.btn:hover{opacity:.88}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn.ghost{background:transparent;border:1px solid var(--line-2);color:var(--text)}
+.err{color:var(--bad);font-size:.85rem;margin-top:10px;min-height:1.2em}
+
+/* ---------- header ---------- */
+header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;
+  padding-bottom:18px;border-bottom:1px solid var(--line);margin-bottom:24px;flex-wrap:wrap}
+header h1{margin:0;font-size:1.5rem;letter-spacing:-.02em}
+header h1 span{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.sub{color:var(--muted);font-size:.85rem;font-family:var(--mono)}
+
+/* ---------- layout ---------- */
+.grid{display:grid;gap:16px}
+.kpis{grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:16px}
+.cols{grid-template-columns:1.35fr .95fr;align-items:start}
+@media(max-width:900px){.cols{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:20px}
+.card h2{margin:0 0 14px;font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.kpi .label{font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.kpi .val{font-family:var(--mono);font-size:1.6rem;margin-top:6px;letter-spacing:-.02em}
+.kpi .val.pos{color:var(--ok)} .kpi .val.neg{color:var(--bad)}
+.kpi .foot{font-size:.75rem;color:var(--muted);margin-top:4px}
+
+/* ---------- bars ---------- */
+.row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:7px 0}
+.row + .row{border-top:1px solid var(--line)}
+.row .name{font-size:.88rem}
+.row .amt{font-family:var(--mono);font-size:.85rem;color:var(--muted)}
+.bar{height:6px;border-radius:99px;background:rgba(255,255,255,.06);overflow:hidden;margin-top:6px;grid-column:1/-1}
+.bar i{display:block;height:100%;border-radius:99px;background:var(--grad)}
+.mrow{display:grid;grid-template-columns:74px 1fr;gap:12px;align-items:center;padding:9px 0}
+.mrow + .mrow{border-top:1px solid var(--line)}
+.mrow .per{font-family:var(--mono);font-size:.8rem;color:var(--muted)}
+.stack{display:flex;height:22px;border-radius:7px;overflow:hidden;background:rgba(255,255,255,.05)}
+.stack i{display:block;height:100%}
+.stack .in{background:linear-gradient(90deg,var(--c1),var(--c2))}
+.stack .out{background:var(--c3);opacity:.85}
+.legend{display:flex;gap:16px;font-size:.75rem;color:var(--muted);margin-top:10px;flex-wrap:wrap}
+.legend b{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:middle}
+
+/* ---------- upload ---------- */
+#drop{border:1.5px dashed var(--line-2);border-radius:14px;padding:26px 18px;text-align:center;
+  cursor:pointer;transition:border-color .15s,background .15s}
+#drop:hover,#drop.over{border-color:var(--c2);background:rgba(16,185,129,.05)}
+#drop .big{font-size:.95rem;font-weight:600}
+#drop .small{font-size:.78rem;color:var(--muted);margin-top:5px}
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+@media(max-width:520px){.fields{grid-template-columns:1fr}}
+.uplog{margin-top:12px;font-family:var(--mono);font-size:.78rem;max-height:190px;overflow:auto}
+.uplog div{padding:6px 0;border-top:1px solid var(--line);display:flex;gap:8px}
+.uplog .s-ok{color:var(--ok)} .uplog .s-bad{color:var(--bad)} .uplog .s-run{color:var(--warn)}
+
+/* ---------- insights ---------- */
+#insight{white-space:pre-wrap;font-size:.92rem;line-height:1.65}
+#insight ul{margin:0;padding-left:18px}
+.badge{display:inline-block;font-family:var(--mono);font-size:.66rem;padding:3px 8px;border-radius:99px;
+  border:1px solid var(--line-2);color:var(--muted);margin-left:8px;vertical-align:middle}
+.docs{font-size:.85rem}
+.docs .d{display:grid;grid-template-columns:1fr auto;gap:8px;padding:8px 0;align-items:center}
+.docs .d + .d{border-top:1px solid var(--line)}
+.docs .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.docs .meta{font-family:var(--mono);font-size:.72rem;color:var(--muted)}
+.pill{font-family:var(--mono);font-size:.68rem;padding:2px 7px;border-radius:99px}
+.pill.extracted{background:rgba(16,185,129,.14);color:var(--ok)}
+.pill.failed{background:rgba(229,100,94,.14);color:var(--bad)}
+.pill.pending{background:rgba(224,164,88,.14);color:var(--warn)}
+.empty{color:var(--muted);font-size:.85rem;font-style:italic}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line-2);
+  border-top-color:var(--c1);border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
+  color:var(--muted);font-size:.78rem;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+
+<!-- ============ token gate ============ -->
+<div id="gate">
+  <div class="box">
+    <h1>Personal hub</h1>
+    <p>Enter your API token to unlock. Stored for this tab only.</p>
+    <form id="gateForm">
+      <input type="password" id="tok" placeholder="API token" autocomplete="current-password" required>
+      <div class="err" id="gateErr"></div>
+      <button class="btn" style="width:100%;margin-top:12px" type="submit">Unlock</button>
+    </form>
+  </div>
+</div>
+
+<!-- ============ app ============ -->
+<div class="wrap" id="app" hidden>
+  <header>
+    <div>
+      <h1><span>Adi</span> · financials</h1>
+      <div class="sub" id="stamp">loading…</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn ghost" id="refresh">Refresh</button>
+      <button class="btn ghost" id="lock">Lock</button>
+    </div>
+  </header>
+
+  <div class="grid kpis" id="kpis"></div>
+
+  <div class="grid cols">
+    <div class="grid" style="gap:16px">
+
+      <section class="card">
+        <h2>Upload document</h2>
+        <div id="drop">
+          <div class="big">Drop a payslip, kibbutz sheet or invoice</div>
+          <div class="small">PDF, JPG or PNG · Hebrew or English · max 15 MB</div>
+          <input type="file" id="file" hidden multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*">
+        </div>
+        <div class="fields">
+          <select id="dtype">
+            <option value="">Auto-detect type</option>
+            <option value="salary">תלוש שכר · Payslip</option>
+            <option value="kibbutz">דף קיבוץ · Kibbutz sheet</option>
+            <option value="invoice">חשבונית · Invoice</option>
+            <option value="investment">קרן השתלמות · Investment</option>
+          </select>
+          <input type="month" id="period" title="Period the document covers (optional)">
+        </div>
+        <div class="uplog" id="uplog"></div>
+      </section>
+
+      <section class="card">
+        <h2>Monthly cashflow</h2>
+        <div id="monthly"><div class="empty">No records yet.</div></div>
+        <div class="legend">
+          <span><b style="background:linear-gradient(90deg,var(--c1),var(--c2))"></b>Net income</span>
+          <span><b style="background:var(--c3)"></b>Spending</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Spending breakdown <span class="badge">last 6 months</span></h2>
+        <div id="cats"><div class="empty">No expenses recorded yet.</div></div>
+      </section>
+    </div>
+
+    <div class="grid" style="gap:16px">
+      <section class="card">
+        <h2>AI insights <span class="badge" id="aimodel">workers ai</span></h2>
+        <div id="insight"><span class="spin"></span></div>
+      </section>
+
+      <section class="card">
+        <h2>Investments <span class="badge">קרן השתלמות</span></h2>
+        <div id="inv"><div class="empty">No statements yet.</div></div>
+      </section>
+
+      <section class="card">
+        <h2>Documents</h2>
+        <div class="docs" id="docs"><div class="empty">Nothing uploaded yet.</div></div>
+      </section>
+    </div>
+  </div>
+
+  <footer>
+    <span>Private · Cloudflare Worker + D1 + R2</span>
+    <span class="sub" id="apibase"></span>
+  </footer>
+</div>
+
+<script>
+const API = 'https://finance.adidatabase.workers.dev';
+const KEY = 'adi_fin_tok';
+const $ = (s) => document.querySelector(s);
+
+const ils = (agorot, dp = 0) =>
+  '₪' + (agorot / 100).toLocaleString('en-IL', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+
+function token(){ return sessionStorage.getItem(KEY) || ''; }
+
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    ...opts,
+    headers: { Authorization: 'Bearer ' + token(), ...(opts.headers || {}) },
+  });
+  if (res.status === 401) { lock(); throw new Error('unauthorized'); }
+  return res;
+}
+
+function lock(){ sessionStorage.removeItem(KEY); $('#app').hidden = true; $('#gate').style.display = 'grid'; }
+
+// ---------------- gate ----------------
+$('#gateForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const value = $('#tok').value.trim();
+  if (!value) return;
+  $('#gateErr').textContent = '';
+  sessionStorage.setItem(KEY, value);
+  const res = await fetch(API + '/api/summary', { headers: { Authorization: 'Bearer ' + value } });
+  if (!res.ok) {
+    sessionStorage.removeItem(KEY);
+    $('#gateErr').textContent = res.status === 401 ? 'Wrong token.' : 'Server error ' + res.status;
+    return;
+  }
+  $('#gate').style.display = 'none';
+  $('#app').hidden = false;
+  boot();
+});
+
+$('#lock').addEventListener('click', lock);
+$('#refresh').addEventListener('click', () => { loadSummary(); loadInsights(); });
+
+// ---------------- render ----------------
+function renderKpis(s) {
+  const latest = s.monthly[0];
+  const invTotal = s.investments.reduce((sum, i) => sum + (i.balance || 0), 0);
+  const keren = s.investments
+    .filter((i) => i.kind === 'keren_hishtalmut')
+    .reduce((sum, i) => sum + (i.balance || 0), 0);
+  const saved = latest ? latest.income_net - latest.spend : 0;
+  const rate = latest && latest.income_net > 0 ? Math.round((saved / latest.income_net) * 100) : null;
+
+  const tiles = [
+    { label: 'Net income', val: latest ? ils(latest.income_net) : '—',
+      foot: latest ? latest.period : 'no data' },
+    { label: 'Spending', val: latest ? ils(latest.spend) : '—',
+      foot: latest ? `${s.totals.expense_rows} items tracked` : 'no data' },
+    { label: 'Saved', val: latest ? ils(saved) : '—', cls: saved > 0 ? 'pos' : saved < 0 ? 'neg' : '',
+      foot: rate === null ? 'no data' : `${rate}% of net income` },
+    { label: 'Investments', val: invTotal ? ils(invTotal) : '—',
+      foot: keren
+        ? `Keren ${ils(keren)} · ${s.investments.length} account(s)`
+        : s.investments.length ? `${s.investments.length} account(s)` : 'no statements' },
+  ];
+
+  $('#kpis').innerHTML = tiles.map((t) => `
+    <div class="card kpi">
+      <div class="label">${t.label}</div>
+      <div class="val ${t.cls || ''}">${t.val}</div>
+      <div class="foot">${t.foot}</div>
+    </div>`).join('');
+}
+
+function renderMonthly(rows) {
+  if (!rows.length) { $('#monthly').innerHTML = '<div class="empty">No records yet.</div>'; return; }
+  const peak = Math.max(...rows.map((r) => Math.max(r.income_net, r.spend)), 1);
+  $('#monthly').innerHTML = rows.map((r) => `
+    <div class="mrow">
+      <div class="per">${r.period}</div>
+      <div>
+        <div class="stack">
+          <i class="in" style="width:${(r.income_net / peak) * 100}%" title="Net ${ils(r.income_net)}"></i>
+        </div>
+        <div class="stack" style="margin-top:3px;height:14px">
+          <i class="out" style="width:${(r.spend / peak) * 100}%" title="Spend ${ils(r.spend)}"></i>
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+function renderCats(rows) {
+  if (!rows.length) { $('#cats').innerHTML = '<div class="empty">No expenses recorded yet.</div>'; return; }
+  const peak = Math.max(...rows.map((r) => r.total), 1);
+  $('#cats').innerHTML = rows.map((r) => `
+    <div class="row">
+      <div class="name">${esc(r.category)}</div>
+      <div class="amt">${ils(r.total)}</div>
+      <div class="bar"><i style="width:${(r.total / peak) * 100}%"></i></div>
+    </div>`).join('');
+}
+
+function renderInv(rows) {
+  if (!rows.length) { $('#inv').innerHTML = '<div class="empty">No statements yet.</div>'; return; }
+  const names = { keren_hishtalmut: 'Keren Hishtalmut', pension: 'Pension', gemel: 'Gemel',
+                  savings: 'Savings', other: 'Other' };
+  $('#inv').innerHTML = rows.map((r) => `
+    <div class="row">
+      <div class="name">${names[r.kind] || esc(r.kind)}${r.provider ? ` <span class="badge">${esc(r.provider)}</span>` : ''}</div>
+      <div class="amt">${ils(r.balance)}</div>
+      <div class="amt" style="grid-column:1/-1;font-size:.74rem">
+        ${r.yield_pct != null ? `yield ${r.yield_pct}%` : ''}
+        ${r.fees_pct != null ? ` · fees ${r.fees_pct}%` : ''}
+        ${r.liquid_from ? ` · liquid ${r.liquid_from}` : ''}
+        ${r.as_of ? ` · as of ${r.as_of}` : ''}
+      </div>
+    </div>`).join('');
+}
+
+function renderDocs(rows) {
+  if (!rows.length) { $('#docs').innerHTML = '<div class="empty">Nothing uploaded yet.</div>'; return; }
+  $('#docs').innerHTML = rows.map((d) => `
+    <div class="d">
+      <div>
+        <div class="nm"><a href="${API}/api/doc/${d.id}" target="_blank" rel="noopener">${esc(d.filename)}</a></div>
+        <div class="meta">${esc(d.doc_type)}${d.period ? ' · ' + d.period : ''} · ${d.uploaded_at}</div>
+      </div>
+      <span class="pill ${d.status}">${d.status}</span>
+    </div>`).join('');
+}
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// ---------------- data ----------------
+async function loadSummary() {
+  const res = await api('/api/summary');
+  const s = await res.json();
+  renderKpis(s); renderMonthly(s.monthly); renderCats(s.by_category);
+  renderInv(s.investments); renderDocs(s.documents);
+  $('#stamp').textContent =
+    `${s.totals.documents} docs · ${s.totals.income_rows} income · ${s.totals.expense_rows} expenses · ${s.totals.investment_rows} statements`;
+  $('#apibase').textContent = new URL(API).host;
+}
+
+async function loadInsights() {
+  $('#insight').innerHTML = '<span class="spin"></span>';
+  try {
+    const res = await api('/api/insights');
+    const d = await res.json();
+    $('#aimodel').textContent = (d.model || 'workers ai').replace('@cf/', '');
+    const text = d.insight || (d.error ? 'Insights unavailable: ' + d.error : 'No insight returned.');
+    const bullets = text.split('\n').map((l) => l.replace(/^[\s*\-•]+/, '').trim()).filter(Boolean);
+    $('#insight').innerHTML = bullets.length > 1
+      ? '<ul>' + bullets.map((b) => `<li>${esc(b)}</li>`).join('') + '</ul>'
+      : esc(text);
+  } catch {
+    $('#insight').textContent = 'Could not reach the insights endpoint.';
+  }
+}
+
+// ---------------- upload ----------------
+const drop = $('#drop'), fileInput = $('#file');
+drop.addEventListener('click', () => fileInput.click());
+drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', (e) => {
+  e.preventDefault(); drop.classList.remove('over');
+  if (e.dataTransfer.files.length) upload([...e.dataTransfer.files]);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) upload([...fileInput.files]);
+  fileInput.value = '';
+});
+
+function logLine(name) {
+  const el = document.createElement('div');
+  el.innerHTML = `<span class="s-run">▸</span><span style="flex:1">${esc(name)}</span><span class="st">…</span>`;
+  $('#uplog').prepend(el);
+  return el;
+}
+
+async function upload(files) {
+  for (const file of files) {
+    const line = logLine(file.name);
+    const fd = new FormData();
+    fd.append('file', file);
+    if ($('#dtype').value) fd.append('doc_type', $('#dtype').value);
+    if ($('#period').value) fd.append('period', $('#period').value);
+    try {
+      const res = await api('/api/upload', { method: 'POST', body: fd });
+      const d = await res.json();
+      if (res.ok && d.ok) {
+        const n = d.counts || {};
+        line.querySelector('.st').innerHTML =
+          `<span class="s-ok">${d.doc_type} · ${n.income || 0}i ${n.expenses || 0}e ${n.investments || 0}v</span>`;
+        line.querySelector('.s-run').outerHTML = '<span class="s-ok">✓</span>';
+      } else if (res.status === 409) {
+        line.querySelector('.st').innerHTML = '<span class="s-bad">duplicate</span>';
+        line.querySelector('.s-run').outerHTML = '<span class="s-bad">!</span>';
+      } else {
+        line.querySelector('.st').innerHTML =
+          `<span class="s-bad">${esc(d.error || res.status)}</span>`;
+        line.querySelector('.s-run').outerHTML = '<span class="s-bad">✕</span>';
+      }
+    } catch (err) {
+      line.querySelector('.st').innerHTML = `<span class="s-bad">${esc(err.message)}</span>`;
+    }
+  }
+  await loadSummary();
+  await loadInsights();
+}
+
+// ---------------- boot ----------------
+function boot(){ loadSummary().catch(() => {}); loadInsights(); }
+
+if (token()) {
+  fetch(API + '/api/summary', { headers: { Authorization: 'Bearer ' + token() } })
+    .then((r) => { if (r.ok) { $('#gate').style.display = 'none'; $('#app').hidden = false; boot(); } })
+    .catch(() => {});
+}
+</script>
+</body>
+</html>
