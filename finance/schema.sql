@@ -112,3 +112,36 @@ FROM (
 ) p
 GROUP BY p.period
 ORDER BY p.period DESC;
+
+-- ---------------------------------------------------------------------------
+-- Tasks & Notes (added 2026-08-02) — the second tab of the hub.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tasks (
+  id         TEXT PRIMARY KEY,
+  text       TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','completed')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS notes (
+  id         TEXT PRIMARY KEY,
+  title      TEXT,
+  content    TEXT,                 -- markdown
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC);
+
+-- Files attached to a note. Bytes live in R2; this is the index.
+CREATE TABLE IF NOT EXISTS note_attachments (
+  id         TEXT PRIMARY KEY,
+  note_id    TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  r2_key     TEXT NOT NULL UNIQUE,
+  filename   TEXT NOT NULL,
+  mime       TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_attach_note ON note_attachments(note_id);

@@ -629,6 +629,346 @@ async function handleDiag(env) {
 }
 
 // ---------------------------------------------------------------------------
+// Tasks & Notes — CRUD
+// ---------------------------------------------------------------------------
+
+const readJson = (request) => request.json().catch(() => ({}));
+const trimStr = (v, max) => (v === null || v === undefined ? null : String(v).slice(0, max));
+
+async function handleTasks(request, env, url) {
+  const id = (/^\/api\/tasks\/([\w-]+)$/.exec(url.pathname) || [])[1];
+
+  if (request.method === 'GET') {
+    const { results } = await env.DB.prepare(
+      `SELECT * FROM tasks ORDER BY (status='completed') ASC, created_at DESC`,
+    ).all();
+    return json({ ok: true, tasks: results || [] });
+  }
+
+  if (request.method === 'POST') {
+    const body = await readJson(request);
+    const text = trimStr(body.text, 2000);
+    if (!text || !text.trim()) return json({ error: 'text_required' }, 400);
+    const taskId = uuid();
+    await env.DB.prepare('INSERT INTO tasks (id, text, status) VALUES (?,?,?)')
+      .bind(taskId, text.trim(), body.status === 'completed' ? 'completed' : 'pending').run();
+    return json({ ok: true, task: await env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(taskId).first() }, 201);
+  }
+
+  if (!id) return json({ error: 'id_required' }, 400);
+
+  if (request.method === 'PUT') {
+    const body = await readJson(request);
+    const sets = [];
+    const binds = [];
+    if (body.text !== undefined) { sets.push('text=?'); binds.push(trimStr(body.text, 2000)); }
+    if (body.status !== undefined) {
+      if (!['pending', 'completed'].includes(body.status)) return json({ error: 'bad_status' }, 400);
+      sets.push('status=?'); binds.push(body.status);
+    }
+    if (!sets.length) return json({ error: 'nothing_to_update' }, 400);
+    sets.push("updated_at=datetime('now')");
+    binds.push(id);
+    const res = await env.DB.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id=?`).bind(...binds).run();
+    if (!res.meta.changes) return json({ error: 'not_found' }, 404);
+    return json({ ok: true, task: await env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(id).first() });
+  }
+
+  if (request.method === 'DELETE') {
+    const res = await env.DB.prepare('DELETE FROM tasks WHERE id=?').bind(id).run();
+    return res.meta.changes ? json({ ok: true, deleted: id }) : json({ error: 'not_found' }, 404);
+  }
+
+  return json({ error: 'method_not_allowed' }, 405);
+}
+
+async function handleNotes(request, env, url) {
+  const id = (/^\/api\/notes\/([\w-]+)$/.exec(url.pathname) || [])[1];
+
+  if (request.method === 'GET') {
+    const [notes, attachments] = await Promise.all([
+      env.DB.prepare('SELECT * FROM notes ORDER BY updated_at DESC').all(),
+      env.DB.prepare('SELECT id, note_id, filename, mime, size_bytes FROM note_attachments').all(),
+    ]);
+    const byNote = new Map();
+    for (const a of attachments.results || []) {
+      if (!byNote.has(a.note_id)) byNote.set(a.note_id, []);
+      byNote.get(a.note_id).push(a);
+    }
+    return json({
+      ok: true,
+      notes: (notes.results || []).map((n) => ({ ...n, attachments: byNote.get(n.id) || [] })),
+    });
+  }
+
+  if (request.method === 'POST') {
+    const body = await readJson(request);
+    const noteId = uuid();
+    await env.DB.prepare('INSERT INTO notes (id, title, content) VALUES (?,?,?)')
+      .bind(noteId, trimStr(body.title, 300), trimStr(body.content, 100_000)).run();
+    return json({ ok: true, note: await env.DB.prepare('SELECT * FROM notes WHERE id=?').bind(noteId).first() }, 201);
+  }
+
+  if (!id) return json({ error: 'id_required' }, 400);
+
+  if (request.method === 'PUT') {
+    const body = await readJson(request);
+    const sets = [];
+    const binds = [];
+    if (body.title !== undefined) { sets.push('title=?'); binds.push(trimStr(body.title, 300)); }
+    if (body.content !== undefined) { sets.push('content=?'); binds.push(trimStr(body.content, 100_000)); }
+    if (!sets.length) return json({ error: 'nothing_to_update' }, 400);
+    sets.push("updated_at=datetime('now')");
+    binds.push(id);
+    const res = await env.DB.prepare(`UPDATE notes SET ${sets.join(', ')} WHERE id=?`).bind(...binds).run();
+    if (!res.meta.changes) return json({ error: 'not_found' }, 404);
+    return json({ ok: true, note: await env.DB.prepare('SELECT * FROM notes WHERE id=?').bind(id).first() });
+  }
+
+  if (request.method === 'DELETE') {
+    // Clear the R2 objects first — an orphaned blob costs money and leaks data.
+    const { results } = await env.DB.prepare('SELECT r2_key FROM note_attachments WHERE note_id=?')
+      .bind(id).all();
+    await Promise.all((results || []).map((r) => env.DOCS_BUCKET.delete(r.r2_key)));
+    await env.DB.prepare('DELETE FROM note_attachments WHERE note_id=?').bind(id).run();
+    const res = await env.DB.prepare('DELETE FROM notes WHERE id=?').bind(id).run();
+    return res.meta.changes
+      ? json({ ok: true, deleted: id, attachments_removed: (results || []).length })
+      : json({ error: 'not_found' }, 404);
+  }
+
+  return json({ error: 'method_not_allowed' }, 405);
+}
+
+async function handleAttach(request, env, noteId) {
+  const note = await env.DB.prepare('SELECT id FROM notes WHERE id=?').bind(noteId).first();
+  if (!note) return json({ error: 'note_not_found' }, 404);
+
+  const form = await request.formData().catch(() => null);
+  const file = form?.get('file');
+  if (!file || typeof file === 'string') return json({ error: 'missing_file_field' }, 400);
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return json({ error: 'file_too_large', max_bytes: MAX_UPLOAD_BYTES, got: file.size }, 413);
+  }
+
+  const attachId = uuid();
+  const safeName = (file.name || 'file').replace(/[^\w.\-֐-׿]/g, '_').slice(0, 120);
+  const r2Key = `notes/${noteId}/${attachId}-${safeName}`;
+  const mime = file.type || 'application/octet-stream';
+
+  await env.DOCS_BUCKET.put(r2Key, await file.arrayBuffer(), {
+    httpMetadata: { contentType: mime },
+    customMetadata: { noteId, originalName: file.name || '' },
+  });
+  await env.DB.prepare(
+    `INSERT INTO note_attachments (id, note_id, r2_key, filename, mime, size_bytes) VALUES (?,?,?,?,?,?)`,
+  ).bind(attachId, noteId, r2Key, file.name || safeName, mime, file.size).run();
+  await env.DB.prepare("UPDATE notes SET updated_at=datetime('now') WHERE id=?").bind(noteId).run();
+
+  return json({ ok: true, attachment: { id: attachId, note_id: noteId, filename: file.name || safeName,
+                                        mime, size_bytes: file.size } }, 201);
+}
+
+// ---------------------------------------------------------------------------
+// Agent — smart routing between edge models and Gemini
+// ---------------------------------------------------------------------------
+
+const AGENT_MODELS = {
+  llama:    '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+  deepseek: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b',
+  qwen:     '@cf/qwen/qwen3-30b-a3b-fp8',
+  mistral:  '@cf/mistralai/mistral-small-3.1-24b-instruct',
+};
+const EDGE_TOKEN_LIMIT = 4000;
+const GEMINI_ATTACH_BUDGET = 12 * 1024 * 1024;
+const NOTE_CHAR_CAP = 8000;
+
+/**
+ * Deliberately pessimistic: Hebrew tokenises far worse than English (often
+ * ~1 token per 2 characters), so dividing by 3 keeps us from overshooting the
+ * edge model's window on a Hebrew-heavy payload.
+ */
+const estimateTokens = (text) => Math.ceil((text || '').length / 3);
+
+/** R1-style models narrate their reasoning first; the user wants the answer. */
+const stripThinking = (text) =>
+  String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^[\s\S]*?<\/think>/i, '').trim();
+
+function agentPrompt(lang) {
+  const hebrew = lang === 'he';
+  return `You are Adi's personal executive assistant. You are reading his complete task list and notes.
+
+Give a blunt, highly actionable read of his current state. No pleasantries, no hedging, no restating
+the list back to him. Structure the reply as:
+
+1. **${hebrew ? 'מצב נוכחי' : 'Current state'}** — two sentences on where things actually stand.
+2. **${hebrew ? 'המיקוד להיום' : 'Focus today'}** — the 1-3 things that genuinely matter today, most important first, each with why.
+3. **${hebrew ? 'נופל בין הכיסאות' : 'Slipping'}** — anything stale, blocked, or quietly rotting. Say so directly.
+
+Be specific: name the actual tasks and notes. If something looks like busywork, say it is busywork.
+If there is nothing urgent, say that plainly instead of inventing urgency.
+${hebrew ? 'ענה בעברית בלבד, בשפה טבעית וישירה.' : 'Answer in English.'}
+Keep it under 200 words.`;
+}
+
+function buildAgentContext(tasks, notes) {
+  const pending = tasks.filter((t) => t.status === 'pending');
+  const done = tasks.filter((t) => t.status === 'completed');
+  const lines = [
+    `PENDING TASKS (${pending.length}):`,
+    ...(pending.length ? pending.map((t) => `  - [${t.created_at}] ${t.text}`) : ['  (none)']),
+    '',
+    `RECENTLY COMPLETED (${Math.min(done.length, 5)} of ${done.length}):`,
+    ...(done.slice(0, 5).map((t) => `  - ${t.text}`) || []),
+    '',
+    `NOTES (${notes.length}):`,
+  ];
+  // Note bodies are included close to whole. Truncating here before measuring
+  // would cap the context artificially and stop the size-based escalation to
+  // Gemini from ever firing; the per-note ceiling only guards against one
+  // pathological note, and NOTE_CHAR_CAP is far above the edge token budget.
+  for (const n of notes.slice(0, 25)) {
+    lines.push(`  ## ${n.title || '(untitled)'}  [updated ${n.updated_at}]`);
+    if (n.content) lines.push(`     ${String(n.content).slice(0, NOTE_CHAR_CAP).replace(/\n/g, '\n     ')}`);
+    if (n.attachments?.length) {
+      lines.push(`     attachments: ${n.attachments.map((a) => `${a.filename} (${a.mime})`).join(', ')}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/** The routing decision itself — pure, so it can be reasoned about and logged. */
+function chooseRoute({ requested, tokens, attachments }) {
+  if (requested && requested !== 'auto') {
+    return requested === 'gemini'
+      ? { provider: 'gemini', reason: 'manual override' }
+      : { provider: 'workers-ai', model: requested, reason: 'manual override' };
+  }
+  if (attachments > 0) {
+    return { provider: 'gemini', reason: `${attachments} attachment(s) — edge models cannot read files` };
+  }
+  if (tokens > EDGE_TOKEN_LIMIT) {
+    return { provider: 'gemini', reason: `~${tokens} tokens exceeds the ${EDGE_TOKEN_LIMIT} edge budget` };
+  }
+  return { provider: 'workers-ai', model: 'llama', reason: `text only, ~${tokens} tokens fits the edge` };
+}
+
+async function runEdgeModel(env, modelKey, system, user) {
+  const id = AGENT_MODELS[modelKey];
+  if (!id) throw new Error(`unknown_model: ${modelKey}`);
+  const result = await env.AI.run(id, {
+    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+    max_tokens: 700,
+  });
+  const text = stripThinking(result?.response || result?.result?.response || '');
+  if (!text) throw new Error(`${modelKey}: empty response`);
+  return { text, model: id };
+}
+
+async function runGeminiAgent(env, system, user, attachments) {
+  const parts = [{ text: `${system}\n\n---\n\n${user}` }];
+  let budget = GEMINI_ATTACH_BUDGET;
+
+  for (const a of attachments) {
+    if (a.size_bytes > budget) continue; // skip rather than blow the request limit
+    const object = await env.DOCS_BUCKET.get(a.r2_key);
+    if (!object) continue;
+    const buffer = await object.arrayBuffer();
+    budget -= buffer.byteLength;
+    parts.push({ inline_data: { mime_type: a.mime, data: toBase64(buffer) } });
+  }
+
+  const models = [env.GEMINI_MODEL, ...(env.GEMINI_FALLBACKS || '').split(',')]
+    .map((s) => (s || '').trim()).filter(Boolean);
+  const tried = [];
+
+  for (const model of models) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+        body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: 0.3 } }),
+        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      },
+    );
+    if (res.ok) {
+      const payload = await res.json();
+      const text = payload?.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join('') || '';
+      if (text.trim()) return { text: text.trim(), model };
+      tried.push(`${model}: empty`);
+      continue;
+    }
+    tried.push(`${model}: ${res.status}`);
+    if (res.status !== 404 && res.status !== 429) break;
+  }
+  throw new Error(`gemini_failed: ${tried.join(' | ')}`);
+}
+
+async function handleAgentSummary(request, env) {
+  const body = await readJson(request);
+  const requested = String(body.model || 'auto').toLowerCase();
+  const lang = body.lang === 'he' ? 'he' : 'en';
+
+  if (requested !== 'auto' && requested !== 'gemini' && !AGENT_MODELS[requested]) {
+    return json({ error: 'unknown_model', allowed: ['auto', ...Object.keys(AGENT_MODELS), 'gemini'] }, 400);
+  }
+
+  const [taskRows, noteRows, attachRows] = await Promise.all([
+    env.DB.prepare(`SELECT * FROM tasks ORDER BY (status='completed') ASC, created_at DESC`).all(),
+    env.DB.prepare('SELECT * FROM notes ORDER BY updated_at DESC LIMIT 30').all(),
+    env.DB.prepare('SELECT * FROM note_attachments ORDER BY created_at DESC LIMIT 10').all(),
+  ]);
+  const tasks = taskRows.results || [];
+  const notes = noteRows.results || [];
+  const attachments = attachRows.results || [];
+
+  const byNote = new Map();
+  for (const a of attachments) {
+    if (!byNote.has(a.note_id)) byNote.set(a.note_id, []);
+    byNote.get(a.note_id).push(a);
+  }
+  for (const n of notes) n.attachments = byNote.get(n.id) || [];
+
+  if (!tasks.length && !notes.length) {
+    return json({ ok: true, empty: true, routed: null,
+                  summary: lang === 'he'
+                    ? 'אין עדיין משימות או פתקים. הוסף כמה והסוכן ינתח את המצב.'
+                    : 'No tasks or notes yet. Add some and the agent will read the room.' });
+  }
+
+  const system = agentPrompt(lang);
+  const context = buildAgentContext(tasks, notes);
+  const tokens = estimateTokens(system + context);
+  const route = chooseRoute({ requested, tokens, attachments: attachments.length });
+
+  const meta = {
+    routed: route.provider, reason: route.reason, est_tokens: tokens,
+    attachments: attachments.length, requested,
+    counts: { pending: tasks.filter((t) => t.status === 'pending').length, notes: notes.length },
+  };
+
+  try {
+    if (route.provider === 'gemini') {
+      const { text, model } = await runGeminiAgent(env, system, context, attachments);
+      return json({ ok: true, summary: text, model, ...meta });
+    }
+    try {
+      const { text, model } = await runEdgeModel(env, route.model, system, context);
+      return json({ ok: true, summary: text, model, ...meta });
+    } catch (edgeErr) {
+      // Auto mode promises a fallback; a manual override should fail honestly.
+      if (requested !== 'auto') throw edgeErr;
+      const { text, model } = await runEdgeModel(env, 'deepseek', system, context);
+      return json({ ok: true, summary: text, model, ...meta,
+                    fallback_from: route.model, fallback_reason: String(edgeErr.message).slice(0, 200) });
+    }
+  } catch (err) {
+    return json({ ok: false, error: 'agent_failed', detail: String(err?.message || err), ...meta }, 502);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // entry
 // ---------------------------------------------------------------------------
 
@@ -683,6 +1023,47 @@ export default {
       }
       if (url.pathname === '/api/diag' && request.method === 'GET') {
         return withCors(await handleDiag(env));
+      }
+
+      // --- Tasks & Notes ---
+      if (/^\/api\/tasks(\/[\w-]+)?$/.test(url.pathname)) {
+        return withCors(await handleTasks(request, env, url));
+      }
+      if (/^\/api\/notes(\/[\w-]+)?$/.test(url.pathname)) {
+        return withCors(await handleNotes(request, env, url));
+      }
+
+      const attachMatch = /^\/api\/notes\/([\w-]+)\/attach$/.exec(url.pathname);
+      if (attachMatch && request.method === 'POST') {
+        return withCors(await handleAttach(request, env, attachMatch[1]));
+      }
+
+      const attachIdMatch = /^\/api\/attachment\/([\w-]+)$/.exec(url.pathname);
+      if (attachIdMatch) {
+        const row = await env.DB.prepare(
+          'SELECT r2_key, filename, mime FROM note_attachments WHERE id=?',
+        ).bind(attachIdMatch[1]).first();
+        if (!row) return withCors(json({ error: 'not_found' }, 404));
+
+        if (request.method === 'DELETE') {
+          await env.DOCS_BUCKET.delete(row.r2_key);
+          await env.DB.prepare('DELETE FROM note_attachments WHERE id=?').bind(attachIdMatch[1]).run();
+          return withCors(json({ ok: true, deleted: attachIdMatch[1] }));
+        }
+        if (request.method === 'GET') {
+          const object = await env.DOCS_BUCKET.get(row.r2_key);
+          if (!object) return withCors(json({ error: 'object_missing', key: row.r2_key }, 404));
+          const headers = new Headers(cors);
+          headers.set('content-type', row.mime || 'application/octet-stream');
+          headers.set('content-disposition',
+            `inline; filename*=UTF-8''${encodeURIComponent(row.filename || 'file')}`);
+          headers.set('cache-control', 'private, no-store');
+          return new Response(object.body, { headers });
+        }
+      }
+
+      if (url.pathname === '/api/agent/summary' && request.method === 'POST') {
+        return withCors(await handleAgentSummary(request, env));
       }
 
       // GET /api/doc/<id> — stream the original file back out of R2.
