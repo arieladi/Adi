@@ -3,3 +3,6 @@
 
 # Wrangler local state and cache
 .wrangler/
+
+# Local-only secrets for wrangler dev
+.dev.vars
