@@ -6,3 +6,6 @@
 
 # Local-only secrets for wrangler dev
 .dev.vars
+
+# D1 exports contain personal financial data
+finance/.backup-*.sql

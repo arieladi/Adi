@@ -32,7 +32,8 @@ function corsHeaders(request, env) {
   const ok = allowed.includes(origin);
   return {
     'Access-Control-Allow-Origin': ok ? origin : allowed[0] || 'null',
-    'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
+    // PUT was missing, so every cross-origin task/note edit failed preflight.
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Authorization,Content-Type,X-App-Session',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
@@ -635,48 +636,239 @@ async function handleDiag(env) {
 const readJson = (request) => request.json().catch(() => ({}));
 const trimStr = (v, max) => (v === null || v === undefined ? null : String(v).slice(0, max));
 
+const MAX_TASK_DEPTH = 2;     // 0-indexed: three visible levels
+const PURGE_AFTER_DAYS = 30;
+
+/** Append-only audit trail. Returns a statement so callers can batch it. */
+const logStmt = (env, entity, entityId, action, title, meta) =>
+  env.DB.prepare(
+    'INSERT INTO activity_log (id, entity, entity_id, action, title, meta_json) VALUES (?,?,?,?,?,?)',
+  ).bind(uuid(), entity, entityId, action, trimStr(title, 300), meta ? JSON.stringify(meta) : null);
+
+/**
+ * Depth of a task, and whether `candidateParent` sits inside its own subtree.
+ * Uses UNION (not UNION ALL) — with UNION ALL a pre-existing cycle makes the CTE
+ * spin until the Worker CPU limit kills the request.
+ */
+async function ancestryCheck(env, taskId, candidateParent) {
+  if (!candidateParent) return { ok: true, depth: 0 };
+  if (candidateParent === taskId) return { ok: false, reason: 'self_parent' };
+
+  const { results } = await env.DB.prepare(
+    `WITH RECURSIVE up(id, parent_id, d) AS (
+       SELECT id, parent_id, 0 FROM tasks WHERE id = ?
+       UNION
+       SELECT t.id, t.parent_id, up.d + 1 FROM tasks t JOIN up ON t.id = up.parent_id WHERE up.d < 32
+     ) SELECT id, d FROM up`,
+  ).bind(candidateParent).all();
+
+  const chain = results || [];
+  if (chain.some((r) => r.id === taskId)) return { ok: false, reason: 'cycle_not_allowed' };
+  const parentDepth = Math.max(...chain.map((r) => r.d), 0);
+  if (parentDepth + 1 > MAX_TASK_DEPTH) return { ok: false, reason: 'too_deep', max_depth: MAX_TASK_DEPTH + 1 };
+  return { ok: true, depth: parentDepth + 1 };
+}
+
+const taskRow = (env, id) => env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(id).first();
+
 async function handleTasks(request, env, url) {
   const id = (/^\/api\/tasks\/([\w-]+)$/.exec(url.pathname) || [])[1];
 
   if (request.method === 'GET') {
-    const { results } = await env.DB.prepare(
-      `SELECT * FROM tasks ORDER BY (status='completed') ASC, created_at DESC`,
-    ).all();
-    return json({ ok: true, tasks: results || [] });
+    // Ordering is unchanged from v1 on purpose ('pending' > 'completed' lexically);
+    // only the soft-delete filter is new. Children sort oldest-first — checklist order.
+    const [tasks, counts] = await Promise.all([
+      env.DB.prepare(
+        `SELECT * FROM tasks WHERE deleted_at IS NULL
+          ORDER BY (status='completed') ASC, created_at DESC`,
+      ).all(),
+      env.DB.prepare(
+        `SELECT task_id, COUNT(*) n FROM task_comments WHERE deleted_at IS NULL GROUP BY task_id`,
+      ).all(),
+    ]);
+    const byTask = new Map((counts.results || []).map((r) => [r.task_id, r.n]));
+    return json({
+      ok: true,
+      tasks: (tasks.results || []).map((t) => ({ ...t, comment_count: byTask.get(t.id) || 0 })),
+    });
   }
 
   if (request.method === 'POST') {
     const body = await readJson(request);
     const text = trimStr(body.text, 2000);
     if (!text || !text.trim()) return json({ error: 'text_required' }, 400);
+
+    const parentId = body.parent_id ? String(body.parent_id) : null;
+    if (parentId) {
+      const parent = await taskRow(env, parentId);
+      if (!parent || parent.deleted_at) return json({ error: 'parent_not_found' }, 400);
+      const chk = await ancestryCheck(env, '__new__', parentId);
+      if (!chk.ok) return json({ error: chk.reason, max_depth: chk.max_depth }, 400);
+    }
+
     const taskId = uuid();
-    await env.DB.prepare('INSERT INTO tasks (id, text, status) VALUES (?,?,?)')
-      .bind(taskId, text.trim(), body.status === 'completed' ? 'completed' : 'pending').run();
-    return json({ ok: true, task: await env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(taskId).first() }, 201);
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO tasks (id, text, status, parent_id, detail, due_date, email_alert)
+         VALUES (?,?,?,?,?,?,?)`,
+      ).bind(taskId, text.trim(), body.status === 'completed' ? 'completed' : 'pending',
+             parentId, trimStr(body.detail, 20_000), trimStr(body.due_date, 10),
+             body.email_alert ? 1 : 0),
+      logStmt(env, 'task', taskId, 'create', text.trim(), parentId ? { parent_id: parentId } : null),
+    ]);
+    return json({ ok: true, task: { ...(await taskRow(env, taskId)), comment_count: 0 } }, 201);
   }
 
   if (!id) return json({ error: 'id_required' }, 400);
 
   if (request.method === 'PUT') {
     const body = await readJson(request);
+    const before = await taskRow(env, id);
+    if (!before) return json({ error: 'not_found' }, 404);
+
     const sets = [];
     const binds = [];
-    if (body.text !== undefined) { sets.push('text=?'); binds.push(trimStr(body.text, 2000)); }
+    const put = (col, val) => { sets.push(`${col}=?`); binds.push(val); };
+
+    if (body.text !== undefined) put('text', trimStr(body.text, 2000));
+    if (body.detail !== undefined) put('detail', trimStr(body.detail, 20_000));
+    if (body.due_date !== undefined) put('due_date', body.due_date ? trimStr(body.due_date, 10) : null);
+    if (body.email_alert !== undefined) put('email_alert', body.email_alert ? 1 : 0);
     if (body.status !== undefined) {
       if (!['pending', 'completed'].includes(body.status)) return json({ error: 'bad_status' }, 400);
-      sets.push('status=?'); binds.push(body.status);
+      put('status', body.status);
+    }
+    if (body.parent_id !== undefined) {
+      const next = body.parent_id ? String(body.parent_id) : null;
+      if (next) {
+        const parent = await taskRow(env, next);
+        if (!parent || parent.deleted_at) return json({ error: 'parent_not_found' }, 400);
+      }
+      const chk = await ancestryCheck(env, id, next);
+      if (!chk.ok) return json({ error: chk.reason, max_depth: chk.max_depth }, 400);
+      put('parent_id', next);
     }
     if (!sets.length) return json({ error: 'nothing_to_update' }, 400);
+
     sets.push("updated_at=datetime('now')");
     binds.push(id);
-    const res = await env.DB.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id=?`).bind(...binds).run();
-    if (!res.meta.changes) return json({ error: 'not_found' }, 404);
-    return json({ ok: true, task: await env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(id).first() });
+    // completed_at is stamped by trigger, never written here.
+    const stmts = [env.DB.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id=?`).bind(...binds)];
+    if (body.status !== undefined && body.status !== before.status) {
+      stmts.push(logStmt(env, 'task', id, body.status === 'completed' ? 'complete' : 'reopen',
+                         before.text, { from: before.status, to: body.status }));
+    } else {
+      stmts.push(logStmt(env, 'task', id, 'edit', body.text ?? before.text, null));
+    }
+    await env.DB.batch(stmts);
+    return json({ ok: true, task: await taskRow(env, id) });
   }
 
+  // Soft delete: the row stays searchable in History and readable by the chat agent.
+  // The whole subtree goes with it, so a parent cannot vanish leaving orphans on screen.
   if (request.method === 'DELETE') {
-    const res = await env.DB.prepare('DELETE FROM tasks WHERE id=?').bind(id).run();
-    return res.meta.changes ? json({ ok: true, deleted: id }) : json({ error: 'not_found' }, 404);
+    const before = await taskRow(env, id);
+    if (!before) return json({ error: 'not_found' }, 404);
+    if (before.deleted_at) return json({ ok: true, deleted: id, already: true });
+
+    const { results } = await env.DB.prepare(
+      `WITH RECURSIVE down(id) AS (
+         SELECT id FROM tasks WHERE id = ?
+         UNION
+         SELECT t.id FROM tasks t JOIN down ON t.parent_id = down.id
+       ) SELECT id FROM down`,
+    ).bind(id).all();
+    const ids = (results || []).map((r) => r.id);
+    const marks = ids.map(() => '?').join(',');
+
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE tasks SET deleted_at=datetime('now') WHERE id IN (${marks}) AND deleted_at IS NULL`,
+      ).bind(...ids),
+      logStmt(env, 'task', id, 'delete', before.text, { subtree: ids.length }),
+    ]);
+    return json({ ok: true, deleted: id, subtree: ids.length, restorable_days: PURGE_AFTER_DAYS });
+  }
+
+  return json({ error: 'method_not_allowed' }, 405);
+}
+
+/**
+ * Undo a delete. Because DELETE soft-deletes the whole subtree, restore brings back
+ * exactly what that operation removed: descendants sharing the same deleted_at stamp.
+ * A child deleted separately, earlier, stays deleted — it was not part of this action.
+ * The row is re-rooted if its own parent is still deleted, so it can never come back
+ * invisible (a live child hanging off a deleted parent renders nowhere).
+ */
+async function handleTaskRestore(env, id) {
+  const row = await taskRow(env, id);
+  if (!row) return json({ error: 'not_found' }, 404);
+  if (!row.deleted_at) return json({ ok: true, restored: id, already: true });
+
+  const { results } = await env.DB.prepare(
+    `WITH RECURSIVE down(id) AS (
+       SELECT id FROM tasks WHERE id = ?
+       UNION
+       SELECT t.id FROM tasks t JOIN down ON t.parent_id = down.id
+     ) SELECT id FROM down`,
+  ).bind(id).all();
+  const ids = (results || []).map((r) => r.id);
+  const marks = ids.map(() => '?').join(',');
+
+  let reparented = false;
+  if (row.parent_id) {
+    const parent = await taskRow(env, row.parent_id);
+    if (!parent || parent.deleted_at) reparented = true;
+  }
+
+  const stmts = [
+    env.DB.prepare(
+      `UPDATE tasks SET deleted_at=NULL, updated_at=datetime('now')
+        WHERE id IN (${marks}) AND deleted_at = ?`,
+    ).bind(...ids, row.deleted_at),
+  ];
+  if (reparented) {
+    stmts.push(env.DB.prepare('UPDATE tasks SET parent_id=NULL WHERE id=?').bind(id));
+  }
+  stmts.push(logStmt(env, 'task', id, 'restore', row.text,
+                     { subtree: ids.length, reparented: reparented || undefined }));
+  await env.DB.batch(stmts);
+
+  return json({ ok: true, restored: id, subtree: ids.length, reparented, task: await taskRow(env, id) });
+}
+
+async function handleComments(request, env, taskId, commentId) {
+  if (request.method === 'GET') {
+    const { results } = await env.DB.prepare(
+      'SELECT * FROM task_comments WHERE task_id=? AND deleted_at IS NULL ORDER BY created_at ASC',
+    ).bind(taskId).all();
+    return json({ ok: true, comments: results || [] });
+  }
+
+  if (request.method === 'POST') {
+    const body = await readJson(request);
+    const text = trimStr(body.body ?? body.text, 5000);
+    if (!text || !text.trim()) return json({ error: 'body_required' }, 400);
+    const task = await taskRow(env, taskId);
+    if (!task) return json({ error: 'task_not_found' }, 404);
+
+    const cid = uuid();
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO task_comments (id, task_id, body) VALUES (?,?,?)')
+        .bind(cid, taskId, text.trim()),
+      logStmt(env, 'comment', cid, 'comment', task.text, { task_id: taskId }),
+    ]);
+    return json({
+      ok: true,
+      comment: await env.DB.prepare('SELECT * FROM task_comments WHERE id=?').bind(cid).first(),
+    }, 201);
+  }
+
+  if (request.method === 'DELETE' && commentId) {
+    const res = await env.DB.prepare(
+      "UPDATE task_comments SET deleted_at=datetime('now') WHERE id=? AND deleted_at IS NULL",
+    ).bind(commentId).run();
+    return res.meta.changes ? json({ ok: true, deleted: commentId }) : json({ error: 'not_found' }, 404);
   }
 
   return json({ error: 'method_not_allowed' }, 405);
@@ -687,7 +879,7 @@ async function handleNotes(request, env, url) {
 
   if (request.method === 'GET') {
     const [notes, attachments] = await Promise.all([
-      env.DB.prepare('SELECT * FROM notes ORDER BY updated_at DESC').all(),
+      env.DB.prepare('SELECT * FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC').all(),
       env.DB.prepare('SELECT id, note_id, filename, mime, size_bytes FROM note_attachments').all(),
     ]);
     const byNote = new Map();
@@ -704,8 +896,12 @@ async function handleNotes(request, env, url) {
   if (request.method === 'POST') {
     const body = await readJson(request);
     const noteId = uuid();
-    await env.DB.prepare('INSERT INTO notes (id, title, content) VALUES (?,?,?)')
-      .bind(noteId, trimStr(body.title, 300), trimStr(body.content, 100_000)).run();
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO notes (id, title, content, mode) VALUES (?,?,?,?)')
+        .bind(noteId, trimStr(body.title, 300), trimStr(body.content, 100_000),
+              body.mode === 'drawing' ? 'drawing' : 'markdown'),
+      logStmt(env, 'note', noteId, 'create', body.title || '(untitled)', null),
+    ]);
     return json({ ok: true, note: await env.DB.prepare('SELECT * FROM notes WHERE id=?').bind(noteId).first() }, 201);
   }
 
@@ -717,6 +913,10 @@ async function handleNotes(request, env, url) {
     const binds = [];
     if (body.title !== undefined) { sets.push('title=?'); binds.push(trimStr(body.title, 300)); }
     if (body.content !== undefined) { sets.push('content=?'); binds.push(trimStr(body.content, 100_000)); }
+    if (body.mode !== undefined) {
+      if (!['markdown', 'drawing'].includes(body.mode)) return json({ error: 'bad_mode' }, 400);
+      sets.push('mode=?'); binds.push(body.mode);
+    }
     if (!sets.length) return json({ error: 'nothing_to_update' }, 400);
     sets.push("updated_at=datetime('now')");
     binds.push(id);
@@ -725,19 +925,81 @@ async function handleNotes(request, env, url) {
     return json({ ok: true, note: await env.DB.prepare('SELECT * FROM notes WHERE id=?').bind(id).first() });
   }
 
+  // Soft delete. R2 blobs are deliberately KEPT — a restored note whose attachments and
+  // drawing had already been deleted would come back empty. The 30-day purge clears them.
   if (request.method === 'DELETE') {
-    // Clear the R2 objects first — an orphaned blob costs money and leaks data.
-    const { results } = await env.DB.prepare('SELECT r2_key FROM note_attachments WHERE note_id=?')
-      .bind(id).all();
-    await Promise.all((results || []).map((r) => env.DOCS_BUCKET.delete(r.r2_key)));
-    await env.DB.prepare('DELETE FROM note_attachments WHERE note_id=?').bind(id).run();
-    const res = await env.DB.prepare('DELETE FROM notes WHERE id=?').bind(id).run();
-    return res.meta.changes
-      ? json({ ok: true, deleted: id, attachments_removed: (results || []).length })
-      : json({ error: 'not_found' }, 404);
+    const row = await env.DB.prepare('SELECT id, title FROM notes WHERE id=? AND deleted_at IS NULL')
+      .bind(id).first();
+    if (!row) return json({ error: 'not_found' }, 404);
+    await env.DB.batch([
+      env.DB.prepare("UPDATE notes SET deleted_at=datetime('now') WHERE id=?").bind(id),
+      logStmt(env, 'note', id, 'delete', row.title || '(untitled)', null),
+    ]);
+    return json({ ok: true, deleted: id, restorable_days: PURGE_AFTER_DAYS });
   }
 
   return json({ error: 'method_not_allowed' }, 405);
+}
+
+async function handleNoteRestore(env, id) {
+  const row = await env.DB.prepare('SELECT id, title FROM notes WHERE id=?').bind(id).first();
+  if (!row) return json({ error: 'not_found' }, 404);
+  await env.DB.batch([
+    env.DB.prepare("UPDATE notes SET deleted_at=NULL, updated_at=datetime('now') WHERE id=?").bind(id),
+    logStmt(env, 'note', id, 'restore', row.title || '(untitled)', null),
+  ]);
+  return json({ ok: true, restored: id });
+}
+
+// --- Canvas drawings -------------------------------------------------------
+// Dedicated columns rather than note_attachments: r2_key there is UNIQUE (a drawing is
+// re-saved on every edit) and handleAgentSummary counts attachments to pick an AI route,
+// so one sketch would pin every agent call to Gemini permanently.
+
+async function handleDrawingPut(request, env, noteId) {
+  const note = await env.DB.prepare('SELECT id, drawing_key FROM notes WHERE id=?').bind(noteId).first();
+  if (!note) return json({ error: 'note_not_found' }, 404);
+
+  const form = await request.formData().catch(() => null);
+  const file = form?.get('file');
+  if (!file || typeof file === 'string') return json({ error: 'missing_file_field' }, 400);
+  if (file.size > MAX_UPLOAD_BYTES) return json({ error: 'file_too_large', got: file.size }, 413);
+
+  // Stable key per note: overwriting keeps exactly one blob per drawing, no orphans.
+  const key = note.drawing_key || `notes/${noteId}/drawing.png`;
+  await env.DOCS_BUCKET.put(key, await file.arrayBuffer(), {
+    httpMetadata: { contentType: 'image/png' },
+    customMetadata: { noteId },
+  });
+
+  const strokesRaw = form.get('strokes');       // vector source, so a drawing stays editable
+  if (typeof strokesRaw === 'string' && strokesRaw.length < 2_000_000) {
+    await env.DOCS_BUCKET.put(`${key}.json`, strokesRaw,
+      { httpMetadata: { contentType: 'application/json' } });
+  }
+
+  await env.DB.prepare(
+    `UPDATE notes SET drawing_key=?, drawing_w=?, drawing_h=?, drawing_bytes=?,
+            drawing_updated_at=datetime('now'), mode='drawing', updated_at=datetime('now')
+      WHERE id=?`,
+  ).bind(key, Number(form.get('w')) || null, Number(form.get('h')) || null, file.size, noteId).run();
+
+  return json({ ok: true, note: await env.DB.prepare('SELECT * FROM notes WHERE id=?').bind(noteId).first() });
+}
+
+async function handleDrawingGet(request, env, noteId, cors, wantStrokes) {
+  const note = await env.DB.prepare('SELECT drawing_key, drawing_updated_at FROM notes WHERE id=?')
+    .bind(noteId).first();
+  if (!note?.drawing_key) return json({ error: 'no_drawing' }, 404);
+
+  const key = wantStrokes ? `${note.drawing_key}.json` : note.drawing_key;
+  const object = await env.DOCS_BUCKET.get(key);
+  if (!object) return json({ error: 'object_missing', key }, 404);
+
+  const headers = new Headers(cors);
+  headers.set('content-type', wantStrokes ? 'application/json' : 'image/png');
+  headers.set('cache-control', 'private, no-store');
+  return new Response(object.body, { headers });
 }
 
 async function handleAttach(request, env, noteId) {
@@ -915,9 +1177,16 @@ async function handleAgentSummary(request, env) {
   }
 
   const [taskRows, noteRows, attachRows] = await Promise.all([
-    env.DB.prepare(`SELECT * FROM tasks ORDER BY (status='completed') ASC, created_at DESC`).all(),
-    env.DB.prepare('SELECT * FROM notes ORDER BY updated_at DESC LIMIT 30').all(),
-    env.DB.prepare('SELECT * FROM note_attachments ORDER BY created_at DESC LIMIT 10').all(),
+    env.DB.prepare(
+      `SELECT * FROM tasks WHERE deleted_at IS NULL ORDER BY (status='completed') ASC, created_at DESC`,
+    ).all(),
+    env.DB.prepare('SELECT * FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 30').all(),
+    // Scoped to live notes: previously this counted every attachment in the account, so a
+    // single file anywhere pinned the agent to Gemini forever.
+    env.DB.prepare(
+      `SELECT a.* FROM note_attachments a JOIN notes n ON n.id = a.note_id
+        WHERE n.deleted_at IS NULL ORDER BY a.created_at DESC LIMIT 10`,
+    ).all(),
   ]);
   const tasks = taskRows.results || [];
   const notes = noteRows.results || [];
@@ -966,6 +1235,344 @@ async function handleAgentSummary(request, env) {
   } catch (err) {
     return json({ ok: false, error: 'agent_failed', detail: String(err?.message || err), ...meta }, 502);
   }
+}
+
+// ---------------------------------------------------------------------------
+// History — completed, deleted, and the audit trail
+// ---------------------------------------------------------------------------
+
+async function handleHistory(env, url) {
+  const q = (url.searchParams.get('q') || '').trim();
+  const scope = url.searchParams.get('scope') || 'all';   // all | completed | deleted | log
+  const limit = Math.min(Number(url.searchParams.get('limit')) || 200, 500);
+  const like = `%${q}%`;
+
+  // LIKE is Unicode-safe for Hebrew here because we never rely on case folding —
+  // Hebrew is caseless, and the ASCII half of a mixed string matches literally.
+  const where = [];
+  if (scope === 'completed') where.push("t.completed_at IS NOT NULL AND t.deleted_at IS NULL");
+  else if (scope === 'deleted') where.push('t.deleted_at IS NOT NULL');
+  else where.push('(t.completed_at IS NOT NULL OR t.deleted_at IS NOT NULL)');
+  if (q) where.push('(t.text LIKE ?1 OR t.detail LIKE ?1)');
+
+  const tasksQ = env.DB.prepare(
+    `SELECT t.*, (SELECT COUNT(*) FROM task_comments c WHERE c.task_id=t.id AND c.deleted_at IS NULL) comment_count
+       FROM tasks t WHERE ${where.join(' AND ')}
+      ORDER BY COALESCE(t.deleted_at, t.completed_at) DESC LIMIT ${limit}`,
+  );
+
+  const [tasks, notes, log] = await Promise.all([
+    (q ? tasksQ.bind(like) : tasksQ).all(),
+    q
+      ? env.DB.prepare(
+          `SELECT id,title,content,mode,deleted_at,updated_at FROM notes
+            WHERE deleted_at IS NOT NULL AND (title LIKE ?1 OR content LIKE ?1)
+            ORDER BY deleted_at DESC LIMIT ${limit}`,
+        ).bind(like).all()
+      : env.DB.prepare(
+          `SELECT id,title,content,mode,deleted_at,updated_at FROM notes
+            WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT ${limit}`,
+        ).all(),
+    q
+      ? env.DB.prepare(
+          `SELECT * FROM activity_log WHERE title LIKE ?1 ORDER BY at DESC, id DESC LIMIT ${limit}`,
+        ).bind(like).all()
+      : env.DB.prepare(`SELECT * FROM activity_log ORDER BY at DESC, id DESC LIMIT ${limit}`).all(),
+  ]);
+
+  const ids = (tasks.results || []).map((t) => t.id);
+  let comments = [];
+  if (ids.length) {
+    const marks = ids.map(() => '?').join(',');
+    const r = await env.DB.prepare(
+      `SELECT * FROM task_comments WHERE task_id IN (${marks}) AND deleted_at IS NULL
+        ORDER BY created_at ASC`,
+    ).bind(...ids).all();
+    comments = r.results || [];
+  }
+  const byTask = new Map();
+  for (const c of comments) {
+    if (!byTask.has(c.task_id)) byTask.set(c.task_id, []);
+    byTask.get(c.task_id).push(c);
+  }
+
+  return json({
+    ok: true, scope, q,
+    tasks: (tasks.results || []).map((t) => ({ ...t, comments: byTask.get(t.id) || [] })),
+    notes: notes.results || [],
+    log: log.results || [],
+    purge_after_days: PURGE_AFTER_DAYS,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Contextual chat over the full task history
+// ---------------------------------------------------------------------------
+
+const CHAT_MAX_CONTEXT_TOKENS = 3200;   // leaves room for the system prompt + reply at the edge
+
+function chatSystemPrompt(lang) {
+  return `You are Adi's personal assistant with full access to his task history, including
+completed and deleted tasks, their comments, sub-tasks and timestamps.
+
+Answer the question from the RECORDS below and nothing else.
+
+Hard rules:
+- NEVER invent a task, a date, or a comment. If the records do not contain the answer, say so
+  plainly and say what you did look at.
+- Always cite the concrete timestamp when you state that something was done, created or deleted.
+- "done"/"finished" means status=completed. Report the completed_at time when you say something
+  is finished. If a task is still pending, say it is NOT finished, even if it is old.
+- A DELETED task still exists in history — report it as deleted, with its date; do not pretend
+  it never existed.
+- Quote the relevant comment verbatim when it answers the question.
+- Match names loosely: the records are Hebrew and a name may be spelled differently in the
+  question than in the task text.
+- Be brief. Two or three sentences unless asked for detail.
+${lang === 'he' ? 'ענה בעברית בלבד.' : 'Answer in English.'}`;
+}
+
+/**
+ * Line format, not JSON: measured ~4-5x cheaper in tokens for the same information,
+ * and json() here pretty-prints with 2-space indent which makes it worse still.
+ */
+function serialiseTaskHistory(tasks, commentsByTask) {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const lines = [];
+  for (const t of tasks) {
+    const state = t.deleted_at ? `DELETED ${t.deleted_at}`
+      : t.status === 'completed' ? `DONE ${t.completed_at || t.updated_at}`
+      : 'PENDING';
+    const parent = t.parent_id && byId.has(t.parent_id)
+      ? ` | subtask-of: ${byId.get(t.parent_id).text.slice(0, 60)}` : '';
+    const due = t.due_date ? ` | due ${t.due_date}` : '';
+    lines.push(`- [${state}] ${t.text}${due} | created ${t.created_at}${parent}`);
+    if (t.detail) lines.push(`    detail: ${String(t.detail).slice(0, 800)}`);
+    for (const c of commentsByTask.get(t.id) || []) {
+      lines.push(`    comment ${c.created_at}: ${c.body}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/** Cheap Hebrew/English-safe keyword overlap, used only when the full history cannot fit. */
+function scoreRow(text, terms) {
+  const hay = (text || '').toLowerCase();
+  let score = 0;
+  for (const term of terms) {
+    if (!term) continue;
+    if (hay.includes(term)) score += 2;
+    else if (term.length > 3 && hay.includes(term.slice(0, Math.ceil(term.length * 0.7)))) score += 1;
+  }
+  return score;
+}
+
+async function handleChatTasks(request, env) {
+  const body = await readJson(request);
+  const question = trimStr(body.message ?? body.q, 2000);
+  const lang = body.lang === 'he' ? 'he' : 'en';
+  if (!question || !question.trim()) return json({ error: 'message_required' }, 400);
+
+  const [taskRows, commentRows] = await Promise.all([
+    env.DB.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all(),          // incl. deleted
+    env.DB.prepare('SELECT * FROM task_comments WHERE deleted_at IS NULL ORDER BY created_at ASC').all(),
+  ]);
+  let tasks = taskRows.results || [];
+  const commentsByTask = new Map();
+  for (const c of commentRows.results || []) {
+    if (!commentsByTask.has(c.task_id)) commentsByTask.set(c.task_id, []);
+    commentsByTask.get(c.task_id).push(c);
+  }
+
+  if (!tasks.length) {
+    return json({ ok: true, empty: true, answer: lang === 'he'
+      ? 'אין עדיין משימות בהיסטוריה.' : 'There is no task history yet.' });
+  }
+
+  const system = chatSystemPrompt(lang);
+  let records = serialiseTaskHistory(tasks, commentsByTask);
+  let filtered = false;
+
+  // Only ever filter when the full history physically will not fit. A keyword filter that
+  // drops the one relevant row makes a retrieval miss indistinguishable from "no such task",
+  // and the model then confidently tells Adi something never existed.
+  if (estimateTokens(system + records) > CHAT_MAX_CONTEXT_TOKENS * 4) {
+    const terms = question.toLowerCase().split(/[\s,.?!"'״׳()]+/).filter((w) => w.length > 1);
+    const scored = tasks.map((t) => ({
+      t,
+      s: scoreRow(t.text, terms) + scoreRow(t.detail, terms)
+         + (commentsByTask.get(t.id) || []).reduce((a, c) => a + scoreRow(c.body, terms), 0),
+    }));
+    scored.sort((a, b) => b.s - a.s || String(b.t.created_at).localeCompare(String(a.t.created_at)));
+    tasks = scored.slice(0, 120).map((x) => x.t);
+    records = serialiseTaskHistory(tasks, commentsByTask);
+    filtered = true;
+  }
+
+  const header = filtered
+    ? `RECORDS (a keyword-matched SUBSET of ${taskRows.results.length} tasks — if the answer is not
+here, say you could not find it in the records you were shown, not that it does not exist):`
+    : `RECORDS (COMPLETE task history, ${tasks.length} tasks — if it is not here, it does not exist):`;
+
+  const userMsg = `${header}\n${records}\n\nQUESTION: ${question}`;
+  const tokens = estimateTokens(system + userMsg);
+  const route = tokens > EDGE_TOKEN_LIMIT
+    ? { provider: 'gemini', reason: `~${tokens} tokens exceeds the ${EDGE_TOKEN_LIMIT} edge budget` }
+    : { provider: 'workers-ai', model: 'llama', reason: `~${tokens} tokens fits the edge` };
+
+  const meta = { routed: route.provider, reason: route.reason, est_tokens: tokens,
+                 filtered, considered: tasks.length, total: taskRows.results.length };
+
+  try {
+    if (route.provider === 'gemini') {
+      const { text, model } = await runGeminiAgent(env, system, userMsg, []);
+      return json({ ok: true, answer: text, model, ...meta });
+    }
+    try {
+      const { text, model } = await runEdgeModel(env, 'llama', system, userMsg);
+      return json({ ok: true, answer: text, model, ...meta });
+    } catch (edgeErr) {
+      const { text, model } = await runGeminiAgent(env, system, userMsg, []);
+      return json({ ok: true, answer: text, model, ...meta,
+                    fallback_from: 'llama', fallback_reason: String(edgeErr.message).slice(0, 200) });
+    }
+  } catch (err) {
+    return json({ ok: false, error: 'chat_failed', detail: String(err?.message || err), ...meta }, 502);
+  }
+}
+
+/** The כספים tab's chat bar. Same contract as /api/chat/tasks, financial context. */
+async function handleChatFinance(request, env) {
+  const body = await readJson(request);
+  const question = trimStr(body.message ?? body.q, 2000);
+  const lang = body.lang === 'he' ? 'he' : 'en';
+  if (!question || !question.trim()) return json({ error: 'message_required' }, 400);
+
+  const summary = await loadSummary(env);
+  if (!summary.monthly.length && !summary.investments.length) {
+    return json({ ok: true, empty: true, answer: lang === 'he'
+      ? 'אין עדיין נתונים פיננסיים. העלה תלוש או דף קיבוץ.'
+      : 'No financial records yet. Upload a payslip or kibbutz sheet.' });
+  }
+
+  const records = [
+    'MONTHLY CASHFLOW (newest first):',
+    ...summary.monthly.map((m) =>
+      `- ${m.period}: net ${ils(m.income_net)}, spend ${ils(m.spend)}, saved ${ils(m.income_net - m.spend)}`),
+    '',
+    'SPENDING BY CATEGORY (last 6 months):',
+    ...summary.by_category.map((c) => `- ${c.category}: ${ils(c.total)} over ${c.n} items`),
+    '',
+    'INVESTMENTS (latest statement per account):',
+    ...summary.investments.map((i) =>
+      `- ${i.kind}${i.provider ? ` @ ${i.provider}` : ''}: ${ils(i.balance)}` +
+      `${i.yield_pct != null ? `, yield ${i.yield_pct}%` : ''}` +
+      `${i.fees_pct != null ? `, fees ${i.fees_pct}%` : ''}`),
+    '',
+    `DOCUMENTS ON FILE: ${summary.documents.length}`,
+    ...summary.documents.map((d) => `- ${d.filename} (${d.doc_type}${d.period ? ', ' + d.period : ''})`),
+  ].join('\n');
+
+  const system = `You are Adi's financial assistant. Answer ONLY from the records below.
+Amounts are Israeli shekels. Never invent a number — if the records do not contain the answer,
+say so plainly. Cite the actual figures and periods you used. Be brief: two or three sentences
+unless asked for detail. You are not a licensed advisor: describe the numbers, do not recommend
+specific securities.
+${lang === 'he' ? 'ענה בעברית בלבד.' : 'Answer in English.'}`;
+
+  const userMsg = `RECORDS:\n${records}\n\nQUESTION: ${question}`;
+  const tokens = estimateTokens(system + userMsg);
+  const useGemini = tokens > EDGE_TOKEN_LIMIT;
+  const meta = { routed: useGemini ? 'gemini' : 'workers-ai', est_tokens: tokens,
+                 reason: useGemini ? `~${tokens} tokens exceeds the edge budget` : `~${tokens} tokens fits the edge` };
+
+  try {
+    const { text, model } = useGemini
+      ? await runGeminiAgent(env, system, userMsg, [])
+      : await runEdgeModel(env, 'llama', system, userMsg);
+    return json({ ok: true, answer: text, model, ...meta });
+  } catch (err) {
+    try {
+      const { text, model } = await runGeminiAgent(env, system, userMsg, []);
+      return json({ ok: true, answer: text, model, ...meta, fallback_from: 'llama' });
+    } catch (err2) {
+      return json({ ok: false, error: 'chat_failed', detail: String(err2?.message || err2), ...meta }, 502);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled: purge expired soft-deletes, send due-date alerts
+// ---------------------------------------------------------------------------
+
+async function runPurge(env) {
+  const cutoff = `-${PURGE_AFTER_DAYS} days`;
+  const [tasksGone, notesGone] = await Promise.all([
+    env.DB.prepare(`SELECT id FROM tasks WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', ?)`)
+      .bind(cutoff).all(),
+    env.DB.prepare(
+      `SELECT id, drawing_key FROM notes WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', ?)`,
+    ).bind(cutoff).all(),
+  ]);
+
+  const noteIds = (notesGone.results || []).map((n) => n.id);
+  if (noteIds.length) {
+    const marks = noteIds.map(() => '?').join(',');
+    const atts = await env.DB.prepare(
+      `SELECT r2_key FROM note_attachments WHERE note_id IN (${marks})`,
+    ).bind(...noteIds).all();
+    // Only now are the blobs safe to remove — before this the note was restorable.
+    for (const a of atts.results || []) await env.DOCS_BUCKET.delete(a.r2_key);
+    for (const n of notesGone.results || []) {
+      if (n.drawing_key) {
+        await env.DOCS_BUCKET.delete(n.drawing_key);
+        await env.DOCS_BUCKET.delete(`${n.drawing_key}.json`);
+      }
+    }
+    await env.DB.prepare(`DELETE FROM note_attachments WHERE note_id IN (${marks})`).bind(...noteIds).run();
+    await env.DB.prepare(`DELETE FROM notes WHERE id IN (${marks})`).bind(...noteIds).run();
+  }
+
+  const taskIds = (tasksGone.results || []).map((t) => t.id);
+  if (taskIds.length) {
+    const marks = taskIds.map(() => '?').join(',');
+    await env.DB.prepare(`DELETE FROM tasks WHERE id IN (${marks})`).bind(...taskIds).run();
+  }
+  return { tasks: taskIds.length, notes: noteIds.length };
+}
+
+/**
+ * Due-date email alerts. Inert until an EMAIL binding exists — the column, the cron and the
+ * query all ship now, and the feature lights up with no code change once the sending domain
+ * is onboarded (`npx wrangler email sending enable adiariel.com`).
+ */
+async function runDueAlerts(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, text, due_date FROM tasks
+      WHERE email_alert = 1 AND deleted_at IS NULL AND completed_at IS NULL
+        AND due_date IS NOT NULL AND due_date <= date('now')
+        AND (alerted_at IS NULL OR date(alerted_at) < date('now'))
+      ORDER BY due_date ASC LIMIT 50`,
+  ).all();
+  const due = results || [];
+  if (!due.length) return { sent: 0, skipped: 'none_due' };
+
+  if (!env.EMAIL) {
+    await env.DB.batch(due.map((r) =>
+      logStmt(env, 'task', r.id, 'alert', r.text, { due: r.due_date, sent: false, why: 'no_email_binding' })));
+    return { sent: 0, skipped: 'no_email_binding', would_have_sent: due.length };
+  }
+
+  await env.EMAIL.send({
+    to: env.ALERT_TO || 'computers@ricor.com',
+    from: { email: env.ALERT_FROM || 'alerts@adiariel.com', name: 'Adi Hub' },
+    subject: `${due.length} משימות להיום`,
+    text: due.map((r) => `• ${r.text} — ${r.due_date}`).join('\n'),
+  });
+  const marks = due.map(() => '?').join(',');
+  await env.DB.prepare(`UPDATE tasks SET alerted_at=datetime('now') WHERE id IN (${marks})`)
+    .bind(...due.map((r) => r.id)).run();
+  return { sent: due.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,11 +1633,44 @@ export default {
       }
 
       // --- Tasks & Notes ---
+      // ORDER MATTERS: these sub-resource routes must be tested before the generic
+      // /api/tasks/:id matcher below, which would otherwise swallow /restore and /comments.
+      const restoreTask = /^\/api\/tasks\/([\w-]+)\/restore$/.exec(url.pathname);
+      if (restoreTask && request.method === 'POST') {
+        return withCors(await handleTaskRestore(env, restoreTask[1]));
+      }
+      const taskComments = /^\/api\/tasks\/([\w-]+)\/comments(?:\/([\w-]+))?$/.exec(url.pathname);
+      if (taskComments) {
+        return withCors(await handleComments(request, env, taskComments[1], taskComments[2]));
+      }
+      const restoreNote = /^\/api\/notes\/([\w-]+)\/restore$/.exec(url.pathname);
+      if (restoreNote && request.method === 'POST') {
+        return withCors(await handleNoteRestore(env, restoreNote[1]));
+      }
+      const drawing = /^\/api\/notes\/([\w-]+)\/drawing(\.json)?$/.exec(url.pathname);
+      if (drawing) {
+        if (request.method === 'PUT' || request.method === 'POST') {
+          return withCors(await handleDrawingPut(request, env, drawing[1]));
+        }
+        if (request.method === 'GET') {
+          return await handleDrawingGet(request, env, drawing[1], cors, !!drawing[2]);
+        }
+      }
+
       if (/^\/api\/tasks(\/[\w-]+)?$/.test(url.pathname)) {
         return withCors(await handleTasks(request, env, url));
       }
       if (/^\/api\/notes(\/[\w-]+)?$/.test(url.pathname)) {
         return withCors(await handleNotes(request, env, url));
+      }
+      if (url.pathname === '/api/history' && request.method === 'GET') {
+        return withCors(await handleHistory(env, url));
+      }
+      if (url.pathname === '/api/chat/tasks' && request.method === 'POST') {
+        return withCors(await handleChatTasks(request, env));
+      }
+      if (url.pathname === '/api/chat/finance' && request.method === 'POST') {
+        return withCors(await handleChatFinance(request, env));
       }
 
       const attachMatch = /^\/api\/notes\/([\w-]+)\/attach$/.exec(url.pathname);
@@ -1087,5 +1727,17 @@ export default {
       console.error('unhandled', err?.stack || err);
       return withCors(json({ error: 'internal', detail: String(err?.message || err) }, 500));
     }
+  },
+
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil((async () => {
+      try {
+        const purged = await runPurge(env);
+        const alerts = await runDueAlerts(env);
+        console.log('cron', JSON.stringify({ cron: event.cron, purged, alerts }));
+      } catch (err) {
+        console.error('cron_failed', err?.stack || err);
+      }
+    })());
   },
 };

@@ -1,15 +1,7 @@
--- adiariel.com/me — personal hub schema
+-- adiariel.com/me — personal finance hub schema
 -- D1: finance (e90ec1a7-be5f-4faf-9ecf-bc2981ff2fe2)
 -- Currency default ILS. Money stored in agorot (INTEGER) to avoid float drift.
---
--- ⚠️  THIS FILE IS THE FRESH-DATABASE BASELINE, NOT THE MIGRATION PATH.
--- An existing database is changed only through migrations/, applied with
---   npx wrangler d1 migrations apply finance --remote
--- Re-running this file against a live database will NOT add columns that were
--- introduced by a later migration (CREATE TABLE IF NOT EXISTS silently skips).
--- Keep the two in sync: any new migration must also be reflected here.
 
-PRAGMA foreign_keys = ON;
 
 -- ---------------------------------------------------------------------------
 -- documents: every uploaded file. R2 holds the bytes, D1 holds the metadata.
@@ -123,86 +115,23 @@ ORDER BY p.period DESC;
 -- ---------------------------------------------------------------------------
 -- Tasks & Notes (added 2026-08-02) — the second tab of the hub.
 -- ---------------------------------------------------------------------------
--- Soft delete is a nullable `deleted_at`, never a `status` value: the status CHECK
--- cannot be altered in place without a full table rebuild, and the table holds live rows.
 CREATE TABLE IF NOT EXISTS tasks (
-  id           TEXT PRIMARY KEY,
-  text         TEXT NOT NULL,
-  status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','completed')),
-  parent_id    TEXT REFERENCES tasks(id) ON DELETE SET NULL,  -- SET NULL, not CASCADE: purging a
-                                                              -- parent must promote a restored child,
-                                                              -- not destroy it
-  detail       TEXT,                                          -- markdown body ('detail', not 'notes'
-                                                              -- — a notes TABLE already exists)
-  due_date     TEXT,                                          -- ISO 'YYYY-MM-DD'
-  email_alert  INTEGER NOT NULL DEFAULT 0 CHECK (email_alert IN (0,1)),
-  alerted_at   TEXT,
-  completed_at TEXT,                                          -- stamped by trigger, see below
-  deleted_at   TEXT,                                          -- soft-deleted iff NOT NULL
-  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_tasks_live      ON tasks(status, created_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_tasks_parent    ON tasks(parent_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed_at DESC) WHERE completed_at IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_tasks_deleted   ON tasks(deleted_at  DESC) WHERE deleted_at  IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_tasks_due       ON tasks(due_date)
-  WHERE due_date IS NOT NULL AND completed_at IS NULL AND deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_tasks_alert     ON tasks(due_date)
-  WHERE email_alert = 1 AND completed_at IS NULL AND deleted_at IS NULL;
-
-CREATE TRIGGER IF NOT EXISTS trg_tasks_completed_ins AFTER INSERT ON tasks FOR EACH ROW
-WHEN NEW.status = 'completed' AND NEW.completed_at IS NULL
-BEGIN UPDATE tasks SET completed_at = datetime('now') WHERE id = NEW.id; END;
-
-CREATE TRIGGER IF NOT EXISTS trg_tasks_completed_upd AFTER UPDATE OF status ON tasks FOR EACH ROW
-WHEN NEW.status <> OLD.status
-BEGIN UPDATE tasks SET completed_at = CASE WHEN NEW.status = 'completed' THEN datetime('now') END
-       WHERE id = NEW.id; END;
-
--- Comments attached to a task. Own table, not a JSON column: the chat agent searches
--- these, and SQLite cannot index inside a JSON blob.
-CREATE TABLE IF NOT EXISTS task_comments (
   id         TEXT PRIMARY KEY,
-  task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-  body       TEXT NOT NULL,
+  text       TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','completed')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  deleted_at TEXT
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_comments_task   ON task_comments(task_id, created_at ASC);
-CREATE INDEX IF NOT EXISTS idx_comments_recent ON task_comments(created_at DESC);
-
--- Survives the 30-day purge so History stays readable after rows are hard-deleted.
-CREATE TABLE IF NOT EXISTS activity_log (
-  id        TEXT PRIMARY KEY,
-  at        TEXT NOT NULL DEFAULT (datetime('now')),
-  entity    TEXT NOT NULL CHECK (entity IN ('task','note','comment','attachment')),
-  entity_id TEXT NOT NULL,
-  action    TEXT NOT NULL CHECK (action IN
-             ('create','edit','complete','reopen','delete','restore','comment','attach','move','alert')),
-  title     TEXT,        -- snapshot of the text AT THE TIME
-  meta_json TEXT         -- structured, never prose (the UI is Hebrew-first)
-);
-CREATE INDEX IF NOT EXISTS idx_log_at     ON activity_log(at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_log_entity ON activity_log(entity, entity_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS notes (
-  id                 TEXT PRIMARY KEY,
-  title              TEXT,
-  content            TEXT,                 -- markdown
-  mode               TEXT NOT NULL DEFAULT 'markdown' CHECK (mode IN ('markdown','drawing')),
-  drawing_key        TEXT,                 -- R2 key; NULL = no canvas
-  drawing_w          INTEGER,
-  drawing_h          INTEGER,
-  drawing_bytes      INTEGER,
-  drawing_updated_at TEXT,                 -- doubles as the client blob-cache key
-  deleted_at         TEXT,
-  created_at         TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+  id         TEXT PRIMARY KEY,
+  title      TEXT,
+  content    TEXT,                 -- markdown
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_notes_live    ON notes(deleted_at, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_notes_mode    ON notes(mode, updated_at DESC);
 
 -- Files attached to a note. Bytes live in R2; this is the index.
 CREATE TABLE IF NOT EXISTS note_attachments (
