@@ -14,6 +14,7 @@
  */
 
 import * as XLSX from 'xlsx';
+import { decryptPdf, detectPdfEncryption } from './pdfcrypt.js';
 
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024; // Gemini inline_data ceiling ~20MB total
 const GEMINI_TIMEOUT_MS = 60_000;
@@ -665,8 +666,32 @@ async function handleUpload(request, env) {
     return json({ error: 'file_too_large', max_bytes: MAX_UPLOAD_BYTES, got: file.size }, 413);
   }
 
-  const buffer = await file.arrayBuffer();
-  const hash = await sha256Hex(buffer);
+  let buffer = await file.arrayBuffer();
+  const hash = await sha256Hex(buffer);   // fingerprint the ORIGINAL, pre-decryption
+
+  // Payslips arrive password-protected. Gemini cannot read an encrypted PDF, which is
+  // what produced "extraction_failed". Decrypt before anything else so both the copy
+  // stored in R2 and the bytes sent for extraction are readable.
+  //
+  // The decrypted copy is what gets stored: R2 is private and only reachable through
+  // this authenticated Worker, and the PDF password here is the ID number printed on
+  // the document itself, so keeping it encrypted at rest buys nothing and would mean
+  // re-entering it every time a document is opened in the UI.
+  let decryption = null;
+  if (/pdf/i.test(file.type || '') || /\.pdf$/i.test(file.name || '')) {
+    const enc = detectPdfEncryption(buffer);
+    if (enc) {
+      if (!env.PDF_PASS) {
+        decryption = { attempted: true, ok: false, error: 'no_pdf_pass_secret' };
+      } else {
+        const res = decryptPdf(buffer, env.PDF_PASS);
+        decryption = res.ok
+          ? { attempted: true, ok: true, cipher: `RC4-${res.bits}`, streams: res.streams }
+          : { attempted: true, ok: false, error: res.error };
+        if (res.ok) buffer = res.bytes.buffer;
+      }
+    }
+  }
 
   // Dedupe: same bytes uploaded twice is almost always a mistake.
   const dupe = await env.DB.prepare('SELECT id, filename FROM documents WHERE sha256 = ?')
@@ -733,14 +758,14 @@ async function handleUpload(request, env) {
     ).bind(extracted.doc_type || 'unknown', period, JSON.stringify(extracted), docId).run();
 
     return json({ ok: true, id: docId, r2_key: r2Key, doc_type: extracted.doc_type,
-                  period, counts, confidence: extracted.confidence ?? null, extracted });
+                  period, counts, confidence: extracted.confidence ?? null, decryption, extracted });
   } catch (err) {
     const message = String(err?.message || err);
     await env.DB.prepare(
       `UPDATE documents SET status='failed', error=?, processed_at=datetime('now') WHERE id=?`,
     ).bind(message.slice(0, 500), docId).run();
     // 207: the upload succeeded, only the parse failed. The file is safe in R2.
-    return json({ ok: false, id: docId, r2_key: r2Key, stored: true,
+    return json({ ok: false, id: docId, r2_key: r2Key, stored: true, decryption,
                   error: 'extraction_failed', detail: message }, 207);
   }
 }
