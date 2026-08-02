@@ -329,6 +329,7 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
     <div class="tabs" role="tablist">
       <button class="tab on" id="tabFinance" data-i18n="finance" role="tab">כספים</button>
       <button class="tab" id="tabTasks" data-i18n="tasksNotes" role="tab">משימות ופתקים</button>
+      <button class="tab" id="tabContacts" data-i18n="contacts" role="tab">אנשי קשר</button>
       <button class="tab" id="tabHistory" data-i18n="history" role="tab">היסטוריה</button>
     </div>
     <div class="hdr-actions">
@@ -478,6 +479,51 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
     </div>
   </section>
 
+
+  <!-- ---------- אנשי קשר ---------- -->
+  <section id="viewContacts" hidden>
+    <div class="grid cols">
+      <div class="grid" style="gap:16px">
+        <section class="card">
+          <h2><em data-i18n="contacts" style="font-style:normal">אנשי קשר</em>
+            <span class="badge" id="contactCount">0</span>
+            <button class="btn sm" id="newContact" style="margin-inline-start:auto" data-i18n="newContact">איש קשר חדש</button>
+          </h2>
+          <div class="hfilters"><input type="search" id="contactQ" data-i18n-ph="searchContacts" placeholder="חיפוש…"></div>
+          <div id="contactList"><div class="empty" data-i18n="noContacts">אין עדיין אנשי קשר.</div></div>
+        </section>
+      </div>
+      <div class="grid" style="gap:16px">
+        <section class="card" id="contactEditor" hidden>
+          <h2 id="cEditTitle" data-i18n="newContact">איש קשר חדש</h2>
+          <div class="fieldset"><label data-i18n="cName">שם</label>
+            <input type="text" id="cName" data-i18n-ph="cName" placeholder="שם"></div>
+          <div class="fields">
+            <input type="text" id="cPhone" data-i18n-ph="cPhone" placeholder="טלפון" dir="ltr">
+            <input type="text" id="cEmail" data-i18n-ph="cEmail" placeholder="אימייל" dir="ltr">
+          </div>
+          <div class="fields" style="margin-top:10px">
+            <input type="text" id="cOrg" data-i18n-ph="cOrg" placeholder="ארגון">
+            <input type="text" id="cTitle" data-i18n-ph="cTitle" placeholder="תפקיד">
+          </div>
+          <div class="fieldset"><label data-i18n="cDesc">תיאור</label>
+            <textarea id="cDesc" data-i18n-ph="cDesc" placeholder="תיאור"></textarea></div>
+          <div id="cTasks" style="margin-top:12px"></div>
+          <div class="noteActions">
+            <button class="btn sm" id="cSave" data-i18n="save">שמור</button>
+            <button class="btn ghost sm" id="cCancel" data-i18n="cancel">בטל</button>
+            <button class="btn danger sm" id="cDelete" data-i18n="del">מחק</button>
+          </div>
+        </section>
+      </div>
+    </div>
+    <div class="chatbar" data-chat="tasks">
+      <div class="chatans" hidden></div>
+      <form><input type="text" data-i18n-ph="askTasks" placeholder="שאל…"><button class="btn" type="submit" data-i18n="ask">שאל</button></form>
+      <div class="chatmeta" hidden></div>
+    </div>
+  </section>
+
   <!-- ---------- היסטוריה ---------- -->
   <section id="viewHistory" hidden>
     <section class="card">
@@ -545,6 +591,16 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
   </div>
 
   <div class="fieldset">
+    <label><em data-i18n="people" style="font-style:normal">אנשים</em></label>
+    <div id="dPeople"></div>
+    <div class="addrow" style="margin-top:9px">
+      <input type="text" id="dPersonInput" list="contactOptions" data-i18n-ph="linkContact" placeholder="קשר איש קשר…">
+      <datalist id="contactOptions"></datalist>
+      <button class="btn sm" id="dPersonAdd" type="button" data-i18n="add">הוסף</button>
+    </div>
+  </div>
+
+  <div class="fieldset">
     <label><em data-i18n="comments" style="font-style:normal">תגובות</em></label>
     <div id="dComments"></div>
     <form class="addrow" id="dCmtForm" style="margin-top:9px">
@@ -607,6 +663,11 @@ const I18N = {
     actCreate:'נוצר', actEdit:'נערך', actComplete:'הושלם', actReopen:'נפתח מחדש',
     actDelete:'נמחק', actRestore:'שוחזר', actComment:'תגובה', actAttach:'צורף קובץ',
     actMove:'הועבר', actAlert:'התראה',
+    contacts:'אנשי קשר', newContact:'איש קשר חדש', noContacts:'אין עדיין אנשי קשר.',
+    searchContacts:'חיפוש…', cName:'שם', cPhone:'טלפון', cEmail:'אימייל', cOrg:'ארגון',
+    cTitle:'תפקיד', cDesc:'תיאור', people:'אנשים', linkContact:'קשר איש קשר…',
+    linkedTasks:'משימות מקושרות', confirmDelContact:'למחוק את איש הקשר?',
+    dupSkipped:'כפול · דולג', newRows:'רשומות חדשות', skippedRows:'דולגו',
   },
   en: {
     hub:'Personal hub', hubTitle:'Personal hub', signInHint:'Sign in to continue.',
@@ -650,6 +711,11 @@ const I18N = {
     actCreate:'created', actEdit:'edited', actComplete:'completed', actReopen:'reopened',
     actDelete:'deleted', actRestore:'restored', actComment:'commented', actAttach:'attached',
     actMove:'moved', actAlert:'alert',
+    contacts:'Contacts', newContact:'New contact', noContacts:'No contacts yet.',
+    searchContacts:'Search…', cName:'Name', cPhone:'Phone', cEmail:'Email', cOrg:'Organisation',
+    cTitle:'Job title', cDesc:'Description', people:'People', linkContact:'Link a contact…',
+    linkedTasks:'Linked tasks', confirmDelContact:'Delete this contact?',
+    dupSkipped:'duplicate · skipped', newRows:'new', skippedRows:'skipped',
   },
 };
 let lang = localStorage.getItem('adi_lang') || 'he';
@@ -779,18 +845,22 @@ $('#refresh').addEventListener('click', () => {
 
 // ===================== tabs =====================
 function showTab(name) {
-  $('#viewFinance').hidden = name !== 'finance';
-  $('#viewTasks').hidden = name !== 'tasks';
-  $('#viewHistory').hidden = name !== 'history';
-  $('#tabFinance').classList.toggle('on', name === 'finance');
-  $('#tabTasks').classList.toggle('on', name === 'tasks');
-  $('#tabHistory').classList.toggle('on', name === 'history');
+  for (const [v, n] of [['#viewFinance','finance'],['#viewTasks','tasks'],
+                        ['#viewContacts','contacts'],['#viewHistory','history']]) {
+    $(v).hidden = name !== n;
+  }
+  for (const [b, n] of [['#tabFinance','finance'],['#tabTasks','tasks'],
+                        ['#tabContacts','contacts'],['#tabHistory','history']]) {
+    $(b).classList.toggle('on', name === n);
+  }
   localStorage.setItem('adi_tab', name);
   if (name === 'tasks' && !tasksLoaded) { loadTasks(); loadNotes(); tasksLoaded = true; }
   if (name === 'history') loadHistory();
+  if (name === 'contacts') loadContacts();
 }
 $('#tabFinance').addEventListener('click', () => showTab('finance'));
 $('#tabTasks').addEventListener('click', () => showTab('tasks'));
+$('#tabContacts').addEventListener('click', () => showTab('contacts'));
 $('#tabHistory').addEventListener('click', () => showTab('history'));
 
 // ===================== toast (undo) =====================
@@ -950,6 +1020,7 @@ function renderTasks() {
     if (x.due_date) tags.push(`<span class="tag ${overdue ? 'overdue' : 'due'}">${overdue ? t('overdue') + ' ' : ''}${x.due_date}</span>`);
     if (x.email_alert) tags.push('<span class="tag">✉</span>');
     if (x.comment_count) tags.push(`<span class="tag">💬 ${x.comment_count}</span>`);
+    for (const p of x.contacts || []) tags.push(`<span class="tag">👤 ${esc(p.display_name)}</span>`);
     return `<div class="t ${x.status === 'completed' ? 'done' : ''}" data-id="${x.id}" data-depth="${depth}">
       <div class="chk" data-act="toggle" role="checkbox" aria-checked="${x.status === 'completed'}" tabindex="0">${CHECK}</div>
       <div class="body">
@@ -1034,6 +1105,7 @@ function openDrawer(task) {
   $('#drawer').classList.add('on');
   $('#scrim').classList.add('on');
   renderDrawerSubs();
+  renderDrawerPeople();
   loadDrawerComments();
   $('#dText').focus();
 }
@@ -1453,6 +1525,137 @@ for (const bar of $$('.chatbar')) {
   });
 }
 
+// ===================== contacts =====================
+let allContacts = [];
+let editingContact = null;   // null = closed, '' = new, else id
+let contactTimer = 0;
+
+function renderContacts() {
+  $('#contactCount').textContent = allContacts.length;
+  $('#contactList').innerHTML = allContacts.length ? allContacts.map((c) => `
+    <div class="hitem" data-cid="${c.id}" style="cursor:pointer">
+      <div class="hhead">
+        <span class="htxt">${c.starred ? '★ ' : ''}${esc(c.display_name)}</span>
+        <span class="hwhen">${esc(c.primary_phone || '')}</span>
+      </div>
+      ${c.organization || c.primary_email ? `<div class="cw" style="margin-top:3px">${
+        [esc(c.organization), esc(c.primary_email)].filter(Boolean).join(' · ')}</div>` : ''}
+    </div>`).join('') : `<div class="empty">${t('noContacts')}</div>`;
+  // Feeds the task drawer's <datalist>, so linking is type-ahead rather than a picker modal.
+  $('#contactOptions').innerHTML = allContacts.map((c) =>
+    `<option value="${esc(c.display_name)}"></option>`).join('');
+}
+
+async function loadContacts(q) {
+  const d = await apiJson(`/api/contacts?q=${encodeURIComponent(q ?? $('#contactQ').value.trim())}`);
+  allContacts = d.contacts || [];
+  renderContacts();
+}
+
+function openContact(c) {
+  editingContact = c ? c.id : '';
+  $('#contactEditor').hidden = false;
+  $('#cEditTitle').textContent = c ? c.display_name : t('newContact');
+  $('#cName').value = c?.display_name || '';
+  $('#cPhone').value = c?.primary_phone || '';
+  $('#cEmail').value = c?.primary_email || '';
+  $('#cOrg').value = c?.organization || '';
+  $('#cTitle').value = c?.job_title || '';
+  $('#cDesc').value = c?.description || '';
+  $('#cDelete').hidden = !c;
+  $('#cTasks').innerHTML = '';
+  if (c) {
+    apiJson(`/api/contacts/${c.id}`).then((d) => {
+      const list = d.tasks || [];
+      $('#cTasks').innerHTML = list.length
+        ? `<label style="font-size:.72rem;color:var(--muted);text-transform:uppercase">${esc(t('linkedTasks'))}</label>` +
+          list.map((x) => `<div class="subrow"><span style="flex:1${
+            x.status === 'completed' ? ';text-decoration:line-through;color:var(--muted)' : ''
+          }">${esc(x.text)}</span></div>`).join('')
+        : '';
+    }).catch(() => {});
+  }
+  $('#cName').focus();
+}
+function closeContact() { editingContact = null; $('#contactEditor').hidden = true; }
+
+$('#newContact').addEventListener('click', () => openContact(null));
+$('#cCancel').addEventListener('click', closeContact);
+$('#contactQ').addEventListener('input', () => {
+  clearTimeout(contactTimer);
+  contactTimer = setTimeout(() => loadContacts(), 250);
+});
+$('#contactList').addEventListener('click', (e) => {
+  const row = e.target.closest('[data-cid]');
+  if (!row) return;
+  const c = allContacts.find((x) => x.id === row.dataset.cid);
+  if (c) openContact(c);
+});
+$('#cSave').addEventListener('click', async () => {
+  const payload = {
+    display_name: $('#cName').value.trim(),
+    organization: $('#cOrg').value.trim(), job_title: $('#cTitle').value.trim(),
+    description: $('#cDesc').value,
+    emails: $('#cEmail').value.trim() ? [{ value: $('#cEmail').value.trim(), type: 'other' }] : [],
+    phones: $('#cPhone').value.trim() ? [{ value: $('#cPhone').value.trim(), type: 'mobile' }] : [],
+  };
+  if (!payload.display_name) return;
+  const d = editingContact
+    ? await postJson(`/api/contacts/${editingContact}`, payload, 'PUT')
+    : await postJson('/api/contacts', payload);
+  if (d.error) { showToast('✕ ' + d.error); return; }
+  closeContact();
+  await loadContacts();
+});
+$('#cDelete').addEventListener('click', async () => {
+  if (!editingContact || !confirm(t('confirmDelContact'))) return;
+  const id = editingContact;
+  closeContact();
+  await postJson(`/api/contacts/${id}`, {}, 'DELETE');
+  await loadContacts();
+  showToast(t('deleted'));
+});
+
+// --- linking contacts to a task, from the drawer ---
+function renderDrawerPeople() {
+  const task = allTasks.find((x) => x.id === drawerId);
+  const list = task?.contacts || [];
+  $('#dPeople').innerHTML = list.length ? list.map((p) => `
+    <div class="subrow" data-pid="${p.id}">
+      <span style="flex:1">${esc(p.display_name)}</span>
+      ${p.primary_phone ? `<a class="chip" href="tel:${esc(p.primary_phone)}">📞 ${esc(p.primary_phone)}</a>` : ''}
+      ${p.primary_email ? `<a class="chip" href="mailto:${esc(p.primary_email)}">✉</a>` : ''}
+      <button class="ic del" data-act="unlink" style="background:none;border:0;color:var(--muted);cursor:pointer">✕</button>
+    </div>`).join('') : `<div class="empty">—</div>`;
+}
+$('#dPeople').addEventListener('click', async (e) => {
+  if (!e.target.closest('[data-act="unlink"]')) return;
+  const cid = e.target.closest('[data-pid]')?.dataset.pid;
+  if (!cid || !drawerId) return;
+  await api(`/api/tasks/${drawerId}/contacts/${cid}`, { method: 'DELETE' }).catch(() => {});
+  await loadTasks();
+  renderDrawerPeople();
+});
+$('#dPersonAdd').addEventListener('click', async () => {
+  const name = $('#dPersonInput').value.trim();
+  if (!name || !drawerId) return;
+  if (!allContacts.length) await loadContacts('');
+  let c = allContacts.find((x) => x.display_name === name)
+       || allContacts.find((x) => x.display_name.toLowerCase().includes(name.toLowerCase()));
+  // Typing an unknown name creates the contact rather than silently doing nothing.
+  if (!c) {
+    const made = await postJson('/api/contacts', { display_name: name });
+    if (made.error) { showToast('✕ ' + made.error); return; }
+    c = made.contact;
+    await loadContacts('');
+  }
+  const r = await postJson(`/api/tasks/${drawerId}/contacts`, { contact_id: c.id });
+  if (r.error) { showToast('✕ ' + r.error); return; }
+  $('#dPersonInput').value = '';
+  await loadTasks();
+  renderDrawerPeople();
+});
+
 // ===================== history =====================
 let histScope = 'all';
 let histTimer = 0;
@@ -1534,10 +1737,18 @@ async function upload(files) {
       const res = await api('/api/upload', { method: 'POST', body: fd });
       const d = await res.json();
       if (res.ok && d.ok) {
-        const n = d.counts || {};
-        line.querySelector('.st').innerHTML =
-          `<span class="s-ok">${d.doc_type} · ${n.income || 0}i ${n.expenses || 0}e ${n.investments || 0}v</span>`;
-        line.querySelector('.s-run').outerHTML = '<span class="s-ok">✓</span>';
+        const st = d.stats || {};
+        const added = d.inserted ?? st.inserted ?? 0;
+        const skipped = d.duplicates ?? st.duplicates_ignored ?? 0;
+        if (d.duplicate) {
+          line.querySelector('.st').innerHTML = `<span class="s-bad">${esc(t('dupSkipped'))}</span>`;
+          line.querySelector('.s-run').outerHTML = '<span class="s-bad">⊘</span>';
+        } else {
+          line.querySelector('.st').innerHTML =
+            `<span class="s-ok">${esc(d.doc_type || '')} · ${added} ${esc(t('newRows'))}` +
+            `${skipped ? ` · ${skipped} ${esc(t('skippedRows'))}` : ''}</span>`;
+          line.querySelector('.s-run').outerHTML = '<span class="s-ok">✓</span>';
+        }
       } else {
         line.querySelector('.st').innerHTML =
           `<span class="s-bad">${esc(res.status === 409 ? 'duplicate' : (d.error || res.status))}</span>`;
@@ -1554,7 +1765,7 @@ function rerender() {
   if (lastSummary) { renderKpis(lastSummary); renderMonthly(lastSummary.monthly);
                      renderCats(lastSummary.by_category); renderInv(lastSummary.investments);
                      renderDocs(lastSummary.documents); renderStamp(lastSummary); }
-  renderTasks(); renderNotes();
+  renderTasks(); renderNotes(); renderContacts();
   if (!$('#viewHistory').hidden) loadHistory();
 }
 function enterApp() {

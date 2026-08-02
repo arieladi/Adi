@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Backend for adiariel.com/me. Wrangler bundles these deps; there is no separate build step.",
   "dependencies": {
+    "postal-mime": "^2.7.5",
     "xlsx": "^0.18.5"
   }
 }
