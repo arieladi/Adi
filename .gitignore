@@ -9,3 +9,6 @@
 
 # D1 exports contain personal financial data
 finance/.backup-*.sql
+
+# npm deps (wrangler bundles them at deploy time)
+node_modules/
