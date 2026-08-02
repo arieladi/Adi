@@ -122,11 +122,14 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
 <div id="gate" style="display:none">
   <div class="box">
     <h1>Personal hub</h1>
-    <p>Enter your API token to unlock. Stored for this tab only.</p>
-    <form id="gateForm">
-      <input type="password" id="tok" placeholder="API token" autocomplete="current-password" required>
+    <p id="gateHint">Sign in to continue.</p>
+    <form id="gateForm" autocomplete="on">
+      <input type="text" id="user" name="username" placeholder="User" autocomplete="username"
+             autocapitalize="none" autocorrect="off" spellcheck="false" value="adi">
+      <input type="password" id="pass" name="password" placeholder="Password"
+             autocomplete="current-password" style="margin-top:10px" required>
       <div class="err" id="gateErr"></div>
-      <button class="btn" style="width:100%;margin-top:12px" type="submit">Unlock</button>
+      <button class="btn" style="width:100%;margin-top:12px" type="submit" id="gateBtn">Sign in</button>
     </form>
   </div>
 </div>
@@ -209,12 +212,13 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
 </div>
 
 <script>
-// Same origin when served from the site, so Cloudflare Access can attach your
-// identity to API calls and no token is needed. Absolute URL only for local preview.
-const API = /(^|\.)adiariel\.com$/.test(location.hostname)
-  ? '' : 'https://finance.adidatabase.workers.dev';
-const KEY = 'adi_fin_tok';
-let accessMode = false; // true once Cloudflare Access has authenticated us
+// Served from the site means the API is same-origin and Cloudflare Access is in
+// front of it. Absolute URL only for local preview, where Access does not apply.
+const ON_SITE = /(^|\.)adiariel\.com$/.test(location.hostname);
+const API = ON_SITE ? '' : 'https://finance.adidatabase.workers.dev';
+const KEY = 'adi_fin_sess';   // app session token from /api/login
+const LEGACY_KEY = 'adi_fin_tok';
+let accessMode = ON_SITE;     // Google sign-in handled upstream by Access
 const $ = (s) => document.querySelector(s);
 
 const ils = (agorot, dp = 0) =>
@@ -224,7 +228,7 @@ function token(){ return sessionStorage.getItem(KEY) || ''; }
 
 async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
-  if (!accessMode && token()) headers.Authorization = 'Bearer ' + token();
+  if (token()) headers['X-App-Session'] = token();
   const res = await fetch(API + path, { ...opts, headers, credentials: 'same-origin' });
   // An expired Access session answers with a redirect to the login page rather
   // than a 401. Reload so the browser follows it as a normal navigation.
@@ -236,33 +240,58 @@ async function api(path, opts = {}) {
   return res;
 }
 
+/** Soft: drop the app session and show the password form again. */
 function lock() {
-  // Under Access the real session belongs to Cloudflare, so sign out there.
-  if (accessMode) { location.href = '/cdn-cgi/access/logout'; return; }
   sessionStorage.removeItem(KEY);
   $('#app').hidden = true;
   $('#gate').style.display = 'grid';
+  $('#gateHint').textContent = 'Session expired. Enter your password to continue.';
+  $('#pass').focus();
+}
+
+/** Hard: also end the Cloudflare Access session, so Google is re-checked too. */
+function signOut() {
+  sessionStorage.removeItem(KEY);
+  if (accessMode) { location.href = '/cdn-cgi/access/logout'; return; }
+  lock();
 }
 
 // ---------------- gate ----------------
 $('#gateForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const value = $('#tok').value.trim();
-  if (!value) return;
+  const user = $('#user').value.trim();
+  const pass = $('#pass').value;
+  if (!user || !pass) return;
+
   $('#gateErr').textContent = '';
-  sessionStorage.setItem(KEY, value);
-  const res = await fetch(API + '/api/summary', { headers: { Authorization: 'Bearer ' + value } });
-  if (!res.ok) {
-    sessionStorage.removeItem(KEY);
-    $('#gateErr').textContent = res.status === 401 ? 'Wrong token.' : 'Server error ' + res.status;
-    return;
+  $('#gateBtn').disabled = true;
+  $('#gateBtn').textContent = 'Signing in…';
+
+  try {
+    const res = await fetch(API + '/api/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ user, pass }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.token) {
+      $('#gateErr').textContent = res.status === 401 ? 'Wrong user or password.'
+        : data.hint || ('Server error ' + res.status);
+      return;
+    }
+    sessionStorage.setItem(KEY, data.token);
+    $('#pass').value = '';
+    enterApp();
+  } catch {
+    $('#gateErr').textContent = 'Could not reach the server.';
+  } finally {
+    $('#gateBtn').disabled = false;
+    $('#gateBtn').textContent = 'Sign in';
   }
-  $('#gate').style.display = 'none';
-  $('#app').hidden = false;
-  boot();
 });
 
-$('#lock').addEventListener('click', lock);
+$('#lock').addEventListener('click', signOut);
 $('#refresh').addEventListener('click', () => { loadSummary(); loadInsights(); });
 
 // ---------------- render ----------------
@@ -445,29 +474,26 @@ function enterApp() {
 }
 
 (async function start() {
-  // 1. Cloudflare Access already vouching for us? Then there is no token step.
-  try {
-    const res = await fetch(API + '/api/summary', { credentials: 'same-origin' });
-    if (res.ok) {
-      accessMode = true;
-      $('#lock').textContent = 'Sign out';
-      enterApp();
-      return;
-    }
-  } catch { /* offline or blocked — fall through to the token path */ }
+  sessionStorage.removeItem(LEGACY_KEY); // retired API-token gate
 
-  // 2. Otherwise reuse a token from this tab.
+  if (accessMode) $('#lock').textContent = 'Sign out';
+
+  // Reuse a still-valid session from this tab.
   if (token()) {
     try {
-      const res = await fetch(API + '/api/summary', { headers: { Authorization: 'Bearer ' + token() } });
+      const res = await fetch(API + '/api/summary', { headers: { 'X-App-Session': token() } });
       if (res.ok) { enterApp(); return; }
-    } catch { /* fall through */ }
+    } catch { /* fall through to the form */ }
     sessionStorage.removeItem(KEY);
   }
 
-  // 3. Neither — ask for a token.
+  // Otherwise ask for the password. On the live site, getting this far already
+  // means Access let us through Google, so the form is the second factor.
+  $('#gateHint').textContent = accessMode
+    ? 'Signed in with Google. Enter your password to continue.'
+    : 'Sign in to continue.';
   $('#gate').style.display = 'grid';
-  $('#tok').focus();
+  $('#pass').focus();
 })();
 </script>
 </body>

@@ -33,7 +33,7 @@ function corsHeaders(request, env) {
   return {
     'Access-Control-Allow-Origin': ok ? origin : allowed[0] || 'null',
     'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
-    'Access-Control-Allow-Headers': 'Authorization,Content-Type',
+    'Access-Control-Allow-Headers': 'Authorization,Content-Type,X-App-Session',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   };
@@ -118,28 +118,93 @@ async function verifyAccessJwt(request, env) {
   }
 }
 
+// --- App password layer (second factor, independent of Google) -------------
+//
+// Cloudflare Access proves *which Google account* you are. It cannot tell an
+// unattended-but-signed-in device from you. This password is the thing an
+// attacker holding a live Google session still does not have.
+
+const SESSION_TTL_S = 12 * 60 * 60;
+const b64urlEncode = (bytes) =>
+  btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+async function hmacSign(secret, data) {
+  const key = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
+  );
+  return b64urlEncode(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data)));
+}
+
+async function issueSession(env, subject) {
+  const payload = b64urlEncode(
+    new TextEncoder().encode(JSON.stringify({
+      sub: subject, exp: Math.floor(Date.now() / 1000) + SESSION_TTL_S,
+    })),
+  );
+  return `${payload}.${await hmacSign(env.SESSION_SECRET, payload)}`;
+}
+
+async function verifySession(env, token) {
+  if (!token || !env.SESSION_SECRET) return false;
+  const [payload, sig] = token.split('.');
+  if (!payload || !sig) return false;
+  if (!safeEqual(sig, await hmacSign(env.SESSION_SECRET, payload))) return false;
+  try {
+    const { exp } = JSON.parse(new TextDecoder().decode(b64urlToBytes(payload)));
+    return typeof exp === 'number' && exp > Math.floor(Date.now() / 1000);
+  } catch {
+    return false;
+  }
+}
+
+async function handleLogin(request, env) {
+  if (!env.ADI_PASS || !env.SESSION_SECRET) {
+    return json({ error: 'not_configured', hint: 'Set ADI_PASS and SESSION_SECRET secrets.' }, 503);
+  }
+  const body = await request.json().catch(() => ({}));
+  const user = String(body.user || '');
+  const pass = String(body.pass || '');
+
+  // Both compared in constant time so neither can be probed by timing.
+  const userOk = safeEqual(user.toLowerCase(), (env.ADI_USER || 'adi').toLowerCase());
+  const passOk = safeEqual(pass, env.ADI_PASS);
+  if (!userOk || !passOk) {
+    console.warn('login_failed', { user, ip: request.headers.get('CF-Connecting-IP') });
+    return json({ error: 'bad_credentials' }, 401);
+  }
+  return json({ ok: true, token: await issueSession(env, user), expires_in: SESSION_TTL_S });
+}
+
 /**
  * Fail-closed auth. Returns null when authorised, or a Response when not.
  *
- * Two accepted identities:
- *   1. A valid Cloudflare Access JWT — how the browser authenticates once the
- *      app sits behind Access. No shared secret involved.
- *   2. The API_TOKEN Bearer header — for curl/CLI, and the fallback while
- *      Access is not yet configured.
+ * Accepted identities, in order:
+ *   1. An app session token from /api/login — the browser path. Requires the
+ *      password, so a live Google session alone is not enough.
+ *   2. The API_TOKEN Bearer header — for curl/CLI.
+ *
+ * A valid Access JWT is necessary but NOT sufficient: it only tells us the
+ * caller got past Google. When it is present without a session we answer
+ * `password_required` so the UI knows to show the login form rather than
+ * treating it as a hard rejection.
  */
 async function requireAuth(request, env) {
-  if (await verifyAccessJwt(request, env)) return null;
+  const session = request.headers.get('X-App-Session') || '';
+  if (await verifySession(env, session)) return null;
 
-  if (!env.API_TOKEN) {
+  const header = request.headers.get('Authorization') || '';
+  const bearer = header.startsWith('Bearer ') ? header.slice(7) : '';
+  if (env.API_TOKEN && safeEqual(bearer, env.API_TOKEN)) return null;
+
+  if (!env.API_TOKEN && !env.ADI_PASS) {
     return json(
-      { error: 'not_configured', hint: 'Set the API_TOKEN secret: npx wrangler secret put API_TOKEN --name finance' },
+      { error: 'not_configured', hint: 'Set the ADI_PASS secret: npx wrangler secret put ADI_PASS --name finance' },
       503,
     );
   }
-  const header = request.headers.get('Authorization') || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (!safeEqual(token, env.API_TOKEN)) return json({ error: 'unauthorized' }, 401);
-  return null;
+
+  const viaAccess = await verifyAccessJwt(request, env);
+  return json({ error: viaAccess ? 'password_required' : 'unauthorized' }, 401);
 }
 
 const uuid = () => crypto.randomUUID();
@@ -588,12 +653,20 @@ export default {
           service: 'finance',
           configured: { api_token: !!env.API_TOKEN, gemini: !!env.GEMINI_API_KEY,
                         db: !!env.DB, r2: !!env.DOCS_BUCKET, ai: !!env.AI,
-                        access: !!(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD) },
+                        access: !!(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD),
+                        password: !!(env.ADI_PASS && env.SESSION_SECRET) },
         }));
       }
 
       if (!url.pathname.startsWith('/api/')) {
         return withCors(json({ error: 'not_found', hint: 'API only. UI lives at https://adiariel.com/me' }, 404));
+      }
+
+      // Exchanges the password for a session. Sits behind Access like everything
+      // else, so only your Google identity can even reach it — which is why an
+      // explicit rate limiter would add little here.
+      if (url.pathname === '/api/login' && request.method === 'POST') {
+        return withCors(await handleLogin(request, env));
       }
 
       const denied = await requireAuth(request, env);
