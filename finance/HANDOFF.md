@@ -155,6 +155,26 @@ matching contacts, prompting to add missing ones. Adi's example:
 **Propose, don't commit** — show the parse for one confirmation click. Needs contacts
 populated (run the pull in הגדרות first).
 
+### 2b. Verify the batch-ingest and contacts fixes (do this first — 5 minutes)
+
+Both were found live on 2026-08-03 and fixed but only partly re-verified.
+
+**Root cause of both:** per-item work done sequentially in one request, exceeding the
+Worker's duration budget and dying partway. Watch for this pattern anywhere else.
+
+- **Contacts** reached 33 of 3005 because the loop did a SELECT + its own `env.DB.batch()`
+  per person (~6000 round-trips). Now: map pre-loaded in one query, writes chunked at 90
+  statements, **max 5 pages (1000 contacts) per invocation with a resume token**.
+  → Press **משוך אנשי קשר** in הגדרות repeatedly until the response has `more: false`.
+  It was at 491 when this was written; it should reach ~3005.
+- **Documents stuck at `pending`** because 20 forwarded payslips meant 20 sequential
+  Gemini calls in one `waitUntil`. Now ingestion stores to R2 + inserts the row first,
+  extracts only the first 2 inline, defers the rest.
+  → Drain with `POST /api/documents/process` (`{"limit":6}`), or wait for the cron.
+  → **There is no UI for this yet — add a "process backlog" button** showing
+  `pending` count, or auto-drain on app load.
+  → Re-forward Adi's 2024→now payslip bundle and confirm every attachment lands.
+
 ### 3. Not done / known gaps
 - Google **Contacts push** is intentionally not built (pull-only for safety).
 - Receipts UI untested end-to-end; `.msg` parsing is deployed but never exercised on a
