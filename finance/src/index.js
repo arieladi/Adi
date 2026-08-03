@@ -2707,6 +2707,20 @@ export default {
         return await handleOAuthCallback(request, env, url);
       }
 
+      // /start is reached by typing the URL or clicking a link, and a top-level browser
+      // navigation cannot carry the X-App-Session header — so requiring it here made the
+      // endpoint unreachable by the only means it is ever used. A valid Access JWT is
+      // accepted instead: this route exposes no data, it only redirects to Google, and
+      // Access already proves the caller is Adi. Data routes still demand the password.
+      if (url.pathname === '/api/oauth/google/start' && request.method === 'GET') {
+        const viaAccess = await verifyAccessJwt(request, env);
+        const viaSession = await verifySession(env, request.headers.get('X-App-Session') || '');
+        if (!viaAccess && !viaSession) {
+          return withCors(json({ error: 'unauthorized', hint: 'Open this from adiariel.com/me' }, 401));
+        }
+        return await handleOAuthStart(env);
+      }
+
       if (!url.pathname.startsWith('/api/')) {
         return withCors(json({ error: 'not_found', hint: 'API only. UI lives at https://adiariel.com/me' }, 404));
       }

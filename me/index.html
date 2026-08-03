@@ -494,6 +494,16 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
         </section>
       </div>
       <div class="grid" style="gap:16px">
+        <section class="card" id="googleCard">
+          <h2><em data-i18n="googleSync" style="font-style:normal">סנכרון Google</em>
+            <span class="badge" id="gStatus">—</span></h2>
+          <div id="gDetail" class="empty" data-i18n="gChecking">בודק…</div>
+          <div class="noteActions">
+            <button class="btn sm" id="gConnect" data-i18n="gConnect">חבר את Google</button>
+            <button class="btn ghost sm" id="gRefresh" data-i18n="refresh">רענן</button>
+            <button class="btn danger sm" id="gDisconnect" hidden data-i18n="gDisconnect">נתק</button>
+          </div>
+        </section>
         <section class="card" id="contactEditor" hidden>
           <h2 id="cEditTitle" data-i18n="newContact">איש קשר חדש</h2>
           <div class="fieldset"><label data-i18n="cName">שם</label>
@@ -668,6 +678,10 @@ const I18N = {
     cTitle:'תפקיד', cDesc:'תיאור', people:'אנשים', linkContact:'קשר איש קשר…',
     linkedTasks:'משימות מקושרות', confirmDelContact:'למחוק את איש הקשר?',
     dupSkipped:'כפול · דולג', newRows:'רשומות חדשות', skippedRows:'דולגו',
+    googleSync:'סנכרון Google', gConnect:'חבר את Google', gDisconnect:'נתק',
+    gChecking:'בודק…', gConnected:'מחובר', gNotConnected:'לא מחובר',
+    gNotConfigured:'חסרות הגדרות', gTokenBad:'הטוקן פג — התחבר מחדש',
+    gConfirmDisconnect:'לנתק את Google? הסנכרון ייפסק.',
   },
   en: {
     hub:'Personal hub', hubTitle:'Personal hub', signInHint:'Sign in to continue.',
@@ -716,6 +730,10 @@ const I18N = {
     cTitle:'Job title', cDesc:'Description', people:'People', linkContact:'Link a contact…',
     linkedTasks:'Linked tasks', confirmDelContact:'Delete this contact?',
     dupSkipped:'duplicate · skipped', newRows:'new', skippedRows:'skipped',
+    googleSync:'Google sync', gConnect:'Connect Google', gDisconnect:'Disconnect',
+    gChecking:'Checking…', gConnected:'Connected', gNotConnected:'Not connected',
+    gNotConfigured:'Not configured', gTokenBad:'Token expired — reconnect',
+    gConfirmDisconnect:'Disconnect Google? Sync will stop.',
   },
 };
 let lang = localStorage.getItem('adi_lang') || 'he';
@@ -856,7 +874,7 @@ function showTab(name) {
   localStorage.setItem('adi_tab', name);
   if (name === 'tasks' && !tasksLoaded) { loadTasks(); loadNotes(); tasksLoaded = true; }
   if (name === 'history') loadHistory();
-  if (name === 'contacts') loadContacts();
+  if (name === 'contacts') { loadContacts(); loadGoogle(); }
 }
 $('#tabFinance').addEventListener('click', () => showTab('finance'));
 $('#tabTasks').addEventListener('click', () => showTab('tasks'));
@@ -1654,6 +1672,40 @@ $('#dPersonAdd').addEventListener('click', async () => {
   $('#dPersonInput').value = '';
   await loadTasks();
   renderDrawerPeople();
+});
+
+
+// ---- google sync status ----
+async function loadGoogle() {
+  const badge = $('#gStatus'), detail = $('#gDetail');
+  badge.textContent = '…'; detail.textContent = t('gChecking');
+  try {
+    const d = await apiJson('/api/oauth/google/status');
+    $('#gDisconnect').hidden = !d.connected;
+    if (!d.configured) { badge.textContent = t('gNotConfigured'); detail.textContent = d.redirect_uri; return; }
+    if (!d.connected)  { badge.textContent = t('gNotConnected');
+                         detail.textContent = (d.scopes || []).join('  '); return; }
+    if (d.token_ok === false) {
+      badge.textContent = t('gTokenBad');
+      detail.textContent = String(d.token_error || '').slice(0, 200);
+      return;
+    }
+    badge.textContent = t('gConnected');
+    const lists = (d.task_lists || []).map((l) => l.title).join(', ');
+    detail.textContent = `${d.connected_at || ''}${lists ? ' · ' + lists : ''}`;
+  } catch (err) {
+    badge.textContent = '✕'; detail.textContent = err.message;
+  }
+}
+// A top-level navigation cannot send X-App-Session, but /start accepts the Access
+// identity, so a plain redirect is the right thing here.
+$('#gConnect').addEventListener('click', () => { location.href = API + '/api/oauth/google/start'; });
+$('#gRefresh').addEventListener('click', loadGoogle);
+$('#gDisconnect').addEventListener('click', async () => {
+  if (!confirm(t('gConfirmDisconnect'))) return;
+  await postJson('/api/oauth/google/disconnect', {});
+  showToast(t('gDisconnect'));
+  loadGoogle();
 });
 
 // ===================== history =====================
