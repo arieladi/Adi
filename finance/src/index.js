@@ -2470,6 +2470,8 @@ async function handleContacts(request, env, url) {
   if (request.method === 'GET' && !id) {
     const q = (url.searchParams.get('q') || '').trim();
     const like = `%${q}%`;
+    const limit = Math.min(Number(url.searchParams.get('limit')) || 200, 500);
+    const offset = Math.max(Number(url.searchParams.get('offset')) || 0, 0);
     // Explicit columns, never raw_json: the full People API person is several KB and
     // 500 of them is a multi-megabyte response. Children are NOT joined here either —
     // an IN(?,?...) over 500 ids exceeds D1's bound-parameter limit and 500s the whole
@@ -2483,13 +2485,16 @@ async function handleContacts(request, env, url) {
           `SELECT ${cols} FROM contacts WHERE deleted_at IS NULL
              AND (display_name LIKE ?1 OR primary_email LIKE ?1 OR primary_phone LIKE ?1
                   OR organization LIKE ?1)
-           ORDER BY display_name LIMIT 200`).bind(like).all()
+           ORDER BY display_name LIMIT ${limit} OFFSET ${offset}`).bind(like).all()
       : await env.DB.prepare(
           `SELECT ${cols} FROM contacts WHERE deleted_at IS NULL
-           ORDER BY display_name LIMIT 200`).all();
-    const total = (await env.DB.prepare(
-      'SELECT COUNT(*) n FROM contacts WHERE deleted_at IS NULL').first())?.n ?? 0;
-    return json({ ok: true, total, shown: (rows.results || []).length,
+           ORDER BY display_name LIMIT ${limit} OFFSET ${offset}`).all();
+    const total = (await (q
+      ? env.DB.prepare(`SELECT COUNT(*) n FROM contacts WHERE deleted_at IS NULL
+            AND (display_name LIKE ?1 OR primary_email LIKE ?1 OR primary_phone LIKE ?1
+                 OR organization LIKE ?1)`).bind(like)
+      : env.DB.prepare('SELECT COUNT(*) n FROM contacts WHERE deleted_at IS NULL')).first())?.n ?? 0;
+    return json({ ok: true, total, limit, offset, shown: (rows.results || []).length,
                   contacts: (rows.results || []).map((c) => ({ ...c, emails: [], phones: [], addresses: [] })) });
   }
 
@@ -2597,6 +2602,174 @@ async function handleTaskContacts(request, env, taskId, contactId) {
     return res.meta.changes ? json({ ok: true, unlinked: contactId }) : json({ error: 'not_found' }, 404);
   }
   return json({ error: 'method_not_allowed' }, 405);
+}
+
+// ---------------------------------------------------------------------------
+// Contacts agent — natural language, propose then confirm
+// ---------------------------------------------------------------------------
+//
+// This endpoint NEVER writes. It returns a plan; /api/contacts/apply executes an
+// approved one. That split is the whole safety model: an LLM that can delete 3000
+// contacts on a misread instruction is not something to point at a real address book.
+
+const CONTACT_ACTIONS = `Return ONLY JSON:
+{
+  "answer": "one short sentence in the user's language describing what you will do",
+  "actions": [
+    {"op":"delete","contact_id":"...","display_name":"..."},
+    {"op":"update","contact_id":"...","display_name":"...","fields":{"organization":"...","job_title":"...","description":"...","display_name":"..."}},
+    {"op":"add_email","contact_id":"...","display_name":"...","value":"a@b.com","type":"work|home|other"},
+    {"op":"add_phone","contact_id":"...","display_name":"...","value":"05...","type":"mobile|work|home"},
+    {"op":"create","display_name":"...","fields":{"primary_email":"...","primary_phone":"...","organization":"..."}}
+  ],
+  "unmatched": ["names you were asked about but could not find"]
+}
+Rules:
+- Use ONLY contact_id values that appear in the CONTACTS list given to you. Never invent one.
+- If a request is ambiguous or matches several people, put them in "unmatched" and do NOT
+  guess — the user will clarify. Deleting the wrong person is unrecoverable to them.
+- If asked to delete "all of these" from an image, list one delete action per matched name.
+- Return an empty actions array if nothing is safely actionable, and say why in "answer".`;
+
+async function handleContactsAgent(request, env) {
+  const ct = request.headers.get('content-type') || '';
+  let message = '', lang = 'he', selected = [], image = null;
+
+  if (/multipart/i.test(ct)) {
+    const form = await request.formData();
+    message = String(form.get('message') || '');
+    lang = form.get('lang') === 'en' ? 'en' : 'he';
+    selected = JSON.parse(String(form.get('selected') || '[]'));
+    const f = form.get('image');
+    if (f && typeof f !== 'string') {
+      image = { mimeType: f.type || 'image/jpeg', base64: toBase64(await f.arrayBuffer()) };
+    }
+  } else {
+    const b = await readJson(request);
+    message = String(b.message || '');
+    lang = b.lang === 'en' ? 'en' : 'he';
+    selected = Array.isArray(b.selected) ? b.selected : [];
+  }
+  if (!message.trim() && !image) return json({ error: 'message_required' }, 400);
+
+  // Candidate set: anything the user selected, plus keyword matches, plus a slice of the
+  // book. The whole 3000 will not fit, and sending only matches would let the model
+  // "not find" someone who exists.
+  const terms = message.toLowerCase().split(/[\s,.?!"'״׳()]+/).filter((w) => w.length > 1);
+  const rows = [];
+  if (selected.length) {
+    const marks = selected.map(() => '?').join(',');
+    const r = await env.DB.prepare(
+      `SELECT id, display_name, primary_email, primary_phone, organization
+         FROM contacts WHERE id IN (${marks}) AND deleted_at IS NULL`).bind(...selected).all();
+    rows.push(...(r.results || []));
+  }
+  for (const term of terms.slice(0, 6)) {
+    const r = await env.DB.prepare(
+      `SELECT id, display_name, primary_email, primary_phone, organization
+         FROM contacts WHERE deleted_at IS NULL
+          AND (display_name LIKE ?1 OR primary_email LIKE ?1 OR organization LIKE ?1)
+        LIMIT 40`).bind(`%${term}%`).all();
+    rows.push(...(r.results || []));
+  }
+  const seen = new Set();
+  const candidates = rows.filter((c) => !seen.has(c.id) && seen.add(c.id)).slice(0, 200);
+
+  const list = candidates.map((c) =>
+    `- id=${c.id} | ${c.display_name}${c.primary_email ? ` | ${c.primary_email}` : ''}` +
+    `${c.primary_phone ? ` | ${c.primary_phone}` : ''}${c.organization ? ` | ${c.organization}` : ''}`
+  ).join('\n');
+
+  const system = `You manage Adi's address book. ${CONTACT_ACTIONS}
+${lang === 'he' ? 'כתוב את "answer" בעברית.' : 'Write "answer" in English.'}`;
+  const user = `CONTACTS (candidates):\n${list || '(none matched)'}\n\n` +
+    `${selected.length ? `THE USER HAS SELECTED ${selected.length} contact(s), listed above.\n` : ''}` +
+    `REQUEST: ${message}`;
+
+  try {
+    // Vision when an image is attached ("delete everyone in this photo").
+    const plan = image
+      ? await geminiCallJson(env, `${system}\n\n${user}`, image)
+      : parseLooseJson((await runGeminiAgent(env, system, user, [])).text);
+    if (!plan?.actions) throw new Error('no_plan');
+
+    // Re-validate every id server-side. The model does not get to name a row that
+    // does not exist, and this is the last line before a destructive apply.
+    const valid = new Set(candidates.map((c) => c.id));
+    const actions = (plan.actions || []).filter((a) => a.op === 'create' || valid.has(a.contact_id));
+    const dropped = (plan.actions || []).length - actions.length;
+
+    return json({ ok: true, answer: plan.answer || '', actions,
+                  unmatched: plan.unmatched || [], dropped_invalid: dropped,
+                  requires_confirmation: actions.length > 0 });
+  } catch (err) {
+    return json({ ok: false, error: 'plan_failed', detail: String(err?.message || err) }, 502);
+  }
+}
+
+/** Executes a plan the user has explicitly approved. Nothing else writes contacts. */
+async function handleContactsApply(request, env) {
+  const b = await readJson(request);
+  const actions = Array.isArray(b.actions) ? b.actions : [];
+  if (!actions.length) return json({ error: 'no_actions' }, 400);
+  if (actions.length > 200) return json({ error: 'too_many_actions', max: 200 }, 400);
+
+  const done = [];
+  for (const a of actions.slice(0, 200)) {
+    try {
+      if (a.op === 'delete') {
+        await env.DB.batch([
+          env.DB.prepare("UPDATE contacts SET deleted_at=datetime('now') WHERE id=?").bind(a.contact_id),
+          logStmt(env, 'note', a.contact_id, 'delete', a.display_name, { kind: 'contact', via: 'agent' }),
+        ]);
+        done.push({ ...a, ok: true });
+      } else if (a.op === 'add_email' || a.op === 'add_phone') {
+        const table = a.op === 'add_email' ? 'contact_emails' : 'contact_phones';
+        const col = a.op === 'add_email' ? 'primary_email' : 'primary_phone';
+        await env.DB.batch([
+          env.DB.prepare(
+            `INSERT INTO ${table} (id, contact_id, value, type, is_primary) VALUES (?,?,?,?,0)`,
+          ).bind(uuid(), a.contact_id, trimStr(a.value, 200), trimStr(a.type, 40)),
+          // Keep the denormalised primary populated if it was empty.
+          env.DB.prepare(
+            `UPDATE contacts SET ${col}=COALESCE(${col},?), dirty=1, updated_at=datetime('now') WHERE id=?`,
+          ).bind(trimStr(a.value, 200), a.contact_id),
+          logStmt(env, 'note', a.contact_id, 'edit', a.display_name, { kind: 'contact', add: a.op, via: 'agent' }),
+        ]);
+        done.push({ ...a, ok: true });
+      } else if (a.op === 'update') {
+        const f = a.fields || {};
+        const cols = ['display_name', 'organization', 'job_title', 'description',
+                      'primary_email', 'primary_phone'].filter((k) => f[k] !== undefined);
+        if (!cols.length) { done.push({ ...a, ok: false, error: 'no_fields' }); continue; }
+        await env.DB.batch([
+          env.DB.prepare(
+            `UPDATE contacts SET ${cols.map((c) => `${c}=?`).join(', ')}, dirty=1,
+                    updated_at=datetime('now') WHERE id=?`,
+          ).bind(...cols.map((c) => trimStr(f[c], 300)), a.contact_id),
+          logStmt(env, 'note', a.contact_id, 'edit', a.display_name, { kind: 'contact', via: 'agent' }),
+        ]);
+        done.push({ ...a, ok: true });
+      } else if (a.op === 'create') {
+        const f = a.fields || {};
+        const id = uuid();
+        await env.DB.batch([
+          env.DB.prepare(
+            `INSERT INTO contacts (id, display_name, primary_email, primary_phone, organization, dirty)
+             VALUES (?,?,?,?,?,1)`,
+          ).bind(id, trimStr(a.display_name, 200), trimStr(f.primary_email, 200),
+                 trimStr(f.primary_phone, 60), trimStr(f.organization, 200)),
+          logStmt(env, 'note', id, 'create', a.display_name, { kind: 'contact', via: 'agent' }),
+        ]);
+        done.push({ ...a, ok: true, id });
+      } else {
+        done.push({ ...a, ok: false, error: 'unknown_op' });
+      }
+    } catch (err) {
+      done.push({ ...a, ok: false, error: String(err?.message || err) });
+    }
+  }
+  return json({ ok: true, applied: done.filter((d) => d.ok).length, results: done });
 }
 
 // ---------------------------------------------------------------------------
@@ -3627,6 +3800,9 @@ export default {
       if (/^\/api\/receipts(\/[\w-]+(\/(confirm|reject|file))?)?$/.test(url.pathname)) {
         return withCors(await handleReceipts(request, env, url));
       }
+      if (url.pathname === '/api/contacts/apply' && request.method === 'POST') {
+        return withCors(await handleContactsApply(request, env));
+      }
       if (/^\/api\/contacts(\/[\w-]+)?$/.test(url.pathname)) {
         return withCors(await handleContacts(request, env, url));
       }
@@ -3697,6 +3873,9 @@ export default {
       }
       if (url.pathname === '/api/chat/tasks' && request.method === 'POST') {
         return withCors(await handleChatTasks(request, env));
+      }
+      if (url.pathname === '/api/chat/contacts' && request.method === 'POST') {
+        return withCors(await handleContactsAgent(request, env));
       }
       if (url.pathname === '/api/chat/finance' && request.method === 'POST') {
         return withCors(await handleChatFinance(request, env));

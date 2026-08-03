@@ -489,7 +489,13 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
             <span class="badge" id="contactCount">0</span>
             <button class="btn sm" id="newContact" style="margin-inline-start:auto" data-i18n="newContact">איש קשר חדש</button>
           </h2>
-          <div class="hfilters"><input type="search" id="contactQ" data-i18n-ph="searchContacts" placeholder="חיפוש…"></div>
+          <div class="hfilters">
+            <input type="search" id="contactQ" data-i18n-ph="searchContacts" placeholder="חיפוש…">
+            <button class="btn ghost sm" id="cPrev">‹</button>
+            <span class="badge" id="cRange">—</span>
+            <button class="btn ghost sm" id="cNext">›</button>
+            <button class="btn ghost sm" id="cSelAll" data-i18n="selectAll">בחר הכל</button>
+          </div>
           <div id="contactList"><div class="empty" data-i18n="noContacts">אין עדיין אנשי קשר.</div></div>
         </section>
       </div>
@@ -517,9 +523,16 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
         </section>
       </div>
     </div>
-    <div class="chatbar" data-chat="tasks">
+    <div class="chatbar" data-chat="contacts">
       <div class="chatans" hidden></div>
-      <form><input type="text" data-i18n-ph="askTasks" placeholder="שאל…"><button class="btn" type="submit" data-i18n="ask">שאל</button></form>
+      <div class="noteActions" id="planBox" hidden style="margin-bottom:10px">
+        <button class="btn sm" id="planApply" data-i18n="planApply">אשר ובצע</button>
+        <button class="btn ghost sm" id="planCancel" data-i18n="cancel">בטל</button>
+      </div>
+      <form><input type="text" data-i18n-ph="askContacts" placeholder="מה תרצה שנשנה באנשי הקשר?">
+        <input type="file" id="chatImage" accept="image/*" hidden>
+        <button class="btn ghost" id="chatImgBtn" type="button" title="תמונה">🖼</button>
+        <button class="btn" type="submit" data-i18n="ask">שאל</button></form>
       <div class="chatmeta" hidden></div>
     </div>
   </section>
@@ -711,6 +724,8 @@ const I18N = {
     settings:'הגדרות', autoSyncTitle:'סנכרון אוטומטי',
     autoSyncNote:'הסנכרון רץ אוטומטית בטעינת האפליקציה ובכל לילה.',
     gPullContacts:'משוך אנשי קשר', gSyncedContacts:'אנשי קשר סונכרנו',
+    askContacts:'מה תרצה שנשנה באנשי הקשר?', planApply:'אשר ובצע', selectAll:'בחר הכל',
+    planNone:'לא נמצאה פעולה בטוחה לביצוע.', applied:'בוצע', selected:'נבחרו',
   },
   en: {
     hub:'Personal hub', hubTitle:'Personal hub', signInHint:'Sign in to continue.',
@@ -768,6 +783,8 @@ const I18N = {
     settings:'Settings', autoSyncTitle:'Automatic sync',
     autoSyncNote:'Sync runs automatically on app load and nightly.',
     gPullContacts:'Pull contacts', gSyncedContacts:'contacts synced',
+    askContacts:'What should I change in your contacts?', planApply:'Approve & run', selectAll:'Select all',
+    planNone:'No safe action found.', applied:'applied', selected:'selected',
   },
 };
 let lang = localStorage.getItem('adi_lang') || 'he';
@@ -1565,6 +1582,33 @@ for (const bar of $$('.chatbar')) {
     ans.hidden = false; ans.innerHTML = '<span class="spin"></span>';
     meta.hidden = true; btn.disabled = true;
     try {
+      if (scope === 'contacts') {
+        const img = $('#chatImage')?.files?.[0];
+        let d;
+        if (img) {
+          const fd = new FormData();
+          fd.append('message', q); fd.append('lang', lang);
+          fd.append('selected', JSON.stringify([...selectedContacts]));
+          fd.append('image', img);
+          d = await apiJson('/api/chat/contacts', { method: 'POST', body: fd });
+          $('#chatImage').value = '';
+        } else {
+          d = await postJson('/api/chat/contacts',
+            { message: q, lang, selected: [...selectedContacts] });
+        }
+        pendingPlan = d.actions?.length ? d.actions : null;
+        const lines = (d.actions || []).map((a) =>
+          `• ${a.op} — ${esc(a.display_name || a.value || '')}`).join('<br>');
+        ans.innerHTML = `${esc(d.answer || t('planNone'))}` +
+          (lines ? `<div class="cw" style="margin-top:8px">${lines}</div>` : '') +
+          ((d.unmatched || []).length ? `<div class="cw" style="margin-top:6px;color:var(--warn)">? ${
+            d.unmatched.map(esc).join(', ')}</div>` : '');
+        // Nothing is written until this button is pressed.
+        $('#planBox').hidden = !pendingPlan;
+        input.value = '';
+        btn.disabled = false;
+        return;
+      }
       const d = await postJson(`/api/chat/${scope}`, { message: q, lang });
       ans.innerHTML = d.answer ? md(d.answer) : `<span class="empty">${esc(d.detail || d.error || '—')}</span>`;
       if (d.routed) {
@@ -1582,6 +1626,10 @@ for (const bar of $$('.chatbar')) {
 // ===================== contacts =====================
 let allContacts = [];
 let contactTotal = 0;
+let contactOffset = 0;
+const CONTACT_PAGE = 200;
+const selectedContacts = new Set();
+let pendingPlan = null;
 let editingContact = null;   // null = closed, '' = new, else id
 let contactTimer = 0;
 
@@ -1591,7 +1639,9 @@ function renderContacts() {
   $('#contactList').innerHTML = allContacts.length ? allContacts.map((c) => `
     <div class="hitem" data-cid="${c.id}" style="cursor:pointer">
       <div class="hhead">
-        <span class="htxt">${c.starred ? '★ ' : ''}${esc(c.display_name)}</span>
+        <span class="htxt"><input type="checkbox" class="csel" data-id="${c.id}"
+          style="width:15px;height:15px;margin-inline-end:7px;accent-color:var(--c2)"
+          ${selectedContacts.has(c.id) ? 'checked' : ''}>${c.starred ? '★ ' : ''}${esc(c.display_name)}</span>
         <span class="hwhen">${esc(c.primary_phone || '')}</span>
       </div>
       ${c.organization || c.primary_email ? `<div class="cw" style="margin-top:3px">${
@@ -1603,11 +1653,36 @@ function renderContacts() {
 }
 
 async function loadContacts(q) {
-  const d = await apiJson(`/api/contacts?q=${encodeURIComponent(q ?? $('#contactQ').value.trim())}`);
+  const term = q ?? $('#contactQ').value.trim();
+  const d = await apiJson(`/api/contacts?q=${encodeURIComponent(term)}` +
+                          `&limit=${CONTACT_PAGE}&offset=${contactOffset}`);
   allContacts = d.contacts || [];
   contactTotal = d.total ?? allContacts.length;
+  const from = contactTotal ? contactOffset + 1 : 0;
+  $('#cRange').textContent = `${from}–${contactOffset + allContacts.length} / ${contactTotal}`;
+  $('#cPrev').disabled = contactOffset === 0;
+  $('#cNext').disabled = contactOffset + allContacts.length >= contactTotal;
   renderContacts();
 }
+$('#cPrev').addEventListener('click', () => {
+  contactOffset = Math.max(0, contactOffset - CONTACT_PAGE); loadContacts();
+});
+$('#cNext').addEventListener('click', () => { contactOffset += CONTACT_PAGE; loadContacts(); });
+// A new search must start from the first page, or results look empty.
+$('#contactQ').addEventListener('input', () => { contactOffset = 0; });
+$('#cSelAll').addEventListener('click', () => {
+  const all = allContacts.every((c) => selectedContacts.has(c.id));
+  for (const c of allContacts) all ? selectedContacts.delete(c.id) : selectedContacts.add(c.id);
+  renderContacts();
+});
+$('#contactList').addEventListener('change', (e) => {
+  const box = e.target.closest('.csel');
+  if (!box) return;
+  box.checked ? selectedContacts.add(box.dataset.id) : selectedContacts.delete(box.dataset.id);
+  const bar = [...$$('.chatbar')].find((b) => b.dataset.chat === 'contacts');
+  if (bar) bar.querySelector('input[type=text]').placeholder =
+    selectedContacts.size ? `${selectedContacts.size} ${t('selected')} — ${t('askContacts')}` : t('askContacts');
+});
 
 function openContact(c) {
   editingContact = c ? c.id : '';
@@ -1643,6 +1718,7 @@ $('#contactQ').addEventListener('input', () => {
   contactTimer = setTimeout(() => loadContacts(), 250);
 });
 $('#contactList').addEventListener('click', (e) => {
+  if (e.target.closest('.csel')) return;      // selecting is not opening
   const row = e.target.closest('[data-cid]');
   if (!row) return;
   const c = allContacts.find((x) => x.id === row.dataset.cid);
@@ -1788,6 +1864,20 @@ $('#gSync').addEventListener('click', async () => {
   } finally { b.disabled = false; b.textContent = t('gSyncNow'); }
 });
 
+
+$('#chatImgBtn')?.addEventListener('click', () => $('#chatImage').click());
+$('#planCancel')?.addEventListener('click', () => { pendingPlan = null; $('#planBox').hidden = true; });
+$('#planApply')?.addEventListener('click', async () => {
+  if (!pendingPlan) return;
+  const b = $('#planApply'); b.disabled = true;
+  try {
+    const r = await postJson('/api/contacts/apply', { actions: pendingPlan });
+    showToast(`${t('applied')}: ${r.applied}`);
+    pendingPlan = null; $('#planBox').hidden = true;
+    selectedContacts.clear();
+    await loadContacts();
+  } finally { b.disabled = false; }
+});
 
 // ---- background auto-sync ----
 // Runs on app load and when entering Tasks/Contacts, throttled so switching tabs
