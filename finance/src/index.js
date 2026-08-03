@@ -2470,25 +2470,27 @@ async function handleContacts(request, env, url) {
   if (request.method === 'GET' && !id) {
     const q = (url.searchParams.get('q') || '').trim();
     const like = `%${q}%`;
+    // Explicit columns, never raw_json: the full People API person is several KB and
+    // 500 of them is a multi-megabyte response. Children are NOT joined here either —
+    // an IN(?,?...) over 500 ids exceeds D1's bound-parameter limit and 500s the whole
+    // request, which is why a healthy 2000-row table rendered as an empty list. The
+    // list only needs the denormalised primaries; children come from the detail route.
+    const cols = `id, display_name, given_name, family_name, nickname, primary_email,
+                  primary_phone, organization, job_title, birthday, starred,
+                  google_resource_name, synced_at`;
     const rows = q
       ? await env.DB.prepare(
-          `SELECT * FROM contacts WHERE deleted_at IS NULL
+          `SELECT ${cols} FROM contacts WHERE deleted_at IS NULL
              AND (display_name LIKE ?1 OR primary_email LIKE ?1 OR primary_phone LIKE ?1
-                  OR organization LIKE ?1 OR description LIKE ?1)
-           ORDER BY display_name LIMIT 500`).bind(like).all()
+                  OR organization LIKE ?1)
+           ORDER BY display_name LIMIT 200`).bind(like).all()
       : await env.DB.prepare(
-          'SELECT * FROM contacts WHERE deleted_at IS NULL ORDER BY display_name LIMIT 500').all();
-    const list = rows.results || [];
-    const kids = await contactChildren(env, list.map((c) => c.id));
-    return json({
-      ok: true,
-      contacts: list.map((c) => ({
-        ...c, raw_json: undefined,                       // large; only needed by the sync path
-        emails: kids.emails.get(c.id) || [],
-        phones: kids.phones.get(c.id) || [],
-        addresses: kids.addresses.get(c.id) || [],
-      })),
-    });
+          `SELECT ${cols} FROM contacts WHERE deleted_at IS NULL
+           ORDER BY display_name LIMIT 200`).all();
+    const total = (await env.DB.prepare(
+      'SELECT COUNT(*) n FROM contacts WHERE deleted_at IS NULL').first())?.n ?? 0;
+    return json({ ok: true, total, shown: (rows.results || []).length,
+                  contacts: (rows.results || []).map((c) => ({ ...c, emails: [], phones: [], addresses: [] })) });
   }
 
   if (request.method === 'POST') {
