@@ -2017,6 +2017,142 @@ function childStatements(env, contactId, body) {
 const displayNameOf = (b) =>
   (b.display_name || [b.given_name, b.family_name].filter(Boolean).join(' ') || b.organization || '').trim();
 
+// --- Google People API: pull-first sync ------------------------------------
+//
+// PULL ONLY, deliberately. A Google contact carries dozens of fields we do not model —
+// photos, relations, custom fields, group memberships — and a careless push would wipe
+// every one of them. The complete person is stored in raw_json so nothing is discarded,
+// and when a push is eventually added it must use updatePersonFields to scope the write
+// to the fields we actually own.
+
+const PERSON_FIELDS = [
+  'names', 'nicknames', 'emailAddresses', 'phoneNumbers', 'addresses',
+  'organizations', 'biographies', 'birthdays', 'urls', 'metadata',
+].join(',');
+
+/** People API 'home'/'work'/'mobile', or a user-defined label when type is custom. */
+const fieldType = (f) => f.type || f.formattedType || null;
+
+function mapPerson(p) {
+  const name = (p.names || [])[0] || {};
+  const org = (p.organizations || [])[0] || {};
+  const bday = (p.birthdays || [])[0]?.date;
+  const emails = (p.emailAddresses || []).filter((e) => e.value);
+  const phones = (p.phoneNumbers || []).filter((n) => n.value);
+  return {
+    resource: p.resourceName,
+    etag: p.etag,
+    display_name: (name.displayName
+      || [name.givenName, name.familyName].filter(Boolean).join(' ')
+      || org.name || emails[0]?.value || '(ללא שם)').trim(),
+    given_name: name.givenName || null,
+    family_name: name.familyName || null,
+    nickname: (p.nicknames || [])[0]?.value || null,
+    organization: org.name || null,
+    job_title: org.title || null,
+    description: (p.biographies || [])[0]?.value || null,
+    birthday: bday
+      ? (bday.year ? `${bday.year}-` : '--') +
+        `${String(bday.month || 1).padStart(2, '0')}-${String(bday.day || 1).padStart(2, '0')}`
+      : null,
+    emails: emails.map((e, i) => ({ value: e.value, type: fieldType(e),
+                                    is_primary: e.metadata?.primary || i === 0 ? 1 : 0 })),
+    phones: phones.map((n, i) => ({ value: n.value, type: fieldType(n),
+                                    is_primary: n.metadata?.primary || i === 0 ? 1 : 0 })),
+    addresses: (p.addresses || []).map((a) => ({
+      formatted: a.formattedValue || null, street: a.streetAddress || null, city: a.city || null,
+      region: a.region || null, postal_code: a.postalCode || null, country: a.country || null,
+      type: fieldType(a),
+    })),
+  };
+}
+
+async function syncGoogleContacts(env, { full = false } = {}) {
+  const stateRow = await env.DB.prepare("SELECT sync_token FROM google_sync_state WHERE resource='contacts'")
+    .first();
+  let syncToken = full ? null : stateRow?.sync_token || null;
+
+  const people = [];
+  let pageToken = null;
+  let nextSyncToken = null;
+
+  for (let page = 0; page < 25; page++) {
+    const q = new URLSearchParams({ personFields: PERSON_FIELDS, pageSize: '200',
+                                    requestSyncToken: 'true' });
+    if (syncToken) q.set('syncToken', syncToken);
+    if (pageToken) q.set('pageToken', pageToken);
+
+    let data;
+    try {
+      data = await googleFetch(env, `https://people.googleapis.com/v1/people/me/connections?${q}`);
+    } catch (err) {
+      // An expired sync token is a 400 EXPIRED_SYNC_TOKEN; the documented recovery is a
+      // full resync, so do that once rather than surfacing an error the user cannot act on.
+      if (!full && /400|EXPIRED_SYNC_TOKEN|sync token/i.test(String(err?.message))) {
+        return syncGoogleContacts(env, { full: true });
+      }
+      throw err;
+    }
+    people.push(...(data.connections || []));
+    nextSyncToken = data.nextSyncToken || nextSyncToken;
+    pageToken = data.nextPageToken;
+    if (!pageToken) break;
+  }
+
+  let created = 0, updated = 0, removed = 0;
+  for (const p of people) {
+    const existing = await env.DB.prepare('SELECT id FROM contacts WHERE google_resource_name=?')
+      .bind(p.resourceName).first();
+
+    // Incremental responses include tombstones for deleted contacts.
+    if (p.metadata?.deleted) {
+      if (existing) {
+        await env.DB.prepare("UPDATE contacts SET deleted_at=datetime('now') WHERE id=?")
+          .bind(existing.id).run();
+        removed++;
+      }
+      continue;
+    }
+
+    const m = mapPerson(p);
+    const id = existing?.id || uuid();
+    const stmts = [];
+
+    if (existing) {
+      stmts.push(env.DB.prepare(
+        `UPDATE contacts SET display_name=?, given_name=?, family_name=?, nickname=?,
+                primary_email=?, primary_phone=?, organization=?, job_title=?, birthday=?,
+                description=?, google_etag=?, raw_json=?, synced_at=datetime('now'),
+                dirty=0, deleted_at=NULL, updated_at=datetime('now') WHERE id=?`,
+      ).bind(m.display_name, m.given_name, m.family_name, m.nickname,
+             m.emails[0]?.value || null, m.phones[0]?.value || null, m.organization,
+             m.job_title, m.birthday, m.description, m.etag, JSON.stringify(p), id));
+      updated++;
+    } else {
+      stmts.push(env.DB.prepare(
+        `INSERT INTO contacts (id, display_name, given_name, family_name, nickname, primary_email,
+           primary_phone, organization, job_title, birthday, description,
+           google_resource_name, google_etag, raw_json, synced_at, dirty)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),0)`,
+      ).bind(id, m.display_name, m.given_name, m.family_name, m.nickname,
+             m.emails[0]?.value || null, m.phones[0]?.value || null, m.organization,
+             m.job_title, m.birthday, m.description, m.resource, m.etag, JSON.stringify(p)));
+      created++;
+    }
+    stmts.push(...childStatements(env, id, m));
+    await env.DB.batch(stmts);
+  }
+
+  if (nextSyncToken) {
+    await env.DB.prepare(
+      `INSERT INTO google_sync_state (resource, sync_token, synced_at)
+       VALUES ('contacts',?,datetime('now'))
+       ON CONFLICT(resource) DO UPDATE SET sync_token=excluded.sync_token, synced_at=datetime('now')`,
+    ).bind(nextSyncToken).run();
+  }
+  return { seen: people.length, created, updated, removed, incremental: !full && !!syncToken };
+}
+
 async function handleContacts(request, env, url) {
   const id = (/^\/api\/contacts\/([\w-]+)$/.exec(url.pathname) || [])[1];
 
@@ -3011,6 +3147,14 @@ export default {
           return withCors(json({ ok: false, error: String(err?.message || err) }, 502));
         }
       }
+      if (url.pathname === '/api/sync/google/contacts' && request.method === 'POST') {
+        const body = await readJson(request);
+        try {
+          return withCors(json({ ok: true, ...(await syncGoogleContacts(env, { full: !!body.full })) }));
+        } catch (err) {
+          return withCors(json({ ok: false, error: String(err?.message || err) }, 502));
+        }
+      }
       if (url.pathname === '/api/sync/google/list' && request.method === 'POST') {
         const body = await readJson(request);
         if (!body.list_id) return withCors(json({ error: 'list_id_required' }, 400));
@@ -3151,14 +3295,15 @@ export default {
         // Google Tasks has no webhooks, so the nightly run is the pull channel.
         // Never let a sync failure abort the purge or the alerts above it.
         let sync = { skipped: 'not_connected' };
-        try {
-          if (await env.DB.prepare("SELECT 1 FROM oauth_tokens WHERE provider='google'").first()) {
-            sync = await syncGoogleTasks(env, {});
-          }
-        } catch (err) {
-          sync = { error: String(err?.message || err) };
+        let contacts = { skipped: 'not_connected' };
+        if (await env.DB.prepare("SELECT 1 FROM oauth_tokens WHERE provider='google'").first()) {
+          try { sync = await syncGoogleTasks(env, {}); }
+          catch (err) { sync = { error: String(err?.message || err) }; }
+          // Independently caught: a tasks failure must not skip contacts, or vice versa.
+          try { contacts = await syncGoogleContacts(env, {}); }
+          catch (err) { contacts = { error: String(err?.message || err) }; }
         }
-        console.log('cron', JSON.stringify({ cron: event.cron, purged, alerts, sync }));
+        console.log('cron', JSON.stringify({ cron: event.cron, purged, alerts, sync, contacts }));
       } catch (err) {
         console.error('cron_failed', err?.stack || err);
       }

@@ -331,6 +331,7 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
       <button class="tab" id="tabTasks" data-i18n="tasksNotes" role="tab">משימות ופתקים</button>
       <button class="tab" id="tabContacts" data-i18n="contacts" role="tab">אנשי קשר</button>
       <button class="tab" id="tabHistory" data-i18n="history" role="tab">היסטוריה</button>
+      <button class="tab" id="tabSettings" data-i18n="settings" role="tab">הגדרות</button>
     </div>
     <div class="hdr-actions">
       <div class="seg" id="themeSeg" role="group">
@@ -494,23 +495,6 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
         </section>
       </div>
       <div class="grid" style="gap:16px">
-        <section class="card" id="googleCard">
-          <h2><em data-i18n="googleSync" style="font-style:normal">סנכרון Google</em>
-            <span class="badge" id="gStatus">—</span></h2>
-          <div id="gDetail" class="empty" data-i18n="gChecking">בודק…</div>
-          <div id="gListWrap" hidden style="margin-top:10px">
-            <label style="font-size:.72rem;color:var(--muted);text-transform:uppercase"
-                   data-i18n="gList">רשימת יעד</label>
-            <select id="gList" style="margin-top:5px"></select>
-          </div>
-          <div class="noteActions">
-            <button class="btn sm" id="gConnect" data-i18n="gConnect">חבר את Google</button>
-            <button class="btn sm" id="gSync" hidden data-i18n="gSyncNow">סנכרן עכשיו</button>
-            <button class="btn ghost sm" id="gRefresh" data-i18n="refresh">רענן</button>
-            <button class="btn danger sm" id="gDisconnect" hidden data-i18n="gDisconnect">נתק</button>
-          </div>
-          <div class="route" id="gResult" hidden></div>
-        </section>
         <section class="card" id="contactEditor" hidden>
           <h2 id="cEditTitle" data-i18n="newContact">איש קשר חדש</h2>
           <div class="fieldset"><label data-i18n="cName">שם</label>
@@ -563,6 +547,40 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
       <div class="chatans" hidden></div>
       <form><input type="text" data-i18n-ph="askTasks" placeholder="שאל על המשימות וההיסטוריה…"><button class="btn" type="submit" data-i18n="ask">שאל</button></form>
       <div class="chatmeta" hidden></div>
+    </div>
+  </section>
+
+
+  <!-- ---------- הגדרות ---------- -->
+  <section id="viewSettings" hidden>
+    <div class="grid cols">
+      <div class="grid" style="gap:16px">
+        <section class="card" id="googleCard">
+          <h2><em data-i18n="googleSync" style="font-style:normal">סנכרון Google</em>
+            <span class="badge" id="gStatus">—</span></h2>
+          <div id="gDetail" class="empty" data-i18n="gChecking">בודק…</div>
+          <div id="gListWrap" hidden style="margin-top:10px">
+            <label style="font-size:.72rem;color:var(--muted);text-transform:uppercase"
+                   data-i18n="gList">רשימת יעד</label>
+            <select id="gList" style="margin-top:5px"></select>
+          </div>
+          <div class="noteActions">
+            <button class="btn sm" id="gConnect" data-i18n="gConnect">חבר את Google</button>
+            <button class="btn sm" id="gSync" hidden data-i18n="gSyncNow">סנכרן עכשיו</button>
+            <button class="btn sm" id="gPull" hidden data-i18n="gPullContacts">משוך אנשי קשר</button>
+            <button class="btn ghost sm" id="gRefresh" data-i18n="refresh">רענן</button>
+            <button class="btn danger sm" id="gDisconnect" hidden data-i18n="gDisconnect">נתק</button>
+          </div>
+          <div class="route" id="gResult" hidden></div>
+        </section>
+      </div>
+      <div class="grid" style="gap:16px">
+        <section class="card">
+          <h2 data-i18n="autoSyncTitle">סנכרון אוטומטי</h2>
+          <div class="empty" data-i18n="autoSyncNote">הסנכרון רץ אוטומטית בטעינת האפליקציה ובכל לילה.</div>
+          <div class="route" id="autoSyncState" hidden></div>
+        </section>
+      </div>
     </div>
   </section>
 
@@ -691,6 +709,9 @@ const I18N = {
     gConfirmDisconnect:'לנתק את Google? הסנכרון ייפסק.',
     gList:'רשימת יעד', gSyncNow:'סנכרן עכשיו', gSyncing:'מסנכרן…',
     gListChanged:'הרשימה הוחלפה — הקישורים אופסו',
+    settings:'הגדרות', autoSyncTitle:'סנכרון אוטומטי',
+    autoSyncNote:'הסנכרון רץ אוטומטית בטעינת האפליקציה ובכל לילה.',
+    gPullContacts:'משוך אנשי קשר', gSyncedContacts:'אנשי קשר סונכרנו',
   },
   en: {
     hub:'Personal hub', hubTitle:'Personal hub', signInHint:'Sign in to continue.',
@@ -745,6 +766,9 @@ const I18N = {
     gConfirmDisconnect:'Disconnect Google? Sync will stop.',
     gList:'Target list', gSyncNow:'Sync now', gSyncing:'Syncing…',
     gListChanged:'List changed — mappings reset',
+    settings:'Settings', autoSyncTitle:'Automatic sync',
+    autoSyncNote:'Sync runs automatically on app load and nightly.',
+    gPullContacts:'Pull contacts', gSyncedContacts:'contacts synced',
   },
 };
 let lang = localStorage.getItem('adi_lang') || 'he';
@@ -875,22 +899,28 @@ $('#refresh').addEventListener('click', () => {
 // ===================== tabs =====================
 function showTab(name) {
   for (const [v, n] of [['#viewFinance','finance'],['#viewTasks','tasks'],
-                        ['#viewContacts','contacts'],['#viewHistory','history']]) {
+                        ['#viewContacts','contacts'],['#viewHistory','history'],
+                        ['#viewSettings','settings']]) {
     $(v).hidden = name !== n;
   }
   for (const [b, n] of [['#tabFinance','finance'],['#tabTasks','tasks'],
-                        ['#tabContacts','contacts'],['#tabHistory','history']]) {
+                        ['#tabContacts','contacts'],['#tabHistory','history'],
+                        ['#tabSettings','settings']]) {
     $(b).classList.toggle('on', name === n);
   }
   localStorage.setItem('adi_tab', name);
   if (name === 'tasks' && !tasksLoaded) { loadTasks(); loadNotes(); tasksLoaded = true; }
+  if (name === 'tasks') autoSync('tasks');
+  if (name === 'contacts') autoSync('contacts');
   if (name === 'history') loadHistory();
-  if (name === 'contacts') { loadContacts(); loadGoogle(); }
+  if (name === 'contacts') loadContacts();
+  if (name === 'settings') loadGoogle();
 }
 $('#tabFinance').addEventListener('click', () => showTab('finance'));
 $('#tabTasks').addEventListener('click', () => showTab('tasks'));
 $('#tabContacts').addEventListener('click', () => showTab('contacts'));
 $('#tabHistory').addEventListener('click', () => showTab('history'));
+$('#tabSettings').addEventListener('click', () => showTab('settings'));
 
 // ===================== toast (undo) =====================
 let toastTimer = 0, toastAction = null;
@@ -1704,6 +1734,7 @@ async function loadGoogle() {
     badge.textContent = t('gConnected');
     detail.textContent = d.connected_at || '';
     $('#gSync').hidden = false;
+    $('#gPull').hidden = false;
     const lists = d.task_lists || [];
     if (lists.length) {
       $('#gListWrap').hidden = false;
@@ -1726,6 +1757,19 @@ $('#gDisconnect').addEventListener('click', async () => {
 });
 
 
+$('#gPull').addEventListener('click', async () => {
+  const b = $('#gPull');
+  b.disabled = true; b.textContent = t('gSyncing');
+  try {
+    const d = await postJson('/api/sync/google/contacts', {});
+    $('#gResult').hidden = false;
+    $('#gResult').textContent = d.ok
+      ? `contacts: created ${d.created} · updated ${d.updated} · removed ${d.removed}` + (d.incremental ? ' (incremental)' : ' (full)')
+      : `✕ ${d.error}`;
+    markSync('contacts');
+    await loadContacts();
+  } finally { b.disabled = false; b.textContent = t('gPullContacts'); }
+});
 $('#gList').addEventListener('change', async () => {
   const r = await postJson('/api/sync/google/list', { list_id: $('#gList').value });
   showToast(r.ok ? t('gListChanged') : ('✕ ' + r.error));
@@ -1735,6 +1779,7 @@ $('#gSync').addEventListener('click', async () => {
   b.disabled = true; b.textContent = t('gSyncing');
   try {
     const d = await postJson('/api/sync/google/tasks', {});
+    markSync('tasks');
     $('#gResult').hidden = false;
     $('#gResult').textContent = d.ok
       ? `imported ${d.imported} · updated ${d.updated} · pushed ${d.pushed} · removed ${d.removed}`
@@ -1744,6 +1789,48 @@ $('#gSync').addEventListener('click', async () => {
     $('#gResult').hidden = false; $('#gResult').textContent = '✕ ' + err.message;
   } finally { b.disabled = false; b.textContent = t('gSyncNow'); }
 });
+
+
+// ---- background auto-sync ----
+// Runs on app load and when entering Tasks/Contacts, throttled so switching tabs
+// does not hammer Google. Never awaited by the UI: a slow or failing sync must not
+// delay rendering, and the data on screen is already correct without it.
+const SYNC_MIN_GAP_MS = 10 * 60 * 1000;
+function lastSync(kind) { return Number(localStorage.getItem('adi_sync_' + kind) || 0); }
+function markSync(kind) { localStorage.setItem('adi_sync_' + kind, String(Date.now())); }
+
+async function autoSync(kind, { force = false } = {}) {
+  if (!force && Date.now() - lastSync(kind) < SYNC_MIN_GAP_MS) return null;
+  markSync(kind);                                   // mark first: prevents overlapping runs
+  try {
+    const d = await postJson(`/api/sync/google/${kind}`, {});
+    if (!d.ok) { console.warn('autosync', kind, d.error); return d; }
+    if (kind === 'tasks' && (d.imported || d.updated || d.removed)) await loadTasks();
+    if (kind === 'contacts' && (d.created || d.updated || d.removed)) {
+      if (!$('#viewContacts').hidden) await loadContacts();
+    }
+    const el = $('#autoSyncState');
+    if (el) {
+      el.hidden = false;
+      el.textContent = `${kind}: ` + Object.entries(d)
+        .filter(([k, v]) => typeof v === 'number' && v).map(([k, v]) => `${k} ${v}`).join(' · ');
+    }
+    return d;
+  } catch (err) {
+    console.warn('autosync_failed', kind, err.message);
+    return null;
+  }
+}
+
+/** Fire-and-forget both syncs if Google is connected. */
+async function autoSyncAll(opts) {
+  try {
+    const st = await apiJson('/api/oauth/google/status');
+    if (!st.connected || st.token_ok === false) return;
+    autoSync('tasks', opts);
+    autoSync('contacts', opts);
+  } catch { /* not connected, or offline — nothing to do */ }
+}
 
 // ===================== history =====================
 let histScope = 'all';
@@ -1864,6 +1951,7 @@ function enterApp() {
   showTab(localStorage.getItem('adi_tab') || 'finance');
   loadFinance().catch(() => {});
   loadInsights();
+  autoSyncAll();
 }
 
 (async function start() {
