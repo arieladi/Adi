@@ -525,6 +525,11 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
     </div>
     <div class="chatbar" data-chat="contacts">
       <div class="chatans" hidden></div>
+      <div id="imgChip" hidden style="margin-bottom:9px;display:flex;gap:9px;align-items:center">
+        <img id="imgThumb" style="height:52px;border-radius:8px;border:1px solid var(--line-2)">
+        <span class="badge" id="imgName"></span>
+        <button class="btn ghost sm" id="imgClear">✕</button>
+      </div>
       <div class="noteActions" id="planBox" hidden style="margin-bottom:10px">
         <button class="btn sm" id="planApply" data-i18n="planApply">אשר ובצע</button>
         <button class="btn ghost sm" id="planCancel" data-i18n="cancel">בטל</button>
@@ -1576,14 +1581,14 @@ for (const bar of $$('.chatbar')) {
     e.preventDefault();
     const input = bar.querySelector('input');
     const q = input.value.trim();
-    if (!q) return;
+    if (!q && !(scope === 'contacts' && chatImageFile)) return;
     const ans = bar.querySelector('.chatans'), meta = bar.querySelector('.chatmeta');
     const btn = bar.querySelector('button');
     ans.hidden = false; ans.innerHTML = '<span class="spin"></span>';
     meta.hidden = true; btn.disabled = true;
     try {
       if (scope === 'contacts') {
-        const img = $('#chatImage')?.files?.[0];
+        const img = chatImageFile;
         let d;
         if (img) {
           const fd = new FormData();
@@ -1591,7 +1596,7 @@ for (const bar of $$('.chatbar')) {
           fd.append('selected', JSON.stringify([...selectedContacts]));
           fd.append('image', img);
           d = await apiJson('/api/chat/contacts', { method: 'POST', body: fd });
-          $('#chatImage').value = '';
+          clearChatImage();
         } else {
           d = await postJson('/api/chat/contacts',
             { message: q, lang, selected: [...selectedContacts] });
@@ -1864,6 +1869,59 @@ $('#gSync').addEventListener('click', async () => {
   } finally { b.disabled = false; b.textContent = t('gSyncNow'); }
 });
 
+
+
+// ---- image into the contacts chat: paste, drop, or picker ----
+// A file input alone is not how anyone actually moves a screenshot — Cmd+V is.
+let chatImageFile = null;
+
+function setChatImage(file) {
+  if (!file || !/^image\//.test(file.type)) return false;
+  chatImageFile = file;
+  const url = URL.createObjectURL(file);
+  $('#imgThumb').src = url;
+  $('#imgName').textContent = `${file.name || 'clipboard'} · ${Math.round(file.size / 1024)}KB`;
+  $('#imgChip').hidden = false;
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return true;
+}
+function clearChatImage() {
+  chatImageFile = null;
+  $('#imgChip').hidden = true;
+  if ($('#chatImage')) $('#chatImage').value = '';
+}
+$('#imgClear')?.addEventListener('click', clearChatImage);
+$('#chatImage')?.addEventListener('change', (e) => setChatImage(e.target.files?.[0]));
+
+// Document-level paste, but only while the Contacts tab is open — otherwise a paste
+// into the task box or note editor would be hijacked.
+document.addEventListener('paste', (e) => {
+  if ($('#viewContacts')?.hidden) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'TEXTAREA') return;
+  for (const item of e.clipboardData?.items || []) {
+    if (item.type.startsWith('image/')) {
+      const f = item.getAsFile();
+      if (f && setChatImage(f)) {
+        e.preventDefault();
+        [...$$('.chatbar')].find((b) => b.dataset.chat === 'contacts')
+          ?.querySelector('input[type=text]')?.focus();
+      }
+      return;
+    }
+  }
+});
+
+// Drag a screenshot straight onto the bar.
+const cbar = [...$$('.chatbar')].find((b) => b.dataset.chat === 'contacts');
+if (cbar) {
+  cbar.addEventListener('dragover', (e) => { e.preventDefault(); cbar.style.borderColor = 'var(--c2)'; });
+  cbar.addEventListener('dragleave', () => { cbar.style.borderColor = ''; });
+  cbar.addEventListener('drop', (e) => {
+    e.preventDefault(); cbar.style.borderColor = '';
+    setChatImage(e.dataTransfer?.files?.[0]);
+  });
+}
 
 $('#chatImgBtn')?.addEventListener('click', () => $('#chatImage').click());
 $('#planCancel')?.addEventListener('click', () => { pendingPlan = null; $('#planBox').hidden = true; });
