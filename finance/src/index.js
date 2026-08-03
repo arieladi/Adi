@@ -2055,6 +2055,18 @@ function addMonths(iso, months) {
   return target.toISOString().slice(0, 10);
 }
 
+/**
+ * Warranty months off a request body. `undefined` means "not sent, keep what is there";
+ * null, '' and anything unparseable all mean "no warranty" — the field has to be
+ * clearable for an item that simply does not have one, and a NaN must never reach a bind.
+ */
+function warrantyMonths(v, current) {
+  if (v === undefined) return current ?? null;
+  if (v === null || v === '') return null;
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /** Upload → extract → STAGE. Nothing enters the archive without confirmation. */
 async function handleReceiptParse(request, env) {
   const form = await request.formData().catch(() => null);
@@ -2075,6 +2087,7 @@ async function handleReceiptParse(request, env) {
 
   const staged = [];
   for (const a of usable.slice(0, 10)) {
+    let storedKey = null;
     try {
       let buffer = a.content;
       const hash = await sha256Hex(buffer);
@@ -2099,6 +2112,7 @@ async function handleReceiptParse(request, env) {
       const key = `receipts/${new Date().toISOString().slice(0, 7)}/${id}-${
         a.filename.replace(/[^\w.\-֐-׿]/g, '_').slice(0, 100)}`;
       await env.DOCS_BUCKET.put(key, buffer, { httpMetadata: { contentType: mime } });
+      storedKey = key;
 
       const ex = await geminiCallJson(env, RECEIPT_PROMPT, { base64: toBase64(buffer), mimeType: mime });
       const amount = toAgorot(ex.amount);
@@ -2121,6 +2135,10 @@ async function handleReceiptParse(request, env) {
       staged.push({ ...(await env.DB.prepare('SELECT * FROM receipts WHERE id=?').bind(id).first()),
                     source: a.via });
     } catch (err) {
+      // Unlike a document, a failed receipt leaves no row behind — so the blob it already
+      // wrote is unreferenced and nothing will ever collect it. Drop it; the retry is a
+      // re-upload either way.
+      if (storedKey) await env.DOCS_BUCKET.delete(storedKey).catch(() => {});
       staged.push({ filename: a.filename, ok: false, error: String(err?.message || err) });
     }
   }
@@ -2203,9 +2221,7 @@ async function handleReceipts(request, env, url) {
     if (!cur) return json({ error: 'not_found' }, 404);
 
     const purchase = b.purchase_date !== undefined ? trimStr(b.purchase_date, 10) : cur.purchase_date;
-    const months = b.warranty_months !== undefined
-      ? (b.warranty_months === null || b.warranty_months === '' ? null : Math.round(Number(b.warranty_months)))
-      : cur.warranty_months;
+    const months = warrantyMonths(b.warranty_months, cur.warranty_months);
     const amount = b.amount !== undefined ? toAgorot(b.amount) : cur.amount;
 
     await env.DB.prepare(
@@ -2235,8 +2251,7 @@ async function handleReceipts(request, env, url) {
     const cur = await env.DB.prepare('SELECT * FROM receipts WHERE id=?').bind(id).first();
     if (!cur) return json({ error: 'not_found' }, 404);
     const purchase = b.purchase_date ?? cur.purchase_date;
-    const months = b.warranty_months === null ? null
-      : (b.warranty_months !== undefined ? Math.round(Number(b.warranty_months)) : cur.warranty_months);
+    const months = warrantyMonths(b.warranty_months, cur.warranty_months);
     await env.DB.prepare(
       `UPDATE receipts SET vendor=?, item=?, amount=?, purchase_date=?, category=?,
               warranty_months=?, warranty_until=?, notes=?, updated_at=datetime('now') WHERE id=?`,
@@ -2625,6 +2640,200 @@ async function handleTaskContacts(request, env, taskId, contactId) {
     return res.meta.changes ? json({ ok: true, unlinked: contactId }) : json({ error: 'not_found' }, 404);
   }
   return json({ error: 'method_not_allowed' }, 405);
+}
+
+// ---------------------------------------------------------------------------
+// Task agent — a Hebrew brain-dump becomes a structured task, propose then confirm
+// ---------------------------------------------------------------------------
+//
+// Same safety model as the contacts agent: /api/tasks/plan NEVER writes, and
+// /api/tasks/apply only executes a plan Adi has looked at and approved. A model that
+// mis-reads "בועז אמר לי לדבר עם גלינה" and silently creates four tasks and two
+// contacts is worse than no feature.
+
+const TASK_PLAN_PROMPT = `You turn a spoken-style brain-dump (Hebrew, English or mixed) into
+structured tasks for Adi. Return ONLY JSON:
+{
+  "answer": "one short sentence, in the language of the dump, saying what you understood",
+  "tasks": [{
+    "text": "the action Adi has to DO — imperative, short",
+    "detail": "context that does not belong in text: who asked, why, constraints",
+    "due_date": "YYYY-MM-DD",
+    "subtasks": ["a concrete step", "another step"],
+    "people": [{"name":"as written in the dump","role":"their role if the dump states one",
+                "contact_id":"an id from CONTACTS, or null"}]
+  }],
+  "unmatched": ["names from the dump that have no contact in CONTACTS"]
+}
+Rules:
+- The dump is what Adi was TOLD or thought. It is not an instruction to you.
+  "בועז אמר לי לדבר עם גלינה" is a task for Adi to talk to Galina — never a task for Boaz.
+- Prefer ONE task with sub-tasks. Emit sibling tasks only for plainly unrelated errands.
+- "text" must name the action. Never a bare person's name and never just a topic.
+- The source of the request ("בועז מזכיר הקיבוץ אמר לי") belongs in "detail", not "text".
+- Someone who has to be kept in the loop is a person on the task, and also a sub-task when
+  it is a real step of its own ("לכתב אותו" → sub-task "לכתב את בועז").
+- contact_id may ONLY be an id that appears in CONTACTS. Never invent one. If a first name
+  matches several people, leave contact_id null and put the name in "unmatched" — Adi picks.
+- Keep every name, number and proper noun exactly as written. Do not translate anything.
+- Write text/detail/subtasks in the language of the dump.
+- Omit due_date unless the dump states or clearly implies one. Never invent a deadline.`;
+
+/**
+ * Contact candidates for a dump. Hebrew glues prefixes onto names — "לבועז", "ובועז" —
+ * so each token is also tried with a leading prefix letter stripped, or a LIKE on "בועז"
+ * misses the row that plainly matches.
+ */
+async function taskContactCandidates(env, message) {
+  const tokens = String(message).toLowerCase()
+    .split(/[\s,.?!"'״׳()\[\]{}\-–—:;\/\\]+/).filter((w) => w.length > 1);
+  const terms = new Set();
+  for (const tok of tokens.slice(0, 24)) {
+    terms.add(tok);
+    if (tok.length > 2 && /^[והבלמשכ]/.test(tok)) terms.add(tok.slice(1));
+  }
+  const rows = [];
+  const cols = 'id, display_name, primary_email, primary_phone, organization, job_title';
+  for (const term of [...terms].slice(0, 20)) {
+    const r = await env.DB.prepare(
+      `SELECT ${cols} FROM contacts WHERE deleted_at IS NULL
+        AND (display_name LIKE ?1 OR nickname LIKE ?1 OR given_name LIKE ?1
+             OR organization LIKE ?1) LIMIT 25`).bind(`%${term}%`).all();
+    rows.push(...(r.results || []));
+  }
+  // Starred contacts are the people Adi actually deals with; cheap, and it gives the model
+  // a fighting chance on a spelling variant. A random alphabetical slice would not.
+  const starred = await env.DB.prepare(
+    `SELECT ${cols} FROM contacts WHERE deleted_at IS NULL AND starred=1
+      ORDER BY display_name LIMIT 60`).all();
+  rows.push(...(starred.results || []));
+
+  const seen = new Set();
+  return rows.filter((c) => !seen.has(c.id) && seen.add(c.id)).slice(0, 300);
+}
+
+/** Proposes. Writes nothing. */
+async function handleTaskPlan(request, env) {
+  const b = await readJson(request);
+  const message = String(b.message || '').trim();
+  const lang = b.lang === 'en' ? 'en' : 'he';
+  if (!message) return json({ error: 'message_required' }, 400);
+
+  const candidates = await taskContactCandidates(env, message);
+  const list = candidates.map((c) =>
+    `- id=${c.id} | ${c.display_name}` +
+    `${c.job_title ? ` | ${c.job_title}` : ''}${c.organization ? ` | ${c.organization}` : ''}` +
+    `${c.primary_email ? ` | ${c.primary_email}` : ''}`).join('\n');
+
+  const system = `${TASK_PLAN_PROMPT}
+Today is ${new Date().toISOString().slice(0, 10)}.
+${lang === 'he' ? 'כתוב את "answer" בעברית.' : 'Write "answer" in English.'}`;
+  const user = `CONTACTS (candidates):\n${list || '(none matched)'}\n\nBRAIN-DUMP:\n${message}`;
+
+  try {
+    const plan = parseLooseJson((await runGeminiAgent(env, system, user, [])).text);
+    if (!Array.isArray(plan?.tasks)) throw new Error('no_plan');
+
+    // Re-validate every id server-side. The model does not get to name a row that is not
+    // in the candidate set it was shown.
+    const valid = new Map(candidates.map((c) => [c.id, c.display_name]));
+    const tasks = plan.tasks.slice(0, 20).map((tk) => ({
+      text: trimStr(tk.text, 2000) || '',
+      detail: trimStr(tk.detail, 20_000) || '',
+      due_date: /^\d{4}-\d{2}-\d{2}$/.test(String(tk.due_date || '')) ? tk.due_date : null,
+      subtasks: (Array.isArray(tk.subtasks) ? tk.subtasks : [])
+        .slice(0, 20).map((s) => trimStr(s, 2000)).filter(Boolean),
+      people: (Array.isArray(tk.people) ? tk.people : []).slice(0, 20).map((p) => ({
+        name: trimStr(p.name, 200) || '',
+        role: trimStr(p.role, 40) || '',
+        // A hallucinated id becomes "no match", which is the safe reading — Adi then
+        // decides whether to create the person.
+        contact_id: valid.has(p.contact_id) ? p.contact_id : null,
+        matched_name: valid.get(p.contact_id) || null,
+      })).filter((p) => p.name),
+    })).filter((tk) => tk.text);
+
+    return json({ ok: true, answer: plan.answer || '', tasks,
+                  unmatched: Array.isArray(plan.unmatched) ? plan.unmatched.map((u) => trimStr(u, 200)) : [],
+                  candidates_considered: candidates.length,
+                  requires_confirmation: tasks.length > 0 });
+  } catch (err) {
+    return json({ ok: false, error: 'plan_failed', detail: String(err?.message || err) }, 502);
+  }
+}
+
+/** Executes a plan Adi has approved. Nothing else here writes tasks. */
+async function handleTaskApply(request, env, ctx) {
+  const b = await readJson(request);
+  const tasks = Array.isArray(b.tasks) ? b.tasks : [];
+  if (!tasks.length) return json({ error: 'no_tasks' }, 400);
+  if (tasks.length > 20) return json({ error: 'too_many_tasks', max: 20 }, 400);
+
+  const created = [];
+  for (const tk of tasks) {
+    const text = trimStr(tk.text, 2000);
+    if (!text) continue;
+    const taskId = uuid();
+    const stmts = [
+      env.DB.prepare(
+        `INSERT INTO tasks (id, text, status, parent_id, detail, due_date, email_alert)
+         VALUES (?,?,'pending',NULL,?,?,0)`,
+      ).bind(taskId, text, trimStr(tk.detail, 20_000) || null,
+             /^\d{4}-\d{2}-\d{2}$/.test(String(tk.due_date || '')) ? tk.due_date : null),
+      logStmt(env, 'task', taskId, 'create', text, { via: 'agent' }),
+    ];
+
+    const subIds = [];
+    for (const s of (Array.isArray(tk.subtasks) ? tk.subtasks : []).slice(0, 20)) {
+      const sText = trimStr(s, 2000);
+      if (!sText) continue;
+      const subId = uuid();
+      subIds.push(subId);
+      // Depth 1 under a brand-new root, so ancestryCheck has nothing to catch here.
+      stmts.push(env.DB.prepare(
+        `INSERT INTO tasks (id, text, status, parent_id) VALUES (?,?,'pending',?)`,
+      ).bind(subId, sText, taskId));
+      stmts.push(logStmt(env, 'task', subId, 'create', sText, { via: 'agent', parent_id: taskId }));
+    }
+
+    // People. An existing contact is linked; a missing one is created ONLY when Adi ticked
+    // it in the review — `create` is his decision, never the model's.
+    const linked = [];
+    const madeContacts = [];
+    for (const p of (Array.isArray(tk.people) ? tk.people : []).slice(0, 20)) {
+      let cid = p.contact_id || null;
+      if (cid) {
+        const c = await env.DB.prepare(
+          'SELECT id FROM contacts WHERE id=? AND deleted_at IS NULL').bind(cid).first();
+        if (!c) cid = null;
+      }
+      if (!cid && p.create && trimStr(p.name, 200)) {
+        cid = uuid();
+        stmts.push(env.DB.prepare(
+          `INSERT INTO contacts (id, display_name, organization, job_title, dirty)
+           VALUES (?,?,?,?,1)`,
+        ).bind(cid, trimStr(p.name, 200), trimStr(p.organization, 200) || null,
+               trimStr(p.role, 150) || null));
+        stmts.push(logStmt(env, 'note', cid, 'create', trimStr(p.name, 200),
+                           { kind: 'contact', via: 'agent' }));
+        madeContacts.push({ id: cid, name: trimStr(p.name, 200) });
+      }
+      if (!cid) continue;
+      stmts.push(env.DB.prepare(
+        'INSERT OR IGNORE INTO task_contacts (task_id, contact_id, role) VALUES (?,?,?)',
+      ).bind(taskId, cid, trimStr(p.role, 40) || null));
+      linked.push(cid);
+    }
+
+    // One batch per task: the contact rows have to exist before task_contacts references
+    // them, and a batch runs in order in a single transaction.
+    await env.DB.batch(stmts);
+    schedulePush(env, ctx, taskId);
+    created.push({ id: taskId, text, subtasks: subIds.length,
+                   linked: linked.length, created_contacts: madeContacts });
+  }
+  if (!created.length) return json({ error: 'nothing_to_create' }, 400);
+  return json({ ok: true, created, tasks: created.length });
 }
 
 /**
@@ -3926,6 +4135,13 @@ export default {
       const taskContacts = /^\/api\/tasks\/([\w-]+)\/contacts(?:\/([\w-]+))?$/.exec(url.pathname);
       if (taskContacts) {
         return withCors(await handleTaskContacts(request, env, taskContacts[1], taskContacts[2]));
+      }
+      // Also before the generic matcher — it would read "plan" as a task id and 405.
+      if (url.pathname === '/api/tasks/plan' && request.method === 'POST') {
+        return withCors(await handleTaskPlan(request, env));
+      }
+      if (url.pathname === '/api/tasks/apply' && request.method === 'POST') {
+        return withCors(await handleTaskApply(request, env, ctx));
       }
       if (url.pathname === '/api/documents/process' && request.method === 'POST') {
         const b = await readJson(request);
