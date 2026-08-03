@@ -308,6 +308,9 @@ Return this exact JSON shape (omit sections that do not apply, never invent valu
 }
 
 Rules:
+- "period" is the SALARY MONTH the document covers (e.g. "יוני 2026" / "חודש שכר 06/2026"),
+  NOT the date it was paid and NOT the date it was printed. Israeli payslips routinely carry
+  a print date in the following month; ignore it when choosing the period.
 - All money values are NUMBERS in shekels (₪ / ש"ח), no separators, no currency symbol.
 - Hebrew field hints: ברוטו=gross, נטו=net, מס הכנסה=income_tax, ביטוח לאומי=national_ins,
   מס בריאות=health_tax, הפרשות עובד=pension_empl, הפרשות מעסיק=pension_emplr,
@@ -614,7 +617,11 @@ async function persistExtraction(env, docId, data, fallbackPeriod) {
 
   for (const row of Array.isArray(data.income) ? data.income : []) {
     attempted.income++;
-    const rowPeriod = toPeriod(row.pay_date) || period;
+    // The salary MONTH, not the pay date. A June payslip is normally paid in July, and
+    // Israeli payslips also carry a print date — deriving the period from either files
+    // the salary under the wrong month and splits the dedup key. Document period wins.
+    const rowPeriod = toPeriod(row.period) || toPeriod(data.period)
+                   || toPeriod(row.pay_date) || period;
     const hash = await rowHash(
       `payslip:${rowPeriod}`, toAgorot(row.net), `${row.source || 'salary'}|${row.employer || ''}`);
     statements.push(
