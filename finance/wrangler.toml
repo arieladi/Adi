@@ -1,6 +1,9 @@
 name = "finance"
 main = "src/index.js"
 compatibility_date = "2026-08-01"
+# Required by @kenjiuno/msgreader (.msg / Outlook Compound File parsing), which pulls in
+# node:buffer and node:string_decoder. Without this the build fails to resolve them.
+compatibility_flags = ["nodejs_compat"]
 account_id = "84bfab8d23e7751df724a1ee31dcfcc6"
 
 # Private financial API — do not mint per-version public preview URLs.
