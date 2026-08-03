@@ -76,7 +76,7 @@ a{color:var(--c1)}
 #gate h1{margin:0 0 6px;font-size:1.25rem}
 #gate p{margin:0 0 18px;color:var(--muted);font-size:.9rem}
 input[type=password],input[type=text],input[type=month],input[type=date],input[type=search],
-textarea,select{
+input[type=number],textarea,select{
   width:100%;background:var(--field);border:1px solid var(--line-2);color:var(--text);
   border-radius:12px;padding:11px 13px;font-size:.9rem;font-family:inherit}
 textarea{resize:vertical;min-height:110px;line-height:1.6}
@@ -111,6 +111,9 @@ html[dir=rtl] .sub{text-align:right}
   line-height:1;padding:6px 9px;border-radius:8px;transition:.15s}
 .seg button:hover{color:var(--text)}
 .seg button.on{background:var(--grad);color:var(--on-accent)}
+/* Word labels need more room than the icon segments the base rule was sized for. */
+.seg.wide{width:max-content;max-width:100%}
+.seg.wide button{padding:8px 15px;font-size:.86rem;font-weight:600;line-height:1.3}
 
 /* ---------- layout ---------- */
 .grid{display:grid;gap:16px}
@@ -155,6 +158,68 @@ html[dir=rtl] .kpi .val{text-align:right}
 .uplog{margin-top:12px;font-family:var(--mono);font-size:.78rem;max-height:180px;overflow:auto}
 .uplog div{padding:6px 0;border-top:1px solid var(--line);display:flex;gap:8px}
 .uplog .s-ok{color:var(--ok)} .uplog .s-bad{color:var(--bad)} .uplog .s-run{color:var(--warn)}
+
+/* ---------- receipts ---------- */
+#rDrop{border:1.5px dashed var(--line-2);border-radius:14px;padding:22px 16px;text-align:center;
+  transition:border-color .15s,background .15s}
+#rDrop.over{border-color:var(--c2);background:var(--accent-wash)}
+#rDrop .big{font-size:.94rem;font-weight:600}
+#rDrop .small{font-size:.78rem;color:var(--muted);margin-top:5px}
+/* One review bubble per staged receipt — the question, the proof, the editable fields. */
+.rev{border:1px solid var(--agent-line);border-radius:14px;padding:14px;
+  background:linear-gradient(160deg,var(--agent-1),var(--agent-2))}
+.rev + .rev{margin-top:12px}
+.rev .rq{font-size:.95rem;line-height:1.6}
+.rev .rq b{color:var(--c1)}
+.rmid{display:grid;grid-template-columns:104px 1fr;gap:13px;margin-top:12px;align-items:start}
+@media(max-width:620px){.rmid{grid-template-columns:1fr}}
+.rthumb{width:104px;height:104px;border-radius:10px;border:1px solid var(--line-2);overflow:hidden;
+  display:grid;place-items:center;background:var(--field);cursor:pointer;font-size:1.7rem}
+.rthumb img{width:100%;height:100%;object-fit:cover;display:block}
+.rthumb.sm{width:40px;height:40px;font-size:1rem;border-radius:9px;cursor:default}
+.rf{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+@media(max-width:520px){.rf{grid-template-columns:1fr}}
+.rf .wide{grid-column:1/-1}
+.rf label{display:block;font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);margin-bottom:4px;font-weight:600}
+html[lang=he] .rf label{letter-spacing:.02em}
+.warrow{display:flex;gap:5px;align-items:center}
+.warrow input{flex:1;min-width:0}
+.warrow .btn{flex:0 0 auto;padding:8px 9px}
+/* plaintext, not a fixed direction: this line is either pure Hebrew ("ללא אחריות") or
+   Hebrew with an ISO date in it, and each needs the opposite base direction. */
+.wexp{font-size:.72rem;color:var(--muted);margin-top:5px;unicode-bidi:plaintext}
+.rrow{display:grid;grid-template-columns:auto 1fr auto;gap:11px;align-items:center;padding:9px 4px;
+  border-top:1px solid var(--line);cursor:pointer;border-radius:9px}
+.rrow:first-child{border-top:0}
+.rrow:hover{background:var(--accent-wash)}
+.rrow.on{background:var(--accent-wash);outline:1px solid var(--c2)}
+.rrow .rv{font-size:.9rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rrow .rs{font-size:.76rem;color:var(--muted);margin-top:2px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.rrow .ramt{font-family:var(--mono);font-size:.86rem;direction:ltr}
+.rend{text-align:end;flex:0 0 auto}
+.wbadge{display:inline-block;font-family:var(--mono);font-size:.66rem;padding:2px 7px;
+  border-radius:99px;background:var(--ok-soft);color:var(--ok);white-space:nowrap;margin-top:3px}
+.wbadge.soon{background:var(--warn-soft);color:var(--warn)}
+.wbadge.expired{background:var(--track);color:var(--muted)}
+
+/* ---------- brain-dump proposal ---------- */
+.prop{border:1px solid var(--line-2);border-radius:13px;padding:13px;margin-top:11px;
+  background:var(--panel)}
+.prop + .prop{margin-top:11px}
+.prop .phead{display:flex;gap:9px;align-items:center;margin-bottom:10px}
+.prop .phead .switch{font-weight:600;font-size:.8rem;color:var(--muted)}
+.prop label.fl{display:block;font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);margin:10px 0 4px;font-weight:600}
+html[lang=he] .prop label.fl{letter-spacing:.02em}
+.prop textarea{min-height:60px}
+.prop .switch{padding:4px 0;align-items:flex-start}
+.prop .switch input{margin-top:2px}
+.prop .switch span{font-size:.87rem}
+.badge.warn{border-color:var(--warn);color:var(--warn)}
+.badge.ok{border-color:var(--ok);color:var(--ok)}
+#brainOut .empty{margin-top:10px;display:block}
 
 /* ---------- tasks ---------- */
 .addrow{display:flex;gap:8px;margin-bottom:12px}
@@ -346,6 +411,12 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
 
   <!-- ---------- כספים ---------- -->
   <section id="viewFinance">
+    <div class="seg wide" id="finSeg" role="group" style="margin-bottom:16px">
+      <button data-fin="dash" class="on" data-i18n="finDash">לוח בקרה</button>
+      <button data-fin="receipts" data-i18n="finReceipts">קבלות ואחריות</button>
+    </div>
+
+    <div id="finDash">
     <div class="grid kpis" id="kpis"></div>
     <div class="grid cols">
       <div class="grid" style="gap:16px">
@@ -401,12 +472,99 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
       <form><input type="text" data-i18n-ph="askFinance" placeholder="שאל על הכספים שלך…"><button class="btn" type="submit" data-i18n="ask">שאל</button></form>
       <div class="chatmeta" hidden></div>
     </div>
+    </div><!-- /#finDash -->
+
+    <!-- ---------- קבלות ואחריות ----------
+         A sub-section of כספים, but its own table on the server. Nothing here writes to
+         `expenses`, so no receipt can ever move the Net Income tiles above. -->
+    <div id="finReceipts" hidden>
+      <div class="grid kpis" id="rTotals"></div>
+      <div class="grid cols">
+        <div class="grid" style="gap:16px">
+          <section class="card">
+            <h2 data-i18n="addReceipt">הוספת קבלה</h2>
+            <div id="rDrop">
+              <div class="big" data-i18n="rDropBig">גרור קבלה לכאן · הדבק מהלוח · או בחר קובץ</div>
+              <div class="small" data-i18n="rDropSmall">תמונה או PDF · גם .eml ו-.msg · עד 15MB</div>
+              <div class="noteActions" style="justify-content:center">
+                <button class="btn sm" id="rPick" type="button" data-i18n="rChoose">בחר קובץ</button>
+                <button class="btn ghost sm" id="rCam" type="button" hidden data-i18n="rCamera">📷 צלם קבלה</button>
+              </div>
+            </div>
+            <!-- Two inputs on purpose: `capture` turns the picker into the camera on a
+                 phone, which is wrong for choosing an existing file. -->
+            <input type="file" id="rFile" hidden multiple
+                   accept="image/*,application/pdf,.pdf,.jpg,.jpeg,.png,.webp,.heic,.eml,.msg">
+            <input type="file" id="rCamFile" hidden accept="image/*" capture="environment">
+            <div class="uplog" id="rLog"></div>
+          </section>
+
+          <section class="card agent" id="rReviewCard" hidden>
+            <h2><em data-i18n="rReview" style="font-style:normal">בדיקה לפני ארכיון</em>
+              <span class="badge" id="rStagedCount">0</span></h2>
+            <div id="rReview"></div>
+          </section>
+
+          <section class="card">
+            <h2><em data-i18n="rArchive" style="font-style:normal">ארכיון קבלות</em>
+              <span class="badge" id="rCount">0</span></h2>
+            <div class="hfilters">
+              <input type="search" id="rQ" data-i18n-ph="rSearch"
+                     placeholder="חיפוש לפי ספק, פריט או מספר חשבונית…">
+              <div class="seg" id="rFilter">
+                <button data-rf="all" class="on" data-i18n="rAll">הכל</button>
+                <button data-rf="warranty" data-i18n="rUnderWarranty">באחריות</button>
+              </div>
+            </div>
+            <div id="rList"><div class="empty" data-i18n="rNone">אין עדיין קבלות בארכיון.</div></div>
+          </section>
+        </div>
+
+        <div class="grid" style="gap:16px">
+          <section class="card" id="rEditCard" hidden>
+            <h2><em data-i18n="rEdit" style="font-style:normal">עריכת קבלה</em>
+              <span class="badge" id="rEditWhen"></span></h2>
+            <div class="rthumb" id="rEditThumb"
+                 style="width:100%;height:auto;aspect-ratio:4/3;margin-bottom:12px"></div>
+            <div id="rEditFields"></div>
+            <div class="noteActions">
+              <button class="btn sm" id="rEditSave" data-i18n="save">שמור</button>
+              <button class="btn ghost sm" id="rEditView" data-i18n="rOpenFile">פתח קובץ</button>
+              <button class="btn ghost sm" id="rEditCancel" data-i18n="cancel">בטל</button>
+              <button class="btn danger sm" id="rEditDelete" data-i18n="del">מחק</button>
+            </div>
+          </section>
+          <section class="card">
+            <h2 data-i18n="rIsolation">הפרדה מלאה</h2>
+            <div class="empty" data-i18n="rIsolationNote">קבלות נשמרות בטבלה נפרדת. הן לא נכנסות
+              להכנסה נטו, לתזרים החודשי או לפילוח ההוצאות.</div>
+          </section>
+        </div>
+      </div>
+    </div><!-- /#finReceipts -->
   </section>
 
   <!-- ---------- משימות ופתקים ---------- -->
   <section id="viewTasks" hidden>
     <div class="grid cols">
       <div class="grid" style="gap:16px">
+        <!-- Brain-dump → structured task. Proposes only; nothing is written until
+             "צור משימות" is pressed. -->
+        <section class="card agent" id="brainCard">
+          <h2><em data-i18n="brainTitle" style="font-style:normal">ממחשבה למשימה</em>
+            <span class="badge" data-i18n="brainBadge">הצעה לאישור</span></h2>
+          <textarea id="brainInput" data-i18n-ph="brainPh" style="min-height:76px"
+            placeholder="ספר במילים שלך מה צריך לקרות — מי אמר, למי לפנות, ובשביל מה…"></textarea>
+          <div class="noteActions">
+            <button class="btn sm" id="brainRun" data-i18n="brainRun">נתח</button>
+            <button class="btn ghost sm" id="brainClear" hidden data-i18n="cancel">בטל</button>
+          </div>
+          <div id="brainOut"></div>
+          <div class="noteActions" id="brainApplyBox" hidden>
+            <button class="btn sm" id="brainApply" data-i18n="brainApply">צור משימות</button>
+          </div>
+        </section>
+
         <section class="card">
           <h2><em data-i18n="tasks" style="font-style:normal">משימות</em> <span class="badge" id="taskCount">0</span></h2>
           <form class="addrow" id="taskForm">
@@ -731,6 +889,49 @@ const I18N = {
     gPullContacts:'משוך אנשי קשר', gSyncedContacts:'אנשי קשר סונכרנו',
     askContacts:'מה תרצה שנשנה באנשי הקשר?', planApply:'אשר ובצע', selectAll:'בחר הכל',
     planNone:'לא נמצאה פעולה בטוחה לביצוע.', applied:'בוצע', selected:'נבחרו',
+    // receipts & warranty
+    finDash:'לוח בקרה', finReceipts:'קבלות ואחריות',
+    // No latin/symbol run inside the Hebrew line: "⌘V" lands on the wrong side of the
+    // bidi boundary and reads as "V⌘".
+    addReceipt:'הוספת קבלה', rDropBig:'גרור קבלה לכאן · הדבק מהלוח · או בחר קובץ',
+    rDropSmall:'תמונה או PDF · גם .eml ו-.msg · עד 15MB',
+    rChoose:'בחר קובץ', rCamera:'📷 צלם קבלה',
+    rReview:'בדיקה לפני ארכיון', rArchive:'ארכיון קבלות',
+    rSearch:'חיפוש לפי ספק, פריט או מספר חשבונית…',
+    rAll:'הכל', rUnderWarranty:'באחריות',
+    rNone:'אין עדיין קבלות בארכיון.', rNoMatch:'אין קבלות שמתאימות לסינון.',
+    rVendor:'ספק', rItem:'מה נקנה', rAmount:'סכום (₪)', rDate:'תאריך קנייה',
+    rCategory:'קטגוריה', rWarranty:'אחריות (חודשים)', rNoWarranty:'ללא',
+    rClearWarranty:'נקה אחריות', rNoWarrantySet:'ללא אחריות', rUntil:'בתוקף עד',
+    rNeedDate:'צריך תאריך קנייה כדי לחשב את האחריות',
+    rArchiveIt:'הוסף לארכיון', rReject:'דחה',
+    rConfirmReject:'לדחות את הקבלה? היא לא תיכנס לארכיון.',
+    rArchived:'נוסף לארכיון', rRejected:'נדחה', rConfidence:'ביטחון',
+    rUnknownVendor:'ספק לא מזוהה', rUnknownAmount:'סכום לא מזוהה',
+    rAsk1:'קבלה מ-', rAsk2:' על ', rAsk3:' — להוסיף לארכיון?',
+    rDuplicate:'כבר קיימת בארכיון', rParsing:'קורא את הקבלה…', rTooBig:'הקובץ גדול מדי',
+    rNoImage:'לא נמצאה תמונה או PDF בקובץ',
+    rTileCount:'קבלות', rTileTotal:'סך הקבלות', rTileWarranty:'באחריות',
+    rTileCountFoot:'בארכיון', rTileTotalFoot:'לא נכנס לתזרים', rTileWarrantyFoot:'פריטים מכוסים',
+    rEdit:'עריכת קבלה', rOpenFile:'פתח קובץ', rConfirmDelete:'למחוק את הקבלה מהארכיון?',
+    rIsolation:'הפרדה מלאה',
+    rIsolationNote:'קבלות נשמרות בטבלה נפרדת. הן לא נכנסות להכנסה נטו, לתזרים החודשי או לפילוח ההוצאות.',
+    rExpired:'אחריות פגה', rWarrantyTo:'אחריות עד', rDaysLeft:'ימים',
+    rc_electronics:'אלקטרוניקה', rc_appliance:'מוצרי חשמל', rc_furniture:'רהיטים',
+    rc_tools:'כלי עבודה', rc_clothing:'ביגוד', rc_food:'מזון', rc_service:'שירות',
+    rc_software:'תוכנה', rc_other:'אחר',
+    rp_credit:'אשראי', rp_cash:'מזומן', rp_bank_transfer:'העברה בנקאית', rp_bit:'ביט',
+    rp_paypal:'פייפאל', rp_other:'אחר',
+    // brain-dump → task
+    brainTitle:'ממחשבה למשימה', brainBadge:'הצעה לאישור',
+    brainPh:'ספר במילים שלך מה צריך לקרות — מי אמר, למי לפנות, ובשביל מה…',
+    brainRun:'נתח', brainRunning:'מנתח…', brainApply:'צור משימות',
+    brainNone:'לא הצלחתי להוציא מזה משימה. נסה לנסח אחרת.', brainFail:'הניתוח נכשל',
+    brainTask:'משימה', brainDetail:'פירוט', brainDue:'תאריך יעד',
+    brainSubs:'תת-משימות', brainPeople:'אנשים', brainInclude:'כלול',
+    brainLinked:'מקושר', brainNew:'לא נמצא — ליצור ולקשר?',
+    brainNoSubs:'ללא תת-משימות', brainNoPeople:'לא זוהו אנשים',
+    brainCreated:'נוצר', brainUnmatched:'שמות שלא זוהו',
   },
   en: {
     hub:'Personal hub', hubTitle:'Personal hub', signInHint:'Sign in to continue.',
@@ -790,6 +991,49 @@ const I18N = {
     gPullContacts:'Pull contacts', gSyncedContacts:'contacts synced',
     askContacts:'What should I change in your contacts?', planApply:'Approve & run', selectAll:'Select all',
     planNone:'No safe action found.', applied:'applied', selected:'selected',
+    // receipts & warranty
+    finDash:'Dashboard', finReceipts:'Receipts & warranty',
+    addReceipt:'Add a receipt', rDropBig:'Drop a receipt here · paste with ⌘V · or pick a file',
+    rDropSmall:'Image or PDF · .eml and .msg too · max 15 MB',
+    rChoose:'Choose a file', rCamera:'📷 Take a photo',
+    rReview:'Review before archiving', rArchive:'Receipt archive',
+    rSearch:'Search vendor, item or invoice number…',
+    rAll:'All', rUnderWarranty:'Under warranty',
+    rNone:'Nothing in the archive yet.', rNoMatch:'No receipts match that filter.',
+    rVendor:'Vendor', rItem:'Item', rAmount:'Amount (₪)', rDate:'Purchase date',
+    rCategory:'Category', rWarranty:'Warranty (months)', rNoWarranty:'none',
+    rClearWarranty:'Clear the warranty', rNoWarrantySet:'no warranty', rUntil:'covered until',
+    rNeedDate:'A purchase date is needed to work out the warranty',
+    rArchiveIt:'Add to archive', rReject:'Discard',
+    rConfirmReject:'Discard this receipt? It will not be archived.',
+    rArchived:'Archived', rRejected:'Discarded', rConfidence:'confidence',
+    rUnknownVendor:'an unidentified vendor', rUnknownAmount:'an unread amount',
+    rAsk1:'Receipt from ', rAsk2:' for ', rAsk3:' — add it to the archive?',
+    rDuplicate:'already in the archive', rParsing:'reading the receipt…', rTooBig:'file too large',
+    rNoImage:'no image or PDF found in that file',
+    rTileCount:'Receipts', rTileTotal:'Archive total', rTileWarranty:'Under warranty',
+    rTileCountFoot:'in the archive', rTileTotalFoot:'never in the cashflow',
+    rTileWarrantyFoot:'items still covered',
+    rEdit:'Edit receipt', rOpenFile:'Open file', rConfirmDelete:'Delete this receipt from the archive?',
+    rIsolation:'Fully isolated',
+    rIsolationNote:'Receipts live in their own table. They never enter net income, the monthly cashflow, or the spending breakdown.',
+    rExpired:'warranty expired', rWarrantyTo:'warranty to', rDaysLeft:'days',
+    rc_electronics:'Electronics', rc_appliance:'Appliance', rc_furniture:'Furniture',
+    rc_tools:'Tools', rc_clothing:'Clothing', rc_food:'Food', rc_service:'Service',
+    rc_software:'Software', rc_other:'Other',
+    rp_credit:'Credit', rp_cash:'Cash', rp_bank_transfer:'Bank transfer', rp_bit:'Bit',
+    rp_paypal:'PayPal', rp_other:'Other',
+    // brain-dump → task
+    brainTitle:'From a thought to a task', brainBadge:'proposed, not saved',
+    brainPh:'Say what needs to happen, in your own words — who said it, who to talk to, why…',
+    brainRun:'Parse', brainRunning:'Parsing…', brainApply:'Create tasks',
+    brainNone:'I could not get a task out of that. Try phrasing it differently.',
+    brainFail:'Parsing failed',
+    brainTask:'Task', brainDetail:'Detail', brainDue:'Due date',
+    brainSubs:'Sub-tasks', brainPeople:'People', brainInclude:'include',
+    brainLinked:'linked', brainNew:'not in contacts — create and link?',
+    brainNoSubs:'no sub-tasks', brainNoPeople:'nobody identified',
+    brainCreated:'created', brainUnmatched:'names not recognised',
   },
 };
 let lang = localStorage.getItem('adi_lang') || 'he';
@@ -915,6 +1159,7 @@ $('#lock').addEventListener('click', signOut);
 $('#refresh').addEventListener('click', () => {
   loadFinance(); loadTasks(); loadNotes(); loadInsights();
   if (!$('#viewHistory').hidden) loadHistory();
+  if (!$('#finReceipts').hidden) { loadReceipts(); loadStaged(); }
 });
 
 // ===================== tabs =====================
@@ -930,6 +1175,9 @@ function showTab(name) {
     $(b).classList.toggle('on', name === n);
   }
   localStorage.setItem('adi_tab', name);
+  // Restore which half of כספים was last open. Safe to call from here: showFinSub is a
+  // hoisted declaration and its `let` state is initialised before enterApp() runs.
+  if (name === 'finance') showFinSub(localStorage.getItem('adi_fin_sub') || 'dash');
   if (name === 'tasks' && !tasksLoaded) { loadTasks(); loadNotes(); tasksLoaded = true; }
   if (name === 'tasks') autoSync('tasks');
   if (name === 'contacts') autoSync('contacts');
@@ -2082,12 +2330,582 @@ async function upload(files) {
   await loadInsights();
 }
 
+// ===================== brain-dump → task =====================
+//
+// /api/tasks/plan never writes. What comes back is a proposal Adi edits and approves, and
+// only /api/tasks/apply creates anything. Missing people default to UNTICKED: linking an
+// existing contact is cheap, inventing one in the address book is not.
+
+let brainPlan = null;
+
+function renderBrainPlan(d) {
+  brainPlan = d;
+  const box = $('#brainOut');
+  if (!d || !d.tasks?.length) {
+    box.innerHTML = `<div class="empty">${esc(d?.answer || t('brainNone'))}</div>`;
+    $('#brainApplyBox').hidden = true;
+    return;
+  }
+  box.innerHTML =
+    `<div class="chatans" style="margin:10px 0 0">${esc(d.answer || '')}</div>` +
+    d.tasks.map((tk, i) => `
+      <div class="prop" data-idx="${i}">
+        <div class="phead">
+          <label class="switch"><input type="checkbox" data-task-on checked>
+            <em style="font-style:normal">${esc(t('brainInclude'))}</em></label>
+        </div>
+        <label class="fl">${esc(t('brainTask'))}</label>
+        <input type="text" data-p="text" maxlength="2000" value="${esc(tk.text || '')}">
+        <label class="fl">${esc(t('brainDetail'))}</label>
+        <textarea data-p="detail">${esc(tk.detail || '')}</textarea>
+        <label class="fl">${esc(t('brainDue'))}</label>
+        <input type="date" data-p="due_date" value="${esc(tk.due_date || '')}">
+        <label class="fl">${esc(t('brainSubs'))}</label>
+        ${tk.subtasks?.length ? tk.subtasks.map((s, j) => `
+          <label class="switch"><input type="checkbox" data-sub="${j}" checked>
+            <span>${esc(s)}</span></label>`).join('')
+          : `<div class="empty">${esc(t('brainNoSubs'))}</div>`}
+        <label class="fl">${esc(t('brainPeople'))}</label>
+        ${tk.people?.length ? tk.people.map((p, j) => `
+          <label class="switch"><input type="checkbox" data-person="${j}"${p.contact_id ? ' checked' : ''}>
+            <span>${esc(p.name)}${p.role ? ` — ${esc(p.role)}` : ''}
+              ${p.contact_id
+                ? `<span class="badge ok">${esc(t('brainLinked'))}${
+                    p.matched_name && p.matched_name !== p.name ? `: ${esc(p.matched_name)}` : ''}</span>`
+                : `<span class="badge warn">${esc(t('brainNew'))}</span>`}</span></label>`).join('')
+          : `<div class="empty">${esc(t('brainNoPeople'))}</div>`}
+      </div>`).join('') +
+    ((d.unmatched || []).length
+      ? `<div class="cw" style="margin-top:9px;color:var(--warn)">? ${esc(t('brainUnmatched'))}: ${
+          d.unmatched.map(esc).join(', ')}</div>` : '');
+  $('#brainApplyBox').hidden = false;
+  $('#brainClear').hidden = false;
+}
+
+function clearBrainPlan() {
+  brainPlan = null;
+  $('#brainOut').innerHTML = '';
+  $('#brainApplyBox').hidden = true;
+  $('#brainClear').hidden = true;
+}
+
+$('#brainClear').addEventListener('click', clearBrainPlan);
+$('#brainRun').addEventListener('click', async () => {
+  const message = $('#brainInput').value.trim();
+  if (!message) return;
+  const b = $('#brainRun');
+  b.disabled = true; b.textContent = t('brainRunning');
+  $('#brainOut').innerHTML = '<span class="spin"></span>';
+  $('#brainApplyBox').hidden = true;
+  try {
+    const d = await postJson('/api/tasks/plan', { message, lang });
+    if (!d.ok) throw new Error(d.detail || d.error || 'plan_failed');
+    renderBrainPlan(d);
+  } catch (err) {
+    $('#brainOut').innerHTML = `<div class="empty">${esc(t('brainFail'))}: ${esc(err.message)}</div>`;
+  } finally { b.disabled = false; b.textContent = t('brainRun'); }
+});
+
+$('#brainApply').addEventListener('click', async () => {
+  if (!brainPlan) return;
+  const b = $('#brainApply'); b.disabled = true;
+  try {
+    const tasks = brainPlan.tasks.map((tk, i) => {
+      const box = $(`.prop[data-idx="${i}"]`);
+      if (!box || !box.querySelector('[data-task-on]').checked) return null;
+      return {
+        text: box.querySelector('[data-p="text"]').value.trim(),
+        detail: box.querySelector('[data-p="detail"]').value.trim(),
+        due_date: box.querySelector('[data-p="due_date"]').value || null,
+        subtasks: (tk.subtasks || []).filter((_, j) =>
+          box.querySelector(`[data-sub="${j}"]`)?.checked),
+        // An unticked person is simply left off. A ticked person with no contact_id is the
+        // one case that creates an address-book row, and only because Adi ticked it.
+        people: (tk.people || []).map((p, j) =>
+          box.querySelector(`[data-person="${j}"]`)?.checked
+            ? { ...p, create: !p.contact_id } : null).filter(Boolean),
+      };
+    }).filter((tk) => tk && tk.text);
+    if (!tasks.length) return;
+    const d = await postJson('/api/tasks/apply', { tasks });
+    if (!d.ok) throw new Error(d.error || 'apply_failed');
+    const madeContacts = d.created.flatMap((c) => c.created_contacts || []);
+    clearBrainPlan();
+    $('#brainInput').value = '';
+    await loadTasks();
+    if (madeContacts.length) loadContacts().catch(() => {});
+    showToast(`${t('brainCreated')}: ${d.created.map((c) => c.text).join(' · ')}`);
+  } catch (err) { showToast('✕ ' + err.message); }
+  finally { b.disabled = false; }
+});
+
+// ===================== receipts & warranty archive =====================
+//
+// A sub-section of כספים that shares nothing with it. The server keeps receipts in their
+// own table; the only endpoints touched here are /api/receipts/*, so nothing on this
+// screen can reach `expenses`, `v_monthly` or the Net Income tiles. The dashboard is
+// deliberately NOT reloaded after a confirm — there would be nothing for it to pick up,
+// and reloading it would imply otherwise.
+//
+// Nothing is archived without a press on "הוסף לארכיון": /parse only ever writes
+// `status='staged'`, and only /confirm promotes a row.
+
+const RECEIPT_CATS = ['electronics', 'appliance', 'furniture', 'tools', 'clothing',
+                      'food', 'service', 'software', 'other'];
+const MAX_RECEIPT_BYTES = 15 * 1024 * 1024;   // matches MAX_UPLOAD_BYTES in the worker
+
+let finSub = 'dash';
+let stagedReceipts = [];
+let archivedReceipts = [];
+let receiptTotals = {};
+let receiptFilter = 'all';
+let receiptQ = '';
+let receiptsLoaded = false;
+let editingReceipt = null;
+let rQTimer = 0;
+const rBlob = new Map();          // receipt id → blob: URL for its image
+
+/** Agorot with the agora shown only when there is one — ₪1,299 but ₪1,299.90. */
+const ilsExact = (agorot) => '₪' + ((agorot || 0) / 100).toLocaleString('en-IL',
+  { minimumFractionDigits: (agorot || 0) % 100 ? 2 : 0, maximumFractionDigits: 2 });
+
+// t() falls back to the key itself, which would print "rc_gardening" for a category
+// Gemini invented. Look the label up directly and fall back to the raw value.
+const enumLabel = (prefix, v) =>
+  (v ? (I18N[lang][prefix + v] || I18N.en[prefix + v] || v) : '');
+const catLabel = (c) => enumLabel('rc_', c);
+const payLabel = (p) => enumLabel('rp_', p);
+
+/** Mirrors addMonths() in the worker (month-end safe). Preview only — the server computes
+    the stored warranty_until, and this must agree with it or the preview lies. */
+function addMonthsISO(iso, months) {
+  if (!iso || !Number.isFinite(months)) return null;
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  const target = new Date(Date.UTC(y, m - 1 + months, 1));
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(d, lastDay));
+  return target.toISOString().slice(0, 10);
+}
+
+function warrantyBadge(r) {
+  if (!r.warranty_until) return '';
+  const days = Math.round((Date.parse(r.warranty_until + 'T00:00:00Z')
+                         - Date.parse(todayISO() + 'T00:00:00Z')) / 86400000);
+  if (days < 0) return `<div class="wbadge expired">${esc(t('rExpired'))} ${r.warranty_until}</div>`;
+  const cls = days <= 60 ? ' soon' : '';
+  const left = days <= 60 ? ` · ${days} ${esc(t('rDaysLeft'))}` : '';
+  return `<div class="wbadge${cls}">${esc(t('rWarrantyTo'))} ${r.warranty_until}${left}</div>`;
+}
+
+function catOptions(v) {
+  const list = v && !RECEIPT_CATS.includes(v) ? [v, ...RECEIPT_CATS] : RECEIPT_CATS;
+  return '<option value=""></option>' + list.map((c) =>
+    `<option value="${esc(c)}"${c === v ? ' selected' : ''}>${esc(catLabel(c))}</option>`).join('');
+}
+
+/** The editable block, shared by a review bubble and the archive editor. */
+function receiptFields(r) {
+  const sh = (r.amount || 0) / 100;
+  return `<div class="rf">
+    <div><label>${esc(t('rVendor'))}</label>
+      <input type="text" data-f="vendor" maxlength="200" value="${esc(r.vendor || '')}"></div>
+    <div><label>${esc(t('rAmount'))}</label>
+      <input type="text" inputmode="decimal" dir="ltr" data-f="amount"
+             value="${sh ? String(Number(sh.toFixed(2))) : ''}"></div>
+    <div class="wide"><label>${esc(t('rItem'))}</label>
+      <input type="text" data-f="item" maxlength="300" value="${esc(r.item || '')}"></div>
+    <div><label>${esc(t('rDate'))}</label>
+      <input type="date" data-f="purchase_date" value="${esc(r.purchase_date || '')}"></div>
+    <div><label>${esc(t('rCategory'))}</label>
+      <select data-f="category">${catOptions(r.category || '')}</select></div>
+    <div class="wide"><label>${esc(t('rWarranty'))}</label>
+      <div class="warrow">
+        <input type="number" min="0" max="600" step="1" dir="ltr" data-f="warranty_months"
+               placeholder="${esc(t('rNoWarranty'))}" value="${r.warranty_months ?? ''}">
+        <button class="btn ghost sm" type="button" data-w="12">12</button>
+        <button class="btn ghost sm" type="button" data-w="24">24</button>
+        <button class="btn ghost sm" type="button" data-w="36">36</button>
+        <button class="btn ghost sm" type="button" data-w="" title="${esc(t('rClearWarranty'))}">✕</button>
+      </div>
+      <div class="wexp" data-exp></div></div>
+  </div>`;
+}
+
+/** Live "covered until" line under the warranty row. */
+function refreshExpiry(box) {
+  const el = box.querySelector('[data-exp]');
+  if (!el) return;
+  const raw = (box.querySelector('[data-f="warranty_months"]')?.value || '').trim();
+  const date = box.querySelector('[data-f="purchase_date"]')?.value || '';
+  const months = raw === '' ? null : Number(raw);
+  if (months === null || !Number.isFinite(months) || months <= 0) {
+    el.textContent = t('rNoWarrantySet');
+    return;
+  }
+  const until = addMonthsISO(date, Math.round(months));
+  el.textContent = until ? `${t('rUntil')} ${until}` : t('rNeedDate');
+}
+
+function readFields(box) {
+  const v = (f) => box.querySelector(`[data-f="${f}"]`)?.value ?? '';
+  const months = v('warranty_months').trim();
+  return {
+    vendor: v('vendor').trim(),
+    item: v('item').trim(),
+    amount: v('amount').trim(),      // toAgorot() on the server tolerates "1,299.90 ₪"
+    purchase_date: v('purchase_date'),
+    category: v('category'),
+    // An empty box must send null, not 0 — this is what makes the warranty clearable.
+    warranty_months: months === '' ? null : Number(months),
+  };
+}
+
+// ---- the review chat ----
+function reviewQuestion(r) {
+  const vendor = r.vendor ? `<b>${esc(r.vendor)}</b>` : esc(t('rUnknownVendor'));
+  const amount = r.amount ? `<b>${esc(ilsExact(r.amount))}</b>` : esc(t('rUnknownAmount'));
+  return esc(t('rAsk1')) + vendor + esc(t('rAsk2')) + amount + esc(t('rAsk3'));
+}
+
+function renderReview() {
+  $('#rStagedCount').textContent = stagedReceipts.length;
+  $('#rReviewCard').hidden = !stagedReceipts.length;
+  $('#rReview').innerHTML = stagedReceipts.map((r) => `
+    <div class="rev" data-id="${esc(r.id)}">
+      <div class="rq">${reviewQuestion(r)}</div>
+      <div class="rmid">
+        <div class="rthumb" data-view="${esc(r.id)}" title="${esc(t('rOpenFile'))}">${
+          /pdf/i.test(r.mime || '') ? '📄' : '🧾'}</div>
+        <div>${receiptFields(r)}</div>
+      </div>
+      <div class="noteActions">
+        <button class="btn sm" data-act="confirm">${esc(t('rArchiveIt'))}</button>
+        <button class="btn ghost sm" data-act="reject">${esc(t('rReject'))}</button>
+        ${r.confidence != null
+          ? `<span class="badge">${esc(t('rConfidence'))} ${Math.round(r.confidence * 100)}%</span>` : ''}
+        ${r.invoice_number ? `<span class="badge">#${esc(r.invoice_number)}</span>` : ''}
+        ${r.payment_method ? `<span class="badge">${esc(payLabel(r.payment_method))}</span>` : ''}
+      </div>
+      ${r.notes ? `<div class="cw" style="margin-top:9px">📎 ${esc(r.notes)}</div>` : ''}
+    </div>`).join('');
+  for (const box of $$('#rReview .rev')) refreshExpiry(box);
+  loadThumbs(stagedReceipts, '#rReview');
+}
+
+// Never <img src> an authenticated route — it renders a 401 blob. Fetch, then blob: URL.
+async function loadThumbs(pool, scope) {
+  for (const el of $$(`${scope} [data-view]`)) {
+    const id = el.dataset.view;
+    const r = pool.find((x) => x.id === id);
+    if (!r || !/^image\//i.test(r.mime || '')) continue;
+    if (rBlob.has(id)) { el.innerHTML = `<img src="${rBlob.get(id)}" alt="">`; continue; }
+    try {
+      const res = await apiRaw(`/api/receipts/${id}/file`);
+      if (!res.ok) continue;
+      if (rBlob.size > 60) {                 // bounded: these URLs live until the page does
+        for (const url of rBlob.values()) URL.revokeObjectURL(url);
+        rBlob.clear();
+      }
+      const url = URL.createObjectURL(await res.blob());
+      rBlob.set(id, url);
+      el.innerHTML = `<img src="${url}" alt="">`;
+    } catch { /* leave the glyph — a missing thumbnail is not an error worth shouting about */ }
+  }
+}
+
+$('#rReview').addEventListener('input', (e) => {
+  const box = e.target.closest('.rev');
+  if (box) refreshExpiry(box);
+});
+$('#rReview').addEventListener('click', async (e) => {
+  const quick = e.target.closest('[data-w]');
+  if (quick) {
+    const box = quick.closest('.rev');
+    box.querySelector('[data-f="warranty_months"]').value = quick.dataset.w;
+    refreshExpiry(box);
+    return;
+  }
+  const thumb = e.target.closest('[data-view]');
+  if (thumb) { openProtected(`/api/receipts/${thumb.dataset.view}/file`); return; }
+
+  const act = e.target.closest('[data-act]');
+  if (!act) return;
+  const box = act.closest('.rev');
+  const id = box.dataset.id;
+
+  if (act.dataset.act === 'reject') {
+    if (!confirm(t('rConfirmReject'))) return;
+    act.disabled = true;
+    try {
+      await postJson(`/api/receipts/${id}/reject`, {});
+      stagedReceipts = stagedReceipts.filter((x) => x.id !== id);
+      renderReview();
+      showToast(t('rRejected'));
+    } catch (err) { showToast('✕ ' + err.message); act.disabled = false; }
+    return;
+  }
+
+  // Confirm: the only path into the archive.
+  act.disabled = true;
+  try {
+    const d = await postJson(`/api/receipts/${id}/confirm`, readFields(box));
+    if (!d.ok) throw new Error(d.error || 'confirm_failed');
+    stagedReceipts = stagedReceipts.filter((x) => x.id !== id);
+    renderReview();
+    await loadReceipts();      // the archive and its totals — never loadFinance()
+    showToast(`${t('rArchived')}: ${d.receipt.vendor || ''} ${ilsExact(d.receipt.amount)}`.trim());
+  } catch (err) { showToast('✕ ' + err.message); act.disabled = false; }
+});
+
+// ---- archive list ----
+function renderReceiptTotals() {
+  const tiles = [
+    { label: t('rTileCount'), val: String(receiptTotals.n || 0), foot: t('rTileCountFoot') },
+    { label: t('rTileTotal'), val: receiptTotals.total ? ilsExact(receiptTotals.total) : '—',
+      foot: t('rTileTotalFoot') },
+    { label: t('rTileWarranty'), val: String(receiptTotals.under_warranty || 0),
+      foot: t('rTileWarrantyFoot') },
+  ];
+  $('#rTotals').innerHTML = tiles.map((x) => `
+    <div class="card kpi"><div class="label">${esc(x.label)}</div>
+      <div class="val">${x.val}</div><div class="foot">${esc(x.foot)}</div></div>`).join('');
+}
+
+function renderReceipts() {
+  $('#rCount').textContent = archivedReceipts.length;
+  $('#rList').innerHTML = archivedReceipts.length
+    ? archivedReceipts.map((r) => `
+      <div class="rrow${editingReceipt === r.id ? ' on' : ''}" data-open="${esc(r.id)}">
+        <div class="rthumb sm">${/pdf/i.test(r.mime || '') ? '📄' : '🧾'}</div>
+        <div style="min-width:0">
+          <div class="rv">${esc(r.vendor || t('rUnknownVendor'))}</div>
+          <div class="rs">${esc([r.item, r.purchase_date, catLabel(r.category)]
+            .filter(Boolean).join(' · '))}</div>
+        </div>
+        <div class="rend">
+          <div class="ramt">${esc(ilsExact(r.amount))}</div>
+          ${warrantyBadge(r)}
+        </div>
+      </div>`).join('')
+    : `<div class="empty">${esc(receiptQ || receiptFilter === 'warranty' ? t('rNoMatch') : t('rNone'))}</div>`;
+}
+
+async function loadReceipts() {
+  const p = new URLSearchParams({ status: 'confirmed' });
+  if (receiptQ) p.set('q', receiptQ);
+  if (receiptFilter === 'warranty') p.set('warranty', 'active');
+  const d = await apiJson('/api/receipts?' + p);
+  archivedReceipts = d.receipts || [];
+  receiptTotals = d.totals || {};
+  renderReceiptTotals();
+  renderReceipts();
+}
+
+/** Anything staged in an earlier session is still waiting for an answer. */
+async function loadStaged() {
+  const d = await apiJson('/api/receipts?status=staged');
+  stagedReceipts = d.receipts || [];
+  renderReview();
+}
+
+$('#rQ').addEventListener('input', () => {
+  clearTimeout(rQTimer);
+  rQTimer = setTimeout(() => { receiptQ = $('#rQ').value.trim(); loadReceipts(); }, 250);
+});
+$('#rFilter').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-rf]');
+  if (!b) return;
+  receiptFilter = b.dataset.rf;
+  for (const x of $$('#rFilter button')) x.classList.toggle('on', x === b);
+  loadReceipts();
+});
+
+// ---- archive editor ----
+$('#rList').addEventListener('click', (e) => {
+  const row = e.target.closest('[data-open]');
+  if (!row) return;
+  const r = archivedReceipts.find((x) => x.id === row.dataset.open);
+  if (r) openReceipt(r);
+});
+
+function openReceipt(r) {
+  editingReceipt = r.id;
+  $('#rEditCard').hidden = false;
+  $('#rEditWhen').textContent = r.confirmed_at || r.created_at || '';
+  $('#rEditFields').innerHTML = receiptFields(r);
+  refreshExpiry($('#rEditFields'));
+  $('#rEditThumb').innerHTML = /pdf/i.test(r.mime || '') ? '📄' : '🧾';
+  $('#rEditThumb').dataset.view = r.id;
+  loadThumbs(archivedReceipts, '#rEditThumb').catch(() => {});
+  renderReceipts();
+  $('#rEditCard').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+function closeReceipt() {
+  editingReceipt = null;
+  $('#rEditCard').hidden = true;
+  renderReceipts();
+}
+$('#rEditFields').addEventListener('input', () => refreshExpiry($('#rEditFields')));
+$('#rEditFields').addEventListener('click', (e) => {
+  const quick = e.target.closest('[data-w]');
+  if (!quick) return;
+  $('#rEditFields').querySelector('[data-f="warranty_months"]').value = quick.dataset.w;
+  refreshExpiry($('#rEditFields'));
+});
+$('#rEditCancel').addEventListener('click', closeReceipt);
+$('#rEditView').addEventListener('click', () => {
+  if (editingReceipt) openProtected(`/api/receipts/${editingReceipt}/file`);
+});
+$('#rEditThumb').addEventListener('click', () => {
+  if (editingReceipt) openProtected(`/api/receipts/${editingReceipt}/file`);
+});
+$('#rEditSave').addEventListener('click', async () => {
+  if (!editingReceipt) return;
+  const b = $('#rEditSave'); b.disabled = true;
+  try {
+    const d = await apiJson(`/api/receipts/${editingReceipt}`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(readFields($('#rEditFields'))),
+    });
+    if (!d.ok) throw new Error(d.error || 'save_failed');
+    closeReceipt();
+    await loadReceipts();
+    showToast(t('saved') || 'saved');
+  } catch (err) { showToast('✕ ' + err.message); }
+  finally { b.disabled = false; }
+});
+$('#rEditDelete').addEventListener('click', async () => {
+  if (!editingReceipt || !confirm(t('rConfirmDelete'))) return;
+  const id = editingReceipt;
+  await api(`/api/receipts/${id}`, { method: 'DELETE' });
+  closeReceipt();
+  await loadReceipts();
+  showToast(t('deleted'));
+});
+
+// ---- input: picker, camera, drag-and-drop, clipboard ----
+function rLogLine(name) {
+  const el = document.createElement('div');
+  el.innerHTML = `<span class="spin"></span><span style="flex:1">${esc(name)}</span>` +
+                 `<span class="st s-run">${esc(t('rParsing'))}</span>`;
+  $('#rLog').prepend(el);
+  return {
+    ok: (msg) => { el.querySelector('.spin').outerHTML = '<span class="s-ok">✓</span>';
+                   el.querySelector('.st').outerHTML = `<span class="s-ok">${esc(msg)}</span>`; },
+    dup: (msg) => { el.querySelector('.spin').outerHTML = '<span class="s-bad">⊘</span>';
+                    el.querySelector('.st').outerHTML = `<span class="s-bad">${esc(msg)}</span>`; },
+    bad: (msg) => { el.querySelector('.spin').outerHTML = '<span class="s-bad">✕</span>';
+                    el.querySelector('.st').outerHTML = `<span class="s-bad">${esc(msg)}</span>`; },
+  };
+}
+
+// ONE REQUEST PER FILE, deliberately. The worker runs a Gemini vision call per receipt
+// inside the request; batching ten files into one POST is exactly the sequential-work
+// pattern that blew the Worker duration budget on the payslip backlog.
+async function uploadReceipts(files) {
+  const list = [...files].filter(Boolean);
+  if (!list.length) return;
+  if (finSub !== 'receipts') showFinSub('receipts');
+  let parsed = 0;
+  for (const file of list) {
+    const line = rLogLine(file.name || 'receipt');
+    if (file.size > MAX_RECEIPT_BYTES) { line.bad(t('rTooBig')); continue; }
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await api('/api/receipts/parse', { method: 'POST', body: fd });
+      const d = await res.json();
+      if (!res.ok || !d.ok) {
+        line.bad(d.error === 'no_image_or_pdf' ? t('rNoImage') : (d.error || res.status));
+        continue;
+      }
+      const rows = d.staged || [];
+      if (!rows.length) { line.bad(t('rNoImage')); continue; }
+      // A container (.eml/.msg) can yield several receipts, so report per row.
+      const dupes = rows.filter((r) => r.duplicate);
+      const errs = rows.filter((r) => r.ok === false);
+      const good = rows.filter((r) => r.id);
+      parsed += good.length;
+      if (good.length) {
+        line.ok(good.map((r) => `${r.vendor || t('rUnknownVendor')} ${ilsExact(r.amount)}`).join(' · '));
+      } else if (dupes.length) {
+        line.dup(`${t('rDuplicate')}: ${dupes.map((r) => r.existing?.vendor || '').join(', ')}`.trim());
+      } else {
+        line.bad(errs[0]?.error || 'extraction_failed');
+      }
+    } catch (err) { line.bad(err.message); }
+  }
+  if (parsed) await loadStaged();
+}
+
+$('#rPick').addEventListener('click', () => $('#rFile').click());
+$('#rFile').addEventListener('change', () => {
+  if ($('#rFile').files.length) uploadReceipts([...$('#rFile').files]);
+  $('#rFile').value = '';
+});
+// `capture` is a no-op on a desktop browser, where it would just be a second file
+// picker — so the button only exists where a camera actually opens.
+if (IS_TOUCH) $('#rCam').hidden = false;
+$('#rCam').addEventListener('click', () => $('#rCamFile').click());
+$('#rCamFile').addEventListener('change', () => {
+  if ($('#rCamFile').files.length) uploadReceipts([...$('#rCamFile').files]);
+  $('#rCamFile').value = '';
+});
+
+// Drop anywhere in the sub-section, not just on the dashed box.
+const rZone = $('#finReceipts');
+rZone.addEventListener('dragover', (e) => { e.preventDefault(); $('#rDrop').classList.add('over'); });
+rZone.addEventListener('dragleave', (e) => {
+  if (!rZone.contains(e.relatedTarget)) $('#rDrop').classList.remove('over');
+});
+rZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  $('#rDrop').classList.remove('over');
+  if (e.dataTransfer?.files?.length) uploadReceipts([...e.dataTransfer.files]);
+});
+
+// Clipboard paste — how a screenshot of an emailed invoice actually arrives. Scoped to
+// this sub-view, and it steps aside while a field is focused so editing a vendor name
+// still pastes text normally.
+document.addEventListener('paste', (e) => {
+  if ($('#viewFinance').hidden || $('#finReceipts').hidden) return;
+  const el = document.activeElement;
+  if (el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type !== 'file'))) return;
+  const files = [...(e.clipboardData?.items || [])]
+    .filter((i) => i.kind === 'file')
+    .map((i) => i.getAsFile())
+    .filter((f) => f && (/^image\//i.test(f.type) || /pdf/i.test(f.type)));
+  if (!files.length) return;
+  e.preventDefault();
+  uploadReceipts(files);
+});
+
+// ---- the כספים sub-view switch ----
+function showFinSub(which) {
+  finSub = which === 'receipts' ? 'receipts' : 'dash';
+  $('#finDash').hidden = finSub !== 'dash';
+  $('#finReceipts').hidden = finSub !== 'receipts';
+  for (const b of $$('#finSeg button')) b.classList.toggle('on', b.dataset.fin === finSub);
+  localStorage.setItem('adi_fin_sub', finSub);
+  if (finSub === 'receipts' && !receiptsLoaded) {
+    receiptsLoaded = true;
+    loadReceipts().catch(() => {});
+    loadStaged().catch(() => {});
+  }
+}
+$('#finSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-fin]');
+  if (b) showFinSub(b.dataset.fin);
+});
+
 // ===================== boot =====================
 function rerender() {
   if (lastSummary) { renderKpis(lastSummary); renderMonthly(lastSummary.monthly);
                      renderCats(lastSummary.by_category); renderInv(lastSummary.investments);
                      renderDocs(lastSummary.documents); renderStamp(lastSummary); }
   renderTasks(); renderNotes(); renderContacts();
+  renderReceiptTotals(); renderReceipts(); renderReview();
   if (!$('#viewHistory').hidden) loadHistory();
 }
 function enterApp() {
