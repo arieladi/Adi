@@ -324,7 +324,6 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
   <header>
     <div class="brand">
       <h1><span>Adi</span> · <em data-i18n="hub" style="font-style:normal">מרכז אישי</em></h1>
-      <div class="sub" id="stamp">…</div>
     </div>
     <div class="tabs" role="tablist">
       <button class="tab on" id="tabFinance" data-i18n="finance" role="tab">כספים</button>
@@ -995,12 +994,8 @@ function renderDocs(rows) {
       <div class="meta">${esc(d.doc_type)}${d.period ? ' · ' + d.period : ''} · ${d.uploaded_at}</div>
     </div><span class="pill ${d.status}">${d.status}</span></div>`).join('');
 }
-function renderStamp(s) {
-  if (!s?.totals) return;
-  $('#stamp').textContent =
-    `${s.totals.documents} ${t('docsWord')} · ${s.totals.income_rows} ${t('incomeWord')} · ` +
-    `${s.totals.expense_rows} ${t('expensesWord')} · ${s.totals.investment_rows} ${t('statementsWord')}`;
-}
+// The counts line under the title was noise — removed at Adi's request.
+function renderStamp() {}
 
 async function loadFinance() {
   const s = await apiJson('/api/summary');
@@ -1586,11 +1581,13 @@ for (const bar of $$('.chatbar')) {
 
 // ===================== contacts =====================
 let allContacts = [];
+let contactTotal = 0;
 let editingContact = null;   // null = closed, '' = new, else id
 let contactTimer = 0;
 
 function renderContacts() {
-  $('#contactCount').textContent = allContacts.length;
+  $('#contactCount').textContent = contactTotal && contactTotal !== allContacts.length
+    ? `${allContacts.length} / ${contactTotal}` : String(allContacts.length);
   $('#contactList').innerHTML = allContacts.length ? allContacts.map((c) => `
     <div class="hitem" data-cid="${c.id}" style="cursor:pointer">
       <div class="hhead">
@@ -1608,6 +1605,7 @@ function renderContacts() {
 async function loadContacts(q) {
   const d = await apiJson(`/api/contacts?q=${encodeURIComponent(q ?? $('#contactQ').value.trim())}`);
   allContacts = d.contacts || [];
+  contactTotal = d.total ?? allContacts.length;
   renderContacts();
 }
 
