@@ -281,6 +281,7 @@ Identify the document type:
 Return this exact JSON shape (omit sections that do not apply, never invent values):
 {
   "doc_type": "salary|kibbutz|invoice|investment|unknown",
+  "is_summary": true|false,
   "period": "YYYY-MM",
   "confidence": 0.0-1.0,
   "income": [{
@@ -306,6 +307,16 @@ Return this exact JSON shape (omit sections that do not apply, never invent valu
     "liquid_from": "YYYY-MM-DD", "as_of": "YYYY-MM-DD"
   }]
 }
+
+CRITICAL — SUMMARY vs SOURCE documents:
+Set "is_summary": true for a kibbutz aggregate/budget statement — דוח מצרפי,
+"ריכוז תקציבים והוצאות", a תקציב number rather than a תלוש number. These RESTATE income
+that already appears on the payslip (תלוש שכר / דוח פרטני) for the same month; counting
+them again would double the month's salary.
+For a summary: leave "income" EMPTY. Report only what is unique to it — the internal
+kibbutz charges (מס איזון, היטל הדדי, מס שירותים אחיד, ניכויים) as "expenses" with
+category "kibbutz". Do not restate the salary as income under any circumstance.
+Set "is_summary": false for a תלוש שכר or a דוח פרטני — those ARE the source.
 
 Rules:
 - "period" is the SALARY MONTH the document covers (e.g. "יוני 2026" / "חודש שכר 06/2026"),
@@ -615,7 +626,17 @@ async function persistExtraction(env, docId, data, fallbackPeriod) {
   const statements = [];
   const attempted = { income: 0, expenses: 0, investments: 0 };
 
-  for (const row of Array.isArray(data.income) ? data.income : []) {
+  // A summary restates payslip income. Enforced here rather than trusting the model's
+  // flag alone: a mis-classified aggregate report would silently double a month's salary,
+  // and that is invisible on the dashboard until the numbers stop making sense.
+  const isSummary = data.is_summary === true;
+  const incomeRows = isSummary ? [] : (Array.isArray(data.income) ? data.income : []);
+  if (isSummary && (data.income || []).length) {
+    console.log('summary_income_skipped', JSON.stringify({
+      period: data.period, skipped: data.income.length }));
+  }
+
+  for (const row of incomeRows) {
     attempted.income++;
     // The salary MONTH, not the pay date. A June payslip is normally paid in July, and
     // Israeli payslips also carry a print date — deriving the period from either files
@@ -685,7 +706,7 @@ async function persistExtraction(env, docId, data, fallbackPeriod) {
   }
   const total = attempted.income + attempted.expenses + attempted.investments;
   return {
-    period,
+    period, is_summary: isSummary,
     counts: attempted,
     inserted,
     duplicates: total - inserted,
