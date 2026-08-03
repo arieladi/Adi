@@ -2612,7 +2612,19 @@ async function handleTaskContacts(request, env, taskId, contactId) {
 // approved one. That split is the whole safety model: an LLM that can delete 3000
 // contacts on a misread instruction is not something to point at a real address book.
 
-const CONTACT_ACTIONS = `Return ONLY JSON:
+const CONTACT_ACTIONS = `You can do far more than delete. Typical requests:
+  · rename / translate names ("translate every English name to Hebrew")
+  · append or strip a suffix ("add - ריקור to the end of these names")
+  · fill in a field ("set adi@ricor.com as the work email on Adi")
+  · create people read off a photo of a contact list or a business card
+  · delete, individually or in bulk
+
+For MECHANICAL edits over many contacts — the same suffix, prefix, or find-and-replace
+applied to a list — emit ONE bulk_* action instead of hundreds of updates. It is exact,
+cheap, and cannot drift halfway through. Use per-contact "update" only when each new
+value genuinely differs, which is the case for translation.
+
+Return ONLY JSON:
 {
   "answer": "one short sentence in the user's language describing what you will do",
   "actions": [
@@ -2620,7 +2632,10 @@ const CONTACT_ACTIONS = `Return ONLY JSON:
     {"op":"update","contact_id":"...","display_name":"...","fields":{"organization":"...","job_title":"...","description":"...","display_name":"..."}},
     {"op":"add_email","contact_id":"...","display_name":"...","value":"a@b.com","type":"work|home|other"},
     {"op":"add_phone","contact_id":"...","display_name":"...","value":"05...","type":"mobile|work|home"},
-    {"op":"create","display_name":"...","fields":{"primary_email":"...","primary_phone":"...","organization":"..."}}
+    {"op":"create","display_name":"...","fields":{"primary_email":"...","primary_phone":"...","organization":"..."}},
+    {"op":"bulk_suffix","contact_ids":["..."],"value":" - ריקור"},
+    {"op":"bulk_prefix","contact_ids":["..."],"value":"..."},
+    {"op":"bulk_replace","contact_ids":["..."],"find":"...","value":"..."}
   ],
   "unmatched": ["names you were asked about but could not find"]
 }
@@ -2629,7 +2644,10 @@ Rules:
 - If a request is ambiguous or matches several people, put them in "unmatched" and do NOT
   guess — the user will clarify. Deleting the wrong person is unrecoverable to them.
 - If asked to delete "all of these" from an image, list one delete action per matched name.
-- Return an empty actions array if nothing is safely actionable, and say why in "answer".`;
+- Return an empty actions array if nothing is safely actionable, and say why in "answer".
+- For a translation, emit one "update" per contact with fields.display_name set to the
+  Hebrew name. Keep the original spelling of proper nouns that have no Hebrew form.
+- bulk_* actions take contact_ids and change ONLY display_name.`;
 
 async function handleContactsAgent(request, env) {
   const ct = request.headers.get('content-type') || '';
@@ -2673,7 +2691,13 @@ async function handleContactsAgent(request, env) {
     rows.push(...(r.results || []));
   }
   const seen = new Set();
-  const candidates = rows.filter((c) => !seen.has(c.id) && seen.add(c.id)).slice(0, 200);
+  // Anything explicitly selected is the user's stated target and must all reach the
+  // model; only the keyword-guessed extras are trimmed. A bulk edit over 400 ticked
+  // rows should not silently become an edit over the first 200.
+  const sel = new Set(selected);
+  const uniq = rows.filter((c) => !seen.has(c.id) && seen.add(c.id));
+  const candidates = [...uniq.filter((c) => sel.has(c.id)),
+                      ...uniq.filter((c) => !sel.has(c.id)).slice(0, 200)].slice(0, 600);
 
   const list = candidates.map((c) =>
     `- id=${c.id} | ${c.display_name}${c.primary_email ? ` | ${c.primary_email}` : ''}` +
@@ -2712,11 +2736,37 @@ async function handleContactsApply(request, env) {
   const b = await readJson(request);
   const actions = Array.isArray(b.actions) ? b.actions : [];
   if (!actions.length) return json({ error: 'no_actions' }, 400);
-  if (actions.length > 200) return json({ error: 'too_many_actions', max: 200 }, 400);
+  if (actions.length > 600) return json({ error: 'too_many_actions', max: 600 }, 400);
 
   const done = [];
-  for (const a of actions.slice(0, 200)) {
+  for (const a of actions.slice(0, 600)) {
     try {
+      if (a.op === 'bulk_suffix' || a.op === 'bulk_prefix' || a.op === 'bulk_replace') {
+        // Applied in SQL, so a 400-row rename is one statement per chunk and exact —
+        // no chance of the model mistyping one of them.
+        const ids = (a.contact_ids || []).filter(Boolean);
+        if (!ids.length) { done.push({ ...a, ok: false, error: 'no_ids' }); continue; }
+        let changed = 0;
+        for (let i = 0; i < ids.length; i += 80) {
+          const chunk = ids.slice(i, i + 80);
+          const marks = chunk.map(() => '?').join(',');
+          const expr = a.op === 'bulk_suffix' ? 'display_name || ?'
+            : a.op === 'bulk_prefix' ? '? || display_name'
+            : 'REPLACE(display_name, ?, ?)';
+          const binds = a.op === 'bulk_replace'
+            ? [trimStr(a.find, 200), trimStr(a.value, 200)] : [trimStr(a.value, 200)];
+          const res = await env.DB.prepare(
+            `UPDATE contacts SET display_name=${expr}, dirty=1, updated_at=datetime('now')
+              WHERE id IN (${marks}) AND deleted_at IS NULL`).bind(...binds, ...chunk).run();
+          changed += res.meta?.changes || 0;
+        }
+        await env.DB.prepare(
+          'INSERT INTO activity_log (id, entity, entity_id, action, title, meta_json) VALUES (?,?,?,?,?,?)',
+        ).bind(uuid(), 'note', 'bulk', 'edit', `${a.op} × ${changed}`,
+               JSON.stringify({ op: a.op, value: a.value, count: changed, via: 'agent' })).run();
+        done.push({ ...a, ok: true, changed });
+        continue;
+      }
       if (a.op === 'delete') {
         await env.DB.batch([
           env.DB.prepare("UPDATE contacts SET deleted_at=datetime('now') WHERE id=?").bind(a.contact_id),
