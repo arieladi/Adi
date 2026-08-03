@@ -720,10 +720,10 @@ async function handleUpload(request, env) {
                     saw: expanded.map((a) => a.via || a.filename).slice(0, 20) }, 400);
     }
     const results = [];
-    for (const a of usable.slice(0, 20)) {
+    for (const [i, a] of usable.slice(0, 40).entries()) {
       try {
         results.push({ ...(await ingestPdfBuffer(env, a.content, a.filename,
-                         { via: 'upload', mime: a.mimeType })), source: a.via });
+                         { via: 'upload', mime: a.mimeType, defer: i >= 2 })), source: a.via });
       } catch (err) {
         results.push({ filename: a.filename, ok: false, error: String(err?.message || err) });
       }
@@ -2339,11 +2339,19 @@ async function syncGoogleContacts(env, { full = false } = {}) {
     .first();
   let syncToken = full ? null : stateRow?.sync_token || null;
 
-  const people = [];
-  let pageToken = null;
-  let nextSyncToken = null;
+  // Resume point from a previous invocation that hit the page cap.
+  const resumeRow = await env.DB.prepare(
+    "SELECT sync_token FROM google_sync_state WHERE resource='contacts_resume'").first();
 
-  for (let page = 0; page < 25; page++) {
+  const people = [];
+  let pageToken = resumeRow?.sync_token || null;
+  let nextSyncToken = null;
+  let hitCap = false;
+
+  // A full pull of a real address book is thousands of rows. Cap the work per request
+  // — Workers have hard CPU and duration limits — and resume on the next call.
+  const MAX_PAGES = 5;
+  for (let page = 0; page < MAX_PAGES; page++) {
     const q = new URLSearchParams({ personFields: PERSON_FIELDS, pageSize: '200',
                                     requestSyncToken: 'true' });
     if (syncToken) q.set('syncToken', syncToken);
@@ -2364,20 +2372,39 @@ async function syncGoogleContacts(env, { full = false } = {}) {
     nextSyncToken = data.nextSyncToken || nextSyncToken;
     pageToken = data.nextPageToken;
     if (!pageToken) break;
+    if (page === MAX_PAGES - 1) hitCap = true;
+  }
+
+  // Pre-load the resource→id map in ONE query. Doing a SELECT per person meant ~3000
+  // sequential D1 round-trips for a real address book, and the request died partway —
+  // which is exactly why only 33 of 3005 contacts landed.
+  const known = new Map();
+  {
+    const { results } = await env.DB.prepare(
+      'SELECT id, google_resource_name FROM contacts WHERE google_resource_name IS NOT NULL').all();
+    for (const r of results || []) known.set(r.google_resource_name, r.id);
   }
 
   let created = 0, updated = 0, removed = 0;
+  const queue = [];
+  const flush = async (force = false) => {
+    // D1 caps statements per batch; chunk rather than issuing one batch per contact.
+    while (queue.length >= 90 || (force && queue.length)) {
+      await env.DB.batch(queue.splice(0, 90));
+    }
+  };
+
   for (const p of people) {
-    const existing = await env.DB.prepare('SELECT id FROM contacts WHERE google_resource_name=?')
-      .bind(p.resourceName).first();
+    const existing = known.has(p.resourceName) ? { id: known.get(p.resourceName) } : null;
 
     // Incremental responses include tombstones for deleted contacts.
     if (p.metadata?.deleted) {
       if (existing) {
-        await env.DB.prepare("UPDATE contacts SET deleted_at=datetime('now') WHERE id=?")
-          .bind(existing.id).run();
+        queue.push(env.DB.prepare("UPDATE contacts SET deleted_at=datetime('now') WHERE id=?")
+          .bind(existing.id));
         removed++;
       }
+      await flush();
       continue;
     }
 
@@ -2407,17 +2434,34 @@ async function syncGoogleContacts(env, { full = false } = {}) {
       created++;
     }
     stmts.push(...childStatements(env, id, m));
-    await env.DB.batch(stmts);
+    queue.push(...stmts);
+    known.set(p.resourceName, id);
+    await flush();
   }
+  await flush(true);
 
-  if (nextSyncToken) {
+  // Only bank a syncToken once the whole set has been walked; banking it mid-way would
+  // make the next run "incremental" from an incomplete baseline and silently lose the rest.
+  if (hitCap && pageToken) {
     await env.DB.prepare(
       `INSERT INTO google_sync_state (resource, sync_token, synced_at)
-       VALUES ('contacts',?,datetime('now'))
+       VALUES ('contacts_resume',?,datetime('now'))
        ON CONFLICT(resource) DO UPDATE SET sync_token=excluded.sync_token, synced_at=datetime('now')`,
-    ).bind(nextSyncToken).run();
+    ).bind(pageToken).run();
+  } else {
+    await env.DB.prepare("DELETE FROM google_sync_state WHERE resource='contacts_resume'").run();
+    if (nextSyncToken) {
+      await env.DB.prepare(
+        `INSERT INTO google_sync_state (resource, sync_token, synced_at)
+         VALUES ('contacts',?,datetime('now'))
+         ON CONFLICT(resource) DO UPDATE SET sync_token=excluded.sync_token, synced_at=datetime('now')`,
+      ).bind(nextSyncToken).run();
+    }
   }
-  return { seen: people.length, created, updated, removed, incremental: !full && !!syncToken };
+  const total = (await env.DB.prepare(
+    'SELECT COUNT(*) n FROM contacts WHERE deleted_at IS NULL').first())?.n ?? 0;
+  return { seen: people.length, created, updated, removed, total,
+           more: hitCap, incremental: !full && !!syncToken };
 }
 
 async function handleContacts(request, env, url) {
@@ -2980,11 +3024,11 @@ async function handleInboundEmail(message, env, ctx) {
   }
 
   const results = [];
-  for (const att of pdfs.slice(0, 10)) {
+  for (const [i, att] of pdfs.slice(0, 40).entries()) {
     try {
       results.push({ ...(await ingestPdfBuffer(env, att.content, att.filename || 'payslip.pdf',
                        { via: 'email', sender: origin.matched, subject: parsed.subject,
-                         mime: att.mimeType })), source: att.via });
+                         mime: att.mimeType, defer: i >= 2 })), source: att.via });
     } catch (err) {
       results.push({ filename: att.filename, ok: false, error: String(err?.message || err) });
     }
@@ -3148,7 +3192,7 @@ async function processResendEmail(env, emailId, data) {
   // Download everything first — .eml/.msg containers have to be opened before we can
   // tell whether there is anything ingestable inside them.
   const downloaded = [];
-  for (const att of all.slice(0, 20)) {
+  for (const att of all.slice(0, 40)) {
     try {
       const meta = await resendGet(env, `/emails/receiving/${emailId}/attachments/${att.id}`);
       const url = meta.download_url || meta.downloadUrl || meta.url;
@@ -3171,10 +3215,10 @@ async function processResendEmail(env, emailId, data) {
   }
 
   const results = [];
-  for (const att of usable.slice(0, 10)) {
+  for (const [i, att] of usable.slice(0, 40).entries()) {
     try {
       results.push({ ...(await ingestPdfBuffer(env, att.content, att.filename,
-        { via: 'resend', sender: origin, subject })), source: att.via });
+        { via: 'resend', sender: origin, subject, mime: att.mimeType, defer: i >= 2 })), source: att.via });
     } catch (err) {
       results.push({ filename: att.filename, ok: false, error: String(err?.message || err) });
     }
@@ -3195,6 +3239,7 @@ async function processResendEmail(env, emailId, data) {
 
 /** Shared ingestion used by both the HTTP upload and the email handler. */
 async function ingestPdfBuffer(env, bytes, filename, meta = {}) {
+  const defer = !!meta.defer;   // store now, extract in a later pass
   let buffer = bytes instanceof ArrayBuffer ? bytes : bytes.buffer.slice(
     bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   const hash = await sha256Hex(buffer);
@@ -3258,6 +3303,13 @@ async function ingestPdfBuffer(env, bytes, filename, meta = {}) {
     }
   }
 
+  // A bundle of 20 payslips cannot be extracted inside one request: each Gemini call
+  // takes ~10-30s and the Worker's duration limit kills the run partway, leaving rows
+  // stuck at 'pending'. Batch ingests store first and extract in a later pass.
+  if (defer) {
+    return { filename, ok: true, id: docId, deferred: true, status: 'pending', decryption };
+  }
+
   try {
     const extracted = await geminiExtract(env, { base64: toBase64(buffer), mimeType });
     const r = await persistExtraction(env, docId, extracted, null);
@@ -3275,6 +3327,56 @@ async function ingestPdfBuffer(env, bytes, filename, meta = {}) {
     ).bind(m.slice(0, 500), docId).run();
     return { filename, ok: false, id: docId, stored: true, error: 'extraction_failed', detail: m };
   }
+}
+
+/**
+ * Extract documents left at 'pending' by a batch ingest. Small limit per call: each
+ * item is a Gemini round-trip, and the whole point is to stay inside the Worker's
+ * duration budget. Called by the cron and on demand from the UI.
+ */
+async function processPendingDocuments(env, limit = 3) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, r2_key, filename, mime FROM documents
+      WHERE status='pending' ORDER BY uploaded_at ASC LIMIT ?`).bind(limit).all();
+  const done = [];
+  for (const d of results || []) {
+    try {
+      const obj = await env.DOCS_BUCKET.get(d.r2_key);
+      if (!obj) throw new Error('object_missing');
+      const buffer = await obj.arrayBuffer();
+
+      if (isSpreadsheet(d.filename, d.mime)) {
+        const { rows, sheetName } = parseSheet(buffer, d.filename);
+        const mapping = await mapSheetColumns(env, rows);
+        const stats = await importTransactions(env, d.id, rows, mapping);
+        await env.DB.prepare(
+          `UPDATE documents SET status='extracted', doc_kind='bank_statement', extracted_json=?,
+                  processed_at=datetime('now') WHERE id=?`,
+        ).bind(JSON.stringify({ sheet: sheetName, mapping, stats }), d.id).run();
+        done.push({ id: d.id, filename: d.filename, ok: true, inserted: stats.inserted });
+        continue;
+      }
+
+      const extracted = await geminiExtract(env, { base64: toBase64(buffer), mimeType: d.mime });
+      const r = await persistExtraction(env, d.id, extracted, null);
+      await env.DB.prepare(
+        `UPDATE documents SET status='extracted', doc_type=?, doc_kind=?, period=?, extracted_json=?,
+                processed_at=datetime('now') WHERE id=?`,
+      ).bind(extracted.doc_type || 'unknown', r.all_duplicates ? 'duplicate' : (extracted.doc_type || null),
+             r.period, JSON.stringify(extracted), d.id).run();
+      done.push({ id: d.id, filename: d.filename, ok: true, period: r.period,
+                  inserted: r.inserted, duplicate: !!r.all_duplicates });
+    } catch (err) {
+      const m = String(err?.message || err);
+      await env.DB.prepare(
+        "UPDATE documents SET status='failed', error=?, processed_at=datetime('now') WHERE id=?",
+      ).bind(m.slice(0, 500), d.id).run();
+      done.push({ id: d.id, filename: d.filename, ok: false, error: m });
+    }
+  }
+  const left = (await env.DB.prepare(
+    "SELECT COUNT(*) n FROM documents WHERE status='pending'").first())?.n ?? 0;
+  return { processed: done.length, remaining: left, results: done };
 }
 
 // ---------------------------------------------------------------------------
@@ -3512,6 +3614,11 @@ export default {
       if (taskContacts) {
         return withCors(await handleTaskContacts(request, env, taskContacts[1], taskContacts[2]));
       }
+      if (url.pathname === '/api/documents/process' && request.method === 'POST') {
+        const b = await readJson(request);
+        return withCors(json({ ok: true,
+          ...(await processPendingDocuments(env, Math.min(Number(b.limit) || 3, 6))) }));
+      }
       if (url.pathname === '/api/receipts/parse' && request.method === 'POST') {
         return withCors(await handleReceiptParse(request, env));
       }
@@ -3680,6 +3787,10 @@ export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
       try {
+        // Drain the extraction backlog first — a batch of forwarded payslips can leave
+        // dozens of pending rows that no interactive request will ever pick up.
+        let pending = { processed: 0 };
+        try { pending = await processPendingDocuments(env, 6); } catch (e) { pending = { error: String(e) }; }
         const purged = await runPurge(env);
         const alerts = await runDueAlerts(env);
         // Google Tasks has no webhooks, so the nightly run is the pull channel.
@@ -3693,7 +3804,7 @@ export default {
           try { contacts = await syncGoogleContacts(env, {}); }
           catch (err) { contacts = { error: String(err?.message || err) }; }
         }
-        console.log('cron', JSON.stringify({ cron: event.cron, purged, alerts, sync, contacts }));
+        console.log('cron', JSON.stringify({ cron: event.cron, pending, purged, alerts, sync, contacts }));
       } catch (err) {
         console.error('cron_failed', err?.stack || err);
       }
