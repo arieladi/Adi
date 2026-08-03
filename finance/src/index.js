@@ -586,8 +586,9 @@ async function importTransactions(env, docId, rows, mapping) {
     } else {
       income++;
       stmts.push(env.DB.prepare(
-        `INSERT OR IGNORE INTO income (id, doc_id, source, employer, period, pay_date, gross, net, notes, row_hash)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT OR IGNORE INTO income (id, doc_id, source, employer, period, pay_date, gross, net,
+           notes, row_hash, source_kind)
+         VALUES (?,?,?,?,?,?,?,?,?,?,'bank')`,
       ).bind(uuid(), docId, 'other', cell(row, cols.description).slice(0, 120) || null,
              period, iso, agorot, agorot, desc || null, hash));
     }
@@ -909,7 +910,7 @@ function periodsAgo(n) {
 
 const ils = (agorot) => `₪${(agorot / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 
-async function handleInsights(env) {
+async function handleInsights(env, lang = 'en') {
   const summary = await loadSummary(env);
 
   if (!summary.monthly.length && !summary.investments.length) {
@@ -946,7 +947,8 @@ async function handleInsights(env) {
         'Bituach Leumi, kibbutz budget). Given the figures, reply with exactly three short bullet points: ' +
         '1) the clearest trend, 2) the biggest opportunity or risk, 3) one specific action for this month. ' +
         'Use ₪ and real numbers from the data. No preamble, no disclaimers, under 120 words total. ' +
-        'You are not a licensed advisor — describe the numbers, do not recommend specific securities.',
+        'You are not a licensed advisor — describe the numbers, do not recommend specific securities. ' +
+        (lang === 'he' ? 'ענה בעברית בלבד.' : 'Answer in English.'),
     },
     { role: 'user', content: facts },
   ];
@@ -2625,6 +2627,60 @@ async function handleTaskContacts(request, env, taskId, contactId) {
   return json({ error: 'method_not_allowed' }, 405);
 }
 
+/**
+ * Match bank deposits against payslips in the same month and mark the deposit cleared.
+ * Neither row is deleted: the payslip keeps the breakdown, the bank row keeps the actual
+ * cash date, and only the payslip counts toward the month's income.
+ *
+ * Tolerance exists because a deposit rarely equals the payslip net to the agora — a
+ * rounding, a fee, or a partial advance shifts it slightly.
+ */
+async function reconcileIncome(env, { tolerance = 5000, apply = true } = {}) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, period, net, employer, pay_date, source_kind, cleared
+       FROM income WHERE cleared = 0 ORDER BY period DESC, net DESC`).all();
+  const rows = results || [];
+  const banks = rows.filter((r) => r.source_kind === 'bank');
+  const slips = rows.filter((r) => r.source_kind !== 'bank');
+
+  const matches = [];
+  const used = new Set();
+  for (const b of banks) {
+    // Same month first, then the month either side: a June salary often lands in July.
+    const near = (p) => {
+      const [y, m] = String(b.period).split('-').map(Number);
+      const d = new Date(Date.UTC(y, m - 1 + p, 1));
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    };
+    const windows = [b.period, near(-1), near(1)];
+    let best = null;
+    for (const s of slips) {
+      if (used.has(s.id) || !windows.includes(s.period)) continue;
+      const diff = Math.abs(s.net - b.net);
+      if (diff > tolerance) continue;
+      if (!best || diff < best.diff) best = { slip: s, diff };
+    }
+    if (best) {
+      used.add(best.slip.id);
+      matches.push({ bank_id: b.id, bank_net: b.net, bank_period: b.period,
+                     payslip_id: best.slip.id, payslip_net: best.slip.net,
+                     payslip_period: best.slip.period, employer: best.slip.employer,
+                     diff: best.diff });
+    }
+  }
+
+  if (apply && matches.length) {
+    for (let i = 0; i < matches.length; i += 40) {
+      await env.DB.batch(matches.slice(i, i + 40).map((m) =>
+        env.DB.prepare(
+          'UPDATE income SET cleared=1, matched_income_id=? WHERE id=?').bind(m.payslip_id, m.bank_id)));
+    }
+  }
+  const unmatchedBank = banks.filter((b) => !matches.some((m) => m.bank_id === b.id));
+  return { applied: apply, matched: matches.length, matches,
+           unmatched_bank: unmatchedBank.map((b) => ({ id: b.id, period: b.period, net: b.net })) };
+}
+
 // ---------------------------------------------------------------------------
 // Contacts agent — natural language, propose then confirm
 // ---------------------------------------------------------------------------
@@ -2711,6 +2767,16 @@ async function handleContactsAgent(request, env) {
         LIMIT 40`).bind(`%${term}%`).all();
     rows.push(...(r.results || []));
   }
+  // An image carries the names; the sentence ("delete everyone in this photo") has no
+  // useful keywords, so keyword-only candidates came back near-empty and the model
+  // correctly reported "not found" for people who plainly exist. Send a broad slice.
+  if (image && rows.length < 400) {
+    const r = await env.DB.prepare(
+      `SELECT id, display_name, primary_email, primary_phone, organization
+         FROM contacts WHERE deleted_at IS NULL ORDER BY display_name LIMIT 600`).all();
+    rows.push(...(r.results || []));
+  }
+
   const seen = new Set();
   // Anything explicitly selected is the user's stated target and must all reach the
   // model; only the keyword-guessed extras are trimmed. A bulk edit over 400 ticked
@@ -2718,7 +2784,8 @@ async function handleContactsAgent(request, env) {
   const sel = new Set(selected);
   const uniq = rows.filter((c) => !seen.has(c.id) && seen.add(c.id));
   const candidates = [...uniq.filter((c) => sel.has(c.id)),
-                      ...uniq.filter((c) => !sel.has(c.id)).slice(0, 200)].slice(0, 600);
+                      ...uniq.filter((c) => !sel.has(c.id)).slice(0, image ? 600 : 200)]
+                     .slice(0, 700);
 
   const list = candidates.map((c) =>
     `- id=${c.id} | ${c.display_name}${c.primary_email ? ` | ${c.primary_email}` : ''}` +
@@ -3814,7 +3881,7 @@ export default {
         return withCors(await handleUpload(request, env));
       }
       if (url.pathname === '/api/insights' && request.method === 'GET') {
-        return withCors(await handleInsights(env));
+        return withCors(await handleInsights(env, url.searchParams.get('lang') === 'he' ? 'he' : 'en'));
       }
       if (url.pathname === '/api/summary' && request.method === 'GET') {
         return withCors(json({ ok: true, ...(await loadSummary(env)) }));
@@ -3944,6 +4011,12 @@ export default {
       }
       if (url.pathname === '/api/chat/tasks' && request.method === 'POST') {
         return withCors(await handleChatTasks(request, env));
+      }
+      if (url.pathname === '/api/reconcile' && request.method === 'POST') {
+        const b = await readJson(request);
+        return withCors(json({ ok: true, ...(await reconcileIncome(env, {
+          apply: b.preview !== true,
+          tolerance: Number.isFinite(b.tolerance) ? b.tolerance : 5000 })) }));
       }
       if (url.pathname === '/api/chat/contacts' && request.method === 'POST') {
         return withCors(await handleContactsAgent(request, env));

@@ -1029,7 +1029,7 @@ async function loadFinance() {
 async function loadInsights() {
   $('#insight').innerHTML = '<span class="spin"></span>';
   try {
-    const d = await apiJson('/api/insights');
+    const d = await apiJson('/api/insights?lang=' + lang);
     $('#aimodel').textContent = (d.model || 'workers ai').replace('@cf/', '');
     const text = d.insight || (d.error ? 'Unavailable: ' + d.error : '—');
     const bullets = text.split('\n').map((l) => l.replace(/^[\s*\-•]+/, '').trim()).filter(Boolean);
