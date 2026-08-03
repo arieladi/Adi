@@ -2039,10 +2039,14 @@ ${lang === 'he' ? 'ענה בעברית בלבד.' : 'Answer in English.'}`;
 //   3. the PDF must decrypt with PDF_PASS, which no third party can produce.
 // Anything else is dropped and logged. Nothing is ever executed from the message.
 
+// Original senders, plus the mailboxes Adi forwards FROM. The Outlook rules forward
+// from office@adiariel.com, and a forward rewrites the sender — without that address
+// here every genuine payslip is rejected.
 const ALLOWED_SENDERS = [
   'hr@hargal.co.il',
   'dalia-b@ricor.com',
-  'adidatabase@gmail.com',   // Adi forwarding something manually
+  'office@adiariel.com',     // the O365 mailbox the forwarding rules run in
+  'adidatabase@gmail.com',
   'computers@ricor.com',
 ];
 
@@ -2199,33 +2203,51 @@ async function handleResendWebhook(request, env, ctx) {
 }
 
 async function processResendEmail(env, emailId, data) {
-  const from = emailAddr(data?.from?.address || data?.from || '');
-  const subject = data?.subject || '';
-  const to = [].concat(data?.to || []).map((x) => emailAddr(x?.address || x)).join(',');
-
   const log = (action, title, meta) =>
     env.DB.prepare(
       'INSERT INTO activity_log (id, entity, entity_id, action, title, meta_json) VALUES (?,?,?,?,?,?)',
     ).bind(uuid(), 'task', 'inbound-email', action, trimStr(title, 300), JSON.stringify(meta)).run()
       .catch((e) => console.error('log_failed', String(e)));
 
-  // Same allowlist as the Cloudflare path. An O365 forward rewrites the sender, so the
-  // original is recovered from the metadata Resend does give us.
-  const candidates = [from, ...String(subject).toLowerCase().matchAll?.(/[\w.+-]+@[\w.-]+\.\w+/g) ?? []]
-    .map((c) => (typeof c === 'string' ? c : c[0]));
-  const replyTo = emailAddr(data?.reply_to?.[0]?.address || data?.reply_to || '');
-  if (replyTo) candidates.push(replyTo);
+  // The webhook is metadata-only, so fetch the full record: it carries text, html and
+  // headers, which is where a forwarded message's ORIGINAL sender survives. Without
+  // this the only visible sender is the forwarding mailbox.
+  let full = null;
+  try {
+    full = await resendGet(env, `/emails/receiving/${emailId}`);
+  } catch (err) {
+    console.warn('resend_fetch_email_failed', String(err?.message || err));
+  }
+
+  const from = emailAddr(full?.from || data?.from?.address || data?.from || '');
+  const subject = full?.subject || data?.subject || '';
+  const to = [].concat(full?.to || data?.to || []).map((x) => emailAddr(x?.address || x)).join(',');
+
+  const candidates = [from];
+  for (const key of ['reply-to', 'x-forwarded-for', 'x-original-sender', 'return-path', 'sender']) {
+    const v = full?.headers?.[key] ?? full?.headers?.[key.replace(/-/g, '_')];
+    if (v) candidates.push(emailAddr(v));
+  }
+  // Outlook quotes the original "From:" in the forwarded body.
+  const body = `${full?.text || ''}\n${full?.html || ''}`;
+  for (const m of body.matchAll(/[\w.+-]+@[\w.-]+\.\w+/g)) candidates.push(m[0].toLowerCase());
+
   const matched = candidates.find((c) => c && ALLOWED_SENDERS.includes(c));
   if (!matched) {
-    await log('alert', 'resend inbound rejected: sender not allowed', { from, to, subject });
+    await log('alert', 'resend inbound rejected: sender not allowed',
+      { from, to, subject, seen: [...new Set(candidates.filter(Boolean))].slice(0, 8) });
     return;
   }
+  // Prefer the true origin over the forwarder when both are present, for the audit trail.
+  const origin = candidates.find(
+    (c) => c && ALLOWED_SENDERS.includes(c) && !['office@adiariel.com', 'adidatabase@gmail.com'].includes(c),
+  ) || matched;
 
   const list = await resendGet(env, `/emails/receiving/${emailId}/attachments`);
   const pdfs = (list.data || list.attachments || [])
     .filter((a) => /pdf/i.test(a.content_type || '') || /\.pdf$/i.test(a.filename || ''));
   if (!pdfs.length) {
-    await log('alert', 'resend inbound: no pdf attachment', { from: matched, subject });
+    await log('alert', 'resend inbound: no pdf attachment', { from: origin, subject });
     return;
   }
 
@@ -2238,14 +2260,14 @@ async function processResendEmail(env, emailId, data) {
       const bin = await fetch(url, { signal: AbortSignal.timeout(60_000) });
       if (!bin.ok) throw new Error(`download_${bin.status}`);
       results.push(await ingestPdfBuffer(env, await bin.arrayBuffer(),
-        att.filename || 'payslip.pdf', { via: 'resend', sender: matched, subject }));
+        att.filename || 'payslip.pdf', { via: 'resend', sender: origin, subject }));
     } catch (err) {
       results.push({ filename: att.filename, ok: false, error: String(err?.message || err) });
     }
   }
 
-  await log('attach', `resend payslip from ${matched}`, { subject, results });
-  console.log('resend_inbound', JSON.stringify({ from: matched, emailId, results }));
+  await log('attach', `resend payslip from ${origin}`, { subject, forwarded_by: matched, results });
+  console.log('resend_inbound', JSON.stringify({ origin, forwarded_by: matched, emailId, results }));
 
   // Duplicates are normal on this path (a re-forward, an old payslip) — stay quiet.
   const fresh = results.filter((r) => r.ok && !r.duplicate);
