@@ -1571,6 +1571,193 @@ async function handleAgentSummary(request, env) {
 }
 
 // ---------------------------------------------------------------------------
+// Google OAuth
+// ---------------------------------------------------------------------------
+
+const GOOGLE_SCOPES = [
+  'https://www.googleapis.com/auth/tasks',
+  'https://www.googleapis.com/auth/contacts',
+];
+const OAUTH_REDIRECT = 'https://adiariel.com/api/oauth/google/callback';
+const TOKEN_SKEW_MS = 90_000;   // refresh a little before actual expiry
+
+/** AES-GCM key derived from SESSION_SECRET — no extra secret to provision or lose. */
+async function oauthKey(env) {
+  const material = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(env.SESSION_SECRET || ''), 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: new TextEncoder().encode('adi-oauth-v1'),
+      info: new TextEncoder().encode('refresh-token') },
+    material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+
+async function encryptSecret(env, plaintext) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv }, await oauthKey(env), new TextEncoder().encode(plaintext));
+  return { cipher: b64urlEncode(ct), iv: b64urlEncode(iv) };
+}
+async function decryptSecret(env, cipher, iv) {
+  const pt = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: b64urlToBytes(iv) }, await oauthKey(env), b64urlToBytes(cipher));
+  return new TextDecoder().decode(pt);
+}
+
+async function handleOAuthStart(env) {
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    return json({ error: 'not_configured',
+                  hint: 'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET secrets.' }, 503);
+  }
+  const state = b64urlEncode(crypto.getRandomValues(new Uint8Array(24)));
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO oauth_state (state) VALUES (?)').bind(state),
+    // Housekeeping: states are single-use and short-lived.
+    env.DB.prepare("DELETE FROM oauth_state WHERE created_at < datetime('now','-1 hour')"),
+  ]);
+
+  const u = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  u.searchParams.set('client_id', env.GOOGLE_CLIENT_ID);
+  u.searchParams.set('redirect_uri', OAUTH_REDIRECT);
+  u.searchParams.set('response_type', 'code');
+  u.searchParams.set('scope', GOOGLE_SCOPES.join(' '));
+  u.searchParams.set('access_type', 'offline');       // we need a refresh token
+  u.searchParams.set('prompt', 'consent');            // force one, even on re-auth
+  u.searchParams.set('include_granted_scopes', 'true');
+  u.searchParams.set('state', state);
+  return Response.redirect(u.toString(), 302);
+}
+
+async function handleOAuthCallback(request, env, url) {
+  const err = url.searchParams.get('error');
+  if (err) return htmlResult(`Google returned: ${escHtml(err)}`, false);
+
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  if (!code || !state) return htmlResult('Missing code or state.', false);
+
+  // This path is bypassed from Access, so state is the only proof the flow started here.
+  const row = await env.DB.prepare(
+    "SELECT state FROM oauth_state WHERE state=? AND created_at > datetime('now','-1 hour')")
+    .bind(state).first();
+  if (!row) return htmlResult('Invalid or expired state. Start again from /me.', false);
+  await env.DB.prepare('DELETE FROM oauth_state WHERE state=?').bind(state).run();
+
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code, client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET,
+      redirect_uri: OAUTH_REDIRECT, grant_type: 'authorization_code',
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const tok = await res.json().catch(() => ({}));
+  if (!res.ok || !tok.access_token) {
+    return htmlResult(`Token exchange failed: ${escHtml(JSON.stringify(tok).slice(0, 300))}`, false);
+  }
+  if (!tok.refresh_token) {
+    // Without this the sync dies at the first access-token expiry, so fail loudly now.
+    return htmlResult(
+      'Google did not return a refresh token. Revoke this app at ' +
+      'myaccount.google.com/permissions and authorise again.', false);
+  }
+
+  const { cipher, iv } = await encryptSecret(env, tok.refresh_token);
+  const expires = new Date(Date.now() + (tok.expires_in || 3600) * 1000).toISOString();
+  await env.DB.prepare(
+    `INSERT INTO oauth_tokens (provider, access_token, access_expires, refresh_cipher, refresh_iv,
+                               scope, connected_at, updated_at, last_error)
+     VALUES ('google',?,?,?,?,?,datetime('now'),datetime('now'),NULL)
+     ON CONFLICT(provider) DO UPDATE SET access_token=excluded.access_token,
+       access_expires=excluded.access_expires, refresh_cipher=excluded.refresh_cipher,
+       refresh_iv=excluded.refresh_iv, scope=excluded.scope,
+       updated_at=datetime('now'), last_error=NULL`,
+  ).bind(tok.access_token, expires, cipher, iv, tok.scope || GOOGLE_SCOPES.join(' ')).run();
+
+  return htmlResult('Google connected. You can close this tab.', true);
+}
+
+const htmlResult = (msg, ok) => new Response(
+  `<!doctype html><meta charset="utf-8"><title>Google</title>
+   <body style="font-family:system-ui;background:#0a0d0b;color:#eaf1ec;display:grid;
+                place-items:center;height:100vh;margin:0;text-align:center;padding:24px">
+     <div><div style="font-size:44px">${ok ? '✅' : '⚠️'}</div>
+     <p style="max-width:44ch;line-height:1.6">${msg}</p>
+     <a href="/me/" style="color:#5eead4">← adiariel.com/me</a></div></body>`,
+  { status: ok ? 200 : 400, headers: { 'content-type': 'text/html; charset=utf-8' } });
+
+/** Valid access token, refreshing when needed. Null when not connected. */
+async function googleAccessToken(env) {
+  const row = await env.DB.prepare("SELECT * FROM oauth_tokens WHERE provider='google'").first();
+  if (!row?.refresh_cipher) return null;
+
+  if (row.access_token && row.access_expires &&
+      Date.parse(row.access_expires) - Date.now() > TOKEN_SKEW_MS) {
+    return row.access_token;
+  }
+
+  const refresh = await decryptSecret(env, row.refresh_cipher, row.refresh_iv);
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET,
+      refresh_token: refresh, grant_type: 'refresh_token',
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const tok = await res.json().catch(() => ({}));
+  if (!res.ok || !tok.access_token) {
+    const detail = JSON.stringify(tok).slice(0, 300);
+    await env.DB.prepare(
+      "UPDATE oauth_tokens SET last_error=?, updated_at=datetime('now') WHERE provider='google'")
+      .bind(detail).run();
+    // invalid_grant here almost always means the refresh token expired — the 7-day
+    // Testing-mode window, or the user revoked access.
+    throw new Error(`google_refresh_failed: ${detail}`);
+  }
+  await env.DB.prepare(
+    `UPDATE oauth_tokens SET access_token=?, access_expires=?, last_error=NULL,
+            updated_at=datetime('now') WHERE provider='google'`,
+  ).bind(tok.access_token, new Date(Date.now() + (tok.expires_in || 3600) * 1000).toISOString()).run();
+  return tok.access_token;
+}
+
+async function googleFetch(env, url, init = {}) {
+  const token = await googleAccessToken(env);
+  if (!token) throw new Error('google_not_connected');
+  const res = await fetch(url, {
+    ...init,
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json',
+               ...(init.headers || {}) },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`google_${res.status}: ${(await res.text()).slice(0, 240)}`);
+  return res.status === 204 ? null : res.json();
+}
+
+async function handleOAuthStatus(env) {
+  const row = await env.DB.prepare(
+    `SELECT provider, scope, account_email, connected_at, updated_at, access_expires, last_error
+       FROM oauth_tokens WHERE provider='google'`).first();
+  const out = {
+    configured: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
+    connected: !!row, redirect_uri: OAUTH_REDIRECT, scopes: GOOGLE_SCOPES, ...row,
+  };
+  if (row) {
+    try {
+      const lists = await googleFetch(env, 'https://tasks.googleapis.com/tasks/v1/users/@me/lists');
+      out.task_lists = (lists.items || []).map((l) => ({ id: l.id, title: l.title }));
+      out.token_ok = true;
+    } catch (e) {
+      out.token_ok = false;
+      out.token_error = String(e?.message || e);
+    }
+  }
+  return json(out);
+}
+
+// ---------------------------------------------------------------------------
 // Contacts
 // ---------------------------------------------------------------------------
 
@@ -2513,6 +2700,13 @@ export default {
         return withCors(await handleResendWebhook(request, env, ctx));
       }
 
+      // Also before requireAuth, and for the same reason: Google redirects the browser
+      // here and the Access Bypass lets it through. Protected instead by the one-time
+      // `state` issued by /start, which IS behind Access — so only Adi can begin a flow.
+      if (url.pathname === '/api/oauth/google/callback' && request.method === 'GET') {
+        return await handleOAuthCallback(request, env, url);
+      }
+
       if (!url.pathname.startsWith('/api/')) {
         return withCors(json({ error: 'not_found', hint: 'API only. UI lives at https://adiariel.com/me' }, 404));
       }
@@ -2579,6 +2773,22 @@ export default {
       }
       if (/^\/api\/contacts(\/[\w-]+)?$/.test(url.pathname)) {
         return withCors(await handleContacts(request, env, url));
+      }
+
+      // --- Google OAuth (start/status behind auth; callback handled above) ---
+      if (url.pathname === '/api/oauth/google/start' && request.method === 'GET') {
+        return await handleOAuthStart(env);
+      }
+      if (url.pathname === '/api/oauth/google/status' && request.method === 'GET') {
+        return withCors(await handleOAuthStatus(env));
+      }
+      if (url.pathname === '/api/oauth/google/disconnect' && request.method === 'POST') {
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM oauth_tokens WHERE provider='google'"),
+          env.DB.prepare('DELETE FROM google_task_links'),
+          env.DB.prepare("DELETE FROM google_sync_state WHERE resource='contacts'"),
+        ]);
+        return withCors(json({ ok: true, disconnected: true }));
       }
       const restoreNote = /^\/api\/notes\/([\w-]+)\/restore$/.exec(url.pathname);
       if (restoreNote && request.method === 'POST') {
