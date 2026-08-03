@@ -498,11 +498,18 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
           <h2><em data-i18n="googleSync" style="font-style:normal">סנכרון Google</em>
             <span class="badge" id="gStatus">—</span></h2>
           <div id="gDetail" class="empty" data-i18n="gChecking">בודק…</div>
+          <div id="gListWrap" hidden style="margin-top:10px">
+            <label style="font-size:.72rem;color:var(--muted);text-transform:uppercase"
+                   data-i18n="gList">רשימת יעד</label>
+            <select id="gList" style="margin-top:5px"></select>
+          </div>
           <div class="noteActions">
             <button class="btn sm" id="gConnect" data-i18n="gConnect">חבר את Google</button>
+            <button class="btn sm" id="gSync" hidden data-i18n="gSyncNow">סנכרן עכשיו</button>
             <button class="btn ghost sm" id="gRefresh" data-i18n="refresh">רענן</button>
             <button class="btn danger sm" id="gDisconnect" hidden data-i18n="gDisconnect">נתק</button>
           </div>
+          <div class="route" id="gResult" hidden></div>
         </section>
         <section class="card" id="contactEditor" hidden>
           <h2 id="cEditTitle" data-i18n="newContact">איש קשר חדש</h2>
@@ -682,6 +689,8 @@ const I18N = {
     gChecking:'בודק…', gConnected:'מחובר', gNotConnected:'לא מחובר',
     gNotConfigured:'חסרות הגדרות', gTokenBad:'הטוקן פג — התחבר מחדש',
     gConfirmDisconnect:'לנתק את Google? הסנכרון ייפסק.',
+    gList:'רשימת יעד', gSyncNow:'סנכרן עכשיו', gSyncing:'מסנכרן…',
+    gListChanged:'הרשימה הוחלפה — הקישורים אופסו',
   },
   en: {
     hub:'Personal hub', hubTitle:'Personal hub', signInHint:'Sign in to continue.',
@@ -734,6 +743,8 @@ const I18N = {
     gChecking:'Checking…', gConnected:'Connected', gNotConnected:'Not connected',
     gNotConfigured:'Not configured', gTokenBad:'Token expired — reconnect',
     gConfirmDisconnect:'Disconnect Google? Sync will stop.',
+    gList:'Target list', gSyncNow:'Sync now', gSyncing:'Syncing…',
+    gListChanged:'List changed — mappings reset',
   },
 };
 let lang = localStorage.getItem('adi_lang') || 'he';
@@ -1691,8 +1702,14 @@ async function loadGoogle() {
       return;
     }
     badge.textContent = t('gConnected');
-    const lists = (d.task_lists || []).map((l) => l.title).join(', ');
-    detail.textContent = `${d.connected_at || ''}${lists ? ' · ' + lists : ''}`;
+    detail.textContent = d.connected_at || '';
+    $('#gSync').hidden = false;
+    const lists = d.task_lists || [];
+    if (lists.length) {
+      $('#gListWrap').hidden = false;
+      $('#gList').innerHTML = lists.map((l) =>
+        `<option value="${esc(l.id)}"${l.id === d.sync_list ? ' selected' : ''}>${esc(l.title)}</option>`).join('');
+    }
   } catch (err) {
     badge.textContent = '✕'; detail.textContent = err.message;
   }
@@ -1706,6 +1723,26 @@ $('#gDisconnect').addEventListener('click', async () => {
   await postJson('/api/oauth/google/disconnect', {});
   showToast(t('gDisconnect'));
   loadGoogle();
+});
+
+
+$('#gList').addEventListener('change', async () => {
+  const r = await postJson('/api/sync/google/list', { list_id: $('#gList').value });
+  showToast(r.ok ? t('gListChanged') : ('✕ ' + r.error));
+});
+$('#gSync').addEventListener('click', async () => {
+  const b = $('#gSync');
+  b.disabled = true; b.textContent = t('gSyncing');
+  try {
+    const d = await postJson('/api/sync/google/tasks', {});
+    $('#gResult').hidden = false;
+    $('#gResult').textContent = d.ok
+      ? `imported ${d.imported} · updated ${d.updated} · pushed ${d.pushed} · removed ${d.removed}`
+      : `✕ ${d.error}`;
+    await loadTasks();
+  } catch (err) {
+    $('#gResult').hidden = false; $('#gResult').textContent = '✕ ' + err.message;
+  } finally { b.disabled = false; b.textContent = t('gSyncNow'); }
 });
 
 // ===================== history =====================

@@ -992,7 +992,7 @@ async function ancestryCheck(env, taskId, candidateParent) {
 
 const taskRow = (env, id) => env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(id).first();
 
-async function handleTasks(request, env, url) {
+async function handleTasks(request, env, url, ctx) {
   const id = (/^\/api\/tasks\/([\w-]+)$/.exec(url.pathname) || [])[1];
 
   if (request.method === 'GET') {
@@ -1049,6 +1049,7 @@ async function handleTasks(request, env, url) {
              body.email_alert ? 1 : 0),
       logStmt(env, 'task', taskId, 'create', text.trim(), parentId ? { parent_id: parentId } : null),
     ]);
+    schedulePush(env, ctx, taskId);
     return json({ ok: true, task: { ...(await taskRow(env, taskId)), comment_count: 0 } }, 201);
   }
 
@@ -1094,6 +1095,7 @@ async function handleTasks(request, env, url) {
       stmts.push(logStmt(env, 'task', id, 'edit', body.text ?? before.text, null));
     }
     await env.DB.batch(stmts);
+    schedulePush(env, ctx, id);
     return json({ ok: true, task: await taskRow(env, id) });
   }
 
@@ -1120,6 +1122,7 @@ async function handleTasks(request, env, url) {
       ).bind(...ids),
       logStmt(env, 'task', id, 'delete', before.text, { subtree: ids.length }),
     ]);
+    for (const sub of ids) schedulePush(env, ctx, sub);
     return json({ ok: true, deleted: id, subtree: ids.length, restorable_days: PURGE_AFTER_DAYS });
   }
 
@@ -1746,15 +1749,219 @@ async function handleOAuthStatus(env) {
   };
   if (row) {
     try {
-      const lists = await googleFetch(env, 'https://tasks.googleapis.com/tasks/v1/users/@me/lists');
+      const lists = await googleFetch(env, `${TASKS_API}/users/@me/lists`);
       out.task_lists = (lists.items || []).map((l) => ({ id: l.id, title: l.title }));
       out.token_ok = true;
+      out.sync_list = await getSetting(env, 'google_task_list');
+      out.last_synced = await getSetting(env, 'google_tasks_synced_at');
+      out.linked_tasks = (await env.DB.prepare(
+        'SELECT COUNT(*) n FROM google_task_links').first())?.n ?? 0;
     } catch (e) {
       out.token_ok = false;
       out.token_error = String(e?.message || e);
     }
   }
   return json(out);
+}
+
+// ---------------------------------------------------------------------------
+// Google Tasks sync
+// ---------------------------------------------------------------------------
+
+const TASKS_API = 'https://tasks.googleapis.com/tasks/v1';
+
+const getSetting = async (env, key, dflt = null) =>
+  (await env.DB.prepare('SELECT value FROM settings WHERE key=?').bind(key).first())?.value ?? dflt;
+const setSetting = (env, key, value) =>
+  env.DB.prepare(
+    `INSERT INTO settings (key, value) VALUES (?,?)
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=datetime('now')`,
+  ).bind(key, value).run();
+
+/** The list to sync into; defaults to the account's first list on first use. */
+async function taskListId(env) {
+  const saved = await getSetting(env, 'google_task_list');
+  if (saved) return saved;
+  const lists = await googleFetch(env, `${TASKS_API}/users/@me/lists`);
+  const first = (lists.items || [])[0];
+  if (!first) throw new Error('no_google_task_lists');
+  await setSetting(env, 'google_task_list', first.id);
+  return first.id;
+}
+
+/** Skip pushing a task whose synced content has not actually changed. */
+const taskContentHash = (t) => rowHash(
+  `${t.status}|${t.due_date || ''}`, 0, `${t.text}|${t.detail || ''}|${t.parent_id || ''}`);
+
+const toGoogleTask = (t) => ({
+  title: t.text,
+  notes: t.detail || undefined,
+  status: t.status === 'completed' ? 'completed' : 'needsAction',
+  // Google Tasks treats `due` as date-only; any time component is discarded, so send
+  // midnight UTC rather than a local time that could shift the date across a boundary.
+  due: t.due_date ? `${t.due_date}T00:00:00.000Z` : undefined,
+  // Clearing a completion needs an explicit null, not an omitted field.
+  completed: t.status === 'completed' ? undefined : null,
+});
+
+/**
+ * Push one task to Google. Fire-and-forget from the write path, so a Google outage
+ * degrades to "not yet synced" rather than failing the user's own save.
+ */
+async function pushTask(env, taskId) {
+  const t = await taskRow(env, taskId);
+  if (!t) return { skipped: 'gone' };
+
+  const listId = await taskListId(env);
+  const link = await env.DB.prepare('SELECT * FROM google_task_links WHERE task_id=?')
+    .bind(taskId).first();
+
+  // Soft-deleted locally → remove from Google, but keep our row and its history.
+  if (t.deleted_at) {
+    if (link) {
+      await googleFetch(env, `${TASKS_API}/lists/${link.google_list_id}/tasks/${link.google_id}`,
+        { method: 'DELETE' }).catch(() => {});
+      await env.DB.prepare('DELETE FROM google_task_links WHERE task_id=?').bind(taskId).run();
+    }
+    return { deleted: true };
+  }
+
+  const hash = await taskContentHash(t);
+  if (link && link.content_hash === hash) return { skipped: 'unchanged' };
+
+  // A sub-task must be pushed under a parent that already exists in Google.
+  let parentGoogleId;
+  if (t.parent_id) {
+    const p = await env.DB.prepare('SELECT google_id FROM google_task_links WHERE task_id=?')
+      .bind(t.parent_id).first();
+    if (!p) { await pushTask(env, t.parent_id).catch(() => {}); }
+    parentGoogleId = (await env.DB.prepare('SELECT google_id FROM google_task_links WHERE task_id=?')
+      .bind(t.parent_id).first())?.google_id;
+  }
+
+  let g;
+  if (link) {
+    g = await googleFetch(env, `${TASKS_API}/lists/${link.google_list_id}/tasks/${link.google_id}`,
+      { method: 'PATCH', body: JSON.stringify(toGoogleTask(t)) });
+  } else {
+    const q = parentGoogleId ? `?parent=${encodeURIComponent(parentGoogleId)}` : '';
+    g = await googleFetch(env, `${TASKS_API}/lists/${listId}/tasks${q}`,
+      { method: 'POST', body: JSON.stringify(toGoogleTask(t)) });
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO google_task_links (task_id, google_id, google_list_id, etag, content_hash, last_synced_at)
+     VALUES (?,?,?,?,?,datetime('now'))
+     ON CONFLICT(task_id) DO UPDATE SET google_id=excluded.google_id,
+       google_list_id=excluded.google_list_id, etag=excluded.etag,
+       content_hash=excluded.content_hash, last_synced_at=datetime('now')`,
+  ).bind(taskId, g.id, link?.google_list_id || listId, g.etag || null, hash).run();
+
+  return { pushed: g.id, created: !link };
+}
+
+/** Non-blocking push used from the write handlers. */
+function schedulePush(env, ctx, taskId) {
+  if (!ctx?.waitUntil) return;
+  ctx.waitUntil(pushTask(env, taskId).catch((err) =>
+    console.warn('google_push_failed', taskId, String(err?.message || err))));
+}
+
+/**
+ * Two-way reconcile. Google is authoritative for rows it has changed more recently;
+ * ours wins otherwise. Google Tasks has no webhooks, so this runs on the cron and
+ * on demand — there is no push channel to subscribe to.
+ */
+async function syncGoogleTasks(env, { full = false } = {}) {
+  const listId = await taskListId(env);
+  const since = full ? null : await getSetting(env, 'google_tasks_synced_at');
+
+  const params = new URLSearchParams({ showCompleted: 'true', showHidden: 'true', maxResults: '100' });
+  if (since) params.set('updatedMin', since);
+
+  const remote = [];
+  let pageToken = null;
+  do {
+    if (pageToken) params.set('pageToken', pageToken); else params.delete('pageToken');
+    const page = await googleFetch(env, `${TASKS_API}/lists/${listId}/tasks?${params}`);
+    remote.push(...(page.items || []));
+    pageToken = page.nextPageToken;
+  } while (pageToken && remote.length < 500);
+
+  const links = await env.DB.prepare('SELECT * FROM google_task_links').all();
+  const byGoogleId = new Map((links.results || []).map((l) => [l.google_id, l]));
+
+  let updated = 0, imported = 0, removed = 0;
+  for (const g of remote) {
+    const link = byGoogleId.get(g.id);
+
+    if (g.deleted) {
+      if (link) {
+        await env.DB.batch([
+          env.DB.prepare("UPDATE tasks SET deleted_at=datetime('now') WHERE id=? AND deleted_at IS NULL")
+            .bind(link.task_id),
+          env.DB.prepare('DELETE FROM google_task_links WHERE task_id=?').bind(link.task_id),
+        ]);
+        removed++;
+      }
+      continue;
+    }
+
+    const status = g.status === 'completed' ? 'completed' : 'pending';
+    const due = g.due ? String(g.due).slice(0, 10) : null;
+
+    if (link) {
+      const local = await taskRow(env, link.task_id);
+      if (!local || local.deleted_at) continue;
+      // Last-write-wins: only take Google's copy when it changed after our last sync.
+      if (link.last_synced_at && g.updated && Date.parse(g.updated) <= Date.parse(link.last_synced_at + 'Z')) {
+        continue;
+      }
+      if (local.text === (g.title || '') && local.status === status &&
+          (local.due_date || null) === due && (local.detail || null) === (g.notes || null)) {
+        continue;
+      }
+      await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE tasks SET text=?, detail=?, due_date=?, status=?, updated_at=datetime('now') WHERE id=?`,
+        ).bind(g.title || local.text, g.notes || null, due, status, link.task_id),
+        env.DB.prepare(
+          "UPDATE google_task_links SET etag=?, last_synced_at=datetime('now') WHERE task_id=?",
+        ).bind(g.etag || null, link.task_id),
+        logStmt(env, 'task', link.task_id, 'edit', g.title || local.text, { via: 'google_pull' }),
+      ]);
+      updated++;
+    } else {
+      if (!g.title) continue;                       // Google allows empty placeholder rows
+      const id = uuid();
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO tasks (id, text, status, detail, due_date) VALUES (?,?,?,?,?)`,
+        ).bind(id, g.title, status, g.notes || null, due),
+        env.DB.prepare(
+          `INSERT INTO google_task_links (task_id, google_id, google_list_id, etag, last_synced_at)
+           VALUES (?,?,?,?,datetime('now'))`,
+        ).bind(id, g.id, listId, g.etag || null),
+        logStmt(env, 'task', id, 'create', g.title, { via: 'google_pull' }),
+      ]);
+      imported++;
+    }
+  }
+
+  // Push anything local that Google has never seen or that has drifted.
+  const unpushed = await env.DB.prepare(
+    `SELECT t.id FROM tasks t LEFT JOIN google_task_links l ON l.task_id = t.id
+      WHERE t.deleted_at IS NULL AND (l.task_id IS NULL OR l.content_hash IS NULL)
+      ORDER BY t.parent_id IS NOT NULL, t.created_at LIMIT 200`,   // parents before children
+  ).all();
+  let pushed = 0;
+  for (const r of unpushed.results || []) {
+    try { const res = await pushTask(env, r.id); if (res.pushed) pushed++; }
+    catch (err) { console.warn('push_during_sync', r.id, String(err?.message || err)); }
+  }
+
+  await setSetting(env, 'google_tasks_synced_at', new Date().toISOString());
+  return { list: listId, remote_seen: remote.length, imported, updated, removed, pushed };
 }
 
 // ---------------------------------------------------------------------------
@@ -2796,6 +3003,24 @@ export default {
       if (url.pathname === '/api/oauth/google/status' && request.method === 'GET') {
         return withCors(await handleOAuthStatus(env));
       }
+      if (url.pathname === '/api/sync/google/tasks' && request.method === 'POST') {
+        const body = await readJson(request);
+        try {
+          return withCors(json({ ok: true, ...(await syncGoogleTasks(env, { full: !!body.full })) }));
+        } catch (err) {
+          return withCors(json({ ok: false, error: String(err?.message || err) }, 502));
+        }
+      }
+      if (url.pathname === '/api/sync/google/list' && request.method === 'POST') {
+        const body = await readJson(request);
+        if (!body.list_id) return withCors(json({ error: 'list_id_required' }, 400));
+        await setSetting(env, 'google_task_list', String(body.list_id));
+        // A different list means every existing mapping points at the wrong place.
+        await env.DB.prepare('DELETE FROM google_task_links').run();
+        await setSetting(env, 'google_tasks_synced_at', '');
+        return withCors(json({ ok: true, list_id: body.list_id, links_reset: true }));
+      }
+
       if (url.pathname === '/api/oauth/google/disconnect' && request.method === 'POST') {
         await env.DB.batch([
           env.DB.prepare("DELETE FROM oauth_tokens WHERE provider='google'"),
@@ -2819,7 +3044,7 @@ export default {
       }
 
       if (/^\/api\/tasks(\/[\w-]+)?$/.test(url.pathname)) {
-        return withCors(await handleTasks(request, env, url));
+        return withCors(await handleTasks(request, env, url, ctx));
       }
       if (/^\/api\/notes(\/[\w-]+)?$/.test(url.pathname)) {
         return withCors(await handleNotes(request, env, url));
@@ -2923,7 +3148,17 @@ export default {
       try {
         const purged = await runPurge(env);
         const alerts = await runDueAlerts(env);
-        console.log('cron', JSON.stringify({ cron: event.cron, purged, alerts }));
+        // Google Tasks has no webhooks, so the nightly run is the pull channel.
+        // Never let a sync failure abort the purge or the alerts above it.
+        let sync = { skipped: 'not_connected' };
+        try {
+          if (await env.DB.prepare("SELECT 1 FROM oauth_tokens WHERE provider='google'").first()) {
+            sync = await syncGoogleTasks(env, {});
+          }
+        } catch (err) {
+          sync = { error: String(err?.message || err) };
+        }
+        console.log('cron', JSON.stringify({ cron: event.cron, purged, alerts, sync }));
       } catch (err) {
         console.error('cron_failed', err?.stack || err);
       }
