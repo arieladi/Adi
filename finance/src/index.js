@@ -730,8 +730,9 @@ async function handleUpload(request, env) {
   }
 
   // Dedupe: same bytes uploaded twice is almost always a mistake.
-  const dupe = await env.DB.prepare('SELECT id, filename FROM documents WHERE sha256 = ?')
-    .bind(hash).first();
+  // Same rule as the email path: a failed document is not a duplicate, it is a retry.
+  const dupe = await env.DB.prepare(
+    "SELECT id, filename FROM documents WHERE sha256 = ? AND status != 'failed'").bind(hash).first();
   if (dupe && form.get('force') !== '1') {
     return json({ error: 'duplicate', existing_id: dupe.id, filename: dupe.filename }, 409);
   }
@@ -2197,8 +2198,26 @@ async function handleResendWebhook(request, env, ctx) {
 
   // Return 200 immediately and do the work after: Resend retries on timeout, and
   // Gemini extraction takes far longer than a webhook should be held open for.
-  ctx.waitUntil(processResendEmail(env, emailId, event.data)
-    .catch((err) => console.error('resend_ingest_failed', emailId, String(err?.message || err))));
+  // Record the hit BEFORE any processing. Otherwise a throw in the background leaves no
+  // trace in the audit log and "webhook never fired" looks identical to "webhook fired
+  // and blew up" — which is exactly the ambiguity this cost us once already.
+  ctx.waitUntil((async () => {
+    await env.DB.prepare(
+      'INSERT INTO activity_log (id, entity, entity_id, action, title, meta_json) VALUES (?,?,?,?,?,?)',
+    ).bind(uuid(), 'task', 'inbound-email', 'alert', 'webhook received',
+           JSON.stringify({ email_id: emailId, from: event.data?.from, to: event.data?.to,
+                            subject: event.data?.subject })).run().catch(() => {});
+    try {
+      await processResendEmail(env, emailId, event.data);
+    } catch (err) {
+      const detail = String(err?.message || err);
+      console.error('resend_ingest_failed', emailId, detail);
+      await env.DB.prepare(
+        'INSERT INTO activity_log (id, entity, entity_id, action, title, meta_json) VALUES (?,?,?,?,?,?)',
+      ).bind(uuid(), 'task', 'inbound-email', 'alert', 'inbound processing failed',
+             JSON.stringify({ email_id: emailId, error: detail })).run().catch(() => {});
+    }
+  })());
   return json({ ok: true, accepted: emailId });
 }
 
@@ -2285,8 +2304,11 @@ async function ingestPdfBuffer(env, bytes, filename, meta = {}) {
     bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   const hash = await sha256Hex(buffer);
 
-  const dupeFile = await env.DB.prepare('SELECT id, period FROM documents WHERE sha256 = ?')
-    .bind(hash).first();
+  // Excludes failed rows on purpose: a document that errored mid-ingest must stay
+  // retryable. Otherwise its sha256 is recorded forever and every replay of the same
+  // file is waved through as a "duplicate" of a document that never actually imported.
+  const dupeFile = await env.DB.prepare(
+    "SELECT id, period FROM documents WHERE sha256 = ? AND status != 'failed'").bind(hash).first();
   if (dupeFile) {
     return { filename, ok: true, duplicate: true, reason: 'identical_file',
              existing_id: dupeFile.id, period: dupeFile.period, inserted: 0 };
@@ -2509,6 +2531,28 @@ export default {
       }
       if (url.pathname === '/api/diag' && request.method === 'GET') {
         return withCors(await handleDiag(env));
+      }
+
+      // Asks Resend what it actually received. Distinguishes "the mail never arrived"
+      // (Outlook rule / MX) from "it arrived but the webhook did not fire".
+      if (url.pathname === '/api/diag/inbound' && request.method === 'GET') {
+        const out = { webhook_secret_set: !!env.RESEND_WEBHOOK_SECRET, allowed_senders: ALLOWED_SENDERS };
+        try {
+          const list = await resendGet(env, '/emails/receiving');
+          const items = list.data || list.received || [];
+          out.received_count = items.length;
+          out.received = items.slice(0, 10).map((m) => ({
+            id: m.id, from: m.from, to: m.to, subject: m.subject,
+            created_at: m.created_at, attachments: m.attachment_count ?? m.attachments?.length,
+          }));
+        } catch (err) {
+          out.resend_error = String(err?.message || err);
+        }
+        const log = await env.DB.prepare(
+          `SELECT at, action, title, meta_json FROM activity_log
+            WHERE entity_id='inbound-email' ORDER BY at DESC LIMIT 10`).all();
+        out.worker_inbound_events = log.results || [];
+        return withCors(json(out));
       }
 
       // --- Tasks & Notes ---
