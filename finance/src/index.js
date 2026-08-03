@@ -2123,6 +2123,140 @@ async function handleInboundEmail(message, env, ctx) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Resend Inbound webhook
+// ---------------------------------------------------------------------------
+//
+// This path MUST be excluded from Cloudflare Access — Resend is a machine and cannot
+// complete a Google login; without a Bypass policy every delivery 302s to the login
+// page and fails silently. That makes the Svix signature the ONLY thing standing
+// between this endpoint and the open internet, so verification is mandatory and the
+// handler refuses to run at all when RESEND_WEBHOOK_SECRET is unset.
+//
+// Unlike Cloudflare's email() handler, which hands over raw MIME, the Resend webhook
+// carries metadata only: "Webhooks do not include the email body, headers, or
+// attachments, only their metadata." The bytes take two further API calls.
+
+const SVIX_TOLERANCE_S = 5 * 60;
+
+async function verifySvix(request, rawBody, secret) {
+  const id = request.headers.get('svix-id');
+  const ts = request.headers.get('svix-timestamp');
+  const sigHeader = request.headers.get('svix-signature');
+  if (!id || !ts || !sigHeader) return { ok: false, reason: 'missing_svix_headers' };
+
+  const age = Math.abs(Math.floor(Date.now() / 1000) - Number(ts));
+  if (!Number.isFinite(age) || age > SVIX_TOLERANCE_S) return { ok: false, reason: 'timestamp_out_of_tolerance' };
+
+  // Secrets are given as "whsec_<base64>"; the bytes are the decoded remainder.
+  const b64 = secret.startsWith('whsec_') ? secret.slice(6) : secret;
+  const keyBytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey(
+    'raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${id}.${ts}.${rawBody}`));
+  const expected = btoa(String.fromCharCode(...new Uint8Array(mac)));
+
+  // The header may carry several space-separated "v1,<sig>" values during rotation.
+  for (const part of sigHeader.split(' ')) {
+    const [version, sig] = part.split(',');
+    if (version === 'v1' && sig && safeEqual(sig, expected)) return { ok: true };
+  }
+  return { ok: false, reason: 'signature_mismatch' };
+}
+
+const resendGet = async (env, path) => {
+  const res = await fetch(`https://api.resend.com${path}`, {
+    headers: { authorization: `Bearer ${env.RESEND_API_KEY}` },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) throw new Error(`resend_api_${res.status}: ${(await res.text()).slice(0, 160)}`);
+  return res.json();
+};
+
+async function handleResendWebhook(request, env, ctx) {
+  if (!env.RESEND_WEBHOOK_SECRET) {
+    console.error('resend_webhook: RESEND_WEBHOOK_SECRET not set — refusing');
+    return json({ error: 'not_configured' }, 503);
+  }
+  const raw = await request.text();
+  const check = await verifySvix(request, raw, env.RESEND_WEBHOOK_SECRET);
+  if (!check.ok) {
+    console.warn('resend_webhook_rejected', check.reason);
+    return json({ error: 'bad_signature', reason: check.reason }, 401);
+  }
+
+  const event = JSON.parse(raw || '{}');
+  if (event.type !== 'email.received') return json({ ok: true, ignored: event.type });
+
+  const emailId = event.data?.email_id || event.data?.id;
+  if (!emailId) return json({ ok: true, ignored: 'no_email_id' });
+
+  // Return 200 immediately and do the work after: Resend retries on timeout, and
+  // Gemini extraction takes far longer than a webhook should be held open for.
+  ctx.waitUntil(processResendEmail(env, emailId, event.data)
+    .catch((err) => console.error('resend_ingest_failed', emailId, String(err?.message || err))));
+  return json({ ok: true, accepted: emailId });
+}
+
+async function processResendEmail(env, emailId, data) {
+  const from = emailAddr(data?.from?.address || data?.from || '');
+  const subject = data?.subject || '';
+  const to = [].concat(data?.to || []).map((x) => emailAddr(x?.address || x)).join(',');
+
+  const log = (action, title, meta) =>
+    env.DB.prepare(
+      'INSERT INTO activity_log (id, entity, entity_id, action, title, meta_json) VALUES (?,?,?,?,?,?)',
+    ).bind(uuid(), 'task', 'inbound-email', action, trimStr(title, 300), JSON.stringify(meta)).run()
+      .catch((e) => console.error('log_failed', String(e)));
+
+  // Same allowlist as the Cloudflare path. An O365 forward rewrites the sender, so the
+  // original is recovered from the metadata Resend does give us.
+  const candidates = [from, ...String(subject).toLowerCase().matchAll?.(/[\w.+-]+@[\w.-]+\.\w+/g) ?? []]
+    .map((c) => (typeof c === 'string' ? c : c[0]));
+  const replyTo = emailAddr(data?.reply_to?.[0]?.address || data?.reply_to || '');
+  if (replyTo) candidates.push(replyTo);
+  const matched = candidates.find((c) => c && ALLOWED_SENDERS.includes(c));
+  if (!matched) {
+    await log('alert', 'resend inbound rejected: sender not allowed', { from, to, subject });
+    return;
+  }
+
+  const list = await resendGet(env, `/emails/receiving/${emailId}/attachments`);
+  const pdfs = (list.data || list.attachments || [])
+    .filter((a) => /pdf/i.test(a.content_type || '') || /\.pdf$/i.test(a.filename || ''));
+  if (!pdfs.length) {
+    await log('alert', 'resend inbound: no pdf attachment', { from: matched, subject });
+    return;
+  }
+
+  const results = [];
+  for (const att of pdfs.slice(0, 5)) {
+    try {
+      const meta = await resendGet(env, `/emails/receiving/${emailId}/attachments/${att.id}`);
+      const url = meta.download_url || meta.downloadUrl || meta.url;
+      if (!url) throw new Error('no_download_url');
+      const bin = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+      if (!bin.ok) throw new Error(`download_${bin.status}`);
+      results.push(await ingestPdfBuffer(env, await bin.arrayBuffer(),
+        att.filename || 'payslip.pdf', { via: 'resend', sender: matched, subject }));
+    } catch (err) {
+      results.push({ filename: att.filename, ok: false, error: String(err?.message || err) });
+    }
+  }
+
+  await log('attach', `resend payslip from ${matched}`, { subject, results });
+  console.log('resend_inbound', JSON.stringify({ from: matched, emailId, results }));
+
+  // Duplicates are normal on this path (a re-forward, an old payslip) — stay quiet.
+  const fresh = results.filter((r) => r.ok && !r.duplicate);
+  if (fresh.length) {
+    await sendMail(env, {
+      subject: `תלוש חדש נקלט · ${fresh.map((r) => r.period || '').filter(Boolean).join(', ')}`,
+      text: fresh.map((r) => `${r.filename}: ${r.doc_type || ''} ${r.period || ''} — ${r.inserted} רשומות`).join('\n'),
+    }).catch((e) => console.error('notify_failed', String(e)));
+  }
+}
+
 /** Shared ingestion used by both the HTTP upload and the email handler. */
 async function ingestPdfBuffer(env, bytes, filename, meta = {}) {
   let buffer = bytes instanceof ArrayBuffer ? bytes : bytes.buffer.slice(
@@ -2295,7 +2429,7 @@ async function runDueAlerts(env) {
 // ---------------------------------------------------------------------------
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const cors = corsHeaders(request, env);
 
@@ -2318,6 +2452,14 @@ export default {
                         access: !!(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD),
                         password: !!(env.ADI_PASS && env.SESSION_SECRET) },
         }));
+      }
+
+      // Before requireAuth on purpose: a webhook cannot present a session. It is
+      // authenticated by its Svix signature instead, which is verified inside.
+      // Needs a Cloudflare Access Bypass policy on this exact path, or Access 302s
+      // Resend to a login page and no delivery ever arrives.
+      if (url.pathname === '/api/webhooks/resend' && request.method === 'POST') {
+        return withCors(await handleResendWebhook(request, env, ctx));
       }
 
       if (!url.pathname.startsWith('/api/')) {
