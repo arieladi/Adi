@@ -703,8 +703,35 @@ async function handleUpload(request, env) {
   const form = await request.formData().catch(() => null);
   if (!form) return json({ error: 'expected_multipart_form_data' }, 400);
 
-  const file = form.get('file');
-  if (!file || typeof file === 'string') return json({ error: 'missing_file_field' }, 400);
+  const files = form.getAll('file').filter((f) => f && typeof f !== 'string');
+  if (!files.length) return json({ error: 'missing_file_field' }, 400);
+
+  // More than one file, or a container that may hold several: run them all through the
+  // shared ingest path and report per-file, rather than silently handling only the first.
+  if (files.length > 1 || files.some((f) => isEmlLike(f.name, f.type) || isMsgLike(f.name, f.type))) {
+    const raw = [];
+    for (const f of files) {
+      raw.push({ filename: f.name || 'attachment', mimeType: f.type || '', content: await f.arrayBuffer() });
+    }
+    const expanded = await expandAttachments(raw);
+    const usable = expanded.filter((a) => isIngestable(a.filename, a.mimeType));
+    if (!usable.length) {
+      return json({ ok: false, error: 'nothing_ingestable',
+                    saw: expanded.map((a) => a.via || a.filename).slice(0, 20) }, 400);
+    }
+    const results = [];
+    for (const a of usable.slice(0, 20)) {
+      try {
+        results.push({ ...(await ingestPdfBuffer(env, a.content, a.filename,
+                         { via: 'upload', mime: a.mimeType })), source: a.via });
+      } catch (err) {
+        results.push({ filename: a.filename, ok: false, error: String(err?.message || err) });
+      }
+    }
+    return json({ ok: results.some((r) => r.ok), batch: true, count: results.length, results });
+  }
+
+  const file = files[0];
   if (file.size > MAX_UPLOAD_BYTES) {
     return json({ error: 'file_too_large', max_bytes: MAX_UPLOAD_BYTES, got: file.size }, 413);
   }
@@ -1965,6 +1992,246 @@ async function syncGoogleTasks(env, { full = false } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Receipts & warranty archive
+// ---------------------------------------------------------------------------
+//
+// Writes ONLY to `receipts`. Never to `expenses`, which feeds v_monthly and the Net
+// Income tiles — that isolation is the point of the separate table, and any future
+// "roll receipts into spending" feature must be an explicit, opt-in query rather than
+// a write that leaks into the dashboard.
+
+const RECEIPT_PROMPT = `Read this receipt or invoice (Hebrew, English or mixed) and return ONLY JSON:
+{
+  "vendor": "shop or supplier name",
+  "item": "what was bought, short",
+  "amount": number,              // TOTAL paid, including VAT. Number only, no symbol.
+  "currency": "ILS|USD|EUR",
+  "purchase_date": "YYYY-MM-DD",
+  "category": "electronics|appliance|furniture|tools|clothing|food|service|software|other",
+  "payment_method": "credit|cash|bank_transfer|bit|paypal|other",
+  "invoice_number": "string",
+  "warranty_months": number,     // ONLY if the document states a warranty. Omit otherwise.
+  "warranty_note": "the exact warranty wording if present",
+  "confidence": 0.0-1.0
+}
+Hebrew hints: סה"כ לתשלום / סה"כ = total, ספק / בית עסק = vendor, חשבונית מס = tax invoice,
+קבלה = receipt, אחריות = warranty, שנה = 1 year (12 months), חודשים = months, תאריך = date.
+Rules:
+- "amount" is the FINAL total actually paid, not a line item and not the pre-VAT subtotal.
+- Do NOT invent a warranty. Omit warranty_months unless the document actually states one.
+- If a value is genuinely absent, omit the key rather than guessing.`;
+
+/** purchase_date + months → ISO date, month-end safe (31 Jan + 1 month = 28/29 Feb). */
+function addMonths(iso, months) {
+  if (!iso || !Number.isFinite(months)) return null;
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  const target = new Date(Date.UTC(y, m - 1 + months, 1));
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(d, lastDay));
+  return target.toISOString().slice(0, 10);
+}
+
+/** Upload → extract → STAGE. Nothing enters the archive without confirmation. */
+async function handleReceiptParse(request, env) {
+  const form = await request.formData().catch(() => null);
+  if (!form) return json({ error: 'expected_multipart_form_data' }, 400);
+  const files = form.getAll('file').filter((f) => f && typeof f !== 'string');
+  if (!files.length) return json({ error: 'missing_file_field' }, 400);
+
+  const raw = [];
+  for (const f of files) {
+    if (f.size > MAX_UPLOAD_BYTES) continue;
+    raw.push({ filename: f.name || 'receipt', mimeType: f.type || '', content: await f.arrayBuffer() });
+  }
+  const expanded = await expandAttachments(raw);
+  const usable = expanded.filter((a) =>
+    /^image\//i.test(a.mimeType || '') || /\.(jpe?g|png|webp|heic)$/i.test(a.filename || '')
+    || /pdf/i.test(a.mimeType || '') || /\.pdf$/i.test(a.filename || ''));
+  if (!usable.length) return json({ error: 'no_image_or_pdf' }, 400);
+
+  const staged = [];
+  for (const a of usable.slice(0, 10)) {
+    try {
+      let buffer = a.content;
+      const hash = await sha256Hex(buffer);
+      const dupe = await env.DB.prepare(
+        "SELECT id, vendor, amount, status FROM receipts WHERE sha256=? AND status!='rejected'")
+        .bind(hash).first();
+      if (dupe) {
+        staged.push({ filename: a.filename, duplicate: true, existing: dupe });
+        continue;
+      }
+      // A receipt can arrive as an encrypted PDF too.
+      if (detectPdfEncryption(buffer) && env.PDF_PASS) {
+        const dec = decryptPdf(buffer, env.PDF_PASS);
+        if (dec.ok) buffer = dec.bytes.buffer;
+      }
+
+      const isPdf = /pdf/i.test(a.mimeType || '') || /\.pdf$/i.test(a.filename || '');
+      const mime = isPdf ? 'application/pdf'
+        : (a.mimeType || `image/${(a.filename.split('.').pop() || 'jpeg').replace('jpg', 'jpeg')}`);
+
+      const id = uuid();
+      const key = `receipts/${new Date().toISOString().slice(0, 7)}/${id}-${
+        a.filename.replace(/[^\w.\-֐-׿]/g, '_').slice(0, 100)}`;
+      await env.DOCS_BUCKET.put(key, buffer, { httpMetadata: { contentType: mime } });
+
+      const ex = await geminiCallJson(env, RECEIPT_PROMPT, { base64: toBase64(buffer), mimeType: mime });
+      const amount = toAgorot(ex.amount);
+      const months = Number.isFinite(ex.warranty_months) ? Math.round(ex.warranty_months) : null;
+
+      await env.DB.prepare(
+        `INSERT INTO receipts (id, status, vendor, item, amount, currency, purchase_date, category,
+           payment_method, invoice_number, warranty_months, warranty_until, r2_key, mime,
+           size_bytes, sha256, extracted_json, confidence, notes)
+         VALUES (?,'staged',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).bind(id, trimStr(ex.vendor, 200), trimStr(ex.item, 300), amount,
+             trimStr(ex.currency, 3) || 'ILS', trimStr(ex.purchase_date, 10),
+             trimStr(ex.category, 40), trimStr(ex.payment_method, 40),
+             trimStr(ex.invoice_number, 80), months,
+             months ? addMonths(ex.purchase_date, months) : null,
+             key, mime, buffer.byteLength, hash, JSON.stringify(ex),
+             Number.isFinite(ex.confidence) ? ex.confidence : null,
+             trimStr(ex.warranty_note, 300)).run();
+
+      staged.push({ ...(await env.DB.prepare('SELECT * FROM receipts WHERE id=?').bind(id).first()),
+                    source: a.via });
+    } catch (err) {
+      staged.push({ filename: a.filename, ok: false, error: String(err?.message || err) });
+    }
+  }
+  return json({ ok: true, staged });
+}
+
+/** Shared Gemini JSON call used by the receipt reader. */
+async function geminiCallJson(env, prompt, file) {
+  const models = [env.GEMINI_MODEL, ...(env.GEMINI_FALLBACKS || '').split(',')]
+    .map((s) => (s || '').trim()).filter(Boolean);
+  const tried = [];
+  for (const model of models) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [
+            { inline_data: { mime_type: file.mimeType, data: file.base64 } }, { text: prompt }] }],
+          generationConfig: { temperature: 0, responseMimeType: 'application/json' },
+        }),
+        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      });
+    if (res.ok) {
+      const payload = await res.json();
+      const parsed = parseLooseJson(
+        payload?.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join(''));
+      if (parsed) return parsed;
+      tried.push(`${model}: unparseable`);
+    } else {
+      tried.push(`${model}: ${res.status}`);
+      if (res.status !== 404 && res.status !== 429) break;
+    }
+  }
+  throw new Error(`gemini_failed: ${tried.join(' | ')}`);
+}
+
+async function handleReceipts(request, env, url) {
+  const m = /^\/api\/receipts\/([\w-]+)(?:\/(confirm|reject|file))?$/.exec(url.pathname);
+  const id = m?.[1];
+  const action = m?.[2];
+
+  if (!id && request.method === 'GET') {
+    const status = url.searchParams.get('status') || 'confirmed';
+    const q = (url.searchParams.get('q') || '').trim();
+    const warrantyOnly = url.searchParams.get('warranty') === 'active';
+    const where = ['deleted_at IS NULL'];
+    if (status !== 'all') where.push(`status = '${status === 'staged' ? 'staged' : 'confirmed'}'`);
+    if (warrantyOnly) where.push("warranty_until IS NOT NULL AND warranty_until >= date('now')");
+    if (q) where.push('(vendor LIKE ?1 OR item LIKE ?1 OR invoice_number LIKE ?1)');
+    const sql = `SELECT * FROM receipts WHERE ${where.join(' AND ')}
+                 ORDER BY COALESCE(purchase_date, created_at) DESC LIMIT 300`;
+    const stmt = env.DB.prepare(sql);
+    const { results } = await (q ? stmt.bind(`%${q}%`) : stmt).all();
+    const totals = await env.DB.prepare(
+      `SELECT COUNT(*) n, COALESCE(SUM(amount),0) total,
+              SUM(CASE WHEN warranty_until >= date('now') THEN 1 ELSE 0 END) under_warranty
+         FROM receipts WHERE deleted_at IS NULL AND status='confirmed'`).first();
+    return json({ ok: true, receipts: results || [], totals });
+  }
+
+  if (!id) return json({ error: 'id_required' }, 400);
+
+  if (action === 'file' && request.method === 'GET') {
+    const r = await env.DB.prepare('SELECT r2_key, mime FROM receipts WHERE id=?').bind(id).first();
+    if (!r?.r2_key) return json({ error: 'not_found' }, 404);
+    const obj = await env.DOCS_BUCKET.get(r.r2_key);
+    if (!obj) return json({ error: 'object_missing' }, 404);
+    return new Response(obj.body, {
+      headers: { 'content-type': r.mime || 'application/octet-stream', 'cache-control': 'private, no-store' },
+    });
+  }
+
+  // Confirmation is where Adi's corrections land. Warranty is explicitly nullable:
+  // sending warranty_months: null clears it for an item that has none.
+  if (action === 'confirm' && request.method === 'POST') {
+    const b = await readJson(request);
+    const cur = await env.DB.prepare('SELECT * FROM receipts WHERE id=?').bind(id).first();
+    if (!cur) return json({ error: 'not_found' }, 404);
+
+    const purchase = b.purchase_date !== undefined ? trimStr(b.purchase_date, 10) : cur.purchase_date;
+    const months = b.warranty_months !== undefined
+      ? (b.warranty_months === null || b.warranty_months === '' ? null : Math.round(Number(b.warranty_months)))
+      : cur.warranty_months;
+    const amount = b.amount !== undefined ? toAgorot(b.amount) : cur.amount;
+
+    await env.DB.prepare(
+      `UPDATE receipts SET status='confirmed', vendor=?, item=?, amount=?, purchase_date=?,
+              category=?, payment_method=?, invoice_number=?, warranty_months=?, warranty_until=?,
+              notes=?, confirmed_at=datetime('now'), updated_at=datetime('now') WHERE id=?`,
+    ).bind(b.vendor !== undefined ? trimStr(b.vendor, 200) : cur.vendor,
+           b.item !== undefined ? trimStr(b.item, 300) : cur.item,
+           amount, purchase,
+           b.category !== undefined ? trimStr(b.category, 40) : cur.category,
+           b.payment_method !== undefined ? trimStr(b.payment_method, 40) : cur.payment_method,
+           b.invoice_number !== undefined ? trimStr(b.invoice_number, 80) : cur.invoice_number,
+           months, months ? addMonths(purchase, months) : null,
+           b.notes !== undefined ? trimStr(b.notes, 1000) : cur.notes, id).run();
+    return json({ ok: true, receipt: await env.DB.prepare('SELECT * FROM receipts WHERE id=?').bind(id).first() });
+  }
+
+  if (action === 'reject' && request.method === 'POST') {
+    // Keep the blob briefly so a re-parse does not need a re-upload; the purge clears it.
+    await env.DB.prepare(
+      "UPDATE receipts SET status='rejected', deleted_at=datetime('now') WHERE id=?").bind(id).run();
+    return json({ ok: true, rejected: id });
+  }
+
+  if (request.method === 'PUT') {
+    const b = await readJson(request);
+    const cur = await env.DB.prepare('SELECT * FROM receipts WHERE id=?').bind(id).first();
+    if (!cur) return json({ error: 'not_found' }, 404);
+    const purchase = b.purchase_date ?? cur.purchase_date;
+    const months = b.warranty_months === null ? null
+      : (b.warranty_months !== undefined ? Math.round(Number(b.warranty_months)) : cur.warranty_months);
+    await env.DB.prepare(
+      `UPDATE receipts SET vendor=?, item=?, amount=?, purchase_date=?, category=?,
+              warranty_months=?, warranty_until=?, notes=?, updated_at=datetime('now') WHERE id=?`,
+    ).bind(b.vendor ?? cur.vendor, b.item ?? cur.item,
+           b.amount !== undefined ? toAgorot(b.amount) : cur.amount, purchase,
+           b.category ?? cur.category, months, months ? addMonths(purchase, months) : null,
+           b.notes ?? cur.notes, id).run();
+    return json({ ok: true, receipt: await env.DB.prepare('SELECT * FROM receipts WHERE id=?').bind(id).first() });
+  }
+
+  if (request.method === 'DELETE') {
+    await env.DB.prepare("UPDATE receipts SET deleted_at=datetime('now') WHERE id=?").bind(id).run();
+    return json({ ok: true, deleted: id });
+  }
+  return json({ error: 'method_not_allowed' }, 405);
+}
+
+// ---------------------------------------------------------------------------
 // Contacts
 // ---------------------------------------------------------------------------
 
@@ -2566,6 +2833,77 @@ ${lang === 'he' ? 'ענה בעברית בלבד.' : 'Answer in English.'}`;
 }
 
 // ---------------------------------------------------------------------------
+// Attachment expansion: .eml / .msg containers
+// ---------------------------------------------------------------------------
+//
+// A forwarded mail often carries other mails as attachments, each with the PDF we
+// actually want. Without unwrapping, the pipeline sees one .eml and finds no payslip.
+// Recursion is depth-limited: a mail can contain a mail containing a mail.
+
+const EML_RE = /\.eml$/i;
+const MSG_RE = /\.msg$/i;
+const isEmlLike = (name, mime) =>
+  EML_RE.test(name || '') || /message\/rfc822/i.test(mime || '');
+const isMsgLike = (name, mime) =>
+  MSG_RE.test(name || '') || /application\/vnd\.ms-outlook/i.test(mime || '');
+
+/** → [{ filename, mimeType, content: ArrayBuffer, via }] with containers expanded. */
+async function expandAttachments(items, depth = 0) {
+  if (depth > 3) return [];
+  const out = [];
+
+  for (const a of items) {
+    const name = a.filename || '';
+    const mime = a.mimeType || a.content_type || '';
+    const buf = a.content instanceof ArrayBuffer
+      ? a.content
+      : a.content?.buffer?.slice(a.content.byteOffset, a.content.byteOffset + a.content.byteLength)
+        ?? a.content;
+
+    if (isEmlLike(name, mime)) {
+      try {
+        const { default: PostalMime } = await import('postal-mime');
+        const inner = await new PostalMime().parse(buf);
+        const nested = await expandAttachments(inner.attachments || [], depth + 1);
+        out.push(...nested.map((n) => ({ ...n, via: `${name} › ${n.via || n.filename}` })));
+        continue;
+      } catch (err) {
+        console.warn('eml_parse_failed', name, String(err?.message || err));
+      }
+    }
+
+    if (isMsgLike(name, mime)) {
+      try {
+        const { default: MsgReader } = await import('@kenjiuno/msgreader');
+        const reader = new MsgReader(buf);
+        const info = reader.getFileData();
+        const inner = [];
+        for (const att of info.attachments || []) {
+          const data = reader.getAttachment(att);
+          inner.push({
+            filename: data.fileName || att.fileName || 'attachment',
+            mimeType: '', content: data.content?.buffer ?? data.content,
+          });
+        }
+        const nested = await expandAttachments(inner, depth + 1);
+        out.push(...nested.map((n) => ({ ...n, via: `${name} › ${n.via || n.filename}` })));
+        continue;
+      } catch (err) {
+        console.warn('msg_parse_failed', name, String(err?.message || err));
+      }
+    }
+
+    out.push({ filename: name || 'attachment', mimeType: mime, content: buf, via: name });
+  }
+  return out;
+}
+
+const isIngestable = (name, mime) =>
+  /pdf/i.test(mime || '') || /\.pdf$/i.test(name || '')
+  || isSpreadsheet(name, mime)
+  || /^image\//i.test(mime || '') || /\.(jpe?g|png|webp|heic)$/i.test(name || '');
+
+// ---------------------------------------------------------------------------
 // Inbound email — payslips arriving automatically
 // ---------------------------------------------------------------------------
 //
@@ -2633,8 +2971,8 @@ async function handleInboundEmail(message, env, ctx) {
     return message.setReject('Sender not permitted');
   }
 
-  const pdfs = (parsed.attachments || []).filter(
-    (a) => /pdf/i.test(a.mimeType || '') || /\.pdf$/i.test(a.filename || ''));
+  const expanded = await expandAttachments(parsed.attachments || []);
+  const pdfs = expanded.filter((a) => isIngestable(a.filename, a.mimeType));
   if (!pdfs.length) {
     await log('alert', 'inbound: no pdf attachment',
       { from: origin.matched, subject: parsed.subject, attachments: (parsed.attachments || []).length });
@@ -2642,10 +2980,11 @@ async function handleInboundEmail(message, env, ctx) {
   }
 
   const results = [];
-  for (const att of pdfs.slice(0, 5)) {
+  for (const att of pdfs.slice(0, 10)) {
     try {
-      results.push(await ingestPdfBuffer(env, att.content, att.filename || 'payslip.pdf',
-                                         { via: 'email', sender: origin.matched, subject: parsed.subject }));
+      results.push({ ...(await ingestPdfBuffer(env, att.content, att.filename || 'payslip.pdf',
+                       { via: 'email', sender: origin.matched, subject: parsed.subject,
+                         mime: att.mimeType })), source: att.via });
     } catch (err) {
       results.push({ filename: att.filename, ok: false, error: String(err?.message || err) });
     }
@@ -2800,23 +3139,42 @@ async function processResendEmail(env, emailId, data) {
   ) || matched;
 
   const list = await resendGet(env, `/emails/receiving/${emailId}/attachments`);
-  const pdfs = (list.data || list.attachments || [])
-    .filter((a) => /pdf/i.test(a.content_type || '') || /\.pdf$/i.test(a.filename || ''));
-  if (!pdfs.length) {
-    await log('alert', 'resend inbound: no pdf attachment', { from: origin, subject });
+  const all = list.data || list.attachments || [];
+  if (!all.length) {
+    await log('alert', 'resend inbound: no attachments', { from: origin, subject });
     return;
   }
 
-  const results = [];
-  for (const att of pdfs.slice(0, 5)) {
+  // Download everything first — .eml/.msg containers have to be opened before we can
+  // tell whether there is anything ingestable inside them.
+  const downloaded = [];
+  for (const att of all.slice(0, 20)) {
     try {
       const meta = await resendGet(env, `/emails/receiving/${emailId}/attachments/${att.id}`);
       const url = meta.download_url || meta.downloadUrl || meta.url;
       if (!url) throw new Error('no_download_url');
       const bin = await fetch(url, { signal: AbortSignal.timeout(60_000) });
       if (!bin.ok) throw new Error(`download_${bin.status}`);
-      results.push(await ingestPdfBuffer(env, await bin.arrayBuffer(),
-        att.filename || 'payslip.pdf', { via: 'resend', sender: origin, subject }));
+      downloaded.push({ filename: att.filename || 'attachment',
+                        mimeType: att.content_type || '', content: await bin.arrayBuffer() });
+    } catch (err) {
+      console.warn('attachment_download_failed', att.filename, String(err?.message || err));
+    }
+  }
+
+  const expanded = await expandAttachments(downloaded);
+  const usable = expanded.filter((a) => isIngestable(a.filename, a.mimeType));
+  if (!usable.length) {
+    await log('alert', 'resend inbound: nothing ingestable',
+      { from: origin, subject, saw: expanded.map((a) => a.via || a.filename).slice(0, 10) });
+    return;
+  }
+
+  const results = [];
+  for (const att of usable.slice(0, 10)) {
+    try {
+      results.push({ ...(await ingestPdfBuffer(env, att.content, att.filename,
+        { via: 'resend', sender: origin, subject })), source: att.via });
     } catch (err) {
       results.push({ filename: att.filename, ok: false, error: String(err?.message || err) });
     }
@@ -2864,18 +3222,44 @@ async function ingestPdfBuffer(env, bytes, filename, meta = {}) {
   const now = new Date();
   const safeName = filename.replace(/[^\w.\-֐-׿]/g, '_').slice(0, 120);
   const r2Key = `docs/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, '0')}/${docId}-${safeName}`;
+  const sheet = isSpreadsheet(filename, meta.mime);
+  const mimeType = sheet ? (meta.mime || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    : /\.(jpe?g|png|webp)$/i.test(filename) ? `image/${filename.split('.').pop().replace('jpg', 'jpeg')}`
+    : 'application/pdf';
 
   await env.DOCS_BUCKET.put(r2Key, buffer, {
-    httpMetadata: { contentType: 'application/pdf' },
+    httpMetadata: { contentType: mimeType },
     customMetadata: { docId, originalName: filename, sha256: hash, via: meta.via || 'upload' },
   });
   await env.DB.prepare(
     `INSERT INTO documents (id, r2_key, filename, mime, size_bytes, sha256, doc_type, status)
      VALUES (?,?,?,?,?,?,'unknown','pending')`,
-  ).bind(docId, r2Key, filename, 'application/pdf', buffer.byteLength, hash).run();
+  ).bind(docId, r2Key, filename, mimeType, buffer.byteLength, hash).run();
+
+  // A bank export arriving by mail takes the deterministic importer, not vision.
+  if (sheet) {
+    try {
+      const { rows, sheetName } = parseSheet(buffer, filename);
+      const mapping = await mapSheetColumns(env, rows);
+      const stats = await importTransactions(env, docId, rows, mapping);
+      await env.DB.prepare(
+        `UPDATE documents SET status='extracted', doc_type='unknown', doc_kind='bank_statement',
+                extracted_json=?, processed_at=datetime('now') WHERE id=?`,
+      ).bind(JSON.stringify({ sheet: sheetName, mapping, stats }), docId).run();
+      return { filename, ok: true, id: docId, doc_type: 'bank_statement',
+               inserted: stats.inserted, duplicates: stats.duplicates_ignored,
+               duplicate: stats.inserted === 0, decryption };
+    } catch (err) {
+      const m = String(err?.message || err);
+      await env.DB.prepare(
+        "UPDATE documents SET status='failed', error=?, processed_at=datetime('now') WHERE id=?",
+      ).bind(m.slice(0, 500), docId).run();
+      return { filename, ok: false, id: docId, stored: true, error: 'spreadsheet_import_failed', detail: m };
+    }
+  }
 
   try {
-    const extracted = await geminiExtract(env, { base64: toBase64(buffer), mimeType: 'application/pdf' });
+    const extracted = await geminiExtract(env, { base64: toBase64(buffer), mimeType });
     const r = await persistExtraction(env, docId, extracted, null);
     await env.DB.prepare(
       `UPDATE documents SET status='extracted', doc_type=?, doc_kind=?, period=?, extracted_json=?,
@@ -3127,6 +3511,12 @@ export default {
       const taskContacts = /^\/api\/tasks\/([\w-]+)\/contacts(?:\/([\w-]+))?$/.exec(url.pathname);
       if (taskContacts) {
         return withCors(await handleTaskContacts(request, env, taskContacts[1], taskContacts[2]));
+      }
+      if (url.pathname === '/api/receipts/parse' && request.method === 'POST') {
+        return withCors(await handleReceiptParse(request, env));
+      }
+      if (/^\/api\/receipts(\/[\w-]+(\/(confirm|reject|file))?)?$/.test(url.pathname)) {
+        return withCors(await handleReceipts(request, env, url));
       }
       if (/^\/api\/contacts(\/[\w-]+)?$/.test(url.pathname)) {
         return withCors(await handleContacts(request, env, url));
