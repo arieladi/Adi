@@ -5286,7 +5286,11 @@ async function ingestPdfBuffer(env, bytes, filename, meta = {}) {
   }
 
   let decryption = null;
-  if (detectPdfEncryption(buffer)) {
+  // meta.decrypted lets a caller that has already decrypted say so. Belt and braces beside
+  // the routeIngestItem fix: because decryptPdf leaves /Encrypt in place, "looks encrypted"
+  // is not the same as "is still encrypted", and a second RC4 pass silently restores the
+  // ciphertext instead of failing loudly.
+  if (!meta.decrypted && detectPdfEncryption(buffer)) {
     if (!env.PDF_PASS) return { filename, ok: false, error: 'no_pdf_pass_secret' };
     const res = decryptPdf(buffer, env.PDF_PASS);
     decryption = res.ok ? { ok: true, cipher: `RC4-${res.bits}` } : { ok: false, error: res.error };
@@ -5396,7 +5400,22 @@ async function processPendingDocuments(env, limit = 3, budgetMs = DRAIN_BUDGET_M
       }
       const obj = await env.DOCS_BUCKET.get(d.r2_key);
       if (!obj) throw new Error('object_missing');
-      const buffer = await obj.arrayBuffer();
+      let buffer = await obj.arrayBuffer();
+
+      // Repair pass. Two kinds of stored object still look encrypted here:
+      //   · one the old pipeline stored before decrypting, and
+      //   · one the queue DOUBLE-decrypted, where RC4 twice restored the ciphertext.
+      // Both are unreadable to the model (confidence 0, blank page) and unreadable in the
+      // document viewer. Decrypting once fixes either, and the plaintext is written BACK to
+      // R2 so the preview works too — an artefact nobody can read is not worth keeping.
+      if (detectPdfEncryption(buffer) && env.PDF_PASS) {
+        const dec = decryptPdf(buffer, env.PDF_PASS);
+        if (dec.ok) {
+          buffer = dec.bytes.buffer;
+          await env.DOCS_BUCKET.put(d.r2_key, buffer, {
+            httpMetadata: { contentType: d.mime || 'application/pdf' } });
+        }
+      }
 
       if (isSpreadsheet(d.filename, d.mime)) {
         const { rows, sheetName } = parseSheet(buffer, d.filename);
@@ -5647,16 +5666,25 @@ async function routeIngestItem(env, item, rawBuffer) {
              result: { ok: true, skipped: 'not_a_document' } };
   }
 
-  let buffer = rawBuffer;
-  // Decrypt before classifying — a locked payslip shows the model nothing at all.
+  // Decrypt a COPY for the classifier only — a locked payslip shows the model nothing.
+  //
+  // The copy is the whole point. decryptPdf does NOT neutralise the /Encrypt reference, so
+  // an already-decrypted file still reports as encrypted; handing it on meant
+  // ingestPdfBuffer decrypted it a SECOND time, and RC4 twice restores the ciphertext. The
+  // result stored and extracted cleanly with every stream corrupted: a structurally valid
+  // PDF whose 6 Flate streams no longer inflate, a blank page, and confidence 0 from the
+  // model. `rawBuffer` therefore goes downstream untouched and ingestPdfBuffer keeps sole
+  // ownership of decryption, exactly as it had before this queue existed.
+  let classifyBuffer = rawBuffer;
   let decryption = null;
-  if (detectPdfEncryption(buffer)) {
+  if (detectPdfEncryption(rawBuffer)) {
     if (!env.PDF_PASS) throw new Error('no_pdf_pass_secret');
-    const res = decryptPdf(buffer, env.PDF_PASS);
+    const res = decryptPdf(rawBuffer, env.PDF_PASS);
     decryption = res.ok ? { ok: true, cipher: `RC4-${res.bits}` } : { ok: false, error: res.error };
     if (!res.ok) throw new Error(`decrypt_failed: ${res.error}`);
-    buffer = res.bytes.buffer;
+    classifyBuffer = res.bytes.buffer;
   }
+  const buffer = rawBuffer;   // what every downstream writer receives
 
   const ingestMeta = { via: item.source === 'expand' ? 'resend' : item.source,
                        sender: item.sender, subject: item.subject, mime: item.mime };
@@ -5674,7 +5702,7 @@ async function routeIngestItem(env, item, rawBuffer) {
     : (item.mime && /^image\//i.test(item.mime) ? item.mime
       : `image/${(item.filename.split('.').pop() || 'jpeg').toLowerCase().replace('jpg', 'jpeg')}`);
 
-  const verdict = await classifyDocument(env, { base64: toBase64(buffer), mimeType: mime });
+  const verdict = await classifyDocument(env, { base64: toBase64(classifyBuffer), mimeType: mime });
   const cls = String(verdict?.class || 'other');
 
   // "other" means the model looked and saw no financial document. Skipping is recorded,
@@ -5690,8 +5718,9 @@ async function routeIngestItem(env, item, rawBuffer) {
     // One call did both jobs; only fall back to the dedicated prompt if it withheld the fields.
     const ex = verdict.receipt && typeof verdict.receipt === 'object'
       ? { ...verdict.receipt, confidence: verdict.receipt.confidence ?? verdict.confidence }
-      : await geminiCallJson(env, RECEIPT_PROMPT, { base64: toBase64(buffer), mimeType: mime });
-    const staged = await stageReceiptRow(env, buffer, item.filename, mime, ex,
+      : await geminiCallJson(env, RECEIPT_PROMPT, { base64: toBase64(classifyBuffer), mimeType: mime });
+    // A receipt is stored as-is with no later decryption step, so it keeps the readable copy.
+    const staged = await stageReceiptRow(env, classifyBuffer, item.filename, mime, ex,
                                         { via: item.source });
     return { classified_as: 'receipt', receipt_id: staged.id || null,
              result: { ...staged, why: verdict.why, decryption } };
