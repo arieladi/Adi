@@ -68,13 +68,10 @@ ALLOWED_ORIGINS = "https://adiariel.com,https://www.adiariel.com,https://arielad
 MAIL_FROM = "Adi Hub <office@adiariel.com>"
 MAIL_TO = "adidatabase@gmail.com"
 
-# Ceiling for ONE payslip's net, in agorot. Above this a row is not treated as salary —
-# it is almost always a gross figure, a year-to-date total, or an aggregate kibbutz report
-# read as a single payslip, and averaging those in is what produced a "₪41,645 salary".
-# Adi's actual net is ~₪12,000, corroborated by the bank deposits (₪11,819-₪12,831), so this
-# sits just above it. Raise it if his real pay rises; it is a var precisely so that is a
-# one-line change and not a deploy of new logic.
-SALARY_NET_CEILING = 1300000
+# NOTE: there is deliberately NO salary ceiling here any more. A hard limit cannot tell a real
+# bonus from a misread gross, and it quarantined legitimate high months. A questionable payslip
+# is now detected from the document's OWN arithmetic (gross − deductions ≈ net) and STAGED for
+# confirmation through the finance command line — see migration 0016.
 
 # --- Microsoft Graph / Office 365 calendar ---------------------------------
 # The IDs and the secret are SECRETS, not vars — see the list at the bottom of this file.

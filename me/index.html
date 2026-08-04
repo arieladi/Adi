@@ -367,6 +367,8 @@ html[lang=he] #drawer label{letter-spacing:.02em}
 .chatbar input{flex:1}
 .chatans{font-size:.9rem;line-height:1.65;margin-bottom:10px;white-space:pre-wrap}
 .chatans strong{color:var(--c1)}
+.chatchip{display:flex;gap:9px;align-items:center;margin-bottom:9px}
+.chatchip img{height:52px;border-radius:8px;border:1px solid var(--line-2)}
 .chatmeta{font-family:var(--mono);font-size:.67rem;color:var(--muted);margin-top:8px;direction:ltr;text-align:start}
 
 /* ---------- agent widget ---------- */
@@ -491,6 +493,13 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
           </div>
           <div class="uplog" id="uplog"></div>
         </section>
+        <!-- Payslips whose own arithmetic did not close, or which are far above Adi's usual.
+             Staged, never hidden: the numbers below exclude them until he answers. -->
+        <section class="card agent" id="incomeReviewCard" hidden>
+          <h2><em data-i18n="finReview" style="font-style:normal">תלושים לאישור</em>
+            <span class="badge warn" id="finReviewCount">0</span></h2>
+          <div id="incomeReview"></div>
+        </section>
         <section class="card">
           <h2 data-i18n="cashflow">תזרים חודשי</h2>
           <div id="monthly"><div class="empty" data-i18n="noRecords">אין עדיין רשומות.</div></div>
@@ -521,7 +530,7 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
     </div>
     <div class="chatbar" data-chat="finance">
       <div class="chatans" hidden></div>
-      <form><input type="text" data-i18n-ph="askFinance" placeholder="שאל על הכספים שלך…"><button class="btn" type="submit" data-i18n="ask">שאל</button></form>
+      <form><input type="text" data-i18n-ph="askFinance" placeholder="הדבק תלוש או קבלה, או שאל על הכספים…"><button class="btn" type="submit" data-i18n="ask">שאל</button></form>
       <div class="chatmeta" hidden></div>
     </div>
     </div><!-- /#finDash -->
@@ -661,16 +670,9 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
          Paste is bound to THIS input, not the page. -->
     <div class="chatbar" data-chat="calendar">
       <div class="chatans" hidden></div>
-      <div id="calImgChip" hidden style="margin-bottom:9px;display:flex;gap:9px;align-items:center">
-        <img id="calImgThumb" style="height:52px;border-radius:8px;border:1px solid var(--line-2)">
-        <span class="badge" id="calImgName"></span>
-        <button class="btn ghost sm" id="calImgClear" type="button">✕</button>
-      </div>
       <form>
         <input type="text" data-i18n-ph="calChatPh"
                placeholder="הדבק כאן תמונה של הזמנה (⌘V), או שאל על היומן…">
-        <input type="file" id="calChatImage" accept="image/*,application/pdf" hidden>
-        <button class="btn ghost" id="calChatImgBtn" type="button" title="תמונה">🖼</button>
         <button class="btn" type="submit" data-i18n="ask">שאל</button>
       </form>
       <div class="chatmeta" hidden></div>
@@ -816,18 +818,11 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
     </div>
     <div class="chatbar" data-chat="contacts">
       <div class="chatans" hidden></div>
-      <div id="imgChip" hidden style="margin-bottom:9px;display:flex;gap:9px;align-items:center">
-        <img id="imgThumb" style="height:52px;border-radius:8px;border:1px solid var(--line-2)">
-        <span class="badge" id="imgName"></span>
-        <button class="btn ghost sm" id="imgClear">✕</button>
-      </div>
       <div class="noteActions" id="planBox" hidden style="margin-bottom:10px">
         <button class="btn sm" id="planApply" data-i18n="planApply">אשר ובצע</button>
         <button class="btn ghost sm" id="planCancel" data-i18n="cancel">בטל</button>
       </div>
       <form><input type="text" data-i18n-ph="askContacts" placeholder="מה תרצה שנשנה באנשי הקשר?">
-        <input type="file" id="chatImage" accept="image/*" hidden>
-        <button class="btn ghost" id="chatImgBtn" type="button" title="תמונה">🖼</button>
         <button class="btn" type="submit" data-i18n="ask">שאל</button></form>
       <div class="chatmeta" hidden></div>
     </div>
@@ -1144,6 +1139,20 @@ const I18N = {
     // calendar AI command line
     calChatPh:'הדבק כאן תמונה של הזמנה (⌘V), או שאל על היומן…',
     calReadonly:'מצב שאלות — כדי להוסיף אירוע, הדבק הזמנה',
+    // AI command line + staged payslips
+    chatNoDocs:'הסוכן בלשונית הזו לא קורא מסמכים — נסה בכספים או ביומן.',
+    chatAttachTitle:'צרף מסמך או תמונה',
+    finNeedsAnswer:'ממתין לתשובה שלך',
+    finReview:'תלושים לאישור',
+    finQArith1:'קראתי תלוש ל-', finQArith2:'עם נטו', finQArith3:'אבל החשבון לא מסתדר: ברוטו',
+    finQArith4:'פחות הניכויים לא מגיע לסכום הזה. יכול להיות שקראתי ברוטו או טור מצטבר. מה נכנס לבנק?',
+    finQHigh1:'קראתי תלוש ל-', finQHigh2:'על', finQHigh3:'גבוה מהרגיל. חודש עם בונוס, או שקראתי ברוטו?',
+    finQDup1:'לחודש', finQDup2:'יש שני תלושים, זה על',
+    finQDup3:'ויש עוד אחד באותו חודש. אצל חבר קיבוץ זה תלוש המעסיק מול הדוח הפרטני — שניהם נכונים, אבל רק אחד הוא ההכנסה שלך. איזה סכום נכנס בפועל?',
+    finRealNet:'הנטו האמיתי (₪)', finGross:'ברוטו לפי המסמך',
+    finCorrect:'תקן לסכום הזה', finItsRight:'הסכום נכון', finDiscard:'מחק',
+    finNeedNet:'הזן את הסכום הנכון', finConfirmDiscard:'למחוק את התלוש? הוא לא ייכנס להכנסות.',
+    finConfirmed:'אושר', finDiscarded:'נמחק',
   },
   en: {
     hub:'Personal hub', hubTitle:'Personal hub', signInHint:'Sign in to continue.',
@@ -1306,6 +1315,22 @@ const I18N = {
     // calendar AI command line
     calChatPh:'Paste an invitation here, or ask about the calendar…',
     calReadonly:'Question mode — paste an invitation to add an event',
+    // AI command line + staged payslips
+    chatNoDocs:'This tab\u2019s agent does not read documents — try Finance or Calendar.',
+    chatAttachTitle:'Attach a document or image',
+    finNeedsAnswer:'waiting on your answer',
+    finReview:'Payslips to confirm',
+    finQArith1:'I read a payslip for', finQArith2:'with a net of',
+    finQArith3:'but the arithmetic does not close: gross',
+    finQArith4:'minus the deductions does not reach it. I may have taken a gross or a cumulative column. What landed in the bank?',
+    finQHigh1:'I extracted a payslip for', finQHigh2:'at',
+    finQHigh3:'well above your usual. Is this a bonus month, or did I read the gross?',
+    finQDup1:'Month', finQDup2:'has two payslips — this one at',
+    finQDup3:'and another for the same month. For a kibbutz member that is the employer slip against the member report: both are true, but only one is your income. Which amount reached you?',
+    finRealNet:'Actual net (₪)', finGross:'Gross on the document',
+    finCorrect:'Correct to this', finItsRight:'The amount is right', finDiscard:'Discard',
+    finNeedNet:'Enter the correct amount', finConfirmDiscard:'Discard this payslip? It will not count as income.',
+    finConfirmed:'Confirmed', finDiscarded:'Discarded',
   },
 };
 let lang = localStorage.getItem('adi_lang') || 'he';
@@ -1531,6 +1556,72 @@ function renderKpis(s) {
     <div class="card kpi"><div class="label">${esc(x.label)}</div>
       <div class="val ${x.cls || ''}">${x.val}</div><div class="foot">${esc(x.foot)}</div></div>`).join('');
 }
+// ---- staged payslips (propose-then-confirm for income) ----
+//
+// A payslip whose own arithmetic did not close, or one far above Adi's usual, is staged rather
+// than trusted or hidden. The figures elsewhere on this tab already exclude it, so nothing
+// moves until he answers — here, or by replying in the finance command line.
+function renderIncomeReview() {
+  const pending = (lastSummary?.income?.pending) || [];
+  const card = $('#incomeReviewCard');
+  if (card) card.hidden = !pending.length;
+  $('#finReviewCount').textContent = pending.length;
+  if (!pending.length) { $('#incomeReview').innerHTML = ''; return; }
+
+  $('#incomeReview').innerHTML = pending.map((p) => {
+    const reason = String(p.reason || '');
+    const who = p.who ? ` (${esc(p.who)})` : '';
+    // The question names the specific contradiction, because "please check this" is not
+    // something anyone can act on.
+    const q = /duplicate_period/.test(reason)
+      ? `${t('finQDup1')} <b>${esc(p.period)}</b> ${t('finQDup2')} <b>${esc(ils(p.amount))}</b>${who} — ${t('finQDup3')}`
+      : /arithmetic_mismatch|net_not_below_gross/.test(reason)
+      ? `${t('finQArith1')} ${esc(p.period)}${who} ${t('finQArith2')} ` +
+        `<b>${esc(ils(p.amount))}</b>, ${t('finQArith3')} <b>${esc(ils(p.gross))}</b> ${t('finQArith4')}`
+      : `${t('finQHigh1')} ${esc(p.period)}${who} ${t('finQHigh2')} ` +
+        `<b>${esc(ils(p.amount))}</b> — ${t('finQHigh3')}`;
+    return `<div class="rev" data-inc="${esc(p.id)}">
+      <div class="rq">${q}</div>
+      <div class="rf" style="margin-top:11px">
+        <div><label>${esc(t('finRealNet'))}</label>
+          <input type="text" inputmode="decimal" dir="ltr" data-net
+                 placeholder="${esc(String(Math.round(p.amount / 100)))}"></div>
+        <div><label>${esc(t('finGross'))}</label>
+          <input type="text" dir="ltr" value="${esc(ils(p.gross))}" disabled></div>
+      </div>
+      <div class="noteActions">
+        <button class="btn sm" data-inc-act="correct">${esc(t('finCorrect'))}</button>
+        <button class="btn ghost sm" data-inc-act="confirm">${esc(t('finItsRight'))}</button>
+        <button class="btn danger sm" data-inc-act="reject">${esc(t('finDiscard'))}</button>
+        <span class="badge">${esc(String(p.reason || '').split(':')[0])}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+$('#incomeReview').addEventListener('click', async (e) => {
+  const act = e.target.closest('[data-inc-act]');
+  if (!act) return;
+  const box = act.closest('[data-inc]');
+  const id = box.dataset.inc;
+  const kind = act.dataset.incAct;
+  const typed = box.querySelector('[data-net]')?.value.trim();
+  if (kind === 'correct' && !typed) { showToast(t('finNeedNet')); return; }
+  if (kind === 'reject' && !confirm(t('finConfirmDiscard'))) return;
+
+  act.disabled = true;
+  try {
+    const d = await postJson(`/api/income/${id}/review`, {
+      action: kind === 'reject' ? 'reject' : 'confirm',
+      ...(kind === 'correct' ? { net: typed } : {}),
+    });
+    if (d.error) throw new Error(d.error);
+    showToast(kind === 'reject' ? t('finDiscarded') : t('finConfirmed'));
+    await loadFinance();
+    await loadInsights().catch(() => {});
+  } catch (err) { showToast('✕ ' + err.message); act.disabled = false; }
+});
+
 // Numbers, not bars. The stacked bars carried no figures at all — you could see that one
 // month was longer than another and nothing else — and they made a transfer look like pay
 // because everything went into one length.
@@ -1601,7 +1692,7 @@ async function loadFinance() {
   const s = await apiJson('/api/summary');
   lastSummary = s;
   renderKpis(s); renderMonthly(s.monthly); renderCats(s.by_category);
-  renderInv(s.investments); renderStamp(s);
+  renderInv(s.investments); renderIncomeReview(); renderStamp(s);
   $('#apibase').textContent = API ? new URL(API).host : location.host;
 }
 async function loadInsights() {
@@ -2154,66 +2245,192 @@ $('#runAgent').addEventListener('click', async () => {
   } finally { btn.disabled = false; btn.textContent = t('analyse'); }
 });
 
+// ===================== the AI command line (universal) =====================
+//
+// One component, every tab. Each `.chatbar` gets:
+//   · a paste listener ON ITS OWN INPUT — not on the document. A page-level hook is invisible
+//     (nothing tells you where the image went) and it competes with every other paste target.
+//   · an attachment chip, so it is obvious what is about to be sent before you send it,
+//   · a file picker and drag-and-drop onto the bar,
+//   · `context` on every request, naming the active domain, so the backend can pick the right
+//     domain agent instead of guessing from the URL.
+//
+// Files are held per BAR, not per scope: the History tab reuses data-chat="tasks", so two bars
+// can share a scope and must not share an attachment.
+
+// Which domains have an agent that reads documents. Mirrors DOMAIN_AGENTS in the worker; a
+// mismatch shows a hint rather than posting something the backend will not understand.
+const CHAT_DOCS = { finance: true, calendar: true, contacts: true };
+
+const barFile = new WeakMap();
+
+function chatChipRender(bar) {
+  const f = barFile.get(bar);
+  const chip = bar.querySelector('.chatchip');
+  if (!chip) return;
+  chip.hidden = !f;
+  if (!f) return;
+  const img = chip.querySelector('img');
+  const isImg = /^image\//i.test(f.type);
+  img.hidden = !isImg;
+  if (isImg) {
+    const url = URL.createObjectURL(f);
+    img.src = url;
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+  chip.querySelector('.badge').textContent =
+    `${isImg ? '' : '📄 '}${f.name || 'clipboard'} · ${Math.round(f.size / 1024)}KB`;
+}
+
+function chatAttach(bar, file) {
+  const scope = bar.dataset.chat;
+  if (!file) return false;
+  if (!(/^image\//i.test(file.type) || /pdf/i.test(file.type))) return false;
+  if (!CHAT_DOCS[scope]) {
+    const ans = bar.querySelector('.chatans');
+    ans.hidden = false;
+    ans.innerHTML = `<span class="empty">${esc(t('chatNoDocs'))}</span>`;
+    return false;
+  }
+  barFile.set(bar, file);
+  chatChipRender(bar);
+  return true;
+}
+function chatClear(bar) {
+  barFile.delete(bar);
+  chatChipRender(bar);
+  const fi = bar.querySelector('input[type=file]');
+  if (fi) fi.value = '';
+}
+
+function chatBarInit(bar) {
+  const scope = bar.dataset.chat;
+  const form = bar.querySelector('form');
+  const input = form.querySelector('input[type=text]');
+  const submit = form.querySelector('button[type=submit]');
+
+  const chip = document.createElement('div');
+  chip.className = 'chatchip';
+  chip.hidden = true;
+  chip.innerHTML = '<img alt=""><span class="badge"></span>' +
+                   '<button class="btn ghost sm" type="button" data-chipclear>✕</button>';
+  bar.insertBefore(chip, form);
+  chip.querySelector('[data-chipclear]').addEventListener('click', () => chatClear(bar));
+
+  if (CHAT_DOCS[scope]) {
+    const file = document.createElement('input');
+    file.type = 'file';
+    file.hidden = true;
+    file.accept = 'image/*,application/pdf,.pdf';
+    file.addEventListener('change', () => { chatAttach(bar, file.files?.[0]); });
+    const pick = document.createElement('button');
+    pick.type = 'button';
+    pick.className = 'btn ghost';
+    pick.textContent = '🖼';
+    pick.title = t('chatAttachTitle');
+    pick.addEventListener('click', () => file.click());
+    form.insertBefore(pick, submit);
+    form.appendChild(file);
+  }
+
+  // Paste on the input, and on the bar for a click that landed just outside it. A text paste
+  // is never intercepted — only a clipboard entry that is actually a file.
+  for (const target of [input, bar]) {
+    target.addEventListener('paste', (e) => {
+      const files = [...(e.clipboardData?.items || [])]
+        .filter((i) => i.kind === 'file').map((i) => i.getAsFile()).filter(Boolean);
+      if (!files.length) return;
+      if (chatAttach(bar, files[0])) { e.preventDefault(); input.focus(); }
+    });
+  }
+  bar.addEventListener('dragover', (e) => { e.preventDefault(); bar.style.borderColor = 'var(--c2)'; });
+  bar.addEventListener('dragleave', () => { bar.style.borderColor = ''; });
+  bar.addEventListener('drop', (e) => {
+    e.preventDefault();
+    bar.style.borderColor = '';
+    if (e.dataTransfer?.files?.length) chatAttach(bar, e.dataTransfer.files[0]);
+  });
+}
+
 // ===================== chat bars =====================
 for (const bar of $$('.chatbar')) {
   const scope = bar.dataset.chat;
+  chatBarInit(bar);
   bar.querySelector('form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = bar.querySelector('input');
     const q = input.value.trim();
-    if (!q && !(scope === 'contacts' && chatImageFile) && !(scope === 'calendar' && calChatFile)) return;
+    if (!q && !barFile.get(bar)) return;
     const ans = bar.querySelector('.chatans'), meta = bar.querySelector('.chatmeta');
     const btn = bar.querySelector('button');
     ans.hidden = false; ans.innerHTML = '<span class="spin"></span>';
     meta.hidden = true; btn.disabled = true;
     try {
-      if (scope === 'calendar') {
-        // The domain agent: an image is an invitation, text answers whatever the last one
-        // left open, and with nothing open it answers questions without writing.
-        let d;
-        if (calChatFile) {
-          const fd = new FormData();
-          fd.append('message', q); fd.append('lang', lang);
-          fd.append('image', calChatFile);
-          d = await apiJson('/api/chat/calendar', { method: 'POST', body: fd });
-          clearCalImage();
-        } else {
-          d = await postJson('/api/chat/calendar', { message: q, lang });
+      // One request shape for every domain: multipart when something is attached, JSON
+      // otherwise, and `context` on both so the backend picks the right domain agent.
+      const attached = barFile.get(bar);
+      const send = (path, extra = {}) => {
+        if (!attached) return postJson(path, { message: q, lang, context: scope, ...extra });
+        const fd = new FormData();
+        fd.append('message', q);
+        fd.append('lang', lang);
+        fd.append('context', scope);
+        fd.append('image', attached);
+        for (const [k, v] of Object.entries(extra)) {
+          fd.append(k, typeof v === 'string' ? v : JSON.stringify(v));
         }
+        return apiJson(path, { method: 'POST', body: fd });
+      };
+
+      if (scope === 'calendar') {
+        const d = await send('/api/chat/calendar');
+        chatClear(bar);
         ans.innerHTML = d.answer ? md(d.answer)
           : `<span class="empty">${esc(d.detail || d.error || '—')}</span>`;
         if ((d.options || []).length > 1) {
           ans.innerHTML += `<div class="cw" style="margin-top:8px">${esc(t('calWhichOption'))} ${
             d.options.map((o) => esc(o.label || '')).filter(Boolean).join(' · ')}</div>`;
         }
-        if (d.readonly) {
-          meta.hidden = false;
-          meta.textContent = t('calReadonly');
-        }
+        if (d.readonly) { meta.hidden = false; meta.textContent = t('calReadonly'); }
         input.value = '';
         btn.disabled = false;
-        // The review card is where the fields and the confirm button live, so pull it fresh
-        // and take him to it — the answer above is a prompt to act, not the end of the flow.
+        // The review card holds the fields and the confirm button, so refresh it and take him
+        // there — the answer above is a prompt to act, not the end of the flow.
         await loadCalendar().catch(() => {});
         if (d.event_id) {
           $(`.cev[data-id="${d.event_id}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
         }
         return;
       }
-      if (scope === 'contacts') {
-        const img = chatImageFile;
-        let d;
-        if (img) {
-          const fd = new FormData();
-          fd.append('message', q); fd.append('lang', lang);
-          fd.append('selected', JSON.stringify([...selectedContacts]));
-          fd.append('image', img);
-          d = await apiJson('/api/chat/contacts', { method: 'POST', body: fd });
-          clearChatImage();
-        } else {
-          d = await postJson('/api/chat/contacts',
-            { message: q, lang, selected: [...selectedContacts] });
+
+      if (scope === 'finance') {
+        const d = await send('/api/chat/finance');
+        chatClear(bar);
+        ans.innerHTML = d.answer ? md(d.answer)
+          : `<span class="empty">${esc(d.detail || d.error || '—')}</span>`;
+        if (d.needs_answer) {
+          meta.hidden = false;
+          meta.textContent = t('finNeedsAnswer');
+        } else if (d.routed) {
+          meta.hidden = false;
+          meta.textContent = `→ ${d.routed}${d.model ? ' · ' + String(d.model).replace('@cf/', '') : ''}` +
+            ` · ${d.est_tokens} tok`;
         }
+        input.value = '';
+        btn.disabled = false;
+        // An ingest or a resolved payslip both move the numbers, so pull them fresh.
+        if (d.ingested || d.resolved) {
+          await loadFinance().catch(() => {});
+          await loadInsights().catch(() => {});
+          if (!$('#finReceipts').hidden) await loadStaged().catch(() => {});
+        }
+        renderIncomeReview();
+        return;
+      }
+
+      if (scope === 'contacts') {
+        const d = await send('/api/chat/contacts', { selected: [...selectedContacts] });
+        chatClear(bar);
         pendingPlan = d.actions?.length ? d.actions : null;
         const lines = (d.actions || []).map((a) =>
           `• ${a.op} — ${esc(a.display_name || a.value || '')}`).join('<br>');
@@ -2221,13 +2438,14 @@ for (const bar of $$('.chatbar')) {
           (lines ? `<div class="cw" style="margin-top:8px">${lines}</div>` : '') +
           ((d.unmatched || []).length ? `<div class="cw" style="margin-top:6px;color:var(--warn)">? ${
             d.unmatched.map(esc).join(', ')}</div>` : '');
-        // Nothing is written until this button is pressed.
         $('#planBox').hidden = !pendingPlan;
         input.value = '';
         btn.disabled = false;
         return;
       }
-      const d = await postJson(`/api/chat/${scope}`, { message: q, lang });
+
+      const d = await send(`/api/chat/${scope}`);
+      chatClear(bar);
       ans.innerHTML = d.answer ? md(d.answer) : `<span class="empty">${esc(d.detail || d.error || '—')}</span>`;
       if (d.routed) {
         meta.hidden = false;
@@ -2484,59 +2702,6 @@ $('#gSync').addEventListener('click', async () => {
 
 
 
-// ---- image into the contacts chat: paste, drop, or picker ----
-// A file input alone is not how anyone actually moves a screenshot — Cmd+V is.
-let chatImageFile = null;
-
-function setChatImage(file) {
-  if (!file || !/^image\//.test(file.type)) return false;
-  chatImageFile = file;
-  const url = URL.createObjectURL(file);
-  $('#imgThumb').src = url;
-  $('#imgName').textContent = `${file.name || 'clipboard'} · ${Math.round(file.size / 1024)}KB`;
-  $('#imgChip').hidden = false;
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  return true;
-}
-function clearChatImage() {
-  chatImageFile = null;
-  $('#imgChip').hidden = true;
-  if ($('#chatImage')) $('#chatImage').value = '';
-}
-$('#imgClear')?.addEventListener('click', clearChatImage);
-$('#chatImage')?.addEventListener('change', (e) => setChatImage(e.target.files?.[0]));
-
-// Document-level paste, but only while the Contacts tab is open — otherwise a paste
-// into the task box or note editor would be hijacked.
-document.addEventListener('paste', (e) => {
-  if ($('#viewContacts')?.hidden) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'TEXTAREA') return;
-  for (const item of e.clipboardData?.items || []) {
-    if (item.type.startsWith('image/')) {
-      const f = item.getAsFile();
-      if (f && setChatImage(f)) {
-        e.preventDefault();
-        [...$$('.chatbar')].find((b) => b.dataset.chat === 'contacts')
-          ?.querySelector('input[type=text]')?.focus();
-      }
-      return;
-    }
-  }
-});
-
-// Drag a screenshot straight onto the bar.
-const cbar = [...$$('.chatbar')].find((b) => b.dataset.chat === 'contacts');
-if (cbar) {
-  cbar.addEventListener('dragover', (e) => { e.preventDefault(); cbar.style.borderColor = 'var(--c2)'; });
-  cbar.addEventListener('dragleave', () => { cbar.style.borderColor = ''; });
-  cbar.addEventListener('drop', (e) => {
-    e.preventDefault(); cbar.style.borderColor = '';
-    setChatImage(e.dataTransfer?.files?.[0]);
-  });
-}
-
-$('#chatImgBtn')?.addEventListener('click', () => $('#chatImage').click());
 $('#planCancel')?.addEventListener('click', () => { pendingPlan = null; $('#planBox').hidden = true; });
 $('#planApply')?.addEventListener('click', async () => {
   if (!pendingPlan) return;
@@ -3089,63 +3254,6 @@ calZone.addEventListener('drop', (e) => {
   $('#calDrop').classList.remove('over');
   if (e.dataTransfer?.files?.length) uploadInvites([...e.dataTransfer.files]);
 });
-
-// ---- the calendar AI command line ----
-//
-// Paste is bound to THIS input, not to the page: a document-level hook is invisible (nothing
-// tells you where the image went) and it competes with every other paste target. Pasting
-// into the box shows a thumbnail chip first, so it is obvious what is about to be sent.
-let calChatFile = null;
-
-function setCalImage(file) {
-  if (!file || !(/^image\//i.test(file.type) || /pdf/i.test(file.type))) return false;
-  calChatFile = file;
-  const isPdf = /pdf/i.test(file.type);
-  $('#calImgThumb').hidden = isPdf;
-  if (!isPdf) {
-    const url = URL.createObjectURL(file);
-    $('#calImgThumb').src = url;
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  }
-  $('#calImgName').textContent =
-    `${isPdf ? '📄 ' : ''}${file.name || 'clipboard'} · ${Math.round(file.size / 1024)}KB`;
-  $('#calImgChip').hidden = false;
-  return true;
-}
-function clearCalImage() {
-  calChatFile = null;
-  $('#calImgChip').hidden = true;
-  $('#calChatImage').value = '';
-}
-$('#calImgClear').addEventListener('click', clearCalImage);
-$('#calChatImgBtn').addEventListener('click', () => $('#calChatImage').click());
-$('#calChatImage').addEventListener('change', (e) => setCalImage(e.target.files?.[0]));
-
-const calBar = [...$$('.chatbar')].find((b) => b.dataset.chat === 'calendar');
-const calChatInput = calBar?.querySelector('input[type=text]');
-
-// Bound to the input itself. Works whether he clicks in first or not, because the bar also
-// accepts a paste that lands on it.
-for (const target of [calChatInput, calBar]) {
-  target?.addEventListener('paste', (e) => {
-    const files = [...(e.clipboardData?.items || [])]
-      .filter((i) => i.kind === 'file').map((i) => i.getAsFile())
-      .filter((f) => f && (/^image\//i.test(f.type) || /pdf/i.test(f.type)));
-    if (!files.length) return;          // a normal text paste falls through untouched
-    e.preventDefault();
-    setCalImage(files[0]);
-    calChatInput?.focus();
-  });
-}
-// Dropping onto the bar works too.
-if (calBar) {
-  calBar.addEventListener('dragover', (e) => { e.preventDefault(); calBar.style.borderColor = 'var(--c2)'; });
-  calBar.addEventListener('dragleave', () => { calBar.style.borderColor = ''; });
-  calBar.addEventListener('drop', (e) => {
-    e.preventDefault(); calBar.style.borderColor = '';
-    if (e.dataTransfer?.files?.length) setCalImage(e.dataTransfer.files[0]);
-  });
-}
 
 $('#calRefresh').addEventListener('click', loadCalUpcoming);
 
@@ -3922,7 +4030,7 @@ $('#finSeg').addEventListener('click', (e) => {
 function rerender() {
   if (lastSummary) { renderKpis(lastSummary); renderMonthly(lastSummary.monthly);
                      renderCats(lastSummary.by_category); renderInv(lastSummary.investments);
-                     renderStamp(lastSummary); }
+                     renderIncomeReview(); renderStamp(lastSummary); }
   renderTasks(); renderNotes(); renderContacts();
   renderReceiptTotals(); renderReceipts(); renderReview();
   renderIngest();

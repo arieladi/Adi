@@ -323,11 +323,34 @@ Rules:
   NOT the date it was paid and NOT the date it was printed. Israeli payslips routinely carry
   a print date in the following month; ignore it when choosing the period.
 - All money values are NUMBERS in shekels (₪ / ש"ח), no separators, no currency symbol.
-- Hebrew field hints: ברוטו=gross, נטו=net, מס הכנסה=income_tax, ביטוח לאומי=national_ins,
+- Hebrew field hints: ברוטו=gross, מס הכנסה=income_tax, ביטוח לאומי=national_ins,
   מס בריאות=health_tax, הפרשות עובד=pension_empl, הפרשות מעסיק=pension_emplr,
   יתרה צבורה=balance, תשואה=yield_pct, דמי ניהול=fees_pct, נזיל=liquid_from.
 - A payslip produces ONE income row, not one per line item.
-- If a value is genuinely absent, omit the key. Do not guess.`;
+- If a value is genuinely absent, omit the key. Do not guess.
+
+CRITICAL — "net" IS THE AMOUNT THAT REACHES THE BANK, AND NOTHING ELSE.
+An Israeli payslip prints several large numbers side by side and it is easy to take the
+wrong one. "net" must come from the line that states what is actually transferred:
+    נטו לתשלום · סכום לתשלום · לתשלום · שכר נטו · העברה לבנק · יתרה לתשלום
+That line is normally the LAST money line on the slip, at the bottom.
+
+NEVER use any of these as "net":
+  · ברוטו / סה"כ ברוטו — that is gross, and it belongs in "gross".
+  · מצטבר / סה"כ מצטבר / מ.מצטבר / מתחילת השנה / YTD — a year-to-date CUMULATIVE column.
+    Israeli slips print a monthly column next to a cumulative one; the cumulative is many
+    times larger and is NOT this month. If a figure sits under a heading about the year so
+    far, it is the wrong figure.
+  · סה"כ תשלומים / סה"כ חייב במס — totals BEFORE deductions.
+  · שווי / שווי מעביד — a taxable benefit value, not cash.
+
+SELF-CHECK before you answer, and correct yourself if it fails:
+  · net must be SMALLER than gross. If the number you chose for net is greater than or equal
+    to gross, you have taken a cumulative or a pre-deduction total — go back and find the
+    לתשלום line.
+  · gross minus the deductions you reported should land near net. If it is wildly off, you
+    have mixed a monthly figure with a cumulative one.
+  · An Israeli monthly net is a plausible single month's pay, not a year's worth.`;
 
 async function geminiCall(env, model, { base64, mimeType }) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
@@ -772,11 +795,18 @@ async function persistExtraction(env, docId, data, fallbackPeriod) {
   for (let i = 0; i < upserts.length; i += 50) {
     await env.DB.batch(upserts.slice(i, i + 50));
   }
+  // Inside persistExtraction rather than at each call site, so the upload path, the queue and
+  // the pending-document drainer all stage a questionable payslip identically — there is no
+  // route into `income` that skips the check.
+  const review = await reviewNewIncome(env, docId).catch(
+    (err) => ({ flagged: 0, error: String(err?.message || err) }));
+
   const total = attempted.income + attempted.expenses + attempted.investments;
   return {
     period, is_summary: isSummary,
     counts: attempted,
     inserted,
+    review,
     duplicates: total - inserted,
     // Every row already present, and there was something to insert: this document has
     // been ingested before. Callers surface it in the UI and swallow it over email.
@@ -944,29 +974,25 @@ async function handleUpload(request, env) {
 }
 
 // ---------------------------------------------------------------------------
-// Income classification — salary vs one-off transfers
+// Income classification and review
 // ---------------------------------------------------------------------------
 //
-// `v_monthly.income_net` is the SUM of every uncleared income row, and that is the number
-// that made the insights call a ₪41,645 month "salary". June 2026 was actually:
-//   payslip ₪12,046 + payslip ₪17,780 + a ₪11,819 BANK DEPOSIT of one of those salaries.
-// Three different things, added together.
+// `v_monthly.income_net` is the SUM of every income row, which is what made the insights
+// call a ₪41,645 month "salary". June 2026 was actually a ₪12,046 payslip, a ₪17,780 payslip
+// and the ₪11,819 BANK DEPOSIT of one of those salaries — three different things.
 //
-// Two independent signals separate them, and both are needed:
+// `source_kind` separates the transfer. What separates a MISREAD payslip from a real bonus is
+// not a limit on what Adi may earn — it is the payslip's own arithmetic:
 //
-//  1. `source_kind`. A bank-imported credit is a transfer, full stop. Where it duplicates a
-//     payslip, reconciliation is what clears it (see migration 0012) — until then it must
-//     never be counted as pay.
+//     gross − (income tax + national insurance + health tax + employee pension) ≈ net
 //
-//  2. A CEILING on a single payslip's net. A median alone does not work here: six of ten
-//     payslip rows are inflated (₪16.6k-₪24.7k), so the median is itself ₪16,600 and an
-//     outlier test around it would bless the wrong figure. Adi's actual net is ~₪12,000 —
-//     corroborated independently by the bank deposits, which land at ₪11,819-₪12,831. So the
-//     ceiling is a stated domain fact, kept as a var so it can move without a code change.
+// That identity closed exactly on every דוח_פרטני and failed on every TL_* slip, where the
+// extractor returned net ≈ gross (ratio 0.99) — arithmetically impossible once deductions
+// exist. A document that contradicts itself is a bad read, whatever the amount. A large
+// figure whose arithmetic closes is simply a large month, and gets left alone.
 //
-// A robust MAD test then still runs *below* the ceiling, to catch an anomaly that a fixed
-// threshold would miss.
-const DEFAULT_SALARY_CEILING = 1_300_000;   // agorot — ₪13,000, Adi's ~₪12,000 plus headroom
+// A second, softer signal asks about a figure far above his own history. Neither signal ever
+// hides a row: both stage it as `pending_confirmation` and raise a question in the chat.
 
 const median = (nums) => {
   if (!nums.length) return 0;
@@ -975,65 +1001,192 @@ const median = (nums) => {
   return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
 };
 
-async function incomeBreakdown(env) {
-  const ceiling = Number(env.SALARY_NET_CEILING) > 0
-    ? Number(env.SALARY_NET_CEILING) : DEFAULT_SALARY_CEILING;
+/**
+ * Does a payslip row's own arithmetic close? Returns null when it does, or a reason when the
+ * document contradicts itself. Deliberately knows nothing about how much Adi earns.
+ */
+function payslipArithmetic(row) {
+  const gross = Number(row.gross) || 0;
+  const net = Number(row.net) || 0;
+  if (!gross || !net) return null;                    // nothing to check against
 
+  if (net >= gross) {
+    return { reason: 'net_not_below_gross',
+             detail: `net ${net} is not below gross ${gross}` };
+  }
+  const deductions = ['income_tax', 'national_ins', 'health_tax', 'pension_empl']
+    .reduce((a, k) => a + (Number(row[k]) || 0), 0);
+  if (!deductions) return null;                       // no deductions reported, cannot test
+
+  const expected = gross - deductions;
+  const drift = Math.abs(expected - net);
+  // 3% of gross, floor ₪150. Rounding, a חופשה adjustment or a line the extractor did not
+  // report should pass; taking the wrong column should not.
+  const tolerance = Math.max(15_000, Math.round(gross * 0.03));
+  if (drift > tolerance) {
+    return { reason: 'arithmetic_mismatch',
+             detail: `gross ${gross} − deductions ${deductions} = ${expected}, but net says ${net}` };
+  }
+  return null;
+}
+
+/** The median net of rows already confirmed — the baseline "unusual" is measured against. */
+async function confirmedSalaryMedian(env) {
   const { results } = await env.DB.prepare(
-    `SELECT id, period, source, source_kind, cleared, employer, net, gross
+    `SELECT net FROM income
+      WHERE status='confirmed' AND cleared=0 AND source_kind='payslip' AND net > 0`).all();
+  const nets = (results || []).map((r) => r.net);
+  return { median: median(nets), samples: nets.length };
+}
+
+async function incomeBreakdown(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, period, source, source_kind, cleared, status, review_reason, employer,
+            net, gross, original_net
        FROM income ORDER BY period DESC, net DESC`).all();
   const rows = results || [];
 
-  const classify = (r) => {
-    if (r.cleared) return 'reconciled';                 // already excluded from v_monthly
-    if (r.source_kind === 'bank' || r.source === 'other') return 'transfer';
-    if (!r.net) return 'empty';
-    if (r.net > ceiling) return 'suspect_high';
-    return 'salary';
-  };
-  for (const r of rows) r.kind = classify(r);
-
-  // MAD test among the rows that survived the ceiling: a robust spread measure, so one
-  // extreme value cannot inflate the threshold the way a standard deviation would.
-  const salaryNets = rows.filter((r) => r.kind === 'salary').map((r) => r.net);
-  const med = median(salaryNets);
-  const mad = median(salaryNets.map((n) => Math.abs(n - med)));
-  const madLimit = med + Math.max(4 * mad, Math.round(med * 0.6));
-  if (salaryNets.length >= 4) {
-    for (const r of rows) {
-      if (r.kind === 'salary' && r.net > madLimit) r.kind = 'outlier';
-    }
+  for (const r of rows) {
+    r.kind = r.status === 'pending_confirmation' ? 'pending'
+      : r.status === 'rejected' ? 'rejected'
+      : r.cleared ? 'reconciled'
+      : (r.source_kind === 'bank' || r.source === 'other') ? 'transfer'
+      : !r.net ? 'empty'
+      : 'salary';
   }
 
   const recurring = rows.filter((r) => r.kind === 'salary');
   const byMonth = new Map();
   for (const r of rows) {
     if (!byMonth.has(r.period)) {
-      byMonth.set(r.period, { period: r.period, salary: 0, transfers: 0, excluded: 0, n: 0 });
+      byMonth.set(r.period, { period: r.period, salary: 0, transfers: 0, pending: 0, n: 0 });
     }
     const m = byMonth.get(r.period);
     if (r.kind === 'salary') { m.salary += r.net; m.n++; }
     else if (r.kind === 'transfer') m.transfers += r.net;
-    else if (r.kind === 'suspect_high' || r.kind === 'outlier') m.excluded += r.net;
+    else if (r.kind === 'pending') m.pending += r.net;
   }
 
-  const label = (r) => `${r.period} ${r.employer || '—'}`;
   return {
-    ceiling,
     typical_salary: median(recurring.map((r) => r.net)),
     max_salary: recurring.reduce((a, r) => Math.max(a, r.net), 0),
     months: [...byMonth.values()].sort((a, b) => b.period.localeCompare(a.period)),
     transfers: rows.filter((r) => r.kind === 'transfer')
       .map((r) => ({ period: r.period, who: r.employer, amount: r.net })),
-    // Named separately from transfers because the fix is different: a transfer is real money
-    // in the wrong bucket, a suspect row is probably a bad extraction (a gross, a
-    // year-to-date total, or an aggregate report read as one payslip).
-    suspect: rows.filter((r) => r.kind === 'suspect_high' || r.kind === 'outlier')
-      .map((r) => ({ period: r.period, who: r.employer, amount: r.net, gross: r.gross,
-                     reason: r.kind === 'outlier' ? 'far_above_peers' : 'above_stated_ceiling',
-                     label: label(r) })),
+    // Waiting on an answer, not hidden. The finance agent asks about these by name.
+    pending: rows.filter((r) => r.kind === 'pending')
+      .map((r) => ({ id: r.id, period: r.period, who: r.employer, amount: r.net,
+                     gross: r.gross, original_net: r.original_net,
+                     reason: r.review_reason,
+                     label: `${r.period} ${r.employer || '—'}` })),
     counts: rows.reduce((a, r) => ({ ...a, [r.kind]: (a[r.kind] || 0) + 1 }), {}),
   };
+}
+
+/**
+ * Stage the income rows a document just produced, where they warrant a question. Runs after
+ * persistExtraction, so the rows exist with their doc_id and dedup hash intact.
+ */
+async function reviewNewIncome(env, docId) {
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM income WHERE doc_id=? AND status='confirmed' AND source_kind='payslip'`)
+    .bind(docId).all();
+  const rows = results || [];
+  if (!rows.length) return { flagged: 0 };
+
+  const base = await confirmedSalaryMedian(env);
+  const flagged = [];
+  for (const r of rows) {
+    // 1. Is this month ALREADY covered by a payslip from a different document?
+    //
+    //    This is the real double-count, and it is not a misread. A kibbutz member gets two
+    //    true documents for one month: the employer slip (TL_*, "חברים קיבוץ 172") showing
+    //    what leaves the employer — ₪17,780 for 2026-06 — and the member report
+    //    (דוח_פרטני) showing what actually reaches him, ₪12,046. Counting both gave the
+    //    ₪29,826 month. Only Adi can say which is his income of record, so ask.
+    const twin = await env.DB.prepare(
+      `SELECT i.id, i.net, i.employer, d.filename
+         FROM income i LEFT JOIN documents d ON d.id = i.doc_id
+        WHERE i.period=? AND i.id!=? AND i.source_kind='payslip' AND i.cleared=0
+          AND i.status='confirmed' AND i.doc_id IS NOT i.id AND COALESCE(i.doc_id,'') != ?
+        ORDER BY i.net DESC LIMIT 1`).bind(r.period, r.id, docId).first();
+    let hit = twin
+      ? { reason: 'duplicate_period',
+          detail: `${r.period} already has a payslip of ${twin.net}` +
+                  `${twin.filename ? ` from ${twin.filename}` : ''}; this one says ${r.net}` }
+      : null;
+
+    // 2. Does the document contradict itself? Deterministic, amount-agnostic.
+    if (!hit) hit = payslipArithmetic(r);
+    // 3. Otherwise, is this far above his own history? Only with enough history to judge,
+    //    and it ASKS rather than excludes — a bonus month is a legitimate answer.
+    if (!hit && base.samples >= 5 && base.median > 0 && r.net > Math.round(base.median * 1.8)) {
+      hit = { reason: 'far_above_usual',
+              detail: `net ${r.net} against a usual ${base.median}` };
+    }
+    if (!hit) continue;
+    await env.DB.prepare(
+      `UPDATE income SET status='pending_confirmation', review_reason=?, original_net=net
+        WHERE id=?`).bind(`${hit.reason}: ${hit.detail}`, r.id).run();
+    flagged.push({ id: r.id, period: r.period, employer: r.employer, net: r.net,
+                   reason: hit.reason });
+  }
+  return { flagged: flagged.length, rows: flagged };
+}
+
+/**
+ * Read Adi's free-text reply to a pending-payslip question and act on it.
+ *
+ * Returns null when the reply is plainly not an answer, so the caller falls through and
+ * treats it as an ordinary question. A bare number is handled deterministically — that is the
+ * common case ("12046") and it should never depend on a model round-trip.
+ */
+async function resolveIncomeReviewFromText(env, row, message, lang) {
+  const say = (he, en) => (lang === 'he' ? he : en);
+  const ilsTxt = (a) => `₪${Math.round(a / 100).toLocaleString('en-US')}`;
+
+  // A number on its own, or "נטו 12,046" / "it was 12046" — take it as the correction.
+  const numeric = /(?:^|\s|[:=])(\d{1,3}(?:,\d{3})+|\d{3,6})(?:\.\d+)?\s*(?:₪|ש"ח|nis|shekels?)?\s*$/i
+    .exec(message.trim()) || /^\s*(\d{1,3}(?:,\d{3})+|\d{3,6})(?:\.\d+)?\s*$/.exec(message.trim());
+  if (numeric) {
+    const out = await resolveIncomeReview(env, row.id, { action: 'confirm', net: numeric[1] });
+    return { ok: true, resolved: out,
+             answer: say(`עודכן: ${row.period} — נטו ${ilsTxt(out.net)} (היה ${ilsTxt(out.was)}).`,
+                         `Updated: ${row.period} — net ${ilsTxt(out.net)} (was ${ilsTxt(out.was)}).`) };
+  }
+
+  const CONFIRM = /(בונוס|זה נכון|נכון|אמת|כן זה|אשר|confirm|correct|bonus|that'?s right|yes,? (it|this) is)/i;
+  const REJECT = /(מחק|תמחק|למחוק|תזרוק|לא רלוונטי|delete|discard|remove|throw)/i;
+  if (REJECT.test(message)) {
+    await resolveIncomeReview(env, row.id, { action: 'reject' });
+    return { ok: true, answer: say(`נמחק: ${row.period}. לא ייכנס להכנסות.`,
+                                   `Discarded: ${row.period}. It will not count as income.`) };
+  }
+  if (CONFIRM.test(message)) {
+    const out = await resolveIncomeReview(env, row.id, { action: 'confirm' });
+    return { ok: true, resolved: out,
+             answer: say(`אושר: ${row.period} — ${ilsTxt(out.net)} נכנס להכנסות.`,
+                         `Confirmed: ${row.period} — ${ilsTxt(out.net)} counted as income.`) };
+  }
+  return null;   // not an answer to the question
+}
+
+/** Adi's answer: keep it, correct the figure, or throw the row away. */
+async function resolveIncomeReview(env, id, { action, net }) {
+  const row = await env.DB.prepare('SELECT * FROM income WHERE id=?').bind(id).first();
+  if (!row) return { error: 'not_found' };
+
+  if (action === 'reject') {
+    await env.DB.prepare(
+      "UPDATE income SET status='rejected' WHERE id=?").bind(id).run();
+    return { ok: true, id, status: 'rejected' };
+  }
+  const corrected = net === undefined || net === null || net === '' ? null : toAgorot(net);
+  await env.DB.prepare(
+    `UPDATE income SET status='confirmed', net=COALESCE(?,net),
+            review_reason=NULL WHERE id=?`).bind(corrected, id).run();
+  return { ok: true, id, status: 'confirmed',
+           net: corrected ?? row.net, was: row.original_net ?? row.net };
 }
 
 async function loadSummary(env) {
@@ -2739,6 +2892,122 @@ async function handleReceipts(request, env, url) {
   return json({ error: 'method_not_allowed' }, 405);
 }
 
+// ===========================================================================
+// DOMAIN AGENT PROMPTS — one per tab, edit independently
+// ===========================================================================
+//
+// Each tab's AI command line is its own agent with its own system prompt. They are collected
+// here, side by side and NOT shared, precisely so one can be retrained without disturbing
+// another: tightening how the finance agent interrogates a payslip must not change how the
+// calendar agent reads a flyer.
+//
+// The contract every domain honours:
+//   · it may ingest a pasted document,
+//   · it asks GUIDING, domain-specific follow-up questions until the data is right,
+//   · it never commits anything outward-facing on its own — a write to the calendar, the
+//     address book or the income tables is always a separate confirmation.
+//
+// `context` arrives from the frontend as the active tab. Anything unknown is refused rather
+// than quietly handled by a default agent, because a finance question answered by the
+// calendar prompt is worse than an error message.
+
+const DOMAIN_AGENTS = {
+  // ---- FINANCE -----------------------------------------------------------
+  // Tweak freely: this one owns payslips, receipts and the questions asked about them.
+  finance: {
+    label: 'finance',
+    accepts_documents: true,
+    system: (lang) => `You are Adi's finance agent for an Israeli household (₪, תלוש שכר,
+קרן השתלמות, ביטוח לאומי, kibbutz budget). You answer about the figures already imported and
+you interrogate anything that looks wrong.
+
+How to talk about money here — this matters more than anything else you do:
+- SALARY is what a payslip says reaches the bank (נטו לתשלום). Nothing else is salary.
+- A BANK TRANSFER is not salary. Where a credit matches a payslip it IS that salary arriving,
+  so counting both double-counts the month. Name a transfer as a transfer.
+- A row marked PENDING CONFIRMATION is not income yet. It is waiting on an answer from Adi.
+  Never add it to a total and never present it as earnings.
+- Never state a number the input did not give you, and never sum salary with transfers.
+
+When Adi answers a pending question, be concrete: confirm the corrected figure back to him in
+₪ and say which month it applies to.
+
+If he asks something the figures cannot answer, say so in one sentence rather than estimating.
+Keep answers under 90 words. You are not a licensed advisor: describe the numbers, never
+recommend a specific security.
+${lang === 'he' ? 'ענה בעברית.' : 'Answer in English.'}`,
+
+    // Asked when a payslip is staged for confirmation. Deliberately a separate string from
+    // the conversational prompt so the wording of the question can be tuned on its own.
+    reviewQuestion: (lang, r) => {
+      const ils_ = (a) => `₪${Math.round(a / 100).toLocaleString('en-US')}`;
+      const reason = String(r.reason || '');
+      const who = r.who ? ` (${r.who})` : '';
+      if (lang === 'he') {
+        if (/duplicate_period/.test(reason)) {
+          return `לחודש ${r.period} יש שני תלושים: אחד על ${ils_(r.amount)}${who} וכבר יש אחר` +
+                 ' באותו חודש. אצל חבר קיבוץ זה בדרך כלל תלוש המעסיק מול הדוח הפרטני — שניהם' +
+                 ' נכונים אבל רק אחד הוא ההכנסה שלך. איזה סכום נכנס אליך בפועל?';
+        }
+        if (/arithmetic_mismatch|net_not_below_gross/.test(reason)) {
+          return `קראתי תלוש ל-${r.period}${who} עם נטו ${ils_(r.amount)}, אבל הניכויים שקראתי` +
+                 ` לא מסתדרים מול ברוטו ${ils_(r.gross)}. ייתכן שקראתי ניכוי מהטבלה הלא נכונה.` +
+                 ' הסכום נכון?';
+        }
+        return `קראתי תלוש ל-${r.period}${who} על ${ils_(r.amount)}, גבוה מהרגיל אצלך.` +
+               ' זה חודש עם בונוס, או שהסכום לא נכון?';
+      }
+      if (/duplicate_period/.test(reason)) {
+        return `${r.period} has two payslips: this one at ${ils_(r.amount)}${who} and another` +
+               ' already recorded for the same month. For a kibbutz member that is normally the' +
+               ' employer slip against the member report — both are true, but only one is your' +
+               ' income. Which amount actually reached you?';
+      }
+      if (/arithmetic_mismatch|net_not_below_gross/.test(reason)) {
+        return `I read a payslip for ${r.period}${who} with a net of ${ils_(r.amount)}, but the` +
+               ` deductions I read do not reconcile against gross ${ils_(r.gross)} — I may have` +
+               ' taken a deduction from the wrong table. Is the amount right?';
+      }
+      return `I extracted a payslip for ${r.period}${who} at ${ils_(r.amount)}, which is well` +
+             ' above your usual. Is this a bonus month, or is the amount wrong?';
+    },
+  },
+
+  // ---- CALENDAR ----------------------------------------------------------
+  calendar: {
+    label: 'calendar',
+    accepts_documents: true,
+    system: (lang) => `You are Adi's calendar agent. You read invitations, flyers, tickets and
+booking confirmations, and you get an event right BEFORE it reaches his Office 365 calendar.
+
+A calendar is shared, outward-facing state: a wrong entry makes him turn up on the wrong day,
+which is worse than no entry at all. So you ask rather than guess.
+
+Ask a guiding question whenever any of these is unresolved: which of several date cycles or
+sessions he registered for, the start hour when only a date is printed, whether a multi-day
+event is all-day, and which year a bare day-and-month refers to. Ask about one thing at a
+time and keep it short.
+
+Never invent a venue, an order number or a year. You cannot write to the calendar: once the
+details are settled, tell him to press "הוסף ליומן".
+Keep answers under 60 words.
+${lang === 'he' ? 'ענה בעברית.' : 'Answer in English.'}`,
+  },
+
+  // ---- TASKS -------------------------------------------------------------
+  // Points at chatSystemPrompt() rather than restating it: that prompt is already specific and
+  // verified against real task history, and two prompts for one domain is how they drift.
+  tasks: {
+    label: 'tasks',
+    accepts_documents: false,
+    system: (lang) => chatSystemPrompt(lang),
+  },
+
+  // ---- CONTACTS ----------------------------------------------------------
+  // The contacts agent has its own propose-then-apply plan format; see CONTACT_ACTIONS.
+  contacts: { label: 'contacts', accepts_documents: true, system: null },
+};
+
 // ---------------------------------------------------------------------------
 // Calendar events — flyer/invitation → staged event → Office 365
 // ---------------------------------------------------------------------------
@@ -3276,11 +3545,10 @@ async function handleCalendarAgent(request, env) {
     handleCalendarUpcoming(env, new URL('http://x/?days=60')).then((r) => r.json()).catch(() => null),
   ]);
 
-  const system = `You answer questions about Adi's calendar. Be brief — two sentences at most.
-Use only the events given to you; if the answer is not there, say so plainly.
-You cannot create or change events in this mode: if he is asking you to add something, tell
-him to drop the invitation on the calendar tab or paste it into this box.
-${lang === 'he' ? 'ענה בעברית.' : 'Answer in English.'}`;
+  const system = `${DOMAIN_AGENTS.calendar.system(lang)}
+
+Right now you are answering a question, not reading a document. Use only the events listed
+below; if the answer is not there, say so plainly.`;
   const user = `EVENTS IN THE HUB:
 ${(staged.results || []).map((e) => `- ${e.status} | ${e.starts_at || 'no date'} | ${e.title || ''} | ${e.location || ''}`).join('\n') || '(none)'}
 
@@ -4409,10 +4677,79 @@ here, say you could not find it in the records you were shown, not that it does 
 
 /** The כספים tab's chat bar. Same contract as /api/chat/tasks, financial context. */
 async function handleChatFinance(request, env) {
-  const body = await readJson(request);
-  const question = trimStr(body.message ?? body.q, 2000);
+  // Multipart when a document was pasted into the command line; JSON otherwise.
+  const ct = request.headers.get('content-type') || '';
+  let body = {};
+  let upload = null;
+  if (/multipart/i.test(ct)) {
+    const form = await request.formData();
+    body = { message: String(form.get('message') || ''), lang: form.get('lang'),
+             context: String(form.get('context') || 'finance'),
+             income_id: String(form.get('income_id') || '') || null };
+    const f = form.get('image') || form.get('file');
+    if (f && typeof f !== 'string') {
+      if (f.size > MAX_UPLOAD_BYTES) return json({ error: 'file_too_large' }, 413);
+      upload = f;
+    }
+  } else {
+    body = await readJson(request);
+  }
+  const question = trimStr(body.message ?? body.q, 2000) || '';
   const lang = body.lang === 'he' ? 'he' : 'en';
-  if (!question || !question.trim()) return json({ error: 'message_required' }, 400);
+  if (!question.trim() && !upload) return json({ error: 'message_required' }, 400);
+
+  // --- a pasted document goes through the normal classify-and-route pipeline, so a payslip
+  //     lands in income and a receipt lands in the isolated archive, exactly as an emailed
+  //     one would. Nothing bespoke, nothing that can drift from the email path.
+  if (upload) {
+    const month = new Date().toISOString().slice(0, 7);
+    const buf = await upload.arrayBuffer();
+    const safe = (upload.name || 'pasted').replace(/[^\w.\-֐-׿]/g, '_').slice(0, 100);
+    const key = `inbox/${month}/${uuid()}-${safe}`;
+    await env.DOCS_BUCKET.put(key, buf, {
+      httpMetadata: { contentType: upload.type || 'application/octet-stream' } });
+    await enqueueIngest(env, [{ source: 'upload', r2_key: key, filename: upload.name || 'pasted',
+                                mime: upload.type || '', size_bytes: buf.byteLength,
+                                subject: 'הודבק בשורת הפקודה' }]);
+    const pass = await runIngestionPass(env, { items: 1, budgetMs: 20_000 });
+    const r = (pass.queue_results || [])[0] || {};
+    const inc = await incomeBreakdown(env);
+    const asked = inc.pending[0];
+
+    let answer;
+    if (asked) {
+      // The document raised a question — ask it, in this agent's own words.
+      answer = DOMAIN_AGENTS.finance.reviewQuestion(lang, asked);
+    } else if (r.receipt_id) {
+      answer = lang === 'he' ? 'זו קבלה — העברתי אותה לארכיון הקבלות לבדיקה.'
+                             : 'That is a receipt — I staged it in the receipts archive.';
+    } else if (r.ok === false) {
+      answer = (lang === 'he' ? 'לא הצלחתי לקרוא את המסמך: ' : 'I could not read that document: ')
+               + String(r.error || '').slice(0, 160);
+    } else {
+      answer = lang === 'he'
+        ? `נקלט: ${r.classified_as || 'מסמך'}${r.period ? ` · ${r.period}` : ''}${
+            r.duplicate ? ' · כבר היה קיים' : ''}.`
+        : `Imported: ${r.classified_as || 'document'}${r.period ? ` · ${r.period}` : ''}${
+            r.duplicate ? ' · already on file' : ''}.`;
+    }
+    return json({ ok: true, answer, ingested: r, pending: inc.pending,
+                  pending_id: asked?.id || null, needs_answer: !!asked });
+  }
+
+  // --- text, and something is waiting on an answer: treat it as that answer ---
+  const pendingRow = body.income_id
+    ? await env.DB.prepare(
+        "SELECT * FROM income WHERE id=? AND status='pending_confirmation'").bind(body.income_id).first()
+    : await env.DB.prepare(
+        `SELECT * FROM income WHERE status='pending_confirmation'
+          ORDER BY period DESC LIMIT 1`).first();
+
+  if (pendingRow) {
+    const resolved = await resolveIncomeReviewFromText(env, pendingRow, question, lang);
+    if (resolved) return json(resolved);
+    // Not an answer to the question — fall through and treat it as a normal query.
+  }
 
   const summary = await loadSummary(env);
   if (!summary.monthly.length && !summary.investments.length) {
@@ -4421,30 +4758,42 @@ async function handleChatFinance(request, env) {
       : 'No financial records yet. Upload a payslip or kibbutz sheet.' });
   }
 
+  const inc = summary.income || { months: [], transfers: [], pending: [] };
+  const withBalance = summary.investments.filter((i) => i.balance > 0);
   const records = [
-    'MONTHLY CASHFLOW (newest first):',
+    `SALARY — the only figures that are pay. Typical ${ils(inc.typical_salary)}/month.`,
+    ...inc.months.filter((m) => m.salary).map((m) => `- ${m.period}: salary ${ils(m.salary)}`),
+    '',
+    'SPENDING:',
     ...summary.monthly.map((m) =>
-      `- ${m.period}: net ${ils(m.income_net)}, spend ${ils(m.spend)}, saved ${ils(m.income_net - m.spend)}`),
+      `- ${m.period}: spend ${ils(m.spend)}, salary minus spend ${ils((m.salary || 0) - m.spend)}`),
+    '',
+    inc.transfers.length
+      ? 'BANK TRANSFERS — NOT salary. Where one matches a payslip it is that salary arriving:\n' +
+        inc.transfers.map((x) => `- ${x.period}: ${ils(x.amount)} from ${x.who || '—'}`).join('\n')
+      : 'No bank transfers recorded.',
+    '',
+    inc.pending.length
+      ? 'PENDING CONFIRMATION — NOT income yet, waiting on Adi. Never include in a total:\n' +
+        inc.pending.map((x) => `- ${x.label}: ${ils(x.amount)} (${x.reason || 'needs review'})`).join('\n')
+      : 'Nothing pending confirmation.',
     '',
     'SPENDING BY CATEGORY (last 6 months):',
     ...summary.by_category.map((c) => `- ${c.category}: ${ils(c.total)} over ${c.n} items`),
     '',
-    'INVESTMENTS (latest statement per account):',
-    ...summary.investments.map((i) =>
-      `- ${i.kind}${i.provider ? ` @ ${i.provider}` : ''}: ${ils(i.balance)}` +
-      `${i.yield_pct != null ? `, yield ${i.yield_pct}%` : ''}` +
-      `${i.fees_pct != null ? `, fees ${i.fees_pct}%` : ''}`),
+    withBalance.length
+      ? 'INVESTMENTS:\n' + withBalance.map((i) =>
+          `- ${i.kind}${i.provider ? ` @ ${i.provider}` : ''}: ${ils(i.balance)}` +
+          `${i.yield_pct != null ? `, yield ${i.yield_pct}%` : ''}`).join('\n')
+      : 'INVESTMENTS: no fund balances reported yet — payslips carry contributions, not balances.',
     '',
     `DOCUMENTS ON FILE: ${summary.documents.length}`,
-    ...summary.documents.map((d) => `- ${d.filename} (${d.doc_type}${d.period ? ', ' + d.period : ''})`),
+    ...summary.documents.slice(0, 15).map((d) => `- ${d.filename} (${d.doc_type}${d.period ? ', ' + d.period : ''})`),
   ].join('\n');
 
-  const system = `You are Adi's financial assistant. Answer ONLY from the records below.
-Amounts are Israeli shekels. Never invent a number — if the records do not contain the answer,
-say so plainly. Cite the actual figures and periods you used. Be brief: two or three sentences
-unless asked for detail. You are not a licensed advisor: describe the numbers, do not recommend
-specific securities.
-${lang === 'he' ? 'ענה בעברית בלבד.' : 'Answer in English.'}`;
+  const system = `${DOMAIN_AGENTS.finance.system(lang)}
+
+Answer ONLY from the records below. Cite the actual figures and periods you used.`;
 
   const userMsg = `RECORDS:\n${records}\n\nQUESTION: ${question}`;
   const tokens = estimateTokens(system + userMsg);
@@ -5808,6 +6157,22 @@ export default {
       }
       if (url.pathname === '/api/chat/finance' && request.method === 'POST') {
         return withCors(await handleChatFinance(request, env));
+      }
+      // Resolve a staged payslip explicitly (the chat does the same thing conversationally).
+      const incomeReview = /^\/api\/income\/([\w-]+)\/review$/.exec(url.pathname);
+      if (incomeReview && request.method === 'POST') {
+        const b = await readJson(request);
+        const out = await resolveIncomeReview(env, incomeReview[1],
+          { action: b.action === 'reject' ? 'reject' : 'confirm', net: b.net });
+        return withCors(json(out.error ? out : { ...out, ...(await incomeBreakdown(env)) },
+                             out.error ? 404 : 200));
+      }
+      // One entry point for the per-tab command lines. `context` names the domain, and an
+      // unknown one is refused rather than silently handled by some default agent.
+      const chatCtx = /^\/api\/chat\/([\w-]+)$/.exec(url.pathname);
+      if (chatCtx && request.method === 'POST' && !DOMAIN_AGENTS[chatCtx[1]]) {
+        return withCors(json({ error: 'unknown_context', context: chatCtx[1],
+                               known: Object.keys(DOMAIN_AGENTS) }, 400));
       }
 
       // Fixed recipient and subject — deliberately not a general "send anything" route.
