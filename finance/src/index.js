@@ -624,6 +624,19 @@ async function importTransactions(env, docId, rows, mapping) {
  */
 async function persistExtraction(env, docId, data, fallbackPeriod) {
   const period = toPeriod(data.period) || fallbackPeriod || toPeriod(new Date().toISOString());
+
+  // Re-extraction must be idempotent for THIS document. The cross-document row_hash cannot
+  // carry that on its own: it includes the employer string, and the model does not spell a
+  // Hebrew employer identically twice ("עין חרוד איחוד - חברים" one pass,
+  // "עין חרוד איחוד - ריקור" the next), so a retry slipped a second income row past it and
+  // inflated the month. Clearing what this document previously produced makes the outcome
+  // depend on the latest extraction alone.
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM income   WHERE doc_id=?').bind(docId),
+    env.DB.prepare('DELETE FROM expenses WHERE doc_id=?').bind(docId),
+    env.DB.prepare('DELETE FROM investment_snapshots WHERE doc_id=?').bind(docId),
+  ]);
+
   const statements = [];
   const attempted = { income: 0, expenses: 0, investments: 0 };
 
@@ -3902,7 +3915,7 @@ async function ingestPdfBuffer(env, bytes, filename, meta = {}) {
 async function processPendingDocuments(env, limit = 3, budgetMs = DRAIN_BUDGET_MS) {
   const started = Date.now();
   const { results } = await env.DB.prepare(
-    `SELECT id, r2_key, filename, mime FROM documents
+    `SELECT id, r2_key, filename, mime, sha256 FROM documents
       WHERE status='pending' ORDER BY uploaded_at ASC LIMIT ?`).bind(limit).all();
   const done = [];
   for (const d of results || []) {
@@ -3910,6 +3923,24 @@ async function processPendingDocuments(env, limit = 3, budgetMs = DRAIN_BUDGET_M
     // and let the caller come back. Rows left alone stay 'pending' and remain claimable.
     if (Date.now() - started > budgetMs) break;
     try {
+      // The same FILE may exist as two document rows: ingestPdfBuffer deliberately lets a
+      // 'failed' sha256 back in so it stays retryable, and a re-forward then creates a
+      // second row. If a sibling has since extracted successfully, re-extracting this one
+      // duplicates a month's salary — which is exactly what the retry button did before
+      // this check existed.
+      if (d.sha256) {
+        const twin = await env.DB.prepare(
+          `SELECT id, period FROM documents
+            WHERE sha256=? AND id!=? AND status='extracted' LIMIT 1`).bind(d.sha256, d.id).first();
+        if (twin) {
+          await env.DB.prepare(
+            `UPDATE documents SET status='extracted', doc_kind='duplicate',
+                    error=NULL, processed_at=datetime('now') WHERE id=?`).bind(d.id).run();
+          done.push({ id: d.id, filename: d.filename, ok: true, duplicate: true,
+                      duplicate_of: twin.id, period: twin.period });
+          continue;
+        }
+      }
       const obj = await env.DOCS_BUCKET.get(d.r2_key);
       if (!obj) throw new Error('object_missing');
       const buffer = await obj.arrayBuffer();

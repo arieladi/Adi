@@ -215,6 +215,30 @@ npx wrangler d1 execute finance --remote \
   --command="SELECT value, updated_at FROM settings WHERE key='ingest_heartbeat'"
 ```
 
+### Re-extraction must never double-count — two guards, both learned the hard way
+
+Pressing the new retry button on Adi's real data **inflated 2026-06 net income by ₪12,046**
+before this was fixed. Two separate holes:
+
+1. **The same FILE as two document rows.** `ingestPdfBuffer` deliberately lets a `failed`
+   sha256 back in so it stays retryable, so a re-forward creates a second row. Retrying the
+   failed one re-extracted a payslip that had *already* extracted under its twin.
+   → `processPendingDocuments` now checks for a sibling with the same `sha256` and
+   `status='extracted'`, and marks the retried row `doc_kind='duplicate'` instead.
+2. **The row_hash cannot carry idempotency alone.** It includes the employer string, and
+   the model does not spell a Hebrew employer identically twice — the same PDF gave
+   `עין חרוד איחוד - חברים` on one pass and `עין חרוד איחוד - ריקור` on the next, so
+   `INSERT OR IGNORE` saw a new row.
+   → `persistExtraction` now deletes the income/expenses/snapshots a document previously
+   produced before re-inserting, so the result depends only on the latest extraction.
+
+**Bank deposits still need reconciling.** A payslip and the bank credit that settles it are
+both imported, and `v_monthly` counts only `cleared = 0` rows — so until they are matched,
+the month is inflated by the deposit. Migration 0012 predicted the exact figure
+("June read 41,645 instead of ~29,800"). The endpoint existed with no way to press it;
+there is now a **התאם הפקדות** button next to the backlog controls. 2026-06 was still
+carrying an unmatched ₪11,819 deposit when this was written — press it.
+
 ## The two propose-then-confirm APIs
 
 Both follow the same rule: **the planning endpoint never writes.** A model that mis-reads
