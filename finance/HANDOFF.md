@@ -7,6 +7,36 @@ started in `~/Documents/GitHub/Adi`.
 
 ## Prompt for the new session
 
+> I'm continuing work on my personal hub at **adiariel.com/me**. Read `finance/HANDOFF.md`
+> first, then `finance/README.md`, then `finance/src/index.js`. My memory file
+> `finance-hub-me.md` has hard-won gotchas — read them and don't relearn them.
+>
+> Last session (2026-08-04) shipped month envelopes, a ReAct tool-calling agent, API rate
+> limiting, upserts on re-extraction, and the kibbutz code-20 net rule. **All of it is
+> deployed but the ReAct loop has never run against the real Gemini key** — no dev session can
+> reach it. My bulk forward of ~3 years of payslips was still draining (~50 attachments) when
+> the session ended.
+>
+> **Start here, in this order:**
+>
+> 1. **Drain and observe.** Open היסטוריה → press **עבד את התור** until the backlog is zero,
+>    then `GET /api/envelopes`. Envelopes should appear per month with roles filed. Any that
+>    reach `needs_input` are the agent asking me a question — check the wording is sensible.
+> 2. **Verify the code-20 net end to end.** The ground truth: for **06/2026** the gross is
+>    17,950 and the true net is **11,876** (the code-20 line in ניכויים שונים, dated 8/07/26).
+>    If the envelope agent saves 11,876 with `net_source='masav'`, the feature works. If it
+>    saves 12,046 that is "העברה לדף משפחתי" and it is still wrong. Read
+>    `month_envelopes.transcript` to see what it reasoned — that column exists for this.
+> 3. **Check the ReAct loop actually calls tools.** In כספים ask "מתי הפגישה הבאה שלי?" — it
+>    should call `query_calendar` and answer, not refuse. The response carries `tools_used`.
+> 4. **Then** whatever I ask for next.
+>
+> Conventions I care about: never push to git (I push via GitHub Desktop), commit finished work
+> in the same turn, verify against real data rather than assuming a green result is correct,
+> and tell me plainly when something is broken or when you got a diagnosis wrong.
+
+## Original prompt (kept for reference)
+
 > I'm continuing work on my personal hub at **adiariel.com/me**. Read
 > `finance/HANDOFF.md` and `finance/README.md` first, then `finance/src/index.js`.
 > My memory file `finance-hub-me.md` also has hard-won gotchas — read it and don't
@@ -311,6 +341,63 @@ curl -s -X POST "https://login.microsoftonline.com/$TENANT/oauth2/v2.0/token" \
   -d "client_id=$CID" -d "client_secret=$SECRET" -d grant_type=client_credentials \
   -d 'scope=https%3A%2F%2Fgraph.microsoft.com%2F.default'
 ```
+
+## Month envelopes + the ReAct agent (2026-08-04) — NEWEST, LEAST VERIFIED
+
+**The unit of work for finance is a MONTH, not a file.** A Ricor payslip alone cannot yield a
+net (its נטו goes to the kibbutz), so extracting on arrival asks the model a question the paper
+cannot answer and it guesses. Documents are filed into `month_envelopes` by role and reasoned
+about together.
+
+| table | purpose |
+|---|---|
+| `month_envelopes` | one row per `YYYY-MM`; `status` collecting → ready → working → done / needs_input / failed; `transcript` holds every thought and tool call |
+| `envelope_documents` | which document plays which role (`employer` / `prati` / `metzaref` / `bank`) |
+| `api_rate_limit` | D1-backed limiter, 12 calls/min + 1.5s gap, `backoff_until` on a 429 |
+
+- **Ready** = `has_employer AND has_prati`. `metzaref` alone is an aggregate and cannot answer
+  the net question. Incomplete after 6 hours (`ENVELOPE_PATIENCE`) → processed anyway, and the
+  agent asks for what is missing.
+- `processPendingDocuments` **skips** any document an unfinished envelope owns — otherwise a
+  file gets pulled out and extracted in the vacuum this design removes.
+- **ONE envelope per cron tick**, serial with a gap. A ReAct loop is several model calls; fifty
+  months in parallel is a guaranteed 429. That is why this queue is separate from
+  `ingest_queue`, which only moves bytes.
+
+Endpoints: `GET /api/envelopes` · `POST /api/envelopes/drain {max}` ·
+`POST /api/envelopes/:period/answer {answer}` (stores the answer, sets `ready`, re-runs the
+loop so the agent re-reasons **with** the fact rather than applying it blindly).
+
+**Tools** (`AGENT_TOOLS`): `save_financial_record`, `ask_user_for_clarification`,
+`list_month_documents`, `query_finance`, `query_calendar`, `query_tasks`.
+`toolsForContext(ctx)` = that domain's tools + every read-only `query_*` from other domains,
+which is what makes a calendar question answerable from the finance tab. Writes stay
+domain-scoped. Choosing no tool is treated as `needs_input`, never as success.
+
+### The kibbutz net, definitively (verified against the paper)
+
+`KIBBUTZ_NET_RULES` is the single source, shared by the flat prompt and the envelope agent.
+
+```
+סך-כל התשלומים      17,950   gross (employer payslip)
+העברה לדף משפחתי    12,046   → the kibbutz FAMILY ACCOUNT, not the bank. NEVER net.
+נטו לתשלום           (empty) → usually zero on a member report. NEVER net.
+  ניכויים שונים:  code 03 → 170 · code 20 → 11,876 (8/07/26) · total 12,046
+                                    ↑ THIS is the bank transfer. net = 11,876
+```
+
+The words "מקדמות במסב" are **not printed** and the description column is **blank** — the
+**code 20** identifies the line.
+
+### Re-extraction must overwrite — and the conflict target is fiddly
+
+`income` and `expenses` use an upsert, not `INSERT OR IGNORE`. With IGNORE, a re-extraction
+whose values matched a **twin document's** surviving row produced nothing, so prompt
+improvements were no-ops on imported data.
+
+**The conflict target must repeat the partial index's predicate:**
+`ON CONFLICT(row_hash) WHERE row_hash IS NOT NULL DO UPDATE …`. Plain `ON CONFLICT(row_hash)`
+is rejected outright — `does not match any PRIMARY KEY or UNIQUE constraint`.
 
 ## The AI command line — one component, one agent per domain
 
