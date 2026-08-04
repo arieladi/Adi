@@ -4,8 +4,19 @@
 # Wrangler local state and cache
 .wrangler/
 
-# Local-only secrets for wrangler dev
+# Local-only secrets for wrangler dev.
+# No leading slash and no directory part, so this matches at EVERY depth —
+# finance/.dev.vars is covered, not just a file at the repo root. The starred form
+# catches wrangler's per-environment variants (.dev.vars.production, .dev.vars.local).
 .dev.vars
+.dev.vars.*
+**/.dev.vars
+**/.dev.vars.*
+
+# Belt and braces: never commit a raw env file from any tool.
+.env
+.env.*
+!.env.example
 
 # D1 exports contain personal financial data
 finance/.backup-*.sql

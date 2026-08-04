@@ -1808,8 +1808,8 @@ async function handleOAuthCallback(request, env, url) {
   return htmlResult('Google connected. You can close this tab.', true);
 }
 
-const htmlResult = (msg, ok) => new Response(
-  `<!doctype html><meta charset="utf-8"><title>Google</title>
+const htmlResult = (msg, ok, provider = 'Google') => new Response(
+  `<!doctype html><meta charset="utf-8"><title>${escHtml(provider)}</title>
    <body style="font-family:system-ui;background:#0a0d0b;color:#eaf1ec;display:grid;
                 place-items:center;height:100vh;margin:0;text-align:center;padding:24px">
      <div><div style="font-size:44px">${ok ? '✅' : '⚠️'}</div>
@@ -1865,6 +1865,260 @@ async function googleFetch(env, url, init = {}) {
   });
   if (!res.ok) throw new Error(`google_${res.status}: ${(await res.text()).slice(0, 240)}`);
   return res.status === 204 ? null : res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Microsoft OAuth (Entra ID) — Office 365 calendar
+// ---------------------------------------------------------------------------
+//
+// Reuses the Google plumbing deliberately: the same `oauth_tokens` row-per-provider table,
+// the same AES-GCM encryption of the refresh token (a D1 export is a plain SQL file, and a
+// cleartext refresh token in one is a standing compromise of the mailbox), and the same
+// single-use `oauth_state` CSRF binding.
+//
+// TWO THINGS ADI MUST DO IN A DASHBOARD — neither is reachable from an API token scoped to
+// zone:read:
+//   1. Cloudflare Access: add /api/auth/microsoft/callback to the Bypass policy. Microsoft
+//      is a machine and cannot complete a Google SSO login; without the bypass the callback
+//      302s to the login page and the flow dies with no error worth reading.
+//   2. Entra ID: the Redirect URI must match MS_REDIRECT below EXACTLY, including scheme
+//      and trailing path. A mismatch fails at the authorize step with AADSTS50011.
+//
+// `offline_access` is what yields a refresh token. Without it the calendar works for an
+// hour and then silently stops, which is the worst of both worlds.
+const MS_REDIRECT = 'https://adiariel.com/api/auth/microsoft/callback';
+const MS_SCOPES = ['offline_access', 'openid', 'profile', 'User.Read', 'Calendars.ReadWrite'];
+const GRAPH = 'https://graph.microsoft.com/v1.0';
+
+const msAuthBase = (env) =>
+  `https://login.microsoftonline.com/${encodeURIComponent(env.MICROSOFT_TENANT_ID || 'common')}/oauth2/v2.0`;
+
+async function handleMsStart(env) {
+  if (!env.MICROSOFT_CLIENT_ID || !env.MICROSOFT_CLIENT_SECRET) {
+    return json({ error: 'not_configured',
+                  hint: 'Set MICROSOFT_CLIENT_ID, MICROSOFT_TENANT_ID and MICROSOFT_CLIENT_SECRET.' }, 503);
+  }
+  const state = b64urlEncode(crypto.getRandomValues(new Uint8Array(24)));
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO oauth_state (state) VALUES (?)').bind(state),
+    env.DB.prepare("DELETE FROM oauth_state WHERE created_at < datetime('now','-1 hour')"),
+  ]);
+
+  const u = new URL(`${msAuthBase(env)}/authorize`);
+  u.searchParams.set('client_id', env.MICROSOFT_CLIENT_ID);
+  u.searchParams.set('response_type', 'code');
+  u.searchParams.set('redirect_uri', MS_REDIRECT);
+  u.searchParams.set('response_mode', 'query');
+  u.searchParams.set('scope', MS_SCOPES.join(' '));
+  u.searchParams.set('state', state);
+  // Force an account picker: office@adiariel.com is not necessarily the browser's
+  // currently-signed-in Microsoft account, and a silent wrong-account grant is confusing
+  // to diagnose later.
+  u.searchParams.set('prompt', 'select_account');
+  return Response.redirect(u.toString(), 302);
+}
+
+async function handleMsCallback(request, env, url) {
+  const err = url.searchParams.get('error');
+  if (err) {
+    return htmlResult(
+      `Microsoft returned: ${escHtml(err)} — ${escHtml(url.searchParams.get('error_description') || '')}`,
+      false, 'Microsoft');
+  }
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  if (!code || !state) return htmlResult('Missing code or state.', false, 'Microsoft');
+
+  // Bypassed from Access, so state is the only proof this flow started here.
+  const row = await env.DB.prepare(
+    "SELECT state FROM oauth_state WHERE state=? AND created_at > datetime('now','-1 hour')")
+    .bind(state).first();
+  if (!row) return htmlResult('Invalid or expired state. Start again from /me.', false, 'Microsoft');
+  await env.DB.prepare('DELETE FROM oauth_state WHERE state=?').bind(state).run();
+
+  const res = await fetch(`${msAuthBase(env)}/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: env.MICROSOFT_CLIENT_ID, client_secret: env.MICROSOFT_CLIENT_SECRET,
+      code, redirect_uri: MS_REDIRECT, grant_type: 'authorization_code',
+      scope: MS_SCOPES.join(' '),
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const tok = await res.json().catch(() => ({}));
+  if (!res.ok || !tok.access_token) {
+    return htmlResult(`Token exchange failed: ${escHtml(JSON.stringify(tok).slice(0, 400))}`,
+                      false, 'Microsoft');
+  }
+  if (!tok.refresh_token) {
+    return htmlResult(
+      'Microsoft did not return a refresh token — the app registration is missing the ' +
+      'offline_access delegated permission. Add it and authorise again.', false, 'Microsoft');
+  }
+
+  // Whose mailbox did we actually get? Recorded so a wrong-account grant is obvious in
+  // Settings rather than showing up as "my events are missing".
+  let email = null;
+  try {
+    const me = await (await fetch(`${GRAPH}/me`, {
+      headers: { authorization: `Bearer ${tok.access_token}` },
+      signal: AbortSignal.timeout(15_000),
+    })).json();
+    email = me.mail || me.userPrincipalName || null;
+  } catch { /* non-fatal: the tokens are good even if /me hiccups */ }
+
+  const { cipher, iv } = await encryptSecret(env, tok.refresh_token);
+  const expires = new Date(Date.now() + (tok.expires_in || 3600) * 1000).toISOString();
+  await env.DB.prepare(
+    `INSERT INTO oauth_tokens (provider, access_token, access_expires, refresh_cipher, refresh_iv,
+                               scope, account_email, connected_at, updated_at, last_error)
+     VALUES ('microsoft',?,?,?,?,?,?,datetime('now'),datetime('now'),NULL)
+     ON CONFLICT(provider) DO UPDATE SET access_token=excluded.access_token,
+       access_expires=excluded.access_expires, refresh_cipher=excluded.refresh_cipher,
+       refresh_iv=excluded.refresh_iv, scope=excluded.scope,
+       account_email=excluded.account_email, updated_at=datetime('now'), last_error=NULL`,
+  ).bind(tok.access_token, expires, cipher, iv, tok.scope || MS_SCOPES.join(' '), email).run();
+
+  return htmlResult(`Microsoft connected${email ? ` as ${escHtml(email)}` : ''}. You can close this tab.`,
+                    true, 'Microsoft');
+}
+
+/** Valid Graph access token, refreshing when needed. Null when not connected. */
+async function msAccessToken(env) {
+  const row = await env.DB.prepare("SELECT * FROM oauth_tokens WHERE provider='microsoft'").first();
+  if (!row?.refresh_cipher) return null;
+
+  if (row.access_token && row.access_expires &&
+      Date.parse(row.access_expires) - Date.now() > TOKEN_SKEW_MS) {
+    return row.access_token;
+  }
+
+  const refresh = await decryptSecret(env, row.refresh_cipher, row.refresh_iv);
+  const res = await fetch(`${msAuthBase(env)}/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: env.MICROSOFT_CLIENT_ID, client_secret: env.MICROSOFT_CLIENT_SECRET,
+      refresh_token: refresh, grant_type: 'refresh_token', scope: MS_SCOPES.join(' '),
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const tok = await res.json().catch(() => ({}));
+  if (!res.ok || !tok.access_token) {
+    const detail = JSON.stringify(tok).slice(0, 400);
+    await env.DB.prepare(
+      "UPDATE oauth_tokens SET last_error=?, updated_at=datetime('now') WHERE provider='microsoft'")
+      .bind(detail).run();
+    // AADSTS7000222 here means the CLIENT SECRET expired, not the user's token — the
+    // nightly check exists to warn before that happens.
+    throw new Error(`microsoft_refresh_failed: ${detail}`);
+  }
+  // Microsoft rotates the refresh token on use. Dropping the new one leaves a token that
+  // works until the old one ages out, then fails for no visible reason.
+  const patch = [tok.access_token,
+                 new Date(Date.now() + (tok.expires_in || 3600) * 1000).toISOString()];
+  if (tok.refresh_token) {
+    const { cipher, iv } = await encryptSecret(env, tok.refresh_token);
+    await env.DB.prepare(
+      `UPDATE oauth_tokens SET access_token=?, access_expires=?, refresh_cipher=?, refresh_iv=?,
+              last_error=NULL, updated_at=datetime('now') WHERE provider='microsoft'`,
+    ).bind(...patch, cipher, iv).run();
+  } else {
+    await env.DB.prepare(
+      `UPDATE oauth_tokens SET access_token=?, access_expires=?, last_error=NULL,
+              updated_at=datetime('now') WHERE provider='microsoft'`).bind(...patch).run();
+  }
+  return tok.access_token;
+}
+
+async function graphFetch(env, path, init = {}) {
+  const token = await msAccessToken(env);
+  if (!token) throw new Error('microsoft_not_connected');
+  const res = await fetch(path.startsWith('http') ? path : `${GRAPH}${path}`, {
+    ...init,
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json',
+               ...(init.headers || {}) },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`graph_${res.status}: ${(await res.text()).slice(0, 300)}`);
+  return res.status === 204 ? null : res.json();
+}
+
+/** Days until the client secret expires. Negative once it has. */
+function msSecretDaysLeft(env) {
+  const iso = (env.MICROSOFT_SECRET_EXPIRES || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  return Math.round((Date.parse(`${iso}T00:00:00Z`) - Date.now()) / 86_400_000);
+}
+
+/**
+ * Warn before the Entra client secret expires, because the failure mode is otherwise
+ * invisible: the calendar keeps working off a cached access token for up to an hour, then
+ * every refresh returns AADSTS7000222 and events silently stop syncing.
+ *
+ * Fires once per threshold rather than nightly for two months — an alert that arrives 60
+ * times is an alert that gets filtered.
+ */
+async function checkMsSecretExpiry(env) {
+  const left = msSecretDaysLeft(env);
+  if (left === null) return { skipped: 'no_expiry_configured' };
+
+  const THRESHOLDS = [90, 60, 30, 14, 7, 3, 1, 0];
+  const due = THRESHOLDS.find((t) => left <= t);
+  if (due === undefined) return { days_left: left, quiet: true };
+
+  const marker = `ms_secret_alert_${due}`;
+  if (await getSetting(env, marker)) return { days_left: left, already_sent: due };
+
+  const expired = left < 0;
+  const subject = expired
+    ? '🔴 סוד Microsoft פג — היומן לא מסתנכרן'
+    : `⚠️ סוד Microsoft פג בעוד ${left} ימים — יש להחליף`;
+  await sendMail(env, {
+    subject,
+    text: [
+      expired
+        ? `ה-client secret של אפליקציית Entra פג ב-${env.MICROSOFT_SECRET_EXPIRES}.`
+        : `ה-client secret של אפליקציית Entra יפוג ב-${env.MICROSOFT_SECRET_EXPIRES} (בעוד ${left} ימים).`,
+      '',
+      'להחלפה:',
+      '1. portal.azure.com → Entra ID → App registrations → Hub Calendar → Certificates & secrets',
+      '2. New client secret, להעתיק את ה-Value מיד (הוא מוצג פעם אחת בלבד)',
+      '3. cd finance && npx wrangler secret put MICROSOFT_CLIENT_SECRET --name finance',
+      '4. לעדכן MICROSOFT_SECRET_EXPIRES ב-wrangler.toml ואז npx wrangler deploy',
+      '5. לעדכן גם את finance/.dev.vars המקומי',
+      '',
+      'עד להחלפה: הסנכרון ליומן ייכשל עם AADSTS7000222.',
+    ].join('\n'),
+  });
+  await setSetting(env, marker, new Date().toISOString());
+  return { days_left: left, alerted: due };
+}
+
+async function handleMsStatus(env) {
+  const row = await env.DB.prepare(
+    `SELECT provider, scope, account_email, connected_at, updated_at, access_expires, last_error
+       FROM oauth_tokens WHERE provider='microsoft'`).first();
+  const out = {
+    configured: !!(env.MICROSOFT_CLIENT_ID && env.MICROSOFT_CLIENT_SECRET && env.MICROSOFT_TENANT_ID),
+    connected: !!row, redirect_uri: MS_REDIRECT, scopes: MS_SCOPES,
+    secret_expires: env.MICROSOFT_SECRET_EXPIRES || null,
+    secret_days_left: msSecretDaysLeft(env),
+    ...row,
+  };
+  if (row) {
+    try {
+      const me = await graphFetch(env, '/me?$select=displayName,mail,userPrincipalName');
+      out.token_ok = true;
+      out.display_name = me.displayName;
+      out.account_email = me.mail || me.userPrincipalName || row.account_email;
+    } catch (err) {
+      out.token_ok = false;
+      out.token_error = String(err?.message || err).slice(0, 300);
+    }
+  }
+  return json(out);
 }
 
 async function handleOAuthStatus(env) {
@@ -2345,6 +2599,480 @@ async function handleReceipts(request, env, url) {
     return json({ ok: true, deleted: id });
   }
   return json({ error: 'method_not_allowed' }, 405);
+}
+
+// ---------------------------------------------------------------------------
+// Calendar events — flyer/invitation → staged event → Office 365
+// ---------------------------------------------------------------------------
+//
+// Propose-then-confirm, exactly as receipts and the contacts agent do. The difference is
+// what happens on confirm: this one writes to a SHARED, OUTWARD-FACING system. A wrong
+// entry from a misread flyer is worse than no entry, because it makes Adi show up on the
+// wrong day. So `/parse` only ever writes `staged` or `incomplete`, and only `/confirm`
+// touches Graph.
+//
+// `incomplete` earns its own status. A flyer listing three date cycles is not a failed
+// parse and not a confirmable event — it is a CORRECT reading of an ambiguous document.
+// Collapsing that into "staged with a guessed date" is how you end up at the wrong retreat.
+
+const CALENDAR_PROMPT = `Read this invitation, flyer, ticket or booking confirmation and
+return ONLY JSON:
+{
+  "title": "short event name, in the document's language",
+  "location": "venue or address as written",
+  "description": "anything worth keeping: what it is, who is organising, what to bring",
+  "organizer": "person or organisation running it",
+  "order_number": "ticket / order / booking / confirmation reference, exactly as printed",
+  "all_day": true|false,
+  "timezone": "IANA zone, default Asia/Jerusalem",
+  "starts_at": "YYYY-MM-DDTHH:MM",
+  "ends_at": "YYYY-MM-DDTHH:MM",
+  "complete": true|false,
+  "options": [
+    {"label":"how the document names this choice","starts_at":"YYYY-MM-DDTHH:MM","ends_at":"YYYY-MM-DDTHH:MM","note":"..."}
+  ],
+  "questions": ["a short question, in the document's language, per thing you cannot resolve"],
+  "confidence": 0.0-1.0
+}
+
+The ambiguity rules are the important part:
+- If the document offers SEVERAL possible dates — "מחזור א׳ / מחזור ב׳ / מחזור ג׳",
+  "Session 1 / 2 / 3", two alternative weekends — set "complete": false, list every
+  candidate in "options" with its own dates, and LEAVE starts_at / ends_at null. Do not
+  pick one. The reader of this JSON has to ask which cycle was actually booked.
+- If a date is given but no time, and the event is plainly not all-day (a wedding, a
+  meeting), set "complete": false and ask for the hour in "questions". Set starts_at to the
+  date with 00:00 so the day is not lost.
+- A single all-day or multi-day event with clear dates IS complete: set "all_day": true and
+  do not invent hours.
+- Omit any key you genuinely cannot read. Never invent an order number or a venue.
+- Years: if only a day and month appear, choose the NEXT occurrence from today, not a past
+  date. Hebrew dates are dd/mm/yyyy, never mm/dd.
+- "complete": true means every field needed to put this on a calendar is present and
+  unambiguous. When in doubt, say false — a question costs seconds, a wrong calendar entry
+  costs a day.`;
+
+const CAL_FIELDS = ['title', 'location', 'description', 'organizer', 'order_number',
+                    'starts_at', 'ends_at', 'timezone'];
+
+/** 'YYYY-MM-DDTHH:MM' (accepts a bare date, and tolerates seconds). Null if unusable. */
+function toLocalDateTime(v, { endOfDay = false } = {}) {
+  const s = String(v ?? '').trim();
+  if (!s) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(s);
+  if (!m) return null;
+  const [, y, mo, d, hh, mi] = m;
+  return `${y}-${mo}-${d}T${hh ?? (endOfDay ? '23' : '00')}:${mi ?? '00'}`;
+}
+
+const addLocalMinutes = (local, minutes) => {
+  const t = Date.parse(`${local}:00Z`);
+  if (!Number.isFinite(t)) return null;
+  return new Date(t + minutes * 60_000).toISOString().slice(0, 16);
+};
+
+/** Upload → vision → STAGE. Never reaches the calendar. */
+async function handleCalendarParse(request, env) {
+  const form = await request.formData().catch(() => null);
+  if (!form) return json({ error: 'expected_multipart_form_data' }, 400);
+  const files = form.getAll('file').filter((f) => f && typeof f !== 'string');
+  if (!files.length) return json({ error: 'missing_file_field' }, 400);
+
+  const raw = [];
+  for (const f of files) {
+    if (f.size > MAX_UPLOAD_BYTES) continue;
+    raw.push({ filename: f.name || 'invite', mimeType: f.type || '', content: await f.arrayBuffer() });
+  }
+  const expanded = await expandAttachments(raw);
+  const usable = expanded.filter((a) =>
+    /^image\//i.test(a.mimeType || '') || /\.(jpe?g|png|webp|heic)$/i.test(a.filename || '')
+    || /pdf/i.test(a.mimeType || '') || /\.pdf$/i.test(a.filename || ''));
+  if (!usable.length) return json({ error: 'no_image_or_pdf' }, 400);
+
+  const staged = [];
+  // One vision call per file, and the UI sends one file per request — same reasoning as
+  // receipts: batching model calls into a single invocation is what blew the duration
+  // budget on the email pipeline.
+  for (const a of usable.slice(0, 6)) {
+    let storedKey = null;
+    try {
+      const buffer = a.content;
+      const hash = await sha256Hex(buffer);
+      const dupe = await env.DB.prepare(
+        "SELECT id, title, status, starts_at FROM calendar_events WHERE sha256=? AND status!='rejected'")
+        .bind(hash).first();
+      if (dupe) { staged.push({ filename: a.filename, duplicate: true, existing: dupe }); continue; }
+
+      const isPdf = /pdf/i.test(a.mimeType || '') || /\.pdf$/i.test(a.filename || '');
+      const mime = isPdf ? 'application/pdf'
+        : (a.mimeType || `image/${(a.filename.split('.').pop() || 'jpeg').replace('jpg', 'jpeg')}`);
+
+      const id = uuid();
+      const key = `calendar/${new Date().toISOString().slice(0, 7)}/${id}-${
+        (a.filename || 'invite').replace(/[^\w.\-֐-׿]/g, '_').slice(0, 100)}`;
+      await env.DOCS_BUCKET.put(key, buffer, { httpMetadata: { contentType: mime } });
+      storedKey = key;
+
+      const ex = await geminiCallJson(env, CALENDAR_PROMPT,
+        { base64: toBase64(buffer), mimeType: mime });
+
+      const options = Array.isArray(ex.options) ? ex.options.filter((o) => o && (o.starts_at || o.label)) : [];
+      const questions = Array.isArray(ex.questions) ? ex.questions.filter(Boolean) : [];
+      // The model's own "complete" is trusted only when it agrees with the evidence:
+      // several candidate dates, or no start at all, is incomplete regardless of the flag.
+      const start = toLocalDateTime(ex.starts_at);
+      const complete = ex.complete === true && options.length <= 1 && !!start;
+
+      await env.DB.prepare(
+        `INSERT INTO calendar_events (id, status, title, location, description, organizer,
+           order_number, starts_at, ends_at, all_day, timezone, options_json, questions_json,
+           r2_key, mime, size_bytes, sha256, extracted_json, confidence)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).bind(id, complete ? 'staged' : 'incomplete',
+             trimStr(ex.title, 300), trimStr(ex.location, 300), trimStr(ex.description, 4000),
+             trimStr(ex.organizer, 200), trimStr(ex.order_number, 120),
+             start, toLocalDateTime(ex.ends_at), ex.all_day ? 1 : 0,
+             trimStr(ex.timezone, 60) || 'Asia/Jerusalem',
+             options.length ? JSON.stringify(options) : null,
+             questions.length ? JSON.stringify(questions) : null,
+             key, mime, buffer.byteLength, hash, JSON.stringify(ex),
+             Number.isFinite(ex.confidence) ? ex.confidence : null).run();
+
+      staged.push(await env.DB.prepare('SELECT * FROM calendar_events WHERE id=?').bind(id).first());
+    } catch (err) {
+      // No row survives a failure here, so the blob it wrote is unreferenced garbage.
+      if (storedKey) await env.DOCS_BUCKET.delete(storedKey).catch(() => {});
+      staged.push({ filename: a.filename, ok: false, error: String(err?.message || err) });
+    }
+  }
+  return json({ ok: true, staged });
+}
+
+/**
+ * The clarification turn. Adi answers the question ("cycle B", "starts at 9") and the model
+ * resolves it into concrete fields. Text-only — the ambiguity is already captured in
+ * options_json, so there is no reason to pay for a second vision call.
+ *
+ * This NEVER pushes and never sets 'confirmed'. It can only move a row from `incomplete` to
+ * `staged`, which is the state that makes the confirm button appear.
+ */
+async function handleCalendarChat(request, env, id) {
+  const b = await readJson(request);
+  const message = String(b.message || '').trim();
+  if (!message) return json({ error: 'message_required' }, 400);
+
+  const row = await env.DB.prepare(
+    'SELECT * FROM calendar_events WHERE id=? AND deleted_at IS NULL').bind(id).first();
+  if (!row) return json({ error: 'not_found' }, 404);
+  if (row.status === 'confirmed') return json({ error: 'already_confirmed' }, 409);
+
+  const history = JSON.parse(row.chat_json || '[]');
+  const lang = b.lang === 'en' ? 'en' : 'he';
+
+  const system = `You are resolving the missing details of ONE calendar event from the user's
+reply. Return ONLY JSON:
+{
+  "answer": "one short sentence confirming what you understood, in the user's language",
+  "patch": { "title": "...", "location": "...", "description": "...", "organizer": "...",
+             "order_number": "...", "starts_at": "YYYY-MM-DDTHH:MM",
+             "ends_at": "YYYY-MM-DDTHH:MM", "timezone": "...", "all_day": true|false },
+  "complete": true|false,
+  "questions": ["anything still genuinely unresolved"]
+}
+Rules:
+- Include in "patch" ONLY fields the reply actually settles. Omit everything else; omitted
+  fields keep their current value.
+- If the reply names one of the OPTIONS ("מחזור ב׳", "the second one", "cycle B"), copy that
+  option's dates verbatim into starts_at / ends_at.
+- If the reply gives only an hour, combine it with the date already on the event.
+- "complete": true only when a start date-time is now known and nothing in "questions"
+  remains. Do not guess to reach completeness.
+- Never invent an order number, a venue or a year that was not stated.
+${lang === 'he' ? 'כתוב את "answer" ואת "questions" בעברית.' : 'Write "answer" and "questions" in English.'}`;
+
+  const user = `CURRENT EVENT:
+${JSON.stringify({ title: row.title, location: row.location, organizer: row.organizer,
+                   order_number: row.order_number, starts_at: row.starts_at,
+                   ends_at: row.ends_at, all_day: !!row.all_day, timezone: row.timezone }, null, 1)}
+
+CANDIDATE OPTIONS FROM THE DOCUMENT:
+${row.options_json || '(none)'}
+
+STILL OPEN:
+${row.questions_json || '(none)'}
+
+${history.length ? `EARLIER IN THIS CONVERSATION:\n${history.map((h) => `${h.role}: ${h.text}`).join('\n')}\n` : ''}
+USER REPLY: ${message}`;
+
+  let plan;
+  try {
+    plan = parseLooseJson((await runGeminiAgent(env, system, user, [])).text);
+    if (!plan) throw new Error('unparseable');
+  } catch (err) {
+    return json({ ok: false, error: 'chat_failed', detail: String(err?.message || err) }, 502);
+  }
+
+  const patch = plan.patch && typeof plan.patch === 'object' ? plan.patch : {};
+  const next = {
+    title: patch.title !== undefined ? trimStr(patch.title, 300) : row.title,
+    location: patch.location !== undefined ? trimStr(patch.location, 300) : row.location,
+    description: patch.description !== undefined ? trimStr(patch.description, 4000) : row.description,
+    organizer: patch.organizer !== undefined ? trimStr(patch.organizer, 200) : row.organizer,
+    order_number: patch.order_number !== undefined ? trimStr(patch.order_number, 120) : row.order_number,
+    starts_at: patch.starts_at !== undefined ? toLocalDateTime(patch.starts_at) : row.starts_at,
+    ends_at: patch.ends_at !== undefined ? toLocalDateTime(patch.ends_at) : row.ends_at,
+    timezone: patch.timezone !== undefined ? (trimStr(patch.timezone, 60) || 'Asia/Jerusalem') : row.timezone,
+    all_day: patch.all_day !== undefined ? (patch.all_day ? 1 : 0) : row.all_day,
+  };
+
+  const questions = Array.isArray(plan.questions) ? plan.questions.filter(Boolean) : [];
+  // Server decides the status, not the model: no start time means not ready, whatever it
+  // claimed. Still only ever 'staged' — confirming stays a separate, explicit act.
+  const ready = plan.complete === true && !!next.starts_at && !questions.length;
+  history.push({ role: 'user', text: message.slice(0, 2000) });
+  history.push({ role: 'assistant', text: String(plan.answer || '').slice(0, 2000) });
+
+  await env.DB.prepare(
+    `UPDATE calendar_events SET title=?, location=?, description=?, organizer=?, order_number=?,
+            starts_at=?, ends_at=?, timezone=?, all_day=?, questions_json=?, chat_json=?,
+            status=?, updated_at=datetime('now') WHERE id=?`,
+  ).bind(next.title, next.location, next.description, next.organizer, next.order_number,
+         next.starts_at, next.ends_at, next.timezone, next.all_day,
+         questions.length ? JSON.stringify(questions) : null,
+         JSON.stringify(history.slice(-20)),
+         ready ? 'staged' : 'incomplete', id).run();
+
+  return json({ ok: true, answer: plan.answer || '', ready, questions,
+                event: await env.DB.prepare('SELECT * FROM calendar_events WHERE id=?').bind(id).first() });
+}
+
+/** The Graph body for an event. All-day is a genuine trap — see below. */
+function graphEventBody(row) {
+  const tz = row.timezone || 'Asia/Jerusalem';
+  let start = row.starts_at;
+  let end = row.ends_at;
+
+  if (row.all_day) {
+    // Graph requires an all-day event to start at midnight and END AT MIDNIGHT OF THE DAY
+    // AFTER — the end is exclusive. Sending same-day start/end is rejected outright, and
+    // sending 23:59 silently produces a two-day event in Outlook.
+    start = `${start.slice(0, 10)}T00:00:00`;
+    const lastDay = (end || start).slice(0, 10);
+    end = `${new Date(Date.parse(`${lastDay}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10)}T00:00:00`;
+  } else {
+    if (!end || Date.parse(`${end}:00Z`) <= Date.parse(`${start}:00Z`)) {
+      end = addLocalMinutes(start, 60);   // a start with no end is a one-hour event
+    }
+    start = `${start}:00`;
+    end = `${end}:00`;
+  }
+
+  const notes = [row.description, row.order_number ? `Order / אסמכתא: ${row.order_number}` : '',
+                 row.organizer ? `Organiser: ${row.organizer}` : '',
+                 'Added by adiariel.com/me'].filter(Boolean).join('\n\n');
+
+  return {
+    subject: row.title || '(no title)',
+    body: { contentType: 'text', content: notes },
+    start: { dateTime: start, timeZone: tz },
+    end: { dateTime: end, timeZone: tz },
+    isAllDay: !!row.all_day,
+    ...(row.location ? { location: { displayName: row.location } } : {}),
+  };
+}
+
+/**
+ * The ONLY path to the calendar. Body overrides any field, so the last edit in the UI wins
+ * over whatever the model read.
+ */
+async function handleCalendarConfirm(request, env, id) {
+  const b = await readJson(request);
+  const row = await env.DB.prepare(
+    'SELECT * FROM calendar_events WHERE id=? AND deleted_at IS NULL').bind(id).first();
+  if (!row) return json({ error: 'not_found' }, 404);
+
+  const merged = { ...row };
+  for (const f of CAL_FIELDS) {
+    if (b[f] !== undefined) {
+      merged[f] = f === 'starts_at' || f === 'ends_at'
+        ? toLocalDateTime(b[f]) : trimStr(b[f], f === 'description' ? 4000 : 300);
+    }
+  }
+  if (b.all_day !== undefined) merged.all_day = b.all_day ? 1 : 0;
+  merged.timezone = merged.timezone || 'Asia/Jerusalem';
+
+  if (!merged.title) return json({ error: 'title_required' }, 400);
+  // Refusing here rather than letting Graph reject it: the error is far clearer, and an
+  // event with no start is exactly the case this whole staging area exists to catch.
+  if (!merged.starts_at) {
+    return json({ error: 'start_required',
+                  hint: 'Answer the open question in the chat, or set the date by hand.' }, 400);
+  }
+
+  let pushed = null;
+  try {
+    // A graph_id already present means this is a re-push: PATCH, so a retry after a
+    // network failure updates the same entry instead of duplicating it.
+    pushed = row.graph_id
+      ? await graphFetch(env, `/me/events/${encodeURIComponent(row.graph_id)}`,
+                         { method: 'PATCH', body: JSON.stringify(graphEventBody(merged)) })
+      : await graphFetch(env, '/me/events',
+                         { method: 'POST', body: JSON.stringify(graphEventBody(merged)) });
+  } catch (err) {
+    const detail = String(err?.message || err).slice(0, 500);
+    const notConnected = /not_connected/.test(detail);
+    // "Microsoft isn't connected" is a global missing prerequisite, not this event's fault:
+    // the row is left completely untouched so it neither lands in the failed bucket nor
+    // wears a per-event error badge for a condition the connection card already reports.
+    // Only a real Graph rejection belongs on the event.
+    if (!notConnected) {
+      await env.DB.prepare(
+        `UPDATE calendar_events SET push_error=?, status='failed', updated_at=datetime('now')
+          WHERE id=?`).bind(detail, id).run();
+    }
+    return json({ ok: false, error: notConnected ? 'microsoft_not_connected' : 'graph_push_failed',
+                  detail }, notConnected ? 409 : 502);
+  }
+
+  await env.DB.prepare(
+    `UPDATE calendar_events SET status='confirmed', title=?, location=?, description=?,
+            organizer=?, order_number=?, starts_at=?, ends_at=?, timezone=?, all_day=?,
+            graph_id=?, graph_etag=?, web_link=?, pushed_at=datetime('now'), push_error=NULL,
+            confirmed_at=datetime('now'), updated_at=datetime('now'), questions_json=NULL
+      WHERE id=?`,
+  ).bind(merged.title, merged.location, merged.description, merged.organizer,
+         merged.order_number, merged.starts_at, merged.ends_at, merged.timezone,
+         merged.all_day, pushed?.id || row.graph_id, pushed?.['@odata.etag'] || null,
+         pushed?.webLink || null, id).run();
+
+  await env.DB.prepare(
+    'INSERT INTO activity_log (id, entity, entity_id, action, title, meta_json) VALUES (?,?,?,?,?,?)',
+  ).bind(uuid(), 'note', id, 'create', `יומן: ${merged.title}`,
+         JSON.stringify({ kind: 'calendar', starts_at: merged.starts_at,
+                          graph_id: pushed?.id || row.graph_id })).run().catch(() => {});
+
+  return json({ ok: true, web_link: pushed?.webLink || null,
+                event: await env.DB.prepare('SELECT * FROM calendar_events WHERE id=?').bind(id).first() });
+}
+
+async function handleCalendar(request, env, url) {
+  const m = /^\/api\/calendar\/([\w-]+)(?:\/(confirm|reject|chat|file))?$/.exec(url.pathname);
+  const id = m?.[1];
+  const action = m?.[2];
+
+  if (!id && request.method === 'GET') {
+    const status = url.searchParams.get('status') || 'open';
+    const where = ['deleted_at IS NULL'];
+    if (status === 'open') where.push("status IN ('staged','incomplete','failed')");
+    else if (status !== 'all') where.push(`status = '${status.replace(/[^a-z]/g, '')}'`);
+    const { results } = await env.DB.prepare(
+      `SELECT * FROM calendar_events WHERE ${where.join(' AND ')}
+        ORDER BY COALESCE(starts_at, created_at) DESC LIMIT 200`).all();
+    const counts = await env.DB.prepare(
+      `SELECT SUM(status='staged') staged, SUM(status='incomplete') incomplete,
+              SUM(status='confirmed') confirmed, SUM(status='failed') failed
+         FROM calendar_events WHERE deleted_at IS NULL`).first();
+    return json({ ok: true, events: results || [], counts: counts || {} });
+  }
+  if (!id) return json({ error: 'id_required' }, 400);
+
+  if (action === 'file' && request.method === 'GET') {
+    const r = await env.DB.prepare('SELECT r2_key, mime FROM calendar_events WHERE id=?')
+      .bind(id).first();
+    if (!r?.r2_key) return json({ error: 'not_found' }, 404);
+    const obj = await env.DOCS_BUCKET.get(r.r2_key);
+    if (!obj) return json({ error: 'object_missing' }, 404);
+    return new Response(obj.body, {
+      headers: { 'content-type': r.mime || 'application/octet-stream',
+                 'cache-control': 'private, no-store' } });
+  }
+  if (action === 'chat' && request.method === 'POST') return handleCalendarChat(request, env, id);
+  if (action === 'confirm' && request.method === 'POST') return handleCalendarConfirm(request, env, id);
+
+  if (action === 'reject' && request.method === 'POST') {
+    await env.DB.prepare(
+      "UPDATE calendar_events SET status='rejected', deleted_at=datetime('now') WHERE id=?")
+      .bind(id).run();
+    return json({ ok: true, rejected: id });
+  }
+
+  if (request.method === 'PUT') {
+    const b = await readJson(request);
+    const row = await env.DB.prepare('SELECT * FROM calendar_events WHERE id=?').bind(id).first();
+    if (!row) return json({ error: 'not_found' }, 404);
+    const merged = { ...row };
+    for (const f of CAL_FIELDS) {
+      if (b[f] !== undefined) {
+        merged[f] = f === 'starts_at' || f === 'ends_at'
+          ? toLocalDateTime(b[f]) : trimStr(b[f], f === 'description' ? 4000 : 300);
+      }
+    }
+    if (b.all_day !== undefined) merged.all_day = b.all_day ? 1 : 0;
+    await env.DB.prepare(
+      `UPDATE calendar_events SET title=?, location=?, description=?, organizer=?,
+              order_number=?, starts_at=?, ends_at=?, timezone=?, all_day=?,
+              updated_at=datetime('now') WHERE id=?`,
+    ).bind(merged.title, merged.location, merged.description, merged.organizer,
+           merged.order_number, merged.starts_at, merged.ends_at,
+           merged.timezone || 'Asia/Jerusalem', merged.all_day, id).run();
+    return json({ ok: true,
+                  event: await env.DB.prepare('SELECT * FROM calendar_events WHERE id=?').bind(id).first() });
+  }
+
+  if (request.method === 'DELETE') {
+    // Also removes it from Outlook when it got that far — leaving a confirmed event on the
+    // calendar after deleting it here would be the worst of both worlds.
+    const row = await env.DB.prepare('SELECT graph_id FROM calendar_events WHERE id=?').bind(id).first();
+    let graphDeleted = null;
+    if (row?.graph_id && url.searchParams.get('keep_remote') !== '1') {
+      try {
+        await graphFetch(env, `/me/events/${encodeURIComponent(row.graph_id)}`, { method: 'DELETE' });
+        graphDeleted = true;
+      } catch (err) { graphDeleted = String(err?.message || err).slice(0, 200); }
+    }
+    await env.DB.prepare("UPDATE calendar_events SET deleted_at=datetime('now') WHERE id=?")
+      .bind(id).run();
+    return json({ ok: true, deleted: id, graph_deleted: graphDeleted });
+  }
+  return json({ error: 'method_not_allowed' }, 405);
+}
+
+/**
+ * Upcoming events straight from Office 365.
+ *
+ * calendarView, not /me/events, on purpose: /me/events returns a recurring series as ONE
+ * row with its master start date, so a weekly standup would show up once, in the past.
+ * calendarView expands a window into individual instances, which is what "upcoming" means.
+ */
+async function handleCalendarUpcoming(env, url) {
+  const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 180);
+  const start = new Date();
+  const end = new Date(Date.now() + days * 86_400_000);
+  const tz = url.searchParams.get('tz') || 'Asia/Jerusalem';
+  const q = new URLSearchParams({
+    startDateTime: start.toISOString(), endDateTime: end.toISOString(),
+    $select: 'id,subject,start,end,isAllDay,location,webLink,organizer,seriesMasterId',
+    $orderby: 'start/dateTime', $top: '50',
+  });
+  try {
+    const data = await graphFetch(env, `/me/calendarView?${q}`, {
+      // Ask Graph to return times already in Adi's zone instead of UTC, so the UI does not
+      // have to re-derive a wall-clock time and get DST wrong.
+      headers: { Prefer: `outlook.timezone="${tz}"` },
+    });
+    return json({ ok: true, days, timezone: tz,
+                  events: (data.value || []).map((e) => ({
+                    id: e.id, subject: e.subject, all_day: e.isAllDay,
+                    start: e.start?.dateTime, end: e.end?.dateTime,
+                    location: e.location?.displayName || null,
+                    organizer: e.organizer?.emailAddress?.name || null,
+                    web_link: e.webLink, recurring: !!e.seriesMasterId })) });
+  } catch (err) {
+    const detail = String(err?.message || err);
+    const notConnected = /not_connected/.test(detail);
+    return json({ ok: false, error: notConnected ? 'microsoft_not_connected' : 'graph_failed',
+                  detail: detail.slice(0, 300) }, notConnected ? 409 : 502);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4598,6 +5326,22 @@ export default {
         return await handleOAuthStart(env);
       }
 
+      // Microsoft, same two exceptions and the same reasoning as Google above.
+      // ADI: /api/auth/microsoft/callback needs its own Cloudflare Access Bypass policy —
+      // Microsoft cannot complete a Google SSO login, and without the bypass every callback
+      // 302s to the login page and the connect flow dies silently.
+      if (url.pathname === '/api/auth/microsoft/callback' && request.method === 'GET') {
+        return await handleMsCallback(request, env, url);
+      }
+      if (url.pathname === '/api/auth/microsoft/start' && request.method === 'GET') {
+        const viaAccess = await verifyAccessJwt(request, env);
+        const viaSession = await verifySession(env, request.headers.get('X-App-Session') || '');
+        if (!viaAccess && !viaSession) {
+          return withCors(json({ error: 'unauthorized', hint: 'Open this from adiariel.com/me' }, 401));
+        }
+        return await handleMsStart(env);
+      }
+
       if (!url.pathname.startsWith('/api/')) {
         return withCors(json({ error: 'not_found', hint: 'API only. UI lives at https://adiariel.com/me' }, 404));
       }
@@ -4689,6 +5433,23 @@ export default {
       }
       if (url.pathname === '/api/receipts/parse' && request.method === 'POST') {
         return withCors(await handleReceiptParse(request, env));
+      }
+      // --- Calendar. Order matters: /parse and /upcoming before the :id matcher. ---
+      if (url.pathname === '/api/calendar/parse' && request.method === 'POST') {
+        return withCors(await handleCalendarParse(request, env));
+      }
+      if (url.pathname === '/api/calendar/upcoming' && request.method === 'GET') {
+        return withCors(await handleCalendarUpcoming(env, url));
+      }
+      if (/^\/api\/calendar(\/[\w-]+(\/(confirm|reject|chat|file))?)?$/.test(url.pathname)) {
+        return withCors(await handleCalendar(request, env, url));
+      }
+      if (url.pathname === '/api/auth/microsoft/status' && request.method === 'GET') {
+        return withCors(await handleMsStatus(env));
+      }
+      if (url.pathname === '/api/auth/microsoft/disconnect' && request.method === 'POST') {
+        await env.DB.prepare("DELETE FROM oauth_tokens WHERE provider='microsoft'").run();
+        return withCors(json({ ok: true, disconnected: 'microsoft' }));
       }
       if (/^\/api\/receipts(\/[\w-]+(\/(confirm|reject|file))?)?$/.test(url.pathname)) {
         return withCors(await handleReceipts(request, env, url));
@@ -4891,6 +5652,10 @@ export default {
         catch (e) { pending = { error: String(e) }; }
         const purged = await runPurge(env);
         const alerts = await runDueAlerts(env);
+        // Independently caught: a mail failure must not skip the Google sync below.
+        let msSecret = null;
+        try { msSecret = await checkMsSecretExpiry(env); }
+        catch (err) { msSecret = { error: String(err?.message || err) }; }
         // Google Tasks has no webhooks, so the nightly run is the pull channel.
         // Never let a sync failure abort the purge or the alerts above it.
         let sync = { skipped: 'not_connected' };
@@ -4902,7 +5667,7 @@ export default {
           try { contacts = await syncGoogleContacts(env, {}); }
           catch (err) { contacts = { error: String(err?.message || err) }; }
         }
-        console.log('cron', JSON.stringify({ cron: event.cron, pending, purged, alerts, sync, contacts }));
+        console.log('cron', JSON.stringify({ cron: event.cron, pending, purged, alerts, ms_secret: msSecret, sync, contacts }));
       } catch (err) {
         console.error('cron_failed', err?.stack || err);
       }

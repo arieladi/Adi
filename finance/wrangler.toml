@@ -68,6 +68,16 @@ ALLOWED_ORIGINS = "https://adiariel.com,https://www.adiariel.com,https://arielad
 MAIL_FROM = "Adi Hub <office@adiariel.com>"
 MAIL_TO = "adidatabase@gmail.com"
 
+# --- Microsoft Graph / Office 365 calendar ---------------------------------
+# The IDs and the secret are SECRETS, not vars — see the list at the bottom of this file.
+# This date is not sensitive and has to be editable, so it lives here: the nightly cron
+# warns at 90/60/30/14/7/3/1/0 days out, once per threshold, because an expired client
+# secret fails invisibly (the calendar works for up to an hour on a cached access token,
+# then every refresh returns AADSTS7000222).
+# UPDATE THIS whenever you rotate MICROSOFT_CLIENT_SECRET, or the warnings stop matching
+# reality — and delete the ms_secret_alert_* rows from `settings` so they can fire again.
+MICROSOFT_SECRET_EXPIRES = "2028-08-03"
+
 # --- Cloudflare Access -----------------------------------------------------
 # When both are set, a valid Access JWT authenticates a request and the UI stops
 # asking for a token. Leave blank to fall back to Bearer-only.
@@ -81,3 +91,8 @@ ACCESS_AUD = "4f55ba0a1eeb3be3c6365cadb2e3f4e7bfe59c3b010a53359104144698d72fce"
 # Secrets (set with `npx wrangler secret put <NAME> --name finance`):
 #   GEMINI_API_KEY  — already set
 #   API_TOKEN       — REQUIRED. The worker fails closed (503) without it.
+#   MICROSOFT_CLIENT_ID / MICROSOFT_TENANT_ID / MICROSOFT_CLIENT_SECRET
+#                   — Entra ID app "Hub Calendar". The two IDs are not secret in themselves,
+#                     but they are kept here rather than in [vars] so no Microsoft
+#                     credential of any kind is committed to a public repo.
+# Local values for all of these live in finance/.dev.vars, which is gitignored.
