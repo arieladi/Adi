@@ -75,8 +75,11 @@ a{color:var(--c1)}
   border-radius:var(--r);padding:28px}
 #gate h1{margin:0 0 6px;font-size:1.25rem}
 #gate p{margin:0 0 18px;color:var(--muted);font-size:.9rem}
-input[type=password],input[type=text],input[type=month],input[type=date],input[type=search],
-input[type=number],textarea,select{
+/* Every text-ish input, by exclusion rather than by enumeration. The old explicit list
+   silently missed each new type as it was introduced — first number, then datetime-local —
+   and an unstyled input renders as a bright white box in the dark themes. */
+input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=hidden]):not([type=range]):not([type=color]):not([type=submit]):not([type=button]):not([type=image]):not([type=reset]),
+textarea,select{
   width:100%;background:var(--field);border:1px solid var(--line-2);color:var(--text);
   border-radius:12px;padding:11px 13px;font-size:.9rem;font-family:inherit}
 textarea{resize:vertical;min-height:110px;line-height:1.6}
@@ -204,6 +207,45 @@ html[lang=he] .rf label{letter-spacing:.02em}
   border-radius:99px;background:var(--ok-soft);color:var(--ok);white-space:nowrap;margin-top:3px}
 .wbadge.soon{background:var(--warn-soft);color:var(--warn)}
 .wbadge.expired{background:var(--track);color:var(--muted)}
+
+/* ---------- calendar ---------- */
+#calDrop{border:1.5px dashed var(--line-2);border-radius:14px;padding:22px 16px;text-align:center;
+  transition:border-color .15s,background .15s}
+#calDrop.over{border-color:var(--c2);background:var(--accent-wash)}
+#calDrop .big{font-size:.94rem;font-weight:600}
+#calDrop .small{font-size:.78rem;color:var(--muted);margin-top:5px}
+/* One review block per staged event: the question, the evidence, the conversation. */
+.cev{border:1px solid var(--agent-line);border-radius:14px;padding:14px;
+  background:linear-gradient(160deg,var(--agent-1),var(--agent-2))}
+.cev + .cev{margin-top:12px}
+.cev .cq{font-size:.95rem;line-height:1.65}
+.cev .cq b{color:var(--c1)}
+.cev.needs{border-color:var(--warn)}
+/* Candidate date cycles — clicking one answers the question through the same chat turn. */
+.optchips{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}
+.optchip{display:inline-flex;flex-direction:column;gap:2px;align-items:flex-start;
+  border:1px solid var(--line-2);border-radius:11px;padding:7px 11px;cursor:pointer;
+  background:var(--field);text-align:start;font-family:inherit;color:var(--text);transition:.15s}
+.optchip:hover{border-color:var(--c2);background:var(--accent-wash)}
+.optchip b{font-size:.84rem}
+.optchip span{font-family:var(--mono);font-size:.68rem;color:var(--muted);direction:ltr}
+.calturns{margin-top:11px;display:grid;gap:7px}
+.turn{font-size:.87rem;line-height:1.55;padding:7px 11px;border-radius:11px;max-width:88%}
+.turn.user{background:var(--track);justify-self:end;border-end-end-radius:3px}
+.turn.bot{background:var(--accent-wash);border:1px solid var(--line);justify-self:start;
+  border-end-start-radius:3px}
+.calask{display:flex;gap:8px;margin-top:11px}
+.calask input{flex:1}
+.evrow{display:grid;grid-template-columns:auto 1fr auto;gap:11px;align-items:center;
+  padding:9px 4px;border-top:1px solid var(--line);border-radius:9px}
+.evrow:first-child{border-top:0}
+.evrow .when{font-family:var(--mono);font-size:.7rem;color:var(--muted);direction:ltr;
+  text-align:center;line-height:1.35;min-width:52px}
+.evrow .when b{display:block;font-size:1.15rem;color:var(--text)}
+.evrow .ttl{font-size:.9rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.evrow .sub{font-size:.76rem;color:var(--muted);margin-top:2px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.evrow a{color:var(--c1);text-decoration:none;font-size:.8rem}
 
 /* ---------- brain-dump proposal ---------- */
 .prop{border:1px solid var(--line-2);border-radius:13px;padding:13px;margin-top:11px;
@@ -393,6 +435,7 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
     </div>
     <div class="tabs" role="tablist">
       <button class="tab on" id="tabFinance" data-i18n="finance" role="tab">כספים</button>
+      <button class="tab" id="tabCalendar" data-i18n="calendar" role="tab">יומן</button>
       <button class="tab" id="tabTasks" data-i18n="tasksNotes" role="tab">משימות ופתקים</button>
       <button class="tab" id="tabContacts" data-i18n="contacts" role="tab">אנשי קשר</button>
       <button class="tab" id="tabHistory" data-i18n="history" role="tab">היסטוריה</button>
@@ -547,6 +590,66 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
         </div>
       </div>
     </div><!-- /#finReceipts -->
+  </section>
+
+  <!-- ---------- יומן ----------
+       Propose-then-confirm, like receipts — but confirming here writes to a shared,
+       outward-facing calendar, so an `incomplete` event cannot be confirmed at all until
+       the chat has resolved what the flyer left ambiguous. -->
+  <section id="viewCalendar" hidden>
+    <div class="grid kpis" id="calTotals"></div>
+    <div class="grid cols">
+      <div class="grid" style="gap:16px">
+        <section class="card">
+          <h2 data-i18n="calAdd">הוספת אירוע מהזמנה</h2>
+          <div id="calDrop">
+            <div class="big" data-i18n="calDropBig">גרור הזמנה, פלייר או כרטיס · הדבק מהלוח · או בחר קובץ</div>
+            <div class="small" data-i18n="calDropSmall">תמונה או PDF · עד 15MB</div>
+            <div class="noteActions" style="justify-content:center">
+              <button class="btn sm" id="calPick" type="button" data-i18n="rChoose">בחר קובץ</button>
+              <button class="btn ghost sm" id="calCam" type="button" hidden data-i18n="calCamera">📷 צלם הזמנה</button>
+            </div>
+          </div>
+          <input type="file" id="calFile" hidden multiple
+                 accept="image/*,application/pdf,.pdf,.jpg,.jpeg,.png,.webp,.heic">
+          <input type="file" id="calCamFile" hidden accept="image/*" capture="environment">
+          <div class="uplog" id="calLog"></div>
+        </section>
+
+        <section class="card agent" id="calReviewCard" hidden>
+          <h2><em data-i18n="calReview" style="font-style:normal">בדיקה לפני הוספה ליומן</em>
+            <span class="badge" id="calOpenCount">0</span></h2>
+          <div id="calReview"></div>
+        </section>
+
+        <section class="card">
+          <h2><em data-i18n="calArchive" style="font-style:normal">אירועים שנוספו</em>
+            <span class="badge" id="calDoneCount">0</span></h2>
+          <div id="calList"><div class="empty" data-i18n="calNone">עוד לא נוספו אירועים.</div></div>
+        </section>
+      </div>
+
+      <div class="grid" style="gap:16px">
+        <section class="card">
+          <h2><em data-i18n="calUpcoming" style="font-style:normal">מהיומן שלי</em>
+            <span class="badge" id="calUpcomingBadge">Office 365</span>
+            <button class="btn ghost sm" id="calRefresh" style="margin-inline-start:auto"
+                    data-i18n="refresh">רענן</button></h2>
+          <div id="calUpcoming"><span class="spin"></span></div>
+        </section>
+        <section class="card" id="msCard">
+          <h2><em data-i18n="msTitle" style="font-style:normal">חיבור Microsoft</em>
+            <span class="badge" id="msStatus">—</span></h2>
+          <div id="msDetail" class="empty" data-i18n="gChecking">בודק…</div>
+          <div class="noteActions">
+            <button class="btn sm" id="msConnect" data-i18n="msConnect">חבר את Office 365</button>
+            <button class="btn ghost sm" id="msRefresh" data-i18n="refresh">רענן</button>
+            <button class="btn danger sm" id="msDisconnect" hidden data-i18n="gDisconnect">נתק</button>
+          </div>
+          <div class="route" id="msResult" hidden></div>
+        </section>
+      </div>
+    </div>
   </section>
 
   <!-- ---------- משימות ופתקים ---------- -->
@@ -981,6 +1084,35 @@ const I18N = {
     invLiquid:'נזיל מ־', invAsOf:'לתאריך', invStatements:'דוחות',
     inv_keren_hishtalmut:'קרן השתלמות', inv_pension:'פנסיה', inv_gemel:'קופת גמל',
     inv_savings:'חיסכון', inv_other:'אחר',
+    // calendar
+    calendar:'יומן', calAdd:'הוספת אירוע מהזמנה',
+    calDropBig:'גרור הזמנה, פלייר או כרטיס · הדבק מהלוח · או בחר קובץ',
+    calDropSmall:'תמונה או PDF · עד 15MB', calCamera:'📷 צלם הזמנה',
+    calReview:'בדיקה לפני הוספה ליומן', calArchive:'אירועים שנוספו',
+    calNone:'עוד לא נוספו אירועים.', calUpcoming:'מהיומן שלי',
+    calParsing:'קורא את ההזמנה…', calNoImage:'לא נמצאה תמונה או PDF',
+    calTileOpen:'ממתינים לאישור', calTileNeeds:'חסרים פרטים', calTileDone:'נוספו ליומן',
+    calTileOpenFoot:'לפני הוספה ליומן', calTileNeedsFoot:'צריך תשובה בצ׳אט',
+    calTileDoneFoot:'ב-Office 365',
+    calTitle:'כותרת', calWhere:'מקום', calStart:'תחילה', calEnd:'סיום',
+    calOrder:'מספר הזמנה', calOrganizer:'מארגן', calNotes:'הערות', calAllDay:'כל היום',
+    calAdd2:'הוסף ליומן', calRejectBtn:'דחה', calOpenFile:'פתח את ההזמנה',
+    calConfirmReject:'לדחות את האירוע? הוא לא ייכנס ליומן.',
+    calAdded:'נוסף ליומן', calRejected:'נדחה', calSaved:'נשמר',
+    calAskPh:'ענה כאן — למשל: מחזור ב׳, או: מתחיל ב-9:00',
+    calSend:'שלח', calThinking:'חושב…',
+    calNeedsAnswer:'צריך תשובה לפני שאפשר להוסיף ליומן',
+    calWhichOption:'אפשרויות מהמסמך — לחץ על הנכונה:',
+    calAskedFor:'פירשתי אירוע', calAt:'ב־', calNoDate:'בלי תאריך ברור',
+    calToAdd:'— להוסיף ליומן?',
+    calNoUpcoming:'אין אירועים בשבועות הקרובים.', calNotConnected:'Office 365 לא מחובר.',
+    calRecurring:'חוזר', calAllDayShort:'כל היום',
+    calConfirmDelete:'למחוק את האירוע? הוא יימחק גם מ-Office 365.',
+    msTitle:'חיבור Microsoft', msConnect:'חבר את Office 365',
+    msConnected:'מחובר', msNotConnected:'לא מחובר', msNotConfigured:'חסרות הגדרות',
+    msTokenBad:'הטוקן פג — התחבר מחדש', msConfirmDisconnect:'לנתק את Office 365? הסנכרון ייפסק.',
+    msSecretExpires:'הסוד פג בתאריך', msSecretDays:'ימים',
+    msSecretSoon:'צריך להחליף את הסוד בקרוב',
   },
   en: {
     hub:'Personal hub', hubTitle:'Personal hub', signInHint:'Sign in to continue.',
@@ -1106,6 +1238,37 @@ const I18N = {
     invLiquid:'liquid from', invAsOf:'as of', invStatements:'statements',
     inv_keren_hishtalmut:'Keren Hishtalmut', inv_pension:'Pension', inv_gemel:'Gemel',
     inv_savings:'Savings', inv_other:'Other',
+    // calendar
+    calendar:'Calendar', calAdd:'Add an event from an invitation',
+    calDropBig:'Drop an invitation, flyer or ticket · paste · or pick a file',
+    calDropSmall:'Image or PDF · max 15 MB', calCamera:'📷 Photograph it',
+    calReview:'Review before it reaches the calendar', calArchive:'Events added',
+    calNone:'No events added yet.', calUpcoming:'From my calendar',
+    calParsing:'reading the invitation…', calNoImage:'no image or PDF found',
+    calTileOpen:'Awaiting confirmation', calTileNeeds:'Missing details',
+    calTileDone:'Added to calendar',
+    calTileOpenFoot:'before reaching the calendar', calTileNeedsFoot:'needs a chat answer',
+    calTileDoneFoot:'in Office 365',
+    calTitle:'Title', calWhere:'Location', calStart:'Starts', calEnd:'Ends',
+    calOrder:'Order number', calOrganizer:'Organiser', calNotes:'Notes', calAllDay:'All day',
+    calAdd2:'Add to calendar', calRejectBtn:'Discard', calOpenFile:'Open the invitation',
+    calConfirmReject:'Discard this event? It will not reach the calendar.',
+    calAdded:'Added to the calendar', calRejected:'Discarded', calSaved:'Saved',
+    calAskPh:'Answer here — e.g. "cycle B", or "starts at 9:00"',
+    calSend:'Send', calThinking:'Thinking…',
+    calNeedsAnswer:'Needs an answer before it can reach the calendar',
+    calWhichOption:'Options found in the document — click the right one:',
+    calAskedFor:'I parsed an event', calAt:'in ', calNoDate:'with no clear date',
+    calToAdd:'— add it to the calendar?',
+    calNoUpcoming:'Nothing in the next few weeks.', calNotConnected:'Office 365 is not connected.',
+    calRecurring:'recurring', calAllDayShort:'all day',
+    calConfirmDelete:'Delete this event? It will also be removed from Office 365.',
+    msTitle:'Microsoft connection', msConnect:'Connect Office 365',
+    msConnected:'Connected', msNotConnected:'Not connected', msNotConfigured:'Not configured',
+    msTokenBad:'Token expired — reconnect',
+    msConfirmDisconnect:'Disconnect Office 365? Syncing will stop.',
+    msSecretExpires:'Secret expires', msSecretDays:'days',
+    msSecretSoon:'the client secret needs rotating soon',
   },
 };
 let lang = localStorage.getItem('adi_lang') || 'he';
@@ -1232,18 +1395,19 @@ $('#refresh').addEventListener('click', () => {
   loadFinance(); loadTasks(); loadNotes(); loadInsights();
   if (!$('#viewHistory').hidden) { loadHistory(); loadIngest().catch(() => {}); }
   if (!$('#finReceipts').hidden) { loadReceipts(); loadStaged(); }
+  if (!$('#viewCalendar').hidden) { loadCalendar(); loadCalUpcoming(); loadMs(); }
 });
 
 // ===================== tabs =====================
 function showTab(name) {
-  for (const [v, n] of [['#viewFinance','finance'],['#viewTasks','tasks'],
-                        ['#viewContacts','contacts'],['#viewHistory','history'],
-                        ['#viewSettings','settings']]) {
+  for (const [v, n] of [['#viewFinance','finance'],['#viewCalendar','calendar'],
+                        ['#viewTasks','tasks'],['#viewContacts','contacts'],
+                        ['#viewHistory','history'],['#viewSettings','settings']]) {
     $(v).hidden = name !== n;
   }
-  for (const [b, n] of [['#tabFinance','finance'],['#tabTasks','tasks'],
-                        ['#tabContacts','contacts'],['#tabHistory','history'],
-                        ['#tabSettings','settings']]) {
+  for (const [b, n] of [['#tabFinance','finance'],['#tabCalendar','calendar'],
+                        ['#tabTasks','tasks'],['#tabContacts','contacts'],
+                        ['#tabHistory','history'],['#tabSettings','settings']]) {
     $(b).classList.toggle('on', name === n);
   }
   localStorage.setItem('adi_tab', name);
@@ -1253,11 +1417,17 @@ function showTab(name) {
   if (name === 'tasks' && !tasksLoaded) { loadTasks(); loadNotes(); tasksLoaded = true; }
   if (name === 'tasks') autoSync('tasks');
   if (name === 'contacts') autoSync('contacts');
+  if (name === 'calendar') {
+    loadCalendar().catch(() => {});
+    // Both hit Microsoft, so only on first entry / explicit refresh — not every tab switch.
+    if (!calendarLoaded) { calendarLoaded = true; loadMs(); loadCalUpcoming(); }
+  }
   if (name === 'history') { loadHistory(); loadIngest().catch(() => {}); }
   if (name === 'contacts') loadContacts();
   if (name === 'settings') loadGoogle();
 }
 $('#tabFinance').addEventListener('click', () => showTab('finance'));
+$('#tabCalendar').addEventListener('click', () => showTab('calendar'));
 $('#tabTasks').addEventListener('click', () => showTab('tasks'));
 $('#tabContacts').addEventListener('click', () => showTab('contacts'));
 $('#tabHistory').addEventListener('click', () => showTab('history'));
@@ -1383,6 +1553,7 @@ $('#ingList').addEventListener('click', (e) => {
 
 // ===================== tasks =====================
 let tasksLoaded = false;
+let calendarLoaded = false;
 let allTasks = [];
 const MAX_DEPTH = 2;
 const CHECK = '<svg viewBox="0 0 12 12" fill="none"><path d="M1 6l3.5 3.5L11 2" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -2426,6 +2597,445 @@ async function upload(files) {
   await loadInsights();
 }
 
+// ===================== calendar (יומן) =====================
+//
+// Same propose-then-confirm shape as receipts, with one addition: an `incomplete` event
+// cannot be confirmed at all. A flyer offering three date cycles is a correct reading of an
+// ambiguous document, not a parse failure — so the confirm button does not exist until the
+// chat has resolved which cycle Adi actually booked.
+
+let calEvents = [];
+let calDone = [];
+let calCounts = {};
+let calUpcoming = null;
+let msState = null;
+const calBlob = new Map();
+
+const CAL_DOW = { he: ['א','ב','ג','ד','ה','ו','ש'], en: ['Su','Mo','Tu','We','Th','Fr','Sa'] };
+
+/** 'YYYY-MM-DDTHH:MM' → readable, without pretending a wall-clock time is UTC. */
+function calWhen(local, allDay) {
+  if (!local) return { day: '—', mon: '', time: '' };
+  const [date, time] = String(local).split('T');
+  const [y, m, d] = date.split('-').map(Number);
+  // Date.UTC + getUTC* keeps the printed day equal to the stored day in every timezone —
+  // a local Date() would render 2026-09-01T00:00 as 31 August west of Greenwich.
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const mon = dt.toLocaleDateString(lang === 'he' ? 'he-IL' : 'en-GB',
+    { month: 'short', timeZone: 'UTC' });
+  return { day: String(d), mon, y,
+           dow: (CAL_DOW[lang] || CAL_DOW.en)[dt.getUTCDay()],
+           time: allDay ? t('calAllDayShort') : (time || '').slice(0, 5) };
+}
+
+function calFields(e) {
+  return `<div class="rf">
+    <div class="wide"><label>${esc(t('calTitle'))}</label>
+      <input type="text" data-f="title" maxlength="300" value="${esc(e.title || '')}"></div>
+    <div class="wide"><label>${esc(t('calWhere'))}</label>
+      <input type="text" data-f="location" maxlength="300" value="${esc(e.location || '')}"></div>
+    <div><label>${esc(t('calStart'))}</label>
+      <input type="datetime-local" data-f="starts_at" value="${esc(e.starts_at || '')}"></div>
+    <div><label>${esc(t('calEnd'))}</label>
+      <input type="datetime-local" data-f="ends_at" value="${esc(e.ends_at || '')}"></div>
+    <div><label>${esc(t('calOrder'))}</label>
+      <input type="text" data-f="order_number" maxlength="120" value="${esc(e.order_number || '')}"></div>
+    <div><label>${esc(t('calOrganizer'))}</label>
+      <input type="text" data-f="organizer" maxlength="200" value="${esc(e.organizer || '')}"></div>
+    <div class="wide"><label class="switch" style="margin-top:4px">
+      <input type="checkbox" data-f="all_day"${e.all_day ? ' checked' : ''}>
+      <em style="font-style:normal">${esc(t('calAllDay'))}</em></label></div>
+    <div class="wide"><label>${esc(t('calNotes'))}</label>
+      <textarea data-f="description" style="min-height:56px">${esc(e.description || '')}</textarea></div>
+  </div>`;
+}
+
+function readCalFields(box) {
+  const v = (f) => box.querySelector(`[data-f="${f}"]`)?.value ?? '';
+  return {
+    title: v('title').trim(), location: v('location').trim(),
+    description: v('description').trim(), order_number: v('order_number').trim(),
+    organizer: v('organizer').trim(),
+    starts_at: v('starts_at'), ends_at: v('ends_at'),
+    all_day: !!box.querySelector('[data-f="all_day"]')?.checked,
+  };
+}
+
+function calQuestion(e) {
+  const title = e.title ? `<b>${esc(e.title)}</b>` : esc(t('calNoDate'));
+  const where = e.location ? ` ${esc(t('calAt'))}<b>${esc(e.location)}</b>` : '';
+  return `${esc(t('calAskedFor'))} ${title}${where} ${esc(t('calToAdd'))}`;
+}
+
+function renderCalReview() {
+  const open = calEvents;
+  $('#calOpenCount').textContent = open.length;
+  $('#calReviewCard').hidden = !open.length;
+  $('#calReview').innerHTML = open.map((e) => {
+    const opts = e.options_json ? JSON.parse(e.options_json) : [];
+    const qs = e.questions_json ? JSON.parse(e.questions_json) : [];
+    const turns = e.chat_json ? JSON.parse(e.chat_json) : [];
+    const needs = e.status === 'incomplete';
+    return `
+    <div class="cev${needs ? ' needs' : ''}" data-id="${esc(e.id)}">
+      <div class="cq">${calQuestion(e)}</div>
+      ${qs.length ? `<div class="cq" style="margin-top:8px;color:var(--warn)">${
+        qs.map((q) => esc(q)).join('<br>')}</div>` : ''}
+      ${opts.length > 1 ? `
+        <div class="cw" style="margin-top:10px">${esc(t('calWhichOption'))}</div>
+        <div class="optchips">${opts.map((o, i) => `
+          <button class="optchip" type="button" data-opt="${i}">
+            <b>${esc(o.label || `#${i + 1}`)}</b>
+            <span>${esc([o.starts_at, o.ends_at].filter(Boolean).join(' → ') || o.note || '')}</span>
+          </button>`).join('')}</div>` : ''}
+      ${turns.length ? `<div class="calturns">${turns.map((h) => `
+        <div class="turn ${h.role === 'user' ? 'user' : 'bot'}">${esc(h.text)}</div>`).join('')}</div>` : ''}
+      <div class="rmid">
+        <div class="rthumb" data-view="${esc(e.id)}" title="${esc(t('calOpenFile'))}">${
+          /pdf/i.test(e.mime || '') ? '📄' : '🖼'}</div>
+        <div>${calFields(e)}</div>
+      </div>
+      <form class="calask" data-ask="${esc(e.id)}">
+        <input type="text" data-i18n-ph="calAskPh" placeholder="${esc(t('calAskPh'))}">
+        <button class="btn ghost sm" type="submit">${esc(t('calSend'))}</button>
+      </form>
+      <div class="noteActions">
+        <!-- Always rendered, disabled while no start date exists. Hiding it outright trapped
+             a hand-edited event: Adi could type the date himself, but the only way to clear
+             the incomplete status was the chat, so the button never appeared. The gate is
+             the DATE, not the status; the badge still explains why it was flagged.
+             (No backticks in here - this comment lives inside a template literal.) -->
+        <button class="btn sm" data-act="confirm"${e.starts_at ? '' : ' disabled'}
+                >${esc(t('calAdd2'))}</button>
+        ${needs ? `<span class="badge warn">${esc(t('calNeedsAnswer'))}</span>` : ''}
+        <button class="btn ghost sm" data-act="reject">${esc(t('calRejectBtn'))}</button>
+        ${e.confidence != null
+          ? `<span class="badge">${esc(t('rConfidence'))} ${Math.round(e.confidence * 100)}%</span>` : ''}
+        ${e.push_error ? `<span class="badge warn">${esc(e.push_error.slice(0, 60))}</span>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+  loadCalThumbs();
+}
+
+// Never <img src> an authenticated route — fetch, then a blob: URL.
+async function loadCalThumbs() {
+  for (const el of $$('#calReview [data-view]')) {
+    const id = el.dataset.view;
+    const e = calEvents.find((x) => x.id === id);
+    if (!e || !/^image\//i.test(e.mime || '')) continue;
+    if (calBlob.has(id)) { el.innerHTML = `<img src="${calBlob.get(id)}" alt="">`; continue; }
+    try {
+      const res = await apiRaw(`/api/calendar/${id}/file`);
+      if (!res.ok) continue;
+      if (calBlob.size > 40) {
+        for (const u of calBlob.values()) URL.revokeObjectURL(u);
+        calBlob.clear();
+      }
+      const url = URL.createObjectURL(await res.blob());
+      calBlob.set(id, url);
+      el.innerHTML = `<img src="${url}" alt="">`;
+    } catch { /* keep the glyph */ }
+  }
+}
+
+function renderCalTotals() {
+  const tiles = [
+    { label: t('calTileOpen'), val: String(calCounts.staged || 0), foot: t('calTileOpenFoot') },
+    { label: t('calTileNeeds'), val: String(calCounts.incomplete || 0), foot: t('calTileNeedsFoot') },
+    { label: t('calTileDone'), val: String(calCounts.confirmed || 0), foot: t('calTileDoneFoot') },
+  ];
+  $('#calTotals').innerHTML = tiles.map((x) => `
+    <div class="card kpi"><div class="label">${esc(x.label)}</div>
+      <div class="val">${x.val}</div><div class="foot">${esc(x.foot)}</div></div>`).join('');
+}
+
+function renderCalDone() {
+  $('#calDoneCount').textContent = calDone.length;
+  $('#calList').innerHTML = calDone.length ? calDone.map((e) => {
+    const w = calWhen(e.starts_at, e.all_day);
+    return `<div class="evrow" data-ev="${esc(e.id)}">
+      <div class="when"><b>${esc(w.day)}</b>${esc(w.mon)}<br>${esc(w.time)}</div>
+      <div style="min-width:0">
+        <div class="ttl">${esc(e.title || '')}</div>
+        <div class="sub">${esc([e.location, e.order_number].filter(Boolean).join(' · '))}</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        ${e.web_link ? `<a href="${esc(e.web_link)}" target="_blank" rel="noopener">Outlook ↗</a>` : ''}
+        <button class="ic del" data-del="${esc(e.id)}" title="${esc(t('del'))}">✕</button>
+      </div></div>`;
+  }).join('') : `<div class="empty">${esc(t('calNone'))}</div>`;
+}
+
+function renderCalUpcoming() {
+  const box = $('#calUpcoming');
+  if (!calUpcoming) { box.innerHTML = `<span class="spin"></span>`; return; }
+  if (!calUpcoming.ok) {
+    box.innerHTML = `<div class="empty">${esc(
+      calUpcoming.error === 'microsoft_not_connected' ? t('calNotConnected')
+        : `${t('chatFail')}: ${calUpcoming.detail || calUpcoming.error}`)}</div>`;
+    return;
+  }
+  const evs = calUpcoming.events || [];
+  box.innerHTML = evs.length ? evs.map((e) => {
+    const w = calWhen((e.start || '').slice(0, 16), e.all_day);
+    return `<div class="evrow">
+      <div class="when"><b>${esc(w.day)}</b>${esc(w.mon)}<br>${esc(w.time)}</div>
+      <div style="min-width:0">
+        <div class="ttl">${esc(e.subject || '')}</div>
+        <div class="sub">${esc([e.location, e.organizer,
+          e.recurring ? t('calRecurring') : ''].filter(Boolean).join(' · '))}</div>
+      </div>
+      ${e.web_link ? `<a href="${esc(e.web_link)}" target="_blank" rel="noopener">↗</a>` : '<span></span>'}
+    </div>`;
+  }).join('') : `<div class="empty">${esc(t('calNoUpcoming'))}</div>`;
+}
+
+async function loadCalendar() {
+  const [open, done] = await Promise.all([
+    apiJson('/api/calendar?status=open'),
+    apiJson('/api/calendar?status=confirmed'),
+  ]);
+  calEvents = open.events || [];
+  calDone = done.events || [];
+  calCounts = open.counts || {};
+  renderCalTotals(); renderCalReview(); renderCalDone();
+}
+
+async function loadCalUpcoming() {
+  calUpcoming = null; renderCalUpcoming();
+  try { calUpcoming = await apiJson('/api/calendar/upcoming?days=45'); }
+  catch (err) { calUpcoming = { ok: false, error: 'graph_failed', detail: err.message }; }
+  renderCalUpcoming();
+}
+
+// ---- the review chat ----
+$('#calReview').addEventListener('click', async (e) => {
+  const thumb = e.target.closest('[data-view]');
+  if (thumb) { openProtected(`/api/calendar/${thumb.dataset.view}/file`); return; }
+
+  // Clicking a date-cycle chip is just a chat turn with its label as the message, so the
+  // model resolves it exactly as it would a typed reply — and the choice lands in the
+  // conversation history as the record of why that cycle was picked.
+  const chip = e.target.closest('[data-opt]');
+  if (chip) {
+    const box = chip.closest('.cev');
+    const ev = calEvents.find((x) => x.id === box.dataset.id);
+    const opt = JSON.parse(ev.options_json || '[]')[Number(chip.dataset.opt)];
+    await calChat(box.dataset.id, opt?.label || chip.textContent.trim());
+    return;
+  }
+
+  const act = e.target.closest('[data-act]');
+  if (!act) return;
+  const box = act.closest('.cev');
+  const id = box.dataset.id;
+
+  if (act.dataset.act === 'reject') {
+    if (!confirm(t('calConfirmReject'))) return;
+    act.disabled = true;
+    try {
+      await postJson(`/api/calendar/${id}/reject`, {});
+      showToast(t('calRejected'));
+      await loadCalendar();
+    } catch (err) { showToast('✕ ' + err.message); act.disabled = false; }
+    return;
+  }
+
+  // The only path to the calendar.
+  act.disabled = true;
+  try {
+    const d = await postJson(`/api/calendar/${id}/confirm`, readCalFields(box));
+    if (!d.ok) throw new Error(d.detail || d.error || 'confirm_failed');
+    showToast(`${t('calAdded')}: ${d.event.title || ''}`.trim());
+    await loadCalendar();
+    await loadCalUpcoming();
+  } catch (err) { showToast('✕ ' + err.message); act.disabled = false; }
+});
+
+async function calChat(id, message) {
+  const box = $(`.cev[data-id="${id}"]`);
+  const input = box?.querySelector('.calask input');
+  const btn = box?.querySelector('.calask button');
+  if (btn) { btn.disabled = true; btn.textContent = t('calThinking'); }
+  try {
+    // Send the on-screen edits along with the reply, so a hand-typed correction is not lost
+    // when the model's patch is applied on top.
+    if (box) await apiJson(`/api/calendar/${id}`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(readCalFields(box)),
+    }).catch(() => {});
+    const d = await postJson(`/api/calendar/${id}/chat`, { message, lang });
+    if (!d.ok) throw new Error(d.detail || d.error || 'chat_failed');
+    if (input) input.value = '';
+    await loadCalendar();
+  } catch (err) { showToast('✕ ' + err.message); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = t('calSend'); } }
+}
+
+// Typing a start date by hand arms the confirm button immediately, without waiting for a
+// save-and-re-render round trip.
+$('#calReview').addEventListener('input', (e) => {
+  const box = e.target.closest('.cev');
+  if (!box) return;
+  const btn = box.querySelector('[data-act="confirm"]');
+  if (btn) btn.disabled = !box.querySelector('[data-f="starts_at"]')?.value;
+});
+
+$('#calReview').addEventListener('submit', (e) => {
+  const form = e.target.closest('[data-ask]');
+  if (!form) return;
+  e.preventDefault();
+  const msg = form.querySelector('input').value.trim();
+  if (msg) calChat(form.dataset.ask, msg);
+});
+
+$('#calList').addEventListener('click', async (e) => {
+  const del = e.target.closest('[data-del]');
+  if (!del || !confirm(t('calConfirmDelete'))) return;
+  try {
+    await api(`/api/calendar/${del.dataset.del}`, { method: 'DELETE' });
+    showToast(t('deleted'));
+    await loadCalendar();
+    await loadCalUpcoming();
+  } catch (err) { showToast('✕ ' + err.message); }
+});
+
+// ---- input: picker, camera, drag-and-drop, clipboard ----
+const MAX_INVITE_BYTES = 15 * 1024 * 1024;   // matches MAX_UPLOAD_BYTES in the worker
+
+async function uploadInvites(files) {
+  const list = [...files].filter(Boolean);
+  if (!list.length) return;
+  let parsed = 0;
+  // One request per file: a Gemini vision call per invitation, same reasoning as receipts.
+  for (const file of list) {
+    const line = calLogLine(file.name || 'invite');
+    if (file.size > MAX_INVITE_BYTES) { line.bad(t('rTooBig')); continue; }
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await api('/api/calendar/parse', { method: 'POST', body: fd });
+      const d = await res.json();
+      if (!res.ok || !d.ok) {
+        line.bad(d.error === 'no_image_or_pdf' ? t('calNoImage') : (d.error || res.status));
+        continue;
+      }
+      const rows = d.staged || [];
+      const good = rows.filter((r) => r.id);
+      const dupes = rows.filter((r) => r.duplicate);
+      parsed += good.length;
+      if (good.length) {
+        line.ok(good.map((r) => `${r.title || '?'}${
+          r.status === 'incomplete' ? ` · ${t('calTileNeeds')}` : ''}`).join(' · '));
+      } else if (dupes.length) {
+        line.dup(`${t('rDuplicate')}: ${dupes.map((r) => r.existing?.title || '').join(', ')}`.trim());
+      } else {
+        line.bad(rows[0]?.error || 'extraction_failed');
+      }
+    } catch (err) { line.bad(err.message); }
+  }
+  if (parsed) await loadCalendar();
+}
+
+/** Same shape as the receipts log line, but writing into #calLog. */
+function calLogLine(name) {
+  const el = document.createElement('div');
+  el.innerHTML = `<span class="spin"></span><span style="flex:1" dir="auto">${esc(name)}</span>` +
+                 `<span class="st s-run">${esc(t('calParsing'))}</span>`;
+  $('#calLog').prepend(el);
+  const set = (glyph, cls, msg) => {
+    el.querySelector('.spin')?.replaceWith(Object.assign(document.createElement('span'),
+      { className: cls, textContent: glyph }));
+    el.querySelector('.st').outerHTML = `<span class="${cls}">${esc(msg)}</span>`;
+  };
+  return { ok: (m) => set('✓', 's-ok', m), dup: (m) => set('⊘', 's-bad', m),
+           bad: (m) => set('✕', 's-bad', m) };
+}
+
+$('#calPick').addEventListener('click', () => $('#calFile').click());
+$('#calFile').addEventListener('change', () => {
+  if ($('#calFile').files.length) uploadInvites([...$('#calFile').files]);
+  $('#calFile').value = '';
+});
+if (IS_TOUCH) $('#calCam').hidden = false;
+$('#calCam').addEventListener('click', () => $('#calCamFile').click());
+$('#calCamFile').addEventListener('change', () => {
+  if ($('#calCamFile').files.length) uploadInvites([...$('#calCamFile').files]);
+  $('#calCamFile').value = '';
+});
+
+const calZone = $('#viewCalendar');
+calZone.addEventListener('dragover', (e) => { e.preventDefault(); $('#calDrop').classList.add('over'); });
+calZone.addEventListener('dragleave', (e) => {
+  if (!calZone.contains(e.relatedTarget)) $('#calDrop').classList.remove('over');
+});
+calZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  $('#calDrop').classList.remove('over');
+  if (e.dataTransfer?.files?.length) uploadInvites([...e.dataTransfer.files]);
+});
+
+// Scoped to this tab, and it stands aside while a field or the chat box has focus.
+document.addEventListener('paste', (e) => {
+  if ($('#viewCalendar').hidden) return;
+  const el = document.activeElement;
+  if (el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type !== 'file'))) return;
+  const files = [...(e.clipboardData?.items || [])]
+    .filter((i) => i.kind === 'file').map((i) => i.getAsFile())
+    .filter((f) => f && (/^image\//i.test(f.type) || /pdf/i.test(f.type)));
+  if (!files.length) return;
+  e.preventDefault();
+  uploadInvites(files);
+});
+
+$('#calRefresh').addEventListener('click', loadCalUpcoming);
+
+// ---- Microsoft connection ----
+function renderMs() {
+  if (!msState) return;
+  const s = msState;
+  const pill = $('#msStatus');
+  pill.textContent = !s.configured ? t('msNotConfigured')
+    : !s.connected ? t('msNotConnected')
+    : s.token_ok === false ? t('msTokenBad') : t('msConnected');
+  const bits = [];
+  if (s.account_email) bits.push(s.account_email);
+  if (s.display_name) bits.push(s.display_name);
+  if (s.connected_at) bits.push(`${t('gConnected')}: ${s.connected_at}`);
+  if (s.secret_expires) {
+    const soon = s.secret_days_left != null && s.secret_days_left <= 90;
+    bits.push(`${t('msSecretExpires')} ${s.secret_expires}${
+      s.secret_days_left != null ? ` (${s.secret_days_left} ${t('msSecretDays')})` : ''}${
+      soon ? ` — ${t('msSecretSoon')}` : ''}`);
+  }
+  if (s.token_error) bits.push(s.token_error);
+  if (s.last_error) bits.push(s.last_error);
+  $('#msDetail').textContent = bits.join(' · ') || t('msNotConnected');
+  $('#msConnect').hidden = false;
+  $('#msConnect').textContent = s.connected ? t('refresh') + ' / ' + t('msConnect') : t('msConnect');
+  $('#msDisconnect').hidden = !s.connected;
+}
+
+async function loadMs() {
+  try { msState = await apiJson('/api/auth/microsoft/status'); }
+  catch (err) { msState = { configured: false, connected: false, token_error: err.message }; }
+  renderMs();
+}
+
+// A top-level navigation, not fetch: the OAuth consent screen has to own the whole tab, and
+// /start is reachable with the Access JWT alone for exactly that reason.
+$('#msConnect').addEventListener('click', () => {
+  location.href = (API || '') + '/api/auth/microsoft/start';
+});
+$('#msRefresh').addEventListener('click', () => { loadMs(); loadCalUpcoming(); });
+$('#msDisconnect').addEventListener('click', async () => {
+  if (!confirm(t('msConfirmDisconnect'))) return;
+  await postJson('/api/auth/microsoft/disconnect', {});
+  await loadMs();
+  await loadCalUpcoming();
+});
+
 // ===================== ingestion log (היסטוריה) =====================
 //
 // Moved out of כספים on purpose: the Finance tab shows money that has been parsed, this
@@ -3158,6 +3768,7 @@ function rerender() {
   renderTasks(); renderNotes(); renderContacts();
   renderReceiptTotals(); renderReceipts(); renderReview();
   renderIngest();
+  renderCalTotals(); renderCalReview(); renderCalDone(); renderCalUpcoming(); renderMs();
   if (!$('#viewHistory').hidden) loadHistory();
 }
 function enterApp() {
