@@ -722,6 +722,9 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
         </div>
         <button class="btn sm" id="ingDrain" data-i18n="ingDrainBtn">עבד את התור</button>
         <button class="btn ghost sm" id="ingRetry" data-i18n="ingRetryBtn">נסה שוב את הכשלונות</button>
+        <!-- The reconcile endpoint existed with no way to press it, and unreconciled bank
+             deposits are counted alongside the payslips that produced them. -->
+        <button class="btn ghost sm" id="ingReconcile" data-i18n="ingReconcileBtn">התאם הפקדות</button>
       </div>
       <div class="route" id="ingProgress" hidden></div>
       <div id="ingQueue"></div>
@@ -964,6 +967,7 @@ const I18N = {
     ingWaiting:'ממתינים', ingFailedShort:'נכשלו', ingInside:'בתוך הקובץ',
     ingWorking:'מעבד…', ingPass:'מעבר', ingHandled:'טופלו', ingDone:'הושלם',
     ingRequeued:'הוחזרו לתור', ingRows:'שורות', ingRow:'שורה',
+    ingReconcileBtn:'התאם הפקדות', ingMatched:'הותאמו', ingUnmatched:'ללא התאמה',
     ingSt_extracted:'נקלט', ingSt_pending:'בהמתנה', ingSt_failed:'נכשל',
     ingK_salary:'תלוש שכר', ingK_kibbutz:'דוח קיבוץ', ingK_invoice:'חשבונית',
     ingK_investment:'דוח השקעות', ingK_bank_statement:'דף חשבון', ingK_payslip:'תלוש שכר',
@@ -1086,6 +1090,7 @@ const I18N = {
     ingWaiting:'waiting', ingFailedShort:'failed', ingInside:'inside',
     ingWorking:'Processing…', ingPass:'pass', ingHandled:'handled', ingDone:'Done',
     ingRequeued:'back in the queue', ingRows:'rows', ingRow:'row',
+    ingReconcileBtn:'Match deposits', ingMatched:'matched', ingUnmatched:'unmatched',
     ingSt_extracted:'parsed', ingSt_pending:'waiting', ingSt_failed:'failed',
     ingK_salary:'payslip', ingK_kibbutz:'kibbutz report', ingK_invoice:'invoice',
     ingK_investment:'fund statement', ingK_bank_statement:'bank statement',
@@ -2547,6 +2552,23 @@ async function autoDrainIngest() {
     await loadFinance().catch(() => {});
   } catch { /* offline, or the session is not up yet — the cron owns this either way */ }
 }
+
+// A payslip and the bank credit that settles it are both true, at two stages of the same
+// cash flow — counting both doubles the month. This matches them and flags the deposit
+// cleared; nothing is deleted, and the total drops to the payslip alone.
+$('#ingReconcile').addEventListener('click', async () => {
+  const btn = $('#ingReconcile');
+  btn.disabled = true;
+  try {
+    const d = await postJson('/api/reconcile', {});
+    showToast(`${t('ingMatched')}: ${d.applied ?? d.matched ?? 0}`);
+    $('#ingProgress').hidden = false;
+    $('#ingProgress').textContent =
+      `${t('ingMatched')} ${d.applied ?? 0} · ${t('ingUnmatched')} ${(d.unmatched_bank || []).length}`;
+    await loadFinance().catch(() => {});
+  } catch (err) { showToast('✕ ' + err.message); }
+  finally { btn.disabled = false; }
+});
 
 $('#ingRetry').addEventListener('click', async () => {
   const btn = $('#ingRetry');
