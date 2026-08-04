@@ -291,6 +291,7 @@ Return this exact JSON shape (omit sections that do not apply, never invent valu
     "gross": number, "net": number,
     "income_tax": number, "national_ins": number, "health_tax": number,
     "pension_empl": number, "pension_emplr": number,
+    "net_source": "masav|employer_slip|unavailable|bank_net",
     "notes": "string"
   }],
   "expenses": [{
@@ -329,7 +330,45 @@ Rules:
 - A payslip produces ONE income row, not one per line item.
 - If a value is genuinely absent, omit the key. Do not guess.
 
-CRITICAL — "net" IS THE AMOUNT THAT REACHES THE BANK, AND NOTHING ELSE.
+CRITICAL — ADI'S FINANCES RUN THROUGH A KIBBUTZ. STANDARD PAYSLIP LOGIC DOES NOT APPLY.
+Three documents describe ONE month, and only one of them knows what reached his bank:
+
+  1. THE EMPLOYER PAYSLIP (Ricor — filenames like TL_2026_06.pdf, company
+     "חברים קיבוץ 172"). This dictates the GROSS. Its "נטו לתשלום" is paid to the KIBBUTZ,
+     NOT to Adi's bank account. Do NOT report it as net.
+       → set "gross" from it, OMIT "net", and set "net_source": "employer_slip".
+  2. דוח פרטני — the member's individual kibbutz report.
+  3. דוח מצרפי — the aggregate kibbutz report.
+
+  THE TRUE NET THAT REACHES HIS BANK IS ONLY IN THE KIBBUTZ REPORTS (2 and 3), on the row
+  named "מקדמות במסב", or any row containing "במסב" (MASAV — the Israeli bank-transfer
+  clearing system). That figure, and only that figure, is "net".
+       → set "net" to the מקדמות במסב amount and "net_source": "masav".
+
+  WHERE TO FIND IT, from a real דוח פרטני (June 2026). The member summary
+  "ריכוז נתונים לחבר" reads:
+        סך-כל התשלומים        17,950     ← gross
+        ניכויי חובה-מסים        4,411
+        ניכוי קופות גמל         1,493
+        העברה לדף משפחתי      12,046     ← goes to the KIBBUTZ family account, NOT his bank
+        נטו לתשלום             (empty)   ← often ZERO on a member report. Never use it.
+  and the "ניכויים שונים" table below it reads:
+        code 03                  170
+        code 20               11,876     dated 8/07/26   ← THIS is מקדמות במסב, the bank transfer
+        סה"כ ניכויים שונים    12,046
+  The net to report for 06/2026 is 11,876.
+
+  So, in order of preference:
+    a. a row labelled מקדמות במסב / במסב → that amount, "net_source": "masav";
+    b. otherwise, inside "ניכויים שונים", the line that carries a TRANSFER DATE (and is the
+       large one, not a small ₪170-style charge) → that amount, "net_source": "masav";
+    c. otherwise OMIT "net" and set "net_source": "unavailable".
+
+  NEVER use "העברה לדף משפחתי" as net — that is the transfer to the kibbutz family account,
+  one step before his bank. NEVER use "נטו לתשלום" on a kibbutz member report. NEVER use the
+  employer slip's net. A missing net is asked about; a wrong one is believed.
+
+WHEN THE DOCUMENT IS NOT A KIBBUTZ ONE — "net" IS THE AMOUNT THAT REACHES THE BANK.
 An Israeli payslip prints several large numbers side by side and it is easy to take the
 wrong one. "net" must come from the line that states what is actually transferred:
     נטו לתשלום · סכום לתשלום · לתשלום · שכר נטו · העברה לבנק · יתרה לתשלום
@@ -680,19 +719,35 @@ async function persistExtraction(env, docId, data, fallbackPeriod) {
     // the salary under the wrong month and splits the dedup key. Document period wins.
     const rowPeriod = toPeriod(row.period) || toPeriod(data.period)
                    || toPeriod(row.pay_date) || period;
+    // Only a מקדמות במסב figure is the money that reached the bank. An employer slip's net
+    // goes to the kibbutz, so it is recorded as evidence in `original_net` and the countable
+    // `net` is left at 0 — reviewNewIncome then stages the row and asks for the MASAV amount.
+    // Counting the employer net here is precisely what produced the inflated months.
+    const netSource = ['masav', 'bank_net'].includes(row.net_source) ? row.net_source
+      : row.net_source === 'employer_slip' ? 'employer_slip'
+      : row.net === undefined || row.net === null ? 'unavailable'
+      : 'unverified';
+    const trusted = netSource === 'masav' || netSource === 'bank_net';
+    const extracted = toAgorot(row.net);
+    const countable = trusted ? extracted : 0;
+
+    // The dedup key uses the EXTRACTED figure, not the countable one: two employer slips for
+    // the same month would otherwise both hash on 0 and the second would be dropped.
     const hash = await rowHash(
-      `payslip:${rowPeriod}`, toAgorot(row.net), `${row.source || 'salary'}|${row.employer || ''}`);
+      `payslip:${rowPeriod}`, extracted, `${row.source || 'salary'}|${row.employer || ''}`);
     statements.push(
       env.DB.prepare(
         `INSERT OR IGNORE INTO income (id, doc_id, source, employer, period, pay_date, gross, net,
-           income_tax, national_ins, health_tax, pension_empl, pension_emplr, notes, row_hash)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           income_tax, national_ins, health_tax, pension_empl, pension_emplr, notes, row_hash,
+           net_source, original_net)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       ).bind(
         uuid(), docId, row.source || 'salary', row.employer || null,
         rowPeriod, row.pay_date || null,
-        toAgorot(row.gross), toAgorot(row.net), toAgorot(row.income_tax),
+        toAgorot(row.gross), countable, toAgorot(row.income_tax),
         toAgorot(row.national_ins), toAgorot(row.health_tax),
         toAgorot(row.pension_empl), toAgorot(row.pension_emplr), row.notes || null, hash,
+        netSource, extracted || null,
       ),
     );
   }
@@ -1040,10 +1095,14 @@ async function confirmedSalaryMedian(env) {
 }
 
 async function incomeBreakdown(env) {
+  // Joined to `documents` because a staged row is unanswerable without the paper: the UI
+  // renders the source document beside the fields, so it needs the id and mime to fetch it.
   const { results } = await env.DB.prepare(
-    `SELECT id, period, source, source_kind, cleared, status, review_reason, employer,
-            net, gross, original_net
-       FROM income ORDER BY period DESC, net DESC`).all();
+    `SELECT i.id, i.period, i.source, i.source_kind, i.cleared, i.status, i.review_reason,
+            i.employer, i.net, i.gross, i.original_net, i.net_source, i.doc_id,
+            d.filename AS doc_filename, d.mime AS doc_mime
+       FROM income i LEFT JOIN documents d ON d.id = i.doc_id
+      ORDER BY i.period DESC, i.net DESC`).all();
   const rows = results || [];
 
   for (const r of rows) {
@@ -1075,9 +1134,13 @@ async function incomeBreakdown(env) {
       .map((r) => ({ period: r.period, who: r.employer, amount: r.net })),
     // Waiting on an answer, not hidden. The finance agent asks about these by name.
     pending: rows.filter((r) => r.kind === 'pending')
-      .map((r) => ({ id: r.id, period: r.period, who: r.employer, amount: r.net,
+      .map((r) => ({ id: r.id, period: r.period, who: r.employer,
+                     // `amount` is what to show: the countable net is 0 for an employer slip,
+                     // so fall back to what the extractor actually read.
+                     amount: r.net || r.original_net || 0,
                      gross: r.gross, original_net: r.original_net,
-                     reason: r.review_reason,
+                     net_source: r.net_source, reason: r.review_reason,
+                     doc_id: r.doc_id, doc_filename: r.doc_filename, doc_mime: r.doc_mime,
                      label: `${r.period} ${r.employer || '—'}` })),
     counts: rows.reduce((a, r) => ({ ...a, [r.kind]: (a[r.kind] || 0) + 1 }), {}),
   };
@@ -1097,6 +1160,22 @@ async function reviewNewIncome(env, docId) {
   const base = await confirmedSalaryMedian(env);
   const flagged = [];
   for (const r of rows) {
+    // 0. Is this a net we are allowed to believe at all? Under the kibbutz structure only a
+    //    מקדמות במסב figure is the money that reached the bank. An employer slip tells us the
+    //    gross and nothing more, so it is staged with the question "what was the transfer?"
+    //    rather than being counted or guessed at.
+    if (r.net_source && !['masav', 'bank_net'].includes(r.net_source)) {
+      const detail = r.net_source === 'employer_slip'
+        ? `employer slip: gross ${r.gross}, its net goes to the kibbutz`
+        : `net_source=${r.net_source}, no מקדמות במסב figure found`;
+      await env.DB.prepare(
+        `UPDATE income SET status='pending_confirmation', review_reason=?
+          WHERE id=?`).bind(`pending_kibbutz_masav: ${detail}`, r.id).run();
+      flagged.push({ id: r.id, period: r.period, employer: r.employer, net: r.net,
+                     reason: 'pending_kibbutz_masav' });
+      continue;
+    }
+
     // 1. Is this month ALREADY covered by a payslip from a different document?
     //
     //    This is the real double-count, and it is not a misread. A kibbutz member gets two
@@ -1244,7 +1323,12 @@ function periodsAgo(n) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
-const ils = (agorot) => `₪${(agorot / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+// Defensive: a null or NaN reaching a prompt as "₪NaN" is worse than a zero, and a row
+// mid-review legitimately has no verified figure yet.
+const ils = (agorot) => {
+  const n = Number(agorot);
+  return `₪${(Number.isFinite(n) ? n / 100 : 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+};
 
 async function handleInsights(env, lang = 'en') {
   const summary = await loadSummary(env);
@@ -1257,36 +1341,46 @@ async function handleInsights(env, lang = 'en') {
     });
   }
 
-  const inc = summary.income || { months: [], transfers: [], suspect: [] };
-  const withBalance = summary.investments.filter((i) => i.balance > 0);
+  // Every list defaulted, because this crashed in production: incomeBreakdown renamed
+  // `suspect` to `pending` and a stale `inc.suspect.length` here threw "Cannot read
+  // properties of undefined", which the top-level catch turned into {error:'internal'} and
+  // the UI rendered as "Unavailable: internal".
+  const inc = summary.income || {};
+  const incMonths = inc.months || [];
+  const incTransfers = inc.transfers || [];
+  // Rows awaiting Adi's confirmation are NOT income: excluded from every figure below and
+  // only named, so the model can see they exist without counting them.
+  const incPending = inc.pending || [];
+  const withBalance = (summary.investments || []).filter((i) => i.balance > 0);
 
   const facts = [
     `RECURRING SALARY — the only figures that are pay. Typical ${ils(inc.typical_salary)}/month,` +
     ` highest ${ils(inc.max_salary)}. Anything above ${ils(inc.ceiling)} for a single payslip is` +
     ' NOT treated as salary here.',
-    ...inc.months.slice(0, 8).map((m) => `  ${m.period}: salary ${ils(m.salary)}` +
-      `${m.n > 1 ? ` (${m.n} payslips)` : ''}`),
+    ...incMonths.filter((m) => m.salary > 0).slice(0, 8).map(
+      (m) => `  ${m.period}: salary ${ils(m.salary)}${m.n > 1 ? ` (${m.n} payslips)` : ''}`),
     '',
     'SPENDING:',
-    ...summary.monthly.slice(0, 8).map((m) => `  ${m.period}: spend ${ils(m.spend)}` +
-      `, salary minus spend ${ils(m.salary - m.spend)}`),
+    ...(summary.monthly || []).slice(0, 8).map((m) => `  ${m.period}: spend ${ils(m.spend)}` +
+      `, salary minus spend ${ils((m.salary || 0) - (m.spend || 0))}`),
     '',
-    inc.transfers.length
+    incTransfers.length
       ? 'ONE-OFF TRANSFERS AND CAPITAL MOVEMENTS — NOT salary, NOT recurring income.\n' +
         'These are bank credits. Where one matches a payslip it is that salary arriving in the\n' +
         'account, so counting it as extra income double-counts the month:\n' +
-        inc.transfers.slice(0, 10).map((x) => `  ${x.period}: ${ils(x.amount)} from ${x.who || '—'}`).join('\n')
+        incTransfers.slice(0, 10).map((x) => `  ${x.period}: ${ils(x.amount)} from ${x.who || '—'}`).join('\n')
       : 'No one-off transfers recorded.',
     '',
-    inc.suspect.length
-      ? 'EXCLUDED AS IMPLAUSIBLE SALARY — probably an extraction error (a gross figure, a\n' +
-        'year-to-date total, or an aggregate report read as one payslip). Do NOT use these as\n' +
-        'income, and do not describe them as a raise or a good month:\n' +
-        inc.suspect.slice(0, 10).map((x) => `  ${x.label}: ${ils(x.amount)} (${x.reason})`).join('\n')
-      : 'No implausible salary figures.',
+    incPending.length
+      ? 'AWAITING CONFIRMATION — these are NOT income and are NOT in any figure above. Adi has\n' +
+        'not yet verified them, so do not add them to a total, do not average them into a\n' +
+        'salary, and do not call them a raise or a good month. Mention them only as items\n' +
+        'still to be confirmed:\n' +
+        incPending.slice(0, 10).map((x) => `  ${x.label}: ${ils(x.amount)} (awaiting confirmation)`).join('\n')
+      : 'Nothing awaiting confirmation.',
     '',
     'SPENDING BY CATEGORY (last 6 months):',
-    ...summary.by_category.slice(0, 10).map((c) => `  ${c.category}: ${ils(c.total)} across ${c.n} items`),
+    ...(summary.by_category || []).slice(0, 10).map((c) => `  ${c.category}: ${ils(c.total)} across ${c.n} items`),
     '',
     withBalance.length
       ? 'INVESTMENTS:\n' + withBalance.map(
@@ -2944,6 +3038,11 @@ ${lang === 'he' ? 'ענה בעברית.' : 'Answer in English.'}`,
       const reason = String(r.reason || '');
       const who = r.who ? ` (${r.who})` : '';
       if (lang === 'he') {
+        if (/pending_kibbutz_masav/.test(reason)) {
+          return `קראתי תלוש מעסיק ל-${r.period}${who} עם ברוטו ${ils_(r.gross)}.` +
+                 ' הנטו שבתלוש הולך לקיבוץ, לא לחשבון שלך — הסכום האמיתי מופיע רק בדוח הקיבוץ,' +
+                 ' בשורת "מקדמות במסב". מה הסכום שהועבר לבנק?';
+        }
         if (/duplicate_period/.test(reason)) {
           return `לחודש ${r.period} יש שני תלושים: אחד על ${ils_(r.amount)}${who} וכבר יש אחר` +
                  ' באותו חודש. אצל חבר קיבוץ זה בדרך כלל תלוש המעסיק מול הדוח הפרטני — שניהם' +
@@ -2956,6 +3055,11 @@ ${lang === 'he' ? 'ענה בעברית.' : 'Answer in English.'}`,
         }
         return `קראתי תלוש ל-${r.period}${who} על ${ils_(r.amount)}, גבוה מהרגיל אצלך.` +
                ' זה חודש עם בונוס, או שהסכום לא נכון?';
+      }
+      if (/pending_kibbutz_masav/.test(reason)) {
+        return `I read an employer payslip for ${r.period}${who} with a gross of ${ils_(r.gross)}.` +
+               ' Its net goes to the kibbutz, not to your account — the real figure appears only' +
+               ' on the kibbutz report, on the "מקדמות במסב" row. What was transferred to the bank?';
       }
       if (/duplicate_period/.test(reason)) {
         return `${r.period} has two payslips: this one at ${ils_(r.amount)}${who} and another` +
@@ -4758,25 +4862,34 @@ async function handleChatFinance(request, env) {
       : 'No financial records yet. Upload a payslip or kibbutz sheet.' });
   }
 
-  const inc = summary.income || { months: [], transfers: [], pending: [] };
-  const withBalance = summary.investments.filter((i) => i.balance > 0);
+  // Every list defaulted, because this crashed in production: `incomeBreakdown` renamed
+  // `suspect` to `pending` and a stale `inc.suspect.length` here threw
+  // "Cannot read properties of undefined", which the top-level catch turned into
+  // {error:'internal'} and the UI rendered as "Unavailable: internal".
+  const inc = summary.income || {};
+  const incMonths = inc.months || [];
+  const incTransfers = inc.transfers || [];
+  // Rows awaiting Adi's confirmation are NOT income. They are excluded from every figure
+  // below and only named, so the model can see they exist without counting them.
+  const incPending = inc.pending || [];
+  const withBalance = (summary.investments || []).filter((i) => i.balance > 0);
   const records = [
     `SALARY — the only figures that are pay. Typical ${ils(inc.typical_salary)}/month.`,
-    ...inc.months.filter((m) => m.salary).map((m) => `- ${m.period}: salary ${ils(m.salary)}`),
+    ...incMonths.filter((m) => m.salary > 0).map((m) => `- ${m.period}: salary ${ils(m.salary)}`),
     '',
     'SPENDING:',
-    ...summary.monthly.map((m) =>
-      `- ${m.period}: spend ${ils(m.spend)}, salary minus spend ${ils((m.salary || 0) - m.spend)}`),
+    ...(summary.monthly || []).map((m) =>
+      `- ${m.period}: spend ${ils(m.spend)}, salary minus spend ${ils((m.salary || 0) - (m.spend || 0))}`),
     '',
-    inc.transfers.length
+    incTransfers.length
       ? 'BANK TRANSFERS — NOT salary. Where one matches a payslip it is that salary arriving:\n' +
-        inc.transfers.map((x) => `- ${x.period}: ${ils(x.amount)} from ${x.who || '—'}`).join('\n')
+        incTransfers.map((x) => `- ${x.period}: ${ils(x.amount)} from ${x.who || '—'}`).join('\n')
       : 'No bank transfers recorded.',
     '',
-    inc.pending.length
-      ? 'PENDING CONFIRMATION — NOT income yet, waiting on Adi. Never include in a total:\n' +
-        inc.pending.map((x) => `- ${x.label}: ${ils(x.amount)} (${x.reason || 'needs review'})`).join('\n')
-      : 'Nothing pending confirmation.',
+    incPending.length
+      ? 'AWAITING CONFIRMATION — NOT income, and in no figure above. Never include in a total:\n' +
+        incPending.map((x) => `- ${x.label}: ${ils(x.amount)} (awaiting confirmation)`).join('\n')
+      : 'Nothing awaiting confirmation.',
     '',
     'SPENDING BY CATEGORY (last 6 months):',
     ...summary.by_category.map((c) => `- ${c.category}: ${ils(c.total)} over ${c.n} items`),

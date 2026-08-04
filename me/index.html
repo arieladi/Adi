@@ -255,6 +255,17 @@ html[lang=he] .rf label{letter-spacing:.02em}
   text-overflow:ellipsis;white-space:nowrap}
 .evrow a{color:var(--c1);text-decoration:none;font-size:.8rem}
 
+/* flex, not grid+place-items: with align-items:center the grid row is CONTENT-sized, so
+   height:100% on a tall scan resolved to its natural height (751px in a 460px box) and
+   overflow:hidden cropped the payslip instead of fitting it. max-height against a definite
+   flex container is what actually fits the page. */
+.docview{margin-top:11px;border:1px solid var(--line-2);border-radius:12px;overflow:hidden;
+  background:#fff;height:min(56vh,460px);display:flex;align-items:center;justify-content:center}
+.docview iframe{width:100%;height:100%;border:0;display:block}
+.docview img{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;display:block}
+.docview .docloading{color:var(--muted);font-size:.85rem;display:flex;gap:8px;align-items:center}
+@media(max-width:620px){.docview{height:44vh}}
+
 /* ---------- brain-dump proposal ---------- */
 .prop{border:1px solid var(--line-2);border-radius:13px;padding:13px;margin-top:11px;
   background:var(--panel)}
@@ -1149,6 +1160,11 @@ const I18N = {
     finQHigh1:'קראתי תלוש ל-', finQHigh2:'על', finQHigh3:'גבוה מהרגיל. חודש עם בונוס, או שקראתי ברוטו?',
     finQDup1:'לחודש', finQDup2:'יש שני תלושים, זה על',
     finQDup3:'ויש עוד אחד באותו חודש. אצל חבר קיבוץ זה תלוש המעסיק מול הדוח הפרטני — שניהם נכונים, אבל רק אחד הוא ההכנסה שלך. איזה סכום נכנס בפועל?',
+    finLoadingDoc:'טוען את המסמך…', finOpenDoc:'פתח בכרטיסייה חדשה',
+    finNoDoc:'אין מסמך מקור מקושר לשורה הזו.', finDocTitle:'מסמך המקור',
+    finDocFailed:'לא הצלחתי להציג את המסמך',
+    finQMasav1:'קראתי תלוש מעסיק ל-', finQMasav2:'עם ברוטו',
+    finQMasav3:'הנטו בתלוש הולך לקיבוץ, לא לחשבון שלך. הסכום האמיתי מופיע רק בדוח הקיבוץ, בשורת "מקדמות במסב". מה הועבר לבנק?',
     finRealNet:'הנטו האמיתי (₪)', finGross:'ברוטו לפי המסמך',
     finCorrect:'תקן לסכום הזה', finItsRight:'הסכום נכון', finDiscard:'מחק',
     finNeedNet:'הזן את הסכום הנכון', finConfirmDiscard:'למחוק את התלוש? הוא לא ייכנס להכנסות.',
@@ -1327,6 +1343,11 @@ const I18N = {
     finQHigh3:'well above your usual. Is this a bonus month, or did I read the gross?',
     finQDup1:'Month', finQDup2:'has two payslips — this one at',
     finQDup3:'and another for the same month. For a kibbutz member that is the employer slip against the member report: both are true, but only one is your income. Which amount reached you?',
+    finLoadingDoc:'Loading the document…', finOpenDoc:'Open in a new tab',
+    finNoDoc:'No source document is linked to this row.', finDocTitle:'Source document',
+    finDocFailed:'Could not display the document',
+    finQMasav1:'I read an employer payslip for', finQMasav2:'with a gross of',
+    finQMasav3:'Its net goes to the kibbutz, not your account. The real figure is only on the kibbutz report, on the "מקדמות במסב" row. What was transferred to the bank?',
     finRealNet:'Actual net (₪)', finGross:'Gross on the document',
     finCorrect:'Correct to this', finItsRight:'The amount is right', finDiscard:'Discard',
     finNeedNet:'Enter the correct amount', finConfirmDiscard:'Discard this payslip? It will not count as income.',
@@ -1573,7 +1594,9 @@ function renderIncomeReview() {
     const who = p.who ? ` (${esc(p.who)})` : '';
     // The question names the specific contradiction, because "please check this" is not
     // something anyone can act on.
-    const q = /duplicate_period/.test(reason)
+    const q = /pending_kibbutz_masav/.test(reason)
+      ? `${t('finQMasav1')} <b>${esc(p.period)}</b>${who} ${t('finQMasav2')} <b>${esc(ils(p.gross))}</b>. ${t('finQMasav3')}`
+      : /duplicate_period/.test(reason)
       ? `${t('finQDup1')} <b>${esc(p.period)}</b> ${t('finQDup2')} <b>${esc(ils(p.amount))}</b>${who} — ${t('finQDup3')}`
       : /arithmetic_mismatch|net_not_below_gross/.test(reason)
       ? `${t('finQArith1')} ${esc(p.period)}${who} ${t('finQArith2')} ` +
@@ -1582,10 +1605,22 @@ function renderIncomeReview() {
         `<b>${esc(ils(p.amount))}</b> — ${t('finQHigh3')}`;
     return `<div class="rev" data-inc="${esc(p.id)}">
       <div class="rq">${q}</div>
+      <!-- The document itself. You cannot check a figure you cannot see, and the source is
+           authenticated, so it is fetched and shown from a blob: URL — an <iframe src> or
+           <img src> pointed straight at /api/doc would render a 401. -->
+      ${p.doc_id ? `<div class="docview" data-doc-view="${esc(p.doc_id)}"
+             data-doc-mime="${esc(p.doc_mime || '')}">
+          <div class="docloading"><span class="spin"></span> ${esc(t('finLoadingDoc'))}</div>
+        </div>
+        <div class="noteActions" style="margin-top:0">
+          <button class="btn ghost sm" data-inc-open>${esc(t('finOpenDoc'))}</button>
+          <span class="badge">${esc(p.doc_filename || '')}</span>
+        </div>`
+        : `<div class="empty" style="margin-top:10px">${esc(t('finNoDoc'))}</div>`}
       <div class="rf" style="margin-top:11px">
         <div><label>${esc(t('finRealNet'))}</label>
           <input type="text" inputmode="decimal" dir="ltr" data-net
-                 placeholder="${esc(String(Math.round(p.amount / 100)))}"></div>
+                 placeholder="${esc(String(Math.round((p.amount || 0) / 100)))}"></div>
         <div><label>${esc(t('finGross'))}</label>
           <input type="text" dir="ltr" value="${esc(ils(p.gross))}" disabled></div>
       </div>
@@ -1597,9 +1632,46 @@ function renderIncomeReview() {
       </div>
     </div>`;
   }).join('');
+  loadDocPreviews();
+}
+
+/**
+ * Render each staged row's source document inline. PDFs go in an iframe, images in an img,
+ * both from a blob: URL because /api/doc needs the session header.
+ */
+const docBlobs = new Map();
+async function loadDocPreviews() {
+  for (const box of $$('#incomeReview [data-doc-view]')) {
+    const id = box.dataset.docView;
+    const mime = box.dataset.docMime || '';
+    const isPdf = /pdf/i.test(mime);
+    try {
+      let url = docBlobs.get(id);
+      if (!url) {
+        const res = await apiRaw(`/api/doc/${id}`);
+        if (!res.ok) throw new Error(String(res.status));
+        // Force the PDF type: R2 sometimes serves octet-stream, and an iframe will offer a
+        // download instead of rendering when the blob has no usable type.
+        const blob = await res.blob();
+        url = URL.createObjectURL(isPdf ? blob.slice(0, blob.size, 'application/pdf') : blob);
+        docBlobs.set(id, url);
+      }
+      box.innerHTML = isPdf
+        ? `<iframe src="${url}#view=FitH" title="${esc(t('finDocTitle'))}"></iframe>`
+        : `<img src="${url}" alt="${esc(t('finDocTitle'))}">`;
+    } catch (err) {
+      box.innerHTML = `<div class="empty">${esc(t('finDocFailed'))} (${esc(err.message)})</div>`;
+    }
+  }
 }
 
 $('#incomeReview').addEventListener('click', async (e) => {
+  const open = e.target.closest('[data-inc-open]');
+  if (open) {
+    const view = open.closest('[data-inc]')?.querySelector('[data-doc-view]');
+    if (view) openProtected(`/api/doc/${view.dataset.docView}`);
+    return;
+  }
   const act = e.target.closest('[data-inc-act]');
   if (!act) return;
   const box = act.closest('[data-inc]');
