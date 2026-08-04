@@ -264,6 +264,30 @@ function parseLooseJson(text) {
   }
 }
 
+/**
+ * The one description of how Adi's money actually moves. Shared by the flat extraction prompt
+ * and the ReAct envelope agent so the two can never disagree about what "net" means.
+ */
+const KIBBUTZ_NET_RULES = `HOW ADI'S MONEY MOVES — THE NET IS NOT WHERE YOU EXPECT IT.
+Three documents describe one month:
+  1. the employer payslip (Ricor, TL_*.pdf, company "חברים קיבוץ 172") — gives the GROSS. Its
+     "נטו לתשלום" is paid to the KIBBUTZ, never to Adi's bank. Never report it as net.
+  2. דוח פרטני — the member's individual kibbutz report.
+  3. דוח מצרפי — the aggregate kibbutz report.
+
+The money that reached his bank is in the kibbutz report's "ניכויים שונים" table, on the line
+whose code (סמל) is 20. The description column there is usually BLANK — the CODE identifies
+it, not a label, and the words "מקדמות במסב" are usually not printed at all:
+
+      סמל   תאור הניכוי   מתאריך     סכום הניכוי
+      03    (blank)                       170.00
+      20    (blank)       8/07/26     11,876.00     ← the bank transfer. THIS is net.
+      סה"כ ניכויים שונים               12,046.00
+
+For June 2026 the gross was 17,950 and the net is 11,876.
+Never use "העברה לדף משפחתי" (12,046) — that is the transfer to the kibbutz family account,
+one step before the bank. Never use "נטו לתשלום" on a member report; it is often zero.`;
+
 // ---------------------------------------------------------------------------
 // Gemini — Hebrew document extraction
 // ---------------------------------------------------------------------------
@@ -330,43 +354,7 @@ Rules:
 - A payslip produces ONE income row, not one per line item.
 - If a value is genuinely absent, omit the key. Do not guess.
 
-CRITICAL — ADI'S FINANCES RUN THROUGH A KIBBUTZ. STANDARD PAYSLIP LOGIC DOES NOT APPLY.
-Three documents describe ONE month, and only one of them knows what reached his bank:
-
-  1. THE EMPLOYER PAYSLIP (Ricor — filenames like TL_2026_06.pdf, company
-     "חברים קיבוץ 172"). This dictates the GROSS. Its "נטו לתשלום" is paid to the KIBBUTZ,
-     NOT to Adi's bank account. Do NOT report it as net.
-       → set "gross" from it, OMIT "net", and set "net_source": "employer_slip".
-  2. דוח פרטני — the member's individual kibbutz report.
-  3. דוח מצרפי — the aggregate kibbutz report.
-
-  THE TRUE NET THAT REACHES HIS BANK IS ONLY IN THE KIBBUTZ REPORTS (2 and 3), on the row
-  named "מקדמות במסב", or any row containing "במסב" (MASAV — the Israeli bank-transfer
-  clearing system). That figure, and only that figure, is "net".
-       → set "net" to the מקדמות במסב amount and "net_source": "masav".
-
-  WHERE TO FIND IT, from a real דוח פרטני (June 2026). The member summary
-  "ריכוז נתונים לחבר" reads:
-        סך-כל התשלומים        17,950     ← gross
-        ניכויי חובה-מסים        4,411
-        ניכוי קופות גמל         1,493
-        העברה לדף משפחתי      12,046     ← goes to the KIBBUTZ family account, NOT his bank
-        נטו לתשלום             (empty)   ← often ZERO on a member report. Never use it.
-  and the "ניכויים שונים" table below it reads:
-        code 03                  170
-        code 20               11,876     dated 8/07/26   ← THIS is מקדמות במסב, the bank transfer
-        סה"כ ניכויים שונים    12,046
-  The net to report for 06/2026 is 11,876.
-
-  So, in order of preference:
-    a. a row labelled מקדמות במסב / במסב → that amount, "net_source": "masav";
-    b. otherwise, inside "ניכויים שונים", the line that carries a TRANSFER DATE (and is the
-       large one, not a small ₪170-style charge) → that amount, "net_source": "masav";
-    c. otherwise OMIT "net" and set "net_source": "unavailable".
-
-  NEVER use "העברה לדף משפחתי" as net — that is the transfer to the kibbutz family account,
-  one step before his bank. NEVER use "נטו לתשלום" on a kibbutz member report. NEVER use the
-  employer slip's net. A missing net is asked about; a wrong one is believed.
+${KIBBUTZ_NET_RULES}
 
 WHEN THE DOCUMENT IS NOT A KIBBUTZ ONE — "net" IS THE AMOUNT THAT REACHES THE BANK.
 An Israeli payslip prints several large numbers side by side and it is easy to take the
@@ -737,10 +725,29 @@ async function persistExtraction(env, docId, data, fallbackPeriod) {
       `payslip:${rowPeriod}`, extracted, `${row.source || 'salary'}|${row.employer || ''}`);
     statements.push(
       env.DB.prepare(
-        `INSERT OR IGNORE INTO income (id, doc_id, source, employer, period, pay_date, gross, net,
+        // UPSERT, not INSERT OR IGNORE. With IGNORE a re-extraction whose values collided
+        // with an existing row — including a row belonging to a TWIN document of the same
+        // PDF — silently produced nothing, so every prompt improvement was a no-op on data
+        // already imported. Re-extraction must be able to correct what it got wrong.
+        //
+        // The conflict target must repeat the partial index's WHERE clause: the index is
+        // `UNIQUE(row_hash) WHERE row_hash IS NOT NULL`, and plain ON CONFLICT(row_hash)
+        // is rejected outright with "does not match any PRIMARY KEY or UNIQUE constraint".
+        `INSERT INTO income (id, doc_id, source, employer, period, pay_date, gross, net,
            income_tax, national_ins, health_tax, pension_empl, pension_emplr, notes, row_hash,
            net_source, original_net)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(row_hash) WHERE row_hash IS NOT NULL DO UPDATE SET
+           doc_id=excluded.doc_id, source=excluded.source, employer=excluded.employer,
+           period=excluded.period, pay_date=excluded.pay_date, gross=excluded.gross,
+           net=excluded.net, income_tax=excluded.income_tax,
+           national_ins=excluded.national_ins, health_tax=excluded.health_tax,
+           pension_empl=excluded.pension_empl, pension_emplr=excluded.pension_emplr,
+           notes=excluded.notes, net_source=excluded.net_source,
+           original_net=excluded.original_net,
+           -- a corrected figure has not been reviewed yet, so put it back in the queue
+           status=CASE WHEN income.net != excluded.net THEN 'confirmed' ELSE income.status END,
+           review_reason=CASE WHEN income.net != excluded.net THEN NULL ELSE income.review_reason END`,
       ).bind(
         uuid(), docId, row.source || 'salary', row.employer || null,
         rowPeriod, row.pay_date || null,
@@ -759,9 +766,13 @@ async function persistExtraction(env, docId, data, fallbackPeriod) {
       `${row.vendor || ''}|${row.description || ''}`);
     statements.push(
       env.DB.prepare(
-        `INSERT OR IGNORE INTO expenses (id, doc_id, category, vendor, description, amount,
+        `INSERT INTO expenses (id, doc_id, category, vendor, description, amount,
            spent_on, period, recurring, row_hash)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(row_hash) WHERE row_hash IS NOT NULL DO UPDATE SET
+           doc_id=excluded.doc_id, category=excluded.category, vendor=excluded.vendor,
+           description=excluded.description, amount=excluded.amount,
+           spent_on=excluded.spent_on, period=excluded.period, recurring=excluded.recurring`,
       ).bind(
         uuid(), docId, row.category || 'other', row.vendor || null, row.description || null,
         toAgorot(row.amount), spentOn, toPeriod(spentOn) || period, row.recurring ? 1 : 0, hash,
@@ -2987,6 +2998,258 @@ async function handleReceipts(request, env, url) {
 }
 
 // ===========================================================================
+// ReAct agent — reasoning loop with tool calling
+// ===========================================================================
+//
+// Gemini function-calling, not a flat JSON answer. The difference matters for the kibbutz
+// case: the correct net for a month is only knowable by looking across several documents, and
+// the agent has to be able to conclude "I do not have the kibbutz report, so I must ASK"
+// instead of returning its best guess. A flat extraction cannot express that.
+//
+// Tools are declared once here and shared. Each carries the domain it belongs to, which is
+// what lets the finance agent answer "when is my next meeting?" — the calendar tools are
+// offered alongside its own, so a cross-domain question is a tool call rather than a refusal.
+
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX_CALLS = 12;          // per minute, well under Gemini's free-tier ceiling
+const RATE_MIN_GAP_MS = 1_500;      // never two calls back to back
+
+/**
+ * Token-bucket-ish limiter in D1, so it holds across isolates and cron ticks. Returns the
+ * milliseconds to wait; the caller sleeps. A 429 sets backoff_until and everything defers.
+ */
+async function rateLimitDelay(env, provider = 'gemini') {
+  const row = await env.DB.prepare('SELECT * FROM api_rate_limit WHERE provider=?')
+    .bind(provider).first();
+  const now = Date.now();
+  if (!row) {
+    await env.DB.prepare(
+      `INSERT INTO api_rate_limit (provider, window_start, calls, last_call_at)
+       VALUES (?, datetime('now'), 1, datetime('now'))
+       ON CONFLICT(provider) DO UPDATE SET calls=1, window_start=datetime('now'),
+         last_call_at=datetime('now')`).bind(provider).run();
+    return 0;
+  }
+  if (row.backoff_until && Date.parse(row.backoff_until + 'Z') > now) {
+    return Math.min(Date.parse(row.backoff_until + 'Z') - now, 30_000);
+  }
+  const windowAge = now - Date.parse((row.window_start || '').replace(' ', 'T') + 'Z');
+  const fresh = !Number.isFinite(windowAge) || windowAge > RATE_WINDOW_MS;
+  const calls = fresh ? 0 : row.calls;
+  const sinceLast = now - Date.parse((row.last_call_at || '').replace(' ', 'T') + 'Z');
+
+  let wait = 0;
+  if (Number.isFinite(sinceLast) && sinceLast < RATE_MIN_GAP_MS) wait = RATE_MIN_GAP_MS - sinceLast;
+  if (calls >= RATE_MAX_CALLS) wait = Math.max(wait, RATE_WINDOW_MS - windowAge);
+
+  await env.DB.prepare(
+    `UPDATE api_rate_limit SET calls=?, window_start=?, last_call_at=datetime('now')
+      WHERE provider=?`,
+  ).bind(calls + 1, fresh ? new Date().toISOString().slice(0, 19).replace('T', ' ') : row.window_start,
+         provider).run();
+  return Math.max(0, Math.min(wait, 30_000));
+}
+
+const noteRateLimitHit = (env, provider = 'gemini', seconds = 30) =>
+  env.DB.prepare(
+    `INSERT INTO api_rate_limit (provider, backoff_until) VALUES (?, datetime('now', ?))
+     ON CONFLICT(provider) DO UPDATE SET backoff_until=datetime('now', ?)`,
+  ).bind(provider, `+${seconds} seconds`, `+${seconds} seconds`).run().catch(() => {});
+
+const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
+
+/** Every tool the agent can call, with its Gemini declaration and its implementation. */
+const AGENT_TOOLS = {
+  // ---- finance ----
+  save_financial_record: {
+    domain: 'finance',
+    declaration: {
+      name: 'save_financial_record',
+      description: 'Save the verified figures for ONE salary month. Call this only when the ' +
+        'net that reached the bank is actually known — never with a guess.',
+      parameters: { type: 'object', properties: {
+        period: { type: 'string', description: "salary month, 'YYYY-MM'" },
+        employer: { type: 'string' },
+        gross: { type: 'number', description: 'gross in shekels, from the employer payslip' },
+        net: { type: 'number', description: 'shekels that reached the bank — the code-20 line' },
+        net_source: { type: 'string', enum: ['masav', 'bank_net', 'unavailable'] },
+        income_tax: { type: 'number' }, national_ins: { type: 'number' },
+        health_tax: { type: 'number' }, pension_empl: { type: 'number' },
+        evidence: { type: 'string', description: 'which document and which line the net came from' },
+        expenses: { type: 'array', description: 'kibbutz charges for the month',
+          items: { type: 'object', properties: {
+            category: { type: 'string' }, vendor: { type: 'string' },
+            description: { type: 'string' }, amount: { type: 'number' } } } },
+      }, required: ['period', 'net_source'] },
+    },
+    run: async (env, args, ctx) => {
+      const period = toPeriod(args.period) || ctx.period;
+      const trusted = ['masav', 'bank_net'].includes(args.net_source);
+      const data = {
+        doc_type: 'salary', period,
+        income: [{ source: 'salary', employer: args.employer, gross: args.gross,
+                   net: trusted ? args.net : null, net_source: args.net_source,
+                   income_tax: args.income_tax, national_ins: args.national_ins,
+                   health_tax: args.health_tax, pension_empl: args.pension_empl,
+                   notes: args.evidence }],
+        expenses: Array.isArray(args.expenses) ? args.expenses : [],
+      };
+      const r = await persistExtraction(env, ctx.primaryDocId, data, period);
+      return { saved: true, period, net: trusted ? args.net : null,
+               net_source: args.net_source, rows_written: r.inserted,
+               staged_for_review: r.review?.flagged || 0 };
+    },
+  },
+
+  ask_user_for_clarification: {
+    domain: 'finance',
+    declaration: {
+      name: 'ask_user_for_clarification',
+      description: 'Ask Adi one specific question and STOP. Use this whenever the documents ' +
+        'in hand cannot answer what the net was — never guess instead.',
+      parameters: { type: 'object', properties: {
+        question: { type: 'string', description: 'one specific question, in Hebrew' },
+        document_id: { type: 'string', description: 'the document he should look at' },
+        what_is_missing: { type: 'string' },
+      }, required: ['question'] },
+    },
+    run: async (env, args, ctx) => {
+      await env.DB.prepare(
+        `UPDATE month_envelopes SET status='needs_input', question=?, updated_at=datetime('now')
+          WHERE period=?`).bind(trimStr(args.question, 1000), ctx.period).run();
+      return { asked: true, halt: true, question: args.question,
+               document_id: args.document_id || ctx.primaryDocId };
+    },
+  },
+
+  list_month_documents: {
+    domain: 'finance',
+    declaration: {
+      name: 'list_month_documents',
+      description: 'List which documents are in this month\'s envelope and what each one is.',
+      parameters: { type: 'object', properties: {
+        period: { type: 'string' } } },
+    },
+    run: async (env, args, ctx) => {
+      const { results } = await env.DB.prepare(
+        `SELECT ed.role, d.id, d.filename, d.doc_kind FROM envelope_documents ed
+           JOIN documents d ON d.id = ed.document_id WHERE ed.period=?`)
+        .bind(toPeriod(args.period) || ctx.period).all();
+      return { documents: results || [] };
+    },
+  },
+
+  query_finance: {
+    domain: 'finance',
+    declaration: {
+      name: 'query_finance',
+      description: 'Read already-verified finances: salary per month, transfers, spending, ' +
+        'and anything awaiting confirmation.',
+      parameters: { type: 'object', properties: {
+        period: { type: 'string', description: 'optional YYYY-MM filter' } } },
+    },
+    run: async (env, args) => {
+      const inc = await incomeBreakdown(env);
+      const months = args.period
+        ? (inc.months || []).filter((m) => m.period === toPeriod(args.period))
+        : (inc.months || []).slice(0, 12);
+      return { typical_salary_agorot: inc.typical_salary, months,
+               transfers: (inc.transfers || []).slice(0, 12),
+               awaiting_confirmation: (inc.pending || []).map(
+                 (p) => ({ period: p.period, amount: p.amount, reason: p.reason })) };
+    },
+  },
+
+  // ---- calendar, offered to every domain so a cross-domain question just works ----
+  query_calendar: {
+    domain: 'calendar',
+    declaration: {
+      name: 'query_calendar',
+      description: "Adi's upcoming Office 365 events. Use for anything about meetings, " +
+        'appointments or what is coming up.',
+      parameters: { type: 'object', properties: {
+        days: { type: 'number', description: 'how far ahead to look, default 30' } } },
+    },
+    run: async (env, args) => {
+      const res = await handleCalendarUpcoming(env, new URL(
+        `http://x/?days=${Math.min(Math.max(Number(args.days) || 30, 1), 180)}`));
+      const body = await res.json();
+      if (!body.ok) return { error: body.error, detail: body.detail };
+      return { events: (body.events || []).slice(0, 15) };
+    },
+  },
+
+  // ---- tasks ----
+  query_tasks: {
+    domain: 'tasks',
+    declaration: {
+      name: 'query_tasks',
+      description: 'Open and recently completed tasks, with due dates.',
+      parameters: { type: 'object', properties: {
+        only_open: { type: 'boolean' } } },
+    },
+    run: async (env, args) => {
+      const { results } = await env.DB.prepare(
+        `SELECT text, status, due_date, completed_at FROM tasks
+          WHERE deleted_at IS NULL ${args.only_open ? "AND status='pending'" : ''}
+          ORDER BY COALESCE(due_date,'9999') LIMIT 30`).all();
+      return { tasks: results || [] };
+    },
+  },
+};
+
+/** The declarations a given context may use: its own domain, plus the read-only cross-domain
+ *  tools. That is what makes "when is my next meeting?" answerable from the finance tab. */
+function toolsForContext(context) {
+  const own = Object.entries(AGENT_TOOLS).filter(([, t]) => t.domain === context);
+  const cross = Object.entries(AGENT_TOOLS).filter(
+    ([n, t]) => t.domain !== context && /^query_/.test(n));
+  return [...own, ...cross];
+}
+
+/**
+ * One ReAct turn: send history + tool declarations, get back either text or a functionCall.
+ * Rate-limited and 429-aware, because an envelope is several calls and fifty envelopes is
+ * hundreds.
+ */
+async function geminiReactTurn(env, { system, contents, tools }) {
+  const models = [env.GEMINI_MODEL, ...(env.GEMINI_FALLBACKS || '').split(',')]
+    .map((s) => (s || '').trim()).filter(Boolean);
+  const tried = [];
+  for (const model of models) {
+    await sleep(await rateLimitDelay(env));
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      { method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+        body: JSON.stringify({
+          contents,
+          systemInstruction: { parts: [{ text: system }] },
+          tools: tools.length ? [{ functionDeclarations: tools.map(([, t]) => t.declaration) }] : undefined,
+          generationConfig: { temperature: 0 },
+        }),
+        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS) });
+
+    if (res.status === 429) {
+      await noteRateLimitHit(env, 'gemini', 45);
+      tried.push(`${model}: 429`);
+      continue;
+    }
+    if (!res.ok) {
+      tried.push(`${model}: ${res.status}`);
+      if (res.status !== 404) break;
+      continue;
+    }
+    const payload = await res.json();
+    const parts = payload?.candidates?.[0]?.content?.parts || [];
+    const call = parts.find((p) => p.functionCall)?.functionCall;
+    const text = parts.map((p) => p.text).filter(Boolean).join('').trim();
+    return { model, call, text, raw: payload?.candidates?.[0] };
+  }
+  throw new Error(`gemini_react_failed: ${tried.join(' | ')}`);
+}
+
+// ===========================================================================
 // DOMAIN AGENT PROMPTS — one per tab, edit independently
 // ===========================================================================
 //
@@ -3664,6 +3927,11 @@ ${upcoming?.ok
 QUESTION: ${message}`;
 
   try {
+    const viaAgent = await runCommandLineAgent(env,
+      { context: 'calendar', message: `${message}\n\nCONTEXT:\n${user}`, lang });
+    if (viaAgent.ok && viaAgent.answer) {
+      return json({ ...viaAgent, readonly: true });
+    }
     const out = await runGeminiAgent(env, system, user, []);
     return json({ ok: true, answer: (out.text || '').trim(), readonly: true });
   } catch (err) {
@@ -4780,6 +5048,65 @@ here, say you could not find it in the records you were shown, not that it does 
 }
 
 /** The כספים tab's chat bar. Same contract as /api/chat/tasks, financial context. */
+/**
+ * The AI command line, as a ReAct agent.
+ *
+ * `context` chooses the system prompt AND the tool set: its own domain plus every read-only
+ * cross-domain query tool. That is what makes "מתי הפגישה הבאה שלי?" answerable from the
+ * finance tab — the calendar tool is simply available, so the agent reaches for it instead of
+ * refusing. Writes stay domain-scoped: only finance tools can touch finance.
+ */
+async function runCommandLineAgent(env, { context, message, lang, attachmentNote }) {
+  const agent = DOMAIN_AGENTS[context];
+  if (!agent) return { ok: false, error: 'unknown_context', known: Object.keys(DOMAIN_AGENTS) };
+
+  const tools = toolsForContext(context);
+  const system = `${agent.system ? agent.system(lang) : ''}
+
+You have tools. Use them rather than guessing, and rather than saying you cannot see something
+— if the answer lives in another part of the hub, the tool for it is in your list. Call one
+tool at a time, then answer in one or two short sentences using what it returned.
+Never invent a figure, a date or an event that a tool did not give you.
+${attachmentNote || ''}
+${lang === 'he' ? 'ענה בעברית.' : 'Answer in English.'}`;
+
+  const contents = [{ role: 'user', parts: [{ text: message }] }];
+  const trace = [];
+
+  for (let turn = 0; turn < 4; turn++) {
+    let out;
+    try {
+      out = await geminiReactTurn(env, { system, contents, tools });
+    } catch (err) {
+      return { ok: false, error: 'agent_failed',
+               detail: String(err?.message || err).slice(0, 300), trace };
+    }
+    if (!out.call) {
+      return { ok: true, answer: out.text || '', model: out.model, trace,
+               tools_used: trace.map((t) => t.tool) };
+    }
+    const tool = AGENT_TOOLS[out.call.name];
+    let result;
+    try {
+      result = tool
+        ? await tool.run(env, out.call.args || {}, { period: null, primaryDocId: null })
+        : { error: `unknown_tool:${out.call.name}` };
+    } catch (err) {
+      result = { error: String(err?.message || err).slice(0, 300) };
+    }
+    trace.push({ tool: out.call.name, args: out.call.args, result });
+    if (result?.halt) {
+      return { ok: true, answer: result.question || out.text || '', halted: true, trace };
+    }
+    contents.push({ role: 'model', parts: [{ functionCall: out.call }] });
+    contents.push({ role: 'user', parts: [{ functionResponse: {
+      name: out.call.name, response: { result } } }] });
+  }
+  return { ok: true, answer: (lang === 'he'
+    ? 'לא הצלחתי להגיע לתשובה בכמה צעדים. נסה לנסח מחדש.'
+    : 'I could not settle that in a few steps. Try rephrasing.'), trace };
+}
+
 async function handleChatFinance(request, env) {
   // Multipart when a document was pasted into the command line; JSON otherwise.
   const ct = request.headers.get('content-type') || '';
@@ -4853,6 +5180,17 @@ async function handleChatFinance(request, env) {
     const resolved = await resolveIncomeReviewFromText(env, pendingRow, question, lang);
     if (resolved) return json(resolved);
     // Not an answer to the question — fall through and treat it as a normal query.
+  }
+
+  // Text with nothing pending: the ReAct agent, so cross-domain questions work and the
+  // figures come from a tool rather than a pre-rendered blob.
+  if (!upload) {
+    const viaAgent = await runCommandLineAgent(env,
+      { context: 'finance', message: question, lang });
+    if (viaAgent.ok && viaAgent.answer) {
+      return json({ ...viaAgent, routed: 'react', tools_used: viaAgent.tools_used || [] });
+    }
+    // Fall through to the pre-rendered records path when the agent could not answer.
   }
 
   const summary = await loadSummary(env);
@@ -5371,9 +5709,15 @@ async function ingestPdfBuffer(env, bytes, filename, meta = {}) {
  */
 async function processPendingDocuments(env, limit = 3, budgetMs = DRAIN_BUDGET_MS) {
   const started = Date.now();
+  // Skip anything an unfinished envelope owns: those are extracted as a MONTH by the ReAct
+  // agent, and pulling one out to extract alone is exactly the vacuum this design removes.
   const { results } = await env.DB.prepare(
-    `SELECT id, r2_key, filename, mime, sha256 FROM documents
-      WHERE status='pending' ORDER BY uploaded_at ASC LIMIT ?`).bind(limit).all();
+    `SELECT d.id, d.r2_key, d.filename, d.mime, d.sha256 FROM documents d
+      WHERE d.status='pending'
+        AND NOT EXISTS (SELECT 1 FROM envelope_documents ed
+                          JOIN month_envelopes me ON me.period = ed.period
+                         WHERE ed.document_id = d.id AND me.status != 'done')
+      ORDER BY d.uploaded_at ASC LIMIT ?`).bind(limit).all();
   const done = [];
   for (const d of results || []) {
     // Same budget discipline as the queue drainer: stop before the invocation is killed,
@@ -5449,6 +5793,250 @@ async function processPendingDocuments(env, limit = 3, budgetMs = DRAIN_BUDGET_M
   const left = (await env.DB.prepare(
     "SELECT COUNT(*) n FROM documents WHERE status='pending'").first())?.n ?? 0;
   return { processed: done.length, remaining: left, results: done };
+}
+
+// ---------------------------------------------------------------------------
+// Month envelopes — group a salary month, then reason over it as one unit
+// ---------------------------------------------------------------------------
+//
+// A Ricor payslip on its own cannot yield a correct net: its "נטו לתשלום" goes to the kibbutz
+// and the bank figure is the code-20 line in the kibbutz report. Extracting on arrival asks
+// the model a question the paper cannot answer, so it guesses. Envelopes remove the guess by
+// making the MONTH the unit of work.
+
+const ENVELOPE_ROLES = { employer: 'employer', prati: 'prati', metzaref: 'metzaref',
+                         bank: 'bank', other: 'other' };
+// A month missing one document must not wait forever — after this it is processed as-is and
+// the agent asks for what it lacks.
+const ENVELOPE_PATIENCE = '-6 hours';
+
+/** Which of the three documents is this, and which salary month does it belong to? */
+function classifyEnvelopeRole(filename, classifiedAs, extractedPeriod) {
+  const f = String(filename || '');
+  let role = ENVELOPE_ROLES.other;
+  if (/^TL[_-]/i.test(f) || /תלוש/.test(f)) role = ENVELOPE_ROLES.employer;
+  else if (/פרטני/.test(f)) role = ENVELOPE_ROLES.prati;
+  else if (/מצרפי/.test(f)) role = ENVELOPE_ROLES.metzaref;
+  else if (classifiedAs === 'bank_statement') role = ENVELOPE_ROLES.bank;
+  else if (classifiedAs === 'payslip') role = ENVELOPE_ROLES.employer;
+  else if (classifiedAs === 'kibbutz_report') role = ENVELOPE_ROLES.prati;
+
+  // Filenames carry the month reliably: TL_2026_06, דוח_פרטני__148_29387_06-2026.
+  let period = toPeriod(extractedPeriod);
+  const mm = /(?:^|[^\d])(\d{2})[-_](\d{4})(?:[^\d]|$)/.exec(f);     // 06-2026
+  const yy = /(?:^|[^\d])(\d{4})[-_](\d{2})(?:[^\d]|$)/.exec(f);     // 2026_06
+  if (!period && mm) period = `${mm[2]}-${mm[1]}`;
+  if (!period && yy) period = `${yy[1]}-${yy[2]}`;
+  return { role, period };
+}
+
+/** File a document into its month and refresh the envelope's readiness. */
+async function fileIntoEnvelope(env, { documentId, filename, classifiedAs, period }) {
+  const info = classifyEnvelopeRole(filename, classifiedAs, period);
+  if (!info.period || info.role === ENVELOPE_ROLES.bank) return null;   // bank rows are monthly-agnostic
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO month_envelopes (period) VALUES (?)
+       ON CONFLICT(period) DO UPDATE SET updated_at=datetime('now')`).bind(info.period),
+    env.DB.prepare(
+      `INSERT INTO envelope_documents (period, document_id, role) VALUES (?,?,?)
+       ON CONFLICT(period, document_id) DO UPDATE SET role=excluded.role`)
+      .bind(info.period, documentId, info.role),
+  ]);
+
+  // Recompute from the join rather than incrementing: a re-file or a re-classification must
+  // not double-count, and the flags are what decide readiness.
+  await env.DB.prepare(
+    `UPDATE month_envelopes SET
+       has_employer = (SELECT COUNT(*)>0 FROM envelope_documents WHERE period=?1 AND role='employer'),
+       has_prati    = (SELECT COUNT(*)>0 FROM envelope_documents WHERE period=?1 AND role='prati'),
+       has_metzaref = (SELECT COUNT(*)>0 FROM envelope_documents WHERE period=?1 AND role='metzaref'),
+       doc_count    = (SELECT COUNT(*) FROM envelope_documents WHERE period=?1),
+       status = CASE
+         WHEN status IN ('done','working') THEN status
+         -- The employer slip plus at least one kibbutz report is the set that can answer the
+         -- net question. metzaref alone is an aggregate and cannot.
+         WHEN (SELECT COUNT(*)>0 FROM envelope_documents WHERE period=?1 AND role='employer')
+          AND (SELECT COUNT(*)>0 FROM envelope_documents WHERE period=?1 AND role='prati')
+           THEN 'ready'
+         ELSE 'collecting' END,
+       ready_at = CASE WHEN ready_at IS NULL AND
+         (SELECT COUNT(*)>0 FROM envelope_documents WHERE period=?1 AND role='employer') AND
+         (SELECT COUNT(*)>0 FROM envelope_documents WHERE period=?1 AND role='prati')
+         THEN datetime('now') ELSE ready_at END,
+       updated_at = datetime('now')
+     WHERE period=?1`).bind(info.period).run();
+
+  return info;
+}
+
+/** Claim one envelope to reason about: ready first, then anything that has waited too long. */
+async function claimEnvelope(env) {
+  const { results } = await env.DB.prepare(
+    `UPDATE month_envelopes SET status='working', claimed_at=datetime('now'),
+            attempts=attempts+1, updated_at=datetime('now')
+      WHERE period = (
+        SELECT period FROM month_envelopes
+         WHERE attempts < 4
+           AND ( status='ready'
+              OR (status='collecting' AND first_seen_at < datetime('now', ?1))
+              OR (status='working' AND claimed_at < datetime('now','-10 minutes')) )
+         ORDER BY status='ready' DESC, first_seen_at ASC LIMIT 1)
+      RETURNING *`).bind(ENVELOPE_PATIENCE).all();
+  return results?.[0] || null;
+}
+
+/**
+ * The ReAct loop for one month.
+ *
+ * Every document in the envelope is sent as inline data in the FIRST turn, so the model can
+ * cross-reference — that is the whole point of grouping. Then it reasons, calls tools, and
+ * either saves a record or asks a question. Bounded turns, because a loop that cannot end is
+ * worse than one that gives up.
+ */
+async function runEnvelopeAgent(env, envelope, { maxTurns = 6 } = {}) {
+  const period = envelope.period;
+  const { results: docs } = await env.DB.prepare(
+    `SELECT ed.role, d.id, d.filename, d.mime, d.r2_key, d.size_bytes
+       FROM envelope_documents ed JOIN documents d ON d.id = ed.document_id
+      WHERE ed.period=? ORDER BY ed.role`).bind(period).all();
+  if (!docs?.length) {
+    await env.DB.prepare(
+      "UPDATE month_envelopes SET status='failed', error='no_documents' WHERE period=?")
+      .bind(period).run();
+    return { period, error: 'no_documents' };
+  }
+
+  // Attach the papers. A budget, because inline_data is capped and a month can carry scans.
+  let budget = GEMINI_ATTACH_BUDGET;
+  const parts = [];
+  const manifest = [];
+  for (const d of docs) {
+    manifest.push(`- id=${d.id} | role=${d.role} | ${d.filename}`);
+    if ((d.size_bytes || 0) > budget) { manifest.push('    (too large to attach)'); continue; }
+    const obj = await env.DOCS_BUCKET.get(d.r2_key);
+    if (!obj) { manifest.push('    (missing from storage)'); continue; }
+    let buf = await obj.arrayBuffer();
+    if (detectPdfEncryption(buf) && env.PDF_PASS) {
+      const dec = decryptPdf(buf, env.PDF_PASS);
+      if (dec.ok) buf = dec.bytes.buffer;
+    }
+    budget -= buf.byteLength;
+    parts.push({ inline_data: { mime_type: d.mime || 'application/pdf', data: toBase64(buf) } });
+  }
+
+  const system = `${DOMAIN_AGENTS.finance.system('he')}
+
+You are reasoning about ONE salary month: ${period}. The attached documents are that month's
+envelope. Work out the figures by CROSS-REFERENCING them, then call exactly one tool.
+
+${KIBBUTZ_NET_RULES}
+
+Your reasoning must follow this order, out loud, briefly:
+  1. Which documents do I have? (employer payslip / דוח פרטני / דוח מצרפי)
+  2. Do I have a kibbutz report containing the ניכויים שונים table with a code-20 line?
+     · No  → call ask_user_for_clarification. Say which month and what is missing, and ask
+             what was transferred to the bank. Do NOT call save_financial_record.
+     · Yes → read the code-20 amount. That is the net.
+  3. Take the gross from the employer payslip, the deductions from the kibbutz report, and
+     call save_financial_record with net_source "masav" and the evidence line.
+Never call save_financial_record with a net you inferred, averaged or assumed.`;
+
+  const contents = [{ role: 'user', parts: [
+    { text: `ENVELOPE ${period}\nDocuments present:\n${manifest.join('\n')}\n` +
+            `has_employer=${!!envelope.has_employer} has_prati=${!!envelope.has_prati} ` +
+            `has_metzaref=${!!envelope.has_metzaref}` +
+            (envelope.answer ? `\n\nAdi previously answered: ${envelope.answer}` : '') },
+    ...parts,
+  ] }];
+
+  const tools = toolsForContext('finance');
+  const transcript = [];
+  const ctx = { period, primaryDocId: (docs.find((d) => d.role === 'prati') || docs[0]).id };
+
+  for (let turn = 0; turn < maxTurns; turn++) {
+    let out;
+    try {
+      out = await geminiReactTurn(env, { system, contents, tools });
+    } catch (err) {
+      const detail = String(err?.message || err).slice(0, 400);
+      transcript.push({ turn, error: detail });
+      await env.DB.prepare(
+        `UPDATE month_envelopes SET status=CASE WHEN attempts>=4 THEN 'failed' ELSE 'ready' END,
+                error=?, transcript=?, updated_at=datetime('now') WHERE period=?`,
+      ).bind(detail, JSON.stringify(transcript).slice(0, 20_000), period).run();
+      return { period, error: detail };
+    }
+
+    if (out.text) transcript.push({ turn, thought: out.text.slice(0, 1500) });
+    if (!out.call) {
+      // Reasoned but chose nothing: treat as needing input rather than silently succeeding.
+      await env.DB.prepare(
+        `UPDATE month_envelopes SET status='needs_input',
+                question=COALESCE(question, ?), transcript=?, updated_at=datetime('now')
+          WHERE period=?`,
+      ).bind(trimStr(out.text, 1000) || 'לא הצלחתי להסיק את הסכום — מה הועבר לבנק?',
+             JSON.stringify(transcript).slice(0, 20_000), period).run();
+      return { period, halted: 'no_tool_call', turns: turn + 1 };
+    }
+
+    const tool = AGENT_TOOLS[out.call.name];
+    const args = out.call.args || {};
+    let result;
+    try {
+      result = tool ? await tool.run(env, args, ctx) : { error: `unknown_tool:${out.call.name}` };
+    } catch (err) {
+      result = { error: String(err?.message || err).slice(0, 300) };
+    }
+    transcript.push({ turn, tool: out.call.name, args, result });
+
+    if (result?.halt) {                       // ask_user_for_clarification stops the loop
+      await env.DB.prepare(
+        `UPDATE month_envelopes SET transcript=?, updated_at=datetime('now') WHERE period=?`,
+      ).bind(JSON.stringify(transcript).slice(0, 20_000), period).run();
+      return { period, asked: result.question, turns: turn + 1 };
+    }
+    if (result?.saved) {
+      await env.DB.prepare(
+        `UPDATE month_envelopes SET status='done', result_json=?, transcript=?, error=NULL,
+                question=NULL, completed_at=datetime('now'), updated_at=datetime('now')
+          WHERE period=?`,
+      ).bind(JSON.stringify(result), JSON.stringify(transcript).slice(0, 20_000), period).run();
+      return { period, saved: result, turns: turn + 1 };
+    }
+
+    // A read-only tool: feed the result back and let it reason again.
+    contents.push({ role: 'model', parts: [{ functionCall: out.call }] });
+    contents.push({ role: 'user', parts: [{ functionResponse: {
+      name: out.call.name, response: { result } } }] });
+  }
+
+  await env.DB.prepare(
+    `UPDATE month_envelopes SET status='needs_input',
+            question=COALESCE(question,'נגמרו הצעדים בלי הכרעה — מה הועבר לבנק?'),
+            transcript=?, updated_at=datetime('now') WHERE period=?`,
+  ).bind(JSON.stringify(transcript).slice(0, 20_000), period).run();
+  return { period, halted: 'max_turns' };
+}
+
+/**
+ * ONE envelope per pass, with a pause after it. Deliberately serial: a ReAct loop is several
+ * model calls, and fifty months in parallel is a guaranteed 429 — the whole reason this queue
+ * exists separately from the byte-moving one.
+ */
+async function drainEnvelopes(env, { max = 1, gapMs = 2_000 } = {}) {
+  const done = [];
+  for (let i = 0; i < max; i++) {
+    const envelope = await claimEnvelope(env);
+    if (!envelope) break;
+    done.push(await runEnvelopeAgent(env, envelope));
+    if (i + 1 < max) await sleep(gapMs);
+  }
+  const counts = await env.DB.prepare(
+    `SELECT status, COUNT(*) n FROM month_envelopes GROUP BY status`).all();
+  return { processed: done.length, results: done,
+           envelopes: Object.fromEntries((counts.results || []).map((r) => [r.status, r.n])) };
 }
 
 // ---------------------------------------------------------------------------
@@ -5726,8 +6314,19 @@ async function routeIngestItem(env, item, rawBuffer) {
              result: { ...staged, why: verdict.why, decryption } };
   }
 
-  const r = await ingestPdfBuffer(env, buffer, item.filename, ingestMeta);
-  return { classified_as: cls, document_id: r.id || null, result: { ...r, why: verdict.why } };
+  // A financial month is reasoned about as an ENVELOPE, not file by file: a Ricor payslip
+  // alone cannot yield a net, so extracting it on arrival only produces a guess. Store it,
+  // file it into its month, and let the envelope agent read the set together.
+  const envelopeBound = ['payslip', 'kibbutz_report'].includes(cls);
+  const r = await ingestPdfBuffer(env, buffer, item.filename,
+    envelopeBound ? { ...ingestMeta, defer: true } : ingestMeta);
+  let envelope = null;
+  if (envelopeBound && r.id) {
+    envelope = await fileIntoEnvelope(env, { documentId: r.id, filename: item.filename,
+                                             classifiedAs: cls, period: r.period }).catch(() => null);
+  }
+  return { classified_as: cls, document_id: r.id || null, envelope,
+           result: { ...r, why: verdict.why } };
 }
 
 const classifyDocument = (env, file) => geminiCallJson(env, CLASSIFY_PROMPT, file);
@@ -6172,6 +6771,35 @@ export default {
         return withCors(json({ ok: true,
           ...(await processPendingDocuments(env, Math.min(Number(b.limit) || 3, 6))) }));
       }
+      // --- Month envelopes + the ReAct agent ---
+      if (url.pathname === '/api/envelopes' && request.method === 'GET') {
+        const [rows, counts] = await Promise.all([
+          env.DB.prepare(
+            `SELECT e.*, (SELECT GROUP_CONCAT(ed.role) FROM envelope_documents ed
+                           WHERE ed.period=e.period) roles
+               FROM month_envelopes e ORDER BY e.period DESC LIMIT 60`).all(),
+          env.DB.prepare('SELECT status, COUNT(*) n FROM month_envelopes GROUP BY status').all(),
+        ]);
+        return withCors(json({ ok: true, envelopes: rows.results || [],
+          counts: Object.fromEntries((counts.results || []).map((r) => [r.status, r.n])) }));
+      }
+      const envAnswer = /^\/api\/envelopes\/(\d{4}-\d{2})\/answer$/.exec(url.pathname);
+      if (envAnswer && request.method === 'POST') {
+        const b = await readJson(request);
+        // The answer goes back on the envelope and it returns to 'ready', so the agent
+        // re-reasons WITH the new fact rather than the answer being applied blindly.
+        await env.DB.prepare(
+          `UPDATE month_envelopes SET answer=?, status='ready', attempts=0, question=NULL,
+                  updated_at=datetime('now') WHERE period=?`,
+        ).bind(trimStr(b.answer, 2000), envAnswer[1]).run();
+        return withCors(json({ ok: true, ...(await drainEnvelopes(env, { max: 1 })) }));
+      }
+      if (url.pathname === '/api/envelopes/drain' && request.method === 'POST') {
+        const b = await readJson(request);
+        return withCors(json({ ok: true,
+          ...(await drainEnvelopes(env, { max: Math.min(Number(b.max) || 1, 3) })) }));
+      }
+
       // --- Ingestion queue (History tab) ---
       if (url.pathname === '/api/ingest/status' && request.method === 'GET') {
         return withCors(json({ ok: true, ...(await handleIngestStatus(env, url)) }));
@@ -6408,6 +7036,10 @@ export default {
       ctx.waitUntil((async () => {
         try {
           const pass = await runIngestionPass(env, { items: 3, via: 'cron-2min' });
+          // ONE envelope per tick. A ReAct loop is several model calls, so this is the pacing
+          // that keeps fifty months from becoming a 429 storm — the queue's whole purpose.
+          try { pass.envelopes = await drainEnvelopes(env, { max: 1 }); }
+          catch (err) { pass.envelope_error = String(err?.message || err).slice(0, 200); }
           // Quiet when idle: this fires 720 times a day.
           if (pass.queue_processed || pass.documents_processed || pass.remaining) {
             console.log('ingest_tick', JSON.stringify(pass));
