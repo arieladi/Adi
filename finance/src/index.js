@@ -678,25 +678,76 @@ async function persistExtraction(env, docId, data, fallbackPeriod) {
     );
   }
 
+  // Investments are CURRENT STATE, one row per fund kind — see migration 0014. The dated
+  // snapshot carries the history and the dedup fingerprint; the fund row is upserted.
+  // Writing a second `investments` row per statement is what filled the dashboard with
+  // duplicate Keren Hishtalmut and Pension cards.
+  const upserts = [];
   for (const row of Array.isArray(data.investments) ? data.investments : []) {
     attempted.investments++;
     const asOf = row.as_of || `${period}-01`;
+    const kind = row.kind || 'keren_hishtalmut';
     const hash = await rowHash(`inv:${asOf}`, toAgorot(row.balance),
-      `${row.kind || 'keren_hishtalmut'}|${row.provider || ''}`);
+      `${kind}|${row.provider || ''}`);
+    const vals = [
+      docId, kind, row.provider || null, row.account_ref || null,
+      toAgorot(row.balance), toAgorot(row.deposits_total),
+      toAgorot(row.employer_contrib), toAgorot(row.employee_contrib),
+      Number.isFinite(row.yield_pct) ? row.yield_pct : null,
+      Number.isFinite(row.fees_pct) ? row.fees_pct : null,
+      row.liquid_from || null, asOf, hash,
+    ];
+
+    // Counted: re-importing the same statement changes nothing here, which is what makes
+    // `all_duplicates` (and the silent-on-duplicate email path) still correct.
     statements.push(
       env.DB.prepare(
-        `INSERT OR IGNORE INTO investments (id, doc_id, kind, provider, account_ref, balance,
-           deposits_total, employer_contrib, employee_contrib, yield_pct, fees_pct,
+        `INSERT OR IGNORE INTO investment_snapshots (id, doc_id, kind, provider, account_ref,
+           balance, deposits_total, employer_contrib, employee_contrib, yield_pct, fees_pct,
            liquid_from, as_of, row_hash)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      ).bind(
-        uuid(), docId, row.kind || 'keren_hishtalmut', row.provider || null, row.account_ref || null,
-        toAgorot(row.balance), toAgorot(row.deposits_total),
-        toAgorot(row.employer_contrib), toAgorot(row.employee_contrib),
-        Number.isFinite(row.yield_pct) ? row.yield_pct : null,
-        Number.isFinite(row.fees_pct) ? row.fees_pct : null,
-        row.liquid_from || null, asOf, hash,
-      ),
+      ).bind(uuid(), ...vals),
+    );
+
+    // Not counted: an upsert always reports one change, so counting it would make every
+    // re-import look like fresh data.
+    //
+    // Two guards, both load-bearing:
+    //   · `excluded.as_of >= investments.as_of` — a payslip forwarded out of order must
+    //     not drag a fund's balance backwards to an older figure.
+    //   · `excluded.<amount> > 0` — a payslip reports pension/keren CONTRIBUTIONS and
+    //     leaves the accrued balance at 0. That zero must never overwrite the real
+    //     figure read off an actual fund statement.
+    upserts.push(
+      env.DB.prepare(
+        `INSERT INTO investments (id, doc_id, kind, provider, account_ref, balance,
+           deposits_total, employer_contrib, employee_contrib, yield_pct, fees_pct,
+           liquid_from, as_of, row_hash)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(kind) DO UPDATE SET
+           doc_id      = CASE WHEN excluded.as_of >= investments.as_of
+                              THEN excluded.doc_id ELSE investments.doc_id END,
+           provider    = COALESCE(CASE WHEN excluded.as_of >= investments.as_of
+                                       THEN excluded.provider END, investments.provider),
+           account_ref = COALESCE(CASE WHEN excluded.as_of >= investments.as_of
+                                       THEN excluded.account_ref END, investments.account_ref),
+           balance     = CASE WHEN excluded.as_of >= investments.as_of AND excluded.balance > 0
+                              THEN excluded.balance ELSE investments.balance END,
+           deposits_total   = CASE WHEN excluded.as_of >= investments.as_of AND excluded.deposits_total > 0
+                              THEN excluded.deposits_total ELSE investments.deposits_total END,
+           employer_contrib = CASE WHEN excluded.as_of >= investments.as_of AND excluded.employer_contrib > 0
+                              THEN excluded.employer_contrib ELSE investments.employer_contrib END,
+           employee_contrib = CASE WHEN excluded.as_of >= investments.as_of AND excluded.employee_contrib > 0
+                              THEN excluded.employee_contrib ELSE investments.employee_contrib END,
+           yield_pct   = COALESCE(CASE WHEN excluded.as_of >= investments.as_of
+                                       THEN excluded.yield_pct END, investments.yield_pct),
+           fees_pct    = COALESCE(CASE WHEN excluded.as_of >= investments.as_of
+                                       THEN excluded.fees_pct END, investments.fees_pct),
+           liquid_from = COALESCE(CASE WHEN excluded.as_of >= investments.as_of
+                                       THEN excluded.liquid_from END, investments.liquid_from),
+           as_of       = MAX(investments.as_of, excluded.as_of),
+           row_hash    = excluded.row_hash`,
+      ).bind(uuid(), ...vals),
     );
   }
 
@@ -704,6 +755,9 @@ async function persistExtraction(env, docId, data, fallbackPeriod) {
   for (let i = 0; i < statements.length; i += 50) {
     const res = await env.DB.batch(statements.slice(i, i + 50));
     inserted += res.reduce((a, r) => a + (r.meta?.changes || 0), 0);
+  }
+  for (let i = 0; i < upserts.length; i += 50) {
+    await env.DB.batch(upserts.slice(i, i + 50));
   }
   const total = attempted.income + attempted.expenses + attempted.investments;
   return {
@@ -728,29 +782,39 @@ async function handleUpload(request, env) {
   const files = form.getAll('file').filter((f) => f && typeof f !== 'string');
   if (!files.length) return json({ error: 'missing_file_field' }, 400);
 
-  // More than one file, or a container that may hold several: run them all through the
-  // shared ingest path and report per-file, rather than silently handling only the first.
-  if (files.length > 1 || files.some((f) => isEmlLike(f.name, f.type) || isMsgLike(f.name, f.type))) {
-    const raw = [];
+  const forceType = String(form.get('doc_type') || '').trim();
+
+  // Anything without an explicit type override goes on the SAME queue an emailed
+  // attachment does. Two reasons, both of them requirements rather than tidiness:
+  //   · classification — a receipt dropped on the upload box has to reach the receipts
+  //     archive, not income/expenses;
+  //   · reliability — this branch used to expand a container and then loop over up to 40
+  //     files with two synchronous Gemini calls, which is the identical shape that killed
+  //     the email path. A bulk .eml dropped in the browser failed the same way.
+  //
+  // An explicit doc_type means "do not guess", so that one case keeps the direct path
+  // below, where the period override still applies.
+  if (!forceType || files.length > 1) {
+    const month = new Date().toISOString().slice(0, 7);
+    const rows = [];
+    const tooBig = [];
     for (const f of files) {
-      raw.push({ filename: f.name || 'attachment', mimeType: f.type || '', content: await f.arrayBuffer() });
+      if (f.size > MAX_UPLOAD_BYTES) { tooBig.push(f.name); continue; }
+      const buf = await f.arrayBuffer();
+      const safe = (f.name || 'upload').replace(/[^\w.\-֐-׿]/g, '_').slice(0, 100);
+      const key = `inbox/${month}/${uuid()}-${safe}`;
+      await env.DOCS_BUCKET.put(key, buf, {
+        httpMetadata: { contentType: f.type || 'application/octet-stream' } });
+      rows.push({ source: 'upload', r2_key: key, filename: f.name || 'upload',
+                  mime: f.type || '', size_bytes: buf.byteLength, subject: 'ידני' });
     }
-    const expanded = await expandAttachments(raw);
-    const usable = expanded.filter((a) => isIngestable(a.filename, a.mimeType));
-    if (!usable.length) {
-      return json({ ok: false, error: 'nothing_ingestable',
-                    saw: expanded.map((a) => a.via || a.filename).slice(0, 20) }, 400);
-    }
-    const results = [];
-    for (const [i, a] of usable.slice(0, 40).entries()) {
-      try {
-        results.push({ ...(await ingestPdfBuffer(env, a.content, a.filename,
-                         { via: 'upload', mime: a.mimeType, defer: i >= 2 })), source: a.via });
-      } catch (err) {
-        results.push({ filename: a.filename, ok: false, error: String(err?.message || err) });
-      }
-    }
-    return json({ ok: results.some((r) => r.ok), batch: true, count: results.length, results });
+    const queued = await enqueueIngest(env, rows);
+    // Work what we can right now so a single drop answers immediately. Whatever does not
+    // fit stays on the queue, and the */2 cron plus the History button finish it.
+    const pass = await runIngestionPass(env,
+      { items: Math.min(rows.length || 1, 3), budgetMs: 20_000 });
+    return json({ ok: true, queued, too_big: tooBig,
+                  results: pass.queue_results, ...pass });
   }
 
   const file = files[0];
@@ -873,12 +937,13 @@ async function loadSummary(env) {
       `SELECT category, SUM(amount) AS total, COUNT(*) AS n
          FROM expenses WHERE period >= ? GROUP BY category ORDER BY total DESC`,
     ).bind(periodsAgo(6)).all(),
+    // One row per kind is now a table invariant (UNIQUE(kind), migration 0014), so this
+    // needs no latest-per-group subquery — and cannot return duplicate cards even if the
+    // extractor misreads a provider name.
     env.DB.prepare(
-      `SELECT kind, provider, balance, yield_pct, fees_pct, liquid_from, as_of
-         FROM investments i
-        WHERE as_of = (SELECT MAX(as_of) FROM investments x WHERE x.kind = i.kind AND
-                       COALESCE(x.provider,'') = COALESCE(i.provider,''))
-        ORDER BY balance DESC`,
+      `SELECT kind, provider, balance, yield_pct, fees_pct, liquid_from, as_of,
+              (SELECT COUNT(*) FROM investment_snapshots s WHERE s.kind = i.kind) AS statements
+         FROM investments i ORDER BY balance DESC, kind`,
     ).all(),
     env.DB.prepare(
       `SELECT id, filename, doc_type, period, status, uploaded_at
@@ -3489,6 +3554,7 @@ const ALLOWED_SENDERS = [
   'dalia-b@ricor.com',
   'office@adiariel.com',     // the O365 mailbox the forwarding rules run in
   'adidatabase@gmail.com',
+  'studio@avastha.info',     // Avastha business documents
   'computers@ricor.com',
 ];
 
@@ -3537,37 +3603,37 @@ async function handleInboundEmail(message, env, ctx) {
     return message.setReject('Sender not permitted');
   }
 
-  const expanded = await expandAttachments(parsed.attachments || []);
-  const pdfs = expanded.filter((a) => isIngestable(a.filename, a.mimeType));
-  if (!pdfs.length) {
-    await log('alert', 'inbound: no pdf attachment',
-      { from: origin.matched, subject: parsed.subject, attachments: (parsed.attachments || []).length });
+  // Same enqueue-only rule as the Resend path. Here the raw MIME is already in hand, so
+  // the bytes go straight to R2 and the queue row points at them — but the per-attachment
+  // work still happens one item at a time in the drainer, not in this invocation.
+  const top = parsed.attachments || [];
+  if (!top.length) {
+    await log('alert', 'inbound: no attachment',
+      { from: origin.matched, subject: parsed.subject });
     return;   // accept and drop — an HR mail with no payslip is not an error
   }
 
-  const results = [];
-  for (const [i, att] of pdfs.slice(0, 40).entries()) {
-    try {
-      results.push({ ...(await ingestPdfBuffer(env, att.content, att.filename || 'payslip.pdf',
-                       { via: 'email', sender: origin.matched, subject: parsed.subject,
-                         mime: att.mimeType, defer: i >= 2 })), source: att.via });
-    } catch (err) {
-      results.push({ filename: att.filename, ok: false, error: String(err?.message || err) });
-    }
+  const month = new Date().toISOString().slice(0, 7);
+  const rows = [];
+  for (const att of top.slice(0, 60)) {
+    const name = att.filename || 'attachment';
+    const buf = att.content instanceof ArrayBuffer ? att.content
+      : att.content?.buffer?.slice(att.content.byteOffset,
+                                  att.content.byteOffset + att.content.byteLength) ?? att.content;
+    const key = `inbox/${month}/${uuid()}-${name.replace(/[^\w.\-֐-׿]/g, '_').slice(0, 100)}`;
+    await env.DOCS_BUCKET.put(key, buf, {
+      httpMetadata: { contentType: att.mimeType || att.content_type || 'application/octet-stream' } });
+    rows.push({ source: 'cf-email', r2_key: key, filename: name,
+                mime: att.mimeType || att.content_type || '', size_bytes: buf.byteLength,
+                sender: origin.matched, subject: parsed.subject });
   }
-
-  await log('attach', `inbound payslip from ${origin.matched}`,
-    { subject: parsed.subject, results });
-  console.log('inbound_email', JSON.stringify({ from: origin.matched, results }));
-
-  // Silence is the spec for the background path: a duplicate is normal, not a failure.
-  const fresh = results.filter((r) => r.ok && !r.duplicate);
-  if (fresh.length && env.RESEND_API_KEY) {
-    ctx.waitUntil(sendMail(env, {
-      subject: `תלוש חדש נקלט · ${fresh.map((r) => r.period || '').filter(Boolean).join(', ')}`,
-      text: fresh.map((r) => `${r.filename}: ${r.doc_type || ''} ${r.period || ''} — ${r.inserted} רשומות`).join('\n'),
-    }).catch((e) => console.error('notify_failed', String(e))));
-  }
+  const queued = await enqueueIngest(env, rows);
+  await log('attach', `queued ${queued} attachment(s) from ${origin.matched}`,
+    { subject: parsed.subject, attachments: top.length, queued,
+      files: rows.map((r) => r.filename).slice(0, 20) });
+  console.log('inbound_email_queued', JSON.stringify({ from: origin.matched, queued }));
+  ctx?.waitUntil?.(drainIngestQueue(env, { maxItems: 2, budgetMs: 10_000 })
+    .catch((e) => console.error('drain_failed', String(e))));
 }
 
 // ---------------------------------------------------------------------------
@@ -3651,6 +3717,10 @@ async function handleResendWebhook(request, env, ctx) {
                             subject: event.data?.subject })).run().catch(() => {});
     try {
       await processResendEmail(env, emailId, event.data);
+      // Work a little of it now so a single-attachment forward lands within seconds
+      // instead of waiting for the next cron tick. Bounded, and whatever is left over is
+      // still safely on the queue — this is an optimisation, never the delivery mechanism.
+      await drainIngestQueue(env, { maxItems: 2, budgetMs: 10_000 });
     } catch (err) {
       const detail = String(err?.message || err);
       console.error('resend_ingest_failed', emailId, detail);
@@ -3711,52 +3781,25 @@ async function processResendEmail(env, emailId, data) {
     return;
   }
 
-  // Download everything first — .eml/.msg containers have to be opened before we can
-  // tell whether there is anything ingestable inside them.
-  const downloaded = [];
-  for (const att of all.slice(0, 40)) {
-    try {
-      const meta = await resendGet(env, `/emails/receiving/${emailId}/attachments/${att.id}`);
-      const url = meta.download_url || meta.downloadUrl || meta.url;
-      if (!url) throw new Error('no_download_url');
-      const bin = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-      if (!bin.ok) throw new Error(`download_${bin.status}`);
-      downloaded.push({ filename: att.filename || 'attachment',
-                        mimeType: att.content_type || '', content: await bin.arrayBuffer() });
-    } catch (err) {
-      console.warn('attachment_download_failed', att.filename, String(err?.message || err));
-    }
-  }
+  // ENQUEUE ONLY. This handler used to download every attachment, expand the containers,
+  // decrypt, store, insert and run two Gemini calls — all sequentially, all inside one
+  // waitUntil — and the isolate was killed after two or three files with nothing logged.
+  // Now the expensive part is somebody else's problem: one cheap row per attachment, and
+  // the bytes are fetched from Resend when the item is actually worked.
+  //
+  // Nothing is filtered here on purpose. A .eml is not ingestable by itself but has to be
+  // queued so it can be expanded, and deciding what a file is belongs to the classifier.
+  const queued = await enqueueIngest(env, all.slice(0, 200).map((att) => ({
+    source: 'resend', email_id: emailId, attachment_id: att.id,
+    filename: att.filename || 'attachment', mime: att.content_type || '',
+    size_bytes: att.size ?? att.size_bytes ?? null, sender: origin, subject,
+  })));
 
-  const expanded = await expandAttachments(downloaded);
-  const usable = expanded.filter((a) => isIngestable(a.filename, a.mimeType));
-  if (!usable.length) {
-    await log('alert', 'resend inbound: nothing ingestable',
-      { from: origin, subject, saw: expanded.map((a) => a.via || a.filename).slice(0, 10) });
-    return;
-  }
-
-  const results = [];
-  for (const [i, att] of usable.slice(0, 40).entries()) {
-    try {
-      results.push({ ...(await ingestPdfBuffer(env, att.content, att.filename,
-        { via: 'resend', sender: origin, subject, mime: att.mimeType, defer: i >= 2 })), source: att.via });
-    } catch (err) {
-      results.push({ filename: att.filename, ok: false, error: String(err?.message || err) });
-    }
-  }
-
-  await log('attach', `resend payslip from ${origin}`, { subject, forwarded_by: matched, results });
-  console.log('resend_inbound', JSON.stringify({ origin, forwarded_by: matched, emailId, results }));
-
-  // Duplicates are normal on this path (a re-forward, an old payslip) — stay quiet.
-  const fresh = results.filter((r) => r.ok && !r.duplicate);
-  if (fresh.length) {
-    await sendMail(env, {
-      subject: `תלוש חדש נקלט · ${fresh.map((r) => r.period || '').filter(Boolean).join(', ')}`,
-      text: fresh.map((r) => `${r.filename}: ${r.doc_type || ''} ${r.period || ''} — ${r.inserted} רשומות`).join('\n'),
-    }).catch((e) => console.error('notify_failed', String(e)));
-  }
+  await log('attach', `queued ${queued} attachment(s) from ${origin}`,
+    { subject, forwarded_by: matched, email_id: emailId,
+      attachments: all.length, queued,
+      files: all.slice(0, 20).map((a) => a.filename) });
+  console.log('resend_queued', JSON.stringify({ origin, emailId, attachments: all.length, queued }));
 }
 
 /** Shared ingestion used by both the HTTP upload and the email handler. */
@@ -3856,12 +3899,16 @@ async function ingestPdfBuffer(env, bytes, filename, meta = {}) {
  * item is a Gemini round-trip, and the whole point is to stay inside the Worker's
  * duration budget. Called by the cron and on demand from the UI.
  */
-async function processPendingDocuments(env, limit = 3) {
+async function processPendingDocuments(env, limit = 3, budgetMs = DRAIN_BUDGET_MS) {
+  const started = Date.now();
   const { results } = await env.DB.prepare(
     `SELECT id, r2_key, filename, mime FROM documents
       WHERE status='pending' ORDER BY uploaded_at ASC LIMIT ?`).bind(limit).all();
   const done = [];
   for (const d of results || []) {
+    // Same budget discipline as the queue drainer: stop before the invocation is killed,
+    // and let the caller come back. Rows left alone stay 'pending' and remain claimable.
+    if (Date.now() - started > budgetMs) break;
     try {
       const obj = await env.DOCS_BUCKET.get(d.r2_key);
       if (!obj) throw new Error('object_missing');
@@ -3899,6 +3946,454 @@ async function processPendingDocuments(env, limit = 3) {
   const left = (await env.DB.prepare(
     "SELECT COUNT(*) n FROM documents WHERE status='pending'").first())?.n ?? 0;
   return { processed: done.length, remaining: left, results: done };
+}
+
+// ---------------------------------------------------------------------------
+// Ingestion queue — one attachment per row, resumable, never silent
+// ---------------------------------------------------------------------------
+//
+// See migration 0013 for the evidence this replaces. The rule here is that NO invocation
+// ever takes on an unbounded amount of work: the webhook only enumerates and enqueues,
+// and a drainer takes items one at a time inside a time budget. If an isolate is killed
+// mid-item the lease expires and the next drainer picks the same item up again, so the
+// worst case is a repeat, never a loss.
+
+const QUEUE_LEASE = '-3 minutes';     // after this, a 'working' item is fair game again
+const QUEUE_MAX_ATTEMPTS = 4;
+// Stop STARTING new items past this. One item is a Gemini vision call (10-25s), so this
+// deliberately lets a single long item finish and then stops, rather than trying to fit
+// two in and getting killed between them — which is exactly how rows got stuck 'pending'.
+const DRAIN_BUDGET_MS = 15_000;
+
+/** One attachment = one row, written before anything expensive happens. */
+async function enqueueIngest(env, items) {
+  if (!items.length) return 0;
+  const stmts = items.map((it) => env.DB.prepare(
+    `INSERT OR IGNORE INTO ingest_queue
+       (id, source, email_id, attachment_id, r2_key, filename, mime, size_bytes,
+        sender, subject, parent_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+  ).bind(uuid(), it.source || 'resend', it.email_id || null, it.attachment_id || null,
+         it.r2_key || null, trimStr(it.filename, 300) || 'attachment', trimStr(it.mime, 120),
+         it.size_bytes ?? null, trimStr(it.sender, 200), trimStr(it.subject, 300),
+         it.parent_id || null));
+  let queued = 0;
+  for (let i = 0; i < stmts.length; i += 40) {
+    const res = await env.DB.batch(stmts.slice(i, i + 40));
+    queued += res.reduce((a, r) => a + (r.meta?.changes || 0), 0);
+  }
+  return queued;
+}
+
+/**
+ * Claim exactly one item, atomically. The UPDATE ... RETURNING is a single statement, so
+ * two drainers running at once (the cron and Adi pressing the button) cannot take the
+ * same row — one of them updates it, the other's subquery no longer matches.
+ */
+async function claimIngestItem(env) {
+  const { results } = await env.DB.prepare(
+    `UPDATE ingest_queue
+        SET status='working', claimed_at=datetime('now'), attempts=attempts+1,
+            updated_at=datetime('now')
+      WHERE id = (
+        SELECT id FROM ingest_queue
+         WHERE attempts < ?2
+           AND (status='queued' OR (status='working' AND claimed_at < datetime('now', ?1)))
+         -- attempts first: a never-tried attachment always outranks a retry, so one
+         -- poisonous file cannot starve the other 39 in a bulk forward.
+         ORDER BY attempts ASC, created_at ASC LIMIT 1)
+      RETURNING *`,
+  ).bind(QUEUE_LEASE, QUEUE_MAX_ATTEMPTS).all();
+  return results?.[0] || null;
+}
+
+const finishIngestItem = (env, id, fields) => {
+  const cols = Object.keys(fields);
+  return env.DB.prepare(
+    `UPDATE ingest_queue SET ${cols.map((c) => `${c}=?`).join(', ')},
+            updated_at=datetime('now') WHERE id=?`,
+  ).bind(...cols.map((c) => fields[c]), id).run();
+};
+
+/** Bytes for an item: already in R2, or still sitting at Resend. */
+async function ingestItemBytes(env, item) {
+  if (item.r2_key) {
+    const obj = await env.DOCS_BUCKET.get(item.r2_key);
+    if (!obj) throw new Error('r2_object_missing');
+    return await obj.arrayBuffer();
+  }
+  if (item.email_id && item.attachment_id) {
+    const meta = await resendGet(env,
+      `/emails/receiving/${item.email_id}/attachments/${item.attachment_id}`);
+    const url = meta.download_url || meta.downloadUrl || meta.url;
+    if (!url) throw new Error('no_download_url');
+    const bin = await fetch(url, { signal: AbortSignal.timeout(45_000) });
+    if (!bin.ok) throw new Error(`download_${bin.status}`);
+    return await bin.arrayBuffer();
+  }
+  throw new Error('no_source_for_item');
+}
+
+/**
+ * A .eml/.msg holding 40 payslips becomes 40 queue rows, each with its bytes already in
+ * R2 — no Gemini call in this step at all. This is the step that used to be invisible:
+ * the container was expanded in memory and then only the first two or three inner files
+ * were ever reached.
+ */
+async function fanOutContainer(env, item, buffer) {
+  const expanded = await expandAttachments(
+    [{ filename: item.filename, mimeType: item.mime, content: buffer }]);
+  const children = expanded.filter((a) => isIngestable(a.filename, a.mimeType));
+  if (!children.length) {
+    return { fanned_out: 0, saw: expanded.map((a) => a.via || a.filename).slice(0, 20) };
+  }
+
+  const month = new Date().toISOString().slice(0, 7);
+  const rows = [];
+  // Chunked-parallel puts: 60 sequential R2 writes is minutes of round-trips, and this
+  // step has to stay comfortably inside one invocation.
+  for (let i = 0; i < Math.min(children.length, 200); i += 6) {
+    const chunk = children.slice(i, i + 6);
+    await Promise.all(chunk.map(async (c) => {
+      const safe = (c.filename || 'attachment').replace(/[^\w.\-֐-׿]/g, '_').slice(0, 100);
+      const key = `inbox/${month}/${uuid()}-${safe}`;
+      await env.DOCS_BUCKET.put(key, c.content, {
+        httpMetadata: { contentType: c.mimeType || 'application/octet-stream' } });
+      rows.push({ source: 'expand', r2_key: key, filename: c.filename, mime: c.mimeType,
+                  size_bytes: c.content.byteLength, sender: item.sender,
+                  subject: item.subject, parent_id: item.id });
+    }));
+  }
+  return { fanned_out: await enqueueIngest(env, rows), children: rows.length,
+           truncated: children.length > 200 ? children.length - 200 : 0 };
+}
+
+// --- classification -------------------------------------------------------
+//
+// Adi forwards payslips and receipts to the same address, so the pipeline has to decide
+// which one it is looking at. Two shapes, two completely separate destinations: a payslip
+// feeds income/expenses and therefore the Net Income tiles; a receipt goes to the
+// isolated `receipts` archive and must never touch them.
+//
+// The receipt fields come back in this same call, so a receipt costs ONE model round-trip
+// rather than a classify-then-extract pair. A financial document takes a second call with
+// the full extraction prompt, which is left exactly as it is — that prompt is verified
+// against real payslips and is not worth destabilising for a shared shortcut.
+
+const CLASSIFY_PROMPT = `Decide which pipeline this document belongs to. Return ONLY JSON:
+{
+  "class": "payslip" | "kibbutz_report" | "investment_statement" | "bank_statement" | "receipt" | "other",
+  "confidence": 0.0-1.0,
+  "why": "a few words, in English",
+  "receipt": {
+    "vendor": "shop or supplier", "item": "what was bought, short",
+    "amount": number, "currency": "ILS|USD|EUR", "purchase_date": "YYYY-MM-DD",
+    "category": "electronics|appliance|furniture|tools|clothing|food|service|software|other",
+    "payment_method": "credit|cash|bank_transfer|bit|paypal|other",
+    "invoice_number": "string", "warranty_months": number, "warranty_note": "exact wording"
+  }
+}
+Include "receipt" ONLY when class is "receipt"; omit it entirely otherwise.
+
+How to tell them apart (Hebrew):
+- "payslip"              — תלוש שכר, תלוש משכורת. Has ברוטו/נטו, מס הכנסה, ביטוח לאומי,
+                           ניכויי חובה, ימי עבודה. It is a STATEMENT OF PAY, not a purchase.
+- "kibbutz_report"       — דוח פרטני / דוח מצרפי לחבר קיבוץ: a member's monthly account.
+- "investment_statement" — דוח קרן השתלמות / פנסיה / קופת גמל, with יתרה צבורה, תשואה,
+                           דמי ניהול.
+- "bank_statement"       — תנועות בחשבון / דף חשבון: many dated transaction lines.
+- "receipt"              — קבלה, חשבונית מס, חשבונית מס/קבלה for something BOUGHT: a
+                           vendor, a total (סה"כ לתשלום), sometimes אחריות.
+
+Rules that matter:
+- A payslip is NEVER a receipt, even though it is full of amounts. If you see ברוטו/נטו
+  or ניכויי חובה, it is "payslip" — this is the single most costly mistake here.
+- A purchase document is a receipt whether it says קבלה or חשבונית מס.
+- "amount" on a receipt is the FINAL total paid including VAT, not a line item and not
+  the pre-VAT subtotal (סה"כ לפני מע"מ).
+- Do NOT invent a warranty. Omit warranty_months unless the document states one.
+- If genuinely unsure between two financial classes, pick the financial one, never
+  "receipt" — a misfiled receipt is recoverable, a receipt that lands in income is not.`;
+
+/** Store + stage one receipt. Shared by /api/receipts/parse and the ingestion queue. */
+async function stageReceiptRow(env, buffer, filename, mime, ex, meta = {}) {
+  const hash = await sha256Hex(buffer);
+  const dupe = await env.DB.prepare(
+    "SELECT id, vendor, amount, status FROM receipts WHERE sha256=? AND status!='rejected'")
+    .bind(hash).first();
+  if (dupe) return { duplicate: true, existing: dupe };
+
+  const id = uuid();
+  const safe = (filename || 'receipt').replace(/[^\w.\-֐-׿]/g, '_').slice(0, 100);
+  const key = `receipts/${new Date().toISOString().slice(0, 7)}/${id}-${safe}`;
+  await env.DOCS_BUCKET.put(key, buffer, { httpMetadata: { contentType: mime } });
+
+  const amount = toAgorot(ex.amount);
+  const months = Number.isFinite(ex.warranty_months) ? Math.round(ex.warranty_months) : null;
+  await env.DB.prepare(
+    `INSERT INTO receipts (id, status, vendor, item, amount, currency, purchase_date, category,
+       payment_method, invoice_number, warranty_months, warranty_until, r2_key, mime,
+       size_bytes, sha256, extracted_json, confidence, notes)
+     VALUES (?,'staged',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).bind(id, trimStr(ex.vendor, 200), trimStr(ex.item, 300), amount,
+         trimStr(ex.currency, 3) || 'ILS', trimStr(ex.purchase_date, 10),
+         trimStr(ex.category, 40), trimStr(ex.payment_method, 40),
+         trimStr(ex.invoice_number, 80), months,
+         months ? addMonths(ex.purchase_date, months) : null,
+         key, mime, buffer.byteLength, hash, JSON.stringify(ex),
+         Number.isFinite(ex.confidence) ? ex.confidence : null,
+         trimStr(ex.warranty_note, 300)).run();
+
+  await env.DB.prepare(
+    'INSERT INTO activity_log (id, entity, entity_id, action, title, meta_json) VALUES (?,?,?,?,?,?)',
+  ).bind(uuid(), 'note', id, 'attach', `קבלה: ${ex.vendor || filename}`,
+         JSON.stringify({ kind: 'receipt', via: meta.via || 'queue', amount })).run()
+    .catch(() => {});
+
+  return { id, receipt: await env.DB.prepare('SELECT * FROM receipts WHERE id=?').bind(id).first() };
+}
+
+/** Classify, then hand the bytes to whichever pipeline owns them. */
+async function routeIngestItem(env, item, rawBuffer) {
+  // Mail carries logos, vCards and disclaimers. Rejecting them here is why the pipeline
+  // stops manufacturing junk documents — an email signature image previously sailed
+  // through vision and landed as a document with a made-up period.
+  if (!isIngestable(item.filename, item.mime)) {
+    return { classified_as: 'not_ingestable', skipped: true,
+             result: { ok: true, skipped: 'not_a_document' } };
+  }
+
+  let buffer = rawBuffer;
+  // Decrypt before classifying — a locked payslip shows the model nothing at all.
+  let decryption = null;
+  if (detectPdfEncryption(buffer)) {
+    if (!env.PDF_PASS) throw new Error('no_pdf_pass_secret');
+    const res = decryptPdf(buffer, env.PDF_PASS);
+    decryption = res.ok ? { ok: true, cipher: `RC4-${res.bits}` } : { ok: false, error: res.error };
+    if (!res.ok) throw new Error(`decrypt_failed: ${res.error}`);
+    buffer = res.bytes.buffer;
+  }
+
+  const ingestMeta = { via: item.source === 'expand' ? 'resend' : item.source,
+                       sender: item.sender, subject: item.subject, mime: item.mime };
+
+  // A spreadsheet is never sent to vision: Gemini rejects the MIME type outright, which is
+  // the "Unsupported MIME type: ...spreadsheetml.sheet" failure still in the table. It has
+  // a deterministic importer, so classification would be wasted work anyway.
+  if (isSpreadsheet(item.filename, item.mime)) {
+    const r = await ingestPdfBuffer(env, buffer, item.filename, ingestMeta);
+    return { classified_as: 'bank_statement', document_id: r.id || null, result: r };
+  }
+
+  const isPdf = /pdf/i.test(item.mime || '') || /\.pdf$/i.test(item.filename || '');
+  const mime = isPdf ? 'application/pdf'
+    : (item.mime && /^image\//i.test(item.mime) ? item.mime
+      : `image/${(item.filename.split('.').pop() || 'jpeg').toLowerCase().replace('jpg', 'jpeg')}`);
+
+  const verdict = await classifyDocument(env, { base64: toBase64(buffer), mimeType: mime });
+  const cls = String(verdict?.class || 'other');
+
+  // "other" means the model looked and saw no financial document. Skipping is recorded,
+  // and the bytes are deliberately left in R2 so a wrong call is recoverable rather than
+  // a deletion. The prompt is told to prefer a financial class when unsure, so landing
+  // here is a real signal and not a coin toss.
+  if (cls === 'other') {
+    return { classified_as: 'other', skipped: true,
+             result: { ok: true, skipped: 'classified_other', why: verdict.why } };
+  }
+
+  if (cls === 'receipt') {
+    // One call did both jobs; only fall back to the dedicated prompt if it withheld the fields.
+    const ex = verdict.receipt && typeof verdict.receipt === 'object'
+      ? { ...verdict.receipt, confidence: verdict.receipt.confidence ?? verdict.confidence }
+      : await geminiCallJson(env, RECEIPT_PROMPT, { base64: toBase64(buffer), mimeType: mime });
+    const staged = await stageReceiptRow(env, buffer, item.filename, mime, ex,
+                                        { via: item.source });
+    return { classified_as: 'receipt', receipt_id: staged.id || null,
+             result: { ...staged, why: verdict.why, decryption } };
+  }
+
+  const r = await ingestPdfBuffer(env, buffer, item.filename, ingestMeta);
+  return { classified_as: cls, document_id: r.id || null, result: { ...r, why: verdict.why } };
+}
+
+const classifyDocument = (env, file) => geminiCallJson(env, CLASSIFY_PROMPT, file);
+
+/**
+ * Work the queue inside a time budget. Returns what it did and what is left, so the UI can
+ * call it again and show real progress instead of guessing.
+ */
+async function drainIngestQueue(env, { maxItems = 3, budgetMs = DRAIN_BUDGET_MS } = {}) {
+  const started = Date.now();
+
+  // Exhausted items are marked failed rather than left in limbo. An item nobody will ever
+  // pick up again has to be VISIBLE, or this is the old silent drop with extra steps.
+  await env.DB.prepare(
+    `UPDATE ingest_queue
+        SET status='failed', updated_at=datetime('now'),
+            error=COALESCE(error, 'gave up after ' || attempts || ' attempts')
+      WHERE status IN ('queued','working') AND attempts >= ?`,
+  ).bind(QUEUE_MAX_ATTEMPTS).run();
+
+  const done = [];
+  for (let n = 0; n < maxItems; n++) {
+    if (Date.now() - started > budgetMs) break;
+    const item = await claimIngestItem(env);
+    if (!item) break;
+    try {
+      const buffer = await ingestItemBytes(env, item);
+
+      if (isEmlLike(item.filename, item.mime) || isMsgLike(item.filename, item.mime)) {
+        const out = await fanOutContainer(env, item, buffer);
+        await finishIngestItem(env, item.id, {
+          status: 'done', fanned_out: out.fanned_out, classified_as: 'container',
+          error: out.fanned_out ? null : `nothing ingestable: ${(out.saw || []).join(', ').slice(0, 300)}`,
+        });
+        done.push({ id: item.id, filename: item.filename, ok: true,
+                    container: true, ...out });
+        continue;
+      }
+
+      const routed = await routeIngestItem(env, item, buffer);
+      await finishIngestItem(env, item.id, {
+        status: routed.skipped ? 'skipped' : 'done', classified_as: routed.classified_as,
+        document_id: routed.document_id || null, receipt_id: routed.receipt_id || null,
+        error: routed.skipped ? trimStr(routed.result?.why || routed.result?.skipped, 300)
+          : (routed.result?.ok === false
+            ? String(routed.result.detail || routed.result.error).slice(0, 500) : null),
+      });
+      // Expanded children were staged in R2 only to survive the hand-off; once routed, the
+      // canonical copy lives under docs/ or receipts/. A SKIPPED child keeps its staged
+      // bytes — that is the only copy, and a misclassification must stay recoverable.
+      if (item.source === 'expand' && item.r2_key && !routed.skipped) {
+        await env.DOCS_BUCKET.delete(item.r2_key).catch(() => {});
+      }
+      done.push({ id: item.id, filename: item.filename, ok: routed.result?.ok !== false,
+                  classified_as: routed.classified_as,
+                  document_id: routed.document_id, receipt_id: routed.receipt_id,
+                  period: routed.result?.period, duplicate: !!routed.result?.duplicate,
+                  error: routed.result?.ok === false ? routed.result.detail || routed.result.error : undefined });
+    } catch (err) {
+      const detail = String(err?.message || err).slice(0, 500);
+      const terminal = item.attempts >= QUEUE_MAX_ATTEMPTS;
+      // A retry stays 'working' with a fresh lease rather than going back to 'queued'.
+      // That IS the backoff: the item cannot be re-claimed until the lease expires, so a
+      // single failing file no longer consumes every slot of the pass that met it.
+      await finishIngestItem(env, item.id, terminal
+        ? { status: 'failed', error: detail }
+        : { status: 'working', claimed_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+            error: detail });
+      done.push({ id: item.id, filename: item.filename, ok: false, error: detail,
+                  attempt: item.attempts, terminal });
+    }
+  }
+
+  const counts = await ingestQueueCounts(env);
+  return { processed: done.length, results: done, ...counts,
+           elapsed_ms: Date.now() - started };
+}
+
+async function ingestQueueCounts(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT status, COUNT(*) n FROM ingest_queue GROUP BY status`).all();
+  const by = Object.fromEntries((results || []).map((r) => [r.status, r.n]));
+  const docs = await env.DB.prepare(
+    `SELECT COUNT(*) total,
+            SUM(status='pending')   pending,
+            SUM(status='failed')    failed,
+            SUM(status='extracted') extracted
+       FROM documents`).first();
+  return {
+    queue: { queued: by.queued || 0, working: by.working || 0, done: by.done || 0,
+             failed: by.failed || 0, skipped: by.skipped || 0 },
+    // What is still outstanding anywhere: queue backlog plus documents whose extraction
+    // never completed. This is the number the UI loops until it reaches zero.
+    remaining: (by.queued || 0) + (by.working || 0) + (docs?.pending || 0),
+    documents: docs || {},
+  };
+}
+
+/**
+ * One pass of the whole pipeline: the attachment queue first (it is what produces document
+ * rows), then any document still waiting for extraction. Shared by the cron, the History
+ * tab's button and the app's auto-drain, so all three behave identically.
+ */
+async function runIngestionPass(env, { items = 3, budgetMs = DRAIN_BUDGET_MS, via = 'api' } = {}) {
+  const started = Date.now();
+  // A single overwritten row, so "is the drainer actually running?" is answerable from the
+  // database alone. `wrangler tail` cannot prove a negative and this pipeline has already
+  // cost us one round of "it looks like nothing ran" — and 720 log rows a day is not an
+  // acceptable price for that answer.
+  await setSetting(env, 'ingest_heartbeat',
+    JSON.stringify({ at: new Date().toISOString(), via })).catch(() => {});
+  const queue = await drainIngestQueue(env, { maxItems: items, budgetMs });
+  let pending = { processed: 0, results: [] };
+  const left = budgetMs - (Date.now() - started);
+  if (left > 4000) {
+    pending = await processPendingDocuments(env, items, left);
+  }
+  const counts = await ingestQueueCounts(env);
+  return {
+    queue_processed: queue.processed, queue_results: queue.results,
+    documents_processed: pending.processed, document_results: pending.results,
+    ...counts,
+    elapsed_ms: Date.now() - started,
+  };
+}
+
+/**
+ * Everything the History tab needs: the chronological ingestion log, the queue backlog,
+ * and per-item outcomes. This is the view that used to be jammed into the Finance tab as
+ * raw pending/failed/extracted pills next to the actual balances.
+ */
+async function handleIngestStatus(env, url) {
+  const limit = Math.min(Number(url.searchParams.get('limit')) || 100, 300);
+  const status = url.searchParams.get('status') || 'all';
+  const where = status === 'all' ? '' : 'WHERE d.status = ?1';
+
+  const docsQ = env.DB.prepare(
+    `SELECT d.id, d.filename, d.doc_type, d.doc_kind, d.period, d.status, d.size_bytes,
+            d.uploaded_at, d.processed_at, substr(COALESCE(d.error,''),1,240) AS error,
+            (SELECT COUNT(*) FROM income   x WHERE x.doc_id = d.id) AS income_rows,
+            (SELECT COUNT(*) FROM expenses x WHERE x.doc_id = d.id) AS expense_rows,
+            (SELECT q.sender FROM ingest_queue q WHERE q.document_id = d.id LIMIT 1) AS sender
+       FROM documents d ${where}
+      ORDER BY d.uploaded_at DESC LIMIT ${limit}`);
+
+  const [docs, queue, receipts, counts] = await Promise.all([
+    (status === 'all' ? docsQ : docsQ.bind(status)).all(),
+    // Anything not finished, plus recent terminal rows, so a failure is visible without
+    // hunting for it.
+    env.DB.prepare(
+      `SELECT id, source, filename, mime, size_bytes, sender, subject, status, attempts,
+              classified_as, fanned_out, document_id, receipt_id,
+              substr(COALESCE(error,''),1,240) AS error, created_at, updated_at
+         FROM ingest_queue
+        ORDER BY CASE status WHEN 'queued' THEN 0 WHEN 'working' THEN 0 WHEN 'failed' THEN 1
+                             ELSE 2 END, created_at DESC
+        LIMIT ${limit}`).all(),
+    env.DB.prepare(
+      `SELECT id, vendor, amount, status, purchase_date, created_at FROM receipts
+        WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 30`).all(),
+    ingestQueueCounts(env),
+  ]);
+
+  // Distinct names on purpose: `counts` also carries `queue` and `documents` keys, and
+  // spreading it over the arrays silently emptied both.
+  return { documents: docs.results || [], queue_items: queue.results || [],
+           receipts: receipts.results || [],
+           counts: counts.queue, doc_counts: counts.documents, remaining: counts.remaining };
+}
+
+/** Put failed work back in play: queue rows and documents that never got extracted. */
+async function retryFailedIngest(env) {
+  const q = await env.DB.prepare(
+    `UPDATE ingest_queue SET status='queued', attempts=0, error=NULL, claimed_at=NULL,
+            updated_at=datetime('now')
+      WHERE status='failed'`).run();
+  const d = await env.DB.prepare(
+    `UPDATE documents SET status='pending', error=NULL WHERE status='failed'`).run();
+  return { requeued_items: q.meta?.changes || 0, reset_documents: d.meta?.changes || 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -4148,6 +4643,19 @@ export default {
         return withCors(json({ ok: true,
           ...(await processPendingDocuments(env, Math.min(Number(b.limit) || 3, 6))) }));
       }
+      // --- Ingestion queue (History tab) ---
+      if (url.pathname === '/api/ingest/status' && request.method === 'GET') {
+        return withCors(json({ ok: true, ...(await handleIngestStatus(env, url)) }));
+      }
+      if (url.pathname === '/api/ingest/drain' && request.method === 'POST') {
+        const b = await readJson(request);
+        return withCors(json({ ok: true,
+          ...(await runIngestionPass(env, { items: Math.min(Number(b.items) || 3, 6) })) }));
+      }
+      if (url.pathname === '/api/ingest/retry' && request.method === 'POST') {
+        const reset = await retryFailedIngest(env);
+        return withCors(json({ ok: true, ...reset, ...(await ingestQueueCounts(env)) }));
+      }
       if (url.pathname === '/api/receipts/parse' && request.method === 'POST') {
         return withCors(await handleReceiptParse(request, env));
       }
@@ -4326,12 +4834,30 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
+    // The frequent tick does ONE job. Mixing the queue drain into the nightly run is what
+    // made a 40-attachment forward wait until 03:17 and then get killed halfway.
+    if (event.cron === '*/2 * * * *') {
+      ctx.waitUntil((async () => {
+        try {
+          const pass = await runIngestionPass(env, { items: 3, via: 'cron-2min' });
+          // Quiet when idle: this fires 720 times a day.
+          if (pass.queue_processed || pass.documents_processed || pass.remaining) {
+            console.log('ingest_tick', JSON.stringify(pass));
+          }
+        } catch (err) {
+          console.error('ingest_tick_failed', err?.stack || err);
+        }
+      })());
+      return;
+    }
+
     ctx.waitUntil((async () => {
       try {
-        // Drain the extraction backlog first — a batch of forwarded payslips can leave
-        // dozens of pending rows that no interactive request will ever pick up.
+        // Belt and braces: the */2 tick owns the backlog, but a nightly sweep catches
+        // anything that was failing all day and has since become retryable.
         let pending = { processed: 0 };
-        try { pending = await processPendingDocuments(env, 6); } catch (e) { pending = { error: String(e) }; }
+        try { pending = await runIngestionPass(env, { items: 6, budgetMs: 20_000, via: 'cron-nightly' }); }
+        catch (e) { pending = { error: String(e) }; }
         const purged = await runPurge(env);
         const alerts = await runDueAlerts(env);
         // Google Tasks has no webhooks, so the nightly run is the pull channel.

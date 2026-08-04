@@ -146,6 +146,75 @@ Always rehearse `--local` first, and back up (`d1 export`, `d1 time-travel info`
   default). Hebrew prefix letters (ו/ה/ב/ל/מ/ש/כ) are stripped when matching names, or a
   LIKE on "לבועז" misses בועז.
 
+## Bulk ingestion: what was actually wrong (2026-08-04)
+
+Adi forwarded three years of documents and only a fraction appeared. The cause was one
+thing, and it produced all three symptoms he reported. The evidence, from
+`activity_log` joined against `documents`:
+
+```
+17:43:06 webhook → 17:43:18 doc                          no completion log
+17:43:52 webhook → 17:44:05, 17:44:17, 17:44:20 docs     no completion log
+19:00:25 webhook → 19:00:40, 19:00:48 docs               no completion log
+19:10:19 webhook → 19:10:30, 19:10:46 docs               no completion log
+05:34:19 webhook → 05:34:28 doc, 05:34:42 doc→pending    no completion log
+```
+
+Every bulk forward died **23–28 seconds** after its webhook, always mid-loop. The three
+single-attachment emails before them all completed in ~10s and logged normally.
+
+`processResendEmail` did every per-attachment step inside one `waitUntil`: two Resend API
+calls, a binary download, an RC4 decrypt, an R2 put, a D1 insert, and up to two
+**synchronous Gemini vision calls**. The isolate was killed at the duration ceiling.
+
+- **Silently dropped** — attachments past the 2nd/3rd were never downloaded. No document
+  row, no log line, nothing to find. `defer: i >= 2` deferred only the *Gemini call*; the
+  download, decrypt, store and insert stayed in the same invocation.
+- **Stuck `pending`** — `ingestPdfBuffer` INSERTs the row `pending` and UPDATEs it after
+  extraction. The kill landed between the two.
+- **No error anywhere** — the `log('attach', …)` call and the `catch` that would have
+  recorded a failure both sit *after* the loop that never finished.
+
+The two `failed` rows had unrelated, already-fixed causes: `investments has no column
+named row_hash` (migration 0008) and `Unsupported MIME type: …spreadsheetml.sheet` (an
+.xlsx sent to vision — spreadsheets take SheetJS, never the model).
+
+### The architecture now
+
+**No invocation takes on an unbounded amount of work.**
+
+1. The webhook **only enqueues** — one `ingest_queue` row per attachment, before anything
+   expensive. Two API calls total, regardless of attachment count. It cannot time out.
+2. A **drainer** claims one item at a time inside a time budget (`DRAIN_BUDGET_MS`,
+   15s — deliberately enough for one long Gemini call, not two).
+3. A `.eml`/`.msg` **fans out** into one row per inner file, bytes staged to R2, with no
+   model call in that step. Verified: a doubly-nested bundle of 13 attachments fanned out
+   in **79 ms**.
+4. `'working'` is a **lease**, not a state. `claimed_at` older than 3 minutes is fair game
+   again, so a killed isolate causes a repeat, never a loss. That is the anti-hang
+   guarantee — test it by ageing `claimed_at` and draining.
+5. Retries are capped at 4 attempts, then the row is **marked `failed` with the error
+   text**. An item nobody will retry has to be visible.
+6. A failing item **keeps its lease** instead of going back to `queued`, and the claim
+   orders by `attempts ASC` — so one poisonous file cannot eat every slot of a pass.
+   (It could, before that fix: one bad file consumed all 3 slots retrying itself.)
+
+Three things drive the drainer, deliberately overlapping:
+- **`*/2 * * * *` cron** — the delivery guarantee. Nothing else is required for a bulk
+  forward to finish.
+- **The כספים→היסטוריה button** (`עבד את התור`) — loops `/api/ingest/drain` until
+  `remaining` is 0, with a live progress line.
+- **App load** — `autoDrainIngest()` works a little of any backlog and toasts the count.
+
+`settings.ingest_heartbeat` is a single overwritten row stamped by every pass, with `via`
+(`cron-2min` / `cron-nightly` / `api`). **Check it first** when the pipeline looks idle —
+`wrangler tail` cannot prove a negative, and this already cost one round of confusion.
+
+```bash
+npx wrangler d1 execute finance --remote \
+  --command="SELECT value, updated_at FROM settings WHERE key='ingest_heartbeat'"
+```
+
 ## The two propose-then-confirm APIs
 
 Both follow the same rule: **the planning endpoint never writes.** A model that mis-reads

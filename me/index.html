@@ -157,7 +157,8 @@ html[dir=rtl] .kpi .val{text-align:right}
 @media(max-width:520px){.fields{grid-template-columns:1fr}}
 .uplog{margin-top:12px;font-family:var(--mono);font-size:.78rem;max-height:180px;overflow:auto}
 .uplog div{padding:6px 0;border-top:1px solid var(--line);display:flex;gap:8px}
-.uplog .s-ok{color:var(--ok)} .uplog .s-bad{color:var(--bad)} .uplog .s-run{color:var(--warn)}
+/* Global, not scoped to .uplog — the ingestion log in היסטוריה uses them too. */
+.s-ok{color:var(--ok)} .s-bad{color:var(--bad)} .s-run{color:var(--warn)}
 
 /* ---------- receipts ---------- */
 #rDrop{border:1.5px dashed var(--line-2);border-radius:14px;padding:22px 16px;text-align:center;
@@ -458,12 +459,16 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
           <div id="insight"><span class="spin"></span></div>
         </section>
         <section class="card">
-          <h2><em data-i18n="investments" style="font-style:normal">השקעות</em> <span class="badge">קרן השתלמות</span></h2>
+          <h2><em data-i18n="investments" style="font-style:normal">השקעות</em>
+            <span class="badge" data-i18n="invPerFund">קרן אחת לכל סוג</span></h2>
           <div id="inv"><div class="empty" data-i18n="noStatements">אין עדיין דוחות.</div></div>
-        </section>
-        <section class="card">
-          <h2 data-i18n="documents">מסמכים</h2>
-          <div class="docs" id="docs"><div class="empty" data-i18n="nothingUploaded">לא הועלה דבר.</div></div>
+
+          <!-- Deliberately empty for now: the place future AI crypto/stock suggestions land. -->
+          <h2 style="margin-top:22px;padding-top:16px;border-top:1px solid var(--line)"
+              data-i18n="personalInv">השקעות אישיות</h2>
+          <div id="personalInv">
+            <div class="empty" data-i18n="personalInvSoon">בקרוב — מניות וקריפטו, עם המלצות AI.</div>
+          </div>
         </section>
       </div>
     </div>
@@ -702,7 +707,28 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
 
   <!-- ---------- היסטוריה ---------- -->
   <section id="viewHistory" hidden>
+    <!-- The ingestion log lives here, not in כספים: the Finance views show parsed money,
+         this shows what arrived and what happened to it. -->
     <section class="card">
+      <h2><em data-i18n="ingestion" style="font-style:normal">קליטת מסמכים</em>
+        <span class="badge" id="ingCount">0</span>
+        <span class="badge" id="ingBacklog" hidden></span></h2>
+      <div class="hfilters">
+        <div class="seg" id="ingFilter">
+          <button data-ing="all" class="on" data-i18n="ingAll">הכל</button>
+          <button data-ing="extracted" data-i18n="ingOk">נקלטו</button>
+          <button data-ing="pending" data-i18n="ingPending">בהמתנה</button>
+          <button data-ing="failed" data-i18n="ingFailed">נכשלו</button>
+        </div>
+        <button class="btn sm" id="ingDrain" data-i18n="ingDrainBtn">עבד את התור</button>
+        <button class="btn ghost sm" id="ingRetry" data-i18n="ingRetryBtn">נסה שוב את הכשלונות</button>
+      </div>
+      <div class="route" id="ingProgress" hidden></div>
+      <div id="ingQueue"></div>
+      <div class="docs" id="ingList"><div class="empty" data-i18n="nothingUploaded">לא הועלה דבר.</div></div>
+    </section>
+
+    <section class="card" style="margin-top:16px">
       <h2><em data-i18n="history" style="font-style:normal">היסטוריה</em> <span class="badge" id="histCount">0</span></h2>
       <div class="hfilters">
         <input type="search" id="histQ" data-i18n-ph="searchHistory" placeholder="חיפוש בהיסטוריה…">
@@ -932,6 +958,25 @@ const I18N = {
     brainLinked:'מקושר', brainNew:'לא נמצא — ליצור ולקשר?',
     brainNoSubs:'ללא תת-משימות', brainNoPeople:'לא זוהו אנשים',
     brainCreated:'נוצר', brainUnmatched:'שמות שלא זוהו',
+    // ingestion log
+    ingestion:'קליטת מסמכים', ingAll:'הכל', ingOk:'נקלטו', ingPending:'בהמתנה', ingFailed:'נכשלו',
+    ingDrainBtn:'עבד את התור', ingRetryBtn:'נסה שוב את הכשלונות',
+    ingWaiting:'ממתינים', ingFailedShort:'נכשלו', ingInside:'בתוך הקובץ',
+    ingWorking:'מעבד…', ingPass:'מעבר', ingHandled:'טופלו', ingDone:'הושלם',
+    ingRequeued:'הוחזרו לתור', ingRows:'שורות', ingRow:'שורה',
+    ingSt_extracted:'נקלט', ingSt_pending:'בהמתנה', ingSt_failed:'נכשל',
+    ingK_salary:'תלוש שכר', ingK_kibbutz:'דוח קיבוץ', ingK_invoice:'חשבונית',
+    ingK_investment:'דוח השקעות', ingK_bank_statement:'דף חשבון', ingK_payslip:'תלוש שכר',
+    ingK_kibbutz_report:'דוח פרטני', ingK_investment_statement:'דוח קרן',
+    ingK_receipt:'קבלה', ingK_duplicate:'כפול', ingK_unknown:'לא זוהה', ingK_container:'מכולת דואר',
+    ingK_other:'לא מסמך פיננסי', ingK_not_ingestable:'לא נתמך',
+    // investments
+    invPerFund:'קרן אחת לכל סוג', personalInv:'השקעות אישיות',
+    personalInvSoon:'בקרוב — מניות וקריפטו, עם המלצות AI.',
+    invNoBalance:'טרם דווחה יתרה', invYield:'תשואה', invFees:'דמי ניהול',
+    invLiquid:'נזיל מ־', invAsOf:'לתאריך', invStatements:'דוחות',
+    inv_keren_hishtalmut:'קרן השתלמות', inv_pension:'פנסיה', inv_gemel:'קופת גמל',
+    inv_savings:'חיסכון', inv_other:'אחר',
   },
   en: {
     hub:'Personal hub', hubTitle:'Personal hub', signInHint:'Sign in to continue.',
@@ -1034,6 +1079,28 @@ const I18N = {
     brainLinked:'linked', brainNew:'not in contacts — create and link?',
     brainNoSubs:'no sub-tasks', brainNoPeople:'nobody identified',
     brainCreated:'created', brainUnmatched:'names not recognised',
+    // ingestion log
+    ingestion:'Document ingestion', ingAll:'All', ingOk:'Parsed', ingPending:'Waiting',
+    ingFailed:'Failed',
+    ingDrainBtn:'Process backlog', ingRetryBtn:'Retry the failures',
+    ingWaiting:'waiting', ingFailedShort:'failed', ingInside:'inside',
+    ingWorking:'Processing…', ingPass:'pass', ingHandled:'handled', ingDone:'Done',
+    ingRequeued:'back in the queue', ingRows:'rows', ingRow:'row',
+    ingSt_extracted:'parsed', ingSt_pending:'waiting', ingSt_failed:'failed',
+    ingK_salary:'payslip', ingK_kibbutz:'kibbutz report', ingK_invoice:'invoice',
+    ingK_investment:'fund statement', ingK_bank_statement:'bank statement',
+    ingK_payslip:'payslip', ingK_kibbutz_report:'kibbutz report',
+    ingK_investment_statement:'fund statement',
+    ingK_receipt:'receipt', ingK_duplicate:'duplicate', ingK_unknown:'unrecognised',
+    ingK_container:'mail container', ingK_other:'not a financial document',
+    ingK_not_ingestable:'unsupported',
+    // investments
+    invPerFund:'one row per fund', personalInv:'Personal investments',
+    personalInvSoon:'Coming soon — stocks and crypto, with AI suggestions.',
+    invNoBalance:'no balance reported yet', invYield:'yield', invFees:'fees',
+    invLiquid:'liquid from', invAsOf:'as of', invStatements:'statements',
+    inv_keren_hishtalmut:'Keren Hishtalmut', inv_pension:'Pension', inv_gemel:'Gemel',
+    inv_savings:'Savings', inv_other:'Other',
   },
 };
 let lang = localStorage.getItem('adi_lang') || 'he';
@@ -1158,7 +1225,7 @@ for (const id of ['#lang', '#langGate']) {
 $('#lock').addEventListener('click', signOut);
 $('#refresh').addEventListener('click', () => {
   loadFinance(); loadTasks(); loadNotes(); loadInsights();
-  if (!$('#viewHistory').hidden) loadHistory();
+  if (!$('#viewHistory').hidden) { loadHistory(); loadIngest().catch(() => {}); }
   if (!$('#finReceipts').hidden) { loadReceipts(); loadStaged(); }
 });
 
@@ -1181,7 +1248,7 @@ function showTab(name) {
   if (name === 'tasks' && !tasksLoaded) { loadTasks(); loadNotes(); tasksLoaded = true; }
   if (name === 'tasks') autoSync('tasks');
   if (name === 'contacts') autoSync('contacts');
-  if (name === 'history') loadHistory();
+  if (name === 'history') { loadHistory(); loadIngest().catch(() => {}); }
   if (name === 'contacts') loadContacts();
   if (name === 'settings') loadGoogle();
 }
@@ -1246,23 +1313,29 @@ function renderCats(rows) {
     <div class="row"><div class="name">${esc(r.category)}</div><div class="amt">${ils(r.total)}</div>
       <div class="bar"><i style="width:${(r.total / peak) * 100}%"></i></div></div>`).join('');
 }
+// One card per fund kind is now a database invariant (UNIQUE(kind)), so this can no longer
+// draw duplicate Keren Hishtalmut / Pension rows however the extractor spells a provider.
 function renderInv(rows) {
   if (!rows.length) { $('#inv').innerHTML = `<div class="empty">${t('noStatements')}</div>`; return; }
-  const names = { keren_hishtalmut: 'Keren Hishtalmut', pension: 'Pension', gemel: 'Gemel', savings: 'Savings', other: 'Other' };
-  $('#inv').innerHTML = rows.map((r) => `
-    <div class="row"><div class="name">${names[r.kind] || esc(r.kind)}${r.provider ? ` <span class="badge">${esc(r.provider)}</span>` : ''}</div>
-      <div class="amt">${ils(r.balance)}</div>
-      <div class="amt" style="grid-column:1/-1;font-size:.74rem">
-        ${r.yield_pct != null ? `yield ${r.yield_pct}%` : ''}${r.fees_pct != null ? ` · fees ${r.fees_pct}%` : ''}
-        ${r.liquid_from ? ` · liquid ${r.liquid_from}` : ''}${r.as_of ? ` · ${r.as_of}` : ''}</div></div>`).join('');
-}
-function renderDocs(rows) {
-  if (!rows.length) { $('#docs').innerHTML = `<div class="empty">${t('nothingUploaded')}</div>`; return; }
-  $('#docs').innerHTML = rows.map((d) => `
-    <div class="d"><div>
-      <div class="nm"><a href="#" data-doc="${d.id}">${esc(d.filename)}</a></div>
-      <div class="meta">${esc(d.doc_type)}${d.period ? ' · ' + d.period : ''} · ${d.uploaded_at}</div>
-    </div><span class="pill ${d.status}">${d.status}</span></div>`).join('');
+  $('#inv').innerHTML = rows.map((r) => {
+    // A payslip reports contributions and leaves the accrued balance at 0. Printing ₪0
+    // reads as "the fund is empty", which is wrong — say what is actually missing.
+    const bal = r.balance > 0 ? ils(r.balance)
+      : `<span style="color:var(--muted)">—</span>`;
+    const meta = [
+      r.balance > 0 ? '' : t('invNoBalance'),
+      r.yield_pct != null ? `${t('invYield')} ${r.yield_pct}%` : '',
+      r.fees_pct != null ? `${t('invFees')} ${r.fees_pct}%` : '',
+      r.liquid_from ? `${t('invLiquid')} ${r.liquid_from}` : '',
+      r.as_of ? `${t('invAsOf')} ${r.as_of}` : '',
+      r.statements > 1 ? `${r.statements} ${t('invStatements')}` : '',
+    ].filter(Boolean).join(' · ');
+    return `<div class="row">
+      <div class="name">${esc(fundLabel(r.kind))}${
+        r.provider ? ` <span class="badge">${esc(r.provider)}</span>` : ''}</div>
+      <div class="amt">${bal}</div>
+      <div class="amt" style="grid-column:1/-1;font-size:.74rem">${esc(meta)}</div></div>`;
+  }).join('');
 }
 // The counts line under the title was noise — removed at Adi's request.
 function renderStamp() {}
@@ -1271,7 +1344,7 @@ async function loadFinance() {
   const s = await apiJson('/api/summary');
   lastSummary = s;
   renderKpis(s); renderMonthly(s.monthly); renderCats(s.by_category);
-  renderInv(s.investments); renderDocs(s.documents); renderStamp(s);
+  renderInv(s.investments); renderStamp(s);
   $('#apibase').textContent = API ? new URL(API).host : location.host;
 }
 async function loadInsights() {
@@ -1294,7 +1367,9 @@ async function openProtected(path) {
   window.open(url, '_blank', 'noopener');
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
-$('#docs').addEventListener('click', (e) => {
+// The ingestion log now lives in היסטוריה; opening a source file still needs the session
+// header, so it goes through openProtected rather than an href.
+$('#ingList').addEventListener('click', (e) => {
   const a = e.target.closest('[data-doc]');
   if (!a) return;
   e.preventDefault();
@@ -2306,6 +2381,22 @@ async function upload(files) {
     try {
       const res = await api('/api/upload', { method: 'POST', body: fd });
       const d = await res.json();
+      // Without an explicit type the worker queues + classifies, and answers with the
+      // queue's own per-file results instead of a single flat extraction.
+      if (res.ok && d.ok && Array.isArray(d.results)) {
+        const mine = d.results.find((r) => r.filename === file.name) || d.results[0];
+        const label = mine
+          ? [enumLabel('ingK_', mine.classified_as), mine.period,
+             mine.receipt_id ? t('rReview') : '',
+             mine.duplicate ? t('dupSkipped') : ''].filter(Boolean).join(' · ')
+          : `${t('ingWaiting')} (${d.remaining})`;
+        const bad = mine && mine.ok === false;
+        line.querySelector('.st').innerHTML =
+          `<span class="${bad ? 's-bad' : 's-ok'}">${esc(bad ? (mine.error || 'failed') : (label || t('ingDone')))}</span>`;
+        line.querySelector('.s-run').outerHTML = `<span class="${bad ? 's-bad' : 's-ok'}">${bad ? '✕' : '✓'}</span>`;
+        if (mine?.receipt_id && !$('#finReceipts').hidden) loadStaged().catch(() => {});
+        continue;
+      }
       if (res.ok && d.ok) {
         const st = d.stats || {};
         const added = d.inserted ?? st.inserted ?? 0;
@@ -2329,6 +2420,144 @@ async function upload(files) {
   await loadFinance();
   await loadInsights();
 }
+
+// ===================== ingestion log (היסטוריה) =====================
+//
+// Moved out of כספים on purpose: the Finance tab shows money that has been parsed, this
+// shows what arrived and what became of it. It is also the only place a stuck or failed
+// attachment is visible, which is the whole point after the bulk-forward failures — the
+// old pipeline had nowhere to report them.
+
+const FUND_KINDS = ['keren_hishtalmut', 'pension', 'gemel', 'savings', 'other'];
+const fundLabel = (k) => enumLabel('inv_', k);
+
+let ingest = null;
+let ingestFilter = 'all';
+let draining = false;
+
+function renderIngest() {
+  if (!ingest) return;
+  const docs = ingestFilter === 'all'
+    ? ingest.documents
+    : ingest.documents.filter((d) => d.status === ingestFilter);
+  $('#ingCount').textContent = docs.length;
+
+  const q = ingest.counts || {};
+  const outstanding = ingest.remaining || 0;
+  const badge = $('#ingBacklog');
+  badge.hidden = !outstanding && !q.failed;
+  badge.className = 'badge' + (outstanding ? ' warn' : q.failed ? ' warn' : '');
+  badge.textContent = outstanding
+    ? `${outstanding} ${t('ingWaiting')}`
+    : (q.failed ? `${q.failed} ${t('ingFailedShort')}` : '');
+
+  // Anything not finished, so a backlog is impossible to miss.
+  const live = (ingest.queue_items || []).filter((x) =>
+    x.status === 'queued' || x.status === 'working' || x.status === 'failed');
+  $('#ingQueue').innerHTML = live.length ? `
+    <div class="route" style="margin:0 0 12px;padding-top:0;border-top:0">
+      ${live.slice(0, 40).map((x) => `<div style="display:flex;gap:8px;padding:2px 0">
+        <span class="${x.status === 'failed' ? 's-bad' : 's-run'}">${
+          x.status === 'failed' ? '✕' : x.status === 'working' ? '◌' : '▸'}</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+              dir="auto">${esc(x.filename || '')}</span>
+        ${x.fanned_out ? `<span class="badge">${x.fanned_out} ${esc(t('ingInside'))}</span>` : ''}
+        ${x.attempts > 1 ? `<span class="badge">${x.attempts}/4</span>` : ''}
+        ${x.error ? `<span class="s-bad" style="max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.error)}</span>` : ''}
+      </div>`).join('')}
+    </div>` : '';
+
+  $('#ingList').innerHTML = docs.length ? docs.map((d) => {
+    const rows = (d.income_rows || 0) + (d.expense_rows || 0);
+    return `<div class="d"><div>
+      <div class="nm"><a href="#" data-doc="${esc(d.id)}" dir="auto">${esc(d.filename)}</a></div>
+      <div class="meta">${esc([
+        catOrKind(d), d.period, rows ? `${rows} ${t(rows === 1 ? 'ingRow' : 'ingRows')}` : '',
+        d.sender, d.uploaded_at].filter(Boolean).join(' · '))}</div>
+      ${d.error ? `<div class="meta s-bad" style="white-space:normal">${esc(d.error)}</div>` : ''}
+    </div><span class="pill ${esc(d.status)}">${esc(t('ingSt_' + d.status) || d.status)}</span></div>`;
+  }).join('') : `<div class="empty">${esc(t('nothingUploaded'))}</div>`;
+}
+
+const catOrKind = (d) => enumLabel('ingK_', d.doc_kind || d.doc_type) || (d.doc_kind || d.doc_type || '');
+
+async function loadIngest() {
+  ingest = await apiJson('/api/ingest/status?limit=150');
+  renderIngest();
+}
+
+$('#ingFilter').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-ing]');
+  if (!b) return;
+  ingestFilter = b.dataset.ing;
+  for (const x of $$('#ingFilter button')) x.classList.toggle('on', x === b);
+  renderIngest();
+});
+
+/**
+ * Press once, drain to zero. Each call does a bounded amount of work and reports what is
+ * left, so the loop here is what turns "a couple of attachments per invocation" into
+ * "every attachment", without any single request risking the duration limit.
+ */
+$('#ingDrain').addEventListener('click', async () => {
+  if (draining) return;
+  draining = true;
+  const btn = $('#ingDrain');
+  btn.disabled = true;
+  const prog = $('#ingProgress');
+  prog.hidden = false;
+  let passes = 0, processed = 0;
+  try {
+    for (;;) {
+      const d = await postJson('/api/ingest/drain', { items: 4 });
+      passes++;
+      processed += (d.queue_processed || 0) + (d.documents_processed || 0);
+      prog.textContent = `${t('ingWorking')} — ${t('ingPass')} ${passes} · ${
+        processed} ${t('ingHandled')} · ${d.remaining} ${t('ingWaiting')}`;
+      ingest = { ...(ingest || {}), counts: d.queue, remaining: d.remaining };
+      // Stop when the backlog is empty, or when a pass achieves nothing (everything left
+      // is leased for a retry or terminally failed) — never spin.
+      if (!d.remaining) break;
+      if (!d.queue_processed && !d.documents_processed) break;
+      if (passes >= 60) break;
+    }
+    await loadIngest();
+    await loadFinance().catch(() => {});
+    if (!$('#finReceipts').hidden) await loadStaged().catch(() => {});
+    prog.textContent = `${t('ingDone')} — ${processed} ${t('ingHandled')}${
+      ingest.remaining ? ` · ${ingest.remaining} ${t('ingWaiting')}` : ''}`;
+    showToast(`${t('ingDone')}: ${processed}`);
+  } catch (err) {
+    prog.textContent = '✕ ' + err.message;
+  } finally { draining = false; btn.disabled = false; }
+});
+
+/**
+ * On app load: if attachments are waiting, work a little of the backlog immediately rather
+ * than making Adi wait for the next cron tick. Never awaited by the UI, and the cron
+ * remains the actual guarantee — this is only about it feeling instant.
+ */
+async function autoDrainIngest() {
+  try {
+    const st = await apiJson('/api/ingest/status?limit=1');
+    if (!st.remaining) return;
+    showToast(`${st.remaining} ${t('ingWaiting')}`);
+    await postJson('/api/ingest/drain', { items: 3 });
+    if (!$('#viewHistory').hidden) await loadIngest();
+    await loadFinance().catch(() => {});
+  } catch { /* offline, or the session is not up yet — the cron owns this either way */ }
+}
+
+$('#ingRetry').addEventListener('click', async () => {
+  const btn = $('#ingRetry');
+  btn.disabled = true;
+  try {
+    const d = await postJson('/api/ingest/retry', {});
+    showToast(`${t('ingRequeued')}: ${d.requeued_items + d.reset_documents}`);
+    await loadIngest();
+  } catch (err) { showToast('✕ ' + err.message); }
+  finally { btn.disabled = false; }
+});
 
 // ===================== brain-dump → task =====================
 //
@@ -2903,9 +3132,10 @@ $('#finSeg').addEventListener('click', (e) => {
 function rerender() {
   if (lastSummary) { renderKpis(lastSummary); renderMonthly(lastSummary.monthly);
                      renderCats(lastSummary.by_category); renderInv(lastSummary.investments);
-                     renderDocs(lastSummary.documents); renderStamp(lastSummary); }
+                     renderStamp(lastSummary); }
   renderTasks(); renderNotes(); renderContacts();
   renderReceiptTotals(); renderReceipts(); renderReview();
+  renderIngest();
   if (!$('#viewHistory').hidden) loadHistory();
 }
 function enterApp() {
@@ -2916,6 +3146,7 @@ function enterApp() {
   loadFinance().catch(() => {});
   loadInsights();
   autoSyncAll();
+  autoDrainIngest();
 }
 
 (async function start() {
