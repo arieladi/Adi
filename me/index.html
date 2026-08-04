@@ -133,22 +133,30 @@ html[dir=rtl] .kpi .val{text-align:right}
 .kpi .val.pos{color:var(--ok)} .kpi .val.neg{color:var(--bad)}
 .kpi .foot{font-size:.75rem;color:var(--muted);margin-top:4px}
 
-/* ---------- bars ---------- */
-.row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:7px 0}
-.row + .row{border-top:1px solid var(--line)}
-.row .name{font-size:.88rem}
-.row .amt{font-family:var(--mono);font-size:.85rem;color:var(--muted);direction:ltr}
-.bar{height:6px;border-radius:99px;background:var(--track);overflow:hidden;margin-top:6px;grid-column:1/-1}
-.bar i{display:block;height:100%;border-radius:99px;background:var(--grad)}
-.mrow{display:grid;grid-template-columns:74px 1fr;gap:12px;align-items:center;padding:9px 0}
-.mrow + .mrow{border-top:1px solid var(--line)}
-.mrow .per{font-family:var(--mono);font-size:.8rem;color:var(--muted);direction:ltr}
-.stack{display:flex;height:22px;border-radius:7px;overflow:hidden;background:var(--track)}
-.stack i{display:block;height:100%}
-.stack .in{background:linear-gradient(90deg,var(--c1),var(--c2))}
-.stack .out{background:var(--c3);opacity:.85}
-.legend{display:flex;gap:16px;font-size:.75rem;color:var(--muted);margin-top:10px;flex-wrap:wrap}
-.legend b{display:inline-block;width:9px;height:9px;border-radius:3px;margin-inline-end:5px;vertical-align:middle}
+/* ---------- numeric tables (replaced the bar charts) ----------
+   The old .stack / .bar rules drew horizontal bars with no figures on them. Numbers in a
+   grid say strictly more in the same space, and cannot make a transfer look like salary. */
+.mtable{display:grid;gap:0}
+/* One fixed period column, then an implicit equal column per remaining child. auto-fit with
+   minmax(0,1fr) is degenerate here — it produced ten tracks for five cells, five of them
+   0px wide — because a 0 minimum gives the browser no basis for a track count. */
+.mhead,.mline{display:grid;grid-template-columns:74px;grid-auto-flow:column;
+  grid-auto-columns:minmax(0,1fr);gap:10px;align-items:baseline;padding:8px 0}
+.mline{border-top:1px solid var(--line)}
+.mhead{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+  font-weight:600;padding-bottom:6px}
+html[lang=he] .mhead{letter-spacing:.02em}
+.mline .per{font-family:var(--mono);font-size:.8rem;color:var(--muted);direction:ltr}
+html[dir=rtl] .mline .per{text-align:right}
+.mline .num{font-family:var(--mono);font-size:.86rem;direction:ltr;text-align:end}
+.mline .num.soft,.mline .soft{color:var(--muted);font-weight:400}
+.mline .num.pos{color:var(--ok)} .mline .num.neg{color:var(--bad)}
+/* Category and fund rows are label + figures, with no period column. */
+.mline.cat,.mline.inv{grid-template-columns:1fr auto auto;gap:14px;font-size:.88rem}
+.mline.inv{grid-template-columns:1fr auto}
+.mline.cat span:first-child,.mline.inv span:first-child{overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.mline.inv .num{font-size:.95rem}
 
 /* ---------- upload ---------- */
 #drop{border:1.5px dashed var(--line-2);border-radius:14px;padding:24px 18px;text-align:center;
@@ -486,10 +494,6 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
         <section class="card">
           <h2 data-i18n="cashflow">תזרים חודשי</h2>
           <div id="monthly"><div class="empty" data-i18n="noRecords">אין עדיין רשומות.</div></div>
-          <div class="legend">
-            <span><b style="background:linear-gradient(90deg,var(--c1),var(--c2))"></b><em data-i18n="netIncome" style="font-style:normal">הכנסה נטו</em></span>
-            <span><b style="background:var(--c3)"></b><em data-i18n="spending" style="font-style:normal">הוצאות</em></span>
-          </div>
         </section>
         <section class="card">
           <h2><em data-i18n="breakdown" style="font-style:normal">פילוח הוצאות</em> <span class="badge" data-i18n="last6">6 חודשים</span></h2>
@@ -498,17 +502,17 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
       </div>
       <div class="grid" style="gap:16px">
         <section class="card">
-          <h2><em data-i18n="aiInsights" style="font-style:normal">תובנות AI</em> <span class="badge" id="aimodel">workers ai</span></h2>
+          <h2 data-i18n="aiInsights">תובנות AI</h2>
           <div id="insight"><span class="spin"></span></div>
         </section>
+        <!-- Hidden entirely until a fund reports a real balance: see renderInv. -->
+        <section class="card" id="invCard" hidden>
+          <h2 data-i18n="investments">השקעות</h2>
+          <div id="inv"></div>
+        </section>
+        <!-- Deliberately minimal: the place the crypto/stocks integration will land. -->
         <section class="card">
-          <h2><em data-i18n="investments" style="font-style:normal">השקעות</em>
-            <span class="badge" data-i18n="invPerFund">קרן אחת לכל סוג</span></h2>
-          <div id="inv"><div class="empty" data-i18n="noStatements">אין עדיין דוחות.</div></div>
-
-          <!-- Deliberately empty for now: the place future AI crypto/stock suggestions land. -->
-          <h2 style="margin-top:22px;padding-top:16px;border-top:1px solid var(--line)"
-              data-i18n="personalInv">השקעות אישיות</h2>
+          <h2 data-i18n="personalInv">השקעות אישיות</h2>
           <div id="personalInv">
             <div class="empty" data-i18n="personalInvSoon">בקרוב — מניות וקריפטו, עם המלצות AI.</div>
           </div>
@@ -649,6 +653,27 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
           <div class="route" id="msResult" hidden></div>
         </section>
       </div>
+    </div>
+
+    <!-- The calendar's AI command line. Same chatbar pattern as the other tabs, but
+         context-aware: an image is read as an invitation, text answers whatever the last
+         invitation left ambiguous, and with nothing open it answers questions read-only.
+         Paste is bound to THIS input, not the page. -->
+    <div class="chatbar" data-chat="calendar">
+      <div class="chatans" hidden></div>
+      <div id="calImgChip" hidden style="margin-bottom:9px;display:flex;gap:9px;align-items:center">
+        <img id="calImgThumb" style="height:52px;border-radius:8px;border:1px solid var(--line-2)">
+        <span class="badge" id="calImgName"></span>
+        <button class="btn ghost sm" id="calImgClear" type="button">✕</button>
+      </div>
+      <form>
+        <input type="text" data-i18n-ph="calChatPh"
+               placeholder="הדבק כאן תמונה של הזמנה (⌘V), או שאל על היומן…">
+        <input type="file" id="calChatImage" accept="image/*,application/pdf" hidden>
+        <button class="btn ghost" id="calChatImgBtn" type="button" title="תמונה">🖼</button>
+        <button class="btn" type="submit" data-i18n="ask">שאל</button>
+      </form>
+      <div class="chatmeta" hidden></div>
     </div>
   </section>
 
@@ -1080,8 +1105,8 @@ const I18N = {
     // investments
     invPerFund:'קרן אחת לכל סוג', personalInv:'השקעות אישיות',
     personalInvSoon:'בקרוב — מניות וקריפטו, עם המלצות AI.',
-    invNoBalance:'טרם דווחה יתרה', invYield:'תשואה', invFees:'דמי ניהול',
-    invLiquid:'נזיל מ־', invAsOf:'לתאריך', invStatements:'דוחות',
+    invYield:'תשואה', invFees:'דמי ניהול',
+    invLiquid:'נזיל מ־',
     inv_keren_hishtalmut:'קרן השתלמות', inv_pension:'פנסיה', inv_gemel:'קופת גמל',
     inv_savings:'חיסכון', inv_other:'אחר',
     // calendar
@@ -1113,6 +1138,12 @@ const I18N = {
     msTokenBad:'הטוקן פג — התחבר מחדש', msConfirmDisconnect:'לנתק את Office 365? הסנכרון ייפסק.',
     msSecretExpires:'הסוד פג בתאריך', msSecretDays:'ימים',
     msSecretSoon:'צריך להחליף את הסוד בקרוב',
+    // monthly numbers (replaced the bar charts)
+    mPeriod:'חודש', mSalary:'שכר', mTransfers:'העברות', 
+    mTransferNote:'העברות בנקאיות מוצגות בנפרד — ברוב המקרים זו אותה משכורת שנכנסה לחשבון, ולכן היא לא נספרת כהכנסה.',
+    // calendar AI command line
+    calChatPh:'הדבק כאן תמונה של הזמנה (⌘V), או שאל על היומן…',
+    calReadonly:'מצב שאלות — כדי להוסיף אירוע, הדבק הזמנה',
   },
   en: {
     hub:'Personal hub', hubTitle:'Personal hub', signInHint:'Sign in to continue.',
@@ -1234,8 +1265,8 @@ const I18N = {
     // investments
     invPerFund:'one row per fund', personalInv:'Personal investments',
     personalInvSoon:'Coming soon — stocks and crypto, with AI suggestions.',
-    invNoBalance:'no balance reported yet', invYield:'yield', invFees:'fees',
-    invLiquid:'liquid from', invAsOf:'as of', invStatements:'statements',
+    invYield:'yield', invFees:'fees',
+    invLiquid:'liquid from',
     inv_keren_hishtalmut:'Keren Hishtalmut', inv_pension:'Pension', inv_gemel:'Gemel',
     inv_savings:'Savings', inv_other:'Other',
     // calendar
@@ -1269,6 +1300,12 @@ const I18N = {
     msConfirmDisconnect:'Disconnect Office 365? Syncing will stop.',
     msSecretExpires:'Secret expires', msSecretDays:'days',
     msSecretSoon:'the client secret needs rotating soon',
+    // monthly numbers (replaced the bar charts)
+    mPeriod:'Month', mSalary:'Salary', mTransfers:'Transfers',
+    mTransferNote:'Bank transfers are listed separately — usually they are the same salary arriving in the account, so they are not counted as income.',
+    // calendar AI command line
+    calChatPh:'Paste an invitation here, or ask about the calendar…',
+    calReadonly:'Question mode — paste an invitation to add an event',
   },
 };
 let lang = localStorage.getItem('adi_lang') || 'he';
@@ -1286,7 +1323,10 @@ const token = () => sessionStorage.getItem(KEY) || '';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const ils = (agorot) => '₪' + (agorot / 100).toLocaleString('en-IL', { maximumFractionDigits: 0 });
+// The sign goes OUTSIDE the symbol: '₪-538' reads as a currency oddity, '-₪538' reads as
+// a negative amount. The saved column shows these often.
+const ils = (agorot) => (agorot < 0 ? '-₪' : '₪') +
+  (Math.abs(agorot) / 100).toLocaleString('en-IL', { maximumFractionDigits: 0 });
 
 function md(src) {
   let h = esc(src || '');
@@ -1454,63 +1494,105 @@ let lastSummary = null;
 
 function renderKpis(s) {
   const latest = s.monthly[0];
+  // Recurring salary, not v_monthly's lumped total. The tile used to add a bank transfer to
+  // two payslips and call the result net income — the same arithmetic that had the insights
+  // reporting a ₪41,645 salary.
+  //
+  // And the headline month is the latest one that actually HAS a payslip, not simply the
+  // latest row: a month with only bank credits in it would otherwise render the main tile as
+  // "—" while the numbers sat one line below in the table.
+  const paidMonth = s.monthly.find((m) => (m.salary || 0) > 0) || latest;
+  const pay = paidMonth ? (paidMonth.salary || 0) : 0;
+  const saved = paidMonth ? pay - paidMonth.spend : 0;
+  const rate = pay > 0 ? Math.round((saved / pay) * 100) : null;
   const invTotal = s.investments.reduce((a, i) => a + (i.balance || 0), 0);
-  const keren = s.investments.filter((i) => i.kind === 'keren_hishtalmut').reduce((a, i) => a + (i.balance || 0), 0);
-  const saved = latest ? latest.income_net - latest.spend : 0;
-  const rate = latest && latest.income_net > 0 ? Math.round((saved / latest.income_net) * 100) : null;
+
   const tiles = [
-    { label: t('netIncome'), val: latest ? ils(latest.income_net) : '—', foot: latest ? latest.period : t('noData') },
-    { label: t('spending'), val: latest ? ils(latest.spend) : '—',
-      foot: latest ? `${s.totals.expense_rows} ${t('itemsTracked')}` : t('noData') },
-    { label: t('saved'), val: latest ? ils(saved) : '—', cls: saved > 0 ? 'pos' : saved < 0 ? 'neg' : '',
+    { label: t('netIncome'), val: pay ? ils(pay) : '—',
+      foot: paidMonth
+        ? paidMonth.period + (paidMonth.transfers ? ` · ${t('mTransfers')} ${ils(paidMonth.transfers)}` : '')
+        : t('noData') },
+    { label: t('spending'), val: paidMonth ? ils(paidMonth.spend) : '—',
+      foot: paidMonth ? `${paidMonth.period} · ${s.totals.expense_rows} ${t('itemsTracked')}` : t('noData') },
+    { label: t('saved'), val: paidMonth ? ils(saved) : '—',
+      cls: saved > 0 ? 'pos' : saved < 0 ? 'neg' : '',
       foot: rate === null ? t('noData') : `${rate}% ${t('ofNet')}` },
-    { label: t('investments'), val: invTotal ? ils(invTotal) : '—',
-      foot: keren ? `Keren ${ils(keren)} · ${s.investments.length} ${t('accounts')}`
-        : s.investments.length ? `${s.investments.length} ${t('accounts')}` : t('noStatementsShort') },
   ];
+  // The investments tile only exists once a fund reports a real balance. "— · 2 accounts"
+  // was a count of rows that hold no figure, which is the report-count noise Adi asked to
+  // be rid of; three clean tiles beat four with one apologising for itself.
+  if (invTotal > 0) {
+    const keren = s.investments.filter((i) => i.kind === 'keren_hishtalmut')
+      .reduce((a, i) => a + (i.balance || 0), 0);
+    tiles.push({ label: t('investments'), val: ils(invTotal),
+                 foot: keren ? `${fundLabel('keren_hishtalmut')} ${ils(keren)}` : '' });
+  }
   $('#kpis').innerHTML = tiles.map((x) => `
     <div class="card kpi"><div class="label">${esc(x.label)}</div>
       <div class="val ${x.cls || ''}">${x.val}</div><div class="foot">${esc(x.foot)}</div></div>`).join('');
 }
+// Numbers, not bars. The stacked bars carried no figures at all — you could see that one
+// month was longer than another and nothing else — and they made a transfer look like pay
+// because everything went into one length.
 function renderMonthly(rows) {
   if (!rows.length) { $('#monthly').innerHTML = `<div class="empty">${t('noRecords')}</div>`; return; }
-  const peak = Math.max(...rows.map((r) => Math.max(r.income_net, r.spend)), 1);
-  $('#monthly').innerHTML = rows.map((r) => `
-    <div class="mrow"><div class="per">${r.period}</div><div>
-      <div class="stack"><i class="in" style="width:${(r.income_net / peak) * 100}%" title="${ils(r.income_net)}"></i></div>
-      <div class="stack" style="margin-top:3px;height:14px"><i class="out" style="width:${(r.spend / peak) * 100}%" title="${ils(r.spend)}"></i></div>
-    </div></div>`).join('');
+  const anyTransfer = rows.some((r) => r.transfers > 0);
+  $('#monthly').innerHTML = `
+    <div class="mtable">
+      <div class="mhead">
+        <span>${esc(t('mPeriod'))}</span>
+        <span>${esc(t('mSalary'))}</span>
+        ${anyTransfer ? `<span>${esc(t('mTransfers'))}</span>` : ''}
+        <span>${esc(t('spending'))}</span>
+        <span>${esc(t('saved'))}</span>
+      </div>
+      ${rows.map((r) => {
+        const saved = (r.salary || 0) - r.spend;
+        return `<div class="mline">
+          <span class="per">${esc(r.period)}</span>
+          <span class="num">${r.salary ? esc(ils(r.salary)) : '—'}</span>
+          ${anyTransfer ? `<span class="num soft">${r.transfers ? esc(ils(r.transfers)) : '—'}</span>` : ''}
+          <span class="num">${r.spend ? esc(ils(r.spend)) : '—'}</span>
+          <span class="num ${saved > 0 ? 'pos' : saved < 0 ? 'neg' : ''}">${
+            r.salary || r.spend ? esc(ils(saved)) : '—'}</span>
+        </div>`;
+      }).join('')}
+    </div>
+    ${anyTransfer ? `<div class="cw" style="margin-top:10px">${esc(t('mTransferNote'))}</div>` : ''}`;
 }
+
 function renderCats(rows) {
   if (!rows.length) { $('#cats').innerHTML = `<div class="empty">${t('noExpenses')}</div>`; return; }
-  const peak = Math.max(...rows.map((r) => r.total), 1);
-  $('#cats').innerHTML = rows.map((r) => `
-    <div class="row"><div class="name">${esc(r.category)}</div><div class="amt">${ils(r.total)}</div>
-      <div class="bar"><i style="width:${(r.total / peak) * 100}%"></i></div></div>`).join('');
+  const total = rows.reduce((a, r) => a + r.total, 0) || 1;
+  // A share of total is the thing the bar was gesturing at, so state it as a number.
+  $('#cats').innerHTML = `<div class="mtable">${rows.map((r) => `
+    <div class="mline cat">
+      <span>${esc(r.category)}</span>
+      <span class="num">${esc(ils(r.total))}</span>
+      <span class="num soft">${Math.round((r.total / total) * 100)}%</span>
+    </div>`).join('')}</div>`;
 }
-// One card per fund kind is now a database invariant (UNIQUE(kind)), so this can no longer
-// draw duplicate Keren Hishtalmut / Pension rows however the extractor spells a provider.
+// Only funds with a REAL balance are shown. A payslip reports monthly contributions and
+// leaves the accrued balance at 0, so every row was rendering as "טרם דווחה יתרה · 2 דוחות"
+// — three lines of bookkeeping about the absence of a number. The whole card hides until
+// there is something to say; the Personal Investments placeholder carries the section until
+// the crypto/stocks integration lands.
 function renderInv(rows) {
-  if (!rows.length) { $('#inv').innerHTML = `<div class="empty">${t('noStatements')}</div>`; return; }
-  $('#inv').innerHTML = rows.map((r) => {
-    // A payslip reports contributions and leaves the accrued balance at 0. Printing ₪0
-    // reads as "the fund is empty", which is wrong — say what is actually missing.
-    const bal = r.balance > 0 ? ils(r.balance)
-      : `<span style="color:var(--muted)">—</span>`;
+  const funds = (rows || []).filter((r) => r.balance > 0);
+  const card = $('#invCard');
+  if (card) card.hidden = !funds.length;
+  if (!funds.length) { $('#inv').innerHTML = ''; return; }
+  $('#inv').innerHTML = `<div class="mtable">${funds.map((r) => {
     const meta = [
-      r.balance > 0 ? '' : t('invNoBalance'),
       r.yield_pct != null ? `${t('invYield')} ${r.yield_pct}%` : '',
       r.fees_pct != null ? `${t('invFees')} ${r.fees_pct}%` : '',
       r.liquid_from ? `${t('invLiquid')} ${r.liquid_from}` : '',
-      r.as_of ? `${t('invAsOf')} ${r.as_of}` : '',
-      r.statements > 1 ? `${r.statements} ${t('invStatements')}` : '',
     ].filter(Boolean).join(' · ');
-    return `<div class="row">
-      <div class="name">${esc(fundLabel(r.kind))}${
-        r.provider ? ` <span class="badge">${esc(r.provider)}</span>` : ''}</div>
-      <div class="amt">${bal}</div>
-      <div class="amt" style="grid-column:1/-1;font-size:.74rem">${esc(meta)}</div></div>`;
-  }).join('');
+    return `<div class="mline inv">
+      <span>${esc(fundLabel(r.kind))}${meta ? `<span class="soft"> · ${esc(meta)}</span>` : ''}</span>
+      <span class="num">${esc(ils(r.balance))}</span>
+    </div>`;
+  }).join('')}</div>`;
 }
 // The counts line under the title was noise — removed at Adi's request.
 function renderStamp() {}
@@ -1526,7 +1608,6 @@ async function loadInsights() {
   $('#insight').innerHTML = '<span class="spin"></span>';
   try {
     const d = await apiJson('/api/insights?lang=' + lang);
-    $('#aimodel').textContent = (d.model || 'workers ai').replace('@cf/', '');
     const text = d.insight || (d.error ? 'Unavailable: ' + d.error : '—');
     const bullets = text.split('\n').map((l) => l.replace(/^[\s*\-•]+/, '').trim()).filter(Boolean);
     $('#insight').innerHTML = bullets.length > 1
@@ -2080,12 +2161,45 @@ for (const bar of $$('.chatbar')) {
     e.preventDefault();
     const input = bar.querySelector('input');
     const q = input.value.trim();
-    if (!q && !(scope === 'contacts' && chatImageFile)) return;
+    if (!q && !(scope === 'contacts' && chatImageFile) && !(scope === 'calendar' && calChatFile)) return;
     const ans = bar.querySelector('.chatans'), meta = bar.querySelector('.chatmeta');
     const btn = bar.querySelector('button');
     ans.hidden = false; ans.innerHTML = '<span class="spin"></span>';
     meta.hidden = true; btn.disabled = true;
     try {
+      if (scope === 'calendar') {
+        // The domain agent: an image is an invitation, text answers whatever the last one
+        // left open, and with nothing open it answers questions without writing.
+        let d;
+        if (calChatFile) {
+          const fd = new FormData();
+          fd.append('message', q); fd.append('lang', lang);
+          fd.append('image', calChatFile);
+          d = await apiJson('/api/chat/calendar', { method: 'POST', body: fd });
+          clearCalImage();
+        } else {
+          d = await postJson('/api/chat/calendar', { message: q, lang });
+        }
+        ans.innerHTML = d.answer ? md(d.answer)
+          : `<span class="empty">${esc(d.detail || d.error || '—')}</span>`;
+        if ((d.options || []).length > 1) {
+          ans.innerHTML += `<div class="cw" style="margin-top:8px">${esc(t('calWhichOption'))} ${
+            d.options.map((o) => esc(o.label || '')).filter(Boolean).join(' · ')}</div>`;
+        }
+        if (d.readonly) {
+          meta.hidden = false;
+          meta.textContent = t('calReadonly');
+        }
+        input.value = '';
+        btn.disabled = false;
+        // The review card is where the fields and the confirm button live, so pull it fresh
+        // and take him to it — the answer above is a prompt to act, not the end of the flow.
+        await loadCalendar().catch(() => {});
+        if (d.event_id) {
+          $(`.cev[data-id="${d.event_id}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+        return;
+      }
       if (scope === 'contacts') {
         const img = chatImageFile;
         let d;
@@ -2976,18 +3090,62 @@ calZone.addEventListener('drop', (e) => {
   if (e.dataTransfer?.files?.length) uploadInvites([...e.dataTransfer.files]);
 });
 
-// Scoped to this tab, and it stands aside while a field or the chat box has focus.
-document.addEventListener('paste', (e) => {
-  if ($('#viewCalendar').hidden) return;
-  const el = document.activeElement;
-  if (el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type !== 'file'))) return;
-  const files = [...(e.clipboardData?.items || [])]
-    .filter((i) => i.kind === 'file').map((i) => i.getAsFile())
-    .filter((f) => f && (/^image\//i.test(f.type) || /pdf/i.test(f.type)));
-  if (!files.length) return;
-  e.preventDefault();
-  uploadInvites(files);
-});
+// ---- the calendar AI command line ----
+//
+// Paste is bound to THIS input, not to the page: a document-level hook is invisible (nothing
+// tells you where the image went) and it competes with every other paste target. Pasting
+// into the box shows a thumbnail chip first, so it is obvious what is about to be sent.
+let calChatFile = null;
+
+function setCalImage(file) {
+  if (!file || !(/^image\//i.test(file.type) || /pdf/i.test(file.type))) return false;
+  calChatFile = file;
+  const isPdf = /pdf/i.test(file.type);
+  $('#calImgThumb').hidden = isPdf;
+  if (!isPdf) {
+    const url = URL.createObjectURL(file);
+    $('#calImgThumb').src = url;
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+  $('#calImgName').textContent =
+    `${isPdf ? '📄 ' : ''}${file.name || 'clipboard'} · ${Math.round(file.size / 1024)}KB`;
+  $('#calImgChip').hidden = false;
+  return true;
+}
+function clearCalImage() {
+  calChatFile = null;
+  $('#calImgChip').hidden = true;
+  $('#calChatImage').value = '';
+}
+$('#calImgClear').addEventListener('click', clearCalImage);
+$('#calChatImgBtn').addEventListener('click', () => $('#calChatImage').click());
+$('#calChatImage').addEventListener('change', (e) => setCalImage(e.target.files?.[0]));
+
+const calBar = [...$$('.chatbar')].find((b) => b.dataset.chat === 'calendar');
+const calChatInput = calBar?.querySelector('input[type=text]');
+
+// Bound to the input itself. Works whether he clicks in first or not, because the bar also
+// accepts a paste that lands on it.
+for (const target of [calChatInput, calBar]) {
+  target?.addEventListener('paste', (e) => {
+    const files = [...(e.clipboardData?.items || [])]
+      .filter((i) => i.kind === 'file').map((i) => i.getAsFile())
+      .filter((f) => f && (/^image\//i.test(f.type) || /pdf/i.test(f.type)));
+    if (!files.length) return;          // a normal text paste falls through untouched
+    e.preventDefault();
+    setCalImage(files[0]);
+    calChatInput?.focus();
+  });
+}
+// Dropping onto the bar works too.
+if (calBar) {
+  calBar.addEventListener('dragover', (e) => { e.preventDefault(); calBar.style.borderColor = 'var(--c2)'; });
+  calBar.addEventListener('dragleave', () => { calBar.style.borderColor = ''; });
+  calBar.addEventListener('drop', (e) => {
+    e.preventDefault(); calBar.style.borderColor = '';
+    if (e.dataTransfer?.files?.length) setCalImage(e.dataTransfer.files[0]);
+  });
+}
 
 $('#calRefresh').addEventListener('click', loadCalUpcoming);
 
