@@ -312,6 +312,65 @@ curl -s -X POST "https://login.microsoftonline.com/$TENANT/oauth2/v2.0/token" \
   -d 'scope=https%3A%2F%2Fgraph.microsoft.com%2F.default'
 ```
 
+## The AI command line — one component, one agent per domain
+
+Every tab's `.chatbar` is the same frontend component (`chatBarInit`), and every request it
+sends carries `context: <tab>`. The backend keys off that to pick a **separate system prompt**
+per domain, collected in `DOMAIN_AGENTS` so one can be retrained without touching another.
+An unknown context is refused with the known list — never handled by a default agent, because
+a finance question answered by the calendar prompt is worse than an error.
+
+- **Paste is bound to the input, never to the document.** A page-level listener is invisible
+  (nothing tells you where the image went) and competes with every other paste target. A
+  clipboard entry that is a *file* is intercepted; a text paste always falls through.
+- Attachments are held **per bar, not per scope** — the History tab reuses
+  `data-chat="tasks"`, so two bars share a scope and must not share an attachment.
+- `CHAT_DOCS` in the frontend mirrors `accepts_documents` in `DOMAIN_AGENTS`. The tasks agent
+  reads no documents, so its bars show a hint instead of posting something the backend cannot
+  parse.
+- A document pasted into the **finance** line goes through the ordinary
+  enqueue → classify → route pipeline, so a payslip lands in income and a receipt in the
+  isolated archive exactly as an emailed one would. Nothing bespoke that can drift from the
+  email path.
+
+## Payslips: the arithmetic is the referee, not a ceiling
+
+`SALARY_NET_CEILING` is **gone**. A hard limit cannot tell a real bonus from a misread gross,
+and it quarantined legitimate high months. The payslip's own arithmetic can:
+
+```
+gross − (income_tax + national_ins + health_tax + pension_empl) ≈ net      (3%, floor ₪150)
+```
+
+That identity closed exactly on every `דוח_פרטני` and failed on every `TL_*`, where the
+extractor returned **net ≈ gross (ratio 0.99)** — impossible once deductions exist:
+
+```
+דוח_פרטני 06-2026:  17,950 − 5,904 = 12,046  = reported net      ✓
+TL_2026_06:         17,950 − 2,639 = 15,311 vs net 17,780        ✗
+TL_2025_03:         24,800 − 2,491 = 22,309 vs net 24,690        ✗
+```
+
+`payslipArithmetic()` knows nothing about how much Adi earns, so a ₪24,000 bonus whose
+arithmetic closes passes untouched — the case the ceiling got wrong. A second, softer signal
+asks about a figure more than 1.8× his own median, and only once there are ≥5 confirmed
+samples to judge against.
+
+**Neither signal ever hides a row.** Both set `income.status = 'pending_confirmation'`, which
+`v_monthly` excludes, and the finance command line asks about it by name. Answer it in the
+chat — a bare number corrects it, "בונוס"/"bonus" confirms it, "תמחק"/"discard" drops it — or
+use the buttons in **תלושים לאישור** on the finance tab. `original_net` keeps what the
+extractor first said, so a correction does not destroy the evidence.
+
+The extraction prompt now names the target explicitly (`נטו לתשלום` / `סכום לתשלום` /
+`העברה לבנק`), forbids `ברוטו` and every cumulative column (`מצטבר`, `מתחילת השנה`), and
+carries a self-check: **net must be smaller than gross**, and gross minus the reported
+deductions must land near net.
+
+`reviewNewIncome()` is called from inside `persistExtraction`, not at the call sites, so the
+upload path, the queue and the pending-document drainer all stage a questionable payslip
+identically — there is no route into `income` that skips the check.
+
 ## The two propose-then-confirm APIs
 
 Both follow the same rule: **the planning endpoint never writes.** A model that mis-reads
