@@ -943,6 +943,99 @@ async function handleUpload(request, env) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Income classification — salary vs one-off transfers
+// ---------------------------------------------------------------------------
+//
+// `v_monthly.income_net` is the SUM of every uncleared income row, and that is the number
+// that made the insights call a ₪41,645 month "salary". June 2026 was actually:
+//   payslip ₪12,046 + payslip ₪17,780 + a ₪11,819 BANK DEPOSIT of one of those salaries.
+// Three different things, added together.
+//
+// Two independent signals separate them, and both are needed:
+//
+//  1. `source_kind`. A bank-imported credit is a transfer, full stop. Where it duplicates a
+//     payslip, reconciliation is what clears it (see migration 0012) — until then it must
+//     never be counted as pay.
+//
+//  2. A CEILING on a single payslip's net. A median alone does not work here: six of ten
+//     payslip rows are inflated (₪16.6k-₪24.7k), so the median is itself ₪16,600 and an
+//     outlier test around it would bless the wrong figure. Adi's actual net is ~₪12,000 —
+//     corroborated independently by the bank deposits, which land at ₪11,819-₪12,831. So the
+//     ceiling is a stated domain fact, kept as a var so it can move without a code change.
+//
+// A robust MAD test then still runs *below* the ceiling, to catch an anomaly that a fixed
+// threshold would miss.
+const DEFAULT_SALARY_CEILING = 1_300_000;   // agorot — ₪13,000, Adi's ~₪12,000 plus headroom
+
+const median = (nums) => {
+  if (!nums.length) return 0;
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
+};
+
+async function incomeBreakdown(env) {
+  const ceiling = Number(env.SALARY_NET_CEILING) > 0
+    ? Number(env.SALARY_NET_CEILING) : DEFAULT_SALARY_CEILING;
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, period, source, source_kind, cleared, employer, net, gross
+       FROM income ORDER BY period DESC, net DESC`).all();
+  const rows = results || [];
+
+  const classify = (r) => {
+    if (r.cleared) return 'reconciled';                 // already excluded from v_monthly
+    if (r.source_kind === 'bank' || r.source === 'other') return 'transfer';
+    if (!r.net) return 'empty';
+    if (r.net > ceiling) return 'suspect_high';
+    return 'salary';
+  };
+  for (const r of rows) r.kind = classify(r);
+
+  // MAD test among the rows that survived the ceiling: a robust spread measure, so one
+  // extreme value cannot inflate the threshold the way a standard deviation would.
+  const salaryNets = rows.filter((r) => r.kind === 'salary').map((r) => r.net);
+  const med = median(salaryNets);
+  const mad = median(salaryNets.map((n) => Math.abs(n - med)));
+  const madLimit = med + Math.max(4 * mad, Math.round(med * 0.6));
+  if (salaryNets.length >= 4) {
+    for (const r of rows) {
+      if (r.kind === 'salary' && r.net > madLimit) r.kind = 'outlier';
+    }
+  }
+
+  const recurring = rows.filter((r) => r.kind === 'salary');
+  const byMonth = new Map();
+  for (const r of rows) {
+    if (!byMonth.has(r.period)) {
+      byMonth.set(r.period, { period: r.period, salary: 0, transfers: 0, excluded: 0, n: 0 });
+    }
+    const m = byMonth.get(r.period);
+    if (r.kind === 'salary') { m.salary += r.net; m.n++; }
+    else if (r.kind === 'transfer') m.transfers += r.net;
+    else if (r.kind === 'suspect_high' || r.kind === 'outlier') m.excluded += r.net;
+  }
+
+  const label = (r) => `${r.period} ${r.employer || '—'}`;
+  return {
+    ceiling,
+    typical_salary: median(recurring.map((r) => r.net)),
+    max_salary: recurring.reduce((a, r) => Math.max(a, r.net), 0),
+    months: [...byMonth.values()].sort((a, b) => b.period.localeCompare(a.period)),
+    transfers: rows.filter((r) => r.kind === 'transfer')
+      .map((r) => ({ period: r.period, who: r.employer, amount: r.net })),
+    // Named separately from transfers because the fix is different: a transfer is real money
+    // in the wrong bucket, a suspect row is probably a bad extraction (a gross, a
+    // year-to-date total, or an aggregate report read as one payslip).
+    suspect: rows.filter((r) => r.kind === 'suspect_high' || r.kind === 'outlier')
+      .map((r) => ({ period: r.period, who: r.employer, amount: r.net, gross: r.gross,
+                     reason: r.kind === 'outlier' ? 'far_above_peers' : 'above_stated_ceiling',
+                     label: label(r) })),
+    counts: rows.reduce((a, r) => ({ ...a, [r.kind]: (a[r.kind] || 0) + 1 }), {}),
+  };
+}
+
 async function loadSummary(env) {
   const [monthly, byCategory, investments, recentDocs, totals] = await Promise.all([
     env.DB.prepare('SELECT * FROM v_monthly LIMIT 12').all(),
@@ -970,12 +1063,24 @@ async function loadSummary(env) {
     ).first(),
   ]);
 
+  const income = await incomeBreakdown(env);
+  // Join the classified income onto the cashflow view, so every consumer — the dashboard
+  // tiles, the monthly list and the insights prompt — reads the same separated figures
+  // instead of re-deriving them from the lumped v_monthly total.
+  const bySalary = new Map(income.months.map((m) => [m.period, m]));
+  const monthlyRows = (monthly.results || []).map((m) => {
+    const b = bySalary.get(m.period) || { salary: 0, transfers: 0, excluded: 0 };
+    return { ...m, salary: b.salary, transfers: b.transfers, excluded: b.excluded,
+             saved: b.salary - m.spend };
+  });
+
   return {
-    monthly: monthly.results || [],
+    monthly: monthlyRows,
     by_category: byCategory.results || [],
     investments: investments.results || [],
     documents: recentDocs.results || [],
     totals: totals || {},
+    income,
   };
 }
 
@@ -999,22 +1104,46 @@ async function handleInsights(env, lang = 'en') {
     });
   }
 
+  const inc = summary.income || { months: [], transfers: [], suspect: [] };
+  const withBalance = summary.investments.filter((i) => i.balance > 0);
+
   const facts = [
-    'Monthly cashflow (most recent first):',
-    ...summary.monthly.slice(0, 6).map(
-      (m) => `  ${m.period}: net income ${ils(m.income_net)}, spend ${ils(m.spend)}, saved ${ils(m.income_net - m.spend)}`,
-    ),
+    `RECURRING SALARY — the only figures that are pay. Typical ${ils(inc.typical_salary)}/month,` +
+    ` highest ${ils(inc.max_salary)}. Anything above ${ils(inc.ceiling)} for a single payslip is` +
+    ' NOT treated as salary here.',
+    ...inc.months.slice(0, 8).map((m) => `  ${m.period}: salary ${ils(m.salary)}` +
+      `${m.n > 1 ? ` (${m.n} payslips)` : ''}`),
     '',
-    'Spending by category (last 6 months):',
+    'SPENDING:',
+    ...summary.monthly.slice(0, 8).map((m) => `  ${m.period}: spend ${ils(m.spend)}` +
+      `, salary minus spend ${ils(m.salary - m.spend)}`),
+    '',
+    inc.transfers.length
+      ? 'ONE-OFF TRANSFERS AND CAPITAL MOVEMENTS — NOT salary, NOT recurring income.\n' +
+        'These are bank credits. Where one matches a payslip it is that salary arriving in the\n' +
+        'account, so counting it as extra income double-counts the month:\n' +
+        inc.transfers.slice(0, 10).map((x) => `  ${x.period}: ${ils(x.amount)} from ${x.who || '—'}`).join('\n')
+      : 'No one-off transfers recorded.',
+    '',
+    inc.suspect.length
+      ? 'EXCLUDED AS IMPLAUSIBLE SALARY — probably an extraction error (a gross figure, a\n' +
+        'year-to-date total, or an aggregate report read as one payslip). Do NOT use these as\n' +
+        'income, and do not describe them as a raise or a good month:\n' +
+        inc.suspect.slice(0, 10).map((x) => `  ${x.label}: ${ils(x.amount)} (${x.reason})`).join('\n')
+      : 'No implausible salary figures.',
+    '',
+    'SPENDING BY CATEGORY (last 6 months):',
     ...summary.by_category.slice(0, 10).map((c) => `  ${c.category}: ${ils(c.total)} across ${c.n} items`),
     '',
-    'Investments (latest statement per account):',
-    ...summary.investments.map(
-      (i) => `  ${i.kind}${i.provider ? ` @ ${i.provider}` : ''}: ${ils(i.balance)}` +
-             `${i.yield_pct != null ? `, yield ${i.yield_pct}%` : ''}` +
-             `${i.fees_pct != null ? `, fees ${i.fees_pct}%` : ''}` +
-             `${i.liquid_from ? `, liquid from ${i.liquid_from}` : ''}`,
-    ),
+    withBalance.length
+      ? 'INVESTMENTS:\n' + withBalance.map(
+          (i) => `  ${i.kind}${i.provider ? ` @ ${i.provider}` : ''}: ${ils(i.balance)}` +
+                 `${i.yield_pct != null ? `, yield ${i.yield_pct}%` : ''}` +
+                 `${i.fees_pct != null ? `, fees ${i.fees_pct}%` : ''}`).join('\n')
+      // Saying "no balances yet" beats listing funds at ₪0, which the model read as
+      // "the pension is empty" and turned into alarming advice.
+      : 'INVESTMENTS: no fund balances have been reported yet — the payslips carry monthly ' +
+        'contributions only, not accrued balances. Say nothing about investment size.',
   ].join('\n');
 
   const messages = [
@@ -1026,6 +1155,15 @@ async function handleInsights(env, lang = 'en') {
         '1) the clearest trend, 2) the biggest opportunity or risk, 3) one specific action for this month. ' +
         'Use ₪ and real numbers from the data. No preamble, no disclaimers, under 120 words total. ' +
         'You are not a licensed advisor — describe the numbers, do not recommend specific securities. ' +
+        // The sections are pre-separated for a reason: the previous version was handed one
+        // lumped "net income" per month and reported a ₪41,645 salary, which was a payslip
+        // plus another payslip plus the bank deposit of one of them.
+        'CRITICAL: the input is already separated into RECURRING SALARY, ONE-OFF TRANSFERS and ' +
+        'EXCLUDED figures. Use ONLY the recurring salary numbers when you talk about salary, pay, ' +
+        'income or a monthly trend. Never add a transfer to income, never call a transfer or an ' +
+        'excluded figure a salary, a raise or a strong month, and never quote the sum of the two ' +
+        'as what he earns. If a transfer matters, name it explicitly as a transfer. ' +
+        'Say nothing about any figure the input tells you to ignore. ' +
         (lang === 'he' ? 'ענה בעברית בלבד.' : 'Answer in English.'),
     },
     { role: 'user', content: facts },
@@ -3035,6 +3173,131 @@ async function handleCalendar(request, env, url) {
     return json({ ok: true, deleted: id, graph_deleted: graphDeleted });
   }
   return json({ error: 'method_not_allowed' }, 405);
+}
+
+/**
+ * The calendar tab's AI command line — a domain agent, not a generic chat.
+ *
+ * One input, three behaviours, chosen by what it is given:
+ *   · an IMAGE  → parse it as an invitation and come back with the question it raises
+ *   · text, with an unresolved event open → treat it as the answer to that question
+ *   · text, nothing open → read-only Q&A over the staged rows and the live calendar
+ *
+ * It never writes to Office 365. Resolving an ambiguity moves a row to `staged`; the push
+ * is still a separate press of "הוסף ליומן".
+ */
+async function handleCalendarAgent(request, env) {
+  const ct = request.headers.get('content-type') || '';
+  let message = '';
+  let lang = 'he';
+  let image = null;
+  let targetId = null;
+
+  if (/multipart/i.test(ct)) {
+    const form = await request.formData();
+    message = String(form.get('message') || '');
+    lang = form.get('lang') === 'en' ? 'en' : 'he';
+    targetId = String(form.get('event_id') || '') || null;
+    const f = form.get('image');
+    if (f && typeof f !== 'string') {
+      if (f.size > MAX_UPLOAD_BYTES) return json({ error: 'file_too_large' }, 413);
+      image = { file: f, mime: f.type || 'image/jpeg', bytes: await f.arrayBuffer() };
+    }
+  } else {
+    const b = await readJson(request);
+    message = String(b.message || '');
+    lang = b.lang === 'en' ? 'en' : 'he';
+    targetId = b.event_id || null;
+  }
+  if (!message.trim() && !image) return json({ error: 'message_required' }, 400);
+
+  // --- an image is an invitation: parse and stage it, then ask what it left open ---
+  if (image) {
+    const fd = new FormData();
+    fd.append('file', image.file);
+    const parsed = await handleCalendarParse(
+      new Request('http://internal/api/calendar/parse', { method: 'POST', body: fd }), env);
+    const body = await parsed.json();
+    const rows = (body.staged || []).filter((r) => r.id);
+    const dupe = (body.staged || []).find((r) => r.duplicate);
+    if (!rows.length) {
+      return json({ ok: !!dupe, answer: dupe
+        ? (lang === 'he' ? `כבר קיים אצלי: ${dupe.existing?.title || ''}`
+                         : `Already staged: ${dupe.existing?.title || ''}`)
+        : (lang === 'he' ? 'לא הצלחתי לקרוא אירוע מהתמונה.'
+                         : 'I could not read an event from that image.'),
+        duplicate: !!dupe, events: [] });
+    }
+    const e = rows[0];
+    const opts = e.options_json ? JSON.parse(e.options_json) : [];
+    const qs = e.questions_json ? JSON.parse(e.questions_json) : [];
+    const where = e.location ? (lang === 'he' ? ` ב${e.location}` : ` in ${e.location}`) : '';
+    let answer;
+    if (e.status === 'incomplete') {
+      const ask = qs[0] || (lang === 'he' ? 'איזה תאריך נכון?' : 'which date is right?');
+      answer = lang === 'he'
+        ? `פירשתי אירוע "${e.title || '—'}"${where}.` +
+          (opts.length > 1 ? ` יש ${opts.length} אפשרויות תאריך. ${ask}` : ` ${ask}`)
+        : `I parsed an event "${e.title || '—'}"${where}.` +
+          (opts.length > 1 ? ` There are ${opts.length} possible date cycles. ${ask}` : ` ${ask}`);
+    } else {
+      answer = lang === 'he'
+        ? `פירשתי אירוע "${e.title || '—'}"${where} ב-${e.starts_at || '—'}. להוסיף ליומן?`
+        : `I parsed "${e.title || '—'}"${where} on ${e.starts_at || '—'}. Add it to the calendar?`;
+    }
+    return json({ ok: true, answer, events: rows, options: opts, questions: qs,
+                  event_id: e.id, needs_answer: e.status === 'incomplete' });
+  }
+
+  // --- text: is there an open question this is answering? ---
+  const open = targetId
+    ? await env.DB.prepare(
+        "SELECT * FROM calendar_events WHERE id=? AND deleted_at IS NULL AND status!='confirmed'")
+        .bind(targetId).first()
+    : await env.DB.prepare(
+        `SELECT * FROM calendar_events WHERE deleted_at IS NULL AND status='incomplete'
+          ORDER BY created_at DESC LIMIT 1`).first();
+
+  if (open) {
+    const res = await handleCalendarChat(
+      new Request('http://internal/chat', { method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message, lang }) }), env, open.id);
+    const body = await res.json();
+    return json({ ...body, event_id: open.id,
+                  needs_answer: body.ready === false ? true : !body.ready });
+  }
+
+  // --- nothing open: answer questions, never write ---
+  const [staged, upcoming] = await Promise.all([
+    env.DB.prepare(
+      `SELECT title, location, starts_at, status FROM calendar_events
+        WHERE deleted_at IS NULL ORDER BY COALESCE(starts_at, created_at) DESC LIMIT 40`).all(),
+    handleCalendarUpcoming(env, new URL('http://x/?days=60')).then((r) => r.json()).catch(() => null),
+  ]);
+
+  const system = `You answer questions about Adi's calendar. Be brief — two sentences at most.
+Use only the events given to you; if the answer is not there, say so plainly.
+You cannot create or change events in this mode: if he is asking you to add something, tell
+him to drop the invitation on the calendar tab or paste it into this box.
+${lang === 'he' ? 'ענה בעברית.' : 'Answer in English.'}`;
+  const user = `EVENTS IN THE HUB:
+${(staged.results || []).map((e) => `- ${e.status} | ${e.starts_at || 'no date'} | ${e.title || ''} | ${e.location || ''}`).join('\n') || '(none)'}
+
+UPCOMING IN OFFICE 365:
+${upcoming?.ok
+  ? (upcoming.events || []).slice(0, 25).map((e) => `- ${e.start || ''} | ${e.subject || ''} | ${e.location || ''}`).join('\n') || '(none)'
+  : `(not available: ${upcoming?.error || 'not connected'})`}
+
+QUESTION: ${message}`;
+
+  try {
+    const out = await runGeminiAgent(env, system, user, []);
+    return json({ ok: true, answer: (out.text || '').trim(), readonly: true });
+  } catch (err) {
+    return json({ ok: false, error: 'agent_failed',
+                  detail: String(err?.message || err).slice(0, 300) }, 502);
+  }
 }
 
 /**
@@ -5440,6 +5703,12 @@ export default {
       }
       if (url.pathname === '/api/calendar/upcoming' && request.method === 'GET') {
         return withCors(await handleCalendarUpcoming(env, url));
+      }
+      // The calendar tab's AI command line. Also reachable as /api/chat/calendar so it sits
+      // alongside the other per-tab agents.
+      if ((url.pathname === '/api/calendar/agent' || url.pathname === '/api/chat/calendar')
+          && request.method === 'POST') {
+        return withCors(await handleCalendarAgent(request, env));
       }
       if (/^\/api\/calendar(\/[\w-]+(\/(confirm|reject|chat|file))?)?$/.test(url.pathname)) {
         return withCors(await handleCalendar(request, env, url));
