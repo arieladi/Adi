@@ -32,7 +32,7 @@ backend. **The domain stays on Pages** — never move it to the Worker.
   re-rendered by `rerender()`, or the English toggle leaves it in Hebrew.
 - Backend: `finance/src/index.js` (~4.3k lines) + `finance/src/pdfcrypt.js`.
   Wrangler bundles npm deps at deploy; there is no separate build.
-- Tabs: **כספים** (לוח בקרה ↔ קבלות ואחריות) · משימות ופתקים · אנשי קשר · היסטוריה · הגדרות
+- Tabs: **כספים** (לוח בקרה ↔ קבלות ואחריות) · יומן · משימות ופתקים · אנשי קשר · היסטוריה · הגדרות
 
 ## Access & auth (three layers, all required)
 
@@ -239,6 +239,79 @@ the month is inflated by the deposit. Migration 0012 predicted the exact figure
 there is now a **התאם הפקדות** button next to the backlog controls. 2026-06 was still
 carrying an unmatched ₪11,819 deposit when this was written — press it.
 
+## Calendar → Office 365 (2026-08-04)
+
+`יומן` tab. Flyer/ticket/invitation → Gemini Vision → staged event → clarification chat →
+Microsoft Graph. Same propose-then-confirm split as receipts, with one extra state.
+
+**`incomplete` is the whole point.** A flyer offering מחזור א׳/ב׳/ג׳ is not a failed parse
+and not a confirmable event — it is a correct reading of an ambiguous document. The prompt
+leaves `starts_at` null and lists candidates in `options_json`; the server then refuses to
+believe a `complete: true` that arrives with several candidate dates or no start time.
+`/chat` can only move `incomplete` → `staged`. Only `/confirm` touches Graph.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/calendar/parse` | multipart image/PDF → vision → `staged` or `incomplete` |
+| POST | `/api/calendar/:id/chat` | Adi's reply → field patch. Text-only; **never** pushes |
+| POST | `/api/calendar/:id/confirm` | body overrides any field → Graph POST/PATCH |
+| POST | `/api/calendar/:id/reject` | discard |
+| GET | `/api/calendar?status=open\|confirmed\|all` | list + counts |
+| PUT/DELETE | `/api/calendar/:id` | edit / soft delete (also deletes from Outlook) |
+| GET | `/api/calendar/:id/file` | the source image (`apiRaw` + blob URL) |
+| GET | `/api/calendar/upcoming?days=` | live from Office 365 |
+| GET | `/api/auth/microsoft/start` · `/callback` · `/status`, POST `/disconnect` | OAuth |
+
+### Traps, all of them load-bearing
+
+- **Graph's all-day END is EXCLUSIVE.** A one-day all-day event must end at midnight of the
+  NEXT day. Same-day start/end is rejected outright; 23:59 silently produces a two-day event
+  in Outlook. `graphEventBody()` handles it and has unit tests (33, including leap-year and
+  month boundaries) — run them from the scratchpad test if you touch it.
+- **Microsoft ROTATES the refresh token on every refresh.** Dropping the new one leaves a
+  token that works until the old one ages out, then fails for no visible reason.
+- **`offline_access` is what yields a refresh token.** Without it the calendar works for an
+  hour and then stops.
+- **`/me/calendarView`, never `/me/events`,** for an upcoming list: `/me/events` returns a
+  recurring series as ONE row at its master start date, so a weekly standup shows up once,
+  in the past.
+- **`Prefer: outlook.timezone`** makes Graph return wall-clock times in Asia/Jerusalem.
+  Without it you get UTC and the UI has to re-derive local time, which gets DST wrong.
+- **Times are stored as local wall time with a separate `timezone` column**, matching
+  Graph's `dateTime` + `timeZone` pair. Converting to UTC on the way in would shift events
+  across DST boundaries.
+- **`/api/auth/microsoft/callback` needs a Cloudflare Access Bypass policy** — Microsoft
+  cannot complete a Google SSO login. Without it every callback 302s to the login page and
+  the connect flow dies with nothing useful in the logs. Same requirement as the Google
+  callback and the Resend webhook.
+- **The client secret expires 2028-08-03.** The nightly cron mails a warning at
+  90/60/30/14/7/3/1/0 days, once per threshold, tracked by `settings.ms_secret_alert_*`
+  rows. On rotation: `wrangler secret put MICROSOFT_CLIENT_SECRET`, update
+  `MICROSOFT_SECRET_EXPIRES` in wrangler.toml, redeploy, update `.dev.vars`, and delete the
+  `ms_secret_alert_*` settings rows so the warnings can fire again. An expired secret fails
+  invisibly: cached access tokens work for up to an hour, then every refresh returns
+  AADSTS7000222.
+- **Never enumerate input types in CSS.** `input[type=number]` and then
+  `input[type=datetime-local]` were both missed by the old explicit selector and rendered as
+  white boxes in the dark themes. The selector is now by exclusion.
+
+### Credentials
+
+`MICROSOFT_CLIENT_ID` / `MICROSOFT_TENANT_ID` / `MICROSOFT_CLIENT_SECRET` are Cloudflare
+secrets and local `.dev.vars` entries — never in code, never in the repo. The two IDs are
+not sensitive in themselves but are kept as secrets so no Microsoft credential of any kind
+is committed. `MICROSOFT_SECRET_EXPIRES` is a plain var in wrangler.toml because it has to
+be visible and editable.
+
+Validate the credentials without the browser flow — this issues a real token if the secret
+is right, and returns AADSTS7000215 if it is wrong:
+
+```bash
+curl -s -X POST "https://login.microsoftonline.com/$TENANT/oauth2/v2.0/token" \
+  -d "client_id=$CID" -d "client_secret=$SECRET" -d grant_type=client_credentials \
+  -d 'scope=https%3A%2F%2Fgraph.microsoft.com%2F.default'
+```
+
 ## The two propose-then-confirm APIs
 
 Both follow the same rule: **the planning endpoint never writes.** A model that mis-reads
@@ -263,6 +336,17 @@ The UI's ✕ button sends `null` — an item with no warranty has to be expressi
 `/^\/api\/tasks(\/[\w-]+)?$/` matcher, which would otherwise read "plan" as a task id.
 
 ## What's next
+
+### 0. Connect Office 365 — two dashboard steps only Adi can do
+
+1. **Cloudflare Access → Bypass policy** must include `/api/auth/microsoft/callback`,
+   alongside the existing `/api/webhooks/resend` and `/api/oauth/google/callback`.
+2. Then יומן → **חבר את Office 365**. The connection card shows the account it actually
+   granted, so a wrong-account grant is visible immediately rather than showing up later as
+   "my events are missing".
+
+Until step 1 is done, `/confirm` and the upcoming widget both return
+`microsoft_not_connected` (409) — cleanly, and without marking any event failed.
 
 ### 1. Verify the two AI paths against the real model (nothing else can)
 
