@@ -41,9 +41,14 @@ bucket_name = "adi-docs"
 [ai]
 binding = "AI"
 
-# Nightly: purge soft-deletes past their 30-day window, then send due-date alerts.
+# Two schedules, deliberately:
+#   */2  — drains the ingestion queue. This is the DELIVERY GUARANTEE for bulk forwards:
+#          the webhook only enqueues, and this tick keeps taking a couple of attachments
+#          at a time until the backlog is empty, however large the email was. Without a
+#          frequent trigger a 40-payslip forward would sit until 03:17.
+#   17 3 — nightly maintenance: purge 30-day-old soft deletes, due-date alerts, Google pull.
 [triggers]
-crons = ["17 3 * * *"]
+crons = ["*/2 * * * *", "17 3 * * *"]
 
 # Outbound mail goes through Resend (RESEND_API_KEY secret), not Cloudflare Email
 # Sending — no domain onboarding step, and the DNS records are already verified.
