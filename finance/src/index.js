@@ -379,9 +379,76 @@ SELF-CHECK before you answer, and correct yourself if it fails:
     have mixed a monthly figure with a cumulative one.
   · An Israeli monthly net is a plausible single month's pay, not a year's worth.`;
 
-async function geminiCall(env, model, { base64, mimeType }) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+// --- the one door to generateContent ------------------------------------------------------
+//
+// Every Gemini call in this file goes through geminiPost, and that is the point. Bulk-forwarding
+// three years of payslips produced 47 identical failures:
+//
+//   gemini_failed: gemini-3.6-flash: 429 | gemini-flash-latest: 429 | gemini-2.0-flash: 429
+//
+// Two separate holes. First, `geminiCallJson` — the classifier, which every single attachment
+// goes through — never touched the D1 rate limiter that the ReAct loop uses, so a drain pass
+// fired as fast as the queue could feed it. Second, nothing retried: walking the model chain on
+// a 429 is useless because the quota is per KEY, not per model, so all three names failed within
+// milliseconds of each other and the item burned an attempt. Four of those and a payslip Adi
+// deliberately forwarded is terminally `failed` with its bytes orphaned in R2.
+//
+// The retry here is deliberately SHORT — two attempts, a couple of seconds. The long wait is not
+// this function's job: an isolate that sleeps 30s to outlast a quota window is an isolate that
+// gets killed at the duration ceiling, which is the exact failure mode the ingest queue exists to
+// prevent. A genuine rate-limit is escalated to the caller, which parks the queue ITEM with
+// `not_before` and lets the cron return to it. Backoff across minutes, not inside one request.
+const GEMINI_RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
+const GEMINI_ATTEMPTS_PER_MODEL = 2;
+// Jittered, so two isolates that hit the wall together do not come back together.
+const geminiBackoffMs = (n) => Math.round(1_500 * 2 ** n * (0.85 + Math.random() * 0.3));
 
+/** True when this error means "come back later", not "this will never work". */
+const isRateLimited = (err) =>
+  /(^|\D)429(\D|$)|rate.?limit|RESOURCE_EXHAUSTED|\bquota\b/i.test(String(err?.message || err));
+
+/**
+ * POST one request to one model, rate-limited and briefly retried.
+ * Returns `{ ok: true, payload }` or `{ ok: false, status, detail, retryable }` — never throws
+ * for an HTTP status, because the callers all need to walk their model chain.
+ */
+async function geminiPost(env, model, body) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${
+    encodeURIComponent(model)}:generateContent`;
+  let last = { status: 0, detail: 'no_attempt', retryable: true };
+
+  for (let attempt = 0; attempt < GEMINI_ATTEMPTS_PER_MODEL; attempt++) {
+    // The shared D1 limiter, so the ceiling holds across isolates and cron ticks rather than
+    // per-request. This is the line whose absence caused the storm.
+    await sleep(await rateLimitDelay(env));
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      });
+    } catch (err) {
+      // A timeout or a dropped connection is worth one more go; a 60s timeout already elapsed,
+      // so do not add a backoff sleep on top of it.
+      last = { status: 0, detail: String(err?.message || err).slice(0, 300), retryable: true };
+      continue;
+    }
+    if (res.ok) return { ok: true, payload: await res.json() };
+
+    const detail = (await res.text().catch(() => '')).slice(0, 300);
+    const retryable = GEMINI_RETRY_STATUS.has(res.status);
+    last = { status: res.status, detail, retryable };
+    // Record the 429 in D1 so every OTHER isolate defers too, not just this one.
+    if (res.status === 429) await noteRateLimitHit(env, 'gemini', 45);
+    if (!retryable) return { ok: false, ...last };
+    if (attempt + 1 < GEMINI_ATTEMPTS_PER_MODEL) await sleep(geminiBackoffMs(attempt));
+  }
+  return { ok: false, ...last };
+}
+
+async function geminiCall(env, model, { base64, mimeType }) {
   const body = {
     contents: [{
       role: 'user',
@@ -393,22 +460,18 @@ async function geminiCall(env, model, { base64, mimeType }) {
     generationConfig: { temperature: 0, responseMimeType: 'application/json' },
   };
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
-  });
-
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    const err = new Error(`gemini_${res.status}: ${detail.slice(0, 300)}`);
-    // 404 = retired/unavailable model, 429 = quota. Both are worth failing over.
-    err.retryNextModel = res.status === 404 || res.status === 429;
+  const out = await geminiPost(env, model, body);
+  if (!out.ok) {
+    const err = new Error(`gemini_${out.status}: ${out.detail}`);
+    // 404 = retired/unavailable model, so the next name in the chain is a real alternative.
+    // A 429 has already been retried and is a per-KEY quota, so trying another model is
+    // pointless — surface it and let the queue park the item instead of burning the chain.
+    err.retryNextModel = out.status === 404;
+    err.rateLimited = out.status === 429;
     throw err;
   }
 
-  const payload = await res.json();
+  const payload = out.payload;
   const text = payload?.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join('') || '';
   const parsed = parseLooseJson(text);
   if (!parsed) throw new Error(`gemini_unparseable: ${text.slice(0, 300)}`);
@@ -433,7 +496,14 @@ async function geminiExtract(env, file) {
       return result;
     } catch (err) {
       tried.push(`${model}: ${String(err.message).slice(0, 120)}`);
-      if (!err.retryNextModel) throw new Error(`${err.message} (tried: ${tried.join(' | ')})`);
+      if (!err.retryNextModel) {
+        const out = new Error(`${err.message} (tried: ${tried.join(' | ')})`);
+        // Carried through so the queue can tell "come back in a few minutes" from
+        // "this file will never parse". Without it a quota blip is indistinguishable from a
+        // corrupt PDF, and both cost the item an attempt.
+        out.rateLimited = !!err.rateLimited || isRateLimited(err);
+        throw out;
+      }
     }
   }
   throw new Error(`all_gemini_models_failed: ${tried.join(' | ')}`);
@@ -1110,7 +1180,7 @@ async function incomeBreakdown(env) {
   // renders the source document beside the fields, so it needs the id and mime to fetch it.
   const { results } = await env.DB.prepare(
     `SELECT i.id, i.period, i.source, i.source_kind, i.cleared, i.status, i.review_reason,
-            i.employer, i.net, i.gross, i.original_net, i.net_source, i.doc_id,
+            i.review_quiet, i.employer, i.net, i.gross, i.original_net, i.net_source, i.doc_id,
             d.filename AS doc_filename, d.mime AS doc_mime
        FROM income i LEFT JOIN documents d ON d.id = i.doc_id
       ORDER BY i.period DESC, i.net DESC`).all();
@@ -1137,29 +1207,63 @@ async function incomeBreakdown(env) {
     else if (r.kind === 'pending') m.pending += r.net;
   }
 
+  const shape = (r) => ({
+    id: r.id, period: r.period, who: r.employer,
+    // `amount` is what to show: the countable net is 0 for an employer slip, so fall back
+    // to what the extractor actually read.
+    amount: r.net || r.original_net || 0,
+    gross: r.gross, original_net: r.original_net,
+    net_source: r.net_source, reason: r.review_reason,
+    doc_id: r.doc_id, doc_filename: r.doc_filename, doc_mime: r.doc_mime,
+    label: `${r.period} ${r.employer || '—'}`,
+  });
+  const pendingRows = rows.filter((r) => r.kind === 'pending');
+
   return {
     typical_salary: median(recurring.map((r) => r.net)),
     max_salary: recurring.reduce((a, r) => Math.max(a, r.net), 0),
     months: [...byMonth.values()].sort((a, b) => b.period.localeCompare(a.period)),
     transfers: rows.filter((r) => r.kind === 'transfer')
       .map((r) => ({ period: r.period, who: r.employer, amount: r.net })),
-    // Waiting on an answer, not hidden. The finance agent asks about these by name.
-    pending: rows.filter((r) => r.kind === 'pending')
-      .map((r) => ({ id: r.id, period: r.period, who: r.employer,
-                     // `amount` is what to show: the countable net is 0 for an employer slip,
-                     // so fall back to what the extractor actually read.
-                     amount: r.net || r.original_net || 0,
-                     gross: r.gross, original_net: r.original_net,
-                     net_source: r.net_source, reason: r.review_reason,
-                     doc_id: r.doc_id, doc_filename: r.doc_filename, doc_mime: r.doc_mime,
-                     label: `${r.period} ${r.employer || '—'}` })),
+    // Waiting on ADI. The finance agent asks about these by name and the UI raises a card.
+    pending: pendingRows.filter((r) => !r.review_quiet).map(shape),
+    // Waiting on PAPER. Excluded from every total in exactly the same way, but nobody is
+    // asked anything: the answer is a document that has not arrived, not a decision. Two
+    // separate lists because one is actionable and the other is a shelf.
+    staged_quiet: pendingRows.filter((r) => r.review_quiet).map(shape),
     counts: rows.reduce((a, r) => ({ ...a, [r.kind]: (a[r.kind] || 0) + 1 }), {}),
   };
 }
 
 /**
+ * Can this month's paperwork answer the net question at all?
+ *
+ * The employer slip alone cannot: its נטו goes to the kibbutz. So a month missing either
+ * half is not a document with a problem, it is a month that is still arriving — and the
+ * difference decides whether Adi gets asked anything.
+ *
+ * A period with NO envelope row is treated as complete: envelopes only exist for documents
+ * that came through the classifier, and a hand-uploaded payslip must still be reviewable.
+ */
+async function monthIsIncomplete(env, period) {
+  if (!period) return false;
+  const e = await env.DB.prepare(
+    'SELECT has_employer, has_prati, status FROM month_envelopes WHERE period=?')
+    .bind(period).first();
+  if (!e) return false;
+  if (e.status === 'done') return false;
+  return !(e.has_employer && e.has_prati);
+}
+
+/**
  * Stage the income rows a document just produced, where they warrant a question. Runs after
  * persistExtraction, so the rows exist with their doc_id and dedup hash intact.
+ *
+ * Staging and ASKING are two different things, and conflating them is what turned a
+ * three-year backlog into a wall of unanswerable cards. A row from an incomplete month is
+ * staged `review_quiet=1`: excluded from every total exactly as before, but silent. Adi
+ * cannot answer "what reached the bank?" for a month whose kibbutz report has not arrived,
+ * so asking him is noise — the missing paper is the blocker, not his confirmation.
  */
 async function reviewNewIncome(env, docId) {
   const { results } = await env.DB.prepare(
@@ -1170,6 +1274,11 @@ async function reviewNewIncome(env, docId) {
 
   const base = await confirmedSalaryMedian(env);
   const flagged = [];
+  const quietCache = new Map();
+  const isQuiet = async (period) => {
+    if (!quietCache.has(period)) quietCache.set(period, await monthIsIncomplete(env, period));
+    return quietCache.get(period);
+  };
   for (const r of rows) {
     // 0. Is this a net we are allowed to believe at all? Under the kibbutz structure only a
     //    מקדמות במסב figure is the money that reached the bank. An employer slip tells us the
@@ -1179,11 +1288,14 @@ async function reviewNewIncome(env, docId) {
       const detail = r.net_source === 'employer_slip'
         ? `employer slip: gross ${r.gross}, its net goes to the kibbutz`
         : `net_source=${r.net_source}, no מקדמות במסב figure found`;
+      // The commonest quiet case by far: a lone Ricor slip. Nothing Adi can say fixes it —
+      // only the kibbutz report can — so it waits without asking.
+      const quiet = await isQuiet(r.period) ? 1 : 0;
       await env.DB.prepare(
-        `UPDATE income SET status='pending_confirmation', review_reason=?
-          WHERE id=?`).bind(`pending_kibbutz_masav: ${detail}`, r.id).run();
+        `UPDATE income SET status='pending_confirmation', review_reason=?, review_quiet=?
+          WHERE id=?`).bind(`pending_kibbutz_masav: ${detail}`, quiet, r.id).run();
       flagged.push({ id: r.id, period: r.period, employer: r.employer, net: r.net,
-                     reason: 'pending_kibbutz_masav' });
+                     reason: 'pending_kibbutz_masav', quiet: !!quiet });
       continue;
     }
 
@@ -1215,13 +1327,33 @@ async function reviewNewIncome(env, docId) {
               detail: `net ${r.net} against a usual ${base.median}` };
     }
     if (!hit) continue;
+    // Same rule for a gross/net contradiction: while the month is incomplete the figures are
+    // EXPECTED not to reconcile — the deductions live on the report that has not arrived. Ask
+    // once the set is whole; until then it is a discrepancy in the paperwork, not a question.
+    const quiet = await isQuiet(r.period) ? 1 : 0;
     await env.DB.prepare(
-      `UPDATE income SET status='pending_confirmation', review_reason=?, original_net=net
-        WHERE id=?`).bind(`${hit.reason}: ${hit.detail}`, r.id).run();
+      `UPDATE income SET status='pending_confirmation', review_reason=?, review_quiet=?,
+              original_net=net WHERE id=?`)
+      .bind(`${hit.reason}: ${hit.detail}`, quiet, r.id).run();
     flagged.push({ id: r.id, period: r.period, employer: r.employer, net: r.net,
-                   reason: hit.reason });
+                   reason: hit.reason, quiet: !!quiet });
   }
-  return { flagged: flagged.length, rows: flagged };
+  return { flagged: flagged.length,
+           asked: flagged.filter((f) => !f.quiet).length, rows: flagged };
+}
+
+/**
+ * A month that has since become complete stops being quiet. Called when a document is filed
+ * into an envelope, so the last arriving PDF is what surfaces every question the month was
+ * holding back — rather than them staying invisible forever because they were silenced once.
+ */
+async function unquietCompleteMonths(env, period) {
+  if (!period) return 0;
+  if (await monthIsIncomplete(env, period)) return 0;
+  const r = await env.DB.prepare(
+    `UPDATE income SET review_quiet=0
+      WHERE period=? AND review_quiet=1 AND status='pending_confirmation'`).bind(period).run();
+  return r.meta?.changes || 0;
 }
 
 /**
@@ -2874,35 +3006,43 @@ async function handleReceiptParse(request, env) {
 }
 
 /** Shared Gemini JSON call used by the receipt reader. */
+/**
+ * The vision-plus-JSON call behind the classifier, receipts and the calendar parser. This is the
+ * one that failed 47 times in a row on the bulk forward: it built its own fetch, bypassing both
+ * the rate limiter and any retry. It now goes through geminiPost like everything else.
+ */
 async function geminiCallJson(env, prompt, file) {
   const models = [env.GEMINI_MODEL, ...(env.GEMINI_FALLBACKS || '').split(',')]
     .map((s) => (s || '').trim()).filter(Boolean);
+  if (!models.length) models.push('gemini-flash-latest');
   const tried = [];
+  let rateLimited = false;
   for (const model of models) {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [
-            { inline_data: { mime_type: file.mimeType, data: file.base64 } }, { text: prompt }] }],
-          generationConfig: { temperature: 0, responseMimeType: 'application/json' },
-        }),
-        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
-      });
-    if (res.ok) {
-      const payload = await res.json();
+    const out = await geminiPost(env, model, {
+      contents: [{ role: 'user', parts: [
+        { inline_data: { mime_type: file.mimeType, data: file.base64 } }, { text: prompt }] }],
+      generationConfig: { temperature: 0, responseMimeType: 'application/json' },
+    });
+    if (out.ok) {
       const parsed = parseLooseJson(
-        payload?.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join(''));
+        out.payload?.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join(''));
       if (parsed) return parsed;
       tried.push(`${model}: unparseable`);
-    } else {
-      tried.push(`${model}: ${res.status}`);
-      if (res.status !== 404 && res.status !== 429) break;
+      continue;
     }
+    tried.push(`${model}: ${out.status}`);
+    if (out.status === 429) {
+      // Per-KEY quota: the next model in the chain shares it, so trying it is a wasted call and
+      // another entry in an error message that already says 429 three times. Stop here and let
+      // the caller park the work.
+      rateLimited = true;
+      break;
+    }
+    if (out.status !== 404) break;
   }
-  throw new Error(`gemini_failed: ${tried.join(' | ')}`);
+  const err = new Error(`gemini_failed: ${tried.join(' | ')}`);
+  err.rateLimited = rateLimited;
+  throw err;
 }
 
 async function handleReceipts(request, env, url) {
@@ -3058,6 +3198,41 @@ const noteRateLimitHit = (env, provider = 'gemini', seconds = 30) =>
 
 const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 
+// ---------------------------------------------------------------------------
+// Learned preferences — the agent's long-term memory
+// ---------------------------------------------------------------------------
+//
+// Without this, every correction Adi makes is worth exactly one turn. He tells the calendar agent
+// that an Avastha gig needs a Departure event AND a separate Stage Time event, it does that once,
+// and the next flyer starts from the same blank prompt. Being told the same thing twice is the
+// defect; the fix is that a correction becomes a stored rule which every later run loads.
+//
+// Deliberately a plain text rule keyed by a short slug, not structured config. The rules are
+// consumed by a language model, so prose is the native format, and `pref_key` is what makes
+// re-stating a preference an UPDATE rather than a second contradictory line in the prompt.
+
+/** Every active rule for a domain, plus the global ones, as a prompt block. '' when there are none. */
+async function preferenceBlock(env, scope) {
+  const { results } = await env.DB.prepare(
+    `SELECT scope, pref_key, pref_value FROM user_preferences
+      WHERE active=1 AND scope IN (?, 'global') ORDER BY scope, updated_at`).bind(scope).all()
+    .catch(() => ({ results: [] }));
+  const rows = results || [];
+  if (!rows.length) return '';
+  return `
+ADI'S STANDING INSTRUCTIONS — things he has already corrected you on. These override your
+defaults. Follow them without being asked again, and do not ask him to confirm a rule that is
+already listed here:
+${rows.map((r) => `- [${r.pref_key}] ${r.pref_value}`).join('\n')}
+`;
+}
+
+/** Note that a rule was in play, so a stale one is identifiable later. */
+const touchPreferences = (env, scope) =>
+  env.DB.prepare(
+    `UPDATE user_preferences SET hits=hits+1 WHERE active=1 AND scope IN (?, 'global')`)
+    .bind(scope).run().catch(() => {});
+
 /** Every tool the agent can call, with its Gemini declaration and its implementation. */
 const AGENT_TOOLS = {
   // ---- finance ----
@@ -3085,6 +3260,20 @@ const AGENT_TOOLS = {
     run: async (env, args, ctx) => {
       const period = toPeriod(args.period) || ctx.period;
       const trusted = ['masav', 'bank_net'].includes(args.net_source);
+      // The ENVELOPE owns the month, so its verdict replaces any earlier one — including a
+      // partial verdict recorded against a DIFFERENT document in the same envelope.
+      //
+      // persistExtraction only clears what the document it is given produced. So a month first
+      // reasoned about with the employer slip alone (net unavailable, parked) and later with the
+      // kibbutz report (net known, primaryDocId now the report) would keep both rows and
+      // double-count the month. That is the ₪12,046 inflation, one indirection along.
+      if (ctx.period) {
+        await env.DB.prepare(
+          `DELETE FROM income
+            WHERE period=? AND source_kind='payslip'
+              AND doc_id IN (SELECT document_id FROM envelope_documents WHERE period=?)
+              AND doc_id IS NOT ?`).bind(ctx.period, ctx.period, ctx.primaryDocId).run();
+      }
       const data = {
         doc_type: 'salary', period,
         income: [{ source: 'salary', employer: args.employer, gross: args.gross,
@@ -3114,6 +3303,19 @@ const AGENT_TOOLS = {
       }, required: ['question'] },
     },
     run: async (env, args, ctx) => {
+      // A question Adi cannot answer is not a question. While the month is missing half its
+      // paperwork the honest state is "still collecting", so the envelope goes back on the
+      // shelf silently and the missing document — not Adi — is what unblocks it.
+      //
+      // The guard lives HERE as well as in runEnvelopeAgent because the tool is reachable from
+      // the answer endpoint and the manual drain too, and one silent path is one too many.
+      if (await monthIsIncomplete(env, ctx.period)) {
+        await env.DB.prepare(
+          `UPDATE month_envelopes SET status='collecting', question=NULL, claimed_at=NULL,
+                  updated_at=datetime('now') WHERE period=?`).bind(ctx.period).run();
+        return { asked: false, halt: true, parked: true, period: ctx.period,
+                 why: 'month_incomplete — waiting for the missing document, not for Adi' };
+      }
       await env.DB.prepare(
         `UPDATE month_envelopes SET status='needs_input', question=?, updated_at=datetime('now')
           WHERE period=?`).bind(trimStr(args.question, 1000), ctx.period).run();
@@ -3156,7 +3358,11 @@ const AGENT_TOOLS = {
       return { typical_salary_agorot: inc.typical_salary, months,
                transfers: (inc.transfers || []).slice(0, 12),
                awaiting_confirmation: (inc.pending || []).map(
-                 (p) => ({ period: p.period, amount: p.amount, reason: p.reason })) };
+                 (p) => ({ period: p.period, amount: p.amount, reason: p.reason })),
+               // Separate key, separate meaning: these are waiting on a missing document,
+               // not on Adi. Never raise a question about one.
+               parked_waiting_for_documents: (inc.staged_quiet || []).map(
+                 (p) => ({ period: p.period, gross: p.gross, reason: p.reason })) };
     },
   },
 
@@ -3176,6 +3382,68 @@ const AGENT_TOOLS = {
       const body = await res.json();
       if (!body.ok) return { error: body.error, detail: body.detail };
       return { events: (body.events || []).slice(0, 15) };
+    },
+  },
+
+  // ---- learning, offered to every domain (see toolsForContext) ----------------------------
+  update_user_preferences: {
+    domain: 'meta',
+    declaration: {
+      name: 'update_user_preferences',
+      description:
+        'Remember a standing instruction Adi has just given you, so you follow it from now on ' +
+        'without being told again. Call this whenever he corrects your behaviour or states a ' +
+        'preference about HOW you should work ("next time…", "always…", "never…", "I prefer…", ' +
+        "\"stop doing X\"). Do NOT call it for a one-off fact about a single document or event — " +
+        'this is for rules, not data.',
+      parameters: { type: 'object', properties: {
+        scope: { type: 'string',
+          description: 'which agent the rule applies to; "global" if it applies everywhere',
+          enum: ['global', 'finance', 'calendar', 'tasks', 'contacts'] },
+        pref_key: { type: 'string',
+          description: 'short stable snake_case slug naming the rule, e.g. ' +
+            '"avastha_gig_two_events". Reuse the SAME key when refining an existing rule.' },
+        pref_value: { type: 'string',
+          description: 'the rule, as one or two plain sentences addressed to yourself, ' +
+            'specific enough to act on without the original conversation' },
+        source_text: { type: 'string', description: "Adi's own words, verbatim" },
+        active: { type: 'boolean',
+          description: 'false to retire a rule he has just told you to stop following' },
+      }, required: ['pref_key', 'pref_value'] },
+    },
+    run: async (env, args, ctx) => {
+      const key = trimStr(String(args.pref_key || '').toLowerCase()
+        .replace(/[^\w]+/g, '_').replace(/^_+|_+$/g, ''), 60);
+      const value = trimStr(args.pref_value, 1000);
+      if (!key || !value) return { error: 'pref_key_and_pref_value_required' };
+      const allowed = ['global', 'finance', 'calendar', 'tasks', 'contacts'];
+      // Default to the domain the agent is actually running in, never 'global': a rule about
+      // reading flyers has no business reshaping how payslips are handled.
+      const scope = allowed.includes(args.scope) ? args.scope
+        : (allowed.includes(ctx?.context) ? ctx.context : 'global');
+      const active = args.active === false ? 0 : 1;
+
+      // Same key, same scope = the rule is being refined, so it is replaced rather than stacked.
+      // Two contradictory versions of one instruction in a prompt is worse than neither.
+      await env.DB.prepare(
+        `INSERT INTO user_preferences (id, scope, pref_key, pref_value, source_text, active)
+         VALUES (?,?,?,?,?,?)
+         ON CONFLICT(scope, pref_key) DO UPDATE SET
+           pref_value=excluded.pref_value,
+           source_text=COALESCE(excluded.source_text, user_preferences.source_text),
+           active=excluded.active, updated_at=datetime('now')`,
+      ).bind(uuid(), scope, key, value, trimStr(args.source_text, 2000), active).run();
+
+      await env.DB.prepare(
+        'INSERT INTO activity_log (id, entity, entity_id, action, title, meta_json) VALUES (?,?,?,?,?,?)',
+      ).bind(uuid(), 'note', `pref:${scope}:${key}`, active ? 'update' : 'delete',
+             `כלל חדש (${scope}): ${value.slice(0, 80)}`,
+             JSON.stringify({ kind: 'preference', scope, pref_key: key })).run().catch(() => {});
+
+      return { remembered: true, scope, pref_key: key, active: !!active,
+               // Not a halt: the agent should now go on and DO the thing it just learned, in the
+               // same turn. Learning a rule and then stopping would make Adi ask twice.
+               note: 'Rule stored. Continue and apply it to the current request now.' };
     },
   },
 
@@ -3199,12 +3467,17 @@ const AGENT_TOOLS = {
 };
 
 /** The declarations a given context may use: its own domain, plus the read-only cross-domain
- *  tools. That is what makes "when is my next meeting?" answerable from the finance tab. */
+ *  tools. That is what makes "when is my next meeting?" answerable from the finance tab.
+ *
+ *  `meta` tools belong to no domain and are offered everywhere: learning a preference is
+ *  something every agent must be able to do, or "next time, do X" only sticks on whichever tab
+ *  Adi happened to be looking at. */
 function toolsForContext(context) {
   const own = Object.entries(AGENT_TOOLS).filter(([, t]) => t.domain === context);
   const cross = Object.entries(AGENT_TOOLS).filter(
-    ([n, t]) => t.domain !== context && /^query_/.test(n));
-  return [...own, ...cross];
+    ([n, t]) => t.domain !== context && t.domain !== 'meta' && /^query_/.test(n));
+  const meta = Object.entries(AGENT_TOOLS).filter(([, t]) => t.domain === 'meta');
+  return [...own, ...cross, ...meta];
 }
 
 /**
@@ -3216,37 +3489,29 @@ async function geminiReactTurn(env, { system, contents, tools }) {
   const models = [env.GEMINI_MODEL, ...(env.GEMINI_FALLBACKS || '').split(',')]
     .map((s) => (s || '').trim()).filter(Boolean);
   const tried = [];
+  let rateLimited = false;
   for (const model of models) {
-    await sleep(await rateLimitDelay(env));
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      { method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
-        body: JSON.stringify({
-          contents,
-          systemInstruction: { parts: [{ text: system }] },
-          tools: tools.length ? [{ functionDeclarations: tools.map(([, t]) => t.declaration) }] : undefined,
-          generationConfig: { temperature: 0 },
-        }),
-        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS) });
-
-    if (res.status === 429) {
-      await noteRateLimitHit(env, 'gemini', 45);
-      tried.push(`${model}: 429`);
-      continue;
+    const out = await geminiPost(env, model, {
+      contents,
+      systemInstruction: { parts: [{ text: system }] },
+      tools: tools.length ? [{ functionDeclarations: tools.map(([, t]) => t.declaration) }] : undefined,
+      generationConfig: { temperature: 0 },
+    });
+    if (out.ok) {
+      const parts = out.payload?.candidates?.[0]?.content?.parts || [];
+      const call = parts.find((p) => p.functionCall)?.functionCall;
+      const text = parts.map((p) => p.text).filter(Boolean).join('').trim();
+      return { model, call, text, raw: out.payload?.candidates?.[0] };
     }
-    if (!res.ok) {
-      tried.push(`${model}: ${res.status}`);
-      if (res.status !== 404) break;
-      continue;
-    }
-    const payload = await res.json();
-    const parts = payload?.candidates?.[0]?.content?.parts || [];
-    const call = parts.find((p) => p.functionCall)?.functionCall;
-    const text = parts.map((p) => p.text).filter(Boolean).join('').trim();
-    return { model, call, text, raw: payload?.candidates?.[0] };
+    tried.push(`${model}: ${out.status}`);
+    // Same reasoning as geminiCallJson: the quota is on the key, so the chain cannot route
+    // around it. A mid-loop 429 leaves the envelope claimable and the cron resumes it.
+    if (out.status === 429) { rateLimited = true; break; }
+    if (out.status !== 404) break;
   }
-  throw new Error(`gemini_react_failed: ${tried.join(' | ')}`);
+  const err = new Error(`gemini_react_failed: ${tried.join(' | ')}`);
+  err.rateLimited = rateLimited;
+  throw err;
 }
 
 // ===========================================================================
@@ -3401,6 +3666,11 @@ return ONLY JSON:
   "timezone": "IANA zone, default Asia/Jerusalem",
   "starts_at": "YYYY-MM-DDTHH:MM",
   "ends_at": "YYYY-MM-DDTHH:MM",
+  "stage_time": "YYYY-MM-DDTHH:MM — the performance/set/ceremony moment, if the document names one",
+  "crosses_midnight": true|false,
+  "additional_events": [
+    {"title":"...","starts_at":"YYYY-MM-DDTHH:MM","ends_at":"YYYY-MM-DDTHH:MM","location":"...","description":"..."}
+  ],
   "complete": true|false,
   "options": [
     {"label":"how the document names this choice","starts_at":"YYYY-MM-DDTHH:MM","ends_at":"YYYY-MM-DDTHH:MM","note":"..."}
@@ -3408,6 +3678,32 @@ return ONLY JSON:
   "questions": ["a short question, in the document's language, per thing you cannot resolve"],
   "confidence": 0.0-1.0
 }
+
+NIGHT EVENTS AND MIDNIGHT — read this before you write starts_at:
+
+A time after midnight belongs to the night that STARTED on the previous evening. Hebrew flyers
+say this the way people speak: "מוצ״ש 7.8 בשעה 03:00", "בליל 7 באוגוסט", "7/8 23:00 עד הבוקר",
+"Thursday night, 3AM". The calendar date printed on the flyer is the date the NIGHT begins, not
+the clock date of the set. So a flyer reading "7 באוגוסט, הופעה ב-03:00" is an event that starts
+on the EVENING of 7 August and runs into 8 August — never a single stamp at 08-08T03:00, which
+would put Adi at the venue a full day late.
+
+When the document describes a night that crosses midnight:
+- "starts_at" is when HE needs to be there: the arrival, doors, or set-up time on the FIRST
+  date. If the flyer gives no arrival time, use the evening of the first date — 22:00 for a
+  club or festival night, or the stated doors time if there is one.
+- "ends_at" is on the FOLLOWING date, after the small-hours time. If no finish is printed,
+  allow two hours past the stated performance time.
+- "stage_time" is the headline moment itself — the "03:00" on the poster — written in full as
+  "YYYY-MM-DDTHH:MM" on whichever calendar date it actually falls on (so 03:00 after a 7 August
+  night is 8 August). Set it whenever the document names a performance, set, ceremony or
+  kick-off time distinct from arrival. This is what he must not miss; it is NOT the start.
+- "crosses_midnight": true.
+- This is NOT ambiguity and NOT a reason to set "complete": false. A night event with a clear
+  date and a clear small-hours time is complete.
+
+Never move a small-hours time onto the printed date and call it a day event. If a poster says
+02:00 or 03:00 or 04:00, the event began the evening before.
 
 The ambiguity rules are the important part:
 - If the document offers SEVERAL possible dates — "מחזור א׳ / מחזור ב׳ / מחזור ג׳",
@@ -3424,10 +3720,18 @@ The ambiguity rules are the important part:
   date. Hebrew dates are dd/mm/yyyy, never mm/dd.
 - "complete": true means every field needed to put this on a calendar is present and
   unambiguous. When in doubt, say false — a question costs seconds, a wrong calendar entry
-  costs a day.`;
+  costs a day.
+- Return ONE object, never a bare array. If a standing instruction below requires more than one
+  calendar entry for this document — a separate departure and stage-time entry, say — put the
+  FIRST entry in the top-level fields and every further one in "additional_events". Omit
+  "additional_events" entirely when one entry is enough, which is the normal case.`;
 
 const CAL_FIELDS = ['title', 'location', 'description', 'organizer', 'order_number',
-                    'starts_at', 'ends_at', 'timezone'];
+                    'starts_at', 'ends_at', 'stage_time', 'timezone'];
+
+// A night out is one span, not one instant. 4am is late enough to cover a club night and early
+// enough that a genuine 05:00 start (a flight, a hike) is not silently dragged backwards a day.
+const SMALL_HOURS_UNTIL = 5;
 
 /** 'YYYY-MM-DDTHH:MM' (accepts a bare date, and tolerates seconds). Null if unusable. */
 function toLocalDateTime(v, { endOfDay = false } = {}) {
@@ -3444,6 +3748,113 @@ const addLocalMinutes = (local, minutes) => {
   if (!Number.isFinite(t)) return null;
   return new Date(t + minutes * 60_000).toISOString().slice(0, 16);
 };
+
+const localMinutes = (local) => {
+  const m = /T(\d{2}):(\d{2})/.exec(String(local || ''));
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+};
+const addLocalDays = (local, days) =>
+  `${new Date(Date.parse(`${String(local).slice(0, 10)}T00:00:00Z`) + days * 86_400_000)
+    .toISOString().slice(0, 10)}${String(local).slice(10)}`;
+
+/**
+ * Make a night event a SPAN instead of a single misplaced instant.
+ *
+ * The reported bug: a flyer for "Avastha, 7 August, 03:00" produced one timestamp at
+ * 2026-08-08T03:00 — technically the right clock moment, practically useless. It says nothing
+ * about being at the venue on the evening of the 7th, and in a month view it lands on the wrong
+ * day entirely. What Adi needs is 7 Aug 23:00 → 8 Aug 08:00 with "on stage 03:00" inside it.
+ *
+ * Three repairs, all of them things the model gets wrong often enough to be worth doing in code:
+ *   1. An end earlier in the clock than the start is the NEXT DAY, not an error. 23:00 → 08:00
+ *      spans midnight; without this graphEventBody quietly replaced it with a one-hour event.
+ *   2. A stage time in the small hours on the SAME date as an evening start belongs to the
+ *      following morning — the model writes "23:00" and "03:00" and leaves both on the 7th.
+ *   3. A start that is itself in the small hours, with no evening component, is the classic
+ *      misread: pull it back to the previous evening and keep the small-hours moment as the
+ *      stage time. This is the exact case in the bug report.
+ *
+ * Deliberately does nothing to an all-day event and nothing when there is no start.
+ */
+function normaliseNightSpan(row) {
+  const out = { ...row };
+  if (!out.starts_at || out.all_day) return out;
+
+  const startMin = localMinutes(out.starts_at);
+  let stage = out.stage_time || null;
+
+  // 3. The whole event is a single small-hours stamp: that is an evening that was flattened.
+  if (startMin !== null && startMin < SMALL_HOURS_UNTIL * 60 && !out.ends_at) {
+    stage = stage || out.starts_at;
+    // 22:00 the evening before — early enough to be a believable call time, and the point is
+    // the DATE, which is what was wrong.
+    out.starts_at = `${addLocalDays(out.starts_at, -1).slice(0, 10)}T22:00`;
+  }
+
+  // 2. A small-hours stage time still sitting on the start date moves to the next morning.
+  if (stage) {
+    const stageMin = localMinutes(stage);
+    const sMin = localMinutes(out.starts_at);
+    if (stageMin !== null && sMin !== null && stage.slice(0, 10) === out.starts_at.slice(0, 10)
+        && stageMin < SMALL_HOURS_UNTIL * 60 && sMin >= 12 * 60) {
+      stage = addLocalDays(stage, 1);
+    }
+  }
+  out.stage_time = stage;
+
+  // 1. An end at or before the start crosses midnight — unless it is a whole day or more out,
+  //    which means the model produced something incoherent rather than a night.
+  if (out.ends_at) {
+    const s = Date.parse(`${out.starts_at}:00Z`);
+    const e = Date.parse(`${out.ends_at}:00Z`);
+    if (Number.isFinite(s) && Number.isFinite(e) && e <= s && s - e < 86_400_000) {
+      out.ends_at = addLocalDays(out.ends_at, 1);
+    }
+  } else if (stage) {
+    // No finish printed: two hours past the set is a better guess than an hour past the doors,
+    // and it keeps the event visibly spanning both dates.
+    out.ends_at = addLocalMinutes(stage, 120);
+  }
+  return out;
+}
+
+/** Does this event visibly span more than one calendar day? */
+const spansMidnight = (row) => !!(row.starts_at && row.ends_at
+  && row.starts_at.slice(0, 10) !== row.ends_at.slice(0, 10));
+
+/**
+ * One extraction → the list of events it describes. Almost always one.
+ *
+ * A learned preference can legitimately turn one document into two entries — "when Avastha
+ * plays, make a Departure event AND a separate Stage Time event" is exactly the kind of rule
+ * update_user_preferences exists to store. When that rule is loaded the model stops returning
+ * an object and returns an ARRAY, which the old code read as a single event: every field came
+ * back undefined and a completely blank row was staged, with no error anywhere.
+ *
+ * So the shape is normalised here rather than assumed. Three inputs are accepted: the ordinary
+ * object, the sanctioned `additional_events`, and a bare array — the last because a model that
+ * has been told to produce two events will sometimes produce two events however the schema is
+ * worded, and silently dropping one is the worst of the available outcomes.
+ *
+ * Siblings inherit location, timezone and order number: they came off the same poster, and a
+ * "Departure" entry with no venue is not useful.
+ */
+function calendarEventList(ex) {
+  const head = Array.isArray(ex) ? (ex[0] || {}) : (ex && typeof ex === 'object' ? ex : {});
+  const extra = Array.isArray(ex) ? ex.slice(1)
+    : (Array.isArray(ex?.additional_events) ? ex.additional_events : []);
+  const inherit = (e) => ({
+    ...e,
+    location: e.location ?? head.location,
+    timezone: e.timezone ?? head.timezone,
+    organizer: e.organizer ?? head.organizer,
+    order_number: e.order_number ?? head.order_number,
+    all_day: e.all_day ?? head.all_day,
+  });
+  // Cap it: a prompt injection or a confused model must not mint fifty calendar rows.
+  return [head, ...extra.filter((e) => e && typeof e === 'object' && (e.title || e.starts_at))
+    .slice(0, 4).map(inherit)];
+}
 
 /** Upload → vision → STAGE. Never reaches the calendar. */
 async function handleCalendarParse(request, env) {
@@ -3463,6 +3874,7 @@ async function handleCalendarParse(request, env) {
     || /pdf/i.test(a.mimeType || '') || /\.pdf$/i.test(a.filename || ''));
   if (!usable.length) return json({ error: 'no_image_or_pdf' }, 400);
 
+  const prefs = await preferenceBlock(env, 'calendar');
   const staged = [];
   // One vision call per file, and the UI sends one file per request — same reasoning as
   // receipts: batching model calls into a single invocation is what blew the duration
@@ -3487,32 +3899,57 @@ async function handleCalendarParse(request, env) {
       await env.DOCS_BUCKET.put(key, buffer, { httpMetadata: { contentType: mime } });
       storedKey = key;
 
-      const ex = await geminiCallJson(env, CALENDAR_PROMPT,
+      // Standing instructions ride along with the flyer prompt, so a rule like "an Avastha gig
+      // is a Departure event AND a separate Stage Time event" applies at READ time — which is
+      // the only place it can change what gets staged.
+      const ex = await geminiCallJson(env, `${CALENDAR_PROMPT}${prefs}`,
         { base64: toBase64(buffer), mimeType: mime });
 
-      const options = Array.isArray(ex.options) ? ex.options.filter((o) => o && (o.starts_at || o.label)) : [];
-      const questions = Array.isArray(ex.questions) ? ex.questions.filter(Boolean) : [];
-      // The model's own "complete" is trusted only when it agrees with the evidence:
-      // several candidate dates, or no start at all, is incomplete regardless of the flag.
-      const start = toLocalDateTime(ex.starts_at);
-      const complete = ex.complete === true && options.length <= 1 && !!start;
+      const head = Array.isArray(ex) ? (ex[0] || {}) : ex;
+      const options = Array.isArray(head.options) ? head.options.filter((o) => o && (o.starts_at || o.label)) : [];
+      const questions = Array.isArray(head.questions) ? head.questions.filter(Boolean) : [];
 
-      await env.DB.prepare(
-        `INSERT INTO calendar_events (id, status, title, location, description, organizer,
-           order_number, starts_at, ends_at, all_day, timezone, options_json, questions_json,
-           r2_key, mime, size_bytes, sha256, extracted_json, confidence)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      ).bind(id, complete ? 'staged' : 'incomplete',
-             trimStr(ex.title, 300), trimStr(ex.location, 300), trimStr(ex.description, 4000),
-             trimStr(ex.organizer, 200), trimStr(ex.order_number, 120),
-             start, toLocalDateTime(ex.ends_at), ex.all_day ? 1 : 0,
-             trimStr(ex.timezone, 60) || 'Asia/Jerusalem',
-             options.length ? JSON.stringify(options) : null,
-             questions.length ? JSON.stringify(questions) : null,
-             key, mime, buffer.byteLength, hash, JSON.stringify(ex),
-             Number.isFinite(ex.confidence) ? ex.confidence : null).run();
+      // One document can be several entries when a standing instruction says so. The first
+      // keeps `id` (already used for the R2 key); siblings get their own.
+      const events = calendarEventList(ex);
+      for (const [n, e] of events.entries()) {
+        const rowId = n === 0 ? id : uuid();
+        // The model's own "complete" is trusted only when it agrees with the evidence:
+        // several candidate dates, or no start at all, is incomplete regardless of the flag.
+        const span = normaliseNightSpan({
+          starts_at: toLocalDateTime(e.starts_at),
+          ends_at: toLocalDateTime(e.ends_at),
+          stage_time: toLocalDateTime(e.stage_time),
+          all_day: !!e.all_day,
+        });
+        const complete = (n === 0 ? head.complete === true : e.complete !== false)
+          && options.length <= 1 && !!span.starts_at;
 
-      staged.push(await env.DB.prepare('SELECT * FROM calendar_events WHERE id=?').bind(id).first());
+        await env.DB.prepare(
+          `INSERT INTO calendar_events (id, status, title, location, description, organizer,
+             order_number, starts_at, ends_at, stage_time, all_day, timezone, options_json,
+             questions_json, asked_at, r2_key, mime, size_bytes, sha256, extracted_json, confidence)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        ).bind(rowId, complete ? 'staged' : 'incomplete',
+               trimStr(e.title, 300), trimStr(e.location, 300), trimStr(e.description, 4000),
+               trimStr(e.organizer, 200), trimStr(e.order_number, 120),
+               span.starts_at, span.ends_at, span.stage_time, e.all_day ? 1 : 0,
+               trimStr(e.timezone, 60) || 'Asia/Jerusalem',
+               // Ambiguity belongs to the document, so only the first row carries it — three
+               // date cycles asked about twice is one question too many.
+               n === 0 && options.length ? JSON.stringify(options) : null,
+               n === 0 && questions.length ? JSON.stringify(questions) : null,
+               // The one fact the review card keys its input box off: did the model actually ask
+               // anything? A confident, unambiguous read leaves this NULL and gets no box.
+               (n === 0 && (questions.length || options.length > 1)) ? new Date().toISOString() : null,
+               // Siblings point at the same source image — it is the evidence for both — and
+               // share its sha256, so re-uploading the flyer is still caught as a duplicate.
+               key, mime, buffer.byteLength, hash, JSON.stringify(e),
+               Number.isFinite(e.confidence) ? e.confidence
+                 : (Number.isFinite(head.confidence) ? head.confidence : null)).run();
+
+        staged.push(await env.DB.prepare('SELECT * FROM calendar_events WHERE id=?').bind(rowId).first());
+      }
     } catch (err) {
       // No row survives a failure here, so the blob it wrote is unreferenced garbage.
       if (storedKey) await env.DOCS_BUCKET.delete(storedKey).catch(() => {});
@@ -3549,7 +3986,8 @@ reply. Return ONLY JSON:
   "answer": "one short sentence confirming what you understood, in the user's language",
   "patch": { "title": "...", "location": "...", "description": "...", "organizer": "...",
              "order_number": "...", "starts_at": "YYYY-MM-DDTHH:MM",
-             "ends_at": "YYYY-MM-DDTHH:MM", "timezone": "...", "all_day": true|false },
+             "ends_at": "YYYY-MM-DDTHH:MM", "stage_time": "YYYY-MM-DDTHH:MM",
+             "timezone": "...", "all_day": true|false },
   "complete": true|false,
   "questions": ["anything still genuinely unresolved"]
 }
@@ -3559,6 +3997,9 @@ Rules:
 - If the reply names one of the OPTIONS ("מחזור ב׳", "the second one", "cycle B"), copy that
   option's dates verbatim into starts_at / ends_at.
 - If the reply gives only an hour, combine it with the date already on the event.
+- A small-hours hour ("ב-3 בלילה", "3AM") belongs to the night that STARTED the previous
+  evening. Put it in "stage_time" on the following calendar date and leave starts_at on the
+  evening of the first date; never move the whole event onto the later date.
 - "complete": true only when a start date-time is now known and nothing in "questions"
   remains. Do not guess to reach completeness.
 - Never invent an order number, a venue or a year that was not stated.
@@ -3587,7 +4028,7 @@ USER REPLY: ${message}`;
   }
 
   const patch = plan.patch && typeof plan.patch === 'object' ? plan.patch : {};
-  const next = {
+  const next = normaliseNightSpan({
     title: patch.title !== undefined ? trimStr(patch.title, 300) : row.title,
     location: patch.location !== undefined ? trimStr(patch.location, 300) : row.location,
     description: patch.description !== undefined ? trimStr(patch.description, 4000) : row.description,
@@ -3595,9 +4036,10 @@ USER REPLY: ${message}`;
     order_number: patch.order_number !== undefined ? trimStr(patch.order_number, 120) : row.order_number,
     starts_at: patch.starts_at !== undefined ? toLocalDateTime(patch.starts_at) : row.starts_at,
     ends_at: patch.ends_at !== undefined ? toLocalDateTime(patch.ends_at) : row.ends_at,
+    stage_time: patch.stage_time !== undefined ? toLocalDateTime(patch.stage_time) : row.stage_time,
     timezone: patch.timezone !== undefined ? (trimStr(patch.timezone, 60) || 'Asia/Jerusalem') : row.timezone,
     all_day: patch.all_day !== undefined ? (patch.all_day ? 1 : 0) : row.all_day,
-  };
+  });
 
   const questions = Array.isArray(plan.questions) ? plan.questions.filter(Boolean) : [];
   // Server decides the status, not the model: no start time means not ready, whatever it
@@ -3608,12 +4050,14 @@ USER REPLY: ${message}`;
 
   await env.DB.prepare(
     `UPDATE calendar_events SET title=?, location=?, description=?, organizer=?, order_number=?,
-            starts_at=?, ends_at=?, timezone=?, all_day=?, questions_json=?, chat_json=?,
-            status=?, updated_at=datetime('now') WHERE id=?`,
+            starts_at=?, ends_at=?, stage_time=?, timezone=?, all_day=?, questions_json=?,
+            chat_json=?, asked_at=?, status=?, updated_at=datetime('now') WHERE id=?`,
   ).bind(next.title, next.location, next.description, next.organizer, next.order_number,
-         next.starts_at, next.ends_at, next.timezone, next.all_day,
+         next.starts_at, next.ends_at, next.stage_time, next.timezone, next.all_day,
          questions.length ? JSON.stringify(questions) : null,
          JSON.stringify(history.slice(-20)),
+         // Still asking → keep the box. Settled → the box goes away with the question.
+         questions.length ? new Date().toISOString() : null,
          ready ? 'staged' : 'incomplete', id).run();
 
   return json({ ok: true, answer: plan.answer || '', ready, questions,
@@ -3623,6 +4067,10 @@ USER REPLY: ${message}`;
 /** The Graph body for an event. All-day is a genuine trap — see below. */
 function graphEventBody(row) {
   const tz = row.timezone || 'Asia/Jerusalem';
+  // Repair the span here too, not only at parse time: /confirm accepts hand-edited fields
+  // straight from the UI, and typing "23:00 → 08:00" by hand hits exactly the same
+  // end-before-start case that used to collapse into a one-hour event.
+  row = normaliseNightSpan(row);
   let start = row.starts_at;
   let end = row.ends_at;
 
@@ -3641,7 +4089,11 @@ function graphEventBody(row) {
     end = `${end}:00`;
   }
 
-  const notes = [row.description, row.order_number ? `Order / אסמכתא: ${row.order_number}` : '',
+  const notes = [row.description,
+                 // First line of the body, because on a phone the notes preview is often all he
+                 // sees — and for a gig the set time is the only figure that matters.
+                 row.stage_time ? `⏰ עלייה לבמה / Stage time: ${row.stage_time.replace('T', ' ')}` : '',
+                 row.order_number ? `Order / אסמכתא: ${row.order_number}` : '',
                  row.organizer ? `Organiser: ${row.organizer}` : '',
                  'Added by adiariel.com/me'].filter(Boolean).join('\n\n');
 
@@ -3708,15 +4160,20 @@ async function handleCalendarConfirm(request, env, id) {
                   detail }, notConnected ? 409 : 502);
   }
 
+  // Persist the SAME span that was pushed. graphEventBody normalises internally, so writing the
+  // un-normalised `merged` back would leave the row disagreeing with Outlook about which days
+  // the event covers.
+  const saved = normaliseNightSpan(merged);
   await env.DB.prepare(
     `UPDATE calendar_events SET status='confirmed', title=?, location=?, description=?,
-            organizer=?, order_number=?, starts_at=?, ends_at=?, timezone=?, all_day=?,
-            graph_id=?, graph_etag=?, web_link=?, pushed_at=datetime('now'), push_error=NULL,
-            confirmed_at=datetime('now'), updated_at=datetime('now'), questions_json=NULL
+            organizer=?, order_number=?, starts_at=?, ends_at=?, stage_time=?, timezone=?,
+            all_day=?, graph_id=?, graph_etag=?, web_link=?, pushed_at=datetime('now'),
+            push_error=NULL, confirmed_at=datetime('now'), updated_at=datetime('now'),
+            questions_json=NULL, asked_at=NULL
       WHERE id=?`,
-  ).bind(merged.title, merged.location, merged.description, merged.organizer,
-         merged.order_number, merged.starts_at, merged.ends_at, merged.timezone,
-         merged.all_day, pushed?.id || row.graph_id, pushed?.['@odata.etag'] || null,
+  ).bind(saved.title, saved.location, saved.description, saved.organizer,
+         saved.order_number, saved.starts_at, saved.ends_at, saved.stage_time, saved.timezone,
+         saved.all_day, pushed?.id || row.graph_id, pushed?.['@odata.etag'] || null,
          pushed?.webLink || null, id).run();
 
   await env.DB.prepare(
@@ -3777,18 +4234,19 @@ async function handleCalendar(request, env, url) {
     const merged = { ...row };
     for (const f of CAL_FIELDS) {
       if (b[f] !== undefined) {
-        merged[f] = f === 'starts_at' || f === 'ends_at'
+        merged[f] = ['starts_at', 'ends_at', 'stage_time'].includes(f)
           ? toLocalDateTime(b[f]) : trimStr(b[f], f === 'description' ? 4000 : 300);
       }
     }
     if (b.all_day !== undefined) merged.all_day = b.all_day ? 1 : 0;
+    const fixed = normaliseNightSpan(merged);
     await env.DB.prepare(
       `UPDATE calendar_events SET title=?, location=?, description=?, organizer=?,
-              order_number=?, starts_at=?, ends_at=?, timezone=?, all_day=?,
+              order_number=?, starts_at=?, ends_at=?, stage_time=?, timezone=?, all_day=?,
               updated_at=datetime('now') WHERE id=?`,
-    ).bind(merged.title, merged.location, merged.description, merged.organizer,
-           merged.order_number, merged.starts_at, merged.ends_at,
-           merged.timezone || 'Asia/Jerusalem', merged.all_day, id).run();
+    ).bind(fixed.title, fixed.location, fixed.description, fixed.organizer,
+           fixed.order_number, fixed.starts_at, fixed.ends_at, fixed.stage_time,
+           fixed.timezone || 'Asia/Jerusalem', fixed.all_day, id).run();
     return json({ ok: true,
                   event: await env.DB.prepare('SELECT * FROM calendar_events WHERE id=?').bind(id).first() });
   }
@@ -5061,12 +5519,20 @@ async function runCommandLineAgent(env, { context, message, lang, attachmentNote
   if (!agent) return { ok: false, error: 'unknown_context', known: Object.keys(DOMAIN_AGENTS) };
 
   const tools = toolsForContext(context);
+  // Loaded on EVERY run, before the model sees the question. A preference the agent has to be
+  // reminded of is not a preference, and a prompt that only sometimes carries the rules is how
+  // Adi ends up correcting the same behaviour a third time.
+  const prefs = await preferenceBlock(env, context);
   const system = `${agent.system ? agent.system(lang) : ''}
-
+${prefs}
 You have tools. Use them rather than guessing, and rather than saying you cannot see something
 — if the answer lives in another part of the hub, the tool for it is in your list. Call one
 tool at a time, then answer in one or two short sentences using what it returned.
 Never invent a figure, a date or an event that a tool did not give you.
+
+When Adi tells you how he wants you to WORK — "next time…", "always…", "never…", "stop doing
+that", "I prefer…" — call update_user_preferences to store it, then carry on and apply it to the
+request in front of you in the same reply. Do not answer that you will remember; remember.
 ${attachmentNote || ''}
 ${lang === 'he' ? 'ענה בעברית.' : 'Answer in English.'}`;
 
@@ -5082,21 +5548,25 @@ ${lang === 'he' ? 'ענה בעברית.' : 'Answer in English.'}`;
                detail: String(err?.message || err).slice(0, 300), trace };
     }
     if (!out.call) {
+      if (prefs) await touchPreferences(env, context);
       return { ok: true, answer: out.text || '', model: out.model, trace,
+               preferences_loaded: prefs ? prefs.split('\n- ').length - 1 : 0,
                tools_used: trace.map((t) => t.tool) };
     }
     const tool = AGENT_TOOLS[out.call.name];
     let result;
     try {
       result = tool
-        ? await tool.run(env, out.call.args || {}, { period: null, primaryDocId: null })
+        ? await tool.run(env, out.call.args || {},
+                         { period: null, primaryDocId: null, context })
         : { error: `unknown_tool:${out.call.name}` };
     } catch (err) {
       result = { error: String(err?.message || err).slice(0, 300) };
     }
     trace.push({ tool: out.call.name, args: out.call.args, result });
     if (result?.halt) {
-      return { ok: true, answer: result.question || out.text || '', halted: true, trace };
+      return { ok: true, answer: result.question || out.text || '', halted: true, trace,
+               tools_used: trace.map((t) => t.tool) };
     }
     contents.push({ role: 'model', parts: [{ functionCall: out.call }] });
     contents.push({ role: 'user', parts: [{ functionResponse: {
@@ -5104,7 +5574,8 @@ ${lang === 'he' ? 'ענה בעברית.' : 'Answer in English.'}`;
   }
   return { ok: true, answer: (lang === 'he'
     ? 'לא הצלחתי להגיע לתשובה בכמה צעדים. נסה לנסח מחדש.'
-    : 'I could not settle that in a few steps. Try rephrasing.'), trace };
+    : 'I could not settle that in a few steps. Try rephrasing.'),
+    trace, tools_used: trace.map((t) => t.tool) };
 }
 
 async function handleChatFinance(request, env) {
@@ -5145,12 +5616,25 @@ async function handleChatFinance(request, env) {
     const pass = await runIngestionPass(env, { items: 1, budgetMs: 20_000 });
     const r = (pass.queue_results || [])[0] || {};
     const inc = await incomeBreakdown(env);
+    // Only an ANSWERABLE question is raised here. `pending` already excludes rows parked by
+    // an incomplete month, which is what stops a lone Ricor slip from producing a card Adi
+    // has no way to answer.
     const asked = inc.pending[0];
+    const parked = (inc.staged_quiet || []).find((x) => x.period === r.period);
 
     let answer;
     if (asked) {
       // The document raised a question — ask it, in this agent's own words.
       answer = DOMAIN_AGENTS.finance.reviewQuestion(lang, asked);
+    } else if (parked) {
+      // Staged and silent. Say what it is waiting FOR, so the shelf is not a black hole —
+      // but do not ask, because no answer of his moves it.
+      answer = lang === 'he'
+        ? `נקלט תלוש ל-${parked.period} עם ברוטו ${ils(parked.gross)}. הוא ממתין בהמתנה` +
+          ' עד שיגיע דוח הקיבוץ של אותו חודש — אז אחשב את הנטו שנכנס לבנק. אין מה לענות.'
+        : `Filed a payslip for ${parked.period}, gross ${ils(parked.gross)}. It is parked` +
+          ' until that month\'s kibbutz report arrives, then I work out the net that reached' +
+          ' the bank. Nothing for you to answer.';
     } else if (r.receipt_id) {
       answer = lang === 'he' ? 'זו קבלה — העברתי אותה לארכיון הקבלות לבדיקה.'
                              : 'That is a receipt — I staged it in the receipts archive.';
@@ -5165,15 +5649,19 @@ async function handleChatFinance(request, env) {
             r.duplicate ? ' · already on file' : ''}.`;
     }
     return json({ ok: true, answer, ingested: r, pending: inc.pending,
+                  staged_quiet: inc.staged_quiet,
                   pending_id: asked?.id || null, needs_answer: !!asked });
   }
 
   // --- text, and something is waiting on an answer: treat it as that answer ---
+  // `review_quiet=0` matters here: without it a bare "12046" would be swallowed as the answer
+  // to a parked row nobody asked about, silently rewriting the wrong month's net. An explicit
+  // income_id still reaches a quiet row, because that is Adi pressing a specific card.
   const pendingRow = body.income_id
     ? await env.DB.prepare(
         "SELECT * FROM income WHERE id=? AND status='pending_confirmation'").bind(body.income_id).first()
     : await env.DB.prepare(
-        `SELECT * FROM income WHERE status='pending_confirmation'
+        `SELECT * FROM income WHERE status='pending_confirmation' AND review_quiet=0
           ORDER BY period DESC LIMIT 1`).first();
 
   if (pendingRow) {
@@ -5228,6 +5716,16 @@ async function handleChatFinance(request, env) {
       ? 'AWAITING CONFIRMATION — NOT income, and in no figure above. Never include in a total:\n' +
         incPending.map((x) => `- ${x.label}: ${ils(x.amount)} (awaiting confirmation)`).join('\n')
       : 'Nothing awaiting confirmation.',
+    '',
+    // Listed so the agent knows they exist, with an explicit instruction not to turn them
+    // into questions. Leaving them out entirely made it answer "I have nothing for 2024-04",
+    // which is false — the paper is on file, it is the month that is not finished.
+    (inc.staged_quiet || []).length
+      ? 'PARKED, WAITING ON PAPERWORK — also NOT income and in no figure above. These are\n' +
+        'months whose kibbutz report has not arrived. Do NOT ask Adi about them and do NOT\n' +
+        'ask what reached the bank; only mention them if he asks what is outstanding:\n' +
+        inc.staged_quiet.map((x) => `- ${x.label}: gross ${ils(x.gross)} (waiting for the report)`).join('\n')
+      : 'Nothing parked.',
     '',
     'SPENDING BY CATEGORY (last 6 months):',
     ...summary.by_category.map((c) => `- ${c.category}: ${ils(c.total)} over ${c.n} items`),
@@ -5784,6 +6282,15 @@ async function processPendingDocuments(env, limit = 3, budgetMs = DRAIN_BUDGET_M
                   inserted: r.inserted, duplicate: !!r.all_duplicates });
     } catch (err) {
       const m = String(err?.message || err);
+      // A quota must not condemn the document. Leaving it 'pending' keeps it claimable by the
+      // next pass; marking it 'failed' is how a transient 429 turned into a permanent hole that
+      // only the retry button could dig out of.
+      if (err?.rateLimited || isRateLimited(err)) {
+        await env.DB.prepare(
+          'UPDATE documents SET error=? WHERE id=?').bind(`rate_limited: ${m}`.slice(0, 500), d.id).run();
+        done.push({ id: d.id, filename: d.filename, ok: false, rate_limited: true, error: m });
+        break;   // the rest of this pass would meet the same wall
+      }
       await env.DB.prepare(
         "UPDATE documents SET status='failed', error=?, processed_at=datetime('now') WHERE id=?",
       ).bind(m.slice(0, 500), d.id).run();
@@ -5865,13 +6372,29 @@ async function fileIntoEnvelope(env, { documentId, filename, classifiedAs, perio
          (SELECT COUNT(*)>0 FROM envelope_documents WHERE period=?1 AND role='employer') AND
          (SELECT COUNT(*)>0 FROM envelope_documents WHERE period=?1 AND role='prati')
          THEN datetime('now') ELSE ready_at END,
+       -- New paper is the ONE thing that makes an already-reasoned month worth reasoning about
+       -- again. Clearing the previous verdict and the attempt count is what puts it back in
+       -- claimEnvelope's reach; without this a month parked as incomplete would stay parked even
+       -- after the missing report finally landed.
+       result_json = CASE WHEN status='done' THEN result_json ELSE NULL END,
+       attempts    = CASE WHEN status='done' THEN attempts ELSE 0 END,
        updated_at = datetime('now')
      WHERE period=?1`).bind(info.period).run();
+
+  // A month that just became complete releases the questions it was holding back.
+  await unquietCompleteMonths(env, info.period).catch(() => {});
 
   return info;
 }
 
-/** Claim one envelope to reason about: ready first, then anything that has waited too long. */
+/**
+ * Claim one envelope to reason about: ready first, then anything that has waited too long.
+ *
+ * `result_json IS NULL` on the patience branch is what stops an incomplete month from being
+ * re-reasoned every two minutes for the rest of time. A month that has already been read as far
+ * as its paperwork allows has nothing new to say until a document arrives — and arrival is
+ * exactly when fileIntoEnvelope clears result_json and puts it back in play.
+ */
 async function claimEnvelope(env) {
   const { results } = await env.DB.prepare(
     `UPDATE month_envelopes SET status='working', claimed_at=datetime('now'),
@@ -5880,7 +6403,8 @@ async function claimEnvelope(env) {
         SELECT period FROM month_envelopes
          WHERE attempts < 4
            AND ( status='ready'
-              OR (status='collecting' AND first_seen_at < datetime('now', ?1))
+              OR (status='collecting' AND first_seen_at < datetime('now', ?1)
+                  AND result_json IS NULL)
               OR (status='working' AND claimed_at < datetime('now','-10 minutes')) )
          ORDER BY status='ready' DESC, first_seen_at ASC LIMIT 1)
       RETURNING *`).bind(ENVELOPE_PATIENCE).all();
@@ -5897,6 +6421,14 @@ async function claimEnvelope(env) {
  */
 async function runEnvelopeAgent(env, envelope, { maxTurns = 6 } = {}) {
   const period = envelope.period;
+  // An incomplete month is processed but MAY NOT ASK. It reads what the paper in hand can
+  // actually support — the gross — records it with net_source 'unavailable', and that row is
+  // staged quietly by reviewNewIncome. The document sits in staging; nobody is interrogated.
+  //
+  // This is the whole of upgrade 1. Fifty months of a bulk forward each producing "what went
+  // into the bank?" is not a diligent agent, it is a broken one: the answer is a PDF that has
+  // not arrived, and Adi cannot type a PDF.
+  const mayAsk = !(await monthIsIncomplete(env, period));
   const { results: docs } = await env.DB.prepare(
     `SELECT ed.role, d.id, d.filename, d.mime, d.r2_key, d.size_bytes
        FROM envelope_documents ed JOIN documents d ON d.id = ed.document_id
@@ -5926,8 +6458,9 @@ async function runEnvelopeAgent(env, envelope, { maxTurns = 6 } = {}) {
     parts.push({ inline_data: { mime_type: d.mime || 'application/pdf', data: toBase64(buf) } });
   }
 
+  const prefs = await preferenceBlock(env, 'finance');
   const system = `${DOMAIN_AGENTS.finance.system('he')}
-
+${prefs}
 You are reasoning about ONE salary month: ${period}. The attached documents are that month's
 envelope. Work out the figures by CROSS-REFERENCING them, then call exactly one tool.
 
@@ -5936,12 +6469,20 @@ ${KIBBUTZ_NET_RULES}
 Your reasoning must follow this order, out loud, briefly:
   1. Which documents do I have? (employer payslip / דוח פרטני / דוח מצרפי)
   2. Do I have a kibbutz report containing the ניכויים שונים table with a code-20 line?
-     · No  → call ask_user_for_clarification. Say which month and what is missing, and ask
+${mayAsk
+  ? `     · No  → call ask_user_for_clarification. Say which month and what is missing, and ask
              what was transferred to the bank. Do NOT call save_financial_record.
-     · Yes → read the code-20 amount. That is the net.
+     · Yes → read the code-20 amount. That is the net.`
+  : `     · No  → this month is INCOMPLETE and you must NOT ask Adi anything. There is no
+             question he can answer: the figure is on a document that has not arrived.
+             Call save_financial_record with net_source "unavailable", the gross you can
+             actually read, and evidence naming which document is missing. The row will be
+             held aside, uncounted, until the missing report arrives.
+     · Yes → read the code-20 amount. That is the net.`}
   3. Take the gross from the employer payslip, the deductions from the kibbutz report, and
      call save_financial_record with net_source "masav" and the evidence line.
-Never call save_financial_record with a net you inferred, averaged or assumed.`;
+Never call save_financial_record with a net you inferred, averaged or assumed. A missing net
+is reported as "unavailable" — never as a guess and never as the gross.`;
 
   const contents = [{ role: 'user', parts: [
     { text: `ENVELOPE ${period}\nDocuments present:\n${manifest.join('\n')}\n` +
@@ -5951,9 +6492,28 @@ Never call save_financial_record with a net you inferred, averaged or assumed.`;
     ...parts,
   ] }];
 
-  const tools = toolsForContext('finance');
+  // Withhold the tool rather than trusting the prompt. A model told "do not ask" that still has
+  // the ask tool in front of it will occasionally ask anyway, and once is enough to put the card
+  // back on Adi's screen.
+  const tools = toolsForContext('finance')
+    .filter(([name]) => mayAsk || name !== 'ask_user_for_clarification');
   const transcript = [];
   const ctx = { period, primaryDocId: (docs.find((d) => d.role === 'prati') || docs[0]).id };
+  // Where an inconclusive run lands. For a complete month that is a real question for Adi; for
+  // an incomplete one it is back on the shelf, silently, with no question attached.
+  const stall = async (question, tail) => {
+    if (mayAsk) {
+      await env.DB.prepare(
+        `UPDATE month_envelopes SET status='needs_input', question=COALESCE(question, ?),
+                transcript=?, updated_at=datetime('now') WHERE period=?`,
+      ).bind(trimStr(question, 1000), JSON.stringify(tail).slice(0, 20_000), period).run();
+      return;
+    }
+    await env.DB.prepare(
+      `UPDATE month_envelopes SET status='collecting', question=NULL, claimed_at=NULL,
+              transcript=?, updated_at=datetime('now') WHERE period=?`,
+    ).bind(JSON.stringify(tail).slice(0, 20_000), period).run();
+  };
 
   for (let turn = 0; turn < maxTurns; turn++) {
     let out;
@@ -5971,14 +6531,10 @@ Never call save_financial_record with a net you inferred, averaged or assumed.`;
 
     if (out.text) transcript.push({ turn, thought: out.text.slice(0, 1500) });
     if (!out.call) {
-      // Reasoned but chose nothing: treat as needing input rather than silently succeeding.
-      await env.DB.prepare(
-        `UPDATE month_envelopes SET status='needs_input',
-                question=COALESCE(question, ?), transcript=?, updated_at=datetime('now')
-          WHERE period=?`,
-      ).bind(trimStr(out.text, 1000) || 'לא הצלחתי להסיק את הסכום — מה הועבר לבנק?',
-             JSON.stringify(transcript).slice(0, 20_000), period).run();
-      return { period, halted: 'no_tool_call', turns: turn + 1 };
+      // Reasoned but chose nothing: never treated as success. Whether that becomes a question
+      // or a quiet park is decided by whether the month could be answered at all.
+      await stall(out.text || 'לא הצלחתי להסיק את הסכום — מה הועבר לבנק?', transcript);
+      return { period, halted: 'no_tool_call', turns: turn + 1, asked: mayAsk };
     }
 
     const tool = AGENT_TOOLS[out.call.name];
@@ -5998,12 +6554,22 @@ Never call save_financial_record with a net you inferred, averaged or assumed.`;
       return { period, asked: result.question, turns: turn + 1 };
     }
     if (result?.saved) {
+      // An incomplete month that recorded net_source 'unavailable' is NOT done — it is parked
+      // with what could be read, and must be re-reasoned once the missing report lands.
+      // Marking it 'done' would freeze the gross-only reading in place forever, and
+      // processPendingDocuments would then happily extract the same documents a second time
+      // (it only skips envelopes that are not done).
+      const parked = !mayAsk || !['masav', 'bank_net'].includes(String(result.net_source || ''));
       await env.DB.prepare(
-        `UPDATE month_envelopes SET status='done', result_json=?, transcript=?, error=NULL,
-                question=NULL, completed_at=datetime('now'), updated_at=datetime('now')
-          WHERE period=?`,
+        parked
+          ? `UPDATE month_envelopes SET status='collecting', result_json=?, transcript=?,
+                    error=NULL, question=NULL, claimed_at=NULL, updated_at=datetime('now')
+              WHERE period=?`
+          : `UPDATE month_envelopes SET status='done', result_json=?, transcript=?, error=NULL,
+                    question=NULL, completed_at=datetime('now'), updated_at=datetime('now')
+              WHERE period=?`,
       ).bind(JSON.stringify(result), JSON.stringify(transcript).slice(0, 20_000), period).run();
-      return { period, saved: result, turns: turn + 1 };
+      return { period, saved: result, parked, turns: turn + 1 };
     }
 
     // A read-only tool: feed the result back and let it reason again.
@@ -6012,12 +6578,8 @@ Never call save_financial_record with a net you inferred, averaged or assumed.`;
       name: out.call.name, response: { result } } }] });
   }
 
-  await env.DB.prepare(
-    `UPDATE month_envelopes SET status='needs_input',
-            question=COALESCE(question,'נגמרו הצעדים בלי הכרעה — מה הועבר לבנק?'),
-            transcript=?, updated_at=datetime('now') WHERE period=?`,
-  ).bind(JSON.stringify(transcript).slice(0, 20_000), period).run();
-  return { period, halted: 'max_turns' };
+  await stall('נגמרו הצעדים בלי הכרעה — מה הועבר לבנק?', transcript);
+  return { period, halted: 'max_turns', asked: mayAsk };
 }
 
 /**
@@ -6090,6 +6652,9 @@ async function claimIngestItem(env) {
         SELECT id FROM ingest_queue
          WHERE attempts < ?2
            AND (status='queued' OR (status='working' AND claimed_at < datetime('now', ?1)))
+           -- A rate-limited item is parked, not broken. Claiming it before its window has
+           -- passed just re-earns the same 429 and pushes the wait out again.
+           AND (not_before IS NULL OR not_before <= datetime('now'))
          -- attempts first: a never-tried attachment always outranks a retry, so one
          -- poisonous file cannot starve the other 39 in a bulk forward.
          ORDER BY attempts ASC, created_at ASC LIMIT 1)
@@ -6340,11 +6905,16 @@ async function drainIngestQueue(env, { maxItems = 3, budgetMs = DRAIN_BUDGET_MS 
 
   // Exhausted items are marked failed rather than left in limbo. An item nobody will ever
   // pick up again has to be VISIBLE, or this is the old silent drop with extra steps.
+  //
+  // An item PARKED behind a rate limit is not exhausted — it has a scheduled return. Condemning
+  // it here would undo the backoff at the one moment it is doing its job, which is how a quota
+  // blip turned into 47 terminal failures in the first place.
   await env.DB.prepare(
     `UPDATE ingest_queue
         SET status='failed', updated_at=datetime('now'),
             error=COALESCE(error, 'gave up after ' || attempts || ' attempts')
-      WHERE status IN ('queued','working') AND attempts >= ?`,
+      WHERE status IN ('queued','working') AND attempts >= ?
+        AND (not_before IS NULL OR not_before <= datetime('now'))`,
   ).bind(QUEUE_MAX_ATTEMPTS).run();
 
   const done = [];
@@ -6387,6 +6957,28 @@ async function drainIngestQueue(env, { maxItems = 3, budgetMs = DRAIN_BUDGET_MS 
                   error: routed.result?.ok === false ? routed.result.detail || routed.result.error : undefined });
     } catch (err) {
       const detail = String(err?.message || err).slice(0, 500);
+      const throttled = err?.rateLimited || isRateLimited(err);
+
+      if (throttled) {
+        // A quota is not a defect in the file. Park it until the window has passed and GIVE THE
+        // ATTEMPT BACK — otherwise a five-minute Gemini outage terminally fails every payslip in
+        // the queue, which is exactly what happened to 47 of Adi's on 2026-08-05. The wait grows
+        // with how many times this item has already been throttled, and the `*/2` cron is what
+        // comes back for it, so no invocation ever sits here waiting.
+        const waitS = Math.min(60 * 2 ** Math.max(0, item.attempts - 1), 900);
+        await env.DB.prepare(
+          `UPDATE ingest_queue
+              SET status='queued', attempts=MAX(0, attempts-1), claimed_at=NULL,
+                  not_before=datetime('now', ?), error=?, updated_at=datetime('now')
+            WHERE id=?`,
+        ).bind(`+${waitS} seconds`, `rate_limited, retrying in ${waitS}s: ${detail}`, item.id).run();
+        done.push({ id: item.id, filename: item.filename, ok: false, rate_limited: true,
+                    retry_in_s: waitS, error: detail });
+        // Nothing else in this pass will fare better against the same quota — every remaining
+        // item would just re-park itself and add a wasted round-trip.
+        break;
+      }
+
       const terminal = item.attempts >= QUEUE_MAX_ATTEMPTS;
       // A retry stays 'working' with a fresh lease rather than going back to 'queued'.
       // That IS the backoff: the item cannot be re-claimed until the lease expires, so a
@@ -6415,12 +7007,32 @@ async function ingestQueueCounts(env) {
             SUM(status='failed')    failed,
             SUM(status='extracted') extracted
        FROM documents`).first();
+
+  // Pending documents an envelope is deliberately holding are NOT backlog. Counting them made
+  // "drain until remaining is 0" unsatisfiable the moment an incomplete month existed: the UI
+  // would loop, achieve nothing, and still report work outstanding forever. They are reported
+  // under their own name instead, because a shelf still has to be visible.
+  const parked = (await env.DB.prepare(
+    `SELECT COUNT(*) n FROM documents d
+      WHERE d.status='pending'
+        AND EXISTS (SELECT 1 FROM envelope_documents ed
+                      JOIN month_envelopes me ON me.period = ed.period
+                     WHERE ed.document_id = d.id AND me.status != 'done')`).first())?.n || 0;
+  // Items parked by a rate limiter are backlog — they WILL run — but they are not work this
+  // pass can do, so a drain loop must not treat "nothing happened" as "still outstanding".
+  const waiting = (await env.DB.prepare(
+    `SELECT COUNT(*) n FROM ingest_queue
+      WHERE status IN ('queued','working') AND not_before > datetime('now')`).first())?.n || 0;
+
+  const active = Math.max(0, (by.queued || 0) + (by.working || 0) - waiting);
   return {
     queue: { queued: by.queued || 0, working: by.working || 0, done: by.done || 0,
              failed: by.failed || 0, skipped: by.skipped || 0 },
     // What is still outstanding anywhere: queue backlog plus documents whose extraction
     // never completed. This is the number the UI loops until it reaches zero.
-    remaining: (by.queued || 0) + (by.working || 0) + (docs?.pending || 0),
+    remaining: active + Math.max(0, (docs?.pending || 0) - parked),
+    rate_limited: waiting,
+    parked_in_envelopes: parked,
     documents: docs || {},
   };
 }
@@ -6501,11 +7113,58 @@ async function handleIngestStatus(env, url) {
 async function retryFailedIngest(env) {
   const q = await env.DB.prepare(
     `UPDATE ingest_queue SET status='queued', attempts=0, error=NULL, claimed_at=NULL,
-            updated_at=datetime('now')
+            not_before=NULL, updated_at=datetime('now')
       WHERE status='failed'`).run();
   const d = await env.DB.prepare(
     `UPDATE documents SET status='pending', error=NULL WHERE status='failed'`).run();
   return { requeued_items: q.meta?.changes || 0, reset_documents: d.meta?.changes || 0 };
+}
+
+/**
+ * Clear the error log. Deliberately NOT a blanket delete.
+ *
+ * A `failed` row whose bytes are still staged under `inbox/` is the ONLY reference to that file:
+ * the R2 object has no other pointer, so deleting the row makes an attachment Adi forwarded
+ * unreachable and unfindable. That is the exact shape of the original bug — a document that
+ * vanished with no trace — and a tidy-up button must not reintroduce it.
+ *
+ * So by default this removes only rows that are safe to remove: ones that already produced a
+ * document or a receipt, ones with no stored bytes, and ones whose bytes live under a canonical
+ * prefix. Anything still holding the sole copy is REPORTED, not deleted, and the answer for those
+ * is the retry button next to it. `force` deletes them too, with their staged blobs, because
+ * sometimes a file really is junk — but that has to be an explicit second decision.
+ */
+async function clearIngestErrors(env, { force = false } = {}) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, r2_key, filename, document_id, receipt_id FROM ingest_queue WHERE status='failed'`
+  ).all();
+  const rows = results || [];
+  const holdsOnlyCopy = (r) =>
+    !r.document_id && !r.receipt_id && !!r.r2_key && /^inbox\//.test(r.r2_key);
+
+  const removable = force ? rows : rows.filter((r) => !holdsOnlyCopy(r));
+  const kept = force ? [] : rows.filter(holdsOnlyCopy);
+
+  let blobs = 0;
+  if (force) {
+    // Only ever the transient staging prefix. `docs/` and `receipts/` are canonical copies that
+    // live rows point at, and nothing here is allowed to touch them.
+    for (const r of rows.filter((x) => x.r2_key && /^inbox\//.test(x.r2_key))) {
+      await env.DOCS_BUCKET.delete(r.r2_key).catch(() => {});
+      blobs++;
+    }
+  }
+  for (let i = 0; i < removable.length; i += 40) {
+    await env.DB.batch(removable.slice(i, i + 40).map(
+      (r) => env.DB.prepare('DELETE FROM ingest_queue WHERE id=?').bind(r.id)));
+  }
+
+  // Failed DOCUMENTS are a different thing and are never deleted here: the row is the only
+  // record that the file exists at all, and its R2 object is deliberately kept for a retry.
+  // Clearing the message would just hide why it failed.
+  return { cleared: removable.length, blobs_deleted: blobs,
+           kept_holding_only_copy: kept.length,
+           kept: kept.slice(0, 20).map((r) => r.filename) };
 }
 
 // ---------------------------------------------------------------------------
@@ -6812,6 +7471,15 @@ export default {
       if (url.pathname === '/api/ingest/retry' && request.method === 'POST') {
         const reset = await retryFailedIngest(env);
         return withCors(json({ ok: true, ...reset, ...(await ingestQueueCounts(env)) }));
+      }
+      // Tidying the error list is separate from retrying it, and it refuses by default to
+      // delete a row that holds the only reference to a stored file. `force` is the second,
+      // explicit decision.
+      if (url.pathname === '/api/ingest/errors/clear' && request.method === 'POST') {
+        const b = await readJson(request);
+        return withCors(json({ ok: true,
+          ...(await clearIngestErrors(env, { force: b.force === true })),
+          ...(await ingestQueueCounts(env)) }));
       }
       if (url.pathname === '/api/receipts/parse' && request.method === 'POST') {
         return withCors(await handleReceiptParse(request, env));

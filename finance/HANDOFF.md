@@ -11,29 +11,51 @@ started in `~/Documents/GitHub/Adi`.
 > first, then `finance/README.md`, then `finance/src/index.js`. My memory file
 > `finance-hub-me.md` has hard-won gotchas — read them and don't relearn them.
 >
-> Last session (2026-08-04) shipped month envelopes, a ReAct tool-calling agent, API rate
-> limiting, upserts on re-extraction, and the kibbutz code-20 net rule. **All of it is
-> deployed but the ReAct loop has never run against the real Gemini key** — no dev session can
-> reach it. My bulk forward of ~3 years of payslips was still draining (~50 attachments) when
-> the session ended.
+> Last session (2026-08-08) shipped six upgrades: silent staging for incomplete months,
+> 429 backoff with a parked queue, multi-day night events, persistent chat bubbles, a
+> conditional clarification box, and `update_user_preferences` so the agent learns. All of it
+> is deployed and verified against the real Gemini key. See "Verified 2026-08-08" below.
 >
-> **Start here, in this order:**
+> **Start here:**
 >
-> 1. **Drain and observe.** Open היסטוריה → press **עבד את התור** until the backlog is zero,
->    then `GET /api/envelopes`. Envelopes should appear per month with roles filed. Any that
->    reach `needs_input` are the agent asking me a question — check the wording is sensible.
-> 2. **Verify the code-20 net end to end.** The ground truth: for **06/2026** the gross is
->    17,950 and the true net is **11,876** (the code-20 line in ניכויים שונים, dated 8/07/26).
->    If the envelope agent saves 11,876 with `net_source='masav'`, the feature works. If it
->    saves 12,046 that is "העברה לדף משפחתי" and it is still wrong. Read
->    `month_envelopes.transcript` to see what it reasoned — that column exists for this.
-> 3. **Check the ReAct loop actually calls tools.** In כספים ask "מתי הפגישה הבאה שלי?" — it
->    should call `query_calendar` and answer, not refuse. The response carries `tools_used`.
-> 4. **Then** whatever I ask for next.
+> 1. **Check the backlog finished.** היסטוריה → the badge should show no backlog and no
+>    "ממתינים למכסת AI". 47 payslips were requeued after the 429 storm; if any are still
+>    parked, the cron is working through them and there is nothing to press.
+> 2. **Look at the parked shelf** in כספים (ממתינים למסמכים). Those are months whose kibbutz
+>    report never arrived. They ask nothing on purpose. Forward the missing דוח פרטני for any
+>    month you care about and it will resolve itself.
+> 3. **Then** whatever I ask for next.
 >
 > Conventions I care about: never push to git (I push via GitHub Desktop), commit finished work
 > in the same turn, verify against real data rather than assuming a green result is correct,
 > and tell me plainly when something is broken or when you got a diagnosis wrong.
+
+## Verified 2026-08-08 — against the real model, with real documents
+
+Everything below was run through `gemini-flash-latest` with Adi's key, importing the actual
+prompts and tool declarations from `src/index.js` (a temporary copy with an `export` appended,
+so the test exercised production strings rather than a paraphrase of them). Scripts are in the
+session scratchpad; the method is worth repeating.
+
+| Check | Result |
+|---|---|
+| **code-20 net, 06/2026** | `save_financial_record` · net **11,876** · gross 17,950 · `net_source='masav'` · evidence "דוח פרטני 06-2026, טבלת ניכויים שונים, סמל 20" — **not** 12,046, **not** 17,780 |
+| **incomplete month does not nag** | employer slip alone → no question, `net_source='unavailable'`, gross recorded, **no guessed net** |
+| **ReAct calls tools** | "מתי הפגישה הבאה שלי?" in כספים → `query_calendar {days:30}` |
+| **the agent learns** | the Avastha correction → `update_user_preferences` scoped `calendar`, key `avastha_gig_two_events` |
+| **an ordinary question does not write a rule** | "מה יש לי ביומן השבוע?" → `query_calendar`, no preference written |
+| **night gig** | flyer "7 באוגוסט, עלייה לבמה 03:00" → **7 Aug 22:00 → 8 Aug 08:00**, stage_time 8 Aug 03:00, confidence 1.0 |
+
+Plus 64 offline unit tests (night spans incl. leap year and month boundaries, the all-day
+exclusive-end Graph rule, the calendar widget, multi-event splitting).
+
+**The one thing that broke, and why it is worth remembering:** with the Avastha rule loaded the
+model stopped returning an object and returned a **bare JSON array of two events**.
+`handleCalendarParse` read `ex.title` off the array, got `undefined` for every field, and staged
+a completely blank event with no error anywhere. A learned preference can change the SHAPE of a
+model's reply, not just its content — so `calendarEventList()` now normalises object /
+`additional_events` / bare-array into a list, and the prompt has a sanctioned way to say "two
+entries". Any prompt that preferences are injected into needs this treatment.
 
 ## Original prompt (kept for reference)
 
@@ -480,6 +502,120 @@ The UI's ✕ button sends `null` — an item with no warranty has to be expressi
 
 `/api/tasks/plan` and `/api/tasks/apply` are registered **before** the generic
 `/^\/api\/tasks(\/[\w-]+)?$/` matcher, which would otherwise read "plan" as a task id.
+
+## The six upgrades (2026-08-08)
+
+### 1. Staging is silent when the MONTH is incomplete
+
+The agent was raising "מהו סכום הנטו שנכנס לחשבון הבנק שלך?" once per month of a three-year
+backlog, for months holding a single document. **That question has no answer** — the figure is
+on a kibbutz report that has not arrived, and Adi cannot type a PDF. Asking it is not diligence,
+it is a chore generator.
+
+The rule now: **staging and asking are different things.**
+
+- `monthIsIncomplete(period)` — an envelope missing `has_employer` or `has_prati`. A period with
+  no envelope row at all counts as complete, so a hand-uploaded payslip is still reviewable.
+- `runEnvelopeAgent` computes `mayAsk` once and, when false, **removes
+  `ask_user_for_clarification` from the tool list entirely**. Telling a model not to ask is not
+  the same as not letting it — and once is enough to put the card back on screen.
+- The prompt for an incomplete month instructs `save_financial_record` with
+  `net_source:'unavailable'` and the readable gross. That is a real record, uncounted.
+- `income.review_quiet=1` marks it. `pending_confirmation` and the `v_monthly` exclusion are
+  **unchanged** — the money behaves exactly as before, only the question is withheld.
+- `incomeBreakdown` returns `pending` (waiting on Adi, raises a card) and `staged_quiet`
+  (waiting on paper, renders as a plain shelf: **ממתינים למסמכים**, no buttons).
+- `ask_user_for_clarification` also refuses at the tool boundary, because the answer endpoint
+  and the manual drain reach it by other routes.
+
+Three things this had to get right, all of which bit during implementation:
+
+- **`remaining` must still reach zero.** It counted every `pending` document, and a
+  deliberately-parked one is not backlog — the drain loop would have spun forever reporting
+  work outstanding. `ingestQueueCounts` now subtracts envelope-parked documents and reports
+  them as `parked_in_envelopes`.
+- **A parked envelope must not be re-reasoned every two minutes.** It goes back to `collecting`
+  with its `result_json` set; `claimEnvelope`'s patience branch only takes `result_json IS NULL`.
+  `fileIntoEnvelope` clears `result_json` and `attempts` when a document arrives — **new paper
+  is the only thing that makes a month worth thinking about again.**
+- **The second pass must not double-count.** A month first read with the employer slip
+  (primaryDocId = the slip) and later with the report (primaryDocId = the report) would keep both
+  rows, because `persistExtraction` only clears what the document it was given produced. So
+  `save_financial_record` deletes any income the OTHER documents in the same envelope produced
+  first. This is the ₪12,046 inflation one indirection along.
+
+### 2. 429s: backoff in the queue, not inside the request
+
+47 of 48 queue failures were `gemini_failed: … 429 | … 429 | … 429`. Two holes:
+
+- **`geminiCallJson` — the classifier every attachment goes through — never touched the D1 rate
+  limiter** and never retried. Only the ReAct loop was limited.
+- **Walking the model chain on a 429 is pointless.** The quota is on the KEY. All three names
+  failed within milliseconds, the item burned an attempt, and four of those made a payslip Adi
+  deliberately forwarded terminally `failed` with its bytes orphaned in R2.
+
+Now **every** Gemini call goes through `geminiPost()`: shared D1 limiter, then at most two
+attempts with a jittered ~1.5s/3s backoff. Deliberately short — an isolate that sleeps 30s to
+outlast a quota window is an isolate killed at the duration ceiling, which is the failure this
+queue exists to prevent.
+
+**The long wait is the queue's job.** A rate-limited item is parked with
+`not_before = now + 60·2^(attempts-1)` (capped 15 min) and **gets its attempt back**, and the
+pass `break`s — nothing else will fare better against the same quota. The `*/2` cron returns to
+it. `claimIngestItem` and the give-up sweep both respect `not_before`, so backoff cannot be
+undone at the moment it is working. `processPendingDocuments` leaves a throttled document
+`pending` instead of condemning it to `failed`.
+
+UI: **נקה שגיאות** beside the existing retry. It refuses by default to delete a row still
+holding the only copy of a file (`inbox/` bytes with no document or receipt), reports how many
+it kept, and only `force:true` removes those with their blobs. Retry is listed first on purpose —
+47 of the 48 dead rows were payslips, and a tidy-up button that eats them is the original bug
+with a friendlier label.
+
+### 3. Night events are a SPAN plus a stage time
+
+A flyer reading "7 באוגוסט, 03:00" was stored as one stamp at `08-08T03:00`: the right clock
+moment, the wrong day to turn up, and wrong in a month view.
+
+- `CALENDAR_PROMPT` explains midnight in the way Hebrew flyers actually write it ("מוצ״ש",
+  "בליל", "עד הבוקר") and adds `stage_time` + `crosses_midnight`. A clear night event is
+  **complete**, not ambiguous — it must not generate a question.
+- `normaliseNightSpan()` repairs three things in code, because the model gets them wrong often
+  enough: an end earlier in the clock than the start is the next day; a small-hours stage time
+  on an evening start's date belongs to the next morning; a lone small-hours start is an evening
+  that was flattened, so it is pulled back to 22:00 the day before and the original time becomes
+  the stage time. `SMALL_HOURS_UNTIL = 5` — late enough for a club night, early enough that a
+  05:00 flight is not dragged back a day. It is idempotent and runs at parse, chat, PUT and
+  confirm, so a hand-typed "23:00 → 08:00" is fixed too.
+- UI: `calWhenBlock()` renders `7 ↓ 8 Aug`, and the sub-line carries a coloured
+  **על הבמה 03:00**. All-day rows subtract Graph's exclusive end first, or every one-day
+  all-day event would read as a two-day span.
+
+### 4 & 5. The command line keeps its transcript; the ask box is conditional
+
+- Every `.chatbar` holds a `chatlog` of bubbles. The prompt goes up **before** the request, so
+  it is on screen for the whole wait; the input clears immediately. Held in a `WeakMap`, not the
+  DOM, because `rerender()` rebuilds this markup on the English toggle. `unicode-bidi:plaintext`
+  on the bubble — Hebrew mixed with a latin run reorders otherwise.
+- The calendar review card's `<form class="calask">` now renders **only when the agent actually
+  asked** — `asked_at` is stamped at parse/chat time when it produced questions or several date
+  options, and cleared on confirm. A **לתקן או לשאול** button reveals it on demand, so a
+  confidently-parsed event is still correctable.
+- Fixed in passing: `bar.querySelector('button')` matched the attachment chip's ✕, so the send
+  button was never actually disabled and a double-press sent twice.
+
+### 6. `update_user_preferences` — the agent learns
+
+`user_preferences(scope, pref_key, pref_value, source_text, active, hits)` with a UNIQUE
+`(scope, pref_key)`, so restating a rule **updates** it rather than stacking a contradictory
+second copy in the prompt. `preferenceBlock(scope)` loads that domain's rules plus `global` into
+**every** system prompt — the envelope agent, `runCommandLineAgent`, and `handleCalendarParse`
+(the flyer prompt, which is the only place a rule about reading flyers can take effect).
+
+The tool is `domain:'meta'` and offered to every context: "next time, do X" must stick wherever
+Adi happens to be. It defaults `scope` to the calling context, never `global` — a rule about
+flyers has no business reshaping payslips — and returns "continue and apply it now" rather than
+halting, so he is not asked twice.
 
 ## What's next
 
