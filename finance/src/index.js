@@ -402,6 +402,13 @@ const GEMINI_RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
 const GEMINI_ATTEMPTS_PER_MODEL = 2;
 // Jittered, so two isolates that hit the wall together do not come back together.
 const geminiBackoffMs = (n) => Math.round(1_500 * 2 ** n * (0.85 + Math.random() * 0.3));
+// The longest the limiter may make an invocation WAIT before its call. rateLimitDelay can ask
+// for up to 30s after a 429, and sleeping that before a 10-25s vision call puts the isolate
+// straight through the duration ceiling — the exact failure the ingest queue exists to prevent,
+// re-introduced from a new direction the moment every call started going through here.
+// Anything longer is refused as a rate-limit so the QUEUE parks the work and the cron returns.
+// 5s still absorbs the ordinary 1.5s pacing gap, which an interactive chat should just wait out.
+const GEMINI_MAX_INLINE_WAIT_MS = 5_000;
 
 /** True when this error means "come back later", not "this will never work". */
 const isRateLimited = (err) =>
@@ -420,7 +427,14 @@ async function geminiPost(env, model, body) {
   for (let attempt = 0; attempt < GEMINI_ATTEMPTS_PER_MODEL; attempt++) {
     // The shared D1 limiter, so the ceiling holds across isolates and cron ticks rather than
     // per-request. This is the line whose absence caused the storm.
-    await sleep(await rateLimitDelay(env));
+    const wait = await rateLimitDelay(env);
+    if (wait > GEMINI_MAX_INLINE_WAIT_MS) {
+      // Do not hold an invocation open for a window that has not opened yet. Reported as a
+      // rate limit so the caller parks the item — waiting is the queue's job, not the isolate's.
+      return { ok: false, status: 429, retryable: true, deferred: true,
+               detail: `limiter deferred: ${Math.round(wait / 1000)}s until the window reopens` };
+    }
+    await sleep(wait);
     let res;
     try {
       res = await fetch(url, {
@@ -3151,8 +3165,13 @@ async function handleReceipts(request, env, url) {
 // offered alongside its own, so a cross-domain question is a tool call rather than a refusal.
 
 const RATE_WINDOW_MS = 60_000;
-const RATE_MAX_CALLS = 12;          // per minute, well under Gemini's free-tier ceiling
-const RATE_MIN_GAP_MS = 1_500;      // never two calls back to back
+// Tuned from live evidence 2026-08-08, not from the published RPM figure. Draining the payslip
+// backlog earned 429s at roughly TWO calls per minute — far below any request-per-minute limit,
+// which points at the token-per-minute ceiling instead: a decrypted payslip PDF is a megabyte of
+// inline_data, so a handful of them is a large minute however few requests it is.
+// Spacing the calls is therefore what helps, not counting them, hence the much wider gap.
+const RATE_MAX_CALLS = 8;           // per minute
+const RATE_MIN_GAP_MS = 4_000;      // never two big vision calls close together
 
 /**
  * Token-bucket-ish limiter in D1, so it holds across isolates and cron ticks. Returns the
