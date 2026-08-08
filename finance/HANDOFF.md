@@ -544,7 +544,42 @@ Three things this had to get right, all of which bit during implementation:
   `save_financial_record` deletes any income the OTHER documents in the same envelope produced
   first. This is the ₪12,046 inflation one indirection along.
 
-### 2. 429s: backoff in the queue, not inside the request
+### 2. 429s — and what the limit actually is
+
+**Measure the quota, do not infer it from throughput.** I guessed twice and was wrong twice
+(first "per-key requests per minute", then "tokens per minute, because the PDFs are big").
+Asking the API settles it in one call — the 429 body names the quota:
+
+```bash
+curl -s "https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent" \
+  -H 'Content-Type: application/json' -H "X-goog-api-key: $KEY" \
+  -X POST -d '{"contents":[{"parts":[{"text":"ok"}]}]}' | jq '.error.details'
+```
+
+```
+GenerateRequestsPerDayPerProjectPerModel-FreeTier   limit = 20
+```
+
+**Twenty requests per day, per model.** Not per minute. Nothing to do with payload size — a
+20 KB and a 69 KB payslip both cost one request and both measured 539 prompt tokens. So:
+
+- **Per-minute pacing is hygiene here, never the constraint.** No gap or ceiling drains a
+  backlog against a daily cap. `RATE_MAX_CALLS` / `RATE_MIN_GAP_MS` exist only to avoid bursts.
+- **The fallback chain IS the budget.** Because the bucket is per model, a 429 means "this
+  model is spent today", not "the key is spent" — so a 429 must **walk to the next name**, and
+  `geminiPost` must NOT retry the same model (a spent daily bucket cannot refill in 3 seconds).
+  Four models × 20 = ~80 requests/day; a payslip costs two (classify + extract), so **~40
+  documents a day** on the free tier. Stopping the chain at the first 429 caps it at ~10.
+- A fully-exhausted item parks for up to an **hour**, not fifteen minutes — a daily allowance
+  resets on a daily boundary and 96 wake-ups to discover that is not a backoff.
+- `gemini-2.0-flash` reports a *different* quota, `GenerateContentInputTokensPerModelPerMinute`,
+  which genuinely is transient. Both shapes exist; read the `quotaId` rather than assuming.
+
+**Lifting this is a billing decision, not a code change.** Adi: enabling billing on the AI
+Studio project removes the 20/day cap. Until then the backlog drains at roughly 40 documents a
+day on its own, with nothing to press.
+
+### The backoff itself: in the queue, not inside the request
 
 47 of 48 queue failures were `gemini_failed: … 429 | … 429 | … 429`. Two holes:
 
