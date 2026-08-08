@@ -454,8 +454,13 @@ async function geminiPost(env, model, body) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     const retryable = GEMINI_RETRY_STATUS.has(res.status);
     last = { status: res.status, detail, retryable };
-    // Record the 429 in D1 so every OTHER isolate defers too, not just this one.
-    if (res.status === 429) await noteRateLimitHit(env, 'gemini', 45);
+    if (res.status === 429) {
+      // Do NOT retry the same model. The quota is per model PER DAY, so coming back to it three
+      // seconds later cannot succeed — it just burns the invocation. The caller's job is to move
+      // to the next model in the chain, which has its own daily bucket.
+      await noteRateLimitHit(env, 'gemini', 45);
+      return { ok: false, ...last, exhausted: true };
+    }
     if (!retryable) return { ok: false, ...last };
     if (attempt + 1 < GEMINI_ATTEMPTS_PER_MODEL) await sleep(geminiBackoffMs(attempt));
   }
@@ -477,10 +482,10 @@ async function geminiCall(env, model, { base64, mimeType }) {
   const out = await geminiPost(env, model, body);
   if (!out.ok) {
     const err = new Error(`gemini_${out.status}: ${out.detail}`);
-    // 404 = retired/unavailable model, so the next name in the chain is a real alternative.
-    // A 429 has already been retried and is a per-KEY quota, so trying another model is
-    // pointless — surface it and let the queue park the item instead of burning the chain.
-    err.retryNextModel = out.status === 404;
+    // Both 404 and 429 mean "try the next name". 404 = retired model. 429 = this model's DAILY
+    // free-tier allowance (20 requests) is spent — and that bucket is per model, so the next one
+    // in the chain is a genuinely fresh 20. Walking it is what turns 20 requests a day into 80.
+    err.retryNextModel = out.status === 404 || out.status === 429;
     err.rateLimited = out.status === 429;
     throw err;
   }
@@ -3045,16 +3050,14 @@ async function geminiCallJson(env, prompt, file) {
       continue;
     }
     tried.push(`${model}: ${out.status}`);
-    if (out.status === 429) {
-      // Per-KEY quota: the next model in the chain shares it, so trying it is a wasted call and
-      // another entry in an error message that already says 429 three times. Stop here and let
-      // the caller park the work.
-      rateLimited = true;
-      break;
-    }
+    // The daily free-tier allowance is per MODEL, so a 429 means "this bucket is spent today",
+    // not "the key is spent". Keep walking — the next name has its own 20.
+    if (out.status === 429) { rateLimited = true; continue; }
     if (out.status !== 404) break;
   }
   const err = new Error(`gemini_failed: ${tried.join(' | ')}`);
+  // Only a rate limit if EVERY model was exhausted; a mid-chain 429 that a later model
+  // satisfied never reaches here.
   err.rateLimited = rateLimited;
   throw err;
 }
@@ -3164,14 +3167,19 @@ async function handleReceipts(request, env, url) {
 // what lets the finance agent answer "when is my next meeting?" — the calendar tools are
 // offered alongside its own, so a cross-domain question is a tool call rather than a refusal.
 
+// WHAT THE LIMIT ACTUALLY IS (measured 2026-08-08, after two wrong guesses):
+//
+//     GenerateRequestsPerDayPerProjectPerModel-FreeTier   limit = 20
+//
+// Twenty requests **per day, per model** — not per minute, and nothing to do with tokens or
+// payload size. A 20 KB and a 69 KB payslip both cost exactly one request. So per-minute pacing
+// is NOT the binding constraint and cannot be tuned into one; these values only exist to avoid
+// pointless bursts. The real ceiling is the fallback chain: four models × 20 = ~80 requests a
+// day, and a payslip costs two (classify + extract), so roughly 40 documents a day on the free
+// tier. Lifting it is a billing decision, not a code change.
 const RATE_WINDOW_MS = 60_000;
-// Tuned from live evidence 2026-08-08, not from the published RPM figure. Draining the payslip
-// backlog earned 429s at roughly TWO calls per minute — far below any request-per-minute limit,
-// which points at the token-per-minute ceiling instead: a decrypted payslip PDF is a megabyte of
-// inline_data, so a handful of them is a large minute however few requests it is.
-// Spacing the calls is therefore what helps, not counting them, hence the much wider gap.
-const RATE_MAX_CALLS = 8;           // per minute
-const RATE_MIN_GAP_MS = 4_000;      // never two big vision calls close together
+const RATE_MAX_CALLS = 12;          // per minute — hygiene, not the real ceiling
+const RATE_MIN_GAP_MS = 1_500;      // never two calls back to back
 
 /**
  * Token-bucket-ish limiter in D1, so it holds across isolates and cron ticks. Returns the
@@ -3523,9 +3531,9 @@ async function geminiReactTurn(env, { system, contents, tools }) {
       return { model, call, text, raw: out.payload?.candidates?.[0] };
     }
     tried.push(`${model}: ${out.status}`);
-    // Same reasoning as geminiCallJson: the quota is on the key, so the chain cannot route
-    // around it. A mid-loop 429 leaves the envelope claimable and the cron resumes it.
-    if (out.status === 429) { rateLimited = true; break; }
+    // Same reasoning as geminiCallJson: the daily allowance is per model, so the chain CAN
+    // route around an exhausted one. Only a clean sweep of 429s leaves the envelope for the cron.
+    if (out.status === 429) { rateLimited = true; continue; }
     if (out.status !== 404) break;
   }
   const err = new Error(`gemini_react_failed: ${tried.join(' | ')}`);
@@ -6984,7 +6992,11 @@ async function drainIngestQueue(env, { maxItems = 3, budgetMs = DRAIN_BUDGET_MS 
         // the queue, which is exactly what happened to 47 of Adi's on 2026-08-05. The wait grows
         // with how many times this item has already been throttled, and the `*/2` cron is what
         // comes back for it, so no invocation ever sits here waiting.
-        const waitS = Math.min(60 * 2 ** Math.max(0, item.attempts - 1), 900);
+        //
+        // Capped at an HOUR, not fifteen minutes: reaching here means every model's DAILY
+        // allowance is spent, and that resets on a daily boundary. Retrying a per-day quota every
+        // fifteen minutes is 96 pointless wake-ups; hourly still picks the reset up promptly.
+        const waitS = Math.min(60 * 2 ** Math.max(0, item.attempts - 1), 3_600);
         await env.DB.prepare(
           `UPDATE ingest_queue
               SET status='queued', attempts=MAX(0, attempts-1), claimed_at=NULL,
