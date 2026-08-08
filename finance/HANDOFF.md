@@ -572,6 +572,12 @@ GenerateRequestsPerDayPerProjectPerModel-FreeTier   limit = 20
   documents a day** on the free tier. Stopping the chain at the first 429 caps it at ~10.
 - A fully-exhausted item parks for up to an **hour**, not fifteen minutes — a daily allowance
   resets on a daily boundary and 96 wake-ups to discover that is not a backoff.
+- **The throttle count has its own column (`ingest_queue.throttled`, migration 0020), and that
+  is load-bearing.** The park hands `attempts` back so a quota outage cannot trip the
+  four-strikes rule — so a wait computed as `60 * 2^(attempts-1)` was pinned at its 60-second
+  floor forever, and the drainer sat in a 2-minute retry loop for twenty minutes making four
+  rejected calls a cycle. Never derive a backoff from a counter you also reset. It was invisible
+  in review and obvious in one `SELECT attempts, throttled, not_before`.
 - `gemini-2.0-flash` reports a *different* quota, `GenerateContentInputTokensPerModelPerMinute`,
   which genuinely is transient. Both shapes exist; read the `quotaId` rather than assuming.
 
