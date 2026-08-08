@@ -6955,7 +6955,7 @@ async function drainIngestQueue(env, { maxItems = 3, budgetMs = DRAIN_BUDGET_MS 
       if (isEmlLike(item.filename, item.mime) || isMsgLike(item.filename, item.mime)) {
         const out = await fanOutContainer(env, item, buffer);
         await finishIngestItem(env, item.id, {
-          status: 'done', fanned_out: out.fanned_out, classified_as: 'container',
+          status: 'done', fanned_out: out.fanned_out, classified_as: 'container', throttled: 0,
           error: out.fanned_out ? null : `nothing ingestable: ${(out.saw || []).join(', ').slice(0, 300)}`,
         });
         done.push({ id: item.id, filename: item.filename, ok: true,
@@ -6966,6 +6966,9 @@ async function drainIngestQueue(env, { maxItems = 3, budgetMs = DRAIN_BUDGET_MS 
       const routed = await routeIngestItem(env, item, buffer);
       await finishIngestItem(env, item.id, {
         status: routed.skipped ? 'skipped' : 'done', classified_as: routed.classified_as,
+        // Cleared on success: the next time this row is throttled, the escalation starts fresh
+        // rather than inheriting an hour-long wait from a quota outage days ago.
+        throttled: 0,
         document_id: routed.document_id || null, receipt_id: routed.receipt_id || null,
         error: routed.skipped ? trimStr(routed.result?.why || routed.result?.skipped, 300)
           : (routed.result?.ok === false
@@ -6993,18 +6996,24 @@ async function drainIngestQueue(env, { maxItems = 3, budgetMs = DRAIN_BUDGET_MS 
         // with how many times this item has already been throttled, and the `*/2` cron is what
         // comes back for it, so no invocation ever sits here waiting.
         //
+        // The wait grows from `throttled`, NOT from `attempts`. They cannot be the same column:
+        // this branch deliberately hands the attempt back so a quota outage never trips the
+        // four-strikes rule, which pinned any attempts-derived backoff at its floor — the live
+        // queue sat in a 60-second retry loop for twenty minutes before that was spotted.
+        //
         // Capped at an HOUR, not fifteen minutes: reaching here means every model's DAILY
         // allowance is spent, and that resets on a daily boundary. Retrying a per-day quota every
         // fifteen minutes is 96 pointless wake-ups; hourly still picks the reset up promptly.
-        const waitS = Math.min(60 * 2 ** Math.max(0, item.attempts - 1), 3_600);
+        const waitS = Math.min(60 * 2 ** Math.min(item.throttled || 0, 6), 3_600);
         await env.DB.prepare(
           `UPDATE ingest_queue
-              SET status='queued', attempts=MAX(0, attempts-1), claimed_at=NULL,
-                  not_before=datetime('now', ?), error=?, updated_at=datetime('now')
+              SET status='queued', attempts=MAX(0, attempts-1), throttled=throttled+1,
+                  claimed_at=NULL, not_before=datetime('now', ?), error=?,
+                  updated_at=datetime('now')
             WHERE id=?`,
         ).bind(`+${waitS} seconds`, `rate_limited, retrying in ${waitS}s: ${detail}`, item.id).run();
         done.push({ id: item.id, filename: item.filename, ok: false, rate_limited: true,
-                    retry_in_s: waitS, error: detail });
+                    retry_in_s: waitS, throttled: (item.throttled || 0) + 1, error: detail });
         // Nothing else in this pass will fare better against the same quota — every remaining
         // item would just re-park itself and add a wasted round-trip.
         break;
@@ -7143,8 +7152,8 @@ async function handleIngestStatus(env, url) {
 /** Put failed work back in play: queue rows and documents that never got extracted. */
 async function retryFailedIngest(env) {
   const q = await env.DB.prepare(
-    `UPDATE ingest_queue SET status='queued', attempts=0, error=NULL, claimed_at=NULL,
-            not_before=NULL, updated_at=datetime('now')
+    `UPDATE ingest_queue SET status='queued', attempts=0, throttled=0, error=NULL,
+            claimed_at=NULL, not_before=NULL, updated_at=datetime('now')
       WHERE status='failed'`).run();
   const d = await env.DB.prepare(
     `UPDATE documents SET status='pending', error=NULL WHERE status='failed'`).run();
