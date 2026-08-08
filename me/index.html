@@ -244,16 +244,56 @@ html[lang=he] .rf label{letter-spacing:.02em}
   border-end-start-radius:3px}
 .calask{display:flex;gap:8px;margin-top:11px}
 .calask input{flex:1}
+/* The ask box is now the EXCEPTION, not the furniture: it renders only when the agent
+   actually asked something. `hidden` is not enough on a flex container — display:flex wins
+   over the UA's display:none — so it is neutralised explicitly. */
+.calask[hidden]{display:none}
+/* …with a way back in for a hand-written correction on an event nobody asked about. */
+.askopen{margin-top:9px}
 .evrow{display:grid;grid-template-columns:auto 1fr auto;gap:11px;align-items:center;
   padding:9px 4px;border-top:1px solid var(--line);border-radius:9px}
 .evrow:first-child{border-top:0}
 .evrow .when{font-family:var(--mono);font-size:.7rem;color:var(--muted);direction:ltr;
   text-align:center;line-height:1.35;min-width:52px}
 .evrow .when b{display:block;font-size:1.15rem;color:var(--text)}
+/* A night that crosses midnight is TWO dates. "7-8" in the day slot, with an arrow between
+   the stacked numerals, so the range is legible at a glance instead of reading as one day. */
+.evrow .when.span b{font-size:1.02rem;letter-spacing:-.02em}
+.evrow .when .to{display:block;font-size:.6rem;opacity:.65;line-height:.9;margin:1px 0}
 .evrow .ttl{font-size:.9rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .evrow .sub{font-size:.76rem;color:var(--muted);margin-top:2px;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
+/* The set time is the thing he cannot miss, so it is the one coloured token in the row. */
+.evrow .sub .stage{color:var(--c1);font-weight:600;font-family:var(--mono);font-size:.72rem;
+  direction:ltr;unicode-bidi:plaintext}
 .evrow a{color:var(--c1);text-decoration:none;font-size:.8rem}
+
+/* ---------- the prompt, kept on screen ----------
+   The command line used to behave like a terminal: you typed a question, hit enter, the input
+   emptied and only the answer remained. With nothing to read it against, an answer to a
+   half-remembered question is barely an answer. Every turn is now a persistent pair of
+   bubbles above whatever card it produced. */
+.chatlog{display:grid;gap:8px;margin-bottom:11px}
+.bub{font-size:.88rem;line-height:1.6;padding:8px 12px;border-radius:13px;max-width:88%;
+  white-space:pre-wrap;overflow-wrap:anywhere;
+  /* Hebrew mixed with a latin or symbol run reorders visually; taking the base direction
+     from each string's own first strong character is the only thing that reads correctly. */
+  unicode-bidi:plaintext}
+.bub.me{background:var(--track);justify-self:end;border-end-end-radius:3px}
+.bub.ai{background:var(--accent-wash);border:1px solid var(--line);justify-self:start;
+  border-end-start-radius:3px}
+.bub.err{background:transparent;border:1px dashed var(--warn);color:var(--warn);justify-self:start}
+.bub .att{display:block;font-family:var(--mono);font-size:.66rem;opacity:.7;margin-top:4px;direction:ltr}
+.bub.pend{opacity:.6}
+.chatlog .clr{justify-self:center;font-family:var(--mono);font-size:.63rem;color:var(--muted);
+  background:none;border:0;cursor:pointer;padding:2px 6px}
+.chatlog .clr:hover{color:var(--text)}
+
+/* Parked payslips: on file, in no total, and deliberately not asking anything. */
+.parked{display:flex;justify-content:space-between;gap:10px;align-items:baseline;
+  padding:7px 2px;border-top:1px solid var(--line);font-size:.83rem}
+.parked:first-child{border-top:0}
+.parked .amt{font-family:var(--mono);font-size:.76rem;color:var(--muted);direction:ltr}
 
 /* flex, not grid+place-items: with align-items:center the grid row is CONTENT-sized, so
    height:100% on a tall scan resolved to its natural height (751px in a 460px box) and
@@ -510,6 +550,16 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
           <h2><em data-i18n="finReview" style="font-style:normal">תלושים לאישור</em>
             <span class="badge warn" id="finReviewCount">0</span></h2>
           <div id="incomeReview"></div>
+        </section>
+        <!-- Payslips whose month is not complete yet. On file, excluded from every total, and
+             deliberately NOT asking anything: the missing piece is a kibbutz report, which no
+             answer of Adi's can supply. A plain list, not a card with buttons. -->
+        <section class="card" id="parkedCard" hidden>
+          <h2><em data-i18n="finParked" style="font-style:normal">ממתינים למסמכים</em>
+            <span class="badge" id="finParkedCount">0</span></h2>
+          <div id="parkedList"></div>
+          <div class="foot" style="margin-top:9px;font-size:.76rem;color:var(--muted)"
+               data-i18n="finParkedFoot">לא נספרים בהכנסות. אין מה לענות — חסר דוח קיבוץ.</div>
         </section>
         <section class="card">
           <h2 data-i18n="cashflow">תזרים חודשי</h2>
@@ -856,6 +906,10 @@ footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
         </div>
         <button class="btn sm" id="ingDrain" data-i18n="ingDrainBtn">עבד את התור</button>
         <button class="btn ghost sm" id="ingRetry" data-i18n="ingRetryBtn">נסה שוב את הכשלונות</button>
+        <!-- Retry sits BEFORE clear deliberately. 47 of the 48 dead items were payslips killed
+             by a transient 429, so the recovering action has to be the one nearest to hand;
+             clearing refuses by default to drop a row that holds the only copy of a file. -->
+        <button class="btn ghost sm" id="ingClearErr" data-i18n="ingClearErrBtn">נקה שגיאות</button>
         <!-- The reconcile endpoint existed with no way to press it, and unreconciled bank
              deposits are counted alongside the payslips that produced them. -->
         <button class="btn ghost sm" id="ingReconcile" data-i18n="ingReconcileBtn">התאם הפקדות</button>
@@ -1126,6 +1180,8 @@ const I18N = {
     calTileOpenFoot:'לפני הוספה ליומן', calTileNeedsFoot:'צריך תשובה בצ׳אט',
     calTileDoneFoot:'ב-Office 365',
     calTitle:'כותרת', calWhere:'מקום', calStart:'תחילה', calEnd:'סיום',
+    calStageTime:'עלייה לבמה', calStageAt:'על הבמה',
+    calAskAnyway:'לתקן או לשאול',
     calOrder:'מספר הזמנה', calOrganizer:'מארגן', calNotes:'הערות', calAllDay:'כל היום',
     calAdd2:'הוסף ליומן', calRejectBtn:'דחה', calOpenFile:'פתח את ההזמנה',
     calConfirmReject:'לדחות את האירוע? הוא לא ייכנס ליומן.',
@@ -1152,9 +1208,15 @@ const I18N = {
     calReadonly:'מצב שאלות — כדי להוסיף אירוע, הדבק הזמנה',
     // AI command line + staged payslips
     chatNoDocs:'הסוכן בלשונית הזו לא קורא מסמכים — נסה בכספים או ביומן.',
-    chatAttachTitle:'צרף מסמך או תמונה',
+    chatAttachTitle:'צרף מסמך או תמונה', chatClearLog:'נקה שיחה',
     finNeedsAnswer:'ממתין לתשובה שלך',
     finReview:'תלושים לאישור',
+    finParked:'ממתינים למסמכים', finParkedFoot:'לא נספרים בהכנסות. אין מה לענות — חסר דוח קיבוץ.',
+    finParkedGross:'ברוטו',
+    ingClearErrBtn:'נקה שגיאות', ingCleared:'נוקו',
+    ingClearErrConfirm:'למחוק את רשומות השגיאה מהתור? הקבצים עצמם נשמרים.',
+    ingKeptFiles:'נשמרו כי הם הקובץ היחיד — נסה שוב במקום למחוק',
+    ingRateLimited:'ממתינים למכסת AI',
     finQArith1:'קראתי תלוש ל-', finQArith2:'עם נטו', finQArith3:'אבל החשבון לא מסתדר: ברוטו',
     finQArith4:'פחות הניכויים לא מגיע לסכום הזה. יכול להיות שקראתי ברוטו או טור מצטבר. מה נכנס לבנק?',
     finQHigh1:'קראתי תלוש ל-', finQHigh2:'על', finQHigh3:'גבוה מהרגיל. חודש עם בונוס, או שקראתי ברוטו?',
@@ -1306,6 +1368,8 @@ const I18N = {
     calTileOpenFoot:'before reaching the calendar', calTileNeedsFoot:'needs a chat answer',
     calTileDoneFoot:'in Office 365',
     calTitle:'Title', calWhere:'Location', calStart:'Starts', calEnd:'Ends',
+    calStageTime:'Stage time', calStageAt:'on stage',
+    calAskAnyway:'Correct or ask',
     calOrder:'Order number', calOrganizer:'Organiser', calNotes:'Notes', calAllDay:'All day',
     calAdd2:'Add to calendar', calRejectBtn:'Discard', calOpenFile:'Open the invitation',
     calConfirmReject:'Discard this event? It will not reach the calendar.',
@@ -1333,9 +1397,15 @@ const I18N = {
     calReadonly:'Question mode — paste an invitation to add an event',
     // AI command line + staged payslips
     chatNoDocs:'This tab\u2019s agent does not read documents — try Finance or Calendar.',
-    chatAttachTitle:'Attach a document or image',
+    chatAttachTitle:'Attach a document or image', chatClearLog:'clear',
     finNeedsAnswer:'waiting on your answer',
     finReview:'Payslips to confirm',
+    finParked:'Waiting on paperwork', finParkedFoot:'Not counted as income. Nothing to answer — the kibbutz report has not arrived.',
+    finParkedGross:'gross',
+    ingClearErrBtn:'Clear errors', ingCleared:'cleared',
+    ingClearErrConfirm:'Remove the error entries from the queue? The files themselves are kept.',
+    ingKeptFiles:'kept — they hold the only copy; retry them instead of clearing',
+    ingRateLimited:'waiting on the AI quota',
     finQArith1:'I read a payslip for', finQArith2:'with a net of',
     finQArith3:'but the arithmetic does not close: gross',
     finQArith4:'minus the deductions does not reach it. I may have taken a gross or a cumulative column. What landed in the bank?',
@@ -1583,6 +1653,7 @@ function renderKpis(s) {
 // than trusted or hidden. The figures elsewhere on this tab already exclude it, so nothing
 // moves until he answers — here, or by replying in the finance command line.
 function renderIncomeReview() {
+  renderParked();
   const pending = (lastSummary?.income?.pending) || [];
   const card = $('#incomeReviewCard');
   if (card) card.hidden = !pending.length;
@@ -1633,6 +1704,25 @@ function renderIncomeReview() {
     </div>`;
   }).join('');
   loadDocPreviews();
+}
+
+/**
+ * The shelf. Deliberately unlike the review card above it: no question, no input, no buttons.
+ * Its whole job is to prove these payslips were not lost — the previous behaviour raised one
+ * unanswerable "what reached the bank?" card per month of a three-year backlog.
+ */
+function renderParked() {
+  const parked = (lastSummary?.income?.staged_quiet) || [];
+  const card = $('#parkedCard');
+  if (card) card.hidden = !parked.length;
+  const count = $('#finParkedCount');
+  if (count) count.textContent = parked.length;
+  const list = $('#parkedList');
+  if (!list) return;
+  list.innerHTML = parked.map((p) => `<div class="parked">
+    <span>${esc(p.period)}${p.who ? ` · ${esc(p.who)}` : ''}</span>
+    <span class="amt">${esc(t('finParkedGross'))} ${esc(ils(p.gross))}</span>
+  </div>`).join('');
 }
 
 /**
@@ -2375,11 +2465,64 @@ function chatClear(bar) {
   if (fi) fi.value = '';
 }
 
+// ---- the transcript -------------------------------------------------------
+//
+// The command line used to be a terminal: type, enter, the text vanishes and a bare answer
+// replaces it. Losing the question is what makes the answer hard to read — "12,046" means
+// nothing without "how much came in in June?" above it. Every bar now keeps its turns.
+//
+// Held in memory per bar rather than written into the DOM as the source of truth, because
+// rerender() rebuilds this markup on the English toggle and anything living only in innerHTML
+// would be wiped by it.
+const barLog = new WeakMap();
+const CHAT_LOG_MAX = 40;
+
+function chatLogRender(bar) {
+  const log = bar.querySelector('.chatlog');
+  const turns = barLog.get(bar) || [];
+  if (!log) return;
+  log.hidden = !turns.length;
+  log.innerHTML = turns.map((m) => {
+    const cls = m.role === 'me' ? 'me' : m.error ? 'ai err' : 'ai';
+    return `<div class="bub ${cls}${m.pending ? ' pend' : ''}">${
+      m.role === 'me' ? esc(m.text) : md(m.text)}${
+      m.attachment ? `<span class="att">📎 ${esc(m.attachment)}</span>` : ''}</div>`;
+  }).join('') + `<button class="clr" type="button" data-logclear>${esc(t('chatClearLog'))}</button>`;
+  // Newest turn in view without dragging the whole page around it.
+  log.lastElementChild?.previousElementSibling?.scrollIntoView?.(
+    { block: 'nearest', behavior: 'smooth' });
+}
+
+function chatSay(bar, role, text, extra = {}) {
+  const turns = barLog.get(bar) || [];
+  turns.push({ role, text: String(text ?? ''), ...extra });
+  // A long session must not grow without bound; the pair structure means trimming in twos.
+  barLog.set(bar, turns.slice(-CHAT_LOG_MAX));
+  chatLogRender(bar);
+  return turns[turns.length - 1];
+}
+
+/** Replace the placeholder bubble that was showing a spinner. */
+function chatResolve(bar, bubble, text, extra = {}) {
+  Object.assign(bubble, { text: String(text ?? ''), pending: false, ...extra });
+  chatLogRender(bar);
+}
+
 function chatBarInit(bar) {
   const scope = bar.dataset.chat;
   const form = bar.querySelector('form');
   const input = form.querySelector('input[type=text]');
   const submit = form.querySelector('button[type=submit]');
+
+  const log = document.createElement('div');
+  log.className = 'chatlog';
+  log.hidden = true;
+  bar.insertBefore(log, bar.firstChild);
+  log.addEventListener('click', (e) => {
+    if (!e.target.closest('[data-logclear]')) return;
+    barLog.set(bar, []);
+    chatLogRender(bar);
+  });
 
   const chip = document.createElement('div');
   chip.className = 'chatchip';
@@ -2430,13 +2573,27 @@ for (const bar of $$('.chatbar')) {
   chatBarInit(bar);
   bar.querySelector('form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const input = bar.querySelector('input');
+    const form = bar.querySelector('form');
+    const input = form.querySelector('input[type=text]');
     const q = input.value.trim();
     if (!q && !barFile.get(bar)) return;
     const ans = bar.querySelector('.chatans'), meta = bar.querySelector('.chatmeta');
-    const btn = bar.querySelector('button');
-    ans.hidden = false; ans.innerHTML = '<span class="spin"></span>';
-    meta.hidden = true; btn.disabled = true;
+    // Explicitly the SUBMIT button. `bar.querySelector('button')` matched whichever button
+    // came first in the bar — the attachment chip's ✕ — so the send button was never actually
+    // disabled and a double-press sent the same prompt twice.
+    const btn = form.querySelector('button[type=submit]');
+
+    // The prompt goes up as a bubble BEFORE the request, so it is on screen for the whole wait
+    // rather than appearing once an answer exists. The input clears immediately, which is what
+    // makes typing the next thing feel normal — nothing is lost, it just moved up.
+    const attachedNow = barFile.get(bar);
+    chatSay(bar, 'me', q || (lang === 'he' ? '(מסמך)' : '(document)'),
+            attachedNow ? { attachment: attachedNow.name || 'clipboard' } : {});
+    const reply = chatSay(bar, 'ai', '…', { pending: true });
+    input.value = '';
+    ans.hidden = true;
+    meta.hidden = true;
+    if (btn) btn.disabled = true;
     try {
       // One request shape for every domain: multipart when something is attached, JSON
       // otherwise, and `context` on both so the backend picks the right domain agent.
@@ -2454,18 +2611,21 @@ for (const bar of $$('.chatbar')) {
         return apiJson(path, { method: 'POST', body: fd });
       };
 
+      // Every branch answers into the SAME bubble that has been showing the spinner, so the
+      // question and its answer stay adjacent whatever the domain did behind the scenes.
+      const settle = (d, tail = '') => chatResolve(bar, reply,
+        (d.answer || '') + tail,
+        { error: !d.answer && !tail });
+      const failed = (d) => `_${d.detail || d.error || '—'}_`;
+
       if (scope === 'calendar') {
         const d = await send('/api/chat/calendar');
         chatClear(bar);
-        ans.innerHTML = d.answer ? md(d.answer)
-          : `<span class="empty">${esc(d.detail || d.error || '—')}</span>`;
-        if ((d.options || []).length > 1) {
-          ans.innerHTML += `<div class="cw" style="margin-top:8px">${esc(t('calWhichOption'))} ${
-            d.options.map((o) => esc(o.label || '')).filter(Boolean).join(' · ')}</div>`;
-        }
+        settle(d, !d.answer ? failed(d)
+          : ((d.options || []).length > 1
+            ? `\n\n${t('calWhichOption')} ${d.options.map((o) => o.label || '')
+                .filter(Boolean).join(' · ')}` : ''));
         if (d.readonly) { meta.hidden = false; meta.textContent = t('calReadonly'); }
-        input.value = '';
-        btn.disabled = false;
         // The review card holds the fields and the confirm button, so refresh it and take him
         // there — the answer above is a prompt to act, not the end of the flow.
         await loadCalendar().catch(() => {});
@@ -2478,18 +2638,18 @@ for (const bar of $$('.chatbar')) {
       if (scope === 'finance') {
         const d = await send('/api/chat/finance');
         chatClear(bar);
-        ans.innerHTML = d.answer ? md(d.answer)
-          : `<span class="empty">${esc(d.detail || d.error || '—')}</span>`;
+        settle(d, d.answer ? '' : failed(d));
         if (d.needs_answer) {
           meta.hidden = false;
           meta.textContent = t('finNeedsAnswer');
         } else if (d.routed) {
           meta.hidden = false;
           meta.textContent = `→ ${d.routed}${d.model ? ' · ' + String(d.model).replace('@cf/', '') : ''}` +
-            ` · ${d.est_tokens} tok`;
+            (d.est_tokens ? ` · ${d.est_tokens} tok` : '') +
+            // Naming the tools is what makes "it called query_calendar" checkable rather than
+            // something to be taken on trust.
+            ((d.tools_used || []).length ? ` · ${d.tools_used.join(' → ')}` : '');
         }
-        input.value = '';
-        btn.disabled = false;
         // An ingest or a resolved payslip both move the numbers, so pull them fresh.
         if (d.ingested || d.resolved) {
           await loadFinance().catch(() => {});
@@ -2505,29 +2665,26 @@ for (const bar of $$('.chatbar')) {
         chatClear(bar);
         pendingPlan = d.actions?.length ? d.actions : null;
         const lines = (d.actions || []).map((a) =>
-          `• ${a.op} — ${esc(a.display_name || a.value || '')}`).join('<br>');
-        ans.innerHTML = `${esc(d.answer || t('planNone'))}` +
-          (lines ? `<div class="cw" style="margin-top:8px">${lines}</div>` : '') +
-          ((d.unmatched || []).length ? `<div class="cw" style="margin-top:6px;color:var(--warn)">? ${
-            d.unmatched.map(esc).join(', ')}</div>` : '');
+          `• ${a.op} — ${a.display_name || a.value || ''}`).join('\n');
+        settle({ answer: d.answer || t('planNone') },
+          (lines ? `\n\n${lines}` : '') +
+          ((d.unmatched || []).length ? `\n\n? ${d.unmatched.join(', ')}` : ''));
         $('#planBox').hidden = !pendingPlan;
-        input.value = '';
-        btn.disabled = false;
         return;
       }
 
       const d = await send(`/api/chat/${scope}`);
       chatClear(bar);
-      ans.innerHTML = d.answer ? md(d.answer) : `<span class="empty">${esc(d.detail || d.error || '—')}</span>`;
+      settle(d, d.answer ? '' : failed(d));
       if (d.routed) {
         meta.hidden = false;
         meta.textContent = `→ ${d.routed}${d.model ? ' · ' + String(d.model).replace('@cf/', '') : ''}` +
-          ` · ${d.est_tokens} tok${d.filtered ? ' · subset' : ''}`;
+          ` · ${d.est_tokens} tok${d.filtered ? ' · subset' : ''}` +
+          ((d.tools_used || []).length ? ` · ${d.tools_used.join(' → ')}` : '');
       }
-      input.value = '';
     } catch (err) {
-      ans.innerHTML = `<span class="empty">${t('chatFail')}: ${esc(err.message)}</span>`;
-    } finally { btn.disabled = false; }
+      chatResolve(bar, reply, `${t('chatFail')}: ${err.message}`, { error: true });
+    } finally { if (btn) btn.disabled = false; }
   });
 }
 
@@ -2979,6 +3136,40 @@ function calWhen(local, allDay) {
            time: allDay ? t('calAllDayShort') : (time || '').slice(0, 5) };
 }
 
+/**
+ * The date block for one row. A night that runs past midnight is TWO dates and has to look
+ * like two: "7 ↓ 8 Aug", not a bare "8" that puts Adi at the venue a day late.
+ *
+ * Same-month spans print the month once. Different months print both, because "31 ↓ 1" with a
+ * single month label is worse than no label.
+ */
+function calWhenBlock(startLocal, endLocal, allDay) {
+  const a = calWhen(startLocal, allDay);
+  const b = endLocal ? calWhen(endLocal, allDay) : null;
+  // An all-day event's stored end is EXCLUSIVE (Graph's rule), so the last day Adi is actually
+  // busy is the day before — otherwise every one-day all-day event would render as a 2-day span.
+  const endDay = allDay && endLocal
+    ? calWhen(`${new Date(Date.parse(`${String(endLocal).slice(0, 10)}T00:00:00Z`) - 86400000)
+        .toISOString().slice(0, 10)}T00:00`, allDay)
+    : b;
+  const spans = endDay && (endDay.day !== a.day || endDay.mon !== a.mon);
+  if (!spans) {
+    return `<div class="when"><b>${esc(a.day)}</b>${esc(a.mon)}<br>${esc(a.time)}</div>`;
+  }
+  return `<div class="when span"><b>${esc(a.day)}</b><span class="to">↓</span>` +
+         `<b>${esc(endDay.day)}</b>${esc(a.mon === endDay.mon ? a.mon : `${a.mon}–${endDay.mon}`)}` +
+         `<br>${esc(a.time)}</div>`;
+}
+
+/** "Tel Aviv · on stage 03:00" — the set time is the thing he must not miss. */
+function calSub(parts, stageLocal) {
+  const line = parts.filter(Boolean).map(esc).join(' · ');
+  if (!stageLocal) return line;
+  const hhmm = String(stageLocal).split('T')[1]?.slice(0, 5) || '';
+  const tag = `<span class="stage">${esc(t('calStageAt'))} ${esc(hhmm)}</span>`;
+  return line ? `${line} · ${tag}` : tag;
+}
+
 function calFields(e) {
   return `<div class="rf">
     <div class="wide"><label>${esc(t('calTitle'))}</label>
@@ -2989,6 +3180,11 @@ function calFields(e) {
       <input type="datetime-local" data-f="starts_at" value="${esc(e.starts_at || '')}"></div>
     <div><label>${esc(t('calEnd'))}</label>
       <input type="datetime-local" data-f="ends_at" value="${esc(e.ends_at || '')}"></div>
+    <!-- Separate from the start on purpose: for a gig the span is when he is out and this is
+         the moment he goes on. Collapsing them is what produced a single 03:00 stamp on the
+         wrong day. -->
+    <div><label>${esc(t('calStageTime'))}</label>
+      <input type="datetime-local" data-f="stage_time" value="${esc(e.stage_time || '')}"></div>
     <div><label>${esc(t('calOrder'))}</label>
       <input type="text" data-f="order_number" maxlength="120" value="${esc(e.order_number || '')}"></div>
     <div><label>${esc(t('calOrganizer'))}</label>
@@ -3007,7 +3203,7 @@ function readCalFields(box) {
     title: v('title').trim(), location: v('location').trim(),
     description: v('description').trim(), order_number: v('order_number').trim(),
     organizer: v('organizer').trim(),
-    starts_at: v('starts_at'), ends_at: v('ends_at'),
+    starts_at: v('starts_at'), ends_at: v('ends_at'), stage_time: v('stage_time'),
     all_day: !!box.querySelector('[data-f="all_day"]')?.checked,
   };
 }
@@ -3015,7 +3211,16 @@ function readCalFields(box) {
 function calQuestion(e) {
   const title = e.title ? `<b>${esc(e.title)}</b>` : esc(t('calNoDate'));
   const where = e.location ? ` ${esc(t('calAt'))}<b>${esc(e.location)}</b>` : '';
-  return `${esc(t('calAskedFor'))} ${title}${where} ${esc(t('calToAdd'))}`;
+  // Spell the span out in the question itself. "7–8 באוג׳" is the fact that was being lost,
+  // and it is the one worth reading before pressing "add to calendar".
+  const a = e.starts_at ? calWhen(e.starts_at, e.all_day) : null;
+  const b = e.ends_at ? calWhen(e.ends_at, e.all_day) : null;
+  const span = a && b && (a.day !== b.day || a.mon !== b.mon)
+    ? ` <b class="badge">${esc(`${a.day}${a.mon === b.mon ? '' : ' ' + a.mon}–${b.day} ${b.mon}`)}</b>` : '';
+  const stage = e.stage_time
+    ? ` <b class="badge">${esc(t('calStageAt'))} ${esc(String(e.stage_time).split('T')[1]?.slice(0, 5) || '')}</b>`
+    : '';
+  return `${esc(t('calAskedFor'))} ${title}${where}${span}${stage} ${esc(t('calToAdd'))}`;
 }
 
 function renderCalReview() {
@@ -3027,6 +3232,10 @@ function renderCalReview() {
     const qs = e.questions_json ? JSON.parse(e.questions_json) : [];
     const turns = e.chat_json ? JSON.parse(e.chat_json) : [];
     const needs = e.status === 'incomplete';
+    // Did the agent ASK? `asked_at` is set at parse/chat time exactly when it produced a
+    // question or several date options, and cleared when the matter is settled. A conversation
+    // already in progress counts too — the box must not vanish mid-exchange.
+    const asked = !!e.asked_at || qs.length > 0 || opts.length > 1 || turns.length > 0;
     return `
     <div class="cev${needs ? ' needs' : ''}" data-id="${esc(e.id)}">
       <div class="cq">${calQuestion(e)}</div>
@@ -3046,10 +3255,17 @@ function renderCalReview() {
           /pdf/i.test(e.mime || '') ? '📄' : '🖼'}</div>
         <div>${calFields(e)}</div>
       </div>
-      <form class="calask" data-ask="${esc(e.id)}">
+      <!-- The reply box appears ONLY where the agent actually asked something. It used to be
+           permanent furniture: an "Answer here..." input sitting under a 95%-confidence event
+           nobody had a question about, which reads as an unfinished task on every card.
+           asked_at is a stored fact from the parse, not re-derived guesswork.
+           (No backticks in here - this comment lives inside a template literal.) -->
+      <form class="calask" data-ask="${esc(e.id)}"${asked ? '' : ' hidden'}>
         <input type="text" data-i18n-ph="calAskPh" placeholder="${esc(t('calAskPh'))}">
         <button class="btn ghost sm" type="submit">${esc(t('calSend'))}</button>
       </form>
+      ${asked ? '' : `<button class="btn ghost sm askopen" type="button" data-askopen
+        >${esc(t('calAskAnyway'))}</button>`}
       <div class="noteActions">
         <!-- Always rendered, disabled while no start date exists. Hiding it outright trapped
              a hand-edited event: Adi could type the date himself, but the only way to clear
@@ -3104,12 +3320,11 @@ function renderCalTotals() {
 function renderCalDone() {
   $('#calDoneCount').textContent = calDone.length;
   $('#calList').innerHTML = calDone.length ? calDone.map((e) => {
-    const w = calWhen(e.starts_at, e.all_day);
     return `<div class="evrow" data-ev="${esc(e.id)}">
-      <div class="when"><b>${esc(w.day)}</b>${esc(w.mon)}<br>${esc(w.time)}</div>
+      ${calWhenBlock(e.starts_at, e.ends_at, e.all_day)}
       <div style="min-width:0">
         <div class="ttl">${esc(e.title || '')}</div>
-        <div class="sub">${esc([e.location, e.order_number].filter(Boolean).join(' · '))}</div>
+        <div class="sub">${calSub([e.location, e.order_number], e.stage_time)}</div>
       </div>
       <div style="display:flex;gap:6px;align-items:center">
         ${e.web_link ? `<a href="${esc(e.web_link)}" target="_blank" rel="noopener">Outlook ↗</a>` : ''}
@@ -3129,13 +3344,12 @@ function renderCalUpcoming() {
   }
   const evs = calUpcoming.events || [];
   box.innerHTML = evs.length ? evs.map((e) => {
-    const w = calWhen((e.start || '').slice(0, 16), e.all_day);
     return `<div class="evrow">
-      <div class="when"><b>${esc(w.day)}</b>${esc(w.mon)}<br>${esc(w.time)}</div>
+      ${calWhenBlock((e.start || '').slice(0, 16), (e.end || '').slice(0, 16), e.all_day)}
       <div style="min-width:0">
         <div class="ttl">${esc(e.subject || '')}</div>
-        <div class="sub">${esc([e.location, e.organizer,
-          e.recurring ? t('calRecurring') : ''].filter(Boolean).join(' · '))}</div>
+        <div class="sub">${calSub([e.location, e.organizer,
+          e.recurring ? t('calRecurring') : ''], null)}</div>
       </div>
       ${e.web_link ? `<a href="${esc(e.web_link)}" target="_blank" rel="noopener">↗</a>` : '<span></span>'}
     </div>`;
@@ -3174,6 +3388,16 @@ $('#calReview').addEventListener('click', async (e) => {
     const ev = calEvents.find((x) => x.id === box.dataset.id);
     const opt = JSON.parse(ev.options_json || '[]')[Number(chip.dataset.opt)];
     await calChat(box.dataset.id, opt?.label || chip.textContent.trim());
+    return;
+  }
+
+  // No question was asked, but he wants to correct something anyway. Reveal the box rather
+  // than leaving the chat unreachable on a confidently-parsed event.
+  const open = e.target.closest('[data-askopen]');
+  if (open) {
+    const form = open.closest('.cev')?.querySelector('.calask');
+    if (form) { form.hidden = false; form.querySelector('input')?.focus(); }
+    open.remove();
     return;
   }
 
@@ -3397,12 +3621,17 @@ function renderIngest() {
 
   const q = ingest.counts || {};
   const outstanding = ingest.remaining || 0;
+  const throttled = ingest.rate_limited || 0;
   const badge = $('#ingBacklog');
-  badge.hidden = !outstanding && !q.failed;
-  badge.className = 'badge' + (outstanding ? ' warn' : q.failed ? ' warn' : '');
-  badge.textContent = outstanding
-    ? `${outstanding} ${t('ingWaiting')}`
-    : (q.failed ? `${q.failed} ${t('ingFailedShort')}` : '');
+  badge.hidden = !outstanding && !q.failed && !throttled;
+  badge.className = 'badge' + (outstanding || q.failed || throttled ? ' warn' : '');
+  // "Waiting on the AI quota" is a different fact from "outstanding" and from "failed": it
+  // means the cron will get to it on its own and there is nothing to press.
+  badge.textContent = [
+    outstanding ? `${outstanding} ${t('ingWaiting')}` : '',
+    throttled ? `${throttled} ${t('ingRateLimited')}` : '',
+    q.failed ? `${q.failed} ${t('ingFailedShort')}` : '',
+  ].filter(Boolean).join(' · ');
 
   // Anything not finished, so a backlog is impossible to miss.
   const live = (ingest.queue_items || []).filter((x) =>
@@ -3524,6 +3753,25 @@ $('#ingRetry').addEventListener('click', async () => {
   try {
     const d = await postJson('/api/ingest/retry', {});
     showToast(`${t('ingRequeued')}: ${d.requeued_items + d.reset_documents}`);
+    await loadIngest();
+  } catch (err) { showToast('✕ ' + err.message); }
+  finally { btn.disabled = false; }
+});
+
+// Tidy the dead entries out of the queue. The endpoint decides what is safe to remove — a row
+// still holding the only copy of a forwarded file is reported back rather than deleted, and the
+// count of those is shown so the answer ("retry them") is visible instead of implied.
+$('#ingClearErr').addEventListener('click', async () => {
+  if (!confirm(t('ingClearErrConfirm'))) return;
+  const btn = $('#ingClearErr');
+  btn.disabled = true;
+  try {
+    const d = await postJson('/api/ingest/errors/clear', {});
+    showToast(`${t('ingCleared')}: ${d.cleared}`);
+    const prog = $('#ingProgress');
+    prog.hidden = false;
+    prog.textContent = `${t('ingCleared')} ${d.cleared}` +
+      (d.kept_holding_only_copy ? ` · ${d.kept_holding_only_copy} ${t('ingKeptFiles')}` : '');
     await loadIngest();
   } catch (err) { showToast('✕ ' + err.message); }
   finally { btn.disabled = false; }
@@ -4107,6 +4355,9 @@ function rerender() {
   renderReceiptTotals(); renderReceipts(); renderReview();
   renderIngest();
   renderCalTotals(); renderCalReview(); renderCalDone(); renderCalUpcoming(); renderMs();
+  // The transcript is held in barLog, not in the DOM, precisely so switching language does not
+  // wipe the conversation — only the "clear" label under it needs re-rendering.
+  for (const bar of $$('.chatbar')) chatLogRender(bar);
   if (!$('#viewHistory').hidden) loadHistory();
 }
 function enterApp() {
