@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "Adi Studio OS",
+  "Version": "2.0.0.0",
+  "Author": "Adi Ariel",
+  "UUID": "com.adiariel.studioos",
+  "URL": "https://adiariel.com",
+  "Description": "Studio OS hub for the Stream Deck + XL. One navigable surface over all 36 keys and 6 dials: Ableton Live control, rekordbox MIDI, numpad/calculator/delay calculator, drum pads and scale touch, and live audio visualizers. Talks to a local Node service for native MIDI and OS routing.",
+  "Category": "Adi Studio OS",
+  "CategoryIcon": "imgs/plugin/category",
+  "Icon": "imgs/plugin/marketplace",
+  "CodePath": "app.html",
+  "PropertyInspectorPath": "pi/inspector.html",
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "7.3" },
+  "OS": [
+    { "Platform": "mac", "MinimumVersion": "13" },
+    { "Platform": "windows", "MinimumVersion": "10" }
+  ],
+  "Profiles": [
+    {
+      "Name": "StudioOS",
+      "DeviceType": 13,
+      "Readonly": false,
+      "DontAutoSwitchWhenInstalled": true,
+      "AutoInstall": false
+    }
+  ],
+  "Actions": [
+    {
+      "Name": "Studio OS Cell",
+      "UUID": "com.adiariel.studioos.cell",
+      "Icon": "imgs/actions/cell/icon",
+      "Tooltip": "One key of the Studio OS surface. Place it on all 36 keys once — it reads its own coordinates and the plugin drives everything centrally. Nothing to configure per key.",
+      "Controllers": ["Keypad"],
+      "UserTitleEnabled": false,
+      "DisableAutomaticStates": true,
+      "States": [{ "Image": "imgs/actions/cell/key", "TitleAlignment": "middle" }]
+    },
+    {
+      "Name": "Studio OS Dial",
+      "UUID": "com.adiariel.studioos.dial",
+      "Icon": "imgs/actions/dial/icon",
+      "Tooltip": "One dial of the Studio OS surface. Place it on all 6 dials once — role and touch-strip zone follow the active hub and state.",
+      "Controllers": ["Encoder"],
+      "Encoder": {
+        "layout": "layouts/dial.json",
+        "Icon": "imgs/actions/dial/icon",
+        "StackColor": "#0c0f12",
+        "TriggerDescription": {
+          "Rotate": "Context parameter",
+          "Push": "Context action",
+          "Touch": "Context zone",
+          "LongTouch": "Context alternate"
+        }
+      },
+      "States": [{ "Image": "imgs/actions/dial/icon" }]
+    }
+  ]
+}

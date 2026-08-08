@@ -1,0 +1,14 @@
+# Root node_modules only — service/vendor/node_modules IS committed (prebuilt
+# MIDI natives, so end users never compile). The repo root .gitignore excludes
+# every directory named node_modules at any depth, and git cannot re-include a
+# file whose parent directory is excluded — so the DIRECTORY has to be
+# un-ignored first, then its contents.
+/node_modules/
+!service/vendor/node_modules/
+!service/vendor/node_modules/**
+
+*.streamDeckPlugin
+*.log
+/logs/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,14 @@
+{
+  "name": "studioos-service",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Native backend for the Adi Studio OS Stream Deck plugin: virtual MIDI, OS keystroke/volume/zoom/app routing, smart-home. Runs on the Stream Deck app's bundled Node 20.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "smoke": "node ../scripts/test_service.mjs"
+  },
+  "dependencies": {},
+  "comment": "No npm dependencies by design. The WebSocket server is hand-rolled (service/ws-server.js) and the MIDI natives are committed prebuilds in service/vendor/, so installing never compiles or downloads anything."
+}

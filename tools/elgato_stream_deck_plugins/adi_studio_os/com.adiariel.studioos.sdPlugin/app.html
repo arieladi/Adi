@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' 'unsafe-inline' blob: data:; connect-src ws: wss: 'self'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:;" />
+  <title>Adi Studio OS — plugin host</title>
+  <style>
+    html,body{margin:0;background:#0c0f12;color:#6b7682;font:11px/1.5 ui-monospace,Menlo,monospace}
+    .h{padding:12px}
+    b{color:#e8edf2}
+  </style>
+</head>
+<body>
+  <div class="h">
+    <b>Adi Studio OS</b> — Stream Deck plugin host (offscreen).<br />
+    Surface: 36 keys + 6 dials · Stream Deck + XL.<br />
+    Backend service: <code>ws://127.0.0.1:9010</code> · Ableton bridge: <code>ws://127.0.0.1:9006</code>
+  </div>
+
+  <!-- Load order matters: each file augments window.SOS and reads the ones above it. -->
+
+  <!-- core: no dependencies on modules -->
+  <script src="js/core/sd-client.js"></script>
+  <script src="js/core/surface.js"></script>
+  <script src="js/core/render.js"></script>
+  <script src="js/core/ipc.js"></script>
+  <script src="js/core/input.js"></script>
+  <script src="js/core/nav.js"></script>
+  <script src="js/core/states.js"></script>
+
+  <!-- modules: each registers screens/overlays, none touch the global rules -->
+  <script src="js/modules/root.js"></script>
+  <script src="js/modules/console.js"></script>
+  <!-- ableton / rekordbox / midictl / viz load here as they are ported -->
+  <script src="js/modules/index.js"></script>
+
+  <!-- orchestrator last: defines connectElgatoStreamDeckSocket -->
+  <script src="js/plugin.js"></script>
+</body>
+</html>

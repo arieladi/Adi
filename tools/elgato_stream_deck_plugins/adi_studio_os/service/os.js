@@ -1,0 +1,223 @@
+// OS routing: keystrokes, hotkeys, volume, zoom, app switching, launching.
+//
+// The CEF frontend has no child_process, so everything here is why the service
+// exists at all. Both platforms are implemented; macOS is verified on this
+// machine, Windows is written but UNVERIFIED until Adi runs it there (see
+// docs/DECISIONS.md — the Windows pass is explicitly a later session).
+//
+// Windows input goes through keybd_event via Add-Type rather than SendKeys,
+// because SendKeys cannot press the Windows key at all and is unreliable for
+// Ctrl+Shift+Esc. That one choice makes Win+R, Win+Plus and Alt-Tab possible.
+//
+// macOS requires the Stream Deck app to hold Accessibility permission, exactly
+// as the legacy console plugin's numpad did.
+import { execFile } from "node:child_process";
+import os from "node:os";
+
+const PLATFORM = os.platform();
+const isMac = PLATFORM === "darwin";
+const isWin = PLATFORM === "win32";
+
+let log = console;
+export function setLogger(l) { log = l; }
+
+function run(cmd, args) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: 5000 }, (err, stdout, stderr) => {
+      if (err) log.error?.(`${cmd} failed: ${err.message} ${stderr || ""}`);
+      resolve(!err);
+    });
+  });
+}
+const osa = (script) => run("osascript", ["-e", script]);
+const ps = (script) => run("powershell", ["-NoProfile", "-NonInteractive", "-Command", script]);
+
+// PowerShell prelude giving us real virtual-key control on Windows.
+const WIN_KEY_SHIM =
+  "Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void " +
+  "keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo);' " +
+  "-Name U -Namespace W -PassThru | Out-Null; ";
+const winDown = (vk) => `[W.U]::keybd_event(${vk},0,0,[UIntPtr]::Zero); `;
+const winUp = (vk) => `[W.U]::keybd_event(${vk},0,2,[UIntPtr]::Zero); `;
+const winTap = (vk) => winDown(vk) + winUp(vk);
+
+// ---------------------------------------------------------------- numpad keys
+// macOS numeric-keypad key codes; Windows virtual-key codes for the same keys.
+const MAC_KEY = {
+  "0": 82, "1": 83, "2": 84, "3": 85, "4": 86, "5": 87, "6": 88, "7": 89, "8": 91, "9": 92,
+  decimal: 65, enter: 76, plus: 69, minus: 78, multiply: 67, divide: 75,
+  backspace: 51, clear: 53, // 53 = escape; see the note in os.key() below
+};
+const WIN_VK = {
+  "0": 0x60, "1": 0x61, "2": 0x62, "3": 0x63, "4": 0x64, "5": 0x65,
+  "6": 0x66, "7": 0x67, "8": 0x68, "9": 0x69,
+  decimal: 0x6e, enter: 0x0d, plus: 0x6b, minus: 0x6d, multiply: 0x6a, divide: 0x6f,
+  backspace: 0x08, clear: 0x1b,
+};
+
+/* Send one numpad token to the focused application.
+   `clear` deliberately sends ESCAPE on both platforms rather than a literal
+   numpad-Clear: Windows has no Clear key that types anything, and "cancel the
+   current entry" is what the key means to a person looking at it. Inside the
+   State 1 calculator the token never reaches here — the overlay handles it
+   internally. */
+export function key(token) {
+  const t = String(token);
+  if (isMac) {
+    const code = MAC_KEY[t];
+    if (code == null) return Promise.resolve(false);
+    return osa(`tell application "System Events" to key code ${code}`);
+  }
+  if (isWin) {
+    const vk = WIN_VK[t];
+    if (vk == null) return Promise.resolve(false);
+    return ps(WIN_KEY_SHIM + winTap(vk));
+  }
+  const X11 = { decimal: "KP_Decimal", enter: "KP_Enter", plus: "KP_Add", minus: "KP_Subtract",
+                multiply: "KP_Multiply", divide: "KP_Divide", backspace: "BackSpace", clear: "Escape" };
+  return run("xdotool", ["key", X11[t] || `KP_${t}`]);
+}
+
+// ------------------------------------------------------------------- hotkeys
+// "cmd+space", "ctrl+shift+escape", "alt+tab", "win+r" — modifiers are named
+// per-platform on purpose so a caller can be explicit when it matters.
+const MAC_MODS = { cmd: "command down", command: "command down", ctrl: "control down",
+                   control: "control down", alt: "option down", option: "option down",
+                   shift: "shift down", win: "command down" };
+const MAC_SPECIAL = { space: 49, tab: 48, escape: 53, esc: 53, enter: 36, return: 36,
+                      delete: 51, up: 126, down: 125, left: 123, right: 124,
+                      "=": 24, "+": 24, "-": 27, minus: 27 };
+const WIN_MODS = { ctrl: 0x11, control: 0x11, alt: 0x12, shift: 0x10, win: 0x5b, cmd: 0x5b };
+const WIN_SPECIAL = { space: 0x20, tab: 0x09, escape: 0x1b, esc: 0x1b, enter: 0x0d, return: 0x0d,
+                      delete: 0x2e, up: 0x26, down: 0x28, left: 0x25, right: 0x27,
+                      "=": 0xbb, "+": 0xbb, "-": 0xbd, minus: 0xbd };
+
+export function hotkey(combo) {
+  const parts = String(combo).toLowerCase().split("+").map((s) => s.trim()).filter(Boolean);
+  if (!parts.length) return Promise.resolve(false);
+  const target = parts[parts.length - 1];
+  const mods = parts.slice(0, -1);
+
+  if (isMac) {
+    const using = mods.map((m) => MAC_MODS[m]).filter(Boolean);
+    const suffix = using.length ? ` using {${using.join(", ")}}` : "";
+    const code = MAC_SPECIAL[target];
+    const action = code != null ? `key code ${code}` : `keystroke "${target.replace(/"/g, '\\"')}"`;
+    return osa(`tell application "System Events" to ${action}${suffix}`);
+  }
+  if (isWin) {
+    const modVks = mods.map((m) => WIN_MODS[m]).filter((v) => v != null);
+    const vk = WIN_SPECIAL[target] ?? target.toUpperCase().charCodeAt(0);
+    let s = WIN_KEY_SHIM;
+    modVks.forEach((v) => { s += winDown(v); });
+    s += winTap(vk);
+    [...modVks].reverse().forEach((v) => { s += winUp(v); });
+    return ps(s);
+  }
+  return run("xdotool", ["key", parts.join("+")]);
+}
+
+// -------------------------------------------------------------------- volume
+export function volume(delta) {
+  const d = Number(delta) || 0;
+  if (isMac) {
+    return osa(
+      `set cur to output volume of (get volume settings)\n` +
+      `set n to cur + (${d})\n` +
+      `if n > 100 then set n to 100\n` +
+      `if n < 0 then set n to 0\n` +
+      `set volume output volume n`
+    );
+  }
+  if (isWin) {
+    // Media keys are the only route that respects the per-app mixer.
+    const vk = d > 0 ? 0xaf : 0xae;
+    const taps = Math.min(10, Math.max(1, Math.round(Math.abs(d) / 2)));
+    return ps(WIN_KEY_SHIM + winTap(vk).repeat(taps));
+  }
+  return run("amixer", ["-q", "sset", "Master", `${Math.abs(d)}%${d > 0 ? "+" : "-"}`]);
+}
+
+export function mute() {
+  if (isMac) return osa("set volume output muted not (output muted of (get volume settings))");
+  if (isWin) return ps(WIN_KEY_SHIM + winTap(0xad));
+  return run("amixer", ["-q", "sset", "Master", "toggle"]);
+}
+
+// ---------------------------------------------------------------------- zoom
+// macOS Accessibility Zoom (System Settings > Accessibility > Zoom > keyboard
+// shortcuts must be enabled); Windows Magnifier.
+export function zoom(dir) {
+  const inward = Number(dir) >= 0;
+  if (isMac) return hotkey(`cmd+alt+${inward ? "=" : "-"}`);
+  if (isWin) return hotkey(`win+${inward ? "=" : "-"}`);
+  return Promise.resolve(false);
+}
+
+// -------------------------------------------------------------- app switcher
+// A dial should feel like holding Cmd/Alt and tapping Tab, so the modifier is
+// held down across ticks and released only after the dial goes quiet. Releasing
+// per-tick would commit the switch on every detent and make cycling impossible.
+const SWITCH_IDLE_MS = 900;
+let switchTimer = null;
+let switchHeld = false;
+
+function switchRelease() {
+  switchTimer = null;
+  if (!switchHeld) return;
+  switchHeld = false;
+  if (isMac) return osa('tell application "System Events" to key up command');
+  if (isWin) return ps(WIN_KEY_SHIM + winUp(0x12));
+}
+
+export async function appSwitch(dir) {
+  const forward = Number(dir) >= 0;
+  clearTimeout(switchTimer);
+  if (isMac) {
+    if (!switchHeld) { switchHeld = true; await osa('tell application "System Events" to key down command'); }
+    await osa(`tell application "System Events" to key code 48${forward ? "" : " using {shift down}"}`);
+  } else if (isWin) {
+    let s = WIN_KEY_SHIM;
+    if (!switchHeld) { switchHeld = true; s += winDown(0x12); }
+    if (!forward) s += winDown(0x10);
+    s += winTap(0x09);
+    if (!forward) s += winUp(0x10);
+    await ps(s);
+  } else {
+    return false;
+  }
+  switchTimer = setTimeout(switchRelease, SWITCH_IDLE_MS);
+  return true;
+}
+
+// -------------------------------------------------------------------- launch
+export function launch(app) {
+  const name = String(app || "").trim();
+  if (!name) return Promise.resolve(false);
+  if (isMac) return run("open", ["-a", name]);
+  if (isWin) return ps(`Start-Process ${JSON.stringify(name)}`);
+  return run("xdg-open", [name]);
+}
+
+/* Named Root Hub actions (D11). Each is one concept with two implementations,
+   rather than a raw hotkey the caller has to know the platform spelling of.
+   macOS equivalents for the Windows-named items are DERIVED, not ruled — they
+   are listed in DECISIONS.md D14 for veto. */
+export const ACTIONS = {
+  start:    { mac: () => launch("Launchpad"),          win: () => hotkey("ctrl+escape") },
+  run:      { mac: () => hotkey("cmd+space"),          win: () => ps('(New-Object -ComObject "Shell.Application").FileRun()') },
+  shell:    { mac: () => launch("Terminal"),           win: () => ps("Start-Process powershell") },
+  taskmgr:  { mac: () => launch("Activity Monitor"),   win: () => ps("Start-Process taskmgr") },
+  chrome:   { mac: () => launch("Google Chrome"),      win: () => ps("Start-Process chrome") },
+  lynx:     { mac: () => launch("Lynx Mixer"),         win: () => ps('Start-Process "Lynx Mixer"') },
+};
+
+export function action(name) {
+  const a = ACTIONS[String(name)];
+  if (!a) return Promise.resolve(false);
+  if (isMac) return a.mac();
+  if (isWin) return a.win();
+  return Promise.resolve(false);
+}
+
+export const platform = PLATFORM;
