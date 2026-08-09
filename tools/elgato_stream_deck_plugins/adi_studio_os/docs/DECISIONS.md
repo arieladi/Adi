@@ -487,3 +487,51 @@ the response model and every graph range.
 The remaining 13 controllers are still byte-identical shim copies, and
 `scripts/test_ableton.mjs` asserts that on every run — so their parameter maps
 demonstrably have not drifted while EQ8 was rewritten.
+
+
+---
+
+## Batch 8 — per-controller dual layouts
+
+Workflow from here on ("Discovery First"): before asking Adi to design a
+controller's Compact layout, output a briefing covering (1) core purpose,
+(2) what all 6 dials map to in Full, (3) whether it uses keys, (4) modes/tabs,
+(5) what the screen shows. Adi does not memorise the legacy mappings; this
+codebase is the memory base.
+
+### L9 — GenericController compact: blind chop
+
+**RULING — parameters 1-4 on dials 1-4, drop 5 and 6.** Deliberately the dumbest
+rule available: this is a catch-all whose parameter choice is already arbitrary
+(whatever the device exposes first), so ranking them for a small screen would
+invent meaning that is not there. The generic logic is being overhauled later.
+
+### L8 — Pulsar Massive compact: a fourth DRIVE tab
+
+Four dials cannot hold four bands AND the centre section, but Drive and Gain are
+too characterful to lose.
+
+**RULING — add a `DRIVE` tab in compact only**, beside GAIN / FREQ / WIDTH:
+
+| Tab | Dial 1 | Dial 2 | Dial 3 | Dial 4 |
+|---|---|---|---|---|
+| GAIN / FREQ / WIDTH | Low | Warmth | Presence | Air |
+| **DRIVE** | Drive *(press = Auto Gain)* | Gain *(press = Transformer)* | HPF | LPF |
+
+Nothing from the full layout is lost — it moves behind a tab. The filters become
+dial-driven here because touch steppers would waste a whole zone. DRIVE exists
+only in compact; carried into the full layout it falls back to GAIN, where dials
+5-6 already hold the centre section.
+
+### Native SVG progress (L4)
+
+| Controller | Native | Compact |
+|---|---|---|
+| EQ8 | ✅ | ✅ bands 1/2/3/6, no GLOB |
+| Generic | ✅ | ✅ blind chop |
+| Pulsar Massive | ✅ | ✅ DRIVE tab |
+| ProQ3, Spectre, Indeq, ValhallaRoom, ValhallaVintageVerb, Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
+
+`scripts/test_ableton.mjs` asserts on every run that the not-yet-rewritten
+controllers are still byte-identical to 1.5.9.0, so their verified parameter maps
+demonstrably have not drifted.
