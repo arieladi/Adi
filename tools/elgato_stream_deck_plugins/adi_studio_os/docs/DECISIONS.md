@@ -291,7 +291,7 @@ sits out on the right beside Enter, Clear is bottom-left.
 | Rekordbox | done, verified — constants diffed against `src/midimap.js` |
 | MIDI Control | done, verified — C++ helper eliminated |
 | Visualizers | **working, 4 of 9 views.** See below |
-| Ableton | **not started.** The agent porting it never produced a file |
+| Ableton | **done.** 14 controllers, byte-identical copies |
 
 **Visualizers, accurately.** The port arrived as constants + FFT + Analyzer with
 3 of 9 view renderers, and — despite a long header comment describing the audio
@@ -308,8 +308,31 @@ needs its processor loaded from a blob URL and a CSP that permits it, which is
 one more thing to be wrong on a user's machine for no audible benefit at 15 fps.
 Swap in a worklet behind the same `push()` call if that ever changes.
 
-Both remaining gaps trace to the same cause: the porting run hit the org monthly
-spend limit and 4 of its 6 agents failed.
+**Ableton — the port that edited nothing.** All 14 legacy DeviceControllers draw
+with a Canvas 2D context while Studio OS paints SVG. Rewriting each
+`renderTouch()` would have meant editing 2,500 lines of layout code whose
+parameter maps were verified one by one against Adi's real Ableton "Configure"
+screenshots — the highest-risk, lowest-value change available.
+
+So the CANVAS was ported instead of the controllers. `SOS.SvgCtx` implements the
+exact Canvas 2D subset they use — 15 methods and 7 properties, established by
+grepping every controller rather than guessing — and serialises to SVG. The
+controller files are copied **byte-for-byte** into `js/ableton/` and
+`scripts/test_ableton.mjs` asserts on every run that they still `diff` clean
+against 1.5.9.0. A verified parameter map cannot be broken by a port that never
+touches it.
+
+The same shim is the strip compositor: one 1200×100 drawing, each dial handed a
+`viewBox` window into it, so an EQ curve spans all six dials as one continuous
+picture. Elements carry their x-extent so a zone only receives what it can see —
+without that clipping each zone shipped the whole drawing at 17.5 KB, roughly
+1.5 MB/s across six dials at 15 fps; it is now 2.9 KB worst case.
+
+The `ws://127.0.0.1:9006` protocol to the AdiVST Remote Script is **unchanged**.
+
+Both earlier gaps traced to the same cause: the porting run hit the org monthly
+spend limit and 4 of its 6 agents failed. Ableton and the Visualizers completion
+were then written by hand.
 
 ---
 

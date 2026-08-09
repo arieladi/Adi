@@ -35,7 +35,26 @@
   <script src="js/modules/rekordbox.js"></script>
   <script src="js/modules/midictl.js"></script>
   <script src="js/modules/viz.js"></script>
-  <!-- ableton.js is not written yet -->
+
+  <!-- Ableton: the compat layer FIRST (it defines AVC.DeviceController and
+       AVC.registry), then the controllers copied byte-for-byte from
+       adi_ableton_vst_controller 1.5.9.0, then their registry. -->
+  <script src="js/modules/ableton.js"></script>
+  <script src="js/ableton/GenericController.js"></script>
+  <script src="js/ableton/EQ8Controller.js"></script>
+  <script src="js/ableton/PulsarMassiveController.js"></script>
+  <script src="js/ableton/ProQ3Controller.js"></script>
+  <script src="js/ableton/SpectreController.js"></script>
+  <script src="js/ableton/IndeqController.js"></script>
+  <script src="js/ableton/ValhallaRoomController.js"></script>
+  <script src="js/ableton/ValhallaVintageVerbController.js"></script>
+  <script src="js/ableton/BlackholeController.js"></script>
+  <script src="js/ableton/HDelayController.js"></script>
+  <script src="js/ableton/DbCompController.js"></script>
+  <script src="js/ableton/OmnipressorController.js"></script>
+  <script src="js/ableton/SaturateController.js"></script>
+  <script src="js/ableton/SideMinderController.js"></script>
+  <script src="js/ableton/registry.js"></script>
   <script src="js/modules/index.js"></script>
 
   <!-- orchestrator last: defines connectElgatoStreamDeckSocket -->
