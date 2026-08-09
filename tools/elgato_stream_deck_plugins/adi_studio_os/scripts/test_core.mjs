@@ -18,7 +18,7 @@ global.WebSocket = FakeWS;
 
 const ORDER = [
   'js/core/sd-client.js', 'js/core/surface.js', 'js/core/render.js',
-  'js/core/ipc.js', 'js/core/input.js', 'js/core/nav.js', 'js/core/states.js',
+  'js/core/ipc.js', 'js/core/layout.js', 'js/core/input.js', 'js/core/nav.js', 'js/core/states.js',
   'js/modules/root.js', 'js/modules/console.js', 'js/modules/index.js', 'js/plugin.js',
 ];
 
@@ -108,16 +108,25 @@ ok('btn36 still reserved in State 4', Input.reserved(36));
 States.setState(0);
 ok('btn1 reserved again outside State 4', Input.backReserved());
 
-console.log('\n[7] overlay ownership (D3 / D8)');
+console.log('\n[7] responsive regions (L1 / L3a)');
+// Regions depend on a window actually being registered, so install first.
+SOS.Modules.install();
 States.setState(0);
-ok('S0: col 8 owned by overlay', States.overlayOwnsKey(S.btn(8, 0)));
-ok('S0: col 4 left to the module', !States.overlayOwnsKey(S.btn(4, 0)));
-ok('S0: dials 5,6 overlay / 1-4 module',
-   States.overlayOwnsDial(5) && States.overlayOwnsDial(6) && !States.overlayOwnsDial(4));
+ok('S0: docks 4 columns', States.dockCols() === 4, `docks=${States.dockCols()}`);
+ok('S0: col 8 belongs to the docked window', States.overlayOwnsKey(S.btn(8, 0)));
+ok('S0: col 4 belongs to the module', !States.overlayOwnsKey(S.btn(4, 0)));
+ok('S0: module region is cols 0-4', States.regions().module.cols === 5);
+ok('S0: numpad borrows NO dials', States.borrowedDials() === 0);
+States.setState(1);
+ok('S1: calculator borrows 2 dials (L3a)', States.borrowedDials() === 2, `n=${States.borrowedDials()}`);
+ok('S1: dials 1-2 to the window, 3-6 to the module',
+   States.overlayOwnsDial(1) && States.overlayOwnsDial(2) && !States.overlayOwnsDial(3));
 States.setState(2);
-ok('S2: full device takeover', States.overlayOwnsKey(1) && States.overlayOwnsKey(20) && States.overlayOwnsDial(1));
+ok('S2: delay is a 4-col dock, not a takeover', States.dockCols() === 4 && !States.overlayOwnsKey(1));
+ok('S2: delay borrows 2 dials (BPM + division)', States.borrowedDials() === 2);
 States.setState(4);
-ok('S4: nothing overlaid', !States.overlayOwnsKey(8) && !States.overlayOwnsDial(6));
+ok('S4: nothing docked', !States.overlayOwnsKey(8) && States.regions().module.cols === 9);
+ok('S4: module keeps every dial', States.borrowedDials() === 0);
 States.setState(0);
 
 console.log('\n[8] carousel wraps 0..4');
@@ -127,7 +136,6 @@ ok('cycles 0,1,2,3,4,0', seen.join() === '0,1,2,3,4,0', seen.join());
 States.setState(0);
 
 console.log('\n[9] navigation');
-SOS.Modules.install();
 ok('root installed', Nav.current().id === 'root');
 ok('back at root is a no-op', Nav.back() === false);
 Nav.enter('ableton.hub');

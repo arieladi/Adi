@@ -1,87 +1,125 @@
 'use strict';
 /* =============================================================================
-   states.js — the State Carousel (the horizontal axis) and the compositor.
+   states.js — the State Carousel and the region compositor.
 
-   nav.js owns WHERE you are; this owns WHAT IS OVERLAID on it. The two are
-   orthogonal: changing state never changes your level, and going Back never
-   changes your state.
+   nav.js owns WHERE you are; this owns WHICH NAV WINDOW IS DOCKED beside you.
+   The two are orthogonal: docking a window never changes your level, and going
+   Back never changes which window is docked.
 
-     State 0  Numpad          cols 5-8 + dials 5-6
-     State 1  Calculator      cols 5-8 + dials 5-6
-     State 2  Delay Calc      FULL DEVICE — all keys, all dials  (D3)
-     State 3  Context Nav     cols 5-8 + dials 5-6, supplied by the active module
-     State 4  Full Screen     no overlay at all; Button 1 released too  (D7)
+     State 0  Numpad          16-key dock
+     State 1  Calculator      16-key dock + 2 borrowed dials
+     State 2  Delay Calc      16-key dock + 2 borrowed dials
+     State 3  Context Nav     16-key dock, supplied by the active module
+     State 4  Full Screen     docks nothing — the module has the whole board
 
-   Everything routes through resolveKey()/resolveDial(), so there is exactly one
-   place that decides who owns a control at any instant — which is what keeps the
-   five ported modules from re-litigating the global rules individually.
+   Every window is the SAME standard 4x4 dock. Uniformity is the point: the
+   module region never changes width depending on which window you opened.
+
+   RESPONSIVE, NOT OVERLAID (L1). A docked window does not cover the module: it
+   takes columns away from it, and the module re-lays-out into the remainder via
+   its declared breakpoints. Nothing is ever hidden underneath something else.
+
+   DIALS ARE BORROWED, NOT SHARED (L3a, supersedes L3). L3 said nav windows were
+   keys-only. That could not survive contact with the delay calculator: a useful
+   delay view needs a BPM input and a division selector, and spending 2 of 16
+   keys on each leaves no room for the readouts. So a window may declare
+   `borrowDials: N` and takes the FIRST N dials; the module keeps the rest.
+
+   Windows borrow from the LEFT so the borrowed pair is always dials 1-2 — one
+   fixed place to look, whichever window is open.
+
+   PARKED, deliberately: the background module is not yet told it has fewer
+   dials. It still answers for dials 1-2 and those answers are simply not shown
+   while a window is borrowing them. Making modules lay out their dials
+   responsively is the next piece of work, by Adi's explicit instruction.
    ============================================================================= */
 
 window.SOS = window.SOS || {};
 
 SOS.States = (function () {
-  var S = SOS.Surface, R = SOS.Render, Nav = SOS.Nav;
+  var S = SOS.Surface, R = SOS.Render, Nav = SOS.Nav, LO = SOS.Layout;
 
   var COUNT = 5;
   var NAMES = ['Numpad', 'Calc', 'Delay', 'Context', 'Full'];
   var FULL = 4, DELAY = 2, CONTEXT = 3;
 
+  // Every window is the same 4-column dock; State 4 docks nothing.
+  var DOCK_COLS = [4, 4, 4, 4, 0];
+
   var state = 0;
-  var overlays = {};        // state index -> screen (same contract as nav screens)
-  var contextProvider = function () { return null; };  // (moduleId) -> screen
+  var windows = {};         // state index -> screen
+  var contextProvider = function () { return null; };
   var painting = false, dirty = false;
 
   // ---------------------------------------------------------------- ownership
   function isFullScreen() { return state === FULL; }
-  function isFullDevice() { return state === DELAY; }
+  function dockCols() { return DOCK_COLS[state] || 0; }
 
-  function overlayScreen() {
+  function navScreen() {
     if (state === FULL) return null;
     if (state === CONTEXT) return contextProvider(Nav.activeModule()) || null;
-    return overlays[state] || null;
+    return windows[state] || null;
   }
 
-  // Does the overlay own this key right now?
-  function overlayOwnsKey(button) {
-    if (state === FULL) return false;
-    if (state === DELAY) return true;              // full-device takeover
-    return S.inOverlay(button);                    // cols 5-8
+  /* The current split. Recomputed per call rather than cached: it depends on the
+     state AND on whether the docked window actually exists (a module with no
+     context strip should not lose four columns to an empty window). */
+  function regions() {
+    var win = navScreen();
+    return LO.split(win ? dockCols() : 0);
   }
-  function overlayOwnsDial(dial) {
-    if (state === FULL) return false;
-    if (state === DELAY) return true;
-    return dial >= 5;                              // dials 5 & 6 (D8)
+
+  // How many dials the docked window has borrowed right now (L3a).
+  function borrowedDials() {
+    var win = navScreen();
+    if (!win || !win.borrowDials || typeof win.dials !== 'function') return 0;
+    return Math.max(0, Math.min(S.DIALS, win.borrowDials | 0));
   }
+
+  // Kept as the vocabulary the rest of the code and the tests already speak.
+  function overlayOwnsKey(button) { return regions().nav.has(button); }
+  function overlayOwnsDial(dial) { return dial <= borrowedDials(); }
 
   // ---------------------------------------------------------------- resolving
-  function fromScreen(screen, button) {
-    if (!screen || !screen.keys) return null;
-    try { return screen.keys(button) || null; }
-    catch (e) { SOS.SD.log('states: keys() threw in ' + screen.id + ': ' + e.message); return null; }
-  }
-  function dialFromScreen(screen, dial) {
-    if (!screen || !screen.dials) return null;
-    try { return screen.dials(dial) || null; }
-    catch (e) { SOS.SD.log('states: dials() threw in ' + screen.id + ': ' + e.message); return null; }
-  }
-
-  // The single source of truth for "who owns this key".
+  /* The single source of truth for "who owns this key". A key belongs to the
+     docked window if it falls in the nav region, otherwise to the module — and
+     each is resolved through the layout that fits ITS region. */
   function resolveKey(button) {
-    if (overlayOwnsKey(button)) {
-      var b = fromScreen(overlayScreen(), button);
-      if (b) return b;
-      // An overlay that declines a cell in its own region still owns it — falling
-      // through to the module would paint DAW controls inside the numpad block.
-      return { dim: true, kind: 'tap' };
+    var reg = regions();
+
+    if (reg.nav.has(button)) {
+      var win = navScreen();
+      var wl = LO.pick(win, reg.nav.cols);
+      var wb = LO.resolve(wl, reg.nav, button);
+      // A window that declines a cell inside its own region still owns it —
+      // falling through to the module would paint DAW controls inside the numpad.
+      return wb || { dim: true, kind: 'tap' };
     }
-    return Nav.keyBinding(button);
+
+    var cur = Nav.current();
+    var ml = LO.pick(cur, reg.module.cols);
+    if (!ml) {
+      // The module has no layout narrow enough. Say so on the surface instead of
+      // painting a broken half-layout, and only on the first cell so the message
+      // is readable rather than repeated 15 times.
+      if (button === 1) {
+        return { label: 'No room', sub: 'needs ' + LO.minCols(cur) + ' cols',
+                 dim: true, kind: 'tap' };
+      }
+      return null;
+    }
+    return LO.resolve(ml, reg.module, button);
   }
 
+  /* L3a: the first N dials belong to the docked window, the rest to the module.
+     The module is NOT asked to compact — it still answers for a borrowed dial
+     and that answer is simply not painted (parked, see the header). */
   function resolveDial(dial) {
-    if (overlayOwnsDial(dial)) {
-      var d = dialFromScreen(overlayScreen(), dial);
-      if (d) return d;
-      return { title: NAMES[state], sub: '—' };
+    var n = borrowedDials();
+    if (dial <= n) {
+      var win = navScreen();
+      try { return win.dials(dial) || null; }
+      catch (e) { SOS.SD.log('states: window dials() threw — ' + e.message); return null; }
     }
     return Nav.dialBinding(dial);
   }
@@ -94,23 +132,15 @@ SOS.States = (function () {
 
   // ------------------------------------------------------------------ gestures
   function carousel() {
-    // A manual cycle means the user has taken charge of the state, so an
-    // auto-entered Full Screen stops being "on loan" and leaving the hub no
-    // longer rewinds it (D15).
-    autoFullFrom = null;
+    autoFullFrom = null;   // a manual cycle takes the state off loan (D15)
     setState((state + 1) % COUNT);
   }
 
-  /* D15 — a screen declaring fullScreenCapable auto-enters State 4 on arrival,
-     and leaving it restores the state you had before.
-
-     This is the one place nav and state are deliberately NOT orthogonal, and it
-     is worth the exception: arriving at the DJ surface in the power-on State 0
-     put the numpad on top of the whole of Deck B, and climbing out of it meant
-     four Button 36 long-presses before you could touch a deck.
-
-     The borrow is remembered rather than assumed, so it only ever rewinds a
-     state IT changed. */
+  /* D15 — a screen declaring fullScreenCapable docks nothing on arrival, and
+     leaving restores whatever was docked before. Still worth having under the
+     responsive model: rekordbox at 5 columns loses half its hot cues (L2), so
+     arriving at the DJ surface should hand it the whole board. The borrow is
+     remembered, so it only rewinds a state it changed. */
   var autoFullFrom = null;
 
   function syncToScreen() {
@@ -135,19 +165,17 @@ SOS.States = (function () {
     // Button 1 changes hands crossing the State 4 boundary; drop armed timers so
     // a press that started under the old rules cannot resolve under the new ones.
     SOS.Input.resetAnchors();
-    var o = overlays[prev]; if (o && o.onExit) o.onExit();
-    var n = overlayScreen(); if (n && n.onEnter) n.onEnter();
-    SOS.SD.log('state ' + prev + ' -> ' + state + ' (' + NAMES[state] + ')');
+    var o = windows[prev]; if (o && o.onExit) o.onExit();
+    var n = navScreen(); if (n && n.onEnter) n.onEnter();
+    SOS.SD.log('state ' + prev + ' -> ' + state + ' (' + NAMES[state]
+             + ', docks ' + dockCols() + ' cols)');
     repaint();
   }
 
-  function registerOverlay(index, screen) { overlays[index] = screen; return screen; }
+  function registerOverlay(index, screen) { windows[index] = screen; return screen; }
   function wireContext(fn) { contextProvider = fn || function () { return null; }; }
 
   // ------------------------------------------------------------------ painting
-  // Decorate the anchors so their reserved gesture is visible on the key itself.
-  // Button 1 keeps the CONTEXTUAL label (its short press) and gains a "level up"
-  // badge; Button 36 keeps its module label and shows the current state.
   function decorate(button, b) {
     if (button === S.BTN_BACK && !isFullScreen()) {
       b = b || { label: Nav.atRoot() ? '' : 'Back', color: R.PALETTE.nav };
@@ -162,9 +190,8 @@ SOS.States = (function () {
 
   // Every render-relevant field of a binding is forwarded. Listing them by hand
   // once cost a real bug: `size` and `subStrong` were dropped here, so a module
-  // asking for a full-cap digit silently got the renderer's length guess and
-  // promoted captions never appeared on the device — only in the preview sheet,
-  // which passed them. If a field is added to a binding, add it here.
+  // asking for a full-cap digit silently got the renderer's length guess. If a
+  // field is added to a binding, add it here.
   function keySpec(b) {
     return {
       title: b.label, sub: b.sub, subStrong: b.subStrong, glyph: b.glyph,
@@ -179,15 +206,11 @@ SOS.States = (function () {
 
   /* A dial binding may supply `svg` instead of title/value: a raw 200x100 SVG
      string that IS the zone's face. That is how a module paints across zone
-     boundaries — the Ableton strip compositor draws one 1200x100 image and hands
-     each dial a viewBox window into it, so an EQ curve reads as one continuous
-     picture spanning all six dials rather than six unrelated tiles. */
+     boundaries — the Ableton strip draws one 1200x100 image and hands each dial
+     a window into it, so an EQ curve reads as one continuous picture. */
   function paintDial(dial, context) {
     var d = resolveDial(dial);
-    if (d && d.svg) {
-      SOS.SD.setFeedback(context, { full: R.dataUri(d.svg) });
-      return;
-    }
+    if (d && d.svg) { SOS.SD.setFeedback(context, { full: R.dataUri(d.svg) }); return; }
     SOS.SD.setFeedback(context, { full: d ? R.zoneUri({
       title: d.title, value: d.value, sub: d.sub, indicator: d.indicator, color: d.color,
     }) : R.zoneUri({ title: '', value: '' }) });
@@ -201,8 +224,8 @@ SOS.States = (function () {
   }
 
   // Coalesce repaints — a single navigation can touch nav, state and module
-  // state in the same tick, and 36 SVG writes per mutation is wasteful. The
-  // deduping in SD.image() means an unchanged key still costs nothing.
+  // state in the same tick. The deduping in SD.image() means an unchanged key
+  // still costs nothing.
   function repaint() {
     if (painting) { dirty = true; return; }
     painting = true;
@@ -211,14 +234,18 @@ SOS.States = (function () {
 
   return {
     COUNT: COUNT, NAMES: NAMES, FULL: FULL, DELAY: DELAY, CONTEXT: CONTEXT,
+    DOCK_COLS: DOCK_COLS,
     get: function () { return state; },
     name: function () { return NAMES[state]; },
     setState: setState, carousel: carousel, syncToScreen: syncToScreen,
     registerOverlay: registerOverlay, wireContext: wireContext,
-    overlayScreen: overlayScreen, overlayOwnsKey: overlayOwnsKey, overlayOwnsDial: overlayOwnsDial,
-    isFullScreen: isFullScreen, isFullDevice: isFullDevice,
+    overlayScreen: navScreen, navScreen: navScreen,
+    regions: regions, dockCols: dockCols,
+    overlayOwnsKey: overlayOwnsKey, overlayOwnsDial: overlayOwnsDial,
+    borrowedDials: borrowedDials,
+    isFullScreen: isFullScreen,
     resolveKey: resolveKey, resolveDial: resolveDial, bindingKind: bindingKind,
     repaint: repaint, paintKey: paintKey, paintDial: paintDial,
-    decorate: decorate, keySpec: keySpec,   // shared with scripts/preview.mjs
+    decorate: decorate, keySpec: keySpec,
   };
 })();

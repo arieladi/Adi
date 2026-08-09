@@ -13,7 +13,7 @@ global.window = global;
 global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
 for (const f of ["js/core/sd-client.js", "js/core/surface.js", "js/core/render.js",
-                 "js/core/ipc.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js",
+                 "js/core/ipc.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js",
                  "js/modules/root.js", "js/modules/console.js",
                  "js/modules/rekordbox.js", "js/modules/midictl.js",
                  "js/modules/viz.js", "js/modules/ableton.js",
@@ -123,9 +123,9 @@ const html = `<!doctype html><meta charset="utf-8"><title>Studio OS surface prev
 </style>
 <h1>Studio OS — surface preview</h1>
 <p class="s">Exactly what setImage receives. Stream Deck + XL: 36 keys (9&times;4) + 6 dial zones.</p>
-${pick("root", grid("Root Hub &middot; State 0 (Numpad) &mdash; the power-on view", 0))}
-${pick("calc", grid("Root Hub &middot; State 1 (Calculator)", 1))}
-${pick("delay", grid("State 2 (Delay Calculator) &mdash; full device", 2))}
+${pick("root", grid("Root Hub + Numpad docked &mdash; module keeps cols 0-4, window takes 5-8", 0))}
+${pick("calc", grid("Root Hub + Calculator docked &mdash; window borrows dials 1-2 for operators", 1))}
+${pick("delay", grid("Root Hub + Delay viewport docked &mdash; dial 1 = BPM, dial 2 slides the division", 2))}
 ${pick("dj", grid("Rekordbox &middot; State 4 (Full Screen) &mdash; the DJ surface", 4, "rekordbox.hub"))}
 ${pick("djnum", grid("Rekordbox &middot; State 0 &mdash; numpad covering Deck B", 0, "rekordbox.hub"))}
 ${pick("midi", grid("MIDI Control &middot; State 4 &mdash; drums, scale touch, banked CC", 4, "midictl.hub"))}
