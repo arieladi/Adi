@@ -526,17 +526,36 @@ SOS.Modules.Ableton = (function () {
      once and re-wrapped six times, so a curve spanning the whole strip costs one
      render, not six — and lands on the dials as one continuous picture, which is
      what the legacy canvas-slicing achieved. */
-  var ctx = new SOS.SvgCtx(L.W, L.H);
+  var ctx = new SOS.SvgCtx(L.W, L.H);      // legacy shim, for controllers not yet native
   var zoneSvg = ['', '', '', '', '', ''];
-  var lastRender = 0;
+  var lastZones = 6;
 
   function composite() {
     if (!active) return;
+    // L3b: a docked window borrows dials 5-6, so the strip is only as wide as
+    // the dials the module still has. The controller is told how many zones it
+    // has and picks its own layout from that.
+    var zones = SOS.States.moduleDials();
+    lastZones = zones;
+
+    if (typeof active.build === 'function') {
+      // Native SVG controller (L4).
+      var bag;
+      try { bag = active.build(zones); }
+      catch (e) { SOS.SD.log('ableton: build() failed in ' + (active.id || '?') + ' — ' + e.message); return; }
+      for (var i = 0; i < zones; i++) zoneSvg[i] = SOS.Svg.serialize(bag, i * L.slotW, L.slotW, L.slotH);
+      for (var j = zones; j < L.slots; j++) zoneSvg[j] = '';
+      return;
+    }
+
+    // Controllers still on the Canvas shim always draw their full 1200px strip;
+    // only the zones the module owns get painted.
     ctx.reset();
     try { active.renderTouch(ctx); }
-    catch (e) { SOS.SD.log('ableton: renderTouch failed in ' + (active.id || '?') + ' — ' + e.message); return; }
-    for (var i = 0; i < L.slots; i++) zoneSvg[i] = ctx.serialize(i * L.slotW, L.slotW);
-    lastRender = Date.now();
+    catch (e2) { SOS.SD.log('ableton: renderTouch failed in ' + (active.id || '?') + ' — ' + e2.message); return; }
+    for (var k = 0; k < L.slots; k++) {
+      zoneSvg[k] = k < zones ? ctx.serialize(k * L.slotW, L.slotW) : '';
+    }
   }
 
   /* ------------------------------------------------------ controller picking */
@@ -591,6 +610,97 @@ SOS.Modules.Ableton = (function () {
 
   function shortName(s) { s = String(s || ''); return s.length > 10 ? s.slice(0, 9) + '…' : s; }
 
+  /* One builder for both breakpoints. `cols` decides where the second nav row
+     starts and how many rows the preset folder gets — the controls themselves
+     are identical, which is the point of hand-authoring rather than reflowing. */
+  function hubKeys(cols) {
+    var wide = cols >= 9;
+    var presetRow0 = wide ? 1 : 2;      // first row the preset folder may use
+
+    return function (col, row) {
+      var st = Bridge.state();
+
+      // --- row 0: transport of the browser (always identical) ---
+      if (row === 0) {
+        if (NAV[col]) {
+          var nav = NAV[col];
+          return { label: nav.label, sub: nav.sub, size: 'md', color: R.PALETTE.nav,
+                   dim: !Bridge.isOnline(), kind: 'tap', tap: nav.run };
+        }
+        if (col === 4) {
+          var e = st.eq8_state || { count: 0, selected_is_eq8: false };
+          return {
+            label: 'EQ8', glyph: 'EQ',
+            sub: e.count ? (e.count + ' on track') : 'create',
+            color: R.PALETTE.ableton, active: !!e.selected_is_eq8,
+            badge: e.count ? ('×' + e.count) : '+',
+            dim: !Bridge.isOnline(), kind: 'tap',
+            tap: function () { Bridge.cmd.eq8Key(); },
+          };
+        }
+        if (!wide) return null;
+        return secondRowKey(col - 5, st);
+      }
+
+      // --- compact: the rest of the nav row wraps onto row 1 ---
+      if (!wide && row === 1) {
+        var k = secondRowKey(col, st);
+        if (k) return k;
+      }
+
+      // --- preset folder ---
+      if (mode !== 'presets' || row < presetRow0) return null;
+      var slot = (row - presetRow0) * cols + col;
+      var presets = st.presets || [];
+      var p = presets[slot];
+      if (!p) return { label: '—', sub: 'empty', dim: true, kind: 'tap' };
+      return {
+        label: shortName(p.name), sub: 'load · hold = new', size: 'md',
+        color: R.PALETTE.midi, kind: 'momentary',
+        down: function () { p._t = Date.now(); },
+        up: function () {
+          var held = Date.now() - (p._t || Date.now());
+          if (held >= 500) Bridge.cmd.newPreset(p.id); else Bridge.cmd.loadPreset(p.id);
+          setMode('normal');
+        },
+      };
+    };
+  }
+
+  // Presets toggle / track / device / bridge status — shared by both layouts.
+  function secondRowKey(i, st) {
+    if (i === 0) {
+      return {
+        label: mode === 'presets' ? 'BACK' : 'Presets',
+        sub: mode === 'presets' ? 'close folder' : 'EQ8 presets',
+        color: R.PALETTE.console, active: mode === 'presets',
+        dim: !Bridge.isOnline(), kind: 'tap',
+        tap: function () {
+          if (mode === 'presets') return setMode('normal');
+          Bridge.cmd.listPresets();
+          setMode('presets');
+        },
+      };
+    }
+    if (i === 1) {
+      return { label: shortName(st.track.name || '—'), sub: 'track', size: 'md',
+               color: R.PALETTE.dim, kind: 'tap', tap: function () {} };
+    }
+    if (i === 2) {
+      return { label: shortName(st.device.name || '—'),
+               sub: st.device.has_device ? (active && active.id ? active.id : 'device') : 'no device',
+               size: 'md', color: R.PALETTE.dim, kind: 'tap', tap: function () {} };
+    }
+    if (i === 3) {
+      return { label: Bridge.isOnline() ? 'LIVE' : 'Offline',
+               sub: Bridge.isOnline() ? 'bridge up' : 'start Ableton',
+               color: Bridge.isOnline() ? R.PALETTE.ableton : '#ff5d5d',
+               active: Bridge.isOnline(), kind: 'tap',
+               tap: function () { Bridge.cmd.getAllParams(); } };
+    }
+    return null;
+  }
+
   var hub = {
     id: 'ableton.hub',
     title: 'Ableton',
@@ -607,95 +717,18 @@ SOS.Modules.Ableton = (function () {
     },
     onExit: function () { stopPump(); setMode('normal'); },
 
-    keys: function (button) {
-      var col = S.colOf(button), row = S.rowOf(button);
-      var st = Bridge.state();
-
-      if (row === 0) {
-        if (NAV[col]) {
-          var nav = NAV[col];
-          return {
-            label: nav.label, sub: nav.sub, size: 'md',
-            color: R.PALETTE.nav, dim: !Bridge.isOnline(), kind: 'tap',
-            tap: nav.run,
-          };
-        }
-        if (col === 4) {
-          // Legacy EQ8 launcher, conditions A/B/C — the decision lives in the
-          // remote script, so this key just sends eq8_key and shows the count.
-          var e = st.eq8_state || { count: 0, selected_is_eq8: false };
-          return {
-            label: 'EQ8', glyph: 'EQ',
-            sub: e.count ? (e.count + ' on track') : 'create',
-            color: R.PALETTE.ableton, active: !!e.selected_is_eq8,
-            badge: e.count ? ('×' + e.count) : '+',
-            dim: !Bridge.isOnline(), kind: 'tap',
-            tap: function () { Bridge.cmd.eq8Key(); },
-          };
-        }
-        if (col === 5) {
-          return {
-            label: mode === 'presets' ? 'BACK' : 'Presets',
-            sub: mode === 'presets' ? 'close folder' : 'EQ8 presets',
-            color: R.PALETTE.console, active: mode === 'presets',
-            dim: !Bridge.isOnline(), kind: 'tap',
-            tap: function () {
-              if (mode === 'presets') return setMode('normal');
-              Bridge.cmd.listPresets();
-              setMode('presets');
-            },
-          };
-        }
-        if (col === 6) {
-          return {
-            label: shortName(st.track.name || '—'), sub: 'track', size: 'md',
-            color: R.PALETTE.dim, kind: 'tap', tap: function () {},
-          };
-        }
-        if (col === 7) {
-          return {
-            label: shortName(st.device.name || '—'),
-            sub: st.device.has_device ? (active && active.id ? active.id : 'device') : 'no device',
-            size: 'md', color: R.PALETTE.dim, kind: 'tap', tap: function () {},
-          };
-        }
-        if (col === 8) {
-          return {
-            label: Bridge.isOnline() ? 'LIVE' : 'Offline',
-            sub: Bridge.isOnline() ? 'bridge up' : 'start Ableton',
-            color: Bridge.isOnline() ? R.PALETTE.ableton : '#ff5d5d',
-            active: Bridge.isOnline(), kind: 'tap',
-            tap: function () { Bridge.cmd.getAllParams(); },
-          };
-        }
-        return null;
-      }
-
-      // Rows 1-3 are the preset folder; inert until it is open, exactly as the
-      // legacy preset slots were.
-      if (mode !== 'presets') return null;
-      var slot = (row - 1) * S.COLS + col;
-      var presets = st.presets || [];
-      var p = presets[slot];
-      if (!p) return { label: '—', sub: 'empty', dim: true, kind: 'tap' };
-      return {
-        label: shortName(p.name), sub: 'load · hold = new', size: 'md',
-        color: R.PALETTE.midi, kind: 'momentary',
-        // Legacy: short = load onto the current EQ8, long = drop a NEW EQ8 with
-        // that preset. Implemented as momentary so the hold can be timed here
-        // without a second long-press engine.
-        down: function () { p._t = Date.now(); },
-        up: function () {
-          var held = Date.now() - (p._t || Date.now());
-          if (held >= 500) Bridge.cmd.newPreset(p.id);
-          else Bridge.cmd.loadPreset(p.id);
-          setMode('normal');
-        },
-      };
-    },
+    /* Two hand-crafted layouts (the global dual-layout contract).
+       FULL (9 cols): one nav row across the top, preset folder below.
+       COMPACT (5 cols): the same controls folded onto two rows, so nothing is
+       lost when a window docks — only the preset folder gets shorter. */
+    layouts: [
+      { cols: 9, keys: hubKeys(9) },
+      { cols: 5, keys: hubKeys(5) },
+    ],
 
     dials: function (dial) {
       var slot = dial - 1;
+      if (slot >= lastZones) return { title: '', value: '' };   // borrowed by a window
       return {
         // The strip image IS the dial's face: the compositor already sliced the
         // one 1200x100 drawing, so a curve spans all six as one picture.

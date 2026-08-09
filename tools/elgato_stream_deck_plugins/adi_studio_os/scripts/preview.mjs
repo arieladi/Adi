@@ -16,7 +16,7 @@ for (const f of ["js/core/sd-client.js", "js/core/surface.js", "js/core/render.j
                  "js/core/ipc.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js",
                  "js/modules/root.js", "js/modules/console.js",
                  "js/modules/rekordbox.js", "js/modules/midictl.js",
-                 "js/modules/viz.js", "js/modules/ableton.js",
+                 "js/modules/viz.js", "js/modules/ableton.js", "js/ableton/svg.js",
                  "js/ableton/GenericController.js", "js/ableton/EQ8Controller.js",
                  "js/ableton/PulsarMassiveController.js", "js/ableton/ProQ3Controller.js",
                  "js/ableton/SpectreController.js", "js/ableton/IndeqController.js",

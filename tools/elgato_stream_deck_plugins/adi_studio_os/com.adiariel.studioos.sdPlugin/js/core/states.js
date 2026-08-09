@@ -25,13 +25,17 @@
    keys on each leaves no room for the readouts. So a window may declare
    `borrowDials: N` and takes the FIRST N dials; the module keeps the rest.
 
-   Windows borrow from the LEFT so the borrowed pair is always dials 1-2 — one
-   fixed place to look, whichever window is open.
+   Windows borrow from the RIGHT (L3b). The 16-key dock sits on the right of the
+   board, so its dials must sit under it: a window borrowing N dials takes the
+   LAST N — with N=2 that is physical dials 5 and 6, directly beneath the dock.
+   Borrowing from the left would have put the calculator's operators at the
+   opposite end of the device from the calculator.
 
-   PARKED, deliberately: the background module is not yet told it has fewer
-   dials. It still answers for dials 1-2 and those answers are simply not shown
-   while a window is borrowing them. Making modules lay out their dials
-   responsively is the next piece of work, by Adi's explicit instruction.
+   The window still addresses its own dials 1..N; the mapping to physical
+   5..6 happens here, so a window never has to know where it was docked.
+
+   Modules are told how many dials they have left via States.moduleDials(), and
+   pick their dial layout from that.
    ============================================================================= */
 
 window.SOS = window.SOS || {};
@@ -75,10 +79,17 @@ SOS.States = (function () {
     if (!win || !win.borrowDials || typeof win.dials !== 'function') return 0;
     return Math.max(0, Math.min(S.DIALS, win.borrowDials | 0));
   }
+  // First PHYSICAL dial the window owns — it borrows from the right (L3b).
+  function firstBorrowed() {
+    var n = borrowedDials();
+    return n > 0 ? (S.DIALS - n + 1) : (S.DIALS + 1);
+  }
+  // How many dials the active module still has, counting from dial 1.
+  function moduleDials() { return S.DIALS - borrowedDials(); }
 
   // Kept as the vocabulary the rest of the code and the tests already speak.
   function overlayOwnsKey(button) { return regions().nav.has(button); }
-  function overlayOwnsDial(dial) { return dial <= borrowedDials(); }
+  function overlayOwnsDial(dial) { return dial >= firstBorrowed(); }
 
   // ---------------------------------------------------------------- resolving
   /* The single source of truth for "who owns this key". A key belongs to the
@@ -111,14 +122,14 @@ SOS.States = (function () {
     return LO.resolve(ml, reg.module, button);
   }
 
-  /* L3a: the first N dials belong to the docked window, the rest to the module.
-     The module is NOT asked to compact — it still answers for a borrowed dial
-     and that answer is simply not painted (parked, see the header). */
+  /* L3b: the LAST N dials belong to the docked window, the rest to the module.
+     The window addresses its own dials 1..N, so the physical-to-local mapping
+     lives here and a window never learns where it was docked. */
   function resolveDial(dial) {
-    var n = borrowedDials();
-    if (dial <= n) {
+    var first = firstBorrowed();
+    if (dial >= first) {
       var win = navScreen();
-      try { return win.dials(dial) || null; }
+      try { return win.dials(dial - first + 1) || null; }
       catch (e) { SOS.SD.log('states: window dials() threw — ' + e.message); return null; }
     }
     return Nav.dialBinding(dial);
@@ -242,7 +253,7 @@ SOS.States = (function () {
     overlayScreen: navScreen, navScreen: navScreen,
     regions: regions, dockCols: dockCols,
     overlayOwnsKey: overlayOwnsKey, overlayOwnsDial: overlayOwnsDial,
-    borrowedDials: borrowedDials,
+    borrowedDials: borrowedDials, firstBorrowed: firstBorrowed, moduleDials: moduleDials,
     isFullScreen: isFullScreen,
     resolveKey: resolveKey, resolveDial: resolveDial, bindingKind: bindingKind,
     repaint: repaint, paintKey: paintKey, paintDial: paintDial,
