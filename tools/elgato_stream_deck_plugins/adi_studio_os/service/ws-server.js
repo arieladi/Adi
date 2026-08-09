@@ -19,7 +19,7 @@ const MAX_MESSAGE = 1 << 20; // 1 MiB — far above any real payload; a bigger
                              // frame means something is wrong, so we close.
 
 export class WsServer {
-  constructor({ port = 9010, host = "127.0.0.1", logger = console } = {}) {
+  constructor({ port = 9011, host = "127.0.0.1", logger = console } = {}) {
     this.port = port;
     this.host = host;
     this.log = logger;

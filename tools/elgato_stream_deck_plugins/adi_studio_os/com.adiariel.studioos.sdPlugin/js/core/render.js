@@ -79,6 +79,31 @@ SOS.Render = (function () {
      `label` is accepted as an alias for `title`: nav bindings speak in `label`
      and only states.js translates, so a module handing a raw binding straight to
      the renderer would otherwise paint a silently blank key. */
+  // Title size tiers. The first pass used 19px in a 144 viewBox, which reads as
+  // tiny on the physical key — a numpad digit especially wants to fill the cap.
+  var SIZES = { xl: 82, lg: 40, md: 26, sm: 19 };
+
+  function titleSize(o) {
+    if (o.size && SIZES[o.size]) return SIZES[o.size];
+    if (o.glyph) return SIZES.sm;
+    var n = String(o.title == null ? '' : o.title).length;
+    if (n <= 2) return SIZES.xl;      // digits, operators, single symbols
+    if (n <= 4) return SIZES.lg;      // "Play", "1/16", deck labels
+    if (n <= 7) return SIZES.md;
+    return SIZES.sm;
+  }
+
+  /* Shrink to fit the key rather than letting a label run off the cap.
+     "Ableton" at the requested 40px is ~174px wide in a 144 viewBox — it bled
+     past the panel on hardware. Bold sans averages ~0.62em per character, which
+     is close enough to pick a size that fits without measuring text (there is no
+     layout engine available when the SVG is just a string). */
+  var FIT_W = KS - 24;
+  function fitSize(str, size) {
+    var w = 0.62 * size * String(str == null ? '' : str).length;
+    return w <= FIT_W ? size : Math.max(11, Math.floor(size * FIT_W / w));
+  }
+
   function key(o) {
     o = o || {};
     if (o.title == null && o.label != null) o = Object.assign({}, o, { title: o.label });
@@ -91,17 +116,41 @@ SOS.Render = (function () {
        + ' fill="' + (o.dim ? PALETTE.panelD : PALETTE.panel) + '"/>';
     if (o.active) {
       s += '<rect x="' + pad + '" y="' + pad + '" width="' + inner + '" height="' + inner + '" rx="' + r + '"'
-         + ' fill="none" stroke="' + color + '" stroke-width="3"/>';
+         + ' fill="none" stroke="' + color + '" stroke-width="4"/>';
     }
-    if (o.glyph) s += text(truncate(o.glyph, 4), KS / 2, KS / 2 + 12, 34, 800, color);
-    if (o.title) {
-      s += text(truncate(o.title, 9), KS / 2, o.glyph ? KS - 34 : KS / 2 + 7,
-                19, 800, o.dim ? PALETTE.dim : PALETTE.text);
+
+    var ts = titleSize(o);
+    var hasSub = !!o.sub;
+
+    if (o.glyph) {
+      // An explicit size wins over the glyph layout's default, and the glyph
+      // gives ground so a big label still fits — otherwise a hub tile's name
+      // stays tiny no matter what the caller asks for.
+      var gt = fitSize(o.title, o.size && SIZES[o.size] ? SIZES[o.size] : SIZES.sm + 3);
+      var gs = gt > SIZES.md ? 38 : 46;
+      s += text(truncate(o.glyph, 4), KS / 2, (o.title ? KS * 0.40 : KS / 2 + 14), gs, 800, color);
+      if (o.title) {
+        s += text(o.title, KS / 2, KS - (hasSub ? 30 : 16),
+                  gt, 800, o.dim ? PALETTE.dim : PALETTE.text);
+      }
+    } else if (o.title != null && o.title !== '') {
+      // Optically centred: big type sits low if you use the geometric middle, so
+      // the baseline is nudged by a fraction of the cap height instead.
+      var fs = fitSize(o.title, ts);
+      var cy = hasSub ? (KS / 2 - 6) : (KS / 2);
+      s += text(o.title, KS / 2, cy + fs * 0.35, fs, 800, o.dim ? PALETTE.dim : PALETTE.text);
     }
-    if (o.sub) s += text(truncate(o.sub, 16), KS / 2, KS - 16, 11, 600, PALETTE.dim);
+
+    // `subStrong` promotes the caption to the real payload — a delay cell's
+    // "419.6 ms" is what you actually read; "1/4" only tells you which row.
+    if (hasSub) {
+      s += o.subStrong
+        ? text(truncate(o.sub, 12), KS / 2, KS - 14, 21, 800, o.color || PALETTE.text)
+        : text(truncate(o.sub, 18), KS / 2, KS - 15, 13, 600, PALETTE.dim);
+    }
     if (o.badge) {
-      s += '<circle cx="' + (KS - 26) + '" cy="30" r="13" fill="' + color + '"/>';
-      s += text(truncate(o.badge, 3), KS - 26, 34, 12, 800, PALETTE.bg);
+      s += '<circle cx="' + (KS - 25) + '" cy="27" r="15" fill="' + color + '"/>';
+      s += text(truncate(o.badge, 3), KS - 25, 32, 15, 800, PALETTE.bg);
     }
     return s + '</svg>';
   }

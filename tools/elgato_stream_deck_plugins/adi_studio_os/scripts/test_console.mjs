@@ -50,8 +50,9 @@ ok("(5,0)=7 (6,0)=8 (7,0)=9", at(5, 0) === "7" && at(6, 0) === "8" && at(7, 0) =
 ok("(8,0)=plus  (8,1)=minus", at(8, 0) === "plus" && at(8, 1) === "minus");
 ok("(8,2)=backspace", at(8, 2) === "backspace");
 ok("(8,3)=enter on Button 36", at(8, 3) === "enter" && S.btn(8, 3) === 36);
-ok("(5,3)=0  (6,3)=decimal  (7,3)=clear on Button 35",
-   at(5, 3) === "0" && at(6, 3) === "decimal" && at(7, 3) === "clear" && S.btn(7, 3) === 35);
+// Adi swapped C and 0 on hardware: zero now sits beside Enter.
+ok("(5,3)=clear  (6,3)=decimal  (7,3)=0 on Button 35",
+   at(5, 3) === "clear" && at(6, 3) === "decimal" && at(7, 3) === "0" && S.btn(7, 3) === 35);
 ok("exactly 16 pad cells", Object.keys(pad).length === 16);
 ok("nothing leaks left of col 5", Object.keys(pad).every((b) => S.colOf(+b) >= 5));
 

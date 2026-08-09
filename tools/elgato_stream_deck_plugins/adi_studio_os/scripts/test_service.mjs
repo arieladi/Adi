@@ -9,7 +9,7 @@
 import { spawn } from "node:child_process";
 import http from "node:http";
 
-const PORT = 9199; // not 9010, so a running service is never disturbed
+const PORT = 9199; // not 9011, so a running service is never disturbed
 const URL_WS = `ws://127.0.0.1:${PORT}`;
 const SERVICE = new URL("../service/index.js", import.meta.url).pathname;
 

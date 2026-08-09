@@ -17,15 +17,7 @@
     { "Platform": "mac", "MinimumVersion": "13" },
     { "Platform": "windows", "MinimumVersion": "10" }
   ],
-  "Profiles": [
-    {
-      "Name": "StudioOS",
-      "DeviceType": 13,
-      "Readonly": false,
-      "DontAutoSwitchWhenInstalled": true,
-      "AutoInstall": false
-    }
-  ],
+  "_comment_profiles": "No Profiles block on purpose. That key declares an EMBEDDED .streamDeckProfile, which is a binary the Stream Deck app alone can produce — declaring one we do not ship makes the app log 'dropped embedded profile (profile not found on disk)' at every launch. The surface is generated instead by scripts/make_profile.py, which writes the installed JSON form directly.",
   "Actions": [
     {
       "Name": "Studio OS Cell",

@@ -3,7 +3,7 @@
    ipc.js — client for the Studio OS Node backend service (docs/IPC.md).
 
    The CEF frontend cannot open a MIDI port, synthesise a keystroke or spawn a
-   process, so everything native goes over ws://127.0.0.1:9010 to a Node service
+   process, so everything native goes over ws://127.0.0.1:9011 to a Node service
    the installer registers as a login agent (docs/ARCHITECTURE.md).
 
    One rule shapes this file: REALTIME MESSAGES ARE NEVER QUEUED. A Note On that
@@ -16,7 +16,7 @@
 window.SOS = window.SOS || {};
 
 SOS.IPC = (function () {
-  var DEFAULT_URL = 'ws://127.0.0.1:9010';
+  var DEFAULT_URL = 'ws://127.0.0.1:9011';
   var RETRY_MS = 1500;
 
   var ws = null, url = DEFAULT_URL, online = false, retry = null;

@@ -23,7 +23,7 @@ Rulings that produced this shape live in [DECISIONS.md](DECISIONS.md).
 │  │  audio/engine.js    Web Audio FFT/meters  ◄── Visualizers live here │  │
 │  └───────┬──────────────────────────────────┬────────────────────────┘  │
 └──────────┼──────────────────────────────────┼───────────────────────────┘
-           │ ws://127.0.0.1:9010              │ ws://127.0.0.1:9006
+           │ ws://127.0.0.1:9011              │ ws://127.0.0.1:9006
            │ (Studio OS IPC)                  │ (unchanged legacy protocol)
 ┌──────────▼───────────────────────┐   ┌──────▼──────────────────────────┐
 │  studioos-service  (Node 20.20)  │   │  AdiVST Remote Script (Ableton) │

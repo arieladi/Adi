@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Studio OS</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; padding:14px; background:#2d2d2d; color:#d8d8d8;
+           font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    h2 { margin:0 0 4px; font-size:13px; color:#9fa6ad; text-transform:uppercase; letter-spacing:.06em; }
+    p.hint { margin:0 0 14px; color:#8a9096; font-size:12px; }
+    .row { display:flex; align-items:center; gap:10px; margin-bottom:9px; }
+    .row label { flex:0 0 108px; text-align:right; color:#9fa6ad; }
+    input { flex:1; background:#3d3d3d; border:1px solid #4a4a4a; border-radius:4px;
+            color:#e8edf2; padding:5px 7px; font:inherit; }
+    .pill { display:inline-block; padding:2px 9px; border-radius:10px; font-size:11px; font-weight:700; }
+    .up { background:#1f4d3f; color:#6fe3c4; } .down { background:#4d1f1f; color:#ff8b8b; }
+    hr { border:0; border-top:1px solid #444; margin:14px 0; }
+    code { background:#3d3d3d; padding:1px 5px; border-radius:3px; font-size:11px; }
+  </style>
+</head>
+<body>
+  <h2>Studio OS</h2>
+  <p class="hint">
+    Place <b>Studio OS Cell</b> on all 36 keys and <b>Studio OS Dial</b> on all 6 dials once —
+    each reads its own position and the plugin drives everything centrally.
+    Nothing is configured per key.
+  </p>
+
+  <div class="row"><label>Surface</label><span id="surface">—</span></div>
+  <div class="row"><label>Service</label><span id="svc" class="pill down">checking…</span></div>
+
+  <hr />
+
+  <div class="row"><label>Service port</label><input id="servicePort" type="number" value="9011" /></div>
+  <div class="row"><label>Ableton port</label><input id="abletonPort" type="number" value="9006" /></div>
+  <div class="row"><label>rekordbox MIDI</label><input id="rekordboxPort" value="Adi RekordBox Controller" /></div>
+  <div class="row"><label>Studio MIDI</label><input id="studioPort" value="Adi Studio OS MIDI" /></div>
+
+  <p class="hint" style="margin-top:12px">
+    Windows needs <a href="https://www.tobias-erichsen.de/software/loopmidi.html">loopMIDI</a>
+    ports with these exact names — RtMidi cannot create virtual ports there.
+    macOS creates them itself. Backend service: <code>ws://127.0.0.1:<span id="pShow">9011</span></code>
+  </p>
+
+<script>
+let ws = null, uuid = null, settings = {};
+
+function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info) {
+  uuid = inUUID;
+  ws = new WebSocket('ws://127.0.0.1:' + port);
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ event: registerEvent, uuid: inUUID }));
+    ws.send(JSON.stringify({ event: 'getGlobalSettings', context: inUUID }));
+    try {
+      const d = (typeof info === 'string' ? JSON.parse(info) : info).devices || [];
+      const dev = d.find(x => x.type === 13) || d[0];
+      if (dev) document.getElementById('surface').textContent =
+        `${dev.name} — ${dev.size.columns}x${dev.size.rows} keys`;
+    } catch (e) { /* info is optional */ }
+  };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.event === 'didReceiveGlobalSettings') {
+      settings = (m.payload && m.payload.settings) || {};
+      for (const id of ['servicePort', 'abletonPort', 'rekordboxPort', 'studioPort']) {
+        if (settings[id] != null) document.getElementById(id).value = settings[id];
+      }
+      document.getElementById('pShow').textContent = settings.servicePort || 9011;
+      probe();
+    }
+  };
+}
+
+function save() {
+  for (const id of ['servicePort', 'abletonPort']) settings[id] = Number(document.getElementById(id).value);
+  for (const id of ['rekordboxPort', 'studioPort']) settings[id] = document.getElementById(id).value;
+  document.getElementById('pShow').textContent = settings.servicePort || 9011;
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({ event: 'setGlobalSettings', context: uuid, payload: settings }));
+  }
+  probe();
+}
+for (const id of ['servicePort', 'abletonPort', 'rekordboxPort', 'studioPort']) {
+  document.getElementById(id).addEventListener('change', save);
+}
+
+// The service answers a plain GET on the same port, so the PI can report health
+// without opening a second control socket.
+async function probe() {
+  const el = document.getElementById('svc');
+  const port = settings.servicePort || 9011;
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/`, { cache: 'no-store' });
+    const j = await r.json();
+    el.className = 'pill up';
+    el.textContent = `running · ${j.clients} client${j.clients === 1 ? '' : 's'}`;
+  } catch {
+    el.className = 'pill down';
+    el.textContent = 'not running';
+  }
+}
+setInterval(probe, 4000);
+</script>
+</body>
+</html>
