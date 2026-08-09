@@ -347,3 +347,83 @@ were then written by hand.
 | **Dials 5–6** | overlay (States 0/1/3) · module in State 4 | active sub-plugin |
 | **Cols 5–8** | overlay region (States 0/1/3) | active sub-plugin |
 | **State 2** | full-device takeover — all 36 keys + all 6 dials | n/a |
+
+
+---
+
+## Batch 6 — the responsive pivot
+
+Adi rejected two things at once: the Canvas-to-SVG shim under the Ableton
+controllers, and the overlay model where a docked window hid the module beneath
+it. Both are architectural, and between them they supersede D3, D8, D10 and D15's
+rationale.
+
+### L1 — Layout model
+
+**RULING — breakpoint layouts.** A screen declares layouts at fixed column
+widths and the engine picks the largest that fits, like CSS breakpoints. Every
+layout is hand-designed, so nothing lands somewhere stupid by emergent accident,
+and every one can be rendered in the preview sheet and tested.
+
+### L2 — Rekordbox compact view
+
+**RULING — both decks, 4 hot cues each.** Keeps the two-deck mirror that makes
+the layout readable by feel; drops cues 5-8. *(Not yet implemented.)*
+
+### L3 — Dial sharing *(superseded by L3a)*
+
+**RULING — nav windows are keys-only; the module keeps all six dials.**
+
+### L3a — Dials are borrowed, not shared *(supersedes L3)*
+
+L3 did not survive contact with the delay calculator: a usable delay view needs
+a BPM input and a division selector, and spending 2 of 16 keys on each leaves no
+room for readouts.
+
+**RULING — a window may declare `borrowDials: N`** and takes the first N dials;
+the module keeps the rest. Windows borrow from the LEFT so the borrowed pair is
+always dials 1-2 — one fixed place to look.
+
+**PARKED by explicit instruction:** background modules are not yet told they have
+fewer dials. They still answer for dials 1-2 and those answers simply are not
+painted. Responsive module dials are the next piece of work.
+
+### L4 — Native SVG for Ableton
+
+**RULING — redraw natively, keep the parameter maps exactly.** Every
+`renderTouch` becomes a native SVG emitter. The parameter maps, name regexes,
+OVERRIDES tables and registry patterns carry across unchanged — that is verified
+DATA, not drawing code. Visuals get re-verified against Live; mappings do not.
+*(Not yet implemented — `SOS.SvgCtx` and the byte-identical copies are still in
+place.)*
+
+### L5 — Delay calculator is a viewport, not a table
+
+The 24-cell grid was never requested and does not fit a 16-key dock.
+
+**RULING — the Nick Fever model, one division at a time**, inside the standard
+dock plus 2 borrowed dials:
+
+```
+dial 1  BPM              dial 2  note division (slides 1/1 … 1/128)
+
+col:      0            1            2            3
+row0   [ 1/8 ]      [ 143 ]      [ C0 ]       [ Oct 0 ]
+row1    NORMAL       209.8 ms     4.77 Hz
+row2    TRIPLET      139.9 ms     7.15 Hz
+row3    DOTTED       314.7 ms     3.18 Hz
+```
+
+**Math is exact.** `triplet = normal × 2/3`, not the legacy 0.667 — which its own
+comment admitted was "not exact 2/3" and drifts 2.2 ms on a 1/1 at 120 BPM.
+Values are ROUNDED, never truncated: a 1/2 triplet at 120 BPM is 666.67 ms and
+must read 667. The acoustic readout (A4=442) survives on the header row, so
+nothing was dropped to make room.
+
+### Superseded by this batch
+
+* **D3 / D8** — the fixed cols 5-8 overlay and dials 5-6 ownership. Windows now
+  dock 4 columns and borrow dials explicitly.
+* **D10** — the delay grid's column offset. There is no 24-cell grid any more.
+* **D15** — still in force, but now means "docks nothing" rather than
+  "borrows the whole board from an overlay".

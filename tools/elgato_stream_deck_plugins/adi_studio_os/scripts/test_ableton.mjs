@@ -20,7 +20,7 @@ Object.defineProperty(global, "navigator", {
 
 // app.html order, verbatim.
 const FILES = [
-  "js/core/sd-client.js", "js/core/surface.js", "js/core/render.js", "js/core/ipc.js",
+  "js/core/sd-client.js", "js/core/surface.js", "js/core/render.js", "js/core/ipc.js", "js/core/layout.js",
   "js/core/input.js", "js/core/nav.js", "js/core/states.js",
   "js/modules/root.js", "js/modules/console.js", "js/modules/rekordbox.js",
   "js/modules/midictl.js", "js/modules/viz.js", "js/modules/ableton.js",
@@ -229,8 +229,9 @@ ok("hub is fullScreenCapable (needs all 6 dials)", A.hub.fullScreenCapable === t
 Nav.toRoot(); States.setState(0);
 Nav.enter("ableton.hub");
 ok("entering auto-enters State 4 (D15)", States.get() === 4, `state=${States.get()}`);
+const rootL = SOS.Layout.pick(M.Root.screen, 9);
 ok("Ableton tile is reachable from the Root Hub",
-   !!M.Root.screen.keys(1) && /Ableton/.test(M.Root.screen.keys(1).label));
+   !!rootL.keys(0, 0) && /Ableton/.test(rootL.keys(0, 0).label));
 let dialsBound = 0;
 for (let d = 1; d <= 6; d++) { const z = States.resolveDial(d); if (z && z.svg) dialsBound++; }
 ok("all 6 dials carry a strip slice", dialsBound === 6, `bound=${dialsBound}`);

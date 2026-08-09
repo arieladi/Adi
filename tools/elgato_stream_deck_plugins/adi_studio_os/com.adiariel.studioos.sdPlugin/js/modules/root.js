@@ -41,23 +41,25 @@ SOS.Modules.Root = (function () {
      only real once Cubase is installed). `module` gates on the module having
      actually been ported, so a half-built Studio OS shows fewer tiles rather
      than keys that navigate into nothing. */
-  var HUBS = {
-    1: { label: 'Ableton', glyph: '♪', color: R.PALETTE.ableton,   screen: 'ableton.hub',   module: 'Ableton' },
-    2: { label: 'Cubase',  glyph: '◇', color: R.PALETTE.midi,      screen: 'cubase.hub',    needs: 'cubase' },
-    3: { label: 'DJ',      glyph: '⏻', color: R.PALETTE.rekordbox, screen: 'rekordbox.hub', module: 'Rekordbox' },
-    4: { label: 'MIDI',    glyph: '⌗', color: R.PALETTE.midi,      screen: 'midictl.hub',   module: 'MidiCtl' },
-    5: { label: 'Meters',  glyph: '▥', color: R.PALETTE.viz,       screen: 'viz.hub',       module: 'Viz' },
-  };
+  // Region-local: column index within row 0 of whatever region the hub is given.
+  var HUBS = [
+    { label: 'Ableton', glyph: '♪', color: R.PALETTE.ableton,   screen: 'ableton.hub',   module: 'Ableton' },
+    { label: 'Cubase',  glyph: '◇', color: R.PALETTE.midi,      screen: 'cubase.hub',    needs: 'cubase' },
+    { label: 'DJ',      glyph: '⏻', color: R.PALETTE.rekordbox, screen: 'rekordbox.hub', module: 'Rekordbox' },
+    { label: 'MIDI',    glyph: '⌗', color: R.PALETTE.midi,      screen: 'midictl.hub',   module: 'MidiCtl' },
+    { label: 'Meters',  glyph: '▥', color: R.PALETTE.viz,       screen: 'viz.hub',       module: 'Viz' },
+  ];
 
   /* ROWS 1+ are OS actions. `action` names an entry in service/os.js ACTIONS;
      availability comes from the service, so nothing here hardcodes a platform. */
+  // Region-local "col,row" -> OS action.
   var SLOTS = {
-    10: { label: 'Start',  glyph: '⊞',  action: 'start' },
-    11: { label: 'Run',    glyph: '▸_', action: 'run' },
-    12: { label: 'Shell',  glyph: '>_', action: 'shell' },
-    13: { label: 'Tasks',  glyph: '▤',  action: 'taskmgr' },
-    14: { label: 'Chrome', glyph: '◉',  action: 'chrome' },
-    19: { label: 'Lynx',   glyph: '⎍',  action: 'lynx' },
+    '0,1': { label: 'Start',  glyph: '⊞',  action: 'start' },
+    '1,1': { label: 'Run',    glyph: '▸_', action: 'run' },
+    '2,1': { label: 'Shell',  glyph: '>_', action: 'shell' },
+    '3,1': { label: 'Tasks',  glyph: '▤',  action: 'taskmgr' },
+    '4,1': { label: 'Chrome', glyph: '◉',  action: 'chrome' },
+    '0,2': { label: 'Lynx',   glyph: '⎍',  action: 'lynx' },
   };
 
   // A hub tile only appears once its module is actually ported and registered.
@@ -93,6 +95,36 @@ SOS.Modules.Root = (function () {
   function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
   function volLabel() { return muted ? 'muted' : vol + '%'; }
 
+  // ------------------------------------------------------------------ keys
+  function rootKeys(col, row) {
+    if (row === 0) {
+      var hub = HUBS[col];
+      if (!hub) return null;
+      if (hub.needs && !usable(hub.needs)) return null;         // app not installed
+      if (hub.module && !moduleReady(hub.module)) return null;  // module not ported
+      return {
+        label: hub.label, glyph: hub.glyph, size: 'lg',
+        color: hub.color, kind: 'tap',
+        tap: function () { Nav.enter(hub.screen); },
+      };
+    }
+    var slot = SLOTS[col + ',' + row];
+    if (!slot) return null;
+    if (slot.action && !usable(slot.action)) return null;       // not on this machine
+    return {
+      // No sub on hub tiles: at 72px the caption is unreadable and the glyph
+      // plus a large name already says everything.
+      label: slot.label, glyph: slot.glyph, size: 'lg',
+      color: slot.color || R.PALETTE.nav, kind: 'tap',
+      dim: !IPC.isOnline(),
+      tap: slot.run || function () {
+        if (slot.action) IPC.os.action(slot.action);
+        else if (slot.app) IPC.os.launch(slot.app);
+        else if (slot.hotkey) IPC.os.hotkey(slot.hotkey);
+      },
+    };
+  }
+
   // ------------------------------------------------------------------ screen
   var screen = {
     id: 'root',
@@ -101,35 +133,14 @@ SOS.Modules.Root = (function () {
     color: R.PALETTE.accent,
     fullScreenCapable: false,
 
-    keys: function (button) {
-      var hub = HUBS[button];
-      if (hub) {
-        if (hub.needs && !usable(hub.needs)) return null;      // app not installed
-        if (hub.module && !moduleReady(hub.module)) return null; // module not ported
-        return {
-          label: hub.label, glyph: hub.glyph, size: 'lg',
-          color: hub.color, kind: 'tap',
-          tap: function () { Nav.enter(hub.screen); },
-        };
-      }
-
-      var slot = SLOTS[button];
-      if (!slot) return null;
-      if (slot.action && !usable(slot.action)) return null;   // not on this machine
-
-      return {
-        // No sub on hub tiles: at 72px the caption is unreadable and the glyph
-        // plus a large name already says everything.
-        label: slot.label, glyph: slot.glyph, size: 'lg',
-        color: slot.color || R.PALETTE.nav, kind: 'tap',
-        dim: !IPC.isOnline(),
-        tap: slot.run || function () {
-          if (slot.action) IPC.os.action(slot.action);
-          else if (slot.app) IPC.os.launch(slot.app);
-          else if (slot.hotkey) IPC.os.hotkey(slot.hotkey);
-        },
-      };
-    },
+    /* The Root Hub already lived entirely in columns 0-4, so the 9-column and
+       5-column layouts are the SAME function — it simply stops being asked about
+       columns that no longer exist. That is the cheapest possible breakpoint and
+       the reason the hub survives a docked window untouched. */
+    layouts: [
+      { cols: 9, keys: rootKeys },
+      { cols: 5, keys: rootKeys },
+    ],
 
     dials: function (dial) {
       switch (dial) {

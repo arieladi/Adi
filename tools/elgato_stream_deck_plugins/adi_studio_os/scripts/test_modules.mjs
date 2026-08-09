@@ -19,7 +19,7 @@ global.window = global;
 global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
 const CORE = ["js/core/sd-client.js", "js/core/surface.js", "js/core/render.js",
-              "js/core/ipc.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js"];
+              "js/core/ipc.js", "js/core/layout.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js"];
 const MODS = ["js/modules/root.js", "js/modules/console.js",
               "js/modules/rekordbox.js", "js/modules/midictl.js", "js/modules/index.js"];
 
@@ -145,13 +145,20 @@ const mcHeld = heldAudit(mc.hub, "midictl");
 ok("drum pads are held (16 momentary keys)", mcHeld.length >= 16, `count=${mcHeld.length}`);
 
 // ---------------------------------------------------------------------------
-console.log("\n[6] overlay-safety: nothing essential hides under cols 5-8");
-// Root Hub is visible in States 0/1/3, so every tile must be left of col 5.
-const rootBad = [];
-for (let b = 1; b <= S.KEYS; b++) {
-  if (M.Root.screen.keys(b) && S.colOf(b) >= 5) rootBad.push(b);
+console.log("\n[6] responsive: the Root Hub survives a docked window (L1)");
+// It is no longer about hiding: the hub must still paint every tile when its
+// region shrinks from 9 columns to 5.
+const rootFull = SOS.Layout.pick(M.Root.screen, 9);
+const rootCompact = SOS.Layout.pick(M.Root.screen, 5);
+ok("declares a 9-col and a 5-col layout", !!rootFull && !!rootCompact,
+   `${rootFull && rootFull.cols} / ${rootCompact && rootCompact.cols}`);
+function tilesIn(layout) {
+  let n = 0;
+  for (let r = 0; r < S.ROWS; r++) for (let c = 0; c < layout.cols; c++) if (layout.keys(c, r)) n++;
+  return n;
 }
-ok("Root Hub keeps every tile in cols 0-4", rootBad.length === 0, `cols>=5: ${rootBad}`);
+ok("no tile is lost when the region shrinks to 5 columns",
+   tilesIn(rootCompact) === tilesIn(rootFull), `${tilesIn(rootCompact)} vs ${tilesIn(rootFull)}`);
 
 // ---------------------------------------------------------------------------
 console.log("\n[7] reachability");
@@ -159,7 +166,7 @@ States.setState(0);
 Nav.toRoot();
 M.install ? null : null;
 const reach = [];
-for (let b = 1; b <= 5; b++) { const k = M.Root.screen.keys(b); if (k) reach.push(`${b}:${k.label}`); }
+for (let c = 0; c < 5; c++) { const k = rootFull.keys(c, 0); if (k) reach.push(`${c}:${k.label}`); }
 ok("rekordbox is reachable from the Root Hub", reach.some((r) => /DJ/.test(r)), reach.join(" "));
 ok("midictl is reachable from the Root Hub", reach.some((r) => /MIDI/.test(r)), reach.join(" "));
 ok("un-ported modules show no tile", !reach.some((r) => /Ableton|Meters/.test(r)), reach.join(" "));
