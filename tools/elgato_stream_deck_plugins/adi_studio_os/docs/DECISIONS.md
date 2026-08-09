@@ -427,3 +427,63 @@ nothing was dropped to make room.
 * **D10** — the delay grid's column offset. There is no 24-cell grid any more.
 * **D15** — still in force, but now means "docks nothing" rather than
   "borrows the whole board from an overlay".
+
+
+---
+
+## Batch 7 — dial side, and the first native controller
+
+### L3b — Windows borrow the RIGHTMOST dials *(supersedes L3a's direction)*
+
+L3a had windows borrow from the left, which put the calculator's operators at
+the opposite end of the device from the dock they belong to.
+
+**RULING — a window borrowing N dials takes the LAST N.** With N=2 that is
+physical dials **5 and 6**, directly under the 16-key dock. Dials **1-4 stay with
+the module**, globally. A window still addresses its own dials 1..N; the mapping
+to physical 5-6 happens in `states.js`, so a window never learns where it was
+docked. Modules read `States.moduleDials()` to pick their dial layout.
+
+### L6 — Global dual-layout contract
+
+**RULING — every module and controller from now on ships TWO hand-crafted
+layouts:** a Full layout for the whole board, and a Compact layout for when a nav
+window is docked. Not a reflow of the full one — a bespoke design.
+
+Workflow, per controller: **(1)** present the Full layout for inspection,
+**(2)** design the Compact layout together, **(3)** only then move on.
+
+### L7 — EQ8 Compact Layout
+
+Presented Full first. EQ8 owns **zero keys** in either layout — all 36 belong to
+the Ableton hub shell.
+
+**RULING — 4 dials, 4 fixed bands, no GLOB:**
+
+| Dial | Band |
+|---|---|
+| 1 | Band 1 |
+| 2 | Band 2 |
+| 3 | Band 3 |
+| 4 | **Band 6** |
+
+* Modes **FREQ / GAIN / Q only** — the GLOB tab is dropped entirely in compact.
+  No response graph, no Output Gain, no Scale, so all four dials stay strictly on
+  bands.
+* Bands are **fixed, not a sliding window** — no pagination arrows in compact.
+* A GLOB mode carried in from the full layout falls back to FREQ rather than
+  rendering an empty strip.
+
+### L4 applied — EQ8 is now native SVG
+
+First controller off the Canvas shim. `js/ableton/svg.js` provides native SVG
+primitives (every one records its x-extent so the compositor can clip a zone to
+what it can see), and `EQ8Controller.js` emits SVG directly through them.
+
+Carried across **unchanged**, because it is verified data and not ink: the bridge
+messages, band indices, `_BAND_RE` name resolution, filter-type classification,
+the response model and every graph range.
+
+The remaining 13 controllers are still byte-identical shim copies, and
+`scripts/test_ableton.mjs` asserts that on every run — so their parameter maps
+demonstrably have not drifted while EQ8 was rewritten.

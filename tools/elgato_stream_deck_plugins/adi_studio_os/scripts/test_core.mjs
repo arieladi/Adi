@@ -119,14 +119,17 @@ ok('S0: module region is cols 0-4', States.regions().module.cols === 5);
 ok('S0: numpad borrows NO dials', States.borrowedDials() === 0);
 States.setState(1);
 ok('S1: calculator borrows 2 dials (L3a)', States.borrowedDials() === 2, `n=${States.borrowedDials()}`);
-ok('S1: dials 1-2 to the window, 3-6 to the module',
-   States.overlayOwnsDial(1) && States.overlayOwnsDial(2) && !States.overlayOwnsDial(3));
+// L3b: the dock is on the RIGHT, so its dials are the rightmost pair.
+ok('S1: dials 5-6 to the window, 1-4 to the module',
+   States.overlayOwnsDial(5) && States.overlayOwnsDial(6)
+   && !States.overlayOwnsDial(4) && !States.overlayOwnsDial(1));
+ok('S1: module keeps 4 dials', States.moduleDials() === 4, `n=${States.moduleDials()}`);
 States.setState(2);
 ok('S2: delay is a 4-col dock, not a takeover', States.dockCols() === 4 && !States.overlayOwnsKey(1));
 ok('S2: delay borrows 2 dials (BPM + division)', States.borrowedDials() === 2);
 States.setState(4);
 ok('S4: nothing docked', !States.overlayOwnsKey(8) && States.regions().module.cols === 9);
-ok('S4: module keeps every dial', States.borrowedDials() === 0);
+ok('S4: module keeps every dial', States.borrowedDials() === 0 && States.moduleDials() === 6);
 States.setState(0);
 
 console.log('\n[8] carousel wraps 0..4');

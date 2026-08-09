@@ -23,7 +23,7 @@ const FILES = [
   "js/core/sd-client.js", "js/core/surface.js", "js/core/render.js", "js/core/ipc.js", "js/core/layout.js",
   "js/core/input.js", "js/core/nav.js", "js/core/states.js",
   "js/modules/root.js", "js/modules/console.js", "js/modules/rekordbox.js",
-  "js/modules/midictl.js", "js/modules/viz.js", "js/modules/ableton.js",
+  "js/modules/midictl.js", "js/modules/viz.js", "js/modules/ableton.js", "js/ableton/svg.js",
   "js/ableton/GenericController.js", "js/ableton/EQ8Controller.js",
   "js/ableton/PulsarMassiveController.js", "js/ableton/ProQ3Controller.js",
   "js/ableton/SpectreController.js", "js/ableton/IndeqController.js",
@@ -49,12 +49,20 @@ Nav.wire(States.syncToScreen);
 M.install();
 const A = M.Ableton;
 
-console.log("\n[2] controllers are byte-identical copies");
+console.log("\n[2] controllers not yet rewritten are still byte-identical copies");
+// EQ8 has been rewritten natively (L4) and svg.js is new, so both are expected
+// to differ. Everything else must still diff clean against 1.5.9.0 — that is
+// what guarantees their verified parameter maps have not drifted.
+const NATIVE = new Set(["EQ8Controller.js", "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
+  if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
   const b = fs.readFileSync(path.join(LEGACY, f));
   ok(`${f} unchanged from 1.5.9.0`, a.equals(b), `${a.length} vs ${b.length} bytes`);
 }
+ok("EQ8Controller.js is the native rewrite, not a copy",
+   !fs.readFileSync(path.join(NEW, "js/ableton/EQ8Controller.js")).equals(
+     fs.readFileSync(path.join(LEGACY, "EQ8Controller.js"))));
 
 console.log("\n[3] SvgCtx — the Canvas 2D subset the controllers use");
 const C = new SOS.SvgCtx(200, 100);
@@ -127,7 +135,7 @@ ok("Ableton's native Saturator does NOT hit SaturateController",
    resolve({ class_name: "Saturator", name: "Saturator", controller: "generic" }) !== AVC.SaturateController,
    nameOf(resolve({ class_name: "Saturator", name: "Saturator", controller: "generic" })));
 
-console.log("\n[5] every controller renders through the shim");
+console.log("\n[5] every controller renders (native or shimmed) and accepts input");
 // A plausible device state: enough named params that a predefined controller can
 // resolve some roles, plus a full EQ8 snapshot.
 const st = A.bridge.state();
@@ -170,9 +178,15 @@ for (const name of CTORS) {
   try {
     const inst = new Ctor(svc);
     inst.onState(st);
-    const cx = new SOS.SvgCtx(1200, 100);
-    inst.renderTouch(cx);
-    out = cx.serialize();
+    // Native controllers (L4) build an SVG bag; the rest still draw through the
+    // Canvas shim. Both must produce a real strip.
+    if (typeof inst.build === "function") {
+      out = SOS.Svg.serialize(inst.build(6), 0, 1200, 100);
+    } else {
+      const cx = new SOS.SvgCtx(1200, 100);
+      inst.renderTouch(cx);
+      out = cx.serialize();
+    }
     // Exercise input too — a controller that renders but throws on a dial turn
     // is still broken.
     inst.onDial(0, 1); inst.onDialPress(0); inst.onTouch(250, 50, false);
@@ -224,7 +238,59 @@ ok("real zones are clipped, not duplicated (bodies differ)",
 const sizes = zones.map((z) => z.length);
 ok(`each zone stays small (max ${Math.max(...sizes)} chars)`, Math.max(...sizes) < 9000, sizes.join(","));
 
-console.log("\n[7] hub wiring");
+console.log("\n[7] EQ8 dual layout — full 6 dials vs compact 4 (L3b + the compact ruling)");
+const eq = new AVC.EQ8Controller(svc);
+eq.onState(st);
+
+// --- FULL ---
+eq.setZones(6);
+ok("full offers all four modes incl GLOB", eq._modes().join(",") === "freq,gain,q,glob", eq._modes().join(","));
+ok("full uses the sliding focus window", [0,1,2,3,4,5].map((s2) => eq._bandFor(s2)).join(",") === "1,2,3,4,5,6",
+   [0,1,2,3,4,5].map((s2) => eq._bandFor(s2)).join(","));
+const fullBag = eq.build(6);
+const fullSvg = SOS.Svg.serialize(fullBag, 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(fullSvg));
+ok("full shows pagination arrows", fullSvg.includes("▶") || fullSvg.includes("◀"));
+
+// --- COMPACT ---
+eq.setZones(4);
+ok("compact drops GLOB entirely", eq._modes().join(",") === "freq,gain,q", eq._modes().join(","));
+ok("compact maps dials 1-4 to bands 1,2,3,6",
+   [0,1,2,3].map((s2) => eq._bandFor(s2)).join(",") === "1,2,3,6",
+   [0,1,2,3].map((s2) => eq._bandFor(s2)).join(","));
+const compBag = eq.build(4);
+const compSvg = SOS.Svg.serialize(compBag, 0, 800, 100);
+ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(compSvg));
+ok("compact has NO pagination arrows", !compSvg.includes("▶") && !compSvg.includes("◀"));
+ok("compact renders no GLOB tab", !compSvg.includes("GLOB"));
+ok("compact shows bands B1 B2 B3 B6", ["B1","B2","B3","B6"].every((t) => compSvg.includes(">" + t + "<")),
+   ["B1","B2","B3","B6"].filter((t) => !compSvg.includes(">" + t + "<")).join(","));
+ok("compact does NOT show B4 or B5", !compSvg.includes(">B4<") && !compSvg.includes(">B5<"));
+
+// GLOB carried in from full must fall back, not render an empty strip.
+eq.setZones(6); eq.mode = "glob"; eq.setZones(4);
+ok("a GLOB mode carried into compact falls back to FREQ", eq.mode === "freq", eq.mode);
+
+// Dial 4 must address band 6, not band 4.
+let sent = null;
+const spy = { cmd: Object.assign({}, A.bridge.cmd, {
+  eq8FreqDelta: (band, d) => { sent = { band, d }; },
+  eq8ToggleBand: (band) => { sent = { toggle: band }; },
+}) };
+const eq2 = new AVC.EQ8Controller({ bridge: spy, sd: { log() {} }, layout: A._layout });
+eq2.onState(st); eq2.setZones(4); eq2.mode = "freq";
+eq2.onDial(3, 1);
+ok("compact dial 4 drives BAND 6", sent && sent.band === 6, JSON.stringify(sent));
+eq2.onDialPress(2);
+ok("compact dial 3 toggles BAND 3", sent && sent.toggle === 3, JSON.stringify(sent));
+eq2.setZones(6); eq2.onDial(3, 1);
+ok("full dial 4 still drives band focus+3 = 4", sent && sent.band === 4, JSON.stringify(sent));
+
+const titles = [0,1,2,3].map((s2) => { eq.setZones(4); return eq.dialTitle(s2); });
+ok("compact dial titles name B1 B2 B3 B6",
+   titles.map((t) => t.split(" ")[0]).join(",") === "B1,B2,B3,B6", titles.join(" | "));
+
+console.log("\n[8] hub wiring");
 ok("hub is fullScreenCapable (needs all 6 dials)", A.hub.fullScreenCapable === true);
 Nav.toRoot(); States.setState(0);
 Nav.enter("ableton.hub");
@@ -234,7 +300,24 @@ ok("Ableton tile is reachable from the Root Hub",
    !!rootL.keys(0, 0) && /Ableton/.test(rootL.keys(0, 0).label));
 let dialsBound = 0;
 for (let d = 1; d <= 6; d++) { const z = States.resolveDial(d); if (z && z.svg) dialsBound++; }
-ok("all 6 dials carry a strip slice", dialsBound === 6, `bound=${dialsBound}`);
+ok("all 6 dials carry a strip slice in Full Screen", dialsBound === 6, `bound=${dialsBound}`);
+
+// Dock a window: the module must drop to 4 dials and 5 columns, and the strip
+// must follow without the hub losing any control.
+States.setState(1);
+ok("docking a window leaves the module 4 dials", States.moduleDials() === 4, String(States.moduleDials()));
+let bound4 = 0, borrowed = 0;
+for (let d = 1; d <= 6; d++) {
+  const z = States.resolveDial(d);
+  if (d <= 4) { if (z && z.svg) bound4++; }
+  else if (z && !z.svg) borrowed++;
+}
+ok("strip reflows onto dials 1-4", bound4 === 4, `bound=${bound4}`);
+ok("dials 5-6 belong to the docked window", borrowed === 2, `borrowed=${borrowed}`);
+let compactKeys = 0;
+for (let b = 1; b <= S.KEYS; b++) if (S.colOf(b) < 5 && States.resolveKey(b)) compactKeys++;
+ok("the hub still paints its controls at 5 columns", compactKeys >= 6, `keys=${compactKeys}`);
+States.setState(4);
 const uri = R.dataUri(States.resolveDial(1).svg);
 ok("a zone slice encodes to a data URI", uri.startsWith("data:image/svg+xml;base64,"));
 ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
