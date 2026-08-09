@@ -43,6 +43,8 @@ Before asking me to design any controller's Compact layout, output a **Discovery
 
 I do not memorise legacy mappings. You have perfect recall of the codebase — act as my memory base. A rendered picture of the strip alongside the briefing is very welcome.
 
+**3. Chain the briefings.** When you finish a controller and commit it, do NOT stop and wait for me to ask for the next one. Put the **next controller's Discovery briefing at the very bottom of the same commit/success message**. A turn spent asking "shall I continue?" costs context for no information. This chains the *briefing* only — still stop for my ruling on the Compact layout before writing code.
+
 ## Where things stand
 
 **Done and verified — 394 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`):
