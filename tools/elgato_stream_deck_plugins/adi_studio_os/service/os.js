@@ -12,6 +12,8 @@
 // macOS requires the Stream Deck app to hold Accessibility permission, exactly
 // as the legacy console plugin's numpad did.
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import os from "node:os";
 
 const PLATFORM = os.platform();
@@ -199,24 +201,70 @@ export function launch(app) {
   return run("xdg-open", [name]);
 }
 
-/* Named Root Hub actions (D11). Each is one concept with two implementations,
-   rather than a raw hotkey the caller has to know the platform spelling of.
-   macOS equivalents for the Windows-named items are DERIVED, not ruled — they
-   are listed in DECISIONS.md D14 for veto. */
+/* Named Root Hub actions (D11). Each is one concept with per-platform
+   implementations, so modules never learn a platform spelling.
+
+   D14 REVISED on hardware: Start / Run / Shell are Windows concepts, and mapping
+   them to Launchpad / Spotlight / Terminal was a derived guess Adi rejected —
+   they are now `mac: null`, so they simply do not exist on macOS. `app` names an
+   application whose presence is probed, so a tile for something uninstalled
+   (Cubase, Lynx Mixer) never appears rather than failing when pressed. Install
+   the app and the tile shows up on its own. */
 export const ACTIONS = {
-  start:    { mac: () => launch("Launchpad"),          win: () => hotkey("ctrl+escape") },
-  run:      { mac: () => hotkey("cmd+space"),          win: () => ps('(New-Object -ComObject "Shell.Application").FileRun()') },
-  shell:    { mac: () => launch("Terminal"),           win: () => ps("Start-Process powershell") },
-  taskmgr:  { mac: () => launch("Activity Monitor"),   win: () => ps("Start-Process taskmgr") },
-  chrome:   { mac: () => launch("Google Chrome"),      win: () => ps("Start-Process chrome") },
-  lynx:     { mac: () => launch("Lynx Mixer"),         win: () => ps('Start-Process "Lynx Mixer"') },
+  start:    { mac: null, win: () => hotkey("ctrl+escape") },
+  run:      { mac: null, win: () => ps('(New-Object -ComObject "Shell.Application").FileRun()') },
+  shell:    { mac: null, win: () => ps("Start-Process powershell") },
+  taskmgr:  { macApp: "Activity Monitor", mac: () => launch("Activity Monitor"), win: () => ps("Start-Process taskmgr") },
+  chrome:   { macApp: "Google Chrome",    mac: () => launch("Google Chrome"),    win: () => ps("Start-Process chrome") },
+  lynx:     { macApp: "Lynx Mixer",       mac: () => launch("Lynx Mixer"),       win: () => ps('Start-Process "Lynx Mixer"') },
+  cubase:   { macApp: "Cubase",           mac: () => launch("Cubase"),           win: () => ps("Start-Process Cubase") },
 };
+
+const APP_DIRS = ["/Applications", "/System/Applications", "/System/Applications/Utilities",
+                  path.join(os.homedir(), "Applications")];
+
+let appCache = null;
+function macApps() {
+  if (appCache) return appCache;
+  appCache = new Set();
+  for (const dir of APP_DIRS) {
+    try {
+      for (const entry of fs.readdirSync(dir)) {
+        if (entry.endsWith(".app")) appCache.add(entry.slice(0, -4).toLowerCase());
+      }
+    } catch { /* directory may not exist */ }
+  }
+  return appCache;
+}
+
+// Cheap prefix match so "Cubase" finds "Cubase 13", which is how Steinberg
+// versions its bundle names.
+function macAppInstalled(name) {
+  const want = String(name).toLowerCase();
+  for (const have of macApps()) if (have === want || have.startsWith(want)) return true;
+  return false;
+}
+
+/* Which named actions can actually run here. The Root Hub hides everything that
+   reports unavailable, so the surface never shows a key that cannot work. */
+export function actionAvailability() {
+  const out = {};
+  for (const [name, a] of Object.entries(ACTIONS)) {
+    let available = false;
+    if (isMac) available = !!a.mac && (!a.macApp || macAppInstalled(a.macApp));
+    else if (isWin) available = !!a.win;
+    out[name] = { available, platform: PLATFORM };
+  }
+  return out;
+}
+
+export function rescanApps() { appCache = null; return actionAvailability(); }
 
 export function action(name) {
   const a = ACTIONS[String(name)];
   if (!a) return Promise.resolve(false);
-  if (isMac) return a.mac();
-  if (isWin) return a.win();
+  if (isMac) return a.mac ? a.mac() : Promise.resolve(false);
+  if (isWin) return a.win ? a.win() : Promise.resolve(false);
   return Promise.resolve(false);
 }
 

@@ -137,11 +137,14 @@ SOS.Modules.Console = (function () {
   // muscle memory is identical whichever one is up.
   var PAD = {};
   (function () {
+    // Bottom row is Clear · . · 0 · Enter — Adi swapped C and 0 on hardware so
+    // zero sits next to Enter, which is the pair the thumb actually travels
+    // between. (D5 originally had 0 bottom-left.)
     var rows = [
       ['7', '8', '9', 'plus'],
       ['4', '5', '6', 'minus'],
       ['1', '2', '3', 'backspace'],
-      ['0', 'decimal', 'clear', 'enter'],
+      ['clear', 'decimal', '0', 'enter'],
     ];
     for (var r = 0; r < 4; r++) for (var c = 0; c < 4; c++) PAD[S.btn(5 + c, r)] = rows[r][c];
   })();
@@ -177,9 +180,11 @@ SOS.Modules.Console = (function () {
       var token = PAD[button];
       if (!token) return null;
       return {
-        label: glyphOf(token), color: R.PALETTE.console, kind: 'tap',
+        // size 'xl' explicitly: a numpad digit should fill the key cap, and
+        // relying on the renderer's length heuristic would silently shrink if a
+        // token ever grew a second character.
+        label: glyphOf(token), size: 'xl', color: R.PALETTE.console, kind: 'tap',
         dim: !IPC.isOnline(),
-        sub: button === S.BTN_ANCHOR ? 'hold = state' : '',
         tap: function () { IPC.os.key(token); },
       };
     },
@@ -195,7 +200,7 @@ SOS.Modules.Console = (function () {
       if (!token) return null;
       var active = (token === 'plus' && calc.op === '+') || (token === 'minus' && calc.op === '−');
       return {
-        label: token === 'enter' ? '=' : glyphOf(token),
+        label: token === 'enter' ? '=' : glyphOf(token), size: 'xl',
         color: R.PALETTE.console, kind: 'tap', active: active,
         tap: function () {
           if (/^[0-9]$/.test(token)) calcDigit(token);
@@ -245,8 +250,11 @@ SOS.Modules.Console = (function () {
       var denom = denomAt(category, row);
       var ms = categoryMs(category, denom);
       return {
-        label: '1/' + denom,
+        // The note identifies the row; the VALUE is what you came to read, so it
+        // gets the weight (subStrong) rather than the usual dim caption.
+        label: '1/' + denom, size: 'md',
         sub: isHz ? fixed(freqHz(ms), 2) + ' Hz' : fixed(ms, 1) + ' ms',
+        subStrong: true,
         color: R.PALETTE.console, kind: 'tap',
         active: row === 0,
         tap: function () { /* display cell — legacy behaviour is read-only */ },

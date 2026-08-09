@@ -22,7 +22,7 @@
   var CELL = 'com.adiariel.studioos.cell';
   var DIAL = 'com.adiariel.studioos.dial';
 
-  var settings = { servicePort: 9010, abletonPort: 9006 };
+  var settings = { servicePort: 9011, abletonPort: 9006 };
 
   // ------------------------------------------------------------- key dispatch
   function runDown(button) {
@@ -140,6 +140,9 @@
   function wireIPC() {
     IPC.on('online', function (up) {
       SD.log('service ' + (up ? 'online' : 'offline'));
+      // Tile visibility depends on what is installed on this machine, and only
+      // the service can see that — so re-probe on every (re)connect.
+      if (up && SOS.Modules.Root) SOS.Modules.Root.refreshAvailability();
       States.repaint();   // module screens paint an offline affordance
     });
     IPC.connect();
@@ -147,15 +150,22 @@
 
   // The plugin only works once one cell is on all 36 keys and one dial action on
   // all 6 dials. Say so loudly rather than half-painting a broken surface.
-  var warned = false;
+  // Coverage is reported on a settle timer rather than only when something is
+  // wrong: "no warning in the log" is ambiguous between "fully placed" and "no
+  // events arrived at all", and telling those apart is the first question every
+  // time the device looks blank.
+  var settleTimer = null;
   function warnIfIncomplete() {
-    if (S.complete() || warned) return;
-    var c = S.coverage();
-    if (c.keys + c.dials === 0) return;
-    warned = true;
-    SD.log('surface incomplete: ' + c.keys + '/36 keys, ' + c.dials + '/6 dials placed — '
-         + 'run scripts/install-mac.sh to generate the StudioOS profile');
-    setTimeout(function () { warned = false; }, 10000);
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(function () {
+      var c = S.coverage();
+      if (S.complete()) {
+        SD.log('surface COMPLETE — ' + c.keys + '/36 keys, ' + c.dials + '/6 dials');
+      } else {
+        SD.log('surface INCOMPLETE — ' + c.keys + '/36 keys, ' + c.dials + '/6 dials placed. '
+             + 'Run: python3 scripts/make_profile.py --activate  (with the Stream Deck app quit)');
+      }
+    }, 1500);
   }
 
   // ============================================================== bootstrap

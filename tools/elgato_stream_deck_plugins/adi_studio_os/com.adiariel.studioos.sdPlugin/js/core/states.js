@@ -129,12 +129,21 @@ SOS.States = (function () {
     return b;
   }
 
+  // Every render-relevant field of a binding is forwarded. Listing them by hand
+  // once cost a real bug: `size` and `subStrong` were dropped here, so a module
+  // asking for a full-cap digit silently got the renderer's length guess and
+  // promoted captions never appeared on the device — only in the preview sheet,
+  // which passed them. If a field is added to a binding, add it here.
+  function keySpec(b) {
+    return {
+      title: b.label, sub: b.sub, subStrong: b.subStrong, glyph: b.glyph,
+      size: b.size, color: b.color, active: b.active, dim: b.dim, badge: b.badge,
+    };
+  }
+
   function paintKey(button, context) {
     var b = decorate(button, resolveKey(button));
-    SOS.SD.image(context, b ? R.keyUri({
-      title: b.label, sub: b.sub, glyph: b.glyph, color: b.color,
-      active: b.active, dim: b.dim, badge: b.badge,
-    }) : R.blankUri());
+    SOS.SD.image(context, b ? R.keyUri(keySpec(b)) : R.blankUri());
   }
 
   function paintDial(dial, context) {
@@ -170,5 +179,6 @@ SOS.States = (function () {
     isFullScreen: isFullScreen, isFullDevice: isFullDevice,
     resolveKey: resolveKey, resolveDial: resolveDial, bindingKind: bindingKind,
     repaint: repaint, paintKey: paintKey, paintDial: paintDial,
+    decorate: decorate, keySpec: keySpec,   // shared with scripts/preview.mjs
   };
 })();

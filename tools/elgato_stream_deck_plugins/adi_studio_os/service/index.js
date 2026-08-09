@@ -13,7 +13,7 @@ import { MidiPorts, DEFAULT_PORTS } from "./midi.js";
 import * as OS from "./os.js";
 import * as Home from "./home.js";
 
-const PORT = Number(process.env.STUDIOOS_PORT || 9010);
+const PORT = Number(process.env.STUDIOOS_PORT || 9011);
 
 // Timestamped stderr logging — LaunchAgent/Task Scheduler capture this to a file
 // and it is the only window into the service once it is running headless.
@@ -54,6 +54,10 @@ const HANDLERS = {
   "os.zoom":      (m) => OS.zoom(m.dir),
   "os.appSwitch": (m) => OS.appSwitch(m.dir),
   "os.launch":    (m) => OS.launch(m.app),
+  // Which named actions exist on THIS machine — drives tile visibility so
+  // the hub never paints a key whose target is not installed.
+  "os.actions":   () => OS.actionAvailability(),
+  "os.rescan":    () => OS.rescanApps(),
 
   // --- smart home ---
   "home.dim":     (m) => Home.dim(m.level),
