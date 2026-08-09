@@ -177,8 +177,17 @@ SOS.States = (function () {
     SOS.SD.image(context, b ? R.keyUri(keySpec(b)) : R.blankUri());
   }
 
+  /* A dial binding may supply `svg` instead of title/value: a raw 200x100 SVG
+     string that IS the zone's face. That is how a module paints across zone
+     boundaries — the Ableton strip compositor draws one 1200x100 image and hands
+     each dial a viewBox window into it, so an EQ curve reads as one continuous
+     picture spanning all six dials rather than six unrelated tiles. */
   function paintDial(dial, context) {
     var d = resolveDial(dial);
+    if (d && d.svg) {
+      SOS.SD.setFeedback(context, { full: R.dataUri(d.svg) });
+      return;
+    }
     SOS.SD.setFeedback(context, { full: d ? R.zoneUri({
       title: d.title, value: d.value, sub: d.sub, indicator: d.indicator, color: d.color,
     }) : R.zoneUri({ title: '', value: '' }) });

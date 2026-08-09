@@ -16,6 +16,15 @@ for (const f of ["js/core/sd-client.js", "js/core/surface.js", "js/core/render.j
                  "js/core/ipc.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js",
                  "js/modules/root.js", "js/modules/console.js",
                  "js/modules/rekordbox.js", "js/modules/midictl.js",
+                 "js/modules/viz.js", "js/modules/ableton.js",
+                 "js/ableton/GenericController.js", "js/ableton/EQ8Controller.js",
+                 "js/ableton/PulsarMassiveController.js", "js/ableton/ProQ3Controller.js",
+                 "js/ableton/SpectreController.js", "js/ableton/IndeqController.js",
+                 "js/ableton/ValhallaRoomController.js", "js/ableton/ValhallaVintageVerbController.js",
+                 "js/ableton/BlackholeController.js", "js/ableton/HDelayController.js",
+                 "js/ableton/DbCompController.js", "js/ableton/OmnipressorController.js",
+                 "js/ableton/SaturateController.js", "js/ableton/SideMinderController.js",
+                 "js/ableton/registry.js",
                  "js/modules/index.js"]) {
   (0, eval)(fs.readFileSync(path.join(ROOT, f), "utf8"));
 }
@@ -34,6 +43,39 @@ SOS.IPC.ask = () => Promise.resolve(avail);
 Modules.install();
 await Modules.Root.refreshAvailability();
 console.log("tiles shown:", Object.entries(avail).filter(([, v]) => v.available).map(([k]) => k).join(", ") || "(none)");
+
+/* Give the Ableton bridge a plausible Live state so the strip has something to
+   draw — the preview machine has no Ableton running. Values are shaped like the
+   real protocol, not invented fields. */
+function fakeAbleton(deviceName, className, controller) {
+  const st = SOS.Modules.Ableton.bridge.state();
+  st.online = true;
+  st.track = { name: "Drums", index: 2 };
+  st.device = { name: deviceName, class_name: className, controller,
+                has_device: true, index: 0, param_count: 40 };
+  const NAMES = ["Device On", "Band 1 Gain A", "Band 1 Freq A", "Band 1 Q A", "Gain", "Freq", "Q",
+    "Frequency", "Resonance", "Mix", "Dry/Wet", "Decay", "Size", "Predelay", "Damping", "Feedback",
+    "Delay", "Threshold", "Ratio", "Attack", "Release", "Output", "Input", "Drive", "Width",
+    "Low Cut", "High Cut", "Bass", "Treble", "Mode", "Type", "Bypass", "Compression", "Function"];
+  st.allParams = NAMES.map((name, i) => ({ i, name, value: 0.5, min: 0, max: 1,
+                                           quantized: false, items: [], disp: "0.50" }));
+  st.pv = {};
+  st.allParams.forEach((p) => { st.pv[p.i] = { value: p.value, disp: p.disp }; });
+  st.params = [0, 1, 2, 3, 4, 5].map((slot) => ({ slot, pidx: slot, name: NAMES[slot],
+                                                  value: 0.4 + slot * 0.08, min: 0, max: 1, disp: "0.50" }));
+  st.eq8 = {
+    focus: 1, output: 0, output_disp: "0.0 dB", scale: 100, scale_disp: "100 %",
+    bands: Array.from({ length: 8 }, (_, k) => ({
+      i: k + 1, on: k < 5, freq: 60 * Math.pow(2, k * 0.8),
+      freq_disp: Math.round(60 * Math.pow(2, k * 0.8)) + " Hz",
+      gain: [3, -2, 4, 0, -5, 2, 0, 1][k], gain_disp: [3, -2, 4, 0, -5, 2, 0, 1][k] + ".0 dB",
+      q: 0.7 + k * 0.1, q_disp: (0.7 + k * 0.1).toFixed(2),
+      type: 1, type_name: "Bell", type_items: ["Low Cut", "Bell", "High Cut"],
+    })),
+  };
+  st.eq8_state = { count: 1, selected_is_eq8: className === "Eq8", selected_index: 0 };
+  SOS.Modules.Ableton._pick();
+}
 
 function grid(label, stateIndex, screenId) {
   // Navigating for real (rather than rendering a screen in isolation) means the
@@ -56,7 +98,7 @@ function grid(label, stateIndex, screenId) {
   let zones = "";
   for (let d = 1; d <= S.DIALS; d++) {
     const z = States.resolveDial(d) || {};
-    zones += `<div class="z">${R.zone({ title: z.title, value: z.value, sub: z.sub, indicator: z.indicator, color: z.color })}</div>`;
+    zones += `<div class="z">${z.svg || R.zone({ title: z.title, value: z.value, sub: z.sub, indicator: z.indicator, color: z.color })}</div>`;
   }
   return `<section><h2>${label}</h2><div class="grid">${cells}</div><div class="strip">${zones}</div></section>`;
 }
@@ -87,7 +129,16 @@ ${pick("delay", grid("State 2 (Delay Calculator) &mdash; full device", 2))}
 ${pick("dj", grid("Rekordbox &middot; State 4 (Full Screen) &mdash; the DJ surface", 4, "rekordbox.hub"))}
 ${pick("djnum", grid("Rekordbox &middot; State 0 &mdash; numpad covering Deck B", 0, "rekordbox.hub"))}
 ${pick("midi", grid("MIDI Control &middot; State 4 &mdash; drums, scale touch, banked CC", 4, "midictl.hub"))}
+${pick("ableton", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; EQ Eight &mdash; the strip spans all six dials", 4, "ableton.hub")))}
+${pick("ableton2", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; FabFilter Pro-Q 3 &mdash; resolved by name", 4, "ableton.hub")))}
 `;
 
 fs.writeFileSync(OUT, html);
 console.log("wrote " + OUT);
+
+// Modules that own a render pump (Ableton, Visualizers) keep a setTimeout chain
+// alive; a preview run is one-shot, so stop them and leave deterministically.
+for (const m of ["Ableton", "Viz"]) {
+  try { SOS.Modules[m] && SOS.Modules[m]._stop && SOS.Modules[m]._stop(); } catch {}
+}
+process.exit(0);
