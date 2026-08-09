@@ -137,14 +137,16 @@ SOS.Modules.Console = (function () {
   // muscle memory is identical whichever one is up.
   var PAD = {};
   (function () {
-    // Bottom row is Clear · . · 0 · Enter — Adi swapped C and 0 on hardware so
-    // zero sits next to Enter, which is the pair the thumb actually travels
-    // between. (D5 originally had 0 bottom-left.)
+    /* Bottom row is Clear · 0 · . · Enter, settled on hardware over two passes.
+       D5 originally had 0 bottom-left with Clear at (7,3); Adi swapped C and 0,
+       then moved 0 to the centre column so it sits directly under the 1-4-7
+       column's centre (2/5/8) like a real numpad, with the decimal point out on
+       the right next to Enter. */
     var rows = [
       ['7', '8', '9', 'plus'],
       ['4', '5', '6', 'minus'],
       ['1', '2', '3', 'backspace'],
-      ['clear', 'decimal', '0', 'enter'],
+      ['clear', '0', 'decimal', 'enter'],
     ];
     for (var r = 0; r < 4; r++) for (var c = 0; c < 4; c++) PAD[S.btn(5 + c, r)] = rows[r][c];
   })();

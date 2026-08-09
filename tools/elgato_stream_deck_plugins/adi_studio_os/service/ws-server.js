@@ -15,6 +15,7 @@ import crypto from "node:crypto";
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 const OP = { CONT: 0x0, TEXT: 0x1, BIN: 0x2, CLOSE: 0x8, PING: 0x9, PONG: 0xa };
+const HEARTBEAT_MS = 15000;  // ping cadence; a client that misses one is dropped
 const MAX_MESSAGE = 1 << 20; // 1 MiB — far above any real payload; a bigger
                              // frame means something is wrong, so we close.
 
@@ -42,6 +43,24 @@ export class WsServer {
     this.server.listen(this.port, this.host, () => {
       this.log.info?.(`studioos service listening on ws://${this.host}:${this.port}`);
     });
+
+    /* Heartbeat. Observed on the real install: after a few Stream Deck app
+       restarts the service reported 3 clients when only 1 existed. A CEF page
+       that goes away without a clean close leaves a half-open TCP connection
+       that never fires 'close', so the socket count only ever grows.
+
+       That is not cosmetic. "Silence every sounding note when the LAST client
+       disconnects" is the guarantee that stops a crash mid-nudge from leaving a
+       note stuck on in rekordbox — and a phantom client means the last real one
+       leaving never looks like the last one. */
+    this.heartbeat = setInterval(() => {
+      for (const c of [...this.clients]) {
+        if (!c.awaitingPong) { c.awaitingPong = true; c.ping(); continue; }
+        this.log.warn?.("dropping a client that missed its pong (half-open socket)");
+        c.terminate();
+      }
+    }, HEARTBEAT_MS);
+    this.heartbeat.unref?.();   // never hold the process open on its own
     return this;
   }
 
@@ -79,6 +98,7 @@ export class WsServer {
   }
 
   close() {
+    clearInterval(this.heartbeat);
     for (const c of [...this.clients]) c.close();
     this.server?.close();
   }
@@ -92,6 +112,21 @@ class WsClient {
     this.fragments = [];   // continuation frames of the current message
     this.fragOp = null;
     this.alive = true;
+    this.awaitingPong = false;
+  }
+
+  ping() {
+    if (!this.alive) return;
+    try { this.socket.write(encode(OP.PING, Buffer.alloc(0))); }
+    catch { this._gone(); }
+  }
+
+  // Hard drop for a socket that stopped answering — close() waits on a TCP
+  // handshake the peer will never complete.
+  terminate() {
+    if (!this.alive) return;
+    try { this.socket.destroy(); } catch { /* already torn down */ }
+    this._gone();
   }
 
   send(obj) { this.sendRaw(JSON.stringify(obj)); }
@@ -128,12 +163,13 @@ class WsClient {
       if (frame.error) { this.close(1002); return; }
       this.buf = this.buf.subarray(frame.size);
 
+      this.awaitingPong = false;   // any frame proves the peer is alive
       if (frame.op === OP.CLOSE) { this.close(1000); return; }
       if (frame.op === OP.PING) {
         try { this.socket.write(encode(OP.PONG, frame.payload)); } catch { this._gone(); }
         continue;
       }
-      if (frame.op === OP.PONG) continue;
+      if (frame.op === OP.PONG) { this.awaitingPong = false; continue; }
 
       // Text / continuation. Reassemble before parsing so a split JSON payload
       // is never handed to JSON.parse half-formed.

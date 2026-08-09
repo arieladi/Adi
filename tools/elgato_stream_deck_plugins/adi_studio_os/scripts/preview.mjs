@@ -14,7 +14,9 @@ global.WebSocket = class { constructor() { this.readyState = 0; } send() {} clos
 
 for (const f of ["js/core/sd-client.js", "js/core/surface.js", "js/core/render.js",
                  "js/core/ipc.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js",
-                 "js/modules/root.js", "js/modules/console.js", "js/modules/index.js"]) {
+                 "js/modules/root.js", "js/modules/console.js",
+                 "js/modules/rekordbox.js", "js/modules/midictl.js",
+                 "js/modules/index.js"]) {
   (0, eval)(fs.readFileSync(path.join(ROOT, f), "utf8"));
 }
 
@@ -33,7 +35,11 @@ Modules.install();
 await Modules.Root.refreshAvailability();
 console.log("tiles shown:", Object.entries(avail).filter(([, v]) => v.available).map(([k]) => k).join(", ") || "(none)");
 
-function grid(label, stateIndex) {
+function grid(label, stateIndex, screenId) {
+  // Navigating for real (rather than rendering a screen in isolation) means the
+  // sheet also exercises nav + the overlay compositor, not just the module.
+  Nav.toRoot();
+  if (screenId) Nav.enter(screenId);
   States.setState(stateIndex);
   let cells = "";
   for (let row = 0; row < S.ROWS; row++) {
@@ -55,6 +61,11 @@ function grid(label, stateIndex) {
   return `<section><h2>${label}</h2><div class="grid">${cells}</div><div class="strip">${zones}</div></section>`;
 }
 
+// Optional filter so a focused sheet can be produced for review:
+//   SECTIONS=dj,midi node scripts/preview.mjs out.html
+const WANT = (process.env.SECTIONS || "").split(",").map((x) => x.trim()).filter(Boolean);
+const pick = (key, body) => (WANT.length === 0 || WANT.includes(key)) ? body : "";
+
 const html = `<!doctype html><meta charset="utf-8"><title>Studio OS surface preview</title>
 <style>
  body{margin:0;padding:24px;background:#17191c;color:#e8edf2;
@@ -70,9 +81,12 @@ const html = `<!doctype html><meta charset="utf-8"><title>Studio OS surface prev
 </style>
 <h1>Studio OS — surface preview</h1>
 <p class="s">Exactly what setImage receives. Stream Deck + XL: 36 keys (9&times;4) + 6 dial zones.</p>
-${grid("Root Hub &middot; State 0 (Numpad) &mdash; the power-on view", 0)}
-${grid("Root Hub &middot; State 1 (Calculator)", 1)}
-${grid("State 2 (Delay Calculator) &mdash; full device", 2)}
+${pick("root", grid("Root Hub &middot; State 0 (Numpad) &mdash; the power-on view", 0))}
+${pick("calc", grid("Root Hub &middot; State 1 (Calculator)", 1))}
+${pick("delay", grid("State 2 (Delay Calculator) &mdash; full device", 2))}
+${pick("dj", grid("Rekordbox &middot; State 4 (Full Screen) &mdash; the DJ surface", 4, "rekordbox.hub"))}
+${pick("djnum", grid("Rekordbox &middot; State 0 &mdash; numpad covering Deck B", 0, "rekordbox.hub"))}
+${pick("midi", grid("MIDI Control &middot; State 4 &mdash; drums, scale touch, banked CC", 4, "midictl.hub"))}
 `;
 
 fs.writeFileSync(OUT, html);

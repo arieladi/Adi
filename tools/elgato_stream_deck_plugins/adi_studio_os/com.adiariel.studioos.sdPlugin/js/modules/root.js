@@ -33,17 +33,38 @@ SOS.Modules = SOS.Modules || {};
 SOS.Modules.Root = (function () {
   var R = SOS.Render, IPC = SOS.IPC, Nav = SOS.Nav;
 
-  /* button -> { label, sub, glyph, color, action | app | hotkey }
-     `action` names an entry in service/os.js ACTIONS. Availability comes from
-     the service; nothing here hardcodes a platform. */
-  var SLOTS = {
-    3:  { label: 'Start',  sub: 'Start menu',   glyph: '⊞',  action: 'start' },
-    4:  { label: 'Run',    sub: 'Run dialog',   glyph: '▸_', action: 'run' },
-    5:  { label: 'Shell',  sub: 'PowerShell',   glyph: '>_', action: 'shell' },
-    10: { label: 'Tasks',  sub: 'task manager', glyph: '▤',  action: 'taskmgr' },
-    11: { label: 'Chrome', sub: 'browser',      glyph: '◉',  action: 'chrome' },
-    12: { label: 'Lynx',   sub: 'mixer',        glyph: '⎍',  action: 'lynx' },
+  /* ROW 0 (buttons 1-5) is the module row: every tile enters a hub.
+     Nothing reached the rekordbox module before this — it was registered but
+     unreachable, which the port surfaced.
+
+     `needs` names a service action whose availability gates the tile (Cubase is
+     only real once Cubase is installed). `module` gates on the module having
+     actually been ported, so a half-built Studio OS shows fewer tiles rather
+     than keys that navigate into nothing. */
+  var HUBS = {
+    1: { label: 'Ableton', glyph: '♪', color: R.PALETTE.ableton,   screen: 'ableton.hub',   module: 'Ableton' },
+    2: { label: 'Cubase',  glyph: '◇', color: R.PALETTE.midi,      screen: 'cubase.hub',    needs: 'cubase' },
+    3: { label: 'DJ',      glyph: '⏻', color: R.PALETTE.rekordbox, screen: 'rekordbox.hub', module: 'Rekordbox' },
+    4: { label: 'MIDI',    glyph: '⌗', color: R.PALETTE.midi,      screen: 'midictl.hub',   module: 'MidiCtl' },
+    5: { label: 'Meters',  glyph: '▥', color: R.PALETTE.viz,       screen: 'viz.hub',       module: 'Viz' },
   };
+
+  /* ROWS 1+ are OS actions. `action` names an entry in service/os.js ACTIONS;
+     availability comes from the service, so nothing here hardcodes a platform. */
+  var SLOTS = {
+    10: { label: 'Start',  glyph: '⊞',  action: 'start' },
+    11: { label: 'Run',    glyph: '▸_', action: 'run' },
+    12: { label: 'Shell',  glyph: '>_', action: 'shell' },
+    13: { label: 'Tasks',  glyph: '▤',  action: 'taskmgr' },
+    14: { label: 'Chrome', glyph: '◉',  action: 'chrome' },
+    19: { label: 'Lynx',   glyph: '⎍',  action: 'lynx' },
+  };
+
+  // A hub tile only appears once its module is actually ported and registered.
+  function moduleReady(name) {
+    var m = name && SOS.Modules[name];
+    return !!(m && m.hub);
+  }
 
   // action name -> bool. Empty until the service answers; unknown is treated as
   // unavailable so a key never appears and then fails on the first press.
@@ -81,20 +102,14 @@ SOS.Modules.Root = (function () {
     fullScreenCapable: false,
 
     keys: function (button) {
-      if (button === 1) {
+      var hub = HUBS[button];
+      if (hub) {
+        if (hub.needs && !usable(hub.needs)) return null;      // app not installed
+        if (hub.module && !moduleReady(hub.module)) return null; // module not ported
         return {
-          label: 'Ableton', glyph: '♪', size: 'lg',
-          color: R.PALETTE.ableton, kind: 'tap',
-          tap: function () { Nav.enter('ableton.hub'); },
-        };
-      }
-      // Cubase only exists as a tile once Cubase is actually installed.
-      if (button === 2) {
-        if (!usable('cubase')) return null;
-        return {
-          label: 'Cubase', glyph: '◇', size: 'lg',
-          color: R.PALETTE.midi, kind: 'tap',
-          tap: function () { Nav.enter('cubase.hub'); },
+          label: hub.label, glyph: hub.glyph, size: 'lg',
+          color: hub.color, kind: 'tap',
+          tap: function () { Nav.enter(hub.screen); },
         };
       }
 

@@ -22,10 +22,15 @@ SOS.Modules.install = function () {
   // ------------------------------------------------------------------ modules
   var pending = [];
 
-  if (M.Ableton)   Nav.register(M.Ableton.hub);        else pending.push('ableton');
-  if (M.Rekordbox) Nav.register(M.Rekordbox.hub);      else pending.push('rekordbox');
-  if (M.MidiCtl)   Nav.register(M.MidiCtl.hub);        else pending.push('midictl');
-  if (M.Viz)       Nav.register(M.Viz.hub);            else pending.push('viz');
+  // Guard on .hub, not on the namespace: a module file can load and define its
+  // engine while still lacking a screen (viz.js is exactly that today), and
+  // register(undefined) would throw and take the whole surface down.
+  [['Ableton', 'ableton'], ['Rekordbox', 'rekordbox'],
+   ['MidiCtl', 'midictl'], ['Viz', 'viz']].forEach(function (pair) {
+    var mod = M[pair[0]];
+    if (mod && mod.hub) Nav.register(mod.hub);
+    else pending.push(pair[1]);
+  });
 
   // A hub that has not been ported yet still needs to exist, or Key 1 navigates
   // into nothing and Back has nowhere to return from.
