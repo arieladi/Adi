@@ -53,16 +53,18 @@ console.log("\n[2] controllers not yet rewritten are still byte-identical copies
 // EQ8 has been rewritten natively (L4) and svg.js is new, so both are expected
 // to differ. Everything else must still diff clean against 1.5.9.0 — that is
 // what guarantees their verified parameter maps have not drifted.
-const NATIVE = new Set(["EQ8Controller.js", "svg.js"]);
+const NATIVE = new Set(["EQ8Controller.js", "GenericController.js", "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
   const b = fs.readFileSync(path.join(LEGACY, f));
   ok(`${f} unchanged from 1.5.9.0`, a.equals(b), `${a.length} vs ${b.length} bytes`);
 }
-ok("EQ8Controller.js is the native rewrite, not a copy",
-   !fs.readFileSync(path.join(NEW, "js/ableton/EQ8Controller.js")).equals(
-     fs.readFileSync(path.join(LEGACY, "EQ8Controller.js"))));
+for (const f of ["EQ8Controller.js", "GenericController.js"]) {
+  ok(`${f} is the native rewrite, not a copy`,
+     !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
+       fs.readFileSync(path.join(LEGACY, f))));
+}
 
 console.log("\n[3] SvgCtx — the Canvas 2D subset the controllers use");
 const C = new SOS.SvgCtx(200, 100);
@@ -290,7 +292,45 @@ const titles = [0,1,2,3].map((s2) => { eq.setZones(4); return eq.dialTitle(s2); 
 ok("compact dial titles name B1 B2 B3 B6",
    titles.map((t) => t.split(" ")[0]).join(",") === "B1,B2,B3,B6", titles.join(" | "));
 
-console.log("\n[8] hub wiring");
+console.log("\n[8] GenericController dual layout — blind chop of the last two");
+const gen = new AVC.GenericController(svc);
+gen.onState(st);
+
+gen.setZones(6);
+const gFull = SOS.Svg.serialize(gen.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(gFull));
+const fullNames = [0,1,2,3,4,5].map((s2) => gen.dialTitle(s2));
+ok("full maps 6 parameters linearly", fullNames.filter(Boolean).length === 6, fullNames.join(","));
+
+gen.setZones(4);
+const gComp = SOS.Svg.serialize(gen.build(4), 0, 800, 100);
+ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(gComp));
+const compNames = [0,1,2,3].map((s2) => gen.dialTitle(s2));
+ok("compact keeps parameters 1-4 in the same order",
+   compNames.join(",") === fullNames.slice(0, 4).join(","), compNames.join(","));
+// Structural, not substring: parameter names overlap ("Gain" is inside
+// "Band 1 Gain A"), so count ZONES instead. n zones have n-1 dividers.
+const divs = (svgStr) => (svgStr.match(/<line /g) || []).length;
+ok("compact renders 4 zones, full renders 6",
+   divs(gComp) === 3 && divs(gFull) === 5, `compact=${divs(gComp)} full=${divs(gFull)}`);
+ok("compact is materially smaller than full", gComp.length < gFull.length * 0.75,
+   `${gComp.length} vs ${gFull.length}`);
+ok("dialTitle is empty for a borrowed dial", gen.dialTitle(4) === "" && gen.dialTitle(5) === "");
+
+// A borrowed dial must not reach the bridge — the window owns it now.
+let gsent = 0;
+const gspy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  paramDelta: () => { gsent++; }, paramSet: () => { gsent++; },
+}) }, sd: { log() {} }, layout: A._layout };
+const gen2 = new AVC.GenericController(gspy);
+gen2.onState(st); gen2.setZones(4);
+gen2.onDial(3, 1); gen2.onDialPress(0);
+ok("dials 1-4 still drive the bridge", gsent === 2, `sent=${gsent}`);
+gsent = 0;
+gen2.onDial(4, 1); gen2.onDial(5, 1); gen2.onDialPress(5);
+ok("borrowed dials 5-6 send nothing", gsent === 0, `sent=${gsent}`);
+
+console.log("\n[9] hub wiring");
 ok("hub is fullScreenCapable (needs all 6 dials)", A.hub.fullScreenCapable === true);
 Nav.toRoot(); States.setState(0);
 Nav.enter("ableton.hub");
