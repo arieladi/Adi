@@ -756,5 +756,403 @@ SOS.Modules.Viz = (function () {
     return open(w, h) + s + '</svg>';
   };
 
-  return {};
+  /* =========================================================================
+     AUDIO CAPTURE
+
+     The port stopped before this existed, so nothing fed the ring buffers and
+     every view rendered an empty frame. Implemented here.
+
+     A ScriptProcessorNode is used rather than the legacy AudioWorklet. The
+     worklet needs its processor source loaded from a URL; inside the Stream Deck
+     app that means a blob: URL and a CSP that permits it, which is one more
+     thing to be wrong on a user's machine for no audible benefit at 15 fps. The
+     node is deprecated but universally present and its callback is exactly the
+     "give me the last N samples of both channels" hook this needs. If it is ever
+     removed, swap in a worklet behind the same push() call — nothing else here
+     knows the difference.
+     ========================================================================= */
+
+  var audio = {
+    status: 'idle',          // idle | asking | running | denied | nodevice | error
+    detail: '',
+    ctx: null, stream: null, src: null, node: null, splitter: null,
+    label: '',
+  };
+
+  var BLOCK = 4096;
+
+  function audioRunning() { return audio.status === 'running'; }
+
+  function push(l, r) {
+    var n = l.length, i;
+    // Peak and RMS for the meter views, computed on the raw block so they are
+    // not affected by whatever decimation a view applies later.
+    var sL = 0, sR = 0, pL = 0, pR = 0, sLR = 0, sLL = 0, sRR = 0;
+    for (i = 0; i < n; i++) {
+      var a = l[i], b = r[i];
+      sL += a * a; sR += b * b;
+      var aa = a < 0 ? -a : a, ab = b < 0 ? -b : b;
+      if (aa > pL) pL = aa;
+      if (ab > pR) pR = ab;
+      sLR += a * b; sLL += a * a; sRR += b * b;
+      ringPush(a, b, (a + b) * 0.5);
+    }
+    METER.rmsL = Math.sqrt(sL / n);
+    METER.rmsR = Math.sqrt(sR / n);
+    METER.peakL = pL; METER.peakR = pR;
+    // Pearson correlation of L against R: +1 mono, 0 uncorrelated, -1 out of phase.
+    var den = Math.sqrt(sLL * sRR);
+    METER.corr = den > 1e-12 ? sLR / den : 0;
+    // Balance as a -1..+1 energy ratio.
+    var eL = Math.sqrt(sLL), eR = Math.sqrt(sRR);
+    METER.bal = (eL + eR) > 1e-9 ? (eR - eL) / (eR + eL) : 0;
+    lastPacket = Date.now();
+  }
+
+  function audioStart() {
+    if (audio.status === 'running' || audio.status === 'asking') return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      audio.status = 'error'; audio.detail = 'no getUserMedia'; return;
+    }
+    audio.status = 'asking'; audio.detail = '';
+    SOS.States.repaint();
+
+    navigator.mediaDevices.getUserMedia({
+      audio: {
+        // Every processing stage the browser offers would rewrite the signal
+        // being measured, so all of them are off. This is an analyser, not a mic.
+        echoCancellation: false, noiseSuppression: false,
+        autoGainControl: false, channelCount: 2,
+      },
+      video: false,
+    }).then(function (stream) {
+      audio.stream = stream;
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      audio.ctx = new Ctx();
+      SR = audio.ctx.sampleRate || 48000;
+
+      var track = stream.getAudioTracks()[0];
+      audio.label = (track && track.label) || 'input';
+
+      audio.src = audio.ctx.createMediaStreamSource(stream);
+      audio.node = audio.ctx.createScriptProcessor(BLOCK, 2, 2);
+      audio.node.onaudioprocess = function (ev) {
+        var ib = ev.inputBuffer;
+        var l = ib.getChannelData(0);
+        // A mono source still reports 2 channels on some drivers; fall back to
+        // L so a mono input reads as centred rather than hard-left.
+        var r = ib.numberOfChannels > 1 ? ib.getChannelData(1) : l;
+        push(l, r);
+      };
+      audio.src.connect(audio.node);
+      // ScriptProcessor only runs while connected to a destination. A zero gain
+      // keeps it pumping without routing the captured audio back to the output,
+      // which on a loopback device would be a feedback loop.
+      var sink = audio.ctx.createGain();
+      sink.gain.value = 0;
+      audio.node.connect(sink);
+      sink.connect(audio.ctx.destination);
+
+      audio.status = 'running';
+      SOS.SD.log('viz: capturing "' + audio.label + '" @ ' + SR + ' Hz');
+      SOS.States.repaint();
+    }).catch(function (e) {
+      var name = (e && e.name) || 'Error';
+      audio.status = (name === 'NotAllowedError' || name === 'SecurityError') ? 'denied'
+                   : (name === 'NotFoundError' || name === 'OverconstrainedError') ? 'nodevice'
+                   : 'error';
+      audio.detail = name;
+      SOS.SD.log('viz: capture failed — ' + name + ' (' + (e && e.message) + ')');
+      SOS.States.repaint();
+    });
+  }
+
+  function audioStop() {
+    try { if (audio.node) audio.node.disconnect(); } catch (e) {}
+    try { if (audio.src) audio.src.disconnect(); } catch (e) {}
+    try { if (audio.stream) audio.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+    try { if (audio.ctx) audio.ctx.close(); } catch (e) {}
+    audio.node = audio.src = audio.stream = audio.ctx = null;
+    audio.status = 'idle'; audio.detail = ''; audio.label = '';
+    METER.rmsL = METER.rmsR = METER.peakL = METER.peakR = 0;
+    SOS.States.repaint();
+  }
+
+  function audioToggle() { audioRunning() ? audioStop() : audioStart(); }
+
+  var AUDIO_TEXT = {
+    idle:     { label: 'Audio', sub: 'tap to start', color: R.PALETTE.dim },
+    asking:   { label: 'Audio', sub: 'allow access…', color: R.PALETTE.console },
+    running:  { label: 'LIVE',  sub: '',             color: R.PALETTE.viz },
+    denied:   { label: 'Denied', sub: 'grant mic access', color: '#ff5d5d' },
+    nodevice: { label: 'No in', sub: 'pick an input',     color: '#ff5d5d' },
+    error:    { label: 'Error', sub: '',                  color: '#ff5d5d' },
+  };
+
+  /* =========================================================================
+     METERS — the fourth view, implemented here because it needs nothing from
+     the FFT and is the one view that is useful the instant capture starts.
+     ========================================================================= */
+
+  function dbNorm(db) { return clamp((db - DB_BOT) / (DB_TOP - DB_BOT), 0, 1); }
+
+  Analyzer.prototype.svgMeters = function (w, h, C) {
+    var now = Date.now();
+    var dbs = { rmsL: lin2db(METER.rmsL), rmsR: lin2db(METER.rmsR),
+                pkL: lin2db(METER.peakL), pkR: lin2db(METER.peakR) };
+    var H = this.hold;
+    // Peak hold with a decay, the legacy ballistics: instant attack, slow fall.
+    ['L', 'R'].forEach(function (ch) {
+      var pk = dbs['pk' + ch];
+      if (pk >= H['hold' + ch]) { H['hold' + ch] = pk; H['holdT' + ch] = now; }
+      else if (now - H['holdT' + ch] > 1200) { H['hold' + ch] -= 0.6; }
+      H['rms' + ch] = Math.max(pk === -Infinity ? -120 : dbs['rms' + ch], H['rms' + ch] - 1.2);
+      H['pk' + ch] = pk;
+    });
+
+    var s = '';
+    var pad = 6, barH = (h - pad * 3) / 2;
+    ['L', 'R'].forEach(function (ch, i) {
+      var y = pad + i * (barH + pad);
+      var rms = dbNorm(H['rms' + ch]), pk = dbNorm(dbs['pk' + ch]), hold = dbNorm(H['hold' + ch]);
+      s += rc(pad + 12, y, w - pad * 2 - 12, barH, 'rgba(255,255,255,0.07)', 'rx="2"');
+      var col = dbs['pk' + ch] > -1 ? ZONE_RED : dbs['pk' + ch] > -6 ? ZONE_YEL : (C.color || R.PALETTE.viz);
+      s += rc(pad + 12, y, (w - pad * 2 - 12) * rms, barH, col, 'rx="2"');
+      // peak-hold tick
+      s += rc(pad + 12 + (w - pad * 2 - 12) * hold - 1, y, 2, barH, '#ffffff');
+      s += tx(ch, pad + 4, y + barH * 0.5 + 4, 10, R.PALETTE.dim, 'start', 700);
+      if (h >= ZONE_H) {
+        s += tx(H['rms' + ch] <= -119 ? '-inf' : H['rms' + ch].toFixed(1),
+                w - pad, y + barH * 0.5 + 4, 11, R.PALETTE.text, 'end', 700);
+      }
+    });
+    this.head = {
+      value: (H.rmsL <= -119 && H.rmsR <= -119) ? '—'
+           : Math.max(H.rmsL, H.rmsR).toFixed(1) + ' dB',
+      sub: 'peak ' + (Math.max(dbs.pkL, dbs.pkR) <= -119 ? '-inf' : Math.max(dbs.pkL, dbs.pkR).toFixed(1)),
+      indicator: dbNorm(Math.max(H.rmsL, H.rmsR)),
+    };
+    return open(w, h) + s + '</svg>';
+  };
+
+  /* =========================================================================
+     SLOTS + FRAME PUMP
+
+     Six independent analyzer slots, one per dial — the legacy per-instance
+     Renderer model verbatim. DSP advances ONCE per frame here; keys() and
+     dials() are pure reads of the cached SVG, because nav/states call them an
+     unpredictable number of times per repaint.
+     ========================================================================= */
+
+  var IMPLEMENTED = { spectrum: 1, scope: 1, waveform: 1, meters: 1 };
+
+  var slots = [];
+  for (var si = 0; si < 6; si++) {
+    slots.push({ view: ['spectrum', 'meters', 'scope', 'waveform', 'spectrum', 'meters'][si],
+                 cfg: clone(DEFAULTS[['spectrum', 'meters', 'scope', 'waveform', 'spectrum', 'meters'][si]]
+                            || DEFAULTS.spectrum),
+                 an: new Analyzer() });
+  }
+  var selected = 0;
+  var fps = DEFAULT_FPS;
+  var pumping = false, lastFrame = 0;
+
+  function cfgFor(slot) {
+    if (!slot.cfg) slot.cfg = clone(DEFAULTS[slot.view] || DEFAULTS.spectrum);
+    return slot.cfg;
+  }
+
+  function renderSlot(slot, w, h, dt) {
+    var C = cfgFor(slot), an = slot.an;
+    var pts = w >= ZONE_W ? ZONE_PTS : KEY_PTS;
+    try {
+      if (slot.view === 'spectrum') return an.svgSpectrum(w, h, C, dt, pts);
+      if (slot.view === 'scope')    return an.svgScope(w, h, C, pts);
+      if (slot.view === 'waveform') return an.svgWaveform(w, h, C, pts);
+      if (slot.view === 'meters')   return an.svgMeters(w, h, C);
+    } catch (e) {
+      SOS.SD.log('viz: ' + slot.view + ' render failed — ' + e.message);
+    }
+    // A view the port never reached still has to paint something honest.
+    return open(w, h) + tx(slot.view, w / 2, h / 2 - 2, 13, R.PALETTE.dim, 'middle', 700)
+         + tx('not ported', w / 2, h / 2 + 13, 10, R.PALETTE.dim, 'middle', 600) + '</svg>';
+  }
+
+  function frame() {
+    var now = Date.now();
+    var dt = lastFrame ? (now - lastFrame) / 1000 : 1 / fps;
+    lastFrame = now;
+    for (var i = 0; i < slots.length; i++) {
+      slots[i].an.svg = renderSlot(slots[i], ZONE_W, ZONE_H, dt);
+    }
+    SOS.States.repaint();
+  }
+
+  function pump() {
+    if (!pumping) return;
+    // Idle far slower when there is nothing to draw: SD.image() dedupes the
+    // identical frame anyway, but building the string still costs CPU.
+    var live = audioRunning() && (Date.now() - lastPacket) < 1000;
+    if (live) frame();
+    setTimeout(pump, live ? Math.max(20, 1000 / fps) : 500);
+  }
+
+  function startPump() { if (!pumping) { pumping = true; lastFrame = 0; pump(); } }
+  function stopPump() { pumping = false; }
+
+  /* =========================================================================
+     SCREENS
+     ========================================================================= */
+
+  function viewTile(button, name) {
+    var impl = !!IMPLEMENTED[name];
+    var meta = VIEW_META[name] || {};
+    return {
+      label: meta.label || name.slice(0, 5).toUpperCase(),
+      sub: impl ? (slots[selected].view === name ? 'slot ' + (selected + 1) : '') : 'not ported',
+      color: impl ? viewColor(name) : R.PALETTE.dim,
+      dim: !impl,
+      active: impl && slots[selected].view === name,
+      kind: 'tap',
+      tap: function () {
+        if (!impl) return;
+        slots[selected].view = name;
+        slots[selected].cfg = clone(DEFAULTS[name] || DEFAULTS.spectrum);
+        frame();
+      },
+    };
+  }
+
+  var hub = {
+    id: 'viz.hub',
+    title: 'Meters',
+    module: 'viz',
+    color: R.PALETTE.viz,
+    fullScreenCapable: true,        // D15: entering gives it the whole board
+
+    onEnter: function () { startPump(); frame(); },
+    onExit: function () { stopPump(); },
+
+    keys: function (button) {
+      var col = S.colOf(button), row = S.rowOf(button);
+
+      if (row === 0) {
+        if (col === 0) {
+          return { label: 'Reset', glyph: '⟲', color: R.PALETTE.dim, kind: 'tap',
+                   tap: function () {
+                     slots[selected].cfg = clone(DEFAULTS[slots[selected].view] || DEFAULTS.spectrum);
+                     slots[selected].an = new Analyzer();
+                     frame();
+                   } };
+        }
+        if (col >= 1 && col <= 6) {
+          var idx = col - 1, sl = slots[idx];
+          return {
+            label: String(idx + 1), size: 'lg',
+            sub: sl.view, color: viewColor(sl.view),
+            active: idx === selected, kind: 'tap',
+            tap: function () { selected = idx; frame(); },
+          };
+        }
+        if (col === 7) {
+          var a = AUDIO_TEXT[audio.status] || AUDIO_TEXT.error;
+          return {
+            label: a.label, sub: a.detail || a.sub, color: a.color,
+            active: audioRunning(), kind: 'tap', tap: audioToggle,
+          };
+        }
+        if (col === 8) {
+          return { label: fps + 'f', sub: 'frame rate', color: R.PALETTE.dim, kind: 'tap',
+                   tap: function () {
+                     var i = FPS_STEPS.indexOf(fps);
+                     fps = FPS_STEPS[(i + 1 + FPS_STEPS.length) % FPS_STEPS.length];
+                     frame();
+                   } };
+        }
+        return null;
+      }
+
+      if (row === 1 && col < VIEWS.length) return viewTile(button, VIEWS[col]);
+
+      // Rows 2-3 were planned as the 288-column spectrum wall; the port never
+      // reached it, so they stay empty rather than pretending.
+      return null;
+    },
+
+    dials: function (dial) {
+      var sl = slots[dial - 1];
+      if (!sl) return { title: '', value: '' };
+      var head = sl.an.head || {};
+      return {
+        title: (dial === selected + 1 ? '▸ ' : '') + sl.view,
+        value: head.value || (audioRunning() ? '…' : '—'),
+        sub: audioRunning() ? (head.sub || '') : 'audio off',
+        indicator: head.indicator == null ? undefined : head.indicator,
+        color: viewColor(sl.view),
+        press: function () {
+          // Press cycles this slot's view, legacy behaviour.
+          var i = CYCLE.indexOf(sl.view);
+          for (var n = 1; n <= CYCLE.length; n++) {
+            var next = CYCLE[(i + n) % CYCLE.length];
+            if (IMPLEMENTED[next]) { sl.view = next; break; }
+          }
+          sl.cfg = clone(DEFAULTS[sl.view] || DEFAULTS.spectrum);
+          selected = dial - 1;
+          frame();
+        },
+        rotate: function (t) {
+          // Rotate adjusts the view's main parameter, clamped to the legacy range.
+          var C = cfgFor(sl);
+          if (sl.view === 'spectrum') C.rangeLo = clampNum(C.rangeLo - t * 3, -120, -20, -78);
+          else if (sl.view === 'scope') C.timeMs = clampNum(C.timeMs + t * 2, 1, 200, 20);
+          else if (sl.view === 'waveform') C.windowMs = clampNum(C.windowMs + t * 100, 200, 8000, 1500);
+          selected = dial - 1;
+          frame();
+        },
+        touch: function (x, hold) {
+          if (hold) { sl.an = new Analyzer(); }
+          else { cfgFor(sl).markerX = clamp(x / ZONE_W, 0, 1); }
+          selected = dial - 1;
+          frame();
+        },
+      };
+    },
+  };
+
+  // State 3 strip: pick a view / slot without leaving the module you are in.
+  var context = {
+    id: 'viz.context', title: 'Meters', module: 'viz',
+    keys: function (button) {
+      var col = S.colOf(button), row = S.rowOf(button);
+      if (col === 8 && row === 0) {
+        var a = AUDIO_TEXT[audio.status] || AUDIO_TEXT.error;
+        return { label: a.label, sub: a.detail || a.sub, color: a.color,
+                 active: audioRunning(), kind: 'tap', tap: audioToggle };
+      }
+      var idx = (row * 3) + (col - 5);
+      if (col >= 5 && col <= 7 && idx < VIEWS.length) return viewTile(button, VIEWS[idx]);
+      return null;
+    },
+    dials: function (dial) {
+      if (dial === 5) {
+        return { title: 'Slot', value: String(selected + 1), sub: slots[selected].view,
+                 color: viewColor(slots[selected].view),
+                 rotate: function (t) { selected = (selected + (t > 0 ? 1 : -1) + 6) % 6; frame(); } };
+      }
+      var head = slots[selected].an.head || {};
+      return { title: slots[selected].view, value: head.value || '—', sub: head.sub || '',
+               indicator: head.indicator == null ? undefined : head.indicator,
+               color: viewColor(slots[selected].view) };
+    },
+  };
+
+  return {
+    hub: hub, context: context,
+    // exposed for scripts/test_viz.mjs
+    _audio: audio, _slots: slots, _frame: frame,
+    _implemented: IMPLEMENTED, _views: VIEWS,
+    _push: push, _meter: METER,
+    _start: startPump, _stop: stopPump,
+  };
 })();
+

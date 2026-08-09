@@ -94,7 +94,38 @@ SOS.States = (function () {
 
   // ------------------------------------------------------------------ gestures
   function carousel() {
+    // A manual cycle means the user has taken charge of the state, so an
+    // auto-entered Full Screen stops being "on loan" and leaving the hub no
+    // longer rewinds it (D15).
+    autoFullFrom = null;
     setState((state + 1) % COUNT);
+  }
+
+  /* D15 — a screen declaring fullScreenCapable auto-enters State 4 on arrival,
+     and leaving it restores the state you had before.
+
+     This is the one place nav and state are deliberately NOT orthogonal, and it
+     is worth the exception: arriving at the DJ surface in the power-on State 0
+     put the numpad on top of the whole of Deck B, and climbing out of it meant
+     four Button 36 long-presses before you could touch a deck.
+
+     The borrow is remembered rather than assumed, so it only ever rewinds a
+     state IT changed. */
+  var autoFullFrom = null;
+
+  function syncToScreen() {
+    var cur = Nav.current();
+    var wantsFull = !!(cur && cur.fullScreenCapable);
+
+    if (wantsFull && state !== FULL) {
+      autoFullFrom = state;
+      setState(FULL);
+    } else if (!wantsFull && autoFullFrom !== null) {
+      var back = autoFullFrom;
+      autoFullFrom = null;
+      if (state === FULL) setState(back);
+    }
+    repaint();
   }
 
   function setState(next) {
@@ -173,7 +204,7 @@ SOS.States = (function () {
     COUNT: COUNT, NAMES: NAMES, FULL: FULL, DELAY: DELAY, CONTEXT: CONTEXT,
     get: function () { return state; },
     name: function () { return NAMES[state]; },
-    setState: setState, carousel: carousel,
+    setState: setState, carousel: carousel, syncToScreen: syncToScreen,
     registerOverlay: registerOverlay, wireContext: wireContext,
     overlayScreen: overlayScreen, overlayOwnsKey: overlayOwnsKey, overlayOwnsDial: overlayOwnsDial,
     isFullScreen: isFullScreen, isFullDevice: isFullDevice,

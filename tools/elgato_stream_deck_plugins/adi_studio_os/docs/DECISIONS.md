@@ -246,10 +246,15 @@ Raised by the module ports. Rekordbox and MIDI Control are DONE and verified
 (`scripts/test_modules.mjs`, 48/48, diffing every constant against the legacy
 sources); these are behaviour questions on top of working modules.
 
-* **D15** *(module: Rekordbox)* — entering the DJ hub lands in whatever state you
-  left, which at power-on is State 0, so the numpad sits on top of all of Deck B.
-  Should a screen declaring `fullScreenCapable` auto-switch to State 4 on entry,
-  or do you always reach it by hand with a Button 36 long-press?
+### D15 — full-screen hubs auto-enter State 4
+
+**RULING — a screen declaring `fullScreenCapable` auto-enters State 4 on arrival,
+and leaving restores the state you had before.** This is the one deliberate
+exception to nav and state being orthogonal, and it earns it: arriving at the DJ
+surface in the power-on State 0 put the numpad on top of the whole of Deck B, and
+getting out meant four Button 36 long-presses before you could touch a deck. The
+borrow is *remembered*, so it only rewinds a state it changed, and a manual
+carousel cancels the rewind entirely.
 * **D16** *(module: Rekordbox)* — the MIDI port name is hardcoded to
   "Adi RekordBox Controller". The legacy PI let you rename it, which is REQUIRED
   on Windows to match the loopMIDI port. It needs a home: global settings + a PI
@@ -285,11 +290,26 @@ sits out on the right beside Enter, Clear is bottom-left.
 | Console (States 0/1/2) | done, verified |
 | Rekordbox | done, verified — constants diffed against `src/midimap.js` |
 | MIDI Control | done, verified — C++ helper eliminated |
-| Visualizers | **engine only.** `viz.js` has the FFT/analyzer/meters/waveform code but no screen; it exports `{}` and is not loaded |
+| Visualizers | **working, 4 of 9 views.** See below |
 | Ableton | **not started.** The agent porting it never produced a file |
 
-Both gaps are the same cause: the porting run hit the org monthly spend limit and
-4 of its 6 agents failed.
+**Visualizers, accurately.** The port arrived as constants + FFT + Analyzer with
+3 of 9 view renderers, and — despite a long header comment describing the audio
+chain — **no audio capture at all**, no meter computation and no frame pump. So
+nothing it drew could ever contain a signal. Written by hand since: capture
+(`getUserMedia` → `ScriptProcessorNode` → ring buffers, with every failure mode
+painted on the surface), peak/RMS/correlation/balance, the `meters` view, the
+frame pump, and both screens. Working views: **spectrum, scope, waveform,
+meters**. Still un-ported: bands, rme, gonio, corr, bal — each paints a labelled
+"not ported" tile rather than a blank key.
+
+A `ScriptProcessorNode` is used instead of the legacy `AudioWorklet`: the worklet
+needs its processor loaded from a blob URL and a CSP that permits it, which is
+one more thing to be wrong on a user's machine for no audible benefit at 15 fps.
+Swap in a worklet behind the same `push()` call if that ever changes.
+
+Both remaining gaps trace to the same cause: the porting run hit the org monthly
+spend limit and 4 of its 6 agents failed.
 
 ---
 

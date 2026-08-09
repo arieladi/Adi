@@ -133,7 +133,8 @@
       onKeyUp: runUp,
       onTap: runTap,
     });
-    Nav.wire(States.repaint);
+    // Navigation drives the D15 full-screen sync, which repaints as its last step.
+    Nav.wire(States.syncToScreen);
   }
 
   // ------------------------------------------------------------------ service

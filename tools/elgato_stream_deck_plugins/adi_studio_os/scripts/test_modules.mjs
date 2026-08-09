@@ -35,6 +35,10 @@ if (fail) { console.log(`\n${pass} passed, ${fail} failed`); process.exit(1); }
 
 const { Surface: S, Modules: M, Nav, States } = SOS;
 
+// plugin.js does this at bootstrap; without it nav changes never reach the state
+// machine and a D15 test silently passes by never changing anything at all.
+Nav.wire(States.syncToScreen);
+
 // ---------------------------------------------------------------------------
 console.log("\n[2] rekordbox: MIDI matrix vs legacy src/midimap.js");
 const legacyMap = await import(path.join(LEGACY, "com.adiariel.rekordbox.sdPlugin/src/midimap.js"));
@@ -159,6 +163,30 @@ for (let b = 1; b <= 5; b++) { const k = M.Root.screen.keys(b); if (k) reach.pus
 ok("rekordbox is reachable from the Root Hub", reach.some((r) => /DJ/.test(r)), reach.join(" "));
 ok("midictl is reachable from the Root Hub", reach.some((r) => /MIDI/.test(r)), reach.join(" "));
 ok("un-ported modules show no tile", !reach.some((r) => /Ableton|Meters/.test(r)), reach.join(" "));
+
+// ---------------------------------------------------------------------------
+console.log("\n[8] D15: fullScreenCapable hubs auto-enter State 4");
+Nav.toRoot(); States.setState(0);
+Nav.enter("rekordbox.hub");
+ok("entering the DJ hub auto-enters State 4", States.get() === 4, `state=${States.get()}`);
+Nav.back();
+ok("leaving restores State 0", States.get() === 0, `state=${States.get()}`);
+
+States.setState(1);
+Nav.enter("rekordbox.hub");
+ok("borrows from State 1 as well", States.get() === 4, `state=${States.get()}`);
+Nav.back();
+ok("restores State 1, not a hardcoded 0", States.get() === 1, `state=${States.get()}`);
+
+Nav.enter("rekordbox.hub"); States.carousel();
+const manual = States.get();
+Nav.back();
+ok("a manual carousel cancels the rewind", States.get() === manual, `state=${States.get()}`);
+
+Nav.toRoot(); States.setState(0);
+Nav.enter("midictl.hub");
+ok("a non-fullscreen hub leaves the state alone", States.get() === 0, `state=${States.get()}`);
+Nav.toRoot(); States.setState(0);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
