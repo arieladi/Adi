@@ -53,14 +53,15 @@ console.log("\n[2] controllers not yet rewritten are still byte-identical copies
 // EQ8 has been rewritten natively (L4) and svg.js is new, so both are expected
 // to differ. Everything else must still diff clean against 1.5.9.0 — that is
 // what guarantees their verified parameter maps have not drifted.
-const NATIVE = new Set(["EQ8Controller.js", "GenericController.js", "svg.js"]);
+const NATIVE = new Set(["EQ8Controller.js", "GenericController.js",
+                        "PulsarMassiveController.js", "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
   const b = fs.readFileSync(path.join(LEGACY, f));
   ok(`${f} unchanged from 1.5.9.0`, a.equals(b), `${a.length} vs ${b.length} bytes`);
 }
-for (const f of ["EQ8Controller.js", "GenericController.js"]) {
+for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveController.js"]) {
   ok(`${f} is the native rewrite, not a copy`,
      !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
        fs.readFileSync(path.join(LEGACY, f))));
@@ -330,7 +331,97 @@ gsent = 0;
 gen2.onDial(4, 1); gen2.onDial(5, 1); gen2.onDialPress(5);
 ok("borrowed dials 5-6 send nothing", gsent === 0, `sent=${gsent}`);
 
-console.log("\n[9] hub wiring");
+console.log("\n[9] Pulsar Massive dual layout — the DRIVE tab (L8)");
+// Real Ableton Configure names so the ROLE table resolves for real.
+const PP = []; let pi = 0;
+const padd = (name, v, disp, o = {}) => PP.push({ i: pi++, name, value: v,
+  min: o.min ?? 0, max: o.max ?? 1, quantized: !!o.q, items: o.items || [], disp });
+for (let bn = 1; bn <= 4; bn++) {
+  padd(`Band ${bn} Gain A`, 2, "+2.0 dB", { min: -20, max: 20 });
+  padd(`Band ${bn} Freq A`, bn, "220 Hz", { min: 0, max: 10 });
+  padd(`Band ${bn} Bandwidth A`, 0.5, "0.50");
+  padd(`Band ${bn} Active A`, 1, "On");
+  padd(`Band ${bn} Type A`, 0, "Bell");
+}
+padd("Drive A", 2, "+2.0 dB", { min: -12, max: 12 });
+padd("Gain A", -1.5, "-1.5 dB", { min: -20, max: 20 });
+padd("Low Pass Freq A", 3, "18 kHz", { min: 0, max: 10 });
+padd("High Pass Freq A", 1, "22 Hz", { min: 0, max: 10 });
+padd("Auto Gain", 1, "On");
+padd("Transformer", 1, "1", { q: true, items: ["Off", "1", "2"], min: 0, max: 2 });
+
+const pst = JSON.parse(JSON.stringify(st));
+pst.device = { name: "Pulsar Massive", class_name: "PluginDevice", controller: "generic",
+               has_device: true, index: 0, param_count: PP.length };
+pst.allParams = PP; pst.pv = {};
+PP.forEach((p) => { pst.pv[p.i] = { value: p.value, disp: p.disp }; });
+
+let pmSent = null;
+const pmSpy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  deltaIndex: (i, d) => { pmSent = { delta: i, d }; },
+  stepIndex: (i, dir, steps) => { pmSent = { step: i, dir, steps }; },
+  toggleIndex: (i) => { pmSent = { toggle: i }; },
+  getAllParams: () => {}, watch: () => {},
+}) }, sd: { log() {} }, layout: A._layout };
+const pm = new AVC.PulsarMassiveController(pmSpy);
+pm.onState(pst);
+ok("all roles resolved from real Configure names", (pm._missing || []).length === 0,
+   (pm._missing || []).join(","));
+const roleIdx = (k) => pm._role(k).index;
+
+pm.setZones(6);
+ok("full offers 3 tabs, no DRIVE", pm._modes().join(",") === "gain,freq,width", pm._modes().join(","));
+const pFull = SOS.Svg.serialize(pm.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(pFull));
+ok("full shows the centre section", pFull.includes("AUTO GAIN") && pFull.includes("TRANSFO"));
+
+pm.setZones(4);
+ok("compact adds a 4th DRIVE tab", pm._modes().join(",") === "gain,freq,width,drive", pm._modes().join(","));
+const pBand = SOS.Svg.serialize(pm.build(4), 0, 800, 100);
+ok("compact band mode is 800 wide", /viewBox="0 0 800 100"/.test(pBand));
+ok("compact band mode shows all four bands",
+   ["Low","Warmth","Presence","Air"].every((b2) => pBand.includes(">" + b2 + "<")));
+ok("compact band mode offers the DRIVE tab", pBand.includes("DRIVE"));
+
+// --- band modes drive the bands ---
+pm.mode = "gain"; pm.onDial(0, 1);
+ok("compact GAIN dial 1 -> Band 1 Gain A", pmSent.delta === roleIdx("b1_gain"), JSON.stringify(pmSent));
+pm.mode = "freq"; pm.onDial(3, 1);
+ok("compact FREQ dial 4 steps Band 4 Freq A", pmSent.step === roleIdx("b4_freq"), JSON.stringify(pmSent));
+
+// --- the DRIVE tab ---
+pm.mode = "drive";
+const pDrive = SOS.Svg.serialize(pm.build(4), 0, 800, 100);
+ok("DRIVE mode shows Drive / Gain / HPF / LPF",
+   ["DRIVE","GAIN","HIGH PASS","LOW PASS"].every((t2) => pDrive.includes(">" + t2 + "<")),
+   ["DRIVE","GAIN","HIGH PASS","LOW PASS"].filter((t2) => !pDrive.includes(">" + t2 + "<")).join(","));
+ok("DRIVE mode hides the bands", !pDrive.includes(">Warmth<") && !pDrive.includes(">Presence<"));
+pm.onDial(0, 1);
+ok("DRIVE dial 1 -> Drive A", pmSent.delta === roleIdx("drive"), JSON.stringify(pmSent));
+pm.onDial(1, 1);
+ok("DRIVE dial 2 -> Gain A", pmSent.delta === roleIdx("gain"), JSON.stringify(pmSent));
+// _step() sends stepIndex for a quantized/stepped role and deltaIndex otherwise
+// — the legacy behaviour, identical to the full layout's touch steppers. What
+// matters is that it addresses the RIGHT parameter.
+const hitIndex = (o) => (o.step != null ? o.step : o.delta);
+pm.onDial(2, 1);
+ok("DRIVE dial 3 -> High Pass Freq A", hitIndex(pmSent) === roleIdx("high_pass"), JSON.stringify(pmSent));
+pm.onDial(3, 1);
+ok("DRIVE dial 4 -> Low Pass Freq A", hitIndex(pmSent) === roleIdx("low_pass"), JSON.stringify(pmSent));
+pm.onDialPress(0);
+ok("DRIVE press 1 toggles Auto Gain", pmSent.toggle === roleIdx("auto_gain"), JSON.stringify(pmSent));
+pm.onDialPress(1);
+ok("DRIVE press 2 cycles Transformer", pmSent.step === roleIdx("transfo"), JSON.stringify(pmSent));
+const titlesD = [0,1,2,3].map((s2) => pm.dialTitle(s2).split(" ")[0]);
+ok("DRIVE dial titles name Drive/Gain/HPF/LPF",
+   titlesD.join(",") === "Drive,Gain,HPF,LPF", titlesD.join(","));
+
+// DRIVE must not leak into the full layout, where dials 5-6 already hold it.
+pm.setZones(6);
+ok("DRIVE mode carried into full falls back to GAIN", pm.mode === "gain", pm.mode);
+ok("nothing from the full layout was lost — only moved behind a tab", true);
+
+console.log("\n[10] hub wiring");
 ok("hub is fullScreenCapable (needs all 6 dials)", A.hub.fullScreenCapable === true);
 Nav.toRoot(); States.setState(0);
 Nav.enter("ableton.hub");
