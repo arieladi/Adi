@@ -240,6 +240,59 @@ destination and does appear in `getOutputs()`. `midi.status()` reports both.
 
 ---
 
+## Batch 5 — pending
+
+Raised by the module ports. Rekordbox and MIDI Control are DONE and verified
+(`scripts/test_modules.mjs`, 48/48, diffing every constant against the legacy
+sources); these are behaviour questions on top of working modules.
+
+* **D15** *(module: Rekordbox)* — entering the DJ hub lands in whatever state you
+  left, which at power-on is State 0, so the numpad sits on top of all of Deck B.
+  Should a screen declaring `fullScreenCapable` auto-switch to State 4 on entry,
+  or do you always reach it by hand with a Button 36 long-press?
+* **D16** *(module: Rekordbox)* — the MIDI port name is hardcoded to
+  "Adi RekordBox Controller". The legacy PI let you rename it, which is REQUIRED
+  on Windows to match the loopMIDI port. It needs a home: global settings + a PI
+  field, or a `~/.studioos` config the service reads.
+* **D17** *(module: Rekordbox)* — the six encoder accumulators reset to
+  127/64/64 on every restart; the legacy persisted them on an 800 ms debounce.
+  The seam is built (`wirePersist` / `restore` / `snapshot`) but unwired, because
+  global settings are now shared by every module and writing from one of them
+  reintroduces the single-writer race the legacy fixed in 1.0.1.0.
+
+### F5 — verified: half-open sockets inflate the client count
+
+The running service reported 3 clients when 1 existed: a CEF page that goes away
+without a clean close leaves a half-open TCP connection that never fires `close`.
+That breaks the "silence every sounding note when the LAST client disconnects"
+guarantee — the last real client leaving never looks like the last one. Fixed
+with a 15 s ping/pong heartbeat that terminates a socket which misses its pong;
+verified stable at 1 client across two cycles.
+
+### Numpad, final
+
+Settled over two hardware passes: `7 8 9 +` / `4 5 6 −` / `1 2 3 ⌫` /
+`C 0 . ⏎`. Zero is centred under the 2/5/8 column like a real numpad, decimal
+sits out on the right beside Enter, Clear is bottom-left.
+
+---
+
+## Status
+
+| Module | State |
+|---|---|
+| Core engine + service | done, verified |
+| Console (States 0/1/2) | done, verified |
+| Rekordbox | done, verified — constants diffed against `src/midimap.js` |
+| MIDI Control | done, verified — C++ helper eliminated |
+| Visualizers | **engine only.** `viz.js` has the FFT/analyzer/meters/waveform code but no screen; it exports `{}` and is not loaded |
+| Ableton | **not started.** The agent porting it never produced a file |
+
+Both gaps are the same cause: the porting run hit the org monthly spend limit and
+4 of its 6 agents failed.
+
+---
+
 ## Global rules as ruled (implementation contract)
 
 | Control | States 0–3 | State 4 (Full Screen) |
