@@ -451,7 +451,7 @@ SOS.Modules.Rekordbox = (function () {
       // Each dial owns a 200x100 zone: left half = beat jump back, right half =
       // beat jump forward, on THAT dial's deck. `hold` is ignored, as it was in
       // the legacy onTouchTap — a long press on the strip is still one jump.
-      touch: function (x, hold) {
+      touch: function (x, y, hold) {
         IPC.midi.tap(PORT, CH[deck], x < 100 ? NOTE.BEATJUMP_BACK : NOTE.BEATJUMP_FWD);
       },
     };

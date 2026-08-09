@@ -1109,7 +1109,7 @@ SOS.Modules.Viz = (function () {
           selected = dial - 1;
           frame();
         },
-        touch: function (x, hold) {
+        touch: function (x, y, hold) {
           if (hold) { sl.an = new Analyzer(); }
           else { cfgFor(sl).markerX = clamp(x / ZONE_W, 0, 1); }
           selected = dial - 1;

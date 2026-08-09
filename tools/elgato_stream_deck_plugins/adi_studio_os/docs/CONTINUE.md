@@ -45,7 +45,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**Done and verified — 362 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`):
+**Done and verified — 394 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`):
 
 | Piece | State |
 |---|---|
@@ -58,17 +58,30 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 | **EQ8** | ✅ native SVG + compact (bands 1/2/3/6, no GLOB) |
 | **Generic** | ✅ native SVG + compact (params 1–4, blind chop) |
 | **Pulsar Massive** | ✅ native SVG + compact (4th DRIVE tab) |
+| **ProQ3** | ✅ native SVG + compact (bands 1/2/3/6, press = Slope on cuts) |
 
-**Immediate next task: `ProQ3Controller`** (FabFilter Pro-Q 3). Start with the Discovery briefing, then we design its Compact layout together, then implement.
+**Two engine bugs were fixed on the way through ProQ3 — see DECISIONS L10:**
 
-**After that, in registry order:** Spectre, Indeq, ValhallaRoom, ValhallaVintageVerb, Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder.
+* **The touch Y coordinate was being dropped**, so no mode tab and no pill in any
+  Ableton controller could ever be hit on the real device. The dial-descriptor
+  contract is now `touch(x, y, hold)`. Guarded by `test_core.mjs [11]`, which
+  drives a real `touchTap` in through the socket — calling a controller's
+  `onTouch` directly, which is all the tests did before, cannot see it.
+* **`Nav.setRoot` looped forever** on any second call: it drained the stack with
+  `while (stack.length) pop(true)` and `pop` refuses to remove the last entry.
+  Latent (install runs once at boot) but one line from a hang.
+
+**Immediate next task: `SpectreController`** (Wavesfactory Spectre). Discovery
+briefing first, then design its Compact layout together, then implement.
+
+**After that, in registry order:** Indeq, ValhallaRoom, ValhallaVintageVerb, Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder.
 
 **Then:** Compact layouts for Rekordbox (ruled L2: both decks, 4 hot cues each), MIDI Control and Visualizers — none have one yet, so docking a window over them currently hits the engine's "No room" path.
 
 ## How the Ableton controllers work
 
 - **Native ones** implement `build(zones)` returning an `SOS.Svg.bag()`; `setZones(n)` tells them how many dials they have (6 = Full, 4 = Compact). Primitives in `js/ableton/svg.js`.
-- **Not-yet-rewritten ones** are **byte-identical copies** of the 1.5.9.0 originals and still draw through the `SOS.SvgCtx` Canvas shim in `js/modules/ableton.js`. `scripts/test_ableton.mjs` asserts that byte-identity on every run — when you rewrite one, add its filename to the `NATIVE` set in that test.
+- **Not-yet-rewritten ones** are **byte-identical copies** of the 1.5.9.0 originals and still draw through the `SOS.SvgCtx` Canvas shim in `js/modules/ableton.js`. `scripts/test_ableton.mjs` asserts that byte-identity on every run — when you rewrite one, add its filename to the `NATIVE` set **and** to the "is the native rewrite, not a copy" list in that test.
 - **When rewriting: keep the parameter maps EXACTLY.** Role tables, name regexes, `OVERRIDES`, registry match patterns and response models were verified against my real Ableton "Configure" screenshots. Rewrite the *drawing* only.
 
 ## Workflow

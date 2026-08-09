@@ -535,3 +535,93 @@ only in compact; carried into the full layout it falls back to GAIN, where dials
 `scripts/test_ableton.mjs` asserts on every run that the not-yet-rewritten
 controllers are still byte-identical to 1.5.9.0, so their verified parameter maps
 demonstrably have not drifted.
+
+
+---
+
+## Batch 9 — Pro-Q 3, and the touch axis the port lost
+
+### L10 — the touch Y coordinate is restored end-to-end *(engine-wide regression)*
+
+Found while tracing ProQ3 for its Discovery briefing, and it was never a Pro-Q 3
+problem — it broke every Ableton controller at once.
+
+The legacy plugin forwarded both axes (`js/plugin.js:78`,
+`Touch.touch(ctx, pos[0], pos[1], hold)`). Studio OS forwarded only x: the SDK
+handler passed `pos[0]` alone, the dial-descriptor contract was `touch(x, hold)`,
+and the Ableton module handed its controllers a hardcoded `0` for y. Every
+hit-test in every controller is banded by y — `TAB [2,17]`, `MID`, `BOT [62,97]`
+— so **no tab and no pill could ever be hit**, in EQ8, Pulsar or the 11 shim
+copies. `scripts/test_ableton.mjs` missed it because it called
+`onTouch(250, 50, false)` directly, bypassing the module wiring that supplied
+the zero.
+
+For Pro-Q 3 this was fatal rather than cosmetic: Shape, Slope and Stereo
+Placement have no route except touch, so the plugin's defining feature was
+unreachable.
+
+**RULING — restore y end-to-end.** The dial-descriptor contract becomes
+`touch(x, y, hold)`, `plugin.js` forwards `tapPos[1]`, and the Ableton module
+stops substituting `0`. Exactly the legacy signature. Six modules implement
+`touch`; the four that read `hold` take the signature bump, the rest already
+ignored everything after x.
+
+Guarded by a test that drives a tap through the **real** wiring
+(`States.resolveDial(n).touch(...)`) rather than calling a controller directly,
+because calling the controller directly is precisely what hid this for a whole
+port.
+
+### L11 — ProQ3 compact: bands 1 / 2 / 3 / 6
+
+Presented Full first, rendered. ProQ3 owns **zero keys** in either layout.
+
+Unlike EQ8 (which had to drop GLOB) and Pulsar (which had to grow a DRIVE tab),
+ProQ3's zone artwork needs **no redesign** — each zone is still 200×100 and draws
+identically. Its mode tabs are **per column**, not global, so there is no global
+tab row to hang a fourth tab off; the Pulsar trick is structurally unavailable.
+The only question was which four of six bands the dials address.
+
+**RULING — dials 1-4 → bands 1, 2, 3, 6**, identical to the EQ8 compact ruling
+(L7), so dial 4 is "the top end" across both EQ controllers and there is one
+muscle memory rather than two. Bands are **fixed, not a sliding window** — no
+pagination, exactly as L7.
+
+Considered and rejected: *all bells* (B2/B3/B4/B5), which would have kept every
+dial three-moded but put both cuts out of reach; *spread* (B1/B3/B4/B6), which
+matched no existing precedent; *paginate*, which L7 already ruled out.
+
+The known cost of this choice — Pro-Q 3's cut bands expose no Gain and, being
+cuts, no Q either, so dials 1 and 4 are FREQ-only — is answered by L12 rather
+than accepted.
+
+### L12 — a single-mode band's dial press steps its SLOPE *(changes Full too)*
+
+On a band whose Shape allows only FREQ (Low Cut, High Cut), `onDialPress` cycled
+a one-element mode list and therefore did nothing at all — in both layouts.
+
+**RULING — when a band has only one available mode, its dial press steps the
+Slope instead.** Zero cost, because there is no second mode to cycle to, and
+Slope is the control that actually matters on a cut. This applies in **Full as
+well as Compact**: it is a change to the full layout, deliberately, not a
+compact-only special case. Bands with two or more modes are untouched — press
+still cycles the mode.
+
+### Derived, flagged for veto
+
+* **Modes are keyed by BAND, not by dial slot.** `_mode[slot]` was indexed by
+  column; slot == band-1 in Full so the two were the same thing, but the moment
+  dial 4 means band 6 the layouts would alias each other's modes. Invisible in
+  Full, correct in Compact.
+* **A mode carried in from Full falls back to FREQ** when the compact band's
+  shape cannot offer it — the same guard EQ8 uses for GLOB, and the same guard
+  the legacy `_validateModes` already applied on every state change.
+
+### Native SVG progress (L4), updated
+
+| Controller | Native | Compact |
+|---|---|---|
+| EQ8 | ✅ | ✅ bands 1/2/3/6, no GLOB |
+| Generic | ✅ | ✅ blind chop |
+| Pulsar Massive | ✅ | ✅ DRIVE tab |
+| **ProQ3** | ✅ | ✅ bands 1/2/3/6, press = Slope on cuts |
+| Spectre, Indeq, ValhallaRoom, ValhallaVintageVerb, Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |

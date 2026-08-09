@@ -10,7 +10,14 @@ const ROOT = new URL('../com.adiariel.studioos.sdPlugin/', import.meta.url).path
 global.window = global;
 const sent = [];
 class FakeWS {
-  constructor(url) { this.url = url; this.readyState = 1; FakeWS.last = this; setTimeout(() => this.onopen && this.onopen(), 0); }
+  constructor(url) {
+    this.url = url; this.readyState = 1;
+    FakeWS.last = this; (FakeWS.all = FakeWS.all || []).push(this);
+    setTimeout(() => this.onopen && this.onopen(), 0);
+  }
+  // The plugin opens TWO sockets — the Stream Deck one and the backend service
+  // one — so a test that wants to deliver an SD event has to say which.
+  static ofPort(p) { return (FakeWS.all || []).filter((w) => w.url.indexOf(':' + p) >= 0).pop(); }
   send(s) { sent.push(JSON.parse(s)); }
   close() { this.readyState = 3; this.onclose && this.onclose(); }
 }
@@ -149,7 +156,10 @@ ok('repeated back lands at root', Nav.current().id === 'root' && Nav.atRoot());
 
 console.log('\n[10] repaint dedupe');
 // The dedupe cache only observes real sends, so the SD socket has to be open.
-SD.connect(1234, 'uuid-test', 'registerPlugin', '{"devices":[]}');
+// Boot through the REAL entry point rather than SD.connect alone, so the SDK
+// event handlers in plugin.js are wired too — [11] needs them, and nothing else
+// in this file was ever exercising them.
+window.connectElgatoStreamDeckSocket(1234, 'uuid-test', 'registerPlugin', '{"devices":[]}');
 await wait(30);
 States.setState(0); await wait(30);          // settle
 sent.length = 0;
@@ -160,6 +170,30 @@ States.repaint(); await wait(30);            // same surface again
 const second = sent.filter(m => m.event === 'setImage').length;
 ok(`changed repaint writes, unchanged repaint is free (${first} -> ${second})`,
    first > 0 && second === 0);
+
+console.log('\n[11] a touch tap delivers BOTH axes end-to-end (L10)');
+/* The regression this guards: plugin.js forwarded only tapPos[0] and the Ableton
+   module substituted 0 for y, so every y-banded hit-test in every controller —
+   mode tabs, ON/OFF pills, Shape/Slope/Stereo switches — was unreachable on the
+   real device. Calling a controller's onTouch directly (which is all
+   test_ableton did) cannot see that. The tap has to arrive through the socket. */
+const taps = [];
+Nav.register({
+  id: 'probe.hub', title: 'Probe', module: 'probe',
+  keys: function () { return null; },
+  dials: function (dial) {
+    if (dial !== 3) return { title: '', value: '' };
+    return { title: 'Probe', value: '', touch: function (x, y, hold) { taps.push([x, y, hold]); } };
+  },
+});
+Nav.enter('probe.hub');
+States.setState(4);                       // nothing docked, so dial 3 is the module's
+FakeWS.ofPort(1234).onmessage({ data: JSON.stringify({
+  event: 'touchTap', context: 'd2', payload: { tapPos: [137, 71], hold: true },
+}) });
+ok('touchTap reaches the module with x, y AND hold',
+   taps.length === 1 && taps[0][0] === 137 && taps[0][1] === 71 && taps[0][2] === true,
+   JSON.stringify(taps));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
