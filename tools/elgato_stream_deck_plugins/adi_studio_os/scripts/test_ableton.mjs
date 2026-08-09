@@ -54,14 +54,15 @@ console.log("\n[2] controllers not yet rewritten are still byte-identical copies
 // to differ. Everything else must still diff clean against 1.5.9.0 — that is
 // what guarantees their verified parameter maps have not drifted.
 const NATIVE = new Set(["EQ8Controller.js", "GenericController.js",
-                        "PulsarMassiveController.js", "svg.js"]);
+                        "PulsarMassiveController.js", "ProQ3Controller.js", "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
   const b = fs.readFileSync(path.join(LEGACY, f));
   ok(`${f} unchanged from 1.5.9.0`, a.equals(b), `${a.length} vs ${b.length} bytes`);
 }
-for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveController.js"]) {
+for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveController.js",
+                 "ProQ3Controller.js"]) {
   ok(`${f} is the native rewrite, not a copy`,
      !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
        fs.readFileSync(path.join(LEGACY, f))));
@@ -455,6 +456,150 @@ ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
 let keys = 0;
 for (let b = 1; b <= S.KEYS; b++) if (States.resolveKey(b)) keys++;
 ok(`hub paints its keys (${keys})`, keys >= 9);
+
+console.log("\n[11] Pro-Q 3 dual layout (L11) + the slope press (L12)");
+// Real Ableton Configure names, and the default preset's shapes: band 1 is a
+// Low Cut, band 6 a High Cut, 2-4 bells, 5 a high shelf. The SHAPES matter as
+// much as the names here — the available dial modes are derived from them.
+const SHAPES = ["Bell", "Low Shelf", "Low Cut", "High Shelf", "High Cut", "Notch",
+                "Band Pass", "Tilt Shelf", "Flat Tilt"];
+const SLOPES = ["6 dB/oct", "12 dB/oct", "18 dB/oct", "24 dB/oct", "30 dB/oct",
+                "36 dB/oct", "48 dB/oct", "72 dB/oct", "96 dB/oct", "Brickwall"];
+const STEREO = ["Left", "Right", "Stereo", "Mid", "Side"];
+const QBANDS = [
+  { f: 47.924, fd: "47.9 Hz",  shape: 2, slope: 1, st: 2 },                                  // Low Cut
+  { f: 124,    fd: "124 Hz",   shape: 0, slope: 1, st: 2, g: -2.5, gd: "-2.50 dB" },         // Bell
+  { f: 450,    fd: "450 Hz",   shape: 0, slope: 1, st: 2, g: 1.5,  gd: "+1.50 dB" },         // Bell
+  { f: 2400,   fd: "2.40 kHz", shape: 0, slope: 1, st: 3, g: 3.2,  gd: "+3.20 dB" },         // Bell
+  { f: 8200,   fd: "8.20 kHz", shape: 3, slope: 1, st: 4, g: 2.0,  gd: "+2.00 dB" },         // High Shelf
+  { f: 18000,  fd: "18.0 kHz", shape: 4, slope: 3, st: 2 },                                  // High Cut
+];
+const QP = []; let qi = 0;
+const qadd = (name, v, disp, o = {}) => QP.push({ i: qi++, name, value: v,
+  min: o.min ?? 0, max: o.max ?? 1, quantized: !!o.q, items: o.items || [], disp });
+QBANDS.forEach((bd, k) => {
+  const n = k + 1;
+  qadd(`Band ${n} Frequency`, bd.f, bd.fd, { min: 10, max: 30000 });
+  if (bd.g != null) qadd(`Band ${n} Gain`, bd.g, bd.gd, { min: -30, max: 30 });
+  qadd(`Band ${n} Q`, 0.71, "0.71", { min: 0.025, max: 40 });
+  qadd(`Band ${n} Shape`, bd.shape, SHAPES[bd.shape], { q: true, items: SHAPES, min: 0, max: 8 });
+  qadd(`Band ${n} Slope`, bd.slope, SLOPES[bd.slope], { q: true, items: SLOPES, min: 0, max: 9 });
+  qadd(`Band ${n} Stereo Placement`, bd.st, STEREO[bd.st], { q: true, items: STEREO, min: 0, max: 4 });
+});
+
+const qst = JSON.parse(JSON.stringify(st));
+qst.device = { name: "FabFilter Pro-Q 3", class_name: "PluginDevice", controller: "generic",
+               has_device: true, index: 0, param_count: QP.length };
+qst.allParams = QP; qst.pv = {};
+QP.forEach((p) => { qst.pv[p.i] = { value: p.value, disp: p.disp }; });
+
+let qSent = null;
+const qSpy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  deltaIndex: (i, d) => { qSent = { delta: i, d }; },
+  deltaLogIndex: (i, d) => { qSent = { logdelta: i, d }; },
+  stepIndex: (i, dir, steps) => { qSent = { step: i, dir, steps }; },
+  getAllParams: () => {}, watch: () => {},
+}) }, sd: { log() {} }, layout: A._layout };
+const q = new AVC.ProQ3Controller(qSpy);
+q.onState(qst);
+ok("all 34 roles resolved from real Configure names", (q._missing || []).length === 0,
+   (q._missing || []).join(","));
+const qIdx = (b, suffix) => q._role(b, suffix).index;
+
+// --- shape-aware modes: the whole point of this controller ---
+ok("B1 Low Cut offers FREQ only (no gain param, no Q for a cut)",
+   q._modes(1).join(",") === "freq", q._modes(1).join(","));
+ok("B2 Bell offers FREQ/GAIN/Q", q._modes(2).join(",") === "freq,gain,q", q._modes(2).join(","));
+ok("B5 High Shelf offers FREQ/GAIN but no Q", q._modes(5).join(",") === "freq,gain", q._modes(5).join(","));
+ok("B6 High Cut offers FREQ only", q._modes(6).join(",") === "freq", q._modes(6).join(","));
+
+// --- FULL ---
+q.setZones(6);
+const qFull = SOS.Svg.serialize(q.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(qFull));
+ok("full maps dial N to band N", [0,1,2,3,4,5].map((s2) => q._bandFor(s2)).join(",") === "1,2,3,4,5,6",
+   [0,1,2,3,4,5].map((s2) => q._bandFor(s2)).join(","));
+ok("full shows all six bands", ["B1","B2","B3","B4","B5","B6"].every((t2) => qFull.includes(">" + t2 + "<")),
+   ["B1","B2","B3","B4","B5","B6"].filter((t2) => !qFull.includes(">" + t2 + "<")).join(","));
+ok("full draws the Shape/Slope/Stereo switch row",
+   qFull.includes(">SHAPE<") && qFull.includes(">STEREO<") && qFull.includes(">LO CUT<"));
+ok("values are Ableton's own strings, not reinvented", qFull.includes(">47.9 Hz<"));
+
+// --- COMPACT (L11) ---
+q.setZones(4);
+const qComp = SOS.Svg.serialize(q.build(4), 0, 800, 100);
+ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(qComp));
+ok("compact maps dials 1-4 to bands 1,2,3,6",
+   [0,1,2,3].map((s2) => q._bandFor(s2)).join(",") === "1,2,3,6",
+   [0,1,2,3].map((s2) => q._bandFor(s2)).join(","));
+ok("compact shows B1 B2 B3 B6", ["B1","B2","B3","B6"].every((t2) => qComp.includes(">" + t2 + "<")),
+   ["B1","B2","B3","B6"].filter((t2) => !qComp.includes(">" + t2 + "<")).join(","));
+ok("compact does NOT show B4 or B5", !qComp.includes(">B4<") && !qComp.includes(">B5<"));
+ok("compact keeps the full switch row — the artwork is unchanged, only the bands",
+   qComp.includes(">SHAPE<") && qComp.includes(">STEREO<") && qComp.includes(">HI CUT<"));
+
+// --- dials address the right parameters ---
+q.onDial(3, 1);
+ok("compact dial 4 drives BAND 6 Frequency (log)", qSent.logdelta === qIdx(6, "freq"), JSON.stringify(qSent));
+q.setZones(6); q.onDial(3, 1);
+ok("full dial 4 still drives BAND 4", qSent.logdelta === qIdx(4, "freq"), JSON.stringify(qSent));
+q._mode[4] = "gain"; q.onDial(3, 1);
+ok("GAIN is linear, FREQ/Q are log", qSent.delta === qIdx(4, "gain"), JSON.stringify(qSent));
+
+// --- modes are keyed by BAND, not by dial slot ---
+q.setZones(4);
+ok("compact dial 4 shows B6's own mode, not the B4 gain left on that slot",
+   q._mode[q._bandFor(3)] === "freq" && q._mode[4] === "gain",
+   `b6=${q._mode[6]} b4=${q._mode[4]}`);
+ok("compact dial titles name B1 B2 B3 B6",
+   [0,1,2,3].map((s2) => q.dialTitle(s2).split(" ")[0]).join(",") === "B1,B2,B3,B6",
+   [0,1,2,3].map((s2) => q.dialTitle(s2)).join(" | "));
+ok("dialTitle is empty for a borrowed dial", q.dialTitle(4) === "" && q.dialTitle(5) === "");
+qSent = null; q.onDial(4, 1); q.onDialPress(5);
+ok("borrowed dials 5-6 send nothing", qSent === null, JSON.stringify(qSent));
+
+// --- L12: a single-mode band's press steps the Slope ---
+q.setZones(6);
+q.onDialPress(0);
+ok("press on B1 (FREQ only) steps Band 1 Slope", qSent.step === qIdx(1, "slope"), JSON.stringify(qSent));
+qSent = null; q.onDialPress(1);
+ok("press on B2 (three modes) cycles the mode instead, sending nothing",
+   qSent === null && q._mode[2] === "gain", `${JSON.stringify(qSent)} mode=${q._mode[2]}`);
+q.setZones(4); qSent = null; q.onDialPress(3);
+ok("compact press on dial 4 steps BAND 6's slope", qSent.step === qIdx(6, "slope"), JSON.stringify(qSent));
+ok("the slope pill is marked on cut bands only",
+   (SOS.Svg.serialize(q.build(4), 0, 200, 100).match(/◉ SLOPE/g) || []).length === 1 &&
+   !SOS.Svg.serialize(q.build(4), 200, 200, 100).includes("◉ SLOPE"));
+
+// --- a mode the Shape no longer allows falls back to FREQ ---
+q._mode[2] = "q";
+qst.pv[qIdx(2, "shape")] = { value: 2, disp: "Low Cut" };     // B2 becomes a Low Cut
+q.onState(qst);
+ok("a Q mode survives only while the Shape allows it", q._mode[2] === "freq", q._mode[2]);
+qst.pv[qIdx(2, "shape")] = { value: 0, disp: "Bell" };
+q.onState(qst);
+
+// --- touch, through the module, with the y axis that L10 restored ---
+qst.device.name = "FabFilter Pro-Q 3";
+Object.assign(A.bridge.state(), qst);
+A._pick();
+const live = A._active();
+ok("the module resolved Pro-Q 3", live && live.id === "proq3", live && live.id);
+States.setState(4);                                    // full board, 6 dials
+live._mode[2] = "freq";
+States.resolveDial(2).touch(150, 12, false);           // x into the Q tab, y in the tab row
+ok("a tap on the Q tab switches band 2 to Q", live._mode[2] === "q", live._mode[2]);
+live._mode[2] = "freq";
+States.resolveDial(2).touch(150, 0, false);            // the y the port used to send
+ok("y=0 hits nothing — which is exactly what L10 fixed", live._mode[2] === "freq", live._mode[2]);
+let stepped = null;
+const realStep = A.bridge.cmd.stepIndex;
+A.bridge.cmd.stepIndex = (i, dir) => { stepped = { i, dir }; };
+States.resolveDial(2).touch(30, 75, true);             // SHAPE pill, held = backwards
+ok("a held tap on the SHAPE pill steps it backwards",
+   stepped && stepped.i === live._role(2, "shape").index && stepped.dir === -1,
+   JSON.stringify(stepped));
+A.bridge.cmd.stepIndex = realStep;
 
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();

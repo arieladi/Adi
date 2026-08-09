@@ -737,11 +737,12 @@ SOS.Modules.Ableton = (function () {
         value: '',
         rotate: function (t) { if (active) { active.onDial(slot, t); composite(); } },
         press: function () { if (active) { active.onDialPress(slot); composite(); } },
-        touch: function (x, hold) {
+        touch: function (x, y, hold) {
           if (!active) return;
           // Touch arrives per-zone; map back into full-strip space before
-          // hit-testing, which is what the controllers expect.
-          active.onTouch(slot * L.slotW + (x || 0), 0, !!hold);
+          // hit-testing, which is what the controllers expect. y is zone-local
+          // already (0-99) and passes straight through — L10.
+          active.onTouch(slot * L.slotW + (x || 0), y || 0, !!hold);
           composite();
         },
       };

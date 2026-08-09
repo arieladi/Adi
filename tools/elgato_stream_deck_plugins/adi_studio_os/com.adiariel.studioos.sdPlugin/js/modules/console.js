@@ -188,7 +188,7 @@ SOS.Modules.Console = (function () {
           sub: 'turn = cycle · push = set', color: R.PALETTE.console,
           rotate: function (t) { calcCycleOp(t > 0 ? 1 : -1); },
           press: calcCommitOp,
-          touch: function (x, hold) { if (hold) calcClear(); else calcCycleOp(x < 100 ? -1 : 1); },
+          touch: function (x, y, hold) { if (hold) calcClear(); else calcCycleOp(x < 100 ? -1 : 1); },
         };
       }
       return {

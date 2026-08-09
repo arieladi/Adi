@@ -24,7 +24,10 @@
                  tap(), down(), up() }                           // behaviour
 
      dialBinding = { title, value, sub, indicator, color,
-                     rotate(ticks), press(), release(), touch(x, hold) }
+                     rotate(ticks), press(), release(), touch(x, y, hold) }
+
+   touch carries BOTH axes (L10): a zone is 200x100 and the Ableton controllers
+   band their hit-tests by y, so an x-only tap can never reach a tab or a pill.
 
    Screens are asked for a binding per button on every repaint rather than
    handing over a static map, so a module can answer from live state (deck level,
@@ -60,8 +63,16 @@ SOS.Nav = (function () {
     return c ? (c.module || 'nav') : 'nav';
   }
 
+  /* Unwind to empty and start again. pop() deliberately refuses to remove the
+     LAST entry (Back at Level 0 is a no-op, not an error), so the final one has
+     to be taken by hand — `while (stack.length) pop(true)` never terminates
+     against a stack of one, and hung the whole frontend on any second call. */
   function setRoot(screen) {
-    while (stack.length) pop(true);
+    while (stack.length > 1) pop(true);
+    if (stack.length) {
+      var last = stack.pop();
+      if (last.onExit) last.onExit();
+    }
     stack.push(register(screen));
     if (screen.onEnter) screen.onEnter();
     onChange();

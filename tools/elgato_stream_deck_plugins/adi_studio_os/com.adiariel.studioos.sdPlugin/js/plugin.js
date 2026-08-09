@@ -57,9 +57,12 @@
     var d = States.resolveDial(dial);
     if (d && d.release) { d.release(); States.repaint(); }
   }
-  function onTouch(dial, x, hold) {
+  // L10: BOTH axes reach the module. The strip is 200x100 per zone and every
+  // Ableton controller bands its hit-tests by y (tab row / value / switch row),
+  // so dropping y silently disabled every tab and pill on the device.
+  function onTouch(dial, x, y, hold) {
     var d = States.resolveDial(dial);
-    if (d && d.touch) { d.touch(x, hold); States.repaint(); }
+    if (d && d.touch) { d.touch(x, y, hold); States.repaint(); }
   }
 
   // ------------------------------------------------------- Stream Deck events
@@ -115,7 +118,7 @@
     SD.on('touchTap', function (m) {
       var d = dialOf(m.context); if (!d) return;
       var p = m.payload || {}, pos = p.tapPos || [0, 0];
-      onTouch(d, pos[0], !!p.hold);
+      onTouch(d, pos[0], pos[1], !!p.hold);
     });
   }
 
