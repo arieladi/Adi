@@ -2,19 +2,43 @@
 /* =============================================================================
    IndeqController — predefined strategy for Analog Obsession INDEQ (VST3).
 
+   NATIVE SVG (L4). The drawing is emitted as SVG directly instead of being
+   replayed through the Canvas shim. The ROLE TABLE, OVERRIDES, the match
+   patterns, the step labels and the toggle label fallbacks are carried across
+   UNCHANGED from 1.5.9.0 — those 12 names were confirmed against a live Ableton
+   INDEQ instance, and they are data rather than ink.
+
    Fixed layout: 6 continuous/stepped knobs on the 6 dials + 6 toggle switches on
-   touch zones above/below them. No dynamic state.
+   touch zones above/below them. **No dynamic state** — no modes, no tabs, no
+   focus, no pagination. This is a hardware panel, not a navigable surface.
 
    Dials:  1 Low Gain · 2 Low Freq (stepped) · 3 Mid Gain · 4 Mid Freq (stepped)
            5 High Gain · 6 Output
    Toggles (touch): Highpass Filter (z1 top), Low Band Shape (z2 top),
            Mid Bandwidth (z3 top), High Band Shape (z5 top),
            High Frequency 8/16k (z5 bottom), Bypass (z6 top).
+   Dial press mirrors that zone's top toggle.
 
    Parameters resolve by NAME from the bridge's all_params (VST3 indexes aren't
-   stable). The match patterns use the exact names from INDEQ's Ableton parameter
-   list; pin overrides in IndeqController.OVERRIDES if your build differs.
-   See docs/INDEQ.md.
+   stable); pin overrides in IndeqController.OVERRIDES. See docs/INDEQ.md.
+
+   TWO LAYOUTS (L6). Zero keys in both — all 36 belong to the Ableton hub shell.
+
+   FULL — 6 dials, the panel above, one zone per dial.
+
+   COMPACT — 4 dials (L14), when a nav window borrows dials 5-6:
+     dial 1 = Low Gain · 2 = Mid Gain · 3 = High Gain · 4 = Output.
+     The two stepped corner-frequency dials are dropped: on a fixed-frequency EQ
+     the corners are set-and-forget setup decisions, while the gains are what a
+     hand reaches for mid-listen — which is the situation compact exists for.
+
+     NO tab is invented to hide them behind. Pulsar and Spectre earned their
+     fourth tab because they already HAD a strip-wide tab row; INDEQ has none,
+     and bolting one on would give a stateless plugin a mode concept it does not
+     have. Compact is the same four zones drawn verbatim — SELECTED, not
+     redesigned — which is why High Gain keeps its bottom row and the 8/16 kHz
+     switch survives. Of the six toggles only Low Band Shape is lost, with the
+     Low Freq zone that carried it.
    ============================================================================= */
 
 window.AVC = window.AVC || {};
@@ -37,6 +61,11 @@ AVC.IndeqController.NAME = ['Low Gain', 'Low Freq', 'Mid Gain', 'Mid Freq', 'Hig
 AVC.IndeqController.TOP = ['hpf', 'low_shape', 'mid_bw', null, 'high_shape', 'bypass'];
 AVC.IndeqController.BOT = [null, null, null, null, 'high_freq', null];
 
+/* L14 — which FULL zone each compact dial carries. Indexing the same tables
+   rather than duplicating them is the whole point: a compact zone is the full
+   zone, verbatim, so nothing can drift between the two layouts. */
+AVC.IndeqController.COMPACT_SLOTS = [0, 2, 4, 5];   // Low Gain · Mid Gain · High Gain · Output
+
 AVC.IndeqController.ROLES = [
   { key: 'low_gain',  kind: 'cont', match: ['low gain'] },
   { key: 'low_freq',  kind: 'step', steps: 4, labels: ['35', '60', '100', '220'], unit: 'Hz',
@@ -55,14 +84,16 @@ AVC.IndeqController.ROLES = [
 ];
 
 (function (P) {
-  var proto = P.prototype, gfx = AVC.gfx;
-  var SLOT = 200, SLOTS = 6;
+  var proto = P.prototype;
+  var Svg = SOS.Svg, gfx = AVC.gfx;
+  var SLOT = 200, H = 100;
   var TOP = [3, 25], MID = [30, 74], BOT = [77, 97];
 
   function norm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
   function inY(y, sec) { return y >= sec[0] && y <= sec[1]; }
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
-  // ------------------------------------------------------------- resolution
+  // ------------------------------------------------- resolution (UNCHANGED)
   proto.onState = function (state) {
     this.state = state;
     var d = state.device || {};
@@ -141,74 +172,107 @@ AVC.IndeqController.ROLES = [
     return labs[this._on(role) ? 1 : 0];
   };
 
+  // ------------------------------------------------------------ layout mode
+  /* There is no mode to fall back and no state to validate — the only thing
+     setZones changes is WHICH of the six fixed zones are on screen. */
+  proto.setZones = function (z) { this.zones = clamp(z | 0, 1, 6); };
+  proto._zones = function () { return this.zones || 6; };
+  proto._compact = function () { return this._zones() < 6; };
+  /* Dial slot -> the FULL zone it carries. L14: compact selects zones, it does
+     not redesign them. */
+  proto._slotFor = function (slot) {
+    if (!this._compact()) return slot;
+    var s = P.COMPACT_SLOTS[slot];
+    return s == null ? -1 : s;
+  };
+
   // ============================================================== rendering
-  proto.renderTouch = function (ctx) {
-    var L = this.L; gfx.clear(ctx, L.W, L.H);
+  proto.build = function (zones) {
+    this.setZones(zones);
+    var b = Svg.bag(), n = this._zones(), W = n * SLOT;
+    Svg.rect(b, 0, 0, W, H, gfx.bg);
+
     if (!this._resolved) {
-      gfx.text2(ctx, 'INDEQ — reading parameters…', 12, L.H / 2, '600 13px Inter, sans-serif', gfx.dim);
-      return;
+      Svg.text(b, 'INDEQ — reading parameters…', 12, H / 2, 13, 600, gfx.dim, 'start');
+      return b;
     }
-    for (var slot = 0; slot < SLOTS; slot++) {
+    for (var slot = 0; slot < n; slot++) {
       var x = slot * SLOT;
-      if (slot > 0) { ctx.strokeStyle = gfx.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + 0.5, 4); ctx.lineTo(x + 0.5, L.H - 4); ctx.stroke(); }
-      this._drawZone(ctx, x, slot);
+      if (slot > 0) Svg.line(b, x + 0.5, 4, x + 0.5, H - 4, gfx.line, 1);
+      this._buildZone(b, x, this._slotFor(slot));
     }
+    return b;
   };
 
-  proto._pill = function (ctx, x, y, w, h, label, on, color) {
-    gfx.roundRect(ctx, x, y, w, h, 4);
-    ctx.fillStyle = on ? (color || gfx.accent) : 'rgba(255,255,255,0.06)'; ctx.fill();
-    gfx.text2(ctx, label, x + w / 2, y + h / 2 + 3.5, '700 9px Inter, sans-serif', on ? '#06251d' : gfx.dim, 'center');
+  proto._pill = function (b, x, y, w, h, label, on, color) {
+    Svg.rrect(b, x, y, w, h, 4, on ? (color || gfx.accent) : 'rgba(255,255,255,0.06)');
+    Svg.text(b, label, x + w / 2, y + h / 2 + 3.5, 9, 700, on ? '#06251d' : gfx.dim, 'middle');
   };
 
-  proto._drawZone = function (ctx, x, slot) {
-    var color = gfx.bandColors[slot % 8];
+  /* `zone` is a FULL zone index 0-5, whichever dial happens to be showing it. */
+  proto._buildZone = function (b, x, zone) {
+    if (zone < 0) return;
+    var color = gfx.bandColors[zone % 8];
+
     // TOP toggle
-    var topKey = P.TOP[slot];
+    var topKey = P.TOP[zone];
     if (topKey) {
       var tr = this._role(topKey);
       var isByp = (topKey === 'bypass');
       var on = tr ? this._on(tr) : false;
       var label = tr ? (isByp ? this._toggleText(tr) : (tr.tag + ' ' + this._toggleText(tr))) : (topKey.toUpperCase() + ' ?');
-      this._pill(ctx, x + 6, TOP[0], SLOT - 12, TOP[1] - TOP[0], label, on, isByp ? '#ff8a8a' : color);
+      this._pill(b, x + 6, TOP[0], SLOT - 12, TOP[1] - TOP[0], label, on, isByp ? '#ff8a8a' : color);
     }
+
     // MIDDLE name + value
-    var dialKey = P.DIAL[slot], role = this._role(dialKey);
+    var role = this._role(P.DIAL[zone]);
     var isStep = role && role.kind === 'step';
-    gfx.text2(ctx, P.NAME[slot], x + SLOT / 2, MID[0] + 11, '600 10px Inter, sans-serif', gfx.dim, 'center');
-    gfx.text2(ctx, role ? (isStep ? this._fmtStep(role) : this._fmtDb(role)) : '—',
-      x + SLOT / 2, MID[1] - 2, '800 18px "SF Mono", monospace', role ? gfx.text : gfx.dim, 'center');
+    Svg.text(b, P.NAME[zone], x + SLOT / 2, MID[0] + 11, 10, 600, gfx.dim, 'middle');
+    Svg.mono(b, role ? (isStep ? this._fmtStep(role) : this._fmtDb(role)) : '—',
+             x + SLOT / 2, MID[1] - 2, 18, 800, role ? gfx.text : gfx.dim, 'middle');
+
     // BOTTOM toggle (zone 5: High Frequency)
-    var botKey = P.BOT[slot];
+    var botKey = P.BOT[zone];
     if (botKey) {
       var br = this._role(botKey);
       var blabel = br ? (br.tag + ' ' + this._toggleText(br)) : (botKey.toUpperCase() + ' ?');
-      this._pill(ctx, x + 6, BOT[0], SLOT - 12, BOT[1] - BOT[0], blabel, br ? this._on(br) : false, '#4dabf7');
+      this._pill(b, x + 6, BOT[0], SLOT - 12, BOT[1] - BOT[0], blabel, br ? this._on(br) : false, '#4dabf7');
     }
   };
 
   // ================================================================= input
   proto.onDial = function (slot, ticks) {
-    var role = this._role(P.DIAL[slot]); if (!role) return;
+    if (slot >= this._zones()) return;                    // dial on loan to a window
+    var zone = this._slotFor(slot); if (zone < 0) return;
+    var role = this._role(P.DIAL[zone]); if (!role) return;
     if (role.kind === 'step') this.bridge.cmd.stepIndex(role.index, ticks >= 0 ? 1 : -1, role.quantized ? 0 : role.steps);
     else this.bridge.cmd.deltaIndex(role.index, ticks * AVC.STEP);
   };
-  // dial press mirrors the zone's top toggle
+
+  // dial press mirrors the zone's top toggle — in BOTH layouts, since a compact
+  // zone IS the full zone.
   proto.onDialPress = function (slot) {
-    var key = P.TOP[slot]; if (!key) return;
-    var r = this._role(key); if (r) this.bridge.cmd.toggleIndex(r.index);
+    if (slot >= this._zones()) return;
+    var zone = this._slotFor(slot); if (zone < 0) return;
+    var key = P.TOP[zone]; if (!key) return;
+    this._toggle(key);
   };
+
   proto.onTouch = function (gx, gy) {
-    var slot = Math.floor(gx / SLOT); if (slot < 0 || slot > 5) return;
+    var slot = Math.floor(gx / SLOT);
+    if (slot < 0 || slot >= this._zones()) return;
+    var zone = this._slotFor(slot); if (zone < 0) return;
     var ly = gy;
-    if (inY(ly, TOP) && P.TOP[slot]) { this._toggle(P.TOP[slot]); return; }
-    if (inY(ly, BOT) && P.BOT[slot]) { this._toggle(P.BOT[slot]); return; }
+    if (inY(ly, TOP) && P.TOP[zone]) { this._toggle(P.TOP[zone]); return; }
+    if (inY(ly, BOT) && P.BOT[zone]) { this._toggle(P.BOT[zone]); return; }
   };
   proto._toggle = function (key) { var r = this._role(key); if (r) this.bridge.cmd.toggleIndex(r.index); };
 
   proto.dialTitle = function (slot) {
-    var role = this._role(P.DIAL[slot]);
-    if (!role) return P.NAME[slot];
-    return P.NAME[slot] + ' ' + (role.kind === 'step' ? this._fmtStep(role) : this._fmtDb(role));
+    if (slot >= this._zones()) return '';
+    var zone = this._slotFor(slot); if (zone < 0) return '';
+    var role = this._role(P.DIAL[zone]);
+    if (!role) return P.NAME[zone];
+    return P.NAME[zone] + ' ' + (role.kind === 'step' ? this._fmtStep(role) : this._fmtDb(role));
   };
 })(AVC.IndeqController);

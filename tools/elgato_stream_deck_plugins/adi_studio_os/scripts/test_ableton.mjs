@@ -55,7 +55,7 @@ console.log("\n[2] controllers not yet rewritten are still byte-identical copies
 // what guarantees their verified parameter maps have not drifted.
 const NATIVE = new Set(["EQ8Controller.js", "GenericController.js",
                         "PulsarMassiveController.js", "ProQ3Controller.js",
-                        "SpectreController.js", "svg.js"]);
+                        "SpectreController.js", "IndeqController.js", "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
@@ -63,7 +63,7 @@ for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   ok(`${f} unchanged from 1.5.9.0`, a.equals(b), `${a.length} vs ${b.length} bytes`);
 }
 for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveController.js",
-                 "ProQ3Controller.js", "SpectreController.js"]) {
+                 "ProQ3Controller.js", "SpectreController.js", "IndeqController.js"]) {
   ok(`${f} is the native rewrite, not a copy`,
      !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
        fs.readFileSync(path.join(LEGACY, f))));
@@ -740,6 +740,112 @@ ok("the tab row still works in GLOB, so you can get back", sp.mode === "gain", s
 sp.mode = "glob"; sp.setZones(6);
 ok("GLOB carried into full falls back to GAIN", sp.mode === "gain", sp.mode);
 ok("nothing from the full layout was lost — only moved behind a tab", true);
+
+console.log("\n[13] INDEQ dual layout — stateless, steppers dropped (L14)");
+// The exact 12 names confirmed against a live Ableton INDEQ (docs/INDEQ.md).
+const IQ = []; let iqi = 0;
+const iqadd = (o) => IQ.push(Object.assign({ i: iqi++, quantized: false, items: [] }, o));
+iqadd({ name: "Low Gain", min: -10, max: 10, value: 3, disp: "+3.00 dB" });
+iqadd({ name: "Low Frequency", min: 0, max: 3, quantized: true, items: ["35Hz", "60Hz", "100Hz", "220Hz"], value: 2, disp: "100Hz" });
+iqadd({ name: "Mid Gain", min: -10, max: 10, value: -2, disp: "-2.00 dB" });
+iqadd({ name: "Mid Frequency", min: 0, max: 5, quantized: true, items: [".2kHz", ".35kHz", ".7kHz", "1.5kHz", "3kHz", "6kHz"], value: 3, disp: "1.5kHz" });
+iqadd({ name: "High Gain", min: -10, max: 10, value: 4, disp: "+4.00 dB" });
+iqadd({ name: "Output", min: -10, max: 10, value: 0, disp: "0.00 dB" });
+iqadd({ name: "Highpass Filter", min: 0, max: 1, quantized: true, items: ["OFF", "ON"], value: 1, disp: "ON" });
+iqadd({ name: "Low Band Shape", min: 0, max: 1, quantized: true, items: ["Shelf", "Peak"], value: 0, disp: "Shelf" });
+iqadd({ name: "Mid Bandwidth", min: 0, max: 1, quantized: true, items: ["Normal", "High"], value: 1, disp: "High" });
+iqadd({ name: "High Band Shape", min: 0, max: 1, quantized: true, items: ["Shelf", "Peak"], value: 1, disp: "Peak" });
+iqadd({ name: "High Frequency", min: 0, max: 1, quantized: true, items: ["8kHz", "16kHz"], value: 0, disp: "8kHz" });
+iqadd({ name: "Bypass", min: 0, max: 1, quantized: true, items: ["IN", "BYP"], value: 0, disp: "IN" });
+
+const ist = JSON.parse(JSON.stringify(st));
+ist.device = { name: "INDEQ", class_name: "PluginDevice", controller: "generic",
+               has_device: true, index: 0, param_count: IQ.length };
+ist.allParams = IQ; ist.pv = {};
+IQ.forEach((p) => { ist.pv[p.i] = { value: p.value, disp: p.disp }; });
+
+let iqSent = null;
+const iqSpy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  deltaIndex: (i2, d) => { iqSent = { delta: i2, d }; },
+  stepIndex: (i2, dir, steps) => { iqSent = { step: i2, dir, steps }; },
+  toggleIndex: (i2) => { iqSent = { toggle: i2 }; },
+  getAllParams: () => {}, watch: () => {},
+}) }, sd: { log() {} }, layout: A._layout };
+const iq = new AVC.IndeqController(iqSpy);
+iq.onState(ist);
+ok("all 12 roles resolved from the live-verified names", (iq._missing || []).length === 0,
+   (iq._missing || []).join(","));
+const iqIdx = (k) => iq._role(k).index;
+
+// --- FULL ---
+iq.setZones(6);
+const iqFull = SOS.Svg.serialize(iq.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(iqFull));
+ok("full shows all six knobs",
+   ["Low Gain", "Low Freq", "Mid Gain", "Mid Freq", "High Gain", "Output"]
+     .every((t2) => iqFull.includes(">" + t2 + "<")),
+   ["Low Gain", "Low Freq", "Mid Gain", "Mid Freq", "High Gain", "Output"]
+     .filter((t2) => !iqFull.includes(">" + t2 + "<")).join(","));
+ok("full shows all six toggles",
+   ["HPF ON", "SHAPE Shelf", "BW High", "SHAPE Peak", "HF 8kHz", "IN"]
+     .every((t2) => iqFull.includes(">" + t2 + "<")),
+   ["HPF ON", "SHAPE Shelf", "BW High", "SHAPE Peak", "HF 8kHz", "IN"]
+     .filter((t2) => !iqFull.includes(">" + t2 + "<")).join(","));
+ok("stepped dials read back Live's own item text", iqFull.includes(">100Hz<") && iqFull.includes(">1.5kHz<"));
+iq.onDial(1, 1);
+ok("full dial 2 STEPS Low Frequency", iqSent.step === iqIdx("low_freq"), JSON.stringify(iqSent));
+iq.onDial(0, 1);
+ok("full dial 1 sweeps Low Gain", iqSent.delta === iqIdx("low_gain"), JSON.stringify(iqSent));
+iq.onDialPress(1);
+ok("full dial 2 press mirrors Low Band Shape", iqSent.toggle === iqIdx("low_shape"), JSON.stringify(iqSent));
+iqSent = null; iq.onDialPress(3);
+ok("full dial 4 press does nothing — that zone has no top toggle", iqSent === null, JSON.stringify(iqSent));
+
+// --- COMPACT (L14) ---
+iq.setZones(4);
+const iqComp = SOS.Svg.serialize(iq.build(4), 0, 800, 100);
+ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(iqComp));
+ok("compact maps dials 1-4 to Low Gain / Mid Gain / High Gain / Output",
+   [0,1,2,3].map((s2) => iq._slotFor(s2)).join(",") === "0,2,4,5",
+   [0,1,2,3].map((s2) => iq._slotFor(s2)).join(","));
+ok("compact drops both frequency steppers",
+   !iqComp.includes(">Low Freq<") && !iqComp.includes(">Mid Freq<"));
+ok("compact keeps all four gain/output knobs",
+   ["Low Gain", "Mid Gain", "High Gain", "Output"].every((t2) => iqComp.includes(">" + t2 + "<")));
+ok("compact invents NO tab, page or mode — the zones are selected, not redesigned",
+   !/GLOB|BANDS|DRIVE|>PAGE</.test(iqComp) && !("mode" in iq) && typeof iq._modes !== "function");
+// Carrying zones whole means the bottom row survives with them.
+ok("5 of the 6 toggles survive; only Low Band Shape goes with its zone",
+   ["HPF ON", "BW High", "SHAPE Peak", "HF 8kHz", "IN"].every((t2) => iqComp.includes(">" + t2 + "<")) &&
+   !iqComp.includes(">SHAPE Shelf<"),
+   ["HPF ON", "BW High", "SHAPE Peak", "HF 8kHz", "IN"].filter((t2) => !iqComp.includes(">" + t2 + "<")).join(","));
+
+iq.onDial(1, 1);
+ok("compact dial 2 sweeps Mid Gain", iqSent.delta === iqIdx("mid_gain"), JSON.stringify(iqSent));
+iq.onDial(3, 1);
+ok("compact dial 4 sweeps Output", iqSent.delta === iqIdx("output"), JSON.stringify(iqSent));
+ok("no compact dial can reach a stepper",
+   [0,1,2,3].every((s2) => { iqSent = null; iq.onDial(s2, 1); return iqSent && iqSent.step === undefined; }));
+
+// Presses must still mirror the top toggles — Adi's point 3.
+const wantPress = ["hpf", "mid_bw", "high_shape", "bypass"];
+ok("compact presses mirror HPF / Mid Bandwidth / High Band Shape / Bypass",
+   wantPress.every((k, s2) => { iqSent = null; iq.onDialPress(s2); return iqSent && iqSent.toggle === iqIdx(k); }),
+   wantPress.map((k, s2) => { iqSent = null; iq.onDialPress(s2); return k + ":" + JSON.stringify(iqSent); }).join(" "));
+// And the touch rows must address the same zone the dial does.
+iqSent = null; iq.onTouch(400 + 100, 90, false);          // zone 3 = High Gain, bottom row
+ok("compact touch on the High Gain bottom row hits the 8/16 kHz switch",
+   iqSent.toggle === iqIdx("high_freq"), JSON.stringify(iqSent));
+iqSent = null; iq.onTouch(600 + 100, 12, false);          // zone 4 = Output, top row
+ok("compact touch on the Output top row hits Bypass", iqSent.toggle === iqIdx("bypass"), JSON.stringify(iqSent));
+
+ok("compact dial titles name the four knobs",
+   [0,1,2,3].map((s2) => iq.dialTitle(s2).replace(/ [-+0-9.].*$/, "")).join(",")
+     === "Low Gain,Mid Gain,High Gain,Output",
+   [0,1,2,3].map((s2) => iq.dialTitle(s2)).join(" | "));
+ok("dialTitle is empty for a borrowed dial", iq.dialTitle(4) === "" && iq.dialTitle(5) === "");
+iqSent = null; iq.onDial(4, 1); iq.onDialPress(5); iq.onTouch(900, 12, false);
+ok("borrowed dials 5-6 send nothing", iqSent === null, JSON.stringify(iqSent));
 
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();
