@@ -56,7 +56,8 @@ console.log("\n[2] controllers not yet rewritten are still byte-identical copies
 const NATIVE = new Set(["EQ8Controller.js", "GenericController.js",
                         "PulsarMassiveController.js", "ProQ3Controller.js",
                         "SpectreController.js", "IndeqController.js",
-                        "ValhallaRoomController.js", "svg.js"]);
+                        "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
+                        "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
@@ -65,7 +66,7 @@ for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
 }
 for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveController.js",
                  "ProQ3Controller.js", "SpectreController.js", "IndeqController.js",
-                 "ValhallaRoomController.js"]) {
+                 "ValhallaRoomController.js", "ValhallaVintageVerbController.js"]) {
   ok(`${f} is the native rewrite, not a copy`,
      !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
        fs.readFileSync(path.join(LEGACY, f))));
@@ -983,6 +984,128 @@ ok("in FULL the left half is still MODE", vrSent.step === vrIdx("reverbmode"), J
 vr.setZones(4);
 vr.onTouch(30, 8, false);
 ok("the page tabs still work in compact", vr.page === "main", vr.page);
+
+console.log("\n[15] ValhallaVintageVerb dual layout — the bar keeps BOTH halves (L16)");
+// Real v2.1.2 Configure names. Unlike ValhallaRoom, BOTH bar selectors are real
+// exposed quantized params — which is the whole reason L15's V3 does not apply.
+const VV_MODES = ["Concert Hall", "Bright Hall", "Plate", "Room", "Chamber",
+                  "Random Space", "Chorus Space", "Ambience", "Sanctuary", "Nonlinear"];
+const VV_COLOR = ["seventies", "eighties", "now"];
+const VV = []; let vvi = 0;
+const vvadd = (name, min, max, value, disp, o = {}) => VV.push({
+  i: vvi++, name, min, max, value, disp, quantized: !!o.q, items: o.items || [],
+});
+vvadd("Mix", 0, 100, 42, "42.0 %");
+vvadd("PreDelay", 0, 500, 20, "20 ms");
+vvadd("Decay", 0.1, 70, 4.2, "4.20 s");
+vvadd("Size", 0, 100, 100, "100 %");
+vvadd("Attack", 0, 100, 50, "50.0 %");
+vvadd("HighFreq", 200, 20000, 6000, "6.00 kHz");
+vvadd("HighShelf", -30, 0, -24, "-24.0 dB");
+vvadd("BassXover", 100, 2000, 700, "700 Hz");
+vvadd("BassMult", 0.25, 4, 1.5, "1.50 x");
+vvadd("EarlyDiffusion", 0, 100, 100, "100 %");
+vvadd("LateDiffusion", 0, 100, 100, "100 %");
+vvadd("ModRate", 0, 10, 2.53, "2.53 Hz");
+vvadd("ModDepth", 0, 100, 38, "38.0 %");
+vvadd("HighCut", 200, 20000, 8000, "8.00 kHz");
+vvadd("LowCut", 10, 2000, 120, "120 Hz");
+vvadd("ReverbMode", 0, VV_MODES.length - 1, 6, "Chorus Space", { q: true, items: VV_MODES });
+vvadd("ColorMode", 0, VV_COLOR.length - 1, 0, "seventies", { q: true, items: VV_COLOR });
+
+const vvst = JSON.parse(JSON.stringify(st));
+vvst.device = { name: "ValhallaVintageVerb", class_name: "PluginDevice", controller: "generic",
+                has_device: true, index: 0, param_count: VV.length };
+vvst.allParams = VV; vvst.pv = {};
+VV.forEach((p) => { vvst.pv[p.i] = { value: p.value, disp: p.disp }; });
+
+let vvSent = null;
+const vvSpy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  deltaIndex: (i2, d) => { vvSent = { delta: i2, d }; },
+  stepIndex: (i2, dir, steps) => { vvSent = { step: i2, dir, steps }; },
+  getAllParams: () => {}, watch: () => {},
+}) }, sd: { log() {} }, layout: A._layout };
+const vv = new AVC.ValhallaVintageVerbController(vvSpy);
+vv.onState(vvst);
+ok("all 17 roles resolve — including BOTH bar selectors", (vv._missing || []).length === 0,
+   (vv._missing || []).join(","));
+const vvIdx = (k) => vv._role(k).index;
+
+// --- FULL ---
+vv.setZones(6);
+vv.page = "main";
+const vvFull = SOS.Svg.serialize(vv.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(vvFull));
+ok("full MAIN shows all six parameters",
+   ["MIX", "PREDLY", "DECAY", "SIZE", "HI CUT", "LO CUT"].every((t2) => vvFull.includes(">" + t2 + "<")),
+   ["MIX", "PREDLY", "DECAY", "SIZE", "HI CUT", "LO CUT"].filter((t2) => !vvFull.includes(">" + t2 + "<")).join(","));
+ok("full bar carries MODE and COLOR with live values",
+   vvFull.includes(">MODE<") && vvFull.includes(">COLOR<") &&
+   vvFull.includes(">Chorus Space<") && vvFull.includes(">seventies<"));
+for (const [pg, first] of [["damp", "HF DAMP"], ["shape", "ATTACK"]]) {
+  vv.page = pg;
+  const svgP = SOS.Svg.serialize(vv.build(6), 0, 1200, 100);
+  ok(`full ${pg.toUpperCase()} page renders, dial 1 = ${first}`, svgP.includes(">" + first + "<"), first);
+}
+
+// --- COMPACT (L16) ---
+vv.setZones(4);
+vv.page = "main";
+const vvComp = SOS.Svg.serialize(vv.build(4), 0, 800, 100);
+ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(vvComp));
+ok("compact keeps all THREE page tabs",
+   ["MAIN", "DAMP", "SHAPE"].every((t2) => vvComp.includes(">" + t2 + "<")));
+ok("compact MAIN keeps the first four parameters",
+   ["MIX", "PREDLY", "DECAY", "SIZE"].every((t2) => vvComp.includes(">" + t2 + "<")));
+ok("compact MAIN drops High Cut and Low Cut",
+   !vvComp.includes(">HI CUT<") && !vvComp.includes(">LO CUT<"));
+// The point of L16: unlike ValhallaRoom, NOTHING is dropped from the bar.
+ok("compact bar KEEPS both halves — COLOR is a real control, not a dead slot",
+   vvComp.includes(">MODE<") && vvComp.includes(">COLOR<") &&
+   vvComp.includes(">Chorus Space<") && vvComp.includes(">seventies<"));
+const vvHalves = [...vvComp.matchAll(/<rect x="(6|406)" y="64" width="([\d.]+)"/g)].map((m2) => m2[1] + ":" + m2[2]);
+ok("each half is 388 wide at the compact width (~394 px of target each)",
+   vvHalves.join(",") === "6:388,406:388", vvHalves.join(","));
+
+// DAMP is the sharpest case: its four UNIQUE params are exactly dials 1-4.
+vv.page = "damp";
+const vvDamp = SOS.Svg.serialize(vv.build(4), 0, 800, 100);
+ok("compact DAMP survives functionally whole — only its repeats go",
+   ["HF DAMP", "HF SHLF", "BAS XO", "BAS MUL"].every((t2) => vvDamp.includes(">" + t2 + "<")) &&
+   !vvDamp.includes(">DECAY<") && !vvDamp.includes(">MIX<"),
+   ["HF DAMP", "HF SHLF", "BAS XO", "BAS MUL"].filter((t2) => !vvDamp.includes(">" + t2 + "<")).join(","));
+vv.onDial(1, 1);
+ok("compact DAMP dial 2 drives HighShelf", vvSent.delta === vvIdx("highshelf"), JSON.stringify(vvSent));
+vv.page = "shape"; vv.onDial(3, 1);
+ok("compact SHAPE dial 4 drives ModRate", vvSent.delta === vvIdx("modrate"), JSON.stringify(vvSent));
+
+// The bar splits at the CURRENT width — the regression would be splitting at 600
+// while drawing at 400, which puts every compact tap on the wrong selector.
+vv.onTouch(200, 80, false);
+ok("compact: a tap left of 400 cycles MODE", vvSent.step === vvIdx("reverbmode"), JSON.stringify(vvSent));
+vv.onTouch(500, 80, false);
+ok("compact: a tap right of 400 cycles COLOR", vvSent.step === vvIdx("colormode"), JSON.stringify(vvSent));
+vv.onTouch(500, 80, true);
+ok("holding steps COLOR backwards", vvSent.step === vvIdx("colormode") && vvSent.dir === -1, JSON.stringify(vvSent));
+// x=500 is right of the compact midpoint (400) but left of the full one (600),
+// so it must mean DIFFERENT selectors in the two layouts. That is the whole
+// claim of "the split follows the width" — and the bug it guards against is a
+// bar drawn at 800 while still hit-tested at 1200.
+vv.setZones(6);
+vv.onTouch(500, 80, false);
+ok("full: the SAME x=500 is MODE, because the split follows the width",
+   vvSent.step === vvIdx("reverbmode"), JSON.stringify(vvSent));
+vv.onTouch(900, 80, false);
+ok("full: a tap right of 600 cycles COLOR", vvSent.step === vvIdx("colormode"), JSON.stringify(vvSent));
+
+// Presses and borrowed dials.
+vv.setZones(4); vv.page = "main";
+vv.onDialPress(2); vv.onDialPress(0); vv.onDialPress(3);
+ok("three presses walk MAIN -> DAMP -> SHAPE -> MAIN from any dial", vv.page === "main", vv.page);
+vvSent = null; vv.onDial(4, 1); vv.onDialPress(5);
+ok("borrowed dials 5-6 send nothing and cannot page", vvSent === null && vv.page === "main",
+   `${JSON.stringify(vvSent)} page=${vv.page}`);
+ok("dialTitle is empty for a borrowed dial", vv.dialTitle(4) === "" && vv.dialTitle(5) === "");
 
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();

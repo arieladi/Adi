@@ -763,6 +763,47 @@ the page you land on stops being "everything important"); turning the bar into a
 fifth GLOB page (the bar is already touch-driven and works — converting it to
 dials is motion without gain).
 
+### L16 — VintageVerb compact: three pages kept, and the bar KEEPS both halves
+
+Presented Full first, rendered on all three pages. VVV owns **zero keys** in
+either layout.
+
+Architecturally this is ValhallaRoom again — paged reverb, press-any-dial to
+advance — so L15 mostly transfers. **One thing does not.** ValhallaRoom's
+right-hand bar slot was an unexposed Preset that printed "— (not exposed)",
+which is exactly why dropping it in compact (V3) cost nothing. VVV's right-hand
+slot is **ColorMode**, a real exposed quantized selector, and on this plugin the
+era voicing (`seventies` / `eighties` / `now`) is one of its most characterful
+controls. Reusing V3 here would throw away a live control on the strength of a
+precedent that was only ever about a dead one.
+
+**RULING — W1.**
+
+* **All three pages survive** (MAIN / DAMP / SHAPE), each yielding its **first
+  four parameters**; dials 5 and 6 are dropped.
+  - MAIN loses High Cut and Low Cut
+  - SHAPE loses Mod Depth and Size
+  - **DAMP survives functionally whole** — its four unique parameters are exactly
+    dials 1-4, and only its Decay/Mix *repeats* go
+* **The bar keeps BOTH halves**, split at the compact width: MODE left, COLOR
+  right, ~394 px each — still wider than a whole dial zone, and ample for
+  "Chorus Space" and "seventies". Both stay fully touch-interactive.
+* **Press behaviour unchanged: any dial advances the page.**
+
+Adi's reasoning: the thematic integrity of the three pages matters more than
+holding on to setup parameters like High Cut / Low Cut, and 394 px is a massive
+touch target.
+
+Implementation consequence worth recording: because the bar splits at the
+CURRENT width rather than a hardcoded 1200, the compact bar needs no special
+case at all — the same code draws and hit-tests both layouts. VVV is the
+simpler controller of the two precisely because nothing had to be dropped.
+
+Rejected: stacking MODE over COLOR as two half-height rows (~16 px each, tight
+for no gain); one bar that toggles between them (adds hidden state to a bar that
+has none); re-paging to four pages so nothing is lost (VVV's pages are thematic —
+damping vs shape — and splitting them makes the themes fuzzy).
+
 ### Native SVG progress (L4), updated
 
 | Controller | Native | Compact |
@@ -774,4 +815,5 @@ dials is motion without gain).
 | **Spectre** | ✅ | ✅ GLOB tab, bands Lo/P1/P3/Hi |
 | **Indeq** | ✅ | ✅ gains + Output, steppers dropped |
 | **ValhallaRoom** | ✅ | ✅ 4 pages × first 4 dials, MODE-only bar |
-| ValhallaVintageVerb, Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
+| **ValhallaVintageVerb** | ✅ | ✅ 3 pages × first 4 dials, bar keeps MODE + COLOR |
+| Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
