@@ -55,7 +55,8 @@ console.log("\n[2] controllers not yet rewritten are still byte-identical copies
 // what guarantees their verified parameter maps have not drifted.
 const NATIVE = new Set(["EQ8Controller.js", "GenericController.js",
                         "PulsarMassiveController.js", "ProQ3Controller.js",
-                        "SpectreController.js", "IndeqController.js", "svg.js"]);
+                        "SpectreController.js", "IndeqController.js",
+                        "ValhallaRoomController.js", "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
@@ -63,7 +64,8 @@ for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   ok(`${f} unchanged from 1.5.9.0`, a.equals(b), `${a.length} vs ${b.length} bytes`);
 }
 for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveController.js",
-                 "ProQ3Controller.js", "SpectreController.js", "IndeqController.js"]) {
+                 "ProQ3Controller.js", "SpectreController.js", "IndeqController.js",
+                 "ValhallaRoomController.js"]) {
   ok(`${f} is the native rewrite, not a copy`,
      !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
        fs.readFileSync(path.join(LEGACY, f))));
@@ -846,6 +848,141 @@ ok("compact dial titles name the four knobs",
 ok("dialTitle is empty for a borrowed dial", iq.dialTitle(4) === "" && iq.dialTitle(5) === "");
 iqSent = null; iq.onDial(4, 1); iq.onDialPress(5); iq.onTouch(900, 12, false);
 ok("borrowed dials 5-6 send nothing", iqSent === null, JSON.stringify(iqSent));
+
+console.log("\n[14] ValhallaRoom dual layout — 4 pages, MODE-only bar (L15)");
+// The legacy demo's mock: the real v1.6.2 Configure names, and deliberately NO
+// preset parameter, because ValhallaRoom does not reliably expose one.
+const VR_MODES = ["Large Room", "Medium Room", "Small Room", "Big Hall",
+                  "Bright Hall", "Chamber", "Dark Room"];
+const VR = []; let vri = 0;
+const vradd = (name, min, max, value, disp, o = {}) => VR.push({
+  i: vri++, name, min, max, value, disp, quantized: !!o.q, items: o.items || [],
+});
+vradd("mix", 0, 100, 35, "35.0 %");
+vradd("predelay", 0, 500, 24, "24 ms");
+vradd("decay", 0.1, 70, 2.4, "2.40 s");
+vradd("HighCut", 200, 20000, 8000, "8.00 kHz");
+vradd("diffusion", 0, 1, 0.62, "62.0 %");
+vradd("earlyLateMix", 0, 100, 50, "50.0 %");
+vradd("earlySize", 0, 100, 30, "30.0 %");
+vradd("earlyCross", 0, 1, 0.1, "10.0 %");
+vradd("earlyModRate", 0, 5, 0.5, "0.50 Hz");
+vradd("earlyModDepth", 0, 1, 0.2, "20.0 %");
+vradd("earlySend", 0, 1, 0.35, "35.0 %");
+vradd("lateSize", 0, 1, 0.5, "50.0 %");
+vradd("lateCross", 0, 1, 0.5, "50.0 %");
+vradd("lateModRate", 0, 5, 1.0, "1.00 Hz");
+vradd("lateModDepth", 0, 1, 0.5, "50.0 %");
+vradd("RTBassMultiply", 0.25, 4, 1.4, "1.40 x");
+vradd("RTXover", 100, 2000, 1000, "1.00 kHz");
+vradd("RTHighMultiply", 0.25, 2, 0.5, "0.50 x");
+vradd("RTHighXover", 1000, 20000, 8000, "8.00 kHz");
+vradd("type", 0, VR_MODES.length - 1, 4, "Bright Hall", { q: true, items: VR_MODES });
+
+const vst = JSON.parse(JSON.stringify(st));
+vst.device = { name: "ValhallaRoom", class_name: "PluginDevice", controller: "generic",
+               has_device: true, index: 0, param_count: VR.length };
+vst.allParams = VR; vst.pv = {};
+VR.forEach((p) => { vst.pv[p.i] = { value: p.value, disp: p.disp }; });
+
+let vrSent = null;
+const vrSpy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  deltaIndex: (i2, d) => { vrSent = { delta: i2, d }; },
+  stepIndex: (i2, dir, steps) => { vrSent = { step: i2, dir, steps }; },
+  getAllParams: () => {}, watch: () => {},
+}) }, sd: { log() {} }, layout: A._layout };
+const vr = new AVC.ValhallaRoomController(vrSpy);
+vr.onState(vst);
+ok("all 19 continuous roles + the mode selector resolve",
+   (vr._missing || []).join(",") === "preset", (vr._missing || []).join(","));
+ok("the absent preset role degrades instead of throwing", vr._role("preset") === null);
+const vrIdx = (k) => vr._role(k).index;
+
+// --- FULL ---
+vr.setZones(6);
+vr.page = "main";
+const vrFull = SOS.Svg.serialize(vr.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(vrFull));
+ok("full MAIN shows all six parameters",
+   ["MIX", "PREDLY", "DECAY", "HI CUT", "DIFF", "E/L MIX"].every((t2) => vrFull.includes(">" + t2 + "<")),
+   ["MIX", "PREDLY", "DECAY", "HI CUT", "DIFF", "E/L MIX"].filter((t2) => !vrFull.includes(">" + t2 + "<")).join(","));
+ok("full bar carries BOTH halves", vrFull.includes(">MODE<") && vrFull.includes(">PRESET<"));
+ok("an unexposed preset says so rather than pretending", vrFull.includes("(not exposed)"));
+ok("MODE reads Live's own algorithm name", vrFull.includes(">Bright Hall<"));
+// Every page maps six dials in full.
+for (const [pg, first] of [["early", "E SIZE"], ["late", "L SIZE"], ["rt", "BAS MUL"]]) {
+  vr.page = pg;
+  const svgP = SOS.Svg.serialize(vr.build(6), 0, 1200, 100);
+  ok(`full ${pg.toUpperCase()} page renders, dial 1 = ${first}`, svgP.includes(">" + first + "<"), first);
+}
+vr.page = "main"; vr.onDial(5, 1);
+ok("full dial 6 drives Early/Late Mix", vrSent.delta === vrIdx("earlylatemix"), JSON.stringify(vrSent));
+
+// --- COMPACT (L15) ---
+vr.setZones(4);
+const vrComp = SOS.Svg.serialize(vr.build(4), 0, 800, 100);
+ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(vrComp));
+ok("compact keeps ALL FOUR page tabs",
+   ["MAIN", "EARLY", "LATE", "RT"].every((t2) => vrComp.includes(">" + t2 + "<")),
+   ["MAIN", "EARLY", "LATE", "RT"].filter((t2) => !vrComp.includes(">" + t2 + "<")).join(","));
+ok("compact MAIN keeps the first four parameters",
+   ["MIX", "PREDLY", "DECAY", "HI CUT"].every((t2) => vrComp.includes(">" + t2 + "<")));
+ok("compact MAIN drops Diffusion and Early/Late Mix",
+   !vrComp.includes(">DIFF<") && !vrComp.includes(">E/L MIX<"));
+ok("compact bar drops PRESET entirely",
+   !vrComp.includes(">PRESET<") && !vrComp.includes("(not exposed)"));
+ok("compact bar still carries MODE", vrComp.includes(">MODE<") && vrComp.includes(">Bright Hall<"));
+// V3's actual point: MODE spans the whole compact width, not half of it.
+const barW = (vrComp.match(/<rect x="6" y="64" width="([\d.]+)"/) || [])[1];
+ok("MODE spans the full compact width (788, not 388)", barW === "788", String(barW));
+
+// RT is exactly four parameters, so it survives whole — the sharpest case.
+vr.page = "rt";
+const vrRt = SOS.Svg.serialize(vr.build(4), 0, 800, 100);
+ok("compact RT page survives WHOLE — it is exactly four parameters",
+   ["BAS MUL", "BAS XO", "HI MUL", "HI XO"].every((t2) => vrRt.includes(">" + t2 + "<")),
+   ["BAS MUL", "BAS XO", "HI MUL", "HI XO"].filter((t2) => !vrRt.includes(">" + t2 + "<")).join(","));
+vr.onDial(3, 1);
+ok("compact RT dial 4 drives RTHighXover", vrSent.delta === vrIdx("highxover"), JSON.stringify(vrSent));
+vr.page = "late"; vr.onDial(0, 1);
+ok("compact LATE dial 1 drives lateSize", vrSent.delta === vrIdx("latesize"), JSON.stringify(vrSent));
+
+// Mix and Decay stay reachable, which is what makes the drop acceptable.
+vr.page = "main";
+ok("Mix is on dial 1 of MAIN and Decay on dial 3",
+   vr.dialTitle(0).indexOf("MIX") >= 0 && vr.dialTitle(2).indexOf("DECAY") >= 0,
+   vr.dialTitle(0) + " | " + vr.dialTitle(2));
+
+// Presses: ANY dial advances the page, in both layouts.
+vr.page = "main";
+vrSent = null;
+[0, 1, 2, 3].forEach(() => vr.onDialPress(0));
+ok("four presses walk MAIN -> EARLY -> LATE -> RT -> MAIN", vr.page === "main", vr.page);
+vr.onDialPress(2);
+ok("pressing ANY dial advances the page, not just dial 1", vr.page === "early", vr.page);
+ok("a page advance sends nothing to the bridge", vrSent === null, JSON.stringify(vrSent));
+vr.page = "main";
+vrSent = null; vr.onDial(4, 1); vr.onDialPress(5);
+ok("borrowed dials 5-6 send nothing and cannot page", vrSent === null && vr.page === "main",
+   `${JSON.stringify(vrSent)} page=${vr.page}`);
+ok("dialTitle is empty for a borrowed dial", vr.dialTitle(4) === "" && vr.dialTitle(5) === "");
+
+// Touch: in compact the WHOLE bar is MODE, including the half that used to be
+// PRESET — the regression that would make the right side of the bar dead.
+vr.onTouch(700, 80, false);
+ok("a tap on the right of the compact bar still cycles MODE",
+   vrSent.step === vrIdx("reverbmode") && vrSent.dir === 1, JSON.stringify(vrSent));
+vr.onTouch(100, 80, true);
+ok("holding cycles MODE backwards", vrSent.step === vrIdx("reverbmode") && vrSent.dir === -1, JSON.stringify(vrSent));
+vr.setZones(6); vrSent = null;
+vr.onTouch(700, 80, false);
+ok("in FULL the same x is the PRESET half, which is unmapped here, so nothing is sent",
+   vrSent === null, JSON.stringify(vrSent));
+vr.onTouch(100, 80, false);
+ok("in FULL the left half is still MODE", vrSent.step === vrIdx("reverbmode"), JSON.stringify(vrSent));
+vr.setZones(4);
+vr.onTouch(30, 8, false);
+ok("the page tabs still work in compact", vr.page === "main", vr.page);
 
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();

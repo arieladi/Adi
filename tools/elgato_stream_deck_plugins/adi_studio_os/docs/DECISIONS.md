@@ -726,6 +726,43 @@ Rejected: dropping High and Output to keep two complete bands (loses the high
 band and three toggles); a shared "frequency of the last band you touched" dial
 (adds focus state to a deliberately stateless controller); inventing a tab.
 
+### L15 — ValhallaRoom compact: keep all four pages, lose the PRESET half
+
+Presented Full first, rendered on all four pages. ValhallaRoom owns **zero keys**
+in either layout.
+
+The first reverb, and the first controller that was **already paged** — 19
+continuous parameters were folded onto 6 dials long before compact existed. So
+the compact question was never "what do we drop"; it was "does the existing
+paging stretch one notch further". It does.
+
+The genuinely new problem was the **global bar**: the only full-width element any
+controller has, and at 800 px it is sliced through the middle, leaving MODE in
+the module's half and PRESET stranded in the borrowed half where it can never be
+drawn or touched.
+
+**RULING — V1 + V3.**
+
+* **All four pages survive** (MAIN / EARLY / LATE / RT). Each uses the **first
+  four parameters of its own page**; dials 5 and 6 are dropped.
+  - MAIN loses Diffusion and Early/Late Mix
+  - EARLY loses Early Send (and its repeat of Mix)
+  - LATE and **RT survive whole** — RT is exactly four parameters
+* **Mix and Decay stay reachable everywhere**, because they already repeat on the
+  deeper pages. Adi's reasoning: riding Mix and Decay is the frequent move when
+  dialling dense spatial atmospheres; Diffusion and Early Send are not.
+* **The PRESET half of the bar is dropped in compact**, and MODE expands to span
+  the full compact width. ValhallaRoom does not reliably expose a preset
+  parameter at all, so compact was about to spend half a bar rendering
+  "— (not exposed)". MODE gets a target twice the size instead.
+* **Press behaviour is unchanged: any dial advances the page.** No per-dial press
+  action exists in either layout.
+
+Rejected: re-paging into five pages so nothing is lost (splits MAIN in two, and
+the page you land on stops being "everything important"); turning the bar into a
+fifth GLOB page (the bar is already touch-driven and works — converting it to
+dials is motion without gain).
+
 ### Native SVG progress (L4), updated
 
 | Controller | Native | Compact |
@@ -736,4 +773,5 @@ band and three toggles); a shared "frequency of the last band you touched" dial
 | ProQ3 | ✅ | ✅ bands 1/2/3/6, press = Slope on cuts |
 | **Spectre** | ✅ | ✅ GLOB tab, bands Lo/P1/P3/Hi |
 | **Indeq** | ✅ | ✅ gains + Output, steppers dropped |
-| ValhallaRoom, ValhallaVintageVerb, Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
+| **ValhallaRoom** | ✅ | ✅ 4 pages × first 4 dials, MODE-only bar |
+| ValhallaVintageVerb, Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
