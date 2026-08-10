@@ -57,7 +57,7 @@ const NATIVE = new Set(["EQ8Controller.js", "GenericController.js",
                         "PulsarMassiveController.js", "ProQ3Controller.js",
                         "SpectreController.js", "IndeqController.js",
                         "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
-                        "BlackholeController.js", "svg.js"]);
+                        "BlackholeController.js", "HDelayController.js", "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
@@ -67,7 +67,7 @@ for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
 for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveController.js",
                  "ProQ3Controller.js", "SpectreController.js", "IndeqController.js",
                  "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
-                 "BlackholeController.js"]) {
+                 "BlackholeController.js", "HDelayController.js"]) {
   ok(`${f} is the native rewrite, not a copy`,
      !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
        fs.readFileSync(path.join(LEGACY, f))));
@@ -1251,6 +1251,95 @@ ok("borrowed dials 5-6 send nothing and cannot page", bhSent === null && bh.page
    `${JSON.stringify(bhSent)} page=${bh.page}`);
 ok("a BORROWED dial title is empty, unlike an unmapped one",
    bh.dialTitle(4) === "" && bh.dialTitle(5) === "");
+
+console.log("\n[17] H-Delay dual layout — filters dropped, both steppers kept (L18)");
+const HD_DELAY = ["1/64T", "1/64", "1/32T", "1/32", "1/16T", "1/16", "1/8T", "1/8D",
+                  "1/8", "1/4T", "1/4D", "1/4", "1/2", "1 Bar", "2 Bar"];
+const HD_PP = ["ØL", "Ping Pong", "ØR", "Stereo"];
+const HD = []; let hdi = 0;
+const hdadd = (name, min, max, value, disp, o = {}) => HD.push({
+  i: hdi++, name, min, max, value, disp, quantized: !!o.q, items: o.items || [],
+});
+hdadd("Mix", 0, 100, 34, "34.0 %");
+hdadd("Delay BPM", 0, HD_DELAY.length - 1, 7, "1/8D", { q: true, items: HD_DELAY });
+hdadd("Feedback", 0, 200, 89, "89.0 %");
+hdadd("HiPass", 20, 20000, 132, "132 Hz");
+hdadd("LoPass", 20, 20000, 18800, "18.8 kHz");
+hdadd("PingPong", 0, HD_PP.length - 1, 1, "Ping Pong", { q: true, items: HD_PP });
+
+const hst = JSON.parse(JSON.stringify(st));
+hst.device = { name: "H-Delay Stereo", class_name: "PluginDevice", controller: "generic",
+               has_device: true, index: 0, param_count: HD.length };
+hst.allParams = HD; hst.pv = {};
+HD.forEach((p) => { hst.pv[p.i] = { value: p.value, disp: p.disp }; });
+
+let hdSent = null;
+const hdSpy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  deltaIndex: (i2, d) => { hdSent = { delta: i2, d }; },
+  stepIndex: (i2, dir, steps) => { hdSent = { step: i2, dir, steps }; },
+  getAllParams: () => {}, watch: () => {},
+}) }, sd: { log() {} }, layout: A._layout };
+const hd = new AVC.HDelayController(hdSpy);
+hd.onState(hst);
+ok("all 6 roles resolve", (hd._missing || []).length === 0, (hd._missing || []).join(","));
+const hdIdx = (k) => hd._role(k).index;
+
+// --- FULL ---
+hd.setZones(6);
+const hdFull = SOS.Svg.serialize(hd.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(hdFull));
+ok("full shows all six parameters",
+   ["MIX", "DELAY", "FEEDBACK", "HIPASS", "LOPASS", "PINGPONG"].every((t2) => hdFull.includes(">" + t2 + "<")),
+   ["MIX", "DELAY", "FEEDBACK", "HIPASS", "LOPASS", "PINGPONG"].filter((t2) => !hdFull.includes(">" + t2 + "<")).join(","));
+ok("only the two stepped zones get a stepper hint",
+   (hdFull.match(/>turn \/ tap</g) || []).length === 2,
+   String((hdFull.match(/>turn \/ tap</g) || []).length));
+ok("stepped values read Live's own item text", hdFull.includes(">1/8D<") && hdFull.includes(">Ping Pong<"));
+hd.onDial(4, 1);
+ok("full dial 5 sweeps LoPass", hdSent.delta === hdIdx("lopass"), JSON.stringify(hdSent));
+
+// --- COMPACT (L18) ---
+hd.setZones(4);
+const hdComp = SOS.Svg.serialize(hd.build(4), 0, 800, 100);
+ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(hdComp));
+ok("compact maps dials 1-4 to Mix / Delay / Feedback / PingPong",
+   [0,1,2,3].map((s2) => hd._slotFor(s2)).join(",") === "0,1,2,5",
+   [0,1,2,3].map((s2) => hd._slotFor(s2)).join(","));
+ok("compact drops both filters", !hdComp.includes(">HIPASS<") && !hdComp.includes(">LOPASS<"));
+ok("compact keeps Mix / Delay / Feedback / PingPong",
+   ["MIX", "DELAY", "FEEDBACK", "PINGPONG"].every((t2) => hdComp.includes(">" + t2 + "<")));
+ok("compact invents no tab, page or mode",
+   !/GLOB|MAIN|LEVELS|>PAGE</.test(hdComp) && !("page" in hd) && !("mode" in hd));
+// The point of keeping PingPong: BOTH steppers survive, with all three gestures.
+ok("both stepped zones survive, hints and all",
+   (hdComp.match(/>turn \/ tap</g) || []).length === 2,
+   String((hdComp.match(/>turn \/ tap</g) || []).length));
+
+hd.onDial(0, 1);
+ok("compact dial 1 sweeps Mix", hdSent.delta === hdIdx("mix"), JSON.stringify(hdSent));
+hd.onDial(2, 1);
+ok("compact dial 3 sweeps Feedback", hdSent.delta === hdIdx("feedback"), JSON.stringify(hdSent));
+hd.onDial(3, 1);
+ok("compact dial 4 STEPS PingPong forward", hdSent.step === hdIdx("pingpong") && hdSent.dir === 1, JSON.stringify(hdSent));
+hd.onDial(3, -1);
+ok("turning back steps PingPong backwards", hdSent.step === hdIdx("pingpong") && hdSent.dir === -1, JSON.stringify(hdSent));
+hd.onDialPress(3);
+ok("pressing dial 4 steps PingPong forward", hdSent.step === hdIdx("pingpong") && hdSent.dir === 1, JSON.stringify(hdSent));
+hd.onTouch(600 + 100, 50, false);
+ok("tapping zone 4 steps PingPong forward", hdSent.step === hdIdx("pingpong") && hdSent.dir === 1, JSON.stringify(hdSent));
+hd.onTouch(600 + 100, 50, true);
+ok("holding zone 4 steps PingPong backwards", hdSent.step === hdIdx("pingpong") && hdSent.dir === -1, JSON.stringify(hdSent));
+hd.onTouch(200 + 100, 50, false);
+ok("tapping the Delay zone steps the note division", hdSent.step === hdIdx("delay"), JSON.stringify(hdSent));
+hdSent = null; hd.onDialPress(0); hd.onTouch(100, 50, false);
+ok("a continuous zone has no press or tap action", hdSent === null, JSON.stringify(hdSent));
+
+ok("compact dial titles name the four kept parameters",
+   [0,1,2,3].map((s2) => hd.dialTitle(s2).split(" ")[0]).join(",") === "MIX,DELAY,FEEDBACK,PINGPONG",
+   [0,1,2,3].map((s2) => hd.dialTitle(s2)).join(" | "));
+ok("dialTitle is empty for a borrowed dial", hd.dialTitle(4) === "" && hd.dialTitle(5) === "");
+hdSent = null; hd.onDial(4, 1); hd.onDialPress(5); hd.onTouch(900, 50, false);
+ok("borrowed dials 5-6 send nothing", hdSent === null, JSON.stringify(hdSent));
 
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();
