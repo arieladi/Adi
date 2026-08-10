@@ -6,11 +6,23 @@
    The two are orthogonal: docking a window never changes your level, and going
    Back never changes which window is docked.
 
-     State 0  Numpad          16-key dock
-     State 1  Calculator      16-key dock + 2 borrowed dials
-     State 2  Delay Calc      16-key dock + 2 borrowed dials
-     State 3  Context Nav     16-key dock, supplied by the active module
-     State 4  Full Screen     docks nothing — the module has the whole board
+     State 0  Numpad          16-key dock, NO dials
+     State 1  Calculator      16-key dock, NO dials
+     State 2  Divisions       16-key dock + 1 borrowed dial  (BPM)
+     State 3  Context         16-key dock + 2 borrowed dials (module-supplied)
+     State 4  NAV OFF         docks nothing — the module has the whole board
+
+   V1 — the carousel is `0 -> 1 -> 2 -> 3 -> OFF -> 0`. State 4 is the NAV-OFF
+   position: NAV hides completely and the module reclaims all 36 keys. Without
+   it Rekordbox would be stuck at 5 columns, where it loses half its hot cues.
+
+   V3 — the carousel is triggered by a LONG PRESS ON THE RIGHT-MOST DIAL, wired
+   in plugin.js. Button 36 no longer switches state and carries no engine role.
+
+   V4 — dial borrowing is now PER STATE, not a blanket rule. States 0 and 1 leave
+   the strip completely alone; State 2 takes one dial for BPM; State 3 takes two,
+   which is exactly what drops the active Ableton controller into its 4-dial
+   Compact layout. The Compact work is not dormant — State 3 is its consumer.
 
    Every window is the SAME standard 4x4 dock. Uniformity is the point: the
    module region never changes width depending on which window you opened.
@@ -44,7 +56,7 @@ SOS.States = (function () {
   var S = SOS.Surface, R = SOS.Render, Nav = SOS.Nav, LO = SOS.Layout;
 
   var COUNT = 5;
-  var NAMES = ['Numpad', 'Calc', 'Delay', 'Context', 'Full'];
+  var NAMES = ['Numpad', 'Calc', 'Divisions', 'Context', 'NAV OFF'];
   var FULL = 4, DELAY = 2, CONTEXT = 3;
 
   // Every window is the same 4-column dock; State 4 docks nothing.
@@ -135,7 +147,9 @@ SOS.States = (function () {
     return Nav.dialBinding(dial);
   }
 
-  // input.js asks this for Button 36 to decide press-vs-release delivery (D9a).
+  /* Was input.js's Button 36 press-vs-release lookup (D9a). V2 made Button 36 a
+     plain key so nothing in the engine asks any more, but the question is still
+     a real one about a binding and the tests read it. */
   function bindingKind(button) {
     var b = resolveKey(button);
     return (b && b.kind === 'momentary') ? 'momentary' : 'tap';
@@ -192,10 +206,8 @@ SOS.States = (function () {
       b = b || { label: Nav.atRoot() ? '' : 'Back', color: R.PALETTE.nav };
       return Object.assign({}, b, { badge: Nav.atRoot() ? '' : '↑', color: b.color || R.PALETTE.nav });
     }
-    if (button === S.BTN_ANCHOR) {
-      b = b || { label: NAMES[state], color: R.PALETTE.nav };
-      return Object.assign({}, b, { badge: String(state) });
-    }
+    // V2 — Button 36 no longer switches state, so it no longer wears the state
+    // badge. It is a plain key and paints whatever the module put there.
     return b;
   }
 
@@ -207,6 +219,9 @@ SOS.States = (function () {
     return {
       title: b.label, sub: b.sub, subStrong: b.subStrong, glyph: b.glyph,
       size: b.size, color: b.color, active: b.active, dim: b.dim, badge: b.badge,
+      // V9 additions. Forgetting one here paints a silently blank label.
+      kicker: b.kicker, kickerColor: b.kickerColor, corner: b.corner,
+      cornerColor: b.cornerColor, subColor: b.subColor, seg: b.seg,
     };
   }
 

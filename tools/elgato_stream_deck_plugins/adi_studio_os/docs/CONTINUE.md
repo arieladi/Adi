@@ -22,8 +22,10 @@ CEF frontend (`app.html`) owns the UI, navigation and Web Audio. A Node backend 
 ## Global rules currently in force
 
 - **Button 1** — long press = Back / level up; short press = contextual select. Released to the module in State 4.
-- **Button 36** — long press (500 ms) = State Carousel and the only escape from State 4. Short press delivery depends on the binding kind (`momentary` fires on press, `tap` on release).
-- **Button 35** — no engine role. Plain key.
+- **Button 35 and Button 36** — no engine role. Plain keys (V2). Button 36's carousel and its D9 hanging-note logic are gone; (8,3) in Rekordbox is a Beat Jump now, not a held nudge.
+- **NAV trigger (V3)** — a **long press on the right-most dial** cycles `0 → 1 → 2 → 3 → NAV OFF → 0`. It works in NAV OFF too, so NAV can always be recalled.
+- **Merged keys (V6)** — any binding may declare `hold`; short press runs `tap` on release, long press runs `hold`. Opt-in, per binding.
+- **Dial borrowing is PER STATE (V4)** — 0 and 1 touch no dials, 2 takes one (BPM), 3 takes two. **State 3 is what puts the Ableton controllers into their Compact layouts.**
 - **Responsive layouts (L1)** — a docked nav window does NOT overlay the module; it takes columns and the module re-lays-out via declared breakpoints. Screens declare `layouts: [{cols, keys(col,row)}]` with **region-local** coordinates. Engine: `js/core/layout.js`.
 - **Dial borrowing (L3b)** — a nav window declares `borrowDials: N` and takes the **rightmost** N (so N=2 is physical dials **5 and 6**, under the dock). **Dials 1–4 always stay with the module.**
 - **Every window is the same 4×4 dock** (16 keys). States: 0 Numpad · 1 Calculator · 2 Delay · 3 Context · 4 Full Screen (docks nothing).
@@ -47,7 +49,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**Done and verified — 679 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`):
+**Done and verified — 705 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`):
 
 | Piece | State |
 |---|---|
@@ -95,9 +97,10 @@ asserts the inverse: no `*Controller.js` may still match 1.5.9.0, and every
 registered strategy builds real SVG at BOTH 1200 and 800. `registry.js` is
 deliberately still identical — it is the device→strategy table, not ink.
 
-**Immediate next task: Compact layouts for `Rekordbox`** (ruled L2: both decks,
-4 hot cues each), then **MIDI Control** and **Visualizers**. None has one yet, so
-docking a window over them currently hits the engine's "No room" path.
+**Immediate next task: State 3's context shell** — it is an empty 16-key shell
+plus two borrowed dials (V8); Ableton is its only consumer so far. Then the
+**Compact layouts for Rekordbox** (ruled L2), **MIDI Control** and
+**Visualizers** — Adi asked to be prompted before those are started.
 
 **Also still open:** the 5 un-ported Visualizer views (bands, rme, gonio, corr,
 bal), and the Windows pass.
