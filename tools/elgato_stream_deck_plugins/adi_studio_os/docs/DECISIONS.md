@@ -804,6 +804,50 @@ for no gain); one bar that toggles between them (adds hidden state to a bar that
 has none); re-paging to four pages so nothing is lost (VVV's pages are thematic —
 damping vs shape — and splitting them makes the themes fuzzy).
 
+### L17 — Blackhole: re-paged to 3 × 4, and FULL gives up two dials
+
+Presented Full first, rendered on both pages. Blackhole owns **zero keys** in
+either layout.
+
+Two things made this different from the Valhallas. **Nothing repeats across
+Blackhole's pages** — each of the 12 dial parameters appears exactly once, so
+there is no "Mix is always reachable" safety net and anything dropped is
+genuinely gone until you change page. And the bar has **four** cells rather than
+two, so at 800 px the 300 px cells stop tiling: HOTSWITCH is sliced in half and
+TEMPO lands entirely in the borrowed region.
+
+**RULING — B3, and it changes the FULL layout too.**
+
+* **Re-paged to three pages of exactly four**, which 12 parameters divide into
+  with no remainder:
+  - **MAIN** — Mix · Gravity · Size · Predelay
+  - **MOD** — Mod Depth · Mod Rate · Feedback · Resonance
+  - **LEVELS** — In Level · Out Level · Low EQ · Hi EQ
+* **In FULL, dials 5 and 6 are deliberately left unmapped.** This is the point,
+  not a side effect: Adi wants the plugin to feel **100 % identical in both
+  layouts, with zero hidden parameters**. Consistency of workflow beats filling
+  all six dials.
+* **The bar keeps all four cells in both layouts**, scaled to the current width —
+  300 px each at full, 200 px each at compact. All four switches are live
+  controls; nothing here is dead the way ValhallaRoom's PRESET was.
+* **Pressing ANY dial advances the page** (MAIN → MOD → LEVELS → MAIN),
+  including the two unmapped dials in full.
+
+This is the first ruling that deliberately spends hardware rather than
+information — and the first time a Compact layout has driven a change back into
+the Full one. Worth remembering as a precedent when a later controller divides
+evenly into fours.
+
+**Derived, flagged for veto:** an unmapped zone in full paints a dim
+`press = page` rather than a bare em-dash, so an empty dial reads as intentional
+instead of broken, and still announces the one thing it does. `dialTitle` returns
+the same string (a *borrowed* dial still returns `''`, so the two states stay
+distinguishable).
+
+Rejected: rescaling the bar and keeping two pages of six (B1 — costs Low/Hi EQ
+and In/Out Level with no repeats to fall back on); dropping TEMPO in compact (B2
+— TempoSync changes what Predelay means, so it is not a dead slot).
+
 ### Native SVG progress (L4), updated
 
 | Controller | Native | Compact |
@@ -816,4 +860,5 @@ damping vs shape — and splitting them makes the themes fuzzy).
 | **Indeq** | ✅ | ✅ gains + Output, steppers dropped |
 | **ValhallaRoom** | ✅ | ✅ 4 pages × first 4 dials, MODE-only bar |
 | **ValhallaVintageVerb** | ✅ | ✅ 3 pages × first 4 dials, bar keeps MODE + COLOR |
-| Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
+| **Blackhole** | ✅ | ✅ identical to full — 3 pages × 4, 4-cell bar |
+| HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |

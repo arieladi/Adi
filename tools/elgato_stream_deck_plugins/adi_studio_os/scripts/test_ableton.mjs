@@ -57,7 +57,7 @@ const NATIVE = new Set(["EQ8Controller.js", "GenericController.js",
                         "PulsarMassiveController.js", "ProQ3Controller.js",
                         "SpectreController.js", "IndeqController.js",
                         "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
-                        "svg.js"]);
+                        "BlackholeController.js", "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
@@ -66,7 +66,8 @@ for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
 }
 for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveController.js",
                  "ProQ3Controller.js", "SpectreController.js", "IndeqController.js",
-                 "ValhallaRoomController.js", "ValhallaVintageVerbController.js"]) {
+                 "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
+                 "BlackholeController.js"]) {
   ok(`${f} is the native rewrite, not a copy`,
      !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
        fs.readFileSync(path.join(LEGACY, f))));
@@ -1106,6 +1107,150 @@ vvSent = null; vv.onDial(4, 1); vv.onDialPress(5);
 ok("borrowed dials 5-6 send nothing and cannot page", vvSent === null && vv.page === "main",
    `${JSON.stringify(vvSent)} page=${vv.page}`);
 ok("dialTitle is empty for a borrowed dial", vv.dialTitle(4) === "" && vv.dialTitle(5) === "");
+
+console.log("\n[16] Blackhole — re-paged 3x4, identical in both layouts (L17)");
+// Real Configure names, plus the two decoys the controller deliberately does not
+// map: Tempo (only meaningful when TempoSync = Sync) and Ribbon Controller.
+const BH_TS = ["Manual", "Sync", "Off"];
+const BH = []; let bhi = 0;
+const bhadd = (name, min, max, value, disp, o = {}) => BH.push({
+  i: bhi++, name, min, max, value, disp, quantized: !!o.q, items: o.items || [],
+});
+bhadd("Mix", 0, 100, 62, "62.0 %");
+bhadd("Gravity", -100, 100, 12, "12.0");
+bhadd("Size", 0, 100, 90, "90.0 %");
+bhadd("Predelay", 0, 500, 40, "40 ms");
+bhadd("Low Level", -100, 100, -10, "-10.0 dB");
+bhadd("Hi Level", -100, 100, 0, "0.0 dB");
+bhadd("Mod Depth", 0, 100, 43, "43.0 %");
+bhadd("Mod Rate", 0, 100, 58, "58.0 %");
+bhadd("Feedback", 0, 100, 22, "22.0 %");
+bhadd("Resonance", 0, 100, 0, "0.0 %");
+bhadd("In Level", -60, 12, 0, "0.0 dB");
+bhadd("Out Level", -60, 12, -1.5, "-1.5 dB");
+bhadd("TempoSync", 0, 2, 1, "Sync", { q: true, items: BH_TS });
+bhadd("Tempo", 0, 1, 0, "0.00");                                        // decoy
+bhadd("Kill", 0, 1, 0, "Off", { q: true, items: ["Off", "On"] });
+bhadd("Freeze", 0, 1, 1, "On", { q: true, items: ["Off", "On"] });
+bhadd("HotSwitch", 0, 1, 0, "Off", { q: true, items: ["Off", "On"] });
+bhadd("Ribbon Controller", 0, 100, 50, "50.0 %");                       // decoy
+
+const bst = JSON.parse(JSON.stringify(st));
+bst.device = { name: "Blackhole", class_name: "PluginDevice", controller: "generic",
+               has_device: true, index: 0, param_count: BH.length };
+bst.allParams = BH; bst.pv = {};
+BH.forEach((p) => { bst.pv[p.i] = { value: p.value, disp: p.disp }; });
+
+let bhSent = null;
+const bhSpy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  deltaIndex: (i2, d) => { bhSent = { delta: i2, d }; },
+  stepIndex: (i2, dir, steps) => { bhSent = { step: i2, dir, steps }; },
+  toggleIndex: (i2) => { bhSent = { toggle: i2 }; },
+  getAllParams: () => {}, watch: () => {},
+}) }, sd: { log() {} }, layout: A._layout };
+const bh = new AVC.BlackholeController(bhSpy);
+bh.onState(bst);
+ok("all 16 roles resolve", (bh._missing || []).length === 0, (bh._missing || []).join(","));
+const bhIdx = (k) => bh._role(k).index;
+ok("Ribbon Controller and Tempo stay unmapped — GUI only",
+   !Object.keys(bh._roles).some((k) => /ribbon/.test(bh._roles[k].name.toLowerCase())) &&
+   bh._role("temposync").name === "TempoSync");
+
+// --- the re-paging itself (L17) ---
+const BHC = AVC.BlackholeController;
+ok("three pages, four dials each",
+   BHC.PAGES_ORDER.join(",") === "main,mod,levels" &&
+   BHC.PAGES_ORDER.every((pg) => BHC.PAGES[pg].length === 4),
+   BHC.PAGES_ORDER.map((pg) => pg + ":" + BHC.PAGES[pg].length).join(" "));
+// Every one of the 12 dial parameters must appear exactly once across the pages.
+const bhAll = BHC.PAGES_ORDER.reduce((acc, pg) => acc.concat(BHC.PAGES[pg]), []);
+ok("all 12 dial parameters appear exactly once — zero hidden parameters",
+   bhAll.length === 12 && new Set(bhAll).size === 12, bhAll.join(","));
+
+// --- FULL: dials 5-6 are unmapped BY DESIGN ---
+bh.setZones(6);
+bh.page = "main";
+const bhFull = SOS.Svg.serialize(bh.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(bhFull));
+ok("full MAIN shows its four parameters",
+   ["MIX", "GRAVITY", "SIZE", "PREDLY"].every((t2) => bhFull.includes(">" + t2 + "<")));
+ok("full leaves dials 5-6 unmapped, and says so rather than looking broken",
+   (bhFull.match(/>press = page</g) || []).length === 2,
+   String((bhFull.match(/>press = page</g) || []).length));
+ok("full dial titles 5-6 announce the press, and are NOT the empty borrowed string",
+   bh.dialTitle(4) === "press = page" && bh.dialTitle(5) === "press = page",
+   bh.dialTitle(4) + " | " + bh.dialTitle(5));
+bhSent = null; bh.onDial(4, 1); bh.onDial(5, 1);
+ok("turning an unmapped dial sends nothing", bhSent === null, JSON.stringify(bhSent));
+bh.onDialPress(5);
+ok("pressing an unmapped dial STILL advances the page", bh.page === "mod", bh.page);
+bh.page = "main";
+
+// --- COMPACT is the same view on a shorter strip ---
+bh.setZones(4);
+const bhComp = SOS.Svg.serialize(bh.build(4), 0, 800, 100);
+ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(bhComp));
+ok("compact shows exactly the same four parameters as full",
+   ["MIX", "GRAVITY", "SIZE", "PREDLY"].every((t2) => bhComp.includes(">" + t2 + "<")));
+ok("compact has NO unmapped zones — the layouts are identical",
+   !bhComp.includes(">press = page<"));
+ok("compact keeps all three page tabs",
+   ["MAIN", "MOD", "LEVELS"].every((t2) => bhComp.includes(">" + t2 + "<")));
+
+// The LEVELS page is what the re-paging bought — nothing is hidden any more.
+bh.page = "levels";
+const bhLevels = SOS.Svg.serialize(bh.build(4), 0, 800, 100);
+ok("the new LEVELS page carries In/Out/Low EQ/Hi EQ — none of it hidden",
+   ["IN", "OUT", "LOW EQ", "HI EQ"].every((t2) => bhLevels.includes(">" + t2 + "<")),
+   ["IN", "OUT", "LOW EQ", "HI EQ"].filter((t2) => !bhLevels.includes(">" + t2 + "<")).join(","));
+bh.onDial(2, 1);
+ok("compact LEVELS dial 3 drives Low Level", bhSent.delta === bhIdx("low"), JSON.stringify(bhSent));
+bh.page = "mod"; bh.onDial(3, 1);
+ok("compact MOD dial 4 drives Resonance", bhSent.delta === bhIdx("resonance"), JSON.stringify(bhSent));
+bh.page = "main";
+
+// --- the four-cell bar tiles the CURRENT width ---
+const cells = (svgStr) => ["KILL", "FREEZE", "HOTSW", "TEMPO"].filter((t2) => svgStr.includes(">" + t2 + "<"));
+ok("full bar has all four cells", cells(bhFull).length === 4, cells(bhFull).join(","));
+ok("compact bar has all four cells too", cells(bhComp).length === 4, cells(bhComp).join(","));
+const bhCellW = (bhComp.match(/<rect x="5" y="64" width="([\d.]+)"/) || [])[1];
+const bhCellWFull = (bhFull.match(/<rect x="5" y="64" width="([\d.]+)"/) || [])[1];
+ok("cells are 190 wide at compact and 290 at full (200 / 300 pitch)",
+   bhCellW === "190" && bhCellWFull === "290", `${bhCellW} / ${bhCellWFull}`);
+ok("FREEZE reads its live ON state", bhComp.includes(">FREEZE<") && bhComp.includes(">ON<"));
+ok("TEMPO shows Live's own item text", bhComp.includes(">Sync<"));
+
+// Hit-testing must tile the same way, or every compact tap lands one cell right.
+bh.setZones(4);
+bh.onTouch(100, 80, false);
+ok("compact: a tap at x=100 hits KILL", bhSent.toggle === bhIdx("kill"), JSON.stringify(bhSent));
+bh.onTouch(300, 80, false);
+ok("compact: a tap at x=300 hits FREEZE", bhSent.toggle === bhIdx("freeze"), JSON.stringify(bhSent));
+bh.onTouch(500, 80, false);
+ok("compact: a tap at x=500 hits HOTSWITCH", bhSent.toggle === bhIdx("hotswitch"), JSON.stringify(bhSent));
+bh.onTouch(700, 80, false);
+ok("compact: a tap at x=700 cycles TEMPO", bhSent.step === bhIdx("temposync"), JSON.stringify(bhSent));
+bh.onTouch(700, 80, true);
+ok("holding steps TEMPO backwards", bhSent.step === bhIdx("temposync") && bhSent.dir === -1, JSON.stringify(bhSent));
+// The same x means a different cell at full width — that is the tiling working.
+bh.setZones(6);
+// At full the pitch is 300, so x=700 falls in cell 2 (600-900) = HOTSWITCH;
+// at compact the pitch is 200, so the same x is cell 3 = TEMPO.
+bh.onTouch(700, 80, false);
+ok("full: x=700 is HOTSWITCH, not TEMPO — the cells tile the current width",
+   bhSent.toggle === bhIdx("hotswitch"), JSON.stringify(bhSent));
+bh.onTouch(1100, 80, false);
+ok("full: x=1100 cycles TEMPO", bhSent.step === bhIdx("temposync"), JSON.stringify(bhSent));
+
+// Pages and borrowed dials.
+bh.setZones(4); bh.page = "main";
+bh.onDialPress(1); bh.onDialPress(3); bh.onDialPress(0);
+ok("three presses walk MAIN -> MOD -> LEVELS -> MAIN", bh.page === "main", bh.page);
+bhSent = null; bh.onDial(4, 1); bh.onDialPress(5);
+ok("borrowed dials 5-6 send nothing and cannot page", bhSent === null && bh.page === "main",
+   `${JSON.stringify(bhSent)} page=${bh.page}`);
+ok("a BORROWED dial title is empty, unlike an unmapped one",
+   bh.dialTitle(4) === "" && bh.dialTitle(5) === "");
 
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();
