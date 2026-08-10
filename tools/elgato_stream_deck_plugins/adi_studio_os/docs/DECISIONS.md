@@ -1044,3 +1044,118 @@ unedited.
 | Omnipressor | ✅ | ✅ 3 pages × 4 (same as full), bar drops POWER + LINE |
 | Saturate | ✅ | ✅ Drive / Shape / Detail / Output, 3-cell bar kept |
 | **SideMinder** | ✅ | ✅ 3 pages × first 4, bar drops BYPASS + EXT SC |
+
+
+---
+
+## Batch 11 — the V3 NAV refactor
+
+A set of core system changes prepared in another session. Four of them collided
+with rulings already in force; Adi resolved all four before any code was written.
+
+### V1 — the carousel gains a NAV-OFF position *(clarifies L17-era State 4)*
+
+The refactor brief said NAV cycles "States 0-3", which would have left the module
+permanently at 5 columns — and Rekordbox at 5 columns loses half its hot cues
+(L2), while the Root Hub, the Ableton hub, MIDI Control and the Visualizers all
+declare 9-column layouts.
+
+**RULING — the cycle is `0 → 1 → 2 → 3 → OFF → 0`.** State 4 survives as the
+NAV-OFF position: NAV hides completely and the active module reclaims all 36
+keys. Nothing else about it changes.
+
+### V2 — Button 36 is a plain key *(supersedes D2a, D9, D9a)*
+
+**RULING — Button 36 loses every engine role**, exactly like Button 35. It is a
+standard single-trigger `KeyUp` button, globally.
+
+The reason D9/D9a existed at all was Rekordbox's *held* Nudge ▶▶ Deck B at (8,3),
+which needed Note On at press and Note Off at release, and which forced a 500 ms
+cap so the carousel could still open. Adi has ruled — with the Pioneer Omnis-Duo
+as the reference — that **(8,3) should be a standard Beat Jump, not a continuous
+nudge**. With the held gesture gone, the whole special case dissolves: no timer,
+no forced Note Off, no hanging-note risk, no `max 0.5 s` caption.
+
+D2a's Button 36 long-press is therefore removed, and with it the last reason
+`bindingKind()` existed for that key.
+
+### V3 — the NAV trigger moves to the right-most dial
+
+**RULING — a long press (500 ms) on dial 6 cycles the NAV state.** It is the
+only state gesture, and it works in every state including OFF, so NAV can always
+be recalled. Dial 6's *short* press consequently resolves on release rather than
+on press; dials 1-5 are untouched and stay immediate.
+
+### V4 — NAV dial boundaries, per state *(corrects the brief; refines L3b)*
+
+The brief's "NAV must never touch the dials" was overly broad and would have made
+all 14 Compact strip layouts unreachable. The real boundary is per state:
+
+| State | Keys | Dials |
+|---|---|---|
+| 0 Numpad | 16-key dock | **none** — strip untouched |
+| 1 Calculator | 16-key dock | **none** — strip untouched |
+| 2 Time Divisions | 16-key dock | **1** (dial 6) for BPM |
+| 3 Context | 16-key dock | **2** (dials 5-6) |
+| 4 NAV OFF | none | none |
+
+**State 3 is what triggers the Compact layouts.** Borrowing two dials leaves the
+module four, which is precisely the `build(4)` path every Ableton controller now
+implements. The compact work is not dormant — State 3 is its consumer.
+
+### V5 — State 0 keeps its layout; `C` becomes `✱` *(amends D5)*
+
+Bottom-left is now an asterisk. Everything else about the numpad stands.
+
+### V6 — State 1 rebuilt: a display row and merged keys
+
+The operators no longer live on borrowed dials (V4), so they move onto the keys
+via long-press, and the freed top row becomes a real display.
+
+* **Top row (4 keys) is the display.** It starts at `0` on the left and grows
+  rightwards, three characters per key, so a twelve-digit result reads across the
+  row as one number.
+* **Merged keys — short press / long press:**
+  `0` / **BACK** · `.` / **−** · `C` / **+**
+* `=` replaces Enter. Digits, `×`, `÷` and `⌫` are unchanged.
+
+### V7 — State 2 rebuilt: three variant rows *(supersedes L5)*
+
+L5's one-division viewport is gone, along with its two borrowed dials.
+
+```
+col:      0            1            2            3
+row0   [ NOTES ]   [ DOTTED ]  [ TRIPLETS ]  [ 104.90 ms ]   <- value, tap = ms/Hz
+row1   [ 1/8 ]     [ 1/16 ]    [ 1/32 ]      —               <- straight
+row2   [ 1/8 D ]   [ 1/16 D ]  [ 1/32 D ]    —               <- dotted
+row3   [ 1/8 T ]   [ 1/16 T ]  [ 1/32 T ]    [ BPM 143 ]
+```
+
+* The three top keys are **cycle buttons, not modes**: tapping any of them slides
+  the visible three-division window (1/8-1/32 → 1/4-1/16 → … → 1/1-1/4), hold
+  slides it back. Each one labels the row it belongs to.
+* Default window is 1/8-1/32 and the default selection is **straight 1/16**.
+* The value key shows the selected cell and **toggles ms ⇄ Hz** on tap.
+* **BPM sits bottom-right** and is turned with dial 6; tapping it resets.
+
+**Math is exact and rounds only at the text layer.** `ms = 60000 / BPM` for a
+quarter, scaled by `4 / denominator`; `triplet = straight × 2/3`;
+`dotted = straight × 3/2`; `Hz = 1000 / ms`. No `Math.round` anywhere in the
+computation — output formatting is **2 dp for ms, 4 dp for Hz**.
+
+### V8 — State 3 is an empty context shell
+
+**RULING — the breadcrumb fallback is removed.** State 3 is a 16-key shell that
+the active module fills, plus two borrowed dials. A module with nothing to say
+leaves it empty rather than painting a nav-tree readout. Ableton is the first
+consumer and keeps its track/device strip.
+
+### V9 — the key aesthetic
+
+**RULING — kill the programmer UI.** Keys are now a soft raised face (vertical
+gradient with a hairline top edge), and **active keys use a tinted face plus an
+inner glow** rather than the old 4 px accent ring. Type is Inter/SF Pro with real
+weight separation: the number is heavy, units and captions are small and quiet.
+
+**Future-proofing:** every label is a single `<text>` node at a known anchor, so
+V3's image swap is a node-for-node replacement with no layout consequences.

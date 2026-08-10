@@ -86,18 +86,16 @@ ok('btn1 short -> contextual select', log.join() === 'select1', log.join());
 clear(); Input.keyDown('k0_0'); await wait(600); Input.keyUp('k0_0');
 ok('btn1 long -> back, release swallowed', log.join() === 'back', log.join());
 
-clear(); kind = 'tap'; Input.keyDown('k3_8'); Input.keyUp('k3_8');
-ok('btn36 tap binding -> fires on release', log.join() === 'tap36', log.join());
+/* V2 — Button 36 has NO engine role. It is a plain key: down/up pass straight
+   through, and holding it does nothing special because there is no timer left
+   on it at all. The carousel moved to the right-most dial (V3). */
+clear(); Input.keyDown('k3_8'); Input.keyUp('k3_8');
+ok('btn36 is a plain key — down+up, no engine gesture', log.join() === 'down36,up36', log.join());
 
 clear(); Input.keyDown('k3_8'); await wait(600); Input.keyUp('k3_8');
-ok('btn36 long -> carousel, no stray tap', log.join() === 'carousel', log.join());
-
-clear(); kind = 'momentary'; Input.keyDown('k3_8'); Input.keyUp('k3_8');
-ok('btn36 momentary short -> down+up (D9a)', log.join() === 'down36,up36', log.join());
-
-clear(); Input.keyDown('k3_8'); await wait(600); Input.keyUp('k3_8');
-ok('btn36 momentary held -> D9 note off BEFORE carousel',
-   log.join() === 'down36,up36,carousel', log.join());
+ok('btn36 held past 500 ms still just down+up — no carousel',
+   log.join() === 'down36,up36', log.join());
+ok('btn36 is not reserved anywhere', !Input.reserved(36));
 
 clear(); kind = 'tap'; Input.keyDown('k3_7'); Input.keyUp('k3_7');
 ok('btn35 has no engine role (D2a)', log.join() === 'down35,up35', log.join());
@@ -111,7 +109,7 @@ ok('state is 4', States.get() === 4);
 ok('back no longer reserved', !Input.backReserved());
 clear(); Input.keyDown('k0_0'); Input.keyUp('k0_0');
 ok('btn1 -> module, not Back', log.join() === 'down1,up1', log.join());
-ok('btn36 still reserved in State 4', Input.reserved(36));
+ok('btn36 is not reserved in State 4 either', !Input.reserved(36));
 States.setState(0);
 ok('btn1 reserved again outside State 4', Input.backReserved());
 
@@ -124,25 +122,31 @@ ok('S0: col 8 belongs to the docked window', States.overlayOwnsKey(S.btn(8, 0)))
 ok('S0: col 4 belongs to the module', !States.overlayOwnsKey(S.btn(4, 0)));
 ok('S0: module region is cols 0-4', States.regions().module.cols === 5);
 ok('S0: numpad borrows NO dials', States.borrowedDials() === 0);
+/* V4 — dial borrowing is PER STATE now. 0 and 1 leave the strip alone entirely;
+   2 takes one dial for BPM; 3 takes two, which is what puts the Ableton
+   controllers into their Compact layout. */
 States.setState(1);
-ok('S1: calculator borrows 2 dials (L3a)', States.borrowedDials() === 2, `n=${States.borrowedDials()}`);
-// L3b: the dock is on the RIGHT, so its dials are the rightmost pair.
-ok('S1: dials 5-6 to the window, 1-4 to the module',
-   States.overlayOwnsDial(5) && States.overlayOwnsDial(6)
-   && !States.overlayOwnsDial(4) && !States.overlayOwnsDial(1));
-ok('S1: module keeps 4 dials', States.moduleDials() === 4, `n=${States.moduleDials()}`);
+ok('S1: calculator borrows NO dials — the strip is untouched',
+   States.borrowedDials() === 0, `n=${States.borrowedDials()}`);
+ok('S1: the module still owns all six dials', States.moduleDials() === 6, `n=${States.moduleDials()}`);
+ok('S1: still a 4-col dock', States.dockCols() === 4 && States.regions().module.cols === 5);
 States.setState(2);
-ok('S2: delay is a 4-col dock, not a takeover', States.dockCols() === 4 && !States.overlayOwnsKey(1));
-ok('S2: delay borrows 2 dials (BPM + division)', States.borrowedDials() === 2);
+ok('S2: divisions is a 4-col dock, not a takeover', States.dockCols() === 4 && !States.overlayOwnsKey(1));
+ok('S2: borrows exactly ONE dial for BPM', States.borrowedDials() === 1, `n=${States.borrowedDials()}`);
+ok('S2: the borrowed dial is the right-most (L3b)',
+   States.overlayOwnsDial(6) && !States.overlayOwnsDial(5));
+ok('S2: the module keeps five dials', States.moduleDials() === 5, `n=${States.moduleDials()}`);
 States.setState(4);
-ok('S4: nothing docked', !States.overlayOwnsKey(8) && States.regions().module.cols === 9);
+ok('S4 is NAV OFF: nothing docked', !States.overlayOwnsKey(8) && States.regions().module.cols === 9);
 ok('S4: module keeps every dial', States.borrowedDials() === 0 && States.moduleDials() === 6);
 States.setState(0);
+ok('S0: numpad borrows no dials either', States.borrowedDials() === 0);
 
-console.log('\n[8] carousel wraps 0..4');
+console.log('\n[8] carousel wraps 0..4, ending on NAV OFF (V1)');
 const seen = [];
 for (let i = 0; i < 6; i++) { seen.push(States.get()); States.carousel(); }
-ok('cycles 0,1,2,3,4,0', seen.join() === '0,1,2,3,4,0', seen.join());
+ok('cycles 0,1,2,3,OFF,0', seen.join() === '0,1,2,3,4,0', seen.join());
+ok('State 4 is named NAV OFF', States.NAMES[4] === 'NAV OFF', States.NAMES[4]);
 States.setState(0);
 
 console.log('\n[9] navigation');
@@ -194,6 +198,37 @@ FakeWS.ofPort(1234).onmessage({ data: JSON.stringify({
 ok('touchTap reaches the module with x, y AND hold',
    taps.length === 1 && taps[0][0] === 137 && taps[0][1] === 71 && taps[0][2] === true,
    JSON.stringify(taps));
+
+console.log('\n[12] the NAV trigger is a long press on the RIGHT-MOST dial (V3)');
+/* Driven through the real socket, like [11]: the gesture lives in plugin.js, so
+   calling States.carousel() directly would prove nothing about the wiring. */
+const sd = FakeWS.ofPort(1234);
+const dialMsg = (event, ctx) => sd.onmessage({ data: JSON.stringify({ event, context: ctx, payload: {} }) });
+States.setState(0);
+dialMsg('dialDown', 'd5');            // d5 = column 5 = physical dial 6
+await wait(30);
+ok('a short press does NOT change state', States.get() === 0, String(States.get()));
+dialMsg('dialUp', 'd5');
+await wait(30);
+ok('still no state change after release', States.get() === 0, String(States.get()));
+
+dialMsg('dialDown', 'd5');
+await wait(620);
+ok('holding the right-most dial cycles the state', States.get() === 1, String(States.get()));
+dialMsg('dialUp', 'd5');              // the release must be swallowed
+await wait(30);
+ok('the release after a long press does not also fire', States.get() === 1, String(States.get()));
+
+// It has to work in NAV OFF too, or NAV can never be recalled.
+States.setState(4);
+dialMsg('dialDown', 'd5'); await wait(620); dialMsg('dialUp', 'd5'); await wait(30);
+ok('the trigger still works in NAV OFF, so NAV can be recalled',
+   States.get() === 0, String(States.get()));
+
+// Any other dial is untouched — no timer, no state change.
+States.setState(0);
+dialMsg('dialDown', 'd0'); await wait(620); dialMsg('dialUp', 'd0'); await wait(30);
+ok('dial 1 has no state gesture', States.get() === 0, String(States.get()));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

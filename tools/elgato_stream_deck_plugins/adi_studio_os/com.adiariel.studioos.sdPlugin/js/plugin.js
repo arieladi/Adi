@@ -41,6 +41,15 @@
     var b = States.resolveKey(button);
     if (b && b.tap) { b.tap(); States.repaint(); }
   }
+  // V6 — the long half of a merged key.
+  function runHold(button) {
+    var b = States.resolveKey(button);
+    if (b && b.hold) { b.hold(); States.repaint(); }
+  }
+  function hasHold(button) {
+    var b = States.resolveKey(button);
+    return !!(b && b.hold);
+  }
 
   // ------------------------------------------------------------ dial dispatch
   function dialOf(context) { return S.dialOfContext(context); }
@@ -49,13 +58,56 @@
     var d = States.resolveDial(dial);
     if (d && d.rotate) { d.rotate(ticks); States.repaint(); }
   }
+  /* V3 — the NAV trigger lives on the RIGHT-MOST dial's long press. It is the
+     only state gesture, and it works in every state including NAV OFF, so the
+     NAV windows can always be recalled.
+
+     Consequence, and the reason this is a timer rather than a straight press:
+     dial 6's SHORT press can only be known once the timer has lost, so it fires
+     on release. Dials 1-5 are untouched and stay immediate — a module's dial
+     press on those is as sample-accurate as it ever was. */
+  var NAV_DIAL = SOS.Surface.DIALS;          // 6
+  var dialHold = null;                       // { timer, fired }
+
   function onPress(dial) {
-    var d = States.resolveDial(dial);
-    if (d && d.press) { d.press(); States.repaint(); }
+    if (dial !== NAV_DIAL) {
+      var d = States.resolveDial(dial);
+      if (d && d.press) { d.press(); States.repaint(); }
+      return;
+    }
+    dialHoldCancel();
+    var rec = { fired: false, timer: null };
+    rec.timer = setTimeout(function () {
+      rec.fired = true;
+      States.carousel();
+    }, Input.LONG_MS);
+    dialHold = rec;
   }
+
   function onRelease(dial) {
+    if (dial === NAV_DIAL) {
+      var fired = dialHoldEnd();
+      // The carousel already consumed the gesture — swallow the short press so
+      // changing state never also toggles a band or advances a page.
+      if (fired) return;
+      var nd = States.resolveDial(dial);
+      if (nd && nd.press) { nd.press(); States.repaint(); }
+      if (nd && nd.release) { nd.release(); States.repaint(); }
+      return;
+    }
     var d = States.resolveDial(dial);
     if (d && d.release) { d.release(); States.repaint(); }
+  }
+
+  function dialHoldEnd() {
+    if (!dialHold) return false;
+    clearTimeout(dialHold.timer);
+    var f = dialHold.fired;
+    dialHold = null;
+    return f;
+  }
+  function dialHoldCancel() {
+    if (dialHold) { clearTimeout(dialHold.timer); dialHold = null; }
   }
   // L10: BOTH axes reach the module. The strip is 200x100 per zone and every
   // Ableton controller bands its hit-tests by y (tab row / value / switch row),
@@ -126,12 +178,12 @@
   function wireInput() {
     Input.wire({
       getState: States.get,
-      bindingKind: States.bindingKind,
+      hasHold: hasHold,
+      onHold: runHold,
       onBack: function () {
         if (!Nav.back()) SD.showAlert(S.contextOfKey(S.BTN_BACK));  // already at Level 0
       },
       onSelect: function (button) { runTap(button); },   // contextual short press
-      onCarousel: States.carousel,
       onKeyDown: runDown,
       onKeyUp: runUp,
       onTap: runTap,

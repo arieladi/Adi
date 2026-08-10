@@ -752,6 +752,10 @@ SOS.Modules.Ableton = (function () {
   // State 3 strip: navigation without leaving whatever module owns the board.
   var context = {
     id: 'ableton.context', title: 'Ableton', module: 'ableton',
+    /* V4 — State 3 borrows TWO dials, which is what drops the active controller
+       into its 4-dial Compact layout. The window addresses them as 1 and 2;
+       states.js maps those to physical 5 and 6. */
+    borrowDials: 2,
     keys: function (button) {
       var col = S.colOf(button), row = S.rowOf(button);
       if (col < 5) return null;
@@ -770,7 +774,7 @@ SOS.Modules.Ableton = (function () {
     },
     dials: function (dial) {
       var st = Bridge.state();
-      if (dial === 5) return { title: 'Track', value: shortName(st.track.name || '—'), color: R.PALETTE.ableton };
+      if (dial === 1) return { title: 'Track', value: shortName(st.track.name || '—'), color: R.PALETTE.ableton };
       return { title: 'Device', value: shortName(st.device.name || '—'),
                sub: Bridge.isOnline() ? '' : 'bridge offline', color: R.PALETTE.ableton };
     },

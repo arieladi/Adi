@@ -24,11 +24,16 @@
    switchToProfile ("one profile, forever"), so the launcher has no job left and
    the cell is returned to the navigation anchor — keys() answers null there.
 
-   (8,3) = Button 36 = Nudge ▶▶ Deck B. It is declared kind:'momentary' with
-   down()/up() so input.js applies D9 exactly: Note On at keyDown, and if the key
-   is still held at 500 ms the engine emits the matching Note Off FIRST and then
-   opens the carousel. Deck B therefore cannot be nudged past half a second —
-   that is the accepted cost of D9, printed on the key itself as "max 0.5 s".
+   (8,3) = Button 36 = BEAT JUMP ▶ Deck B (V2). It used to be a HELD nudge, and
+   that single fact drove D2a, D9 and D9a: the carousel lived on this key's long
+   press, so a held Note On needed a forced Note Off at the 500 ms boundary and
+   the cap was printed on the cap itself as "max 0.5 s".
+
+   Adi has ruled — with the Pioneer Omnis-Duo as the reference — that this
+   position is a standard Beat Jump, not a continuous nudge. It is now a plain
+   'tap' that fires one Beat Jump on release, the carousel has moved to the
+   right-most dial (V3), and the whole special case is gone: no timer, no forced
+   release, no cap. The other three nudge keys are untouched and stay held.
 
    WHY THIS MODULE IS PLAYABLE IN BOTH STATE 3 AND STATE 4
    The overlay block (D8, cols 5-8 + dials 5-6) sits exactly on Deck B: hot cues
@@ -335,13 +340,24 @@ SOS.Modules.Rekordbox = (function () {
   function nudgeBinding(button, spec) {
     var slot = 'k' + button;
     var fwd = spec.dir === 'fwd';
+
+    /* V2 — (8,3) is a BEAT JUMP, not a held nudge. One tap, one jump, delivered
+       on release like every other tap binding. The three remaining nudge keys
+       are still held gestures and behave exactly like leaning on a jog wheel. */
+    if (button === S.BTN_ANCHOR) {
+      return {
+        glyph: fwd ? '▶' : '◀',
+        label: spec.deck, sub: 'beat jump',
+        color: tone(COLOR.nudge), dim: !IPC.isOnline(), kind: 'tap',
+        tap: function () {
+          IPC.midi.tap(PORT, CH[spec.deck], fwd ? NOTE.BEATJUMP_FWD : NOTE.BEATJUMP_BACK);
+        },
+      };
+    }
+
     return {
       glyph: fwd ? '▶▶' : '◀◀',
       label: spec.deck,
-      // D9, printed where it can actually be read: Button 36's Note Off is
-      // forced at 500 ms so the carousel can open. Every other nudge is
-      // unlimited, exactly like leaning on a jog wheel.
-      sub: button === S.BTN_ANCHOR ? 'max 0.5 s' : '',
       color: tone(COLOR.nudge),
       dim: !IPC.isOnline(),
       active: held(slot),

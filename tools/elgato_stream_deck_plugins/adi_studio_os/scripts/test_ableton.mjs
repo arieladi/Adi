@@ -441,10 +441,20 @@ let dialsBound = 0;
 for (let d = 1; d <= 6; d++) { const z = States.resolveDial(d); if (z && z.svg) dialsBound++; }
 ok("all 6 dials carry a strip slice in Full Screen", dialsBound === 6, `bound=${dialsBound}`);
 
-// Dock a window: the module must drop to 4 dials and 5 columns, and the strip
-// must follow without the hub losing any control.
+/* V4 — dial borrowing is per state now. State 1 (calculator) leaves the strip
+   completely alone, so the hub keeps all six dials there; STATE 3 is the one
+   that borrows two, and it is therefore the thing that puts every controller
+   into its 4-dial Compact layout. Both halves are asserted, because the whole
+   Compact suite hangs off the second one. */
 States.setState(1);
-ok("docking a window leaves the module 4 dials", States.moduleDials() === 4, String(States.moduleDials()));
+ok("State 1 does NOT touch the strip — the hub keeps six dials",
+   States.moduleDials() === 6, String(States.moduleDials()));
+States.setState(2);
+ok("State 2 borrows one dial for BPM, leaving five",
+   States.moduleDials() === 5, String(States.moduleDials()));
+States.setState(3);
+ok("State 3 borrows two — THIS is what triggers the Compact layouts",
+   States.moduleDials() === 4, String(States.moduleDials()));
 let bound4 = 0, borrowed = 0;
 for (let d = 1; d <= 6; d++) {
   const z = States.resolveDial(d);

@@ -108,8 +108,16 @@ function heldAudit(screen, name) {
 }
 const rbHeld = heldAudit(rb.hub, "rekordbox");
 ok("rekordbox has many held keys (cues/transport/nudge)", rbHeld.length >= 20, `count=${rbHeld.length}`);
-ok("Button 36 is momentary — D9 needs its Note Off before the carousel",
-   rbHeld.includes(36), `held=${rbHeld.includes(36)}`);
+/* V2 — (8,3) is a BEAT JUMP now, not a held nudge. That is the whole reason
+   D2a/D9/D9a could be deleted: a tap has no Note Off to force, so Button 36
+   needed no timer and no cap. Asserting the ABSENCE here, because the old
+   behaviour is exactly what a careless revert would restore. */
+ok("Button 36 is NOT momentary — it is a single-trigger Beat Jump (V2)",
+   !rbHeld.includes(36), `held=${rbHeld.includes(36)}`);
+const bj = rb.hub.keys(36);
+ok("…and it says so on the cap", bj && bj.kind === "tap" && /beat jump/i.test(bj.sub || ""),
+   bj ? bj.kind + " / " + bj.sub : "no binding");
+ok("the other three nudge keys are still held gestures", rbHeld.length >= 20, `count=${rbHeld.length}`);
 
 // ---------------------------------------------------------------------------
 console.log("\n[5] midictl: constants vs legacy plugin.js");
