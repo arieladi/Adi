@@ -3,18 +3,44 @@
    BlackholeController — predefined strategy for Eventide "Blackhole" (H9 series,
    VST3/AU reverb).
 
-   Paged like the Valhalla controllers. Tap the MAIN / MOD tabs (or press a dial)
-   to switch what the 6 dials control:
-     MAIN : Mix · Gravity · Size · Predelay · Low (EQ) · Hi (EQ)
-     MOD  : Mod Depth · Mod Rate · Feedback · Resonance · In Level · Out Level
+   NATIVE SVG (L4). The drawing is emitted as SVG directly instead of being
+   replayed through the Canvas shim. The ROLE TABLE, OVERRIDES, the anchored name
+   patterns and the bar definition are carried across UNCHANGED from 1.5.9.0 —
+   those came from Adi's real Ableton Configure screenshot and are data, not ink.
+
+   ONE LAYOUT, TWO WIDTHS (L17). Blackhole is the first controller whose Compact
+   ruling changed the FULL layout as well, deliberately: the plugin is re-paged
+   to THREE pages of exactly FOUR dials, and in the full layout dials 5 and 6 are
+   left unmapped on purpose. The point is that Blackhole feels 100% identical
+   docked or not, with zero hidden parameters — workflow consistency bought with
+   two hardware dials.
+
+     MAIN   : Mix · Gravity · Size · Predelay
+     MOD    : Mod Depth · Mod Rate · Feedback · Resonance
+     LEVELS : In Level · Out Level · Low EQ · Hi EQ
+
+   Twelve parameters divide into three pages of four with no remainder, and
+   nothing repeats across pages — which is exactly why the "keep two pages of
+   six and drop the tail" approach used for the Valhallas was rejected here:
+   Blackhole has no repeats to fall back on, so a dropped parameter is genuinely
+   gone.
+
+   Tap MAIN / MOD / LEVELS, or press ANY dial (including the two unmapped ones in
+   full) to advance the page.
+
    A full-width bottom bar holds Blackhole's signature performance switches:
      KILL (mute) · FREEZE (hold the tail) · HOTSWITCH (morph) — tap to toggle —
      and TEMPO (TempoSync: Manual / Sync / Off) — tap to cycle.
+   All four survive in both layouts, scaled to the current width: 300 px per cell
+   at full, 200 px at compact. Every one of them is a live control, so unlike
+   ValhallaRoom's unexposed PRESET there is nothing here worth reclaiming.
 
    Parameters resolve by NAME from the bridge's all_params (VST3 indexes aren't
    version-stable). Continuous params use delta_index; switches toggle/step.
    Ribbon Controller and Tempo are left to the plugin GUI. Pin exact names/indexes
    in BlackholeController.OVERRIDES. See docs/BLACKHOLE.md.
+
+   Zero keys in both layouts — all 36 belong to the Ableton hub shell.
    ============================================================================= */
 
 window.AVC = window.AVC || {};
@@ -30,12 +56,15 @@ AVC.BlackholeController = function BlackholeController(services) {
 AVC.BlackholeController.prototype = Object.create(AVC.DeviceController.prototype);
 AVC.BlackholeController.prototype.id = 'blackhole';
 
-AVC.BlackholeController.PAGES_ORDER = ['main', 'mod'];
-AVC.BlackholeController.PAGE_LABEL = { main: 'MAIN', mod: 'MOD' };
+/* L17 — three pages of exactly four. */
+AVC.BlackholeController.PAGES_ORDER = ['main', 'mod', 'levels'];
+AVC.BlackholeController.PAGE_LABEL = { main: 'MAIN', mod: 'MOD', levels: 'LEVELS' };
 AVC.BlackholeController.PAGES = {
-  main: ['mix', 'gravity', 'size', 'predelay', 'low', 'high'],
-  mod:  ['moddepth', 'modrate', 'feedback', 'resonance', 'inlevel', 'outlevel'],
+  main:   ['mix', 'gravity', 'size', 'predelay'],
+  mod:    ['moddepth', 'modrate', 'feedback', 'resonance'],
+  levels: ['inlevel', 'outlevel', 'low', 'high'],
 };
+AVC.BlackholeController.PAGE_DIALS = 4;      // every page is exactly four wide
 AVC.BlackholeController.LABEL = {
   mix: 'MIX', gravity: 'GRAVITY', size: 'SIZE', predelay: 'PREDLY', low: 'LOW EQ', high: 'HI EQ',
   moddepth: 'MOD D', modrate: 'MOD R', feedback: 'FDBK', resonance: 'RESO', inlevel: 'IN', outlevel: 'OUT',
@@ -71,14 +100,16 @@ AVC.BlackholeController.ROLES = [
 ];
 
 (function (P) {
-  var proto = P.prototype, gfx = AVC.gfx;
-  var SLOT = 200, SLOTS = 6;
+  var proto = P.prototype;
+  var Svg = SOS.Svg, gfx = AVC.gfx;
+  var SLOT = 200, H = 100;
   var TAB = [2, 16], MID = [19, 60], BOT = [64, 97];
 
   function norm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
   function inY(y, sec) { return y >= sec[0] && y <= sec[1]; }
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
-  // ------------------------------------------------------------- resolution
+  // ------------------------------------------------- resolution (UNCHANGED)
   proto.onState = function (state) {
     this.state = state;
     var d = state.device || {};
@@ -138,31 +169,44 @@ AVC.BlackholeController.ROLES = [
     if (role.quantized && role.items.length) return String(role.items[Math.round(this._value(role) - role.min)] || '');
     return this._fmt(role);
   };
+  // undefined for slots 4-5 in the full layout — those dials are unmapped by design.
   proto._pageRoleKey = function (slot) { return P.PAGES[this.page][slot]; };
 
+  // ------------------------------------------------------------ layout mode
+  /* Every page is four dials wide in BOTH layouts, so compact is not a reduced
+     view of full — it is the same view on a shorter strip. */
+  proto.setZones = function (z) { this.zones = clamp(z | 0, 1, 6); };
+  proto._zones = function () { return this.zones || 6; };
+  proto._compact = function () { return this._zones() < 6; };
+
   // ============================================================== rendering
-  proto.renderTouch = function (ctx) {
-    var L = this.L; gfx.clear(ctx, L.W, L.H);
+  proto.build = function (zones) {
+    this.setZones(zones);
+    var b = Svg.bag(), n = this._zones(), W = n * SLOT;
+    Svg.rect(b, 0, 0, W, H, gfx.bg);
+
     if (!this._resolved) {
-      gfx.text2(ctx, 'Blackhole — reading parameters…', 12, L.H / 2, '600 13px Inter, sans-serif', gfx.dim);
-      return;
+      Svg.text(b, 'Blackhole — reading parameters…', 12, H / 2, 13, 600, gfx.dim, 'start');
+      return b;
     }
-    for (var slot = 0; slot < SLOTS; slot++) {
+    for (var slot = 0; slot < n; slot++) {
       var x = slot * SLOT;
-      if (slot > 0) { ctx.strokeStyle = gfx.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + 0.5, 4); ctx.lineTo(x + 0.5, BOT[0] - 2); ctx.stroke(); }
-      this._drawZone(ctx, x, slot);
+      // Dividers stop above the bar, so the bar reads as one continuous element.
+      if (slot > 0) Svg.line(b, x + 0.5, 4, x + 0.5, BOT[0] - 2, gfx.line, 1);
+      this._buildZone(b, x, slot);
     }
-    this._drawBar(ctx);
+    this._buildBar(b, W);
+    return b;
   };
 
-  proto._drawTabs = function (ctx, x, color) {
+  proto._buildTabs = function (b, x, color) {
     var pages = P.PAGES_ORDER, tw = (SLOT - 8) / pages.length;
     for (var i = 0; i < pages.length; i++) {
-      var act = pages[i] === this.page;
-      gfx.roundRect(ctx, x + 4 + i * tw + 1, TAB[0], tw - 2, TAB[1] - TAB[0], 3);
-      ctx.fillStyle = act ? (color || gfx.accent) : 'rgba(255,255,255,0.05)'; ctx.fill();
-      gfx.text2(ctx, P.PAGE_LABEL[pages[i]], x + 4 + i * tw + tw / 2, TAB[1] - 3.5,
-        act ? '800 8px Inter, sans-serif' : '600 7px Inter, sans-serif', act ? '#06251d' : gfx.dim, 'center');
+      var act = pages[i] === this.page, tx = x + 4 + i * tw + 1;
+      Svg.rrect(b, tx, TAB[0], tw - 2, TAB[1] - TAB[0], 3,
+                act ? (color || gfx.accent) : 'rgba(255,255,255,0.05)');
+      Svg.text(b, P.PAGE_LABEL[pages[i]], tx + (tw - 2) / 2, TAB[1] - 3.5,
+               act ? 8 : 7, act ? 800 : 600, act ? '#06251d' : gfx.dim, 'middle');
     }
   };
   proto._tabHit = function (lx, ly) {
@@ -171,46 +215,65 @@ AVC.BlackholeController.ROLES = [
     return (seg >= 0 && seg < P.PAGES_ORDER.length) ? P.PAGES_ORDER[seg] : null;
   };
 
-  proto._drawZone = function (ctx, x, slot) {
+  proto._buildZone = function (b, x, slot) {
     var color = gfx.bandColors[slot % 8];
-    this._drawTabs(ctx, x, color);
-    var key = this._pageRoleKey(slot), role = key ? this._role(key) : null;
-    gfx.text2(ctx, key ? P.LABEL[key] : '—', x + SLOT / 2, MID[0] + 12, '700 9px Inter, sans-serif', role ? color : gfx.dim, 'center');
-    gfx.text2(ctx, role ? this._fmt(role) : '—', x + SLOT / 2, MID[1] - 3, '800 18px "SF Mono", monospace', role ? gfx.text : gfx.dim, 'center');
+    // The tab row is drawn in EVERY zone, including the unmapped ones, so a page
+    // can be tapped anywhere along the strip.
+    this._buildTabs(b, x, color);
+
+    var key = this._pageRoleKey(slot);
+    if (!key) {
+      // Unmapped by design (full layout, dials 5-6). Say what the dial still
+      // does rather than painting a bare em-dash that reads as broken.
+      Svg.text(b, 'press = page', x + SLOT / 2, MID[1] - 10, 9, 600, gfx.dim, 'middle', 0.55);
+      return;
+    }
+    var role = this._role(key);
+    Svg.text(b, P.LABEL[key], x + SLOT / 2, MID[0] + 12, 9, 700, role ? color : gfx.dim, 'middle');
+    Svg.mono(b, role ? this._fmt(role) : '—', x + SLOT / 2, MID[1] - 3, 18, 800, role ? gfx.text : gfx.dim, 'middle');
   };
 
-  proto._drawBar = function (ctx) {
-    var L = this.L, n = P.BAR.length, cw = L.W / n;
+  /* All four cells in both layouts, tiled across the CURRENT width: 300 px each
+     at full, 200 px at compact. */
+  proto._buildBar = function (b, W) {
+    var n = P.BAR.length, cw = W / n, h = BOT[1] - BOT[0];
     for (var i = 0; i < n; i++) {
       var cell = P.BAR[i], r = this._role(cell.key), x = i * cw;
       var isToggle = cell.kind === 'toggle';
       var on = isToggle && r ? this._on(r) : false;
-      gfx.roundRect(ctx, x + 5, BOT[0], cw - 10, BOT[1] - BOT[0], 5);
-      ctx.fillStyle = on ? cell.color : 'rgba(255,255,255,0.06)'; ctx.fill();
-      gfx.text2(ctx, cell.label, x + cw / 2, BOT[0] + 11, '700 8px Inter, sans-serif', on ? '#06251d' : gfx.dim, 'center');
+      Svg.rrect(b, x + 5, BOT[0], cw - 10, h, 5, on ? cell.color : 'rgba(255,255,255,0.06)');
+      Svg.text(b, cell.label, x + cw / 2, BOT[0] + 11, 8, 700, on ? '#06251d' : gfx.dim, 'middle');
       var state = r ? (isToggle ? (on ? 'ON' : 'OFF') : this._stepName(r)) : '—';
-      gfx.text2(ctx, state, x + cw / 2, BOT[1] - 5, '800 12px Inter, sans-serif', on ? '#06251d' : gfx.text, 'center');
+      Svg.text(b, state, x + cw / 2, BOT[1] - 5, 12, 800, on ? '#06251d' : gfx.text, 'middle');
     }
   };
 
   // ================================================================= input
   proto.onDial = function (slot, ticks) {
+    if (slot >= this._zones()) return;                    // dial on loan to a window
     var key = this._pageRoleKey(slot), role = key ? this._role(key) : null;
     if (role) this.bridge.cmd.deltaIndex(role.index, ticks * AVC.STEP);
   };
-  proto.onDialPress = function () {
+
+  // Any dial advances the page — including the two unmapped ones in full.
+  proto.onDialPress = function (slot) {
+    if (slot >= this._zones()) return;
     var order = P.PAGES_ORDER, i = order.indexOf(this.page);
     this.page = order[(i + 1) % order.length];
   };
+
   proto.onTouch = function (gx, gy, hold) {
-    var L = this.L, ly = gy;
+    var n = this._zones(), W = n * SLOT, ly = gy;
+    if (gx < 0 || gx >= W) return;
     if (inY(ly, TAB)) {
-      var slot = Math.floor(gx / SLOT); if (slot < 0 || slot > 5) return;
+      var slot = Math.floor(gx / SLOT);
       var tab = this._tabHit(gx - slot * SLOT, ly); if (tab) this.page = tab;
       return;
     }
     if (inY(ly, BOT)) {
-      var n = P.BAR.length, cw = L.W / n, i = Math.floor(gx / cw); if (i < 0 || i >= n) return;
+      // Cells tile the CURRENT width, so the hit test has to as well.
+      var cells = P.BAR.length, cw = W / cells, i = Math.floor(gx / cw);
+      if (i < 0 || i >= cells) return;
       var cell = P.BAR[i], r = this._role(cell.key); if (!r) return;
       if (cell.kind === 'toggle') this.bridge.cmd.toggleIndex(r.index);
       else this._cycle(cell.key, hold ? -1 : 1);
@@ -223,7 +286,10 @@ AVC.BlackholeController.ROLES = [
   };
 
   proto.dialTitle = function (slot) {
-    var key = this._pageRoleKey(slot), role = key ? this._role(key) : null;
-    return P.PAGE_LABEL[this.page] + ' ' + (key ? P.LABEL[key] : '—') + ' ' + (role ? this._fmt(role) : '');
+    if (slot >= this._zones()) return '';                 // borrowed by a window
+    var key = this._pageRoleKey(slot);
+    if (!key) return 'press = page';                      // unmapped, but not dead
+    var role = this._role(key);
+    return P.PAGE_LABEL[this.page] + ' ' + P.LABEL[key] + ' ' + (role ? this._fmt(role) : '');
   };
 })(AVC.BlackholeController);
