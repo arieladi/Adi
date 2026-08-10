@@ -57,7 +57,8 @@ const NATIVE = new Set(["EQ8Controller.js", "GenericController.js",
                         "PulsarMassiveController.js", "ProQ3Controller.js",
                         "SpectreController.js", "IndeqController.js",
                         "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
-                        "BlackholeController.js", "HDelayController.js", "svg.js"]);
+                        "BlackholeController.js", "HDelayController.js",
+                        "DbCompController.js", "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
@@ -67,7 +68,7 @@ for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
 for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveController.js",
                  "ProQ3Controller.js", "SpectreController.js", "IndeqController.js",
                  "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
-                 "BlackholeController.js", "HDelayController.js"]) {
+                 "BlackholeController.js", "HDelayController.js", "DbCompController.js"]) {
   ok(`${f} is the native rewrite, not a copy`,
      !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
        fs.readFileSync(path.join(LEGACY, f))));
@@ -1340,6 +1341,103 @@ ok("compact dial titles name the four kept parameters",
 ok("dialTitle is empty for a borrowed dial", hd.dialTitle(4) === "" && hd.dialTitle(5) === "");
 hdSent = null; hd.onDial(4, 1); hd.onDialPress(5); hd.onTouch(900, 50, false);
 ok("borrowed dials 5-6 send nothing", hdSent === null, JSON.stringify(hdSent));
+
+console.log("\n[18] dBComp dual layout — four knobs, no switch zone (L19)");
+const DB_OS = ["Oversampling Off", "Oversampling On"];
+const DB = []; let dbi = 0;
+const dbadd = (name, min, max, value, disp, o = {}) => DB.push({
+  i: dbi++, name, min, max, value, disp, quantized: !!o.q, items: o.items || [],
+});
+dbadd("Threshold", -40, 20, -8.5, "-8.50 dB");
+dbadd("Compression", 1, 10, 4, "4.0:1");
+dbadd("Output Gain", -20, 20, 3.5, "+3.50 dB");
+dbadd("HPF", 20, 500, 120, "120 Hz");
+dbadd("Mix", 0, 100, 100, "100 %");
+dbadd("Oversampling", 0, 1, 1, "Oversampling On", { q: true, items: DB_OS });
+dbadd("Bypass", 0, 1, 0, "Off", { q: true, items: ["Off", "On"] });
+dbadd("Parameter #6", 0, 1, 0, "0.00");            // unmapped on purpose
+dbadd("Parameter #7", 0, 1, 0, "0.00");            // unmapped on purpose
+
+const dst = JSON.parse(JSON.stringify(st));
+dst.device = { name: "dBComp", class_name: "PluginDevice", controller: "generic",
+               has_device: true, index: 0, param_count: DB.length };
+dst.allParams = DB; dst.pv = {};
+DB.forEach((p) => { dst.pv[p.i] = { value: p.value, disp: p.disp }; });
+
+let dbSent = null;
+const dbSpy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  deltaIndex: (i2, d) => { dbSent = { delta: i2, d }; },
+  stepIndex: (i2, dir, steps) => { dbSent = { step: i2, dir, steps }; },
+  toggleIndex: (i2) => { dbSent = { toggle: i2 }; },
+  getAllParams: () => {}, watch: () => {},
+}) }, sd: { log() {} }, layout: A._layout };
+const db = new AVC.DbCompController(dbSpy);
+db.onState(dst);
+ok("all 7 roles resolve", (db._missing || []).length === 0, (db._missing || []).join(","));
+ok("the Parameter #6/#7 placeholders stay unmapped",
+   !Object.keys(db._roles).some((k) => /parameter #/.test(db._roles[k].name.toLowerCase())),
+   Object.keys(db._roles).map((k) => db._roles[k].name).join(","));
+const dbIdx = (k) => db._role(k).index;
+
+// --- FULL ---
+db.setZones(6);
+const dbFull = SOS.Svg.serialize(db.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(dbFull));
+ok("full shows all five knobs",
+   ["THRESH", "COMP", "OUTPUT", "HPF", "MIX"].every((t2) => dbFull.includes(">" + t2 + "<")),
+   ["THRESH", "COMP", "OUTPUT", "HPF", "MIX"].filter((t2) => !dbFull.includes(">" + t2 + "<")).join(","));
+ok("full shows the two-pill switch zone", dbFull.includes(">OVERSAMP<") && dbFull.includes(">BYPASS<"));
+ok("a switch shows the LAST word of Live's value string", dbFull.includes(">On<"));
+db.onDial(4, 1);
+ok("full dial 5 sweeps Mix", dbSent.delta === dbIdx("mix"), JSON.stringify(dbSent));
+db.onDial(5, 1);
+ok("full dial 6 TURN cycles Oversampling", dbSent.step === dbIdx("oversampling"), JSON.stringify(dbSent));
+db.onDialPress(5);
+ok("full dial 6 PRESS toggles Bypass", dbSent.toggle === dbIdx("bypass"), JSON.stringify(dbSent));
+db.onTouch(1000 + 100, 30, false);
+ok("full: tapping the top pill cycles Oversampling", dbSent.step === dbIdx("oversampling"), JSON.stringify(dbSent));
+db.onTouch(1000 + 100, 70, false);
+ok("full: tapping the bottom pill toggles Bypass", dbSent.toggle === dbIdx("bypass"), JSON.stringify(dbSent));
+
+// --- COMPACT (L19) ---
+db.setZones(4);
+const dbComp = SOS.Svg.serialize(db.build(4), 0, 800, 100);
+ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(dbComp));
+ok("compact maps dials 1-4 to Threshold / Compression / Output / Mix",
+   [0,1,2,3].map((s2) => db._slotFor(s2)).join(",") === "0,1,2,4",
+   [0,1,2,3].map((s2) => db._slotFor(s2)).join(","));
+ok("compact keeps the four knobs you ride",
+   ["THRESH", "COMP", "OUTPUT", "MIX"].every((t2) => dbComp.includes(">" + t2 + "<")));
+ok("compact drops HPF", !dbComp.includes(">HPF<"));
+ok("compact drops the ENTIRE switch zone",
+   !dbComp.includes(">OVERSAMP<") && !dbComp.includes(">BYPASS<"));
+ok("compact invents no tab, page or hidden state",
+   !/GLOB|MAIN|LEVELS|>PAGE</.test(dbComp) && !("page" in db) && !("mode" in db));
+
+db.onDial(0, 1);
+ok("compact dial 1 sweeps Threshold", dbSent.delta === dbIdx("threshold"), JSON.stringify(dbSent));
+db.onDial(3, 1);
+ok("compact dial 4 sweeps Mix — parallel compression survives", dbSent.delta === dbIdx("mix"), JSON.stringify(dbSent));
+// No hidden bypass: a press anywhere in compact must send nothing at all.
+dbSent = null;
+[0, 1, 2, 3].forEach((s2) => db.onDialPress(s2));
+ok("no compact dial press does anything — Bypass was NOT folded onto a knob",
+   dbSent === null, JSON.stringify(dbSent));
+dbSent = null;
+[100, 300, 500, 700].forEach((gx) => { db.onTouch(gx, 30, false); db.onTouch(gx, 70, false); });
+ok("no compact zone is touchable — the switch zone is gone, not relocated",
+   dbSent === null, JSON.stringify(dbSent));
+
+ok("compact dial titles name the four knobs",
+   [0,1,2,3].map((s2) => db.dialTitle(s2).split(" ")[0]).join(",") === "THRESH,COMP,OUTPUT,MIX",
+   [0,1,2,3].map((s2) => db.dialTitle(s2)).join(" | "));
+ok("dialTitle is empty for a borrowed dial", db.dialTitle(4) === "" && db.dialTitle(5) === "");
+dbSent = null; db.onDial(4, 1); db.onDial(5, 1); db.onDialPress(5);
+ok("borrowed dials 5-6 send nothing", dbSent === null, JSON.stringify(dbSent));
+// And full must be unharmed by all of the above.
+db.setZones(6); db.onDialPress(5);
+ok("the switch zone still works in full after compact dropped it",
+   dbSent.toggle === dbIdx("bypass"), JSON.stringify(dbSent));
 
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();

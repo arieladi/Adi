@@ -880,6 +880,35 @@ a hidden mode on a controller with none); re-paging 2×4 Blackhole-style (H4 —
 Adi: "re-paging just to save two filters and ending up with a half-empty page is
 bad architecture". L17 was honest because 12 divides by 4 exactly; 6 does not).
 
+### L19 — dBComp compact: the four knobs you ride, no switches
+
+Presented Full first, rendered. dBComp owns **zero keys** in either layout.
+
+The first dynamics processor in the run. Fixed panel, no paging, and one
+structural oddity: **zone 6 is not a knob**. It is a two-pill switch panel where
+the dial and the touch zone address different parameters — turn or tap-top for
+Oversampling, press or tap-bottom for Bypass. One zone, two controls, four
+gestures.
+
+**RULING — D2. Dials 1-4 are Threshold, Compression, Output, Mix.** HPF and the
+entire switch zone are dropped.
+
+Adi's reasoning: "If I load a compressor, I'm actively using it" — Bypass is one
+click away in Ableton's own device header, Oversampling is a set-once quality
+toggle, and HPF is a sidechain setup decision. Retaining **Mix** for parallel
+compression matters more than any of them. That leaves the classic four-knob
+compressor surface, which is exactly what compact should be.
+
+* **No tabs, pages, hidden gestures or press-to-bypass are invented.** Compact
+  SELECTS zones, as INDEQ (L14) and H-Delay (L18) do.
+* Because the switch zone is simply never selected, its dial/press/touch
+  behaviour survives untouched in full without a single branch in compact.
+
+Rejected: keeping the switch zone and dropping Mix (D1 — costs parallel
+compression, and Bypass already has a good home outside the deck); Threshold /
+Compression / Mix / switches (D3 — drops makeup gain); folding Bypass onto a
+knob's press (D4 — a hidden gesture, the thing already rejected twice).
+
 ### Native SVG progress (L4), updated
 
 | Controller | Native | Compact |
@@ -894,4 +923,5 @@ bad architecture". L17 was honest because 12 divides by 4 exactly; 6 does not).
 | **ValhallaVintageVerb** | ✅ | ✅ 3 pages × first 4 dials, bar keeps MODE + COLOR |
 | **Blackhole** | ✅ | ✅ identical to full — 3 pages × 4, 4-cell bar |
 | **HDelay** | ✅ | ✅ Mix / Delay / Feedback / PingPong, filters dropped |
-| DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
+| **DbComp** | ✅ | ✅ Thresh / Comp / Output / Mix, switch zone dropped |
+| Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
