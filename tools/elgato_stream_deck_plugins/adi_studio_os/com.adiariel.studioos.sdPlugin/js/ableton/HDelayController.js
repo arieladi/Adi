@@ -3,6 +3,11 @@
    HDelayController — predefined strategy for Waves "H-Delay" (Hybrid Line delay,
    VST3/AU; covers the Stereo / Mono-Stereo / Mono variants).
 
+   NATIVE SVG (L4). The drawing is emitted as SVG directly instead of being
+   replayed through the Canvas shim. The ROLE TABLE, OVERRIDES and the match
+   patterns are carried across UNCHANGED from 1.5.9.0 — those came from Adi's
+   real Ableton Configure screenshot and are data, not ink.
+
    The H-Delay device exposes only a handful of Configured parameters, so this is
    a FIXED 6-dial layout (no paging), like the INDEQ controller:
      1 Mix · 2 Delay (BPM note division) · 3 Feedback · 4 HiPass · 5 LoPass ·
@@ -11,9 +16,29 @@
    PingPong are stepped — turn the dial OR tap the zone to cycle (hold/right =
    previous); pressing those dials also steps forward.
 
+   H-Delay has plenty more controls (Dry/Wet, Output, Analog, Mod Depth/Rate,
+   sync source, LoFi, Tap) that are NOT mapped because they are not Configured in
+   Ableton. Add them there and they can be wired in.
+
    Parameters resolve by NAME from the bridge's all_params (VST3 indexes aren't
    version-stable). Continuous params use delta_index; stepped use step_index.
    Pin exact names/indexes in HDelayController.OVERRIDES. See docs/H_DELAY.md.
+
+   TWO LAYOUTS (L6). Zero keys in both — all 36 belong to the Ableton hub shell.
+
+   FULL — 6 dials, the panel above.
+
+   COMPACT — 4 dials (L18): Mix · Delay BPM · Feedback · PingPong. The two
+     filters are dropped — on a delay, HiPass and LoPass are mix cleanup you set
+     once, while the note division and the ping-pong routing are what you
+     actually perform with. Keeping PingPong also keeps BOTH stepped dials, the
+     richest interactions here.
+
+     This controller has no tabs, no pages and no bar, so there is nothing to
+     hide the filters behind and NONE is invented. Compact SELECTS zones rather
+     than redesigning them — COMPACT_SLOTS indexes the same DIAL table, so a
+     compact zone IS the full zone and the turn / tap / press behaviour comes
+     across untouched.
    ============================================================================= */
 
 window.AVC = window.AVC || {};
@@ -32,6 +57,9 @@ AVC.HDelayController.DIAL = ['mix', 'delay', 'feedback', 'hipass', 'lopass', 'pi
 AVC.HDelayController.LABEL = {
   mix: 'MIX', delay: 'DELAY', feedback: 'FEEDBACK', hipass: 'HIPASS', lopass: 'LOPASS', pingpong: 'PINGPONG',
 };
+/* L18 — which FULL zone each compact dial carries: Mix, Delay, Feedback,
+   PingPong. Indexing the same table rather than duplicating it is the point. */
+AVC.HDelayController.COMPACT_SLOTS = [0, 1, 2, 5];
 
 /* roleKey -> exact Live parameter NAME or numeric index. */
 AVC.HDelayController.OVERRIDES = {};
@@ -46,12 +74,14 @@ AVC.HDelayController.ROLES = [
 ];
 
 (function (P) {
-  var proto = P.prototype, gfx = AVC.gfx;
-  var SLOT = 200, SLOTS = 6;
+  var proto = P.prototype;
+  var Svg = SOS.Svg, gfx = AVC.gfx;
+  var SLOT = 200, H = 100;
 
   function norm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
-  // ------------------------------------------------------------- resolution
+  // ------------------------------------------------- resolution (UNCHANGED)
   proto.onState = function (state) {
     this.state = state;
     var d = state.device || {};
@@ -107,48 +137,79 @@ AVC.HDelayController.ROLES = [
     return AVC.showVal(this._disp(role), (Math.round(this._value(role) * 100) / 100) + '');
   };
 
-  // ============================================================== rendering
-  proto.renderTouch = function (ctx) {
-    var L = this.L; gfx.clear(ctx, L.W, L.H);
-    if (!this._resolved) {
-      gfx.text2(ctx, 'H-Delay — reading parameters…', 12, L.H / 2, '600 13px Inter, sans-serif', gfx.dim);
-      return;
-    }
-    for (var slot = 0; slot < SLOTS; slot++) {
-      var x = slot * SLOT;
-      if (slot > 0) { ctx.strokeStyle = gfx.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + 0.5, 6); ctx.lineTo(x + 0.5, L.H - 6); ctx.stroke(); }
-      this._drawZone(ctx, x, slot);
-    }
+  // ------------------------------------------------------------ layout mode
+  /* No modes and no pages — the only thing setZones changes is WHICH of the six
+     fixed zones are on screen. */
+  proto.setZones = function (z) { this.zones = clamp(z | 0, 1, 6); };
+  proto._zones = function () { return this.zones || 6; };
+  proto._compact = function () { return this._zones() < 6; };
+  /* Dial slot -> the FULL zone it carries (L18). */
+  proto._slotFor = function (slot) {
+    if (!this._compact()) return slot;
+    var s = P.COMPACT_SLOTS[slot];
+    return s == null ? -1 : s;
+  };
+  proto._roleFor = function (slot) {
+    var zone = this._slotFor(slot);
+    return zone < 0 ? null : this._role(P.DIAL[zone]);
   };
 
-  proto._drawZone = function (ctx, x, slot) {
-    var key = P.DIAL[slot], r = this._role(key), color = gfx.bandColors[slot % 8];
-    gfx.text2(ctx, P.LABEL[key], x + SLOT / 2, 24, '700 10px Inter, sans-serif', r ? color : gfx.dim, 'center');
-    gfx.text2(ctx, r ? this._text(r) : '—', x + SLOT / 2, 58, '800 18px "SF Mono", monospace', r ? gfx.text : gfx.dim, 'center');
+  // ============================================================== rendering
+  proto.build = function (zones) {
+    this.setZones(zones);
+    var b = Svg.bag(), n = this._zones(), W = n * SLOT;
+    Svg.rect(b, 0, 0, W, H, gfx.bg);
+
+    if (!this._resolved) {
+      Svg.text(b, 'H-Delay — reading parameters…', 12, H / 2, 13, 600, gfx.dim, 'start');
+      return b;
+    }
+    for (var slot = 0; slot < n; slot++) {
+      var x = slot * SLOT;
+      if (slot > 0) Svg.line(b, x + 0.5, 6, x + 0.5, H - 6, gfx.line, 1);
+      this._buildZone(b, x, slot);
+    }
+    return b;
+  };
+
+  /* Drawn from the FULL zone index, so a compact zone is byte-for-byte the zone
+     it carries — including the stepper hint on Delay and PingPong. */
+  proto._buildZone = function (b, x, slot) {
+    var zone = this._slotFor(slot); if (zone < 0) return;
+    var key = P.DIAL[zone], r = this._role(key), color = gfx.bandColors[zone % 8];
+
+    Svg.text(b, P.LABEL[key], x + SLOT / 2, 24, 10, 700, r ? color : gfx.dim, 'middle');
+    Svg.mono(b, r ? this._text(r) : '—', x + SLOT / 2, 58, 18, 800, r ? gfx.text : gfx.dim, 'middle');
     if (r && r.kind === 'step') {
-      gfx.text2(ctx, '◂', x + 16, 90, '700 13px Inter, sans-serif', gfx.accent, 'center');
-      gfx.text2(ctx, '▸', x + SLOT - 16, 90, '700 13px Inter, sans-serif', gfx.accent, 'center');
-      gfx.text2(ctx, 'turn / tap', x + SLOT / 2, 90, '600 8px Inter, sans-serif', gfx.dim, 'center');
+      Svg.text(b, '◂', x + 16, 90, 13, 700, gfx.accent, 'middle');
+      Svg.text(b, '▸', x + SLOT - 16, 90, 13, 700, gfx.accent, 'middle');
+      Svg.text(b, 'turn / tap', x + SLOT / 2, 90, 8, 600, gfx.dim, 'middle');
     }
   };
 
   // ================================================================= input
   proto.onDial = function (slot, ticks) {
-    var r = this._role(P.DIAL[slot]); if (!r) return;
+    if (slot >= this._zones()) return;                    // dial on loan to a window
+    var r = this._roleFor(slot); if (!r) return;
     if (r.kind === 'step') this.bridge.cmd.stepIndex(r.index, ticks >= 0 ? 1 : -1, r.quantized ? 0 : (r.steps || 0));
     else this.bridge.cmd.deltaIndex(r.index, ticks * AVC.STEP);
   };
   proto.onDialPress = function (slot) {
-    var r = this._role(P.DIAL[slot]); if (r && r.kind === 'step') this.bridge.cmd.stepIndex(r.index, 1, r.quantized ? 0 : (r.steps || 0));
+    if (slot >= this._zones()) return;
+    var r = this._roleFor(slot);
+    if (r && r.kind === 'step') this.bridge.cmd.stepIndex(r.index, 1, r.quantized ? 0 : (r.steps || 0));
   };
   proto.onTouch = function (gx, gy, hold) {
-    var slot = Math.floor(gx / SLOT); if (slot < 0 || slot > 5) return;
-    var r = this._role(P.DIAL[slot]);
+    var slot = Math.floor(gx / SLOT);
+    if (slot < 0 || slot >= this._zones()) return;
+    var r = this._roleFor(slot);
     if (r && r.kind === 'step') this.bridge.cmd.stepIndex(r.index, hold ? -1 : 1, r.quantized ? 0 : (r.steps || 0));
   };
 
   proto.dialTitle = function (slot) {
-    var key = P.DIAL[slot], r = this._role(key);
+    if (slot >= this._zones()) return '';
+    var zone = this._slotFor(slot); if (zone < 0) return '';
+    var key = P.DIAL[zone], r = this._role(key);
     return P.LABEL[key] + (r ? ' ' + this._text(r) : '');
   };
 })(AVC.HDelayController);

@@ -848,6 +848,38 @@ Rejected: rescaling the bar and keeping two pages of six (B1 — costs Low/Hi EQ
 and In/Out Level with no repeats to fall back on); dropping TEMPO in compact (B2
 — TempoSync changes what Predelay means, so it is not a dead slot).
 
+### L18 — H-Delay compact: drop the filters, keep both steppers
+
+Presented Full first, rendered. H-Delay owns **zero keys** in either layout.
+
+The barest controller in the set: six Configured parameters on six dials, 1:1,
+with **no tabs, no pages, no bar and nothing repeated** — less structure even
+than INDEQ, which at least had toggle rows. So none of the established tricks
+apply: there is no tab row to extend (Spectre), no page to add (Blackhole), no
+dead slot to reclaim (ValhallaRoom), and no repeat to fall back on.
+
+**RULING — H2. Dials 1-4 are Mix, Delay BPM, Feedback, PingPong.** HiPass and
+LoPass are dropped.
+
+Adi's reasoning, and it is L14's applied again: riding the note division and the
+ping-pong routing is performance-critical for leads and rhythmic atmospheres,
+while the two filters are purely mix cleanup — a set-and-forget setup task.
+
+* **All three interactions survive on both stepped dials** — turn, tap the zone,
+  press the dial; hold-tap still steps backwards.
+* **No tabs, pages or hidden modes are invented.** Compact SELECTS zones, exactly
+  as INDEQ does (L14): `COMPACT_SLOTS` indexes the same `DIAL` table, so a
+  compact zone IS the full zone and nothing can drift between them.
+* Keeping PingPong also keeps **both** stepped dials — the richest interactions
+  on the controller. Dropping it would have left compact with three plain
+  continuous dials and one stepper.
+
+Rejected: the blind chop (H1 — loses the routing mode, which changes what the
+delay *is*); pairing the filters onto one dial with a press to swap (H3 — invents
+a hidden mode on a controller with none); re-paging 2×4 Blackhole-style (H4 —
+Adi: "re-paging just to save two filters and ending up with a half-empty page is
+bad architecture". L17 was honest because 12 divides by 4 exactly; 6 does not).
+
 ### Native SVG progress (L4), updated
 
 | Controller | Native | Compact |
@@ -861,4 +893,5 @@ and In/Out Level with no repeats to fall back on); dropping TEMPO in compact (B2
 | **ValhallaRoom** | ✅ | ✅ 4 pages × first 4 dials, MODE-only bar |
 | **ValhallaVintageVerb** | ✅ | ✅ 3 pages × first 4 dials, bar keeps MODE + COLOR |
 | **Blackhole** | ✅ | ✅ identical to full — 3 pages × 4, 4-cell bar |
-| HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
+| **HDelay** | ✅ | ✅ Mix / Delay / Feedback / PingPong, filters dropped |
+| DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
