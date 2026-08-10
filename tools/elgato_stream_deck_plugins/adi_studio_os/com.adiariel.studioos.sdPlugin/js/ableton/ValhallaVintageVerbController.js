@@ -3,19 +3,47 @@
    ValhallaVintageVerbController — predefined strategy for Valhalla DSP
    "ValhallaVintageVerb" (VST3 reverb, v2.1.x).
 
+   NATIVE SVG (L4). The drawing is emitted as SVG directly instead of being
+   replayed through the Canvas shim. The ROLE TABLE, OVERRIDES, the anchored name
+   patterns, the page tables and the labels are carried across UNCHANGED from
+   1.5.9.0 — those came from Adi's real Ableton Configure screenshot (v2.1.2) and
+   are data rather than ink.
+
    Same paged design as ValhallaRoomController. Tap the MAIN / DAMP / SHAPE tabs
-   (or press a dial) to switch what the 6 dials control:
+   (or press ANY dial) to switch what the 6 dials control:
      MAIN  : Mix · Predelay · Decay · Size · High Cut · Low Cut
      DAMP  : High Freq · High Shelf · Bass Xover · Bass Mult · Decay · Mix
      SHAPE : Attack · Early Diffusion · Late Diffusion · Mod Rate · Mod Depth · Size
+   Decay, Mix and Size repeat on the deeper pages so they are always reachable.
+
    A full-width bottom bar holds the two selectors: left = Reverb Mode (the
    algorithm, e.g. Concert Hall), right = Color Mode (the era voicing, e.g.
-   1970s/seventies). Tap to cycle, hold/right-tap = previous.
+   seventies). Tap to cycle, hold/right-tap = previous.
 
    Parameters resolve by NAME from the bridge's all_params (VST3 indexes aren't
    version-stable). Continuous params use delta_index; the two selectors step.
    Pin exact names/indexes in ValhallaVintageVerbController.OVERRIDES.
    See docs/VALHALLA_VINTAGE_VERB.md.
+
+   TWO LAYOUTS (L6). Zero keys in both — all 36 belong to the Ableton hub shell.
+
+   FULL — 6 dials, the three pages above, bar split MODE | COLOR.
+
+   COMPACT — 4 dials (L16):
+     ALL THREE PAGES SURVIVE, each yielding its FIRST FOUR parameters; dials 5
+     and 6 are dropped. MAIN loses High Cut and Low Cut, SHAPE loses Mod Depth
+     and Size, and DAMP survives functionally WHOLE — its four unique parameters
+     are exactly dials 1-4, so only its Decay/Mix repeats go.
+
+     THE BAR KEEPS BOTH HALVES. This is where VVV parts company with
+     ValhallaRoom: there the right-hand slot was an unexposed Preset, so compact
+     reclaimed it (L15/V3). Here it is ColorMode — a real exposed selector, and
+     one of this plugin's most characterful controls. It keeps its half, ~394 px,
+     still wider than a whole dial zone.
+
+     Because the bar splits at the CURRENT width rather than a hardcoded 1200,
+     no special case is needed at all: the same code draws and hit-tests both
+     layouts.
    ============================================================================= */
 
 window.AVC = window.AVC || {};
@@ -68,14 +96,16 @@ AVC.ValhallaVintageVerbController.ROLES = [
 ];
 
 (function (P) {
-  var proto = P.prototype, gfx = AVC.gfx;
-  var SLOT = 200, SLOTS = 6;
+  var proto = P.prototype;
+  var Svg = SOS.Svg, gfx = AVC.gfx;
+  var SLOT = 200, H = 100;
   var TAB = [2, 16], MID = [19, 60], BOT = [64, 97];
 
   function norm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
   function inY(y, sec) { return y >= sec[0] && y <= sec[1]; }
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
-  // ------------------------------------------------------------- resolution
+  // ------------------------------------------------- resolution (UNCHANGED)
   proto.onState = function (state) {
     this.state = state;
     var d = state.device || {};
@@ -136,29 +166,41 @@ AVC.ValhallaVintageVerbController.ROLES = [
   };
   proto._pageRoleKey = function (slot) { return P.PAGES[this.page][slot]; };
 
+  // ------------------------------------------------------------ layout mode
+  /* The pages are unchanged between layouts — compact simply has fewer dials to
+     hand them to, so each page yields its first N parameters (L16). */
+  proto.setZones = function (z) { this.zones = clamp(z | 0, 1, 6); };
+  proto._zones = function () { return this.zones || 6; };
+  proto._compact = function () { return this._zones() < 6; };
+
   // ============================================================== rendering
-  proto.renderTouch = function (ctx) {
-    var L = this.L; gfx.clear(ctx, L.W, L.H);
+  proto.build = function (zones) {
+    this.setZones(zones);
+    var b = Svg.bag(), n = this._zones(), W = n * SLOT;
+    Svg.rect(b, 0, 0, W, H, gfx.bg);
+
     if (!this._resolved) {
-      gfx.text2(ctx, 'ValhallaVintageVerb — reading parameters…', 12, L.H / 2, '600 13px Inter, sans-serif', gfx.dim);
-      return;
+      Svg.text(b, 'ValhallaVintageVerb — reading parameters…', 12, H / 2, 13, 600, gfx.dim, 'start');
+      return b;
     }
-    for (var slot = 0; slot < SLOTS; slot++) {
+    for (var slot = 0; slot < n; slot++) {
       var x = slot * SLOT;
-      if (slot > 0) { ctx.strokeStyle = gfx.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + 0.5, 4); ctx.lineTo(x + 0.5, BOT[0] - 2); ctx.stroke(); }
-      this._drawZone(ctx, x, slot);
+      // Dividers stop above the bar, so the bar reads as one continuous element.
+      if (slot > 0) Svg.line(b, x + 0.5, 4, x + 0.5, BOT[0] - 2, gfx.line, 1);
+      this._buildZone(b, x, slot);
     }
-    this._drawGlobalBar(ctx);
+    this._buildGlobalBar(b, W);
+    return b;
   };
 
-  proto._drawTabs = function (ctx, x, color) {
+  proto._buildTabs = function (b, x, color) {
     var pages = P.PAGES_ORDER, tw = (SLOT - 8) / pages.length;
     for (var i = 0; i < pages.length; i++) {
-      var act = pages[i] === this.page;
-      gfx.roundRect(ctx, x + 4 + i * tw + 1, TAB[0], tw - 2, TAB[1] - TAB[0], 3);
-      ctx.fillStyle = act ? (color || gfx.accent) : 'rgba(255,255,255,0.05)'; ctx.fill();
-      gfx.text2(ctx, P.PAGE_LABEL[pages[i]], x + 4 + i * tw + tw / 2, TAB[1] - 3.5,
-        act ? '800 7px Inter, sans-serif' : '600 6px Inter, sans-serif', act ? '#06251d' : gfx.dim, 'center');
+      var act = pages[i] === this.page, tx = x + 4 + i * tw + 1;
+      Svg.rrect(b, tx, TAB[0], tw - 2, TAB[1] - TAB[0], 3,
+                act ? (color || gfx.accent) : 'rgba(255,255,255,0.05)');
+      Svg.text(b, P.PAGE_LABEL[pages[i]], tx + (tw - 2) / 2, TAB[1] - 3.5,
+               act ? 7 : 6, act ? 800 : 600, act ? '#06251d' : gfx.dim, 'middle');
     }
   };
   proto._tabHit = function (lx, ly) {
@@ -167,43 +209,56 @@ AVC.ValhallaVintageVerbController.ROLES = [
     return (seg >= 0 && seg < P.PAGES_ORDER.length) ? P.PAGES_ORDER[seg] : null;
   };
 
-  proto._drawZone = function (ctx, x, slot) {
+  proto._buildZone = function (b, x, slot) {
     var color = gfx.bandColors[slot % 8];
-    this._drawTabs(ctx, x, color);
+    this._buildTabs(b, x, color);
     var key = this._pageRoleKey(slot), role = key ? this._role(key) : null;
-    gfx.text2(ctx, key ? P.LABEL[key] : '—', x + SLOT / 2, MID[0] + 12, '700 9px Inter, sans-serif', role ? color : gfx.dim, 'center');
-    gfx.text2(ctx, role ? this._fmt(role) : '—', x + SLOT / 2, MID[1] - 3, '800 18px "SF Mono", monospace', role ? gfx.text : gfx.dim, 'center');
+    Svg.text(b, key ? P.LABEL[key] : '—', x + SLOT / 2, MID[0] + 12, 9, 700, role ? color : gfx.dim, 'middle');
+    Svg.mono(b, role ? this._fmt(role) : '—', x + SLOT / 2, MID[1] - 3, 18, 800, role ? gfx.text : gfx.dim, 'middle');
   };
 
-  proto._drawGlobalBar = function (ctx) {
-    var L = this.L, half = L.W / 2;
+  /* Both halves survive in BOTH layouts (L16) — ColorMode is a real selector,
+     unlike ValhallaRoom's unexposed Preset. The split is taken from the CURRENT
+     width, so compact needs no special case: 1200 -> 600/600, 800 -> 400/400. */
+  proto._buildGlobalBar = function (b, W) {
+    var half = W / 2, h = BOT[1] - BOT[0];
     var mode = this._role('reverbmode'), color = this._role('colormode');
-    gfx.roundRect(ctx, 6, BOT[0], half - 12, BOT[1] - BOT[0], 5);
-    ctx.fillStyle = 'rgba(151,117,250,0.18)'; ctx.fill();
-    gfx.text2(ctx, 'MODE', 16, BOT[0] + 9, '600 8px Inter, sans-serif', gfx.dim, 'left');
-    gfx.text2(ctx, mode ? this._stepName(mode) : '— (configure ReverbMode)', half / 2, BOT[1] - 5, '800 13px Inter, sans-serif', mode ? '#c9b8ff' : gfx.dim, 'center');
-    gfx.roundRect(ctx, half + 6, BOT[0], half - 12, BOT[1] - BOT[0], 5);
-    ctx.fillStyle = 'rgba(255,169,77,0.16)'; ctx.fill();
-    gfx.text2(ctx, 'COLOR', half + 16, BOT[0] + 9, '600 8px Inter, sans-serif', gfx.dim, 'left');
-    gfx.text2(ctx, color ? this._stepName(color) : '— (configure ColorMode)', half + half / 2, BOT[1] - 5, '800 13px Inter, sans-serif', color ? '#ffcf99' : gfx.dim, 'center');
+
+    Svg.rrect(b, 6, BOT[0], half - 12, h, 5, 'rgba(151,117,250,0.18)');
+    Svg.text(b, 'MODE', 16, BOT[0] + 9, 8, 600, gfx.dim, 'start');
+    Svg.text(b, mode ? this._stepName(mode) : '— (configure ReverbMode)', half / 2, BOT[1] - 5,
+             13, 800, mode ? '#c9b8ff' : gfx.dim, 'middle');
+
+    Svg.rrect(b, half + 6, BOT[0], half - 12, h, 5, 'rgba(255,169,77,0.16)');
+    Svg.text(b, 'COLOR', half + 16, BOT[0] + 9, 8, 600, gfx.dim, 'start');
+    Svg.text(b, color ? this._stepName(color) : '— (configure ColorMode)', half + half / 2, BOT[1] - 5,
+             13, 800, color ? '#ffcf99' : gfx.dim, 'middle');
   };
 
   // ================================================================= input
   proto.onDial = function (slot, ticks) {
+    if (slot >= this._zones()) return;                    // dial on loan to a window
     var key = this._pageRoleKey(slot), role = key ? this._role(key) : null;
     if (role) this.bridge.cmd.deltaIndex(role.index, ticks * AVC.STEP);
   };
-  proto.onDialPress = function () {
+
+  // Any dial advances the page — the same in both layouts.
+  proto.onDialPress = function (slot) {
+    if (slot >= this._zones()) return;
     var order = P.PAGES_ORDER, i = order.indexOf(this.page);
     this.page = order[(i + 1) % order.length];
   };
+
   proto.onTouch = function (gx, gy, hold) {
-    var L = this.L, slot = Math.floor(gx / SLOT); if (slot < 0 || slot > 5) return;
+    var n = this._zones(), W = n * SLOT;
+    var slot = Math.floor(gx / SLOT);
+    if (slot < 0 || slot >= n) return;
     var lx = gx - slot * SLOT, ly = gy;
     var tab = this._tabHit(lx, ly);
     if (tab) { this.page = tab; return; }
     if (inY(ly, BOT)) {
-      if (gx < L.W / 2) this._cycle('reverbmode', hold ? -1 : 1);
+      // Split at the CURRENT width, so the halves stay where they look.
+      if (gx < W / 2) this._cycle('reverbmode', hold ? -1 : 1);
       else this._cycle('colormode', hold ? -1 : 1);
     }
   };
@@ -214,6 +269,7 @@ AVC.ValhallaVintageVerbController.ROLES = [
   };
 
   proto.dialTitle = function (slot) {
+    if (slot >= this._zones()) return '';
     var key = this._pageRoleKey(slot), role = key ? this._role(key) : null;
     return P.PAGE_LABEL[this.page] + ' ' + (key ? P.LABEL[key] : '—') + ' ' + (role ? this._fmt(role) : '');
   };

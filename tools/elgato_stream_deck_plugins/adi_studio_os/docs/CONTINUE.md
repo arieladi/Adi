@@ -47,7 +47,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**Done and verified — 487 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`):
+**Done and verified — 510 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`):
 
 | Piece | State |
 |---|---|
@@ -64,6 +64,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 | **Spectre** | ✅ native SVG + compact (4th GLOB tab, bands Lo/P1/P3/Hi) |
 | **Indeq** | ✅ native SVG + compact (gains + Output, steppers dropped, stateless) |
 | **ValhallaRoom** | ✅ native SVG + compact (4 pages × first 4 dials, MODE-only bar) |
+| **ValhallaVintageVerb** | ✅ native SVG + compact (3 pages × first 4 dials, bar keeps MODE + COLOR) |
 
 **Two engine bugs were fixed on the way through ProQ3 — see DECISIONS L10:**
 
@@ -76,10 +77,10 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
   `while (stack.length) pop(true)` and `pop` refuses to remove the last entry.
   Latent (install runs once at boot) but one line from a hang.
 
-**Immediate next task: `ValhallaVintageVerbController`**. Its Discovery briefing
-has already been given — pick up at the Compact-layout ruling.
+**Immediate next task: `BlackholeController`** (Eventide Blackhole). Its Discovery
+briefing has already been given — pick up at the Compact-layout ruling.
 
-**After that, in registry order:** Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder.
+**After that, in registry order:** HDelay, DbComp, Omnipressor, Saturate, SideMinder.
 
 **Then:** Compact layouts for Rekordbox (ruled L2: both decks, 4 hot cues each), MIDI Control and Visualizers — none have one yet, so docking a window over them currently hits the engine's "No room" path.
 
