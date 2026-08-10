@@ -58,7 +58,8 @@ const NATIVE = new Set(["EQ8Controller.js", "GenericController.js",
                         "SpectreController.js", "IndeqController.js",
                         "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
                         "BlackholeController.js", "HDelayController.js",
-                        "DbCompController.js", "OmnipressorController.js", "svg.js"]);
+                        "DbCompController.js", "OmnipressorController.js",
+                        "SaturateController.js", "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
@@ -69,7 +70,7 @@ for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveContr
                  "ProQ3Controller.js", "SpectreController.js", "IndeqController.js",
                  "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
                  "BlackholeController.js", "HDelayController.js", "DbCompController.js",
-                 "OmnipressorController.js"]) {
+                 "OmnipressorController.js", "SaturateController.js"]) {
   ok(`${f} is the native rewrite, not a copy`,
      !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
        fs.readFileSync(path.join(LEGACY, f))));
@@ -1575,6 +1576,134 @@ ok("borrowed dials 5-6 send nothing and cannot page", opSent === null && op.page
    `${JSON.stringify(opSent)} page=${op.page}`);
 ok("a BORROWED dial title is empty, unlike an unmapped one",
    op.dialTitle(4) === "" && op.dialTitle(5) === "");
+
+console.log("\n[20] Saturate dual layout — the clipper trio plus Output (L21)");
+// The most decoy-heavy mapping in the set: cosmetic params AND the per-module
+// "Clipper … Active" enables, which the anchored patterns must refuse to grab.
+const SAT_METER = ["Gain Curve", "Waveform"];
+const SAT_OUTSEL = ["Automatic", "Manual"];
+const SAT = []; let sati = 0;
+const satadd = (name, min, max, value, disp, o = {}) => SAT.push({
+  i: sati++, name, min, max, value, disp, quantized: !!o.q, items: o.items || [],
+});
+satadd("Active", 0, 1, 1, "On", { q: true, items: ["Off", "On"] });
+satadd("Color Scheme", 0, 2, 0, "MODERN", { q: true, items: ["MODERN", "CLASSIC", "MONO"] });
+satadd("Meters On", 0, 1, 1, "On", { q: true, items: ["Off", "On"] });
+satadd("UI Scale", 0.5, 2, 1, "1.00");
+satadd("Use OpenGL", 0, 1, 1, "On", { q: true, items: ["Off", "On"] });
+satadd("Gain Lock", 0, 1, 0, "Off", { q: true, items: ["Off", "On"] });
+satadd("Show Meters", 0, 1, 1, "On", { q: true, items: ["Off", "On"] });
+satadd("Draw Curve", 0, 1, 1, "On", { q: true, items: ["Off", "On"] });
+satadd("Input Level", -24, 24, 0, "0.00 dB");
+satadd("Output Level", -24, 24, -1.5, "-1.50 dB");
+satadd("Output Compensation", -24, 24, 2, "+2.00 dB");
+satadd("Output Level Select", 0, 1, 0, "Automatic", { q: true, items: SAT_OUTSEL });
+satadd("Clipper Drive Active", 0, 1, 1, "On", { q: true, items: ["Off", "On"] });
+satadd("Clipper Drive", 0, 24, 6.5, "6.50 dB");
+satadd("Clipper Shape Active", 0, 1, 1, "On", { q: true, items: ["Off", "On"] });
+satadd("Clipper Shape", 0, 100, 35, "35.0 %");
+satadd("Clipper Detail Active", 0, 1, 1, "On", { q: true, items: ["Off", "On"] });
+satadd("Clipper Detail", 0, 100, 100, "100 %");
+satadd("Meter Selector", 0, 1, 0, "Gain Curve", { q: true, items: SAT_METER });
+
+const sast = JSON.parse(JSON.stringify(st));
+sast.device = { name: "Newfangled Saturate", class_name: "PluginDevice", controller: "generic",
+                has_device: true, index: 0, param_count: SAT.length };
+sast.allParams = SAT; sast.pv = {};
+SAT.forEach((p) => { sast.pv[p.i] = { value: p.value, disp: p.disp }; });
+
+let satSent = null;
+const satSpy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  deltaIndex: (i2, d) => { satSent = { delta: i2, d }; },
+  stepIndex: (i2, dir, steps) => { satSent = { step: i2, dir, steps }; },
+  toggleIndex: (i2) => { satSent = { toggle: i2 }; },
+  getAllParams: () => {}, watch: () => {},
+}) }, sd: { log() {} }, layout: A._layout };
+const sat = new AVC.SaturateController(satSpy);
+sat.onState(sast);
+ok("all 9 roles resolve", (sat._missing || []).length === 0, (sat._missing || []).join(","));
+const satIdx = (k) => sat._role(k).index;
+// The negative lookaheads are the fragile part of this mapping — pin them.
+ok("Clipper Drive/Shape/Detail resolve to the KNOBS, not their '… Active' siblings",
+   sat._role("drive").name === "Clipper Drive" &&
+   sat._role("shape").name === "Clipper Shape" &&
+   sat._role("detail").name === "Clipper Detail",
+   [sat._role("drive").name, sat._role("shape").name, sat._role("detail").name].join(","));
+ok("Output Level did NOT fall onto Output Level Select",
+   sat._role("output").name === "Output Level" && sat._role("outmode").name === "Output Level Select",
+   sat._role("output").name + " / " + sat._role("outmode").name);
+ok("the cosmetic params stay unmapped",
+   !Object.keys(sat._roles).some((k) => /color scheme|ui scale|opengl|show meters|draw curve|^active$/
+     .test(sat._roles[k].name.toLowerCase())),
+   Object.keys(sat._roles).map((k) => sat._roles[k].name).join(","));
+
+// --- FULL ---
+sat.setZones(6);
+const satFull = SOS.Svg.serialize(sat.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(satFull));
+ok("full shows all six knobs",
+   ["INPUT", "DRIVE", "SHAPE", "DETAIL", "OUTPUT", "OUT COMP"].every((t2) => satFull.includes(">" + t2 + "<")),
+   ["INPUT", "DRIVE", "SHAPE", "DETAIL", "OUTPUT", "OUT COMP"].filter((t2) => !satFull.includes(">" + t2 + "<")).join(","));
+ok("full shows the three-cell bar with Ableton's FULL label text",
+   satFull.includes(">METER<") && satFull.includes(">OUT MODE<") && satFull.includes(">LOCK<") &&
+   satFull.includes(">Gain Curve<") && satFull.includes(">Automatic<"));
+sat.onDial(0, 1);
+ok("full dial 1 sweeps Input Level", satSent.delta === satIdx("input"), JSON.stringify(satSent));
+sat.onDial(5, 1);
+ok("full dial 6 sweeps Output Compensation", satSent.delta === satIdx("outcomp"), JSON.stringify(satSent));
+
+// --- COMPACT (L21) ---
+sat.setZones(4);
+const satComp = SOS.Svg.serialize(sat.build(4), 0, 800, 100);
+ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(satComp));
+ok("compact maps dials 1-4 to Drive / Shape / Detail / Output",
+   [0,1,2,3].map((s2) => sat._slotFor(s2)).join(",") === "1,2,3,4",
+   [0,1,2,3].map((s2) => sat._slotFor(s2)).join(","));
+ok("compact keeps the clipper trio together plus Output",
+   ["DRIVE", "SHAPE", "DETAIL", "OUTPUT"].every((t2) => satComp.includes(">" + t2 + "<")));
+ok("compact drops Input and Out Comp",
+   !satComp.includes(">INPUT<") && !satComp.includes(">OUT COMP<"));
+ok("compact keeps ALL THREE bar cells — three divides any width cleanly",
+   ["METER", "OUT MODE", "LOCK"].every((t2) => satComp.includes(">" + t2 + "<")));
+const satCellW = (satComp.match(/<rect x="5" y="64" width="([\d.]+)"/) || [])[1];
+const satCellWFull = (satFull.match(/<rect x="5" y="64" width="([\d.]+)"/) || [])[1];
+ok("cells are ~256 wide at compact and 390 at full (266 / 400 pitch)",
+   satCellW === "256.67" && satCellWFull === "390", `${satCellW} / ${satCellWFull}`);
+
+sat.onDial(0, 1);
+ok("compact dial 1 sweeps Clipper Drive", satSent.delta === satIdx("drive"), JSON.stringify(satSent));
+sat.onDial(2, 1);
+ok("compact dial 3 sweeps Clipper Detail", satSent.delta === satIdx("detail"), JSON.stringify(satSent));
+sat.onDial(3, 1);
+ok("compact dial 4 sweeps Output Level", satSent.delta === satIdx("output"), JSON.stringify(satSent));
+// Press is unused on this controller, in BOTH layouts.
+satSent = null;
+[0, 1, 2, 3].forEach((s2) => sat.onDialPress(s2));
+ok("dial press does nothing at all — Saturate has no press action", satSent === null, JSON.stringify(satSent));
+
+// Bar hit-testing must follow the current width.
+sat.onTouch(100, 80, false);
+ok("compact: x=100 cycles METER", satSent.step === satIdx("meter") && satSent.dir === 1, JSON.stringify(satSent));
+sat.onTouch(700, 80, false);
+ok("compact: x=700 toggles LOCK", satSent.toggle === satIdx("gainlock"), JSON.stringify(satSent));
+sat.onTouch(400, 80, true);
+ok("compact: holding x=400 steps OUT MODE backwards",
+   satSent.step === satIdx("outmode") && satSent.dir === -1, JSON.stringify(satSent));
+sat.setZones(6);
+sat.onTouch(700, 80, false);
+ok("full: the SAME x=700 is OUT MODE, because three cells of 400 tile differently",
+   satSent.step === satIdx("outmode"), JSON.stringify(satSent));
+sat.setZones(4);
+satSent = null; sat.onTouch(400, 30, false);
+ok("a tap above the bar does nothing — the knob zones are not touchable",
+   satSent === null, JSON.stringify(satSent));
+
+ok("compact dial titles name the four kept knobs",
+   [0,1,2,3].map((s2) => sat.dialTitle(s2).split(" ")[0]).join(",") === "DRIVE,SHAPE,DETAIL,OUTPUT",
+   [0,1,2,3].map((s2) => sat.dialTitle(s2)).join(" | "));
+ok("dialTitle is empty for a borrowed dial", sat.dialTitle(4) === "" && sat.dialTitle(5) === "");
+satSent = null; sat.onDial(4, 1); sat.onDial(5, 1);
+ok("borrowed dials 5-6 send nothing", satSent === null, JSON.stringify(satSent));
 
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();

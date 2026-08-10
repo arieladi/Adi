@@ -950,6 +950,36 @@ Rejected: keeping two pages and rescaling the bar to five 160 px cells (O1 —
 loses Mix, and 160 px would be the narrowest target in the project); a 4-cell bar
 keeping POWER (O4 — POWER duplicates Live's own device on/off).
 
+### L21 — Saturate compact: the clipper trio plus Output
+
+Presented Full first, rendered. Saturate owns **zero keys** in either layout.
+
+The bar was not the problem here — three cells tile any width cleanly (400 px →
+266 px). The whole question was which four of the six continuous knobs, which
+split naturally into a **character trio** (Drive · Shape · Detail) and **three
+level controls** (Input · Output · Out Comp).
+
+**RULING — S1. Dials 1-4 are Clipper Drive, Clipper Shape, Clipper Detail,
+Output Level.** Input Level and Output Compensation are dropped.
+
+The three clipper knobs are what Saturate *is*; splitting them would be like
+dropping one of Pro-Q's modes. Input goes because on a clipper, pushing Input and
+pushing Drive do nearly the same job, and Drive is the one with the metering
+behind it. The bar keeps all three cells in both layouts.
+
+**Flagged, not blocking — Adi runs OUT MODE = Automatic.** Asked which mode he
+uses, the answer was "automatic", and he chose S1 anyway with that in hand. Worth
+recording because the two interact: with Output Level Select on Automatic the
+plugin computes output itself, so the Output dial compact keeps may read as
+inert on hardware. If it does, swapping it for Input is a one-line change to
+`SaturateController.COMPACT_SLOTS` — `[1,2,3,4]` becomes `[0,1,2,3]` — and
+nothing else moves. Left as ruled rather than second-guessed.
+
+Rejected: Input / Drive / Shape / Detail (S2 — the "everything before the
+clipper" set, which is also what a blind first-four chop happens to give); any
+re-paging (6 into 4 leaves a 2-slot page, the split already rejected for
+H-Delay in L18).
+
 ### Native SVG progress (L4), updated
 
 | Controller | Native | Compact |
@@ -966,4 +996,5 @@ keeping POWER (O4 — POWER duplicates Live's own device on/off).
 | **HDelay** | ✅ | ✅ Mix / Delay / Feedback / PingPong, filters dropped |
 | **DbComp** | ✅ | ✅ Thresh / Comp / Output / Mix, switch zone dropped |
 | **Omnipressor** | ✅ | ✅ 3 pages × 4 (same as full), bar drops POWER + LINE |
-| Saturate, SideMinder | ❌ shim copies | ❌ |
+| **Saturate** | ✅ | ✅ Drive / Shape / Detail / Output, 3-cell bar kept |
+| SideMinder | ❌ shim copy | ❌ |
