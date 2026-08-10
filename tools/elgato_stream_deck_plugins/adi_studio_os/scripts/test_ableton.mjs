@@ -49,32 +49,31 @@ Nav.wire(States.syncToScreen);
 M.install();
 const A = M.Ableton;
 
-console.log("\n[2] controllers not yet rewritten are still byte-identical copies");
-// EQ8 has been rewritten natively (L4) and svg.js is new, so both are expected
-// to differ. Everything else must still diff clean against 1.5.9.0 — that is
-// what guarantees their verified parameter maps have not drifted.
-const NATIVE = new Set(["EQ8Controller.js", "GenericController.js",
-                        "PulsarMassiveController.js", "ProQ3Controller.js",
-                        "SpectreController.js", "IndeqController.js",
-                        "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
-                        "BlackholeController.js", "HDelayController.js",
-                        "DbCompController.js", "OmnipressorController.js",
-                        "SaturateController.js", "svg.js"]);
-for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
-  if (NATIVE.has(f)) continue;
+console.log("\n[2] L4 COMPLETE — every controller is a native rewrite, none is a copy");
+/* This check used to run the other way round: the not-yet-rewritten controllers
+   were byte-identical copies of 1.5.9.0, and asserting that was what guaranteed
+   their verified parameter maps had not drifted while their siblings were being
+   rewritten. SideMinder was the last copy (L22), so the assertion is inverted —
+   NO file in js/ableton may still match the legacy. If one ever does, a rewrite
+   has been reverted. */
+const LEGACY_FILES = new Set(fs.readdirSync(LEGACY));
+const ABLETON_FILES = fs.readdirSync(path.join(NEW, "js/ableton"));
+// Only the CONTROLLERS were rewritten. registry.js is the registration table and
+// legitimately still matches 1.5.9.0 — it is data about which strategy handles
+// which device, and nothing about the port changed that.
+const CONTROLLER_FILES = ABLETON_FILES.filter((f) => /Controller\.js$/.test(f));
+let copies = [];
+for (const f of CONTROLLER_FILES) {
+  if (!LEGACY_FILES.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
   const b = fs.readFileSync(path.join(LEGACY, f));
-  ok(`${f} unchanged from 1.5.9.0`, a.equals(b), `${a.length} vs ${b.length} bytes`);
+  if (a.equals(b)) copies.push(f);
 }
-for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveController.js",
-                 "ProQ3Controller.js", "SpectreController.js", "IndeqController.js",
-                 "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
-                 "BlackholeController.js", "HDelayController.js", "DbCompController.js",
-                 "OmnipressorController.js", "SaturateController.js"]) {
-  ok(`${f} is the native rewrite, not a copy`,
-     !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
-       fs.readFileSync(path.join(LEGACY, f))));
-}
+ok("no controller is still a byte-identical 1.5.9.0 copy", copies.length === 0, copies.join(","));
+ok(`all 14 controller files present`, CONTROLLER_FILES.length === 14, String(CONTROLLER_FILES.length));
+ok("registry.js is deliberately NOT rewritten — it is the device→strategy table",
+   fs.readFileSync(path.join(NEW, "js/ableton/registry.js"))
+     .equals(fs.readFileSync(path.join(LEGACY, "registry.js"))));
 
 console.log("\n[3] SvgCtx — the Canvas 2D subset the controllers use");
 const C = new SOS.SvgCtx(200, 100);
@@ -1704,6 +1703,168 @@ ok("compact dial titles name the four kept knobs",
 ok("dialTitle is empty for a borrowed dial", sat.dialTitle(4) === "" && sat.dialTitle(5) === "");
 satSent = null; sat.onDial(4, 1); sat.onDial(5, 1);
 ok("borrowed dials 5-6 send nothing", satSent === null, JSON.stringify(satSent));
+
+console.log("\n[21] SideMinder ME2 — Full stays perfect, compact accepts orphans (L22)");
+const SM_BANDS = ["1-Band", "2-Bands", "3-Bands"];
+const SM_LINK = ["Independent", "Relative", "Ganged"];
+const SM = []; let smi = 0;
+const smadd = (name, min, max, value, disp, o = {}) => SM.push({
+  i: smi++, name, min, max, value, disp, quantized: !!o.q, items: o.items || [],
+});
+smadd("#Bands", 0, 2, 2, "3-Bands", { q: true, items: SM_BANDS });
+smadd("BandLink", 0, 2, 0, "Independent", { q: true, items: SM_LINK });
+smadd("LMXovr", 40, 1000, 300, "300 Hz");
+smadd("MHXovr", 1000, 16000, 3000, "3.00 kHz");
+const SMW = { L: 118, M: 100, H: 135 };
+["L", "M", "H"].forEach((bd) => {
+  smadd(bd + "-Width", 0, 200, SMW[bd], SMW[bd] + " %");
+  smadd(bd + "-Width Out", 0, 1, 1, "On", { q: true, items: ["Out", "On"] });       // decoy
+  smadd(bd + "-Limiter", 0, 1, 1, "Limit", { q: true, items: ["Out", "Limit"] });   // decoy
+  smadd(bd + "-Release", 0, 1, 0.5, "0.50");
+  smadd(bd + "-Ratio", 1, 20, 10, "10.00 : 1");
+  smadd(bd + "-Offset", -12, 12, 0, "0.00 dB");
+  smadd(bd + "-Solo", 0, 1, 0, "Normal", { q: true, items: ["Normal", "Solo"] });   // decoy
+  smadd(bd + "-Trim", -12, 12, 0, "0.00 dB");
+});
+smadd("Bypass", 0, 1, 0, "Process", { q: true, items: ["Process", "Bypass"] });
+smadd("Output Mono", 0, 1, 0, "Stereo", { q: true, items: ["Stereo", "Mono"] });
+smadd("Norm/Delta", 0, 1, 0, "Normal", { q: true, items: ["Normal", "Delta"] });
+smadd("ExtSC", 0, 1, 0, "Normal", { q: true, items: ["Normal", "Ext SC"] });
+smadd("Advanced", 0, 1, 0, "Basic", { q: true, items: ["Basic", "Advanced"] });     // decoy
+smadd("Bass Mono", 0, 1, 1, "BassMono", { q: true, items: ["Stereo", "BassMono"] }); // decoy
+smadd("B-Mono", 20, 200, 90, "90 Hz");                                              // decoy
+smadd("Cmeter", 0, 1, 1, "Output", { q: true, items: ["Input", "Output"] });        // decoy
+smadd("IO Trim", -12, 12, 0, "0.00 dB");
+
+const smst = JSON.parse(JSON.stringify(st));
+smst.device = { name: "SideMinder ME2", class_name: "PluginDevice", controller: "generic",
+                has_device: true, index: 0, param_count: SM.length };
+smst.allParams = SM; smst.pv = {};
+SM.forEach((p) => { smst.pv[p.i] = { value: p.value, disp: p.disp }; });
+
+let smSent = null;
+const smSpy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  deltaIndex: (i2, d) => { smSent = { delta: i2, d }; },
+  deltaLogIndex: (i2, d) => { smSent = { logdelta: i2, d }; },
+  stepIndex: (i2, dir, steps) => { smSent = { step: i2, dir, steps }; },
+  toggleIndex: (i2) => { smSent = { toggle: i2 }; },
+  getAllParams: () => {}, watch: () => {},
+}) }, sd: { log() {} }, layout: A._layout };
+const sm = new AVC.SideMinderController(smSpy);
+sm.onState(smst);
+ok("all 24 roles resolve", (sm._missing || []).length === 0, (sm._missing || []).join(","));
+const smIdx = (k) => sm._role(k).index;
+ok("the width dials resolve to the AMOUNT params, not the '-Width Out' toggles",
+   sm._role("l_width").name === "L-Width" && sm._role("m_width").name === "M-Width" &&
+   sm._role("h_width").name === "H-Width",
+   [sm._role("l_width").name, sm._role("m_width").name, sm._role("h_width").name].join(","));
+ok("the Solo / Limiter / bass / meter params stay unmapped",
+   !Object.keys(sm._roles).some((k) => /solo|limiter|bass|cmeter|advanced/
+     .test(sm._roles[k].name.toLowerCase())),
+   Object.keys(sm._roles).map((k) => sm._roles[k].name).join(","));
+
+// --- FULL is untouched: all 6 dials, all 18 params, 6 bar cells ---
+sm.setZones(6);
+sm.page = "width";
+const smFull = SOS.Svg.serialize(sm.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(smFull));
+ok("full WIDTH uses all six dials",
+   ["L WIDTH", "M WIDTH", "H WIDTH", "LM XO", "MH XO", "I/O TRIM"].every((t2) => smFull.includes(">" + t2 + "<")),
+   ["L WIDTH", "M WIDTH", "H WIDTH", "LM XO", "MH XO", "I/O TRIM"].filter((t2) => !smFull.includes(">" + t2 + "<")).join(","));
+ok("full bar keeps all SIX cells",
+   ["BANDS", "LINK", "MONO", "DELTA", "EXT SC", "BYPASS"].every((t2) => smFull.includes(">" + t2 + "<")));
+sm.onDial(3, 1);
+ok("the LM crossover nudges GEOMETRICALLY", smSent.logdelta === smIdx("lmxover"), JSON.stringify(smSent));
+sm.onDial(0, 1);
+ok("a width nudges linearly", smSent.delta === smIdx("l_width"), JSON.stringify(smSent));
+sm.page = "limit";
+const smLimit = SOS.Svg.serialize(sm.build(6), 0, 1200, 100);
+ok("full LIMIT keeps the whole Release triad AND the whole Ratio triad",
+   ["L REL", "M REL", "H REL", "L RATIO", "M RATIO", "H RATIO"].every((t2) => smLimit.includes(">" + t2 + "<")));
+sm.onDial(5, 1);
+ok("full dial 6 drives H-Ratio", smSent.delta === smIdx("h_ratio"), JSON.stringify(smSent));
+
+// --- COMPACT: first four per page, orphans accepted (L22) ---
+sm.setZones(4);
+sm.page = "width";
+const smCompW = SOS.Svg.serialize(sm.build(4), 0, 800, 100);
+ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(smCompW));
+ok("compact WIDTH keeps the width triad plus LM XO",
+   ["L WIDTH", "M WIDTH", "H WIDTH", "LM XO"].every((t2) => smCompW.includes(">" + t2 + "<")));
+ok("compact WIDTH drops MH XO and I/O Trim",
+   !smCompW.includes(">MH XO<") && !smCompW.includes(">I/O TRIM<"));
+sm.page = "limit";
+const smCompL = SOS.Svg.serialize(sm.build(4), 0, 800, 100);
+// The accepted cost of M1, asserted so nobody "fixes" it later by accident.
+ok("compact LIMIT keeps the Release triad and ORPHANS L-Ratio — the accepted L22 trade",
+   ["L REL", "M REL", "H REL", "L RATIO"].every((t2) => smCompL.includes(">" + t2 + "<")) &&
+   !smCompL.includes(">M RATIO<") && !smCompL.includes(">H RATIO<"),
+   smCompL.includes(">L RATIO<") + "/" + smCompL.includes(">M RATIO<"));
+sm.page = "trim";
+const smCompT = SOS.Svg.serialize(sm.build(4), 0, 800, 100);
+ok("compact TRIM keeps the Offset triad and orphans L-Trim",
+   ["L OFFS", "M OFFS", "H OFFS", "L TRIM"].every((t2) => smCompT.includes(">" + t2 + "<")) &&
+   !smCompT.includes(">M TRIM<") && !smCompT.includes(">H TRIM<"));
+ok("compact keeps all three page tabs at a readable width",
+   ["WIDTH", "LIMIT", "TRIM"].every((t2) => smCompT.includes(">" + t2 + "<")));
+sm.page = "limit"; sm.onDial(3, 1);
+ok("compact LIMIT dial 4 drives L-Ratio", smSent.delta === smIdx("l_ratio"), JSON.stringify(smSent));
+
+// --- the bar: six cells full, four compact, 200 px pitch in BOTH ---
+ok("compact bar drops BYPASS and EXT SC",
+   !smCompW.includes(">BYPASS<") && !smCompW.includes(">EXT SC<"));
+ok("compact bar keeps BANDS / LINK / MONO / DELTA",
+   ["BANDS", "LINK", "MONO", "DELTA"].every((t2) => smCompW.includes(">" + t2 + "<")));
+const smCellW = (smCompW.match(/<rect x="5" y="64" width="([\d.]+)"/) || [])[1];
+const smCellWFull = (smFull.match(/<rect x="5" y="64" width="([\d.]+)"/) || [])[1];
+ok("cells are 190 wide in BOTH layouts — a 200 px pitch either way",
+   smCellW === "190" && smCellWFull === "190", `${smCellW} / ${smCellWFull}`);
+// Same pitch, but the cell at a given x still differs after the drop.
+sm.setZones(4);
+sm.onTouch(700, 80, false);
+ok("compact: x=700 toggles DELTA (4th cell)", smSent.toggle === smIdx("delta"), JSON.stringify(smSent));
+sm.setZones(6);
+sm.onTouch(700, 80, false);
+ok("full: the SAME x=700 also hits the 4th cell, DELTA — the pitch matches",
+   smSent.toggle === smIdx("delta"), JSON.stringify(smSent));
+sm.onTouch(1100, 80, false);
+ok("full: x=1100 toggles BYPASS, which compact cannot reach at all",
+   smSent.toggle === smIdx("bypass"), JSON.stringify(smSent));
+sm.onTouch(100, 80, false);
+ok("BANDS cycles rather than toggling (3 positions)",
+   smSent.step === smIdx("bands") && smSent.dir === 1, JSON.stringify(smSent));
+sm.onTouch(300, 80, true);
+ok("holding steps LINK backwards", smSent.step === smIdx("link") && smSent.dir === -1, JSON.stringify(smSent));
+
+// Pages and borrowed dials.
+sm.setZones(4); sm.page = "width";
+sm.onDialPress(2); sm.onDialPress(0); sm.onDialPress(3);
+ok("three presses walk WIDTH -> LIMIT -> TRIM -> WIDTH", sm.page === "width", sm.page);
+smSent = null; sm.onDial(4, 1); sm.onDialPress(5);
+ok("borrowed dials 5-6 send nothing and cannot page", smSent === null && sm.page === "width",
+   `${JSON.stringify(smSent)} page=${sm.page}`);
+ok("dialTitle is empty for a borrowed dial", sm.dialTitle(4) === "" && sm.dialTitle(5) === "");
+
+console.log("\n[22] the whole registry — every controller builds both layouts");
+/* L4 is complete, so this is now a property of the SET rather than of any one
+   controller: every registered strategy must implement build(), and must render
+   a real strip at BOTH widths. */
+for (const name of CTORS) {
+  const inst = new AVC[name](svc);
+  inst.onState(st);
+  let full = "", comp = "", err = null;
+  try {
+    full = SOS.Svg.serialize(inst.build(6), 0, 1200, 100);
+    comp = SOS.Svg.serialize(inst.build(4), 0, 800, 100);
+  } catch (e) { err = e; }
+  ok(`${name} builds native SVG at 1200 AND 800`,
+     !err && typeof inst.build === "function" &&
+     /viewBox="0 0 1200 100"/.test(full) && /viewBox="0 0 800 100"/.test(comp) &&
+     full.length > 300 && comp.length > 200,
+     err ? err.message : `${full.length} / ${comp.length}`);
+}
+ok("SOS.SvgCtx has no controllers left to serve",
+   CTORS.every((n) => typeof AVC[n].prototype.build === "function"));
 
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();

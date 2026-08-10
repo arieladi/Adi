@@ -47,7 +47,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**Done and verified — 648 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`):
+**Done and verified — 679 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`):
 
 | Piece | State |
 |---|---|
@@ -70,6 +70,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 | **DbComp** | ✅ native SVG + compact (Thresh / Comp / Output / Mix, switch zone dropped) |
 | **Omnipressor** | ✅ native SVG — re-paged 3×4 (pages identical to full), compact bar drops POWER + LINE |
 | **Saturate** | ✅ native SVG + compact (Drive / Shape / Detail / Output, 3-cell bar kept) |
+| **SideMinder** | ✅ native SVG + compact (3 pages × first 4, bar drops BYPASS + EXT SC) |
 
 **Two engine bugs were fixed on the way through ProQ3 — see DECISIONS L10:**
 
@@ -82,12 +83,24 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
   `while (stack.length) pop(true)` and `pop` refuses to remove the last entry.
   Latent (install runs once at boot) but one line from a hang.
 
-**Immediate next task: `SideMinderController`** — the LAST shim copy. Its Discovery
-briefing has already been given; pick up at the Compact-layout ruling. When it
-lands, `test_ableton.mjs` has no byte-identity assertions left to make and that
-whole check can retire.
+### L4 IS COMPLETE — all 14 Ableton controllers are native SVG with both layouts
 
-**Then:** Compact layouts for Rekordbox (ruled L2), MIDI Control and Visualizers.
+SideMinder was the last byte-identical copy. `SOS.SvgCtx` — the Canvas-2D shim
+written so the port could avoid editing 2,500 lines of verified parameter maps —
+now has no controllers left to serve. Every parameter map crossed the port
+unedited; the rulings are L7-L9 and L11-L22 in `DECISIONS.md`.
+
+`test_ableton.mjs [2]` no longer asserts byte-identity (nothing is a copy). It
+asserts the inverse: no `*Controller.js` may still match 1.5.9.0, and every
+registered strategy builds real SVG at BOTH 1200 and 800. `registry.js` is
+deliberately still identical — it is the device→strategy table, not ink.
+
+**Immediate next task: Compact layouts for `Rekordbox`** (ruled L2: both decks,
+4 hot cues each), then **MIDI Control** and **Visualizers**. None has one yet, so
+docking a window over them currently hits the engine's "No room" path.
+
+**Also still open:** the 5 un-ported Visualizer views (bands, rme, gonio, corr,
+bal), and the Windows pass.
 
 **Then:** Compact layouts for Rekordbox (ruled L2: both decks, 4 hot cues each), MIDI Control and Visualizers — none have one yet, so docking a window over them currently hits the engine's "No room" path.
 

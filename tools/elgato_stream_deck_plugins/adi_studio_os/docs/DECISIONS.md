@@ -980,7 +980,53 @@ clipper" set, which is also what a blind first-four chop happens to give); any
 re-paging (6 into 4 leaves a 2-slot page, the split already rejected for
 H-Delay in L18).
 
-### Native SVG progress (L4), updated
+### L22 — SideMinder: Full stays perfect, compact accepts orphans
+
+Presented Full first, rendered on all three pages. SideMinder owns **zero keys**
+in either layout. The hardest compact of the run, and the last shim copy.
+
+Two things fought each other. Every page is built from **L/M/H triads**, so a
+first-four chop *splits* one — LIMIT compact keeps `L-Ratio` with no M or H
+beside it. But the alternatives all cost more: re-paging 4×4 drops a whole triad
+(the Releases) and spends two Full dials, and the zero-loss six-page version
+squeezes the tab row to **32 px per tab**, which is unusable.
+
+**RULING — M1 for the dials, M2's reduction for the bar.**
+
+* **Three pages kept** (WIDTH / LIMIT / TRIM), each yielding its **first four**
+  parameters in compact. Dials 5 and 6 are dropped there.
+* **The FULL layout is untouched** — all six dials used, all 18 parameters
+  reachable, Release triad intact. Adi: keeping Full perfect and retaining the
+  Release controls matters more than avoiding orphans in compact, and the 32 px
+  tabs were a non-starter.
+* **Orphaned `L-Ratio` and `L-Trim` in compact are accepted, explicitly.** This
+  is the first time a compact layout deliberately shows part of a group — worth
+  recording as a considered trade rather than an oversight.
+* **Compact bar drops BYPASS and EXT SC**, keeping BANDS · LINK · MONO · DELTA
+  at exactly 200 px each; full keeps all six at 200 px. MONO and DELTA are the
+  two you ride on a width tool — mono-compatibility checking and hearing only
+  the side processing. Bypass is handled in Live; EXT SC is routing setup.
+
+Note this is the mirror image of L17/L20: there, Full gave up dials to keep the
+layouts identical. Here Full is held perfect and compact takes the compromise.
+Both are legitimate; the difference is which side the plugin's value sits on.
+
+Rejected: 4 pages × 4 dropping the Release triad (M2's dials); 6 pages of triads
+with I/O Trim on dial 4 (M3 — zero loss, unusable tabs); 3 pages with a
+hand-picked four (M4 — wastes a dial on two of three pages).
+
+### L4 COMPLETE — every controller is native SVG
+
+SideMinder was the last byte-identical copy. `SOS.SvgCtx`, the Canvas-2D shim
+written so the port could avoid editing 2,500 lines of verified parameter maps,
+now has no controllers left to serve. The byte-identity assertion in
+`scripts/test_ableton.mjs` is replaced by its inverse: **no file in `js/ableton`
+may still match 1.5.9.0**, which is now the stronger claim.
+
+All 14 controllers ship both layouts. Every parameter map crossed the port
+unedited.
+
+### Native SVG progress (L4) — final
 
 | Controller | Native | Compact |
 |---|---|---|
@@ -988,13 +1034,13 @@ H-Delay in L18).
 | Generic | ✅ | ✅ blind chop |
 | Pulsar Massive | ✅ | ✅ DRIVE tab |
 | ProQ3 | ✅ | ✅ bands 1/2/3/6, press = Slope on cuts |
-| **Spectre** | ✅ | ✅ GLOB tab, bands Lo/P1/P3/Hi |
-| **Indeq** | ✅ | ✅ gains + Output, steppers dropped |
-| **ValhallaRoom** | ✅ | ✅ 4 pages × first 4 dials, MODE-only bar |
-| **ValhallaVintageVerb** | ✅ | ✅ 3 pages × first 4 dials, bar keeps MODE + COLOR |
-| **Blackhole** | ✅ | ✅ identical to full — 3 pages × 4, 4-cell bar |
-| **HDelay** | ✅ | ✅ Mix / Delay / Feedback / PingPong, filters dropped |
-| **DbComp** | ✅ | ✅ Thresh / Comp / Output / Mix, switch zone dropped |
-| **Omnipressor** | ✅ | ✅ 3 pages × 4 (same as full), bar drops POWER + LINE |
-| **Saturate** | ✅ | ✅ Drive / Shape / Detail / Output, 3-cell bar kept |
-| SideMinder | ❌ shim copy | ❌ |
+| Spectre | ✅ | ✅ GLOB tab, bands Lo/P1/P3/Hi |
+| Indeq | ✅ | ✅ gains + Output, steppers dropped |
+| ValhallaRoom | ✅ | ✅ 4 pages × first 4 dials, MODE-only bar |
+| ValhallaVintageVerb | ✅ | ✅ 3 pages × first 4 dials, bar keeps MODE + COLOR |
+| Blackhole | ✅ | ✅ identical to full — 3 pages × 4, 4-cell bar |
+| HDelay | ✅ | ✅ Mix / Delay / Feedback / PingPong, filters dropped |
+| DbComp | ✅ | ✅ Thresh / Comp / Output / Mix, switch zone dropped |
+| Omnipressor | ✅ | ✅ 3 pages × 4 (same as full), bar drops POWER + LINE |
+| Saturate | ✅ | ✅ Drive / Shape / Detail / Output, 3-cell bar kept |
+| **SideMinder** | ✅ | ✅ 3 pages × first 4, bar drops BYPASS + EXT SC |
