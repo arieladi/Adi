@@ -689,6 +689,43 @@ nobody would ever find them).
   row, MODE cycles from its pill (hold = backwards). Output is dial-only, as it
   is in full.
 
+### L13a — the two GLOB derivations, ratified
+
+Adi explicitly approved both items that L13 flagged for veto: **dial 3's press
+cycles Mode** in GLOB (consistent with dial 6 in full), and **dial 4 carries the
+five-dot band-status readout** rather than a blank. They are rulings now, not
+derivations.
+
+### L14 — INDEQ compact: drop the frequency steppers, stay stateless
+
+Presented Full first, rendered. INDEQ owns **zero keys** in either layout.
+
+INDEQ is the odd one out: a fixed 3-band EQ with **no dynamic state at all** — no
+modes, no tabs, no focus, no pagination. Six knobs on six dials, six toggles on
+the touch rows, permanently. That rules the fourth-tab pattern (L8 / L13) out on
+principle rather than on space: Pulsar and Spectre already had a strip-wide tab
+row to extend, and INDEQ has none. Adding one would invent a mode concept the
+plugin does not have.
+
+**RULING — dials 1-4 are Low Gain, Mid Gain, High Gain, Output.** The two
+stepped corner-frequency dials (Low Freq, Mid Freq) are dropped.
+
+Rationale, Adi's: the corner frequencies on a fixed-frequency EQ are set-and-
+forget setup decisions, while the three gains plus Output are exactly what a hand
+reaches for mid-listen — which is the situation compact exists for.
+
+* **Dial presses keep mirroring their zone's top toggle**, exactly as in full:
+  HPF · Mid Bandwidth · High Band Shape · Bypass.
+* **No tabs, no pages, no hidden state.** Compact is the same four zones drawn
+  verbatim — the zone artwork is not redesigned, it is selected.
+* Because the zones are carried whole, High Gain keeps its bottom row too, so the
+  **8/16 kHz High Frequency switch survives**. Of the six toggles only **Low Band
+  Shape** is lost, because its zone (Low Freq) is one of the two dropped.
+
+Rejected: dropping High and Output to keep two complete bands (loses the high
+band and three toggles); a shared "frequency of the last band you touched" dial
+(adds focus state to a deliberately stateless controller); inventing a tab.
+
 ### Native SVG progress (L4), updated
 
 | Controller | Native | Compact |
@@ -698,4 +735,5 @@ nobody would ever find them).
 | Pulsar Massive | ✅ | ✅ DRIVE tab |
 | ProQ3 | ✅ | ✅ bands 1/2/3/6, press = Slope on cuts |
 | **Spectre** | ✅ | ✅ GLOB tab, bands Lo/P1/P3/Hi |
-| Indeq, ValhallaRoom, ValhallaVintageVerb, Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
+| **Indeq** | ✅ | ✅ gains + Output, steppers dropped |
+| ValhallaRoom, ValhallaVintageVerb, Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
