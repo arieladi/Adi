@@ -3,6 +3,11 @@
    SideMinderController — predefined strategy for RJ Studios "SideMinder ME2"
    (SideMinder Mastering Edition — dynamic stereo-width maximizer, VST3/AU).
 
+   NATIVE SVG (L4) — and the LAST controller off the Canvas shim. The ROLE TABLE,
+   OVERRIDES and the anchored match patterns (including the `(?! out)` guards
+   that keep the width dials off the "<band>-Width Out" toggles) are carried
+   across UNCHANGED from 1.5.9.0: verified data, not ink.
+
    A 3-band (Low / Mid / High) stereo-width processor with a lot of per-band
    params, so the 6 dials are PAGED (like Omnipressor / Blackhole). Tap the
    WIDTH / LIMIT / TRIM tabs — or press a dial — to switch what the dials drive:
@@ -27,6 +32,26 @@
    per-band Width-Out / Limiter-Out / Band-Solo toggles, the Bass-Narrow/Bass-Mono
    controls, the correlation-meter source, Advanced, and Output/Input monitor.
    See docs/SIDEMINDER.md.
+
+   TWO LAYOUTS (L6). Zero keys in both — all 36 belong to the Ableton hub shell.
+
+   FULL — 6 dials, the three pages above, all 18 parameters reachable, six bar
+   cells at 200 px.
+
+   COMPACT — 4 dials (L22): the three pages are kept and each yields its FIRST
+   FOUR parameters. That deliberately ORPHANS L-Ratio (on LIMIT) and L-Trim (on
+   TRIM) — their M and H siblings are on dials 5-6 and go. It is the first
+   compact layout here to show part of a group on purpose, and it was chosen:
+   the alternatives were dropping the whole Release triad, or a six-page layout
+   whose tab row would be 32 px per tab.
+
+   The FULL layout is untouched by that compromise, which is the point — this is
+   the mirror image of Blackhole and Omnipressor, where Full gave up dials so the
+   two layouts could match. Here Full is held perfect and compact takes the hit.
+
+   The compact bar drops BYPASS and EXT SC, keeping BANDS · LINK · MONO · DELTA
+   at exactly 200 px each. MONO and DELTA are the two you ride on a width tool;
+   bypass is handled in Live and EXT SC is routing setup.
    ============================================================================= */
 
 window.AVC = window.AVC || {};
@@ -65,6 +90,8 @@ AVC.SideMinderController.BAR = [
   { key: 'extsc',  label: 'EXT SC', kind: 'toggle', color: '#8ce99a' },
   { key: 'bypass', label: 'BYPASS', kind: 'toggle', color: '#ff8a8a' },
 ];
+/* L22 — compact drops BYPASS and EXT SC, leaving four cells at exactly 200 px. */
+AVC.SideMinderController.BAR_COMPACT = ['bands', 'link', 'mono', 'delta'];
 
 /* roleKey -> exact Live parameter NAME or numeric index. */
 AVC.SideMinderController.OVERRIDES = {};
@@ -105,12 +132,14 @@ AVC.SideMinderController.ROLES = [
 ];
 
 (function (P) {
-  var proto = P.prototype, gfx = AVC.gfx;
-  var SLOT = 200, SLOTS = 6;
+  var proto = P.prototype;
+  var Svg = SOS.Svg, gfx = AVC.gfx;
+  var SLOT = 200, H = 100;
   var TAB = [2, 16], MID = [19, 60], BOT = [64, 97];
 
   function norm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
   function inY(y, sec) { return y >= sec[0] && y <= sec[1]; }
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
   // ------------------------------------------------------------- resolution
   proto.onState = function (state) {
@@ -175,29 +204,46 @@ AVC.SideMinderController.ROLES = [
   };
   proto._pageRoleKey = function (slot) { return P.PAGES[this.page][slot]; };
 
-  // ============================================================== rendering
-  proto.renderTouch = function (ctx) {
-    var L = this.L; gfx.clear(ctx, L.W, L.H);
-    if (!this._resolved) {
-      gfx.text2(ctx, 'SideMinder ME2 — reading parameters…', 12, L.H / 2, '600 13px Inter, sans-serif', gfx.dim);
-      return;
-    }
-    for (var slot = 0; slot < SLOTS; slot++) {
-      var x = slot * SLOT;
-      if (slot > 0) { ctx.strokeStyle = gfx.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + 0.5, 4); ctx.lineTo(x + 0.5, BOT[0] - 2); ctx.stroke(); }
-      this._drawZone(ctx, x, slot);
-    }
-    this._drawBar(ctx);
+  // ------------------------------------------------------------ layout mode
+  /* The pages are unchanged between layouts — compact simply has fewer dials to
+     hand them to, so each page yields its first N parameters (L22). The BAR is
+     the one thing that differs: four cells instead of six. */
+  proto.setZones = function (z) { this.zones = clamp(z | 0, 1, 6); };
+  proto._zones = function () { return this.zones || 6; };
+  proto._compact = function () { return this._zones() < 6; };
+  proto._bar = function () {
+    if (!this._compact()) return P.BAR;
+    return P.BAR.filter(function (c) { return P.BAR_COMPACT.indexOf(c.key) >= 0; });
   };
 
-  proto._drawTabs = function (ctx, x, color) {
+  // ============================================================== rendering
+  proto.build = function (zones) {
+    this.setZones(zones);
+    var b = Svg.bag(), n = this._zones(), W = n * SLOT;
+    Svg.rect(b, 0, 0, W, H, gfx.bg);
+
+    if (!this._resolved) {
+      Svg.text(b, 'SideMinder ME2 — reading parameters…', 12, H / 2, 13, 600, gfx.dim, 'start');
+      return b;
+    }
+    for (var slot = 0; slot < n; slot++) {
+      var x = slot * SLOT;
+      // Dividers stop above the bar, so the bar reads as one continuous element.
+      if (slot > 0) Svg.line(b, x + 0.5, 4, x + 0.5, BOT[0] - 2, gfx.line, 1);
+      this._buildZone(b, x, slot);
+    }
+    this._buildBar(b, W);
+    return b;
+  };
+
+  proto._buildTabs = function (b, x, color) {
     var pages = P.PAGES_ORDER, tw = (SLOT - 8) / pages.length;
     for (var i = 0; i < pages.length; i++) {
-      var act = pages[i] === this.page;
-      gfx.roundRect(ctx, x + 4 + i * tw + 1, TAB[0], tw - 2, TAB[1] - TAB[0], 3);
-      ctx.fillStyle = act ? (color || gfx.accent) : 'rgba(255,255,255,0.05)'; ctx.fill();
-      gfx.text2(ctx, P.PAGE_LABEL[pages[i]], x + 4 + i * tw + tw / 2, TAB[1] - 3.5,
-        act ? '800 7px Inter, sans-serif' : '600 7px Inter, sans-serif', act ? '#06251d' : gfx.dim, 'center');
+      var act = pages[i] === this.page, tx = x + 4 + i * tw + 1;
+      Svg.rrect(b, tx, TAB[0], tw - 2, TAB[1] - TAB[0], 3,
+                act ? (color || gfx.accent) : 'rgba(255,255,255,0.05)');
+      Svg.text(b, P.PAGE_LABEL[pages[i]], tx + (tw - 2) / 2, TAB[1] - 3.5,
+               7, act ? 800 : 600, act ? '#06251d' : gfx.dim, 'middle');
     }
   };
   proto._tabHit = function (lx, ly) {
@@ -206,53 +252,65 @@ AVC.SideMinderController.ROLES = [
     return (seg >= 0 && seg < P.PAGES_ORDER.length) ? P.PAGES_ORDER[seg] : null;
   };
 
-  proto._drawZone = function (ctx, x, slot) {
+  proto._buildZone = function (b, x, slot) {
     var color = gfx.bandColors[slot % 8];
-    this._drawTabs(ctx, x, color);
+    this._buildTabs(b, x, color);
     var key = this._pageRoleKey(slot), role = key ? this._role(key) : null;
-    gfx.text2(ctx, key ? P.LABEL[key] : '—', x + SLOT / 2, MID[0] + 12, '700 9px Inter, sans-serif', role ? color : gfx.dim, 'center');
-    gfx.text2(ctx, role ? this._fmt(role) : '—', x + SLOT / 2, MID[1] - 3, '800 17px "SF Mono", monospace', role ? gfx.text : gfx.dim, 'center');
+    Svg.text(b, key ? P.LABEL[key] : '—', x + SLOT / 2, MID[0] + 12, 9, 700, role ? color : gfx.dim, 'middle');
+    Svg.mono(b, role ? this._fmt(role) : '—', x + SLOT / 2, MID[1] - 3, 17, 800, role ? gfx.text : gfx.dim, 'middle');
   };
 
-  proto._drawBar = function (ctx) {
-    var L = this.L, n = P.BAR.length, cw = L.W / n;
+  /* Cells tile the CURRENT width over the CURRENT cell list — six at 200 px in
+     full, four at 200 px in compact. The pitch happens to match because compact
+     drops exactly two cells with the two dropped dials; the code does not rely
+     on that. */
+  proto._buildBar = function (b, W) {
+    var bar = this._bar(), n = bar.length, cw = W / n, h = BOT[1] - BOT[0];
     for (var i = 0; i < n; i++) {
-      var cell = P.BAR[i], r = this._role(cell.key), x = i * cw;
+      var cell = bar[i], r = this._role(cell.key), x = i * cw;
       var on = r ? this._on(r) : false;
-      gfx.roundRect(ctx, x + 5, BOT[0], cw - 10, BOT[1] - BOT[0], 5);
-      ctx.fillStyle = on ? cell.color : 'rgba(255,255,255,0.06)'; ctx.fill();
-      gfx.text2(ctx, cell.label, x + cw / 2, BOT[0] + 11, '700 8px Inter, sans-serif', on ? '#06251d' : gfx.dim, 'center');
-      gfx.text2(ctx, r ? this._sw(r) : '—', x + cw / 2, BOT[1] - 5, '800 11px Inter, sans-serif', on ? '#06251d' : gfx.text, 'center');
+      Svg.rrect(b, x + 5, BOT[0], cw - 10, h, 5, on ? cell.color : 'rgba(255,255,255,0.06)');
+      Svg.text(b, cell.label, x + cw / 2, BOT[0] + 11, 8, 700, on ? '#06251d' : gfx.dim, 'middle');
+      Svg.text(b, r ? this._sw(r) : '—', x + cw / 2, BOT[1] - 5, 11, 800, on ? '#06251d' : gfx.text, 'middle');
     }
   };
 
   // ================================================================= input
   proto.onDial = function (slot, ticks) {
+    if (slot >= this._zones()) return;                    // dial on loan to a window
     var key = this._pageRoleKey(slot), role = key ? this._role(key) : null;
     if (!role) return;
     if (P.LOG[key]) this.bridge.cmd.deltaLogIndex(role.index, ticks * AVC.STEP);
     else this.bridge.cmd.deltaIndex(role.index, ticks * AVC.STEP);
   };
-  proto.onDialPress = function () {
+
+  // Any dial advances the page — the same in both layouts.
+  proto.onDialPress = function (slot) {
+    if (slot >= this._zones()) return;
     var order = P.PAGES_ORDER, i = order.indexOf(this.page);
     this.page = order[(i + 1) % order.length];
   };
+
   proto.onTouch = function (gx, gy, hold) {
-    var L = this.L, ly = gy;
+    var n = this._zones(), W = n * SLOT, ly = gy;
+    if (gx < 0 || gx >= W) return;
     if (inY(ly, TAB)) {
-      var slot = Math.floor(gx / SLOT); if (slot < 0 || slot > 5) return;
+      var slot = Math.floor(gx / SLOT);
       var tab = this._tabHit(gx - slot * SLOT, ly); if (tab) this.page = tab;
       return;
     }
     if (inY(ly, BOT)) {
-      var n = P.BAR.length, cw = L.W / n, i = Math.floor(gx / cw); if (i < 0 || i >= n) return;
-      var cell = P.BAR[i], r = this._role(cell.key); if (!r) return;
+      // Hit-test the SAME cell list the bar drew, tiled the same way.
+      var bar = this._bar(), cells = bar.length, cw = W / cells, i = Math.floor(gx / cw);
+      if (i < 0 || i >= cells) return;
+      var cell = bar[i], r = this._role(cell.key); if (!r) return;
       if (cell.kind === 'cycle' || (r.quantized && r.items.length > 2)) this.bridge.cmd.stepIndex(r.index, hold ? -1 : 1, 0);
       else this.bridge.cmd.toggleIndex(r.index);
     }
   };
 
   proto.dialTitle = function (slot) {
+    if (slot >= this._zones()) return '';
     var key = this._pageRoleKey(slot), role = key ? this._role(key) : null;
     return P.PAGE_LABEL[this.page] + ' ' + (key ? P.LABEL[key] : '—') + ' ' + (role ? this._fmt(role) : '');
   };
