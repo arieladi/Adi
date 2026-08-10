@@ -58,7 +58,7 @@ const NATIVE = new Set(["EQ8Controller.js", "GenericController.js",
                         "SpectreController.js", "IndeqController.js",
                         "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
                         "BlackholeController.js", "HDelayController.js",
-                        "DbCompController.js", "svg.js"]);
+                        "DbCompController.js", "OmnipressorController.js", "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
@@ -68,7 +68,8 @@ for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
 for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveController.js",
                  "ProQ3Controller.js", "SpectreController.js", "IndeqController.js",
                  "ValhallaRoomController.js", "ValhallaVintageVerbController.js",
-                 "BlackholeController.js", "HDelayController.js", "DbCompController.js"]) {
+                 "BlackholeController.js", "HDelayController.js", "DbCompController.js",
+                 "OmnipressorController.js"]) {
   ok(`${f} is the native rewrite, not a copy`,
      !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
        fs.readFileSync(path.join(LEGACY, f))));
@@ -1438,6 +1439,142 @@ ok("borrowed dials 5-6 send nothing", dbSent === null, JSON.stringify(dbSent));
 db.setZones(6); db.onDialPress(5);
 ok("the switch zone still works in full after compact dropped it",
    dbSent.toggle === dbIdx("bypass"), JSON.stringify(dbSent));
+
+console.log("\n[19] Omnipressor — re-paged 3x4, compact bar drops 2 cells (L20)");
+const OP_METER = ["Input", "Gain", "Output"];
+const OP = []; let opi = 0;
+const opadd = (name, min, max, value, disp, o = {}) => OP.push({
+  i: opi++, name, min, max, value, disp, quantized: !!o.q, items: o.items || [],
+});
+opadd("Threshold", -60, 0, -20, "-20.0 dB");
+opadd("Attack", 0.1, 100, 10, "10.0 ms");
+opadd("Release", 1, 1000, 100, "100 ms");
+opadd("Function", -10, 10, 3.5, "3.5:1");
+opadd("Atten Limit", -30, 0, -18, "-18.0 dB");
+opadd("Gain Limit", 0, 30, 12, "+12.0 dB");
+opadd("Input Gain", -20, 20, 0, "0.0 dB");
+opadd("Output Gain", -20, 20, 2, "+2.0 dB");
+opadd("In Level", -20, 20, 0, "0.0 dB");
+opadd("Out Level", -20, 20, 0, "0.0 dB");
+opadd("Mix", 0, 100, 100, "100 %");
+opadd("Bass Switch", 0, 1, 0, "Norm", { q: true, items: ["Norm", "Cut"] });
+opadd("Meter Select", 0, 2, 1, "Gain", { q: true, items: OP_METER });
+opadd("Sidechain Enable", 0, 1, 0, "Off", { q: true, items: ["Off", "On"] });
+opadd("Line", 0, 1, 0, "In", { q: true, items: ["In", "Out"] });
+opadd("Power", 0, 1, 1, "On", { q: true, items: ["Off", "On"] });
+
+const ost = JSON.parse(JSON.stringify(st));
+ost.device = { name: "Omnipressor", class_name: "PluginDevice", controller: "generic",
+               has_device: true, index: 0, param_count: OP.length };
+ost.allParams = OP; ost.pv = {};
+OP.forEach((p) => { ost.pv[p.i] = { value: p.value, disp: p.disp }; });
+
+let opSent = null;
+const opSpy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  deltaIndex: (i2, d) => { opSent = { delta: i2, d }; },
+  stepIndex: (i2, dir, steps) => { opSent = { step: i2, dir, steps }; },
+  toggleIndex: (i2) => { opSent = { toggle: i2 }; },
+  getAllParams: () => {}, watch: () => {},
+}) }, sd: { log() {} }, layout: A._layout };
+const op = new AVC.OmnipressorController(opSpy);
+op.onState(ost);
+ok("all 16 roles resolve", (op._missing || []).length === 0, (op._missing || []).join(","));
+const opIdx = (k) => op._role(k).index;
+
+// --- the re-paging (L20) ---
+const OPC = AVC.OmnipressorController;
+ok("three pages, four dials each",
+   OPC.PAGES_ORDER.join(",") === "main,limits,io" &&
+   OPC.PAGES_ORDER.every((pg) => OPC.PAGES[pg].length === 4),
+   OPC.PAGES_ORDER.map((pg) => pg + ":" + OPC.PAGES[pg].length).join(" "));
+const opAll = OPC.PAGES_ORDER.reduce((acc, pg) => acc.concat(OPC.PAGES[pg]), []);
+ok("11 unique knobs across 12 slots — Function is the only repeat",
+   opAll.length === 12 && new Set(opAll).size === 11 &&
+   opAll.filter((k) => k === "function").length === 2,
+   opAll.join(","));
+
+// --- FULL: dials 5-6 unmapped by design, five bar cells ---
+op.setZones(6);
+op.page = "main";
+const opFull = SOS.Svg.serialize(op.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(opFull));
+ok("full MAIN shows its four parameters",
+   ["THRESH", "ATTACK", "RELEASE", "FUNC"].every((t2) => opFull.includes(">" + t2 + "<")));
+ok("full leaves dials 5-6 unmapped with the L17 hint",
+   (opFull.match(/>press = page</g) || []).length === 2,
+   String((opFull.match(/>press = page</g) || []).length));
+ok("full dial titles 5-6 announce the press", op.dialTitle(4) === "press = page" && op.dialTitle(5) === "press = page");
+opSent = null; op.onDial(5, 1);
+ok("turning an unmapped dial sends nothing", opSent === null, JSON.stringify(opSent));
+op.onDialPress(4);
+ok("pressing an unmapped dial advances the page", op.page === "limits", op.page);
+op.page = "main";
+ok("full bar keeps ALL FIVE cells",
+   ["BASS", "METER", "SC", "LINE", "POWER"].every((t2) => opFull.includes(">" + t2 + "<")),
+   ["BASS", "METER", "SC", "LINE", "POWER"].filter((t2) => !opFull.includes(">" + t2 + "<")).join(","));
+
+// --- the new LIMITS page ---
+op.page = "limits";
+const opLimits = SOS.Svg.serialize(op.build(6), 0, 1200, 100);
+ok("LIMITS carries Atten / Gain Lim / Mix / Function",
+   ["ATTEN", "GAIN LIM", "MIX", "FUNC"].every((t2) => opLimits.includes(">" + t2 + "<")),
+   ["ATTEN", "GAIN LIM", "MIX", "FUNC"].filter((t2) => !opLimits.includes(">" + t2 + "<")).join(","));
+op.onDial(3, 1);
+ok("Function is reachable from LIMITS as well as MAIN", opSent.delta === opIdx("function"), JSON.stringify(opSent));
+op.page = "main"; op.onDial(3, 1);
+ok("...and from MAIN, on the same dial 4", opSent.delta === opIdx("function"), JSON.stringify(opSent));
+
+// --- COMPACT: dials identical, bar is NOT ---
+op.setZones(4);
+const opComp = SOS.Svg.serialize(op.build(4), 0, 800, 100);
+ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(opComp));
+ok("compact shows exactly the same four parameters as full",
+   ["THRESH", "ATTACK", "RELEASE", "FUNC"].every((t2) => opComp.includes(">" + t2 + "<")));
+ok("compact has NO unmapped zones — the pages are identical",
+   !opComp.includes(">press = page<"));
+ok("compact keeps all three page tabs",
+   ["MAIN", "LIMITS", "I/O"].every((t2) => opComp.includes(">" + t2 + "<")));
+// The one deliberate asymmetry (L20).
+ok("compact bar drops POWER and LINE", !opComp.includes(">POWER<") && !opComp.includes(">LINE<"));
+ok("compact bar keeps BASS / METER / SC",
+   ["BASS", "METER", "SC"].every((t2) => opComp.includes(">" + t2 + "<")));
+const opCellW = (opComp.match(/<rect x="5" y="64" width="([\d.]+)"/) || [])[1];
+const opCellWFull = (opFull.match(/<rect x="5" y="64" width="([\d.]+)"/) || [])[1];
+ok("3 cells at ~266 px in compact, 5 at 240 px in full",
+   opCellW === "256.67" && opCellWFull === "230", `${opCellW} / ${opCellWFull}`);
+
+// Hit-testing must follow the COMPACT cell list, not the full one.
+op.onTouch(100, 80, false);
+ok("compact: x=100 toggles BASS", opSent.toggle === opIdx("bass"), JSON.stringify(opSent));
+op.onTouch(400, 80, false);
+ok("compact: x=400 cycles METER (3 positions, so it steps)",
+   opSent.step === opIdx("meter") && opSent.dir === 1, JSON.stringify(opSent));
+op.onTouch(400, 80, true);
+ok("holding steps METER backwards", opSent.step === opIdx("meter") && opSent.dir === -1, JSON.stringify(opSent));
+op.onTouch(700, 80, false);
+ok("compact: x=700 toggles SC", opSent.toggle === opIdx("sidechain"), JSON.stringify(opSent));
+/* x=250 is the x that actually distinguishes the two tilings: with THREE cells
+   at 266.67 it is still inside BASS (0-266), with FIVE at 240 it has already
+   crossed into METER (240-480). A bar drawn compact but hit-tested full would
+   fail exactly here. */
+op.onTouch(250, 80, false);
+ok("compact: x=250 is still BASS (3 cells of 266)", opSent.toggle === opIdx("bass"), JSON.stringify(opSent));
+op.setZones(6);
+op.onTouch(250, 80, false);
+ok("full: the SAME x=250 is METER (5 cells of 240)",
+   opSent.step === opIdx("meter"), JSON.stringify(opSent));
+op.onTouch(1100, 80, false);
+ok("full: x=1100 toggles POWER", opSent.toggle === opIdx("power"), JSON.stringify(opSent));
+
+// Pages and borrowed dials.
+op.setZones(4); op.page = "main";
+op.onDialPress(1); op.onDialPress(3); op.onDialPress(0);
+ok("three presses walk MAIN -> LIMITS -> I/O -> MAIN", op.page === "main", op.page);
+opSent = null; op.onDial(4, 1); op.onDialPress(5);
+ok("borrowed dials 5-6 send nothing and cannot page", opSent === null && op.page === "main",
+   `${JSON.stringify(opSent)} page=${op.page}`);
+ok("a BORROWED dial title is empty, unlike an unmapped one",
+   op.dialTitle(4) === "" && op.dialTitle(5) === "");
 
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();

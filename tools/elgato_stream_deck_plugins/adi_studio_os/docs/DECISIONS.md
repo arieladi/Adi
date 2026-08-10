@@ -909,6 +909,47 @@ compression, and Bypass already has a good home outside the deck); Threshold /
 Compression / Mix / switches (D3 — drops makeup gain); folding Bypass onto a
 knob's press (D4 — a hidden gesture, the thing already rejected twice).
 
+### L20 — Omnipressor: re-paged 3×4 (L17 again), and a 3-cell compact bar
+
+Presented Full first, rendered on both pages. Omnipressor owns **zero keys** in
+either layout.
+
+Two problems at once. **Five bar cells do not divide into four zones** — at
+800 px the 240 px cells stop tiling, slicing LINE and stranding POWER — and
+unlike Blackhole the dials offered no escape either: 11 unique knobs will not fit
+two pages of four.
+
+**RULING — O2 for the dials, O3 for the bar.**
+
+**Dials — re-paged to three pages of exactly four**, the L17 move repeated. The
+arithmetic is nearly as clean as Blackhole's: 11 unique knobs, and `Function`
+(the signature EXP↔COMP ratio) already repeated, so three pages of four cover
+everything with `Function` appearing twice:
+
+  - **MAIN** — Threshold · Attack · Release · Function
+  - **LIMITS** — Atten Limit · Gain Limit · Mix · Function
+  - **I/O** — Input Gain · Output Gain · In Level · Out Level
+
+**In FULL, dials 5 and 6 stay unmapped on purpose**, carrying the dim
+`press = page` hint established in L17. Adi: "Consistency and preserving the
+exact same layout across both Full and Compact modes is paramount." Second time
+this trade has been made deliberately.
+
+**Bar — compact drops POWER and LINE**, leaving BASS · METER · SC re-tiled to
+~266 px each; full keeps all five at 240 px. Adi handles bypass in Ableton, and
+LINE is a routing setup switch rather than something to ride.
+
+**Noted tension, accepted:** the dials are now identical across layouts while the
+bar is not. That is deliberate — the dial pages are a *workflow* the muscle
+memory depends on, whereas the bar is a set of independent switches where
+dropping two costs nothing but reach. It is the first controller where the two
+halves of the strip follow different compact rules, so it is worth remembering
+that this was chosen rather than overlooked.
+
+Rejected: keeping two pages and rescaling the bar to five 160 px cells (O1 —
+loses Mix, and 160 px would be the narrowest target in the project); a 4-cell bar
+keeping POWER (O4 — POWER duplicates Live's own device on/off).
+
 ### Native SVG progress (L4), updated
 
 | Controller | Native | Compact |
@@ -924,4 +965,5 @@ knob's press (D4 — a hidden gesture, the thing already rejected twice).
 | **Blackhole** | ✅ | ✅ identical to full — 3 pages × 4, 4-cell bar |
 | **HDelay** | ✅ | ✅ Mix / Delay / Feedback / PingPong, filters dropped |
 | **DbComp** | ✅ | ✅ Thresh / Comp / Output / Mix, switch zone dropped |
-| Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
+| **Omnipressor** | ✅ | ✅ 3 pages × 4 (same as full), bar drops POWER + LINE |
+| Saturate, SideMinder | ❌ shim copies | ❌ |

@@ -47,7 +47,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**Done and verified — 591 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`):
+**Done and verified — 621 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`):
 
 | Piece | State |
 |---|---|
@@ -68,6 +68,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 | **Blackhole** | ✅ native SVG — re-paged 3×4, **compact is identical to full**; dials 5–6 unmapped by design |
 | **HDelay** | ✅ native SVG + compact (Mix / Delay / Feedback / PingPong, filters dropped) |
 | **DbComp** | ✅ native SVG + compact (Thresh / Comp / Output / Mix, switch zone dropped) |
+| **Omnipressor** | ✅ native SVG — re-paged 3×4 (pages identical to full), compact bar drops POWER + LINE |
 
 **Two engine bugs were fixed on the way through ProQ3 — see DECISIONS L10:**
 
@@ -80,10 +81,10 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
   `while (stack.length) pop(true)` and `pop` refuses to remove the last entry.
   Latent (install runs once at boot) but one line from a hang.
 
-**Immediate next task: `OmnipressorController`** (Eventide Omnipressor). Its
-Discovery briefing has already been given — pick up at the Compact-layout ruling.
+**Immediate next task: `SaturateController`** (Newfangled Audio Saturate). Discovery
+briefing first, then the Compact-layout ruling.
 
-**After that, in registry order:** Saturate, SideMinder.
+**After that:** SideMinder — the last shim copy.
 
 **Then:** Compact layouts for Rekordbox (ruled L2: both decks, 4 hot cues each), MIDI Control and Visualizers — none have one yet, so docking a window over them currently hits the engine's "No room" path.
 
