@@ -625,3 +625,77 @@ still cycles the mode.
 | Pulsar Massive | ✅ | ✅ DRIVE tab |
 | **ProQ3** | ✅ | ✅ bands 1/2/3/6, press = Slope on cuts |
 | Spectre, Indeq, ValhallaRoom, ValhallaVintageVerb, Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |
+
+
+---
+
+## Batch 10 — Spectre, and a workflow rule
+
+### P3 — Chain the next Discovery briefing *(workflow)*
+
+**RULING — finishing a controller must not end in a turn that only asks whether
+to continue.** When a controller is committed, the **next** controller's
+Discovery briefing goes at the bottom of the same message, unprompted, rendered
+picture included. A round-trip that carries no information costs context for
+nothing.
+
+The *briefing* chains; the *implementation* does not. Work still stops at the
+Compact-layout ruling, which is Adi's. Recorded as protocol #3 in
+`docs/CONTINUE.md` so it survives the handoff.
+
+### L13 — Spectre compact: a fourth GLOB tab, 4 widespread bands
+
+Presented Full first, rendered in all three modes. Spectre owns **zero keys** in
+either layout.
+
+The squeeze: **5 bands + 1 globals zone is exactly 6**, so four dials must drop
+two — and unlike ProQ3 the candidates are not the same kind of thing. Losing the
+globals costs Output, Mix and Mode (Mix especially, since it is how the whole
+effect is dialled back); losing bands costs the mid detail the plugin is bought
+for. Spectre, unlike ProQ3, has a **strip-wide** tab row, so the Pulsar trick
+(L8) is structurally available here.
+
+**RULING — reuse the fourth-tab pattern. Nothing is lost; the globals move
+behind a tab.**
+
+| Tab | Dial 1 | Dial 2 | Dial 3 | Dial 4 |
+|---|---|---|---|---|
+| GAIN / FREQ / Q | Lo Shelf | Peak 1 | **Peak 3** | Hi Shelf |
+| **GLOB** | Output | Mix | Mode | — (spacer) |
+
+* Bands in compact are **Lo Shelf / Peak 1 / Peak 3 / Hi Shelf** — the widespread
+  set. **Peak 2 is dropped**, keeping the outer two peaks so coverage spreads
+  rather than clustering in the low-mids.
+* Bands are **fixed**, no pagination — consistent with L7 and L11.
+* `GLOB` exists **only in compact**; carried into the full layout it falls back
+  to GAIN, where dial 6 already holds Output and Mode.
+
+Rejected: dropping the globals outright (Mix unreachable while docked); keeping
+the globals zone and dropping two peaks (loses the plugin's whole point);
+hanging the globals off dial presses (the presses already mean Switch, and
+nobody would ever find them).
+
+### Derived, flagged for veto
+
+* **In GLOB, dial 3's press cycles Mode forward** — the same gesture as dial 6's
+  press in the full layout, so "press to cycle Mode" means one thing in both.
+  Redundant with turning dial 3, deliberately.
+* **In GLOB, dial 4 is a read-only band-status readout**, not a blank: five dots
+  showing which bands are switched on. Adi ruled "unmapped/empty or a visual
+  spacer"; this claims no control, it just stops the zone being a black hole and
+  answers the one question the compact layout can no longer show — what happened
+  to Peak 2.
+* **Touch in GLOB** mirrors the full globals zone: MIX steps from its own ◂ ▸
+  row, MODE cycles from its pill (hold = backwards). Output is dial-only, as it
+  is in full.
+
+### Native SVG progress (L4), updated
+
+| Controller | Native | Compact |
+|---|---|---|
+| EQ8 | ✅ | ✅ bands 1/2/3/6, no GLOB |
+| Generic | ✅ | ✅ blind chop |
+| Pulsar Massive | ✅ | ✅ DRIVE tab |
+| ProQ3 | ✅ | ✅ bands 1/2/3/6, press = Slope on cuts |
+| **Spectre** | ✅ | ✅ GLOB tab, bands Lo/P1/P3/Hi |
+| Indeq, ValhallaRoom, ValhallaVintageVerb, Blackhole, HDelay, DbComp, Omnipressor, Saturate, SideMinder | ❌ shim copies | ❌ |

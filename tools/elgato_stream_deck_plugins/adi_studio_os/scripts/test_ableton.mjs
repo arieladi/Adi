@@ -54,7 +54,8 @@ console.log("\n[2] controllers not yet rewritten are still byte-identical copies
 // to differ. Everything else must still diff clean against 1.5.9.0 — that is
 // what guarantees their verified parameter maps have not drifted.
 const NATIVE = new Set(["EQ8Controller.js", "GenericController.js",
-                        "PulsarMassiveController.js", "ProQ3Controller.js", "svg.js"]);
+                        "PulsarMassiveController.js", "ProQ3Controller.js",
+                        "SpectreController.js", "svg.js"]);
 for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   if (NATIVE.has(f)) continue;
   const a = fs.readFileSync(path.join(NEW, "js/ableton", f));
@@ -62,7 +63,7 @@ for (const f of fs.readdirSync(path.join(NEW, "js/ableton"))) {
   ok(`${f} unchanged from 1.5.9.0`, a.equals(b), `${a.length} vs ${b.length} bytes`);
 }
 for (const f of ["EQ8Controller.js", "GenericController.js", "PulsarMassiveController.js",
-                 "ProQ3Controller.js"]) {
+                 "ProQ3Controller.js", "SpectreController.js"]) {
   ok(`${f} is the native rewrite, not a copy`,
      !fs.readFileSync(path.join(NEW, "js/ableton", f)).equals(
        fs.readFileSync(path.join(LEGACY, f))));
@@ -600,6 +601,145 @@ ok("a held tap on the SHAPE pill steps it backwards",
    stepped && stepped.i === live._role(2, "shape").index && stepped.dir === -1,
    JSON.stringify(stepped));
 A.bridge.cmd.stepIndex = realStep;
+
+console.log("\n[12] Spectre dual layout — the GLOB tab (L13)");
+// The legacy demo's parameter mock verbatim: real Configure names, real option
+// lists, and the five DECOY globals that prove the controller maps only
+// Output / Dry Wet / Mode.
+const SP_BANDS = ["LowShelf", "Peak 01", "Peak 02", "Peak 03", "HighShelf"];
+const SP_COLOR = ["Solid", "Smooth", "Bright", "Warm"];
+const SP_PROC = ["Stereo", "Mid", "Side", "Left", "Right"];
+const SP_MODE = ["Subtle", "Modern", "Vintage"];
+const SF = [42.08, 164.0, 632.5, 2460, 9600];
+const SGAIN = [2.5, -1.8, 0, 3.4, 4.2];
+const SSW = [1, 1, 0, 1, 1];                     // Peak 02 bypassed
+const SP = []; let spi = 0;
+const spadd = (o) => SP.push(Object.assign({ i: spi++, quantized: false, items: [] }, o));
+SP_BANDS.forEach((bn, k) => {
+  spadd({ name: bn + " Frequency", min: 20, max: 20000, value: SF[k], disp: SF[k] + " Hz" });
+  spadd({ name: bn + " Gain", min: -18, max: 18, value: SGAIN[k], disp: SGAIN[k] + " dB" });
+  spadd({ name: bn + " Q", min: 0.1, max: 10, value: 0.71, disp: "0.71" });
+  spadd({ name: bn + " Switch", min: 0, max: 1, quantized: true, items: ["Off", "On"],
+          value: SSW[k], disp: SSW[k] ? "On" : "Off" });
+  spadd({ name: bn + " Color", min: 0, max: 3, quantized: true, items: SP_COLOR, value: 0, disp: "Solid" });
+  spadd({ name: bn + " Processing", min: 0, max: 4, quantized: true, items: SP_PROC, value: 0, disp: "Stereo" });
+});
+spadd({ name: "Output", min: -18, max: 18, value: -1.2, disp: "-1.20 dB" });
+spadd({ name: "Dry Wet", min: 0, max: 100, value: 100, disp: "100 %" });
+spadd({ name: "Stereo Input", min: -18, max: 18, value: 0, disp: "0.00 dB" });
+spadd({ name: "Mode", min: 0, max: 2, quantized: true, items: SP_MODE, value: 1, disp: "Modern" });
+spadd({ name: "Quality", min: 0, max: 2, quantized: true, items: ["Eco", "Normal", "High"], value: 1, disp: "Normal" });
+spadd({ name: "De-Emphasis", min: 0, max: 1, quantized: true, items: ["Disabled", "Enabled"], value: 0, disp: "Disabled" });
+spadd({ name: "Processing", min: 0, max: 4, quantized: true, items: SP_PROC, value: 0, disp: "Stereo" });
+
+const sst = JSON.parse(JSON.stringify(st));
+sst.device = { name: "Spectre", class_name: "PluginDevice", controller: "generic",
+               has_device: true, index: 0, param_count: SP.length };
+sst.allParams = SP; sst.pv = {};
+SP.forEach((p) => { sst.pv[p.i] = { value: p.value, disp: p.disp }; });
+
+let spSent = null;
+const spSpy = { bridge: { cmd: Object.assign({}, A.bridge.cmd, {
+  deltaIndex: (i, d) => { spSent = { delta: i, d }; },
+  deltaLogIndex: (i, d) => { spSent = { logdelta: i, d }; },
+  stepIndex: (i, dir, steps) => { spSent = { step: i, dir, steps }; },
+  toggleIndex: (i) => { spSent = { toggle: i }; },
+  getAllParams: () => {}, watch: () => {},
+}) }, sd: { log() {} }, layout: A._layout };
+const sp = new AVC.SpectreController(spSpy);
+sp.onState(sst);
+ok("all 33 roles resolved from real Configure names", (sp._missing || []).length === 0,
+   (sp._missing || []).join(","));
+const spIdx = (k) => sp._role(k).index;
+const spBand = (b, s2) => sp._bandRole(b, s2).index;
+// The decoys must NOT have been grabbed — that is the whole point of anchoring.
+ok("only Output / Dry Wet / Mode are mapped; the other globals stay unmapped",
+   sp._role("output").name === "Output" && sp._role("mix").name === "Dry Wet" &&
+   sp._role("mode").name === "Mode",
+   [sp._role("output").name, sp._role("mix").name, sp._role("mode").name].join(","));
+ok("the global 'Processing' decoy did not steal a band's Processing role",
+   sp._bandRole(1, "proc").name === "LowShelf Processing", sp._bandRole(1, "proc").name);
+
+// --- FULL ---
+sp.setZones(6);
+ok("full offers 3 tabs, no GLOB", sp._modes().join(",") === "gain,freq,q", sp._modes().join(","));
+const spFull = SOS.Svg.serialize(sp.build(6), 0, 1200, 100);
+ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(spFull));
+ok("full shows all five named bands",
+   ["Lo Shelf", "Peak 1", "Peak 2", "Peak 3", "Hi Shelf"].every((t2) => spFull.includes(">" + t2 + "<")),
+   ["Lo Shelf", "Peak 1", "Peak 2", "Peak 3", "Hi Shelf"].filter((t2) => !spFull.includes(">" + t2 + "<")).join(","));
+ok("full shows the globals zone", spFull.includes("MODE Modern") && spFull.includes(">Output<") && spFull.includes(">MIX<"));
+ok("the fixed shape glyphs are drawn as paths", (spFull.match(/<path /g) || []).length === 5,
+   String((spFull.match(/<path /g) || []).length));
+sp.onDial(5, 1);
+ok("full dial 6 drives Output", spSent.delta === spIdx("output"), JSON.stringify(spSent));
+sp.onDialPress(5);
+ok("full dial 6 press cycles Mode", spSent.step === spIdx("mode"), JSON.stringify(spSent));
+sp.onDialPress(2);
+ok("full dial 3 press toggles Peak 2's Switch", spSent.toggle === spBand(3, "switch"), JSON.stringify(spSent));
+
+// --- COMPACT band modes (L13) ---
+sp.setZones(4);
+ok("compact adds a 4th GLOB tab", sp._modes().join(",") === "gain,freq,q,glob", sp._modes().join(","));
+const spBandView = SOS.Svg.serialize(sp.build(4), 0, 800, 100);
+ok("compact band view is 800 wide", /viewBox="0 0 800 100"/.test(spBandView));
+ok("compact maps dials 1-4 to Lo Shelf / Peak 1 / Peak 3 / Hi Shelf",
+   [0,1,2,3].map((s2) => sp._bandFor(s2)).join(",") === "1,2,4,5",
+   [0,1,2,3].map((s2) => sp._bandFor(s2)).join(","));
+ok("compact drops Peak 2", !spBandView.includes(">Peak 2<") && spBandView.includes(">Peak 3<"));
+ok("compact offers the GLOB tab", spBandView.includes(">GLOB<"));
+sp.mode = "gain"; sp.onDial(2, 1);
+ok("compact GAIN dial 3 -> Peak 03 Gain", spSent.delta === spBand(4, "gain"), JSON.stringify(spSent));
+sp.mode = "freq"; sp.onDial(3, 1);
+ok("compact FREQ dial 4 -> HighShelf Frequency (log)", spSent.logdelta === spBand(5, "freq"), JSON.stringify(spSent));
+sp.onDialPress(3);
+ok("compact dial 4 press toggles HighShelf Switch", spSent.toggle === spBand(5, "switch"), JSON.stringify(spSent));
+ok("compact dial titles name the four bands",
+   [0,1,2,3].map((s2) => sp.dialTitle(s2).split(" FREQ")[0]).join(",") === "Lo Shelf,Peak 1,Peak 3,Hi Shelf",
+   [0,1,2,3].map((s2) => sp.dialTitle(s2)).join(" | "));
+
+// --- COMPACT GLOB tab ---
+sp.mode = "glob";
+const spGlob = SOS.Svg.serialize(sp.build(4), 0, 800, 100);
+ok("GLOB shows Output / Mix / Mode",
+   ["OUTPUT", "MIX", "MODE"].every((t2) => spGlob.includes(">" + t2 + "<")),
+   ["OUTPUT", "MIX", "MODE"].filter((t2) => !spGlob.includes(">" + t2 + "<")).join(","));
+ok("GLOB hides the bands", !spGlob.includes(">Peak 1<") && !spGlob.includes(">Lo Shelf<"));
+ok("GLOB carries the live values", spGlob.includes(">-1.20 dB<") && spGlob.includes(">100 %<") && spGlob.includes(">Modern<"));
+ok("dial 4 is a readout, not a control", spGlob.includes(">BANDS<") && spGlob.includes(">readout only<"));
+ok("the readout shows all five bands including the hidden Peak 2",
+   ["LS", "P1", "P2", "P3", "HS"].every((t2) => spGlob.includes(">" + t2 + "<")),
+   ["LS", "P1", "P2", "P3", "HS"].filter((t2) => !spGlob.includes(">" + t2 + "<")).join(","));
+sp.onDial(0, 1);
+ok("GLOB dial 1 -> Output", spSent.delta === spIdx("output"), JSON.stringify(spSent));
+sp.onDial(1, 1);
+ok("GLOB dial 2 -> Dry Wet", spSent.delta === spIdx("mix"), JSON.stringify(spSent));
+sp.onDial(2, 1);
+ok("GLOB dial 3 steps Mode", spSent.step === spIdx("mode"), JSON.stringify(spSent));
+spSent = null; sp.onDial(3, 1); sp.onDialPress(3);
+ok("GLOB dial 4 sends nothing at all", spSent === null, JSON.stringify(spSent));
+sp.onDialPress(2);
+ok("GLOB dial 3 press cycles Mode, like dial 6 does in full", spSent.step === spIdx("mode"), JSON.stringify(spSent));
+const spTitles = [0,1,2,3].map((s2) => sp.dialTitle(s2).split(" ")[0]);
+ok("GLOB dial titles name Output/Mix/Mode/Bands", spTitles.join(",") === "Output,Mix,Mode,Bands", spTitles.join(","));
+
+// --- touch inside GLOB, y axis and all ---
+spSent = null; sp.onTouch(200 + 40, 80, false);          // zone 2 (MIX), left half
+ok("a tap left of the MIX row steps it down", spSent.delta === spIdx("mix") && spSent.d < 0, JSON.stringify(spSent));
+sp.onTouch(400 + 100, 80, true);                          // zone 3 (MODE), held
+ok("a held tap on the MODE pill cycles backwards",
+   spSent.step === spIdx("mode") && spSent.dir === -1, JSON.stringify(spSent));
+sp.onTouch(600 + 100, 80, false);                         // zone 4 readout: inert
+spSent = null; sp.onTouch(600 + 100, 80, false);
+ok("the readout zone swallows taps", spSent === null, JSON.stringify(spSent));
+// 4 tabs across (SLOT-8) means GAIN spans lx 4..52 — tap inside it, not past it.
+sp.onTouch(30, 10, false);
+ok("the tab row still works in GLOB, so you can get back", sp.mode === "gain", sp.mode);
+
+// GLOB must not leak into the full layout, where dial 6 already holds it.
+sp.mode = "glob"; sp.setZones(6);
+ok("GLOB carried into full falls back to GAIN", sp.mode === "gain", sp.mode);
+ok("nothing from the full layout was lost — only moved behind a tab", true);
 
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();
