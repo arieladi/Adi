@@ -256,10 +256,33 @@ SOS.States = (function () {
     }) : R.zoneUri({ title: '', value: '' }) });
   }
 
+  /* V18 — ONE BAD CELL MUST NOT FREEZE THE SURFACE.
+
+     This used to be four bare lines, and an exception anywhere inside them
+     escaped before `painting = false` ran. Every later repaint returns early on
+     that flag, so the device stopped updating permanently — and because the
+     state machine itself kept working, the symptom was "the dial does nothing",
+     not "the plugin crashed". A long press really did cycle the state; nothing
+     ever repainted to show it.
+
+     Newly reachable the moment the Ableton bridge saw real Live data for the
+     first time: a controller's build() runs against parameter shapes that only
+     exist on the device, and it is called from paintDial. Each cell is now
+     guarded on its own, so a controller that throws costs one blank zone rather
+     than the whole board, and the flag is cleared in a finally regardless. */
   function paint() {
-    S.eachKey(paintKey);
-    S.eachDial(paintDial);
-    painting = false;
+    try {
+      S.eachKey(function (button, context) {
+        try { paintKey(button, context); }
+        catch (e) { SOS.SD.log('states: paintKey ' + button + ' failed — ' + e.message); }
+      });
+      S.eachDial(function (dial, context) {
+        try { paintDial(dial, context); }
+        catch (e) { SOS.SD.log('states: paintDial ' + dial + ' failed — ' + e.message); }
+      });
+    } finally {
+      painting = false;
+    }
     if (dirty) { dirty = false; repaint(); }
   }
 

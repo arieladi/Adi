@@ -1383,3 +1383,112 @@ is the intended design.
 * **V8** — State 3 as an empty context shell. There is no State 3.
 * **V11**, in part — the value key's ms/Hz toggle moved to dial 5's push.
 * **L2** — still unbuilt, but its "4 hot cues each" now means cues **A-D**.
+
+
+---
+
+## Batch 14 — the first Omnis-Duo hardware pass
+
+Adi tested Batch 13 on the device. An initial instruction set was **withdrawn
+mid-flight** (it would have moved the calculator display onto the touch strip and
+widened it past 16 keys) and replaced with the set below. Nothing from the
+withdrawn version was implemented.
+
+**Workflow change (P5) — LAYOUT IS ADI'S TO CHANGE.** Never alter a physical key
+layout, or expand a module's footprint (more columns, borrowed dials, a display
+moved onto the strip), without presenting options and getting explicit approval
+first. Specifically: **the Calculator stays inside its 16 keys, and the screen
+strip and dials are reserved for the VSTs.** A layout is muscle memory on
+physical hardware; widening a module "to make things fit" silently rewrites how
+the instrument is played. When Adi specifies an exact layout himself, that IS the
+approval.
+
+### V18 — one bad cell must not be able to freeze the surface *(the real "dial 6 does nothing")*
+
+Reported: in NAV OFF, a long press on dial 6 did nothing. Driven through the real
+socket — Ableton hub, NAV OFF, 620 ms press — the carousel fires and the state
+advances correctly. The gesture was never broken.
+
+**The surface was.** `paint()` was four bare lines and let any exception escape
+before `painting = false` ran. Every subsequent `repaint()` returns early on that
+flag, so the device stopped updating **permanently** — while the state machine
+carried on working. The state really did change on every long press; nothing ever
+repainted to show it, which is indistinguishable from "the dial does nothing".
+
+**RULING — every cell is painted inside its own guard and the flag is cleared in
+a `finally`.** A controller that throws costs one blank zone, not the board.
+
+Newly reachable precisely because Adi selected AdiVST in Live: a controller's
+`build()` ran against real device parameter shapes for the first time, and it is
+called from `paintDial`.
+
+*Test note:* the first regression test for this passed against the broken code,
+because it overrode `States.resolveKey` — and `paintKey` calls the closure-local
+`resolveKey`, not the exported one. It now poisons `SD.image`, which the paint
+loop genuinely reaches, and it fails without the fix.
+
+### V19 — the calculator: float casting on the operator, and no duplicates
+
+**The `+` bug.** Driven through the real bindings, `277 + 5` returns **282** —
+the engine was already correct, and the concatenation Adi sees is the HOLD not
+registering, after which two digit presses append. Both ends addressed anyway:
+
+* **RULING — the float cast sits on the execution line itself**, not merely at
+  the top of `applyOp`. `+` is the one operator where a string operand succeeds
+  quietly and produces a plausible-looking wrong number, so there is now no path
+  to a `+` in this engine that is not `parseFloat(x) + parseFloat(y)`.
+* **RULING — every function exists exactly once.** `⌫` was reachable BOTH as a
+  tap on display segment 2 and as the long half of `0`. Backspace stays on the
+  display row; **`0` becomes a plain immediate key** — no timer, no caption, no
+  latency. That was the only duplicate on the board.
+* **RULING — `+` and `−` stay as the only two holds**, on `C` and `.`, in the
+  right-hand operator column. Eighteen functions, sixteen keys, two holds. A test
+  now counts every reachable function and fails on any duplicate.
+
+The 16-key footprint is unchanged, the display stays on the keys, and the
+calculator still borrows **zero** dials.
+
+### V20 — rekordbox: nudge restored, and the two arrow pairs swap rows
+
+**RULING — all four nudges are HELD again** (Note On down, Note Off up), with no
+exception for Button 36. V2 had made (8,3) a tap only because the State Carousel
+lived on that key's long press and a held Note On needed a forced Note Off at the
+500 ms boundary. The carousel moved to dial 6 in V3, so the special case has had
+no reason to exist since — and pulling a deck back into phase by hand is a
+gesture you lean into, which a tap cannot express.
+
+**RULING — Beat Jump moves to row 0, Nudge takes the bottom row:**
+
+```
+col:     0      1      2      3      4      5      6      7      8
+row0   [◀◀A]  [▶▶A]  [ ▲ ]  [ ▼ ]  [ ⊞ ]  [    ] [    ] [◀◀B]  [▶▶B]   BEAT JUMP
+row3   [◀◀A]  [▶▶A]  [▶‖A]  [CUE A][    ] [CUE B][▶‖B]  [◀◀B]  [▶▶B]   NUDGE (held)
+```
+
+The bottom row is now nothing but the four things a hand rests on mid-mix. The
+browser strip shifted two columns right. Deck B's forward Beat Jump gains its
+second chevron, so both decks read identically.
+
+Nudge and Beat Jump wear the SAME glyphs, so they are separated by colour and
+caption: Beat Jump takes the browser blue, Nudge keeps its purple.
+
+**(0,0) is now Deck A's Beat Jump**, which makes the nav-anchor rule load-bearing
+rather than cosmetic: `keyFor` returns null there whenever NAV is on, or the cap
+would PAINT as a beat jump and BEHAVE as Back — input.js reserves the key before
+the module is consulted. With NAV off it is the module's, exactly as D7 says.
+
+### V21 — the circular transport buttons stand on the bezel
+
+V16's circles were drawn on a chassis-coloured key, so the corners still lit and
+it read as a square with a circle inside it. Every Stream Deck key is a lit
+square with unlit plastic around it; the only way to get a standalone round
+button is to make the square disappear.
+
+**RULING — CUE and PLAY get a BLACK field** (`#000000`), which merges into the
+physical bezel and leaves the circle floating. Ordinary pads keep the chassis.
+
+### Superseded by this batch
+
+* **V2** — (8,3) as a single-trigger Beat Jump. It is a held nudge again.
+* **V12**, in part — the `⌫` long press on `0` is gone; backspace is display-row only.
+* **V16**, in part — the circular caps sit on bezel black, not chassis.

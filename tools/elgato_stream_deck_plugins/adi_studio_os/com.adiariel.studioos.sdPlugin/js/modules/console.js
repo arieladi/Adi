@@ -129,16 +129,25 @@ SOS.Modules.Console = (function () {
      "277" + 5 is "2775", not 282 — so this is belt and braces rather than a
      nicety, and it is the reason the coercion lives here and not at the call
      sites where one could be missed. */
-  function num(v) { var n = typeof v === 'number' ? v : parseFloat(v); return isFinite(n) ? n : NaN; }
+  function num(v) { var n = parseFloat(v); return isFinite(n) ? n : NaN; }
+
+  /* V19 — FLOAT CASTING IS ENFORCED ON THE EXECUTION LINE ITSELF.
+
+     The previous pass coerced at the top of this function and then wrote
+     `a + b`, which is correct but relies on nothing ever reaching that line by
+     another route. `+` is the one operator where a string operand succeeds
+     QUIETLY instead of failing — "277" + 5 is "2775", a plausible-looking number
+     that no exception ever flags — so the cast now sits on the operator itself.
+     There is no path to a `+` in this engine that is not a float add. */
   function applyOp(a, b, op) {
-    a = num(a); b = num(b);
-    if (!isFinite(a) || !isFinite(b)) return NaN;
+    var x = num(a), y = num(b);
+    if (!isFinite(x) || !isFinite(y)) return NaN;
     switch (op) {
-      case '+': return a + b;
-      case '−': return a - b;
-      case '×': return a * b;
-      case '÷': return b === 0 ? NaN : a / b;
-      default: return b;
+      case '+': return parseFloat(x) + parseFloat(y);
+      case '−': return parseFloat(x) - parseFloat(y);
+      case '×': return parseFloat(x) * parseFloat(y);
+      case '÷': return parseFloat(y) === 0 ? NaN : parseFloat(x) / parseFloat(y);
+      default: return y;
     }
   }
   function calcCommitOp() {
@@ -250,10 +259,23 @@ SOS.Modules.Console = (function () {
      × ÷ and = had no home in the brief, and the display row is the only surface
      with nothing else to do — so tapping a display segment performs them. The
      segment still shows its digits; the action is printed above them. */
+  /* V19 — EVERY FUNCTION EXISTS EXACTLY ONCE.
+
+     `⌫` used to be BOTH a tap on display segment 2 and the long half of the `0`
+     key. Two ways to reach one function is two things to learn and one of them
+     to forget, and it spent the only spare hold slot on a duplicate. Backspace
+     now lives on the display row only, and `0` is a plain immediate key again —
+     no timer, no caption, zero latency.
+
+     That leaves exactly two holds on the board, both on the right-hand column
+     where the operators belong, and every operator reachable in one place:
+
+         holds     .  / HOLD −        C  / HOLD +
+         taps      display row: ×  ÷  ⌫  =                                  */
   var CALC_MERGE = [
     { row: 1, short: '.', long: '−', shortRun: calcDecimal, longRun: function () { calcSetOp('−'); } },
     { row: 2, short: 'C', long: '+', shortRun: calcClear,   longRun: function () { calcSetOp('+'); } },
-    { row: 3, short: '0', long: '⌫', shortRun: function () { calcDigit('0'); }, longRun: calcBackspace },
+    { row: 3, short: '0', long: null, shortRun: function () { calcDigit('0'); } },
   ];
   var CALC_DIGITS = [['7', '8', '9'], ['4', '5', '6'], ['1', '2', '3']];
   var CALC_SEG = [
@@ -287,6 +309,12 @@ SOS.Modules.Console = (function () {
            hardware. The operator is now the caption itself: big, tinted, and
            prefixed with the hold affordance. */
         var m = CALC_MERGE[row - 1];
+        // A key with no long half is NOT a merged key: no `hold`, so input.js
+        // never arms a timer for it and the press stays immediate.
+        if (!m.long) {
+          return { label: m.short, size: 'xl', color: R.PALETTE.accent,
+                   kind: 'tap', tap: m.shortRun };
+        }
         return {
           label: m.short, size: 'xl',
           // Plain ASCII + the operator glyph. An earlier pass used U+2337 as a

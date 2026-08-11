@@ -52,13 +52,13 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**777 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) and **Batch 13 is deployed and running on the hardware**. Last commit: "scrap State 3, Omnis-Duo skin, Ableton launcher + bridge install".
+**795 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) and **Batch 13 is deployed and running on the hardware**. Last commit: "restore held nudge, rekordbox row swap, calculator de-dup, unfreezable paint".
 
 | Piece | State |
 |---|---|
 | Core engine, Node service, installers | done |
 | Root Hub | done, 9-col + 5-col |
-| Rekordbox, MIDI Control | done — **Full layout only** |
+| Rekordbox, MIDI Control | done — **Full layout only**; rekordbox is Omnis-Duo skinned (V16/V20/V21) |
 | Visualizers | working, **4 of 9 views** (spectrum, scope, waveform, meters) |
 | Ableton hub shell | done, 9-col + 5-col |
 | **All 14 Ableton controllers** | ✅ native SVG, both layouts — L4 COMPLETE |
@@ -86,7 +86,18 @@ State 3 scrapped, State 2 became the Compact consumer and gained a readout + PAS
 key, rekordbox got the Omnis-Duo skin, the Ableton tile became a smart launcher,
 and the AdiVST remote script was finally installed.
 
-**Awaiting hardware feedback on V13–V17.** Ask what still looks wrong before starting anything new.
+### Batch 14 (rulings V18–V21) — the first Omnis-Duo hardware pass
+
+The surface could be frozen permanently by one throwing cell (V18 — this was the
+real "dial 6 does nothing"); the calculator lost its duplicate `⌫` and got the
+float cast on the operator line (V19); rekordbox got its held nudge back and the
+beat-jump/nudge rows swapped (V20); the circular caps moved onto bezel black (V21).
+
+**P5 — LAYOUT IS ADI'S TO CHANGE.** Never alter a key layout or widen a module's
+footprint without presenting options first. The Calculator stays inside its 16
+keys; the screen strip and dials are reserved for the VSTs.
+
+**Awaiting hardware feedback on V18–V21.** Ask what still looks wrong before starting anything new.
 
 ### Immediate next tasks, in order
 

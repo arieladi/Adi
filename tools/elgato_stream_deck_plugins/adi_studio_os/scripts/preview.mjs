@@ -124,7 +124,7 @@ const html = `<!doctype html><meta charset="utf-8"><title>Studio OS surface prev
 <h1>Studio OS — surface preview</h1>
 <p class="s">Exactly what setImage receives. Stream Deck + XL: 36 keys (9&times;4) + 6 dial zones.</p>
 ${pick("root", grid("Root Hub + Numpad docked &mdash; module keeps cols 0-4, window takes 5-8", 0))}
-${pick("calc", grid("Root Hub + Calculator docked &mdash; window borrows dials 1-2 for operators", 1))}
+${pick("calc", grid("Root Hub + Calculator docked &mdash; borrows NO dials; operators are 2 holds (V19)", 1))}
 ${pick("delay", grid("Root Hub + Time Divisions docked &mdash; dial 5 = readout/grid/format, dial 6 = BPM (V14/V15)", 2))}
 ${pick("dj", grid("Rekordbox &middot; NAV OFF &mdash; the Omnis-Duo surface (V16)", 3, "rekordbox.hub"))}
 ${pick("djnum", grid("Rekordbox &middot; State 0 &mdash; numpad covering Deck B", 0, "rekordbox.hub"))}
