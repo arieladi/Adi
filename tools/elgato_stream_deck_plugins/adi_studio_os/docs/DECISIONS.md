@@ -1492,3 +1492,47 @@ physical bezel and leaves the circle floating. Ordinary pads keep the chassis.
 * **V2** — (8,3) as a single-trigger Beat Jump. It is a held nudge again.
 * **V12**, in part — the `⌫` long press on `0` is gone; backspace is display-row only.
 * **V16**, in part — the circular caps sit on bezel black, not chassis.
+
+
+---
+
+## Batch 15 — real icons, and the invisible operator
+
+### V22 — the Root Hub wears the real application icons
+
+**RULING — the Ableton and DJ tiles carry the vendors' own app icons**, extracted
+from the installed applications, instead of the `♪` and `⏻` glyphs standing in
+for them. This is the swap V9 designed the label geometry around: "V3 swaps text
+for artwork ... a node-for-node replacement with no layout consequences."
+
+`js/core/art.js` is a registry keyed by NAME, and a binding carries the name —
+never the bytes. render.js derives each key's id from its content and `SD.image()`
+dedupes on that, so a 6 KB base64 payload riding on the binding would be walked
+by the FNV hash on 36 keys, 15 times a second. Only the renderer touches bytes.
+
+Both `href` and `xlink:href` are emitted, with the xlink namespace declared on
+the root `<svg>`. The modern attribute is correct; the legacy one costs 40 bytes
+and is the difference between an icon and a blank key on an older rasteriser.
+
+### V23 — the calculator says what it is holding *(the "+ disaster")*
+
+Reported: `2`, `+`, `2` shows `1`. Driven through the real socket the engine
+returns **4**, and `2 × 2` — which Adi confirms works — takes an identical path
+through `calcSetOp` → `applyOp`. The arithmetic is not the fault.
+
+**What the screen showed was.** The display row printed the current operand and
+nothing else, so after `2` `+` it read exactly `2` — pixel-for-pixel identical to
+`2` with no operator pending. A registered `+` and a dropped `+` were
+indistinguishable, which is precisely what an unreliable key feels like from the
+outside: you cannot tell whether it took, so you press again, and the answer
+changes.
+
+**RULING — segment 0 shows the pending operation** (`2 +`) above the number,
+in the operator amber, and clears when `=` resolves it. No key moved and no
+function changed; the machine says out loud what it is holding.
+
+`×` and `÷` never felt broken because they are plain taps on the display row.
+`+` and `−` are long presses on caps printed `C` and `.` — a hold that does not
+register looks exactly like a hold that was never meant to do anything. **The
+remaining question is whether the operators should stop being holds at all**,
+which cannot be answered without giving up a key, and is therefore Adi's (P5).

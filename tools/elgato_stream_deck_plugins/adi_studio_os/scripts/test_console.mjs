@@ -342,6 +342,36 @@ ok("a long figure gets a smaller face than a short one",
 ok("nothing is truncated out of the readout", wide.indexOf("12345.78") > 0 && !/…/.test(wide));
 C._reset();
 
+console.log("\n[9d] V23 — the pending operation is visible on the screen");
+{
+  const segKey = (i) => LO.pick(C.calculator, 4).keys(i, 0);
+  C._reset();
+  ok("at rest, segment 0 shows its own operator label", segKey(0).kicker === "×", segKey(0).kicker);
+
+  const cal2 = (c, r) => LO.pick(C.calculator, 4).keys(c, r);
+  cal2(1, 3).tap();            // 2
+  ok("typing a digit does not invent a pending op", segKey(0).kicker === "×", segKey(0).kicker);
+  cal2(3, 2).hold();           // HOLD C = +
+  /* THE FIX. Before this, the screen after `2` `+` read exactly the same as the
+     screen after `2` alone — so a lost keypress and a registered one were
+     indistinguishable, which is what made `+` feel broken. */
+  ok("after 2 then +, the screen says so", segKey(0).kicker === "2 +", segKey(0).kicker);
+  ok("…in the operator colour, not the segment's own", segKey(0).kickerColor === SOS.Render.PALETTE.console);
+  cal2(1, 3).tap();            // 2
+  ok("the pending op survives typing the second operand", segKey(0).kicker === "2 +", segKey(0).kicker);
+  cal2(3, 0).tap();            // =
+  ok("2 + 2 = 4", C._calc.display === "4", C._calc.display);
+  ok("…and the pending op clears with it", segKey(0).kicker === "×", segKey(0).kicker);
+
+  // It must render, and a wide pending value must not run off the cap.
+  const svg = SOS.Render.key(SOS.States.keySpec({ seg: "1,284", kicker: "1,284,567 −",
+                                         kickerColor: SOS.Render.PALETTE.console }));
+  ok("a long pending value shrinks instead of overflowing",
+     Number(/font-size="(\d+)"[^>]*>1,284,567/.exec(svg)[1]) < 30, svg.slice(0, 80));
+  ok("the pending op reaches the ink in its own colour", svg.indexOf(SOS.Render.PALETTE.console) > 0);
+  C._reset();
+}
+
 console.log("\n[10] calculator engine arithmetic");
 const calc = C._calc;
 C._reset();

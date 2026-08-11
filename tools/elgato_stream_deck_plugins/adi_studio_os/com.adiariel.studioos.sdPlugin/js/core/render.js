@@ -147,7 +147,7 @@ SOS.Render = (function () {
                // V16 — the skin fields are part of the identity too. Leaving them
                // out would let a slate pad and a default pad share an id, and
                // SD.image()'s dedupe would then skip the repaint entirely.
-               o.shape, o.face, o.canvas, o.titleColor].join('\u0001');
+               o.shape, o.face, o.canvas, o.titleColor, o.art].join('\u0001');
     var h = 2166136261;
     for (var i = 0; i < src.length; i++) {
       h ^= src.charCodeAt(i);
@@ -240,7 +240,8 @@ SOS.Render = (function () {
     var id = hashId(o);
     var color = o.color || PALETTE.accent;
     var pad = 6, r = 18, inner = KS - pad * 2;
-    var s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + KS + ' ' + KS + '" width="' + KS + '" height="' + KS + '">';
+    var s = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"'
+      + ' viewBox="0 0 ' + KS + ' ' + KS + '" width="' + KS + '" height="' + KS + '">';
     s += '<rect width="' + KS + '" height="' + KS + '" fill="' + (o.canvas || PALETTE.bg) + '"/>';
 
     /* A DISPLAY SEGMENT (V6, redesigned in V10). The calculator's number spans
@@ -256,7 +257,12 @@ SOS.Render = (function () {
       var opH = Math.round(inner * 0.28);
       s += face(id, pad, pad, inner, inner, r, { flat: true, color: color });
       if (o.kicker) {
-        s += text(o.kicker, KS / 2, pad + opH - 8, 30, 700, color, 'middle');
+        /* V23 — the segment kicker is no longer always one glyph. It carries the
+           PENDING OPERATION on segment 0 ("1,284 +"), so it has to shrink to fit
+           and it may ask for its own colour: a waiting operation is a different
+           kind of statement from the key's own operator label. */
+        s += text(o.kicker, KS / 2, pad + opH - 8, fitSize(o.kicker, 30), 700,
+                  o.kickerColor || color, 'middle');
         s += '<path d="M' + (pad + 14) + ',' + (pad + opH) + ' H' + (KS - pad - 14) + '"'
            + ' stroke="rgba(255,255,255,0.09)" stroke-width="1"/>';
       }
@@ -279,7 +285,26 @@ SOS.Render = (function () {
                 o.dim ? PALETTE.faint : (o.kickerColor || PALETTE.dim), 'middle', 1.6);
     }
 
-    if (o.glyph) {
+    /* V22 — ARTWORK instead of a glyph. `art` names an entry in SOS.Art (never a
+       data URI: see the note there). It occupies exactly the space the glyph
+       would have, so a tile that swaps a glyph for its real app icon keeps its
+       label at the same baseline — the node-for-node replacement V9 promised.
+
+       Both `href` and `xlink:href` are emitted. The modern attribute is correct;
+       the legacy one costs 40 bytes and is the difference between an icon and a
+       blank key on a rasteriser that predates SVG 2. */
+    var art = o.art && SOS.Art ? SOS.Art[o.art] : null;
+    if (art) {
+      var ah = o.title ? 62 : 78;
+      var ay = o.title ? 22 : (KS - ah) / 2;
+      s += '<image href="' + art + '" xlink:href="' + art + '"'
+         + ' x="' + ((KS - ah) / 2) + '" y="' + ay + '" width="' + ah + '" height="' + ah + '"'
+         + ' preserveAspectRatio="xMidYMid meet"/>';
+      if (o.title) {
+        s += text(o.title, KS / 2, KS - (hasSub ? 30 : 18),
+                  fitSize(o.title, o.size && SIZES[o.size] ? SIZES[o.size] : SIZES.sm + 3), 700, textC);
+      }
+    } else if (o.glyph) {
       var gt = fitSize(o.title, o.size && SIZES[o.size] ? SIZES[o.size] : SIZES.sm + 3);
       var gs = gt > SIZES.md ? 38 : 46;
       s += text(truncate(o.glyph, 4), KS / 2, (o.title ? KS * 0.42 : KS / 2 + 14), gs, 700, color);

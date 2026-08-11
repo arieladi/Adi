@@ -52,7 +52,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**795 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) and **Batch 13 is deployed and running on the hardware**. Last commit: "restore held nudge, rekordbox row swap, calculator de-dup, unfreezable paint".
+**817 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) and **Batch 13 is deployed and running on the hardware**. Last commit: "real app icons on the Root Hub, and the calculator shows its pending operator".
 
 | Piece | State |
 |---|---|
@@ -97,7 +97,26 @@ beat-jump/nudge rows swapped (V20); the circular caps moved onto bezel black (V2
 footprint without presenting options first. The Calculator stays inside its 16
 keys; the screen strip and dials are reserved for the VSTs.
 
-**Awaiting hardware feedback on V18–V21.** Ask what still looks wrong before starting anything new.
+### Batch 15 (V22–V23)
+
+Real app icons via `js/core/art.js` (a NAME registry — never put base64 on a
+binding, it lands in the per-frame hash); the calculator now prints its pending
+operation, which is the feedback whose absence made `+` feel broken.
+
+**Awaiting hardware feedback on V18–V23.** Ask what still looks wrong before starting anything new.
+
+### Open, waiting on Adi's ruling (raised, not yet designed)
+
+1. **MIDI Control belongs inside Ableton**, not on the Root Hub — needs a home in
+   the Ableton hub's already-full 9-col row 0.
+2. **macOS window management on the Root Hub** — note D14: mapping Windows
+   concepts onto macOS guesses was explicitly REJECTED once already. macOS 26 has
+   real tiling shortcuts, so this can be actual key sends rather than a guess.
+3. **A clock on the touch strip, right-hand side** — conflicts head-on with "the
+   screen and dials are strictly for the VSTs" (P5) and with the 6-zone VST
+   layouts. Needs a ruling on which zone and what yields to what.
+4. **Whether `+` / `−` should stop being long presses** — the cure needs a key to
+   give up, so it is a footprint decision (P5).
 
 ### Immediate next tasks, in order
 
