@@ -16,21 +16,27 @@
 
    V6 — CALCULATOR. The operators used to live on two borrowed dials; they now
    live on the keys, because States 0 and 1 may not touch the strip. The freed
-   top row becomes a real DISPLAY: four segments of three characters, painted
-   left to right, so a twelve-digit number reads across the row as one number.
+   top row becomes a real DISPLAY spanning four keys.
 
-   V7 — TIME DIVISIONS, rebuilt (supersedes L5's one-division viewport).
+   V12 — the display is GROUPED, not chopped every three characters. A number is
+   formatted with thousands separators first and then split on those separators,
+   so 12000 reads "12," | "000" rather than "120" | "00". At rest it shows a dim
+   0.000 000 000 across all four keys, so the row is obviously one screen.
 
-       col:      0            1            2            3
-       row0   [ NOTES ]   [ DOTTED ]  [ TRIPLETS ]  [ 104.90 ms ]
-       row1   [ 1/8 ]     [ 1/16 ]    [ 1/32 ]      —
-       row2   [ 1/8 D ]   [ 1/16 D ]  [ 1/32 D ]    —
-       row3   [ 1/8 T ]   [ 1/16 T ]  [ 1/32 T ]    [ BPM 143 ]
+   V11 — TIME DIVISIONS, rebuilt AGAIN after hardware testing. V7 had the grid
+   TRANSPOSED (variants on rows, divisions on columns) and printed the computed
+   time inside all nine cells, which was unreadable clutter. The columns are the
+   variants now, and the nine cells carry nothing but their fraction:
 
-   The three top keys are CYCLE buttons, not modes: any of them slides the
-   visible three-division window (1/8-1/32 -> 1/4-1/16 -> ... -> 1/1-1/4), hold
-   slides it back. Each labels the row it belongs to. The value key shows the
-   selected cell and toggles ms/Hz. BPM sits bottom-right and turns on dial 6.
+       col:      0          1            2            3
+       row0   [ NOTES ]  [ DOTTED ]  [ TRIPLETS ]  [ 104.90 ms ]   <- tap = ms/Hz
+       row1   [ 1/8 ]    [ 1/8 D ]   [ 1/8 T ]     [ ▲ ]
+       row2   [ 1/16 ]   [ 1/16 D ]  [ 1/16 T ]    [ ▼ ]
+       row3   [ 1/32 ]   [ 1/32 D ]  [ 1/32 T ]    [ BPM 143 ]
+
+   Row 0's three labels are STATIC — they are column headers, nothing more. The
+   ▲ / ▼ keys shift the whole 3x3 through the division table, and the computed
+   value appears ONLY in the top-right key, for whichever cell is selected.
 
    MATH IS EXACT AND ROUNDS ONLY AT THE TEXT LAYER (V7). A quarter note is
    60000 / BPM; a division scales that by 4 / denominator; triplet is x2/3 and
@@ -63,8 +69,8 @@ SOS.Modules.Console = (function () {
   var state = {
     bpm: BPM_DEFAULT,
     start: DEFAULT_START,     // index into SUBDIVS of the left-most visible division
-    selRow: 0,                // 0 straight · 1 dotted · 2 triplet
-    selCol: 1,                // default selection is the middle cell — 1/16
+    selRow: 1,                // grid ROW = division offset within the window
+    selCol: 0,                // grid COL = variant: 0 straight · 1 dotted · 2 triplet
     unit: 'ms',               // 'ms' | 'Hz'
   };
 
@@ -82,16 +88,10 @@ SOS.Modules.Console = (function () {
   function hzText(ms) { return isFinite(ms) ? freqHz(ms).toFixed(4) : '—'; }
   function valueText(ms, unit) { return unit === 'Hz' ? hzText(ms) : msText(ms); }
 
-  function denomAt(col) { return SUBDIVS[clamp(state.start + col, 0, SUBDIVS.length - 1)]; }
-  function divLabel(col) { return '1/' + denomAt(col); }
-  function cellMs(row, col) { return variantMs(state.bpm, denomAt(col), VARIANTS[row].factor); }
-  function selectedMs() { return cellMs(state.selRow, state.selCol); }
-
-  // The window slides but never runs off the end of the table.
+  // The visible window slides but never runs off the end of the table. V11
+  // clamps rather than wrapping: an arrow that silently jumps from 1/1 back to
+  // 1/128 is worse than one that greys out at the end of its travel.
   var MAX_START = SUBDIVS.length - WINDOW;
-  function cycleWindow(dir) {
-    state.start = (state.start + dir + (MAX_START + 1)) % (MAX_START + 1);
-  }
 
   // ------------------------------------------------- calculator engine
   var calc = { display: '0', stored: null, op: null, opIndex: 0, fresh: true };
@@ -116,7 +116,15 @@ SOS.Modules.Console = (function () {
     calc.display = calc.display.length > 1 ? calc.display.slice(0, -1) : '0';
     if (calc.display === '0') calc.fresh = true;
   }
+  /* Every operand is coerced to a NUMBER at the boundary. `+` is the one
+     operator where a stray string silently succeeds instead of failing —
+     "277" + 5 is "2775", not 282 — so this is belt and braces rather than a
+     nicety, and it is the reason the coercion lives here and not at the call
+     sites where one could be missed. */
+  function num(v) { var n = typeof v === 'number' ? v : parseFloat(v); return isFinite(n) ? n : NaN; }
   function applyOp(a, b, op) {
+    a = num(a); b = num(b);
+    if (!isFinite(a) || !isFinite(b)) return NaN;
     switch (op) {
       case '+': return a + b;
       case '−': return a - b;
@@ -126,7 +134,7 @@ SOS.Modules.Console = (function () {
     }
   }
   function calcCommitOp() {
-    var v = parseFloat(calc.display);
+    var v = num(calc.display);
     if (calc.stored !== null && calc.op && !calc.fresh) v = applyOp(calc.stored, v, calc.op);
     calc.stored = v;
     calc.op = OPS[calc.opIndex];
@@ -137,20 +145,58 @@ SOS.Modules.Console = (function () {
   function calcCycleOp(dir) { calc.opIndex = (calc.opIndex + dir + OPS.length) % OPS.length; }
   function calcEquals() {
     if (calc.stored === null || !calc.op) { calc.fresh = true; return; }
-    var v = applyOp(calc.stored, parseFloat(calc.display), calc.op);
+    var v = applyOp(calc.stored, num(calc.display), calc.op);
     calc.display = fmtCalc(v);
     calc.stored = null; calc.op = null; calc.fresh = true;
   }
 
-  /* The display spans four keys, three characters each, filling left to right —
-     "start with 0 on the left and expand rightwards" (V6). */
-  var SEG_CHARS = 3, SEGS = 4;
-  function segment(i) {
-    var s = calc.display;
-    if (s.length > SEG_CHARS * SEGS) s = s.slice(0, SEG_CHARS * SEGS);
-    var from = i * SEG_CHARS;
-    return from >= s.length ? '' : s.slice(from, from + SEG_CHARS);
+  /* ---------------------------------------------------------------- display
+     V12. The number is grouped with thousands separators and then split ON those
+     groups, so the break always lands where a reader expects it:
+
+        12000     -> "12,000"      -> [ "12,"  "000"                ]
+        1234567   -> "1,234,567"   -> [ "1,"   "234," "567"         ]
+        1284.5    -> "1,284.5"     -> [ "1,"   "284"  ".5"          ]
+
+     At rest the row shows a dim placeholder across all four keys, so it reads as
+     one screen rather than a lone tiny 0 on the left. */
+  var SEGS = 4;
+  var PLACEHOLDER = ['0.', '000', '000', '000'];
+
+  function withCommas(intDigits) {
+    return intDigits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   }
+
+  /* Split a formatted number into display chunks: each thousands group keeps its
+     trailing comma, and the fractional tail is its own chunk. */
+  function chunks(display) {
+    var neg = display.charAt(0) === '-';
+    var body = neg ? display.slice(1) : display;
+    var dot = body.indexOf('.');
+    var intPart = dot < 0 ? body : body.slice(0, dot);
+    var frac = dot < 0 ? '' : body.slice(dot);
+    if (!/^\d+$/.test(intPart)) return [display];        // 'Err' and friends
+
+    var grouped = withCommas(intPart).split(',');
+    var out = grouped.map(function (g, i) { return i < grouped.length - 1 ? g + ',' : g; });
+    if (neg) out[0] = '-' + out[0];
+    if (frac) {
+      // Keep the fraction with the last group when it still fits the cap.
+      if (out[out.length - 1].length + frac.length <= 4) out[out.length - 1] += frac;
+      else out.push(frac);
+    }
+    return out;
+  }
+
+  function isResting() { return calc.fresh && calc.stored === null && calc.display === '0'; }
+
+  function segment(i) {
+    if (isResting()) return PLACEHOLDER[i] || '';
+    var c = chunks(calc.display);
+    if (c.length > SEGS) c = c.slice(0, SEGS);            // 12 digits never gets here
+    return c[i] || '';
+  }
+  function segmentDim() { return isResting(); }
 
   // ---------------------------------------------------------- numpad map
   // V5 — bottom-left is now an asterisk. `multiply` is the real numpad-star
@@ -218,7 +264,7 @@ SOS.Modules.Console = (function () {
         if (row === 0) {
           var seg = CALC_SEG[col];
           return {
-            seg: segment(col), kicker: seg.label,
+            seg: segment(col), segDim: segmentDim(), kicker: seg.label,
             color: col === 3 ? R.PALETTE.accent : R.PALETTE.midi,
             kind: 'tap', tap: seg.run,
           };
@@ -228,9 +274,17 @@ SOS.Modules.Console = (function () {
           return { label: d, size: 'xl', color: R.PALETTE.accent, kind: 'tap',
                    tap: function () { calcDigit(d); } };
         }
+        /* The long half used to read "hold −" in small grey type and was
+           effectively invisible on the cap — which is why + went unused on
+           hardware. The operator is now the caption itself: big, tinted, and
+           prefixed with the hold affordance. */
         var m = CALC_MERGE[row - 1];
         return {
-          label: m.short, size: 'xl', sub: 'hold  ' + m.long,
+          label: m.short, size: 'xl',
+          // Plain ASCII + the operator glyph. An earlier pass used U+2337 as a
+          // "hold" mark and it rendered as tofu on the device — the key font is
+          // not guaranteed to carry anything outside the set already in use.
+          sub: 'HOLD ' + m.long, subStrong: true, subColor: R.PALETTE.console,
           color: R.PALETTE.console, active: calc.op === m.long,
           kind: 'tap', tap: m.shortRun, hold: m.longRun,
         };
@@ -239,30 +293,43 @@ SOS.Modules.Console = (function () {
   };
 
   // ============================================ Time Divisions (State 2)
+  /* V11 — columns are the VARIANTS, rows are the DIVISIONS, and the nine cells
+     carry nothing but their fraction. The computed value lives in exactly one
+     place: the top-right key. */
+  var ARROW_UP = '▲', ARROW_DOWN = '▼';
+
+  function shiftWindow(dir) {
+    // ▲ moves toward the LONGER notes (1/8-1/32 -> 1/4-1/16), ▼ back down.
+    state.start = clamp(state.start + dir, 0, MAX_START);
+  }
+  function canShift(dir) {
+    return state.start + dir >= 0 && state.start + dir <= MAX_START;
+  }
+  // The grid's own coordinates: row = division offset, col = variant.
+  function gridDenom(row) { return SUBDIVS[clamp(state.start + row, 0, SUBDIVS.length - 1)]; }
+  function gridLabel(row, col) { return '1/' + gridDenom(row) + (VARIANTS[col].mark ? ' ' + VARIANTS[col].mark : ''); }
+  function gridMs(row, col) { return variantMs(state.bpm, gridDenom(row), VARIANTS[col].factor); }
+  function selMs() { return gridMs(state.selRow, state.selCol); }
+
   var delay = {
     id: 'state.delay', title: 'Divisions', module: 'console',
     borrowDials: 1,
     layouts: [{
       cols: 4,
       keys: function (col, row) {
-        // --- row 0: three cycle buttons + the value readout
-        if (row === 0) {
-          if (col < 3) {
-            var v = VARIANTS[col];
-            return {
-              label: v.label, size: 'md', kicker: 'CYCLE',
-              color: R.PALETTE.viz, kind: 'tap',
-              // "1/8-1/32 up to 1/1-1/4" — a tap slides toward the LONGER
-              // notes; holding walks back down toward 1/128.
-              tap: function () { cycleWindow(-1); },
-              hold: function () { cycleWindow(1); },
-            };
-          }
-          var ms = selectedMs();
+        // --- row 0, cols 0-2: STATIC column headers. Not buttons (V11).
+        if (row === 0 && col < 3) {
           return {
-            kicker: VARIANTS[state.selRow].mark
-              ? divLabel(state.selCol) + ' ' + VARIANTS[state.selRow].mark
-              : divLabel(state.selCol),
+            label: VARIANTS[col].label, size: 'md',
+            color: R.PALETTE.dim, dim: true, kind: 'tap',
+          };
+        }
+
+        // --- row 0, col 3: the ONLY place a computed value appears.
+        if (row === 0) {
+          var ms = selMs();
+          return {
+            kicker: gridLabel(state.selRow, state.selCol),
             label: valueText(ms, state.unit), size: 'md',
             sub: state.unit, subColor: R.PALETTE.accent,
             color: R.PALETTE.accent, active: true, kind: 'tap',
@@ -270,29 +337,36 @@ SOS.Modules.Console = (function () {
           };
         }
 
-        // --- rows 1-3, cols 0-2: the division grid
+        // --- rows 1-3, cols 0-2: the 3x3 of selectable fractions. Text only.
         if (col < 3) {
-          var vi = row - 1, variant = VARIANTS[vi];
-          var cellVal = cellMs(vi, col);
-          var on = (state.selRow === vi && state.selCol === col);
+          var r = row - 1, on = (state.selRow === r && state.selCol === col);
           return {
-            label: divLabel(col), size: 'lg',
-            corner: variant.mark,
-            sub: valueText(cellVal, state.unit), subStrong: on,
+            label: gridLabel(r, col), size: 'lg',
             color: R.PALETTE.accent, active: on, kind: 'tap',
-            tap: function () { state.selRow = vi; state.selCol = col; },
+            tap: function () { state.selRow = r; state.selCol = col; },
           };
         }
 
-        // --- BPM, bottom right (V7). Turned with dial 6; tap resets.
-        if (row === 3) {
+        // --- col 3: the controls.
+        if (row === 1) {
           return {
-            kicker: 'BPM', label: String(state.bpm), size: 'lg',
-            color: R.PALETTE.console, kind: 'tap',
-            tap: function () { state.bpm = BPM_DEFAULT; },
+            label: ARROW_UP, size: 'lg', kicker: 'RANGE',
+            color: R.PALETTE.viz, dim: !canShift(-1), kind: 'tap',
+            tap: function () { shiftWindow(-1); },
           };
         }
-        return null;   // col 3, rows 1-2 intentionally free
+        if (row === 2) {
+          return {
+            label: ARROW_DOWN, size: 'lg', kicker: 'RANGE',
+            color: R.PALETTE.viz, dim: !canShift(1), kind: 'tap',
+            tap: function () { shiftWindow(1); },
+          };
+        }
+        return {
+          kicker: 'BPM', label: String(state.bpm), size: 'lg',
+          color: R.PALETTE.console, kind: 'tap',
+          tap: function () { state.bpm = BPM_DEFAULT; },
+        };
       },
     }],
     // ONE dial (V4): the window addresses it as dial 1; states.js maps it to
@@ -318,11 +392,12 @@ SOS.Modules.Console = (function () {
       TRIPLET: TRIPLET, DOTTED: DOTTED, SUBDIVS: SUBDIVS, WINDOW: WINDOW,
       MAX_START: MAX_START,
     },
-    _calc: calc, _state: state, _segment: segment,
+    _calc: calc, _state: state,
+    _segment: segment, _segmentDim: segmentDim, _chunks: chunks,
     _reset: function () {
       calcClear();
       state.bpm = BPM_DEFAULT; state.start = DEFAULT_START;
-      state.selRow = 0; state.selCol = 1; state.unit = 'ms';
+      state.selRow = 1; state.selCol = 0; state.unit = 'ms';
     },
   };
 })();

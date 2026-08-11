@@ -1159,3 +1159,71 @@ weight separation: the number is heavy, units and captions are small and quiet.
 
 **Future-proofing:** every label is a single `<text>` node at a known anchor, so
 V3's image swap is a node-for-node replacement with no layout consequences.
+
+
+---
+
+## Batch 12 — the first hardware pass
+
+V3 shipped to the device and Adi tested it. Three things came back.
+
+### V10 — an active key has NO outline at all
+
+V9 replaced the 4 px accent ring with a tinted face, an inner glow AND a 1.5 px
+tinted rim. On hardware the rim still read as "a green border".
+
+**RULING — the perimeter is untouched.** An active key is lit purely from
+within: the face tints toward the accent, a wider/brighter radial glow sits under
+the label, and the top hairline brightens. Nothing is stroked. It reads as an
+illuminated cap rather than a selected element.
+
+### V11 — Time Divisions, transposed and de-cluttered *(supersedes V7's grid)*
+
+V7 put the variants on ROWS and the divisions on COLUMNS, and printed the
+computed time inside all nine cells. On the device that was unreadable.
+
+**RULING — columns are the variants, rows are the divisions, and the nine cells
+carry their fraction and nothing else:**
+
+```
+col:      0          1            2            3
+row0   [ NOTES ]  [ DOTTED ]  [ TRIPLETS ]  [ 104.90 ms ]   tap = ms/Hz
+row1   [ 1/8 ]    [ 1/8 D ]   [ 1/8 T ]     [ ▲ ]
+row2   [ 1/16 ]   [ 1/16 D ]  [ 1/16 T ]    [ ▼ ]
+row3   [ 1/32 ]   [ 1/32 D ]  [ 1/32 T ]    [ BPM 143 ]
+```
+
+* Row 0's three labels are **static column headers** — they carry no action at
+  all. V7 had made them cycle triggers; that is gone.
+* **▲ / ▼ shift the whole 3×3** through the division table. They **clamp** rather
+  than wrapping, and grey out at the ends of their travel: an arrow that silently
+  jumps from 1/1 back to 1/128 is worse than one that visibly stops.
+* The computed value appears in **exactly one place**, the top-right key.
+
+### V12 — the calculator display is grouped, not chopped
+
+Three fixes from the same pass.
+
+**Arithmetic.** `277 + 5` came back `2775`. The engine was provably correct in
+isolation — driven through the real bindings it returns 282 — so the fault was
+that the `+` never reached it: the operator lived on a long press captioned
+"hold +" in small grey type and was effectively invisible on the cap. Both ends
+are fixed: **operands are coerced to Number inside `applyOp`** (belt and braces —
+`+` is the one operator where a stray string succeeds quietly instead of
+failing), and the caption is now **`HOLD +` in promoted amber type**.
+
+**Grouping.** Numbers are formatted with thousands separators and split ON those
+separators, so the break lands where a reader expects it:
+`12000 → "12," | "000"`, not `"120" | "00"`.
+
+**Resting state.** The row shows a dim `0. 000 000 000` across all four keys, so
+it is obviously one wide screen rather than a lone digit on the left.
+
+**Key geometry.** Each display key gives its top ~28 % to a centred operator
+glyph above a hairline, and the rest to the number at display size.
+
+### Field note — glyphs outside the proven set render as tofu
+
+`⌷` (U+2337) was used as a "hold" mark and came out as an empty box on the
+device. The key font is not guaranteed to carry anything beyond the set already
+in use. `scripts/test_console.mjs` now pins the caption to that set.
