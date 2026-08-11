@@ -86,6 +86,38 @@ ok("row 3 has transport + nudge on both decks",
 ok("(8,3) = Button 36 exists and is Deck B nudge forward",
    S.btn(8, 3) === 36 && !!at(8, 3), lbl(8, 3));
 
+/* V20 — the two arrow pairs swapped rows. Positions are asserted by ROLE via the
+   caption, because the glyphs are deliberately identical: nudge and beat jump
+   are both ◀◀ / ▶▶ and only the caption and colour separate them. */
+const sub = (c, r) => { const b = at(c, r); return b ? String(b.sub || "") : null; };
+ok("row 0 cols 0-1 are Deck A Beat Jump",
+   /beat jump/i.test(sub(0, 0)) && /beat jump/i.test(sub(1, 0)), `${sub(0,0)} / ${sub(1,0)}`);
+ok("row 0 cols 7-8 are Deck B Beat Jump",
+   /beat jump/i.test(sub(7, 0)) && /beat jump/i.test(sub(8, 0)), `${sub(7,0)} / ${sub(8,0)}`);
+ok("the browser strip shifted two right, to cols 2-4",
+   !!at(2, 0) && !!at(3, 0) && !!at(4, 0) && !/beat jump/i.test(sub(2, 0)));
+ok("both Deck B beat jumps carry a DOUBLE chevron, like Deck A's",
+   at(7, 0).glyph === "◀◀" && at(8, 0).glyph === "▶▶",
+   `${at(7,0).glyph} ${at(8,0).glyph}`);
+ok("all four beat jumps are taps, never held",
+   [[0,0],[1,0],[7,0],[8,0]].every(([c, r]) => at(c, r).kind === "tap" && !at(c, r).down));
+ok("row 3 is nudge-nudge-transport | transport-nudge-nudge",
+   /nudge/i.test(sub(0, 3)) && /nudge/i.test(sub(1, 3)) &&
+   at(2, 3).shape === "circle" && at(3, 3).shape === "circle" &&
+   at(5, 3).shape === "circle" && at(6, 3).shape === "circle" &&
+   /nudge/i.test(sub(7, 3)) && /nudge/i.test(sub(8, 3)),
+   [0,1,2,3,5,6,7,8].map((c) => sub(c, 3) || at(c,3).glyph).join("|"));
+/* Both keys grey out to the same offline tone, so the colours only differ while
+   the service is up — which is the only time the distinction has to be read. */
+{
+  const realOnline = SOS.IPC.isOnline;
+  SOS.IPC.isOnline = () => true;
+  ok("beat jump and nudge are told apart by colour, not glyph",
+     at(0, 0).color !== at(0, 3).color && at(0, 0).glyph === at(0, 3).glyph,
+     `${at(0,0).color} vs ${at(0,3).color}`);
+  SOS.IPC.isOnline = realOnline;
+}
+
 // ---------------------------------------------------------------------------
 console.log("\n[4] held controls declare kind:'momentary'");
 // A held gesture implemented as tap() cannot send a Note Off -> stuck note.
@@ -108,15 +140,21 @@ function heldAudit(screen, name) {
 }
 const rbHeld = heldAudit(rb.hub, "rekordbox");
 ok("rekordbox has many held keys (cues/transport/nudge)", rbHeld.length >= 20, `count=${rbHeld.length}`);
-/* V2 — (8,3) is a BEAT JUMP now, not a held nudge. That is the whole reason
-   D2a/D9/D9a could be deleted: a tap has no Note Off to force, so Button 36
-   needed no timer and no cap. Asserting the ABSENCE here, because the old
-   behaviour is exactly what a careless revert would restore. */
-ok("Button 36 is NOT momentary — it is a single-trigger Beat Jump (V2)",
-   !rbHeld.includes(36), `held=${rbHeld.includes(36)}`);
-const bj = rb.hub.keys(36);
-ok("…and it says so on the cap", bj && bj.kind === "tap" && /beat jump/i.test(bj.sub || ""),
-   bj ? bj.kind + " / " + bj.sub : "no binding");
+/* V20 — (8,3) is a HELD NUDGE again. V2 had made it a tap only because the State
+   Carousel lived on its long press and a held Note On needed a forced Note Off
+   at the 500 ms boundary; the carousel moved to dial 6 in V3, so the special
+   case has been unnecessary ever since. Beatmatching by hand needs the hold.
+   Note Off delivery is what actually matters here, so it is asserted. */
+ok("Button 36 is momentary again — a held nudge (V20)",
+   rbHeld.includes(36), `held=${rbHeld.includes(36)}`);
+const nudge36 = rb.hub.keys(36);
+ok("…and it says so on the cap",
+   nudge36 && nudge36.kind === "momentary" && /nudge/i.test(nudge36.sub || ""),
+   nudge36 ? nudge36.kind + " / " + nudge36.sub : "no binding");
+ok("…and it declares both halves, so the Note Off can never be lost",
+   typeof nudge36.down === "function" && typeof nudge36.up === "function");
+ok("all four nudges are held, not just three",
+   [S.btn(0, 3), S.btn(1, 3), S.btn(7, 3), S.btn(8, 3)].every((b) => rbHeld.includes(b)));
 ok("the other three nudge keys are still held gestures", rbHeld.length >= 20, `count=${rbHeld.length}`);
 
 // ---------------------------------------------------------------------------
@@ -208,7 +246,8 @@ console.log("\n[9] V16: the rekordbox Omnis-Duo skin");
 Nav.toRoot(); Nav.enter("rekordbox.hub");   // fullScreenCapable -> NAV OFF, 9 cols
 SOS.IPC.isOnline = () => true;
 const rbAt = (c, r) => rb.hub.keys(S.btn(c, r));
-const SKIN = { canvas: "#1a202c", pad: "#232d3d", transport: "#121822", type: "#64748b" };
+const SKIN = { canvas: "#1a202c", pad: "#232d3d", transport: "#121822", type: "#64748b",
+               bezel: "#000000" };
 
 // A-H on BOTH decks, top row A-D and bottom row E-H, exactly as the hardware.
 const rowA = [0, 1, 2, 3].map((c) => rbAt(c, 1).label).join("");
@@ -251,8 +290,8 @@ ok("an unmapped cell is bare chassis, not a near-black hole",
 /* Button 1 is asked twice and must answer differently. Getting this wrong is
    invisible in one state and obvious in the other, which is why both are here:
    the first render of this skin left a black square at (0,0) in NAV OFF. */
-ok("(0,0) is chassis in NAV OFF, where the module owns it",
-   States.isFullScreen() && rbAt(0, 0) !== null && rbAt(0, 0).face === SKIN.canvas,
+ok("(0,0) is Deck A's Beat Jump in NAV OFF, where the module owns it",
+   States.isFullScreen() && rbAt(0, 0) !== null && /beat jump/i.test(rbAt(0, 0).sub || ""),
    JSON.stringify(rbAt(0, 0)));
 States.setState(0);
 ok("…and null with NAV on, so states.js can put Back there", rb.hub.keys(S.btn(0, 0)) === null);
@@ -273,12 +312,20 @@ ok("the CUE glyph keeps its CDJ orange", cueA.color === "#ff9f0a", cueA.color);
 const spec = States.keySpec(cueA);
 ok("keySpec forwards every skin field (the whitelist trap)",
    spec.shape === "circle" && spec.face === SKIN.transport &&
-   spec.canvas === SKIN.canvas && "titleColor" in spec,
+   spec.canvas === SKIN.bezel && "titleColor" in spec,
    Object.keys(spec).join(","));
 const cueSvg = SOS.Render.key(spec);
 ok("a circular cap is drawn with rx = half the width", /rx="66"/.test(cueSvg));
 ok("…and its catch-light is an arc, not a zero-length chord", /A64\.75,64\.75 0 0 1/.test(cueSvg));
-ok("the chassis colour reaches the SVG background", cueSvg.indexOf(SKIN.canvas) > 0);
+/* V20 — a TRUE standalone circle. On this hardware every key is a lit square,
+   so a circle on a chassis-coloured key still lights its corners and reads as a
+   square with a circle in it. The transport keys sit on a BLACK field, which
+   disappears into the physical bezel; the chassis colour must NOT appear. */
+ok("the circular caps sit on bezel black, not chassis",
+   cueSvg.indexOf(SKIN.bezel) > 0 && cueSvg.indexOf(SKIN.canvas) < 0,
+   `bezel=${cueSvg.indexOf(SKIN.bezel) > 0} chassis=${cueSvg.indexOf(SKIN.canvas) > 0}`);
+ok("…while an ordinary pad still sits on the chassis",
+   SOS.Render.key(States.keySpec(rbAt(0, 1))).indexOf(SKIN.canvas) > 0);
 const padSvg = SOS.Render.key(States.keySpec(rbAt(0, 1)));
 ok("a pad is still a rounded square", /rx="18"/.test(padSvg) && !/rx="66"/.test(padSvg));
 ok("two different skins produce two different gradient ids",

@@ -154,6 +154,52 @@ ok('there is no fourth window — State 3 (Context) is gone',
    States.COUNT === 4 && States.NAMES.length === 4, `count=${States.COUNT}`);
 States.setState(0);
 
+/* V18 — THE SURFACE MUST BE UNFREEZABLE.
+
+   paint() used to let an exception escape before it cleared `painting`, and
+   every later repaint returns early on that flag — so one bad binding stopped
+   the whole device updating, permanently and silently. The state machine kept
+   working, which is why the symptom was "the dial does nothing" rather than a
+   visible crash. Asserted by poisoning a real binding and then checking that the
+   surface still repaints afterwards. */
+console.log('\n[8b] a throwing binding cannot freeze the surface (V18)');
+{
+  /* Poison SD.image, not States.resolveKey: paintKey() calls the CLOSURE-LOCAL
+     resolveKey, so overriding the exported one changes nothing and a test built
+     that way passes against the broken code. SD.image is reached through the
+     SOS.SD global, which is the same object the paint loop uses. */
+  const realImage = SD.image;
+  let painted = 0, poison = true;
+  SD.image = function (ctx, uri) {
+    painted++;
+    if (poison && ctx === 'k0_4') throw new Error('poisoned paint');
+    return realImage.apply(this, arguments);
+  };
+
+  States.repaint();
+  await wait(40);
+  ok('a throwing cell does not abort the rest of the board',
+     painted >= 30, `painted=${painted}`);
+
+  /* THE REGRESSION. With paint() unguarded the exception escapes before
+     `painting = false` runs, and every later repaint returns early on that flag
+     — the device stops updating for good while the state machine carries on,
+     which is why this looked like "the dial does nothing". */
+  poison = false;
+  painted = 0;
+  States.repaint();
+  await wait(40);
+  ok('the surface still repaints after a cell threw', painted > 0, `painted=${painted}`);
+
+  painted = 0;
+  States.setState(1);
+  await wait(40);
+  ok('…and a state change still reaches the surface', painted > 0, `painted=${painted}`);
+
+  SD.image = realImage;
+  States.setState(0);
+}
+
 console.log('\n[9] navigation');
 ok('root installed', Nav.current().id === 'root');
 ok('back at root is a no-op', Nav.back() === false);

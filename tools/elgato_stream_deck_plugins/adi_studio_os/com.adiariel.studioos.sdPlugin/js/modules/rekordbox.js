@@ -13,12 +13,19 @@
    photo stays valid. This is the README's "Suggested + XL layout" verbatim:
 
      col:     0      1      2      3      4      5      6      7      8
-     row0   [ — ]  [ ▲ ]  [ ▼ ]  [ ⊞ ]  [    ] [    ] [    ] [    ] [    ]
+     row0   [◀◀A]  [▶▶A]  [ ▲ ]  [ ▼ ]  [ ⊞ ]  [    ] [    ] [◀◀B]  [▶▶B]   <- BEAT JUMP
      row1   [ A ]  [ B ]  [ C ]  [ D ]  [SHFT] [ A ]  [ B ]  [ C ]  [ D ]
      row2   [ E ]  [ F ]  [ G ]  [ H ]  [SHFT] [ E ]  [ F ]  [ G ]  [ H ]
-     row3   [◀◀A]  [▶▶A]  [▶‖A]  [CUE A][    ] [CUE B][▶‖B]  [◀◀B]  [▶▶B]
+     row3   [◀◀A]  [▶▶A]  [▶‖A]  [CUE A][    ] [CUE B][▶‖B]  [◀◀B]  [▶▶B]   <- NUDGE (held)
 
      dials   BPM A   FLT A   VOL A  │  VOL B   FLT B   BPM B
+
+   V20 — the two arrow pairs swapped rows. Beat Jump went up so the bottom row
+   is nothing but the four things a hand rests on mid-mix: nudge, play, cue,
+   nudge. All four nudges are HELD again (Note On down, Note Off up), because
+   correcting phase by hand is a gesture you lean into and a tap cannot say it.
+   The browser strip shifted two columns right to make room, and (0,0) is now
+   Deck A's Beat Jump — it is still the nav anchor whenever NAV is on.
 
    V16 — the pads carry the Omnis-Duo's OWN lettering (A-D over E-H, identical on
    both decks) on the Omnis-Duo's own indigo caps, and CUE / ▶‖ are circles. The
@@ -147,6 +154,14 @@ SOS.Modules.Rekordbox = (function () {
     pad:       '#232d3d',   // a performance pad / standard key
     transport: '#121822',   // the recessed circular CUE and PLAY buttons
     type:      '#64748b',   // muted lettering, printed on a matte surface
+
+    /* V20 — the bezel. A Stream Deck key is a lit square with unlit plastic
+       around it, so a circle drawn on a CHASSIS-coloured key still reads as a
+       square with a circle inside it: the corners light up. Giving the two
+       transport keys a black field instead makes the square vanish into the
+       physical bezel and leaves the circle standing on its own, which is the
+       only way to get a true standalone round button on this hardware. */
+    bezel:     '#000000',
   };
 
   /* Every binding this module paints wears the skin. Done in ONE place, at the
@@ -254,10 +269,16 @@ SOS.Modules.Rekordbox = (function () {
      the same (col,row) order as the README grid and the reference photo. */
   var KEY = {};
   (function () {
-    // row 0 — browser strip, all on Ch 3. (0,0) is left to the nav anchor.
-    KEY[S.btn(1, 0)] = { role: 'browse', which: 'up' };
-    KEY[S.btn(2, 0)] = { role: 'browse', which: 'down' };
-    KEY[S.btn(3, 0)] = { role: 'browse', which: 'toggle' };
+    /* row 0 (V20) — BEAT JUMP on the flanks, browser strip shifted two right.
+       Beat Jump leaves the bottom row so the bottom row can be nothing but
+       transport and nudge, which is the pair of gestures a hand rests on. */
+    KEY[S.btn(0, 0)] = { role: 'beatjump', deck: 'A', dir: 'back' };
+    KEY[S.btn(1, 0)] = { role: 'beatjump', deck: 'A', dir: 'fwd' };
+    KEY[S.btn(2, 0)] = { role: 'browse', which: 'up' };
+    KEY[S.btn(3, 0)] = { role: 'browse', which: 'down' };
+    KEY[S.btn(4, 0)] = { role: 'browse', which: 'toggle' };
+    KEY[S.btn(7, 0)] = { role: 'beatjump', deck: 'B', dir: 'back' };
+    KEY[S.btn(8, 0)] = { role: 'beatjump', deck: 'B', dir: 'fwd' };
 
     // rows 1-2 — hot cues 1-8 per deck, with SHIFT on the centre column.
     // Both SHIFT keys are equivalent so either hand can hold the layer.
@@ -270,7 +291,12 @@ SOS.Modules.Rekordbox = (function () {
     KEY[S.btn(4, 1)] = { role: 'shift' };
     KEY[S.btn(4, 2)] = { role: 'shift' };
 
-    // row 3 — nudge + transport, mirrored around an empty centre column.
+    /* row 3 — nudge flanking transport, mirrored around an empty centre column.
+       V20 — (8,3) is a HELD NUDGE again, like the other three. V2 had made it a
+       Beat Jump because the State Carousel used to live on that key's long press
+       and a held Note On needed a forced Note Off at the 500 ms boundary. The
+       carousel moved to dial 6 in V3, so the special case has had no reason to
+       exist since — and beatmatching by hand needs a nudge you can lean on. */
     KEY[S.btn(0, 3)] = { role: 'nudge',     deck: 'A', dir: 'back' };
     KEY[S.btn(1, 3)] = { role: 'nudge',     deck: 'A', dir: 'fwd' };
     KEY[S.btn(2, 3)] = { role: 'transport', deck: 'A', which: 'play' };
@@ -359,11 +385,12 @@ SOS.Modules.Rekordbox = (function () {
     return {
       glyph: isCue ? 'CUE' : '▶‖',
       label: spec.deck,
-      /* V16 — CUE and PLAY are PERFECT CIRCLES, as on the hardware, sitting in
-         their own darker recess. The renderer needs no new geometry for this:
-         the cap is already a square with a corner radius, so `shape: 'circle'`
-         simply takes that radius to half the width. */
-      shape: 'circle', face: SKIN.transport,
+      /* V16 — CUE and PLAY are PERFECT CIRCLES, as on the hardware. The renderer
+         needs no new geometry: the cap is already a square with a corner radius,
+         so `shape: 'circle'` takes that radius to half the width.
+         V20 — and the field behind them is BEZEL BLACK, not chassis, so the key
+         square stops being visible at all and the circle stands alone. */
+      shape: 'circle', face: SKIN.transport, canvas: SKIN.bezel,
       // PAINT-ONLY addition: the legacy repainted hot cues and shift keys on a
       // shift change but not transport, so PLAY/CUE silently sent their shifted
       // notes. Studio OS repaints the whole surface anyway, so saying so is free.
@@ -382,27 +409,17 @@ SOS.Modules.Rekordbox = (function () {
     };
   }
 
+  /* V20 — ALL FOUR NUDGES ARE HELD, with no exception for Button 36. Note On on
+     press, Note Off on release, for as long as the key is down: that is the only
+     way to pull a deck back into phase by hand, and a tap cannot express it.
+     There is no timer on this key any more, so there is nothing to force a
+     release at 500 ms and no hanging-note risk left to manage. */
   function nudgeBinding(button, spec) {
     var slot = 'k' + button;
     var fwd = spec.dir === 'fwd';
-
-    /* V2 — (8,3) is a BEAT JUMP, not a held nudge. One tap, one jump, delivered
-       on release like every other tap binding. The three remaining nudge keys
-       are still held gestures and behave exactly like leaning on a jog wheel. */
-    if (button === S.BTN_ANCHOR) {
-      return {
-        glyph: fwd ? '▶' : '◀',
-        label: spec.deck, sub: 'beat jump',
-        color: tone(COLOR.nudge), dim: !IPC.isOnline(), kind: 'tap',
-        tap: function () {
-          IPC.midi.tap(PORT, CH[spec.deck], fwd ? NOTE.BEATJUMP_FWD : NOTE.BEATJUMP_BACK);
-        },
-      };
-    }
-
     return {
       glyph: fwd ? '▶▶' : '◀◀',
-      label: spec.deck,
+      label: spec.deck, sub: 'nudge',
       color: tone(COLOR.nudge),
       dim: !IPC.isOnline(),
       active: held(slot),
@@ -411,6 +428,25 @@ SOS.Modules.Rekordbox = (function () {
         pressNote(slot, CH[spec.deck], fwd ? NOTE.NUDGE_FWD : NOTE.NUDGE_BACK);
       },
       up: function () { releaseNote(slot); },
+    };
+  }
+
+  /* V20 — BEAT JUMP, now on row 0. One tap, one jump, delivered on release.
+     Both directions carry a DOUBLE chevron: the single ▶ the old Button 36 wore
+     made Deck B's pair asymmetric against Deck A's. Painted in the browser blue
+     rather than the nudge purple, so a glance at the board separates "jump the
+     playhead" from "lean on the platter" — they are the same two arrows
+     otherwise. */
+  function beatjumpBinding(button, spec) {
+    var fwd = spec.dir === 'fwd';
+    return {
+      glyph: fwd ? '▶▶' : '◀◀',
+      label: spec.deck, sub: 'beat jump',
+      color: tone(COLOR.browse),
+      dim: !IPC.isOnline(), kind: 'tap',
+      tap: function () {
+        IPC.midi.tap(PORT, CH[spec.deck], fwd ? NOTE.BEATJUMP_FWD : NOTE.BEATJUMP_BACK);
+      },
     };
   }
 
@@ -434,23 +470,23 @@ SOS.Modules.Rekordbox = (function () {
   }
 
   function keyFor(button) {
+    /* Button 1 belongs to NAV while NAV is on, whatever this module maps there.
+       Answering null is what lets states.js paint Back on it — and V20 made this
+       load-bearing rather than cosmetic: (0,0) now carries Deck A's Beat Jump,
+       so without this the cap would PAINT as a beat jump and BEHAVE as Back,
+       because input.js reserves the key before the module is ever consulted.
+       With NAV off the key is the module's, exactly as D7 says. */
+    if (button === S.BTN_BACK && !SOS.States.isFullScreen()) return null;
+
     var spec = KEY[button];
 
     /* An unmapped cell is painted as a BARE CHASSIS PANEL rather than handed
        back as null. Null falls through to the engine's default blank, which is
        near-black — and a near-black hole in the middle of an indigo board reads
-       as a broken key, not an empty one.
+       as a broken key, not an empty one. */
+    if (!spec) return { dim: true, kind: 'tap', canvas: SKIN.canvas, face: SKIN.canvas };
 
-       Button 1 is the one cell that has to be asked twice. While NAV is on it is
-       the navigation anchor and MUST answer null, or states.js has nothing to
-       hang Back on. With NAV off it belongs to the module like every other empty
-       cell, so it gets the chassis too — which is exactly the case the first
-       render of this skin got wrong and left as a black square. */
-    if (!spec) {
-      if (button === S.BTN_BACK && !SOS.States.isFullScreen()) return null;
-      return { dim: true, kind: 'tap', canvas: SKIN.canvas, face: SKIN.canvas };
-    }
-
+    if (spec.role === 'beatjump')  return skinned(beatjumpBinding(button, spec));
     if (spec.role === 'hotcue')    return skinned(hotcueBinding(button, spec));
     if (spec.role === 'shift')     return skinned(shiftBinding(button));
     if (spec.role === 'transport') return skinned(transportBinding(button, spec));

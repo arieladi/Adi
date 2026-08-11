@@ -124,18 +124,40 @@ ok("an error string is not mangled by the grouper", segsOf("Err")[0] === "Err");
 C._reset();
 
 ok("digit keys are where they look", cal(0, 1).label === "7" && cal(2, 3).label === "3");
-const merged = [cal(3, 1), cal(3, 2), cal(3, 3)];
+/* V19 — exactly TWO merged keys, both operators, both in the right-hand column.
+   `0` lost its ⌫ hold: backspace already lives on the display row, and a second
+   way to reach one function is the thing this pass set out to remove. */
+const merged = [cal(3, 1), cal(3, 2)];
 ok("merged keys show short on the cap and the OPERATOR as the caption",
    merged[0].label === "." && /−/.test(merged[0].sub) &&
-   merged[1].label === "C" && /\+/.test(merged[1].sub) &&
-   merged[2].label === "0" && /⌫/.test(merged[2].sub),
+   merged[1].label === "C" && /\+/.test(merged[1].sub),
    merged.map((k) => k.label + "/" + k.sub).join(" "));
 ok("the operator caption is promoted, not small grey text",
    merged.every((k) => k.subStrong === true));
 /* U+2337 rendered as tofu on the device. The caption must stay inside the glyph
    set the plugin already proves it can draw. */
 ok("the caption uses only glyphs already in the shipped set",
-   merged.every((k) => /^HOLD [−+⌫]$/.test(k.sub)), merged.map((k) => k.sub).join(" "));
+   merged.every((k) => /^HOLD [−+]$/.test(k.sub)), merged.map((k) => k.sub).join(" "));
+
+/* THE DE-DUPLICATION, asserted as an invariant rather than a spot check: count
+   every reachable function across all 16 keys and require each to appear once.
+   A future pass that re-adds a convenience hold fails here. */
+const zeroKey = cal(3, 3);
+ok("`0` is a plain immediate key again — no hold, no caption",
+   zeroKey.label === "0" && !zeroKey.hold && !zeroKey.sub,
+   JSON.stringify({ hold: !!zeroKey.hold, sub: zeroKey.sub }));
+const fns = [];
+for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+  const k = cal(c, r);
+  if (!k) continue;
+  if (r === 0) fns.push(k.kicker);            // display row: the operator it runs
+  else { fns.push(k.label); if (k.hold) fns.push(k.sub.replace("HOLD ", "")); }
+}
+const dupes = fns.filter((f, i) => fns.indexOf(f) !== i);
+ok("no function is reachable from two different places", dupes.length === 0, dupes.join(","));
+ok("…and all 18 are reachable",
+   ["0","1","2","3","4","5","6","7","8","9",".","C","⌫","×","÷","+","−","="]
+     .every((f) => fns.includes(f)), fns.join(" "));
 ok("segDim reaches the renderer through keySpec",
    "segDim" in SOS.States.keySpec({ segDim: true }), Object.keys(SOS.States.keySpec({})).join(","));
 ok("every merged key declares BOTH halves", merged.every((k) => k.tap && k.hold));
@@ -149,8 +171,12 @@ C._reset(); cal(0, 1).tap(); cal(3, 2).hold();
 ok("LONG press on the C key sets +", C._calc.op === "+", String(C._calc.op));
 C._reset(); cal(0, 1).tap(); cal(3, 1).hold();
 ok("LONG press on the . key sets −", C._calc.op === "−", String(C._calc.op));
-C._reset(); cal(0, 1).tap(); cal(3, 3).hold();
-ok("LONG press on the 0 key backspaces", C._calc.display === "0", C._calc.display);
+/* V19 — the 0 key HAS no long half now. Backspace is on the display row only,
+   and asserting the absence is the point: a convenience hold re-added here is
+   exactly the duplicate this pass removed. */
+ok("the 0 key has NO long half at all", cal(3, 3).hold === undefined);
+C._reset(); cal(0, 1).tap(); cal(1, 1).tap(); cal(2, 0).tap();   // 7 8 then ⌫
+ok("backspace lives on the display row, and works", C._calc.display === "7", C._calc.display);
 
 /* THE HARDWARE REGRESSION: 277 + 5 came back 2775 — a string concatenation, not
    a sum. Driven through the real key bindings, and the operands are asserted to
