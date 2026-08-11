@@ -221,7 +221,8 @@ SOS.States = (function () {
       size: b.size, color: b.color, active: b.active, dim: b.dim, badge: b.badge,
       // V9 additions. Forgetting one here paints a silently blank label.
       kicker: b.kicker, kickerColor: b.kickerColor, corner: b.corner,
-      cornerColor: b.cornerColor, subColor: b.subColor, seg: b.seg,
+      cornerColor: b.cornerColor, subColor: b.subColor,
+      seg: b.seg, segDim: b.segDim,
     };
   }
 

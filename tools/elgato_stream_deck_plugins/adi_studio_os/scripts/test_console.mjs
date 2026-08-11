@@ -89,106 +89,180 @@ cell(C.numpad, 0, 3).tap();
 ok("✱ sends the real numpad-star keystroke, not a literal 'clear'",
    sentKey === "multiply", String(sentKey));
 
-console.log("\n[6] State 1 calculator — display row + merged keys (V6)");
+console.log("\n[6] State 1 calculator — display, grouping, arithmetic (V6/V12)");
 C._reset();
 const cal = (col, row) => LO.pick(C.calculator, 4).keys(col, row);
 ok("the top row is a display, not keys",
    [0, 1, 2, 3].every((c) => typeof cal(c, 0).seg === "string"));
-ok("it starts at 0 on the LEFT", cal(0, 0).seg === "0" && cal(1, 0).seg === "");
-// Type a long number and watch it grow rightwards across the four segments.
-"123456789012".split("").forEach((d) => cal(0, 3).tap());   // (0,3) short press is `0`… use digits
-C._reset();
-[["7", 0, 1], ["8", 1, 1], ["9", 2, 1], ["4", 0, 2], ["5", 1, 2], ["6", 2, 2]].forEach(([, c, r]) => cal(c, r).tap());
-ok("digits fill left to right across the segments",
-   cal(0, 0).seg === "789" && cal(1, 0).seg === "456", cal(0, 0).seg + "|" + cal(1, 0).seg);
-ok("digit keys are where they look", cal(0, 1).label === "7" && cal(2, 3).label === "3");
 
+/* V12 — at rest the row shows a dim placeholder across ALL FOUR keys, so it
+   reads as one screen instead of a lone tiny 0. */
+ok("at rest it spans all four keys",
+   [0, 1, 2, 3].every((c) => cal(c, 0).seg !== ""),
+   [0, 1, 2, 3].map((c) => cal(c, 0).seg).join("|"));
+ok("…and the placeholder is dimmed, not typed content",
+   [0, 1, 2, 3].every((c) => cal(c, 0).segDim === true));
+ok("the placeholder reads 0.000 000 000",
+   [0, 1, 2, 3].map((c) => cal(c, 0).seg).join("") === "0.000000000",
+   [0, 1, 2, 3].map((c) => cal(c, 0).seg).join(""));
+
+/* Grouping: the break lands on the thousands separator, not every 3 chars. */
+const segsOf = (display) => {
+  C._reset(); C._calc.display = display; C._calc.fresh = false; C._calc.stored = 0;
+  return [0, 1, 2, 3].map((c) => cal(c, 0).seg);
+};
+ok("12000 spans as '12,' + '000' — Adi's example",
+   segsOf("12000").join("|") === "12,|000||", segsOf("12000").join("|"));
+ok("1234567 spans as '1,' '234,' '567'",
+   segsOf("1234567").join("|") === "1,|234,|567|", segsOf("1234567").join("|"));
+ok("a fraction rides with its group: 1284.5 -> '1,' '284' '.5'",
+   segsOf("1284.5").join("|") === "1,|284|.5|", segsOf("1284.5").join("|"));
+ok("a short number needs no grouping", segsOf("277").join("|") === "277|||");
+ok("twelve digits still fit four keys",
+   segsOf("123456789012").join("|") === "123,|456,|789,|012");
+ok("an error string is not mangled by the grouper", segsOf("Err")[0] === "Err");
 C._reset();
+
+ok("digit keys are where they look", cal(0, 1).label === "7" && cal(2, 3).label === "3");
 const merged = [cal(3, 1), cal(3, 2), cal(3, 3)];
-ok("merged keys show short on the cap and long in the caption",
+ok("merged keys show short on the cap and the OPERATOR as the caption",
    merged[0].label === "." && /−/.test(merged[0].sub) &&
    merged[1].label === "C" && /\+/.test(merged[1].sub) &&
    merged[2].label === "0" && /⌫/.test(merged[2].sub),
    merged.map((k) => k.label + "/" + k.sub).join(" "));
+ok("the operator caption is promoted, not small grey text",
+   merged.every((k) => k.subStrong === true));
+/* U+2337 rendered as tofu on the device. The caption must stay inside the glyph
+   set the plugin already proves it can draw. */
+ok("the caption uses only glyphs already in the shipped set",
+   merged.every((k) => /^HOLD [−+⌫]$/.test(k.sub)), merged.map((k) => k.sub).join(" "));
+ok("segDim reaches the renderer through keySpec",
+   "segDim" in SOS.States.keySpec({ segDim: true }), Object.keys(SOS.States.keySpec({})).join(","));
 ok("every merged key declares BOTH halves", merged.every((k) => k.tap && k.hold));
+
 // short press
 cal(3, 3).tap();
 ok("short press on the 0 key types a zero", C._calc.display === "0", C._calc.display);
 cal(0, 1).tap(); cal(3, 1).tap();      // 7 then .
 ok("short press on the . key types a decimal point", C._calc.display === "7.", C._calc.display);
-// long press
-C._reset(); cal(0, 1).tap(); cal(3, 2).hold();   // 7 then hold +
+C._reset(); cal(0, 1).tap(); cal(3, 2).hold();
 ok("LONG press on the C key sets +", C._calc.op === "+", String(C._calc.op));
-C._reset(); cal(0, 1).tap(); cal(3, 1).hold();   // 7 then hold −
+C._reset(); cal(0, 1).tap(); cal(3, 1).hold();
 ok("LONG press on the . key sets −", C._calc.op === "−", String(C._calc.op));
 C._reset(); cal(0, 1).tap(); cal(3, 3).hold();
 ok("LONG press on the 0 key backspaces", C._calc.display === "0", C._calc.display);
-// arithmetic end to end: 7 + 5 = 12
-C._reset(); cal(0, 1).tap(); cal(3, 2).hold(); cal(1, 2).tap(); cal(3, 0).tap();
-ok("7 + 5 = 12 through the real keys", C._calc.display === "12", C._calc.display);
+
+/* THE HARDWARE REGRESSION: 277 + 5 came back 2775 — a string concatenation, not
+   a sum. Driven through the real key bindings, and the operands are asserted to
+   be NUMBERS so a future `a + b` on strings cannot pass this quietly. */
+console.log("\n[6b] the 277 + 5 = 2775 regression");
+C._reset();
+cal(1, 3).tap(); cal(0, 1).tap(); cal(0, 1).tap();       // 2 7 7
+ok("typed 277", C._calc.display === "277", C._calc.display);
+cal(3, 2).hold();                                        // +
+ok("the stored operand is a NUMBER, never a string",
+   typeof C._calc.stored === "number", typeof C._calc.stored);
+cal(1, 2).tap();                                         // 5
+cal(3, 0).tap();                                         // =
+ok("277 + 5 = 282, not 2775", C._calc.display === "282", C._calc.display);
+// The same trap for every operator, since `+` is only the one that fails quietly.
+const run = (a, opKey, b, expect) => {
+  C._reset();
+  String(a).split("").forEach((d) => cal(...DIGIT_AT[d]).tap());
+  opKey();
+  String(b).split("").forEach((d) => cal(...DIGIT_AT[d]).tap());
+  cal(3, 0).tap();
+  ok(`${a} ${expect.op} ${b} = ${expect.v}`, C._calc.display === String(expect.v), C._calc.display);
+};
+const DIGIT_AT = { 1: [0, 3], 2: [1, 3], 3: [2, 3], 4: [0, 2], 5: [1, 2], 6: [2, 2],
+                   7: [0, 1], 8: [1, 1], 9: [2, 1], 0: [3, 3] };
+run(277, () => cal(3, 2).hold(), 5, { op: "+", v: 282 });
+run(277, () => cal(3, 1).hold(), 5, { op: "−", v: 272 });
+run(12, () => cal(0, 0).tap(), 12, { op: "×", v: 144 });
+run(144, () => cal(1, 0).tap(), 12, { op: "÷", v: 12 });
 ok("the display row carries × ÷ ⌫ = as its tap actions",
    [0, 1, 2, 3].map((c) => cal(c, 0).kicker).join("") === "×÷⌫=",
    [0, 1, 2, 3].map((c) => cal(c, 0).kicker).join(""));
 
-console.log("\n[7] State 2 grid — three variant rows (V7)");
+console.log("\n[7] State 2 grid — columns are variants, rows are divisions (V11)");
 C._reset();
 const div = (col, row) => LO.pick(C.delay, 4).keys(col, row);
 ok("row 0 is NOTES / DOTTED / TRIPLETS + the value key",
    div(0, 0).label === "NOTES" && div(1, 0).label === "DOTTED" &&
    div(2, 0).label === "TRIPLETS" && div(3, 0).active === true,
    [0, 1, 2].map((c) => div(c, 0).label).join(","));
-ok("the three top keys are CYCLE buttons, not modes",
-   [0, 1, 2].every((c) => div(c, 0).kicker === "CYCLE" && !div(c, 0).active));
-ok("the default window is 1/8 · 1/16 · 1/32",
-   [0, 1, 2].map((c) => div(c, 1).label).join(",") === "1/8,1/16,1/32",
-   [0, 1, 2].map((c) => div(c, 1).label).join(","));
-ok("rows 1-3 are straight / dotted / triplet",
-   div(0, 1).corner === "" && div(0, 2).corner === "D" && div(0, 3).corner === "T",
-   [1, 2, 3].map((r) => div(0, r).corner).join(","));
-ok("the default selection is straight 1/16", div(1, 1).active === true && st.selRow === 0 && st.selCol === 1);
+/* V11 — the three labels are STATIC headers now. They must not act on a press. */
+ok("the three labels are static headers, not cycle buttons",
+   [0, 1, 2].every((c) => !div(c, 0).tap && div(c, 0).dim === true));
+
+ok("column 0 is straight, column 1 dotted, column 2 triplet",
+   div(0, 1).label === "1/8" && div(1, 1).label === "1/8 D" && div(2, 1).label === "1/8 T",
+   [0, 1, 2].map((c) => div(c, 1).label).join(" | "));
+ok("rows walk the divisions 1/8 · 1/16 · 1/32",
+   [1, 2, 3].map((r) => div(0, r).label).join(",") === "1/8,1/16,1/32",
+   [1, 2, 3].map((r) => div(0, r).label).join(","));
+
+/* The clutter that made the hardware unreadable: nine cells each printing a
+   computed time. They must carry the fraction and NOTHING else. */
+let clutter = [];
+for (let r = 1; r <= 3; r++) for (let c = 0; c < 3; c++) {
+  const k = div(c, r);
+  if (k.sub != null || k.kicker != null || k.corner != null) clutter.push(`${c},${r}`);
+}
+ok("the 3x3 carries fractions ONLY — no values, kickers or corner marks",
+   clutter.length === 0, clutter.join(" "));
+
+ok("the default selection is straight 1/16", div(0, 2).active === true && st.selRow === 1 && st.selCol === 0);
 ok("only one cell is selected at a time",
    [1, 2, 3].reduce((n, r) => n + [0, 1, 2].filter((c) => div(c, r).active).length, 0) === 1);
+div(2, 3).tap();
+ok("tapping a cell selects it", div(2, 3).active === true && st.selRow === 2 && st.selCol === 2);
 
-// the cycle buttons slide the window, and hold slides it back
-div(0, 0).tap();
-ok("tapping a cycle key slides the window UP toward 1/1", div(0, 1).label === "1/4", div(0, 1).label);
-div(0, 0).hold();
-ok("holding it slides back down", div(0, 1).label === "1/8", div(0, 1).label);
-const starts = new Set();
-for (let i = 0; i < 12; i++) { starts.add(div(0, 1).label); div(1, 0).tap(); }
-ok(`the window wraps through ${starts.size} positions and never runs off the table`,
-   starts.size === m.MAX_START + 1 && [...starts].every((l) => /^1\/\d+$/.test(l)),
-   [...starts].join(" "));
-
+console.log("\n[8] State 2 — the ▲ / ▼ range arrows (V11)");
 C._reset();
-console.log("\n[8] State 2 values and the ms/Hz toggle");
+ok("col 3 rows 1-2 are the arrows", div(3, 1).label === "▲" && div(3, 2).label === "▼");
+ok("both are labelled RANGE", div(3, 1).kicker === "RANGE" && div(3, 2).kicker === "RANGE");
+div(3, 1).tap();
+ok("▲ shifts toward the LONGER notes", div(0, 1).label === "1/4", div(0, 1).label);
+div(3, 2).tap();
+ok("▼ shifts back down", div(0, 1).label === "1/8", div(0, 1).label);
+// It clamps rather than wrapping, and says so by dimming.
+for (let i = 0; i < 10; i++) div(3, 1).tap();
+ok("▲ clamps at the top of the table", div(0, 1).label === "1/1", div(0, 1).label);
+ok("…and greys out when it cannot travel further", div(3, 1).dim === true);
+ok("▼ is still live there", div(3, 2).dim !== true);
+for (let i = 0; i < 20; i++) div(3, 2).tap();
+ok("▼ clamps at the bottom", div(2, 3).label.indexOf("1/128") === 0, div(2, 3).label);
+ok("…and greys out too", div(3, 2).dim === true);
+C._reset();
+
+console.log("\n[9] State 2 — the value key is the ONLY readout");
+C._reset();
 st.bpm = 120;
-ok("straight 1/16 at 120 BPM reads 125.00", div(1, 1).sub === "125.00", div(1, 1).sub);
-ok("dotted 1/16 reads 187.50", div(1, 2).sub === "187.50", div(1, 2).sub);
-ok("triplet 1/16 reads 83.33", div(1, 3).sub === "83.33", div(1, 3).sub);
-ok("the value key shows the SELECTED cell", div(3, 0).label === "125.00", div(3, 0).label);
+ok("it shows the selected cell — straight 1/16 at 120 BPM", div(3, 0).label === "125.00", div(3, 0).label);
+ok("…labelled with which cell that is", div(3, 0).kicker === "1/16", div(3, 0).kicker);
 ok("…and its unit", div(3, 0).sub === "ms");
+div(1, 2).tap();            // dotted 1/16
+ok("selecting dotted 1/16 moves the readout", div(3, 0).label === "187.50", div(3, 0).label);
+ok("…and relabels it", div(3, 0).kicker === "1/16 D", div(3, 0).kicker);
+div(2, 2).tap();            // triplet 1/16
+ok("selecting triplet 1/16 reads 83.33", div(3, 0).label === "83.33", div(3, 0).label);
 div(3, 0).tap();
 ok("tapping the value key switches to Hz", st.unit === "Hz" && div(3, 0).sub === "Hz");
-ok("Hz is 4 dp", div(3, 0).label === (1000 / 125).toFixed(4), div(3, 0).label);
-ok("the grid follows the unit", div(1, 1).sub === (1000 / 125).toFixed(4), div(1, 1).sub);
+ok("Hz is 4 dp", /^\d+\.\d{4}$/.test(div(3, 0).label), div(3, 0).label);
 div(3, 0).tap();
-// selecting a different cell moves the readout
-div(2, 3).tap();
-ok("selecting triplet 1/32 moves the readout",
-   st.selRow === 2 && st.selCol === 2 && div(3, 0).label === m.msText(m.variantMs(120, 32, m.TRIPLET)),
-   div(3, 0).label);
+ok("the grid never shows a value, in either unit",
+   [1, 2, 3].every((r) => [0, 1, 2].every((c) => div(c, r).sub == null)));
 
-console.log("\n[9] State 2 BPM — bottom-right key + one dial");
+console.log("\n[9b] State 2 BPM — bottom-right key + one dial");
 C._reset();
 ok("BPM sits bottom-right", div(3, 3).kicker === "BPM" && div(3, 3).label === "143", div(3, 3).label);
-ok("col 3 rows 1-2 are free", div(3, 1) === null && div(3, 2) === null);
 const d1 = C.delay.dials(1);
 ok("the window exposes exactly one dial", !!d1 && C.delay.dials(2) === null);
 d1.rotate(7);
 ok("turning it raises BPM", st.bpm === 150, String(st.bpm));
 ok("the key follows the dial", div(3, 3).label === "150", div(3, 3).label);
-ok("the value follows BPM too", div(1, 1).sub === m.msText(m.straightMs(150, 16)), div(1, 1).sub);
+ok("the readout follows BPM too", div(3, 0).label === m.msText(m.straightMs(150, 16)), div(3, 0).label);
 d1.press();
 ok("pressing resets to 143", st.bpm === 143, String(st.bpm));
 d1.rotate(-9999);

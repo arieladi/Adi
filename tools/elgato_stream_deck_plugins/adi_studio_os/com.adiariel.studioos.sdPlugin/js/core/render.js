@@ -12,8 +12,13 @@
    V9 — THE KEY AESTHETIC. The first pass was a flat panel with a 4px accent ring
    for "active", which read as a debug UI. A key is now a soft raised face: a
    vertical gradient with a hairline top edge where the light would catch, and a
-   1px edge everywhere else. ACTIVE is a tinted face plus a radial inner glow and
-   a soft 1.5px rim — the key lights up from inside instead of being outlined.
+   1px edge everywhere else.
+
+   V10 — ACTIVE HAS NO OUTLINE AT ALL. The V9 pass still drew a 1.5px tinted rim,
+   which on hardware still read as "a green border". An active key is now lit
+   purely from within: the face itself is tinted toward the accent, a radial glow
+   sits under the label, and the top hairline brightens. Nothing is drawn on the
+   perimeter, so it looks like an illuminated cap rather than a selected div.
 
    TYPOGRAPHY has real weight separation. The payload (a digit, a delay time) is
    heavy and large; units, captions and row labels are small, quiet and often
@@ -133,7 +138,8 @@ SOS.Render = (function () {
      sheet, which inlines many keys in one document, stays correct). */
   function hashId(o) {
     var src = [o.title, o.sub, o.glyph, o.kicker, o.corner, o.seg, o.size,
-               o.color, o.active ? 1 : 0, o.dim ? 1 : 0, o.badge].join('\u0001');
+               o.color, o.active ? 1 : 0, o.dim ? 1 : 0, o.segDim ? 1 : 0,
+               o.badge].join('\u0001');
     var h = 2166136261;
     for (var i = 0; i < src.length; i++) {
       h ^= src.charCodeAt(i);
@@ -150,18 +156,19 @@ SOS.Render = (function () {
       + '<stop offset="0" stop-color="' + (o.active ? PALETTE.faceHi : (o.flat ? PALETTE.faceLo : PALETTE.face)) + '"/>'
       + '<stop offset="1" stop-color="' + PALETTE.faceLo + '"/></linearGradient>';
     if (o.active) {
-      s += '<radialGradient id="' + id + 'g" cx="0.5" cy="0.5" r="0.62">'
-        + '<stop offset="0" stop-color="' + tint + '" stop-opacity="0.30"/>'
-        + '<stop offset="0.6" stop-color="' + tint + '" stop-opacity="0.10"/>'
-        + '<stop offset="1" stop-color="' + tint + '" stop-opacity="0"/></radialGradient>';
+      // Brighter and wider than V9's: with no rim to carry the state, the glow
+      // has to do all of the work on its own.
+      s += '<radialGradient id="' + id + 'g" cx="0.5" cy="0.52" r="0.70">'
+        + '<stop offset="0" stop-color="' + tint + '" stop-opacity="0.42"/>'
+        + '<stop offset="0.55" stop-color="' + tint + '" stop-opacity="0.16"/>'
+        + '<stop offset="1" stop-color="' + tint + '" stop-opacity="0.03"/></radialGradient>';
     }
     s += '</defs>';
     s += '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + r + '"'
        + ' fill="url(#' + id + 'f)"' + (o.dim ? ' opacity="0.55"' : '') + '/>';
     if (o.active) {
+      // V10 — glow only. No perimeter stroke of any kind.
       s += '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + r + '" fill="url(#' + id + 'g)"/>';
-      s += '<rect x="' + (x + 1) + '" y="' + (y + 1) + '" width="' + (w - 2) + '" height="' + (h - 2) + '" rx="' + (r - 1) + '"'
-         + ' fill="none" stroke="' + tint + '" stroke-opacity="0.55" stroke-width="1.5"/>';
     } else {
       s += '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + r + '"'
          + ' fill="none" stroke="' + PALETTE.edge + '" stroke-width="1"/>';
@@ -188,13 +195,27 @@ SOS.Render = (function () {
     var s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + KS + ' ' + KS + '" width="' + KS + '" height="' + KS + '">';
     s += '<rect width="' + KS + '" height="' + KS + '" fill="' + PALETTE.bg + '"/>';
 
-    /* A DISPLAY SEGMENT (V6). The calculator's number spans the top four keys;
-       each key paints its own three characters, left-aligned at a shared size so
-       the row reads as one continuous number across the physical gaps. */
+    /* A DISPLAY SEGMENT (V6, redesigned in V10). The calculator's number spans
+       the top four keys. Each key is split: the TOP QUARTER carries the segment's
+       operator, centred and legible, and the BOTTOM THREE QUARTERS carry the
+       number at display size. A hairline divides them, and the face is flat and
+       darker than a normal key so the row reads as one screen rather than four
+       buttons.
+
+       `segDim` renders the resting placeholder (0.000 000 000) — same geometry,
+       quieter ink, so it is obvious the row is a screen even before you type. */
     if (o.seg != null) {
+      var opH = Math.round(inner * 0.28);
       s += face(id, pad, pad, inner, inner, r, { flat: true, color: color });
-      if (o.seg !== '') s += text(o.seg, pad + 12, KS / 2 + 19, 52, 700, PALETTE.text, 'start');
-      if (o.kicker) s += text(o.kicker, pad + 12, 34, 15, 700, color, 'start', 1.4);
+      if (o.kicker) {
+        s += text(o.kicker, KS / 2, pad + opH - 8, 30, 700, color, 'middle');
+        s += '<path d="M' + (pad + 14) + ',' + (pad + opH) + ' H' + (KS - pad - 14) + '"'
+           + ' stroke="rgba(255,255,255,0.09)" stroke-width="1"/>';
+      }
+      if (o.seg !== '') {
+        s += text(o.seg, pad + 11, pad + opH + Math.round((inner - opH) * 0.66), 46, 700,
+                  o.segDim ? PALETTE.faint : PALETTE.text, 'start');
+      }
       return s + '</svg>';
     }
 
