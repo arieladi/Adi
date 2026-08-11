@@ -71,7 +71,7 @@ console.log("\n[3] rekordbox: layout vs the README's suggested + XL grid");
 Nav.setRoot(M.Root.screen);
 Nav.register(rb.hub);
 Nav.enter(rb.hub.id);
-States.setState(4);   // Full Screen: the module owns every key
+States.setState(3);   // NAV OFF: the module owns every key
 
 const at = (c, r) => rb.hub.keys(S.btn(c, r));
 const lbl = (c, r) => { const b = at(c, r); return b ? String(b.label || "") : null; };
@@ -180,16 +180,16 @@ ok("midictl is reachable from the Root Hub", reach.some((r) => /MIDI/.test(r)), 
 ok("un-ported modules show no tile", !reach.some((r) => /Ableton|Meters/.test(r)), reach.join(" "));
 
 // ---------------------------------------------------------------------------
-console.log("\n[8] D15: fullScreenCapable hubs auto-enter State 4");
+console.log("\n[8] D15: fullScreenCapable hubs auto-enter NAV OFF");
 Nav.toRoot(); States.setState(0);
 Nav.enter("rekordbox.hub");
-ok("entering the DJ hub auto-enters State 4", States.get() === 4, `state=${States.get()}`);
+ok("entering the DJ hub auto-enters NAV OFF", States.get() === 3, `state=${States.get()}`);
 Nav.back();
 ok("leaving restores State 0", States.get() === 0, `state=${States.get()}`);
 
 States.setState(1);
 Nav.enter("rekordbox.hub");
-ok("borrows from State 1 as well", States.get() === 4, `state=${States.get()}`);
+ok("borrows from State 1 as well", States.get() === 3, `state=${States.get()}`);
 Nav.back();
 ok("restores State 1, not a hardcoded 0", States.get() === 1, `state=${States.get()}`);
 
@@ -202,6 +202,87 @@ Nav.toRoot(); States.setState(0);
 Nav.enter("midictl.hub");
 ok("a non-fullscreen hub leaves the state alone", States.get() === 0, `state=${States.get()}`);
 Nav.toRoot(); States.setState(0);
+
+// ---------------------------------------------------------------------------
+console.log("\n[9] V16: the rekordbox Omnis-Duo skin");
+Nav.toRoot(); Nav.enter("rekordbox.hub");   // fullScreenCapable -> NAV OFF, 9 cols
+SOS.IPC.isOnline = () => true;
+const rbAt = (c, r) => rb.hub.keys(S.btn(c, r));
+const SKIN = { canvas: "#1a202c", pad: "#232d3d", transport: "#121822", type: "#64748b" };
+
+// A-H on BOTH decks, top row A-D and bottom row E-H, exactly as the hardware.
+const rowA = [0, 1, 2, 3].map((c) => rbAt(c, 1).label).join("");
+const rowB = [5, 6, 7, 8].map((c) => rbAt(c, 1).label).join("");
+const rowE = [0, 1, 2, 3].map((c) => rbAt(c, 2).label).join("");
+const rowF = [5, 6, 7, 8].map((c) => rbAt(c, 2).label).join("");
+ok("Deck A top row is A B C D", rowA === "ABCD", rowA);
+ok("Deck B top row is A B C D too — both banks read alike", rowB === "ABCD", rowB);
+ok("Deck A bottom row is E F G H", rowE === "EFGH", rowE);
+ok("Deck B bottom row is E F G H", rowF === "EFGH", rowF);
+ok("the deck letter is gone from the cap", !/[0-9]/.test(rowA + rowB + rowE + rowF));
+
+/* The rename is COSMETIC. This is the assertion that matters most in the file:
+   the pads are MIDI-LEARNed in Adi's rekordbox, so the note a pad sends must be
+   untouched by relettering it. Driven through the real binding. */
+const sent = [];
+SOS.IPC.midi.noteOn = (port, ch, note, vel) => { sent.push(`${ch}:${note}`); };
+SOS.IPC.midi.noteOff = () => {};
+[0, 1, 2, 3].forEach((c) => { const b = rbAt(c, 1); b.down(); b.up(); });
+[0, 1, 2, 3].forEach((c) => { const b = rbAt(c, 2); b.down(); b.up(); });
+ok("pad A-H still sends HOT_CUE + (slot-1) on channel 0",
+   sent.join() === "0:16,0:17,0:18,0:19,0:20,0:21,0:22,0:23", sent.join());
+
+// The shift layer relabels with it.
+const shiftKey = rb.hub.keys(S.btn(4, 1));
+shiftKey.down();
+const delRow = [0, 1, 2, 3].map((c) => rbAt(c, 1).label).join("|");
+ok("the shift layer reads DEL A..DEL D", delRow === "DEL A|DEL B|DEL C|DEL D", delRow);
+ok("…and keeps its red warning ink", rbAt(0, 1).titleColor === SOS.Render.PALETTE.rekordbox,
+   rbAt(0, 1).titleColor);
+shiftKey.up();
+
+// The material.
+ok("a pad wears the indigo chassis and slate cap",
+   rbAt(0, 1).canvas === SKIN.canvas && rbAt(0, 1).face === SKIN.pad,
+   `${rbAt(0, 1).canvas} / ${rbAt(0, 1).face}`);
+ok("its lettering is the muted printed ink", rbAt(0, 1).titleColor === SKIN.type, rbAt(0, 1).titleColor);
+ok("an unmapped cell is bare chassis, not a near-black hole",
+   rbAt(5, 0).face === SKIN.canvas && rbAt(5, 0).canvas === SKIN.canvas);
+/* Button 1 is asked twice and must answer differently. Getting this wrong is
+   invisible in one state and obvious in the other, which is why both are here:
+   the first render of this skin left a black square at (0,0) in NAV OFF. */
+ok("(0,0) is chassis in NAV OFF, where the module owns it",
+   States.isFullScreen() && rbAt(0, 0) !== null && rbAt(0, 0).face === SKIN.canvas,
+   JSON.stringify(rbAt(0, 0)));
+States.setState(0);
+ok("…and null with NAV on, so states.js can put Back there", rb.hub.keys(S.btn(0, 0)) === null);
+ok("…which is what states.js then does", /Back/.test(States.decorate(1, States.resolveKey(1)).label || ""),
+   JSON.stringify(States.decorate(1, States.resolveKey(1))));
+States.setState(3);
+
+// CUE and PLAY are circles in their own recess.
+const cueA = rbAt(3, 3), playA = rbAt(2, 3), nudgeA = rbAt(0, 3);
+ok("CUE is a circle", cueA.shape === "circle" && cueA.face === SKIN.transport, cueA.shape);
+ok("PLAY is a circle", playA.shape === "circle" && playA.face === SKIN.transport, playA.shape);
+ok("a nudge key is NOT — only the two transport buttons are round", nudgeA.shape == null, String(nudgeA.shape));
+ok("the CUE glyph keeps its CDJ orange", cueA.color === "#ff9f0a", cueA.color);
+
+/* The renderer has to actually DRAW the circle, and the field note about
+   keySpec's hand-written whitelist means a new field can reach the binding and
+   still never reach the ink. Both ends are asserted. */
+const spec = States.keySpec(cueA);
+ok("keySpec forwards every skin field (the whitelist trap)",
+   spec.shape === "circle" && spec.face === SKIN.transport &&
+   spec.canvas === SKIN.canvas && "titleColor" in spec,
+   Object.keys(spec).join(","));
+const cueSvg = SOS.Render.key(spec);
+ok("a circular cap is drawn with rx = half the width", /rx="66"/.test(cueSvg));
+ok("…and its catch-light is an arc, not a zero-length chord", /A64\.75,64\.75 0 0 1/.test(cueSvg));
+ok("the chassis colour reaches the SVG background", cueSvg.indexOf(SKIN.canvas) > 0);
+const padSvg = SOS.Render.key(States.keySpec(rbAt(0, 1)));
+ok("a pad is still a rounded square", /rx="18"/.test(padSvg) && !/rx="66"/.test(padSvg));
+ok("two different skins produce two different gradient ids",
+   SOS.Render.key({ title: "A", face: SKIN.pad }) !== SOS.Render.key({ title: "A", face: SKIN.transport }));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

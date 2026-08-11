@@ -39,7 +39,9 @@ SOS.Modules.install = function () {
   });
 
   // ----------------------------------------------------------------- overlays
-  // States 0/1/2 come from the Console module; State 3 is supplied per-module.
+  /* V13 — there are three windows and nothing else. The old State 3 asked the
+     active module for a context strip; that shell is gone, and a module that
+     wants a sub-menu presents it on its own board while full-screen. */
   if (M.Console) {
     States.registerOverlay(0, M.Console.numpad);
     States.registerOverlay(1, M.Console.calculator);
@@ -47,13 +49,6 @@ SOS.Modules.install = function () {
   } else {
     [0, 1, 2].forEach(function (i) { States.registerOverlay(i, placeholderOverlay(i)); });
   }
-
-  // State 3 asks the active module for its own context strip; a module without
-  // one falls back to a breadcrumb rather than an empty block.
-  States.wireContext(function (moduleId) {
-    var owner = { ableton: M.Ableton, rekordbox: M.Rekordbox, midictl: M.MidiCtl, viz: M.Viz }[moduleId];
-    return (owner && owner.context) ? owner.context : breadcrumb();
-  });
 
   if (pending.length) SOS.SD.log('modules pending port: ' + pending.join(', '));
 
@@ -77,21 +72,4 @@ SOS.Modules.install = function () {
     };
   }
 
-  // State 3's default: show where you are, which is genuinely useful five levels
-  // deep and costs nothing.
-  function breadcrumb() {
-    return {
-      id: 'state.context.default', title: 'Context', module: 'nav',
-      keys: function (button) {
-        var path = Nav.path(), row = SOS.Surface.rowOf(button), col = SOS.Surface.colOf(button);
-        if (col !== 5 || row >= path.length) return { dim: true, kind: 'tap' };
-        return { label: path[row], sub: row === path.length - 1 ? 'you are here' : 'level ' + row,
-                 dim: row !== path.length - 1, color: R.PALETTE.nav, kind: 'tap' };
-      },
-      dials: function (dial) {
-        if (dial === 5) return { title: 'Level', value: String(Nav.depth() - 1), sub: Nav.path().join(' › ') };
-        return { title: 'Module', value: Nav.activeModule() };
-      },
-    };
-  }
 };

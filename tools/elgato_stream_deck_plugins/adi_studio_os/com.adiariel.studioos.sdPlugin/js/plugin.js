@@ -177,7 +177,7 @@
   // --------------------------------------------------------------- gestures
   function wireInput() {
     Input.wire({
-      getState: States.get,
+      isFullScreen: States.isFullScreen,
       hasHold: hasHold,
       onHold: runHold,
       onBack: function () {

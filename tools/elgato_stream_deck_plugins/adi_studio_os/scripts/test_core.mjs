@@ -68,7 +68,7 @@ console.log('\n[5] gesture engine — anchors');
 const log = [];
 let kind = 'tap';
 Input.wire({
-  getState: States.get,
+  isFullScreen: States.isFullScreen,
   bindingKind: () => kind,
   onBack: () => log.push('back'),
   onSelect: b => log.push('select' + b),
@@ -103,15 +103,15 @@ ok('btn35 has no engine role (D2a)', log.join() === 'down35,up35', log.join());
 clear(); Input.keyDown('k1_3'); Input.keyUp('k1_3');
 ok('ordinary key passes through instantly', log.join() === 'down13,up13', log.join());
 
-console.log('\n[6] State 4 releases Button 1 (D7)');
-States.setState(4);
-ok('state is 4', States.get() === 4);
+console.log('\n[6] NAV OFF releases Button 1 (D7)');
+States.setState(3);
+ok('state is NAV OFF', States.get() === 3);
 ok('back no longer reserved', !Input.backReserved());
 clear(); Input.keyDown('k0_0'); Input.keyUp('k0_0');
 ok('btn1 -> module, not Back', log.join() === 'down1,up1', log.join());
-ok('btn36 is not reserved in State 4 either', !Input.reserved(36));
+ok('btn36 is not reserved in NAV OFF either', !Input.reserved(36));
 States.setState(0);
-ok('btn1 reserved again outside State 4', Input.backReserved());
+ok('btn1 reserved again outside NAV OFF', Input.backReserved());
 
 console.log('\n[7] responsive regions (L1 / L3a)');
 // Regions depend on a window actually being registered, so install first.
@@ -122,9 +122,10 @@ ok('S0: col 8 belongs to the docked window', States.overlayOwnsKey(S.btn(8, 0)))
 ok('S0: col 4 belongs to the module', !States.overlayOwnsKey(S.btn(4, 0)));
 ok('S0: module region is cols 0-4', States.regions().module.cols === 5);
 ok('S0: numpad borrows NO dials', States.borrowedDials() === 0);
-/* V4 — dial borrowing is PER STATE now. 0 and 1 leave the strip alone entirely;
-   2 takes one dial for BPM; 3 takes two, which is what puts the Ableton
-   controllers into their Compact layout. */
+/* V14 — dial borrowing is PER STATE. 0 and 1 leave the strip alone entirely,
+   which IS the pass-through: the module keeps six dials and stays Full. State 2
+   takes TWO, which is what puts the Ableton controllers into their Compact
+   layout — it is the only state that does. */
 States.setState(1);
 ok('S1: calculator borrows NO dials — the strip is untouched',
    States.borrowedDials() === 0, `n=${States.borrowedDials()}`);
@@ -132,21 +133,25 @@ ok('S1: the module still owns all six dials', States.moduleDials() === 6, `n=${S
 ok('S1: still a 4-col dock', States.dockCols() === 4 && States.regions().module.cols === 5);
 States.setState(2);
 ok('S2: divisions is a 4-col dock, not a takeover', States.dockCols() === 4 && !States.overlayOwnsKey(1));
-ok('S2: borrows exactly ONE dial for BPM', States.borrowedDials() === 1, `n=${States.borrowedDials()}`);
-ok('S2: the borrowed dial is the right-most (L3b)',
-   States.overlayOwnsDial(6) && !States.overlayOwnsDial(5));
-ok('S2: the module keeps five dials', States.moduleDials() === 5, `n=${States.moduleDials()}`);
-States.setState(4);
-ok('S4 is NAV OFF: nothing docked', !States.overlayOwnsKey(8) && States.regions().module.cols === 9);
-ok('S4: module keeps every dial', States.borrowedDials() === 0 && States.moduleDials() === 6);
+ok('S2: borrows TWO dials — readout + BPM (V14)',
+   States.borrowedDials() === 2, `n=${States.borrowedDials()}`);
+ok('S2: the borrowed pair is the RIGHT-MOST (L3b)',
+   States.overlayOwnsDial(5) && States.overlayOwnsDial(6) && !States.overlayOwnsDial(4));
+ok('S2: the module is left with FOUR — the build(4) path',
+   States.moduleDials() === 4, `n=${States.moduleDials()}`);
+States.setState(3);
+ok('S3 is NAV OFF: nothing docked', !States.overlayOwnsKey(8) && States.regions().module.cols === 9);
+ok('S3: module keeps every dial', States.borrowedDials() === 0 && States.moduleDials() === 6);
 States.setState(0);
 ok('S0: numpad borrows no dials either', States.borrowedDials() === 0);
 
-console.log('\n[8] carousel wraps 0..4, ending on NAV OFF (V1)');
+console.log('\n[8] carousel wraps 0..3, ending on NAV OFF (V13)');
 const seen = [];
-for (let i = 0; i < 6; i++) { seen.push(States.get()); States.carousel(); }
-ok('cycles 0,1,2,3,OFF,0', seen.join() === '0,1,2,3,4,0', seen.join());
-ok('State 4 is named NAV OFF', States.NAMES[4] === 'NAV OFF', States.NAMES[4]);
+for (let i = 0; i < 5; i++) { seen.push(States.get()); States.carousel(); }
+ok('cycles 0,1,2,OFF,0', seen.join() === '0,1,2,3,0', seen.join());
+ok('State 3 is named NAV OFF', States.NAMES[3] === 'NAV OFF', States.NAMES[3]);
+ok('there is no fourth window — State 3 (Context) is gone',
+   States.COUNT === 4 && States.NAMES.length === 4, `count=${States.COUNT}`);
 States.setState(0);
 
 console.log('\n[9] navigation');
@@ -220,7 +225,7 @@ await wait(30);
 ok('the release after a long press does not also fire', States.get() === 1, String(States.get()));
 
 // It has to work in NAV OFF too, or NAV can never be recalled.
-States.setState(4);
+States.setState(3);
 dialMsg('dialDown', 'd5'); await wait(620); dialMsg('dialUp', 'd5'); await wait(30);
 ok('the trigger still works in NAV OFF, so NAV can be recalled',
    States.get() === 0, String(States.get()));

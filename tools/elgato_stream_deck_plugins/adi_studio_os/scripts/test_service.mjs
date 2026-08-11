@@ -129,6 +129,27 @@ try {
   await wait(300);
   ok("invalid numpad token refused", inbox2.find((m) => m.id === 1001)?.result === false);
   ok("unknown named action refused", inbox2.find((m) => m.id === 1002)?.result === false);
+
+  /* V15 — os.type. The payload is WHITELISTED to digits, dot and minus, so an
+     empty result is the refusal path and there is no string left that could
+     break out of the AppleScript literal it is interpolated into. Asserted
+     through the real socket rather than by importing os.js, so the verb table
+     entry is covered too. */
+  const REFUSE = ["", "   ", 'abc"; do shell script "x', "no-digits-here", "1.2.3",
+                  "12 34", "--", "1e9", "0x10", "-", ".", "12;ls"];
+  REFUSE.forEach((text, i) => ws2.send(JSON.stringify({ t: "os.type", text, id: 2000 + i })));
+  const ACCEPT = ["104.90", "9.5310", "0", "-12.5", "4000.00"];
+  await wait(600);
+  ok("os.type is a known verb", inbox2.find((m) => m.id === 2000) !== undefined);
+  const refused = REFUSE.map((_, i) => inbox2.find((m) => m.id === 2000 + i)?.result);
+  ok("every non-numeric payload is refused", refused.every((r) => r === false),
+     REFUSE.map((t, i) => `${JSON.stringify(t)}=>${refused[i]}`).join(" "));
+  /* "no-digits-here" is the one that mattered: the first cut of this FILTERED
+     to [0-9.-] and typed the "--" that survived. Validation refuses it whole. */
+  ok("…including one that a character filter would have turned into \"--\"",
+     refused[REFUSE.indexOf("no-digits-here")] === false);
+  ok("the shape a real readout has would be accepted",
+     ACCEPT.every((t) => /^-?\d{1,15}(\.\d{1,6})?$/.test(t)), ACCEPT.join(","));
   ws2.close();
 
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -139,6 +139,9 @@ SOS.IPC = (function () {
 
   var os = {
     key:    function (token) { return send('os.key', { token: token }); },
+    // V15 — type a short string (the delay readout) into the focused app. The
+    // service filters the payload to digits/dot/minus; nothing else gets typed.
+    type:   function (text) { return send('os.type', { text: text }); },
     hotkey: function (combo) { return send('os.hotkey', { combo: combo }); },
     // Named cross-platform action (start, run, shell, taskmgr, chrome, lynx) —
     // the service owns the per-platform spelling so modules stay portable.

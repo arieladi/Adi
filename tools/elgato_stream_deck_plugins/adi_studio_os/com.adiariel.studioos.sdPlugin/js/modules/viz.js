@@ -1119,35 +1119,10 @@ SOS.Modules.Viz = (function () {
     },
   };
 
-  // State 3 strip: pick a view / slot without leaving the module you are in.
-  var context = {
-    id: 'viz.context', title: 'Meters', module: 'viz',
-    keys: function (button) {
-      var col = S.colOf(button), row = S.rowOf(button);
-      if (col === 8 && row === 0) {
-        var a = AUDIO_TEXT[audio.status] || AUDIO_TEXT.error;
-        return { label: a.label, sub: a.detail || a.sub, color: a.color,
-                 active: audioRunning(), kind: 'tap', tap: audioToggle };
-      }
-      var idx = (row * 3) + (col - 5);
-      if (col >= 5 && col <= 7 && idx < VIEWS.length) return viewTile(button, VIEWS[idx]);
-      return null;
-    },
-    dials: function (dial) {
-      if (dial === 5) {
-        return { title: 'Slot', value: String(selected + 1), sub: slots[selected].view,
-                 color: viewColor(slots[selected].view),
-                 rotate: function (t) { selected = (selected + (t > 0 ? 1 : -1) + 6) % 6; frame(); } };
-      }
-      var head = slots[selected].an.head || {};
-      return { title: slots[selected].view, value: head.value || '—', sub: head.sub || '',
-               indicator: head.indicator == null ? undefined : head.indicator,
-               color: viewColor(slots[selected].view) };
-    },
-  };
+  // V13 — STATE 3 IS GONE, and the view/slot picker it carried with it.
 
   return {
-    hub: hub, context: context,
+    hub: hub,
     // exposed for scripts/test_viz.mjs
     _audio: audio, _slots: slots, _frame: frame,
     _implemented: IMPLEMENTED, _views: VIEWS,

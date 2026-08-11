@@ -125,12 +125,13 @@ const html = `<!doctype html><meta charset="utf-8"><title>Studio OS surface prev
 <p class="s">Exactly what setImage receives. Stream Deck + XL: 36 keys (9&times;4) + 6 dial zones.</p>
 ${pick("root", grid("Root Hub + Numpad docked &mdash; module keeps cols 0-4, window takes 5-8", 0))}
 ${pick("calc", grid("Root Hub + Calculator docked &mdash; window borrows dials 1-2 for operators", 1))}
-${pick("delay", grid("Root Hub + Delay viewport docked &mdash; dial 1 = BPM, dial 2 slides the division", 2))}
-${pick("dj", grid("Rekordbox &middot; State 4 (Full Screen) &mdash; the DJ surface", 4, "rekordbox.hub"))}
+${pick("delay", grid("Root Hub + Time Divisions docked &mdash; dial 5 = readout/grid/format, dial 6 = BPM (V14/V15)", 2))}
+${pick("dj", grid("Rekordbox &middot; NAV OFF &mdash; the Omnis-Duo surface (V16)", 3, "rekordbox.hub"))}
 ${pick("djnum", grid("Rekordbox &middot; State 0 &mdash; numpad covering Deck B", 0, "rekordbox.hub"))}
-${pick("midi", grid("MIDI Control &middot; State 4 &mdash; drums, scale touch, banked CC", 4, "midictl.hub"))}
-${pick("ableton", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; EQ Eight &mdash; the strip spans all six dials", 4, "ableton.hub")))}
-${pick("ableton2", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; FabFilter Pro-Q 3 &mdash; resolved by name", 4, "ableton.hub")))}
+${pick("midi", grid("MIDI Control &middot; NAV OFF &mdash; drums, scale touch, banked CC", 3, "midictl.hub"))}
+${pick("ableton", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; EQ Eight &mdash; FULL: the strip spans all six dials", 3, "ableton.hub")))}
+${pick("ableton2", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; FabFilter Pro-Q 3 &mdash; FULL, resolved by name", 3, "ableton.hub")))}
+${pick("compact", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; Pro-Q 3 COMPACT &mdash; State 2 borrows dials 5-6, so build(4) (V14)", 2, "ableton.hub")))}
 `;
 
 fs.writeFileSync(OUT, html);

@@ -23,16 +23,19 @@ CEF frontend (`app.html`) owns the UI, navigation and Web Audio. A Node backend 
 
 - **Button 1** — long press = Back / level up; short press = contextual select. Released to the module in State 4. It is the **only** reserved key on the board.
 - **Buttons 35 and 36** — no engine role, plain keys (V2). Button 36's carousel and the whole D9/D9a hanging-note apparatus are gone; (8,3) in Rekordbox is a **Beat Jump** now, not a held nudge.
-- **NAV trigger (V3)** — a **long press on the right-most dial (dial 6)** cycles `0 → 1 → 2 → 3 → NAV OFF → 0`. It works in NAV OFF too, so NAV can always be recalled. Dial 6's *short* press therefore resolves on release; dials 1–5 stay immediate.
+- **NAV trigger (V3/V13)** — a **long press on the right-most dial (dial 6)** cycles `0 → 1 → 2 → NAV OFF → 0`. **State 3 (Context) was scrapped in Batch 13**; NAV OFF is now index 3. It works in NAV OFF too, so NAV can always be recalled. Dial 6's *short* press therefore resolves on release; dials 1–5 stay immediate.
 - **Merged keys (V6)** — any binding may declare `hold`; short press runs `tap` on release, long press runs `hold`. Binding-level opt-in, not a new anchor.
-- **Dial borrowing is PER STATE (V4)** — States 0 and 1 touch **no** dials, State 2 takes **one** (BPM, dial 6), State 3 takes **two**. **State 3 is what puts the Ableton controllers into their 4-dial Compact layouts** — that is the Compact suite's only consumer.
+- **Dial borrowing is PER STATE (V4/V14)** — States 0 and 1 touch **no** dials, which IS the pass-through: the module keeps six and stays FULL. **State 2 takes TWO (physical 5 and 6) and is the Compact suite's only consumer** — it is what puts the Ableton controllers into `build(4)`. There is no 5-zone case any more.
 - **Responsive layouts (L1)** — a docked nav window does NOT overlay the module; it takes columns and the module re-lays-out via declared breakpoints. Screens declare `layouts: [{cols, keys(col,row)}]` with **region-local** coordinates. Engine: `js/core/layout.js`.
 - **Windows borrow the RIGHTMOST dials (L3b)** — `borrowDials: N` takes the last N. Dials 1–4 always stay with the module.
-- **Every window is the same 4×4 dock** (16 keys, cols 5–8). States: 0 Numpad · 1 Calculator · 2 Time Divisions · 3 Context · 4 NAV OFF (docks nothing, module reclaims all 36 keys).
+- **Every window is the same 4×4 dock** (16 keys, cols 5–8). States: 0 Numpad · 1 Calculator · 2 Time Divisions · 3 NAV OFF (docks nothing, module reclaims all 36 keys).
+- **Never compare the state INDEX to a literal.** Ask `States.isFullScreen()`. A hardcoded `4` in `input.js` silently un-reserved Button 1 everywhere the moment State 3 was removed.
 
 ## Three protocols I insist on
 
 **1. Stop at every conflict.** Whenever legacy behaviour clashes with the new design, or a decision is genuinely mine to make, STOP that component, explain the conflict, propose creative options with trade-offs, and ask. Do not guess or write a workaround. Log the ruling in `docs/DECISIONS.md` before implementing. This has caught real problems every single time — keep doing it.
+
+**1b. Conflicts are plain output, never a menu (P4).** State the findings and every conflict as text, then STOP and wait. Do not present an interactive multiple-choice question — Adi rules on the whole set at once and replies with one unified instruction.
 
 **2. Dual-layout contract + "Discovery First" (L6).** Every module and controller ships TWO hand-crafted layouts: **Full** (whole board) and **Compact**. Not a reflow — a bespoke design.
 
@@ -49,7 +52,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**728 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) and **V3 is deployed and running on the hardware**. Last commit: "first hardware pass — calculator + Time Divisions fixes".
+**777 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) and **Batch 13 is deployed and running on the hardware**. Last commit: "scrap State 3, Omnis-Duo skin, Ableton launcher + bridge install".
 
 | Piece | State |
 |---|---|
@@ -62,7 +65,10 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 | State 0 Numpad | ✅ V3 — `C` is now `✱` (sends real KP_Multiply) |
 | State 1 Calculator | ✅ V3 — display row, merged keys, grouped numbers |
 | State 2 Time Divisions | ✅ V3 — 3×3 fractions, ▲/▼ range, value in one place |
-| State 3 Context | **empty shell** — Ableton is its only consumer |
+| State 2 Time Divisions | ✅ V15 — dial 5 readout/grid/format, value key TYPES via `os.type` |
+| Rekordbox Omnis-Duo skin | ✅ V16 — A–H pads, indigo chassis, circular CUE / ▶‖ |
+| Ableton smart launcher | ✅ V17 — Root Hub tile starts the newest installed Live |
+| **The 14 Compact strips** | ✅ reachable at last — State 2 is the consumer (V14) |
 
 ### The V3 NAV refactor (DECISIONS Batch 11, rulings V1–V9)
 
@@ -74,12 +80,18 @@ Carousel gained a NAV-OFF position; Button 36 became a plain key; the NAV trigge
 - **V11** — Time Divisions: **columns are the variants, rows are the divisions**, the nine cells carry their fraction and nothing else, row 0's three labels are **static headers**, ▲/▼ shift the grid and **clamp** (greying out at the ends), and the computed value appears in exactly one place.
 - **V12** — Calculator: operands coerced to Number in `applyOp`; numbers grouped with thousands separators and split **on** the separator (`12000` → `12,` | `000`); dim `0. 000 000 000` placeholder spanning all four keys at rest; operator glyph in the top ~28% of each display key.
 
-**Awaiting your hardware feedback on V10–V12.** Ask me what still looks wrong before starting anything new.
+### Batch 13 (rulings V13–V17) — see DECISIONS
+
+State 3 scrapped, State 2 became the Compact consumer and gained a readout + PASTE
+key, rekordbox got the Omnis-Duo skin, the Ableton tile became a smart launcher,
+and the AdiVST remote script was finally installed.
+
+**Awaiting hardware feedback on V13–V17.** Ask what still looks wrong before starting anything new.
 
 ### Immediate next tasks, in order
 
-1. **State 3's context shell** (V8) — a 16-key shell plus two borrowed dials that the active module fills. Ableton supplies a track/device strip; every other module supplies nothing. This is also the ONLY path that exercises the 14 Compact strip layouts, so it is worth building carefully.
-2. **Compact layouts for Rekordbox** (ruled L2: both decks, 4 hot cues each), **MIDI Control**, **Visualizers** — none has one, so docking a window over them currently hits the engine's "No room" path. **I asked to be prompted before these are started.**
+1. **Confirm the Ableton bridge against real Live.** The remote script is now installed at `~/Music/Ableton/User Library/Remote Scripts/AdiVST` (byte-identical, unmodified) but **Adi still has to select AdiVST as a Control Surface** in Live → Settings → Link/Tempo/MIDI. Until then port 9006 has no server and every controller resolves to Generic. Nothing Ableton-side has ever seen real Live.
+2. **Compact layouts for Rekordbox** (ruled L2: both decks, 4 hot cues each — now cues **A–D**), **MIDI Control**, **Visualizers** — none has one, so docking a window over them still hits the engine's "No room" path. **I asked to be prompted before these are started.**
 
 ## How the Ableton controllers work
 
