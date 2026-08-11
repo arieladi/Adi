@@ -236,6 +236,8 @@ SOS.States = (function () {
       seg: b.seg, segDim: b.segDim,
       // V16 additions — the per-module hardware skin (Rekordbox / Omnis-Duo).
       shape: b.shape, face: b.face, canvas: b.canvas, titleColor: b.titleColor,
+      // V22 — the artwork NAME (never the bytes; see js/core/art.js).
+      art: b.art,
     };
   }
 

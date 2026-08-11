@@ -18,7 +18,7 @@ const LEGACY = path.resolve(NEW, "../../");
 global.window = global;
 global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
-const CORE = ["js/core/sd-client.js", "js/core/surface.js", "js/core/render.js",
+const CORE = ["js/core/sd-client.js", "js/core/surface.js", "js/core/art.js", "js/core/render.js",
               "js/core/ipc.js", "js/core/layout.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js"];
 const MODS = ["js/modules/root.js", "js/modules/console.js",
               "js/modules/rekordbox.js", "js/modules/midictl.js", "js/modules/index.js"];
@@ -330,6 +330,42 @@ const padSvg = SOS.Render.key(States.keySpec(rbAt(0, 1)));
 ok("a pad is still a rounded square", /rx="18"/.test(padSvg) && !/rx="66"/.test(padSvg));
 ok("two different skins produce two different gradient ids",
    SOS.Render.key({ title: "A", face: SKIN.pad }) !== SOS.Render.key({ title: "A", face: SKIN.transport }));
+
+// ---------------------------------------------------------------------------
+console.log("\n[11] V22: the Root Hub wears the real application icons");
+{
+  const tile = (c) => SOS.Layout.pick(M.Root.screen, 9).keys(c, 0);
+  ok("art.js registered both icons",
+     !!(SOS.Art && SOS.Art.ableton && SOS.Art.rekordbox), Object.keys(SOS.Art || {}).join(","));
+  ok("…as PNG data URIs",
+     /^data:image\/png;base64,/.test(SOS.Art.ableton) && /^data:image\/png;base64,/.test(SOS.Art.rekordbox));
+  /* The Ableton tile is hidden here — this harness deliberately does not load
+     ableton.js, and a hub tile only appears once its module is registered. The
+     DJ tile carries the same mechanism, so the binding assertions ride on it. */
+  const dj = tile(2);
+  ok("the DJ tile names its artwork, not a glyph",
+     dj.art === "rekordbox" && !dj.glyph, JSON.stringify({ art: dj.art, glyph: dj.glyph }));
+
+  /* The whitelist trap, for the third time: a field can reach the binding and
+     still never reach the ink. Both ends are asserted, and so is the drawing. */
+  const spec = States.keySpec(dj);
+  ok("keySpec forwards `art`", spec.art === "rekordbox", Object.keys(spec).join(","));
+  const svg = SOS.Render.key(spec);
+  ok("the icon is actually drawn", svg.indexOf("<image") > 0);
+  ok("…with both the modern and legacy href",
+     /\shref="data:image\/png/.test(svg) && /xlink:href="data:image\/png/.test(svg));
+  ok("…and the SVG declares the xlink namespace, or the legacy href is invalid",
+     svg.indexOf('xmlns:xlink="http://www.w3.org/1999/xlink"') > 0);
+  ok("the label survives beside it", svg.indexOf(">DJ<") > 0);
+
+  /* The bytes must never enter the per-frame hash: 36 keys x 15 fps over a 6 KB
+     payload is the difference between a static surface and a busy one. */
+  ok("the binding carries the NAME, never the bytes", dj.art.length < 32);
+  ok("two different icons still produce two different keys",
+     SOS.Render.key({ title: "X", art: "ableton" }) !== SOS.Render.key({ title: "X", art: "rekordbox" }));
+  ok("an unknown art name degrades to a plain key, it does not throw",
+     SOS.Render.key({ title: "X", art: "nope" }).indexOf("<image") < 0);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

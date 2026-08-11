@@ -12,7 +12,7 @@ const OUT = process.argv[2] || path.join(ROOT, "..", "preview.html");
 global.window = global;
 global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
-for (const f of ["js/core/sd-client.js", "js/core/surface.js", "js/core/render.js",
+for (const f of ["js/core/sd-client.js", "js/core/surface.js", "js/core/art.js", "js/core/render.js",
                  "js/core/ipc.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js",
                  "js/modules/root.js", "js/modules/console.js",
                  "js/modules/rekordbox.js", "js/modules/midictl.js",

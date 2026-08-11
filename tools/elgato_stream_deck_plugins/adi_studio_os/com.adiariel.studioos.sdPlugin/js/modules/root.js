@@ -48,13 +48,14 @@ SOS.Modules.Root = (function () {
        action rather than an app, so the service owns the version hunt (the
        bundle is "Ableton Live 11 Suite" here and "…12 Suite" on another
        machine) and this table stays a list of names. */
-    { label: 'Ableton', glyph: '♪', color: R.PALETTE.ableton,   screen: 'ableton.hub',   module: 'Ableton',
+    // V22 — the real application icons, not a glyph approximating them.
+    { label: 'Ableton', art: 'ableton', color: R.PALETTE.ableton,   screen: 'ableton.hub',   module: 'Ableton',
       launch: 'ableton', running: function () {
         var A = SOS.Modules.Ableton;
         return !!(A && A.bridge && A.bridge.isOnline());
       } },
     { label: 'Cubase',  glyph: '◇', color: R.PALETTE.midi,      screen: 'cubase.hub',    needs: 'cubase' },
-    { label: 'DJ',      glyph: '⏻', color: R.PALETTE.rekordbox, screen: 'rekordbox.hub', module: 'Rekordbox' },
+    { label: 'DJ',      art: 'rekordbox', color: R.PALETTE.rekordbox, screen: 'rekordbox.hub', module: 'Rekordbox' },
     { label: 'MIDI',    glyph: '⌗', color: R.PALETTE.midi,      screen: 'midictl.hub',   module: 'MidiCtl' },
     { label: 'Meters',  glyph: '▥', color: R.PALETTE.viz,       screen: 'viz.hub',       module: 'Viz' },
   ];
@@ -112,7 +113,7 @@ SOS.Modules.Root = (function () {
       if (hub.needs && !usable(hub.needs)) return null;         // app not installed
       if (hub.module && !moduleReady(hub.module)) return null;  // module not ported
       return {
-        label: hub.label, glyph: hub.glyph, size: 'lg',
+        label: hub.label, glyph: hub.glyph, art: hub.art, size: 'lg',
         color: hub.color, kind: 'tap',
         tap: function () {
           /* Launch FIRST, then navigate. Both are fire-and-forget, but the app

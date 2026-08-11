@@ -293,8 +293,24 @@ SOS.Modules.Console = (function () {
       keys: function (col, row) {
         if (row === 0) {
           var seg = CALC_SEG[col];
+          /* V23 — THE PENDING OPERATION IS ON THE SCREEN.
+
+             Until now the display row showed the current operand and nothing
+             else: after `2`, `+`, the screen read "2" with the `+` recorded
+             only in a variable. That is indistinguishable from having pressed
+             nothing at all, which is exactly what "the + is a disaster" looks
+             like from the outside — you cannot tell a lost keypress from a
+             registered one, so you press again and get a different answer.
+
+             Segment 0 now carries `stored op` above the number whenever an
+             operation is waiting. No key moved and no function changed; the
+             machine simply says out loud what it is holding. */
+          var pend = (col === 0 && calc.op && calc.stored !== null)
+            ? fmtCalc(calc.stored) + ' ' + calc.op : null;
           return {
-            seg: segment(col), segDim: segmentDim(), kicker: seg.label,
+            seg: segment(col), segDim: segmentDim(),
+            kicker: pend || seg.label,
+            kickerColor: pend ? R.PALETTE.console : null,
             color: col === 3 ? R.PALETTE.accent : R.PALETTE.midi,
             kind: 'tap', tap: seg.run,
           };
