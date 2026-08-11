@@ -192,6 +192,42 @@ export async function appSwitch(dir) {
   return true;
 }
 
+/* ---------------------------------------------------------------- type text
+   V15 — the delay calculator's value key types its figure into whatever has
+   focus. `key()` above sends ONE numpad token; this sends a short string.
+
+   The payload is VALIDATED, not filtered. The first cut of this stripped
+   everything outside [0-9.-] and typed whatever survived — which meant
+   "no-digits-here" collapsed to "--" and got typed, because filtering can
+   SYNTHESISE a valid-looking payload out of garbage. Caught by probing the
+   running service, not by the unit test, whose sample happened to contain no
+   hyphen.
+
+   A plain decimal number is the only thing this verb exists to send, so it is
+   also the only thing accepted. Nothing that passes can break out of the
+   AppleScript literal below — there is no quote, backslash or newline in the
+   grammar — so there is still nothing to escape. */
+const TYPEABLE = /^-?\d{1,15}(\.\d{1,6})?$/;
+
+export function type(text) {
+  const s = String(text == null ? "" : text).trim();
+  if (!TYPEABLE.test(s)) return Promise.resolve(false);
+  if (isMac) return osa(`tell application "System Events" to keystroke "${s}"`);
+  if (isWin) {
+    // Reuse the numpad virtual keys already proven by key(): every character
+    // that survives the filter has an entry, so a digit types as a real
+    // keystroke rather than through SendKeys.
+    const VK = { ".": WIN_VK.decimal, "-": WIN_VK.minus };
+    let script = WIN_KEY_SHIM;
+    for (const ch of s) {
+      const vk = /[0-9]/.test(ch) ? WIN_VK[ch] : VK[ch];
+      if (vk != null) script += winTap(vk);
+    }
+    return ps(script);
+  }
+  return run("xdotool", ["type", "--clearmodifiers", s]);
+}
+
 // -------------------------------------------------------------------- launch
 export function launch(app) {
   const name = String(app || "").trim();
@@ -218,19 +254,40 @@ export const ACTIONS = {
   chrome:   { macApp: "Google Chrome",    mac: () => launch("Google Chrome"),    win: () => ps("Start-Process chrome") },
   lynx:     { macApp: "Lynx Mixer",       mac: () => launch("Lynx Mixer"),       win: () => ps('Start-Process "Lynx Mixer"') },
   cubase:   { macApp: "Cubase",           mac: () => launch("Cubase"),           win: () => ps("Start-Process Cubase") },
+
+  /* V17 — the Ableton SMART LAUNCHER. The bundle name carries the version
+     ("Ableton Live 11 Suite"), so this cannot be a fixed string the way Chrome
+     can: it resolves the newest installed Live at press time. macOS `open -a` is
+     idempotent — it focuses a running Live rather than starting a second one —
+     so pressing the key is safe whether or not Live is already up.
+
+     The Windows arm searches the two directories Ableton actually installs to
+     and is UNVERIFIED, like every other Windows path in this file. */
+  ableton:  {
+    macApp: "Ableton Live",
+    mac: () => { const app = findMacApp("Ableton Live"); return app ? launch(app) : Promise.resolve(false); },
+    win: () => ps('$p = Get-ChildItem -Path "$env:ProgramData\\Ableton","$env:ProgramFiles\\Ableton" '
+                + '-Recurse -Filter "Ableton Live*.exe" -ErrorAction SilentlyContinue | '
+                + 'Sort-Object Name -Descending | Select-Object -First 1; '
+                + 'if ($p) { Start-Process $p.FullName }'),
+  },
 };
 
 const APP_DIRS = ["/Applications", "/System/Applications", "/System/Applications/Utilities",
                   path.join(os.homedir(), "Applications")];
 
+/* The cache holds the bundle names AS WRITTEN. It used to lowercase on the way
+   in, which was fine while the only question was "is it installed?" — but
+   launching needs the real name to hand to `open -a`, and "ableton live 11
+   suite" is not a thing on disk. Comparison lowercases at the call site now. */
 let appCache = null;
 function macApps() {
   if (appCache) return appCache;
-  appCache = new Set();
+  appCache = [];
   for (const dir of APP_DIRS) {
     try {
       for (const entry of fs.readdirSync(dir)) {
-        if (entry.endsWith(".app")) appCache.add(entry.slice(0, -4).toLowerCase());
+        if (entry.endsWith(".app")) appCache.push(entry.slice(0, -4));
       }
     } catch { /* directory may not exist */ }
   }
@@ -240,9 +297,23 @@ function macApps() {
 // Cheap prefix match so "Cubase" finds "Cubase 13", which is how Steinberg
 // versions its bundle names.
 function macAppInstalled(name) {
-  const want = String(name).toLowerCase();
-  for (const have of macApps()) if (have === want || have.startsWith(want)) return true;
-  return false;
+  return !!findMacApp(name);
+}
+
+/* The best installed bundle whose name starts with `prefix`, NEWEST FIRST.
+   "Ableton Live 11 Suite" and "Ableton Live 12 Suite" can both be installed and
+   the launcher has to pick one; comparing the embedded version NUMERICALLY is
+   the only ordering that survives Live 9 sitting next to Live 12. */
+function findMacApp(prefix) {
+  const want = String(prefix).toLowerCase();
+  const hits = macApps().filter((a) => {
+    const have = a.toLowerCase();
+    return have === want || have.startsWith(want);
+  });
+  if (!hits.length) return null;
+  const ver = (s) => { const m = /(\d+)/.exec(s.slice(prefix.length)); return m ? Number(m[1]) : -1; };
+  hits.sort((a, b) => ver(b) - ver(a) || b.localeCompare(a));
+  return hits[0];
 }
 
 /* Which named actions can actually run here. The Root Hub hides everything that

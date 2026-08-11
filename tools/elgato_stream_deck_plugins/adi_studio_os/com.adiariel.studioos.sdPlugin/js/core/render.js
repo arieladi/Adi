@@ -60,6 +60,10 @@ SOS.Render = (function () {
     dim:    '#78848f',
     faint:  '#4a545e',
     accent: '#6fe3c4',
+    // V15 — the delay readout's green. Deliberately the SAME green the rekordbox
+    // hot cues already ship with, so no new glyph-or-colour risk is introduced
+    // on a device where the proven set is the safe set.
+    green:  '#39d353',
     // module identity colours, carried over from the legacy plugins
     ableton:  '#6fe3c4',
     rekordbox:'#ff6b6b',
@@ -139,7 +143,11 @@ SOS.Render = (function () {
   function hashId(o) {
     var src = [o.title, o.sub, o.glyph, o.kicker, o.corner, o.seg, o.size,
                o.color, o.active ? 1 : 0, o.dim ? 1 : 0, o.segDim ? 1 : 0,
-               o.badge].join('\u0001');
+               o.badge,
+               // V16 — the skin fields are part of the identity too. Leaving them
+               // out would let a slate pad and a default pad share an id, and
+               // SD.image()'s dedupe would then skip the repaint entirely.
+               o.shape, o.face, o.canvas, o.titleColor].join('\u0001');
     var h = 2166136261;
     for (var i = 0; i < src.length; i++) {
       h ^= src.charCodeAt(i);
@@ -148,13 +156,42 @@ SOS.Render = (function () {
     return 'k' + h.toString(36);
   }
 
+  /* V16 — lighten (amt > 0) or darken (amt < 0) a #rrggbb toward white/black.
+     A module supplying a skin gives ONE surface colour per material; the raised
+     face needs two stops, so the second is derived rather than asked for. That
+     keeps a module's palette declaration as short as the hardware spec it came
+     from — four hex codes, not eight. */
+  function shade(hex, amt) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
+    if (!m) return hex;
+    var n = parseInt(m[1], 16), t = amt < 0 ? 0 : 255, p = Math.abs(amt);
+    var ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(function (c) {
+      return Math.round((t - c) * p + c);
+    });
+    return '#' + ch.map(function (c) {
+      return (c < 16 ? '0' : '') + c.toString(16);
+    }).join('');
+  }
+
   /* The raised face. Split out because the calculator's display row needs the
-     same material without the key's padding rhythm. */
+     same material without the key's padding rhythm.
+
+     V16 — `o.face` overrides the material (the Omnis-Duo skin) and `o.shape`
+     of 'circle' makes it round. A circle is not new geometry: the face is
+     already a square with a corner radius, so r = w/2 IS the circle. Only the
+     top hairline has to change, because a straight chord between two corner
+     radii collapses to zero length once r reaches half the width. */
   function face(id, x, y, w, h, r, o) {
     var tint = o.color || PALETTE.accent;
+    var round = o.shape === 'circle';
+    if (round) r = Math.min(w, h) / 2;
+    var top = o.face
+      ? (o.active ? shade(o.face, 0.16) : o.face)
+      : (o.active ? PALETTE.faceHi : (o.flat ? PALETTE.faceLo : PALETTE.face));
+    var bot = o.face ? shade(o.face, -0.34) : PALETTE.faceLo;
     var s = '<defs><linearGradient id="' + id + 'f" x1="0" y1="0" x2="0" y2="1">'
-      + '<stop offset="0" stop-color="' + (o.active ? PALETTE.faceHi : (o.flat ? PALETTE.faceLo : PALETTE.face)) + '"/>'
-      + '<stop offset="1" stop-color="' + PALETTE.faceLo + '"/></linearGradient>';
+      + '<stop offset="0" stop-color="' + top + '"/>'
+      + '<stop offset="1" stop-color="' + bot + '"/></linearGradient>';
     if (o.active) {
       // Brighter and wider than V9's: with no rim to carry the state, the glow
       // has to do all of the work on its own.
@@ -174,9 +211,20 @@ SOS.Render = (function () {
          + ' fill="none" stroke="' + PALETTE.edge + '" stroke-width="1"/>';
     }
     // the hairline that makes it read as hardware rather than a web panel
-    s += '<path d="M' + (x + r) + ',' + (y + 0.75) + ' H' + (x + w - r) + '"'
-       + ' stroke="rgba(255,255,255,' + (o.active ? '0.20' : '0.10') + ')"'
-       + ' stroke-width="1.5" stroke-linecap="round"/>';
+    var ink = 'rgba(255,255,255,' + (o.active ? '0.20' : '0.10') + ')';
+    if (round) {
+      // The same catch-light, bent around the top of the cap: an arc from 215°
+      // to 325°, which is the span a straight hairline would have covered.
+      var cx = x + w / 2, cy = y + h / 2, rr = r - 1.25;
+      var a1 = 215 * Math.PI / 180, a2 = 325 * Math.PI / 180;
+      s += '<path d="M' + (cx + rr * Math.cos(a1)).toFixed(2) + ',' + (cy + rr * Math.sin(a1)).toFixed(2)
+         + ' A' + rr.toFixed(2) + ',' + rr.toFixed(2) + ' 0 0 1 '
+         + (cx + rr * Math.cos(a2)).toFixed(2) + ',' + (cy + rr * Math.sin(a2)).toFixed(2) + '"'
+         + ' fill="none" stroke="' + ink + '" stroke-width="1.5" stroke-linecap="round"/>';
+    } else {
+      s += '<path d="M' + (x + r) + ',' + (y + 0.75) + ' H' + (x + w - r) + '"'
+         + ' stroke="' + ink + '" stroke-width="1.5" stroke-linecap="round"/>';
+    }
     return s;
   }
 
@@ -193,7 +241,7 @@ SOS.Render = (function () {
     var color = o.color || PALETTE.accent;
     var pad = 6, r = 18, inner = KS - pad * 2;
     var s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + KS + ' ' + KS + '" width="' + KS + '" height="' + KS + '">';
-    s += '<rect width="' + KS + '" height="' + KS + '" fill="' + PALETTE.bg + '"/>';
+    s += '<rect width="' + KS + '" height="' + KS + '" fill="' + (o.canvas || PALETTE.bg) + '"/>';
 
     /* A DISPLAY SEGMENT (V6, redesigned in V10). The calculator's number spans
        the top four keys. Each key is split: the TOP QUARTER carries the segment's
@@ -221,7 +269,9 @@ SOS.Render = (function () {
 
     s += face(id, pad, pad, inner, inner, r, o);
 
-    var textC = o.dim ? PALETTE.faint : PALETTE.text;
+    // V16 — `titleColor` is how a skin gets its "printed on matte" lettering:
+    // the label is muted ink on the cap rather than the default bright text.
+    var textC = o.dim ? PALETTE.faint : (o.titleColor || PALETTE.text);
     var hasSub = !!o.sub, hasKicker = !!o.kicker;
 
     if (hasKicker) {
@@ -287,10 +337,35 @@ SOS.Render = (function () {
 
   function zoneUri(o) { return dataUri(zone(o)); }
 
+  /* V15 — the delay READOUT zone. The strip above dial 5 exists to be read from
+     across a room, so the number gets the whole zone: no indicator bar, no
+     second value, just the division it belongs to, the figure, and its unit.
+
+     The figure auto-fits rather than truncating. `104.90` and `9.5310` are six
+     characters, but a 1/1 at 60 BPM is `4000.00` and the Hz side can reach eight
+     — truncating the readout you built the zone for would be the one failure
+     that matters, so it shrinks instead. */
+  function valueZone(o) {
+    o = o || {};
+    var color = o.color || PALETTE.green;
+    var val = String(o.value == null ? '' : o.value);
+    // 0.62em per char, against the zone width less a small margin.
+    var size = Math.min(58, Math.floor((Z_W - 26) / (0.62 * Math.max(1, val.length))));
+    var s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + Z_W + ' ' + Z_H + '" width="' + Z_W + '" height="' + Z_H + '">';
+    s += '<rect width="' + Z_W + '" height="' + Z_H + '" fill="#0c0f12"/>';
+    if (o.title) s += text(truncate(o.title, 16), Z_W / 2, 19, 12, 700, PALETTE.dim, 'middle', 1.4);
+    s += text(val, Z_W / 2, 66, size, 800, color);
+    if (o.unit) s += text(truncate(o.unit, 8), Z_W / 2, Z_H - 9, 13, 700, color, 'middle', 1.2);
+    return s + '</svg>';
+  }
+
+  function valueZoneUri(o) { return dataUri(valueZone(o)); }
+
   return {
     KS: KS, ZONE_W: Z_W, ZONE_H: Z_H, PALETTE: PALETTE, SIZES: SIZES,
     key: key, keyUri: keyUri, blankUri: blankUri,
     zone: zone, zoneUri: zoneUri,
-    dataUri: dataUri, esc: esc, truncate: truncate,
+    valueZone: valueZone, valueZoneUri: valueZoneUri,
+    dataUri: dataUri, esc: esc, truncate: truncate, shade: shade,
   };
 })();

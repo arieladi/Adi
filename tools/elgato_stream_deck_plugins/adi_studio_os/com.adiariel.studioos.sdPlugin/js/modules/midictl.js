@@ -422,92 +422,12 @@ SOS.Modules.MidiCtl = (function () {
     dials: function (dial) { return ccDial(dial); },
   };
 
-  // ======================================================== State 3 context
-  /* The module's context strip (cols 5-8 + dials 5-6). This is where the legacy
-     pi.html goes: root note, scale and MIDI channel, which used to be per-action
-     Property Inspector fields stored in global settings.
-
-       col:   5        6        7        8
-       row0   C        C#       D        D#
-       row1   E        F        F#       G
-       row2   G#       A        A#       B
-       row3   Scale ◀  Scale ▶  Ch n     Bank      (8,3) = Button 36
-
-     The 12 chromatic roots fall out of the 4x4 block exactly, which is the reason
-     they are laid out in rows of four rather than as a piano.
-
-     Dials 5-6 keep the keyboard on `touch` instead of mirroring their rotate
-     action the way the console overlay does — in State 3 that makes all six
-     segments play, so the full 8-zone keyboard is reachable without going to
-     State 4. Rotate and the row-3 keys cover the editing. */
-  var context = {
-    id: 'state.context.midictl',
-    title: 'Keyboard',
-    module: 'midictl',
-
-    keys: function (button) {
-      var col = S.colOf(button) - S.OVERLAY_COL_MIN, row = S.rowOf(button);
-      if (col < 0) return null;   // states.js owns the fallback for cols 0-4
-
-      if (row < 3) {
-        var idx = row * 4 + col;                 // 0..11
-        return {
-          label: CHROMATIC[idx], size: 'xl',
-          color: R.PALETTE.midi, kind: 'tap',
-          active: idx === rootIndex(),
-          tap: function () { cfg.rootNote = CHROMATIC[idx]; },
-        };
-      }
-
-      if (col === 0) {
-        return { label: 'Scale', glyph: '◀', color: R.PALETTE.midi, kind: 'tap',
-                 tap: function () { cycleScale(-1); } };
-      }
-      if (col === 1) {
-        return { label: 'Scale', glyph: '▶', color: R.PALETTE.midi, kind: 'tap',
-                 tap: function () { cycleScale(1); } };
-      }
-      if (col === 2) {
-        // Button 35 — a plain module key in every state (D2a), no gateway role.
-        // Channel applies to the touch keyboard only; drums and CC dials are
-        // hardwired to channel 1 exactly as the legacy constants declare.
-        return { label: 'Ch ' + cfg.midiChannel, sub: 'keyboard', size: 'md',
-                 color: R.PALETTE.midi, kind: 'tap',
-                 tap: function () { cycleChannel(1); } };
-      }
-      // Button 36. kind:'tap' so it fires on release and is swallowed if the
-      // 500 ms carousel timer wins (D9a) — never implement the hold here.
-      return {
-        label: BANK_LABELS[currentBank], size: 'sm', sub: bankRange(currentBank),
-        color: R.PALETTE.midi, kind: 'tap',
-        tap: cycleBank,
-      };
-    },
-
-    dials: function (dial) {
-      if (dial === 5) {
-        return {
-          title: 'Scale', value: cfg.selectedScale,
-          sub: IPC.isOnline() ? zoneNamesFor(5) : 'service offline',
-          color: accent(),
-          rotate: function (t) { cycleScale(t > 0 ? 1 : -1); },
-          press: function () { cfg.selectedScale = DEFAULT_SCALE; },
-          touch: keyboardTouch(5),
-        };
-      }
-      return {
-        title: 'Root', value: cfg.rootNote,
-        sub: IPC.isOnline() ? zoneNamesFor(6) : 'service offline',
-        color: accent(),
-        rotate: function (t) { cycleRoot(t > 0 ? 1 : -1); },
-        press: function () { cfg.rootNote = DEFAULT_ROOT; },
-        touch: keyboardTouch(6),
-      };
-    },
-  };
+  /* V13 — STATE 3 IS GONE. The chromatic root / scale / channel block that
+     used to live in the context strip goes with it; those controls are
+     reachable on the hub board with NAV off. */
 
   return {
-    hub: hub, context: context,
+    hub: hub,
 
     // Exposed for a headless test in the shape of scripts/test_console.mjs.
     _scale: { intervals: scaleIntervals, rootIndex: rootIndex, zoneNote: zoneNote,

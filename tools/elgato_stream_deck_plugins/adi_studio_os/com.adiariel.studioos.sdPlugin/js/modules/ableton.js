@@ -749,36 +749,13 @@ SOS.Modules.Ableton = (function () {
     },
   };
 
-  // State 3 strip: navigation without leaving whatever module owns the board.
-  var context = {
-    id: 'ableton.context', title: 'Ableton', module: 'ableton',
-    /* V4 — State 3 borrows TWO dials, which is what drops the active controller
-       into its 4-dial Compact layout. The window addresses them as 1 and 2;
-       states.js maps those to physical 5 and 6. */
-    borrowDials: 2,
-    keys: function (button) {
-      var col = S.colOf(button), row = S.rowOf(button);
-      if (col < 5) return null;
-      var idx = (row * 4) + (col - 5);
-      var items = [
-        { label: '◀TRK', run: function () { Bridge.cmd.selectTrack(-1); } },
-        { label: 'TRK▶', run: function () { Bridge.cmd.selectTrack(1); } },
-        { label: '◀DEV', run: function () { Bridge.cmd.selectDevice(-1); } },
-        { label: 'DEV▶', run: function () { Bridge.cmd.selectDevice(1); } },
-        { label: 'EQ8', run: function () { Bridge.cmd.eq8Key(); } },
-      ];
-      var it = items[idx];
-      if (!it) return null;
-      return { label: it.label, size: 'md', color: R.PALETTE.ableton,
-               dim: !Bridge.isOnline(), kind: 'tap', tap: it.run };
-    },
-    dials: function (dial) {
-      var st = Bridge.state();
-      if (dial === 1) return { title: 'Track', value: shortName(st.track.name || '—'), color: R.PALETTE.ableton };
-      return { title: 'Device', value: shortName(st.device.name || '—'),
-               sub: Bridge.isOnline() ? '' : 'bridge offline', color: R.PALETTE.ableton };
-    },
-  };
+  /* V13 — STATE 3 IS GONE, and with it this module's context strip. ◀TRK / DEV▶
+     live on the hub's own board, which is where they belong: the hub is
+     fullScreenCapable, so arriving hands it all 36 keys anyway (D15).
+
+     V14 — the CONSUMER of the 4-dial Compact layouts moved to State 2. Docking
+     Time Divisions borrows physical dials 5-6, `moduleDials()` returns 4, and
+     `composite()` calls `build(4)` — the same path State 3 used to open. */
 
   // Repaint whenever Live's state moves.
   Bridge.on('state', function () { pickController(); });
@@ -790,7 +767,7 @@ SOS.Modules.Ableton = (function () {
   Bridge.on('error', function (msg) { SOS.SD.log('ableton bridge error: ' + msg); });
 
   return {
-    hub: hub, context: context, bridge: Bridge,
+    hub: hub, bridge: Bridge,
     setUrl: Bridge.setUrl,
     // exposed for scripts/test_ableton.mjs
     _ctx: ctx, _composite: composite, _zones: zoneSvg,

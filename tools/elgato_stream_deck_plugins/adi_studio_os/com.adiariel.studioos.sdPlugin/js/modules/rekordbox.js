@@ -14,11 +14,16 @@
 
      col:     0      1      2      3      4      5      6      7      8
      row0   [ — ]  [ ▲ ]  [ ▼ ]  [ ⊞ ]  [    ] [    ] [    ] [    ] [    ]
-     row1   [A1]   [A2]   [A3]   [A4]   [SHFT] [B1]   [B2]   [B3]   [B4]
-     row2   [A5]   [A6]   [A7]   [A8]   [SHFT] [B5]   [B6]   [B7]   [B8]
+     row1   [ A ]  [ B ]  [ C ]  [ D ]  [SHFT] [ A ]  [ B ]  [ C ]  [ D ]
+     row2   [ E ]  [ F ]  [ G ]  [ H ]  [SHFT] [ E ]  [ F ]  [ G ]  [ H ]
      row3   [◀◀A]  [▶▶A]  [▶‖A]  [CUE A][    ] [CUE B][▶‖B]  [◀◀B]  [▶▶B]
 
      dials   BPM A   FLT A   VOL A  │  VOL B   FLT B   BPM B
+
+   V16 — the pads carry the Omnis-Duo's OWN lettering (A-D over E-H, identical on
+   both decks) on the Omnis-Duo's own indigo caps, and CUE / ▶‖ are circles. The
+   MIDI matrix below did not move a single number to make that happen: the pad
+   letter is a label, the note is still HOT_CUE + (slot - 1).
 
    (0,0) held the legacy "Launch RekordBox Controller" key. D1 abolished
    switchToProfile ("one profile, forever"), so the launcher has no job left and
@@ -127,6 +132,30 @@ SOS.Modules.Rekordbox = (function () {
     filter:    '#8a94a0',
     tempo:     '#aeb6bd',            // == legacy layouts/tempo.json title colour
   };
+
+  /* V16 — THE OMNIS-DUO SKIN. Adi's Pioneer Omnis-Duo is deep indigo, not the
+     near-black the rest of Studio OS uses, and this module is a replica of that
+     instrument rather than a page of the OS. Ruled as an explicit, module-local
+     deviation from the global V9/V10 aesthetic: these four hex codes are the
+     hardware, sampled from it, and nothing outside rekordbox.js may read them.
+
+     The ACCENT colours above are untouched. The skin changes the MATERIAL — what
+     the cap is made of — while a lit cue is still green and a lit CUE still
+     glows orange, because that is what the hardware does too. */
+  var SKIN = {
+    canvas:    '#1a202c',   // the chassis between the caps
+    pad:       '#232d3d',   // a performance pad / standard key
+    transport: '#121822',   // the recessed circular CUE and PLAY buttons
+    type:      '#64748b',   // muted lettering, printed on a matte surface
+  };
+
+  /* Every binding this module paints wears the skin. Done in ONE place, at the
+     bottom of keyFor(), rather than spread across five role builders — a skin
+     applied per-role is a skin that gets forgotten when a sixth role is added. */
+  function skinned(b, over) {
+    if (!b) return b;
+    return Object.assign({ canvas: SKIN.canvas, face: SKIN.pad, titleColor: SKIN.type }, b, over || {});
+  }
 
   // ==================================================================== state
   var shiftHeld = {};      // button -> true, for each shift key currently down
@@ -273,19 +302,30 @@ SOS.Modules.Rekordbox = (function () {
          : GLOBAL_NOTE.BROWSE_DOWN;
   }
 
+  /* V16 — the pads are lettered A-H, exactly like the Omnis-Duo's, on BOTH
+     decks. The deck no longer appears on the cap: the hardware does not print it
+     either, and the two banks are told apart by which side of the SHIFT column
+     they sit on. Purely cosmetic — the note is still HOT_CUE + (slot - 1), so
+     every rekordbox MIDI-LEARN mapping is untouched. */
+  var CUE_LETTER = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+
   function hotcueBinding(button, spec) {
     var slot = 'k' + button;
     // The note is chosen at PRESS time from the shift layer that is live then;
     // release replays whatever was actually sent (see pressNote).
     var del = shiftActive();
+    var letter = CUE_LETTER[spec.slot - 1] || String(spec.slot);
     return {
       // 'lg' on both faces: letting the renderer's length heuristic choose would
-      // swing 'A1' (2 chars -> 82px) against 'DEL 1' (5 -> 26px), and a pad that
+      // swing 'A' (1 char -> 74px) against 'DEL A' (5 -> 26px), and a pad that
       // changes size when you touch shift reads as a glitch on hardware.
-      label: del ? 'DEL ' + spec.slot : spec.deck + spec.slot,
+      label: del ? 'DEL ' + letter : letter,
       size: 'lg',
       sub: del ? 'delete cue' : 'hot cue',
       color: tone(del ? COLOR.hotcueDel : COLOR.hotcue),
+      // Muted ink at rest so the letter reads as printed on the pad; the DELETE
+      // layer keeps its red lettering, which is the only warning the cap gives.
+      titleColor: del ? tone(COLOR.hotcueDel) : SKIN.type,
       dim: !IPC.isOnline(),
       active: held(slot),
       kind: 'momentary',
@@ -319,6 +359,11 @@ SOS.Modules.Rekordbox = (function () {
     return {
       glyph: isCue ? 'CUE' : '▶‖',
       label: spec.deck,
+      /* V16 — CUE and PLAY are PERFECT CIRCLES, as on the hardware, sitting in
+         their own darker recess. The renderer needs no new geometry for this:
+         the cap is already a square with a corner radius, so `shape: 'circle'`
+         simply takes that radius to half the width. */
+      shape: 'circle', face: SKIN.transport,
       // PAINT-ONLY addition: the legacy repainted hot cues and shift keys on a
       // shift change but not transport, so PLAY/CUE silently sent their shifted
       // notes. Studio OS repaints the whole surface anyway, so saying so is free.
@@ -390,12 +435,27 @@ SOS.Modules.Rekordbox = (function () {
 
   function keyFor(button) {
     var spec = KEY[button];
-    if (!spec) return null;
-    if (spec.role === 'hotcue')    return hotcueBinding(button, spec);
-    if (spec.role === 'shift')     return shiftBinding(button);
-    if (spec.role === 'transport') return transportBinding(button, spec);
-    if (spec.role === 'nudge')     return nudgeBinding(button, spec);
-    if (spec.role === 'browse')    return browseBinding(button, spec);
+
+    /* An unmapped cell is painted as a BARE CHASSIS PANEL rather than handed
+       back as null. Null falls through to the engine's default blank, which is
+       near-black — and a near-black hole in the middle of an indigo board reads
+       as a broken key, not an empty one.
+
+       Button 1 is the one cell that has to be asked twice. While NAV is on it is
+       the navigation anchor and MUST answer null, or states.js has nothing to
+       hang Back on. With NAV off it belongs to the module like every other empty
+       cell, so it gets the chassis too — which is exactly the case the first
+       render of this skin got wrong and left as a black square. */
+    if (!spec) {
+      if (button === S.BTN_BACK && !SOS.States.isFullScreen()) return null;
+      return { dim: true, kind: 'tap', canvas: SKIN.canvas, face: SKIN.canvas };
+    }
+
+    if (spec.role === 'hotcue')    return skinned(hotcueBinding(button, spec));
+    if (spec.role === 'shift')     return skinned(shiftBinding(button));
+    if (spec.role === 'transport') return skinned(transportBinding(button, spec));
+    if (spec.role === 'nudge')     return skinned(nudgeBinding(button, spec));
+    if (spec.role === 'browse')    return skinned(browseBinding(button, spec));
     return null;
   }
 
@@ -510,28 +570,12 @@ SOS.Modules.Rekordbox = (function () {
     dials: dialFor,
   };
 
-  /* State 3 — the module's context strip. It hands back exactly the cols 5-8 /
-     dials 5-6 block the overlay borrows, by calling the same builders the hub
-     uses. Deliberately not a second, hand-written Deck B layout: two copies of
-     the same 12 controls would drift, and this way State 3 and State 4 are
-     provably the same instrument. */
-  var context = {
-    id: 'rekordbox.context',
-    title: 'Deck B',
-    module: 'rekordbox',
-    color: R.PALETTE.rekordbox,
-    keys: function (button) {
-      if (!S.inOverlay(button)) return null;   // the hub still owns cols 0-4
-      return keyFor(button);
-    },
-    dials: function (dial) {
-      if (dial < 5) return null;               // dials 1-4 stay with the hub
-      return dialFor(dial);
-    },
-  };
+  // V13 — the State 3 context strip is gone with the state itself. Deck B is
+  // reached by turning NAV off, which is what `fullScreenCapable` already does
+  // on arrival (D15).
 
   return {
-    hub: hub, context: context,
+    hub: hub,
 
     // Persistence seam for the orchestrator (see the note above): call
     // restore(saved.levels) at boot and wirePersist(fn) to start saving.

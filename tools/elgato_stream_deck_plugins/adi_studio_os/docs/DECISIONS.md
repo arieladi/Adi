@@ -1227,3 +1227,159 @@ glyph above a hairline, and the rest to the number at display size.
 `⌷` (U+2337) was used as a "hold" mark and came out as an empty box on the
 device. The key font is not guaranteed to carry anything beyond the set already
 in use. `scripts/test_console.mjs` now pins the caption to that set.
+
+
+---
+
+## Batch 13 — scrapping State 3, and the Omnis-Duo
+
+Adi reviewed a conflict briefing covering all three phases and returned one
+unified ruling for every open question at once. Five of the eight items below
+contradicted a rule already in force; none was decided here.
+
+**Workflow change (P4).** Conflicts are presented as PLAIN OUTPUT and the session
+then stops. No interactive multiple-choice menu: Adi wants to see every conflict
+side by side and rule on them as one coherent set, because a menu fragments a
+decision he prefers to make whole.
+
+### V13 — State 3 is scrapped; the cycle is `0 → 1 → 2 → OFF → 0`
+
+**RULING — State 3 (Context) is removed entirely**, superseding V8 and amending
+V1's five-position carousel.
+
+An empty global shell was the wrong home for module sub-menus. A module that is
+full-screen owns all 36 keys and can present its own; a *global* state that every
+module has to fill is a shell that most modules leave blank. NAV OFF keeps its
+job unchanged and simply moves from index 4 to index 3.
+
+Removed with it: `States.wireContext`, the `contextProvider` seam, the breadcrumb
+fallback in `modules/index.js`, and the four per-module `context` screens
+(ableton, rekordbox, midictl, viz).
+
+**Two engine bugs surfaced doing this**, both invisible until the index moved:
+
+* `input.js` compared `getState() !== 4` to decide whether Button 1 was
+  reserved. With NAV OFF at 3 that silently un-reserved Back in *every* state.
+  The hook is now `isFullScreen()` — it asks the question instead of comparing
+  the index, so the number can never rot again.
+* `setState()` stored any integer it was handed. `setState(4)` on a 4-position
+  carousel produced a state with no name, no dock width and no window, and every
+  later carousel step was offset by one. Out-of-range is now refused and logged.
+
+### V14 — State 2 is the Compact consumer, and 0/1 pass through by taking nothing
+
+The brief asked for the Compact strips to "pass through" onto States 0 and 1.
+They already do — and as FULL, which is strictly better: States 0/1 borrow no
+dials, so the module keeps six and `composite()` calls `build(6)`. Painting a
+4-dial Compact layout there would have blanked two live dials and left them dead
+(`hub.dials()` returns a faceless zone past `lastZones`, with no `rotate`).
+
+**RULING — States 0 and 1 keep taking NOTHING, which IS the pass-through. State 2
+borrows TWO dials (physical 5 and 6) and becomes the sole consumer of the 14
+Compact layouts.** V4's table is amended: State 2 goes from one borrowed dial to
+two.
+
+This also closes a latent hole nobody had hit: State 2's single borrowed dial
+made `moduleDials()` return 5, so every controller was being asked for a
+`build(5)` that L6 never commissioned. There is no 5-zone case left.
+
+### V15 — State 2 gains a readout, a format dial and a PASTE key
+
+The second borrowed dial has to earn its place. It does three jobs:
+
+* **Dial 5 turn** — scrolls the division grid, same clamp and direction as ▼.
+  The ▲/▼ keys are unchanged; the dial duplicates them, it does not replace them.
+* **Dial 5 push** — toggles ms ⇄ Hz. This moves OFF the value key (amends V11).
+* **Dial 5 face** — the computed figure at display size in green, with its
+  division above and its unit below. `R.valueZone()`; the figure auto-fits rather
+  than truncating, because a 1/1 at 60 BPM is `4000.00` and Hz runs to eight
+  characters.
+
+**The value key now TYPES.** Tapping the top-right key sends the figure to the
+focused application through a new `os.type` verb — the point of computing a delay
+time on a device that sits next to the keyboard. The unit is NOT typed; a plugin
+field wants the number.
+
+`os.type` **whitelists** its payload to digits, dot and minus rather than
+escaping it. Nothing that survives the filter can break out of the AppleScript
+string literal it is interpolated into, so there is nothing left to escape.
+Verified through the real socket: `abc"; do shell script "x` filters to empty and
+is refused.
+
+The green is `#39d353` — the green the rekordbox hot cues already ship. On a
+device where the proven set is the safe set, a new colour is a new risk for
+nothing.
+
+### V16 — the rekordbox Omnis-Duo skin *(module-local, deviates from V9/V10)*
+
+**RULING — rekordbox may look like the hardware it replicates rather than like
+Studio OS.** Explicit permission to deviate from the global key aesthetic, scoped
+to this one module. Four sampled hex codes, and nothing outside `rekordbox.js`
+may read them:
+
+| | |
+|---|---|
+| chassis / canvas | `#1a202c` |
+| performance pad | `#232d3d` |
+| circular transport recess | `#121822` |
+| muted printed lettering | `#64748b` |
+
+* **Hot cues are lettered A-D over E-H, identical on BOTH decks**, exactly like
+  the Omnis-Duo. The deck letter leaves the cap; the two banks are told apart by
+  which side of the SHIFT column they sit on. The shift layer reads `DEL A`…
+  `DEL H` and keeps its red lettering, which is the only warning the cap gives.
+  **Purely cosmetic** — the note is still `HOT_CUE + (slot − 1)`, asserted
+  through the real binding, so every MIDI-LEARNed mapping is untouched.
+* **CUE and PLAY are perfect circles.** This needed no new geometry: the cap is
+  already a square with a corner radius, so `shape: 'circle'` takes that radius
+  to half the width. Only the top catch-light changed — a straight chord between
+  two corner radii collapses to zero length at r = w/2, so it becomes an arc.
+* Renderer additions: `shape`, `face`, `canvas`, `titleColor`, all forwarded
+  through `keySpec()` (the hand-written whitelist from the field notes) and all
+  folded into `hashId()` — a skin field left out of the hash would let a slate
+  pad and a default pad share an id, and `SD.image()`'s dedupe would then skip
+  the repaint entirely.
+* An unmapped cell paints as **bare chassis**, not the engine's near-black blank.
+  A near-black hole in an indigo board reads as a broken key. **Button 1 is asked
+  twice**: null while NAV is on so states.js can hang Back on it, chassis with
+  NAV off where the module owns it. The first render of this skin got exactly
+  that case wrong and left a black square at (0,0) — caught in the preview sheet
+  before deploying, which is what the preview sheet is for.
+
+### V17 — the Ableton smart launcher, and the bridge had no server
+
+**RULING — the Root Hub's Ableton tile launches Live if Live is not running, and
+navigates either way.**
+
+The plumbing already existed: `IPC.os.launch` → `os.launch` → `open -a` /
+`Start-Process`. What did not exist was the version hunt — the bundle is
+`Ableton Live 11 Suite` here and `…12 Suite` elsewhere, so the tile names an
+ACTION (`ableton`) and the service resolves the newest installed Live at press
+time, comparing embedded version numbers numerically. macOS `open -a` focuses a
+running app rather than starting a second one, so the check is belt-and-braces;
+`Bridge.isOnline()` supplies it.
+
+**The 14 VST layouts were never missing.** Diagnosed rather than rebuilt: the
+AdiVST remote script existed only as source in the old repo. It was **not
+installed** — `/Applications/Ableton Live 11 Suite.app/…/MIDI Remote Scripts/`
+held only `Radium49_61`, `~/Music/Ableton/User Library/Remote Scripts/` did not
+exist, and nothing listened on 9006. So `Bridge.isOnline()` was false, `pump()`
+never composited, and the registry never resolved past Generic. Writing new
+routing over the working routing would have been the wrong fix.
+
+Installed byte-identical to `~/Music/Ableton/User Library/Remote Scripts/AdiVST`,
+which is version-agnostic on macOS and therefore serves Live 11 and Live 12 from
+one copy — and survives Live updates, which the app-bundle location does not.
+**Still requires Adi to select AdiVST as a Control Surface in Live's settings.**
+
+**Confirmed, not changed:** VSTs paint the touch strip and dials only and own
+zero keys (L7). The keys staying as the Ableton hub shell while a VST is focused
+is the intended design.
+
+### Superseded by this batch
+
+* **V1** — the five-position carousel. Four positions now.
+* **V4** — State 2's single borrowed dial. Two now.
+* **V8** — State 3 as an empty context shell. There is no State 3.
+* **V11**, in part — the value key's ms/Hz toggle moved to dial 5's push.
+* **L2** — still unbuilt, but its "4 hot cues each" now means cues **A-D**.

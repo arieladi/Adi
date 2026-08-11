@@ -47,6 +47,7 @@ const HANDLERS = {
 
   // --- OS ---
   "os.key":       (m) => OS.key(m.token),
+  "os.type":      (m) => OS.type(m.text),
   "os.hotkey":    (m) => OS.hotkey(m.combo),
   "os.action":    (m) => OS.action(m.name),
   "os.volume":    (m) => OS.volume(m.delta),

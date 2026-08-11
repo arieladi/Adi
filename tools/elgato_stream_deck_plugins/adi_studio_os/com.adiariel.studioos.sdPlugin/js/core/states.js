@@ -8,21 +8,25 @@
 
      State 0  Numpad          16-key dock, NO dials
      State 1  Calculator      16-key dock, NO dials
-     State 2  Divisions       16-key dock + 1 borrowed dial  (BPM)
-     State 3  Context         16-key dock + 2 borrowed dials (module-supplied)
-     State 4  NAV OFF         docks nothing — the module has the whole board
+     State 2  Divisions       16-key dock + 2 borrowed dials (grid/format + BPM)
+     State 3  NAV OFF         docks nothing — the module has the whole board
 
-   V1 — the carousel is `0 -> 1 -> 2 -> 3 -> OFF -> 0`. State 4 is the NAV-OFF
-   position: NAV hides completely and the module reclaims all 36 keys. Without
-   it Rekordbox would be stuck at 5 columns, where it loses half its hot cues.
+   V13 — STATE 3 (Context) IS GONE and the cycle is `0 -> 1 -> 2 -> OFF -> 0`.
+   An empty global shell was the wrong home for module sub-menus: a module that
+   is full-screen owns the whole board and can present its own. NAV OFF keeps its
+   job and simply moves down one index. Without it Rekordbox would be stuck at 5
+   columns, where it loses half its hot cues.
 
    V3 — the carousel is triggered by a LONG PRESS ON THE RIGHT-MOST DIAL, wired
    in plugin.js. Button 36 no longer switches state and carries no engine role.
 
-   V4 — dial borrowing is now PER STATE, not a blanket rule. States 0 and 1 leave
-   the strip completely alone; State 2 takes one dial for BPM; State 3 takes two,
-   which is exactly what drops the active Ableton controller into its 4-dial
-   Compact layout. The Compact work is not dormant — State 3 is its consumer.
+   V14 — dial borrowing is PER STATE, and STATE 2 IS NOW THE COMPACT CONSUMER.
+   States 0 and 1 leave the strip completely alone, so the module beneath keeps
+   all six dials and stays in its FULL layout — the pass-through is simply that
+   nothing is taken. State 2 takes TWO (physical 5 and 6), which leaves the
+   module four and is exactly what drops the active Ableton controller into its
+   4-dial Compact layout. The Compact suite is not dormant: State 2 is its sole
+   consumer, and the undesigned 5-zone case disappears with it.
 
    Every window is the SAME standard 4x4 dock. Uniformity is the point: the
    module region never changes width depending on which window you opened.
@@ -55,16 +59,15 @@ window.SOS = window.SOS || {};
 SOS.States = (function () {
   var S = SOS.Surface, R = SOS.Render, Nav = SOS.Nav, LO = SOS.Layout;
 
-  var COUNT = 5;
-  var NAMES = ['Numpad', 'Calc', 'Divisions', 'Context', 'NAV OFF'];
-  var FULL = 4, DELAY = 2, CONTEXT = 3;
+  var COUNT = 4;
+  var NAMES = ['Numpad', 'Calc', 'Divisions', 'NAV OFF'];
+  var FULL = 3, DELAY = 2;
 
-  // Every window is the same 4-column dock; State 4 docks nothing.
-  var DOCK_COLS = [4, 4, 4, 4, 0];
+  // Every window is the same 4-column dock; NAV OFF docks nothing.
+  var DOCK_COLS = [4, 4, 4, 0];
 
   var state = 0;
   var windows = {};         // state index -> screen
-  var contextProvider = function () { return null; };
   var painting = false, dirty = false;
 
   // ---------------------------------------------------------------- ownership
@@ -73,7 +76,6 @@ SOS.States = (function () {
 
   function navScreen() {
     if (state === FULL) return null;
-    if (state === CONTEXT) return contextProvider(Nav.activeModule()) || null;
     return windows[state] || null;
   }
 
@@ -184,10 +186,20 @@ SOS.States = (function () {
   }
 
   function setState(next) {
+    /* V13 — reject an out-of-range index rather than storing it. While the
+       carousel had five positions this could not happen; now that it has four, a
+       stale `setState(4)` would take the surface to a state with no name, no
+       dock width and no window, and every subsequent carousel step would be
+       offset by one. Refusing is silent-safe: the surface simply does not move. */
+    next = next | 0;
+    if (next < 0 || next >= COUNT) {
+      SOS.SD.log('states: ignoring out-of-range state ' + next);
+      return;
+    }
     if (next === state) return;
     var prev = state;
     state = next;
-    // Button 1 changes hands crossing the State 4 boundary; drop armed timers so
+    // Button 1 changes hands crossing the NAV-OFF boundary; drop armed timers so
     // a press that started under the old rules cannot resolve under the new ones.
     SOS.Input.resetAnchors();
     var o = windows[prev]; if (o && o.onExit) o.onExit();
@@ -198,7 +210,6 @@ SOS.States = (function () {
   }
 
   function registerOverlay(index, screen) { windows[index] = screen; return screen; }
-  function wireContext(fn) { contextProvider = fn || function () { return null; }; }
 
   // ------------------------------------------------------------------ painting
   function decorate(button, b) {
@@ -223,6 +234,8 @@ SOS.States = (function () {
       kicker: b.kicker, kickerColor: b.kickerColor, corner: b.corner,
       cornerColor: b.cornerColor, subColor: b.subColor,
       seg: b.seg, segDim: b.segDim,
+      // V16 additions — the per-module hardware skin (Rekordbox / Omnis-Duo).
+      shape: b.shape, face: b.face, canvas: b.canvas, titleColor: b.titleColor,
     };
   }
 
@@ -260,12 +273,12 @@ SOS.States = (function () {
   }
 
   return {
-    COUNT: COUNT, NAMES: NAMES, FULL: FULL, DELAY: DELAY, CONTEXT: CONTEXT,
+    COUNT: COUNT, NAMES: NAMES, FULL: FULL, DELAY: DELAY,
     DOCK_COLS: DOCK_COLS,
     get: function () { return state; },
     name: function () { return NAMES[state]; },
     setState: setState, carousel: carousel, syncToScreen: syncToScreen,
-    registerOverlay: registerOverlay, wireContext: wireContext,
+    registerOverlay: registerOverlay,
     overlayScreen: navScreen, navScreen: navScreen,
     regions: regions, dockCols: dockCols,
     overlayOwnsKey: overlayOwnsKey, overlayOwnsDial: overlayOwnsDial,

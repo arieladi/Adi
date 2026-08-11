@@ -5,14 +5,22 @@
    All three are the SAME standard 4x4 dock (16 keys), region-local: `keys(col,
    row)` gets 0..3 / 0..3 and never needs to know where the dock sits.
 
-   V4 — DIAL BOUNDARIES, PER STATE. The refactor's "NAV never touches the dials"
-   was corrected to a per-state rule:
+   V14 — DIAL BOUNDARIES, PER STATE, and State 2 is now the Compact consumer:
 
      State 0 Numpad       16 keys, NO dials — the strip is untouched
      State 1 Calculator   16 keys, NO dials — the strip is untouched
-     State 2 Divisions    16 keys + ONE dial (dial 6) for BPM
-     State 3 Context      16 keys + TWO dials — this is what puts the Ableton
-                          controllers into their 4-dial Compact layout
+     State 2 Divisions    16 keys + TWO dials (physical 5 and 6)
+     State 3 NAV OFF      nothing docked at all
+
+   States 0 and 1 leaving the strip alone IS the pass-through: the module beneath
+   keeps six dials and stays in its Full layout. State 2 takes two, which leaves
+   the module four — the `build(4)` path, and the only door to the 14 Compact
+   strip layouts now that the old State 3 shell is gone.
+
+   V15 — STATE 2 GAINED A READOUT AND A PASTE. Dial 5 carries the computed value
+   at display size in green, scrolls the grid when turned and toggles ms/Hz when
+   pushed. The top-right key keeps showing the figure and now TYPES it into the
+   focused application instead of toggling the unit.
 
    V6 — CALCULATOR. The operators used to live on two borrowed dials; they now
    live on the keys, because States 0 and 1 may not touch the strip. The freed
@@ -29,7 +37,7 @@
    variants now, and the nine cells carry nothing but their fraction:
 
        col:      0          1            2            3
-       row0   [ NOTES ]  [ DOTTED ]  [ TRIPLETS ]  [ 104.90 ms ]   <- tap = ms/Hz
+       row0   [ NOTES ]  [ DOTTED ]  [ TRIPLETS ]  [ 104.90 ms ]   <- tap = PASTE
        row1   [ 1/8 ]    [ 1/8 D ]   [ 1/8 T ]     [ ▲ ]
        row2   [ 1/16 ]   [ 1/16 D ]  [ 1/16 T ]    [ ▼ ]
        row3   [ 1/32 ]   [ 1/32 D ]  [ 1/32 T ]    [ BPM 143 ]
@@ -313,7 +321,6 @@ SOS.Modules.Console = (function () {
 
   var delay = {
     id: 'state.delay', title: 'Divisions', module: 'console',
-    borrowDials: 1,
     layouts: [{
       cols: 4,
       keys: function (col, row) {
@@ -325,15 +332,24 @@ SOS.Modules.Console = (function () {
           };
         }
 
-        // --- row 0, col 3: the ONLY place a computed value appears.
+        /* --- row 0, col 3: the value key.
+           V15 — it still shows the computed figure (now in green, matching the
+           strip readout above dial 5), but its PRESS has changed: the ms/Hz
+           toggle moved to dial 5's push, and the key now TYPES the figure into
+           whatever application has focus. That is the whole point of computing a
+           delay time on a device sitting next to the keyboard. */
         if (row === 0) {
-          var ms = selMs();
+          var txt = valueText(selMs(), state.unit);
           return {
             kicker: gridLabel(state.selRow, state.selCol),
-            label: valueText(ms, state.unit), size: 'md',
-            sub: state.unit, subColor: R.PALETTE.accent,
-            color: R.PALETTE.accent, active: true, kind: 'tap',
-            tap: function () { state.unit = state.unit === 'ms' ? 'Hz' : 'ms'; },
+            label: txt, size: 'md', titleColor: R.PALETTE.green,
+            sub: 'PASTE ' + state.unit, subStrong: true, subColor: R.PALETTE.green,
+            color: R.PALETTE.green, active: true, kind: 'tap',
+            dim: !IPC.isOnline(),
+            // The unit is NOT typed: what a plugin's delay field wants is the
+            // number. `txt` is captured at build time, so the key types exactly
+            // the figure that was printed on it.
+            tap: function () { IPC.os.type(txt); },
           };
         }
 
@@ -369,10 +385,34 @@ SOS.Modules.Console = (function () {
         };
       },
     }],
-    // ONE dial (V4): the window addresses it as dial 1; states.js maps it to
-    // physical dial 6.
+    /* TWO dials (V14). The window addresses them 1 and 2; states.js maps those
+       to physical 5 and 6, so BPM stays exactly where it has always been on the
+       right-hand end and the new readout lands beside it.
+
+       Borrowing the second dial is also what gives the 14 Ableton Compact strip
+       layouts a consumer: the module beneath is left with four, which is the
+       `build(4)` path. State 2 is the only state that opens it. */
+    borrowDials: 2,
     dials: function (dial) {
-      if (dial !== 1) return null;
+      // --- window dial 1 = physical dial 5: the readout, the grid, the format.
+      if (dial === 1) {
+        return {
+          svg: R.valueZone({
+            title: gridLabel(state.selRow, state.selCol),
+            value: valueText(selMs(), state.unit),
+            unit: state.unit,
+            color: R.PALETTE.green,
+          }),
+          // Same direction as the ▼ key: turning right walks toward the shorter
+          // notes. The keys are not replaced, they are duplicated — the arrows
+          // still work and still grey out at the ends of the same clamp.
+          rotate: function (t) { shiftWindow(t); },
+          press: function () { state.unit = state.unit === 'ms' ? 'Hz' : 'ms'; },
+          touch: function (x) { shiftWindow(x < 100 ? -1 : 1); },
+        };
+      }
+      if (dial !== 2) return null;
+      // --- window dial 2 = physical dial 6: BPM, unchanged.
       return {
         title: 'BPM', value: String(state.bpm), indicator: state.bpm / BPM_MAX,
         sub: 'push = ' + BPM_DEFAULT, color: R.PALETTE.console,

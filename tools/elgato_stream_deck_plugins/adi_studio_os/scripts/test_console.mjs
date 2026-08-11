@@ -73,7 +73,7 @@ for (const [name, win] of [["numpad", C.numpad], ["calculator", C.calculator], [
 // V4 — dial borrowing is per state, and 0/1 must not touch the strip at all.
 ok("numpad borrows NO dials", !C.numpad.borrowDials);
 ok("calculator borrows NO dials (V4)", !C.calculator.borrowDials);
-ok("divisions borrows exactly ONE dial for BPM (V4)", C.delay.borrowDials === 1, String(C.delay.borrowDials));
+ok("divisions borrows TWO dials — readout + BPM (V14)", C.delay.borrowDials === 2, String(C.delay.borrowDials));
 
 console.log("\n[5] State 0 numpad — C is now an asterisk (V5)");
 const padL = LO.pick(C.numpad, 4);
@@ -241,26 +241,49 @@ C._reset();
 st.bpm = 120;
 ok("it shows the selected cell — straight 1/16 at 120 BPM", div(3, 0).label === "125.00", div(3, 0).label);
 ok("…labelled with which cell that is", div(3, 0).kicker === "1/16", div(3, 0).kicker);
-ok("…and its unit", div(3, 0).sub === "ms");
+ok("…and its unit, promoted to a PASTE caption (V15)", div(3, 0).sub === "PASTE ms", div(3, 0).sub);
 div(1, 2).tap();            // dotted 1/16
 ok("selecting dotted 1/16 moves the readout", div(3, 0).label === "187.50", div(3, 0).label);
 ok("…and relabels it", div(3, 0).kicker === "1/16 D", div(3, 0).kicker);
 div(2, 2).tap();            // triplet 1/16
 ok("selecting triplet 1/16 reads 83.33", div(3, 0).label === "83.33", div(3, 0).label);
+ok("the grid never shows a value", [1, 2, 3].every((r) => [0, 1, 2].every((c) => div(c, r).sub == null)));
+
+console.log("\n[9a] V15 — the value key TYPES, and dial 5 owns the format");
+C._reset(); st.bpm = 120;
+const typed = [];
+SOS.IPC.os.type = (t) => { typed.push(t); return Promise.resolve(true); };
 div(3, 0).tap();
-ok("tapping the value key switches to Hz", st.unit === "Hz" && div(3, 0).sub === "Hz");
+ok("tapping the value key types the figure, not the unit", typed.join() === "125.00", typed.join());
+ok("…and does NOT toggle the unit any more", st.unit === "ms", st.unit);
+const dRead = C.delay.dials(1);
+dRead.press();
+ok("dial 5's push toggles ms -> Hz", st.unit === "Hz", st.unit);
 ok("Hz is 4 dp", /^\d+\.\d{4}$/.test(div(3, 0).label), div(3, 0).label);
 div(3, 0).tap();
-ok("the grid never shows a value, in either unit",
-   [1, 2, 3].every((r) => [0, 1, 2].every((c) => div(c, r).sub == null)));
+ok("…and the key then types the Hz figure", typed[1] === div(3, 0).label, typed.join());
+dRead.press();
+ok("pushing again returns to ms", st.unit === "ms", st.unit);
 
-console.log("\n[9b] State 2 BPM — bottom-right key + one dial");
+console.log("\n[9b] V15 — dial 5 scrolls the grid, dial 6 keeps BPM");
 C._reset();
+const startAt = st.start;
+dRead.rotate(1);
+ok("turning dial 5 shifts the grid toward the shorter notes", st.start === startAt + 1, String(st.start));
+dRead.rotate(-1);
+ok("…and back", st.start === startAt, String(st.start));
+dRead.rotate(-9999);
+ok("it clamps at the top exactly like the ▲ key", st.start === 0, String(st.start));
+dRead.rotate(9999);
+ok("…and at the bottom", st.start === m.MAX_START, String(st.start));
+ok("its zone is a raw SVG readout, not a title/value pair", typeof dRead.svg === "string" && dRead.svg.indexOf("<svg") === 0);
+C._reset();
+
 ok("BPM sits bottom-right", div(3, 3).kicker === "BPM" && div(3, 3).label === "143", div(3, 3).label);
-const d1 = C.delay.dials(1);
-ok("the window exposes exactly one dial", !!d1 && C.delay.dials(2) === null);
+const d1 = C.delay.dials(2);
+ok("the window exposes exactly two dials", !!d1 && !!C.delay.dials(1) && C.delay.dials(3) === null);
 d1.rotate(7);
-ok("turning it raises BPM", st.bpm === 150, String(st.bpm));
+ok("turning dial 6 raises BPM", st.bpm === 150, String(st.bpm));
 ok("the key follows the dial", div(3, 3).label === "150", div(3, 3).label);
 ok("the readout follows BPM too", div(3, 0).label === m.msText(m.straightMs(150, 16)), div(3, 0).label);
 d1.press();
@@ -269,6 +292,28 @@ d1.rotate(-9999);
 ok("BPM cannot go below 1", st.bpm === 1, String(st.bpm));
 d1.rotate(9999);
 ok("…or above 300", st.bpm === 300, String(st.bpm));
+C._reset();
+
+console.log("\n[9c] V15 — the readout zone above dial 5");
+C._reset(); st.bpm = 120;
+const zoneSvg = C.delay.dials(1).svg;
+const figSize = Number(/<text[^>]*font-size="(\d+)"[^>]*>125\.00/.exec(zoneSvg)[1]);
+ok("it prints the figure at display size", figSize >= 40, String(figSize));
+ok("…in green", zoneSvg.indexOf(SOS.Render.PALETTE.green) > 0);
+ok("…labelled with the division it belongs to", zoneSvg.indexOf("1/16") > 0);
+ok("…and carrying its unit", />ms</.test(zoneSvg));
+st.unit = "Hz";
+ok("the unit follows the toggle", />Hz</.test(C.delay.dials(1).svg));
+st.unit = "ms";
+/* A 1/1 at 60 BPM is 4000.00 and the Hz side runs to eight characters. The zone
+   SHRINKS rather than truncating: a readout you built the zone for is the one
+   thing that must never be cut off. */
+const wide = SOS.Render.valueZone({ value: "12345.78", unit: "ms" });
+const narrow = SOS.Render.valueZone({ value: "83.33", unit: "ms" });
+ok("a long figure gets a smaller face than a short one",
+   Number(/<text[^>]*font-size="(\d+)"[^>]*>12345\.78/.exec(wide)[1]) <
+   Number(/<text[^>]*font-size="(\d+)"[^>]*>83\.33/.exec(narrow)[1]));
+ok("nothing is truncated out of the readout", wide.indexOf("12345.78") > 0 && !/…/.test(wide));
 C._reset();
 
 console.log("\n[10] calculator engine arithmetic");

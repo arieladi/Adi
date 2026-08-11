@@ -433,40 +433,71 @@ console.log("\n[10] hub wiring");
 ok("hub is fullScreenCapable (needs all 6 dials)", A.hub.fullScreenCapable === true);
 Nav.toRoot(); States.setState(0);
 Nav.enter("ableton.hub");
-ok("entering auto-enters State 4 (D15)", States.get() === 4, `state=${States.get()}`);
+ok("entering auto-enters NAV OFF (D15)", States.get() === 3, `state=${States.get()}`);
 const rootL = SOS.Layout.pick(M.Root.screen, 9);
 ok("Ableton tile is reachable from the Root Hub",
    !!rootL.keys(0, 0) && /Ableton/.test(rootL.keys(0, 0).label));
+
+/* V17 — THE SMART LAUNCHER. The tile has always navigated; it now also starts
+   Live when Live is not there. Both halves are asserted, and so is the
+   negative: pressing it while Live is already up must NOT fire a launch. */
+{
+  const launched = [];
+  const realAction = SOS.IPC.os.action;
+  const realOnline = A.bridge.isOnline;
+  SOS.IPC.os.action = (n) => { launched.push(n); return Promise.resolve(true); };
+
+  Nav.toRoot(); States.setState(0);
+  A.bridge.isOnline = () => false;                        // Live is not running
+  SOS.Layout.pick(M.Root.screen, 9).keys(0, 0).tap();
+  ok("pressing the tile launches Live when the bridge is down",
+     launched.join() === "ableton", launched.join());
+  ok("…and opens the hub in the same press", Nav.current().id === "ableton.hub", Nav.current().id);
+  ok("it asks for a NAMED action, so the service owns the version hunt",
+     launched[0] === "ableton");
+
+  Nav.toRoot(); launched.length = 0;
+  A.bridge.isOnline = () => true;                         // Live is already up
+  SOS.Layout.pick(M.Root.screen, 9).keys(0, 0).tap();
+  ok("a running Live is not launched a second time", launched.length === 0, launched.join());
+  ok("…but the page still opens", Nav.current().id === "ableton.hub", Nav.current().id);
+
+  SOS.IPC.os.action = realAction;
+  A.bridge.isOnline = realOnline;
+  Nav.toRoot(); States.setState(0); Nav.enter("ableton.hub");
+}
 let dialsBound = 0;
 for (let d = 1; d <= 6; d++) { const z = States.resolveDial(d); if (z && z.svg) dialsBound++; }
 ok("all 6 dials carry a strip slice in Full Screen", dialsBound === 6, `bound=${dialsBound}`);
 
-/* V4 — dial borrowing is per state now. State 1 (calculator) leaves the strip
-   completely alone, so the hub keeps all six dials there; STATE 3 is the one
-   that borrows two, and it is therefore the thing that puts every controller
-   into its 4-dial Compact layout. Both halves are asserted, because the whole
-   Compact suite hangs off the second one. */
+/* V14 — dial borrowing is per state. State 1 (calculator) leaves the strip
+   completely alone, so the hub keeps all six dials there and stays FULL; STATE 2
+   is the one that borrows two, and it is therefore the only thing that puts a
+   controller into its 4-dial Compact layout. Both halves are asserted, because
+   the whole Compact suite hangs off the second one. */
 States.setState(1);
 ok("State 1 does NOT touch the strip — the hub keeps six dials",
    States.moduleDials() === 6, String(States.moduleDials()));
 States.setState(2);
-ok("State 2 borrows one dial for BPM, leaving five",
-   States.moduleDials() === 5, String(States.moduleDials()));
-States.setState(3);
-ok("State 3 borrows two — THIS is what triggers the Compact layouts",
+ok("State 2 borrows TWO — THIS is what triggers the Compact layouts (V14)",
    States.moduleDials() === 4, String(States.moduleDials()));
-let bound4 = 0, borrowed = 0;
-for (let d = 1; d <= 6; d++) {
-  const z = States.resolveDial(d);
-  if (d <= 4) { if (z && z.svg) bound4++; }
-  else if (z && !z.svg) borrowed++;
-}
+let bound4 = 0;
+for (let d = 1; d <= 4; d++) { const z = States.resolveDial(d); if (z && z.svg) bound4++; }
 ok("strip reflows onto dials 1-4", bound4 === 4, `bound=${bound4}`);
-ok("dials 5-6 belong to the docked window", borrowed === 2, `borrowed=${borrowed}`);
+/* Ownership is asserted DIRECTLY rather than inferred from "the zone has no
+   svg". V15 gave the divisions window an svg face of its own for the readout,
+   which quietly broke that heuristic — the window is not the absence of a
+   picture, it is a different owner. */
+const z5 = States.resolveDial(5), z6 = States.resolveDial(6);
+ok("dials 5-6 belong to the docked window",
+   States.overlayOwnsDial(5) && States.overlayOwnsDial(6) && !States.overlayOwnsDial(4),
+   `first=${States.firstBorrowed()}`);
+ok("…and carry the window's own faces, not slices of the controller strip",
+   A._zones.indexOf(z5 && z5.svg) < 0 && !(z6 && z6.svg));
 let compactKeys = 0;
 for (let b = 1; b <= S.KEYS; b++) if (S.colOf(b) < 5 && States.resolveKey(b)) compactKeys++;
 ok("the hub still paints its controls at 5 columns", compactKeys >= 6, `keys=${compactKeys}`);
-States.setState(4);
+States.setState(3);
 const uri = R.dataUri(States.resolveDial(1).svg);
 ok("a zone slice encodes to a data URI", uri.startsWith("data:image/svg+xml;base64,"));
 ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
@@ -602,7 +633,7 @@ Object.assign(A.bridge.state(), qst);
 A._pick();
 const live = A._active();
 ok("the module resolved Pro-Q 3", live && live.id === "proq3", live && live.id);
-States.setState(4);                                    // full board, 6 dials
+States.setState(3);                                    // full board, 6 dials
 live._mode[2] = "freq";
 States.resolveDial(2).touch(150, 12, false);           // x into the Q tab, y in the tab row
 ok("a tap on the Q tab switches band 2 to Q", live._mode[2] === "q", live._mode[2]);

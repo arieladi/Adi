@@ -43,7 +43,16 @@ SOS.Modules.Root = (function () {
      than keys that navigate into nothing. */
   // Region-local: column index within row 0 of whatever region the hub is given.
   var HUBS = [
-    { label: 'Ableton', glyph: '♪', color: R.PALETTE.ableton,   screen: 'ableton.hub',   module: 'Ableton' },
+    /* V17 — SMART LAUNCHER. Entering the hub is what this key has always done;
+       it now also starts Live if Live is not there. `launch` names an os.js
+       action rather than an app, so the service owns the version hunt (the
+       bundle is "Ableton Live 11 Suite" here and "…12 Suite" on another
+       machine) and this table stays a list of names. */
+    { label: 'Ableton', glyph: '♪', color: R.PALETTE.ableton,   screen: 'ableton.hub',   module: 'Ableton',
+      launch: 'ableton', running: function () {
+        var A = SOS.Modules.Ableton;
+        return !!(A && A.bridge && A.bridge.isOnline());
+      } },
     { label: 'Cubase',  glyph: '◇', color: R.PALETTE.midi,      screen: 'cubase.hub',    needs: 'cubase' },
     { label: 'DJ',      glyph: '⏻', color: R.PALETTE.rekordbox, screen: 'rekordbox.hub', module: 'Rekordbox' },
     { label: 'MIDI',    glyph: '⌗', color: R.PALETTE.midi,      screen: 'midictl.hub',   module: 'MidiCtl' },
@@ -105,7 +114,14 @@ SOS.Modules.Root = (function () {
       return {
         label: hub.label, glyph: hub.glyph, size: 'lg',
         color: hub.color, kind: 'tap',
-        tap: function () { Nav.enter(hub.screen); },
+        tap: function () {
+          /* Launch FIRST, then navigate. Both are fire-and-forget, but the app
+             takes seconds to appear and the page should already be there when it
+             does — and the bridge reconnects on its own 1.5s retry, so nothing
+             here has to wait for Live to answer. */
+          if (hub.launch && !(hub.running && hub.running())) IPC.os.action(hub.launch);
+          Nav.enter(hub.screen);
+        },
       };
     }
     var slot = SLOTS[col + ',' + row];

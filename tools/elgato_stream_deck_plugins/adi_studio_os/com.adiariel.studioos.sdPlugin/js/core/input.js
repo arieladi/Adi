@@ -46,7 +46,7 @@ SOS.Input = (function () {
   var LONG_MS = 500;
 
   var hooks = {
-    getState: function () { return 0; },        // 0-4, supplied by states.js
+    isFullScreen: function () { return false; }, // NAV OFF? supplied by states.js
     hasHold: function () { return false; },     // (button) -> does it declare `hold`?
     onBack: function () {},                     // Button 1 long press
     onSelect: function () {},                   // Button 1 short press (contextual)
@@ -61,9 +61,14 @@ SOS.Input = (function () {
   function wire(h) { for (var k in h) if (hooks.hasOwnProperty(k)) hooks[k] = h[k]; }
 
   // ------------------------------------------------------------ reservations
-  // State 4 hands Button 1 back to the module (D7). Button 1 is now the ONLY
-  // reserved key on the board.
-  function backReserved() { return hooks.getState() !== 4; }
+  /* NAV OFF hands Button 1 back to the module (D7). Button 1 is now the ONLY
+     reserved key on the board.
+
+     V13 — this asks states.js the QUESTION ("is nav hidden?") instead of
+     comparing the state INDEX to a literal. The index moved from 4 to 3 when
+     State 3 was scrapped, and a hardcoded 4 here silently un-reserved Button 1
+     in every state at once. */
+  function backReserved() { return !hooks.isFullScreen(); }
   function reserved(button) { return button === S.BTN_BACK && backReserved(); }
   // A merged key is timed like an anchor, but only because its binding asked.
   function merged(button) { return !reserved(button) && !!hooks.hasHold(button); }
