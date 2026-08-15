@@ -52,7 +52,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**817 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) and **Batch 13 is deployed and running on the hardware**. Last commit: "real app icons on the Root Hub, and the calculator shows its pending operator".
+**819 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) and **Batch 13 is deployed and running on the hardware**. Last commit: "revert the clock, and make the app icons fill their keys".
 
 | Piece | State |
 |---|---|
@@ -134,10 +134,11 @@ operation, which is the feedback whose absence made `+` feel broken.
 - **Verify headlessly**, never by asking me to check: `node scripts/test_*.mjs`. All six suites, every time.
 - **Look at what you built before deploying.** Render the REAL modules through the REAL `render.js` into an SVG sheet and screenshot it in the Browser pane — a mock proves nothing. The pane's screenshots go black when scrolled, so keep each sheet inside one viewport.
 - **Deploy to hardware** — this exact sequence, because the app caches plugin files while running and a plain restart picks up nothing:
-  1. `osascript -e 'tell application "Elgato Stream Deck" to quit'` and wait for the process to actually die.
+  1. Quit the app and wait for it to ACTUALLY die. The binary is `MacOS/`**`Stream Deck`**, not "Elgato Stream Deck" — `pgrep -x "Elgato Stream Deck"` and `pgrep -f ".../MacOS/Elgato"` NEVER match and will report success instantly while the app runs on. Use `pgrep -lf "Elgato Stream Deck.app/Contents/MacOS/Stream Deck"`, and `pkill -f "Elgato Stream Deck.app"` to clear QtWebEngine helpers too.
   2. `rsync -a --delete <repo>/com.adiariel.studioos.sdPlugin/ ~/Library/Application\ Support/com.elgato.StreamDeck/Plugins/com.adiariel.studioos.sdPlugin/`
   3. `diff -r` the two folders and grep the DEPLOYED files for markers of the change — never trust the copy.
-  4. Archive the old log, `open -a "Elgato Stream Deck"`, then confirm `surface COMPLETE — 36/36 keys, 6/6 dials` in `~/Library/Logs/ElgatoStreamDeck/com.adiariel.studioos0.log` with no errors.
+  4. Archive the old log, `open -a "Elgato Stream Deck"`, then confirm `surface COMPLETE — 36/36 keys, 6/6 dials` with no errors. **The log number ROTATES per launch** — find the current one with `ls -t ~/Library/Logs/ElgatoStreamDeck/com.adiariel.studioos[0-9].log | head -1`. A fresh log is the only trustworthy proof the app really restarted.
+  5. Sample CPU afterwards (`ps -o %cpu= -p <pid>`). Idle should be ~0%.
   - Sync the **plugin folder only**. The full installer also regenerates my profile, which I do not want touched.
 
 ## Field notes that cost real debugging time

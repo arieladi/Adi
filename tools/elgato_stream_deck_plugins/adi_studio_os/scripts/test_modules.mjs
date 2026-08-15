@@ -211,9 +211,15 @@ console.log("\n[7] reachability");
 States.setState(0);
 Nav.toRoot();
 M.install ? null : null;
+/* V26 — an art tile has NO label, so reachability is read off what the tile IS
+   (its artwork, or its caption when it has one) rather than off a caption that
+   deliberately no longer exists. */
 const reach = [];
-for (let c = 0; c < 5; c++) { const k = rootFull.keys(c, 0); if (k) reach.push(`${c}:${k.label}`); }
-ok("rekordbox is reachable from the Root Hub", reach.some((r) => /DJ/.test(r)), reach.join(" "));
+for (let c = 0; c < 5; c++) {
+  const k = rootFull.keys(c, 0);
+  if (k) reach.push(`${c}:${k.art || k.label}`);
+}
+ok("rekordbox is reachable from the Root Hub", reach.some((r) => /rekordbox/.test(r)), reach.join(" "));
 ok("midictl is reachable from the Root Hub", reach.some((r) => /MIDI/.test(r)), reach.join(" "));
 ok("un-ported modules show no tile", !reach.some((r) => /Ableton|Meters/.test(r)), reach.join(" "));
 
@@ -356,7 +362,15 @@ console.log("\n[11] V22: the Root Hub wears the real application icons");
      /\shref="data:image\/png/.test(svg) && /xlink:href="data:image\/png/.test(svg));
   ok("…and the SVG declares the xlink namespace, or the legacy href is invalid",
      svg.indexOf('xmlns:xlink="http://www.w3.org/1999/xlink"') > 0);
-  ok("the label survives beside it", svg.indexOf(">DJ<") > 0);
+  /* V26 — the caption is GONE and the icon takes the whole cap. Both halves are
+     asserted: a label creeping back would shrink the art silently. */
+  ok("the tile carries no caption at all", svg.indexOf("<text") < 0, svg.slice(0, 120));
+  const box = /<image[^>]*width="([\d.]+)"/.exec(svg);
+  ok("the icon fills the inner face, not a stamp in the middle",
+     Number(box[1]) >= 120, box && box[1]);
+  const labelled = SOS.Render.key({ title: "Meters", art: "rekordbox" });
+  ok("…while a tile that still has a caption keeps the small icon",
+     Number(/<image[^>]*width="([\d.]+)"/.exec(labelled)[1]) < 80);
 
   /* The bytes must never enter the per-frame hash: 36 keys x 15 fps over a 6 KB
      payload is the difference between a static surface and a busy one. */

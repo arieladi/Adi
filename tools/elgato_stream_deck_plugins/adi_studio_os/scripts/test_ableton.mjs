@@ -436,7 +436,8 @@ Nav.enter("ableton.hub");
 ok("entering auto-enters NAV OFF (D15)", States.get() === 3, `state=${States.get()}`);
 const rootL = SOS.Layout.pick(M.Root.screen, 9);
 ok("Ableton tile is reachable from the Root Hub",
-   !!rootL.keys(0, 0) && /Ableton/.test(rootL.keys(0, 0).label));
+   !!rootL.keys(0, 0) && rootL.keys(0, 0).art === "ableton",
+   JSON.stringify(rootL.keys(0, 0) && { art: rootL.keys(0, 0).art, label: rootL.keys(0, 0).label }));
 
 /* V17 — THE SMART LAUNCHER. The tile has always navigated; it now also starts
    Live when Live is not there. Both halves are asserted, and so is the

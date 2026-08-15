@@ -113,7 +113,12 @@ SOS.Modules.Root = (function () {
       if (hub.needs && !usable(hub.needs)) return null;         // app not installed
       if (hub.module && !moduleReady(hub.module)) return null;  // module not ported
       return {
-        label: hub.label, glyph: hub.glyph, art: hub.art, size: 'lg',
+        /* V26 — a tile WITH artwork shows the artwork alone. The application's
+           own icon is a better name for it than the word is, and dropping the
+           caption is what frees the whole cap for the image. `hub.label` stays
+           in the table above as the tile's identity for logs and tests. */
+        label: hub.art ? undefined : hub.label,
+        glyph: hub.glyph, art: hub.art, size: 'lg',
         color: hub.color, kind: 'tap',
         tap: function () {
           /* Launch FIRST, then navigate. Both are fire-and-forget, but the app

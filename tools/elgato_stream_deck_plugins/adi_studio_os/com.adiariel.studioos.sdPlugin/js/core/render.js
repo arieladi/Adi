@@ -295,8 +295,14 @@ SOS.Render = (function () {
        blank key on a rasteriser that predates SVG 2. */
     var art = o.art && SOS.Art ? SOS.Art[o.art] : null;
     if (art) {
-      var ah = o.title ? 62 : 78;
-      var ay = o.title ? 22 : (KS - ah) / 2;
+      /* V26 — AN UNLABELLED ICON FILLS THE CAP. A macOS app icon already carries
+         its own margin inside the square, so drawing it at the full inner face
+         gives the breathing room a hand-tuned inset would only duplicate — and
+         anything smaller reads as a stamp floating on a button rather than as
+         the application itself. A LABELLED icon still sits high and small, so a
+         tile that needs a caption is unchanged. */
+      var ah = o.title ? 62 : inner;
+      var ay = o.title ? 22 : pad;
       s += '<image href="' + art + '" xlink:href="' + art + '"'
          + ' x="' + ((KS - ah) / 2) + '" y="' + ay + '" width="' + ah + '" height="' + ah + '"'
          + ' preserveAspectRatio="xMidYMid meet"/>';

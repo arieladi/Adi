@@ -1536,3 +1536,58 @@ function changed; the machine says out loud what it is holding.
 register looks exactly like a hold that was never meant to do anything. **The
 remaining question is whether the operators should stop being holds at all**,
 which cannot be answered without giving up a key, and is therefore Adi's (P5).
+
+
+---
+
+## Batch 17 — the clock is reverted, and the deploy check was lying
+
+### V25 REVERTED — the clock is removed in full
+
+Adi's machine began freezing for minutes at a time after the V25 deploy.
+**RULING — the clock is removed completely**, to be revisited later from a
+stable base. `git reset --hard` to the commit before it; V24 (MIDI inside
+Ableton) went with it, since the two shipped together.
+
+**No root cause is claimed.** What is known: V25 added a 4-second timer that
+forced a FULL 42-cell repaint at idle, on a surface that until then only
+repainted on interaction — and it did so on the same build where the Ableton
+bridge had just gone live for the first time, so `pump()` was running its 15 fps
+`composite()` + `repaint()` against real Live data, and `Bridge.on('state')` was
+firing `pickController()` on every parameter message. The clock was at minimum an
+additional independent repaint source layered on that. Before any clock returns,
+**the cost of the existing 15 fps pump against a live bridge has to be measured**
+— that load exists with or without a clock.
+
+### FIELD NOTE — the Stream Deck binary is `MacOS/Stream Deck`
+
+This one invalidated its own verification, which is the worst kind.
+
+The app's main process is
+`/Applications/Elgato Stream Deck.app/Contents/MacOS/`**`Stream Deck`** — the
+binary is NOT named "Elgato Stream Deck". So:
+
+* `pgrep -x "Elgato Stream Deck"` — never matches.
+* `pgrep -f "…/MacOS/Elgato"` — never matches.
+* **Correct:** `pgrep -lf "Elgato Stream Deck.app/Contents/MacOS/Stream Deck"`
+
+Every "wait for the process to actually die" check in this session used a pattern
+that cannot match, so it returned instantly and reported success. The app caches
+plugin files while running; an rsync under a live app changes nothing on the
+device. A main process from two days earlier was found still alive after several
+"app confirmed dead" reports.
+
+**Confirm a restart by the LOG, not by a pgrep**: a genuine launch writes a fresh
+`~/Library/Logs/ElgatoStreamDeck/com.adiariel.studioos<N>.log` — and note the
+number ROTATES per launch, so `ls -t …studioos[0-9].log | head -1` is the only
+reliable way to find the current one. `QtWebEngineCore` helpers and a
+`termination_handler` can outlive a kill; `pkill -f "Elgato Stream Deck.app"`
+clears them.
+
+### V26 — an art tile shows the artwork alone
+
+**RULING — the Ableton and DJ tiles drop their captions and the icon fills the
+cap.** A macOS app icon carries its own margin inside the square, so drawing it
+at the full inner face needs no hand-tuned inset; anything smaller reads as a
+stamp floating on a button rather than as the application. A tile that still has
+a caption keeps the small high-set icon, unchanged.
