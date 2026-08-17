@@ -121,6 +121,8 @@
   function wireSD() {
     SD.on('connected', function () {
       SD.log('surface online — ' + JSON.stringify(S.coverage()));
+      // V28 — one zone, once a second, and only while it is visible.
+      States.startClock();
     });
 
     SD.on('didReceiveGlobalSettings', function (m) {

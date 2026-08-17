@@ -1591,3 +1591,127 @@ cap.** A macOS app icon carries its own margin inside the square, so drawing it
 at the full inner face needs no hand-tuned inset; anything smaller reads as a
 stamp floating on a button rather than as the application. A tile that still has
 a caption keeps the small high-set icon, unchanged.
+
+
+---
+
+## Batch 18 — the freeze had a name, and the clock came back safely
+
+Adi is away from the studio, so everything here is verified headlessly and by
+render; the hardware pass is his.
+
+**Standing rule overridden, explicitly.** "The AdiVST remote script is verified
+and must not be modified" has held since the port. Adi has now instructed the
+opposite for V30. The override is honoured with two constraints of its own: the
+change is **purely additive** (`diff` reports ZERO removed lines in both files)
+and the wire protocol gains one verb while nothing existing moves, so an older
+script simply ignores it.
+
+### V27 — `setFeedback` had no dedupe, and THAT was the render loop
+
+`SD.image()` has dropped no-op writes since the first commit — the field note
+about content-derived SVG ids exists because of it. **`setFeedback()` never did.**
+
+So a static 36-key surface cost nothing on the wire while the SIX DIAL ZONES were
+re-sent in full on every repaint. Under the Ableton pump's 15 fps that is
+**6 × 15 = 90 multi-kilobyte WebSocket messages every second, forever, whether or
+not a single pixel changed.** That is the render loop that overloaded the machine.
+The V25 clock did not cause it; a 4-second full repaint merely made the
+previously-idle Root Hub start doing it too, on top of a pipe already saturated
+by a bridge that had just gone live for the first time.
+
+**RULING — `SD.feedback()` is the deduped sibling of `SD.image()`, and paintDial
+uses it.** Measured in `test_core`: a cold strip sends 6, ten repaints of an
+unchanged strip send **0**, and a zone whose content genuinely moved still sends.
+An idle strip went from ~90 messages/second to zero.
+
+`flushCounts()` reports key and zone writes separately, because only the zone
+count could ever run away and a single number would have hidden it.
+
+### V28 — the LED clock, ported from Elgato's own font
+
+**RULING — the clock is the Clocks plugin's own "LED" style**, the one Adi
+highlighted: seven-segment digits with the UNLIT segments still faintly drawn
+behind them, which is the whole trick — it reads as an LED panel rather than a
+blocky font. Ported from
+`com.elgato.clocks.sdPlugin/action/fontstyles/fonts/led.svg`.
+
+The source ships one `<g>` per digit, each repeating the same seven paths and
+dimming the ones that are off. That collapses: the skeleton is stored **once** and
+each digit is a **seven-bit lit mask** over it. The font is a few hundred bytes
+instead of 6 KB, which is what makes it cheap enough to redraw every second. Cell
+geometry is the source's own — 51×93, digits advancing 56, colons 28, straight off
+its `translatex` table. Blue is `#4A90E2`, from the plugin's own preset palette.
+The city comes from the machine's IANA zone, which is what "Sydney" is in the
+photo.
+
+**RULING — the clock takes the right-hand zone ONLY WHEN THAT ZONE IS EMPTY, and
+never in State 2.** Adi named the Root Hub, State 0 and State 1 as must-show and
+State 2 as must-hide. One rule delivers all four and is safer than a list of
+states: the Root Hub leaves dials 5-6 blank by design and States 0/1 do not touch
+the strip, so the clock appears in every case he named — while a live VST strip
+keeps its sixth zone, honouring the standing rule that the screen belongs to the
+VSTs. **A clock is never worth covering a control for.**
+
+**Safety, measured rather than asserted.** `paintClockZone()` repaints ONE zone
+and never the keys. Over a simulated minute: 60 ticks → **60 zone messages, 0 key
+writes**, one ~4.4 KB frame each. A tick inside the same second sends nothing at
+all, and a tick in State 2 does not run. Against the 90 messages/second the strip
+already sent before V27, the clock is noise. On the machine, with it ticking:
+app 0.1–1.4 % CPU, load average falling.
+
+The tick is a self-rescheduling timeout aimed at the next whole second, so it
+cannot stack a backlog and the digit flips when the second does.
+
+### V29 — the Ableton hub is a clean slate
+
+**RULING — the browser arrows and the LIVE key are removed.** ◀TRK / TRK▶ /
+◀DEV / DEV▶ spent four of nine keys on row 0 driving Live's own selection, which
+the mouse already does well and which said nothing about the session. LIVE
+re-requested parameters: debug plumbing, not a control. `selectTrack` /
+`selectDevice` stay on the Bridge for whatever wants them later.
+
+Three keys became one: a single quiet readout says what the strip is controlling,
+and says "Offline" plainly instead of lighting a red debug lamp. Row 0 is now the
+**device shelf** — Pro-Q 3, EQ8, Presets — and the rest is deliberately empty. An
+empty key invites the next shortcut; a row padded with generic controls does not.
+
+The hub tests stopped counting keys and started naming them: a count passes for
+the wrong reasons and fails every time a shortcut is added.
+
+### V24 (re-landed) — MIDI Control lives in the Ableton hub
+
+Off the Root Hub, into the DAW's own hub: `(0,1)` wide, `(4,1)` compact, those
+being the first spare cell each layout has. Implemented and reverted with the
+clock in Batch 17; it was never implicated.
+
+### V30 — the first real workflow shortcut: insert Pro-Q 3
+
+**RULING — one key drops a FabFilter Pro-Q 3 on the selected track**, wearing
+FabFilter's own mark for the same reason the Root Hub tiles wear theirs.
+
+The remote script gains `cmd_load_device(name)`. `_create_eq8` searched
+`audio_effects` only — correct for a stock device, useless for a plug-in, which
+lives under `browser.plugins` and may be VST3, VST2 or AU on another machine. So
+the new loader walks **every** browser root and matches on NAME, normalised
+case-and-punctuation-insensitively, exact match first and only then a contains
+pass — so "Pro-Q 3" can never be satisfied by "Pro-Q 3 (m/s)" while the exact
+item exists. Only `is_loadable` items are handed to `load_item`, so a folder of
+the same name is never loaded.
+
+**It is tested without Live.** `scripts/test_bridge.py` stubs the `Live` module,
+builds a fake browser tree shaped like the real one, and asserts the walk, the
+match, the exact-beats-variant rule, the folder rule and all three failure paths
+(unknown device, empty name, no selected track). Eleven assertions on code that
+had never been testable at all.
+
+**Installed** to `~/Music/Ableton/User Library/Remote Scripts/AdiVST`, byte-
+identical to the repo. **Live must be restarted** to pick up a changed remote
+script.
+
+### Field note — the preview sheet drifted from the paint path AGAIN
+
+`scripts/preview.mjs` built its strip by calling `R.zone()` directly, so the clock
+was absent from a sheet that was otherwise correct — the same drift as Batch 16,
+reintroduced by the revert. It mirrors `paintDial` again. **When the paint path
+grows a step, preview.mjs grows it too, or the sheet quietly stops being evidence.**

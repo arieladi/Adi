@@ -250,12 +250,52 @@ SOS.States = (function () {
      string that IS the zone's face. That is how a module paints across zone
      boundaries — the Ableton strip draws one 1200x100 image and hands each dial
      a window into it, so an EQ curve reads as one continuous picture. */
-  function paintDial(dial, context) {
+  /* V28 — THE CLOCK OWNS THE LAST ZONE, BUT ONLY WHEN IT IS EMPTY.
+
+     Adi asked for it on the Root Hub and in States 0 and 1, and never in State 2
+     where the delay readout and BPM are numbers he is reading. Those cases all
+     follow from one rule that is safer than a list of states: the clock takes the
+     right-hand zone when NOTHING ELSE is using it.
+
+     That satisfies every case he named — the Root Hub leaves dials 5-6 blank by
+     design, and States 0/1 do not touch the strip at all — while also keeping his
+     standing rule that the screen belongs to the VSTs: with a controller live the
+     zone is carrying an EQ curve, so the clock stays out of the way instead of
+     painting over it. A clock is never worth covering a control for. */
+  function lastZoneFree() {
+    var d = resolveDial(S.DIALS);
+    return !d || (!d.svg && !d.title && !d.value && !d.sub && d.indicator == null);
+  }
+  function clockVisible() { return state !== DELAY && lastZoneFree(); }
+
+  function zoneUriFor(dial) {
+    if (dial === S.DIALS && clockVisible()) return R.dataUri(SOS.Clock.zone({}));
     var d = resolveDial(dial);
-    if (d && d.svg) { SOS.SD.setFeedback(context, { full: R.dataUri(d.svg) }); return; }
-    SOS.SD.setFeedback(context, { full: d ? R.zoneUri({
-      title: d.title, value: d.value, sub: d.sub, indicator: d.indicator, color: d.color,
-    }) : R.zoneUri({ title: '', value: '' }) });
+    if (d && d.svg) return R.dataUri(d.svg);
+    return d ? R.zoneUri({ title: d.title, value: d.value, sub: d.sub,
+                           indicator: d.indicator, color: d.color })
+             : R.zoneUri({ title: '', value: '' });
+  }
+
+  /* Deduped (V27). setFeedback had no dedupe of its own, so six zones were
+     re-sent in full on every repaint — 90 messages a second under the Ableton
+     pump, changed or not. */
+  function paintDial(dial, context) {
+    SOS.SD.feedback(context, { full: zoneUriFor(dial) });
+  }
+
+  /* THE ISOLATED CLOCK TICK. This is the whole safety argument: it repaints ONE
+     zone, never the strip and never the keys. A full repaint at 1 Hz is what
+     turned a 15 fps pump into a frozen machine; this touches 1/42nd of the
+     surface and the dedupe in SD.feedback drops it entirely on the 59 seconds a
+     minute when only the seconds digit could have moved... which is, of course,
+     every second. So it is one 4 KB message per second, against the 90 the strip
+     already sends — and zero when the clock is not visible at all. */
+  function paintClockZone() {
+    if (!clockVisible()) return false;
+    var ctx = S.contextOfDial(S.DIALS);
+    if (!ctx) return false;
+    return SOS.SD.feedback(ctx, { full: R.dataUri(SOS.Clock.zone({})) });
   }
 
   /* V18 — ONE BAD CELL MUST NOT FREEZE THE SURFACE.
@@ -288,6 +328,21 @@ SOS.States = (function () {
     if (dirty) { dirty = false; repaint(); }
   }
 
+  /* The tick. A self-rescheduling timeout, not an interval, so a slow paint can
+     never stack a backlog of them — and it re-aims at the next whole second each
+     time so the digit flips when the second does rather than drifting. */
+  var clockTimer = null;
+  function startClock() {
+    if (clockTimer) return;
+    (function tick() {
+      var now = Date.now();
+      clockTimer = setTimeout(tick, 1000 - (now % 1000) + 5);
+      try { paintClockZone(); }
+      catch (e) { SOS.SD.log('states: clock tick failed — ' + e.message); }
+    })();
+  }
+  function stopClock() { if (clockTimer) { clearTimeout(clockTimer); clockTimer = null; } }
+
   // Coalesce repaints — a single navigation can touch nav, state and module
   // state in the same tick. The deduping in SD.image() means an unchanged key
   // still costs nothing.
@@ -311,6 +366,8 @@ SOS.States = (function () {
     isFullScreen: isFullScreen,
     resolveKey: resolveKey, resolveDial: resolveDial, bindingKind: bindingKind,
     repaint: repaint, paintKey: paintKey, paintDial: paintDial,
+    clockVisible: clockVisible, lastZoneFree: lastZoneFree,
+    paintClockZone: paintClockZone, startClock: startClock, stopClock: stopClock,
     decorate: decorate, keySpec: keySpec,
   };
 })();

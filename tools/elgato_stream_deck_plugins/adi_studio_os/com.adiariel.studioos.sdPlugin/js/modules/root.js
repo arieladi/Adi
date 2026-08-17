@@ -56,7 +56,8 @@ SOS.Modules.Root = (function () {
       } },
     { label: 'Cubase',  glyph: '◇', color: R.PALETTE.midi,      screen: 'cubase.hub',    needs: 'cubase' },
     { label: 'DJ',      art: 'rekordbox', color: R.PALETTE.rekordbox, screen: 'rekordbox.hub', module: 'Rekordbox' },
-    { label: 'MIDI',    glyph: '⌗', color: R.PALETTE.midi,      screen: 'midictl.hub',   module: 'MidiCtl' },
+    /* V24 — MIDI Control is NOT a Root Hub destination; its tile lives inside
+       the Ableton hub, with the DAW it belongs to. */
     { label: 'Meters',  glyph: '▥', color: R.PALETTE.viz,       screen: 'viz.hub',       module: 'Viz' },
   ];
 

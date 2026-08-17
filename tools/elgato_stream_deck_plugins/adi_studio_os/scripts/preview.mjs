@@ -12,7 +12,7 @@ const OUT = process.argv[2] || path.join(ROOT, "..", "preview.html");
 global.window = global;
 global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
-for (const f of ["js/core/sd-client.js", "js/core/surface.js", "js/core/art.js", "js/core/render.js",
+for (const f of ["js/core/sd-client.js", "js/core/surface.js", "js/core/art.js", "js/core/clock.js", "js/core/render.js",
                  "js/core/ipc.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js",
                  "js/modules/root.js", "js/modules/console.js",
                  "js/modules/rekordbox.js", "js/modules/midictl.js",
@@ -97,8 +97,16 @@ function grid(label, stateIndex, screenId) {
   }
   let zones = "";
   for (let d = 1; d <= S.DIALS; d++) {
+    /* Composited exactly the way states.js does it, CLOCK INCLUDED. The sheet
+       claims to be "what setImage receives"; it stops being true the moment the
+       paint path grows a step the preview does not copy — which is how the clock
+       went missing from a sheet that was otherwise correct. */
     const z = States.resolveDial(d) || {};
-    zones += `<div class="z">${z.svg || R.zone({ title: z.title, value: z.value, sub: z.sub, indicator: z.indicator, color: z.color })}</div>`;
+    const svg = (d === S.DIALS && States.clockVisible())
+      ? SOS.Clock.zone({})
+      : (z.svg || R.zone({ title: z.title, value: z.value, sub: z.sub,
+                           indicator: z.indicator, color: z.color }));
+    zones += `<div class="z">${svg}</div>`;
   }
   return `<section><h2>${label}</h2><div class="grid">${cells}</div><div class="strip">${zones}</div></section>`;
 }

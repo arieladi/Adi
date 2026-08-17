@@ -52,7 +52,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**819 tests green** (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) and **Batch 13 is deployed and running on the hardware**. Last commit: "revert the clock, and make the app icons fill their keys".
+**854 tests green** (843 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 13 is deployed and running on the hardware**. Last commit: "dedupe setFeedback, port the LED clock, clean the Ableton hub, insert Pro-Q 3".
 
 | Piece | State |
 |---|---|
@@ -131,7 +131,7 @@ operation, which is the feedback whose absence made `+` feel broken.
 
 ## Workflow
 
-- **Verify headlessly**, never by asking me to check: `node scripts/test_*.mjs`. All six suites, every time.
+- **Verify headlessly**, never by asking me to check: `node scripts/test_*.mjs` plus `python3 scripts/test_bridge.py`. All SEVEN suites, every time.
 - **Look at what you built before deploying.** Render the REAL modules through the REAL `render.js` into an SVG sheet and screenshot it in the Browser pane — a mock proves nothing. The pane's screenshots go black when scrolled, so keep each sheet inside one viewport.
 - **Deploy to hardware** — this exact sequence, because the app caches plugin files while running and a plain restart picks up nothing:
   1. Quit the app and wait for it to ACTUALLY die. The binary is `MacOS/`**`Stream Deck`**, not "Elgato Stream Deck" — `pgrep -x "Elgato Stream Deck"` and `pgrep -f ".../MacOS/Elgato"` NEVER match and will report success instantly while the app runs on. Use `pgrep -lf "Elgato Stream Deck.app/Contents/MacOS/Stream Deck"`, and `pkill -f "Elgato Stream Deck.app"` to clear QtWebEngine helpers too.
@@ -146,6 +146,8 @@ operation, which is the feedback whose absence made `+` feel broken.
 - **Glyphs outside the proven set render as tofu.** `⌷` (U+2337) came out as an empty box on the device. Stay inside the glyph set already in shipped use; there is a test pinning this.
 - **`keySpec()` in `states.js` must forward every new binding field.** It is a hand-written whitelist and a forgotten field paints a silently wrong key — this has now bitten twice (`size`/`subStrong`, then `segDim`).
 - **Key SVG ids must be derived from content, not a counter.** `SD.image()` dedupes by data URI; a per-call id makes every key look different every frame and turns a static surface into 36 writes at 15 fps.
+- **`setFeedback` has no dedupe of its own — use `SD.feedback()`.** `SD.image()` always deduped; setFeedback did not, so six dial zones were re-sent in full on every repaint. Under the 15 fps Ableton pump that was ~90 multi-KB messages a second and it is what overloaded the machine. Anything new that paints a zone goes through `SD.feedback()`.
+- **`scripts/preview.mjs` must mirror `States.paintDial` exactly** — it has now silently drifted TWICE, each time leaving a sheet that looked right and was not evidence.
 - **Tests that call a controller's `onTouch` directly cannot see wiring bugs.** The dropped touch-Y axis survived a whole port that way. Drive gestures through the real socket (`test_core.mjs [11]`, `[12]`).
 
 ## Known open items
