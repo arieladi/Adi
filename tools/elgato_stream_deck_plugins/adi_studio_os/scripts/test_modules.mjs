@@ -220,7 +220,12 @@ for (let c = 0; c < 5; c++) {
   if (k) reach.push(`${c}:${k.art || k.label}`);
 }
 ok("rekordbox is reachable from the Root Hub", reach.some((r) => /rekordbox/.test(r)), reach.join(" "));
-ok("midictl is reachable from the Root Hub", reach.some((r) => /MIDI/.test(r)), reach.join(" "));
+/* V24 — MIDI Control is deliberately NOT on the Root Hub; it belongs with the
+   DAW. Asserting the ABSENCE, because a careless revert of the HUBS table is
+   exactly what would put it back. Its new home is asserted in test_ableton,
+   which is the harness that loads that module. */
+ok("midictl is NOT on the Root Hub — it lives inside Ableton (V24)",
+   !reach.some((r) => /MIDI/.test(r)), reach.join(" "));
 ok("un-ported modules show no tile", !reach.some((r) => /Ableton|Meters/.test(r)), reach.join(" "));
 
 // ---------------------------------------------------------------------------

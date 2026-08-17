@@ -501,6 +501,11 @@ SOS.Modules.Ableton = (function () {
       listPresets: function () { send({ c: 'eq8_list_presets' }); },
       loadPreset: function (id) { send({ c: 'eq8_load_preset', id: id }); },
       newPreset: function (id) { send({ c: 'eq8_new_preset', id: id }); },
+      /* V30 — additive: the remote script gained a `load_device` verb and
+         nothing else on this protocol changed. An older script simply
+         ignores an unknown `c`, so the key degrades to a no-op rather
+         than breaking the bridge. */
+      loadDevice: function (name) { send({ c: 'load_device', name: name }); },
       selectTrack: function (dir) { send({ c: 'select_track', dir: dir }); },
       selectDevice: function (dir) { send({ c: 'select_device', dir: dir }); },
       getAllParams: function () { send({ c: 'get_all_params' }); },
@@ -601,12 +606,13 @@ SOS.Modules.Ableton = (function () {
   var mode = 'normal';          // 'normal' | 'presets'
   function setMode(m) { mode = m; SOS.States.repaint(); }
 
-  var NAV = {
-    0: { label: '◀TRK', sub: 'prev track', run: function () { Bridge.cmd.selectTrack(-1); } },
-    1: { label: 'TRK▶', sub: 'next track', run: function () { Bridge.cmd.selectTrack(1); } },
-    2: { label: '◀DEV', sub: 'prev device', run: function () { Bridge.cmd.selectDevice(-1); } },
-    3: { label: 'DEV▶', sub: 'next device', run: function () { Bridge.cmd.selectDevice(1); } },
-  };
+  /* V29 — THE BROWSER ARROWS ARE GONE. ◀TRK / TRK▶ / ◀DEV / DEV▶ filled four of
+     the nine keys on row 0 with a generic transport for Live's own selection,
+     which is a thing the mouse already does well and which told Adi nothing
+     about his session. The keys are a clean slate for real workflow shortcuts
+     now; `selectTrack` / `selectDevice` remain on the Bridge for anything that
+     wants them later. The LIVE key went with them — it existed to re-request
+     parameters, which is debug plumbing, not a control. */
 
   function shortName(s) { s = String(s || ''); return s.length > 10 ? s.slice(0, 9) + '…' : s; }
 
@@ -615,19 +621,17 @@ SOS.Modules.Ableton = (function () {
      are identical, which is the point of hand-authoring rather than reflowing. */
   function hubKeys(cols) {
     var wide = cols >= 9;
-    var presetRow0 = wide ? 1 : 2;      // first row the preset folder may use
+    var presetRow0 = 2;                 // rows 0 and 1 are taken; folder starts below
 
     return function (col, row) {
       var st = Bridge.state();
 
-      // --- row 0: transport of the browser (always identical) ---
+      /* --- row 0: the DEVICE SHELF. One key per thing you actually reach for.
+         Left-aligned and deliberately short: an empty key is an invitation for
+         the next shortcut, and a row padded with generic controls is not. */
       if (row === 0) {
-        if (NAV[col]) {
-          var nav = NAV[col];
-          return { label: nav.label, sub: nav.sub, size: 'md', color: R.PALETTE.nav,
-                   dim: !Bridge.isOnline(), kind: 'tap', tap: nav.run };
-        }
-        if (col === 4) {
+        if (col === 0) return proqKey();
+        if (col === 1) {
           var e = st.eq8_state || { count: 0, selected_is_eq8: false };
           return {
             label: 'EQ8', glyph: 'EQ',
@@ -638,14 +642,14 @@ SOS.Modules.Ableton = (function () {
             tap: function () { Bridge.cmd.eq8Key(); },
           };
         }
-        if (!wide) return null;
-        return secondRowKey(col - 5, st);
+        if (col === 2) return presetsKey();
+        return null;
       }
 
-      // --- compact: the rest of the nav row wraps onto row 1 ---
-      if (!wide && row === 1) {
-        var k = secondRowKey(col, st);
-        if (k) return k;
+      // --- row 1: MIDI Control, and one quiet readout of what Live is doing ---
+      if (row === 1) {
+        if ((wide && col === 0) || (!wide && col === 4)) return midiKey();
+        if ((wide && col === 1) || (!wide && col === 0)) return statusKey(st);
       }
 
       // --- preset folder ---
@@ -667,38 +671,64 @@ SOS.Modules.Ableton = (function () {
     };
   }
 
-  // Presets toggle / track / device / bridge status — shared by both layouts.
-  function secondRowKey(i, st) {
-    if (i === 0) {
-      return {
-        label: mode === 'presets' ? 'BACK' : 'Presets',
-        sub: mode === 'presets' ? 'close folder' : 'EQ8 presets',
-        color: R.PALETTE.console, active: mode === 'presets',
-        dim: !Bridge.isOnline(), kind: 'tap',
-        tap: function () {
-          if (mode === 'presets') return setMode('normal');
-          Bridge.cmd.listPresets();
-          setMode('presets');
-        },
-      };
-    }
-    if (i === 1) {
-      return { label: shortName(st.track.name || '—'), sub: 'track', size: 'md',
-               color: R.PALETTE.dim, kind: 'tap', tap: function () {} };
-    }
-    if (i === 2) {
-      return { label: shortName(st.device.name || '—'),
-               sub: st.device.has_device ? (active && active.id ? active.id : 'device') : 'no device',
-               size: 'md', color: R.PALETTE.dim, kind: 'tap', tap: function () {} };
-    }
-    if (i === 3) {
-      return { label: Bridge.isOnline() ? 'LIVE' : 'Offline',
-               sub: Bridge.isOnline() ? 'bridge up' : 'start Ableton',
-               color: Bridge.isOnline() ? R.PALETTE.ableton : '#ff5d5d',
-               active: Bridge.isOnline(), kind: 'tap',
-               tap: function () { Bridge.cmd.getAllParams(); } };
-    }
-    return null;
+  // ------------------------------------------------------------------ keys
+  function presetsKey() {
+    return {
+      label: mode === 'presets' ? 'BACK' : 'Presets',
+      sub: mode === 'presets' ? 'close folder' : 'EQ8 presets',
+      color: R.PALETTE.console, active: mode === 'presets',
+      dim: !Bridge.isOnline(), kind: 'tap',
+      tap: function () {
+        if (mode === 'presets') return setMode('normal');
+        Bridge.cmd.listPresets();
+        setMode('presets');
+      },
+    };
+  }
+
+  /* V24 — MIDI Control lives HERE, not on the Root Hub: it is a studio
+     instrument that belongs with the DAW rather than a top-level destination
+     beside it. The two layouts put it in different cells because their spare
+     cells are in different places. */
+  function midiKey() {
+    return {
+      label: 'MIDI', glyph: '⌗', size: 'lg', color: R.PALETTE.midi,
+      sub: 'controller', kind: 'tap',
+      tap: function () { SOS.Nav.enter('midictl.hub'); },
+    };
+  }
+
+  /* V29 — ONE readout replaces three keys. The old row had a track name, a
+     device name and a LIVE lamp; between them they said one useful thing, which
+     is "what is the strip controlling right now". Offline it says so plainly
+     instead of lighting a red debug button. It is not a control and does
+     nothing when pressed. */
+  function statusKey(st) {
+    var on = Bridge.isOnline();
+    return {
+      kicker: on ? 'DEVICE' : 'BRIDGE',
+      label: on ? shortName(st.device.name || '—') : 'Offline',
+      sub: on ? shortName(st.track.name || '—') : 'start Ableton',
+      size: 'md',
+      color: on ? R.PALETTE.dim : '#ff5d5d',
+      dim: !on, kind: 'tap',
+    };
+  }
+
+  /* V30 — THE FIRST REAL WORKFLOW SHORTCUT. One press drops a Pro-Q 3 onto the
+     selected track. Wears FabFilter's own logo for the same reason the Root Hub
+     tiles wear theirs: the mark is a faster read than the words.
+
+     The name is the string Live's own browser uses, and the service-side search
+     is name-based rather than path-based, so a Pro-Q 3 that lives under VST3,
+     VST2 or AU is found the same way. */
+  function proqKey() {
+    return {
+      art: 'proq3', label: 'Pro-Q 3', size: 'md',
+      sub: 'insert on track', color: R.PALETTE.ableton,
+      dim: !Bridge.isOnline(), kind: 'tap',
+      tap: function () { Bridge.cmd.loadDevice('FabFilter Pro-Q 3'); },
+    };
   }
 
   var hub = {

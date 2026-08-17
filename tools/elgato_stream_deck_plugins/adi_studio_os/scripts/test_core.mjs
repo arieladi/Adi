@@ -24,7 +24,7 @@ class FakeWS {
 global.WebSocket = FakeWS;
 
 const ORDER = [
-  'js/core/sd-client.js', 'js/core/surface.js', 'js/core/art.js', 'js/core/render.js',
+  'js/core/sd-client.js', 'js/core/surface.js', 'js/core/art.js', 'js/core/clock.js', 'js/core/render.js',
   'js/core/ipc.js', 'js/core/layout.js', 'js/core/input.js', 'js/core/nav.js', 'js/core/states.js',
   'js/modules/root.js', 'js/modules/console.js', 'js/modules/index.js', 'js/plugin.js',
 ];
@@ -198,6 +198,85 @@ console.log('\n[8b] a throwing binding cannot freeze the surface (V18)');
 
   SD.image = realImage;
   States.setState(0);
+}
+
+console.log('\n[8b] V27 — setFeedback is deduped, which is the freeze fix');
+{
+  /* Measured through SD's own write counters rather than by patching the socket:
+     they count what feedback()/image() actually pushed, which is exactly the
+     number that matters, and they cannot be fooled by a stale prototype. */
+  States.setState(0);
+  for (let d = 1; d <= S.DIALS; d++) SOS.SD.forget(S.contextOfDial(d));
+  SOS.SD.flushCounts();
+  States.repaint(); await wait(25);
+  const cold = SOS.SD.flushCounts();
+  ok('a cold strip paints all six zones', cold.zones === 6, JSON.stringify(cold));
+
+  for (let i = 0; i < 10; i++) { States.repaint(); await wait(6); }
+  const idle = SOS.SD.flushCounts();
+  ok('ten repaints of an UNCHANGED strip send NOTHING', idle.zones === 0, JSON.stringify(idle));
+  /* This is the number that mattered. Un-deduped, the Ableton pump's 15 fps was
+     6 x 15 = 90 multi-kilobyte messages a second, changed or not, forever. */
+  ok('an idle strip now costs 0 zone messages/s, not 90', idle.zones === 0);
+
+  // A zone that genuinely changes must still get through, or the dedupe would
+  // have traded a flood for a frozen strip.
+  States.setState(2);
+  States.repaint(); await wait(25);
+  SOS.SD.flushCounts();
+  States.resolveDial(6).rotate(3);          // BPM moves: the zone really changed
+  States.repaint(); await wait(25);
+  const moved = SOS.SD.flushCounts();
+  ok('a zone that genuinely changed is still sent', moved.zones > 0, JSON.stringify(moved));
+  States.setState(0);
+}
+
+console.log('\n[8c] V28 — the LED clock, and the cost of ticking it');
+{
+  ok('the clock face renders as a 200x100 zone',
+     /viewBox="0 0 200 100"/.test(SOS.Clock.zone({})));
+  ok('it uses the ported seven-segment skeleton',
+     SOS.Clock.SEG.length === 7 && Object.keys(SOS.Clock.LIT).length === 10);
+  ok('every digit is a seven-bit lit mask',
+     Object.values(SOS.Clock.LIT).every((m) => /^[01]{7}$/.test(m)));
+  ok('unlit segments are still drawn — that IS the LED look',
+     SOS.Clock.zone({ text: '11:11:11' }).indexOf('opacity="0.5"') > 0);
+  ok('the time reads HH:MM:SS', /^\d\d:\d\d:\d\d$/.test(SOS.Clock.timeText(new Date(2026, 0, 1, 9, 5, 7))));
+  ok('…zero-padded throughout', SOS.Clock.timeText(new Date(2026, 0, 1, 9, 5, 7)) === '09:05:07');
+  ok('a 1 and an 8 do not render alike',
+     SOS.Clock.zone({ text: '11:11:11' }) !== SOS.Clock.zone({ text: '88:88:88' }));
+
+  // --- visibility, exactly as ruled ---
+  Nav.toRoot();
+  States.setState(0);
+  ok('State 0 (Numpad) shows it — the Root Hub leaves that zone empty', States.clockVisible());
+  States.setState(1);
+  ok('State 1 (Calculator) shows it', States.clockVisible());
+  States.setState(2);
+  ok('State 2 (Delay) SUPPRESSES it — the readout owns that zone', !States.clockVisible());
+  ok('…and the tick is a no-op there', States.paintClockZone() === false);
+  States.setState(0);
+
+  /* THE SAFETY NUMBER. A full repaint at 1 Hz is what froze the machine. This
+     must touch ONE zone and nothing else — asserted by counting every write the
+     tick produces, keys included. */
+  States.paintClockZone();                       // seed
+  SOS.SD.flushCounts();
+  for (let i = 0; i < 60; i++) {                 // a simulated minute of ticks
+    SOS.SD.forget(S.contextOfDial(S.DIALS));     // stand in for the second changing
+    States.paintClockZone();
+  }
+  const tick = SOS.SD.flushCounts();
+  ok('60 ticks send exactly 60 zone messages — one zone each',
+     tick.zones === 60, JSON.stringify(tick));
+  ok('…and touch ZERO keys. A full repaint is what froze the machine',
+     tick.keys === 0, JSON.stringify(tick));
+  ok('a tick within the same second sends nothing at all',
+     (States.paintClockZone(), States.paintClockZone() === false));
+
+  const oneFrame = SOS.Clock.zone({}).length;
+  ok('one clock frame is a few KB, not tens', oneFrame < 8000, `${oneFrame} bytes`);
+  console.log(`       (a tick is 1 zone x ~${oneFrame} bytes; the Ableton strip already sends 6 x 15/s)`);
 }
 
 console.log('\n[9] navigation');

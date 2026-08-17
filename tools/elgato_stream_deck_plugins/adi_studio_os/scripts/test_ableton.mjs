@@ -495,16 +495,48 @@ ok("dials 5-6 belong to the docked window",
    `first=${States.firstBorrowed()}`);
 ok("…and carry the window's own faces, not slices of the controller strip",
    A._zones.indexOf(z5 && z5.svg) < 0 && !(z6 && z6.svg));
-let compactKeys = 0;
-for (let b = 1; b <= S.KEYS; b++) if (S.colOf(b) < 5 && States.resolveKey(b)) compactKeys++;
-ok("the hub still paints its controls at 5 columns", compactKeys >= 6, `keys=${compactKeys}`);
+/* V29 — the hub is a CLEAN SLATE now, so a key COUNT is the wrong assertion: it
+   passes for the wrong reasons and fails every time a shortcut is added. What
+   matters is that the compact layout still offers the same controls the wide one
+   does, in whatever cells it has. */
+{
+  const cl = SOS.Layout.pick(A.hub, 5);
+  const present = [];
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 5; c++) {
+    const k = cl.keys(c, r);
+    if (k) present.push(k.label || k.art || k.kicker);
+  }
+  ok("compact keeps every control the wide layout has",
+     ["Pro-Q 3", "EQ8", "Presets", "MIDI"].every((n) => present.includes(n)),
+     present.join(","));
+}
 States.setState(3);
 const uri = R.dataUri(States.resolveDial(1).svg);
 ok("a zone slice encodes to a data URI", uri.startsWith("data:image/svg+xml;base64,"));
 ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
-let keys = 0;
-for (let b = 1; b <= S.KEYS; b++) if (States.resolveKey(b)) keys++;
-ok(`hub paints its keys (${keys})`, keys >= 9);
+/* Same reasoning as above: name the controls, do not count them. Row 0 is the
+   device shelf and row 1 carries MIDI plus the one status readout; the rest is
+   deliberately empty, waiting for the next shortcut. */
+{
+  const wl = SOS.Layout.pick(A.hub, 9);
+  ok("row 0 is the device shelf: Pro-Q 3, EQ8, Presets",
+     wl.keys(0, 0).label === "Pro-Q 3" && wl.keys(1, 0).label === "EQ8" &&
+     wl.keys(2, 0).label === "Presets",
+     [0,1,2].map((c) => wl.keys(c, 0) && wl.keys(c, 0).label).join(","));
+  ok("…and the rest of row 0 is empty, on purpose",
+     [3,4,5,6,7,8].every((c) => wl.keys(c, 0) === null));
+  ok("row 1 is MIDI + one status readout",
+     wl.keys(0, 1).label === "MIDI" && !!wl.keys(1, 1).kicker,
+     `${wl.keys(0,1) && wl.keys(0,1).label} / ${wl.keys(1,1) && wl.keys(1,1).kicker}`);
+
+  // V29 — the removals, asserted as removals.
+  const all = [];
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 9; c++) {
+    const k = wl.keys(c, r); if (k) all.push(String(k.label || ""));
+  }
+  ok("the browser arrows are gone", !all.some((l) => /TRK|DEV▶|◀DEV/.test(l)), all.join(","));
+  ok("the LIVE debug key is gone", !all.includes("LIVE"), all.join(","));
+}
 
 console.log("\n[11] Pro-Q 3 dual layout (L11) + the slope press (L12)");
 // Real Ableton Configure names, and the default preset's shapes: band 1 is a
