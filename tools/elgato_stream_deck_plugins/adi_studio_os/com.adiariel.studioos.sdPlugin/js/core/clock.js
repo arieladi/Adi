@@ -58,11 +58,21 @@ SOS.Clock = (function () {
 
   /* Blue, because the reference photo is blue — and this exact value is one the
      Clocks plugin ships in its own preset palette, so it is the vendor's blue
-     rather than one invented here. The ghost segments keep the source's
-     #222222 at half opacity: that is the whole trick of the style. */
+     rather than one invented here.
+
+     V31 — NO GHOST SEGMENTS. The source font draws the unlit segments at
+     #222222 / 0.5 and I kept them, on the theory that they were the point of the
+     style. On the actual hardware they read as a faded 00:00:00 sitting behind
+     the time: cluttered, and nothing like Elgato's own app, where the same font
+     shows clean digits. The reason is in the font's own root element —
+
+         extras="dimmedLEDColor:fill=#222222,dimmedOpacity:opacity=0.5"
+
+     `extras` is a THEMEABLE knob (clock_font.js resolves it through `__extras`),
+     so the dimmed segments are an option the vendor's UI can turn off, not a
+     fixed feature of the face. Adi's does. Ours now simply never draws them,
+     which is both what he asked for and what the source intends. */
   var LIT_COLOR = '#4A90E2';
-  var GHOST_COLOR = '#222222';
-  var GHOST_OPACITY = 0.5;
   var LABEL_COLOR = '#7FA8D8';
 
   function esc(s) {
@@ -71,8 +81,10 @@ SOS.Clock = (function () {
       .replace(/"/g, '&quot;');
   }
 
-  // One glyph at x. Unlit segments are drawn FIRST and stay drawn — the panel
-  // is always whole, only the illumination changes.
+  /* One glyph at x. ONLY the lit segments are emitted (V31) — an unlit segment
+     is simply absent, so the face carries exactly the digits and nothing behind
+     them. This also makes each frame smaller, which is free on a per-second
+     redraw. */
   function glyph(ch, x, lit) {
     var s = '<g transform="translate(' + x + ',0)">';
     if (ch === ':') {
@@ -84,9 +96,7 @@ SOS.Clock = (function () {
     var mask = LIT[ch];
     if (!mask) return s + '</g>';                  // a space: the cell stays dark
     for (var i = 0; i < SEG.length; i++) {
-      s += mask.charAt(i) === '1'
-        ? '<path d="' + SEG[i] + '" fill="' + lit + '"/>'
-        : '<path d="' + SEG[i] + '" fill="' + GHOST_COLOR + '" opacity="' + GHOST_OPACITY + '"/>';
+      if (mask.charAt(i) === '1') s += '<path d="' + SEG[i] + '" fill="' + lit + '"/>';
     }
     return s + '</g>';
   }

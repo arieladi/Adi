@@ -1715,3 +1715,73 @@ script.
 was absent from a sheet that was otherwise correct — the same drift as Batch 16,
 reintroduced by the revert. It mirrors `paintDial` again. **When the paint path
 grows a step, preview.mjs grows it too, or the sheet quietly stops being evidence.**
+
+
+---
+
+## Batch 19 — why the clock froze, and why it does not any more
+
+Adi tested V28 on hardware. Two things came back, and the second one named the
+first.
+
+### V31 — a page timer CANNOT keep time here; the tick moved into a Worker
+
+**The symptom, and the tell.** The seconds froze. Two photographs taken two
+minutes apart both read **`:40`** — `16:16:40` and `16:18:40`. That is not a slow
+clock, it is a clock firing **once per minute, aligned**.
+
+**The cause.** `app.html` runs in a HIDDEN WebView. The embedded Chromium
+throttles timers on a hidden page: first to a 1 s floor, and then — once the page
+has been hidden a few minutes — to *intensive wake-up throttling*, roughly once a
+minute, aligned. V28's self-rescheduling `setTimeout` walked into it. Nothing was
+blocking and nothing was slow; the timer simply was not being allowed to run.
+
+Worth stating plainly, because it was my own bad reasoning: the Elgato Clocks
+plugin uses a plain `setInterval(fn, 1000)` and works, and I took that as licence
+to use a page timer. Reading its font and not its clock was the mistake Adi
+called out.
+
+**RULING — the heartbeat lives in a dedicated Worker** (`js/core/clock-worker.js`).
+A worker has no visibility state of its own, so its interval keeps real time
+regardless of the page; `message` delivery is not throttled either. The worker
+posts a timestamp once a second and does nothing else — no rendering, no payload,
+no state — so it can never be the thing that stalls. If a Worker cannot be created
+at all, it falls back to the `setInterval` the Elgato plugin itself uses.
+
+**MEASURED, not asserted.** The tick reports its own cadence to the plugin log
+after ten ticks and every five minutes thereafter, so a throttled clock announces
+itself instead of being discovered in a photograph:
+
+```
+16:34:53.778  clock: started via worker
+16:35:03.006  clock: 10 ticks via worker — avg 1000ms (min 996, max 1005)
+```
+
+**What a tick costs, for the record:** one ~2.8 KB string build and one deduped
+`setFeedback` on a SINGLE zone. It never calls `repaint()`, never touches a key,
+never composites the Ableton strip, and does not run at all while the clock is
+invisible — so it cannot block the socket, stall `ableton.js`, or perturb NAV.
+App CPU with it ticking: 1–5 %, load average falling.
+
+### V32 — no ghost digits
+
+**RULING — the unlit segments are not drawn.** V28 drew them at the source font's
+`#222222` / 0.5, believing they were the point of the style. On hardware they read
+as a faded `00:00:00` sitting behind the time.
+
+Adi's observation settled it: they do **not** appear in Elgato's own app. The
+reason is in the font's own root element —
+
+```
+extras="dimmedLEDColor:fill=#222222,dimmedOpacity:opacity=0.5"
+```
+
+`extras` is a **themeable knob** (`clock_font.js` resolves it via `__extras`), so
+the dimmed segments are an option the vendor's UI can switch off, not a fixed
+feature of the face. Ours now never emits them. The frame also dropped from ~4.4
+KB to ~2.8 KB, which is free on a per-second redraw.
+
+*Note for a future pass:* the ghosts appeared on the DEVICE but not in the app's
+own preview of our plugin, which means the two rasterise the same SVG differently.
+Not chased, since the segments are gone either way — but it is a real difference
+worth remembering if a future face ever depends on opacity.
