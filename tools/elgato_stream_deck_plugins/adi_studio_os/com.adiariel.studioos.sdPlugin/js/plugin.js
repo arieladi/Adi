@@ -69,18 +69,45 @@
   var NAV_DIAL = SOS.Surface.DIALS;          // 6
   var dialHold = null;                       // { timer, fired }
 
+  /* V35 — a DIAL may declare `hold`, exactly as a key may (V6). The gesture is
+     the same shape: arm a timer on press, run `hold` if it expires, and swallow
+     the short press if it did. Needed for the Root Hub's tab dial, where a short
+     press opens a tab and a long press closes one — and deliberately generic, so
+     the next dial that wants two functions does not need engine changes.
+
+     Dial 6 keeps its own path below: NAV is an ENGINE gesture, not a binding, and
+     it must work even on a module that declares nothing. */
+  var holdDials = {};                        // dial -> { timer, fired }
+
+  function dialHoldClear(dial) {
+    var rec = holdDials[dial];
+    if (rec) { SOS.Timing.cancel(rec.timer); delete holdDials[dial]; }
+  }
+
   function onPress(dial) {
     if (dial !== NAV_DIAL) {
       var d = States.resolveDial(dial);
+      if (d && d.hold) {
+        dialHoldClear(dial);
+        var rec = { fired: false, timer: null };
+        rec.timer = SOS.Timing.after(Input.LONG_MS, function () {
+          rec.fired = true;
+          var b = States.resolveDial(dial);
+          if (b && b.hold) { b.hold(); States.repaint(); }
+        });
+        holdDials[dial] = rec;
+        return;                              // the short press resolves on release
+      }
       if (d && d.press) { d.press(); States.repaint(); }
       return;
     }
     dialHoldCancel();
     var rec = { fired: false, timer: null };
-    rec.timer = setTimeout(function () {
+    // V34 — SOS.Timing: a page timer here was taking over a second to fire.
+    rec.timer = SOS.Timing.after(Input.LONG_MS, function () {
       rec.fired = true;
       States.carousel();
-    }, Input.LONG_MS);
+    });
     dialHold = rec;
   }
 
@@ -95,19 +122,30 @@
       if (nd && nd.release) { nd.release(); States.repaint(); }
       return;
     }
+    /* A dial with a `hold` resolves its SHORT press here, and only if the long
+       press did not already consume the gesture. */
+    var rec = holdDials[dial];
+    if (rec) {
+      var fired = rec.fired;
+      dialHoldClear(dial);
+      if (fired) return;
+      var sd = States.resolveDial(dial);
+      if (sd && sd.press) { sd.press(); States.repaint(); }
+      return;
+    }
     var d = States.resolveDial(dial);
     if (d && d.release) { d.release(); States.repaint(); }
   }
 
   function dialHoldEnd() {
     if (!dialHold) return false;
-    clearTimeout(dialHold.timer);
+    SOS.Timing.cancel(dialHold.timer);
     var f = dialHold.fired;
     dialHold = null;
     return f;
   }
   function dialHoldCancel() {
-    if (dialHold) { clearTimeout(dialHold.timer); dialHold = null; }
+    if (dialHold) { SOS.Timing.cancel(dialHold.timer); dialHold = null; }
   }
   // L10: BOTH axes reach the module. The strip is 200x100 per zone and every
   // Ableton controller bands its hit-tests by y (tab row / value / switch row),
@@ -214,8 +252,8 @@
   // time the device looks blank.
   var settleTimer = null;
   function warnIfIncomplete() {
-    clearTimeout(settleTimer);
-    settleTimer = setTimeout(function () {
+    SOS.Timing.cancel(settleTimer);
+    settleTimer = SOS.Timing.after(1500, function () {
       var c = S.coverage();
       if (S.complete()) {
         SD.log('surface COMPLETE — ' + c.keys + '/36 keys, ' + c.dials + '/6 dials');
@@ -223,7 +261,7 @@
         SD.log('surface INCOMPLETE — ' + c.keys + '/36 keys, ' + c.dials + '/6 dials placed. '
              + 'Run: python3 scripts/make_profile.py --activate  (with the Stream Deck app quit)');
       }
-    }, 1500);
+    });
   }
 
   // ============================================================== bootstrap

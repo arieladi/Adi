@@ -994,7 +994,8 @@ SOS.Modules.Viz = (function () {
     // identical frame anyway, but building the string still costs CPU.
     var live = audioRunning() && (Date.now() - lastPacket) < 1000;
     if (live) frame();
-    setTimeout(pump, live ? Math.max(20, 1000 / fps) : 500);
+    // V34 — SOS.Timing: a page timer here was clamped to ~1 frame/minute.
+    SOS.Timing.after(live ? Math.max(20, 1000 / fps) : 500, pump);
   }
 
   function startPump() { if (!pumping) { pumping = true; lastFrame = 0; pump(); } }

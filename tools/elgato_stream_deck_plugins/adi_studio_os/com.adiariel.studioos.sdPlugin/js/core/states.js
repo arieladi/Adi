@@ -328,24 +328,18 @@ SOS.States = (function () {
     if (dirty) { dirty = false; repaint(); }
   }
 
-  /* V31 — THE TICK RUNS IN A WORKER, because a page timer cannot be trusted here.
+  /* V31/V34 — THE TICK CANNOT USE A PAGE TIMER, and neither can anything else in
+     this plugin. app.html runs in a HIDDEN WebView whose timers are throttled;
+     measured on the device, a 500 ms timeout took 1187 ms two minutes in, and a
+     1 s tick degraded to one tick a MINUTE (the seconds froze at :40, two photos
+     two minutes apart). Everything scheduled now goes through SOS.Timing, which
+     serves real delays from a Worker — see js/core/timing.js.
 
-     app.html lives in a HIDDEN WebView, and the embedded Chromium throttles
-     timers on a hidden page down to roughly once a MINUTE once it has been hidden
-     a while. V28's self-rescheduling setTimeout hit exactly that: on the device
-     the seconds froze, and the tell was two photos two minutes apart both reading
-     :40 — not a slow clock, a clock firing once a minute on the minute.
-
-     A dedicated worker has no visibility state, so its interval keeps real time;
-     `message` delivery is not throttled either. If a Worker cannot be created at
-     all (an embedded WebView is entitled to refuse), it falls back to the plain
-     setInterval the Elgato Clocks plugin itself uses — better than nothing, and
-     the log says which one is running so this is never a guess again.
-
-     WHAT A TICK COSTS: one ~3 KB string build and one deduped setFeedback for a
-     SINGLE zone. It never calls repaint(), never touches a key, never composites
-     the Ableton strip, and never runs at all while the clock is not visible — so
-     it cannot block the socket, stall ableton.js, or perturb the NAV state. */
+     WHAT A CLOCK TICK COSTS: one ~2.8 KB string build and one deduped
+     setFeedback for a SINGLE zone. It never calls repaint(), never touches a
+     key, never composites the Ableton strip, and does not run at all while the
+     clock is invisible — so it cannot block the socket, stall ableton.js, or
+     perturb the NAV state. */
   var clockSource = null;
   var tickCount = 0, tickFirst = 0, tickPrev = 0, tickMin = 1e9, tickMax = 0;
 
@@ -355,58 +349,36 @@ SOS.States = (function () {
       var gap = now - tickPrev;
       if (gap < tickMin) tickMin = gap;
       if (gap > tickMax) tickMax = gap;
-    } else {
-      tickFirst = now;
-    }
+    } else { tickFirst = now; }
     tickPrev = now;
     tickCount++;
 
-    /* Report the MEASURED cadence rather than the intended one. A throttled
-       clock is invisible in code and obvious in this line; it is logged once
-       after ten ticks and then every five minutes, which is cheap enough to
-       leave in permanently and is the only way a future regression announces
-       itself. */
+    /* Report the MEASURED cadence, not the intended one. A throttled clock is
+       invisible in code and obvious in this line; logged once after ten ticks and
+       then every five minutes, which is cheap enough to leave in permanently and
+       is the only way a regression here announces itself. */
     if (tickCount === 10 || tickCount % 300 === 0) {
-      SOS.SD.log('clock: ' + tickCount + ' ticks via ' + (clockSource ? clockSource.kind : '?')
+      SOS.SD.log('clock: ' + tickCount + ' ticks via ' + SOS.Timing.kind()
                + ' — avg ' + Math.round((now - tickFirst) / (tickCount - 1)) + 'ms'
                + ' (min ' + tickMin + ', max ' + tickMax + ')');
     }
-
     try { paintClockZone(); }
     catch (e) { SOS.SD.log('states: clock tick failed — ' + e.message); }
   }
 
+  /* V34 — the clock no longer owns a Worker of its own; it is one ticker on the
+     plugin's shared timer service. Same immunity, one less moving part. */
   function startClock() {
-    if (clockSource) return;
-    try {
-      var w = new Worker('js/core/clock-worker.js');
-      w.onmessage = onClockTick;
-      w.onerror = function (e) {
-        SOS.SD.log('clock: worker error — ' + (e && e.message) + '; falling back to setInterval');
-        clockSource = null;
-        startIntervalClock();
-      };
-      w.postMessage('start');
-      clockSource = { kind: 'worker', stop: function () {
-        try { w.postMessage('stop'); w.terminate(); } catch (e) {}
-      } };
-    } catch (e) {
-      SOS.SD.log('clock: no Worker available (' + e.message + ')');
-      startIntervalClock();
-    }
-    if (clockSource) SOS.SD.log('clock: started via ' + clockSource.kind);
+    if (clockSource !== null) return;
+    clockSource = SOS.Timing.every(1000, onClockTick);
+    SOS.SD.log('clock: started via ' + SOS.Timing.kind());
   }
-
-  function startIntervalClock() {
-    if (clockSource) return;
-    var id = setInterval(onClockTick, 1000);
-    clockSource = { kind: 'interval', stop: function () { clearInterval(id); } };
-  }
-
   function stopClock() {
-    if (clockSource) { clockSource.stop(); clockSource = null; }
+    if (clockSource === null) return;
+    SOS.Timing.cancel(clockSource);
+    clockSource = null;
   }
-  function clockKind() { return clockSource ? clockSource.kind : null; }
+  function clockKind() { return clockSource === null ? null : SOS.Timing.kind(); }
 
   // Coalesce repaints — a single navigation can touch nav, state and module
   // state in the same tick. The deduping in SD.image() means an unchanged key
@@ -414,7 +386,13 @@ SOS.States = (function () {
   function repaint() {
     if (painting) { dirty = true; return; }
     painting = true;
-    setTimeout(paint, 0);
+    /* V34 — MessageChannel rather than setTimeout(0). MEASURED HONESTLY: a 0 ms
+       timer is NOT the throttled case on this WebView (1-4 ms across six
+       minutes) — it is the DELAYED timers that get aligned to a 1-second grid.
+       So this change is hygiene, not the fix: it removes the last page timer from
+       the paint path and is strictly faster, but the strip's problem was the
+       PUMP's 66 ms re-arm, not this. */
+    SOS.Timing.soon(paint);
   }
 
   return {
@@ -433,7 +411,7 @@ SOS.States = (function () {
     repaint: repaint, paintKey: paintKey, paintDial: paintDial,
     clockVisible: clockVisible, lastZoneFree: lastZoneFree,
     paintClockZone: paintClockZone, startClock: startClock, stopClock: stopClock,
-    startIntervalClock: startIntervalClock, clockKind: clockKind, onClockTick: onClockTick,
+    clockKind: clockKind, onClockTick: onClockTick,
     decorate: decorate, keySpec: keySpec,
   };
 })();

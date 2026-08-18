@@ -88,11 +88,14 @@ const MAC_MODS = { cmd: "command down", command: "command down", ctrl: "control 
                    shift: "shift down", win: "command down" };
 const MAC_SPECIAL = { space: 49, tab: 48, escape: 53, esc: 53, enter: 36, return: 36,
                       delete: 51, up: 126, down: 125, left: 123, right: 124,
-                      "=": 24, "+": 24, "-": 27, minus: 27 };
+                      "=": 24, "+": 24, "-": 27, minus: 27,
+                      // V33 — the OS-navigation dials press these.
+                      home: 115, end: 119, pageup: 116, pagedown: 121 };
 const WIN_MODS = { ctrl: 0x11, control: 0x11, alt: 0x12, shift: 0x10, win: 0x5b, cmd: 0x5b };
 const WIN_SPECIAL = { space: 0x20, tab: 0x09, escape: 0x1b, esc: 0x1b, enter: 0x0d, return: 0x0d,
                       delete: 0x2e, up: 0x26, down: 0x28, left: 0x25, right: 0x27,
-                      "=": 0xbb, "+": 0xbb, "-": 0xbd, minus: 0xbd };
+                      "=": 0xbb, "+": 0xbb, "-": 0xbd, minus: 0xbd,
+                      home: 0x24, end: 0x23, pageup: 0x21, pagedown: 0x22 };
 
 export function hotkey(combo) {
   const parts = String(combo).toLowerCase().split("+").map((s) => s.trim()).filter(Boolean);
@@ -235,6 +238,90 @@ export function launch(app) {
   if (isMac) return run("open", ["-a", name]);
   if (isWin) return ps(`Start-Process ${JSON.stringify(name)}`);
   return run("xdg-open", [name]);
+}
+
+/* ===========================================================================
+   V33 — OS NAVIGATION for the Root Hub dials.
+
+   Every verb here is ONE CONCEPT with two platform spellings, exactly like
+   ACTIONS below: a module says "next tab" and never learns whether that is
+   Cmd or Ctrl. That is the whole reason these live in the service rather than
+   being hotkey() strings in root.js — the frontend cannot know the platform.
+
+   ON SCROLLING, HONESTLY. macOS System Events cannot synthesise a scroll-wheel
+   event; neither can keybd_event on Windows. So a scroll here is ARROW KEYS,
+   repeated, which is what actually scrolls a focused view in nearly every app.
+   It is not pixel-smooth and it will not scroll a view that ignores arrows.
+   True wheel events would need a native helper (cliclick, or a node addon) and
+   that is a decision worth taking on its own rather than smuggling in here.
+
+   Repeats are batched into ONE osascript / ONE PowerShell call. Six ticks must
+   not be six process spawns — that is the difference between a responsive dial
+   and a dial that queues up half a second of shell.
+   =========================================================================== */
+
+const REPEAT_CAP = 12;                 // a fast flick must not spawn a storm
+
+function repeatKey(target, times) {
+  const n = Math.max(1, Math.min(REPEAT_CAP, Math.abs(times | 0) || 1));
+  if (isMac) {
+    const code = MAC_SPECIAL[target];
+    if (code == null) return Promise.resolve(false);
+    return run("osascript", ["-e",
+      `tell application "System Events"\nrepeat ${n} times\nkey code ${code}\nend repeat\nend tell`]);
+  }
+  if (isWin) {
+    const vk = WIN_SPECIAL[target];
+    if (vk == null) return Promise.resolve(false);
+    let script = WIN_KEY_SHIM;
+    for (let i = 0; i < n; i++) script += winTap(vk);
+    return ps(script);
+  }
+  return run("xdotool", ["key", "--repeat", String(n), target]);
+}
+
+// Dial 1 / Dial 2 — scroll the focused view. delta sign gives the direction.
+export function scroll(axis, delta) {
+  const d = Number(delta) || 0;
+  if (!d) return Promise.resolve(false);
+  const vertical = String(axis || "y").toLowerCase() !== "x";
+  const target = vertical ? (d > 0 ? "down" : "up") : (d > 0 ? "right" : "left");
+  return repeatKey(target, d);
+}
+
+// Dial 1 push / Dial 2 push — jump rather than crawl.
+export function pageDown() { return hotkey("pagedown"); }
+export function home() { return hotkey("home"); }
+
+/* Dial 3 — APPLICATION zoom, which is Cmd/Ctrl +/-. Deliberately not the same
+   thing as zoom() above: that one is cmd+alt+= , the macOS SYSTEM magnifier
+   (D12 era). A dial labelled "Zoom" on a hub next to a browser means the page. */
+export function appZoom(dir) {
+  const inward = Number(dir) >= 0;
+  const mod = isMac ? "cmd" : "ctrl";
+  return hotkey(`${mod}+${inward ? "=" : "-"}`);
+}
+export function appZoomReset() { return hotkey(`${isMac ? "cmd" : "ctrl"}+0`); }
+
+/* Dial 4 — tabs. Ctrl+Tab is the tab cycle on BOTH platforms (it is not Cmd on
+   macOS), while new/close are Cmd on macOS and Ctrl on Windows. Getting that
+   asymmetry right is exactly what this layer is for. */
+export function tab(dir) {
+  return Number(dir) >= 0 ? hotkey("ctrl+tab") : hotkey("ctrl+shift+tab");
+}
+export function tabNew() { return hotkey(`${isMac ? "cmd" : "ctrl"}+t`); }
+export function tabClose() { return hotkey(`${isMac ? "cmd" : "ctrl"}+w`); }
+
+/* Dial 5 — cycle applications. appSwitch() already exists above and is BETTER
+   than a pair of hotkey() calls would be: it holds the modifier down across
+   ticks and releases it only after the dial goes quiet, so the switcher stays
+   open while you spin instead of committing on every detent. Reused as-is. */
+
+// Dial 5 push — the "show me everything" gesture each platform already has.
+export function missionControl() {
+  if (isMac) return hotkey("ctrl+up");      // Mission Control
+  if (isWin) return hotkey("win+tab");      // Task View
+  return Promise.resolve(false);
 }
 
 /* Named Root Hub actions (D11). Each is one concept with per-platform

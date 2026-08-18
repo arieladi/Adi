@@ -225,13 +225,15 @@ SOS.Modules.Rekordbox = (function () {
   // rekordbox scrolls one row per Note On, so holding the key has to re-tap.
   function repeatStart(slot, note) {
     repeatStop(slot);
-    repeats[slot] = setTimeout(function again() {
+    // V34 — SOS.Timing throughout: a 140 ms auto-repeat clamped to ~1 s is not
+    // an auto-repeat.
+    repeats[slot] = SOS.Timing.after(BROWSE_REPEAT_DELAY_MS, function again() {
       IPC.midi.tap(PORT, CH.GLOBAL, note);
-      repeats[slot] = setTimeout(again, BROWSE_REPEAT_MS);
+      repeats[slot] = SOS.Timing.after(BROWSE_REPEAT_MS, again);
     }, BROWSE_REPEAT_DELAY_MS);
   }
   function repeatStop(slot) {
-    if (repeats[slot]) { clearTimeout(repeats[slot]); delete repeats[slot]; }
+    if (repeats[slot]) { SOS.Timing.cancel(repeats[slot]); delete repeats[slot]; }
   }
   function repeatStopAll() { for (var slot in repeats) repeatStop(slot); }
 
@@ -250,8 +252,8 @@ SOS.Modules.Rekordbox = (function () {
   function wirePersist(fn) { persist = fn || null; }
   function saveLevelsSoon() {
     if (!persist) return;
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(function () { persist({ levels: levels }); }, SAVE_DEBOUNCE_MS);
+    SOS.Timing.cancel(saveTimer);
+    saveTimer = SOS.Timing.after(SAVE_DEBOUNCE_MS, function () { persist({ levels: levels }); });
   }
   function restoreLevels(saved) {
     if (!saved) return;

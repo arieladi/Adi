@@ -265,7 +265,9 @@ SOS.Modules.MidiCtl = (function () {
     var n = zoneNote(zone);
     var ch = wireCh(cfg.midiChannel || 1);
     IPC.midi.noteOn(PORT, ch, n.midi, TOUCH_VELOCITY);
-    setTimeout(function () { IPC.midi.noteOff(PORT, ch, n.midi); }, TOUCH_NOTE_MS);
+    // V34 — SOS.Timing. Clamped to ~1 s by the hidden page, this 40 ms note-off
+    // left every touch note ringing for a full second.
+    SOS.Timing.after(TOUCH_NOTE_MS, function () { IPC.midi.noteOff(PORT, ch, n.midi); });
   }
 
   // Every dial hands its touch segment to the keyboard, so the strip reads as one

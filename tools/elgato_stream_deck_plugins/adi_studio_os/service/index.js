@@ -54,6 +54,16 @@ const HANDLERS = {
   "os.mute":      () => OS.mute(),
   "os.zoom":      (m) => OS.zoom(m.dir),
   "os.appSwitch": (m) => OS.appSwitch(m.dir),
+  // --- V33: OS navigation for the Root Hub dials ---
+  "os.scroll":       (m) => OS.scroll(m.axis, m.delta),
+  "os.pageDown":     () => OS.pageDown(),
+  "os.home":         () => OS.home(),
+  "os.appZoom":      (m) => OS.appZoom(m.dir),
+  "os.appZoomReset": () => OS.appZoomReset(),
+  "os.tab":          (m) => OS.tab(m.dir),
+  "os.tabNew":       () => OS.tabNew(),
+  "os.tabClose":     () => OS.tabClose(),
+  "os.missionControl": () => OS.missionControl(),
   "os.launch":    (m) => OS.launch(m.app),
   // Which named actions exist on THIS machine — drives tile visibility so
   // the hub never paints a key whose target is not installed.

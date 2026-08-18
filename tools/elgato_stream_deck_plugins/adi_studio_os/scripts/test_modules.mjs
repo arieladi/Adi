@@ -18,7 +18,7 @@ const LEGACY = path.resolve(NEW, "../../");
 global.window = global;
 global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
-const CORE = ["js/core/sd-client.js", "js/core/surface.js", "js/core/art.js", "js/core/render.js",
+const CORE = ["js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/render.js",
               "js/core/ipc.js", "js/core/layout.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js"];
 const MODS = ["js/modules/root.js", "js/modules/console.js",
               "js/modules/rekordbox.js", "js/modules/midictl.js", "js/modules/index.js"];
@@ -384,6 +384,92 @@ console.log("\n[11] V22: the Root Hub wears the real application icons");
      SOS.Render.key({ title: "X", art: "ableton" }) !== SOS.Render.key({ title: "X", art: "rekordbox" }));
   ok("an unknown art name degrades to a plain key, it does not throw",
      SOS.Render.key({ title: "X", art: "nope" }).indexOf("<image") < 0);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n[12] V33: the Root Hub OS-navigation strip");
+{
+  SOS.IPC.isOnline = () => true;
+  const calls = [];
+  for (const verb of ["scroll","pageDown","home","appZoom","appZoomReset",
+                      "tab","tabNew","tabClose","appSwitch","missionControl"]) {
+    SOS.IPC.os[verb] = (...a) => { calls.push(verb + (a.length ? ":" + a.join(",") : "")); };
+  }
+  const d = (n) => M.Root.screen.dials(n);
+
+  ok("the strip reads Scroll Y / Scroll X / Zoom / Tabs / Apps",
+     [1,2,3,4,5].map((n) => d(n).title).join("|") === "Scroll Y|Scroll X|Zoom|Tabs|Apps",
+     [1,2,3,4,5].map((n) => d(n).title).join("|"));
+  ok("…and each says what its push does",
+     /PgDn/.test(d(1).sub) && /Home/.test(d(2).sub) && /Reset/.test(d(3).sub) &&
+     /New/.test(d(4).sub) && /Desktop/.test(d(5).sub),
+     [1,2,3,4,5].map((n) => d(n).sub).join(" | "));
+
+  /* Zone 6 must stay EMPTY. That is not an omission — States.lastZoneFree() is
+     what gives the clock its home, so a binding here would silently evict it. */
+  const z6 = d(6);
+  ok("zone 6 is left empty so the clock can claim it",
+     !z6.title && !z6.value && !z6.svg, JSON.stringify(z6));
+
+  calls.length = 0;
+  d(1).rotate(3);  d(1).press();
+  d(2).rotate(-2); d(2).press();
+  d(3).rotate(1);  d(3).press();
+  d(4).rotate(1);  d(4).press();  d(4).hold();
+  d(5).rotate(-1); d(5).press();
+  ok("every dial reaches the right named verb",
+     calls.join(" ") === "scroll:y,3 pageDown scroll:x,-2 home appZoom:1 appZoomReset " +
+                         "tab:1 tabNew tabClose appSwitch:-1 missionControl",
+     calls.join(" "));
+
+  /* THE PORTABILITY INVARIANT. This file must contain no platform knowledge: a
+     key combo spelled here would be wrong on the other OS. Every dial goes
+     through a NAMED verb and the service owns the spelling. */
+  const src = fs.readFileSync(path.join(NEW, "js/modules/root.js"), "utf8");
+  const bare = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  // Scoped to the DIAL STRIP. rootKeys() keeps a generic `slot.hotkey` escape
+  // hatch for a raw combo, which predates this and is a deliberate seam.
+  const dialsSrc = bare.slice(bare.indexOf("dials: function (dial)"));
+  ok("the dial strip names no key combo and no platform",
+     !/cmd\+|ctrl\+|alt\+|darwin|win32|hotkey\(/i.test(dialsSrc),
+     (dialsSrc.match(/cmd\+\S*|ctrl\+\S*|hotkey\([^)]*\)/gi) || []).join(","));
+
+  ok("dial 4 is the only one with two functions",
+     [1,2,3,5].every((n) => !d(n).hold) && typeof d(4).hold === "function");
+
+  /* THE TOFU RULE. `⌷` rendered as an empty box on this device once, so a glyph
+     that is not already shipping elsewhere is a glyph that has never been proven.
+     The set is derived from the OTHER modules rather than hardcoded, so it grows
+     honestly as the plugin does — and the obvious picks for this strip (↕ ↔ ⌕ ⧉)
+     are all outside it, which is exactly the mistake this catches. */
+  {
+    const proven = new Set();
+    for (const f of ["console", "rekordbox", "midictl", "ableton", "viz"]) {
+      const src = fs.readFileSync(path.join(NEW, `js/modules/${f}.js`), "utf8");
+      for (const m of src.matchAll(/'([^'\n]*)'|"([^"\n]*)"/g)) {
+        for (const lit of [m[1], m[2]]) {
+          if (!lit) continue;
+          for (const ch of lit) if (ch.codePointAt(0) > 127) proven.add(ch);
+        }
+      }
+    }
+    const used = new Set();
+    for (let n = 1; n <= 6; n++) {
+      const b = d(n);
+      for (const field of [b.title, b.value, b.sub]) {
+        for (const ch of String(field || "")) if (ch.codePointAt(0) > 127) used.add(ch);
+      }
+    }
+    const unproven = [...used].filter((ch) => !proven.has(ch));
+    ok("the strip uses only glyphs already proven on the device",
+       unproven.length === 0, `unproven: ${unproven.join(" ")}`);
+    ok("…and it does use some, so the check is not vacuous", used.size > 0);
+  }
+
+  // The captions must fit the zone, or the one that says what a push does is the
+  // one that gets truncated.
+  ok("every caption fits the 22-char zone", [1,2,3,4,5].every((n) => d(n).sub.length <= 22),
+     [1,2,3,4,5].map((n) => `${d(n).sub.length}`).join(","));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
