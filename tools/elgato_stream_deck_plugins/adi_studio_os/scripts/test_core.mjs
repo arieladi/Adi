@@ -239,8 +239,14 @@ console.log('\n[8c] V28 — the LED clock, and the cost of ticking it');
      SOS.Clock.SEG.length === 7 && Object.keys(SOS.Clock.LIT).length === 10);
   ok('every digit is a seven-bit lit mask',
      Object.values(SOS.Clock.LIT).every((m) => /^[01]{7}$/.test(m)));
-  ok('unlit segments are still drawn — that IS the LED look',
-     SOS.Clock.zone({ text: '11:11:11' }).indexOf('opacity="0.5"') > 0);
+  /* V31 — NO GHOST SEGMENTS. They read as a faded 00:00:00 behind the time on the
+     device, and Elgato's own app does not show them: `dimmedOpacity` is a
+     themeable knob in the source font, not a fixed feature. Asserted as an
+     absence, because it is the kind of thing a faithful re-port would re-add. */
+  ok('unlit segments are NOT drawn — no ghost digits',
+     SOS.Clock.zone({ text: '11:11:11' }).indexOf('opacity=') < 0);
+  ok('…so a 1 draws only its two lit segments',
+     (SOS.Clock.zone({ text: '11' }).match(/<path/g) || []).length === 4);
   ok('the time reads HH:MM:SS', /^\d\d:\d\d:\d\d$/.test(SOS.Clock.timeText(new Date(2026, 0, 1, 9, 5, 7))));
   ok('…zero-padded throughout', SOS.Clock.timeText(new Date(2026, 0, 1, 9, 5, 7)) === '09:05:07');
   ok('a 1 and an 8 do not render alike',
@@ -273,6 +279,29 @@ console.log('\n[8c] V28 — the LED clock, and the cost of ticking it');
      tick.keys === 0, JSON.stringify(tick));
   ok('a tick within the same second sends nothing at all',
      (States.paintClockZone(), States.paintClockZone() === false));
+
+  /* V31 — THE TICK SOURCE. A page timer in this hidden WebView gets throttled to
+     roughly once a minute, which is what froze the seconds on hardware. Node has
+     no DOM Worker, so this exercises the FALLBACK leg and proves the chain
+     degrades instead of dying silently. */
+  ok('no clock source before it is started', States.clockKind() === null);
+  States.startClock();
+  ok('a source is always chosen, even with no Worker available',
+     States.clockKind() !== null, String(States.clockKind()));
+  ok('…and here that is the setInterval fallback — the Elgato primitive',
+     States.clockKind() === 'interval', String(States.clockKind()));
+  States.startClock();
+  ok('starting twice never stacks two heartbeats', States.clockKind() === 'interval');
+
+  // A tick must paint exactly one zone and never reach a key.
+  SOS.SD.forget(S.contextOfDial(S.DIALS));
+  SOS.SD.flushCounts();
+  States.onClockTick();
+  const one = SOS.SD.flushCounts();
+  ok('one tick paints one zone and zero keys',
+     one.zones === 1 && one.keys === 0, JSON.stringify(one));
+  States.stopClock();
+  ok('stopping releases the source', States.clockKind() === null);
 
   const oneFrame = SOS.Clock.zone({}).length;
   ok('one clock frame is a few KB, not tens', oneFrame < 8000, `${oneFrame} bytes`);

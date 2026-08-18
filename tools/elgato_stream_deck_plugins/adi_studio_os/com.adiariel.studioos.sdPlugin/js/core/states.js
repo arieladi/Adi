@@ -328,20 +328,85 @@ SOS.States = (function () {
     if (dirty) { dirty = false; repaint(); }
   }
 
-  /* The tick. A self-rescheduling timeout, not an interval, so a slow paint can
-     never stack a backlog of them — and it re-aims at the next whole second each
-     time so the digit flips when the second does rather than drifting. */
-  var clockTimer = null;
-  function startClock() {
-    if (clockTimer) return;
-    (function tick() {
-      var now = Date.now();
-      clockTimer = setTimeout(tick, 1000 - (now % 1000) + 5);
-      try { paintClockZone(); }
-      catch (e) { SOS.SD.log('states: clock tick failed — ' + e.message); }
-    })();
+  /* V31 — THE TICK RUNS IN A WORKER, because a page timer cannot be trusted here.
+
+     app.html lives in a HIDDEN WebView, and the embedded Chromium throttles
+     timers on a hidden page down to roughly once a MINUTE once it has been hidden
+     a while. V28's self-rescheduling setTimeout hit exactly that: on the device
+     the seconds froze, and the tell was two photos two minutes apart both reading
+     :40 — not a slow clock, a clock firing once a minute on the minute.
+
+     A dedicated worker has no visibility state, so its interval keeps real time;
+     `message` delivery is not throttled either. If a Worker cannot be created at
+     all (an embedded WebView is entitled to refuse), it falls back to the plain
+     setInterval the Elgato Clocks plugin itself uses — better than nothing, and
+     the log says which one is running so this is never a guess again.
+
+     WHAT A TICK COSTS: one ~3 KB string build and one deduped setFeedback for a
+     SINGLE zone. It never calls repaint(), never touches a key, never composites
+     the Ableton strip, and never runs at all while the clock is not visible — so
+     it cannot block the socket, stall ableton.js, or perturb the NAV state. */
+  var clockSource = null;
+  var tickCount = 0, tickFirst = 0, tickPrev = 0, tickMin = 1e9, tickMax = 0;
+
+  function onClockTick() {
+    var now = Date.now();
+    if (tickPrev) {
+      var gap = now - tickPrev;
+      if (gap < tickMin) tickMin = gap;
+      if (gap > tickMax) tickMax = gap;
+    } else {
+      tickFirst = now;
+    }
+    tickPrev = now;
+    tickCount++;
+
+    /* Report the MEASURED cadence rather than the intended one. A throttled
+       clock is invisible in code and obvious in this line; it is logged once
+       after ten ticks and then every five minutes, which is cheap enough to
+       leave in permanently and is the only way a future regression announces
+       itself. */
+    if (tickCount === 10 || tickCount % 300 === 0) {
+      SOS.SD.log('clock: ' + tickCount + ' ticks via ' + (clockSource ? clockSource.kind : '?')
+               + ' — avg ' + Math.round((now - tickFirst) / (tickCount - 1)) + 'ms'
+               + ' (min ' + tickMin + ', max ' + tickMax + ')');
+    }
+
+    try { paintClockZone(); }
+    catch (e) { SOS.SD.log('states: clock tick failed — ' + e.message); }
   }
-  function stopClock() { if (clockTimer) { clearTimeout(clockTimer); clockTimer = null; } }
+
+  function startClock() {
+    if (clockSource) return;
+    try {
+      var w = new Worker('js/core/clock-worker.js');
+      w.onmessage = onClockTick;
+      w.onerror = function (e) {
+        SOS.SD.log('clock: worker error — ' + (e && e.message) + '; falling back to setInterval');
+        clockSource = null;
+        startIntervalClock();
+      };
+      w.postMessage('start');
+      clockSource = { kind: 'worker', stop: function () {
+        try { w.postMessage('stop'); w.terminate(); } catch (e) {}
+      } };
+    } catch (e) {
+      SOS.SD.log('clock: no Worker available (' + e.message + ')');
+      startIntervalClock();
+    }
+    if (clockSource) SOS.SD.log('clock: started via ' + clockSource.kind);
+  }
+
+  function startIntervalClock() {
+    if (clockSource) return;
+    var id = setInterval(onClockTick, 1000);
+    clockSource = { kind: 'interval', stop: function () { clearInterval(id); } };
+  }
+
+  function stopClock() {
+    if (clockSource) { clockSource.stop(); clockSource = null; }
+  }
+  function clockKind() { return clockSource ? clockSource.kind : null; }
 
   // Coalesce repaints — a single navigation can touch nav, state and module
   // state in the same tick. The deduping in SD.image() means an unchanged key
@@ -368,6 +433,7 @@ SOS.States = (function () {
     repaint: repaint, paintKey: paintKey, paintDial: paintDial,
     clockVisible: clockVisible, lastZoneFree: lastZoneFree,
     paintClockZone: paintClockZone, startClock: startClock, stopClock: stopClock,
+    startIntervalClock: startIntervalClock, clockKind: clockKind, onClockTick: onClockTick,
     decorate: decorate, keySpec: keySpec,
   };
 })();
