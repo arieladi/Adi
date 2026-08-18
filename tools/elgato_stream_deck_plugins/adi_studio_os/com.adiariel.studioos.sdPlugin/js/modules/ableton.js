@@ -431,7 +431,7 @@ SOS.Modules.Ableton = (function () {
     function reconnect() { try { if (ws) ws.close(); } catch (e) {} connect(); }
     function scheduleRetry() {
       if (retry) return;
-      retry = setTimeout(function () { retry = null; connect(); }, 1500);
+      retry = SOS.Timing.after(1500, function () { retry = null; connect(); });
     }
     function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 
@@ -587,15 +587,27 @@ SOS.Modules.Ableton = (function () {
      frames, so a static device costs nothing on the wire; the pump idles slowly
      when the bridge is down so a disconnected Ableton is not re-rendered 15
      times a second forever. */
-  var pumping = false;
+  /* V34 — THE PUMP RUNS ON SOS.Timing, and this is the fix for "the strip takes a
+     minute to appear and never moves when I turn a dial". It was a
+     self-rescheduling setTimeout on a hidden page, so the 66 ms cadence was being
+     clamped to roughly one frame a MINUTE. Nothing about the payload was slow and
+     nothing was blocking — the pump simply was not being allowed to run, which is
+     also why the Pro-Q 3 screen never cleared when the focused device changed.
+
+     Re-armed rather than run on a fixed interval, so a slow composite can never
+     stack a backlog of frames behind it. */
+  var pumping = false, pumpTimer = null;
   function pump() {
     if (!pumping) return;
     var live = Bridge.isOnline();
     if (live) { composite(); SOS.States.repaint(); }
-    setTimeout(pump, live ? Math.max(30, 1000 / FPS) : 750);
+    pumpTimer = SOS.Timing.after(live ? Math.max(30, 1000 / FPS) : 750, pump);
   }
   function startPump() { if (!pumping) { pumping = true; pump(); } }
-  function stopPump() { pumping = false; }
+  function stopPump() {
+    pumping = false;
+    if (pumpTimer != null) { SOS.Timing.cancel(pumpTimer); pumpTimer = null; }
+  }
 
   /* ------------------------------------------------------------------- keys
      Ported from the legacy keys.js roles, but placed absolutely rather than

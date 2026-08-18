@@ -7,11 +7,12 @@
      Key 1  short press -> Ableton Live Hub   (long press is Back, a no-op here)
      Key 2  Cubase Hub                        (only when Cubase is installed)
 
-     Dial 1  OS master volume, push to mute
-     Dial 2  global OS zoom in / out
-     Dial 3  app switcher (Cmd-Tab / Alt-Tab)
-     Dial 4  room lighting dimmer — INERT until D12 picks a system
-     Dial 5  blank        Dial 6  blank
+     Dial 1  Scroll Y   turn = scroll up/down     push = Page Down
+     Dial 2  Scroll X   turn = scroll left/right   push = Home
+     Dial 3  Zoom       turn = Cmd/Ctrl +/-        push = Cmd/Ctrl 0
+     Dial 4  Tabs       turn = Ctrl+Tab cycle      push = new · HOLD = close
+     Dial 5  Apps       turn = Cmd/Alt-Tab cycle   push = Mission Control
+     Dial 6  the clock (V28) — claimed automatically because nothing else uses it
 
    Two layout rules learned on hardware, both enforced here:
 
@@ -101,10 +102,10 @@ SOS.Modules.Root = (function () {
   function defineSlot(button, spec) { SLOTS[button] = spec; return spec; }
   function clearSlots() { SLOTS = {}; }
 
-  // ---------------------------------------------------------------- local state
-  var vol = 50, muted = false, lights = 60;
-  function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
-  function volLabel() { return muted ? 'muted' : vol + '%'; }
+  /* V33 — the volume / mute / lights locals went with the dials that used them.
+     Master volume and the D12 lighting dimmer are not gone as concepts (os.volume,
+     os.mute and home.dim all still exist on the service); they simply no longer
+     have a home on THIS strip, which is now OS navigation end to end. */
 
   // ------------------------------------------------------------------ keys
   function rootKeys(col, row) {
@@ -165,33 +166,68 @@ SOS.Modules.Root = (function () {
       { cols: 5, keys: rootKeys },
     ],
 
+    /* V33 — THE OS NAVIGATION STRIP. The four placeholders (Master / Zoom / Apps
+       / Lights) are replaced by the five things a hand actually reaches for while
+       driving a computer, with the clock keeping zone 6.
+
+       Every action is a NAMED CONCEPT on the service — `IPC.os.tabNew()`, not
+       `hotkey('cmd+t')`. This file therefore contains no platform knowledge at
+       all: the service decides that a tab cycle is Ctrl+Tab on both platforms
+       while a new tab is Cmd+T on macOS and Ctrl+T on Windows. That asymmetry is
+       precisely why the split exists.
+
+       GLYPHS ARE RESTRICTED TO THE PROVEN SET. ⌷ rendered as an empty box on this
+       device once, so nothing here uses a glyph that is not already shipping
+       somewhere else: ▲▼ ◀▶ ± ⇄ ⊞ · are all in use elsewhere in the plugin. The
+       obvious choices (↕ ↔ ⌕ ⧉) are NOT, and a test pins this.
+
+       Zone 6 is deliberately absent from this switch: the clock claims the last
+       zone whenever nothing else is using it, so returning nothing here IS how the
+       clock gets its home (States.lastZoneFree). */
     dials: function (dial) {
+      var offline = !IPC.isOnline();
       switch (dial) {
         case 1: return {
-          title: 'Master', value: volLabel(), indicator: vol / 100, color: R.PALETTE.nav,
-          sub: muted ? 'MUTED' : 'push to mute',
-          rotate: function (t) { vol = clamp(vol + t * 2, 0, 100); IPC.os.volume(t * 2); },
-          press: function () { muted = !muted; IPC.os.mute(); },
-          touch: function (x) { var d = x < 100 ? -5 : 5; vol = clamp(vol + d, 0, 100); IPC.os.volume(d); },
+          title: 'Scroll Y', value: '▲▼', sub: 'push = PgDn', color: R.PALETTE.nav,
+          dim: offline,
+          rotate: function (t) { IPC.os.scroll('y', t); },
+          press: function () { IPC.os.pageDown(); },
+          // A touch on the left/right half nudges one line, so the strip is
+          // usable without reaching for the dial.
+          touch: function (x) { IPC.os.scroll('y', x < 100 ? -1 : 1); },
         };
         case 2: return {
-          title: 'Zoom', value: 'OS', sub: 'in / out', color: R.PALETTE.nav,
-          rotate: function (t) { IPC.os.zoom(t > 0 ? 1 : -1); },
-          touch: function (x) { IPC.os.zoom(x < 100 ? -1 : 1); },
+          title: 'Scroll X', value: '◀▶', sub: 'push = Home', color: R.PALETTE.nav,
+          dim: offline,
+          rotate: function (t) { IPC.os.scroll('x', t); },
+          press: function () { IPC.os.home(); },
+          touch: function (x) { IPC.os.scroll('x', x < 100 ? -1 : 1); },
         };
         case 3: return {
-          title: 'Apps', value: 'Switch', sub: 'rotate to cycle', color: R.PALETTE.nav,
-          rotate: function (t) { IPC.os.appSwitch(t > 0 ? 1 : -1); },
+          title: 'Zoom', value: '±', sub: 'push = Reset', color: R.PALETTE.nav,
+          dim: offline,
+          rotate: function (t) { IPC.os.appZoom(t > 0 ? 1 : -1); },
+          press: function () { IPC.os.appZoomReset(); },
+          touch: function (x) { IPC.os.appZoom(x < 100 ? -1 : 1); },
         };
         case 4: return {
-          // D12: no lighting system chosen, so this is inert on purpose. The
-          // verb and driver seam exist; only the config is missing.
-          title: 'Lights', value: lights + '%', sub: 'not configured',
-          indicator: lights / 100, color: R.PALETTE.dim,
-          rotate: function (t) { lights = clamp(lights + t * 5, 0, 100); IPC.home.dim(lights); },
-          touch: function (x) { var d = x < 100 ? -10 : 10; lights = clamp(lights + d, 0, 100); IPC.home.dim(lights); },
+          title: 'Tabs', value: '⇄', sub: 'New · hold = Close',
+          color: R.PALETTE.console, dim: offline,
+          rotate: function (t) { IPC.os.tab(t > 0 ? 1 : -1); },
+          /* V35 — the only dial on the board with two functions. `press` is the
+             short one and resolves on RELEASE (plugin.js arms a timer the moment
+             a binding declares `hold`), so closing a tab can never also open one. */
+          press: function () { IPC.os.tabNew(); },
+          hold: function () { IPC.os.tabClose(); },
         };
-        default: return { title: '', value: '' };   // dials 5 & 6 blank per spec
+        case 5: return {
+          title: 'Apps', value: '⊞', sub: 'push = Desktop', color: R.PALETTE.midi,
+          dim: offline,
+          rotate: function (t) { IPC.os.appSwitch(t > 0 ? 1 : -1); },
+          press: function () { IPC.os.missionControl(); },
+        };
+        // case 6 — left to the clock, on purpose. See the note above.
+        default: return { title: '', value: '' };
       }
     },
   };

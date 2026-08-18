@@ -52,7 +52,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**861 tests green** (850 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 13 is deployed and running on the hardware**. Last commit: "move the clock tick into a Worker, and drop the ghost digits".
+**880 tests green** (869 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 13 is deployed and running on the hardware**. Last commit: "no page timers anywhere, OS-nav strip on the Root Hub, EQ8 mapping written out".
 
 | Piece | State |
 |---|---|
@@ -146,7 +146,7 @@ operation, which is the feedback whose absence made `+` feel broken.
 - **Glyphs outside the proven set render as tofu.** `⌷` (U+2337) came out as an empty box on the device. Stay inside the glyph set already in shipped use; there is a test pinning this.
 - **`keySpec()` in `states.js` must forward every new binding field.** It is a hand-written whitelist and a forgotten field paints a silently wrong key — this has now bitten twice (`size`/`subStrong`, then `segDim`).
 - **Key SVG ids must be derived from content, not a counter.** `SD.image()` dedupes by data URI; a per-call id makes every key look different every frame and turns a static surface into 36 writes at 15 fps.
-- **A page timer CANNOT keep time in this plugin.** `app.html` runs in a hidden WebView and the embedded Chromium throttles hidden-page timers to roughly once a MINUTE. Anything that must tick goes through `js/core/clock-worker.js` — a Worker has no visibility state, so its interval keeps real time. The tell that this is happening: values frozen at an arbitrary second, minutes apart.
+- **NOTHING may call `setTimeout`/`setInterval`. Use `SOS.Timing`.** A page timer in this hidden WebView is clamped: measured, a 500 ms timeout takes ~1190 ms, and with the app window closed it degrades to roughly once a MINUTE. That single fact was behind the frozen clock, the calculator `+`, the dial-6 long press, the minute-long Ableton strip, ringing MIDI notes and slow reconnects. `js/core/timing.js` serves delays from a Worker; a test fails the build if any other file schedules anything.
 - **`setFeedback` has no dedupe of its own — use `SD.feedback()`.** `SD.image()` always deduped; setFeedback did not, so six dial zones were re-sent in full on every repaint. Under the 15 fps Ableton pump that was ~90 multi-KB messages a second and it is what overloaded the machine. Anything new that paints a zone goes through `SD.feedback()`.
 - **`scripts/preview.mjs` must mirror `States.paintDial` exactly** — it has now silently drifted TWICE, each time leaving a sheet that looked right and was not evidence.
 - **Tests that call a controller's `onTouch` directly cannot see wiring bugs.** The dropped touch-Y axis survived a whole port that way. Drive gestures through the real socket (`test_core.mjs [11]`, `[12]`).

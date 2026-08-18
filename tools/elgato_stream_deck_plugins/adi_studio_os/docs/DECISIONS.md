@@ -1785,3 +1785,117 @@ KB to ~2.8 KB, which is free on a per-second redraw.
 own preview of our plugin, which means the two rasterise the same SVG differently.
 Not chased, since the segments are gone either way — but it is a real difference
 worth remembering if a future face ever depends on opacity.
+
+
+---
+
+## Batch 20 — one cause behind almost every bug in this project
+
+Adi reported the Ableton UI "choking": EQ8's **physical dials respond instantly**
+while its touch screen takes a full minute to appear, never updates when a dial
+turns, and behaves randomly under the finger; Pro-Q 3 shows `??` and never clears
+when the focused device changes. His read was a massive unoptimised payload
+saturating the JS thread.
+
+**It is not the payload. It is that a page timer cannot keep time in this
+WebView, and almost everything in the plugin was scheduled on one.**
+
+### V34 — every scheduled callback moves to `SOS.Timing`
+
+MEASURED on the device with a probe driven from an unthrottled worker, so the
+probe could not itself be the thing delayed:
+
+| sample | `setTimeout(0)` | `setTimeout(500)` |
+|---|---|---|
+| t + 1 s | 2 ms | overshot by **187 ms** |
+| t + 2 min | 4 ms | overshot by **687 ms** |
+| t + 4 min | 1 ms | overshot by **692 ms** |
+| t + 6 min | 3 ms | overshot by **691 ms** |
+
+**A 0 ms timeout is NOT throttled here** — that part of my earlier reasoning was
+wrong and is corrected in the code comments. What gets clamped is any DELAYED
+timer: it is aligned to a 1-second grid, so a 500 ms timeout reliably takes
+~1190 ms. On Adi's device, with the app window closed rather than merely hidden,
+the harsher regime appeared — roughly one fire per MINUTE, which is what froze the
+clock at `:40` and what makes a 66 ms render pump take a minute to paint.
+
+Every symptom this project has chased falls out of that one fact:
+
+| symptom | the timer behind it |
+|---|---|
+| the Ableton strip takes a minute to appear, and never moves when a dial turns | `ableton.js` pump, `setTimeout(pump, 66)` |
+| Pro-Q 3's `??` screen never clears on a device change | the same pump — the repaint that would clear it never ran |
+| calculator `+` "does string concatenation" | `input.js` long press, 500 ms → ~1190 ms, released before it fired |
+| dial-6 long press "does nothing" in NAV OFF | `plugin.js` dial hold, same 500 ms |
+| the clock froze at `:40` | the V28 tick |
+| MIDI touch notes ring for a second | `midictl.js` 40 ms note-off |
+| rekordbox browse auto-repeat feels broken | 140 ms repeat |
+| the surface is dead for a minute after a service restart | `ipc.js` 1.5 s reconnect |
+
+**RULING — `js/core/timing.js` is the only place in the plugin allowed to
+schedule anything.** `after` / `every` are served by a dedicated Worker, which has
+no visibility state and therefore keeps real time; `soon()` uses a MessageChannel
+for repaint coalescing. Both degrade to native timers if a Worker cannot be
+created, and `kind()` reports which leg is live so this is never guesswork again.
+
+**The rule is enforced by a test, not by discipline:** `test_core` strips comments
+from every plugin source and fails if any file calls `setTimeout`/`setInterval`
+outside the timing layer. Every timing bug here was a raw page timer, so the
+invariant is worth more than the individual fixes.
+
+*Not done, deliberately:* the payload was NOT throttled or paginated. Nothing
+measured suggests it needs to be, and cutting parameter data on a hunch would
+degrade the controllers while hiding whatever is left. If the strip is still slow
+with real Live now that the pump runs at 15 fps, that is the point to measure the
+payload — and the pump's own numbers will say so.
+
+### V35 — a dial may declare `hold`
+
+Generalised from the key model (V6): a dial binding with a `hold` gets a timer on
+press, runs `hold` if it expires, and resolves its short `press` on RELEASE so
+closing a tab can never also open one. Dial 6 keeps its own path — NAV is an
+engine gesture, not a binding, and must work on a module that declares nothing.
+
+### V33 — the Root Hub touch strip is OS navigation
+
+Master / Zoom / Apps / Lights are replaced by the five things a hand reaches for
+while driving a computer. Zone 6 is left EMPTY on purpose: that is how the clock
+claims it (`lastZoneFree`).
+
+| dial | turn | push |
+|---|---|---|
+| 1 Scroll Y | scroll up/down | Page Down |
+| 2 Scroll X | scroll left/right | Home |
+| 3 Zoom | Cmd/Ctrl +/− | Cmd/Ctrl 0 |
+| 4 Tabs | Ctrl+Tab cycle | new · **HOLD = close** |
+| 5 Apps | Cmd/Alt-Tab cycle | Mission Control / Task View |
+
+**Every action is a NAMED VERB on the service**, never a key combo in `root.js`.
+A test asserts the dial strip contains no `cmd+`, no `ctrl+`, no `hotkey(` and no
+platform name — because the asymmetry is real: a tab cycle is Ctrl+Tab on BOTH
+platforms while a new tab is Cmd+T on macOS and Ctrl+T on Windows. That is
+precisely what the service layer is for.
+
+`appSwitch` was reused rather than rewritten — it already holds the modifier down
+across ticks and releases it only when the dial goes quiet, so the switcher stays
+open while you spin. My first pass duplicated it with a worse version; corrected.
+
+**Glyphs are restricted to the proven set.** `↕ ↔ ⌕ ⧉` were the obvious picks and
+are all UNPROVEN on this device; they became `▲▼ ◀▶ ± ⊞`, all already shipping
+elsewhere. A test derives the proven set from the other modules and fails on
+anything outside it — the tofu field note, finally enforced instead of remembered.
+
+### EQ8 — the mapping, written out
+
+`docs/EQ8_MAPPING.md` records exactly what every dial and touch band currently
+does, at Adi's request. Two structural causes of the erratic touch are visible
+without changing anything:
+
+* **the mode selector is duplicated in all six zones** — `_tabHit` runs on
+  zone-local `lx` with nothing restricting it to one zone, so the top 17 % of the
+  whole strip is a six-times-over mode switcher;
+* **the bottom 36 % is band-mute on the left and filter-type on the right, with no
+  dead space**, so a slightly low touch mutes a band.
+
+Nothing there was changed: the parameter mapping is verified data (L4) and the
+touch bands are Adi's to rule on.

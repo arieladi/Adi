@@ -42,7 +42,7 @@ SOS.IPC = (function () {
 
   // ------------------------------------------------------------------ socket
   function connect() {
-    clearTimeout(retry); retry = null;
+    SOS.Timing.cancel(retry); retry = null;
     try { ws = new WebSocket(url); }
     catch (e) { return scheduleRetry(); }
 
@@ -58,7 +58,7 @@ SOS.IPC = (function () {
       if (msg.id && pending[msg.id]) {
         var p = pending[msg.id];
         delete pending[msg.id];
-        clearTimeout(p.timer);
+        SOS.Timing.cancel(p.timer);
         if (msg.ok === false) p.reject(new Error(msg.error || 'service error'));
         else p.resolve(msg.result);
         return;
@@ -74,15 +74,17 @@ SOS.IPC = (function () {
     ws.onerror = function () { /* onclose always follows; retry lives there */ };
   }
 
+  /* V34 — SOS.Timing. A clamped reconnect timer is a real outage: restart the
+     service and a 1.5 s retry becomes up to a minute of a dead surface. */
   function scheduleRetry() {
     if (retry) return;
-    retry = setTimeout(function () { retry = null; connect(); }, RETRY_MS);
+    retry = SOS.Timing.after(RETRY_MS, function () { retry = null; connect(); });
   }
 
   function failAllPending(reason) {
     for (var id in pending) {
       if (!pending.hasOwnProperty(id)) continue;
-      clearTimeout(pending[id].timer);
+      SOS.Timing.cancel(pending[id].timer);
       pending[id].reject(new Error(reason));
     }
     pending = {};
@@ -117,10 +119,10 @@ SOS.IPC = (function () {
       if (!rawSend(msg)) return reject(new Error('service offline'));
       pending[id] = {
         resolve: resolve, reject: reject,
-        timer: setTimeout(function () {
+        timer: SOS.Timing.after(timeoutMs || 4000, function () {
           delete pending[id];
           reject(new Error('service timeout: ' + t));
-        }, timeoutMs || 4000),
+        }),
       };
     });
   }
@@ -150,6 +152,18 @@ SOS.IPC = (function () {
     mute:   function () { return send('os.mute'); },
     zoom:   function (dir) { return send('os.zoom', { dir: dir }); },
     appSwitch: function (dir) { return send('os.appSwitch', { dir: dir }); },
+    /* V33 — OS navigation. Every one of these is a CONCEPT, not a key combo:
+       the service owns whether "new tab" is Cmd+T or Ctrl+T, so root.js stays
+       portable and never learns the platform. */
+    scroll:     function (axis, delta) { return send('os.scroll', { axis: axis, delta: delta }); },
+    pageDown:   function () { return send('os.pageDown'); },
+    home:       function () { return send('os.home'); },
+    appZoom:    function (dir) { return send('os.appZoom', { dir: dir }); },
+    appZoomReset: function () { return send('os.appZoomReset'); },
+    tab:        function (dir) { return send('os.tab', { dir: dir }); },
+    tabNew:     function () { return send('os.tabNew'); },
+    tabClose:   function () { return send('os.tabClose'); },
+    missionControl: function () { return send('os.missionControl'); },
     launch: function (app) { return send('os.launch', { app: app }); },
   };
 

@@ -24,7 +24,7 @@ class FakeWS {
 global.WebSocket = FakeWS;
 
 const ORDER = [
-  'js/core/sd-client.js', 'js/core/surface.js', 'js/core/art.js', 'js/core/clock.js', 'js/core/render.js',
+  'js/core/sd-client.js', 'js/core/timing.js', 'js/core/surface.js', 'js/core/art.js', 'js/core/clock.js', 'js/core/render.js',
   'js/core/ipc.js', 'js/core/layout.js', 'js/core/input.js', 'js/core/nav.js', 'js/core/states.js',
   'js/modules/root.js', 'js/modules/console.js', 'js/modules/index.js', 'js/plugin.js',
 ];
@@ -288,10 +288,12 @@ console.log('\n[8c] V28 — the LED clock, and the cost of ticking it');
   States.startClock();
   ok('a source is always chosen, even with no Worker available',
      States.clockKind() !== null, String(States.clockKind()));
-  ok('…and here that is the setInterval fallback — the Elgato primitive',
-     States.clockKind() === 'interval', String(States.clockKind()));
+  ok('…and here that is the native fallback leg, since Node has no DOM Worker',
+     States.clockKind() === 'native', String(States.clockKind()));
+  const armed = SOS.Timing.pending();
   States.startClock();
-  ok('starting twice never stacks two heartbeats', States.clockKind() === 'interval');
+  ok('starting twice never stacks two heartbeats',
+     SOS.Timing.pending() === armed, `${armed} -> ${SOS.Timing.pending()}`);
 
   // A tick must paint exactly one zone and never reach a key.
   SOS.SD.forget(S.contextOfDial(S.DIALS));
@@ -306,6 +308,66 @@ console.log('\n[8c] V28 — the LED clock, and the cost of ticking it');
   const oneFrame = SOS.Clock.zone({}).length;
   ok('one clock frame is a few KB, not tens', oneFrame < 8000, `${oneFrame} bytes`);
   console.log(`       (a tick is 1 zone x ~${oneFrame} bytes; the Ableton strip already sends 6 x 15/s)`);
+}
+
+console.log('\n[8d] V34 — SOS.Timing: no module may use a page timer');
+{
+  /* MEASURED ON THE DEVICE, which is why this layer exists at all:
+       t+1s    setTimeout(0) 2ms    setTimeout(500) overshot by 187ms
+       t+2min  setTimeout(0) 4ms    setTimeout(500) overshot by 687ms
+       t+6min  setTimeout(0) 3ms    setTimeout(500) overshot by 691ms
+     A 500 ms timer taking ~1190 ms IS the calculator's `+` and the dial-6 NAV
+     gesture failing: a normal-feeling long press was released before it fired. */
+  ok('soon() runs after the current turn, not inline', await new Promise((res) => {
+    let inline = true;
+    SOS.Timing.soon(() => res(inline === false));
+    inline = false;
+  }));
+  ok('soon() batches — one channel message drains the whole queue',
+     await new Promise((res) => {
+       const order = [];
+       SOS.Timing.soon(() => order.push(1));
+       SOS.Timing.soon(() => order.push(2));
+       SOS.Timing.soon(() => { order.push(3); res(order.join() === '1,2,3'); });
+     }));
+
+  const t0 = Date.now();
+  ok('after() fires, and near its deadline', await new Promise((res) => {
+    SOS.Timing.after(60, () => res(Date.now() - t0 >= 50));
+  }));
+  ok('cancel() stops a pending one-shot', await new Promise((res) => {
+    let fired = false;
+    const id = SOS.Timing.after(30, () => { fired = true; });
+    SOS.Timing.cancel(id);
+    SOS.Timing.after(90, () => res(fired === false));
+  }));
+  ok('every() repeats', await new Promise((res) => {
+    let n = 0;
+    const id = SOS.Timing.every(25, () => {
+      if (++n >= 3) { SOS.Timing.cancel(id); res(true); }
+    });
+  }));
+  ok('cancel() releases the handle', SOS.Timing.pending() >= 0);
+
+  /* THE INVARIANT. Every timing bug in this project was a raw page timer, so the
+     rule is enforced by a test rather than by discipline: no plugin source may
+     call setTimeout/setInterval except the timing layer and its worker. */
+  const fs2 = await import('node:fs');
+  const path2 = await import('node:path');
+  const offenders = [];
+  (function walk(dir) {
+    for (const e of fs2.readdirSync(dir, { withFileTypes: true })) {
+      const full = path2.join(dir, e.name);
+      if (e.isDirectory()) { walk(full); continue; }
+      if (!e.name.endsWith('.js')) continue;
+      if (/timing\.js$|timer-worker\.js$/.test(e.name)) continue;
+      const src = fs2.readFileSync(full, 'utf8');
+      // strip comments before looking, so documentation may discuss them freely
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      if (/\b(setTimeout|setInterval)\s*\(/.test(code)) offenders.push(path2.relative(ROOT, full));
+    }
+  })(path2.join(ROOT, 'js'));
+  ok('no plugin source calls a page timer directly', offenders.length === 0, offenders.join(', '));
 }
 
 console.log('\n[9] navigation');

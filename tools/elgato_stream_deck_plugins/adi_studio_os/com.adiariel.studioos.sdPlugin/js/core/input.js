@@ -74,22 +74,26 @@ SOS.Input = (function () {
   function merged(button) { return !reserved(button) && !!hooks.hasHold(button); }
 
   // ------------------------------------------------------------ hold plumbing
+  /* V34 — through SOS.Timing, because THIS is the timer whose clamping made the
+     calculator's `+` and the dial-6 NAV gesture look broken: measured on the
+     device, a 500 ms page timer was taking 1187 ms, so a normal-feeling long
+     press was released before it ever fired. */
   function holdStart(button, onLong) {
     holdCancel(button);
     var rec = { fired: false, timer: null };
-    rec.timer = setTimeout(function () { rec.fired = true; onLong(); }, LONG_MS);
+    rec.timer = SOS.Timing.after(LONG_MS, function () { rec.fired = true; onLong(); });
     holds[button] = rec;
   }
   function holdEnd(button) {
     var rec = holds[button];
     if (!rec) return false;
-    clearTimeout(rec.timer);
+    SOS.Timing.cancel(rec.timer);
     delete holds[button];
     return rec.fired;
   }
   function holdCancel(button) {
     var rec = holds[button];
-    if (rec) { clearTimeout(rec.timer); delete holds[button]; }
+    if (rec) { SOS.Timing.cancel(rec.timer); delete holds[button]; }
   }
 
   // ----------------------------------------------------------------- events
