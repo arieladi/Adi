@@ -392,7 +392,8 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
   SOS.IPC.isOnline = () => true;
   const calls = [];
   for (const verb of ["scroll","pageDown","home","appZoom","appZoomReset",
-                      "tab","tabNew","tabClose","appSwitch","missionControl"]) {
+                      "tab","tabNew","tabClose","appSwitch","appSwitchCommit",
+                      "missionControl","window"]) {
     SOS.IPC.os[verb] = (...a) => { calls.push(verb + (a.length ? ":" + a.join(",") : "")); };
   }
   const d = (n) => M.Root.screen.dials(n);
@@ -402,7 +403,7 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
      [1,2,3,4,5].map((n) => d(n).title).join("|"));
   ok("…and each says what its push does",
      /PgDn/.test(d(1).sub) && /Home/.test(d(2).sub) && /Reset/.test(d(3).sub) &&
-     /New/.test(d(4).sub) && /Desktop/.test(d(5).sub),
+     /New/.test(d(4).sub) && /pick/.test(d(5).sub),
      [1,2,3,4,5].map((n) => d(n).sub).join(" | "));
 
   /* Zone 6 must stay EMPTY. That is not an omission — States.lastZoneFree() is
@@ -416,11 +417,20 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
   d(2).rotate(-2); d(2).press();
   d(3).rotate(1);  d(3).press();
   d(4).rotate(1);  d(4).press();  d(4).hold();
-  d(5).rotate(-1); d(5).press();
+  d(5).rotate(-1); d(5).press();  d(5).hold();
   ok("every dial reaches the right named verb",
      calls.join(" ") === "scroll:y,3 pageDown scroll:x,-2 home appZoom:1 appZoomReset " +
-                         "tab:1 tabNew tabClose appSwitch:-1 missionControl",
+                         "tab:1 tabNew tabClose appSwitch:-1 appSwitchCommit missionControl",
      calls.join(" "));
+
+  /* V36 — TURNING MUST NOT COMMIT. The old 900 ms release meant a spin selected
+     apps at random; now the only things that choose an app are an explicit short
+     press and the service's own 2.5 s idle. Asserted as an absence: rotating any
+     number of times must never reach the commit verb. */
+  calls.length = 0;
+  for (let i = 0; i < 8; i++) d(5).rotate(1);
+  ok("spinning the app dial never commits", !calls.includes("appSwitchCommit"), calls.join(" "));
+  ok("…it only navigates", calls.every((c) => c.startsWith("appSwitch:")), calls.join(" "));
 
   /* THE PORTABILITY INVARIANT. This file must contain no platform knowledge: a
      key combo spelled here would be wrong on the other OS. Every dial goes
@@ -434,8 +444,9 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
      !/cmd\+|ctrl\+|alt\+|darwin|win32|hotkey\(/i.test(dialsSrc),
      (dialsSrc.match(/cmd\+\S*|ctrl\+\S*|hotkey\([^)]*\)/gi) || []).join(","));
 
-  ok("dial 4 is the only one with two functions",
-     [1,2,3,5].every((n) => !d(n).hold) && typeof d(4).hold === "function");
+  ok("dials 4 and 5 carry a hold; 1-3 do not",
+     [1,2,3].every((n) => !d(n).hold) &&
+     typeof d(4).hold === "function" && typeof d(5).hold === "function");
 
   /* THE TOFU RULE. `⌷` rendered as an empty box on this device once, so a glyph
      that is not already shipping elsewhere is a glyph that has never been proven.
@@ -464,6 +475,25 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
     ok("the strip uses only glyphs already proven on the device",
        unproven.length === 0, `unproven: ${unproven.join(" ")}`);
     ok("…and it does use some, so the check is not vacuous", used.size > 0);
+  }
+
+  /* V36 — THE WINDOW LAYOUT KEYS, on row 3 nearest the dials. Named layouts
+     again, never a key combo: on macOS the service writes the window's AX
+     position/size, on Windows it sends Win+arrow, and those share nothing. */
+  {
+    const wcalls = [];
+    SOS.IPC.os.window = (l) => { wcalls.push(l); };
+    const rowFull = SOS.Layout.pick(M.Root.screen, 9);
+    const trio = [0, 1, 2].map((c) => rowFull.keys(c, 3));
+    ok("row 3 carries three window keys", trio.every(Boolean),
+       trio.map((k) => k && k.label).join(","));
+    ok("…labelled Left / Fill / Right",
+       trio.map((k) => k.label).join(",") === "Left,Fill,Right", trio.map((k) => k.label).join(","));
+    trio.forEach((k) => k.tap());
+    ok("each asks the service for its named layout",
+       wcalls.join(",") === "left,max,right", wcalls.join(","));
+    ok("…and they use only proven glyphs",
+       trio.map((k) => k.glyph).join("") === "◀⊞▶", trio.map((k) => k.glyph).join(""));
   }
 
   // The captions must fit the zone, or the one that says what a push does is the

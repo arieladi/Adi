@@ -1899,3 +1899,95 @@ without changing anything:
 
 Nothing there was changed: the parameter mapping is verified data (L4) and the
 touch bands are Adi's to rule on.
+
+
+---
+
+## Batch 21 — the dials did nothing because the service was stale
+
+### THE CAUSE, and it was a deploy bug of mine
+
+Adi reported Root Hub dials 1-4 doing "absolutely nothing" on macOS, and
+suspected the `osascript` layer. It was not the osascript. **Every AppleScript
+form those dials generate compiles and runs correctly** — verified with
+`osacompile` and then for real.
+
+The deploy step started the service only *if it was not already running*. It was
+running, so it was never restarted, and the running service was the OLD build
+that had never heard of `os.scroll`, `os.tab`, `os.appZoom` or the rest. Probed
+live: ten of eleven new verbs came back `unknown verb`. `appSwitch` "worked"
+only because it is an old verb.
+
+**And it failed in total silence**, because those verbs are fire-and-forget: no
+`id`, so no reply, so no error anywhere. Three fixes, because the bug and its
+invisibility are separate problems:
+
+1. **`scripts/deploy-mac.sh`** — the sequence as a script, and it ALWAYS restarts
+   the service. It also matches the app on `MacOS/Stream Deck`, the trap from
+   Batch 17.
+2. **The service logs unknown verbs.** A stale service is now audible.
+3. **The plugin logs the service version on connect** (`service v2.1.0 on
+   darwin`) and the version is bumped whenever the verb table changes, so a
+   mismatch is visible in one glance.
+
+### V36 — the app switcher behaves like the gesture it imitates
+
+`SWITCH_IDLE_MS` was 900 ms, which dropped the held modifier mid-spin: the
+switcher committed to whatever was highlighted and reopened on the next tick —
+Adi's "it selects apps randomly as I spin".
+
+**RULING — turning ONLY navigates.** The app is chosen either by a short press
+(an explicit commit, `os.appSwitchCommit`) or by stopping for **2.5 s**. Mission
+Control moves to the dial's HOLD, since the short press now has a job. A test
+asserts the negative: spinning any number of times never reaches the commit verb.
+
+### V36 — window layouts, and how Elgato actually does it
+
+Adi suggested looking at the official plugins. Worth recording what is there:
+**Elgato's Window Mover ships a compiled native Node addon**
+(`bin/addon/mac/System.node`) and drives the Accessibility API directly. It uses
+`osascript` for exactly one thing — resolving an app's display name.
+
+We have no addon, but System Events exposes the same AX attributes: `position`
+and `size` of a window are readable and writable. **RULING — three keys on row 3
+(nearest the dials): Left / Fill / Right**, as named layouts on the service.
+
+What AppleScript *cannot* read is `NSScreen.visibleFrame`, so the usable area is
+derived: the menu bar is exact (30 pt) and the Dock is estimated from `dock size`,
+which is reported as a NORMALISED 0-1 value. Verified frames on this machine:
+`left x=0 y=30 w=720 h=809`, `max w=1440`, `right x=720`. Being exact needs the
+native addon; that is stated rather than hidden.
+
+**Two runtime bugs that `osacompile` was happy with**, both found only by running
+it — which is the lesson:
+
+* `set hidden to autohide` raises -10006. `hidden` is a reserved term in that
+  context. Renamed.
+* `front window` of the frontmost process raises -1719 when that process has no
+  window — and the Stream Deck app itself is exactly that case. Now guarded: it
+  walks to the frontmost process that HAS a window and does nothing if none does.
+
+### V37 — the EQ8 UX rebuild
+
+**RULING — two functions per band on the touch screen, and the mode switcher
+moves to the dial press.** See `docs/EQ8_MAPPING.md` for the full map.
+
+* **Dial turn** — the active parameter of that dial's band.
+* **Band dial short press** — cycles FREQ -> GAIN -> Q, globally for the strip.
+* **Touch, two strict boxes with real dead zones**: `8-44` toggles the band,
+  `56-92` cycles the filter type, and `0-7 / 45-55 / 93-99` do NOTHING. `x` is
+  ignored inside a zone, so there is no horizontal edge left to miss.
+* The zone is DRAWN as its hitboxes — top pill, value in the gap, bottom pill —
+  so what you see is what you can press.
+
+Deleted outright: the tab row (`_buildTabs`/`_tabHit`), the pagination arrows
+(`_pageArrow`), GLOB mode and its builders. Two of those builders still called
+`_buildTabs`, so leaving them would have been a latent crash behind an
+unreachable branch. The response-curve maths (`_bandDb`, `_buildGraph`) is KEPT
+and self-contained — it is the expensive part to rebuild.
+
+**TWO INFERENCES HERE ARE MINE, not Adi's words, and both are flagged in the code
+and the doc:** that dial 1 becomes Output (his instruction named dials 2-6 as the
+bands but not what dial 1 does), and that pagination lives on dial 1's press
+(touch can no longer carry it). **Consequence worth his ruling: COMPACT drops from
+four bands to three**, because dial 1 is spent on Output there too.

@@ -64,6 +64,8 @@ const HANDLERS = {
   "os.tabNew":       () => OS.tabNew(),
   "os.tabClose":     () => OS.tabClose(),
   "os.missionControl": () => OS.missionControl(),
+  "os.appSwitchCommit": () => OS.appSwitchCommit(),
+  "os.window":       (m) => OS.windowLayout(m.layout),
   "os.launch":    (m) => OS.launch(m.app),
   // Which named actions exist on THIS machine — drives tile visibility so
   // the hub never paints a key whose target is not installed.
@@ -80,6 +82,11 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 server.onMessage = async (msg, client) => {
   const handler = HANDLERS[msg && msg.t];
   if (!handler) {
+    /* V36 — LOG IT. Most verbs are fire-and-forget (no `id`), so an unknown one
+       used to fail in total silence: after a deploy that did not restart the
+       service, four Root Hub dials did nothing at all and there was no trace of
+       why anywhere. A stale service is now audible in the service log. */
+    log.warn(`unknown verb "${msg && msg.t}" — is the service stale? restart it`);
     if (msg && msg.id) client.send({ id: msg.id, ok: false, error: `unknown verb "${msg.t}"` });
     return;
   }
@@ -105,7 +112,9 @@ server.onDisconnect = () => {
   }
 };
 
-const VERSION = "2.0.0";
+/* Bumped whenever the verb table changes, so a version mismatch in the plugin
+   log is enough to spot a service that was not restarted. */
+const VERSION = "2.1.0";
 
 // ------------------------------------------------------------------ lifecycle
 function shutdown(signal) {

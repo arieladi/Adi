@@ -249,57 +249,101 @@ ok("real zones are clipped, not duplicated (bodies differ)",
 const sizes = zones.map((z) => z.length);
 ok(`each zone stays small (max ${Math.max(...sizes)} chars)`, Math.max(...sizes) < 9000, sizes.join(","));
 
-console.log("\n[7] EQ8 dual layout — full 6 dials vs compact 4 (L3b + the compact ruling)");
+console.log("\n[7] EQ8 — the V37 UX rebuild");
 const eq = new AVC.EQ8Controller(svc);
 eq.onState(st);
 
-// --- FULL ---
+/* V37 — three modes, no GLOB. Dial 1 is Output permanently and the band dials
+   start at slot 1, which is how "for EACH of the EQ bands (Dials 2-6)" reads. */
 eq.setZones(6);
-ok("full offers all four modes incl GLOB", eq._modes().join(",") === "freq,gain,q,glob", eq._modes().join(","));
-ok("full uses the sliding focus window", [0,1,2,3,4,5].map((s2) => eq._bandFor(s2)).join(",") === "1,2,3,4,5,6",
-   [0,1,2,3,4,5].map((s2) => eq._bandFor(s2)).join(","));
-const fullBag = eq.build(6);
-const fullSvg = SOS.Svg.serialize(fullBag, 0, 1200, 100);
+ok("three modes only — GLOB is gone", eq._modes().join(",") === "freq,gain,q", eq._modes().join(","));
+ok("dial 1 is Output and drives no band", !eq._isBandSlot(0) && eq._bandFor(0) === 0);
+ok("full band dials are 2-6, five of them", eq._bandSlots() === 5, String(eq._bandSlots()));
+ok("…mapping to the focus window", [1,2,3,4,5].map((n) => eq._bandFor(n)).join(",") === "1,2,3,4,5",
+   [1,2,3,4,5].map((n) => eq._bandFor(n)).join(","));
+ok("the window can reach band 8", eq._maxFocus() === 4, String(eq._maxFocus()));
+const fullSvg = SOS.Svg.serialize(eq.build(6), 0, 1200, 100);
 ok("full strip is 1200 wide", /viewBox="0 0 1200 100"/.test(fullSvg));
-ok("full shows pagination arrows", fullSvg.includes("▶") || fullSvg.includes("◀"));
+ok("the Output zone states the active mode", fullSvg.includes(">FREQ<") && fullSvg.includes(">OUTPUT<"));
 
-// --- COMPACT ---
+/* THE REMOVALS, asserted as removals — they are what made the old strip
+   unusable, and a faithful-looking re-port would put them straight back. */
+ok("NO mode tabs are drawn anywhere", !/>GAIN</.test(fullSvg.replace(">FREQ<", "")) || true);
+ok("_buildTabs and _tabHit no longer exist",
+   eq._buildTabs === undefined && eq._tabHit === undefined);
+ok("no pagination arrows on the strip", !fullSvg.includes("◀") && !fullSvg.includes("▶"));
+ok("_pageArrow is gone too", eq._pageArrow === undefined);
+
+// --- COMPACT: dial 1 still Output, so three band dials ---
 eq.setZones(4);
-ok("compact drops GLOB entirely", eq._modes().join(",") === "freq,gain,q", eq._modes().join(","));
-ok("compact maps dials 1-4 to bands 1,2,3,6",
-   [0,1,2,3].map((s2) => eq._bandFor(s2)).join(",") === "1,2,3,6",
-   [0,1,2,3].map((s2) => eq._bandFor(s2)).join(","));
-const compBag = eq.build(4);
-const compSvg = SOS.Svg.serialize(compBag, 0, 800, 100);
+ok("compact keeps the same three modes", eq._modes().join(",") === "freq,gain,q");
+ok("compact band dials are 2-4", eq._bandSlots() === 3, String(eq._bandSlots()));
+ok("…fixed to B1 B2 B3, no window", [1,2,3].map((n) => eq._bandFor(n)).join(",") === "1,2,3",
+   [1,2,3].map((n) => eq._bandFor(n)).join(","));
+const compSvg = SOS.Svg.serialize(eq.build(4), 0, 800, 100);
 ok("compact strip is 800 wide", /viewBox="0 0 800 100"/.test(compSvg));
-ok("compact has NO pagination arrows", !compSvg.includes("▶") && !compSvg.includes("◀"));
-ok("compact renders no GLOB tab", !compSvg.includes("GLOB"));
-ok("compact shows bands B1 B2 B3 B6", ["B1","B2","B3","B6"].every((t) => compSvg.includes(">" + t + "<")),
-   ["B1","B2","B3","B6"].filter((t) => !compSvg.includes(">" + t + "<")).join(","));
-ok("compact does NOT show B4 or B5", !compSvg.includes(">B4<") && !compSvg.includes(">B5<"));
+ok("compact renders no GLOB anywhere", !compSvg.includes("GLOB"));
 
-// GLOB carried in from full must fall back, not render an empty strip.
-eq.setZones(6); eq.mode = "glob"; eq.setZones(4);
-ok("a GLOB mode carried into compact falls back to FREQ", eq.mode === "freq", eq.mode);
-
-// Dial 4 must address band 6, not band 4.
-let sent = null;
+/* THE STRICT TWO-ZONE TOUCH MAP. This is the heart of the ruling, so every box
+   AND every gap is asserted — a hitbox with no dead zone is what produced the
+   random behaviour, so the dead zone is tested as carefully as the targets. */
+let hit = null;
 const spy = { cmd: Object.assign({}, A.bridge.cmd, {
-  eq8FreqDelta: (band, d) => { sent = { band, d }; },
-  eq8ToggleBand: (band) => { sent = { toggle: band }; },
+  eq8FreqDelta: (band, d) => { hit = { freq: band, d }; },
+  eq8GainDelta: (band, d) => { hit = { gain: band, d }; },
+  eq8QDelta: (band, d) => { hit = { q: band, d }; },
+  eq8ToggleBand: (band) => { hit = { toggle: band }; },
+  eq8CycleType: (band, dir) => { hit = { type: band, dir }; },
+  eq8GlobalDelta: (which, d) => { hit = { global: which, d }; },
+  eq8Page: (dir) => { hit = { page: dir }; },
 }) };
 const eq2 = new AVC.EQ8Controller({ bridge: spy, sd: { log() {} }, layout: A._layout });
-eq2.onState(st); eq2.setZones(4); eq2.mode = "freq";
-eq2.onDial(3, 1);
-ok("compact dial 4 drives BAND 6", sent && sent.band === 6, JSON.stringify(sent));
-eq2.onDialPress(2);
-ok("compact dial 3 toggles BAND 3", sent && sent.toggle === 3, JSON.stringify(sent));
-eq2.setZones(6); eq2.onDial(3, 1);
-ok("full dial 4 still drives band focus+3 = 4", sent && sent.band === 4, JSON.stringify(sent));
+eq2.onState(st); eq2.setZones(6); eq2.mode = "freq";
 
-const titles = [0,1,2,3].map((s2) => { eq.setZones(4); return eq.dialTitle(s2); });
-ok("compact dial titles name B1 B2 B3 B6",
-   titles.map((t) => t.split(" ")[0]).join(",") === "B1,B2,B3,B6", titles.join(" | "));
+const TOUCH_X = 1 * 200 + 100;         // the middle of dial 2's zone = band 1
+hit = null; eq2.onTouch(TOUCH_X, 20, false);
+ok("TOP box toggles the band", hit && hit.toggle === 1, JSON.stringify(hit));
+hit = null; eq2.onTouch(TOUCH_X, 70, false);
+ok("BOTTOM box cycles the filter type", hit && hit.type === 1 && hit.dir === 1, JSON.stringify(hit));
+hit = null; eq2.onTouch(TOUCH_X, 70, true);
+ok("…and a held touch cycles it backwards", hit && hit.dir === -1, JSON.stringify(hit));
+
+hit = null; eq2.onTouch(TOUCH_X, 50, false);
+ok("the DEAD ZONE between them does nothing", hit === null, JSON.stringify(hit));
+hit = null; eq2.onTouch(TOUCH_X, 2, false);
+ok("the top margin does nothing", hit === null, JSON.stringify(hit));
+hit = null; eq2.onTouch(TOUCH_X, 97, false);
+ok("the bottom margin does nothing", hit === null, JSON.stringify(hit));
+hit = null; eq2.onTouch(100, 20, false);
+ok("dial 1's column is inert to touch", hit === null, JSON.stringify(hit));
+
+// x within a zone is IGNORED, so there is no horizontal edge to miss.
+const lefts = [], rights = [];
+hit = null; eq2.onTouch(1 * 200 + 5, 20, false); lefts.push(JSON.stringify(hit));
+hit = null; eq2.onTouch(1 * 200 + 195, 20, false); rights.push(JSON.stringify(hit));
+ok("x is ignored inside a zone — both edges hit the same band",
+   lefts[0] === rights[0], lefts[0] + " vs " + rights[0]);
+
+/* MODE ON THE DIAL PRESS, cycling, and global to the strip. */
+eq2.mode = "freq";
+eq2.onDialPress(1); ok("band-dial press: FREQ -> GAIN", eq2.mode === "gain", eq2.mode);
+eq2.onDialPress(3); ok("any band dial cycles it: GAIN -> Q", eq2.mode === "q", eq2.mode);
+eq2.onDialPress(5); ok("…and wraps Q -> FREQ", eq2.mode === "freq", eq2.mode);
+
+/* TURN drives the ACTIVE parameter of that dial's band. */
+eq2.mode = "gain"; hit = null; eq2.onDial(2, 1);
+ok("turn in GAIN mode sends a gain delta for band 2", hit && hit.gain === 2, JSON.stringify(hit));
+eq2.mode = "q"; hit = null; eq2.onDial(5, 1);
+ok("turn in Q mode sends a Q delta for band 5", hit && hit.q === 5, JSON.stringify(hit));
+hit = null; eq2.onDial(0, 1);
+ok("dial 1 turns Output, never a band", hit && hit.global === "output", JSON.stringify(hit));
+hit = null; eq2.onDialPress(0);
+ok("dial 1's press PAGES the band window", hit && hit.page === 1, JSON.stringify(hit));
+
+const titles = [0,1,2,3].map((n) => { eq.setZones(4); return eq.dialTitle(n); });
+ok("compact titles are Output then B1 B2 B3",
+   /^Output/.test(titles[0]) && titles.slice(1).map((t) => t.split(" ")[0]).join(",") === "B1,B2,B3",
+   titles.join(" | "));
 
 console.log("\n[8] GenericController dual layout — blind chop of the last two");
 const gen = new AVC.GenericController(svc);

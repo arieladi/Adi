@@ -163,7 +163,15 @@ export function zoom(dir) {
 // A dial should feel like holding Cmd/Alt and tapping Tab, so the modifier is
 // held down across ticks and released only after the dial goes quiet. Releasing
 // per-tick would commit the switch on every detent and make cycling impossible.
-const SWITCH_IDLE_MS = 900;
+/* V36 — 900 ms was far too short: Adi's spin dropped the modifier mid-cycle, so
+   the switcher committed to whatever app happened to be highlighted and reopened
+   on the next tick. That is the "it selects apps randomly as I spin" report.
+
+   The dial now behaves like the keyboard gesture it imitates: turning ONLY moves
+   the highlight, and the app is chosen either by a short press (an explicit
+   commit) or by simply stopping for a beat. 2.5 s is long enough to think and
+   short enough not to feel stuck. */
+const SWITCH_IDLE_MS = 2500;
 let switchTimer = null;
 let switchHeld = false;
 
@@ -194,6 +202,15 @@ export async function appSwitch(dir) {
   switchTimer = setTimeout(switchRelease, SWITCH_IDLE_MS);
   return true;
 }
+
+/* Commit now — the dial's short press. Releasing the held modifier IS the
+   selection, exactly as letting go of Cmd is on the keyboard. A no-op when the
+   switcher is not open, so the press is never destructive. */
+export function appSwitchCommit() {
+  clearTimeout(switchTimer);
+  return switchRelease() || Promise.resolve(true);
+}
+export function appSwitchHeld() { return switchHeld; }
 
 /* ---------------------------------------------------------------- type text
    V15 — the delay calculator's value key types its figure into whatever has
@@ -321,6 +338,89 @@ export function tabClose() { return hotkey(`${isMac ? "cmd" : "ctrl"}+w`); }
 export function missionControl() {
   if (isMac) return hotkey("ctrl+up");      // Mission Control
   if (isWin) return hotkey("win+tab");      // Task View
+  return Promise.resolve(false);
+}
+
+/* ===========================================================================
+   V36 — WINDOW LAYOUTS: snap left half / fill / snap right half.
+
+   HOW ELGATO DOES IT, since Adi asked me to look: their Window Mover plugin
+   ships a compiled native Node addon (bin/addon/mac/System.node) and drives the
+   macOS Accessibility API directly. It uses osascript for exactly one thing —
+   resolving an app's display name — and nothing else.
+
+   We have no addon, but AppleScript's System Events exposes the same AX
+   attributes: `position of front window` and `size of front window` are readable
+   AND writable, which is enough to place a window precisely.
+
+   THE ONE THING IT CANNOT DO is read NSScreen.visibleFrame. So the usable area is
+   derived: the menu bar height is readable exactly (30 pt here), and the Dock is
+   estimated from `dock size`, which AppleScript reports as a NORMALISED 0-1 value
+   rather than pixels. The estimate below is within roughly ten points. Being
+   exact needs the native addon Elgato ships; this is stated rather than hidden.
+
+   All of the arithmetic happens INSIDE one AppleScript so a key press costs a
+   single process spawn, not three.
+   =========================================================================== */
+
+const WINDOW_LAYOUTS = { left: [0, 0.5], right: [0.5, 0.5], max: [0, 1] };
+
+export function windowLayout(which) {
+  const spec = WINDOW_LAYOUTS[String(which || "").toLowerCase()];
+  if (!spec) return Promise.resolve(false);
+  const [xf, wf] = spec;
+
+  if (isMac) {
+    /* dock size is 0-1; icons run about 16-128 pt and the tray adds ~16, which
+       is where the 112 and 16 come from. Only subtracted when the Dock is
+       actually at the bottom and actually visible. */
+    return run("osascript", ["-e", [
+      'tell application "Finder" to set b to bounds of window of desktop',
+      'set sw to item 3 of b',
+      'set sh to item 4 of b',
+      'tell application "System Events" to set mbh to item 2 of (get size of menu bar 1 of process "Finder")',
+      'set dockH to 0',
+      'tell application "System Events" to tell dock preferences',
+      '  set dockEdge to (screen edge as string)',
+      /* NOT `hidden` — that is a reserved term inside this context and System
+         Events raises -10006 on `set hidden to autohide`. It COMPILES cleanly and
+         fails only when run, which is why these are executed here and not merely
+         validated with osacompile. */
+      '  set dockAuto to autohide',
+      '  set dockSz to dock size',
+      'end tell',
+      'if (dockEdge is "bottom") and (dockAuto is false) then set dockH to (16 + (dockSz * 112) + 16)',
+      `set winX to round (sw * ${xf})`,
+      `set winW to round (sw * ${wf})`,
+      'set winY to mbh',
+      'set winH to round (sh - mbh - dockH)',
+      /* GUARDED. The frontmost process may legitimately have no window — the
+         Stream Deck app itself is the obvious case, and it raises -1719 ("Can't
+         get window 1 ... Invalid index") rather than failing quietly. Found by
+         running this for real; osacompile is happy with the unguarded version. */
+      'tell application "System Events"',
+      '  set target to missing value',
+      '  repeat with pr in (every application process whose frontmost is true)',
+      '    if (count of windows of pr) > 0 then',
+      '      set target to pr',
+      '      exit repeat',
+      '    end if',
+      '  end repeat',
+      '  if target is missing value then return "nowindow"',
+      '  tell target',
+      '    set position of window 1 to {winX, winY}',
+      '    set size of window 1 to {winW, winH}',
+      '  end tell',
+      'end tell',
+      'return "ok"',
+    ].join("\n")]);
+  }
+
+  if (isWin) {
+    // Windows has this natively and correctly: Win+Left / Win+Right / Win+Up.
+    if (wf === 1) return hotkey("win+up");
+    return hotkey(xf === 0 ? "win+left" : "win+right");
+  }
   return Promise.resolve(false);
 }
 
