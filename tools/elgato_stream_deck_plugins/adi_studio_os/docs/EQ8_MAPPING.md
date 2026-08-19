@@ -1,92 +1,80 @@
-# EQ8 — the mapping Studio OS currently believes in
+# EQ8 — the mapping (V37 rebuild)
 
-Written out at Adi's request, so the touch behaviour can be judged against what
-the code actually does rather than against what it was meant to do. Every line
-below is read off `js/ableton/EQ8Controller.js`, not remembered.
+Rewritten to Adi's ruling after the original hitboxes proved unusable. The
+"before" analysis that motivated this is preserved at the bottom.
 
-**Geometry.** One zone is 200 × 100. The strip is six of them, drawn as ONE
-1200 × 100 picture and sliced (so a curve spans all six). Touch arrives per-zone
-and is mapped back into full-strip space before hit-testing:
-`slot = floor(gx / 200)`, `lx = gx − slot·200`, `ly = gy` (0–99).
+**Geometry.** One zone is 200 x 100. The strip is six of them drawn as ONE
+1200 x 100 picture and sliced, so a value spans nothing and each zone is
+self-contained. Touch arrives per zone; `slot = floor(gx / 200)`.
 
-**The three Y bands, out of 100:**
+---
 
-| band | rows | what lives there |
+## Dials
+
+| dial (slot) | turn | short press |
 |---|---|---|
-| `TAB` | **2 – 17** | the mode selector |
-| `MID` | **19 – 60** | the band readout; pagination arrows at the far edges |
-| `BOT` | **62 – 97** | band on/off and filter type |
+| **1** (0) | Output Gain | **page** the band window (FULL only) |
+| **2-6** (1-5) | the ACTIVE parameter of that dial's band | **cycle the mode** FREQ -> GAIN -> Q |
 
----
+* Mode is **global to the strip**, not per band: every dial shows the same
+  parameter, so pressing any band dial cycles all of them.
+* FULL has five band dials over eight bands, so the window starts at band 1-4.
+* COMPACT (State 2 docked, 4 dials) has three band dials, fixed to **B1 B2 B3**,
+  and no paging.
 
-## FULL layout — 6 dials
+## Touch — exactly two functions per band
 
-Modes: **FREQ · GAIN · Q · GLOB**. `focus` (F) is 1–3, so the six dials show
-bands F … F+5 — a sliding window over the eight bands.
-
-### Dials
-
-| mode | dial 1 | dial 2 | dial 3 | dial 4 | dial 5 | dial 6 |
-|---|---|---|---|---|---|---|
-| FREQ | B(F) freq | B(F+1) | B(F+2) | B(F+3) | B(F+4) | B(F+5) |
-| GAIN | B(F) gain | B(F+1) | B(F+2) | B(F+3) | B(F+4) | B(F+5) |
-| Q | B(F) Q | B(F+1) | B(F+2) | B(F+3) | B(F+4) | B(F+5) |
-| GLOB | **Output Gain** | **Scale** | — | — | — | — |
-
-* **Turn** → `eq8FreqDelta` / `eq8GainDelta` / `eq8QDelta` on that band,
-  `ticks × 0.02` normalised. In GLOB: `eq8GlobalDelta('output'|'scale')`.
-* **Push** → `eq8ToggleBand(band)`. **In GLOB, push does nothing.**
-
-### Touch
-
-| where | action |
+| `ly` | action |
 |---|---|
-| `ly 2–17`, **any of the six zones** | select mode from `lx`: 4 segments of 48 px → FREQ / GAIN / Q / GLOB |
-| `ly 19–60`, zone 1, `lx < 22` | `eq8Page(−1)` — only if `focus > 1` |
-| `ly 19–60`, last zone, `lx > 178` | `eq8Page(+1)` — only if `focus < 3` |
-| `ly 62–97`, `lx < ~85` | `eq8ToggleBand(band)` |
-| `ly 62–97`, `lx > ~85` | `eq8CycleType(band, +1)`; a **hold** touch cycles −1 |
-| anything in GLOB below the tab row | ignored |
+| 0 - 7 | **dead** (top margin) |
+| **8 - 44** | **toggle band on/off** |
+| 45 - 55 | **dead** (the gap; the value is printed here) |
+| **56 - 92** | **cycle filter type** — a held touch cycles backwards |
+| 93 - 99 | **dead** (bottom margin) |
+
+* **`x` is ignored inside a zone.** There is no left/right split any more, so
+  there is no horizontal edge to miss — only the vertical third you aimed at.
+* **Dial 1's column is completely inert to touch.**
+* The zone is DRAWN as its hitboxes: a top pill, the value in the gap, a bottom
+  pill. What you see is what you can press.
+
+## Removed outright
+
+| gone | why |
+|---|---|
+| the FREQ/GAIN/Q/GLOB **tab row** | it was drawn in ALL SIX zones and `_tabHit` ran on zone-local `x` with nothing restricting it to one zone, so the top 17 % of the whole strip was a six-times-over mode switcher. Mode is on the dial press now. |
+| **GLOB** mode | its Output Gain became a permanent dial 1; Scale is no longer reachable. |
+| **pagination arrows** | 22 px targets at the extreme edges of zones 1 and 6. Paging is dial 1's press. |
+| the **horizontal** split in the bottom band | left-42 %/right-58 % with no margin, so a slightly-off touch muted a band instead of changing its filter. |
+| `_buildTabs`, `_tabHit`, `_pageArrow`, `_buildGlobals`, `_buildGlobalZone` | deleted, not just unused — two of them called `_buildTabs` and would have been a latent crash behind an unreachable branch. |
+
+The per-band dB approximation and its plotting (`_bandDb`, `_buildGraph`) are
+KEPT though nothing draws them: that is the expensive part to reconstruct, and it
+references nothing that was removed.
 
 ---
 
-## COMPACT layout — 4 dials (State 2 docked)
+## Two inferences in this design that are MINE, not Adi's words
 
-Modes: **FREQ · GAIN · Q**. GLOB is dropped entirely. Bands are **FIXED**, not a
-window, and there is **no pagination**:
-
-| dial 1 | dial 2 | dial 3 | dial 4 |
-|---|---|---|---|
-| **B1** | **B2** | **B3** | **B6** |
-
-Tab row is 3 segments of 64 px instead of 4 of 48.
+1. **Dial 1 = Output.** "for EACH of the EQ bands (Dials 2-6)" says the band dials
+   are 2-6. It does not say what dial 1 is. Output Gain was the only global worth
+   a knob, and GLOB mode was being deleted anyway. **Consequence: COMPACT drops
+   from four bands (B1/B2/B3/B6) to three (B1/B2/B3).** If four bands in compact
+   matter more, dial 1 should be a band there.
+2. **Pagination on dial 1's press.** Touch can no longer carry it and it had to
+   live somewhere, or bands 6-8 become unreachable in FULL.
 
 ---
 
-## Where I think the erratic touch comes from
+## Appendix — what was wrong before (the analysis that led here)
 
-Three things, and I am confident about the first two because they are structural.
+The old map had THREE overlapping Y bands with no margin at all:
+`TAB 2-17`, `MID 19-60`, `BOT 62-97`. On top of that:
 
-**1. The mode selector is duplicated in all six zones.** `_tabHit` is evaluated
-against zone-local `lx`, and nothing restricts it to one zone. So the top 17 % of
-the ENTIRE 1200 px strip is a mode selector, six times over — and which mode you
-get depends on where you landed inside whichever 200 px zone you touched. A touch
-meant for band 4 that lands 10 px too high silently becomes "switch to GAIN".
-That alone would read as random.
-
-**2. The bottom third is two destructive-ish actions with no margin.** `ly 62–97`
-is 36 % of the zone height; its left 42 % toggles a band off and its right 58 %
-cycles the filter type. There is no dead space, so a slightly low touch aimed at
-the readout mutes a band or changes a bell into a shelf.
-
-**3. Until V34 the visuals were up to a minute stale.** The pump was a page timer
-being clamped, so the strip Adi was touching described a state Live had already
-left. Correct hit-testing against a stale picture still feels random. This one is
-fixed; the two above are not.
-
-**A fourth, smaller thing:** `hold` reverses `eq8CycleType`. A touch that lingers
-— which a finger on a small target naturally does — steps the filter type
-backwards instead of forwards.
-
-I have deliberately NOT changed any of this. The parameter mapping is verified
-data (L4) and the touch bands are Adi's to rule on.
+* the mode selector was duplicated across all six zones, so a touch aimed at a
+  band that landed 10 px high silently switched the whole strip's parameter;
+* the bottom 36 % was band-mute on the left and filter-type on the right with no
+  dead space between them;
+* a lingering touch reversed the filter-type direction;
+* and until the timing fix the visuals were up to a minute stale, so correct
+  hit-testing was being done against a picture Live had already left behind.

@@ -52,7 +52,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**880 tests green** (869 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 13 is deployed and running on the hardware**. Last commit: "no page timers anywhere, OS-nav strip on the Root Hub, EQ8 mapping written out".
+**902 tests green** (891 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 13 is deployed and running on the hardware**. Last commit: "restart the service on every deploy, window layouts, app-switch UX, EQ8 rebuild".
 
 | Piece | State |
 |---|---|
@@ -134,6 +134,7 @@ operation, which is the feedback whose absence made `+` feel broken.
 - **Verify headlessly**, never by asking me to check: `node scripts/test_*.mjs` plus `python3 scripts/test_bridge.py`. All SEVEN suites, every time.
 - **Look at what you built before deploying.** Render the REAL modules through the REAL `render.js` into an SVG sheet and screenshot it in the Browser pane — a mock proves nothing. The pane's screenshots go black when scrolled, so keep each sheet inside one viewport.
 - **Deploy to hardware** — this exact sequence, because the app caches plugin files while running and a plain restart picks up nothing:
+  0. **Just run `./scripts/deploy-mac.sh`.** It encodes all of this, and in particular it ALWAYS restarts the service — a deploy that only started it "if not running" left four Root Hub dials calling verbs a stale service had never heard of, silently, because those verbs are fire-and-forget.
   1. Quit the app and wait for it to ACTUALLY die. The binary is `MacOS/`**`Stream Deck`**, not "Elgato Stream Deck" — `pgrep -x "Elgato Stream Deck"` and `pgrep -f ".../MacOS/Elgato"` NEVER match and will report success instantly while the app runs on. Use `pgrep -lf "Elgato Stream Deck.app/Contents/MacOS/Stream Deck"`, and `pkill -f "Elgato Stream Deck.app"` to clear QtWebEngine helpers too.
   2. `rsync -a --delete <repo>/com.adiariel.studioos.sdPlugin/ ~/Library/Application\ Support/com.elgato.StreamDeck/Plugins/com.adiariel.studioos.sdPlugin/`
   3. `diff -r` the two folders and grep the DEPLOYED files for markers of the change — never trust the copy.
@@ -146,6 +147,8 @@ operation, which is the feedback whose absence made `+` feel broken.
 - **Glyphs outside the proven set render as tofu.** `⌷` (U+2337) came out as an empty box on the device. Stay inside the glyph set already in shipped use; there is a test pinning this.
 - **`keySpec()` in `states.js` must forward every new binding field.** It is a hand-written whitelist and a forgotten field paints a silently wrong key — this has now bitten twice (`size`/`subStrong`, then `segDim`).
 - **Key SVG ids must be derived from content, not a counter.** `SD.image()` dedupes by data URI; a per-call id makes every key look different every frame and turns a static surface into 36 writes at 15 fps.
+- **THE SERVICE IS A SEPARATE PROCESS. Restart it on EVERY deploy.** rsyncing new code does nothing to the one already running, and an unknown verb from a stale service fails silently (fire-and-forget has no reply). The plugin log now prints `service vX.Y.Z` on connect — check it matches.
+- **`osacompile` proves syntax, NOT behaviour.** Two AppleScript bugs compiled cleanly and failed only when run: `hidden` is reserved inside `dock preferences`, and `front window` raises -1719 when the frontmost process has no window (the Stream Deck app itself). Run the script, do not just compile it.
 - **NOTHING may call `setTimeout`/`setInterval`. Use `SOS.Timing`.** A page timer in this hidden WebView is clamped: measured, a 500 ms timeout takes ~1190 ms, and with the app window closed it degrades to roughly once a MINUTE. That single fact was behind the frozen clock, the calculator `+`, the dial-6 long press, the minute-long Ableton strip, ringing MIDI notes and slow reconnects. `js/core/timing.js` serves delays from a Worker; a test fails the build if any other file schedules anything.
 - **`setFeedback` has no dedupe of its own — use `SD.feedback()`.** `SD.image()` always deduped; setFeedback did not, so six dial zones were re-sent in full on every repaint. Under the 15 fps Ableton pump that was ~90 multi-KB messages a second and it is what overloaded the machine. Anything new that paints a zone goes through `SD.feedback()`.
 - **`scripts/preview.mjs` must mirror `States.paintDial` exactly** — it has now silently drifted TWICE, each time leaving a sheet that looked right and was not evidence.

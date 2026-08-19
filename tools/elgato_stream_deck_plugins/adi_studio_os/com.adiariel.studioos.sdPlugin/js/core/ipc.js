@@ -63,6 +63,10 @@ SOS.IPC = (function () {
         else p.resolve(msg.result);
         return;
       }
+      /* V36 — say which service version answered. Fire-and-forget verbs cannot
+         report an unknown-verb error, so a stale service is otherwise invisible;
+         this one line in the plugin log is the cheapest way to see it. */
+      if (msg.t === 'ready') SOS.SD.log('service v' + (msg.version || '?') + ' on ' + (msg.platform || '?'));
       if (msg.t) emit(msg.t, msg);
     };
 
@@ -164,6 +168,8 @@ SOS.IPC = (function () {
     tabNew:     function () { return send('os.tabNew'); },
     tabClose:   function () { return send('os.tabClose'); },
     missionControl: function () { return send('os.missionControl'); },
+    appSwitchCommit: function () { return send('os.appSwitchCommit'); },
+    window: function (layout) { return send('os.window', { layout: layout }); },
     launch: function (app) { return send('os.launch', { app: app }); },
   };
 

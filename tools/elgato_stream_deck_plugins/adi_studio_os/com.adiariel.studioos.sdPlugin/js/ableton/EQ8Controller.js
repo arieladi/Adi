@@ -40,16 +40,34 @@ window.AVC = window.AVC || {};
 
 AVC.EQ8Controller = function EQ8Controller(services) {
   AVC.DeviceController.call(this, services);
-  this.mode = 'freq';                                // freq | gain | q | glob
+  this.mode = 'freq';                                // freq | gain | q  (V37)
   this.FMIN = 20; this.FMAX = 22000; this.DBR = 18;  // graph ranges
 };
 AVC.EQ8Controller.prototype = Object.create(AVC.DeviceController.prototype);
 AVC.EQ8Controller.prototype.id = 'eq8';
 
-AVC.EQ8Controller.MODES = ['freq', 'gain', 'q', 'glob'];
-AVC.EQ8Controller.MODES_COMPACT = ['freq', 'gain', 'q'];      // GLOB dropped
-AVC.EQ8Controller.COMPACT_BANDS = [1, 2, 3, 6];               // dial 1..4 -> band
-AVC.EQ8Controller.MODE_LABEL = { freq: 'FREQ', gain: 'GAIN', q: 'Q', glob: 'GLOB' };
+/* V37 — THE UX REBUILD, to Adi's ruling after the old hitboxes proved unusable:
+   three modes cycled by a BAND DIAL'S SHORT PRESS, and the touch screen limited
+   to exactly two functions per band with a real dead zone between them.
+
+   GLOB is gone as a mode. Its Output Gain becomes a PERMANENT dial 1, which is
+   how "for EACH of the EQ bands (Dials 2-6)" reads: five band dials, and dial 1
+   doing the one global thing worth a knob. FLAGGED — that inference is mine, not
+   Adi's words, and so is putting pagination on dial 1's press. */
+AVC.EQ8Controller.MODES = ['freq', 'gain', 'q'];
+AVC.EQ8Controller.MODES_COMPACT = ['freq', 'gain', 'q'];
+AVC.EQ8Controller.COMPACT_BANDS = [1, 2, 3];            // dials 2..4 -> band
+AVC.EQ8Controller.MODE_LABEL = { freq: 'FREQ', gain: 'GAIN', q: 'Q' };
+AVC.EQ8Controller.OUTPUT_SLOT = 0;                      // dial 1 = Output
+AVC.EQ8Controller.BAND_SLOT0 = 1;                       // band dials start here
+
+/* THE STRICT TOUCH MAP. Two boxes per band zone with a real gap: the zone is 100
+   tall, so 8-44 is the top box, 56-92 the bottom, 12 of dead space between them
+   and 8 at each edge. The old map had THREE overlapping bands with no margin and
+   a mode switcher duplicated across all six zones — which is why a touch aimed at
+   a readout muted a band or silently changed the mode. */
+AVC.EQ8Controller.HIT_TOP = [8, 44];
+AVC.EQ8Controller.HIT_BOTTOM = [56, 92];
 
 (function (P) {
   var proto = P.prototype;
@@ -63,8 +81,10 @@ AVC.EQ8Controller.MODE_LABEL = { freq: 'FREQ', gain: 'GAIN', q: 'Q', glob: 'GLOB
 
   // ------------------------------------------------------------- state access
   proto._eq = function () { return (this.state && this.state.eq8) || { focus: 1, bands: [] }; };
-  // Max focus 3 = EQ8_BANDS(8) - EQ8_DIALS(6) + 1 in live_bridge.py.
-  proto._focus = function () { return clamp(this._eq().focus || 1, 1, 3); };
+  /* Max focus = 8 bands - (band dials) + 1. With dial 1 taken by Output there
+     are five band dials in FULL, so the window can start as late as band 4. */
+  proto._maxFocus = function () { return Math.max(1, 8 - this._bandSlots() + 1); };
+  proto._focus = function () { return clamp(this._eq().focus || 1, 1, this._maxFocus()); };
   proto._band = function (i) {
     var bs = this._eq().bands || [];
     for (var k = 0; k < bs.length; k++) if (bs[k].i === i) return bs[k];
@@ -75,9 +95,8 @@ AVC.EQ8Controller.MODE_LABEL = { freq: 'FREQ', gain: 'GAIN', q: 'Q', glob: 'GLOB
      before each render; defaults to the full 6. */
   proto.setZones = function (z) {
     this.zones = clamp(z | 0, 1, 6);
-    // GLOB does not exist in compact, so a mode carried in from the full layout
-    // has to fall back rather than render nothing.
-    if (this.zones < 6 && this.mode === 'glob') this.mode = 'freq';
+    // V37 — GLOB is gone entirely, so there is nothing left to fall back from.
+    if (P.MODES.indexOf(this.mode) < 0) this.mode = 'freq';
   };
   proto._zones = function () { return this.zones || 6; };
   proto._compact = function () { return this._zones() < 6; };
@@ -85,9 +104,15 @@ AVC.EQ8Controller.MODE_LABEL = { freq: 'FREQ', gain: 'GAIN', q: 'Q', glob: 'GLOB
 
   /* Which band a given dial drives. Compact uses the fixed strategic set
      (B1/B2/B3/B6); full uses the sliding focus window. */
+  // Slot 0 is Output and drives no band at all.
+  proto._isBandSlot = function (slot) { return slot >= P.BAND_SLOT0 && slot < this._zones(); };
+  proto._bandSlots = function () { return Math.max(0, this._zones() - P.BAND_SLOT0); };
+
   proto._bandFor = function (slot) {
-    if (this._compact()) return P.COMPACT_BANDS[slot] || P.COMPACT_BANDS[P.COMPACT_BANDS.length - 1];
-    return this._focus() + slot;
+    var i = slot - P.BAND_SLOT0;                    // 0-based band-dial index
+    if (i < 0) return 0;
+    if (this._compact()) return P.COMPACT_BANDS[i] || P.COMPACT_BANDS[P.COMPACT_BANDS.length - 1];
+    return this._focus() + i;
   };
 
   // ---------------------------------------------- filter-type classification
@@ -144,85 +169,80 @@ AVC.EQ8Controller.MODE_LABEL = { freq: 'FREQ', gain: 'GAIN', q: 'Q', glob: 'GLOB
     var b = Svg.bag(), W = this._zones() * SLOT;
     Svg.rect(b, 0, 0, W, H, gfx.bg);
 
-    if (this.mode === 'glob') { this._buildGlobals(b, W); return b; }
-
     for (var slot = 0; slot < this._zones(); slot++) {
       var x = slot * SLOT;
       if (slot > 0) Svg.line(b, x + 0.5, 4, x + 0.5, H - 4, gfx.line, 1);
-      this._buildBandZone(b, x, this._bandFor(slot));
-    }
-    // Pagination only exists in the full layout — compact bands are fixed.
-    if (!this._compact()) {
-      this._pageArrow(b, 0, '◀', this._focus() > 1);
-      this._pageArrow(b, (this._zones() - 1) * SLOT, '▶', this._focus() < 3);
+      if (slot === P.OUTPUT_SLOT) this._buildOutputZone(b, x);
+      else this._buildBandZone(b, x, this._bandFor(slot));
     }
     return b;
   };
 
-  proto._buildTabs = function (b, x, color) {
-    var modes = this._modes(), tw = (SLOT - 8) / modes.length;
-    for (var i = 0; i < modes.length; i++) {
-      var act = modes[i] === this.mode;
-      var tx = x + 4 + i * tw + 1;
-      Svg.rrect(b, tx, TAB[0], tw - 2, TAB[1] - TAB[0], 3,
-                act ? (color || gfx.accent) : 'rgba(255,255,255,0.05)');
-      Svg.text(b, P.MODE_LABEL[modes[i]], tx + (tw - 2) / 2, TAB[1] - 4,
-               act ? 8 : 7, act ? 800 : 600, act ? '#06251d' : gfx.dim, 'middle');
+  /* V37 — zone 1 is Output, permanently. It also states the current MODE and the
+     band window, because the mode indicator has to live somewhere now that it is
+     not a row of tabs, and this is the one zone with room for it. It is a
+     READOUT: nothing here responds to touch. */
+  proto._buildOutputZone = function (b, x) {
+    var eq = this._eq();
+    Svg.text(b, 'OUTPUT', x + SLOT / 2, 16, 9, 700, gfx.dim, 'middle');
+    Svg.mono(b, AVC.showVal(eq.output_disp, (Math.round((eq.output || 0) * 10) / 10) + ' dB'),
+             x + SLOT / 2, 46, 18, 800, gfx.text, 'middle');
+    // the active parameter, and which bands the dials are showing
+    Svg.rrect(b, x + 26, 58, SLOT - 52, 18, 4, 'rgba(111,227,196,0.16)');
+    Svg.text(b, P.MODE_LABEL[this.mode], x + SLOT / 2, 71, 10, 800, gfx.accent, 'middle');
+    if (!this._compact()) {
+      var f = this._focus();
+      Svg.text(b, 'B' + f + '-B' + (f + this._bandSlots() - 1) + '  push = page',
+               x + SLOT / 2, 92, 8, 600, gfx.dim, 'middle');
+    } else {
+      Svg.text(b, 'push a band = mode', x + SLOT / 2, 92, 8, 600, gfx.dim, 'middle');
     }
   };
-  proto._tabHit = function (lx, ly) {
-    if (!inY(ly, TAB)) return null;
-    var modes = this._modes(), tw = (SLOT - 8) / modes.length;
-    var seg = Math.floor((lx - 4) / tw);
-    return (seg >= 0 && seg < modes.length) ? modes[seg] : null;
-  };
+
+  /* V37 — _buildTabs and _tabHit are DELETED. The tab row was the mode switcher,
+     it was drawn in every zone, and its hit test ran on zone-local x with nothing
+     restricting it to one zone — so the top 17 % of the whole strip was a
+     six-times-over mode selector. Mode now lives on the band dials' short press
+     and is displayed once, in the Output zone. */
 
   proto._pill = function (b, x, y, w, h, label, on, color) {
     Svg.rrect(b, x, y, w, h, 4, on ? (color || gfx.accent) : 'rgba(255,255,255,0.06)');
     Svg.text(b, label, x + w / 2, y + h / 2 + 3.5, 9, 700, on ? '#06251d' : gfx.dim, 'middle');
   };
 
+  /* V37 — the zone is drawn AS THE HITBOXES, so what you see is what you can
+     press: a top box that mutes, a bottom box that cycles the filter type, and a
+     visible gap between them that does nothing. The value sits inside the gap
+     band's baseline so it never invites a touch of its own. */
   proto._buildBandZone = function (b, x, bandNo) {
     var band = this._band(bandNo), color = gfx.bandColors[(bandNo - 1) % 8];
-    this._buildTabs(b, x, color);
     if (!band) {
-      Svg.mono(b, '—', x + SLOT / 2, MID[1] - 6, 16, 800, gfx.dim, 'middle');
+      Svg.mono(b, '—', x + SLOT / 2, 56, 16, 800, gfx.dim, 'middle');
       return;
     }
     var dim = band.on ? 1 : 0.45;
-    Svg.text(b, 'B' + bandNo, x + SLOT / 2, MID[0] + 10, 9, 700, color, 'middle', dim);
-    Svg.mono(b, this._bandDisp(band, this.mode), x + SLOT / 2, MID[1] - 4, 18, 800, gfx.text, 'middle', dim);
-    var ew = (SLOT - 12) * 0.42, tw = (SLOT - 12) - ew - 4;
-    this._pill(b, x + 4, BOT[0], ew, BOT[1] - BOT[0], band.on ? 'ON' : 'OFF', band.on, color);
-    this._pill(b, x + 8 + ew, BOT[0], tw, BOT[1] - BOT[0], this._typeAbbr(band), false, color);
+    var T = P.HIT_TOP, B = P.HIT_BOTTOM;
+
+    // top hitbox — mute
+    this._pill(b, x + 8, T[0], SLOT - 16, T[1] - T[0], 'B' + bandNo + (band.on ? '  ON' : '  OFF'),
+               band.on, color);
+    // the value, in the dead zone: read it, do not press it
+    Svg.mono(b, this._bandDisp(band, this.mode), x + SLOT / 2, B[0] - 3, 15, 800, gfx.text, 'middle', dim);
+    // bottom hitbox — filter type
+    this._pill(b, x + 8, B[0], SLOT - 16, B[1] - B[0], this._typeAbbr(band), false, color);
   };
 
-  proto._pageArrow = function (b, x, glyph, enabled) {
-    var cy = (MID[0] + MID[1]) / 2;
-    Svg.rrect(b, x + 3, cy - 11, ARROW_W - 6, 22, 5,
-              enabled ? 'rgba(111,227,196,0.16)' : 'rgba(255,255,255,0.03)');
-    Svg.text(b, glyph, x + ARROW_W / 2, cy + 5, 14, 700, enabled ? gfx.accent : gfx.dim, 'middle');
-  };
+  // V37 — _pageArrow deleted: pagination moved to dial 1's press.
+  /* V37 — _buildGlobals and _buildGlobalZone are DELETED with the GLOB mode.
+     They also called _buildTabs, which is gone, so leaving them would have left a
+     latent crash behind an unreachable branch. */
 
-  // --------------------------------------------------------------- GLOB mode
-  proto._buildGlobals = function (b, W) {
-    var eq = this._eq();
-    this._buildGlobalZone(b, 0, 'OUTPUT',
-      AVC.showVal(eq.output_disp, (Math.round((eq.output || 0) * 10) / 10) + ' dB'), '#4dd4c8', '1');
-    this._buildGlobalZone(b, SLOT, 'SCALE',
-      AVC.showVal(eq.scale_disp, Math.round(eq.scale || 0) + ' %'), '#9775fa', '2');
-    Svg.line(b, SLOT + 0.5, 4, SLOT + 0.5, H - 4, gfx.line, 1);
-    Svg.line(b, 2 * SLOT + 0.5, 4, 2 * SLOT + 0.5, H - 4, gfx.line, 1);
-    this._buildGraph(b, 2 * SLOT, W - 2 * SLOT, H);
-  };
-  proto._buildGlobalZone = function (b, x, label, value, color, dialNo) {
-    this._buildTabs(b, x, color);
-    Svg.text(b, label, x + SLOT / 2, MID[0] + 12, 10, 700, color, 'middle');
-    Svg.mono(b, value, x + SLOT / 2, BOT[0] - 4, 20, 800, gfx.text, 'middle');
-    Svg.text(b, 'dial ' + dialNo, x + SLOT / 2, BOT[1], 8, 600, gfx.dim, 'middle');
-  };
-
-  // ------------------------------------------------------------ graph (GLOB)
+  /* ------------------------------------------------------- response graph
+     KEPT, though nothing draws it since GLOB was removed. This is the verified
+     per-band dB approximation (_bandDb above) plus its plotting, and it is the
+     one piece of this controller that would be expensive to reconstruct. Left
+     intact and self-contained for whenever a curve view is wanted; it references
+     nothing that was deleted. */
   proto._xOf = function (f, w) { return w * Math.log(f / this.FMIN) / Math.log(this.FMAX / this.FMIN); };
   proto._yOf = function (db, h) { return h / 2 - (db / this.DBR) * (h / 2 - 6); };
 
@@ -262,53 +282,65 @@ AVC.EQ8Controller.MODE_LABEL = { freq: 'FREQ', gain: 'GAIN', q: 'Q', glob: 'GLOB
   };
 
   // ==================================================================== input
+  /* TURN — the active parameter of this dial's band. Dial 1 is Output. */
   proto.onDial = function (slot, ticks) {
     var d = ticks * AVC.STEP;
-    if (this.mode === 'glob') {
-      if (slot === 0) this.bridge.cmd.eq8GlobalDelta('output', d);
-      else if (slot === 1) this.bridge.cmd.eq8GlobalDelta('scale', d);
-      return;
-    }
+    if (slot === P.OUTPUT_SLOT) { this.bridge.cmd.eq8GlobalDelta('output', d); return; }
+    if (!this._isBandSlot(slot)) return;
     var band = this._bandFor(slot);
     if (this.mode === 'freq') this.bridge.cmd.eq8FreqDelta(band, d);
     else if (this.mode === 'gain') this.bridge.cmd.eq8GainDelta(band, d);
     else this.bridge.cmd.eq8QDelta(band, d);
   };
 
+  /* PRESS — cycles the mode, FREQ -> GAIN -> Q. This REPLACES the touch-based
+     mode switcher, which lived in the top 17 % of all six zones and was the
+     single biggest source of "random" touches.
+
+     Mode is global to the strip, not per band: every dial shows the same
+     parameter, so one row of numbers implies one mode, and pressing any band dial
+     cycles the whole strip.
+
+     Dial 1's press PAGES the band window instead, since touch can no longer carry
+     pagination. It wraps rather than clamping — five dials over eight bands leaves
+     only four positions, and wrapping beats a there-and-back. */
   proto.onDialPress = function (slot) {
-    if (this.mode === 'glob') return;
-    this.bridge.cmd.eq8ToggleBand(this._bandFor(slot));
+    if (slot === P.OUTPUT_SLOT) {
+      if (this._compact()) return;                  // compact bands are fixed
+      var f = this._focus();
+      if (f >= this._maxFocus()) this.bridge.cmd.eq8Page(-(f - 1));
+      else this.bridge.cmd.eq8Page(1);
+      return;
+    }
+    if (!this._isBandSlot(slot)) return;
+    var modes = this._modes(), i = modes.indexOf(this.mode);
+    this.mode = modes[(i + 1) % modes.length];
   };
 
+  /* TOUCH — EXACTLY TWO FUNCTIONS PER BAND, and nothing else anywhere.
+
+       top box     -> toggle the band on/off (mute)
+       bottom box  -> cycle the filter type
+
+     Everything else the old map did is gone: no mode tabs, no pagination arrows,
+     no horizontal split. A touch outside either box does NOTHING; the dead zone
+     is the feature. Within a zone the x coordinate is IGNORED entirely, so there
+     is no horizontal edge left to miss — only the vertical third you aimed at. */
   proto.onTouch = function (gx, gy, hold) {
-    var zones = this._zones();
     var slot = Math.floor(gx / SLOT);
-    if (slot < 0 || slot >= zones) return;
-    var lx = gx - slot * SLOT, ly = gy;
-
-    var tab = this._tabHit(lx, ly);
-    if (tab && (this.mode === 'glob' ? slot <= 1 : true)) { this.mode = tab; return; }
-    if (this.mode === 'glob') return;             // graph / globals: dials only
-
-    // Pagination — full layout only; compact bands are fixed.
-    if (!this._compact() && inY(ly, MID)) {
-      if (slot === 0 && lx < ARROW_W && this._focus() > 1) { this.bridge.cmd.eq8Page(-1); return; }
-      if (slot === zones - 1 && lx > SLOT - ARROW_W && this._focus() < 3) { this.bridge.cmd.eq8Page(1); return; }
-    }
-    if (inY(ly, BOT)) {
-      var band = this._bandFor(slot), ew = (SLOT - 12) * 0.42;
-      if (lx < 4 + ew + 2) this.bridge.cmd.eq8ToggleBand(band);
-      else this.bridge.cmd.eq8CycleType(band, hold ? -1 : 1);
-    }
+    if (!this._isBandSlot(slot)) return;            // dial 1's column is inert
+    var band = this._bandFor(slot);
+    if (inY(gy, P.HIT_TOP)) { this.bridge.cmd.eq8ToggleBand(band); return; }
+    if (inY(gy, P.HIT_BOTTOM)) { this.bridge.cmd.eq8CycleType(band, hold ? -1 : 1); return; }
+    // dead zone — deliberately no action
   };
 
   proto.dialTitle = function (slot) {
-    if (this.mode === 'glob') {
+    if (slot === P.OUTPUT_SLOT) {
       var eq = this._eq();
-      if (slot === 0) return 'Output ' + AVC.showVal(eq.output_disp, (Math.round((eq.output || 0) * 10) / 10) + ' dB');
-      if (slot === 1) return 'Scale ' + AVC.showVal(eq.scale_disp, Math.round(eq.scale || 0) + ' %');
-      return 'EQ Eight';
+      return 'Output ' + AVC.showVal(eq.output_disp, (Math.round((eq.output || 0) * 10) / 10) + ' dB');
     }
+    if (!this._isBandSlot(slot)) return '';
     var bandNo = this._bandFor(slot), band = this._band(bandNo);
     if (!band) return 'B' + bandNo;
     return 'B' + bandNo + ' ' + P.MODE_LABEL[this.mode] + ' ' + this._bandDisp(band, this.mode);

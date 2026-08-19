@@ -11,7 +11,7 @@
      Dial 2  Scroll X   turn = scroll left/right   push = Home
      Dial 3  Zoom       turn = Cmd/Ctrl +/-        push = Cmd/Ctrl 0
      Dial 4  Tabs       turn = Ctrl+Tab cycle      push = new · HOLD = close
-     Dial 5  Apps       turn = Cmd/Alt-Tab cycle   push = Mission Control
+     Dial 5  Apps       turn = cycle (holds Cmd)   push = pick · HOLD = Mission Control
      Dial 6  the clock (V28) — claimed automatically because nothing else uses it
 
    Two layout rules learned on hardware, both enforced here:
@@ -20,6 +20,8 @@
       State 0 is the power-on default, so anything placed at col >= 5 is
       invisible behind the numpad. The first arrangement ran along row 0 and hid
       Tasks/Chrome/Lynx.
+
+   ROW 3 is window management: Left / Fill / Right, nearest the dials.
 
    2. A tile is only shown if its target actually exists on THIS machine. The
       service probes each named action and reports availability, so Start / Run /
@@ -65,7 +67,18 @@ SOS.Modules.Root = (function () {
   /* ROWS 1+ are OS actions. `action` names an entry in service/os.js ACTIONS;
      availability comes from the service, so nothing here hardcodes a platform. */
   // Region-local "col,row" -> OS action.
+  /* V36 — WINDOW LAYOUTS on row 3, which is the row physically nearest the
+     dials. Three keys, matching the default Elgato Window Mover arrangement Adi
+     referenced: snap left half, fill, snap right half.
+
+     `window` names a layout on the service, so this table stays free of platform
+     detail — the service uses AX position/size on macOS and Win+arrow on
+     Windows, which are not remotely the same mechanism. Glyphs are from the
+     proven set (◀ ▶ ⊞); nothing new is risked on the cap. */
   var SLOTS = {
+    '0,3': { label: 'Left',  glyph: '◀', window: 'left',  color: R.PALETTE.nav },
+    '1,3': { label: 'Fill',  glyph: '⊞', window: 'max',   color: R.PALETTE.nav },
+    '2,3': { label: 'Right', glyph: '▶', window: 'right', color: R.PALETTE.nav },
     '0,1': { label: 'Start',  glyph: '⊞',  action: 'start' },
     '1,1': { label: 'Run',    glyph: '▸_', action: 'run' },
     '2,1': { label: 'Shell',  glyph: '>_', action: 'shell' },
@@ -143,6 +156,7 @@ SOS.Modules.Root = (function () {
       dim: !IPC.isOnline(),
       tap: slot.run || function () {
         if (slot.action) IPC.os.action(slot.action);
+        else if (slot.window) IPC.os.window(slot.window);
         else if (slot.app) IPC.os.launch(slot.app);
         else if (slot.hotkey) IPC.os.hotkey(slot.hotkey);
       },
@@ -220,11 +234,21 @@ SOS.Modules.Root = (function () {
           press: function () { IPC.os.tabNew(); },
           hold: function () { IPC.os.tabClose(); },
         };
+        /* V36 — TURNING ONLY NAVIGATES. The switcher stays open while you spin
+           (the service holds the modifier down) and the app is chosen either by a
+           short press — an explicit commit — or by simply stopping for 2.5 s.
+           900 ms was dropping the modifier mid-spin, which committed to whatever
+           happened to be highlighted and reopened on the next tick: the "selects
+           apps randomly" report.
+
+           Mission Control moves to the HOLD, since the short press now has a job.
+           Both halves are printed on the zone so the gesture is discoverable. */
         case 5: return {
-          title: 'Apps', value: '⊞', sub: 'push = Desktop', color: R.PALETTE.midi,
+          title: 'Apps', value: '⇄', sub: 'push pick · hold ⊞', color: R.PALETTE.midi,
           dim: offline,
           rotate: function (t) { IPC.os.appSwitch(t > 0 ? 1 : -1); },
-          press: function () { IPC.os.missionControl(); },
+          press: function () { IPC.os.appSwitchCommit(); },
+          hold: function () { IPC.os.missionControl(); },
         };
         // case 6 — left to the clock, on purpose. See the note above.
         default: return { title: '', value: '' };
