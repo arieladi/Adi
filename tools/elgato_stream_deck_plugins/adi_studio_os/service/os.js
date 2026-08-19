@@ -91,6 +91,52 @@ const MAC_SPECIAL = { space: 49, tab: 48, escape: 53, esc: 53, enter: 36, return
                       "=": 24, "+": 24, "-": 27, minus: 27,
                       // V33 — the OS-navigation dials press these.
                       home: 115, end: 119, pageup: 116, pagedown: 121 };
+/* V40 — PHYSICAL KEY CODES FOR EVERY LETTER AND DIGIT. This table is the fix for
+   the "Full Screen duplicates files" bug, and it is not a workaround: it removes
+   the only layout-dependent step in the whole keystroke path.
+
+   `keystroke "f"` asks System Events to produce the CHARACTER f, which it resolves
+   through the CURRENTLY SELECTED keyboard layout. This machine's layout is Hebrew
+   (`com.apple.keylayout.Hebrew`), which has no `f` at all. MEASURED, not assumed —
+   typed into a TextEdit document and read back:
+
+     keystroke "f"  ->  ש   (U+05E9) — the character on PHYSICAL KEY CODE 0, i.e. A
+     key code 3     ->  כ   (U+05DB) — the character on physical key F. Correct.
+
+   So `hotkey("ctrl+cmd+f")` was being delivered as **Ctrl+Cmd+A**, and in Finder
+   Ctrl+Cmd+A is *Make Alias*. That is exactly the three `… .docx alias` files in
+   Adi's screenshot: not a wrong shortcut in the table, a wrong LETTER on the wire.
+   Re-running the same probe minutes later typed nothing at all, so the old path
+   was not even deterministic.
+
+   IT WAS NEVER JUST FULL SCREEN. Every letter hotkey in the plugin went through
+   the same line. Verified against a real TextEdit window:
+
+     keystroke "w" using {command down}  ->  window stayed open   (dial 4 CLOSE)
+     key code 13   using {command down}  ->  window closed        (correct)
+
+   A `key code` is the PHYSICAL key and is identical under every layout, so
+   everything below now resolves to one. Codes are the Carbon `kVK_ANSI_*` values.
+   MAC_SPECIAL is consulted first, so "delete" stays the Delete key and never
+   becomes the letter d. */
+const MAC_ANSI = {
+  a: 0, s: 1, d: 2, f: 3, h: 4, g: 5, z: 6, x: 7, c: 8, v: 9, b: 11,
+  q: 12, w: 13, e: 14, r: 15, y: 16, t: 17, o: 31, u: 32, i: 34, p: 35,
+  l: 37, j: 38, k: 40, n: 45, m: 46,
+  "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "9": 25, "7": 26,
+  "8": 28, "0": 29,
+  "=": 24, "-": 27, "]": 30, "[": 33, "'": 39, ";": 41, "\\": 42,
+  ",": 43, "/": 44, ".": 47, "`": 50,
+};
+
+/* Exported for the test suite: the resolution is the part worth pinning, and it
+   is pure. Everything else in this file spawns a process. */
+export function macKeyCode(target) {
+  const t = String(target == null ? "" : target).toLowerCase();
+  const special = MAC_SPECIAL[t];
+  return special != null ? special : (MAC_ANSI[t] != null ? MAC_ANSI[t] : null);
+}
+
 const WIN_MODS = { ctrl: 0x11, control: 0x11, alt: 0x12, shift: 0x10, win: 0x5b, cmd: 0x5b };
 const WIN_SPECIAL = { space: 0x20, tab: 0x09, escape: 0x1b, esc: 0x1b, enter: 0x0d, return: 0x0d,
                       delete: 0x2e, up: 0x26, down: 0x28, left: 0x25, right: 0x27,
@@ -106,7 +152,9 @@ export function hotkey(combo) {
   if (isMac) {
     const using = mods.map((m) => MAC_MODS[m]).filter(Boolean);
     const suffix = using.length ? ` using {${using.join(", ")}}` : "";
-    const code = MAC_SPECIAL[target];
+    // V40 — a key code, never a character. See MAC_ANSI above: `keystroke "f"`
+    // arrives as Ctrl+Cmd+A under a Hebrew layout, which is Finder's Make Alias.
+    const code = macKeyCode(target);
     const action = code != null ? `key code ${code}` : `keystroke "${target.replace(/"/g, '\\"')}"`;
     return osa(`tell application "System Events" to ${action}${suffix}`);
   }
@@ -252,10 +300,20 @@ export function appSwitchHeld() { return switchHeld; }
    grammar — so there is still nothing to escape. */
 const TYPEABLE = /^-?\d{1,15}(\.\d{1,6})?$/;
 
+/* V40 — the same layout bug lives here, so this sends key codes too. TYPEABLE
+   admits only digits, `.` and `-`, and MAC_ANSI has a physical key for every one
+   of them, so the delay calculator's value key types the figure it printed rather
+   than whatever the active layout happens to put under those characters. Measured
+   on this machine: `keystroke "0"` under Hebrew typed NOTHING. */
 export function type(text) {
   const s = String(text == null ? "" : text).trim();
   if (!TYPEABLE.test(s)) return Promise.resolve(false);
-  if (isMac) return osa(`tell application "System Events" to keystroke "${s}"`);
+  if (isMac) {
+    const codes = [...s].map((ch) => macKeyCode(ch));
+    if (codes.some((c) => c == null)) return Promise.resolve(false);
+    return run("osascript", ["-e", 'tell application "System Events"\n'
+      + codes.map((c) => `key code ${c}`).join("\n") + '\nend tell']);
+  }
   if (isWin) {
     // Reuse the numpad virtual keys already proven by key(): every character
     // that survives the filter has an entry, so a digit types as a real
@@ -443,18 +501,68 @@ const FRONT_WITH_WINDOW = [
   '  end repeat',
 ].join("\n");
 
+/* Click the first ENABLED menu item with this name, rather than `menu item "X"`.
+
+   V40 — that is a bug fix, not a refinement. `Move & Resize` is ONE flat menu
+   whose group titles are disabled rows, and it contains the name "Quarters"
+   TWICE. Enumerated from this machine:
+
+      1 Halves   2 Left  3 Right  4 Top  5 Bottom
+      7 Quarters  8 Top Left  9 Top Right  10 Bottom Left  11 Bottom Right
+     13 Arrange  14 Left & Right  15 Left & Quarters  …  22 Quarters
+     24 Return to Previous Size
+
+   `menu item "Quarters"` always resolves to the FIRST match — index 7, the
+   greyed-out group heading — so the Quads key was asking AppleScript to click a
+   label. It could never have worked. Matching on "first enabled" skips headings
+   by construction and needs no index hardcoded against a future macOS. */
 function clickWindowMenu(submenu, item) {
-  const path = submenu
-    ? `menu item "${item}" of menu 1 of menu item "${submenu}" of menu 1 of menu bar item "Window" of menu bar 1`
-    : `menu item "${item}" of menu 1 of menu bar item "Window" of menu bar 1`;
+  const menu = submenu
+    ? `menu 1 of menu item "${submenu}" of menu 1 of menu bar item "Window" of menu bar 1`
+    : 'menu 1 of menu bar item "Window" of menu bar 1';
   return run("osascript", ["-e", [
     'tell application "System Events"',
     FRONT_WITH_WINDOW,
     '  if target is missing value then error "no window"',
     '  tell target',
-    `    if not (exists ${path}) then error "no menu item"`,
-    `    if not (enabled of ${path}) then error "disabled"`,
-    `    click ${path}`,
+    `    if not (exists ${menu}) then error "no menu"`,
+    `    set hits to (every menu item of ${menu} whose name is "${item}" and enabled is true)`,
+    '    if (count of hits) is 0 then error "no enabled menu item"',
+    '    click item 1 of hits',
+    '  end tell',
+    'end tell',
+  ].join("\n")]);
+}
+
+/* V40 — FULL SCREEN, and why it is not a keystroke any more.
+
+   Adi's report: the key created Finder aliases instead of maximising. The cause is
+   in MAC_ANSI above — `keystroke "f"` is layout-dependent and this machine runs a
+   Hebrew layout, so Ctrl+Cmd+F left as Ctrl+Cmd+A.
+
+   Fixing `hotkey()` is enough to make the shortcut correct, but a shortcut is
+   still a keystroke aimed at whatever happens to be focused, and *any* future
+   mis-resolution lands on a file command again. So the primary path is now the
+   Accessibility attribute the green traffic light itself drives: read
+   `AXFullScreen` and write its inverse. It cannot type, so it cannot touch a file
+   — the failure mode is structurally gone rather than corrected.
+
+   Verified on a real TextEdit window: read false, write true -> reports true,
+   write false -> reports false. It also TOGGLES, which is what Adi asked for.
+
+   `key code 3 using {control down, command down}` stays as the fallback for a
+   window that does not expose the attribute (also verified: it entered and left
+   full screen), and it is now spelled as a physical key code like everything
+   else. */
+function axFullScreenToggle() {
+  return run("osascript", ["-e", [
+    'tell application "System Events"',
+    FRONT_WITH_WINDOW,
+    '  if target is missing value then error "no window"',
+    '  tell target',
+    '    set w to window 1',
+    '    if not (exists attribute "AXFullScreen" of w) then error "no AXFullScreen"',
+    '    set value of attribute "AXFullScreen" of w to not (value of attribute "AXFullScreen" of w)',
     '  end tell',
     'end tell',
   ].join("\n")]);
@@ -501,9 +609,9 @@ function geomFrame(xf, wf) {
 export async function windowLayout(which) {
   const key = String(which || "").toLowerCase().replace(/[^a-z]/g, "");
 
-  // The green traffic light. A real shortcut, not a menu name.
+  // The green traffic light. V40 — the AX attribute first, the shortcut second.
   if (key === "fullscreen") {
-    if (isMac) return hotkey("ctrl+cmd+f");
+    if (isMac) return (await axFullScreenToggle()) || hotkey("ctrl+cmd+f");
     if (isWin) return hotkey("win+up");
     return false;
   }

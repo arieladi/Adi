@@ -238,6 +238,9 @@ SOS.States = (function () {
       shape: b.shape, face: b.face, canvas: b.canvas, titleColor: b.titleColor,
       // V22 — the artwork NAME (never the bytes; see js/core/art.js).
       art: b.art,
+      // V40 — the vector icon NAME (js/core/icons.js). Forgetting it here is the
+      // third time this whitelist would have painted a silently wrong key.
+      icon: b.icon,
     };
   }
 

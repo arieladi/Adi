@@ -147,7 +147,12 @@ SOS.Render = (function () {
                // V16 — the skin fields are part of the identity too. Leaving them
                // out would let a slate pad and a default pad share an id, and
                // SD.image()'s dedupe would then skip the repaint entirely.
-               o.shape, o.face, o.canvas, o.titleColor, o.art].join('\u0001');
+               o.shape, o.face, o.canvas, o.titleColor, o.art,
+               /* V40 — the vector icon NAME. Same reasoning as `art`: leave it out
+                  and two window keys that differ only by their picture share an id,
+                  so SD.image()'s dedupe skips the repaint and both wear whichever
+                  one happened to be drawn first. */
+               o.icon].join('\u0001');
     var h = 2166136261;
     for (var i = 0; i < src.length; i++) {
       h ^= src.charCodeAt(i);
@@ -293,6 +298,38 @@ SOS.Render = (function () {
        Both `href` and `xlink:href` are emitted. The modern attribute is correct;
        the legacy one costs 40 bytes and is the difference between an icon and a
        blank key on a rasteriser that predates SVG 2. */
+    /* V40 — A VECTOR ICON. `icon` names an entry in SOS.Icons (see js/core/icons.js),
+       which is markup rather than bytes, so it is spliced into this document
+       directly instead of being referenced as a nested <image> the way `art` is.
+       That keeps it resolution-independent all the way to the cap: the Stream Deck
+       scales the key's SVG itself, so a drawn shape is never resampled.
+
+       AN UNLABELLED ICON FILLS THE CAP, following V26. Adi's instruction for the
+       window keys was that the picture must "completely fill the physical button
+       space", and a caption is the only thing that was stopping it — the native
+       macOS popover captions these with nothing either. Each icon declares its own
+       box so the square traffic light can fill the whole key while the 132x96
+       screen pictograms keep the popover's aspect ratio. */
+    var icon = o.icon && SOS.Icons ? SOS.Icons[o.icon] : null;
+    if (icon) {
+      var avail = o.title ? 92 : KS - 16;
+      var isc = Math.min(avail / icon.w, avail / icon.h);
+      var iw = icon.w * isc, ih = icon.h * isc;
+      s += '<g transform="translate(' + ((KS - iw) / 2).toFixed(2) + ','
+         + (o.title ? 18 : ((KS - ih) / 2)).toFixed(2) + ') scale(' + isc.toFixed(4) + ')"'
+         + (o.dim ? ' opacity="0.5"' : '') + '>'
+         // Any id inside the icon is namespaced to this key — see the note in icons.js.
+         + String(icon.svg).split('__ID__').join(id) + '</g>';
+      if (o.title) {
+        s += text(o.title, KS / 2, KS - (hasSub ? 30 : 16),
+                  fitSize(o.title, o.size && SIZES[o.size] ? SIZES[o.size] : SIZES.sm), 700, textC);
+      }
+      if (hasSub) {
+        s += text(truncate(o.sub, 18), KS / 2, KS - 17, 14, 600, o.subColor || PALETTE.dim);
+      }
+      return s + '</svg>';
+    }
+
     var art = o.art && SOS.Art ? SOS.Art[o.art] : null;
     if (art) {
       /* V26 — AN UNLABELLED ICON FILLS THE CAP. A macOS app icon already carries

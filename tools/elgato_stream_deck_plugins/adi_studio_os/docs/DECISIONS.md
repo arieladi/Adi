@@ -2086,3 +2086,141 @@ effectively empty and nothing can bind.
 **V39 adds the diagnostic that would have answered this immediately:** on every
 `all_params` the plugin now logs the device name, the parameter COUNT and the
 first ten NAMES. One press with Pro-Q 3 focused produces the answer.
+
+---
+
+## Batch 23 — the alias bug was a keyboard layout, and the window keys got real icons
+
+### THE CAUSE, and it was not the shortcut
+
+Adi's report: the Full Screen key "is duplicating files in Finder and creating
+aliases", with a screenshot of three `תמחור בית מבונה.docx alias` files. His
+suspicion was a wrong keystroke (`Cmd+D`) or the wrong execution context.
+
+Neither. **The shortcut in the table was correct and the letter on the wire was
+not.** `hotkey()` emitted `keystroke "f" using {control down, command down}`, and
+`keystroke` asks System Events to produce a **CHARACTER**, which it resolves
+through the **currently selected keyboard layout**. This machine's layout is
+`com.apple.keylayout.Hebrew`, which has no `f` in it at all.
+
+MEASURED, by typing into a TextEdit document and reading the bytes back:
+
+| sent | typed | means |
+|---|---|---|
+| `keystroke "f"` | **ש** U+05E9 | the character on **physical key code 0** — `A` |
+| `key code 3` | **כ** U+05DB | the character on physical key `F`. Correct. |
+
+So `ctrl+cmd+f` left the service as **Ctrl+Cmd+A**, and in Finder Ctrl+Cmd+A is
+**Make Alias**. Three presses, three aliases. Nothing was ever "duplicating".
+
+It was not deterministic either: minutes later the same `keystroke "f"` typed
+nothing at all, as did `t`, `w` and `0`. A character-based keystroke under a
+non-Latin layout is simply unreliable.
+
+**IT WAS NEVER JUST FULL SCREEN.** Every letter hotkey in the plugin went through
+that one line. Verified against a real TextEdit window:
+
+* `keystroke "w" using {command down}` — window **stayed open**
+* `key code 13 using {command down}` — window **closed**
+
+So **dial 4's New Tab and Close Tab (V33/V35) have been dead since the day they
+shipped**, silently, for exactly the same reason. Adi never reported them; they
+were broken anyway.
+
+### V40 — every key leaves the service as a PHYSICAL key code
+
+**RULING (mine, as a bug fix — no design choice in it):** `MAC_ANSI` maps a–z and
+0–9 to their Carbon `kVK_ANSI_*` codes and `hotkey()` resolves through it, after
+`MAC_SPECIAL` so that "delete" stays Delete and never becomes the letter d. A key
+code is the physical key and is identical under every layout, so the layout is no
+longer part of the path. `os.type()` (V15's delay-calculator value key) had the
+same defect and now sends key codes too.
+
+`macKeyCode()` is exported purely so the resolution can be pinned by a test
+without synthesising input on the machine running it.
+
+### V40 — Full Screen is an ACCESSIBILITY WRITE, not a keystroke
+
+Fixing `hotkey()` makes the shortcut correct, but a shortcut is still a keystroke
+aimed at whatever has focus, and any future mis-resolution lands on a file command
+again. Adi's instruction was that this key "must strictly toggle the native macOS
+full screen … NOT duplicate files".
+
+**RULING — read `AXFullScreen` on the front window and write its inverse.** It is
+the same attribute the green traffic light drives, it cannot type, so it cannot
+touch a file: the failure mode is structurally gone rather than corrected. Verified
+on a real window — read false, write true reports true, write false reports false,
+so it toggles both ways. `key code 3 using {control down, command down}` is kept as
+the fallback for a window that does not expose the attribute (also verified: it
+entered and left full screen).
+
+### V40 — the Quads key could never have worked
+
+Found while reading the menu, not reported. `Window > Move & Resize` is **one flat
+menu whose group titles are disabled rows**, and it contains the name "Quarters"
+**twice** — index 7 is the greyed-out *Quarters* heading, index 22 is the *Arrange*
+command. `menu item "Quarters"` always resolves to the first match, so the key was
+asking AppleScript to click a label.
+
+Enumerated and then confirmed by running the filter against a live window:
+
+```
+"Quarters":  enabled-matches=1  total-matches=2
+"Left":      enabled-matches=1  total-matches=1
+```
+
+**RULING — match the first ENABLED item of that name.** Group headings are skipped
+by construction, no index is hardcoded against a future macOS, and an Arrange
+command that is greyed out (one window open) now falls through to the geometry
+path instead of erroring. Verified end to end: clicking *Left* moved a real window
+to `x=0 y=30 w=960`.
+
+### V41 — the nine window keys wear the native macOS pictograms
+
+**RULING (Adi's, explicit) — exact SVG replicas of the icons in the macOS
+"Move & Resize" popover, large enough to fill the cap; and for Full Screen, the
+green traffic light rather than the popover's own Full Screen icon.**
+
+`js/core/icons.js` is a NEW registry, deliberately separate from `art.js`: art.js
+holds raster bytes because an application's real icon can only be pixels, whereas
+every one of these is a shape we draw, so it stays as SVG source — a few hundred
+bytes instead of six kilobytes, editable, and never resampled. render.js splices
+the markup straight into the key's own SVG; there is no nested `<image>`.
+
+**This retires nine compromises.** The halves were ◀ ▶ ▲ ▼ and Fill plus all three
+Arrange sets were **⊞ four times over**, so four keys painted the same picture and
+the caption carried the entire meaning. The tofu rule is what forced that — the
+proven glyph set has no pictogram for "left and quarters". **A drawn shape has no
+font behind it, so it cannot come out as an empty box**, which is the first time
+this project has been able to step outside the proven set safely.
+
+* **No caption**, per V26 and Adi's "must completely fill the physical button
+  space". The label stays on the slot table as the key's identity for logs and
+  tests, exactly as `hub.label` does for the app tiles.
+* **`icon` is a name, never markup on the binding** — same reason as `art` (V22).
+  It is added to `hashId()` and to `keySpec()`; a missing `keySpec` field is the
+  trap that has now bitten three times, so the test asserts on the RENDERED SVG.
+* Ids inside an icon are namespaced through an `__ID__` placeholder. A fixed
+  gradient id would be fine at runtime (a key is its own document) and wrong in
+  the preview sheet, which inlines every key into one page.
+
+**THE TRAFFIC LIGHT HAS NO GLYPH ON IT, and that was decided by looking.** The
+obvious move was the pair of opposing triangles the real button shows under the
+pointer. Rendered at cap scale against three variations of triangle size and gap,
+**all of them read as one diagonal bar across the circle** — which on a Mac window
+button is the *not available* badge. A glyph that says the opposite of what the key
+does is worse than none, so the disc is bare: exactly the button in the screenshot
+Adi pointed at, and the only coloured cap on the surface.
+
+### Field note — `keystroke "<letter>"` is layout-dependent, `key code` is not
+
+This is the fifth distinct bug in this project traced to one shared cause, and it
+belongs next to the `setTimeout` note. Anything that must reach a specific key on
+this machine sends a **key code**. There is a test asserting no macOS path
+interpolates a letter into `keystroke`.
+
+### STILL AWAITING ADI'S RULING — the Root Hub grid redesign
+
+Not implemented. His four bullets cannot all be satisfied at once under one
+reading of the drawing, and P5 says the layout is his. The conflict, the arithmetic
+and the proposed grid are stated in full in the session output; nothing was moved.
