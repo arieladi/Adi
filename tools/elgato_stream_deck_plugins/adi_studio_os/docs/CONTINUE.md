@@ -52,7 +52,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**902 tests green** (891 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 13 is deployed and running on the hardware**. Last commit: "restart the service on every deploy, window layouts, app-switch UX, EQ8 rebuild".
+**908 tests green** (897 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 13 is deployed and running on the hardware**. Last commit: "app switcher never auto-selects, nine native window states, Pro-Q 3 UI rebuild".
 
 | Piece | State |
 |---|---|

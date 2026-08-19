@@ -65,6 +65,7 @@ const HANDLERS = {
   "os.tabClose":     () => OS.tabClose(),
   "os.missionControl": () => OS.missionControl(),
   "os.appSwitchCommit": () => OS.appSwitchCommit(),
+  "os.appSwitchCancel": () => OS.appSwitchCancel(),
   "os.window":       (m) => OS.windowLayout(m.layout),
   "os.launch":    (m) => OS.launch(m.app),
   // Which named actions exist on THIS machine — drives tile visibility so
@@ -114,7 +115,7 @@ server.onDisconnect = () => {
 
 /* Bumped whenever the verb table changes, so a version mismatch in the plugin
    log is enough to spot a service that was not restarted. */
-const VERSION = "2.1.0";
+const VERSION = "2.2.0";
 
 // ------------------------------------------------------------------ lifecycle
 function shutdown(signal) {

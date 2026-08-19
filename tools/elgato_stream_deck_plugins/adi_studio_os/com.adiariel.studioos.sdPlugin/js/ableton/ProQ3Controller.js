@@ -54,8 +54,9 @@ window.AVC = window.AVC || {};
 AVC.ProQ3Controller = function ProQ3Controller(services) {
   AVC.DeviceController.call(this, services);
   this._sig = null; this._resolved = false; this._roles = {}; this._missing = [];
-  this._mode = {};                                  // BAND number -> freq|gain|q
-  for (var b = 1; b <= 6; b++) this._mode[b] = 'freq';
+  // V39 — ONE mode for the strip. It was a per-band map; _modeFor(band) now
+  // resolves shape-awareness on read, so no per-band state survives.
+  this._gmode = 'freq';
 };
 AVC.ProQ3Controller.prototype = Object.create(AVC.DeviceController.prototype);
 AVC.ProQ3Controller.prototype.id = 'proq3';
@@ -87,7 +88,13 @@ AVC.ProQ3Controller.ROLES = (function () {
   var proto = P.prototype;
   var Svg = SOS.Svg, gfx = AVC.gfx;
   var SLOT = 200, H = 100, TAG_W = 22;
-  var TOP = [3, 22], MID = [26, 53], BOT = [56, 97];
+  /* V39 — THE SWITCHES GET THE ZONE. The old split gave the top 53 % to a mode
+     tab row plus a value line and squeezed SHAPE/SLOPE/STEREO into the bottom
+     41 px. The tab row is gone (mode is global now) and the value shares one
+     compact header line, so the three switches run from 22 to 97 — 75 px instead
+     of 41, nearly double the target height. */
+  var HEAD = [2, 20];              // band tag + live value, one line
+  var BOT = [22, 97];              // the three switches, stretched up
 
   function norm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
   function inY(y, sec) { return y >= sec[0] && y <= sec[1]; }
@@ -150,6 +157,27 @@ AVC.ProQ3Controller.ROLES = (function () {
     return String(this._disp(r) || '');
   };
   // dial modes available for a band = FREQ, (GAIN if exposed + shape allows), (Q if exposed + shape allows)
+  /* V39 — MODE IS GLOBAL, one for the whole strip.
+
+     It was per band, and shape-aware: a Low Cut offers only FREQ, so each band
+     showed its own tab row. That is why the mode appeared eight times, which Adi
+     called out. EQ8 went global in V37 and this now matches.
+
+     Shape-awareness is NOT lost, it moves: `_modeFor(band)` answers what a band
+     can actually honour, falling back to its first available mode when the global
+     one is impossible for that band's Shape. So a cut band shows FREQ while the
+     strip says GAIN, instead of pretending. */
+  proto._globalMode = function () { return this._gmode || 'freq'; };
+  proto._modeFor = function (b) {
+    var allowed = this._modes(b), want = this._globalMode();
+    return allowed.indexOf(want) >= 0 ? want : (allowed[0] || 'freq');
+  };
+  proto._cycleGlobal = function () {
+    var all = P.MODES || ['freq', 'gain', 'q'];
+    var i = all.indexOf(this._globalMode());
+    this._gmode = all[(i + 1) % all.length];
+  };
+
   proto._modes = function (b) {
     var m = ['freq'], sn = norm(this._shapeName(b));
     if (this._role(b, 'gain') && !has(P.NO_GAIN, sn)) m.push('gain');
@@ -161,7 +189,7 @@ AVC.ProQ3Controller.ROLES = (function () {
      also what makes a mode carried in from the full layout safe in compact. */
   proto._validateModes = function () {
     for (var b = 1; b <= P.BANDS; b++) {
-      if (this._modes(b).indexOf(this._mode[b]) < 0) this._mode[b] = 'freq';
+      // V39 — nothing to re-clamp per band; _modeFor() resolves it on read.
     }
   };
   proto._fmt = function (kind, role) {
@@ -217,38 +245,40 @@ AVC.ProQ3Controller.ROLES = (function () {
       if (slot > 0) Svg.line(b, x + 0.5, 4, x + 0.5, H - 4, gfx.line, 1);
       this._buildBand(b, x, this._bandFor(slot));
     }
+    /* V39 — ONE mode indicator for the whole strip, not eight. Drawn LAST so it
+       sits over the first zone's corner, and deliberately tiny: it is a status
+       light, not a control. Mode is now global (see onDialPress). */
+    Svg.rrect(b, 4, 2, 46, 15, 3, 'rgba(111,227,196,0.20)');
+    Svg.text(b, P.MODE_LABEL[this._globalMode()], 27, 13, 9, 800, gfx.accent, 'middle');
     return b;
   };
 
+  /* V39 — the pill is now 75 px tall instead of 41, so the label sits at the top
+     and the VALUE is centred in the body rather than pinned to the bottom edge.
+     Both grow with the pill, so this reads the same at either height. */
   proto._pill = function (b, x, y, w, h, top, bot, on, color) {
-    Svg.rrect(b, x, y, w, h, 4, on ? color : 'rgba(255,255,255,0.05)');
-    Svg.text(b, top, x + w / 2, y + 9, 7, 600, on ? '#06251d' : gfx.dim, 'middle');
-    Svg.text(b, bot, x + w / 2, y + h - 5, 10, 700, on ? '#06251d' : gfx.text, 'middle');
+    Svg.rrect(b, x, y, w, h, 5, on ? color : 'rgba(255,255,255,0.05)');
+    Svg.text(b, top, x + w / 2, y + 11, 8, 600, on ? '#06251d' : gfx.dim, 'middle');
+    Svg.text(b, bot, x + w / 2, y + h / 2 + 10, Math.min(14, 9 + h / 12), 800,
+             on ? '#06251d' : gfx.text, 'middle');
   };
 
   proto._buildBand = function (b, x, bandNo) {
     var color = gfx.bandColors[(bandNo - 1) % 8];
-    var modes = this._modes(bandNo), active = this._mode[bandNo];
+    var active = this._modeFor(bandNo);
 
-    // TOP — band tag + mode tabs (only the modes this Shape allows)
-    Svg.text(b, 'B' + bandNo, x + 10, TOP[1] - 2, 9, 800, color, 'middle');
-    var tx = x + TAG_W, tw = (SLOT - TAG_W - 6) / modes.length;
-    for (var i = 0; i < modes.length; i++) {
-      var act = modes[i] === active;
-      Svg.rrect(b, tx + i * tw + 1, TOP[0], tw - 2, TOP[1] - TOP[0], 3,
-                act ? color : 'rgba(255,255,255,0.05)');
-      Svg.text(b, P.MODE_LABEL[modes[i]], tx + i * tw + tw / 2, TOP[1] - 6,
-               act ? 9 : 8, act ? 800 : 600, act ? '#06251d' : gfx.dim, 'middle');
-    }
+    /* HEADER — band tag and the live value on ONE line. No mode tab (there is a
+       single global one) and no separator: the "white line" Adi saw was this
+       value rendering as an em dash because the parameter was unresolved. */
+    Svg.text(b, 'B' + bandNo, x + 12, HEAD[1] - 4, 9, 800, color, 'middle');
+    Svg.mono(b, this._fmt(active, this._role(bandNo, active)), x + SLOT / 2 + 8, HEAD[1] - 3,
+             13, 800, gfx.text, 'middle');
 
-    // MIDDLE — the active mode's live value, Ableton's own string
-    Svg.mono(b, this._fmt(active, this._role(bandNo, active)), x + SLOT / 2, MID[1] - 2,
-             17, 800, gfx.text, 'middle');
-
-    // BOTTOM — Shape | Slope | Stereo switches
+    /* THE THREE SWITCHES, stretched to fill everything below the header. These
+       are the only touch targets in the zone, so they get all of the room. */
     var shape = this._role(bandNo, 'shape'), slope = this._role(bandNo, 'slope'), stereo = this._role(bandNo, 'stereo');
     var pw = (SLOT - 8) / 3, py = BOT[0], ph = BOT[1] - BOT[0];
-    // L12: mark the pill the dial press now drives, so the gesture is visible.
+    // L12: mark the pill the dial press drives when a band has nothing to cycle.
     var slopeLabel = (slope && this._pressStepsSlope(bandNo)) ? '◉ SLOPE' : 'SLOPE';
     this._pill(b, x + 4, py, pw - 2, ph, 'SHAPE', shape ? abbrShape(this._stepName(shape)) : '?', !!shape, '#9775fa');
     this._pill(b, x + 4 + pw, py, pw - 2, ph, slopeLabel, slope ? abbrSlope(this._stepName(slope)) : '?', !!slope, '#4dabf7');
@@ -259,7 +289,7 @@ AVC.ProQ3Controller.ROLES = (function () {
   // ================================================================= input
   proto.onDial = function (slot, ticks) {
     if (slot >= this._zones()) return;                       // dial on loan to a window
-    var b = this._bandFor(slot), kind = this._mode[b], role = this._role(b, kind);
+    var b = this._bandFor(slot), kind = this._modeFor(b), role = this._role(b, kind);
     if (!role) return;
     if (kind === 'gain') this.bridge.cmd.deltaIndex(role.index, ticks * AVC.STEP);
     else this.bridge.cmd.deltaLogIndex(role.index, ticks * AVC.STEP);   // freq + Q (log)
@@ -267,36 +297,34 @@ AVC.ProQ3Controller.ROLES = (function () {
 
   proto.onDialPress = function (slot) {
     if (slot >= this._zones()) return;
-    var b = this._bandFor(slot), modes = this._modes(b);
-    if (modes.length < 2) {                                  // L12 — a cut: step the Slope
+    var b = this._bandFor(slot);
+    /* L12 survives: a band whose Shape allows only FREQ has no mode to cycle, so
+       its press steps the SLOPE instead — the control that matters on a cut. */
+    if (this._modes(b).length < 2) {
       var sl = this._role(b, 'slope');
       if (sl) this.bridge.cmd.stepIndex(sl.index, 1, 0);
       return;
     }
-    var i = modes.indexOf(this._mode[b]);
-    this._mode[b] = modes[(i + 1) % modes.length];
+    this._cycleGlobal();                       // V39 — global, not per band
   };
 
+  /* V39 — THREE TARGETS PER BAND, and nothing else. The mode tab row is gone
+     (mode is the dial press now), so the switches own everything below the
+     header and a touch in the header does nothing. */
   proto.onTouch = function (gx, gy, hold) {
     var slot = Math.floor(gx / SLOT);
     if (slot < 0 || slot >= this._zones()) return;
-    var b = this._bandFor(slot), modes = this._modes(b), lx = gx - slot * SLOT, ly = gy;
-    if (inY(ly, TOP)) {                                  // mode tab
-      var tw = (SLOT - TAG_W - 6) / modes.length, seg = Math.floor((lx - TAG_W) / tw);
-      if (seg >= 0 && seg < modes.length) this._mode[b] = modes[seg];
-      return;
-    }
-    if (inY(ly, BOT)) {                                  // Shape | Slope | Stereo cycle
-      var pw = (SLOT - 8) / 3, col = Math.floor((lx - 4) / pw), dir = hold ? -1 : 1;
-      var key = col <= 0 ? 'shape' : col === 1 ? 'slope' : 'stereo';
-      var r = this._role(b, key); if (r) this.bridge.cmd.stepIndex(r.index, dir, 0);
-      return;
-    }
+    if (!inY(gy, BOT)) return;                 // the header line is inert
+    var b = this._bandFor(slot), lx = gx - slot * SLOT;
+    var pw = (SLOT - 8) / 3, col = Math.floor((lx - 4) / pw), dir = hold ? -1 : 1;
+    var key = col <= 0 ? 'shape' : col === 1 ? 'slope' : 'stereo';
+    var r = this._role(b, key);
+    if (r) this.bridge.cmd.stepIndex(r.index, dir, 0);
   };
 
   proto.dialTitle = function (slot) {
     if (slot >= this._zones()) return '';
-    var b = this._bandFor(slot), kind = this._mode[b];
+    var b = this._bandFor(slot), kind = this._modeFor(b);
     return 'B' + b + ' ' + P.MODE_LABEL[kind] + ' ' + this._fmt(kind, this._role(b, kind));
   };
 })(AVC.ProQ3Controller);

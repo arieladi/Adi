@@ -1991,3 +1991,98 @@ and the doc:** that dial 1 becomes Output (his instruction named dials 2-6 as th
 bands but not what dial 1 does), and that pagination lives on dial 1's press
 (touch can no longer carry it). **Consequence worth his ruling: COMPACT drops from
 four bands to three**, because dial 1 is spent on Output there too.
+
+
+---
+
+## Batch 22 — the app switcher, nine window states, and Pro-Q 3
+
+### V38 — spinning NEVER selects an app
+
+**RULING — dial 5's turn only moves the highlight; the app is committed ONLY by a
+physical press.**
+
+The reason no timeout works: **releasing the held modifier IS the selection.** So
+an idle timeout does not "give up", it CHOOSES — which is precisely the random
+behaviour Adi reported, first at 900 ms and again at 2.5 s. But removing the
+timeout outright is unsafe: a held Command that is never released leaves the
+machine unusable.
+
+The resolution is that the safety net **cancels instead of committing**. Escape
+while the switcher is open dismisses it *without* switching, so the guard sends
+Escape and only then releases the modifier. Nothing is ever chosen by the passage
+of time. The guard is 25 s — a deadlock breaker, not part of the interaction — and
+dial 5's HOLD is the same cancel, made explicit. Mission Control loses its home
+here; two presses are worth more on a dial that is otherwise a one-way trip.
+
+### V38 — the nine native window states, through macOS's own menu
+
+**RULING — nine keys: the four halves on row 1; Fill, three Arrange sets and the
+green-button Full Screen on row 2.**
+
+Adi suggested studying the official plugins, and the finding is worth recording:
+**Elgato's Window Mover ships a compiled native Node addon**
+(`bin/addon/mac/System.node`) and drives the Accessibility API directly. It uses
+`osascript` for exactly one thing — resolving an app's display name.
+
+Three of the nine — Left & Right, Left & Quarters, Quarters — are macOS **Arrange**
+commands that place TWO OR MORE windows. No single frame write can express those,
+so these click the real menu items, enumerated from this machine rather than
+guessed (`Window > Move & Resize > Halves | Quarters | Arrange`, plus top-level
+`Fill` and `Center`). Full Screen is **Ctrl+Cmd+F**, not a menu name — more robust,
+and exactly what the green traffic light does.
+
+The geometry path is KEPT as a fallback for the states it can express, because the
+menu route is English-only and needs an app that has the system Window menu.
+
+**Two runtime bugs that `osacompile` accepted happily**, both found only by
+running the script — which is the lesson:
+
+* `set hidden to autohide` raises **-10006**: `hidden` is reserved in that context.
+* `front window` raises **-1719** when the frontmost process has no window, and
+  the Stream Deck app itself is exactly that case. Now walks to the frontmost
+  process that HAS a window and does nothing if none does.
+
+### V39 — Pro-Q 3's mode goes global, and the switches get the zone
+
+**RULING — one mode indicator for the strip, no separator, and the three switches
+stretched into the freed space.**
+
+The mode was per band AND shape-aware, which is why it appeared eight times.
+Mode is now global (matching EQ8's V37) and **shape-awareness moves rather than
+disappearing**: `_modeFor(band)` resolves on READ, so a Low Cut reports FREQ while
+the strip says Q instead of pretending it can honour it.
+
+Geometry: the header (band tag + live value) is one 18 px line and the switches run
+**22-97 — 75 px instead of 41**, nearly double the target height. The tab row is
+gone, so a touch in the header does nothing and the three switches own everything
+below it.
+
+**A correction to Adi's reading of the screenshot:** the "white separator line"
+under each mode indicator is not a separator — it is the **parameter value**,
+rendering as an em dash because the parameter is unresolved. It will show a real
+number once the binding works, so it was kept (compacted onto the header line)
+rather than deleted.
+
+### Pro-Q 3 is still functionally dead, and this is why
+
+Not fixed, because the missing information is on Adi's machine. What IS
+established:
+
+* the controller resolves parameters **by name** from `all_params`, matching
+  `"band N frequency"`, `"band N gain"`, `"band N shape"` and so on;
+* it requests them itself (`getAllParams()` in `onState`), so nothing is missing
+  on the plugin side;
+* the Python side enumerates `device.parameters` and returns every name.
+
+So `?` means **the names Live sent do not match**. The overwhelmingly likely cause:
+Live only exposes a VST's parameters that have been **"Configured"** in Live's own
+Configure mode. The header of ProQ3Controller says as much — it was written for a
+Pro-Q 3 "whose Ableton Configure exposes, per band: Frequency, Q, Shape, Slope,
+Stereo Placement". **A freshly instantiated Pro-Q 3 — which is exactly what V30's
+key inserts — has no Configure mapping at all**, so `device.parameters` is
+effectively empty and nothing can bind.
+
+**V39 adds the diagnostic that would have answered this immediately:** on every
+`all_params` the plugin now logs the device name, the parameter COUNT and the
+first ten NAMES. One press with Pro-Q 3 focused produces the answer.

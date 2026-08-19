@@ -393,7 +393,7 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
   const calls = [];
   for (const verb of ["scroll","pageDown","home","appZoom","appZoomReset",
                       "tab","tabNew","tabClose","appSwitch","appSwitchCommit",
-                      "missionControl","window"]) {
+                      "appSwitchCancel","missionControl","window"]) {
     SOS.IPC.os[verb] = (...a) => { calls.push(verb + (a.length ? ":" + a.join(",") : "")); };
   }
   const d = (n) => M.Root.screen.dials(n);
@@ -420,7 +420,7 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
   d(5).rotate(-1); d(5).press();  d(5).hold();
   ok("every dial reaches the right named verb",
      calls.join(" ") === "scroll:y,3 pageDown scroll:x,-2 home appZoom:1 appZoomReset " +
-                         "tab:1 tabNew tabClose appSwitch:-1 appSwitchCommit missionControl",
+                         "tab:1 tabNew tabClose appSwitch:-1 appSwitchCommit appSwitchCancel",
      calls.join(" "));
 
   /* V36 — TURNING MUST NOT COMMIT. The old 900 ms release meant a spin selected
@@ -480,20 +480,37 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
   /* V36 — THE WINDOW LAYOUT KEYS, on row 3 nearest the dials. Named layouts
      again, never a key combo: on macOS the service writes the window's AX
      position/size, on Windows it sends Win+arrow, and those share nothing. */
+  /* V38 — NINE native window states, grouped the way macOS's own menu groups
+     them: halves on row 1, then Fill + the three Arrange sets + the green-button
+     Full Screen on row 2. Named layouts again, never a key combo. */
   {
     const wcalls = [];
     SOS.IPC.os.window = (l) => { wcalls.push(l); };
-    const rowFull = SOS.Layout.pick(M.Root.screen, 9);
-    const trio = [0, 1, 2].map((c) => rowFull.keys(c, 3));
-    ok("row 3 carries three window keys", trio.every(Boolean),
-       trio.map((k) => k && k.label).join(","));
-    ok("…labelled Left / Fill / Right",
-       trio.map((k) => k.label).join(",") === "Left,Fill,Right", trio.map((k) => k.label).join(","));
-    trio.forEach((k) => k.tap());
-    ok("each asks the service for its named layout",
-       wcalls.join(",") === "left,max,right", wcalls.join(","));
-    ok("…and they use only proven glyphs",
-       trio.map((k) => k.glyph).join("") === "◀⊞▶", trio.map((k) => k.glyph).join(""));
+    const L9 = SOS.Layout.pick(M.Root.screen, 9);
+    const halves = [1, 2, 3, 4].map((c) => L9.keys(c, 1));
+    const arrange = [0, 1, 2, 3, 4].map((c) => L9.keys(c, 2));
+    ok("row 1 carries the four halves", halves.every(Boolean),
+       halves.map((k) => k && k.label).join(","));
+    ok("…labelled Left / Right / Top / Bottom",
+       halves.map((k) => k.label).join(",") === "Left,Right,Top,Bottom",
+       halves.map((k) => k.label).join(","));
+    ok("row 2 carries Fill, three Arrange sets and Full Screen", arrange.every(Boolean),
+       arrange.map((k) => k && k.label).join(","));
+
+    wcalls.length = 0;
+    halves.concat(arrange).forEach((k) => k.tap());
+    ok("all nine ask the service for their named layout",
+       wcalls.join(",") === "left,right,top,bottom,fill,leftright,leftquarters,quarters,fullscreen",
+       wcalls.join(","));
+    ok("…that is exactly NINE keys", wcalls.length === 9, String(wcalls.length));
+
+    // The tofu rule again — none of the obvious pictograms for these exist.
+    const used = new Set();
+    halves.concat(arrange).forEach((k) => {
+      for (const ch of String(k.glyph || "")) if (ch.codePointAt(0) > 127) used.add(ch);
+    });
+    ok("the window keys use only proven glyphs",
+       [...used].every((ch) => "◀▶▲▼⊞".includes(ch)), [...used].join(""));
   }
 
   // The captions must fit the zone, or the one that says what a push does is the

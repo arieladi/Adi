@@ -447,6 +447,18 @@ SOS.Modules.Ableton = (function () {
           state.allParams = []; state.pv = {};   // invalidate the named-param cache
           emit('device', state.device); emit('state', state); break;
         case 'all_params':
+          /* V39 — SAY WHAT LIVE ACTUALLY EXPOSES. Every name-resolving controller
+             (Pro-Q 3 and nine others) binds parameters BY NAME, so when a device
+             shows `?` the only question that matters is "what names did Live
+             send?" — and nothing anywhere answered it. One line per device
+             change, truncated, is the difference between a guess and a fix. */
+          try {
+            var _ps = m.params || [];
+            SOS.SD.log('ableton: "' + (state.device.name || '?') + '" exposes '
+                     + _ps.length + ' params'
+                     + (_ps.length ? ': ' + _ps.slice(0, 10).map(function (q) { return q.name; }).join(' | ')
+                                     + (_ps.length > 10 ? ' …' : '') : ''));
+          } catch (e) {}
           state.allParams = m.params || [];
           state.pv = {};
           for (var ap = 0; ap < state.allParams.length; ap++) {
