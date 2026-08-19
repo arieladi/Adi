@@ -71,14 +71,16 @@ SOS.Icons = (function () {
      Colours are macOS's: #28C840 is the button, and the vertical gradient plus the
      hairline inner ring are what stop a flat disc from reading as a status LED.
 
-     NO GLYPH ON IT, and that was decided by looking rather than by reasoning. The
-     obvious move was the pair of opposing triangles the real button shows under the
-     pointer, since that is the affordance for full screen. Rendered at cap scale
-     and compared against three variations of the triangle size and gap, ALL of them
-     read as one diagonal bar across the circle — which on a Mac window button is
-     the "not available" badge. A glyph that says the opposite of what the key does
-     is worse than no glyph, so the disc is bare: exactly the green button in the
-     screenshot Adi pointed at, and the only coloured cap on the surface. */
+     THE EXPAND ARROW STAYS ON IT — ADI'S RULING, and it overrides my own call.
+     I had shipped the bare disc: rendered at cap scale I read the two opposing
+     triangles as a single diagonal bar, which on a Mac window button is the "not
+     available" badge, so I took them off. Adi saw both and was explicit — the
+     first render was right and the bare circle is the wrong one. His surface, and
+     he is the one reading it at arm's length on hardware. Restored verbatim.
+
+     The two triangles are the glyph the real green button shows the moment the
+     pointer is over it, which is the state you are in when you click it to go full
+     screen. Do not "fix" this back to a bare disc. */
   var LIGHT = (function () {
     var C = 50, R = 48;
     /* `__ID__` is substituted by render.js with the key's content-derived id. An
@@ -93,10 +95,37 @@ SOS.Icons = (function () {
     // The glass edge: darker inside the rim, not a stroke around the outside.
     s += '<circle cx="' + C + '" cy="' + C + '" r="' + (R - 1.25) + '" fill="none"'
       + ' stroke="rgba(0,0,0,0.18)" stroke-width="2.5"/>';
+    // The dark-green expand pair: a right angle in the top-left corner and its
+    // mirror in the bottom-right, hypotenuses facing across the centre.
+    var G = '#0B5E13';
+    s += '<path d="M31,31 H55 L31,55 Z" fill="' + G + '"/>';
+    s += '<path d="M69,69 H45 L69,45 Z" fill="' + G + '"/>';
     return { w: 100, h: 100, svg: s };
   })();
 
+  /* V42 — THE ZOOM DIAL'S MAGNIFIER, replacing the `±` glyph on the touch strip
+     (Adi supplied the icon). It is drawn rather than typed for the same reason as
+     everything else here: `⌕` is not in the proven glyph set and the one time an
+     unproven glyph shipped it came out as an empty box.
+
+     Strokes, not fills, so it stays crisp when the zone scales it down — a dial
+     zone is 200 x 100 and the icon gets about 46 px of that. Round caps because the
+     supplied icon has them. */
+  var ZOOM = (function () {
+    var CX = 42, CY = 42, RR = 27;
+    var s = '<g fill="none" stroke="' + INK + '" stroke-linecap="round">';
+    s += '<circle cx="' + CX + '" cy="' + CY + '" r="' + RR + '" stroke-width="8"/>';
+    // The handle, on the circle's lower-right diagonal.
+    s += '<path d="M62,62 L84,84" stroke-width="11"/>';
+    // The plus inside the lens.
+    s += '<path d="M' + (CX - 13) + ',' + CY + ' H' + (CX + 13) + '" stroke-width="7.5"/>';
+    s += '<path d="M' + CX + ',' + (CY - 13) + ' V' + (CY + 13) + '" stroke-width="7.5"/>';
+    return { w: 92, h: 92, svg: s + '</g>' };
+  })();
+
   return {
+    zoomIn: ZOOM,
+
     // Move & Resize — one window, one half of the screen.
     winLeft:   win(pane(IX, IY, HW, IH)),
     winRight:  win(pane(MX, IY, HW, IH)),

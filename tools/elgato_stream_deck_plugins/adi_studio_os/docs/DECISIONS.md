@@ -2224,3 +2224,81 @@ interpolates a letter into `keystroke`.
 Not implemented. His four bullets cannot all be satisfied at once under one
 reading of the drawing, and P5 says the layout is his. The conflict, the arithmetic
 and the proposed grid are stated in full in the session output; nothing was moved.
+
+---
+
+## Batch 24 — the grid, to Adi's drawing
+
+### V41a REVERSED — the traffic light keeps its arrow *(Adi overrules me)*
+
+I shipped the bare disc in V41 because at cap scale I read the two opposing
+triangles as a single diagonal bar, which on a Mac window button is the "not
+available" badge. Adi saw both renders and was explicit: **the first one was right
+and the bare circle is the wrong one.** Restored verbatim.
+
+Recorded because the reasoning was sound and the conclusion was still wrong — he
+is the one reading this at arm's length on hardware, and the comment in `icons.js`
+now says so, so a future pass does not "fix" it back.
+
+### V42 — the Zoom dial wears a magnifier
+
+**RULING — replace the `±` on dial 3's zone with the magnifying glass Adi
+supplied.** Drawn, not typed: `⌕` is outside the proven glyph set and is exactly
+the kind of character that shipped as an empty box once.
+
+This needed the icon registry to reach DIALS, not just keys, which surfaced the
+dial half of a trap that had only ever been documented for keys:
+
+* `R.zone()` gained `icon`, occupying the value's slot so the title and caption do
+  not move;
+* **`zoneUriFor` in `states.js` is the dial equivalent of `keySpec()`** — a
+  hand-written whitelist that paints a silently empty zone if a field is forgotten.
+  It now forwards `icon` (and `dim`);
+* `scripts/preview.mjs` mirrors that list and has drifted TWICE before, so it was
+  updated in the same edit rather than afterwards;
+* **`lastZoneFree()` now counts `icon` as content.** Without it a zone carrying only
+  an icon reads as empty and the clock paints straight over it.
+
+### V43 — THE GRID, exactly as drawn
+
+**RULING (Adi's, and it settles the Batch 23 ambiguity):**
+
+```
+        col 0     col 1      col 2    col 3    col 4
+row 0   Ableton   rekordbox  Tasks    Meters   Chrome      shortcuts
+row 1     ·          ·         ·        ·        ·          breathing room
+row 2   Left       Right     Top      Bottom     ·          Move & Resize
+row 3   Fill       L | R     L | Qt   Quads    ● Full       Fill & Arrange
+```
+
+His words were "the two rows closest to the touchscreen filled with our mac
+navigation icons which should be 8, 4 above the other, then the green alone with
+empty key above". **So the "four directional arrows" of Batch 23 were the four
+half-snaps all along** — reading B — and there are no new keys. Nothing had to be
+cut, and the ten slots hold nine keys with the one deliberate gap at (4,2).
+
+**The window block is now the macOS popover row for row**, which was not something
+I arranged: the popover's own two groups ARE four halves over four fill/arrange
+states with Full Screen separated below. The eight pictograms therefore sit in the
+same relative positions as the icons they replicate.
+
+Three consequences worth stating rather than burying:
+
+1. **ROW 0 IS MIXED**, so a hub declares its `col` instead of being found by its
+   index in `HUBS`. An array position cannot interleave hub tiles with app tiles.
+2. **CUBASE IS UNPLACED** (`col: null`). Row 0 is five slots wide and Adi named all
+   five. The tile was never functional — **there is no `cubase.hub` screen anywhere
+   in the plugin**, so a machine with Cubase installed would have shown a key that
+   navigated into nothing. The entry and its availability probe are kept for
+   whenever the hub is actually built, and a test asserts it is unplaced rather than
+   quietly deleted.
+3. **Start / Run / Shell and Lynx move to row 1.** They are `mac: null` (D14) or
+   gated on an uninstalled app, so row 1 is empty on this machine, and putting them
+   in the gap is the only placement that cannot collide with the window block on
+   either platform. If Adi installs Lynx Mixer one tile will appear in the breathing
+   row; that is better than dropping the tile silently, and he can then say where it
+   belongs.
+
+**Both gaps are held by OMISSION**, not by a placeholder binding — `resolveKey`
+returns null and the engine paints a blank. Tests assert both, so filling them in
+later reads as a regression rather than a tidy-up.

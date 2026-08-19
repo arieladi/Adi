@@ -393,7 +393,19 @@ SOS.Render = (function () {
     var s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + Z_W + ' ' + Z_H + '" width="' + Z_W + '" height="' + Z_H + '">';
     s += '<rect width="' + Z_W + '" height="' + Z_H + '" fill="#0c0f12"/>';
     if (o.title) s += text(truncate(o.title, 16), Z_W / 2, 22, 13, 700, PALETTE.dim, 'middle', 1.2);
-    if (o.value) s += text(truncate(o.value, 11), Z_W / 2, 60, 30, 700, PALETTE.text);
+    /* V42 — a zone may carry an ICON where its value would go. Same registry and
+       the same reasoning as a key's `icon`: the glyph this replaces (`⌕` for zoom)
+       is outside the proven set, and a drawn shape cannot come out as tofu.
+       It occupies the value's slot exactly, so the title and caption do not move. */
+    var zi = o.icon && SOS.Icons ? SOS.Icons[o.icon] : null;
+    if (zi) {
+      var zh = 46, zsc = zh / zi.h, zw = zi.w * zsc;
+      s += '<g transform="translate(' + ((Z_W - zw) / 2).toFixed(2) + ',30) scale(' + zsc.toFixed(4) + ')"'
+         + (o.dim ? ' opacity="0.5"' : '') + '>'
+         + String(zi.svg).split('__ID__').join('z' + o.icon) + '</g>';
+    } else if (o.value) {
+      s += text(truncate(o.value, 11), Z_W / 2, 60, 30, 700, PALETTE.text);
+    }
     if (typeof o.indicator === 'number') {
       var w = Math.max(0, Math.min(1, o.indicator)) * (Z_W - 32);
       s += '<rect x="16" y="74" width="' + (Z_W - 32) + '" height="5" rx="2.5" fill="rgba(255,255,255,0.10)"/>';

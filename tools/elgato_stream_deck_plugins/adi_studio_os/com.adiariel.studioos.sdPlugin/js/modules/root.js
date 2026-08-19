@@ -21,7 +21,17 @@
       invisible behind the numpad. The first arrangement ran along row 0 and hid
       Tasks/Chrome/Lynx.
 
-   ROWS 1-2 are the nine native macOS window states (V38); row 3 is OS actions.
+   V43 — THE GRID, to Adi's marked-up photo of the surface:
+
+     row 0   Ableton   rekordbox  Tasks    Meters   Chrome     shortcuts
+     row 1     ·          ·         ·        ·        ·         breathing room
+     row 2   Left       Right     Top      Bottom     ·         Move & Resize
+     row 3   Fill       L | R     L | Qt   Quads    ● Full      Fill & Arrange
+
+   Row 0 is MIXED — hub tiles and app tiles interleaved — so a hub declares its
+   `col` rather than being found by its index. The eight window pictograms are laid
+   out as the macOS popover lays them out, four over four, with the green traffic
+   light alone at (4,3) and nothing above it.
 
    2. A tile is only shown if its target actually exists on THIS machine. The
       service probes each named action and reports availability, so Start / Run /
@@ -44,7 +54,17 @@ SOS.Modules.Root = (function () {
      only real once Cubase is installed). `module` gates on the module having
      actually been ported, so a half-built Studio OS shows fewer tiles rather
      than keys that navigate into nothing. */
-  // Region-local: column index within row 0 of whatever region the hub is given.
+  /* V43 — ROW 0 IS NOW MIXED, so a hub declares its COLUMN instead of being found
+     by its index in this array. Adi's order is Ableton · rekordbox · Tasks · Meters
+     · Chrome, which interleaves hub tiles (this table) with app tiles (SLOTS), and
+     an array position cannot express that.
+
+     CUBASE HAS NO COLUMN, and that is a real consequence worth stating rather than
+     hiding. Row 0 is exactly five slots wide and Adi named all five. The tile was
+     never functional anyway — there is no `cubase.hub` screen anywhere in the
+     plugin, so a machine with Cubase installed would have shown a key that
+     navigated into nothing. `col: null` keeps the entry and its availability probe
+     intact for whenever the hub is actually built. */
   var HUBS = [
     /* V17 — SMART LAUNCHER. Entering the hub is what this key has always done;
        it now also starts Live if Live is not there. `launch` names an os.js
@@ -52,17 +72,24 @@ SOS.Modules.Root = (function () {
        bundle is "Ableton Live 11 Suite" here and "…12 Suite" on another
        machine) and this table stays a list of names. */
     // V22 — the real application icons, not a glyph approximating them.
-    { label: 'Ableton', art: 'ableton', color: R.PALETTE.ableton,   screen: 'ableton.hub',   module: 'Ableton',
+    { col: 0, label: 'Ableton', art: 'ableton', color: R.PALETTE.ableton, screen: 'ableton.hub', module: 'Ableton',
       launch: 'ableton', running: function () {
         var A = SOS.Modules.Ableton;
         return !!(A && A.bridge && A.bridge.isOnline());
       } },
-    { label: 'Cubase',  glyph: '◇', color: R.PALETTE.midi,      screen: 'cubase.hub',    needs: 'cubase' },
-    { label: 'DJ',      art: 'rekordbox', color: R.PALETTE.rekordbox, screen: 'rekordbox.hub', module: 'Rekordbox' },
+    // V43 — rekordbox sits immediately beside Ableton: the two DAW-ish tiles first.
+    { col: 1, label: 'DJ',      art: 'rekordbox', color: R.PALETTE.rekordbox, screen: 'rekordbox.hub', module: 'Rekordbox' },
+    { col: 3, label: 'Meters',  glyph: '▥', color: R.PALETTE.viz, screen: 'viz.hub', module: 'Viz' },
     /* V24 — MIDI Control is NOT a Root Hub destination; its tile lives inside
        the Ableton hub, with the DAW it belongs to. */
-    { label: 'Meters',  glyph: '▥', color: R.PALETTE.viz,       screen: 'viz.hub',       module: 'Viz' },
+    { col: null, label: 'Cubase', glyph: '◇', color: R.PALETTE.midi, screen: 'cubase.hub', needs: 'cubase' },
   ];
+
+  // col -> hub, for row 0. Unplaced hubs (col: null) are simply never asked for.
+  function hubAt(col) {
+    for (var i = 0; i < HUBS.length; i++) if (HUBS[i].col === col) return HUBS[i];
+    return null;
+  }
 
   /* ROWS 1+ are OS actions. `action` names an entry in service/os.js ACTIONS;
      availability comes from the service, so nothing here hardcodes a platform. */
@@ -101,27 +128,57 @@ SOS.Modules.Root = (function () {
      NO CAPTION, per V26 and Adi's instruction that the icon must fill the cap. The
      label stays here as the key's identity for logs and tests, exactly as `hub.label`
      does for the app tiles — it is simply not painted. */
+  /* V43 — THE GRID, TO ADI'S DRAWING. Read it as four bands:
+
+       row 0   Ableton   rekordbox  Tasks    Meters   Chrome     the shortcuts
+       row 1     ·          ·         ·        ·        ·         breathing room
+       row 2   Left       Right     Top      Bottom     ·         Move & Resize
+       row 3   Fill       L | R     L | Qt   Quads    ● Full      Fill & Arrange
+
+     THE WINDOW BLOCK IS THE macOS POPOVER, ROW FOR ROW. That is not a coincidence
+     I engineered — Adi asked for "8, 4 above the other, then the green alone with
+     an empty key above", and the popover's own two groups are exactly four halves
+     over four fill/arrange states with Full Screen separated below them. The eight
+     pictograms therefore sit in the same relative positions as the icons he is
+     copying from, which is the whole point of replicating them.
+
+     Row 1 is empty BY OMISSION on macOS, which is the honest way to hold a gap: no
+     placeholder binding, so `resolveKey` returns null and the engine paints a blank
+     rather than a key that does nothing.
+
+     (4,2) is likewise deliberately absent. The green cap stands alone at (4,3) with
+     nothing above it, so it reads as its own control rather than as the fifth
+     member of the Fill & Arrange row.
+
+     WINDOWS still needs somewhere for Start / Run / Shell, which are `mac: null`
+     and therefore invisible here (D14). They go in row 1 — the breathing row — so
+     they cannot collide with the window block on either platform. Lynx joins them;
+     it is gated on the app being installed and is not installed on this machine. If
+     Adi installs it, one tile will appear in the gap and he can say where he wants
+     it, which is better than silently dropping the tile. */
   var SLOTS = {
-    // row 1 — Move & Resize: halves
-    '1,1': { label: 'Left',   icon: 'winLeft',   window: 'left',   color: R.PALETTE.nav },
-    '2,1': { label: 'Right',  icon: 'winRight',  window: 'right',  color: R.PALETTE.nav },
-    '3,1': { label: 'Top',    icon: 'winTop',    window: 'top',    color: R.PALETTE.nav },
-    '4,1': { label: 'Bottom', icon: 'winBottom', window: 'bottom', color: R.PALETTE.nav },
-    // row 2 — Fill & Arrange, plus the green traffic light
-    '0,2': { label: 'Fill',   icon: 'winFill',          window: 'fill',         color: R.PALETTE.nav },
-    '1,2': { label: 'L | R',  icon: 'winLeftRight',     window: 'leftright',    color: R.PALETTE.midi },
-    '2,2': { label: 'L | Qt', icon: 'winLeftQuarters',  window: 'leftquarters', color: R.PALETTE.midi },
-    '3,2': { label: 'Quads',  icon: 'winQuarters',      window: 'quarters',     color: R.PALETTE.midi },
-    '4,2': { label: 'Full',   icon: 'winFullScreen',    window: 'fullscreen',   color: R.PALETTE.viz },
+    // row 0 — the two app tiles, interleaved with the hub tiles above.
+    '2,0': { label: 'Tasks',  glyph: '▤',  action: 'taskmgr' },
+    '4,0': { label: 'Chrome', glyph: '◉',  action: 'chrome' },
+
+    // row 1 — EMPTY on macOS. Windows-only concepts live here; see the note above.
     '0,1': { label: 'Start',  glyph: '⊞',  action: 'start' },
-    /* Windows-only concepts and the app tiles move to row 3, out of the window
-       block's way. They are hidden on macOS anyway (D14), so on this machine row
-       3 shows Tasks / Chrome / Lynx and nothing else. */
-    '0,3': { label: 'Run',    glyph: '▸_', action: 'run' },
-    '1,3': { label: 'Shell',  glyph: '>_', action: 'shell' },
-    '2,3': { label: 'Tasks',  glyph: '▤',  action: 'taskmgr' },
-    '3,3': { label: 'Chrome', glyph: '◉',  action: 'chrome' },
-    '4,3': { label: 'Lynx',   glyph: '⎍',  action: 'lynx' },
+    '1,1': { label: 'Run',    glyph: '▸_', action: 'run' },
+    '2,1': { label: 'Shell',  glyph: '>_', action: 'shell' },
+    '4,1': { label: 'Lynx',   glyph: '⎍',  action: 'lynx' },
+
+    // row 2 — Move & Resize: the four halves. (4,2) intentionally has no entry.
+    '0,2': { label: 'Left',   icon: 'winLeft',   window: 'left',   color: R.PALETTE.nav },
+    '1,2': { label: 'Right',  icon: 'winRight',  window: 'right',  color: R.PALETTE.nav },
+    '2,2': { label: 'Top',    icon: 'winTop',    window: 'top',    color: R.PALETTE.nav },
+    '3,2': { label: 'Bottom', icon: 'winBottom', window: 'bottom', color: R.PALETTE.nav },
+
+    // row 3 — Fill & Arrange, then the green traffic light on its own.
+    '0,3': { label: 'Fill',   icon: 'winFill',         window: 'fill',         color: R.PALETTE.nav },
+    '1,3': { label: 'L | R',  icon: 'winLeftRight',    window: 'leftright',    color: R.PALETTE.midi },
+    '2,3': { label: 'L | Qt', icon: 'winLeftQuarters', window: 'leftquarters', color: R.PALETTE.midi },
+    '3,3': { label: 'Quads',  icon: 'winQuarters',     window: 'quarters',     color: R.PALETTE.midi },
+    '4,3': { label: 'Full',   icon: 'winFullScreen',   window: 'fullscreen',   color: R.PALETTE.viz },
   };
 
   // A hub tile only appears once its module is actually ported and registered.
@@ -159,9 +216,12 @@ SOS.Modules.Root = (function () {
 
   // ------------------------------------------------------------------ keys
   function rootKeys(col, row) {
-    if (row === 0) {
-      var hub = HUBS[col];
-      if (!hub) return null;
+    /* V43 — row 0 is mixed, so a hub tile is looked up by its declared column and
+       anything that is not a hub falls through to the SLOTS path below. That is how
+       Tasks and Chrome sit between Ableton, rekordbox and Meters while keeping the
+       availability gating that hides a tile for an app that is not installed. */
+    var hub = row === 0 ? hubAt(col) : null;
+    if (hub) {
       if (hub.needs && !usable(hub.needs)) return null;         // app not installed
       if (hub.module && !moduleReady(hub.module)) return null;  // module not ported
       return {
@@ -256,8 +316,12 @@ SOS.Modules.Root = (function () {
           press: function () { IPC.os.home(); },
           touch: function (x) { IPC.os.scroll('x', x < 100 ? -1 : 1); },
         };
+        /* V42 — the magnifier replaces `±` (Adi supplied the icon). `icon` names a
+           drawn shape in js/core/icons.js, so nothing here risks an unproven glyph:
+           the obvious `⌕` is outside the proven set and is exactly the kind of
+           character that shipped as an empty box once. */
         case 3: return {
-          title: 'Zoom', value: '±', sub: 'push = Reset', color: R.PALETTE.nav,
+          title: 'Zoom', icon: 'zoomIn', sub: 'push = Reset', color: R.PALETTE.nav,
           dim: offline,
           rotate: function (t) { IPC.os.appZoom(t > 0 ? 1 : -1); },
           press: function () { IPC.os.appZoomReset(); },
@@ -305,6 +369,9 @@ SOS.Modules.Root = (function () {
   return {
     screen: screen, defineSlot: defineSlot, clearSlots: clearSlots,
     slots: function () { return SLOTS; },
+    // V43 — exposed so a test can assert the row-0 columns, including the one hub
+    // that is deliberately unplaced (Cubase).
+    hubs: function () { return HUBS; },
     refreshAvailability: refreshAvailability,
     availability: function () { return avail; },
   };

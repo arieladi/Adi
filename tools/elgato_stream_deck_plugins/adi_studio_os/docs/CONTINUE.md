@@ -52,7 +52,28 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**937 tests green** (926 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 23 is deployed and running on the hardware** (`service v2.3.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`, idle 0.2 %).
+**950 tests green** (939 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 24 is deployed and running on the hardware** (`service v2.3.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`).
+
+### Batch 24 (V41a, V42–V43) — the Root Hub grid, to Adi's drawing
+
+```
+        col 0     col 1      col 2    col 3    col 4
+row 0   Ableton   rekordbox  Tasks    Meters   Chrome      shortcuts
+row 1     ·          ·         ·        ·        ·          breathing room
+row 2   Left       Right     Top      Bottom     ·          Move & Resize
+row 3   Fill       L | R     L | Qt   Quads    ● Full       Fill & Arrange
+```
+
+The Batch 23 ambiguity is settled: **the "four directional arrows" were the four
+half-snaps**, so nothing was cut. The window block is now the macOS popover row for
+row. **Row 0 is MIXED**, so a hub declares its `col` rather than its array index.
+**Cubase is unplaced** (`col: null`) — there is no `cubase.hub` screen anywhere, so
+that tile would have navigated into nothing. Start / Run / Shell / Lynx moved to row
+1, where they are invisible on macOS. Both gaps are held by omission and pinned by
+tests. Dial 3 wears a drawn magnifier instead of `±` (V42), which required `icon`
+support in `R.zone()` — and **`zoneUriFor` in `states.js` is the DIAL equivalent of
+`keySpec()`**, the same whitelist trap. The traffic light's expand arrow is back:
+**V41a reversed my own call at Adi's explicit instruction — do not remove it again.**
 
 ### Batch 23 (V40–V41) — the alias bug, and the native window icons
 
@@ -190,7 +211,7 @@ in `ProQ3Controller.ROLES` need editing (`OVERRIDES` exists for pinning them).
 ## Field notes that cost real debugging time
 
 - **Glyphs outside the proven set render as tofu.** `⌷` (U+2337) came out as an empty box on the device. Stay inside the glyph set already in shipped use; there is a test pinning this.
-- **`keySpec()` in `states.js` must forward every new binding field.** It is a hand-written whitelist and a forgotten field paints a silently wrong key — this has now bitten twice (`size`/`subStrong`, then `segDim`).
+- **`keySpec()` in `states.js` must forward every new binding field.** It is a hand-written whitelist and a forgotten field paints a silently wrong key — this has now bitten twice (`size`/`subStrong`, then `segDim`). **There are THREE of these lists, not one:** `keySpec()` for keys, **`zoneUriFor()` for dials**, and `scripts/preview.mjs`, which mirrors both and has drifted twice. Add a field to all three in the same edit, and check `lastZoneFree()` too — it decides whether a zone is empty enough for the clock to take, so a new content field must count as content there as well.
 - **Key SVG ids must be derived from content, not a counter.** `SD.image()` dedupes by data URI; a per-call id makes every key look different every frame and turns a static surface into 36 writes at 15 fps.
 - **THE SERVICE IS A SEPARATE PROCESS. Restart it on EVERY deploy.** rsyncing new code does nothing to the one already running, and an unknown verb from a stale service fails silently (fire-and-forget has no reply). The plugin log now prints `service vX.Y.Z` on connect — check it matches.
 - **`osacompile` proves syntax, NOT behaviour.** Two AppleScript bugs compiled cleanly and failed only when run: `hidden` is reserved inside `dock preferences`, and `front window` raises -1719 when the frontmost process has no window (the Stream Deck app itself). Run the script, do not just compile it.

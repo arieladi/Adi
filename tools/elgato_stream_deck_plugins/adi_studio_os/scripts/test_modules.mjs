@@ -228,6 +228,40 @@ ok("midictl is NOT on the Root Hub — it lives inside Ableton (V24)",
    !reach.some((r) => /MIDI/.test(r)), reach.join(" "));
 ok("un-ported modules show no tile", !reach.some((r) => /Ableton|Meters/.test(r)), reach.join(" "));
 
+/* V43 — ROW 0 IN ADI'S ORDER: Ableton · rekordbox · Tasks · Meters · Chrome. It is
+   asserted from the TABLES rather than from the rendered row, because this harness
+   deliberately loads neither ableton.js nor viz.js, so those two tiles are hidden
+   here and reading the row would silently pass on a shorter list.
+
+   The point of the test is the INTERLEAVING: row 0 mixes hub tiles (HUBS, by
+   declared column) with app tiles (SLOTS, by "col,row"), and getting the two tables
+   to agree on who owns which column is the part that can break. */
+{
+  const slots0 = M.Root.slots();
+  const hubCol = (label) => {
+    for (let c = 0; c < 5; c++) {
+      const k = SOS.Layout.pick(M.Root.screen, 9).keys(c, 0);
+      if (k && (k.art === label || k.label === label)) return c;
+    }
+    return -1;
+  };
+  ok("col 1 is rekordbox — right beside Ableton at col 0", hubCol("rekordbox") === 1,
+     String(hubCol("rekordbox")));
+  ok("col 2 is Tasks and col 4 is Chrome, interleaved with the hub tiles",
+     slots0["2,0"] && slots0["2,0"].action === "taskmgr"
+     && slots0["4,0"] && slots0["4,0"].action === "chrome",
+     [slots0["2,0"] && slots0["2,0"].label, slots0["4,0"] && slots0["4,0"].label].join(","));
+  ok("no SLOTS entry collides with a hub column on row 0",
+     !slots0["0,0"] && !slots0["1,0"] && !slots0["3,0"],
+     ["0,0", "1,0", "3,0"].filter((k) => slots0[k]).join(","));
+  /* Cubase is unplaced (col: null) and stays that way until someone builds a
+     `cubase.hub` screen — there is none, so the tile would have navigated into
+     nothing. Asserted so the removal is deliberate rather than forgotten. */
+  ok("Cubase is deliberately unplaced, not silently deleted",
+     M.Root.hubs().some((h) => h.label === "Cubase" && h.col === null),
+     M.Root.hubs().map((h) => `${h.label}@${h.col}`).join(" "));
+}
+
 // ---------------------------------------------------------------------------
 console.log("\n[8] D15: fullScreenCapable hubs auto-enter NAV OFF");
 Nav.toRoot(); States.setState(0);
@@ -353,7 +387,8 @@ console.log("\n[11] V22: the Root Hub wears the real application icons");
   /* The Ableton tile is hidden here — this harness deliberately does not load
      ableton.js, and a hub tile only appears once its module is registered. The
      DJ tile carries the same mechanism, so the binding assertions ride on it. */
-  const dj = tile(2);
+  // V43 — rekordbox moved to col 1, immediately beside Ableton.
+  const dj = tile(1);
   ok("the DJ tile names its artwork, not a glyph",
      dj.art === "rekordbox" && !dj.glyph, JSON.stringify({ art: dj.art, glyph: dj.glyph }));
 
@@ -487,9 +522,12 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
     const wcalls = [];
     SOS.IPC.os.window = (l) => { wcalls.push(l); };
     const L9 = SOS.Layout.pick(M.Root.screen, 9);
-    const halves = [1, 2, 3, 4].map((c) => L9.keys(c, 1));
-    const arrange = [0, 1, 2, 3, 4].map((c) => L9.keys(c, 2));
-    ok("row 1 carries the four halves", halves.every(Boolean),
+    /* V43 — the block moved to the two rows nearest the dials, laid out the way the
+       macOS popover lays it out: four halves on row 2, the four Fill & Arrange
+       states on row 3, and the green traffic light alone at (4,3). */
+    const halves = [0, 1, 2, 3].map((c) => L9.keys(c, 2));
+    const arrange = [0, 1, 2, 3, 4].map((c) => L9.keys(c, 3));
+    ok("row 2 carries the four halves", halves.every(Boolean),
        halves.map((k) => k && k.icon).join(","));
     /* V40 — the IDENTITY still says Left / Right / Top / Bottom, but it is no
        longer painted: the key is the native pictogram alone, filling the cap. The
@@ -497,10 +535,19 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
        `hub.label` does for the app tiles. */
     const slots = M.Root.slots();
     ok("…identified as Left / Right / Top / Bottom on the slot table",
-       [1, 2, 3, 4].map((c) => slots[c + ",1"].label).join(",") === "Left,Right,Top,Bottom",
-       [1, 2, 3, 4].map((c) => slots[c + ",1"].label).join(","));
-    ok("row 2 carries Fill, three Arrange sets and Full Screen", arrange.every(Boolean),
+       [0, 1, 2, 3].map((c) => slots[c + ",2"].label).join(",") === "Left,Right,Top,Bottom",
+       [0, 1, 2, 3].map((c) => slots[c + ",2"].label).join(","));
+    ok("row 3 carries Fill, three Arrange sets and Full Screen", arrange.every(Boolean),
        arrange.map((k) => k && k.icon).join(","));
+
+    /* V43 — THE TWO DELIBERATE GAPS. Both are held by OMISSION, not by a
+       placeholder binding, and both are things Adi asked for explicitly, so a
+       future edit that fills them in is a regression rather than a tidy-up. */
+    ok("row 1 is the breathing row — completely empty on macOS",
+       [0, 1, 2, 3, 4].every((c) => L9.keys(c, 1) === null),
+       [0, 1, 2, 3, 4].map((c) => { const k = L9.keys(c, 1); return k ? (k.label || k.icon) : "·"; }).join(" "));
+    ok("(4,2) is empty, so the green cap stands alone with nothing above it",
+       L9.keys(4, 2) === null && L9.keys(4, 3) !== null);
 
     wcalls.length = 0;
     halves.concat(arrange).forEach((k) => k.tap());
@@ -559,6 +606,27 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
       ok("…and its gradient id is namespaced to the key, not a fixed string",
          !/__ID__/.test(painted[8]) && /id="k[0-9a-z]+tl"/.test(painted[8]));
     }
+  }
+
+  /* V42 — THE ZOOM ZONE WEARS THE MAGNIFIER. This is the DIAL half of the
+     whitelist trap: keySpec() covers keys, and `zoneUriFor` in states.js is the
+     equivalent hand-written list for dials. A forgotten field there paints an empty
+     zone, so the assertion is on the RENDERED zone, not on the binding. */
+  {
+    ok("dial 3 names the magnifier and no longer carries a ± glyph",
+       d(3).icon === "zoomIn" && !d(3).value, JSON.stringify({ icon: d(3).icon, value: d(3).value }));
+    const z = SOS.Render.zone({ title: d(3).title, value: d(3).value, sub: d(3).sub,
+                                icon: d(3).icon, color: d(3).color });
+    ok("…and the shape really reaches the ink", /<g transform="translate/.test(z));
+    ok("…with its ids namespaced, not left as the placeholder", !/__ID__/.test(z));
+    ok("a zone with an icon drops the value text rather than drawing both",
+       (z.match(/<text/g) || []).length === 2, String((z.match(/<text/g) || []).length));
+    /* The clock claims the last zone only when nothing else uses it. An icon is
+       content, so a zone carrying only an icon must NOT read as free. */
+    ok("an icon-only zone counts as occupied, so the clock cannot paint over it",
+       SOS.Render.zone({ icon: "zoomIn" }).indexOf("<g transform") > 0);
+    ok("an unknown icon name degrades to the value text, it does not throw",
+       SOS.Render.zone({ value: "±", icon: "nope" }).indexOf("±") > 0);
   }
 
   // The captions must fit the zone, or the one that says what a push does is the
