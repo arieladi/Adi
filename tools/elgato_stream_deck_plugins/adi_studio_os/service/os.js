@@ -160,32 +160,50 @@ export function zoom(dir) {
 }
 
 // -------------------------------------------------------------- app switcher
-// A dial should feel like holding Cmd/Alt and tapping Tab, so the modifier is
-// held down across ticks and released only after the dial goes quiet. Releasing
-// per-tick would commit the switch on every detent and make cycling impossible.
-/* V36 — 900 ms was far too short: Adi's spin dropped the modifier mid-cycle, so
-   the switcher committed to whatever app happened to be highlighted and reopened
-   on the next tick. That is the "it selects apps randomly as I spin" report.
+/* V38 — SPINNING NEVER SELECTS. Adi's ruling: the app is committed ONLY by a
+   physical press of dial 5.
 
-   The dial now behaves like the keyboard gesture it imitates: turning ONLY moves
-   the highlight, and the app is chosen either by a short press (an explicit
-   commit) or by simply stopping for a beat. 2.5 s is long enough to think and
-   short enough not to feel stuck. */
-const SWITCH_IDLE_MS = 2500;
+   The trouble with ANY idle timeout is that releasing the held modifier IS the
+   selection — so a timeout does not "give up", it CHOOSES. That is exactly the
+   random behaviour he reported, first at 900 ms and then at 2.5 s. Removing it
+   outright is not safe either: a held Command that is never released leaves the
+   machine unusable.
+
+   THE WORKAROUND: the safety net CANCELS instead of committing. Escape while the
+   switcher is open dismisses it WITHOUT switching, so the guard sends Escape and
+   only then releases the modifier. Nothing is ever chosen by the passage of time.
+   The guard is deliberately long — it is a deadlock breaker, not part of the
+   interaction. */
+const SWITCH_GUARD_MS = 25000;
 let switchTimer = null;
 let switchHeld = false;
 
-function switchRelease() {
-  switchTimer = null;
-  if (!switchHeld) return;
+function releaseModifier() {
   switchHeld = false;
   if (isMac) return osa('tell application "System Events" to key up command');
   if (isWin) return ps(WIN_KEY_SHIM + winUp(0x12));
+  return Promise.resolve(false);
 }
 
+// The guard, and dial 5's hold: dismiss, then let go. Selects nothing.
+async function switchAbandon() {
+  switchTimer = null;
+  if (!switchHeld) return true;
+  if (isMac) await osa('tell application "System Events" to key code 53');    // Escape
+  else if (isWin) await ps(WIN_KEY_SHIM + winTap(0x1b));
+  await releaseModifier();
+  return true;
+}
+
+function armGuard() {
+  clearTimeout(switchTimer);
+  switchTimer = setTimeout(switchAbandon, SWITCH_GUARD_MS);
+}
+
+/* TURN — hold the modifier and tap Tab. It never releases, so the switcher stays
+   open and only the highlight moves. */
 export async function appSwitch(dir) {
   const forward = Number(dir) >= 0;
-  clearTimeout(switchTimer);
   if (isMac) {
     if (!switchHeld) { switchHeld = true; await osa('tell application "System Events" to key down command'); }
     await osa(`tell application "System Events" to key code 48${forward ? "" : " using {shift down}"}`);
@@ -199,18 +217,23 @@ export async function appSwitch(dir) {
   } else {
     return false;
   }
-  switchTimer = setTimeout(switchRelease, SWITCH_IDLE_MS);
+  armGuard();
   return true;
 }
 
-/* Commit now — the dial's short press. Releasing the held modifier IS the
-   selection, exactly as letting go of Cmd is on the keyboard. A no-op when the
+/* PRESS — commit. Releasing the modifier is what chooses the highlighted app,
+   exactly as letting go of Command does on the keyboard. A no-op when the
    switcher is not open, so the press is never destructive. */
 export function appSwitchCommit() {
   clearTimeout(switchTimer);
-  return switchRelease() || Promise.resolve(true);
+  switchTimer = null;
+  if (!switchHeld) return Promise.resolve(true);
+  return releaseModifier();
 }
+
+export function appSwitchCancel() { clearTimeout(switchTimer); return switchAbandon(); }
 export function appSwitchHeld() { return switchHeld; }
+
 
 /* ---------------------------------------------------------------- type text
    V15 — the delay calculator's value key types its figure into whatever has
@@ -363,65 +386,147 @@ export function missionControl() {
    single process spawn, not three.
    =========================================================================== */
 
-const WINDOW_LAYOUTS = { left: [0, 0.5], right: [0.5, 0.5], max: [0, 1] };
+/* V38 — THE NINE NATIVE WINDOW STATES, driven through macOS's OWN menu.
 
-export function windowLayout(which) {
-  const spec = WINDOW_LAYOUTS[String(which || "").toLowerCase()];
-  if (!spec) return Promise.resolve(false);
-  const [xf, wf] = spec;
+   The geometry approach (writing AX position/size) works and is kept as a
+   fallback, but it can only express SINGLE-window states. Three of the nine Adi
+   asked for — Left & Right, Left & Quarters, Quarters — are macOS "Arrange"
+   commands that place TWO OR MORE windows, which no single frame write can do.
+
+   So these click the real menu items, enumerated from this machine rather than
+   guessed:
+
+     Window > Fill | Center
+     Window > Move & Resize > Halves:   Left | Right | Top | Bottom
+                            > Quarters: Top Left | Top Right | Bottom Left | Bottom Right
+                            > Arrange:  Left & Right | Left & Quarters | Quarters | ...
+                            > Return to Previous Size
+     Window > Full Screen Tile > Left of Screen | Right of Screen
+
+   TWO HONEST LIMITATIONS: these are menu item NAMES, so English-only, and an app
+   without the system-provided Window menu has nothing to click. Both are why the
+   geometry fallback is retained for the states it can express.
+
+   Full Screen is NOT a menu item — it is Ctrl+Cmd+F, which is both more robust
+   and exactly what the green traffic-light button does. */
+
+const MENU_TILES = {
+  left:         ['Move & Resize', 'Left'],
+  right:        ['Move & Resize', 'Right'],
+  top:          ['Move & Resize', 'Top'],
+  bottom:       ['Move & Resize', 'Bottom'],
+  topleft:      ['Move & Resize', 'Top Left'],
+  topright:     ['Move & Resize', 'Top Right'],
+  bottomleft:   ['Move & Resize', 'Bottom Left'],
+  bottomright:  ['Move & Resize', 'Bottom Right'],
+  leftright:    ['Move & Resize', 'Left & Right'],
+  leftquarters: ['Move & Resize', 'Left & Quarters'],
+  quarters:     ['Move & Resize', 'Quarters'],
+  restore:      ['Move & Resize', 'Return to Previous Size'],
+  fill:         [null, 'Fill'],
+  center:       [null, 'Center'],
+};
+
+// The states a frame write can also express, for the fallback.
+const GEOM_TILES = { left: [0, 0.5], right: [0.5, 0.5], fill: [0, 1] };
+
+/* Walk to the frontmost process that actually HAS a window. The Stream Deck app
+   itself is the obvious counter-example and raises -1719 ("Invalid index")
+   rather than failing quietly — found by running this, not by compiling it. */
+const FRONT_WITH_WINDOW = [
+  '  set target to missing value',
+  '  repeat with pr in (every application process whose frontmost is true)',
+  '    if (count of windows of pr) > 0 then',
+  '      set target to pr',
+  '      exit repeat',
+  '    end if',
+  '  end repeat',
+].join("\n");
+
+function clickWindowMenu(submenu, item) {
+  const path = submenu
+    ? `menu item "${item}" of menu 1 of menu item "${submenu}" of menu 1 of menu bar item "Window" of menu bar 1`
+    : `menu item "${item}" of menu 1 of menu bar item "Window" of menu bar 1`;
+  return run("osascript", ["-e", [
+    'tell application "System Events"',
+    FRONT_WITH_WINDOW,
+    '  if target is missing value then error "no window"',
+    '  tell target',
+    `    if not (exists ${path}) then error "no menu item"`,
+    `    if not (enabled of ${path}) then error "disabled"`,
+    `    click ${path}`,
+    '  end tell',
+    'end tell',
+  ].join("\n")]);
+}
+
+/* Geometry fallback — an exact frame write. Needs no menu and no English, and is
+   the only path that works in an app whose Window menu lacks the tiling items.
+
+   It cannot read NSScreen.visibleFrame (AppleScript has no access), so the usable
+   area is derived: menu bar exact, Dock estimated from a NORMALISED `dock size`.
+   Within about ten points. Elgato's Window Mover ships a native addon for exactly
+   this reason. */
+function geomFrame(xf, wf) {
+  return run("osascript", ["-e", [
+    'tell application "Finder" to set b to bounds of window of desktop',
+    'set sw to item 3 of b',
+    'set sh to item 4 of b',
+    'tell application "System Events" to set mbh to item 2 of (get size of menu bar 1 of process "Finder")',
+    'set dockH to 0',
+    'tell application "System Events" to tell dock preferences',
+    '  set dockEdge to (screen edge as string)',
+    // NOT `hidden` — reserved in this context; System Events raises -10006. It
+    // compiles cleanly and fails only when run.
+    '  set dockAuto to autohide',
+    '  set dockSz to dock size',
+    'end tell',
+    'if (dockEdge is "bottom") and (dockAuto is false) then set dockH to (16 + (dockSz * 112) + 16)',
+    `set winX to round (sw * ${xf})`,
+    `set winW to round (sw * ${wf})`,
+    'set winY to mbh',
+    'set winH to round (sh - mbh - dockH)',
+    'tell application "System Events"',
+    FRONT_WITH_WINDOW,
+    '  if target is missing value then return "nowindow"',
+    '  tell target',
+    '    set position of window 1 to {winX, winY}',
+    '    set size of window 1 to {winW, winH}',
+    '  end tell',
+    'end tell',
+    'return "ok"',
+  ].join("\n")]);
+}
+
+export async function windowLayout(which) {
+  const key = String(which || "").toLowerCase().replace(/[^a-z]/g, "");
+
+  // The green traffic light. A real shortcut, not a menu name.
+  if (key === "fullscreen") {
+    if (isMac) return hotkey("ctrl+cmd+f");
+    if (isWin) return hotkey("win+up");
+    return false;
+  }
 
   if (isMac) {
-    /* dock size is 0-1; icons run about 16-128 pt and the tray adds ~16, which
-       is where the 112 and 16 come from. Only subtracted when the Dock is
-       actually at the bottom and actually visible. */
-    return run("osascript", ["-e", [
-      'tell application "Finder" to set b to bounds of window of desktop',
-      'set sw to item 3 of b',
-      'set sh to item 4 of b',
-      'tell application "System Events" to set mbh to item 2 of (get size of menu bar 1 of process "Finder")',
-      'set dockH to 0',
-      'tell application "System Events" to tell dock preferences',
-      '  set dockEdge to (screen edge as string)',
-      /* NOT `hidden` — that is a reserved term inside this context and System
-         Events raises -10006 on `set hidden to autohide`. It COMPILES cleanly and
-         fails only when run, which is why these are executed here and not merely
-         validated with osacompile. */
-      '  set dockAuto to autohide',
-      '  set dockSz to dock size',
-      'end tell',
-      'if (dockEdge is "bottom") and (dockAuto is false) then set dockH to (16 + (dockSz * 112) + 16)',
-      `set winX to round (sw * ${xf})`,
-      `set winW to round (sw * ${wf})`,
-      'set winY to mbh',
-      'set winH to round (sh - mbh - dockH)',
-      /* GUARDED. The frontmost process may legitimately have no window — the
-         Stream Deck app itself is the obvious case, and it raises -1719 ("Can't
-         get window 1 ... Invalid index") rather than failing quietly. Found by
-         running this for real; osacompile is happy with the unguarded version. */
-      'tell application "System Events"',
-      '  set target to missing value',
-      '  repeat with pr in (every application process whose frontmost is true)',
-      '    if (count of windows of pr) > 0 then',
-      '      set target to pr',
-      '      exit repeat',
-      '    end if',
-      '  end repeat',
-      '  if target is missing value then return "nowindow"',
-      '  tell target',
-      '    set position of window 1 to {winX, winY}',
-      '    set size of window 1 to {winW, winH}',
-      '  end tell',
-      'end tell',
-      'return "ok"',
-    ].join("\n")]);
+    const menu = MENU_TILES[key];
+    if (menu && await clickWindowMenu(menu[0], menu[1])) return true;
+    const g = GEOM_TILES[key];               // menu missing/disabled/non-English
+    if (g) return geomFrame(g[0], g[1]);
+    return false;
   }
 
   if (isWin) {
-    // Windows has this natively and correctly: Win+Left / Win+Right / Win+Up.
-    if (wf === 1) return hotkey("win+up");
-    return hotkey(xf === 0 ? "win+left" : "win+right");
+    // Windows has halves natively; the multi-window arrange sets do not map.
+    const WIN_TILES = {
+      left: "win+left", right: "win+right", top: "win+up", bottom: "win+down",
+      fill: "win+up", topleft: "win+left", topright: "win+right",
+      bottomleft: "win+left", bottomright: "win+right",
+    };
+    const combo = WIN_TILES[key];
+    return combo ? hotkey(combo) : false;
   }
-  return Promise.resolve(false);
+  return false;
 }
 
 /* Named Root Hub actions (D11). Each is one concept with per-platform

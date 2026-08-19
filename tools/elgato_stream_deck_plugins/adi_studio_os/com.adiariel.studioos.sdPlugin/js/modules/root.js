@@ -11,7 +11,7 @@
      Dial 2  Scroll X   turn = scroll left/right   push = Home
      Dial 3  Zoom       turn = Cmd/Ctrl +/-        push = Cmd/Ctrl 0
      Dial 4  Tabs       turn = Ctrl+Tab cycle      push = new · HOLD = close
-     Dial 5  Apps       turn = cycle (holds Cmd)   push = pick · HOLD = Mission Control
+     Dial 5  Apps       turn = cycle, never selects push = pick · HOLD = cancel
      Dial 6  the clock (V28) — claimed automatically because nothing else uses it
 
    Two layout rules learned on hardware, both enforced here:
@@ -21,7 +21,7 @@
       invisible behind the numpad. The first arrangement ran along row 0 and hid
       Tasks/Chrome/Lynx.
 
-   ROW 3 is window management: Left / Fill / Right, nearest the dials.
+   ROWS 1-2 are the nine native macOS window states (V38); row 3 is OS actions.
 
    2. A tile is only shown if its target actually exists on THIS machine. The
       service probes each named action and reports availability, so Start / Run /
@@ -75,16 +75,39 @@ SOS.Modules.Root = (function () {
      detail — the service uses AX position/size on macOS and Win+arrow on
      Windows, which are not remotely the same mechanism. Glyphs are from the
      proven set (◀ ▶ ⊞); nothing new is risked on the cap. */
+  /* V38 — THE NINE NATIVE WINDOW STATES, laid out the way macOS's own menu
+     groups them: the four HALVES on row 1, then FILL plus the three ARRANGE sets
+     and the green-button FULL SCREEN on row 2.
+
+     Row 1 starts at col 1 because Start / Run / Shell occupy 0-2 on Windows;
+     they are hidden on macOS (D14) so nothing collides in practice, and the
+     arrangement stays valid on both platforms. Lynx keeps (0,2).
+
+     Glyphs are from the PROVEN set only. The obvious pictograms for these states
+     do not exist in it, so the labels carry the meaning and the glyphs merely
+     hint at direction: ◀ ▶ ▲ ▼ for the halves, ⊞ for anything that fills or
+     tiles. A test pins this. */
   var SLOTS = {
-    '0,3': { label: 'Left',  glyph: '◀', window: 'left',  color: R.PALETTE.nav },
-    '1,3': { label: 'Fill',  glyph: '⊞', window: 'max',   color: R.PALETTE.nav },
-    '2,3': { label: 'Right', glyph: '▶', window: 'right', color: R.PALETTE.nav },
+    // row 1 — Move & Resize: halves
+    '1,1': { label: 'Left',   glyph: '◀', window: 'left',   color: R.PALETTE.nav },
+    '2,1': { label: 'Right',  glyph: '▶', window: 'right',  color: R.PALETTE.nav },
+    '3,1': { label: 'Top',    glyph: '▲', window: 'top',    color: R.PALETTE.nav },
+    '4,1': { label: 'Bottom', glyph: '▼', window: 'bottom', color: R.PALETTE.nav },
+    // row 2 — Fill & Arrange, plus the green traffic light
+    '0,2': { label: 'Fill',   glyph: '⊞', window: 'fill',         color: R.PALETTE.nav },
+    '1,2': { label: 'L | R',  glyph: '⊞', window: 'leftright',    color: R.PALETTE.midi },
+    '2,2': { label: 'L | Qt', glyph: '⊞', window: 'leftquarters', color: R.PALETTE.midi },
+    '3,2': { label: 'Quads',  glyph: '⊞', window: 'quarters',     color: R.PALETTE.midi },
+    '4,2': { label: 'Full',   glyph: '⊞', window: 'fullscreen',   color: R.PALETTE.viz },
     '0,1': { label: 'Start',  glyph: '⊞',  action: 'start' },
-    '1,1': { label: 'Run',    glyph: '▸_', action: 'run' },
-    '2,1': { label: 'Shell',  glyph: '>_', action: 'shell' },
-    '3,1': { label: 'Tasks',  glyph: '▤',  action: 'taskmgr' },
-    '4,1': { label: 'Chrome', glyph: '◉',  action: 'chrome' },
-    '0,2': { label: 'Lynx',   glyph: '⎍',  action: 'lynx' },
+    /* Windows-only concepts and the app tiles move to row 3, out of the window
+       block's way. They are hidden on macOS anyway (D14), so on this machine row
+       3 shows Tasks / Chrome / Lynx and nothing else. */
+    '0,3': { label: 'Run',    glyph: '▸_', action: 'run' },
+    '1,3': { label: 'Shell',  glyph: '>_', action: 'shell' },
+    '2,3': { label: 'Tasks',  glyph: '▤',  action: 'taskmgr' },
+    '3,3': { label: 'Chrome', glyph: '◉',  action: 'chrome' },
+    '4,3': { label: 'Lynx',   glyph: '⎍',  action: 'lynx' },
   };
 
   // A hub tile only appears once its module is actually ported and registered.
@@ -243,12 +266,19 @@ SOS.Modules.Root = (function () {
 
            Mission Control moves to the HOLD, since the short press now has a job.
            Both halves are printed on the zone so the gesture is discoverable. */
+        /* V38 — SPINNING NEVER SELECTS. Turning only moves the highlight (the
+           service holds the modifier down and never lets go on a timer); the app
+           is chosen ONLY by this press. The hold DISMISSES without switching,
+           which is the escape hatch a gesture with no timeout needs.
+
+           Mission Control loses its home here — the two presses are worth more
+           on a dial that is otherwise a one-way trip. */
         case 5: return {
-          title: 'Apps', value: '⇄', sub: 'push pick · hold ⊞', color: R.PALETTE.midi,
+          title: 'Apps', value: '⇄', sub: 'push=pick hold=esc', color: R.PALETTE.midi,
           dim: offline,
           rotate: function (t) { IPC.os.appSwitch(t > 0 ? 1 : -1); },
           press: function () { IPC.os.appSwitchCommit(); },
-          hold: function () { IPC.os.missionControl(); },
+          hold: function () { IPC.os.appSwitchCancel(); },
         };
         // case 6 — left to the clock, on purpose. See the note above.
         default: return { title: '', value: '' };

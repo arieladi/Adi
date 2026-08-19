@@ -169,6 +169,7 @@ SOS.IPC = (function () {
     tabClose:   function () { return send('os.tabClose'); },
     missionControl: function () { return send('os.missionControl'); },
     appSwitchCommit: function () { return send('os.appSwitchCommit'); },
+    appSwitchCancel: function () { return send('os.appSwitchCancel'); },
     window: function (layout) { return send('os.window', { layout: layout }); },
     launch: function (app) { return send('os.launch', { app: app }); },
   };

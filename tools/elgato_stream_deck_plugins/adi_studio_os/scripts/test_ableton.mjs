@@ -668,14 +668,24 @@ q.onDial(3, 1);
 ok("compact dial 4 drives BAND 6 Frequency (log)", qSent.logdelta === qIdx(6, "freq"), JSON.stringify(qSent));
 q.setZones(6); q.onDial(3, 1);
 ok("full dial 4 still drives BAND 4", qSent.logdelta === qIdx(4, "freq"), JSON.stringify(qSent));
-q._mode[4] = "gain"; q.onDial(3, 1);
+q._gmode = "gain"; q.onDial(3, 1);
 ok("GAIN is linear, FREQ/Q are log", qSent.delta === qIdx(4, "gain"), JSON.stringify(qSent));
+q._gmode = "freq";
 
-// --- modes are keyed by BAND, not by dial slot ---
+/* V39 — MODE IS GLOBAL. It used to be keyed by band so the layouts could not
+   alias each other's modes; now there is only one, and shape-awareness moved to
+   _modeFor(band), which resolves on READ. */
 q.setZones(4);
-ok("compact dial 4 shows B6's own mode, not the B4 gain left on that slot",
-   q._mode[q._bandFor(3)] === "freq" && q._mode[4] === "gain",
-   `b6=${q._mode[6]} b4=${q._mode[4]}`);
+q._gmode = "gain";
+ok("a band that CAN honour the global mode reports it",
+   q._modeFor(2) === "gain" && q._modeFor(3) === "gain",
+   [2,3].map((bn) => q._modeFor(bn)).join(","));
+/* B1 is a cut in this fixture and exposes no Gain at all, so it reports what it
+   can actually do. That is the whole point of resolving on read rather than
+   storing a mode per band. */
+ok("…and a cut band falls back instead of pretending",
+   q._modeFor(1) === "freq", q._modeFor(1));
+q._gmode = "freq";
 ok("compact dial titles name B1 B2 B3 B6",
    [0,1,2,3].map((s2) => q.dialTitle(s2).split(" ")[0]).join(",") === "B1,B2,B3,B6",
    [0,1,2,3].map((s2) => q.dialTitle(s2)).join(" | "));
@@ -687,22 +697,30 @@ ok("borrowed dials 5-6 send nothing", qSent === null, JSON.stringify(qSent));
 q.setZones(6);
 q.onDialPress(0);
 ok("press on B1 (FREQ only) steps Band 1 Slope", qSent.step === qIdx(1, "slope"), JSON.stringify(qSent));
-qSent = null; q.onDialPress(1);
-ok("press on B2 (three modes) cycles the mode instead, sending nothing",
-   qSent === null && q._mode[2] === "gain", `${JSON.stringify(qSent)} mode=${q._mode[2]}`);
+qSent = null; q._gmode = "freq"; q.onDialPress(1);
+ok("press on B2 (three modes) cycles the GLOBAL mode, sending nothing",
+   qSent === null && q._globalMode() === "gain", `${JSON.stringify(qSent)} mode=${q._globalMode()}`);
+q.onDialPress(1);
+ok("…and again, GAIN -> Q", q._globalMode() === "q", q._globalMode());
+q.onDialPress(1);
+ok("…wrapping Q -> FREQ", q._globalMode() === "freq", q._globalMode());
 q.setZones(4); qSent = null; q.onDialPress(3);
 ok("compact press on dial 4 steps BAND 6's slope", qSent.step === qIdx(6, "slope"), JSON.stringify(qSent));
 ok("the slope pill is marked on cut bands only",
    (SOS.Svg.serialize(q.build(4), 0, 200, 100).match(/◉ SLOPE/g) || []).length === 1 &&
    !SOS.Svg.serialize(q.build(4), 200, 200, 100).includes("◉ SLOPE"));
 
-// --- a mode the Shape no longer allows falls back to FREQ ---
-q._mode[2] = "q";
+/* SHAPE-AWARENESS SURVIVES the move to a global mode: a band that cannot honour
+   the strip's mode reports the nearest one it can, rather than pretending. */
+q._gmode = "q";
 qst.pv[qIdx(2, "shape")] = { value: 2, disp: "Low Cut" };     // B2 becomes a Low Cut
 q.onState(qst);
-ok("a Q mode survives only while the Shape allows it", q._mode[2] === "freq", q._mode[2]);
+ok("a Low Cut band falls back to FREQ while the strip says Q",
+   q._modeFor(2) === "freq" && q._globalMode() === "q", `${q._modeFor(2)} / ${q._globalMode()}`);
 qst.pv[qIdx(2, "shape")] = { value: 0, disp: "Bell" };
 q.onState(qst);
+ok("…and honours Q again once the Shape allows it", q._modeFor(2) === "q", q._modeFor(2));
+q._gmode = "freq";
 
 // --- touch, through the module, with the y axis that L10 restored ---
 qst.device.name = "FabFilter Pro-Q 3";
@@ -711,12 +729,14 @@ A._pick();
 const live = A._active();
 ok("the module resolved Pro-Q 3", live && live.id === "proq3", live && live.id);
 States.setState(3);                                    // full board, 6 dials
-live._mode[2] = "freq";
-States.resolveDial(2).touch(150, 12, false);           // x into the Q tab, y in the tab row
-ok("a tap on the Q tab switches band 2 to Q", live._mode[2] === "q", live._mode[2]);
-live._mode[2] = "freq";
-States.resolveDial(2).touch(150, 0, false);            // the y the port used to send
-ok("y=0 hits nothing — which is exactly what L10 fixed", live._mode[2] === "freq", live._mode[2]);
+/* V39 — THE MODE TAB ROW IS GONE, so the header is inert and the three switches
+   own everything below it. Asserted as an absence: a touch where the tabs used to
+   be must change nothing at all. */
+live._gmode = "freq";
+States.resolveDial(2).touch(150, 12, false);           // where the Q tab used to be
+ok("a tap in the header no longer switches mode", live._globalMode() === "freq", live._globalMode());
+States.resolveDial(2).touch(150, 0, false);
+ok("y=0 still hits nothing — L10", live._globalMode() === "freq", live._globalMode());
 let stepped = null;
 const realStep = A.bridge.cmd.stepIndex;
 A.bridge.cmd.stepIndex = (i, dir) => { stepped = { i, dir }; };
