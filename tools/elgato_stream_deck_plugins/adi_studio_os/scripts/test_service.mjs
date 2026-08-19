@@ -8,6 +8,7 @@
 // running the test. Only their rejection paths are checked.
 import { spawn } from "node:child_process";
 import http from "node:http";
+import fs from "node:fs";
 
 const PORT = 9199; // not 9011, so a running service is never disturbed
 const URL_WS = `ws://127.0.0.1:${PORT}`;
@@ -151,6 +152,72 @@ try {
   ok("the shape a real readout has would be accepted",
      ACCEPT.every((t) => /^-?\d{1,15}(\.\d{1,6})?$/.test(t)), ACCEPT.join(","));
   ws2.close();
+
+  /* =========================================================================
+     [7] V40 — EVERY KEY IS A PHYSICAL KEY CODE, NEVER A CHARACTER.
+
+     THE BUG THIS PINS. Adi's Full Screen key created Finder aliases. `hotkey()`
+     emitted `keystroke "f" using {control down, command down}`, and `keystroke`
+     resolves the CHARACTER through the ACTIVE keyboard layout. This machine runs
+     `com.apple.keylayout.Hebrew`, which has no `f`. Measured by typing into a
+     TextEdit document and reading it back:
+
+       keystroke "f"  ->  ש  (U+05E9), the character on PHYSICAL key code 0 = A
+       key code 3     ->  כ  (U+05DB), the character on physical key F. Correct.
+
+     So Ctrl+Cmd+F left the service as Ctrl+Cmd+A, which in Finder is Make Alias.
+     Confirmed against real windows: `keystroke "w" using {command down}` did NOT
+     close a TextEdit window and `key code 13 using {command down}` did.
+
+     Tested through the PURE resolver rather than by pressing anything, because
+     every other path here synthesises real input on the machine running the test.
+     ========================================================================= */
+  console.log("\n[7] V40: hotkeys resolve to physical key codes, not characters");
+  {
+    const OS = await import("../service/os.js");
+    // kVK_ANSI_* — the values are the whole point, so they are spelled out.
+    const EXPECT = { f: 3, a: 0, t: 17, w: 13, d: 2, s: 1, c: 8, v: 9, z: 6,
+                     q: 12, "0": 29, "1": 18, "5": 23, "9": 25 };
+    const wrong = Object.entries(EXPECT)
+      .filter(([ch, code]) => OS.macKeyCode(ch) !== code)
+      .map(([ch, code]) => `${ch} want ${code} got ${OS.macKeyCode(ch)}`);
+    ok("every letter and digit resolves to its ANSI key code", wrong.length === 0,
+       wrong.join("; "));
+    ok("…and f is 3, which is the whole alias bug in one number",
+       OS.macKeyCode("f") === 3, String(OS.macKeyCode("f")));
+    ok("f does NOT resolve to 0 — that is the key Ctrl+Cmd+A lives on",
+       OS.macKeyCode("f") !== OS.macKeyCode("a"));
+
+    /* MAC_SPECIAL is consulted FIRST, so a named key never collapses into the
+       letter it starts with: "delete" must stay Delete (51) and not become d (2). */
+    ok("named keys still win over single letters",
+       OS.macKeyCode("delete") === 51 && OS.macKeyCode("down") === 125
+       && OS.macKeyCode("escape") === 53 && OS.macKeyCode("tab") === 48,
+       [OS.macKeyCode("delete"), OS.macKeyCode("down"), OS.macKeyCode("escape")].join(","));
+    ok("the OS-nav dial keys are unchanged",
+       OS.macKeyCode("pagedown") === 121 && OS.macKeyCode("home") === 115,
+       [OS.macKeyCode("pagedown"), OS.macKeyCode("home")].join(","));
+    ok("something genuinely unmappable still reports null",
+       OS.macKeyCode("nosuchkey") === null && OS.macKeyCode("") === null);
+
+    /* The source-level guarantee: no macOS path may reach `keystroke` with a
+       letter again. `type()` and `hotkey()` are the only two that ever could, and
+       both now build key codes. The one remaining `keystroke` is hotkey()'s
+       fallback for a target that is in NO table — which by the assertion above
+       cannot be a letter or a digit. */
+    const src = fs.readFileSync(new URL("../service/os.js", import.meta.url), "utf8");
+    const strokes = src.match(/keystroke "\$\{?[a-z]/gi) || [];
+    ok("no macOS path interpolates a letter into `keystroke`", strokes.length <= 1,
+       strokes.join(" | "));
+    ok("full screen writes the AXFullScreen attribute, not a keystroke",
+       /AXFullScreen/.test(src) && /axFullScreenToggle\(\)/.test(src));
+    /* V40 — and the Quads key: `menu item "Quarters"` matched the DISABLED group
+       heading at index 7 instead of the Arrange command at index 22, so it could
+       never have fired. Matching the first ENABLED item skips headings by
+       construction. */
+    ok("window menu items are matched on ENABLED, so a group heading is skipped",
+       /whose name is "\$\{item\}" and enabled is true/.test(src));
+  }
 
   console.log(`\n${pass} passed, ${fail} failed`);
   done(fail ? 1 : 0);

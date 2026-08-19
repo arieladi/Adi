@@ -52,7 +52,23 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**908 tests green** (897 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 22 is deployed and running on the hardware**. Last commit: "app switcher never auto-selects, nine native window states, Pro-Q 3 UI rebuild".
+**937 tests green** (926 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 23 is deployed and running on the hardware** (`service v2.3.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`, idle 0.2 %).
+
+### Batch 23 (V40–V41) — the alias bug, and the native window icons
+
+The Full Screen key was creating Finder aliases because `keystroke "f"` resolves
+through the **Hebrew** keyboard layout and landed on key code 0 — see the field note
+below; it had also been silently killing dial 4's tab keys. Full Screen is now an
+**`AXFullScreen` attribute write**, so it cannot type and therefore cannot touch a
+file. The **Quads** key could never have fired (`menu item "Quarters"` matched the
+disabled group heading — the name appears twice in that menu) and now matches the
+first ENABLED item. All nine window keys wear **exact SVG replicas of the macOS
+Move & Resize popover icons** from the new `js/core/icons.js`, caption-free and
+filling the cap, with a bare green traffic light for Full Screen.
+
+**The Root Hub GRID REDESIGN is still unbuilt and waiting on Adi's ruling** — his
+four bullets cannot all hold at once under one reading of the marked-up photo. See
+the bottom of DECISIONS Batch 23.
 
 | Piece | State |
 |---|---|
@@ -103,10 +119,18 @@ Real app icons via `js/core/art.js` (a NAME registry — never put base64 on a
 binding, it lands in the per-frame hash); the calculator now prints its pending
 operation, which is the feedback whose absence made `+` feel broken.
 
-### BLOCKED ON ADI — one thing, and it is the top of the list
+### Pro-Q 3 — ANSWERED by Adi (Batch 23), not yet implemented
 
-**Pro-Q 3 is functionally dead and no more code should be written for it until this
-is answered.** Established by reading, not guessing: the controller binds
+**The Configure theory was correct.** Adi has built an Ableton template with **six
+bands fully Configured and exposed**, and has supplied the parameter names. He asked
+that the actual control be implemented **later** — do not write Pro-Q 3 code until he
+says so. The diagnostic below is no longer the blocker; the remaining work is
+matching `ProQ3Controller.ROLES` against the six exposed bands he provided.
+
+The analysis that got us here is kept below because it applies to the other nine
+controllers, which all resolve parameters by name the same way.
+
+**Pro-Q 3 was functionally dead** for this reason: the controller binds
 parameters BY NAME from `all_params` (`"band 1 frequency"`, `"band 1 shape"`, …),
 it requests them itself in `onState`, and the Python side returns every name Live
 reports. So the names Live sends do not match.
@@ -170,6 +194,15 @@ in `ProQ3Controller.ROLES` need editing (`OVERRIDES` exists for pinning them).
 - **Key SVG ids must be derived from content, not a counter.** `SD.image()` dedupes by data URI; a per-call id makes every key look different every frame and turns a static surface into 36 writes at 15 fps.
 - **THE SERVICE IS A SEPARATE PROCESS. Restart it on EVERY deploy.** rsyncing new code does nothing to the one already running, and an unknown verb from a stale service fails silently (fire-and-forget has no reply). The plugin log now prints `service vX.Y.Z` on connect — check it matches.
 - **`osacompile` proves syntax, NOT behaviour.** Two AppleScript bugs compiled cleanly and failed only when run: `hidden` is reserved inside `dock preferences`, and `front window` raises -1719 when the frontmost process has no window (the Stream Deck app itself). Run the script, do not just compile it.
+- **`keystroke "<letter>"` IS LAYOUT-DEPENDENT. Send a `key code`.** This machine's
+  layout is **Hebrew** (`com.apple.keylayout.Hebrew`), which has no `f`. Measured:
+  `keystroke "f"` typed **ש** — the character on physical key code **0**, i.e. `A` —
+  so `ctrl+cmd+f` arrived as **Ctrl+Cmd+A**, which in Finder is **Make Alias**. That
+  is the whole "Full Screen duplicates files" bug. It also silently killed dial 4's
+  New/Close Tab (`cmd+t` / `cmd+w`) from the day they shipped, and it is not even
+  deterministic — the same call typed nothing at all on a later run. `MAC_ANSI` in
+  `service/os.js` maps every letter and digit to its `kVK_ANSI_*` code and a test
+  fails the build if any macOS path interpolates a letter into `keystroke`.
 - **NOTHING may call `setTimeout`/`setInterval`. Use `SOS.Timing`.** A page timer in this hidden WebView is clamped: measured, a 500 ms timeout takes ~1190 ms, and with the app window closed it degrades to roughly once a MINUTE. That single fact was behind the frozen clock, the calculator `+`, the dial-6 long press, the minute-long Ableton strip, ringing MIDI notes and slow reconnects. `js/core/timing.js` serves delays from a Worker; a test fails the build if any other file schedules anything.
 - **`setFeedback` has no dedupe of its own — use `SD.feedback()`.** `SD.image()` always deduped; setFeedback did not, so six dial zones were re-sent in full on every repaint. Under the 15 fps Ableton pump that was ~90 multi-KB messages a second and it is what overloaded the machine. Anything new that paints a zone goes through `SD.feedback()`.
 - **`scripts/preview.mjs` must mirror `States.paintDial` exactly** — it has now silently drifted TWICE, each time leaving a sheet that looked right and was not evidence.

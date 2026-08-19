@@ -87,18 +87,32 @@ SOS.Modules.Root = (function () {
      do not exist in it, so the labels carry the meaning and the glyphs merely
      hint at direction: ◀ ▶ ▲ ▼ for the halves, ⊞ for anything that fills or
      tiles. A test pins this. */
+  /* V40 — THE NATIVE PICTOGRAMS REPLACE THE GLYPHS. Every one of these nine keys
+     wore a compromise: ◀ ▶ ▲ ▼ for the halves, and ⊞ FOUR TIMES for Fill and all
+     three Arrange sets, because the proven glyph set has no pictogram that says
+     "left and quarters" — so four keys were telling you the same thing and the
+     caption was doing all of the work.
+
+     `icon` names a drawn shape in js/core/icons.js, traced from the macOS
+     Move & Resize popover itself. A drawn shape has no font behind it, so the tofu
+     rule cannot apply to it, and the three Arrange sets are finally distinguishable
+     at a glance.
+
+     NO CAPTION, per V26 and Adi's instruction that the icon must fill the cap. The
+     label stays here as the key's identity for logs and tests, exactly as `hub.label`
+     does for the app tiles — it is simply not painted. */
   var SLOTS = {
     // row 1 — Move & Resize: halves
-    '1,1': { label: 'Left',   glyph: '◀', window: 'left',   color: R.PALETTE.nav },
-    '2,1': { label: 'Right',  glyph: '▶', window: 'right',  color: R.PALETTE.nav },
-    '3,1': { label: 'Top',    glyph: '▲', window: 'top',    color: R.PALETTE.nav },
-    '4,1': { label: 'Bottom', glyph: '▼', window: 'bottom', color: R.PALETTE.nav },
+    '1,1': { label: 'Left',   icon: 'winLeft',   window: 'left',   color: R.PALETTE.nav },
+    '2,1': { label: 'Right',  icon: 'winRight',  window: 'right',  color: R.PALETTE.nav },
+    '3,1': { label: 'Top',    icon: 'winTop',    window: 'top',    color: R.PALETTE.nav },
+    '4,1': { label: 'Bottom', icon: 'winBottom', window: 'bottom', color: R.PALETTE.nav },
     // row 2 — Fill & Arrange, plus the green traffic light
-    '0,2': { label: 'Fill',   glyph: '⊞', window: 'fill',         color: R.PALETTE.nav },
-    '1,2': { label: 'L | R',  glyph: '⊞', window: 'leftright',    color: R.PALETTE.midi },
-    '2,2': { label: 'L | Qt', glyph: '⊞', window: 'leftquarters', color: R.PALETTE.midi },
-    '3,2': { label: 'Quads',  glyph: '⊞', window: 'quarters',     color: R.PALETTE.midi },
-    '4,2': { label: 'Full',   glyph: '⊞', window: 'fullscreen',   color: R.PALETTE.viz },
+    '0,2': { label: 'Fill',   icon: 'winFill',          window: 'fill',         color: R.PALETTE.nav },
+    '1,2': { label: 'L | R',  icon: 'winLeftRight',     window: 'leftright',    color: R.PALETTE.midi },
+    '2,2': { label: 'L | Qt', icon: 'winLeftQuarters',  window: 'leftquarters', color: R.PALETTE.midi },
+    '3,2': { label: 'Quads',  icon: 'winQuarters',      window: 'quarters',     color: R.PALETTE.midi },
+    '4,2': { label: 'Full',   icon: 'winFullScreen',    window: 'fullscreen',   color: R.PALETTE.viz },
     '0,1': { label: 'Start',  glyph: '⊞',  action: 'start' },
     /* Windows-only concepts and the app tiles move to row 3, out of the window
        block's way. They are hidden on macOS anyway (D14), so on this machine row
@@ -174,7 +188,9 @@ SOS.Modules.Root = (function () {
     return {
       // No sub on hub tiles: at 72px the caption is unreadable and the glyph
       // plus a large name already says everything.
-      label: slot.label, glyph: slot.glyph, size: 'lg',
+      // V40 — a slot WITH an icon shows the icon alone (V26's rule for artwork).
+      label: slot.icon ? undefined : slot.label,
+      glyph: slot.glyph, icon: slot.icon, size: 'lg',
       color: slot.color || R.PALETTE.nav, kind: 'tap',
       dim: !IPC.isOnline(),
       tap: slot.run || function () {

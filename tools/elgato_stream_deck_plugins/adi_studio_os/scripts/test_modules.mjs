@@ -18,7 +18,7 @@ const LEGACY = path.resolve(NEW, "../../");
 global.window = global;
 global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
-const CORE = ["js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/render.js",
+const CORE = ["js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/render.js",
               "js/core/ipc.js", "js/core/layout.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js"];
 const MODS = ["js/modules/root.js", "js/modules/console.js",
               "js/modules/rekordbox.js", "js/modules/midictl.js", "js/modules/index.js"];
@@ -490,12 +490,17 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
     const halves = [1, 2, 3, 4].map((c) => L9.keys(c, 1));
     const arrange = [0, 1, 2, 3, 4].map((c) => L9.keys(c, 2));
     ok("row 1 carries the four halves", halves.every(Boolean),
-       halves.map((k) => k && k.label).join(","));
-    ok("…labelled Left / Right / Top / Bottom",
-       halves.map((k) => k.label).join(",") === "Left,Right,Top,Bottom",
-       halves.map((k) => k.label).join(","));
+       halves.map((k) => k && k.icon).join(","));
+    /* V40 — the IDENTITY still says Left / Right / Top / Bottom, but it is no
+       longer painted: the key is the native pictogram alone, filling the cap. The
+       name lives on the slot table for logs and for this test, exactly as
+       `hub.label` does for the app tiles. */
+    const slots = M.Root.slots();
+    ok("…identified as Left / Right / Top / Bottom on the slot table",
+       [1, 2, 3, 4].map((c) => slots[c + ",1"].label).join(",") === "Left,Right,Top,Bottom",
+       [1, 2, 3, 4].map((c) => slots[c + ",1"].label).join(","));
     ok("row 2 carries Fill, three Arrange sets and Full Screen", arrange.every(Boolean),
-       arrange.map((k) => k && k.label).join(","));
+       arrange.map((k) => k && k.icon).join(","));
 
     wcalls.length = 0;
     halves.concat(arrange).forEach((k) => k.tap());
@@ -504,13 +509,56 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
        wcalls.join(","));
     ok("…that is exactly NINE keys", wcalls.length === 9, String(wcalls.length));
 
-    // The tofu rule again — none of the obvious pictograms for these exist.
-    const used = new Set();
-    halves.concat(arrange).forEach((k) => {
-      for (const ch of String(k.glyph || "")) if (ch.codePointAt(0) > 127) used.add(ch);
-    });
-    ok("the window keys use only proven glyphs",
-       [...used].every((ch) => "◀▶▲▼⊞".includes(ch)), [...used].join(""));
+    /* V40 — THE GLYPHS ARE GONE, and this is the assertion that matters. Four of
+       these nine keys used to paint ⊞ — Fill and all three Arrange sets — so the
+       picture told you nothing and the caption carried the whole meaning. The tofu
+       rule is what forced that: the proven set has no pictogram for "left and
+       quarters". A DRAWN shape has no font behind it, so it cannot be tofu. */
+    const nine = halves.concat(arrange);
+    ok("no window key paints a glyph any more",
+       nine.every((k) => !k.glyph), nine.map((k) => k.glyph || "-").join(""));
+    ok("…each names a vector icon instead",
+       nine.every((k) => typeof k.icon === "string" && k.icon),
+       nine.map((k) => k.icon).join(","));
+    ok("…and all nine icons are DIFFERENT pictures",
+       new Set(nine.map((k) => k.icon)).size === 9,
+       nine.map((k) => k.icon).join(","));
+    ok("every named icon exists in the registry",
+       nine.every((k) => SOS.Icons[k.icon]),
+       nine.filter((k) => !SOS.Icons[k.icon]).map((k) => k.icon).join(",") || "all present");
+    ok("…and none of them is painted with a caption",
+       nine.every((k) => k.label == null), nine.map((k) => k.label).join(","));
+
+    /* The icon registry is VECTOR. The whole reason it is not more entries in
+       art.js is that these are shapes we draw, so a raster payload here would mean
+       someone had quietly gone back to bytes. */
+    for (const [name, ic] of Object.entries(SOS.Icons)) {
+      ok(`${name} is vector markup with its own box`,
+         typeof ic.svg === "string" && !/data:image/.test(ic.svg)
+           && ic.w > 0 && ic.h > 0, JSON.stringify({ w: ic.w, h: ic.h }));
+    }
+
+    /* THE keySpec() WHITELIST TRAP, pinned. It is hand-written and has painted a
+       silently wrong key twice (size/subStrong, then segDim). A forgotten `icon`
+       would leave nine blank caps, so the check is on the RENDERED SVG rather than
+       on the binding — that is the only place the omission would show. */
+    {
+      const painted = nine.map((k) => SOS.Render.key(States.keySpec(k)));
+      ok("keySpec forwards `icon`, so the rendered key really contains the shape",
+         painted.every((svg) => /<g transform="translate/.test(svg)),
+         `${painted.filter((s) => !/<g transform="translate/.test(s)).length} blank`);
+      ok("…and the nine rendered keys are nine DIFFERENT images",
+         new Set(painted).size === 9, String(new Set(painted).size));
+      /* SD.image() dedupes by data URI, so two keys sharing a hash id would leave
+         the second wearing the first one's picture. hashId must include `icon`. */
+      const ids = painted.map((s) => (/id="(k[0-9a-z]+)f"/.exec(s) || [])[1]);
+      ok("…carrying nine distinct content-derived ids (the dedupe trap)",
+         new Set(ids).size === 9, ids.join(","));
+      ok("the full-screen key is the green traffic light, not a grey pictogram",
+         /#3FDE58/.test(painted[8]) && /#1FB534/.test(painted[8]));
+      ok("…and its gradient id is namespaced to the key, not a fixed string",
+         !/__ID__/.test(painted[8]) && /id="k[0-9a-z]+tl"/.test(painted[8]));
+    }
   }
 
   // The captions must fit the zone, or the one that says what a push does is the
