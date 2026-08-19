@@ -52,7 +52,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**908 tests green** (897 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 13 is deployed and running on the hardware**. Last commit: "app switcher never auto-selects, nine native window states, Pro-Q 3 UI rebuild".
+**908 tests green** (897 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 22 is deployed and running on the hardware**. Last commit: "app switcher never auto-selects, nine native window states, Pro-Q 3 UI rebuild".
 
 | Piece | State |
 |---|---|
@@ -103,25 +103,46 @@ Real app icons via `js/core/art.js` (a NAME registry — never put base64 on a
 binding, it lands in the per-frame hash); the calculator now prints its pending
 operation, which is the feedback whose absence made `+` feel broken.
 
-**Awaiting hardware feedback on V18–V23.** Ask what still looks wrong before starting anything new.
+### BLOCKED ON ADI — one thing, and it is the top of the list
 
-### Open, waiting on Adi's ruling (raised, not yet designed)
+**Pro-Q 3 is functionally dead and no more code should be written for it until this
+is answered.** Established by reading, not guessing: the controller binds
+parameters BY NAME from `all_params` (`"band 1 frequency"`, `"band 1 shape"`, …),
+it requests them itself in `onState`, and the Python side returns every name Live
+reports. So the names Live sends do not match.
 
-1. **MIDI Control belongs inside Ableton**, not on the Root Hub — needs a home in
-   the Ableton hub's already-full 9-col row 0.
-2. **macOS window management on the Root Hub** — note D14: mapping Windows
-   concepts onto macOS guesses was explicitly REJECTED once already. macOS 26 has
-   real tiling shortcuts, so this can be actual key sends rather than a guess.
-3. **A clock on the touch strip, right-hand side** — conflicts head-on with "the
-   screen and dials are strictly for the VSTs" (P5) and with the 6-zone VST
-   layouts. Needs a ruling on which zone and what yields to what.
-4. **Whether `+` / `−` should stop being long presses** — the cure needs a key to
-   give up, so it is a footprint decision (P5).
+The likely cause: **Live only exposes a VST's parameters that have been
+"Configured"** in Live's own Configure mode, and a freshly inserted Pro-Q 3 (which
+is exactly what the V30 key creates) has no Configure mapping at all.
+
+V39 added the diagnostic that settles it in one press — focus a Pro-Q 3 in Live,
+then:
+
+```
+grep "exposes" $(ls -t ~/Library/Logs/ElgatoStreamDeck/com.adiariel.studioos[0-9].log | head -1)
+```
+
+It logs the device name, the parameter COUNT and the first ten NAMES. A count of
+~1 confirms the Configure theory; real-but-different names mean the match patterns
+in `ProQ3Controller.ROLES` need editing (`OVERRIDES` exists for pinning them).
+
+### Also awaiting a ruling
+
+1. **The two EQ8 inferences are mine, not Adi's words** (V37): dial 1 = Output,
+   and pagination on dial 1's press. Consequence: **COMPACT dropped from four
+   bands (B1/B2/B3/B6) to three**, because dial 1 is spent on Output there too.
+2. **Whether `+` / `−` should stop being long presses** in the calculator — the
+   cure needs a key to give up, so it is a footprint decision (P5).
 
 ### Immediate next tasks, in order
 
-1. **Confirm the Ableton bridge against real Live.** The remote script is now installed at `~/Music/Ableton/User Library/Remote Scripts/AdiVST` (byte-identical, unmodified) but **Adi still has to select AdiVST as a Control Surface** in Live → Settings → Link/Tempo/MIDI. Until then port 9006 has no server and every controller resolves to Generic. Nothing Ableton-side has ever seen real Live.
-2. **Compact layouts for Rekordbox** (ruled L2: both decks, 4 hot cues each — now cues **A–D**), **MIDI Control**, **Visualizers** — none has one, so docking a window over them still hits the engine's "No room" path. **I asked to be prompted before these are started.**
+1. **Answer the Pro-Q 3 question above.** Nine other controllers resolve
+   parameters by name the same way, so whatever is wrong here is wrong for all of
+   them — it is the single highest-value unblock left.
+2. **Compact layouts for Rekordbox** (ruled L2: both decks, 4 hot cues each — now
+   cues **A–D**), **MIDI Control**, **Visualizers** — none has one, so docking a
+   window over them still hits the engine's "No room" path. **I asked to be
+   prompted before these are started.**
 
 ## How the Ableton controllers work
 
@@ -156,7 +177,8 @@ operation, which is the feedback whose absence made `+` feel broken.
 
 ## Known open items
 
-- **Nothing Ableton-side has been confirmed against real Live yet** — the bridge has only ever seen synthetic state. The 14 Compact strips are the least-proven code in the project.
+- **The bridge IS live now** (AdiVST is selected as a Control Surface) and EQ8 works end to end: its dials move real bands. **Pro-Q 3 does not** — see the blocked item above. The other twelve controllers have still only ever seen synthetic state, and every one of them resolves parameters by name exactly as Pro-Q 3 does.
+- **The 14 Compact strips remain the least-proven code in the project.** State 2 is their only consumer (V14).
 - **The 5 un-ported Visualizer views** — bands, rme, gonio, corr, bal. Each paints a labelled "not ported" tile rather than a blank key.
 - **Windows pass** — installers written but never run there. Needs my machine: the active-profile pointer (the macOS route is a preferences plist key with no known Windows equivalent) and loopMIDI ports named `Adi RekordBox Controller` / `Adi Studio OS MIDI`.
 - **BlackHole 2ch is installed but needs a reboot** before the visualizers see audio.
