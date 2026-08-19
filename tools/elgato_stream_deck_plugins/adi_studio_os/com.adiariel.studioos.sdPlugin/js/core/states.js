@@ -267,7 +267,9 @@ SOS.States = (function () {
      painting over it. A clock is never worth covering a control for. */
   function lastZoneFree() {
     var d = resolveDial(S.DIALS);
-    return !d || (!d.svg && !d.title && !d.value && !d.sub && d.indicator == null);
+    // V42 — `icon` counts as content. A zone carrying only an icon is in use, and
+    // without this the clock would paint straight over it.
+    return !d || (!d.svg && !d.title && !d.value && !d.sub && !d.icon && d.indicator == null);
   }
   function clockVisible() { return state !== DELAY && lastZoneFree(); }
 
@@ -275,8 +277,11 @@ SOS.States = (function () {
     if (dial === S.DIALS && clockVisible()) return R.dataUri(SOS.Clock.zone({}));
     var d = resolveDial(dial);
     if (d && d.svg) return R.dataUri(d.svg);
-    return d ? R.zoneUri({ title: d.title, value: d.value, sub: d.sub,
-                           indicator: d.indicator, color: d.color })
+    // V42 — `icon` is forwarded here too. This is the DIAL half of the keySpec()
+    // whitelist trap and it fails exactly the same way: a field that reaches the
+    // binding and not the ink paints a silently empty zone.
+    return d ? R.zoneUri({ title: d.title, value: d.value, sub: d.sub, icon: d.icon,
+                           indicator: d.indicator, color: d.color, dim: d.dim })
              : R.zoneUri({ title: '', value: '' });
   }
 

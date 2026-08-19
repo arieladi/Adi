@@ -104,8 +104,8 @@ function grid(label, stateIndex, screenId) {
     const z = States.resolveDial(d) || {};
     const svg = (d === S.DIALS && States.clockVisible())
       ? SOS.Clock.zone({})
-      : (z.svg || R.zone({ title: z.title, value: z.value, sub: z.sub,
-                           indicator: z.indicator, color: z.color }));
+      : (z.svg || R.zone({ title: z.title, value: z.value, sub: z.sub, icon: z.icon,
+                           indicator: z.indicator, color: z.color, dim: z.dim }));
     zones += `<div class="z">${svg}</div>`;
   }
   return `<section><h2>${label}</h2><div class="grid">${cells}</div><div class="strip">${zones}</div></section>`;
