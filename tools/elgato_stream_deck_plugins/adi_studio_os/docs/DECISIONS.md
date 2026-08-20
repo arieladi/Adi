@@ -2424,3 +2424,141 @@ rule on (P5)** — they are two-press-shorter and were there first.
   is deliberately not used inside the tree, so the folder reads uniformly.
 * **INDEQ, dBComp, Vital** are installed and INDEQ/dBComp already have controllers,
   but they were not on his list, so no keys were invented for them.
+
+---
+
+## Batch 26 — the Great Flattening, and Chrome
+
+**FROZEN at Adi's instruction, and untouched here: EQ8, Pro-Q 3 data mapping, the
+Calculator.**
+
+### V46 — the VST tree is scrapped; the Ableton hub IS the launcher
+
+**RULING (Adi's) — "The Stream Deck XL has 32 keys, which is plenty of room. We
+want to flatten the menu and put the plugin shortcuts directly on the main Ableton
+hub, categorized by columns for fast muscle memory."** V44's `Plugins → category →
+loaders` tree is gone, one batch after it shipped. `plugins.js` survives as the
+CATALOGUE — the part worth keeping was the single table, not the navigation.
+
+```
+        cols 0-1    cols 2-3      cols 4-5   cols 6-7      col 8
+row 0   Back        Glue          Serum      SPAN          MIDI
+row 1   Pro-Q 3◆    Massive       —          Scope         status
+row 2   —           Soothe        —          —             —
+row 3   —           —             —          —             NEXT
+        RED  EQ     YELLOW  Dyn   GREEN  Syn CYAN  Meters  utility
+```
+(EQ8 / INDEQ fill the rest of the red band, Comp / Spectre / dBComp the yellow,
+Vital the green, bx_meter the cyan. ◆ = real extracted logo.)
+
+### THE HARDWARE DISAGREED WITH THE BRIEF, and this is the resolution
+
+Adi wrote "32 keys", "8 columns wide", and numbered the functional keys **col 7**.
+The **+ XL is 36 keys and 9 columns** (verified, CONTINUE.md). His screenshot cuts
+off the ninth column — **which is exactly why he drew MIDI and NEXT in the margin to
+the RIGHT of his cyan Meters box rather than inside it.**
+
+Read as "the rightmost column" every part of the brief agrees at once: "Top-Right"
+and "Bottom-Right" are the real right edge (col 8), cols 6-7 stay wholly Meters as
+the cyan box shows, and four category bands plus one utility column uses all 36 keys
+instead of stranding four. Taking "col 7" literally would have made col 7 both a
+Meters cell and the MIDI/NEXT cell, and left an empty column at the edge.
+
+### V46 — the group frames, and why they were the hard part
+
+**RULING — "draw visual borders, subtle background tints, or grouped frames behind
+these specific column groups."**
+
+**THERE IS NO CANVAS BETWEEN KEYS.** Each key is its own 144x144 image with a real
+bezel gap either side, so a box around eight keys cannot be one drawn rectangle — it
+has to be assembled from eight keys each painting the piece that falls inside their
+own square. A binding therefore declares which of its sides are the GROUP's outer
+boundary (`frame: {color, t, r, b, l}`) and `render.js` gives it a colour wash over
+the whole canvas — visible in the 6 px margin, which is what ties the band together
+across the gaps — plus a hard bar on each outer side.
+
+Three things this forced, all found by rendering it:
+
+* **The bars are emitted AFTER the face**, or the raised face covers them and the
+  whole feature is invisible.
+* **`frame` is part of `hashId()`.** Two loaders can differ only by which edge of
+  the box they sit on, and `SD.image()` dedupes by URI — without it the second key
+  wears the first one's border.
+* **ARTWORK GIVES BACK 8 px INSIDE A FRAME.** Unlabelled art fills the inner face
+  (V26); on the sheet the FabFilter and Vital tiles were edge-to-edge and their
+  red/green bands all but vanished. Seen, then fixed.
+
+**EVERY CELL OF A BAND IS RETURNED, EMPTY OR NOT** — a blank that still carries the
+frame is what makes the band read as a box four rows tall. Returning null for the
+empties would stop the colour halfway down.
+
+### PRESETS IS GONE ENTIRELY
+
+"Completely remove the Presets button and its folder. I never requested it." Key,
+folder, the `mode`/`setMode` flag and the `_setMode` export are all deleted.
+`Bridge.cmd.listPresets/loadPreset/newPreset` are left alone — those are protocol
+against the verified remote script, not UI.
+
+### Icons — only real ones, and an honest list of the gaps
+
+**RULING — "if you need an icon and it exists locally or you can extract it, just
+use it. Do not invent fake SVGs."** Every plug-in bundle on the machine was searched.
+
+| extracted | Chrome (`app.icns`, path supplied), Vital (`Icon.icns`), FabFilter (already shipped) |
+|---|---|
+| **no product mark exists** | Serum2 (no images in the bundle), SPAN (empty Resources), **s(M)exoscope (the .vst3 is a bare 5 MB FILE, not a bundle)**, bx_meter / INDEQ / dBComp (UI parts only — knobs, plates, needles), EQ Eight / Compressor / Glue Compressor (**Live DRAWS its device graphics; there are no per-device files**) |
+
+Those keys wear text plus a vendor caption. Extracting a background plate or a knob
+and calling it a logo would be the same fake icon, just sourced locally. Adi asked
+to be asked for the rest.
+
+### V47 — Chrome could not exit full screen, and the reason was invisible
+
+**Adi: "it CANNOT exit full screen in Google Chrome (pressing it again does
+nothing)." MEASURED: the AX write is accepted and does NOTHING, in BOTH
+directions.** Writing `true` to a windowed Chrome left it reading `false` and raised
+no error, so osascript exited 0 and V40's `(await ax()) || hotkey(...)` never reached
+its fallback. The failure was invisible to the only thing being checked.
+
+**RULING — the Chromium family is named and goes straight to the keystroke** (Adi's
+own suggestion), and the AX path is now VERIFIED rather than assumed: the script
+re-reads the attribute and reports `unchanged`, and only then does the keystroke run.
+Verified through the real `windowLayout("fullscreen")`: Chrome windowed →
+FULLSCREEN → windowed (read off Chrome's own View menu), TextEdit false → true →
+false with no keystroke at all.
+
+**TWO MORE APPLESCRIPT BUGS, both found only by RUNNING it — the standing lesson:**
+
+* **`set w to window 1` and then reusing `w`** raised `Can't get window "re.txt" of
+  application process "TextEdit" (-1728)`. Assigning a System Events UI-element
+  specifier collapses it to a by-name reference which then fails to resolve. **The
+  AX path was erroring on EVERY app and only the keystroke fallback was doing the
+  work — so V40's whole "never type, so it can never touch a file" property was
+  silently gone.** The geometry path never had it because it addresses `window 1`
+  inline, which is now the fix.
+* **A fixed `delay 0.25` was too short.** TextEdit ENTERING full screen still read
+  the old value, so it reported `unchanged` and the caller ran the keystroke as
+  well — one mistimed animation away from toggling twice and landing back where it
+  started. It now POLLS for the change, up to ~1.8 s, exiting the moment it flips.
+
+### V47 — the touch strip
+
+* **The Tabs zone** wears an SVG replica of the image Adi supplied: two overlapping
+  cards, the back one with a white body and the front one solid with a white title
+  bar and a plus. The two cards are deliberately different, because that asymmetry
+  is what reads as "an inactive tab behind the active one" and it is in his source.
+* **The scroll arrows are the clock's blue.** "Exactly the same" is the requirement,
+  so `PALETTE.clock` is now the single source and `clock.js` resolves it at call
+  time; a test asserts the two agree so they cannot drift into two similar blues.
+
+### Flagged for Adi, not decided
+
+1. **The EQ8 key lost its create-or-focus behaviour.** It used to call `eq8Key()`,
+   which selected an existing EQ Eight if the track had one; as an EQ-band loader it
+   now always inserts. That follows "the shortcut buttons must STRICTLY send the Live
+   API command to instantiate that device", and EQ8 is frozen, so it was not
+   redesigned — but it is a real behaviour change and reversible in one line.
+2. **Pulsar Massive and Spectre are under DYNAMICS because he put them there.** I
+   flagged in Batch 25 that Pulsar Massive is a Manley Massive Passive emulation — a
+   passive program EQ, which the registry's own patterns confirm — and he has since
+   assigned it to Dynamics explicitly. Recorded, not re-argued.

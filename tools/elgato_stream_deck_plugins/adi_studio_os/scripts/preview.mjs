@@ -108,6 +108,7 @@ function grid(label, stateIndex, screenId) {
     const svg = (d === S.DIALS && States.clockVisible())
       ? SOS.Clock.zone({})
       : (z.svg || R.zone({ title: z.title, value: z.value, sub: z.sub, icon: z.icon,
+                           valueColor: z.valueColor,
                            indicator: z.indicator, color: z.color, dim: z.dim }));
     zones += `<div class="z">${svg}</div>`;
   }
@@ -143,9 +144,7 @@ ${pick("midi", grid("MIDI Control &middot; NAV OFF &mdash; drums, scale touch, b
 ${pick("ableton", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; EQ Eight &mdash; FULL: the strip spans all six dials", 3, "ableton.hub")))}
 ${pick("ableton2", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; FabFilter Pro-Q 3 &mdash; FULL, resolved by name", 3, "ableton.hub")))}
 ${pick("compact", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; Pro-Q 3 COMPACT &mdash; State 2 borrows dials 5-6, so build(4) (V14)", 2, "ableton.hub")))}
-${pick("vst", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; PLUGINS &mdash; level 2, the four categories (V44)", 3, ["ableton.hub", "ableton.plugins"])))}
-${pick("vsteq", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; Plugins &rarr; EQ &mdash; level 3, the loaders (V44)", 3, ["ableton.hub", "ableton.plugins", "ableton.plugins.eq"])))}
-${pick("vstmeter", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; Plugins &rarr; Meters &mdash; level 3 at 5 columns (V44)", 2, ["ableton.hub", "ableton.plugins", "ableton.plugins.meter"])))}
+${pick("flat", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton hub &middot; THE FLAT COLUMN LAYOUT (V46) &mdash; EQ | Dynamics | Synths | Meters, utility col 8", 3, "ableton.hub")))}
 `;
 
 fs.writeFileSync(OUT, html);

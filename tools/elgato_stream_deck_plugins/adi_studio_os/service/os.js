@@ -491,11 +491,15 @@ const GEOM_TILES = { left: [0, 0.5], right: [0.5, 0.5], fill: [0, 1] };
 /* Walk to the frontmost process that actually HAS a window. The Stream Deck app
    itself is the obvious counter-example and raises -1719 ("Invalid index")
    rather than failing quietly — found by running this, not by compiling it. */
+/* `contents of pr` — `repeat with pr in <list>` binds pr to a REFERENCE to the
+   list item rather than the item, so dereferencing it is the correct idiom for a
+   `tell` target. Kept, though it was NOT the cause of the -1728 error hunted in
+   V47: that was `set w to window 1` downstream (see axFullScreenProbe). */
 const FRONT_WITH_WINDOW = [
   '  set target to missing value',
   '  repeat with pr in (every application process whose frontmost is true)',
-  '    if (count of windows of pr) > 0 then',
-  '      set target to pr',
+  '    if (count of windows of (contents of pr)) > 0 then',
+  '      set target to contents of pr',
   '      exit repeat',
   '    end if',
   '  end repeat',
@@ -554,18 +558,86 @@ function clickWindowMenu(submenu, item) {
    window that does not expose the attribute (also verified: it entered and left
    full screen), and it is now spelled as a physical key code like everything
    else. */
-function axFullScreenToggle() {
-  return run("osascript", ["-e", [
+/* V47 — CHROME CANNOT BE TAKEN OUT OF FULL SCREEN BY AN AX WRITE.
+
+   Adi: "The green Full Screen button works well for most apps, but it CANNOT exit
+   full screen in Google Chrome (pressing it again does nothing)."
+
+   The cause is that the AX write SUCCEEDS and does nothing. Chrome's window
+   exposes AXFullScreen, `set value ... to false` returns without error, osascript
+   exits 0 — so V40's `(await axFullScreenToggle()) || hotkey(...)` never reached
+   its fallback. The failure was invisible to the only thing being checked.
+
+   Chromium-family browsers run their OWN full-screen mode rather than the system
+   one, and only the keyboard shortcut reaches it. So they are named and go
+   straight to the keystroke — which is what Adi asked for, and it is instant
+   rather than paying for a write that is known not to work.
+
+   Everything else keeps the AX path, because it cannot type and therefore cannot
+   trigger a file command (the whole point of V40), but it is now VERIFIED: the
+   script re-reads the attribute and reports `unchanged`, and only then does the
+   keystroke run. A silent no-op can no longer look like success.
+
+   Returns a short token so the caller can log which path ran, rather than a bare
+   boolean that throws the diagnosis away. */
+const KEYSTROKE_FULLSCREEN_APPS = [
+  "Google Chrome", "Google Chrome Beta", "Google Chrome Canary", "Google Chrome Dev",
+  "Chromium", "Brave Browser", "Microsoft Edge", "Opera", "Vivaldi",
+];
+
+function osaOut(script) {
+  return new Promise((resolve) => {
+    execFile("osascript", ["-e", script], { timeout: 8000 }, (err, stdout, stderr) => {
+      if (err) { log.error?.(`osascript failed: ${err.message} ${stderr || ""}`); resolve(""); }
+      else resolve(String(stdout || "").trim());
+    });
+  });
+}
+
+function axFullScreenProbe() {
+  const named = KEYSTROKE_FULLSCREEN_APPS.map((n) => `"${n}"`).join(", ");
+  return osaOut([
     'tell application "System Events"',
     FRONT_WITH_WINDOW,
-    '  if target is missing value then error "no window"',
+    '  if target is missing value then return "nowindow"',
+    '  set appName to name of target',
+    `  if appName is in {${named}} then return "keys:" & appName`,
+    /* NEVER STORE THE WINDOW IN A VARIABLE. `set w to window 1` and then reusing
+       `w` is what raised
+
+         System Events got an error: Can't get window "re.txt" of
+         application process "TextEdit". (-1728)
+
+       — assigning a System Events UI-element specifier collapses it to a
+       BY-NAME reference ("window re.txt"), which then fails to resolve. Found by
+       running this against a real TextEdit window, not by compiling it: the AX
+       path was erroring on EVERY app and only the keystroke fallback was doing
+       the work, so V40's whole "never type" property was silently gone. The
+       geometry path never had the bug because it addresses `window 1` inline —
+       which is the fix here too. */
     '  tell target',
-    '    set w to window 1',
-    '    if not (exists attribute "AXFullScreen" of w) then error "no AXFullScreen"',
-    '    set value of attribute "AXFullScreen" of w to not (value of attribute "AXFullScreen" of w)',
+    '    if not (exists attribute "AXFullScreen" of window 1) then return "noattr:" & appName',
+    '    set was to value of attribute "AXFullScreen" of window 1',
+    '    set value of attribute "AXFullScreen" of window 1 to (not was)',
+    /* POLLED, NOT A FIXED DELAY, and that matters more than it looks. A single
+       `delay 0.25` reported `unchanged` for TextEdit ENTERING full screen — the
+       attribute had not settled yet — so the caller ran the keystroke fallback as
+       well and the key was one mistimed animation away from toggling twice and
+       landing back where it started. Measured: exit settles almost at once, entry
+       takes longer than a quarter second.
+
+       So it waits for the change instead of guessing how long it takes: up to
+       ~1.8 s, exiting the moment the value flips. The cost is only paid when the
+       write genuinely did nothing, and Chrome — the one app known to do that —
+       never gets here, because it is named above and goes straight to the keys. */
+    '    repeat 12 times',
+    '      delay 0.15',
+    '      if (value of attribute "AXFullScreen" of window 1) is not was then return "ok:" & appName',
+    '    end repeat',
+    '    return "unchanged:" & appName',
     '  end tell',
     'end tell',
-  ].join("\n")]);
+  ].join("\n"));
 }
 
 /* Geometry fallback — an exact frame write. Needs no menu and no English, and is
@@ -609,9 +681,18 @@ function geomFrame(xf, wf) {
 export async function windowLayout(which) {
   const key = String(which || "").toLowerCase().replace(/[^a-z]/g, "");
 
-  // The green traffic light. V40 — the AX attribute first, the shortcut second.
+  /* The green traffic light. V40 put the AX attribute first because it cannot
+     type and so cannot touch a file; V47 makes that decision VERIFIED rather than
+     assumed, and sends Chromium browsers straight to the keystroke. */
   if (key === "fullscreen") {
-    if (isMac) return (await axFullScreenToggle()) || hotkey("ctrl+cmd+f");
+    if (isMac) {
+      const res = await axFullScreenProbe();
+      log.info?.(`fullscreen: ${res || "no result"}`);
+      if (res.startsWith("ok:")) return true;
+      if (res === "nowindow") return false;
+      // keys: / unchanged: / noattr: / "" — the attribute route did not do it.
+      return hotkey("ctrl+cmd+f");
+    }
     if (isWin) return hotkey("win+up");
     return false;
   }

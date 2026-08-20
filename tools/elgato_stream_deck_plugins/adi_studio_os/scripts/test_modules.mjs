@@ -18,7 +18,7 @@ const LEGACY = path.resolve(NEW, "../../");
 global.window = global;
 global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
-const CORE = ["js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/render.js",
+const CORE = ["js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/clock.js", "js/core/render.js",
               "js/core/ipc.js", "js/core/layout.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js"];
 const MODS = ["js/modules/root.js", "js/modules/console.js",
               "js/modules/rekordbox.js", "js/modules/midictl.js", "js/modules/index.js"];
@@ -627,6 +627,60 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
        SOS.Render.zone({ icon: "zoomIn" }).indexOf("<g transform") > 0);
     ok("an unknown icon name degrades to the value text, it does not throw",
        SOS.Render.zone({ value: "±", icon: "nope" }).indexOf("±") > 0);
+  }
+
+  /* V45 — THE TOUCH-SCREEN POLISH. Three separate instructions from Adi, and each
+     one has a way of silently not landing. */
+  {
+    /* THE SCROLL ARROWS MUST BE THE CLOCK'S BLUE. "Exactly the same" is the part
+       worth pinning: the value is read from ONE palette entry that clock.js also
+       resolves, so the two cannot drift into two similar blues. */
+    ok("both scroll zones ask for the clock's blue",
+       d(1).valueColor === SOS.Render.PALETTE.clock
+       && d(2).valueColor === SOS.Render.PALETTE.clock,
+       `${d(1).valueColor} / ${d(2).valueColor}`);
+    ok("…and that IS the colour the clock lights its digits with",
+       SOS.Clock.LIT_COLOR() === SOS.Render.PALETTE.clock,
+       `${SOS.Clock.LIT_COLOR()} vs ${SOS.Render.PALETTE.clock}`);
+    const zy = SOS.Render.zone({ title: "Scroll Y", value: d(1).value,
+                                 valueColor: d(1).valueColor, sub: d(1).sub });
+    ok("…and it reaches the ink, not just the binding",
+       zy.indexOf(SOS.Render.PALETTE.clock) > 0);
+    ok("a zone with no valueColor still paints the default ink",
+       SOS.Render.zone({ value: "X" }).indexOf(SOS.Render.PALETTE.text) > 0);
+
+    /* THE TABS ICON replaces the ⇄ glyph with the image Adi supplied. */
+    ok("dial 4 names the tabs icon and no longer carries a glyph",
+       d(4).icon === "tabs" && !d(4).value, JSON.stringify({ icon: d(4).icon, value: d(4).value }));
+    ok("…the icon exists and is vector, not a raster payload",
+       !!SOS.Icons.tabs && !/data:image/.test(SOS.Icons.tabs.svg));
+    ok("…it draws two overlapping cards and a plus, like the source image",
+       (SOS.Icons.tabs.svg.match(/<rect/g) || []).length === 6,
+       String((SOS.Icons.tabs.svg.match(/<rect/g) || []).length));
+    const zt = SOS.Render.zone({ title: "Tabs", icon: "tabs", sub: d(4).sub });
+    ok("…and it reaches the zone with its gradient id namespaced",
+       /<g transform="translate/.test(zt) && !/__ID__/.test(zt));
+
+    /* CHROME WEARS ITS REAL ICON, extracted from the bundle Adi pointed at. His
+       rule is "do not invent fake SVGs", so this must be the actual artwork.
+
+       The tile is gated on the service's availability probe — it does not exist
+       until the service says Chrome is installed — so the probe is driven here
+       rather than asserted around. That is the same path the device uses. */
+    SOS.IPC.ask = () => Promise.resolve({
+      chrome: { available: true }, taskmgr: { available: true },
+    });
+    await M.Root.refreshAvailability();
+    const chrome = SOS.Layout.pick(M.Root.screen, 9).keys(4, 0);
+    ok("the probe makes the Chrome tile appear at all", !!chrome);
+    ok("the Chrome tile names real extracted artwork, not a glyph",
+       chrome.art === "chrome" && !chrome.glyph,
+       JSON.stringify({ art: chrome.art, glyph: chrome.glyph }));
+    ok("…which is a real PNG in the registry",
+       /^data:image\/png;base64,/.test(SOS.Art.chrome || ""));
+    ok("…and it is drawn, caption dropped so the icon fills the cap (V26)",
+       SOS.Render.key(States.keySpec(chrome)).indexOf("<image") > 0
+       && SOS.Render.key(States.keySpec(chrome)).indexOf("<text") < 0);
   }
 
   // The captions must fit the zone, or the one that says what a push does is the

@@ -217,6 +217,45 @@ try {
        construction. */
     ok("window menu items are matched on ENABLED, so a group heading is skipped",
        /whose name is "\$\{item\}" and enabled is true/.test(src));
+
+    /* =======================================================================
+       V47 — CHROME. Adi: the green key "CANNOT exit full screen in Google
+       Chrome (pressing it again does nothing)".
+
+       MEASURED against a real Chrome window: the AX write is accepted and does
+       NOTHING, in BOTH directions — `set value of attribute "AXFullScreen" ... to
+       true` left it reading false and raised no error, so osascript exited 0 and
+       V40's `(await ax()) || hotkey(...)` never reached its fallback. The failure
+       was invisible to the only thing being checked.
+
+       Verified after the fix, through the real `windowLayout("fullscreen")`:
+         Chrome    windowed -> FULLSCREEN -> windowed   (View menu names the state)
+         TextEdit  false -> true -> false               (pure AX, never types)
+       ======================================================================= */
+    ok("the Chromium family is named, so it never waits on a write known to fail",
+       /"Google Chrome"/.test(src) && /Brave Browser/.test(src)
+       && /KEYSTROKE_FULLSCREEN_APPS/.test(src));
+    ok("…and those apps short-circuit to the keystroke before any AX write",
+       src.indexOf("keys:") < src.indexOf('set value of attribute "AXFullScreen"'));
+    ok("the AX route is VERIFIED rather than assumed — it reports `unchanged`",
+       /"unchanged:"/.test(src) && /"ok:"/.test(src));
+    ok("…and the caller only claims success on `ok:`",
+       /res\.startsWith\("ok:"\)/.test(src));
+
+    /* Two AppleScript bugs found only by RUNNING it, which is the standing lesson
+       in this project. Both are asserted as source shape because reproducing them
+       needs a live window. */
+    /* Matched against the EMITTED AppleScript lines (quoted strings), not the file
+       as a whole — the first cut of these two asserted on raw text and failed on
+       the comment above that quotes the very bug it describes. */
+    const emitted = (src.match(/^\s*'.*',?$/gm) || []).join("\n");
+    ok("the window is addressed INLINE, never stored in a variable",
+       !/set w to window 1/.test(emitted)
+       && /attribute "AXFullScreen" of window 1/.test(emitted));
+    ok("…and the settle is POLLED, so entering full screen cannot double-toggle",
+       /repeat 12 times/.test(emitted) && !/delay 0\.25/.test(emitted));
+    ok("the frontmost-process loop dereferences its list item",
+       /contents of pr/.test(src));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

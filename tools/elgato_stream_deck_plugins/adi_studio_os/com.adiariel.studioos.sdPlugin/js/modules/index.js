@@ -38,15 +38,11 @@ SOS.Modules.install = function () {
     Nav.register(placeholder(id));
   });
 
-  /* V44 — THE VST LAUNCHER TREE. Sub-screens of the Ableton hub, not a hub of
-     their own, so they are registered here rather than through the list above:
-     that list is keyed on `.hub` and these have no hub. Registering them up front
-     (instead of lazily on first enter) means `Nav.enter` can never miss — a
-     screen that is not registered logs "no screen" and does nothing, which would
-     look exactly like a dead key. */
-  if (M.Plugins && M.Plugins.screens) {
-    M.Plugins.screens.forEach(function (s) { Nav.register(s); });
-  }
+  /* V46 — THE VST LAUNCHER TREE IS GONE. V44 registered five screens here;
+     Adi flattened the whole thing onto the Ableton hub itself, so plugins.js is
+     now a CATALOGUE with no screens of its own and there is nothing to register.
+     Kept as a note rather than silence, because "why is the plugins module not
+     installed?" is otherwise a real five minutes for the next reader. */
 
   // ----------------------------------------------------------------- overlays
   /* V13 — there are three windows and nothing else. The old State 3 asked the

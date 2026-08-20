@@ -646,109 +646,93 @@ SOS.Modules.Ableton = (function () {
   }
 
   /* ------------------------------------------------------------------- keys
-     Ported from the legacy keys.js roles, but placed absolutely rather than
-     configured per-instance (D1). Preset mode is the legacy "folder": the EQ8
-     key long-press opened it and the same key became BACK; here Button 1 is the
-     navigation anchor in States 0-3, so the preset folder is toggled from its
-     own key and closes by pressing it again. */
-  var mode = 'normal';          // 'normal' | 'presets'
-  function setMode(m) { mode = m; SOS.States.repaint(); }
 
-  /* V29 — THE BROWSER ARROWS ARE GONE. ◀TRK / TRK▶ / ◀DEV / DEV▶ filled four of
-     the nine keys on row 0 with a generic transport for Live's own selection,
-     which is a thing the mouse already does well and which told Adi nothing
-     about his session. The keys are a clean slate for real workflow shortcuts
-     now; `selectTrack` / `selectDevice` remain on the Bridge for anything that
-     wants them later. The LIVE key went with them — it existed to re-request
-     parameters, which is debug plumbing, not a control. */
+     V46 — THE GREAT FLATTENING. Adi's ruling, and it replaces both the V44
+     hierarchical launcher and the old three-key device shelf:
+
+       "The Stream Deck XL has 32 keys, which is plenty of room. We want to flatten
+        the menu and put the plugin shortcuts directly on the main Ableton hub,
+        categorized by columns for fast muscle memory."
+
+     So the hub IS the launcher. Four two-column bands from the plugins.js
+     catalogue, each framed in the colour he boxed it with, and the rightmost
+     column as a utility strip:
+
+       cols 0-1  RED     EQ         cols 4-5  GREEN  Synths
+       cols 2-3  YELLOW  Dynamics   cols 6-7  CYAN   Meters
+       (0,0)     BACK — global, out of the Ableton hub
+       col 8     MIDI (row 0) · device/load status (row 1) · NEXT (row 3)
+
+     PRESETS IS GONE ENTIRELY — key, folder, mode flag and all. "I never requested
+     it" (Adi). The `mode`/`setMode` machinery existed only to open that folder, so
+     it went with it; `Bridge.cmd.listPresets/loadPreset/newPreset` are left alone
+     because those are protocol against the verified remote script, not UI.
+
+     V29 — THE BROWSER ARROWS ARE GONE, and stay gone. ◀TRK / TRK▶ / ◀DEV / DEV▶
+     filled four keys with a generic transport for Live's own selection, which the
+     mouse already does well. `selectTrack` / `selectDevice` remain on the Bridge. */
+
+  var page = 0;
+  function setPage(p) { page = p; SOS.States.repaint(); }
 
   function shortName(s) { s = String(s || ''); return s.length > 10 ? s.slice(0, 9) + '…' : s; }
 
-  /* One builder for both breakpoints. `cols` decides where the second nav row
-     starts and how many rows the preset folder gets — the controls themselves
-     are identical, which is the point of hand-authoring rather than reflowing. */
+  /* One builder for both breakpoints. `cols` decides how many bands fit beside the
+     utility column — four at 9, two at 5 — and plugins.js owns that arithmetic, so
+     this function never counts columns itself. */
   function hubKeys(cols) {
-    var wide = cols >= 9;
-    var presetRow0 = 2;                 // rows 0 and 1 are taken; folder starts below
-
     return function (col, row) {
-      var st = Bridge.state();
+      var util = cols - 1;
 
-      /* --- row 0: the DEVICE SHELF. One key per thing you actually reach for.
-         Left-aligned and deliberately short: an empty key is an invitation for
-         the next shortcut, and a row padded with generic controls is not. */
-      if (row === 0) {
-        if (col === 0) return proqKey();
-        if (col === 1) {
-          var e = st.eq8_state || { count: 0, selected_is_eq8: false };
-          return {
-            label: 'EQ8', glyph: 'EQ',
-            sub: e.count ? (e.count + ' on track') : 'create',
-            color: R.PALETTE.ableton, active: !!e.selected_is_eq8,
-            badge: e.count ? ('×' + e.count) : '+',
-            dim: !Bridge.isOnline(), kind: 'tap',
-            tap: function () { Bridge.cmd.eq8Key(); },
-          };
-        }
-        if (col === 2) return presetsKey();
-        /* V44 — THE VST LAUNCHER. Continues the left-aligned device shelf rather
-           than starting a second cluster, and sits at the same column in both
-           breakpoints because row 0 is identical at 9 and 5 columns.
+      /* (0,0) IS THE GLOBAL BACK. Adi: "The absolute top-left key (0,0) MUST be
+         the global BACK button to exit the Ableton Hub."
 
-           Looked up through SOS.Modules at PAINT time, not captured at load time,
-           so plugins.js and this file have no load-order dependency and a build
-           without plugins.js simply shows one fewer key. */
-        if (col === 3) {
-          var P = SOS.Modules.Plugins;
-          return P ? P.hubKey() : null;
-        }
+         It works on a SHORT press because the hub is fullScreenCapable: Button 1
+         is the engine's reserved long-press Back anchor only OUTSIDE NAV OFF, and
+         inside it the key belongs to the module. The frame under it still comes
+         from the EQ band so the red box is not missing a corner. */
+      if (col === 0 && row === 0) {
+        return {
+          label: 'Back', badge: '↑', size: 'md', color: R.PALETTE.nav,
+          frame: P() ? P().frameAt(0, 0, cols, page) : null,
+          kind: 'tap',
+          tap: function () { SOS.Nav.back(); },
+        };
+      }
+
+      if (col === util) {
+        if (row === 0) return midiKey();
+        if (row === 1) return statusKey(Bridge.state());
+        if (row === 3) return nextKey(cols);
         return null;
       }
 
-      // --- row 1: MIDI Control, and one quiet readout of what Live is doing ---
-      if (row === 1) {
-        if ((wide && col === 0) || (!wide && col === 4)) return midiKey();
-        if ((wide && col === 1) || (!wide && col === 0)) return statusKey(st);
-      }
-
-      // --- preset folder ---
-      if (mode !== 'presets' || row < presetRow0) return null;
-      var slot = (row - presetRow0) * cols + col;
-      var presets = st.presets || [];
-      var p = presets[slot];
-      if (!p) return { label: '—', sub: 'empty', dim: true, kind: 'tap' };
-      return {
-        label: shortName(p.name), sub: 'load · hold = new', size: 'md',
-        color: R.PALETTE.midi, kind: 'momentary',
-        down: function () { p._t = Date.now(); },
-        up: function () {
-          var held = Date.now() - (p._t || Date.now());
-          if (held >= 500) Bridge.cmd.newPreset(p.id); else Bridge.cmd.loadPreset(p.id);
-          setMode('normal');
-        },
-      };
+      // Everything else is the plugin block, frames and blanks included.
+      return P() ? P().gridKey(col, row, cols, page) : null;
     };
   }
 
-  // ------------------------------------------------------------------ keys
-  function presetsKey() {
+  // Looked up at PAINT time, so plugins.js and this file have no load-order
+  // dependency and a build without the catalogue degrades to an empty block.
+  function P() { return SOS.Modules.Plugins || null; }
+
+  /* NEXT. Its meaning follows the breakpoint — at 9 columns every band is already
+     on screen so it can only page items, and nothing currently overflows, so it
+     goes DIM and says 1/1 rather than pretending to be a control. At 5 columns it
+     cycles which pair of bands you are looking at. */
+  function nextKey(cols) {
+    var pages = P() ? P().pageCount(cols) : 1;
+    var cur = pages > 1 ? ((page % pages) + pages) % pages : 0;
     return {
-      label: mode === 'presets' ? 'BACK' : 'Presets',
-      sub: mode === 'presets' ? 'close folder' : 'EQ8 presets',
-      color: R.PALETTE.console, active: mode === 'presets',
-      dim: !Bridge.isOnline(), kind: 'tap',
-      tap: function () {
-        if (mode === 'presets') return setMode('normal');
-        Bridge.cmd.listPresets();
-        setMode('presets');
-      },
+      label: 'NEXT', sub: (cur + 1) + '/' + pages, size: 'md',
+      color: R.PALETTE.console, dim: pages <= 1, kind: 'tap',
+      tap: function () { if (pages > 1) setPage(cur + 1); },
     };
   }
 
   /* V24 — MIDI Control lives HERE, not on the Root Hub: it is a studio
      instrument that belongs with the DAW rather than a top-level destination
-     beside it. The two layouts put it in different cells because their spare
-     cells are in different places. */
+     beside it. V46 pins it to the top-right, where Adi drew it. */
   function midiKey() {
     return {
       label: 'MIDI', glyph: '⌗', size: 'lg', color: R.PALETTE.midi,
@@ -757,12 +741,23 @@ SOS.Modules.Ableton = (function () {
     };
   }
 
-  /* V29 — ONE readout replaces three keys. The old row had a track name, a
-     device name and a LIVE lamp; between them they said one useful thing, which
-     is "what is the strip controlling right now". Offline it says so plainly
-     instead of lighting a red debug button. It is not a control and does
-     nothing when pressed. */
+  /* V29 — ONE readout of what the strip is controlling. Offline it says so plainly
+     instead of lighting a red debug button. Not a control; does nothing when
+     pressed.
+
+     V46 — it also carries a FAILED LOAD. A successful insert needs no display of
+     its own, because Live focuses the device it just created and this key names it
+     by itself; a miss has no such echo, and three plugins in the catalogue are not
+     installed on this machine. Without this a press on Soothe would be completely
+     silent — the same fire-and-forget blindness as the stale-service bug. */
   function statusKey(st) {
+    var err = P() ? P().lastError() : null;
+    if (err) {
+      return {
+        kicker: 'NOT LOADED', label: shortName(err.name), sub: err.note,
+        size: 'md', color: '#ff5d5d', kind: 'tap',
+      };
+    }
     var on = Bridge.isOnline();
     return {
       kicker: on ? 'DEVICE' : 'BRIDGE',
@@ -771,22 +766,6 @@ SOS.Modules.Ableton = (function () {
       size: 'md',
       color: on ? R.PALETTE.dim : '#ff5d5d',
       dim: !on, kind: 'tap',
-    };
-  }
-
-  /* V30 — THE FIRST REAL WORKFLOW SHORTCUT. One press drops a Pro-Q 3 onto the
-     selected track. Wears FabFilter's own logo for the same reason the Root Hub
-     tiles wear theirs: the mark is a faster read than the words.
-
-     The name is the string Live's own browser uses, and the service-side search
-     is name-based rather than path-based, so a Pro-Q 3 that lives under VST3,
-     VST2 or AU is found the same way. */
-  function proqKey() {
-    return {
-      art: 'proq3', label: 'Pro-Q 3', size: 'md',
-      sub: 'insert on track', color: R.PALETTE.ableton,
-      dim: !Bridge.isOnline(), kind: 'tap',
-      tap: function () { Bridge.cmd.loadDevice('FabFilter Pro-Q 3'); },
     };
   }
 
@@ -801,10 +780,11 @@ SOS.Modules.Ableton = (function () {
 
     onEnter: function () {
       Bridge.connect();
+      if (SOS.Modules.Plugins) SOS.Modules.Plugins.wire();
       pickController();
       startPump();
     },
-    onExit: function () { stopPump(); setMode('normal'); },
+    onExit: function () { stopPump(); },
 
     /* Two hand-crafted layouts (the global dual-layout contract).
        FULL (9 cols): one nav row across the top, preset folder below.
@@ -861,6 +841,7 @@ SOS.Modules.Ableton = (function () {
     // exposed for scripts/test_ableton.mjs
     _ctx: ctx, _composite: composite, _zones: zoneSvg,
     _pick: pickController, _active: function () { return active; },
-    _layout: L, _setMode: setMode, _stop: stopPump,
+    _layout: L, _stop: stopPump,
+    _page: function (p) { page = p | 0; },
   };
 })();

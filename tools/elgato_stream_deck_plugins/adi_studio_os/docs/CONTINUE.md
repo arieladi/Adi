@@ -52,127 +52,57 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**981 tests green** (970 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 25 is deployed and running on the hardware** (`service v2.3.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`).
+**1019 tests green** (1008 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 26 is deployed and running on the hardware** (`service v2.4.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`).
 
-### FROZEN at Adi's instruction (Batch 25)
+### FROZEN at Adi's instruction — do not write code for these
 
-**EQ8, Pro-Q 3 data mapping and the Calculator.** Do not write code for any of the
-three until he lifts it. The two EQ8 rulings below are therefore parked, not live.
+**EQ8, Pro-Q 3 data mapping, and the Calculator.** The two EQ8 rulings noted further
+down are parked, not live.
 
-### Batch 25 (V44) — the VST launcher tree
+### Batch 26 (V46–V47) — the flat Ableton hub, and Chrome
 
-`Ableton hub → Plugins → EQ | Dynamics | Synths | Meters → loaders`, all generated
-from one `CATEGORIES` table in `js/modules/plugins.js`: a new plugin is one line, a
-new category four, and neither touches a layout, a key index or a Back button.
-Back is at (0,0) on all five pages. The load path is the EXISTING V30
-`loadDevice` → `load_device` verb; **no Python changed.**
-
-Three things in there are worth knowing before touching it:
-
-- **Names are short STEMS on purpose.** The remote script's second pass is a
-  substring match, so "Serum" finds the installed `Serum2` while "Serum2" would miss
-  a plain "Serum" elsewhere. But **"FabFilter Pro-Q 3" is spelled out** because
-  Pro-Q 2 is also installed and a stem could land on it.
-- **soothe, Spectre and Pulsar Massive are NOT installed here** (checked every
-  plug-in folder). Their keys exist and report "not installed" — there is nothing to
-  probe, because only Live knows its own browser.
-- **The status readout is on DIAL 2, never 5.** State 2 borrows physical dials 5-6
-  (V14/L3b), so a readout on 5 disappears behind a docked window. The preview sheet
-  is what caught that.
-
-Sub-pages are all `fullScreenCapable`, which is load-bearing: Button 1 is the
-reserved Back anchor only OUTSIDE NAV OFF, so this is what lets (0,0) be a plain
-Back key on a SHORT press instead of a 500 ms hold.
-
-**Adi still owes a ruling on:** per-plugin icons (he asked to be asked), and whether
-Pro-Q 3 / EQ8 should keep their duplicate fast keys on the device shelf now that
-both also live inside Plugins.
-
-### Batch 24 (V41a, V42–V43) — the Root Hub grid, to Adi's drawing
+**The V44 VST tree lasted one batch.** Adi flattened it: the Ableton hub IS the
+launcher now, four two-column bands with `(0,0)` as a global Back and col 8 as a
+utility strip (MIDI / status / NEXT). `plugins.js` is the CATALOGUE only — no
+screens. **Presets is deleted entirely**, key, folder and `mode` flag.
 
 ```
-        col 0     col 1      col 2    col 3    col 4
-row 0   Ableton   rekordbox  Tasks    Meters   Chrome      shortcuts
-row 1     ·          ·         ·        ·        ·          breathing room
-row 2   Left       Right     Top      Bottom     ·          Move & Resize
-row 3   Fill       L | R     L | Qt   Quads    ● Full       Fill & Arrange
+cols 0-1 RED EQ   cols 2-3 YELLOW Dynamics   cols 4-5 GREEN Synths
+cols 6-7 CYAN Meters      col 8 utility      (0,0) = Back
 ```
 
-The Batch 23 ambiguity is settled: **the "four directional arrows" were the four
-half-snaps**, so nothing was cut. The window block is now the macOS popover row for
-row. **Row 0 is MIXED**, so a hub declares its `col` rather than its array index.
-**Cubase is unplaced** (`col: null`) — there is no `cubase.hub` screen anywhere, so
-that tile would have navigated into nothing. Start / Run / Shell / Lynx moved to row
-1, where they are invisible on macOS. Both gaps are held by omission and pinned by
-tests. Dial 3 wears a drawn magnifier instead of `±` (V42), which required `icon`
-support in `R.zone()` — and **`zoneUriFor` in `states.js` is the DIAL equivalent of
-`keySpec()`**, the same whitelist trap. The traffic light's expand arrow is back:
-**V41a reversed my own call at Adi's explicit instruction — do not remove it again.**
+Four things here will bite anyone editing it:
 
-### Batch 23 (V40–V41) — the alias bug, and the native window icons
+- **HIS BRIEF SAID "8 columns / col 7"; the + XL has 9.** His screenshot cut off the
+  last column, which is why he drew MIDI and NEXT in the margin beside the cyan box.
+  Read as "the rightmost column" it all agrees — col 8 — and nothing is stranded.
+- **A group frame is assembled from the keys themselves.** There is no canvas between
+  keys, so `frame: {color,t,r,b,l}` washes each key's 6 px margin and bars only its
+  OUTER sides. It must be in `hashId()` (two loaders can differ only by edge) and the
+  bars must be emitted AFTER the face. Framed artwork gives back 8 px a side or the
+  band vanishes under it.
+- **Every cell of a band is returned even when empty**, or the colour box stops
+  halfway down the group.
+- **Only REAL icons.** Chrome, Vital and FabFilter are extracted; Serum2, SPAN,
+  s(M)exoscope, bx_meter, INDEQ, dBComp and the three Ableton stock devices have no
+  product mark that exists on disk, so they wear text. See the table in art.js.
 
-The Full Screen key was creating Finder aliases because `keystroke "f"` resolves
-through the **Hebrew** keyboard layout and landed on key code 0 — see the field note
-below; it had also been silently killing dial 4's tab keys. Full Screen is now an
-**`AXFullScreen` attribute write**, so it cannot type and therefore cannot touch a
-file. The **Quads** key could never have fired (`menu item "Quarters"` matched the
-disabled group heading — the name appears twice in that menu) and now matches the
-first ENABLED item. All nine window keys wear **exact SVG replicas of the macOS
-Move & Resize popover icons** from the new `js/core/icons.js`, caption-free and
-filling the cap, with a bare green traffic light for Full Screen.
+**Chrome full screen (V47).** Chrome accepts the `AXFullScreen` write and does
+nothing, in BOTH directions, with no error — so V40's `||` fallback never fired. The
+Chromium family is now named and goes straight to `key code 3 + Ctrl+Cmd`, and the AX
+path re-reads the attribute before claiming success. Two AppleScript bugs found by
+RUNNING it: **`set w to window 1` then reusing `w`** raises -1728 (a stored System
+Events specifier collapses to a by-name reference) and had been breaking the AX path
+for EVERY app, leaving only the keystroke fallback working; and a fixed `delay 0.25`
+was too short to see the change, so it now polls.
 
-**The Root Hub GRID REDESIGN is still unbuilt and waiting on Adi's ruling** — his
-four bullets cannot all hold at once under one reading of the marked-up photo. See
-the bottom of DECISIONS Batch 23.
+**Touch strip:** the Tabs zone wears an SVG replica of Adi's supplied image, and the
+scroll arrows are the clock's blue via a single `PALETTE.clock` entry that clock.js
+also resolves.
 
-| Piece | State |
-|---|---|
-| Core engine, Node service, installers | done |
-| Root Hub | done, 9-col + 5-col |
-| Rekordbox, MIDI Control | done — **Full layout only**; rekordbox is Omnis-Duo skinned (V16/V20/V21) |
-| Visualizers | working, **4 of 9 views** (spectrum, scope, waveform, meters) |
-| Ableton hub shell | done, 9-col + 5-col |
-| **All 14 Ableton controllers** | ✅ native SVG, both layouts — L4 COMPLETE |
-| State 0 Numpad | ✅ V3 — `C` is now `✱` (sends real KP_Multiply) |
-| State 1 Calculator | ✅ V3 — display row, merged keys, grouped numbers |
-| State 2 Time Divisions | ✅ V3 — 3×3 fractions, ▲/▼ range, value in one place |
-| State 2 Time Divisions | ✅ V15 — dial 5 readout/grid/format, value key TYPES via `os.type` |
-| Rekordbox Omnis-Duo skin | ✅ V16 — A–H pads, indigo chassis, circular CUE / ▶‖ |
-| Ableton smart launcher | ✅ V17 — Root Hub tile starts the newest installed Live |
-| **The 14 Compact strips** | ✅ reachable at last — State 2 is the consumer (V14) |
-
-### The V3 NAV refactor (DECISIONS Batch 11, rulings V1–V9)
-
-Carousel gained a NAV-OFF position; Button 36 became a plain key; the NAV trigger moved to dial 6's long press; dial borrowing became per-state; States 0–2 were rebuilt; the key aesthetic was replaced.
-
-### The first hardware pass (DECISIONS Batch 12, rulings V10–V12)
-
-- **V10** — an active key has **no outline at all**. Tinted face + inner glow only. Two earlier attempts still drew a rim and it kept reading as "a green border".
-- **V11** — Time Divisions: **columns are the variants, rows are the divisions**, the nine cells carry their fraction and nothing else, row 0's three labels are **static headers**, ▲/▼ shift the grid and **clamp** (greying out at the ends), and the computed value appears in exactly one place.
-- **V12** — Calculator: operands coerced to Number in `applyOp`; numbers grouped with thousands separators and split **on** the separator (`12000` → `12,` | `000`); dim `0. 000 000 000` placeholder spanning all four keys at rest; operator glyph in the top ~28% of each display key.
-
-### Batch 13 (rulings V13–V17) — see DECISIONS
-
-State 3 scrapped, State 2 became the Compact consumer and gained a readout + PASTE
-key, rekordbox got the Omnis-Duo skin, the Ableton tile became a smart launcher,
-and the AdiVST remote script was finally installed.
-
-### Batch 14 (rulings V18–V21) — the first Omnis-Duo hardware pass
-
-The surface could be frozen permanently by one throwing cell (V18 — this was the
-real "dial 6 does nothing"); the calculator lost its duplicate `⌫` and got the
-float cast on the operator line (V19); rekordbox got its held nudge back and the
-beat-jump/nudge rows swapped (V20); the circular caps moved onto bezel black (V21).
-
-**P5 — LAYOUT IS ADI'S TO CHANGE.** Never alter a key layout or widen a module's
-footprint without presenting options first. The Calculator stays inside its 16
-keys; the screen strip and dials are reserved for the VSTs.
-
-### Batch 15 (V22–V23)
-
-Real app icons via `js/core/art.js` (a NAME registry — never put base64 on a
-binding, it lands in the per-frame hash); the calculator now prints its pending
-operation, which is the feedback whose absence made `+` feel broken.
+**Awaiting Adi:** per-plugin icons for everything without one; and the EQ8 key has
+lost its create-or-focus behaviour (it is a plain loader now, per "strictly
+instantiate" plus the freeze) — reversible in one line.
 
 ### Pro-Q 3 — ANSWERED by Adi (Batch 23), not yet implemented
 
