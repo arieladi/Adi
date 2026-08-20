@@ -110,6 +110,19 @@ class AdiVST(ControlSurface):
             b.cmd_load_preset(int(m["id"]), replace=True)
         elif c == "eq8_new_preset":
             b.cmd_load_preset(int(m["id"]), replace=False)
+        elif c == "load_device":
+            # V30 — additive verb. Everything else on this protocol is untouched.
+            b.cmd_load_device(m.get("name", ""))
+        elif c == "device_key":
+            # V48 — additive. The unified plugin key: short press focuses or
+            # cycles, long press forces a new instance.
+            b.cmd_device_key(m.get("name", ""), bool(m.get("new", False)))
+        elif c == "track_volume_delta":
+            b.cmd_track_volume_delta(int(m.get("steps", 0)))
+        elif c == "track_pan_delta":
+            b.cmd_track_pan_delta(int(m.get("steps", 0)))
+        elif c == "get_mix":
+            b.cmd_get_mix()
         elif c == "select_track":
             b.cmd_select_track(int(m.get("dir", 1)))
         elif c == "select_device":
