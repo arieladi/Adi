@@ -2562,3 +2562,167 @@ false with no keystroke at all.
    flagged in Batch 25 that Pulsar Massive is a Manley Massive Passive emulation — a
    passive program EQ, which the registry's own patterns confirm — and he has since
    assigned it to Dynamics explicitly. Recorded, not re-argued.
+
+---
+
+## Batch 27 — tints, the unified plugin key, and Track Mode
+
+**FROZEN and untouched: EQ8's mapping, Pro-Q 3 data mapping, the Calculator.**
+(The EQ8 *key* changed, but only to stop being special — see V52.)
+
+### THE INVESTIGATION Adi asked for: what happened to track volume and pan
+
+**Answer: nothing happened to it, because it never existed.** Searched
+exhaustively rather than recalled — `live_bridge.py`, `AdiVST.py`, the whole
+protocol doc, every file of the legacy `adi_ableton_vst_controller`, all of
+`docs/DECISIONS.md`, and `git log -S` across the repo. There is no Ableton track
+volume or pan anywhere in the history. No ruling, no verb, no dial.
+
+**What he is almost certainly remembering is one of two adjacent things:**
+
+1. **The Root Hub's MASTER VOLUME dial (D12 era), which V33 displaced.** That is
+   SYSTEM output volume, not an Ableton track: `os.volume` and `os.mute` still
+   exist on the *service* and still work. The note in root.js has said so all
+   along — "Master volume and the D12 lighting dimmer are not gone as concepts;
+   they simply no longer have a home on THIS strip". It was dropped because the
+   V33 OS-navigation strip took all five usable zones, not because it was rejected.
+2. **The uncommitted `load_device` work in the working tree.** `AdiVST.py` and
+   `live_bridge.py` have been dirty in git since Batch 18 — that diff is V30's
+   loader, which I wrote and never committed because the commit scope is "the
+   plugin folder only" and AdiVST sits outside it. So "we discussed adding to the
+   remote script" is a real memory; it just was not about the mixer.
+
+**AND THAT ANSWERS THE OTHER QUESTION IT RAISES.** "The remote script is verified
+and must not be modified" has one established exception, set by V30 and live on the
+hardware ever since: **purely ADDITIVE verbs that touch no existing code path.**
+Volume, pan and the unified device key are implemented that way — new methods, new
+dispatch branches, nothing existing edited. `cmd_eq8_key` is left byte-for-byte
+intact even though nothing calls it any more.
+
+**THE UNCOMMITTED PYTHON IS NOW COMMITTED**, in its own commit. Leaving the verbs
+this batch depends on living only in the working tree and the deployed User Library
+copy was a real hazard: a `git checkout` would have silently broken the hub.
+
+### V52 — the unified plugin key: short = smart focus, long = force insert
+
+**RULING (Adi's) — "Do not make EQ8 special."** Every plugin key on the hub:
+
+| press | behaviour |
+|---|---|
+| **short** | none on the track -> insert · one -> focus it · several -> focus the NEXT on each press |
+| **long** | always append a new instance |
+
+This is `cmd_eq8_key`'s Conditions A/B/C generalised from "devices whose
+class_name is Eq8" to "devices whose NAME matches" — the only handle a VST gives
+us, since every VST3 shares `class_name` "PluginDevice" and class matching cannot
+tell Pro-Q 3 from Serum.
+
+**THE DECISION HAPPENS IN LIVE, NOT IN THE PLUGIN**, and that is deliberate. The
+plugin's picture of the track is a snapshot pushed on change; a key that chose
+between insert and focus from that snapshot would be racing it. One verb,
+`device_key`, with a `new` flag for the hold.
+
+**A BUG THE TEST CAUGHT BEFORE THE HARDWARE DID.** The first cut reused
+`cmd_load_device`'s exact-then-CONTAINS matching for the on-track search. Contains
+is right for the browser — "Serum" has to reach the installed `Serum2` — and wrong
+on a track: `"compressor"` is contained in `"gluecompressor"`, so a track holding
+only a Glue Compressor answered the **Comp** key by focusing the Glue and never
+inserting the Compressor that was asked for. It is exact-then-**PREFIX** now, which
+keeps the leniency that matters (a device named for a later version still answers
+to its stem) while a plugin whose name merely ENDS with another's can no longer
+impersonate it.
+
+The `hold` is V6/V35's binding-level opt-in, so the engine times the key like an
+anchor and resolves the short press on RELEASE — a long press can never also fire
+the short one, and input.js needed no changes at all.
+
+### V50 — Track Mode: the idle state
+
+**RULING — with no device focused, the dials become track controls instead of six
+blank zones.**
+
+| dial | idle |
+|---|---|
+| 1-4 | the Root Hub's OS-navigation strip, **mirrored** |
+| 5 | track Pan |
+| 6 | track Volume, **strictly 0.5 dB** |
+
+Dials 1-4 are not reimplemented — `osNavDial` was extracted from root.js and both
+strips call it. Two hand-written copies of "the standard OS navigation strip" is
+how it quietly stops being standard. **The clock loses zone 6 here on purpose**
+(`lastZoneFree` gives it up when something else uses the zone), which is what Adi
+asked for. **Neither track dial takes a press**: dial 6's long press is the engine's
+NAV gesture, and volume is the one control on this strip you must not fire by
+accident.
+
+**WHY 0.5 dB IS HARDER THAN IT SOUNDS, and how it is exact.** `mixer_device.volume`
+is a DeviceParameter whose `value` is NORMALISED 0..1 on Live's own fader curve.
+There is no dB setter and the curve cannot be inverted analytically. So the dB is
+read from the parameter's OWN display string and the normalised value for a target
+dB is found by **bisection on that same function** — exact by construction, correct
+on any Live version, no curve constants to go stale. ~30 halvings per detent, which
+is nothing beside the round trip that delivered it.
+
+Two details that only a test would have found:
+* **The value is SNAPPED to the grid before stepping.** A fader parked at -6.02 dB
+  by a mouse drag must land on -6.0 and stay on the half-dB grid; stepping from the
+  raw value carries that 0.02 forever.
+* **24 bisection halvings left ~0.01 dB of residue** — visible in a readout printed
+  to two decimals. It is 30 now.
+
+Both mixer parameters are **watched for the lifetime of the selected track**, so the
+readout cannot go stale when the fader is moved with the mouse.
+
+### V49 — the bands are TINTED, not just outlined
+
+**RULING — "The thin colored bezels are too subtle and hard to see depending on the
+viewing angle... the background color of the keys themselves MUST clearly
+differentiate the sections."**
+
+Every cell of a band now carries `face` — render.js's existing material override,
+which V16's Omnis-Duo skin already used — set to the band colour crushed 78 %
+toward black. Dark red / amber / green / cyan caps. **Reusing `face` rather than
+inventing a second tint mechanism meant it was already in `hashId()` and already in
+`keySpec()`**, so nothing new could silently fail to reach the ink. The outlines
+stay on top. The Back key takes the EQ band's tint so that corner is not the one
+bare cap; the utility column is deliberately untinted, because it is not a category.
+
+### V49 — the categories, corrected
+
+**Pulsar Massive and Spectre moved OUT of Dynamics and into EQ**, at Adi's
+instruction: "You were correct in your previous warning regarding Pulsar Massive."
+Both are band tools. Pinned in both directions by a test so neither drifts back.
+
+### V49 — the invented "Device" readout is deleted
+
+"I do not know what the Device screen you invented is, but it does nothing useful."
+He is right — it was a key with no tap handler, and its one remaining job, reporting
+a load that missed, belongs on **the key you actually pressed**. `lastError` is now
+matched on the device string, so pressing Soothe on a machine without Soothe reddens
+Soothe and nothing else. Asserted as an absence, because a careless revert is what
+would bring it back.
+
+### V49 — NEXT always has somewhere to go
+
+**RULING — "The NEXT button should have an empty next layout for more plugins in
+the future with the same visual split."** `itemPages()` returns a minimum of 2, so
+page 2 is the same four tinted, framed bands with nothing in them. Pages are
+`bandPages x itemPages`, which at 5 columns walks EQ+Dyn, EQ+Dyn spare, Syn+Met,
+Syn+Met spare — one control, still just "show me more".
+
+### V51 — the MIDI screen had no exit, and the comment lied
+
+**RULING — a real Back key at (0,0).** The bug is worth recording exactly: the code
+returned `null` there with the comment *"Button 1 is left unbound so the engine
+paints Back."* **The engine only does that OUTSIDE NAV OFF** — `decorate()` guards
+on `!isFullScreen()` and input.js reserves Button 1 on the same condition — and the
+screen declares `fullScreenCapable`, so it is ALWAYS in NAV OFF. Button 1 was an
+unbound, unpainted, dead key and the module's only exit was the dial-6 NAV gesture.
+**The comment stopped being true the moment the screen went full-screen-capable, and
+nothing failed loudly.** Same class of bug as V51's stale claims elsewhere: a
+comment asserting an invariant that a later change quietly broke.
+
+### Operational note — LIVE MUST BE RESTARTED
+
+Ableton loads MIDI Remote Scripts at launch, so the new verbs do not exist in a Live
+that was already running when the deploy landed. Live WAS running at deploy time.

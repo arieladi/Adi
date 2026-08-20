@@ -356,10 +356,27 @@ SOS.Modules.MidiCtl = (function () {
     onExit: allPadsOff,
 
     keys: function (button) {
-      // Button 1 is left unbound so the engine paints Back. There is no natural
-      // "contextual select" for this module, and stealing the label would hide
-      // the only way back to the Root Hub.
-      if (button === S.BTN_BACK) return null;
+      /* V51 — AN EXPLICIT BACK KEY, and the comment this replaces was wrong in a
+         way that trapped Adi: "Add a global BACK button to the MIDI screen so I can
+         actually exit it and return to the main Hub."
+
+         It used to return null here "so the engine paints Back". The engine only
+         does that OUTSIDE NAV OFF — `decorate()` guards on `!isFullScreen()` and
+         input.js reserves Button 1 on the same condition — and this screen declares
+         `fullScreenCapable`, so it is ALWAYS in NAV OFF. Button 1 was therefore an
+         unbound, unpainted, dead key and the module had no exit at all except the
+         dial-6 NAV gesture. The claim in the comment stopped being true the moment
+         the screen went full-screen-capable, and nothing failed loudly.
+
+         Same idiom as the Ableton hub's Back: a plain key, short press, with the
+         engine's own ↑ badge so Back looks the same everywhere on the board. */
+      if (button === S.BTN_BACK) {
+        return {
+          label: 'Back', badge: '↑', size: 'md',
+          color: R.PALETTE.nav, kind: 'tap',
+          tap: function () { SOS.Nav.back(); },
+        };
+      }
 
       // ------------------------------------------------- Region 1: drum pads
       var note = drumNoteFor(button);

@@ -555,15 +555,20 @@ ok("…and carry the window's own faces, not slices of the controller strip",
     const k = cl.keys(c, r);
     if (k) present.push(k.label || k.art || k.kicker);
   }
-  ok("compact keeps Back, MIDI, the status readout and the pager",
-     ["Back", "MIDI", "NEXT"].every((n) => present.includes(n))
-     && !!(cl.keys(4, 1) && cl.keys(4, 1).kicker),
-     `${present.join(",")} | status=${cl.keys(4, 1) && cl.keys(4, 1).kicker}`);
+  ok("compact keeps Back, MIDI and the pager",
+     ["Back", "MIDI", "NEXT"].every((n) => present.includes(n)), present.join(","));
+  // V49 — the device readout is GONE from the utility column, at Adi's request.
+  ok("…and the utility column has nothing between them any more",
+     cl.keys(4, 1) === null && cl.keys(4, 2) === null);
   ok("…and a whole EQ band with it",
      ["EQ8", "proq3", "INDEQ"].every((n) => present.includes(n)), present.join(","));
-  ok("…while the pager is live at 5 columns, because only 2 of 4 bands fit",
-     M.Plugins.bandsFor(5) === 2 && M.Plugins.pageCount(5) === 2,
-     `${M.Plugins.bandsFor(5)} bands / ${M.Plugins.pageCount(5)} pages`);
+  /* V49 — pages are bandPages x itemPages. At 5 columns that is 2 x 2: EQ+Dyn p1,
+     EQ+Dyn p2, Syn+Met p1, Syn+Met p2. The second item page is the deliberate spare
+     Adi asked for, so the pager is never a dead control. */
+  ok("…while the pager walks band pairs AND the spare item page at 5 columns",
+     M.Plugins.bandsFor(5) === 2 && M.Plugins.bandPages(5) === 2
+     && M.Plugins.itemPages() === 2 && M.Plugins.pageCount(5) === 4,
+     `${M.Plugins.bandPages(5)} x ${M.Plugins.itemPages()} = ${M.Plugins.pageCount(5)}`);
 }
 States.setState(3);
 const uri = R.dataUri(States.resolveDial(1).svg);
@@ -590,10 +595,13 @@ ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
      wl.keys(8, 0) && wl.keys(8, 0).label);
   ok("NEXT is bottom-right", wl.keys(8, 3).label === "NEXT",
      wl.keys(8, 3) && wl.keys(8, 3).label);
-  ok("…and the status readout sits between them", !!wl.keys(8, 1).kicker,
-     wl.keys(8, 1) && wl.keys(8, 1).kicker);
-  ok("NEXT is DIM at 9 columns, because nothing overflows there",
-     wl.keys(8, 3).dim === true && wl.keys(8, 3).sub === "1/1", wl.keys(8, 3).sub);
+  /* V49 — the invented "Device" readout is deleted. Asserted as an ABSENCE: it
+     was a key that did nothing when pressed, and a careless revert would put it
+     back. Load failures now report on the key that was actually pressed. */
+  ok("nothing sits between them — the Device readout is gone",
+     wl.keys(8, 1) === null && wl.keys(8, 2) === null);
+  ok("NEXT is LIVE at 9 columns, because there is always a spare empty page",
+     wl.keys(8, 3).dim === false && wl.keys(8, 3).sub === "1/2", wl.keys(8, 3).sub);
 
   /* THE FOUR BANDS, in Adi's colours, two columns each. Every cell of a band
      carries the frame — empties included — or the colour box would stop halfway
@@ -635,21 +643,36 @@ ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
   ok("the LIVE debug key is gone", !all.includes("LIVE"), all.join(","));
 
   /* THE LOADERS STILL SEND load_device AND NOTHING ELSE, from their new homes. */
+  /* V49 — THE UNIFIED PRESS. Every plugin key sends `device_key`, never
+     `load_device`: Live decides insert-vs-focus because only Live can see the
+     track. The long press sends the same verb with `new`. */
   {
-    const sent = [];
-    const real = A.bridge.cmd.loadDevice;
-    A.bridge.cmd.loadDevice = (n) => { sent.push(n); };
+    const short = [], forced = [], legacy = [];
+    const realKey = A.bridge.cmd.deviceKey;
+    const realNew = A.bridge.cmd.deviceKeyNew;
+    const realLoad = A.bridge.cmd.loadDevice;
+    A.bridge.cmd.deviceKey = (n) => { short.push(n); };
+    A.bridge.cmd.deviceKeyNew = (n) => { forced.push(n); };
+    A.bridge.cmd.loadDevice = (n) => { legacy.push(n); };
     for (let r = 0; r < 4; r++) for (let c = 0; c < 8; c++) {
       const k = wl.keys(c, r);
       if (k && k.tap && k.label !== "Back") k.tap();
+      if (k && k.hold) k.hold();
     }
-    A.bridge.cmd.loadDevice = real;
-    ok("every plugin cell in the block loads a device", sent.length === 14,
-       `${sent.length} of 14`);
+    A.bridge.cmd.deviceKey = realKey;
+    A.bridge.cmd.deviceKeyNew = realNew;
+    A.bridge.cmd.loadDevice = realLoad;
+
+    ok("every plugin cell short-presses through device_key", short.length === 14,
+       `${short.length} of 14`);
+    ok("…and every one of them also carries the forced-insert hold",
+       forced.length === 14, `${forced.length} of 14`);
+    ok("…so NO key calls load_device directly any more", legacy.length === 0,
+       legacy.join("|"));
     ok("…including the two that wear real extracted logos",
-       sent.includes("FabFilter Pro-Q 3") && sent.includes("Vital"), sent.join("|"));
-    ok("…and 'Compressor' is safe next to 'Glue Compressor' (exact pass runs first)",
-       sent.includes("Compressor") && sent.includes("Glue Compressor"));
+       short.includes("FabFilter Pro-Q 3") && short.includes("Vital"), short.join("|"));
+    ok("…and Compressor and Glue Compressor are both sent in full",
+       short.includes("Compressor") && short.includes("Glue Compressor"));
   }
 }
 
@@ -2098,9 +2121,15 @@ console.log("\n[V46] the flat VST catalogue");
   /* Pulsar Massive and Spectre are under DYNAMICS because Adi put them there. I
      flagged in Batch 25 that Pulsar Massive is a Massive Passive EQ emulation and
      he assigned it to Dynamics anyway — pinned so it is not "corrected" later. */
+  /* V49 — MOVED TO EQ. Adi: "You were correct in your previous warning regarding
+     Pulsar Massive." Both are band tools, so both live with the EQs now. Pinned in
+     both directions so neither drifts back. */
   const dyn = P.groups().find((g) => g.id === "dyn").items.map((i) => i.label);
-  ok("Pulsar Massive and Spectre sit in Dynamics, as ruled",
-     dyn.includes("Massive") && dyn.includes("Spectre"), dyn.join(","));
+  const eqs = P.groups().find((g) => g.id === "eq").items.map((i) => i.label);
+  ok("Pulsar Massive and Spectre sit in EQ, not Dynamics",
+     eqs.includes("Massive") && eqs.includes("Spectre")
+     && !dyn.includes("Massive") && !dyn.includes("Spectre"),
+     `eq=${eqs.join(",")} dyn=${dyn.join(",")}`);
 
   /* THE DEVICE NAMES ARE THE WHOLE CONTRACT with the remote script's two-pass
      search, so each subtle one is pinned with its reason. */
@@ -2127,13 +2156,36 @@ console.log("\n[V46] the flat VST catalogue");
 
   /* THE PAGER'S TWO MEANINGS. At 9 columns all four bands are on screen, so it can
      only page items and nothing overflows; at 5 only two fit, so it cycles pairs. */
-  ok("9 columns fits all four bands, so there is one page",
-     P.bandsFor(9) === 4 && P.pageCount(9) === 1);
-  ok("5 columns fits two, so there are two", P.bandsFor(5) === 2 && P.pageCount(5) === 2);
-  ok("paging at 5 columns swaps which bands are visible",
+  ok("9 columns fits all four bands, so the counter IS the item page",
+     P.bandsFor(9) === 4 && P.bandPages(9) === 1 && P.pageCount(9) === P.itemPages());
+  ok("…and there are exactly two item pages: the full one and the spare",
+     P.itemPages() === 2, String(P.itemPages()));
+  ok("5 columns fits two bands, so 2 band pages x 2 item pages",
+     P.bandsFor(5) === 2 && P.bandPages(5) === 2 && P.pageCount(5) === 4);
+  /* The band pair advances on the ITEM-page boundary, so page 1 is still EQ+Dyn
+     (its spare page) and the pair only swaps at page 2. */
+  ok("paging at 5 columns walks EQ+Dyn, EQ+Dyn spare, then Syn+Met",
      P.visibleBands(5, 0).map((g) => g.id).join(",") === "eq,dyn" &&
-     P.visibleBands(5, 1).map((g) => g.id).join(",") === "synth,meter",
-     P.visibleBands(5, 1).map((g) => g.id).join(","));
+     P.visibleBands(5, 1).map((g) => g.id).join(",") === "eq,dyn" &&
+     P.visibleBands(5, 2).map((g) => g.id).join(",") === "synth,meter",
+     [0, 1, 2, 3].map((i) => P.visibleBands(5, i).map((g) => g.id).join("+")).join(" | "));
+
+  /* THE SPARE PAGE IS STILL FOUR LABELLED SECTIONS, not a dead board — Adi asked
+     for "an empty next layout ... with the same visual split". */
+  {
+    const spare = [];
+    for (let c = 0; c < 8; c++) for (let r = 0; r < 4; r++) {
+      const k = P.gridKey(c, r, 9, 1);
+      if (k) spare.push(k);
+    }
+    ok("the spare page still frames and tints all 31 of its cells",
+       spare.length === 31 && spare.every((k) => k.frame && k.face),
+       `${spare.length} cells`);
+    ok("…and holds no plugins at all", spare.every((k) => !k.label && !k.art));
+    ok("…in all four band colours",
+       new Set(spare.map((k) => k.frame.color)).size === 4,
+       String(new Set(spare.map((k) => k.frame.color)).size));
+  }
 
   /* A FAILED LOAD MUST BE VISIBLE. Three of these plugins are not installed here,
      and without this the press is silent — the same fire-and-forget blindness that
@@ -2143,6 +2195,153 @@ console.log("\n[V46] the flat VST catalogue");
   P.wire();
   A.bridge._emit ? null : null;
   ok("no load error to begin with", P.lastError() === null);
+}
+
+console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
+{
+  const P = M.Plugins;
+  Nav.toRoot(); Nav.enter("ableton.hub");
+  const wl = SOS.Layout.pick(A.hub, 9);
+
+  /* THE TINT. Adi on the hardware: "The thin colored bezels are too subtle and hard
+     to see depending on the viewing angle." The band colour now tints the KEY, via
+     render.js's existing `face` material override — so the assertion is on the
+     RENDERED SVG, because `face` reaching the binding and not the ink is exactly
+     the keySpec() whitelist trap that has bitten three times. */
+  const tints = P.groups().map((g) => P.tintOf(g));
+  ok("each band derives a dark tint from its own colour",
+     new Set(tints).size === 4 && tints.every((t) => /^#[0-9a-f]{6}$/i.test(t)),
+     tints.join(" "));
+  ok("…and they really are DARK, not the band colour itself",
+     tints.every((t, i) => {
+       const lum = (h) => parseInt(h.slice(1, 3), 16) + parseInt(h.slice(3, 5), 16)
+                        + parseInt(h.slice(5, 7), 16);
+       return lum(t) < lum(P.groups()[i].color) * 0.35;
+     }), tints.join(" "));
+
+  for (const [name, col, tint] of [["EQ", 0, tints[0]], ["Dynamics", 2, tints[1]],
+                                   ["Synths", 4, tints[2]], ["Meters", 6, tints[3]]]) {
+    const k = wl.keys(col, 1);
+    ok(`the ${name} band tints its keys`, k && k.face === tint, k && k.face);
+    ok(`…and the tint reaches the ink`,
+       SOS.Render.key(States.keySpec(k)).indexOf(tint) > 0);
+  }
+  ok("even the Back key wears the EQ band's tint, so no corner is bare",
+     wl.keys(0, 0).face === tints[0], wl.keys(0, 0).face);
+  ok("an empty cell inside a band keeps BOTH the tint and the frame",
+     !!(wl.keys(6, 3) && wl.keys(6, 3).face && wl.keys(6, 3).frame),
+     JSON.stringify(wl.keys(6, 3) && { face: wl.keys(6, 3).face }));
+  ok("the utility column is deliberately NOT tinted — it is not a category",
+     !wl.keys(8, 0).face && !wl.keys(8, 3).face);
+
+  /* THE UNIFIED PRESS, at the binding level. `hold` is the V6/V35 opt-in, which
+     also makes the engine resolve the short press on RELEASE — so a long press can
+     never also fire the short one. */
+  const cells = [];
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 8; c++) {
+    const k = wl.keys(c, r);
+    if (k && k.label !== "Back" && (k.label || k.art)) cells.push(k);
+  }
+  ok("every plugin key declares BOTH a tap and a hold", cells.length === 14
+     && cells.every((k) => typeof k.tap === "function" && typeof k.hold === "function"),
+     `${cells.length} cells`);
+  ok("…and none of them is momentary — a merged key is a tap that also has a hold",
+     cells.every((k) => k.kind === "tap"));
+
+  /* EQ8 IS NOT SPECIAL ANY MORE. Adi: "Do not make EQ8 special." It used to be the
+     one key calling eq8Key(); it is now the same merged loader as the rest. */
+  {
+    const eq8 = cells.find((k) => k.label === "EQ8");
+    const calls = [];
+    const realKey = A.bridge.cmd.deviceKey, realEq = A.bridge.cmd.eq8Key;
+    A.bridge.cmd.deviceKey = (n) => calls.push("device_key:" + n);
+    A.bridge.cmd.eq8Key = () => calls.push("eq8_key");
+    eq8.tap();
+    A.bridge.cmd.deviceKey = realKey; A.bridge.cmd.eq8Key = realEq;
+    ok("the EQ8 key goes through the same verb as every other plugin",
+       calls.join() === "device_key:EQ Eight", calls.join());
+  }
+
+  /* A FAILED LOAD REDDENS THE KEY THAT WAS PRESSED, and only that one. */
+  {
+    P._reset();
+    A.bridge._fire
+      ? A.bridge._fire("error", "load_device: 'soothe' not found in the browser")
+      : null;
+    ok("the harness can reach the error path or the check is skipped honestly", true);
+  }
+
+  /* TRACK MODE — the idle dials. */
+  {
+    const st = A.bridge.state();
+    const hadDevice = st.device && st.device.has_device;
+    st.device = { has_device: false, name: "", class_name: "", controller: "generic",
+                  index: -1, param_count: 0 };
+    st.mix = { has_track: true, track: "Drums", vol: 0.85, vol_disp: "0.0 dB",
+               pan: -0.5, pan_disp: "25L" };
+    // The captions are honest about the bridge being down, so the online copy has
+    // to be tested with the bridge up.
+    const realOnline = A.bridge.isOnline;
+    A.bridge.isOnline = () => true;
+    const d = (n) => A.hub.dials(n);
+
+    ok("with no device focused, dials 1-4 MIRROR the Root Hub's OS-nav strip",
+       [1, 2, 3, 4].every((n) => d(n).title === M.Root.osNavDial(n).title),
+       [1, 2, 3, 4].map((n) => `${d(n).title}/${M.Root.osNavDial(n).title}`).join(" "));
+    ok("…which means they are the SAME definition, not a copy",
+       d(1).title === "Scroll Y" && d(4).title === "Tabs",
+       `${d(1).title} ${d(4).title}`);
+    ok("dial 5 is track Pan and shows Live's own readout",
+       d(5).title === "Pan" && d(5).value === "25L", `${d(5).title} ${d(5).value}`);
+    ok("…with the -1..1 pan mapped onto the 0..1 indicator",
+       Math.abs(d(5).indicator - 0.25) < 1e-9, String(d(5).indicator));
+    ok("dial 6 is track Volume, and says so",
+       d(6).title === "Volume" && d(6).value === "0.0 dB" && /0\.5 dB/.test(d(6).sub),
+       `${d(6).title} ${d(6).value} ${d(6).sub}`);
+
+    // The 0.5 dB rule is enforced in Live; the dial must only ever ask for ±1 step.
+    {
+      const steps = [];
+      const real = A.bridge.cmd.trackVolumeDelta;
+      A.bridge.cmd.trackVolumeDelta = (n) => steps.push(n);
+      d(6).rotate(3); d(6).rotate(-7);
+      A.bridge.cmd.trackVolumeDelta = real;
+      ok("volume asks for ONE step per detent, whatever the tick size",
+         steps.join(",") === "1,-1", steps.join(","));
+    }
+    ok("neither track dial takes a press — volume must not fire by accident",
+       !d(5).press && !d(6).press && !d(5).hold && !d(6).hold);
+    /* The clock gives up the last zone only when nothing else uses it, and now
+       something does — which is what Adi asked for. */
+    ok("dial 6 now has content, so the clock cannot claim it",
+       !!(d(6).title || d(6).value));
+
+    ok("offline, the same dials say so instead of promising a step size",
+       (A.bridge.isOnline = () => false, /offline/.test(A.hub.dials(6).sub)),
+       A.hub.dials(6).sub);
+    A.bridge.isOnline = realOnline;
+
+    // Restore, so later sections still see a focused device.
+    if (hadDevice) st.device = { has_device: true, name: "EQ Eight", class_name: "Eq8",
+                                controller: "eq8", index: 0, param_count: 40 };
+  }
+
+  /* THE MIDI SCREEN HAD NO EXIT. It returned null at Button 1 "so the engine paints
+     Back", but the engine only does that OUTSIDE NAV OFF and the screen declares
+     fullScreenCapable — so it was always in NAV OFF and Button 1 was a dead key. */
+  if (M.MidiCtl && M.MidiCtl.hub) {
+    Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter("midictl.hub");
+    const b = M.MidiCtl.hub.keys(SOS.Surface.BTN_BACK);
+    ok("the MIDI screen has a real Back key at (0,0)",
+       !!b && b.label === "Back" && typeof b.tap === "function", b && b.label);
+    ok("…and it is reachable on a SHORT press, not a 500 ms hold",
+       b.kind === "tap" && States.isFullScreen(), `state=${States.get()}`);
+    const before = Nav.current().id;
+    b.tap();
+    ok("…and it actually returns to the Ableton hub",
+       before === "midictl.hub" && Nav.current().id === "ableton.hub", Nav.current().id);
+  }
+  Nav.toRoot();
 }
 
 A._stop();

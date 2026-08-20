@@ -52,57 +52,64 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**1019 tests green** (1008 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 26 is deployed and running on the hardware** (`service v2.4.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`).
+**1080 tests green** (1044 JS + 36 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 27 is deployed** (`service v2.4.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`).
 
 ### FROZEN at Adi's instruction — do not write code for these
 
-**EQ8, Pro-Q 3 data mapping, and the Calculator.** The two EQ8 rulings noted further
-down are parked, not live.
+**EQ8's mapping, Pro-Q 3 data mapping, and the Calculator.**
 
-### Batch 26 (V46–V47) — the flat Ableton hub, and Chrome
+### ⚠️ THE REMOTE SCRIPT GAINED VERBS — LIVE MUST BE RESTARTED
 
-**The V44 VST tree lasted one batch.** Adi flattened it: the Ableton hub IS the
-launcher now, four two-column bands with `(0,0)` as a global Back and col 8 as a
-utility strip (MIDI / status / NEXT). `plugins.js` is the CATALOGUE only — no
-screens. **Presets is deleted entirely**, key, folder and `mode` flag.
+Ableton loads MIDI Remote Scripts **at launch**, so `device_key`,
+`track_volume_delta`, `track_pan_delta` and `get_mix` do not exist in a Live that was
+already running when the deploy landed. Live WAS running at Batch 27's deploy. If the
+plugin keys or the Track Mode dials do nothing, that is why — quit and reopen Live.
 
-```
-cols 0-1 RED EQ   cols 2-3 YELLOW Dynamics   cols 4-5 GREEN Synths
-cols 6-7 CYAN Meters      col 8 utility      (0,0) = Back
-```
+**"The remote script must not be modified" has one established exception**, set by
+V30 and live ever since: **purely ADDITIVE verbs that touch no existing code path.**
+Batch 27 follows it exactly — new methods, new dispatch branches, nothing existing
+edited, and `cmd_eq8_key` left byte-for-byte intact. **The Python is now COMMITTED**
+(its own commit); it had been dirty in the working tree since Batch 18, so a
+`git checkout` would have silently broken the hub.
 
-Four things here will bite anyone editing it:
+### Batch 27 (V49–V52) — tints, the unified plugin key, Track Mode
 
-- **HIS BRIEF SAID "8 columns / col 7"; the + XL has 9.** His screenshot cut off the
-  last column, which is why he drew MIDI and NEXT in the margin beside the cyan box.
-  Read as "the rightmost column" it all agrees — col 8 — and nothing is stranded.
-- **A group frame is assembled from the keys themselves.** There is no canvas between
-  keys, so `frame: {color,t,r,b,l}` washes each key's 6 px margin and bars only its
-  OUTER sides. It must be in `hashId()` (two loaders can differ only by edge) and the
-  bars must be emitted AFTER the face. Framed artwork gives back 8 px a side or the
-  band vanishes under it.
-- **Every cell of a band is returned even when empty**, or the colour box stops
-  halfway down the group.
-- **Only REAL icons.** Chrome, Vital and FabFilter are extracted; Serum2, SPAN,
-  s(M)exoscope, bx_meter, INDEQ, dBComp and the three Ableton stock devices have no
-  product mark that exists on disk, so they wear text. See the table in art.js.
+- **The bands are TINTED**, not just outlined — Adi: the bezels were "too subtle and
+  hard to see depending on the viewing angle". Every band cell carries `face` (the
+  V16 material override, so it was already in `hashId()` and `keySpec()`) at the band
+  colour crushed 78 % toward black.
+- **One press rule for EVERY plugin key** — short: insert if absent, focus if
+  present, cycle if several; long: force a new instance. **The decision happens in
+  LIVE** (`device_key`), because the plugin's view of the track is a snapshot and
+  deciding here would race it. EQ8 is no longer special.
+  **On-track matching is exact-then-PREFIX, never contains** — contains made
+  "Compressor" match "Glue Compressor", so the Comp key focused the Glue instead of
+  inserting a Compressor. A test pins it.
+- **Track Mode** is the idle state (no device focused): dials 1–4 MIRROR the Root
+  Hub strip via the shared `Root.osNavDial`, dial 5 is Pan, dial 6 is Volume in
+  **strictly 0.5 dB** steps. The clock gives up zone 6 here on purpose.
+  **The 0.5 dB is exact, not approximated**: Live's fader curve is not invertible, so
+  the dB is read from the parameter's own display string and the target is found by
+  **bisection on that same function** (30 halvings — 24 left ~0.01 dB of visible
+  residue). The value is SNAPPED to the grid before stepping, or a mouse-dragged
+  -6.02 dB carries its 0.02 forever.
+- **Pulsar Massive and Spectre moved to EQ.** **The invented "Device" readout is
+  deleted** — a load that misses now reddens the key you pressed. **NEXT always has a
+  spare empty page** that keeps the four tinted sections.
+- **The MIDI screen finally has an exit.** It returned null at Button 1 "so the
+  engine paints Back", but the engine only does that OUTSIDE NAV OFF and that screen
+  is `fullScreenCapable` — so Button 1 was a dead key and the comment had been false
+  since the day the screen went full-screen-capable.
 
-**Chrome full screen (V47).** Chrome accepts the `AXFullScreen` write and does
-nothing, in BOTH directions, with no error — so V40's `||` fallback never fired. The
-Chromium family is now named and goes straight to `key code 3 + Ctrl+Cmd`, and the AX
-path re-reads the attribute before claiming success. Two AppleScript bugs found by
-RUNNING it: **`set w to window 1` then reusing `w`** raises -1728 (a stored System
-Events specifier collapses to a by-name reference) and had been breaking the AX path
-for EVERY app, leaving only the keystroke fallback working; and a fixed `delay 0.25`
-was too short to see the change, so it now polls.
+### There is no lost track volume/pan logic — it never existed
 
-**Touch strip:** the Tabs zone wears an SVG replica of Adi's supplied image, and the
-scroll arrows are the clock's blue via a single `PALETTE.clock` entry that clock.js
-also resolves.
-
-**Awaiting Adi:** per-plugin icons for everything without one; and the EQ8 key has
-lost its create-or-focus behaviour (it is a plain loader now, per "strictly
-instantiate" plus the freeze) — reversible in one line.
+Adi asked what happened to it. Searched, not recalled: `live_bridge.py`,
+`AdiVST.py`, the protocol doc, the entire legacy plugin, all of DECISIONS, and
+`git log -S`. Nothing. What he remembers is most likely **D12/V33's master-volume
+dial on the Root Hub** — which is SYSTEM volume (`os.volume`, still on the service,
+still working) and lost its home when the OS-nav strip took the zones — or the
+uncommitted `load_device` work, which is a real "we added to the remote script"
+memory about something else.
 
 ### Pro-Q 3 — ANSWERED by Adi (Batch 23), not yet implemented
 

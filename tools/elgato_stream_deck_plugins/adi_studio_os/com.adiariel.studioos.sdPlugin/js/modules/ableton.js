@@ -501,6 +501,14 @@ SOS.Modules.Ableton = (function () {
            consequence at all. The VST launcher shows the result, so the reply is
            finally emitted. */
         case 'device_loaded': emit('device_loaded', m); break;
+        /* V48 — the selected track's volume and pan, for the idle dials. Pushed on
+           track change and whenever either parameter moves, INCLUDING when it is
+           moved with the mouse: the remote script watches both for the lifetime of
+           the track, so the dial readout cannot go stale. */
+        case 'mix':
+          state.mix = m.has_track ? m : null;
+          emit('mix', state.mix); emit('state', state); break;
+        case 'device_focused': emit('device_focused', m); break;
         default: break;
       }
     }
@@ -524,6 +532,20 @@ SOS.Modules.Ableton = (function () {
          ignores an unknown `c`, so the key degrades to a no-op rather
          than breaking the bridge. */
       loadDevice: function (name) { send({ c: 'load_device', name: name }); },
+      /* V48 — THE UNIFIED PLUGIN KEY. `device_key` decides on the LIVE side,
+         because only Live can see what is already on the track: nothing there ->
+         insert, one -> focus it, several -> focus the next on each press. The long
+         press sets `new`, which always appends.
+
+         Deciding in Live rather than here is not an implementation detail. The
+         plugin's mirror of the track is a snapshot pushed on change; a key that
+         chose between insert and focus from that snapshot would be racing it. */
+      deviceKey: function (name) { send({ c: 'device_key', name: name }); },
+      deviceKeyNew: function (name) { send({ c: 'device_key', name: name, new: true }); },
+      // V48 — the idle-state dials. 0.5 dB per detent is enforced in Live.
+      trackVolumeDelta: function (steps) { send({ c: 'track_volume_delta', steps: steps }); },
+      trackPanDelta: function (steps) { send({ c: 'track_pan_delta', steps: steps }); },
+      getMix: function () { send({ c: 'get_mix' }); },
       selectTrack: function (dir) { send({ c: 'select_track', dir: dir }); },
       selectDevice: function (dir) { send({ c: 'select_device', dir: dir }); },
       getAllParams: function () { send({ c: 'get_all_params' }); },
@@ -695,14 +717,20 @@ SOS.Modules.Ableton = (function () {
         return {
           label: 'Back', badge: '↑', size: 'md', color: R.PALETTE.nav,
           frame: P() ? P().frameAt(0, 0, cols, page) : null,
+          face: P() ? P().tintAt(0, cols, page) : null,
           kind: 'tap',
           tap: function () { SOS.Nav.back(); },
         };
       }
 
+      /* V49 — THE UTILITY COLUMN IS MIDI AND NEXT, AND NOTHING ELSE. The device
+         readout that used to sit at (8,1) is gone: "I do not know what the Device
+         screen you invented is, but it does nothing useful." It was a key that did
+         nothing when pressed, and the one job it had left — reporting a load that
+         missed — belongs on the key you actually pressed, which is where
+         plugins.js puts it now. */
       if (col === util) {
         if (row === 0) return midiKey();
-        if (row === 1) return statusKey(Bridge.state());
         if (row === 3) return nextKey(cols);
         return null;
       }
@@ -720,9 +748,13 @@ SOS.Modules.Ableton = (function () {
      on screen so it can only page items, and nothing currently overflows, so it
      goes DIM and says 1/1 rather than pretending to be a control. At 5 columns it
      cycles which pair of bands you are looking at. */
+  /* NEXT. V49 — plugins.js now guarantees a spare EMPTY page, so this is never
+     inert: page 2 is the same four tinted, framed bands with nothing in them, ready
+     for the next plugins. At 5 columns the count also folds in which pair of bands
+     is showing. */
   function nextKey(cols) {
     var pages = P() ? P().pageCount(cols) : 1;
-    var cur = pages > 1 ? ((page % pages) + pages) % pages : 0;
+    var cur = ((page % pages) + pages) % pages;
     return {
       label: 'NEXT', sub: (cur + 1) + '/' + pages, size: 'md',
       color: R.PALETTE.console, dim: pages <= 1, kind: 'tap',
@@ -741,31 +773,59 @@ SOS.Modules.Ableton = (function () {
     };
   }
 
-  /* V29 — ONE readout of what the strip is controlling. Offline it says so plainly
-     instead of lighting a red debug button. Not a control; does nothing when
-     pressed.
+  /* ==========================================================================
+     V50 — THE IDLE STATE: TRACK MODE.
 
-     V46 — it also carries a FAILED LOAD. A successful insert needs no display of
-     its own, because Live focuses the device it just created and this key names it
-     by itself; a miss has no such echo, and three plugins in the catalogue are not
-     installed on this machine. Without this a press on Soothe would be completely
-     silent — the same fire-and-forget blindness as the stale-service bug. */
-  function statusKey(st) {
-    var err = P() ? P().lastError() : null;
-    if (err) {
+     Adi: "when I enter the Ableton hub but no VST is selected/focused, the touch
+     screen and dials are completely empty. I want a default Track Mode."
+
+       dials 1-4   the standard OS navigation strip, MIRRORED from the Root Hub
+       dial  5     track PAN
+       dial  6     track VOLUME, in strictly 0.5 dB steps
+
+     Dials 1-4 are not reimplemented here — they come from `Root.osNavDial`, which
+     was extracted for exactly this. Two hand-written copies of the same five dials
+     is how "the standard OS navigation strip" quietly stops being standard.
+
+     THE CLOCK LOSES ZONE 6 HERE, deliberately: `States.lastZoneFree` gives the last
+     zone to the clock only when nothing else uses it, and now something does. That
+     is what Adi asked for ("Replace the Apps and Clock with Ableton Track
+     Controls").
+
+     Dial 6's LONG press is the engine's NAV gesture and is untouchable, so neither
+     of these two dials takes a press — turning is the whole interaction. Volume is
+     the one thing on this strip you must not fire by accident.
+     ========================================================================== */
+  function deviceFocused() {
+    var st = Bridge.state();
+    return !!(st.device && st.device.has_device);
+  }
+
+  function idleDial(dial) {
+    // 1-4: the Root Hub's own strip, not a copy of it.
+    if (dial <= 4) {
+      var Root = SOS.Modules.Root;
+      return Root && Root.osNavDial ? Root.osNavDial(dial) : { title: '', value: '' };
+    }
+    var mix = Bridge.state().mix;
+    var on = Bridge.isOnline();
+
+    if (dial === 5) {
       return {
-        kicker: 'NOT LOADED', label: shortName(err.name), sub: err.note,
-        size: 'md', color: '#ff5d5d', kind: 'tap',
+        title: 'Pan', value: mix ? (mix.pan_disp || 'C') : '—',
+        sub: on ? 'track pan' : 'bridge offline',
+        // Live's pan is -1..1; the bar wants 0..1.
+        indicator: mix && typeof mix.pan === 'number' ? (mix.pan + 1) / 2 : undefined,
+        color: R.PALETTE.ableton, dim: !on,
+        rotate: function (t) { Bridge.cmd.trackPanDelta(t > 0 ? 1 : -1); },
       };
     }
-    var on = Bridge.isOnline();
     return {
-      kicker: on ? 'DEVICE' : 'BRIDGE',
-      label: on ? shortName(st.device.name || '—') : 'Offline',
-      sub: on ? shortName(st.track.name || '—') : 'start Ableton',
-      size: 'md',
-      color: on ? R.PALETTE.dim : '#ff5d5d',
-      dim: !on, kind: 'tap',
+      title: 'Volume', value: mix ? (mix.vol_disp || '—') : '—',
+      sub: on ? '0.5 dB steps' : 'bridge offline',
+      indicator: mix && typeof mix.vol === 'number' ? mix.vol : undefined,
+      color: R.PALETTE.green, dim: !on,
+      rotate: function (t) { Bridge.cmd.trackVolumeDelta(t > 0 ? 1 : -1); },
     };
   }
 
@@ -781,6 +841,8 @@ SOS.Modules.Ableton = (function () {
     onEnter: function () {
       Bridge.connect();
       if (SOS.Modules.Plugins) SOS.Modules.Plugins.wire();
+      // V50 — populate the idle Track Mode dials without waiting for a change.
+      Bridge.cmd.getMix();
       pickController();
       startPump();
     },
@@ -798,6 +860,9 @@ SOS.Modules.Ableton = (function () {
     dials: function (dial) {
       var slot = dial - 1;
       if (slot >= lastZones) return { title: '', value: '' };   // borrowed by a window
+      // V50 — with no device focused there is no controller strip to draw, so the
+      // dials become Track Mode instead of six blank zones. See idleDial().
+      if (!deviceFocused()) return idleDial(dial);
       return {
         // The strip image IS the dial's face: the compositor already sliced the
         // one 1200x100 drawing, so a curve spans all six as one picture.
