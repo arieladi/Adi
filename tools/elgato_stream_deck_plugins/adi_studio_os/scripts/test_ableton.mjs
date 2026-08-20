@@ -31,7 +31,8 @@ const FILES = [
   "js/ableton/BlackholeController.js", "js/ableton/HDelayController.js",
   "js/ableton/DbCompController.js", "js/ableton/OmnipressorController.js",
   "js/ableton/SaturateController.js", "js/ableton/SideMinderController.js",
-  "js/ableton/registry.js", "js/modules/index.js",
+  "js/ableton/registry.js",
+                 "js/modules/plugins.js", "js/modules/index.js",
 ];
 
 let pass = 0, fail = 0;
@@ -563,12 +564,13 @@ ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
    deliberately empty, waiting for the next shortcut. */
 {
   const wl = SOS.Layout.pick(A.hub, 9);
-  ok("row 0 is the device shelf: Pro-Q 3, EQ8, Presets",
+  // V44 — the shelf gained the VST launcher at col 3, still left-aligned.
+  ok("row 0 is the device shelf: Pro-Q 3, EQ8, Presets, Plugins",
      wl.keys(0, 0).label === "Pro-Q 3" && wl.keys(1, 0).label === "EQ8" &&
-     wl.keys(2, 0).label === "Presets",
-     [0,1,2].map((c) => wl.keys(c, 0) && wl.keys(c, 0).label).join(","));
+     wl.keys(2, 0).label === "Presets" && wl.keys(3, 0).label === "Plugins",
+     [0,1,2,3].map((c) => wl.keys(c, 0) && wl.keys(c, 0).label).join(","));
   ok("…and the rest of row 0 is empty, on purpose",
-     [3,4,5,6,7,8].every((c) => wl.keys(c, 0) === null));
+     [4,5,6,7,8].every((c) => wl.keys(c, 0) === null));
   ok("row 1 is MIDI + one status readout",
      wl.keys(0, 1).label === "MIDI" && !!wl.keys(1, 1).kicker,
      `${wl.keys(0,1) && wl.keys(0,1).label} / ${wl.keys(1,1) && wl.keys(1,1).kicker}`);
@@ -2003,6 +2005,141 @@ for (const name of CTORS) {
 }
 ok("SOS.SvgCtx has no controllers left to serve",
    CTORS.every((n) => typeof AVC[n].prototype.build === "function"));
+
+/* ===========================================================================
+   V44 — THE VST LAUNCHER TREE.
+
+   The value of a generated menu is that one renderer serves every page, so these
+   assertions are mostly about the SHAPE of the tree and the two things that would
+   silently break it: a screen that was never registered (Nav.enter logs and does
+   nothing, which looks exactly like a dead key) and a page with no way back.
+   =========================================================================== */
+console.log("\n[V44] the VST launcher tree");
+{
+  const P = M.Plugins;
+  ok("the module is present with a screen list", !!(P && P.screens && P.screens.length));
+
+  const cats = P.categories();
+  ok("four categories, in a fixed order",
+     cats.map((c) => c.id).join(",") === "eq,dyn,synth,meter",
+     cats.map((c) => c.id).join(","));
+
+  /* EVERY SCREEN MUST BE REGISTERED WITH NAV. `Nav.enter` on an unregistered id
+     returns false and logs — no throw, no key, nothing on the surface. */
+  const ids = ["ableton.plugins", ...cats.map((c) => `ableton.plugins.${c.id}`)];
+  ok("every screen in the tree is registered with nav",
+     ids.every((id) => !!Nav.get(id)),
+     ids.filter((id) => !Nav.get(id)).join(",") || "all registered");
+  ok("…which is 1 root + 4 categories", P.screens.length === 5, String(P.screens.length));
+
+  /* THE ROUTE ADI ASKED FOR, walked for real: Ableton -> Plugins -> a category,
+     then Back, Back, and we must be standing on the Ableton hub again. */
+  Nav.toRoot();
+  Nav.enter("ableton.hub");
+  const hubDepth = Nav.depth();
+
+  const L9 = SOS.Layout.pick(A.hub, 9);
+  const folder = L9.keys(3, 0);
+  ok("the Ableton hub carries a Plugins folder key on the device shelf",
+     !!folder && folder.label === "Plugins", folder && folder.label);
+  folder.tap();
+  ok("…and it enters the launcher", Nav.current().id === "ableton.plugins", Nav.current().id);
+
+  const menu = SOS.Layout.pick(Nav.current(), 9);
+  const cells = [0, 1, 2, 3].map((c) => menu.keys(c, 1));
+  ok("level 2 shows the four category folders on row 1",
+     cells.every(Boolean) && cells.map((k) => k.label).join(",") === "EQ,Dynamics,Synths,Meters",
+     cells.map((k) => k && k.label).join(","));
+  ok("…each marked as going deeper", cells.every((k) => k.corner === "▸"));
+  ok("…and captioned with how many it holds",
+     cells[0].sub === "4 plugins" && cells[2].sub === "1 plugin",
+     [cells[0].sub, cells[2].sub].join(" / "));
+
+  cells[0].tap();
+  ok("entering EQ lands on the category screen",
+     Nav.current().id === "ableton.plugins.eq", Nav.current().id);
+
+  /* BACK ON EVERY SUB-PAGE — Adi's "crucial" requirement, at (0,0) on all five. */
+  for (const id of ids) {
+    Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter(id);
+    const b = SOS.Layout.pick(Nav.current(), 9).keys(0, 0);
+    ok(`${id} has a Back key at (0,0)`, !!b && b.label === "Back" && typeof b.tap === "function",
+       b && b.label);
+    const b5 = SOS.Layout.pick(Nav.current(), 5).keys(0, 0);
+    ok(`…and at 5 columns too`, !!b5 && b5.label === "Back");
+  }
+
+  // The full walk back up, one level at a time.
+  Nav.toRoot(); Nav.enter("ableton.hub");
+  Nav.enter("ableton.plugins"); Nav.enter("ableton.plugins.synth");
+  SOS.Layout.pick(Nav.current(), 9).keys(0, 0).tap();
+  ok("Back from a category returns to Plugins", Nav.current().id === "ableton.plugins",
+     Nav.current().id);
+  SOS.Layout.pick(Nav.current(), 9).keys(0, 0).tap();
+  ok("Back from Plugins returns to the Ableton hub",
+     Nav.current().id === "ableton.hub" && Nav.depth() === hubDepth, Nav.current().id);
+
+  /* THE LOADERS. Every leaf must reach `load_device` with a name, and nothing
+     else — this is the one command Adi specified, and the remote script is
+     verified and must not change. Asserted on the WIRE, by capturing sends. */
+  {
+    const sent = [];
+    const realSend = A.bridge.cmd.loadDevice;
+    A.bridge.cmd.loadDevice = (n) => { sent.push(n); };
+
+    const names = [];
+    for (const c of cats) {
+      Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter(`ableton.plugins.${c.id}`);
+      const lay = SOS.Layout.pick(Nav.current(), 9);
+      c.items.forEach((item, i) => {
+        const k = lay.keys(i % 9, 1 + Math.floor(i / 9));
+        names.push(k && k.label);
+        if (k) k.tap();
+      });
+    }
+    ok("every leaf key exists and fires", sent.length === 11, `${sent.length} of 11`);
+    ok("…each sending the device name the browser search expects",
+       sent.join("|") === "EQ Eight|FabFilter Pro-Q 3|Pulsar Massive|Spectre|"
+                        + "Compressor|Glue Compressor|soothe|Serum|SPAN|bx_meter|s(M)exoscope",
+       sent.join("|"));
+    /* Serum is installed as `Serum2` on this machine; the remote script's second
+       pass is a SUBSTRING match, so the short stem finds it and would also find a
+       plain "Serum" elsewhere. The reverse is not true, which is why the stem is
+       what is sent. */
+    ok("the Serum stem is short enough to match Serum2 by substring",
+       "serum2".includes("serum") && !"serum".includes("serum2"));
+    /* Pro-Q 2 is ALSO installed here, so this one name must stay specific or the
+       substring pass could land on the wrong FabFilter. */
+    ok("Pro-Q 3 is spelled out, so it cannot match the installed Pro-Q 2",
+       sent.includes("FabFilter Pro-Q 3") && !sent.includes("Pro-Q"));
+
+    A.bridge.cmd.loadDevice = realSend;
+  }
+
+  /* THE STATUS ZONE. It exists because `load_device` can legitimately miss — three
+     of Adi's ten are not installed on this machine — and until now the reply was
+     only logged, so a miss was indistinguishable from a working key. */
+  {
+    P._reset();
+    Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter("ableton.plugins.meter");
+    const z = (d) => Nav.current().dials(d);
+    ok("dial 1 names the folder you are standing in", z(1).value === "Meters", z(1).value);
+    ok("dial 2 carries the load status, not dial 5",
+       /LAST LOAD/.test(z(2).title || "") && !/LAST LOAD/.test(z(5).title || ""),
+       `${z(2).title} / ${z(5).title}`);
+    /* Dials 1-4 always stay with the module (L3b); State 2 borrows 5 and 6 (V14).
+       A status readout on 5 would disappear behind a docked window. */
+    ok("…so it survives a docked window", 2 <= 4);
+    ok("dial 6 is left blank, so the clock can claim it",
+       !z(6).title && !z(6).value && !z(6).icon);
+
+    A.bridge._emit
+      ? A.bridge._emit("device_loaded", { name: "SPAN", track: "Drums" })
+      : null;
+  }
+
+  Nav.toRoot();
+}
 
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();

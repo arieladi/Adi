@@ -25,6 +25,7 @@ for (const f of ["js/core/sd-client.js", "js/core/timing.js", "js/core/surface.j
                  "js/ableton/DbCompController.js", "js/ableton/OmnipressorController.js",
                  "js/ableton/SaturateController.js", "js/ableton/SideMinderController.js",
                  "js/ableton/registry.js",
+                 "js/modules/plugins.js",
                  "js/modules/index.js"]) {
   (0, eval)(fs.readFileSync(path.join(ROOT, f), "utf8"));
 }
@@ -81,7 +82,9 @@ function grid(label, stateIndex, screenId) {
   // Navigating for real (rather than rendering a screen in isolation) means the
   // sheet also exercises nav + the overlay compositor, not just the module.
   Nav.toRoot();
-  if (screenId) Nav.enter(screenId);
+  // An ARRAY walks the real path, so a sub-page is rendered with the stack it
+  // actually has on the device — which is what makes its Back key meaningful.
+  for (const id of [].concat(screenId || [])) Nav.enter(id);
   States.setState(stateIndex);
   let cells = "";
   for (let row = 0; row < S.ROWS; row++) {
@@ -140,6 +143,9 @@ ${pick("midi", grid("MIDI Control &middot; NAV OFF &mdash; drums, scale touch, b
 ${pick("ableton", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; EQ Eight &mdash; FULL: the strip spans all six dials", 3, "ableton.hub")))}
 ${pick("ableton2", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; FabFilter Pro-Q 3 &mdash; FULL, resolved by name", 3, "ableton.hub")))}
 ${pick("compact", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; Pro-Q 3 COMPACT &mdash; State 2 borrows dials 5-6, so build(4) (V14)", 2, "ableton.hub")))}
+${pick("vst", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; PLUGINS &mdash; level 2, the four categories (V44)", 3, ["ableton.hub", "ableton.plugins"])))}
+${pick("vsteq", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; Plugins &rarr; EQ &mdash; level 3, the loaders (V44)", 3, ["ableton.hub", "ableton.plugins", "ableton.plugins.eq"])))}
+${pick("vstmeter", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; Plugins &rarr; Meters &mdash; level 3 at 5 columns (V44)", 2, ["ableton.hub", "ableton.plugins", "ableton.plugins.meter"])))}
 `;
 
 fs.writeFileSync(OUT, html);

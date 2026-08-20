@@ -52,7 +52,41 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**950 tests green** (939 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 24 is deployed and running on the hardware** (`service v2.3.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`).
+**981 tests green** (970 JS + 11 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 25 is deployed and running on the hardware** (`service v2.3.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`).
+
+### FROZEN at Adi's instruction (Batch 25)
+
+**EQ8, Pro-Q 3 data mapping and the Calculator.** Do not write code for any of the
+three until he lifts it. The two EQ8 rulings below are therefore parked, not live.
+
+### Batch 25 (V44) — the VST launcher tree
+
+`Ableton hub → Plugins → EQ | Dynamics | Synths | Meters → loaders`, all generated
+from one `CATEGORIES` table in `js/modules/plugins.js`: a new plugin is one line, a
+new category four, and neither touches a layout, a key index or a Back button.
+Back is at (0,0) on all five pages. The load path is the EXISTING V30
+`loadDevice` → `load_device` verb; **no Python changed.**
+
+Three things in there are worth knowing before touching it:
+
+- **Names are short STEMS on purpose.** The remote script's second pass is a
+  substring match, so "Serum" finds the installed `Serum2` while "Serum2" would miss
+  a plain "Serum" elsewhere. But **"FabFilter Pro-Q 3" is spelled out** because
+  Pro-Q 2 is also installed and a stem could land on it.
+- **soothe, Spectre and Pulsar Massive are NOT installed here** (checked every
+  plug-in folder). Their keys exist and report "not installed" — there is nothing to
+  probe, because only Live knows its own browser.
+- **The status readout is on DIAL 2, never 5.** State 2 borrows physical dials 5-6
+  (V14/L3b), so a readout on 5 disappears behind a docked window. The preview sheet
+  is what caught that.
+
+Sub-pages are all `fullScreenCapable`, which is load-bearing: Button 1 is the
+reserved Back anchor only OUTSIDE NAV OFF, so this is what lets (0,0) be a plain
+Back key on a SHORT press instead of a 500 ms hold.
+
+**Adi still owes a ruling on:** per-plugin icons (he asked to be asked), and whether
+Pro-Q 3 / EQ8 should keep their duplicate fast keys on the device shelf now that
+both also live inside Plugins.
 
 ### Batch 24 (V41a, V42–V43) — the Root Hub grid, to Adi's drawing
 
