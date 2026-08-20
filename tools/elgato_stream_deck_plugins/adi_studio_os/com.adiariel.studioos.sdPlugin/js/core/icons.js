@@ -123,8 +123,36 @@ SOS.Icons = (function () {
     return { w: 92, h: 92, svg: s + '</g>' };
   })();
 
+  /* V45 — THE TABS ICON, replacing `⇄` on dial 4's zone. Traced from the image
+     Adi supplied: two overlapping rounded cards in a blue gradient, each with a
+     white title bar, and a white plus on the front one.
+
+     The two cards are deliberately NOT identical — the back card has a white body
+     and the front card a solid one, which is what reads as "an inactive tab behind
+     the active one" rather than as two copies of the same shape. That difference is
+     in the source image, so it is here too.
+
+     Drawn at 512 so the traced coordinates are the ones measured, not rescaled by
+     hand; render.js scales the whole box to the zone. */
+  var TABS = (function () {
+    var G = '__ID__tb';
+    var s = '<defs><linearGradient id="' + G + '" x1="0" y1="0" x2="1" y2="1">'
+      + '<stop offset="0" stop-color="#6EB8DD"/>'
+      + '<stop offset="1" stop-color="#4B95C3"/></linearGradient></defs>';
+    // back card: gradient frame with a white body
+    s += '<rect x="85" y="60" width="405" height="300" rx="26" fill="url(#' + G + ')"/>';
+    s += '<rect x="103" y="118" width="369" height="224" rx="4" fill="#ffffff"/>';
+    // front card: solid, with its title bar and the plus
+    s += '<rect x="22" y="148" width="405" height="300" rx="26" fill="url(#' + G + ')"/>';
+    s += '<rect x="40" y="170" width="369" height="22" rx="6" fill="#ffffff"/>';
+    s += '<rect x="180" y="289" width="88" height="22" rx="11" fill="#ffffff"/>';
+    s += '<rect x="213" y="256" width="22" height="88" rx="11" fill="#ffffff"/>';
+    return { w: 512, h: 512, svg: s };
+  })();
+
   return {
     zoomIn: ZOOM,
+    tabs: TABS,
 
     // Move & Resize — one window, one half of the screen.
     winLeft:   win(pane(IX, IY, HW, IH)),

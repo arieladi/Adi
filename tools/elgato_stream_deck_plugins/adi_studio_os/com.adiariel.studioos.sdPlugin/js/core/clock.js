@@ -72,7 +72,16 @@ SOS.Clock = (function () {
      so the dimmed segments are an option the vendor's UI can turn off, not a
      fixed feature of the face. Adi's does. Ours now simply never draws them,
      which is both what he asked for and what the source intends. */
-  var LIT_COLOR = '#4A90E2';
+  /* V45 — resolved from the palette AT CALL TIME, with the literal kept as the
+     fallback because clock.js loads BEFORE render.js in app.html. Adi asked for the
+     OS-nav scroll arrows to be "exactly the same" blue as the clock; two files each
+     holding their own '#4A90E2' is how that stops being true six months from now.
+     A test asserts the two agree. */
+  var LIT_FALLBACK = '#4A90E2';
+  function litColor() {
+    var R = SOS.Render;
+    return (R && R.PALETTE && R.PALETTE.clock) || LIT_FALLBACK;
+  }
   var LABEL_COLOR = '#7FA8D8';
 
   function esc(s) {
@@ -144,7 +153,7 @@ SOS.Clock = (function () {
   function zone(o) {
     o = o || {};
     var W = o.width || 200, H = o.height || 100;
-    var lit = o.color || LIT_COLOR;
+    var lit = o.color || litColor();
     var label = o.label == null ? city() : o.label;
     var text = o.text || timeText(o.date, o.seconds);
 
@@ -173,6 +182,6 @@ SOS.Clock = (function () {
     zone: zone, run: run, timeText: timeText, city: city,
     LIT: LIT, SEG: SEG, COLON: COLON,
     CELL_W: CELL_W, CELL_H: CELL_H, ADV_DIGIT: ADV_DIGIT, ADV_COLON: ADV_COLON,
-    LIT_COLOR: LIT_COLOR,
+    LIT_COLOR: litColor,
   };
 })();

@@ -241,6 +241,9 @@ SOS.States = (function () {
       // V40 — the vector icon NAME (js/core/icons.js). Forgetting it here is the
       // third time this whitelist would have painted a silently wrong key.
       icon: b.icon,
+      // V45 — the category group's frame ({color, t, r, b, l}). Without this the
+      // Ableton hub's colour boxes reach the binding and never reach the ink.
+      frame: b.frame,
     };
   }
 
@@ -281,6 +284,7 @@ SOS.States = (function () {
     // whitelist trap and it fails exactly the same way: a field that reaches the
     // binding and not the ink paints a silently empty zone.
     return d ? R.zoneUri({ title: d.title, value: d.value, sub: d.sub, icon: d.icon,
+                           valueColor: d.valueColor,
                            indicator: d.indicator, color: d.color, dim: d.dim })
              : R.zoneUri({ title: '', value: '' });
   }

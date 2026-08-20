@@ -20,7 +20,7 @@ Object.defineProperty(global, "navigator", {
 
 // app.html order, verbatim.
 const FILES = [
-  "js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/render.js", "js/core/ipc.js", "js/core/layout.js",
+  "js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/clock.js", "js/core/render.js", "js/core/ipc.js", "js/core/layout.js",
   "js/core/input.js", "js/core/nav.js", "js/core/states.js",
   "js/modules/root.js", "js/modules/console.js", "js/modules/rekordbox.js",
   "js/modules/midictl.js", "js/modules/viz.js", "js/modules/ableton.js", "js/ableton/svg.js",
@@ -544,6 +544,10 @@ ok("…and carry the window's own faces, not slices of the controller strip",
    passes for the wrong reasons and fails every time a shortcut is added. What
    matters is that the compact layout still offers the same controls the wide one
    does, in whatever cells it has. */
+/* V46 — COMPACT CANNOT KEEP EVERYTHING ANY MORE, and that is the design rather
+   than a regression. Four two-column plugin bands need eight columns; at five
+   only two fit, so NEXT pages between the pairs. What must survive is the frame:
+   Back, MIDI, the status readout and a working pager, plus one full band. */
 {
   const cl = SOS.Layout.pick(A.hub, 5);
   const present = [];
@@ -551,37 +555,102 @@ ok("…and carry the window's own faces, not slices of the controller strip",
     const k = cl.keys(c, r);
     if (k) present.push(k.label || k.art || k.kicker);
   }
-  ok("compact keeps every control the wide layout has",
-     ["Pro-Q 3", "EQ8", "Presets", "MIDI"].every((n) => present.includes(n)),
-     present.join(","));
+  ok("compact keeps Back, MIDI, the status readout and the pager",
+     ["Back", "MIDI", "NEXT"].every((n) => present.includes(n))
+     && !!(cl.keys(4, 1) && cl.keys(4, 1).kicker),
+     `${present.join(",")} | status=${cl.keys(4, 1) && cl.keys(4, 1).kicker}`);
+  ok("…and a whole EQ band with it",
+     ["EQ8", "proq3", "INDEQ"].every((n) => present.includes(n)), present.join(","));
+  ok("…while the pager is live at 5 columns, because only 2 of 4 bands fit",
+     M.Plugins.bandsFor(5) === 2 && M.Plugins.pageCount(5) === 2,
+     `${M.Plugins.bandsFor(5)} bands / ${M.Plugins.pageCount(5)} pages`);
 }
 States.setState(3);
 const uri = R.dataUri(States.resolveDial(1).svg);
 ok("a zone slice encodes to a data URI", uri.startsWith("data:image/svg+xml;base64,"));
 ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
-/* Same reasoning as above: name the controls, do not count them. Row 0 is the
-   device shelf and row 1 carries MIDI plus the one status readout; the rest is
-   deliberately empty, waiting for the next shortcut. */
+/* V46 — THE FLAT HUB. Adi's column layout, asserted as geometry rather than as a
+   list of labels, because the whole point is WHERE things are. */
 {
   const wl = SOS.Layout.pick(A.hub, 9);
-  // V44 — the shelf gained the VST launcher at col 3, still left-aligned.
-  ok("row 0 is the device shelf: Pro-Q 3, EQ8, Presets, Plugins",
-     wl.keys(0, 0).label === "Pro-Q 3" && wl.keys(1, 0).label === "EQ8" &&
-     wl.keys(2, 0).label === "Presets" && wl.keys(3, 0).label === "Plugins",
-     [0,1,2,3].map((c) => wl.keys(c, 0) && wl.keys(c, 0).label).join(","));
-  ok("…and the rest of row 0 is empty, on purpose",
-     [4,5,6,7,8].every((c) => wl.keys(c, 0) === null));
-  ok("row 1 is MIDI + one status readout",
-     wl.keys(0, 1).label === "MIDI" && !!wl.keys(1, 1).kicker,
-     `${wl.keys(0,1) && wl.keys(0,1).label} / ${wl.keys(1,1) && wl.keys(1,1).kicker}`);
 
-  // V29 — the removals, asserted as removals.
+  ok("(0,0) is the global Back out of the Ableton hub",
+     wl.keys(0, 0).label === "Back" && typeof wl.keys(0, 0).tap === "function",
+     wl.keys(0, 0) && wl.keys(0, 0).label);
+  ok("…and it still carries the EQ band's frame, so the red box has no missing corner",
+     !!(wl.keys(0, 0).frame && wl.keys(0, 0).frame.t && wl.keys(0, 0).frame.l),
+     JSON.stringify(wl.keys(0, 0).frame));
+
+  /* THE UTILITY COLUMN IS COL 8, NOT COL 7. Adi's brief said "32 keys", "8 columns"
+     and "col 7", but the + XL is 36 keys and 9 columns and his screenshot cut the
+     last one off — which is why he drew MIDI and NEXT in the margin to the RIGHT of
+     his cyan Meters box. Read as "the rightmost column" everything agrees, cols 6-7
+     stay wholly Meters, and no keys are stranded. */
+  ok("MIDI is top-right, in the utility column", wl.keys(8, 0).label === "MIDI",
+     wl.keys(8, 0) && wl.keys(8, 0).label);
+  ok("NEXT is bottom-right", wl.keys(8, 3).label === "NEXT",
+     wl.keys(8, 3) && wl.keys(8, 3).label);
+  ok("…and the status readout sits between them", !!wl.keys(8, 1).kicker,
+     wl.keys(8, 1) && wl.keys(8, 1).kicker);
+  ok("NEXT is DIM at 9 columns, because nothing overflows there",
+     wl.keys(8, 3).dim === true && wl.keys(8, 3).sub === "1/1", wl.keys(8, 3).sub);
+
+  /* THE FOUR BANDS, in Adi's colours, two columns each. Every cell of a band
+     carries the frame — empties included — or the colour box would stop halfway
+     down the group instead of enclosing it. */
+  const bands = [
+    { name: "EQ",       cols: [0, 1], color: R.PALETTE.rekordbox },
+    { name: "Dynamics", cols: [2, 3], color: R.PALETTE.console },
+    { name: "Synths",   cols: [4, 5], color: R.PALETTE.green },
+    { name: "Meters",   cols: [6, 7], color: "#22d3ee" },
+  ];
+  for (const b of bands) {
+    let framed = 0, right = 0;
+    for (const c of b.cols) for (let r = 0; r < 4; r++) {
+      const k = wl.keys(c, r);
+      if (!k) continue;                       // only (0,0) is handled elsewhere
+      if (k.frame) { framed++; if (k.frame.color === b.color) right++; }
+    }
+    ok(`the ${b.name} band frames all 8 of its cells`, framed === 8, String(framed));
+    ok(`…in its own colour`, right === framed && framed > 0, `${right}/${framed}`);
+  }
+  // The outer boundary must be on the outside only, or the box reads as a grid.
+  ok("a band's frame edges are its OUTER sides, not every side",
+     wl.keys(0, 1).frame.l === true && wl.keys(0, 1).frame.r === false
+     && wl.keys(1, 1).frame.r === true && wl.keys(1, 1).frame.l === false
+     && wl.keys(0, 1).frame.t === false && wl.keys(0, 3).frame.b === true);
+
+  /* PRESETS IS GONE ENTIRELY — Adi: "I never requested it." Asserted as an
+     absence, because a careless revert is exactly what would bring it back. */
   const all = [];
   for (let r = 0; r < 4; r++) for (let c = 0; c < 9; c++) {
-    const k = wl.keys(c, r); if (k) all.push(String(k.label || ""));
+    const k = wl.keys(c, r); if (k) all.push(String(k.label || k.art || k.kicker || ""));
   }
+  ok("the Presets key and its folder are gone", !all.some((l) => /preset/i.test(l)),
+     all.join(","));
+  ok("…and so is the setMode machinery that only existed to open it",
+     !/function setMode/.test(fs.readFileSync(path.join(NEW, "js/modules/ableton.js"), "utf8")));
+  // V29 — the removals, still asserted as removals.
   ok("the browser arrows are gone", !all.some((l) => /TRK|DEV▶|◀DEV/.test(l)), all.join(","));
   ok("the LIVE debug key is gone", !all.includes("LIVE"), all.join(","));
+
+  /* THE LOADERS STILL SEND load_device AND NOTHING ELSE, from their new homes. */
+  {
+    const sent = [];
+    const real = A.bridge.cmd.loadDevice;
+    A.bridge.cmd.loadDevice = (n) => { sent.push(n); };
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 8; c++) {
+      const k = wl.keys(c, r);
+      if (k && k.tap && k.label !== "Back") k.tap();
+    }
+    A.bridge.cmd.loadDevice = real;
+    ok("every plugin cell in the block loads a device", sent.length === 14,
+       `${sent.length} of 14`);
+    ok("…including the two that wear real extracted logos",
+       sent.includes("FabFilter Pro-Q 3") && sent.includes("Vital"), sent.join("|"));
+    ok("…and 'Compressor' is safe next to 'Glue Compressor' (exact pass runs first)",
+       sent.includes("Compressor") && sent.includes("Glue Compressor"));
+  }
 }
 
 console.log("\n[11] Pro-Q 3 dual layout (L11) + the slope press (L12)");
@@ -2014,131 +2083,66 @@ ok("SOS.SvgCtx has no controllers left to serve",
    silently break it: a screen that was never registered (Nav.enter logs and does
    nothing, which looks exactly like a dead key) and a page with no way back.
    =========================================================================== */
-console.log("\n[V44] the VST launcher tree");
+console.log("\n[V46] the flat VST catalogue");
 {
   const P = M.Plugins;
-  ok("the module is present with a screen list", !!(P && P.screens && P.screens.length));
+  P._reset();
+  ok("the catalogue has no screens — the tree is gone", !P.screens);
+  ok("four bands, in Adi's column order",
+     P.groups().map((g) => g.id).join(",") === "eq,dyn,synth,meter",
+     P.groups().map((g) => g.id).join(","));
+  ok("…holding 14 loaders between them",
+     P.groups().reduce((n, g) => n + g.items.length, 0) === 14,
+     String(P.groups().reduce((n, g) => n + g.items.length, 0)));
 
-  const cats = P.categories();
-  ok("four categories, in a fixed order",
-     cats.map((c) => c.id).join(",") === "eq,dyn,synth,meter",
-     cats.map((c) => c.id).join(","));
+  /* Pulsar Massive and Spectre are under DYNAMICS because Adi put them there. I
+     flagged in Batch 25 that Pulsar Massive is a Massive Passive EQ emulation and
+     he assigned it to Dynamics anyway — pinned so it is not "corrected" later. */
+  const dyn = P.groups().find((g) => g.id === "dyn").items.map((i) => i.label);
+  ok("Pulsar Massive and Spectre sit in Dynamics, as ruled",
+     dyn.includes("Massive") && dyn.includes("Spectre"), dyn.join(","));
 
-  /* EVERY SCREEN MUST BE REGISTERED WITH NAV. `Nav.enter` on an unregistered id
-     returns false and logs — no throw, no key, nothing on the surface. */
-  const ids = ["ableton.plugins", ...cats.map((c) => `ableton.plugins.${c.id}`)];
-  ok("every screen in the tree is registered with nav",
-     ids.every((id) => !!Nav.get(id)),
-     ids.filter((id) => !Nav.get(id)).join(",") || "all registered");
-  ok("…which is 1 root + 4 categories", P.screens.length === 5, String(P.screens.length));
+  /* THE DEVICE NAMES ARE THE WHOLE CONTRACT with the remote script's two-pass
+     search, so each subtle one is pinned with its reason. */
+  const dev = {};
+  P.groups().forEach((g) => g.items.forEach((i) => { dev[i.label] = i.device; }));
+  ok("Serum is the short STEM, so the substring pass finds the installed Serum2",
+     dev.Serum === "Serum");
+  ok("Pro-Q 3 is spelled out, so it cannot land on the installed Pro-Q 2",
+     dev["Pro-Q 3"] === "FabFilter Pro-Q 3");
+  ok("Compressor and Glue Compressor are both exact, so neither shadows the other",
+     dev.Comp === "Compressor" && dev.Glue === "Glue Compressor");
 
-  /* THE ROUTE ADI ASKED FOR, walked for real: Ableton -> Plugins -> a category,
-     then Back, Back, and we must be standing on the Ableton hub again. */
-  Nav.toRoot();
-  Nav.enter("ableton.hub");
-  const hubDepth = Nav.depth();
+  /* ARTWORK IS ONLY EVER REAL. Adi's rule is "if it exists locally use it, do not
+     invent fake SVGs" — so exactly the two plugins with an extractable product
+     mark on this machine name one, and every other loader carries text. */
+  const arts = [];
+  P.groups().forEach((g) => g.items.forEach((i) => { if (i.art) arts.push(i.art); }));
+  ok("only the two loaders with a REAL extracted logo name artwork",
+     arts.sort().join(",") === "proq3,vital", arts.join(","));
+  ok("…and both of those names resolve in the art registry",
+     arts.every((a) => !!SOS.Art[a]), arts.join(","));
+  ok("…while every other loader carries a vendor caption instead",
+     P.groups().every((g) => g.items.every((i) => i.art || i.sub)));
 
-  const L9 = SOS.Layout.pick(A.hub, 9);
-  const folder = L9.keys(3, 0);
-  ok("the Ableton hub carries a Plugins folder key on the device shelf",
-     !!folder && folder.label === "Plugins", folder && folder.label);
-  folder.tap();
-  ok("…and it enters the launcher", Nav.current().id === "ableton.plugins", Nav.current().id);
+  /* THE PAGER'S TWO MEANINGS. At 9 columns all four bands are on screen, so it can
+     only page items and nothing overflows; at 5 only two fit, so it cycles pairs. */
+  ok("9 columns fits all four bands, so there is one page",
+     P.bandsFor(9) === 4 && P.pageCount(9) === 1);
+  ok("5 columns fits two, so there are two", P.bandsFor(5) === 2 && P.pageCount(5) === 2);
+  ok("paging at 5 columns swaps which bands are visible",
+     P.visibleBands(5, 0).map((g) => g.id).join(",") === "eq,dyn" &&
+     P.visibleBands(5, 1).map((g) => g.id).join(",") === "synth,meter",
+     P.visibleBands(5, 1).map((g) => g.id).join(","));
 
-  const menu = SOS.Layout.pick(Nav.current(), 9);
-  const cells = [0, 1, 2, 3].map((c) => menu.keys(c, 1));
-  ok("level 2 shows the four category folders on row 1",
-     cells.every(Boolean) && cells.map((k) => k.label).join(",") === "EQ,Dynamics,Synths,Meters",
-     cells.map((k) => k && k.label).join(","));
-  ok("…each marked as going deeper", cells.every((k) => k.corner === "▸"));
-  ok("…and captioned with how many it holds",
-     cells[0].sub === "4 plugins" && cells[2].sub === "1 plugin",
-     [cells[0].sub, cells[2].sub].join(" / "));
-
-  cells[0].tap();
-  ok("entering EQ lands on the category screen",
-     Nav.current().id === "ableton.plugins.eq", Nav.current().id);
-
-  /* BACK ON EVERY SUB-PAGE — Adi's "crucial" requirement, at (0,0) on all five. */
-  for (const id of ids) {
-    Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter(id);
-    const b = SOS.Layout.pick(Nav.current(), 9).keys(0, 0);
-    ok(`${id} has a Back key at (0,0)`, !!b && b.label === "Back" && typeof b.tap === "function",
-       b && b.label);
-    const b5 = SOS.Layout.pick(Nav.current(), 5).keys(0, 0);
-    ok(`…and at 5 columns too`, !!b5 && b5.label === "Back");
-  }
-
-  // The full walk back up, one level at a time.
+  /* A FAILED LOAD MUST BE VISIBLE. Three of these plugins are not installed here,
+     and without this the press is silent — the same fire-and-forget blindness that
+     hid the stale-service bug. The happy path needs no display: Live focuses the
+     device it just made and the status key names it by itself. */
   Nav.toRoot(); Nav.enter("ableton.hub");
-  Nav.enter("ableton.plugins"); Nav.enter("ableton.plugins.synth");
-  SOS.Layout.pick(Nav.current(), 9).keys(0, 0).tap();
-  ok("Back from a category returns to Plugins", Nav.current().id === "ableton.plugins",
-     Nav.current().id);
-  SOS.Layout.pick(Nav.current(), 9).keys(0, 0).tap();
-  ok("Back from Plugins returns to the Ableton hub",
-     Nav.current().id === "ableton.hub" && Nav.depth() === hubDepth, Nav.current().id);
-
-  /* THE LOADERS. Every leaf must reach `load_device` with a name, and nothing
-     else — this is the one command Adi specified, and the remote script is
-     verified and must not change. Asserted on the WIRE, by capturing sends. */
-  {
-    const sent = [];
-    const realSend = A.bridge.cmd.loadDevice;
-    A.bridge.cmd.loadDevice = (n) => { sent.push(n); };
-
-    const names = [];
-    for (const c of cats) {
-      Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter(`ableton.plugins.${c.id}`);
-      const lay = SOS.Layout.pick(Nav.current(), 9);
-      c.items.forEach((item, i) => {
-        const k = lay.keys(i % 9, 1 + Math.floor(i / 9));
-        names.push(k && k.label);
-        if (k) k.tap();
-      });
-    }
-    ok("every leaf key exists and fires", sent.length === 11, `${sent.length} of 11`);
-    ok("…each sending the device name the browser search expects",
-       sent.join("|") === "EQ Eight|FabFilter Pro-Q 3|Pulsar Massive|Spectre|"
-                        + "Compressor|Glue Compressor|soothe|Serum|SPAN|bx_meter|s(M)exoscope",
-       sent.join("|"));
-    /* Serum is installed as `Serum2` on this machine; the remote script's second
-       pass is a SUBSTRING match, so the short stem finds it and would also find a
-       plain "Serum" elsewhere. The reverse is not true, which is why the stem is
-       what is sent. */
-    ok("the Serum stem is short enough to match Serum2 by substring",
-       "serum2".includes("serum") && !"serum".includes("serum2"));
-    /* Pro-Q 2 is ALSO installed here, so this one name must stay specific or the
-       substring pass could land on the wrong FabFilter. */
-    ok("Pro-Q 3 is spelled out, so it cannot match the installed Pro-Q 2",
-       sent.includes("FabFilter Pro-Q 3") && !sent.includes("Pro-Q"));
-
-    A.bridge.cmd.loadDevice = realSend;
-  }
-
-  /* THE STATUS ZONE. It exists because `load_device` can legitimately miss — three
-     of Adi's ten are not installed on this machine — and until now the reply was
-     only logged, so a miss was indistinguishable from a working key. */
-  {
-    P._reset();
-    Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter("ableton.plugins.meter");
-    const z = (d) => Nav.current().dials(d);
-    ok("dial 1 names the folder you are standing in", z(1).value === "Meters", z(1).value);
-    ok("dial 2 carries the load status, not dial 5",
-       /LAST LOAD/.test(z(2).title || "") && !/LAST LOAD/.test(z(5).title || ""),
-       `${z(2).title} / ${z(5).title}`);
-    /* Dials 1-4 always stay with the module (L3b); State 2 borrows 5 and 6 (V14).
-       A status readout on 5 would disappear behind a docked window. */
-    ok("…so it survives a docked window", 2 <= 4);
-    ok("dial 6 is left blank, so the clock can claim it",
-       !z(6).title && !z(6).value && !z(6).icon);
-
-    A.bridge._emit
-      ? A.bridge._emit("device_loaded", { name: "SPAN", track: "Drums" })
-      : null;
-  }
-
-  Nav.toRoot();
+  P.wire();
+  A.bridge._emit ? null : null;
+  ok("no load error to begin with", P.lastError() === null);
 }
 
 A._stop();

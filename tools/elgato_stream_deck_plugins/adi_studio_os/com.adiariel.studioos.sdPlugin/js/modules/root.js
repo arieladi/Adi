@@ -159,7 +159,8 @@ SOS.Modules.Root = (function () {
   var SLOTS = {
     // row 0 — the two app tiles, interleaved with the hub tiles above.
     '2,0': { label: 'Tasks',  glyph: '▤',  action: 'taskmgr' },
-    '4,0': { label: 'Chrome', glyph: '◉',  action: 'chrome' },
+    // V45 — Chrome's REAL icon, extracted from the bundle Adi pointed at.
+    '4,0': { label: 'Chrome', art: 'chrome', action: 'chrome' },
 
     // row 1 — EMPTY on macOS. Windows-only concepts live here; see the note above.
     '0,1': { label: 'Start',  glyph: '⊞',  action: 'start' },
@@ -248,9 +249,9 @@ SOS.Modules.Root = (function () {
     return {
       // No sub on hub tiles: at 72px the caption is unreadable and the glyph
       // plus a large name already says everything.
-      // V40 — a slot WITH an icon shows the icon alone (V26's rule for artwork).
-      label: slot.icon ? undefined : slot.label,
-      glyph: slot.glyph, icon: slot.icon, size: 'lg',
+      // V40/V45 — a slot with an icon OR artwork shows it alone (V26's rule).
+      label: (slot.icon || slot.art) ? undefined : slot.label,
+      glyph: slot.glyph, icon: slot.icon, art: slot.art, size: 'lg',
       color: slot.color || R.PALETTE.nav, kind: 'tap',
       dim: !IPC.isOnline(),
       tap: slot.run || function () {
@@ -301,8 +302,8 @@ SOS.Modules.Root = (function () {
       var offline = !IPC.isOnline();
       switch (dial) {
         case 1: return {
-          title: 'Scroll Y', value: '▲▼', sub: 'push = PgDn', color: R.PALETTE.nav,
-          dim: offline,
+          title: 'Scroll Y', value: '▲▼', valueColor: R.PALETTE.clock,
+          sub: 'push = PgDn', color: R.PALETTE.nav, dim: offline,
           rotate: function (t) { IPC.os.scroll('y', t); },
           press: function () { IPC.os.pageDown(); },
           // A touch on the left/right half nudges one line, so the strip is
@@ -310,8 +311,8 @@ SOS.Modules.Root = (function () {
           touch: function (x) { IPC.os.scroll('y', x < 100 ? -1 : 1); },
         };
         case 2: return {
-          title: 'Scroll X', value: '◀▶', sub: 'push = Home', color: R.PALETTE.nav,
-          dim: offline,
+          title: 'Scroll X', value: '◀▶', valueColor: R.PALETTE.clock,
+          sub: 'push = Home', color: R.PALETTE.nav, dim: offline,
           rotate: function (t) { IPC.os.scroll('x', t); },
           press: function () { IPC.os.home(); },
           touch: function (x) { IPC.os.scroll('x', x < 100 ? -1 : 1); },
@@ -328,7 +329,7 @@ SOS.Modules.Root = (function () {
           touch: function (x) { IPC.os.appZoom(x < 100 ? -1 : 1); },
         };
         case 4: return {
-          title: 'Tabs', value: '⇄', sub: 'New · hold = Close',
+          title: 'Tabs', icon: 'tabs', sub: 'New · hold = Close',
           color: R.PALETTE.console, dim: offline,
           rotate: function (t) { IPC.os.tab(t > 0 ? 1 : -1); },
           /* V35 — the only dial on the board with two functions. `press` is the

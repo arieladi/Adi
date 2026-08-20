@@ -71,6 +71,11 @@ SOS.Render = (function () {
     midi:     '#9775fa',
     viz:      '#4dabf7',
     nav:      '#4dabf7',
+    /* V45 — THE CLOCK'S LIT BLUE, promoted to the palette so the OS-nav scroll
+       arrows can be exactly the same colour as the clock (Adi's instruction)
+       without either file hardcoding the other's literal. clock.js reads this at
+       call time and a test asserts the two agree, so they cannot drift. */
+    clock:    '#4A90E2',
   };
 
   // ------------------------------------------------------------------ helpers
@@ -152,7 +157,14 @@ SOS.Render = (function () {
                   and two window keys that differ only by their picture share an id,
                   so SD.image()'s dedupe skips the repaint and both wear whichever
                   one happened to be drawn first. */
-               o.icon].join('\u0001');
+               o.icon,
+               /* V45 — the GROUP FRAME is part of the key's identity. Two plugin
+                  keys can differ only by which category box they sit in (a left
+                  edge versus a right edge), and without this they would share a
+                  hash and SD.image()'s dedupe would give the second one the
+                  first one's border. */
+               o.frame && [o.frame.color, o.frame.t ? 1 : 0, o.frame.r ? 1 : 0,
+                           o.frame.b ? 1 : 0, o.frame.l ? 1 : 0].join('')].join('\u0001');
     var h = 2166136261;
     for (var i = 0; i < src.length; i++) {
       h ^= src.charCodeAt(i);
@@ -233,6 +245,27 @@ SOS.Render = (function () {
     return s;
   }
 
+  /* The group frame's hard outer bars — see the note in key(). Emitted after the
+     face so nothing paints over them, and inset by half their weight so the full
+     width lands inside the 144 box rather than being clipped in half. */
+  function frameBars(o) {
+    if (!o.frame) return '';
+    var fc = o.frame.color || PALETTE.accent;
+    var w = 5, h = w / 2, e = KS - h;
+    var op = o.dim ? 0.45 : 0.95;
+    var seg = '';
+    function bar(x1, y1, x2, y2) {
+      seg += '<path d="M' + x1 + ',' + y1 + ' L' + x2 + ',' + y2 + '"'
+        + ' stroke="' + fc + '" stroke-width="' + w + '" stroke-opacity="' + op + '"'
+        + ' stroke-linecap="square"/>';
+    }
+    if (o.frame.t) bar(0, h, KS, h);
+    if (o.frame.b) bar(0, e, KS, e);
+    if (o.frame.l) bar(h, 0, h, KS);
+    if (o.frame.r) bar(e, 0, e, KS);
+    return seg;
+  }
+
   /* key({ title|label, sub, subStrong, glyph, kicker, corner, seg,
            size, color, active, dim, badge })
 
@@ -248,6 +281,29 @@ SOS.Render = (function () {
     var s = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"'
       + ' viewBox="0 0 ' + KS + ' ' + KS + '" width="' + KS + '" height="' + KS + '">';
     s += '<rect width="' + KS + '" height="' + KS + '" fill="' + (o.canvas || PALETTE.bg) + '"/>';
+
+    /* V45 — THE GROUP FRAME. Adi asked for the plugin categories on the Ableton
+       hub to be visually boxed the way he drew them.
+
+       THE HARD PART IS THAT THERE IS NO CANVAS BETWEEN KEYS. Every key is its own
+       144x144 image with a real bezel gap either side, so a frame around eight keys
+       cannot be one drawn rectangle — it has to be assembled out of the eight
+       keys each painting the piece of it that falls inside their own square. So a
+       binding declares which of its sides are the GROUP's outer boundary
+       (`frame: {color, t, r, b, l}`) and gets:
+
+         - a wash of the group colour over the whole canvas, which shows in the 6 px
+           margin around the face and is what ties the group together across the
+           gaps, and
+         - a hard bar on each outer side, so the block reads as bounded rather than
+           just tinted.
+
+       The bars are drawn AFTER the face, or the face would cover them. */
+    if (o.frame) {
+      var fc = o.frame.color || PALETTE.accent;
+      s += '<rect width="' + KS + '" height="' + KS + '" fill="' + fc
+         + '" opacity="' + (o.dim ? 0.10 : 0.20) + '"/>';
+    }
 
     /* A DISPLAY SEGMENT (V6, redesigned in V10). The calculator's number spans
        the top four keys. Each key is split: the TOP QUARTER carries the segment's
@@ -327,7 +383,7 @@ SOS.Render = (function () {
       if (hasSub) {
         s += text(truncate(o.sub, 18), KS / 2, KS - 17, 14, 600, o.subColor || PALETTE.dim);
       }
-      return s + '</svg>';
+      return s + frameBars(o) + '</svg>';
     }
 
     var art = o.art && SOS.Art ? SOS.Art[o.art] : null;
@@ -338,8 +394,14 @@ SOS.Render = (function () {
          anything smaller reads as a stamp floating on a button rather than as
          the application itself. A LABELLED icon still sits high and small, so a
          tile that needs a caption is unchanged. */
-      var ah = o.title ? 62 : inner;
-      var ay = o.title ? 22 : pad;
+      /* V45 — ARTWORK GIVES WAY TO A GROUP FRAME. Unlabelled art normally fills
+         the whole inner face (V26), but inside a category band that covers the
+         colour wash in the margin and crowds the outer bars, so the box stops
+         reading as a box. Seen on the sheet: the FabFilter and Vital tiles were
+         edge-to-edge and their red/green bands all but vanished. Inside a frame the
+         art gives back 8 px a side, which is enough for both. */
+      var ah = o.title ? 62 : (o.frame ? inner - 16 : inner);
+      var ay = o.title ? 22 : (KS - ah) / 2;
       s += '<image href="' + art + '" xlink:href="' + art + '"'
          + ' x="' + ((KS - ah) / 2) + '" y="' + ay + '" width="' + ah + '" height="' + ah + '"'
          + ' preserveAspectRatio="xMidYMid meet"/>';
@@ -376,7 +438,7 @@ SOS.Render = (function () {
       s += '<circle cx="' + (KS - 25) + '" cy="27" r="15" fill="' + color + '"/>';
       s += text(truncate(o.badge, 3), KS - 25, 32, 15, 700, PALETTE.bg);
     }
-    return s + '</svg>';
+    return s + frameBars(o) + '</svg>';
   }
 
   function keyUri(o) { return dataUri(key(o)); }
@@ -404,7 +466,8 @@ SOS.Render = (function () {
          + (o.dim ? ' opacity="0.5"' : '') + '>'
          + String(zi.svg).split('__ID__').join('z' + o.icon) + '</g>';
     } else if (o.value) {
-      s += text(truncate(o.value, 11), Z_W / 2, 60, 30, 700, PALETTE.text);
+      // V45 — `valueColor` so the OS-nav scroll arrows can be the clock's blue.
+      s += text(truncate(o.value, 11), Z_W / 2, 60, 30, 700, o.valueColor || PALETTE.text);
     }
     if (typeof o.indicator === 'number') {
       var w = Math.max(0, Math.min(1, o.indicator)) * (Z_W - 32);

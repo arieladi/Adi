@@ -44,6 +44,57 @@ if (fail) { console.log(`\n${pass} passed, ${fail} failed`); process.exit(1); }
 
 const { Surface: S, Input, States, Nav, Render, SD } = SOS;
 
+/* ===========================================================================
+   V45 — THE GROUP FRAME. Adi asked for the Ableton hub's plugin categories to be
+   visually boxed the way he drew them, and the hard part is that THERE IS NO
+   CANVAS BETWEEN KEYS: each key is its own 144x144 image with a real bezel gap
+   either side, so a box around eight keys has to be assembled from eight keys each
+   painting their own piece of it.
+   =========================================================================== */
+console.log('\n[0] V45: the group frame');
+{
+  const R = SOS.Render;
+  const bare = R.key({ title: 'X' });
+  const framed = R.key({ title: 'X', frame: { color: '#ff6b6b', t: true, l: true } });
+  ok('an unframed key draws no frame at all',
+     bare.indexOf('#ff6b6b') < 0 && bare === R.key({ title: 'X' }));
+  ok('a framed key washes the canvas in the group colour',
+     framed.indexOf('#ff6b6b') > 0 && /opacity="0\.2/.test(framed));
+
+  // Only the declared sides get a bar, or the box reads as a grid of boxes.
+  const bars = (svg) => (svg.match(/stroke-width="5"/g) || []).length;
+  ok('…and one bar per declared outer side', bars(framed) === 2, String(bars(framed)));
+  ok('a mid-block key with no outer side gets the wash and no bars',
+     bars(R.key({ title: 'X', frame: { color: '#ff6b6b' } })) === 0);
+  ok('all four sides is four bars',
+     bars(R.key({ title: 'X', frame: { color: '#ff6b6b', t: 1, r: 1, b: 1, l: 1 } })) === 4);
+
+  /* THE BARS MUST SURVIVE THE FACE. They are emitted after it; drawn before, the
+     raised face would cover them and the whole feature would be invisible. */
+  ok('the bars are emitted after the face, so nothing paints over them',
+     framed.lastIndexOf('stroke-width="5"') > framed.lastIndexOf('url(#'));
+
+  /* An icon-only key takes a different exit from key(), and that exit had to be
+     patched too — a plugin loader wearing artwork is exactly this case. */
+  ok('an artwork key still gets its frame',
+     R.key({ art: 'proq3', frame: { color: '#22d3ee', l: true } }).indexOf('#22d3ee') > 0);
+  ok('a vector-icon key still gets its frame',
+     R.key({ icon: 'winFill', frame: { color: '#22d3ee', l: true } }).indexOf('#22d3ee') > 0);
+
+  /* THE DEDUPE TRAP. SD.image() compares data URIs, so two keys that differ only
+     by which edge of the box they are on MUST hash differently or the second one
+     wears the first one's border. */
+  const l = R.key({ title: 'X', frame: { color: '#ff6b6b', l: true } });
+  const r = R.key({ title: 'X', frame: { color: '#ff6b6b', r: true } });
+  ok('left-edge and right-edge keys are different images', l !== r);
+  ok('…and carry different content-derived ids',
+     /id="(k[0-9a-z]+)f"/.exec(l)[1] !== /id="(k[0-9a-z]+)f"/.exec(r)[1]);
+  ok('two bands differ by colour alone',
+     R.key({ title: 'X', frame: { color: '#ff6b6b', t: true } })
+     !== R.key({ title: 'X', frame: { color: '#ffd166', t: true } }));
+}
+
+
 console.log('\n[2] geometry (DECISIONS F1)');
 ok('btn(0,0) === 1', S.btn(0, 0) === 1);
 ok('btn(7,3) === 35 (Clear)', S.btn(7, 3) === 35);
