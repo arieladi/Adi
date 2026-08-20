@@ -76,6 +76,7 @@ class LiveBridge(object):
         self._listened = []           # [(subject, name, fn)] for clean teardown
         self._preset_items = {}       # {id: BrowserItem}
         self._watch = []              # [(parameter, fn)] watched by predefined controllers
+        self._mixed = []              # V48 — watched mixer params (volume, panning)
 
     # ============================================================ lifecycle
     def setup(self):
@@ -84,6 +85,7 @@ class LiveBridge(object):
 
     def teardown(self):
         self._remove_device_listeners()
+        self._unmix_listen()
         for subject, name, fn in self._listened:
             try:
                 getattr(subject, "remove_%s_listener" % name)(fn)
@@ -125,6 +127,9 @@ class LiveBridge(object):
                 "index": self._track_index(self._track),
                 "color": getattr(self._track, "color", 0),
             })
+        # V48 — the idle-state dials follow the selected track.
+        self._mix_listen(self._track)
+        self._emit_mix()
         self._on_device_changed()
 
     def _on_devices_changed(self):
@@ -452,6 +457,282 @@ class LiveBridge(object):
             return
         self.song.view.selected_track = track
         self._browser().load_item(item)   # loads onto the selected track, selects it
+
+    # -------------------------------------------------------- generic loader
+    """Load ANY browser device by name (V30).
+
+    _create_eq8 above searches audio_effects only, which is correct for a stock
+    Live device and useless for a plug-in: FabFilter Pro-Q 3 lives under
+    browser.plugins, and on another machine the same plug-in may be reached as
+    VST3, VST2 or AU. So the search walks every root the browser exposes and
+    matches on NAME, which is the one thing stable across all of them.
+
+    Matching is case-insensitive and ignores spaces and hyphens, because the
+    browser spells it "FabFilter Pro-Q 3" and a caller may reasonably say
+    "fabfilter proq3". Exact-ish first, then a contains pass, so "Pro-Q 3" can
+    never be satisfied by "Pro-Q 3 (m/s)" while an exact match exists.
+    """
+
+    @staticmethod
+    def _norm(name):
+        return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
+    def _browser_roots(self):
+        b = self._browser()
+        roots = []
+        # plugins first: a VST is the common case for this verb, and it keeps the
+        # walk short for the device we are actually most likely to be asked for.
+        for attr in ("plugins", "audio_effects", "instruments",
+                     "midi_effects", "user_library", "packs"):
+            root = getattr(b, attr, None)
+            if root is not None:
+                roots.append(root)
+        return roots
+
+    def cmd_load_device(self, name):
+        want = self._norm(name)
+        if not want:
+            self.send({"t": "error", "message": "load_device: no name given"})
+            return
+
+        track = self.song.view.selected_track
+        if track is None:
+            self.send({"t": "error", "message": "load_device: no selected track"})
+            return
+
+        item = None
+        for match in (lambda c: self._norm(getattr(c, "name", "")) == want,
+                      lambda c: want in self._norm(getattr(c, "name", ""))):
+            for root in self._browser_roots():
+                item = self._find_item(
+                    root,
+                    lambda c, m=match: m(c) and getattr(c, "is_loadable", False),
+                )
+                if item is not None:
+                    break
+            if item is not None:
+                break
+
+        if item is None:
+            self.send({"t": "error",
+                       "message": "load_device: '%s' not found in the browser" % name})
+            return
+
+        try:
+            self.song.view.selected_track = track
+            self._browser().load_item(item)
+            self.send({"t": "device_loaded", "name": getattr(item, "name", name),
+                       "track": getattr(track, "name", "")})
+        except Exception as e:
+            self.send({"t": "error", "message": "load_device failed: %s" % e})
+
+    # ==================================== V48 — the UNIFIED device key
+    """Adi's ruling: "Do not make EQ8 special." Every plugin shortcut on the
+    Ableton hub behaves the same way.
+
+        short press  none on the track -> insert; one -> focus it;
+                     several -> focus the NEXT one on each press
+        long  press  always append a new instance
+
+    This is cmd_eq8_key's logic (Conditions A/B/C) generalised from "devices whose
+    class_name is Eq8" to "devices whose NAME matches", which is the only handle a
+    VST gives us — every VST3 shares class_name "PluginDevice", so class matching
+    cannot tell Pro-Q 3 from Serum. cmd_eq8_key is left exactly as it was; nothing
+    calls it any more, but it is verified code and deleting it is not this batch's
+    job.
+    """
+
+    def _devices_named(self, track, name):
+        # EXACT first, then PREFIX — deliberately NOT the contains pass that
+        # cmd_load_device uses on the browser.
+        #
+        # Contains is right for the browser, where "Serum" has to reach the
+        # installed "Serum2". On a TRACK it is wrong, and the test caught it:
+        # "compressor" is contained in "gluecompressor", so a track holding only a
+        # Glue Compressor answered the Compressor key by focusing the Glue and
+        # never inserting the Compressor that was asked for.
+        #
+        # A prefix keeps the leniency that matters — a device named for a later
+        # version ("Serum2") still answers to its stem — while a plugin whose name
+        # merely ENDS with another's no longer impersonates it.
+        want = self._norm(name)
+        if not want:
+            return []
+        devs = list(track.devices)
+        exact = [d for d in devs if self._norm(getattr(d, "name", "")) == want]
+        if exact:
+            return exact
+        return [d for d in devs if self._norm(getattr(d, "name", "")).startswith(want)]
+
+    def cmd_device_key(self, name, force_new=False):
+        track = self.song.view.selected_track
+        if track is None:
+            self.send({"t": "error", "message": "device_key: no selected track"})
+            return
+
+        if force_new:
+            self.cmd_load_device(name)          # long press: always append
+            return
+
+        hits = self._devices_named(track, name)
+        if not hits:
+            self.cmd_load_device(name)          # nothing there: insert one
+            return
+
+        sel = track.view.selected_device
+        try:
+            at = hits.index(sel) if sel is not None else -1
+        except ValueError:
+            at = -1
+
+        # Already standing on one of them and there are others -> advance.
+        # Otherwise focus the first. `at` of -1 covers "selection is elsewhere".
+        target = hits[(at + 1) % len(hits)] if (at >= 0 and len(hits) > 1) else hits[0]
+        self._select_device(track, target)
+        try:
+            self._cs.show_message("%s  %d/%d" % (name, hits.index(target) + 1, len(hits)))
+        except Exception:
+            pass
+        self.send({"t": "device_focused", "name": getattr(target, "name", name),
+                   "count": len(hits), "index": hits.index(target)})
+
+    # ============================== V48 — track volume and pan (the idle dials)
+    """Volume is the awkward one, and it is worth saying why.
+
+    `mixer_device.volume` is a DeviceParameter whose `value` is NORMALISED 0..1 on
+    Live's own fader curve. There is no dB setter, and the curve is not something
+    we can invert analytically. Adi's requirement is "strictly 0.5 dB increments",
+    so approximating the curve is not good enough — the step has to land on the
+    same dB grid Live itself displays.
+
+    So the dB is READ FROM THE PARAMETER'S OWN DISPLAY STRING, and the normalised
+    value for a target dB is found by BISECTION on that same function. That is
+    exact by construction: it agrees with whatever Live shows, on any Live version,
+    with no curve constants to go stale. It costs ~24 string formats per dial tick,
+    which is nothing beside the round trip that delivered the tick.
+
+    Pan is linear -1..1, so it needs none of this. 0.02 is one unit of Live's own
+    50L..C..50R readout.
+    """
+    VOL_STEP_DB = 0.5
+    VOL_MIN_DB = -60.0          # below this Live's fader is -inf, and so is ours
+    PAN_STEP = 0.02
+
+    @staticmethod
+    def _parse_db(text):
+        t = str(text).replace("dB", "").strip()
+        if "inf" in t.lower():
+            return float("-inf")
+        try:
+            return float(t)
+        except ValueError:
+            return float("-inf")
+
+    def _db_at(self, param, value):
+        try:
+            return self._parse_db(param.str_for_value(value))
+        except Exception:
+            return float("-inf")
+
+    def _norm_for_db(self, param, db):
+        lo, hi = 0.0, 1.0
+        # 30, not 24: at 24 the residue was ~0.01 dB, which is visible in a
+        # readout printed to two decimals. 30 halvings is free.
+        for _ in range(30):
+            mid = (lo + hi) / 2.0
+            if self._db_at(param, mid) < db:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2.0
+
+    def _mixer(self):
+        track = self.song.view.selected_track
+        if track is None:
+            return None, None, None
+        m = getattr(track, "mixer_device", None)
+        if m is None:
+            return track, None, None
+        return track, getattr(m, "volume", None), getattr(m, "panning", None)
+
+    def cmd_track_volume_delta(self, steps):
+        track, vol, _pan = self._mixer()
+        if vol is None:
+            return
+        n = int(steps)
+        if n == 0:
+            return
+        cur = self._db_at(vol, vol.value)
+        # SNAP TO THE GRID FIRST. A fader parked at -6.02 dB by a mouse drag must
+        # land on -6.0 and stay on the half-dB grid from then on; stepping from the
+        # raw value would carry that 0.02 forever.
+        base = self.VOL_MIN_DB if cur == float("-inf") else \
+            round(cur / self.VOL_STEP_DB) * self.VOL_STEP_DB
+        target = base + n * self.VOL_STEP_DB
+        top = self._db_at(vol, 1.0)
+        if target > top:
+            target = top
+        if target <= self.VOL_MIN_DB:
+            vol.value = 0.0
+        else:
+            vol.value = self._norm_for_db(vol, target)
+        self._emit_mix()
+
+    def cmd_track_pan_delta(self, steps):
+        _track, _vol, pan = self._mixer()
+        if pan is None:
+            return
+        v = pan.value + int(steps) * self.PAN_STEP
+        pan.value = max(pan.min, min(pan.max, v))
+        self._emit_mix()
+
+    def _emit_mix(self):
+        track, vol, pan = self._mixer()
+        if track is None:
+            self.send({"t": "mix", "has_track": False})
+            return
+        msg = {"t": "mix", "has_track": True, "track": getattr(track, "name", "")}
+        if vol is not None:
+            msg["vol"] = vol.value
+            msg["vol_disp"] = self._disp(vol)
+        if pan is not None:
+            msg["pan"] = pan.value
+            msg["pan_disp"] = self._disp(pan)
+        self.send(msg)
+
+    def _disp(self, param):
+        try:
+            return str(param.str_for_value(param.value))
+        except Exception:
+            return ""
+
+    def cmd_get_mix(self):
+        self._emit_mix()
+
+    # The dials must not go stale when the fader is moved with the mouse, so the
+    # two mixer parameters are watched for the lifetime of the selected track and
+    # torn down with it. Same shape as the device listeners above.
+    def _mix_listen(self, track):
+        self._unmix_listen()
+        if track is None:
+            return
+        _t, vol, pan = self._mixer()
+        for p in (vol, pan):
+            if p is None:
+                continue
+            try:
+                p.add_value_listener(self._emit_mix)
+                self._mixed.append(p)
+            except Exception as e:
+                self.log("mix listen failed: %s" % e)
+
+    def _unmix_listen(self):
+        for p in getattr(self, "_mixed", []):
+            try:
+                p.remove_value_listener(self._emit_mix)
+            except Exception:
+                pass
+        self._mixed = []
 
     # ================================================================= presets
     def _find_preset_root(self):
