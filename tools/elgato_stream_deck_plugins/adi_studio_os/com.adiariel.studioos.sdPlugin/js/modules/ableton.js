@@ -495,6 +495,12 @@ SOS.Modules.Ableton = (function () {
           emit('eq8_state', state.eq8_state); break;
         case 'presets': state.presets = m.items || []; emit('presets', state.presets); break;
         case 'error': emit('error', m.message); break;
+        /* V44 — the remote script has always answered `device_loaded`; nothing
+           listened, so a load shortcut was fire-and-forget in both directions and
+           a name Live's browser does not have produced a press with no visible
+           consequence at all. The VST launcher shows the result, so the reply is
+           finally emitted. */
+        case 'device_loaded': emit('device_loaded', m); break;
         default: break;
       }
     }
@@ -609,11 +615,29 @@ SOS.Modules.Ableton = (function () {
      Re-armed rather than run on a fixed interval, so a slow composite can never
      stack a backlog of frames behind it. */
   var pumping = false, pumpTimer = null;
+  /* V44 — THE PUMP ONLY COMPOSITES FOR THE SCREEN THAT DRAWS THE STRIP.
+
+     Navigating INTO a sub-page does not exit the hub (nav.enter pushes, it does
+     not pop), so the pump keeps running underneath the VST launcher. That is
+     wanted — the launcher's status zone needs repaints — but `composite()` builds
+     the whole 1200x100 controller strip, and on a menu page nothing paints it: the
+     zones belong to the menu screen. So it was 15 frames a second of an image
+     thrown away.
+
+     Compositing is now gated on the hub actually being the current screen, and the
+     cadence drops to 4 fps off it, which is still instant for a status line. The
+     alternative — pausing the pump from the menu screens' lifecycle — couples two
+     modules and can desynchronise; asking one question here cannot. */
   function pump() {
     if (!pumping) return;
     var live = Bridge.isOnline();
-    if (live) { composite(); SOS.States.repaint(); }
-    pumpTimer = SOS.Timing.after(live ? Math.max(30, 1000 / FPS) : 750, pump);
+    var onHub = SOS.Nav.current() === hub;
+    if (live) {
+      if (onHub) composite();
+      SOS.States.repaint();
+    }
+    pumpTimer = SOS.Timing.after(
+      live ? (onHub ? Math.max(30, 1000 / FPS) : 250) : 750, pump);
   }
   function startPump() { if (!pumping) { pumping = true; pump(); } }
   function stopPump() {
@@ -667,6 +691,17 @@ SOS.Modules.Ableton = (function () {
           };
         }
         if (col === 2) return presetsKey();
+        /* V44 — THE VST LAUNCHER. Continues the left-aligned device shelf rather
+           than starting a second cluster, and sits at the same column in both
+           breakpoints because row 0 is identical at 9 and 5 columns.
+
+           Looked up through SOS.Modules at PAINT time, not captured at load time,
+           so plugins.js and this file have no load-order dependency and a build
+           without plugins.js simply shows one fewer key. */
+        if (col === 3) {
+          var P = SOS.Modules.Plugins;
+          return P ? P.hubKey() : null;
+        }
         return null;
       }
 

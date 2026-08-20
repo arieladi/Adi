@@ -2302,3 +2302,125 @@ Three consequences worth stating rather than burying:
 **Both gaps are held by OMISSION**, not by a placeholder binding — `resolveKey`
 returns null and the engine paints a blank. Tests assert both, so filling them in
 later reads as a regression rather than a tidy-up.
+
+---
+
+## Batch 25 — the VST launcher tree
+
+**Development is FROZEN on EQ8, Pro-Q 3 data mapping and the Calculator** at Adi's
+instruction. Nothing in this batch touches any of them.
+
+### V44 — a hierarchical VST launcher under the Ableton hub
+
+**RULING (Adi's) — a "Plugins" folder on the main Ableton screen, category
+sub-folders beneath it, load shortcuts inside those, and a dedicated Back button
+on every sub-page. The taxonomy, naming and arrangement were explicitly left to
+my judgement.**
+
+```
+Ableton hub  ->  Plugins  ->  EQ | Dynamics | Synths | Meters  ->  loaders
+```
+
+**THE WHOLE TREE IS ONE TABLE.** The brief was a structure that "doesn't get
+cluttered as we add many more tools", so `CATEGORIES` in `js/modules/plugins.js`
+generates every screen: adding a plugin is one line, a category is four, and
+neither touches a layout, a key index or a Back button. There is exactly one menu
+renderer, so a grid fix fixes all five pages.
+
+### The taxonomy, and the two placements that are judgement calls
+
+| folder | plugins |
+|---|---|
+| **EQ** | EQ Eight · FabFilter Pro-Q 3 · Pulsar Massive · Spectre |
+| **Dynamics** | Compressor · Glue Compressor · soothe |
+| **Synths** | Serum |
+| **Meters** | SPAN · bx_meter · s(M)exoscope |
+
+Grouped by **what the plugin does to sound**, not by vendor, because that is the
+axis a hand reaches along mid-session: "I need an EQ" comes before "I need a
+FabFilter". Four categories is deliberately few — a top level you can read without
+hunting beats a precise one.
+
+1. **PULSAR MASSIVE IS FILED UNDER EQ, NOT SYNTHS.** Adi's list sat it next to
+   Serum, which reads like a synth, but it is Pulsar Audio's Manley Massive Passive
+   emulation — a passive program EQ. The registry is the evidence, not my opinion:
+   `PulsarMassiveController` matches `/massive\s*passive/i` and `/\bmp[.\s-]?eq\b/i`.
+   This is the one item I moved.
+2. **SOOTHE IS FILED UNDER DYNAMICS.** soothe2 is spectral in *what* it touches but
+   level-dependent in *when* it acts, so it sits with the compressors.
+
+"standard Compressors" was read as **plural** and became Ableton's two stock ones,
+Compressor and Glue Compressor. Spectre sits in EQ because it is a per-band
+harmonic enhancer and `SpectreController` is band-shaped.
+
+### The load path was already built and was NOT touched
+
+`Bridge.cmd.loadDevice(name)` (V30) sends `{c:'load_device', name}` to the AdiVST
+remote script, **which is verified and must not be modified**. Its
+`cmd_load_device` walks Live's browser roots and matches EXACT normalised name
+first, then SUBSTRING, then loads onto `song.view.selected_track` — precisely "the
+currently selected track" from the brief. No Python changed.
+
+**THE SUBSTRING PASS DICTATED THE NAMES.** Measured on this machine, Xfer's synth
+is installed as `Serum2.vst3`, not "Serum", so the short stem "Serum" finds it
+through the substring pass while "Serum2" would miss a plain "Serum" elsewhere.
+Short distinctive stems resolve on more machines than exact product names. Where a
+stem would be ambiguous it is spelled out: **"FabFilter Pro-Q 3", never "Pro-Q",
+because Pro-Q 2 is also installed here** and the substring pass would be free to
+pick it. A test pins both halves of that reasoning.
+
+### NOT INSTALLED, verified by looking
+
+**soothe, Spectre and Pulsar Massive are absent from every plug-in folder on this
+machine** (`/Library/Audio/Plug-Ins/{VST3,VST,Components}` and the user
+equivalents). Their keys are built anyway and are deliberately NOT hidden — unlike
+a Root Hub app tile there is nothing to probe, because only Live knows its own
+browser. They will report "not installed" on the status zone.
+
+### The status zone, and why it is not polish
+
+**`device_loaded` was never emitted and `error` was only logged**, so a load
+shortcut was fire-and-forget in both directions: a name Live's browser does not
+have produced a key press with no visible consequence at all. With three of the ten
+missing here that is the common case, not the edge case — and it is the same silence
+that hid the stale-service bug in Batch 21. The bridge now emits `device_loaded` and
+the launcher shows the result.
+
+**The readout sits on DIAL 2, not dial 5.** Under L3b a docked window borrows the
+RIGHTMOST dials and 1-4 always stay with the module; State 2 takes physical 5 and 6
+(V14). A status zone on 5 vanished behind the Time Divisions window the moment
+anything docked — **the preview sheet showed it, which is the second time that
+"look at it before deploying" caught a design error rather than a typo.** Zone 1
+carries the folder name, zone 2 the result, zone 6 is left blank for the clock. Both
+cost no keys, which is the clutter the brief asked me to design out.
+
+### Every sub-page is `fullScreenCapable`, and that is load-bearing
+
+Not cosmetic. **Button 1 is the reserved Back anchor only OUTSIDE NAV OFF**; in NAV
+OFF it belongs to the module, which is what allows (0,0) to be a plain Back key
+answering a SHORT press. On a non-full-screen page the same key would need a 500 ms
+hold — not the button Adi asked for. It also means entering and leaving these pages
+changes no state and docks nothing, so no numpad ever appears over the menu.
+
+### The pump only composites for the screen that draws the strip
+
+`Nav.enter` pushes without exiting, so the pump kept running under the launcher.
+That is wanted — the status zone needs repaints — but `composite()` builds the whole
+1200x100 controller strip and on a menu page nothing paints it. It was 15 frames a
+second of an image thrown away. Compositing is now gated on the hub being the
+current screen and the cadence drops to 4 fps off it. Gating with one question here
+beats coupling two modules' lifecycles, which can desynchronise.
+
+### Left alone deliberately
+
+Pro-Q 3 and EQ8 still have their own fast keys on the device shelf even though both
+now also appear inside Plugins. **That duplication is intentional and is Adi's to
+rule on (P5)** — they are two-press-shorter and were there first.
+
+### Awaiting Adi
+
+* **Per-plugin icons.** He asked to be asked. Everything is text plus vendor
+  captions for now; only Pro-Q 3 has artwork in the project (`SOS.Art.proq3`) and it
+  is deliberately not used inside the tree, so the folder reads uniformly.
+* **INDEQ, dBComp, Vital** are installed and INDEQ/dBComp already have controllers,
+  but they were not on his list, so no keys were invented for them.
