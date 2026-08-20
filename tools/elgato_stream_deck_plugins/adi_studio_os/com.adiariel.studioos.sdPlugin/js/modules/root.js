@@ -298,7 +298,15 @@ SOS.Modules.Root = (function () {
        Zone 6 is deliberately absent from this switch: the clock claims the last
        zone whenever nothing else is using it, so returning nothing here IS how the
        clock gets its home (States.lastZoneFree). */
-    dials: function (dial) {
+    dials: function (dial) { return osNavDial(dial); },
+  };
+
+  /* V49 — EXTRACTED so the Ableton hub's idle state can MIRROR this strip rather
+     than copy it. Adi asked for "the standard OS navigation strip" over there, and
+     two hand-written copies of the same five dials is how they stop being the same
+     strip. The Ableton idle state takes dials 1-4 from here and puts Ableton track
+     controls on 5 and 6. */
+  function osNavDial(dial) {
       var offline = !IPC.isOnline();
       switch (dial) {
         case 1: return {
@@ -364,8 +372,7 @@ SOS.Modules.Root = (function () {
         // case 6 — left to the clock, on purpose. See the note above.
         default: return { title: '', value: '' };
       }
-    },
-  };
+  }
 
   return {
     screen: screen, defineSlot: defineSlot, clearSlots: clearSlots,
@@ -374,6 +381,8 @@ SOS.Modules.Root = (function () {
     // that is deliberately unplaced (Cubase).
     hubs: function () { return HUBS; },
     refreshAvailability: refreshAvailability,
+    // V49 — shared with the Ableton hub's idle state.
+    osNavDial: osNavDial,
     availability: function () { return avail; },
   };
 })();

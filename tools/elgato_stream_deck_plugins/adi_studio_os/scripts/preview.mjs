@@ -78,6 +78,20 @@ function fakeAbleton(deviceName, className, controller) {
   SOS.Modules.Ableton._pick();
 }
 
+/* V50 — the IDLE state: a track selected, no device focused. `fakeAbleton` always
+   installs a device, so the sheet needs a way to take it away again or Track Mode
+   can never be seen. */
+function fakeIdle() {
+  const st = SOS.Modules.Ableton.bridge.state();
+  st.online = true;
+  st.track = { name: "Drums", index: 2 };
+  st.device = { has_device: false, name: "", class_name: "", controller: "generic",
+                index: -1, param_count: 0 };
+  st.mix = { has_track: true, track: "Drums", vol: 0.72, vol_disp: "-4.5 dB",
+             pan: -0.34, pan_disp: "17L" };
+  SOS.Modules.Ableton.bridge.isOnline = () => true;
+}
+
 function grid(label, stateIndex, screenId) {
   // Navigating for real (rather than rendering a screen in isolation) means the
   // sheet also exercises nav + the overlay compositor, not just the module.
@@ -144,7 +158,10 @@ ${pick("midi", grid("MIDI Control &middot; NAV OFF &mdash; drums, scale touch, b
 ${pick("ableton", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; EQ Eight &mdash; FULL: the strip spans all six dials", 3, "ableton.hub")))}
 ${pick("ableton2", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; FabFilter Pro-Q 3 &mdash; FULL, resolved by name", 3, "ableton.hub")))}
 ${pick("compact", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; Pro-Q 3 COMPACT &mdash; State 2 borrows dials 5-6, so build(4) (V14)", 2, "ableton.hub")))}
-${pick("flat", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton hub &middot; THE FLAT COLUMN LAYOUT (V46) &mdash; EQ | Dynamics | Synths | Meters, utility col 8", 3, "ableton.hub")))}
+${pick("flat", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton hub &middot; the flat column layout, TINTED (V49)", 3, "ableton.hub")))}
+${pick("idle", (fakeIdle(), grid("Ableton hub &middot; IDLE = TRACK MODE (V50) &mdash; OS nav on 1-4, Pan on 5, Volume on 6", 3, "ableton.hub")))}
+${pick("next", (fakeIdle(), (SOS.Modules.Ableton._page(1), grid("Ableton hub &middot; NEXT &mdash; the spare page keeps the four tinted sections (V49)", 3, "ableton.hub"))))}
+${pick("midi", (fakeIdle(), (SOS.Modules.Ableton._page(0), grid("MIDI Control &middot; now with a real Back key at (0,0) (V51)", 3, ["ableton.hub", "midictl.hub"]))))}
 `;
 
 fs.writeFileSync(OUT, html);
