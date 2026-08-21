@@ -52,64 +52,50 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**1080 tests green** (1044 JS + 36 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 27 is deployed** (`service v2.4.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`).
+**1096 tests green** (1041 JS + 55 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 28 is deployed** (`service v2.4.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`).
 
-### FROZEN at Adi's instruction — do not write code for these
+### FROZEN at Adi's instruction - do not write code for these
 
 **EQ8's mapping, Pro-Q 3 data mapping, and the Calculator.**
 
-### ⚠️ THE REMOTE SCRIPT GAINED VERBS — LIVE MUST BE RESTARTED
+### THE REMOTE SCRIPT KEEPS GAINING VERBS - LIVE MUST BE RESTARTED
 
-Ableton loads MIDI Remote Scripts **at launch**, so `device_key`,
-`track_volume_delta`, `track_pan_delta` and `get_mix` do not exist in a Live that was
-already running when the deploy landed. Live WAS running at Batch 27's deploy. If the
-plugin keys or the Track Mode dials do nothing, that is why — quit and reopen Live.
+Ableton loads Remote Scripts **at launch**. If the plugin keys, the Track Mode dials
+or the device arrows do nothing, quit and reopen Live. Current additive verbs:
+`load_device` (V30), `device_key` (V52), `track_volume_delta` / `track_pan_delta` /
+`get_mix` (V50), `device_step` / `device_pos` (V53).
 
-**"The remote script must not be modified" has one established exception**, set by
-V30 and live ever since: **purely ADDITIVE verbs that touch no existing code path.**
-Batch 27 follows it exactly — new methods, new dispatch branches, nothing existing
-edited, and `cmd_eq8_key` left byte-for-byte intact. **The Python is now COMMITTED**
-(its own commit); it had been dirty in the working tree since Batch 18, so a
-`git checkout` would have silently broken the hub.
+**"The remote script must not be modified" means: no editing existing code paths.**
+Purely ADDITIVE verbs are the established exception (V30). `cmd_eq8_key` and
+`cmd_select_device` are both still byte-for-byte intact and both now unused.
 
-### Batch 27 (V49–V52) — tints, the unified plugin key, Track Mode
+### Batch 28 (V53-V54) - flat tints, deep search, device stepping
 
-- **The bands are TINTED**, not just outlined — Adi: the bezels were "too subtle and
-  hard to see depending on the viewing angle". Every band cell carries `face` (the
-  V16 material override, so it was already in `hashId()` and `keySpec()`) at the band
-  colour crushed 78 % toward black.
-- **One press rule for EVERY plugin key** — short: insert if absent, focus if
-  present, cycle if several; long: force a new instance. **The decision happens in
-  LIVE** (`device_key`), because the plugin's view of the track is a snapshot and
-  deciding here would race it. EQ8 is no longer special.
-  **On-track matching is exact-then-PREFIX, never contains** — contains made
-  "Compressor" match "Glue Compressor", so the Comp key focused the Glue instead of
-  inserting a Compressor. A test pins it.
-- **Track Mode** is the idle state (no device focused): dials 1–4 MIRROR the Root
-  Hub strip via the shared `Root.osNavDial`, dial 5 is Pan, dial 6 is Volume in
-  **strictly 0.5 dB** steps. The clock gives up zone 6 here on purpose.
-  **The 0.5 dB is exact, not approximated**: Live's fader curve is not invertible, so
-  the dB is read from the parameter's own display string and the target is found by
-  **bisection on that same function** (30 halvings — 24 left ~0.01 dB of visible
-  residue). The value is SNAPPED to the grid before stepping, or a mouse-dragged
-  -6.02 dB carries its 0.02 forever.
-- **Pulsar Massive and Spectre moved to EQ.** **The invented "Device" readout is
-  deleted** — a load that misses now reddens the key you pressed. **NEXT always has a
-  spare empty page** that keeps the four tinted sections.
-- **The MIDI screen finally has an exit.** It returned null at Button 1 "so the
-  engine paints Back", but the engine only does that OUTSIDE NAV OFF and that screen
-  is `fullScreenCapable` — so Button 1 was a dead key and the comment had been false
-  since the day the screen went full-screen-capable.
+- **The coloured bezels are DELETED** from render.js, not switched off - the bars,
+  the margin wash, the `frame` field, its `hashId()` term and its `keySpec()` line.
+  **The part that mattered was setting `canvas` as well as `face`**: with `face`
+  alone the 6 px margin stayed near-black and every key read as a tinted button
+  inside a dark ring, which was the border he wanted gone.
+  Still there on purpose: the 1 px neutral hairline and the V9/V10 gradient. Those
+  are the global key material on every module - changing them is a P5 call.
+- **Uniform text on the plugin grid**, reversing V46's "use real logos where they
+  exist": two pictures among twelve names read as a mistake. `proq3` and `vital`
+  were removed from art.js; the extraction paths are still in its header. Root Hub
+  icons untouched.
+- **Smart Focus descends into RACKS** (`_all_devices`, depth-first, `chains` AND
+  `return_chains`, depth-capped at 12 because a runaway recursion inside Ableton
+  takes the DAW with it). **The old bug was worse than "it misses"** - a buried
+  instance meant every press INSERTED another copy.
+- **Device-step arrows** at (8,1)/(8,2), walking that same flattened list so they
+  enter and leave racks. They CLAMP rather than wrap. The caption is the position in
+  the tree, on its own `device_pos` message - `device` is verified protocol and a
+  tree walk on every change would make it pay for what two keys read.
 
-### There is no lost track volume/pan logic — it never existed
+### FIELD NOTE - never string-match through hashId()
 
-Adi asked what happened to it. Searched, not recalled: `live_bridge.py`,
-`AdiVST.py`, the protocol doc, the entire legacy plugin, all of DECISIONS, and
-`git log -S`. Nothing. What he remembers is most likely **D12/V33's master-volume
-dial on the Root Hub** — which is SYSTEM volume (`os.volume`, still on the service,
-still working) and lost its home when the OS-nav strip took the zones — or the
-uncommitted `load_device` work, which is a real "we added to the remote script"
-memory about something else.
+`hashId()` ends in a literal backslash-u-0001 join argument. Editing around it by
+text match has now mangled it **three times**; this batch produced a syntax error
+that took render.js and five suites down at once. Edit that function BY LINE.
 
 ### Pro-Q 3 — ANSWERED by Adi (Batch 23), not yet implemented
 

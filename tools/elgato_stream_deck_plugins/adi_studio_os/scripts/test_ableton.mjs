@@ -557,11 +557,14 @@ ok("…and carry the window's own faces, not slices of the controller strip",
   }
   ok("compact keeps Back, MIDI and the pager",
      ["Back", "MIDI", "NEXT"].every((n) => present.includes(n)), present.join(","));
-  // V49 — the device readout is GONE from the utility column, at Adi's request.
-  ok("…and the utility column has nothing between them any more",
-     cl.keys(4, 1) === null && cl.keys(4, 2) === null);
+  /* V53 — the two cells between MIDI and NEXT are the device-step arrows now. The
+     V49 device readout that used to sit there is gone for good. */
+  ok("…and the device-step arrows fill the gap between MIDI and NEXT",
+     cl.keys(4, 1) && cl.keys(4, 1).label === "Prev"
+     && cl.keys(4, 2) && cl.keys(4, 2).label === "Next",
+     [cl.keys(4, 1), cl.keys(4, 2)].map((k) => k && k.label).join(","));
   ok("…and a whole EQ band with it",
-     ["EQ8", "proq3", "INDEQ"].every((n) => present.includes(n)), present.join(","));
+     ["EQ8", "Pro-Q 3", "INDEQ"].every((n) => present.includes(n)), present.join(","));
   /* V49 — pages are bandPages x itemPages. At 5 columns that is 2 x 2: EQ+Dyn p1,
      EQ+Dyn p2, Syn+Met p1, Syn+Met p2. The second item page is the deliberate spare
      Adi asked for, so the pager is never a dead control. */
@@ -582,9 +585,8 @@ ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
   ok("(0,0) is the global Back out of the Ableton hub",
      wl.keys(0, 0).label === "Back" && typeof wl.keys(0, 0).tap === "function",
      wl.keys(0, 0) && wl.keys(0, 0).label);
-  ok("…and it still carries the EQ band's frame, so the red box has no missing corner",
-     !!(wl.keys(0, 0).frame && wl.keys(0, 0).frame.t && wl.keys(0, 0).frame.l),
-     JSON.stringify(wl.keys(0, 0).frame));
+  ok("…and it still wears the EQ band's tint, so the red block has no bare corner",
+     !!(wl.keys(0, 0).face && wl.keys(0, 0).canvas), wl.keys(0, 0).face);
 
   /* THE UTILITY COLUMN IS COL 8, NOT COL 7. Adi's brief said "32 keys", "8 columns"
      and "col 7", but the + XL is 36 keys and 9 columns and his screenshot cut the
@@ -595,38 +597,58 @@ ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
      wl.keys(8, 0) && wl.keys(8, 0).label);
   ok("NEXT is bottom-right", wl.keys(8, 3).label === "NEXT",
      wl.keys(8, 3) && wl.keys(8, 3).label);
-  /* V49 — the invented "Device" readout is deleted. Asserted as an ABSENCE: it
-     was a key that did nothing when pressed, and a careless revert would put it
-     back. Load failures now report on the key that was actually pressed. */
-  ok("nothing sits between them — the Device readout is gone",
-     wl.keys(8, 1) === null && wl.keys(8, 2) === null);
+  /* The invented "Device" readout is deleted for good (V49) and V53 gave its two
+     cells a job: stepping through the track's devices. Both halves are asserted —
+     the arrows are there, and nothing in the column reports a device name. */
+  ok("the device-step arrows sit between MIDI and NEXT",
+     wl.keys(8, 1).label === "Prev" && wl.keys(8, 2).label === "Next",
+     [wl.keys(8, 1), wl.keys(8, 2)].map((k) => k && k.label).join(","));
+  ok("…and neither of them is the old readout — no kicker, and both do something",
+     !wl.keys(8, 1).kicker && !wl.keys(8, 2).kicker
+     && typeof wl.keys(8, 1).tap === "function" && typeof wl.keys(8, 2).tap === "function");
+  {
+    const dirs = [];
+    const real = A.bridge.cmd.deviceStep;
+    A.bridge.cmd.deviceStep = (d) => dirs.push(d);
+    wl.keys(8, 1).tap(); wl.keys(8, 2).tap();
+    A.bridge.cmd.deviceStep = real;
+    ok("…up steps back through the chain and down steps forward",
+       dirs.join(",") === "-1,1", dirs.join(","));
+  }
+  ok("their glyphs are from the proven set", 
+     "▲▼".includes(wl.keys(8, 1).glyph) && "▲▼".includes(wl.keys(8, 2).glyph),
+     `${wl.keys(8, 1).glyph}${wl.keys(8, 2).glyph}`);
   ok("NEXT is LIVE at 9 columns, because there is always a spare empty page",
      wl.keys(8, 3).dim === false && wl.keys(8, 3).sub === "1/2", wl.keys(8, 3).sub);
 
-  /* THE FOUR BANDS, in Adi's colours, two columns each. Every cell of a band
-     carries the frame — empties included — or the colour box would stop halfway
-     down the group instead of enclosing it. */
+  /* THE FOUR BANDS, in Adi's colours, two columns each. V54 — the coloured bars are
+     gone and only the TINT separates them, so the assertion moved from frame edges
+     to `face`/`canvas`: every cell of a band, empty ones included, must carry the
+     same flat tint edge to edge. */
   const bands = [
-    { name: "EQ",       cols: [0, 1], color: R.PALETTE.rekordbox },
-    { name: "Dynamics", cols: [2, 3], color: R.PALETTE.console },
-    { name: "Synths",   cols: [4, 5], color: R.PALETTE.green },
-    { name: "Meters",   cols: [6, 7], color: "#22d3ee" },
+    { name: "EQ",       cols: [0, 1] },
+    { name: "Dynamics", cols: [2, 3] },
+    { name: "Synths",   cols: [4, 5] },
+    { name: "Meters",   cols: [6, 7] },
   ];
-  for (const b of bands) {
-    let framed = 0, right = 0;
+  bands.forEach((b, i) => {
+    const tint = M.Plugins.tintOf(M.Plugins.groups()[i]);
+    let tinted = 0, cells = 0;
     for (const c of b.cols) for (let r = 0; r < 4; r++) {
       const k = wl.keys(c, r);
-      if (!k) continue;                       // only (0,0) is handled elsewhere
-      if (k.frame) { framed++; if (k.frame.color === b.color) right++; }
+      if (!k) continue;
+      cells++;
+      if (k.face === tint && k.canvas === tint) tinted++;
     }
-    ok(`the ${b.name} band frames all 8 of its cells`, framed === 8, String(framed));
-    ok(`…in its own colour`, right === framed && framed > 0, `${right}/${framed}`);
-  }
-  // The outer boundary must be on the outside only, or the box reads as a grid.
-  ok("a band's frame edges are its OUTER sides, not every side",
-     wl.keys(0, 1).frame.l === true && wl.keys(0, 1).frame.r === false
-     && wl.keys(1, 1).frame.r === true && wl.keys(1, 1).frame.l === false
-     && wl.keys(0, 1).frame.t === false && wl.keys(0, 3).frame.b === true);
+    ok(`the ${b.name} band tints all 8 of its cells, face and margin alike`,
+       cells === 8 && tinted === 8, `${tinted}/${cells}`);
+  });
+  ok("the four band tints are four different colours",
+     new Set(M.Plugins.groups().map((g) => M.Plugins.tintOf(g))).size === 4);
+  ok("NO key carries a frame any more — the borders are gone",
+     [...Array(4).keys()].every((r) => [...Array(9).keys()].every((c) => {
+       const k = wl.keys(c, r); return !k || k.frame === undefined;
+     })));
 
   /* PRESETS IS GONE ENTIRELY — Adi: "I never requested it." Asserted as an
      absence, because a careless revert is exactly what would bring it back. */
@@ -2142,17 +2164,19 @@ console.log("\n[V46] the flat VST catalogue");
   ok("Compressor and Glue Compressor are both exact, so neither shadows the other",
      dev.Comp === "Compressor" && dev.Glue === "Glue Compressor");
 
-  /* ARTWORK IS ONLY EVER REAL. Adi's rule is "if it exists locally use it, do not
-     invent fake SVGs" — so exactly the two plugins with an extractable product
-     mark on this machine name one, and every other loader carries text. */
+  /* V54 — NO ARTWORK AT ALL on the plugin grid. Pro-Q 3 and Vital did wear their
+     real extracted logos; Adi found that two pictures among twelve names read as a
+     mistake rather than as emphasis, so the whole grid is text now. Asserted as an
+     absence, because "use the real logo where one exists" was the previous ruling
+     and a revert would look like a fix. */
   const arts = [];
   P.groups().forEach((g) => g.items.forEach((i) => { if (i.art) arts.push(i.art); }));
-  ok("only the two loaders with a REAL extracted logo name artwork",
-     arts.sort().join(",") === "proq3,vital", arts.join(","));
-  ok("…and both of those names resolve in the art registry",
-     arts.every((a) => !!SOS.Art[a]), arts.join(","));
-  ok("…while every other loader carries a vendor caption instead",
-     P.groups().every((g) => g.items.every((i) => i.art || i.sub)));
+  ok("no plugin key names artwork any more — the grid is uniform text",
+     arts.length === 0, arts.join(","));
+  ok("…every one carries a label and a vendor caption instead",
+     P.groups().every((g) => g.items.every((i) => i.label && i.sub)));
+  ok("…and the Root Hub's own icons are untouched (Adi was explicit)",
+     !!(SOS.Art.chrome && SOS.Art.ableton && SOS.Art.rekordbox));
 
   /* THE PAGER'S TWO MEANINGS. At 9 columns all four bands are on screen, so it can
      only page items and nothing overflows; at 5 only two fit, so it cycles pairs. */
@@ -2178,13 +2202,13 @@ console.log("\n[V46] the flat VST catalogue");
       const k = P.gridKey(c, r, 9, 1);
       if (k) spare.push(k);
     }
-    ok("the spare page still frames and tints all 31 of its cells",
-       spare.length === 31 && spare.every((k) => k.frame && k.face),
+    ok("the spare page still tints all 31 of its cells",
+       spare.length === 31 && spare.every((k) => k.face && k.canvas),
        `${spare.length} cells`);
     ok("…and holds no plugins at all", spare.every((k) => !k.label && !k.art));
     ok("…in all four band colours",
-       new Set(spare.map((k) => k.frame.color)).size === 4,
-       String(new Set(spare.map((k) => k.frame.color)).size));
+       new Set(spare.map((k) => k.face)).size === 4,
+       String(new Set(spare.map((k) => k.face)).size));
   }
 
   /* A FAILED LOAD MUST BE VISIBLE. Three of these plugins are not installed here,
@@ -2222,15 +2246,16 @@ console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
   for (const [name, col, tint] of [["EQ", 0, tints[0]], ["Dynamics", 2, tints[1]],
                                    ["Synths", 4, tints[2]], ["Meters", 6, tints[3]]]) {
     const k = wl.keys(col, 1);
-    ok(`the ${name} band tints its keys`, k && k.face === tint, k && k.face);
+    ok(`the ${name} band tints its keys`,
+       k && k.face === tint && k.canvas === tint, k && `${k.face}/${k.canvas}`);
     ok(`…and the tint reaches the ink`,
        SOS.Render.key(States.keySpec(k)).indexOf(tint) > 0);
   }
   ok("even the Back key wears the EQ band's tint, so no corner is bare",
-     wl.keys(0, 0).face === tints[0], wl.keys(0, 0).face);
-  ok("an empty cell inside a band keeps BOTH the tint and the frame",
-     !!(wl.keys(6, 3) && wl.keys(6, 3).face && wl.keys(6, 3).frame),
-     JSON.stringify(wl.keys(6, 3) && { face: wl.keys(6, 3).face }));
+     wl.keys(0, 0).face === tints[0] && wl.keys(0, 0).canvas === tints[0],
+     wl.keys(0, 0).face);
+  ok("an empty cell inside a band keeps the tint on both face and margin",
+     !!(wl.keys(6, 3) && wl.keys(6, 3).face && wl.keys(6, 3).canvas));
   ok("the utility column is deliberately NOT tinted — it is not a category",
      !wl.keys(8, 0).face && !wl.keys(8, 3).face);
 
