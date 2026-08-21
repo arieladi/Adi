@@ -328,5 +328,144 @@ br = MixBridge(); br.track.mixer_device = None
 br.cmd_track_volume_delta(1); br.cmd_track_pan_delta(1)
 ok("a track with no mixer is a no-op, not a crash", True)
 
+# ===========================================================================
+# V53 — the deep search, and stepping through the whole device tree.
+# ===========================================================================
+print("\n[14] V53: the rack walk sees every device, in Live's own order")
+
+class Chain:
+    def __init__(self, devices): self.devices = list(devices)
+
+class Rack(Dev):
+    """A rack. Live exposes `chains` (and `return_chains` for a rack's returns);
+    the devices inside can be racks again, which is normal in a drum rack."""
+    def __init__(self, name, chains=(), returns=()):
+        Dev.__init__(self, name, "RackDevice")
+        self.chains = [Chain(c) for c in chains]
+        self.return_chains = [Chain(c) for c in returns]
+
+class TreeBridge(lb.LiveBridge):
+    def __init__(self, devices, selected=None, loaded=None):
+        self.sent = []; self.msgs = []
+        self._loaded = loaded if loaded is not None else []
+        self._b = make_browser(self._loaded)
+        self.track = types.SimpleNamespace(
+            name="Drums", devices=list(devices),
+            view=types.SimpleNamespace(selected_device=selected))
+        self.song = types.SimpleNamespace(
+            view=types.SimpleNamespace(selected_track=self.track,
+                                       select_device=self._sel))
+        self._cs = types.SimpleNamespace(show_message=lambda m: self.msgs.append(m))
+    def send(self, m): self.sent.append(m)
+    def log(self, m): pass
+    def _browser(self): return self._b
+    def _sel(self, d): self.track.view.selected_device = d
+    def _device_index(self, d):
+        try: return list(self.track.devices).index(d)
+        except ValueError: return -1
+
+# A realistic tree: a plain device, then a rack with two chains, one of which
+# holds a nested rack, plus a return chain.
+buried  = Dev("FabFilter Pro-Q 3")
+inner   = Rack("Inner Rack", chains=[[buried]])
+chainA  = [Dev("Saturator"), inner]
+chainB  = [Dev("Compressor")]
+ret     = [Dev("ValhallaRoom")]
+outer   = Rack("Drum Rack", chains=[chainA, chainB], returns=[ret])
+top     = [Dev("EQ Eight"), outer, Dev("Glue Compressor")]
+
+br = TreeBridge(top)
+flat = [getattr(d, "name", "?") for d in br._track_devices(br.track)]
+EXPECT = ["EQ Eight", "Drum Rack", "Saturator", "Inner Rack",
+          "FabFilter Pro-Q 3", "Compressor", "ValhallaRoom", "Glue Compressor"]
+ok("the walk finds all eight devices, racks included", len(flat) == 8, str(len(flat)))
+ok("...depth-first in chain order, so 'next' descends instead of skipping",
+   flat == EXPECT, " -> ".join(flat))
+ok("...and a rack's RETURN chain is walked too, not just its chains",
+   "ValhallaRoom" in flat, " -> ".join(flat))
+ok("...and the racks themselves are in the list, being devices as well",
+   "Drum Rack" in flat and "Inner Rack" in flat)
+
+print("\n[15] V53: Smart Focus finds a plugin buried in a rack")
+loaded = []
+br = TreeBridge(top, None, loaded)
+br.cmd_device_key("FabFilter Pro-Q 3")
+ok("a Pro-Q 3 two racks deep is FOCUSED, not duplicated",
+   br.track.view.selected_device is buried and loaded == [], str(loaded))
+# The regression this guards: before V53 the search saw only the top chain, so it
+# found nothing and inserted a second copy on every press.
+loaded = []
+br = TreeBridge([Dev("EQ Eight")], None, loaded)
+br.cmd_device_key("FabFilter Pro-Q 3")
+ok("...while a track that genuinely lacks one still gets one inserted",
+   loaded == ["FabFilter Pro-Q 3"], str(loaded))
+loaded = []
+buried2 = Dev("FabFilter Pro-Q 3")
+br = TreeBridge([Rack("R", chains=[[buried]]), Rack("R2", chains=[[buried2]])], buried, loaded)
+br.cmd_device_key("FabFilter Pro-Q 3")
+ok("two instances in DIFFERENT racks still cycle between each other",
+   br.track.view.selected_device is buried2 and loaded == [], str(loaded))
+
+print("\n[16] V53: the long press still forces a new instance, even when one is buried")
+loaded = []
+br = TreeBridge(top, buried, loaded)
+br.cmd_device_key("FabFilter Pro-Q 3", force_new=True)
+ok("a forced insert ignores the buried instance", loaded == ["FabFilter Pro-Q 3"], str(loaded))
+
+print("\n[17] V53: the device-step arrows traverse the tree")
+br = TreeBridge(top, None)
+br.cmd_device_step(1)
+ok("with nothing selected, next starts at the first device",
+   br.track.view.selected_device is top[0], getattr(br.track.view.selected_device, "name", "?"))
+seen = []
+for _ in range(10):
+    br.cmd_device_step(1)
+    seen.append(getattr(br.track.view.selected_device, "name", "?"))
+ok("stepping forward walks INTO the rack, not over it",
+   seen[0] == "Drum Rack" and seen[1] == "Saturator" and seen[2] == "Inner Rack"
+   and seen[3] == "FabFilter Pro-Q 3", " -> ".join(seen[:5]))
+ok("...and back OUT of it to the next top-level device",
+   "Glue Compressor" in seen, " -> ".join(seen))
+ok("...and it CLAMPS at the end instead of wrapping round",
+   seen[-1] == "Glue Compressor" and seen[-2] == "Glue Compressor", " -> ".join(seen[-3:]))
+
+br = TreeBridge(top, None)
+br.cmd_device_step(-1)
+ok("with nothing selected, prev starts at the LAST device",
+   getattr(br.track.view.selected_device, "name", "?") == "Glue Compressor",
+   getattr(br.track.view.selected_device, "name", "?"))
+back = []
+for _ in range(10):
+    br.cmd_device_step(-1)
+    back.append(getattr(br.track.view.selected_device, "name", "?"))
+ok("stepping back descends into the rack from the other side",
+   back[0] == "ValhallaRoom" and back[1] == "Compressor", " -> ".join(back[:3]))
+ok("...and clamps at the first device", back[-1] == "EQ Eight", " -> ".join(back[-2:]))
+
+print("\n[18] V53: the position message the arrows read")
+br = TreeBridge(top, buried)
+br._emit_device_pos()
+m = [x for x in br.sent if x.get("t") == "device_pos"][-1]
+ok("it reports where the selection sits in the FLATTENED tree",
+   m["count"] == 8 and m["index"] == 4, str(m))
+br = TreeBridge([], None)
+br.cmd_device_step(1)
+ok("an empty track reports a count of zero rather than throwing",
+   [x for x in br.sent if x.get("t") == "device_pos"][-1]["count"] == 0)
+br = TreeBridge(top, Dev("Not On This Track"))
+br._emit_device_pos()
+ok("a selection that is not in the tree reports index -1, not a crash",
+   [x for x in br.sent if x.get("t") == "device_pos"][-1]["index"] == -1)
+
+print("\n[19] V53: the depth cap is a rail, not a limit")
+deep = Dev("Bottom")
+node = deep
+for _ in range(30):
+    node = Rack("R", chains=[[node]])
+br = TreeBridge([node])
+n = len(br._track_devices(br.track))
+ok("a pathologically deep tree is truncated instead of blowing the stack",
+   n > 0 and n <= 40, str(n))
+
 print("\n%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

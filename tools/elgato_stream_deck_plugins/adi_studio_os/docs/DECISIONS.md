@@ -2726,3 +2726,97 @@ comment asserting an invariant that a later change quietly broke.
 
 Ableton loads MIDI Remote Scripts at launch, so the new verbs do not exist in a Live
 that was already running when the deploy landed. Live WAS running at deploy time.
+
+---
+
+## Batch 28 — flat tints, deep search, and device stepping
+
+**FROZEN and untouched: EQ8's mapping, Pro-Q 3 data mapping, the Calculator.**
+
+### V54 — the coloured bezels are DELETED, not switched off
+
+**RULING — "The tints look good and we no longer need the thin colored border
+lines."** So the whole V45 group-frame feature is gone from render.js: the coloured
+outer bars, the margin wash, the `frame` field, its term in `hashId()` and its line
+in `keySpec()`. It had no other caller, and a feature left switched off is a decoy.
+
+**THE PART THAT ACTUALLY MATTERED was setting `canvas` as well as `face`.** With
+`face` alone the raised cap was tinted and the 6 px margin around it stayed
+near-black — so every key read as a tinted button sitting inside a dark ring, which
+is exactly the border he asked to be rid of. Both fields together make the key one
+flat block of colour edge to edge. Both were already in `hashId()` from V16, so the
+dedupe could not silently break.
+
+**Still there, deliberately:** the 1 px neutral hairline and the soft vertical
+gradient from V9/V10. Those are the global key material on every module, not a
+category border, and changing them is a P5 aesthetic decision rather than this
+instruction. Flagged for him rather than assumed.
+
+### V54 — uniform text, no logos on the plugin grid
+
+**RULING — "Mixing real logos with text labels for the other plugins is visually
+confusing... use plain, uniform text for ALL plugin buttons."** Pro-Q 3 and Vital
+lose their artwork; every cell is now a name plus a vendor caption.
+
+This REVERSES V46's "use the actual plugin logos as the buttons instead of text
+where possible", and the reason is worth keeping: two pictures among twelve names
+read as a mistake rather than as emphasis. **`proq3` and `vital` were removed from
+art.js entirely** — 30 KB of base64 that nothing draws is a decoy — with the
+extraction paths and the `sips` command left in the header so they are one command
+away. **Root Hub icons are untouched**; Adi was explicit that Chrome and the app
+tiles keep theirs.
+
+### V53 — Smart Focus descends into racks
+
+**RULING (Adi, answering my own question) — YES, search inside Racks.**
+
+`track.devices` is only the top-level chain. `_all_devices` now walks it
+depth-first, descending through every rack's `chains` **and its `return_chains`** —
+which is where a reverb send inside a drum rack lives — and recursing, because a
+drum rack is routinely three levels deep.
+
+**DEPTH-FIRST IN CHAIN ORDER, and that ordering is load-bearing**: the same
+flattened list feeds the device-step arrows, so it has to be the order you see in
+Live or "next" would jump over a rack instead of entering it.
+
+**The bug this fixes was worse than "it does not find it".** Before this, pressing
+Pro-Q 3 while an instance sat inside a rack found nothing on the track and therefore
+INSERTED another one — every press, forever. A test pins that case directly.
+
+There is a `MAX_RACK_DEPTH` of 12. Live's device tree is finite and acyclic so it is
+not a real limit; it is there because this code runs inside Ableton's own process and
+a runaway recursion there takes the DAW down with it.
+
+### V53 — the device-step arrows
+
+**RULING — Up and Down in the two cells between MIDI and NEXT, stepping the
+selected device on the track "including traversing into and out of nested
+devices/Racks."**
+
+They walk the same flattened list, so they descend into a rack and come back out the
+other side. **They CLAMP rather than wrap**: stepping off the end of a chain should
+stop, the way an arrow key stops at the end of a list — wrapping from the last device
+to the first is the kind of surprise that makes you stop trusting the key. From a
+cold start with nothing selected, "next" begins at the first device and "prev" at the
+last, so both arrows do something useful.
+
+The caption is the position in the flattened tree (`3/8`), which is the only thing on
+the surface that can tell you a Pro-Q 3 is three deep inside a drum rack. It arrives
+on its own `device_pos` message rather than as a new field on `device`: that one is
+verified protocol several controllers key off, and a tree walk on every device change
+would make it pay for something only two keys read.
+
+### Field note — never string-match through hashId()
+
+`hashId()`'s join argument is a literal backslash-u-0001 escape, and every attempt to
+edit around it by matching text through it has silently mangled it. This batch
+produced a doubled `join` and a syntax error that took render.js and five suites down
+at once. **The test suite caught it in a single run**, which is the point — but the
+lesson is to edit that function BY LINE, never by matching text across it. Third
+time.
+
+### Operational note — LIVE MUST BE RESTARTED, again
+
+`device_step`, `device_pos` and the recursive search are new remote-script code.
+Ableton loads Remote Scripts at launch, so a Live that was already running does not
+have them.

@@ -36,13 +36,27 @@
    Pulsar Massive." Both are band tools: Massive is the Manley Massive Passive
    emulation and Spectre is a per-band harmonic enhancer.
 
-   V49 — THE BANDS ARE TINTED, NOT JUST OUTLINED. Adi on the hardware: "The thin
-   colored bezels are too subtle and hard to see depending on the viewing angle."
-   So every cell of a band now carries `face`, which is render.js's existing
-   material override (V16's Omnis-Duo skin used it), set to the band colour crushed
-   ~78 % toward black. The key ITSELF is dark red / amber / green / cyan; the
-   outline stays on top of that. Reusing `face` rather than inventing a second
-   tint mechanism means it is already in hashId() and already in keySpec().
+   V54 — TINT ONLY, NO OUTLINE, NO LOGOS. Two rulings from Adi after living with
+   V49 on the hardware:
+
+     "The tints look good and we no longer need the thin colored border lines."
+     "Mixing real logos with text labels for the other plugins is visually
+      confusing... use plain, uniform text for ALL plugin buttons."
+
+   So a band cell now sets BOTH `face` and `canvas` to the same tint — the raised
+   face and the 6 px margin around it — and the key is one flat block of colour
+   edge to edge. The whole group-frame feature (the coloured bars and the margin
+   wash) is deleted from render.js rather than left switched off; it had no other
+   caller.
+
+   Setting `canvas` as well as `face` is the part that matters. With `face` alone
+   the margin stayed near-black and the cap read as a tinted button sitting inside
+   a dark ring — which is exactly the border he asked to remove.
+
+   NO ARTWORK, either. Pro-Q 3 and Vital had real extracted logos and now wear
+   their names like everything else: a grid where two of fourteen keys are pictures
+   reads as a mistake rather than as emphasis. Root Hub icons are untouched — Adi
+   was explicit that Chrome and the app tiles keep theirs.
    ============================================================================= */
 
 window.SOS = window.SOS || {};
@@ -73,11 +87,10 @@ SOS.Modules.Plugins = (function () {
        * 'FabFilter Pro-Q 3' — spelled out. 'Pro-Q' would be free to land on the
                         Pro-Q 2 that is also installed here.
 
-     `art` names a REAL extracted icon (js/core/art.js). Adi's rule is "if it
-     exists locally use it, do not invent fake SVGs", and only two of these have a
-     product mark on this machine: FabFilter's (already shipped) and Vital's. The
-     rest carry text and a vendor caption until he supplies artwork — the note in
-     art.js lists exactly what was searched and what was not there.
+     Every entry is TEXT plus a vendor caption (V54). Pro-Q 3 and Vital did wear
+     their real extracted logos and no longer do: Adi found that two pictures among
+     twelve names read as a mistake rather than as emphasis. The vendor line is what
+     tells two tools that do the same job apart.
      ========================================================================== */
   var GROUPS = [
     {
@@ -85,7 +98,7 @@ SOS.Modules.Plugins = (function () {
       color: R.PALETTE.rekordbox,          // #ff6b6b — Adi's red box
       items: [
         { label: 'EQ8',      device: 'EQ Eight',          sub: 'Ableton' },
-        { label: 'Pro-Q 3',  device: 'FabFilter Pro-Q 3', art: 'proq3' },
+        { label: 'Pro-Q 3',  device: 'FabFilter Pro-Q 3', sub: 'FabFilter' },
         { label: 'INDEQ',    device: 'INDEQ',             sub: 'Analog Obs.' },
         /* V49 — MOVED HERE FROM DYNAMICS, at Adi's instruction: "You were correct
            in your previous warning regarding Pulsar Massive." Pulsar Massive is the
@@ -112,7 +125,7 @@ SOS.Modules.Plugins = (function () {
       color: R.PALETTE.green,              // #39d353 — his green box
       items: [
         { label: 'Serum',    device: 'Serum',             sub: 'Xfer' },
-        { label: 'Vital',    device: 'Vital',             art: 'vital' },
+        { label: 'Vital',    device: 'Vital',             sub: 'Matt Tytel' },
       ],
     },
     {
@@ -208,8 +221,8 @@ SOS.Modules.Plugins = (function () {
      should have an empty next layout for more plugins in the future with the same
      visual split for the different sections."
 
-     So NEXT is never inert: page 2 is the same four tinted, framed bands with
-     nothing in them, waiting. It costs nothing — the bands are generated, so an
+     So NEXT is never inert: page 2 is the same four tinted bands with nothing in
+     them, waiting. It costs nothing — the bands are generated, so an
      empty page is the same code drawing no items — and it means adding a fifth EQ
      needs no thought about pagination at all. */
   function itemPages() {
@@ -241,10 +254,9 @@ SOS.Modules.Plugins = (function () {
   /* ------------------------------------------------------------------- keys
      One cell of the plugin block, or null if this column is not part of it.
 
-     EVERY CELL INSIDE A BAND IS RETURNED, EMPTY OR NOT. A blank that still
-     carries the frame is what makes the band read as a box four rows tall, which
-     is what Adi drew. Returning null for the empty ones would leave the colour
-     stopping halfway down the group. */
+     EVERY CELL INSIDE A BAND IS RETURNED, EMPTY OR NOT. A blank that still carries
+     the tint is what makes the band read as a block four rows tall. Returning null
+     for the empty ones would leave the colour stopping halfway down the group. */
   function gridKey(col, row, cols, page) {
     var util = cols - 1;
     if (col >= util) return null;                    // the utility column
@@ -254,23 +266,18 @@ SOS.Modules.Plugins = (function () {
     if (!g) return null;
 
     var local = col % GROUP_W;
-    var frame = {
-      color: g.color,
-      t: row === 0, b: row === ROWS - 1,
-      l: local === 0, r: local === GROUP_W - 1,
-    };
 
-    // (0,0) belongs to Back; ableton.js handles it, but the frame is ours.
+    // (0,0) belongs to Back; ableton.js handles it, but the tint is ours.
     var slot = row * GROUP_W + local;
     if (band === 0 && row === 0 && local === 0) return null;
 
     var index = (band === 0 ? slot - 1 : slot)
               + itemPageOf(cols, page) * capacityOf(band);
     var item = g.items[index];
-    // An empty cell keeps the tint AND the frame, so a spare page still reads as
-    // four labelled sections rather than as a dead board.
-    if (!item) return { frame: frame, face: tintOf(g), dim: true, kind: 'tap' };
-    return loaderKey(g, item, frame);
+    // An empty cell still carries the tint, so a spare page reads as four
+    // labelled sections rather than as a dead board.
+    if (!item) return { face: tintOf(g), canvas: tintOf(g), dim: true, kind: 'tap' };
+    return loaderKey(g, item);
   }
 
   /* V49 — THE BAND TINT. `face` is render.js's material override, already used by
@@ -291,24 +298,23 @@ SOS.Modules.Plugins = (function () {
      A FAILED LOAD REDDENS THIS KEY, and only this key: `lastError` is matched on
      the device string, so pressing Soothe on a machine without Soothe tells you
      where you pressed. */
-  function loaderKey(g, item, frame) {
+  function loaderKey(g, item) {
+    var tint = tintOf(g);
     var failed = lastError && lastError.device
       && norm(lastError.device) === norm(item.device);
     if (failed) {
       return {
         label: item.label, sub: lastError.note, size: 'md',
         color: '#ff5d5d', titleColor: '#ff9d9d',
-        frame: frame, face: R.shade('#ff5d5d', -0.72),
+        face: R.shade('#ff5d5d', -0.72), canvas: R.shade('#ff5d5d', -0.72),
         kind: 'tap',
         tap: function () { press(item); },
         hold: function () { pressNew(item); },
       };
     }
     return {
-      label: item.art ? undefined : item.label,
-      art: item.art,
-      sub: item.art ? undefined : item.sub,
-      size: 'md', color: g.color, frame: frame, face: tintOf(g),
+      label: item.label, sub: item.sub, size: 'md',
+      color: g.color, face: tint, canvas: tint,
       dim: !online(), kind: 'tap',
       tap: function () { press(item); },
       hold: function () { pressNew(item); },
@@ -319,19 +325,8 @@ SOS.Modules.Plugins = (function () {
   // itself, since both sides of the comparison come from our own table.
   function norm(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
-  /* The frame — and now the tint — for the band a column belongs to, with no item
-     in it. The Back key at (0,0) sits inside the EQ band's box and uses this, so
-     that corner is not the one cap missing its colour. */
-  function frameAt(col, row, cols, page) {
-    var util = cols - 1;
-    if (col >= util) return null;
-    var band = Math.floor(col / GROUP_W);
-    var g = visibleBands(cols, page)[band];
-    if (!g) return null;
-    var local = col % GROUP_W;
-    return { color: g.color, t: row === 0, b: row === ROWS - 1,
-             l: local === 0, r: local === GROUP_W - 1 };
-  }
+  /* The tint for the band a column belongs to. The Back key at (0,0) sits inside
+     the EQ band and uses this, so that corner is not the one cap left untinted. */
   function tintAt(col, cols, page) {
     var band = Math.floor(col / GROUP_W);
     var g = visibleBands(cols, page)[band];
@@ -339,7 +334,7 @@ SOS.Modules.Plugins = (function () {
   }
 
   return {
-    gridKey: gridKey, frameAt: frameAt, tintAt: tintAt, tintOf: tintOf,
+    gridKey: gridKey, tintAt: tintAt, tintOf: tintOf,
     itemPages: itemPages, bandPages: bandPages,
     pageCount: pageCount, bandsFor: bandsFor, visibleBands: visibleBands,
     groups: function () { return GROUPS; },

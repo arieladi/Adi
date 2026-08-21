@@ -45,55 +45,45 @@ if (fail) { console.log(`\n${pass} passed, ${fail} failed`); process.exit(1); }
 const { Surface: S, Input, States, Nav, Render, SD } = SOS;
 
 /* ===========================================================================
-   V45 — THE GROUP FRAME. Adi asked for the Ableton hub's plugin categories to be
-   visually boxed the way he drew them, and the hard part is that THERE IS NO
-   CANVAS BETWEEN KEYS: each key is its own 144x144 image with a real bezel gap
-   either side, so a box around eight keys has to be assembled from eight keys each
-   painting their own piece of it.
+   V54 — THE FLAT BAND TINT. The V45 group-frame feature (coloured bars around each
+   category plus a wash in the key margin) is DELETED, not switched off: Adi lived
+   with it on the hardware and said "we no longer need the thin colored border
+   lines". What remains is a tint, and the point of these tests is that it covers
+   the WHOLE key — `face` alone left the 6 px margin near-black, which read as
+   exactly the dark ring he asked to be rid of.
    =========================================================================== */
-console.log('\n[0] V45: the group frame');
+console.log('\n[0] V54: the flat band tint');
 {
   const R = SOS.Render;
-  const bare = R.key({ title: 'X' });
-  const framed = R.key({ title: 'X', frame: { color: '#ff6b6b', t: true, l: true } });
-  ok('an unframed key draws no frame at all',
-     bare.indexOf('#ff6b6b') < 0 && bare === R.key({ title: 'X' }));
-  ok('a framed key washes the canvas in the group colour',
-     framed.indexOf('#ff6b6b') > 0 && /opacity="0\.2/.test(framed));
+  const TINT = '#381818';
+  const flat = R.key({ title: 'X', face: TINT, canvas: TINT });
 
-  // Only the declared sides get a bar, or the box reads as a grid of boxes.
-  const bars = (svg) => (svg.match(/stroke-width="5"/g) || []).length;
-  ok('…and one bar per declared outer side', bars(framed) === 2, String(bars(framed)));
-  ok('a mid-block key with no outer side gets the wash and no bars',
-     bars(R.key({ title: 'X', frame: { color: '#ff6b6b' } })) === 0);
-  ok('all four sides is four bars',
-     bars(R.key({ title: 'X', frame: { color: '#ff6b6b', t: 1, r: 1, b: 1, l: 1 } })) === 4);
+  ok('the tint reaches the ink', flat.indexOf(TINT) > 0);
+  ok('it covers the canvas AND the face, so there is no dark ring',
+     (flat.match(new RegExp(TINT, 'g')) || []).length >= 2,
+     String((flat.match(new RegExp(TINT, 'g')) || []).length));
+  ok('a key with no tint is unchanged from the default material',
+     R.key({ title: 'X' }).indexOf(TINT) < 0);
 
-  /* THE BARS MUST SURVIVE THE FACE. They are emitted after it; drawn before, the
-     raised face would cover them and the whole feature would be invisible. */
-  ok('the bars are emitted after the face, so nothing paints over them',
-     framed.lastIndexOf('stroke-width="5"') > framed.lastIndexOf('url(#'));
+  /* THE BORDERS ARE GONE. Asserted as an absence, because the bars were 5px
+     strokes and a revert would bring them straight back. */
+  ok('no key draws a 5px perimeter bar any more',
+     !/stroke-width="5"/.test(flat) && !/stroke-width="5"/.test(R.key({ title: 'X' })));
+  ok('...and `frame` is not a field the renderer understands at all',
+     R.key({ title: 'X', frame: { color: '#ff0000', t: true, l: true } })
+       .indexOf('#ff0000') < 0);
 
-  /* An icon-only key takes a different exit from key(), and that exit had to be
-     patched too — a plugin loader wearing artwork is exactly this case. */
-  ok('an artwork key still gets its frame',
-     R.key({ art: 'proq3', frame: { color: '#22d3ee', l: true } }).indexOf('#22d3ee') > 0);
-  ok('a vector-icon key still gets its frame',
-     R.key({ icon: 'winFill', frame: { color: '#22d3ee', l: true } }).indexOf('#22d3ee') > 0);
-
-  /* THE DEDUPE TRAP. SD.image() compares data URIs, so two keys that differ only
-     by which edge of the box they are on MUST hash differently or the second one
-     wears the first one's border. */
-  const l = R.key({ title: 'X', frame: { color: '#ff6b6b', l: true } });
-  const r = R.key({ title: 'X', frame: { color: '#ff6b6b', r: true } });
-  ok('left-edge and right-edge keys are different images', l !== r);
-  ok('…and carry different content-derived ids',
-     /id="(k[0-9a-z]+)f"/.exec(l)[1] !== /id="(k[0-9a-z]+)f"/.exec(r)[1]);
-  ok('two bands differ by colour alone',
-     R.key({ title: 'X', frame: { color: '#ff6b6b', t: true } })
-     !== R.key({ title: 'X', frame: { color: '#ffd166', t: true } }));
+  /* THE DEDUPE TRAP still applies: two bands differ only by their tint, so the
+     tint must be part of the content-derived id or SD.image() gives the second
+     band the first band's cap. `face`/`canvas` were already in hashId (V16). */
+  const red = R.key({ title: 'X', face: '#381818', canvas: '#381818' });
+  const amb = R.key({ title: 'X', face: '#382e16', canvas: '#382e16' });
+  ok('two bands are two different images', red !== amb);
+  ok('...carrying different ids',
+     /id="(k[0-9a-z]+)f"/.exec(red)[1] !== /id="(k[0-9a-z]+)f"/.exec(amb)[1]);
+  ok('an unlabelled tinted cell still paints (the spare page)',
+     R.key({ face: TINT, canvas: TINT, dim: true }).indexOf(TINT) > 0);
 }
-
 
 console.log('\n[2] geometry (DECISIONS F1)');
 ok('btn(0,0) === 1', S.btn(0, 0) === 1);

@@ -509,6 +509,14 @@ SOS.Modules.Ableton = (function () {
           state.mix = m.has_track ? m : null;
           emit('mix', state.mix); emit('state', state); break;
         case 'device_focused': emit('device_focused', m); break;
+        /* V53 — where the selection sits in the FLATTENED device tree, which is the
+           only thing that can tell you a Pro-Q 3 is three deep inside a rack. Its
+           own message, not a field on `device`: that one is verified protocol
+           several controllers key off, and a tree walk on every device change would
+           make it pay for something only two keys read. */
+        case 'device_pos':
+          state.devicePos = { index: m.index, count: m.count };
+          emit('device_pos', state.devicePos); emit('state', state); break;
         default: break;
       }
     }
@@ -546,6 +554,9 @@ SOS.Modules.Ableton = (function () {
       trackVolumeDelta: function (steps) { send({ c: 'track_volume_delta', steps: steps }); },
       trackPanDelta: function (steps) { send({ c: 'track_pan_delta', steps: steps }); },
       getMix: function () { send({ c: 'get_mix' }); },
+      // V53 — step through the track's devices, racks included. Live owns the walk.
+      deviceStep: function (dir) { send({ c: 'device_step', dir: dir }); },
+      devicePos: function () { send({ c: 'device_pos' }); },
       selectTrack: function (dir) { send({ c: 'select_track', dir: dir }); },
       selectDevice: function (dir) { send({ c: 'select_device', dir: dir }); },
       getAllParams: function () { send({ c: 'get_all_params' }); },
@@ -716,8 +727,10 @@ SOS.Modules.Ableton = (function () {
       if (col === 0 && row === 0) {
         return {
           label: 'Back', badge: '↑', size: 'md', color: R.PALETTE.nav,
-          frame: P() ? P().frameAt(0, 0, cols, page) : null,
+          // V54 — the EQ band's flat tint, face and margin alike, so the top-left
+          // corner is not the one cap left out of its block.
           face: P() ? P().tintAt(0, cols, page) : null,
+          canvas: P() ? P().tintAt(0, cols, page) : null,
           kind: 'tap',
           tap: function () { SOS.Nav.back(); },
         };
@@ -731,6 +744,8 @@ SOS.Modules.Ableton = (function () {
          plugins.js puts it now. */
       if (col === util) {
         if (row === 0) return midiKey();
+        if (row === 1) return deviceStepKey(-1);   // V53 — previous device
+        if (row === 2) return deviceStepKey(1);    // V53 — next device
         if (row === 3) return nextKey(cols);
         return null;
       }
@@ -748,6 +763,31 @@ SOS.Modules.Ableton = (function () {
      on screen so it can only page items, and nothing currently overflows, so it
      goes DIM and says 1/1 rather than pretending to be a control. At 5 columns it
      cycles which pair of bands you are looking at. */
+  /* V53 — STEP THROUGH THE TRACK'S DEVICES. Adi asked for these in the two empty
+     cells between MIDI and NEXT.
+
+     They walk the FLATTENED device tree on the Live side, so they descend into a
+     rack and come back out of it rather than stepping over it — "including
+     traversing into and out of nested devices/Racks". Live clamps at both ends
+     instead of wrapping; stepping off the end of a chain should stop, the way an
+     arrow key stops at the end of a list.
+
+     The caption is the position in that tree, which is the only way to tell from
+     the surface that you are three devices deep inside a drum rack. It comes from
+     the `device_pos` message rather than from a count taken here, because only Live
+     can see inside the racks. */
+  function deviceStepKey(dir) {
+    var pos = Bridge.state().devicePos;
+    var on = Bridge.isOnline();
+    var at = pos && pos.count ? (pos.index + 1) + '/' + pos.count : 'device';
+    return {
+      glyph: dir < 0 ? '▲' : '▼', label: dir < 0 ? 'Prev' : 'Next',
+      sub: on ? at : 'offline', size: 'md',
+      color: R.PALETTE.ableton, dim: !on, kind: 'tap',
+      tap: function () { Bridge.cmd.deviceStep(dir); },
+    };
+  }
+
   /* NEXT. V49 — plugins.js now guarantees a spare EMPTY page, so this is never
      inert: page 2 is the same four tinted, framed bands with nothing in them, ready
      for the next plugins. At 5 columns the count also folds in which pair of bands
@@ -843,6 +883,7 @@ SOS.Modules.Ableton = (function () {
       if (SOS.Modules.Plugins) SOS.Modules.Plugins.wire();
       // V50 — populate the idle Track Mode dials without waiting for a change.
       Bridge.cmd.getMix();
+      Bridge.cmd.devicePos();       // V53 — populate the step arrows' caption
       pickController();
       startPump();
     },
