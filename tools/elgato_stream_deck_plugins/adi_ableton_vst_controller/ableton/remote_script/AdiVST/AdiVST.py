@@ -123,6 +123,12 @@ class AdiVST(ControlSurface):
             b.cmd_track_pan_delta(int(m.get("steps", 0)))
         elif c == "get_mix":
             b.cmd_get_mix()
+        elif c == "device_step":
+            # V53 — additive. Walks the flattened device tree, so it steps into and
+            # out of racks rather than over them.
+            b.cmd_device_step(int(m.get("dir", 1)))
+        elif c == "device_pos":
+            b._emit_device_pos()
         elif c == "select_track":
             b.cmd_select_track(int(m.get("dir", 1)))
         elif c == "select_device":

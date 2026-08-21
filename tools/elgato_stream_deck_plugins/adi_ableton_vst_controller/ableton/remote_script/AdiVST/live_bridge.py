@@ -129,11 +129,13 @@ class LiveBridge(object):
             })
         # V48 — the idle-state dials follow the selected track.
         self._mix_listen(self._track)
+        self._emit_device_pos()          # V53 — and so does the device counter
         self._emit_mix()
         self._on_device_changed()
 
     def _on_devices_changed(self):
         self._emit_eq8_state()
+        self._emit_device_pos()          # V53 — a rack gaining a device moves the count
         # selection may now point elsewhere; re-evaluate
         self._on_device_changed()
 
@@ -542,6 +544,50 @@ class LiveBridge(object):
     job.
     """
 
+    # ------------------------------------------------- V53 — the whole device tree
+    """Every device on a track, INCLUDING the ones inside racks.
+
+    Adi: "If I press the Pro-Q 3 shortcut and the instance is buried inside a
+    Group/Rack on the selected track, it MUST find it and focus it."
+
+    `track.devices` is only the top-level chain. A rack (Audio Effect, Instrument,
+    Drum) exposes `chains`, each with its own `devices`, and those devices can be
+    racks in turn — a drum rack is routinely three levels deep. `return_chains`
+    carries a rack's return chains, which is where a reverb send inside a drum rack
+    lives, so it is walked too.
+
+    DEPTH-FIRST, IN CHAIN ORDER, which matters because this same list is what the
+    device-step arrows walk: the order has to be the order you see in Live, so
+    stepping "next" descends into a rack rather than jumping over it.
+
+    The depth cap is a safety rail, not a real limit. Live's device tree is finite
+    and acyclic, but this runs inside Ableton's process and a runaway recursion
+    there takes the DAW down with it.
+    """
+    MAX_RACK_DEPTH = 12
+
+    def _all_devices(self, devices, depth=0):
+        out = []
+        if depth > self.MAX_RACK_DEPTH:
+            return out
+        for d in (devices or []):
+            out.append(d)
+            for attr in ("chains", "return_chains"):
+                chains = getattr(d, attr, None)
+                if not chains:
+                    continue
+                try:
+                    for ch in chains:
+                        out.extend(self._all_devices(getattr(ch, "devices", None), depth + 1))
+                except Exception as e:
+                    self.log("rack walk failed at depth %d: %s" % (depth, e))
+        return out
+
+    def _track_devices(self, track):
+        if track is None:
+            return []
+        return self._all_devices(getattr(track, "devices", None))
+
     def _devices_named(self, track, name):
         # EXACT first, then PREFIX — deliberately NOT the contains pass that
         # cmd_load_device uses on the browser.
@@ -558,7 +604,7 @@ class LiveBridge(object):
         want = self._norm(name)
         if not want:
             return []
-        devs = list(track.devices)
+        devs = self._track_devices(track)          # V53 — racks included
         exact = [d for d in devs if self._norm(getattr(d, "name", "")) == want]
         if exact:
             return exact
@@ -595,6 +641,62 @@ class LiveBridge(object):
             pass
         self.send({"t": "device_focused", "name": getattr(target, "name", name),
                    "count": len(hits), "index": hits.index(target)})
+
+    # ================================= V53 — step through the track's devices
+    """The Up/Down arrows in the hub's utility column.
+
+    Walks the SAME flattened list the deep search uses, so "next" descends into a
+    rack instead of stepping over it, and comes back out the other side — which is
+    what Adi asked for: "including traversing into and out of nested devices/Racks."
+
+    IT CLAMPS RATHER THAN WRAPS. Stepping off the end of a chain should stop, the
+    way an arrow key stops at the end of a list; wrapping from the last device back
+    to the first is the kind of surprise that makes you stop trusting the key. With
+    nothing selected, "next" starts at the first device and "prev" at the last, so
+    both arrows do something useful from a cold start.
+    """
+
+    def cmd_device_step(self, direction):
+        track = self.song.view.selected_track
+        if track is None:
+            return
+        devs = self._track_devices(track)
+        if not devs:
+            self.send({"t": "device_pos", "index": -1, "count": 0})
+            return
+        fwd = int(direction) >= 0
+        cur = track.view.selected_device
+        try:
+            i = devs.index(cur) if cur is not None else -1
+        except ValueError:
+            i = -1
+        if i < 0:
+            i = 0 if fwd else len(devs) - 1
+        else:
+            i = max(0, min(len(devs) - 1, i + (1 if fwd else -1)))
+        self._select_device(track, devs[i])
+        try:
+            self._cs.show_message("%s  %d/%d" % (
+                getattr(devs[i], "name", "device"), i + 1, len(devs)))
+        except Exception:
+            pass
+        self._emit_device_pos()
+
+    def _emit_device_pos(self):
+        """Where the selection sits in the flattened tree, for the arrows' caption.
+
+        Deliberately its own message rather than a new field on `device`: `device`
+        is verified protocol that several controllers key off, and a tree walk on
+        every device change would make it pay for something only two keys read.
+        """
+        track = self.song.view.selected_track
+        devs = self._track_devices(track)
+        sel = track.view.selected_device if track is not None else None
+        try:
+            i = devs.index(sel) if sel is not None else -1
+        except ValueError:
+            i = -1
+        self.send({"t": "device_pos", "index": i, "count": len(devs)})
 
     # ============================== V48 — track volume and pan (the idle dials)
     """Volume is the awkward one, and it is worth saying why.
