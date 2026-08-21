@@ -36,6 +36,18 @@
    Pulsar Massive." Both are band tools: Massive is the Manley Massive Passive
    emulation and Spectre is a per-band harmonic enhancer.
 
+   V55 — THE BANDS WEAR ADI'S ARTWORK. Each category is backed by one of his four
+   images, drawn at 1:2 to cover its 2x4 block, and cut into per-key tiles in
+   js/core/backgrounds.js so the picture runs unbroken across the bezel gaps. The
+   flat tint below survives as the FALLBACK: `face`/`canvas` are still set, so a
+   build without backgrounds.js (or a band with no image) still reads as a category
+   rather than as a dead block.
+
+   The category colours are their own palette entries now (`catEq`, `catDyn`,
+   `catSynth`, `catMeter`) instead of borrowed module colours — EQ used to take
+   rekordbox's red and Dynamics the calculator's amber, which meant recolouring a
+   category moved an unrelated module with it.
+
    V54 — TINT ONLY, NO OUTLINE, NO LOGOS. Two rulings from Adi after living with
    V49 on the hardware:
 
@@ -95,7 +107,8 @@ SOS.Modules.Plugins = (function () {
   var GROUPS = [
     {
       id: 'eq', title: 'EQ',
-      color: R.PALETTE.rekordbox,          // #ff6b6b — Adi's red box
+      color: R.PALETTE.catEq,              // deep violet
+      bg: 'eq',
       items: [
         { label: 'EQ8',      device: 'EQ Eight',          sub: 'Ableton' },
         { label: 'Pro-Q 3',  device: 'FabFilter Pro-Q 3', sub: 'FabFilter' },
@@ -112,7 +125,8 @@ SOS.Modules.Plugins = (function () {
     },
     {
       id: 'dyn', title: 'Dynamics',
-      color: R.PALETTE.console,            // #ffd166 — his yellow box
+      color: R.PALETTE.catDyn,             // dark amber
+      bg: 'dyn',
       items: [
         { label: 'Glue',     device: 'Glue Compressor',   sub: 'Ableton' },
         { label: 'Comp',     device: 'Compressor',        sub: 'Ableton' },
@@ -122,7 +136,8 @@ SOS.Modules.Plugins = (function () {
     },
     {
       id: 'synth', title: 'Synths',
-      color: R.PALETTE.green,              // #39d353 — his green box
+      color: R.PALETTE.catSynth,           // deep teal
+      bg: 'synth',
       items: [
         { label: 'Serum',    device: 'Serum',             sub: 'Xfer' },
         { label: 'Vital',    device: 'Vital',             sub: 'Matt Tytel' },
@@ -130,7 +145,8 @@ SOS.Modules.Plugins = (function () {
     },
     {
       id: 'meter', title: 'Meters',
-      color: '#22d3ee',                    // his cyan box; no palette entry matches
+      color: R.PALETTE.catMeter,           // emerald green
+      bg: 'meter',
       items: [
         { label: 'SPAN',     device: 'SPAN',              sub: 'Voxengo' },
         { label: 'bx_meter', device: 'bx_meter',          sub: 'Brainworx' },
@@ -274,10 +290,35 @@ SOS.Modules.Plugins = (function () {
     var index = (band === 0 ? slot - 1 : slot)
               + itemPageOf(cols, page) * capacityOf(band);
     var item = g.items[index];
-    // An empty cell still carries the tint, so a spare page reads as four
-    // labelled sections rather than as a dead board.
-    if (!item) return { face: tintOf(g), canvas: tintOf(g), dim: true, kind: 'tap' };
-    return loaderKey(g, item);
+    /* THE TILE INDEX IS THE SLOT INDEX. backgrounds.js emits its eight tiles
+       row-major, which is the order a band is filled in, so the number a cell
+       already computes for its position IS its piece of the picture — there is no
+       second mapping that could drift out of step.
+
+       NOTE it is `slot`, not `index`: the picture belongs to the BLOCK, so it must
+       not move when NEXT pages the items through it. */
+    var art = bandArt(g, slot);
+
+    // An empty cell still carries the artwork and the tint, so a spare page reads
+    // as four labelled sections rather than as a dead board.
+    if (!item) return Object.assign({ dim: true, kind: 'tap' }, art);
+    return loaderKey(g, item, art);
+  }
+
+  /* V55 — everything a cell needs to wear its band: the tile, and the flat tint
+     underneath it as a fallback. `faceOpacity` is what keeps the button material
+     ON TOP of the picture rather than instead of it — Adi asked for the hairline
+     and the gradient to survive, and 0.38 is enough sheen to read as a cap while
+     leaving the art visible. */
+  function bandArt(g, slot) {
+    var tint = tintOf(g);
+    var o = { face: tint, canvas: tint };
+    if (g.bg && SOS.Bg && SOS.Bg[g.bg]) {
+      o.bg = g.bg;
+      o.bgSlot = slot;
+      o.faceOpacity = 0.38;
+    }
+    return o;
   }
 
   /* V49 — THE BAND TINT. `face` is render.js's material override, already used by
@@ -298,11 +339,13 @@ SOS.Modules.Plugins = (function () {
      A FAILED LOAD REDDENS THIS KEY, and only this key: `lastError` is matched on
      the device string, so pressing Soothe on a machine without Soothe tells you
      where you pressed. */
-  function loaderKey(g, item) {
-    var tint = tintOf(g);
+  function loaderKey(g, item, art) {
     var failed = lastError && lastError.device
       && norm(lastError.device) === norm(item.device);
     if (failed) {
+      /* A miss reddens the key it happened on. The artwork is dropped for that one
+         cell on purpose: a red cap in the middle of the band is the point, and it
+         has to beat the picture to be seen. */
       return {
         label: item.label, sub: lastError.note, size: 'md',
         color: '#ff5d5d', titleColor: '#ff9d9d',
@@ -312,13 +355,13 @@ SOS.Modules.Plugins = (function () {
         hold: function () { pressNew(item); },
       };
     }
-    return {
+    return Object.assign({
       label: item.label, sub: item.sub, size: 'md',
-      color: g.color, face: tint, canvas: tint,
+      color: g.color,
       dim: !online(), kind: 'tap',
       tap: function () { press(item); },
       hold: function () { pressNew(item); },
-    };
+    }, art);
   }
 
   // The remote script normalises names the same way; this only has to agree with
@@ -333,8 +376,20 @@ SOS.Modules.Plugins = (function () {
     return g ? tintOf(g) : null;
   }
 
+  /* The band art for an arbitrary cell, for keys ableton.js owns rather than
+     plugins.js — (0,0) is Back but it still sits inside the EQ block, and leaving
+     it out would put one blank cap in the corner of the picture. */
+  function artAt(col, row, cols, page) {
+    var util = cols - 1;
+    if (col >= util) return null;
+    var band = Math.floor(col / GROUP_W);
+    var g = visibleBands(cols, page)[band];
+    if (!g) return null;
+    return bandArt(g, row * GROUP_W + (col % GROUP_W));
+  }
+
   return {
-    gridKey: gridKey, tintAt: tintAt, tintOf: tintOf,
+    gridKey: gridKey, tintAt: tintAt, tintOf: tintOf, artAt: artAt,
     itemPages: itemPages, bandPages: bandPages,
     pageCount: pageCount, bandsFor: bandsFor, visibleBands: visibleBands,
     groups: function () { return GROUPS; },

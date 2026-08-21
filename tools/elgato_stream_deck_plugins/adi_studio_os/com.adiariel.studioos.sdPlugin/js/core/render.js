@@ -76,6 +76,19 @@ SOS.Render = (function () {
        without either file hardcoding the other's literal. clock.js reads this at
        call time and a test asserts the two agree, so they cannot drift. */
     clock:    '#4A90E2',
+
+    /* V55 — THE CATEGORY PALETTE, named at last. Adi: "We have officially changed
+       the category color scheme. EQ is now Deep Violet, Dynamics is Dark Amber,
+       Synths is Deep Teal, and Meters is Emerald Green."
+
+       These were borrowed module colours before — EQ used `rekordbox`, Dynamics
+       used `console` — which meant a category could not be recoloured without
+       moving rekordbox's red or the calculator's amber with it. They are their own
+       names now, so the two things are finally independent. */
+    catEq:    '#8b5cf6',   // deep violet
+    catDyn:   '#d99125',   // dark amber
+    catSynth: '#14b8a6',   // deep teal
+    catMeter: '#10b981',   // emerald green
   };
 
   // ------------------------------------------------------------------ helpers
@@ -157,7 +170,12 @@ SOS.Render = (function () {
                   and two window keys that differ only by their picture share an id,
                   so SD.image()'s dedupe skips the repaint and both wear whichever
                   one happened to be drawn first. */
-               o.icon].join('\u0001');
+               o.icon,
+               /* V55 — the band artwork. `bg` is the band and `bgSlot` the tile, and
+                  BOTH belong here: eight keys of a band share the band name and differ
+                  only by slot, so leaving the slot out would give all eight the same
+                  id and SD.image()'s dedupe would paint tile 0 across the whole block. */
+               o.bg, o.bgSlot, o.faceOpacity].join('\u0001');
     var h = 2166136261;
     for (var i = 0; i < src.length; i++) {
       h ^= src.charCodeAt(i);
@@ -211,8 +229,16 @@ SOS.Render = (function () {
         + '<stop offset="1" stop-color="' + tint + '" stop-opacity="0.03"/></radialGradient>';
     }
     s += '</defs>';
+    /* V55 — the gradient can be TRANSLUCENT, so band artwork shows through it.
+       Adi's instruction was explicit: "do not remove the existing 1px neutral
+       hairline and soft vertical gradient; render them on top of these new
+       background images so the keys still look like physical buttons." So the
+       material is not replaced by the picture, it is laid over it — which is what
+       keeps a key looking like a cap rather than a photo. */
+    var faceOp = o.faceOpacity == null ? 1 : o.faceOpacity;
+    var faceAlpha = (o.dim ? 0.55 : 1) * faceOp;
     s += '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + r + '"'
-       + ' fill="url(#' + id + 'f)"' + (o.dim ? ' opacity="0.55"' : '') + '/>';
+       + ' fill="url(#' + id + 'f)"' + (faceAlpha < 1 ? ' opacity="' + faceAlpha.toFixed(3) + '"' : '') + '/>';
     if (o.active) {
       // V10 — glow only. No perimeter stroke of any kind.
       s += '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + r + '" fill="url(#' + id + 'g)"/>';
@@ -253,6 +279,27 @@ SOS.Render = (function () {
     var s = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"'
       + ' viewBox="0 0 ' + KS + ' ' + KS + '" width="' + KS + '" height="' + KS + '">';
     s += '<rect width="' + KS + '" height="' + KS + '" fill="' + (o.canvas || PALETTE.bg) + '"/>';
+
+    /* V55 — THE BAND ARTWORK. `bg` names a band in SOS.Bg and `bgSlot` is which of
+       its eight 144x144 tiles this key is. The tile fills the WHOLE canvas, not the
+       inner face, because that is what makes the picture continue across the bezel:
+       any inset would leave a dark gutter around every key and break the illusion
+       the whole feature exists for.
+
+       Then a scrim, and this is the part that is not decoration. The Dynamics image
+       is a cream-coloured VU dial; white labels on it are unreadable without
+       something in between. A flat dark wash costs a little of the art and buys
+       every caption on the surface, which is the trade Adi asked for when he said
+       "ensure the white text labels remain perfectly legible". */
+    var bgSet = o.bg && SOS.Bg ? SOS.Bg[o.bg] : null;
+    var bgUri = bgSet ? bgSet[o.bgSlot | 0] : null;
+    if (bgUri) {
+      s += '<image href="' + bgUri + '" xlink:href="' + bgUri + '"'
+         + ' x="0" y="0" width="' + KS + '" height="' + KS + '"'
+         + ' preserveAspectRatio="none"' + (o.dim ? ' opacity="0.55"' : '') + '/>';
+      s += '<rect width="' + KS + '" height="' + KS + '" fill="#05070a"'
+         + ' opacity="' + (o.dim ? 0.46 : 0.27) + '"/>';
+    }
 
     /* A DISPLAY SEGMENT (V6, redesigned in V10). The calculator's number spans
        the top four keys. Each key is split: the TOP QUARTER carries the segment's
@@ -301,8 +348,16 @@ SOS.Render = (function () {
        label at the same baseline — the node-for-node replacement V9 promised.
 
        Both `href` and `xlink:href` are emitted. The modern attribute is correct;
-       the legacy one costs 40 bytes and is the difference between an icon and a
-       blank key on a rasteriser that predates SVG 2. */
+       the legacy one is the difference between an icon and a blank key on a
+       rasteriser that predates SVG 2.
+
+       V55 — CORRECTING THIS COMMENT. It used to say the legacy attribute "costs 40
+       bytes". It does not: the whole data URI is repeated, so it costs the SIZE OF
+       THE IMAGE, and V55's band tiles made that visible — a 5 KB tile produces a
+       10 KB key. It is kept anyway, because a blank key on the real device is worse
+       than a duplicated payload that dedupes on the wire and never leaves the
+       machine. But the tile budget is set with the doubling in mind, and the
+       measurement is why the tiles are 144 px rather than 288. */
     /* V40 — A VECTOR ICON. `icon` names an entry in SOS.Icons (see js/core/icons.js),
        which is markup rather than bytes, so it is spliced into this document
        directly instead of being referenced as a nested <image> the way `art` is.

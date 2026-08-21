@@ -81,27 +81,20 @@ SOS.Icons = (function () {
      The two triangles are the glyph the real green button shows the moment the
      pointer is over it, which is the state you are in when you click it to go full
      screen. Do not "fix" this back to a bare disc. */
-  var LIGHT = (function () {
-    var C = 50, R = 48;
-    /* `__ID__` is substituted by render.js with the key's content-derived id. An
-       SVG id must be unique within a DOCUMENT, and at runtime a key IS a document
-       — but the preview sheet inlines every key into one page, so a fixed id here
-       would put three identical `tlg` gradients in it and leave the icon depending
-       on document order to resolve. Same discipline as hashId(). */
-    var s = '<defs><linearGradient id="__ID__tl" x1="0" y1="0" x2="0" y2="1">'
-      + '<stop offset="0" stop-color="#3FDE58"/>'
-      + '<stop offset="1" stop-color="#1FB534"/></linearGradient></defs>';
-    s += '<circle cx="' + C + '" cy="' + C + '" r="' + R + '" fill="url(#__ID__tl)"/>';
-    // The glass edge: darker inside the rim, not a stroke around the outside.
-    s += '<circle cx="' + C + '" cy="' + C + '" r="' + (R - 1.25) + '" fill="none"'
-      + ' stroke="rgba(0,0,0,0.18)" stroke-width="2.5"/>';
-    // The dark-green expand pair: a right angle in the top-left corner and its
-    // mirror in the bottom-right, hypotenuses facing across the centre.
+  /* `__ID__` is substituted by render.js with the key's content-derived id. An SVG
+     id must be unique within a DOCUMENT, and at runtime a key IS a document — but
+     the preview sheet inlines every key into one page, so a fixed id here would put
+     several identical gradients in it and leave the icon depending on document
+     order to resolve. Same discipline as hashId(). See trafficLight() below. */
+  var GREEN_EXPAND = (function () {
+    // A right angle in the top-left corner and its mirror in the bottom-right,
+    // hypotenuses facing each other across the centre.
     var G = '#0B5E13';
-    s += '<path d="M31,31 H55 L31,55 Z" fill="' + G + '"/>';
-    s += '<path d="M69,69 H45 L69,45 Z" fill="' + G + '"/>';
-    return { w: 100, h: 100, svg: s };
+    return '<path d="M31,31 H55 L31,55 Z" fill="' + G + '"/>'
+         + '<path d="M69,69 H45 L69,45 Z" fill="' + G + '"/>';
   })();
+
+  var LIGHT = trafficLight('#3FDE58', '#1FB534', GREEN_EXPAND);
 
   /* V42 — THE ZOOM DIAL'S MAGNIFIER, replacing the `±` glyph on the touch strip
      (Adi supplied the icon). It is drawn rather than typed for the same reason as
@@ -150,7 +143,39 @@ SOS.Icons = (function () {
     return { w: 512, h: 512, svg: s };
   })();
 
+  /* V55 — THE RED TRAFFIC LIGHT, the green one's twin. Adi asked for it "exactly
+     matching the flat style and scale of the Green one", so it is the same
+     construction — same radius, same gradient shape, same inner glass ring — with
+     macOS's own red (#FF5F57) and the glyph that button actually shows under the
+     pointer: a cross, not the green one's expand pair.
+
+     Built from the same helper as the green cap for that reason. Two hand-written
+     circles that were "the same" would drift the first time either was touched. */
+  function trafficLight(top, bot, glyph) {
+    var C = 50, R = 48;
+    var s = '<defs><linearGradient id="__ID__tl" x1="0" y1="0" x2="0" y2="1">'
+      + '<stop offset="0" stop-color="' + top + '"/>'
+      + '<stop offset="1" stop-color="' + bot + '"/></linearGradient></defs>';
+    s += '<circle cx="' + C + '" cy="' + C + '" r="' + R + '" fill="url(#__ID__tl)"/>';
+    // The glass edge: darker inside the rim, not a stroke around the outside.
+    s += '<circle cx="' + C + '" cy="' + C + '" r="' + (R - 1.25) + '" fill="none"'
+      + ' stroke="rgba(0,0,0,0.18)" stroke-width="2.5"/>';
+    return { w: 100, h: 100, svg: s + glyph };
+  }
+
+  // macOS's red, and its cross. Stroked rather than filled so the two arms stay
+  // even at any scale, with round caps like the system glyph.
+  var RED_X = (function () {
+    var G = '#7d0f0a', w = 11, a = 33, b = 67;
+    return '<g stroke="' + G + '" stroke-width="' + w + '" stroke-linecap="round">'
+      + '<path d="M' + a + ',' + a + ' L' + b + ',' + b + '"/>'
+      + '<path d="M' + b + ',' + a + ' L' + a + ',' + b + '"/></g>';
+  })();
+
+  var LIGHT_RED = trafficLight('#FF7B74', '#E8443B', RED_X);
+
   return {
+    closeLight: LIGHT_RED,
     zoomIn: ZOOM,
     tabs: TABS,
 

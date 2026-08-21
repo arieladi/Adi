@@ -241,6 +241,9 @@ SOS.States = (function () {
       // V40 — the vector icon NAME (js/core/icons.js). Forgetting it here is the
       // third time this whitelist would have painted a silently wrong key.
       icon: b.icon,
+      // V55 — the band artwork: which band, which of its eight tiles, and how much
+      // of the button material to lay over it.
+      bg: b.bg, bgSlot: b.bgSlot, faceOpacity: b.faceOpacity,
     };
   }
 

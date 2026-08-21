@@ -725,15 +725,15 @@ SOS.Modules.Ableton = (function () {
          inside it the key belongs to the module. The frame under it still comes
          from the EQ band so the red box is not missing a corner. */
       if (col === 0 && row === 0) {
-        return {
+        var back = {
           label: 'Back', badge: '↑', size: 'md', color: R.PALETTE.nav,
-          // V54 — the EQ band's flat tint, face and margin alike, so the top-left
-          // corner is not the one cap left out of its block.
-          face: P() ? P().tintAt(0, cols, page) : null,
-          canvas: P() ? P().tintAt(0, cols, page) : null,
           kind: 'tap',
           tap: function () { SOS.Nav.back(); },
         };
+        // V55 — Back sits INSIDE the EQ block, so it carries that block's tile as
+        // well as its tint. Without this the picture would have one blank corner.
+        if (P()) back = Object.assign(back, P().artAt(0, 0, cols, page) || {});
+        return back;
       }
 
       /* V49 — THE UTILITY COLUMN IS MIDI AND NEXT, AND NOTHING ELSE. The device

@@ -20,7 +20,7 @@ Object.defineProperty(global, "navigator", {
 
 // app.html order, verbatim.
 const FILES = [
-  "js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/clock.js", "js/core/render.js", "js/core/ipc.js", "js/core/layout.js",
+  "js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/backgrounds.js", "js/core/clock.js", "js/core/render.js", "js/core/ipc.js", "js/core/layout.js",
   "js/core/input.js", "js/core/nav.js", "js/core/states.js",
   "js/modules/root.js", "js/modules/console.js", "js/modules/rekordbox.js",
   "js/modules/midictl.js", "js/modules/viz.js", "js/modules/ableton.js", "js/ableton/svg.js",
@@ -2366,6 +2366,135 @@ console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
     ok("…and it actually returns to the Ableton hub",
        before === "midictl.hub" && Nav.current().id === "ableton.hub", Nav.current().id);
   }
+  Nav.toRoot();
+}
+
+console.log("\n[V55] the band artwork, and the new category palette");
+{
+  const P = M.Plugins;
+  Nav.toRoot(); Nav.enter("ableton.hub");
+  const wl = SOS.Layout.pick(A.hub, 9);
+
+  /* THE PALETTE. These were borrowed module colours (EQ took rekordbox's red,
+     Dynamics the calculator's amber), which meant recolouring a category dragged an
+     unrelated module with it. They are their own names now. */
+  const want = { eq: "catEq", dyn: "catDyn", synth: "catSynth", meter: "catMeter" };
+  ok("each band takes its colour from its OWN palette entry",
+     P.groups().every((g) => g.color === SOS.Render.PALETTE[want[g.id]]),
+     P.groups().map((g) => g.id + "=" + g.color).join(" "));
+  ok("…and none of them is a module colour any more",
+     P.groups().every((g) => ![SOS.Render.PALETTE.rekordbox, SOS.Render.PALETTE.console,
+                              SOS.Render.PALETTE.green].includes(g.color)));
+
+  /* THE ARTWORK. 8 tiles per band, and the whole point is CONTINUITY: the tile a
+     cell gets must be its position in the block, or the picture scrambles. */
+  ok("all four bands have artwork registered",
+     ["eq", "dyn", "synth", "meter"].every((b) => SOS.Bg[b] && SOS.Bg[b].length === 8),
+     Object.keys(SOS.Bg || {}).map((k) => k + ":" + SOS.Bg[k].length).join(" "));
+  ok("…every tile is a real JPEG payload",
+     Object.values(SOS.Bg).every((b) => b.every((u) => /^data:image\/jpeg;base64,/.test(u))));
+
+  /* THE SLICE MAP, which is the assertion that matters. Reading the grid back must
+     give each band's tiles 0-7 exactly once, in row-major order — the same order
+     backgrounds.js emits them. Any permutation here and the art is jumbled on the
+     hardware in a way no unit test of the renderer would notice. */
+  const seen = {};
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 8; c++) {
+    const k = (c === 0 && r === 0) ? wl.keys(0, 0) : P.gridKey(c, r, 9, 0);
+    if (!k || !k.bg) continue;
+    (seen[k.bg] = seen[k.bg] || []).push([r * 2 + (c % 2), k.bgSlot]);
+  }
+  ok("all four bands are covered", Object.keys(seen).length === 4, Object.keys(seen).join(","));
+  ok("every band uses each of its 8 tiles exactly once",
+     Object.values(seen).every((v) => v.length === 8
+        && new Set(v.map((p) => p[1])).size === 8),
+     Object.entries(seen).map(([k, v]) => k + ":" + v.length).join(" "));
+  ok("…and the tile index IS the cell's position in the block, so the art lines up",
+     Object.values(seen).every((v) => v.every(([pos, slot]) => pos === slot)),
+     JSON.stringify(seen.eq));
+
+  /* (0,0) is Back, which ableton.js owns rather than plugins.js — it still has to
+     carry the EQ block's first tile or the picture has a blank corner. */
+  ok("the Back key carries the EQ block's tile 0, not a bare cap",
+     wl.keys(0, 0).bg === "eq" && wl.keys(0, 0).bgSlot === 0,
+     `${wl.keys(0, 0).bg}:${wl.keys(0, 0).bgSlot}`);
+
+  /* THE PICTURE BELONGS TO THE BLOCK, NOT THE ITEMS. NEXT pages the plugins through
+     the bands; the art must stay put, or the background would slide sideways every
+     time Adi looked for a plugin on page 2. */
+  ok("paging the items does NOT move the artwork",
+     [0, 1].every((pg) => [0, 1, 2, 3].every((r) => {
+       const k = P.gridKey(1, r, 9, pg);
+       return k && k.bgSlot === r * 2 + 1;
+     })));
+
+  /* THE BUTTON MATERIAL SURVIVES ON TOP. Adi: "do not remove the existing 1px
+     neutral hairline and soft vertical gradient; render them on top of these new
+     background images so the keys still look like physical buttons." */
+  {
+    const k = wl.keys(1, 1);
+    const svg = SOS.Render.key(States.keySpec(k));
+    /* TWICE, not once, and that is deliberate: the <image> carries both `href` and
+       `xlink:href` so a pre-SVG-2 rasteriser still draws it, which repeats the whole
+       data URI. V22's comment claimed the legacy attribute "costs 40 bytes" — it
+       actually costs the size of the image, which V55 made visible and which the
+       tile budget below now accounts for. What matters is that the cell embeds its
+       OWN tile and not the whole band picture. */
+    ok("a band cell embeds only its own tile (twice, for the legacy href)",
+       (svg.match(/data:image\/jpeg/g) || []).length === 2
+       && svg.indexOf(SOS.Bg.eq[k.bgSlot].slice(-64)) > 0,
+       String((svg.match(/data:image\/jpeg/g) || []).length));
+    ok("…the tile fills the whole canvas, so it meets the next key's edge",
+       /<image [^>]*width="144" height="144"[^>]*preserveAspectRatio="none"/.test(svg));
+    /* The binding asks for 0.38; the RENDERED value is 0.38 x the dim factor, since
+       the bridge is down in this harness. Both halves are checked so neither the
+       request nor the compositing can quietly change. */
+    ok("…the gradient is laid OVER it, translucent, not replaced by it",
+       k.faceOpacity === 0.38
+       && /opacity="0\.209"/.test(svg)                       // 0.55 dim x 0.38
+       && /opacity="0\.380"/.test(SOS.Render.key(Object.assign(
+            States.keySpec(k), { dim: false }))),
+       (svg.match(/opacity="[0-9.]+"/g) || []).join(" "));
+    ok("…the 1px neutral hairline is still drawn",
+       svg.indexOf(SOS.Render.PALETTE.edge) > 0);
+    ok("…and a scrim keeps white labels legible over the art",
+       /fill="#05070a"/.test(svg));
+    ok("…with the flat tint still underneath as the fallback",
+       !!(k.face && k.canvas));
+  }
+
+  /* THE DEDUPE TRAP, in its worst form yet: eight keys of a band share the band name
+     and differ ONLY by slot. If the slot were left out of hashId, SD.image() would
+     paint tile 0 across the entire block. */
+  {
+    const imgs = [];
+    for (let r = 0; r < 4; r++) for (const c of [0, 1]) {
+      const k = (c === 0 && r === 0) ? wl.keys(0, 0) : P.gridKey(c, r, 9, 0);
+      imgs.push(SOS.Render.key(States.keySpec(k)));
+    }
+    ok("the eight EQ cells are eight DIFFERENT images", new Set(imgs).size === 8,
+       String(new Set(imgs).size));
+    const ids = imgs.map((x) => (/id="(k[0-9a-z]+)f"/.exec(x) || [])[1]);
+    ok("…carrying eight distinct content-derived ids", new Set(ids).size === 8,
+       ids.join(","));
+    ok("a tile difference alone changes the image",
+       SOS.Render.key({ title: "X", bg: "eq", bgSlot: 0 })
+       !== SOS.Render.key({ title: "X", bg: "eq", bgSlot: 1 }));
+  }
+
+  /* Payload discipline: each key carries ONE 144x144 tile. Embedding the whole band
+     image per key would have been ~95 MB of SVG across the surface, on a pipe V27
+     showed is overwhelmed by ~90 multi-KB messages a second. */
+  {
+    const biggest = Math.max(...Object.values(SOS.Bg).flat().map((u) => u.length));
+    // Budgeted against the DOUBLING above: a 6 KB tile is a 12 KB key.
+    ok("no single tile is larger than 6 KB of base64", biggest < 6144, String(biggest));
+    const total = Object.values(SOS.Bg).flat().reduce((n, u) => n + u.length, 0);
+    ok("…and all 32 together stay under 150 KB", total < 150000, String(total));
+  }
+
+  ok("a band with no registered artwork still falls back to its flat tint",
+     !!P.tintOf(P.groups()[0]) && P.tintOf(P.groups()[0]) !== P.groups()[0].color);
   Nav.toRoot();
 }
 

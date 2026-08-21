@@ -115,7 +115,7 @@ server.onDisconnect = () => {
 
 /* Bumped whenever the verb table changes, so a version mismatch in the plugin
    log is enough to spot a service that was not restarted. */
-const VERSION = "2.4.0";
+const VERSION = "2.5.0";
 
 // ------------------------------------------------------------------ lifecycle
 function shutdown(signal) {
