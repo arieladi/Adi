@@ -144,13 +144,35 @@ SOS.Modules.Plugins = (function () {
       ],
     },
     {
-      id: 'meter', title: 'Meters',
+      /* V58 — RENAMED to "Analyzer & Effects" and given back the time-based effects
+         that the V46 flattening dropped. Adi: "we are NOT creating a new layout for
+         them" — they join this band rather than earning a fifth one.
+
+         THE `id` STAYS 'meter'. It is the key into SOS.Bg and into every test, and
+         renaming it would mean regenerating backgrounds.js for no visible gain. The
+         title is identity only — nothing paints it — so the two can disagree, and
+         this comment is why they do. */
+      id: 'meter', title: 'Analyzer & Effects',
       color: R.PALETTE.catMeter,           // emerald green
       bg: 'meter',
       items: [
         { label: 'SPAN',     device: 'SPAN',              sub: 'Voxengo' },
         { label: 'bx_meter', device: 'bx_meter',          sub: 'Brainworx' },
         { label: 'Scope',    device: 's(M)exoscope',      sub: 'oscilloscope' },
+        /* 'Delay' is EXACT on purpose, and it is the Compressor/Glue trap again:
+           Live also ships "Filter Delay", "Grain Delay" and "Echo", all of which a
+           contains-pass would be free to pick. Confirmed against Live 11's own core
+           library on this machine — the stock device is named exactly "Delay". */
+        { label: 'Delay',    device: 'Delay',             sub: 'Ableton' },
+        // H-Delay's browser entry is "H-Delay Stereo"/"Mono"; the stem finds either.
+        { label: 'H-Delay',  device: 'H-Delay',           sub: 'Waves' },
+        /* ONE Valhalla key, and the device is SPELLED OUT rather than left as the
+           stem. "Valhalla" alone would be a contains-match against two completely
+           different reverbs — the project carries controllers for BOTH ValhallaRoom
+           and ValhallaVintageVerb — so a bare stem would land on whichever the
+           browser walked into first. Adi named one plugin, so this is one key.
+           ValhallaRoom is one line away if he wants it too. */
+        { label: 'Valhalla', device: 'ValhallaVintageVerb', sub: 'Valhalla DSP' },
       ],
     },
   ];
