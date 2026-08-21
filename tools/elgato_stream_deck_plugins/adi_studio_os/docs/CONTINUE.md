@@ -52,7 +52,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**1096 tests green** (1041 JS + 55 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 28 is deployed** (`service v2.4.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`).
+**1130 tests green** (1075 JS + 55 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 29 is deployed** (`service v2.5.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`).
 
 ### FROZEN at Adi's instruction - do not write code for these
 
@@ -60,42 +60,50 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ### THE REMOTE SCRIPT KEEPS GAINING VERBS - LIVE MUST BE RESTARTED
 
-Ableton loads Remote Scripts **at launch**. If the plugin keys, the Track Mode dials
-or the device arrows do nothing, quit and reopen Live. Current additive verbs:
-`load_device` (V30), `device_key` (V52), `track_volume_delta` / `track_pan_delta` /
-`get_mix` (V50), `device_step` / `device_pos` (V53).
+Ableton loads Remote Scripts **at launch**. Additive verbs so far: `load_device`
+(V30), `device_key` (V52), `track_volume_delta` / `track_pan_delta` / `get_mix`
+(V50), `device_step` / `device_pos` (V53). "Must not be modified" means no editing
+existing code paths; additive verbs are the V30 exception.
 
-**"The remote script must not be modified" means: no editing existing code paths.**
-Purely ADDITIVE verbs are the established exception (V30). `cmd_eq8_key` and
-`cmd_select_device` are both still byte-for-byte intact and both now unused.
+### Batch 29 (V55) - Adi's artwork on the bands, and the red traffic light
 
-### Batch 28 (V53-V54) - flat tints, deep search, device stepping
+- **The category palette has its own names**: `catEq` violet, `catDyn` amber,
+  `catSynth` teal, `catMeter` emerald. They used to borrow rekordbox's red and the
+  calculator's amber, so a category could not be recoloured alone.
+- **The bands wear Adi's four images, SLICED PER KEY.** This is the important
+  constraint: every key is its own image with no shared canvas behind it, so
+  embedding a band's whole picture in each of its eight keys would be ~95 MB of SVG
+  on a pipe V27 showed is overwhelmed by ~90 multi-KB messages a second. So
+  `scripts/slice_backgrounds.py` cuts each image into eight 144x144 tiles ONCE, and
+  `js/core/backgrounds.js` is 101 KB for all 32. **Regenerate with that script if an
+  image changes** - do not hand-edit the file.
+- **Tiles are row-major and the tile index IS the cell's slot index**, so there is
+  no second mapping to drift. The tile follows the SLOT, never the paged item, or the
+  art would slide sideways when NEXT pages plugins through the bands. `(0,0)` is Back
+  and is handed the EQ block's tile 0 explicitly, or the picture has a blank corner.
+- **The button material is drawn ON TOP** via `faceOpacity` (0.38), plus a 0.27 dark
+  scrim for label legibility. **The scrim was tuned by looking**: 0.38 crushed the
+  violet and teal bands almost to black. The flat V54 tint survives underneath as the
+  fallback.
 
-- **The coloured bezels are DELETED** from render.js, not switched off - the bars,
-  the margin wash, the `frame` field, its `hashId()` term and its `keySpec()` line.
-  **The part that mattered was setting `canvas` as well as `face`**: with `face`
-  alone the 6 px margin stayed near-black and every key read as a tinted button
-  inside a dark ring, which was the border he wanted gone.
-  Still there on purpose: the 1 px neutral hairline and the V9/V10 gradient. Those
-  are the global key material on every module - changing them is a P5 call.
-- **Uniform text on the plugin grid**, reversing V46's "use real logos where they
-  exist": two pictures among twelve names read as a mistake. `proq3` and `vital`
-  were removed from art.js; the extraction paths are still in its header. Root Hub
-  icons untouched.
-- **Smart Focus descends into RACKS** (`_all_devices`, depth-first, `chains` AND
-  `return_chains`, depth-capped at 12 because a runaway recursion inside Ableton
-  takes the DAW with it). **The old bug was worse than "it misses"** - a buried
-  instance meant every press INSERTED another copy.
-- **Device-step arrows** at (8,1)/(8,2), walking that same flattened list so they
-  enter and leave racks. They CLAMP rather than wrap. The caption is the position in
-  the tree, on its own `device_pos` message - `device` is verified protocol and a
-  tree walk on every change would make it pay for what two keys read.
+### FIELD NOTE - `xlink:href` costs the SIZE OF THE IMAGE, not 40 bytes
+
+V22's comment said the legacy attribute "costs 40 bytes". It repeats the whole data
+URI, so a 5 KB tile makes a 10 KB key. Harmless with one app icon, obvious with 32
+tiles. Both attributes are kept - a blank key on the device is worse - but budget
+raster payloads at DOUBLE their size.
 
 ### FIELD NOTE - never string-match through hashId()
 
 `hashId()` ends in a literal backslash-u-0001 join argument. Editing around it by
-text match has now mangled it **three times**; this batch produced a syntax error
-that took render.js and five suites down at once. Edit that function BY LINE.
+text match has mangled it three times. Edit that function BY LINE.
+
+### The red traffic light's guard list
+
+`NEVER_QUIT` in service/os.js refuses Stream Deck (killing it kills the plugin),
+Finder / Dock / SystemUIServer / loginwindow / WindowServer, **and Ableton Live** -
+deliberately, because an accidental long press that killed Live mid-session would
+lose work in a way no other key can. **One line to remove if Adi disagrees.**
 
 ### Pro-Q 3 — ANSWERED by Adi (Batch 23), not yet implemented
 

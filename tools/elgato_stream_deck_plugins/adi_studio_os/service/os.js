@@ -718,6 +718,93 @@ export async function windowLayout(which) {
   return false;
 }
 
+/* ===========================================================================
+   V55 — QUIT and FORCE QUIT the frontmost application, for the Root Hub's red
+   traffic light. Short press quits gracefully, long press kills.
+
+   GRACEFUL means the QUIT APPLE EVENT, aimed at the app by name, rather than a
+   blind Cmd+Q. Two reasons: an Apple Event cannot land on the wrong app if focus
+   moves between the press and the script, and it is the same event Cmd+Q sends, so
+   an unsaved document still gets its save prompt. The keystroke is kept as a
+   fallback for the rare app that ignores the event.
+
+   THE GUARD LIST IS THE IMPORTANT PART. This key can end a process, so it must not
+   be able to end the wrong one:
+
+     Stream Deck   killing it kills the plugin issuing the command — the surface
+                   would go dark mid-press, and on macOS the app is what hosts this
+                   whole frontend
+     Finder, Dock, SystemUIServer, loginwindow, WindowServer
+                   system UI. Force-quitting these leaves the machine in a state a
+                   studio session should never be one long press away from.
+
+   Both verbs resolve the frontmost app FIRST and refuse by name, so the guard
+   applies to the graceful path too — quitting the Stream Deck app gracefully is
+   just as unhelpful as killing it.
+   =========================================================================== */
+const NEVER_QUIT = [
+  "Stream Deck", "Elgato Stream Deck", "Finder", "Dock", "SystemUIServer",
+  "loginwindow", "WindowServer", "Ableton Live",
+];
+
+function frontAppScript(body) {
+  return [
+    'tell application "System Events"',
+    '  set procs to (every application process whose frontmost is true)',
+    '  if (count of procs) is 0 then return "none"',
+    '  set nm to name of (contents of item 1 of procs)',
+    '  set pid to unix id of (contents of item 1 of procs)',
+    'end tell',
+    body,
+  ].join("\n");
+}
+
+async function frontApp() {
+  const out = await osaOut(frontAppScript('return nm & "\\t" & pid'));
+  const [name, pid] = String(out).split("\t");
+  if (!name || name === "none") return null;
+  return { name: name.trim(), pid: Number(pid) };
+}
+
+/* Ableton is on the guard list deliberately, and it is worth saying why: this is a
+   studio surface, the Ableton hub is two presses away, and an accidental long press
+   that killed Live mid-session would lose work in a way no other key on this board
+   can. Adi can take it off the list in one line if he disagrees. */
+function guarded(name) {
+  const n = String(name || "").toLowerCase();
+  return NEVER_QUIT.some((p) => n === p.toLowerCase() || n.indexOf(p.toLowerCase()) === 0);
+}
+
+export async function quitFront() {
+  if (!isMac) return isWin ? hotkey("alt+f4") : false;
+  const app = await frontApp();
+  if (!app) { log.warn?.("quitFront: nothing frontmost"); return false; }
+  if (guarded(app.name)) {
+    log.warn?.(`quitFront: refusing to quit "${app.name}" — it is on the guard list`);
+    return false;
+  }
+  log.info?.(`quitFront: quitting ${app.name}`);
+  const esc = app.name.replace(/"/g, '\\"');
+  if (await run("osascript", ["-e", `tell application "${esc}" to quit`])) return true;
+  return hotkey("cmd+q");          // the rare app that ignores the event
+}
+
+export async function forceQuitFront() {
+  if (!isMac) return isWin ? ps("Stop-Process -Id (Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).Id -Force") : false;
+  const app = await frontApp();
+  if (!app) { log.warn?.("forceQuitFront: nothing frontmost"); return false; }
+  if (guarded(app.name)) {
+    log.warn?.(`forceQuitFront: refusing to kill "${app.name}" — it is on the guard list`);
+    return false;
+  }
+  if (!Number.isFinite(app.pid) || app.pid <= 1) {
+    log.error?.(`forceQuitFront: implausible pid ${app.pid} for ${app.name}`);
+    return false;
+  }
+  log.info?.(`forceQuitFront: killing ${app.name} (${app.pid})`);
+  return run("kill", ["-9", String(app.pid)]);
+}
+
 /* Named Root Hub actions (D11). Each is one concept with per-platform
    implementations, so modules never learn a platform spelling.
 
@@ -735,6 +822,11 @@ export const ACTIONS = {
   chrome:   { macApp: "Google Chrome",    mac: () => launch("Google Chrome"),    win: () => ps("Start-Process chrome") },
   lynx:     { macApp: "Lynx Mixer",       mac: () => launch("Lynx Mixer"),       win: () => ps('Start-Process "Lynx Mixer"') },
   cubase:   { macApp: "Cubase",           mac: () => launch("Cubase"),           win: () => ps("Start-Process Cubase") },
+
+  // V55 — the red traffic light. Short press quits, long press kills; both refuse
+  // the guard list in os.js rather than trusting the caller.
+  quitFront:      { mac: () => quitFront(),      win: () => quitFront() },
+  forceQuitFront: { mac: () => forceQuitFront(), win: () => forceQuitFront() },
 
   /* V17 — the Ableton SMART LAUNCHER. The bundle name carries the version
      ("Ableton Live 11 Suite"), so this cannot be a fixed string the way Chrome

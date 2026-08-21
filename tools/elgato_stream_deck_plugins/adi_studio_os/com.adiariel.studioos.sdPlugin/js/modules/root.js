@@ -174,6 +174,17 @@ SOS.Modules.Root = (function () {
     '2,2': { label: 'Top',    icon: 'winTop',    window: 'top',    color: R.PALETTE.nav },
     '3,2': { label: 'Bottom', icon: 'winBottom', window: 'bottom', color: R.PALETTE.nav },
 
+    /* V55 — THE RED TRAFFIC LIGHT, in the cell Adi kept empty above the green one.
+       Short press quits the frontmost app, long press force-quits it. The pair is
+       the reason this slot declares `hold`: V6/V35's binding-level opt-in makes the
+       engine time the key like an anchor and resolve the short press on RELEASE, so
+       a force quit can never also fire a graceful quit on the way through.
+
+       (4,2) was deliberately blank in V43 so the green cap stood alone; Adi has now
+       asked for its twin there, which is a better use of the cell than air. */
+    '4,2': { label: 'Close',  icon: 'closeLight',      action: 'quitFront',
+             hold: 'forceQuitFront',                   color: R.PALETTE.rekordbox },
+
     // row 3 — Fill & Arrange, then the green traffic light on its own.
     '0,3': { label: 'Fill',   icon: 'winFill',         window: 'fill',         color: R.PALETTE.nav },
     '1,3': { label: 'L | R',  icon: 'winLeftRight',    window: 'leftright',    color: R.PALETTE.midi },
@@ -260,6 +271,11 @@ SOS.Modules.Root = (function () {
         else if (slot.app) IPC.os.launch(slot.app);
         else if (slot.hotkey) IPC.os.hotkey(slot.hotkey);
       },
+      /* V55 — a slot may name a SECOND action for its long press. Only declared
+         when the slot asks for one: `hold` on a binding is what makes the engine
+         time that key like an anchor, and giving every OS key a phantom hold would
+         delay all of their short presses to the 500 ms boundary for nothing. */
+      hold: slot.hold ? function () { IPC.os.action(slot.hold); } : undefined,
     };
   }
 

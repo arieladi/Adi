@@ -2820,3 +2820,126 @@ time.
 `device_step`, `device_pos` and the recursive search are new remote-script code.
 Ableton loads Remote Scripts at launch, so a Live that was already running does not
 have them.
+
+---
+
+## Batch 29 — Adi's artwork on the bands, and the red traffic light
+
+**FROZEN and untouched: EQ8's mapping, Pro-Q 3 data mapping, the Calculator.**
+
+### V55 — the category palette gets its own names
+
+**RULING — "EQ is now Deep Violet, Dynamics is Dark Amber, Synths is Deep Teal,
+Meters is Emerald Green."**
+
+| band | colour |
+|---|---|
+| EQ | `catEq` `#8b5cf6` deep violet |
+| Dynamics | `catDyn` `#d99125` dark amber |
+| Synths | `catSynth` `#14b8a6` deep teal |
+| Meters | `catMeter` `#10b981` emerald green |
+
+These were BORROWED module colours before — EQ took `rekordbox`'s red and Dynamics
+the calculator's `console` amber — so a category could not be recoloured without
+dragging an unrelated module with it. They are their own palette entries now, and a
+test asserts none of them is a module colour any more.
+
+### V55 — the bands wear Adi's images, sliced per key
+
+**RULING — replace the flat tints with his four images, each 1:2 over a 2x4 block,
+"one continuous, unbroken piece of art spanning across the bezel gaps".**
+
+**THE IMAGES ARE CUT UP OFFLINE, AND THAT IS THE WHOLE ENGINEERING PROBLEM.** Every
+Stream Deck key is its own image, handed to setImage as a data URI inside its own
+SVG; there is no shared canvas behind the keys. Embedding each band's whole picture
+in each of its eight keys would put **32 copies of four 2 MB JPEGs — about 95 MB of
+SVG — on a pipe that V27 established is overwhelmed by ~90 multi-KB messages a
+second.** So `scripts/slice_backgrounds.py` cuts each image into eight 144x144
+tiles once, and `js/core/backgrounds.js` is 101 KB for all thirty-two.
+
+Details that had to be right:
+
+* **The sources are 1440x2912, which is 1:2.022, not 1:2.** 32 px is CROPPED from
+  the height before the resize rather than squashing the frame by 1.1 % — losing
+  1 % of the picture is less visible than distorting every circle in it.
+* **Tiles are ROW-MAJOR, and the tile index IS the cell's slot index.** plugins.js
+  already computes a slot for every cell, so there is no second mapping that could
+  drift; a test reads the whole grid back and asserts each band uses its eight tiles
+  exactly once, in position order. A permutation here would scramble the art on
+  hardware in a way no renderer unit test would notice.
+* **THE PICTURE BELONGS TO THE BLOCK, NOT THE ITEMS.** The slot, not the paged item
+  index, chooses the tile — otherwise the background would slide sideways every time
+  NEXT paged the plugins through the bands.
+* **`(0,0)` is Back, which ableton.js owns rather than plugins.js**, so it is handed
+  the EQ block's tile 0 explicitly. Without that the picture has one blank corner.
+* **The tile fills the whole 144 canvas, not the inner face.** Any inset would leave
+  a dark gutter around every key and break the continuity the feature exists for.
+
+### V55 — the button material stays ON TOP of the art
+
+**RULING — "do not remove the existing 1px neutral hairline and soft vertical
+gradient; render them on top of these new background images."** So `face()` gained
+`faceOpacity`: the gradient is drawn at 0.38 over the picture instead of replacing
+it, and the hairline and 1 px edge draw at full strength. A key still reads as a cap
+rather than as a photo.
+
+**Plus a scrim, which is not decoration.** The Dynamics image is a cream VU dial and
+white labels on it are unreadable bare. A flat dark wash at 0.27 costs a little of
+the art and buys every caption on the surface — Adi's "ensure the white text labels
+remain perfectly legible" is a requirement, not a preference. **Tuned by looking:**
+0.38 was safe but crushed the violet and teal bands almost to black, so it came down
+to 0.27 and the bright-VU case was re-checked at cap scale before it shipped.
+
+The flat V54 tint survives underneath as the FALLBACK, so a build without
+backgrounds.js still reads as four categories rather than four dead blocks.
+
+### CORRECTING A COMMENT V22 GOT WRONG BY THREE ORDERS OF MAGNITUDE
+
+`<image>` emits both `href` and `xlink:href`, and V22's note said the legacy
+attribute "costs 40 bytes". **It costs the SIZE OF THE IMAGE** — the whole data URI
+is repeated, so a 5 KB tile produces a 10 KB key. Invisible while the only raster
+was one 6 KB app icon; obvious the moment 32 tiles arrived. Both attributes are kept
+(a blank key on the real device beats a duplicated payload that never leaves the
+machine), but the tile budget is now set WITH the doubling in mind, which is why the
+tiles are 144 px and not 288, and a test caps a tile at 6 KB.
+
+### V55 — the red traffic light
+
+**RULING — the green button's twin in the cell above it. Short press quits the
+frontmost app, long press force-quits it.**
+
+Drawn from the SAME helper as the green cap — `trafficLight(top, bot, glyph)` — and
+the green one was refactored onto it in the same edit. Two hand-written circles that
+were "the same" would drift the first time either was touched, and a comment
+claiming they matched would then be false. macOS's own red, with the cross that
+button actually shows under the pointer rather than the green one's expand pair.
+
+**THE GUARD LIST IS THE PART THAT MATTERS.** This key can end a process, so it must
+not be able to end the wrong one. `NEVER_QUIT` covers:
+
+* **Stream Deck** — killing it kills the plugin issuing the command; the surface
+  would go dark mid-press.
+* **Finder, Dock, SystemUIServer, loginwindow, WindowServer** — system UI that a
+  studio session should never be one long press away from losing.
+* **Ableton Live** — deliberately included. This is a studio surface, the Ableton
+  hub is two presses away, and an accidental long press that killed Live mid-session
+  would lose work in a way no other key on this board can. **Flagged for Adi: one
+  line to remove if he disagrees.**
+
+Both verbs resolve the frontmost app FIRST and refuse by name, so the guard covers
+the graceful path too. Graceful means the QUIT APPLE EVENT aimed at the app by name,
+not a blind Cmd+Q: an event cannot land on the wrong app if focus moves between the
+press and the script, and it still raises the save prompt. The keystroke stays as a
+fallback for an app that ignores the event.
+
+`hold` on a Root Hub slot is new, and it is only emitted when a slot ASKS for one —
+a phantom hold on every OS key would delay all of their short presses to the 500 ms
+boundary for nothing.
+
+### A test that was passing for the wrong reason
+
+The V43 assertion "(4,2) is empty, so the green cap stands alone" still passed after
+the red light was added, because that block never runs the service availability probe
+and the key is gated on it. Rewritten to say WHY it is null there, with the real
+behaviour tested separately with the probe driven. A test that cannot fail is worse
+than no test.

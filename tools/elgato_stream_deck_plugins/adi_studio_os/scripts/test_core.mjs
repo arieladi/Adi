@@ -24,7 +24,7 @@ class FakeWS {
 global.WebSocket = FakeWS;
 
 const ORDER = [
-  'js/core/sd-client.js', 'js/core/timing.js', 'js/core/surface.js', 'js/core/art.js', 'js/core/icons.js', 'js/core/clock.js', 'js/core/render.js',
+  'js/core/sd-client.js', 'js/core/timing.js', 'js/core/surface.js', 'js/core/art.js', 'js/core/icons.js', 'js/core/backgrounds.js', 'js/core/clock.js', 'js/core/render.js',
   'js/core/ipc.js', 'js/core/layout.js', 'js/core/input.js', 'js/core/nav.js', 'js/core/states.js',
   'js/modules/root.js', 'js/modules/console.js', 'js/modules/index.js', 'js/plugin.js',
 ];

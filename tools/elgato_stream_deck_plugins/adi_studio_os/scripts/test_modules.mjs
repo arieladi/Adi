@@ -18,7 +18,7 @@ const LEGACY = path.resolve(NEW, "../../");
 global.window = global;
 global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
-const CORE = ["js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/clock.js", "js/core/render.js",
+const CORE = ["js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/backgrounds.js", "js/core/clock.js", "js/core/render.js",
               "js/core/ipc.js", "js/core/layout.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js"];
 const MODS = ["js/modules/root.js", "js/modules/console.js",
               "js/modules/rekordbox.js", "js/modules/midictl.js", "js/modules/index.js"];
@@ -546,8 +546,15 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
     ok("row 1 is the breathing row — completely empty on macOS",
        [0, 1, 2, 3, 4].every((c) => L9.keys(c, 1) === null),
        [0, 1, 2, 3, 4].map((c) => { const k = L9.keys(c, 1); return k ? (k.label || k.icon) : "·"; }).join(" "));
-    ok("(4,2) is empty, so the green cap stands alone with nothing above it",
-       L9.keys(4, 2) === null && L9.keys(4, 3) !== null);
+    /* V55 — (4,2) is the RED traffic light now. It is gated on the service probe
+       like every other named action, so this block (which has not run the probe)
+       sees nothing there — which is exactly why the assertion has to say WHY it is
+       null rather than just that it is. The real behaviour is tested below, with
+       the probe driven. */
+    ok("(4,2) is hidden until the service says quitFront exists",
+       L9.keys(4, 2) === null && !!M.Root.slots()["4,2"],
+       "slot declared: " + !!M.Root.slots()["4,2"]);
+    ok("…and the green cap below it is always there", L9.keys(4, 3) !== null);
 
     wcalls.length = 0;
     halves.concat(arrange).forEach((k) => k.tap());
@@ -669,6 +676,7 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
        rather than asserted around. That is the same path the device uses. */
     SOS.IPC.ask = () => Promise.resolve({
       chrome: { available: true }, taskmgr: { available: true },
+      quitFront: { available: true }, forceQuitFront: { available: true },
     });
     await M.Root.refreshAvailability();
     const chrome = SOS.Layout.pick(M.Root.screen, 9).keys(4, 0);
@@ -681,6 +689,55 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
     ok("…and it is drawn, caption dropped so the icon fills the cap (V26)",
        SOS.Render.key(States.keySpec(chrome)).indexOf("<image") > 0
        && SOS.Render.key(States.keySpec(chrome)).indexOf("<text") < 0);
+  }
+
+  /* V55 — THE RED TRAFFIC LIGHT. Adi asked for the green button's twin in the cell
+     above it: short press quits the frontmost app, long press force-quits it.
+
+     The probe is driven here because the key does not exist until the service says
+     the action does — the same gate every other OS tile sits behind. */
+  {
+    SOS.IPC.isOnline = () => true;
+    SOS.IPC.ask = () => Promise.resolve({
+      quitFront: { available: true }, forceQuitFront: { available: true },
+      chrome: { available: true }, taskmgr: { available: true },
+    });
+    await M.Root.refreshAvailability();
+    const L9 = SOS.Layout.pick(M.Root.screen, 9);
+    const red = L9.keys(4, 2);
+    const green = L9.keys(4, 3);
+
+    ok("the red light appears once the service reports the action", !!red);
+    ok("…directly above the green Full Screen key",
+       red.icon === "closeLight" && green.icon === "winFullScreen",
+       `${red && red.icon} / ${green && green.icon}`);
+    ok("…and both lights are drawn at the SAME scale, from one helper",
+       SOS.Icons.closeLight.w === SOS.Icons.winFullScreen.w
+       && SOS.Icons.closeLight.h === SOS.Icons.winFullScreen.h);
+    ok("…in macOS's own red, with its cross rather than the green expand pair",
+       /#FF7B74|#E8443B/.test(SOS.Icons.closeLight.svg)
+       && !/M31,31/.test(SOS.Icons.closeLight.svg));
+    ok("…and it paints, icon and all",
+       SOS.Render.key(States.keySpec(red)).indexOf("<g transform=\"translate") > 0);
+
+    /* TWO ACTIONS ON ONE KEY. `hold` is V6/V35's binding-level opt-in, which also
+       makes the engine resolve the short press on RELEASE — so a force quit can
+       never also fire a graceful quit on its way through. */
+    ok("it declares BOTH a tap and a hold",
+       typeof red.tap === "function" && typeof red.hold === "function");
+    {
+      const calls = [];
+      const real = SOS.IPC.os.action;
+      SOS.IPC.os.action = (n) => calls.push(n);
+      red.tap(); red.hold();
+      SOS.IPC.os.action = real;
+      ok("…short = quitFront, long = forceQuitFront",
+         calls.join(",") === "quitFront,forceQuitFront", calls.join(","));
+    }
+    /* Only a slot that ASKS for a hold gets one: a phantom hold on every OS key
+       would delay all of their short presses to the 500 ms boundary for nothing. */
+    ok("a slot with no hold declared does not get one",
+       L9.keys(4, 3).hold === undefined && L9.keys(0, 2).hold === undefined);
   }
 
   // The captions must fit the zone, or the one that says what a push does is the
