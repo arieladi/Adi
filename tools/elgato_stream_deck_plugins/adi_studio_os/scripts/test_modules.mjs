@@ -433,13 +433,20 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
   }
   const d = (n) => M.Root.screen.dials(n);
 
-  ok("the strip reads Scroll Y / Scroll X / Zoom / Tabs / Apps",
-     [1,2,3,4,5].map((n) => d(n).title).join("|") === "Scroll Y|Scroll X|Zoom|Tabs|Apps",
+  /* V57 — APPS AND TABS ARE SWAPPED, at Adi's instruction. Apps takes dial 4 and
+     Tabs moves to 5. The position is what he asked for and it is what matters: the
+     Ableton hub's idle Track Mode mirrors dials 1-4 only, so whatever sits on 4 is
+     the control that survives over there. */
+  ok("the strip reads Scroll Y / Scroll X / Zoom / Apps / Tabs",
+     [1,2,3,4,5].map((n) => d(n).title).join("|") === "Scroll Y|Scroll X|Zoom|Apps|Tabs",
      [1,2,3,4,5].map((n) => d(n).title).join("|"));
   ok("…and each says what its push does",
      /PgDn/.test(d(1).sub) && /Home/.test(d(2).sub) && /Reset/.test(d(3).sub) &&
-     /New/.test(d(4).sub) && /pick/.test(d(5).sub),
+     /pick/.test(d(4).sub) && /New/.test(d(5).sub),
      [1,2,3,4,5].map((n) => d(n).sub).join(" | "));
+  // The tabs artwork travelled with the control, rather than staying on dial 4.
+  ok("…and the tabs icon moved with Tabs, to dial 5",
+     d(5).icon === "tabs" && !d(4).icon, `${d(4).icon} / ${d(5).icon}`);
 
   /* Zone 6 must stay EMPTY. That is not an omission — States.lastZoneFree() is
      what gives the clock its home, so a binding here would silently evict it. */
@@ -455,15 +462,23 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
   d(5).rotate(-1); d(5).press();  d(5).hold();
   ok("every dial reaches the right named verb",
      calls.join(" ") === "scroll:y,3 pageDown scroll:x,-2 home appZoom:1 appZoomReset " +
-                         "tab:1 tabNew tabClose appSwitch:-1 appSwitchCommit appSwitchCancel",
+                         "appSwitch:1 appSwitchCommit appSwitchCancel tab:-1 tabNew tabClose",
      calls.join(" "));
+  /* A SWAP OF POSITIONS, NOT OF BEHAVIOUR: each control kept its own three
+     gestures when it moved. Asserted separately, because getting the order right
+     while accidentally pairing Apps' turn with Tabs' press would still satisfy the
+     line above. */
+  ok("…and each control took its own gestures with it",
+     calls.slice(6, 9).every((c) => /^appSwitch/.test(c))
+     && calls.slice(9).every((c) => /^tab/.test(c)),
+     calls.slice(6).join(" "));
 
   /* V36 — TURNING MUST NOT COMMIT. The old 900 ms release meant a spin selected
      apps at random; now the only things that choose an app are an explicit short
      press and the service's own 2.5 s idle. Asserted as an absence: rotating any
      number of times must never reach the commit verb. */
   calls.length = 0;
-  for (let i = 0; i < 8; i++) d(5).rotate(1);
+  for (let i = 0; i < 8; i++) d(4).rotate(1);          // V57 — Apps is dial 4 now
   ok("spinning the app dial never commits", !calls.includes("appSwitchCommit"), calls.join(" "));
   ok("…it only navigates", calls.every((c) => c.startsWith("appSwitch:")), calls.join(" "));
 
@@ -656,15 +671,16 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
     ok("a zone with no valueColor still paints the default ink",
        SOS.Render.zone({ value: "X" }).indexOf(SOS.Render.PALETTE.text) > 0);
 
-    /* THE TABS ICON replaces the ⇄ glyph with the image Adi supplied. */
-    ok("dial 4 names the tabs icon and no longer carries a glyph",
-       d(4).icon === "tabs" && !d(4).value, JSON.stringify({ icon: d(4).icon, value: d(4).value }));
+    /* THE TABS ICON replaces the ⇄ glyph with the image Adi supplied. V57 moved the
+       control to dial 5, and the icon travelled with it. */
+    ok("the Tabs dial names the icon and no longer carries a glyph",
+       d(5).icon === "tabs" && !d(5).value, JSON.stringify({ icon: d(5).icon, value: d(5).value }));
     ok("…the icon exists and is vector, not a raster payload",
        !!SOS.Icons.tabs && !/data:image/.test(SOS.Icons.tabs.svg));
     ok("…it draws two overlapping cards and a plus, like the source image",
        (SOS.Icons.tabs.svg.match(/<rect/g) || []).length === 6,
        String((SOS.Icons.tabs.svg.match(/<rect/g) || []).length));
-    const zt = SOS.Render.zone({ title: "Tabs", icon: "tabs", sub: d(4).sub });
+    const zt = SOS.Render.zone({ title: "Tabs", icon: "tabs", sub: d(5).sub });
     ok("…and it reaches the zone with its gradient id namespaced",
        /<g transform="translate/.test(zt) && !/__ID__/.test(zt));
 

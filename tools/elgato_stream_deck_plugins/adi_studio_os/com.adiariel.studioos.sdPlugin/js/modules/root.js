@@ -352,38 +352,39 @@ SOS.Modules.Root = (function () {
           press: function () { IPC.os.appZoomReset(); },
           touch: function (x) { IPC.os.appZoom(x < 100 ? -1 : 1); },
         };
+        /* V57 — APPS AND TABS ARE SWAPPED. Adi's instruction, globally: Apps takes
+           dial 4 and Tabs moves to dial 5.
+
+           It matters most where he said it matters — the Ableton hub's idle Track
+           Mode mirrors dials 1-4 of this strip and gives 5 and 6 to Pan and Volume,
+           so whichever control sits on 4 is the one that survives over there. Apps
+           now does; Tabs is a Root Hub control only.
+
+           Both keep their own gestures with them: this is a swap of POSITIONS, not
+           a re-mapping of what either dial does.
+
+           V38 — SPINNING NEVER SELECTS. Turning only moves the highlight (the
+           service holds the modifier down and never lets go on a timer); the app is
+           chosen ONLY by the press, and the hold DISMISSES without switching, which
+           is the escape hatch a gesture with no timeout needs. Mission Control lost
+           its home here — two presses are worth more on a dial that is otherwise a
+           one-way trip. */
         case 4: return {
-          title: 'Tabs', icon: 'tabs', sub: 'New · hold = Close',
-          color: R.PALETTE.console, dim: offline,
-          rotate: function (t) { IPC.os.tab(t > 0 ? 1 : -1); },
-          /* V35 — the only dial on the board with two functions. `press` is the
-             short one and resolves on RELEASE (plugin.js arms a timer the moment
-             a binding declares `hold`), so closing a tab can never also open one. */
-          press: function () { IPC.os.tabNew(); },
-          hold: function () { IPC.os.tabClose(); },
-        };
-        /* V36 — TURNING ONLY NAVIGATES. The switcher stays open while you spin
-           (the service holds the modifier down) and the app is chosen either by a
-           short press — an explicit commit — or by simply stopping for 2.5 s.
-           900 ms was dropping the modifier mid-spin, which committed to whatever
-           happened to be highlighted and reopened on the next tick: the "selects
-           apps randomly" report.
-
-           Mission Control moves to the HOLD, since the short press now has a job.
-           Both halves are printed on the zone so the gesture is discoverable. */
-        /* V38 — SPINNING NEVER SELECTS. Turning only moves the highlight (the
-           service holds the modifier down and never lets go on a timer); the app
-           is chosen ONLY by this press. The hold DISMISSES without switching,
-           which is the escape hatch a gesture with no timeout needs.
-
-           Mission Control loses its home here — the two presses are worth more
-           on a dial that is otherwise a one-way trip. */
-        case 5: return {
           title: 'Apps', value: '⇄', sub: 'push=pick hold=esc', color: R.PALETTE.midi,
           dim: offline,
           rotate: function (t) { IPC.os.appSwitch(t > 0 ? 1 : -1); },
           press: function () { IPC.os.appSwitchCommit(); },
           hold: function () { IPC.os.appSwitchCancel(); },
+        };
+        case 5: return {
+          title: 'Tabs', icon: 'tabs', sub: 'New · hold = Close',
+          color: R.PALETTE.console, dim: offline,
+          rotate: function (t) { IPC.os.tab(t > 0 ? 1 : -1); },
+          /* V35 — `press` is the short one and resolves on RELEASE (plugin.js arms a
+             timer the moment a binding declares `hold`), so closing a tab can never
+             also open one. */
+          press: function () { IPC.os.tabNew(); },
+          hold: function () { IPC.os.tabClose(); },
         };
         // case 6 — left to the clock, on purpose. See the note above.
         default: return { title: '', value: '' };
