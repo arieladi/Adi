@@ -2313,9 +2313,16 @@ console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
     ok("with no device focused, dials 1-4 MIRROR the Root Hub's OS-nav strip",
        [1, 2, 3, 4].every((n) => d(n).title === M.Root.osNavDial(n).title),
        [1, 2, 3, 4].map((n) => `${d(n).title}/${M.Root.osNavDial(n).title}`).join(" "));
+    /* V57 — Adi asked specifically for this: "replace the 'Tabs' control on Dial 4
+       with the 'Apps' control" in Track Mode. It follows for free from the Root Hub
+       swap precisely BECAUSE this strip mirrors that one rather than copying it —
+       which is the whole argument for having extracted osNavDial. */
     ok("…which means they are the SAME definition, not a copy",
-       d(1).title === "Scroll Y" && d(4).title === "Tabs",
+       d(1).title === "Scroll Y" && d(4).title === "Apps",
        `${d(1).title} ${d(4).title}`);
+    ok("…so Tabs is gone from Track Mode entirely, since 5 and 6 are Pan and Volume",
+       [1, 2, 3, 4, 5, 6].every((n) => d(n).title !== "Tabs"),
+       [1, 2, 3, 4, 5, 6].map((n) => d(n).title).join("|"));
     ok("dial 5 is track Pan and shows Live's own readout",
        d(5).title === "Pan" && d(5).value === "25L", `${d(5).title} ${d(5).value}`);
     ok("…with the -1..1 pan mapped onto the 0..1 indicator",

@@ -52,7 +52,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**1130 tests green** (1075 JS + 55 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 29 is deployed** (`service v2.5.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`).
+**1133 tests green** (1078 JS + 55 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 30 is deployed** (`service v2.5.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`).
 
 ### FROZEN at Adi's instruction - do not write code for these
 
@@ -64,6 +64,23 @@ Ableton loads Remote Scripts **at launch**. Additive verbs so far: `load_device`
 (V30), `device_key` (V52), `track_volume_delta` / `track_pan_delta` / `get_mix`
 (V50), `device_step` / `device_pos` (V53). "Must not be modified" means no editing
 existing code paths; additive verbs are the V30 exception.
+
+### Batch 30 (V56-V57) - centre elements removed, Apps/Tabs swapped
+
+- **The Dynamics VU meter and the Meters radar are removed by the generator.**
+  THREE DETECTORS FAILED FIRST - brightness, contrast and centre-vs-margin all found
+  the VU's bright face and missed its dark bezel ring, and a band stopping inside the
+  ring smears it down the whole patch (the first render was a tombstone-shaped ghost).
+  **The bands are now MEASURED and written down**: dyn 850..1855, meter 1050..1815.
+  `verify_band` prints the distance to the nearest surviving feature and warns under
+  16 px - it fires on Meters, whose LED bars sit 2 px away and are being KEPT.
+  `EXPECT_SIZE` fails loudly if a source image is ever a different size.
+  Repaired by PER-COLUMN cross-fade, which is what carries the vertical grid lines
+  through; boundary colour is the median of 10 rows at a standoff of 8.
+- **Apps is on dial 4, Tabs on dial 5**, globally. It moved the Ableton idle strip
+  for free because Track Mode MIRRORS `Root.osNavDial` rather than copying it.
+  **Tabs is therefore absent from Track Mode** (that strip mirrors only 1-4, and 5/6
+  are Pan/Volume) - which is what Adi asked for, and a test asserts the absence.
 
 ### Batch 29 (V55) - Adi's artwork on the bands, and the red traffic light
 

@@ -2943,3 +2943,73 @@ the red light was added, because that block never runs the service availability 
 and the key is gated on it. Rewritten to say WHY it is null there, with the real
 behaviour tested separately with the probe driven. A test that cannot fail is worse
 than no test.
+
+---
+
+## Batch 30 — the centre elements are gone, and Apps/Tabs swap
+
+**FROZEN and untouched: EQ8's mapping, Pro-Q 3 data mapping, the Calculator.**
+
+### V56 — removing the VU meter and the radar, and why detection lost to measurement
+
+**RULING — "programmatically remove, hide, or obscure the distracting center
+elements": the VU meter from the Dynamics image, the radar circle from the Meters
+image.**
+
+**THREE DETECTORS FAILED BEFORE THE FOURTH ANSWER WAS "STOP DETECTING".** Row
+brightness, row contrast (stddev), and centre-versus-margin deviation all found the
+VU meter's bright FACE and all three missed the dark bezel ring around it. The ring
+is very dark brown on very dark brown — it barely registers on any statistic. A band
+that stops even a few pixels inside it smears those pixels down the entire patch,
+because the fill blends between the boundary rows: **the first render came out with a
+tombstone-shaped ghost exactly where the meter had been, and the radar came out as a
+rounded rectangle.** Both were caught by rendering a before/after sheet and looking
+at it, not by any assertion.
+
+So the bands are **measured from the files and written down**:
+
+```
+dyn     VU unit's OUTER BEZEL   y  880..1813   ->  band  850..1855
+meter   radar's outer bezel     y 1103..1767   ->  band 1050..1815
+```
+
+For four fixed, hand-made images that is more honest than a detector tuned until it
+happens to agree — the numbers are checkable, and `verify_band` re-checks them at
+generation time and prints the distance to the nearest surviving feature. It fired a
+warning on the Meters band (2 px from the LED bars) which is exactly the case worth
+being told about: **the bars are art Adi is keeping**, and they sit immediately above
+and below the radar. `EXPECT_SIZE` fails loudly if a source is ever swapped for a
+different size, since the bands stop being measurements of anything at that point.
+
+**REMOVED BY PER-COLUMN CROSS-FADE, NOT A FLAT FILL.** Each column of the band is a
+linear blend from the clean background above it to the clean background below it.
+Two reasons a flat colour would not do: the backgrounds are a vertical gradient, so
+a solid patch reads as a plate; and doing it per column carries the faint VERTICAL
+grid lines straight through the repair, which is visible in the Meters result. The
+boundary colour is the MEDIAN of ten rows taken from a STANDOFF of eight rows
+outside the band — one sampled row smears its own noise and any residual soft edge
+down the whole patch, which is the same failure in a smaller form.
+
+Side effect worth noting: the tiles got SMALLER (101 KB to 86 KB for all 32), because
+what was removed was the busiest part of two of the four images.
+
+### V57 — Apps and Tabs swap
+
+**RULING — swap them globally; specifically, Track Mode's dial 4 becomes Apps.**
+Apps takes dial 4, Tabs moves to dial 5, and each control keeps its own three
+gestures.
+
+**IT FOLLOWED FOR FREE IN THE ABLETON HUB, AND THAT IS THE ARGUMENT FOR V50's
+REFACTOR.** Track Mode mirrors dials 1-4 through the shared `Root.osNavDial` rather
+than copying them, so swapping the Root Hub strip moved the Ableton idle strip in the
+same edit. Two hand-written copies would have needed two edits and would have drifted
+the first time one was missed.
+
+A consequence stated rather than hidden: **Tabs is now absent from Track Mode
+entirely**, because that strip only mirrors 1-4 and dials 5 and 6 are Pan and Volume.
+That is what Adi asked for — Apps on dial 4 there — and a test asserts the absence so
+it reads as intended rather than as a loss.
+
+The tabs artwork travelled with the control to dial 5. A test asserts that too: the
+order being right while an icon stayed behind on dial 4 would have looked like a
+rendering bug and been hunted in the wrong file.
