@@ -3013,3 +3013,71 @@ it reads as intended rather than as a loss.
 The tabs artwork travelled with the control to dial 5. A test asserts that too: the
 order being right while an icon stayed behind on dial 4 would have looked like a
 rendering bug and been hunted in the wrong file.
+
+---
+
+## Batch 31 — Analyzer & Effects, and the pagination invariant
+
+**FROZEN and untouched: EQ8's mapping, Pro-Q 3 data mapping, the Calculator.**
+
+### V58 — the time-based effects come back, into the existing band
+
+**RULING — rename Meters to "Analyzer & Effects" and add H-Delay, Valhalla and
+Live's Delay to it. "We are NOT creating a new layout for them."** So cols 6-7 now
+hold six: SPAN, bx_meter, Scope, Delay, H-Delay, Valhalla. Still inside the block's
+eight, so nothing overflows yet.
+
+**THE `id` STAYS `'meter'` WHILE THE TITLE CHANGES.** The id is the key into
+`SOS.Bg` and into every test; renaming it would mean regenerating backgrounds.js for
+no visible gain, since nothing paints the title — it is identity only. The two
+disagreeing is deliberate and both the code and a test say so.
+
+### The three device strings, and two traps in them
+
+* **`Delay` is EXACT, and that is the Compressor/Glue trap again.** Live also ships
+  **Filter Delay**, **Grain Delay** and **Echo** — verified against Live 11's own
+  core library on this machine — every one of which a contains-pass would be free to
+  pick. The remote script runs exact before contains, so the stock Delay wins.
+* **`H-Delay` is a stem on purpose**: the browser entry is "H-Delay Stereo" or
+  "H-Delay Mono", and the stem reaches either.
+* **`Valhalla` is SPELLED OUT as `ValhallaVintageVerb`, not left as a stem.** A bare
+  "Valhalla" would be non-deterministic: the project carries controllers for
+  **ValhallaRoom AND ValhallaVintageVerb**, two different reverbs, so the stem would
+  land on whichever the browser walked into first. Adi named one plugin, so this is
+  one key. **ValhallaRoom is one line away if he wants it as well — flagged, not
+  assumed.**
+
+**NOT INSTALLED on this machine: H-Delay and Valhalla** (no Waves and no Valhalla in
+any plug-in folder). Their keys will redden with "not installed" until they are,
+which is the V49 behaviour working as designed rather than a fault.
+
+### V58 — the pagination invariant, now actually pinned
+
+**RULING — "Page 2 must remain an exact structural continuation of Page 1... the
+overflow plugins must simply spill into their exact same respective columns on Page
+2. Ensure this layout consistency is strictly maintained so muscle memory applies to
+both pages."**
+
+The mechanism was already right — `index = slot + itemPage * capacity`, per band —
+but it was **only an intention, because nothing in the catalogue overflowed, so no
+test had ever exercised the spill.** That is now fixed in both directions:
+
+* page 2 shows the same four bands in the same order, and every cell on it still
+  carries its own band's artwork (a band drifting sideways is the failure that would
+  break muscle memory);
+* **the artwork is identical on both pages** — the picture belongs to the block, so
+  the tile follows the slot and not the page;
+* **the overflow is FORCED in the test.** Three extra items are pushed into Analyzer
+  & Effects and the spill is asserted to land in cols 6-7 **and nowhere else**,
+  starting from the top of the block; and the three bands that did not overflow are
+  asserted to stay EMPTY on page 2 — not shifted, not repeated. That last one is
+  what makes page 2 a continuation rather than a remix.
+
+### A count that should not have been hardcoded
+
+Three assertions counted "14 loaders" and broke the moment a plugin was added. Two
+of them were really asking *"is every catalogue item reachable and does it fire?"*,
+so they now derive the expected number from `sum(min(items, capacity))` — the count
+that actually FITS on page 1. That keeps them true when Adi adds a plugin and still
+fails if an item becomes unreachable, which is the thing worth catching. The third is
+a factual total and stays written down, because changing it should be deliberate.

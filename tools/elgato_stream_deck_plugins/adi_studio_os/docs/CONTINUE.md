@@ -52,7 +52,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**1133 tests green** (1078 JS + 55 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 30 is deployed** (`service v2.5.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`).
+**1153 tests green** (1098 JS + 55 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 31 is deployed** (`service v2.5.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`).
 
 ### FROZEN at Adi's instruction - do not write code for these
 
@@ -64,6 +64,28 @@ Ableton loads Remote Scripts **at launch**. Additive verbs so far: `load_device`
 (V30), `device_key` (V52), `track_volume_delta` / `track_pan_delta` / `get_mix`
 (V50), `device_step` / `device_pos` (V53). "Must not be modified" means no editing
 existing code paths; additive verbs are the V30 exception.
+
+### Batch 31 (V58) - Analyzer & Effects, and the pagination invariant
+
+- **The fourth band is "Analyzer & Effects"** (cols 6-7) and holds SPAN, bx_meter,
+  Scope, Delay, H-Delay, Valhalla. **Its `id` stays `'meter'`** - that keys into
+  SOS.Bg and every test, and nothing paints the title.
+- **`Delay` is sent EXACT** because Live also ships Filter Delay, Grain Delay and
+  Echo - the Compressor/Glue trap again. **`Valhalla` is spelled out as
+  `ValhallaVintageVerb`**, never a stem: the project has controllers for TWO
+  different Valhalla reverbs, so a stem is non-deterministic. ValhallaRoom is one
+  line away if Adi wants it too.
+- **H-Delay and Valhalla are NOT installed here** - their keys redden with "not
+  installed", which is V49 working, not a fault.
+- **The pagination invariant is now pinned.** The mechanism was always
+  `index = slot + itemPage * capacity` per band, but nothing overflowed, so no test
+  had ever exercised the spill. A test now FORCES an overflow and asserts it lands in
+  cols 6-7 and nowhere else, that non-overflowing bands stay EMPTY on page 2, and
+  that the artwork is identical on both pages (the tile follows the SLOT, never the
+  page).
+- Reachability counts now derive from `sum(min(items, capacity))` instead of a
+  hardcoded 14, so adding a plugin does not break them but an UNREACHABLE plugin
+  still does.
 
 ### Batch 30 (V56-V57) - centre elements removed, Apps/Tabs swapped
 

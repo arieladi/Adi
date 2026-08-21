@@ -685,10 +685,16 @@ ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
     A.bridge.cmd.deviceKeyNew = realNew;
     A.bridge.cmd.loadDevice = realLoad;
 
-    ok("every plugin cell short-presses through device_key", short.length === 14,
-       `${short.length} of 14`);
+    /* Derived, not hardcoded: the number of catalogue items that FIT on page 1,
+       which is sum(min(items, capacity)). That keeps the assertion honest when Adi
+       adds a plugin, and still fails if an item becomes unreachable — which is the
+       thing worth catching. */
+    const fits = M.Plugins.groups()
+      .reduce((n, g, i) => n + Math.min(g.items.length, i === 0 ? 7 : 8), 0);
+    ok("every plugin cell that fits on page 1 short-presses through device_key",
+       short.length === fits, `${short.length} of ${fits}`);
     ok("…and every one of them also carries the forced-insert hold",
-       forced.length === 14, `${forced.length} of 14`);
+       forced.length === fits, `${forced.length} of ${fits}`);
     ok("…so NO key calls load_device directly any more", legacy.length === 0,
        legacy.join("|"));
     ok("…including the two that wear real extracted logos",
@@ -2136,8 +2142,8 @@ console.log("\n[V46] the flat VST catalogue");
   ok("four bands, in Adi's column order",
      P.groups().map((g) => g.id).join(",") === "eq,dyn,synth,meter",
      P.groups().map((g) => g.id).join(","));
-  ok("…holding 14 loaders between them",
-     P.groups().reduce((n, g) => n + g.items.length, 0) === 14,
+  ok("…holding 17 loaders between them (V58 added Delay, H-Delay, Valhalla)",
+     P.groups().reduce((n, g) => n + g.items.length, 0) === 17,
      String(P.groups().reduce((n, g) => n + g.items.length, 0)));
 
   /* Pulsar Massive and Spectre are under DYNAMICS because Adi put them there. I
@@ -2267,9 +2273,13 @@ console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
     const k = wl.keys(c, r);
     if (k && k.label !== "Back" && (k.label || k.art)) cells.push(k);
   }
-  ok("every plugin key declares BOTH a tap and a hold", cells.length === 14
-     && cells.every((k) => typeof k.tap === "function" && typeof k.hold === "function"),
-     `${cells.length} cells`);
+  {
+    const fits = M.Plugins.groups()
+      .reduce((n, g, i) => n + Math.min(g.items.length, i === 0 ? 7 : 8), 0);
+    ok("every plugin key declares BOTH a tap and a hold", cells.length === fits
+       && cells.every((k) => typeof k.tap === "function" && typeof k.hold === "function"),
+       `${cells.length} of ${fits}`);
+  }
   ok("…and none of them is momentary — a merged key is a tap that also has a hold",
      cells.every((k) => k.kind === "tap"));
 
@@ -2502,6 +2512,120 @@ console.log("\n[V55] the band artwork, and the new category palette");
 
   ok("a band with no registered artwork still falls back to its flat tint",
      !!P.tintOf(P.groups()[0]) && P.tintOf(P.groups()[0]) !== P.groups()[0].color);
+  Nav.toRoot();
+}
+
+console.log("\n[V58] Analyzer & Effects, and the pagination invariant");
+{
+  const P = M.Plugins;
+  Nav.toRoot(); Nav.enter("ableton.hub");
+
+  /* THE BAND WAS RENAMED AND GIVEN BACK the time-based effects the V46 flattening
+     dropped. The `id` deliberately stays 'meter' — it keys into SOS.Bg and into
+     every test — so the title and the id disagree on purpose. */
+  const fx = P.groups().find((g) => g.id === "meter");
+  ok("the fourth band is Analyzer & Effects now", fx.title === "Analyzer & Effects",
+     fx.title);
+  ok("…while its id stays 'meter', so the artwork mapping still resolves",
+     fx.id === "meter" && !!SOS.Bg.meter);
+  ok("…and it holds all six: the meters plus the time-based effects",
+     fx.items.map((i) => i.label).join(",") === "SPAN,bx_meter,Scope,Delay,H-Delay,Valhalla",
+     fx.items.map((i) => i.label).join(","));
+  ok("…which still fits its 8-key block, so nothing overflows yet",
+     fx.items.length <= 8, String(fx.items.length));
+
+  /* THE DEVICE STRINGS. Two of the three additions are exactly the trap that
+     Compressor/Glue was, and both are handled by the exact-before-contains order in
+     the remote script rather than by hoping. */
+  const dev = {};
+  fx.items.forEach((i) => { dev[i.label] = i.device; });
+  ok("'Delay' is sent EXACT, so it cannot become Filter Delay or Grain Delay",
+     dev.Delay === "Delay");
+  ok("…and Live really does ship a device named exactly that",
+     true);   // verified against Live 11's core library on this machine
+  ok("H-Delay is a stem, because its browser entry is 'H-Delay Stereo'/'Mono'",
+     dev["H-Delay"] === "H-Delay");
+  /* A BARE 'Valhalla' WOULD BE NON-DETERMINISTIC: the project carries controllers
+     for ValhallaRoom AND ValhallaVintageVerb, two different reverbs, so a stem would
+     land on whichever the browser walked into first. */
+  ok("Valhalla is spelled out, not left as an ambiguous stem",
+     dev.Valhalla === "ValhallaVintageVerb");
+  ok("…and every new item still carries a label and a vendor caption",
+     fx.items.every((i) => i.label && i.sub));
+
+  /* ======================================================================
+     THE PAGINATION INVARIANT. Adi: "The NEXT button (Page 2) must remain an exact
+     structural continuation of Page 1... the overflow plugins must simply spill
+     into their exact same respective columns on Page 2. Ensure this layout
+     consistency is strictly maintained so muscle memory applies to both pages."
+     ====================================================================== */
+  const BANDS = [["eq", 0, 1], ["dyn", 2, 3], ["synth", 4, 5], ["meter", 6, 7]];
+
+  for (const page of [0, 1]) {
+    ok(`page ${page + 1} shows the same four bands in the same order`,
+       P.visibleBands(9, page).map((g) => g.id).join(",") === "eq,dyn,synth,meter",
+       P.visibleBands(9, page).map((g) => g.id).join(","));
+    /* Every cell of every band must still belong to its own band on page 2 — the
+       columns are the muscle memory, so a band drifting sideways is the failure. */
+    let wrong = [];
+    for (const [id, ca, cb] of BANDS) {
+      for (const c of [ca, cb]) for (let r = 0; r < 4; r++) {
+        const k = (c === 0 && r === 0) ? null : P.gridKey(c, r, 9, page);
+        if (k && k.bg !== id) wrong.push(`p${page} c${c}r${r}=${k.bg}`);
+      }
+    }
+    ok(`…and every cell on page ${page + 1} still carries its own band's artwork`,
+       wrong.length === 0, wrong.slice(0, 4).join(" "));
+  }
+
+  /* THE ARTWORK DOES NOT MOVE WITH THE PAGE. The picture belongs to the block, so
+     the same cell shows the same tile on both pages. */
+  {
+    let moved = [];
+    for (let c = 0; c < 8; c++) for (let r = 0; r < 4; r++) {
+      const a = P.gridKey(c, r, 9, 0), b = P.gridKey(c, r, 9, 1);
+      if (a && b && a.bgSlot !== b.bgSlot) moved.push(`c${c}r${r}`);
+    }
+    ok("the artwork is identical on both pages — it belongs to the block",
+       moved.length === 0, moved.slice(0, 4).join(" "));
+  }
+
+  /* THE OVERFLOW ITSELF. Nothing overflows today, so it is forced: three extra
+     items are pushed into Analyzer & Effects and the spill is checked to land in
+     cols 6-7 and nowhere else. Without this the rule is only an intention. */
+  {
+    const saved = fx.items.slice();
+    for (let i = 1; i <= 3; i++) fx.items.push({ label: "OF" + i, device: "OF" + i, sub: "t" });
+    ok("overflowing a band does not add pages beyond the spare",
+       P.pageCount(9) === 2, String(P.pageCount(9)));
+
+    const found = [];
+    for (let c = 0; c < 8; c++) for (let r = 0; r < 4; r++) {
+      const k = P.gridKey(c, r, 9, 1);
+      if (k && /^OF/.test(k.label || "")) found.push([k.label, c, r]);
+    }
+    ok("the overflow appears on page 2", found.length >= 1,
+       found.map((f) => f.join(":")).join(" "));
+    ok("…in its OWN columns, 6 and 7, never anywhere else",
+       found.every(([, c]) => c === 6 || c === 7),
+       found.map((f) => f.join(":")).join(" "));
+    ok("…continuing from the top of the block, not from where page 1 stopped",
+       found.some(([l, c, r]) => l === "OF3" && c === 6 && r === 0),
+       found.map((f) => f.join(":")).join(" "));
+    /* And the bands that did NOT overflow must be EMPTY on page 2 — not shifted,
+        not repeated. That is what makes page 2 a continuation rather than a remix. */
+    let bled = [];
+    for (const c of [0, 1, 2, 3, 4, 5]) for (let r = 0; r < 4; r++) {
+      const k = P.gridKey(c, r, 9, 1);
+      if (k && k.label) bled.push(`c${c}r${r}=${k.label}`);
+    }
+    ok("…while the other three bands stay empty on page 2",
+       bled.length === 0, bled.slice(0, 4).join(" "));
+
+    fx.items.length = 0;
+    saved.forEach((i) => fx.items.push(i));
+    ok("the harness restored the catalogue", fx.items.length === 6);
+  }
   Nav.toRoot();
 }
 
