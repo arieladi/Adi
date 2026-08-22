@@ -25,11 +25,11 @@ CEF frontend (`app.html`) owns the UI, navigation and Web Audio. A Node backend 
 - **Buttons 35 and 36** — no engine role, plain keys (V2). Button 36's carousel and the whole D9/D9a hanging-note apparatus are gone; (8,3) in Rekordbox is a **Beat Jump** now, not a held nudge.
 - **NAV trigger (V3/V13)** — a **long press on the right-most dial (dial 6)** cycles `0 → 1 → 2 → NAV OFF → 0`. **State 3 (Context) was scrapped in Batch 13**; NAV OFF is now index 3. It works in NAV OFF too, so NAV can always be recalled. Dial 6's *short* press therefore resolves on release; dials 1–5 stay immediate.
 - **Merged keys (V6)** — any binding may declare `hold`; short press runs `tap` on release, long press runs `hold`. Binding-level opt-in, not a new anchor.
-- **Dial borrowing is PER STATE (V4/V14)** — States 0 and 1 touch **no** dials, which IS the pass-through: the module keeps six and stays FULL. **State 2 takes TWO (physical 5 and 6) and is the Compact suite's only consumer** — it is what puts the Ableton controllers into `build(4)`. There is no 5-zone case any more.
+- **Dial borrowing is PER STATE (V4/V14)** — the Numpad touches **no** dials, which IS the pass-through: the module keeps six and stays FULL. **Divisions takes TWO (physical 5 and 6) and is the Compact suite's only consumer** — it is what puts the Ableton controllers into `build(4)`. There is no 5-zone case any more.
 - **Responsive layouts (L1)** — a docked nav window does NOT overlay the module; it takes columns and the module re-lays-out via declared breakpoints. Screens declare `layouts: [{cols, keys(col,row)}]` with **region-local** coordinates. Engine: `js/core/layout.js`.
 - **Windows borrow the RIGHTMOST dials (L3b)** — `borrowDials: N` takes the last N. Dials 1–4 always stay with the module.
-- **Every window is the same 4×4 dock** (16 keys, cols 5–8). States: 0 Numpad · 1 Calculator · 2 Time Divisions · 3 NAV OFF (docks nothing, module reclaims all 36 keys).
-- **Never compare the state INDEX to a literal.** Ask `States.isFullScreen()`. A hardcoded `4` in `input.js` silently un-reserved Button 1 everywhere the moment State 3 was removed.
+- **Both windows are the same 4×4 dock** (16 keys, cols 5–8). States: **0 Numpad · 1 Time Divisions · 2 NAV OFF** (docks nothing, module reclaims all 36 keys). **The Calculator was State 1 and was deleted in V59**, so every index below it moved down one — the second renumbering after V13.
+- **Never compare the state INDEX to a literal.** Ask `States.isFullScreen()`, or `States.FULL` / `States.DELAY`. A hardcoded `4` in `input.js` silently un-reserved Button 1 everywhere the moment State 3 was removed — and when V59 deleted the Calculator, **eight literal `3`s in the TEST suites** failed for exactly the same reason. The tests ask by name now.
 
 ## Three protocols I insist on
 
@@ -52,11 +52,15 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**1153 tests green** (1098 JS + 55 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**) and **Batch 31 is deployed** (`service v2.5.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`).
+**1107 tests green** (1052 JS + 55 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**). The count DROPPED from 1153 because V59 deleted the Calculator and its 24 assertions with it; four new invariants were added in their place. **Batch 31 is what is deployed** (`service v2.5.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`) — **Batch 32 is committed but NOT yet on the hardware.**
+
+**`scripts/test_service.mjs` is FLAKY UNDER LOAD** and it is not a new bug: a dropped `midi.ports` reply cascades into the five assertions after it. It spawns the real service and races on real socket timing. Re-run it on a quiet machine before believing a failure there.
 
 ### FROZEN at Adi's instruction - do not write code for these
 
-**EQ8's mapping, Pro-Q 3 data mapping, and the Calculator.**
+**EQ8's mapping and Pro-Q 3 data mapping.** (**The Calculator was frozen and is now
+DELETED** — V59, Batch 32. Frozen meant "write no new code for it"; Adi removed it
+outright.)
 
 ### THE REMOTE SCRIPT KEEPS GAINING VERBS - LIVE MUST BE RESTARTED
 
@@ -180,8 +184,8 @@ in `ProQ3Controller.ROLES` need editing (`OVERRIDES` exists for pinning them).
 1. **The two EQ8 inferences are mine, not Adi's words** (V37): dial 1 = Output,
    and pagination on dial 1's press. Consequence: **COMPACT dropped from four
    bands (B1/B2/B3/B6) to three**, because dial 1 is spent on Output there too.
-2. **Whether `+` / `−` should stop being long presses** in the calculator — the
-   cure needs a key to give up, so it is a footprint decision (P5).
+2. ~~**Whether `+` / `−` should stop being long presses** in the calculator (P5).~~
+   **CLOSED by V59** — the calculator is gone, so the question is moot.
 
 ### Immediate next tasks, in order
 

@@ -3081,3 +3081,84 @@ so they now derive the expected number from `sum(min(items, capacity))` — the 
 that actually FITS on page 1. That keeps them true when Adi adds a plugin and still
 fails if an item becomes unreachable, which is the thing worth catching. The third is
 a factual total and stays written down, because changing it should be deliberate.
+
+---
+
+## Batch 32 — V59: the Calculator is deleted
+
+### V59 — RULING: "I find the standard Calculator module useless for my workflow. Please completely delete the calculator feature, its UI, and its associated code from the codebase."
+
+Adi's words, and they override the FROZEN note that had been protecting the
+Calculator since Batch 23. Frozen meant "write no new code for it"; it never meant
+it could not be removed.
+
+**The Calculator was State 1 of the carousel, so this is a RENUMBERING, not just a
+deletion.** That is the whole risk in the change and it is the second time it has
+happened — V13 removed State 3 (Context) the same way. The cycle is now:
+
+```
+State 0  Numpad      16-key dock, NO dials
+State 1  Divisions   16-key dock + 2 borrowed dials (readout/grid/format + BPM)
+State 2  NAV OFF     docks nothing
+```
+
+`COUNT` 4 -> 3, `FULL` 3 -> 2, `DELAY` 2 -> 1, `DOCK_COLS` `[4,4,4,0]` -> `[4,4,0]`.
+
+**Every index lives in states.js and nothing outside it may hold a literal.** That
+rule already existed (a hardcoded `4` in input.js silently un-reserved Button 1 when
+V13 landed) but only the *engine* obeyed it — **the TESTS were full of literal 3s**,
+and eight of them failed the moment COUNT changed. They now ask
+`States.isFullScreen()`, `States.FULL` and `States.DELAY` by name, so a third
+renumbering costs nothing. Two new assertions pin the shape itself:
+`DOCK_COLS.length === COUNT`, and `FULL === COUNT-1 && DELAY === COUNT-2`. Two more
+assert the ABSENCE — no state named `Calc`, and `Console.calculator` undefined —
+because that is the only thing that catches a re-add.
+
+### What went with it
+
+| Removed | Where | Lines |
+|---|---|---|
+| the `calculator` screen (display row, digit grid, the 2 merged operator holds) | `js/modules/console.js` | ~96 |
+| the arithmetic engine (`calcDigit/Decimal/Backspace/Clear/SetOp/CycleOp/Equals`, `applyOp`, `num`, `fmtCalc`, `OPS`) | `js/modules/console.js` | ~65 |
+| the V12 grouped display (`chunks`, `withCommas`, `segment`, `segmentDim`, `isResting`, `SEGS`, `PLACEHOLDER`) | `js/modules/console.js` | ~49 |
+| the `seg` / `segDim` render path — the four-key display screen | `js/core/render.js` | ~29 |
+| `seg` / `segDim` in the `keySpec()` whitelist | `js/core/states.js` | 1 |
+| `o.seg` / `o.segDim` from `hashId()`'s identity list | `js/core/render.js` | 2 |
+| the `registerOverlay(1, ...)` registration | `js/modules/index.js` | 1 |
+| the `calc` preview sheet | `scripts/preview.mjs` | 1 |
+| blocks `[6]`, `[6b]`, `[9d]`, `[10]` — 24 assertions | `scripts/test_console.mjs` | ~160 |
+
+**`seg` was the calculator's UI, so it left with it.** It had exactly one caller
+ever, and the field note about the three hand-written whitelists
+(`keySpec()` / `zoneUriFor()` / `preview.mjs`) applies in reverse here: this is the
+first time a field has been *removed* from `keySpec()`, and all three lists were
+checked in the same edit. `zoneUriFor()` never carried `seg` — it is a key field, not
+a dial field — and `preview.mjs` reads `keySpec()` rather than listing fields itself,
+so both were already correct.
+
+**`hashId()` was edited BY LINE, never by string match**, per the standing field
+note. Its join argument was verified byte-for-byte afterwards: still exactly one
+literal backslash-u-0001 escape, and still zero raw control characters anywhere in
+the file.
+
+### Left behind deliberately, and reported rather than removed
+
+**`o.flat` in `render.js`'s `face()`** — the flat-material flag — now has no caller.
+It is one arm of one ternary inside the function that paints all 36 keys, and
+reworking that path to reclaim a single word is a bad trade. `PALETTE.faceLo` is NOT
+orphaned with it; the line below still uses it for every key's bottom stop.
+
+### The open ruling this closes
+
+**P5 — "whether `+` / `-` should stop being long presses in the calculator"** is
+moot and is hereby closed. It was the last open item on the Calculator.
+
+### A pre-existing flake found while verifying, NOT caused by this change
+
+`scripts/test_service.mjs` is timing-sensitive and fails in a cascade under machine
+load: a dropped `midi.ports` reply takes the five assertions after it down with it
+(`virtual CoreMIDI port created`, `port published as a source`, `two notes tracked as
+sounding`, `note off decrements`, `disconnect logged`). It passes clean on a quiet
+machine, and the only diff this batch makes to `service/` is one comment. Worth a
+real fix (the `ask()` helper needs a longer timeout, or a retry) but it is not this
+batch's bug.

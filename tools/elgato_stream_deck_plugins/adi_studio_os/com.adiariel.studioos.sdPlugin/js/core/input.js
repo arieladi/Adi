@@ -15,8 +15,13 @@
      `hold` binding    its `tap` on release. Opt-in, per binding.
      every other key   immediate keyDown / keyUp passthrough, zero latency
 
-   MERGED KEYS (V6). The calculator puts two functions on one cap — short `.`,
-   long `−`. That is a binding-level opt-in, not a new anchor: a binding that
+   MERGED KEYS (V6). A plugin key puts two functions on one cap — short = insert
+   or focus, long = force a NEW instance — and the Root Hub's traffic lights do
+   the same (short = quit frontmost, long = force quit). The Calculator's short
+   `.` / long `−` was the original example and it went with V59; the mechanism
+   has four live consumers left in plugins.js and root.js.
+
+   That is a binding-level opt-in, not a new anchor: a binding that
    declares `hold` gets the timer, and one that does not is delivered as
    immediately as it ever was. The engine asks `hasHold(button)` rather than
    reading the binding itself, so this file still knows nothing about modules.

@@ -45,15 +45,16 @@ SOS.Modules.install = function () {
      installed?" is otherwise a real five minutes for the next reader. */
 
   // ----------------------------------------------------------------- overlays
-  /* V13 — there are three windows and nothing else. The old State 3 asked the
-     active module for a context strip; that shell is gone, and a module that
-     wants a sub-menu presents it on its own board while full-screen. */
+  /* V59 — there are TWO windows and nothing else. The Calculator was State 1 and
+     Adi removed it, so Divisions moves down to 1 and NAV OFF to 2. The indices
+     are States.NAMES's indices by construction — never write a literal here that
+     does not come from that table, because this list has now been renumbered
+     twice (V13 dropped Context, V59 dropped the Calculator). */
   if (M.Console) {
     States.registerOverlay(0, M.Console.numpad);
-    States.registerOverlay(1, M.Console.calculator);
-    States.registerOverlay(2, M.Console.delay);
+    States.registerOverlay(1, M.Console.delay);
   } else {
-    [0, 1, 2].forEach(function (i) { States.registerOverlay(i, placeholderOverlay(i)); });
+    [0, 1].forEach(function (i) { States.registerOverlay(i, placeholderOverlay(i)); });
   }
 
   if (pending.length) SOS.SD.log('modules pending port: ' + pending.join(', '));

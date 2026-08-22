@@ -7,28 +7,32 @@
    Back never changes which window is docked.
 
      State 0  Numpad          16-key dock, NO dials
-     State 1  Calculator      16-key dock, NO dials
-     State 2  Divisions       16-key dock + 2 borrowed dials (grid/format + BPM)
-     State 3  NAV OFF         docks nothing — the module has the whole board
+     State 1  Divisions       16-key dock + 2 borrowed dials (grid/format + BPM)
+     State 2  NAV OFF         docks nothing — the module has the whole board
 
-   V13 — STATE 3 (Context) IS GONE and the cycle is `0 -> 1 -> 2 -> OFF -> 0`.
-   An empty global shell was the wrong home for module sub-menus: a module that
-   is full-screen owns the whole board and can present its own. NAV OFF keeps its
-   job and simply moves down one index. Without it Rekordbox would be stuck at 5
-   columns, where it loses half its hot cues.
+   V59 — THE CALCULATOR IS GONE, at Adi's instruction, and the cycle is now
+   `0 -> 1 -> OFF -> 0`. Every index below it moves down one, which is the SECOND
+   time this has happened (V13 removed Context) and the reason nothing in the
+   engine may compare a state index to a literal: ask isFullScreen() / DELAY.
+
+   V13 — STATE 3 (Context) IS GONE. An empty global shell was the wrong home for
+   module sub-menus: a module that is full-screen owns the whole board and can
+   present its own. NAV OFF keeps its job and simply moves down one index.
+   Without it Rekordbox would be stuck at 5 columns, where it loses half its hot
+   cues.
 
    V3 — the carousel is triggered by a LONG PRESS ON THE RIGHT-MOST DIAL, wired
    in plugin.js. Button 36 no longer switches state and carries no engine role.
 
-   V14 — dial borrowing is PER STATE, and STATE 2 IS NOW THE COMPACT CONSUMER.
-   States 0 and 1 leave the strip completely alone, so the module beneath keeps
-   all six dials and stays in its FULL layout — the pass-through is simply that
-   nothing is taken. State 2 takes TWO (physical 5 and 6), which leaves the
+   V14 — dial borrowing is PER STATE, and DIVISIONS IS THE COMPACT CONSUMER.
+   The Numpad leaves the strip completely alone, so the module beneath keeps all
+   six dials and stays in its FULL layout — the pass-through is simply that
+   nothing is taken. Divisions takes TWO (physical 5 and 6), which leaves the
    module four and is exactly what drops the active Ableton controller into its
-   4-dial Compact layout. The Compact suite is not dormant: State 2 is its sole
+   4-dial Compact layout. The Compact suite is not dormant: Divisions is its sole
    consumer, and the undesigned 5-zone case disappears with it.
 
-   Every window is the SAME standard 4x4 dock. Uniformity is the point: the
+   Both windows are the SAME standard 4x4 dock. Uniformity is the point: the
    module region never changes width depending on which window you opened.
 
    RESPONSIVE, NOT OVERLAID (L1). A docked window does not cover the module: it
@@ -59,12 +63,12 @@ window.SOS = window.SOS || {};
 SOS.States = (function () {
   var S = SOS.Surface, R = SOS.Render, Nav = SOS.Nav, LO = SOS.Layout;
 
-  var COUNT = 4;
-  var NAMES = ['Numpad', 'Calc', 'Divisions', 'NAV OFF'];
-  var FULL = 3, DELAY = 2;
+  var COUNT = 3;
+  var NAMES = ['Numpad', 'Divisions', 'NAV OFF'];
+  var FULL = 2, DELAY = 1;
 
   // Every window is the same 4-column dock; NAV OFF docks nothing.
-  var DOCK_COLS = [4, 4, 4, 0];
+  var DOCK_COLS = [4, 4, 0];
 
   var state = 0;
   var windows = {};         // state index -> screen
@@ -187,10 +191,11 @@ SOS.States = (function () {
 
   function setState(next) {
     /* V13 — reject an out-of-range index rather than storing it. While the
-       carousel had five positions this could not happen; now that it has four, a
-       stale `setState(4)` would take the surface to a state with no name, no
-       dock width and no window, and every subsequent carousel step would be
-       offset by one. Refusing is silent-safe: the surface simply does not move. */
+       carousel had five positions this could not happen; V13 took it to four and
+       V59 to THREE, and a stale `setState(3)` would take the surface to a state
+       with no name, no dock width and no window, and every subsequent carousel
+       step would be offset by one. Refusing is silent-safe: the surface simply
+       does not move. */
     next = next | 0;
     if (next < 0 || next >= COUNT) {
       SOS.SD.log('states: ignoring out-of-range state ' + next);
@@ -233,7 +238,9 @@ SOS.States = (function () {
       // V9 additions. Forgetting one here paints a silently blank label.
       kicker: b.kicker, kickerColor: b.kickerColor, corner: b.corner,
       cornerColor: b.cornerColor, subColor: b.subColor,
-      seg: b.seg, segDim: b.segDim,
+      // V59 — `seg` / `segDim` were the calculator's four-key display and left
+      // with it. They are the only fields ever REMOVED from this whitelist; the
+      // matching render path went too, so a stray `seg` now paints nothing.
       // V16 additions — the per-module hardware skin (Rekordbox / Omnis-Duo).
       shape: b.shape, face: b.face, canvas: b.canvas, titleColor: b.titleColor,
       // V22 — the artwork NAME (never the bytes; see js/core/art.js).
@@ -258,13 +265,13 @@ SOS.States = (function () {
      a window into it, so an EQ curve reads as one continuous picture. */
   /* V28 — THE CLOCK OWNS THE LAST ZONE, BUT ONLY WHEN IT IS EMPTY.
 
-     Adi asked for it on the Root Hub and in States 0 and 1, and never in State 2
+     Adi asked for it on the Root Hub and in the Numpad, and never in Divisions
      where the delay readout and BPM are numbers he is reading. Those cases all
      follow from one rule that is safer than a list of states: the clock takes the
      right-hand zone when NOTHING ELSE is using it.
 
      That satisfies every case he named — the Root Hub leaves dials 5-6 blank by
-     design, and States 0/1 do not touch the strip at all — while also keeping his
+     design, and the Numpad does not touch the strip at all — while also keeping his
      standing rule that the screen belongs to the VSTs: with a controller live the
      zone is carrying an EQ curve, so the clock stays out of the way instead of
      painting over it. A clock is never worth covering a control for. */

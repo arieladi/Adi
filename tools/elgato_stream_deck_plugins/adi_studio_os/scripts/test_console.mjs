@@ -1,7 +1,12 @@
-// Console windows: the V7 Time Divisions grid, the exact math, the V6
-// calculator, and the shared dock geometry.
+// Console windows: the V7 Time Divisions grid, the exact math, and the shared
+// dock geometry.
 //
-// V7 rebuilt State 2 as three variant rows inside the standard 16-key dock, with
+// V59 removed the Calculator, so this suite lost its [6], [6b], [9d] and [10]
+// blocks along with it — 24 assertions covering the arithmetic engine, the
+// grouped four-key display, the two merged operator holds and the pending-op
+// kicker. Divisions is State 1 now and NAV OFF is 2.
+//
+// V7 rebuilt Divisions as three variant rows inside the standard 16-key dock, with
 // a cycling division window and BPM on one borrowed dial. The maths is the whole
 // point, so it is checked against values computed independently here rather than
 // against the module's own formulas.
@@ -65,14 +70,13 @@ for (const bpm of [90, 128, 143, 174]) {
 ok("triplet = straight x 2/3 and dotted x 3/2, 4 tempos x 3 divisions", rel);
 ok("Hz is the reciprocal in ms", near(m.freqHz(500), 2));
 
-console.log("\n[4] every window is the standard 4x4 dock");
-for (const [name, win] of [["numpad", C.numpad], ["calculator", C.calculator], ["divisions", C.delay]]) {
+console.log("\n[4] both windows are the standard 4x4 dock");
+for (const [name, win] of [["numpad", C.numpad], ["divisions", C.delay]]) {
   const l = LO.pick(win, 4);
   ok(`${name} declares a 4-col layout`, !!l && l.cols === 4);
 }
-// V4 — dial borrowing is per state, and 0/1 must not touch the strip at all.
+// V4 — dial borrowing is per state, and the Numpad must not touch the strip.
 ok("numpad borrows NO dials", !C.numpad.borrowDials);
-ok("calculator borrows NO dials (V4)", !C.calculator.borrowDials);
 ok("divisions borrows TWO dials — readout + BPM (V14)", C.delay.borrowDials === 2, String(C.delay.borrowDials));
 
 console.log("\n[5] State 0 numpad — C is now an asterisk (V5)");
@@ -89,128 +93,7 @@ cell(C.numpad, 0, 3).tap();
 ok("✱ sends the real numpad-star keystroke, not a literal 'clear'",
    sentKey === "multiply", String(sentKey));
 
-console.log("\n[6] State 1 calculator — display, grouping, arithmetic (V6/V12)");
-C._reset();
-const cal = (col, row) => LO.pick(C.calculator, 4).keys(col, row);
-ok("the top row is a display, not keys",
-   [0, 1, 2, 3].every((c) => typeof cal(c, 0).seg === "string"));
-
-/* V12 — at rest the row shows a dim placeholder across ALL FOUR keys, so it
-   reads as one screen instead of a lone tiny 0. */
-ok("at rest it spans all four keys",
-   [0, 1, 2, 3].every((c) => cal(c, 0).seg !== ""),
-   [0, 1, 2, 3].map((c) => cal(c, 0).seg).join("|"));
-ok("…and the placeholder is dimmed, not typed content",
-   [0, 1, 2, 3].every((c) => cal(c, 0).segDim === true));
-ok("the placeholder reads 0.000 000 000",
-   [0, 1, 2, 3].map((c) => cal(c, 0).seg).join("") === "0.000000000",
-   [0, 1, 2, 3].map((c) => cal(c, 0).seg).join(""));
-
-/* Grouping: the break lands on the thousands separator, not every 3 chars. */
-const segsOf = (display) => {
-  C._reset(); C._calc.display = display; C._calc.fresh = false; C._calc.stored = 0;
-  return [0, 1, 2, 3].map((c) => cal(c, 0).seg);
-};
-ok("12000 spans as '12,' + '000' — Adi's example",
-   segsOf("12000").join("|") === "12,|000||", segsOf("12000").join("|"));
-ok("1234567 spans as '1,' '234,' '567'",
-   segsOf("1234567").join("|") === "1,|234,|567|", segsOf("1234567").join("|"));
-ok("a fraction rides with its group: 1284.5 -> '1,' '284' '.5'",
-   segsOf("1284.5").join("|") === "1,|284|.5|", segsOf("1284.5").join("|"));
-ok("a short number needs no grouping", segsOf("277").join("|") === "277|||");
-ok("twelve digits still fit four keys",
-   segsOf("123456789012").join("|") === "123,|456,|789,|012");
-ok("an error string is not mangled by the grouper", segsOf("Err")[0] === "Err");
-C._reset();
-
-ok("digit keys are where they look", cal(0, 1).label === "7" && cal(2, 3).label === "3");
-/* V19 — exactly TWO merged keys, both operators, both in the right-hand column.
-   `0` lost its ⌫ hold: backspace already lives on the display row, and a second
-   way to reach one function is the thing this pass set out to remove. */
-const merged = [cal(3, 1), cal(3, 2)];
-ok("merged keys show short on the cap and the OPERATOR as the caption",
-   merged[0].label === "." && /−/.test(merged[0].sub) &&
-   merged[1].label === "C" && /\+/.test(merged[1].sub),
-   merged.map((k) => k.label + "/" + k.sub).join(" "));
-ok("the operator caption is promoted, not small grey text",
-   merged.every((k) => k.subStrong === true));
-/* U+2337 rendered as tofu on the device. The caption must stay inside the glyph
-   set the plugin already proves it can draw. */
-ok("the caption uses only glyphs already in the shipped set",
-   merged.every((k) => /^HOLD [−+]$/.test(k.sub)), merged.map((k) => k.sub).join(" "));
-
-/* THE DE-DUPLICATION, asserted as an invariant rather than a spot check: count
-   every reachable function across all 16 keys and require each to appear once.
-   A future pass that re-adds a convenience hold fails here. */
-const zeroKey = cal(3, 3);
-ok("`0` is a plain immediate key again — no hold, no caption",
-   zeroKey.label === "0" && !zeroKey.hold && !zeroKey.sub,
-   JSON.stringify({ hold: !!zeroKey.hold, sub: zeroKey.sub }));
-const fns = [];
-for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
-  const k = cal(c, r);
-  if (!k) continue;
-  if (r === 0) fns.push(k.kicker);            // display row: the operator it runs
-  else { fns.push(k.label); if (k.hold) fns.push(k.sub.replace("HOLD ", "")); }
-}
-const dupes = fns.filter((f, i) => fns.indexOf(f) !== i);
-ok("no function is reachable from two different places", dupes.length === 0, dupes.join(","));
-ok("…and all 18 are reachable",
-   ["0","1","2","3","4","5","6","7","8","9",".","C","⌫","×","÷","+","−","="]
-     .every((f) => fns.includes(f)), fns.join(" "));
-ok("segDim reaches the renderer through keySpec",
-   "segDim" in SOS.States.keySpec({ segDim: true }), Object.keys(SOS.States.keySpec({})).join(","));
-ok("every merged key declares BOTH halves", merged.every((k) => k.tap && k.hold));
-
-// short press
-cal(3, 3).tap();
-ok("short press on the 0 key types a zero", C._calc.display === "0", C._calc.display);
-cal(0, 1).tap(); cal(3, 1).tap();      // 7 then .
-ok("short press on the . key types a decimal point", C._calc.display === "7.", C._calc.display);
-C._reset(); cal(0, 1).tap(); cal(3, 2).hold();
-ok("LONG press on the C key sets +", C._calc.op === "+", String(C._calc.op));
-C._reset(); cal(0, 1).tap(); cal(3, 1).hold();
-ok("LONG press on the . key sets −", C._calc.op === "−", String(C._calc.op));
-/* V19 — the 0 key HAS no long half now. Backspace is on the display row only,
-   and asserting the absence is the point: a convenience hold re-added here is
-   exactly the duplicate this pass removed. */
-ok("the 0 key has NO long half at all", cal(3, 3).hold === undefined);
-C._reset(); cal(0, 1).tap(); cal(1, 1).tap(); cal(2, 0).tap();   // 7 8 then ⌫
-ok("backspace lives on the display row, and works", C._calc.display === "7", C._calc.display);
-
-/* THE HARDWARE REGRESSION: 277 + 5 came back 2775 — a string concatenation, not
-   a sum. Driven through the real key bindings, and the operands are asserted to
-   be NUMBERS so a future `a + b` on strings cannot pass this quietly. */
-console.log("\n[6b] the 277 + 5 = 2775 regression");
-C._reset();
-cal(1, 3).tap(); cal(0, 1).tap(); cal(0, 1).tap();       // 2 7 7
-ok("typed 277", C._calc.display === "277", C._calc.display);
-cal(3, 2).hold();                                        // +
-ok("the stored operand is a NUMBER, never a string",
-   typeof C._calc.stored === "number", typeof C._calc.stored);
-cal(1, 2).tap();                                         // 5
-cal(3, 0).tap();                                         // =
-ok("277 + 5 = 282, not 2775", C._calc.display === "282", C._calc.display);
-// The same trap for every operator, since `+` is only the one that fails quietly.
-const run = (a, opKey, b, expect) => {
-  C._reset();
-  String(a).split("").forEach((d) => cal(...DIGIT_AT[d]).tap());
-  opKey();
-  String(b).split("").forEach((d) => cal(...DIGIT_AT[d]).tap());
-  cal(3, 0).tap();
-  ok(`${a} ${expect.op} ${b} = ${expect.v}`, C._calc.display === String(expect.v), C._calc.display);
-};
-const DIGIT_AT = { 1: [0, 3], 2: [1, 3], 3: [2, 3], 4: [0, 2], 5: [1, 2], 6: [2, 2],
-                   7: [0, 1], 8: [1, 1], 9: [2, 1], 0: [3, 3] };
-run(277, () => cal(3, 2).hold(), 5, { op: "+", v: 282 });
-run(277, () => cal(3, 1).hold(), 5, { op: "−", v: 272 });
-run(12, () => cal(0, 0).tap(), 12, { op: "×", v: 144 });
-run(144, () => cal(1, 0).tap(), 12, { op: "÷", v: 12 });
-ok("the display row carries × ÷ ⌫ = as its tap actions",
-   [0, 1, 2, 3].map((c) => cal(c, 0).kicker).join("") === "×÷⌫=",
-   [0, 1, 2, 3].map((c) => cal(c, 0).kicker).join(""));
-
-console.log("\n[7] State 2 grid — columns are variants, rows are divisions (V11)");
+console.log("\n[7] State 1 grid — columns are variants, rows are divisions (V11)");
 C._reset();
 const div = (col, row) => LO.pick(C.delay, 4).keys(col, row);
 ok("row 0 is NOTES / DOTTED / TRIPLETS + the value key",
@@ -244,7 +127,7 @@ ok("only one cell is selected at a time",
 div(2, 3).tap();
 ok("tapping a cell selects it", div(2, 3).active === true && st.selRow === 2 && st.selCol === 2);
 
-console.log("\n[8] State 2 — the ▲ / ▼ range arrows (V11)");
+console.log("\n[8] State 1 — the ▲ / ▼ range arrows (V11)");
 C._reset();
 ok("col 3 rows 1-2 are the arrows", div(3, 1).label === "▲" && div(3, 2).label === "▼");
 ok("both are labelled RANGE", div(3, 1).kicker === "RANGE" && div(3, 2).kicker === "RANGE");
@@ -262,7 +145,7 @@ ok("▼ clamps at the bottom", div(2, 3).label.indexOf("1/128") === 0, div(2, 3)
 ok("…and greys out too", div(3, 2).dim === true);
 C._reset();
 
-console.log("\n[9] State 2 — the value key is the ONLY readout");
+console.log("\n[9] State 1 — the value key is the ONLY readout");
 C._reset();
 st.bpm = 120;
 ok("it shows the selected cell — straight 1/16 at 120 BPM", div(3, 0).label === "125.00", div(3, 0).label);
@@ -340,52 +223,6 @@ ok("a long figure gets a smaller face than a short one",
    Number(/<text[^>]*font-size="(\d+)"[^>]*>12345\.78/.exec(wide)[1]) <
    Number(/<text[^>]*font-size="(\d+)"[^>]*>83\.33/.exec(narrow)[1]));
 ok("nothing is truncated out of the readout", wide.indexOf("12345.78") > 0 && !/…/.test(wide));
-C._reset();
-
-console.log("\n[9d] V23 — the pending operation is visible on the screen");
-{
-  const segKey = (i) => LO.pick(C.calculator, 4).keys(i, 0);
-  C._reset();
-  ok("at rest, segment 0 shows its own operator label", segKey(0).kicker === "×", segKey(0).kicker);
-
-  const cal2 = (c, r) => LO.pick(C.calculator, 4).keys(c, r);
-  cal2(1, 3).tap();            // 2
-  ok("typing a digit does not invent a pending op", segKey(0).kicker === "×", segKey(0).kicker);
-  cal2(3, 2).hold();           // HOLD C = +
-  /* THE FIX. Before this, the screen after `2` `+` read exactly the same as the
-     screen after `2` alone — so a lost keypress and a registered one were
-     indistinguishable, which is what made `+` feel broken. */
-  ok("after 2 then +, the screen says so", segKey(0).kicker === "2 +", segKey(0).kicker);
-  ok("…in the operator colour, not the segment's own", segKey(0).kickerColor === SOS.Render.PALETTE.console);
-  cal2(1, 3).tap();            // 2
-  ok("the pending op survives typing the second operand", segKey(0).kicker === "2 +", segKey(0).kicker);
-  cal2(3, 0).tap();            // =
-  ok("2 + 2 = 4", C._calc.display === "4", C._calc.display);
-  ok("…and the pending op clears with it", segKey(0).kicker === "×", segKey(0).kicker);
-
-  // It must render, and a wide pending value must not run off the cap.
-  const svg = SOS.Render.key(SOS.States.keySpec({ seg: "1,284", kicker: "1,284,567 −",
-                                         kickerColor: SOS.Render.PALETTE.console }));
-  ok("a long pending value shrinks instead of overflowing",
-     Number(/font-size="(\d+)"[^>]*>1,284,567/.exec(svg)[1]) < 30, svg.slice(0, 80));
-  ok("the pending op reaches the ink in its own colour", svg.indexOf(SOS.Render.PALETTE.console) > 0);
-  C._reset();
-}
-
-console.log("\n[10] calculator engine arithmetic");
-const calc = C._calc;
-C._reset();
-ok("starts at 0", calc.display === "0");
-const runKeys = (seq) => seq.forEach((f) => f());
-runKeys([() => cal(0, 1).tap(), () => cal(3, 2).hold(), () => cal(1, 1).tap(), () => cal(3, 0).tap()]);
-ok("7 + 8 = 15", calc.display === "15", calc.display);
-C._reset();
-runKeys([() => cal(2, 1).tap(), () => cal(1, 0).tap(), () => cal(2, 3).tap(), () => cal(3, 0).tap()]);
-ok("9 ÷ 3 = 3", calc.display === "3", calc.display);
-C._reset();
-// 1 ÷ 0 — (0,3) is the digit 1, (1,0) is ÷, (3,3) short is 0, (3,0) is =
-runKeys([() => cal(0, 3).tap(), () => cal(1, 0).tap(), () => cal(3, 3).tap(), () => cal(3, 0).tap()]);
-ok("1 ÷ 0 reports an error rather than crashing", calc.display === "Err", calc.display);
 C._reset();
 
 console.log(`\n${pass} passed, ${fail} failed`);
