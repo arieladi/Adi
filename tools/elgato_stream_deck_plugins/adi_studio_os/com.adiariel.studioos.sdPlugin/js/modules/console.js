@@ -1,35 +1,32 @@
 'use strict';
 /* =============================================================================
-   console.js — the NAV windows: Numpad (0), Calculator (1), Time Divisions (2).
+   console.js — the NAV windows: Numpad (0) and Time Divisions (1).
 
-   All three are the SAME standard 4x4 dock (16 keys), region-local: `keys(col,
+   Both are the SAME standard 4x4 dock (16 keys), region-local: `keys(col,
    row)` gets 0..3 / 0..3 and never needs to know where the dock sits.
 
-   V14 — DIAL BOUNDARIES, PER STATE, and State 2 is now the Compact consumer:
+   V59 — THE CALCULATOR IS GONE. Adi: "I find the standard Calculator module
+   useless for my workflow." It was State 1 and it took the whole engine with it:
+   the arithmetic (V19's float casting), the grouped four-key display (V12), the
+   two merged operator holds (V6/V19), the pending-operation kicker (V23) and the
+   renderer's `seg` / `segDim` display-segment path. Divisions moves DOWN one
+   index and NAV OFF with it, so the carousel is now `0 -> 1 -> OFF -> 0`.
+
+   V14 — DIAL BOUNDARIES, PER STATE, and Divisions is the Compact consumer:
 
      State 0 Numpad       16 keys, NO dials — the strip is untouched
-     State 1 Calculator   16 keys, NO dials — the strip is untouched
-     State 2 Divisions    16 keys + TWO dials (physical 5 and 6)
-     State 3 NAV OFF      nothing docked at all
+     State 1 Divisions    16 keys + TWO dials (physical 5 and 6)
+     State 2 NAV OFF      nothing docked at all
 
-   States 0 and 1 leaving the strip alone IS the pass-through: the module beneath
-   keeps six dials and stays in its Full layout. State 2 takes two, which leaves
+   The Numpad leaving the strip alone IS the pass-through: the module beneath
+   keeps six dials and stays in its Full layout. Divisions takes two, which leaves
    the module four — the `build(4)` path, and the only door to the 14 Compact
    strip layouts now that the old State 3 shell is gone.
 
-   V15 — STATE 2 GAINED A READOUT AND A PASTE. Dial 5 carries the computed value
+   V15 — DIVISIONS GAINED A READOUT AND A PASTE. Dial 5 carries the computed value
    at display size in green, scrolls the grid when turned and toggles ms/Hz when
    pushed. The top-right key keeps showing the figure and now TYPES it into the
    focused application instead of toggling the unit.
-
-   V6 — CALCULATOR. The operators used to live on two borrowed dials; they now
-   live on the keys, because States 0 and 1 may not touch the strip. The freed
-   top row becomes a real DISPLAY spanning four keys.
-
-   V12 — the display is GROUPED, not chopped every three characters. A number is
-   formatted with thousands separators first and then split on those separators,
-   so 12000 reads "12," | "000" rather than "120" | "00". At rest it shows a dim
-   0.000 000 000 across all four keys, so the row is obviously one screen.
 
    V11 — TIME DIVISIONS, rebuilt AGAIN after hardware testing. V7 had the grid
    TRANSPOSED (variants on rows, divisions on columns) and printed the computed
@@ -65,7 +62,6 @@ SOS.Modules.Console = (function () {
   var DEFAULT_START = 3;                         // window starts at 1/8
   var TRIPLET = 2 / 3;
   var DOTTED = 3 / 2;
-  var OPS = ['+', '−', '×', '÷'];
   var BPM_MIN = 1, BPM_MAX = 300, BPM_DEFAULT = 143;
 
   var VARIANTS = [
@@ -101,120 +97,6 @@ SOS.Modules.Console = (function () {
   // 1/128 is worse than one that greys out at the end of its travel.
   var MAX_START = SUBDIVS.length - WINDOW;
 
-  // ------------------------------------------------- calculator engine
-  var calc = { display: '0', stored: null, op: null, opIndex: 0, fresh: true };
-
-  function fmtCalc(n) {
-    if (!isFinite(n)) return 'Err';
-    var s = String(Math.round(n * 1e10) / 1e10);
-    return s.length > 12 ? n.toPrecision(10).replace(/0+$/, '').replace(/\.$/, '') : s;
-  }
-  function calcClear() { calc.display = '0'; calc.stored = null; calc.op = null; calc.opIndex = 0; calc.fresh = true; }
-  function calcDigit(d) {
-    if (calc.fresh || calc.display === '0') { calc.display = d; calc.fresh = false; return; }
-    if (calc.display.replace(/[^0-9]/g, '').length >= 12) return;
-    calc.display += d;
-  }
-  function calcDecimal() {
-    if (calc.fresh) { calc.display = '0.'; calc.fresh = false; return; }
-    if (calc.display.indexOf('.') < 0) calc.display += '.';
-  }
-  function calcBackspace() {
-    if (calc.fresh) return;
-    calc.display = calc.display.length > 1 ? calc.display.slice(0, -1) : '0';
-    if (calc.display === '0') calc.fresh = true;
-  }
-  /* Every operand is coerced to a NUMBER at the boundary. `+` is the one
-     operator where a stray string silently succeeds instead of failing —
-     "277" + 5 is "2775", not 282 — so this is belt and braces rather than a
-     nicety, and it is the reason the coercion lives here and not at the call
-     sites where one could be missed. */
-  function num(v) { var n = parseFloat(v); return isFinite(n) ? n : NaN; }
-
-  /* V19 — FLOAT CASTING IS ENFORCED ON THE EXECUTION LINE ITSELF.
-
-     The previous pass coerced at the top of this function and then wrote
-     `a + b`, which is correct but relies on nothing ever reaching that line by
-     another route. `+` is the one operator where a string operand succeeds
-     QUIETLY instead of failing — "277" + 5 is "2775", a plausible-looking number
-     that no exception ever flags — so the cast now sits on the operator itself.
-     There is no path to a `+` in this engine that is not a float add. */
-  function applyOp(a, b, op) {
-    var x = num(a), y = num(b);
-    if (!isFinite(x) || !isFinite(y)) return NaN;
-    switch (op) {
-      case '+': return parseFloat(x) + parseFloat(y);
-      case '−': return parseFloat(x) - parseFloat(y);
-      case '×': return parseFloat(x) * parseFloat(y);
-      case '÷': return parseFloat(y) === 0 ? NaN : parseFloat(x) / parseFloat(y);
-      default: return y;
-    }
-  }
-  function calcCommitOp() {
-    var v = num(calc.display);
-    if (calc.stored !== null && calc.op && !calc.fresh) v = applyOp(calc.stored, v, calc.op);
-    calc.stored = v;
-    calc.op = OPS[calc.opIndex];
-    calc.display = fmtCalc(v);
-    calc.fresh = true;
-  }
-  function calcSetOp(sym) { calc.opIndex = Math.max(0, OPS.indexOf(sym)); calcCommitOp(); }
-  function calcCycleOp(dir) { calc.opIndex = (calc.opIndex + dir + OPS.length) % OPS.length; }
-  function calcEquals() {
-    if (calc.stored === null || !calc.op) { calc.fresh = true; return; }
-    var v = applyOp(calc.stored, num(calc.display), calc.op);
-    calc.display = fmtCalc(v);
-    calc.stored = null; calc.op = null; calc.fresh = true;
-  }
-
-  /* ---------------------------------------------------------------- display
-     V12. The number is grouped with thousands separators and then split ON those
-     groups, so the break always lands where a reader expects it:
-
-        12000     -> "12,000"      -> [ "12,"  "000"                ]
-        1234567   -> "1,234,567"   -> [ "1,"   "234," "567"         ]
-        1284.5    -> "1,284.5"     -> [ "1,"   "284"  ".5"          ]
-
-     At rest the row shows a dim placeholder across all four keys, so it reads as
-     one screen rather than a lone tiny 0 on the left. */
-  var SEGS = 4;
-  var PLACEHOLDER = ['0.', '000', '000', '000'];
-
-  function withCommas(intDigits) {
-    return intDigits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  }
-
-  /* Split a formatted number into display chunks: each thousands group keeps its
-     trailing comma, and the fractional tail is its own chunk. */
-  function chunks(display) {
-    var neg = display.charAt(0) === '-';
-    var body = neg ? display.slice(1) : display;
-    var dot = body.indexOf('.');
-    var intPart = dot < 0 ? body : body.slice(0, dot);
-    var frac = dot < 0 ? '' : body.slice(dot);
-    if (!/^\d+$/.test(intPart)) return [display];        // 'Err' and friends
-
-    var grouped = withCommas(intPart).split(',');
-    var out = grouped.map(function (g, i) { return i < grouped.length - 1 ? g + ',' : g; });
-    if (neg) out[0] = '-' + out[0];
-    if (frac) {
-      // Keep the fraction with the last group when it still fits the cap.
-      if (out[out.length - 1].length + frac.length <= 4) out[out.length - 1] += frac;
-      else out.push(frac);
-    }
-    return out;
-  }
-
-  function isResting() { return calc.fresh && calc.stored === null && calc.display === '0'; }
-
-  function segment(i) {
-    if (isResting()) return PLACEHOLDER[i] || '';
-    var c = chunks(calc.display);
-    if (c.length > SEGS) c = c.slice(0, SEGS);            // 12 digits never gets here
-    return c[i] || '';
-  }
-  function segmentDim() { return isResting(); }
-
   // ---------------------------------------------------------- numpad map
   // V5 — bottom-left is now an asterisk. `multiply` is the real numpad-star
   // keystroke on every platform (os.js maps it to KP_Multiply / VK_MULTIPLY).
@@ -247,104 +129,7 @@ SOS.Modules.Console = (function () {
     }],
   };
 
-  // ================================================= Calculator (State 1)
-  /* 12 keys have to carry ten digits plus nine operations, so keys merge:
-     a short press is the common action, a long press the rarer one (V6).
-
-       row0   [ display · display · display · display ]
-       row1     7          8          9      [ .  | − ]
-       row2     4          5          6      [ C  | + ]
-       row3     1          2          3      [ 0  | ⌫ ]
-
-     × ÷ and = had no home in the brief, and the display row is the only surface
-     with nothing else to do — so tapping a display segment performs them. The
-     segment still shows its digits; the action is printed above them. */
-  /* V19 — EVERY FUNCTION EXISTS EXACTLY ONCE.
-
-     `⌫` used to be BOTH a tap on display segment 2 and the long half of the `0`
-     key. Two ways to reach one function is two things to learn and one of them
-     to forget, and it spent the only spare hold slot on a duplicate. Backspace
-     now lives on the display row only, and `0` is a plain immediate key again —
-     no timer, no caption, zero latency.
-
-     That leaves exactly two holds on the board, both on the right-hand column
-     where the operators belong, and every operator reachable in one place:
-
-         holds     .  / HOLD −        C  / HOLD +
-         taps      display row: ×  ÷  ⌫  =                                  */
-  var CALC_MERGE = [
-    { row: 1, short: '.', long: '−', shortRun: calcDecimal, longRun: function () { calcSetOp('−'); } },
-    { row: 2, short: 'C', long: '+', shortRun: calcClear,   longRun: function () { calcSetOp('+'); } },
-    { row: 3, short: '0', long: null, shortRun: function () { calcDigit('0'); } },
-  ];
-  var CALC_DIGITS = [['7', '8', '9'], ['4', '5', '6'], ['1', '2', '3']];
-  var CALC_SEG = [
-    { label: '×', run: function () { calcSetOp('×'); } },
-    { label: '÷', run: function () { calcSetOp('÷'); } },
-    { label: '⌫', run: calcBackspace },
-    { label: '=', run: calcEquals },
-  ];
-
-  var calculator = {
-    id: 'state.calc', title: 'Calc', module: 'console',
-    onEnter: calcClear,
-    layouts: [{
-      cols: 4,
-      keys: function (col, row) {
-        if (row === 0) {
-          var seg = CALC_SEG[col];
-          /* V23 — THE PENDING OPERATION IS ON THE SCREEN.
-
-             Until now the display row showed the current operand and nothing
-             else: after `2`, `+`, the screen read "2" with the `+` recorded
-             only in a variable. That is indistinguishable from having pressed
-             nothing at all, which is exactly what "the + is a disaster" looks
-             like from the outside — you cannot tell a lost keypress from a
-             registered one, so you press again and get a different answer.
-
-             Segment 0 now carries `stored op` above the number whenever an
-             operation is waiting. No key moved and no function changed; the
-             machine simply says out loud what it is holding. */
-          var pend = (col === 0 && calc.op && calc.stored !== null)
-            ? fmtCalc(calc.stored) + ' ' + calc.op : null;
-          return {
-            seg: segment(col), segDim: segmentDim(),
-            kicker: pend || seg.label,
-            kickerColor: pend ? R.PALETTE.console : null,
-            color: col === 3 ? R.PALETTE.accent : R.PALETTE.midi,
-            kind: 'tap', tap: seg.run,
-          };
-        }
-        if (col < 3) {
-          var d = CALC_DIGITS[row - 1][col];
-          return { label: d, size: 'xl', color: R.PALETTE.accent, kind: 'tap',
-                   tap: function () { calcDigit(d); } };
-        }
-        /* The long half used to read "hold −" in small grey type and was
-           effectively invisible on the cap — which is why + went unused on
-           hardware. The operator is now the caption itself: big, tinted, and
-           prefixed with the hold affordance. */
-        var m = CALC_MERGE[row - 1];
-        // A key with no long half is NOT a merged key: no `hold`, so input.js
-        // never arms a timer for it and the press stays immediate.
-        if (!m.long) {
-          return { label: m.short, size: 'xl', color: R.PALETTE.accent,
-                   kind: 'tap', tap: m.shortRun };
-        }
-        return {
-          label: m.short, size: 'xl',
-          // Plain ASCII + the operator glyph. An earlier pass used U+2337 as a
-          // "hold" mark and it rendered as tofu on the device — the key font is
-          // not guaranteed to carry anything outside the set already in use.
-          sub: 'HOLD ' + m.long, subStrong: true, subColor: R.PALETTE.console,
-          color: R.PALETTE.console, active: calc.op === m.long,
-          kind: 'tap', tap: m.shortRun, hold: m.longRun,
-        };
-      },
-    }],
-  };
-
-  // ============================================ Time Divisions (State 2)
+  // ============================================ Time Divisions (State 1)
   /* V11 — columns are the VARIANTS, rows are the DIVISIONS, and the nine cells
      carry nothing but their fraction. The computed value lives in exactly one
      place: the top-right key. */
@@ -435,7 +220,7 @@ SOS.Modules.Console = (function () {
 
        Borrowing the second dial is also what gives the 14 Ableton Compact strip
        layouts a consumer: the module beneath is left with four, which is the
-       `build(4)` path. State 2 is the only state that opens it. */
+       `build(4)` path. Divisions is the only state that opens it. */
     borrowDials: 2,
     dials: function (dial) {
       // --- window dial 1 = physical dial 5: the readout, the grid, the format.
@@ -468,7 +253,7 @@ SOS.Modules.Console = (function () {
   };
 
   return {
-    numpad: numpad, calculator: calculator, delay: delay,
+    numpad: numpad, delay: delay,
     // exposed for scripts/test_console.mjs
     _math: {
       quarterMs: quarterMs, straightMs: straightMs, variantMs: variantMs,
@@ -476,10 +261,8 @@ SOS.Modules.Console = (function () {
       TRIPLET: TRIPLET, DOTTED: DOTTED, SUBDIVS: SUBDIVS, WINDOW: WINDOW,
       MAX_START: MAX_START,
     },
-    _calc: calc, _state: state,
-    _segment: segment, _segmentDim: segmentDim, _chunks: chunks,
+    _state: state,
     _reset: function () {
-      calcClear();
       state.bpm = BPM_DEFAULT; state.start = DEFAULT_START;
       state.selRow = 1; state.selCol = 0; state.unit = 'ms';
     },

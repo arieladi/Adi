@@ -478,7 +478,7 @@ console.log("\n[10] hub wiring");
 ok("hub is fullScreenCapable (needs all 6 dials)", A.hub.fullScreenCapable === true);
 Nav.toRoot(); States.setState(0);
 Nav.enter("ableton.hub");
-ok("entering auto-enters NAV OFF (D15)", States.get() === 3, `state=${States.get()}`);
+ok("entering auto-enters NAV OFF (D15)", States.isFullScreen(), `state=${States.get()}`);
 const rootL = SOS.Layout.pick(M.Root.screen, 9);
 ok("Ableton tile is reachable from the Root Hub",
    !!rootL.keys(0, 0) && rootL.keys(0, 0).art === "ableton",
@@ -516,16 +516,19 @@ let dialsBound = 0;
 for (let d = 1; d <= 6; d++) { const z = States.resolveDial(d); if (z && z.svg) dialsBound++; }
 ok("all 6 dials carry a strip slice in Full Screen", dialsBound === 6, `bound=${dialsBound}`);
 
-/* V14 — dial borrowing is per state. State 1 (calculator) leaves the strip
-   completely alone, so the hub keeps all six dials there and stays FULL; STATE 2
-   is the one that borrows two, and it is therefore the only thing that puts a
+/* V14 — dial borrowing is per state. The Numpad leaves the strip completely
+   alone, so the hub keeps all six dials there and stays FULL; DIVISIONS is the
+   one that borrows two, and it is therefore the only thing that puts a
    controller into its 4-dial Compact layout. Both halves are asserted, because
-   the whole Compact suite hangs off the second one. */
-States.setState(1);
-ok("State 1 does NOT touch the strip — the hub keeps six dials",
+   the whole Compact suite hangs off the second one.
+
+   V59 — the Calculator was the other no-dial state and it is gone, so this is
+   asked by NAME (States.DELAY) rather than by a literal index. */
+States.setState(0);
+ok("the Numpad does NOT touch the strip — the hub keeps six dials",
    States.moduleDials() === 6, String(States.moduleDials()));
-States.setState(2);
-ok("State 2 borrows TWO — THIS is what triggers the Compact layouts (V14)",
+States.setState(States.DELAY);
+ok("Divisions borrows TWO — THIS is what triggers the Compact layouts (V14)",
    States.moduleDials() === 4, String(States.moduleDials()));
 let bound4 = 0;
 for (let d = 1; d <= 4; d++) { const z = States.resolveDial(d); if (z && z.svg) bound4++; }
@@ -573,7 +576,7 @@ ok("…and carry the window's own faces, not slices of the controller strip",
      && M.Plugins.itemPages() === 2 && M.Plugins.pageCount(5) === 4,
      `${M.Plugins.bandPages(5)} x ${M.Plugins.itemPages()} = ${M.Plugins.pageCount(5)}`);
 }
-States.setState(3);
+States.setState(States.FULL);
 const uri = R.dataUri(States.resolveDial(1).svg);
 ok("a zone slice encodes to a data URI", uri.startsWith("data:image/svg+xml;base64,"));
 ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
@@ -850,7 +853,7 @@ Object.assign(A.bridge.state(), qst);
 A._pick();
 const live = A._active();
 ok("the module resolved Pro-Q 3", live && live.id === "proq3", live && live.id);
-States.setState(3);                                    // full board, 6 dials
+States.setState(States.FULL);                           // full board, 6 dials
 /* V39 — THE MODE TAB ROW IS GONE, so the header is inert and the three switches
    own everything below it. Asserted as an absence: a touch where the tabs used to
    be must change nothing at all. */
@@ -2393,7 +2396,7 @@ console.log("\n[V55] the band artwork, and the new category palette");
   const wl = SOS.Layout.pick(A.hub, 9);
 
   /* THE PALETTE. These were borrowed module colours (EQ took rekordbox's red,
-     Dynamics the calculator's amber), which meant recolouring a category dragged an
+     Dynamics the calculator's amber — both since retired), which meant recolouring a category dragged an
      unrelated module with it. They are their own names now. */
   const want = { eq: "catEq", dyn: "catDyn", synth: "catSynth", meter: "catMeter" };
   ok("each band takes its colour from its OWN palette entry",

@@ -94,6 +94,15 @@ Level 0  Root Main Hub
 Level 1  Module hubs → Level 2 sub-menus …
 ```
 
-Orthogonal to the hierarchy, the **State Carousel** (0 Numpad · 1 Calculator ·
-2 Delay Calculator · 3 Context Nav · 4 Full Screen) composites over whatever
-level is active. State 0 occupies cols 5–8; State 2 takes the whole device.
+Orthogonal to the hierarchy, the **State Carousel** composites over whatever
+level is active. It has been renumbered twice — V13 scrapped State 3 (Context Nav)
+and V59 deleted the Calculator — and is now:
+
+```
+0  Numpad      16-key dock on cols 5-8, NO dials
+1  Divisions   the same dock + 2 borrowed dials (readout/grid/format + BPM)
+2  NAV OFF     docks nothing; the module reclaims all 36 keys
+```
+
+Never compare a state index to a literal — ask `States.isFullScreen()`, or
+`States.FULL` / `States.DELAY`. See V13 and V59 in DECISIONS.md.

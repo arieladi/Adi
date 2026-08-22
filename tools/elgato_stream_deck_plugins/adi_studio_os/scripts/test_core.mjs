@@ -145,8 +145,8 @@ clear(); Input.keyDown('k1_3'); Input.keyUp('k1_3');
 ok('ordinary key passes through instantly', log.join() === 'down13,up13', log.join());
 
 console.log('\n[6] NAV OFF releases Button 1 (D7)');
-States.setState(3);
-ok('state is NAV OFF', States.get() === 3);
+States.setState(2);
+ok('state is NAV OFF', States.get() === 2);
 ok('back no longer reserved', !Input.backReserved());
 clear(); Input.keyDown('k0_0'); Input.keyUp('k0_0');
 ok('btn1 -> module, not Back', log.join() === 'down1,up1', log.join());
@@ -163,36 +163,49 @@ ok('S0: col 8 belongs to the docked window', States.overlayOwnsKey(S.btn(8, 0)))
 ok('S0: col 4 belongs to the module', !States.overlayOwnsKey(S.btn(4, 0)));
 ok('S0: module region is cols 0-4', States.regions().module.cols === 5);
 ok('S0: numpad borrows NO dials', States.borrowedDials() === 0);
-/* V14 — dial borrowing is PER STATE. 0 and 1 leave the strip alone entirely,
-   which IS the pass-through: the module keeps six dials and stays Full. State 2
-   takes TWO, which is what puts the Ableton controllers into their Compact
-   layout — it is the only state that does. */
+/* V14 — dial borrowing is PER STATE. The Numpad leaves the strip alone
+   entirely, which IS the pass-through: the module keeps six dials and stays
+   Full. Divisions takes TWO, which is what puts the Ableton controllers into
+   their Compact layout — it is the only state that does.
+
+   V59 — the Calculator was the second no-dial state and it is gone, so the
+   indices below moved down one. It is the second renumbering (V13 was the
+   first), which is why nothing outside states.js may hold a literal. */
 States.setState(1);
-ok('S1: calculator borrows NO dials — the strip is untouched',
-   States.borrowedDials() === 0, `n=${States.borrowedDials()}`);
-ok('S1: the module still owns all six dials', States.moduleDials() === 6, `n=${States.moduleDials()}`);
-ok('S1: still a 4-col dock', States.dockCols() === 4 && States.regions().module.cols === 5);
-States.setState(2);
-ok('S2: divisions is a 4-col dock, not a takeover', States.dockCols() === 4 && !States.overlayOwnsKey(1));
-ok('S2: borrows TWO dials — readout + BPM (V14)',
+ok('S1: divisions is a 4-col dock, not a takeover', States.dockCols() === 4 && !States.overlayOwnsKey(1));
+ok('S1: borrows TWO dials — readout + BPM (V14)',
    States.borrowedDials() === 2, `n=${States.borrowedDials()}`);
-ok('S2: the borrowed pair is the RIGHT-MOST (L3b)',
+ok('S1: the borrowed pair is the RIGHT-MOST (L3b)',
    States.overlayOwnsDial(5) && States.overlayOwnsDial(6) && !States.overlayOwnsDial(4));
-ok('S2: the module is left with FOUR — the build(4) path',
+ok('S1: the module is left with FOUR — the build(4) path',
    States.moduleDials() === 4, `n=${States.moduleDials()}`);
-States.setState(3);
-ok('S3 is NAV OFF: nothing docked', !States.overlayOwnsKey(8) && States.regions().module.cols === 9);
-ok('S3: module keeps every dial', States.borrowedDials() === 0 && States.moduleDials() === 6);
+States.setState(2);
+ok('S2 is NAV OFF: nothing docked', !States.overlayOwnsKey(8) && States.regions().module.cols === 9);
+ok('S2: module keeps every dial', States.borrowedDials() === 0 && States.moduleDials() === 6);
 States.setState(0);
 ok('S0: numpad borrows no dials either', States.borrowedDials() === 0);
 
-console.log('\n[8] carousel wraps 0..3, ending on NAV OFF (V13)');
+console.log('\n[8] carousel wraps 0..2, ending on NAV OFF (V13/V59)');
 const seen = [];
-for (let i = 0; i < 5; i++) { seen.push(States.get()); States.carousel(); }
-ok('cycles 0,1,2,OFF,0', seen.join() === '0,1,2,3,0', seen.join());
-ok('State 3 is named NAV OFF', States.NAMES[3] === 'NAV OFF', States.NAMES[3]);
-ok('there is no fourth window — State 3 (Context) is gone',
-   States.COUNT === 4 && States.NAMES.length === 4, `count=${States.COUNT}`);
+for (let i = 0; i < 4; i++) { seen.push(States.get()); States.carousel(); }
+ok('cycles 0,1,OFF,0', seen.join() === '0,1,2,0', seen.join());
+ok('State 2 is named NAV OFF', States.NAMES[2] === 'NAV OFF', States.NAMES[2]);
+ok('there are TWO windows and NAV OFF — Context (V13) and the Calculator (V59) are both gone',
+   States.COUNT === 3 && States.NAMES.length === 3, `count=${States.COUNT}`);
+/* V59 asserted as an ABSENCE, which is the only way a re-added Calculator is
+   caught: no state may be named Calc, and console.js may not expose one. */
+ok('no state is called Calc any more', States.NAMES.indexOf('Calc') < 0, States.NAMES.join(','));
+ok('…and the module exposes no calculator screen', !SOS.Modules.Console.calculator);
+ok('DOCK_COLS matches the state count', States.DOCK_COLS.length === States.COUNT,
+   `${States.DOCK_COLS.length} vs ${States.COUNT}`);
+ok('FULL is the last index and DELAY the one before it',
+   States.FULL === States.COUNT - 1 && States.DELAY === States.COUNT - 2,
+   `FULL=${States.FULL} DELAY=${States.DELAY}`);
+/* The out-of-range guard, now that COUNT is 3: a stale setState(3) must be
+   refused rather than stored, or every later carousel step is offset by one. */
+States.setState(0);
+States.setState(3);
+ok('a stale out-of-range setState(3) is refused, not stored', States.get() === 0, String(States.get()));
 States.setState(0);
 
 /* V18 — THE SURFACE MUST BE UNFREEZABLE.
@@ -262,7 +275,7 @@ console.log('\n[8b] V27 — setFeedback is deduped, which is the freeze fix');
 
   // A zone that genuinely changes must still get through, or the dedupe would
   // have traded a flood for a frozen strip.
-  States.setState(2);
+  States.setState(States.DELAY);
   States.repaint(); await wait(25);
   SOS.SD.flushCounts();
   States.resolveDial(6).rotate(3);          // BPM moves: the zone really changed
@@ -298,10 +311,10 @@ console.log('\n[8c] V28 — the LED clock, and the cost of ticking it');
   States.setState(0);
   ok('State 0 (Numpad) shows it — the Root Hub leaves that zone empty', States.clockVisible());
   States.setState(1);
-  ok('State 1 (Calculator) shows it', States.clockVisible());
-  States.setState(2);
-  ok('State 2 (Delay) SUPPRESSES it — the readout owns that zone', !States.clockVisible());
+  ok('State 1 (Divisions) SUPPRESSES it — the readout owns that zone', !States.clockVisible());
   ok('…and the tick is a no-op there', States.paintClockZone() === false);
+  States.setState(2);
+  ok('NAV OFF shows it again — the Root Hub leaves dials 5-6 blank', States.clockVisible());
   States.setState(0);
 
   /* THE SAFETY NUMBER. A full repaint at 1 Hz is what froze the machine. This
@@ -357,7 +370,7 @@ console.log('\n[8d] V34 — SOS.Timing: no module may use a page timer');
        t+1s    setTimeout(0) 2ms    setTimeout(500) overshot by 187ms
        t+2min  setTimeout(0) 4ms    setTimeout(500) overshot by 687ms
        t+6min  setTimeout(0) 3ms    setTimeout(500) overshot by 691ms
-     A 500 ms timer taking ~1190 ms IS the calculator's `+` and the dial-6 NAV
+     A 500 ms timer taking ~1190 ms WAS the calculator's `+` and IS the dial-6 NAV
      gesture failing: a normal-feeling long press was released before it fired. */
   ok('soon() runs after the current turn, not inline', await new Promise((res) => {
     let inline = true;
@@ -453,7 +466,7 @@ Nav.register({
   },
 });
 Nav.enter('probe.hub');
-States.setState(4);                       // nothing docked, so dial 3 is the module's
+States.setState(States.FULL);             // nothing docked, so dial 3 is the module's
 FakeWS.ofPort(1234).onmessage({ data: JSON.stringify({
   event: 'touchTap', context: 'd2', payload: { tapPos: [137, 71], hold: true },
 }) });
@@ -482,7 +495,7 @@ await wait(30);
 ok('the release after a long press does not also fire', States.get() === 1, String(States.get()));
 
 // It has to work in NAV OFF too, or NAV can never be recalled.
-States.setState(3);
+States.setState(2);
 dialMsg('dialDown', 'd5'); await wait(620); dialMsg('dialUp', 'd5'); await wait(30);
 ok('the trigger still works in NAV OFF, so NAV can be recalled',
    States.get() === 0, String(States.get()));

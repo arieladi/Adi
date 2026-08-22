@@ -60,9 +60,9 @@ const WIN_VK = {
 /* Send one numpad token to the focused application.
    `clear` deliberately sends ESCAPE on both platforms rather than a literal
    numpad-Clear: Windows has no Clear key that types anything, and "cancel the
-   current entry" is what the key means to a person looking at it. Inside the
-   State 1 calculator the token never reaches here — the overlay handles it
-   internally. */
+   current entry" is what the key means to a person looking at it. The Calculator
+   used to swallow these tokens internally; it was removed in V59, so every
+   numpad token now reaches this function. */
 export function key(token) {
   const t = String(token);
   if (isMac) {

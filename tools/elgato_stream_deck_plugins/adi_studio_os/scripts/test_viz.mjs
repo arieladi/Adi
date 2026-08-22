@@ -44,7 +44,7 @@ ok("exports a hub", !!(V && V.hub));
 ok("no longer exports a State 3 context strip — the state is gone (V13)", !V.context);
 ok("hub is fullScreenCapable", V.hub.fullScreenCapable === true);
 Nav.enter("viz.hub");
-ok("entering auto-enters NAV OFF (D15)", States.get() === 3, `state=${States.get()}`);
+ok("entering auto-enters NAV OFF (D15)", States.isFullScreen(), `state=${States.get()}`);
 
 console.log("\n[2] DSP: a synthetic 440 Hz block through the real capture path");
 const n = 4096, l = new Float32Array(n), r = new Float32Array(n);

@@ -2,7 +2,7 @@
 /* =============================================================================
    layout.js — the responsive layout engine.
 
-   REPLACES the overlay model. Previously a nav window (numpad, calculator,
+   REPLACES the overlay model. Previously a nav window (numpad, divisions,
    context strip) was painted ON TOP of cols 5-8 and the module underneath was
    simply hidden there. Now the two SHARE the grid: docking a nav window shrinks
    the module's region, and the module re-lays-out into what is left.

@@ -71,7 +71,7 @@ console.log("\n[3] rekordbox: layout vs the README's suggested + XL grid");
 Nav.setRoot(M.Root.screen);
 Nav.register(rb.hub);
 Nav.enter(rb.hub.id);
-States.setState(3);   // NAV OFF: the module owns every key
+States.setState(States.FULL);   // NAV OFF: the module owns every key
 
 const at = (c, r) => rb.hub.keys(S.btn(c, r));
 const lbl = (c, r) => { const b = at(c, r); return b ? String(b.label || "") : null; };
@@ -264,15 +264,18 @@ ok("un-ported modules show no tile", !reach.some((r) => /Ableton|Meters/.test(r)
 
 // ---------------------------------------------------------------------------
 console.log("\n[8] D15: fullScreenCapable hubs auto-enter NAV OFF");
+/* V59 — asked by NAME, never by literal. These read `States.FULL` because the
+   carousel has now been renumbered twice (V13, V59) and a literal 3 here was a
+   silent failure the second time. */
 Nav.toRoot(); States.setState(0);
 Nav.enter("rekordbox.hub");
-ok("entering the DJ hub auto-enters NAV OFF", States.get() === 3, `state=${States.get()}`);
+ok("entering the DJ hub auto-enters NAV OFF", States.isFullScreen(), `state=${States.get()}`);
 Nav.back();
 ok("leaving restores State 0", States.get() === 0, `state=${States.get()}`);
 
 States.setState(1);
 Nav.enter("rekordbox.hub");
-ok("borrows from State 1 as well", States.get() === 3, `state=${States.get()}`);
+ok("borrows from State 1 (Divisions) as well", States.isFullScreen(), `state=${States.get()}`);
 Nav.back();
 ok("restores State 1, not a hardcoded 0", States.get() === 1, `state=${States.get()}`);
 
@@ -342,7 +345,7 @@ States.setState(0);
 ok("…and null with NAV on, so states.js can put Back there", rb.hub.keys(S.btn(0, 0)) === null);
 ok("…which is what states.js then does", /Back/.test(States.decorate(1, States.resolveKey(1)).label || ""),
    JSON.stringify(States.decorate(1, States.resolveKey(1))));
-States.setState(3);
+States.setState(States.FULL);
 
 // CUE and PLAY are circles in their own recess.
 const cueA = rbAt(3, 3), playA = rbAt(2, 3), nudgeA = rbAt(0, 3);

@@ -5,7 +5,7 @@
   "Author": "Adi Ariel",
   "UUID": "com.adiariel.studioos",
   "URL": "https://adiariel.com",
-  "Description": "Studio OS hub for the Stream Deck + XL. One navigable surface over all 36 keys and 6 dials: Ableton Live control, rekordbox MIDI, numpad/calculator/delay calculator, drum pads and scale touch, and live audio visualizers. Talks to a local Node service for native MIDI and OS routing.",
+  "Description": "Studio OS hub for the Stream Deck + XL. One navigable surface over all 36 keys and 6 dials: Ableton Live control, rekordbox MIDI, numpad and delay calculator, drum pads and scale touch, and live audio visualizers. Talks to a local Node service for native MIDI and OS routing.",
   "Category": "Adi Studio OS",
   "CategoryIcon": "imgs/plugin/category",
   "Icon": "imgs/plugin/marketplace",

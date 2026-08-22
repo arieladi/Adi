@@ -150,18 +150,17 @@ const html = `<!doctype html><meta charset="utf-8"><title>Studio OS surface prev
 <h1>Studio OS — surface preview</h1>
 <p class="s">Exactly what setImage receives. Stream Deck + XL: 36 keys (9&times;4) + 6 dial zones.</p>
 ${pick("root", grid("Root Hub + Numpad docked &mdash; module keeps cols 0-4, window takes 5-8", 0))}
-${pick("calc", grid("Root Hub + Calculator docked &mdash; borrows NO dials; operators are 2 holds (V19)", 1))}
-${pick("delay", grid("Root Hub + Time Divisions docked &mdash; dial 5 = readout/grid/format, dial 6 = BPM (V14/V15)", 2))}
-${pick("dj", grid("Rekordbox &middot; NAV OFF &mdash; the Omnis-Duo surface (V16)", 3, "rekordbox.hub"))}
+${pick("delay", grid("Root Hub + Time Divisions docked &mdash; dial 5 = readout/grid/format, dial 6 = BPM (V14/V15)", 1))}
+${pick("dj", grid("Rekordbox &middot; NAV OFF &mdash; the Omnis-Duo surface (V16)", 2, "rekordbox.hub"))}
 ${pick("djnum", grid("Rekordbox &middot; State 0 &mdash; numpad covering Deck B", 0, "rekordbox.hub"))}
-${pick("midi", grid("MIDI Control &middot; NAV OFF &mdash; drums, scale touch, banked CC", 3, "midictl.hub"))}
-${pick("ableton", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; EQ Eight &mdash; FULL: the strip spans all six dials", 3, "ableton.hub")))}
-${pick("ableton2", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; FabFilter Pro-Q 3 &mdash; FULL, resolved by name", 3, "ableton.hub")))}
-${pick("compact", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; Pro-Q 3 COMPACT &mdash; State 2 borrows dials 5-6, so build(4) (V14)", 2, "ableton.hub")))}
-${pick("flat", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton hub &middot; the flat column layout, TINTED (V49)", 3, "ableton.hub")))}
-${pick("idle", (fakeIdle(), grid("Ableton hub &middot; IDLE = TRACK MODE (V50) &mdash; OS nav on 1-4, Pan on 5, Volume on 6", 3, "ableton.hub")))}
-${pick("next", (fakeIdle(), (SOS.Modules.Ableton._page(1), grid("Ableton hub &middot; NEXT &mdash; the spare page keeps the four tinted sections (V49)", 3, "ableton.hub"))))}
-${pick("midi", (fakeIdle(), (SOS.Modules.Ableton._page(0), grid("MIDI Control &middot; now with a real Back key at (0,0) (V51)", 3, ["ableton.hub", "midictl.hub"]))))}
+${pick("midi", grid("MIDI Control &middot; NAV OFF &mdash; drums, scale touch, banked CC", 2, "midictl.hub"))}
+${pick("ableton", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; EQ Eight &mdash; FULL: the strip spans all six dials", 2, "ableton.hub")))}
+${pick("ableton2", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; FabFilter Pro-Q 3 &mdash; FULL, resolved by name", 2, "ableton.hub")))}
+${pick("compact", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; Pro-Q 3 COMPACT &mdash; Divisions borrows dials 5-6, so build(4) (V14)", 1, "ableton.hub")))}
+${pick("flat", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton hub &middot; the flat column layout, TINTED (V49)", 2, "ableton.hub")))}
+${pick("idle", (fakeIdle(), grid("Ableton hub &middot; IDLE = TRACK MODE (V50) &mdash; OS nav on 1-4, Pan on 5, Volume on 6", 2, "ableton.hub")))}
+${pick("next", (fakeIdle(), (SOS.Modules.Ableton._page(1), grid("Ableton hub &middot; NEXT &mdash; the spare page keeps the four tinted sections (V49)", 2, "ableton.hub"))))}
+${pick("midi", (fakeIdle(), (SOS.Modules.Ableton._page(0), grid("MIDI Control &middot; now with a real Back key at (0,0) (V51)", 2, ["ableton.hub", "midictl.hub"]))))}
 `;
 
 fs.writeFileSync(OUT, html);

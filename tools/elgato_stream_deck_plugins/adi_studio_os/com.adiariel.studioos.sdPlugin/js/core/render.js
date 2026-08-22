@@ -35,7 +35,9 @@
 
      kicker  small letter-spaced caps ABOVE the payload ("CYCLE", "BPM")
      corner  tiny top-right marker, for row variants ("D", "T")
-     seg     a display SEGMENT — see the calculator note below
+
+   V59 — `seg`, the multi-key display SEGMENT, is gone. It existed for exactly
+   one caller, the calculator's four-key number row, and left with it.
 
    Dials keep the legacy pixmap approach: one full-bleed 200x100 image per dial
    (layouts/dial.json), so six zones can be composited as one continuous
@@ -159,8 +161,8 @@ SOS.Render = (function () {
      URIs (dedupe works), different keys produce different ids (the preview
      sheet, which inlines many keys in one document, stays correct). */
   function hashId(o) {
-    var src = [o.title, o.sub, o.glyph, o.kicker, o.corner, o.seg, o.size,
-               o.color, o.active ? 1 : 0, o.dim ? 1 : 0, o.segDim ? 1 : 0,
+    var src = [o.title, o.sub, o.glyph, o.kicker, o.corner, o.size,
+               o.color, o.active ? 1 : 0, o.dim ? 1 : 0,
                o.badge,
                // V16 — the skin fields are part of the identity too. Leaving them
                // out would let a slate pad and a default pad share an id, and
@@ -201,8 +203,11 @@ SOS.Render = (function () {
     }).join('');
   }
 
-  /* The raised face. Split out because the calculator's display row needs the
-     same material without the key's padding rhythm.
+  /* The raised face. Split out because the calculator's display row once needed
+     the same material without the key's padding rhythm. That caller is gone
+     (V59) and `o.flat` now has none — see the audit note in DECISIONS.md; it is
+     one ternary arm and is left in place rather than reworking the material path
+     that paints all 36 keys.
 
      V16 — `o.face` overrides the material (the Omnis-Duo skin) and `o.shape`
      of 'circle' makes it round. A circle is not new geometry: the face is
@@ -299,35 +304,6 @@ SOS.Render = (function () {
          + ' preserveAspectRatio="none"' + (o.dim ? ' opacity="0.55"' : '') + '/>';
       s += '<rect width="' + KS + '" height="' + KS + '" fill="#05070a"'
          + ' opacity="' + (o.dim ? 0.46 : 0.27) + '"/>';
-    }
-
-    /* A DISPLAY SEGMENT (V6, redesigned in V10). The calculator's number spans
-       the top four keys. Each key is split: the TOP QUARTER carries the segment's
-       operator, centred and legible, and the BOTTOM THREE QUARTERS carry the
-       number at display size. A hairline divides them, and the face is flat and
-       darker than a normal key so the row reads as one screen rather than four
-       buttons.
-
-       `segDim` renders the resting placeholder (0.000 000 000) — same geometry,
-       quieter ink, so it is obvious the row is a screen even before you type. */
-    if (o.seg != null) {
-      var opH = Math.round(inner * 0.28);
-      s += face(id, pad, pad, inner, inner, r, { flat: true, color: color });
-      if (o.kicker) {
-        /* V23 — the segment kicker is no longer always one glyph. It carries the
-           PENDING OPERATION on segment 0 ("1,284 +"), so it has to shrink to fit
-           and it may ask for its own colour: a waiting operation is a different
-           kind of statement from the key's own operator label. */
-        s += text(o.kicker, KS / 2, pad + opH - 8, fitSize(o.kicker, 30), 700,
-                  o.kickerColor || color, 'middle');
-        s += '<path d="M' + (pad + 14) + ',' + (pad + opH) + ' H' + (KS - pad - 14) + '"'
-           + ' stroke="rgba(255,255,255,0.09)" stroke-width="1"/>';
-      }
-      if (o.seg !== '') {
-        s += text(o.seg, pad + 11, pad + opH + Math.round((inner - opH) * 0.66), 46, 700,
-                  o.segDim ? PALETTE.faint : PALETTE.text, 'start');
-      }
-      return s + '</svg>';
     }
 
     s += face(id, pad, pad, inner, inner, r, o);

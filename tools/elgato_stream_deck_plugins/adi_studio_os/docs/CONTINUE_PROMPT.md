@@ -8,9 +8,9 @@ Read first, in this order:
 
 1. `docs/CONTINUE.md` — the full handoff: global rules, my protocols, where things
    stand, the deploy sequence, and a field-notes section of traps that each cost real
-   debugging time. Current as of **Batch 31**.
+   debugging time. Current as of **Batch 32**.
 2. `docs/DECISIONS.md` — append-only ruling log and the source of truth. **Batches
-   27–31 at the bottom are the most recent and supersede a lot above them.**
+   27–32 at the bottom are the most recent and supersede a lot above them.**
 3. `docs/EQ8_MAPPING.md` — the EQ8 dial and touch map (frozen, see below).
 
 **Never `git push`.** Commit locally only, in the same turn as the work. Trailer:
@@ -19,15 +19,22 @@ The AdiVST remote script lives in a **sibling** plugin folder — commit it sepa
 
 ## State
 
-**1153 tests green across seven suites** — six JS
+**1107 tests green across seven suites** — six JS
 (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) plus
-`python3 scripts/test_bridge.py`. **Batch 31 is deployed and running on the
-hardware** (`service v2.5.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`).
+`python3 scripts/test_bridge.py`. It was 1153 until V59 deleted the Calculator and
+its 24 assertions. **Batch 31 is what is on the hardware** (`service v2.5.0`,
+`surface COMPLETE — 36/36 keys, 6/6 dials`); **Batch 32 is committed and NOT yet
+deployed.**
+
+**The state carousel is `0 Numpad -> 1 Divisions -> 2 NAV OFF -> 0`** since V59.
+Never write a state index as a literal — ask `States.FULL` / `States.DELAY` /
+`States.isFullScreen()`. `test_service.mjs` is flaky under machine load; that is
+pre-existing.
 
 ## FROZEN — do not write code for these
 
-**EQ8's mapping, Pro-Q 3 data mapping, and the Calculator.** Two EQ8 rulings noted in
-DECISIONS are parked, not live.
+**EQ8's mapping and Pro-Q 3 data mapping.** Two EQ8 rulings noted in DECISIONS are
+parked, not live. **The Calculator is DELETED** (V59) — it used to be on this list.
 
 ## ⚠️ Ableton must be RESTARTED after any deploy that touches the remote script
 
