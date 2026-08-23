@@ -475,6 +475,17 @@ ok("Ableton tile is reachable from the Root Hub",
   A.bridge.isOnline = realOnline;
   Nav.toRoot(); States.setState(0); Nav.enter("ableton.hub");
 }
+
+/* V61 — THE GRID AND THE STRIP LIVE ON LEVEL 2 NOW. The Root Hub tile opens
+   `ableton.hub`, the transport / mode control centre; the VST page is one level
+   down. Every assertion below that is about the plugin bands, the utility column
+   or the controller strip therefore enters `ableton.vst` first — which is also
+   what sets strip focus to VST, so this exercises the real path rather than
+   poking `_setFocus`. */
+Nav.enter("ableton.vst");
+ok("the VST folder is a REAL screen one level down", Nav.current().id === "ableton.vst",
+   Nav.current().id);
+ok("…and arriving there focuses the strip on VSTs", A._focus() === A._FOCUS.VST, A._focus());
 let dialsBound = 0;
 for (let d = 1; d <= 6; d++) { const z = States.resolveDial(d); if (z && z.svg) dialsBound++; }
 ok("all 6 dials carry a strip slice in Full Screen", dialsBound === 6, `bound=${dialsBound}`);
@@ -515,7 +526,7 @@ ok("…and carry the window's own faces, not slices of the controller strip",
    only two fit, so NEXT pages between the pairs. What must survive is the frame:
    Back, MIDI, the status readout and a working pager, plus one full band. */
 {
-  const cl = SOS.Layout.pick(A.hub, 5);
+  const cl = SOS.Layout.pick(A.vst, 5);
   const present = [];
   for (let r = 0; r < 4; r++) for (let c = 0; c < 5; c++) {
     const k = cl.keys(c, r);
@@ -546,7 +557,7 @@ ok("zone slice stays under 16 KB", uri.length < 16384, `${uri.length} bytes`);
 /* V46 — THE FLAT HUB. Adi's column layout, asserted as geometry rather than as a
    list of labels, because the whole point is WHERE things are. */
 {
-  const wl = SOS.Layout.pick(A.hub, 9);
+  const wl = SOS.Layout.pick(A.vst, 9);
 
   ok("(0,0) is the global Back out of the Ableton hub",
      wl.keys(0, 0).label === "Back" && typeof wl.keys(0, 0).tap === "function",
@@ -2193,7 +2204,7 @@ console.log("\n[V46] the flat VST catalogue");
      and without this the press is silent — the same fire-and-forget blindness that
      hid the stale-service bug. The happy path needs no display: Live focuses the
      device it just made and the status key names it by itself. */
-  Nav.toRoot(); Nav.enter("ableton.hub");
+  Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter("ableton.vst");
   P.wire();
   A.bridge._emit ? null : null;
   ok("no load error to begin with", P.lastError() === null);
@@ -2202,8 +2213,8 @@ console.log("\n[V46] the flat VST catalogue");
 console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
 {
   const P = M.Plugins;
-  Nav.toRoot(); Nav.enter("ableton.hub");
-  const wl = SOS.Layout.pick(A.hub, 9);
+  Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter("ableton.vst");
+  const wl = SOS.Layout.pick(A.vst, 9);
 
   /* THE TINT. Adi on the hardware: "The thin colored bezels are too subtle and hard
      to see depending on the viewing angle." The band colour now tints the KEY, via
@@ -2290,21 +2301,42 @@ console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
     // to be tested with the bridge up.
     const realOnline = A.bridge.isOnline;
     A.bridge.isOnline = () => true;
+    // V61 — Track Mode's Pan/Volume are Device mode now, and Device mode is a
+    // strip focus rather than an idle fallback. Same dials, same positions, same
+    // verbs; the trigger is an explicit mode press instead of "no device focused".
+    A._setFocus(A._FOCUS.MIX);
     const d = (n) => A.hub.dials(n);
 
-    ok("with no device focused, dials 1-4 MIRROR the Root Hub's OS-nav strip",
-       [1, 2, 3, 4].every((n) => d(n).title === M.Root.osNavDial(n).title),
-       [1, 2, 3, 4].map((n) => `${d(n).title}/${M.Root.osNavDial(n).title}`).join(" "));
-    /* V57 — Adi asked specifically for this: "replace the 'Tabs' control on Dial 4
-       with the 'Apps' control" in Track Mode. It follows for free from the Root Hub
-       swap precisely BECAUSE this strip mirrors that one rather than copying it —
-       which is the whole argument for having extracted osNavDial. */
-    ok("…which means they are the SAME definition, not a copy",
-       d(1).title === "Scroll Y" && d(4).title === "Apps",
-       `${d(1).title} ${d(4).title}`);
-    ok("…so Tabs is gone from Track Mode entirely, since 5 and 6 are Pan and Volume",
-       [1, 2, 3, 4, 5, 6].every((n) => d(n).title !== "Tabs"),
+    /* V61 — ADI'S RULING: "remove the standard OS Nav controls (Scroll, Zoom,
+       Apps, Tabs) from the touch screen and dials whenever we are inside the
+       Ableton Hub… Leave those dial/touch slots empty for now so we can build
+       dedicated Track/Mixer controls there later."
+
+       So the assertion INVERTS. In Device mode dials 1-4 are EMPTY and reserved
+       for Mute / Solo / Record Arm, and the OS strip is not a default any more. */
+    ok("Device mode leaves dials 1-4 EMPTY, reserved for Mute/Solo/Arm",
+       [1, 2, 3, 4].every((n) => !d(n).title && !d(n).value && !d(n).svg
+                                 && d(n).indicator == null),
+       [1, 2, 3, 4].map((n) => `${d(n).title}|${d(n).value}`).join(" "));
+    ok("…and no OS-nav control survives anywhere on the Ableton strip by default",
+       [1, 2, 3, 4, 5, 6].every((n) => !["Scroll Y", "Scroll X", "Zoom", "Apps", "Tabs"]
+                                          .includes(d(n).title)),
        [1, 2, 3, 4, 5, 6].map((n) => d(n).title).join("|"));
+
+    /* THE MIRRORING INVARIANT SURVIVES, it just moved to OS mode. It is still
+       worth pinning: dials 1-4 there are the Root Hub's OWN definitions, not a
+       copy, which is exactly why the V57 Apps/Tabs swap propagated for free. */
+    A._setFocus(A._FOCUS.OS);
+    const o = (n) => A.hub.dials(n);
+    ok("OS mode MIRRORS the Root Hub's strip — same definition, not a copy",
+       [1, 2, 3, 4].every((n) => o(n).title === M.Root.osNavDial(n).title),
+       [1, 2, 3, 4].map((n) => `${o(n).title}/${M.Root.osNavDial(n).title}`).join(" "));
+    ok("…so it is still Scroll Y on 1 and Apps on 4 (V57)",
+       o(1).title === "Scroll Y" && o(4).title === "Apps",
+       `${o(1).title} ${o(4).title}`);
+    ok("…and OS mode leaves dial 6 free, so the clock can still have it",
+       !o(6).title && !o(6).value, `${o(6).title}|${o(6).value}`);
+    A._setFocus(A._FOCUS.MIX);
     ok("dial 5 is track Pan and shows Live's own readout",
        d(5).title === "Pan" && d(5).value === "25L", `${d(5).title} ${d(5).value}`);
     ok("…with the -1..1 pan mapped onto the 0..1 indicator",
@@ -2333,6 +2365,7 @@ console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
     ok("offline, the same dials say so instead of promising a step size",
        (A.bridge.isOnline = () => false, /offline/.test(A.hub.dials(6).sub)),
        A.hub.dials(6).sub);
+    A._setFocus(A._FOCUS.NONE);
     A.bridge.isOnline = realOnline;
 
     // Restore, so later sections still see a focused device.
@@ -2344,7 +2377,7 @@ console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
      Back", but the engine only does that OUTSIDE NAV OFF and the screen declares
      fullScreenCapable — so it was always in NAV OFF and Button 1 was a dead key. */
   if (M.MidiCtl && M.MidiCtl.hub) {
-    Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter("midictl.hub");
+    Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter("ableton.vst"); Nav.enter("midictl.hub");
     const b = M.MidiCtl.hub.keys(SOS.Surface.BTN_BACK);
     ok("the MIDI screen has a real Back key at (0,0)",
        !!b && b.label === "Back" && typeof b.tap === "function", b && b.label);
@@ -2353,7 +2386,7 @@ console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
     const before = Nav.current().id;
     b.tap();
     ok("…and it actually returns to the Ableton hub",
-       before === "midictl.hub" && Nav.current().id === "ableton.hub", Nav.current().id);
+       before === "midictl.hub" && Nav.current().id === "ableton.vst", Nav.current().id);
   }
   Nav.toRoot();
 }
@@ -2361,8 +2394,8 @@ console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
 console.log("\n[V55] the band artwork, and the new category palette");
 {
   const P = M.Plugins;
-  Nav.toRoot(); Nav.enter("ableton.hub");
-  const wl = SOS.Layout.pick(A.hub, 9);
+  Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter("ableton.vst");
+  const wl = SOS.Layout.pick(A.vst, 9);
 
   /* THE PALETTE. These were borrowed module colours (EQ took rekordbox's red,
      Dynamics the calculator's amber — both since retired), which meant recolouring a category dragged an
@@ -2490,7 +2523,7 @@ console.log("\n[V55] the band artwork, and the new category palette");
 console.log("\n[V58] Analyzer & Effects, and the pagination invariant");
 {
   const P = M.Plugins;
-  Nav.toRoot(); Nav.enter("ableton.hub");
+  Nav.toRoot(); Nav.enter("ableton.hub"); Nav.enter("ableton.vst");
 
   /* THE BAND WAS RENAMED AND GIVEN BACK the time-based effects the V46 flattening
      dropped. The `id` deliberately stays 'meter' — it keys into SOS.Bg and into
@@ -2604,5 +2637,172 @@ console.log("\n[V58] Analyzer & Effects, and the pagination invariant");
 A._stop();
 if (M.Viz && M.Viz._stop) M.Viz._stop();
 Nav.toRoot();
+/* ===========================================================================
+   V61 — LEVEL 1 vs LEVEL 2, AND STRIP FOCUS.
+
+   The three things worth pinning here are the three that could regress silently:
+   the VST page is UNCHANGED (Adi's explicit instruction, and my first reading of
+   his brief would have shrunk it), BACK does not drop the strip, and `focus` is a
+   third orthogonal state machine that must not grow literals outside ableton.js.
+   =========================================================================== */
+console.log("\n[V61] the Ableton control centre");
+{
+  Nav.toRoot(); States.setState(0);
+  Nav.enter("ableton.hub");
+  const l1 = SOS.Layout.pick(A.hub, 9);
+  const at = (c, r) => l1.keys(c, r);
+
+  // --- the two screens exist and are distinct
+  ok("Level 1 and Level 2 are separate registered screens",
+     Nav.get("ableton.hub") === A.hub && Nav.get("ableton.vst") === A.vst
+     && A.hub !== A.vst);
+  ok("the Root Hub tile lands on LEVEL 1, not the VST page",
+     Nav.current().id === "ableton.hub", Nav.current().id);
+
+  // --- THE VST PAGE IS UNTOUCHED. This is the assertion that guards Adi's
+  //     ruling: full 4 rows, 8 cells per band, artwork not re-sliced.
+  const l2 = SOS.Layout.pick(A.vst, 9);
+  ok("the VST page still declares a 9-column layout", !!l2 && l2.cols === 9);
+  {
+    let cells = 0;
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 8; c++) if (l2.keys(c, r)) cells++;
+    ok("…and still fills all 32 band cells across all FOUR rows — nothing shrank",
+       cells === 32, String(cells));
+  }
+  ok("…the utility column is still MIDI / Prev / Next / NEXT",
+     l2.keys(8, 0).label === "MIDI" && "▲▼".includes(l2.keys(8, 1).glyph)
+     && "▲▼".includes(l2.keys(8, 2).glyph) && l2.keys(8, 3).label === "NEXT",
+     [0,1,2,3].map((r) => l2.keys(8, r).label || l2.keys(8, r).glyph).join(","));
+  ok("…and (0,0) is still Back, still carrying the EQ block's tile",
+     l2.keys(0, 0).label === "Back" && l2.keys(0, 0).bg === "eq"
+     && l2.keys(0, 0).bgSlot === 0,
+     JSON.stringify({ bg: l2.keys(0, 0).bg, slot: l2.keys(0, 0).bgSlot }));
+
+  // --- Level 1's own board: transport on row 0, the mode row on row 3
+  ok("Level 1 keeps Back at (0,0)", at(0, 0).label === "Back");
+  ok("transport is Play / Stop / Loop on row 0",
+     [1, 2, 3].map((c) => at(c, 0).sub).join(",") === "Play,Stop,Loop",
+     [1, 2, 3].map((c) => at(c, 0).sub).join(","));
+  /* THE TOFU RULE. The proven glyph set has no filled square and nothing that
+     reads as a loop, so all three are DRAWN. Asserted the same way the nine
+     window states are: no glyph, a real icon name, three different pictures. */
+  ok("…drawn as vector icons, never glyphs (the tofu rule)",
+     [1, 2, 3].every((c) => !at(c, 0).glyph && typeof at(c, 0).icon === "string"),
+     [1, 2, 3].map((c) => at(c, 0).icon || "GLYPH:" + at(c, 0).glyph).join(","));
+  ok("…and every one of them exists in the icon registry",
+     [1, 2, 3].every((c) => SOS.Icons[at(c, 0).icon]),
+     [1, 2, 3].map((c) => at(c, 0).icon).join(","));
+  ok("…as three DIFFERENT pictures",
+     new Set([1, 2, 3].map((c) => at(c, 0).icon)).size === 3);
+
+  ok("the five mode folders are on ROW 3, cols 0-4",
+     [0, 1, 2, 3, 4].map((c) => at(c, 3).label).join(",") === "VST,MIDI,Device,OS,Delay",
+     [0, 1, 2, 3, 4].map((c) => at(c, 3).label).join(","));
+  ok("…and rows 1-2 are deliberately empty — the room Adi bought",
+     [1, 2].every((r) => [0,1,2,3,4,5,6,7,8].every((c) => at(c, r) === null)));
+
+  // --- the transport verb reaches the bridge as ONE additive verb
+  {
+    const sent = [];
+    const real = A.bridge.cmd.transport;
+    A.bridge.cmd.transport = (a) => sent.push(a);
+    at(1, 0).tap(); at(2, 0).tap(); at(3, 0).tap();
+    A.bridge.cmd.transport = real;
+    ok("each transport key sends its own action on ONE verb",
+       sent.join(",") === "play,stop,loop", sent.join(","));
+  }
+
+  // --- the keys LIGHT from Live's own transport state
+  {
+    const st = A.bridge.state();
+    st.transport = { playing: true, loop: false };
+    const g = SOS.Layout.pick(A.hub, 9);
+    ok("Play lights while Live is playing", g.keys(1, 0).active === true);
+    ok("…Loop does not, because Live's loop is off", g.keys(3, 0).active === false);
+    ok("…and Stop has no lit state at all — it is momentary, not a toggle",
+       g.keys(2, 0).active === undefined, String(g.keys(2, 0).active));
+    st.transport = { playing: false, loop: true };
+    const g2 = SOS.Layout.pick(A.hub, 9);
+    ok("the pair follows Live: stopped and looping", g2.keys(1, 0).active === false
+       && g2.keys(3, 0).active === true);
+    /* An older Live that omits a field must leave the key unlit rather than
+       undefined-shaped, which is why the handler coerces with !!. */
+    st.transport = null;
+    ok("no transport state yet leaves both unlit, not broken",
+       SOS.Layout.pick(A.hub, 9).keys(1, 0).active === false
+       && SOS.Layout.pick(A.hub, 9).keys(3, 0).active === false);
+  }
+
+  // --- STRIP FOCUS, and the retention Adi asked for
+  A._setFocus(A._FOCUS.NONE);
+  ok("Level 1 starts with an EMPTY strip (Adi's ruling)",
+     [1,2,3,4,5,6].every((n) => { const z = A.hub.dials(n); return !z.title && !z.value && !z.svg; }),
+     [1,2,3,4,5,6].map((n) => A.hub.dials(n).title).join("|"));
+  ok("…and no mode key is lit when nothing owns the strip",
+     [0,1,2,3,4].every((c) => !at(c, 3).active));
+
+  at(0, 3).tap();                                  // press the VST folder
+  ok("pressing VST navigates to Level 2", Nav.current().id === "ableton.vst",
+     Nav.current().id);
+  ok("…and focuses the strip on VSTs", A._focus() === A._FOCUS.VST, A._focus());
+
+  /* THE WHOLE POINT. Back changes the KEYS and must not touch the STRIP. */
+  Nav.back();
+  ok("BACK returns to Level 1", Nav.current().id === "ableton.hub", Nav.current().id);
+  ok("…and the strip is STILL on VSTs — focus survives navigation",
+     A._focus() === A._FOCUS.VST, A._focus());
+  ok("…so the VST folder key stays LIT on Level 1",
+     SOS.Layout.pick(A.hub, 9).keys(0, 3).active === true);
+  ok("…and it is the only one lit",
+     [0,1,2,3,4].filter((c) => SOS.Layout.pick(A.hub, 9).keys(c, 3).active).length === 1);
+
+  // --- the other folders
+  const l1b = SOS.Layout.pick(A.hub, 9);
+  l1b.keys(2, 3).tap();
+  ok("Device selects the mixer focus WITHOUT navigating",
+     A._focus() === A._FOCUS.MIX && Nav.current().id === "ableton.hub",
+     `${A._focus()} @ ${Nav.current().id}`);
+  ok("…and the VST key goes dark while Device is lit",
+     SOS.Layout.pick(A.hub, 9).keys(0, 3).active === false
+     && SOS.Layout.pick(A.hub, 9).keys(2, 3).active === true);
+
+  l1b.keys(3, 3).tap();
+  ok("OS selects the OS strip WITHOUT navigating",
+     A._focus() === A._FOCUS.OS && Nav.current().id === "ableton.hub");
+
+  /* Delay Calc DOCKS a window rather than navigating: after V59 the Divisions
+     window is a carousel STATE, not a nav destination. */
+  l1b.keys(4, 3).tap();
+  ok("Delay Calc docks the Divisions window instead of navigating",
+     States.get() === States.DELAY && Nav.current().id === "ableton.hub",
+     `state=${States.get()} @ ${Nav.current().id}`);
+  ok("…and it is NOT a mode that lights, because it owns no strip focus",
+     SOS.Layout.pick(A.hub, 5).keys(4, 3).active === false);
+  States.setState(States.FULL);
+
+  l1b.keys(1, 3).tap();
+  ok("MIDI navigates to the MIDI controller page", Nav.current().id === "midictl.hub",
+     Nav.current().id);
+  Nav.back();
+
+  /* THE SHAPE ASSERTIONS. `focus` is a third orthogonal state machine and this
+     project has been bitten twice by literals leaking out of one (a hardcoded 4
+     in input.js; eight literal 3s in the tests at V59). */
+  ok("every mode key's focus value is a member of FOCUS",
+     A._modes.every((m) => !m.focus || Object.values(A._FOCUS).includes(m.focus)),
+     A._modes.map((m) => m.focus || "-").join(","));
+  ok("…and no two modes claim the same focus",
+     new Set(A._modes.filter((m) => m.focus).map((m) => m.focus)).size
+       === A._modes.filter((m) => m.focus).length);
+  ok("FOCUS.NONE is the default and is not claimed by any key",
+     A._modes.every((m) => m.focus !== A._FOCUS.NONE));
+  ok("the mode row fits inside the COMPACT breakpoint too — all five at 5 cols",
+     [0,1,2,3,4].every((c) => !!SOS.Layout.pick(A.hub, 5).keys(c, 3)),
+     [0,1,2,3,4].map((c) => (SOS.Layout.pick(A.hub, 5).keys(c, 3) || {}).label).join(","));
+
+  A._setFocus(A._FOCUS.NONE);
+  Nav.toRoot(); States.setState(0);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

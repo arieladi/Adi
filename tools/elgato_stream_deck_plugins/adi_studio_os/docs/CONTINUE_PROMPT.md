@@ -8,9 +8,9 @@ Read first, in this order:
 
 1. `docs/CONTINUE.md` — the full handoff: global rules, my protocols, where things
    stand, the deploy sequence, and a field-notes section of traps that each cost real
-   debugging time. Current as of **Batch 32**.
+   debugging time. Current as of **Batch 33**.
 2. `docs/DECISIONS.md` — append-only ruling log and the source of truth. **Batches
-   27–32 at the bottom are the most recent and supersede a lot above them.**
+   27–33 at the bottom are the most recent and supersede a lot above them.**
 3. `docs/EQ8_MAPPING.md` — the EQ8 dial and touch map (frozen, see below).
 
 **Never `git push`.** Commit locally only, in the same turn as the work. Trailer:
@@ -19,17 +19,21 @@ The AdiVST remote script lives in a **sibling** plugin folder — commit it sepa
 
 ## State
 
-**1107 tests green across seven suites** — six JS
+**1139 tests green across seven suites** — six JS
 (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) plus
-`python3 scripts/test_bridge.py`. It was 1153 until V59 deleted the Calculator and
-its 24 assertions. **Batch 31 is what is on the hardware** (`service v2.5.0`,
-`surface COMPLETE — 36/36 keys, 6/6 dials`); **Batch 32 is committed and NOT yet
-deployed.**
+`python3 scripts/test_bridge.py`. **Batch 31 is what is on the hardware**
+(`service v2.5.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`); **Batches 32 and 33
+are committed and NOT yet deployed.**
 
-**The state carousel is `0 Numpad -> 1 Divisions -> 2 NAV OFF -> 0`** since V59.
+**The state carousel is `0 Numpad -> 1 Divisions -> 2 NAV OFF -> 0`** since V59, and
+**the Ableton module owns TWO screens** since V61: `ableton.hub` (Level 1 — transport
++ five mode folders on row 3) and `ableton.vst` (Level 2 — the VST grid, unchanged).
+Strip ownership is `focus` and nav never touches it, which is what keeps the VST key
+lit after BACK.
+
 Never write a state index as a literal — ask `States.FULL` / `States.DELAY` /
-`States.isFullScreen()`. `test_service.mjs` is flaky under machine load; that is
-pre-existing.
+`States.isFullScreen()`, and never compare `focus` to a literal outside
+`ableton.js`. `test_service.mjs` is flaky under machine load; that is pre-existing.
 
 ## FROZEN — do not write code for these
 
@@ -38,10 +42,14 @@ parked, not live. **The Calculator is DELETED** (V59) — it used to be on this 
 
 ## ⚠️ Ableton must be RESTARTED after any deploy that touches the remote script
 
-Live loads MIDI Remote Scripts **at launch**. If plugin keys, Track Mode dials or the
-device arrows do nothing, that is why. Additive verbs so far: `load_device` (V30),
-`device_key` (V52), `track_volume_delta` / `track_pan_delta` / `get_mix` (V50),
-`device_step` / `device_pos` (V53).
+Live loads MIDI Remote Scripts **at launch**. If plugin keys, Device Mode dials, the
+device arrows or **the new transport keys** do nothing, that is why. Additive verbs so
+far: `load_device` (V30), `device_key` (V52), `track_volume_delta` /
+`track_pan_delta` / `get_mix` (V50), `device_step` / `device_pos` (V53), **`transport`
+(V61 — actions `play` / `stop` / `loop`)**.
+
+**Batch 33 is one of those deploys.** Mute / Solo / Record Arm still need three more
+additive verbs; the script has none of them today.
 
 **"The remote script must not be modified" means: no editing existing code paths.**
 Purely *additive* verbs are the established exception, set by V30 and live ever since.

@@ -92,6 +92,17 @@ Level 0  Root Main Hub
          dials → 1 Master Vol (push=mute) · 2 OS Zoom · 3 App Switcher
                  4 Room Lighting · 5–6 blank
 Level 1  Module hubs → Level 2 sub-menus …
+
+         The Ableton module owns two of them (V61):
+           ableton.hub  Level 1 — transport (Play/Stop/Loop) on row 0, and the
+                        five mode folders VST · MIDI · Device · OS · Delay on
+                        row 3. This is what the Root Hub tile opens.
+           ableton.vst  Level 2 — the VST grid: four two-column bands, 8 cells
+                        each, all four rows, sliced artwork. Unchanged.
+
+         Orthogonal again: which module owns the DIALS is `focus` inside
+         ableton.js (none · vst · mix · os), and NAVIGATION NEVER CHANGES IT.
+         That is what lets the dials stay on a VST after Back.
 ```
 
 Orthogonal to the hierarchy, the **State Carousel** composites over whatever
