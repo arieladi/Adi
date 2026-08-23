@@ -811,6 +811,48 @@ class LiveBridge(object):
     def cmd_get_mix(self):
         self._emit_mix()
 
+    # ------------------------------------------------------------- transport
+    # V61 — ADDITIVE, in the V30 sense: a new verb, no existing code path
+    # touched. ONE verb carrying an action rather than three separate ones.
+    #
+    # play/stop go through the Song's own transport rather than firing the
+    # keyboard, so they work with Live in the background and cannot be eaten by
+    # whatever window has focus.
+    #
+    # `is_playing = True` is Live's own "play from the current position", which
+    # is what the spacebar does; `start_playing()` would always jump to the
+    # start marker and that is a different control.
+    def cmd_transport(self, action):
+        a = str(action or "").lower()
+        try:
+            if a == "play":
+                self.song.is_playing = True
+            elif a == "stop":
+                # stop_playing() rather than is_playing = False: the former also
+                # returns the playhead to the start marker, which is what a
+                # transport STOP means in Live as opposed to a pause.
+                self.song.stop_playing()
+            elif a == "loop":
+                self.song.loop = not self.song.loop
+            else:
+                self.log("transport: unknown action %r" % (action,))
+                return
+        except Exception as e:
+            self.log("transport %s failed: %s" % (a, e))
+            return
+        self._emit_transport()
+
+    def _emit_transport(self):
+        # Reported back so the keys can light. Wrapped because a Live version
+        # without one of these attributes must not take the verb down with it.
+        msg = {"t": "transport"}
+        for key, attr in (("playing", "is_playing"), ("loop", "loop")):
+            try:
+                msg[key] = bool(getattr(self.song, attr))
+            except Exception:
+                pass
+        self.send(msg)
+
     # The dials must not go stale when the fader is moved with the mouse, so the
     # two mixer parameters are watched for the lifetime of the selected track and
     # torn down with it. Same shape as the device listeners above.

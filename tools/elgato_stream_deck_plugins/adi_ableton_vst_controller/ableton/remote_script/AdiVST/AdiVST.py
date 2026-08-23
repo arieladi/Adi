@@ -123,6 +123,9 @@ class AdiVST(ControlSurface):
             b.cmd_track_pan_delta(int(m.get("steps", 0)))
         elif c == "get_mix":
             b.cmd_get_mix()
+        elif c == "transport":
+            # V61 — additive. One verb, three actions: play / stop / loop.
+            b.cmd_transport(m.get("action", ""))
         elif c == "device_step":
             # V53 — additive. Walks the flattened device tree, so it steps into and
             # out of racks rather than over them.
