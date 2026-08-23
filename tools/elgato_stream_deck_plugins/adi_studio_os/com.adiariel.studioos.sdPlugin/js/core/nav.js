@@ -112,14 +112,8 @@ SOS.Nav = (function () {
 
   // Resolve a binding from the active screen, tolerating a screen that has no
   // opinion about this position.
-  function keyBinding(button) {
-    var c = current();
-    if (!c || !c.keys) return null;
-    try { return c.keys(button) || null; } catch (e) {
-      SOS.SD.log('nav: keys() threw in ' + c.id + ': ' + e.message);
-      return null;
-    }
-  }
+  // V60 — `keyBinding` was removed: states.js resolves keys through Layout, so
+  // nothing had called it since L1. `dialBinding` below is live.
   function dialBinding(dial) {
     var c = current();
     if (!c || !c.dials) return null;
@@ -134,6 +128,6 @@ SOS.Nav = (function () {
     setRoot: setRoot, enter: enter, back: back, toRoot: toRoot,
     current: current, root: root, depth: depth, atRoot: atRoot,
     path: path, activeModule: activeModule,
-    keyBinding: keyBinding, dialBinding: dialBinding,
+    dialBinding: dialBinding,
   };
 })();

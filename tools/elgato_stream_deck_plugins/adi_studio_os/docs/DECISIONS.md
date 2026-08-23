@@ -3162,3 +3162,113 @@ sounding`, `note off decrements`, `disconnect logged`). It passes clean on a qui
 machine, and the only diff this batch makes to `service/` is one comment. Worth a
 real fix (the `ask()` helper needs a longer timeout, or a retry) but it is not this
 batch's bug.
+
+---
+
+## Batch 33 — V60: the approved purge
+
+### V60 — RULING: purge the true dead code the audit found
+
+Adi, on `docs/AUDIT.md`: *"Let's officially purge the true dead code you found
+(`SOS.SvgCtx`, `METER.corr/METER.bal`, the 14 empty engine exports,
+`Rekordbox.wirePersist`, and the un-ported viz scaffolding). Keep the audio/viz path
+and all Ableton controllers intact."*
+
+**473 lines deleted, 152 added.** All fourteen controllers and the whole Web Audio
+path are untouched, as instructed.
+
+### `SOS.SvgCtx` — the big one, ~258 lines
+
+The Canvas-2D-emits-SVG shim. It existed so the thirteen legacy controllers could be
+copied in byte-for-byte rather than rewritten — the right call at the time, and the
+reasoning is kept as a comment because "why is the compositor shaped like this?" is
+otherwise a real half hour for the next reader. L4 then ported all fourteen to native
+`build()`, which left it serving nobody.
+
+Gone with it: `AVC.DeviceController.prototype.renderTouch`, `Ableton._ctx`, the `ctx`
+instance, `composite()`'s shim fallback branch, and `AVC.gfx`'s three Canvas-only
+drawing helpers (`clear`, `roundRect`, `text2`). **`AVC.gfx`'s COLOURS stay** — `bg`,
+`text` and `bandColors` have 14, 26 and 15 controller references between them.
+
+**`composite()` now has ONE path.** A controller without `build()` logs and leaves the
+strip alone, which is the loud failure the shim's own header comment asked for.
+
+**Its tests went with it** — block `[3]`, 13 assertions, was the shim's only remaining
+caller. **But the compositor probe was rebuilt, not deleted:** it used `SvgCtx` merely
+as a convenient generator of known geometry, while the mechanism it tests is the
+per-zone clipping that fixed the 17.5 KB payload bug. It is a native `SOS.Svg.bag()`
+now and still asserts both halves. Two absence assertions replace block `[3]`:
+every controller implements `build()`, and `SOS.SvgCtx` is `undefined` — the second is
+the only thing that catches a re-introduction.
+
+### `METER.corr` / `METER.bal` — and the reason they cost more than two lines
+
+Written every frame, read **nowhere**: their two views (`corr`, `bal`) were never
+ported. The tell was that `audioStop()` reset the four meter fields and not these two.
+
+The real cost was the three accumulators feeding them from **inside the per-sample
+loop** — and `sLL` / `sRR` were byte-for-byte duplicates of `sL` / `sR` (both
+`+= a*a`, `+= b*b`). Every sample of every block paid for three redundant
+multiply-adds at 15 fps to produce two numbers nothing drew.
+
+`test_viz.mjs`'s balance and correlation assertions were their only readers, which is
+the whole point. Replaced with an absence assertion, so a pass that re-adds the
+compute without a view to draw it fails.
+
+### The un-ported viz scaffolding
+
+`RME_BANDS`, `RME_FLO`, `RME_FHI`, `RME_LABELS` — the ISO 1/3-octave table for the
+un-ported `rme` view, defined once and referenced nowhere. And the `DEFAULTS` blocks
+for all five un-ported views (`bands`, `rme`, `gonio`, `corr`, `bal`).
+
+**The picker still lists all nine views and still paints "not ported".** Every read is
+`DEFAULTS[view] || DEFAULTS.spectrum`, so the fallback already covered a missing key.
+One visible change, small and worth writing down: `viewColor('gonio')` now returns
+`PALETTE.viz` instead of `#38f0a0`, because gonio was the only un-ported view carrying
+a colour.
+
+**`RME_LIT` / `RME_OFF` / `RME_MARK` / `RME_MARK_OFF` STAY.** Despite the name they
+serve the `meters` view's `style: 'rme'` segmented-LED variant, which is live. Named
+for the un-ported view, used by the ported one — exactly the trap the audit flagged.
+
+### `Rekordbox.wirePersist` — D17 is CLOSED by deletion
+
+The apparatus was a seam: `wirePersist(fn)` to hand in a writer, an 800 ms debounce,
+and a validating `restore(saved)`. It was left unwired until the orchestrator owned a
+namespaced store, because the global settings object is shared by every module and a
+module writing it directly reintroduces the 1.0.1.0 read-modify-write race one level
+up.
+
+**That store never arrived.** `persist` was null for the entire life of the project,
+`saveLevelsSoon()` returned on its first line every time a dial moved, and `restore()`
+was never called. Encoder levels reset on every launch, which is the behaviour Adi has
+been living with. `SAVE_DEBOUNCE_MS`, `snapshot()` and `Rekordbox._keys` went too.
+
+**The reasoning is kept as a comment**: if persistence returns, it returns as a
+namespaced store owned by the orchestrator, never as a module writing shared settings.
+
+### The engine exports
+
+`IPC.droppedCount`, `IPC.DEFAULT_URL`, `States.overlayScreen` (a dead alias of
+`navScreen`), `Nav.keyBinding`, `SD.deviceOfType`, `SD.flushDirty` (superseded by
+`flushCounts`), `SD.sendToPI` (there are no Property Inspectors — D1),
+`Surface.isKey`, `Surface.OVERLAY_COL_MIN`, `Surface.inOverlay`,
+`Clock.CELL_W/CELL_H/ADV_DIGIT/ADV_COLON`, `Ableton.setUrl`, `root.defineSlot`,
+`root.clearSlots`, `Viz._start`.
+
+### TWO ITEMS WERE PUT BACK, and the reason matters
+
+The audit listed both as "test-only", and **test-only is not the same as dead**:
+
+* **`Clock.LIT_COLOR` is RESTORED.** Its one caller pins the Root Hub scroll arrows
+  and the clock's lit digits to the SAME palette entry so they cannot drift into two
+  similar blues. Deleting it deletes an invariant. Its sibling geometry constants
+  really were export-only and did go.
+* **`Surface.inOverlay`'s assertion was dropped rather than rewritten**, because it
+  asserted `OVERLAY_COL_MIN` against itself. The dock boundary already has real
+  coverage on the LIVE path in `test_core [7]` — "col 8 belongs to the docked window",
+  "col 4 belongs to the module" — both read through `Layout.split()`.
+
+**The general lesson for the next purge: check whether a test-only export is holding a
+cross-check before deleting it.** One of these two was, and the sweep that found them
+could not tell the difference.

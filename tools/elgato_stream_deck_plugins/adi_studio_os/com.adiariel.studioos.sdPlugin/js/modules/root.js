@@ -218,8 +218,8 @@ SOS.Modules.Root = (function () {
 
   function usable(name) { return probed && !!(avail[name] && avail[name].available); }
 
-  function defineSlot(button, spec) { SLOTS[button] = spec; return spec; }
-  function clearSlots() { SLOTS = {}; }
+  // V60 — defineSlot() / clearSlots() removed: SLOTS is built once at load and
+  // nothing ever mutated it at runtime.
 
   /* V33 — the volume / mute / lights locals went with the dials that used them.
      Master volume and the D12 lighting dimmer are not gone as concepts (os.volume,
@@ -392,7 +392,7 @@ SOS.Modules.Root = (function () {
   }
 
   return {
-    screen: screen, defineSlot: defineSlot, clearSlots: clearSlots,
+    screen: screen,
     slots: function () { return SLOTS; },
     // V43 — exposed so a test can assert the row-0 columns, including the one hub
     // that is deliberately unplaced (Cubase).

@@ -55,8 +55,14 @@ const met = V._meter;
 ok("RMS matches the analytic value for a sine", Math.abs(met.rmsL - 0.3536) < 0.005, `rms=${met.rmsL.toFixed(4)}`);
 ok("peak is the amplitude", Math.abs(met.peakL - 0.5) < 0.01, `peak=${met.peakL.toFixed(4)}`);
 ok("R at 0.7x reads quieter", met.rmsR < met.rmsL, `${met.rmsR.toFixed(3)} < ${met.rmsL.toFixed(3)}`);
-ok("balance leans left (negative)", met.bal < -0.1, `bal=${met.bal.toFixed(3)}`);
-ok("correlation ~ +1 for a scaled copy", met.corr > 0.999, `corr=${met.corr.toFixed(5)}`);
+/* V60 — the balance and correlation assertions went with the DSP. They were the
+   only readers METER.corr and METER.bal ever had, which is the whole point: the
+   `corr` and `bal` views were never ported, so the numbers were computed every
+   frame for a test and nothing else. Asserted as an ABSENCE instead, so a future
+   pass that re-adds the compute without a view to draw it fails here. */
+ok("no correlation or balance is computed — their views are un-ported",
+   met.corr === undefined && met.bal === undefined,
+   `corr=${met.corr} bal=${met.bal}`);
 
 console.log("\n[3] rendering");
 V._frame();

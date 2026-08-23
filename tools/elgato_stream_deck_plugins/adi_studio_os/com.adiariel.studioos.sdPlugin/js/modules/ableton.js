@@ -7,22 +7,21 @@
    remote script is verified and is not being modified, so this speaks exactly
    the wire format in that plugin's docs/PROTOCOL.md.
 
-   THE PORTING DECISION THAT SHAPES THIS FILE
+   THE PORTING DECISION THAT SHAPED THIS FILE — AND HAS NOW BEEN UNWOUND
 
-   All 13 legacy DeviceControllers draw with a Canvas 2D context, and Studio OS
-   paints SVG strings. Rewriting each controller's renderTouch() would mean
-   touching 2,500 lines of layout code whose parameter maps were verified one by
-   one against Adi's real Ableton "Configure" screenshots — the highest-risk,
-   lowest-value edit available.
+   All 13 legacy DeviceControllers drew with a Canvas 2D context while Studio OS
+   paints SVG strings, so rather than rewrite 2,500 lines of verified layout code
+   this file used to port the CANVAS instead: `SOS.SvgCtx` implemented the exact
+   Canvas 2D subset they used and serialised it to SVG, and the controllers were
+   copied in byte-for-byte. It was the right call — a verified parameter map
+   cannot be broken by a port that never edits it.
 
-   So instead of porting the controllers, this ports the CANVAS. `SvgCtx` below
-   implements the exact Canvas 2D subset they use (15 methods, 7 properties,
-   measured — not guessed) and serialises it to SVG. The controller files are
-   then copied in BYTE-FOR-BYTE under js/ableton/ and still diff clean against
-   the originals. A verified parameter map cannot be broken by a port that never
-   edits it.
+   L4 then ported all fourteen controllers to native `build()` anyway, one at a
+   time, which left the shim serving nobody. **V60 deleted it.** What follows is
+   history, kept because "why is the compositor shaped like this?" is otherwise a
+   real half hour for the next reader.
 
-   That shim is also exactly what the strip compositor needs: draw ONE 1200x100
+   The shim was also exactly what the strip compositor needs: draw ONE 1200x100
    image, then hand each dial a viewBox window into it, so an EQ curve spans all
    six dials as one continuous picture the way the legacy canvas-slicing did.
 
@@ -38,266 +37,14 @@ SOS.Modules = SOS.Modules || {};
 window.AVC = window.AVC || {};      // the legacy controllers' namespace
 
 /* ===========================================================================
-   1. SvgCtx — a Canvas 2D context that emits SVG.
+   V60 — SECTION 1, `SOS.SvgCtx`, IS GONE. It was a Canvas-2D context that
+   emitted SVG, and it existed so the legacy controllers could be copied in
+   unmodified. L4 finished porting all fourteen to native `build()`, so it has
+   had no consumer since — measured, not assumed: zero of the fourteen
+   *Controller.js files referenced it, and its only remaining callers were the
+   tests written for the shim itself. ~258 lines.
 
-   Only the surface the controllers actually use is implemented, established by
-   grepping every controller rather than by assumption:
-     methods    beginPath moveTo lineTo arc arcTo closePath fill stroke
-                fillRect clearRect fillText translate save restore
-                createLinearGradient
-     properties fillStyle strokeStyle lineWidth globalAlpha font textAlign
-                textBaseline
-   Anything outside that set is deliberately absent so a future controller using
-   something new fails loudly instead of silently drawing nothing.
-   =========================================================================== */
-
-SOS.SvgCtx = (function () {
-  function esc(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
-  function n(v) { return Math.round(v * 100) / 100; }
-
-  function SvgCtx(w, h) {
-    this.W = w; this.H = h;
-    this.reset();
-  }
-
-  SvgCtx.prototype.reset = function () {
-    this.out = [];
-    this.defs = [];
-    this.path = [];
-    this.gid = 0;
-    this.tx = 0; this.ty = 0;
-    this.stack = [];
-    this.px0 = null; this.px1 = null;
-    this.fillStyle = '#000000';
-    this.strokeStyle = '#000000';
-    this.lineWidth = 1;
-    this.globalAlpha = 1;
-    this.font = '400 12px sans-serif';
-    this.textAlign = 'left';
-    this.textBaseline = 'alphabetic';
-  };
-
-  // ------------------------------------------------------------------ state
-  SvgCtx.prototype.save = function () {
-    this.stack.push({
-      fillStyle: this.fillStyle, strokeStyle: this.strokeStyle,
-      lineWidth: this.lineWidth, globalAlpha: this.globalAlpha,
-      font: this.font, textAlign: this.textAlign, textBaseline: this.textBaseline,
-      tx: this.tx, ty: this.ty,
-    });
-  };
-  SvgCtx.prototype.restore = function () {
-    var s = this.stack.pop();
-    if (!s) return;
-    for (var k in s) if (s.hasOwnProperty(k)) this[k] = s[k];
-  };
-  SvgCtx.prototype.translate = function (x, y) { this.tx += x; this.ty += y; };
-
-  // ------------------------------------------------------------------- path
-  SvgCtx.prototype.beginPath = function () {
-    this.path = []; this.cx = null; this.cy = null;
-    this.px0 = null; this.px1 = null;      // x-extent of the path being built
-  };
-  SvgCtx.prototype.moveTo = function (x, y) {
-    x += this.tx; y += this.ty;
-    this.path.push('M' + n(x) + ' ' + n(y)); this.cx = x; this.cy = y; this._mark(x);
-  };
-  SvgCtx.prototype.lineTo = function (x, y) {
-    x += this.tx; y += this.ty;
-    if (this.cx === null) return this.moveTo(x - this.tx, y - this.ty);
-    this.path.push('L' + n(x) + ' ' + n(y)); this.cx = x; this.cy = y; this._mark(x);
-  };
-  SvgCtx.prototype.closePath = function () { this.path.push('Z'); };
-
-  SvgCtx.prototype.arc = function (x, y, r, a0, a1, ccw) {
-    x += this.tx; y += this.ty;
-    var full = Math.abs(a1 - a0) >= Math.PI * 2 - 1e-6;
-    if (full) {
-      // Two half-arcs: a single SVG arc command cannot describe a full circle.
-      this.path.push('M' + n(x + r) + ' ' + n(y)
-        + 'A' + n(r) + ' ' + n(r) + ' 0 1 1 ' + n(x - r) + ' ' + n(y)
-        + 'A' + n(r) + ' ' + n(r) + ' 0 1 1 ' + n(x + r) + ' ' + n(y) + 'Z');
-      this.cx = x + r; this.cy = y; this._mark(x - r); this._mark(x + r);
-      return;
-    }
-    var x0 = x + r * Math.cos(a0), y0 = y + r * Math.sin(a0);
-    var x1 = x + r * Math.cos(a1), y1 = y + r * Math.sin(a1);
-    var large = Math.abs(a1 - a0) > Math.PI ? 1 : 0;
-    var sweep = ccw ? 0 : 1;
-    this.path.push((this.cx === null ? 'M' + n(x0) + ' ' + n(y0) : 'L' + n(x0) + ' ' + n(y0))
-      + 'A' + n(r) + ' ' + n(r) + ' 0 ' + large + ' ' + sweep + ' ' + n(x1) + ' ' + n(y1));
-    this.cx = x1; this.cy = y1; this._mark(Math.min(x0, x1)); this._mark(Math.max(x0, x1));
-  };
-
-  /* Canvas arcTo: an arc of radius r tangent to the line (current -> p1) and the
-     line (p1 -> p2). Only roundRect() uses it, but implementing the real
-     geometry (rather than a corner approximation) keeps every rounded panel the
-     controllers draw pixel-identical to the canvas original. */
-  SvgCtx.prototype.arcTo = function (x1, y1, x2, y2, r) {
-    x1 += this.tx; y1 += this.ty; x2 += this.tx; y2 += this.ty;
-    if (this.cx === null) { this.moveTo(x1 - this.tx, y1 - this.ty); return; }
-    var x0 = this.cx, y0 = this.cy;
-
-    var a = { x: x0 - x1, y: y0 - y1 };
-    var b = { x: x2 - x1, y: y2 - y1 };
-    var la = Math.hypot(a.x, a.y), lb = Math.hypot(b.x, b.y);
-    if (la < 1e-9 || lb < 1e-9 || r <= 0) { this.lineTo(x1 - this.tx, y1 - this.ty); return; }
-    a.x /= la; a.y /= la; b.x /= lb; b.y /= lb;
-
-    var cosTheta = Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y));
-    var theta = Math.acos(cosTheta);
-    if (theta < 1e-6 || Math.abs(theta - Math.PI) < 1e-6) {
-      this.lineTo(x1 - this.tx, y1 - this.ty); return;   // collinear: no arc exists
-    }
-    var dist = r / Math.tan(theta / 2);
-    dist = Math.min(dist, la, lb);
-
-    var t1 = { x: x1 + a.x * dist, y: y1 + a.y * dist };   // tangent point on the incoming leg
-    var t2 = { x: x1 + b.x * dist, y: y1 + b.y * dist };   // tangent point on the outgoing leg
-    // Sign of the cross product decides which way the corner turns.
-    var sweep = (a.x * b.y - a.y * b.x) < 0 ? 1 : 0;
-
-    this.path.push('L' + n(t1.x) + ' ' + n(t1.y)
-      + 'A' + n(r) + ' ' + n(r) + ' 0 0 ' + sweep + ' ' + n(t2.x) + ' ' + n(t2.y));
-    this.cx = t2.x; this.cy = t2.y;
-    this._mark(Math.min(t1.x, t2.x) - r); this._mark(Math.max(t1.x, t2.x) + r);
-  };
-
-  // ------------------------------------------------------------------ paint
-  SvgCtx.prototype._alpha = function (kind) {
-    return this.globalAlpha < 1 ? ' ' + kind + '-opacity="' + n(this.globalAlpha) + '"' : '';
-  };
-
-  /* Every emitted element carries the x-range it covers, so serialize() can drop
-     the ones a given zone cannot see.
-
-     Without this each of the six zones ships the WHOLE 1200px drawing and only
-     changes its viewBox — measured at 17.5 KB per zone, which is ~1.5 MB/s
-     across six dials at 15 fps. Clipping keeps the continuity (an EQ curve still
-     spans the strip, because its path legitimately overlaps every zone) while a
-     label or panel that lives in one zone is sent to that zone alone. */
-  SvgCtx.prototype._emit = function (svg, x0, x1) {
-    this.out.push({ s: svg, x0: x0, x1: x1 });
-  };
-  SvgCtx.prototype._pathBounds = function () {
-    // Track extents as the path is built rather than re-parsing the d string.
-    return [this.px0, this.px1];
-  };
-  SvgCtx.prototype._mark = function (x) {
-    if (this.px0 === null || x < this.px0) this.px0 = x;
-    if (this.px1 === null || x > this.px1) this.px1 = x;
-  };
-
-  SvgCtx.prototype.fill = function () {
-    if (!this.path.length) return;
-    this._emit('<path d="' + this.path.join('') + '" fill="' + esc(this.fillStyle)
-      + '"' + this._alpha('fill') + '/>', this.px0, this.px1);
-  };
-  SvgCtx.prototype.stroke = function () {
-    if (!this.path.length) return;
-    var pad = (this.lineWidth || 1) / 2 + 1;
-    this._emit('<path d="' + this.path.join('') + '" fill="none" stroke="' + esc(this.strokeStyle)
-      + '" stroke-width="' + n(this.lineWidth) + '" stroke-linejoin="round" stroke-linecap="round"'
-      + this._alpha('stroke') + '/>', this.px0 - pad, this.px1 + pad);
-  };
-  SvgCtx.prototype.fillRect = function (x, y, w, h) {
-    if (w <= 0 || h <= 0) return;
-    var ax = x + this.tx;
-    this._emit('<rect x="' + n(ax) + '" y="' + n(y + this.ty) + '" width="' + n(w)
-      + '" height="' + n(h) + '" fill="' + esc(this.fillStyle) + '"' + this._alpha('fill') + '/>',
-      ax, ax + w);
-  };
-  SvgCtx.prototype.clearRect = function (x, y, w, h) {
-    // SVG has no erase. Every legacy clearRect is immediately followed by a
-    // background fillRect (see AVC.gfx.clear), so dropping the buffer is both
-    // correct and what makes the "clear then repaint" idiom work here.
-    if (x <= this.tx && y <= this.ty && w >= this.W && h >= this.H) {
-      this.out = []; this.defs = []; this.gid = 0;
-    }
-  };
-
-  // '600 16px Inter, sans-serif' -> { weight, size, family }
-  var FONT_RE = /^\s*(?:(normal|italic|oblique)\s+)?(?:(\d{3}|bold|normal)\s+)?(\d+(?:\.\d+)?)px\s+(.+)$/;
-  SvgCtx.prototype._font = function () {
-    var m = FONT_RE.exec(this.font || '');
-    if (!m) return { weight: 400, size: 12, family: 'sans-serif', style: 'normal' };
-    return {
-      style: m[1] || 'normal',
-      weight: m[2] === 'bold' ? 700 : (m[2] ? parseInt(m[2], 10) : 400),
-      size: parseFloat(m[3]),
-      family: m[4],
-    };
-  };
-  var ANCHOR = { left: 'start', start: 'start', center: 'middle', right: 'end', end: 'end' };
-  var BASELINE = { top: 'hanging', middle: 'central', alphabetic: 'alphabetic', bottom: 'auto' };
-
-  SvgCtx.prototype.fillText = function (str, x, y) {
-    var f = this._font();
-    // SVG has no measureText, so the extent is estimated from the font size and
-    // padded generously (0.75em/char plus a full em). Over-estimating only means
-    // a label is sent to one extra zone; under-estimating would clip a glyph.
-    var wEst = String(str).length * f.size * 0.75 + f.size;
-    var ax = x + this.tx;
-    var a = this.textAlign;
-    var bx0 = a === 'center' ? ax - wEst / 2 : (a === 'right' || a === 'end') ? ax - wEst : ax;
-    this._textBounds = [bx0 - 2, bx0 + wEst + 2];
-    this._emit('<text x="' + n(x + this.tx) + '" y="' + n(y + this.ty)
-      + '" font-family="' + esc(f.family) + '" font-size="' + n(f.size) + '"'
-      + ' font-weight="' + f.weight + '"'
-      + (f.style !== 'normal' ? ' font-style="' + f.style + '"' : '')
-      + ' text-anchor="' + (ANCHOR[this.textAlign] || 'start') + '"'
-      + (this.textBaseline && this.textBaseline !== 'alphabetic'
-          ? ' dominant-baseline="' + (BASELINE[this.textBaseline] || 'auto') + '"' : '')
-      + ' fill="' + esc(this.fillStyle) + '"' + this._alpha('fill') + '>'
-      + esc(str) + '</text>', this._textBounds[0], this._textBounds[1]);
-  };
-
-  SvgCtx.prototype.createLinearGradient = function (x0, y0, x1, y1) {
-    var id = 'g' + (this.gid++);
-    var self = this, stops = [];
-    self.defs.push({ id: id, x0: x0 + self.tx, y0: y0 + self.ty, x1: x1 + self.tx, y1: y1 + self.ty, stops: stops });
-    return {
-      // The returned object is assigned to fillStyle/strokeStyle, so it has to
-      // stringify to the url(#id) reference the SVG attribute expects.
-      addColorStop: function (offset, color) { stops.push({ o: offset, c: color }); },
-      toString: function () { return 'url(#' + id + ')'; },
-    };
-  };
-
-  SvgCtx.prototype.serialize = function (viewX, viewW) {
-    var defs = '';
-    if (this.defs.length) {
-      defs = '<defs>' + this.defs.map(function (g) {
-        return '<linearGradient id="' + g.id + '" gradientUnits="userSpaceOnUse"'
-          + ' x1="' + n(g.x0) + '" y1="' + n(g.y0) + '" x2="' + n(g.x1) + '" y2="' + n(g.y1) + '">'
-          + g.stops.map(function (s) {
-              return '<stop offset="' + n(s.o) + '" stop-color="' + esc(s.c) + '"/>';
-            }).join('')
-          + '</linearGradient>';
-      }).join('') + '</defs>';
-    }
-    var vx = viewX || 0, vw = viewW || this.W, vx1 = vx + vw;
-    var body = '';
-    for (var i = 0; i < this.out.length; i++) {
-      var el = this.out[i];
-      // null bounds means "extent unknown" — always include rather than risk
-      // dropping something visible.
-      if (el.x0 == null || el.x1 == null || (el.x1 >= vx && el.x0 <= vx1)) body += el.s;
-    }
-    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + n(vx) + ' 0 ' + n(vw) + ' ' + n(this.H)
-      + '" width="' + n(vw) + '" height="' + n(this.H) + '">'
-      + defs + body + '</svg>';
-  };
-
-  return SvgCtx;
-})();
-
-/* ===========================================================================
-   2. AVC compatibility layer — verbatim from the legacy plugin so the copied
+   1. AVC compatibility layer — verbatim from the legacy plugin so the copied
       controller files run unmodified.
    =========================================================================== */
 
@@ -309,16 +56,9 @@ AVC.gfx = {
   ok: '#4ad27a', warn: '#ffd166', bad: '#ff5d5d', eq: '#6fe3c4',
   bandColors: ['#ff6b6b', '#ffa94d', '#ffd43b', '#8ce99a', '#4dd4c8', '#4dabf7', '#9775fa', '#f783ac'],
 
-  clear: function (ctx, w, h) { ctx.clearRect(0, 0, w, h); ctx.fillStyle = AVC.gfx.bg; ctx.fillRect(0, 0, w, h); },
-  roundRect: function (ctx, x, y, w, h, r) {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
-  },
-  text2: function (ctx, s, x, y, font, color, align) {
-    ctx.font = font; ctx.fillStyle = color; ctx.textAlign = align || 'left'; ctx.textBaseline = 'alphabetic';
-    ctx.fillText(s, x, y);
-  },
+  // V60 — `clear`, `roundRect` and `text2` took a Canvas ctx and went with the
+  // shim; no controller ever called them. The COLOURS above are live (bg, text
+  // and bandColors have 14, 26 and 15 controller references between them).
   clamp: function (v, a, b) { return v < a ? a : v > b ? b : v; },
 };
 
@@ -340,10 +80,7 @@ AVC.DeviceController = function DeviceController(services) {
 AVC.DeviceController.prototype = {
   id: 'base',
   onState: function (state) { this.state = state; },
-  renderTouch: function (ctx) {
-    var L = this.L; AVC.gfx.clear(ctx, L.W, L.H);
-    AVC.gfx.text2(ctx, 'No device', 12, L.H / 2, '600 16px Inter, sans-serif', AVC.gfx.dim);
-  },
+  // V60 — `renderTouch` went with SvgCtx. Every controller implements `build()`.
   onDial: function (slot, ticks) {},
   onDialPress: function (slot) {},
   onTouch: function (x, y, hold) {},
@@ -577,12 +314,11 @@ SOS.Modules.Ableton = (function () {
   AVC.Bridge = Bridge;   // some controllers reach for it directly
 
   /* --------------------------------------------------- the strip compositor
-     Draws the active controller ONCE into a 1200x100 SvgCtx, then gives each
-     dial a viewBox window into that same drawing. The content string is built
+     Draws the active controller ONCE across the full 1200x100 strip, then gives
+     each dial a viewBox window into that same drawing. The string is built
      once and re-wrapped six times, so a curve spanning the whole strip costs one
      render, not six — and lands on the dials as one continuous picture, which is
      what the legacy canvas-slicing achieved. */
-  var ctx = new SOS.SvgCtx(L.W, L.H);      // legacy shim, for controllers not yet native
   var zoneSvg = ['', '', '', '', '', ''];
   var lastZones = 6;
 
@@ -594,24 +330,19 @@ SOS.Modules.Ableton = (function () {
     var zones = SOS.States.moduleDials();
     lastZones = zones;
 
-    if (typeof active.build === 'function') {
-      // Native SVG controller (L4).
-      var bag;
-      try { bag = active.build(zones); }
-      catch (e) { SOS.SD.log('ableton: build() failed in ' + (active.id || '?') + ' — ' + e.message); return; }
-      for (var i = 0; i < zones; i++) zoneSvg[i] = SOS.Svg.serialize(bag, i * L.slotW, L.slotW, L.slotH);
-      for (var j = zones; j < L.slots; j++) zoneSvg[j] = '';
+    /* V60 — there is only ONE path now. The Canvas-shim fallback that used to
+       sit below this went with SvgCtx: a controller without `build()` cannot be
+       drawn at all any more, which is the loud failure the shim's own header
+       comment asked for. A missing build() logs and leaves the strip alone. */
+    if (typeof active.build !== 'function') {
+      SOS.SD.log('ableton: ' + (active.id || '?') + ' has no build() — nothing to draw');
       return;
     }
-
-    // Controllers still on the Canvas shim always draw their full 1200px strip;
-    // only the zones the module owns get painted.
-    ctx.reset();
-    try { active.renderTouch(ctx); }
-    catch (e2) { SOS.SD.log('ableton: renderTouch failed in ' + (active.id || '?') + ' — ' + e2.message); return; }
-    for (var k = 0; k < L.slots; k++) {
-      zoneSvg[k] = k < zones ? ctx.serialize(k * L.slotW, L.slotW) : '';
-    }
+    var bag;
+    try { bag = active.build(zones); }
+    catch (e) { SOS.SD.log('ableton: build() failed in ' + (active.id || '?') + ' — ' + e.message); return; }
+    for (var i = 0; i < zones; i++) zoneSvg[i] = SOS.Svg.serialize(bag, i * L.slotW, L.slotW, L.slotH);
+    for (var j = zones; j < L.slots; j++) zoneSvg[j] = '';
   }
 
   /* ------------------------------------------------------ controller picking */
@@ -943,9 +674,8 @@ SOS.Modules.Ableton = (function () {
 
   return {
     hub: hub, bridge: Bridge,
-    setUrl: Bridge.setUrl,
     // exposed for scripts/test_ableton.mjs
-    _ctx: ctx, _composite: composite, _zones: zoneSvg,
+    _composite: composite, _zones: zoneSvg,
     _pick: pickController, _active: function () { return active; },
     _layout: L, _stop: stopPump,
     _page: function (p) { page = p | 0; },

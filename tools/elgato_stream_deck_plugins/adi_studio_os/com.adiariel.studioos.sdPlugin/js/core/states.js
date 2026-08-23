@@ -421,7 +421,7 @@ SOS.States = (function () {
     name: function () { return NAMES[state]; },
     setState: setState, carousel: carousel, syncToScreen: syncToScreen,
     registerOverlay: registerOverlay,
-    overlayScreen: navScreen, navScreen: navScreen,
+    navScreen: navScreen,
     regions: regions, dockCols: dockCols,
     overlayOwnsKey: overlayOwnsKey, overlayOwnsDial: overlayOwnsDial,
     borrowedDials: borrowedDials, firstBorrowed: firstBorrowed, moduleDials: moduleDials,

@@ -116,25 +116,19 @@ SOS.Modules.Viz = (function () {
       markerHold: 6,
     },
     meters: { color: '#7fe06a', style: 'classic' },   // 'classic' | 'rme'
-    bands: { tuneA4: 440, markerHold: 6 },
-    rme: {
-      window: 'hann', blockSize: 4096, overlap: 0.5, avgTime: 300,
-      rangeLo: -50, rangeHi: -10,
-      tuneA4: 440, markerHold: 6,
-    },
-    gonio: { color: '#38f0a0' },
-    corr: {},
-    bal: {},
+    /* V60 — `bands`, `rme`, `gonio`, `corr` and `bal` had DEFAULTS blocks and no
+       emitter to consume them. Every read is `DEFAULTS[view] || DEFAULTS.spectrum`
+       (see :961, :1021, :1044, :1100), so the fallback already covers a missing
+       key and the picker still lists all nine views. The one visible change:
+       viewColor('gonio') now returns PALETTE.viz instead of '#38f0a0', because
+       that was the only un-ported view that carried a colour. */
   };
 
-  // ISO 1/3-octave centres for the RME view. The log-uniform column mapping in
-  // ensureMap() with these edges lands each column on a 1/3-octave centre
-  // (log-uniform IS 1/3-octave: per-column ratio 2^(1/3), within ~0.3%).
-  var RME_BANDS = [50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800,
-    1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
-  var RME_FLO = 50 * Math.pow(2, -1 / 6);
-  var RME_FHI = 20000 * Math.pow(2, 1 / 6);
-  var RME_LABELS = { 63: '63', 250: '250', 1000: '1k', 4000: '4k', 16000: '16k' };
+  /* V60 — the ISO 1/3-octave band table, its edge frequencies and its label map
+     went with the un-ported `rme` view: they were defined once and referenced
+     nowhere. The four colours below them STAY — despite the name they serve the
+     `meters` view's `style: 'rme'` segmented-LED variant (the <pattern> at
+     ensurePatterns, and the marker column), which is live. */
   var RME_LIT = '#6fe9c9', RME_OFF = '#17352b', RME_MARK = '#ffe066', RME_MARK_OFF = '#4e481f';
   var ZONE_RED = '#ff5d5d', ZONE_YEL = '#ffd166';
 
@@ -176,7 +170,7 @@ SOS.Modules.Viz = (function () {
 
   var SR = 48000;                                   // live sample rate
   var analyserL = null, analyserR = null, dataL = null, dataR = null;
-  var METER = { rmsL: 0, rmsR: 0, peakL: 0, peakR: 0, corr: 0, bal: 0 };
+  var METER = { rmsL: 0, rmsR: 0, peakL: 0, peakR: 0 };
   var lastPacket = 0;                               // ms of the last worklet frame
 
   var ringL = new Float32Array(RING);
@@ -783,29 +777,33 @@ SOS.Modules.Viz = (function () {
 
   function audioRunning() { return audio.status === 'running'; }
 
+  /* V60 — THE CORRELATION AND BALANCE DSP IS GONE, and it is worth saying why
+     it lasted so long. `METER.corr` and `METER.bal` were written here every
+     frame and read NOWHERE: their two views (`corr`, `bal`) were never ported,
+     so the numbers went straight into a variable nobody looked at. The tell was
+     that audioStop() reset the four meter fields and not those two.
+
+     The cost was not the two lines — it was the three accumulators feeding them
+     from INSIDE the per-sample loop, and `sLL`/`sRR` were byte-for-byte
+     duplicates of `sL`/`sR` (both `+= a*a` / `+= b*b`). So every sample of every
+     block paid for three redundant multiply-adds at 15 fps to compute two
+     numbers nothing drew. */
   function push(l, r) {
     var n = l.length, i;
     // Peak and RMS for the meter views, computed on the raw block so they are
     // not affected by whatever decimation a view applies later.
-    var sL = 0, sR = 0, pL = 0, pR = 0, sLR = 0, sLL = 0, sRR = 0;
+    var sL = 0, sR = 0, pL = 0, pR = 0;
     for (i = 0; i < n; i++) {
       var a = l[i], b = r[i];
       sL += a * a; sR += b * b;
       var aa = a < 0 ? -a : a, ab = b < 0 ? -b : b;
       if (aa > pL) pL = aa;
       if (ab > pR) pR = ab;
-      sLR += a * b; sLL += a * a; sRR += b * b;
       ringPush(a, b, (a + b) * 0.5);
     }
     METER.rmsL = Math.sqrt(sL / n);
     METER.rmsR = Math.sqrt(sR / n);
     METER.peakL = pL; METER.peakR = pR;
-    // Pearson correlation of L against R: +1 mono, 0 uncorrelated, -1 out of phase.
-    var den = Math.sqrt(sLL * sRR);
-    METER.corr = den > 1e-12 ? sLR / den : 0;
-    // Balance as a -1..+1 energy ratio.
-    var eL = Math.sqrt(sLL), eR = Math.sqrt(sRR);
-    METER.bal = (eL + eR) > 1e-9 ? (eR - eL) / (eR + eL) : 0;
     lastPacket = Date.now();
   }
 
@@ -1128,7 +1126,7 @@ SOS.Modules.Viz = (function () {
     _audio: audio, _slots: slots, _frame: frame,
     _implemented: IMPLEMENTED, _views: VIEWS,
     _push: push, _meter: METER,
-    _start: startPump, _stop: stopPump,
+    _stop: stopPump,
   };
 })();
 

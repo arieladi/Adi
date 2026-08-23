@@ -181,9 +181,7 @@ SOS.IPC = (function () {
   return {
     connect: connect, setUrl: setUrl, on: on,
     isOnline: function () { return online; },
-    droppedCount: function () { return dropped; },
     send: send, config: config, ask: ask,
     midi: midi, os: os, home: home,
-    DEFAULT_URL: DEFAULT_URL,
   };
 })();

@@ -34,8 +34,10 @@ SOS.Surface = (function () {
   function rowOf(button) { return Math.floor((button - 1) / COLS); }
   function valid(button) { return button >= 1 && button <= KEYS; }
 
-  // Is this key inside the States 0/1/3 overlay block?
-  function inOverlay(button) { return colOf(button) >= OVERLAY_COL_MIN; }
+  /* V60 — `inOverlay()` and the export of `OVERLAY_COL_MIN` are gone. Region
+     ownership has been Layout.split()'s job since L1, and the only caller either
+     had left was a test asserting the constant against itself. The constant stays
+     private because it still documents where the dock starts. */
 
   // Dials are 1-based to match the spec's "Knob 1..6" language.
   function dialOf(col) { return col + 1; }
@@ -85,7 +87,6 @@ SOS.Surface = (function () {
   function buttonOf(context) { return keyBtn[context] || 0; }
   function dialOfContext(context) { return dialNum[context] || 0; }
 
-  function isKey(context) { return keyBtn[context] != null; }
   function isDial(context) { return dialNum[context] != null; }
 
   // How much of the surface is actually placed — drives the setup nag.
@@ -109,15 +110,14 @@ SOS.Surface = (function () {
     COLS: COLS, ROWS: ROWS, KEYS: KEYS, DIALS: DIALS,
     ZONE_W: ZONE_W, ZONE_H: ZONE_H, STRIP_W: STRIP_W,
     BTN_BACK: BTN_BACK, BTN_CLEAR: BTN_CLEAR, BTN_ANCHOR: BTN_ANCHOR,
-    OVERLAY_COL_MIN: OVERLAY_COL_MIN,
 
-    btn: btn, colOf: colOf, rowOf: rowOf, valid: valid, inOverlay: inOverlay,
+    btn: btn, colOf: colOf, rowOf: rowOf, valid: valid,
     dialOf: dialOf, dialCol: dialCol, stripX: stripX, zoneOf: zoneOf,
 
     registerKey: registerKey, registerDial: registerDial, unregister: unregister,
     contextOfKey: contextOfKey, contextOfDial: contextOfDial,
     buttonOf: buttonOf, dialOfContext: dialOfContext,
-    isKey: isKey, isDial: isDial,
+    isDial: isDial,
     coverage: coverage, complete: complete, eachKey: eachKey, eachDial: eachDial,
   };
 })();

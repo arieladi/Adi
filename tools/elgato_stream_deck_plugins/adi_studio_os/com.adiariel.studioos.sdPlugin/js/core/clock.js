@@ -181,7 +181,11 @@ SOS.Clock = (function () {
   return {
     zone: zone, run: run, timeText: timeText, city: city,
     LIT: LIT, SEG: SEG, COLON: COLON,
-    CELL_W: CELL_W, CELL_H: CELL_H, ADV_DIGIT: ADV_DIGIT, ADV_COLON: ADV_COLON,
+    /* V60 — KEPT after the audit listed it as test-only. Its one caller pins the
+       Root Hub scroll arrows and the clock's lit digits to the SAME palette
+       entry, so deleting it would delete an invariant, not dead code. The
+       geometry constants (CELL_W / CELL_H / ADV_DIGIT / ADV_COLON) really were
+       export-only and did go. */
     LIT_COLOR: litColor,
   };
 })();

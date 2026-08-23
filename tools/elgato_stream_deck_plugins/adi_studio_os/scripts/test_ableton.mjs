@@ -1,5 +1,5 @@
 // Ableton module: the Canvas->SVG shim, registry resolution, the strip
-// compositor, and every controller's renderTouch.
+// compositor, and every controller's build().
 //
 // The port deliberately did NOT rewrite the 14 controllers — they are copied
 // byte-for-byte and a Canvas 2D shim was written under them instead, so their
@@ -76,47 +76,11 @@ ok("registry.js is deliberately NOT rewritten — it is the device→strategy ta
    fs.readFileSync(path.join(NEW, "js/ableton/registry.js"))
      .equals(fs.readFileSync(path.join(LEGACY, "registry.js"))));
 
-console.log("\n[3] SvgCtx — the Canvas 2D subset the controllers use");
-const C = new SOS.SvgCtx(200, 100);
-C.fillStyle = "#123456"; C.fillRect(1, 2, 10, 20);
-ok("fillRect", /<rect x="1" y="2" width="10" height="20" fill="#123456"\/>/.test(C.serialize()));
-
-C.reset(); C.beginPath(); C.moveTo(0, 0); C.lineTo(10, 10); C.strokeStyle = "#f00"; C.lineWidth = 2; C.stroke();
-ok("path + stroke", /<path d="M0 0L10 10" fill="none" stroke="#f00" stroke-width="2"/.test(C.serialize()));
-
-C.reset(); AVC.gfx.roundRect(C, 0, 0, 40, 20, 5); C.fillStyle = "#0f0"; C.fill();
-const rr = C.serialize();
-ok("roundRect emits real arcs (arcTo geometry)", (rr.match(/A5 5 0 0 /g) || []).length === 4, rr.slice(0, 160));
-
-C.reset(); C.beginPath(); C.arc(50, 50, 10, 0, Math.PI * 2); C.fillStyle = "#fff"; C.fill();
-ok("full circle uses two half-arcs", (C.serialize().match(/A10 10 0 1 1/g) || []).length === 2);
-
-C.reset(); C.font = "800 19px Inter, sans-serif"; C.textAlign = "center"; C.fillStyle = "#abc";
-C.fillText("Hi & <you>", 10, 20);
-const t = C.serialize();
-ok("fillText parses the font shorthand", /font-size="19"/.test(t) && /font-weight="800"/.test(t), t.slice(0, 200));
-ok("fillText maps textAlign to text-anchor", /text-anchor="middle"/.test(t));
-ok("fillText escapes markup", /Hi &amp; &lt;you&gt;/.test(t));
-
-C.reset(); C.globalAlpha = 0.5; C.fillStyle = "#fff"; C.fillRect(0, 0, 5, 5);
-ok("globalAlpha becomes fill-opacity", /fill-opacity="0.5"/.test(C.serialize()));
-
-C.reset();
-const grad = C.createLinearGradient(0, 0, 0, 100);
-grad.addColorStop(0, "#111"); grad.addColorStop(1, "#222");
-C.fillStyle = grad; C.fillRect(0, 0, 10, 10);
-const gs = C.serialize();
-ok("gradient emits defs and a url() reference",
-   /<linearGradient id="g0"/.test(gs) && /fill="url\(#g0\)"/.test(gs) && /stop-color="#111"/.test(gs), gs.slice(0, 220));
-
-C.reset(); C.fillStyle = "#fff"; C.fillRect(0, 0, 5, 5); C.clearRect(0, 0, 200, 100);
-ok("full clearRect drops the buffer", !/<rect/.test(C.serialize()));
-
-C.reset(); C.save(); C.translate(10, 5); C.fillStyle = "#fff"; C.fillRect(0, 0, 1, 1); C.restore();
-C.fillRect(0, 0, 1, 1);
-const tr = C.serialize();
-ok("translate offsets, restore undoes it",
-   /x="10" y="5"/.test(tr) && /x="0" y="0"/.test(tr), tr);
+/* V60 — BLOCK [3] IS GONE. It was 13 assertions on SOS.SvgCtx, the Canvas-2D
+   shim, and it was the shim's ONLY remaining caller — no controller had used it
+   since L4 finished porting all fourteen to native build(). The shim went, so
+   its tests went with it. The inverse assertion at the end of the L4 section is
+   what now stands in its place. */
 
 console.log("\n[4] registry resolution");
 const resolve = (device) => AVC.registry.resolve({ device });
@@ -190,15 +154,9 @@ for (const name of CTORS) {
   try {
     const inst = new Ctor(svc);
     inst.onState(st);
-    // Native controllers (L4) build an SVG bag; the rest still draw through the
-    // Canvas shim. Both must produce a real strip.
-    if (typeof inst.build === "function") {
-      out = SOS.Svg.serialize(inst.build(6), 0, 1200, 100);
-    } else {
-      const cx = new SOS.SvgCtx(1200, 100);
-      inst.renderTouch(cx);
-      out = cx.serialize();
-    }
+    // V60 — every controller is native, so there is one path. A controller
+    // without build() now fails here rather than falling back to a shim.
+    out = SOS.Svg.serialize(inst.build(6), 0, 1200, 100);
     // Exercise input too — a controller that renders but throws on a dial turn
     // is still broken.
     inst.onDial(0, 1); inst.onDialPress(0); inst.onTouch(250, 50, false);
@@ -227,16 +185,21 @@ ok("each zone is a 200px window at its own offset",
 // Drive the compositor with a controller whose geometry is known, so this tests
 // the MECHANISM rather than whichever artwork a real controller happens to draw
 // for the synthetic state above.
-const probe = new SOS.SvgCtx(1200, 100);
-probe.beginPath();                                   // one curve across the strip
-for (let x = 0; x <= 1200; x += 10) probe.lineTo(x, 50 + 30 * Math.sin(x / 90));
-probe.strokeStyle = "#6fe3c4"; probe.lineWidth = 2; probe.stroke();
-probe.fillStyle = "#ff0000"; probe.fillRect(10, 10, 40, 20);      // lives only in zone 1
-probe.fillStyle = "#00ff00"; probe.fillRect(1040, 10, 40, 20);    // lives only in zone 6
+/* V60 — the probe is a native SOS.Svg bag now. It used to be built with the
+   Canvas shim purely because that was a convenient way to declare known
+   geometry; the MECHANISM under test is the compositor's per-zone clipping,
+   which is unchanged. A bag element declares its own [x0, x1] span, which is
+   exactly what serialize() clips against. */
+const probe = SOS.Svg.bag();
+let curveD = "";                                     // one curve across the strip
+for (let x = 0; x <= 1200; x += 10) curveD += (x ? "L" : "M") + x + " " + (50 + 30 * Math.sin(x / 90));
+SOS.Svg.path(probe, curveD, 0, 1200, { stroke: "#6fe3c4", sw: 2 });
+SOS.Svg.rect(probe, 10, 10, 40, 20, "#ff0000");      // lives only in zone 1
+SOS.Svg.rect(probe, 1040, 10, 40, 20, "#00ff00");    // lives only in zone 6
 const pz = [];
-for (let i = 0; i < 6; i++) pz.push(probe.serialize(i * 200, 200));
+for (let i = 0; i < 6; i++) pz.push(SOS.Svg.serialize(probe, i * 200, 200, 100));
 
-const curve = (probe.serialize(0, 1200).match(/<path[^>]*\/>/) || [])[0];
+const curve = (SOS.Svg.serialize(probe, 0, 1200, 100).match(/<path[^>]*\/>/) || [])[0];
 ok("a strip-spanning curve reaches ALL six zones (continuous picture)",
    !!curve && pz.every((z) => z.includes(curve)),
    `present in ${pz.filter((z) => curve && z.includes(curve)).length}/6`);
@@ -2126,8 +2089,14 @@ for (const name of CTORS) {
      full.length > 300 && comp.length > 200,
      err ? err.message : `${full.length} / ${comp.length}`);
 }
-ok("SOS.SvgCtx has no controllers left to serve",
+/* The L4 invariant, and now the V60 one too: every controller is native, AND
+   the shim it replaced no longer exists at all. Asserting the absence is the
+   only thing that catches a re-introduction. */
+ok("every controller is native — all fourteen implement build()",
    CTORS.every((n) => typeof AVC[n].prototype.build === "function"));
+ok("the Canvas-2D shim is GONE, not merely unused",
+   SOS.SvgCtx === undefined && AVC.DeviceController.prototype.renderTouch === undefined,
+   `SvgCtx=${typeof SOS.SvgCtx} renderTouch=${typeof AVC.DeviceController.prototype.renderTouch}`);
 
 /* ===========================================================================
    V44 — THE VST LAUNCHER TREE.
