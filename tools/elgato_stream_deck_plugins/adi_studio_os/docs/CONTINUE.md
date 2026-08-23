@@ -52,7 +52,36 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**1107 tests green** (1052 JS + 55 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**). The count DROPPED from 1153 because V59 deleted the Calculator and its 24 assertions with it; four new invariants were added in their place. **Batch 31 is what is deployed** (`service v2.5.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`) — **Batch 32 is committed but NOT yet on the hardware.**
+**1139 tests green** (1084 JS + 55 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**). **Batch 31 is what is deployed** (`service v2.5.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`) — **Batches 32 and 33 are committed but NOT yet on the hardware.**
+
+### ⚠️ BATCH 33 NEEDS AN ABLETON RESTART, NOT JUST A DEPLOY
+
+V61 adds ONE additive remote-script verb, `transport` (actions `play` / `stop` /
+`loop`). Live loads Remote Scripts at launch, so until you restart Live the three
+transport keys are fire-and-forget messages into a script that has never heard of
+them — they will look dead and nothing will log. **The remote-script change is a
+separate commit in the sibling `adi_ableton_vst_controller` folder.**
+
+### The Ableton module owns TWO screens now (V61)
+
+- **`ableton.hub`** — Level 1, the control centre. What the Root Hub tile opens.
+  Transport (Play/Stop/Loop) on row 0, the five mode folders (VST · MIDI · Device ·
+  OS · Delay) on row 3, rows 1-2 and cols 5-8 deliberately empty.
+- **`ableton.vst`** — Level 2, the VST page. The OLD hub, unchanged: four
+  two-column bands, 8 cells each, all four rows, same artwork. **A test counts
+  those 32 cells and fails if anything shrinks them.**
+
+**Strip ownership is `focus`, and NAV NEVER TOUCHES IT** — `none` (the Level 1
+default, empty) · `vst` · `mix` · `os`. That is what makes the VST folder key stay
+lit after BACK. The tint is just `active`, an existing keySpec field: **nothing was
+added to the three whitelists.** `stopPump()` lives on **Level 1's** `onExit` and
+nowhere else — see V61 in DECISIONS for why putting it on Level 2 breaks retention.
+
+### Mute / Solo / Record Arm need verbs that do not exist
+
+Device mode's dials 1-4 are empty on purpose, reserved for them. The remote script
+has **no mute/solo/arm verb of any kind** — checked. Three more additive verbs, a
+sibling-repo commit, and another Live restart.
 
 **`scripts/test_service.mjs` is FLAKY UNDER LOAD** and it is not a new bug: a dropped `midi.ports` reply cascades into the five assertions after it. It spawns the real service and races on real socket timing. Re-run it on a quiet machine before believing a failure there.
 

@@ -89,16 +89,26 @@ function fakeIdle() {
                 index: -1, param_count: 0 };
   st.mix = { has_track: true, track: "Drums", vol: 0.72, vol_disp: "-4.5 dB",
              pan: -0.34, pan_disp: "17L" };
+  // V61 — Live playing with loop on, so the sheet shows both transport keys LIT.
+  st.transport = { playing: true, loop: true };
   SOS.Modules.Ableton.bridge.isOnline = () => true;
 }
 
-function grid(label, stateIndex, screenId) {
+function grid(label, stateIndex, screenId, opts) {
   // Navigating for real (rather than rendering a screen in isolation) means the
   // sheet also exercises nav + the overlay compositor, not just the module.
   Nav.toRoot();
   // An ARRAY walks the real path, so a sub-page is rendered with the stack it
   // actually has on the device — which is what makes its Back key meaningful.
   for (const id of [].concat(screenId || [])) Nav.enter(id);
+  /* V61 — `back: n` pops n levels AFTER walking down, which is the only way to
+     render the retention state honestly: the sheet has to have really been on the
+     VST page and really pressed Back, or it proves nothing about focus surviving.
+     `focus` sets the Ableton strip focus explicitly, for the Device-mode sheet. */
+  for (let i = 0; i < ((opts && opts.back) || 0); i++) Nav.back();
+  if (opts && opts.focus && SOS.Modules.Ableton) {
+    SOS.Modules.Ableton._setFocus(opts.focus);
+  }
   States.setState(stateIndex);
   let cells = "";
   for (let row = 0; row < S.ROWS; row++) {
@@ -154,13 +164,15 @@ ${pick("delay", grid("Root Hub + Time Divisions docked &mdash; dial 5 = readout/
 ${pick("dj", grid("Rekordbox &middot; NAV OFF &mdash; the Omnis-Duo surface (V16)", 2, "rekordbox.hub"))}
 ${pick("djnum", grid("Rekordbox &middot; State 0 &mdash; numpad covering Deck B", 0, "rekordbox.hub"))}
 ${pick("midi", grid("MIDI Control &middot; NAV OFF &mdash; drums, scale touch, banked CC", 2, "midictl.hub"))}
-${pick("ableton", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton &middot; EQ Eight &mdash; FULL: the strip spans all six dials", 2, "ableton.hub")))}
-${pick("ableton2", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; FabFilter Pro-Q 3 &mdash; FULL, resolved by name", 2, "ableton.hub")))}
-${pick("compact", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton &middot; Pro-Q 3 COMPACT &mdash; Divisions borrows dials 5-6, so build(4) (V14)", 1, "ableton.hub")))}
-${pick("flat", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton hub &middot; the flat column layout, TINTED (V49)", 2, "ableton.hub")))}
-${pick("idle", (fakeIdle(), grid("Ableton hub &middot; IDLE = TRACK MODE (V50) &mdash; OS nav on 1-4, Pan on 5, Volume on 6", 2, "ableton.hub")))}
-${pick("next", (fakeIdle(), (SOS.Modules.Ableton._page(1), grid("Ableton hub &middot; NEXT &mdash; the spare page keeps the four tinted sections (V49)", 2, "ableton.hub"))))}
-${pick("midi", (fakeIdle(), (SOS.Modules.Ableton._page(0), grid("MIDI Control &middot; now with a real Back key at (0,0) (V51)", 2, ["ableton.hub", "midictl.hub"]))))}
+${pick("level1", (fakeIdle(), grid("Ableton LEVEL 1 &mdash; transport on row 0, the five mode folders on row 3, strip EMPTY (V61)", 2, "ableton.hub")))}
+${pick("level1vst", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton LEVEL 1 after BACK &mdash; VST folder still LIT, dials still on the VST (V61 retention)", 2, ["ableton.hub", "ableton.vst"], { back: 1 })))}
+${pick("level1mix", (fakeIdle(), grid("Ableton LEVEL 1 &middot; DEVICE mode &mdash; Pan on 5, Volume on 6, dials 1-4 reserved (V61)", 2, "ableton.hub", { focus: "mix" })))}
+${pick("ableton", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton VST page &middot; EQ Eight &mdash; FULL: the strip spans all six dials", 2, ["ableton.hub", "ableton.vst"])))}
+${pick("ableton2", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton VST page &middot; FabFilter Pro-Q 3 &mdash; FULL, resolved by name", 2, ["ableton.hub", "ableton.vst"])))}
+${pick("compact", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton VST page &middot; Pro-Q 3 COMPACT &mdash; Divisions borrows dials 5-6, so build(4) (V14)", 1, ["ableton.hub", "ableton.vst"])))}
+${pick("flat", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton VST page &middot; the flat column layout, TINTED (V49)", 2, ["ableton.hub", "ableton.vst"])))}
+${pick("next", (fakeIdle(), (SOS.Modules.Ableton._page(1), grid("Ableton VST page &middot; NEXT &mdash; the spare page keeps the four tinted sections (V49)", 2, ["ableton.hub", "ableton.vst"]))))}
+${pick("midi", (fakeIdle(), (SOS.Modules.Ableton._page(0), grid("MIDI Control &middot; now with a real Back key at (0,0) (V51)", 2, ["ableton.hub", "ableton.vst", "midictl.hub"]))))}
 `;
 
 fs.writeFileSync(OUT, html);

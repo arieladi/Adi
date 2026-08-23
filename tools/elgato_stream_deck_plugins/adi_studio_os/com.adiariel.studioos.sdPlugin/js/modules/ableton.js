@@ -254,6 +254,13 @@ SOS.Modules.Ableton = (function () {
         case 'device_pos':
           state.devicePos = { index: m.index, count: m.count };
           emit('device_pos', state.devicePos); emit('state', state); break;
+        /* V61 — Live's own transport state, so the keys can LIGHT rather than
+           just fire. The remote script pushes it after every transport verb.
+           Fields are read defensively: an older Live missing one of them must
+           leave the key unlit, not undefined-shaped. */
+        case 'transport':
+          state.transport = { playing: !!m.playing, loop: !!m.loop };
+          emit('transport', state.transport); emit('state', state); break;
         default: break;
       }
     }
@@ -291,6 +298,12 @@ SOS.Modules.Ableton = (function () {
       trackVolumeDelta: function (steps) { send({ c: 'track_volume_delta', steps: steps }); },
       trackPanDelta: function (steps) { send({ c: 'track_pan_delta', steps: steps }); },
       getMix: function () { send({ c: 'get_mix' }); },
+      /* V61 — the transport. ONE additive verb carrying an action rather than
+         three separate ones: the remote script's V30 exception is for purely
+         additive verbs, and one addition is a smaller change than three. Live
+         must be RESTARTED after the remote script is deployed, or these are
+         fire-and-forget messages into a script that has never heard of them. */
+      transport: function (action) { send({ c: 'transport', action: action }); },
       // V53 — step through the track's devices, racks included. Live owns the walk.
       deviceStep: function (dir) { send({ c: 'device_step', dir: dir }); },
       devicePos: function () { send({ c: 'device_pos' }); },
@@ -572,14 +585,88 @@ SOS.Modules.Ableton = (function () {
     return !!(st.device && st.device.has_device);
   }
 
-  function idleDial(dial) {
-    // 1-4: the Root Hub's own strip, not a copy of it.
-    if (dial <= 4) {
-      var Root = SOS.Modules.Root;
-      return Root && Root.osNavDial ? Root.osNavDial(dial) : { title: '', value: '' };
-    }
+  /* ==========================================================================
+     V61 — STRIP FOCUS: WHO OWNS THE DIALS, DECOUPLED FROM WHERE YOU ARE.
+
+     Adi: "If I press BACK to return to the Level 1 Ableton Hub, the VST folder
+     key MUST remain highlighted to clearly indicate that the dials and touch
+     screen are still actively controlling VSTs."
+
+     That is not a tint — it is a decoupling. Until now the strip followed
+     NAVIGATION: composite() painted only while the hub's own dials() was being
+     asked, so going Back stopped the module owning the strip.
+
+     Ownership is now ONE module-level variable that NAV NEVER TOUCHES:
+
+       'none'  nothing on the strip (the Level 1 default — Adi's ruling)
+       'vst'   the device/macro controller owns all six zones
+       'mix'   Ableton track controls (Device mode)
+       'os'    the Root Hub's OS navigation strip, on explicit request
+
+     THE TINT FALLS OUT FOR FREE. Each mode key paints `active: focus === '...'`,
+     and `active` is already a keySpec() field that render.js draws as a lit cap.
+     No new render path, no new binding field, and NOTHING added to the three
+     hand-written whitelists — which matters, because that trap has bitten twice.
+
+     THIS IS A THIRD ORTHOGONAL STATE MACHINE, beside nav level and the carousel
+     state, and this project has been hurt exactly there before (a hardcoded 4 in
+     input.js; eight literal 3s in the tests at V59). So: nothing outside this
+     file compares `focus` to a literal, the values live in FOCUS, and the tests
+     assert the SHAPE — every mode key's focus value must be a member of FOCUS,
+     and at most one mode key may be lit at a time.
+     ========================================================================== */
+  var FOCUS = { NONE: 'none', VST: 'vst', MIX: 'mix', OS: 'os' };
+  var focus = FOCUS.NONE;
+
+  function setFocus(f) {
+    if (focus === f) return;
+    focus = f;
+    SOS.SD.log('ableton: strip focus -> ' + f);
+    SOS.States.repaint();
+  }
+
+  var BLANK = { title: '', value: '' };
+
+  /* V61 — OS mode, on explicit request only.
+
+     Adi: "remove the standard OS Nav controls (Scroll, Zoom, Apps, Tabs) from the
+     touch screen and dials whenever we are inside the Ableton Hub". So this is no
+     longer the DEFAULT — `focus` starts at NONE and the strip is empty. The OS
+     mode key is what brings it back, which is the only reading under which that
+     key is not dead on arrival: the other four mode keys are strip-focus
+     switches, so this one is too. INTERPRETATION, flagged in DECISIONS — one line
+     to change if Adi wants the OS key to navigate to the Root Hub instead.
+
+     Still MIRRORED from Root.osNavDial rather than copied. Two hand-written
+     copies of the same five dials is how "the standard OS navigation strip"
+     quietly stops being standard. */
+  function osDial(dial) {
+    var Root = SOS.Modules.Root;
+    if (dial > 5) return BLANK;          // 6 stays free, so the clock can have it
+    return Root && Root.osNavDial ? Root.osNavDial(dial) : BLANK;
+  }
+
+  /* V61 — DEVICE MODE: the Ableton mixer, as far as the remote script can go.
+
+     Volume and Pan work TODAY: `track_volume_delta` and `track_pan_delta` are
+     V50's additive verbs and they are live. They keep their exact physical
+     positions — Pan on 5, Volume on 6, where they have always been — because
+     moving a working control to tidy a layout is not an improvement.
+
+     Dials 1-4 are DELIBERATELY EMPTY. Adi: "Leave those dial/touch slots empty
+     for now so we can build dedicated Track/Mixer controls there later." Mute,
+     Solo and Record Arm need three more additive remote-script verbs that do not
+     exist yet — checked, the script has no mute/solo/arm verb of any kind — and
+     those are a sibling-repo commit plus a Live restart.
+
+     Dial 6's LONG press is the engine's NAV gesture and is untouchable, so
+     neither of these two takes a press — turning is the whole interaction.
+     Volume is the one thing on this strip you must not fire by accident. */
+  function mixDial(dial) {
     var mix = Bridge.state().mix;
     var on = Bridge.isOnline();
+
+    if (dial <= 4) return BLANK;         // reserved for Mute / Solo / Arm
 
     if (dial === 5) {
       return {
@@ -600,59 +687,230 @@ SOS.Modules.Ableton = (function () {
     };
   }
 
+  /* The VST strip: the compositor's slices, one window per dial. */
+  function vstDial(dial) {
+    var slot = dial - 1;
+    if (!deviceFocused()) {
+      // Focus is on VSTs but Live has nothing selected. Say so on zone 1 rather
+      // than painting six blank zones that look like a broken strip.
+      return dial === 1
+        ? { title: 'VST', value: '—',
+            sub: Bridge.isOnline() ? 'no device focused' : 'bridge offline',
+            color: R.PALETTE.ableton, dim: true }
+        : BLANK;
+    }
+    return {
+      // The strip image IS the dial's face: the compositor already sliced the
+      // one 1200x100 drawing, so a curve spans all six as one picture.
+      svg: zoneSvg[slot] || null,
+      title: active ? (active.dialTitle(slot) || '') : '',
+      value: '',
+      rotate: function (t) { if (active) { active.onDial(slot, t); composite(); } },
+      press: function () { if (active) { active.onDialPress(slot); composite(); } },
+      touch: function (x, y, hold) {
+        if (!active) return;
+        // Touch arrives per-zone; map back into full-strip space before
+        // hit-testing, which is what the controllers expect. y is zone-local
+        // already (0-99) and passes straight through — L10.
+        active.onTouch(slot * L.slotW + (x || 0), y || 0, !!hold);
+        composite();
+      },
+    };
+  }
+
+  /* THE ONE DIAL ENTRY POINT for both screens. Level 1 and Level 2 share it, so
+     the strip cannot disagree with itself depending on which screen asked — which
+     is the whole point of state retention: BACK changes the keys, never the strip. */
+  function focusDial(dial) {
+    if (dial - 1 >= lastZones) return BLANK;      // borrowed by a docked window
+    if (focus === FOCUS.VST) return vstDial(dial);
+    if (focus === FOCUS.MIX) return mixDial(dial);
+    if (focus === FOCUS.OS) return osDial(dial);
+    return BLANK;                                 // FOCUS.NONE — Adi's default
+  }
+
+  /* ==========================================================================
+     V61 — LEVEL 1 IS A CONTROL CENTRE, LEVEL 2 IS THE VST PAGE.
+
+     Adi's ruling, and it corrected a misreading of mine that would have cost the
+     band artwork:
+
+       "The Mode Selectors are NOT a persistent global row that stays visible
+        everywhere. They are simply folder/navigation keys that live exclusively
+        on the Ableton Home Page (Level 1). DO NOT shrink the VST layout. DO NOT
+        re-slice the images. When I press the VST folder on Level 1, it navigates
+        to the VST Page (Level 2), which remains exactly as it is today (full 4
+        rows, 8 cells per category)."
+
+     So `ableton.vst` IS the old hub, byte-for-byte in behaviour: the same
+     `hubKeys(cols)`, the same four two-column bands, the same 8 cells each, the
+     same pagination and the same sliced artwork. `backgrounds.js` is untouched
+     and `slice_backgrounds.py` did NOT need re-running.
+
+     THE MODE ROW IS ROW 3, and that is the resolution of blocker B1 rather than a
+     workaround for it. Adi's physical intent was "the keys above the touch
+     screen"; row 3 is the row nearest the strip. Because the keys are Level-1
+     only, putting them there costs NOTHING — Level 1 has no bands to displace.
+     The reading that shrank the VST page was the wrong one.
+
+         col 0     col 1    col 2     col 3    col 4    cols 5-8
+     r0  BACK      PLAY     STOP      LOOP     ·        ·
+     r1  ·         ·        ·         ·        ·        ·
+     r2  ·         ·        ·         ·        ·        ·
+     r3  VST       MIDI     Device    OS       Delay    ·
+
+     Rows 1-2 and cols 5-8 are deliberately empty. That is the room Adi bought by
+     moving the grid down a level, and filling it is his call, not mine.
+     ========================================================================== */
+
+  /* The five mode folders. A single table, because the difference between them is
+     data: some navigate, some only change strip focus, one docks a window. */
+  var MODES = [
+    { col: 0, label: 'VST',   sub: 'macros',    focus: FOCUS.VST, screen: 'ableton.vst',
+      color: R.PALETTE.green },
+    { col: 1, label: 'MIDI',  sub: 'controller', glyph: '⌗',      screen: 'midictl.hub',
+      color: R.PALETTE.midi },
+    { col: 2, label: 'Device', sub: 'mixer',    focus: FOCUS.MIX,
+      color: R.PALETTE.ableton },
+    { col: 3, label: 'OS',    sub: 'nav',       focus: FOCUS.OS,
+      color: R.PALETTE.nav },
+    { col: 4, label: 'Delay', sub: 'calc',      dock: true,
+      color: R.PALETTE.console },
+  ];
+
+  function modeKey(m) {
+    return {
+      label: m.label, sub: m.sub, glyph: m.glyph, size: 'md',
+      color: m.color,
+      /* THE GREEN VST KEY, and it costs nothing: `active` is already a keySpec()
+         field and render.js already draws it as a lit cap, so the retained focus
+         announces itself with no new render path. A mode that only navigates
+         (MIDI) never lights, because it owns no strip. */
+      active: !!m.focus && focus === m.focus,
+      kind: 'tap',
+      tap: function () {
+        // Focus first, so a screen we navigate to already has the right strip
+        // when its dials() is asked for the first time.
+        if (m.focus) setFocus(m.focus);
+        if (m.dock) SOS.States.setState(SOS.States.DELAY);
+        if (m.screen) SOS.Nav.enter(m.screen);
+      },
+    };
+  }
+
+  /* Transport. DRAWN icons, not glyphs: the proven set has `▶` but no `■` and
+     nothing that reliably reads as a loop, and one drawn shape beside two font
+     glyphs gives three keys three different optical weights. See icons.js. */
+  var TRANSPORT = [
+    { col: 1, label: 'Play', icon: 'transportPlay', color: R.PALETTE.green, verb: 'play' },
+    { col: 2, label: 'Stop', icon: 'transportStop', color: R.PALETTE.rekordbox, verb: 'stop' },
+    { col: 3, label: 'Loop', icon: 'transportLoop', color: R.PALETTE.viz, verb: 'loop' },
+  ];
+
+  function transportKey(t) {
+    var on = Bridge.isOnline();
+    var tp = Bridge.state().transport;
+    /* Play and Loop are STATES in Live and light accordingly; Stop is a momentary
+       action and has nothing to light. `lit` stays undefined for it rather than
+       false, so `active` is simply absent on that key. */
+    var lit = t.verb === 'play' ? !!(tp && tp.playing)
+            : t.verb === 'loop' ? !!(tp && tp.loop)
+            : undefined;
+    return {
+      icon: t.icon, sub: t.label, size: 'md',
+      color: t.color, dim: !on, active: lit,
+      kind: 'tap',
+      tap: function () { Bridge.cmd.transport(t.verb); },
+    };
+  }
+
+  /* Level 1's keys. Region-local (col,row), so the same builder serves the 9-col
+     and 5-col breakpoints — at 5 columns everything still fits, which is the
+     whole advantage of a surface this empty. */
+  function level1Keys(cols) {
+    return function (col, row) {
+      if (col === 0 && row === 0) {
+        return {
+          label: 'Back', badge: '↑', size: 'md', color: R.PALETTE.nav,
+          kind: 'tap', tap: function () { SOS.Nav.back(); },
+        };
+      }
+      if (row === 0) {
+        for (var i = 0; i < TRANSPORT.length; i++) {
+          if (TRANSPORT[i].col === col) return transportKey(TRANSPORT[i]);
+        }
+        return null;
+      }
+      if (row === 3) {
+        for (var j = 0; j < MODES.length; j++) {
+          // At 5 columns the mode row still holds all five (cols 0-4).
+          if (MODES[j].col === col && col < cols) return modeKey(MODES[j]);
+        }
+        return null;
+      }
+      return null;
+    };
+  }
+
+  /* Both screens share onEnter: the bridge, the plugin catalogue, the mix
+     snapshot and the device position are needed by either. The PUMP is shared
+     too — it paints whatever `focus` says, so it must run on Level 1 as well or
+     a retained VST focus would freeze the moment you pressed Back. */
+  function enter() {
+    Bridge.connect();
+    if (SOS.Modules.Plugins) SOS.Modules.Plugins.wire();
+    Bridge.cmd.getMix();
+    Bridge.cmd.devicePos();       // V53 — populate the step arrows' caption
+    pickController();
+    startPump();
+  }
+
   var hub = {
     id: 'ableton.hub',
     title: 'Ableton',
     module: 'ableton',
     color: R.PALETTE.ableton,
-    // The controller is built around owning all six dials, so State 4 is where
-    // it belongs; D15 hands it the whole board on arrival.
+    // Still fullScreenCapable: the mode row is on row 3 and a docked window would
+    // take cols 5-8, so the board is wide enough either way — but D15 handing it
+    // all 36 keys on arrival is what keeps Back where Adi expects it.
     fullScreenCapable: true,
-
-    onEnter: function () {
-      Bridge.connect();
-      if (SOS.Modules.Plugins) SOS.Modules.Plugins.wire();
-      // V50 — populate the idle Track Mode dials without waiting for a change.
-      Bridge.cmd.getMix();
-      Bridge.cmd.devicePos();       // V53 — populate the step arrows' caption
-      pickController();
-      startPump();
-    },
+    onEnter: enter,
+    /* THE PUMP STOPS HERE AND NOWHERE ELSE, and the reason is nav.js's exact
+       semantics: `enter()` pushes and calls onEnter on the NEW screen without
+       touching the parent, and `pop()` calls onExit on the POPPED screen only.
+       So this fires when Level 1 is popped — i.e. going UP to the Root Hub, which
+       is the one moment the Ableton module really stops owning the surface.
+       Putting stopPump on the VST screen instead would kill the strip on the way
+       BACK to Level 1, which is precisely the retention Adi asked for. */
     onExit: function () { stopPump(); },
+    layouts: [
+      { cols: 9, keys: level1Keys(9) },
+      { cols: 5, keys: level1Keys(5) },
+    ],
+    dials: focusDial,
+  };
 
-    /* Two hand-crafted layouts (the global dual-layout contract).
-       FULL (9 cols): one nav row across the top, preset folder below.
-       COMPACT (5 cols): the same controls folded onto two rows, so nothing is
-       lost when a window docks — only the preset folder gets shorter. */
+  /* LEVEL 2 — the VST page. This is the old `ableton.hub` unchanged: same
+     hubKeys, same bands, same 8 cells per category, same artwork. */
+  var vst = {
+    id: 'ableton.vst',
+    title: 'VST',
+    module: 'ableton',
+    color: R.PALETTE.ableton,
+    fullScreenCapable: true,
+    onEnter: function () {
+      // Arriving here IS a VST-focus request, whether you came from the mode key
+      // or from a Back out of the MIDI page.
+      setFocus(FOCUS.VST);
+      enter();
+    },
+    /* NO onExit. Backing out of here lands on Level 1, still inside the module,
+       and the retained VST focus must survive that — see the note on hub.onExit. */
     layouts: [
       { cols: 9, keys: hubKeys(9) },
       { cols: 5, keys: hubKeys(5) },
     ],
-
-    dials: function (dial) {
-      var slot = dial - 1;
-      if (slot >= lastZones) return { title: '', value: '' };   // borrowed by a window
-      // V50 — with no device focused there is no controller strip to draw, so the
-      // dials become Track Mode instead of six blank zones. See idleDial().
-      if (!deviceFocused()) return idleDial(dial);
-      return {
-        // The strip image IS the dial's face: the compositor already sliced the
-        // one 1200x100 drawing, so a curve spans all six as one picture.
-        svg: zoneSvg[slot] || null,
-        title: active ? (active.dialTitle(slot) || '') : '',
-        value: '',
-        rotate: function (t) { if (active) { active.onDial(slot, t); composite(); } },
-        press: function () { if (active) { active.onDialPress(slot); composite(); } },
-        touch: function (x, y, hold) {
-          if (!active) return;
-          // Touch arrives per-zone; map back into full-strip space before
-          // hit-testing, which is what the controllers expect. y is zone-local
-          // already (0-99) and passes straight through — L10.
-          active.onTouch(slot * L.slotW + (x || 0), y || 0, !!hold);
-          composite();
-        },
-      };
-    },
+    dials: focusDial,
   };
 
   /* V13 — STATE 3 IS GONE, and with it this module's context strip. ◀TRK / DEV▶
@@ -673,7 +931,9 @@ SOS.Modules.Ableton = (function () {
   Bridge.on('error', function (msg) { SOS.SD.log('ableton bridge error: ' + msg); });
 
   return {
-    hub: hub, bridge: Bridge,
+    hub: hub, vst: vst, bridge: Bridge,
+    _focus: function () { return focus; },
+    _setFocus: setFocus, _FOCUS: FOCUS, _modes: MODES, _transport: TRANSPORT,
     // exposed for scripts/test_ableton.mjs
     _composite: composite, _zones: zoneSvg,
     _pick: pickController, _active: function () { return active; },

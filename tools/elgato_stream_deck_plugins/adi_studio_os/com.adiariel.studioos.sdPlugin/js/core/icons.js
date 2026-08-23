@@ -174,10 +174,37 @@ SOS.Icons = (function () {
 
   var LIGHT_RED = trafficLight('#FF7B74', '#E8443B', RED_X);
 
+  /* THE TRANSPORT TRIO (V61). Drawn rather than typed, for the same reason the
+     window states are: the proven glyph set has `▶` but no `■` and nothing that
+     reliably reads as a loop, and mixing one drawn shape beside two font glyphs
+     gives three keys three different optical weights. A square box (56 x 56) so
+     each shape sits centred at the same size on the cap.
+
+     The loop is an almost-closed ring with a gap at the top-right and a solid
+     arrowhead on the leading end — the same shape Live puts on its own loop
+     button, and legible at cap scale because the gap is wide enough to read. */
+  var TB = 56;                      // the transport box, square
+  function tr(svg) { return { w: TB, h: TB, svg: svg }; }
+
+  var PLAY = tr('<path d="M18 11 L44 28 L18 45 Z" fill="' + INK + '"/>');
+  var STOP = tr('<rect x="15" y="15" width="26" height="26" rx="3" fill="' + INK + '"/>');
+  /* The ring is a 320-degree arc centred at (28,28) r=17, opened at the TOP so
+     the gap reads at cap scale, with a solid arrowhead on the clockwise-leading
+     end. Both endpoints sit at y=12: 20 degrees either side of vertical. */
+  var LOOP = tr(
+    '<path d="M33.8 12 A17 17 0 1 1 22.2 12" fill="none" stroke="' + INK + '"'
+    + ' stroke-width="5" stroke-linecap="round"/>'
+    + '<path d="M40.4 14.4 L30.1 16.5 L33.9 6.1 Z" fill="' + INK + '"/>');
+
   return {
     closeLight: LIGHT_RED,
     zoomIn: ZOOM,
     tabs: TABS,
+
+    // Ableton transport (V61).
+    transportPlay: PLAY,
+    transportStop: STOP,
+    transportLoop: LOOP,
 
     // Move & Resize — one window, one half of the screen.
     winLeft:   win(pane(IX, IY, HW, IH)),

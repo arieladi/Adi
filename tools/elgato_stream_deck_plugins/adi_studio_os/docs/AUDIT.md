@@ -1,5 +1,24 @@
 # Studio OS — dead-code audit
 
+> ## ✅ RULED ON AND PARTLY ACTIONED — Batch 33 (V60)
+>
+> Adi approved the purge of `SOS.SvgCtx`, `METER.corr`/`METER.bal`, the empty engine
+> exports, `Rekordbox.wirePersist` and the un-ported viz scaffolding, and instructed
+> that **the audio/viz path and all fourteen Ableton controllers stay**. Done in V60 —
+> 473 lines out. See DECISIONS.md Batch 33.
+>
+> **Two items came BACK during the purge**, and the reason generalises for next time:
+> `Clock.LIT_COLOR` was listed test-only but its one caller pins two colours to a
+> single palette entry, so deleting it would delete an invariant; and
+> `Surface.inOverlay`'s assertion was dropped rather than rewritten because it
+> asserted a constant against itself. **Test-only is not the same as dead, and the
+> mechanical sweep in §4 could not tell the difference.**
+>
+> **Still awaiting a ruling:** §2's five controllers with no insert key (~1,450 lines
+> — reachable today by focusing the plugin in Live), §2's dead bridge plumbing and the
+> two dead remote-script verb families, §3's parked service verbs and `service/home.js`,
+> §5's Windows paths, and §6's doc drift (partly fixed in Batches 32-33).
+
 **Asked for in Batch 32**, alongside the Calculator's removal: *"scan the current
 codebase and provide a comprehensive audit report of any unused, dormant, or orphaned
 code… Do NOT delete anything else yet (other than the Calculator)."*

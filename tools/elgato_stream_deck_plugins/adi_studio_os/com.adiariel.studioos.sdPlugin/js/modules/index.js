@@ -32,6 +32,13 @@ SOS.Modules.install = function () {
     else pending.push(pair[1]);
   });
 
+  /* V61 — the Ableton module now owns TWO screens. Level 1 (`ableton.hub`) is the
+     transport / mode control centre and is what the Root Hub tile enters; Level 2
+     (`ableton.vst`) is the VST page, unchanged, reached from the VST mode folder.
+     Registered separately rather than by convention, because `mod.hub` above is
+     the contract every module shares and a second screen is Ableton's alone. */
+  if (M.Ableton && M.Ableton.vst) Nav.register(M.Ableton.vst);
+
   // A hub that has not been ported yet still needs to exist, or Key 1 navigates
   // into nothing and Back has nowhere to return from.
   pending.forEach(function (id) {

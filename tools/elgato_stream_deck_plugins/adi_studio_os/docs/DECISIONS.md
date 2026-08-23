@@ -3272,3 +3272,167 @@ The audit listed both as "test-only", and **test-only is not the same as dead**:
 **The general lesson for the next purge: check whether a test-only export is holding a
 cross-check before deleting it.** One of these two was, and the sweep that found them
 could not tell the difference.
+
+---
+
+## Batch 33 (cont.) — V61: the Ableton control centre
+
+### V61 — RULING, and it CORRECTED A MISREADING OF MINE
+
+I read "use the hardware keys above the touch screen as Mode/Folder selectors" as a
+persistent global row, and drafted a plan whose cost was shrinking every plugin band
+from 8 cells to 6 and re-slicing `backgrounds.js`. Adi:
+
+> "You misunderstood my layout intention. The Mode Selectors are **NOT** a persistent
+> global row that stays visible everywhere. They are simply folder/navigation keys
+> that live exclusively on the **Ableton Home Page (Level 1)**. Therefore: **DO NOT**
+> shrink the VST layout. **DO NOT** re-slice the images. When I press the `VST` folder
+> on Level 1, it navigates to the VST Page (Level 2), which remains exactly as it is
+> today (full 4 rows, 8 cells per category)." And: "These Mode Selectors are
+> **Ableton-only**."
+
+**That resolves B1, B2 and B3 at once, and the resolution is better than the
+workaround.** Because the mode keys are Level-1 only, putting them on **row 3** — the
+row physically nearest the touch strip, which was the point of "above the touch
+screen" — costs *nothing*: Level 1 has no bands to displace. `backgrounds.js` is
+untouched and `slice_backgrounds.py` did not need running.
+
+**The lesson: my B1 blocker was real, but B2 only existed because of the wrong
+reading. When a plan's cost looks disproportionate to the ask, the reading is the
+thing to re-check first.**
+
+### The two screens
+
+```
+LEVEL 1  ableton.hub — the control centre. What the Root Hub tile opens.
+
+     col 0     col 1    col 2     col 3    col 4    cols 5-8
+ r0  BACK      PLAY     STOP      LOOP     ·        ·
+ r1  ·         ·        ·         ·        ·        ·
+ r2  ·         ·        ·         ·        ·        ·
+ r3  VST       MIDI     Device    OS       Delay    ·
+
+LEVEL 2  ableton.vst — the OLD hub, unchanged. Same hubKeys(cols), same four
+         two-column bands, same 8 cells each, same pagination, same sliced
+         artwork, same utility column (MIDI / Prev / Next / NEXT).
+```
+
+Rows 1-2 and cols 5-8 of Level 1 are **deliberately empty** — that is the room the
+split bought, and filling it is Adi's call.
+
+**A test guards the ruling directly**: it counts the VST page's band cells and fails
+unless all 32 are still there across all four rows. That is the assertion that would
+have caught my original plan.
+
+### Strip focus — the green VST key is a DECOUPLING, not a tint
+
+Adi: *"If I press BACK to return to the Level 1 Ableton Hub, the VST folder key MUST
+remain highlighted to clearly indicate that the dials and touch screen are still
+actively controlling VSTs."*
+
+Until now the strip followed NAVIGATION — `composite()` painted only while the hub's
+own `dials()` was being asked, so Back stopped the module owning the strip. Ownership
+is now one module-level variable that **nav never touches**:
+
+| `focus` | strip |
+|---|---|
+| `none` | empty — **the Level 1 default, per Adi's ruling** |
+| `vst` | the device/macro controller owns all six zones |
+| `mix` | Ableton track controls (Device mode) |
+| `os` | the Root Hub's OS navigation strip, on explicit request |
+
+**THE TINT FALLS OUT FOR FREE.** Each mode key paints `active: focus === '…'`, and
+`active` is already a `keySpec()` field that `render.js` draws as a lit cap. **Nothing
+was added to the three hand-written whitelists** — no new render path, no new binding
+field. That was a design goal, not luck: that trap has bitten twice.
+
+**THE PUMP LIFECYCLE IS THE SUBTLE PART.** `nav.js`'s `enter()` pushes and calls
+`onEnter` on the NEW screen without touching the parent; `pop()` calls `onExit` on the
+POPPED screen only. So `stopPump()` belongs on **Level 1's** `onExit` — that fires
+when Level 1 is popped, i.e. going up to the Root Hub, the one moment the module
+really stops owning the surface. Putting it on the VST screen instead would kill the
+strip on the way BACK to Level 1, which is exactly the retention that was asked for.
+**Level 2 has no `onExit` at all, on purpose.**
+
+Focus is **sticky across leaving the module**: come back to Ableton and the strip is
+where you left it. Not asked for either way; it is the behaviour that surprises least.
+
+### This is a THIRD orthogonal state machine, and it is fenced accordingly
+
+`focus` sits beside nav level and the carousel state, and this project has been hurt
+in exactly that spot twice — a hardcoded `4` in `input.js` when V13 removed a state,
+and eight literal `3`s in the test suites when V59 removed another. So:
+
+* nothing outside `ableton.js` compares `focus` to a literal; the values live in
+  `FOCUS`;
+* the tests assert the **shape**: every mode key's focus value must be a member of
+  `FOCUS`, no two modes may claim the same one, `FOCUS.NONE` is claimed by none, and
+  at most one mode key may be lit at a time.
+
+### The OS mode key — AN INTERPRETATION, flagged
+
+Adi asked to *"remove the standard OS Nav controls (Scroll, Zoom, Apps, Tabs) from the
+touch screen and dials whenever we are inside the Ableton Hub"*, **and** kept `OS` in
+the list of five folders. Those pull in opposite directions, so: the OS strip is no
+longer the **default** (that is `FOCUS.NONE`, empty), and the OS mode key is what
+brings it back on request.
+
+That is the only reading under which the OS key is not dead on arrival — the other
+four mode keys are strip-focus switches, so this one is too. **One line to change if
+Adi wants it to navigate to the Root Hub instead.**
+
+It is still MIRRORED from `Root.osNavDial`, never copied. Two hand-written copies of
+the same five dials is how "the standard OS navigation strip" quietly stops being
+standard — and a test still pins it, because that mirroring is why the V57 Apps/Tabs
+swap propagated for free.
+
+### Track Mode is now Device mode
+
+V50's idle Track Mode (dials 1-4 mirroring the OS strip, Pan on 5, Volume on 6) was an
+*idle fallback*; it is an explicit *mode* now. **Pan and Volume keep their exact
+physical positions — 5 and 6 — because moving a working control to tidy a layout is
+not an improvement.** Dials 1-4 are deliberately empty, reserved for Mute / Solo /
+Record Arm, per *"leave those dial/touch slots empty for now so we can build dedicated
+Track/Mixer controls there later."*
+
+**Those three need three more additive remote-script verbs that do not exist.** Checked
+the script: there is no mute/solo/arm verb of any kind.
+
+### The transport, and ONE new remote-script verb
+
+**`transport`, carrying an action** — `play` / `stop` / `loop` — rather than three
+separate verbs. Purely additive, which is the V30 exception, and one addition is a
+smaller change to a file that "must not be modified" than three.
+
+* `play` sets `song.is_playing = True` — Live's own "play from here", which is what
+  the spacebar does. `start_playing()` would always jump to the start marker, which is
+  a different control.
+* `stop` calls `song.stop_playing()` rather than `is_playing = False`: the former also
+  returns the playhead to the start marker, which is what a transport STOP means in
+  Live as opposed to a pause.
+* `loop` toggles `song.loop`.
+
+It goes through the Song rather than firing keystrokes, so it works with Live in the
+background and cannot be eaten by whatever window has focus.
+
+**The script pushes a `transport` message back**, so Play and Loop LIGHT from Live's
+own state. **Stop has no lit state at all** — it is momentary, not a toggle, so
+`active` is simply absent on that key rather than `false`.
+
+**⚠️ LIVE MUST BE RESTARTED** after deploying the remote script, or these are
+fire-and-forget messages into a script that has never heard of them. The remote-script
+change is a **separate commit in the sibling folder.**
+
+### The transport icons are DRAWN, not typed
+
+The proven glyph set has `▶` but **no filled square** and nothing that reliably reads
+as a loop. And one drawn shape beside two font glyphs gives three adjacent keys three
+different optical weights. So all three are vector icons in `js/core/icons.js`
+(`transportPlay` / `transportStop` / `transportLoop`), on a 56×56 box so each sits
+centred at the same size. Same reasoning as the nine window states, and a test pins it
+the same way: no glyph, a real icon name, three different pictures, all present in the
+registry.
+
+**Looked at, not just tested**: rendered at cap scale through the real `render.js`
+before committing. The loop's ring gap is wide enough to read and the arrowhead does
+not collide with it.
