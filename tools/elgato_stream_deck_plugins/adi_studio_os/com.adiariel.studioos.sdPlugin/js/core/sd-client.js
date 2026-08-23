@@ -48,7 +48,7 @@ SOS.SD = (function () {
     return true;
   }
   function forget(context) { delete lastImage[context]; delete lastFeed[context]; }
-  function flushDirty() { var n = writes; writes = 0; return n; }
+  // V60 — flushDirty() was superseded by flushCounts() and had no callers left.
   // Keys and zones counted separately: they have different failure modes and
   // only the zone count could ever run away, having had no dedupe until V27.
   function flushCounts() {
@@ -94,17 +94,13 @@ SOS.SD = (function () {
   function showOk(context) { raw({ event: 'showOk', context: context }); }
   function openUrl(url) { raw({ event: 'openUrl', payload: { url: url } }); }
   function log(message) { raw({ event: 'logMessage', payload: { message: '[StudioOS] ' + message } }); }
-  function sendToPI(context, action, payload) {
-    raw({ event: 'sendToPropertyInspector', context: context, action: action, payload: payload });
-  }
+  // V60 — sendToPI() removed. There are no Property Inspectors (D1): one cell
+  // action on all 36 keys, driven centrally, so nothing ever had a PI to talk to.
 
   // ----- info helpers -----
   // Device type 13 is the Stream Deck + XL (36 keys / 6 dials) — see DECISIONS F1.
-  function deviceOfType(type) {
-    if (!info || !info.devices) return null;
-    for (var i = 0; i < info.devices.length; i++) if (info.devices[i].type === type) return info.devices[i];
-    return null;
-  }
+  // V60 — deviceOfType() removed: no caller since the surface stopped asking
+  // which physical device a context belonged to.
 
   function connect(inPort, inUUID, registerEvent, inInfo) {
     uuid = inUUID;
@@ -125,12 +121,11 @@ SOS.SD = (function () {
 
   return {
     connect: connect, on: on, uuid: function () { return uuid; }, info: function () { return info; },
-    deviceOfType: deviceOfType,
     image: image, feedback: feedback, forget: forget,
-    flushDirty: flushDirty, flushCounts: flushCounts, setImage: setImage,
+    flushCounts: flushCounts, setImage: setImage,
     setTitle: setTitle, setFeedback: setFeedback, setFeedbackLayout: setFeedbackLayout,
     setState: setState, setSettings: setSettings, getSettings: getSettings,
     setGlobalSettings: setGlobalSettings, getGlobalSettings: getGlobalSettings,
-    showAlert: showAlert, showOk: showOk, openUrl: openUrl, log: log, sendToPI: sendToPI,
+    showAlert: showAlert, showOk: showOk, openUrl: openUrl, log: log,
   };
 })();

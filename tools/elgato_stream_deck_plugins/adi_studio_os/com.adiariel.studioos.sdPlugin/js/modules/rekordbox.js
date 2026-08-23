@@ -117,7 +117,6 @@ SOS.Modules.Rekordbox = (function () {
   // ------------------------------------------------------------------ timings
   var BROWSE_REPEAT_DELAY_MS = 400; // hold a browse key -> auto-repeat scroll
   var BROWSE_REPEAT_MS = 140;
-  var SAVE_DEBOUNCE_MS = 800;
 
   // ------------------------------------------------------------------ colours
   /* From the annotated reference photo: hot cues green, shift yellow, nudge
@@ -237,34 +236,22 @@ SOS.Modules.Rekordbox = (function () {
   }
   function repeatStopAll() { for (var slot in repeats) repeatStop(slot); }
 
-  // ------------------------------------------------------- level persistence
-  /* NOT PORTED AS-IS, deliberately. The legacy persisted the six accumulators
-     into the plugin's global settings on an 800 ms debounce, merging into a
-     single-writer snapshot — a fix it had to ship in 1.0.1.0 after a
-     read-modify-write race clobbered the port name. In Studio OS that object is
-     shared by EVERY module, so a module writing it directly reintroduces the
-     same race one level up. Persistence is therefore exposed as a seam and left
-     unwired until the orchestrator owns a namespaced store; the debounce and the
-     restore validation below are the legacy code, ready for it. */
-  var persist = null;
-  var saveTimer = null;
+  /* ------------------------------------------------- level persistence: REMOVED
+     V60 closes D17 by deleting it rather than wiring it. The apparatus was a
+     seam: `wirePersist(fn)` to hand in a writer, an 800 ms debounce, and a
+     validating `restore(saved)` — all ported from the legacy plugin and left
+     unwired until the orchestrator owned a namespaced store, because the global
+     settings object is shared by EVERY module and a module writing it directly
+     reintroduces the 1.0.1.0 read-modify-write race one level up.
 
-  function wirePersist(fn) { persist = fn || null; }
-  function saveLevelsSoon() {
-    if (!persist) return;
-    SOS.Timing.cancel(saveTimer);
-    saveTimer = SOS.Timing.after(SAVE_DEBOUNCE_MS, function () { persist({ levels: levels }); });
-  }
-  function restoreLevels(saved) {
-    if (!saved) return;
-    ['volume', 'filter', 'tempo'].forEach(function (kind) {
-      ['A', 'B'].forEach(function (deck) {
-        var v = Number(saved[kind] && saved[kind][deck]);
-        if (isFinite(v)) levels[kind][deck] = clamp(Math.round(v), 0, 127);
-      });
-    });
-    SOS.States.repaint();   // async restore: the strip already painted defaults
-  }
+     That store never arrived, so `persist` was null for the whole life of the
+     project, `saveLevelsSoon()` returned on its first line every time a dial
+     moved, and `restore()` was never called by anything. Encoder levels reset on
+     every launch, which is the behaviour Adi has actually been living with.
+
+     THE REASONING IS THE PART WORTH KEEPING: if persistence comes back, it comes
+     back as a namespaced store owned by the orchestrator, never as a module
+     writing the shared settings object. */
 
   // ============================================================= key geometry
   /* button -> role spec. Built once from S.btn(col,row) so the table reads in
@@ -538,7 +525,7 @@ SOS.Modules.Rekordbox = (function () {
           // stable value across a service restart.
           levels[kind][deck] = next;
           IPC.midi.cc(PORT, CH[deck], CC[kind.toUpperCase()], next);
-          saveLevelsSoon();
+
         }
       },
 
@@ -553,7 +540,7 @@ SOS.Modules.Rekordbox = (function () {
           // Push = snap the filter back to its center detent.
           levels.filter[deck] = 64;
           IPC.midi.cc(PORT, CH[deck], CC.FILTER, 64);
-          saveLevelsSoon();
+
         }
         // tempo push intentionally does nothing — no accidental BPM jumps mid-mix.
       },
@@ -615,22 +602,17 @@ SOS.Modules.Rekordbox = (function () {
   return {
     hub: hub,
 
-    // Persistence seam for the orchestrator (see the note above): call
-    // restore(saved.levels) at boot and wirePersist(fn) to start saving.
-    wirePersist: wirePersist, restore: restoreLevels,
-    snapshot: function () { return { levels: levels }; },
-
     // Exposed for a headless scripts/test_rekordbox.mjs and scripts/preview.mjs.
     _midimap: { CH: CH, NOTE: NOTE, GLOBAL_NOTE: GLOBAL_NOTE, CC: CC,
                 DEFAULT_SENS: DEFAULT_SENS, LEVEL_DEFAULT: LEVEL_DEFAULT,
                 PORT_NAME: DEFAULT_PORT_NAME },
-    _keys: KEY, _dials: DIAL, _levels: levels, _sens: sens,
+    _dials: DIAL, _levels: levels, _sens: sens,
     _shift: { active: shiftActive, held: shiftHeld },
     _notes: { press: pressNote, release: releaseNote, releaseAll: releaseAll,
               active: activeNote, browseNote: browseNote },
     _fmt: { dialValueText: dialValueText },
     _timing: { BROWSE_REPEAT_DELAY_MS: BROWSE_REPEAT_DELAY_MS,
                BROWSE_REPEAT_MS: BROWSE_REPEAT_MS,
-               SAVE_DEBOUNCE_MS: SAVE_DEBOUNCE_MS },
+             },
   };
 })();

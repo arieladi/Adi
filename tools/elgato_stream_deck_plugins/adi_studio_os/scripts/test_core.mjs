@@ -90,7 +90,10 @@ ok('btn(0,0) === 1', S.btn(0, 0) === 1);
 ok('btn(7,3) === 35 (Clear)', S.btn(7, 3) === 35);
 ok('btn(8,3) === 36 (Anchor)', S.btn(8, 3) === 36);
 ok('36 keys / 6 dials', S.KEYS === 36 && S.DIALS === 6);
-ok('col 5 is in the overlay block', S.inOverlay(S.btn(5, 0)) && !S.inOverlay(S.btn(4, 0)));
+/* V60 — `S.inOverlay()` is gone and this assertion went with it, deliberately.
+   It asserted OVERLAY_COL_MIN against itself, and the dock boundary already has
+   real coverage on the LIVE path in block [7]: "col 8 belongs to the docked
+   window" and "col 4 belongs to the module", both read through Layout.split(). */
 
 console.log('\n[3] surface registration');
 for (let r = 0; r < 4; r++) for (let c = 0; c < 9; c++) S.registerKey(`k${r}_${c}`, { column: c, row: r });
