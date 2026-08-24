@@ -800,6 +800,17 @@ class LiveBridge(object):
         if pan is not None:
             msg["pan"] = pan.value
             msg["pan_disp"] = self._disp(pan)
+        # V62 — the three mixer TOGGLES, so Device mode's dials 1-3 can show
+        # state rather than just fire. Read one at a time through getattr in a
+        # try: a return track has no `arm` at all, and a master track has none of
+        # the three, so a single blanket try would drop all three for a Live
+        # version missing only one. `None` means "this track cannot do that",
+        # which the frontend paints as a dimmed zone rather than as OFF.
+        for key, attr in (("mute", "mute"), ("solo", "solo"), ("arm", "arm")):
+            try:
+                msg[key] = bool(getattr(track, attr))
+            except Exception:
+                msg[key] = None
         self.send(msg)
 
     def _disp(self, param):
@@ -809,6 +820,41 @@ class LiveBridge(object):
             return ""
 
     def cmd_get_mix(self):
+        self._emit_mix()
+
+    # ----------------------------------------------------------- mixer toggles
+    # V62 — ADDITIVE, in the V30 sense: three new verbs, no existing code path
+    # touched. They join track_volume_delta / track_pan_delta / get_mix (V50) so
+    # Device mode owns five of the six dials.
+    #
+    # ONE verb carrying a WHICH, not three separate verbs — same reasoning as
+    # V61's `transport`: the smallest possible addition to a file that "must not
+    # be modified".
+    #
+    # THE TRACK TYPE MATTERS AND LIVE DOES NOT WARN YOU. A return track has no
+    # `arm`, and the master track has no mute, solo or arm. Setting a missing
+    # attribute on a Live object raises, so each is guarded on its own and the
+    # failure is LOGGED rather than swallowed — a dial that silently does nothing
+    # is the hardest kind of bug to find on this surface.
+    def cmd_track_toggle(self, which):
+        w = str(which or "").lower()
+        if w not in ("mute", "solo", "arm"):
+            self.log("track_toggle: unknown target %r" % (which,))
+            return
+        track = self.song.view.selected_track
+        if track is None:
+            return
+        # `can_be_armed` is Live's own answer for the arm case and is cheaper
+        # than catching the exception, so ask when it is there.
+        if w == "arm" and not bool(getattr(track, "can_be_armed", True)):
+            self.log("track_toggle: %r cannot be armed" % (getattr(track, "name", "?"),))
+            self._emit_mix()
+            return
+        try:
+            setattr(track, w, not bool(getattr(track, w)))
+        except Exception as e:
+            self.log("track_toggle %s failed on %r: %s"
+                     % (w, getattr(track, "name", "?"), e))
         self._emit_mix()
 
     # ------------------------------------------------------------- transport
@@ -869,6 +915,20 @@ class LiveBridge(object):
                 self._mixed.append(p)
             except Exception as e:
                 self.log("mix listen failed: %s" % e)
+        # V62 — the three TOGGLES are watched too, for the same reason volume and
+        # pan are: clicking Mute with the mouse must move the dial. These are
+        # track PROPERTIES, not device parameters, so they take
+        # add_<name>_listener on the track rather than add_value_listener, and
+        # they are tracked in their own list because the teardown call differs.
+        self._mixtoggles = []
+        for name in ("mute", "solo", "arm"):
+            if not hasattr(track, name):
+                continue          # a return track has no arm; master has none
+            try:
+                getattr(track, "add_%s_listener" % name)(self._emit_mix)
+                self._mixtoggles.append((track, name))
+            except Exception as e:
+                self.log("mix toggle listen %s failed: %s" % (name, e))
 
     def _unmix_listen(self):
         for p in getattr(self, "_mixed", []):
@@ -877,6 +937,15 @@ class LiveBridge(object):
             except Exception:
                 pass
         self._mixed = []
+        # V62 — torn down with the track, exactly like the two parameters above.
+        # Leaking these would fire _emit_mix for a track that is no longer
+        # selected, which reads on the surface as a dial that will not settle.
+        for track, name in getattr(self, "_mixtoggles", []):
+            try:
+                getattr(track, "remove_%s_listener" % name)(self._emit_mix)
+            except Exception:
+                pass
+        self._mixtoggles = []
 
     # ================================================================= presets
     def _find_preset_root(self):
