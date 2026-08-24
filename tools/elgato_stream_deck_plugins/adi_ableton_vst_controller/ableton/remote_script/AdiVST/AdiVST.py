@@ -126,6 +126,9 @@ class AdiVST(ControlSurface):
         elif c == "transport":
             # V61 — additive. One verb, three actions: play / stop / loop.
             b.cmd_transport(m.get("action", ""))
+        elif c == "track_toggle":
+            # V62 — additive. One verb, three targets: mute / solo / arm.
+            b.cmd_track_toggle(m.get("which", ""))
         elif c == "device_step":
             # V53 — additive. Walks the flattened device tree, so it steps into and
             # out of racks rather than over them.
