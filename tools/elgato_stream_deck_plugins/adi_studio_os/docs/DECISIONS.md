@@ -3436,3 +3436,94 @@ registry.
 **Looked at, not just tested**: rendered at cap scale through the real `render.js`
 before committing. The loop's ring gap is wide enough to read and the arrowhead does
 not collide with it.
+
+---
+
+## Batch 34 — V62: Mute / Solo / Arm, and OS mode confirmed
+
+### V62a — RULING: the OS key was right
+
+> "You were completely right about the OS Mode interpretation. I DO want the OS key
+> to bring back the Scroll/Zoom/Apps/Tabs strip inside the Ableton Hub when needed."
+
+V61's flagged interpretation is now a ruling. No code change — the behaviour shipped
+that way. The note in V61 is upgraded from "one line to change if Adi disagrees" to
+settled.
+
+### V62b — RULING: "Write the Mute, Solo and Record Arm verbs and map them to dials 1-3"
+
+Device mode now owns FIVE of the six dials:
+
+```
+dial 1  Mute    push toggles      dial 4  (still spare)
+dial 2  Solo    push toggles      dial 5  Pan      turn
+dial 3  Arm     push toggles      dial 6  Volume   turn, 0.5 dB
+```
+
+**ONE additive verb again**, `track_toggle` carrying a `which` of `mute` / `solo` /
+`arm` — same reasoning as V61's `transport`: the smallest possible addition to a file
+that must not be modified. **Live must be RESTARTED.** Separate sibling-repo commit.
+
+### They are PRESSES, and that is the opposite of the rule for 5 and 6
+
+A toggle has two positions, so a detent-per-turn would need a direction it does not
+have. And the reason Volume must not take a press — an accidental push changes a level
+you were reading — simply does not apply to a control whose entire job is to flip.
+Turning dials 1-3 is deliberately inert, and a test asserts it.
+
+### THE TRACK TYPE MATTERS, AND LIVE DOES NOT WARN YOU
+
+**A return track has no `arm`. The master track has none of the three.** Setting a
+missing attribute on a Live object raises. So:
+
+* each of the three is read through its own `getattr` in its own `try` — a single
+  blanket try would drop all three because one was missing;
+* `None` is sent for "this track cannot do that", which is **not the same as OFF** and
+  must not look like it. The zone paints an em dash with **no indicator bar at all**,
+  dimmed. A full/empty bar would read as a working control, so a master track would
+  look like three un-muted toggles that silently do nothing;
+* the frontend **refuses the press outright** on an unsupported toggle rather than
+  sending a verb that cannot land;
+* `can_be_armed` is asked before arming when Live exposes it — cheaper than catching
+  the exception, and it logs a real reason.
+
+Three states, three looks, all three asserted: `OFF` + dark bar, `ON` + full bar +
+the mode's colour, `—` + no bar + dimmed.
+
+### The toggles are WATCHED, exactly like Volume and Pan
+
+`_mix_listen` now also attaches to `mute` / `solo` / `arm` so clicking Mute with the
+mouse moves the dial. These are track PROPERTIES, not device parameters, so they take
+`add_<name>_listener` on the track rather than `add_value_listener` — a different
+teardown call, which is why they live in their own `_mixtoggles` list. **Leaking them
+would fire `_emit_mix` for a track that is no longer selected**, which reads on the
+surface as a dial that will not settle.
+
+### DEPLOYED — Batches 32, 33 and 34 are on the hardware
+
+`./scripts/deploy-mac.sh`, twice. Fresh log both times, `service v2.5.0`,
+`surface COMPLETE — 36/36 keys, 6/6 dials`, no errors, app idling at 0.9%. The
+DEPLOYED files were grepped for the change markers rather than trusted, including
+`SOS.SvgCtx` being absent from everything but two history comments.
+
+**Ableton was not running, so the remote script is in place and will be picked up on
+its next launch.** Both `transport` (V61) and `track_toggle` (V62) land together.
+
+### V62c — test_service.mjs's flakiness is FIXED, and the scary hypothesis was wrong
+
+The suite had failed in a cascade under load twice, and the obvious suspect was a
+robustness bug: a malformed frame killing the service, with the assertion checking
+`exitCode` 100 ms too early to see it. **Tested directly, on a throwaway instance on
+its own port: a malformed frame does NOT kill the service, and it answers
+`midi.ports` immediately afterwards.** The product code is fine.
+
+Two real causes in the TEST, both fixed:
+
+1. **`await wait(700)` for boot was a guess.** Plenty on an idle machine, not always
+   enough on a busy one. It polls the real health endpoint now.
+2. **CoreMIDI enumeration was capped at 2.5 s**, and it gets slower when another
+   process — the DEPLOYED service — holds virtual ports open, which is exactly the
+   state right after a deploy. Every MIDI assertion read the reply from that one
+   call, so ONE timeout took six down with it. The MIDI verbs get 12 s.
+
+**14 consecutive clean runs, 6 of them with three other suites running concurrently.**

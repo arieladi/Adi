@@ -2314,10 +2314,43 @@ console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
 
        So the assertion INVERTS. In Device mode dials 1-4 are EMPTY and reserved
        for Mute / Solo / Record Arm, and the OS strip is not a default any more. */
-    ok("Device mode leaves dials 1-4 EMPTY, reserved for Mute/Solo/Arm",
-       [1, 2, 3, 4].every((n) => !d(n).title && !d(n).value && !d(n).svg
-                                 && d(n).indicator == null),
-       [1, 2, 3, 4].map((n) => `${d(n).title}|${d(n).value}`).join(" "));
+    /* V62 — dials 1-3 are Mute / Solo / Arm now; only dial 4 is still spare.
+       The state comes from the remote script's `mix` message. */
+    st.mix.mute = false; st.mix.solo = false; st.mix.arm = false;
+    ok("Device mode puts Mute / Solo / Arm on dials 1-3",
+       [1, 2, 3].map((n) => d(n).title).join(",") === "Mute,Solo,Arm",
+       [1, 2, 3].map((n) => d(n).title).join(","));
+    ok("…they are PRESSES, not turns — a toggle has no direction",
+       [1, 2, 3].every((n) => typeof d(n).press === "function" && !d(n).rotate),
+       [1, 2, 3].map((n) => `${typeof d(n).press}/${typeof d(n).rotate}`).join(" "));
+    ok("…and dial 4 is the one still deliberately spare",
+       !d(4).title && !d(4).value && d(4).indicator == null,
+       `${d(4).title}|${d(4).value}`);
+    {
+      const sent = [];
+      const real = A.bridge.cmd.trackToggle;
+      A.bridge.cmd.trackToggle = (w) => sent.push(w);
+      d(1).press(); d(2).press(); d(3).press();
+      A.bridge.cmd.trackToggle = real;
+      ok("each sends its own target on ONE verb",
+         sent.join(",") === "mute,solo,arm", sent.join(","));
+    }
+    ok("OFF reads OFF with a dark lamp", d(1).value === "OFF" && d(1).indicator === 0);
+    st.mix.solo = true;
+    ok("ON lights the lamp and takes the mode's colour",
+       d(2).value === "ON" && d(2).indicator === 1
+       && d(2).color === SOS.Render.PALETTE.viz,
+       `${d(2).value} ${d(2).indicator} ${d(2).color}`);
+    /* A `null` from the remote script means the track CANNOT do it — a return
+       track has no arm, the master has none of the three. That must NOT look like
+       OFF, or a master track reads as three working controls that do nothing. */
+    st.mix.arm = null;
+    ok("a track that cannot arm shows an em dash, not OFF",
+       d(3).value === "—" && d(3).indicator === undefined && d(3).dim === true,
+       `${d(3).value} ${d(3).indicator} ${d(3).dim}`);
+    ok("…and refuses the press outright rather than sending a doomed verb",
+       d(3).press === undefined, String(typeof d(3).press));
+    st.mix.solo = false; st.mix.arm = false;
     ok("…and no OS-nav control survives anywhere on the Ableton strip by default",
        [1, 2, 3, 4, 5, 6].every((n) => !["Scroll Y", "Scroll X", "Zoom", "Apps", "Tabs"]
                                           .includes(d(n).title)),

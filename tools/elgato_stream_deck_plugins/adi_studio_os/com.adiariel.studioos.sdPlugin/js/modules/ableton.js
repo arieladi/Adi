@@ -304,6 +304,10 @@ SOS.Modules.Ableton = (function () {
          must be RESTARTED after the remote script is deployed, or these are
          fire-and-forget messages into a script that has never heard of them. */
       transport: function (action) { send({ c: 'transport', action: action }); },
+      /* V62 — the three mixer toggles. One verb carrying a target, same shape as
+         `transport` and for the same reason: the smallest addition to a file that
+         must not be modified. Live must be RESTARTED after deploying it. */
+      trackToggle: function (which) { send({ c: 'track_toggle', which: which }); },
       // V53 — step through the track's devices, racks included. Live owns the walk.
       deviceStep: function (dir) { send({ c: 'device_step', dir: dir }); },
       devicePos: function () { send({ c: 'device_pos' }); },
@@ -653,20 +657,57 @@ SOS.Modules.Ableton = (function () {
      positions — Pan on 5, Volume on 6, where they have always been — because
      moving a working control to tidy a layout is not an improvement.
 
-     Dials 1-4 are DELIBERATELY EMPTY. Adi: "Leave those dial/touch slots empty
-     for now so we can build dedicated Track/Mixer controls there later." Mute,
-     Solo and Record Arm need three more additive remote-script verbs that do not
-     exist yet — checked, the script has no mute/solo/arm verb of any kind — and
-     those are a sibling-repo commit plus a Live restart.
+     V62 — MUTE, SOLO AND ARM ARE ON DIALS 1-3, joining Pan and Volume. Adi asked
+     for them there by name, so Device mode owns five of the six dials and only
+     dial 4 is still spare.
+
+     THEY ARE PRESSES, NOT TURNS, and that is the opposite of the rule for 5 and
+     6. A toggle has two positions, so a detent-per-turn would need a direction it
+     does not have; and the reason Volume must not take a press — that an
+     accidental push changes a level you were reading — does not apply to a
+     control whose whole job is to flip. Turning them is deliberately inert.
+
+     A `null` from the remote script means "this track CANNOT do that": a return
+     track has no arm and the master has none of the three. That paints a dimmed
+     zone with an em dash, which is different from OFF and has to look different,
+     or a master track reads as three un-muted controls that silently do nothing.
 
      Dial 6's LONG press is the engine's NAV gesture and is untouchable, so
-     neither of these two takes a press — turning is the whole interaction.
+     neither Pan nor Volume takes a press — turning is the whole interaction.
      Volume is the one thing on this strip you must not fire by accident. */
+  var TOGGLES = [
+    { dial: 1, which: 'mute', title: 'Mute', on: R.PALETTE.rekordbox },
+    { dial: 2, which: 'solo', title: 'Solo', on: R.PALETTE.viz },
+    { dial: 3, which: 'arm',  title: 'Arm',  on: R.PALETTE.green },
+  ];
+
+  function toggleDial(t, mix, on) {
+    // undefined = the bridge has not spoken yet; null = the track cannot do it.
+    var v = mix ? mix[t.which] : undefined;
+    var unsupported = mix && v === null;
+    var lit = v === true;
+    return {
+      title: t.title,
+      value: unsupported ? '—' : (lit ? 'ON' : 'OFF'),
+      sub: unsupported ? 'n/a on this track' : (on ? 'push to toggle' : 'bridge offline'),
+      // The indicator is the lamp: full bar lit, empty bar dark. Absent when the
+      // track cannot do it, so there is no bar to misread as "off".
+      indicator: unsupported ? undefined : (lit ? 1 : 0),
+      color: lit ? t.on : R.PALETTE.dim,
+      dim: !on || unsupported,
+      press: unsupported ? undefined
+                         : function () { Bridge.cmd.trackToggle(t.which); },
+    };
+  }
+
   function mixDial(dial) {
     var mix = Bridge.state().mix;
     var on = Bridge.isOnline();
 
-    if (dial <= 4) return BLANK;         // reserved for Mute / Solo / Arm
+    for (var i = 0; i < TOGGLES.length; i++) {
+      if (TOGGLES[i].dial === dial) return toggleDial(TOGGLES[i], mix, on);
+    }
+    if (dial === 4) return BLANK;        // the one still spare
 
     if (dial === 5) {
       return {

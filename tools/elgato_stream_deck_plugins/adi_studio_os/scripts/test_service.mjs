@@ -31,9 +31,27 @@ child.stderr.on("data", (d) => { stderr += d.toString(); });
 const done = (code) => { try { child.kill("SIGTERM"); } catch {} process.exit(code); };
 
 try {
-  await wait(700);
-  ok("service started", child.exitCode === null, stderr.slice(-300));
-  if (child.exitCode !== null) { console.log(stderr); done(1); }
+  /* V62 — POLL, do not guess. This was a flat `wait(700)`, and 700 ms is plenty
+     on an idle machine and not always enough on a busy one — which is half of why
+     this suite has a reputation for failing under load. Polling the real health
+     endpoint costs nothing when the service is already up and removes the guess
+     entirely. */
+  {
+    let up = false;
+    for (let i = 0; i < 60 && child.exitCode === null; i++) {          // up to ~6 s
+      try {
+        await new Promise((res, rej) => {
+          const r = http.get(`http://127.0.0.1:${PORT}/`, (x) => { x.resume(); res(); });
+          r.on("error", rej);
+          r.setTimeout(400, () => { r.destroy(new Error("t/o")); });
+        });
+        up = true; break;
+      } catch { await wait(100); }
+    }
+    ok("service started and is listening", up && child.exitCode === null,
+       up ? "" : stderr.slice(-300));
+    if (!up || child.exitCode !== null) { console.log(stderr); done(1); }
+  }
 
   console.log("\n[1] http health endpoint");
   const health = await new Promise((res, rej) => {
@@ -83,11 +101,19 @@ try {
   ok("malformed payload does not kill the service", child.exitCode === null);
 
   console.log("\n[4] virtual MIDI");
-  const ports = await ask("midi.ports");
+  /* CoreMIDI enumeration is the slowest thing this service does, and it gets
+     slower when another process (the DEPLOYED service) is holding virtual ports
+     open — which is exactly the situation right after a deploy. A 2.5 s cap was
+     tight enough to lose the race, and because everything below reads the reply
+     from this one call, ONE timeout took six assertions down with it. Verified
+     first that the service itself is not at fault: a malformed frame does not
+     kill it and it answers midi.ports immediately afterwards. */
+  const MIDI_MS = 12000;
+  const ports = await ask("midi.ports", {}, MIDI_MS);
   ok("midi.ports replies", ports?.ok === true, JSON.stringify(ports)?.slice(0, 200));
   ws.send(JSON.stringify({ t: "midi.open", port: "studio", name: "Adi Studio OS TEST" }));
   await wait(600);
-  const after = await ask("midi.ports");
+  const after = await ask("midi.ports", {}, MIDI_MS);
   const studio = after?.result?.ports?.find((p) => p.id === "studio");
   if (process.platform === "darwin") {
     ok("virtual CoreMIDI port created", studio?.connected === true, JSON.stringify(studio));
@@ -104,11 +130,11 @@ try {
   ws.send(JSON.stringify({ t: "midi.noteOn", port: "studio", ch: 0, note: 60, vel: 100 }));
   ws.send(JSON.stringify({ t: "midi.noteOn", port: "studio", ch: 0, note: 64, vel: 100 }));
   await wait(200);
-  const sounding = (await ask("midi.ports"))?.result?.ports?.find((p) => p.id === "studio")?.sounding;
+  const sounding = (await ask("midi.ports", {}, MIDI_MS))?.result?.ports?.find((p) => p.id === "studio")?.sounding;
   ok("two notes tracked as sounding", sounding === 2, `sounding=${sounding}`);
   ws.send(JSON.stringify({ t: "midi.noteOff", port: "studio", ch: 0, note: 60 }));
   await wait(150);
-  const one = (await ask("midi.ports"))?.result?.ports?.find((p) => p.id === "studio")?.sounding;
+  const one = (await ask("midi.ports", {}, MIDI_MS))?.result?.ports?.find((p) => p.id === "studio")?.sounding;
   ok("note off decrements", one === 1, `sounding=${one}`);
 
   ws.close();
