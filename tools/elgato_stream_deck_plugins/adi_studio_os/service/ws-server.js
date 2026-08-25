@@ -39,7 +39,18 @@ export class WsServer {
     });
 
     this.server.on("upgrade", (req, socket, head) => this._upgrade(req, socket, head));
-    this.server.on("error", (e) => this.log.error?.(`ws listen failed: ${e.message}`));
+    /* V64 — A LISTEN FAILURE MUST EXIT, NOT LIMP ON. This used to log and keep
+       running: measured, after EADDRINUSE the process stayed alive forever with
+       no listener, so every key on the board was a silent no-op and KeepAlive
+       could not rescue it because it never exited. Now the supervisor gets its
+       chance. Non-listen errors still only log — those are per-connection. */
+    this.server.on("error", (e) => {
+      this.log.error?.(`ws listen failed: ${e.message}`);
+      if (e && (e.code === "EADDRINUSE" || e.code === "EACCES")) {
+        this.log.error?.(`port ${this.port} is unusable — exiting so the supervisor can retry`);
+        process.exit(1);
+      }
+    });
     this.server.listen(this.port, this.host, () => {
       this.log.info?.(`studioos service listening on ws://${this.host}:${this.port}`);
     });
@@ -90,6 +101,21 @@ export class WsServer {
     socket.on("data", (chunk) => client._feed(chunk));
     socket.on("error", () => client._gone());
     socket.on("close", () => client._gone());
+    /* V64 — 'end' IS THE EVENT THAT ACTUALLY FIRES, and its absence was the whole
+       bug. http.Server builds its sockets with allowHalfOpen: true, so when a CEF
+       page vanishes the server socket gets 'end' and then stays writable FOREVER
+       — 'close' is never emitted. Measured on the app's own bundled node 20.20.0:
+       'end' true, 'close' false at +300ms, +1s and +2s.
+
+       So the only reaper was the 15 s heartbeat, and it needs TWO cycles because
+       cycle 1 only arms awaitingPong. Thirty seconds of a phantom client — during
+       which index.js's `clients.size === 0` never becomes true, so the REAL client
+       leaving never triggers midi.panicAll() and a held note can stay sounding.
+       That is the one guarantee this service's own header promises.
+
+       `terminate()` rather than `_gone()`: the peer is gone, so there is nothing
+       to hand a close handshake to, and destroy() is what frees the fd. */
+    socket.on("end", () => client.terminate());
   }
 
   broadcast(obj) {
@@ -148,14 +174,32 @@ class WsClient {
     this._gone();
   }
 
+  /* V64 — _gone() USED TO LEAVE THE SOCKET OPEN with all three listeners still
+     attached. Since the heartbeat only walks `server.clients`, once _gone() had
+     run nothing could ever reap that socket again — and `_feed` kept buffering on
+     it. Measured: 1 MiB retained per continuation frame, no ceiling, on a client
+     the service had already reported as disconnected.
+
+     Destroying here is safe for the graceful path too: close() writes its CLOSE
+     frame and calls end() BEFORE calling us, so the bytes are already queued. */
   _gone() {
     if (!this.alive) return;
     this.alive = false;
     this.server.clients.delete(this);
+    try { this.socket.destroy(); } catch { /* already torn down */ }
+    this.buf = Buffer.alloc(0);
+    this.fragments = [];
+    this.fragOp = null;
     this.server.onDisconnect(this);
   }
 
   _feed(chunk) {
+    /* V64 — a dead client must not still dispatch. Without this, verbs arriving
+       in the same tick as the teardown ran AFTER onDisconnect: measured, two of
+       them. A midi.noteOn there is armed after the final panicAll() and, because
+       the client is already out of the set, nothing will ever panic again — a
+       permanently stuck note. */
+    if (!this.alive) return;
     this.buf = this.buf.length ? Buffer.concat([this.buf, chunk]) : chunk;
     for (;;) {
       const frame = decode(this.buf);

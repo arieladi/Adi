@@ -70,8 +70,9 @@ class Bridge(lb.LiveBridge):
     def __init__(self, browser, track_name="Drums"):
         self.sent = []
         self._b = browser
-        self.song = types.SimpleNamespace(
+        _song = types.SimpleNamespace(
             view=types.SimpleNamespace(selected_track=Item(track_name)))
+        self._cs = types.SimpleNamespace(song=lambda: _song)
     def send(self, m): self.sent.append(m)
     def _browser(self): return self._b
 
@@ -140,10 +141,11 @@ class KeyBridge(lb.LiveBridge):
         self.track = types.SimpleNamespace(
             name="Drums", devices=list(devices),
             view=types.SimpleNamespace(selected_device=selected))
-        self.song = types.SimpleNamespace(
+        _song = types.SimpleNamespace(
             view=types.SimpleNamespace(selected_track=self.track,
                                        select_device=self._select))
-        self._cs = types.SimpleNamespace(show_message=lambda m: self.msgs.append(m))
+        self._cs = types.SimpleNamespace(song=lambda: _song,
+                                         show_message=lambda m: self.msgs.append(m))
     def send(self, m): self.sent.append(m)
     def _browser(self): return self._b
     def _select(self, d): self.track.view.selected_device = d
@@ -253,8 +255,12 @@ class MixBridge(lb.LiveBridge):
         self.track = types.SimpleNamespace(
             name="Drums",
             mixer_device=types.SimpleNamespace(volume=self.vol, panning=self.pan))
-        self.song = types.SimpleNamespace(
+        _song = types.SimpleNamespace(
             view=types.SimpleNamespace(selected_track=self.track))
+        self._cs = types.SimpleNamespace(song=lambda: _song)
+        # V64 — _emit_mix coalesces against the previous payload now, so a stub
+        # that never calls the real __init__ has to declare the field itself.
+        self._last_mix = None
     def send(self, m): self.sent.append(m)
     def log(self, m): pass
 
@@ -352,10 +358,11 @@ class TreeBridge(lb.LiveBridge):
         self.track = types.SimpleNamespace(
             name="Drums", devices=list(devices),
             view=types.SimpleNamespace(selected_device=selected))
-        self.song = types.SimpleNamespace(
+        _song = types.SimpleNamespace(
             view=types.SimpleNamespace(selected_track=self.track,
                                        select_device=self._sel))
-        self._cs = types.SimpleNamespace(show_message=lambda m: self.msgs.append(m))
+        self._cs = types.SimpleNamespace(song=lambda: _song,
+                                         show_message=lambda m: self.msgs.append(m))
     def send(self, m): self.sent.append(m)
     def log(self, m): pass
     def _browser(self): return self._b
@@ -466,6 +473,142 @@ br = TreeBridge([node])
 n = len(br._track_devices(br.track))
 ok("a pathologically deep tree is truncated instead of blowing the stack",
    n > 0 and n <= 40, str(n))
+
+
+# ===========================================================================
+# V64 — THE REAL CONSTRUCTOR, AND THE LIFECYCLE NOBODY WAS TESTING.
+#
+# Every bridge above overrides __init__ and never calls it, so setup(),
+# teardown(), _listen/_unlisten and the whole listener lifecycle had ZERO
+# coverage — which is exactly the surface every V64 bug lived on. This block
+# instantiates the real LiveBridge against a Live-shaped fake and drives it.
+# ===========================================================================
+print("\n[20] V64: the real lifecycle")
+
+class FakeParam(object):
+    def __init__(self, v=0.5):
+        self.value = v; self.min = 0.0; self.max = 1.0; self.is_enabled = True
+        self._ls = []
+    def add_value_listener(self, fn): self._ls.append(fn)
+    def remove_value_listener(self, fn): self._ls.remove(fn)
+    def str_for_value(self, v): return "%.2f" % v
+
+class FakeTrack(object):
+    """Models Live's listener registry, and its habit of RAISING for an attribute
+       a given track type does not have (a return track has no `arm`)."""
+    def __init__(self, name="Drums", arm_raises=None):
+        self.name = name; self.devices = []
+        self.mute = False; self.solo = False
+        self._arm_raises = arm_raises
+        self._arm = False
+        self.mixer_device = types.SimpleNamespace(volume=FakeParam(0.85), panning=FakeParam(0.0))
+        self.view = types.SimpleNamespace(selected_device=None)
+        self.listeners = {}
+    @property
+    def arm(self):
+        if self._arm_raises is not None: raise self._arm_raises("no arm on this track")
+        return self._arm
+    def __getattr__(self, n):
+        # add_x_listener / remove_x_listener for any property, like Live does.
+        if n.startswith("add_") and n.endswith("_listener"):
+            key = n[4:-9]
+            return lambda fn: self.listeners.setdefault(key, []).append(fn)
+        if n.startswith("remove_") and n.endswith("_listener"):
+            key = n[7:-9]
+            return lambda fn: self.listeners.get(key, []).remove(fn)
+        raise AttributeError(n)
+
+class FakeSong(object):
+    def __init__(self, track):
+        self.is_playing = False; self.loop = False
+        self.view = types.SimpleNamespace(selected_track=track)
+        self.listeners = {}
+        self.tracks = [track]
+    def __getattr__(self, n):
+        if n.startswith("add_") and n.endswith("_listener"):
+            key = n[4:-9]
+            return lambda fn: self.listeners.setdefault(key, []).append(fn)
+        if n.startswith("remove_") and n.endswith("_listener"):
+            key = n[7:-9]
+            return lambda fn: self.listeners.get(key, []).remove(fn)
+        raise AttributeError(n)
+
+def build(track=None, arm_raises=None):
+    tr = track or FakeTrack(arm_raises=arm_raises)
+    song = FakeSong(tr)
+    cs = types.SimpleNamespace(song=lambda: song, show_message=lambda m: None)
+    sent = []
+    br = lb.LiveBridge(cs, sent.append, log=lambda *a: None)
+    return br, song, tr, sent
+
+# --- the transport, which V61 shipped with no listener and no emit-on-connect
+br, song, tr, sent = build()
+br.setup()
+ok("setup() registers a listener on is_playing", "is_playing" in song.listeners)
+ok("...and on loop", "loop" in song.listeners)
+sent[:] = []
+br.resend_all()
+ok("resend_all emits transport, so a reconnect is not blind",
+   any(m.get("t") == "transport" for m in sent),
+   ",".join(sorted({m.get("t") for m in sent})))
+sent[:] = []
+song.is_playing = True
+for fn in song.listeners["is_playing"]: fn()
+ok("pressing play IN LIVE reaches the surface",
+   [m for m in sent if m.get("t") == "transport"][-1]["playing"] is True)
+
+# --- mix coalescing: a dial tick used to emit `mix` twice
+br, song, tr, sent = build()
+br.setup(); sent[:] = []
+br.cmd_track_volume_delta(1)
+mixes = [m for m in sent if m.get("t") == "mix"]
+ok("a volume tick emits `mix` ONCE, not twice", len(mixes) == 1, str(len(mixes)))
+sent[:] = []
+br.cmd_get_mix()
+ok("...but get_mix still forces a restatement",
+   len([m for m in sent if m.get("t") == "mix"]) == 1)
+
+# --- the hasattr crash: a return track whose `arm` raises must not abort
+for exc in (AttributeError, RuntimeError):
+    br, song, tr, sent = build(arm_raises=exc)
+    br.setup()
+    kinds = {m.get("t") for m in sent}
+    ok("a track whose arm raises %s still emits the full state" % exc.__name__,
+       {"track", "mix", "device_pos"} <= kinds, ",".join(sorted(kinds)))
+    ok("...and arm is reported as unsupported, not False",
+       [m for m in sent if m.get("t") == "mix"][-1].get("arm") is None)
+
+# --- a NEW LIVE SET must not wedge the bridge
+br, song, tr, sent = build()
+br.setup()
+tr2 = FakeTrack("Bass")
+song2 = FakeSong(tr2)
+br._cs.song = lambda: song2          # Live swaps the Song under us
+sent[:] = []
+br.resend_all()
+ok("a new Live Set does not wedge the bridge",
+   any(m.get("t") == "track" for m in sent))
+ok("...and the new Set's track is what arrives",
+   [m for m in sent if m.get("t") == "track"][-1]["name"] == "Bass")
+
+# --- device_pos must follow the SELECTION, not just the list
+br, song, tr, sent = build()
+br.setup(); sent[:] = []
+br._on_device_changed()
+ok("selecting a device re-emits device_pos (the stale-caption bug)",
+   any(m.get("t") == "device_pos" for m in sent),
+   ",".join(sorted({m.get("t") for m in sent})))
+
+# --- teardown must leave nothing behind
+br, song, tr, sent = build()
+br.setup()
+before = len(br._listened)
+br.teardown()
+ok("teardown removes every registered listener",
+   before > 0 and len(br._listened) == 0, "%d -> %d" % (before, len(br._listened)))
+ok("...including the song's own",
+   all(len(v) == 0 for v in song.listeners.values()),
+   str({k: len(v) for k, v in song.listeners.items()}))
 
 print("\n%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
