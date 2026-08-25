@@ -269,6 +269,16 @@ console.log('\n[8b] V27 — setFeedback is deduped, which is the freeze fix');
   const cold = SOS.SD.flushCounts();
   ok('a cold strip paints all six zones', cold.zones === 6, JSON.stringify(cold));
 
+  /* V64 — THE CLOCK HAS TO BE STOPPED FOR THIS BLOCK, and its absence was a real
+     intermittent failure (2 runs in 5 under load). The clock owns the last zone
+     and repaints it once a SECOND; these ten repaints span ~60 ms of wall clock
+     plus scheduling, so a tick landing inside the window makes zone 6 genuinely
+     change and one message is CORRECTLY sent. The assertion is about an UNCHANGED
+     strip, so a deliberately changing zone has no business in it.
+
+     Pre-existing: nothing in this batch touched the dedupe or the clock. It
+     simply got more likely to lose the race as the suite grew. */
+  States.stopClock();
   for (let i = 0; i < 10; i++) { States.repaint(); await wait(6); }
   const idle = SOS.SD.flushCounts();
   ok('ten repaints of an UNCHANGED strip send NOTHING', idle.zones === 0, JSON.stringify(idle));
@@ -284,6 +294,9 @@ console.log('\n[8b] V27 — setFeedback is deduped, which is the freeze fix');
   States.resolveDial(6).rotate(3);          // BPM moves: the zone really changed
   States.repaint(); await wait(25);
   const moved = SOS.SD.flushCounts();
+  /* Deliberately NOT restarted: the clock block below asserts there is no clock
+     source before it starts one itself, so leaving it stopped here is what that
+     block expects. */
   ok('a zone that genuinely changed is still sent', moved.zones > 0, JSON.stringify(moved));
   States.setState(0);
 }

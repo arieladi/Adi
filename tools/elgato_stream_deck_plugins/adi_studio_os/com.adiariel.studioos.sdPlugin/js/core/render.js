@@ -56,8 +56,6 @@ SOS.Render = (function () {
     faceHi: '#1e242b',
     faceLo: '#10141a',
     edge:   'rgba(255,255,255,0.07)',
-    panel:  'rgba(255,255,255,0.05)',   // kept: legacy callers still name it
-    panelD: 'rgba(255,255,255,0.03)',
     text:   '#eef2f6',
     dim:    '#78848f',
     faint:  '#4a545e',
@@ -161,7 +159,7 @@ SOS.Render = (function () {
      URIs (dedupe works), different keys produce different ids (the preview
      sheet, which inlines many keys in one document, stays correct). */
   function hashId(o) {
-    var src = [o.title, o.sub, o.glyph, o.kicker, o.corner, o.size,
+    var src = [o.title, o.sub, o.glyph, o.kicker, o.size,
                o.color, o.active ? 1 : 0, o.dim ? 1 : 0,
                o.badge,
                // V16 — the skin fields are part of the identity too. Leaving them
@@ -315,7 +313,7 @@ SOS.Render = (function () {
 
     if (hasKicker) {
       s += text(truncate(o.kicker, 9), KS / 2, 34, 13, 700,
-                o.dim ? PALETTE.faint : (o.kickerColor || PALETTE.dim), 'middle', 1.6);
+                o.dim ? PALETTE.faint : PALETTE.dim, 'middle', 1.6);
     }
 
     /* V22 — ARTWORK instead of a glyph. `art` names an entry in SOS.Art (never a
@@ -411,9 +409,10 @@ SOS.Render = (function () {
         ? text(truncate(o.sub, 12), KS / 2, KS - 16, 22, 700, o.subColor || o.color || PALETTE.text)
         : text(truncate(o.sub, 18), KS / 2, KS - 17, 14, 600, o.subColor || PALETTE.dim);
     }
-    if (o.corner) {
-      s += text(truncate(o.corner, 2), KS - 20, 34, 14, 700, o.cornerColor || PALETTE.faint, 'end');
-    }
+    /* V64 — the `corner` marker branch is gone. It had NO setter anywhere in the
+       plugin: nothing ever passed `corner` or `cornerColor`, and the only tests
+       that mentioned them asserted their ABSENCE. Two dead entries in keySpec()
+       and one dead branch here. */
     if (o.badge) {
       s += '<circle cx="' + (KS - 25) + '" cy="27" r="15" fill="' + color + '"/>';
       s += text(truncate(o.badge, 3), KS - 25, 32, 15, 700, PALETTE.bg);

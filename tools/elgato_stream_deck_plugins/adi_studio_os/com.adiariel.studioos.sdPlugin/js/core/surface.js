@@ -26,7 +26,6 @@ SOS.Surface = (function () {
   var BTN_ANCHOR = 36; // (8,3)
 
   // Overlay region for States 0/1/3 (D8): columns 5-8, all rows.
-  var OVERLAY_COL_MIN = 5;
 
   // ------------------------------------------------------------------ geometry
   function btn(col, row) { return row * COLS + col + 1; }

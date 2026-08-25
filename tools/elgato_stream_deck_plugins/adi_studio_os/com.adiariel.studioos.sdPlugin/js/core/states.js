@@ -236,8 +236,11 @@ SOS.States = (function () {
       title: b.label, sub: b.sub, subStrong: b.subStrong, glyph: b.glyph,
       size: b.size, color: b.color, active: b.active, dim: b.dim, badge: b.badge,
       // V9 additions. Forgetting one here paints a silently blank label.
-      kicker: b.kicker, kickerColor: b.kickerColor, corner: b.corner,
-      cornerColor: b.cornerColor, subColor: b.subColor,
+      /* V64 — `kickerColor`, `corner` and `cornerColor` are gone. Walking every
+         screen x carousel state x focus mode x page showed `kicker` set 48 times
+         and those three set NEVER; the only tests naming them asserted their
+         absence, and render.js's corner branch had no way to fire. */
+      kicker: b.kicker, subColor: b.subColor,
       // V59 — `seg` / `segDim` were the calculator's four-key display and left
       // with it. They are the only fields ever REMOVED from this whitelist; the
       // matching render path went too, so a stray `seg` now paints nothing.
