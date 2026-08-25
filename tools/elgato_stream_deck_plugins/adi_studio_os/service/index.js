@@ -118,8 +118,27 @@ server.onDisconnect = () => {
 const VERSION = "2.5.0";
 
 // ------------------------------------------------------------------ lifecycle
+/* V64 — THE COMMAND KEY IS RELEASED ON THE WAY OUT.
+
+   os.appSwitch holds Command DOWN across a whole app-switch gesture and
+   deliberately never releases it; the only three releases — appSwitchCommit,
+   appSwitchCancel and a 25 s guard timer — all live inside THIS process. So a
+   SIGTERM between a dial-5 turn and its press left Command logically down in the
+   window server with no timer left to release it, and the Mac unusable until the
+   user pressed Command physically.
+
+   A deploy SIGTERMs the service. That is exactly the window.
+
+   This is the keystroke analogue of panicAll() below: silence what you were
+   holding before you go. */
+function releaseHeldKeys(where) {
+  try { OS.appSwitchCancel(); }
+  catch (e) { log.warn?.(`${where}: could not release held modifiers — ${e?.message ?? e}`); }
+}
+
 function shutdown(signal) {
   log.info(`${signal} — shutting down`);
+  releaseHeldKeys(signal);
   midi.closeAll();
   server.close();
   process.exit(0);
@@ -132,6 +151,16 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("uncaughtException", (e) => {
   log.error(`uncaught: ${e?.stack ?? e}`);
   try { midi.panicAll(); } catch { /* nothing left to do */ }
+  releaseHeldKeys("uncaughtException");
+  process.exit(1);
+});
+
+/* V64 — a floated promise rejection reached uncaughtException above and became a
+   hard exit with no context. Named explicitly so the log says which it was. */
+process.on("unhandledRejection", (r) => {
+  log.error(`unhandled rejection: ${r?.stack ?? r}`);
+  try { midi.panicAll(); } catch { /* nothing left to do */ }
+  releaseHeldKeys("unhandledRejection");
   process.exit(1);
 });
 

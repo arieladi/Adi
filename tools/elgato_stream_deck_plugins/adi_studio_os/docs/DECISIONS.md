@@ -3599,3 +3599,143 @@ and `GetWindowThreadProcessId` present, and `Stop-Process -Id ${w.pid} -Force` p
 6/6 dials`. **The DEPLOYED `os.js` was then re-parsed and its real `guarded()` executed
 against the real list** — `guarded("Live")` is `true` and `guarded("Google Chrome")` is
 `false` on the copy that is actually running. 1156 tests green.
+
+---
+
+## Batch 36 — V64: the Master Repair, step 1 — backend and Python
+
+Adi authorised the full purge and repair after Phase 4, in a strict order. This is step 1.
+
+### The security hole: the AdiVST handshake accepted anything
+
+`ws_server.py`'s `_try_handshake` validated only that *some* `Sec-WebSocket-Key` header
+existed — any method, any path, any protocol version, **any Origin**. Measured before the
+fix: a `POST /anything HTTP/1.0` carrying `Origin: https://evil.example` got a **101** and
+its verb reached the dispatcher.
+
+**That matters because WebSocket handshakes are not subject to CORS.** A browser will open
+`ws://127.0.0.1:9006` from any page with no preflight, so any web page open on this Mac could
+reach the full verb table — including `eq8_load_preset`, which calls `track.delete_device`.
+
+Now: `GET` only, `Upgrade: websocket` and `Connection: Upgrade` required,
+`Sec-WebSocket-Version: 13` required, and **Origin absent or `null` only**. The Origin check
+is the one that actually stops a browser: a browser always sends it and cannot forge it, while
+our CEF frontend is a `file://` page and sends either nothing or `null`. Verified — every
+hostile shape refused with nothing reaching the dispatcher, both legitimate shapes still get
+101.
+
+### The half-open socket, and why a note could stay sounding
+
+`http.Server` builds its sockets with `allowHalfOpen: true`, so when a CEF page vanishes the
+server socket gets **`'end'`** and then stays writable forever — **`'close'` is never
+emitted.** Measured on the app's own bundled node 20.20.0: `'end'` true, `'close'` false at
++300 ms, +1 s and +2 s.
+
+So `socket.on("close", …)` — the only reaper — never ran, and the 15 s heartbeat was left to
+do it in **two** cycles because cycle 1 only arms `awaitingPong`. Thirty seconds of a phantom
+client, during which `index.js`'s `clients.size === 0` never becomes true, **so the real
+client leaving never triggers `midi.panicAll()`.** A held note could stay sounding — the one
+guarantee the service's own header makes.
+
+Three changes: listen for `'end'` and `terminate()`; `_gone()` now **destroys the socket and
+drops its buffers** (it used to leave all three listeners attached, and since the heartbeat
+only walks `server.clients`, nothing could ever reap that socket again — measured at 1 MiB
+retained per continuation frame); and `_feed` refuses to run on a dead client.
+
+Verified on the real runtime: abrupt teardown now reaps in **under 150 ms**, `panicAll` fires,
+and two fast reconnects plus one live client report **1 client, not 3** — the original F5
+symptom, which `deploy-mac.sh` reproduces by restarting the app twice.
+
+**One correction to the audit:** it reported verbs still dispatching after `_gone()`. The
+frame loop already `return`s on CLOSE, so the specific CLOSE-then-more-frames case was
+*already* correct — verified. The new entry guard covers the direct-`_feed`-after-death path
+instead. Less dramatic than reported.
+
+### The Windows guard list did not exist
+
+V63 taught the Windows path to consult `guarded()`, but **every entry in the list was a macOS
+process name.** Elgato's Windows build runs as **`StreamDeck` — no space** — and neither
+"Stream Deck" nor "Elgato Stream Deck" is a prefix of `streamdeck`, so the red key could kill
+its own host. Added: `StreamDeck`, `explorer`, `dwm`, `csrss`, `winlogon`,
+`ShellExperienceHost`, `Taskmgr`. Verified all seven now protected, macOS unchanged, and
+ordinary apps still quittable.
+
+### A listen failure must exit, not limp on
+
+`ws-server.js`'s error handler logged and **kept running**: measured, after `EADDRINUSE` the
+process stayed alive forever with no listener, so every key was a silent no-op and `KeepAlive`
+could not rescue it because it never exited. It now exits on `EADDRINUSE`/`EACCES` and says
+why. Verified: second instance exits 1 with both log lines.
+
+### The Command key is released on the way out
+
+`os.appSwitch` holds Command down across the whole gesture and never releases it; all three
+releases lived inside the process. **A deploy SIGTERMs the service**, so a SIGTERM between a
+dial-5 turn and its press left Command logically down with no timer left to release it.
+`shutdown()` and both crash handlers now call `appSwitchCancel()` — the keystroke analogue of
+`panicAll()`. A named `unhandledRejection` handler was added too, so a floated promise no
+longer arrives as a contextless `uncaughtException`.
+
+### `song` is a property now, and that one line was a class of bug
+
+It was captured **once** in `__init__`. `_Framework` exposes `song` as a *method* — the
+framework expects it re-read — and loading a different Live Set kills every handle in the old
+Song. Measured: `resend_all()` raised `Accessing out of date Live object`, **after** sending
+`hello`, so the frontend had already set `online = true`. The hub read as connected with a
+dead surface, and every later subscribe threw identically.
+
+A property fixes **all 26 call sites without touching one of them** — which also sits far more
+comfortably inside "no editing existing code paths" than 26 edits would.
+
+### `hasattr(track, "arm")` could abort a whole track change
+
+`hasattr` swallows `AttributeError` and nothing else. If Live raises anything else for `arm` on
+a return or master track, the exception escaped `_mix_listen`, aborted `_on_track_changed`, and
+left the hub showing the **new** track's name with the **old** track's device page and dials —
+permanently, because nothing retries. Reachable only by mouse-clicking a return track, which
+is exactly how it escaped every test. Now a `getattr` probe inside its own `try`, matching what
+`_emit_mix` did 110 lines above and `cmd_track_toggle` 80 lines below. Both exception types are
+now tested.
+
+### The transport was never watched, and never sent on connect
+
+V61 added the verbs and `_emit_transport` — whose only caller was `cmd_transport` itself. So
+Play and Loop rendered unlit on every connect even while Live was playing, and pressing
+spacebar in Live changed nothing. **V62 got this right for mute/solo/arm one version later.**
+Now `setup()` listens on `is_playing` and `loop`, and `resend_all` emits it.
+
+### Every mixer touch emitted `mix` twice
+
+The setter moves the parameter, Live's value listener fires `_emit_mix`, and then the command
+called `_emit_mix` again by hand. The frontend's `mix` case also fires `state`, so a fast dial
+spin cost **two full surface re-renders per detent**. `_emit_mix` now coalesces against the
+last payload, with `force=True` for `resend_all` and `cmd_get_mix` — deduping rather than
+deleting one call, because the hand call is the only emit on a track with no listener
+registered.
+
+### Stale device positions, both halves
+
+`_on_device_changed` emitted `device` but never `device_pos`, so a mouse click on a different
+device left the Prev/Next "n/m" caption stale. Its **sibling** `cmd_device_key` had the same
+gap, which is why the arrows looked right and the plugin keys did not. Both fixed — **and the
+first attempt only fixed half of it**: the emit sits below an early return, so deselecting a
+device still went stale until the no-device path got its own call.
+
+### `_unlisten`'s bookkeeping moved inside its own `try`
+
+The list rebuild compares **tuples**, so for every other entry it can call `__eq__` on a Live
+handle that is already dead — and this method exists precisely to tolerate dead subjects. It
+now falls back to dropping by **identity**, which cannot touch a dead object.
+
+### THE TEST SUITE NOW RUNS THE REAL CONSTRUCTOR
+
+Phase 3's structural finding was that all four test bridges override `__init__` and never call
+it, so `setup()`, `teardown()` and the whole listener lifecycle had **zero coverage** — which
+is exactly the surface every bug above lived on.
+
+The four stubs now expose their song through a `_cs.song()` the way `_Framework` really does,
+so they go through the property that was just fixed. And a new block `[20]` instantiates the
+**real** `LiveBridge` against a Live-shaped fake that models Live's listener registry *and* its
+habit of raising for a missing attribute. **55 → 70 assertions**, covering: transport listeners
+and emit-on-connect, mix coalescing, both `arm`-raises variants, a new Live Set not wedging the
+bridge, `device_pos` following the selection, and teardown leaving nothing behind.

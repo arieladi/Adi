@@ -802,6 +802,23 @@ const NEVER_QUIT = [
   "Ableton Live", "Ableton",                // full names, and Windows' spelling
   "Stream Deck", "Elgato Stream Deck", "Finder", "Dock", "SystemUIServer",
   "loginwindow", "WindowServer",
+  /* V64 — THE WINDOWS HALF OF THE LIST WAS MISSING ENTIRELY. V63 taught the
+     Windows path to consult the guard, but every entry above is a macOS
+     PROCESS name, and Windows reports different ones:
+
+       * Elgato's Windows build runs as `StreamDeck` — NO SPACE. Neither
+         "Stream Deck" nor "Elgato Stream Deck" is a prefix of "streamdeck", so
+         the red key could kill its own host.
+       * `explorer` is the shell (the Finder/Dock equivalent), and `dwm` /
+         `csrss` / `winlogon` are the WindowServer/loginwindow equivalents.
+       * Ableton on Windows runs as `Ableton Live 11 Suite`, which the "Ableton"
+         prefix entry above already covers.
+
+     Same asymmetry rule as V63: too wide only refuses a quit, too narrow kills
+     something. */
+  "StreamDeck",                             // Elgato's Windows process name
+  "explorer", "dwm", "csrss", "winlogon", "ShellExperienceHost",
+  "Taskmgr",                                // killing the tool you'd recover with
 ];
 
 function frontAppScript(body) {
