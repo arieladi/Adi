@@ -3899,3 +3899,219 @@ device, and a key that cycles.
 2a the scope and waveform dials show real levels (`-6.0 dB`) instead of an ellipsis.
 
 **1220 tests green** across all seven suites (was 1146 at the start of this batch).
+
+---
+
+## Batch 36 (cont.) — V64 step 3: the Phase 1a doc repairs, and the TODO list
+
+The Phase 1a audit found six things wrong with this file. It is **append-only**, so all six
+are corrected here by a new entry that names the offending line, never by an edit. V63
+established that pattern and the audit judged it the right one, so it is what these follow.
+
+### REPAIR 1 — V60's justification for deleting `SD.sendToPI` was FALSE
+
+V60 (`DECISIONS.md:3254`) said `SD.sendToPI` was deleted because *"there are no Property
+Inspectors — D1"*. **A Property Inspector ships and is declared**: `manifest.json:13` sets
+`"PropertyInspectorPath": "pi/inspector.html"`, and the file is 4,692 bytes of working UI.
+
+**D1 rules out PER-KEY / per-instance inspectors** — one universal action driven centrally.
+It does not abolish the plugin-level PI, and one exists. The deletion itself stands (nothing
+called `sendToPI`), but **the stated reason was wrong**, and it was wrong about the exact
+surface D16 was told to use.
+
+Related, and corrected in step 2b: V60 also deleted `Ableton.setUrl` as dead. It *was* dead
+— and that was precisely why the PI's `abletonPort` field could never do anything. It is
+restored and applied. **The lesson worth keeping: before deleting a dead export, read its
+neighbours. A dead symbol is sometimes the missing half of a live feature.**
+
+### REPAIR 2 — D14a: Adi ruled on D14, on hardware, and rejected three rows
+
+`D14` (`:213-230`) tables macOS equivalents for the six Windows-named Root Hub keys and
+closes with *"Not ruled — say the word and any row changes."* **He ruled, and the code
+records it while the log does not.** `service/os.js:897-902`: *"D14 REVISED on hardware:
+Start / Run / Shell are Windows concepts, and mapping them to Launchpad / Spotlight /
+Terminal was a derived guess Adi rejected — they are now `mac: null`."*
+
+**D14a, recorded now:**
+
+| Key | D14's macOS column | Ruled |
+|---|---|---|
+| Start | Launchpad | **rejected** — `mac: null`, Windows-only |
+| Run | Spotlight (⌘Space) | **rejected** — `mac: null`, Windows-only |
+| Shell | Terminal.app | **rejected** — `mac: null`, Windows-only |
+| Tasks | Activity Monitor | stands |
+| Chrome | Google Chrome | stands |
+| Lynx | Lynx Mixer | stands (not installed here, so probe-gated) |
+
+Also not in D14: availability is **probe-gated**, so a tile for something uninstalled never
+appears rather than failing when pressed.
+
+**And a trap this closes:** V43 (`:2295`) cites *"(D14)"* as the authority for `mac: null` —
+i.e. it cites D14 for the opposite of what D14 says. A reader following that citation landed
+on the rejected table with no way to tell which was live. **D14a is the tiebreak.**
+
+### REPAIR 3 — the "implementation contract" table at `:339-350` is STALE
+
+It is titled *"Global rules as ruled (implementation contract)"*, which is the heading a
+reader searches for, and **six of its seven rows are now false**:
+
+| Row | Claims | Actually | Superseded by |
+|---|---|---|---|
+| Button 35 | "Clear in State 0/1" | no engine role; the Calculator is gone | D2a, V59 |
+| Button 36 | "long = State Carousel" | plain key; NAV is dial 6's long press | V2, V3 |
+| Dials 5-6 | "overlay (States 0/1/3)" | declared borrowing, no overlay model | L1, L3a, L3b |
+| Cols 5-8 | "overlay region" | a 4-column dock; no State 3 | V13 |
+| State 2 | "full-device takeover" | State 2 is NAV OFF | V59 |
+| Button 1 | "States 0-3" | three states exist, 0-2 | V59 |
+
+Only Button 1's *reserved-ness* still holds. **Read L1/L3a/L3b, V2, V3, V13, V14 and V59
+instead** — all later in the file, so append-only ordering saves a reader who gets that far,
+but the title does not warn them.
+
+### REPAIR 4 — D17 is CLOSED, and the pending list still says otherwise
+
+`:262-266` describes D17's persistence seam as *"built but unwired"*. **V60 deleted it and
+step 2b of this batch rebuilt it properly on the new store.** The trap was doubled: those
+lines sit under a heading reading *"Batch 5 — pending"*, so a reader skimming for open work
+found **D16 (genuinely open until today) and D17 (closed) presented identically**. Both are
+closed as of this batch.
+
+### REPAIR 5 — V45 and V48 exist in the code and nowhere in this log
+
+Both are cited across the codebase and appear as headings **zero** times here:
+
+* **V48** — cited 12 times (`live_bridge.py`, `ableton.js`, `AdiVST.py`, and
+  `test_bridge.py` blocks [7]-[9] are all titled "V48"). It is **track volume / pan plus the
+  unified device key**. The log covers the same ground under V50 and V52 but never uses the
+  number, so twelve code sites cite a decision a reader cannot look up. **Defined here as
+  V48 rather than renumbered**, because the code and its tests are the older record.
+* **V45** — cited 10 times (`render.js` ×3, `art.js`, `icons.js`, `clock.js`, `root.js` ×2,
+  two test files). It is **Batch 26's icon and group-frame work**, which the log split across
+  "V46 — the group frames" and "V47 — the touch strip" and then referred back to correctly as
+  V45 in V54. **Defined here as V45.**
+
+Also absent and worth knowing: **Batch 16** (referenced at `:1716`, never written — it held
+V24 and V25, which appear only retroactively), **Batch 2**, and **P1/P2** (P3 says "recorded
+as protocol #3 in CONTINUE.md", so that numbering lives partly in another file). **D6 is not
+missing** — it is folded into D2a, whose heading says *"raised as D6"*.
+
+### REPAIR 6 — ten V-numbers are duplicated across unrelated rulings
+
+V55 ×4 (palette names · sliced band art · face opacity · **the red traffic light**), V49 ×4,
+V40 ×3, and V36 / V38 / V46 / V47 / V53 / V54 / V58 ×2 each. **This is why V63's
+`DECISIONS.md:2931` citation style is the correct one and every repair above uses it — "see
+V55" is ambiguous four ways.**
+
+---
+
+## THE OPEN TODO LIST — as of Batch 36
+
+Adi's standing items, and the two he added when authorising this repair. **Nothing here is
+started; each needs his word or his hardware.**
+
+### Added by Adi in Batch 36
+
+1. **Troubleshoot Pro-Q 3 preset mapping.** His words: *"My Pro-Q 3 pre-mapped parameter
+   preset stopped working on my end, so the integration is currently broken."* Note for
+   whoever picks this up: the 34 roles ARE fully wired to dials and touch pills — what fails
+   is **name resolution** against Live's `all_params`. V39's diagnostic prints the device
+   name, parameter count and first ten names in one press, and **its output has never been
+   reported**. That is the first step, not a code change. `OVERRIDES` is the documented
+   escape hatch and **has no loader** — see the feature report.
+2. **Optimize EQ8 layout.** His words: *"the EQ8 control is terrible and needs heavy
+   optimization."* **Leave both layouts exactly as they are until he rules.** Known
+   constraints already logged: band 8 is unreachable because the remote script clamps focus
+   with `EQ8_DIALS = 6` while the frontend expects a max of 4 (V37's consequence); EQ8's
+   Scale global has no control; and `_buildGraph`, the summed response curve, is complete and
+   unreachable.
+
+### Ruled on in Batch 36, no longer open
+
+**Rekordbox has never been MIDI-learned** — *"It is currently just a UI placeholder. We will
+deal with it later."* So the 36-key DJ surface has never controlled anything, by design for
+now, and that is not a defect to chase.
+
+**The visualizers have never shown a signal** — *"There is no button mapped to open the
+visualizer, and I haven't received instructions on routing Ableton audio to Blackhole."* Two
+of those three are now addressed: the input picker exists (step 2b) and the ring buffer that
+had never been written is fixed (step 2a). **Still owed to him: a route from the Root Hub to
+the Meters hub, and written instructions for routing Ableton's output into BlackHole.**
+
+### Still open from before
+
+`V37`'s two inferences (the keystone — ruling it unblocks EQ8's Scale, the response graph and
+the EQ8/Pro-Q 3 dial-4 divergence at once) · compact layouts for rekordbox / MIDI Control /
+Meters (**L2 and L6 — he asked to be prompted, and the feature report is that prompt**) ·
+Level 1's eleven empty cells · Device mode's spare dial 4 (track select is one line and the
+verb is already deployed) · Sends A/B · the five VST controllers with no insert key ·
+`D12`'s dial · `L21`'s Saturate observation · whether Cubase is on the roadmap · the Windows
+pass.
+
+---
+
+## Batch 36 (cont.) — V64 step 3b: the purge, and the two things NOT purged
+
+### Deleted — 8.1 MB inside Elgato's own directories
+
+Four abandoned `make_profile.py` backups from 2026-08-09, verified before removal and with
+the live originals confirmed intact afterwards:
+
+```
+ProfilesV3.studioos-backup-20260809-020214            4.1M
+ProfilesV3.studioos-backup-20260809-020548            4.1M
+com.elgato.StreamDeck.plist.studioos-backup-<both>
+```
+
+**And it will not regrow.** `backup()` never pruned while `restore()` only ever consumed the
+newest, so every run left ~4 MB behind forever in a folder the Stream Deck app scans.
+`prune_backups()` now keeps the last two — enough to undo a bad run and then undo the undo —
+and runs AFTER the new backup so the one just made can never be the one pruned.
+
+Also fixed while in that file: `--activate-only` called `find_profile()` **before** the
+`isdir(PROFILES)` guard, so a missing profile store gave a raw `FileNotFoundError` traceback
+instead of the friendly exit.
+
+### Dead code removed
+
+`PALETTE.panel` and `PALETTE.panelD` — and `panel`'s comment claimed *"kept: legacy callers
+still name it"*, which was false; there were none. `AVC.gfx.ok` / `warn` / `bad`. `AVC.LAYOUT`
+and the `AVC.Bridge = Bridge` assignment whose comment claimed controllers reach for it
+directly — zero do. `Ableton._composite` and `_transport`, both exported "for
+test_ableton.mjs" with no consumer. `ableton.shortName`, orphaned when V49 deleted the
+device readout. `Nav.depth`, `Layout.maxCols`, `Render.valueZoneUri`,
+`SD.setFeedbackLayout`, `SD.openUrl`. `EQ8Controller.ARROW_W`, `ProQ3Controller.TAG_W`.
+
+And three fields with **no setter anywhere in the plugin** — `kickerColor`, `corner`,
+`cornerColor` — removed from `keySpec()`, from `hashId()`'s identity list, and with
+`render.js`'s whole corner branch. Walking every screen × carousel state × focus mode × page
+showed `kicker` set 48 times and those three set never. **`hashId` was edited BY LINE** per
+the standing field note; its join argument verified byte-for-byte afterwards.
+
+### TWO THINGS I DID NOT PURGE, and why
+
+**`Bridge.setUrl` is LIVE now.** It was on the purge list as dead — and it was dead, which is
+exactly why the PI's `abletonPort` field could never do anything. Step 2b restored it and
+gave it the caller it always needed. Deleting it would have re-broken the field I had just
+fixed.
+
+**`midictl.cycleChannel` stays.** It is genuinely unreferenced, so it qualified — but Phase 4
+identified it as a **forgotten feature**: MIDI Control's channel selector, lost when V13
+scrapped State 3, and one line from working. Purging it would delete a feature Adi has not
+yet ruled on. It is on the TODO list instead.
+
+**The general rule this batch produced: check whether a dead symbol is the missing half of a
+live feature before deleting it.** Two of the purge list's entries were, and V60 had already
+made that mistake once with `setUrl`.
+
+### A pre-existing test race, fixed while verifying
+
+`test_core [8b]`'s *"ten repaints of an UNCHANGED strip send NOTHING"* failed 2 runs in 5
+under load. Cause: **the clock owns the last zone and repaints it once a second**, while
+those ten repaints span ~60 ms plus scheduling — so a tick landing inside the window makes
+zone 6 genuinely change and one message is CORRECTLY sent. The assertion is about an
+unchanged strip, so a deliberately changing zone has no business in it. The clock is stopped
+for that block now, and deliberately not restarted, because the block below asserts there is
+no clock source before it starts one. **Eight consecutive clean runs.**
+
+Nothing in this batch touched the dedupe or the clock; the race simply got likelier to lose
+as the suite grew. It is almost certainly what the earlier unexplained 113/2 was.

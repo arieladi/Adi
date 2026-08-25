@@ -50,7 +50,6 @@ SOS.Nav = (function () {
 
   function current() { return stack.length ? stack[stack.length - 1] : null; }
   function root() { return stack.length ? stack[0] : null; }
-  function depth() { return stack.length; }
   function atRoot() { return stack.length <= 1; }
 
   // Breadcrumb for the touchscreen / State 3 context strip.
@@ -126,7 +125,7 @@ SOS.Nav = (function () {
   return {
     register: register, get: get, wire: wire,
     setRoot: setRoot, enter: enter, back: back, toRoot: toRoot,
-    current: current, root: root, depth: depth, atRoot: atRoot,
+    current: current, root: root, atRoot: atRoot,
     path: path, activeModule: activeModule,
     dialBinding: dialBinding,
   };

@@ -109,13 +109,6 @@ SOS.Layout = (function () {
   }
 
   // Widest layout a screen can ever use — drives "does this module fit at all".
-  function maxCols(screen) {
-    var l = screen && screen.layouts;
-    if (!l || !l.length) return S.COLS;
-    var m = 0;
-    for (var i = 0; i < l.length; i++) if (l[i].cols > m) m = l[i].cols;
-    return m;
-  }
   function minCols(screen) {
     var l = screen && screen.layouts;
     if (!l || !l.length) return S.COLS;
@@ -142,6 +135,6 @@ SOS.Layout = (function () {
 
   return {
     region: region, EMPTY: EMPTY, split: split,
-    pick: pick, resolve: resolve, maxCols: maxCols, minCols: minCols,
+    pick: pick, resolve: resolve, minCols: minCols,
   };
 })();

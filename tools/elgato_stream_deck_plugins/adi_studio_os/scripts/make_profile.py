@@ -112,11 +112,35 @@ def build_page():
     }
 
 
+# V64 — KEEP THE LAST FEW, NOT ALL OF THEM. This never pruned, and `restore()`
+# only ever consumes the NEWEST, so every run left ~4 MB behind forever inside
+# Elgato's own directory. The audit found 8.1 MB of 16-day-old backups sitting in
+# a folder the Stream Deck app scans. Two is enough to undo a bad run and then
+# undo the undo; more is just sediment.
+KEEP_BACKUPS = 2
+
+
+def prune_backups():
+    olds = sorted(b for b in os.listdir(SUPPORT)
+                  if b.startswith("ProfilesV3.studioos-backup-"))
+    for b in olds[:-KEEP_BACKUPS] if len(olds) > KEEP_BACKUPS else []:
+        stamp = b[len("ProfilesV3.studioos-backup-"):]
+        try:
+            shutil.rmtree(os.path.join(SUPPORT, b))
+            plist_old = PLIST + f".studioos-backup-{stamp}"
+            if os.path.exists(plist_old):
+                os.remove(plist_old)
+            print(f"  pruned old backup {stamp}")
+        except OSError as e:
+            print(f"  could not prune {b}: {e}")
+
+
 def backup():
     stamp = time.strftime("%Y%m%d-%H%M%S")
     dst = os.path.join(SUPPORT, f"ProfilesV3.studioos-backup-{stamp}")
     shutil.copytree(PROFILES, dst)
     shutil.copy2(PLIST, PLIST + f".studioos-backup-{stamp}")
+    prune_backups()          # V64 — after, so the one just made is never pruned
     return dst, stamp
 
 
@@ -143,6 +167,11 @@ def main():
     if "--activate-only" in sys.argv:
         # Re-point the device at the existing Studio OS profile without creating
         # another one — the recovery path when activation failed on its own.
+        # V64 — the isdir() guard below used to run AFTER this branch, so a
+        # missing profile store gave find_profile() a raw FileNotFoundError
+        # traceback instead of the friendly exit. Checked here too.
+        if not os.path.isdir(PROFILES):
+            sys.exit(f"no profile store at {PROFILES} — is the Stream Deck app installed?")
         existing = find_profile()
         if not existing:
             sys.exit(f"no '{PROFILE_NAME}' profile found — run without --activate-only first")
