@@ -52,7 +52,34 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**1139 tests green** (1084 JS + 55 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**). **Batch 31 is what is deployed** (`service v2.5.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`) — **Batches 32 and 33 are committed but NOT yet on the hardware.**
+**1220 tests green** (1150 JS + 70 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**). **Batch 36 (V64) IS DEPLOYED** — `service v2.5.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`, app idle ~1%, clock at a true 999 ms average.
+
+### ⚠️ ABLETON MUST BE RESTARTED ONCE
+
+V64 changed the remote script — handshake validation, `song` as a property, transport
+listeners, `track_toggle`, the mixer fixes — and Live loads remote scripts **at launch**.
+Until Adi restarts Live those changes are inert, and the transport keys and Device-mode
+dials will look dead.
+
+### THE AUDIT IS COMPLETE — six reports are the master list
+
+`docs/AUDIT.md`, `AUDIT_PHASE1.md`, `AUDIT_DECISIONS.md`, `AUDIT_PHASE1B.md`,
+`AUDIT_PHASE2.md`, `AUDIT_PHASE3.md` and **`AUDIT_PHASE4_FEATURES.md` — the Feature Gap
+Report, which is the one to read before proposing new work.** Everything Adi authorised
+from them was repaired in Batch 36. What remains is the TODO list at the bottom of
+`DECISIONS.md`.
+
+### ONE AGENT PER PROMPT — a hard rule Adi set
+
+Multi-agent fan-outs crashed the session twice. Chunk big jobs across prompts instead, and
+insist a single agent **verifies by executing** rather than by grep — every best finding in
+this project came from an agent that built a harness and ran the real code.
+
+### Settings are namespaced now, and there is exactly ONE writer
+
+`js/core/settings.js` owns the global-settings object. Modules read and write namespaced
+keys through it; **nothing else may call `setGlobalSettings`** — that was D17's whole
+objection, and it is what unblocked D16, D17, midictl and viz persistence at once.
 
 ### ⚠️ BATCH 33 NEEDS AN ABLETON RESTART, NOT JUST A DEPLOY
 
@@ -83,7 +110,12 @@ Device mode's dials 1-4 are empty on purpose, reserved for them. The remote scri
 has **no mute/solo/arm verb of any kind** — checked. Three more additive verbs, a
 sibling-repo commit, and another Live restart.
 
-**`scripts/test_service.mjs` is FLAKY UNDER LOAD** and it is not a new bug: a dropped `midi.ports` reply cascades into the five assertions after it. It spawns the real service and races on real socket timing. Re-run it on a quiet machine before believing a failure there.
+**`scripts/test_service.mjs` still flakes under SUSTAINED back-to-back full sweeps**: a
+`midi.ports` timeout cascades into six failures. Measured honestly — 10/10 clean isolated,
+3/3 clean after other suites, 2 failures in 4 consecutive full sweeps. V64 added a retry on
+that one idempotent query, ruled out leftover CoreMIDI ports as the cause, and confirmed the
+V64 ws-server changes are not responsible. Environmental and pre-existing. **Re-run on a
+quiet machine before believing a failure there.**
 
 ### FROZEN at Adi's instruction - do not write code for these
 

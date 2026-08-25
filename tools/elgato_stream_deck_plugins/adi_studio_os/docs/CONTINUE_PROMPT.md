@@ -6,12 +6,15 @@ We are continuing **Studio OS**, my Elgato **Stream Deck + XL** master plugin.
 
 Read first, in this order:
 
-1. `docs/CONTINUE.md` — the full handoff: global rules, my protocols, where things
-   stand, the deploy sequence, and a field-notes section of traps that each cost real
-   debugging time. Current as of **Batch 33**.
-2. `docs/DECISIONS.md` — append-only ruling log and the source of truth. **Batches
-   27–33 at the bottom are the most recent and supersede a lot above them.**
-3. `docs/EQ8_MAPPING.md` — the EQ8 dial and touch map (frozen, see below).
+1. `docs/CONTINUE.md` — the full handoff: global rules, my protocols, the deploy
+   sequence, and a field-notes section of traps that each cost real debugging time.
+   Current as of **Batch 36**.
+2. `docs/DECISIONS.md` — append-only ruling log and the source of truth, ~4,050 lines.
+   **Batches 32–36 at the bottom are the most recent and supersede a lot above them.**
+   It is append-only: correct a stale entry with a NEW entry that cites the old one by
+   line number (`DECISIONS.md:2931`), never by editing it. Ten V-numbers are duplicated,
+   so "see V55" is ambiguous four ways — always cite the line.
+3. `docs/EQ8_MAPPING.md` — the EQ8 dial and touch map. **FROZEN.**
 
 **Never `git push`.** Commit locally only, in the same turn as the work. Trailer:
 `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`
@@ -19,114 +22,130 @@ The AdiVST remote script lives in a **sibling** plugin folder — commit it sepa
 
 ## State
 
-**1139 tests green across seven suites** — six JS
+**1220 tests green across seven suites** — six JS
 (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) plus
-`python3 scripts/test_bridge.py`. **Batch 31 is what is on the hardware**
-(`service v2.5.0`, `surface COMPLETE — 36/36 keys, 6/6 dials`); **Batches 32 and 33
-are committed and NOT yet deployed.**
+`python3 scripts/test_bridge.py`.
 
-**The state carousel is `0 Numpad -> 1 Divisions -> 2 NAV OFF -> 0`** since V59, and
-**the Ableton module owns TWO screens** since V61: `ableton.hub` (Level 1 — transport
-+ five mode folders on row 3) and `ableton.vst` (Level 2 — the VST grid, unchanged).
-Strip ownership is `focus` and nav never touches it, which is what keeps the VST key
-lit after BACK.
+**Batch 36 (V64) is DEPLOYED and running on the hardware** — `service v2.5.0`,
+`surface COMPLETE — 36/36 keys, 6/6 dials`, app idle ~1%, clock at a true 999 ms.
 
-Never write a state index as a literal — ask `States.FULL` / `States.DELAY` /
-`States.isFullScreen()`, and never compare `focus` to a literal outside
-`ableton.js`. `test_service.mjs` is flaky under machine load; that is pre-existing.
+**⚠️ ABLETON MUST BE RESTARTED once.** V64 changed the remote script (handshake
+validation, `song` as a property, transport listeners) and Live loads remote scripts
+**at launch**. Until Adi restarts Live, those changes are inert.
+
+The surface, as of now:
+
+* **Carousel:** `0 Numpad → 1 Divisions → 2 NAV OFF → 0` (V59 deleted the Calculator).
+  **Never compare a state index to a literal** — ask `States.FULL` / `States.DELAY` /
+  `States.isFullScreen()`. Two renumberings have already broken literals.
+* **Ableton owns TWO screens** (V61): `ableton.hub` = Level 1, transport (Play/Stop/Loop)
+  on row 0 and five mode folders (VST · MIDI · Device · OS · Delay) on row 3;
+  `ableton.vst` = Level 2, the VST grid unchanged. Strip ownership is `focus`
+  (`none|vst|mix|os`) and **nav never touches it** — that is what keeps the VST key lit
+  after BACK. Never compare `focus` to a literal outside `ableton.js`.
+* **Device mode** (V62): Mute/Solo/Arm on dials 1–3 (presses, not turns), dial 4 spare,
+  Pan on 5, Volume on 6.
+* **Settings** (V64): `js/core/settings.js` is the **single writer** for global settings.
+  Modules read/write namespaced keys; nothing else may call `setGlobalSettings`.
+
+## THE AUDIT IS DONE — six reports are the master list
+
+Do not re-audit. Read the relevant one before touching an area:
+
+| Report | Covers |
+|---|---|
+| `docs/AUDIT.md` | the first purge menu (partly actioned by V60) |
+| `docs/AUDIT_PHASE1.md` | backend, Python, installers, docs |
+| `docs/AUDIT_DECISIONS.md` | DECISIONS.md itself — all 6 repairs now applied in Batch 36 |
+| `docs/AUDIT_PHASE1B.md` | the Node service (the phantom-client leak — FIXED in V64) |
+| `docs/AUDIT_PHASE2.md` | frontend and rendering |
+| `docs/AUDIT_PHASE3.md` | Python and the remote script |
+| `docs/AUDIT_PHASE4_FEATURES.md` | **the Feature Gap Report — what we forgot.** Read this one before proposing any new work. |
+
+**Everything the audits found that Adi authorised was repaired in Batch 36 (V64).**
+What is left is in the TODO section at the very bottom of `DECISIONS.md`.
+
+## HOW ADI WANTS AGENTS USED — a hard rule
+
+**ONE agent per prompt, maximum. No fan-out.** Multi-agent fan-outs crashed the session
+twice (nine of twelve agents died on a session limit). If a job is too big for one agent,
+chunk it across prompts and wait for his go-ahead between chunks.
+
+The single-agent pattern that worked best: give it ONE file or ONE area, tell it what is
+already known so it goes deeper instead of re-deriving, and insist it **verify by
+executing** rather than by grep. The best findings in this whole project came from agents
+that built a harness and ran the real code — the never-written ring buffer, the half-open
+socket, the wedged Live Set.
+
+## Adi's protocols — these matter more than speed
+
+* **Stop at every conflict and get his ruling before writing code.** State findings and
+  conflicts as **plain text, never an interactive menu**, then wait. He replies with one
+  unified instruction.
+* **Never move keys or widen a module's footprint without his approval.** Adding to a
+  genuinely blank cell is fine; rearranging is not.
+* **Verify headlessly AND look at a render before deploying.** `SECTIONS=… node
+  scripts/preview.mjs out.html`, then screenshot it. Never ask him to check something you
+  could check yourself.
+* **Chain the next briefing.** When you finish a piece, put the next one's Discovery
+  briefing at the bottom of the same success message rather than asking "shall I
+  continue?".
 
 ## FROZEN — do not write code for these
 
-**EQ8's mapping and Pro-Q 3 data mapping.** Two EQ8 rulings noted in DECISIONS are
-parked, not live. **The Calculator is DELETED** (V59) — it used to be on this list.
+**EQ8's layout and Pro-Q 3's mapping.** Adi in Batch 36: *"the EQ8 control is terrible and
+needs heavy optimization"* and *"My Pro-Q 3 pre-mapped parameter preset stopped working on
+my end."* **Leave both layouts exactly as they are until he rules.** Both are on the TODO
+list; see the notes there for what the actual first step is (for Pro-Q 3 it is running
+V39's diagnostic, not writing code — the 34 roles are already wired, it is *name
+resolution* that fails).
 
-## ⚠️ Ableton must be RESTARTED after any deploy that touches the remote script
+## Two things he is still owed
 
-Live loads MIDI Remote Scripts **at launch**. If plugin keys, Device Mode dials, the
-device arrows or **the new transport keys** do nothing, that is why. Additive verbs so
-far: `load_device` (V30), `device_key` (V52), `track_volume_delta` /
-`track_pan_delta` / `get_mix` (V50), `device_step` / `device_pos` (V53), **`transport`
-(V61 — actions `play` / `stop` / `loop`)**.
+1. **A route from the Root Hub to the Meters hub.** He has never seen the visualizers run:
+   *"There is no button mapped to open the visualizer."*
+2. **Written instructions for routing Ableton's audio into BlackHole.** V64 added the input
+   picker and fixed the ring buffer, so the software side is ready — the routing
+   instructions are not written.
 
-**Batch 33 is one of those deploys.** Mute / Solo / Record Arm still need three more
-additive verbs; the script has none of them today.
+## Known state to not re-discover
 
-**"The remote script must not be modified" means: no editing existing code paths.**
-Purely *additive* verbs are the established exception, set by V30 and live ever since.
-`cmd_eq8_key` and `cmd_select_device` are both still byte-for-byte intact and both now
-unused.
+* **Rekordbox has never been MIDI-learned.** *"It is currently just a UI placeholder."*
+  The 36-key DJ surface controls nothing yet, by design. Not a defect to chase.
+* **`test_service.mjs` flakes under sustained back-to-back full sweeps** — a `midi.ports`
+  timeout cascades into six failures. 10/10 clean isolated. Pre-existing, environmental,
+  ruled out as a product bug. Re-run on a quiet machine before believing it.
+* **`install-windows.ps1` has never been run** and has six known first-run failures.
+* **H-Delay and Valhalla are not installed here**, so those keys redden with "not
+  installed" — that is V49 working, not a fault.
 
 ## The traps that will bite you if you skip the field notes
 
-* **Nothing may call `setTimeout`/`setInterval` — use `SOS.Timing`.** Page timers in
-  this hidden WebView are clamped (500 ms measured at ~1190 ms; ~once a minute with
-  the app window closed). A test fails the build if any other file schedules anything.
-* **`keystroke "<letter>"` is layout-dependent and this Mac runs a HEBREW layout.**
-  `keystroke "f"` lands on physical key code 0 (`A`) — that is how Ctrl+Cmd+F became
-  Finder's *Make Alias*. Always send a `key code`. A test enforces it.
-* **Deploy with `./scripts/deploy-mac.sh`.** It always restarts the service. The app
-  binary is `MacOS/Stream Deck`, so the obvious `pgrep` patterns never match.
-* **`osacompile` proves syntax, not behaviour. Run it.** Five real AppleScript bugs
-  were found only by running: `hidden` is reserved, `front window` raises -1719,
-  `set w to window 1` then reusing `w` raises -1728, a fixed `delay` was too short to
-  see a change, and Chrome accepts an `AXFullScreen` write and ignores it.
-* **THREE hand-written field whitelists must agree**: `keySpec()` for keys,
-  `zoneUriFor()` for dials, and `scripts/preview.mjs`, which mirrors both and has
-  drifted twice. Also check `lastZoneFree()` — a new content field must count as
-  content there or the clock paints over it.
+* **Nothing in the frontend may call `setTimeout`/`setInterval` — use `SOS.Timing`.** Page
+  timers in this hidden WebView are clamped (500 ms measured at ~1190 ms; ~once a minute
+  with the window closed). A test fails the build if any other file schedules anything.
+  This does **not** apply to `service/` — Node timers there are fine.
+* **`keystroke "<letter>"` is layout-dependent and this Mac runs a HEBREW layout.** Always
+  send a `key code`. A test enforces it.
+* **Deploy with `./scripts/deploy-mac.sh`.** It always restarts the service and also syncs
+  the remote script into Live. The app binary is `MacOS/Stream Deck`, so the obvious
+  `pgrep` patterns never match.
+* **`osacompile` proves syntax, not behaviour. Run it.**
+* **THREE hand-written field whitelists must agree**: `keySpec()` for keys, `zoneUriFor()`
+  for dials, and `scripts/preview.mjs`, which mirrors both and has drifted twice. Check
+  `lastZoneFree()` too.
 * **NEVER string-match through `hashId()`.** Its join argument is a literal
-  backslash-u-0001 escape and editing around it by text has mangled it three times. Edit that
-  function **by line**.
-* **`xlink:href` costs the SIZE OF THE IMAGE**, not "40 bytes" as an old comment
-  claimed — the whole data URI is repeated. Budget raster payloads at double.
-* **Glyphs outside the proven set render as tofu.** Drawn shapes (`js/core/icons.js`)
-  have no font behind them and are the way around it.
-
-## Where the surface stands
-
-**Root Hub** — row 0 Ableton · rekordbox · Tasks · Meters · Chrome; row 1 breathing;
-rows 2–3 the nine macOS window states as native pictograms, with the **red traffic
-light at (4,2)** (short = quit frontmost, long = force quit, guarded by `NEVER_QUIT`
-which includes **Ableton Live** — one line to remove if you disagree) and the **green
-one at (4,3)**. Strip: Scroll Y · Scroll X · Zoom · **Apps** · **Tabs** · clock.
-
-**Ableton hub** — four two-column bands backed by your four images, sliced per key:
-
-```
-cols 0-1  EQ (violet)        cols 2-3  Dynamics (amber)
-cols 4-5  Synths (teal)      cols 6-7  Analyzer & Effects (emerald)
-col 8     MIDI · Prev device · Next device · NEXT      (0,0) = Back
-```
-
-Every plugin key: **short press** = insert if absent, focus if present, cycle if
-several (racks included); **long press** = force a new instance. **Idle Track Mode**
-(no device focused): dials 1–4 mirror the Root Hub strip, dial 5 Pan, dial 6 Volume in
-strictly 0.5 dB steps.
-
-**Backgrounds are generated** — `python3 scripts/slice_backgrounds.py` after changing
-an image. Do not hand-edit `js/core/backgrounds.js`. The VU meter and radar are
-patched out by measured bands with a per-column cross-fade.
-
-## Two things I care about most
-
-**Stop at every conflict and get my ruling before writing code** — state findings and
-conflicts as plain text, never an interactive menu, then wait; I reply with one
-unified instruction.
-
-**Verify headlessly AND look at a render of the real modules before deploying** —
-never ask me to check something you could check yourself.
-
-## Open items you may be asked about
-
-* **Pro-Q 3 control** is still unimplemented. The Configure theory was confirmed and
-  I have a template with six bands exposed; the remaining work is matching
-  `ProQ3Controller.ROLES` against them. Ask before starting.
-* **Compact layouts for Rekordbox, MIDI Control and Visualizers** — none has one, so
-  docking a window over them still hits the engine's "No room" path. Ask before
-  starting.
-* **5 un-ported Visualizer views** — bands, rme, gonio, corr, bal.
-* **The Windows pass** — installers written, never run there.
-* **H-Delay and Valhalla are not installed on this machine**, so those two keys
-  report "not installed" until they are. `ValhallaRoom` has a controller too and is
-  one line from being added beside `ValhallaVintageVerb`.
-* **BlackHole 2ch needs a reboot** before the visualizers see audio.
+  backslash-u-0001 escape and editing around it by text has mangled it three times. Edit
+  that function **by line**, then verify the join byte-for-byte.
+* **Glyphs outside the proven set render as tofu.** Drawn shapes (`js/core/icons.js`) have
+  no font behind them and are the way around it.
+* **A source-text assertion cannot tell code from a comment.** Two tests in this project
+  passed for months by matching prose (`axFullScreenToggle()`, `AXFullScreen`). Assert
+  behaviour through a real export instead; if you must match source, strip comments first.
+* **Before deleting a dead symbol, read its neighbours.** V60 deleted `Ableton.setUrl` as
+  dead — and it *was* dead, which was exactly why the PI's `abletonPort` field could never
+  work. A dead symbol is sometimes the missing half of a live feature.
+* **`xlink:href` costs the SIZE OF THE IMAGE**, not "40 bytes". Budget raster payloads at
+  double.
+* **Backgrounds are generated** — `python3 scripts/slice_backgrounds.py` after changing an
+  image. Do not hand-edit `js/core/backgrounds.js`.
