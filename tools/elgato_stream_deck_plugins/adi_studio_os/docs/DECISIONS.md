@@ -3527,3 +3527,75 @@ Two real causes in the TEST, both fixed:
    call, so ONE timeout took six down with it. The MIDI verbs get 12 s.
 
 **14 consecutive clean runs, 6 of them with three other suites running concurrently.**
+
+---
+
+## Batch 35 — V63: the red traffic light could kill Ableton, and did not know it
+
+### V63 — EMERGENCY FIX, at Adi's instruction
+
+> "Fix the `NEVER_QUIT` guard immediately. Change the protected process name to "Live"
+> (and ensure Windows is properly protected too) so it actually prevents Ableton from
+> being force-quit. Make this code change and DEPLOY it right now."
+
+**The guard had never worked for Ableton.** `guarded()` matches on the frontmost app's
+**process name**, and Ableton's process name is **`Live`** —
+`/Applications/Ableton Live 11 Suite.app` has `CFBundleName` *and*
+`CFBundleExecutable` both set to `Live`. The list said `"Ableton Live"`, so
+`guarded("Live")` was **false**: short press = graceful quit, long press = `kill -9`, on
+the one application whose loss costs a session of work. It was live on the hardware for
+every batch since V55 shipped the key.
+
+`"Live"` now comes FIRST in the list, because it is the string that actually arrives.
+`"Ableton Live"` and `"Ableton"` are kept — they cost nothing, and prefix matching then
+also covers `Live 11 Suite` / `Live 12` and the Windows spelling.
+
+**THE FAILURE MODE OF THIS LIST IS ASYMMETRIC, and that is the design rule to remember:
+a name that matches too much REFUSES TO QUIT something; a name that matches too little
+KILLS something.** So it errs wide on purpose. Prefix-matching `"Live"` would also
+protect a hypothetical `LiveFoo.app` — an annoyance, against the alternative.
+
+### Windows was not protected at all
+
+Both verbs returned **before** the guard was ever consulted:
+
+* `quitFront` returned `hotkey("alt+f4")` on the first line.
+* `forceQuitFront` ran `Get-Process | Where MainWindowHandle -ne 0 | Select -First 1`
+  and force-killed it. **That is not the frontmost app** — it is whichever process
+  Windows happens to enumerate first with a window, so it could kill something the user
+  never touched.
+
+Both now resolve the real foreground window via `GetForegroundWindow` +
+`GetWindowThreadProcessId` (new `WIN_FRONT_SHIM` / `winFrontApp()` / `psOut()`, all
+additive), run `guarded()` on the result, and `forceQuitFront` kills **that pid
+specifically** with the same `pid <= 4` sanity floor the macOS path uses.
+
+DECISIONS.md:2931's claim that *"Both verbs resolve the frontmost app FIRST and refuse by
+name"* was false on Windows and ineffective for Ableton on macOS. It is true now.
+
+### The test is BEHAVIOURAL, and there is a lesson in why
+
+`guarded()` is exported now so the test calls it instead of grepping for a name. That is
+deliberate: **the audit found that `test_service.mjs`'s neighbouring assertion had been
+passing by matching a COMMENT** — it required `/axFullScreenToggle\(\)/` in os.js's
+source, and no such function exists; the only occurrence is a comment explaining why the
+approach was abandoned. Deleting the comment would have failed the test; breaking the
+feature would not. That assertion is now the attribute write alone.
+
+Seven new assertions: Ableton protected under all four spellings, the Stream Deck app and
+the five system processes still protected, **ordinary apps still quittable** (a guard that
+protects everything is a red key that does nothing, which reads as broken), and an
+empty/null name not protected by accident.
+
+**And the same trap bit me immediately.** My first Windows assertion also required the
+ABSENCE of `"MainWindowHandle -ne 0"` — and failed, because that string is in the comment
+recording what the old code did. **An absence assertion against a file that documents its
+own history is fragile by construction.** Rewritten as positives: `GetForegroundWindow`
+and `GetWindowThreadProcessId` present, and `Stop-Process -Id ${w.pid} -Force` present.
+
+### Deployed
+
+`./scripts/deploy-mac.sh`. Fresh log, `service v2.5.0`, `surface COMPLETE — 36/36 keys,
+6/6 dials`. **The DEPLOYED `os.js` was then re-parsed and its real `guarded()` executed
+against the real list** — `guarded("Live")` is `true` and `guarded("Google Chrome")` is
+`false` on the copy that is actually running. 1156 tests green.

@@ -235,14 +235,75 @@ try {
     const strokes = src.match(/keystroke "\$\{?[a-z]/gi) || [];
     ok("no macOS path interpolates a letter into `keystroke`", strokes.length <= 1,
        strokes.join(" | "));
+    /* V63 — this used to also assert `/axFullScreenToggle\(\)/.test(src)`, and
+       THAT ASSERTION PASSED BY MATCHING A COMMENT: no such function exists, and
+       the only occurrence in os.js is a comment at :568 explaining why the
+       approach was abandoned. Deleting the comment would have failed the test
+       and breaking the feature would not. The real guarantee is the attribute
+       write, which is what is left. */
     ok("full screen writes the AXFullScreen attribute, not a keystroke",
-       /AXFullScreen/.test(src) && /axFullScreenToggle\(\)/.test(src));
+       /AXFullScreen/.test(src));
     /* V40 — and the Quads key: `menu item "Quarters"` matched the DISABLED group
        heading at index 7 instead of the Arrange command at index 22, so it could
        never have fired. Matching the first ENABLED item skips headings by
        construction. */
     ok("window menu items are matched on ENABLED, so a group heading is skipped",
        /whose name is "\$\{item\}" and enabled is true/.test(src));
+
+    /* =======================================================================
+       V63 — THE RED TRAFFIC LIGHT MUST NOT BE ABLE TO KILL ABLETON.
+
+       This is asserted through the real exported `guarded()`, deliberately NOT
+       by grepping the source for a name. A source grep is what let the
+       axFullScreenToggle assertion above pass on a comment for two batches, and
+       this is the assertion where being fooled costs Adi a session of work.
+
+       THE BUG IT PINS: `guarded()` matches the frontmost app's PROCESS name, and
+       Ableton's process name is "Live" — /Applications/Ableton Live 11 Suite.app
+       has CFBundleName AND CFBundleExecutable both set to "Live". The list said
+       "Ableton Live", so guarded("Live") was FALSE and the long press reached
+       kill -9.
+       ======================================================================= */
+    ok("ABLETON IS PROTECTED under its real process name",
+       OS.guarded("Live") === true, "guarded(\"Live\") must be true");
+    ok("…and under every other spelling Live or Windows might report",
+       ["Ableton Live", "Ableton Live 11 Suite", "Live 11 Suite", "Live 12"]
+         .every((n) => OS.guarded(n) === true),
+       ["Ableton Live", "Ableton Live 11 Suite", "Live 11 Suite", "Live 12"]
+         .filter((n) => !OS.guarded(n)).join(","));
+    ok("…and the Stream Deck app itself still is — killing it kills the plugin",
+       OS.guarded("Stream Deck") && OS.guarded("Elgato Stream Deck"));
+    ok("…along with the system processes",
+       ["Finder", "Dock", "SystemUIServer", "loginwindow", "WindowServer"]
+         .every((n) => OS.guarded(n)));
+    /* The inverse matters as much: a guard that protects everything is a red key
+       that does nothing, which Adi would report as broken. */
+    ok("ordinary apps are still quittable — the guard is not a blanket",
+       ["Google Chrome", "Safari", "Terminal", "rekordbox", "Logic Pro", "Spotify"]
+         .every((n) => OS.guarded(n) === false),
+       ["Google Chrome", "Safari", "Terminal", "rekordbox", "Logic Pro", "Spotify"]
+         .filter((n) => OS.guarded(n)).join(","));
+    ok("…and an empty or missing name is not accidentally protected-by-prefix",
+       OS.guarded("") === false && OS.guarded(null) === false);
+
+    /* V63 — the WINDOWS half. Both verbs used to return before the guard was
+       consulted, so on Windows the red key would kill ANY frontmost app. Asserted
+       on the source because this platform cannot be executed here, and stated as
+       such rather than pretending it is a behavioural test. */
+    ok("neither quit verb returns before the guard on Windows",
+       !/if \(!isMac\) return isWin \? hotkey\("alt\+f4"\)/.test(src)
+       && !/if \(!isMac\) return isWin \? ps\("Stop-Process/.test(src));
+    /* Asserted as POSITIVES only. My first version of this line also required the
+       ABSENCE of "MainWindowHandle -ne 0" — and failed, because that string is in
+       the comment recording what the old code did. An absence assertion against a
+       file that documents its own history is fragile by construction, which is
+       the same trap as the axFullScreenToggle line above, one level up. */
+    ok("…the Windows path resolves the FOREGROUND window",
+       /GetForegroundWindow/.test(src) && /GetWindowThreadProcessId/.test(src));
+    ok("…and kills that pid specifically, not a process it merely enumerated",
+       /Stop-Process -Id \$\{w\.pid\} -Force/.test(src));
+    ok("…and calls guarded() on what it found",
+       /winFrontApp\(\)[\s\S]{0,400}?guarded\(w\.name\)/.test(src));
 
     /* =======================================================================
        V47 — CHROME. Adi: the green key "CANNOT exit full screen in Google
