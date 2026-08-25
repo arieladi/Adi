@@ -262,7 +262,19 @@ console.log('\n[8b] V27 — setFeedback is deduped, which is the freeze fix');
   /* Measured through SD's own write counters rather than by patching the socket:
      they count what feedback()/image() actually pushed, which is exactly the
      number that matters, and they cannot be fooled by a stale prototype. */
-  States.setState(0);
+  /* V64 — MEASURED IN A STATE WHERE THE CLOCK IS SUPPRESSED, and the first two
+     attempts at this got the mechanism wrong. Stopping the TICKER is not enough:
+     `clockVisible()` does not care whether the ticker runs, so every repaint
+     still renders a fresh clock face — and when the second rolls over inside
+     these ten repaints, zone 6 has genuinely changed and one message is
+     CORRECTLY sent. The assertion is about an UNCHANGED strip, so it has to be
+     measured where nothing is time-varying.
+
+     Divisions suppresses the clock by design (the readout owns that zone), and
+     its own zones are static, so all six paint cold and none changes after. */
+  States.setState(States.DELAY);
+  States.stopClock();
+  await wait(30);
   for (let d = 1; d <= S.DIALS; d++) SOS.SD.forget(S.contextOfDial(d));
   SOS.SD.flushCounts();
   States.repaint(); await wait(25);
@@ -278,7 +290,6 @@ console.log('\n[8b] V27 — setFeedback is deduped, which is the freeze fix');
 
      Pre-existing: nothing in this batch touched the dedupe or the clock. It
      simply got more likely to lose the race as the suite grew. */
-  States.stopClock();
   for (let i = 0; i < 10; i++) { States.repaint(); await wait(6); }
   const idle = SOS.SD.flushCounts();
   ok('ten repaints of an UNCHANGED strip send NOTHING', idle.zones === 0, JSON.stringify(idle));
@@ -288,7 +299,6 @@ console.log('\n[8b] V27 — setFeedback is deduped, which is the freeze fix');
 
   // A zone that genuinely changes must still get through, or the dedupe would
   // have traded a flood for a frozen strip.
-  States.setState(States.DELAY);
   States.repaint(); await wait(25);
   SOS.SD.flushCounts();
   States.resolveDial(6).rotate(3);          // BPM moves: the zone really changed
