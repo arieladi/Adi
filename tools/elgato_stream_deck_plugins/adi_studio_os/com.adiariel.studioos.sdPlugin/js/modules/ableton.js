@@ -412,7 +412,18 @@ SOS.Modules.Ableton = (function () {
   function pump() {
     if (!pumping) return;
     var live = Bridge.isOnline();
-    var onHub = SOS.Nav.current() === hub;
+    /* V64 — THE GATE HAD TO WIDEN WHEN V61 SPLIT THE SCREENS. Before the split
+       `hub` WAS the VST grid, so `current() === hub` was exactly right. After it,
+       Level 2 — the screen the controller strip exists for — failed this test, so
+       composite() was never called by the pump there and the re-arm dropped to
+       250 ms. Not frozen, because Bridge.on('state') still composites on every
+       Live message; but anything the controller animates itself (page/tab state,
+       peak-hold, the touch marker) only redrew when Live spoke or a dial moved.
+
+       Asked by SCREEN IDENTITY rather than by `focus`: the pump's job is to paint,
+       and both Ableton screens paint the strip through the same focusDial. */
+    var cur = SOS.Nav.current();
+    var onHub = cur === hub || cur === vst;
     if (live) {
       if (onHub) composite();
       SOS.States.repaint();

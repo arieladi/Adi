@@ -178,14 +178,31 @@ SOS.Modules.Viz = (function () {
   var ringM = new Float32Array(RING);
   var ringW = 0;
 
-  function ringPush(cl, cr, cm) {
-    var n = cl.length;
+  /* V64 — THE RING WAS NEVER WRITTEN, NOT ONCE, SINCE THE ORIGINAL PORT.
+
+     This takes BLOCKS. `push()` called it PER SAMPLE with three scalars —
+     `ringPush(a, b, (a + b) * 0.5)` — so `cl.length` was `undefined`, the loop
+     `i < undefined` never ran, and `ringW` never advanced. Introduced in the
+     "working Visualizers" commit and never noticed, because the one view anybody
+     could check — the meters — is computed from the block directly and never
+     touches the ring.
+
+     Everything that DOES read the ring therefore read pure silence: the
+     SPECTRUM, the SCOPE and the WAVEFORM. Three of the four implemented views.
+     That is the real reason the visualizers have never shown a signal, and it
+     sits underneath the missing input picker rather than beside it.
+
+     `count` is explicit now so a reused mono scratch buffer that is larger than
+     the current block cannot write stale tail samples into the ring. */
+  function ringPush(cl, cr, cm, count) {
+    var n = count == null ? cl.length : count;
     for (var i = 0; i < n; i++) {
       var w = (ringW + i) & RMASK;
       ringL[w] = cl[i]; ringR[w] = cr[i]; ringM[w] = cm[i];
     }
     ringW = (ringW + n) & RMASK;
   }
+  var monoBuf = null;
   // Copy the most recent `count` samples (oldest -> newest) into `out`.
   function ringRead(src, out, count) {
     var start = (ringW - count) & RMASK;
@@ -667,11 +684,25 @@ SOS.Modules.Viz = (function () {
       line += n1(p * (w - 1) / (pts - 1)) + ',' + n1(mid - buf[idx] * amp * halfH) + ' ';
     }
     s += poly(line, 'none', C.color, 1.2);
-    this._scopePeak = 0;
+    /* V64 — THIS PEAK WAS COMPUTED EVERY FRAME AND NEVER READ. It went into
+       `this._scopePeak`, which nothing anywhere consumed, while the scope's own
+       dial showed a bare ellipsis because only svgMeters ever populated
+       `this.head`. Same shape as the METER.corr / METER.bal bug V60 removed —
+       two more instances of it survived that purge.
+
+       So rather than delete the loop, it now feeds the readout it was obviously
+       written for. Peak in dB, plus the window length, which is the scope's other
+       useful number. */
+    var scopePeak = 0;
     for (var q = t0; q < t0 + N; q += Math.max(1, (N / pts) | 0)) {
       var av = buf[q] < 0 ? -buf[q] : buf[q];
-      if (av > this._scopePeak) this._scopePeak = av;
+      if (av > scopePeak) scopePeak = av;
     }
+    this.head = {
+      value: scopePeak <= 1e-6 ? '—' : lin2db(scopePeak).toFixed(1) + ' dB',
+      sub: C.timeMs + ' ms window',
+      indicator: dbNorm(lin2db(scopePeak)),
+    };
 
     if (C.showCursors) {
       var cx = clamp(C.cursorX, 0, 1) * w;
@@ -726,7 +757,13 @@ SOS.Modules.Viz = (function () {
       mn[p] = lo; mx[p] = hi;
       var a = Math.max(Math.abs(lo), Math.abs(hi)); if (a > peak) peak = a;
     }
-    this._wavePeak = peak;
+    /* V64 — as above: `_wavePeak` was written every frame and read nowhere, so
+       the waveform dial showed an ellipsis. The value is already in hand. */
+    this.head = {
+      value: peak <= 1e-6 ? '—' : lin2db(peak).toFixed(1) + ' dB',
+      sub: (C.windowMs / 1000).toFixed(1) + ' s window',
+      indicator: dbNorm(lin2db(peak)),
+    };
 
     var s = ln(0, mid + 0.5, w, mid + 0.5, 'rgba(255,255,255,0.08)', 1);
     // Closed min/max envelope: forward over the maxima, back over the minima.
@@ -799,8 +836,14 @@ SOS.Modules.Viz = (function () {
       var aa = a < 0 ? -a : a, ab = b < 0 ? -b : b;
       if (aa > pL) pL = aa;
       if (ab > pR) pR = ab;
-      ringPush(a, b, (a + b) * 0.5);
     }
+    /* V64 — ONE block write, outside the loop, which is what ringPush was always
+       written for. The mono mixdown gets a scratch buffer that is reused across
+       calls; `n` is passed explicitly so a larger buffer never contributes stale
+       samples. */
+    if (monoBuf === null || monoBuf.length < n) monoBuf = new Float32Array(n);
+    for (i = 0; i < n; i++) monoBuf[i] = (l[i] + r[i]) * 0.5;
+    ringPush(l, r, monoBuf, n);
     METER.rmsL = Math.sqrt(sL / n);
     METER.rmsR = Math.sqrt(sR / n);
     METER.peakL = pL; METER.peakR = pR;
