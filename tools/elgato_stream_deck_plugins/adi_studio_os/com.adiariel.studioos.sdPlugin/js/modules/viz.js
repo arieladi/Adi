@@ -808,7 +808,72 @@ SOS.Modules.Viz = (function () {
     detail: '',
     ctx: null, stream: null, src: null, node: null, splitter: null,
     label: '',
+    // V64 — the INPUT PICKER. See the block comment on refreshInputs().
+    inputs: [],              // [{ deviceId, label }] — audio inputs, newest scan
+    inputIndex: 0,           // which of `inputs` we capture from
+    scanned: false,
   };
+
+  var SETTINGS_NS = 'viz';
+
+  /* V64 — THE VISUALIZERS COULD NOT CHOOSE AN INPUT, AND THAT WAS THE BLOCKER.
+
+     The legacy plugin had an "Input device" dropdown in its Property Inspector
+     that passed `deviceId: {exact: …}` into getUserMedia. The port dropped it and
+     called getUserMedia with no constraint at all, so capture always landed on
+     whatever the OS had as its DEFAULT input. That is why "BlackHole needs a
+     reboot" has been the standing answer for weeks: the reboot was never the
+     issue — without a picker, BlackHole has to BE the system default input, which
+     means changing a system setting and disturbing every other app.
+
+     enumerateDevices only returns real labels AFTER permission has been granted,
+     so the scan runs once capture is up and the chosen index is remembered by
+     LABEL rather than by deviceId: macOS regenerates deviceIds per session, so a
+     stored id would silently stop matching while the label stays stable. */
+  function refreshInputs() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    return navigator.mediaDevices.enumerateDevices().then(function (list) {
+      audio.inputs = (list || [])
+        .filter(function (d) { return d.kind === 'audioinput'; })
+        .map(function (d) { return { deviceId: d.deviceId, label: d.label || 'input' }; });
+      audio.scanned = true;
+      // Re-find the remembered device by label, since ids are per-session.
+      var want = SOS.Settings ? SOS.Settings.str(SETTINGS_NS, 'inputLabel', '') : '';
+      if (want) {
+        for (var i = 0; i < audio.inputs.length; i++) {
+          if (audio.inputs[i].label === want) { audio.inputIndex = i; break; }
+        }
+      }
+      if (audio.inputIndex >= audio.inputs.length) audio.inputIndex = 0;
+      SOS.States.repaint();
+    }).catch(function (e) {
+      SOS.SD.log('viz: enumerateDevices failed — ' + (e && e.message));
+    });
+  }
+
+  /* Device labels are long ("MacBook Pro Microphone", "BlackHole 2ch") and the
+     cap is 144px. Keep the distinguishing head of the name rather than an
+     ellipsis in the middle, which is what makes two similar inputs tell apart. */
+  function shortInput(label) {
+    var t = String(label || '').replace(/\s*\(.*\)\s*$/, '');   // drop "(Built-in)"
+    return t.length > 11 ? t.slice(0, 10) + '…' : t;
+  }
+
+  function currentInput() {
+    return audio.inputs.length ? audio.inputs[audio.inputIndex] : null;
+  }
+
+  /* Cycling restarts capture, because a MediaStream is bound to its device — you
+     cannot re-point one. Remembered by label so it survives a relaunch. */
+  function cycleInput(dir) {
+    if (!audio.inputs.length) { refreshInputs(); return; }
+    var n = audio.inputs.length;
+    audio.inputIndex = ((audio.inputIndex + dir) % n + n) % n;
+    var cur = currentInput();
+    if (cur && SOS.Settings) SOS.Settings.set(SETTINGS_NS, 'inputLabel', cur.label);
+    if (audioRunning()) { audioStop(); audioStart(); }
+    else SOS.States.repaint();
+  }
 
   var BLOCK = 4096;
 
@@ -858,13 +923,19 @@ SOS.Modules.Viz = (function () {
     audio.status = 'asking'; audio.detail = '';
     SOS.States.repaint();
 
+    /* V64 — the chosen device is CONSTRAINED now, not left to the OS default.
+       `exact` rather than `ideal` on purpose: silently capturing the wrong device
+       is worse than failing loudly, because a visualizer showing the wrong
+       signal looks like it is working. */
+    var want = currentInput();
+    var constraints = {
+      echoCancellation: false, noiseSuppression: false,
+      autoGainControl: false, channelCount: 2,
+    };
+    if (want && want.deviceId) constraints.deviceId = { exact: want.deviceId };
+
     navigator.mediaDevices.getUserMedia({
-      audio: {
-        // Every processing stage the browser offers would rewrite the signal
-        // being measured, so all of them are off. This is an analyser, not a mic.
-        echoCancellation: false, noiseSuppression: false,
-        autoGainControl: false, channelCount: 2,
-      },
+      audio: constraints,
       video: false,
     }).then(function (stream) {
       audio.stream = stream;
@@ -897,6 +968,8 @@ SOS.Modules.Viz = (function () {
       audio.status = 'running';
       SOS.SD.log('viz: capturing "' + audio.label + '" @ ' + SR + ' Hz');
       SOS.States.repaint();
+      // V64 — labels are only real once permission is granted, so scan now.
+      if (!audio.scanned) refreshInputs();
     }).catch(function (e) {
       var name = (e && e.name) || 'Error';
       audio.status = (name === 'NotAllowedError' || name === 'SecurityError') ? 'denied'
@@ -1046,6 +1119,33 @@ SOS.Modules.Viz = (function () {
      SCREENS
      ========================================================================= */
 
+  /* V64 — the six slot views and the selected slot survive a relaunch. Saved by
+     NAME and validated on the way back in, so a stale or hand-edited store
+     cannot put an un-ported view into a slot and blank the dial. */
+  function saveSlots() {
+    if (!SOS.Settings) return;
+    SOS.Settings.patch(SETTINGS_NS, {
+      views: slots.map(function (sl) { return sl.view; }).join(','),
+      selected: selected,
+    });
+  }
+
+  function restoreSlots() {
+    if (!SOS.Settings) return;
+    var raw = SOS.Settings.str(SETTINGS_NS, 'views', '');
+    if (raw) {
+      raw.split(',').forEach(function (name, i) {
+        if (i < slots.length && IMPLEMENTED[name] && slots[i].view !== name) {
+          slots[i].view = name;
+          slots[i].cfg = clone(DEFAULTS[name] || DEFAULTS.spectrum);
+          slots[i].an = new Analyzer();
+        }
+      });
+    }
+    selected = SOS.Settings.num(SETTINGS_NS, 'selected', selected, 0, slots.length - 1) | 0;
+    frame();
+  }
+
   function viewTile(button, name) {
     var impl = !!IMPLEMENTED[name];
     var meta = VIEW_META[name] || {};
@@ -1060,6 +1160,7 @@ SOS.Modules.Viz = (function () {
         if (!impl) return;
         slots[selected].view = name;
         slots[selected].cfg = clone(DEFAULTS[name] || DEFAULTS.spectrum);
+        saveSlots();                                  // V64
         frame();
       },
     };
@@ -1072,7 +1173,13 @@ SOS.Modules.Viz = (function () {
     color: R.PALETTE.viz,
     fullScreenCapable: true,        // D15: entering gives it the whole board
 
-    onEnter: function () { startPump(); frame(); },
+    onEnter: function () {
+      startPump();
+      // V64 — slot views persist now. The legacy plugin kept per-action state;
+      // the port rebuilt the six slots from literals on every launch.
+      if (SOS.Settings) SOS.Settings.onReady(restoreSlots);
+      frame();
+    },
     onExit: function () { stopPump(); },
 
     keys: function (button) {
@@ -1093,7 +1200,7 @@ SOS.Modules.Viz = (function () {
             label: String(idx + 1), size: 'lg',
             sub: sl.view, color: viewColor(sl.view),
             active: idx === selected, kind: 'tap',
-            tap: function () { selected = idx; frame(); },
+            tap: function () { selected = idx; saveSlots(); frame(); },
           };
         }
         if (col === 7) {
@@ -1116,8 +1223,36 @@ SOS.Modules.Viz = (function () {
 
       if (row === 1 && col < VIEWS.length) return viewTile(button, VIEWS[col]);
 
-      // Rows 2-3 were planned as the 288-column spectrum wall; the port never
-      // reached it, so they stay empty rather than pretending.
+      /* V64 — THE INPUT PICKER. Adi: "Add the Input Device dropdown picker for
+         the Visualizer so we can finally select Blackhole."
+
+         Placed at (0,2) — the first of the eighteen cells rows 2-3 have always
+         left blank for a spectrum wall that was never built. So this ADDS to
+         empty space and moves nothing, which matters given the standing rule
+         about not rearranging the surface without a ruling.
+
+         Tap = next input, long press = rescan. The rescan matters because
+         enumerateDevices only returns real labels once permission is granted, and
+         because plugging in an interface mid-session changes the list. */
+      if (row === 2 && col === 0) {
+        var cur = currentInput();
+        var many = audio.inputs.length;
+        return {
+          kicker: 'INPUT',
+          label: cur ? shortInput(cur.label) : (many ? '—' : 'scan'),
+          sub: many ? (audio.inputIndex + 1) + '/' + many
+                    : (audioRunning() ? 'no inputs' : 'start audio'),
+          size: 'md',
+          color: cur ? R.PALETTE.viz : R.PALETTE.dim,
+          dim: !many,
+          kind: 'tap',
+          tap: function () { cycleInput(1); },
+          hold: function () { refreshInputs(); },
+        };
+      }
+
+      // The rest of rows 2-3 were planned as the 288-column spectrum wall; the
+      // port never reached it, so they stay empty rather than pretending.
       return null;
     },
 
@@ -1140,6 +1275,7 @@ SOS.Modules.Viz = (function () {
           }
           sl.cfg = clone(DEFAULTS[sl.view] || DEFAULTS.spectrum);
           selected = dial - 1;
+          saveSlots();                                // V64
           frame();
         },
         rotate: function (t) {
@@ -1166,7 +1302,9 @@ SOS.Modules.Viz = (function () {
   return {
     hub: hub,
     // exposed for scripts/test_viz.mjs
-    _audio: audio, _slots: slots, _frame: frame,
+    _audio: audio, _inputs: function () { return audio.inputs; },
+    _cycleInput: cycleInput, _refreshInputs: refreshInputs,
+    _saveSlots: saveSlots, _restoreSlots: restoreSlots, _shortInput: shortInput, _slots: slots, _frame: frame,
     _implemented: IMPLEMENTED, _views: VIEWS,
     _push: push, _meter: METER,
     _stop: stopPump,

@@ -12,7 +12,7 @@ const OUT = process.argv[2] || path.join(ROOT, "..", "preview.html");
 global.window = global;
 global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
-for (const f of ["js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/backgrounds.js", "js/core/clock.js", "js/core/render.js",
+for (const f of ["js/core/sd-client.js", "js/core/timing.js", "js/core/settings.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/backgrounds.js", "js/core/clock.js", "js/core/render.js",
                  "js/core/ipc.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js",
                  "js/modules/root.js", "js/modules/console.js",
                  "js/modules/rekordbox.js", "js/modules/midictl.js",
@@ -98,6 +98,26 @@ function fakeIdle() {
   SOS.Modules.Ableton.bridge.isOnline = () => true;
 }
 
+
+/* V64 — the visualizer sheet needs three things to be worth looking at: a FULL
+   ring (the waveform reads the last 1.5 s, so one block leaves it silent), two
+   fake inputs for the picker, and the audio marked running. */
+function fakeViz() {
+  const V = SOS.Modules.Viz;
+  const blk = new Float32Array(4096);
+  let phase = 0;
+  for (let b = 0; b < 40; b++) {
+    for (let i = 0; i < 4096; i++, phase++) blk[i] = Math.sin(2 * Math.PI * 440 * phase / 48000) * 0.5;
+    V._push(blk, blk);
+  }
+  const A = V._audio;
+  A.status = "running";
+  A.inputs = [{ deviceId: "a", label: "MacBook Pro Microphone" },
+              { deviceId: "b", label: "BlackHole 2ch" }];
+  A.inputIndex = 1; A.scanned = true;
+  V._frame();
+}
+
 function grid(label, stateIndex, screenId, opts) {
   // Navigating for real (rather than rendering a screen in isolation) means the
   // sheet also exercises nav + the overlay compositor, not just the module.
@@ -168,6 +188,7 @@ ${pick("delay", grid("Root Hub + Time Divisions docked &mdash; dial 5 = readout/
 ${pick("dj", grid("Rekordbox &middot; NAV OFF &mdash; the Omnis-Duo surface (V16)", 2, "rekordbox.hub"))}
 ${pick("djnum", grid("Rekordbox &middot; State 0 &mdash; numpad covering Deck B", 0, "rekordbox.hub"))}
 ${pick("midi", grid("MIDI Control &middot; NAV OFF &mdash; drums, scale touch, banked CC", 2, "midictl.hub"))}
+${pick("viz", (fakeViz(), grid("Visualizers &middot; NAV OFF &mdash; V64: the INPUT picker at (0,2), and levels on every dial", 2, "viz.hub")))}
 ${pick("level1", (fakeIdle(), grid("Ableton LEVEL 1 &mdash; transport on row 0, the five mode folders on row 3, strip EMPTY (V61)", 2, "ableton.hub")))}
 ${pick("level1vst", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton LEVEL 1 after BACK &mdash; VST folder still LIT, dials still on the VST (V61 retention)", 2, ["ableton.hub", "ableton.vst"], { back: 1 })))}
 ${pick("level1mix", (fakeIdle(), grid("Ableton LEVEL 1 &middot; DEVICE mode &mdash; Mute/Solo/Arm on 1-3 (OFF, ON, n/a), Pan on 5, Volume on 6 (V62)", 2, "ableton.hub", { focus: "mix" })))}

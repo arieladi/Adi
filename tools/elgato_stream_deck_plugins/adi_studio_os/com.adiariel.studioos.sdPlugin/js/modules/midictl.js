@@ -292,6 +292,7 @@ SOS.Modules.MidiCtl = (function () {
   }
   function cycleBank() {
     currentBank = (currentBank + 1) % BANK_LABELS.length;
+    saveCfg();                                  // V64
   }
   function bankRange(bank) {
     return 'CC ' + BANK_CC_BASE[bank] + '–' + (BANK_CC_BASE[bank] + S.DIALS - 1);
@@ -330,17 +331,61 @@ SOS.Modules.MidiCtl = (function () {
     };
   }
 
+  /* V64 — THIS MODULE'S CONFIG PERSISTS NOW. The legacy plugin kept root note,
+     scale, channel and bank in the Stream Deck's global settings; the port kept
+     them in a closure, so every one of them reset on every launch. The comment
+     that used to sit here said persistence was "deliberately not implemented"
+     because namespacing it was an orchestrator change — that orchestrator is
+     js/core/settings.js now, and it is the single writer D17 asked for. */
+  var SETTINGS_NS = 'midictl';
+
+  function saveCfg() {
+    if (!SOS.Settings) return;
+    SOS.Settings.patch(SETTINGS_NS, {
+      rootNote: cfg.rootNote,
+      selectedScale: cfg.selectedScale,
+      midiChannel: cfg.midiChannel,
+      bank: currentBank,
+    });
+  }
+
+  /* Restored through the SAME validation the cyclers enforce: an unknown scale
+     name or an out-of-range channel from a hand-edited store must fall back to
+     the default rather than reaching the note maths. */
+  function restoreCfg() {
+    if (!SOS.Settings) return;
+    var S = SOS.Settings, ns = SETTINGS_NS;
+    var root = S.str(ns, 'rootNote', cfg.rootNote);
+    if (CHROMATIC.indexOf(root) >= 0) cfg.rootNote = root;
+    var scale = S.str(ns, 'selectedScale', cfg.selectedScale);
+    if (SCALE_NAMES.indexOf(scale) >= 0) cfg.selectedScale = scale;
+    cfg.midiChannel = S.num(ns, 'midiChannel', cfg.midiChannel, 1, 16) | 0;
+    currentBank = S.num(ns, 'bank', currentBank, 0, BANK_LABELS.length - 1) | 0;
+    SOS.States.repaint();
+  }
+
+  /* V64 — the PI's `studioPort` field was the second decoy: saved, never read.
+     Same treatment as rekordbox's, and the same reason — a Windows loopMIDI port
+     has to be matched by name. */
+  function portName() {
+    return SOS.Settings ? SOS.Settings.top('studioPort', 'Adi Studio OS MIDI')
+                        : 'Adi Studio OS MIDI';
+  }
+
   // ---------------------------------------------------------- config cycling
   function cycleRoot(dir) {
     cfg.rootNote = CHROMATIC[(rootIndex() + dir + 12) % 12];
+    saveCfg();
   }
   function cycleScale(dir) {
     var i = SCALE_NAMES.indexOf(cfg.selectedScale);
     if (i < 0) i = SCALE_NAMES.indexOf(DEFAULT_SCALE);
     cfg.selectedScale = SCALE_NAMES[(i + dir + SCALE_NAMES.length) % SCALE_NAMES.length];
+    saveCfg();
   }
   function cycleChannel(dir) {
     cfg.midiChannel = ((cfg.midiChannel - 1 + dir + 16) % 16) + 1;
+    saveCfg();
   }
 
   // ===================================================================== hub
@@ -353,6 +398,13 @@ SOS.Modules.MidiCtl = (function () {
     // since D8 gives those to the overlay in States 0/1/3.
     fullScreenCapable: true,
 
+    /* V64 — announce the configured port NAME (the PI's `studioPort`) and restore
+       the persisted config. config() replays after a service restart, so opening
+       here is safe and idempotent. */
+    onEnter: function () {
+      IPC.midi.open(PORT, portName());
+      if (SOS.Settings) SOS.Settings.onReady(restoreCfg);
+    },
     onExit: allPadsOff,
 
     keys: function (button) {
@@ -455,6 +507,8 @@ SOS.Modules.MidiCtl = (function () {
               SCALE_NAMES: SCALE_NAMES, ZONE_COUNT: ZONE_COUNT, ZONE_PX: ZONE_PX },
     _drum: { noteFor: drumNoteFor, held: function () { return heldPads; },
              allOff: allPadsOff, BASE: DRUM_BASE_NOTE, VELOCITY: DRUM_VELOCITY },
+    _portName: portName, _saveCfg: saveCfg, _restoreCfg: restoreCfg,
+    _bank: function () { return currentBank; },
     _dials: { ccFor: dialCCFor, value: dialValue, set: setDialValue,
               cycleBank: cycleBank, bank: function () { return currentBank; },
               STEP: DIAL_STEP, CENTER: DIAL_CENTER, BANK_CC_BASE: BANK_CC_BASE,

@@ -77,6 +77,16 @@ SOS.Modules.Rekordbox = (function () {
   var PORT = 'rekordbox';                              // IPC port id
   var DEFAULT_PORT_NAME = 'Adi RekordBox Controller';  // published MIDI name
 
+  /* V64 — D16 IS CLOSED. The name is configurable at last: the Property
+     Inspector has always saved `rekordboxPort` and NOTHING EVER READ IT, so the
+     field was a decoy and Windows had no supported way to match its loopMIDI
+     port name. `SOS.Settings.top` reads the PI's own top-level key, so the
+     existing field and its existing id are the contract — no new UI. */
+  function portName() {
+    return SOS.Settings ? SOS.Settings.top('rekordboxPort', DEFAULT_PORT_NAME)
+                        : DEFAULT_PORT_NAME;
+  }
+
   // Note numbers, sent on the deck channel (CH.A / CH.B).
   // Buttons are momentary: Note On (vel 127) on press, Note Off on release,
   // so held functions (nudge, cue audition) behave like real hardware.
@@ -177,6 +187,41 @@ SOS.Modules.Rekordbox = (function () {
   var repeats = {};        // slot key -> timer id (browse auto-repeat)
 
   // Encoder accumulators (endless dial -> absolute CC), one per deck.
+  /* V64 — D17 IS RE-OPENED AND CLOSED PROPERLY. V60 closed it by DELETING the
+     seam, which was right at the time: the seam had been unwired for the whole
+     life of the project because writing global settings from a module is a
+     read-modify-write race, and no namespaced store existed.
+
+     One exists now (js/core/settings.js), and it is the single writer — which is
+     exactly the precondition D17 named. So the six accumulators persist again,
+     the way the legacy plugin's did, and on the same 800 ms debounce.
+
+     RESTORED THROUGH THE SAME CLAMP the dials use. A hand-edited or stale value
+     must not put a fader outside 0..127, and a missing one must fall back to the
+     default rather than to NaN. */
+  var SETTINGS_NS = 'rekordbox';
+
+  function saveLevels() {
+    if (!SOS.Settings) return;
+    SOS.Settings.patch(SETTINGS_NS, {
+      volA: levels.volume.A, volB: levels.volume.B,
+      fltA: levels.filter.A, fltB: levels.filter.B,
+      tmpA: levels.tempo.A,  tmpB: levels.tempo.B,
+    });
+  }
+
+  function restoreLevels() {
+    if (!SOS.Settings) return;
+    var S = SOS.Settings, ns = SETTINGS_NS;
+    levels.volume.A = S.num(ns, 'volA', levels.volume.A, 0, 127);
+    levels.volume.B = S.num(ns, 'volB', levels.volume.B, 0, 127);
+    levels.filter.A = S.num(ns, 'fltA', levels.filter.A, 0, 127);
+    levels.filter.B = S.num(ns, 'fltB', levels.filter.B, 0, 127);
+    levels.tempo.A  = S.num(ns, 'tmpA', levels.tempo.A,  0, 127);
+    levels.tempo.B  = S.num(ns, 'tmpB', levels.tempo.B,  0, 127);
+    SOS.States.repaint();
+  }
+
   var levels = {
     volume: { A: LEVEL_DEFAULT.volume, B: LEVEL_DEFAULT.volume },
     filter: { A: LEVEL_DEFAULT.filter, B: LEVEL_DEFAULT.filter },
@@ -525,6 +570,7 @@ SOS.Modules.Rekordbox = (function () {
           // stable value across a service restart.
           levels[kind][deck] = next;
           IPC.midi.cc(PORT, CH[deck], CC[kind.toUpperCase()], next);
+          saveLevels();                       // V64 — debounced, single writer
 
         }
       },
@@ -540,6 +586,7 @@ SOS.Modules.Rekordbox = (function () {
           // Push = snap the filter back to its center detent.
           levels.filter[deck] = 64;
           IPC.midi.cc(PORT, CH[deck], CC.FILTER, 64);
+          saveLevels();                       // V64
 
         }
         // tempo push intentionally does nothing — no accidental BPM jumps mid-mix.
@@ -576,7 +623,10 @@ SOS.Modules.Rekordbox = (function () {
          the wake-from-sleep reopen and the reconnect nudge all belong to the
          service now, which is also why this is config() and not a realtime send:
          it replays automatically after a service restart. */
-      IPC.midi.open(PORT, DEFAULT_PORT_NAME);
+      IPC.midi.open(PORT, portName());
+      // V64 — the settings object arrives asynchronously, so the restore is a
+      // callback rather than a read. onReady fires immediately if it has landed.
+      if (SOS.Settings) SOS.Settings.onReady(restoreLevels);
     },
 
     onExit: function () {
@@ -607,6 +657,7 @@ SOS.Modules.Rekordbox = (function () {
                 DEFAULT_SENS: DEFAULT_SENS, LEVEL_DEFAULT: LEVEL_DEFAULT,
                 PORT_NAME: DEFAULT_PORT_NAME },
     _dials: DIAL, _levels: levels, _sens: sens,
+    _portName: portName, _saveLevels: saveLevels, _restoreLevels: restoreLevels,
     _shift: { active: shiftActive, held: shiftHeld },
     _notes: { press: pressNote, release: releaseNote, releaseAll: releaseAll,
               active: activeNote, browseNote: browseNote },

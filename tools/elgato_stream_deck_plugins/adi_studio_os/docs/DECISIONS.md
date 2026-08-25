@@ -3813,3 +3813,89 @@ anything the controller animates itself only redrew when Live spoke or a dial mo
 
 Asked by screen identity (`cur === hub || cur === vst`) rather than by `focus`, because the
 pump's job is to paint and both screens paint through the same `focusDial`.
+
+---
+
+## Batch 36 (cont.) — V64 step 2b: the settings store, D16, D17 and the input picker
+
+### `js/core/settings.js` — the namespaced store, and the SINGLE WRITER
+
+**This is the thing D17 was blocked on**, and its absence was holding four separate
+features hostage. D17's objection was never "persistence is hard" — it was that the Stream
+Deck's global settings are ONE object shared by every module, so two modules calling
+`setGlobalSettings` is a read-modify-write race. The legacy rekordbox plugin had to fix
+exactly that race in 1.0.1.0 after it clobbered the port name.
+
+So the store is the **only** writer. Modules read and write namespaced keys; this file owns
+the whole object and writes the merged result on an 800 ms debounce (the legacy plugin's own
+figure) **through `SOS.Timing`**, because nothing in this frontend may call `setTimeout`.
+
+Two details that are load-bearing rather than decorative:
+
+* **`onReady`.** `getGlobalSettings` is asynchronous, so every module boots before its
+  settings arrive. A module registers a restore callback instead of reading on boot.
+* **Reads are validated, not trusted.** `num()` clamps and rejects non-numerics; `str()`
+  treats an empty string as absent. A hand-edited or stale store must not put a fader
+  outside 0..127 or hand an unknown scale name to the note maths — and both are tested.
+
+15 assertions, including the single-writer property asserted directly: two modules write and
+**both namespaces survive in one object**, which is exactly what the old approach could not
+guarantee.
+
+### D16 IS CLOSED — and it was worse than "not implemented"
+
+The Property Inspector has always saved `rekordboxPort`, and **nothing ever read it**. So
+you could type a port name, the PI would remember it, and the surface would silently ignore
+it — a decoy, and the thing blocking Windows, where the name has to match the loopMIDI port.
+`SOS.Settings.top()` reads the PI's own top-level key, so the existing field and its existing
+id are the contract: no new UI, and the same treatment for `studioPort`.
+
+`abletonPort` was worse still: **V60 deleted the `Ableton.setUrl` export that was its
+one-line fix.** Restored, and now applied by `plugin.js`. Purging it was the right call on
+the evidence and the wrong call on the intent — which is a good argument for reading a dead
+export's *neighbours* before deleting it.
+
+### D17 IS RE-OPENED AND CLOSED PROPERLY
+
+V60 closed it by **deleting** the seam. That was right at the time — the seam had been
+unwired for the entire life of the project and no store existed. One exists now, and it is
+the single writer D17 named as its precondition, so the six accumulators persist again on
+the legacy's own 800 ms debounce. Restored through the same clamp the dials enforce.
+
+MIDI Control's root note, scale, channel and bank persist too — its own comment said
+persistence was "deliberately not implemented" pending an orchestrator change, and that is
+what this was. The Visualizers' six slot views and selected slot persist as well, with
+un-ported views refused on the way back in so a stale store cannot blank a dial.
+
+### THE INPUT PICKER — the real blocker on the whole visualizers module
+
+Adi: *"Add the Input Device dropdown picker for the Visualizer so we can finally select
+Blackhole."*
+
+The legacy plugin had an "Input device" dropdown that passed `deviceId: {exact: …}` into
+`getUserMedia`. The port called `getUserMedia` with **no constraint at all**, so capture
+always landed on whatever the OS had as its default input. **That is why "BlackHole needs a
+reboot" has been the standing answer for weeks: the reboot was never the issue.** Without a
+picker, BlackHole has to *be* the system default input — a system setting that disturbs
+every other app.
+
+Now: `enumerateDevices` after permission is granted, `deviceId: { exact: … }` on the chosen
+device, and a key that cycles.
+
+* **`exact` rather than `ideal`, deliberately.** Silently capturing the wrong device is worse
+  than failing loudly, because a visualizer showing the wrong signal looks like it works.
+* **Remembered by LABEL, not by deviceId.** macOS regenerates deviceIds per session, so a
+  stored id would silently stop matching while the label stays stable. Tested by handing the
+  same devices back with fresh ids.
+* **The scan runs after capture starts**, because `enumerateDevices` returns empty labels
+  until permission is granted.
+* **Placed at (0,2)** — the first of the eighteen cells rows 2-3 have always left blank for
+  a spectrum wall that was never built. So it ADDS to empty space and moves nothing, which
+  matters given the standing rule about not rearranging the surface without a ruling. Tap =
+  next input, long press = rescan (needed because plugging in an interface mid-session
+  changes the list).
+
+**Verified by rendering**: the key reads `BlackHole … 2/2`, and with the ring fix from step
+2a the scope and waveform dials show real levels (`-6.0 dB`) instead of an ellipsis.
+
+**1220 tests green** across all seven suites (was 1146 at the start of this batch).
