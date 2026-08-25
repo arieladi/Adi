@@ -63,7 +63,6 @@ def _fmt_generic(p):
 class LiveBridge(object):
     def __init__(self, c_surface, send, log=None, preset_folder="EQ8 Presets"):
         self._cs = c_surface
-        self.song = c_surface.song()
         self.send = send
         self.log = log or (lambda *a: None)
         self.preset_folder = preset_folder
@@ -77,10 +76,43 @@ class LiveBridge(object):
         self._preset_items = {}       # {id: BrowserItem}
         self._watch = []              # [(parameter, fn)] watched by predefined controllers
         self._mixed = []              # V48 — watched mixer params (volume, panning)
+        self._mixtoggles = []         # V62 — watched mute/solo/arm, torn down separately
+        self._last_mix = None         # V64 — the last `mix` payload, for coalescing
+
+    """V64 — `song` IS A PROPERTY NOW, and that one line was a whole class of bug.
+
+    It used to be captured ONCE in __init__ (`self.song = c_surface.song()`).
+    _Framework deliberately exposes `song` as a METHOD, i.e. the framework expects
+    it to be re-read — and when a different Live Set is loaded every handle in the
+    old Song dies. Measured on a harness that models Live's out-of-date raise:
+
+        resend_all() RAISED RuntimeError: Accessing out of date Live object
+          live_bridge.py  self._on_track_changed()
+                          self._track = self.song.view.selected_track
+
+    and because {"t":"hello"} is sent BEFORE that line, the frontend had already
+    set online = true. So the hub read as connected with a dead surface, and every
+    later subscribe threw the same way.
+
+    A property re-reads on every access, so all 26 existing call sites are fixed
+    without being touched — which also keeps this inside the "no editing existing
+    code paths" rule far more comfortably than 26 edits would.
+    """
+    @property
+    def song(self):
+        return self._cs.song()
 
     # ============================================================ lifecycle
     def setup(self):
         self._listen(self.song.view, "selected_track", self._on_track_changed)
+        # V64 — THE TRANSPORT IS WATCHED NOW. V61 added the play/stop/loop verbs
+        # and _emit_transport, but _emit_transport had exactly ONE caller —
+        # cmd_transport itself. So the keys never lit on connect and never
+        # followed Live: pressing spacebar in Live changed nothing on the board.
+        # V62 got this right for mute/solo/arm one version later; this is the
+        # same treatment, one version late.
+        self._listen(self.song, "is_playing", self._emit_transport)
+        self._listen(self.song, "loop", self._emit_transport)
         self._on_track_changed()
 
     def teardown(self):
@@ -102,11 +134,18 @@ class LiveBridge(object):
             self.log("listen %s failed: %s" % (name, e))
 
     def _unlisten(self, subject, name, fn):
+        # V64 — the list rebuild moved INSIDE the try. It compares TUPLES, so for
+        # every other entry it can call __eq__ on a Live handle that is already
+        # dead — and this whole method exists to tolerate dead subjects. Measured
+        # on a harness where a dead handle raises on __eq__: an uncaught
+        # RuntimeError escaped from this exact line.
         try:
             getattr(subject, "remove_%s_listener" % name)(fn)
+            self._listened = [t for t in self._listened if t != (subject, name, fn)]
         except Exception:
-            pass
-        self._listened = [t for t in self._listened if t != (subject, name, fn)]
+            # Drop it by IDENTITY instead, which cannot touch a dead object.
+            self._listened = [t for t in self._listened
+                              if not (t[0] is subject and t[1] == name and t[2] == fn)]
 
     # ================================================================ tracking
     def _on_track_changed(self):
@@ -147,6 +186,10 @@ class LiveBridge(object):
             self.send({"t": "device", "has_device": False, "controller": "generic",
                        "name": "", "class_name": "", "index": -1, "param_count": 0})
             self._emit_eq8_state()
+            # V64 — DESELECTING needs the caption refreshed too. The emit at the
+            # tail of this method is below the early return, so without this line
+            # the fix only covered half the cases.
+            self._emit_device_pos()
             return
 
         is_eq8 = self._device.class_name == EQ8_CLASS
@@ -167,6 +210,12 @@ class LiveBridge(object):
             self._build_generic_map()
             self._emit_generic_full()
         self._emit_eq8_state()
+        # V64 — the SELECTION moved, so the position readout must follow. Only the
+        # track handler and the devices-LIST handler emitted this, and the devices
+        # listener fires when the list changes, not when the selection does. So a
+        # mouse click on a different device in Live left the Prev/Next "n/m"
+        # caption showing the previous device's index indefinitely.
+        self._emit_device_pos()
 
     def _remove_device_listeners(self):
         for slot, p in self._param_map:
@@ -641,6 +690,12 @@ class LiveBridge(object):
             pass
         self.send({"t": "device_focused", "name": getattr(target, "name", name),
                    "count": len(hits), "index": hits.index(target)})
+        # V64 — the SIBLING of the _on_device_changed gap. Focusing a device from a
+        # plugin shortcut key moved the selection without refreshing the position
+        # readout, so the Prev/Next caption went stale on every plugin press.
+        # cmd_device_step always emitted it, which is exactly why the arrows looked
+        # correct and the plugin keys did not.
+        self._emit_device_pos()
 
     # ================================= V53 — step through the track's devices
     """The Up/Down arrows in the hub's utility column.
@@ -788,10 +843,24 @@ class LiveBridge(object):
         pan.value = max(pan.min, min(pan.max, v))
         self._emit_mix()
 
-    def _emit_mix(self):
+    """V64 — COALESCED. Every mixer touch emitted `mix` twice: the setter moves
+    the parameter, Live's own value listener fires _emit_mix, and then the command
+    called _emit_mix again by hand. Measured: a volume tick produced
+    ['mix','mix']. The frontend's `mix` case also fires `state`, so a fast dial
+    spin cost TWO full surface re-renders per detent.
+
+    Deduping here rather than deleting one of the two calls, because the hand call
+    is the only emit on a track that has no listener registered (no mixer_device).
+    `force` exists for resend_all and get_mix, where the frontend genuinely needs
+    the value restated even though nothing changed.
+    """
+    def _emit_mix(self, force=False):
         track, vol, pan = self._mixer()
         if track is None:
-            self.send({"t": "mix", "has_track": False})
+            msg = {"t": "mix", "has_track": False}
+            if force or msg != self._last_mix:
+                self._last_mix = msg
+                self.send(msg)
             return
         msg = {"t": "mix", "has_track": True, "track": getattr(track, "name", "")}
         if vol is not None:
@@ -811,6 +880,9 @@ class LiveBridge(object):
                 msg[key] = bool(getattr(track, attr))
             except Exception:
                 msg[key] = None
+        if not force and msg == self._last_mix:
+            return
+        self._last_mix = msg
         self.send(msg)
 
     def _disp(self, param):
@@ -820,7 +892,7 @@ class LiveBridge(object):
             return ""
 
     def cmd_get_mix(self):
-        self._emit_mix()
+        self._emit_mix(force=True)
 
     # ----------------------------------------------------------- mixer toggles
     # V62 — ADDITIVE, in the V30 sense: three new verbs, no existing code path
@@ -920,9 +992,22 @@ class LiveBridge(object):
         # track PROPERTIES, not device parameters, so they take
         # add_<name>_listener on the track rather than add_value_listener, and
         # they are tracked in their own list because the teardown call differs.
+        # V64 — `hasattr` WAS THE WRONG GUARD, and it could abort the whole track
+        # change. hasattr swallows AttributeError and nothing else, so if Live
+        # raises anything else for `arm` on a return or master track the exception
+        # escaped _mix_listen, aborted _on_track_changed, and left the hub showing
+        # the NEW track's name with the OLD track's device page and dials — for
+        # good, because nothing retries. Reachable only by clicking a return track
+        # with the mouse, which is exactly how it escaped every test.
+        #
+        # _emit_mix already had this right 110 lines up (getattr inside
+        # try/except Exception) and cmd_track_toggle uses can_be_armed. This now
+        # matches them: probe defensively, log, and carry on to the next name.
         self._mixtoggles = []
         for name in ("mute", "solo", "arm"):
-            if not hasattr(track, name):
+            try:
+                getattr(track, name)          # probe; Live may raise anything here
+            except Exception:
                 continue          # a return track has no arm; master has none
             try:
                 getattr(track, "add_%s_listener" % name)(self._emit_mix)
@@ -1134,6 +1219,9 @@ class LiveBridge(object):
             ver = "?"
         self.send({"t": "hello", "version": "1.0", "live": ver})
         self._on_track_changed()
+        # V64 — a reconnect used to start with the transport keys dark even while
+        # Live was playing, because nothing sent this until a key was pressed.
+        self._emit_transport()
 
     # ================================================================== helpers
     def _safe_set(self, p, value):
