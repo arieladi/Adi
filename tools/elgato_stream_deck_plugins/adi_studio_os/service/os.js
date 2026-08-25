@@ -585,6 +585,44 @@ const KEYSTROKE_FULLSCREEN_APPS = [
   "Chromium", "Brave Browser", "Microsoft Edge", "Opera", "Vivaldi",
 ];
 
+/* V63 — the Windows half of the guard. There was none: both quit verbs returned
+   before `guarded()` was ever consulted, so on Windows the red light would kill
+   ANY frontmost app including Live.
+
+   GetForegroundWindow is the only correct answer to "what is the user looking
+   at". The previous forceQuitFront used `Get-Process | Where MainWindowHandle
+   -ne 0 | Select -First 1`, which is not the frontmost app — it is whichever
+   process Windows happens to enumerate first with a window, so it could kill
+   something the user never touched. */
+const WIN_FRONT_SHIM =
+  "Add-Type -MemberDefinition '" +
+  "[DllImport(\"user32.dll\")] public static extern System.IntPtr GetForegroundWindow(); " +
+  "[DllImport(\"user32.dll\")] public static extern int GetWindowThreadProcessId(System.IntPtr h, out uint p);' " +
+  "-Name F -Namespace W -PassThru | Out-Null; ";
+
+function psOut(script) {
+  return new Promise((resolve) => {
+    execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", script],
+      { timeout: 8000 }, (err, stdout, stderr) => {
+        if (err) { log.error?.(`powershell failed: ${err.message} ${stderr || ""}`); resolve(""); }
+        else resolve(String(stdout || "").trim());
+      });
+  });
+}
+
+// Returns { name, pid } for the FOREGROUND window's process, or null.
+async function winFrontApp() {
+  const out = await psOut(WIN_FRONT_SHIM +
+    "$h = [W.F]::GetForegroundWindow(); " +
+    "if ($h -eq [System.IntPtr]::Zero) { 'none' } else { " +
+    "  $p = 0; [void][W.F]::GetWindowThreadProcessId($h, [ref]$p); " +
+    "  $proc = Get-Process -Id $p -ErrorAction SilentlyContinue; " +
+    "  if ($proc) { \"$($proc.ProcessName)`t$($proc.Id)\" } else { 'none' } }");
+  const [name, pid] = String(out).split("\t");
+  if (!name || name === "none") return null;
+  return { name: name.trim(), pid: Number(pid) };
+}
+
 function osaOut(script) {
   return new Promise((resolve) => {
     execFile("osascript", ["-e", script], { timeout: 8000 }, (err, stdout, stderr) => {
@@ -742,9 +780,28 @@ export async function windowLayout(which) {
    applies to the graceful path too — quitting the Stream Deck app gracefully is
    just as unhelpful as killing it.
    =========================================================================== */
+/* V63 — "Ableton Live" WAS NEVER PROTECTED, and this list was the whole safety
+   argument. `guarded()` matches on the frontmost app's PROCESS name, and
+   Ableton's process name on macOS is "Live": the bundle is
+   /Applications/Ableton Live 11 Suite.app but its CFBundleName AND
+   CFBundleExecutable are both "Live". So `guarded("Live")` was false and the red
+   traffic light would quit Live on a short press and kill -9 it on a long one —
+   the exact accident the guard exists to prevent, live on the hardware.
+
+   "Live" comes FIRST because it is the string that actually arrives. The other
+   spellings are kept: they cost nothing, and prefix matching then also covers
+   "Live 11 Suite" / "Live 12" if Live ever reports its full name, and
+   "Ableton Live …" on Windows where the process is "Ableton Live 11 Suite".
+
+   THE FAILURE MODE OF THIS LIST IS ASYMMETRIC, which is why it errs wide: a name
+   that matches too much REFUSES TO QUIT something, and a name that matches too
+   little KILLS SOMETHING. Prefix matching on "Live" would also protect a
+   hypothetical "LiveFoo.app" — an annoyance. The alternative cost Adi a session. */
 const NEVER_QUIT = [
+  "Live",                                   // Ableton Live's real process name
+  "Ableton Live", "Ableton",                // full names, and Windows' spelling
   "Stream Deck", "Elgato Stream Deck", "Finder", "Dock", "SystemUIServer",
-  "loginwindow", "WindowServer", "Ableton Live",
+  "loginwindow", "WindowServer",
 ];
 
 function frontAppScript(body) {
@@ -770,13 +827,25 @@ async function frontApp() {
    studio surface, the Ableton hub is two presses away, and an accidental long press
    that killed Live mid-session would lose work in a way no other key on this board
    can. Adi can take it off the list in one line if he disagrees. */
-function guarded(name) {
+export function guarded(name) {
   const n = String(name || "").toLowerCase();
   return NEVER_QUIT.some((p) => n === p.toLowerCase() || n.indexOf(p.toLowerCase()) === 0);
 }
 
 export async function quitFront() {
-  if (!isMac) return isWin ? hotkey("alt+f4") : false;
+  /* V63 — the guard runs on EVERY platform now. This used to return alt+F4 on
+     Windows before consulting the list at all. */
+  if (isWin) {
+    const w = await winFrontApp();
+    if (!w) { log.warn?.("quitFront: no foreground window"); return false; }
+    if (guarded(w.name)) {
+      log.warn?.(`quitFront: refusing to quit "${w.name}" — it is on the guard list`);
+      return false;
+    }
+    log.info?.(`quitFront: quitting ${w.name}`);
+    return hotkey("alt+f4");
+  }
+  if (!isMac) return false;
   const app = await frontApp();
   if (!app) { log.warn?.("quitFront: nothing frontmost"); return false; }
   if (guarded(app.name)) {
@@ -790,7 +859,24 @@ export async function quitFront() {
 }
 
 export async function forceQuitFront() {
-  if (!isMac) return isWin ? ps("Stop-Process -Id (Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).Id -Force") : false;
+  /* V63 — guarded on Windows too, and aimed at the RIGHT process. The old line
+     killed `Get-Process | Where MainWindowHandle -ne 0 | Select -First 1`, which
+     is not the frontmost app at all. */
+  if (isWin) {
+    const w = await winFrontApp();
+    if (!w) { log.warn?.("forceQuitFront: no foreground window"); return false; }
+    if (guarded(w.name)) {
+      log.warn?.(`forceQuitFront: refusing to kill "${w.name}" — it is on the guard list`);
+      return false;
+    }
+    if (!Number.isFinite(w.pid) || w.pid <= 4) {
+      log.warn?.(`forceQuitFront: refusing a suspicious pid ${w.pid}`);
+      return false;
+    }
+    log.info?.(`forceQuitFront: killing ${w.name} (${w.pid})`);
+    return ps(`Stop-Process -Id ${w.pid} -Force`);
+  }
+  if (!isMac) return false;
   const app = await frontApp();
   if (!app) { log.warn?.("forceQuitFront: nothing frontmost"); return false; }
   if (guarded(app.name)) {
