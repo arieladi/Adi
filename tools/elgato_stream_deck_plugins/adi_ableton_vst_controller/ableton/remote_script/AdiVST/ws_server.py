@@ -211,6 +211,25 @@ class WSServer(threading.Thread):
             pass
 
     # --------------------------------------------------------- HTTP handshake
+    """V64 - THE HANDSHAKE IS VALIDATED NOW, AND THE REASON IS NOT PEDANTRY.
+
+    This used to accept ANY request that carried a Sec-WebSocket-Key header -
+    any method, any path, any protocol version, any Origin. Measured before the
+    fix: a `POST /anything HTTP/1.0` with `Origin: https://evil.example` got a
+    101 and its verb was delivered to the dispatcher.
+
+    That matters because WEBSOCKET HANDSHAKES ARE NOT SUBJECT TO CORS. A browser
+    will happily open ws://127.0.0.1:9006 from any page, without a preflight and
+    without asking. So any web page open on this Mac could reach the full verb
+    table - including eq8_load_preset, which calls track.delete_device.
+
+    THE ORIGIN CHECK IS THE ONE THAT ACTUALLY STOPS A BROWSER. A browser always
+    sends Origin and cannot forge it; our own CEF frontend is a file:// page, so
+    it sends either no Origin at all or the literal "null". Both are allowed
+    here, and every http(s) Origin is refused. A non-browser process can of
+    course omit the header - but a non-browser process on this machine can
+    already do anything, so that is not the threat this closes.
+    """
     def _try_handshake(self, c):
         end = c.in_buf.find(b"\r\n\r\n")
         if end < 0:
@@ -219,15 +238,45 @@ class WSServer(threading.Thread):
             return
         header = bytes(c.in_buf[:end]).decode("latin-1", "ignore")
         del c.in_buf[:end + 4]
-        key = None
-        for line in header.split("\r\n")[1:]:
+
+        lines = header.split("\r\n")
+        request = lines[0] if lines else ""
+        hdr = {}
+        for line in lines[1:]:
             if ":" in line:
                 k, v = line.split(":", 1)
-                if k.strip().lower() == "sec-websocket-key":
-                    key = v.strip()
-        if not key:
+                hdr[k.strip().lower()] = v.strip()
+
+        def refuse(code, why):
+            self.log("WS handshake refused (%s): %s" % (code, why))
+            try:
+                c.queue(("HTTP/1.1 %s\r\nConnection: close\r\n"
+                         "Content-Length: 0\r\n\r\n" % code).encode("latin-1"))
+            except Exception:
+                pass
             c.alive = False
-            return
+
+        # --- method and version. GET only, RFC 6455 only.
+        if not request.upper().startswith("GET "):
+            return refuse("405 Method Not Allowed", request[:40])
+        if "websocket" not in hdr.get("upgrade", "").lower():
+            return refuse("400 Bad Request", "no Upgrade: websocket")
+        if "upgrade" not in hdr.get("connection", "").lower():
+            return refuse("400 Bad Request", "no Connection: Upgrade")
+        if hdr.get("sec-websocket-version", "") != "13":
+            return refuse("426 Upgrade Required",
+                          "version %r" % hdr.get("sec-websocket-version", ""))
+
+        # --- Origin. Absent or "null" is our own file:// frontend; anything
+        #     else is a real web page and is refused.
+        origin = hdr.get("origin", "")
+        if origin and origin.lower() != "null":
+            return refuse("403 Forbidden", "Origin %s" % origin[:60])
+
+        key = hdr.get("sec-websocket-key", "")
+        if not key:
+            return refuse("400 Bad Request", "no Sec-WebSocket-Key")
+
         resp = (
             "HTTP/1.1 101 Switching Protocols\r\n"
             "Upgrade: websocket\r\n"
