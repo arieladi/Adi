@@ -64,6 +64,56 @@ ok("no correlation or balance is computed — their views are un-ported",
    met.corr === undefined && met.bal === undefined,
    `corr=${met.corr} bal=${met.bal}`);
 
+/* V64 — THE SCOPE AND WAVEFORM DIALS SHOWED AN ELLIPSIS, because only svgMeters
+   ever populated `this.head` while _scopePeak and _wavePeak were computed every
+   frame and read by nothing — the same shape as the METER.corr bug V60 removed,
+   two more instances of which survived that purge. The peaks now feed the
+   readouts they were plainly written for.
+
+   The ring has to be genuinely FULL for this: the waveform reads the most recent
+   windowMs of samples (1.5 s = 72000 at 48 kHz), so a single 4096-sample push
+   leaves the read window almost entirely zero and the peak legitimately reads as
+   silence. That is not a bug, it is an empty buffer — and getting it wrong is how
+   I first mis-read this fix. */
+console.log("\n[2b] V64: every implemented view reports a level on its dial");
+{
+  let phase = 0;
+  const blk = new Float32Array(4096);
+  for (let b = 0; b < 40; b++) {
+    for (let i = 0; i < 4096; i++, phase++) blk[i] = Math.sin(2 * Math.PI * 440 * phase / 48000) * 0.5;
+    V._push(blk, blk);
+  }
+  V._frame();
+  /* THE THREE LEVEL VIEWS. Spectrum is deliberately excluded: its `head` is the
+     SPAN-style tap readout (the frequency you touched), so it is empty until you
+     touch the strip — that is the marker slot, not a level. */
+  const LEVEL_VIEWS = ["meters", "scope", "waveform"];
+  const seen = new Set();
+  for (const sl of V._slots) {
+    if (!LEVEL_VIEWS.includes(sl.view) || seen.has(sl.view)) continue;
+    seen.add(sl.view);
+    const h = sl.an.head;
+    ok(`the ${sl.view} dial reports a level, not an ellipsis`,
+       typeof h.value === "string" && h.value !== "" && h.value !== "\u2014",
+       `${sl.view} -> ${JSON.stringify(h.value)}`);
+    ok(`...and the ${sl.view} indicator is normalised and non-zero`,
+       typeof h.indicator === "number" && h.indicator > 0 && h.indicator <= 1,
+       `${sl.view} -> ${h.indicator}`);
+  }
+  ok("all three level views were exercised", seen.size === 3, [...seen].join(","));
+
+  /* THE ROOT CAUSE, pinned. ringPush takes BLOCKS and was called per SAMPLE with
+     scalars, so `cl.length` was undefined and the ring was never written once
+     since the original port — which is why the spectrum, scope and waveform read
+     silence while the meters, computed from the block directly, looked fine. */
+  ok("the ring buffer actually receives samples",
+     V._slots.some((sl) => sl.view === "waveform" && sl.an.head.indicator > 0));
+  /* Asserted as an absence too: re-adding a peak that nothing draws is exactly
+     the bug this fixes. */
+  ok("no analyzer carries a write-only peak field",
+     V._slots.every((sl) => sl.an._scopePeak === undefined && sl.an._wavePeak === undefined));
+}
+
 console.log("\n[3] rendering");
 V._frame();
 for (const [i, slot] of V._slots.entries()) {

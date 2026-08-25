@@ -429,11 +429,27 @@ SOS.Render = (function () {
   // -------------------------------------------------------------------- dials
   /* zone({ title, value, sub, indicator, color })
      indicator 0..1 draws the horizontal fill bar used by every legacy dial. */
+  /* V64 — `dim` NOW DIMS THE WHOLE ZONE, not just an icon.
+
+     It was read in exactly ONE place: inside the icon branch below. Eight dial
+     bindings set `dim` to mean offline or unsupported — five on the Root Hub and
+     three in Ableton's mixer mode — and only the two that happen to carry an icon
+     (Zoom, Tabs) ever showed it. So all three V62 mixer toggles plus Pan and
+     Volume announced "bridge offline" in words while looking exactly as live as
+     ever, and the em-dash "n/a on this track" case that was deliberately made
+     visually distinct was only half distinct.
+
+     Applied as a group opacity over the whole zone rather than per-element: it is
+     one attribute, it cannot be forgotten by a future element the way a per-call
+     check was, and it matches what the icon branch was already doing. The icon's
+     own opacity is dropped now that the wrapper carries it — two 0.5 layers would
+     read as 0.25 and look broken rather than dim. */
   function zone(o) {
     o = o || {};
     var color = o.color || PALETTE.accent;
     var s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + Z_W + ' ' + Z_H + '" width="' + Z_W + '" height="' + Z_H + '">';
     s += '<rect width="' + Z_W + '" height="' + Z_H + '" fill="#0c0f12"/>';
+    if (o.dim) s += '<g opacity="0.45">';
     if (o.title) s += text(truncate(o.title, 16), Z_W / 2, 22, 13, 700, PALETTE.dim, 'middle', 1.2);
     /* V42 — a zone may carry an ICON where its value would go. Same registry and
        the same reasoning as a key's `icon`: the glyph this replaces (`⌕` for zoom)
@@ -442,8 +458,7 @@ SOS.Render = (function () {
     var zi = o.icon && SOS.Icons ? SOS.Icons[o.icon] : null;
     if (zi) {
       var zh = 46, zsc = zh / zi.h, zw = zi.w * zsc;
-      s += '<g transform="translate(' + ((Z_W - zw) / 2).toFixed(2) + ',30) scale(' + zsc.toFixed(4) + ')"'
-         + (o.dim ? ' opacity="0.5"' : '') + '>'
+      s += '<g transform="translate(' + ((Z_W - zw) / 2).toFixed(2) + ',30) scale(' + zsc.toFixed(4) + ')">'
          + String(zi.svg).split('__ID__').join('z' + o.icon) + '</g>';
     } else if (o.value) {
       // V45 — `valueColor` so the OS-nav scroll arrows can be the clock's blue.
@@ -455,6 +470,7 @@ SOS.Render = (function () {
       s += '<rect x="16" y="74" width="' + w.toFixed(1) + '" height="5" rx="2.5" fill="' + color + '"/>';
     }
     if (o.sub) s += text(truncate(o.sub, 22), Z_W / 2, Z_H - 6, 11, 600, PALETTE.dim);
+    if (o.dim) s += '</g>';
     return s + '</svg>';
   }
 

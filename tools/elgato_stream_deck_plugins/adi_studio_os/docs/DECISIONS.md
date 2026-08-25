@@ -3739,3 +3739,77 @@ so they go through the property that was just fixed. And a new block `[20]` inst
 habit of raising for a missing attribute. **55 → 70 assertions**, covering: transport listeners
 and emit-on-connect, mix coalescing, both `arm`-raises variants, a new Live Set not wedging the
 bridge, `device_pos` following the selection, and teardown leaving nothing behind.
+
+---
+
+## Batch 36 (cont.) — V64 step 2a: the three UI bugs, and a root cause underneath them
+
+### THE RING BUFFER WAS NEVER WRITTEN, NOT ONCE, SINCE THE ORIGINAL PORT
+
+Found while verifying the scope readout, and it is much larger than the bug I was
+chasing. `ringPush(cl, cr, cm)` takes **blocks** — `var n = cl.length`. `push()` called it
+**per sample with three scalars**:
+
+```js
+ringPush(a, b, (a + b) * 0.5);        // a is a NUMBER
+```
+
+So `cl.length` was `undefined`, the loop `i < undefined` never ran, and `ringW` never
+advanced. **Nothing was ever written to any ring buffer.**
+
+Everything that reads the ring therefore read pure silence: **the spectrum, the scope and
+the waveform — three of the four implemented views.** The meters looked fine because they
+are computed from the block directly and never touch the ring, which is exactly why nobody
+caught it: the one view you could sanity-check was the one view that did not depend on the
+broken path.
+
+**Provenance checked: this is not a V60 regression.** `git log -S` puts it in `38f97a8`,
+the original "working Visualizers" commit, and it was already per-sample before my purge —
+I preserved the line verbatim. So **the visualizers have never had signal in three of four
+views**, and that sits *underneath* the missing input picker rather than beside it.
+
+Fixed by writing the block once, outside the loop, with an explicit `count` so a reused
+mono scratch buffer larger than the current block cannot contribute stale tail samples.
+
+### The scope and waveform dials showed an ellipsis
+
+`_scopePeak` and `_wavePeak` were computed every frame and read by **nothing**, while only
+`svgMeters` ever populated `this.head` — the same shape as the `METER.corr` / `METER.bal`
+bug V60 removed. **Two more instances of it survived that purge.**
+
+Rather than delete the loops, they now feed the readouts they were plainly written for:
+peak in dB plus the window length. With the ring fix above, all three level views now
+report a real level — verified, and pinned by nine new assertions.
+
+**Spectrum is deliberately excluded from that assertion**: its `head` is the SPAN-style tap
+readout, empty until you touch the strip. That is the marker slot, not a level.
+
+**And a note on how I nearly mis-read this.** My first check showed an em dash and I almost
+took it for a broken fix. It was an empty ring: the waveform reads the most recent
+`windowMs` of samples — 1.5 s, i.e. 72000 at 48 kHz — so a single 4096-sample push leaves
+the read window almost entirely zero and the peak legitimately reads as silence. The test
+now fills the ring properly and says why.
+
+### `dim` now dims the whole zone
+
+It was read in exactly ONE place — inside `zone()`'s icon branch. **Eight dial bindings set
+`dim`** to mean offline or unsupported (five on the Root Hub, three in Ableton's mixer
+mode) and only the two carrying an icon ever showed it. So all three V62 mixer toggles plus
+Pan and Volume announced "bridge offline" in words while looking exactly as live as ever —
+and the em-dash "n/a on this track" case I had deliberately made distinct was only half
+distinct.
+
+Applied as one group opacity over the whole zone: it cannot be forgotten by a future
+element the way a per-call check was. The icon's own `opacity="0.5"` was dropped, because
+two 0.5 layers read as 0.25 and look broken rather than dim.
+
+### The V61 pump gate had to widen
+
+`var onHub = SOS.Nav.current() === hub` was exactly right before the split, when `hub` WAS
+the VST grid. After V61 it named Level 1, so on **Level 2 — the screen the controller strip
+exists for** — `composite()` was never called by the pump and the re-arm dropped to 250 ms.
+Not frozen, because `Bridge.on('state')` still composites on every Live message; but
+anything the controller animates itself only redrew when Live spoke or a dial moved.
+
+Asked by screen identity (`cur === hub || cur === vst`) rather than by `focus`, because the
+pump's job is to paint and both screens paint through the same `focusDial`.
