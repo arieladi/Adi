@@ -109,11 +109,20 @@ try {
      first that the service itself is not at fault: a malformed frame does not
      kill it and it answers midi.ports immediately afterwards. */
   const MIDI_MS = 12000;
-  const ports = await ask("midi.ports", {}, MIDI_MS);
+  /* V64 — ONE RETRY, because this single reply is the observation window for the
+     five assertions after it: when it times out under load, one environmental
+     hiccup reports as six failures and buries whatever else is wrong.
+     `midi.ports` is a pure query with no side effects, so retrying it is
+     legitimate rather than a mask — and V62c already established the cause is
+     CoreMIDI enumeration contending with the DEPLOYED service's virtual ports,
+     which is exactly the state right after a deploy. */
+  const askPorts = async () => (await ask("midi.ports", {}, MIDI_MS))
+                            ?? (await ask("midi.ports", {}, MIDI_MS));
+  const ports = await askPorts();
   ok("midi.ports replies", ports?.ok === true, JSON.stringify(ports)?.slice(0, 200));
   ws.send(JSON.stringify({ t: "midi.open", port: "studio", name: "Adi Studio OS TEST" }));
   await wait(600);
-  const after = await ask("midi.ports", {}, MIDI_MS);
+  const after = await askPorts();
   const studio = after?.result?.ports?.find((p) => p.id === "studio");
   if (process.platform === "darwin") {
     ok("virtual CoreMIDI port created", studio?.connected === true, JSON.stringify(studio));
@@ -130,11 +139,11 @@ try {
   ws.send(JSON.stringify({ t: "midi.noteOn", port: "studio", ch: 0, note: 60, vel: 100 }));
   ws.send(JSON.stringify({ t: "midi.noteOn", port: "studio", ch: 0, note: 64, vel: 100 }));
   await wait(200);
-  const sounding = (await ask("midi.ports", {}, MIDI_MS))?.result?.ports?.find((p) => p.id === "studio")?.sounding;
+  const sounding = (await askPorts())?.result?.ports?.find((p) => p.id === "studio")?.sounding;
   ok("two notes tracked as sounding", sounding === 2, `sounding=${sounding}`);
   ws.send(JSON.stringify({ t: "midi.noteOff", port: "studio", ch: 0, note: 60 }));
   await wait(150);
-  const one = (await ask("midi.ports", {}, MIDI_MS))?.result?.ports?.find((p) => p.id === "studio")?.sounding;
+  const one = (await askPorts())?.result?.ports?.find((p) => p.id === "studio")?.sounding;
   ok("note off decrements", one === 1, `sounding=${one}`);
 
   ws.close();
