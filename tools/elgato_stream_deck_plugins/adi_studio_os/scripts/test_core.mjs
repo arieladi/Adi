@@ -24,7 +24,7 @@ class FakeWS {
 global.WebSocket = FakeWS;
 
 const ORDER = [
-  'js/core/sd-client.js', 'js/core/timing.js', 'js/core/surface.js', 'js/core/art.js', 'js/core/icons.js', 'js/core/backgrounds.js', 'js/core/clock.js', 'js/core/render.js',
+  'js/core/sd-client.js', 'js/core/timing.js', 'js/core/settings.js', 'js/core/surface.js', 'js/core/art.js', 'js/core/icons.js', 'js/core/backgrounds.js', 'js/core/clock.js', 'js/core/render.js',
   'js/core/ipc.js', 'js/core/layout.js', 'js/core/input.js', 'js/core/nav.js', 'js/core/states.js',
   'js/modules/root.js', 'js/modules/console.js', 'js/modules/index.js', 'js/plugin.js',
 ];
@@ -507,6 +507,93 @@ ok('the trigger still works in NAV OFF, so NAV can be recalled',
 States.setState(0);
 dialMsg('dialDown', 'd0'); await wait(620); dialMsg('dialUp', 'd0'); await wait(30);
 ok('dial 1 has no state gesture', States.get() === 0, String(States.get()));
+
+/* ===========================================================================
+   V64 — THE NAMESPACED SETTINGS STORE.
+
+   This is what D17 was blocked on. Its objection was never "persistence is
+   hard": it was that the Stream Deck's global settings are ONE object shared by
+   every module, so two modules calling setGlobalSettings is a read-modify-write
+   race — the race the legacy rekordbox plugin had to fix in 1.0.1.0 after it
+   clobbered the port name.
+
+   So the property under test is SINGLE-WRITER-NESS: modules never write the
+   object, they write namespaced keys, and this file owns the merge.
+   =========================================================================== */
+console.log('\n[13] V64: the settings store');
+{
+  const St = SOS.Settings;
+  const writes = [];
+  const realSet = SOS.SD.setGlobalSettings;
+  SOS.SD.setGlobalSettings = (o) => writes.push(JSON.parse(JSON.stringify(o)));
+
+  St._reset();
+  ok('reads before the first load fall back to the default',
+     St.get('modA', 'x', 'dflt') === 'dflt' && !St.isLoaded());
+
+  /* onReady is the whole reason modules can boot before their settings arrive:
+     getGlobalSettings is asynchronous, so a module that read on boot would read
+     nothing. */
+  let restored = 0;
+  St.onReady(() => restored++);
+  ok('a restore callback registered before load has not run yet', restored === 0);
+  St.load({ modA: { x: 7 }, servicePort: 9011 });
+  ok('...and runs exactly once when the object lands', restored === 1);
+  St.onReady(() => restored++);
+  ok('...while one registered after load runs immediately', restored === 2);
+
+  ok('a namespaced read returns the stored value', St.get('modA', 'x', 0) === 7);
+  ok('num() clamps rather than trusting the store',
+     St.num('modA', 'x', 0, 0, 5) === 5 && St.num('modA', 'nope', 3, 0, 10) === 3);
+  ok('num() rejects a non-numeric value instead of yielding NaN',
+     (St.load({ modA: { x: 'banana' } }), St.num('modA', 'x', 4, 0, 10) === 4));
+  ok('str() rejects an empty string as well as a missing key',
+     (St.load({ modA: { s: '' } }), St.str('modA', 's', 'fallback') === 'fallback'));
+
+  /* THE SINGLE-WRITER PROPERTY, asserted directly: two different modules write,
+     and BOTH survive in one object. Under the old direct-setGlobalSettings
+     approach the second would have clobbered the first. */
+  St._reset(); St.load({});
+  writes.length = 0;
+  St.set('rekordbox', 'volA', 100);
+  St.set('midictl', 'rootNote', 'D');
+  St._flush();
+  const last = writes[writes.length - 1];
+  ok('two modules writing leaves BOTH namespaces intact — no clobber',
+     last.rekordbox.volA === 100 && last.midictl.rootNote === 'D',
+     JSON.stringify(last));
+  ok('...and the PI top-level keys are never touched by a namespaced write',
+     (St.load({ servicePort: 9011, rekordboxPort: 'Custom' }),
+      St.set('viz', 'inputLabel', 'BlackHole 2ch'), St._flush(),
+      writes[writes.length - 1].rekordboxPort === 'Custom'));
+
+  ok('top() reads the PI fields the inspector has always written',
+     St.top('rekordboxPort', 'x') === 'Custom' && St.top('missing', 'dflt') === 'dflt');
+  ok('...and treats an empty PI field as absent, not as a name',
+     (St.load({ rekordboxPort: '' }), St.top('rekordboxPort', 'Default') === 'Default'));
+
+  /* Writing the same value must not cost a disk write. A dial spin is one set()
+     per detent and the app persists global settings to disk. */
+  St._reset(); St.load({ m: { k: 1 } });
+  writes.length = 0;
+  St.set('m', 'k', 1);
+  St._flush();
+  ok('an unchanged value writes nothing at all', writes.length === 0, String(writes.length));
+
+  /* The debounce goes through SOS.Timing because NOTHING in this frontend may
+     call setTimeout — a page timer here is throttled to ~once a minute with the
+     window closed. Asserted as an absence in the source. */
+  const src = fs.readFileSync(new URL('../com.adiariel.studioos.sdPlugin/js/core/settings.js', import.meta.url), 'utf8')
+                .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  ok('the store schedules through SOS.Timing, never a raw page timer',
+     !/setTimeout|setInterval/.test(src) && /SOS\.Timing\.after/.test(src));
+  ok('...and it is the ONLY writer — no module may call setGlobalSettings',
+     /setGlobalSettings/.test(src));
+
+  St._reset();
+  SOS.SD.setGlobalSettings = realSet;
+}
+
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -163,13 +163,32 @@
       States.startClock();
     });
 
+    /* V64 — EVERY PI FIELD IS APPLIED NOW, AND THERE IS ONE WRITER.
+
+       Three of the four fields were decoys: the Property Inspector saved
+       `rekordboxPort`, `studioPort` and `abletonPort`, and nothing ever read
+       them. `abletonPort` was worse than unread — V60 deleted the `setUrl`
+       export that was its one-line fix, so it is restored here and used.
+
+       The object also goes to SOS.Settings, which becomes the SINGLE WRITER for
+       global settings. That is what D17 was blocked on: the object is shared by
+       every module, so a module writing its own key is a read-modify-write race.
+       Modules read and write namespaced keys through the store instead, and the
+       store owns the merge. */
     SD.on('didReceiveGlobalSettings', function (m) {
       var g = (m.payload && m.payload.settings) || {};
+      SOS.Settings.load(g);
+
       if (g.servicePort) {
         settings.servicePort = +g.servicePort;
         IPC.setUrl('ws://127.0.0.1:' + settings.servicePort);
       }
-      if (g.abletonPort) settings.abletonPort = +g.abletonPort;
+      // V64 — actually applied. The bridge URL was unchangeable before this.
+      if (g.abletonPort) {
+        settings.abletonPort = +g.abletonPort;
+        var A = SOS.Modules && SOS.Modules.Ableton;
+        if (A && A.setUrl) A.setUrl('ws://127.0.0.1:' + settings.abletonPort);
+      }
       States.repaint();
     });
 

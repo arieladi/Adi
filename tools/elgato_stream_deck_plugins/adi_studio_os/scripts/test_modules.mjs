@@ -18,7 +18,7 @@ const LEGACY = path.resolve(NEW, "../../");
 global.window = global;
 global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
-const CORE = ["js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/backgrounds.js", "js/core/clock.js", "js/core/render.js",
+const CORE = ["js/core/sd-client.js", "js/core/timing.js", "js/core/settings.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/backgrounds.js", "js/core/clock.js", "js/core/render.js",
               "js/core/ipc.js", "js/core/layout.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js"];
 const MODS = ["js/modules/root.js", "js/modules/console.js",
               "js/modules/rekordbox.js", "js/modules/midictl.js", "js/modules/index.js"];
@@ -763,6 +763,77 @@ console.log("\n[12] V33: the Root Hub OS-navigation strip");
   // one that gets truncated.
   ok("every caption fits the 22-char zone", [1,2,3,4,5].every((n) => d(n).sub.length <= 22),
      [1,2,3,4,5].map((n) => `${d(n).sub.length}`).join(","));
+}
+
+/* ===========================================================================
+   V64 — PERSISTENCE, AND THE TWO PI FIELDS THAT WERE DECOYS.
+
+   D16 and D17 were both open for the same reason: no namespaced store existed,
+   so the Property Inspector's `rekordboxPort` and `studioPort` were saved and
+   never read, and rekordbox's six encoder accumulators reset on every launch.
+   =========================================================================== */
+console.log("\n[V64] persistence and the PI ports");
+{
+  const St = SOS.Settings;
+  const rb = SOS.Modules.Rekordbox, mc = SOS.Modules.MidiCtl;
+  const realSet = SOS.SD.setGlobalSettings;
+  SOS.SD.setGlobalSettings = () => {};
+
+  // --- D16: the port NAME is configurable at last
+  St._reset(); St.load({});
+  ok("rekordbox falls back to its published name when the PI field is empty",
+     rb._portName() === "Adi RekordBox Controller", rb._portName());
+  St.load({ rekordboxPort: "loopMIDI Port 1" });
+  ok("D16: a PI port name is actually APPLIED now",
+     rb._portName() === "loopMIDI Port 1", rb._portName());
+  St.load({ studioPort: "loopMIDI Studio" });
+  ok("...and the same for MIDI Control's port", mc._portName() === "loopMIDI Studio",
+     mc._portName());
+
+  // --- D17: the six accumulators survive a relaunch
+  St._reset(); St.load({});
+  const L = rb._levels;
+  L.volume.A = 111; L.filter.B = 33; L.tempo.A = 90;
+  rb._saveLevels();
+  const saved = JSON.parse(JSON.stringify(St._store().rekordbox));
+  ok("D17: the six levels are written to their own namespace",
+     saved.volA === 111 && saved.fltB === 33 && saved.tmpA === 90, JSON.stringify(saved));
+  L.volume.A = 0; L.filter.B = 0; L.tempo.A = 0;      // simulate a relaunch
+  rb._restoreLevels();
+  ok("...and restored on the next launch",
+     L.volume.A === 111 && L.filter.B === 33 && L.tempo.A === 90,
+     `${L.volume.A}/${L.filter.B}/${L.tempo.A}`);
+
+  /* A hand-edited or corrupt store must not put a fader out of range. This is
+     the validation the legacy plugin had and the reason restore is not a plain
+     assignment. */
+  St.load({ rekordbox: { volA: 9999, fltB: -5, tmpA: "banana" } });
+  rb._restoreLevels();
+  ok("a corrupt store cannot push a level outside 0..127",
+     L.volume.A === 127 && L.filter.B === 0 && L.tempo.A >= 0 && L.tempo.A <= 127,
+     `${L.volume.A}/${L.filter.B}/${L.tempo.A}`);
+
+  // --- MIDI Control's config
+  St._reset(); St.load({});
+  const cfg = mc._cfg;
+  const root0 = cfg.rootNote;
+  St.load({ midictl: { rootNote: "F#", selectedScale: "Dorian", midiChannel: 9, bank: 2 } });
+  mc._restoreCfg();
+  ok("MIDI Control restores root, scale, channel and bank",
+     cfg.rootNote === "F#" && cfg.selectedScale === "Dorian"
+     && cfg.midiChannel === 9 && mc._bank() === 2,
+     JSON.stringify({ r: cfg.rootNote, s: cfg.selectedScale, c: cfg.midiChannel, b: mc._bank() }));
+  /* An unknown scale name must NOT reach the note maths — it would index into
+     SCALE_INTERVALS and produce undefined. */
+  St.load({ midictl: { rootNote: "H", selectedScale: "Nonsense", midiChannel: 99 } });
+  mc._restoreCfg();
+  ok("an unknown root or scale falls back instead of reaching the note maths",
+     cfg.rootNote !== "H" && cfg.selectedScale !== "Nonsense"
+     && cfg.midiChannel >= 1 && cfg.midiChannel <= 16,
+     JSON.stringify({ r: cfg.rootNote, s: cfg.selectedScale, c: cfg.midiChannel }));
+
+  St._reset();
+  SOS.SD.setGlobalSettings = realSet;
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

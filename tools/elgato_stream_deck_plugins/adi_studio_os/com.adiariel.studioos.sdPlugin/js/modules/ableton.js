@@ -984,6 +984,12 @@ SOS.Modules.Ableton = (function () {
 
   return {
     hub: hub, vst: vst, bridge: Bridge,
+    /* V64 — RESTORED. V60 deleted this export as dead, and it WAS dead — which
+       was precisely why the Property Inspector's `abletonPort` field could never
+       do anything. plugin.js applies it now, so the export has the caller it was
+       always missing. Purging it was the right call on the evidence and the
+       wrong call on the intent. */
+    setUrl: Bridge.setUrl,
     _focus: function () { return focus; },
     _setFocus: setFocus, _FOCUS: FOCUS, _modes: MODES, _transport: TRANSPORT,
     // exposed for scripts/test_ableton.mjs

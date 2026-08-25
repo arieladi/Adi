@@ -17,7 +17,7 @@ const ROOT = new URL("../com.adiariel.studioos.sdPlugin/", import.meta.url).path
 global.window = global;
 global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
-for (const f of ["js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/render.js",
+for (const f of ["js/core/sd-client.js", "js/core/timing.js", "js/core/settings.js", "js/core/surface.js", "js/core/render.js",
                  "js/core/ipc.js", "js/core/layout.js", "js/core/input.js",
                  "js/core/nav.js", "js/core/states.js", "js/modules/console.js"]) {
   (0, eval)(fs.readFileSync(path.join(ROOT, f), "utf8"));

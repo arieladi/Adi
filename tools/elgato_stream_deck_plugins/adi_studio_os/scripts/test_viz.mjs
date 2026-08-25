@@ -24,7 +24,7 @@ Object.defineProperty(global, "navigator", {
   },
 });
 
-for (const f of ["js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/render.js",
+for (const f of ["js/core/sd-client.js", "js/core/timing.js", "js/core/settings.js", "js/core/surface.js", "js/core/render.js",
                  "js/core/ipc.js", "js/core/layout.js", "js/core/input.js", "js/core/nav.js", "js/core/states.js",
                  "js/modules/root.js", "js/modules/console.js", "js/modules/rekordbox.js",
                  "js/modules/midictl.js", "js/modules/viz.js", "js/modules/index.js"]) {
@@ -154,5 +154,94 @@ ok("an un-ported view paints dim with a reason", picker && picker.dim === true &
 
 V._stop();   // the pump would otherwise hold the event loop open
 Nav.toRoot();
+/* ===========================================================================
+   V64 — THE INPUT PICKER, which was the real blocker on this whole module.
+
+   The legacy plugin had an "Input device" dropdown that passed
+   deviceId: {exact: …} into getUserMedia. The port called getUserMedia with NO
+   constraint, so capture always landed on the OS default input — which is why
+   "BlackHole needs a reboot" was the standing answer: without a picker, BlackHole
+   has to BE the system default, disturbing every other app on the machine.
+   =========================================================================== */
+console.log("\n[V64] the audio input picker");
+{
+  const St = SOS.Settings;
+  const A = V._audio;
+  St._reset(); St.load({});
+
+  // Fake two inputs the way enumerateDevices would report them.
+  A.inputs = [{ deviceId: "aaa", label: "MacBook Pro Microphone" },
+              { deviceId: "bbb", label: "BlackHole 2ch" }];
+  A.inputIndex = 0; A.scanned = true;
+
+  // viz.hub uses the legacy FLAT keys(button) form, not (col,row).
+  const key = (c, r) => V.hub.keys(SOS.Surface.btn(c, r));
+  const k = key(0, 2);
+  ok("the picker sits at (0,2) — a cell rows 2-3 always left blank",
+     !!k && k.kicker === "INPUT", JSON.stringify(k && k.kicker));
+  ok("...and names the current device", /MacBook/.test(k.label), k.label);
+  ok("...and says which of how many", k.sub === "1/2", k.sub);
+
+  k.tap();
+  ok("tapping selects the next input",
+     V._inputs()[A.inputIndex].label === "BlackHole 2ch",
+     V._inputs()[A.inputIndex].label);
+  ok("...and it is remembered by LABEL, not by deviceId",
+     St.get("viz", "inputLabel", "") === "BlackHole 2ch",
+     St.get("viz", "inputLabel", ""));
+
+  /* By label ON PURPOSE: macOS regenerates deviceIds per session, so a stored id
+     silently stops matching while the label stays stable. Proven by handing back
+     the same devices with different ids. */
+  /* Drive the REAL refreshInputs, which is the code that re-finds by label, by
+     stubbing enumerateDevices the way the browser would answer it — with fresh
+     per-session ids and the same labels. */
+  const fresh = [{ kind: "audioinput", deviceId: "zzz-new-session", label: "MacBook Pro Microphone" },
+                 { kind: "audioinput", deviceId: "yyy-new-session", label: "BlackHole 2ch" },
+                 { kind: "videoinput", deviceId: "cam", label: "FaceTime HD" }];
+  // navigator is a getter-only global on Node 26 — same reason as the header.
+  Object.defineProperty(global, "navigator", {
+    value: { mediaDevices: { enumerateDevices: () => Promise.resolve(fresh) } },
+    configurable: true, writable: true,
+  });
+  A.inputs = []; A.inputIndex = 0;
+  await V._refreshInputs();
+  ok("only AUDIO inputs are listed — the camera is filtered out",
+     A.inputs.length === 2, String(A.inputs.length));
+  ok("a new session with fresh deviceIds still finds the remembered device",
+     A.inputIndex === 1, String(A.inputIndex));
+
+  ok("cycling wraps", (k.tap(), A.inputIndex === 0), String(A.inputIndex));
+
+  // With nothing scanned the key must invite a scan rather than look broken.
+  A.inputs = []; A.inputIndex = 0;
+  const empty = key(0, 2);
+  ok("with no inputs it is dim and asks for audio",
+     empty.dim === true && /start audio|no inputs/.test(empty.sub), empty.sub);
+  ok("the long press rescans", typeof empty.hold === "function");
+
+  ok("a long device name is shortened without an ellipsis in the middle",
+     V._shortInput("MacBook Pro Microphone (Built-in)").length <= 11,
+     V._shortInput("MacBook Pro Microphone (Built-in)"));
+
+  // --- slot views persist
+  St._reset(); St.load({});
+  V._slots[0].view = "waveform";
+  V._saveSlots();
+  ok("the six slot views are saved", /waveform/.test(St.get("viz", "views", "")),
+     St.get("viz", "views", ""));
+  V._slots[0].view = "spectrum";
+  V._restoreSlots();
+  ok("...and restored", V._slots[0].view === "waveform", V._slots[0].view);
+  /* An un-ported view in the store must NOT be restored, or the slot renders a
+     "not ported" tile and its dial goes blank. */
+  St.load({ viz: { views: "gonio,rme,bands,corr,bal,spectrum" } });
+  V._restoreSlots();
+  ok("an un-ported view in the store is refused",
+     V._slots.every((sl) => !!V._implemented[sl.view]),
+     V._slots.map((sl) => sl.view).join(","));
+  St._reset();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

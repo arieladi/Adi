@@ -20,7 +20,7 @@ Object.defineProperty(global, "navigator", {
 
 // app.html order, verbatim.
 const FILES = [
-  "js/core/sd-client.js", "js/core/timing.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/backgrounds.js", "js/core/clock.js", "js/core/render.js", "js/core/ipc.js", "js/core/layout.js",
+  "js/core/sd-client.js", "js/core/timing.js", "js/core/settings.js", "js/core/surface.js", "js/core/art.js", "js/core/icons.js", "js/core/backgrounds.js", "js/core/clock.js", "js/core/render.js", "js/core/ipc.js", "js/core/layout.js",
   "js/core/input.js", "js/core/nav.js", "js/core/states.js",
   "js/modules/root.js", "js/modules/console.js", "js/modules/rekordbox.js",
   "js/modules/midictl.js", "js/modules/viz.js", "js/modules/ableton.js", "js/ableton/svg.js",
