@@ -7,7 +7,7 @@ Paste the block below into a new session.
 We are continuing **Studio OS**, a single "Master Plugin" for my Elgato **Stream Deck + XL** that merges five of my older standalone Stream Deck plugins into one navigable surface.
 
 **Repo:** `~/Documents/GitHub/Adi/tools/elgato_stream_deck_plugins/adi_studio_os`
-**Read first:** `docs/DECISIONS.md` — every architectural crossroad, the options I was offered, and my ruling. It is the source of truth and it is append-only. Batches 11 and 12 at the bottom are the most recent and supersede a lot above them. Then `docs/ARCHITECTURE.md`.
+**Read first:** `docs/DECISIONS.md` — every architectural crossroad, the options I was offered, and my ruling. It is the source of truth and it is append-only. **Batches 32-37 at the bottom are the most recent and supersede a lot above them**, and the **TODO list is always the file's last section** — restated per batch rather than edited, so the newest one wins. Then `docs/ARCHITECTURE.md`.
 
 **Never `git push`.** Commit locally only, scoped to this plugin folder, and commit finished work in the same turn rather than making me ask. Trailer: `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
 
@@ -52,7 +52,7 @@ I do not memorise legacy mappings. You have perfect recall of the codebase — a
 
 ## Where things stand
 
-**1220 tests green** (1150 JS + 70 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**). **Batch 36 (V64) IS DEPLOYED** — `service v2.5.0`, `surface COMPLETE - 36/36 keys, 6/6 dials`, app idle ~1%, clock at a true 999 ms average.
+**1237 tests green** (1167 JS + 70 Python) (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs` **and `python3 scripts/test_bridge.py`**). **Batch 37 (V65) IS DEPLOYED**, on Batch 36's `service v2.5.0` — `surface COMPLETE - 36/36 keys, 6/6 dials`. V65 is frontend-only and adds no new Live restart.
 
 ### ⚠️ ABLETON MUST BE RESTARTED ONCE
 
@@ -89,11 +89,33 @@ transport keys are fire-and-forget messages into a script that has never heard o
 them — they will look dead and nothing will log. **The remote-script change is a
 separate commit in the sibling `adi_ableton_vst_controller` folder.**
 
+### Batch 37 (V65) — the Ableton Hub layout fixes
+
+Adi's four items, all done, all frontend-only:
+
+1. **The Volume readout snaps to the half-dB grid.** `vol_disp` is Live printing back
+   a value the remote script found by BISECTION (`_norm_for_db`), so it carries the
+   residue: `-0.001`, `-0.501`. `fmtDb()` rounds to one decimal — **exact**, because
+   every reachable value is a multiple of 0.5 dB — kills negative zero, and passes
+   `"-inf dB"` through untouched. More halvings on the Python side cannot fix this.
+2. **The OS folder key is REMOVED**, and `FOCUS.OS` with it. **Col 3 of the mode row
+   is now an empty HOLE** — closing it means moving Delay, which needs Adi's word.
+   A test pins the hole on purpose. **Awaiting his ruling.**
+3. **Mute / Solo / Arm are KEYS on row 2, cols 0-2**, and only while Device mode owns
+   the strip. `subStrong` makes ON/OFF the payload; unsupported (`null`) paints an em
+   dash, dims, and carries **no `tap` at all**. Nothing was added to the three
+   whitelists.
+4. **Device mode's dials 1-4 are the OS nav strip** — `Scroll Y · Scroll X · Zoom ·
+   Apps`, still MIRRORED from `Root.osNavDial`. `osDial` was not purged as dead; it
+   was renamed `osNav` and rehomed. Pan stays on 5, Volume on 6. **Tabs cannot fit**
+   (dial 5 is Pan here) — V57's trade, asserted as an absence.
+
 ### The Ableton module owns TWO screens now (V61)
 
 - **`ableton.hub`** — Level 1, the control centre. What the Root Hub tile opens.
-  Transport (Play/Stop/Loop) on row 0, the five mode folders (VST · MIDI · Device ·
-  OS · Delay) on row 3, rows 1-2 and cols 5-8 deliberately empty.
+  Transport (Play/Stop/Loop) on row 0, four mode folders (VST · MIDI · Device ·
+  _hole_ · Delay) on row 3, row 1 and cols 5-8 deliberately empty, and row 2 cols
+  0-2 carrying Mute/Solo/Arm **only in Device mode** (V65).
 - **`ableton.vst`** — Level 2, the VST page. The OLD hub, unchanged: four
   two-column bands, 8 cells each, all four rows, same artwork. **A test counts
   those 32 cells and fails if anything shrinks them.**
@@ -104,11 +126,11 @@ lit after BACK. The tint is just `active`, an existing keySpec field: **nothing 
 added to the three whitelists.** `stopPump()` lives on **Level 1's** `onExit` and
 nowhere else — see V61 in DECISIONS for why putting it on Level 2 breaks retention.
 
-### Mute / Solo / Record Arm need verbs that do not exist
+### Mute / Solo / Record Arm — CLOSED (V62 added the verb, V65 moved the controls)
 
-Device mode's dials 1-4 are empty on purpose, reserved for them. The remote script
-has **no mute/solo/arm verb of any kind** — checked. Three more additive verbs, a
-sibling-repo commit, and another Live restart.
+The section that used to sit here said the remote script had no mute/solo/arm verb.
+V62 added `track_toggle` (one verb, three targets) and V65 moved the three controls
+from dials 1-3 onto **row 2 keys**. Nothing further is needed on the Python side.
 
 **`scripts/test_service.mjs` still flakes under SUSTAINED back-to-back full sweeps**: a
 `midi.ports` timeout cascades into six failures. Measured honestly — 10/10 clean isolated,

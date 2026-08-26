@@ -8,9 +8,11 @@ Read first, in this order:
 
 1. `docs/CONTINUE.md` — the full handoff: global rules, my protocols, the deploy
    sequence, and a field-notes section of traps that each cost real debugging time.
-   Current as of **Batch 36**.
-2. `docs/DECISIONS.md` — append-only ruling log and the source of truth, ~4,050 lines.
-   **Batches 32–36 at the bottom are the most recent and supersede a lot above them.**
+   Current as of **Batch 37**.
+2. `docs/DECISIONS.md` — append-only ruling log and the source of truth, ~4,320 lines.
+   **Batches 32–37 at the bottom are the most recent and supersede a lot above them.**
+   The **TODO list is always the last section** — it is restated at the bottom on each
+   batch rather than edited in place, so the newest one wins.
    It is append-only: correct a stale entry with a NEW entry that cites the old one by
    line number (`DECISIONS.md:2931`), never by editing it. Ten V-numbers are duplicated,
    so "see V55" is ambiguous four ways — always cite the line.
@@ -22,16 +24,19 @@ The AdiVST remote script lives in a **sibling** plugin folder — commit it sepa
 
 ## State
 
-**1220 tests green across seven suites** — six JS
+**1237 tests green across seven suites** — six JS
 (`node scripts/test_{core,service,console,modules,viz,ableton}.mjs`) plus
 `python3 scripts/test_bridge.py`.
 
-**Batch 36 (V64) is DEPLOYED and running on the hardware** — `service v2.5.0`,
-`surface COMPLETE — 36/36 keys, 6/6 dials`, app idle ~1%, clock at a true 999 ms.
+**Batch 37 (V65) is DEPLOYED and running on the hardware**, on top of Batch 36's
+`service v2.5.0` — `surface COMPLETE — 36/36 keys, 6/6 dials`. V65 is frontend-only:
+no remote-script change, so it adds NO new Live restart of its own.
 
-**⚠️ ABLETON MUST BE RESTARTED once.** V64 changed the remote script (handshake
+**⚠️ ABLETON MUST STILL BE RESTARTED once.** V64 changed the remote script (handshake
 validation, `song` as a property, transport listeners) and Live loads remote scripts
-**at launch**. Until Adi restarts Live, those changes are inert.
+**at launch**. Until Adi restarts Live, those changes are inert. **V65 did not touch the
+remote script** — every verb it uses is already deployed — so this is still the V64
+restart and not a second one.
 
 The surface, as of now:
 
@@ -39,12 +44,23 @@ The surface, as of now:
   **Never compare a state index to a literal** — ask `States.FULL` / `States.DELAY` /
   `States.isFullScreen()`. Two renumberings have already broken literals.
 * **Ableton owns TWO screens** (V61): `ableton.hub` = Level 1, transport (Play/Stop/Loop)
-  on row 0 and five mode folders (VST · MIDI · Device · OS · Delay) on row 3;
+  on row 0 and **four** mode folders (VST · MIDI · Device · _hole_ · Delay) on row 3;
   `ableton.vst` = Level 2, the VST grid unchanged. Strip ownership is `focus`
   (`none|vst|mix|os`) and **nav never touches it** — that is what keeps the VST key lit
   after BACK. Never compare `focus` to a literal outside `ableton.js`.
-* **Device mode** (V62): Mute/Solo/Arm on dials 1–3 (presses, not turns), dial 4 spare,
-  Pan on 5, Volume on 6.
+* **Device mode** (V65, superseding V62): **Mute/Solo/Arm are KEYS on row 2, cols 0–2**,
+  and they exist only while Device mode owns the strip. The dials are
+  `Scroll Y · Scroll X · Zoom · Apps` (1–4, **mirrored from `Root.osNavDial`**, never
+  copied), Pan on 5, Volume on 6. **Tabs cannot fit** — dial 5 is Pan here; that is
+  V57's trade, and a test asserts the absence.
+* **The OS mode key and `FOCUS.OS` are GONE** (V65, Adi's instruction). `osDial` was
+  not purged — it was renamed `osNav` and rehomed onto Device mode's dials 1–4.
+  **Col 3 of the mode row is now an empty HOLE** and a test pins it: sliding Delay
+  left would be moving a key. **Awaiting Adi's ruling — one line either way.**
+* **The Volume readout goes through `fmtDb()`** (V65): Live's `vol_disp` carries the
+  remote script's bisection residue (`-0.001`, `-0.501`), so the frontend rounds to
+  one decimal — exact, because every reachable value is a multiple of 0.5 dB — and
+  passes `"-inf dB"` through untouched.
 * **Settings** (V64): `js/core/settings.js` is the **single writer** for global settings.
   Modules read/write namespaced keys; nothing else may call `setGlobalSettings`.
 
@@ -63,7 +79,8 @@ Do not re-audit. Read the relevant one before touching an area:
 | `docs/AUDIT_PHASE4_FEATURES.md` | **the Feature Gap Report — what we forgot.** Read this one before proposing any new work. |
 
 **Everything the audits found that Adi authorised was repaired in Batch 36 (V64).**
-What is left is in the TODO section at the very bottom of `DECISIONS.md`.
+What is left is in the TODO section at the very bottom of `DECISIONS.md` — currently
+the **Batch 37** one.
 
 ## HOW ADI WANTS AGENTS USED — a hard rule
 

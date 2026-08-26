@@ -2307,69 +2307,38 @@ console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
     A._setFocus(A._FOCUS.MIX);
     const d = (n) => A.hub.dials(n);
 
-    /* V61 — ADI'S RULING: "remove the standard OS Nav controls (Scroll, Zoom,
-       Apps, Tabs) from the touch screen and dials whenever we are inside the
-       Ableton Hub… Leave those dial/touch slots empty for now so we can build
-       dedicated Track/Mixer controls there later."
+    /* V65 — ADI'S RULING, and it moves the OS nav strip BACK onto this strip
+       while moving the three toggles OFF it:
 
-       So the assertion INVERTS. In Device mode dials 1-4 are EMPTY and reserved
-       for Mute / Solo / Record Arm, and the OS strip is not a default any more. */
-    /* V62 — dials 1-3 are Mute / Solo / Arm now; only dial 4 is still spare.
-       The state comes from the remote script's `mix` message. */
+         "Move the Mute, Solo and Record Arm toggles OFF the touch screen/dials
+          and map them to the physical keys… Now that Dials 1-4 are free in Device
+          Mode, reassign the navigation capabilities (Scroll, Zoom, etc. —
+          previously in OS Mode) to these 4 dials. Dials 5 and 6 must remain
+          Volume and Pan."
+
+       So the V62 assertions on dials 1-3 are replaced by the MIRRORING invariant
+       here, and the toggles are asserted on the KEYS further down (the V61/V65
+       Level-1 block). The mirroring is the property worth pinning: dials 1-4 are
+       the Root Hub's OWN definitions, not a copy, which is exactly why the V57
+       Apps/Tabs swap propagated over here for free. */
     st.mix.mute = false; st.mix.solo = false; st.mix.arm = false;
-    ok("Device mode puts Mute / Solo / Arm on dials 1-3",
-       [1, 2, 3].map((n) => d(n).title).join(",") === "Mute,Solo,Arm",
-       [1, 2, 3].map((n) => d(n).title).join(","));
-    ok("…they are PRESSES, not turns — a toggle has no direction",
-       [1, 2, 3].every((n) => typeof d(n).press === "function" && !d(n).rotate),
-       [1, 2, 3].map((n) => `${typeof d(n).press}/${typeof d(n).rotate}`).join(" "));
-    ok("…and dial 4 is the one still deliberately spare",
-       !d(4).title && !d(4).value && d(4).indicator == null,
-       `${d(4).title}|${d(4).value}`);
-    {
-      const sent = [];
-      const real = A.bridge.cmd.trackToggle;
-      A.bridge.cmd.trackToggle = (w) => sent.push(w);
-      d(1).press(); d(2).press(); d(3).press();
-      A.bridge.cmd.trackToggle = real;
-      ok("each sends its own target on ONE verb",
-         sent.join(",") === "mute,solo,arm", sent.join(","));
-    }
-    ok("OFF reads OFF with a dark lamp", d(1).value === "OFF" && d(1).indicator === 0);
-    st.mix.solo = true;
-    ok("ON lights the lamp and takes the mode's colour",
-       d(2).value === "ON" && d(2).indicator === 1
-       && d(2).color === SOS.Render.PALETTE.viz,
-       `${d(2).value} ${d(2).indicator} ${d(2).color}`);
-    /* A `null` from the remote script means the track CANNOT do it — a return
-       track has no arm, the master has none of the three. That must NOT look like
-       OFF, or a master track reads as three working controls that do nothing. */
-    st.mix.arm = null;
-    ok("a track that cannot arm shows an em dash, not OFF",
-       d(3).value === "—" && d(3).indicator === undefined && d(3).dim === true,
-       `${d(3).value} ${d(3).indicator} ${d(3).dim}`);
-    ok("…and refuses the press outright rather than sending a doomed verb",
-       d(3).press === undefined, String(typeof d(3).press));
-    st.mix.solo = false; st.mix.arm = false;
-    ok("…and no OS-nav control survives anywhere on the Ableton strip by default",
-       [1, 2, 3, 4, 5, 6].every((n) => !["Scroll Y", "Scroll X", "Zoom", "Apps", "Tabs"]
-                                          .includes(d(n).title)),
+    ok("Device mode's dials 1-4 MIRROR the Root Hub's OS strip — not a copy",
+       [1, 2, 3, 4].every((n) => d(n).title === M.Root.osNavDial(n).title),
+       [1, 2, 3, 4].map((n) => `${d(n).title}/${M.Root.osNavDial(n).title}`).join(" "));
+    ok("…so it is Scroll Y on 1 and Apps on 4 (V57's swap, inherited)",
+       d(1).title === "Scroll Y" && d(4).title === "Apps",
+       `${d(1).title} ${d(4).title}`);
+    ok("…and the gestures come with them, live, not just the captions",
+       [1, 2, 3, 4].every((n) => typeof d(n).rotate === "function"),
+       [1, 2, 3, 4].map((n) => typeof d(n).rotate).join(","));
+    /* TABS CANNOT FIT and its absence is the deliberate half of V57's trade: dial
+       5 is Pan here, so whichever control sits on 4 is the one that survives. */
+    ok("…but TABS is absent — dial 5 is Pan, so it has nowhere to go",
+       [1, 2, 3, 4, 5, 6].every((n) => d(n).title !== "Tabs"),
        [1, 2, 3, 4, 5, 6].map((n) => d(n).title).join("|"));
-
-    /* THE MIRRORING INVARIANT SURVIVES, it just moved to OS mode. It is still
-       worth pinning: dials 1-4 there are the Root Hub's OWN definitions, not a
-       copy, which is exactly why the V57 Apps/Tabs swap propagated for free. */
-    A._setFocus(A._FOCUS.OS);
-    const o = (n) => A.hub.dials(n);
-    ok("OS mode MIRRORS the Root Hub's strip — same definition, not a copy",
-       [1, 2, 3, 4].every((n) => o(n).title === M.Root.osNavDial(n).title),
-       [1, 2, 3, 4].map((n) => `${o(n).title}/${M.Root.osNavDial(n).title}`).join(" "));
-    ok("…so it is still Scroll Y on 1 and Apps on 4 (V57)",
-       o(1).title === "Scroll Y" && o(4).title === "Apps",
-       `${o(1).title} ${o(4).title}`);
-    ok("…and OS mode leaves dial 6 free, so the clock can still have it",
-       !o(6).title && !o(6).value, `${o(6).title}|${o(6).value}`);
-    A._setFocus(A._FOCUS.MIX);
+    ok("…and no toggle survives on the STRIP any more",
+       [1, 2, 3, 4, 5, 6].every((n) => !["Mute", "Solo", "Arm"].includes(d(n).title)),
+       [1, 2, 3, 4, 5, 6].map((n) => d(n).title).join("|"));
     ok("dial 5 is track Pan and shows Live's own readout",
        d(5).title === "Pan" && d(5).value === "25L", `${d(5).title} ${d(5).value}`);
     ok("…with the -1..1 pan mapped onto the 0..1 indicator",
@@ -2390,6 +2359,51 @@ console.log("\n[V49-V51] tints, Track Mode, and the MIDI exit");
     }
     ok("neither track dial takes a press — volume must not fire by accident",
        !d(5).press && !d(6).press && !d(5).hold && !d(6).hold);
+
+    /* =====================================================================
+       V65 — THE VOLUME READOUT SNAPS TO THE HALF-dB GRID.
+
+       Adi: "returning to 0 shows -0.001, and turning left shows things like
+       -0.501. (The actual value sent to Ableton is correct.)"
+
+       The residue is real and comes from `_norm_for_db`'s bisection converging
+       from one side; Live then prints the normalised value it wrote. So the
+       inputs below are the STRINGS LIVE ACTUALLY SENDS, not invented ones.
+       ===================================================================== */
+    ok("fmtDb kills the bisection residue at unity — -0.001 reads 0.0 dB",
+       A._fmtDb("-0.001 dB") === "0.0 dB", A._fmtDb("-0.001 dB"));
+    ok("…and one step down reads -0.5, not -0.501",
+       A._fmtDb("-0.501 dB") === "-0.5 dB", A._fmtDb("-0.501 dB"));
+    ok("…and NEGATIVE ZERO never escapes — (-0.001).toFixed(1) is '-0.0'",
+       !/-0\.0 /.test(A._fmtDb("-0.001 dB")) && A._fmtDb("-0.04 dB") === "0.0 dB",
+       `${A._fmtDb("-0.001 dB")} / ${A._fmtDb("-0.04 dB")}`);
+    ok("…a positive step keeps its sign-free clean form",
+       A._fmtDb("0.499 dB") === "0.5 dB" && A._fmtDb("+0.5 dB") === "0.5 dB",
+       `${A._fmtDb("0.499 dB")} / ${A._fmtDb("+0.5 dB")}`);
+    ok("…a mouse-dragged fader is tidied too — -6.02 reads -6.0",
+       A._fmtDb("-6.02 dB") === "-6.0 dB", A._fmtDb("-6.02 dB"));
+    ok("…an already-clean value is left exactly as it is",
+       A._fmtDb("-4.5 dB") === "-4.5 dB" && A._fmtDb("0.0 dB") === "0.0 dB",
+       `${A._fmtDb("-4.5 dB")} / ${A._fmtDb("0.0 dB")}`);
+    /* THE CASE THAT MUST PASS THROUGH. The bottom of Live's fader is "-inf dB",
+       which has no number to round; parsing it as one would print "NaN dB". */
+    ok("…and anything that does not START with a number passes through untouched",
+       A._fmtDb("-inf dB") === "-inf dB" && A._fmtDb("") === ""
+       && A._fmtDb(undefined) === "",
+       `${A._fmtDb("-inf dB")} / [${A._fmtDb("")}] / [${A._fmtDb(undefined)}]`);
+    {
+      // And it is wired to the DIAL, not just unit-tested in isolation.
+      st.mix.vol_disp = "-0.501 dB";
+      ok("the Volume dial itself shows the snapped value",
+         A.hub.dials(6).value === "-0.5 dB", A.hub.dials(6).value);
+      st.mix.vol_disp = "-inf dB";
+      ok("…and shows -inf at the bottom of the fader rather than NaN",
+         A.hub.dials(6).value === "-inf dB", A.hub.dials(6).value);
+      st.mix.vol_disp = "";
+      ok("…and falls back to an em dash when Live says nothing at all",
+         A.hub.dials(6).value === "—", A.hub.dials(6).value);
+      st.mix.vol_disp = "0.0 dB";
+    }
     /* The clock gives up the last zone only when nothing else uses it, and now
        something does — which is what Adi asked for. */
     ok("dial 6 now has content, so the clock cannot claim it",
@@ -2728,10 +2742,22 @@ console.log("\n[V61] the Ableton control centre");
   ok("…as three DIFFERENT pictures",
      new Set([1, 2, 3].map((c) => at(c, 0).icon)).size === 3);
 
-  ok("the five mode folders are on ROW 3, cols 0-4",
-     [0, 1, 2, 3, 4].map((c) => at(c, 3).label).join(",") === "VST,MIDI,Device,OS,Delay",
-     [0, 1, 2, 3, 4].map((c) => at(c, 3).label).join(","));
-  ok("…and rows 1-2 are deliberately empty — the room Adi bought",
+  /* V65 — THE OS FOLDER IS GONE and col 3 is left EMPTY rather than closed up.
+     Sliding Delay left would be moving a key, and keys do not move without Adi's
+     word. Asserted as a HOLE on purpose, so closing it later is a deliberate
+     change to this line rather than something that drifts in unnoticed. */
+  A._setFocus(A._FOCUS.NONE);
+  ok("the mode folders are on ROW 3 — VST / MIDI / Device, then Delay at col 4",
+     [0, 1, 2, 4].map((c) => at(c, 3).label).join(",") === "VST,MIDI,Device,Delay",
+     [0, 1, 2, 3, 4].map((c) => (at(c, 3) || {}).label || "·").join(","));
+  ok("…and col 3 is a deliberate HOLE where OS used to be, not a moved Delay",
+     at(3, 3) === null, String(at(3, 3) && at(3, 3).label));
+  ok("…and no mode key anywhere still says OS",
+     A._modes.every((m) => m.label !== "OS"), A._modes.map((m) => m.label).join(","));
+  ok("…nor does any FOCUS value survive for it",
+     !("OS" in A._FOCUS) && Object.values(A._FOCUS).indexOf("os") === -1,
+     Object.values(A._FOCUS).join(","));
+  ok("…and rows 1-2 are deliberately empty outside Device mode — the room Adi bought",
      [1, 2].every((r) => [0,1,2,3,4,5,6,7,8].every((c) => at(c, r) === null)));
 
   // --- the transport verb reaches the bridge as ONE additive verb
@@ -2772,7 +2798,7 @@ console.log("\n[V61] the Ableton control centre");
      [1,2,3,4,5,6].every((n) => { const z = A.hub.dials(n); return !z.title && !z.value && !z.svg; }),
      [1,2,3,4,5,6].map((n) => A.hub.dials(n).title).join("|"));
   ok("…and no mode key is lit when nothing owns the strip",
-     [0,1,2,3,4].every((c) => !at(c, 3).active));
+     [0,1,2,3,4].every((c) => !(at(c, 3) || {}).active));
 
   at(0, 3).tap();                                  // press the VST folder
   ok("pressing VST navigates to Level 2", Nav.current().id === "ableton.vst",
@@ -2787,7 +2813,7 @@ console.log("\n[V61] the Ableton control centre");
   ok("…so the VST folder key stays LIT on Level 1",
      SOS.Layout.pick(A.hub, 9).keys(0, 3).active === true);
   ok("…and it is the only one lit",
-     [0,1,2,3,4].filter((c) => SOS.Layout.pick(A.hub, 9).keys(c, 3).active).length === 1);
+     [0,1,2,3,4].filter((c) => (SOS.Layout.pick(A.hub, 9).keys(c, 3) || {}).active).length === 1);
 
   // --- the other folders
   const l1b = SOS.Layout.pick(A.hub, 9);
@@ -2799,9 +2825,75 @@ console.log("\n[V61] the Ableton control centre");
      SOS.Layout.pick(A.hub, 9).keys(0, 3).active === false
      && SOS.Layout.pick(A.hub, 9).keys(2, 3).active === true);
 
-  l1b.keys(3, 3).tap();
-  ok("OS selects the OS strip WITHOUT navigating",
-     A._focus() === A._FOCUS.OS && Nav.current().id === "ableton.hub");
+  /* =========================================================================
+     V65 — THE MIXER TOGGLES ARE KEYS, and they exist only in Device mode.
+
+     Adi: "Move the Mute, Solo and Record Arm toggles OFF the touch screen/dials
+     and map them to the physical keys when Device Mode is active."
+
+     Device mode is the focus in force right now (the tap above), so this is the
+     honest place to assert them — the keys are read through the real layout, at
+     the real coordinates, with the real focus set by a real key press.
+     ========================================================================= */
+  {
+    const st = A.bridge.state();
+    const realOnline = A.bridge.isOnline;
+    A.bridge.isOnline = () => true;
+    st.mix = { has_track: true, track: "Drums", vol: 0.85, vol_disp: "0.0 dB",
+               pan: 0, pan_disp: "C", mute: false, solo: true, arm: null };
+    const k = (c) => SOS.Layout.pick(A.hub, 9).keys(c, 2);
+
+    ok("Device mode puts Mute / Solo / Arm on ROW 2, cols 0-2",
+       [0, 1, 2].map((c) => k(c).label).join(",") === "Mute,Solo,Arm",
+       [0, 1, 2].map((c) => (k(c) || {}).label).join(","));
+    ok("…and nothing else on that row — cols 3-8 stay empty",
+       [3, 4, 5, 6, 7, 8].every((c) => k(c) === null),
+       [3, 4, 5, 6, 7, 8].map((c) => (k(c) || {}).label || "·").join(","));
+    ok("…they are TAPS, and the state is the payload (subStrong)",
+       [0, 1, 2].every((c) => k(c).kind === "tap" && k(c).subStrong === true),
+       [0, 1, 2].map((c) => `${k(c).kind}/${k(c).subStrong}`).join(" "));
+    ok("OFF reads OFF and does not light",
+       k(0).sub === "OFF" && k(0).active === false, `${k(0).sub} ${k(0).active}`);
+    ok("ON reads ON, lights the cap and takes the toggle's own colour",
+       k(1).sub === "ON" && k(1).active === true
+       && k(1).subColor === SOS.Render.PALETTE.viz,
+       `${k(1).sub} ${k(1).active} ${k(1).subColor}`);
+    /* A `null` from the remote script means the track CANNOT do it — a return
+       track has no arm, the master has none of the three. That must NOT look like
+       OFF, or a master track reads as three working controls that do nothing. */
+    ok("a track that cannot arm shows an em dash and is dimmed, never OFF",
+       k(2).sub === "—" && k(2).dim === true && k(2).active === false,
+       `${k(2).sub} ${k(2).dim} ${k(2).active}`);
+    ok("…and refuses the press outright rather than sending a doomed verb",
+       k(2).tap === undefined, String(typeof k(2).tap));
+    {
+      const sent = [];
+      const real = A.bridge.cmd.trackToggle;
+      A.bridge.cmd.trackToggle = (w) => sent.push(w);
+      k(0).tap(); k(1).tap();
+      A.bridge.cmd.trackToggle = real;
+      ok("each key sends its own target on the ONE V62 verb",
+         sent.join(",") === "mute,solo", sent.join(","));
+    }
+    /* THE WHOLE POINT OF "when Device Mode is active": in any other focus these
+       three cells are blank again, so the board does not carry mixer keys while
+       the strip is on a VST. */
+    A._setFocus(A._FOCUS.VST);
+    ok("…and outside Device mode row 2 is empty again",
+       [0, 1, 2].every((c) => k(c) === null),
+       [0, 1, 2].map((c) => (k(c) || {}).label || "·").join(","));
+    A._setFocus(A._FOCUS.NONE);
+    ok("…in FOCUS.NONE too", [0, 1, 2].every((c) => k(c) === null));
+    A._setFocus(A._FOCUS.MIX);
+    ok("offline, the keys dim rather than looking as live as ever (V64's finding)",
+       (A.bridge.isOnline = () => false,
+        [0, 1].every((c) => SOS.Layout.pick(A.hub, 9).keys(c, 2).dim === true)),
+       [0, 1].map((c) => SOS.Layout.pick(A.hub, 9).keys(c, 2).dim).join(","));
+    A.bridge.isOnline = realOnline;
+    ok("the toggle row fits the COMPACT breakpoint too — all three inside 5 cols",
+       [0, 1, 2].every((c) => !!SOS.Layout.pick(A.hub, 5).keys(c, 2)),
+       [0, 1, 2].map((c) => (SOS.Layout.pick(A.hub, 5).keys(c, 2) || {}).label).join(","));
+  }
 
   /* Delay Calc DOCKS a window rather than navigating: after V59 the Divisions
      window is a carousel STATE, not a nav destination. */
@@ -2829,9 +2921,9 @@ console.log("\n[V61] the Ableton control centre");
        === A._modes.filter((m) => m.focus).length);
   ok("FOCUS.NONE is the default and is not claimed by any key",
      A._modes.every((m) => m.focus !== A._FOCUS.NONE));
-  ok("the mode row fits inside the COMPACT breakpoint too — all five at 5 cols",
-     [0,1,2,3,4].every((c) => !!SOS.Layout.pick(A.hub, 5).keys(c, 3)),
-     [0,1,2,3,4].map((c) => (SOS.Layout.pick(A.hub, 5).keys(c, 3) || {}).label).join(","));
+  ok("the mode row fits inside the COMPACT breakpoint too — all four at 5 cols",
+     [0,1,2,4].every((c) => !!SOS.Layout.pick(A.hub, 5).keys(c, 3)),
+     [0,1,2,3,4].map((c) => (SOS.Layout.pick(A.hub, 5).keys(c, 3) || {}).label || "·").join(","));
 
   A._setFocus(A._FOCUS.NONE);
   Nav.toRoot(); States.setState(0);

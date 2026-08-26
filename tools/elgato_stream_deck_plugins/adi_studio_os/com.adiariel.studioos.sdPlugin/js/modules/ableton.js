@@ -616,7 +616,16 @@ SOS.Modules.Ableton = (function () {
        'none'  nothing on the strip (the Level 1 default — Adi's ruling)
        'vst'   the device/macro controller owns all six zones
        'mix'   Ableton track controls (Device mode)
-       'os'    the Root Hub's OS navigation strip, on explicit request
+
+     V65 — `'os'` IS GONE, and so is the OS mode key it existed for. Adi: "Remove
+     the OS folder key entirely from the Ableton Hub layout… now that Dials 1-4
+     are free in Device Mode, reassign the navigation capabilities (Scroll, Zoom,
+     etc. — previously in OS Mode) to these 4 dials." So the OS nav strip did not
+     die — it MOVED, from a mode of its own into Device mode's free dials, which
+     is a strictly better place for it: it is now on the same strip as Pan and
+     Volume instead of being a mode you had to leave them for. Removing the enum
+     member as well as the key is deliberate: a FOCUS value no key can reach is a
+     branch that cannot be tested and cannot be seen.
 
      THE TINT FALLS OUT FOR FREE. Each mode key paints `active: focus === '...'`,
      and `active` is already a keySpec() field that render.js draws as a lit cap.
@@ -630,7 +639,7 @@ SOS.Modules.Ableton = (function () {
      assert the SHAPE — every mode key's focus value must be a member of FOCUS,
      and at most one mode key may be lit at a time.
      ========================================================================== */
-  var FOCUS = { NONE: 'none', VST: 'vst', MIX: 'mix', OS: 'os' };
+  var FOCUS = { NONE: 'none', VST: 'vst', MIX: 'mix' };
   var focus = FOCUS.NONE;
 
   function setFocus(f) {
@@ -642,22 +651,23 @@ SOS.Modules.Ableton = (function () {
 
   var BLANK = { title: '', value: '' };
 
-  /* V61 — OS mode, on explicit request only.
+  /* V65 — THE OS NAV STRIP, NOW A TENANT OF DEVICE MODE RATHER THAN A MODE.
 
-     Adi: "remove the standard OS Nav controls (Scroll, Zoom, Apps, Tabs) from the
-     touch screen and dials whenever we are inside the Ableton Hub". So this is no
-     longer the DEFAULT — `focus` starts at NONE and the strip is empty. The OS
-     mode key is what brings it back, which is the only reading under which that
-     key is not dead on arrival: the other four mode keys are strip-focus
-     switches, so this one is too. INTERPRETATION, flagged in DECISIONS — one line
-     to change if Adi wants the OS key to navigate to the Root Hub instead.
+     V61 gave it a mode key of its own; V65 removes that key at Adi's instruction
+     and hands dials 1-4 to it inside Device mode instead. What did NOT change is
+     the thing worth protecting: it is still MIRRORED from `Root.osNavDial`, never
+     copied. Two hand-written copies of the same four dials is how "the standard
+     OS navigation strip" quietly stops being standard, and it is exactly why the
+     V57 Apps/Tabs swap propagated here for free.
 
-     Still MIRRORED from Root.osNavDial rather than copied. Two hand-written
-     copies of the same five dials is how "the standard OS navigation strip"
-     quietly stops being standard. */
-  function osDial(dial) {
+     ONLY 1-4 ARE REACHABLE NOW, and that is a real consequence, not an oversight:
+     dial 5 is Tabs on the Root Hub and Pan here, so **Tabs is absent from the
+     Ableton strip**. That is the same trade V50 made and V57 named explicitly
+     ("whichever control sits on 4 is the one that survives over there") — Apps
+     survives, Tabs is a Root Hub control. A test asserts the absence. */
+  function osNav(dial) {
     var Root = SOS.Modules.Root;
-    if (dial > 5) return BLANK;          // 6 stays free, so the clock can have it
+    if (dial > 4) return BLANK;          // 5 = Pan, 6 = Volume. Tabs does not fit.
     return Root && Root.osNavDial ? Root.osNavDial(dial) : BLANK;
   }
 
@@ -668,57 +678,89 @@ SOS.Modules.Ableton = (function () {
      positions — Pan on 5, Volume on 6, where they have always been — because
      moving a working control to tidy a layout is not an improvement.
 
-     V62 — MUTE, SOLO AND ARM ARE ON DIALS 1-3, joining Pan and Volume. Adi asked
-     for them there by name, so Device mode owns five of the six dials and only
-     dial 4 is still spare.
+     V62 put MUTE, SOLO AND ARM on dials 1-3. **V65 MOVES THEM OFF THE STRIP AND
+     ONTO PHYSICAL KEYS** — Adi: "Move the Mute, Solo and Record Arm toggles OFF
+     the touch screen/dials and map them to the physical keys when Device Mode is
+     active. Now that Dials 1-4 are free in Device Mode, reassign the navigation
+     capabilities (Scroll, Zoom, etc.) to these 4 dials. Dials 5 and 6 must remain
+     Volume and Pan."
 
-     THEY ARE PRESSES, NOT TURNS, and that is the opposite of the rule for 5 and
-     6. A toggle has two positions, so a detent-per-turn would need a direction it
-     does not have; and the reason Volume must not take a press — that an
-     accidental push changes a level you were reading — does not apply to a
-     control whose whole job is to flip. Turning them is deliberately inert.
+     So Device mode's strip is now:
+
+       dials 1-4   the OS navigation strip, MIRRORED from Root.osNavDial (V65)
+       dial  5     track PAN
+       dial  6     track VOLUME, in strictly 0.5 dB steps
+
+     and the three toggles are keys — see `toggleKey` and `level1Keys`. The V62
+     reasoning for making them PRESSES rather than turns survives the move intact
+     and in fact gets simpler: a toggle has two positions and no direction, which
+     is what a key is.
 
      A `null` from the remote script means "this track CANNOT do that": a return
      track has no arm and the master has none of the three. That paints a dimmed
-     zone with an em dash, which is different from OFF and has to look different,
+     key with an em dash, which is different from OFF and has to look different,
      or a master track reads as three un-muted controls that silently do nothing.
 
      Dial 6's LONG press is the engine's NAV gesture and is untouchable, so
      neither Pan nor Volume takes a press — turning is the whole interaction.
      Volume is the one thing on this strip you must not fire by accident. */
   var TOGGLES = [
-    { dial: 1, which: 'mute', title: 'Mute', on: R.PALETTE.rekordbox },
-    { dial: 2, which: 'solo', title: 'Solo', on: R.PALETTE.viz },
-    { dial: 3, which: 'arm',  title: 'Arm',  on: R.PALETTE.green },
+    { col: 0, which: 'mute', title: 'Mute', on: R.PALETTE.rekordbox },
+    { col: 1, which: 'solo', title: 'Solo', on: R.PALETTE.viz },
+    { col: 2, which: 'arm',  title: 'Arm',  on: R.PALETTE.green },
   ];
 
-  function toggleDial(t, mix, on) {
-    // undefined = the bridge has not spoken yet; null = the track cannot do it.
-    var v = mix ? mix[t.which] : undefined;
-    var unsupported = mix && v === null;
-    var lit = v === true;
-    return {
-      title: t.title,
-      value: unsupported ? '—' : (lit ? 'ON' : 'OFF'),
-      sub: unsupported ? 'n/a on this track' : (on ? 'push to toggle' : 'bridge offline'),
-      // The indicator is the lamp: full bar lit, empty bar dark. Absent when the
-      // track cannot do it, so there is no bar to misread as "off".
-      indicator: unsupported ? undefined : (lit ? 1 : 0),
-      color: lit ? t.on : R.PALETTE.dim,
-      dim: !on || unsupported,
-      press: unsupported ? undefined
-                         : function () { Bridge.cmd.trackToggle(t.which); },
-    };
+  /* ==========================================================================
+     V65 — THE VOLUME READOUT SNAPS TO THE HALF-dB GRID.
+
+     Adi: "going up to +0.5 dB is fine, but returning to 0 shows -0.001, and
+     turning left shows things like -0.501. (The actual value sent to Ableton is
+     correct.) Fix the display formatter in the frontend."
+
+     He is right about where the fault is, and the mechanism is worth writing
+     down. `cmd_track_volume_delta` snaps to the 0.5 dB grid BEFORE it steps, so
+     the fader really is at 0.0 and -0.5. But it reaches that dB by BINARY SEARCH
+     over the normalised 0..1 range (`_norm_for_db`, 30 halvings), and a bisection
+     converges from one side — so the normalised value it writes sits a hair below
+     the dB it was asked for. `vol_disp` is then Live printing THAT value back
+     (`param.str_for_value`), at enough decimals to show the hair: -0.001, -0.501.
+
+     Fixed here rather than in the remote script, as instructed, and that is also
+     the better place: the Python fix needs another Live restart, and no number of
+     extra halvings can be *proved* to land on the right side of the rounding at
+     every level of a curve. One decimal at the display is exact for every value
+     the dial can produce, because every one of them is a multiple of 0.5 dB.
+
+     It tidies the mouse too: a fader dragged to -6.02 reads -6.0, which is what
+     Live's own mixer shows.
+
+     TWO DETAILS THAT ARE LOAD-BEARING:
+     * Negative zero is normalised away. `(-0.001).toFixed(1)` is "-0.0", which is
+       precisely the ugliness being removed, and `-0 === 0` is what erases it.
+     * Anything Live prints that does not START with a number passes through
+       UNTOUCHED. "-inf dB" at the bottom of the fader is the case that matters,
+       and it is why this parses rather than assuming a shape.
+     ========================================================================== */
+  var DB_RE = /^\s*([+-]?\d+(?:\.\d+)?)\s*(.*)$/;
+
+  function fmtDb(s) {
+    // Coerce FIRST and return the coerced string on no-match, not the argument:
+    // handing `undefined` straight back would put the word "undefined" on the
+    // zone the moment the `|| '—'` fallback stopped catching it.
+    var raw = String(s == null ? '' : s);
+    var m = DB_RE.exec(raw);
+    if (!m) return raw;
+    var n = Math.round(parseFloat(m[1]) * 10) / 10;
+    if (n === 0) n = 0;                       // -0 prints as "-0.0"; kill it
+    return n.toFixed(1) + (m[2] ? ' ' + m[2] : '');
   }
 
   function mixDial(dial) {
     var mix = Bridge.state().mix;
     var on = Bridge.isOnline();
 
-    for (var i = 0; i < TOGGLES.length; i++) {
-      if (TOGGLES[i].dial === dial) return toggleDial(TOGGLES[i], mix, on);
-    }
-    if (dial === 4) return BLANK;        // the one still spare
+    // V65 — dials 1-4 are the OS nav strip, mirrored from the Root Hub.
+    if (dial <= 4) return osNav(dial);
 
     if (dial === 5) {
       return {
@@ -731,7 +773,8 @@ SOS.Modules.Ableton = (function () {
       };
     }
     return {
-      title: 'Volume', value: mix ? (mix.vol_disp || '—') : '—',
+      // V65 — through fmtDb, so the readout snaps to the grid the dial steps on.
+      title: 'Volume', value: mix ? (fmtDb(mix.vol_disp) || '—') : '—',
       sub: on ? '0.5 dB steps' : 'bridge offline',
       indicator: mix && typeof mix.vol === 'number' ? mix.vol : undefined,
       color: R.PALETTE.green, dim: !on,
@@ -777,7 +820,6 @@ SOS.Modules.Ableton = (function () {
     if (dial - 1 >= lastZones) return BLANK;      // borrowed by a docked window
     if (focus === FOCUS.VST) return vstDial(dial);
     if (focus === FOCUS.MIX) return mixDial(dial);
-    if (focus === FOCUS.OS) return osDial(dial);
     return BLANK;                                 // FOCUS.NONE — Adi's default
   }
 
@@ -805,18 +847,38 @@ SOS.Modules.Ableton = (function () {
      only, putting them there costs NOTHING — Level 1 has no bands to displace.
      The reading that shrank the VST page was the wrong one.
 
+     V65 — THE BOARD AS IT IS NOW. The OS folder is gone at Adi's instruction and
+     the three mixer toggles have taken row 2, cols 0-2, but ONLY while Device
+     mode owns the strip:
+
          col 0     col 1    col 2     col 3    col 4    cols 5-8
      r0  BACK      PLAY     STOP      LOOP     ·        ·
      r1  ·         ·        ·         ·        ·        ·
-     r2  ·         ·        ·         ·        ·        ·
-     r3  VST       MIDI     Device    OS       Delay    ·
+     r2  MUTE*     SOLO*    ARM*      ·        ·        ·
+     r3  VST       MIDI     Device    ·        Delay    ·
 
-     Rows 1-2 and cols 5-8 are deliberately empty. That is the room Adi bought by
+     * Device mode only. In every other focus row 2 is empty exactly as before.
+
+     ROW 2 RATHER THAN ROW 1, deliberately: it is the row directly above the mode
+     folders, so the three toggles sit immediately over the Device key that turns
+     them on and immediately beside the Pan/Volume dials they belong with. Adi
+     named "Row 1 or Row 2" and left the choice open; this is the reading that
+     keeps the mixer as one block instead of splitting it across the board.
+
+     COL 3 IS LEFT EMPTY, NOT CLOSED UP. Sliding Delay from col 4 to col 3 would
+     be MOVING A KEY, and the standing rule is that keys do not move without Adi's
+     word — adding to a blank cell is fine, rearranging is not. Flagged for his
+     ruling; it is a one-line change if he wants the row contiguous.
+
+     Row 1 and cols 5-8 stay deliberately empty. That is the room Adi bought by
      moving the grid down a level, and filling it is his call, not mine.
      ========================================================================== */
 
-  /* The five mode folders. A single table, because the difference between them is
-     data: some navigate, some only change strip focus, one docks a window. */
+  /* The mode folders. A single table, because the difference between them is
+     data: some navigate, some only change strip focus, one docks a window.
+
+     V65 — the OS folder is REMOVED. Its dial content did not die with it: Device
+     mode's dials 1-4 carry the OS nav strip now (see `osNav`). */
   var MODES = [
     { col: 0, label: 'VST',   sub: 'macros',    focus: FOCUS.VST, screen: 'ableton.vst',
       color: R.PALETTE.green },
@@ -824,11 +886,51 @@ SOS.Modules.Ableton = (function () {
       color: R.PALETTE.midi },
     { col: 2, label: 'Device', sub: 'mixer',    focus: FOCUS.MIX,
       color: R.PALETTE.ableton },
-    { col: 3, label: 'OS',    sub: 'nav',       focus: FOCUS.OS,
-      color: R.PALETTE.nav },
     { col: 4, label: 'Delay', sub: 'calc',      dock: true,
       color: R.PALETTE.console },
   ];
+
+  /* ==========================================================================
+     V65 — MUTE / SOLO / ARM AS KEYS.
+
+     `subStrong` is what makes this readable at arm's length: it promotes the
+     caption to the real payload (22 px, coloured) so ON / OFF is what you read
+     and the label only says which control it is. That field already exists and is
+     already in all three whitelists — nothing was added to them, which matters,
+     because that trap has bitten twice.
+
+     THREE VISUALLY DISTINCT STATES, and the third is the one that has to be
+     distinct or the surface lies:
+
+       ON           lit cap, the toggle's own colour, "ON"
+       OFF          plain cap, dim caption, "OFF"
+       unsupported  dimmed cap, em dash, AND NO `tap` AT ALL — a return track has
+                    no arm and the master has none of the three, so pressing must
+                    not send a verb Live will refuse.
+
+     Offline dims too, for the same reason the dials do: V64's whole finding was
+     that a control announcing "bridge offline" in words while looking perfectly
+     live is not announcing anything. */
+  function toggleKey(t) {
+    var mix = Bridge.state().mix;
+    var on = Bridge.isOnline();
+    // undefined = the bridge has not spoken yet; null = the track cannot do it.
+    var v = mix ? mix[t.which] : undefined;
+    var unsupported = !!mix && v === null;
+    var lit = v === true;
+    return {
+      label: t.title, size: 'md',
+      sub: unsupported ? '—' : (lit ? 'ON' : 'OFF'),
+      subStrong: true,
+      subColor: lit ? t.on : R.PALETTE.dim,
+      color: t.on,
+      active: lit,
+      dim: !on || unsupported,
+      kind: 'tap',
+      tap: unsupported ? undefined
+                       : function () { Bridge.cmd.trackToggle(t.which); },
+    };
+  }
 
   function modeKey(m) {
     return {
@@ -893,9 +995,19 @@ SOS.Modules.Ableton = (function () {
         }
         return null;
       }
+      /* V65 — the mixer toggles, and they exist ONLY while Device mode owns the
+         strip. Asked as `focus === FOCUS.MIX` inside this file, never by a literal
+         outside it — `focus` is the third orthogonal state machine and that is the
+         rule it lives under. */
+      if (row === 2 && focus === FOCUS.MIX) {
+        for (var t = 0; t < TOGGLES.length; t++) {
+          if (TOGGLES[t].col === col && col < cols) return toggleKey(TOGGLES[t]);
+        }
+        return null;
+      }
       if (row === 3) {
         for (var j = 0; j < MODES.length; j++) {
-          // At 5 columns the mode row still holds all five (cols 0-4).
+          // At 5 columns the mode row still holds every folder (cols 0-4).
           if (MODES[j].col === col && col < cols) return modeKey(MODES[j]);
         }
         return null;
@@ -992,6 +1104,8 @@ SOS.Modules.Ableton = (function () {
     setUrl: Bridge.setUrl,
     _focus: function () { return focus; },
     _setFocus: setFocus, _FOCUS: FOCUS, _modes: MODES, _transport: TRANSPORT,
+    // V65 — the mixer toggles are keys now, and fmtDb is unit-testable on its own.
+    _toggles: TOGGLES, _fmtDb: fmtDb,
     // exposed for scripts/test_ableton.mjs
     _composite: composite, _zones: zoneSvg,
     _pick: pickController, _active: function () { return active; },

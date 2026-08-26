@@ -87,13 +87,16 @@ function fakeIdle() {
   st.track = { name: "Drums", index: 2 };
   st.device = { has_device: false, name: "", class_name: "", controller: "generic",
                 index: -1, param_count: 0 };
-  st.mix = { has_track: true, track: "Drums", vol: 0.72, vol_disp: "-4.5 dB",
+  /* V65 — vol_disp is deliberately the UGLY string Live really sends after the
+     remote script's bisection (`-4.501 dB`), so the sheet proves fmtDb rather than
+     being handed an already-clean value. */
+  st.mix = { has_track: true, track: "Drums", vol: 0.72, vol_disp: "-4.501 dB",
              pan: -0.34, pan_disp: "17L" };
   // V61 — Live playing with loop on, so the sheet shows both transport keys LIT.
   st.transport = { playing: true, loop: true };
   // V62 — one toggle ON, one OFF, one UNSUPPORTED, so the Device-mode sheet shows
-  // all three states of the lamp at once (the `null` case is the one that must
-  // not look like OFF).
+  // all three states at once (the `null` case is the one that must not look like
+  // OFF). V65 — they are KEYS now, on row 2, so this is what that row renders.
   st.mix.mute = false; st.mix.solo = true; st.mix.arm = null;
   SOS.Modules.Ableton.bridge.isOnline = () => true;
 }
@@ -189,9 +192,9 @@ ${pick("dj", grid("Rekordbox &middot; NAV OFF &mdash; the Omnis-Duo surface (V16
 ${pick("djnum", grid("Rekordbox &middot; State 0 &mdash; numpad covering Deck B", 0, "rekordbox.hub"))}
 ${pick("midi", grid("MIDI Control &middot; NAV OFF &mdash; drums, scale touch, banked CC", 2, "midictl.hub"))}
 ${pick("viz", (fakeViz(), grid("Visualizers &middot; NAV OFF &mdash; V64: the INPUT picker at (0,2), and levels on every dial", 2, "viz.hub")))}
-${pick("level1", (fakeIdle(), grid("Ableton LEVEL 1 &mdash; transport on row 0, the five mode folders on row 3, strip EMPTY (V61)", 2, "ableton.hub")))}
+${pick("level1", (fakeIdle(), grid("Ableton LEVEL 1 &mdash; transport on row 0, four mode folders on row 3 (V65 removed OS, col 3 left blank), strip EMPTY", 2, "ableton.hub")))}
 ${pick("level1vst", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton LEVEL 1 after BACK &mdash; VST folder still LIT, dials still on the VST (V61 retention)", 2, ["ableton.hub", "ableton.vst"], { back: 1 })))}
-${pick("level1mix", (fakeIdle(), grid("Ableton LEVEL 1 &middot; DEVICE mode &mdash; Mute/Solo/Arm on 1-3 (OFF, ON, n/a), Pan on 5, Volume on 6 (V62)", 2, "ableton.hub", { focus: "mix" })))}
+${pick("level1mix", (fakeIdle(), grid("Ableton LEVEL 1 &middot; DEVICE mode &mdash; V65: Mute/Solo/Arm on ROW 2 keys (OFF, ON, n/a), OS nav back on dials 1-4, Pan 5, Volume 6", 2, "ableton.hub", { focus: SOS.Modules.Ableton._FOCUS.MIX })))}
 ${pick("ableton", (fakeAbleton("EQ Eight", "Eq8", "eq8"), grid("Ableton VST page &middot; EQ Eight &mdash; FULL: the strip spans all six dials", 2, ["ableton.hub", "ableton.vst"])))}
 ${pick("ableton2", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton VST page &middot; FabFilter Pro-Q 3 &mdash; FULL, resolved by name", 2, ["ableton.hub", "ableton.vst"])))}
 ${pick("compact", (fakeAbleton("FabFilter Pro-Q 3", "PluginDevice", "generic"), grid("Ableton VST page &middot; Pro-Q 3 COMPACT &mdash; Divisions borrows dials 5-6, so build(4) (V14)", 1, ["ableton.hub", "ableton.vst"])))}
