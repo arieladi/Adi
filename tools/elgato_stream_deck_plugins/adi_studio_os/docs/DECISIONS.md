@@ -4115,3 +4115,204 @@ no clock source before it starts one. **Eight consecutive clean runs.**
 
 Nothing in this batch touched the dedupe or the clock; the race simply got likelier to lose
 as the suite grew. It is almost certainly what the earlier unexplained 113/2 was.
+
+---
+
+## Batch 37 — V65: the Ableton Hub layout fixes and the volume readout
+
+Adi's four items, verbatim in intent:
+
+1. *"In Device Mode, the Volume dial display has a floating-point calculation
+   error. Going up to +0.5 dB is fine, but returning to 0 shows `-0.001`, and
+   turning left shows things like `-0.501`. (The actual value sent to Ableton is
+   correct.) Please fix the display formatter in the frontend."*
+2. *"Remove the `OS` folder key entirely from the Ableton Hub layout."*
+3. *"Move the `Mute`, `Solo` and `Record Arm` toggles OFF the touch screen/dials
+   and map them to the physical keys (e.g. Row 1 or Row 2) when Device Mode is
+   active."*
+4. *"Now that Dials 1-4 are free in Device Mode, reassign the navigation
+   capabilities (Scroll, Zoom, etc. — previously in OS Mode) to these 4 dials.
+   Dials 5 and 6 must remain Volume and Pan."*
+
+### THE VOLUME RESIDUE IS A BISECTION ARTEFACT, and Adi diagnosed it correctly
+
+The value is right and the string is wrong, exactly as he said. The chain:
+
+* `cmd_track_volume_delta` **snaps to the 0.5 dB grid before it steps**, so the
+  fader genuinely lands on 0.0 and −0.5 — that part has been correct since V50.
+* It reaches that dB by **binary search over the normalised 0..1 range**
+  (`_norm_for_db`, 30 halvings). A bisection converges from one side, so the
+  normalised value it writes sits a hair *below* the dB it was asked for.
+* `vol_disp` is Live printing **that** value back (`param.str_for_value`), at
+  enough decimals to show the hair: `-0.001`, `-0.501`.
+
+So V64's own comment — *"30, not 24: at 24 the residue was ~0.01 dB, which is
+visible in a readout printed to two decimals"* — had the right diagnosis and the
+wrong remedy. **More halvings cannot fix this.** They shrink the residue without
+ever guaranteeing which side of the rounding it lands on, and Live prints as many
+decimals as it takes to show whatever is left.
+
+Fixed in the frontend as instructed, and that is also the better place: the Python
+change would need another Live restart, and **one decimal at the display is exact
+for every value the dial can produce, because every one of them is a multiple of
+0.5 dB.** It tidies the mouse for free — a fader dragged to −6.02 reads −6.0,
+which is what Live's own mixer shows.
+
+`fmtDb()` in `ableton.js`, with three details that are load-bearing:
+
+* **Negative zero is normalised away.** `(-0.001).toFixed(1)` is `"-0.0"`, which is
+  precisely the ugliness being removed; `-0 === 0` is what erases it.
+* **Anything that does not START with a number passes through untouched.**
+  `"-inf dB"` at the bottom of the fader is the case that matters — parsing it as a
+  number would paint `NaN dB` on the zone.
+* **The argument is coerced BEFORE the no-match return.** Returning `s` rather
+  than the coerced string would hand `undefined` back and put the word
+  "undefined" on the zone the moment the `|| '—'` fallback stopped catching it.
+  Caught by writing the test first; it is the same class of bug as a whitelist
+  that forwards a field it never validated.
+
+Pan is untouched: `pan_disp` is `"25L"` / `"C"`, not a number, and has no residue.
+
+### THE OS FOLDER IS GONE, AND SO IS `FOCUS.OS` — but the strip it owned is not
+
+Removing the enum member as well as the key is deliberate. A `FOCUS` value no key
+can reach is a branch that cannot be tested and cannot be seen, and this project
+has been bitten twice by literals leaking out of an orthogonal state machine. Two
+tests now assert the *absence*: no mode key labelled `OS`, and no `os` anywhere in
+`Object.values(FOCUS)`.
+
+**`osDial` was NOT deleted as dead code — it was renamed and rehomed.** This is the
+field note from V64 working as intended (*"before deleting a dead symbol, read its
+neighbours"*): the OS nav strip is the thing item 4 asks for on Device mode's free
+dials, so the correct move was to keep the function and change its tenant, not to
+purge it and re-derive it three lines later. It is `osNav()` now, and it is still
+**MIRRORED from `Root.osNavDial`, never copied** — two hand-written copies of the
+same four dials is how "the standard OS navigation strip" quietly stops being
+standard, and it is exactly why the V57 Apps/Tabs swap propagated here for free.
+
+**TABS STILL CANNOT FIT, and that is V57's trade, not a regression.** Dial 5 is
+Tabs on the Root Hub and Pan here, so — in V57's own words — *"whichever control
+sits on 4 is the one that survives over there."* Apps survives; Tabs is a Root Hub
+control. A test asserts the absence rather than leaving it to be re-discovered.
+
+### COL 3 IS LEFT EMPTY — a conflict flagged rather than resolved
+
+Removing OS leaves a hole at (3,3) between Device and Delay. **Sliding Delay left
+to close it would be MOVING A KEY**, and the standing rule is that keys do not move
+without Adi's word: adding to a blank cell is fine, rearranging is not. So the row
+reads `VST · MIDI · Device · · Delay` and a test asserts the hole **on purpose**, so
+closing it later is a deliberate edit to that line rather than a drift.
+
+**Awaiting his ruling. One line either way.**
+
+### MUTE / SOLO / ARM ARE KEYS ON ROW 2, cols 0-2
+
+Row 2 rather than row 1 — he named "Row 1 or Row 2" and left the choice open. Row 2
+is the row directly above the mode folders, so the three toggles sit immediately
+over the Device key that turns them on and immediately beside the Pan/Volume dials
+they belong with. That keeps the mixer as one block instead of splitting it across
+the board. Row 1 stays empty.
+
+**They exist ONLY while Device mode owns the strip** (`focus === FOCUS.MIX`, asked
+inside `ableton.js` and nowhere else). In every other focus row 2 is blank exactly
+as before, so the board never carries mixer keys while the strip is on a VST.
+
+`subStrong` is what makes them readable at arm's length: it promotes the caption to
+the real payload (22 px, coloured) so **ON / OFF is what you read** and the label
+only says which control it is. **NOTHING WAS ADDED TO THE THREE WHITELISTS** —
+`label`, `sub`, `subStrong`, `subColor`, `size`, `color`, `active`, `dim`, `kind`,
+`tap` all already exist in all three. Same for the dials: `osNav` hands back the
+Root Hub's own bindings, whose `icon` / `valueColor` / `touch` / `press` / `hold`
+fields are already forwarded because the Root Hub has always used them.
+
+Three visually distinct states, and **the third is the one that has to be distinct
+or the surface lies**:
+
+| State | Cap | Caption |
+|---|---|---|
+| ON | lit, the toggle's own colour (Mute red · Solo blue · Arm green) | `ON` |
+| OFF | plain | `OFF`, dim |
+| unsupported (`null`) | dimmed | `—`, **and no `tap` at all** |
+
+A return track has no arm and the master has none of the three, so pressing must not
+send a verb Live will refuse. **Verified by looking**, not by assertion alone: all
+four cases — OFF, ON, master-track, offline — were rendered through the real layout
+and `render.js` into one sheet and inspected.
+
+The V62 reasoning for making these presses rather than turns survives the move and
+in fact gets simpler: a toggle has two positions and no direction, which is what a
+key *is*.
+
+### DEVICE MODE'S STRIP, as it now stands
+
+```
+  dial 1   Scroll Y  ▲▼   push = PgDn     (mirrored from Root.osNavDial)
+  dial 2   Scroll X  ◀▶   push = Home
+  dial 3   Zoom           push = Reset
+  dial 4   Apps      ⇄    push = pick, hold = esc
+  dial 5   Pan            turn only
+  dial 6   Volume         turn only, 0.5 dB steps, snapped readout
+```
+
+Dial 6's long press is the engine's NAV gesture and is untouchable, so neither Pan
+nor Volume takes a press — turning is the whole interaction, and Volume is the one
+thing on this strip you must not fire by accident. Unchanged from V50.
+
+### No remote-script change, and therefore no new Live restart
+
+Every verb this batch uses — `track_toggle`, `track_volume_delta`,
+`track_pan_delta`, `get_mix` — is already deployed. **The V64 restart is still
+owed**, and until Adi restarts Live the transport keys and these dials remain inert
+for that reason and not this one.
+
+**1237 tests green** across all seven suites (was 1220): +28 new, −11 that asserted
+the V61/V62 arrangement this batch replaces.
+
+---
+
+## THE OPEN TODO LIST — as of Batch 37
+
+Supersedes the Batch 36 list above it. **The list lives at the BOTTOM of this file
+by convention, so it is restated here rather than edited in place** — appending V65
+above would otherwise have buried it.
+
+### New, and the only thing this batch is waiting on
+
+* **Col 3 of the Ableton mode row is an empty hole where OS used to be.** Closing
+  it means sliding Delay from col 4 to col 3, which is moving a key, which needs
+  Adi's word. One line either way; a test currently pins the hole.
+
+### Still owed to Adi from Batch 36
+
+1. **A route from the Root Hub to the Meters hub.** He has never seen the
+   visualizers run: *"There is no button mapped to open the visualizer."*
+2. **Written instructions for routing Ableton's audio into BlackHole.** V64 added
+   the input picker and fixed the ring buffer that had never been written, so the
+   software side is ready; the routing instructions are not written.
+
+### Added by Adi in Batch 36, unchanged
+
+1. **Troubleshoot Pro-Q 3 preset mapping.** The 34 roles ARE wired; what fails is
+   **name resolution** against Live's `all_params`. **The first step is running
+   V39's diagnostic and reporting its output, not writing code.** `OVERRIDES` is
+   the documented escape hatch and has no loader.
+2. **Optimize EQ8 layout.** *"The EQ8 control is terrible and needs heavy
+   optimization."* **FROZEN — leave both layouts exactly as they are until he
+   rules.** Band 8 is unreachable (`EQ8_DIALS = 6` vs a frontend max of 4, V37's
+   consequence), EQ8's Scale global has no control, and `_buildGraph` is complete
+   and unreachable.
+
+### Still open from before
+
+`V37`'s two inferences (the keystone — ruling it unblocks EQ8's Scale, the response
+graph and the EQ8/Pro-Q 3 dial-4 divergence at once) · compact layouts for
+rekordbox / MIDI Control / Meters (**L2 and L6 — he asked to be prompted**) · Level
+1's remaining empty cells (row 1, cols 5-8, and (3,3)) · Sends A/B · the five VST
+controllers with no insert key · `midictl.cycleChannel`, a forgotten feature one
+line from working · `D12`'s dial · `L21`'s Saturate observation · whether Cubase is
+on the roadmap · the Windows pass.
+
+### Closed by V65
+
+Device mode's spare dial 4 — it is Apps now, as part of the OS-nav move. The
+"track select is one line and the verb is already deployed" note is superseded.
