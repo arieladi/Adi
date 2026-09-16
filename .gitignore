@@ -23,3 +23,9 @@ finance/.backup-*.sql
 
 # npm deps (wrangler bundles them at deploy time)
 node_modules/
+
+# VST-ADI/vital is its own git repo: a fork of mtytel/vital with an `upstream`
+# remote, so our fork delta stays visible as `git diff main`. Ignore it here so
+# a `git add -A` in this repo can't turn it into a stray gitlink. Our own code
+# under VST-ADI/ (tools/, etc.) is still tracked normally.
+VST-ADI/vital/
