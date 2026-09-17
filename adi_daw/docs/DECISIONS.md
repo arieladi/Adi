@@ -389,3 +389,139 @@ confirms most of what comes after.
 
 **Related open item:** MAGDA requires a contributor CLA, which bears on the CLA
 question left open at the end of ADR-0015.
+
+---
+
+## ADR-0018 (revised) — Stay independent; JUCE for hosting, Tracktion as reference — `DECIDED` (2026-09-17)
+
+**Supersedes the OPEN status of ADR-0018 above.**
+
+**Decision.** Own engine, own project model, own persistence. JUCE for audio I/O,
+plugin hosting and GUI. Tracktion Engine and MAGDA stay in `reference/` as
+design references, not dependencies.
+
+**Why.** Tracktion Engine's model *is* `ValueTree` — its state, its undo, its
+serialization and its change propagation are all built on it. Grafting an
+event-sourced, SQLite-backed, branching op log onto that means fighting the
+engine's grain in every file we touch, and we would spend more time subverting
+its assumptions about how state is held than building a DAW. The persistence
+model is the one thing this project is actually *for* (ADR-0001, ADR-0003), so
+inheriting an engine that contradicts it is the wrong trade.
+
+Confirmed by reading both: MAGDA terminates its mutations in JUCE's in-memory
+`UndoManager`, and **Zrythm's undo is also in-memory** — a Qt `QUndoStack` in the
+new model, an in-memory `UndoStack` in the legacy one. Neither persists. Durable
+branching undo is not a feature we would be duplicating; it does not exist in
+either, and it is not retrofittable into the engine MAGDA is built on.
+
+**The distinction that makes this affordable, and that the framing of the
+question obscured: JUCE is not Tracktion Engine.** Rejecting Tracktion does not
+mean writing plugin hosting or device I/O from scratch —
+`juce::AudioPluginFormatManager` and `juce::AudioDeviceManager` are the hosting
+layer and are entirely independent of Tracktion's `ValueTree` model. We keep the
+part that saves years and decline the part that would cost them.
+
+**What we still take from `reference/`:** Tracktion for latency-compensation
+maths and graph construction, Ardour for the editing maths, Helio for pure-JUCE
+timeline rendering, MAGDA for the operation registry (now ADR-0020), Zrythm for
+action taxonomy — design only, it is AGPL (ADR-0017).
+
+---
+
+## ADR-0019 — Snapshot reclamation is epoch-based, not a return queue — `DECIDED` (2026-09-17)
+
+**Context.** ADR-0010 bans the audio thread from touching SQLite and specifies an
+immutable snapshot published by atomic pointer swap. It did not say who frees the
+old snapshot, and the audio thread cannot call `delete`.
+
+**The proposal considered** was a two-ring "janitor" pipeline: an SPSC
+`publish_ring` carrying new snapshots to the audio thread, and a second SPSC
+`reclaim_ring` in which the audio thread pushes retired snapshots to a background
+thread that frees them.
+
+**Rejected, for three reasons.**
+
+1. **It has an unhandled failure path on the hot path.** An SPSC push can fail
+   when the ring is full — and it will be full exactly when the janitor thread
+   has been descheduled, which is precisely when the system is under stress. The
+   audio thread is then holding a pointer it can neither hand off nor free, and
+   the design says nothing about what happens next. That is the shape of a bug
+   that passes every test and leaks in the field, or worse, invites someone to
+   add a retry loop in the callback.
+2. **There is a simpler mechanism with no failure path at all.** The audio thread
+   publishes *which* snapshot it is using; the writer frees anything else. One
+   atomic store in the callback, no queue, nothing to overflow.
+3. **It answers the wrong question.** Reclamation is the easy half. The hard half
+   is that a full snapshot per edit is O(project size) to build — reintroducing,
+   in the engine, exactly the cost ADR-0001 exists to avoid in the file. A
+   200-track project with automation does not survive rebuilding the world on
+   every fader move, no matter how elegantly the old copy is freed.
+
+**Decision, two parts.**
+
+**(a) Structural sharing.** Snapshots are persistent immutable structures that
+share unchanged subtrees. Editing one clip copies the path from root to that
+clip and shares everything else. A snapshot becomes a cheap root pointer, and
+publication cost is proportional to the edit rather than to the project.
+
+**(b) Epoch reclamation.** The audio thread holds
+`std::atomic<const Snapshot*> current`. At block start it loads `current`,
+stores that pointer into `inUse` (release) **before** dereferencing, and uses it
+for the whole block. The message thread keeps retired snapshots in a list and
+frees any that `inUse` is not equal to, having observed it once — safe because
+the audio thread publishes before use and `current` has already moved on, so it
+cannot go back. Two atomic operations in the callback; no allocation, no
+deallocation, no locks, no queue, no failure path.
+
+**This is what production JUCE DAWs actually do**, which is checkable rather than
+asserted: `reference/tracktion_engine` uses
+`std::atomic<PreparedNode*> currentPreparedNode` with a retain/release count and
+an atomic `nodeToRelease` for deferred destruction
+(`tracktion_graph/tracktion_Node.h`). Atomic pointer publication plus deferred
+release — not a return queue.
+
+**Consequence.** `third_party/lockfree` is still wanted, for message-thread →
+audio-thread *parameter* and event traffic, which genuinely is a queue. It is
+not the snapshot mechanism.
+
+**Consequence.** This is the "one small, isolated, heavily tested type" the
+README has been carrying as an open question since ADR-0014. It is now specified,
+and it should be written once, with its memory ordering commented line by line,
+and then left alone.
+
+---
+
+## ADR-0020 — The op registry, and per-op engine impact — `DECIDED` (2026-09-17)
+
+**Decision.** The op vocabulary is a registry of descriptors carrying name,
+scope, engine impact, payload schema, apply handler and inverse builder, with
+startup-asserted invariants. Specified in [`OPS.md`](OPS.md).
+
+**Adopted from MAGDA** (`reference/magda-core`, GPL-3.0, compatible): exactly one
+scope per operation rather than a set; handler on the descriptor rather than in a
+name-keyed table; and a safe scope default paired with a registry-wide assertion
+that every write declares otherwise, so a forgotten scope fails at startup rather
+than being discovered by a client that finds it can edit.
+
+**Adopted from Zrythm** (design only — AGPL, ADR-0017): per-op declaration of
+what the action *disturbs*. Their `UndoableAction` carries `needs_pause()`,
+`needs_transport_total_bar_update()` and
+`affects_audio_region_internal_positions()`, and their undo stack takes an
+engine-pause requester.
+
+**This is the finding that changed the design.** Nothing in SPEC or ADR-0010
+accounted for mutations that *cannot* be applied to a running engine by swapping
+a snapshot. Some require a graph rebuild; a few require stopping the engine
+outright. Ops therefore declare `EngineImpact ∈ {None, Snapshot, GraphRebuild,
+RequiresPause}`, and the runtime can catch an op that exceeds what it declared —
+instead of the mismatch surfacing as an unreproducible dropout.
+
+`RequiresPause` is kept deliberately tiny (sample-rate change, device change,
+project close). Every member is a stall the user hears.
+
+**Correction worth recording.** Zrythm's action classes we were pointed at —
+`ArrangerSelectionsAction`, `TracklistSelectionsAction`, `PortConnectionAction` —
+live in `src/gui/backend/legacy_actions/`. Zrythm is mid-migration to a new
+Qt/QML operator model in `src/actions/`. Both are worth reading, for different
+things: the legacy tree for its inverse and engine-impact declarations, the new
+one for how the taxonomy is being re-cut. Neither is a persistence model.
