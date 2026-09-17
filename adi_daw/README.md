@@ -6,6 +6,7 @@ Cubase's arrangement, editing and mixing depth, and an AI agent that can only ac
 through the same undoable operations a human uses.
 
 **Status: design. No code. Nothing is frozen.**
+**Language:** C++ with JUCE (ADR-0014) · **Licence:** GPLv3 (ADR-0015)
 
 This is a long-term project being built deliberately, step by step. Step 1 — the
 save format and the feature scope it has to carry — is what's in this directory.
@@ -54,8 +55,9 @@ than frightening.
 | [`docs/format/RATIONALE.md`](docs/format/RATIONALE.md) | Why SQLite, what we rejected, and the three errors in the original proposal that must not come back. |
 | [`docs/FEATURES.md`](docs/FEATURES.md) | Ableton ∪ Cubase, prioritised P0–P3, each row checked against the schema. |
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 14 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 15 entries. |
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
+| [`LICENSE`](LICENSE) | GPLv3. |
 
 ## Verifying the schema
 
@@ -109,8 +111,8 @@ Each step gates the next. No step starts before the previous one is written down
 | | Step | Status |
 |---|---|---|
 | **1** | Format spec, schema, feature scope, agent design | **done, draft** |
-| **2** | Choose implementation language and licence | next — ADR-0014 is open |
-| **3** | The op vocabulary: every op type, payload, inverse | blocks undo *and* the agent |
+| **2** | Choose implementation language and licence | **done** — C++/JUCE, GPLv3 |
+| **3** | The op vocabulary: every op type, payload, inverse | **next** — blocks undo *and* the agent |
 | **4** | Reference reader/writer library + round-trip test corpus | |
 | **5** | Audio engine skeleton: graph, transport, snapshot handoff | |
 | **6** | Plugin hosting: CLAP and VST3 | |
@@ -125,12 +127,14 @@ Each step gates the next. No step starts before the previous one is written down
 
 Named so they stay visible:
 
-- **Language and framework** — C++/JUCE, Rust, or Rust core with a C++ hosting
-  shim. Decide before any engine code. (ADR-0014)
-- **Licence** — GPL vs permissive. This interacts with JUCE's licensing and with
-  whether VST2 support is possible at all. Decide with ADR-0014, not after.
 - **Op payload encoding** — leaning CBOR. Essentially unchangeable once the first
-  op type ships. (SPEC §12.1)
+  op type ships, and it gates step 3. (SPEC §12.1)
+- **The snapshot handoff.** ADR-0014 chose C++, which means ADR-0010's
+  message-thread→audio-thread handoff has no compiler enforcing it. It needs to
+  be one small, isolated, heavily tested type whose API makes the wrong thing
+  hard to express — not a convention people remember.
+- **Contributor CLA** — keeps relicensing possible, deters the contributors a GPL
+  project attracts. Much harder to add once there are contributors. (ADR-0015)
 - **Repo home** — this lives in the `Adi` monorepo while it is design work, and
   should graduate to its own repository before the first public commit.
   (ADR-0013)

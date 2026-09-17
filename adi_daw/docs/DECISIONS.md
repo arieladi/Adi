@@ -230,25 +230,67 @@ and `git clone` drags in unrelated history. Fine while this is design work.
 **Revisit before the first public commit** — at that point it should become
 `github.com/arieladi/adi-daw` with its own history.
 
+**Confirmed 2026-09-17**, staying here for now. Note for whoever does the split:
+`git subtree split -P adi_daw` preserves this directory's history into the new
+repo, so the move is cheap *provided* nothing outside `adi_daw/` ever comes to
+depend on it. Keep the boundary clean.
+
 ---
 
-## ADR-0014 — Implementation language and framework — `OPEN`
+## ADR-0014 — C++ with JUCE — `DECIDED` (2026-09-17)
 
-Not decided. Blocks nothing in the format (SPEC is deliberately
-language-neutral); blocks everything after it.
+**Decision.** C++ for the engine and application, JUCE for audio device I/O,
+plugin hosting and the GUI substrate.
 
-The live options, with the honest trade:
+**Why.** A DAW is, in bulk, a plugin host and an audio-I/O layer. JUCE supplies
+both on every target platform from day one; without it, the first months are
+spent writing ASIO/WASAPI/CoreAudio/ALSA backends and a VST3 host before
+anything makes a sound. Every plugin SDK is C++-first, so the FFI cost is zero.
+And the existing familiarity is real and specific — `VST-ADI` already has a
+working JUCE/CMake toolchain and a headless VST3 validator built against it.
 
-- **C++ / JUCE** — existing familiarity from VST-ADI, every plugin SDK is C++
-  first, JUCE solves audio I/O and plugin hosting on day one. The default answer,
-  and the boring-in-a-good-way one. JUCE's licensing (GPL or commercial) has to be
-  checked against our chosen licence.
-- **Rust** — real safety wins in exactly the places DAWs are historically buggy
-  (lifetimes across threads, the lock-free snapshot handoff in ADR-0010), and a
-  far more attractive proposition for open-source contributors in 2026. Plugin
-  hosting is the weak spot: VST3 and AU hosting from Rust means FFI to C++
-  regardless.
-- **Rust core + C++ hosting shim** — most of the benefit, at the cost of a
-  two-language build and an FFI boundary that will be crossed on the hot path.
+**Rejected: Rust.** The safety argument is genuinely strong and points at exactly
+the code most likely to be subtly wrong — the lock-free snapshot handoff in
+ADR-0010. It would also be more attractive to open-source contributors in 2026.
+It loses on the thing that dominates the work: VST3 and AU hosting from Rust
+means FFI to C++ anyway, through crates that are considerably thinner than JUCE.
 
-Decide before any engine code is written.
+**Rejected: Rust core with a C++ hosting shim.** Most of the safety benefit, at
+the cost of a two-language build and an FFI boundary crossed on the hot path.
+The right answer for a funded team; too much overhead for the first release here.
+
+**Consequence.** ADR-0010 loses its compiler-enforced safety net. The snapshot
+handoff between message thread and audio thread must therefore be a small,
+isolated, heavily reviewed and heavily tested piece of code, written once and
+not casually modified. In Rust the borrow checker would enforce this; in C++ it
+has to be enforced by discipline, so it must be **structural** — one type, one
+file, an explicit API that makes the wrong thing hard to express.
+
+**Consequence.** JUCE's free path is GPLv3, which decides ADR-0015.
+
+---
+
+## ADR-0015 — GPLv3 — `DECIDED` (2026-09-17)
+
+**Decision.** GNU General Public License v3.0. `adi_daw/LICENSE` holds the
+canonical text.
+
+**Why.** It is compatible with JUCE's free licensing path (ADR-0014), which
+would otherwise cost a commercial JUCE licence. It has direct precedent in this
+exact space — Ardour, LMMS, and Vital, which we already fork in `VST-ADI/`. And
+it matches the premise: an open DAW with an open format, where a fork stays open.
+
+**Cost accepted.** No closed-source derivatives, including our own later. Some
+proprietary SDK integrations become awkward or impossible.
+
+**Consequence: VST2 is out.** FEATURES.md listed VST2 hosting as P2,
+"licensing-dependent". It now resolves to no on two independent grounds: the
+VST2 SDK has not been obtainable from Steinberg for years, and its licence terms
+were never GPL-compatible. VST3, CLAP, AU and LV2 cover the ground. This is a
+loss for old projects and old plugins, and it is not recoverable — worth being
+plain about rather than leaving as a dangling maybe.
+
+**Open, deliberately.** Whether to require a CLA from contributors. A CLA keeps
+relicensing possible later; it also deters exactly the contributors a GPL
+project attracts. Not urgent until there are outside contributors, but it gets
+much harder to add after there are.
