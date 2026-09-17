@@ -1,0 +1,649 @@
+# The `.adi` Project Format — Specification
+
+**Version:** 0.1 — DRAFT. Nothing here is frozen. No compatibility promise is
+made until this document says `STABLE`.
+**Container:** SQLite 3
+**Companion files:** [`schema.sql`](schema.sql) (normative DDL),
+[`RATIONALE.md`](RATIONALE.md) (why, and what we rejected)
+
+Key words **MUST**, **MUST NOT**, **SHOULD**, **MAY** are used as in RFC 2119.
+
+---
+
+## 1. Scope and design goals
+
+`.adi` is the native save format of ADI DAW. It is designed to be:
+
+1. **Fast to save incrementally** — a save is proportional to what changed, not
+   to the size of the project, so autosave can run during playback.
+2. **Impossible to half-write** — every save is an atomic transaction.
+3. **Forward compatible by default** — an older build that opens a newer project
+   preserves everything it doesn't understand, and says so out loud when that
+   data is musically essential.
+4. **Complete** — the file holds not just the music but the *session*: window
+   positions, zoom, selection, undo history, controller mappings. Reopening a
+   project puts you back exactly where you were.
+5. **Specified well enough to reimplement** — a third party MUST be able to write
+   a correct reader from this document alone, without reading our source.
+
+### Non-goals
+
+- **Not** a format other DAWs will open. Interop happens through converters
+  (`.dawproject`, MIDI, AAF, stems), not through shared files. See RATIONALE §4.
+- **Not** a streaming/interchange format for the audio engine. It is a
+  persistence layer. The audio thread never touches it. See RATIONALE §3.
+- **Not** a text format. A diffable text projection is a derived export, not the
+  file you work in. See ADR-0007.
+
+---
+
+## 2. Identity
+
+| Property | Value |
+|---|---|
+| Extension | `.adi` |
+| Alias extension | `.adibundle` — same format, signals embedded media (§10.4) |
+| MIME type | `application/vnd.adi.project` |
+| SQLite `application_id` | `1094994225` (= `0x41444931`, ASCII `ADI1`) |
+| SQLite `user_version` | `schema_major * 1000 + schema_minor` |
+| UTI (macOS) | `org.adidaw.project` |
+
+A reader **MUST** verify `application_id` before trusting any table. A SQLite
+file with the wrong `application_id` is not a `.adi` and MUST be rejected with a
+clear message rather than partially parsed.
+
+> **Known extension collision:** `.adi` is also used by ADIF amateur-radio
+> contact logs (a plain-text format). There is no registry to conflict with and
+> no overlap in application domain, and the SQLite magic header plus
+> `application_id` disambiguates unambiguously on content. We accept the
+> collision. It is worth knowing about before someone reports it as a bug.
+
+---
+
+## 3. Container rules
+
+### 3.1 Required pragmas on create
+
+```sql
+PRAGMA application_id = 1094994225;
+PRAGMA user_version   = 1000;          -- schema 1.0
+PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
+PRAGMA encoding       = 'UTF-8';
+PRAGMA foreign_keys   = ON;
+```
+
+### 3.2 Required pragmas while a project is open
+
+```sql
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous  = NORMAL;          -- FULL on removable/network volumes
+PRAGMA busy_timeout = 5000;
+```
+
+`WAL` is what makes autosave-during-playback cheap and lets the render/export
+path read a consistent snapshot while the user keeps editing.
+
+### 3.3 Close policy — the WAL sidecar rule
+
+**A cleanly closed `.adi` MUST be exactly one file on disk.**
+
+While open, SQLite maintains `foo.adi-wal` and `foo.adi-shm` alongside it. A user
+who copies or emails only `foo.adi` from that state gets a project that opens
+*cleanly* but is silently missing everything since the last checkpoint — a worse
+failure than an error.
+
+On clean close, and on every explicit **Save As** / **Export**, the writer
+**MUST**:
+
+```sql
+PRAGMA wal_checkpoint(TRUNCATE);
+PRAGMA journal_mode = DELETE;
+```
+
+If `-wal` files are found next to a `.adi` at open time, the reader MUST let
+SQLite recover them normally (that is the crash-recovery path working as
+designed) and SHOULD tell the user the project was recovered from an unclean
+shutdown, naming how much was recovered.
+
+### 3.4 Page size
+
+`page_size` **MUST** be 4096 unless a project's measured blob profile justifies
+otherwise, and it can only be set before the first write. 4096 matches the write
+granularity argument in RATIONALE §2: a single note edit dirties one or two
+pages. A larger page size makes big blob reads marginally faster and small edits
+strictly more expensive; we optimise for the edit.
+
+### 3.5 Atomicity
+
+Every user-visible action **MUST** be one SQLite transaction. A transaction that
+writes core-tier data **MUST** also append its op-log row (§8.1) inside the same
+transaction. There is no valid state in which the project changed but the op log
+did not.
+
+### 3.6 Concurrency
+
+Exactly one process **MAY** have a project open for writing. The writer takes an
+advisory lock row in `session_lock` carrying host name, PID, and a heartbeat
+timestamp, so a second instance can say *"open in ADI DAW on STUDIO-PC since
+14:32"* rather than silently corrupting expectations. A stale lock (heartbeat
+older than 60 s) MAY be broken by the user after an explicit prompt.
+
+Any number of readers MAY open the project read-only.
+
+---
+
+## 4. The time model
+
+This is the most consequential decision in the format, because combining Ableton
+(beat-native, everything warps) with Cubase (musical *or* linear time, per
+track) means the format cannot pick one domain.
+
+### 4.1 Two domains, declared per object
+
+Every positioned object carries a `time_base`:
+
+| `time_base` | Unit | Column | Meaning |
+|---|---|---|---|
+| `0` = musical | ticks | `pos_ticks` | Follows the tempo map. Moves when tempo changes. |
+| `1` = linear | nanoseconds | `pos_ns` | Absolute wall-clock. Pinned to picture/timecode. |
+
+An object **MUST** populate exactly the column matching its `time_base`; the
+other **MUST** be `NULL`. Readers MUST NOT infer one from the other — the
+conversion is a function of the tempo map and is the runtime's job, not the
+file's.
+
+### 4.2 Musical time: `ADI_PPQ = 5765760` ticks per quarter note
+
+```
+5765760 = 2^7 × 3^2 × 5 × 7 × 11 × 13
+```
+
+This constant is chosen, not arbitrary. It is divisible by:
+
+- **every tuplet from 2 to 16** — triplets, quintuplets, septuplets, 11- and
+  13-tuplets are all *exactly* representable, with no accumulated rounding.
+  Conventional PPQs handle the common cases and then quietly stop: 960 (Logic)
+  and 480 (Cubase) divide cleanly by 2, 3, 4, 5, 6 and 8, but **960/7 = 137.14…
+  and 480/7 = 68.57…**, so a septuplet is rounded at every note, and 11- and
+  13-tuplets are worse. Rounding compounds across a decade of edits, and it is
+  unacceptable in notation, where a septuplet is not an approximation of
+  anything.
+- **128th notes, and 128th-note tuplets** (2^7).
+- **every common interchange PPQ** — 24 (MIDI clock), 96, 192, 384, 480, 960 —
+  so importing and re-exporting a MIDI file is lossless in both directions.
+
+Range at `i64`: ±1.6 × 10¹² quarter notes ≈ 25,000 years at 120 BPM. Overflow is
+not a practical concern; readers MUST still range-check, because a corrupt file
+is not a hypothetical.
+
+**Positions of events inside a clip are relative to the clip's origin**, not to
+the project. Moving a clip is therefore one row update and touches no event data.
+
+### 4.3 Linear time: `i64` nanoseconds
+
+Nanoseconds, not samples, because a project's sample rate can change and every
+sample-domain position would then be wrong. `i64` ns gives ±292 years.
+
+Sample-exactness where it actually matters — the read position inside a source
+audio file — is stored in **frames at that file's own immutable sample rate**
+(§6.4), which is exact by construction and never needs rescaling.
+
+### 4.4 Tempo and signature maps
+
+`tempo_map` is a list of `(pos_ticks, bpm, curve)`. `curve` supports `jump`,
+`linear` and `bezier` ramps, because Cubase-style tempo ramps and Ableton-style
+tempo automation must both round-trip.
+
+The tick↔nanosecond mapping is *derived* from this map and **MUST NOT** be
+cached in the file. A cached mapping is a second source of truth and will
+eventually disagree with the first. Runtimes cache it in memory.
+
+`time_signature_map` is independent of `tempo_map`: they change at different
+places and conflating them is a common and annoying format bug.
+
+---
+
+## 5. Layer structure
+
+Five layers, each with a different compatibility contract:
+
+| Layer | Contents | If a reader doesn't understand it |
+|---|---|---|
+| **0 — Container** | `application_id`, `user_version`, `adi_meta` | Refuse to open |
+| **1 — Core** | Timeline, tracks, clips, events, routing, mixer | Refuse to open (major) / ignore column (minor) |
+| **2 — Plugin state** | Opaque plugin byte streams + param mirror | Preserve; warn on render |
+| **3 — Session** | Op log, undo tree, UI state, controller maps | Ignore safely |
+| **4 — Extensions** | Namespaced opaque data | Preserve; warn if `essential` |
+
+Layer 3 is the one a minimal third-party reader can skip entirely and still be
+correct. That is deliberate: it keeps the barrier to writing a `.adi` reader low.
+
+---
+
+## 6. Layer 1 — the core model
+
+Full DDL is in [`schema.sql`](schema.sql). This section specifies the parts a
+DDL listing can't express.
+
+### 6.1 Tracks
+
+One `tracks` table, self-referencing via `parent_id`, ordered by
+`index_in_parent`. `kind` covers: `audio`, `midi`, `instrument`, `group`,
+`folder`, `return`, `master`, `vca`, `marker`, `tempo`, `signature`, `chord`,
+`arranger`, `video`, `transposition`.
+
+Folder and group are **separate kinds deliberately**. Cubase folder tracks are an
+organisational container with no signal path; Ableton group tracks are a real
+summing bus. A DAW that merges them will get one of the two behaviours wrong.
+We model both.
+
+### 6.2 Clips and lanes
+
+`clips` sit on a `(track_id, lane_id)` pair. `lanes` gives us take lanes and
+comping for free: a comp is a set of clips across lanes on the same track with an
+active-region selection, which is how both Ableton 11+ and Cubase model it.
+
+A clip is `kind ∈ {audio, midi, automation, video, marker}` and carries position,
+length, loop window, fades, gain and mute. Loop fields are separate from position
+and length so that a looping clip is *one* object rather than N repeats — the
+Ableton model, and the correct one.
+
+### 6.3 Event streams — the BLOB contract
+
+Every core-tier BLOB begins with a **16-byte stream header**:
+
+```
+off  size  type     field
+  0     4  char[4]  fourcc      'ANOT' notes, 'AAUT' automation,
+                                'AEXP' note expression, 'ACTL' CC/controller,
+                                'ASYX' sysex, 'AWRP' warp markers
+  4     2  u16      version     layout version, starts at 1
+  6     2  u16      rec_size    bytes per record in THIS blob
+  8     4  u32      count       number of records
+ 12     4  u32      flags       bit0: records sorted ascending by time
+                                bit1: time values are ns, not ticks
+                                bits 2..31 reserved, MUST be 0
+```
+
+followed by `count × rec_size` bytes. All integers are **little-endian**. Floats
+are IEEE 754.
+
+> **This is the forward-compatibility mechanism for binary data, and it is
+> mandatory.** A reader **MUST** stride by `rec_size` from the header, never by
+> `sizeof(its own struct)`. If `rec_size` is larger than the reader knows, the
+> extra tail bytes are a newer version's fields: skip them and preserve the blob
+> byte-for-byte on save. If smaller, the missing fields take their documented
+> defaults. This lets us add a field to every note in the world without a schema
+> migration and without breaking older builds.
+
+**Granularity rule (MUST):** a core-tier BLOB **MUST NOT** span more than one
+user-visible editable object. One notes blob per MIDI clip. One automation blob
+per lane per clip. Never one per track, and never one per project. See
+RATIONALE §2 for why this rule is the difference between a fast format and a slow
+one wearing a fast format's clothes.
+
+#### 6.3.1 `ANOT` — note record, v1, 40 bytes
+
+```
+off  size  type  field           notes
+  0     8  i64   start_ticks     relative to clip origin
+  8     8  i64   dur_ticks       > 0
+ 16     8  u64   note_id         stable within clip; 0 = unassigned
+ 24     1  u8    key             0..127
+ 25     1  u8    vel_on          1..127
+ 26     1  u8    vel_off         0..127  (release velocity)
+ 27     1  u8    channel         0..15
+ 28     2  u16   flags           b0 mute, b1 selected, b2 has_expression,
+                                 b3 tied_to_next, b4 ghost, b5..15 reserved
+ 30     2  u16   probability     0..10000 = 0.00%..100.00%
+ 32     4  f32   tuning_cents    -1200.0..+1200.0, per-note microtuning
+ 36     4  u32   reserved        MUST be 0
+```
+
+`note_id` is not decoration. It is the anchor for per-note expression (§6.3.2),
+for op-log inverses that must identify *which* note moved, and for the AI agent
+to reference a note without ambiguity. It MUST be stable across a save/load
+cycle and MUST NOT be reused within a clip.
+
+`probability` and `tuning_cents` are in v1 rather than bolted on later because
+retrofitting a per-note field is the exact churn the stream header exists to
+avoid — but it is still cheaper to reserve the space now.
+
+#### 6.3.2 `AEXP` — per-note expression, v1, 24 bytes
+
+Stored one row per `(clip_id, note_id, dimension)` in `note_expression`, so
+editing one note's pressure curve rewrites only that curve.
+
+```
+off  size  type  field
+  0     8  i64   time_ticks      relative to NOTE start
+  8     4  f32   value           dimension-defined, see below
+ 12     4  f32   tension         -1.0..+1.0 curve shape
+ 16     1  u8    curve           0 hold, 1 linear, 2 exp, 3 log, 4 s-curve
+ 17     1  u8    flags
+ 18     6  —     reserved        MUST be 0
+```
+
+`dimension`: `0` pitch (semitones, ±48), `1` pressure (0..1), `2` timbre/slide
+(0..1), `3` gain (dB), `4` pan (−1..1), `≥64` plugin-defined.
+
+**This is first-class, not an MPE afterthought.** A Haken Continuum, a Roli, an
+Osmose or a Seaboard produces continuous per-note pitch, pressure and timbre at
+full control-rate resolution; Cubase VST Note Expression and Ableton MPE each
+model part of this and neither is a superset. A format that treats per-note
+expression as "MIDI channel tricks" throws away the performance. We store the
+curves directly, decoupled from the 16-channel MPE transport that happened to
+carry them.
+
+#### 6.3.3 `AAUT` — automation point, v1, 32 bytes
+
+```
+off  size  type  field
+  0     8  i64   time            ticks or ns per the lane's time_base
+  8     8  f64   value           in the lane's declared value_domain
+ 16     4  f32   tension
+ 20     1  u8    curve           as §6.3.2
+ 21     1  u8    flags           b0 selected, b1 locked
+ 22     2  u16   reserved
+ 24     8  u64   point_id        stable identity
+```
+
+`automation_lanes.value_domain` declares whether `value` is `normalized`
+(0.0–1.0, what a plugin API speaks), `real` (dB, Hz, ms — what a human reads), or
+`enum`. Storing normalized values *only* is the common mistake: if the plugin is
+missing or its mapping changes between versions, normalized automation becomes
+meaningless, while `real` survives. Where both are knowable, writers SHOULD store
+`real` and let the runtime map.
+
+### 6.4 Audio clips and warping
+
+`audio_clips` references a `media_files` row and stores its read window as
+`src_start_frames` / `src_len_frames` **in frames at the source file's own sample
+rate** (§4.3).
+
+Warping is `warp_mode` plus an `AWRP` blob of warp markers pairing source frames
+with musical ticks. Both DAWs' models fit: Ableton's always-on warp with a marker
+grid, and Cubase's AudioWarp with hitpoint-derived markers, are the same data
+with different UI over it.
+
+### 6.5 Session View is core, not an extension
+
+`scenes` and `clip_slots` are **Layer 1**, not a vendor blob.
+
+This is the whole premise of the project. "Ableton and Cubase combined" means the
+clip-launching matrix and the linear arrangement are peers in the data model,
+both always present, with clips referenced from either. Demoting Session View to
+an opaque extension would reproduce exactly the second-class-citizen problem that
+makes every other DAW's clip-launcher feel bolted on.
+
+`clip_slots` carries follow actions, launch quantisation, legato and launch mode
+per slot.
+
+### 6.6 Devices, chains, racks and macros
+
+A track's signal path is an ordered list of `devices`. A device MAY own nested
+`device_chains` (Ableton Instrument/Audio-Effect/Drum Racks), each with key,
+velocity and chain-select zones. `macros` and `macro_mappings` give the 8/16-macro
+model with per-target range and curve.
+
+Modelling racks natively — rather than as "a plugin that happens to contain
+plugins" — is what lets the AI agent reason about and build them.
+
+### 6.7 Routing
+
+One `routing` table for every signal connection: main outputs, sends, sidechains,
+external inputs, and VCA control links. A row is
+`(src_kind, src_id) → (dst_kind, dst_id)` with `kind ∈ {main, send, sidechain,
+vca, cue}`, `gain`, `pan`, `pre_fader`, `enabled`.
+
+Cubase Direct Routing (multiple simultaneous outputs per channel) falls out of
+this for free; a one-output-per-track column would have made it impossible.
+
+---
+
+## 7. Layer 2 — plugin state
+
+```
+plugin_refs    identity of a plugin: format, uid, vendor, name, version, path hint
+devices        an instance of a plugin_ref on a chain
+plugin_state   (device_id, stream_role, data, format_hint)
+plugin_params  (device_id, param_id, name, normalized_value, display_string)
+```
+
+`stream_role` exists because plugin state is not always one stream:
+
+| Format | Roles |
+|---|---|
+| VST3 | `component`, `controller` (two separate `IBStream`s) |
+| CLAP | `state` |
+| AU | `classinfo` (the fully-qualified property-list dict) |
+| LV2 | `state`, plus `files` for its file-reference extension |
+| VST2 | `chunk`, or `params` if the plugin is not chunk-capable |
+
+Writing all of these into one column and hoping is the standard way DAWs lose
+people's synth patches. They get separate rows.
+
+### 7.1 The missing-plugin rule
+
+`plugin_params` mirrors every parameter the host can see, by name and value, at
+save time. It is redundant when the plugin loads, and it is the entire reason the
+project is still workable when it doesn't.
+
+A reader that encounters a `device` whose plugin is unavailable **MUST**:
+
+1. preserve `plugin_state` byte-for-byte;
+2. keep the device in the chain as a bypassed placeholder, retaining its position,
+   its routing and its automation lane bindings;
+3. surface the missing plugin's identity to the user — vendor, name, version and
+   the path it was last loaded from;
+4. re-inject the preserved state verbatim if the plugin becomes available later.
+
+It **MUST NOT** silently drop the device, and it MUST NOT renumber the chain.
+Dropping a device silently rewires the signal path, and the user finds out at
+mixdown.
+
+---
+
+## 8. Layer 3 — session state, and the op log
+
+### 8.1 The op log
+
+```sql
+ops(seq, txn_id, parent_seq, ts_utc, actor, actor_detail,
+    op_type, target_kind, target_id, payload, inverse, tags)
+```
+
+Every mutation to Layers 1, 2 and 4 **MUST** append an op row in the same
+transaction that performs it (§3.5).
+
+- `actor ∈ {user, agent, script, import, migration, remote}`. This column is the
+  accountability record for the AI agent: *"what did it change, and when"* is a
+  query, not a forensic exercise.
+- `actor_detail` names the specific agent, model, script or importer.
+- `txn_id` groups ops that must undo as one unit. An agent action, however many
+  individual edits it makes, is one `txn_id` and therefore one Ctrl-Z.
+- `inverse` holds the data needed to revert, so undo never has to replay from the
+  beginning.
+- `parent_seq` makes the history a **tree, not a stack** (§8.2).
+
+### 8.2 The undo tree
+
+`op_branches(id, name, head_seq, created_utc)` plus a current-head pointer in
+`session_state`.
+
+Undoing and then doing something new does not destroy the branch you left; it
+forks. This gives "try the agent's arrangement, don't like it, go back, and still
+be able to return to it" — which for an AI-assisted DAW is not a luxury, it is
+the difference between the agent being usable and being frightening.
+
+### 8.3 Compaction
+
+An unbounded op log grows without limit. Policy is stored in the project
+(`adi_meta`): keep at most N ops or M days, whichever is larger, with a default
+of 10,000 / 90 days. Compaction squashes the tail into a checkpoint and MUST NOT
+cross a branch point that is still reachable from a named branch.
+
+### 8.4 UI and session state
+
+`ui_view`, `window_state`, `session_state`: track heights, fold states, zoom,
+scroll offsets, selection, playhead, loop, per-plugin-window rectangles *with
+their monitor identity*, mixer layout, visible panels, last-used tool.
+
+The monitor identity matters: restoring a plugin window to `x=3200` on a machine
+that no longer has a second monitor puts it offscreen. Readers MUST clamp
+restored windows to the currently available display arrangement.
+
+### 8.5 Controller maps
+
+`controller_maps` holds project-scoped MIDI/OSC/HUI bindings — control surfaces,
+Stream Deck actions, Continuum mappings — with takeover mode (jump / pickup /
+scale) per binding. Project-scoped rather than global, because a template for
+orchestral mockups and one for a club track want different mappings, and because
+a project handed to a collaborator should arrive with its controller layout
+intact.
+
+---
+
+## 9. Layer 4 — extensions
+
+```sql
+extensions(id, ns, key, scope_kind, scope_id, criticality, min_reader, data, mime)
+```
+
+- `ns` is a reverse-DNS namespace: `org.adidaw.experimental.foo`,
+  `com.vendor.thing`. The `org.adidaw.` prefix is reserved for us.
+- `scope_kind` / `scope_id` attach the row to any object — project, track, clip,
+  device — so extensions are not forced to be project-global.
+- `criticality ∈ {advisory, essential}`.
+
+### 9.1 Rules
+
+1. A reader **MUST** preserve extension rows it does not understand, byte for
+   byte, across a load/save cycle.
+2. A reader **MUST NOT** fail to open a project because of an unknown extension.
+3. A reader that encounters an unknown `essential` extension **MUST** warn the
+   user before render, export or bounce, naming the `ns` and `key`. It **SHOULD**
+   warn on open. It **MUST NOT** silently produce audio that omits it.
+4. `min_reader` lets a writer state the minimum schema version that can
+   *interpret* the row, so a reader can tell "newer than me" from "foreign".
+
+Rule 3 is the one that separates this from every "we'll just ignore what we don't
+know" format. Silent degradation at render time is data loss with extra steps.
+
+---
+
+## 10. Media
+
+### 10.1 The pool
+
+`media_files` is a content-addressed pool:
+
+```
+id, hash_blake3, orig_name, rel_path, abs_path_hint, sample_rate, channels,
+frames, format, duration_ns, embedded, size_bytes, imported_utc, missing
+```
+
+Content addressing by BLAKE3 gives us, from one column: deduplication (the same
+sample dropped in twenty times is one file), integrity verification (detect a
+truncated or replaced file *before* it renders as silence), and reliable relink
+(find a moved file by content, not by guessing at names).
+
+### 10.2 Resolution order
+
+A reader resolving a media file **MUST** try, in order:
+
+1. embedded blob, if `embedded = 1`;
+2. `rel_path` relative to the `.adi`;
+3. registered project media folders;
+4. `abs_path_hint`;
+5. the user's configured search paths, matched by `hash_blake3`;
+6. mark `missing = 1` and surface a relink prompt.
+
+A hash mismatch at any step **MUST** be reported, never silently accepted. A
+sample that has been replaced on disk by a different file of the same name is one
+of the most disorienting failures in a DAW, and it is entirely detectable.
+
+### 10.3 Referenced by default
+
+By default media is **referenced**, not copied. A 4-minute project that touches a
+90 GB sample library must not become a 90 GB file.
+
+### 10.4 Embedding is a flag, not a different format
+
+`media_blobs(media_id, data)` holds embedded audio. **Collect & Embed** populates
+it; **Extract Media** empties it.
+
+A `.adi` with embedded media is **the same format** read by the same code — the
+only difference is which branch of §10.2 resolves. `.adibundle` is an alias
+extension that signals "this one is large and self-contained" to humans and to
+mail clients. It carries no semantic difference whatsoever.
+
+This is deliberately simpler than the usual project/bundle/archive split: one
+schema, one reader, one code path, and the decision is reversible at any time.
+
+### 10.5 Size limits
+
+SQLite's default max BLOB is 1 GB and its max database size is ~281 TB. A single
+embedded file over 512 MB **SHOULD** be chunked across `media_blobs` rows (the
+schema allows it via `chunk_index`) rather than relying on a raised
+`SQLITE_MAX_LENGTH` that a third-party reader may not have.
+
+---
+
+## 11. Compatibility rules
+
+`user_version = schema_major × 1000 + schema_minor`.
+
+| Situation | Required behaviour |
+|---|---|
+| `schema_major` > reader's | Open **read-only**. Offer Save As a copy. Never write. |
+| `schema_minor` > reader's | Open read-write. Preserve unknown tables and columns. |
+| Unknown table | Leave untouched. It survives because we never rewrite the file wholesale. |
+| Unknown column | Leave untouched. Writers MUST use named-column `INSERT`/`UPDATE`, never positional. |
+| Unknown extension | §9.1 |
+| Unknown blob `rec_size` | §6.3 — stride by the header, preserve the tail |
+| Unknown enum value | Treat as the documented default for that column and preserve the original on save |
+
+**Writers MUST NOT use `SELECT *` or positional `INSERT`.** Both break silently
+the moment a column is added, and "silently" is the operative word.
+
+Major version bumps are the expensive kind and we expect to make very few. The
+mechanisms in §6.3 (blob tails), §9 (extensions) and the "unknown column"
+rule exist specifically so that almost everything can be a minor bump.
+
+---
+
+## 12. What is deliberately not decided yet
+
+Named here so they are visible gaps rather than accidental omissions:
+
+1. **Op payload encoding.** The `ops.payload` / `ops.inverse` blobs need a
+   concrete encoding (CBOR, MessagePack, FlatBuffers, or a hand-rolled TLV).
+   Leaning CBOR: self-describing, deterministic encoding available (RFC 8949
+   §4.2), no schema compiler in the build, readable in a pinch. Decide before the
+   first op type is implemented, because it is essentially unchangeable after.
+2. **The full op vocabulary.** Every op type, its payload and its inverse. This
+   is a large document of its own and it gates the agent work.
+3. **Score/notation data.** Cubase's score editor needs engraving information
+   (enharmonic spelling, stem direction, beaming, layout) that is *not* derivable
+   from MIDI. Reserved as Layer 1 tables, unspecified.
+4. **Chord track and Expression Maps.** Both need native schema. Sketched in
+   `key_map` and reserved; not specified.
+5. **Video.** A video track kind exists; frame-rate/timecode/pull-up handling is
+   not specified.
+6. **Collaboration.** The op log is the right substrate for it. Whether we go
+   CRDT or OT, and what the identity and conflict model is, is out of scope for
+   0.1 and must not accidentally be foreclosed by 0.1's choices.
+7. **Encryption / signing.** Out of scope. Note that SQLCipher exists if we ever
+   want it, and that it changes the file header — so a `.adi` cannot be both
+   encrypted and recognisable by `application_id`.
+
+---
+
+## 13. Reference
+
+- Normative DDL: [`schema.sql`](schema.sql)
+- Design rationale and rejected alternatives: [`RATIONALE.md`](RATIONALE.md)
+- Decision log: [`../DECISIONS.md`](../DECISIONS.md)
+- Feature scope this format must eventually carry: [`../FEATURES.md`](../FEATURES.md)
+- Agent architecture built on the op log: [`../AI-AGENT.md`](../AI-AGENT.md)
