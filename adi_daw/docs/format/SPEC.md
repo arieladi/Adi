@@ -617,11 +617,11 @@ rule exist specifically so that almost everything can be a minor bump.
 
 Named here so they are visible gaps rather than accidental omissions:
 
-1. **Op payload encoding.** The `ops.payload` / `ops.inverse` blobs need a
-   concrete encoding (CBOR, MessagePack, FlatBuffers, or a hand-rolled TLV).
-   Leaning CBOR: self-describing, deterministic encoding available (RFC 8949
-   §4.2), no schema compiler in the build, readable in a pinch. Decide before the
-   first op type is implemented, because it is essentially unchangeable after.
+1. ~~**Op payload encoding.**~~ **DECIDED** — CBOR (RFC 8949), encoded via
+   `nlohmann/json`. Self-describing, so a newer version's op can still be
+   inspected and preserved by an older reader; deterministic encoding is
+   specified (§4.2), which matters because payloads reach content hashes and the
+   text projection. See ADR-0016.
 2. **The full op vocabulary.** Every op type, its payload and its inverse. This
    is a large document of its own and it gates the agent work.
 3. **Score/notation data.** Cubase's score editor needs engraving information

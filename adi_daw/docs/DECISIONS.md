@@ -294,3 +294,98 @@ plain about rather than leaving as a dangling maybe.
 relicensing possible later; it also deters exactly the contributors a GPL
 project attracts. Not urgent until there are outside contributors, but it gets
 much harder to add after there are.
+
+---
+
+## ADR-0016 — Op payloads are CBOR, via nlohmann/json — `DECIDED` (2026-09-17)
+
+**Context.** SPEC §12.1 left `ops.payload` / `ops.inverse` unencoded and flagged
+it as essentially unchangeable once the first op type ships.
+
+**Decision.** CBOR (RFC 8949), encoded with `nlohmann/json`'s `to_cbor` /
+`from_cbor`.
+
+**Why CBOR.** Self-describing, so an op written by a newer version can still be
+inspected and preserved by an older one — the same forward-compatibility posture
+as ADR-0008 and ADR-0012. Deterministic encoding is specified (RFC 8949 §4.2),
+which matters because op payloads end up in content hashes and in the text
+projection of ADR-0007. Binary, so the log stays compact. And readable with
+off-the-shelf tools when debugging, which a hand-rolled TLV would not be.
+
+**Why nlohmann/json rather than a dedicated CBOR library.** Header-only, MIT, no
+schema compiler in the build, and its CBOR codec is mature. The same value type
+projects cleanly into the JSON Schema an op registry needs (ADR-0018), so one
+library serves both the on-disk encoding and the agent's tool schemas.
+
+**Rejected: FlatBuffers / Cap'n Proto.** Zero-copy reads are the wrong thing to
+optimise for — op payloads are small and read on the message thread, never in
+the audio callback (ADR-0010). The cost is a schema compiler in the build and a
+generated-code step, for a benefit we do not need.
+
+**Rejected: MessagePack.** Very close call. CBOR wins on having a specified
+deterministic encoding and an IETF standard behind it.
+
+---
+
+## ADR-0017 — External code lives in two directories with different rules — `DECIDED` (2026-09-17)
+
+**Decision.** `third_party/` holds permissively-licensed code we link against and
+ship. `reference/` holds GPL-family code we *read* and which is never on the
+include path. Both are gitignored; each clone is its own repo, as with
+`VST-ADI/vital`. `tools/fetch_external.sh` provisions both.
+
+**Why it is a decision and not a directory layout.** We are GPLv3 (ADR-0015), so
+what we may copy from is a design constraint. The sharp case is **Zrythm, which
+is AGPL-3.0, not GPL-3.0** — the incompatibility runs one way, and AGPL code
+cannot come into this project without dragging §13 network obligations onto the
+combination. Zrythm is therefore marked read-for-design-only: we study how it
+decomposes edits into undoable actions, and write our own code. Architecture is
+not what copyright protects; source lines are.
+
+**Also recorded because both mistakes cost real time:** GitHub reports
+`NOASSERTION` for Zrythm, Tracktion and Ardour alike while their actual terms
+differ sharply (AGPL-3.0, GPL-3.0-or-later-or-commercial, and GPL-2.0-or-later
+respectively). Check `COPYING`/`LICENSE` in the tree, never the sidebar. And the
+Helio repo we were pointed at, `Ahornberg/helio-workstation`, is a fork stale
+since January 2022; the live one is `helio-fm/helio-sequencer`.
+
+Full inventory and rationale: [`EXTERNAL-CODE.md`](EXTERNAL-CODE.md).
+
+---
+
+## ADR-0018 — Our relationship to MAGDA and Tracktion Engine — `OPEN`
+
+**The situation.** [MAGDA](https://github.com/Conceptual-Machines/magda-core) is
+an actively developed GPL-3.0 DAW on C++20 + JUCE + Tracktion Engine that already
+ships Session/Arrangement/Mix views with clip launching, nestable racks with 16
+macros and 16 bezier LFOs per device, a piano roll with CC lanes, and an in-app
+AI agent that generates and executes a DSL. That is a large overlap with the
+design in this repository, and it was not known when ADR-0001..0015 were written.
+
+**What is genuinely still ours.** MAGDA inherits Tracktion Engine's persistence:
+`ValueTree` serialized to XML, undo via JUCE's in-memory `UndoManager`. SQLite
+appears in their tree only for plugin metadata and the media database, not the
+project file. Every argument in `format/RATIONALE.md` therefore stands, and the
+one that matters most for the agent — **undo that persists across restarts and
+branches** — is exactly what a `ValueTree` undo stack cannot do, and exactly what
+is hardest to retrofit into an engine built around one.
+
+**The options, unranked and undecided:**
+
+1. **Stay independent.** Own engine, own format. Most work, most control, and the
+   `.adi` differentiator stays sharp.
+2. **Build on Tracktion Engine, keep our own persistence.** Skips years of plugin
+   hosting and graph work. The tension is real: TE's model *is* `ValueTree`, so
+   layering an op log and SQLite over it means fighting the engine's grain.
+3. **Contribute the format to MAGDA.** Fastest route to it existing at all. We
+   stop owning the direction, and MAGDA requires a CLA.
+4. **Fork MAGDA.** Inherits a working DAW and a GPL-compatible licence. Inherits
+   its architecture too, including the persistence we specifically rejected.
+
+**Not deciding this yet is the right call** — it should be made after reading
+their `OperationRegistry` and TE's `ValueTree` layer properly, which is step 3
+work. But it must be decided before any engine code, because it invalidates or
+confirms most of what comes after.
+
+**Related open item:** MAGDA requires a contributor CLA, which bears on the CLA
+question left open at the end of ADR-0015.
