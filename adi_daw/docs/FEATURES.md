@@ -120,7 +120,7 @@ SPEC §6.5.
 |---|---|---|---|---|
 | VST3 / CLAP hosting | — | P0 | ✅ | `plugin_state.stream_role` |
 | AU (macOS), LV2 (Linux) | — | P2 | ✅ | same |
-| VST2 | — | P2 | ✅ | licensing-dependent; see README |
+| ~~VST2~~ | — | **no** | — | **Ruled out** (ADR-0015): SDK unobtainable for years, and its terms were never GPL-compatible. Not recoverable. |
 | **Missing-plugin preservation** | both | **P0** | ✅ | SPEC §7.1 — non-negotiable |
 | Racks: instrument / effect / drum | Ableton | P2 | ✅ | `device_chains` with key/vel/chain zones |
 | Macros with per-target range and curve | Ableton | P2 | ✅ | `macros`, `macro_mappings` |
