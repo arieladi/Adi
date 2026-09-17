@@ -55,7 +55,8 @@ than frightening.
 | [`docs/format/RATIONALE.md`](docs/format/RATIONALE.md) | Why SQLite, what we rejected, and the three errors in the original proposal that must not come back. |
 | [`docs/FEATURES.md`](docs/FEATURES.md) | Ableton ∪ Cubase, prioritised P0–P3, each row checked against the schema. |
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 18 entries. |
+| [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 21 entries. |
 | [`docs/EXTERNAL-CODE.md`](docs/EXTERNAL-CODE.md) | The nine external repos we read or link against, and the licence boundary between them. Read before copying a line out of `reference/`. |
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
 | [`tools/fetch_external.sh`](tools/fetch_external.sh) | Clones/refreshes `third_party/` and `reference/`. Both gitignored. |
@@ -114,8 +115,8 @@ Each step gates the next. No step starts before the previous one is written down
 |---|---|---|
 | **1** | Format spec, schema, feature scope, agent design | **done, draft** |
 | **2** | Choose implementation language and licence | **done** — C++/JUCE, GPLv3 |
-| **3** | The op vocabulary: every op type, payload, inverse | **next** — start from MAGDA's `OperationRegistry` and Zrythm's action model (ADR-0018) |
-| **4** | Reference reader/writer library + round-trip test corpus | |
+| **3** | The op vocabulary: every op type, payload, inverse | **framework done** (`docs/OPS.md`); catalogue partial |
+| **4** | Reference reader/writer library + round-trip test corpus | **next** |
 | **5** | Audio engine skeleton: graph, transport, snapshot handoff | |
 | **6** | Plugin hosting: CLAP and VST3 | |
 | **7** | Minimal arrangement UI — the first thing you can make a track in | |
@@ -129,17 +130,11 @@ Each step gates the next. No step starts before the previous one is written down
 
 Named so they stay visible:
 
-- **Our relationship to MAGDA and Tracktion Engine.** MAGDA is an actively
-  developed GPL-3.0 JUCE DAW that already ships Session view, nested racks and an
-  in-app agent DSL. Stay independent, build on Tracktion Engine, contribute, or
-  fork — undecided, and it must be settled before any engine code. What stays
-  ours regardless is the persistence model: MAGDA inherits Tracktion's
-  `ValueTree`/XML projects and in-memory undo, so persistent branching undo is
-  exactly the thing that cannot be retrofitted into it. (ADR-0018)
-- **The snapshot handoff.** ADR-0014 chose C++, which means ADR-0010's
-  message-thread→audio-thread handoff has no compiler enforcing it. It needs to
-  be one small, isolated, heavily tested type whose API makes the wrong thing
-  hard to express — not a convention people remember.
+- **Selection.** Whether selection is op state, session state or neither. It
+  touches almost every editing op, so it should be settled before the op
+  catalogue is finished. (OPS.md §10)
+- **CBOR key-ID registry.** Op payloads use integer map keys; they need an
+  actual assignment table and a rule for extending one. (OPS.md §10)
 - **Contributor CLA** — keeps relicensing possible, deters the contributors a GPL
   project attracts. Much harder to add once there are contributors. (ADR-0015)
 - **Repo home** — this lives in the `Adi` monorepo while it is design work, and
