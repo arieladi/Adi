@@ -37,3 +37,12 @@ VST-ADI/tools/validator/build/
 # Multi-GB vendor binaries; never belongs in the repo.
 VST-ADI/Reason_*/
 VST-ADI/Reason_*.zip
+
+# adi_daw external code. Each of these is its own git repo, cloned for building
+# against (third_party) or for reading (reference). Ignored here so a `git add -A`
+# cannot turn one into a stray gitlink -- same arrangement as VST-ADI/vital.
+#
+# reference/ is GPL code we read and NEVER copy from without attribution, and it
+# is never on the include path. See adi_daw/reference/README.md.
+adi_daw/third_party/
+adi_daw/reference/
