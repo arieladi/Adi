@@ -133,7 +133,55 @@ plugin is stripped from this repo; that unity file cannot build. Ignore it.
 Sidestep for early prototyping: make the new component header-only and include it
 from an existing `.cpp`. Promote to a real translation unit once the API settles.
 
-### 2.6 Language level
+### 2.6 Headless VST3 validation
+
+`tools/validator/` is a small JUCE console app that loads a built `.vst3` over
+the real VST3 ABI and smoke-tests it — no DAW required, cheap enough to run on
+every build:
+
+```powershell
+$cmake = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+& $cmake -S VST-ADI\tools\validator -B VST-ADI\tools\validator\build -G "Visual Studio 17 2022" -A x64
+& $cmake --build VST-ADI\tools\validator\build --config Release --parallel
+
+VST-ADI\tools\validator\build\VitalValidator_artefacts\Release\VitalValidator.exe `
+    VST-ADI\vital\plugin\builds\vs19\x64\Release\VST3\Vial.vst3
+```
+
+It scans, instantiates, checks the plugin is silent *before* any note-on, plays a
+MIDI note, and asserts the output is audible, finite (no NaN/Inf) and not badly
+clipping — then round-trips `getStateInformation` / `setStateInformation`. Exit
+code 0 = pass. That last check matters to us specifically: it exercises the exact
+`stateToJson` / `jsonToState` path the AI feature hooks into (§3.2).
+
+Two CMake details worth remembering. It builds against the **stock** JUCE
+download, not Vital's patched `third_party/JUCE` — a host talks to the plugin as
+a black box over the ABI and neither needs nor wants Vital's DSP patches. And
+JUCE's CMake API does **not** emit `JuceHeader.h` unless you call
+`juce_generate_juce_header(target)`, unlike Projucer which always generates one.
+
+CMake itself ships with VS2022 (`Common7/IDE/CommonExtensions/Microsoft/CMake`);
+there is no separate install.
+
+**Baseline result (unmodified Vital, 2026-09-17): 15/15 checks passed.**
+Scanned as `Vial` / `Vial Audio` / `Instrument|Synth`, uid `c2dcb7b2`, 0 in / 2
+out, rendered peak 0.357 / rms 0.144 on MIDI note 60, no NaN/Inf, and
+`getStateInformation` returned **232,438 bytes** — which is the §3.3c wavetable
+size claim confirmed empirically. Keep this as the regression baseline.
+
+One number to be aware of before loading this in a DAW: the host sees **2852
+automatable parameters**, not the 794 in our schema. The ~2058 extra are JUCE's
+VST3 MIDI-CC parameter emulation (16 channels × 128 controllers ≈ 2048; the exact
+accounting doesn't quite close and hasn't been pinned down). Some hosts cope
+poorly with parameter lists that large. If Reason struggles, the lever is
+`JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS=0` — at the cost of MIDI CC
+automation from the host.
+
+Note also that `getTotalNumOutputChannels()` reports **0 until
+`enableAllBuses()` is called** on a freshly instantiated VST3. That cost us a
+false failure the first time; the ordering in `Main.cpp` is deliberate.
+
+### 2.7 Language level
 
 `cppLanguageStandard="14"`. **C++14 only** — no `std::optional`, no structured
 bindings, no `if constexpr`. This is a project-level `.jucer` setting; raising it
@@ -207,6 +255,112 @@ fires, URL built, JSON returned, synth state updated.
 Copy its *structure*, not its transport: it calls `readEntireTextStream()`
 **synchronously on the message thread** (line 903). For a short TTS call that's
 merely rude; for a 5–15 s LLM generation it would freeze the DAW. See §5.
+
+### 3.5 Patch format and merge semantics — DECIDED
+
+**The AI returns a sparse patch, and unmentioned parameters keep their current
+values.** The tool is a copilot: "give this a faster, pluckier filter envelope"
+must change the ADSR and leave your oscillators and wavetables alone.
+
+Note this is the *opposite* of what `loadControls` does natively (§3.3a) — it
+resets anything absent to Init defaults. We do not change that behaviour. We
+merge first, so nothing is ever absent.
+
+#### The patch schema is ours, not `.vital`
+
+Do not make the model emit raw `.vital` JSON. Four things make that format
+hostile to sparse generation:
+
+- parameters are nested under `"settings"` rather than at the top level;
+- `modulations` is a **fixed 64-element array** — there is no natural way to say
+  "just add one";
+- `lfos` is a fixed 8-element array with the same problem;
+- a modulation's **routing and its amount live in two different places** (see
+  below), so the model would have to keep two structures in sync by index.
+
+Our patch format instead — flat, obviously sparse, no fixed-size arrays:
+
+```json
+{
+  "params": { "env_1_decay": 0.35, "filter_1_cutoff": 72.0 },
+  "modulations": [
+    { "source": "lfo_1", "destination": "filter_1_cutoff",
+      "amount": 0.5, "bipolar": false }
+  ],
+  "remove_modulations": [
+    { "source": "env_2", "destination": "osc_1_level" }
+  ],
+  "lfos": { "1": { "num_points": 3, "points": [], "powers": [] } },
+  "preset_name": "Plucky Acid"
+}
+```
+
+Every key optional. `params` alone covers most prompts.
+
+#### The modulation two-place coupling
+
+A connection is stored in two unrelated places, correlated only by index:
+
+| Where | Holds | Index base |
+|---|---|---|
+| `settings.modulations[i]` | `source`, `destination`, optional `line_mapping` | 0 |
+| `settings.modulation_<i+1>_*` | `amount`, `bipolar`, `stereo`, `bypass`, `power` | **1** |
+
+So array slot `0` pairs with `modulation_1_amount`. The model must never see
+this — it emits `{source, destination, amount}` and **our merge code assigns the
+slot and writes both places**.
+
+#### Merge algorithm
+
+```cpp
+// message thread, before applying
+json base     = LoadSave::stateToJson(synth, synth->getCriticalSection());
+json snapshot = base;          // undo point — see below, this is free
+json merged   = base;
+
+// 1. flat parameters
+for (auto& kv : patch["params"].items())
+    merged["settings"][kv.key()] = kv.value();
+
+// 2. modulations — resolve (source,destination) to a slot, write both places
+//    existing pair      -> update in place
+//    new pair           -> first slot with empty source AND destination
+//    no free slot       -> surface an error; 64 is the hard ceiling
+//    remove_modulations -> clear source/destination, zero modulation_<n>_amount
+
+// 3. lfos, keyed by index
+// 4. preset_name -> merged["preset_name"]
+
+synth->loadFromJson(merged);   // existing path, unmodified
+gui_interface->updateFullGui();
+```
+
+**No change to Vital's load path is required.** `loadControls` still resets
+anything missing — but after the merge nothing is missing, so the behaviour
+never fires. This keeps our fork delta small and means DAW state restore, preset
+loading and AI generation all still share one code path.
+
+#### Cost note
+
+`merged` carries the wavetables inherited from `base`, so `loadWavetables` will
+re-render all three oscillators on every apply. That runs on the message thread
+with processing paused — a brief UI hiccup, not an audio dropout. Acceptable to
+start; if it becomes perceptible, the fix is to skip re-rendering when the
+wavetable JSON is unchanged from `base`.
+
+### 3.6 Undo — DECIDED
+
+Snapshot before every apply. **The snapshot and the merge base are the same
+object** (`base` above), so undo costs one extra copy and no extra work.
+
+- Undo = `loadFromJson(snapshot)` + `updateFullGui()`.
+- Keep a small stack — 8 entries is plenty. Each snapshot is ~100 KB – 1 MB
+  because of the embedded wavetables, so **cap the depth**; an unbounded stack
+  would quietly eat hundreds of MB over a session.
+- The Undo button lives in the prompt overlay (§6.2). Disable it when the stack
+  is empty.
+- Vital has no undo stack of its own for preset loads; this is entirely ours and
+  only covers AI-applied changes, not manual knob edits.
 
 ---
 
@@ -339,6 +493,8 @@ It is exactly the right shape, needs no layout surgery, and keeps our diff small
   the GL-wrapped variant, because `FullInterface` is an `OpenGLRenderer` and a
   bare `juce::TextEditor` will not composite correctly;
 - a `PlainTextComponent` for status/error, mirroring `ttwt_error_text_`;
+- an **Undo button** (§3.6) — greyed out when the snapshot stack is empty;
+- the snapshot stack itself (`std::vector<json>`, capped at 8);
 - the network `juce::Thread`.
 
 **Modified files**

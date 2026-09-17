@@ -29,3 +29,11 @@ node_modules/
 # a `git add -A` in this repo can't turn it into a stray gitlink. Our own code
 # under VST-ADI/ (tools/, etc.) is still tracked normally.
 VST-ADI/vital/
+
+# CMake build tree for the headless VST3 validator (JUCE gets compiled in here).
+VST-ADI/tools/validator/build/
+
+# Reason 14 installer + sound banks downloaded into VST-ADI for DAW testing.
+# Multi-GB vendor binaries; never belongs in the repo.
+VST-ADI/Reason_*/
+VST-ADI/Reason_*.zip
