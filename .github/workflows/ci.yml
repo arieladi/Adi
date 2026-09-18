@@ -60,15 +60,6 @@ defaults:
   run:
     shell: bash
 
-env:
-  # Mirrors the THIRD_PARTY table in adi_daw/tools/fetch_external.sh. Only these
-  # two of that script's nine repositories are needed to BUILD; the other seven
-  # are reference/ source we read for design and never compile, plus two
-  # third_party libraries step 4 does not link yet. The `deps-match-fetch-script`
-  # step below fails if this list and that table drift apart.
-  DEP_SQLITECPP: SRombauts/SQLiteCpp
-  DEP_JSON: nlohmann/json
-
 jobs:
   # ---------------------------------------------------------------------------
   # The two Python validators. They are pure-stdlib and resolve their inputs
@@ -152,41 +143,14 @@ jobs:
           python3 -VV
           uname -a || true
 
-      # Deliberately not `bash adi_daw/tools/fetch_external.sh`. That script
-      # clones nine repositories, about 630MB, five of which exist to be read for
-      # design and are never on the include path. Cloning ardour and zrythm on
-      # every push would make CI slow, and would make an unrelated upstream
-      # outage look like our failure.
-      - name: Fetch build dependencies
-        run: |
-          set -euo pipefail
-          mkdir -p adi_daw/third_party
-          git clone --depth 1 --single-branch -q \
-            "https://github.com/${DEP_SQLITECPP}.git" adi_daw/third_party/SQLiteCpp
-          git clone --depth 1 --single-branch -q \
-            "https://github.com/${DEP_JSON}.git" adi_daw/third_party/json
-          for d in SQLiteCpp json; do
-            printf '%-12s %s\n' "$d" \
-              "$(git -C "adi_daw/third_party/$d" log -1 --format='%h %cs')"
-          done
-
-      # If the project ever changes which SQLite or JSON library it uses, the
-      # THIRD_PARTY table in fetch_external.sh is where that change will be made.
-      # This step makes CI notice, instead of quietly continuing to build the old
-      # one because its own list was never updated.
-      - name: deps-match-fetch-script
-        run: |
-          set -euo pipefail
-          script=adi_daw/tools/fetch_external.sh
-          for repo in "${DEP_SQLITECPP}" "${DEP_JSON}"; do
-            if ! grep -q "$repo" "$script"; then
-              echo "::error file=${script}::CI clones '${repo}' but it no longer" \
-                   "appears in the THIRD_PARTY table of ${script}. One of the two" \
-                   "is out of date; they must name the same libraries."
-              exit 1
-            fi
-            echo "ok    ${repo} is still in ${script}"
-          done
+      # --build-only fetches the two entries the CMake tree links and skips
+      # reference/, which is 630MB of GPL and AGPL source we read for design and
+      # never compile. Calling the project's own script rather than cloning by
+      # hand matters: the script verifies each clone against the commit pinned
+      # beside it (ADR-0024), so a moved upstream tag fails here, before
+      # anything is compiled, instead of quietly changing what we built against.
+      - name: Fetch build dependencies, at their pinned commits
+        run: bash adi_daw/tools/fetch_external.sh --build-only
 
       # CC/CXX and the macOS architecture list arrive through the environment
       # rather than interpolated into the command line: 'arm64;x86_64' contains a
@@ -381,13 +345,10 @@ jobs:
       - uses: actions/checkout@v4
 
       # main.cpp is the only one of the three that includes anything external,
-      # and only for its two version strings. Cloning SQLiteCpp for a header path
-      # is cheaper than leaving one of our files outside the gate.
-      - name: Fetch SQLiteCpp headers
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --single-branch -q \
-            "https://github.com/${DEP_SQLITECPP}.git" adi_daw/third_party/SQLiteCpp
+      # and only for its two version strings. Fetching for a header path is
+      # cheaper than leaving one of our files outside the gate.
+      - name: Fetch build dependencies, at their pinned commits
+        run: bash adi_daw/tools/fetch_external.sh --build-only
 
       - name: No warnings in our own code, and a hardened library under it
         env:
@@ -406,3 +367,165 @@ jobs:
           "$CXX" $W -Iadi_daw/third_party/SQLiteCpp/include \
                  -fsyntax-only adi_daw/src/main.cpp
           echo "ok    all three translation units are warning-free at -Werror"
+
+  # ---------------------------------------------------------------------------
+  # What did we actually build against?
+  #
+  # Every ABI result recorded in ADR-0022 was produced against whatever
+  # third_party/ happened to be that day, because the fetch script cloned
+  # default branches -- and nlohmann/json's default branch is `develop`. A green
+  # tick was therefore not reproducible, and a red one next week might have been
+  # nothing we did. ADR-0024 pins both, by tag AND by the commit that tag pointed
+  # at, and fetch_external.sh refuses to proceed when the two disagree.
+  #
+  # This job is where that becomes visible rather than merely true: it prints the
+  # provenance of the build, in one place, on every run. The fetch script is what
+  # enforces the pin; this is what lets a human read it six months from now.
+  # ---------------------------------------------------------------------------
+  provenance:
+    name: 'dependency provenance'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch at the pinned commits
+        run: bash adi_daw/tools/fetch_external.sh --build-only
+
+      - name: Print what this build links, and re-check it against the pins
+        run: |
+          set -euo pipefail
+          script=adi_daw/tools/fetch_external.sh
+          fail=0
+          printf '%-14s %-9s %-42s %-12s %s\n' DIR TAG PINNED FETCHED DATE
+          for dir in SQLiteCpp json; do
+            # The pinned tag and commit, read back out of the script's own table
+            # rather than repeated here. A second copy of these hashes in this
+            # file would be one more thing that can drift.
+            row=$(grep -E "^  \"[^\"]*  *${dir}  " "$script" | head -1)
+            if [ -z "$row" ]; then
+              echo "::error file=${script}::no THIRD_PARTY row found for ${dir}"
+              fail=1; continue
+            fi
+            tag=$(echo "$row" | awk '{print $4}')
+            want=$(echo "$row" | awk '{print $5}')
+            got=$(git -C "adi_daw/third_party/$dir" rev-parse HEAD)
+            date=$(git -C "adi_daw/third_party/$dir" log -1 --format=%cs)
+            printf '%-14s %-9s %-42s %-12s %s\n' "$dir" "$tag" "$want" "${got:0:12}" "$date"
+            if [ "$got" != "$want" ]; then
+              echo "::error file=${script}::${dir} is at ${got}, pinned at ${want}"
+              fail=1
+            fi
+          done
+
+          # The sqlite3 that ends up inside our binary is the amalgamation
+          # vendored in SQLiteCpp, not the host's. Pinning SQLiteCpp to its 3.3.3
+          # tag moved this from 3.53.4 to 3.49.2, because its master branch was
+          # ahead of its own release. That is the pin working as intended, and it
+          # is the kind of thing that should be legible in a build log.
+          ver=$(grep -m1 '#define SQLITE_VERSION  *"' \
+                adi_daw/third_party/SQLiteCpp/sqlite3/sqlite3.c | sed 's/.*"\(.*\)".*/\1/')
+          echo
+          echo "vendored sqlite3 amalgamation: ${ver}"
+          [ -n "$ver" ] || { echo "::error::could not read SQLITE_VERSION"; fail=1; }
+
+          exit "$fail"
+
+  # ---------------------------------------------------------------------------
+  # Fuzz StreamReader.
+  #
+  # It is the only component in the tree that parses bytes it did not write, and
+  # four defects were found in it by hand in the first audit (ADR-0023): an
+  # unchecked index that segfaulted, a 32-bit length overflow, an uncapped
+  # allocation, and a rec_size that tore a field in half. Hand-auditing found
+  # those four; this is what looks for the fifth.
+  #
+  # The property is "no input causes a crash, a hang, or a read outside the
+  # buffer" -- NOT "parses correctly". Almost every random input is invalid and
+  # must be rejected; rejection is a pass. Only a sanitiser report, a timeout, or
+  # one of the harness's self-consistency invariants is a finding.
+  #
+  # Two steps, deliberately: replaying the seed corpus is a fast deterministic
+  # regression test over shapes that have already broken this reader, and would
+  # catch a reintroduction on the first second of the run. The timed campaign
+  # after it is the part that looks for something new.
+  # ---------------------------------------------------------------------------
+  fuzz:
+    name: 'fuzz StreamReader (clang · ASan + UBSan)'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang and its sanitiser runtimes
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang libclang-rt-dev \
+            || sudo apt-get install -y -qq clang
+
+      # -fsanitize=fuzzer fails at LINK time when the runtime archive is absent,
+      # which on Apple's toolchain is a confusing error an hour into a build.
+      # Find out here, in three seconds, with a sentence that says what is wrong.
+      - name: Preflight — is a libFuzzer runtime actually present?
+        run: |
+          set -euo pipefail
+          clang++ --version | head -1
+          cat > /tmp/preflight.cpp <<'EOF'
+          #include <cstddef>
+          #include <cstdint>
+          extern "C" int LLVMFuzzerTestOneInput(const uint8_t*, size_t) { return 0; }
+          EOF
+          if ! clang++ -std=c++20 -fsanitize=fuzzer,address,undefined \
+                 /tmp/preflight.cpp -o /tmp/preflight 2>/tmp/preflight.log; then
+            echo "::error::this clang has no libFuzzer runtime; install the" \
+                 "libclang-rt-*-dev matching $(clang++ --version | head -1)"
+            cat /tmp/preflight.log
+            exit 1
+          fi
+          echo "ok    libFuzzer, ASan and UBSan all link"
+
+      - name: Fetch build dependencies, at their pinned commits
+        run: bash adi_daw/tools/fetch_external.sh --build-only
+
+      - name: Configure and build the fuzz target
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          set -euo pipefail
+          cmake -S adi_daw -B adi_daw/build-fuzz \
+                -DCMAKE_BUILD_TYPE=Debug -DADI_BUILD_FUZZERS=ON
+          cmake --build adi_daw/build-fuzz --target adi_fuzz_blob --parallel
+
+      # Deterministic. Every seed is a shape that has already mattered: the four
+      # findings from the first audit, the boundaries of the rules ADR-0023
+      # introduced, and a valid blob of each record type.
+      # libFuzzer refuses to start when -artifact_prefix names a directory that
+      # does not exist, so this is created before the first run rather than
+      # before the second. It is where a reproducer lands, and a reproducer is
+      # only useful if the run that found it got as far as writing one.
+      - name: Replay the seed corpus
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/fuzz-artifacts
+          ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
+            ./adi_daw/build-fuzz/adi_fuzz_blob adi_daw/build-fuzz/fuzz_corpus \
+              -runs=0 -artifact_prefix=/tmp/fuzz-artifacts/
+
+      - name: Fuzz
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/fuzz-artifacts
+          ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
+            ./adi_daw/build-fuzz/adi_fuzz_blob adi_daw/build-fuzz/fuzz_corpus \
+              -max_total_time=120 -rss_limit_mb=2048 -print_final_stats=1 \
+              -artifact_prefix=/tmp/fuzz-artifacts/
+
+      # A crash is worth more than the log line announcing it: the artifact IS
+      # the reproducer, and it goes straight into the seed corpus once fixed.
+      - name: Keep the reproducer
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-reproducer
+          path: /tmp/fuzz-artifacts/
+          if-no-files-found: ignore
