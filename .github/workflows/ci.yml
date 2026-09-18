@@ -341,3 +341,68 @@ jobs:
           fi
           echo "ok    the big-endian guard fired, with its documented message:"
           grep -m1 -B1 -A1 'byte-swapping accessors' "$log"
+
+  # ---------------------------------------------------------------------------
+  # The flag wall in CMakeLists.txt is advisory: it sets -Wall -Wextra and the
+  # rest, but neither branch sets -Werror or /WX, so a build stays green with any
+  # number of new warnings in src/. Making it fatal there is a policy change to a
+  # file another agent owns, and /WX in particular would break a build I cannot
+  # test. This job applies the gate from outside instead — the project's own flag
+  # set, plus -Werror, over the three translation units we actually wrote.
+  #
+  # Also the only place a hardened standard library runs. -D_GLIBCXX_ASSERTIONS
+  # turns libstdc++'s precondition checks on, which is what would catch a
+  # std::span or std::vector misuse at runtime; every other leg runs the
+  # unhardened library and would sail past one.
+  #
+  # All three legs were run locally before this file was written -- Apple clang
+  # 17.0.0 and GNU 16.2.0, -Werror, both hardening modes -- and all were silent.
+  # ---------------------------------------------------------------------------
+  strict:
+    name: '${{ matrix.name }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 'zero warnings + hardened libstdc++ (gcc)'
+            os: ubuntu-latest
+            cxx: g++
+            harden: '-D_GLIBCXX_ASSERTIONS'
+          - name: 'zero warnings + hardened libstdc++ (clang)'
+            os: ubuntu-latest
+            cxx: clang++
+            harden: '-D_GLIBCXX_ASSERTIONS'
+          - name: 'zero warnings + hardened libc++ (apple clang)'
+            os: macos-latest
+            cxx: clang++
+            harden: '-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG'
+    steps:
+      - uses: actions/checkout@v4
+
+      # main.cpp is the only one of the three that includes anything external,
+      # and only for its two version strings. Cloning SQLiteCpp for a header path
+      # is cheaper than leaving one of our files outside the gate.
+      - name: Fetch SQLiteCpp headers
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --single-branch -q \
+            "https://github.com/${DEP_SQLITECPP}.git" adi_daw/third_party/SQLiteCpp
+
+      - name: No warnings in our own code, and a hardened library under it
+        env:
+          CXX: ${{ matrix.cxx }}
+          HARDEN: ${{ matrix.harden }}
+        run: |
+          set -euo pipefail
+          "$CXX" --version | head -1
+          W="-std=c++20 -Wall -Wextra -Wpedantic -Wcast-align -Wconversion"
+          W="$W -Wsign-conversion -Wno-unused-parameter -Werror -Iadi_daw/src"
+          # blob.cpp and test_main.cpp need nothing but the standard library.
+          "$CXX" $W "$HARDEN" -O1 \
+                 adi_daw/tests/test_main.cpp adi_daw/src/adi/blob.cpp -o adi_tests_strict
+          ./adi_tests_strict
+          # main.cpp only needs to compile; it has no test of its own yet.
+          "$CXX" $W -Iadi_daw/third_party/SQLiteCpp/include \
+                 -fsyntax-only adi_daw/src/main.cpp
+          echo "ok    all three translation units are warning-free at -Werror"
