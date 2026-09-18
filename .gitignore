@@ -23,3 +23,26 @@ finance/.backup-*.sql
 
 # npm deps (wrangler bundles them at deploy time)
 node_modules/
+
+# VST-ADI/vital is its own git repo: a fork of mtytel/vital with an `upstream`
+# remote, so our fork delta stays visible as `git diff main`. Ignore it here so
+# a `git add -A` in this repo can't turn it into a stray gitlink. Our own code
+# under VST-ADI/ (tools/, etc.) is still tracked normally.
+VST-ADI/vital/
+
+# CMake build tree for the headless VST3 validator (JUCE gets compiled in here).
+VST-ADI/tools/validator/build/
+
+# Reason 14 installer + sound banks downloaded into VST-ADI for DAW testing.
+# Multi-GB vendor binaries; never belongs in the repo.
+VST-ADI/Reason_*/
+VST-ADI/Reason_*.zip
+
+# adi_daw external code. Each of these is its own git repo, cloned for building
+# against (third_party) or for reading (reference). Ignored here so a `git add -A`
+# cannot turn one into a stray gitlink -- same arrangement as VST-ADI/vital.
+#
+# reference/ is GPL code we read and NEVER copy from without attribution, and it
+# is never on the include path. See adi_daw/reference/README.md.
+adi_daw/third_party/
+adi_daw/reference/
