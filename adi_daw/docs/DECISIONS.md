@@ -676,3 +676,69 @@ released size, which makes the older-narrower branch of ADR-0008 *unreachable*
 for them — correctly, but therefore untested. `tests/test_main.cpp` carries a
 synthetic two-size record type to keep that branch covered until a real type
 gains a v2, at which point it can go.
+
+## ADR-0024 — `third_party/` is pinned by tag *and* commit; `reference/` deliberately is not — `DECIDED` (2026-09-18)
+
+**Context.** `tools/fetch_external.sh` cloned every dependency with
+`--depth 1 --single-branch`, i.e. whatever the default branch pointed at that
+minute. For `nlohmann/json` the default branch is **`develop`**. So every ABI
+result recorded in ADR-0022 — seven ABIs agreeing on four record sizes — was
+produced against an upstream that can move between two runs of the same commit
+of *our* code. The tick was green; it was not reproducible. The same run next
+week could fail for reasons nobody here caused, and the time to find that out is
+not while diagnosing an unrelated bug.
+
+**Decision.**
+
+1. **Everything in `third_party/` is pinned**, because it is compiled into our
+   binaries and its headers participate in our struct layouts. Each entry carries
+   a release tag **and the commit that tag pointed at when it was pinned**.
+
+2. **The commit is the assertion; the tag is the source.** The fetch checks out
+   *by tag* and then verifies the resulting `HEAD` against the recorded commit.
+   Checking out the commit directly would force the tree to the right bytes and
+   make the check tautological — it would paper over a re-pointed tag instead of
+   reporting it, which is the one thing the check exists for. A tag is a mutable
+   ref; matching its name proves nothing about the bytes.
+
+3. **`reference/` stays unpinned**, and that is a decision rather than an
+   oversight. It is read for design and never compiled. The whole point of having
+   Ardour, Zrythm and Tracktion on disk is to see what they do *now*. Nothing
+   there can reach a build artifact, so nothing there needs to be reproducible.
+
+4. **CI fetches through the script** (`--build-only`) rather than cloning by
+   hand, so the pin is enforced on every run, before anything is compiled. A
+   `provenance` job prints tag, pinned commit, fetched commit and date on every
+   run, so "what did this build link against" is answerable by reading a log
+   rather than by archaeology.
+
+**The policy for moving a pin, which is the part that matters.**
+
+A pin that is bumped reflexively is not a pin. Moving one is a reviewed change
+with its own commit, and:
+
+- **It is never a fix for a red build.** If `fetch_external.sh` reports a
+  mismatch, the correct first response is to find out *why upstream's tag moved*.
+  Re-pointing a release tag is a supply-chain event. Copying the new hash into
+  the table to make CI green again destroys the only evidence that it happened.
+  The script says so in its own failure message, because that is where someone
+  will be standing when they are tempted.
+- **Bump for a reason, and name it** in the commit message: a fix we need, a
+  security advisory, a platform we are adding. "Newer" is not a reason.
+- **One dependency per commit**, so a bisect over a regression lands on a single
+  upstream change.
+- **The full CI matrix must pass on the new pin before it merges** — all seven
+  ABIs, not just the platform of whoever bumped it. A dependency that changes a
+  struct layout will show up on exactly one of them, which is the reason ADR-0022
+  shaped the matrix by ABI in the first place.
+- **Record what moved.** Tag, old commit, new commit, and why, in the agent log.
+
+**What this cost, visibly.** Pinning SQLiteCpp to its `3.3.3` tag moved the
+vendored sqlite3 amalgamation from **3.53.4 to 3.49.2**, because its `master`
+branch was ahead of its own most recent release. That is the trade working as
+intended: we now build against a version someone released, rather than against a
+branch tip that happened to be current. The `provenance` job prints that number
+on every run so the cost stays visible instead of becoming folklore.
+
+**Supersedes nothing.** ADR-0017 set out what the two external directories are
+for; this decides how each is fetched, and does not change that boundary.
