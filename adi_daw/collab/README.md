@@ -40,7 +40,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | Path | Agent | Branch | Since |
 |---|---|---|---|
 | `src/**`, `tests/**`, `CMakeLists.txt` | win | `win/step4-store-layer` | 2026-09-18 |
-| `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp` | mac | `mac/pin-deps-and-fuzz` | 2026-09-18 |
+| `src/adi/textproj.*`, `tests/test_textproj.cpp`, `docs/format/TEXT-PROJECTION.md`, `.github/**` | mac | `mac/text-projection` | 2026-09-18 |
 
 ## Before you start work, every time
 
