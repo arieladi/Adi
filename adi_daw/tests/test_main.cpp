@@ -10,6 +10,29 @@
 #include <span>
 #include <vector>
 
+
+// A synthetic record type with TWO released sizes. Every real type has exactly
+// one so far, which makes ADR-0008's "older, narrower writer" branch unreachable
+// for them -- correct, but untested. This keeps it covered until a real type
+// gains a v2, at which point this can go.
+#pragma pack(push, 1)
+struct FakeV2Record {
+    std::int64_t a;   // 0
+    std::int64_t b;   // 8
+    std::uint64_t c;  // 16
+    std::uint64_t d;  // 24
+    std::uint64_t e;  // 32   <- absent in the 40-byte v1
+    std::uint64_t f;  // 40   <- absent in the 40-byte v1
+};
+#pragma pack(pop)
+static_assert(sizeof(FakeV2Record) == 48);
+
+namespace adi {
+template <> struct StreamTraits<FakeV2Record> {
+    static constexpr std::size_t released[] = {40, 48};
+};
+}  // namespace adi
+
 namespace {
 
 int g_failures = 0;
@@ -94,8 +117,9 @@ void testRoundTrip() {
     check(!r.hasUnknownTail(), "no unknown tail for a same-version blob");
 
     const auto out = r.all();
-    check(out.size() == in.size(), "record count matches");
-    check(std::memcmp(in.data(), out.data(), in.size() * sizeof(NoteRecord)) == 0,
+    check(out.has_value(), "all() succeeds within the cap");
+    check(out->size() == in.size(), "record count matches");
+    check(std::memcmp(in.data(), out->data(), in.size() * sizeof(NoteRecord)) == 0,
           "1000 notes round-trip byte-identically");
 }
 
@@ -131,12 +155,12 @@ void testStriding() {
     check(rf.recSize() == kFutureRec, "stride comes from the header, not sizeof");
     check(rf.hasUnknownTail(), "unknown tail is detected so callers preserve bytes");
     check(rf.count() == 3, "count correct with a wider stride");
-    check(rf[1].note_id == 101 && rf[1].key == 61,
+    check(rf.at(1)->note_id == 101 && rf.at(1)->key == 61,
           "fields read correctly despite the unknown tail");
-    check(rf[2].start_ticks == 3000, "third record found at the right stride");
+    check(rf.at(2)->start_ticks == 3000, "third record found at the right stride");
 
     // An OLDER writer: narrower records. Absent fields take zero defaults.
-    constexpr std::uint16_t kOldRec = 32;  // no tuning_cents, no reserved
+    constexpr std::uint16_t kOldRec = 40;  // a released size; see StreamTraits
     std::vector<std::byte> old(16 + 2 * kOldRec, std::byte{0});
     StreamHeader ho{};
     ho.fourcc = static_cast<std::uint32_t>(FourCC::Notes);
@@ -154,8 +178,8 @@ void testStriding() {
     StreamReader<NoteRecord> ro(old, FourCC::Notes);
     check(ro.ok(), "older, narrower records are readable");
     check(!ro.hasUnknownTail(), "a narrower blob has no unknown tail");
-    check(ro[1].key == 41, "known fields read from a narrow record");
-    check(ro[1].tuning_cents == 0.0f, "absent field takes its zero default");
+    check(ro.at(1)->key == 41, "known fields read from a narrow record");
+    check(ro.at(1)->tuning_cents == 0.0f, "absent field takes its zero default");
 }
 
 // --- malformed input ---------------------------------------------------------
@@ -195,7 +219,7 @@ void testOtherStreams() {
     const auto ab = writeStream<AutomationPoint>(FourCC::Automation, ap);
     StreamReader<AutomationPoint> ar(ab, FourCC::Automation);
     check(ar.ok() && ar.count() == 50, "automation stream round-trips");
-    check(ar[49].value == 1.0, "f64 value survives exactly at the endpoint");
+    check(ar.at(49)->value == 1.0, "f64 value survives exactly at the endpoint");
     check(ar.recSize() == 32, "automation rec_size is 32");
 
     std::vector<ExpressionPoint> ep(200);
@@ -209,6 +233,111 @@ void testOtherStreams() {
     check(er.recSize() == 24, "expression rec_size is 24");
 }
 
+
+// --- hardening: every accessor is total -------------------------------------
+// Each check here is a bug that mac found in the first cut of this reader, and
+// each one is a file a user could be handed: truncated by a full volume, cut
+// short by a failed sync, or written by someone hostile.
+void testHardening() {
+    section("hardening");
+
+    // 1. at() on a FAILED reader. The old operator[] memcpy'd from a null
+    //    span -- reproduced as a segfault, exit 139.
+    const std::vector<NoteRecord> one(1);
+    const auto good = writeStream<NoteRecord>(FourCC::Notes, one);
+    StreamReader<NoteRecord> wrongKind(good, FourCC::Automation);
+    check(!wrongKind.ok(), "wrong fourcc still fails");
+    check(!wrongKind.at(0).has_value(), "at() on a failed reader returns nullopt, not a segfault");
+    check(wrongKind.count() == 0, "count() on a failed reader is 0");
+    check(!wrongKind.all().has_value(), "all() on a failed reader returns nullopt");
+
+    // 2. at() out of range. Previously read ~40MB past a 96-byte buffer and
+    //    returned the garbage silently.
+    StreamReader<NoteRecord> r(good, FourCC::Notes);
+    check(r.ok() && r.count() == 1, "one-record blob reads back");
+    check(r.at(0).has_value(), "index 0 is in range");
+    check(!r.at(1).has_value(), "index == count is out of range");
+    check(!r.at(1000000).has_value(), "far out-of-range index returns nullopt");
+    check(!r.at(0xFFFFFFFFu).has_value(), "UINT32_MAX index returns nullopt");
+
+    // 3. The 32-bit size_t overflow. count*rec_size == 2^32 wrapped to 0 in
+    //    size_t arithmetic, so `need` became 16 and a header-only blob passed
+    //    while count() reported 131072. Now computed in u64, so this is
+    //    rejected on every ABI -- Truncated on LP64/LLP64, and on ILP32 either
+    //    Truncated or TooLarge. What matters is that it is never Ok.
+    {
+        std::vector<std::byte> hdrOnly(16, std::byte{0});
+        StreamHeader h{};
+        h.fourcc = static_cast<std::uint32_t>(FourCC::Notes);
+        h.version = 1;
+        h.rec_size = 32768;
+        h.count = 131072;  // 131072 * 32768 == 2^32
+        std::memcpy(hdrOnly.data(), &h, sizeof h);
+        StreamReader<NoteRecord> ovf(hdrOnly, FourCC::Notes);
+        check(!ovf.ok(), "count*rec_size == 2^32 on a 16-byte blob is rejected");
+        check(ovf.error() == StreamError::Truncated || ovf.error() == StreamError::TooLarge,
+              "the overflow fixture fails for a length reason, not by chance");
+        check(ovf.count() == 0, "a rejected blob reports no records");
+    }
+
+    // 4. A rec_size that lands mid-field. 29 copies one byte of the 2-byte
+    //    flags at offset 28 and leaves the other zero, so flags was silently
+    //    0x00EF where the writer wrote 0xBEEF, with error() == Ok. ADR-0008
+    //    promises absent fields take a zero default; half a field is neither.
+    {
+        constexpr std::uint16_t kTorn = 29;
+        std::vector<std::byte> torn(16 + kTorn, std::byte{0});
+        StreamHeader h{};
+        h.fourcc = static_cast<std::uint32_t>(FourCC::Notes);
+        h.version = 1;
+        h.rec_size = kTorn;
+        h.count = 1;
+        std::memcpy(torn.data(), &h, sizeof h);
+        StreamReader<NoteRecord> t(torn, FourCC::Notes);
+        check(t.error() == StreamError::RecSizeUnknown,
+              "a rec_size matching no released version is rejected, not torn");
+        check(!t.at(0).has_value(), "a torn record is not readable");
+    }
+
+    // 5. all() amplification cap. rec_size may be far smaller than sizeof(Rec),
+    //    so a modest blob can ask for a very large vector.
+    {
+        std::vector<NoteRecord> many(1000);
+        const auto blob = writeStream<NoteRecord>(FourCC::Notes, many);
+        StreamReader<NoteRecord> rr(blob, FourCC::Notes);
+        check(rr.all(1000).has_value(), "all() succeeds at exactly the cap");
+        check(!rr.all(999).has_value(), "all() refuses above the cap rather than allocating");
+        check(rr.at(999).has_value(), "at() still reaches every record when all() refuses");
+    }
+}
+
+// --- ADR-0008: an older, narrower released version --------------------------
+void testNarrowerReleasedVersion() {
+    section("ADR-0008 older writer");
+    constexpr std::uint16_t kV1 = 40;  // a released size for FakeV2Record
+    std::vector<std::byte> blob(16 + 2 * kV1, std::byte{0});
+    StreamHeader h{};
+    h.fourcc = static_cast<std::uint32_t>(FourCC::Notes);
+    h.version = 1;
+    h.rec_size = kV1;
+    h.count = 2;
+    std::memcpy(blob.data(), &h, sizeof h);
+    for (int i = 0; i < 2; ++i) {
+        FakeV2Record v{};
+        v.a = 100 * (i + 1);
+        v.d = 7;
+        v.e = 0xDEAD;  // at offset 32: the LAST field of the 40-byte version
+        v.f = 0xBEEF;  // at offset 40: beyond it, so it must NOT survive
+        std::memcpy(blob.data() + 16 + static_cast<std::size_t>(i) * kV1, &v, kV1);
+    }
+    StreamReader<FakeV2Record> rd(blob, FourCC::Notes);
+    check(rd.ok(), "a narrower RELEASED rec_size is accepted");
+    check(rd.at(1)->a == 200, "fields inside the older record read correctly");
+    check(rd.at(1)->d == 7, "last field of the older record reads correctly");
+    check(rd.at(1)->e == 0xDEAD, "the last field inside the older record survives");
+    check(rd.at(1)->f == 0, "a field the older version lacked takes its zero default");
+}
+
 }  // namespace
 
 int main() {
@@ -218,6 +347,8 @@ int main() {
     testStriding();
     testErrors();
     testOtherStreams();
+    testHardening();
+    testNarrowerReleasedVersion();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;
