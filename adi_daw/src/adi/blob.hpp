@@ -23,6 +23,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -201,60 +203,132 @@ std::vector<std::byte> writeStream(FourCC cc, std::span<const Rec> records,
 // ---------------------------------------------------------------------------
 
 enum class StreamError {
-    Ok, TooShort, BadFourCC, ZeroRecSize, Truncated,
+    Ok,
+    TooShort,           // fewer than 16 bytes: no header
+    BadFourCC,          // not the stream kind the caller asked for
+    ZeroRecSize,        // header declares rec_size 0
+    Truncated,          // blob shorter than header + count * rec_size
+    RecSizeUnknown,     // rec_size is narrower than ours and matches no released
+                        // version, so it would land mid-field -- see below
+    TooLarge,           // count * rec_size does not fit the address space
 };
 
 /// Human-readable form, for CLI output and test failures.
 const char* toString(StreamError e);
 
+/// The record sizes each released version of a stream has ever used.
+///
+/// ADR-0008 says a reader strides by the header's rec_size and that absent
+/// fields take their zero default. It did not say what happens when rec_size
+/// lands *inside* a field -- rec_size 29 on a 40-byte note copies one byte of
+/// the 2-byte `flags` and leaves the other zero, so `flags` is neither present
+/// nor absent, it is torn, and nothing reports it.
+///
+/// The fix is that rec_size is not a free integer. It is the size of some
+/// writer's record, so it must be a size that some writer actually emitted:
+///
+///   * equal to a released size for this type  -> accepted, older version
+///   * larger than ours                        -> accepted, newer version,
+///                                                tail skipped (ADR-0008)
+///   * anything else                           -> RecSizeUnknown, rejected
+///
+/// Adding a field means appending the new size here in the same commit.
+template <typename Rec>
+struct StreamTraits;
+
+template <> struct StreamTraits<NoteRecord> {
+    static constexpr std::size_t released[] = {40};
+};
+template <> struct StreamTraits<AutomationPoint> {
+    static constexpr std::size_t released[] = {32};
+};
+template <> struct StreamTraits<ExpressionPoint> {
+    static constexpr std::size_t released[] = {24};
+};
+
 /// Walks a stream by the header's rec_size, never by sizeof(Rec).
 ///
 /// A record wider than this build knows is a NEWER version's: the extra tail
 /// bytes are skipped on read and the blob must be preserved byte-for-byte on
-/// save. A record narrower is an OLDER version's: missing fields take their
-/// documented defaults (zero). Both cases are normal, not errors — that is the
+/// save. A narrower one is an OLDER released version's: its absent fields take
+/// their documented zero defaults. Both are normal, not errors -- that is the
 /// whole point of ADR-0008.
+///
+/// Every accessor is total. There is no unchecked indexing operator, because a
+/// reader parses whatever is on disk, including a file that was truncated by a
+/// full volume or handed over by someone hostile, and an accessor that trusts
+/// its own header is a segfault waiting for that file.
 template <typename Rec>
 class StreamReader {
 public:
+    /// Records `all()` will materialise before refusing. A blob passes the
+    /// length check on its own bytes, but decoding amplifies: rec_size may be
+    /// far smaller than sizeof(Rec), so a modest blob can ask for a very large
+    /// vector. Callers wanting more should loop over at().
+    static constexpr std::uint32_t kMaxRecordsAtOnce = 1u << 23;  // 8.4M
+
     StreamReader(std::span<const std::byte> blob, FourCC expected) {
         if (blob.size() < sizeof(StreamHeader)) { err_ = StreamError::TooShort; return; }
         std::memcpy(&h_, blob.data(), sizeof h_);
-        if (h_.fourcc != static_cast<std::uint32_t>(expected)) { err_ = StreamError::BadFourCC; return; }
+
+        if (h_.fourcc != static_cast<std::uint32_t>(expected)) {
+            err_ = StreamError::BadFourCC; return;
+        }
         if (h_.rec_size == 0) { err_ = StreamError::ZeroRecSize; return; }
 
-        const std::size_t need = sizeof(StreamHeader)
-                               + static_cast<std::size_t>(h_.count) * h_.rec_size;
-        if (blob.size() < need) { err_ = StreamError::Truncated; return; }
+        if (h_.rec_size < sizeof(Rec)) {
+            bool released = false;
+            for (std::size_t sz : StreamTraits<Rec>::released)
+                if (sz == h_.rec_size) { released = true; break; }
+            if (!released) { err_ = StreamError::RecSizeUnknown; return; }
+        }
 
-        body_ = blob.subspan(sizeof(StreamHeader),
-                             static_cast<std::size_t>(h_.count) * h_.rec_size);
+        // 64-bit throughout, then one checked narrowing. Computing this in
+        // size_t wraps on a 32-bit host: count 131072 * rec_size 32768 is 2^32,
+        // which becomes 0, so `need` is 16 and a header-only blob passes while
+        // count() still reports 131072. CI's ILP32 leg cannot catch that on its
+        // own -- only a test that exercises it can.
+        const std::uint64_t body = std::uint64_t(h_.count) * std::uint64_t(h_.rec_size);
+        const std::uint64_t need = std::uint64_t(sizeof(StreamHeader)) + body;
+        if (need > std::uint64_t((std::numeric_limits<std::size_t>::max)())) {
+            err_ = StreamError::TooLarge; return;
+        }
+        if (std::uint64_t(blob.size()) < need) { err_ = StreamError::Truncated; return; }
+
+        body_ = blob.subspan(sizeof(StreamHeader), static_cast<std::size_t>(body));
         err_  = StreamError::Ok;
     }
 
-    [[nodiscard]] StreamError error()   const { return err_; }
-    [[nodiscard]] bool        ok()      const { return err_ == StreamError::Ok; }
-    [[nodiscard]] std::uint32_t count() const { return ok() ? h_.count : 0u; }
-    [[nodiscard]] std::uint16_t recSize() const { return h_.rec_size; }
-    [[nodiscard]] std::uint16_t version() const { return h_.version; }
+    [[nodiscard]] StreamError   error()   const { return err_; }
+    [[nodiscard]] bool          ok()      const { return err_ == StreamError::Ok; }
+    [[nodiscard]] std::uint32_t count()   const { return ok() ? h_.count : 0u; }
+    [[nodiscard]] std::uint16_t recSize() const { return ok() ? h_.rec_size : 0u; }
+    [[nodiscard]] std::uint16_t version() const { return ok() ? h_.version : 0u; }
     [[nodiscard]] const StreamHeader& header() const { return h_; }
 
-    /// True when the blob was written by a build that knows more fields than we
-    /// do. Callers that re-save MUST round-trip the original bytes rather than
-    /// re-encoding from Rec, or the unknown tail is silently dropped.
+    /// True when the blob came from a build that knows more fields than we do.
+    /// Callers that re-save MUST round-trip the original bytes rather than
+    /// re-encode from Rec, or the unknown tail is silently dropped.
     [[nodiscard]] bool hasUnknownTail() const { return ok() && h_.rec_size > sizeof(Rec); }
 
-    [[nodiscard]] Rec operator[](std::uint32_t i) const {
-        Rec r{};                                    // older/narrower -> zero defaults
-        const std::size_t n = std::min<std::size_t>(h_.rec_size, sizeof(Rec));
-        std::memcpy(&r, body_.data() + static_cast<std::size_t>(i) * h_.rec_size, n);
-        return r;                                   // newer/wider  -> tail skipped
+    /// Record `i`, or nullopt if this reader failed or `i` is out of range.
+    /// Total by construction: on a failed reader body_ is an empty span, and
+    /// dereferencing its null data() is what made the old operator[] a segfault.
+    [[nodiscard]] std::optional<Rec> at(std::uint32_t i) const {
+        if (!ok() || i >= h_.count) return std::nullopt;
+        Rec r{};                                      // older/narrower -> zero defaults
+        const std::size_t n = (std::min)(std::size_t(h_.rec_size), sizeof(Rec));
+        std::memcpy(&r, body_.data() + std::size_t(i) * h_.rec_size, n);
+        return r;                                     // newer/wider  -> tail skipped
     }
 
-    [[nodiscard]] std::vector<Rec> all() const {
+    /// All records, or nullopt if this reader failed or count() exceeds `cap`.
+    [[nodiscard]] std::optional<std::vector<Rec>> all(
+        std::uint32_t cap = kMaxRecordsAtOnce) const {
+        if (!ok() || h_.count > cap) return std::nullopt;
         std::vector<Rec> v;
-        v.reserve(count());
-        for (std::uint32_t i = 0; i < count(); ++i) v.push_back((*this)[i]);
+        v.reserve(h_.count);
+        for (std::uint32_t i = 0; i < h_.count; ++i) v.push_back(*at(i));
         return v;
     }
 

@@ -16,6 +16,11 @@ const char* toString(StreamError e) {
         case StreamError::BadFourCC:   return "fourcc does not match the expected stream kind";
         case StreamError::ZeroRecSize: return "header declares rec_size 0";
         case StreamError::Truncated:   return "blob shorter than header count * rec_size";
+        case StreamError::RecSizeUnknown:
+            return "rec_size is narrower than ours and matches no released version, "
+                   "so it would land mid-field";
+        case StreamError::TooLarge:
+            return "count * rec_size does not fit this platform's address space";
     }
     return "unknown";
 }

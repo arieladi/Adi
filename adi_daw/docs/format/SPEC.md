@@ -270,7 +270,13 @@ are IEEE 754.
 
 > **This is the forward-compatibility mechanism for binary data, and it is
 > mandatory.** A reader **MUST** stride by `rec_size` from the header, never by
-> `sizeof(its own struct)`. If `rec_size` is larger than the reader knows, the
+> `sizeof(its own struct)`.
+>
+> `rec_size` **MUST** be either a size that some released version of this record
+> type used, or greater than the reader's own record size. Any other value is
+> rejected: it would land inside a field and tear it, yielding a value that is
+> neither the writer's nor the documented zero default, with no error raised.
+> See ADR-0023. If `rec_size` is larger than the reader knows, the
 > extra tail bytes are a newer version's fields: skip them and preserve the blob
 > byte-for-byte on save. If smaller, the missing fields take their documented
 > defaults. This lets us add a field to every note in the world without a schema
