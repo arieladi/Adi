@@ -223,8 +223,20 @@ itself is not** — `VST-ADI/vital` has only an `upstream` remote, so there is
 nowhere for either agent to push. Resolving that is a prerequisite for any
 macOS work on the fork and is the open question at the end of this entry.
 
-**Open:** where `VST-ADI/vital` gets an `origin`. Vendoring it into the monorepo
-is rejected on size (~180 MB, mostly prebuilt Firebase binaries). A submodule
-pins cleanly but makes two agents fight detached HEADs. A separate private repo
-on the `arieladi` account is the working proposal; private also sidesteps both
-GPLv3 distribution obligations and upstream's naming restrictions.
+**Open:** where `VST-ADI/vital` gets an `origin`. Three candidates:
+
+- **A separate private repo** on the `arieladi` account — preserves the
+  `upstream` remote and therefore `git diff upstream/main`, keeps the monorepo
+  clean, and private sidesteps both GPLv3 distribution obligations and
+  upstream's naming restrictions. Working proposal.
+- **A submodule of `Adi`** — pins cleanly, but two agents plus a submodule means
+  detached HEADs and an extra pin-bump commit on every change.
+- **Vendoring into the monorepo** — simplest sync, but loses `git diff
+  upstream/main`, which is currently the only thing that tells us what we have
+  actually forked.
+
+Note on size: the working tree is ~180 MB but the **packed repo is 31.5 MiB**
+(shallow fetch, and the Firebase binaries compress well). An earlier draft of
+this ADR rejected vendoring on size; that reasoning was wrong. Vendoring is
+rejected on the loss of upstream tracking, which is the argument that actually
+holds.
