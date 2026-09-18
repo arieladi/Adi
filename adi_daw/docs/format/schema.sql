@@ -570,9 +570,14 @@ CREATE TABLE op_branches (
     name         TEXT    NOT NULL DEFAULT '',
     head_seq     INTEGER REFERENCES ops(seq),
     created_utc  INTEGER NOT NULL,
-    is_current   INTEGER NOT NULL DEFAULT 0,
+    is_current   INTEGER NOT NULL DEFAULT 0 CHECK (is_current IN (0,1)),
     created_by   TEXT    NOT NULL DEFAULT 'user'
 );
+-- Exactly one branch is current. A partial index rather than a convention,
+-- because "the current branch" with two claimants is a corrupt undo tree and
+-- the failure would surface much later, as the wrong history (ADR-0026).
+CREATE UNIQUE INDEX idx_branch_current ON op_branches(is_current)
+    WHERE is_current = 1;
 
 -- ============================================================================
 --  LAYER 3 — SESSION: UI, windows, controllers, snapshots
