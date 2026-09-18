@@ -40,7 +40,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | Path | Agent | Branch | Since |
 |---|---|---|---|
 | `src/**`, `tests/**`, `CMakeLists.txt` | win | `win/step4-store-layer` | 2026-09-18 |
-| `.github/**` | mac | `mac/portability-ci` | 2026-09-18 |
+| `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp` | mac | `mac/pin-deps-and-fuzz` | 2026-09-18 |
 
 ## Before you start work, every time
 
@@ -52,11 +52,17 @@ cat adi_daw/collab/<other-agent>.md   # what they did since you last looked
 
 ## Building
 
-The two dependencies are gitignored clones, not submodules. Fetch them first:
+The dependencies are gitignored clones, not submodules. Fetch them first:
 
 ```bash
-bash adi_daw/tools/fetch_external.sh
+bash adi_daw/tools/fetch_external.sh --build-only
 ```
+
+`--build-only` fetches the two entries the CMake tree actually links. Plain
+`fetch_external.sh` fetches all nine repositories — about 630MB, five of which
+are `reference/` source we read for design and never compile. Everything in
+`third_party/` is pinned by tag and verified against a recorded commit
+(ADR-0024); the fetch fails rather than proceeding if upstream has moved a tag.
 
 Then configure and build. On macOS/Linux:
 
