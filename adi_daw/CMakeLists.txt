@@ -102,3 +102,65 @@ enable_testing()
 add_executable(adi_tests tests/test_main.cpp)
 target_link_libraries(adi_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_tests COMMAND adi_tests)
+
+# ---------------------------------------------------------------------------
+# Fuzzing — optional, clang-only, OFF by default.
+#
+# StreamReader is the only thing in the tree that parses bytes it did not write,
+# so it is the only thing that can be handed a hostile file. Four defects were
+# found in it by hand (ADR-0023); this target exists to find the fifth.
+#
+# Off by default and gated on clang so that the MSVC build, and any default
+# build anywhere, is completely unaffected by its existence.
+#
+#   cmake -S adi_daw -B build -DADI_BUILD_FUZZERS=ON
+#   python3 adi_daw/tests/fuzz_seeds.py build/fuzz_corpus
+#   ./build/adi_fuzz_blob build/fuzz_corpus -max_total_time=300
+#
+# blob.cpp is compiled INTO this target rather than linked from adi_core: a
+# sanitised binary linking unsanitised objects still runs, but the uninstrumented
+# half is invisible to the fuzzer, which is the half being tested. It also keeps
+# SQLite out of a target that has no use for it.
+# ---------------------------------------------------------------------------
+option(ADI_BUILD_FUZZERS "Build libFuzzer targets (clang only)" OFF)
+
+if(ADI_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "ADI_BUILD_FUZZERS needs clang; this compiler is "
+            "${CMAKE_CXX_COMPILER_ID}. Configure a separate build directory "
+            "with CXX=clang++, or leave the option off.")
+    endif()
+
+    # Apple's clang is a Clang, but Apple ship it without the libFuzzer runtime:
+    # the failure is a link error naming libclang_rt.fuzzer_osx.a, an hour after
+    # you would rather have been told. Say so at configure time instead.
+    if(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+        message(FATAL_ERROR
+            "Apple clang does not ship a libFuzzer runtime "
+            "(libclang_rt.fuzzer_osx.a is absent from the Xcode toolchain).\n"
+            "Use Homebrew LLVM, which does:\n"
+            "    brew install llvm lld\n"
+            "    cmake -S adi_daw -B build-fuzz -DADI_BUILD_FUZZERS=ON \\\n"
+            "      -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \\\n"
+            "      -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang\n"
+            "Homebrew LLVM emits objects Apple's ld rejects "
+            "('invalid r_symbolnum'), so lld is not optional there.")
+    endif()
+
+    set(ADI_FUZZ_FLAGS -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+
+    add_executable(adi_fuzz_blob tests/fuzz_blob.cpp src/adi/blob.cpp)
+    target_include_directories(adi_fuzz_blob PRIVATE src)
+    target_link_libraries(adi_fuzz_blob PRIVATE adi_warnings)
+    target_compile_options(adi_fuzz_blob PRIVATE ${ADI_FUZZ_FLAGS})
+    target_link_options(adi_fuzz_blob PRIVATE ${ADI_FUZZ_FLAGS})
+
+    # Regenerated on every build: the seeds are the shapes of defects we have
+    # already seen, and a stale corpus is a fuzzer told to stop looking there.
+    add_custom_command(TARGET adi_fuzz_blob POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E echo "generating fuzz seed corpus"
+        COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz_seeds.py"
+                "$<TARGET_FILE_DIR:adi_fuzz_blob>/fuzz_corpus"
+        VERBATIM)
+endif()

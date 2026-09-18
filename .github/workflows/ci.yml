@@ -429,3 +429,98 @@ jobs:
           [ -n "$ver" ] || { echo "::error::could not read SQLITE_VERSION"; fail=1; }
 
           exit "$fail"
+
+  # ---------------------------------------------------------------------------
+  # Fuzz StreamReader.
+  #
+  # It is the only component in the tree that parses bytes it did not write, and
+  # four defects were found in it by hand in the first audit (ADR-0023): an
+  # unchecked index that segfaulted, a 32-bit length overflow, an uncapped
+  # allocation, and a rec_size that tore a field in half. Hand-auditing found
+  # those four; this is what looks for the fifth.
+  #
+  # The property is "no input causes a crash, a hang, or a read outside the
+  # buffer" -- NOT "parses correctly". Almost every random input is invalid and
+  # must be rejected; rejection is a pass. Only a sanitiser report, a timeout, or
+  # one of the harness's self-consistency invariants is a finding.
+  #
+  # Two steps, deliberately: replaying the seed corpus is a fast deterministic
+  # regression test over shapes that have already broken this reader, and would
+  # catch a reintroduction on the first second of the run. The timed campaign
+  # after it is the part that looks for something new.
+  # ---------------------------------------------------------------------------
+  fuzz:
+    name: 'fuzz StreamReader (clang · ASan + UBSan)'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang and its sanitiser runtimes
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang libclang-rt-dev \
+            || sudo apt-get install -y -qq clang
+
+      # -fsanitize=fuzzer fails at LINK time when the runtime archive is absent,
+      # which on Apple's toolchain is a confusing error an hour into a build.
+      # Find out here, in three seconds, with a sentence that says what is wrong.
+      - name: Preflight — is a libFuzzer runtime actually present?
+        run: |
+          set -euo pipefail
+          clang++ --version | head -1
+          cat > /tmp/preflight.cpp <<'EOF'
+          #include <cstddef>
+          #include <cstdint>
+          extern "C" int LLVMFuzzerTestOneInput(const uint8_t*, size_t) { return 0; }
+          EOF
+          if ! clang++ -std=c++20 -fsanitize=fuzzer,address,undefined \
+                 /tmp/preflight.cpp -o /tmp/preflight 2>/tmp/preflight.log; then
+            echo "::error::this clang has no libFuzzer runtime; install the" \
+                 "libclang-rt-*-dev matching $(clang++ --version | head -1)"
+            cat /tmp/preflight.log
+            exit 1
+          fi
+          echo "ok    libFuzzer, ASan and UBSan all link"
+
+      - name: Fetch build dependencies, at their pinned commits
+        run: bash adi_daw/tools/fetch_external.sh --build-only
+
+      - name: Configure and build the fuzz target
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          set -euo pipefail
+          cmake -S adi_daw -B adi_daw/build-fuzz \
+                -DCMAKE_BUILD_TYPE=Debug -DADI_BUILD_FUZZERS=ON
+          cmake --build adi_daw/build-fuzz --target adi_fuzz_blob --parallel
+
+      # Deterministic. Every seed is a shape that has already mattered: the four
+      # findings from the first audit, the boundaries of the rules ADR-0023
+      # introduced, and a valid blob of each record type.
+      - name: Replay the seed corpus
+        run: |
+          set -euo pipefail
+          ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
+            ./adi_daw/build-fuzz/adi_fuzz_blob adi_daw/build-fuzz/fuzz_corpus \
+              -runs=0 -artifact_prefix=/tmp/fuzz-artifacts/
+
+      - name: Fuzz
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/fuzz-artifacts
+          ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
+            ./adi_daw/build-fuzz/adi_fuzz_blob adi_daw/build-fuzz/fuzz_corpus \
+              -max_total_time=120 -rss_limit_mb=2048 -print_final_stats=1 \
+              -artifact_prefix=/tmp/fuzz-artifacts/
+
+      # A crash is worth more than the log line announcing it: the artifact IS
+      # the reproducer, and it goes straight into the seed corpus once fixed.
+      - name: Keep the reproducer
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-reproducer
+          path: /tmp/fuzz-artifacts/
+          if-no-files-found: ignore

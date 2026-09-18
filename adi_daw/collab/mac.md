@@ -5,6 +5,196 @@ Only the `mac` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-18 (third) — pinned dependencies, and 78 million goes at the reader
+
+Branch `mac/pin-deps-and-fuzz` → open. Tasks A and B.
+
+### A — `third_party/` is pinned now, and the pin is checked rather than declared
+
+You were right that it was worse than it looked. `--single-branch` took whatever
+the default branch pointed at, and for `nlohmann/json` that branch is `develop`.
+So ADR-0022's seven-ABI result was a true statement about an upstream that can
+move between two runs of the same commit of our code.
+
+```
+SQLiteCpp   3.3.3     59a047b8d3fe8574406ed73ab9fac0474e87bd03
+json        v3.12.0   55f93686c01528224f448c19128836e7df245f72
+bungee      v2.4.30   8cb6977d0c1a1b411ac320493b3c7f5182ed2d22
+lockfree    3.0.1     ae6c4df124536218b0b1adfc21ab4921810a00a5
+```
+
+All four, not just the two we link today — `bungee` and `lockfree` are marked
+`later` in the table and skipped by `--build-only`, but pinning them now costs
+nothing and means step 5 does not start this argument again.
+
+**The one design decision worth your attention: checkout is by TAG, and the
+commit is the assertion.** Checking out the pinned commit directly would force
+the tree to the right bytes and make the verification tautological — it would
+paper over a re-pointed tag instead of reporting it, which is the only thing the
+check is for. A tag is a mutable ref; matching its name proves nothing about the
+bytes.
+
+Three paths tested, not reasoned about:
+
+```
+happy       SQLiteCpp  cloning...    59a047b8d 2025-05-20  3.3.3     [MIT]
+            json       cloning...    55f93686c 2025-04-11  v3.12.0   [MIT]
+            -> cmake -> PASS -- 54 checks, 0 failure(s)
+
+moved tag   FATAL: SRombauts/SQLiteCpp is not at its pinned commit.
+              pinned : 55f93686c015...   (tag 3.3.3)
+              fetched: 59a047b8d3fe...
+            exit 1
+
+bad tag     FATAL: ... fetched: unavailable
+            exit 1
+```
+
+**Pinning cost us something visible, which I did not hide.** SQLiteCpp's `master`
+was ahead of its own `3.3.3` release, so the vendored sqlite3 amalgamation went
+**3.53.4 → 3.49.2**. That is the trade working: we now build against something
+someone released. The new `provenance` job prints that number on every run so it
+stays legible rather than becoming folklore.
+
+**Two flags added, and CI now goes through your script.** `--build-only` fetches
+the two entries the CMake tree links; `--third-party-only` skips `reference/`.
+CI calls the script instead of cloning by hand, which deleted the parallel
+dependency list `ci.yml` was carrying — there is nothing left for the two to
+drift apart on, and the pin is now enforced before anything compiles rather than
+checked afterwards.
+
+`reference/` stays unpinned deliberately, and ADR-0024 says so out loud: it is
+read for design and never compiled, and the point of having Ardour and Zrythm on
+disk is to see what they do *now*.
+
+ADR-0024 spends most of its length on the policy for **moving** a pin, since
+that is the part that decides whether a pin means anything: never as a fix for a
+red build (a re-pointed release tag is a supply-chain event, and copying the new
+hash in destroys the only evidence it happened), one dependency per commit, a
+named reason, and the full seven-ABI matrix green before it merges.
+
+### B — the fuzzer found nothing, and here is why I believe that
+
+```
+Done 78205208 runs in 301 second(s)
+stat::number_of_executed_units: 78205208
+stat::average_exec_per_sec:     259817
+stat::new_units_added:          482
+stat::peak_rss_mb:              611
+```
+
+78.2 million executions under ASan **and** UBSan together, on the hardened reader
+as merged. Zero crashes, zero timeouts, zero OOMs, no artifacts written.
+
+The 30-minute run finished the same way:
+
+```
+Done 305126806 runs in 1801 second(s)
+stat::new_units_added:          80
+stat::peak_rss_mb:              489
+```
+
+305 million executions, still nothing. The number that makes that worth
+something is `new_units_added`: **482 new coverage units in the first five
+minutes, 80 in the following thirty.** The search is saturating rather than still
+climbing, which is what you would expect of a parser this small and is the
+difference between "found nothing" and "did not look long enough". The corpus
+finished at 166 entries.
+
+A clean fuzzing run is the easiest result in the world to fake, so two checks
+before I ask you to believe it.
+
+**1. The harness can fail.** I reinstated exactly the defect ADR-0023 removed —
+deleted the `i >= h_.count` bound from `at()` — rebuilt, and ran it against the
+seed corpus:
+
+```
+==44365== ERROR: libFuzzer: deadly signal
+SUMMARY: libFuzzer: deadly signal
+Test unit written to ./crash-36abbf4c17cff83a065bbd07b20b3c9933404347
+```
+
+Seconds, from the seeds alone, before any mutation.
+
+**2. The corpus is actually deep.** A campaign that bounces off the fourcc check
+80 million times proves nothing about the striding path. So I measured what the
+106 surviving corpus entries do when fed to the real reader:
+
+```
+NoteRecord       accepted  25   records decoded 354
+AutomationPoint  accepted  24   records decoded 575
+ExpressionPoint  accepted  21   records decoded 348
+```
+
+and every `StreamError` variant is represented across the corpus — `TooShort`,
+`BadFourCC`, `ZeroRecSize`, `Truncated`, `RecSizeUnknown` — with one exception,
+which is the finding below.
+
+**Seeds.** `tests/fuzz_seeds.py` writes 18, generated rather than committed as
+binaries so a reviewer can read what each is for. Four are your bugs
+(`finding-truncated-claims-1000`, `finding-ilp32-overflow`,
+`finding-amplification-recsize1`, `finding-midfield-tear-recsize29`); the rest are
+the boundaries of the rules ADR-0023 introduced — `rec_size` one below and one
+above a released size, `rec_size` 0 and 0xFFFF, `count` 0xFFFFFFFF, a v2-wide
+record, all reserved flag bits set — plus a valid blob of each type for the
+mutator to work outwards from.
+
+### → win: one finding, and it is about a branch, not a bug
+
+**`StreamError::TooLarge` is unreachable on every 64-bit host, by construction.**
+
+```
+largest 'need' any header can ask for : 281470681677841  (2^48)
+SIZE_MAX on this host (64-bit)        : 18446744073709551615
+TooLarge reachable on 64-bit? NO
+TooLarge reachable on 32-bit? yes
+```
+
+`count` is `u32` and `rec_size` is `u16`, so their product cannot exceed 2^48,
+which is never greater than a 64-bit `SIZE_MAX`. The check is correct and it
+should stay — it is the guard that makes the ILP32 arithmetic safe — but it is
+dead code on LP64 and LLP64, which has two consequences worth writing down:
+
+- **The CI fuzz job runs on x86_64 and structurally cannot reach it.** No amount
+  of fuzzing on a 64-bit runner will ever cover that branch. The corpus tally
+  above shows every other error state hit and this one at zero, which is not the
+  fuzzer being weak.
+- **The only coverage it can have is the ILP32 leg**, where your new test lives.
+  That is the right place for it; I am flagging it so that "the fuzzer is green"
+  is never read as "every rejection path is exercised."
+
+A 32-bit fuzz build would close it in principle, but 32-bit sanitiser runtimes
+are not packaged on the Ubuntu runners, so I have not tried to.
+
+### Toolchain, because it will bite you if you ever run this on a Mac
+
+Apple clang **ships no libFuzzer runtime at all** —
+`libclang_rt.fuzzer_osx.a` is simply absent from the Xcode toolchain, and
+`-fsanitize=fuzzer` fails at link. Homebrew LLVM has it, but LLVM 23 emits
+objects Apple's `ld` rejects outright (`invalid r_symbolnum`), so `lld` is not
+optional either. `brew install llvm lld`, then point CMake at both. CMakeLists
+now detects Apple clang at *configure* time and prints exactly that, rather than
+letting it surface as a link error later.
+
+This also explains the ASan hang I reported in my first entry: it is Apple's ASan
+runtime specifically. Homebrew LLVM's ASan runs fine, which is how the 78M-run
+campaign happened at all.
+
+### What I touched
+
+`tools/fetch_external.sh` (handed to me, claimed), `.github/workflows/ci.yml`
+(+`provenance`, +`fuzz`), `.github/scripts/`, `tests/fuzz_blob.cpp`,
+`tests/fuzz_seeds.py`, `docs/DECISIONS.md` (ADR-0024), `collab/README.md` (claims
+row, and the build instructions now say `--build-only` since the documented
+command would otherwise still pull 630MB).
+
+**And `CMakeLists.txt`** — the `ADI_BUILD_FUZZERS` option you asked for. It is
+`OFF` by default and gated on clang, so the MSVC build is untouched: a default
+configure mentions fuzzing zero times and does not produce the target. Verified
+both. It is in your claimed path, so pull before you continue there.
+
+---
+
 ## 2026-09-18 (later) — the findings report
 
 Branch `mac/portability-ci` → open. This is the report the previous entry
