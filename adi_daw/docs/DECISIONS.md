@@ -525,3 +525,51 @@ live in `src/gui/backend/legacy_actions/`. Zrythm is mid-migration to a new
 Qt/QML operator model in `src/actions/`. Both are worth reading, for different
 things: the legacy tree for its inverse and engine-impact declarations, the new
 one for how the taxonomy is being re-cut. Neither is a persistence model.
+
+---
+
+## ADR-0021 — Ops never read ambient state; selection is session state — `DECIDED` (2026-09-18)
+
+**Decision.** Selection lives in Layer 3 session state and never enters the op
+log as input. More generally: **no op payload may contain a value the handler
+resolves from ambient state.** The UI resolves selection, playhead, grid, current
+track, loop region and tool mode to literals at op-construction time.
+
+**Why, in order of weight.**
+
+1. **Determinism.** If ops could target "whatever is selected", an agent or
+   script firing `clip.delete` while the user clicks a different track a
+   millisecond before commit destroys the wrong data. That is not a race we can
+   test our way out of — it has to be impossible by construction. This argument
+   is the whole reason the decision is not a matter of taste.
+2. **Undo hygiene.** If selection were op state, every mouse click would be a
+   transaction, the undo tree would fill with navigation, and undoing an
+   accidental delete would take five keystrokes.
+
+**The generalisation matters as much as the specific case.**
+`note.quantize { clip_id, grid: "current" }` has precisely the same defect as
+targeting the selection, and would be precisely as hard to reproduce. The test
+is: *an op replayed from the log a year later, on a machine with different UI
+state, must do exactly what it did the first time.*
+
+**Consequence — caller-allocated IDs.** `clip.create` takes the new clip's ID in
+its payload rather than allocating one. Undo a create, redo it, and the object
+must return with the *same* ID, or every later op referencing it points at
+nothing. Same for tracks, lanes, devices, chains, automation lanes, scenes,
+markers and notes. Handlers reject a colliding ID rather than reassigning. This
+is what makes the log **replayable** rather than merely undoable — and
+replayability is what step 4's round-trip corpus tests.
+
+**Consequence — the one place selection and undo touch.** Undoing a delete should
+restore what was selected, or the user has to find their clips again. So the
+first op of a transaction may carry an advisory `sel_before` blob in `ops.tags`:
+never an input to `apply`, purely a UI hint on undo, droppable by compaction.
+Selection influences the *view* after an undo; it never influences *what* an op
+does. Keeping it in advisory metadata rather than the payload is what lets both
+statements hold.
+
+**Enforcement.** Invariant 5 in OPS.md §3 cannot be compiler-checked. It is
+enforced by review against the table in OPS.md §7.2, and by a replay test in the
+step-4 corpus: apply a log twice under deliberately different UI state and assert
+the results are byte-identical after canonical text projection (ADR-0007). An op
+reading ambient state fails that test.
