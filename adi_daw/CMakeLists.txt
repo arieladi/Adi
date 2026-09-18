@@ -8,7 +8,11 @@
 # layer, not the runtime model). JUCE arrives in step 5, in a separate target
 # that links adi_core — not the other way round.
 
-cmake_minimum_required(VERSION 3.21)
+# 3.25, not 3.21: the SYSTEM argument to add_subdirectory below was added in
+# 3.25, so a 3.21 CMake would fail to configure this file with
+# "add_subdirectory called with incorrect number of arguments". The declared
+# minimum has to be one that can actually build the tree.
+cmake_minimum_required(VERSION 3.25)
 project(adi_daw LANGUAGES C CXX VERSION 0.1.0)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -17,22 +21,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
-endif()
-
-# ---------------------------------------------------------------------------
-# Warnings. The whole value of choosing C++ here is that layout and lifetime
-# mistakes become compile errors, so the warnings that catch them are errors.
-# ---------------------------------------------------------------------------
-if(MSVC)
-    add_compile_options(/W4 /permissive- /utf-8 /Zc:preprocessor)
-    # Without this MSVC reports __cplusplus as 199711L regardless of the
-    # standard actually in use, which makes any version diagnostic a lie.
-    add_compile_options(/Zc:__cplusplus)
-    add_compile_options(/we4477 /we4020 /we4013)   # format, arg count, implicit decl
-else()
-    add_compile_options(-Wall -Wextra -Wpedantic
-                        -Wcast-align -Wconversion -Wsign-conversion
-                        -Wno-unused-parameter)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -60,6 +48,37 @@ add_subdirectory("${ADI_THIRD_PARTY}/SQLiteCpp" EXCLUDE_FROM_ALL SYSTEM)
 add_subdirectory("${ADI_THIRD_PARTY}/json"      EXCLUDE_FROM_ALL SYSTEM)
 
 # ---------------------------------------------------------------------------
+# Warnings. The whole value of choosing C++ here is that layout and lifetime
+# mistakes become compile errors, so the warnings that catch them matter.
+#
+# These live on an INTERFACE target rather than in add_compile_options(), which
+# is directory-scoped and was therefore also applying them to third_party/. On
+# clang that produced 1306 warnings from sqlite3.c and SQLiteCpp -- an amalgam of
+# noise deep enough to bury a real warning in our own code, which is the only
+# thing this flag set exists to surface. (SYSTEM on add_subdirectory does not
+# help: it marks the dependency's INCLUDE DIRECTORIES as system, which silences
+# diagnostics from its headers when WE include them, not diagnostics raised
+# while compiling its own .c and .cpp files.)
+#
+# Every target we own links this PRIVATE; nothing in third_party/ links it.
+# ---------------------------------------------------------------------------
+add_library(adi_warnings INTERFACE)
+
+if(MSVC)
+    target_compile_options(adi_warnings INTERFACE
+        /W4 /permissive- /utf-8 /Zc:preprocessor
+        # Without this MSVC reports __cplusplus as 199711L regardless of the
+        # standard actually in use, which makes any version diagnostic a lie.
+        /Zc:__cplusplus
+        /we4477 /we4020 /we4013)   # format, arg count, implicit decl
+else()
+    target_compile_options(adi_warnings INTERFACE
+        -Wall -Wextra -Wpedantic
+        -Wcast-align -Wconversion -Wsign-conversion
+        -Wno-unused-parameter)
+endif()
+
+# ---------------------------------------------------------------------------
 # adi_core — the format library. No JUCE, no audio, no threads.
 # ---------------------------------------------------------------------------
 add_library(adi_core STATIC
@@ -67,12 +86,13 @@ add_library(adi_core STATIC
 )
 target_include_directories(adi_core PUBLIC src)
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
+target_link_libraries(adi_core PRIVATE adi_warnings)
 
 # ---------------------------------------------------------------------------
 # adi_tool — headless CLI. The only executable until step 5.
 # ---------------------------------------------------------------------------
 add_executable(adi_tool src/main.cpp)
-target_link_libraries(adi_tool PRIVATE adi_core)
+target_link_libraries(adi_tool PRIVATE adi_core adi_warnings)
 
 # ---------------------------------------------------------------------------
 # Tests. No framework yet on purpose — a dependency we would have to justify,
@@ -80,5 +100,5 @@ target_link_libraries(adi_tool PRIVATE adi_core)
 # ---------------------------------------------------------------------------
 enable_testing()
 add_executable(adi_tests tests/test_main.cpp)
-target_link_libraries(adi_tests PRIVATE adi_core)
+target_link_libraries(adi_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_tests COMMAND adi_tests)

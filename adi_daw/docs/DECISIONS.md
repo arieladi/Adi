@@ -573,3 +573,51 @@ enforced by review against the table in OPS.md §7.2, and by a replay test in th
 step-4 corpus: apply a log twice under deliberately different UI state and assert
 the results are byte-identical after canonical text projection (ADR-0007). An op
 reading ambient state fails that test.
+
+## ADR-0022 — Binary layout claims are proved by CI on every ABI, and the endianness guard is proved by a job required to fail — `DECIDED` (2026-09-18)
+
+**Context.** SPEC §6.3 publishes exact sizes and field offsets for four record
+types and claims a third party can implement a reader from the document alone.
+`blob.hpp` turns each claim into a `static_assert`. Until now those asserts had
+been evaluated by one compiler on one architecture, which proves the claims for
+MSVC x64 and for nothing else. A format specification cannot rest on that.
+
+**Decision, three parts.**
+
+1. **A toolchain that compiles this tree has proved SPEC §6.3 for its own ABI**,
+   whether or not it can then run a test. So CI's matrix is chosen by ABI rather
+   than by convenience, and a compile-only leg is a first-class result. The set
+   is clang and gcc on arm64 and x86_64, gcc on i386, and MSVC on x86_64 —
+   covering LP64, LLP64 and ILP32, and libc++, libstdc++ and the MS STL.
+
+2. **The little-endian precondition is proved by a job that must fail.**
+   `blob.hpp` opens with `static_assert(std::endian::native ==
+   std::endian::little)`. CI cross-compiles `blob.cpp` for big-endian s390x and
+   requires the compile to fail *with that assert's own message in the
+   diagnostic*. An assertion nobody has watched fire is a comment.
+
+3. **The numbers in the spec are compared against the numbers the compiler
+   produced**, by `.github/scripts/check_spec_layout.py`, on every ABI.
+   `adi_tests` proves the layouts are self-consistent and the `static_assert`s
+   prove they equal four numbers written in a header; neither proves those
+   numbers are the ones `SPEC.md` publishes, and SPEC.md is what an implementer
+   reads.
+
+**Why it is an ADR and not just a CI file.** It commits the project to a
+standard: adding a field to a record, or a new record type, means adding its size
+to the spec *and* to the validator, and it means every supported ABI agrees
+before the change lands. It also fixes the meaning of a green tick, which is
+otherwise the least examined artifact in any repository.
+
+**What this does not do.** It does not catch value-level bugs. A layout can be
+byte-correct on every ABI and the reader still mis-handle a hostile file; the
+32-bit `size_t` overflow in `StreamReader`'s length check is exactly such a case,
+and the ILP32 leg will stay green until a test exercises it. Compilation proves
+layout. Tests have to prove behaviour.
+
+**Numbering note.** This is 0022 because 0021 is the highest number in this file.
+`ADR-0018` appears twice — once `OPEN` and once as `ADR-0018 (revised)`. The
+revision was appended rather than edited, which is right, but it reused the
+number, which leaves "ADR-0018" ambiguous to cite. Superseding by editing is what
+this log forbids, so the fix is a further append, and it belongs to whoever owns
+that decision.

@@ -40,6 +40,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | Path | Agent | Branch | Since |
 |---|---|---|---|
 | `src/**`, `tests/**`, `CMakeLists.txt` | win | `win/step4-store-layer` | 2026-09-18 |
+| `.github/**` | mac | `mac/portability-ci` | 2026-09-18 |
 
 ## Before you start work, every time
 
