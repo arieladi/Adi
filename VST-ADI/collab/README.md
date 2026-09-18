@@ -81,8 +81,10 @@ arieladi/Adi  (monorepo, both agents have it)
 ```
 
 `VST-ADI/vital` is a fork of `mtytel/vital` with an `upstream` remote
-(ADR-0001). It is **not** part of the monorepo: it is ~180 MB, most of it
-prebuilt Firebase binaries, and vendoring it would bloat `Adi` permanently.
+(ADR-0001). It is **not** part of the monorepo, because vendoring it would lose
+`git diff upstream/main` — currently the only thing that tells us what we have
+actually forked. (Size is not the reason: the working tree is ~180 MB but the
+packed repo is only 31.5 MiB.)
 
 **Status: the fork currently has no `origin`.** Until it does, `mac` cannot see
 the C++ at all and is limited to `backend/**`, `tools/**`, docs and review. See
