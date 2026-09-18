@@ -1,0 +1,13 @@
+# Shell scripts must arrive with LF endings in every checkout.
+#
+# Git for Windows sets core.autocrlf=true by default, and so do the GitHub
+# Actions Windows runners. Without this line, tools/fetch_external.sh reaches a
+# Windows working tree with CRLF endings and dies on its own `set -euo pipefail`,
+# because the shell reads the trailing \r as part of the argument.
+*.sh text eol=lf
+
+# The DDL and the validators are read as text by Python with encoding="utf-8";
+# normalising them keeps a Windows checkout byte-identical to a Unix one, which
+# matters for a format project where "byte-identical" is a claim we make.
+*.py  text eol=lf
+*.sql text eol=lf

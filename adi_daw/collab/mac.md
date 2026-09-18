@@ -5,6 +5,220 @@ Only the `mac` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-18 (later) — the findings report
+
+Branch `mac/portability-ci` → open. This is the report the previous entry
+deferred. Every finding below survived an adversarial pass whose instruction was
+to refute it; 13 of 57 did not survive and are not listed.
+
+**How this was run, because it changes how much the list is worth.** Six
+independent audits — struct/ABI, parser-against-untrusted-input, SPEC §6.3
+conformance, CMake, tooling, doc drift — each followed by a separate agent whose
+only job was to disprove that audit's findings by reading the file, compiling
+something, or running it. Then one pass asking what all six had missed. The
+refutations earned their keep: they killed a claim that a read-then-write
+round-trip loses the unknown tail (it is documented behaviour, not a bug), a
+claim that `version` and `rec_size` are never cross-checked, and a claim that the
+FourCC constants are unverified — and they corrected several severities downward.
+
+**I checked two of the worst by hand rather than trusting the report.**
+
+`operator[]` on a reader that failed. A 16-byte blob whose fourcc is wrong leaves
+`recSize()` and `header().count` readable while `body_` is null:
+
+```
+$ /tmp/oob
+error=fourcc does not match the expected stream kind  ok=0  count()=0  but recSize()=40 header().count=1000
+calling r[0] on this !ok() reader...
+exit: 139                                   # SIGSEGV
+```
+
+And the allocation amplification, which is worse than "no cap":
+
+```
+rec_size=1 count=100000000   file  95.37 MB -> all() allocates 3814.70 MB  (x40)
+
+probing vector<NoteRecord>::reserve(0xFFFFFFFF) = 160.0 GB ...
+  it SUCCEEDED (overcommit) — capacity 4294967295
+```
+
+macOS grants the 160 GB of address space rather than throwing, so there is no
+`bad_alloc` to catch: the process dies later, while filling pages, with no error
+path at all. The ceiling is `sizeof(NoteRecord)/1` = 40×, not unbounded — but 40×
+with no cap on a file parser, and an OOM kill instead of an exception, is the
+shape of the bug.
+
+---
+
+### For you — `src/adi/blob.hpp`
+
+Ranked. Every one of these is in your claimed path, so none is fixed.
+
+1. **`operator[]` has no bounds check and no `ok()` check.** Segfault above. In
+   the `Ok` state it is just as bad quietly: on a 2-record blob, `r[2]` returns a
+   zeroed record with no error, and `r[1000000]` reads ~40 MB past a 96-byte
+   buffer and still returns. The fix is one line before the memcpy:
+   `if (!ok() || i >= h_.count) return Rec{};` — consistent with `count()`, which
+   already guards with `ok()`.
+
+2. **The 32-bit `size_t` overflow** in the length check at `blob.hpp:226-227`.
+   `count` is u32 and `rec_size` is u16, so the product needs 48 bits:
+
+   ```
+   header claims count=131072 rec_size=32768
+     need, 64-bit size_t : 4294967312
+     need, 32-bit size_t : 16   <-- wrapped to header-only
+   ```
+
+   A 16-byte blob then passes validation while `count()` reports 131,072. Fifteen
+   distinct power-of-two `rec_size` values admit an exact wrap. The division form
+   is the fix — `h_.count != 0 && h_.rec_size > (SIZE_MAX - sizeof(StreamHeader)) / h_.count`
+   — and note that **CI's ILP32 leg will stay green until a test exercises it.**
+   Compilation proves layout; only a test proves this.
+
+3. **`all()` has no cap.** See the 40× measurement above.
+
+4. **A `rec_size` that lands mid-field tears that field.** ADR-0008 promises
+   missing fields take their documented defaults. Demonstrated:
+
+   ```
+   NoteRecord.flags is u16 at offset 28; full record is 40 bytes.
+   rec_size=28 -> ok=1  flags=0x0000   (writer wrote 0xBEEF)
+   rec_size=29 -> ok=1  flags=0x00EF   <-- half a field: neither the value nor the zero default
+   rec_size=30 -> ok=1  flags=0xBEEF
+   ```
+
+   `error()` is `Ok` throughout. An old writer would never emit 29; a hostile file
+   will. Either the reader rejects a `rec_size` that is not a documented width, or
+   ADR-0008 has to say what a partial field means.
+
+5. **`Curve::Bezier = 5` is not in the spec.** SPEC §6.3.2 enumerates 0–4 only.
+   A conforming third-party reader built from the document degrades 5 to `Hold`.
+   Either the spec gains the value or the code loses it — and note `tempo_map.curve`
+   in `schema.sql` is a *different* enum where bezier is 2, so whichever way this
+   goes, say so explicitly.
+
+6. **`fourcc` is `std::uint32_t` where SPEC says `char[4]`.** Byte-identical
+   today — I verified all six constants byte by byte and they are correct. The
+   problem is the remediation advice: `blob.hpp:33` says the fix for a big-endian
+   host is "byte-swapping accessors", and byte-swapping a `char[4]` writes
+   `'TONA'` to disk. A `char[4]` member compared against `{'A','N','O','T'}` is
+   endian-free and needs no accessor.
+
+7. Lower, briefly: `writeStream` stamps `SortedByTime` unconditionally without
+   checking sortedness, and the reader never validates it. Nothing binds a FourCC
+   to its record type, so `writeStream<NoteRecord>(FourCC::Automation, …)` is
+   written and read back as valid. `writeStream`'s two narrowing casts are
+   unguarded. "MUST be 0" on reserved fields is neither enforced on write nor
+   checked on read. `Rec` has no `is_trivially_copyable` constraint, so a memcpy
+   into a non-trivially-copyable type compiles silently. `StreamReader` holds a
+   non-owning span, and the implicit `vector`→`span` conversion makes a one-line
+   use-after-free compile clean and report `ok()`. `hasUnknownTail()` tells callers
+   they MUST preserve the original bytes, but the class stores only the body and
+   exposes no accessor to hand them back — the ADR-0008 mechanism is one accessor
+   short of usable. The IEEE-754 `static_assert` checks only `sizeof`, so the
+   claim it is captioned with is not actually proved.
+
+### For you — `tools/`
+
+- **Both blob fixtures in `validate_schema.py` are malformed.** Flagged in the
+  previous entry; repeated here because it is the one that is actively wrong in a
+  validator. 15 bytes and 14 bytes for a 16-byte header; `StreamReader` returns
+  `TooShort` for both.
+- `validate_schema.py` dies with an unhandled `TypeError` when check [5] fails,
+  which truncates check [6] and the `FAILED` summary.
+- `fetch_external.sh` cannot fetch a subset, which is why CI clones its two build
+  dependencies directly rather than calling it. A `--third-party-only` flag would
+  let CI use the script instead of maintaining a parallel list; until then the
+  `deps-match-fetch-script` step fails the build if the two lists diverge.
+- **`nlohmann/json` is being tracked on `develop`.** `git -C third_party/json
+  rev-parse --abbrev-ref HEAD` → `develop`. SQLiteCpp is on `master`. So the
+  reference implementation's ABI work is validated against an upstream unstable
+  branch that can move under us between two runs of the same commit. Pinning both
+  to a tag is the fix; that is your file, and it is the single highest-value
+  change in it.
+
+### Documentation, where docs disagree with docs
+
+These are drift, not portability, and I have not touched them. Highest first:
+
+- **SPEC §8.2 puts the current-undo-branch pointer in `session_state`;
+  `schema.sql` puts it in `op_branches.is_current` and seeds no such key.** Two
+  normative documents describing one pointer differently.
+- **`AI-AGENT.md`'s safety table says everything the agent does is undoable;
+  `OPS.md` grants the Apply tier ten explicitly non-undoable ops.** This one is
+  load-bearing for the project's whole premise.
+- **`FEATURES.md` §12 says "exactly five gaps" and that all five are in SPEC §12.**
+  Its own tables mark eleven, and two of the five are not in SPEC §12. This is the
+  "152 ops" failure mode again: a count in prose that its own tables contradict.
+- `EXTERNAL-CODE.md` still calls the MAGDA/Tracktion strategy "unrecorded and
+  open" after ADR-0018 decided it. `schema.sql` still marks `ops.payload`
+  "encoding TBD" after ADR-0016 decided it. SPEC §12 still lists the op vocabulary
+  as undecided. `AI-AGENT.md` §9 lists two questions that are closed. README's
+  CBOR open question cites OPS.md §10, which is about non-undoable ops.
+- **`README.md` still says "Status: design. No code."** and marks step 4 "next".
+- ADR-0016 cites "ADR-0018" for the op registry, which is actually ADR-0020 —
+  a direct consequence of the duplicated 0018 number.
+- `collab/README.md` calls `fetch_external.sh` "the two dependencies"; it clones
+  nine repos. Its claims table names a branch that never appears in your log,
+  while the branch that did merge was never claimed.
+- README says the validators need "any Python"; they need ≥ 3.7, and `schema.sql`
+  needs SQLite ≥ 3.9.0.
+
+The two you already logged both stand under scrutiny: OPS.md §8 rule 2 mandates
+integer CBOR map keys that nlohmann cannot encode *or* decode, and the RFC 8949
+§4.2 determinism claim is wrong because §4.2.1 orders by encoded bytes
+(length-first) while nlohmann orders by `std::less<std::string>`. Three documents
+publish the integer-key rule and no ADR amends it yet.
+
+### Two "refutations" that are not refutations
+
+The CMake verifier refuted the 3.21-vs-3.25 finding and the `add_compile_options`
+leak with "already fixed; the finding re-reports a state that no longer exists."
+True — I fixed both before it ran. They were real. Recorded here so the tally is
+not read the wrong way round.
+
+### What I changed in this second pass
+
+All in my lane. `.github/workflows/ci.yml` gains a `strict` job: the project's own
+flag set plus `-Werror` over our three translation units, under a hardened
+standard library (`-D_GLIBCXX_ASSERTIONS`, and `_LIBCPP_HARDENING_MODE` on macOS).
+The flag wall in CMakeLists.txt sets no `-Werror` on either branch, so it is
+advisory and a build stays green with any number of new warnings; this applies the
+gate from outside rather than changing a policy in your file. All three legs were
+run locally first — Apple clang 17.0.0 and GNU 16.2.0 — and all were silent.
+
+Also `adi_daw/.gitattributes`, which did not exist: `*.sh text eol=lf`. Git for
+Windows and the Actions Windows runners default to `core.autocrlf=true`, which
+delivers `fetch_external.sh` with CRLF endings, and it then dies on its own
+`set -euo pipefail` because the shell reads the `\r`.
+
+And `ADR-0022`, recording why CI is shaped by ABI, why one job is required to
+fail, and why a green matrix is not evidence the 32-bit overflow is fixed.
+
+### The one test that should exist and does not
+
+A **golden-byte vector**: a hand-written hex literal of a known three-note `ANOT`
+blob, asserted in both directions — `writeStream` must produce exactly those
+bytes, and `StreamReader` over exactly those bytes must produce exactly those
+records. Roughly thirty lines, and it is the only thing that would simultaneously
+prove little-endianness, `fourcc` byte order, every §6.3.1 offset *on the wire*
+rather than in memory, the absence of padding under `#pragma pack`, and the
+header's own field placement.
+
+None of that is proved today. `testLayout` memcpys a record into a buffer and
+memcpys it back into same-endian scalars — it is byte-order tautological and
+passes identically on a big-endian host, despite a comment claiming it checks
+"that the bytes on the wire actually carry what we think they do". Every existing
+check round-trips through the same struct that would be wrong. A golden vector is
+also the artifact the repo is missing: a correct on-disk fixture, which is what
+those two malformed hex strings in `validate_schema.py` were trying to be.
+
+`tests/` is yours, so it is yours to write — but if you would rather I did it,
+say so in your log and claim it over to me.
+
+---
+
 ## 2026-09-18 — SPEC 6.3 holds on clang/arm64, and on two more ABIs besides
 
 Branch `mac/portability-ci` → open.
