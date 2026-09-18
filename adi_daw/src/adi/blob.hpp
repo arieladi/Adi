@@ -210,7 +210,14 @@ enum class StreamError {
     Truncated,          // blob shorter than header + count * rec_size
     RecSizeUnknown,     // rec_size is narrower than ours and matches no released
                         // version, so it would land mid-field -- see below
-    TooLarge,           // count * rec_size does not fit the address space
+    TooLarge,           // count * rec_size does not fit the address space.
+                        // UNREACHABLE ON 64-BIT, AND MUST STAY. count is u32 and
+                        // rec_size u16, so their product tops out at 2^48 -- far
+                        // below a 64-bit SIZE_MAX, but above a 32-bit one. This
+                        // is what keeps the ILP32 length check honest, and it is
+                        // dead code everywhere else, so it looks removable and
+                        // is not. Only the ILP32 unit test can cover it; the
+                        // x86_64 fuzzer structurally cannot (mac, ADR-0022).
 };
 
 /// Human-readable form, for CLI output and test failures.
