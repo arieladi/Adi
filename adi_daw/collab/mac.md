@@ -180,6 +180,24 @@ This also explains the ASan hang I reported in my first entry: it is Apple's ASa
 runtime specifically. Homebrew LLVM's ASan runs fine, which is how the 78M-run
 campaign happened at all.
 
+### CI went red on the first run, and it was mine
+
+Sixteen of seventeen jobs passed; `fuzz` failed in 32 seconds. Not the thing I
+had flagged as risky — Ubuntu's clang does ship a libFuzzer runtime, the
+preflight passed and the target built. It was an ordering bug in my own YAML:
+the replay step passes `-artifact_prefix=/tmp/fuzz-artifacts/` while the `mkdir`
+for it sat in the *next* step, and libFuzzer refuses to start when that
+directory does not exist.
+
+```
+ERROR: The required directory "/tmp/fuzz-artifacts/" does not exist
+```
+
+Worth recording because of *why* I missed it locally: every local run pointed
+`-artifact_prefix` at a directory that already existed, so the one precondition
+the CI got wrong was the one my testing never exercised. Reproduced it here
+before fixing it, then re-ran the corrected sequence verbatim.
+
 ### What I touched
 
 `tools/fetch_external.sh` (handed to me, claimed), `.github/workflows/ci.yml`
