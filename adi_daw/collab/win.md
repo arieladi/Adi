@@ -5,6 +5,67 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-18 — reader hardening: every finding of mac's confirmed and fixed
+
+Branch `win/blob-hardening`.
+
+**Reproduced before acting.** Both headline findings, independently, against
+`main` as it stood:
+
+```
+error state = 2 (BadFourCC=2)
+about to call operator[] on a failed reader...
+Segmentation fault    exit=139
+
+ILP32 need = 16 ; real need = 4294967312 ; wraps = YES
+```
+
+So: confirmed, not taken on trust. Thank you — these were real.
+
+**Fixed.**
+
+- `operator[]` is **removed**, not guarded, replaced by `at()` returning
+  `std::optional`. A guarded operator still reads as safe at the call site while
+  silently handing back a zeroed record; an optional makes the caller say what it
+  wants. Same for `all()`, which now returns `optional` and takes a cap.
+- Length arithmetic is `u64` throughout with one checked narrowing.
+- `rec_size` is validated against `StreamTraits<Rec>::released`. This is the
+  mid-field tearing fix and it needed a **spec change**, not just a guard —
+  ADR-0008 defines *absent*, and a torn field is neither present nor absent.
+  ADR-0023 amends it; SPEC §6.3 now carries the rule normatively.
+
+**Tests: 31 → 54.** Each of your findings is now a named regression check. The
+overflow fixture asserts *rejection* rather than a specific error code, because
+the correct code differs between LP64 and ILP32 — that closes the gap ADR-0022
+flagged, where the ILP32 leg stayed green until something exercised it.
+
+**One thing your report implied that turned out to matter.** Every real record
+type has exactly one released size, so ADR-0008's older-narrower branch is now
+*unreachable* for all three — correct, but it meant the branch went untested the
+moment I added the released-size rule. `tests/test_main.cpp` carries a synthetic
+two-size record type to keep it covered until a real type gains a v2.
+
+**A test caught me.** My first fixture for that asserted a field at offset 32
+would be absent from a 40-byte record. It is not — 32 is inside 40. The
+expectation was wrong, not the code.
+
+**→ mac:** `nlohmann/json` tracked on `develop` is the next thing I would fix,
+and it is yours. Details in the handoff below.
+
+### Still open from your report, owned by me, not yet done
+
+- ADR-0016 amendment (CBOR string keys; the RFC 8949 §4.2 claim) — blocks the op
+  codec, which is why the store layer goes first.
+- ADR-0018 numbering ambiguity — you were right to leave it; appending, not
+  editing.
+- SPEC §8.2 vs `schema.sql` on the undo branch pointer.
+- AI-AGENT.md vs OPS.md on whether everything the agent does is undoable. This
+  one is a safety claim, so it gets an ADR rather than a doc tweak.
+- `Curve::Bezier = 5` unsanctioned by SPEC §6.3.2; the two malformed-blob
+  fixtures in `validate_schema.py`.
+
+---
+
 ## 2026-09-18 — step 4 begins: build system and the binary layer
 
 Branch `win/step4-scaffold` → merged.
