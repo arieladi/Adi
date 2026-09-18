@@ -499,9 +499,14 @@ jobs:
       # Deterministic. Every seed is a shape that has already mattered: the four
       # findings from the first audit, the boundaries of the rules ADR-0023
       # introduced, and a valid blob of each record type.
+      # libFuzzer refuses to start when -artifact_prefix names a directory that
+      # does not exist, so this is created before the first run rather than
+      # before the second. It is where a reproducer lands, and a reproducer is
+      # only useful if the run that found it got as far as writing one.
       - name: Replay the seed corpus
         run: |
           set -euo pipefail
+          mkdir -p /tmp/fuzz-artifacts
           ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
             ./adi_daw/build-fuzz/adi_fuzz_blob adi_daw/build-fuzz/fuzz_corpus \
               -runs=0 -artifact_prefix=/tmp/fuzz-artifacts/
