@@ -1,0 +1,343 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# adi_daw CI — proving the format spec on more than one compiler.
+#
+# The point of this workflow is narrower and more specific than "the build is
+# green". docs/format/SPEC.md §6.3 publishes exact byte sizes and field offsets
+# for four binary record layouts, and claims a third party can reimplement a
+# reader from the document alone. src/adi/blob.hpp turns every one of those
+# claims into a static_assert — so any toolchain that COMPILES this tree has
+# proved the claims for its own ABI, whether or not it can then run a test.
+#
+# That is why the matrix is shaped by ABI rather than by convenience:
+#
+#   clang / arm64  / libc++      macos-latest
+#   clang / x86_64 / libc++      macos-latest, second slice of the same build
+#   clang / x86_64 / libstdc++   ubuntu-latest
+#   gcc   / x86_64 / libstdc++   ubuntu-latest
+#   gcc   / arm64  / libstdc++   ubuntu-24.04-arm
+#   gcc   / i386   / libstdc++   ubuntu-latest — ILP32: 32-bit size_t
+#   MSVC  / x86_64 / MS STL      windows-latest — LLP64: 32-bit long
+#   gcc   / s390x  / big-endian  ubuntu-latest — required to FAIL to compile
+#
+# The last leg is not a mistake. blob.hpp opens with
+#   static_assert(std::endian::native == std::endian::little, ...)
+# and that assert is only worth having if we know it fires. That job proves it
+# does, by requiring the compile to fail with that exact diagnostic.
+#
+# A green tick here means: seven ABIs agree with SPEC §6.3, the sizes written in
+# the spec's prose match the sizes the compilers actually produced, the
+# little-endian precondition is enforced rather than merely asserted, and both
+# Python validators pass on the oldest and the newest Python we support.
+
+name: adi_daw
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'adi_daw/**'
+      - '.github/workflows/ci.yml'
+      - '.github/scripts/check_spec_layout.py'
+  pull_request:
+    paths:
+      - 'adi_daw/**'
+      - '.github/workflows/ci.yml'
+      - '.github/scripts/check_spec_layout.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: adi_daw-${{ github.ref }}
+  cancel-in-progress: true
+
+# bash on every runner, windows-latest included, so a `run:` block means the same
+# thing everywhere. Without this, windows-latest runs pwsh, where the `set -euo
+# pipefail` idiom below is a syntax error rather than a safety net.
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Mirrors the THIRD_PARTY table in adi_daw/tools/fetch_external.sh. Only these
+  # two of that script's nine repositories are needed to BUILD; the other seven
+  # are reference/ source we read for design and never compile, plus two
+  # third_party libraries step 4 does not link yet. The `deps-match-fetch-script`
+  # step below fails if this list and that table drift apart.
+  DEP_SQLITECPP: SRombauts/SQLiteCpp
+  DEP_JSON: nlohmann/json
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The two Python validators. They are pure-stdlib and resolve their inputs
+  # relative to __file__, so CWD does not matter — but the Python version and the
+  # host's SQLite do. 3.9 is the floor this was developed against; 3.13 is what a
+  # fresh runner gives you. Windows is in the matrix because the documents these
+  # parse are full of en-dashes and arrows: a bare open() there would decode them
+  # as cp1252. Both validators pass encoding="utf-8" explicitly, and this proves
+  # that keeps working.
+  # ---------------------------------------------------------------------------
+  validators:
+    name: validators (py${{ matrix.python }} · ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: '3.9' }
+          - { os: ubuntu-latest, python: '3.11' }
+          - { os: ubuntu-latest, python: '3.13' }
+          - { os: macos-latest, python: '3.13' }
+          - { os: windows-latest, python: '3.13' }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Environment
+        run: |
+          python -VV
+          python -c "import sqlite3; print('sqlite3 library', sqlite3.sqlite_version)"
+
+      # Invoked exactly as collab/README.md documents, from the repository root,
+      # so that CI is testing the command a human is told to run.
+      - name: validate_schema.py
+        run: python adi_daw/tools/validate_schema.py
+
+      - name: validate_ops.py
+        run: python adi_daw/tools/validate_ops.py
+
+  # ---------------------------------------------------------------------------
+  # The real build: configure, compile, run adi_tests, then check the sizes this
+  # compiler produced against the sizes SPEC.md publishes.
+  # ---------------------------------------------------------------------------
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Both slices are compiled, so blob.hpp's static_asserts are evaluated
+          # for arm64 and for the x86_64 ABI in one job. Only the native slice
+          # can be executed on an arm64 runner; the Linux legs cover x86_64 at
+          # runtime.
+          - name: 'macos arm64+x86_64 · apple clang · libc++'
+            os: macos-latest
+            osx_archs: 'arm64;x86_64'
+          - name: 'ubuntu x86_64 · gcc · libstdc++'
+            os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+          - name: 'ubuntu x86_64 · clang · libstdc++'
+            os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+          - name: 'ubuntu arm64 · gcc · libstdc++'
+            os: ubuntu-24.04-arm
+            cc: gcc
+            cxx: g++
+          - name: 'windows x86_64 · msvc · ms stl'
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          cmake --version | head -1
+          python3 -VV
+          uname -a || true
+
+      # Deliberately not `bash adi_daw/tools/fetch_external.sh`. That script
+      # clones nine repositories, about 630MB, five of which exist to be read for
+      # design and are never on the include path. Cloning ardour and zrythm on
+      # every push would make CI slow, and would make an unrelated upstream
+      # outage look like our failure.
+      - name: Fetch build dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p adi_daw/third_party
+          git clone --depth 1 --single-branch -q \
+            "https://github.com/${DEP_SQLITECPP}.git" adi_daw/third_party/SQLiteCpp
+          git clone --depth 1 --single-branch -q \
+            "https://github.com/${DEP_JSON}.git" adi_daw/third_party/json
+          for d in SQLiteCpp json; do
+            printf '%-12s %s\n' "$d" \
+              "$(git -C "adi_daw/third_party/$d" log -1 --format='%h %cs')"
+          done
+
+      # If the project ever changes which SQLite or JSON library it uses, the
+      # THIRD_PARTY table in fetch_external.sh is where that change will be made.
+      # This step makes CI notice, instead of quietly continuing to build the old
+      # one because its own list was never updated.
+      - name: deps-match-fetch-script
+        run: |
+          set -euo pipefail
+          script=adi_daw/tools/fetch_external.sh
+          for repo in "${DEP_SQLITECPP}" "${DEP_JSON}"; do
+            if ! grep -q "$repo" "$script"; then
+              echo "::error file=${script}::CI clones '${repo}' but it no longer" \
+                   "appears in the THIRD_PARTY table of ${script}. One of the two" \
+                   "is out of date; they must name the same libraries."
+              exit 1
+            fi
+            echo "ok    ${repo} is still in ${script}"
+          done
+
+      # CC/CXX and the macOS architecture list arrive through the environment
+      # rather than interpolated into the command line: 'arm64;x86_64' contains a
+      # semicolon, which a shell would read as a command separator. And a matrix
+      # key that is absent expands to an empty string, so CC= would be exported
+      # empty on the macOS and Windows legs and confuse CMake's compiler
+      # detection — hence the unset.
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+          OSX_ARCHS: ${{ matrix.osx_archs }}
+        run: |
+          set -euo pipefail
+          [ -n "${CC:-}" ]  || unset CC
+          [ -n "${CXX:-}" ] || unset CXX
+          if [ -n "${OSX_ARCHS:-}" ]; then
+            cmake -S adi_daw -B adi_daw/build -DCMAKE_BUILD_TYPE=Debug \
+                  -DCMAKE_OSX_ARCHITECTURES="$OSX_ARCHS"
+          else
+            cmake -S adi_daw -B adi_daw/build -DCMAKE_BUILD_TYPE=Debug
+          fi
+
+      # --config is required by the multi-config Visual Studio generator on
+      # windows-latest and ignored by single-config generators, so one line
+      # serves every leg.
+      - name: Build
+        run: cmake --build adi_daw/build --config Debug --parallel
+
+      - name: adi_tests
+        run: ctest --test-dir adi_daw/build --build-config Debug --output-on-failure
+
+      # The Visual Studio generator puts binaries in build/Debug/, everything
+      # else puts them in build/. Resolve it once, loudly, rather than letting a
+      # later step skip silently because its `if [ -x ... ]` was false.
+      - name: Locate adi_tool
+        run: |
+          set -euo pipefail
+          for cand in adi_daw/build/adi_tool \
+                      adi_daw/build/adi_tool.exe \
+                      adi_daw/build/Debug/adi_tool.exe \
+                      adi_daw/build/Debug/adi_tool; do
+            if [ -f "$cand" ]; then
+              echo "ADI_TOOL=$cand" >> "$GITHUB_ENV"
+              echo "found $cand"
+              exit 0
+            fi
+          done
+          echo "::error::adi_tool was built but cannot be found. Tree follows."
+          ls -R adi_daw/build
+          exit 1
+
+      - name: Record the layouts this ABI compiled
+        run: |
+          set -euo pipefail
+          "$ADI_TOOL" layout
+          "$ADI_TOOL" versions
+
+      # adi_tests proves the layouts are self-consistent, and blob.hpp's
+      # static_asserts prove they equal numbers written in a header. Neither
+      # proves those numbers are the ones SPEC.md publishes — and SPEC.md is what
+      # a third-party implementer reads. This step is the only thing in the tree
+      # that compares the document against the binary.
+      - name: SPEC 6.3 sizes match this build
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/check_spec_layout.py "$ADI_TOOL"
+
+  # ---------------------------------------------------------------------------
+  # ABIs the main matrix cannot reach. Neither job needs SQLite or CMake: the
+  # four record layouts live in one header and one .cpp, and the test file
+  # includes nothing else — so a direct compiler invocation is both sufficient
+  # and far less likely to break for reasons that have nothing to do with the
+  # format.
+  # ---------------------------------------------------------------------------
+  abi-ilp32:
+    name: 'ubuntu i386 · gcc · ILP32 (32-bit size_t)'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the 32-bit toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-multilib g++-multilib
+
+      # Every other leg has a 64-bit size_t, which hides a whole class of
+      # length-arithmetic bug: in the stream header `count` is u32 and `rec_size`
+      # is u16, so their product needs 48 bits and cannot be held by a 32-bit
+      # size_t. This leg exists so that arithmetic is exercised by a real
+      # compiler on a real ILP32 target instead of reasoned about.
+      #
+      # The warning set is the project's own, plus -Werror. That is safe to
+      # demand here: the same set at -Werror was run over all three of our
+      # translation units by Apple clang 17 and by GNU 16.2 before this file was
+      # written, and both were silent. An ILP32 target narrows size_t, so if
+      # -Wconversion has anything to say about this code it will say it here
+      # first -- which is exactly the diagnostic we want to be fatal.
+      - name: Compile and run under ILP32
+        run: |
+          set -euo pipefail
+          g++ -m32 --version | head -1
+          g++ -m32 -std=c++20 -Wall -Wextra -Wpedantic -Wcast-align \
+              -Wconversion -Wsign-conversion -Wno-unused-parameter -Werror \
+              -Iadi_daw/src \
+              adi_daw/tests/test_main.cpp adi_daw/src/adi/blob.cpp \
+              -o adi_tests32
+          file adi_tests32
+          ./adi_tests32
+
+  abi-big-endian:
+    name: 'big-endian guard actually fires (s390x)'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install an s390x cross compiler
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++-s390x-linux-gnu
+
+      # blob.hpp's first static_assert is
+      #   std::endian::native == std::endian::little
+      # with the comment "big-endian hosts need byte-swapping accessors". An
+      # assertion nobody has ever watched fire is a comment, not a guarantee.
+      # This step requires the compile to fail, and to fail for that reason — so
+      # if the assert is later deleted to quiet something, CI goes red here
+      # rather than silently accepting a reader that would mis-decode every
+      # field of every record on a big-endian host.
+      - name: The endianness static_assert must fire on big-endian
+        run: |
+          set -euo pipefail
+          s390x-linux-gnu-g++ --version | head -1
+          log=$(mktemp)
+          if s390x-linux-gnu-g++ -std=c++20 -fsyntax-only \
+               -Iadi_daw/src adi_daw/src/adi/blob.cpp >"$log" 2>&1; then
+            echo "::error file=adi_daw/src/adi/blob.hpp::blob.hpp compiled clean" \
+                 "for big-endian s390x. The std::endian::native static_assert that" \
+                 "is supposed to prevent that is missing or has been weakened." \
+                 "SPEC 6.3 says all integers are little-endian; a reader that" \
+                 "ignores it mis-decodes every field."
+            exit 1
+          fi
+          if ! grep -q 'byte-swapping accessors' "$log"; then
+            echo "::error file=adi_daw/src/adi/blob.hpp::the s390x compile failed," \
+                 "but not on the endianness assert, so this job is no longer" \
+                 "testing what it claims to. Actual output follows."
+            cat "$log"
+            exit 1
+          fi
+          echo "ok    the big-endian guard fired, with its documented message:"
+          grep -m1 -B1 -A1 'byte-swapping accessors' "$log"
