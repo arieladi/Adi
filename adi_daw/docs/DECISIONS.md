@@ -621,3 +621,58 @@ revision was appended rather than edited, which is right, but it reused the
 number, which leaves "ADR-0018" ambiguous to cite. Superseding by editing is what
 this log forbids, so the fix is a further append, and it belongs to whoever owns
 that decision.
+
+---
+
+## ADR-0023 — `rec_size` must be a size some writer released; readers are total — `DECIDED` (2026-09-18)
+
+**Amends ADR-0008.** Does not supersede it: the striding contract stands, this
+closes a case it did not cover.
+
+**The gap.** ADR-0008 says a reader strides by the header's `rec_size` and that
+fields absent from a narrower record take their zero default. It did not say
+what happens when `rec_size` lands *inside* a field. A `rec_size` of 29 on a
+40-byte note record copies one byte of the two-byte `flags` at offset 28 and
+leaves the other zero, so the reader returns `flags = 0x00EF` where the writer
+wrote `0xBEEF` — and reports `error() == Ok`. Absent is defined. Torn is not.
+
+**Decision.** `rec_size` is not a free integer. It is the size of some writer's
+record, so it must be a size some writer actually emitted:
+
+| `rec_size` | Result |
+|---|---|
+| equal to a released size for that type | accepted — older version, absent fields zero |
+| greater than the reader's `sizeof(Rec)` | accepted — newer version, tail skipped (ADR-0008) |
+| anything else | **rejected**, `RecSizeUnknown` |
+
+Released sizes live in `StreamTraits<Rec>::released` next to the struct. **Adding
+a field means appending the new size there in the same commit as the struct
+change** — that is the whole maintenance burden this creates, and it is
+deliberately in the one place a reader author cannot miss.
+
+**Decision, second part: every accessor is total.** A reader parses whatever is
+on disk — a file truncated by a full volume, cut short by a failed sync, or
+written by someone hostile. `StreamReader::operator[]` is **removed** rather than
+guarded, and replaced by `at()` returning `std::optional`. A guarded operator
+still reads as safe at the call site while silently returning a zeroed record;
+an optional makes the caller say what it wants to happen.
+
+**Found by the `mac` agent, reproduced independently on `win` before acting.**
+The old `operator[]` on a reader in a failed state memcpy'd from a null span:
+segfault, exit 139. Out of range, it read ~40 MB past a 96-byte buffer and
+returned the garbage silently.
+
+**Third part: length arithmetic is 64-bit.** `count * rec_size` was computed in
+`size_t`. On a 32-bit host `count = 131072, rec_size = 32768` is exactly 2^32,
+which wraps to 0, so the required length became 16 and a header-only blob passed
+validation while `count()` still reported 131,072. Now computed in `std::uint64_t`
+with one checked narrowing. ADR-0022 notes CI's ILP32 leg stays green on this
+until a test exercises it; that test now exists, and it asserts the fixture is
+rejected on every ABI rather than asserting a particular error code, because the
+correct rejection differs between LP64 and ILP32.
+
+**Consequence for testing.** Each of the three real record types has exactly one
+released size, which makes the older-narrower branch of ADR-0008 *unreachable*
+for them — correctly, but therefore untested. `tests/test_main.cpp` carries a
+synthetic two-size record type to keep that branch covered until a real type
+gains a v2, at which point it can go.
