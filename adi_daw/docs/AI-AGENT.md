@@ -20,13 +20,23 @@ an ordinary feature, because it inherits, for free and by construction:
 
 | Property | Why it holds |
 |---|---|
-| Everything it does is undoable | Ops have inverses (SPEC §8.1) |
+| Every change it makes to the project is undoable | Ops have inverses (SPEC §8.1) |
 | One agent action = one Ctrl-Z | All its ops share a `txn_id` |
 | Everything it does is attributable | `ops.actor = 'agent'`, `actor_detail` names the model |
 | Everything it does is auditable after the fact | `SELECT * FROM ops WHERE actor='agent'` |
 | It cannot do what a user couldn't | There is no op for "corrupt the file" |
 | It cannot cause a dropout | Ops are applied on the message thread, never the audio thread |
 | Trying an idea costs nothing | The undo tree branches (SPEC §8.2) |
+
+The first row is deliberately narrower than "everything it does is undoable",
+which is what this document used to claim and which the op catalogue
+contradicts. The Apply tier reaches ten ops that are **not** undoable —
+`transport.play/stop/seek/setLoop/setRecord/setMetronome` and
+`session.launchClip/launchScene/stopTrack/stopAll`. They are safe to grant not
+because undo covers them but because they **persist nothing**: they are
+performance, not editing, and nothing they do survives a save, so there is
+nothing for undo to restore. They are still logged, still attributed, and still
+skipped by undo but not by the audit trail. See ADR-0027.
 
 If a proposed agent feature cannot be expressed as ops, the answer is to add the
 op — not to give the agent a side door.
