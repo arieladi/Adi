@@ -353,7 +353,7 @@ Full inventory and rationale: [`EXTERNAL-CODE.md`](EXTERNAL-CODE.md).
 
 ---
 
-## ADR-0018 — Our relationship to MAGDA and Tracktion Engine — `OPEN`
+## ADR-0018 — Our relationship to MAGDA and Tracktion Engine — `SUPERSEDED BY ADR-0018R`
 
 **The situation.** [MAGDA](https://github.com/Conceptual-Machines/magda-core) is
 an actively developed GPL-3.0 DAW on C++20 + JUCE + Tracktion Engine that already
@@ -392,9 +392,10 @@ question left open at the end of ADR-0015.
 
 ---
 
-## ADR-0018 (revised) — Stay independent; JUCE for hosting, Tracktion as reference — `DECIDED` (2026-09-17)
+## ADR-0018R — Stay independent; JUCE for hosting, Tracktion as reference — `DECIDED` (2026-09-17)
 
-**Supersedes the OPEN status of ADR-0018 above.**
+**Supersedes ADR-0018 above.** Cited as `ADR-0018R`; the two entries are
+distinct and the number is never reused. See ADR-0028.
 
 **Decision.** Own engine, own project model, own persistence. JUCE for audio I/O,
 plugin hosting and GUI. Tracktion Engine and MAGDA stay in `reference/` as
@@ -742,3 +743,126 @@ on every run so the cost stays visible instead of becoming folklore.
 
 **Supersedes nothing.** ADR-0017 set out what the two external directories are
 for; this decides how each is fetched, and does not change that boundary.
+
+---
+
+## ADR-0025 — Op payload keys are short strings, and "deterministic" is not "canonical" — `AMENDS ADR-0016` (2026-09-18)
+
+Two things ADR-0016 asserted that the library cannot do. Both found by reading
+`third_party/json`, before writing the codec against them.
+
+**1. Integer map keys are not implementable with nlohmann, so keys are short
+strings.** `basic_json::object_t` is `ObjectType<StringType, …>` — object keys
+are always strings — and `binary_reader.hpp` calls `get_cbor_string(key)`, so it
+cannot *read* an integer-keyed CBOR map either. OPS.md §8 rule 2 asked for
+something the chosen library refuses in both directions.
+
+Keys are therefore short strings: `"id"`, `"t"`, `"pos"`. A one-character CBOR
+string key costs 2 bytes against an integer key's 1, so nearly all the
+compactness survives, and we keep one library serving both the on-disk encoding
+and the JSON-Schema projection the op registry needs for agent tool schemas —
+which was an explicit reason for choosing it.
+
+**Rejected: switching to a CBOR library that supports integer keys.** It would
+buy roughly one byte per field and cost the schema projection, which is the part
+that makes the registry and the agent share a single definition (ADR-0020).
+
+**Key names are as permanent as op names.** They appear in every `ops.payload` of
+every project ever saved. A retired key's name is never reused for a different
+meaning.
+
+**2. We require *deterministic* encoding, not RFC 8949 §4.2 canonical.**
+ADR-0016 cited §4.2. nlohmann orders object keys with `std::less<StringType>`,
+i.e. lexicographically, while §4.2 core-deterministic order is by *encoded*
+bytes, which is length-first — canonical CBOR puts `"z"` before `"aa"`, and
+nlohmann does the opposite.
+
+What we actually need is narrower than what was claimed: **identical input must
+encode to identical bytes**, so a payload hashes stably and text-projects stably
+(ADR-0007). `std::map` ordering gives exactly that. The stronger property —
+interoperating byte-for-byte with another implementation's canonical encoder —
+is not something we need, and claiming it while not having it is worse than not
+having it.
+
+If we ever do need §4.2, it is a writer-side key-ordering pass, not a library
+change. Recorded so the decision is available rather than rediscovered.
+
+---
+
+## ADR-0026 — The current undo branch lives in `op_branches.is_current` — `DECIDED` (2026-09-18)
+
+**The contradiction.** SPEC §8.2 said the current-head pointer lives in
+`session_state`. `schema.sql` put it in `op_branches.is_current` and seeded no
+such `session_state` key. Two normative documents describing one pointer in two
+places, which means an implementer reading either one alone writes something the
+other rejects. Found by `mac`.
+
+**Decision: `op_branches.is_current` is authoritative.** SPEC §8.2 is corrected.
+
+**Why that side.** `session_state` is an untyped `TEXT` key-value store. A branch
+pointer held there has no foreign key, so nothing stops it naming a branch that
+was deleted, and nothing stops two writers disagreeing about the key's name. In
+`op_branches` the pointer sits on the row it describes, and "exactly one branch
+is current" becomes an enforceable constraint rather than a convention — a
+partial unique index, added here.
+
+`session_state` remains the right home for genuinely free-form session data:
+playhead, zoom, selection (ADR-0021). The rule is that anything with referential
+integrity belongs in a real table.
+
+---
+
+## ADR-0027 — The agent's non-undoable ops are exactly those that persist nothing — `DECIDED` (2026-09-18)
+
+**The contradiction, and it is a safety claim.** `AI-AGENT.md` §1 stated flatly
+that *everything the agent does is undoable*. OPS.md §5 grants the Apply tier the
+`session` and `transport` scopes, which contain ten ops marked explicitly
+non-undoable. The document that exists to say why the agent is safe was making a
+claim the op catalogue contradicts. Found by `mac`, correctly ranked as
+load-bearing.
+
+**Decision.** The claim is corrected rather than the catalogue. The ten ops are
+`transport.play/stop/seek/setLoop/setRecord/setMetronome` and
+`session.launchClip/launchScene/stopTrack/stopAll`.
+
+**The property that actually holds, and is what the safety argument needs:**
+
+> Every change the agent makes to the *project* is undoable. The ops it can reach
+> that are not undoable are exactly those that mutate no persisted state — they
+> are performance, not editing. Nothing they do survives a save, so there is
+> nothing for undo to restore.
+
+That is a weaker claim than the original and it is true, which is the trade
+worth making in a safety document. It also explains why those ops are safe to
+grant rather than merely asserting it: an agent that starts playback has changed
+nothing a user could lose.
+
+**They remain audited.** Ephemeral ops still appear in the log tagged
+`ephemeral`, still carry `actor = 'agent'`, and are still skipped by undo but not
+by the audit trail (OPS.md §10). "What did the agent do at 14:32" stays
+answerable.
+
+**Consequence.** Any op added to `transport` or `session` scope that *does* touch
+persisted state must be undoable, or it does not belong in those scopes. That
+invariant is now the thing keeping this ADR true, and it belongs in the registry
+checks.
+
+---
+
+## ADR-0028 — ADR-0018 is split into 0018 and 0018R; numbers are never reused — `DECIDED` (2026-09-18)
+
+**The problem.** `ADR-0018` appears twice in this file: once `OPEN`, stating the
+MAGDA/Tracktion question, and once as `ADR-0018 (revised)` deciding it. Appending
+rather than editing was right; reusing the number was not. "ADR-0018" now has two
+referents, and a citation cannot disambiguate them. Found by `mac`, who correctly
+left it to the agent that owns the decision.
+
+**Decision.** The two entries are cited as **ADR-0018** (the open question, kept
+verbatim) and **ADR-0018R** (the decision that resolves it). Neither is edited
+beyond adding that label — the log's append-only rule includes its own mistakes.
+
+**The general rule, which is the point of recording this:** a number, once used,
+names one entry forever. Revisiting a decision takes the next free number and
+says what it supersedes. `0018R` is a one-off repair of an existing collision,
+not a pattern to copy — ADR-0025 amends ADR-0016 by taking a fresh number, which
+is the shape every future revision should have.

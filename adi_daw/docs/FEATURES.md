@@ -193,15 +193,18 @@ Saying no now is cheaper than saying no later.
 
 ## 12. What this tells the format
 
-The audit above produces exactly five gaps that must be closed before the
-matching feature can be built, and all five are already listed as open items in
-SPEC §12:
+The audit above produces five gaps that must be closed before the matching
+feature can be built. **Three are listed as open items in SPEC §12; two are
+not** — groove templates and VariAudio-class editing appear only here, which is
+exactly the kind of drift between two documents that leaves a gap owned by
+neither:
 
 1. **Chord track events** — `key_map` anchors it, chord events have no table.
 2. **Expression Maps / articulations** — no schema at all.
 3. **Score/engraving data** — not derivable from MIDI, no schema.
 4. **Groove pool / groove templates** — shared, project-scoped, no table.
-5. **VariAudio-class pitch-segment editing** — no model.
+   *Not in SPEC §12.*
+5. **VariAudio-class pitch-segment editing** — no model. *Not in SPEC §12.*
 
 None of them is P0 or P1. That is the useful result: **the v1.0 schema is
 sufficient for everything in P0 and P1**, which means we can start building

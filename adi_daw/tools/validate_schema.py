@@ -151,9 +151,13 @@ def main() -> int:
                               pos_ticks, length_ticks)
                  VALUES (1, 1, 'midi', 'Riff', 0, 0, 23063040);
             INSERT INTO event_streams(clip_id, stream_kind, data)
-                 VALUES (1, 'notes', X'414E4F540100280001000000010000');
+                 -- A real 16-byte ANOT header: 'ANOT', v1, rec_size 40,
+                 -- count 0, flags SortedByTime. Previous fixtures here were 15
+                 -- and 14 bytes -- too short for the header they claimed to be,
+                 -- in a file whose job is catching exactly that.
+                 VALUES (1, 'notes', X'414E4F54010028000000000001000000');
             INSERT INTO note_expression(clip_id, note_id, dimension, data)
-                 VALUES (1, 1, 1, X'4145585001001800000000000000');
+                 VALUES (1, 1, 1, X'41455850010018000000000001000000');
             INSERT INTO ops(txn_id, ts_utc, actor, op_type, label)
                  VALUES (1, 0, 'user', 'clip.create', 'Create clip');
             INSERT INTO ops(txn_id, ts_utc, actor, actor_detail, op_type, label)
@@ -187,8 +191,14 @@ def main() -> int:
     # rather than asserted. An earlier draft claimed 960 PPQ could not express a
     # quintuplet, which is false -- 960/5 = 192.
     print("[6] ADI_PPQ properties (SPEC 4.2)")
-    ppq = db.execute("SELECT ppq FROM project WHERE id = 1").fetchone()[0]
-    if ppq != ADI_PPQ:
+    # fetchone() is None when check [5] failed to insert, and None[0] is a
+    # TypeError that kills the run -- truncating this check and the summary, so
+    # the tool stops reporting at exactly the moment it has something to report.
+    row = db.execute("SELECT ppq FROM project WHERE id = 1").fetchone()
+    ppq = row[0] if row else None
+    if ppq is None:
+        fail("no project row to read ppq from (check [5] did not insert)")
+    elif ppq != ADI_PPQ:
         fail(f"project.ppq is {ppq}, spec says {ADI_PPQ}")
     if ADI_PPQ != 2**7 * 3**2 * 5 * 7 * 11 * 13:
         fail("ADI_PPQ factorisation in the spec is wrong")

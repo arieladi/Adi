@@ -261,11 +261,22 @@ and in range before casting, because JSON has one numeric type. Our tick
 positions are `i64` at 5,765,760 PPQ and exceed a double's 2^53 exact range — a
 silent truncation in JSON, a non-issue in CBOR.
 
-1. Deterministic encoding: shortest-form integers, sorted map keys, no
-   indefinite-length items. Payloads reach content hashes and the text
-   projection, so identical input must encode byte-identically.
-2. Map keys are small integers, not strings. Key IDs are assigned per op type,
-   start at 1, and are **never reused** — a retired field's ID stays retired.
+1. **Deterministic** encoding: shortest-form integers, sorted map keys, no
+   indefinite-length items. Identical input must encode byte-identically,
+   because payloads reach content hashes and the text projection.
+
+   Deterministic, *not* RFC 8949 §4.2 canonical — the two differ and only the
+   weaker one is needed or provided. §4.2 orders keys by encoded bytes, which is
+   length-first (`"z"` before `"aa"`); nlohmann orders them lexicographically.
+   Byte-level interoperability with a foreign canonical encoder is not a
+   requirement, and claiming it while not having it would be worse than not
+   having it. See ADR-0025.
+2. Map keys are **short strings** (`"id"`, `"t"`, `"pos"`), not integers.
+   Integer keys were specified here originally and are not implementable with
+   `nlohmann::json`, whose object keys are always strings in both directions; a
+   one-character CBOR string key costs one byte more than an integer key, which
+   is the whole price. Key names are as permanent as op names and are **never
+   reused** for a different meaning. See ADR-0025.
 3. Unknown keys are **preserved** on read and re-emitted on write (ADR-0008,
    ADR-0012). An older build must not strip a newer build's fields from an op it
    is merely carrying.
@@ -538,8 +549,9 @@ Compaction (SPEC §8.3) may drop ephemeral ops first.
 
 ## 11. Still open
 
-1. **CBOR key-ID table.** §8 rule 2 fixes the *rule*; the per-op integer
-   assignments are mechanical and belong with the implementation.
+1. **CBOR key-name table.** §8 rule 2 fixes the *rule* (short string keys,
+   ADR-0025); the per-op key names are mechanical and belong with the
+   implementation. They are permanent once shipped.
 2. **Batch failure semantics.** An agent request is one `txn_id`; a partial
    failure mid-batch is presumed all-or-nothing per SPEC §3.5, but the rollback
    path for a `GraphRebuild` op that fails halfway is not written down.

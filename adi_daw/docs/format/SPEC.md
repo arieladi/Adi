@@ -325,13 +325,20 @@ off  size  type  field
   0     8  i64   time_ticks      relative to NOTE start
   8     4  f32   value           dimension-defined, see below
  12     4  f32   tension         -1.0..+1.0 curve shape
- 16     1  u8    curve           0 hold, 1 linear, 2 exp, 3 log, 4 s-curve
+ 16     1  u8    curve           0 hold, 1 linear, 2 exp, 3 log, 4 s-curve,
+                                5 bezier (shape from `tension`)
  17     1  u8    flags
  18     6  —     reserved        MUST be 0
 ```
 
 `dimension`: `0` pitch (semitones, ±48), `1` pressure (0..1), `2` timbre/slide
 (0..1), `3` gain (dB), `4` pan (−1..1), `≥64` plugin-defined.
+
+> **This `curve` enum is not the one in `tempo_map.curve`.** That column is a
+> separate, smaller enum — `0` jump, `1` linear, `2` bezier — because a tempo
+> ramp has no use for exponential or logarithmic shapes and a bezier tempo ramp
+> is the common case. Two enums named `curve` in one format is a trap, so the
+> difference is stated rather than left to be discovered.
 
 **This is first-class, not an MPE afterthought.** A Haken Continuum, a Roli, an
 Osmose or a Seaboard produces continuous per-note pitch, pressure and timbre at
@@ -474,8 +481,13 @@ transaction that performs it (§3.5).
 
 ### 8.2 The undo tree
 
-`op_branches(id, name, head_seq, created_utc)` plus a current-head pointer in
-`session_state`.
+`op_branches(id, name, head_seq, created_utc, is_current)`. The current branch
+is the row with `is_current = 1`, and exactly one row has it — enforced by a
+partial unique index, not by convention.
+
+It lives there rather than in `session_state` because `session_state` is an
+untyped key-value store: a branch pointer held there has no foreign key, so
+nothing stops it naming a deleted branch. See ADR-0026.
 
 Undoing and then doing something new does not destroy the branch you left; it
 forks. This gives "try the agent's arrangement, don't like it, go back, and still
