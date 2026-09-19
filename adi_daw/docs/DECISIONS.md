@@ -866,3 +866,68 @@ names one entry forever. Revisiting a decision takes the next free number and
 says what it supersedes. `0018R` is a one-off repair of an existing collision,
 not a pattern to copy — ADR-0025 amends ADR-0016 by taking a fresh number, which
 is the shape every future revision should have.
+
+---
+
+## ADR-0029 — Every table is STRICT, and `routing` loses the `'bus'` kind — `DECIDED` (2026-09-19)
+
+Two schema defects, both found by `mac` while building the text projection, both
+verified against the file before acting.
+
+### 1. Every table is `STRICT`
+
+**The defect.** `schema.sql` declared no `STRICT` tables and has **23 `REAL`
+columns**. Under SQLite's flexible typing, any of them can legally hold `TEXT` —
+and `sqlite3_column_double()` then coerces it silently. A reader returns a
+number that is not what is stored, and nothing anywhere reports a problem. For a
+format whose entire premise is that a third party can implement a correct reader
+from the spec, a column whose declared type is advisory is a trap laid for that
+implementer.
+
+**Decision.** All 38 tables are `STRICT`. Verified, not assumed: inserting
+`'loud'` into `mixer_strip.volume_db` now raises *"cannot store TEXT value in
+REAL column"* instead of being accepted.
+
+**Cost accepted: this raises the minimum SQLite to 3.37 (November 2021).** Older
+versions do not merely ignore `STRICT` — they fail to parse the schema. A reader
+built against, say, a distro SQLite from 2020 cannot open a `.adi` at all. Four
+years is long enough that the trade is worth it, but it is a real exclusion and
+SPEC §3 now states the requirement rather than leaving it to be discovered.
+
+**Enforced** by `validate_schema.py` check 5b, per table rather than by counting
+the keyword — a comment mentioning `STRICT` would satisfy a count. Proved it can
+fail by removing `STRICT` from one table and watching it name that table.
+
+### 2. `routing` permitted a reference kind with no possible target
+
+**The defect, and it is mine.** `routing.src_kind`/`dst_kind` had a `CHECK`
+allowing `'bus'`, and there is no `buses` table — nor was there ever going to be
+one. A bus in this model is a track whose `kind` is `'group'`, `'return'` or
+`'master'` (ADR-0006 and SPEC §6.1). So the constraint permitted a **dangling
+reference by construction**: not a row that happens to point nowhere, but a
+reference kind whose target could not exist. The text projection surfaced it as
+`"!unresolved(bus)"` because it had nowhere to look, which is the correct
+behaviour for a reader and the wrong situation for a schema.
+
+**Decision.** `'bus'` is removed.
+
+**What the fix exposed, and is now written down.** The remaining kinds are of two
+different sorts, and conflating them is how this got in:
+
+| Kind | `src_id` / `dst_id` means | Unresolvable is |
+|---|---|---|
+| `track`, `device` | a **row id** in that table | corruption |
+| `hw_in`, `hw_out` | a hardware **port index** on the current device | **normal** — the project moved to another studio |
+
+That distinction matters to every reader, not just ours: it decides whether a
+failed lookup is an error or an expected condition. It was implicit before and
+is now in the DDL and in SPEC §6.7.
+
+**The structural cost, stated plainly.** A polymorphic `(kind, id)` pair cannot
+carry a `FOREIGN KEY`. That is the price of one `routing` table instead of six,
+and it is still the right trade — Cubase Direct Routing falls out of it for free
+(ADR-0006's reasoning applies equally here). But it means SQLite cannot enforce
+these references, so `validate_schema.py` check 5c enforces the *schema-level*
+half (every internal kind names a real table) and a future `adi_tool check`
+must enforce the *data-level* half (every internal id resolves to a live row).
+Until that command exists, this class of corruption is undetected at rest.
