@@ -14,6 +14,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <algorithm>
 #include <cstdio>
 #include <limits>
 #include <string>
@@ -234,6 +235,191 @@ void testDeterminism() {
           "assignLabels is stable");
 }
 
+// --- ordering ---------------------------------------------------------------
+
+Member mem(std::vector<SortKey> keys, std::string skel,
+           std::vector<std::uint32_t> out = {}, std::vector<std::uint32_t> in = {}) {
+    Member m;
+    m.keys = std::move(keys);
+    m.skeleton = std::move(skel);
+    m.out_refs = std::move(out);
+    m.in_refs = std::move(in);
+    return m;
+}
+
+std::string seq(const std::vector<std::uint32_t>& order,
+                const std::vector<std::string>& names) {
+    std::string s;
+    for (std::uint32_t i : order) { s += names[i]; s += ' '; }
+    if (!s.empty()) s.pop_back();
+    return s;
+}
+
+void testOrderingKeys() {
+    section("K1 -- declared semantic keys");
+    {
+        // The rule from TEXT-PROJECTION 5.3. Sorting rendered position tokens
+        // bytewise puts `10|1|0` before `2|1|0`; sort keys are raw values.
+        std::vector<Member> ms = {mem({SortKey::integer(10)}, "a"),
+                                  mem({SortKey::integer(2)},  "b"),
+                                  mem({SortKey::integer(100)},"c")};
+        const auto r = canonicalOrder(ms);
+        eq(seq(r.order, {"10", "2", "100"}), "2 10 100", "integers sort as integers");
+        check(r.status == OrderStatus::Exact, "no ties, so exact");
+    }
+    {
+        std::vector<Member> ms = {mem({SortKey::text("b")}, "x"),
+                                  mem({SortKey::integer(1)}, "x"),
+                                  mem({SortKey::null()}, "x"),
+                                  mem({SortKey::real(1.5)}, "x")};
+        const auto r = canonicalOrder(ms);
+        eq(seq(r.order, {"text", "int", "null", "real"}), "null int real text",
+           "null < integer < real < text");
+    }
+    {
+        // std::sort on a comparator built from `<` over doubles is undefined
+        // behaviour when NaN is present, not merely wrong. This must be a
+        // strict weak ordering over every bit pattern a REAL column can hold --
+        // and schema.sql has no STRICT tables, so it can hold anything.
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        std::vector<Member> ms = {mem({SortKey::real(nan)},  "a"),
+                                  mem({SortKey::real(0.0)},  "b"),
+                                  mem({SortKey::real(-0.0)}, "c"),
+                                  mem({SortKey::real(-1.0)}, "d")};
+        const auto r = canonicalOrder(ms);
+        eq(seq(r.order, {"nan", "+0", "-0", "-1"}), "-1 -0 +0 nan",
+           "-0.0 before +0.0, NaN last");
+    }
+}
+
+void testOrderingSkeleton() {
+    section("K2 -- skeletons break K1 ties");
+    std::vector<Member> ms = {mem({SortKey::integer(0)}, "zulu"),
+                              mem({SortKey::integer(0)}, "alpha"),
+                              mem({SortKey::integer(0)}, "mike")};
+    const auto r = canonicalOrder(ms);
+    eq(seq(r.order, {"zulu", "alpha", "mike"}), "alpha mike zulu",
+       "equal keys fall through to the skeleton");
+    check(r.status == OrderStatus::Exact, "skeletons separated them, so exact");
+    check(r.largest_tied_class == 1, "nothing remained tied");
+}
+
+void testOrderingRefinement() {
+    section("K3 -- the reference graph breaks what content cannot");
+    {
+        // Two members identical in every field. Only the graph around them
+        // differs: member 2 cites member 0, nothing cites member 1. This is the
+        // case the whole refinement step exists for -- and note it is reachable
+        // input, because no sibling ordinal in the core model is unique.
+        std::vector<Member> ms = {
+            mem({SortKey::integer(0)}, "same", {}, {2}),   // cited by 2
+            mem({SortKey::integer(0)}, "same", {}, {}),    // cited by nobody
+            mem({SortKey::integer(1)}, "citer", {0}, {}),
+        };
+        const auto r = canonicalOrder(ms);
+        check(r.largest_tied_class == 1, "refinement separated the twins");
+        check(r.status == OrderStatus::Exact, "and the result is exact");
+        eq(seq(r.order, {"cited", "uncited", "citer"}), "uncited cited citer",
+           "the twins are ordered by their position in the graph");
+    }
+    {
+        // Genuinely indistinguishable: same fields, same graph position.
+        // Refinement cannot and should not separate these.
+        std::vector<Member> ms = {mem({SortKey::integer(0)}, "same"),
+                                  mem({SortKey::integer(0)}, "same")};
+        const auto r = canonicalOrder(ms);
+        check(r.largest_tied_class == 2, "a genuine tie is reported, not hidden");
+        check(r.status == OrderStatus::Exact,
+              "within the K4 bound, so still exact -- swapping them is unobservable");
+    }
+}
+
+std::string renderNames(const std::vector<std::uint32_t>& order, void* ctx) {
+    const auto* names = static_cast<const std::vector<std::string>*>(ctx);
+    return seq(order, *names);
+}
+
+void testOrderingK4() {
+    section("K4 -- minimise over the output, never over a member");
+    {
+        // Two members that tie all the way through refinement but whose
+        // renderings differ. K4 must pick the lexicographically least OUTPUT.
+        std::vector<Member> ms = {mem({SortKey::integer(0)}, "same"),
+                                  mem({SortKey::integer(0)}, "same")};
+        std::vector<std::string> names = {"zulu", "alpha"};
+        const auto r = canonicalOrder(ms, &renderNames, &names);
+        eq(seq(r.order, names), "alpha zulu", "the least rendering wins");
+        check(r.status == OrderStatus::Exact, "resolved, so exact");
+    }
+    {
+        // Above the bound the projector refuses rather than inventing an order.
+        // An arbitrary order here would be a leak wearing a canonical hat.
+        std::vector<Member> ms;
+        for (int i = 0; i < 9; ++i) ms.push_back(mem({SortKey::integer(0)}, "same"));
+        const auto r = canonicalOrder(ms);
+        check(r.status == OrderStatus::Ambiguous, "a class of 9 exceeds the bound");
+        check(r.largest_tied_class == 9, "and the size is reported");
+        check(r.order.size() == 9, "output is still produced, so the projector stays total");
+    }
+    {
+        std::vector<Member> ms;
+        for (int i = 0; i < 8; ++i) ms.push_back(mem({SortKey::integer(0)}, "same"));
+        const auto r = canonicalOrder(ms);
+        check(r.status == OrderStatus::Exact, "a class of exactly 8 is within the bound");
+    }
+}
+
+void testOrderingNoLeak() {
+    section("storage order does not leak");
+    // THE property. Build one collection, then present it in every possible
+    // input order -- which is what a different rowid assignment, a different
+    // insertion history or a different query plan would look like -- and
+    // require the output sequence to be identical every time.
+    const std::vector<std::string> names = {"kick", "snare", "hat", "ride"};
+    auto build = [](const std::vector<std::size_t>& perm) {
+        // Member i cites member (i+1) mod 4, so the graph is a cycle and every
+        // member has one in-edge and one out-edge: content, not position, has
+        // to do the separating.
+        std::vector<Member> src = {
+            mem({SortKey::integer(0)}, "kick",  {1}, {3}),
+            mem({SortKey::integer(1)}, "snare", {2}, {0}),
+            mem({SortKey::integer(2)}, "hat",   {3}, {1}),
+            mem({SortKey::integer(3)}, "ride",  {0}, {2}),
+        };
+        // Remap into the requested input order, rewriting refs to match.
+        std::vector<std::uint32_t> where(4);
+        for (std::size_t p = 0; p < perm.size(); ++p)
+            where[perm[p]] = static_cast<std::uint32_t>(p);
+        std::vector<Member> out;
+        for (std::size_t p = 0; p < perm.size(); ++p) {
+            Member m = src[perm[p]];
+            for (auto& r : m.out_refs) r = where[r];
+            for (auto& r : m.in_refs)  r = where[r];
+            out.push_back(std::move(m));
+        }
+        return out;
+    };
+
+    std::vector<std::size_t> perm = {0, 1, 2, 3};
+    std::string expected;
+    int permutations = 0;
+    bool stable = true;
+    do {
+        std::vector<std::string> shuffled;
+        for (std::size_t i : perm) shuffled.push_back(names[i]);
+        const auto ms = build(perm);
+        const auto r = canonicalOrder(ms);
+        const std::string got = seq(r.order, shuffled);
+        if (permutations == 0) expected = got;
+        else if (got != expected) stable = false;
+        ++permutations;
+    } while (std::next_permutation(perm.begin(), perm.end()));
+
+    check(permutations == 24, "all 24 input orders were tried");
+    check(stable, "every input order produces the same output order");
+    eq(expected, "kick snare hat ride", "and it is the content order");
+}
+
 }  // namespace
 
 int main() {
@@ -243,6 +429,11 @@ int main() {
     testEscaping();
     testLabels();
     testDeterminism();
+    testOrderingKeys();
+    testOrderingSkeleton();
+    testOrderingRefinement();
+    testOrderingK4();
+    testOrderingNoLeak();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
