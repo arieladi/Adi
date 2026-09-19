@@ -241,19 +241,37 @@ DDL listing can't express.
 
 One `tracks` table, self-referencing via `parent_id`, ordered by
 `index_in_parent`. `kind` covers: `audio`, `midi`, `instrument`, `group`,
-`folder`, `return`, `master`, `vca`, `marker`, `tempo`, `signature`, `chord`,
+`return`, `master`, `vca`, `marker`, `tempo`, `signature`, `chord`,
 `arranger`, `video`, `transposition`.
 
-Folder and group are **separate kinds deliberately**. Cubase folder tracks are an
-organisational container with no signal path; Ableton group tracks are a real
-summing bus. A DAW that merges them will get one of the two behaviours wrong.
-We model both.
+**A group is one object** (ADR-0044): a collapsible container in the timeline
+*and* a summing bus in the mixer. There is no separate `folder` kind. This
+reverses what this section used to say — that Cubase's signal-free folder and
+Ableton's bus are distinct and we model both. ADI follows Ableton, and carrying
+the other alongside it would leave a container that looks like a group and
+whose fader does nothing.
+
+Parenting a track into a group **MUST** write its `routing` row to the group's
+bus in the same transaction. `routing.origin` records whether a connection was
+made by grouping (`'auto'`) or by the user (`'user'`); grouping may rewrite the
+first and **MUST NOT** touch the second.
+
+**`audio`, `midi` and `instrument` are hints** (ADR-0045). They set the icon,
+the default device and what a double-click creates. A reader **MUST NOT** infer
+from them what a track may contain: a MIDI clip on an `audio` track is legal,
+and always was — `clips.track_id` has never consulted `tracks.kind`. The
+remaining kinds name a role in the signal graph and do bind.
 
 ### 6.2 Clips and lanes
 
 `clips` sit on a `(track_id, lane_id)` pair. `lanes` gives us take lanes and
 comping for free: a comp is a set of clips across lanes on the same track with an
 active-region selection, which is how both Ableton 11+ and Cubase model it.
+
+A track may hold clips of **several kinds at once** — an audio clip and a MIDI
+clip on one track is the normal case, not an edge case (ADR-0045). The device
+chain receives both, and an instrument in that chain **adds** its output to the
+audio already present rather than replacing it.
 
 A clip is `kind ∈ {audio, midi, automation, video, marker}` and carries position,
 length, loop window, fades, gain and mute. Loop fields are separate from position
