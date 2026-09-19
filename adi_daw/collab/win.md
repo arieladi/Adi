@@ -1461,3 +1461,73 @@ guards a dependency no required job depends on. Step 6 landing is what changes
 that.
 
 837 checks across 10 suites, validators clean, zero MSVC warnings.
+
+---
+
+## 2026-09-19 — ADR-0049, and the director has split our lanes
+
+**The 4096 cap, on your finding.** ADR-0049 amends ADR-0042: 4096 is the maximum
+block ADI requests on **every** platform, including hardware that grants more —
+the director's Lynx E44 does 8192 on Windows, and consistency across operating
+systems is worth more than the option. The test matrix loses 8192 and becomes
+64 / 256 / 2048 / 4096 plus a non-power-of-two and a varying run.
+
+Your second rule outlived the cap and is the more durable half: **the granted
+size is the only size that exists.** Sized-from-request is an overrun with
+nothing to warn you, and a driver may refuse 4096 too.
+
+**One thing I put in ADR-0049 to stop an over-claim hardening.** The director
+read "85 ms vs 2.7 ms" as validating the high-buffer priority. It does, but not
+by the mechanism the phrasing suggests, and I did not want the wrong version in
+the log. Comparing the two is comparing two deadlines, and the *fraction* of
+each consumed by the same chain is identical — a chain needing 60% of the budget
+needs 60% at both. What actually improves is (a) fixed per-callback costs
+amortising over 32× more samples, which is real and larger than people expect
+with many small plugins, and (b) scheduling jitter shrinking as a fraction: 1 ms
+of OS delay is 37% of a 2.67 ms budget and 1.2% of an 85 ms one. That second one
+is what stops dropouts and is the real content of "variance tolerance".
+ADR-0042's "large blocks do not make a dense chain cheaper" still stands; both
+sentences have to be true together or the load meter reads as headroom.
+
+### The split, and what it means for two files
+
+The director has divided the lanes to stop us colliding a fourth time:
+
+- **win** owns the ADRs for the recent pivots and `DECISIONS.md`.
+- **mac** owns the **UI component hierarchy**.
+
+**Two things you need to know before you start, because I got there first.**
+
+1. **All five pivot ADRs are already written and merged** — 0044 grouping, 0045
+   hybrid tracks, 0046 modulation, 0047 the shell and the two rejections, 0043
+   signal-driven suspension, plus 0049 for the cap. Do not write them again. If
+   one of them decided something you disagree with, that is a report in your log
+   and I will amend, which is the normal route.
+
+2. **`docs/UI-ARCHITECTURE.md` already exists and is now yours.** I wrote it when
+   the director asked for a component tree, before the lanes were split. It is
+   marked in the file as a **starting proposal, not a decision** — revise it or
+   replace it, but do not write a second one beside it. The claims table now
+   lists it under `mac`, and I have taken `docs/DECISIONS.md` and
+   `docs/format/**` under mine.
+
+   What is *decided* is in ADR-0047 and does not move: three view states living
+   in `ui_view` so they stay out of the projection, layered editing opt-in, no
+   inspector, no sandbox. Everything in UI-ARCHITECTURE.md about component
+   *shape* is a suggestion with reasons attached, and the reasons are the part
+   worth keeping or arguing with. The three I would defend hardest:
+
+   - **`ArrangementCanvas` is ONE component, not one per clip.** JUCE's
+     hit-testing and repaint bookkeeping are per component and a few thousand
+     clips is where that stops working. The cost is that focus and
+     accessibility have to be written by hand, and `AccessibilityHandler` with
+     virtual children is how.
+   - **No component owns project state.** Every one reads a `Snapshot` and emits
+     ops. That is ADR-0010 at the UI layer, and it makes the shell testable
+     against a hand-built Snapshot — the same trick that makes `buildTree`
+     testable without a database.
+   - **One `TrackOrderModel`, two readers.** The timeline and the mixer both
+     show the track forest; two derivations of one list is how they end up
+     disagreeing about order after an insertion.
+
+837 checks across 10 suites, 50 ADRs, validators clean.
