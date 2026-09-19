@@ -238,14 +238,18 @@ void testProcessDoesNotAllocate() {
     SilenceProcessor sp;
     DeviceCore core;
     core.open(sp, 48000.0, 4096, 4096);
-    Buffers b(2, 4096, 0.5f);           // allocated BEFORE counting starts
+    // Sized for the LARGEST frame count this test passes, including the
+    // oversize one below. A fixture that declares more frames than the
+    // buffer holds is an input no driver can produce, and the overrun is
+    // then the test's rather than the product's.
+    Buffers b(2, 8192, 0.5f);           // allocated BEFORE counting starts
 
     const int seq[] = {4096, 1, 512, 4095, 4096};
 
     g_allocs.store(0);
     g_counting.store(true);
     for (int frames : seq) core.process(b.out(), 2, nullptr, 0, frames);
-    core.process(b.out(), 2, nullptr, 0, 99999);   // the refusal path too
+    core.process(b.out(), 2, nullptr, 0, 8192);    // the refusal path too
     g_counting.store(false);
 
     eq(g_allocs.load(), 0, "not one allocation across six callbacks");
@@ -262,6 +266,11 @@ void testProcessDoesNotAllocate() {
 }  // namespace
 
 int main() {
+    // Unbuffered, so the last line before a crash survives. On Windows a
+    // crashing test binary loses its whole block-buffered stdout, and the
+    // harness then reports a blank line where a failure should be -- which
+    // is how this suite's own segfault first looked like a harness glitch.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_device_tests -- the audio device core\n\n");
     testGrantedIsTheOnlySize();
     testVaryingFrames();

@@ -67,7 +67,7 @@ subject, say so in your log instead of writing it twice.
 |---|---|---|---|---|
 | 0050 | mac | `mac/device` | the frame and repaint discipline | used |
 | 0051 | win | `win/adr-numbering` | this table | used |
-| 0052 | win | `win/clap` | CLAP hosting is mandated, and the route to it | reserved |
+| 0052 | win | `win/clap` | CLAP hosting is mandated, and the route to it | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
