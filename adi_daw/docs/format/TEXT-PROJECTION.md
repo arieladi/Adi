@@ -77,15 +77,16 @@ Three consequences worth stating on their own:
   instance — which is correct: you *want* to see that all forty Serum instances
   moved to 1.372 in one diff hunk.
 
-### The seven that genuinely remain
+### The six that genuinely remain
 
-1. `routing` endpoints (track / device / hardware port / bus)
+1. `routing` endpoints (track / device / hardware port)
 2. `mixer_strip.vca_group_id` → track
-3. `clip_slots` → track, scene, clip
-4. `clips.alias_of` → clip
-5. `audio_clips.media_id` and `tracks.freeze_media_id` → media
-6. clip-scoped `automation_data` → its lane
-7. `macro_mappings.target_device_id` → device
+3. `clips.alias_of` → clip
+4. `audio_clips.media_id` and `tracks.freeze_media_id` → media
+5. clip-scoped `automation_data` → its lane
+6. `macro_mappings.target_device_id` → device
+
+(`clip_slots` was the seventh until ADR-0037 removed Session View.)
 
 These get **designators**: quoted, slash-separated paths of content-derived
 labels. See §6.
@@ -218,7 +219,7 @@ Sort keys are raw values; rendered tokens are output only.
 
 A member's **label** is:
 
-1. its base label — `name` for tracks, scenes, lanes, devices, markers, sections
+1. its base label — `name` for tracks, lanes, devices, markers, sections
    and clips; the plugin name for a device with an empty name; `param_ref` for an
    automation lane; the hash prefix for media;
 2. if that is empty, a kind-specific fallback. For **unpositioned** objects this
@@ -242,13 +243,15 @@ renaming `Bass` to `Bass Gtr` cannot change the token's shape.
 
 ```
 "/trk/Rhythm/Drums"                    "/trk/Rhythm/Drums/dev/Serum"
-"/scene/Chorus"                        "/trk/Bass/clip/Verse"
+"/trk/Bass/clip/Verse"                 "/mark/Chorus"
 "/trk/Bass/auto/volume"                "/media/1f4a9c2e7b0d3a51"
 "/trk/Rhythm/Drums/dev/Serum/macro/Drive"
 ```
 
 The top-level track forest is **role-partitioned** from `tracks.kind` into
-`/trk`, `/ret`, `/vca`, `/master` and `/glob`. Sends overwhelmingly target
+`/trk`, `/ret`, `/vca`, `/master` and `/glob`. There is no `/scene` space:
+ADR-0037 removed Session View, so `scenes` and `clip_slots` are gone from
+Layer 1 and nothing addresses a slot. Sends overwhelmingly target
 returns and the master, and those spaces are untouched by inserting an audio
 track — a cheap halving of insertion churn, taken from the path-addressed design.
 
@@ -292,7 +295,6 @@ the panel ran — no ordering column in the core model is uniqueness-enforced:
 | `device_chains` | `ord` | no |
 | `automation_lanes` | *none* | — |
 | `markers` | `pos_ticks` | no |
-| `scenes` | `ord` | **yes** |
 
 Notes inside an `ANOT` blob and points inside an `AAUT` blob have no ordinal at
 all and can collide on time.
@@ -346,7 +348,6 @@ one, and it is a real limitation, recorded in §11.
 | automation lanes | `param_ref` |
 | devices | `ord`, name |
 | device chains | `ord`, name |
-| scenes | `ord` |
 | markers | **`pos_ticks` (raw), then kind, then name** |
 | routing | src designator, dst designator, kind |
 | macros | `ord`, name |
@@ -500,11 +501,13 @@ dangling cite; a reviewer can check it with one search.
 Three schema findings surfaced while designing this, all verified against
 `schema.sql` at `bcf9212`:
 
-1. **No ordering column in the core model is unique** except `scenes.ord`. The
-   projection now defines a total order regardless, so this is no longer
-   blocking — but a duplicate ordinal is a bug wherever it occurs, and `UNIQUE`
-   constraints would let the store layer reject it at write time instead of the
-   projection papering over it at read time.
+1. **No ordering column in the core model is unique.** (This said "except
+   `scenes.ord`" until ADR-0037 removed `scenes`, so the statement is now
+   unconditional — one fewer special case in the ordering rules.) The projection
+   defines a total order regardless, so this is not blocking — but a duplicate
+   ordinal is a bug wherever it occurs, and `UNIQUE` constraints would let the
+   store layer reject it at write time instead of the projection papering over
+   it at read time.
 2. **Zero `STRICT` tables, 23 `REAL` columns.** Any of them can legally hold
    `TEXT`.
 3. **`routing` permits `src_kind`/`dst_kind` = `'bus'` and no `buses` table

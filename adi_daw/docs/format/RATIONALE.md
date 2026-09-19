@@ -98,7 +98,7 @@ decode into the runtime model**, not for in-place access. That is what actually
 justifies the BLOBs — a memcpy-and-fixup of 4,000 notes beats 4,000 row reads by
 two orders of magnitude — but it justifies them for *loading*, not for playback.
 
-## 4. Error three: "open it in Cubase and your Session View is preserved"
+## 4. Error three: "open it in Cubase and your arrangement is preserved"
 
 This will not happen. Steinberg and Ableton are not going to implement our
 format. Presenting the extension mechanism as cross-DAW round-tripping oversells
