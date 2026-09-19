@@ -14,15 +14,6 @@
 
 namespace adi {
 
-// ---------------------------------------------------------------------------
-// What a handler may touch
-// ---------------------------------------------------------------------------
-
-struct OpContext {
-    Store& store;
-    SQLite::Database& db;
-};
-
 namespace {
 
 std::int64_t nowUtcMicros() {
@@ -470,6 +461,47 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs) {
         r.txnId = txnId;
         const std::int64_t ts = nowUtcMicros();
 
+        // Where we are in the tree. New ops hang off this.
+        std::optional<std::int64_t> head = headSeq();
+
+        // SPEC §8.2: "Undoing and then doing something new does not destroy the
+        // branch you left; it forks."
+        //
+        // A fork is detectable here and nowhere else: if the head already has a
+        // non-ephemeral child, we are committing from a position that is not the
+        // tip, which means an undo happened and this work diverges from what
+        // followed. Save the abandoned line as a branch BEFORE writing, or it
+        // becomes unreachable the moment the new op takes its place in redo.
+        {
+            SQLite::Statement kids(db,
+                "SELECT seq FROM ops WHERE tags <> 'ephemeral' AND "
+                "  ((? IS NULL AND parent_seq IS NULL) OR parent_seq = ?) "
+                "ORDER BY seq DESC LIMIT 1");
+            if (head) { kids.bind(1, *head); kids.bind(2, *head); }
+            else      { kids.bind(1);        kids.bind(2); }
+
+            if (kids.executeStep()) {
+                // Walk to the end of the abandoned line -- always the
+                // highest-seq child, which is the same rule redo follows.
+                std::int64_t tip = kids.getColumn(0).getInt64();
+                for (;;) {
+                    SQLite::Statement nxt(db,
+                        "SELECT seq FROM ops WHERE parent_seq = ? AND tags <> 'ephemeral' "
+                        "ORDER BY seq DESC LIMIT 1");
+                    nxt.bind(1, tip);
+                    if (!nxt.executeStep()) break;
+                    tip = nxt.getColumn(0).getInt64();
+                }
+                SQLite::Statement mk(db,
+                    "INSERT INTO op_branches(name, head_seq, created_utc, is_current, "
+                    "created_by) VALUES (?,?,?,0,'system')");
+                mk.bind(1, "forked at " + std::to_string(head ? *head : 0));
+                mk.bind(2, tip);
+                mk.bind(3, ts);
+                mk.exec();
+            }
+        }
+
         for (std::size_t i = 0; i < reqs.size(); ++i) {
             const auto& q = reqs[i];
             const auto* d = descs[i];
@@ -498,26 +530,50 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs) {
             std::vector<std::byte> inverseBytes;
             if (haveInverse) inverseBytes = encodePayload(inverse);
 
+            // Ephemeral ops (transport, clip launching) are in the log for
+            // audit and OUTSIDE the undo tree: parent_seq NULL, and they do not
+            // move the head. OPS.md §10 -- undo skips them, the audit trail does
+            // not. Keeping them out of the chain is what makes "skip" free
+            // rather than a filter every walk has to remember.
+            std::vector<std::byte> selBytes;
+            const bool wantSel = (i == 0) && q.selBefore.has_value();
+            if (wantSel) selBytes = encodePayload(*q.selBefore);
+
             SQLite::Statement st(db,
-                "INSERT INTO ops(txn_id, ts_utc, actor, actor_detail, op_type, "
-                "target_kind, target_id, payload, inverse, label, tags) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+                "INSERT INTO ops(txn_id, parent_seq, ts_utc, actor, actor_detail, "
+                "op_type, target_kind, target_id, payload, inverse, label, tags, "
+                "sel_before) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
             st.bind(1, txnId);
-            st.bind(2, ts);
-            st.bind(3, std::string(toString(q.actor)));
-            st.bind(4, q.actorDetail);
-            st.bind(5, q.opType);
-            st.bind(6, q.targetKind);
-            if (q.targetId) st.bind(7, *q.targetId); else st.bind(7);
-            st.bindNoCopy(8, payloadBytes.data(), static_cast<int>(payloadBytes.size()));
+            if (d->ephemeral || !head) st.bind(2); else st.bind(2, *head);
+            st.bind(3, ts);
+            st.bind(4, std::string(toString(q.actor)));
+            st.bind(5, q.actorDetail);
+            st.bind(6, q.opType);
+            st.bind(7, q.targetKind);
+            if (q.targetId) st.bind(8, *q.targetId); else st.bind(8);
+            st.bindNoCopy(9, payloadBytes.data(), static_cast<int>(payloadBytes.size()));
             if (haveInverse)
-                st.bindNoCopy(9, inverseBytes.data(), static_cast<int>(inverseBytes.size()));
+                st.bindNoCopy(10, inverseBytes.data(), static_cast<int>(inverseBytes.size()));
             else
-                st.bind(9);
-            st.bind(10, q.label);
-            st.bind(11, d->ephemeral ? "ephemeral" : "");
+                st.bind(10);
+            st.bind(11, q.label);
+            st.bind(12, d->ephemeral ? "ephemeral" : "");
+            if (wantSel)
+                st.bindNoCopy(13, selBytes.data(), static_cast<int>(selBytes.size()));
+            else
+                st.bind(13);
             st.exec();
-            r.seqs.push_back(db.getLastInsertRowid());
+            const std::int64_t seq = db.getLastInsertRowid();
+            r.seqs.push_back(seq);
+            if (!d->ephemeral) head = seq;   // the chain advances; ephemeral does not
+        }
+
+        // The head move is in the SAME transaction as the mutations it
+        // describes. Otherwise a crash between them leaves the project changed
+        // and the head saying otherwise, which undo would then get wrong.
+        if (!setHeadSeq(head)) {
+            r.error = "could not advance the undo head";
+            return r;
         }
 
         txn.commit();
@@ -535,7 +591,7 @@ std::vector<OpJournal::LoggedOp> OpJournal::recent(int limit) const {
     try {
         SQLite::Statement st(store_.db(),
             "SELECT seq, txn_id, ts_utc, actor, actor_detail, op_type, label, "
-            "payload, inverse FROM ops ORDER BY seq DESC LIMIT ?");
+            "payload, inverse, parent_seq, tags FROM ops ORDER BY seq DESC LIMIT ?");
         st.bind(1, limit);
         while (st.executeStep()) {
             LoggedOp o;
@@ -560,11 +616,45 @@ std::vector<OpJournal::LoggedOp> OpJournal::recent(int limit) const {
                 if (auto d = decodeFromLog({b, static_cast<std::size_t>(ic.getBytes())}, err))
                     o.inverse = std::move(*d);
             }
+            if (!st.getColumn(9).isNull()) o.parentSeq = st.getColumn(9).getInt64();
+            o.ephemeral = st.getColumn(10).getString() == "ephemeral";
             out.push_back(std::move(o));
         }
     } catch (const std::exception&) {
     }
     return out;
+}
+
+std::int64_t OpJournal::currentBranchId() const {
+    try {
+        return store_.db()
+            .execAndGet("SELECT id FROM op_branches WHERE is_current = 1")
+            .getInt64();
+    } catch (const std::exception&) {
+        return 1;   // schema.sql seeds branch 1 on create
+    }
+}
+
+std::optional<std::int64_t> OpJournal::headSeq() const {
+    try {
+        SQLite::Statement st(store_.db(),
+            "SELECT head_seq FROM op_branches WHERE is_current = 1");
+        if (!st.executeStep() || st.getColumn(0).isNull()) return std::nullopt;
+        return st.getColumn(0).getInt64();
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+bool OpJournal::setHeadSeq(std::optional<std::int64_t> seq) {
+    try {
+        SQLite::Statement st(store_.db(),
+            "UPDATE op_branches SET head_seq = ? WHERE is_current = 1");
+        if (seq) st.bind(1, *seq); else st.bind(1);
+        return st.exec() > 0;
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 std::int64_t OpJournal::count() const {

@@ -25,6 +25,10 @@
 
 #include <nlohmann/json.hpp>
 
+namespace SQLite {
+class Database;
+}
+
 namespace adi {
 
 class Store;
@@ -70,7 +74,15 @@ struct Field {
 // The descriptor — OPS.md §3
 // ---------------------------------------------------------------------------
 
-struct OpContext;  // what a handler is allowed to touch
+/// What a handler is allowed to touch: the store, and the open database inside
+/// the caller's transaction. Defined here rather than in a .cpp because both
+/// ops.cpp and history.cpp apply ops through the same descriptors, and two
+/// identical definitions in two translation units is an ODR violation that
+/// happens to work until it does not.
+struct OpContext {
+    Store& store;
+    SQLite::Database& db;
+};
 
 struct OpDescriptor {
     std::string_view name;     // "clip.move" -- domain.verb, permanent
@@ -178,6 +190,11 @@ struct OpRequest {
     std::string label;      // what the undo menu shows
     std::string targetKind;
     std::optional<std::int64_t> targetId;
+
+    /// ADR-0021 §7.5. What was selected when this transaction began, so undo can
+    /// restore it. Advisory: never an input to a handler, purely a UI hint, and
+    /// droppable by compaction. Recorded on the FIRST op of a transaction only.
+    std::optional<Payload> selBefore;
 };
 
 struct CommitResult {
@@ -212,9 +229,18 @@ public:
         std::string label;
         Payload payload;
         std::optional<Payload> inverse;
+        std::optional<std::int64_t> parentSeq;
+        bool ephemeral = false;
     };
     [[nodiscard]] std::vector<LoggedOp> recent(int limit = 50) const;
     [[nodiscard]] std::int64_t count() const;
+
+    /// The ops table is a tree (SPEC §8.2), and these maintain it. Exposed
+    /// because History walks the same structure and the two must agree about
+    /// what "where we are" means.
+    [[nodiscard]] std::optional<std::int64_t> headSeq() const;
+    bool setHeadSeq(std::optional<std::int64_t>);
+    [[nodiscard]] std::int64_t currentBranchId() const;
 
 private:
     Store& store_;
