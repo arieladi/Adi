@@ -47,8 +47,9 @@ flagged, and it is a bug in the format, not in the plan.
 | Feature | From | P | Fmt | Notes |
 |---|---|---|---|---|
 | Audio / MIDI / instrument tracks | both | P0 | ✅ | |
-| Group (summing bus) tracks | Ableton | P0 | ✅ | `kind='group'` |
-| Folder (organisational) tracks | Cubase | P1 | ✅ | `kind='folder'` — **not** the same thing, SPEC §6.1 |
+| Group tracks: folder **and** bus, one object | Ableton | P0 | ✅ | `kind='group'`. Grouping auto-routes children into the bus in the same transaction; `routing.origin` protects a manual override (ADR-0044). |
+| ~~Folder (organisational) tracks~~ | Cubase | **no** | — | **Removed** (ADR-0044). One grouping concept. A container whose fader does nothing is the thing users pick by accident. |
+| Hybrid tracks: audio and MIDI on one channel | Bitwig | **P0** | ✅ | `tracks.kind` is a hint, never a constraint (ADR-0045) |
 | Return tracks / FX channels | both | P0 | ✅ | `kind='return'` + `routing.kind='send'` |
 | Sends, pre/post fader | both | P0 | ✅ | |
 | Sidechain routing | both | P1 | ✅ | `routing.kind='sidechain'` |
@@ -133,7 +134,10 @@ to be earned on the timeline instead. That is the point.
 | 2048–8192-sample blocks, tested | — | **P0** | — | runtime. The target workflow is dense chains, not low-latency tracking (ADR-0042). |
 | Sub-block automation and MIDI accuracy | both | **P0** | ✅ | runtime. At 8192 a block is 171 ms; per-block updates would step audibly. The price of the row above (ADR-0042). |
 | Change block size without reloading | both | **P0** | — | runtime. At 8192 overdubbing is impossible, so moving between sizes mid-session is not optional (ADR-0042). |
-| Plugin sandboxing (crash isolation) | Cubase | P2 | — | runtime |
+| VST3 silence flags + tail-aware suspension | — | **P0** | ✅ | runtime; `devices.always_process` opts out (ADR-0043) |
+| Host-side modulation to any VST3 parameter | Bitwig | P1 | — | routing persists, output never does (ADR-0046) |
+| ~~Plugin sandboxing (crash isolation)~~ | Cubase | **no** | — | **Rejected** (ADR-0047). Not for IPC cost — that amortises over a 171 ms block and is cheapest here — but for latency and complexity. Affordable because a crash loses one gesture, not the session (ADR-0001). |
+| ~~Dedicated Inspector panel~~ | Cubase | **no** | — | **Rejected** (ADR-0047). Mixer strip, device chain and detail editor must carry every property between step 7 and step 9, and must be keyboard-reachable. |
 
 ## 7. Automation
 

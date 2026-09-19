@@ -1869,3 +1869,289 @@ snapshot handoff headless and step 6 is where a device and a graph arrive. This
 exists so that step 6 is designed for the block sizes the project actually runs
 at, and so the sub-block decision is made before a per-block automation update
 is written and becomes load-bearing.
+
+
+---
+
+## ADR-0043 — Signal-driven DSP suspension: silence flags in, tail time respected — `DECIDED` (2026-09-19)
+
+**Director's call.** Take advantage of VST3's CPU-management capabilities.
+Suspend DSP on a chain with no audio passing through it, and **respect plugin
+tail times** so reverbs, delays and release envelopes are not cut off when the
+input stops.
+
+VST3 gives us exactly the two pieces needed: `AudioBusBuffers::silenceFlags`,
+which the host sets on inputs and the plugin sets on outputs, and
+`IAudioProcessor::getTailSamples()`.
+
+### Decisions
+
+1. **Silence propagates forward through the graph.** A node is skipped for a
+   block when every audio input is flagged silent, it has no pending events, and
+   its tail has expired. Its outputs are then flagged silent, so the saving
+   propagates down the chain rather than stopping at the first node.
+
+2. **The tail counter is the whole mechanism, and it is per node.** When a
+   node's inputs go silent, it keeps processing for `getTailSamples()` more
+   samples. Any non-silent input, at any time, resets the counter. A node is
+   skipped only once the counter reaches zero. `kInfiniteTail` means **never
+   skipped**, and that is the correct handling of a feedback delay or a plugin
+   that does not know its own tail.
+
+3. **Events are not silence.** A node with a pending MIDI event, an active note,
+   or a live sidechain input is processed, whatever its main audio input says.
+   This is the bug every implementation of this feature ships once: an
+   instrument has no audio input, so naive silence detection suspends every
+   synth in the project.
+
+4. **`devices.always_process` is the escape hatch, because plugins lie.** A
+   plugin that reports `kNoTail` and then produces a tail is common, and a plugin
+   whose tail depends on a parameter usually reports a fixed number that is right
+   at one setting. A per-device flag that opts out of suspension entirely, and a
+   UI that can show which devices are currently suspended, together turn "my
+   reverb got cut off" from an unfalsifiable complaint into a two-click
+   diagnosis.
+
+5. **Offline render never suspends.** Skipping is only correct if the plugin's
+   tail report is correct, and decision 4 exists because it often is not. A
+   bounce that differs from playback is the worst possible bug in a DAW: it is
+   discovered after the session, by someone else. Render takes the CPU.
+
+### Two things about this that should be said plainly
+
+**It reduces average load, not peak load.** Silence-skipping saves CPU exactly
+when material is sparse. In a dense arrangement where everything plays at once —
+the workflow ADR-0042 is built for — it saves nothing at the loudest bar, and the
+loudest bar is what determines whether the project drops out. This is a real and
+worthwhile feature; it is not headroom, and the load meter will be much more
+encouraging than the worst case.
+
+**This is a different mechanism from ADR-0040's, and they must not be merged.**
+ADR-0040 suspends a device because its *UI is hidden*, opt-in, declared by the
+device. This suspends a device because *no signal is reaching it*, automatic,
+derived from the graph. One is a claim the device makes about itself; the other
+is a fact about the block. A device may be subject to both and is suspended if
+either applies.
+
+**And ADR-0040's `has_tail` field is now partly redundant for a VST3**, which
+answers the question with `getTailSamples()`. The declared field stays for our
+own devices and for anything that cannot answer; where a plugin can answer, the
+plugin wins over the declaration.
+
+---
+
+## ADR-0044 — A group is one object: a folder and its bus, auto-routed and overridable — `DECIDED` (2026-09-19) — **REVERSES SPEC §6.1**
+
+**Director's call.** Grouping works like Ableton, not Cubase. Tracks grouped
+together enter a collapsible folder *and* their outputs are routed into the
+group's bus automatically. The user can override the routing.
+
+**What the format said, and why it changes.** SPEC §6.1 argued that `folder` and
+`group` are separate kinds deliberately — Cubase's organisational container with
+no signal path, and Ableton's summing bus — and that "a DAW that merges them will
+get one of the two behaviours wrong". That was the right call for a DAW modelling
+both paradigms. ADI is no longer modelling both.
+
+### Decisions
+
+1. **`'folder'` is removed from `tracks.kind`.** One concept. A group is a
+   container in the timeline and a bus in the mixer, and those are two views of
+   one object. Keeping a signal-free folder alongside it is exactly the Cubase
+   split being rejected, and it would be the thing users pick by accident and
+   then wonder why the group fader does nothing.
+
+2. **Grouping creates the routing, in the same transaction.** Parenting a track
+   into a group writes its `routing` row to the group's bus atomically with the
+   re-parent. There is no state in which a track is visually inside a group and
+   still routed to the master — which is the Cubase-shaped bug this ADR exists
+   to prevent.
+
+3. **`routing.origin` distinguishes what grouping owns from what the user
+   said.** A new column, `'auto'` or `'user'`, defaulting to **`'user'`**.
+   Grouping may create, rewrite and delete `'auto'` rows freely; it **MUST NOT**
+   touch a `'user'` row. The moment a user redirects a child's output by hand,
+   that row becomes `'user'` and re-grouping stops managing it.
+
+   Defaulting to `'user'` rather than `'auto'` is deliberate: a row written by
+   anything that has not thought about this — a converter, a migration, a
+   hand-repaired file — is one that automatic grouping must leave alone. The
+   safe default is the one that loses nothing.
+
+4. **`track.setParent` stops being a scalar op.** It currently sets one column,
+   which was correct when parenting was organisational and is now wrong: a
+   re-parent that does not also move the routing produces exactly the state
+   decision 2 forbids. It becomes a composite op writing both, with an inverse
+   that restores both. **This is a real change to an implemented op**, not a
+   future one, and it is the first op in the catalogue that is not a pure
+   function of one row.
+
+### Consequence worth naming
+
+A group bus is a real summing point, so it costs a buffer and, once it holds
+devices, latency that has to be compensated. Ableton users expect this and it is
+the right default. A user who wants organisation *without* a summing point no
+longer has a way to ask for it — that is the cost of decision 1, it is accepted,
+and if it turns out to matter the answer is a group with an explicit "no bus"
+flag, not the return of `'folder'`.
+
+---
+
+## ADR-0045 — Tracks are hybrid; `kind` is a hint and never a constraint — `DECIDED` (2026-09-19)
+
+**Director's call.** No strict separation between audio and MIDI tracks. One
+channel holds both, passing data contextually to the device chain. The Bitwig
+model.
+
+**Most of this already works, and that is worth checking rather than assuming.**
+`clips.track_id` has never consulted `tracks.kind`, and `clips.kind` already
+admits `audio`, `midi`, `automation`, `video` and `marker`. The schema has
+allowed a MIDI clip on an "audio" track since it was written. What was missing
+is the *rule*, and a graph that can carry both.
+
+### Decisions
+
+1. **`tracks.kind` values `audio`, `midi` and `instrument` are hints, not
+   constraints.** They set the icon, the default device and what a double-click
+   creates. No reader, writer, projector or engine may infer from them what a
+   track is allowed to contain. The special kinds — `group`, `return`, `master`,
+   `vca` and the global lanes — keep their meaning; those describe a role in the
+   signal graph, not a content type.
+
+   They are kept rather than collapsed into a single `track` because they carry
+   the user's intent for free and cost nothing to ignore. If they later prove to
+   be a source of wrong assumptions, collapsing them is a one-line CHECK change
+   and a test-fixture sweep.
+
+2. **Every port in the graph is a pair: audio buffers and an event list.** Not a
+   typed port that is one or the other. This is the decision that makes hybrid
+   tracks require no special case anywhere — the special case is what typed
+   ports would force at every junction.
+
+3. **Every device passes through what it does not consume.**
+
+   | device | consumes | produces | passes through |
+   |---|---|---|---|
+   | instrument | events | audio (**added to** the incoming audio) | events |
+   | audio effect | audio | audio | events, unchanged |
+   | note effect | events | events | audio, unchanged |
+
+   The row that needs stating is the instrument's. On a track holding both an
+   audio clip and a MIDI clip, the clip reader fills both halves of the port,
+   and an instrument in the chain **adds** its output to the audio already
+   there rather than replacing it. Replacing would silently mute the audio
+   clips, and the user would find out at mixdown.
+
+4. **A device chain is never typed.** There is no "MIDI chain" and no "audio
+   chain". A chain is a chain, and what flows is whatever the track produced.
+
+---
+
+## ADR-0046 — Modulation is a graph concern; the routing persists and the output never does — `DECIDED (direction)` (2026-09-19)
+
+**Director's call.** The graph must lay the groundwork for native modulation —
+host-side LFOs and envelopes mapped to any VST3 parameter, Bitwig-style.
+
+**Why this fits the decisions already taken, which is the reason to record it
+now rather than at step 7.** ADR-0042 made sub-block splitting mandatory so
+automation is smooth at 8192-sample blocks. Host-side modulation needs exactly
+the same machinery: a value that changes continuously inside one callback,
+delivered to a plugin through `IParameterChanges` at sub-block resolution.
+Building the split for automation and then discovering modulation needs it too
+would be luck. It is not luck; it is the same requirement, and this ADR says so
+before the split is written.
+
+### Decisions
+
+1. **A modulator is a node in the graph**, not a UI widget that writes
+   parameters. It runs on the audio thread, at sub-block resolution, and it is
+   ordered like any other node.
+
+2. **Modulation is not automation, and the difference is the op log.**
+   Automation is recorded data: points, edited, undoable, one op per edit.
+   Modulation is a live function of time. **The routing is persisted and
+   undoable — source, target, depth, curve, mode. The output is never persisted
+   and never written to the op log.** An op per modulated sample would be
+   absurd, and it would also be wrong: the whole point is that the value is
+   derived.
+
+3. **`macros` and `macro_mappings` are the subset we already have**, and the
+   modulation schema generalises them rather than sitting beside them. A macro
+   is a modulator whose source is a knob. Designing two overlapping systems is
+   how a DAW ends up with a macro that cannot target what a modulator can.
+
+**Deliberately not designed here:** the schema. It arrives with the device
+contract (ADR-0040), because a modulation target is a parameter and the
+parameter declaration is the open question in that ADR. Designing the routing
+table before knowing how a device declares a parameter would be designing
+against a guess.
+
+---
+
+## ADR-0047 — The UI shell: three view states, opt-in layered editing, no sandbox, no inspector — `DECIDED` (2026-09-19)
+
+**Director's call**, four parts. The layout stays Ableton-shaped — browser left,
+timeline top, devices bottom, mixer right — and `docs/UI-ARCHITECTURE.md`
+carries the component hierarchy. This ADR records the decisions, including two
+rejections where I owe a correction.
+
+### 1. Three view states, and they are session state
+
+Global view, group/stem focus, detailed zoom, on Cubase's zoom shortcuts. The
+current state lives in `ui_view` (Layer 3), so it survives a reload, is
+per-project, and is **excluded from the text projection** — which is what stops
+a colleague's zoom level appearing in a `git diff`.
+
+**Open, and it is not a UI question:** where a *keyboard* map lives.
+`controller_maps` is project-scoped and right for MIDI and OSC; a keymap is
+app-scoped, because a user's shortcuts should not change when they open someone
+else's project. It needs a home outside the `.adi` and it does not have one.
+
+### 2. Layered editing, opt-in
+
+Superimposed waveform and MIDI from several selected tracks in one editor, for
+phase and timing alignment. Off by default, because the common case is editing
+one track and the layered view is clutter there.
+
+The data model needs nothing for this — reading two tracks is already possible.
+The work is entirely rendering: z-order, colour identity across layers, and
+hit-testing that resolves to the track the user meant. Recording that it is a
+rendering problem, not a model problem, is what stops someone adding a schema
+column for it.
+
+### 3. Plugin sandboxing: rejected, but not for the stated reason
+
+The directive rejects it to avoid IPC overhead at high buffer sizes. **That is
+backwards, and the correction matters because the same reasoning will come up
+again.** IPC cost is per *callback*, not per sample, so it amortises over the
+block: at 8192 samples it is the cheapest it will ever be, spread across 171 ms.
+Sandboxing is *most* affordable in exactly the configuration ADR-0042 describes.
+
+The real costs of sandboxing are added latency — most designs pipeline a block —
+and a large amount of complexity in state transfer, GUI embedding and crash
+recovery. Those are good reasons, and the decision stands on them.
+
+**What we accept by rejecting it:** one badly-behaved plugin takes down the
+whole application. That is less severe here than in most DAWs, because ADR-0001
+and ADR-0003 put every mutation in a WAL-backed SQLite transaction, so a crash
+loses at most the current gesture rather than the session. Our crash-recovery
+story is unusually good, and it is what makes this trade affordable. It is worth
+knowing *why* it is affordable, so nobody later removes the thing that pays for
+it.
+
+### 4. A dedicated Inspector panel: rejected, with two gaps named
+
+The reasoning is that the AI integration handles complex state queries and the
+UI stays clean. Two things follow that should be visible rather than discovered.
+
+**A timing gap.** The UI is roadmap step 7. The agent is step 8 at Observe tier
+and step 9 for anything that can change a value. Between those, there is no
+surface for any property that is not on the timeline, the mixer strip or the
+device chain. So those three have to carry everything, from step 7 onward — that
+is a real constraint on their design, not a deferral.
+
+**An accessibility gap.** A chat box is not a substitute for a focusable,
+screen-reader-navigable list of properties. Whatever replaces the inspector has
+to be reachable by keyboard and announce itself, and "ask the agent" does not
+satisfy that for a user who cannot see the timeline. This does not argue for an
+inspector; it argues that the three surfaces above have an obligation the
+inspector would have carried.

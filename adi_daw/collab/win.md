@@ -1283,3 +1283,85 @@ than left to a default. `JUCE_PLUGINHOST_VST3` is the only one on.
 
 835 checks across 10 suites, validators clean. No code in this branch — ADR,
 FEATURES, the roadmap row for step 6.
+
+---
+
+## 2026-09-19 — five more directives: ADR-0043 to ADR-0047, and docs/UI-ARCHITECTURE.md
+
+Branch `win/ui-routing`. Read all five before the JUCE work; three of them
+constrain it.
+
+| ADR | |
+|---|---|
+| 0043 | VST3 silence flags in, tail time respected, `devices.always_process` opts out |
+| 0044 | a group is ONE object: folder **and** bus, auto-routed, overridable. **Reverses SPEC 6.1** |
+| 0045 | hybrid tracks. `tracks.kind` is a hint, never a constraint |
+| 0046 | modulation is a graph node; routing persists, output never does |
+| 0047 | the UI shell, three view states, layered editing opt-in, sandbox and inspector rejected |
+
+`docs/UI-ARCHITECTURE.md` is new and carries the `juce::Component` tree the
+director asked for, plus how the graph carries a hybrid track.
+
+**Schema changed.** `'folder'` is gone from `tracks.kind`; `routing.origin`
+('auto'|'user', defaulting to 'user') is new; `devices.always_process` is new.
+Validator checks 5g, 5h and 7 cover them, each proved by planting its defect.
+
+### Four things in these that land on your mission
+
+1. **ADR-0043 and ADR-0040 are different mechanisms and must not be merged.**
+   0040 suspends a device because its UI is hidden, opt-in, declared. 0043
+   suspends it because no signal is reaching it, automatic, derived from the
+   graph. A device is suspended if either applies. And 0040's declared
+   `has_tail` is now partly redundant for a VST3, which answers with
+   `getTailSamples()` — where the plugin can answer, the plugin wins.
+
+2. **The processing order is fixed by three ADRs at once**, and they fit
+   because they were taken together:
+
+   ```
+   suspended (0043 signal / 0040 visibility)?  -> flag silent, skip
+   else: split the block at every event boundary   (0042)
+         per segment: apply modulation             (0046)
+                      process
+   ```
+
+   The sub-block split 0042 needs for smooth automation at 8192 is the same
+   split 0046's modulation needs. Do not build a device target that assumes one
+   parameter update per callback.
+
+3. **Every graph port is a pair — audio buffers AND an event list** (0045).
+   Not a typed port. This is the decision that makes hybrid tracks cost nothing,
+   and retrofitting it means touching every node. An instrument **adds** to the
+   audio already on the bus rather than replacing it; replacing would silently
+   mute the audio clips on the same track.
+
+4. **`JUCE_PLUGINHOST_AU` and `JUCE_PLUGINHOST_VST` are 0**, still, from
+   ADR-0041. Unchanged, repeated because it is a flag you will set.
+
+### Two corrections I owe the record, and one I owe the director
+
+**To the director, in ADR-0047:** the sandboxing rejection was justified by IPC
+overhead at high buffer sizes, and that is backwards. IPC cost is per callback,
+not per sample, so it amortises over the block — at 8192 it is the cheapest it
+will ever be, spread across 171 ms. Sandboxing is *most* affordable in exactly
+the configuration ADR-0042 describes. The rejection stands on latency and
+complexity, which are good reasons, and the ADR says so. I also named what we
+accept: one bad plugin takes the application down, which is survivable here only
+because ADR-0001 and ADR-0003 mean a crash loses one gesture rather than the
+session.
+
+**To myself, twice, in `tools/validate_schema.py`:**
+
+- The README said **38 tables** through two schema changes and **37 ADRs**
+  through eleven. Both stale, neither checked. `validate_ops.py` has checked the
+  op count since the prose said 152 and the tables held 174; the same drift had
+  been sitting in the README the whole time. Check 7 now verifies both counts
+  and that no ADR number is used twice — which has happened to us twice.
+
+- Writing that check, it reported "schema.sql has 1 table". `ddl` is assigned at
+  the top of `main()` and **reassigned inside the STRICT loop 150 lines later**,
+  so every later reader of it gets the last table's SQL. Renamed the inner one
+  to `table_sql`; the new check re-reads the file rather than trusting a local
+  that has travelled that far.
+
+835 checks across 10 suites, validators clean.

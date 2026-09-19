@@ -15,13 +15,24 @@ Checks, in order:
      column and the C API coerces it silently on read (ADR-0029).
   5c. Every polymorphic reference kind in `routing` names a real table or a
      known-external endpoint; a FOREIGN KEY cannot constrain (kind, id).
+  5d. Content addressing is enforced: a duplicate media hash is rejected
+     and un-hashed rows still do not collide (ADR-0032).
+  5e. Every clip is placed, on a track, in the domain it declares (ADR-0037).
+  5f. Opaque device state references resolve (ADR-0038).
+  5g. One grouping concept, and a track may hold audio and MIDI clips at
+     once (ADR-0044, ADR-0045).
+  5h. routing.origin defaults to 'user' so grouping cannot rewrite a
+     hand-made connection (ADR-0044).
   6. The tick base really has the arithmetic properties SPEC 4.2 claims,
      because a specification should not assert what it can check.
+  7. The counts README states are the counts that exist, and no ADR
+     number is used twice (ADR-0028).
 """
 
 from __future__ import annotations
 
 import pathlib
+import re
 import sqlite3
 import sys
 
@@ -202,8 +213,8 @@ def main() -> int:
         row = db.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?", (t,)
         ).fetchone()
-        ddl = (row[0] or "") if row else ""
-        tail = ddl[ddl.rfind(")") :].upper() if ")" in ddl else ""
+        table_sql = (row[0] or "") if row else ""
+        tail = table_sql[table_sql.rfind(")") :].upper() if ")" in table_sql else ""
         if "STRICT" not in tail:
             not_strict.append(t)
     if not_strict:
@@ -314,6 +325,47 @@ def main() -> int:
                "VALUES (902, 900, 'controller', 'abc123')")
     ok("two streams may share one blob -- that is the point of ADR-0038")
 
+    # --- 5g. ADR-0044/0045: one grouping concept, and hybrid tracks ---------
+    print("[5g] grouping and hybrid tracks (ADR-0044, ADR-0045)")
+    try:
+        db.execute("INSERT INTO tracks(id, kind, name) VALUES (910, 'folder', 'f')")
+        fail("'folder' is still a track kind -- ADR-0044 merged it into 'group'")
+    except sqlite3.IntegrityError:
+        ok("'folder' is no longer a track kind")
+
+    # The hybrid rule is an ABSENCE of a constraint, which is exactly the kind
+    # of rule that gets re-added by someone tidying up. Asserting it holds is
+    # how that gets caught.
+    db.execute("INSERT INTO tracks(id, kind, name) VALUES (911, 'audio', 'hybrid')")
+    db.execute("INSERT INTO clips(id,track_id,kind,time_base,pos_ticks) "
+               "VALUES (910, 911, 'audio', 0, 0)")
+    db.execute("INSERT INTO clips(id,track_id,kind,time_base,pos_ticks) "
+               "VALUES (911, 911, 'midi', 0, 0)")
+    ok("an 'audio' track holds an audio clip and a midi clip at once")
+
+    # --- 5h. ADR-0044: routing.origin protects a hand-made connection -------
+    print("[5h] routing.origin and device suspension opt-out")
+    db.execute("INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind) "
+               "VALUES (910, 'track', 911, 'track', 911, 'send')")
+    row = db.execute("SELECT origin FROM routing WHERE id = 910").fetchone()
+    if row and row[0] == "user":
+        ok("a routing row defaults to origin='user' -- grouping leaves it alone")
+    else:
+        fail(f"routing.origin defaulted to {row and row[0]!r}, not 'user'. "
+             "An 'auto' default means automatic grouping may rewrite a "
+             "connection nothing asked it to touch (ADR-0044)")
+    try:
+        db.execute("UPDATE routing SET origin = 'managed' WHERE id = 910")
+        fail("routing.origin accepted a value outside ('auto','user')")
+    except sqlite3.IntegrityError:
+        ok("routing.origin admits only 'auto' and 'user'")
+
+    try:
+        db.execute("UPDATE devices SET always_process = 2 WHERE id = 900")
+        fail("devices.always_process accepted a non-boolean")
+    except sqlite3.IntegrityError:
+        ok("devices.always_process is 0 or 1 (ADR-0043)")
+
     # --- 6. the tick base actually has the properties SPEC 4.2 claims --------
     # These are load-bearing claims in a specification, so they get checked
     # rather than asserted. An earlier draft claimed 960 PPQ could not express a
@@ -361,6 +413,42 @@ def main() -> int:
         fail(f"i64 tick range is only {years:.0f} years at 120 BPM")
     else:
         ok(f"i64 tick range = {years:,.0f} years at 120 BPM")
+
+    # --- 7. the counts README states are the counts that exist ---------------
+    # `validate_ops.py` has checked the op count since the prose said 152 and
+    # the tables held 174. The same class of drift had gone unnoticed here: the
+    # README said 38 tables through two schema changes, and 37 ADRs through
+    # eleven. A number in prose that nothing checks is a number that is wrong.
+    print("[7] README's counts match reality")
+    readme = (HERE.parent / "README.md").read_text(encoding="utf-8")
+    decisions = (HERE.parent / "docs" / "DECISIONS.md").read_text(encoding="utf-8")
+
+    real_tables = len(re.findall(r"^CREATE TABLE ", SCHEMA.read_text(encoding="utf-8"), re.M))
+    m = re.search(r"verified on every change\. (\d+) tables", readme)
+    if not m:
+        fail("README no longer states a table count where this check looks")
+    elif int(m.group(1)) != real_tables:
+        fail(f"README says {m.group(1)} tables, schema.sql has {real_tables}")
+    else:
+        ok(f"README and schema.sql agree: {real_tables} tables")
+
+    real_adrs = len(re.findall(r"^## ADR-", decisions, re.M))
+    m = re.search(r"Decision log\. Append-only\. (\d+) entries", readme)
+    if not m:
+        fail("README no longer states an ADR count where this check looks")
+    elif int(m.group(1)) != real_adrs:
+        fail(f"README says {m.group(1)} ADRs, DECISIONS.md has {real_adrs}")
+    else:
+        ok(f"README and DECISIONS.md agree: {real_adrs} ADRs")
+
+    # Numbers are never reused (ADR-0028), so a duplicate heading means two
+    # branches landed the same number -- which has happened twice.
+    nums = re.findall(r"^## (ADR-\d+R?) ", decisions, re.M)
+    dupes = sorted({n for n in nums if nums.count(n) > 1})
+    if dupes:
+        fail(f"duplicate ADR numbers, and ADR-0028 says numbers are never reused: {dupes}")
+    else:
+        ok("no ADR number is used twice")
 
     n = fail.count  # type: ignore[attr-defined]
     print()
