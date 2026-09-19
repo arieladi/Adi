@@ -84,8 +84,12 @@ std::string renderValue(const SQLite::Column& c) {
 
 std::uint64_t fnv1a(const std::string& s) {
     std::uint64_t h = 1469598103934665603ull;
-    for (const unsigned char c : s) {
-        h ^= c;
+    for (const char c : s) {
+        // Explicit: char is signed here, and hashing a sign-extended value would
+        // make the fingerprint depend on the platform's char signedness. clang
+        // and gcc flag the implicit conversion under -Wsign-conversion; MSVC
+        // does not, which is why CI caught this and the local build did not.
+        h ^= static_cast<unsigned char>(c);
         h *= 1099511628211ull;
     }
     return h;
