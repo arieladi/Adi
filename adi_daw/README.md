@@ -76,6 +76,7 @@ adi_tool info <file>     # what is in it
 adi_tool ops             # every registered op, with scope and engine impact
 adi_tool digest <file>   # canonical digest of the project tier (the replay oracle)
 adi_tool check <file>    # verify what SQLite structurally cannot
+adi_tool export <file>   # the canonical text projection, for git diff (ADR-0007)
 ```
 
 ## Verifying the schema
