@@ -2338,3 +2338,99 @@ halving the callback rate again. If that ever matters the answer is to raise the
 cap deliberately with a measurement behind it, not to remove it — a ceiling
 every platform shares is worth more than a ceiling that varies by machine, which
 is a class of bug report nobody can reproduce.
+
+
+---
+
+## ADR-0051 — ADR numbers are reserved before the entry is written, and a burned number is never reused — `DECIDED` (2026-09-20) — **AMENDS ADR-0028**
+
+**mac's proposal, adopted, and the argument for it is theirs.**
+
+Three collisions in a week, and the same mechanism every time:
+
+| | mac | win | who moved |
+|---|---|---|---|
+| 0031 | libpd | the replay oracle | mac → 0035 |
+| 0037–0040 | four pivots | four pivots | merged by hand into one set |
+| 0043 | JUCE | DSP suspension | mac → 0048 |
+
+**Why the rule I gave cannot work.** After the first collision I wrote "pull
+main before writing an ADR — numbers come from reading the file, so a stale
+branch collides." mac has followed it every time since and collided twice more,
+and their diagnosis is exact: *the collision does not happen at the pull. It
+happens in the window between pulling and merging, which is however long the
+work takes.* Pull, read the highest number, write for two hours, and by then the
+other agent has merged. No amount of pulling earlier closes a gap that is
+created by working.
+
+That is worth recording as its own fact, because it generalises: a rule that
+samples shared state at the start of an interval cannot protect the interval.
+
+### Decision
+
+1. **A number is reserved before the entry is written**, in a table in
+   `collab/README.md` beside the claims table, and the reservation is pushed
+   immediately. Ranges are allowed — win wrote 0043–0047 as one unit.
+
+2. **A row is never deleted, only marked.** `reserved` → `merged`, or
+   `reserved` → `burned` if the work is abandoned. The table is the memory. A
+   deleted row loses the fact that a number was ever spoken for, and that fact
+   is the whole mechanism.
+
+3. **A burned number is never reused.** A gap in the sequence costs nothing;
+   "0051 was reserved, dropped, then reused for something else" is exactly the
+   ambiguity ADR-0028 exists to prevent. This is mac's point, and keeping the
+   row rather than deleting it is what makes it enforceable instead of a
+   convention.
+
+4. **The Subject column is load-bearing.** See below.
+
+5. **`validate_schema.py` check 8 enforces it**, because a process rule nothing
+   checks is a process rule that decays. It fails on a number that exists in
+   `DECISIONS.md` while its row still says `reserved` (a row someone forgot), on
+   a `burned` number that appears in `DECISIONS.md` (the reuse rule 3 forbids),
+   and on a `used` row with no entry behind it (a number claimed and never
+   spent).
+
+### What it buys, stated the way mac stated it
+
+**It does not eliminate the conflict. It moves the conflict to before the
+work.** Two agents reserving at the same moment still collide — but on one line
+of a table, minutes in, and the loser renumbers before writing a word. Today it
+lands on a multi-paragraph append after the work is done, with cross-references
+in four files to fix. That is the whole difference and it is a large one.
+
+### The cost, which is real
+
+The reservation is only visible once pushed, so it obliges a push before the
+work rather than after: one extra push per ADR, and a branch that briefly exists
+with nothing on it but a table row. Cheap, and named here rather than
+discovered.
+
+### One addition to the proposal: the numbering was the symptom
+
+The 0037–0040 collision was not a numbering accident. **A directive went to both
+agents and we each wrote the same four ADRs** — roughly two hours of duplicated
+work, resolved by merging two texts into one set. A number reservation does not
+prevent that on its own: both agents would have reserved four numbers and still
+written four entries each.
+
+What prevents it is the **Subject** column, read before starting. So it is not
+decoration: when a directive arrives addressed to both agents, the first one to
+reserve has claimed the *subject*, and the other says so in their log instead of
+writing it twice. The claims table already does this for paths; this does it for
+decisions, which are the thing a broadcast directive actually collides on.
+
+**Rejected: per-agent number pools** (win takes even, mac odd; or disjoint
+ranges). It eliminates the race completely and needs no coordination at all,
+which is genuinely attractive. It also destroys the property that the log reads
+in the order it was decided, and makes "what is the highest ADR" meaningless.
+The log is read top to bottom by people trying to understand how the project got
+here, and a sequence that jumps 0050 → 0117 → 0051 costs more than the race
+does.
+
+**Also rejected: assigning the number at merge**, with `ADR-XXXX` until then. It
+removes the race entirely and is tempting for that reason, but it moves a
+mechanical renumbering step to every merge instead of some, and a forgotten step
+leaves `ADR-XXXX` in the log — worse than a collision, because a collision is
+loud.
