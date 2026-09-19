@@ -136,6 +136,55 @@ std::string renderDuration(std::int64_t ticks) {
     return std::to_string(num) + "/" + std::to_string(den);
 }
 
+std::string renderPosition(std::int64_t ticks, const std::vector<Meter>& meters) {
+    const Meter kDefault{};                       // 4/4 from zero
+    const Meter* cur = &kDefault;
+    std::int64_t bars_before = 0;                 // bars completed before `cur`
+    std::int64_t seg_start = 0;
+
+    // Walk the segments. Bar numbering ACCUMULATES across signature changes:
+    // dividing the whole position by the current meter is correct up to the
+    // first change and wrong after it -- the same shape of bug as integrating
+    // tempo with a single bpm, which the engine tests already guard against.
+    for (std::size_t i = 0; i < meters.size(); ++i) {
+        const Meter& m = meters[i];
+        if (m.start_ticks > ticks) break;
+        if (i > 0) {
+            const std::int64_t bt = cur->barTicks();
+            if (bt > 0) {
+                // A signature change part-way through a bar STARTS A NEW BAR,
+                // so the short bar before it still counts. Truncating instead
+                // makes the token non-unique: under 4/4 then 3/4 at six
+                // quarters, tick 4q and tick 6q both rendered `2|1|0`. Two
+                // positions sharing a token is not cosmetic here -- ordering,
+                // labels and R1's byte identity are all downstream of rendered
+                // content. Found by the store adapter's test; the cases here
+                // all put the change on a bar line, where the two agree.
+                const std::int64_t span = m.start_ticks - seg_start;
+                bars_before += span / bt + (span % bt != 0 ? 1 : 0);
+            }
+        }
+        cur = &m;
+        seg_start = m.start_ticks;
+    }
+
+    const std::int64_t bar_ticks = cur->barTicks();
+    if (bar_ticks <= 0) return "0|0|0";           // a 0 denominator: total, not UB
+
+    const std::int64_t into = ticks - seg_start;
+    std::int64_t bar = bars_before + into / bar_ticks;
+    std::int64_t rem = into % bar_ticks;
+    if (rem < 0) { --bar; rem += bar_ticks; }     // floor, so negatives behave
+
+    const std::int64_t beat_ticks =
+        kWhole / static_cast<std::int64_t>(cur->denominator);
+    const std::int64_t beat = beat_ticks > 0 ? rem / beat_ticks : 0;
+    const std::int64_t tick = beat_ticks > 0 ? rem % beat_ticks : rem;
+
+    return std::to_string(bar + 1) + "|" + std::to_string(beat + 1) + "|"
+         + std::to_string(tick);
+}
+
 bool isBareSafe(std::string_view s) {
     if (s.empty()) return false;
     for (std::size_t i = 0; i < s.size();) {

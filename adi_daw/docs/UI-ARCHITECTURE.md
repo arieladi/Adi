@@ -3,6 +3,13 @@
 **Status:** design. Nothing built. The UI is roadmap step 7; this exists so
 step 6 does not make it impossible.
 
+**Owner: `mac`.** The director assigned the component hierarchy to mac after
+this draft was written. It stands as a **starting proposal, not a decision** —
+revise or replace it rather than writing a second one beside it. What is
+*decided* lives in the ADRs below and does not move; everything here about
+component shape is a suggestion with reasons attached, and the reasons are the
+part worth keeping or arguing with.
+
 Decisions live in ADR-0044 (grouping), ADR-0045 (hybrid tracks), ADR-0046
 (modulation) and ADR-0047 (the shell, the view states, and the two rejections).
 This document is the shape those decisions imply, not a second place they are

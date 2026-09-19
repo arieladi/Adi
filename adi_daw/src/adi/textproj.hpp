@@ -54,6 +54,47 @@ inline constexpr std::int64_t kMaxDenominator = 1024;
 
 [[nodiscard]] std::string renderDuration(std::int64_t ticks);
 
+/// One time signature, and where it starts.
+///
+/// This type exists so that `renderPosition` can live beside `renderDuration`
+/// rather than in the store adapter. The two are the other half of each other
+/// and are equally determinism-critical -- ADR-0021's oracle compares bytes,
+/// and a position rendered two ways fails it exactly as a duration would.
+///
+/// It is NOT a schema shape, which is what kept it out of this header the first
+/// time. A `Meter` is a fact about music; `time_signature_map` is a table that
+/// happens to store some. The adapter converts rows into these, and this layer
+/// stays free of SQLite as it was meant to.
+struct Meter {
+    std::int64_t  start_ticks = 0;   ///< absolute, where this signature begins
+    std::uint16_t numerator   = 4;
+    std::uint16_t denominator = 4;   ///< a power of two; 4 is a quarter note
+
+    /// Ticks in one bar under this signature.
+    [[nodiscard]] std::int64_t barTicks() const {
+        return denominator == 0 ? 0
+             : kWhole * static_cast<std::int64_t>(numerator)
+                      / static_cast<std::int64_t>(denominator);
+    }
+};
+
+/// `bar|beat|tick`, 1-based in bar and beat, from an absolute tick position.
+///
+/// `meters` must be sorted ascending by `start_ticks` and is walked segment by
+/// segment -- bar numbering accumulates across signature changes, so a single
+/// division by the current meter is correct only up to the first change and
+/// wrong after it. That is the same shape of bug as integrating tempo with one
+/// bpm, which the engine's tests already guard against.
+///
+/// **No raw-tick gloss.** `bar|beat|tick` is exact, so a gloss would duplicate
+/// rather than clarify, and a duplicated field is one more thing that can
+/// disagree with itself inside a diff.
+///
+/// An empty map means 4/4 from zero. A negative position renders with a
+/// negative bar rather than refusing: the projection is total.
+[[nodiscard]] std::string renderPosition(std::int64_t ticks,
+                                         const std::vector<Meter>& meters);
+
 // ---------------------------------------------------------------------------
 // Numbers (TEXT-PROJECTION 5)
 // ---------------------------------------------------------------------------
@@ -144,7 +185,10 @@ inline constexpr std::int64_t kMaxDenominator = 1024;
 /// cites past it.
 enum class TrackRole { Track, Return, Vca, Master, Global };
 
-/// `/trk`, `/ret`, `/vca`, `/master`, `/glob`.
+/// The root SEGMENT for a role: `trk`, `ret`, `vca`, `master`, `glob` -- with
+/// no leading slash. `designator()` supplies every separator, so a segment that
+/// carried one would produce `//trk` and a segment stripped of one that was
+/// never there produces `rk`. The second is what happened.
 [[nodiscard]] std::string_view roleRoot(TrackRole r);
 
 /// The role a `tracks.kind` value belongs to. An unknown kind -- a newer
@@ -171,11 +215,11 @@ enum class TrackRole { Track, Return, Vca, Master, Global };
 /// A reference whose target does not exist. Renders `"!unresolved(<kind>)"`,
 /// never a number, and the caller is expected to fail under `--strict`.
 ///
-/// This is reachable by construction today, not merely in principle:
-/// `routing.src_kind` and `routing.dst_kind` both admit `'bus'` and there is no
-/// `buses` table in schema.sql, so every bus endpoint is unresolvable. A CHECK
-/// constraint that admits a reference kind with no referent -- win's call
-/// whether the table or the enum member is the one that is missing.
+/// ADR-0029 removed `'bus'` from `routing`'s CHECK, so the example this comment
+/// used to give is now the one case that CANNOT arise. What remains is the
+/// general one, and it is enough: `routing` is a polymorphic `(kind, id)`
+/// reference that SQLite cannot enforce, so a row pointing at a deleted track
+/// is reachable. ADR-0029 flags exactly that, and `adi_tool check` finds them.
 [[nodiscard]] std::string unresolved(std::string_view kind);
 
 /// Media is addressed by content, because the format already made content the
@@ -201,8 +245,9 @@ inline constexpr std::size_t kMediaPrefixMin = 16;
 //
 // No ordering column in the core model is uniqueness-enforced -- tracks,
 // lanes, clips, devices, device_chains and markers all permit two siblings to
-// share an ordinal, and notes inside a blob have no ordinal at all. `scenes` is
-// the only exception. So the only thing that breaks a tie in storage is the row
+// share an ordinal, and notes inside a blob have no ordinal at all. Since
+// ADR-0037 removed `scenes` this holds without exception: NO core ordering
+// column is unique. That simplifies the rule rather than complicating it. So the only thing that breaks a tie in storage is the row
 // id, which is exactly what must not reach the output. Every collection's order
 // therefore has to be a function of content alone.
 

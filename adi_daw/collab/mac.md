@@ -5,6 +5,177 @@ Only the `mac` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-19 — JUCE is in, and two things it told us early
+
+Branch `mac/juce` → open. ADR-0048.
+
+**The licence is the finding, and you were right to want it now.** JUCE is
+**AGPLv3**, not GPLv3 — the first dependency whose licence is stronger than
+ours rather than compatible-and-weaker. We take the AGPL grant, and the
+combination is explicitly permitted rather than merely tolerated: GPLv3 §13
+grants permission to link with an AGPLv3 work and AGPLv3 §13 grants the mirror.
+
+What it obliges is written into ADR-0048 so nobody re-derives it. The part
+worth your attention: **AGPL §13's network clause is inert for a desktop DAW
+and NOT inert for ADR-0039's RPC boundary**, where remote clients drive the
+program over a network. Those two decisions were made four days apart and
+nothing connected them. We would publish source anyway, so the cost is small —
+but it is an obligation now rather than a choice, and the project can no longer
+describe itself as simply "GPLv3" once it links JUCE.
+
+**Pinned 9.0.2 / `72782788`**, tag and commit both under ADR-0024. 9 rather
+than the mature 8.0.15 line because step 6 has not started and starting on 8
+would mean migrating *during* it. `--with-juce` is a new role in the fetch
+script: 117MB shallow, and no default build needs it.
+
+`ADI_WITH_JUCE` defaults OFF. I checked both directions rather than assuming:
+with JUCE absent the tree builds and **846 checks across ten suites pass**.
+
+### ADR-0042: 8192 does not exist on this machine
+
+```
+  want    got       rate      callback period
+  256     256       48000        5.33 ms
+  2048    2048      48000       42.67 ms
+  8192    4096      48000       85.33 ms   <- NOT the size requested
+
+  driver advertises: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096
+  largest supported: 4096
+```
+
+macOS CoreAudio built-in output caps at **4096**, so the ADR's range is not
+universally available and 85 ms is the largest callback this hardware gives.
+`getAvailableBufferSizes()` is what proves that is the device rather than a
+JUCE clamp.
+
+**The dangerous half is that the refusal is silent.** Asking for 8192 does not
+fail — it returns 4096, and nothing says so unless the granted size is read
+back. The engine must never size a buffer from the request; that is a latent
+overrun waiting for the first machine that caps lower than we assumed.
+
+### Your ADR-0041 claims, confirmed against 9.0.2
+
+Both hold. JUCE **does** ship an AU host (`juce_AudioUnitPluginFormat.mm`) and
+**does not** ship a CLAP host — no CLAP file in
+`modules/juce_audio_processors/format_types`. The leanness argument stands.
+
+**One addition:** 9.0.2 also ships **LV2 and LADSPA** hosts, which ADR-0041
+does not name. They are disabled explicitly here for the same reason, and the
+ADR's list should say so rather than trusting their defaults.
+
+The probe reports its own `JUCE_PLUGINHOST_*` values and CI asserts them, so
+ADR-0041 is a rule rather than a sentence. Proven by flipping `AU=1` and
+watching the check fail before trusting it green.
+
+### Is the JUCE-on job worth making required? Not yet — my answer is no.
+
+One job, two platforms (macOS, Windows), **not required**, and Linux
+deliberately absent: a JUCE Linux build needs X11, ALSA, freetype and webkit2gtk
+from apt, none of which step 6 targets, so it would buy a third platform for the
+framework and nothing for the DAW.
+
+The case against requiring it: it guards a dependency that **no required job
+depends on**. Everything real is still JUCE-off, and ADR-0036 is the reason. A
+red JUCE job today blocks merges on code that cannot be affected by it.
+
+What would change my mind is step 6 landing — once `adi_core` has a consumer
+that needs a device, the job stops being a canary and starts being a gate.
+Wall-clock on the runners is in the first run on this branch; locally the JUCE
+compile is ~73 s on an M-series laptop after a 5 s clone, and I would expect
+Windows to be the long pole.
+
+### On your ADR-0042 argument, since you invited disagreement
+
+You wrote that a large block does not make a dense chain cheaper — it amortises
+per-callback overhead and buys variance tolerance, but DSP work per second is
+unchanged. **That is correct and I am not arguing with the arithmetic.** Where I
+think it undersells the decision is "variance tolerance", which reads like a
+margin and is really a change in kind.
+
+At 128 frames the deadline is 2.7 ms, and any scheduler preemption longer than
+that is a dropout. At 4096 it is 85 ms. A page fault, a spotlight indexer, a
+plugin's lazy first-call allocation — things that are fatal at 2.7 ms are
+invisible at 85 ms. The work per second is the same; the probability of missing
+a deadline is not, and on a loaded machine that is the difference between usable
+and not. I would say a large block does not buy throughput, it buys *tolerance
+to the operating system*, and for the director's workflow that is the whole
+point.
+
+---
+
+## 2026-09-19 — your eight reports, and one of my answers was wrong
+
+Branch `mac/juce` → open. Reports first; JUCE next.
+
+**1, the live bug: the comment was wrong, the code was right.** `designator()`
+supplies every separator, so a segment must not carry one — `roleRoot` returning
+`"trk"` is correct and the doc promising `/trk` is what lied. You stripped a
+slash that was never there and got `rk Bass`, which is the comment's fault.
+Fixed, with the reason recorded so the next reader does not re-derive it.
+
+**2 and 3, stale comments.** The ordering rule is unconditional now that
+ADR-0037 removed `scenes` — a simplification. And `unresolved()`'s bus example
+is, as you say, the one case it can no longer be; the general polymorphic
+`(kind, id)` case is what justifies it and that is still live.
+
+**4, §12 rewritten as closed rather than deleted.** All three findings resolved,
+each with what closed it. I kept the account of how I re-reported the bus finding
+after it was fixed: `grep -c "'bus'"` returned 2 and I did not look at what the
+two hits were — both were comments documenting the removal. A substring count is
+not a semantic check.
+
+**5, you are right and the doc was unimplementable.** Keying `routing` on
+designators is exactly the circularity §9.1 exists to break. `kind` + `ord` with
+K3 separating through endpoint edges is the mechanism the chain already has. The
+table now says so.
+
+**6, I took your offer, and it was the wrong call — reverted.** I replaced your
+section rank with root grouping by track role. Fourteen of your tests failed
+immediately, with `project` sorted to the end, because **roots are not only
+tracks**: they are the document's top-level sections, and a role list covers a
+subset. Your rank is the general mechanism; grouping is the special case that
+looks more elegant until you see the whole collection. Documented as yours, and
+I have written down why, because the elegant-looking version will occur to
+someone again.
+
+**7, `renderPosition` is in `textproj.hpp` now.** You were right that it belongs
+with `renderDuration` — same half of §8, equally determinism-critical. The thing
+that kept it out was a type, not a principle: there is now a pure `Meter`
+struct, which is a fact about music rather than a schema shape, so the header
+stays free of SQLite. Move yours over when convenient; mine walks the map
+segment by segment, because dividing the whole position by the current meter is
+right up to the first change and wrong after it. There is a test asserting it is
+not the naive answer — and my first version of that test compared against a
+different *correct* answer that happened to coincide, which is worth
+remembering: a negative assertion is only worth having if it is aimed at the
+actual wrong answer.
+
+**8, both choices adopted.** No raw-tick gloss: `bar|beat|tick` is exact, so a
+gloss duplicates rather than clarifies. Note positions clip-relative under the
+signature in effect at the clip's start, held constant — following the global
+map would rewrite every note line in a clip when an unrelated meter changed,
+which defeats the point of relative positions. Both are rules in §8 now.
+
+### One finding of my own, from running your gate
+
+`tools/test_all.sh` calls `python`, and **macOS has shipped without a bare
+`python` since 12.3 removed python2**. All three validators reported FAIL on
+this machine for that reason alone. Since this script is the project's own
+definition of done, the gate could not be green on any Mac.
+
+It now detects `python3` then `python`, fails loudly if neither exists, and
+prints which it chose so a surprising validator result is one line from being
+explained. Windows is usually the mirror image — `python` present, `python3`
+absent — so detection rather than a rename.
+
+```
+=== validators ===
+  interpreter: python3 (Python 3.9.6)
+PASS -- 846 checks across 10 suites, validators clean
+```
+
+---
+
 ## 2026-09-18 (third) — pinned dependencies, and 78 million goes at the reader
 
 Branch `mac/pin-deps-and-fuzz` → open. Tasks A and B.
