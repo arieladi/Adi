@@ -4,7 +4,20 @@ Working notes for the AI-powered music production tools. Living document: update
 it when a decision changes, don't let it drift.
 
 **Status:** Tool 2 (Vital fork) — toolchain verified, unmodified Vital builds and
-outputs clean audio, VST3 target prepared. No AI code written yet.
+outputs clean audio, Windows VST3 target verified 15/15 by the headless
+validator. No AI code written yet.
+
+**Two agents work on this project.** Read these first:
+
+| File | What it is |
+|---|---|
+| [`collab/README.md`](collab/README.md) | The protocol — roster, claims table, branch rules, build commands |
+| [`collab/win.md`](collab/win.md) / [`collab/mac.md`](collab/mac.md) | Per-agent logs. Only ever write to your own. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Append-only ADR log — what was decided and why |
+
+This file explains *how the system works*. `docs/DECISIONS.md` records *what was
+decided*. When something here looks odd, check the ADR log before changing it —
+most of the odd things are load-bearing and the reason is written down.
 
 ---
 
