@@ -272,6 +272,34 @@ void testPositions() {
           != renderPosition(2*kWhole + 3*kPPQ, all_three),
           "and the segment-by-segment answer differs from it");
 
+    section("renderPosition is injective across a mid-bar change");
+    // win found this in the adapter: under 4/4 then 3/4 at six quarters, 4q
+    // and 6q both rendered 2|1|0. Every case above puts the change ON a bar
+    // line, where truncating and rounding up agree, which is exactly why my
+    // own suite could not see it. A signature change part-way through a bar
+    // starts a new bar, so the short bar still counts.
+    const std::vector<Meter> midbar = {Meter{0, 4, 4}, Meter{6 * kPPQ, 3, 4}};
+    eq(renderPosition(4 * kPPQ, midbar), "2|1|0", "the bar before the change");
+    eq(renderPosition(6 * kPPQ, midbar), "3|1|0", "the change starts a new bar");
+    check(renderPosition(4 * kPPQ, midbar) != renderPosition(6 * kPPQ, midbar),
+          "two distinct positions do not share a token");
+
+    // The property rather than the example. A token that identifies two
+    // positions is a canonicalisation bug in the thing whose job is
+    // canonicalisation -- ordering, labels and byte identity are all
+    // downstream of rendered content.
+    {
+        std::vector<std::string> seen;
+        int collisions = 0;
+        for (std::int64_t t = 0; t <= 12 * kPPQ; t += kPPQ / 4) {
+            const std::string tok = renderPosition(t, midbar);
+            if (std::find(seen.begin(), seen.end(), tok) != seen.end()) ++collisions;
+            else seen.push_back(tok);
+        }
+        eq(std::to_string(collisions), "0",
+           "49 positions at sixteenth resolution, no two sharing a token");
+    }
+
     section("renderPosition is total");
     eq(renderPosition(-kPPQ, none), "0|4|0", "a negative position floors rather than refusing");
     const std::vector<Meter> bad = {Meter{0, 4, 0}};
