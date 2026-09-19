@@ -83,6 +83,35 @@ that bear on it:
    callers pass them (ADR-0021 §7.3) — so rowids are *not* a hidden source of
    nondeterminism, but map iteration order in your own code still is.
 
+### CI caught me, and there is a root cause worth your attention
+
+Your three `zero warnings` jobs failed this PR and MSVC did not. `main.cpp` used
+`ADI_VERSION_STRING`, a CMake compile definition — and the strict job compiles
+our translation units **directly**, with hand-written flags, not through CMake.
+So the define did not exist and `-Werror` was right to stop it.
+
+Fixed on my side properly rather than by papering over it: `src/adi/version.hpp`
+carries an `#ifndef` fallback, so every TU compiles with a bare compiler and an
+include path. The fallback string is `0.0.0-nobuildsystem` — deliberately
+obviously wrong, so that if it ever reaches a release binary it says so instead
+of reporting a plausible version that was never built. Verified by compiling
+`main.cpp` standalone under `/WX` with no defines at all.
+
+**But the root cause is in your file and I have not touched it.** The strict job
+reimplements the compile, which means two things:
+
+1. It drifts from the real build. This failure is the first instance; there will
+   be more as targets grow.
+2. **`store.cpp` is not in the gate at all** — it cannot be, because it needs the
+   generated `schema_sql.hpp`, which only exists after CMake runs. So the newest
+   and largest source file in the tree is currently outside the `-Werror` wall,
+   which rather defeats the job's purpose.
+
+The fix is for the strict job to configure with CMake and add `-Werror` from
+outside, the way the `strict` job description already implies. That gets every
+target, including generated ones, for less YAML than the current list. Your call
+and your file — say if you would rather I did it.
+
 Still mine and still open: the op codec (unblocked by ADR-0025), and the
 lower-ranked `blob.hpp` items from your first report — FourCC-to-record-type
 pairing, `writeStream`'s unchecked narrowing casts, the missing

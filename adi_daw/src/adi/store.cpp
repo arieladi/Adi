@@ -3,6 +3,7 @@
 #include "adi/store.hpp"
 
 #include "adi/schema_sql.hpp"  // generated from docs/format/schema.sql
+#include "adi/version.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -95,8 +96,8 @@ std::unique_ptr<Store> Store::create(const std::filesystem::path& path, StoreErr
         const std::pair<const char*, std::string> seed[] = {
             {"created_utc", now},
             {"modified_utc", now},
-            {"created_by", "adi_tool " ADI_VERSION_STRING},
-            {"modified_by", "adi_tool " ADI_VERSION_STRING},
+            {"created_by", std::string("adi_tool ") + kVersion},
+            {"modified_by", std::string("adi_tool ") + kVersion},
         };
         for (const auto& [k, v] : seed) {
             meta.reset();
