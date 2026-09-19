@@ -1328,3 +1328,193 @@ is why the test asserts both the right answer and that it is not the wrong one.
 **What this is not.** There is no audio graph, no processing, no device. A
 snapshot describes tracks and clips; nothing renders them. That is step 6, and
 calling this an audio engine would be a lie.
+
+
+## ADR-0037 — Session View is removed; the DAW is linear-only — `DECIDED` (2026-09-19) — **SUPERSEDES ADR-0006**
+
+**Director's call.** The clip-launching Session View is cut. adi_daw is strictly
+a linear, arrangement-timeline DAW.
+
+**What ADR-0006 said, and why this supersedes rather than edits it.** ADR-0006
+put `scenes` and `clip_slots` in Layer 1 and called the clip launcher "the
+premise of the project". That entry stays exactly as written, per ADR-0028;
+this one is the later arrival and this one governs.
+
+**The two halves, which must not be confused.**
+
+- **Data model: no Session View.** `scenes` and `clip_slots` leave Layer 1.
+  There is no clip matrix, no scene, no launch quantisation, no follow action.
+- **UI: still Ableton-shaped.** Channels on the right, device chain along the
+  bottom. The arrangement and the editing depth behind it — crossfades,
+  comping, take lanes, warp — follow Cubase. Ableton's *layout* was never the
+  same claim as Ableton's *clip matrix*, and only the second one is cut.
+
+**Cost, stated honestly.** This is the one decision in the log that makes the
+format smaller rather than larger, and the project's founding argument (README,
+"Why start with the file format") is that the schema is designed against the
+full feature set *so that nothing needs a migration later*. Removing tables
+runs against that argument. It is affordable **only because nothing has
+shipped**: `user_version` is still 1000 and there is no file in the world to
+migrate. That will not be true after the first release.
+
+**If it ever returns** it returns as a Layer 4 extension under a reserved
+namespace, or as a `user_version` bump — not as a quiet re-addition to Layer 1.
+Writing that down now is the cheap part.
+
+**Blast radius, measured rather than guessed.**
+
+| | |
+|---|---|
+| `schema.sql` | drop `scenes`, `clip_slots`, and `idx_scenes_ord`, `idx_slot_cell` |
+| op catalogue | **nothing** — 0 of the 50 ops touch a scene or a slot |
+| `docs/FEATURES.md` | the Session View rows leave P0/P1 |
+| `README.md` | the pitch, design commitment 3, roadmap step 8 |
+| `TEXT-PROJECTION.md` | the `/scene` designator space and the clip-slot section |
+| `SPEC.md` | 6.5 goes; 6.2 loses its slot references |
+
+That the op catalogue is untouched is the useful number: the vocabulary never
+grew scene ops, so the cut costs nothing there.
+
+---
+
+## ADR-0038 — Plugin and device state are not yet undoable, and chunk granularity is why — `DECIDED` (2026-09-19)
+
+**The director asked for confirmation that the schema and op vocabulary fully
+support capturing and reverting third-party VST3 chunk state and native mixer
+changes. Checked, not assumed. The answer is half yes.**
+
+**The schema is ready.** `plugin_state(device_id, stream_role, data, format_hint)`
+with `stream_role` already admitting `'component'|'controller'|'state'|'classinfo'|'chunk'|'files'`
+is exactly VST3's model, and `plugin_params` is the readable mirror ADR-0011
+requires. `ops.payload` and `ops.inverse` are BLOBs and can hold anything.
+
+**Native mixer undo is covered.** `mixer.setVolume`, `setPan`, `setWidth`,
+`setInputGain`, `setPhaseInvert`, plus `routing.setGain`, `setPan`,
+`setPreFader`.
+
+**Plugin and device undo is not covered at all.** The 50-op catalogue is
+`track` 15, `clip` 8, `transport` 6, `routing` 6, `project` 5, `note` 5,
+`mixer` 5. **There is no `device` namespace and no `plugin` namespace.** Not a
+thin one — none. A user cannot currently add a device, remove one, reorder a
+chain, or touch a plugin parameter through an op, so none of it is undoable and
+none of it is available to the agent.
+
+**The design problem behind the gap, which is why it must be decided before the
+ops are written.** A VST3 chunk is opaque and unbounded — a sampler's state can
+be megabytes. Storing a before-and-after chunk in `ops.inverse` for every knob
+turn makes the op log grow without limit, and ADR-0001's whole promise is that
+saving is proportional to what changed.
+
+**Decision — two granularities, because one cannot do the job:**
+
+1. **Parameter ops** (`device.setParam`) carry a single normalized value and
+   its previous value. Cheap, exactly invertible, coalescable under ADR-0020,
+   and what a knob turn emits.
+2. **Chunk snapshots** (`device.setState`) carry the opaque blob, and are
+   emitted only at coarse boundaries: device added, preset loaded, plugin
+   reports a non-parameter state change, or the session is saved.
+
+Both are needed and neither is sufficient: a plugin's chunk holds state that is
+**not** exposed as parameters, so params cannot reconstruct it; and a chunk per
+tweak is unaffordable. Undo of a parameter op restores a value; undo across a
+snapshot boundary restores a chunk.
+
+**Open, and it is the real risk:** some plugins do not report non-parameter
+state changes at all, so a tweak made inside a plugin's own UI can be invisible
+to us until the next snapshot. That is a property of VST3, not of our design,
+and the mitigation is snapshot frequency. Quantifying it needs a real plugin
+and belongs to step 6.
+
+**Also noted:** `schema.sql`'s comment on `ops.payload` still reads
+`encoding TBD — SPEC §12.1`, which ADR-0016 and ADR-0025 settled. `win`'s file.
+
+---
+
+## ADR-0039 — The agent is reachable over RPC, and a remote actor is structurally an ordinary one — `DECIDED (direction)` (2026-09-19)
+
+**Director's call.** The agent must not be restricted to local models. A cloud
+LLM must be able to send ops that mutate the project.
+
+**Why this costs almost nothing architecturally, which is the point.** ADR-0003
+already says every mutation is a typed, attributed op, and ADR-0021 already says
+an op never reads ambient state and carries every id as a literal. A mutation
+that arrives over a socket is therefore **the same object** as one raised by a
+menu item. The schema already anticipated it: `ops.actor` has admitted
+`'remote'` since it was written.
+
+So the RPC layer transports ops. It does not get a second way in. An agent that
+could bypass the op log would undo the entire safety argument this project
+rests on, and no transport is allowed to become that.
+
+**JSON on the wire, CBOR at rest.** The director specified JSON ops. ADR-0016
+and ADR-0025 specify CBOR with short string keys for `ops.payload`. Both hold:
+the boundary decodes JSON into the same op structure a local caller builds, and
+it is stored as CBOR like every other op. ADR-0016 already requires the op
+registry to emit JSON-Schema for agent tool definitions, so the wire schema is
+generated from the registry rather than written twice.
+
+**Do not name a model in this log.** The brief named Gemini 1.5 Pro; that
+generation has been retired, and an ADR naming a specific model is a stale
+claim the day it is written. The contract is with *a client that can emit valid
+ops*, and which model is behind it is configuration.
+
+**Open, and each needs deciding before the tier ships:**
+
+- **Authentication and authorisation.** `AI-AGENT.md`'s Observe / Propose /
+  Apply tiers must be enforced at the boundary, not requested by the caller.
+- **Consent and confidentiality.** Reaching a cloud model means project content
+  leaves the machine. That is the user's decision, per project, defaulting to
+  off, and it has to be visible rather than buried.
+- **Concurrency.** A remote actor mutating while a human edits is two writers.
+  ADR-0030's branching history is the right substrate; the policy is not chosen.
+- **Rate and blast radius.** A remote caller that emits ten thousand ops is a
+  denial of service against the undo tree's legibility as much as the CPU.
+
+---
+
+## ADR-0040 — The device contract carries a GUI hook and an opt-in conditional-DSP capability — `DECIDED (direction)` (2026-09-19)
+
+**Director's call**, and it extends ADR-0035's open device contract rather than
+replacing it. Two capabilities:
+
+1. **Custom GUI in the device chain.** A device renders its own editor inline
+   in the chain strip, not only in a floating window. For a libpd device this
+   is our own view over the patch's declared controls — not a Pd patcher canvas
+   embedded in a mixer strip.
+2. **Conditional DSP, as an opt-in capability.** A device may declare that it
+   can be suspended when its UI is not visible.
+
+**The second one is stated as opt-in because defaulting it on would be a
+correctness bug, and that is worth recording rather than discovering.** A
+device whose processing has no effect beyond its own display is safe to
+suspend. Most devices are not that:
+
+- a reverb or delay has a **tail** that must keep decaying;
+- a compressor carries an **envelope** and a sidechain that must stay converged;
+- an LFO or step sequencer holds **phase** that must stay in step with the
+  transport;
+- an analyser may be **feeding something else**, not just drawing.
+
+Suspending any of those on a window close produces a click, a dropped tail, or
+a sequencer that drifts — silently, and only sometimes. So the capability is
+declared by the device, honoured by the host, and never inferred.
+
+**The contract needs, at minimum:** a `suspend_when_hidden` capability flag; a
+host-to-device visibility signal that is *advisory* and arrives on the message
+thread; and a defined resume obligation — a resumed device must not produce a
+discontinuity, which for anything with state means it was not suspendable in
+the first place.
+
+**Test case: the AVC Spectrum Meter**, ported natively. It is the right first
+subject precisely because it is the honest case for suspension — a pure
+analyser whose output is its display, with nothing downstream depending on it
+running. If conditional DSP is not correct there it is not correct anywhere.
+
+**And the longer aim, recorded because it shapes the contract:** that port is
+the blueprint for a Max for Live porting pipeline. A contract designed only for
+devices we write will not take an M4L device; one designed with a real port in
+hand has a chance. This does not commit us to a porting tool — it commits the
+contract to being shaped by one real example rather than by imagination.
+
+**Depends on the device/parameter contract**, which is still open from ADR-0035
+and is the gate on all of this.

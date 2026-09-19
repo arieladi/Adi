@@ -242,13 +242,15 @@ renaming `Bass` to `Bass Gtr` cannot change the token's shape.
 
 ```
 "/trk/Rhythm/Drums"                    "/trk/Rhythm/Drums/dev/Serum"
-"/scene/Chorus"                        "/trk/Bass/clip/Verse"
+"/trk/Bass/clip/Verse"                 "/trk/Bass/auto/volume"
 "/trk/Bass/auto/volume"                "/media/1f4a9c2e7b0d3a51"
 "/trk/Rhythm/Drums/dev/Serum/macro/Drive"
 ```
 
 The top-level track forest is **role-partitioned** from `tracks.kind` into
-`/trk`, `/ret`, `/vca`, `/master` and `/glob`. Sends overwhelmingly target
+`/trk`, `/ret`, `/vca`, `/master` and `/glob`. There is no `/scene` space:
+ADR-0037 removed Session View, so `scenes` and `clip_slots` are gone from
+Layer 1 and nothing addresses a slot. Sends overwhelmingly target
 returns and the master, and those spaces are untouched by inserting an audio
 track — a cheap halving of insertion churn, taken from the path-addressed design.
 

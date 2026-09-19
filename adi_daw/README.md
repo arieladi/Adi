@@ -1,7 +1,7 @@
 # ADI DAW
 
 An open-source digital audio workstation with an open, documented, reimplementable
-project format — combining Ableton Live's clip-launching and device model with
+project format — combining Ableton Live's device model and screen layout with
 Cubase's arrangement, editing and mixing depth, and an AI agent that can only act
 through the same undoable operations a human uses.
 
@@ -105,8 +105,11 @@ These are the load-bearing ones. Full reasoning in
 2. **Every mutation is a typed, attributed op.** This is what makes undo
    persistent and branching, scripting free, and the AI agent structurally
    incapable of doing anything a user couldn't undo with one keystroke. (ADR-0003)
-3. **Session View is a peer of the arrangement, not an add-on.** Both are core
-   schema. This is the whole premise. (ADR-0006)
+3. **Linear only: there is no Session View.** The clip-launching matrix was
+   core schema until ADR-0037 cut it. The *layout* still follows Ableton —
+   channels right, device chain along the bottom — while the arrangement and
+   the editing depth behind it follow Cubase. Layout and clip matrix were never
+   the same claim. (ADR-0037, superseding ADR-0006)
 4. **Per-note expression is first-class.** Continuum, Osmose, Seaboard and MPE
    performances are stored as real curves, decoupled from the 16-channel
    transport that carried them. Neither Ableton's nor Cubase's model is a
@@ -136,10 +139,9 @@ Each step gates the next. No step starts before the previous one is written down
 | **5** | Audio engine skeleton: snapshot handoff, model, transport | **done** — headless, no JUCE (ADR-0036) |
 | **6** | JUCE: audio device, the graph, plugin hosting | **next** |
 | **7** | Minimal arrangement UI — the first thing you can make a track in | |
-| **8** | Session View | |
-| **9** | The agent, at Observe tier only | |
-| **10** | Propose and Apply tiers | |
-| **11** | Visual patching devices — Pure Data embedded via `libpd` (ADR-0035) | direction decided, contract not designed |
+| **8** | The agent, at Observe tier only | |
+| **9** | Propose and Apply tiers, and the RPC boundary (ADR-0039) | |
+| **10** | Visual patching devices — Pure Data via `libpd` (ADR-0035, ADR-0040) | direction decided, contract not designed |
 
 ---
 
