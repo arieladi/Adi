@@ -507,6 +507,143 @@ void testOrderingNoLeak() {
     eq(expected, "kick snare hat ride", "and it is the content order");
 }
 
+// --- the pipeline -----------------------------------------------------------
+
+std::size_t addNode(Tree& t, std::string kind, std::string selector,
+                    std::string label, std::vector<SortKey> keys) {
+    Node n;
+    n.kind = std::move(kind);
+    n.selector = std::move(selector);
+    n.base_label = std::move(label);
+    n.keys = std::move(keys);
+    t.nodes.push_back(std::move(n));
+    return t.nodes.size() - 1;
+}
+
+void testPipeline() {
+    section("pipeline -- order, label, designate, render");
+    {
+        // A group with two tracks, one clip, one send. Small enough to read in
+        // full, which is the point: the expected text is written out rather
+        // than described.
+        Tree t;
+        const auto grp  = addNode(t, "trk", "", "Rhythm", {SortKey::integer(0)});
+        const auto keys = addNode(t, "trk", "", "Keys",   {SortKey::integer(1)});
+        const auto rev  = addNode(t, "ret", "", "Reverb", {SortKey::integer(2)});
+        const auto drum = addNode(t, "trk", "", "Drums",  {SortKey::integer(0)});
+        const auto clip = addNode(t, "clip", "clip", "Verse", {SortKey::integer(0)});
+
+        t.nodes[grp].children  = {drum};
+        t.nodes[keys].children = {clip};
+        t.nodes[keys].attrs    = {"gain " + renderF64(-3.5)};
+        t.nodes[clip].attrs    = {"len " + renderDuration(kWhole)};
+        t.nodes[keys].refs     = {Ref{"send", rev, "track"}};
+        t.roots = {grp, keys, rev};
+
+        const Projection p = project(t);
+        eq(p.text,
+           "trk Rhythm\n"
+           "  trk Drums\n"
+           "trk Keys\n"
+           "  gain -3.5\n"
+           "  send -> \"/Reverb\"\n"
+           "  clip Verse\n"
+           "    len 1/1\n"
+           "ret Reverb\n",
+           "the whole projection, byte for byte");
+        eq(p.designators[drum], "\"/Rhythm/Drums\"", "a nested track designator");
+        eq(p.designators[clip], "\"/Keys/clip/Verse\"", "a clip under its track");
+        check(p.status == OrderStatus::Exact, "nothing tied");
+    }
+    {
+        // A dangling reference. Reachable today: routing admits a 'bus' kind
+        // and schema.sql has no buses table.
+        Tree t;
+        const auto trk = addNode(t, "trk", "", "Bass", {SortKey::integer(0)});
+        t.nodes[trk].refs = {Ref{"out", Ref::kDangling, "bus"}};
+        t.roots = {trk};
+
+        const Projection p = project(t);
+        eq(p.text, "trk Bass\n  out -> \"!unresolved(bus)\"\n",
+           "a dangling reference renders, and never as a number");
+    }
+    {
+        // The circularity, made concrete. Two tracks identical in every field:
+        // same kind, same key, same name, same children. Only the reference
+        // graph differs -- one is sent to, the other is not. Pass 1 renders
+        // both skeletons with the reference as `?`, so K2 ties; refinement is
+        // what separates them; pass 2 then has a fixed order to designate from.
+        Tree t;
+        const auto a   = addNode(t, "trk", "", "Twin", {SortKey::integer(0)});
+        const auto b   = addNode(t, "trk", "", "Twin", {SortKey::integer(0)});
+        const auto src = addNode(t, "trk", "", "Src",  {SortKey::integer(1)});
+        t.nodes[src].refs = {Ref{"send", a, "track"}};
+        t.roots = {a, b, src};
+
+        const Projection p = project(t);
+        check(p.status == OrderStatus::Exact,
+              "the graph separated two otherwise identical siblings");
+        check(p.largest_tied_class == 1, "so nothing remained tied");
+        // Both are still called Twin, so both carry ~k: the presence of the
+        // suffix is the signal that the name is not unique here.
+        check(p.designators[a] != p.designators[b], "and they addressed differently");
+        check(p.text.find("Twin~1") != std::string::npos, "both twins are suffixed");
+        check(p.text.find("Twin~2") != std::string::npos, "both twins are suffixed (2)");
+        // The send must cite whichever twin it actually points at.
+        check(p.text.find("send -> " + p.designators[a]) != std::string::npos,
+              "the reference resolves to the right twin");
+    }
+    {
+        // Two genuinely indistinguishable roots: same everything, no edges.
+        // Nothing can separate them, and the pipeline must say so rather than
+        // fall back on the order they arrived in.
+        Tree t;
+        addNode(t, "trk", "", "Same", {SortKey::integer(0)});
+        addNode(t, "trk", "", "Same", {SortKey::integer(0)});
+        t.roots = {0, 1};
+
+        const Projection p = project(t);
+        check(p.status == OrderStatus::Ambiguous,
+              "an unresolvable tie is declared, not papered over");
+        check(p.largest_tied_class == 2, "and its size is reported");
+        check(!p.text.empty(), "output is still produced, so the projector stays total");
+    }
+}
+
+void testPipelineNoLeak() {
+    section("the whole projection does not leak input order");
+    // The same project, with its node table built in every one of the 24
+    // possible orders -- which is what a different rowid assignment or query
+    // plan produces -- must project to identical bytes.
+    std::vector<std::size_t> perm = {0, 1, 2, 3};
+    std::string expected;
+    int tried = 0;
+    bool stable = true;
+
+    do {
+        // Four tracks, distinguishable by name, wired in a cycle so that every
+        // one has an in-edge and an out-edge and position cannot be the thing
+        // that separates them.
+        const std::vector<std::string> names = {"Kick", "Snare", "Hat", "Ride"};
+        Tree t;
+        std::vector<std::size_t> id(4);
+        for (std::size_t p = 0; p < 4; ++p)
+            id[perm[p]] = addNode(t, "trk", "", names[perm[p]], {SortKey::integer(0)});
+        for (std::size_t k = 0; k < 4; ++k)
+            t.nodes[id[k]].refs = {Ref{"send", id[(k + 1) % 4], "track"}};
+        for (std::size_t p = 0; p < 4; ++p) t.roots.push_back(id[perm[p]]);
+
+        const Projection r = project(t);
+        if (tried == 0) expected = r.text;
+        else if (r.text != expected) stable = false;
+        ++tried;
+    } while (std::next_permutation(perm.begin(), perm.end()));
+
+    check(tried == 24, "all 24 node-table orders were tried");
+    check(stable, "every one projected to identical bytes");
+    check(expected.find("Hat") != std::string::npos, "and the output is the real thing");
+}
+
 }  // namespace
 
 int main() {
@@ -522,6 +659,8 @@ int main() {
     testOrderingRefinement();
     testOrderingK4();
     testOrderingNoLeak();
+    testPipeline();
+    testPipelineNoLeak();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
