@@ -284,6 +284,14 @@ file, an explicit API that makes the wrong thing hard to express.
 **Decision.** GNU General Public License v3.0. `adi_daw/LICENSE` holds the
 canonical text.
 
+> **Qualified by ADR-0048 (2026-09-19).** Our code stays GPLv3, but JUCE is
+> **AGPLv3**, so a build that links it is a combined work carrying AGPL
+> obligations on the JUCE part — and the project can no longer describe itself
+> as simply GPLv3 once it does. The combination is permitted rather than
+> merely tolerated: GPLv3 §13 grants permission to link with an AGPLv3 work
+> and AGPLv3 §13 grants the mirror. Found by mac while pinning JUCE, which is
+> exactly why the licence position was the first thing asked for.
+
 **Why.** It is compatible with JUCE's free licensing path (ADR-0014), which
 would otherwise cost a commercial JUCE licence. It has direct precedent in this
 exact space — Ardour, LMMS, and Vital, which we already fork in `VST-ADI/`. And
@@ -2155,3 +2163,107 @@ to be reachable by keyboard and announce itself, and "ask the agent" does not
 satisfy that for a user who cannot see the timeline. This does not argue for an
 inspector; it argues that the three surfaces above have an obligation the
 inspector would have carried.
+## ADR-0048 — JUCE is pinned at 9.0.2, taken under AGPLv3, and never a hard dependency — `DECIDED` (2026-09-19)
+
+**Context.** Step 6 is JUCE. `win` asked for the dependency in place before step
+6 needs it, and for the licence position stated plainly and early rather than
+discovered late.
+
+### The licence, which is the part that matters
+
+**JUCE is dual-licensed under AGPLv3 and a commercial licence. It is not
+GPLv3.** ADR-0015 chose GPLv3 for this project, so this is the first dependency
+whose licence is *stronger* than ours rather than compatible-and-weaker.
+
+**We take the AGPLv3 grant.** The combination is explicitly permitted: GPLv3 §13
+grants permission to link a covered work with an AGPLv3 work, and AGPLv3 §13
+grants the mirror image. Neither licence has to be stretched and no exception is
+needed.
+
+**What it obliges, stated so nobody has to re-derive it:**
+
+- Our own code stays GPLv3. The JUCE part stays AGPLv3. That is what §13 says
+  happens, and it is why **the project can no longer describe itself as simply
+  "GPLv3" once it links JUCE** — the binary is a GPLv3+AGPLv3 combination.
+- AGPLv3 §13's network clause attaches to the JUCE part: a *modified* version
+  that users interact with **remotely over a network** must offer those users
+  the corresponding source. For a desktop DAW this is normally inert.
+- **It is not inert for ADR-0039.** That ADR adds an RPC boundary so a remote
+  client can send ops. A deployment where users drive adi_daw over a network is
+  exactly AGPL §13's case. We would be offering source anyway, so the practical
+  burden is small — but it is now an obligation rather than a choice, and the
+  two decisions were made four days apart without anyone connecting them.
+- `JUCE_DISPLAY_SPLASH_SCREEN=0` is correct under this grant. The splash
+  requirement belongs to the free tier of the *commercial* licence, not to the
+  open-source route.
+- JUCE's **examples** are ISC, not AGPL. Copying from them is a different
+  question and a much easier one.
+
+**If the AGPL combination is ever unacceptable**, the alternative is the
+commercial JUCE licence, which is a cost decision rather than a technical one.
+Recording it here means it is a decision rather than a discovery.
+
+### The pin
+
+`juce-framework/JUCE` **9.0.2**, commit
+`72782788ce18c2d4d760b28e0921d6ffc6431102`, under ADR-0024's rules — tag and
+commit both, verified on fetch.
+
+9 rather than the mature 8.0.15 line because step 6 has not started: beginning
+on 8 would mean migrating to 9 *during* step 6, and 9.0.2 has had two patch
+releases. If it proves unstable, moving the pin back is ADR-0024's named-reason
+procedure working as intended.
+
+**Fetched only by `--with-juce`.** JUCE is 117MB even shallow, and no default
+build needs it, so pulling it into every CI leg would cost every ABI a large
+clone to build something none of them build.
+
+### Never a hard dependency
+
+`ADI_WITH_JUCE` defaults **OFF**. With it off, `adi_core`, all ten suites and
+every validator build and pass **with no JUCE present at all** — which is the
+property ADR-0036 was built to have, and the reason the snapshot handoff can be
+proved headless. CI keeps JUCE-off required on every ABI; JUCE-on is one job.
+
+### `adi_audio_probe`, and what it found
+
+One target: open a device at a requested block size, report what the driver
+actually granted, close. No graph, no processing.
+
+**ADR-0042 asks for 2048–8192 sample blocks. On this machine 8192 does not
+exist.**
+
+```
+  want    got       rate      callback period
+  256     256       48000        5.33 ms
+  2048    2048      48000       42.67 ms
+  8192    4096      48000       85.33 ms   <- NOT the size requested
+
+  driver advertises: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096
+  largest supported: 4096
+```
+
+Two things follow, and the second is the dangerous one.
+
+1. **macOS CoreAudio built-in output caps at 4096**, so the ceiling is
+   device-dependent and ADR-0042's stated range is not universally available.
+   85 ms is the largest callback this hardware will give.
+2. **The refusal is silent.** Asking for 8192 does not fail — it returns 4096,
+   and nothing says so unless you read the granted size back. **The engine must
+   never assume it got the size it asked for**, and any buffer sized from the
+   request rather than the grant is a latent overrun.
+
+`getAvailableBufferSizes()` is what distinguishes a device cap from a JUCE
+clamp, and it is the device.
+
+### ADR-0041 confirmed against 9.0.2, with one addition
+
+`win` asked me to check its claims when pinning. Both hold: JUCE **does** ship
+an AU host (`juce_AudioUnitPluginFormat.mm`) and **does not** ship a CLAP host —
+there is no CLAP file in `modules/juce_audio_processors/format_types`. The
+leanness argument stands as written.
+
+**One addition the ADR should absorb:** JUCE 9.0.2 also ships **LV2 and LADSPA**
+hosts, which ADR-0041 does not name. They are disabled here explicitly for the
+same reason as VST2 and AU — `JUCE_PLUGINHOST_LV2=0`, `JUCE_PLUGINHOST_LADSPA=0`
+— and the ADR's list should say so rather than relying on their defaults.

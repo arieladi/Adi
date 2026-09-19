@@ -105,41 +105,47 @@ std::string body(const rows::Model& m) {
 // ===========================================================================
 
 void testPositions() {
-    section("renderPosition -- bar|beat|tick");
+    section("metersOf, and whether a position token is unique");
 
-    const std::int64_t q = 5765760;       // a quarter note
-    const std::vector<rows::TimeSignature> none;
+    const std::int64_t q = 5765760;
 
-    eq(renderPosition(0, none), "1|1|0", "the start of a project is bar 1, beat 1");
-    eq(renderPosition(q, none), "1|2|0", "one quarter in 4/4 is beat 2");
-    eq(renderPosition(4 * q, none), "2|1|0", "four quarters is the next bar");
-    eq(renderPosition(4 * q + q / 2, none), "2|1|" + std::to_string(q / 2),
-       "a tick offset inside a beat is the raw remainder, not a rounding");
-    eq(renderPosition(5 * q, none), "2|2|0", "and the next quarter is beat 2 of bar 2");
-    eq(renderPosition(-1, none), "1|1|0", "a negative position clamps rather than wrapping");
+    // The converter is the adapter's half; renderPosition is mac's and is
+    // tested in test_textproj.cpp. What is checked here is the seam.
+    {
+        const auto m = metersOf({});
+        check(m.size() == 1 && m[0].numerator == 4 && m[0].denominator == 4 &&
+                  m[0].start_ticks == 0,
+              "an empty signature map becomes 4/4 from zero");
+    }
+    {
+        const auto m = metersOf({{4 * q, 3, 4}});
+        check(m.size() == 2 && m[0].start_ticks == 0 && m[0].numerator == 4,
+              "a map that starts late gets 4/4 prepended -- there is no defined "
+              "meter before its first event");
+        check(m.size() == 2 && m[1].start_ticks == 4 * q && m[1].numerator == 3,
+              "and the real event follows it");
+    }
+    {
+        const auto m = metersOf({{0, 7, 8}});
+        check(m.size() == 1 && m[0].numerator == 7 && m[0].denominator == 8,
+              "a map that starts at zero is passed through unchanged");
+    }
 
-    // An empty map and a map that starts late are the same case: there is no
-    // defined meter before the first event, and 4/4 is the assumption.
-    const std::vector<rows::TimeSignature> late{{4 * q, 3, 4}};
-    eq(renderPosition(4 * q, late), "2|1|0", "4/4 is assumed before the first event");
-
-    const std::vector<rows::TimeSignature> threeFour{{0, 3, 4}};
-    eq(renderPosition(3 * q, threeFour), "2|1|0", "three quarters is a bar of 3/4");
-    eq(renderPosition(6 * q, threeFour), "3|1|0", "and two bars is six");
-
-    // A change part-way through the piece. Two bars of 4/4, then 7/8.
-    const std::vector<rows::TimeSignature> mixed{{0, 4, 4}, {8 * q, 7, 8}};
-    eq(renderPosition(8 * q, mixed), "3|1|0", "the change lands on a bar line");
-    eq(renderPosition(8 * q + 7 * q / 2, mixed), "4|1|0",
-       "seven eighths after it is the next bar");
-    eq(renderPosition(8 * q + q / 2, mixed), "3|2|0", "an eighth in is beat 2 of 7/8");
-
-    // A change that does NOT land on a bar line. Every DAW starts a new bar at
-    // the change; the short bar before it still counts as a bar.
-    const std::vector<rows::TimeSignature> ragged{{0, 4, 4}, {6 * q, 3, 4}};
-    eq(renderPosition(6 * q, ragged), "3|1|0",
-       "a meter change mid-bar starts a new bar, and the short bar counted");
-    eq(renderPosition(9 * q, ragged), "4|1|0", "and the next 3/4 bar follows it");
+    // A position token must identify one position. Ordering, labels and the
+    // byte-identity R1 depends on are all downstream of rendered content, so
+    // two distinct positions rendering the same token is not cosmetic.
+    //
+    // The case is a meter change that does NOT land on a bar line, which the
+    // schema permits and nothing forbids. 4/4 for six quarters, then 3/4 --
+    // the change arrives half way through bar 2.
+    {
+        const std::vector<Meter> ragged{Meter{0, 4, 4}, Meter{6 * q, 3, 4}};
+        const std::string at4 = renderPosition(4 * q, ragged);
+        const std::string at6 = renderPosition(6 * q, ragged);
+        check(at4 != at6,
+              "a mid-bar meter change leaves the token unique: 4q -> " + at4 +
+                  ", 6q -> " + at6);
+    }
 }
 
 // ===========================================================================

@@ -107,52 +107,19 @@ std::string roleName(std::string_view trackKind) {
 // Positions
 // ---------------------------------------------------------------------------
 
-std::string renderPosition(std::int64_t ticks,
-                           const std::vector<rows::TimeSignature>& sigs) {
-    if (ticks < 0) ticks = 0;
-
-    // Normalise to segments that always start at 0. A map with no event at
-    // tick 0 has no defined meter before its first one; 4/4 is the assumption,
-    // stated in the header.
-    std::vector<rows::TimeSignature> segs;
-    if (sigs.empty() || sigs.front().posTicks != 0) segs.push_back({0, 4, 4});
-    for (const auto& s : sigs) segs.push_back(s);
-
-    std::int64_t bar = 1;
-    for (std::size_t i = 0; i < segs.size(); ++i) {
-        const std::int64_t start = segs[i].posTicks;
-        if (ticks < start) break;
-
-        const std::int64_t den = segs[i].denominator > 0 ? segs[i].denominator : 4;
-        const std::int64_t num = segs[i].numerator > 0 ? segs[i].numerator : 4;
-        const std::int64_t beatTicks = kPPQ4 / den;      // exact for den in 1..128
-        const std::int64_t barTicks = num * beatTicks;
-
-        // A segment runs to the next event, so it holds `ticks` only when
-        // `ticks` is strictly before that. Using `<=` here put a position that
-        // lands exactly ON a meter change in the OLD meter, which reported the
-        // first bar of a new time signature as the third beat of the last bar
-        // of the old one.
-        const bool last = (i + 1 == segs.size());
-        const bool inThis = last || ticks < segs[i + 1].posTicks;
-
-        if (!inThis) {
-            // The whole segment is behind us. A meter change part-way through a
-            // bar starts a new bar at the change: the short bar still counted.
-            const std::int64_t whole = segs[i + 1].posTicks - start;
-            if (whole < 0) continue;                     // an out-of-order map
-            bar += whole / barTicks + (whole % barTicks != 0 ? 1 : 0);
-            continue;
-        }
-
-        const std::int64_t span = ticks - start;
-        if (span < 0) continue;
-        bar += span / barTicks;
-        const std::int64_t rem = span % barTicks;
-        return std::to_string(bar) + "|" + std::to_string(rem / beatTicks + 1) + "|" +
-               std::to_string(rem % beatTicks);
-    }
-    return std::to_string(bar) + "|1|0";
+std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
+    std::vector<Meter> out;
+    out.reserve(sigs.size() + 1);
+    // A map with no event at zero has no defined meter before its first one.
+    // 4/4 is the assumption, the same one snapshot.cpp makes about a missing
+    // initial tempo, and for the same reason: a projector cannot render a
+    // warning.
+    if (sigs.empty() || sigs.front().posTicks != 0) out.push_back(Meter{});
+    for (const auto& s : sigs)
+        out.push_back(Meter{s.posTicks,
+                            static_cast<std::uint16_t>(s.numerator),
+                            static_cast<std::uint16_t>(s.denominator)});
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +187,7 @@ std::span<const TableCoverage> coverage() {
 
 Tree buildTree(const rows::Model& m) {
     Tree t;
+    const std::vector<Meter> meters = metersOf(m.signatures);
 
     // --- project header --------------------------------------------------
     {
@@ -245,7 +213,7 @@ Tree buildTree(const rows::Model& m) {
         const std::size_t n = addNode(t, "map", "", "tempo",
                                       {SortKey::integer(SecMap), SortKey::integer(0)});
         for (const auto& e : m.tempo) {
-            std::string line = renderPosition(e.posTicks, m.signatures) + " bpm " +
+            std::string line = renderPosition(e.posTicks, meters) + " bpm " +
                                renderF64(e.bpm);
             if (e.curve != 0) line += " curve " + std::to_string(e.curve);
             if (e.tension != 0.0) line += " tension " + renderF64(e.tension);
@@ -257,7 +225,7 @@ Tree buildTree(const rows::Model& m) {
         const std::size_t n = addNode(t, "map", "", "sig",
                                       {SortKey::integer(SecMap), SortKey::integer(1)});
         for (const auto& s : m.signatures)
-            t.nodes[n].attrs.push_back(renderPosition(s.posTicks, m.signatures) + " " +
+            t.nodes[n].attrs.push_back(renderPosition(s.posTicks, meters) + " " +
                                        std::to_string(s.numerator) + "/" +
                                        std::to_string(s.denominator));
         t.roots.push_back(n);
@@ -407,10 +375,11 @@ Tree buildTree(const rows::Model& m) {
     // clip-relative gloss that still followed the global map would rewrite them
     // when an unrelated meter changed. Both defeat the point.
     const auto sigAt = [&](std::int64_t ticks) {
-        std::vector<rows::TimeSignature> one{{0, 4, 4}};
+        std::vector<Meter> one{Meter{}};
         for (const auto& s : m.signatures) {
             if (s.posTicks > ticks) break;
-            one[0] = {0, s.numerator, s.denominator};
+            one[0] = Meter{0, static_cast<std::uint16_t>(s.numerator),
+                           static_cast<std::uint16_t>(s.denominator)};
         }
         return one;
     };
@@ -434,7 +403,7 @@ Tree buildTree(const rows::Model& m) {
 
         Attrs a(t.nodes[n].attrs);
         if (c.timeBase == 0)
-            a.raw("at " + renderPosition(c.posTicks.value_or(0), m.signatures));
+            a.raw("at " + renderPosition(c.posTicks.value_or(0), meters));
         else
             a.raw("at " + std::to_string(c.posNs.value_or(0)) + "ns");
         if (c.lengthTicks) a.raw("len " + renderDuration(*c.lengthTicks));
@@ -509,7 +478,7 @@ Tree buildTree(const rows::Model& m) {
                      SortKey::text(k.kind), SortKey::text(k.name)});
         Attrs a(t.nodes[n].attrs);
         if (k.timeBase == 0)
-            a.raw("at " + renderPosition(k.posTicks.value_or(0), m.signatures));
+            a.raw("at " + renderPosition(k.posTicks.value_or(0), meters));
         else
             a.raw("at " + std::to_string(k.posNs.value_or(0)) + "ns");
         if (k.lengthTicks) a.raw("len " + renderDuration(*k.lengthTicks));

@@ -349,8 +349,34 @@ one, and it is a real limitation, recorded in §11.
 | devices | `ord`, name |
 | device chains | `ord`, name |
 | markers | **`pos_ticks` (raw), then kind, then name** |
-| routing | src designator, dst designator, kind |
+| routing | `kind`, `ord` — **not** designators (see below) |
 | macros | `ord`, name |
+
+**`routing` cannot key on designators, and this table said it did.** A
+designator is only determined *after* its target's container is ordered, which
+is the exact circularity §9.1 exists to break — so keying an order on one is
+unimplementable, not merely awkward. `win` hit this building the adapter and
+resolved it correctly: key on `kind` and `ord`, and let **K3 separate rows
+through their endpoint edges**. That is what refinement is for, and a routing
+row's endpoints are precisely the reference graph K3 reads. No new mechanism
+was needed; the entry was simply wrong.
+
+**Roots are a collection too, and this table had no key for them.** `project()`
+orders every root together rather than grouping them the way children are
+grouped by kind, so without a leading key a project opens with whichever root
+happens to sort first. `win` added a **constant section rank as the first K1
+key on every root**, and that is the rule.
+
+I tried to remove it, by grouping roots by track role the way children group by
+kind, and that was wrong: **roots are not only tracks.** They are the document's
+top-level sections — `project`, `tempo`, `media`, `route` and the track roles
+together — so a role list covers a subset and drops the rest into a catch-all.
+Fourteen adapter tests caught it immediately, with `project` sorted to the end.
+The section rank is the general mechanism and grouping is the special case that
+looks more elegant only until you see the whole collection.
+
+The ranks belong here rather than in the adapter, since they are the §3
+hand-chosen document order, but the mechanism is `win`'s and it is correct.
 
 Markers are ordered by **raw ticks**, not by the rendered `bar|beat|tick` token.
 Ordering on the rendered token couples marker order to the time-signature map, so
@@ -368,7 +394,10 @@ it affects, inside the diff, rather than being silently normalised away.
 
 ## 8. Time
 
-Positions render `bar|beat|tick` with a raw-tick gloss where exactness matters.
+Positions render `bar|beat|tick`, **with no raw-tick gloss**. The draft said
+"with a raw-tick gloss where exactness matters"; `bar|beat|tick` is already
+exact, so the gloss would duplicate information rather than add it, and every
+duplicated field is one more thing that can disagree with itself in a diff.
 **Durations render as reduced fractions of a whole note** — `1/16`, `3/8`,
 `1/12`, `1/80`.
 
@@ -390,7 +419,15 @@ winner's `beats|ticks`. Most notes in most music are sub-beat, so under
 unreadable on the majority of lines in the file. `1/16` is exact, independent of
 the tempo and signature maps, and directly readable as a note value.
 
-**Position glosses are clip-relative inside a clip**, never absolute. The
+**Note positions are clip-relative, under the signature in effect at the clip's
+start, held constant for the length of the clip.** The draft said "clip-relative"
+and stopped, which leaves the meter unspecified. Resolving it against the global
+map would rewrite every note line in a clip when an unrelated meter changed
+elsewhere in the project — which defeats the entire reason for making the
+position relative. `win` chose the constant-meter reading while building the
+adapter; it is the right one and this is the rule.
+
+Positions are never absolute inside a clip. The
 path-addressed design rendered absolute glosses on notes, which means moving a
 clip rewrites the gloss on every note inside it — a 400-note clip move becomes a
 400-line diff for a one-field change.
@@ -496,19 +533,44 @@ dangling cite; a reviewer can check it with one search.
 
 ---
 
-## 12. Open, for `win`
+## 12. Three schema findings, all now closed
 
-Three schema findings surfaced while designing this, all verified against
-`schema.sql` at `bcf9212`:
+These surfaced while designing the projection, against `schema.sql` at
+`bcf9212`. All three are fixed. The section is kept rather than deleted because
+the findings were right and the record of *why* a constraint exists is worth
+more than a tidy document.
 
-1. **No ordering column in the core model is unique.** (This said "except
-   `scenes.ord`" until ADR-0037 removed `scenes`, so the statement is now
-   unconditional — one fewer special case in the ordering rules.) The projection
-   defines a total order regardless, so this is not blocking — but a duplicate
-   ordinal is a bug wherever it occurs, and `UNIQUE` constraints would let the
-   store layer reject it at write time instead of the projection papering over
-   it at read time.
-2. **Zero `STRICT` tables, 23 `REAL` columns.** Any of them can legally hold
-   `TEXT`.
-3. **`routing` permits `src_kind`/`dst_kind` = `'bus'` and no `buses` table
-   exists.** A CHECK constraint admitting a referent that cannot exist.
+1. **No ordering column in the core model was unique.** Still true, and now
+   true without exception: ADR-0037 removed `scenes`, whose `ord` was the one
+   unique ordinal. So it stopped being a special case rather than being fixed —
+   which is why K1 through K4 exist at all. A duplicate ordinal is still a bug
+   wherever it occurs; `adi_tool check` is where it should be caught, not here.
+
+2. **Zero `STRICT` tables, 23 `REAL` columns that could legally hold `TEXT`.**
+   Closed by **ADR-0029**: all tables are `STRICT`. `SortKey`'s mixed-type
+   ordering survives as a defensive measure rather than a load-bearing one —
+   a comparator that is a strict weak ordering over every bit pattern costs
+   nothing to keep and is the difference between a total order and undefined
+   behaviour in `std::sort` if the guarantee ever weakens.
+
+3. **`routing` admitted `'bus'` with no `buses` table.** Closed by **ADR-0029**,
+   which removed the enum member.
+
+   I reported this a second time, after it was fixed, as though it were still
+   open — because I tested it with `grep -c "'bus'"`, got 2, and did not look at
+   what the two hits were. Both were comments documenting the removal. The
+   lesson is not about `routing`: **a substring count is not a semantic check**,
+   and the substring was in the prose describing the fix I claimed was missing.
+
+   `unresolved()` is unaffected. `routing` is still a polymorphic `(kind, id)`
+   reference that SQLite cannot enforce, so a row pointing at a deleted track is
+   reachable — that is ADR-0029's own open item and what `adi_tool check` finds.
+   The rendering was always right; only the example justifying it was false.
+
+### Still open, and it is mine
+
+The device/parameter contract (ADR-0035, ADR-0040) decides how a Pd patch's
+parameters reach `automation_lanes`, and therefore what the projection renders
+for a device. A four-way design panel tied 29/29; the winner on three lenses
+came last on ADR-0021 determinism because it emits no op during reconciliation.
+Not yet written up as an ADR.

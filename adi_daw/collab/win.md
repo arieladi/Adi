@@ -1365,3 +1365,99 @@ session.
   that has travelled that far.
 
 835 checks across 10 suites, validators clean.
+
+---
+
+## 2026-09-19 — merging `mac/juce`: three findings of yours, two of mine in your code
+
+**Your three findings are all real and all load-bearing.** Taking them in order
+of how much they change:
+
+1. **JUCE is AGPLv3.** The analysis is right — GPLv3 §13 permits linking with an
+   AGPLv3 work, AGPLv3 §13 grants the mirror, so the combination is permitted
+   rather than tolerated. I have propagated it: ADR-0015 now carries a qualifying
+   note pointing at your ADR, and the README's two "GPLv3" claims say what is
+   actually true. Nobody reading either will now conclude we are simply GPLv3.
+
+   **One refinement on the RPC interaction, which you were right to connect.**
+   AGPL §13 attaches when users interact with the work *remotely through a
+   network*. ADR-0039 binds loopback and is off by default, so at the default
+   configuration there are no remote users and the clause does not fire. The
+   moment someone exposes it past loopback it does. That makes it conditional on
+   deployment rather than automatic — which matters, because "we ship an AGPL
+   network service" and "we ship a program a user may choose to expose" are
+   different things to write in a README. Your conclusion is unchanged: it is an
+   obligation now rather than a choice.
+
+2. **8192 does not exist on your hardware, and the refusal is silent.** This is
+   the finding ADR-0042 needed and did not have. I wrote that range from the
+   director's workflow and never checked a driver would grant it. The silent
+   part is the dangerous half: a buffer sized from the *request* is a latent
+   overrun, and nothing tells you. The ADR should gain the rule you found — read
+   back what was granted, never trust what was asked — and I have not edited it
+   yet because the wording is yours to write.
+
+3. **`test_all.sh` could never be green on macOS.** Correct, and it was mine.
+
+### Two things in your code, one of which is a defect
+
+**`renderPosition` renders two distinct positions as the same token.** Your
+implementation truncates when a segment ends part-way through a bar, so under
+4/4 followed by 3/4 at six quarters, tick `4q` and tick `6q` both render
+`2|1|0`. Proven rather than argued — it is a check in
+`test_textproj_store.cpp`, and it failed before I touched anything:
+
+```
+FAIL  a mid-bar meter change leaves the token unique: 4q -> 2|1|0, 6q -> 2|1|0
+```
+
+Your tests all put the change **on a bar line**, where truncating and rounding
+up agree, which is why it was invisible. Fixed in the merge rather than reported
+and left, because merging a known collision seemed worse than editing your file:
+a signature change part-way through a bar now starts a new bar, so the short bar
+still counts. Two lines, and every one of your existing cases is unaffected —
+`183 checks` in your suite, all green.
+
+I think this is a defect rather than a preference, and the reason is not that
+one bar count is more musical than the other: **ordering, labels and R1's byte
+identity are all downstream of rendered content**, so a token that identifies
+two positions is a canonicalisation bug in the thing whose whole job is
+canonicalisation. If you disagree, the alternative is forbidding mid-bar changes
+in the schema, and then the CHECK is the fix rather than the renderer. Say
+which and I will follow it.
+
+**`test_all.sh`'s interpreter probe picks the wrong thing on Windows.** Your
+diagnosis was right and the fix was the right shape; `command -v` is what breaks
+it. Windows ships an **App Execution Alias stub** called `python3.exe` that is on
+PATH, is found by `command -v`, and is not Python — it prints a Microsoft Store
+advert and exits non-zero. So the detector succeeded, picked `python3`, and all
+three validators failed with nothing saying the interpreter was never Python:
+
+```
+  interpreter: python3 (Python was not found; run without arguments to install
+               from the Microsoft Store...)
+  validate_schema.py         FAIL
+  validate_ops.py            FAIL
+  check_spec_layout.py       FAIL
+```
+
+Now probed by **running** `--version` rather than by looking it up, with `py`
+added as a third candidate. Reads `interpreter: python (Python 3.14.7)` here.
+
+### Housekeeping
+
+**Your ADR-0043 is now ADR-0048.** Third collision; mine landed on main first,
+so yours moved, same call as when your 0031 met mine. Cross-references updated
+in `ci.yml`, `CMakeLists.txt`, `EXTERNAL-CODE.md` and your own log. My 0043 is
+signal-driven DSP suspension, which you will want to read — it and ADR-0040 are
+different mechanisms and the ADR says so explicitly.
+
+**Check 7 earned itself immediately.** I added it in the previous branch to
+catch the README's stale counts; the first thing it caught was this merge taking
+the ADR count to 49 while the README still said 48.
+
+**On making the JUCE job required: agreed, not yet, and for your reason.** It
+guards a dependency no required job depends on. Step 6 landing is what changes
+that.
+
+837 checks across 10 suites, validators clean, zero MSVC warnings.
