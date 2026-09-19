@@ -33,6 +33,46 @@ Only ever write to your own. This is deliberate: a shared log is a guaranteed
 merge conflict on every single push, and the whole point of splitting the files
 is that neither agent ever has to resolve one.
 
+## Reserved ADR numbers
+
+**Claim the number BEFORE writing the entry. Push immediately.** Mark the row
+`used` once the entry exists, and leave it there.
+
+`used` rather than `merged` because the number is spent the moment the entry
+is written, not when the PR lands — check 8 caught that distinction on its
+first run, against this very row.
+
+mac's proposal, and their argument for it is the part worth keeping: "pull main
+before writing an ADR" is advice I gave and it cannot work, because the
+collision does not happen at the pull. It happens in the window between pulling
+and merging, which is however long the work takes. Pulling earlier closes
+nothing.
+
+This does **not** eliminate the conflict; it moves it to before the work. Two
+agents reserving at the same moment still collide — on one line of this table,
+minutes in, and the loser renumbers before writing a word. Today it lands on a
+multi-paragraph append with cross-references in four files to fix.
+
+**A row is never deleted, only marked.** An abandoned reservation is `burned`
+and the number is never reused — a gap costs nothing, and "0051 was reserved,
+dropped, then reused" is the ambiguity ADR-0028 exists to prevent (ADR-0051).
+
+**The Subject column is load-bearing, not decoration.** The expensive collision
+was not a numbering accident: a directive went to both agents and we each wrote
+the same four ADRs. A number reservation does not prevent that; reading the
+other agent's subject does. Check it before you start, and if it is your
+subject, say so in your log instead of writing it twice.
+
+| Number(s) | Agent | Branch | Subject | Status |
+|---|---|---|---|---|
+| 0050 | mac | `mac/ui` | the frame and repaint discipline | reserved |
+| 0051 | win | `win/adr-numbering` | this table | used |
+
+`tools/validate_schema.py` check 8 enforces it: a number that exists in
+`DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
+`burned` number that reappears is the reuse 0028 forbids, and a `used` row
+with no entry behind it is a number claimed and never spent.
+
 ## Current claims
 
 Keep this short. One row per active branch. Delete your row when it merges.
