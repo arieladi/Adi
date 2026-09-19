@@ -141,6 +141,15 @@ Inside a quoted string, exactly these escapes and no others:
 `\u{XXXX}` is one to six uppercase hex digits naming a scalar value; surrogates
 are not representable.
 
+A seventh escape, `\x{HH}`, names **one raw byte that is not valid UTF-8**.
+Added during implementation, because names arrive from a `TEXT` column with no
+validation and SQLite will store whatever bytes it was handed — so invalid UTF-8
+is reachable input, not a hypothetical. Rejecting it would make the projector
+non-total, which the determinism review penalised for good reason; substituting
+U+FFFD would be lossy and would silently merge two distinct names into one
+label. Escaping the byte is total and injective. Overlong encodings, encoded
+surrogates and truncated sequences are all handled this way, byte by byte.
+
 A character **MUST** be escaped if it is `"` or `\`; any C0 control
 (U+0000–U+001F) or U+007F; any C1 control (U+0080–U+009F); U+2028 or U+2029;
 U+FEFF; or any **bidi control**: U+061C, U+200E, U+200F, U+202A–U+202E,
@@ -169,6 +178,14 @@ identical bit pattern**, at the width it is stored at.
   produces `0.10000000149011612` where `0.1` is correct and sufficient.
 - `-0.0` renders `-0.0`, distinctly from `0.0`. They are different bit patterns
   and ADR-0021's oracle compares bytes.
+- **Every finite value contains a `.` or an `e`**, so a float never renders as a
+  bare integer and `-0.0` is visibly distinct from `0.0`. `std::to_chars` emits
+  `-0` and `16777216`; both are valid shortest round-trips and neither is a
+  canonical form, so the projection appends `.0`.
+- **Exponents are `e308` and `e-308`** — no `+`, no zero padding. `1e+308` and
+  `1e308` are again both valid shortest round-trips. Pinning the shape here
+  means the format does not silently change if a standard library revises its
+  output.
 - Non-finite values render `nan` and `inf` / `-inf`. **NaN payloads and
   signalling NaNs are not rendered**, because payload preservation is not
   consistent across the compilers in ADR-0022's matrix — notably x87 on the i386
@@ -353,6 +370,18 @@ it affects, inside the diff, rather than being silently normalised away.
 Positions render `bar|beat|tick` with a raw-tick gloss where exactness matters.
 **Durations render as reduced fractions of a whole note** — `1/16`, `3/8`,
 `1/12`, `1/80`.
+
+**A duration only reduces to a small fraction when it is on a grid.** Recorded,
+unquantised performance is the common case and does not reduce at all:
+1441441 ticks is 1441441/23063040 in lowest terms, which is exact and useless.
+So a denominator above **1024** renders as raw ticks with a `t` suffix instead.
+Both forms are exact; the fraction is the readable one when it exists and the
+tick count is honest when it does not.
+
+The achievable denominators are exactly the divisors of a whole note, and a
+whole note is `2^9 * 3^2 * 5 * 7 * 11 * 13` — four times the ADI_PPQ
+factorisation in SPEC 4.2. So 1024 is not itself reachable; **512 is the
+power-of-two ceiling**, and the bound is a cutoff rather than a target.
 
 This is taken from the name-addressed design and it is strictly better than the
 winner's `beats|ticks`. Most notes in most music are sub-beat, so under
