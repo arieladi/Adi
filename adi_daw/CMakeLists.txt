@@ -111,6 +111,7 @@ add_custom_command(
 add_library(adi_core STATIC
     src/adi/blob.cpp
     src/adi/store.cpp
+    src/adi/ops.cpp
     src/adi/textproj.cpp
     "${ADI_SCHEMA_HPP}"
 )
@@ -141,6 +142,12 @@ add_test(NAME adi_tests COMMAND adi_tests)
 add_executable(adi_store_tests tests/test_store.cpp)
 target_link_libraries(adi_store_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_store_tests COMMAND adi_store_tests)
+
+# Separate again, for the same reason: an ops failure and a store failure should
+# be distinguishable from the CI summary without opening the log.
+add_executable(adi_ops_tests tests/test_ops.cpp)
+target_link_libraries(adi_ops_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_ops_tests COMMAND adi_ops_tests)
 
 # A second binary rather than a second file in adi_tests: the projection has no
 # dependency on the blob layer and testing it in isolation keeps that true. If
