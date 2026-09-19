@@ -27,6 +27,9 @@ Checks, in order:
      because a specification should not assert what it can check.
   7. The counts README states are the counts that exist, and no ADR
      number is used twice (ADR-0028).
+  8. The ADR reservation table in collab/README.md agrees with the log:
+     no number written while still marked reserved, no burned number
+     reused, no number claimed and never spent (ADR-0051).
 """
 
 from __future__ import annotations
@@ -449,6 +452,38 @@ def main() -> int:
         fail(f"duplicate ADR numbers, and ADR-0028 says numbers are never reused: {dupes}")
     else:
         ok("no ADR number is used twice")
+
+    # --- 8. the ADR reservation table is kept (ADR-0051) ---------------------
+    # A process rule nothing checks is a process rule that decays, and this one
+    # exists because three collisions got through a rule that was only advice.
+    print("[8] ADR reservations are kept up to date (ADR-0051)")
+    before_8 = fail.count  # type: ignore[attr-defined]
+    collab = HERE.parent / "collab" / "README.md"
+    if not collab.exists():
+        fail("collab/README.md is missing; the reservation table lives there")
+    else:
+        text = collab.read_text(encoding="utf-8")
+        used = set(re.findall(r"^## (ADR-\d+R?) ", decisions, re.M))
+        rows = re.findall(
+            r"^\|\s*(\d{4}(?:\s*[-–]\s*\d{4})?)\s*\|\s*(\w+)\s*\|[^|]*\|[^|]*\|"
+            r"\s*(reserved|used|burned)\s*\|",
+            text, re.M)
+        if not rows:
+            fail("no reservation rows parsed -- has the table shape changed?")
+        for nums, agent, status in rows:
+            lo, hi = int(nums[:4]), int(nums[-4:])
+            for n in range(lo, hi + 1):
+                name = f"ADR-{n:04d}"
+                if status == "reserved" and name in used:
+                    fail(f"{name} is in DECISIONS.md but its row still says "
+                         f"'reserved' -- {agent} did not mark it used")
+                elif status == "burned" and name in used:
+                    fail(f"{name} is marked burned and yet exists -- a burned "
+                         f"number is never reused (ADR-0051, ADR-0028)")
+                elif status == "used" and name not in used:
+                    fail(f"{name} is marked used but is not in DECISIONS.md")
+        if fail.count == before_8:  # type: ignore[attr-defined]
+            ok(f"{len(rows)} reservation row(s), all consistent with the log")
 
     n = fail.count  # type: ignore[attr-defined]
     print()

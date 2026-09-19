@@ -36,7 +36,11 @@ is that neither agent ever has to resolve one.
 ## Reserved ADR numbers
 
 **Claim the number BEFORE writing the entry. Push immediately.** Mark the row
-`merged` when it lands, and leave it there.
+`used` once the entry exists, and leave it there.
+
+`used` rather than `merged` because the number is spent the moment the entry
+is written, not when the PR lands — check 8 caught that distinction on its
+first run, against this very row.
 
 mac's proposal, and their argument for it is the part worth keeping: "pull main
 before writing an ADR" is advice I gave and it cannot work, because the
@@ -62,11 +66,12 @@ subject, say so in your log instead of writing it twice.
 | Number(s) | Agent | Branch | Subject | Status |
 |---|---|---|---|---|
 | 0050 | mac | `mac/ui` | the frame and repaint discipline | reserved |
-| 0051 | win | `win/adr-numbering` | this table | reserved |
+| 0051 | win | `win/adr-numbering` | this table | used |
 
-`tools/validate_schema.py` check 8 enforces it: a reserved number that already
-exists in `DECISIONS.md` and is not marked `merged` is a row someone forgot,
-and a burned number that reappears is the reuse 0028 forbids.
+`tools/validate_schema.py` check 8 enforces it: a number that exists in
+`DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
+`burned` number that reappears is the reuse 0028 forbids, and a `used` row
+with no entry behind it is a number claimed and never spent.
 
 ## Current claims
 
