@@ -467,6 +467,8 @@ plugin_params  (device_id, param_id, name, normalized_value, display_string)
 | LV2 | `state`, plus `files` for its file-reference extension |
 | VST2 | `chunk`, or `params` if the plugin is not chunk-capable |
 
+ADI hosts only the first two of those; the rest are here because the format records plugins it cannot load, so that a device is preserved rather than dropped. See §7.4.
+
 Writing all of these into one column and hoping is the standard way DAWs lose
 people's synth patches. They get separate rows.
 
@@ -530,6 +532,32 @@ when a plugin's non-parameter state changes, and plenty of plugins never say.
 
 This is a limitation of the plugin APIs, not of this format, and stating it is
 cheaper than a user discovering it with an hour of sound design at stake.
+
+### 7.4 What ADI hosts, and what it only records
+
+These are two different lists and conflating them loses data.
+
+**Hosted by this implementation: VST3, and CLAP when it is written.** Nothing
+else, and adding to that set takes an ADR (ADR-0041). In particular ADI does not
+host **VST2**, **AU** or **AUv3**, and no build option turns that on.
+
+**Recorded by the format: whatever was there.** `plugin_refs.format` admits
+`vst3`, `vst2`, `clap`, `au`, `auv3`, `lv2`, `ladspa` and `internal`, and it
+will keep admitting all of them. A reader that meets a `format` it cannot host
+**MUST** apply §7.1 unchanged: preserve the state byte-for-byte, keep the device
+in the chain as a bypassed placeholder, and surface what is missing. It **MUST
+NOT** reject the file and **MUST NOT** drop the device.
+
+This is what lets a converter from a macOS Logic or Live project produce a valid
+`.adi`. If the format refused the string `au`, such a project could not be
+represented at all, and the converter's only choices would be to fail or to
+silently discard every device — which is the exact failure §7.1 exists to
+prevent. Refusing to host a format costs us code we do not write; refusing to
+*name* it costs a user their session.
+
+A third-party implementation that does host AU is conforming, and a `.adi` it
+writes is readable here. That is the point of specifying the format separately
+from the application.
 
 ---
 
