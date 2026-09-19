@@ -175,6 +175,10 @@ add_test(NAME adi_tests_textproj COMMAND adi_tests_textproj)
 #   python3 adi_daw/tests/fuzz_seeds.py build/fuzz_corpus
 #   ./build/adi_fuzz_blob build/fuzz_corpus -max_total_time=300
 #
+# Targets are discovered: every tests/fuzz_<x>.cpp becomes adi_fuzz_<x>, built
+# against src/adi/<x>.cpp. `cmake --build ... --target adi_fuzzers` builds them
+# all.
+#
 # blob.cpp is compiled INTO this target rather than linked from adi_core: a
 # sanitised binary linking unsanitised objects still runs, but the uninstrumented
 # half is invisible to the fuzzer, which is the half being tested. It also keeps
@@ -208,17 +212,46 @@ if(ADI_BUILD_FUZZERS)
 
     set(ADI_FUZZ_FLAGS -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
 
-    add_executable(adi_fuzz_blob tests/fuzz_blob.cpp src/adi/blob.cpp)
-    target_include_directories(adi_fuzz_blob PRIVATE src)
-    target_link_libraries(adi_fuzz_blob PRIVATE adi_warnings)
-    target_compile_options(adi_fuzz_blob PRIVATE ${ADI_FUZZ_FLAGS})
-    target_link_options(adi_fuzz_blob PRIVATE ${ADI_FUZZ_FLAGS})
+    # Discovered, not listed. A hardcoded target list is a list that stops
+    # covering the tree the moment someone adds to it -- which is exactly what
+    # happened to the -Werror gate when textproj.cpp arrived.
+    #
+    # Each tests/fuzz_<x>.cpp is built against src/adi/<x>.cpp. Compiling the
+    # subject INTO the target rather than linking adi_core keeps every
+    # instrumented byte instrumented: a sanitised binary linking unsanitised
+    # objects still runs, but the uninstrumented half is invisible to the
+    # fuzzer, and that half is the part being tested.
+    file(GLOB ADI_FUZZ_HARNESSES CONFIGURE_DEPENDS "tests/fuzz_*.cpp")
+    if(NOT ADI_FUZZ_HARNESSES)
+        message(FATAL_ERROR "ADI_BUILD_FUZZERS is ON but tests/fuzz_*.cpp found nothing")
+    endif()
+
+    add_custom_target(adi_fuzzers)
+
+    foreach(harness ${ADI_FUZZ_HARNESSES})
+        get_filename_component(stem "${harness}" NAME_WE)          # fuzz_blob
+        string(REGEX REPLACE "^fuzz_" "" subject "${stem}")         # blob
+        set(subject_src "${CMAKE_CURRENT_SOURCE_DIR}/src/adi/${subject}.cpp")
+        if(NOT EXISTS "${subject_src}")
+            message(FATAL_ERROR
+                "${harness} has no subject: expected src/adi/${subject}.cpp. "
+                "A fuzz harness is named after what it fuzzes.")
+        endif()
+
+        add_executable(adi_${stem} "${harness}" "${subject_src}")
+        target_include_directories(adi_${stem} PRIVATE src)
+        target_link_libraries(adi_${stem} PRIVATE adi_warnings)
+        target_compile_options(adi_${stem} PRIVATE ${ADI_FUZZ_FLAGS})
+        target_link_options(adi_${stem} PRIVATE ${ADI_FUZZ_FLAGS})
+        add_dependencies(adi_fuzzers adi_${stem})
+        message(STATUS "fuzz target: adi_${stem} over src/adi/${subject}.cpp")
+    endforeach()
 
     # Regenerated on every build: the seeds are the shapes of defects we have
     # already seen, and a stale corpus is a fuzzer told to stop looking there.
     add_custom_command(TARGET adi_fuzz_blob POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E echo "generating fuzz seed corpus"
         COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz_seeds.py"
-                "$<TARGET_FILE_DIR:adi_fuzz_blob>/fuzz_corpus"
+                "$<TARGET_FILE_DIR:adi_fuzz_blob>/fuzz_corpus/blob"
         VERBATIM)
 endif()
