@@ -359,14 +359,35 @@ jobs:
           "$CXX" --version | head -1
           W="-std=c++20 -Wall -Wextra -Wpedantic -Wcast-align -Wconversion"
           W="$W -Wsign-conversion -Wno-unused-parameter -Werror -Iadi_daw/src"
-          # blob.cpp and test_main.cpp need nothing but the standard library.
-          "$CXX" $W "$HARDEN" -O1 \
-                 adi_daw/tests/test_main.cpp adi_daw/src/adi/blob.cpp -o adi_tests_strict
-          ./adi_tests_strict
-          # main.cpp only needs to compile; it has no test of its own yet.
-          "$CXX" $W -Iadi_daw/third_party/SQLiteCpp/include \
-                 -fsyntax-only adi_daw/src/main.cpp
-          echo "ok    all three translation units are warning-free at -Werror"
+
+          # The file list is DISCOVERED, not written down. It used to name
+          # blob.cpp and test_main.cpp explicitly, and the first new source
+          # added to the tree -- textproj.cpp -- was silently outside the
+          # -Werror gate as a result. A hardcoded list in a gate is a gate that
+          # stops covering the code the moment someone adds to it.
+          srcs=$(find adi_daw/src/adi -name '*.cpp' | sort | tr '\n' ' ')
+          tests=$(find adi_daw/tests -name 'test_*.cpp' | sort)
+          [ -n "$srcs" ]  || { echo "::error::no library sources found"; exit 1; }
+          [ -n "$tests" ] || { echo "::error::no test sources found"; exit 1; }
+          echo "library sources: $srcs"
+
+          # Every test binary is built against every library source, so a new
+          # source is covered the moment it exists.
+          for t in $tests; do
+            name=$(basename "$t" .cpp)
+            echo "--- $name"
+            "$CXX" $W "$HARDEN" -O1 "$t" $srcs -o "strict_$name"
+            "./strict_$name"
+          done
+
+          # Anything directly under src/ is an executable's own main; it only
+          # has to compile. main.cpp is the one that needs the SQLiteCpp headers.
+          for s in adi_daw/src/*.cpp; do
+            echo "--- $(basename "$s") (syntax only)"
+            "$CXX" $W -Iadi_daw/third_party/SQLiteCpp/include -fsyntax-only "$s"
+          done
+
+          echo "ok    every translation unit in the tree is warning-free at -Werror"
 
   # ---------------------------------------------------------------------------
   # What did we actually build against?
