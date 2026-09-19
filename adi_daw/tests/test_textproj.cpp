@@ -235,6 +235,49 @@ void testDeterminism() {
           "assignLabels is stable");
 }
 
+// --- positions --------------------------------------------------------------
+void testPositions() {
+    section("bar|beat|tick accumulates across signature changes");
+    const std::vector<Meter> none;
+    eq(renderPosition(0, none),            "1|1|0", "the origin is bar 1 beat 1");
+    eq(renderPosition(kPPQ, none),         "1|2|0", "one quarter in 4/4");
+    eq(renderPosition(kWhole, none),       "2|1|0", "a whole note is the next bar");
+    eq(renderPosition(kPPQ / 2, none),     "1|1|" + std::to_string(kPPQ / 2),
+       "a sub-beat position keeps its tick remainder");
+
+    // The bug this shape of code invites: dividing the whole position by the
+    // CURRENT meter. Correct up to the first change, wrong after it -- the same
+    // shape as integrating tempo with a single bpm.
+    const std::vector<Meter> mixed = {
+        Meter{0,        4, 4},
+        Meter{2*kWhole, 3, 4},      // 3/4 from bar 3
+    };
+    eq(renderPosition(0, mixed),          "1|1|0", "before the change");
+    eq(renderPosition(2*kWhole, mixed),   "3|1|0", "the change lands on a bar line");
+    // Two bars of 4/4 then one bar of 3/4 = 2 whole + 3 quarters.
+    eq(renderPosition(2*kWhole + 3*kPPQ, mixed), "4|1|0",
+       "the 3/4 bar is three quarters long, not four");
+    // Assert it is not what the NAIVE computation gives. The bug divides the
+    // whole position by the CURRENT meter, i.e. treats the timeline as 3/4
+    // throughout: 11 quarters / 3 = bar 4 beat 3, not bar 4 beat 1.
+    //
+    // My first version of this check compared against renderPosition(3*kWhole,
+    // {}) instead, which is a different CORRECT answer that happens to equal
+    // this one. A negative assertion is only worth having if it is aimed at the
+    // actual wrong answer.
+    const std::vector<Meter> all_three = {Meter{0, 3, 4}};
+    eq(renderPosition(2*kWhole + 3*kPPQ, all_three), "4|3|0",
+       "treating the whole timeline as 3/4 gives bar 4 beat 3");
+    check(renderPosition(2*kWhole + 3*kPPQ, mixed)
+          != renderPosition(2*kWhole + 3*kPPQ, all_three),
+          "and the segment-by-segment answer differs from it");
+
+    section("renderPosition is total");
+    eq(renderPosition(-kPPQ, none), "0|4|0", "a negative position floors rather than refusing");
+    const std::vector<Meter> bad = {Meter{0, 4, 0}};
+    eq(renderPosition(kPPQ, bad), "0|0|0", "a zero denominator does not divide by zero");
+}
+
 // --- designators ------------------------------------------------------------
 void testDesignators() {
     section("designators");
@@ -653,6 +696,7 @@ int main() {
     testEscaping();
     testLabels();
     testDeterminism();
+    testPositions();
     testDesignators();
     testOrderingKeys();
     testOrderingSkeleton();

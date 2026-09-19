@@ -131,7 +131,7 @@ to be earned on the timeline instead. That is the point.
 | Racks: instrument / effect / drum | Ableton | P2 | ✅ | `device_chains` with key/vel/chain zones |
 | Macros with per-target range and curve | Ableton | P2 | ✅ | `macros`, `macro_mappings` |
 | Plugin delay compensation | both | P0 | ✅ | `devices.latency_samples`. Reported in samples and **excludes** the device buffer — ADR-0042. |
-| 2048–8192-sample blocks, tested | — | **P0** | — | runtime. The target workflow is dense chains, not low-latency tracking (ADR-0042). |
+| 2048–4096-sample blocks, tested | — | **P0** | — | runtime. Dense chains, not low-latency tracking (ADR-0042). **4096 is the cap on every platform** and the granted size is the only one that exists (ADR-0049). |
 | Sub-block automation and MIDI accuracy | both | **P0** | ✅ | runtime. At 8192 a block is 171 ms; per-block updates would step audibly. The price of the row above (ADR-0042). |
 | Change block size without reloading | both | **P0** | — | runtime. At 8192 overdubbing is impossible, so moving between sizes mid-session is not optional (ADR-0042). |
 | VST3 silence flags + tail-aware suspension | — | **P0** | ✅ | runtime; `devices.always_process` opts out (ADR-0043) |
