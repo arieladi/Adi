@@ -370,6 +370,10 @@ off  size  type  field
 > is the common case. Two enums named `curve` in one format is a trap, so the
 > difference is stated rather than left to be discovered.
 
+**Resolution and rate (ADR-0054).** `value` is `f32`, so a 14-bit MPE+ controller loses nothing and neither would a 24-bit one; 7-bit and 14-bit are wire encodings and **MUST NOT** appear in a stored value. A reader **MUST NOT** reconstruct MPE member-channel allocation from `ANOT.channel`: that field records which channel a note arrived on, and allocating channels when playing *to* an MPE destination is an output-side decision made from the zone in force at that moment.
+
+A writer **MAY** thin a captured stream and **MUST** record that it did. An exact capture and a thinned one are different documents, and a file that cannot distinguish them makes "we do not quantise" true of the bit depth and false of the data.
+
 **This is first-class, not an MPE afterthought.** A Haken Continuum, a Roli, an
 Osmose or a Seaboard produces continuous per-note pitch, pressure and timbre at
 full control-rate resolution; Cubase VST Note Expression and Ableton MPE each

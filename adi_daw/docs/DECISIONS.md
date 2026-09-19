@@ -2747,3 +2747,142 @@ fact for whoever owns `third_party/`.
 After VST3 and after CLAP. A remote device is a device, and the device contract
 has to exist and be exercised by two real local formats before a third kind of
 device that is not even in this process can honour it.
+
+
+---
+
+## ADR-0054 — MPE and MPE+ end to end, and the sub-block floor they bound — `DECIDED` (2026-09-20)
+
+**Global mandate.** High-resolution MIDI across the DAW and the plugin
+projects, for a Haken Continuum Slim 21: 14-bit continuous controller and
+Y-axis data, per-note pitch bend, 500 Hz updates, and no quantising down to
+7-bit anywhere. This ADR is the `adi_daw` half; the `VST-ADI` half belongs in
+that repository's log.
+
+### Checked first, because most of this already holds
+
+The interesting result is how little the format has to change, and that is worth
+demonstrating rather than claiming:
+
+| requirement | what exists | verdict |
+|---|---|---|
+| per-note pitch, timbre, pressure | `ExpressionDim::Pitch / Timbre / Pressure` | exactly MPE's X, Y, Z |
+| 14-bit continuous values | `ExpressionPoint.value` is **f32** | 24 bits of mantissa — ten more than asked |
+| 500 Hz timing | `time_ticks` i64 at PPQ 5765760 | ~23,000 ticks between updates at 120 BPM |
+| per-note anchoring | `note_expression(clip_id, note_id, dimension)` | one blob per note per dimension, ADR-0009 |
+| not an afterthought | SPEC §6.3.2 already names the Continuum | written before the mandate arrived |
+
+README design commitment 4 and SPEC §6.3.2 committed to this in week one:
+expression is stored as **curves, decoupled from the 16-channel transport that
+carried them**. MPE is a MIDI 1.0 convention for squeezing per-note data down a
+channel-oriented pipe; it is a property of the wire, not of the music. Having
+modelled the music, the wire can change — which is also why MIDI 2.0, whose
+per-note controllers are 32-bit natively, will be a new input parser here and
+not a format change.
+
+So the mandate is largely **confirmed** rather than implemented. Three things
+genuinely follow from it, and the first one changes a number in another ADR.
+
+### 1. MPE+ puts a hard upper bound on ADR-0042's sub-block floor
+
+ADR-0042 requires splitting a block at every event boundary, with a floor so
+worst-case split overhead is bounded, and said the floor was "a tuning constant
+and needs measuring, not guessing". It now has a derivation.
+
+A Continuum emits update frames at **500 Hz**. If the floor is larger than the
+gap between frames, two frames land in one segment and the later one is
+discarded or delayed — **which is quantising the stream in time**, the thing the
+mandate forbids, arriving by a different door than bit depth.
+
+```
+floor_max = sample_rate / 500
+
+  48 kHz  ->   96 samples
+  96 kHz  ->  192 samples
+ 192 kHz  ->  384 samples
+```
+
+**The floor MUST NOT exceed `sample_rate / 500` samples.** ADR-0042's candidate
+of 64 gives 750 segments per second at 48 kHz, which clears 500 Hz with room;
+32 gives 1500. Either is fine and 128 is not, at 48 kHz.
+
+Two things make this affordable. Distinct *timestamps* are what force a split,
+not events — a 500 Hz frame carrying ten notes across three dimensions is one
+instant, not thirty — so the bound is 500 splits per second and not 15,000. And
+at 4096 frames the block is 85 ms, so a 64-sample floor caps it at 64 segments
+per callback whatever arrives.
+
+This is the second time ADR-0042's large blocks have turned out to cost
+something that has to be bounded rather than bought outright, and it is worth
+noticing the pattern: the floor was introduced to protect against overhead and
+its real constraint turns out to come from an instrument nobody had mentioned.
+
+### 2. No MIDI byte survives the input parser
+
+**The engine's expression value type is floating point from the parser to the
+plugin.** 7-bit and 14-bit are wire encodings; neither appears in an engine
+type, an op payload or a blob. The trap this rule exists to prevent is a single
+`std::uint8_t` in an event struct, which would silently undo the whole mandate
+while every document still claimed compliance.
+
+Both hosted formats carry it, so nothing is lost at the far end either: VST3's
+`INoteExpressionController` takes a `double` in 0..1, and CLAP's
+`CLAP_EVENT_NOTE_EXPRESSION` carries a `double`. The narrow point in the chain
+is neither the format nor the plugin API — it is only ever our own code.
+
+`NoteRecord.channel` stays, and a reader **MUST NOT** reconstruct MPE member
+allocation from it. It records which channel a note arrived on, which is
+history. Allocating member channels when playing *to* an MPE destination is an
+output-side decision made at that moment from the zone in force then.
+
+### 3. The real new cost is size, and thinning must be declared
+
+500 Hz × 3 dimensions × 24 bytes is **36 KB per second per note**. A ten-second
+six-note chord with full expression is about 2.2 MB of `AEXP`, and a dense
+four-minute performance runs to tens of megabytes. The format holds it; the
+question is whether we write all of it.
+
+**A writer MAY thin a captured expression stream, and MUST record that it did.**
+An exact capture and a thinned one are different documents and the file has to
+say which it is — otherwise "we do not quantise" becomes true of the bit depth
+and false of the data, which is worse than not claiming it. Thinning that
+preserves the curve within a stated error bound is a legitimate default; silent
+decimation is not, and neither is thinning that cannot be distinguished later
+from a performance that genuinely had few points.
+
+The flag byte in `ExpressionPoint` and the stream header's `flags` are where
+this lands. The exact encoding is left to the ADR that implements capture,
+because the recording path does not exist yet and designing its metadata now
+would be designing against a guess.
+
+### The UI question is already answered
+
+"Without choking the UI" is ADR-0050, decided before this arrived: one clock
+draining coalesced dirty bits, never `repaint()` per model change. Fifteen
+thousand expression events per second coalesce into sixty repaints, for the same
+reason ADR-0039's remote actor does. Nothing here needs re-deciding, and it is
+worth recording that the answer pre-dates the question — a UI that repainted per
+event would have made this mandate impossible and nobody would have known why.
+
+### MPE+ specifics are the parser's business, deliberately
+
+MPE+ is Haken's extension: the additional low-order bits for Y and Z travel in
+companion controller messages alongside the standard ones. **The exact
+controller assignments are Haken's and must be read from their documentation
+rather than guessed at here** — and, more to the point, the format does not
+depend on them. A parser that understands MPE+ produces the same f32 curve a
+parser that understands plain MPE produces, with more precision in it. That is
+the entire benefit of having decoupled the model from the transport, and it is
+why this ADR can be written without knowing the CC numbers.
+
+### Open, and not invented here
+
+**MPE zone configuration has no home in the schema.** Master channel, member
+channel count and pitch-bend range are per-input configuration, and there is no
+`track_io` table — I checked rather than assumed; it is not in `schema.sql`.
+
+This is a **recording-path** concern: once a performance is captured, expression
+is curves and the zone that carried it is history. The recording path does not
+exist, so the table does not either, and it arrives with that work rather than
+speculatively. Noted here so the gap is on the record instead of being
+rediscovered by whoever builds MIDI input.
