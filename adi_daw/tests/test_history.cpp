@@ -14,6 +14,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <string>
 
@@ -355,7 +356,7 @@ void testReadOnlyRefuses() {
 
 }  // namespace
 
-int main() {
+int runAll() {
     std::printf("adi_history_tests -- SPEC 8.2, ADR-0003/0021/0030\n\n");
     testUndoRedoRoundTrip();
     testTransactionUndoesAsOne();
@@ -370,4 +371,16 @@ int main() {
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;
+}
+
+int main() {
+    // OpRegistry::instance() throws if the catalogue is malformed (OPS.md 3).
+    // Uncaught, that is abort() -- on Windows a modal dialog that blocks the
+    // run rather than reporting it. Catch it and say what is wrong.
+    try {
+        return runAll();
+    } catch (const std::exception& e) {
+        std::printf("\nFAILED -- exception escaped: %s\n", e.what());
+        return 1;
+    }
 }
