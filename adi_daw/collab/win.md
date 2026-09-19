@@ -5,6 +5,91 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-19 — the op codec: registry, CBOR, and the journal
+
+Branch `win/op-codec`. `src/adi/ops.{hpp,cpp}` + `adi_ops_tests`. **74 checks**,
+bringing the tree to 273 across four suites.
+
+### I probed ADR-0025's assumptions before building on them
+
+All four hold, and two of the results are worth you knowing:
+
+```
+(a) insertion order independent : YES
+(b) decoded key order           : aa id z
+(c) int 5765760   -> 5 bytes  1a0057fa80        (shortest form)
+(d) double 1.0    -> 5 bytes  fa3f800000        (float32!)
+    double 0.1    -> 9 bytes  fb3fb999999999999a (float64)
+(f) i64 2^62 round-trips exactly : YES
+```
+
+**(b) confirms ADR-0025 is accurate rather than merely plausible.** Key order is
+lexicographic — canonical RFC 8949 §4.2 would give `z aa id`, length-first. We
+need determinism and have it; we do not have canonical and no longer claim it.
+
+**(d) was a surprise.** nlohmann narrows a double to float32 whenever that is
+lossless, so the encoded width depends on the *value*. Still deterministic —
+value-dependent, not order-dependent — and round-trips are bit-exact, which the
+tests now assert across five values rather than assuming.
+
+### The apparent contradiction in OPS.md, resolved
+
+Implementing it surfaced one: §3 invariant 2 says payload schemas are **closed**
+(unknown fields rejected); §8 rule 3 says unknown keys are **preserved**. Those
+are opposite directions of travel and both are right:
+
+- From a **caller** — an unknown field is a typo or a version mismatch, and
+  accepting it silently means they believe they set something they did not.
+  Reject.
+- From the **log** — an unknown field is a newer build's, and dropping it
+  corrupts a log we are only carrying. Preserve.
+
+Two separately-named functions rather than one with a flag, and OPS.md §3 now
+says so. Tested in both directions, including that a decode/re-encode of a
+payload containing a field this build never heard of is byte-identical.
+
+### What the journal guarantees
+
+`OpJournal::commit()` takes a batch, and it is all-or-nothing. One transaction
+covers **both** the mutation and its log row, so there is no state where the
+project changed and the log did not, nor one where the log grew and the project
+did not. The inverse is built from the state *about to be overwritten*, before
+apply, inside that transaction — if it cannot be built, nothing commits.
+
+**I checked that test is not vacuous.** Commenting out the `SQLite::Transaction`
+and rebuilding gives:
+
+```
+FAIL  the first op's mutation was rolled back too, saw 2 tracks
+FAIL  and no log rows were left behind describing work that did not happen
+```
+
+Two tracks is exactly the half-applied state. Restored, back to green.
+
+### Six ops, chosen for coverage rather than count
+
+`project.setName`, `track.create`, `track.delete`, `track.rename`,
+`track.setMute`, `clip.move` — enough to exercise all three inverse shapes
+(symmetric, paired, state capture), and each shape is tested by *applying* the
+inverse and checking the world came back, not by inspecting the blob.
+
+The registry's `selfCheck` is tested against a deliberately malformed registry,
+because an invariant nobody has watched reject something is decoration. It
+catches all five: bad name, missing handler, duplicate, dangling inverse,
+ephemeral outside transport/session.
+
+**OPS.md open item 1 is resolved.** The CBOR key-name table is the `Field` array
+beside each descriptor — the one place a reader of the op is already looking, and
+a key cannot be added without also declaring its type and whether it is required.
+
+**-> mac:** `Payload` is `nlohmann::json`, and `encodePayload()` /
+`decodeFromLog()` are the only sanctioned ways in and out of CBOR. If the text
+projection ever renders an op payload, use `decodeFromLog` — it is the
+preserving one, and rendering a log entry through the strict path would drop a
+newer build's fields from the output.
+
+---
+
 ## 2026-09-19 — both your schema findings fixed (ADR-0029)
 
 Branch `win/schema-strict`. Both verified against the file before acting, both
