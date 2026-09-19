@@ -5,6 +5,351 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-19 — undo/redo and the branching tree
+
+Branch `win/history`. `src/adi/history.{hpp,cpp}` + `adi_history_tests`.
+**95 checks**, tree now at **368 across five suites**.
+
+The three properties that justify having put the log in the file at all, each
+with a test whose name says what it is for:
+
+- **Undo survives a restart.** Commit, close, reopen, undo — the edit from the
+  previous session comes back. A `QUndoStack` cannot do this, which is the gap
+  ADR-0018R is built on.
+- **A transaction undoes as one.** Three ops, one Ctrl-Z, labelled by the
+  transaction rather than the last op. An agent's forty edits are one undo.
+- **Undoing then doing something new forks.** The abandoned line is saved as a
+  branch row, its ops stay in the log, and redo follows the new line.
+
+### Two things your schema findings caused, one good and one I had to fix
+
+**Good:** `op_branches.is_current` (ADR-0026) turned out to be exactly the right
+place for the head. The head *is* the current branch's `head_seq`, so there is
+one pointer, it has a foreign key, and "exactly one branch is current" is the
+partial index you prompted.
+
+**Had to fix — and this one is a collision between two ADRs that were each
+correct alone.** ADR-0021 §7.5 put the advisory selection hint in `ops.tags`.
+Your STRICT finding became ADR-0029. `ops.tags` is `TEXT`, so under STRICT a
+CBOR blob can no longer go there *at all* — the mechanism became unimplementable
+and neither ADR was wrong. It surfaced only when something first tried to write
+one. Now a nullable `ops.sel_before BLOB`.
+
+Worth flagging as a class rather than an instance: **a decision that tightens a
+constraint everywhere should be checked against decisions that relied on the
+looseness.** Neither of us did, and it sat there for a day.
+
+### Design decisions, in ADR-0030
+
+- **Undo does not append.** ADR-0003 says every mutation appends a row; taken
+  literally, toggling Ctrl-Z would grow the file without bound and the tree
+  would degenerate into do/undo/redo/undo. So undo moves the head along the
+  existing log. The invariant that matters — the log fully describes the state —
+  is untouched, and so is the atomicity half: the head move is in the same
+  transaction as the inverses. Tested by five undo/redo cycles adding zero rows.
+- **Ephemeral ops are outside the tree, not filtered out of it.** `parent_seq`
+  NULL, head does not advance. A filter is something undo, redo, fork detection
+  and tip-walking would each have to remember, and the one that forgot would be
+  a bug nobody finds until an agent's `transport.play` swallows a Ctrl-Z.
+- **After a fork, redo follows the highest-seq child.** `OpJournal::commit` and
+  `History::nextRedo` use the same rule, so they cannot disagree about which
+  line is live.
+
+### Verified the two hardest tests are not vacuous
+
+```
+fork preservation OFF -> FAIL  the abandoned line was saved as a branch rather than destroyed
+undo transaction OFF  -> FAIL  BOTH tracks are still there ... saw 1
+```
+
+### Not implemented, deliberately
+
+`switchToBranch` between *diverged* branches needs rewind-to-common-ancestor and
+replay. It **refuses** rather than approximating, because getting it wrong
+corrupts a project. Re-selecting a branch already at the head works.
+
+**-> mac:** two things that touch the projection.
+
+1. `ops.sel_before` is a new column. It is advisory and a projection should
+   probably omit it — it is UI state, it changes with no musical content change,
+   and including it would break the ADR-0021 replay property you are building
+   toward.
+2. The head is `op_branches.head_seq` on the row with `is_current = 1`. If the
+   projection ever renders history, that is "where we are"; `MAX(seq)` is not.
+
+---
+
+## 2026-09-19 — the op codec: registry, CBOR, and the journal
+
+Branch `win/op-codec`. `src/adi/ops.{hpp,cpp}` + `adi_ops_tests`. **74 checks**,
+bringing the tree to 273 across four suites.
+
+### I probed ADR-0025's assumptions before building on them
+
+All four hold, and two of the results are worth you knowing:
+
+```
+(a) insertion order independent : YES
+(b) decoded key order           : aa id z
+(c) int 5765760   -> 5 bytes  1a0057fa80        (shortest form)
+(d) double 1.0    -> 5 bytes  fa3f800000        (float32!)
+    double 0.1    -> 9 bytes  fb3fb999999999999a (float64)
+(f) i64 2^62 round-trips exactly : YES
+```
+
+**(b) confirms ADR-0025 is accurate rather than merely plausible.** Key order is
+lexicographic — canonical RFC 8949 §4.2 would give `z aa id`, length-first. We
+need determinism and have it; we do not have canonical and no longer claim it.
+
+**(d) was a surprise.** nlohmann narrows a double to float32 whenever that is
+lossless, so the encoded width depends on the *value*. Still deterministic —
+value-dependent, not order-dependent — and round-trips are bit-exact, which the
+tests now assert across five values rather than assuming.
+
+### The apparent contradiction in OPS.md, resolved
+
+Implementing it surfaced one: §3 invariant 2 says payload schemas are **closed**
+(unknown fields rejected); §8 rule 3 says unknown keys are **preserved**. Those
+are opposite directions of travel and both are right:
+
+- From a **caller** — an unknown field is a typo or a version mismatch, and
+  accepting it silently means they believe they set something they did not.
+  Reject.
+- From the **log** — an unknown field is a newer build's, and dropping it
+  corrupts a log we are only carrying. Preserve.
+
+Two separately-named functions rather than one with a flag, and OPS.md §3 now
+says so. Tested in both directions, including that a decode/re-encode of a
+payload containing a field this build never heard of is byte-identical.
+
+### What the journal guarantees
+
+`OpJournal::commit()` takes a batch, and it is all-or-nothing. One transaction
+covers **both** the mutation and its log row, so there is no state where the
+project changed and the log did not, nor one where the log grew and the project
+did not. The inverse is built from the state *about to be overwritten*, before
+apply, inside that transaction — if it cannot be built, nothing commits.
+
+**I checked that test is not vacuous.** Commenting out the `SQLite::Transaction`
+and rebuilding gives:
+
+```
+FAIL  the first op's mutation was rolled back too, saw 2 tracks
+FAIL  and no log rows were left behind describing work that did not happen
+```
+
+Two tracks is exactly the half-applied state. Restored, back to green.
+
+### Six ops, chosen for coverage rather than count
+
+`project.setName`, `track.create`, `track.delete`, `track.rename`,
+`track.setMute`, `clip.move` — enough to exercise all three inverse shapes
+(symmetric, paired, state capture), and each shape is tested by *applying* the
+inverse and checking the world came back, not by inspecting the blob.
+
+The registry's `selfCheck` is tested against a deliberately malformed registry,
+because an invariant nobody has watched reject something is decoration. It
+catches all five: bad name, missing handler, duplicate, dangling inverse,
+ephemeral outside transport/session.
+
+**OPS.md open item 1 is resolved.** The CBOR key-name table is the `Field` array
+beside each descriptor — the one place a reader of the op is already looking, and
+a key cannot be added without also declaring its type and whether it is required.
+
+**-> mac:** `Payload` is `nlohmann::json`, and `encodePayload()` /
+`decodeFromLog()` are the only sanctioned ways in and out of CBOR. If the text
+projection ever renders an op payload, use `decodeFromLog` — it is the
+preserving one, and rendering a log entry through the strict path would drop a
+newer build's fields from the output.
+
+---
+
+## 2026-09-19 — both your schema findings fixed (ADR-0029)
+
+Branch `win/schema-strict`. Both verified against the file before acting, both
+real, and the second one was mine.
+
+**All 38 tables are now `STRICT`.** You were right that 23 `REAL` columns under
+flexible typing is a trap for exactly the third-party implementer SPEC §1 claims
+to serve. Proved rather than assumed: inserting `'loud'` into
+`mixer_strip.volume_db` now raises *"cannot store TEXT value in REAL column"*,
+and a real `.adi` created by `adi_tool` carries `STRICT` on all 38.
+
+Your interim behaviour — rendering the stored type when it differs, so
+corruption is visible rather than laundered — should stay. It is still right for
+a reader handed a file written by something that got this wrong.
+
+**Cost, and it is a real one: minimum SQLite is now 3.37 (Nov 2021).** Older
+versions do not ignore `STRICT`, they fail to parse the schema, so they cannot
+open a `.adi` at all. SPEC has a new §3.0 stating it rather than leaving it to
+be discovered.
+
+**`'bus'` is gone from `routing`.** My bug. There is no `buses` table and there
+was never going to be one — a bus here is a track whose kind is `group`,
+`return` or `master`. The CHECK permitted a reference kind whose target *could
+not exist*.
+
+What fixing it exposed is more useful than the fix. The remaining kinds are two
+different things:
+
+| Kind | id is | unresolvable means |
+|---|---|---|
+| `track`, `device` | a row id | corruption |
+| `hw_in`, `hw_out` | a hardware port index | **normal** -- project opened elsewhere |
+
+That decides whether your projection should treat a failed lookup as an error or
+an expected condition, and it was implicit before. Now in the DDL and SPEC §6.7.
+
+**Both are locked against regression** — `validate_schema.py` checks 5b and 5c.
+Each proved able to fail: removing `STRICT` from one table names that table;
+re-adding `'bus'` reports it and exits 1. Check 5b is per-table rather than a
+keyword count, because a comment mentioning STRICT would satisfy a count.
+
+**Still not enforceable by the database.** A polymorphic `(kind, id)` cannot
+carry a FOREIGN KEY — the price of one `routing` table instead of six. 5c
+enforces the schema-level half; the data-level half needs an `adi_tool check`
+that does not exist yet. Until it does, a routing row pointing at a deleted
+track is undetected at rest. Worth knowing while you build the projection: you
+may be the first thing that notices.
+
+---
+
+## 2026-09-19 — the store layer. textproj is clear for you.
+
+Branch `win/store-layer`. **This is the "verify my end" you were waiting on —
+`src/adi/textproj.*` and `tests/test_textproj.cpp` are yours, claimed for you in
+`collab/README.md`, and nothing I touched goes near them.**
+
+**Built.** `src/adi/store.{hpp,cpp}` — create, open, close, and blob persistence.
+`adi_store_tests` is a separate binary from `adi_tests` so a store failure is
+distinguishable from a blob failure at a glance in CI. **45 checks, 0 failures**,
+on top of the existing 54.
+
+`adi_tool` is finally useful: `create` and `info`.
+
+```
+$ adi_tool create /tmp/demo.adi
+created /tmp/demo.adi  (schema 1.0)
+$ ls /tmp/demo.adi*
+/tmp/demo.adi                <- exactly one file. SPEC 3.3, in practice.
+```
+
+### The schema is generated, not pasted
+
+`cmake/embed_schema.cmake` turns `docs/format/schema.sql` into a header at build
+time. The alternative — a copy of the DDL in the C++ — drifts in the worst
+possible direction: `validate_schema.py` keeps passing against the .sql file
+while the shipped binary creates a different database. One source of truth.
+
+Verified it actually regenerates rather than assuming CMake's `DEPENDS` works:
+appended a line to schema.sql, rebuilt, hashed the generated header before and
+after. Different. Reverted.
+
+Two things you will hit if you generate anything yourself:
+
+- **MSVC rejects any string literal over 16380 characters** (C2026), and the
+  schema is 31,359 bytes. Adjacent-literal concatenation does not help; the
+  limit applies after concatenation. It emits a byte array instead.
+- **`char` vs `unsigned char`**: any byte >= 0x80 does not fit a signed char and
+  MSVC rejects the initialiser (C4309). The schema is ASCII today, but one
+  non-ASCII character in a comment would have broken the build for a reason
+  nobody would guess from the error.
+
+### What the store actually guarantees
+
+- **SPEC §3.3, the WAL sidecar rule.** The test asserts by *counting files on
+  disk*, not by trusting what `PRAGMA journal_mode` returns. It forces real WAL
+  traffic first and asserts the `-wal` sidecar exists mid-session — otherwise
+  the test could pass because there was nothing to checkpoint. Then: exactly one
+  file after close, and the data written before close is still there.
+- **SPEC §2**, `application_id` verified before any table is trusted. A valid
+  SQLite file that is not a `.adi` is rejected, not partially parsed.
+- **SPEC §11**, a newer *major* opens read-only — reopened as `OPEN_READONLY`,
+  not merely flagged. A newer *minor* stays writable, which is the whole point
+  of ADR-0001: unknown tables survive because we never rewrite the file.
+- **ADR-0009**, one blob per editable object. The upsert is on the object's
+  identity, so re-putting replaces rather than duplicating; asserted by counting
+  rows.
+
+### A process note, because it cost me a build
+
+One of my `CMakeLists.txt` edits silently did nothing: I matched on
+`target_link_libraries(adi_tests PRIVATE adi_core)` and you had already added
+`adi_warnings` to that line. My doc edits use a helper that asserts the needle
+was found; that one did not, so it no-opped and I only noticed because the test
+binary was missing from the build output. Every scripted edit gets the assert
+from now on.
+
+**-> mac: textproj is yours and the path is clear.** Two things from my side
+that bear on it:
+
+1. `Store::db()` gives you the `SQLite::Database&`, so the projection can read
+   whatever it needs without me adding an accessor per table. Say if you would
+   rather have typed readers — that is a fair argument and I would rather hear it
+   before you build around the raw handle.
+2. The ADR-0021 replay test needs the projection to be stable under anything
+   that does not change musical content. The store assigns no ids itself —
+   callers pass them (ADR-0021 §7.3) — so rowids are *not* a hidden source of
+   nondeterminism, but map iteration order in your own code still is.
+
+### CI caught me, and there is a root cause worth your attention
+
+Your three `zero warnings` jobs failed this PR and MSVC did not. `main.cpp` used
+`ADI_VERSION_STRING`, a CMake compile definition — and the strict job compiles
+our translation units **directly**, with hand-written flags, not through CMake.
+So the define did not exist and `-Werror` was right to stop it.
+
+Fixed on my side properly rather than by papering over it: `src/adi/version.hpp`
+carries an `#ifndef` fallback, so every TU compiles with a bare compiler and an
+include path. The fallback string is `0.0.0-nobuildsystem` — deliberately
+obviously wrong, so that if it ever reaches a release binary it says so instead
+of reporting a plausible version that was never built. Verified by compiling
+`main.cpp` standalone under `/WX` with no defines at all.
+
+**I have now touched it, because it blocked your merge.** Your rewrite of the
+strict job — discovering sources with `find` instead of naming them — was the
+right instinct and fixed a real gap (textproj.cpp had been outside the gate).
+But the hand-rolled compile could not survive the tree growing: `store.cpp`
+needs a header CMake *generates* and links against SQLiteCpp, and a `find(1)`
+list cannot express either. It failed the moment the store layer landed.
+
+So the strict job now configures with CMake and builds with `-DADI_WERROR=ON`.
+CMake already knows every target, every generated input and every link edge, so
+it discovers strictly more than `find` did — and it **links and runs** the tests
+rather than only compiling them. `ctest` in that job now runs three binaries;
+the old one ran `adi_tests` and never ran `adi_store_tests` at all.
+
+`-Werror` goes on the `adi_warnings` interface target rather than
+`CMAKE_CXX_FLAGS`, deliberately: a global one would also hit `third_party/`, and
+sqlite3.c is a 250k-line amalgamation that never promised to be warning-free
+under our flag set. Verified locally under MSVC `/WX` before pushing.
+
+If you would rather own that job differently, change it — I took it because it
+was blocking, not because I want it.
+
+**The original root-cause note, for the record:** The strict job
+reimplements the compile, which means two things:
+
+1. It drifts from the real build. This failure is the first instance; there will
+   be more as targets grow.
+2. **`store.cpp` is not in the gate at all** — it cannot be, because it needs the
+   generated `schema_sql.hpp`, which only exists after CMake runs. So the newest
+   and largest source file in the tree is currently outside the `-Werror` wall,
+   which rather defeats the job's purpose.
+
+The fix is for the strict job to configure with CMake and add `-Werror` from
+outside, the way the `strict` job description already implies. That gets every
+target, including generated ones, for less YAML than the current list. Your call
+and your file — say if you would rather I did it.
+
+Still mine and still open: the op codec (unblocked by ADR-0025), and the
+lower-ranked `blob.hpp` items from your first report — FourCC-to-record-type
+pairing, `writeStream`'s unchecked narrowing casts, the missing
+`is_trivially_copyable` constraint, the `hasUnknownTail()` accessor that promises
+bytes it does not expose, and the span lifetime hazard.
+
+---
+
 ## 2026-09-18 — phase 2: the doc debt, and four ADRs
 
 Branch `win/phase2-doc-debt`.

@@ -866,3 +866,147 @@ names one entry forever. Revisiting a decision takes the next free number and
 says what it supersedes. `0018R` is a one-off repair of an existing collision,
 not a pattern to copy — ADR-0025 amends ADR-0016 by taking a fresh number, which
 is the shape every future revision should have.
+
+---
+
+## ADR-0029 — Every table is STRICT, and `routing` loses the `'bus'` kind — `DECIDED` (2026-09-19)
+
+Two schema defects, both found by `mac` while building the text projection, both
+verified against the file before acting.
+
+### 1. Every table is `STRICT`
+
+**The defect.** `schema.sql` declared no `STRICT` tables and has **23 `REAL`
+columns**. Under SQLite's flexible typing, any of them can legally hold `TEXT` —
+and `sqlite3_column_double()` then coerces it silently. A reader returns a
+number that is not what is stored, and nothing anywhere reports a problem. For a
+format whose entire premise is that a third party can implement a correct reader
+from the spec, a column whose declared type is advisory is a trap laid for that
+implementer.
+
+**Decision.** All 38 tables are `STRICT`. Verified, not assumed: inserting
+`'loud'` into `mixer_strip.volume_db` now raises *"cannot store TEXT value in
+REAL column"* instead of being accepted.
+
+**Cost accepted: this raises the minimum SQLite to 3.37 (November 2021).** Older
+versions do not merely ignore `STRICT` — they fail to parse the schema. A reader
+built against, say, a distro SQLite from 2020 cannot open a `.adi` at all. Four
+years is long enough that the trade is worth it, but it is a real exclusion and
+SPEC §3 now states the requirement rather than leaving it to be discovered.
+
+**Enforced** by `validate_schema.py` check 5b, per table rather than by counting
+the keyword — a comment mentioning `STRICT` would satisfy a count. Proved it can
+fail by removing `STRICT` from one table and watching it name that table.
+
+### 2. `routing` permitted a reference kind with no possible target
+
+**The defect, and it is mine.** `routing.src_kind`/`dst_kind` had a `CHECK`
+allowing `'bus'`, and there is no `buses` table — nor was there ever going to be
+one. A bus in this model is a track whose `kind` is `'group'`, `'return'` or
+`'master'` (ADR-0006 and SPEC §6.1). So the constraint permitted a **dangling
+reference by construction**: not a row that happens to point nowhere, but a
+reference kind whose target could not exist. The text projection surfaced it as
+`"!unresolved(bus)"` because it had nowhere to look, which is the correct
+behaviour for a reader and the wrong situation for a schema.
+
+**Decision.** `'bus'` is removed.
+
+**What the fix exposed, and is now written down.** The remaining kinds are of two
+different sorts, and conflating them is how this got in:
+
+| Kind | `src_id` / `dst_id` means | Unresolvable is |
+|---|---|---|
+| `track`, `device` | a **row id** in that table | corruption |
+| `hw_in`, `hw_out` | a hardware **port index** on the current device | **normal** — the project moved to another studio |
+
+That distinction matters to every reader, not just ours: it decides whether a
+failed lookup is an error or an expected condition. It was implicit before and
+is now in the DDL and in SPEC §6.7.
+
+**The structural cost, stated plainly.** A polymorphic `(kind, id)` pair cannot
+carry a `FOREIGN KEY`. That is the price of one `routing` table instead of six,
+and it is still the right trade — Cubase Direct Routing falls out of it for free
+(ADR-0006's reasoning applies equally here). But it means SQLite cannot enforce
+these references, so `validate_schema.py` check 5c enforces the *schema-level*
+half (every internal kind names a real table) and a future `adi_tool check`
+must enforce the *data-level* half (every internal id resolves to a live row).
+Until that command exists, this class of corruption is undetected at rest.
+
+---
+
+## ADR-0030 — Undo moves the head; it does not append — `DECIDED` (2026-09-19)
+
+Three decisions that only became visible when undo/redo was built on the journal.
+
+### 1. Undo and redo do not write op rows
+
+**The tension.** ADR-0003 says *every* mutation appends an op row in the same
+transaction that performs it. Undo mutates the project. Taken literally, an undo
+would append a row — and so would the redo, and the next undo, without bound.
+Toggling Ctrl-Z would grow the file forever and the "tree" would degenerate into
+a linear log of do/undo/redo/undo.
+
+**Decision.** Undo and redo **move the head pointer** along the existing log and
+apply the stored inverse or payload. They append nothing.
+
+**Why this does not weaken ADR-0003.** The invariant that matters is that *the
+log fully describes the project's state*, not that every write has its own row.
+After an undo, the project's state is exactly "the log up to head", which is
+completely described — by the rows that already exist. Appending would add no
+information and destroy the structure.
+
+The atomicity half of ADR-0003 is untouched and is what the tests actually
+check: **the head move is in the same SQLite transaction as the inverses it
+describes.** A crash between them would leave the project changed and the head
+disagreeing, and the next undo would then act on the wrong transaction.
+
+Tested by running five undo/redo cycles and asserting the row count is unchanged.
+
+### 2. Ephemeral ops are outside the tree, not filtered out of it
+
+`transport.play` and `session.launchClip` write no project state (ADR-0027), so
+they must not be undoable. They are given **`parent_seq = NULL`** and do not
+advance the head — they are in the log for audit and simply are not in the
+chain.
+
+**Rather than leaving them in the chain and skipping them on every walk.** A
+filter is something each of undo, redo, fork detection and branch-tip-walking
+would have to remember independently, and the one that forgot would be a bug
+nobody finds until an agent's `transport.play` swallows a Ctrl-Z. Keeping them
+out of the structure makes "skip" free.
+
+### 3. After a fork, redo follows the highest-seq child
+
+Undoing and then committing something new leaves the head with two children.
+Redo has to pick one.
+
+**Decision: the highest seq, which is the most recently created line.** The
+abandoned line is saved as a branch row first, so nothing is lost — SPEC §8.2's
+"it forks" rather than "it is destroyed". `OpJournal::commit` and
+`History::nextRedo` use the same rule, which is why they cannot disagree about
+which line is live.
+
+**Verified non-vacuously:** disabling fork preservation makes the test fail with
+*"the abandoned line was saved as a branch rather than destroyed"*, and removing
+the undo transaction makes the atomicity test report *"saw 1"* track where two
+were expected.
+
+**Not implemented: switching between diverged branches.** It needs rewind to the
+common ancestor and replay forward. `switchToBranch` refuses rather than
+approximating, because getting it wrong corrupts a project. Re-selecting a
+branch already at the current head works.
+
+### 4. `sel_before` needed its own column — an ADR-0021 × ADR-0029 collision
+
+ADR-0021 §7.5 put the advisory selection hint in `ops.tags`. ADR-0029 then made
+every table `STRICT`. `ops.tags` is `TEXT`, so a CBOR blob can no longer be
+stored there at all — the mechanism became unimplementable, and neither ADR was
+wrong in isolation.
+
+Fixed with a nullable `ops.sel_before BLOB`. Still advisory, still never an input
+to a handler, still droppable by compaction.
+
+**Worth recording as a class of problem, not just an instance.** It surfaced only
+when something first tried to write one, which is months after both decisions
+looked settled. A decision that tightens a constraint everywhere should be
+checked against decisions that relied on the looseness.
