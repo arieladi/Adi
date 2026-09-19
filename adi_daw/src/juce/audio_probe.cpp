@@ -162,6 +162,20 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ADR-0041 says VST3 is the only host format and that every other one is
+    // set to 0 EXPLICITLY rather than left to a default. Printing them is what
+    // lets CI assert it: a default that flips in a future JUCE would otherwise
+    // re-enable an AU host quietly, and "not behind a flag and not for testing"
+    // is only a rule if something checks.
+    if (argc > 1 && std::string(argv[1]) == "--hosts") {
+        std::printf("JUCE_PLUGINHOST_VST3=%d\n",   JUCE_PLUGINHOST_VST3);
+        std::printf("JUCE_PLUGINHOST_VST=%d\n",    JUCE_PLUGINHOST_VST);
+        std::printf("JUCE_PLUGINHOST_AU=%d\n",     JUCE_PLUGINHOST_AU);
+        std::printf("JUCE_PLUGINHOST_LV2=%d\n",    JUCE_PLUGINHOST_LV2);
+        std::printf("JUCE_PLUGINHOST_LADSPA=%d\n", JUCE_PLUGINHOST_LADSPA);
+        return 0;
+    }
+
     juce::ScopedJuceInitialiser_GUI juce_init;   // JUCE needs its singletons
 
     std::printf("adi_audio_probe -- %s\n\n", juce::SystemStats::getJUCEVersion().toRawUTF8());

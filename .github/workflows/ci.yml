@@ -595,3 +595,90 @@ jobs:
           name: fuzz-reproducer
           path: /tmp/fuzz-artifacts/
           if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # JUCE-ON. One job, deliberately, and NOT required.
+  #
+  # ADR-0036 built the engine headless so the snapshot handoff could be proved
+  # without a device, and ADR-0043 keeps ADI_WITH_JUCE OFF by default so the
+  # whole tree still builds with no JUCE present. Every other job in this file
+  # is a JUCE-OFF job and stays that way: those are what guard the property.
+  #
+  # This one exists to catch the dependency rotting -- a JUCE release that stops
+  # configuring, a platform that stops linking, a host-format default that
+  # flips. It is slow (JUCE compiles ~40 translation units before any of ours)
+  # and it needs a 117MB clone, which is why it is one job on two platforms
+  # rather than a leg on every ABI.
+  #
+  # LINUX IS ABSENT ON PURPOSE. A JUCE Linux build needs X11, ALSA, freetype,
+  # webkit2gtk and more from apt, none of which step 6 targets. Adding it would
+  # buy a third platform for the framework and nothing for the DAW. Say so here
+  # rather than leaving a reader to wonder whether it was forgotten.
+  # ---------------------------------------------------------------------------
+  juce:
+    name: 'JUCE on · ${{ matrix.name }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: 'macos arm64 · apple clang', os: macos-latest }
+          - { name: 'windows x86_64 · msvc', os: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch JUCE at its pinned commit
+        run: bash adi_daw/tools/fetch_external.sh --with-juce
+
+      - name: Configure and build the probe
+        run: |
+          set -euo pipefail
+          cmake -S adi_daw -B adi_daw/build-juce \
+                -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON
+          cmake --build adi_daw/build-juce --config Debug \
+                --target adi_audio_probe --parallel
+
+      - name: Locate the probe
+        run: |
+          set -euo pipefail
+          found=""
+          while IFS= read -r cand; do
+            case "$cand" in *adi_audio_probe|*adi_audio_probe.exe) found="$cand"; break ;; esac
+          done < <(find adi_daw/build-juce -type f -name 'adi_audio_probe*' 2>/dev/null)
+          if [ -z "$found" ]; then
+            echo "::error::adi_audio_probe was built but cannot be found"
+            find adi_daw/build-juce -name 'adi_audio_probe*' -o -name '*artefacts*' | head -20
+            exit 1
+          fi
+          echo "ADI_PROBE=$found" >> "$GITHUB_ENV"
+          echo "found $found"
+
+      # ADR-0041: VST3 is the only host format, and every other one is 0
+      # EXPLICITLY. This is the check that makes that a rule rather than a
+      # sentence -- a future JUCE flipping a default would otherwise re-enable
+      # an AU host with nobody noticing.
+      - name: ADR-0041 — VST3 is the only host format
+        run: |
+          set -euo pipefail
+          hosts=$("$ADI_PROBE" --hosts)
+          echo "$hosts"
+          fail=0
+          expect() {
+            if ! printf '%s\n' "$hosts" | grep -qx "$1=$2"; then
+              echo "::error::ADR-0041 violated: expected $1=$2"
+              fail=1
+            fi
+          }
+          expect JUCE_PLUGINHOST_VST3   1
+          expect JUCE_PLUGINHOST_VST    0
+          expect JUCE_PLUGINHOST_AU     0
+          expect JUCE_PLUGINHOST_LV2    0
+          expect JUCE_PLUGINHOST_LADSPA 0
+          exit "$fail"
+
+      # ADR-0042 is a large-block decision, and the probe is how we find out
+      # what a real driver will actually grant. A CI runner has no sound card,
+      # so "no device" is a pass: it still proved JUCE configured, linked, and
+      # ran far enough to ask the system for one.
+      - name: Open a device at 256, 2048 and 8192
+        run: "$ADI_PROBE"

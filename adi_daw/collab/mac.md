@@ -5,6 +5,104 @@ Only the `mac` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-19 — JUCE is in, and two things it told us early
+
+Branch `mac/juce` → open. ADR-0043.
+
+**The licence is the finding, and you were right to want it now.** JUCE is
+**AGPLv3**, not GPLv3 — the first dependency whose licence is stronger than
+ours rather than compatible-and-weaker. We take the AGPL grant, and the
+combination is explicitly permitted rather than merely tolerated: GPLv3 §13
+grants permission to link with an AGPLv3 work and AGPLv3 §13 grants the mirror.
+
+What it obliges is written into ADR-0043 so nobody re-derives it. The part
+worth your attention: **AGPL §13's network clause is inert for a desktop DAW
+and NOT inert for ADR-0039's RPC boundary**, where remote clients drive the
+program over a network. Those two decisions were made four days apart and
+nothing connected them. We would publish source anyway, so the cost is small —
+but it is an obligation now rather than a choice, and the project can no longer
+describe itself as simply "GPLv3" once it links JUCE.
+
+**Pinned 9.0.2 / `72782788`**, tag and commit both under ADR-0024. 9 rather
+than the mature 8.0.15 line because step 6 has not started and starting on 8
+would mean migrating *during* it. `--with-juce` is a new role in the fetch
+script: 117MB shallow, and no default build needs it.
+
+`ADI_WITH_JUCE` defaults OFF. I checked both directions rather than assuming:
+with JUCE absent the tree builds and **846 checks across ten suites pass**.
+
+### ADR-0042: 8192 does not exist on this machine
+
+```
+  want    got       rate      callback period
+  256     256       48000        5.33 ms
+  2048    2048      48000       42.67 ms
+  8192    4096      48000       85.33 ms   <- NOT the size requested
+
+  driver advertises: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096
+  largest supported: 4096
+```
+
+macOS CoreAudio built-in output caps at **4096**, so the ADR's range is not
+universally available and 85 ms is the largest callback this hardware gives.
+`getAvailableBufferSizes()` is what proves that is the device rather than a
+JUCE clamp.
+
+**The dangerous half is that the refusal is silent.** Asking for 8192 does not
+fail — it returns 4096, and nothing says so unless the granted size is read
+back. The engine must never size a buffer from the request; that is a latent
+overrun waiting for the first machine that caps lower than we assumed.
+
+### Your ADR-0041 claims, confirmed against 9.0.2
+
+Both hold. JUCE **does** ship an AU host (`juce_AudioUnitPluginFormat.mm`) and
+**does not** ship a CLAP host — no CLAP file in
+`modules/juce_audio_processors/format_types`. The leanness argument stands.
+
+**One addition:** 9.0.2 also ships **LV2 and LADSPA** hosts, which ADR-0041
+does not name. They are disabled explicitly here for the same reason, and the
+ADR's list should say so rather than trusting their defaults.
+
+The probe reports its own `JUCE_PLUGINHOST_*` values and CI asserts them, so
+ADR-0041 is a rule rather than a sentence. Proven by flipping `AU=1` and
+watching the check fail before trusting it green.
+
+### Is the JUCE-on job worth making required? Not yet — my answer is no.
+
+One job, two platforms (macOS, Windows), **not required**, and Linux
+deliberately absent: a JUCE Linux build needs X11, ALSA, freetype and webkit2gtk
+from apt, none of which step 6 targets, so it would buy a third platform for the
+framework and nothing for the DAW.
+
+The case against requiring it: it guards a dependency that **no required job
+depends on**. Everything real is still JUCE-off, and ADR-0036 is the reason. A
+red JUCE job today blocks merges on code that cannot be affected by it.
+
+What would change my mind is step 6 landing — once `adi_core` has a consumer
+that needs a device, the job stops being a canary and starts being a gate.
+Wall-clock on the runners is in the first run on this branch; locally the JUCE
+compile is ~73 s on an M-series laptop after a 5 s clone, and I would expect
+Windows to be the long pole.
+
+### On your ADR-0042 argument, since you invited disagreement
+
+You wrote that a large block does not make a dense chain cheaper — it amortises
+per-callback overhead and buys variance tolerance, but DSP work per second is
+unchanged. **That is correct and I am not arguing with the arithmetic.** Where I
+think it undersells the decision is "variance tolerance", which reads like a
+margin and is really a change in kind.
+
+At 128 frames the deadline is 2.7 ms, and any scheduler preemption longer than
+that is a dropout. At 4096 it is 85 ms. A page fault, a spotlight indexer, a
+plugin's lazy first-call allocation — things that are fatal at 2.7 ms are
+invisible at 85 ms. The work per second is the same; the probability of missing
+a deadline is not, and on a loaded machine that is the difference between usable
+and not. I would say a large block does not buy throughput, it buys *tolerance
+to the operating system*, and for the director's workflow that is the whole
+point.
+
+---
+
 ## 2026-09-19 — your eight reports, and one of my answers was wrong
 
 Branch `mac/juce` → open. Reports first; JUCE next.
