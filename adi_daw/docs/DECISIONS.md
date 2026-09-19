@@ -1766,3 +1766,106 @@ same reasoning would reach them — Linux-native, a second discovery path, a
 fourth stream role. The director named VST2 and AU and did not name these, so
 they stay at P2 with no committed date, which is where they already were. If the
 intent was "VST3 and CLAP and nothing else", say so and this ADR gains one line.
+
+
+---
+
+## ADR-0042 — The engine is tuned for large blocks, and sub-block accuracy is what makes that safe — `DECIDED` (2026-09-19)
+
+**Director's call.** The primary workflow is dense DSP chains at block sizes of
+**2048 to 8192 samples**. Heavy computational arrangement playback is prioritised
+over ultra-low-latency MIDI tracking, and the engine must be optimised and
+**explicitly tested** at those sizes.
+
+This is a good trade for the stated workflow and it is not the default any DAW
+ships, so it has to be written down before step 6 or the engine will be built
+for 256 and merely tolerate 8192.
+
+### One thing about large blocks that should be said before the decisions
+
+**A large block does not make a dense chain cheaper.** It amortises per-callback
+overhead and it gives the scheduler far more slack before a deadline is missed,
+which is exactly the stability the directive is after. But the DSP work per
+second is unchanged: a chain that is over budget at 256 samples is over budget
+at 8192. What improves is the *variance* tolerance, not the throughput.
+
+Saying so now stops "we are optimised for large blocks" being read later as a
+performance claim it cannot support.
+
+### Decisions
+
+1. **The target range is 2048–8192, and the test matrix says so.** Engine tests
+   run at 64, 256, 2048, 4096 and 8192, plus at least one non-power-of-two size
+   and one run where the block size *varies* between callbacks. A host is
+   allowed to hand us fewer samples than `maxBlockSize` and routinely does; an
+   engine that only ever saw its maximum has an untested path in the callback.
+
+2. **Sub-block splitting is mandatory, and it is the price of decision 1.**
+   At 8192 samples and 48 kHz one callback is **171 ms**. A parameter or
+   automation change applied once per block therefore steps in 171 ms
+   increments: a filter sweep becomes a staircase, a fast envelope is simply
+   wrong, and a fade is a sequence of clicks. So the graph splits a block at
+   every event boundary — automation point, parameter change, MIDI event — and
+   processes the segments in order.
+
+   There is a floor, say 32 or 64 samples, so worst-case split overhead is
+   bounded; events closer together than the floor coalesce to the segment
+   boundary. The floor is a tuning constant and needs measuring, not guessing.
+
+   **This is the decision that makes large blocks safe rather than merely
+   tolerated**, and it is easy to skip because at 256 samples nobody notices it
+   is missing.
+
+3. **Nothing allocates in the callback, and at these sizes that is not a
+   platitude.** Every scratch buffer is sized at prepare time for
+   `maxBlockSize`. At 8192 with a dense chain those buffers are large, and a
+   `std::vector` that grows once on the audio thread is a dropout the user will
+   describe as "it glitched when I added a reverb".
+
+4. **MIDI is sample-accurate within the block.** Events carry a sample offset
+   and are consumed at their offset via decision 2 — never applied in a batch at
+   the top of the callback. At 171 ms per block, batching MIDI would quantise
+   every note to the block grid, which is roughly a 32nd note at 120 BPM.
+
+5. **Block size is changeable mid-session, without reloading the project.**
+   This is the consequence the directive does not mention and it is the one that
+   will bite. At 8192 the monitoring round trip is on the order of a third of a
+   second, so overdubbing is impossible — not degraded, impossible. Any workflow
+   that mixes dense playback with recording has to move between block sizes, so
+   the engine must tear down and rebuild the graph on a device or buffer change
+   while keeping the project, the transport position and the undo history
+   intact. Requiring a reload would make the directive's own trade unworkable.
+
+6. **Denormals are flushed** (FTZ/DAZ) for the duration of the callback and
+   restored after. A dense chain with long tails is precisely where denormals
+   turn a comfortable 20% load into an xrun, and it is a four-line fix that is
+   invisible until the reverb decays.
+
+7. **Reported latency stays in samples and excludes the buffer.** Plugin delay
+   compensation is a sample count and is unaffected by block size, but if the
+   reported total silently folds in the device buffer, every compensated track
+   is wrong by one block. At 8192 that is 171 ms of visible mistiming.
+
+8. **libpd reblocking is sized at prepare.** Pd computes in ticks of 64 frames
+   (ADR-0035), so 8192 is 128 ticks per callback. The cost is linear and fine;
+   the reblocking buffer is subject to decision 3 like everything else.
+
+### The test that proves it, rather than a test that agrees with it
+
+Run the graph at 8192 with an automation ramp across the block and assert the
+output is a **ramp**, not a staircase — sample *N* differs from sample *N-1* by
+the expected increment, at several points inside one callback. Without
+decision 2 that test fails, which is the property worth having: it is not a test
+that sub-block splitting exists, it is a test that its absence is detected.
+
+A second one, cheap and worth it: assert no allocation occurs during a callback
+at 8192. A counting global `operator new` in the test binary makes this a real
+check rather than an inspection.
+
+### What this ADR does not do
+
+It does not implement any of this. There is no graph yet — ADR-0036 built the
+snapshot handoff headless and step 6 is where a device and a graph arrive. This
+exists so that step 6 is designed for the block sizes the project actually runs
+at, and so the sub-block decision is made before a per-block automation update
+is written and becomes load-bearing.

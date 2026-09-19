@@ -129,7 +129,10 @@ to be earned on the timeline instead. That is the point.
 | **Missing-plugin preservation** | both | **P0** | ✅ | SPEC §7.1 — non-negotiable |
 | Racks: instrument / effect / drum | Ableton | P2 | ✅ | `device_chains` with key/vel/chain zones |
 | Macros with per-target range and curve | Ableton | P2 | ✅ | `macros`, `macro_mappings` |
-| Plugin delay compensation | both | P0 | ✅ | `devices.latency_samples` |
+| Plugin delay compensation | both | P0 | ✅ | `devices.latency_samples`. Reported in samples and **excludes** the device buffer — ADR-0042. |
+| 2048–8192-sample blocks, tested | — | **P0** | — | runtime. The target workflow is dense chains, not low-latency tracking (ADR-0042). |
+| Sub-block automation and MIDI accuracy | both | **P0** | ✅ | runtime. At 8192 a block is 171 ms; per-block updates would step audibly. The price of the row above (ADR-0042). |
+| Change block size without reloading | both | **P0** | — | runtime. At 8192 overdubbing is impossible, so moving between sizes mid-session is not optional (ADR-0042). |
 | Plugin sandboxing (crash isolation) | Cubase | P2 | — | runtime |
 
 ## 7. Automation
