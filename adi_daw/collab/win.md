@@ -864,7 +864,30 @@ architecture. That is the gap your first mission closes.
 **Fixed in passing.** MSVC reports `__cplusplus` as `199711L` unless given
 `/Zc:__cplusplus`, which made `adi_tool versions` print a lie. Flag added.
 
+### Tooling gotchas on this machine, so the next session does not rediscover them
+
+**Heredocs eat backslash escapes.** Writing C++ or Python through
+`python - <<'EOF'` in this environment turns `\n` into a real newline before
+Python sees it, so string literals and regexes arrive mangled — a `'\n'` in a
+`switch` becomes a raw line break and the file will not compile. It cost several
+rebuild cycles before I stopped attributing it to my own typing. Use the Write
+tool for any content with escapes, or build the backslash explicitly with
+`chr(92)`.
+
+**Every scripted edit gets an assert on the needle.** A `str.replace` that does
+not match is silent, and the symptom is a missing build target or an unchanged
+file, not an error. This has bitten twice.
+
+**`rc=$?` after a pipe reads the last command in the pipe.** `x=$(cmd | tail -1);
+rc=$?` gives `tail`'s status, so a failing command reports success. It caught me
+measuring the dependency-pin check and again in `test_all.sh`.
+
 ### The Windows build invocation
+
+`tools/build.bat` is now the committed version of this; the raw commands are
+kept below because knowing what the script does matters when it breaks.
+
+#### The raw commands
 
 The compiler is not on `PATH`, and CMake/Ninja live inside the VS install.
 `vcvars64.bat` must run in the *same* shell, which means a `.bat` — calling it
