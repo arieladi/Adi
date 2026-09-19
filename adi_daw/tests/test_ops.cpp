@@ -15,6 +15,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -432,7 +433,7 @@ void testPersistsAcrossReopen() {
 
 }  // namespace
 
-int main() {
+int runAll() {
     std::printf("adi_ops_tests -- OPS.md 3-8, ADR-0003/0021/0025\n\n");
     try {
         testRegistry();
@@ -453,4 +454,16 @@ int main() {
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;
+}
+
+int main() {
+    // OpRegistry::instance() throws if the catalogue is malformed (OPS.md 3).
+    // Uncaught, that is abort() -- on Windows a modal dialog that blocks the
+    // run rather than reporting it. Catch it and say what is wrong.
+    try {
+        return runAll();
+    } catch (const std::exception& e) {
+        std::printf("\nFAILED -- exception escaped: %s\n", e.what());
+        return 1;
+    }
 }

@@ -4,8 +4,13 @@ One entry per decision that would be expensive to reverse. Append only; when a
 decision changes, add a new entry that supersedes the old one rather than editing
 history. Same convention as `VST-ADI/ARCHITECTURE.md`.
 
-**Status values:** `DECIDED` · `PROVISIONAL` (will revisit before v1.0) ·
-`SUPERSEDED BY ADR-nnnn` · `OPEN`
+**Status values:** `DECIDED` · `DECIDED (direction)` · `PROVISIONAL` (will
+revisit before v1.0) · `SUPERSEDED BY ADR-nnnn` · `OPEN`
+
+`DECIDED (direction)` means the *direction* is settled and will not be
+relitigated, while the design it implies is deliberately not taken yet. It is
+not `PROVISIONAL`, which means the decision itself may change. An entry using it
+must name what is still open.
 
 ---
 
@@ -1011,7 +1016,164 @@ when something first tried to write one, which is months after both decisions
 looked settled. A decision that tightens a constraint everywhere should be
 checked against decisions that relied on the looseness.
 
-## ADR-0031 — A visual patching device tier, embedded via libpd — `DECIDED (direction)` (2026-09-19)
+---
+
+## ADR-0031 — The replay oracle is a canonical database digest — `DECIDED` (2026-09-19)
+
+**Context.** ADR-0021 §7.4 requires a replay test: apply an op log twice under
+deliberately different UI state and assert the results are identical. It named
+the canonical text projection (ADR-0007) as the comparison. The projection's
+pure renderers and ordering exist, but its store adapter does not yet, so the
+test had no oracle and the replay property was an untested claim.
+
+**Decision.** `src/adi/digest.{hpp,cpp}` renders the **project tier** of a `.adi`
+into one canonical string, sorted by content rather than storage, and that is
+the oracle. `adi_tool digest` exposes it.
+
+**Why this is not a stopgap.** It compares *more* than the text projection can:
+every column of every project table, including ones nothing renders yet. An
+oracle that covered only what some renderer emits would pass while the two
+databases differed in a column the renderer had not learned about. When the
+projection's store adapter lands it becomes a second, human-readable oracle —
+not a replacement.
+
+**The exclusion list is the design, not housekeeping.** `ops` and `op_branches`
+are excluded because the log is not the project and replay legitimately produces
+new seqs and timestamps. `adi_meta` and `session_lock` are volatile.
+
+And `session_state`, `ui_view`, `window_state` are excluded **because the test
+sets them differently on purpose**. That is what makes a match mean something:
+the two projects have different selection, playhead, grid and zoom by
+construction, so identical digests prove the ops did not consume any of it.
+
+**Verified by planting the bug it exists to catch.** A `track.rename` handler was
+temporarily made to append the current selection to the name — a textbook
+ADR-0021 §7.2 violation. Result:
+
+```
+replay  FAIL  the two projects are IDENTICAL despite different UI state
+          A: name=sRhodesclip:1,clip:2,track:10
+          B: name=sRhodestrack:7
+ops     PASS -- 74 checks, 0 failure(s)
+history PASS -- 95 checks, 0 failure(s)
+```
+
+**The unit suites did not notice.** They cannot: a unit test does not vary the
+ambience. That gap is the entire justification for this test existing, and it is
+why the corpus was worth building before widening the op catalogue — a sixtieth
+op tests the same pattern the sixth did, while this tests a property nothing
+else can reach.
+
+**Rendering details that matter.** Values carry a type tag, so integer `1` and
+text `"1"` cannot digest alike. Doubles use `%.17g`, the shortest round-tripping
+form. Blobs are hashed with their length rather than dumped, so the digest stays
+readable when it differs. Text escapes the field and record separators, because
+a track name containing one could otherwise make two different projects digest
+identically — the one failure a comparison oracle must not have.
+
+---
+
+## ADR-0032 — `media_files.hash_blake3` is UNIQUE — `DECIDED` (2026-09-19)
+
+**Decision.** The index becomes `CREATE UNIQUE INDEX ... WHERE hash_blake3 <> ''`.
+
+**Why.** ADR-0005 says content addressing is what gives deduplication — "the same
+sample dropped in twenty times is one file". A non-unique index made that a
+comment rather than a rule: nothing stopped twenty rows holding one hash, and
+with duplicates, relink-by-content has no single answer and the pool is not a
+pool. Reported twice by `mac`, who needs hash-as-designator for the text
+projection.
+
+**Partial, on `hash_blake3 <> ''`,** so a row whose hash is not yet computed does
+not collide with every other such row. Nobody looks a file up by the empty
+string, so the index loses nothing by excluding them.
+
+Enforced by `validate_schema.py` check 5d, which asserts both halves: a duplicate
+hash is rejected, and two un-hashed rows are not.
+
+---
+
+## ADR-0033 — `adi_tool check` verifies what SQLite structurally cannot — `DECIDED` (2026-09-19)
+
+**Context.** ADR-0029 closed with an admission: a polymorphic `(kind, id)` pair
+cannot carry a `FOREIGN KEY`, so a `routing` row pointing at a deleted track was
+undetected at rest, and the data-level half of referential integrity needed a
+command that did not exist. This is that command.
+
+**Decision.** `src/adi/check.{hpp,cpp}` plus `adi_tool check`. Read-only: it
+never repairs, because a repair that guesses is how a corrupt project becomes a
+plausible-looking wrong one. 20 checks in three families, each covering
+something the database cannot:
+
+1. **Polymorphic references.** Seven `(kind, id)` sites — `routing` twice,
+   `automation_lanes`, `ui_view`, `extensions`, `controller_maps`, `ops`. A kind
+   naming a real table must resolve; `hw_in`/`hw_out` are hardware port indices
+   and a failed lookup there is *normal* (SPEC §6.7); an unrecognised kind is a
+   **warning**, not an error, because a newer version may have added one and
+   ADR-0012 says unknown data is preserved rather than rejected.
+
+2. **Inside the blobs.** A notes blob is opaque to SQL. Whether its header parses,
+   whether its `rec_size` is a size some writer released (ADR-0023), and whether
+   a `note_expression` row names a note that exists **in another blob** — a
+   reference from one blob into another, which nothing relational can see.
+
+3. **Structural invariants across rows.** Exactly one current branch; a
+   `head_seq` that names a real op; ephemeral ops outside the undo tree; and no
+   cycle in `parent_seq`, which would make undo fail to terminate. A cycle
+   satisfies every foreign key, which is precisely why it needs its own check.
+
+**Every check is planted with the corruption it finds.** A check nobody has
+watched reject something is a comment. The corruptions are written with raw SQL
+deliberately: they are states the op layer cannot produce, which is the point —
+they arrive from a crash, a bad merge, a third-party writer, or a future version
+of us with a bug.
+
+**Two things the tests corrected about my own assumptions**, both in the
+direction of SQLite enforcing more than I credited it with:
+
+- `op_branches.head_seq` **is** a real `FOREIGN KEY`. Planting a dangling head
+  needs `foreign_keys = OFF`. The check still earns its place — a file from a
+  third party, or from us with the pragma off, can arrive that way — but the
+  comment claiming SQLite could not see it was wrong.
+- `clips` **does** CHECK half of SPEC §4.1: `time_base = 1 OR pos_ns IS NULL`
+  stops a musical clip carrying a nanosecond position. What it does not cover is
+  a clip with *no* position at all, which is equally invalid and equally silent.
+  Only that half is ours.
+
+---
+
+## ADR-0034 — `StreamReader` cannot bind to a temporary — `DECIDED` (2026-09-19)
+
+**Found by `mac` in the first audit of `blob.hpp`, reported as a low-severity
+item, and then written by `win` while building the checker.** That sequence is
+the argument for the fix.
+
+**The defect.** `StreamReader` holds a non-owning `std::span`. The implicit
+`vector`-to-`span` conversion made this compile cleanly:
+
+```cpp
+StreamReader<NoteRecord> r(blobOf(column), FourCC::Notes);
+```
+
+The temporary dies at the end of the statement; `r` outlives it. It does not
+crash — it reads freed memory that usually still holds the old bytes, or reports
+`count() == 0`. In `check.cpp` it produced an **empty note set and therefore a
+false "orphaned expression" finding**: a checker confidently reporting corruption
+that was not there.
+
+**Decision.** `StreamReader(std::vector<std::byte>&&, FourCC) = delete;`
+
+The rvalue overload turns the mistake into a diagnostic at the call site. The
+caller keeps the buffer in a named local, which it had to do anyway.
+
+**Why this is worth an ADR rather than a quiet fix.** The lesson is not about
+spans. A reported low-severity finding sat unfixed because it was theoretical,
+and the same author then made exactly that mistake within the week. "Low severity
+because nobody would write that" is a prediction about people, and it was wrong
+within days. Where a hazard can be closed at the type level for one line, it
+should be, rather than ranked and deferred.
+
+## ADR-0035 — A visual patching device tier, embedded via libpd — `DECIDED (direction)` (2026-09-19)
 
 **Goal.** A user can drop a device on a track, open it, and build a synth or an
 effect by patching boxes together — and can do so without buying anything,

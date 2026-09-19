@@ -274,6 +274,20 @@ public:
     /// vector. Callers wanting more should loop over at().
     static constexpr std::uint32_t kMaxRecordsAtOnce = 1u << 23;  // 8.4M
 
+    /// Binding to a TEMPORARY container is a compile error.
+    ///
+    /// StreamReader holds a non-owning span. The implicit vector-to-span
+    /// conversion made `StreamReader r(makeBlob(), FourCC::Notes);` compile
+    /// cleanly, dangle immediately, and still report ok() -- reported by mac in
+    /// the first audit of this file, and then written by win in check.cpp
+    /// anyway, where it silently produced an empty note set and a false
+    /// "orphaned expression" finding.
+    ///
+    /// Deleting the rvalue overload turns that into a diagnostic at the call
+    /// site. The caller keeps the buffer in a named local, which is what it had
+    /// to do all along.
+    StreamReader(std::vector<std::byte>&&, FourCC) = delete;
+
     StreamReader(std::span<const std::byte> blob, FourCC expected) {
         if (blob.size() < sizeof(StreamHeader)) { err_ = StreamError::TooShort; return; }
         std::memcpy(&h_, blob.data(), sizeof h_);

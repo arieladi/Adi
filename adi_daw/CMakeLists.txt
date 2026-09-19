@@ -112,7 +112,10 @@ add_library(adi_core STATIC
     src/adi/blob.cpp
     src/adi/store.cpp
     src/adi/ops.cpp
+    src/adi/ops_catalog.cpp
     src/adi/history.cpp
+    src/adi/digest.cpp
+    src/adi/check.cpp
     src/adi/textproj.cpp
     "${ADI_SCHEMA_HPP}"
 )
@@ -153,6 +156,21 @@ add_test(NAME adi_ops_tests COMMAND adi_ops_tests)
 add_executable(adi_history_tests tests/test_history.cpp)
 target_link_libraries(adi_history_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_history_tests COMMAND adi_history_tests)
+
+# The round-trip corpus (ADR-0021 §7.4). Its own binary because it is an
+# INTEGRATION test -- store, ops and history together -- and a failure here
+# means something different from a failure in any of the three unit suites.
+add_executable(adi_replay_tests tests/test_replay.cpp)
+target_link_libraries(adi_replay_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_replay_tests COMMAND adi_replay_tests)
+
+add_executable(adi_catalog_tests tests/test_catalog.cpp)
+target_link_libraries(adi_catalog_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_catalog_tests COMMAND adi_catalog_tests)
+
+add_executable(adi_check_tests tests/test_check.cpp)
+target_link_libraries(adi_check_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_check_tests COMMAND adi_check_tests)
 
 # A second binary rather than a second file in adi_tests: the projection has no
 # dependency on the blob layer and testing it in isolation keeps that true. If
