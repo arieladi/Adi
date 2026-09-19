@@ -45,193 +45,6 @@ std::string_view typeName(FieldType t) {
     return "?";
 }
 
-// --- handlers ---------------------------------------------------------------
-//
-// A deliberately small first tranche, chosen to exercise all three inverse
-// shapes (OPS.md §6.2) rather than to be a lot of ops: symmetric, paired, and
-// state capture. The rest of the 174 is mechanical once these are right.
-
-bool setNameApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        SQLite::Statement st(c.db, "UPDATE project SET name = ? WHERE id = 1");
-        st.bind(1, p.at("name").get<std::string>());
-        return st.exec() >= 0;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
-bool setNameInverse(OpContext& c, const Payload&, Payload& inv, std::string& err) {
-    try {
-        SQLite::Statement st(c.db, "SELECT name FROM project WHERE id = 1");
-        inv = Payload::object();
-        inv["name"] = st.executeStep() ? st.getColumn(0).getString() : std::string{};
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
-bool trackCreateApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        // The id comes from the payload, never from SQLite. ADR-0021 §7.3:
-        // undo a create, redo it, and the object must return with the SAME id
-        // or every later op referencing it points at nothing.
-        SQLite::Statement st(c.db,
-            "INSERT INTO tracks(id, kind, name, parent_id, index_in_parent) "
-            "VALUES (?,?,?,?,?)");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        st.bind(2, p.at("kind").get<std::string>());
-        st.bind(3, p.value("name", std::string{}));
-        if (p.contains("parent") && !p.at("parent").is_null())
-            st.bind(4, p.at("parent").get<std::int64_t>());
-        else
-            st.bind(4);
-        st.bind(5, p.value("index", std::int64_t{0}));
-        st.exec();
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
-bool trackCreateInverse(OpContext&, const Payload& p, Payload& inv, std::string& err) {
-    if (!p.contains("id")) { err = "track.create payload has no id"; return false; }
-    inv = Payload::object();
-    inv["id"] = p.at("id");
-    return true;   // paired: track.delete
-}
-
-bool trackDeleteApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        SQLite::Statement st(c.db, "DELETE FROM tracks WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such track"; return false; }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
-bool trackDeleteInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    // State capture (OPS.md §6.2/§6.3). Media is never captured -- deleting a
-    // track unlinks media_files rows, it does not delete audio -- so the
-    // inverse of a 40-clip audio track is metadata, not gigabytes.
-    try {
-        SQLite::Statement st(c.db,
-            "SELECT kind, name, parent_id, index_in_parent FROM tracks WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such track to capture"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["kind"] = st.getColumn(0).getString();
-        inv["name"] = st.getColumn(1).getString();
-        if (st.getColumn(2).isNull()) inv["parent"] = nullptr;
-        else inv["parent"] = st.getColumn(2).getInt64();
-        inv["index"] = st.getColumn(3).getInt64();
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
-bool trackRenameApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        SQLite::Statement st(c.db, "UPDATE tracks SET name = ? WHERE id = ?");
-        st.bind(1, p.at("name").get<std::string>());
-        st.bind(2, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such track"; return false; }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
-bool trackRenameInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    try {
-        SQLite::Statement st(c.db, "SELECT name FROM tracks WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such track"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["name"] = st.getColumn(0).getString();
-        return true;   // symmetric
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
-bool trackSetMuteApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        SQLite::Statement st(c.db, "UPDATE tracks SET muted = ? WHERE id = ?");
-        st.bind(1, p.at("muted").get<bool>() ? 1 : 0);
-        st.bind(2, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such track"; return false; }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
-bool trackSetMuteInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    try {
-        SQLite::Statement st(c.db, "SELECT muted FROM tracks WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such track"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["muted"] = st.getColumn(0).getInt() != 0;
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
-bool clipMoveApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        SQLite::Statement st(c.db,
-            "UPDATE clips SET pos_ticks = ?, track_id = ? WHERE id = ?");
-        st.bind(1, p.at("to").get<std::int64_t>());
-        st.bind(2, p.at("track").get<std::int64_t>());
-        st.bind(3, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such clip"; return false; }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
-bool clipMoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    try {
-        SQLite::Statement st(c.db, "SELECT pos_ticks, track_id FROM clips WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such clip"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["to"] = st.getColumn(0).getInt64();      // symmetric: swapped args
-        inv["track"] = st.getColumn(1).getInt64();
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
-// --- field tables -----------------------------------------------------------
-
-constexpr Field kSetName[]      = {{"name", FieldType::Text, true}};
-constexpr Field kTrackCreate[]  = {{"id", FieldType::Int, true},
-                                   {"kind", FieldType::Text, true},
-                                   {"name", FieldType::Text, false},
-                                   {"parent", FieldType::Int, false},
-                                   {"index", FieldType::Int, false}};
-constexpr Field kTrackId[]      = {{"id", FieldType::Int, true}};
-constexpr Field kTrackRename[]  = {{"id", FieldType::Int, true},
-                                   {"name", FieldType::Text, true}};
-constexpr Field kTrackMute[]    = {{"id", FieldType::Int, true},
-                                   {"muted", FieldType::Bool, true}};
-constexpr Field kClipMove[]     = {{"id", FieldType::Int, true},
-                                   {"to", FieldType::Int, true},
-                                   {"track", FieldType::Int, true}};
-
-const OpDescriptor kOps[] = {
-    {"project.setName", "Rename the project", Scope::Edit, EngineImpact::None,
-     kSetName, false, false, setNameApply, setNameInverse, ""},
-
-    {"track.create", "Create a track", Scope::Edit, EngineImpact::GraphRebuild,
-     kTrackCreate, false, false, trackCreateApply, trackCreateInverse, "track.delete"},
-
-    {"track.delete", "Delete a track", Scope::Edit, EngineImpact::GraphRebuild,
-     kTrackId, false, false, trackDeleteApply, trackDeleteInverse, "track.create"},
-
-    {"track.rename", "Rename a track", Scope::Edit, EngineImpact::None,
-     kTrackRename, false, false, trackRenameApply, trackRenameInverse, ""},
-
-    {"track.setMute", "Mute or unmute a track", Scope::Edit, EngineImpact::Snapshot,
-     kTrackMute, false, false, trackSetMuteApply, trackSetMuteInverse, ""},
-
-    {"clip.move", "Move a clip in time, and optionally to another track",
-     Scope::Edit, EngineImpact::Snapshot,
-     kClipMove, false, false, clipMoveApply, clipMoveInverse, ""},
-};
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -304,10 +117,17 @@ std::vector<std::string> OpRegistry::selfCheck(std::span<const OpDescriptor> ops
                 bad.push_back(n + ": a non-ephemeral write op with no inverse builder");
         }
 
-        // Invariant 2.
-        if (o.fields.empty() && o.scope != Scope::Read)
-            bad.push_back(n + ": no payload schema (a closed schema may be empty "
-                              "only for a read op)");
+        // Invariant 2. An EMPTY schema is legal and meaningful: transport.play
+        // takes no parameters, and an empty closed schema says exactly that --
+        // "takes nothing, and any field is an error".
+        //
+        // This used to reject an empty schema on a write op, on the theory that
+        // it meant someone forgot to declare one. It cannot tell the two apart
+        // -- a std::span that was never set and one that is deliberately empty
+        // are the same object -- so it was blocking correct ops while providing
+        // a guarantee it could not actually make. And a genuinely forgotten
+        // schema fails loudly on first use anyway, because validateSubmission
+        // rejects every field as unknown.
         for (const auto& f : o.fields)
             if (f.key.empty())
                 bad.push_back(n + ": a field with an empty key");
@@ -338,7 +158,9 @@ std::vector<std::string> OpRegistry::selfCheck(std::span<const OpDescriptor> ops
     return bad;
 }
 
-OpRegistry::OpRegistry() : ops_(std::begin(kOps), std::end(kOps)) {
+OpRegistry::OpRegistry() {
+    const auto builtin = builtinOps();
+    ops_.assign(builtin.begin(), builtin.end());
     const auto bad = selfCheck(ops_);
     if (!bad.empty()) {
         std::string msg = "op registry is malformed and the process will not start:";

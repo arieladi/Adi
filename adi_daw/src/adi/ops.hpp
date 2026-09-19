@@ -118,6 +118,13 @@ struct OpDescriptor {
 // The registry — OPS.md §3 invariants
 // ---------------------------------------------------------------------------
 
+/// Every op this build knows, defined in ops_catalog.cpp.
+///
+/// Separate from the machinery deliberately: the catalogue is heading for 174
+/// entries (OPS.md §9) and the registry, codec and journal are not. One file
+/// that grows without bound and one that does not should not be the same file.
+std::span<const OpDescriptor> builtinOps();
+
 class OpRegistry {
 public:
     static const OpRegistry& instance();

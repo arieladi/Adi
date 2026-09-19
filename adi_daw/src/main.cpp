@@ -7,6 +7,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/digest.hpp"
+#include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include "adi/version.hpp"
 
@@ -28,6 +29,7 @@ int usage() {
         "  adi_tool create <file>   create an empty .adi project\n"
         "  adi_tool info <file>     inspect an existing .adi\n"
         "  adi_tool digest <file>   canonical digest of the project tier\n"
+        "  adi_tool ops             list every registered op\n"
         "                           --full prints it; default prints the id\n"
         "\n"
         "Ops arrive next; see docs/OPS.md.\n");
@@ -138,6 +140,31 @@ int cmdDigest(const char* path, bool full) {
     return 0;
 }
 
+int cmdOps() {
+    // The registry as a catalogue -- MAGDA's system.describe, in a CLI. It is
+    // also the only honest answer to "what can the agent do", since the same
+    // table backs the UI, scripting and the agent (ADR-0020).
+    const auto& reg = adi::OpRegistry::instance();
+    int byScope[5] = {0, 0, 0, 0, 0};
+    int ephemeral = 0, coalescable = 0;
+    for (const auto& o : reg.all()) {
+        byScope[static_cast<int>(o.scope)]++;
+        if (o.ephemeral) ++ephemeral;
+        if (o.coalescable) ++coalescable;
+        std::printf("  %-28s %-9s %-14s %s%s\n",
+                    std::string(o.name).c_str(),
+                    std::string(adi::toString(o.scope)).c_str(),
+                    std::string(adi::toString(o.engineImpact)).c_str(),
+                    o.inverseOp.empty() ? "" : "-> ",
+                    std::string(o.inverseOp).c_str());
+    }
+    std::printf("\n%zu ops  |  read %d, edit %d, transport %d, session %d, hardware %d\n",
+                reg.all().size(), byScope[0], byScope[1], byScope[2], byScope[3],
+                byScope[4]);
+    std::printf("%d ephemeral, %d coalescable\n", ephemeral, coalescable);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -163,6 +190,9 @@ int main(int argc, char** argv) {
     if (cmd == "digest") {
         if (argc < 3) return usage();
         return cmdDigest(argv[2], argc > 3 && std::string(argv[3]) == "--full");
+    }
+    if (cmd == "ops") {
+        return cmdOps();
     }
 
     std::printf("unknown command: %s\n\n", cmd.c_str());
