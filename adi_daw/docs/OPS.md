@@ -4,7 +4,7 @@
 `src/adi/ops.{hpp,cpp}`, catalogue in `src/adi/ops_catalog.cpp`, undo in
 `src/adi/history.{hpp,cpp}`.
 
-**50 of the 174 are wired up** with handlers and inverses, covering most of the
+**50 of the 160 are wired up** with handlers and inverses, covering most of the
 P0 editing surface. `adi_tool ops` lists them. Roughly half are generated from a
 table rather than hand-written: most of P0 is "set one column, the inverse is the
 old value", and 24 textually identical handlers is 24 chances to get a `WHERE`
@@ -139,7 +139,6 @@ that mutate no project state, so they are not ops at all.
 | `read` | Observation only. Never writes, never appends to the op log. |
 | `edit` | Mutates project content: tracks, clips, notes, automation, devices. |
 | `transport` | Play, stop, record, locate, loop. |
-| `session` | Clip and scene launching, follow actions. |
 | `hardware` | Controller maps, audio/MIDI device binding, input routing. |
 
 Agent capability tiers (AI-AGENT.md §2) are now *defined* as scope sets:
@@ -148,7 +147,7 @@ Agent capability tiers (AI-AGENT.md §2) are now *defined* as scope sets:
 |---|---|
 | Observe | `read` |
 | Propose | `read`, plus may build an op batch it may not commit |
-| Apply | `read`, `edit`, `session`, `transport` |
+| Apply | `read`, `edit`, `transport` |
 
 `hardware` is never granted to an agent. Repointing someone's audio device or
 rewriting their controller map is not an editing action.
@@ -245,7 +244,7 @@ A consequence that is easy to miss and expensive to retrofit.
 and return it. Reason: undo a `clip.create`, then redo it, and the clip must come
 back with the *same* ID — otherwise every later op in the redo chain that
 references it is now pointing at nothing. The same applies to tracks, lanes,
-devices, chains, automation lanes, scenes, markers and note IDs.
+devices, chains, automation lanes, markers and note IDs.
 
 Handlers therefore reject an ID that already exists rather than reassigning. The
 allocator lives with the caller (UI, script, agent), which draws from a
@@ -320,7 +319,7 @@ silent truncation in JSON, a non-issue in CBOR.
 
 ## 9. The catalogue
 
-`S` scope: `e` edit · `t` transport · `s` session · `h` hardware
+`S` scope: `e` edit · `t` transport · `h` hardware
 `E` engine: `N` none · `S` snapshot · `G` graph rebuild · `P` requires pause
 `Inv` inverse: `sym` symmetric · `pair` paired · `cap` state capture · `—` not undoable (§10)
 `P` priority per FEATURES.md.
@@ -494,26 +493,7 @@ silent truncation in JSON, a non-issue in CBOR.
 | `mixer.setPanLaw` | e | S | sym | P2 |
 | `mixer.setVcaGroup` | e | S | sym | P2 |
 
-### 9.9 Session view
-
-| Op | S | E | Inv | P |
-|---|---|---|---|---|
-| `scene.create` | e | S | pair `scene.delete` | P1 |
-| `scene.delete` | e | S | cap | P1 |
-| `scene.reorder` | e | S | sym | P1 |
-| `scene.rename` | e | N | sym | P1 |
-| `scene.setTempo` | e | S | sym | P2 |
-| `session.setSlotClip` | e | S | sym | P1 |
-| `session.clearSlot` | e | S | cap | P1 |
-| `session.setLaunchMode` | e | S | sym | P1 |
-| `session.setLaunchQuant` | e | S | sym | P1 |
-| `session.setFollowAction` | e | S | sym | P2 |
-| `session.launchClip` | s | S | — | P1 |
-| `session.launchScene` | s | S | — | P1 |
-| `session.stopTrack` | s | S | — | P1 |
-| `session.stopAll` | s | S | — | P1 |
-
-### 9.10 Markers, arranger, snapshots
+### 9.9 Markers, arranger, snapshots
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
@@ -531,7 +511,7 @@ silent truncation in JSON, a non-issue in CBOR.
 | `snapshot.delete` | e | N | cap | P2 |
 | `snapshot.rename` | e | N | sym | P2 |
 
-### 9.11 Media
+### 9.10 Media
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
@@ -542,7 +522,7 @@ silent truncation in JSON, a non-issue in CBOR.
 | `media.extract` | e | N | pair `media.embed` | P1 |
 | `media.setName` | e | N | sym | P2 |
 
-### 9.12 Transport, hardware, extensions
+### 9.11 Transport, hardware, extensions
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
@@ -559,7 +539,7 @@ silent truncation in JSON, a non-issue in CBOR.
 | `extension.write` | e | N | cap | P1 |
 | `extension.delete` | e | N | cap | P1 |
 
-**174 ops** — 63 P0, 62 P1, 46 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**160 ops** — 63 P0, 50 P1, 44 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
@@ -567,9 +547,12 @@ state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
 ## 10. Ops that are not undoable, and why that is fine
 
-`transport.play` and `session.launchClip` are **performance**, not editing. They
-write no project state, and appending them to undo history would bury the last
-real edit under navigation.
+The `transport.*` ops are **performance**, not editing. They write no project
+state, and appending them to undo history would bury the last real edit under
+navigation.
+
+ADR-0037 removed the four `session.*` launch ops along with Session View, so the
+transport scope is now the whole of this category.
 
 They still go through the registry — same validation, same scopes, same
 attribution — and still emit an op row, tagged `ephemeral`. Undo skips ephemeral

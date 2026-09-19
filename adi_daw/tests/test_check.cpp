@@ -262,22 +262,33 @@ void testTimeBaseMismatch() {
     section("time.baseMismatch -- the half of SPEC 4.1 clips do not CHECK");
     Fixture f("time");
     if (!f.store) return;
-    // `clips` has a CHECK for half of this: `time_base = 1 OR pos_ns IS NULL`
-    // already stops a musical clip carrying a nanosecond position, so that half
-    // is unreachable and SQLite gets the credit.
-    bool rejected = false;
-    try {
-        f.db().exec("UPDATE clips SET pos_ns = 123456 WHERE id = 5");
-    } catch (const std::exception&) {
-        rejected = true;
+    // SPEC 4.1 has four ways to get this wrong, and `clips` now CHECKs three of
+    // them: `time_base = 1 OR pos_ns IS NULL` stops a musical clip carrying a
+    // nanosecond position, and ADR-0037's placement CHECK stops a clip with no
+    // position in the domain it declares. SQLite gets the credit for those.
+    for (const char* sql : {"UPDATE clips SET pos_ns = 123456 WHERE id = 5",
+                            "UPDATE clips SET pos_ticks = NULL WHERE id = 5"}) {
+        bool rejected = false;
+        try {
+            f.db().exec(sql);
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        check(rejected, std::string("SQLite itself rejects: ") + sql);
     }
-    check(rejected, "SQLite itself rejects pos_ns on a musical-time clip");
 
-    // The other half it does NOT cover: a clip with no position at all. Equally
-    // invalid, equally silent, and only this checker sees it.
-    f.db().exec("UPDATE clips SET pos_ticks = NULL WHERE id = 5");
+    // The fourth it does NOT cover: a LINEAR clip that also carries a tick
+    // position. Equally invalid under SPEC 4.1, equally silent, and only this
+    // checker sees it.
+    //
+    // Worth keeping even though three quarters of the rule is now schema-level.
+    // A CHECK constraint protects files THIS writer creates; `adi_tool check`
+    // runs against files a third-party implementation wrote, and nothing
+    // obliges that implementation to have used our DDL. For an interchange
+    // format a runtime checker is not redundant with a constraint.
+    f.db().exec("UPDATE clips SET time_base = 1, pos_ns = 1000 WHERE id = 5");
     check(has(checkProject(*f.store), "time.baseMismatch"),
-          "a clip with time_base 0 and no position is caught");
+          "a linear clip that also carries pos_ticks is caught");
 }
 
 void testNoInitialTempo() {

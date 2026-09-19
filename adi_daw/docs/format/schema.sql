@@ -256,53 +256,20 @@ CREATE INDEX idx_routing_src ON routing(src_kind, src_id);
 CREATE INDEX idx_routing_dst ON routing(dst_kind, dst_id);
 
 -- ============================================================================
---  LAYER 1 — CORE: session view (SPEC §6.5 — core, not an extension)
--- ============================================================================
-
-CREATE TABLE scenes (
-    id          INTEGER PRIMARY KEY,
-    ord         INTEGER NOT NULL,
-    name        TEXT    NOT NULL DEFAULT '',
-    color       INTEGER,
-    tempo       REAL,               -- NULL = do not change tempo on launch
-    sig_num     INTEGER,
-    sig_den     INTEGER
-) STRICT;
-CREATE UNIQUE INDEX idx_scenes_ord ON scenes(ord);
-
-CREATE TABLE clip_slots (
-    id              INTEGER PRIMARY KEY,
-    track_id        INTEGER NOT NULL REFERENCES tracks(id)  ON DELETE CASCADE,
-    scene_id        INTEGER NOT NULL REFERENCES scenes(id)  ON DELETE CASCADE,
-    clip_id         INTEGER REFERENCES clips(id) ON DELETE SET NULL,
-    -- Launch behaviour
-    launch_mode     INTEGER NOT NULL DEFAULT 0 CHECK (launch_mode BETWEEN 0 AND 3), -- trigger/gate/toggle/repeat
-    launch_quant    INTEGER NOT NULL DEFAULT -1,  -- -1 = global, else ticks
-    legato          INTEGER NOT NULL DEFAULT 0,
-    velocity_to_vol REAL    NOT NULL DEFAULT 0.0,
-    -- Follow actions
-    follow_time_ticks   INTEGER,
-    follow_action_a     INTEGER NOT NULL DEFAULT 0,
-    follow_action_b     INTEGER NOT NULL DEFAULT 0,
-    follow_chance_a     INTEGER NOT NULL DEFAULT 1,
-    follow_chance_b     INTEGER NOT NULL DEFAULT 0,
-    follow_enabled      INTEGER NOT NULL DEFAULT 0
-) STRICT;
-CREATE UNIQUE INDEX idx_slot_cell ON clip_slots(track_id, scene_id);
-
--- ============================================================================
 --  LAYER 1 — CORE: clips and their content
 -- ============================================================================
 
 CREATE TABLE clips (
     id              INTEGER PRIMARY KEY,
-    track_id        INTEGER REFERENCES tracks(id) ON DELETE CASCADE,
+    track_id        INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
     lane_id         INTEGER REFERENCES lanes(id)  ON DELETE SET NULL,
     kind            TEXT    NOT NULL CHECK (kind IN ('audio','midi','automation','video','marker')),
     name            TEXT    NOT NULL DEFAULT '',
     color           INTEGER,
-    -- Placement. A clip owned only by a clip_slot has NULL position: it is not
-    -- on the arrangement timeline.
+    -- Placement. Every clip is on the timeline (ADR-0037): it has a position in
+    -- whichever domain it declares, enforced by the CHECK at the end of the
+    -- table. Both columns stay nullable because only one domain applies at a
+    -- time, not because a clip may be unplaced.
     time_base       INTEGER NOT NULL DEFAULT 0 CHECK (time_base IN (0,1)),
     pos_ticks       INTEGER,
     pos_ns          INTEGER,
@@ -325,7 +292,10 @@ CREATE TABLE clips (
     -- Non-NULL when this clip is an alias of another (Ableton linked clips,
     -- Cubase shared parts): edits propagate to every alias of the same source.
     alias_of        INTEGER REFERENCES clips(id) ON DELETE SET NULL,
-    CHECK (time_base = 1 OR pos_ns IS NULL)
+    CHECK (time_base = 1 OR pos_ns IS NULL),
+    -- ADR-0037: a clip is placed, in exactly the domain it declares.
+    CHECK ((time_base = 0 AND pos_ticks IS NOT NULL)
+        OR (time_base = 1 AND pos_ns    IS NOT NULL))
 ) STRICT;
 CREATE INDEX idx_clips_track ON clips(track_id, pos_ticks);
 CREATE INDEX idx_clips_lane  ON clips(lane_id);
@@ -474,13 +444,33 @@ CREATE TABLE devices (
 ) STRICT;
 CREATE INDEX idx_devices_chain ON devices(chain_id, ord);
 
+-- Opaque device state, stored once per distinct value (ADR-0038).
+--
+-- A VST3 chunk is opaque and routinely large -- a sampler with embedded
+-- samples, a convolution impulse, a wavetable. Storing the bytes inline in
+-- plugin_state AND again in every ops.inverse that reverts to them makes the
+-- undo log the largest thing in the file, growing with the number of tweaks
+-- rather than the size of the project. Content addressing, exactly as ADR-0032
+-- does it for media: twenty tweaks that end where they started cost one blob.
+--
+-- Orphans are collected explicitly (SPEC §7.2) and `adi_tool check` verifies
+-- both directions -- no unreferenced row, no reference to an absent hash.
+-- Content addressing without a referential check is a slower way to lose data.
+CREATE TABLE state_blobs (
+    hash_blake3 TEXT    PRIMARY KEY,
+    data        BLOB    NOT NULL,
+    size_bytes  INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
 -- Plugin state is not always one stream (SPEC §7): VST3 has component +
 -- controller, LV2 has state + files, AU has a classinfo dict. Separate rows.
 CREATE TABLE plugin_state (
     id          INTEGER PRIMARY KEY,
     device_id   INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     stream_role TEXT    NOT NULL,       -- 'component'|'controller'|'state'|'classinfo'|'chunk'|'files'
-    data        BLOB    NOT NULL,
+    -- The bytes live in state_blobs, shared with whatever op payloads and
+    -- inverses reference the same value (ADR-0038).
+    state_hash  TEXT    NOT NULL REFERENCES state_blobs(hash_blake3),
     format_hint TEXT    NOT NULL DEFAULT ''
 ) STRICT;
 CREATE UNIQUE INDEX idx_pstate ON plugin_state(device_id, stream_role);
