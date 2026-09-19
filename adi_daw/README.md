@@ -54,13 +54,13 @@ than frightening.
 | | |
 |---|---|
 | [`docs/format/SPEC.md`](docs/format/SPEC.md) | The `.adi` format specification, v0.1 draft. Written so a third party can implement a reader from it without reading our source. |
-| [`docs/format/schema.sql`](docs/format/schema.sql) | Normative DDL. Executable, and verified on every change. 37 tables. |
+| [`docs/format/schema.sql`](docs/format/schema.sql) | Normative DDL. Executable, and verified on every change. 38 tables. |
 | [`docs/format/RATIONALE.md`](docs/format/RATIONALE.md) | Why SQLite, what we rejected, and the three errors in the original proposal that must not come back. |
 | [`docs/FEATURES.md`](docs/FEATURES.md) | Ableton ∪ Cubase, prioritised P0–P3, each row checked against the schema. |
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
 | [`docs/UI-ARCHITECTURE.md`](docs/UI-ARCHITECTURE.md) | The Ableton-shaped shell, the component tree, and how the graph carries a hybrid track. |
 | [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 51 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 54 entries. |
 | [`docs/EXTERNAL-CODE.md`](docs/EXTERNAL-CODE.md) | The nine external repos we read or link against, and the licence boundary between them. Read before copying a line out of `reference/`. |
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
 | [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 160-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |

@@ -110,6 +110,10 @@ add_custom_command(
 
 add_library(adi_core STATIC
     src/adi/blob.cpp
+    # Deliberately in adi_core rather than behind ADI_WITH_JUCE: device_core
+    # includes no JUCE, so its tests run on all seven ABIs instead of only in
+    # the one JUCE job. See src/juce/device_core.hpp.
+    src/juce/device_core.cpp
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
@@ -178,6 +182,16 @@ add_test(NAME adi_check_tests COMMAND adi_check_tests)
 # The engine skeleton. Its own binary because its concurrency test is the only
 # one in the tree that runs a second thread, and a failure there means something
 # categorically different from a failure anywhere else.
+# The audio-device core. No JUCE, so this runs everywhere; the JUCE half is
+# thin enough that the JUCE job only has to prove a callback arrives.
+#
+# Its own binary because it replaces global operator new to count allocations --
+# ADR-0010 says process() must not allocate, and that turns the claim into an
+# observation. Linking that into another suite would count their allocations too.
+add_executable(adi_device_tests tests/test_device.cpp)
+target_link_libraries(adi_device_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_device_tests COMMAND adi_device_tests)
+
 add_executable(adi_engine_tests tests/test_engine.cpp)
 target_link_libraries(adi_engine_tests PRIVATE adi_core adi_warnings)
 find_package(Threads REQUIRED)
@@ -351,7 +365,11 @@ if(ADI_WITH_JUCE)
         JUCE_PLUGINHOST_LADSPA=0
         JUCE_PLUGINHOST_ARA=0)
 
+    # adi_core carries device_core.cpp and, through its PUBLIC include dir, the
+    # engine seam. Linking it rather than recompiling the source means the probe
+    # exercises exactly the DeviceCore that ships and that the ABI suites test.
     target_link_libraries(adi_audio_probe PRIVATE
+        adi_core
         juce::juce_audio_devices
         juce::juce_audio_utils
         adi_warnings)

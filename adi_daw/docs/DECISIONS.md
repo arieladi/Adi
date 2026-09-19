@@ -2434,3 +2434,316 @@ removes the race entirely and is tempting for that reason, but it moves a
 mechanical renumbering step to every merge instead of some, and a forgotten step
 leaves `ADR-XXXX` in the log — worse than a collision, because a collision is
 loud.
+
+## ADR-0050 — The UI runs on one clock, and metering is not on it — `DECIDED` (2026-09-20)
+
+**Context.** `docs/UI-ARCHITECTURE.md` describes the shell's shape. Its §8–§10
+contain decisions rather than shape, and ADR-0047's own framing is that the
+document is "the shape those decisions imply, not a second place they are
+decided". This is where they are decided.
+
+Everything here concerns *when* the UI does work, which is the question the
+component tree does not answer and the one that determines whether a JUCE DAW
+is usable.
+
+### 1. One clock, draining coalesced dirt
+
+A single `juce::VBlankAttachment` on the root drives the shell at display rate.
+**Components never call `repaint()` in response to a model change**; they set a
+dirty bit and the frame drains it.
+
+The reason is ADR-0039. A remote actor can emit ops faster than a human, and
+repaint-per-change makes that a repaint per op. With one clock it is one repaint
+per frame regardless of how many ops arrived — which is the difference between
+an agent being usable and being something you turn off while you work.
+
+### 2. The playhead never dirties the arrangement
+
+It is its own component, one pixel wide, above `ArrangementCanvas` and
+transparent to hit-testing. Painting it *into* the canvas is the commonest way
+a timeline ends up repainting its full width sixty times a second, and the cost
+does not appear until someone has a hundred tracks on screen — which is to say,
+it appears after the code is written and hard to change.
+
+### 3. The snapshot is read once per frame
+
+`SnapshotReader` takes one reference at the top of the frame; every component
+reads that same one. Otherwise two panels can render different snapshots within
+one frame, and the mixer disagrees with the timeline — ADR-0047's failure mode
+arriving through timing rather than through a second model.
+
+### 4. Metering is a lock-free scalar, and none of the above carries it
+
+The highest-frequency data in the window, and all three obvious homes are wrong:
+
+- **Not an op.** A meter is not a mutation. Metering through the op log fills
+  the undo tree at audio rate.
+- **Not the snapshot.** ADR-0019 publishes when *structure* changes.
+  Republishing at metering rate makes an edit-cost mechanism carry a per-frame
+  signal and defeats the structural sharing it exists for.
+- **Not a lock.** It originates on the audio thread (ADR-0010).
+
+One `std::atomic<float>` pair per metered point, written by the audio thread,
+read by the frame, relaxed ordering. A meter one frame stale is invisible; an
+audio thread waiting to publish one is a dropout. **This is the only path where
+the audio thread writes something the UI reads**, which is why it is named here
+rather than left to whoever builds the mixer.
+
+### 5. Visible components are realised; the rest are not drawn at all
+
+ADR-0047 settles `ArrangementCanvas` as one component because per-component
+bookkeeping stops working at a few thousand clips. The same argument reaches
+`MixerStrip[]`, and there it is sharper: a few hundred strips each repainting a
+meter every frame, with a dozen on screen.
+
+`MixerPanel` and `TrackHeaderList` keep components for the visible span plus a
+margin and recycle on scroll. This is windowing over the single
+`TrackOrderModel`, **not** a second ordering — ADR-0047's one-model rule holds.
+
+It cannot be retrofitted cheaply: a strip written assuming it lives forever
+accumulates state a recycled one loses.
+
+### What this does not decide
+
+Whether `ArrangementCanvas` wants an `OpenGLContext`. It would help a large
+canvas on Windows; on macOS CoreGraphics is competitive and a GL context costs a
+thread and some driver risk. **Measure it at step 7**, do not assume it now.
+
+
+---
+
+## ADR-0052 — CLAP hosting is mandated, not aspirational, and the route to it is ours to build — `DECIDED` (2026-09-20) — **AMENDS ADR-0041**
+
+**Director's call.** CLAP support alongside VST3, integrating an open-source
+extension into the CMake build rather than waiting for JUCE. ADR-0041 said
+"VST3, and CLAP when we write it"; this removes the "when".
+
+### The two stated reasons, one of which is decisive and one of which is smaller than it sounds
+
+**1. Non-destructive parameter modulation. This is the decisive one, and it is
+better than the brief claims.** CLAP distinguishes `CLAP_EVENT_PARAM_VALUE` from
+`CLAP_EVENT_PARAM_MOD`: modulation is applied *on top of* a parameter's value
+without changing it, and the plugin reports the modulated result while still
+holding the user's setting underneath.
+
+That is not merely "suited to" ADR-0046's architecture — it is ADR-0046's
+central rule expressed in a plugin API. ADR-0046 says the routing persists and
+the output never does. Under VST3 we can only reach a parameter by *setting* it,
+so a host-side LFO overwrites the value the user dialled in, and the value that
+gets saved is wherever the LFO happened to be at save time. Avoiding that needs
+us to shadow every modulated parameter, restore it on save and on bypass, and
+get every edge case right. **Under CLAP the problem does not exist.** A DAW
+building Bitwig-style modulation on VST3 alone is building that shadow layer;
+this is the reason to take CLAP seriously and it should be the first line of the
+justification rather than the second.
+
+**2. The shared thread pool, which helps less than the brief suggests.**
+`clap_host_thread_pool` lets a plugin ask the *host* to run its internal work in
+parallel instead of spawning threads of its own. The real benefit is avoiding
+**oversubscription** — thirty plugins each with their own pool on an eight-core
+machine is a scheduler fighting itself — and that is worth having.
+
+But it does not aid the heavy-load goal the way the phrasing implies. It
+parallelises work *inside one plugin* that chooses to use it, and most do not.
+The dominant factor for a dense chain is **graph-level parallelism across
+nodes**, which is ours to build in `src/adi/engine/`, is independent of CLAP
+entirely, and is where the wins for ADR-0042's workflow actually are. Recording
+that here so nobody later reads "CLAP gave us thread pooling" as meaning the
+scheduling work is done.
+
+**A third reason neither of us listed, and it may outlast both.** CLAP is
+MIT-licensed with no vendor gatekeeper, no SDK agreement and no registration.
+For a GPLv3 project that has just discovered its UI framework is AGPL
+(ADR-0048), a plugin format with no licence surface at all is worth something on
+its own.
+
+### Decisions
+
+1. **CLAP is a P0 hosted format, level with VST3.** ADR-0041's hosted set is
+   now **VST3 and CLAP**, and "when we write it" is struck.
+
+2. **The integration is a `third_party/` dependency under ADR-0024** — pinned by
+   tag *and* commit, with its licence recorded in `docs/EXTERNAL-CODE.md` before
+   a line is written against it. That is the rule that caught the JUCE AGPL
+   question at the right time and it applies here unchanged.
+
+3. **The named library must be verified to be a host before it is adopted.** The
+   brief names `juce-clap-host` from the Surge / Free Audio people. What that
+   group is best known for is **`clap-juce-extensions`, which builds CLAP
+   *plugins* out of JUCE projects — the opposite direction to hosting.** Whether
+   a maintained JUCE *host* wrapper exists under that or another name is a
+   question of fact, and the answer changes the size of this work by a large
+   factor. mac owns `third_party/` and resolves it.
+
+   **The fallback, if no maintained host wrapper exists:** implement
+   `juce::AudioPluginFormat` against the CLAP SDK (`free-audio/clap`, MIT)
+   directly. That is more work than a dependency and less than it sounds —
+   CLAP's C ABI is deliberately small — and it leaves us owning the one code
+   path that the modulation architecture depends on, which is not the worst
+   outcome.
+
+4. **The two formats are one device model, not two.** `plugin_refs.format`
+   already admits `'clap'`, and `plugin_state.stream_role` already has
+   `'state'` for it (SPEC §7). Nothing in the schema changes. What must not
+   happen is a `ClapDevice` and a `Vst3Device` with parallel chains behind
+   them: the device contract (ADR-0040) is format-agnostic and stays that way,
+   or hybrid tracks and modulation get implemented twice.
+
+5. **Where the formats differ, CLAP's model is the one the contract follows.**
+   Concretely: a parameter has a value *and* a modulation offset. VST3 devices
+   expose the offset as always zero and the host applies modulation by setting
+   the value, keeping the shadow copy described above. Designing the contract
+   around VST3 and bolting modulation on for CLAP would invert the decision
+   ADR-0046 already took.
+
+### What this costs, plainly
+
+ADR-0041 already noted the irony and it is now paid deliberately: **JUCE ships
+an AU host we refuse and no CLAP host we require.** So of the two formats we
+support, the framework implements neither the one it could give us for free nor
+the one we are mandating. This is a defensible position — AU's cost is its
+surrounding surface, CLAP's benefit is structural — but it means plugin hosting
+is more of our own code than a JUCE project would normally carry, and the
+estimate for step 6 should say so rather than assume a framework freebie.
+
+**Sequenced after VST3 hosting**, not before. VST3 is the format every user
+already has, the one a device test can be written against on any machine, and
+the one whose absence blocks everything else. CLAP second means the abstraction
+is shaped by two real formats rather than designed for two and validated
+against one.
+
+
+---
+
+## ADR-0053 — A remote plugin is a device; the DAW is the AudioGridder client, and the network never touches the audio thread — `DECIDED (direction)` (2026-09-20)
+
+**Director's call.** Native network plugin hosting over the AudioGridder
+protocol (GPLv3), with **the DAW itself as the client** — no wrapper plugin
+inside the graph. Remote plugins appear in the browser beside local ones,
+distinguished by an icon; the graph treats them as ordinary devices; their state
+round-trips into `state_blobs` so undo works identically.
+
+The "no wrapper plugin" part is the right call and worth saying why: a wrapper is
+a device the host cannot see inside. Its latency is opaque to PDC, its state is
+an opaque chunk inside another opaque chunk, and ADR-0043's silence and tail
+handling cannot reach the plugin actually running. Making the DAW the client
+keeps all three legible.
+
+### Decisions
+
+1. **A remote device is a device.** Same device contract (ADR-0040), same op
+   vocabulary, same `state_blobs`, same undo, same missing-plugin rule. A
+   `RemoteDevice` with a parallel chain behind it is forbidden for exactly the
+   reason ADR-0052 forbids a `ClapDevice` one: hybrid tracks, modulation and
+   suspension would each get implemented twice and diverge on the third bug.
+
+2. **The network never runs on the audio thread.** ADR-0010 says the audio
+   thread does not touch SQLite; the same reasoning forbids a socket, and more
+   strongly — `recv` can block for an unbounded time and a dropped packet is
+   not a rare case on a LAN. A dedicated I/O thread owns the connection, and the
+   audio thread exchanges buffers with it through a lock-free SPSC queue.
+   `third_party/lockfree` was pinned for precisely this handoff and this is its
+   first real use.
+
+3. **Therefore the remote node is pipelined, and it declares its latency.** It
+   runs one block behind, and reports that through `devices.latency_samples` so
+   plugin delay compensation treats it like any other latency. This is the
+   decision that makes the design correct rather than lucky: the alternative —
+   blocking the callback on a round trip — works right up until the first late
+   packet and then produces a dropout with no diagnosis.
+
+4. **A missed deadline is defined behaviour.** The node outputs silence for that
+   block and increments a visible counter, the same shape as `DeviceCore`'s
+   oversize refusal. "It glitches sometimes" is unfalsifiable; "this node
+   dropped 41 blocks in the last minute" is a diagnosis.
+
+5. **An unreachable server is the missing-plugin case, unchanged.** ADR-0011:
+   preserve the state byte-for-byte, keep the device in the chain as a bypassed
+   placeholder, surface what is missing, never drop it and never renumber the
+   chain. A remote device whose server is off is not a new failure mode; it is
+   the one the format already handles.
+
+6. **Where a plugin runs is not what a plugin is.** `plugin_refs.format` stays
+   `vst3` / `clap` — a remote VST3 is a VST3. Location goes in a new
+   `remote_hosts` table with a nullable `devices.remote_host_id`.
+
+   That separation is load-bearing rather than tidy: it means a project built
+   against a server can open on a machine that has the plugin installed locally,
+   with nothing but `remote_host_id` set to NULL. Folding "remote" into the
+   format would make the same plugin two different plugins and lose that.
+
+### The latency reasoning, corrected
+
+The brief says the 2048–4096 block sizes will "naturally absorb the network
+transmission latency". **They do not absorb it, and the direction of the effect
+is worth being exact about, because it is partly the opposite.**
+
+What large blocks genuinely buy here: per-packet overhead amortises over 4096
+frames instead of 128, which is a large saving on a protocol that pays a header
+and a syscall per block; and the callback deadline is 85 ms instead of 2.7 ms,
+so a round trip that would be hopeless at 128 frames is comfortable.
+
+What they cost: the pipeline in decision 3 is **one block** of added latency —
+**85 ms at 4096 and 48 kHz**. So the same buffer size that makes the network
+practical is the one that makes the added delay large. That is an acceptable
+trade for the workflow ADR-0042 describes — dense arrangement playback — and it
+makes a remote instrument unplayable for live tracking. Both halves need saying,
+because "the big buffers absorb it" invites someone to try to play a remote
+piano and conclude the implementation is broken.
+
+### Security, which the brief does not mention and which this ADR will not skip
+
+Running plugins on another machine means **audio and plugin state leave this
+one**. That is precisely AI-AGENT §2's "anything that leaves the machine"
+category, and it gets the same treatment: explicit, per project, visible in the
+UI, and off until configured. A project file that silently streams a user's
+unreleased album to an IP address because it was opened is not a feature.
+
+Three specifics, none of them optional:
+
+- **The protocol's authentication and encryption posture must be established
+  before this ships, not assumed.** AudioGridder is designed for a trusted LAN.
+  Until someone has read the protocol and written down what it actually
+  guarantees, the documented assumption is **LAN only**, and never the open
+  internet without a tunnel the user set up deliberately.
+- **A server's responses are untrusted input.** Buffer counts, frame counts and
+  state lengths arriving over a socket are parsed close to the audio path, and
+  every one of them is an attacker-controlled integer. The same discipline
+  `StreamReader` already applies to a blob applies here: total accessors,
+  checked arithmetic, no trusting a length because it arrived in a header.
+- **A server executes plugin code on our behalf.** Pointing the browser at an IP
+  is a trust decision by the user, and the UI should present it as one rather
+  than as a preference.
+
+### State over the network (ADR-0038)
+
+Content addressing works unchanged — a BLAKE3 hash does not care which machine
+produced the bytes, and a remote chunk deduplicates against a local one that
+happens to be identical. What changes is cost: **every capture boundary in
+ADR-0038 becomes a network round trip**, and a sampler's multi-megabyte chunk
+fetched on project save is a stall in the save path.
+
+So: state is fetched on the message thread, never on the audio thread, and the
+save path must not block indefinitely on a server that has stopped answering. A
+save that cannot reach the server writes what it has, records that the remote
+state is stale, and says so — losing the newest plugin state is bad, and hanging
+the save is worse.
+
+### Dependency and licence
+
+AudioGridder is **GPLv3** and built on JUCE, so it is compatible with ADR-0015
+and with ADR-0048's position. If its client code is vendored it becomes a
+`third_party/` dependency under ADR-0024 — pinned by tag *and* commit, licence
+recorded in `docs/EXTERNAL-CODE.md` before a line is written against it.
+
+Worth noting for whoever scopes it: implementing a protocol is not the same as
+copying an implementation, and a client we write ourselves against a documented
+wire format carries no licence obligation at all. Which route is better depends
+on how stable and how documented that wire format is, and that is a question of
+fact for whoever owns `third_party/`.
+
+### Sequenced third
+
+After VST3 and after CLAP. A remote device is a device, and the device contract
+has to exist and be exercised by two real local formats before a third kind of
+device that is not even in this process can honour it.
