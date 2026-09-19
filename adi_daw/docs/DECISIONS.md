@@ -1275,3 +1275,56 @@ agent's relationship to patch contents.
 Sequenced after plugin hosting (roadmap step 6), because a Pd device is a device
 and the device/parameter/automation contract has to exist before a second kind
 of device can honour it.
+
+---
+
+## ADR-0036 — The engine skeleton is built and tested without JUCE — `DECIDED` (2026-09-19)
+
+**Context.** Step 5 is the audio engine skeleton: graph, transport, and the
+snapshot handoff ADR-0019 specified. ADR-0014 chose JUCE, so the obvious move is
+to start with a JUCE audio callback.
+
+**Decision.** The handoff, the engine-side project model and the tempo
+conversion are built in `src/adi/engine/` with **no JUCE and no audio device**,
+and tested headlessly. JUCE arrives in step 6, wiring a real device to a
+mechanism that is already proven.
+
+**Why.** The riskiest thing in the project is the lock-free handoff — ADR-0014
+noted that choosing C++ removed the compiler-enforced safety net ADR-0010 was
+relying on. A bug there is a dropout or a crash in a user's session, and it is
+timing-dependent, which means it is exactly the kind of bug an audio device makes
+*harder* to find: you cannot run a real device ten thousand times a second, you
+cannot make it deterministic, and a glitch is hard to distinguish from a slow
+callback.
+
+Headless, the same mechanism runs **6.9 million read blocks against 666,000
+publications in 1.2 seconds**, on a thread doing nothing but hammering it. That
+is more contention in one test than a real session produces in a week.
+
+**Proved rather than asserted.** The safety argument in `publisher.hpp` turns on
+the free condition being strictly greater — a retired snapshot may be freed only
+once `inUse_ > seq`, never `>=`, because `>=` frees the snapshot the audio thread
+is currently inside. Changing that one character:
+
+```
+adi_engine_tests    Segmentation fault    exit 139
+```
+
+It does not fail a check; it takes the process down before printing a line. One
+character between a working engine and a crash, which is why the reasoning is
+written out above the code rather than left as an off-by-one someone tidies up.
+
+**Structural sharing, also measured.** ADR-0019 required that publication cost
+what the edit cost rather than O(project). With 20 tracks: an unchanged rebuild
+shares all 21 nodes; moving one fader shares 20 of 21 and rebuilds exactly one
+track. The previous snapshot is observably untouched, which is what makes it safe
+for the audio thread to still be reading it.
+
+**Tempo is integrated segment by segment**, not `ticks × 60 / bpm / ppq` with a
+single bpm. The naive form is correct until the first tempo change and wrong
+after it — four quarters at 120 then four at 60 is six seconds, not four — which
+is why the test asserts both the right answer and that it is not the wrong one.
+
+**What this is not.** There is no audio graph, no processing, no device. A
+snapshot describes tracks and clips; nothing renders them. That is step 6, and
+calling this an audio engine would be a lie.

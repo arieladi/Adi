@@ -116,6 +116,7 @@ add_library(adi_core STATIC
     src/adi/history.cpp
     src/adi/digest.cpp
     src/adi/check.cpp
+    src/adi/engine/snapshot.cpp
     src/adi/textproj.cpp
     "${ADI_SCHEMA_HPP}"
 )
@@ -171,6 +172,15 @@ add_test(NAME adi_catalog_tests COMMAND adi_catalog_tests)
 add_executable(adi_check_tests tests/test_check.cpp)
 target_link_libraries(adi_check_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_check_tests COMMAND adi_check_tests)
+
+# The engine skeleton. Its own binary because its concurrency test is the only
+# one in the tree that runs a second thread, and a failure there means something
+# categorically different from a failure anywhere else.
+add_executable(adi_engine_tests tests/test_engine.cpp)
+target_link_libraries(adi_engine_tests PRIVATE adi_core adi_warnings)
+find_package(Threads REQUIRED)
+target_link_libraries(adi_engine_tests PRIVATE Threads::Threads)
+add_test(NAME adi_engine_tests COMMAND adi_engine_tests)
 
 # A second binary rather than a second file in adi_tests: the projection has no
 # dependency on the blob layer and testing it in isolation keeps that true. If
