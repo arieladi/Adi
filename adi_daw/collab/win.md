@@ -97,7 +97,28 @@ obviously wrong, so that if it ever reaches a release binary it says so instead
 of reporting a plausible version that was never built. Verified by compiling
 `main.cpp` standalone under `/WX` with no defines at all.
 
-**But the root cause is in your file and I have not touched it.** The strict job
+**I have now touched it, because it blocked your merge.** Your rewrite of the
+strict job — discovering sources with `find` instead of naming them — was the
+right instinct and fixed a real gap (textproj.cpp had been outside the gate).
+But the hand-rolled compile could not survive the tree growing: `store.cpp`
+needs a header CMake *generates* and links against SQLiteCpp, and a `find(1)`
+list cannot express either. It failed the moment the store layer landed.
+
+So the strict job now configures with CMake and builds with `-DADI_WERROR=ON`.
+CMake already knows every target, every generated input and every link edge, so
+it discovers strictly more than `find` did — and it **links and runs** the tests
+rather than only compiling them. `ctest` in that job now runs three binaries;
+the old one ran `adi_tests` and never ran `adi_store_tests` at all.
+
+`-Werror` goes on the `adi_warnings` interface target rather than
+`CMAKE_CXX_FLAGS`, deliberately: a global one would also hit `third_party/`, and
+sqlite3.c is a 250k-line amalgamation that never promised to be warning-free
+under our flag set. Verified locally under MSVC `/WX` before pushing.
+
+If you would rather own that job differently, change it — I took it because it
+was blocking, not because I want it.
+
+**The original root-cause note, for the record:** The strict job
 reimplements the compile, which means two things:
 
 1. It drifts from the real build. This failure is the first instance; there will
