@@ -2508,3 +2508,106 @@ accumulates state a recycled one loses.
 Whether `ArrangementCanvas` wants an `OpenGLContext`. It would help a large
 canvas on Windows; on macOS CoreGraphics is competitive and a GL context costs a
 thread and some driver risk. **Measure it at step 7**, do not assume it now.
+
+
+---
+
+## ADR-0052 — CLAP hosting is mandated, not aspirational, and the route to it is ours to build — `DECIDED` (2026-09-20) — **AMENDS ADR-0041**
+
+**Director's call.** CLAP support alongside VST3, integrating an open-source
+extension into the CMake build rather than waiting for JUCE. ADR-0041 said
+"VST3, and CLAP when we write it"; this removes the "when".
+
+### The two stated reasons, one of which is decisive and one of which is smaller than it sounds
+
+**1. Non-destructive parameter modulation. This is the decisive one, and it is
+better than the brief claims.** CLAP distinguishes `CLAP_EVENT_PARAM_VALUE` from
+`CLAP_EVENT_PARAM_MOD`: modulation is applied *on top of* a parameter's value
+without changing it, and the plugin reports the modulated result while still
+holding the user's setting underneath.
+
+That is not merely "suited to" ADR-0046's architecture — it is ADR-0046's
+central rule expressed in a plugin API. ADR-0046 says the routing persists and
+the output never does. Under VST3 we can only reach a parameter by *setting* it,
+so a host-side LFO overwrites the value the user dialled in, and the value that
+gets saved is wherever the LFO happened to be at save time. Avoiding that needs
+us to shadow every modulated parameter, restore it on save and on bypass, and
+get every edge case right. **Under CLAP the problem does not exist.** A DAW
+building Bitwig-style modulation on VST3 alone is building that shadow layer;
+this is the reason to take CLAP seriously and it should be the first line of the
+justification rather than the second.
+
+**2. The shared thread pool, which helps less than the brief suggests.**
+`clap_host_thread_pool` lets a plugin ask the *host* to run its internal work in
+parallel instead of spawning threads of its own. The real benefit is avoiding
+**oversubscription** — thirty plugins each with their own pool on an eight-core
+machine is a scheduler fighting itself — and that is worth having.
+
+But it does not aid the heavy-load goal the way the phrasing implies. It
+parallelises work *inside one plugin* that chooses to use it, and most do not.
+The dominant factor for a dense chain is **graph-level parallelism across
+nodes**, which is ours to build in `src/adi/engine/`, is independent of CLAP
+entirely, and is where the wins for ADR-0042's workflow actually are. Recording
+that here so nobody later reads "CLAP gave us thread pooling" as meaning the
+scheduling work is done.
+
+**A third reason neither of us listed, and it may outlast both.** CLAP is
+MIT-licensed with no vendor gatekeeper, no SDK agreement and no registration.
+For a GPLv3 project that has just discovered its UI framework is AGPL
+(ADR-0048), a plugin format with no licence surface at all is worth something on
+its own.
+
+### Decisions
+
+1. **CLAP is a P0 hosted format, level with VST3.** ADR-0041's hosted set is
+   now **VST3 and CLAP**, and "when we write it" is struck.
+
+2. **The integration is a `third_party/` dependency under ADR-0024** — pinned by
+   tag *and* commit, with its licence recorded in `docs/EXTERNAL-CODE.md` before
+   a line is written against it. That is the rule that caught the JUCE AGPL
+   question at the right time and it applies here unchanged.
+
+3. **The named library must be verified to be a host before it is adopted.** The
+   brief names `juce-clap-host` from the Surge / Free Audio people. What that
+   group is best known for is **`clap-juce-extensions`, which builds CLAP
+   *plugins* out of JUCE projects — the opposite direction to hosting.** Whether
+   a maintained JUCE *host* wrapper exists under that or another name is a
+   question of fact, and the answer changes the size of this work by a large
+   factor. mac owns `third_party/` and resolves it.
+
+   **The fallback, if no maintained host wrapper exists:** implement
+   `juce::AudioPluginFormat` against the CLAP SDK (`free-audio/clap`, MIT)
+   directly. That is more work than a dependency and less than it sounds —
+   CLAP's C ABI is deliberately small — and it leaves us owning the one code
+   path that the modulation architecture depends on, which is not the worst
+   outcome.
+
+4. **The two formats are one device model, not two.** `plugin_refs.format`
+   already admits `'clap'`, and `plugin_state.stream_role` already has
+   `'state'` for it (SPEC §7). Nothing in the schema changes. What must not
+   happen is a `ClapDevice` and a `Vst3Device` with parallel chains behind
+   them: the device contract (ADR-0040) is format-agnostic and stays that way,
+   or hybrid tracks and modulation get implemented twice.
+
+5. **Where the formats differ, CLAP's model is the one the contract follows.**
+   Concretely: a parameter has a value *and* a modulation offset. VST3 devices
+   expose the offset as always zero and the host applies modulation by setting
+   the value, keeping the shadow copy described above. Designing the contract
+   around VST3 and bolting modulation on for CLAP would invert the decision
+   ADR-0046 already took.
+
+### What this costs, plainly
+
+ADR-0041 already noted the irony and it is now paid deliberately: **JUCE ships
+an AU host we refuse and no CLAP host we require.** So of the two formats we
+support, the framework implements neither the one it could give us for free nor
+the one we are mandating. This is a defensible position — AU's cost is its
+surrounding surface, CLAP's benefit is structural — but it means plugin hosting
+is more of our own code than a JUCE project would normally carry, and the
+estimate for step 6 should say so rather than assume a framework freebie.
+
+**Sequenced after VST3 hosting**, not before. VST3 is the format every user
+already has, the one a device test can be written against on any machine, and
+the one whose absence blocks everything else. CLAP second means the abstraction
+is shaped by two real formats rather than designed for two and validated
+against one.

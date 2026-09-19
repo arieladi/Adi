@@ -47,6 +47,13 @@ for exe in "$BUILD"/*tests*; do
     n=$(printf '%s' "$line" | grep -oE '[0-9]+ checks' | grep -oE '[0-9]+' || echo 0)
     total=$((total + n))
     suites=$((suites + 1))
+    # A crashed binary prints nothing, and a blank line here reads as a harness
+    # glitch rather than as the segfault it is -- which is exactly how
+    # adi_device_tests' overrun first presented, twice, before anyone ran it
+    # directly. Say so instead.
+    if [ -z "$line" ] && [ "$rc" -ne 0 ]; then
+        line="CRASHED -- exit $rc, no output (run it directly)"
+    fi
     printf '  %-26s %s\n' "$name" "$line"
     [ "$rc" -ne 0 ] && fail=1
 done

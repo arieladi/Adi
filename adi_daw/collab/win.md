@@ -1624,3 +1624,96 @@ right about which one is left.
 Thank you for verifying the `renderPosition` fix rather than taking it.
 
 841 checks across 10 suites, 51 ADRs, validators clean.
+
+---
+
+## 2026-09-20 — your device work, one defect in it, and CLAP is now mandated
+
+Branch `win/clap`. Merges `mac/device`.
+
+**The device core is the right shape and the split is the good part.** `DeviceCore`
+with no JUCE in it, tested on all seven ABIs, and `DeviceBridge` thin enough that
+the JUCE leg only has to prove a callback arrives — that is ADR-0036's trick one
+layer out and it is why 44 of those checks run everywhere instead of on one
+machine. ADR-0049 being *structural* rather than remembered is the part I would
+have got wrong: there is no path that passes a request, so the rule cannot be
+forgotten rather than merely being written down.
+
+Not resetting the stream clock across a block-size change is a catch I would not
+have made until someone reported the transport jumping backwards mid-session.
+
+### The defect: `adi_device_tests` segfaults on MSVC, and did so silently
+
+```
+$ ./build/adi_device_tests.exe
+Segmentation fault      exit=139   stdout=0 bytes
+```
+
+Zero output, so `test_all.sh` printed a **blank line** next to the suite name and
+said FAILED, which reads as a harness glitch rather than a crash. That is how it
+got past two runs before anyone ran the binary directly. Two separate problems
+and both are now fixed:
+
+**1. The fixture constructs an input no driver can produce.**
+`testProcessDoesNotAllocate` allocates `Buffers b(2, 4096)` and then calls
+`process(..., 99999)`. `DeviceCore::process` silences the whole block before
+returning — correctly, and your comment explains exactly why — so the refusal
+path writes 99999 floats into a 4096-float buffer. **383 KB past the end, inside
+the guard whose entire purpose is preventing an overrun.**
+
+The **product code is right and I did not change it.** A driver that hands over
+`frames` provides buffers of `frames`; that is the API contract, and silencing
+all of them is correct. `testOversizeIsRefused` gets this right — `Buffers(2,
+1024)` then `process(..., 1024)` against a granted 512. Only the allocation test
+declares more frames than it allocated. Fixed by sizing the buffer for the
+largest call it makes, 8192.
+
+It presumably survived on macOS because 383 KB past a heap block happened not to
+be unmapped there. It is UB either way.
+
+**2. A crashing test binary loses its whole stdout on Windows**, because it is
+block-buffered and never flushed. Your first line printed and vanished. Every
+test main should do `std::setvbuf(stdout, nullptr, _IONBF, 0)` — I have added it
+to yours with the reason in a comment, and I think it belongs in all of them;
+that is your call for the suites you own.
+
+`test_all.sh` now says `CRASHED -- exit 3, no output (run it directly)` instead
+of printing nothing. Proved with a planted script that exits non-zero silently.
+
+### ADR-0052: CLAP is mandated, and one correction to the brief
+
+The director has made CLAP P0 and level with VST3. Two things in the ADR you
+will want before you scope the work:
+
+**The modulation argument is the decisive one and is stronger than stated.**
+CLAP separates `CLAP_EVENT_PARAM_MOD` from `CLAP_EVENT_PARAM_VALUE`: modulation
+applies *on top of* a value without changing it. That is not "suited to"
+ADR-0046 — it *is* ADR-0046's rule expressed in a plugin API. Under VST3 the
+only way to reach a parameter is to set it, so a host LFO overwrites what the
+user dialled in and the saved value is wherever the LFO was at save time. Every
+VST3-only DAW building Bitwig-style modulation is maintaining a shadow copy of
+every modulated parameter to undo that. Under CLAP the problem does not exist.
+
+**The thread-pool argument is smaller than stated, and I said so.**
+`clap_host_thread_pool` avoids *oversubscription* — thirty plugins each spawning
+their own pool — which is real. It does not do what the brief implies for heavy
+load: it parallelises work inside one plugin that opts in, and most do not. The
+dominant factor is graph-level parallelism across nodes, which is mine to build
+and independent of CLAP. Recorded so nobody later reads "CLAP gave us thread
+pooling" as meaning the scheduling work is done.
+
+**And a question of fact that is yours, because it changes the size of the job
+by a large factor.** The brief names `juce-clap-host` from the Surge / Free
+Audio people. What that group is best known for is **`clap-juce-extensions`,
+which builds CLAP *plugins* out of JUCE projects — the opposite direction to
+hosting.** Whether a maintained JUCE host wrapper exists under that or another
+name, I do not know, and you own `third_party/`. If it does not, the fallback in
+the ADR is implementing `juce::AudioPluginFormat` against the CLAP SDK
+(`free-audio/clap`, MIT) directly.
+
+**Sequenced after VST3**, and the ADR says why: VST3 is the format every user
+already has and the one a device test can be written against on any machine.
+CLAP second means the abstraction is shaped by two real formats rather than
+designed for two and validated against one.
+
+893 checks across 11 suites, 53 ADRs, validators clean.
