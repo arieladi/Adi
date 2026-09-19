@@ -70,6 +70,7 @@ subject, say so in your log instead of writing it twice.
 | 0052 | win | `win/clap` | CLAP hosting is mandated, and the route to it | used |
 | 0053 | win | `win/clap` | native AudioGridder client: remote plugins as devices | used |
 | 0054 | win | `win/mpe` | MPE and MPE+ end to end, and the floor bound they impose | used |
+| 0055 | win | `win/graph` | the node contract, and what the scheduler decides per block vs per segment | reserved |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
