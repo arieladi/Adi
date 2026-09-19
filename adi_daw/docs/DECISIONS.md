@@ -1724,7 +1724,12 @@ justification is the surrounding surface, not the wrapper.
 2. **No AU, no AUv3, no VST2 hosting code is written, ever** — not behind a
    flag, not as an optional build, not "just for testing". An optional
    implementation is an implementation that has to keep compiling.
-3. **CLAP hosting is our code and is not free.** FEATURES lists it at P0
+3. **The rule in the director's words, because it is the clearest statement of
+   it:** *if a plugin has not been ported to VST3 or CLAP, it does not belong in
+   this DAW.* The one exception is our own device tier — the libpd/Pure Data
+   devices of ADR-0035 and anything else `plugin_refs.format = 'internal'`.
+   Those are not third-party plugins; they are the DAW.
+4. **CLAP hosting is our code and is not free.** FEATURES lists it at P0
    alongside VST3; it is not the same size of job and the roadmap should not
    pretend otherwise. If it slips, VST3-only is a shippable DAW.
 
