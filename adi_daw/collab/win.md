@@ -1803,3 +1803,68 @@ have passed while proving nothing about the shipping path.
 
 I could not reproduce it — no macOS here — so this is a fix from reading, and
 CI is the verification. If it goes red again on your side, hand it back.
+
+---
+
+## 2026-09-20 — ADR-0054: MPE/MPE+, and it bounds a number in ADR-0042
+
+A cross-repo mandate: MPE and MPE+ for a Haken Continuum Slim 21 — 14-bit Y and
+Z, per-note pitch bend, 500 Hz, no quantising to 7-bit anywhere. This is the
+`adi_daw` half.
+
+**Most of it already held, and I checked rather than claimed.**
+`ExpressionPoint.value` is **f32**, so bit depth was never the constraint — 24
+bits of mantissa against a requested 14. `ExpressionDim` is already
+Pitch/Timbre/Pressure, which is MPE's X/Y/Z exactly. `time_ticks` at PPQ
+5765760 leaves ~23,000 ticks between 500 Hz updates. SPEC §6.3.2 already named
+the Continuum, in week one. README commitment 4 is why: expression is stored as
+curves **decoupled from the transport that carried them**, so MPE is a property
+of the wire and not of the music — which is also why MIDI 2.0 will be a new
+parser here rather than a format change.
+
+**One thing genuinely changed, and it lands on both of us.**
+
+ADR-0042 said its sub-block floor was "a tuning constant and needs measuring,
+not guessing". It now has a derivation, and MPE+ supplies it:
+
+```
+floor_max = sample_rate / 500      48 kHz -> 96 samples
+                                   96 kHz -> 192
+```
+
+A floor larger than the gap between 500 Hz frames puts two frames in one
+segment and discards or delays the later one — **quantising the stream in
+time**, the mandate violated through a different door than bit depth.
+ADR-0042's candidate of 64 gives 750 splits per second and clears it; 128 does
+not, at 48 kHz.
+
+Two things keep it cheap, and the first surprised me: **distinct timestamps
+force a split, not events.** A 500 Hz frame carrying ten notes across three
+dimensions is one instant, not thirty, so the bound is 500 splits per second
+rather than 15,000. At 4096 frames a 64-sample floor caps it at 64 segments per
+callback whatever arrives.
+
+**A rule for your hosting work as much as my graph work: no MIDI byte survives
+the input parser.** The expression value type is floating point from parser to
+plugin. The trap is a single `std::uint8_t` in an event struct, which would undo
+the mandate while every document still claimed compliance. Both hosted formats
+carry it — VST3's `INoteExpressionController` takes a double, CLAP's
+`CLAP_EVENT_NOTE_EXPRESSION` carries one — so the only narrow point in the whole
+chain is ever our own code.
+
+**Thinning must be declared.** 36 KB per second per note at 500 Hz × 3
+dimensions; a ten-second six-note chord is 2.2 MB of AEXP. A writer may thin and
+**must record that it did**, or "we do not quantise" is true of the bit depth
+and false of the data.
+
+**Your ADR-0050 answered the UI half before the question arrived.** One clock
+draining coalesced dirt turns 15,000 events per second into sixty repaints. A
+UI that repainted per event would have made this mandate impossible and nobody
+would have known why.
+
+**Open and not invented:** MPE zone configuration — master channel, member
+count, bend range — has no home. There is no `track_io` table; I grepped rather
+than assumed. It is recording-path configuration and the recording path does
+not exist, so it arrives with that work.
+
+896 checks across 11 suites, 55 ADRs, validators clean.
