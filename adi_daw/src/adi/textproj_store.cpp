@@ -13,8 +13,6 @@
 namespace adi::textproj {
 namespace {
 
-constexpr std::int64_t kPPQ4 = 4 * 5765760;   // one whole note, SPEC 4.2
-
 // ---------------------------------------------------------------------------
 // Attributes, with defaults omitted (TEXT-PROJECTION 3)
 // ---------------------------------------------------------------------------
