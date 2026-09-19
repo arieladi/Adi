@@ -372,7 +372,24 @@ OrderResult canonicalOrder(const std::vector<Member>& members,
                 // leak wearing a canonical hat, and the caller must be able to
                 // tell the difference.
                 res.status = OrderStatus::Ambiguous;
-            } else if (render != nullptr) {
+            } else if (render == nullptr) {
+                // Found by the fuzzer, on its first campaign, as a violation of
+                // the one property this module exists to guarantee.
+                //
+                // The sorts below are `stable_sort`, and stable means a tie
+                // keeps its INPUT order -- which is rowid order, which is the
+                // leak. K4 is what removes that dependence, and K4 needs to
+                // render to do it. Without a renderer a surviving tie is simply
+                // not resolvable: refinement is incomplete (two members can
+                // share a refined colour and still render differently), so we
+                // cannot certify that swapping them is unobservable.
+                //
+                // Reporting Ambiguous is the honest answer. The alternative --
+                // leaving them in input order and calling it Exact -- is how a
+                // projection ends up merely usually canonical, which breaks
+                // ADR-0021's oracle silently instead of failing it.
+                res.status = OrderStatus::Ambiguous;
+            } else {
                 // Minimise over the OUTPUT, not over any property of the
                 // members. That is what makes this canonical rather than a
                 // choice of member: members that tie through K4 render

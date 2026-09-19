@@ -329,8 +329,13 @@ void testOrderingRefinement() {
                                   mem({SortKey::integer(0)}, "same")};
         const auto r = canonicalOrder(ms);
         check(r.largest_tied_class == 2, "a genuine tie is reported, not hidden");
-        check(r.status == OrderStatus::Exact,
-              "within the K4 bound, so still exact -- swapping them is unobservable");
+        // Expectation corrected after the fuzzer found the leak behind it. With
+        // no renderer, K4 cannot run, and the underlying sort is stable -- so
+        // the tied pair would have kept INPUT order while the status claimed
+        // canonicity. Refinement is incomplete, so we cannot certify that
+        // swapping them is unobservable without rendering both.
+        check(r.status == OrderStatus::Ambiguous,
+              "an unresolvable tie is declared, never left in storage order");
     }
 }
 
@@ -364,8 +369,10 @@ void testOrderingK4() {
     {
         std::vector<Member> ms;
         for (int i = 0; i < 8; ++i) ms.push_back(mem({SortKey::integer(0)}, "same"));
-        const auto r = canonicalOrder(ms);
+        std::vector<std::string> names = {"h","g","f","e","d","c","b","a"};
+        const auto r = canonicalOrder(ms, &renderNames, &names);
         check(r.status == OrderStatus::Exact, "a class of exactly 8 is within the bound");
+        eq(seq(r.order, names), "a b c d e f g h", "and all 8! permutations are searched");
     }
 }
 

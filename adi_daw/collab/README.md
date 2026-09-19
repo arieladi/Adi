@@ -40,7 +40,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | Path | Agent | Branch | Since |
 |---|---|---|---|
 | `src/adi/store.*`, `src/adi/ops.*`, `src/main.cpp`, `tests/test_store.cpp`, `cmake/**` | win | `win/store-layer` | 2026-09-19 |
-| `src/adi/textproj.*`, `tests/test_textproj.cpp`, `docs/format/TEXT-PROJECTION.md` | mac | `mac/text-projection` | 2026-09-19 |
+| `src/adi/textproj.*`, `tests/test_textproj.cpp`, `tests/fuzz_textproj.cpp`, `docs/format/TEXT-PROJECTION.md` | mac | `mac/textproj-fuzz` | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 
 `src/adi/blob.*`, `tests/test_main.cpp` and `CMakeLists.txt` are **shared** —
