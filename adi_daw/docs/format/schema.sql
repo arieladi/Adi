@@ -16,6 +16,11 @@
 --    *  Booleans are INTEGER 0/1.
 --    *  Timestamps are INTEGER microseconds since the Unix epoch, UTC.
 --    *  Colours are INTEGER 0xAARRGGBB.
+--    *  EVERY table is STRICT. Without it, SQLite's flexible typing lets a
+--       TEXT value sit in a REAL column, and sqlite3_column_double() then
+--       coerces it silently -- so a reader returns a number that is not what
+--       is stored, and nothing anywhere reports a problem. There are 23 REAL
+--       columns here. STRICT requires SQLite 3.37+ (Nov 2021); see ADR-0029.
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
@@ -30,7 +35,7 @@ PRAGMA foreign_keys   = ON;
 CREATE TABLE adi_meta (
     key         TEXT PRIMARY KEY,
     value       TEXT
-) WITHOUT ROWID;
+) STRICT, WITHOUT ROWID;
 
 -- Seeded on create. schema_major/minor duplicate user_version in readable form;
 -- user_version remains authoritative.
@@ -53,7 +58,7 @@ CREATE TABLE session_lock (
     app_version     TEXT    NOT NULL,
     acquired_utc    INTEGER NOT NULL,
     heartbeat_utc   INTEGER NOT NULL
-);
+) STRICT;
 
 -- ============================================================================
 --  LAYER 1 — CORE: project, time maps
@@ -75,7 +80,7 @@ CREATE TABLE project (
     notes               TEXT    NOT NULL DEFAULT '',
     CHECK (ppq > 0),
     CHECK (sample_rate > 0)
-);
+) STRICT;
 
 CREATE TABLE tempo_map (
     id          INTEGER PRIMARY KEY,
@@ -86,7 +91,7 @@ CREATE TABLE tempo_map (
     tension     REAL    NOT NULL DEFAULT 0.0,
     CHECK (bpm > 0.0 AND bpm < 1000.0),
     CHECK (pos_ticks >= 0)
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_tempo_pos ON tempo_map(pos_ticks);
 
 -- Deliberately separate from tempo_map: they change at different places
@@ -97,7 +102,7 @@ CREATE TABLE time_signature_map (
     numerator   INTEGER NOT NULL CHECK (numerator   BETWEEN 1 AND 255),
     denominator INTEGER NOT NULL CHECK (denominator IN (1,2,4,8,16,32,64,128)),
     CHECK (pos_ticks >= 0)
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_sig_pos ON time_signature_map(pos_ticks);
 
 -- Key/scale over time. Feeds the chord track, scale-aware editing, and gives
@@ -111,7 +116,7 @@ CREATE TABLE key_map (
     -- including ones we have no name for, without a lookup table.
     scale_mask  INTEGER NOT NULL DEFAULT 2741,                   -- major
     CHECK (pos_ticks >= 0)
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_key_pos ON key_map(pos_ticks);
 
 CREATE TABLE markers (
@@ -127,7 +132,7 @@ CREATE TABLE markers (
     kind        TEXT    NOT NULL DEFAULT 'position',
     CHECK ((time_base = 0 AND pos_ticks IS NOT NULL AND pos_ns    IS NULL)
         OR (time_base = 1 AND pos_ns    IS NOT NULL AND pos_ticks IS NULL))
-);
+) STRICT;
 
 -- Cubase Arranger Track / Ableton locators: named sections that can be
 -- reordered into a play list without moving any clips.
@@ -138,14 +143,14 @@ CREATE TABLE arranger_sections (
     end_ticks   INTEGER NOT NULL,
     color       INTEGER,
     CHECK (end_ticks > start_ticks)
-);
+) STRICT;
 
 CREATE TABLE arranger_chain (
     id          INTEGER PRIMARY KEY,
     ord         INTEGER NOT NULL,
     section_id  INTEGER NOT NULL REFERENCES arranger_sections(id) ON DELETE CASCADE,
     repeats     INTEGER NOT NULL DEFAULT 1 CHECK (repeats >= 1)
-);
+) STRICT;
 CREATE INDEX idx_arranger_chain_ord ON arranger_chain(ord);
 
 -- ============================================================================
@@ -181,7 +186,7 @@ CREATE TABLE tracks (
     automation_mode INTEGER NOT NULL DEFAULT 0
                     CHECK (automation_mode BETWEEN 0 AND 5), -- read/touch/latch/cross/overwrite/trim
     CHECK (id <> parent_id)
-);
+) STRICT;
 CREATE INDEX idx_tracks_parent ON tracks(parent_id, index_in_parent);
 
 -- Take lanes / comping (SPEC §6.2). A comp is clips across lanes with an
@@ -194,7 +199,7 @@ CREATE TABLE lanes (
     kind        TEXT    NOT NULL DEFAULT 'take' CHECK (kind IN ('take','comp','automation')),
     muted       INTEGER NOT NULL DEFAULT 0,
     is_comp_target INTEGER NOT NULL DEFAULT 0
-);
+) STRICT;
 CREATE INDEX idx_lanes_track ON lanes(track_id, ord);
 
 CREATE TABLE mixer_strip (
@@ -208,16 +213,35 @@ CREATE TABLE mixer_strip (
     -- Per-channel delay compensation offset, in samples, positive or negative.
     delay_samples INTEGER NOT NULL DEFAULT 0,
     vca_group_id INTEGER REFERENCES tracks(id) ON DELETE SET NULL
-);
+) STRICT;
 
 -- One table for every signal connection: outputs, sends, sidechains, cue
 -- feeds, VCA links. Cubase Direct Routing (several simultaneous outputs on one
 -- channel) falls out for free; an output column on `tracks` would forbid it.
+--
+-- The endpoint kinds are of TWO different sorts, and conflating them is how the
+-- 'bus' bug got in (ADR-0029):
+--
+--   INTERNAL -- 'track' and 'device'. src_id/dst_id is a ROW ID in that table.
+--               These have referential integrity, and `adi_tool check` verifies
+--               them. A polymorphic column cannot carry a FOREIGN KEY, which is
+--               the price of one routing table instead of six.
+--   EXTERNAL -- 'hw_in' and 'hw_out'. The id is a hardware PORT INDEX on the
+--               current audio device, not a row anywhere. It resolves at load
+--               time against whatever interface is present, and failing to
+--               resolve is normal (a project moved to another studio), not
+--               corruption.
+--
+-- 'bus' was in this list and is GONE. There is no `buses` table and there was
+-- never going to be one: a bus in this model is a track whose kind is 'group',
+-- 'return' or 'master'. The CHECK therefore permitted a reference kind whose
+-- target could not exist -- a dangling reference by construction, which the
+-- text projection surfaced as "!unresolved(bus)" because it had nowhere to look.
 CREATE TABLE routing (
     id          INTEGER PRIMARY KEY,
-    src_kind    TEXT    NOT NULL CHECK (src_kind IN ('track','device','hw_in','hw_out','bus')),
+    src_kind    TEXT    NOT NULL CHECK (src_kind IN ('track','device','hw_in','hw_out')),
     src_id      INTEGER NOT NULL,
-    dst_kind    TEXT    NOT NULL CHECK (dst_kind IN ('track','device','hw_in','hw_out','bus')),
+    dst_kind    TEXT    NOT NULL CHECK (dst_kind IN ('track','device','hw_in','hw_out')),
     dst_id      INTEGER NOT NULL,
     kind        TEXT    NOT NULL CHECK (kind IN ('main','send','sidechain','vca','cue')),
     ord         INTEGER NOT NULL DEFAULT 0,
@@ -227,7 +251,7 @@ CREATE TABLE routing (
     enabled     INTEGER NOT NULL DEFAULT 1,
     -- Channel mapping for partial / multichannel connections, NULL = straight.
     channel_map BLOB
-);
+) STRICT;
 CREATE INDEX idx_routing_src ON routing(src_kind, src_id);
 CREATE INDEX idx_routing_dst ON routing(dst_kind, dst_id);
 
@@ -243,7 +267,7 @@ CREATE TABLE scenes (
     tempo       REAL,               -- NULL = do not change tempo on launch
     sig_num     INTEGER,
     sig_den     INTEGER
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_scenes_ord ON scenes(ord);
 
 CREATE TABLE clip_slots (
@@ -263,7 +287,7 @@ CREATE TABLE clip_slots (
     follow_chance_a     INTEGER NOT NULL DEFAULT 1,
     follow_chance_b     INTEGER NOT NULL DEFAULT 0,
     follow_enabled      INTEGER NOT NULL DEFAULT 0
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_slot_cell ON clip_slots(track_id, scene_id);
 
 -- ============================================================================
@@ -302,7 +326,7 @@ CREATE TABLE clips (
     -- Cubase shared parts): edits propagate to every alias of the same source.
     alias_of        INTEGER REFERENCES clips(id) ON DELETE SET NULL,
     CHECK (time_base = 1 OR pos_ns IS NULL)
-);
+) STRICT;
 CREATE INDEX idx_clips_track ON clips(track_id, pos_ticks);
 CREATE INDEX idx_clips_lane  ON clips(lane_id);
 
@@ -317,7 +341,7 @@ CREATE TABLE event_streams (
     channel     INTEGER,
     controller  INTEGER,
     data        BLOB    NOT NULL       -- 16-byte stream header + records
-);
+) STRICT;
 -- IFNULL() rather than the bare columns: in SQLite two NULLs are distinct, so
 -- a UNIQUE index over a nullable column does not enforce what it looks like it
 -- enforces -- a clip could acquire two 'notes' streams. Caught by
@@ -335,7 +359,7 @@ CREATE TABLE note_expression (
     note_id     INTEGER NOT NULL,      -- matches ANOT.note_id within this clip
     dimension   INTEGER NOT NULL,      -- 0 pitch, 1 pressure, 2 timbre, 3 gain, 4 pan, >=64 plugin
     data        BLOB    NOT NULL       -- AEXP stream
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_nexp ON note_expression(clip_id, note_id, dimension);
 
 CREATE TABLE audio_clips (
@@ -354,7 +378,7 @@ CREATE TABLE audio_clips (
     formant_shift   REAL    NOT NULL DEFAULT 0.0,
     reverse         INTEGER NOT NULL DEFAULT 0,
     channel_mode    INTEGER NOT NULL DEFAULT 0  -- stereo/left/right/mono-sum
-);
+) STRICT;
 
 -- ============================================================================
 --  LAYER 1 — CORE: automation
@@ -381,7 +405,7 @@ CREATE TABLE automation_lanes (
     enabled       INTEGER NOT NULL DEFAULT 1,
     visible       INTEGER NOT NULL DEFAULT 0,
     height        INTEGER NOT NULL DEFAULT 0
-);
+) STRICT;
 CREATE INDEX idx_autolane_owner ON automation_lanes(owner_kind, owner_id);
 
 -- Track-scoped automation has clip_id NULL. Clip-scoped automation (Ableton
@@ -391,7 +415,7 @@ CREATE TABLE automation_data (
     lane_id     INTEGER NOT NULL REFERENCES automation_lanes(id) ON DELETE CASCADE,
     clip_id     INTEGER REFERENCES clips(id) ON DELETE CASCADE,
     data        BLOB    NOT NULL        -- AAUT stream
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_autodata ON automation_data(lane_id, IFNULL(clip_id, -1));
 
 -- ============================================================================
@@ -409,7 +433,7 @@ CREATE TABLE plugin_refs (
     path_hint   TEXT    NOT NULL DEFAULT '',
     is_shell    INTEGER NOT NULL DEFAULT 0,
     shell_id    INTEGER
-);
+) STRICT;
 -- IFNULL for the same reason as idx_stream_clip: shell_id is NULL for every
 -- non-shell plugin, and NULLs are distinct in a SQLite UNIQUE index.
 CREATE UNIQUE INDEX idx_plugin_uid ON plugin_refs(format, uid, IFNULL(shell_id, -1));
@@ -429,7 +453,7 @@ CREATE TABLE device_chains (
     soloed          INTEGER NOT NULL DEFAULT 0,
     -- Exactly one owner: a chain hangs off a rack device or directly off a track.
     CHECK ((parent_device_id IS NULL) <> (track_id IS NULL))
-);
+) STRICT;
 
 CREATE TABLE devices (
     id              INTEGER PRIMARY KEY,
@@ -447,7 +471,7 @@ CREATE TABLE devices (
     -- The device stays in the chain as a bypassed placeholder; it is NEVER
     -- dropped, because dropping it silently rewires the signal path.
     missing         INTEGER NOT NULL DEFAULT 0
-);
+) STRICT;
 CREATE INDEX idx_devices_chain ON devices(chain_id, ord);
 
 -- Plugin state is not always one stream (SPEC §7): VST3 has component +
@@ -458,7 +482,7 @@ CREATE TABLE plugin_state (
     stream_role TEXT    NOT NULL,       -- 'component'|'controller'|'state'|'classinfo'|'chunk'|'files'
     data        BLOB    NOT NULL,
     format_hint TEXT    NOT NULL DEFAULT ''
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_pstate ON plugin_state(device_id, stream_role);
 
 -- The missing-plugin safety net (SPEC §7.1). Redundant while the plugin loads;
@@ -473,7 +497,7 @@ CREATE TABLE plugin_params (
     display          TEXT    NOT NULL DEFAULT '',
     unit             TEXT    NOT NULL DEFAULT '',
     flags            INTEGER NOT NULL DEFAULT 0
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_pparam ON plugin_params(device_id, param_id);
 
 -- Rack macros and their mappings (SPEC §6.6).
@@ -484,7 +508,7 @@ CREATE TABLE macros (
     name        TEXT    NOT NULL DEFAULT '',
     value       REAL    NOT NULL DEFAULT 0.0,
     color       INTEGER
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_macro_ord ON macros(device_id, ord);
 
 CREATE TABLE macro_mappings (
@@ -496,7 +520,7 @@ CREATE TABLE macro_mappings (
     range_max       REAL    NOT NULL DEFAULT 1.0,
     curve           INTEGER NOT NULL DEFAULT 1,
     inverted        INTEGER NOT NULL DEFAULT 0
-);
+) STRICT;
 
 -- ============================================================================
 --  LAYER 1 — MEDIA POOL (SPEC §10)
@@ -522,7 +546,7 @@ CREATE TABLE media_files (
     imported_utc    INTEGER,
     -- Cached peaks for waveform drawing. Regenerable; never authoritative.
     peaks           BLOB
-);
+) STRICT;
 CREATE INDEX idx_media_hash ON media_files(hash_blake3);
 
 -- Embedding is a flag, not a different format (SPEC §10.4). Chunked so a large
@@ -532,7 +556,7 @@ CREATE TABLE media_blobs (
     chunk_index INTEGER NOT NULL,
     data        BLOB    NOT NULL,
     PRIMARY KEY (media_id, chunk_index)
-) WITHOUT ROWID;
+) STRICT, WITHOUT ROWID;
 
 -- ============================================================================
 --  LAYER 3 — SESSION: the op log (SPEC §8)
@@ -557,7 +581,7 @@ CREATE TABLE ops (
     inverse     BLOB,                   -- enough to revert without replaying
     label       TEXT    NOT NULL DEFAULT '',   -- what the undo menu shows
     tags        TEXT    NOT NULL DEFAULT ''
-);
+) STRICT;
 CREATE INDEX idx_ops_txn    ON ops(txn_id);
 CREATE INDEX idx_ops_parent ON ops(parent_seq);
 CREATE INDEX idx_ops_actor  ON ops(actor, ts_utc);
@@ -572,7 +596,7 @@ CREATE TABLE op_branches (
     created_utc  INTEGER NOT NULL,
     is_current   INTEGER NOT NULL DEFAULT 0 CHECK (is_current IN (0,1)),
     created_by   TEXT    NOT NULL DEFAULT 'user'
-);
+) STRICT;
 -- Exactly one branch is current. A partial index rather than a convention,
 -- because "the current branch" with two claimants is a corrupt undo tree and
 -- the failure would surface much later, as the wrong history (ADR-0026).
@@ -586,7 +610,7 @@ CREATE UNIQUE INDEX idx_branch_current ON op_branches(is_current)
 CREATE TABLE session_state (
     key     TEXT PRIMARY KEY,
     value   TEXT
-) WITHOUT ROWID;
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE ui_view (
     id          INTEGER PRIMARY KEY,
@@ -594,7 +618,7 @@ CREATE TABLE ui_view (
     scope_id    INTEGER,
     key         TEXT    NOT NULL,       -- 'height'|'folded'|'zoom_x'|'scroll_y'|...
     value       TEXT    NOT NULL
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_uiview ON ui_view(scope_kind, IFNULL(scope_id,-1), key);
 
 CREATE TABLE window_state (
@@ -612,7 +636,7 @@ CREATE TABLE window_state (
     visible         INTEGER NOT NULL DEFAULT 0,
     always_on_top   INTEGER NOT NULL DEFAULT 0,
     scale_pct       INTEGER NOT NULL DEFAULT 100
-);
+) STRICT;
 
 -- Project-scoped controller bindings: surfaces, Stream Deck, Continuum,
 -- generic MIDI. Project-scoped rather than global, because an orchestral
@@ -634,7 +658,7 @@ CREATE TABLE controller_maps (
     range_min    REAL    NOT NULL DEFAULT 0.0,
     range_max    REAL    NOT NULL DEFAULT 1.0,
     enabled      INTEGER NOT NULL DEFAULT 1
-);
+) STRICT;
 
 -- Mixer snapshots (Cubase) and track versions: named states a user can recall.
 CREATE TABLE snapshots (
@@ -644,7 +668,7 @@ CREATE TABLE snapshots (
     name         TEXT    NOT NULL DEFAULT '',
     created_utc  INTEGER NOT NULL,
     data         BLOB    NOT NULL
-);
+) STRICT;
 
 -- ============================================================================
 --  LAYER 4 — EXTENSIONS (SPEC §9)
@@ -665,7 +689,7 @@ CREATE TABLE extensions (
     min_reader  INTEGER NOT NULL DEFAULT 0,   -- min user_version that can interpret
     mime        TEXT    NOT NULL DEFAULT 'application/octet-stream',
     data        BLOB
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_ext ON extensions(ns, key, scope_kind, IFNULL(scope_id,-1));
 
 -- ============================================================================

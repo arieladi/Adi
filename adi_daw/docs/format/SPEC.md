@@ -62,6 +62,18 @@ clear message rather than partially parsed.
 
 ## 3. Container rules
 
+### 3.0 Minimum SQLite version
+
+A reader **MUST** use **SQLite 3.37.0 or later** (November 2021). Every table in
+`schema.sql` is declared `STRICT`, and an older SQLite does not ignore that
+keyword — it fails to parse the schema, so it cannot open a `.adi` at all.
+
+The requirement buys type enforcement on 23 `REAL` columns. Without `STRICT`,
+flexible typing lets a `TEXT` value sit in a numeric column and the C API coerces
+it on read, so a reader returns a number that is not what is stored, silently.
+For a format meant to be reimplemented from this document, a declared type that
+is merely advisory is a trap. See ADR-0029.
+
 ### 3.1 Required pragmas on create
 
 ```sql
@@ -411,6 +423,24 @@ vca, cue}`, `gain`, `pan`, `pre_fader`, `enabled`.
 
 Cubase Direct Routing (multiple simultaneous outputs per channel) falls out of
 this for free; a one-output-per-track column would have made it impossible.
+
+**The endpoint kinds are of two sorts, and a reader must treat them
+differently:**
+
+| Kind | `src_id` / `dst_id` is | A failed lookup means |
+|---|---|---|
+| `track`, `device` | a row id in that table | **corruption** — report it |
+| `hw_in`, `hw_out` | a hardware port index on the current audio device | **normal** — the project opened on different hardware |
+
+There is deliberately no `bus` kind: a bus here is a track whose `kind` is
+`group`, `return` or `master` (§6.1). An earlier draft permitted `bus` and had no
+table for it, which made a dangling reference expressible by construction —
+see ADR-0029.
+
+A polymorphic `(kind, id)` pair cannot carry a SQL `FOREIGN KEY`. That is the
+price of one routing table rather than six, and it means these references are
+**not** enforced by the database: a conforming writer MUST maintain them, and a
+reader SHOULD verify them rather than assume.
 
 ---
 
