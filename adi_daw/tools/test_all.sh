@@ -57,9 +57,24 @@ if [ "$suites" -eq 0 ]; then
 fi
 
 echo
+# macOS has shipped without a bare `python` since 12.3 removed python2, so
+# `python foo.py` cannot work on any Mac -- and this script IS the project's
+# definition of done. Windows is usually the other way round: `python` exists
+# and `python3` often does not. Detect rather than assume, and say which was
+# chosen so a surprising validator result is one line from being explained.
+PY=""
+for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1; then PY="$candidate"; break; fi
+done
+if [ -z "$PY" ]; then
+    echo "FAILED -- no python3 or python on PATH; the validators cannot run" >&2
+    exit 1
+fi
+
 echo "=== validators ==="
+echo "  interpreter: $PY ($("$PY" --version 2>&1))"
 for v in tools/validate_schema.py tools/validate_ops.py; do
-    if python "$v" >/dev/null 2>&1; then
+    if "$PY" "$v" >/dev/null 2>&1; then
         printf '  %-26s PASS\n' "$(basename "$v")"
     else
         printf '  %-26s FAIL\n' "$(basename "$v")"
@@ -71,7 +86,7 @@ done
 tool="$BUILD/adi_tool"
 [ -f "$tool.exe" ] && tool="$tool.exe"
 if [ -x "$tool" ] && [ -f ../.github/scripts/check_spec_layout.py ]; then
-    if python ../.github/scripts/check_spec_layout.py "$tool" >/dev/null 2>&1; then
+    if "$PY" ../.github/scripts/check_spec_layout.py "$tool" >/dev/null 2>&1; then
         printf '  %-26s PASS\n' "check_spec_layout.py"
     else
         printf '  %-26s FAIL\n' "check_spec_layout.py"
