@@ -62,6 +62,12 @@ add_subdirectory("${ADI_THIRD_PARTY}/json"      EXCLUDE_FROM_ALL SYSTEM)
 #
 # Every target we own links this PRIVATE; nothing in third_party/ links it.
 # ---------------------------------------------------------------------------
+# CI's strict job turns this on. It lives on adi_warnings rather than in
+# CMAKE_CXX_FLAGS deliberately: a global -Werror would also apply to
+# third_party/, and sqlite3.c is a 250k-line amalgamation that has never
+# promised to be warning-free under our flag set. Our code is what we gate.
+option(ADI_WERROR "Treat warnings in our own code as errors" OFF)
+
 add_library(adi_warnings INTERFACE)
 
 if(MSVC)
@@ -76,6 +82,11 @@ else()
         -Wall -Wextra -Wpedantic
         -Wcast-align -Wconversion -Wsign-conversion
         -Wno-unused-parameter)
+endif()
+
+if(ADI_WERROR)
+    target_compile_options(adi_warnings INTERFACE
+        $<IF:$<BOOL:${MSVC}>,/WX,-Werror>)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -100,6 +111,7 @@ add_custom_command(
 add_library(adi_core STATIC
     src/adi/blob.cpp
     src/adi/store.cpp
+    src/adi/textproj.cpp
     "${ADI_SCHEMA_HPP}"
 )
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -129,6 +141,13 @@ add_test(NAME adi_tests COMMAND adi_tests)
 add_executable(adi_store_tests tests/test_store.cpp)
 target_link_libraries(adi_store_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_store_tests COMMAND adi_store_tests)
+
+# A second binary rather than a second file in adi_tests: the projection has no
+# dependency on the blob layer and testing it in isolation keeps that true. If
+# textproj ever needs blob.hpp to build its tests, that is worth noticing.
+add_executable(adi_tests_textproj tests/test_textproj.cpp)
+target_link_libraries(adi_tests_textproj PRIVATE adi_core adi_warnings)
+add_test(NAME adi_tests_textproj COMMAND adi_tests_textproj)
 
 # ---------------------------------------------------------------------------
 # Fuzzing — optional, clang-only, OFF by default.

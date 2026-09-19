@@ -39,15 +39,16 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `src/adi/store.*`, `src/adi/ops.*`, `src/main.cpp`, `tests/test_store.cpp`, `cmake/**` | win | `win/step4-store-layer` | 2026-09-19 |
-| `src/adi/textproj.*`, `tests/test_textproj.cpp` | mac | `mac/text-projection` | 2026-09-19 |
+| `src/adi/store.*`, `src/adi/ops.*`, `src/main.cpp`, `tests/test_store.cpp`, `cmake/**` | win | `win/store-layer` | 2026-09-19 |
+| `src/adi/textproj.*`, `tests/test_textproj.cpp`, `docs/format/TEXT-PROJECTION.md` | mac | `mac/text-projection` | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 
 `src/adi/blob.*`, `tests/test_main.cpp` and `CMakeLists.txt` are **shared** —
 either agent may touch them, in small changes, saying so in their log. They are
 the files both sides keep needing, and locking them to one agent would block the
 other for no gain. `CMakeLists.txt` in particular: adding your own target is
-expected, and the merge is one line.
+expected, and the merge is one line — as it was here, both sides adding a target
+and a source, resolved by keeping both.
 
 ## Before you start work, every time
 
