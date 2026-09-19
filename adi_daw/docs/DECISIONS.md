@@ -1010,3 +1010,78 @@ to a handler, still droppable by compaction.
 when something first tried to write one, which is months after both decisions
 looked settled. A decision that tightens a constraint everywhere should be
 checked against decisions that relied on the looseness.
+
+---
+
+## ADR-0031 — The replay oracle is a canonical database digest — `DECIDED` (2026-09-19)
+
+**Context.** ADR-0021 §7.4 requires a replay test: apply an op log twice under
+deliberately different UI state and assert the results are identical. It named
+the canonical text projection (ADR-0007) as the comparison. The projection's
+pure renderers and ordering exist, but its store adapter does not yet, so the
+test had no oracle and the replay property was an untested claim.
+
+**Decision.** `src/adi/digest.{hpp,cpp}` renders the **project tier** of a `.adi`
+into one canonical string, sorted by content rather than storage, and that is
+the oracle. `adi_tool digest` exposes it.
+
+**Why this is not a stopgap.** It compares *more* than the text projection can:
+every column of every project table, including ones nothing renders yet. An
+oracle that covered only what some renderer emits would pass while the two
+databases differed in a column the renderer had not learned about. When the
+projection's store adapter lands it becomes a second, human-readable oracle —
+not a replacement.
+
+**The exclusion list is the design, not housekeeping.** `ops` and `op_branches`
+are excluded because the log is not the project and replay legitimately produces
+new seqs and timestamps. `adi_meta` and `session_lock` are volatile.
+
+And `session_state`, `ui_view`, `window_state` are excluded **because the test
+sets them differently on purpose**. That is what makes a match mean something:
+the two projects have different selection, playhead, grid and zoom by
+construction, so identical digests prove the ops did not consume any of it.
+
+**Verified by planting the bug it exists to catch.** A `track.rename` handler was
+temporarily made to append the current selection to the name — a textbook
+ADR-0021 §7.2 violation. Result:
+
+```
+replay  FAIL  the two projects are IDENTICAL despite different UI state
+          A: name=sRhodesclip:1,clip:2,track:10
+          B: name=sRhodestrack:7
+ops     PASS -- 74 checks, 0 failure(s)
+history PASS -- 95 checks, 0 failure(s)
+```
+
+**The unit suites did not notice.** They cannot: a unit test does not vary the
+ambience. That gap is the entire justification for this test existing, and it is
+why the corpus was worth building before widening the op catalogue — a sixtieth
+op tests the same pattern the sixth did, while this tests a property nothing
+else can reach.
+
+**Rendering details that matter.** Values carry a type tag, so integer `1` and
+text `"1"` cannot digest alike. Doubles use `%.17g`, the shortest round-tripping
+form. Blobs are hashed with their length rather than dumped, so the digest stays
+readable when it differs. Text escapes the field and record separators, because
+a track name containing one could otherwise make two different projects digest
+identically — the one failure a comparison oracle must not have.
+
+---
+
+## ADR-0032 — `media_files.hash_blake3` is UNIQUE — `DECIDED` (2026-09-19)
+
+**Decision.** The index becomes `CREATE UNIQUE INDEX ... WHERE hash_blake3 <> ''`.
+
+**Why.** ADR-0005 says content addressing is what gives deduplication — "the same
+sample dropped in twenty times is one file". A non-unique index made that a
+comment rather than a rule: nothing stopped twenty rows holding one hash, and
+with duplicates, relink-by-content has no single answer and the pool is not a
+pool. Reported twice by `mac`, who needs hash-as-designator for the text
+projection.
+
+**Partial, on `hash_blake3 <> ''`,** so a row whose hash is not yet computed does
+not collide with every other such row. Nobody looks a file up by the empty
+string, so the index loses nothing by excluding them.
+
+Enforced by `validate_schema.py` check 5d, which asserts both halves: a duplicate
+hash is rejected, and two un-hashed rows are not.

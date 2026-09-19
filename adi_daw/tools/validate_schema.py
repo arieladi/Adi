@@ -244,6 +244,25 @@ def main() -> int:
     else:
         ok("every routing endpoint kind names a real table or a known external")
 
+    # --- 5d. content addressing is actually enforced -------------------------
+    # ADR-0005 says dedupe comes from hash_blake3. A non-unique index makes that
+    # a comment: twenty rows could share one hash and relink-by-content would
+    # have no single answer. ADR-0031.
+    print("[5d] content addressing is enforced")
+    try:
+        db.execute("INSERT INTO media_files(id, hash_blake3) VALUES (100, 'deadbeef')")
+        db.execute("INSERT INTO media_files(id, hash_blake3) VALUES (101, 'deadbeef')")
+        fail("two media rows can share a hash -- dedupe is not enforced")
+    except sqlite3.IntegrityError:
+        ok("a duplicate media hash is rejected")
+    # ...but rows with no hash yet must not collide with each other.
+    try:
+        db.execute("INSERT INTO media_files(id, hash_blake3) VALUES (102, '')")
+        db.execute("INSERT INTO media_files(id, hash_blake3) VALUES (103, '')")
+        ok("un-hashed rows do not collide (the index is partial)")
+    except sqlite3.IntegrityError as exc:
+        fail(f"un-hashed media rows collide: {exc}")
+
     # --- 6. the tick base actually has the properties SPEC 4.2 claims --------
     # These are load-bearing claims in a specification, so they get checked
     # rather than asserted. An earlier draft claimed 960 PPQ could not express a
