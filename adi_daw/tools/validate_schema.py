@@ -263,6 +263,57 @@ def main() -> int:
     except sqlite3.IntegrityError as exc:
         fail(f"un-hashed media rows collide: {exc}")
 
+    # --- 5e. ADR-0037: every clip is placed, on a track ----------------------
+    # These columns were nullable only because a clip owned by a clip_slot had
+    # no timeline position. ADR-0037 removed clip_slots, so the nullability had
+    # to go with it -- otherwise the schema still permits the state that the
+    # removed feature was the only reason for.
+    print("[5e] every clip is placed (ADR-0037)")
+    db.execute("INSERT INTO tracks(id, kind, name) VALUES (900, 'audio', 'placement')")
+    for sql, why in (
+        ("INSERT INTO clips(id,track_id,kind,time_base,pos_ticks) "
+         "VALUES (900,900,'midi',0,NULL)", "a musical clip with no pos_ticks"),
+        ("INSERT INTO clips(id,track_id,kind,time_base,pos_ns) "
+         "VALUES (901,900,'midi',1,NULL)", "a linear clip with no pos_ns"),
+        ("INSERT INTO clips(id,track_id,kind,time_base,pos_ticks) "
+         "VALUES (902,NULL,'midi',0,0)", "a clip on no track"),
+    ):
+        try:
+            db.execute(sql)
+            fail(f"{why} was accepted")
+        except sqlite3.IntegrityError:
+            ok(f"{why} is rejected")
+    try:
+        db.execute("INSERT INTO clips(id,track_id,kind,time_base,pos_ticks) "
+                   "VALUES (903,900,'midi',0,0)")
+        db.execute("INSERT INTO clips(id,track_id,kind,time_base,pos_ns) "
+                   "VALUES (904,900,'midi',1,0)")
+        ok("a placed clip in either domain is accepted")
+    except sqlite3.IntegrityError as exc:
+        fail(f"a correctly placed clip was rejected: {exc}")
+
+    # --- 5f. ADR-0038: opaque device state is content-addressed --------------
+    # plugin_state holds a hash, not bytes, so an undo history that returns a
+    # plugin to a state it already held costs nothing. That only holds if the
+    # reference is real: a dangling state_hash is a device whose state is gone.
+    print("[5f] device state references resolve (ADR-0038)")
+    db.execute("INSERT INTO plugin_refs(id, format, uid) VALUES (900, 'vst3', 'x')")
+    db.execute("INSERT INTO device_chains(id, track_id) VALUES (900, 900)")
+    db.execute("INSERT INTO devices(id, chain_id, plugin_ref_id) VALUES (900, 900, 900)")
+    try:
+        db.execute("INSERT INTO plugin_state(id, device_id, stream_role, state_hash) "
+                   "VALUES (900, 900, 'component', 'nosuchhash')")
+        fail("plugin_state accepted a hash with no state_blobs row")
+    except sqlite3.IntegrityError:
+        ok("a dangling state_hash is rejected")
+    db.execute("INSERT INTO state_blobs(hash_blake3, data, size_bytes) "
+               "VALUES ('abc123', X'00', 1)")
+    db.execute("INSERT INTO plugin_state(id, device_id, stream_role, state_hash) "
+               "VALUES (901, 900, 'component', 'abc123')")
+    db.execute("INSERT INTO plugin_state(id, device_id, stream_role, state_hash) "
+               "VALUES (902, 900, 'controller', 'abc123')")
+    ok("two streams may share one blob -- that is the point of ADR-0038")
+
     # --- 6. the tick base actually has the properties SPEC 4.2 claims --------
     # These are load-bearing claims in a specification, so they get checked
     # rather than asserted. An earlier draft claimed 960 PPQ could not express a

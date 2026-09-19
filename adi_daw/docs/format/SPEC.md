@@ -391,18 +391,21 @@ with musical ticks. Both DAWs' models fit: Ableton's always-on warp with a marke
 grid, and Cubase's AudioWarp with hitpoint-derived markers, are the same data
 with different UI over it.
 
-### 6.5 Session View is core, not an extension
+### 6.5 There is no Session View
 
-`scenes` and `clip_slots` are **Layer 1**, not a vendor blob.
+ADI is a **linear, arrangement-timeline DAW**. There is no clip-launching matrix,
+and the format has no tables for one. ADR-0037 removed `scenes` and `clip_slots`.
 
-This is the whole premise of the project. "Ableton and Cubase combined" means the
-clip-launching matrix and the linear arrangement are peers in the data model,
-both always present, with clips referenced from either. Demoting Session View to
-an opaque extension would reproduce exactly the second-class-citizen problem that
-makes every other DAW's clip-launcher feel bolted on.
+This reverses ADR-0006, which had made them Layer 1 on the argument that
+"Ableton and Cubase combined" required both paradigms as peers. It means
+something narrower now: Ableton's **interface** — channel strips on the right,
+the device chain along the bottom, one window — over Cubase's **arrangement and
+audio-editing depth**, including comping, take lanes and crossfade control.
 
-`clip_slots` carries follow actions, launch quantisation, legato and launch mode
-per slot.
+A consequence worth stating in the format rather than only in the UI docs: every
+`clip` is on the timeline. `clips.track_id` is `NOT NULL`, and a clip carries a
+position in the time domain it declares. There is no unplaced clip, so a reader
+never has to ask where a clip lives.
 
 ### 6.6 Devices, chains, racks and macros
 
@@ -449,7 +452,8 @@ reader SHOULD verify them rather than assume.
 ```
 plugin_refs    identity of a plugin: format, uid, vendor, name, version, path hint
 devices        an instance of a plugin_ref on a chain
-plugin_state   (device_id, stream_role, data, format_hint)
+state_blobs    opaque device state, keyed by BLAKE3 hash, stored once
+plugin_state   (device_id, stream_role, state_hash, format_hint)
 plugin_params  (device_id, param_id, name, normalized_value, display_string)
 ```
 
@@ -484,6 +488,48 @@ A reader that encounters a `device` whose plugin is unavailable **MUST**:
 It **MUST NOT** silently drop the device, and it MUST NOT renumber the chain.
 Dropping a device silently rewires the signal path, and the user finds out at
 mixdown.
+
+### 7.2 Opaque state is stored once, by hash
+
+`plugin_state` holds a **hash**, not bytes. The bytes live in `state_blobs`,
+keyed by their BLAKE3 digest, and op payloads and inverses reference the same
+hashes (ADR-0038).
+
+A VST3 chunk is opaque and routinely large. Storing it inline in `plugin_state`
+and again in every `ops.inverse` that reverts to it makes the undo log the
+largest object in the file, growing with the number of edits rather than the
+size of the project. Two streams of one plugin, two devices loaded from the same
+preset, and twenty tweaks that end where they started all cost one blob.
+
+Writers **MUST** insert the `state_blobs` row before, or in the same transaction
+as, any row or op that references it. Readers **MUST** treat a `plugin_state`
+row whose `state_hash` is absent as a corrupt project, not as an empty state:
+loading a plugin with blank state silently discards a patch, which is the exact
+failure §7.1 exists to prevent.
+
+Orphaned blobs — referenced by no `plugin_state` row and no live op — MAY be
+collected during op-log compaction (§8.3) or an explicit vacuum. They MUST NOT
+be collected at any other time, because an op that is only reachable through an
+undo branch is still live.
+
+### 7.3 What undo covers, and what it cannot
+
+Parameter changes are captured exactly. A VST3 host is told about every
+automatable parameter change through `beginEdit` / `performEdit` / `endEdit`, so
+one user gesture becomes one `device.setParam` op with a before and an after —
+small, symmetric and coalescable.
+
+Opaque internal state is captured at **boundaries**: preset load, device insert
+and remove, plugin editor close, project save, and whenever the plugin calls
+`IComponentHandler2::setDirty`. There is no VST3 guarantee that a host is told
+when a plugin's non-parameter state changes, and plenty of plugins never say.
+
+> A conforming implementation **MUST NOT** claim that undo restores every
+> third-party plugin change. It restores every parameter change exactly, and
+> opaque state to the resolution of the boundaries above.
+
+This is a limitation of the plugin APIs, not of this format, and stating it is
+cheaper than a user discovering it with an hour of sound design at stake.
 
 ---
 

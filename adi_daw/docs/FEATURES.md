@@ -101,18 +101,20 @@ flagged, and it is a bug in the format, not in the plan.
 > no later version can recover it. This is the one place where being late is
 > equivalent to being wrong.
 
-## 5. Session View — clip launching
+## 5. Session View — removed
 
-| Feature | From | P | Fmt | Notes |
-|---|---|---|---|---|
-| Clip matrix, scenes | Ableton | P1 | ✅ | `scenes`, `clip_slots` — **core tier** |
-| Follow actions | Ableton | P2 | ✅ | in `clip_slots` |
-| Launch quantisation, legato, launch modes | Ableton | P1 | ✅ | |
-| Scene tempo / signature | Ableton | P2 | ✅ | |
-| Session ⇄ Arrangement record and consolidation | Ableton | P2 | — | ops over existing schema |
+**There is no Session View.** ADR-0037 removed the clip-launching matrix from the
+project: `scenes` and `clip_slots` are gone from the schema and the fourteen
+`scene.*` / `session.*` ops are gone from the catalogue.
 
-This is the one area where "combined" has to mean *peer*, not *bolted on*. See
-SPEC §6.5.
+ADI is a linear, arrangement-timeline DAW. What it takes from Ableton is the
+**interface** — channel strips on the right, device chain along the bottom, one
+window — and what it takes from Cubase is **arrangement and audio-editing
+depth**: comping, take lanes, crossfade control, the sample editor. See SPEC
+§6.5.
+
+Everything that used to be justified by "you can sketch in Session View" now has
+to be earned on the timeline instead. That is the point.
 
 ## 6. Devices, racks and plugins
 
@@ -184,9 +186,9 @@ Saying no now is cheaper than saying no later.
   engraving data to not destroy it (P3), and stop there.
 - **Mastering suite, spectral repair.** Plugins do this.
 - **Sample library management beyond the project media pool.**
-- **Being a live-performance instrument.** Session View is for production;
-  competing with Ableton's on-stage reliability story is a different project
-  with a different engineering budget.
+- **Being a live-performance instrument.** There is no clip launcher
+  (ADR-0037), and competing with Ableton's on-stage reliability story is a
+  different project with a different engineering budget.
 - **Mobile.** Not until desktop is genuinely good.
 
 ---

@@ -61,8 +61,7 @@ const PolyRef kPolyRefs[] = {
 /// that does not denote a row at all.
 const std::map<std::string, std::string> kKindToTable = {
     {"track", "tracks"},   {"device", "devices"}, {"clip", "clips"},
-    {"routing", "routing"}, {"lane", "lanes"},    {"scene", "scenes"},
-    {"media", "media_files"},
+    {"routing", "routing"}, {"lane", "lanes"},    {"media", "media_files"},
 };
 
 /// Kinds that deliberately name something outside the database. A failed lookup
