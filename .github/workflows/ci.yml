@@ -394,6 +394,26 @@ jobs:
           n=$(ctest --test-dir build-strict -N | grep -c "^  Test +#" || true)
           echo "ok    every target built warning-free at -Werror; $n test binaries run"
 
+          # Fuzz harnesses are NOT in that build: ADI_BUILD_FUZZERS is off by
+          # default and clang-gated, so they are compiled by exactly one job, on
+          # one compiler, against one standard library. That is how a
+          # `std::memcpy` with no <cstring> reached CI -- fine on libc++, a hard
+          # error on libstdc++, and invisible to every leg but the fuzz one.
+          #
+          # They define LLVMFuzzerTestOneInput rather than main, so they cannot
+          # be linked here. They can be compiled, and that is the half that
+          # catches this.
+          W="-std=c++20 -Wall -Wextra -Wpedantic -Wcast-align -Wconversion"
+          W="$W -Wsign-conversion -Wno-unused-parameter -Werror -Iadi_daw/src"
+          harnesses=0
+          for f in adi_daw/tests/fuzz_*.cpp; do
+            [ -e "$f" ] || continue
+            harnesses=$((harnesses + 1))
+            echo "--- $(basename "$f") (syntax only)"
+            "$CXX" $W "$HARDEN" -fsyntax-only "$f"
+          done
+          echo "ok    $harnesses fuzz harness(es) compile on this standard library"
+
   # ---------------------------------------------------------------------------
   # What did we actually build against?
   #
