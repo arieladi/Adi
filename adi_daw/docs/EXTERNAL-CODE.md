@@ -20,6 +20,7 @@ Permissive licences, all GPLv3-compatible in the direction we need.
 | [`json`](https://github.com/nlohmann/json) | MIT | 29 MB | nlohmann/json. We want it for its **CBOR** codec (`to_cbor`/`from_cbor`), not its JSON — for `ops.payload` and `ops.inverse`. See ADR-0016. |
 | [`bungee`](https://github.com/bungee-audio-stretch/bungee) | MPL-2.0 | 426 KB | Time-stretch / pitch-shift. Feeds `audio_clips.warp_markers` (SPEC §6.4). Handles continuous rate change and zero/negative speed, which is what scrubbing needs. |
 | [`lockfree`](https://github.com/DNedic/lockfree) | MIT | 2.2 MB | Header-only bounded SPSC/MPMC queues, no dynamic allocation, cache-line padded. For the message-thread→audio-thread handoff in ADR-0010. |
+| [`JUCE`](https://github.com/juce-framework/JUCE) | **AGPL-3.0** or commercial | 117 MB shallow | Audio device I/O, the plugin graph and VST3 hosting for step 6, and the UI toolkit after it. **Pinned 9.0.2 / `72782788`. Fetched only by `--with-juce`; `ADI_WITH_JUCE` is OFF by default** so the whole tree builds and every suite passes with no JUCE present (ADR-0036). **The one dependency whose licence is stronger than ours** — see ADR-0043 and the note below. |
 
 **MPL-2.0 note.** Bungee is file-level copyleft. Fine to combine with GPLv3, but
 modifications *to Bungee's own files* must stay open and carry MPL headers. Keep
@@ -34,6 +35,27 @@ reading it*) is ours to solve and is the part that will be subtly wrong if we
 are casual about it.
 
 ---
+
+
+### A note on JUCE, because it is the exception
+
+Every other entry above is permissive — MIT or MPL — and imposes nothing on us
+beyond attribution. **JUCE is AGPLv3**, which is stronger than this project's
+own GPLv3 (ADR-0015).
+
+The combination is explicitly permitted rather than merely tolerated: GPLv3 §13
+grants permission to link with an AGPLv3 work and AGPLv3 §13 grants the mirror.
+No exception is needed and neither licence is being stretched.
+
+What changes is what we can say about the result. **A binary that links JUCE is
+a GPLv3 + AGPLv3 combination, not "a GPLv3 program"**, and AGPL §13's
+network-interaction clause attaches to the JUCE part. That is inert for a
+desktop DAW and *not* inert for ADR-0039's RPC boundary, where remote clients
+drive the program over a network.
+
+JUCE's **examples** are ISC, not AGPL. Copying from `examples/` is a different
+and much easier question than copying from `modules/`.
+
 
 ## `reference/` — we read these. They are never on the include path.
 
