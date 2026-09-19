@@ -161,11 +161,17 @@ CREATE TABLE tracks (
     id              INTEGER PRIMARY KEY,
     parent_id       INTEGER REFERENCES tracks(id) ON DELETE CASCADE,
     index_in_parent INTEGER NOT NULL DEFAULT 0,
-    -- 'folder' and 'group' are NOT the same thing (SPEC §6.1): a folder is an
-    -- organisational container with no signal path (Cubase), a group is a real
-    -- summing bus (Ableton). Merging them gets one of the two wrong.
+    -- ADR-0044 removed 'folder'. A group is ONE object: a container in the
+    -- timeline and a summing bus in the mixer, the Ableton model. Carrying a
+    -- signal-free folder alongside it is the Cubase split we are rejecting,
+    -- and it is the one users would pick by accident.
+    --
+    -- ADR-0045: 'audio', 'midi' and 'instrument' are HINTS. They set the icon
+    -- and the default device; nothing may infer from them what a track is
+    -- allowed to contain. A MIDI clip on an 'audio' track is legal and always
+    -- was. The other values name a role in the signal graph and do bind.
     kind            TEXT    NOT NULL CHECK (kind IN (
-                        'audio','midi','instrument','group','folder','return',
+                        'audio','midi','instrument','group','return',
                         'master','vca','marker','tempo','signature','chord',
                         'arranger','video','transposition')),
     name            TEXT    NOT NULL DEFAULT '',
@@ -249,6 +255,15 @@ CREATE TABLE routing (
     pan         REAL    NOT NULL DEFAULT 0.0,
     pre_fader   INTEGER NOT NULL DEFAULT 0,
     enabled     INTEGER NOT NULL DEFAULT 1,
+    -- Who owns this row (ADR-0044). Grouping creates, rewrites and deletes
+    -- 'auto' rows freely and MUST NOT touch a 'user' one, so redirecting a
+    -- child's output by hand survives every later regroup.
+    --
+    -- The default is 'user' on purpose. A row written by anything that has
+    -- not thought about this -- a converter, a migration, a hand-repaired
+    -- file -- is one automatic grouping must leave alone. The safe default
+    -- is the one that loses nothing.
+    origin      TEXT    NOT NULL DEFAULT 'user' CHECK (origin IN ('auto','user')),
     -- Channel mapping for partial / multichannel connections, NULL = straight.
     channel_map BLOB
 ) STRICT;
@@ -442,6 +457,12 @@ CREATE TABLE devices (
     rack_kind       TEXT,
     preset_name     TEXT    NOT NULL DEFAULT '',
     latency_samples INTEGER NOT NULL DEFAULT 0,
+    -- Opt out of signal-driven suspension (ADR-0043). Plugins lie about
+    -- getTailSamples(): reporting kNoTail and then producing a tail is common,
+    -- and a tail that depends on a parameter is usually reported as whatever
+    -- it was at one setting. This is the escape hatch that turns a report of
+    -- a reverb being cut off from unfalsifiable into a two-click fix.
+    always_process  INTEGER NOT NULL DEFAULT 0 CHECK (always_process IN (0,1)),
     -- Set when the plugin could not be instantiated on last load (SPEC §7.1).
     -- The device stays in the chain as a bypassed placeholder; it is NEVER
     -- dropped, because dropping it silently rewires the signal path.
