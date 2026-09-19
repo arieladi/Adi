@@ -112,6 +112,7 @@ add_library(adi_core STATIC
     src/adi/blob.cpp
     src/adi/store.cpp
     src/adi/ops.cpp
+    src/adi/ops_catalog.cpp
     src/adi/history.cpp
     src/adi/digest.cpp
     src/adi/textproj.cpp
@@ -161,6 +162,10 @@ add_test(NAME adi_history_tests COMMAND adi_history_tests)
 add_executable(adi_replay_tests tests/test_replay.cpp)
 target_link_libraries(adi_replay_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_replay_tests COMMAND adi_replay_tests)
+
+add_executable(adi_catalog_tests tests/test_catalog.cpp)
+target_link_libraries(adi_catalog_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_catalog_tests COMMAND adi_catalog_tests)
 
 # A second binary rather than a second file in adi_tests: the projection has no
 # dependency on the blob layer and testing it in isolation keeps that true. If

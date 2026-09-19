@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -102,6 +103,46 @@ std::vector<OpRequest> corpus() {
     op("track.rename", {{"id", 10}, {"name", "Rhodes"}}, "Agent renames Keys",
        Actor::Agent, "adi-agent/claude-opus-5");
     op("track.delete", {{"id", 11}}, "Delete Lead Vocal");
+
+    // The catalogue widened to 50 ops; every new handler has to be free of
+    // ambient state, and this is the only test that can tell. So the corpus
+    // covers one of each shape rather than staying at the original six.
+    op("mixer.setVolume", {{"id", 10}, {"db", -3.25}}, "Trim Rhodes");
+    op("mixer.setPan", {{"id", 10}, {"pan", -0.5}}, "Pan Rhodes left");
+    op("track.setSolo", {{"id", 7}, {"soloed", true}}, "Solo Drums");
+    op("track.setInput", {{"id", 7}, {"input", "in:1"}}, "Route Drums input");
+    op("track.reorder", {{"id", 7}, {"index", 0}}, "Move Drums first");
+    op("project.insertTempoEvent", {{"pos", 0}, {"bpm", 128.0}}, "Set tempo");
+    op("project.insertTempoEvent", {{"pos", 46126080}, {"bpm", 140.0}}, "Tempo up");
+    op("project.insertTimeSignature", {{"pos", 0}, {"num", 7}, {"den", 8}}, "7/8");
+    op("routing.connect", {{"id", 1}, {"srcKind", "track"}, {"src", 7},
+                           {"dstKind", "track"}, {"dst", 12}, {"kind", "main"}},
+       "Drums into Bus");
+    op("routing.setGain", {{"id", 1}, {"db", -2.0}}, "Trim the send");
+
+    // Clips and notes -- the blob path, which nothing else in this corpus
+    // reaches. A note edit is a read-modify-write of one clip's blob, so an
+    // ambient-state bug there would corrupt musical content rather than a flag.
+    op("clip.create", {{"id", 40}, {"track", 10}, {"kind", "midi"},
+                       {"name", "Riff"}, {"pos", 0}, {"length", 23063040}},
+       "Add a clip");
+    op("note.insert", {{"clip", 40}, {"note", 1}, {"start", 0},
+                       {"dur", 1441440}, {"key", 60}, {"vel", 96}}, "C");
+    op("note.insert", {{"clip", 40}, {"note", 2}, {"start", 1441440},
+                       {"dur", 1441440}, {"key", 64}, {"vel", 88}}, "E");
+    op("note.insert", {{"clip", 40}, {"note", 3}, {"start", 2882880},
+                       {"dur", 2882880}, {"key", 67}, {"vel", 72}}, "G");
+    op("note.setVelocity", {{"clip", 40}, {"note", 2}, {"vel", 110}}, "Accent E");
+    op("note.move", {{"clip", 40}, {"note", 3}, {"start", 4324320}, {"key", 69}},
+       "Move G to A");
+    op("note.delete", {{"clip", 40}, {"note", 1}}, "Drop the C");
+    op("clip.resize", {{"id", 40}, {"pos", 1441440}, {"length", 11531520}}, "Trim");
+
+    // Ephemeral, interleaved: they must not disturb the project OR the digest.
+    op("transport.seek", {{"pos", 5765760}}, "Locate", Actor::User);
+    op("transport.play", Payload::object(), "Play");
+    op("transport.stop", Payload::object(), "Stop");
+
     op("project.setName", {{"name", "Round Trip Final"}}, "Rename the project");
     return v;
 }
@@ -271,8 +312,20 @@ void testUndoAllRestoresTheEmptyProject() {
         if (!r.ok) { check(false, "undo failed: " + r.error); break; }
         ++steps;
     }
-    check(steps == static_cast<int>(corpus().size()),
-          "undid every transaction, " + std::to_string(steps) + " steps");
+    // Not corpus().size(): the ephemeral transport ops create no undo steps,
+    // which is OPS.md §10 holding inside the corpus rather than only in a unit
+    // test. Count what should actually be undoable.
+    int undoable = 0;
+    for (const auto& r : corpus()) {
+        const auto* d = OpRegistry::instance().find(r.opType);
+        if (d && !d->ephemeral) ++undoable;
+    }
+    check(undoable < static_cast<int>(corpus().size()),
+          "the corpus really does contain ephemeral ops to skip");
+    check(steps == undoable,
+          "undid every undoable transaction: " + std::to_string(steps) + " of " +
+              std::to_string(corpus().size()) + " ops, " +
+              std::to_string(static_cast<int>(corpus().size()) - undoable) + " ephemeral");
     check(digestProject(*s).text == empty.text,
           "the project is byte-identical to the one that never had anything done to it");
 }
@@ -369,7 +422,7 @@ void testAgentAndUserProduceTheSameProject() {
 
 }  // namespace
 
-int main() {
+int runAll() {
     std::printf("adi_replay_tests -- ADR-0021 7.4, the round-trip corpus\n\n");
     testDigestExclusions();
     testDigestIgnoresRowidOrder();
@@ -381,4 +434,16 @@ int main() {
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;
+}
+
+int main() {
+    // OpRegistry::instance() throws if the catalogue is malformed (OPS.md 3).
+    // Uncaught, that is abort() -- on Windows a modal dialog that blocks the
+    // run rather than reporting it. Catch it and say what is wrong.
+    try {
+        return runAll();
+    } catch (const std::exception& e) {
+        std::printf("\nFAILED -- exception escaped: %s\n", e.what());
+        return 1;
+    }
 }
