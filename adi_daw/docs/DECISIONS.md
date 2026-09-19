@@ -931,3 +931,82 @@ these references, so `validate_schema.py` check 5c enforces the *schema-level*
 half (every internal kind names a real table) and a future `adi_tool check`
 must enforce the *data-level* half (every internal id resolves to a live row).
 Until that command exists, this class of corruption is undetected at rest.
+
+---
+
+## ADR-0030 — Undo moves the head; it does not append — `DECIDED` (2026-09-19)
+
+Three decisions that only became visible when undo/redo was built on the journal.
+
+### 1. Undo and redo do not write op rows
+
+**The tension.** ADR-0003 says *every* mutation appends an op row in the same
+transaction that performs it. Undo mutates the project. Taken literally, an undo
+would append a row — and so would the redo, and the next undo, without bound.
+Toggling Ctrl-Z would grow the file forever and the "tree" would degenerate into
+a linear log of do/undo/redo/undo.
+
+**Decision.** Undo and redo **move the head pointer** along the existing log and
+apply the stored inverse or payload. They append nothing.
+
+**Why this does not weaken ADR-0003.** The invariant that matters is that *the
+log fully describes the project's state*, not that every write has its own row.
+After an undo, the project's state is exactly "the log up to head", which is
+completely described — by the rows that already exist. Appending would add no
+information and destroy the structure.
+
+The atomicity half of ADR-0003 is untouched and is what the tests actually
+check: **the head move is in the same SQLite transaction as the inverses it
+describes.** A crash between them would leave the project changed and the head
+disagreeing, and the next undo would then act on the wrong transaction.
+
+Tested by running five undo/redo cycles and asserting the row count is unchanged.
+
+### 2. Ephemeral ops are outside the tree, not filtered out of it
+
+`transport.play` and `session.launchClip` write no project state (ADR-0027), so
+they must not be undoable. They are given **`parent_seq = NULL`** and do not
+advance the head — they are in the log for audit and simply are not in the
+chain.
+
+**Rather than leaving them in the chain and skipping them on every walk.** A
+filter is something each of undo, redo, fork detection and branch-tip-walking
+would have to remember independently, and the one that forgot would be a bug
+nobody finds until an agent's `transport.play` swallows a Ctrl-Z. Keeping them
+out of the structure makes "skip" free.
+
+### 3. After a fork, redo follows the highest-seq child
+
+Undoing and then committing something new leaves the head with two children.
+Redo has to pick one.
+
+**Decision: the highest seq, which is the most recently created line.** The
+abandoned line is saved as a branch row first, so nothing is lost — SPEC §8.2's
+"it forks" rather than "it is destroyed". `OpJournal::commit` and
+`History::nextRedo` use the same rule, which is why they cannot disagree about
+which line is live.
+
+**Verified non-vacuously:** disabling fork preservation makes the test fail with
+*"the abandoned line was saved as a branch rather than destroyed"*, and removing
+the undo transaction makes the atomicity test report *"saw 1"* track where two
+were expected.
+
+**Not implemented: switching between diverged branches.** It needs rewind to the
+common ancestor and replay forward. `switchToBranch` refuses rather than
+approximating, because getting it wrong corrupts a project. Re-selecting a
+branch already at the current head works.
+
+### 4. `sel_before` needed its own column — an ADR-0021 × ADR-0029 collision
+
+ADR-0021 §7.5 put the advisory selection hint in `ops.tags`. ADR-0029 then made
+every table `STRICT`. `ops.tags` is `TEXT`, so a CBOR blob can no longer be
+stored there at all — the mechanism became unimplementable, and neither ADR was
+wrong in isolation.
+
+Fixed with a nullable `ops.sel_before BLOB`. Still advisory, still never an input
+to a handler, still droppable by compaction.
+
+**Worth recording as a class of problem, not just an instance.** It surfaced only
+when something first tried to write one, which is months after both decisions
+looked settled. A decision that tightens a constraint everywhere should be
+checked against decisions that relied on the looseness.
