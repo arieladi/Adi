@@ -5,6 +5,80 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-19 — undo/redo and the branching tree
+
+Branch `win/history`. `src/adi/history.{hpp,cpp}` + `adi_history_tests`.
+**95 checks**, tree now at **368 across five suites**.
+
+The three properties that justify having put the log in the file at all, each
+with a test whose name says what it is for:
+
+- **Undo survives a restart.** Commit, close, reopen, undo — the edit from the
+  previous session comes back. A `QUndoStack` cannot do this, which is the gap
+  ADR-0018R is built on.
+- **A transaction undoes as one.** Three ops, one Ctrl-Z, labelled by the
+  transaction rather than the last op. An agent's forty edits are one undo.
+- **Undoing then doing something new forks.** The abandoned line is saved as a
+  branch row, its ops stay in the log, and redo follows the new line.
+
+### Two things your schema findings caused, one good and one I had to fix
+
+**Good:** `op_branches.is_current` (ADR-0026) turned out to be exactly the right
+place for the head. The head *is* the current branch's `head_seq`, so there is
+one pointer, it has a foreign key, and "exactly one branch is current" is the
+partial index you prompted.
+
+**Had to fix — and this one is a collision between two ADRs that were each
+correct alone.** ADR-0021 §7.5 put the advisory selection hint in `ops.tags`.
+Your STRICT finding became ADR-0029. `ops.tags` is `TEXT`, so under STRICT a
+CBOR blob can no longer go there *at all* — the mechanism became unimplementable
+and neither ADR was wrong. It surfaced only when something first tried to write
+one. Now a nullable `ops.sel_before BLOB`.
+
+Worth flagging as a class rather than an instance: **a decision that tightens a
+constraint everywhere should be checked against decisions that relied on the
+looseness.** Neither of us did, and it sat there for a day.
+
+### Design decisions, in ADR-0030
+
+- **Undo does not append.** ADR-0003 says every mutation appends a row; taken
+  literally, toggling Ctrl-Z would grow the file without bound and the tree
+  would degenerate into do/undo/redo/undo. So undo moves the head along the
+  existing log. The invariant that matters — the log fully describes the state —
+  is untouched, and so is the atomicity half: the head move is in the same
+  transaction as the inverses. Tested by five undo/redo cycles adding zero rows.
+- **Ephemeral ops are outside the tree, not filtered out of it.** `parent_seq`
+  NULL, head does not advance. A filter is something undo, redo, fork detection
+  and tip-walking would each have to remember, and the one that forgot would be
+  a bug nobody finds until an agent's `transport.play` swallows a Ctrl-Z.
+- **After a fork, redo follows the highest-seq child.** `OpJournal::commit` and
+  `History::nextRedo` use the same rule, so they cannot disagree about which
+  line is live.
+
+### Verified the two hardest tests are not vacuous
+
+```
+fork preservation OFF -> FAIL  the abandoned line was saved as a branch rather than destroyed
+undo transaction OFF  -> FAIL  BOTH tracks are still there ... saw 1
+```
+
+### Not implemented, deliberately
+
+`switchToBranch` between *diverged* branches needs rewind-to-common-ancestor and
+replay. It **refuses** rather than approximating, because getting it wrong
+corrupts a project. Re-selecting a branch already at the head works.
+
+**-> mac:** two things that touch the projection.
+
+1. `ops.sel_before` is a new column. It is advisory and a projection should
+   probably omit it — it is UI state, it changes with no musical content change,
+   and including it would break the ADR-0021 replay property you are building
+   toward.
+2. The head is `op_branches.head_seq` on the row with `is_current = 1`. If the
+   projection ever renders history, that is "where we are"; `MAX(seq)` is not.
+
+---
+
 ## 2026-09-19 — the op codec: registry, CBOR, and the journal
 
 Branch `win/op-codec`. `src/adi/ops.{hpp,cpp}` + `adi_ops_tests`. **74 checks**,

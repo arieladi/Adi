@@ -580,7 +580,17 @@ CREATE TABLE ops (
     payload     BLOB,                   -- encoding TBD — SPEC §12.1
     inverse     BLOB,                   -- enough to revert without replaying
     label       TEXT    NOT NULL DEFAULT '',   -- what the undo menu shows
-    tags        TEXT    NOT NULL DEFAULT ''
+    tags        TEXT    NOT NULL DEFAULT '',
+    -- ADR-0021 §7.5: what was selected when this transaction began, so undo can
+    -- restore it. ADVISORY -- never an input to a handler, purely a UI hint, and
+    -- droppable by compaction.
+    --
+    -- Its own BLOB column rather than living in `tags`, which is where ADR-0021
+    -- put it: `tags` is TEXT, and once ADR-0029 made every table STRICT a CBOR
+    -- blob could no longer be stored there. Two ADRs that were each correct in
+    -- isolation, and the interaction was noticed only when something tried to
+    -- write one. See ADR-0030.
+    sel_before  BLOB
 ) STRICT;
 CREATE INDEX idx_ops_txn    ON ops(txn_id);
 CREATE INDEX idx_ops_parent ON ops(parent_seq);
@@ -597,6 +607,12 @@ CREATE TABLE op_branches (
     is_current   INTEGER NOT NULL DEFAULT 0 CHECK (is_current IN (0,1)),
     created_by   TEXT    NOT NULL DEFAULT 'user'
 ) STRICT;
+-- Every project has a current branch from the moment it is created, so nothing
+-- has to cope with "no branch yet". head_seq NULL means the branch is at the
+-- root: nothing done, nothing to undo.
+INSERT INTO op_branches(id, name, head_seq, created_utc, is_current, created_by)
+     VALUES (1, 'main', NULL, 0, 1, 'system');
+
 -- Exactly one branch is current. A partial index rather than a convention,
 -- because "the current branch" with two claimants is a corrupt undo tree and
 -- the failure would surface much later, as the wrong history (ADR-0026).
