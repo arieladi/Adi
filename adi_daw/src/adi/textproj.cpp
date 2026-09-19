@@ -208,4 +208,194 @@ std::vector<std::string> assignLabels(const std::vector<std::string>& base_label
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Ordering (TEXT-PROJECTION 7)
+// ---------------------------------------------------------------------------
+
+SortKey SortKey::integer(std::int64_t v) { SortKey k; k.tag_ = Tag::Int;  k.i_ = v; return k; }
+SortKey SortKey::real(double v)          { SortKey k; k.tag_ = Tag::Real; k.d_ = v; return k; }
+SortKey SortKey::text(std::string v)     { SortKey k; k.tag_ = Tag::Text; k.s_ = std::move(v); return k; }
+SortKey SortKey::null()                  { return SortKey{}; }
+
+std::string SortKey::seedToken() const {
+    switch (tag_) {
+        case Tag::Null: return "n";
+        case Tag::Int:  return "i" + std::to_string(i_);
+        case Tag::Real: {
+            std::uint64_t bits = 0;
+            std::memcpy(&bits, &d_, sizeof bits);   // the bit pattern, so that
+            return "r" + std::to_string(bits);      // -0.0 and +0.0 differ
+        }
+        case Tag::Text: return "t" + std::to_string(s_.size()) + ":" + s_;
+    }
+    return "n";
+}
+
+int SortKey::compare(const SortKey& o) const {
+    if (tag_ != o.tag_)
+        return static_cast<int>(tag_) < static_cast<int>(o.tag_) ? -1 : 1;
+    switch (tag_) {
+        case Tag::Null: return 0;
+        case Tag::Int:  return i_ < o.i_ ? -1 : (i_ > o.i_ ? 1 : 0);
+        case Tag::Text: {
+            const int c = s_.compare(o.s_);
+            return c < 0 ? -1 : (c > 0 ? 1 : 0);
+        }
+        case Tag::Real: {
+            // A total order over every bit pattern a REAL column can hold.
+            // `<` is not one: NaN compares false against everything and -0.0 ==
+            // +0.0, so a comparator built on it is not a strict weak ordering
+            // and std::sort on it is undefined behaviour, not merely wrong.
+            const bool an = std::isnan(d_), bn = std::isnan(o.d_);
+            if (an || bn) return an && bn ? 0 : (an ? 1 : -1);   // NaN sorts last
+            if (d_ < o.d_) return -1;
+            if (d_ > o.d_) return 1;
+            // Equal by value: separate -0.0 from +0.0 by sign bit.
+            const bool as = std::signbit(d_), bs = std::signbit(o.d_);
+            return as == bs ? 0 : (as ? -1 : 1);
+        }
+    }
+    return 0;
+}
+
+namespace {
+
+int compareKeys(const std::vector<SortKey>& a, const std::vector<SortKey>& b) {
+    const std::size_t n = std::min(a.size(), b.size());
+    for (std::size_t i = 0; i < n; ++i)
+        if (const int c = a[i].compare(b[i])) return c;
+    if (a.size() == b.size()) return 0;
+    return a.size() < b.size() ? -1 : 1;
+}
+
+/// Map each distinct signature to its rank among the sorted distinct
+/// signatures. The rank is therefore a function of the signature set alone --
+/// never a counter incremented in traversal order, which would make the colour
+/// depend on the order we happened to visit members in.
+std::vector<std::size_t> rankOf(const std::vector<std::string>& sigs) {
+    std::vector<std::string> distinct = sigs;
+    std::sort(distinct.begin(), distinct.end());
+    distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
+
+    std::vector<std::size_t> out(sigs.size());
+    for (std::size_t i = 0; i < sigs.size(); ++i)
+        out[i] = static_cast<std::size_t>(
+            std::lower_bound(distinct.begin(), distinct.end(), sigs[i]) - distinct.begin());
+    return out;
+}
+
+std::string joinSorted(const std::vector<std::uint32_t>& refs,
+                       const std::vector<std::size_t>& colour) {
+    std::vector<std::size_t> cs;
+    cs.reserve(refs.size());
+    for (std::uint32_t r : refs)
+        if (r < colour.size()) cs.push_back(colour[r]);
+    std::sort(cs.begin(), cs.end());          // a multiset, not a sequence
+    std::string out;
+    for (std::size_t c : cs) { out += std::to_string(c); out += ','; }
+    return out;
+}
+
+}  // namespace
+
+OrderResult canonicalOrder(const std::vector<Member>& members,
+                           RenderFn render,
+                           void* ctx,
+                           std::size_t max_tied_class) {
+    const std::size_t n = members.size();
+    OrderResult res;
+    res.order.resize(n);
+    for (std::size_t i = 0; i < n; ++i) res.order[i] = static_cast<std::uint32_t>(i);
+    if (n < 2) return res;
+
+    // --- K1 and K2 ---------------------------------------------------------
+    std::stable_sort(res.order.begin(), res.order.end(),
+                     [&](std::uint32_t a, std::uint32_t b) {
+                         if (const int c = compareKeys(members[a].keys, members[b].keys))
+                             return c < 0;
+                         return members[a].skeleton < members[b].skeleton;
+                     });
+
+    auto tiedWith = [&](std::uint32_t a, std::uint32_t b) {
+        return compareKeys(members[a].keys, members[b].keys) == 0
+               && members[a].skeleton == members[b].skeleton;
+    };
+
+    // --- K3: refinement to a fixed point -----------------------------------
+    // Seed each member's colour from what K1 and K2 already separated, then
+    // repeatedly fold in the multiset of neighbour colours, in BOTH directions.
+    // Two tracks identical in every field are still distinguishable if
+    // different things send to them, and only the in-edges carry that.
+    std::vector<std::string> seed(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        std::string k;
+        for (const auto& key : members[i].keys) { k += key.seedToken(); k += ':'; }
+        seed[i] = k + '|' + members[i].skeleton;
+    }
+    std::vector<std::size_t> colour = rankOf(seed);
+
+    for (std::size_t round = 0; round < n; ++round) {
+        std::vector<std::string> sig(n);
+        for (std::size_t i = 0; i < n; ++i)
+            sig[i] = std::to_string(colour[i]) + '>' + joinSorted(members[i].out_refs, colour)
+                                               + '<' + joinSorted(members[i].in_refs, colour);
+        std::vector<std::size_t> next = rankOf(sig);
+        if (next == colour) break;            // fixed point
+        colour = std::move(next);
+    }
+
+    // Re-sort the K1/K2-tied runs by refined colour. Members that K1 and K2
+    // already separated keep their positions: refinement may only break ties,
+    // never reorder across them.
+    std::stable_sort(res.order.begin(), res.order.end(),
+                     [&](std::uint32_t a, std::uint32_t b) {
+                         if (const int c = compareKeys(members[a].keys, members[b].keys))
+                             return c < 0;
+                         if (members[a].skeleton != members[b].skeleton)
+                             return members[a].skeleton < members[b].skeleton;
+                         return colour[a] < colour[b];
+                     });
+
+    // --- K4: permutation minimisation over each surviving class ------------
+    std::size_t p = 0;
+    while (p < n) {
+        std::size_t q = p + 1;
+        while (q < n && tiedWith(res.order[p], res.order[q])
+                     && colour[res.order[p]] == colour[res.order[q]]) ++q;
+
+        const std::size_t size = q - p;
+        res.largest_tied_class = std::max(res.largest_tied_class, size);
+
+        if (size > 1) {
+            if (size > max_tied_class) {
+                // Refusing beats inventing. An arbitrary order here would be a
+                // leak wearing a canonical hat, and the caller must be able to
+                // tell the difference.
+                res.status = OrderStatus::Ambiguous;
+            } else if (render != nullptr) {
+                // Minimise over the OUTPUT, not over any property of the
+                // members. That is what makes this canonical rather than a
+                // choice of member: members that tie through K4 render
+                // identically, so which is first is unobservable.
+                std::vector<std::uint32_t> klass(res.order.begin() + static_cast<std::ptrdiff_t>(p),
+                                                 res.order.begin() + static_cast<std::ptrdiff_t>(q));
+                std::sort(klass.begin(), klass.end());
+
+                std::vector<std::uint32_t> best_class, cand = res.order;
+                std::string best;
+                do {
+                    for (std::size_t i = 0; i < size; ++i) cand[p + i] = klass[i];
+                    std::string out = render(cand, ctx);
+                    if (best.empty() && best_class.empty()) { best = std::move(out); best_class = klass; }
+                    else if (out < best)                    { best = std::move(out); best_class = klass; }
+                } while (std::next_permutation(klass.begin(), klass.end()));
+
+                for (std::size_t i = 0; i < size; ++i) res.order[p + i] = best_class[i];
+            }
+        }
+        p = q;
+    }
+    return res;
+}
+
 }  // namespace adi::textproj
