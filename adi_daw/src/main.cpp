@@ -6,6 +6,7 @@
 // needs any of those, the layering in ADR-0010 has gone wrong.
 
 #include "adi/blob.hpp"
+#include "adi/digest.hpp"
 #include "adi/store.hpp"
 #include "adi/version.hpp"
 
@@ -26,6 +27,8 @@ int usage() {
         "  adi_tool versions        print library versions\n"
         "  adi_tool create <file>   create an empty .adi project\n"
         "  adi_tool info <file>     inspect an existing .adi\n"
+        "  adi_tool digest <file>   canonical digest of the project tier\n"
+        "                           --full prints it; default prints the id\n"
         "\n"
         "Ops arrive next; see docs/OPS.md.\n");
     return 2;
@@ -114,6 +117,27 @@ int cmdInfo(const char* path) {
     return 0;
 }
 
+int cmdDigest(const char* path, bool full) {
+    adi::StoreError err = adi::StoreError::Ok;
+    auto st = adi::Store::open(path, err, /*readOnly=*/true);
+    if (!st) {
+        std::printf("cannot open: %s\n", adi::toString(err));
+        return 1;
+    }
+    const auto d = adi::digestProject(*st);
+    if (full) std::fputs(d.text.c_str(), stdout);
+    std::printf("%s  %d tables  %d rows\n", d.fingerprint.c_str(),
+                d.tableCount, d.rowCount);
+
+    // Worth saying out loud, because a digest is exactly the thing someone
+    // reaches for to compare two files and then wonders why it ignored a
+    // change. It covers the PROJECT, not the session.
+    if (full)
+        std::printf("\nExcludes the op log, UI state and volatile metadata.\n"
+                    "See src/adi/digest.hpp for why each exclusion is there.\n");
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -135,6 +159,10 @@ int main(int argc, char** argv) {
     if (cmd == "info") {
         if (argc < 3) return usage();
         return cmdInfo(argv[2]);
+    }
+    if (cmd == "digest") {
+        if (argc < 3) return usage();
+        return cmdDigest(argv[2], argc > 3 && std::string(argv[3]) == "--full");
     }
 
     std::printf("unknown command: %s\n\n", cmd.c_str());

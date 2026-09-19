@@ -547,7 +547,18 @@ CREATE TABLE media_files (
     -- Cached peaks for waveform drawing. Regenerable; never authoritative.
     peaks           BLOB
 ) STRICT;
-CREATE INDEX idx_media_hash ON media_files(hash_blake3);
+-- UNIQUE, because ADR-0005 says content addressing is what gives dedupe --
+-- "the same sample dropped in twenty times is one file". A non-unique index
+-- made that a comment rather than a rule: nothing stopped twenty rows holding
+-- one hash, and then relink-by-content has no single answer and the pool is not
+-- a pool. Reported twice by mac while building the text projection, where
+-- hash-as-designator needs it.
+--
+-- PARTIAL, on hash_blake3 <> '', so a row whose hash is not yet computed does
+-- not collide with every other such row. A lookup by '' is not a thing anyone
+-- does, so the index loses nothing by excluding them.
+CREATE UNIQUE INDEX idx_media_hash ON media_files(hash_blake3)
+    WHERE hash_blake3 <> '';
 
 -- Embedding is a flag, not a different format (SPEC §10.4). Chunked so a large
 -- file does not depend on a raised SQLITE_MAX_LENGTH in a third-party reader.
