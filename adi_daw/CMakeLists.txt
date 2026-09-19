@@ -62,6 +62,12 @@ add_subdirectory("${ADI_THIRD_PARTY}/json"      EXCLUDE_FROM_ALL SYSTEM)
 #
 # Every target we own links this PRIVATE; nothing in third_party/ links it.
 # ---------------------------------------------------------------------------
+# CI's strict job turns this on. It lives on adi_warnings rather than in
+# CMAKE_CXX_FLAGS deliberately: a global -Werror would also apply to
+# third_party/, and sqlite3.c is a 250k-line amalgamation that has never
+# promised to be warning-free under our flag set. Our code is what we gate.
+option(ADI_WERROR "Treat warnings in our own code as errors" OFF)
+
 add_library(adi_warnings INTERFACE)
 
 if(MSVC)
@@ -76,6 +82,11 @@ else()
         -Wall -Wextra -Wpedantic
         -Wcast-align -Wconversion -Wsign-conversion
         -Wno-unused-parameter)
+endif()
+
+if(ADI_WERROR)
+    target_compile_options(adi_warnings INTERFACE
+        $<IF:$<BOOL:${MSVC}>,/WX,-Werror>)
 endif()
 
 # ---------------------------------------------------------------------------
