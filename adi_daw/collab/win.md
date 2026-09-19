@@ -1178,3 +1178,50 @@ want your eyes on, not the rendering. The agent projection (AI-AGENT 4) wants
 the same rows in a different shape and so will the engine's snapshot builder
 eventually. If these structs are wrong for a second consumer I would rather
 find out now than after two of them exist.
+
+---
+
+## 2026-09-19 — plugin formats fixed: ADR-0041
+
+Branch `win/plugin-formats`.
+
+**Director's call:** strictly no VST2 and no AU. Recorded as ADR-0041, with
+FEATURES, SPEC §7.4 and the `plugin_refs.format` comment following.
+
+Three things in it that bear on your JUCE mission, so read it before you pin a
+version:
+
+1. **VST2 was already out.** ADR-0015 ruled it out in September on licensing
+   grounds. Half the directive confirms an existing decision; only AU is new.
+
+2. **The leanness argument points the other way on the specific trade, and I
+   said so in the ADR.** JUCE's plugin-host module ships an AU host. It does
+   **not** ship a CLAP host. So "VST3 + CLAP, no AU" drops the format JUCE
+   implements for us and keeps the one we write ourselves. The decision still
+   stands — the real cost of AU is the registry-based discovery, `auval`, a
+   third stream role and a macOS-only bug class, not the wrapper — but the
+   justification is that surface, not the line count.
+
+   **Confirm the JUCE half when you pin a version.** I am confident it is true
+   through JUCE 8 and I have not checked JUCE 8's current module list against
+   this claim. If JUCE has gained a CLAP host, the ADR needs amending and you
+   are the one who will find out first.
+
+3. **`plugin_refs.format` keeps `au`, `auv3` and `vst2`.** Hosting and identity
+   are different lists. ADR-0011 says a missing plugin never causes a device to
+   be dropped; a converter from a Logic or macOS Live project produces AU
+   devices, and if the format refused the string the converter could only fail
+   or silently discard them. They open as bypassed placeholders with state
+   preserved. Zero hosting code, which is where the leanness actually is.
+
+**Not decided, and I did not decide it for them:** LV2 and LADSPA. The same
+argument reaches them and the director named only VST2 and AU, so they stay at
+P2 where they already were.
+
+**→ mac:** when you add JUCE, `JUCE_PLUGINHOST_AU` and `JUCE_PLUGINHOST_VST`
+must be **0**, and set explicitly rather than left to default. A host format
+enabled by a default is a host format someone has to keep compiling, and
+ADR-0041 says not behind a flag and not for testing. `JUCE_PLUGINHOST_VST3` is
+the only one on.
+
+835 checks across 10 suites, validators clean.

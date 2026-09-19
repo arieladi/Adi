@@ -1663,3 +1663,106 @@ a *user* may override a device's `dsp_when_hidden` declaration.
 and is the gate on all of this. Sequenced after step 6: a Pd device is a device,
 and the device/parameter/automation contract has to exist before a second kind
 of device can honour it.
+
+
+---
+
+## ADR-0041 — ADI hosts VST3 only, plus CLAP when we write it; no VST2 and no Audio Units — `DECIDED` (2026-09-19)
+
+**Director's call:** strictly no VST2 and no AU, for stability and a lean
+codebase. Two halves, and they are in very different positions.
+
+### VST2 was already out, and the reason is stronger than leanness
+
+ADR-0015 ruled VST2 out in September, on two independent grounds: the SDK has
+not been obtainable from Steinberg for years, and its terms were never
+GPL-compatible. This directive confirms an existing decision rather than making
+a new one. Recording that, rather than logging it as fresh, is the point of
+keeping the log.
+
+### Audio Units is the new decision, and it has a real cost
+
+AU is the **native plugin format on macOS**. Dropping it means:
+
+- Apple's own bundled instruments and effects are unreachable. For a user
+  arriving from Logic or GarageBand, those are the plugins they already own.
+- AU-only third-party plugins are unreachable. Most commercial vendors ship
+  VST3 alongside, so most users are fine — but "most" is doing work in that
+  sentence, and the ones who are not fine will report it as a missing feature
+  rather than a decision.
+- AUv3 goes with it. It is the same API family and the App Store distribution
+  route on macOS, so there is no version of this that keeps AUv3.
+
+**And one correction to the stated rationale, because it points the other way
+on the specific trade.** JUCE's plugin-host module ships an AU host. It does
+**not** ship a CLAP host. So the set "VST3 + CLAP, no AU" drops the format JUCE
+implements for us and keeps the one we would have to write ourselves — which is
+the opposite of lean, measured in our own lines of code. (Worth re-verifying
+against whichever JUCE version step 6 pins; this is true of every version up to
+JUCE 8 as far as we know, and mac's mission is the right time to confirm it.)
+
+The leanness argument for dropping AU is therefore **not** about the hosting
+wrapper. It is about everything around it, and that part is real:
+
+- AU plugins live in a component registry, not a scan folder, so discovery is a
+  second code path with its own caching and its own failure modes.
+- Validation is `auval`, a separate tool with separate semantics.
+- `plugin_state` grows a third stream role (`classinfo`, a property-list dict)
+  with different serialisation from an `IBStream`.
+- A macOS-only CI leg has to exercise it, and a macOS-only bug class has to be
+  triaged by whoever owns a Mac that week.
+
+That is a defensible amount of surface to refuse. The decision stands; the
+justification is the surrounding surface, not the wrapper.
+
+### Decision
+
+1. **The hosted set is VST3, and CLAP when we write it.** Adding any other
+   format requires a new ADR. This is stated as an allowlist rather than as a
+   list of exclusions, so the next format nobody thought of is also out by
+   default.
+2. **No AU, no AUv3, no VST2 hosting code is written, ever** — not behind a
+   flag, not as an optional build, not "just for testing". An optional
+   implementation is an implementation that has to keep compiling.
+3. **The rule in the director's words, because it is the clearest statement of
+   it:** *if a plugin has not been ported to VST3 or CLAP, it does not belong in
+   this DAW.* The one exception is our own device tier — the libpd/Pure Data
+   devices of ADR-0035 and anything else `plugin_refs.format = 'internal'`.
+   Those are not third-party plugins; they are the DAW.
+4. **CLAP hosting is our code and is not free.** FEATURES lists it at P0
+   alongside VST3; it is not the same size of job and the roadmap should not
+   pretend otherwise. If it slips, VST3-only is a shippable DAW.
+
+### Hosting is not identity, and the format keeps both
+
+This is the part that is easy to get wrong, and getting it wrong breaks a rule
+we already committed to.
+
+`plugin_refs.format` continues to admit `'vst2'`, `'au'` and `'auv3'`. We do
+not host them; the format still has to be able to **say that one was there**.
+
+ADR-0011 is non-negotiable: a missing plugin never causes a device to be
+dropped, because dropping a device silently rewires the signal path and the
+user finds out at mixdown. A `.adi` produced by a converter from a Logic or a
+macOS Live project contains AU devices. If `plugin_refs.format` refused the
+string `'au'`, that project could not be represented at all, and the converter's
+only options would be to fail or to silently drop every device — which is
+precisely the failure ADR-0011 exists to prevent.
+
+So an AU device opens as a **bypassed placeholder** with its identity and its
+preserved state intact, exactly like a VST3 the user has not installed. The
+user is told what is missing and why, and nothing is lost that a future
+decision could not recover. This costs zero hosting code, which is the whole
+point: the leanness is in what we implement, not in what a TEXT column may
+contain.
+
+The same argument keeps `'vst2'` recordable. Steinberg's licence governs the
+SDK and shipping a host, not four characters in a column.
+
+### Not decided here
+
+**LV2 and LADSPA.** FEATURES has them at P2 on the same line AU was on, and the
+same reasoning would reach them — Linux-native, a second discovery path, a
+fourth stream role. The director named VST2 and AU and did not name these, so
+they stay at P2 with no committed date, which is where they already were. If the
+intent was "VST3 and CLAP and nothing else", say so and this ADR gains one line.
