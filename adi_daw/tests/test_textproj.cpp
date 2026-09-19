@@ -235,6 +235,86 @@ void testDeterminism() {
           "assignLabels is stable");
 }
 
+// --- designators ------------------------------------------------------------
+void testDesignators() {
+    section("designators");
+    eq(designator({"trk", "Rhythm", "Drums"}), "\"/trk/Rhythm/Drums\"", "a nested track");
+    eq(designator({"trk", "Bass", "clip", "Verse"}), "\"/trk/Bass/clip/Verse\"", "a clip");
+    eq(designator({"scene", "Chorus"}), "\"/scene/Chorus\"", "a scene");
+    eq(designator({}), "\"\"", "an empty path is representable");
+
+    // The whole path is ONE quoted string, so a name with a space does not
+    // change the token's shape -- renaming Bass to Bass Gtr is a text edit
+    // inside the quotes, not a re-quoting of the line.
+    eq(designator({"trk", "Bass Gtr"}), "\"/trk/Bass Gtr\"", "a space needs no extra quoting");
+
+    // A literal slash must not forge a path boundary.
+    eq(designator({"trk", "AC/DC"}), "\"/trk/AC\\u{2F}DC\"", "a literal / is escaped");
+    check(designator({"trk", "a/b"}) != designator({"trk", "a", "b"}),
+          "an escaped slash is distinct from a real segment break");
+
+    // Everything section 4 escapes is still escaped inside a designator.
+    eq(designator({"trk", "a\xE2\x80\xAE""b"}), "\"/trk/a\\u{202E}b\"",
+       "a bidi control cannot hide inside a designator either");
+    eq(designator({"trk", "a\nb"}), "\"/trk/a\\nb\"", "a newline cannot break the line");
+    eq(designator({"trk", "a\"b"}), "\"/trk/a\\\"b\"", "a quote cannot close the token");
+
+    section("track roles");
+    eq(std::string(roleRoot(roleOfKind("audio"))),      "trk",    "audio is a track");
+    eq(std::string(roleRoot(roleOfKind("instrument"))), "trk",    "so is an instrument");
+    eq(std::string(roleRoot(roleOfKind("group"))),      "trk",    "so is a group");
+    eq(std::string(roleRoot(roleOfKind("return"))),     "ret",    "a return has its own space");
+    eq(std::string(roleRoot(roleOfKind("master"))),     "master", "so does the master");
+    eq(std::string(roleRoot(roleOfKind("vca"))),        "vca",    "so do VCAs");
+    eq(std::string(roleRoot(roleOfKind("tempo"))),      "glob",   "the tempo lane is global");
+    eq(std::string(roleRoot(roleOfKind("signature"))),  "glob",   "so is the signature lane");
+    eq(std::string(roleRoot(roleOfKind("marker"))),     "glob",   "so is the marker lane");
+    // A kind a newer writer invented. Refusing would lose a file we can
+    // otherwise render, so it lands in /trk.
+    eq(std::string(roleRoot(roleOfKind("holographic"))), "trk",
+       "an unknown kind is a track, not a refusal");
+
+    section("unresolvable references");
+    eq(unresolved("bus"), "\"!unresolved(bus)\"", "a bus endpoint, which is reachable today");
+    eq(unresolved("track"), "\"!unresolved(track)\"", "a dangling track reference");
+    check(unresolved("bus").find("0") == std::string::npos,
+          "never a number, so it cannot be mistaken for an id");
+
+    section("media prefixes");
+    {
+        // Distinct at 16, so 16 it is.
+        const auto p = mediaPrefixes({"1f4a9c2e7b0d3a51aaaa", "9b3e0c7d2a145f88bbbb"});
+        eq(p[0], "1f4a9c2e7b0d3a51", "the minimum prefix is 16 hex digits");
+        eq(p[1], "9b3e0c7d2a145f88", "and both are cut to the same length");
+    }
+    {
+        // Colliding at 16, so it grows -- in steps of 4, not 1.
+        const auto p = mediaPrefixes({"1f4a9c2e7b0d3a51aaaa", "1f4a9c2e7b0d3a51bbbb"});
+        check(p[0].size() == 20, "the length grows by 4 when 16 collides");
+        check(p[0] != p[1], "and it separates them");
+    }
+    {
+        // Two rows may legitimately share a hash: idx_media_hash is not unique.
+        // No prefix can separate those, and none should try.
+        const auto p = mediaPrefixes({"1f4a9c2e7b0d3a51aaaa", "1f4a9c2e7b0d3a51aaaa"});
+        eq(p[0], p[1], "identical hashes get identical prefixes");
+        check(p[0].size() == 16, "and the length does not grow chasing them");
+        // They are then disambiguated exactly like any other duplicate label.
+        const auto labels = assignLabels({p[0], p[1]});
+        eq(labels[0], "1f4a9c2e7b0d3a51~1", "the duplicate falls through to ~k");
+        eq(labels[1], "1f4a9c2e7b0d3a51~2", "both suffixed, as always");
+    }
+    {
+        const auto p = mediaPrefixes({});
+        check(p.empty(), "an empty media pool yields no prefixes");
+    }
+    {
+        // Shorter than the minimum: take what there is rather than read past it.
+        const auto p = mediaPrefixes({"abc"});
+        eq(p[0], "abc", "a short hash is not padded or over-read");
+    }
+}
+
 // --- ordering ---------------------------------------------------------------
 
 Member mem(std::vector<SortKey> keys, std::string skel,
@@ -329,8 +409,13 @@ void testOrderingRefinement() {
                                   mem({SortKey::integer(0)}, "same")};
         const auto r = canonicalOrder(ms);
         check(r.largest_tied_class == 2, "a genuine tie is reported, not hidden");
-        check(r.status == OrderStatus::Exact,
-              "within the K4 bound, so still exact -- swapping them is unobservable");
+        // Expectation corrected after the fuzzer found the leak behind it. With
+        // no renderer, K4 cannot run, and the underlying sort is stable -- so
+        // the tied pair would have kept INPUT order while the status claimed
+        // canonicity. Refinement is incomplete, so we cannot certify that
+        // swapping them is unobservable without rendering both.
+        check(r.status == OrderStatus::Ambiguous,
+              "an unresolvable tie is declared, never left in storage order");
     }
 }
 
@@ -364,8 +449,10 @@ void testOrderingK4() {
     {
         std::vector<Member> ms;
         for (int i = 0; i < 8; ++i) ms.push_back(mem({SortKey::integer(0)}, "same"));
-        const auto r = canonicalOrder(ms);
+        std::vector<std::string> names = {"h","g","f","e","d","c","b","a"};
+        const auto r = canonicalOrder(ms, &renderNames, &names);
         check(r.status == OrderStatus::Exact, "a class of exactly 8 is within the bound");
+        eq(seq(r.order, names), "a b c d e f g h", "and all 8! permutations are searched");
     }
 }
 
@@ -420,6 +507,143 @@ void testOrderingNoLeak() {
     eq(expected, "kick snare hat ride", "and it is the content order");
 }
 
+// --- the pipeline -----------------------------------------------------------
+
+std::size_t addNode(Tree& t, std::string kind, std::string selector,
+                    std::string label, std::vector<SortKey> keys) {
+    Node n;
+    n.kind = std::move(kind);
+    n.selector = std::move(selector);
+    n.base_label = std::move(label);
+    n.keys = std::move(keys);
+    t.nodes.push_back(std::move(n));
+    return t.nodes.size() - 1;
+}
+
+void testPipeline() {
+    section("pipeline -- order, label, designate, render");
+    {
+        // A group with two tracks, one clip, one send. Small enough to read in
+        // full, which is the point: the expected text is written out rather
+        // than described.
+        Tree t;
+        const auto grp  = addNode(t, "trk", "", "Rhythm", {SortKey::integer(0)});
+        const auto keys = addNode(t, "trk", "", "Keys",   {SortKey::integer(1)});
+        const auto rev  = addNode(t, "ret", "", "Reverb", {SortKey::integer(2)});
+        const auto drum = addNode(t, "trk", "", "Drums",  {SortKey::integer(0)});
+        const auto clip = addNode(t, "clip", "clip", "Verse", {SortKey::integer(0)});
+
+        t.nodes[grp].children  = {drum};
+        t.nodes[keys].children = {clip};
+        t.nodes[keys].attrs    = {"gain " + renderF64(-3.5)};
+        t.nodes[clip].attrs    = {"len " + renderDuration(kWhole)};
+        t.nodes[keys].refs     = {Ref{"send", rev, "track"}};
+        t.roots = {grp, keys, rev};
+
+        const Projection p = project(t);
+        eq(p.text,
+           "trk Rhythm\n"
+           "  trk Drums\n"
+           "trk Keys\n"
+           "  gain -3.5\n"
+           "  send -> \"/Reverb\"\n"
+           "  clip Verse\n"
+           "    len 1/1\n"
+           "ret Reverb\n",
+           "the whole projection, byte for byte");
+        eq(p.designators[drum], "\"/Rhythm/Drums\"", "a nested track designator");
+        eq(p.designators[clip], "\"/Keys/clip/Verse\"", "a clip under its track");
+        check(p.status == OrderStatus::Exact, "nothing tied");
+    }
+    {
+        // A dangling reference. Reachable today: routing admits a 'bus' kind
+        // and schema.sql has no buses table.
+        Tree t;
+        const auto trk = addNode(t, "trk", "", "Bass", {SortKey::integer(0)});
+        t.nodes[trk].refs = {Ref{"out", Ref::kDangling, "bus"}};
+        t.roots = {trk};
+
+        const Projection p = project(t);
+        eq(p.text, "trk Bass\n  out -> \"!unresolved(bus)\"\n",
+           "a dangling reference renders, and never as a number");
+    }
+    {
+        // The circularity, made concrete. Two tracks identical in every field:
+        // same kind, same key, same name, same children. Only the reference
+        // graph differs -- one is sent to, the other is not. Pass 1 renders
+        // both skeletons with the reference as `?`, so K2 ties; refinement is
+        // what separates them; pass 2 then has a fixed order to designate from.
+        Tree t;
+        const auto a   = addNode(t, "trk", "", "Twin", {SortKey::integer(0)});
+        const auto b   = addNode(t, "trk", "", "Twin", {SortKey::integer(0)});
+        const auto src = addNode(t, "trk", "", "Src",  {SortKey::integer(1)});
+        t.nodes[src].refs = {Ref{"send", a, "track"}};
+        t.roots = {a, b, src};
+
+        const Projection p = project(t);
+        check(p.status == OrderStatus::Exact,
+              "the graph separated two otherwise identical siblings");
+        check(p.largest_tied_class == 1, "so nothing remained tied");
+        // Both are still called Twin, so both carry ~k: the presence of the
+        // suffix is the signal that the name is not unique here.
+        check(p.designators[a] != p.designators[b], "and they addressed differently");
+        check(p.text.find("Twin~1") != std::string::npos, "both twins are suffixed");
+        check(p.text.find("Twin~2") != std::string::npos, "both twins are suffixed (2)");
+        // The send must cite whichever twin it actually points at.
+        check(p.text.find("send -> " + p.designators[a]) != std::string::npos,
+              "the reference resolves to the right twin");
+    }
+    {
+        // Two genuinely indistinguishable roots: same everything, no edges.
+        // Nothing can separate them, and the pipeline must say so rather than
+        // fall back on the order they arrived in.
+        Tree t;
+        addNode(t, "trk", "", "Same", {SortKey::integer(0)});
+        addNode(t, "trk", "", "Same", {SortKey::integer(0)});
+        t.roots = {0, 1};
+
+        const Projection p = project(t);
+        check(p.status == OrderStatus::Ambiguous,
+              "an unresolvable tie is declared, not papered over");
+        check(p.largest_tied_class == 2, "and its size is reported");
+        check(!p.text.empty(), "output is still produced, so the projector stays total");
+    }
+}
+
+void testPipelineNoLeak() {
+    section("the whole projection does not leak input order");
+    // The same project, with its node table built in every one of the 24
+    // possible orders -- which is what a different rowid assignment or query
+    // plan produces -- must project to identical bytes.
+    std::vector<std::size_t> perm = {0, 1, 2, 3};
+    std::string expected;
+    int tried = 0;
+    bool stable = true;
+
+    do {
+        // Four tracks, distinguishable by name, wired in a cycle so that every
+        // one has an in-edge and an out-edge and position cannot be the thing
+        // that separates them.
+        const std::vector<std::string> names = {"Kick", "Snare", "Hat", "Ride"};
+        Tree t;
+        std::vector<std::size_t> id(4);
+        for (std::size_t p = 0; p < 4; ++p)
+            id[perm[p]] = addNode(t, "trk", "", names[perm[p]], {SortKey::integer(0)});
+        for (std::size_t k = 0; k < 4; ++k)
+            t.nodes[id[k]].refs = {Ref{"send", id[(k + 1) % 4], "track"}};
+        for (std::size_t p = 0; p < 4; ++p) t.roots.push_back(id[perm[p]]);
+
+        const Projection r = project(t);
+        if (tried == 0) expected = r.text;
+        else if (r.text != expected) stable = false;
+        ++tried;
+    } while (std::next_permutation(perm.begin(), perm.end()));
+
+    check(tried == 24, "all 24 node-table orders were tried");
+    check(stable, "every one projected to identical bytes");
+    check(expected.find("Hat") != std::string::npos, "and the output is the real thing");
+}
+
 }  // namespace
 
 int main() {
@@ -429,11 +653,14 @@ int main() {
     testEscaping();
     testLabels();
     testDeterminism();
+    testDesignators();
     testOrderingKeys();
     testOrderingSkeleton();
     testOrderingRefinement();
     testOrderingK4();
     testOrderingNoLeak();
+    testPipeline();
+    testPipelineNoLeak();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -150,10 +150,12 @@ bool isBareSafe(std::string_view s) {
     return true;
 }
 
-std::string quoteString(std::string_view s) {
-    std::string out;
-    out.reserve(s.size() + 2);
-    out += '"';
+namespace {
+
+/// The body of a quoted string, without the quotes. `escape_slash` is set when
+/// the result goes inside a designator, where an unescaped `/` would forge a
+/// path boundary.
+void appendEscaped(std::string& out, std::string_view s, bool escape_slash) {
     for (std::size_t i = 0; i < s.size();) {
         const Scalar sc = decodeUtf8(s, i);
         if (sc.len == 0) {
@@ -170,11 +172,21 @@ std::string quoteString(std::string_view s) {
             case '\r': out += "\\r";  break;
             case '\t': out += "\\t";  break;
             default:
-                if (mustEscape(sc.cp)) appendHex(out, sc.cp, "\\u{");
-                else                   out.append(s.substr(i, sc.len));
+                if (escape_slash && sc.cp == '/') appendHex(out, sc.cp, "\\u{");
+                else if (mustEscape(sc.cp))       appendHex(out, sc.cp, "\\u{");
+                else                              out.append(s.substr(i, sc.len));
         }
         i += sc.len;
     }
+}
+
+}  // namespace
+
+std::string quoteString(std::string_view s) {
+    std::string out;
+    out.reserve(s.size() + 2);
+    out += '"';
+    appendEscaped(out, s, /*escape_slash=*/false);
     out += '"';
     return out;
 }
@@ -205,6 +217,82 @@ std::vector<std::string> assignLabels(const std::vector<std::string>& base_label
             out[i] += "~" + std::to_string(k);
         }
     }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Designators (TEXT-PROJECTION 6.2 - 6.4)
+// ---------------------------------------------------------------------------
+
+std::string_view roleRoot(TrackRole r) {
+    switch (r) {
+        case TrackRole::Track:  return "trk";
+        case TrackRole::Return: return "ret";
+        case TrackRole::Vca:    return "vca";
+        case TrackRole::Master: return "master";
+        case TrackRole::Global: return "glob";
+    }
+    return "trk";
+}
+
+TrackRole roleOfKind(std::string_view kind) {
+    if (kind == "return") return TrackRole::Return;
+    if (kind == "master") return TrackRole::Master;
+    if (kind == "vca")    return TrackRole::Vca;
+    // The timeline's global lanes. SPEC 6.1 lists these as track kinds, but
+    // they carry no audio and nothing sends to them, so keeping them out of
+    // /trk leaves that rank space to the tracks a user actually addresses.
+    if (kind == "marker" || kind == "tempo" || kind == "signature"
+        || kind == "chord" || kind == "arranger" || kind == "transposition")
+        return TrackRole::Global;
+    // audio, midi, instrument, group, folder, video -- and anything a newer
+    // writer invents. Guessing Track keeps the projection total across a
+    // version boundary; refusing would lose a file we can otherwise render.
+    return TrackRole::Track;
+}
+
+std::string designator(const std::vector<std::string>& segments) {
+    std::string out;
+    out += '"';
+    for (const auto& seg : segments) {
+        out += '/';
+        appendEscaped(out, seg, /*escape_slash=*/true);
+    }
+    out += '"';
+    return out;
+}
+
+std::string unresolved(std::string_view kind) {
+    std::string out = "\"!unresolved(";
+    appendEscaped(out, kind, /*escape_slash=*/true);
+    out += ")\"";
+    return out;
+}
+
+std::vector<std::string> mediaPrefixes(const std::vector<std::string>& hashes) {
+    std::size_t longest = 0;
+    for (const auto& h : hashes) longest = (std::max)(longest, h.size());
+
+    // Grow in steps of 4 from the minimum until every DISTINCT hash has a
+    // distinct prefix. Equal hashes stay equal -- idx_media_hash is not unique,
+    // so that case is legal and is left to assignLabels.
+    std::size_t len = kMediaPrefixMin;
+    for (; len < longest; len += 4) {
+        std::vector<std::string> pre;
+        pre.reserve(hashes.size());
+        for (const auto& h : hashes) pre.push_back(h.substr(0, (std::min)(len, h.size())));
+
+        std::vector<std::string> full = hashes, cut = pre;
+        std::sort(full.begin(), full.end());
+        full.erase(std::unique(full.begin(), full.end()), full.end());
+        std::sort(cut.begin(), cut.end());
+        cut.erase(std::unique(cut.begin(), cut.end()), cut.end());
+        if (full.size() == cut.size()) break;    // the prefix separates as well
+    }                                            // as the whole hash does
+
+    std::vector<std::string> out;
+    out.reserve(hashes.size());
+    for (const auto& h : hashes) out.push_back(h.substr(0, (std::min)(len, h.size())));
     return out;
 }
 
@@ -372,7 +460,24 @@ OrderResult canonicalOrder(const std::vector<Member>& members,
                 // leak wearing a canonical hat, and the caller must be able to
                 // tell the difference.
                 res.status = OrderStatus::Ambiguous;
-            } else if (render != nullptr) {
+            } else if (render == nullptr) {
+                // Found by the fuzzer, on its first campaign, as a violation of
+                // the one property this module exists to guarantee.
+                //
+                // The sorts below are `stable_sort`, and stable means a tie
+                // keeps its INPUT order -- which is rowid order, which is the
+                // leak. K4 is what removes that dependence, and K4 needs to
+                // render to do it. Without a renderer a surviving tie is simply
+                // not resolvable: refinement is incomplete (two members can
+                // share a refined colour and still render differently), so we
+                // cannot certify that swapping them is unobservable.
+                //
+                // Reporting Ambiguous is the honest answer. The alternative --
+                // leaving them in input order and calling it Exact -- is how a
+                // projection ends up merely usually canonical, which breaks
+                // ADR-0021's oracle silently instead of failing it.
+                res.status = OrderStatus::Ambiguous;
+            } else {
                 // Minimise over the OUTPUT, not over any property of the
                 // members. That is what makes this canonical rather than a
                 // choice of member: members that tie through K4 render
@@ -396,6 +501,193 @@ OrderResult canonicalOrder(const std::vector<Member>& members,
         p = q;
     }
     return res;
+}
+
+// ---------------------------------------------------------------------------
+// The pipeline (TEXT-PROJECTION 9.1)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct Pass {
+    const Tree& tree;
+    std::vector<std::string> skeleton;                 // per node
+    std::vector<std::vector<std::size_t>> ordered;     // per node, children in order
+    std::vector<std::string> label;                    // per node, after ~k / #n
+    std::vector<std::vector<std::string>> path;        // per node, designator segments
+    std::vector<std::string> designator_of;            // per node, quoted
+    OrderStatus status = OrderStatus::Exact;
+    std::size_t largest_tied = 1;
+
+    explicit Pass(const Tree& t)
+        : tree(t), skeleton(t.nodes.size()), ordered(t.nodes.size()),
+          label(t.nodes.size()), path(t.nodes.size()),
+          designator_of(t.nodes.size()) {}
+
+    // --- pass 1 ------------------------------------------------------------
+    // Bottom-up, because a node's skeleton contains its children's skeletons,
+    // so the children have to be ordered before the parent can be rendered.
+    // Cross-references are `?`: that is the whole trick, and it is why this
+    // terminates when a definition in terms of the final text would not.
+    void buildSkeletons(std::size_t n, std::vector<char>& visiting) {
+        if (!skeleton[n].empty()) return;
+        if (visiting[n]) {                      // a containment cycle; the
+            skeleton[n] = "<cycle>";            // schema does not forbid one
+            return;
+        }
+        visiting[n] = 1;
+
+        const Node& node = tree.nodes[n];
+        for (std::size_t c : node.children) buildSkeletons(c, visiting);
+
+        // Order each child COLLECTION separately -- clips among clips, devices
+        // among devices. A clip and a device never compete for a position, and
+        // their designators differ by selector anyway.
+        std::map<std::string, std::vector<std::size_t>> by_kind;
+        for (std::size_t c : node.children) by_kind[tree.nodes[c].kind].push_back(c);
+
+        std::vector<std::size_t> flat;
+        for (auto& [kind, group] : by_kind) {
+            std::vector<Member> ms;
+            ms.reserve(group.size());
+            for (std::size_t c : group) {
+                Member m;
+                m.keys = tree.nodes[c].keys;
+                m.skeleton = skeleton[c];
+                ms.push_back(std::move(m));
+            }
+            // Edges between siblings let refinement speak. A reference to a
+            // non-sibling cannot separate two siblings at this level, and is
+            // left to K2, which already contains it as `?` in both.
+            for (std::size_t i = 0; i < group.size(); ++i) {
+                for (const Ref& r : tree.nodes[group[i]].refs) {
+                    const auto at = std::find(group.begin(), group.end(), r.target);
+                    if (at == group.end()) continue;
+                    const auto j = static_cast<std::uint32_t>(at - group.begin());
+                    ms[i].out_refs.push_back(j);
+                    ms[j].in_refs.push_back(static_cast<std::uint32_t>(i));
+                }
+            }
+
+            const OrderResult res = canonicalOrder(ms);
+            if (res.status == OrderStatus::Ambiguous) status = OrderStatus::Ambiguous;
+            largest_tied = (std::max)(largest_tied, res.largest_tied_class);
+            for (std::uint32_t idx : res.order) flat.push_back(group[idx]);
+        }
+        ordered[n] = flat;
+
+        std::string sk = node.kind;
+        sk += '\x1f';
+        sk += node.base_label;
+        for (const auto& a : node.attrs) { sk += '\x1f'; sk += a; }
+        for (const Ref& r : node.refs) { sk += '\x1f'; sk += r.role; sk += "=?"; }
+        for (std::size_t c : flat) { sk += '\x1e'; sk += skeleton[c]; }
+        skeleton[n] = sk;
+
+        visiting[n] = 0;
+    }
+
+    // --- pass 2 ------------------------------------------------------------
+    // Top-down. Every order is fixed now, so labels are determined, and a
+    // label plus a parent path is a designator.
+    void assign(const std::vector<std::size_t>& group,
+                const std::vector<std::string>& parent_path) {
+        std::map<std::string, std::vector<std::size_t>> by_kind;
+        for (std::size_t c : group) by_kind[tree.nodes[c].kind].push_back(c);
+
+        for (auto& [kind, members] : by_kind) {
+            std::vector<std::string> bases;
+            bases.reserve(members.size());
+            for (std::size_t c : members) bases.push_back(tree.nodes[c].base_label);
+            const std::vector<std::string> labels = assignLabels(bases);
+
+            for (std::size_t i = 0; i < members.size(); ++i) {
+                const std::size_t c = members[i];
+                label[c] = labels[i];
+
+                std::vector<std::string> p = parent_path;
+                if (!tree.nodes[c].selector.empty()) p.push_back(tree.nodes[c].selector);
+                p.push_back(labels[i]);
+                path[c] = p;
+                designator_of[c] = designator(p);
+
+                assign(ordered[c], p);
+            }
+        }
+    }
+
+    // --- render ------------------------------------------------------------
+    void emit(std::size_t n, int depth, std::string& out) const {
+        const Node& node = tree.nodes[n];
+        const std::string pad(static_cast<std::size_t>(depth) * 2, ' ');
+
+        out += pad;
+        out += node.kind;
+        out += ' ';
+        out += renderLabelToken(label[n]);
+        out += '\n';
+
+        for (const auto& a : node.attrs) { out += pad; out += "  "; out += a; out += '\n'; }
+
+        for (const Ref& r : node.refs) {
+            out += pad;
+            out += "  ";
+            out += r.role;
+            out += " -> ";
+            out += (r.target == Ref::kDangling || r.target >= tree.nodes.size())
+                   ? unresolved(r.target_kind)
+                   : designator_of[r.target];
+            out += '\n';
+        }
+
+        for (std::size_t c : ordered[n]) emit(c, depth + 1, out);
+    }
+};
+
+}  // namespace
+
+Projection project(const Tree& tree) {
+    Pass p(tree);
+    Projection out;
+
+    std::vector<char> visiting(tree.nodes.size(), 0);
+    for (std::size_t r : tree.roots) p.buildSkeletons(r, visiting);
+
+    // The roots are a collection too, and they are ordered by the same rules.
+    {
+        std::vector<Member> ms;
+        ms.reserve(tree.roots.size());
+        for (std::size_t r : tree.roots) {
+            Member m;
+            m.keys = tree.nodes[r].keys;
+            m.skeleton = p.skeleton[r];
+            ms.push_back(std::move(m));
+        }
+        for (std::size_t i = 0; i < tree.roots.size(); ++i) {
+            for (const Ref& r : tree.nodes[tree.roots[i]].refs) {
+                const auto at = std::find(tree.roots.begin(), tree.roots.end(), r.target);
+                if (at == tree.roots.end()) continue;
+                const auto j = static_cast<std::uint32_t>(at - tree.roots.begin());
+                ms[i].out_refs.push_back(j);
+                ms[j].in_refs.push_back(static_cast<std::uint32_t>(i));
+            }
+        }
+        const OrderResult res = canonicalOrder(ms);
+        if (res.status == OrderStatus::Ambiguous) p.status = OrderStatus::Ambiguous;
+        p.largest_tied = (std::max)(p.largest_tied, res.largest_tied_class);
+
+        std::vector<std::size_t> roots_in_order;
+        roots_in_order.reserve(tree.roots.size());
+        for (std::uint32_t idx : res.order) roots_in_order.push_back(tree.roots[idx]);
+
+        p.assign(roots_in_order, {});
+        for (std::size_t r : roots_in_order) p.emit(r, 0, out.text);
+    }
+
+    out.status = p.status;
+    out.largest_tied_class = p.largest_tied;
+    out.designators = p.designator_of;
+    return out;
 }
 
 }  // namespace adi::textproj

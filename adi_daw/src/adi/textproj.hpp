@@ -129,6 +129,73 @@ inline constexpr std::int64_t kMaxDenominator = 1024;
     const std::vector<std::string>& base_labels);
 
 // ---------------------------------------------------------------------------
+// Designators (TEXT-PROJECTION 6.2 - 6.4)
+// ---------------------------------------------------------------------------
+//
+// Inlining every object that has exactly one owner turns most references into
+// containment and removes the identifier entirely. Seven cross-references
+// genuinely survive that, and these are what address them.
+
+/// The role partition of the top-level track forest.
+///
+/// Sends overwhelmingly target returns and the master, and those rank spaces
+/// are untouched by inserting an audio track -- so partitioning by role is a
+/// cheap halving of the churn an insertion causes in every designator that
+/// cites past it.
+enum class TrackRole { Track, Return, Vca, Master, Global };
+
+/// `/trk`, `/ret`, `/vca`, `/master`, `/glob`.
+[[nodiscard]] std::string_view roleRoot(TrackRole r);
+
+/// The role a `tracks.kind` value belongs to. An unknown kind -- a newer
+/// writer's -- is a Track, which keeps the projection total across a version
+/// boundary rather than refusing a file it could mostly render.
+[[nodiscard]] TrackRole roleOfKind(std::string_view kind);
+
+/// A designator: a quoted, slash-separated path of already-assigned labels.
+///
+///     "/trk/Rhythm/Drums"      "/trk/Bass/clip/Verse"
+///     "/scene/Chorus"          "/media/1f4a9c2e7b0d3a51"
+///
+/// The whole path is ONE quoted string, not a sequence of quoted segments, so
+/// renaming `Bass` to `Bass Gtr` cannot change the token's shape. A literal `/`
+/// inside a segment escapes to `\u{2F}` and therefore cannot forge a path
+/// boundary; everything else follows the escape rules of section 4, including
+/// the bidi controls.
+///
+/// Segments are labels as `assignLabels` returned them, and selectors such as
+/// `clip`, `dev`, `auto`, `macro` -- passed in already, because which selector
+/// applies is a fact about the schema and not about a string.
+[[nodiscard]] std::string designator(const std::vector<std::string>& segments);
+
+/// A reference whose target does not exist. Renders `"!unresolved(<kind>)"`,
+/// never a number, and the caller is expected to fail under `--strict`.
+///
+/// This is reachable by construction today, not merely in principle:
+/// `routing.src_kind` and `routing.dst_kind` both admit `'bus'` and there is no
+/// `buses` table in schema.sql, so every bus endpoint is unresolvable. A CHECK
+/// constraint that admits a reference kind with no referent -- win's call
+/// whether the table or the enum member is the one that is missing.
+[[nodiscard]] std::string unresolved(std::string_view kind);
+
+/// Media is addressed by content, because the format already made content the
+/// identity of a media file -- for dedup, integrity and relink. The schema
+/// tells you which collection deserves hash addressing, and exactly one does.
+///
+/// Returns one prefix per input hash: the shortest length that is at least
+/// `kMediaPrefixMin`, a multiple of 4, and distinguishes every DISTINCT hash in
+/// the pool.
+///
+/// Two rows may legitimately share a hash -- `idx_media_hash` is not unique --
+/// and when they do no prefix can separate them. They receive equal prefixes
+/// here and are disambiguated by `assignLabels`, which is the same `~k`
+/// treatment any other duplicate label gets.
+inline constexpr std::size_t kMediaPrefixMin = 16;
+
+[[nodiscard]] std::vector<std::string> mediaPrefixes(
+    const std::vector<std::string>& hashes);
+
+// ---------------------------------------------------------------------------
 // Ordering (TEXT-PROJECTION 7)
 // ---------------------------------------------------------------------------
 //
@@ -229,5 +296,83 @@ using RenderFn = std::string (*)(const std::vector<std::uint32_t>& order,
                                          RenderFn render = nullptr,
                                          void* ctx = nullptr,
                                          std::size_t max_tied_class = kMaxTiedClass);
+
+// ---------------------------------------------------------------------------
+// The pipeline (TEXT-PROJECTION 9.1)
+// ---------------------------------------------------------------------------
+//
+// Everything above is a piece; this is what puts them in the only order that
+// works. The circularity is real and it is the whole difficulty:
+//
+//     a container's ORDER depends on its members' SKELETONS,
+//     a member's DESIGNATOR depends on that order,
+//     and a member's rendering contains designators.
+//
+// If rendering fed ordering, the projection would be defined in terms of
+// itself. It is broken by rendering twice. Pass 1 renders SKELETONS, in which
+// every cross-reference is the single token `?` -- so a skeleton contains no
+// designator, and ordering can depend on it. Pass 2 has every order fixed, so
+// labels and designators are determined, and the real text is emitted.
+//
+// This layer knows nothing about SQLite. The store adapter's job is to build a
+// Tree; this turns a Tree into bytes. Keeping the seam there is what lets the
+// hard part be tested without a database (ADR-0010).
+
+/// A cross-reference to another node, or to nothing.
+struct Ref {
+    static constexpr std::size_t kDangling = static_cast<std::size_t>(-1);
+
+    std::string role;                    ///< `send`, `out`, `vca`, `media`
+    std::size_t target = kDangling;      ///< index into Tree::nodes
+    std::string target_kind;             ///< for `!unresolved(<kind>)`
+};
+
+/// One object in the projection.
+struct Node {
+    /// The block keyword: `trk`, `clip`, `note`, `dev`.
+    std::string kind;
+
+    /// The path selector that precedes this node's label in a designator --
+    /// `clip` in `/trk/Bass/clip/Verse`. Empty for nested tracks, which the
+    /// hierarchy already addresses by name.
+    std::string selector;
+
+    /// The name before disambiguation. `assignLabels` turns this into the
+    /// final label, which may gain `#n` or `~k`.
+    std::string base_label;
+
+    /// K1 for ordering among siblings of the same kind (TEXT-PROJECTION 7.3).
+    std::vector<SortKey> keys;
+
+    /// Pre-rendered `key value` lines, in the order they should appear. Already
+    /// canonical: the caller has used renderF64, renderDuration and the rest.
+    std::vector<std::string> attrs;
+
+    std::vector<std::size_t> children;   ///< indices into Tree::nodes
+    std::vector<Ref> refs;
+};
+
+struct Tree {
+    std::vector<Node> nodes;
+    std::vector<std::size_t> roots;
+};
+
+struct Projection {
+    std::string text;
+
+    /// `Ambiguous` when any container's order could not be made canonical.
+    /// The ADR-0021 oracle should require `Exact`: comparing bytes only means
+    /// something if the bytes were canonical.
+    OrderStatus status = OrderStatus::Exact;
+    std::size_t largest_tied_class = 1;
+
+    /// Per node, by node index -- the quoted designator it was given. Exposed
+    /// because a reference rendering correctly is worth asserting directly,
+    /// not only through the text it appears in.
+    std::vector<std::string> designators;
+};
+
+/// Order, label, designate, render.
+[[nodiscard]] Projection project(const Tree& tree);
 
 }  // namespace adi::textproj
