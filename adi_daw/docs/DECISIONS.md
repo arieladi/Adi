@@ -1085,3 +1085,85 @@ string, so the index loses nothing by excluding them.
 
 Enforced by `validate_schema.py` check 5d, which asserts both halves: a duplicate
 hash is rejected, and two un-hashed rows are not.
+
+---
+
+## ADR-0033 — `adi_tool check` verifies what SQLite structurally cannot — `DECIDED` (2026-09-19)
+
+**Context.** ADR-0029 closed with an admission: a polymorphic `(kind, id)` pair
+cannot carry a `FOREIGN KEY`, so a `routing` row pointing at a deleted track was
+undetected at rest, and the data-level half of referential integrity needed a
+command that did not exist. This is that command.
+
+**Decision.** `src/adi/check.{hpp,cpp}` plus `adi_tool check`. Read-only: it
+never repairs, because a repair that guesses is how a corrupt project becomes a
+plausible-looking wrong one. 20 checks in three families, each covering
+something the database cannot:
+
+1. **Polymorphic references.** Seven `(kind, id)` sites — `routing` twice,
+   `automation_lanes`, `ui_view`, `extensions`, `controller_maps`, `ops`. A kind
+   naming a real table must resolve; `hw_in`/`hw_out` are hardware port indices
+   and a failed lookup there is *normal* (SPEC §6.7); an unrecognised kind is a
+   **warning**, not an error, because a newer version may have added one and
+   ADR-0012 says unknown data is preserved rather than rejected.
+
+2. **Inside the blobs.** A notes blob is opaque to SQL. Whether its header parses,
+   whether its `rec_size` is a size some writer released (ADR-0023), and whether
+   a `note_expression` row names a note that exists **in another blob** — a
+   reference from one blob into another, which nothing relational can see.
+
+3. **Structural invariants across rows.** Exactly one current branch; a
+   `head_seq` that names a real op; ephemeral ops outside the undo tree; and no
+   cycle in `parent_seq`, which would make undo fail to terminate. A cycle
+   satisfies every foreign key, which is precisely why it needs its own check.
+
+**Every check is planted with the corruption it finds.** A check nobody has
+watched reject something is a comment. The corruptions are written with raw SQL
+deliberately: they are states the op layer cannot produce, which is the point —
+they arrive from a crash, a bad merge, a third-party writer, or a future version
+of us with a bug.
+
+**Two things the tests corrected about my own assumptions**, both in the
+direction of SQLite enforcing more than I credited it with:
+
+- `op_branches.head_seq` **is** a real `FOREIGN KEY`. Planting a dangling head
+  needs `foreign_keys = OFF`. The check still earns its place — a file from a
+  third party, or from us with the pragma off, can arrive that way — but the
+  comment claiming SQLite could not see it was wrong.
+- `clips` **does** CHECK half of SPEC §4.1: `time_base = 1 OR pos_ns IS NULL`
+  stops a musical clip carrying a nanosecond position. What it does not cover is
+  a clip with *no* position at all, which is equally invalid and equally silent.
+  Only that half is ours.
+
+---
+
+## ADR-0034 — `StreamReader` cannot bind to a temporary — `DECIDED` (2026-09-19)
+
+**Found by `mac` in the first audit of `blob.hpp`, reported as a low-severity
+item, and then written by `win` while building the checker.** That sequence is
+the argument for the fix.
+
+**The defect.** `StreamReader` holds a non-owning `std::span`. The implicit
+`vector`-to-`span` conversion made this compile cleanly:
+
+```cpp
+StreamReader<NoteRecord> r(blobOf(column), FourCC::Notes);
+```
+
+The temporary dies at the end of the statement; `r` outlives it. It does not
+crash — it reads freed memory that usually still holds the old bytes, or reports
+`count() == 0`. In `check.cpp` it produced an **empty note set and therefore a
+false "orphaned expression" finding**: a checker confidently reporting corruption
+that was not there.
+
+**Decision.** `StreamReader(std::vector<std::byte>&&, FourCC) = delete;`
+
+The rvalue overload turns the mistake into a diagnostic at the call site. The
+caller keeps the buffer in a named local, which it had to do anyway.
+
+**Why this is worth an ADR rather than a quiet fix.** The lesson is not about
+spans. A reported low-severity finding sat unfixed because it was theoretical,
+and the same author then made exactly that mistake within the week. "Low severity
+because nobody would write that" is a prediction about people, and it was wrong
+within days. Where a hazard can be closed at the type level for one line, it
+should be, rather than ranked and deferred.

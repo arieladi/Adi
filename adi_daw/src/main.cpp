@@ -6,6 +6,7 @@
 // needs any of those, the layering in ADR-0010 has gone wrong.
 
 #include "adi/blob.hpp"
+#include "adi/check.hpp"
 #include "adi/digest.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -30,6 +31,7 @@ int usage() {
         "  adi_tool info <file>     inspect an existing .adi\n"
         "  adi_tool digest <file>   canonical digest of the project tier\n"
         "  adi_tool ops             list every registered op\n"
+        "  adi_tool check <file>    verify what SQLite cannot\n"
         "                           --full prints it; default prints the id\n"
         "\n"
         "Ops arrive next; see docs/OPS.md.\n");
@@ -165,6 +167,30 @@ int cmdOps() {
     return 0;
 }
 
+int cmdCheck(const char* path) {
+    adi::StoreError err = adi::StoreError::Ok;
+    auto st = adi::Store::open(path, err, /*readOnly=*/true);
+    if (!st) {
+        std::printf("cannot open: %s\n", adi::toString(err));
+        return 2;
+    }
+    const auto rep = adi::checkProject(*st);
+    for (const auto& f : rep.findings)
+        std::printf("  %-8s %-24s %-34s %s\n", adi::toString(f.severity),
+                    f.code.c_str(), f.where.c_str(), f.detail.c_str());
+    if (!rep.findings.empty()) std::printf("\n");
+    std::printf("%d checks, %d error(s), %d warning(s)\n", rep.checksRun,
+                rep.errors, rep.warnings);
+
+    // These are the things a FOREIGN KEY cannot express and a blob hides.
+    // Saying so keeps a clean result from being read as "the file is
+    // perfect" when it means "nothing unenforceable is broken".
+    if (rep.clean())
+        std::printf("ok -- polymorphic references resolve, blobs parse, the undo\n"
+                    "tree is acyclic. See src/adi/check.hpp for the full list.\n");
+    return rep.errors ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -193,6 +219,10 @@ int main(int argc, char** argv) {
     }
     if (cmd == "ops") {
         return cmdOps();
+    }
+    if (cmd == "check") {
+        if (argc < 3) return usage();
+        return cmdCheck(argv[2]);
     }
 
     std::printf("unknown command: %s\n\n", cmd.c_str());
