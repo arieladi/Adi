@@ -125,7 +125,7 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 37> kTables{{
+    static constexpr std::array<TableCoverage, 38> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
@@ -163,6 +163,7 @@ std::span<const TableCoverage> coverage() {
         {"plugin_state", Coverage::Excluded, "step 6; ADR-0038 changed its shape"},
         {"plugin_params", Coverage::Excluded, "step 6"},
         {"state_blobs", Coverage::Excluded, "step 6; digest only when it lands (ADR-0038)"},
+        {"remote_hosts", Coverage::Excluded, "step 6+; a host is configuration, not project content (ADR-0053)"},
         {"macros", Coverage::Excluded, "step 6"},
         {"macro_mappings", Coverage::Excluded, "step 6"},
 

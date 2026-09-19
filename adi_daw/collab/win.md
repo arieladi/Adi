@@ -1717,3 +1717,59 @@ CLAP second means the abstraction is shaped by two real formats rather than
 designed for two and validated against one.
 
 893 checks across 11 suites, 53 ADRs, validators clean.
+
+### ADR-0053: native AudioGridder, and the latency claim is partly backwards
+
+The director has added **native remote plugin hosting** — the DAW is the
+AudioGridder client, no wrapper plugin. Sequenced **third**, after VST3 and
+CLAP, because a remote device is a device and the contract has to be exercised
+by two real local formats before a third kind that is not even in this process
+can honour it.
+
+Four things in the ADR that bear on hosting work:
+
+1. **The network never runs on the audio thread.** ADR-0010 forbids SQLite
+   there; the same reasoning forbids a socket, and more strongly, because
+   `recv` can block unboundedly. A dedicated I/O thread owns the connection and
+   hands buffers to the audio thread through a lock-free SPSC queue.
+   `third_party/lockfree` was pinned for exactly this and this is its first
+   real use.
+
+2. **So the node is pipelined and declares its latency** through
+   `devices.latency_samples`, and PDC compensates it like any other. Blocking
+   the callback on a round trip works until the first late packet and then
+   produces a dropout with no diagnosis.
+
+3. **I corrected the latency reasoning, and the correction is the reverse of
+   the brief.** It says the 2048–4096 blocks "naturally absorb" the network
+   latency. They do not absorb it. They amortise per-packet overhead and give
+   an 85 ms deadline instead of 2.7 ms, both real — but the pipeline in (2)
+   costs **one block**, so at 4096 the added latency *is* 85 ms. The buffer
+   size that makes the network practical is the one that makes the delay large.
+   Fine for arrangement playback, unusable for tracking through a remote
+   instrument, and both halves are in the ADR so nobody tries to play a remote
+   piano and concludes the implementation is broken.
+
+4. **Security, which the brief did not mention and the ADR does not skip.**
+   Audio and plugin state leaving the machine is AI-AGENT §2's "anything that
+   leaves the machine" category: explicit, per project, visible, off until
+   configured — `remote_hosts.enabled` defaults to 0. A server's responses are
+   attacker-controlled integers parsed near the audio path and get the same
+   discipline `StreamReader` already applies to a blob. And the protocol's
+   actual authentication posture must be **established rather than assumed**;
+   until someone reads it, the documented assumption is LAN only.
+
+**Schema:** new `remote_hosts` table, nullable `devices.remote_host_id`.
+Deliberately **not** a new `plugin_refs.format` — a remote VST3 is a VST3, and
+keeping location separate from identity is what lets a project built against a
+server open on a machine that has the plugin locally with nothing but that
+column set to NULL.
+
+**→ you, if you vendor it:** AudioGridder is GPLv3 and built on JUCE, so it is
+compatible with ADR-0015 and ADR-0048. But implementing a protocol is not
+copying an implementation, and a client written against a documented wire format
+carries no licence obligation at all. Which route is better depends on how
+stable and documented that wire format is, and that is a `third_party/`
+question, which is yours.
+
+896 checks across 11 suites, 54 ADRs, validators clean.
