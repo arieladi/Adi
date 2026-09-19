@@ -2611,3 +2611,139 @@ already has, the one a device test can be written against on any machine, and
 the one whose absence blocks everything else. CLAP second means the abstraction
 is shaped by two real formats rather than designed for two and validated
 against one.
+
+
+---
+
+## ADR-0053 — A remote plugin is a device; the DAW is the AudioGridder client, and the network never touches the audio thread — `DECIDED (direction)` (2026-09-20)
+
+**Director's call.** Native network plugin hosting over the AudioGridder
+protocol (GPLv3), with **the DAW itself as the client** — no wrapper plugin
+inside the graph. Remote plugins appear in the browser beside local ones,
+distinguished by an icon; the graph treats them as ordinary devices; their state
+round-trips into `state_blobs` so undo works identically.
+
+The "no wrapper plugin" part is the right call and worth saying why: a wrapper is
+a device the host cannot see inside. Its latency is opaque to PDC, its state is
+an opaque chunk inside another opaque chunk, and ADR-0043's silence and tail
+handling cannot reach the plugin actually running. Making the DAW the client
+keeps all three legible.
+
+### Decisions
+
+1. **A remote device is a device.** Same device contract (ADR-0040), same op
+   vocabulary, same `state_blobs`, same undo, same missing-plugin rule. A
+   `RemoteDevice` with a parallel chain behind it is forbidden for exactly the
+   reason ADR-0052 forbids a `ClapDevice` one: hybrid tracks, modulation and
+   suspension would each get implemented twice and diverge on the third bug.
+
+2. **The network never runs on the audio thread.** ADR-0010 says the audio
+   thread does not touch SQLite; the same reasoning forbids a socket, and more
+   strongly — `recv` can block for an unbounded time and a dropped packet is
+   not a rare case on a LAN. A dedicated I/O thread owns the connection, and the
+   audio thread exchanges buffers with it through a lock-free SPSC queue.
+   `third_party/lockfree` was pinned for precisely this handoff and this is its
+   first real use.
+
+3. **Therefore the remote node is pipelined, and it declares its latency.** It
+   runs one block behind, and reports that through `devices.latency_samples` so
+   plugin delay compensation treats it like any other latency. This is the
+   decision that makes the design correct rather than lucky: the alternative —
+   blocking the callback on a round trip — works right up until the first late
+   packet and then produces a dropout with no diagnosis.
+
+4. **A missed deadline is defined behaviour.** The node outputs silence for that
+   block and increments a visible counter, the same shape as `DeviceCore`'s
+   oversize refusal. "It glitches sometimes" is unfalsifiable; "this node
+   dropped 41 blocks in the last minute" is a diagnosis.
+
+5. **An unreachable server is the missing-plugin case, unchanged.** ADR-0011:
+   preserve the state byte-for-byte, keep the device in the chain as a bypassed
+   placeholder, surface what is missing, never drop it and never renumber the
+   chain. A remote device whose server is off is not a new failure mode; it is
+   the one the format already handles.
+
+6. **Where a plugin runs is not what a plugin is.** `plugin_refs.format` stays
+   `vst3` / `clap` — a remote VST3 is a VST3. Location goes in a new
+   `remote_hosts` table with a nullable `devices.remote_host_id`.
+
+   That separation is load-bearing rather than tidy: it means a project built
+   against a server can open on a machine that has the plugin installed locally,
+   with nothing but `remote_host_id` set to NULL. Folding "remote" into the
+   format would make the same plugin two different plugins and lose that.
+
+### The latency reasoning, corrected
+
+The brief says the 2048–4096 block sizes will "naturally absorb the network
+transmission latency". **They do not absorb it, and the direction of the effect
+is worth being exact about, because it is partly the opposite.**
+
+What large blocks genuinely buy here: per-packet overhead amortises over 4096
+frames instead of 128, which is a large saving on a protocol that pays a header
+and a syscall per block; and the callback deadline is 85 ms instead of 2.7 ms,
+so a round trip that would be hopeless at 128 frames is comfortable.
+
+What they cost: the pipeline in decision 3 is **one block** of added latency —
+**85 ms at 4096 and 48 kHz**. So the same buffer size that makes the network
+practical is the one that makes the added delay large. That is an acceptable
+trade for the workflow ADR-0042 describes — dense arrangement playback — and it
+makes a remote instrument unplayable for live tracking. Both halves need saying,
+because "the big buffers absorb it" invites someone to try to play a remote
+piano and conclude the implementation is broken.
+
+### Security, which the brief does not mention and which this ADR will not skip
+
+Running plugins on another machine means **audio and plugin state leave this
+one**. That is precisely AI-AGENT §2's "anything that leaves the machine"
+category, and it gets the same treatment: explicit, per project, visible in the
+UI, and off until configured. A project file that silently streams a user's
+unreleased album to an IP address because it was opened is not a feature.
+
+Three specifics, none of them optional:
+
+- **The protocol's authentication and encryption posture must be established
+  before this ships, not assumed.** AudioGridder is designed for a trusted LAN.
+  Until someone has read the protocol and written down what it actually
+  guarantees, the documented assumption is **LAN only**, and never the open
+  internet without a tunnel the user set up deliberately.
+- **A server's responses are untrusted input.** Buffer counts, frame counts and
+  state lengths arriving over a socket are parsed close to the audio path, and
+  every one of them is an attacker-controlled integer. The same discipline
+  `StreamReader` already applies to a blob applies here: total accessors,
+  checked arithmetic, no trusting a length because it arrived in a header.
+- **A server executes plugin code on our behalf.** Pointing the browser at an IP
+  is a trust decision by the user, and the UI should present it as one rather
+  than as a preference.
+
+### State over the network (ADR-0038)
+
+Content addressing works unchanged — a BLAKE3 hash does not care which machine
+produced the bytes, and a remote chunk deduplicates against a local one that
+happens to be identical. What changes is cost: **every capture boundary in
+ADR-0038 becomes a network round trip**, and a sampler's multi-megabyte chunk
+fetched on project save is a stall in the save path.
+
+So: state is fetched on the message thread, never on the audio thread, and the
+save path must not block indefinitely on a server that has stopped answering. A
+save that cannot reach the server writes what it has, records that the remote
+state is stale, and says so — losing the newest plugin state is bad, and hanging
+the save is worse.
+
+### Dependency and licence
+
+AudioGridder is **GPLv3** and built on JUCE, so it is compatible with ADR-0015
+and with ADR-0048's position. If its client code is vendored it becomes a
+`third_party/` dependency under ADR-0024 — pinned by tag *and* commit, licence
+recorded in `docs/EXTERNAL-CODE.md` before a line is written against it.
+
+Worth noting for whoever scopes it: implementing a protocol is not the same as
+copying an implementation, and a client we write ourselves against a documented
+wire format carries no licence obligation at all. Which route is better depends
+on how stable and how documented that wire format is, and that is a question of
+fact for whoever owns `third_party/`.
+
+### Sequenced third
+
+After VST3 and after CLAP. A remote device is a device, and the device contract
+has to exist and be exercised by two real local formats before a third kind of
+device that is not even in this process can honour it.
