@@ -931,3 +931,134 @@ should say **deterministic**, not **RFC 8949 §4.2 canonical**, unless we decide
 to implement canonical ordering ourselves.
 
 Needs an ADR amending 0016. Not blocking the blob layer, blocking the op codec.
+
+---
+
+## 2026-09-19 — the four pivots, propagated; and we both wrote ADR-0037..0040
+
+Branch `win/pivots` → merges `mac/arch-pivots`.
+
+**We collided.** The director sent the four-pivot directive to both of us, and
+we each wrote ADR-0037 through ADR-0040 for the same four decisions, same
+numbers, different text. I resolved it as one combined set rather than
+renumbering, because renumbering would imply eight decisions where there are
+four. Your text is the base for all four headings and for most of 0037 and
+0039 — the "two halves" split, "if it returns it returns as Layer 4 or a version
+bump", the founding-argument cost, JSON-on-the-wire/CBOR-at-rest, and the
+concurrency and blast-radius open questions are all yours and all survived.
+
+**Did.** Everything downstream of the four decisions, which is where most of the
+work turned out to be:
+
+- `schema.sql`: dropped `scenes`, `clip_slots` and their indexes; added
+  `state_blobs`; `plugin_state.data` → `state_hash`; tightened `clips`.
+- `OPS.md`: removed §9.9 entire, renumbered §9.10+, dropped the `session`
+  scope from the scope table, the tier table and the legend. 174 → 160.
+- `SPEC.md`: §6.5 rewritten; new §7.2 (content-addressed state) and §7.3 (what
+  undo covers, normatively).
+- `FEATURES.md`, `AI-AGENT.md` (new §7.1 RPC, §7.2 injection boundary),
+  `RATIONALE.md`, `check.cpp`, both validators, two tests.
+
+**Found — one correction to your ADR-0037, and it is the useful kind.** Your
+blast-radius table says the op catalogue costs **nothing**, "0 of the 50 ops
+touch a scene or a slot". That is true of the **registry** and false of the
+**catalogue**: `OPS.md` §9.9 held fourteen ops — five `scene.*` and nine
+`session.*`. The registry number is the right one for "does this break working
+code" and I kept it; the catalogue number is the one `validate_ops.py` checks,
+and leaving it would have failed CI on the headline count, the same check that
+caught the 152-vs-174 discrepancy in the first place. Both rows are in the
+merged table now.
+
+I mention it only because the measurement was right and the *target* was one
+level off — which is a failure mode neither of us will catch by reading our own
+work.
+
+**Found — two tests broke on the tightened schema, and both were worth it.**
+
+```
+adi_store_tests   FAILED -- the created database has the full schema, got 37 tables
+adi_check_tests   FAILED -- exception escaped: CHECK constraint failed
+```
+
+The second is the interesting one. `time.baseMismatch` exists because SPEC 4.1
+has four ways to be wrong and the schema only CHECKed one. Its fixture built "a
+musical clip with no position" — which ADR-0037's placement CHECK now makes
+unreachable, so the test could no longer construct its own defect. Retargeted to
+the one case still reachable (a linear clip that also carries `pos_ticks`), with
+the reason the runtime checker stays: a CHECK protects files *we* write, and
+`adi_tool check` reads files other implementations wrote, which are under no
+obligation to have used our DDL.
+
+**Fixed your finding.** `ops.payload`'s comment still said `encoding TBD — SPEC
+§12.1`. It now names ADR-0016/0025 and spells out deterministic ≠ canonical.
+
+**Results.**
+
+```
+  adi_catalog_tests    PASS -- 106 checks      adi_replay_tests   PASS -- 50
+  adi_check_tests      PASS -- 32 checks       adi_store_tests    PASS -- 45
+  adi_engine_tests     PASS -- 48 checks       adi_tests          PASS -- 54
+  adi_history_tests    PASS -- 95 checks       adi_tests_textproj PASS -- 172
+  adi_ops_tests        PASS -- 74 checks
+  validate_schema.py PASS · validate_ops.py PASS · check_spec_layout.py PASS
+  PASS -- 676 checks across 9 suites
+```
+
+`validate_schema.py` gains checks 5e and 5f. Both were run against a deliberately
+broken schema first: 5e rejects all three bad placements and accepts both good
+ones, 5f rejects a `state_hash` with no blob behind it.
+
+---
+
+## → mac: the store adapter is mine, and here is the next mission
+
+**The adapter: I have it (option (b)).** `adi::textproj` builds a `Tree` from
+typed row structs, not from a `SQLite::Database&` — the seam your header
+argues for in its own comment stays exactly where you put it. Plan:
+
+```
+src/adi/store_rows.hpp     typed row structs + one reader per table
+src/adi/textproj_store.hpp buildTree(const Store&) -> textproj::Tree
+```
+
+`textproj.hpp`/`.cpp` I will not touch. If the adapter needs something from the
+pure layer that is not exported, I will ask in this file rather than reach in.
+**Review is yours** when it lands — specifically whether the row structs are the
+right shape for a second consumer, because the agent projection (AI-AGENT §4)
+is going to want the same rows and I would rather find that out from you now
+than rewrite it later.
+
+**Your next mission: get JUCE into the build, on both platforms, before step 6
+needs it.**
+
+Why this and not something closer to the pivots: three of the four are design
+until step 6 exists, and the fourth (ADR-0038's storage) is schema work I have
+just done. Step 6 is "JUCE: audio device, the graph, plugin hosting", and the
+single riskiest part of it is the part that diverges most by platform — which is
+the reason there are two of us. It is also infrastructure that survives whatever
+the UI and feature architecture phase decides.
+
+Concretely:
+
+1. **JUCE as a `third_party/` dependency under ADR-0024** — pinned by tag *and*
+   commit, with the licence position written into `docs/EXTERNAL-CODE.md`. JUCE
+   is dual-licensed and we are GPLv3 (ADR-0015); state plainly which grant we
+   are relying on and what it obliges. If there is a problem, that is a finding
+   and I want it now, not at step 6.
+2. **It must not become a hard dependency of `adi_core`.** ADR-0036 built the
+   engine headless on purpose and the headless tests are how the snapshot
+   handoff is proved. An `ADI_WITH_JUCE` option, defaulting OFF, keeps
+   `adi_core` and all nine suites buildable with no JUCE at all.
+3. **One target that opens an audio device and closes it**, no graph and no
+   processing — enough to prove the dependency configures, links and runs on
+   clang/arm64 and MSVC.
+4. **CI**: JUCE-off stays required on every ABI. JUCE-on is one job, and say in
+   your log whether it is worth the wall-clock before we make it required.
+
+Report a negative result as a result. "JUCE 8 will not configure on the CI
+image without X" is exactly as useful as a green build, and more useful early.
+
+**One process note.** Check `collab/README.md` claims before you start — I have
+taken `src/adi/store_rows.*`, `src/adi/textproj_store.*` and
+`tests/test_textproj_store.cpp`, and released `src/adi/check.*`. `third_party/`,
+`docs/EXTERNAL-CODE.md` and `cmake/**` are yours for this mission.
