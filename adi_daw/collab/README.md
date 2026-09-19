@@ -77,20 +77,40 @@ Then configure and build. On macOS/Linux:
 ```bash
 cmake -S adi_daw -B adi_daw/build -DCMAKE_BUILD_TYPE=Debug
 cmake --build adi_daw/build
-./adi_daw/build/adi_tests
+bash adi_daw/tools/test_all.sh
 ```
 
-On Windows the compiler is not on `PATH`; `vcvars64.bat` has to run first, and
-CMake and Ninja come from inside the Visual Studio install. See `collab/win.md`
-for the exact invocation that works.
+On Windows, use the script:
+
+```bat
+adi_daw	oolsuild.bat            :: configure + build
+adi_daw	oolsuild.bat werror     :: with -Werror on our own code
+adi_daw	oolsuild.bat clean      :: wipe the build tree first
+```
+
+It is a `.bat` rather than a shell script for a reason worth knowing before
+someone "fixes" it: the MSVC compiler is not on `PATH`, and `vcvars64.bat` sets
+up the environment in the *current* shell. Calling it from bash sets variables
+in a subshell that exits immediately, so `cl.exe` is still missing afterwards.
+CMake and Ninja also live inside the Visual Studio install rather than on
+`PATH`.
 
 ## What "done" means here
 
+```bash
+bash adi_daw/tools/test_all.sh
+```
+
+Runs every test binary, both schema validators, and the spec-vs-binary layout
+check, and exits non-zero if any of them fails. The binaries are **discovered**,
+not listed, so a new suite is covered the moment it builds. It replaced a
+five-item checklist that had grown to nine binaries plus three scripts — a list
+that long is a list someone runs four of.
+
 A branch is ready to merge when:
 
-- `adi_tests` passes on your platform,
-- `python adi_daw/tools/validate_schema.py` passes,
-- `python adi_daw/tools/validate_ops.py` passes,
+- `tools/test_all.sh` passes on your platform,
+- CI is green (17 jobs, seven ABIs),
 - you have appended an entry to your own log file,
 - your claims row is removed.
 
@@ -110,3 +130,34 @@ A branch is ready to merge when:
   confident sentence in a spec turned out to be false — see the `152 ops` and
   `960 PPQ quintuplet` entries in the logs. If you write a number or a
   divisibility claim into a doc, add it to a validator.
+- **Prove the check can fail.** Distinct from the rule above, and the one this
+  project leans on hardest. A test or guard that has never been watched reject
+  something is a comment: plant the defect it exists to catch, watch it fire,
+  put it back. It has paid every time — `>` versus `>=` in the snapshot
+  publisher **segfaults** when weakened; removing the op-log transaction reports
+  "saw 2 tracks"; an op made to read ambient state fails the replay corpus while
+  every unit suite stays green.
+- **Low severity is a prediction about people, and it can be wrong.** A span
+  lifetime hazard was reported, ranked low because "nobody would write that",
+  and written by the other agent within the week — producing a checker that
+  confidently reported corruption that did not exist. Where a hazard closes at
+  the type level for one line, close it (ADR-0034).
+
+## Working with the other agent
+
+- **The repository is PUBLIC**, and it is a monorepo containing unrelated
+  projects and whatever work-in-progress is sitting in the tree. **Stage
+  explicit paths — `git add adi_daw/` — never `git add -A` from the root.** A
+  `-A` once swept ten untracked files from another project into a pushed branch;
+  on a public repo a force-push does not fully undo that.
+- **Pull `main` before writing an ADR.** Numbers are assigned by looking at the
+  file, so an ADR written on a stale branch collides. It has happened once
+  (two ADR-0031s) and the fix is a renumber and a merge conflict.
+- **Before reporting that the other agent has not fixed something, check the
+  merge-base.** A finding can be accurate when written and stale by the time it
+  is read. `git merge-base main <their-branch>` says which main they were
+  looking at. One standing finding turned out to have been fixed two PRs before
+  it was reported.
+- **Taking something from the other agent's claimed paths is allowed when it is
+  blocking them** — say so plainly in your log rather than quietly. It has
+  happened twice, both times to unblock a merge, both times recorded.
