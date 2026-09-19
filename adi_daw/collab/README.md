@@ -65,7 +65,7 @@ subject, say so in your log instead of writing it twice.
 
 | Number(s) | Agent | Branch | Subject | Status |
 |---|---|---|---|---|
-| 0050 | mac | `mac/ui` | the frame and repaint discipline | reserved |
+| 0050 | mac | `mac/device` | the frame and repaint discipline | used |
 | 0051 | win | `win/adr-numbering` | this table | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in

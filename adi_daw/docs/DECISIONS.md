@@ -2434,3 +2434,77 @@ removes the race entirely and is tempting for that reason, but it moves a
 mechanical renumbering step to every merge instead of some, and a forgotten step
 leaves `ADR-XXXX` in the log — worse than a collision, because a collision is
 loud.
+
+## ADR-0050 — The UI runs on one clock, and metering is not on it — `DECIDED` (2026-09-20)
+
+**Context.** `docs/UI-ARCHITECTURE.md` describes the shell's shape. Its §8–§10
+contain decisions rather than shape, and ADR-0047's own framing is that the
+document is "the shape those decisions imply, not a second place they are
+decided". This is where they are decided.
+
+Everything here concerns *when* the UI does work, which is the question the
+component tree does not answer and the one that determines whether a JUCE DAW
+is usable.
+
+### 1. One clock, draining coalesced dirt
+
+A single `juce::VBlankAttachment` on the root drives the shell at display rate.
+**Components never call `repaint()` in response to a model change**; they set a
+dirty bit and the frame drains it.
+
+The reason is ADR-0039. A remote actor can emit ops faster than a human, and
+repaint-per-change makes that a repaint per op. With one clock it is one repaint
+per frame regardless of how many ops arrived — which is the difference between
+an agent being usable and being something you turn off while you work.
+
+### 2. The playhead never dirties the arrangement
+
+It is its own component, one pixel wide, above `ArrangementCanvas` and
+transparent to hit-testing. Painting it *into* the canvas is the commonest way
+a timeline ends up repainting its full width sixty times a second, and the cost
+does not appear until someone has a hundred tracks on screen — which is to say,
+it appears after the code is written and hard to change.
+
+### 3. The snapshot is read once per frame
+
+`SnapshotReader` takes one reference at the top of the frame; every component
+reads that same one. Otherwise two panels can render different snapshots within
+one frame, and the mixer disagrees with the timeline — ADR-0047's failure mode
+arriving through timing rather than through a second model.
+
+### 4. Metering is a lock-free scalar, and none of the above carries it
+
+The highest-frequency data in the window, and all three obvious homes are wrong:
+
+- **Not an op.** A meter is not a mutation. Metering through the op log fills
+  the undo tree at audio rate.
+- **Not the snapshot.** ADR-0019 publishes when *structure* changes.
+  Republishing at metering rate makes an edit-cost mechanism carry a per-frame
+  signal and defeats the structural sharing it exists for.
+- **Not a lock.** It originates on the audio thread (ADR-0010).
+
+One `std::atomic<float>` pair per metered point, written by the audio thread,
+read by the frame, relaxed ordering. A meter one frame stale is invisible; an
+audio thread waiting to publish one is a dropout. **This is the only path where
+the audio thread writes something the UI reads**, which is why it is named here
+rather than left to whoever builds the mixer.
+
+### 5. Visible components are realised; the rest are not drawn at all
+
+ADR-0047 settles `ArrangementCanvas` as one component because per-component
+bookkeeping stops working at a few thousand clips. The same argument reaches
+`MixerStrip[]`, and there it is sharper: a few hundred strips each repainting a
+meter every frame, with a dozen on screen.
+
+`MixerPanel` and `TrackHeaderList` keep components for the visible span plus a
+margin and recycle on scroll. This is windowing over the single
+`TrackOrderModel`, **not** a second ordering — ADR-0047's one-model rule holds.
+
+It cannot be retrofitted cheaply: a strip written assuming it lives forever
+accumulates state a recycled one loses.
+
+### What this does not decide
+
+Whether `ArrangementCanvas` wants an `OpenGLContext`. It would help a large
+canvas on Windows; on macOS CoreGraphics is competitive and a GL context costs a
+thread and some driver risk. **Measure it at step 7**, do not assume it now.
