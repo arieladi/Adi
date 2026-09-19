@@ -7,6 +7,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/store.hpp"
+#include "adi/version.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -43,7 +44,7 @@ void printLayout() {
 }
 
 void printVersions() {
-    std::printf("adi_tool  %s\n", ADI_VERSION_STRING);
+    std::printf("adi_tool  %s\n", adi::kVersion);
     std::printf("sqlite3   %s\n", SQLite::getLibVersion());
     std::printf("SQLiteCpp %d.%d.%d\n", SQLITECPP_VERSION_NUMBER / 1000000,
                 (SQLITECPP_VERSION_NUMBER / 1000) % 1000, SQLITECPP_VERSION_NUMBER % 1000);
