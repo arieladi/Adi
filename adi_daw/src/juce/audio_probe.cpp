@@ -86,6 +86,23 @@ Outcome probe(int requested_block, double requested_rate) {
 
     mgr.addAudioCallback(&bridge);
     juce::Thread::sleep(120);                     // a few callbacks at any size
+
+    // Snapshot what the bridge saw WHILE THE STREAM IS STILL LIVE.
+    // `removeAudioCallback` calls `audioDeviceStopped` on the callback it is
+    // removing, which is `core_.close()`, which resets `granted_` to 0 --
+    // correctly, because a closed core reporting a stale granted size would be
+    // the worse bug. Reading it afterwards asked a torn-down object what it
+    // used to know, and it answered 0 on every size:
+    //
+    //     256   256   48000   5.33 ms   bridge prepared 0 but the device reports 256
+    //
+    // Found by the JUCE-on macOS job the first time it ever ran against this
+    // code -- mac's branch never went through a PR, and these jobs only fire
+    // on one.
+    const std::int32_t bridge_granted = bridge.core().granted();
+    const std::int64_t bridge_oversize =
+        static_cast<std::int64_t>(bridge.core().oversizeRefusals());
+
     mgr.removeAudioCallback(&bridge);
 
     r.opened = true;
@@ -102,13 +119,13 @@ Outcome probe(int requested_block, double requested_rate) {
 
     // What the bridge saw, which is the claim worth making: the processor was
     // prepared with the granted size, and no callback exceeded it.
-    if (bridge.core().granted() != r.granted)
-        r.error = "bridge prepared " + juce::String(bridge.core().granted())
+    if (bridge_granted != r.granted)
+        r.error = "bridge prepared " + juce::String(bridge_granted)
                 + " but the device reports " + juce::String(r.granted);
-    else if (bridge.core().oversizeRefusals() != 0)
+    else if (bridge_oversize != 0)
         r.error = "the driver handed over MORE frames than it granted, "
-                + juce::String(bridge.core().oversizeRefusals()) + " times";
-    else if (silence.widestBlock() > bridge.core().granted())
+                + juce::String(bridge_oversize) + " times";
+    else if (silence.widestBlock() > bridge_granted)
         r.error = "a callback exceeded the prepared size";
 
     mgr.closeAudioDevice();

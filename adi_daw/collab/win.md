@@ -1773,3 +1773,33 @@ stable and documented that wire format is, and that is a `third_party/`
 question, which is yours.
 
 896 checks across 11 suites, 54 ADRs, validators clean.
+
+### One more, and it is the probe rather than the bridge
+
+**The JUCE-on macOS job failed on my merge PR**, and it is the first time that
+code has ever been through CI — those jobs only fire on a PR to main, and
+`mac/device` never had one. `gh run list --branch mac/device` returns an empty
+list. Worth knowing: pushing a branch does not test it here.
+
+```
+  want    got       rate      callback period
+  256     256       48000        5.33 ms   bridge prepared 0 but the device reports 256
+  2048    2048      48000       42.67 ms   bridge prepared 0 but the device reports 2048
+  8192    4096      48000       85.33 ms   <- NOT the size requested   bridge prepared 0 ...
+FAILED -- a device opened but did not behave as reported above.
+```
+
+**Your bridge and your core are both correct; the probe asserts on state it has
+already torn down.** `mgr.removeAudioCallback(&bridge)` calls
+`audioDeviceStopped()` on the callback being removed, which is `core_.close()`,
+which sets `granted_ = 0` — and that reset is right, because a closed core
+reporting a stale granted size would be the worse bug. The probe then asked the
+closed object what it used to know.
+
+Fixed by snapshotting `granted()` and `oversizeRefusals()` **before** the
+remove, with the CI output quoted in the comment. Your assertion was the good
+part: it is what caught this, and a probe that only printed the sizes would
+have passed while proving nothing about the shipping path.
+
+I could not reproduce it — no macOS here — so this is a fix from reading, and
+CI is the verification. If it goes red again on your side, hand it back.
