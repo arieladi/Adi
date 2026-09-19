@@ -61,7 +61,7 @@ than frightening.
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 37 entries. |
 | [`docs/EXTERNAL-CODE.md`](docs/EXTERNAL-CODE.md) | The nine external repos we read or link against, and the licence boundary between them. Read before copying a line out of `reference/`. |
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
-| [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 174-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |
+| [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 160-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |
 | [`tools/fetch_external.sh`](tools/fetch_external.sh) | Clones/refreshes `third_party/` and `reference/`. Both gitignored, pinned by tag and commit. |
 | [`tools/test_all.sh`](tools/test_all.sh) | Every test binary, both validators, and the spec-vs-binary layout check. Binaries are discovered, not listed. |
 | [`tools/build.bat`](tools/build.bat) | Windows build. A `.bat` because `vcvars64` must run in the same shell. |
@@ -105,8 +105,9 @@ These are the load-bearing ones. Full reasoning in
 2. **Every mutation is a typed, attributed op.** This is what makes undo
    persistent and branching, scripting free, and the AI agent structurally
    incapable of doing anything a user couldn't undo with one keystroke. (ADR-0003)
-3. **Session View is a peer of the arrangement, not an add-on.** Both are core
-   schema. This is the whole premise. (ADR-0006)
+3. **One timeline, no clip launcher.** The interface takes after Ableton —
+   channels on the right, device chain along the bottom — and the arrangement
+   and audio-editing depth takes after Cubase. (ADR-0037, reversing ADR-0006)
 4. **Per-note expression is first-class.** Continuum, Osmose, Seaboard and MPE
    performances are stored as real curves, decoupled from the 16-channel
    transport that carried them. Neither Ableton's nor Cubase's model is a
@@ -131,15 +132,14 @@ Each step gates the next. No step starts before the previous one is written down
 |---|---|---|
 | **1** | Format spec, schema, feature scope, agent design | **done, draft** |
 | **2** | Choose implementation language and licence | **done** — C++/JUCE, GPLv3 |
-| **3** | The op vocabulary: every op type, payload, inverse | **done** — 174 ops, `docs/OPS.md` |
+| **3** | The op vocabulary: every op type, payload, inverse | **done** — 160 ops, `docs/OPS.md` |
 | **4** | Reference reader/writer library + round-trip test corpus | **done** — store, ops, undo, digest, check |
 | **5** | Audio engine skeleton: snapshot handoff, model, transport | **done** — headless, no JUCE (ADR-0036) |
 | **6** | JUCE: audio device, the graph, plugin hosting | **next** |
 | **7** | Minimal arrangement UI — the first thing you can make a track in | |
-| **8** | Session View | |
-| **9** | The agent, at Observe tier only | |
-| **10** | Propose and Apply tiers | |
-| **11** | Visual patching devices — Pure Data embedded via `libpd` (ADR-0035) | direction decided, contract not designed |
+| **8** | The agent, at Observe tier only | |
+| **9** | Propose and Apply tiers, and the RPC surface (ADR-0039) | |
+| **10** | Visual patching devices — Pure Data embedded via `libpd` (ADR-0035, ADR-0040) | direction decided, contract not designed |
 
 ---
 

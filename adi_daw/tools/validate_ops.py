@@ -38,7 +38,9 @@ ROW = re.compile(
 # a new one has to be added deliberately in two places.
 ALLOWED_PAUSE = {"project.setSampleRate"}
 
-EPHEMERAL_SCOPES = {"t", "s"}
+# "s" (session) went with Session View in ADR-0037; transport is all that is
+# left that persists nothing. Kept as a set so adding a scope stays a one-liner.
+EPHEMERAL_SCOPES = {"t"}
 
 
 def main() -> int:
@@ -89,9 +91,9 @@ def main() -> int:
     nonundo = [(n, s) for n, s, _e, inv, _p in rows if inv.strip() == "—"]
     stray = [n for n, s in nonundo if s not in EPHEMERAL_SCOPES]
     if stray:
-        fail(f"non-undoable ops outside transport/session scope: {stray}")
+        fail(f"non-undoable ops outside the transport scope: {stray}")
     else:
-        ok(f"{len(nonundo)} non-undoable ops, all in transport/session scope")
+        ok(f"{len(nonundo)} non-undoable ops, all in the transport scope")
 
     print("[5] RequiresPause stays small")
     pause = {n for n, _s, e, _i, _p in rows if e.strip("*") == "P"}

@@ -280,7 +280,7 @@ void testSchemaMatchesFile() {
     const auto tables = st->db()
         .execAndGet("SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
                     "AND name NOT LIKE 'sqlite_%'").getInt();
-    check(tables >= 38, "the created database has the full schema, got " +
+    check(tables >= 37, "the created database has the full schema, got " +
                             std::to_string(tables) + " tables");
 
     const auto appId = st->db().execAndGet("PRAGMA application_id").getInt();
