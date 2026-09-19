@@ -63,6 +63,8 @@ than frightening.
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
 | [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 174-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |
 | [`tools/fetch_external.sh`](tools/fetch_external.sh) | Clones/refreshes `third_party/` and `reference/`. Both gitignored, pinned by tag and commit. |
+| [`tools/test_all.sh`](tools/test_all.sh) | Every test binary, both validators, and the spec-vs-binary layout check. Binaries are discovered, not listed. |
+| [`tools/build.bat`](tools/build.bat) | Windows build. A `.bat` because `vcvars64` must run in the same shell. |
 | [`src/adi/`](src/adi/) | The reference implementation: `blob` (SPEC §6.3 layouts), `store` (the `.adi` itself), `ops` + `ops_catalog` (50 ops), `history` (branching undo), `digest` (the replay oracle), `check` (what SQLite cannot enforce), `textproj` (the canonical text projection). |
 | [`LICENSE`](LICENSE) | GPLv3. |
 
