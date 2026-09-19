@@ -88,6 +88,7 @@ flagged, and it is a bug in the format, not in the plan.
 | Per-note probability | Ableton | P2 | ✅ | in the v1 note record |
 | Per-note microtuning | neither, fully | P2 | ✅ | `tuning_cents` in the v1 note record |
 | **Per-note expression / MPE** | both, partially | **P1** | ✅ | `note_expression` — first-class, SPEC §6.3.2 |
+| **MPE+ (Haken), 14-bit Y and Z at 500 Hz** | neither | **P1** | ✅ | `ExpressionPoint.value` is f32, so bit depth was never the constraint. The binding constraint is ADR-0042's sub-block floor, which MUST NOT exceed `sample_rate/500` (ADR-0054). |
 | Scale-aware / scale-locked editing | Ableton 12 | P2 | ✅ | reads `key_map` |
 | Expression Maps (articulations) | Cubase | P3 | ❌ | needs its own schema; big win for orchestral |
 | Logical Editor / Project Logical Editor | Cubase | P3 | — | query+transform over the model; no schema |
