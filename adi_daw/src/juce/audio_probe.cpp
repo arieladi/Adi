@@ -24,6 +24,9 @@
 // reported and exits 0; only a device that opens and then misbehaves is an
 // error.
 
+#include "adi/engine/process.hpp"
+#include "juce/device_bridge.hpp"
+
 #include <juce_audio_devices/juce_audio_devices.h>
 
 #include <algorithm>
@@ -44,39 +47,6 @@ struct Outcome {
     bool opened = false;
     juce::String error;
     juce::Array<int> available;
-};
-
-/// A callback that does nothing but record that it was called, and with what.
-/// Enough to prove the device is really running rather than merely open.
-class CountingCallback final : public juce::AudioIODeviceCallback {
-public:
-    void audioDeviceIOCallbackWithContext(const float* const*, int,
-                                          float* const* out, int numOut,
-                                          int numSamples,
-                                          const juce::AudioIODeviceCallbackContext&) override {
-        for (int ch = 0; ch < numOut; ++ch)
-            if (out[ch] != nullptr)
-                std::fill(out[ch], out[ch] + numSamples, 0.0f);
-
-        ++calls_;
-        last_block_ = numSamples;
-        if (numSamples != first_block_ && first_block_ != 0) varied_ = true;
-        if (first_block_ == 0) first_block_ = numSamples;
-    }
-
-    void audioDeviceAboutToStart(juce::AudioIODevice*) override {}
-    void audioDeviceStopped() override {}
-
-    int calls() const { return calls_.load(); }
-    int firstBlock() const { return first_block_; }
-    int lastBlock() const { return last_block_; }
-    bool varied() const { return varied_; }
-
-private:
-    std::atomic<int> calls_{0};
-    int first_block_ = 0;
-    int last_block_ = 0;
-    bool varied_ = false;
 };
 
 Outcome probe(int requested_block, double requested_rate) {
@@ -105,10 +75,18 @@ Outcome probe(int requested_block, double requested_rate) {
     // the two have very different consequences for ADR-0042.
     if (r.available.isEmpty()) r.available = dev->getAvailableBufferSizes();
 
-    CountingCallback cb;
-    mgr.addAudioCallback(&cb);
+    // Driven through the REAL bridge against SilenceProcessor, not a bespoke
+    // callback. That is what makes this prove something about the shipping
+    // path: the same DeviceBridge a project will use, reading the granted size
+    // back per ADR-0049, driving the same BlockProcessor interface the graph
+    // implements.
+    adi::engine::SilenceProcessor silence;
+    adi::device::DeviceBridge bridge(silence);
+    bridge.setRequestedBlockSize(requested_block);
+
+    mgr.addAudioCallback(&bridge);
     juce::Thread::sleep(120);                     // a few callbacks at any size
-    mgr.removeAudioCallback(&cb);
+    mgr.removeAudioCallback(&bridge);
 
     r.opened = true;
     r.granted = dev->getCurrentBufferSizeSamples();
@@ -116,14 +94,22 @@ Outcome probe(int requested_block, double requested_rate) {
 
     // A device that opens but never calls back is not usable, and saying so is
     // the entire point of running rather than only linking.
-    if (cb.calls() == 0) {
+    if (silence.callbacks() == 0) {
         r.opened = false;
         r.error = "device opened but produced no callbacks";
         return r;
     }
-    if (cb.varied())
-        r.error = "block size VARIED between callbacks: first "
-                + juce::String(cb.firstBlock()) + ", last " + juce::String(cb.lastBlock());
+
+    // What the bridge saw, which is the claim worth making: the processor was
+    // prepared with the granted size, and no callback exceeded it.
+    if (bridge.core().granted() != r.granted)
+        r.error = "bridge prepared " + juce::String(bridge.core().granted())
+                + " but the device reports " + juce::String(r.granted);
+    else if (bridge.core().oversizeRefusals() != 0)
+        r.error = "the driver handed over MORE frames than it granted, "
+                + juce::String(bridge.core().oversizeRefusals()) + " times";
+    else if (silence.widestBlock() > bridge.core().granted())
+        r.error = "a callback exceeded the prepared size";
 
     mgr.closeAudioDevice();
     return r;

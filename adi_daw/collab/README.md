@@ -79,6 +79,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `src/juce/**`, `tests/test_device.cpp` | mac | `mac/device` | 2026-09-20 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp` | win | `win/graph` | 2026-09-20 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing) | 2026-09-19 |
