@@ -457,6 +457,12 @@ CREATE TABLE devices (
     rack_kind       TEXT,
     preset_name     TEXT    NOT NULL DEFAULT '',
     latency_samples INTEGER NOT NULL DEFAULT 0,
+    -- Non-NULL when this device runs on another machine (ADR-0053). The
+    -- plugin is still a VST3 or a CLAP -- where it runs is not what it is --
+    -- so plugin_refs.format is untouched and a project built against a server
+    -- opens on a machine that has the plugin locally with nothing but this
+    -- column set to NULL.
+    remote_host_id  INTEGER REFERENCES remote_hosts(id) ON DELETE SET NULL,
     -- Opt out of signal-driven suspension (ADR-0043). Plugins lie about
     -- getTailSamples(): reporting kNoTail and then producing a tail is common,
     -- and a tail that depends on a parameter is usually reported as whatever
@@ -469,6 +475,25 @@ CREATE TABLE devices (
     missing         INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE INDEX idx_devices_chain ON devices(chain_id, ord);
+
+-- Machines that host plugins for us (ADR-0053). The DAW is the client; there
+-- is no wrapper plugin in the graph, so latency, state and suspension stay
+-- legible to the host instead of hiding inside an opaque device.
+--
+-- `enabled` is 0 until the user says otherwise. Audio and plugin state leaving
+-- this machine is AI-AGENT 2's "anything that leaves the machine" category, and
+-- a project that silently streams an unreleased album to an IP address because
+-- it was opened is not a feature.
+CREATE TABLE remote_hosts (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT    NOT NULL DEFAULT '',
+    host        TEXT    NOT NULL,          -- hostname or address; LAN is assumed
+    port        INTEGER NOT NULL,
+    protocol    TEXT    NOT NULL DEFAULT 'audiogridder',
+    enabled     INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
+    last_seen_utc INTEGER
+) STRICT;
+CREATE UNIQUE INDEX idx_remote_host ON remote_hosts(host, port);
 
 -- Opaque device state, stored once per distinct value (ADR-0038).
 --

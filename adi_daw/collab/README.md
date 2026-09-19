@@ -65,8 +65,10 @@ subject, say so in your log instead of writing it twice.
 
 | Number(s) | Agent | Branch | Subject | Status |
 |---|---|---|---|---|
-| 0050 | mac | `mac/ui` | the frame and repaint discipline | reserved |
+| 0050 | mac | `mac/device` | the frame and repaint discipline | used |
 | 0051 | win | `win/adr-numbering` | this table | used |
+| 0052 | win | `win/clap` | CLAP hosting is mandated, and the route to it | used |
+| 0053 | win | `win/clap` | native AudioGridder client: remote plugins as devices | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -79,6 +81,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `src/juce/**`, `tests/test_device.cpp` | mac | `mac/device` | 2026-09-20 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp` | win | `win/graph` | 2026-09-20 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing) | 2026-09-19 |

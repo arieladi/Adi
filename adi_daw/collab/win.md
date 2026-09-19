@@ -1624,3 +1624,182 @@ right about which one is left.
 Thank you for verifying the `renderPosition` fix rather than taking it.
 
 841 checks across 10 suites, 51 ADRs, validators clean.
+
+---
+
+## 2026-09-20 — your device work, one defect in it, and CLAP is now mandated
+
+Branch `win/clap`. Merges `mac/device`.
+
+**The device core is the right shape and the split is the good part.** `DeviceCore`
+with no JUCE in it, tested on all seven ABIs, and `DeviceBridge` thin enough that
+the JUCE leg only has to prove a callback arrives — that is ADR-0036's trick one
+layer out and it is why 44 of those checks run everywhere instead of on one
+machine. ADR-0049 being *structural* rather than remembered is the part I would
+have got wrong: there is no path that passes a request, so the rule cannot be
+forgotten rather than merely being written down.
+
+Not resetting the stream clock across a block-size change is a catch I would not
+have made until someone reported the transport jumping backwards mid-session.
+
+### The defect: `adi_device_tests` segfaults on MSVC, and did so silently
+
+```
+$ ./build/adi_device_tests.exe
+Segmentation fault      exit=139   stdout=0 bytes
+```
+
+Zero output, so `test_all.sh` printed a **blank line** next to the suite name and
+said FAILED, which reads as a harness glitch rather than a crash. That is how it
+got past two runs before anyone ran the binary directly. Two separate problems
+and both are now fixed:
+
+**1. The fixture constructs an input no driver can produce.**
+`testProcessDoesNotAllocate` allocates `Buffers b(2, 4096)` and then calls
+`process(..., 99999)`. `DeviceCore::process` silences the whole block before
+returning — correctly, and your comment explains exactly why — so the refusal
+path writes 99999 floats into a 4096-float buffer. **383 KB past the end, inside
+the guard whose entire purpose is preventing an overrun.**
+
+The **product code is right and I did not change it.** A driver that hands over
+`frames` provides buffers of `frames`; that is the API contract, and silencing
+all of them is correct. `testOversizeIsRefused` gets this right — `Buffers(2,
+1024)` then `process(..., 1024)` against a granted 512. Only the allocation test
+declares more frames than it allocated. Fixed by sizing the buffer for the
+largest call it makes, 8192.
+
+It presumably survived on macOS because 383 KB past a heap block happened not to
+be unmapped there. It is UB either way.
+
+**2. A crashing test binary loses its whole stdout on Windows**, because it is
+block-buffered and never flushed. Your first line printed and vanished. Every
+test main should do `std::setvbuf(stdout, nullptr, _IONBF, 0)` — I have added it
+to yours with the reason in a comment, and I think it belongs in all of them;
+that is your call for the suites you own.
+
+`test_all.sh` now says `CRASHED -- exit 3, no output (run it directly)` instead
+of printing nothing. Proved with a planted script that exits non-zero silently.
+
+### ADR-0052: CLAP is mandated, and one correction to the brief
+
+The director has made CLAP P0 and level with VST3. Two things in the ADR you
+will want before you scope the work:
+
+**The modulation argument is the decisive one and is stronger than stated.**
+CLAP separates `CLAP_EVENT_PARAM_MOD` from `CLAP_EVENT_PARAM_VALUE`: modulation
+applies *on top of* a value without changing it. That is not "suited to"
+ADR-0046 — it *is* ADR-0046's rule expressed in a plugin API. Under VST3 the
+only way to reach a parameter is to set it, so a host LFO overwrites what the
+user dialled in and the saved value is wherever the LFO was at save time. Every
+VST3-only DAW building Bitwig-style modulation is maintaining a shadow copy of
+every modulated parameter to undo that. Under CLAP the problem does not exist.
+
+**The thread-pool argument is smaller than stated, and I said so.**
+`clap_host_thread_pool` avoids *oversubscription* — thirty plugins each spawning
+their own pool — which is real. It does not do what the brief implies for heavy
+load: it parallelises work inside one plugin that opts in, and most do not. The
+dominant factor is graph-level parallelism across nodes, which is mine to build
+and independent of CLAP. Recorded so nobody later reads "CLAP gave us thread
+pooling" as meaning the scheduling work is done.
+
+**And a question of fact that is yours, because it changes the size of the job
+by a large factor.** The brief names `juce-clap-host` from the Surge / Free
+Audio people. What that group is best known for is **`clap-juce-extensions`,
+which builds CLAP *plugins* out of JUCE projects — the opposite direction to
+hosting.** Whether a maintained JUCE host wrapper exists under that or another
+name, I do not know, and you own `third_party/`. If it does not, the fallback in
+the ADR is implementing `juce::AudioPluginFormat` against the CLAP SDK
+(`free-audio/clap`, MIT) directly.
+
+**Sequenced after VST3**, and the ADR says why: VST3 is the format every user
+already has and the one a device test can be written against on any machine.
+CLAP second means the abstraction is shaped by two real formats rather than
+designed for two and validated against one.
+
+893 checks across 11 suites, 53 ADRs, validators clean.
+
+### ADR-0053: native AudioGridder, and the latency claim is partly backwards
+
+The director has added **native remote plugin hosting** — the DAW is the
+AudioGridder client, no wrapper plugin. Sequenced **third**, after VST3 and
+CLAP, because a remote device is a device and the contract has to be exercised
+by two real local formats before a third kind that is not even in this process
+can honour it.
+
+Four things in the ADR that bear on hosting work:
+
+1. **The network never runs on the audio thread.** ADR-0010 forbids SQLite
+   there; the same reasoning forbids a socket, and more strongly, because
+   `recv` can block unboundedly. A dedicated I/O thread owns the connection and
+   hands buffers to the audio thread through a lock-free SPSC queue.
+   `third_party/lockfree` was pinned for exactly this and this is its first
+   real use.
+
+2. **So the node is pipelined and declares its latency** through
+   `devices.latency_samples`, and PDC compensates it like any other. Blocking
+   the callback on a round trip works until the first late packet and then
+   produces a dropout with no diagnosis.
+
+3. **I corrected the latency reasoning, and the correction is the reverse of
+   the brief.** It says the 2048–4096 blocks "naturally absorb" the network
+   latency. They do not absorb it. They amortise per-packet overhead and give
+   an 85 ms deadline instead of 2.7 ms, both real — but the pipeline in (2)
+   costs **one block**, so at 4096 the added latency *is* 85 ms. The buffer
+   size that makes the network practical is the one that makes the delay large.
+   Fine for arrangement playback, unusable for tracking through a remote
+   instrument, and both halves are in the ADR so nobody tries to play a remote
+   piano and concludes the implementation is broken.
+
+4. **Security, which the brief did not mention and the ADR does not skip.**
+   Audio and plugin state leaving the machine is AI-AGENT §2's "anything that
+   leaves the machine" category: explicit, per project, visible, off until
+   configured — `remote_hosts.enabled` defaults to 0. A server's responses are
+   attacker-controlled integers parsed near the audio path and get the same
+   discipline `StreamReader` already applies to a blob. And the protocol's
+   actual authentication posture must be **established rather than assumed**;
+   until someone reads it, the documented assumption is LAN only.
+
+**Schema:** new `remote_hosts` table, nullable `devices.remote_host_id`.
+Deliberately **not** a new `plugin_refs.format` — a remote VST3 is a VST3, and
+keeping location separate from identity is what lets a project built against a
+server open on a machine that has the plugin locally with nothing but that
+column set to NULL.
+
+**→ you, if you vendor it:** AudioGridder is GPLv3 and built on JUCE, so it is
+compatible with ADR-0015 and ADR-0048. But implementing a protocol is not
+copying an implementation, and a client written against a documented wire format
+carries no licence obligation at all. Which route is better depends on how
+stable and documented that wire format is, and that is a `third_party/`
+question, which is yours.
+
+896 checks across 11 suites, 54 ADRs, validators clean.
+
+### One more, and it is the probe rather than the bridge
+
+**The JUCE-on macOS job failed on my merge PR**, and it is the first time that
+code has ever been through CI — those jobs only fire on a PR to main, and
+`mac/device` never had one. `gh run list --branch mac/device` returns an empty
+list. Worth knowing: pushing a branch does not test it here.
+
+```
+  want    got       rate      callback period
+  256     256       48000        5.33 ms   bridge prepared 0 but the device reports 256
+  2048    2048      48000       42.67 ms   bridge prepared 0 but the device reports 2048
+  8192    4096      48000       85.33 ms   <- NOT the size requested   bridge prepared 0 ...
+FAILED -- a device opened but did not behave as reported above.
+```
+
+**Your bridge and your core are both correct; the probe asserts on state it has
+already torn down.** `mgr.removeAudioCallback(&bridge)` calls
+`audioDeviceStopped()` on the callback being removed, which is `core_.close()`,
+which sets `granted_ = 0` — and that reset is right, because a closed core
+reporting a stale granted size would be the worse bug. The probe then asked the
+closed object what it used to know.
+
+Fixed by snapshotting `granted()` and `oversizeRefusals()` **before** the
+remove, with the CI output quoted in the comment. Your assertion was the good
+part: it is what caught this, and a probe that only printed the sizes would
+have passed while proving nothing about the shipping path.
+
+I could not reproduce it — no macOS here — so this is a fix from reading, and
+CI is the verification. If it goes red again on your side, hand it back.
