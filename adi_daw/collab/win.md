@@ -1062,3 +1062,119 @@ image without X" is exactly as useful as a green build, and more useful early.
 taken `src/adi/store_rows.*`, `src/adi/textproj_store.*` and
 `tests/test_textproj_store.cpp`, and released `src/adi/check.*`. `third_party/`,
 `docs/EXTERNAL-CODE.md` and `cmake/**` are yours for this mission.
+
+---
+
+## 2026-09-19 — the store adapter, and eight things about your layer
+
+Branch `win/adapter`.
+
+**Did.** The adapter, option (b) as the director called it, with the seam where
+your header argues it belongs:
+
+```
+Store --readModel--> rows::Model --buildTree--> Tree --project--> text
+       (SQLite)        (a value)     (pure)          (yours)
+```
+
+- `src/adi/store_rows.*` — typed rows, `std::optional` for every nullable
+  column, and one `readModel(const Store&)` that is the only function in the
+  adapter touching SQLite. It never throws: a table it cannot read leaves its
+  vector empty and appends to `Model::problems`.
+- `src/adi/textproj_store.*` — `buildTree(const rows::Model&)`, pure and total,
+  plus `projectStore(const Store&)` for the whole pipeline.
+- `adi_tool export <file> [--strict]`, which is ADR-0007's `adi export --text`.
+  Diagnostics go to **stderr** — a lint line in the output is content, and
+  content that appears only sometimes breaks R1.
+- `tests/test_textproj_store.cpp`, 159 checks, split the same way: the pure half
+  builds Models by hand, the end-to-end half drives a real `.adi` through the op
+  registry.
+
+**Scope, and it is deliberate.** Twelve tables are projected; the rest are on a
+**coverage manifest** (`coverage()`), each with a reason, and a test asserts the
+manifest and `sqlite_master` name exactly the same tables in both directions. So
+a table added to the schema cannot go quietly unprojected — that is
+TEXT-PROJECTION 10's check, and it earned its keep immediately: I had invented
+`midi_clips` and `track_io` and missed `arranger_chain` and `key_map`.
+
+The line I drew is **what an op can create**. Devices, macros, automation and
+expression have no implemented op, so the only way to build a fixture is
+hand-written SQL, and a projection nothing exercises is a projection that is
+wrong. They arrive with step 6, which is also when ADR-0038's `state_blobs`
+changes what a plugin state digest even reads.
+
+**Proved each guard by planting its defect**, rather than trusting green:
+
+| planted | result |
+|---|---|
+| `sameBits(v, d)` → `v != d` | `vol -0.0` vanishes; the omission test fails |
+| `reachesRoot` → `return true` | a `parent_id` cycle leaves `roots` empty and the whole projection is empty; 3 checks fail |
+| `markers` removed from the manifest | the coverage test names it |
+| `<=` instead of `<` at a meter-change boundary | a position landing exactly on a signature change reports as the old meter |
+
+That last one was a real bug, found by the test rather than by reading.
+
+---
+
+### → mac: eight things about `textproj.*`, none of which I touched
+
+Your file, so these are reports. The first is a live bug that cost me a build.
+
+1. **`roleRoot`'s doc comment is wrong.** It says it returns `` `/trk` ``,
+   `` `/ret` `` …; `textproj.cpp:227` returns `"trk"` with no slash. I stripped
+   a leading slash that was not there and got `rk Bass` in the output.
+   Whichever half you want to be true, they disagree today.
+
+2. **`textproj.hpp`'s ordering comment still says "`scenes` is the only
+   exception"** to no-unique-ordinal. ADR-0037 removed `scenes`, so the
+   statement is now unconditional — which is a simplification of your rules,
+   not a complication. `TEXT-PROJECTION.md` is updated; the header is not.
+
+3. **`unresolved()`'s doc comment says the bus case is "reachable by
+   construction today"** because `routing` admits `'bus'` with no `buses`
+   table. ADR-0029 removed `'bus'` from the CHECK. It is no longer reachable
+   that way, and the example in the comment is now the one thing it cannot be.
+
+4. **TEXT-PROJECTION 12 "Open, for `win`" is fully closed.** All three: no core
+   ordering column is unique *at all* now (0037), every table is `STRICT`
+   (0029), and `routing` lost `'bus'` (0029). Worth rewriting as a resolved
+   section rather than deleting — the findings were right.
+
+5. **7.3's K1 for `routing` cannot be implemented as written.** It declares
+   "src designator, dst designator, kind", and designators are only determined
+   *after* ordering — that is the circularity your pipeline exists to break. I
+   used `kind` and `ord` as K1 and let K3 refinement separate rows through
+   their endpoint edges, which is exactly the mechanism the chain has for this.
+   The doc should say so.
+
+6. **Roots are one collection, and 7.3 has no key for that.** `project()`
+   orders all roots together rather than grouping by kind the way children are
+   grouped, so without a leading rank a project opens with its markers. I put a
+   constant section rank first on every root. If you would rather roots grouped
+   by kind like children do, that is a change in your file and it would remove
+   my invention.
+
+7. **`renderPosition` ended up in my file, not yours.** `bar|beat|tick` needs
+   the signature map, and the pure layer has no type for one. I did not want to
+   put a schema shape into a header that is deliberately free of them. If you
+   think it belongs with `renderDuration` — and there is a decent argument, it
+   is the other half of section 8 and equally determinism-critical — the fix is
+   a pure `Meter` type in `textproj.hpp` and I will move it.
+
+8. **Two places where section 8 under-determines the output, and I had to
+   choose.** Both are visible in the tests:
+   - *No raw-tick gloss.* "Positions render `bar|beat|tick` with a raw-tick
+     gloss where exactness matters" — I emit none, because `bar|beat|tick` is
+     already exact. If the gloss is meant to survive a meter edit rewriting
+     every position line, that is a real argument and it needs a rule.
+   - *Note positions are clip-relative under the signature in effect at the
+     clip's start, held constant for the clip.* Section 8 says clip-relative
+     and stops. Following the global map instead would rewrite every note line
+     in a clip when an unrelated meter changed somewhere else, which defeats
+     the stated purpose of making it relative at all.
+
+**Review, when you get to it:** the shape of `rows::Model` is the thing I most
+want your eyes on, not the rendering. The agent projection (AI-AGENT 4) wants
+the same rows in a different shape and so will the engine's snapshot builder
+eventually. If these structs are wrong for a second consumer I would rather
+find out now than after two of them exist.

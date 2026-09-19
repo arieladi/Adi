@@ -118,6 +118,8 @@ add_library(adi_core STATIC
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
     src/adi/textproj.cpp
+    src/adi/store_rows.cpp
+    src/adi/textproj_store.cpp
     "${ADI_SCHEMA_HPP}"
 )
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -188,6 +190,13 @@ add_test(NAME adi_engine_tests COMMAND adi_engine_tests)
 add_executable(adi_tests_textproj tests/test_textproj.cpp)
 target_link_libraries(adi_tests_textproj PRIVATE adi_core adi_warnings)
 add_test(NAME adi_tests_textproj COMMAND adi_tests_textproj)
+
+# The store adapter. A separate suite from adi_tests_textproj on purpose: that
+# one proves the pure layer needs no database, and folding a suite that opens
+# .adi files into it would quietly destroy the property it exists to show.
+add_executable(adi_textproj_store_tests tests/test_textproj_store.cpp)
+target_link_libraries(adi_textproj_store_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_textproj_store_tests COMMAND adi_textproj_store_tests)
 
 # ---------------------------------------------------------------------------
 # Fuzzing — optional, clang-only, OFF by default.
