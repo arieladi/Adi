@@ -1,8 +1,10 @@
 # The op vocabulary — step 3
 
-**Status:** framework complete. Catalogue covers all P0/P1 surface and most P2.
-Extending it is now mechanical; the contracts in §1–§7 are the part that is
-expensive to change.
+**Status:** framework complete and **implemented** in `src/adi/ops.{hpp,cpp}`.
+The catalogue covers all P0/P1 surface and most P2; six of the 174 are wired up
+with handlers and inverses, chosen to exercise all three inverse shapes rather
+than to be a lot of ops. The rest is mechanical. The contracts in §1–§8 are the
+part that is expensive to change.
 
 Every mutation to an `.adi` project is an **op**: a typed, scoped, attributed,
 invertible command appended to the `ops` table in the same transaction that
@@ -76,6 +78,18 @@ fails:**
 
 1. Every op with `scope != Read` has a non-null `apply` **and** `buildInverse`.
 2. Every op has a closed payload schema: unknown fields rejected, not ignored.
+   **This applies to a payload arriving from a caller, and is not in conflict
+   with §8 rule 3, which preserves unknown fields read back from the log.** They
+   are opposite directions of travel and the distinction is load-bearing:
+
+   - A **caller** (UI, script, agent) is asking us to *do* something. An unknown
+     field is a typo or a version mismatch, and accepting it silently means the
+     caller believes it set something it did not. **Reject.**
+   - Reading an op **already in the log**, an unknown field belongs to a newer
+     build. Dropping it would corrupt a log we are only carrying. **Preserve.**
+
+   Conflating the two is how a format quietly loses data, so the implementation
+   has two separately-named functions rather than one with a flag.
 3. No two ops share a name.
 4. Every name matches `^[a-z][a-zA-Z0-9]*\.[a-z][a-zA-Z0-9]*$`.
 5. **No payload schema contains a field whose value may be resolved from ambient
@@ -549,9 +563,11 @@ Compaction (SPEC §8.3) may drop ephemeral ops first.
 
 ## 11. Still open
 
-1. **CBOR key-name table.** §8 rule 2 fixes the *rule* (short string keys,
-   ADR-0025); the per-op key names are mechanical and belong with the
-   implementation. They are permanent once shipped.
+1. ~~**CBOR key-name table.**~~ **RESOLVED** — the key names live in the
+   registry, as a `Field` table beside each op's descriptor in `src/adi/ops.cpp`.
+   That is the one place a reader of the op must already be looking, and it
+   means a key cannot be added without also declaring its type and whether it is
+   required. They are permanent once shipped, exactly like op names.
 2. **Batch failure semantics.** An agent request is one `txn_id`; a partial
    failure mid-batch is presumed all-or-nothing per SPEC §3.5, but the rollback
    path for a `GraphRebuild` op that fails halfway is not written down.
