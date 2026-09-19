@@ -39,8 +39,10 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | `win/adapter` | 2026-09-19 |
-| `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `cmake/**` | mac | `mac/juce` | 2026-09-19 |
+| `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
+| `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing) | 2026-09-19 |
+| **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
+| `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:

@@ -2267,3 +2267,74 @@ leanness argument stands as written.
 hosts, which ADR-0041 does not name. They are disabled here explicitly for the
 same reason as VST2 and AU — `JUCE_PLUGINHOST_LV2=0`, `JUCE_PLUGINHOST_LADSPA=0`
 — and the ADR's list should say so rather than relying on their defaults.
+
+
+---
+
+## ADR-0049 — 4096 samples is the maximum block ADI will request, and the granted size is the only one that exists — `DECIDED` (2026-09-19) — **AMENDS ADR-0042**
+
+**Director's call**, on mac's finding. ADR-0042 set the target range at
+2048–8192 from the workflow; nobody had checked a driver would grant the top of
+it. mac pinned JUCE, opened a device, and found that **macOS CoreAudio built-in
+output caps at 4096** — and that asking for 8192 **silently returns 4096**:
+
+```
+want    got     rate      callback period
+256     256     48000        5.33 ms
+2048    2048    48000       42.67 ms
+8192    4096    48000       85.33 ms   <- NOT the size requested
+driver advertises: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096
+```
+
+The director's Lynx E44 on Windows does grant 8192, so this is a platform
+difference and not a universal ceiling. The decision is to cap anyway, for
+consistent behaviour across operating systems.
+
+### Decisions
+
+1. **4096 is the maximum block size ADI requests, on every platform.** Hardware
+   that can do more is not asked to. The test matrix from ADR-0042 becomes
+   **64, 256, 2048, 4096**, plus a non-power-of-two size and a run where the
+   size varies between callbacks. 8192 leaves it.
+
+2. **The granted size is the only size that exists.** A buffer sized from what
+   was *requested* rather than from what the driver *returned* is an overrun
+   with nothing to warn you, because the refusal is silent. Every allocation,
+   every reblocking buffer and every scratch buffer is sized from the value read
+   back after the device opens. This rule outlives the cap: a driver may refuse
+   4096 too.
+
+3. **A device that cannot reach the requested size is reported, not corrected.**
+   The user sees what they got. Silently running at a quarter of the requested
+   size while the preference still reads 8192 is how someone spends an afternoon
+   on a dropout that has an obvious cause.
+
+### The arithmetic, stated carefully, because it is about to be over-claimed
+
+Comparing 85.33 ms at 4096 with 2.67 ms at 128 is comparing two deadlines, and
+the *fraction* of each consumed by the same DSP chain is identical. A chain that
+needs 60% of the budget needs 60% at both. **Large blocks do not make a dense
+chain cheaper**, which ADR-0042 already says and this ADR is not walking back.
+
+What actually improves, and it is worth having:
+
+- **Fixed per-callback costs amortise.** Driver overhead, thread wake, graph
+  traversal and per-plugin `process()` entry are paid once per callback rather
+  than once per 128 samples. With a chain of many small plugins this is a real
+  saving, larger than most people expect.
+- **Scheduling jitter shrinks as a fraction.** A 1 ms delay from the OS is 37%
+  of a 2.67 ms budget and 1.2% of an 85.33 ms one. This is the one that stops
+  dropouts, and it is the real content of "variance tolerance".
+
+So the directive's priority is sound and the mechanism is amortisation and
+jitter tolerance rather than throughput. Both sentences have to stay true
+together or the next person reads the load meter as headroom.
+
+### What this costs
+
+The director works at 2048 and the cap is 4096, so nothing in the stated
+workflow is lost. What is lost is the option, on hardware that has it, of
+halving the callback rate again. If that ever matters the answer is to raise the
+cap deliberately with a measurement behind it, not to remove it — a ceiling
+every platform shares is worth more than a ceiling that varies by machine, which
+is a class of bug report nobody can reproduce.
