@@ -138,7 +138,7 @@ Each step gates the next. No step starts before the previous one is written down
 | **3** | The op vocabulary: every op type, payload, inverse | **done** — 160 ops, `docs/OPS.md` |
 | **4** | Reference reader/writer library + round-trip test corpus | **done** — store, ops, undo, digest, check |
 | **5** | Audio engine skeleton: snapshot handoff, model, transport | **done** — headless, no JUCE (ADR-0036) |
-| **6** | JUCE: audio device, the graph, plugin hosting | **next** |
+| **6** | JUCE: audio device, the graph, VST3 hosting (ADR-0041), large-block engine (ADR-0042) | **next** |
 | **7** | Minimal arrangement UI — the first thing you can make a track in | |
 | **8** | The agent, at Observe tier only | |
 | **9** | Propose and Apply tiers, and the RPC boundary (ADR-0039) | |
