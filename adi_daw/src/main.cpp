@@ -10,6 +10,7 @@
 #include "adi/digest.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj_store.hpp"
 #include "adi/version.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -33,6 +34,8 @@ int usage() {
         "                           --full prints it; default prints the id\n"
         "  adi_tool ops             list every registered op\n"
         "  adi_tool check <file>    verify what SQLite cannot\n"
+        "  adi_tool export <file>   the canonical text projection (ADR-0007)\n"
+        "                           --strict fails on a non-canonical order\n"
         "\n"
         "Ops arrive next; see docs/OPS.md.\n");
     return 2;
@@ -167,6 +170,36 @@ int cmdOps() {
     return 0;
 }
 
+int cmdExport(const char* path, bool strict) {
+    adi::StoreError err = adi::StoreError::Ok;
+    auto st = adi::Store::open(path, err, /*readOnly=*/true);
+    if (!st) {
+        std::printf("cannot open: %s\n", adi::toString(err));
+        return 2;
+    }
+
+    const adi::rows::Model model = adi::rows::readModel(*st);
+    const auto proj = adi::textproj::project(adi::textproj::buildTree(model));
+
+    std::fwrite(proj.text.data(), 1, proj.text.size(), stdout);
+
+    // Diagnostics go to stderr, never into the file. A lint line in the output
+    // is itself content, and content that appears only sometimes breaks the
+    // byte-identity the whole projection exists for (TEXT-PROJECTION 3).
+    for (const std::string& p : model.problems)
+        std::fprintf(stderr, "warning: %s\n", p.c_str());
+
+    if (proj.status != adi::textproj::OrderStatus::Exact) {
+        std::fprintf(stderr,
+                     "warning: order is not canonical -- largest tied class %zu "
+                     "(TEXT-PROJECTION 11)\n",
+                     proj.largest_tied_class);
+        if (strict) return 1;
+    }
+    if (strict && !model.problems.empty()) return 1;
+    return 0;
+}
+
 int cmdCheck(const char* path) {
     adi::StoreError err = adi::StoreError::Ok;
     auto st = adi::Store::open(path, err, /*readOnly=*/true);
@@ -219,6 +252,13 @@ int main(int argc, char** argv) {
     }
     if (cmd == "ops") {
         return cmdOps();
+    }
+    if (cmd == "export") {
+        if (argc < 3) return usage();
+        bool strict = false;
+        for (int i = 3; i < argc; ++i)
+            if (std::string(argv[i]) == "--strict") strict = true;
+        return cmdExport(argv[2], strict);
     }
     if (cmd == "check") {
         if (argc < 3) return usage();
