@@ -5,11 +5,13 @@ project format — combining Ableton Live's clip-launching and device model with
 Cubase's arrangement, editing and mixing depth, and an AI agent that can only act
 through the same undoable operations a human uses.
 
-**Status: design. No code. Nothing is frozen.**
+**Status:** format specified, reference implementation building.
+**627 checks across 8 suites**, green on 7 ABIs. Nothing is frozen.
 **Language:** C++ with JUCE (ADR-0014) · **Licence:** GPLv3 (ADR-0015)
 
-This is a long-term project being built deliberately, step by step. Step 1 — the
-save format and the feature scope it has to carry — is what's in this directory.
+A long-term project built step by step. The format came first because it is the
+only part that is genuinely expensive to change later; the store, op log, undo
+tree and integrity checker are built on it now.
 
 ---
 
@@ -56,12 +58,23 @@ than frightening.
 | [`docs/FEATURES.md`](docs/FEATURES.md) | Ableton ∪ Cubase, prioritised P0–P3, each row checked against the schema. |
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
 | [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 22 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 36 entries. |
 | [`docs/EXTERNAL-CODE.md`](docs/EXTERNAL-CODE.md) | The nine external repos we read or link against, and the licence boundary between them. Read before copying a line out of `reference/`. |
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
 | [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 174-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |
-| [`tools/fetch_external.sh`](tools/fetch_external.sh) | Clones/refreshes `third_party/` and `reference/`. Both gitignored. |
+| [`tools/fetch_external.sh`](tools/fetch_external.sh) | Clones/refreshes `third_party/` and `reference/`. Both gitignored, pinned by tag and commit. |
+| [`src/adi/`](src/adi/) | The reference implementation: `blob` (SPEC §6.3 layouts), `store` (the `.adi` itself), `ops` + `ops_catalog` (50 ops), `history` (branching undo), `digest` (the replay oracle), `check` (what SQLite cannot enforce), `textproj` (the canonical text projection). |
 | [`LICENSE`](LICENSE) | GPLv3. |
+
+## The tool
+
+```bash
+adi_tool create <file>   # a new .adi
+adi_tool info <file>     # what is in it
+adi_tool ops             # every registered op, with scope and engine impact
+adi_tool digest <file>   # canonical digest of the project tier (the replay oracle)
+adi_tool check <file>    # verify what SQLite structurally cannot
+```
 
 ## Verifying the schema
 
@@ -117,13 +130,14 @@ Each step gates the next. No step starts before the previous one is written down
 | **1** | Format spec, schema, feature scope, agent design | **done, draft** |
 | **2** | Choose implementation language and licence | **done** — C++/JUCE, GPLv3 |
 | **3** | The op vocabulary: every op type, payload, inverse | **done** — 174 ops, `docs/OPS.md` |
-| **4** | Reference reader/writer library + round-trip test corpus | **next** |
-| **5** | Audio engine skeleton: graph, transport, snapshot handoff | |
+| **4** | Reference reader/writer library + round-trip test corpus | **done** — store, ops, undo, digest, check |
+| **5** | Audio engine skeleton: graph, transport, snapshot handoff | **next** |
 | **6** | Plugin hosting: CLAP and VST3 | |
 | **7** | Minimal arrangement UI — the first thing you can make a track in | |
 | **8** | Session View | |
 | **9** | The agent, at Observe tier only | |
 | **10** | Propose and Apply tiers | |
+| **11** | Visual patching devices — Pure Data embedded via `libpd` (ADR-0035) | direction decided, contract not designed |
 
 ---
 
