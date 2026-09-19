@@ -1010,3 +1010,106 @@ to a handler, still droppable by compaction.
 when something first tried to write one, which is months after both decisions
 looked settled. A decision that tightens a constraint everywhere should be
 checked against decisions that relied on the looseness.
+
+## ADR-0031 — A visual patching device tier, embedded via libpd — `DECIDED (direction)` (2026-09-19)
+
+**Goal.** A user can drop a device on a track, open it, and build a synth or an
+effect by patching boxes together — and can do so without buying anything,
+because the patching environment ships with the DAW and is as free as the DAW
+is. Pure Data, embedded through `libpd`, is how.
+
+Pd is the right choice on the merits and not only on price: Miller Puckette
+wrote Max and then wrote Pd, so this is the same lineage rather than an
+imitation of it, and the patch format is plain text, which matters here more
+than it would elsewhere (see *Consequences*).
+
+### One correction to the framing, stated first because it sets the scope
+
+**Embedding libpd does not give us Max for Live.** It gives us Max for Live's
+*engine*. Everything that makes M4L feel like part of Live is the integration
+layer around it: devices that expose named parameters the host can automate and
+map to a controller, a device UI that is not a patcher window, preset and state
+handling, freezing, and the Live Object Model that lets a patch see and change
+the set. None of that comes with libpd.
+
+So the work is not "embed libpd" — that part is comparatively small. The work is
+the **device contract**: how a patch declares its parameters, how those become
+automatable lanes in our schema, how state is saved, and what happens when a
+patch and a project disagree. That contract is what this ADR commits us to
+designing, and it is deliberately not designed here.
+
+### Licences, verified rather than assumed
+
+- **libpd and the Pd core are BSD-3-Clause** — upstream calls it the "Standard
+  Improved BSD License". Permissive, GPLv3-compatible, and imposes nothing on
+  us beyond attribution. No conflict with ADR-0015.
+- **Pd *externals* are a separate question.** Many are GPL, which is fine; some
+  are neither free nor redistributable. Shipping any external is a per-library
+  decision and belongs in `docs/EXTERNAL-CODE.md`, not here. Vanilla Pd — the
+  objects built into the core — carries no such problem.
+
+**A correction I owe the record: I expected RNBO to be disqualified on licence
+grounds, and it is not.** Code RNBO generates is **dual-licensed**, under either
+Cycling '74's own terms or **GPLv3**, explicitly so that it can be combined with
+GPLv3 code such as JUCE and the VST3 SDK. A GPLv3 project can use it.
+
+### Why libpd is the tier we build, and RNBO is not a rival
+
+They are not competitors; they sit at different points and only one of them can
+carry the goal above.
+
+| | libpd | RNBO |
+|---|---|---|
+| When the patch is compiled | loaded and edited **at runtime** | exported to C++ **ahead of time** |
+| What the user needs to author | nothing but our DAW | **Max plus the RNBO add-on**, both paid and proprietary |
+| Licence of the result | BSD-3 engine, user's patch is the user's | dual, GPLv3 available |
+| Copyright in the generated code | n/a | **Cycling '74 retains it** |
+
+The deciding line is the second row. A patching tier whose authoring requires
+commercial software is not the goal stated at the top — it moves the paywall
+rather than removing it. RNBO stays interesting as a *separate, later* route for
+shipping a fixed DSP algorithm compiled into the binary, and nothing here
+forecloses it; it is simply not the extensibility story.
+
+### What embedding actually constrains
+
+- **Pd computes in ticks of 64 frames**, and `libpd_process_float` wants a
+  buffer that is `channels × ticks × 64`. Our device wrapper owns the
+  reblocking, because a DAW buffer size is not required to be a multiple of 64
+  and users will pick 100 or 480.
+- **Multi-instance is a compile-time flag.** Upstream builds with `MULTI=true`
+  and `PDINSTANCE`; without it there is one global Pd interpreter, which is
+  useless for a DAW where every track may hold a device. This is a hard
+  requirement on how we build it, not a runtime option.
+- **ADR-0010 still governs.** `libpd_process_float` runs on the audio thread;
+  opening a patch, editing it, allocating, and anything that touches the
+  filesystem does not. The existing prohibition does not bend for this.
+- **ADR-0011 generalises.** A patch referencing an external we do not have is
+  the missing-plugin rule in a new costume: preserve the patch byte-for-byte,
+  keep the device in the chain bypassed, surface what is missing. Do not
+  silently drop the object.
+
+### Consequences worth naming now
+
+- **A `.pd` patch is text, so it diffs.** Every other device's state is an
+  opaque plugin blob that the text projection can only render as a digest
+  (TEXT-PROJECTION §9). A Pd device's state is the patch, and a patch is lines.
+  This is the first device state that can appear in a `git diff` as something a
+  human reads — which is a genuine argument for the tier beyond openness.
+- **Where the patch lives is an open format question.** It is file-shaped
+  (`media_files`), state-shaped (`plugin_state`), and text-shaped all at once,
+  and the choice changes what the projection can do with it.
+- **The agent question is not answered.** ADR-0003 says every mutation is a
+  typed op. Whether the agent may edit a patch — and if so whether that is one
+  op or a vocabulary of them — is a real decision and is not taken here.
+
+### Status
+
+**The direction is decided: libpd, vanilla Pd, multi-instance, as a first-class
+device tier.** Three things are explicitly open and each needs its own ADR
+before code: the device/parameter contract, patch storage in the schema, and the
+agent's relationship to patch contents.
+
+Sequenced after plugin hosting (roadmap step 6), because a Pd device is a device
+and the device/parameter/automation contract has to exist before a second kind
+of device can honour it.

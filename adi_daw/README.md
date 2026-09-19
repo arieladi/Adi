@@ -124,6 +124,7 @@ Each step gates the next. No step starts before the previous one is written down
 | **8** | Session View | |
 | **9** | The agent, at Observe tier only | |
 | **10** | Propose and Apply tiers | |
+| **11** | Visual patching devices — Pure Data embedded via `libpd` (ADR-0031) | |
 
 ---
 
