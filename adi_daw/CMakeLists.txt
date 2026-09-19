@@ -62,6 +62,12 @@ add_subdirectory("${ADI_THIRD_PARTY}/json"      EXCLUDE_FROM_ALL SYSTEM)
 #
 # Every target we own links this PRIVATE; nothing in third_party/ links it.
 # ---------------------------------------------------------------------------
+# CI's strict job turns this on. It lives on adi_warnings rather than in
+# CMAKE_CXX_FLAGS deliberately: a global -Werror would also apply to
+# third_party/, and sqlite3.c is a 250k-line amalgamation that has never
+# promised to be warning-free under our flag set. Our code is what we gate.
+option(ADI_WERROR "Treat warnings in our own code as errors" OFF)
+
 add_library(adi_warnings INTERFACE)
 
 if(MSVC)
@@ -78,13 +84,41 @@ else()
         -Wno-unused-parameter)
 endif()
 
+if(ADI_WERROR)
+    target_compile_options(adi_warnings INTERFACE
+        $<IF:$<BOOL:${MSVC}>,/WX,-Werror>)
+endif()
+
 # ---------------------------------------------------------------------------
 # adi_core — the format library. No JUCE, no audio, no threads.
 # ---------------------------------------------------------------------------
+# The DDL is generated from docs/format/schema.sql rather than pasted, so the
+# binary and tools/validate_schema.py exercise the same bytes. A hand-copied
+# schema drifts in the worst direction: the validator keeps passing while the
+# shipped binary creates a different database.
+set(ADI_SCHEMA_SQL "${CMAKE_CURRENT_SOURCE_DIR}/docs/format/schema.sql")
+set(ADI_SCHEMA_HPP "${CMAKE_CURRENT_BINARY_DIR}/generated/adi/schema_sql.hpp")
+
+add_custom_command(
+    OUTPUT  "${ADI_SCHEMA_HPP}"
+    COMMAND "${CMAKE_COMMAND}"
+            -DIN=${ADI_SCHEMA_SQL} -DOUT=${ADI_SCHEMA_HPP}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_schema.cmake"
+    DEPENDS "${ADI_SCHEMA_SQL}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_schema.cmake"
+    COMMENT "Embedding schema.sql"
+    VERBATIM)
+
 add_library(adi_core STATIC
     src/adi/blob.cpp
+    src/adi/store.cpp
+    src/adi/ops.cpp
+    src/adi/history.cpp
     src/adi/textproj.cpp
+    "${ADI_SCHEMA_HPP}"
 )
+target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_compile_definitions(adi_core PUBLIC
+    ADI_VERSION_STRING="${PROJECT_VERSION}")
 target_include_directories(adi_core PUBLIC src)
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
 target_link_libraries(adi_core PRIVATE adi_warnings)
@@ -103,6 +137,22 @@ enable_testing()
 add_executable(adi_tests tests/test_main.cpp)
 target_link_libraries(adi_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_tests COMMAND adi_tests)
+
+# A separate binary from adi_tests so a store failure is distinguishable from a
+# blob failure at a glance in CI, without reading the log.
+add_executable(adi_store_tests tests/test_store.cpp)
+target_link_libraries(adi_store_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_store_tests COMMAND adi_store_tests)
+
+# Separate again, for the same reason: an ops failure and a store failure should
+# be distinguishable from the CI summary without opening the log.
+add_executable(adi_ops_tests tests/test_ops.cpp)
+target_link_libraries(adi_ops_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_ops_tests COMMAND adi_ops_tests)
+
+add_executable(adi_history_tests tests/test_history.cpp)
+target_link_libraries(adi_history_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_history_tests COMMAND adi_history_tests)
 
 # A second binary rather than a second file in adi_tests: the projection has no
 # dependency on the blob layer and testing it in isolation keeps that true. If

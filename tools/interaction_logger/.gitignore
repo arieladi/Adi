@@ -1,0 +1,5 @@
+# recorded sessions never belong in git
+sessions/
+*.log
+__pycache__/
+.venv/

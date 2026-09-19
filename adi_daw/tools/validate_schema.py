@@ -11,6 +11,10 @@ Checks, in order:
   4. No UNIQUE index has a nullable column in it -- in SQLite, NULLs are
      distinct, so such an index does not actually enforce uniqueness.
   5. foreign_keys=ON plus a smoke-test insert of a minimal project.
+  5b. Every table is STRICT -- without it a TEXT value can sit in a REAL
+     column and the C API coerces it silently on read (ADR-0029).
+  5c. Every polymorphic reference kind in `routing` names a real table or a
+     known-external endpoint; a FOREIGN KEY cannot constrain (kind, id).
   6. The tick base really has the arithmetic properties SPEC 4.2 claims,
      because a specification should not assert what it can check.
 """
@@ -185,6 +189,60 @@ def main() -> int:
         fail(f"foreign_key_check reported {len(fk_violations)} violations")
     else:
         ok("foreign_key_check clean")
+
+    # --- 5b. every table is STRICT -------------------------------------------
+    # Without STRICT, SQLite's flexible typing lets a TEXT value live in a REAL
+    # column and sqlite3_column_double() coerces it silently, so a reader
+    # returns a number that is not what is stored. There are 23 REAL columns
+    # here. Checked per table rather than by counting the keyword, because a
+    # comment mentioning STRICT would satisfy a count. See ADR-0029.
+    print("[5b] every table is STRICT")
+    not_strict = []
+    for t in tables:
+        row = db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?", (t,)
+        ).fetchone()
+        ddl = (row[0] or "") if row else ""
+        tail = ddl[ddl.rfind(")") :].upper() if ")" in ddl else ""
+        if "STRICT" not in tail:
+            not_strict.append(t)
+    if not_strict:
+        fail(f"tables without STRICT: {not_strict}")
+    else:
+        ok(f"all {len(tables)} tables are STRICT")
+
+    # --- 5c. polymorphic reference kinds resolve -----------------------------
+    # `routing` carries (kind, id) pairs, which a FOREIGN KEY cannot constrain.
+    # That is the price of one routing table instead of six -- but it means a
+    # CHECK can permit a kind whose target table does not exist, which is how
+    # 'bus' became a dangling reference by construction (ADR-0029). Internal
+    # kinds must name a real table; external ones are an explicit allow-list.
+    print("[5c] polymorphic reference kinds resolve")
+    EXTERNAL_KINDS = {"hw_in", "hw_out"}   # hardware port indices, not rows
+    import re as _re
+
+    dangling = []
+    for col in ("src_kind", "dst_kind"):
+        row = db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='routing'"
+        ).fetchone()
+        m = _re.search(col + r"[^,]*?CHECK\s*\(\s*" + col + r"\s+IN\s*\(([^)]*)\)",
+                       row[0], _re.S | _re.I)
+        if not m:
+            fail(f"could not find the {col} CHECK in routing")
+            continue
+        kinds = [k.strip().strip("'\"") for k in m.group(1).split(",")]
+        for k in kinds:
+            if k in EXTERNAL_KINDS:
+                continue
+            target = k + "s" if not k.endswith("s") else k
+            if target not in tables and k not in tables:
+                dangling.append(f"routing.{col} permits '{k}' but no table '{target}' exists")
+    if dangling:
+        for d in dangling:
+            fail(d)
+    else:
+        ok("every routing endpoint kind names a real table or a known external")
 
     # --- 6. the tick base actually has the properties SPEC 4.2 claims --------
     # These are load-bearing claims in a specification, so they get checked

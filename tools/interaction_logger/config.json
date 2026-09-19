@@ -1,0 +1,19 @@
+{
+  "base_output_dir": "~/Documents/InteractionLogs",
+  "hotkey": "<ctrl>+<shift>+<f9>",
+  "quit_hotkey": "<ctrl>+<shift>+<f10>",
+
+  "screenshot_freq": 5.0,
+  "max_frame_width": 1920,
+  "screenshot_format": "png",
+
+  "mouse_move_throttle": 0.05,
+  "window_poll_interval": 0.5,
+  "capture_mouse_moves": true,
+  "dedupe_screenshots": true,
+  "motion_threshold": 0.001,
+  "mask_text_keys": false,
+
+  "start_delay": 0.35,
+  "status_interval": 15.0
+}
