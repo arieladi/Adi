@@ -39,9 +39,13 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `src/adi/store.*`, `src/adi/ops.*`, `src/main.cpp`, `tests/test_store.cpp`, `cmake/**` | win | `win/store-layer` | 2026-09-19 |
-| `src/adi/textproj.*`, `tests/test_textproj.cpp`, `tests/fuzz_textproj.cpp`, `docs/format/TEXT-PROJECTION.md` | mac | `mac/textproj-fuzz` | 2026-09-19 |
+| `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | `win/adapter` | 2026-09-19 |
+| `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `cmake/**` | mac | `mac/juce` | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
+
+`src/adi/textproj.*` stays mac's even while win writes the adapter against it:
+the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`
+is released — win held it for `adi_tool check` and that branch merged.
 
 `src/adi/blob.*`, `tests/test_main.cpp` and `CMakeLists.txt` are **shared** —
 either agent may touch them, in small changes, saying so in their log. They are

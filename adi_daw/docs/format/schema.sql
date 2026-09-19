@@ -578,7 +578,10 @@ CREATE TABLE ops (
     op_type     TEXT    NOT NULL,
     target_kind TEXT    NOT NULL DEFAULT '',
     target_id   INTEGER,
-    payload     BLOB,                   -- encoding TBD — SPEC §12.1
+    -- Deterministic CBOR with short string keys — ADR-0016, settled by
+    -- ADR-0025. Deterministic (lexicographic keys), NOT RFC 8949 §4.2
+    -- canonical (length-first); the two are different and we mean the first.
+    payload     BLOB,
     inverse     BLOB,                   -- enough to revert without replaying
     label       TEXT    NOT NULL DEFAULT '',   -- what the undo menu shows
     tags        TEXT    NOT NULL DEFAULT '',
