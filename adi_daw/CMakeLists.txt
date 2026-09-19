@@ -81,9 +81,30 @@ endif()
 # ---------------------------------------------------------------------------
 # adi_core — the format library. No JUCE, no audio, no threads.
 # ---------------------------------------------------------------------------
+# The DDL is generated from docs/format/schema.sql rather than pasted, so the
+# binary and tools/validate_schema.py exercise the same bytes. A hand-copied
+# schema drifts in the worst direction: the validator keeps passing while the
+# shipped binary creates a different database.
+set(ADI_SCHEMA_SQL "${CMAKE_CURRENT_SOURCE_DIR}/docs/format/schema.sql")
+set(ADI_SCHEMA_HPP "${CMAKE_CURRENT_BINARY_DIR}/generated/adi/schema_sql.hpp")
+
+add_custom_command(
+    OUTPUT  "${ADI_SCHEMA_HPP}"
+    COMMAND "${CMAKE_COMMAND}"
+            -DIN=${ADI_SCHEMA_SQL} -DOUT=${ADI_SCHEMA_HPP}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_schema.cmake"
+    DEPENDS "${ADI_SCHEMA_SQL}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_schema.cmake"
+    COMMENT "Embedding schema.sql"
+    VERBATIM)
+
 add_library(adi_core STATIC
     src/adi/blob.cpp
+    src/adi/store.cpp
+    "${ADI_SCHEMA_HPP}"
 )
+target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_compile_definitions(adi_core PUBLIC
+    ADI_VERSION_STRING="${PROJECT_VERSION}")
 target_include_directories(adi_core PUBLIC src)
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
 target_link_libraries(adi_core PRIVATE adi_warnings)
@@ -102,6 +123,12 @@ enable_testing()
 add_executable(adi_tests tests/test_main.cpp)
 target_link_libraries(adi_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_tests COMMAND adi_tests)
+
+# A separate binary from adi_tests so a store failure is distinguishable from a
+# blob failure at a glance in CI, without reading the log.
+add_executable(adi_store_tests tests/test_store.cpp)
+target_link_libraries(adi_store_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_store_tests COMMAND adi_store_tests)
 
 # ---------------------------------------------------------------------------
 # Fuzzing — optional, clang-only, OFF by default.
