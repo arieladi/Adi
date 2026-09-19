@@ -58,7 +58,7 @@ than frightening.
 | [`docs/FEATURES.md`](docs/FEATURES.md) | Ableton ∪ Cubase, prioritised P0–P3, each row checked against the schema. |
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
 | [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 36 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 37 entries. |
 | [`docs/EXTERNAL-CODE.md`](docs/EXTERNAL-CODE.md) | The nine external repos we read or link against, and the licence boundary between them. Read before copying a line out of `reference/`. |
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
 | [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 174-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |
@@ -131,8 +131,8 @@ Each step gates the next. No step starts before the previous one is written down
 | **2** | Choose implementation language and licence | **done** — C++/JUCE, GPLv3 |
 | **3** | The op vocabulary: every op type, payload, inverse | **done** — 174 ops, `docs/OPS.md` |
 | **4** | Reference reader/writer library + round-trip test corpus | **done** — store, ops, undo, digest, check |
-| **5** | Audio engine skeleton: graph, transport, snapshot handoff | **next** |
-| **6** | Plugin hosting: CLAP and VST3 | |
+| **5** | Audio engine skeleton: snapshot handoff, model, transport | **done** — headless, no JUCE (ADR-0036) |
+| **6** | JUCE: audio device, the graph, plugin hosting | **next** |
 | **7** | Minimal arrangement UI — the first thing you can make a track in | |
 | **8** | Session View | |
 | **9** | The agent, at Observe tier only | |
