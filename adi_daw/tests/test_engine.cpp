@@ -7,6 +7,7 @@
 // use-after-free that only happens when the reader and writer race — and that
 // race is the entire reason this mechanism exists.
 
+#include "adi/engine/process.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 #include <exception>
 #include <filesystem>
 #include <string>
@@ -327,6 +329,96 @@ void testSnapshotFromRealProject() {
 
 }  // namespace
 
+
+// --- the device seam (engine/process.hpp) ---------------------------------
+
+/// A synthetic driver. Exists so the seam is exercised without a sound card:
+/// CI has none, and a test that needs one is a test that does not run.
+void driveBlocks(adi::engine::BlockProcessor& p, double rate, std::int32_t maxFrames,
+                 const std::vector<std::int32_t>& blocks) {
+    p.prepare(rate, maxFrames);
+    std::vector<float> l(static_cast<std::size_t>(maxFrames), 1.0f);
+    std::vector<float> r(static_cast<std::size_t>(maxFrames), 1.0f);
+    float* chans[2] = {l.data(), r.data()};
+    std::int64_t t = 0;
+    for (std::int32_t n : blocks) {
+        adi::engine::AudioIo io;
+        io.out = chans;
+        io.numOut = 2;
+        io.frames = n;
+        io.streamTimeSamples = t;
+        p.process(io);
+        t += n;
+    }
+    p.release();
+}
+
+void testDeviceSeam() {
+    section("engine/process.hpp -- the seam a device drives");
+    using namespace adi::engine;
+
+    SilenceProcessor sp;
+    // Deliberately NOT all maxFrames. A driver may hand over fewer than the
+    // maximum and routinely does, and anything that sizes work from maxFrames
+    // at call time only breaks on the one driver that varies it.
+    driveBlocks(sp, 48000.0, 4096, {4096, 4096, 1, 512, 4095, 4096});
+
+    check(sp.prepareCount() == 1 && sp.releaseCount() == 1,
+          "prepare and release are paired");
+    check(sp.sampleRate() == 48000.0 && sp.maxFrames() == 4096,
+          "the granted rate and size reach the processor (ADR-0049)");
+    check(sp.callbacks() == 6, "every block arrived");
+    check(sp.frames() == 4096 + 4096 + 1 + 512 + 4095 + 4096,
+          "and every frame, including the short ones");
+    check(sp.widestBlock() == 4096, "nothing exceeded the granted maximum");
+
+    // Silence means silence. The buffer arrives full of 1.0f above, so a
+    // processor that leaves it alone fails here -- which is the point: an
+    // untouched output buffer is a driver's uninitialised memory reaching
+    // somebody's monitors, and it is loud.
+    {
+        SilenceProcessor s2;
+        std::vector<float> buf(64, 1.0f);
+        float* chans[1] = {buf.data()};
+        s2.prepare(48000.0, 64);
+        AudioIo io;
+        io.out = chans;
+        io.numOut = 1;
+        io.frames = 64;
+        s2.process(io);
+        bool cleared = true;
+        for (float v : buf) if (v != 0.0f) cleared = false;
+        check(cleared, "SilenceProcessor writes zeros rather than leaving the buffer");
+    }
+
+    // A device that fails to open calls release() without prepare(). It must
+    // not be undefined behaviour to do so.
+    {
+        SilenceProcessor s3;
+        s3.release();
+        check(s3.releaseCount() == 1 && s3.prepareCount() == 0,
+              "release without a preceding prepare is legal");
+    }
+
+    // A null channel is what a driver gives for an output it did not provide.
+    {
+        SilenceProcessor s4;
+        s4.prepare(48000.0, 64);
+        float* chans[2] = {nullptr, nullptr};
+        AudioIo io;
+        io.out = chans;
+        io.numOut = 2;
+        io.frames = 64;
+        s4.process(io);
+        check(s4.callbacks() == 1, "a null output channel is skipped, not dereferenced");
+    }
+
+    static_assert(noexcept(std::declval<BlockProcessor&>().process(
+                      std::declval<const AudioIo&>())),
+                  "process must be noexcept: an exception crossing a driver "
+                  "callback is UB on every platform we target");
+}
+
 int main() {
     std::printf("adi_engine_tests -- ADR-0010 / ADR-0019, the snapshot handoff\n\n");
     try {
@@ -336,6 +428,7 @@ int main() {
         testStructuralSharing();
         testTempoConversion();
         testSnapshotFromRealProject();
+        testDeviceSeam();
     } catch (const std::exception& e) {
         std::printf("\nFAILED -- exception escaped: %s\n", e.what());
         return 1;
