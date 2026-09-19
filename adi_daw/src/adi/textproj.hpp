@@ -128,4 +128,106 @@ inline constexpr std::int64_t kMaxDenominator = 1024;
 [[nodiscard]] std::vector<std::string> assignLabels(
     const std::vector<std::string>& base_labels);
 
+// ---------------------------------------------------------------------------
+// Ordering (TEXT-PROJECTION 7)
+// ---------------------------------------------------------------------------
+//
+// No ordering column in the core model is uniqueness-enforced -- tracks,
+// lanes, clips, devices, device_chains and markers all permit two siblings to
+// share an ordinal, and notes inside a blob have no ordinal at all. `scenes` is
+// the only exception. So the only thing that breaks a tie in storage is the row
+// id, which is exactly what must not reach the output. Every collection's order
+// therefore has to be a function of content alone.
+
+/// One declared semantic key (TEXT-PROJECTION 7.3). Integers compare as
+/// integers: a bytewise comparison of rendered position tokens sorts `10|1|0`
+/// before `2|1|0`, which is deterministic and wrong-looking, and would be
+/// reported as a bug forever. Sort keys are raw values; rendered tokens are
+/// output only.
+class SortKey {
+public:
+    static SortKey integer(std::int64_t v);
+    static SortKey real(double v);
+    static SortKey text(std::string v);
+    static SortKey null();
+
+    /// Total order: null < integer < real < text, then by value. Reals compare
+    /// with -0.0 before +0.0 and NaN last, so the order is total over every
+    /// bit pattern a REAL column can hold.
+    [[nodiscard]] int compare(const SortKey& other) const;
+
+    /// An injective, content-derived token, used to seed K3 refinement.
+    ///
+    /// NOT part of the output format -- nothing here reaches a projected file.
+    /// It exists because refinement needs to tell two keys apart, and
+    /// `compare()` only yields -1/0/1: seeding from a comparison collapses
+    /// every distinct integer key into one colour and quietly costs refinement
+    /// the discriminating power it was added for. Reals contribute their bit
+    /// pattern, so -0.0 and +0.0 seed differently, as they must.
+    [[nodiscard]] std::string seedToken() const;
+
+private:
+    enum class Tag { Null, Int, Real, Text };
+    Tag tag_ = Tag::Null;
+    std::int64_t i_ = 0;
+    double d_ = 0.0;
+    std::string s_;
+};
+
+/// One member of a collection, as the ordering machinery sees it.
+struct Member {
+    /// K1 -- the declared semantic keys for this collection, in declared order.
+    std::vector<SortKey> keys;
+
+    /// K2 -- this member's own skeleton projection: its full recursive
+    /// rendering with every cross-reference token replaced by a single `?`.
+    /// This is what breaks the circularity. Order depends on skeletons,
+    /// skeletons contain no designators, and designators depend on order.
+    std::string skeleton;
+
+    /// K3 -- indices of sibling members this one cites, and that cite it.
+    /// Refinement uses both directions: two tracks identical in every field are
+    /// still distinguishable if different things send to them.
+    std::vector<std::uint32_t> out_refs;
+    std::vector<std::uint32_t> in_refs;
+};
+
+enum class OrderStatus {
+    Exact,      ///< the order is canonical
+    Ambiguous,  ///< a tied class exceeded the K4 bound; see TEXT-PROJECTION 11
+};
+
+struct OrderResult {
+    /// `order[p]` is the index of the member at position `p`.
+    std::vector<std::uint32_t> order;
+    OrderStatus status = OrderStatus::Exact;
+    /// The largest class that survived K3 still tied. 1 when nothing tied.
+    std::size_t largest_tied_class = 1;
+};
+
+/// The K4 bound (TEXT-PROJECTION 7.2). Permutation minimisation is factorial in
+/// the class size, so it is bounded, and above the bound the projector reports
+/// `Ambiguous` rather than inventing an order. That is a deliberate choice of a
+/// total-but-refusing projector over a total-but-arbitrary one: an arbitrary
+/// order would be a leak wearing a canonical hat.
+inline constexpr std::size_t kMaxTiedClass = 8;
+
+/// Render a candidate ordering. Supplied by the caller because K4 minimises
+/// over the OUTPUT, not over any property of the members -- that is what makes
+/// it canonical rather than a choice of member.
+using RenderFn = std::string (*)(const std::vector<std::uint32_t>& order,
+                                 void* ctx);
+
+/// Canonical order for one collection: K1 semantic keys, then K2 skeletons,
+/// then K3 refinement to a fixed point, then K4 permutation minimisation.
+///
+/// `render` may be null. When it is, K4 cannot observe a difference between
+/// tied members and they are left in refinement order -- correct when the class
+/// is automorphic, which is the common case, and reported through
+/// `largest_tied_class` when the caller needs to know it was not verified.
+[[nodiscard]] OrderResult canonicalOrder(const std::vector<Member>& members,
+                                         RenderFn render = nullptr,
+                                         void* ctx = nullptr,
+                                         std::size_t max_tied_class = kMaxTiedClass);
+
 }  // namespace adi::textproj
