@@ -3,6 +3,12 @@
 **Status:** design. Nothing built. The UI is roadmap step 7; this exists so
 step 6 does not make it impossible.
 
+`win` wrote §1–§7 when the director asked for a component tree, before the
+lanes were split; the tree and its three rules are his and they hold. §8–§11
+are mine and they are all the same omission: **the tree says what the shell
+*is* and nothing said what it *does per frame*.** That is where a JUCE DAW UI
+actually fails — not in its hierarchy.
+
 **Owner: `mac`.** The director assigned the component hierarchy to mac after
 this draft was written. It stands as a **starting proposal, not a decision** —
 revise or replace it rather than writing a second one beside it. What is
@@ -63,11 +69,19 @@ juce::DocumentWindow
 
 ### Three rules the tree exists to enforce
 
-**No component owns project state.** Every one of them reads the current
-`Snapshot` and emits ops. None holds a `SQLite::Database&`, a row id it looked
+**No component owns COMMITTED project state.** Every one of them reads the
+current `Snapshot` and emits ops. None holds a `SQLite::Database&`, a row id it looked
 up itself, or a cached copy of anything. This is ADR-0010 at the UI layer, and
 it is what makes the whole shell testable against a hand-built `Snapshot` — the
 same trick that makes `buildTree` testable without a database.
+
+*One refinement, because the absolute form is not implementable.* A control
+mid-interaction does hold state the snapshot cannot: the characters in a text
+field before commit, a fader's position during a drag, an in-flight IME
+composition. Forcing those through ops would emit an op per keystroke, fill the
+undo tree with typing, and break IME on every platform that has one. The rule
+is about **committed** state: transient interaction state is owned by the
+control, lives until commit or cancel, and never survives either.
 
 **View state lives in `ui_view`, not in members.** The three-state toggle, panel
 widths, collapsed groups, zoom. That puts it in Layer 3, so it survives a reload,
@@ -199,3 +213,117 @@ A group is a summing node: it mixes its children's audio, concatenates their
 event lists, and runs its own device chain on the result. It is silent when all
 its children are silent, so ADR-0043's suspension propagates up a group tree
 without any special case for groups.
+
+---
+
+## 8. The frame, which is the part that was missing
+
+Nothing above says *when* anything repaints, and in a JUCE DAW that is the
+decision that determines whether the UI is usable. A shell that repaints on
+every change is correct and unusable; the arrangement is the largest surface in
+the window and the playhead moves 60 times a second across it.
+
+**One clock, draining coalesced dirt.** A single `juce::VBlankAttachment` on the
+root drives the whole shell at display rate. Components never call `repaint()`
+in response to a model change; they set a dirty bit and the frame drains it.
+Two changes to one track between frames cost one repaint, and an op storm —
+which ADR-0039's remote actor can produce — costs one repaint per frame rather
+than one per op.
+
+**The playhead never dirties the arrangement.** It is its own component, one
+pixel wide, above `ArrangementCanvas` and transparent to hit-testing. Moving it
+repaints two thin strips. Painting it *into* the canvas is the single most
+common way a DAW timeline ends up repainting its whole width at 60 Hz, and the
+cost does not appear until someone has a hundred tracks on screen.
+
+**The UI reads the snapshot once per frame, not once per query.** `SnapshotReader`
+takes one reference at the top of the frame and every component reads that same
+one. Otherwise two panels can render different snapshots in one frame and the
+mixer disagrees with the timeline — the §4 failure, arriving through timing
+rather than through a second model.
+
+**Open:** whether `ArrangementCanvas` wants an `OpenGLContext`. It would help a
+large canvas on Windows and is worth measuring rather than assuming; on macOS
+CoreGraphics is competitive and the context costs a GL thread and some driver
+risk. Decide it with a profile at step 7, not now.
+
+---
+
+## 9. Metering does not go through any of this
+
+The highest-frequency data in the window, and nothing above carries it. Saying
+where it goes matters because all three obvious answers are wrong.
+
+**Not an op.** A meter is not a mutation; metering through the op log would fill
+the undo tree at audio rate.
+
+**Not the snapshot.** ADR-0019 publishes a snapshot when the *structure*
+changes. Republishing at metering rate would make an edit-cost mechanism carry
+a per-frame signal and defeat the structural sharing it was built for.
+
+**Not a lock.** It originates on the audio thread.
+
+It is a **lock-free scalar per metered point**, written by the audio thread and
+read by the frame:
+
+```
+struct MeterTap { std::atomic<float> peak, rms; };   // one per track and bus
+```
+
+Relaxed ordering is sufficient: a meter that is one frame stale is invisible,
+and the audio thread must never wait to publish one. This is the only path in
+the UI where the audio thread writes something the UI reads, which is why it is
+worth naming rather than leaving to whoever builds the mixer.
+
+---
+
+## 10. What is realised, and what is only drawn
+
+§3 settles the canvas: one component, because a few thousand clips is where
+per-component bookkeeping stops working. The same argument reaches two places
+§2 leaves as arrays, and the mixer is the sharper case.
+
+`MixerStrip[]` is one component per track, each with a fader, sends, and a
+meter that updates every frame. At the density this DAW is being built for —
+the director's workflow is dense arrangements — a few hundred strips is a few
+hundred repainting components, and only a dozen are on screen.
+
+**Realise what is visible; draw the rest not at all.** `MixerPanel` and
+`TrackHeaderList` keep components for the visible span plus a small margin and
+recycle them on scroll. `TrackOrderModel` already knows the full order, so
+virtualisation is a windowing concern and not a second model — the §4 rule
+survives.
+
+This costs nothing today and cannot be retrofitted cheaply: a strip that has
+assumed it lives forever will hold state that a recycled one loses.
+
+---
+
+## 11. Two things the other ADRs oblige the UI to carry
+
+**Modulation needs a control base, not a widget (ADR-0046).** Any parameter can
+be a modulation target, so every parameter control — fader, knob, the
+device-chain controls — must share a base that knows its parameter identity,
+can render a modulation depth around its current value, and can accept a source
+dropped onto it. Retrofitting that into controls written as plain sliders means
+touching all of them.
+
+This **depends on the device/parameter contract**, which ADR-0035 and ADR-0040
+still leave open: "its parameter identity" is exactly what that contract
+decides. The control base cannot be written before it, and that is the gate.
+
+**A hybrid port means a device view cannot be typed by its track (ADR-0045).**
+Every port carries audio *and* events, so `DeviceView` renders what the device
+consumes and produces rather than what the track "is" — there is no audio track
+to ask. §7's instrument row is also a UI obligation: an instrument **sums into**
+audio already on the bus, and a chain that does not show that is a surprise the
+user meets at mixdown.
+
+**And an answer to §5's open question.** A keymap does not belong in `.adi`, for
+the reason §5 gives: shortcuts must not change because you opened someone else's
+project. It belongs in an app-scoped `juce::PropertiesFile` alongside the audio
+device selection, which is the same category — a property of this installation
+rather than of this project. Nothing about it needs the format, and putting it
+there would make every project file a vector for changing a user's keyboard.
+
+---
