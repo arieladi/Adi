@@ -292,3 +292,78 @@ if(ADI_BUILD_FUZZERS)
                 "$<TARGET_FILE_DIR:adi_fuzz_blob>/fuzz_corpus/blob"
         VERBATIM)
 endif()
+
+# ---------------------------------------------------------------------------
+# JUCE — optional, OFF by default. Step 6 infrastructure (ADR-0043).
+#
+# ADR-0036 built the engine headless on purpose, and those tests are how the
+# snapshot handoff is proved. So JUCE must never become a hard dependency of
+# adi_core: with ADI_WITH_JUCE=OFF the whole tree, all ten suites and every
+# validator build and pass with no JUCE present at all. That is the property
+# this option exists to protect, and CI keeps JUCE-off required on every ABI.
+#
+#   bash adi_daw/tools/fetch_external.sh --with-juce
+#   cmake -S adi_daw -B build-juce -DADI_WITH_JUCE=ON
+#   ./build-juce/adi_audio_probe --block 8192
+# ---------------------------------------------------------------------------
+option(ADI_WITH_JUCE "Build the JUCE-dependent targets (step 6)" OFF)
+
+if(ADI_WITH_JUCE)
+    set(ADI_JUCE_DIR "${ADI_THIRD_PARTY}/JUCE")
+    if(NOT EXISTS "${ADI_JUCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "ADI_WITH_JUCE=ON but third_party/JUCE is absent. It is pinned and\n"
+            "fetched separately because it is ~800MB unshallowed and no default\n"
+            "build needs it:\n"
+            "    bash adi_daw/tools/fetch_external.sh --with-juce")
+    endif()
+
+    add_subdirectory("${ADI_JUCE_DIR}" EXCLUDE_FROM_ALL SYSTEM)
+
+    # --- adi_audio_probe ---------------------------------------------------
+    # Opens an audio device at a requested block size, reports what it actually
+    # got, and closes. No graph, no processing. It exists to prove the
+    # dependency configures, links and RUNS on clang/arm64 and MSVC before step
+    # 6 depends on it, and to answer ADR-0042's question empirically: what block
+    # sizes will a real driver give us?
+    juce_add_console_app(adi_audio_probe PRODUCT_NAME "adi_audio_probe")
+    target_sources(adi_audio_probe PRIVATE src/juce/audio_probe.cpp)
+    target_compile_features(adi_audio_probe PRIVATE cxx_std_20)
+
+    target_compile_definitions(adi_audio_probe PRIVATE
+        JUCE_STANDALONE_APPLICATION=1
+        JUCE_USE_CURL=0
+        JUCE_WEB_BROWSER=0
+        JUCE_DISPLAY_SPLASH_SCREEN=0   # we take the AGPL grant, not the free tier
+
+        # ADR-0041: VST3 is the only host format, and every other one is set to
+        # 0 EXPLICITLY rather than left to a default. A format enabled by a
+        # default is one somebody has to keep compiling, and the ADR says not
+        # behind a flag and not for testing.
+        #
+        # JUCE 9.0.2 also ships LV2 and LADSPA hosts, which ADR-0041 does not
+        # name. They are off here for the same reason and the ADR should list
+        # them.
+        JUCE_PLUGINHOST_VST3=1
+        JUCE_PLUGINHOST_VST=0
+        JUCE_PLUGINHOST_AU=0
+        JUCE_PLUGINHOST_LV2=0
+        JUCE_PLUGINHOST_LADSPA=0
+        JUCE_PLUGINHOST_ARA=0)
+
+    target_link_libraries(adi_audio_probe PRIVATE
+        juce::juce_audio_devices
+        juce::juce_audio_utils
+        adi_warnings)
+
+    # JUCE's own headers do not survive this tree's warning wall, and they are
+    # not ours to fix. SYSTEM on add_subdirectory covers its sources; this
+    # covers its headers where we include them.
+    get_target_property(_adi_juce_incs juce::juce_audio_devices
+                        INTERFACE_INCLUDE_DIRECTORIES)
+    if(_adi_juce_incs)
+        target_include_directories(adi_audio_probe SYSTEM PRIVATE ${_adi_juce_incs})
+    endif()
+
+    message(STATUS "adi: JUCE enabled (${ADI_JUCE_DIR})")
+endif()
