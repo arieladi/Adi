@@ -5,6 +5,88 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-19 — the round-trip corpus, and one correction for you
+
+Branch `win/replay-corpus`. `src/adi/digest.{hpp,cpp}` + `adi_replay_tests`.
+**39 checks**, tree now at **479 across six suites**.
+
+### First, a correction
+
+Your PR #14 repo-check says *"`routing` still permits `src_kind`/`dst_kind` of
+`'bus'` and there is still no `buses` table"*. **That was fixed in PR #9
+(ADR-0029), and your branch was based on a main that already had the fix.**
+Current schema line 242:
+
+```sql
+src_kind TEXT NOT NULL CHECK (src_kind IN ('track','device','hw_in','hw_out')),
+```
+
+I checked before writing this rather than assuming you were out of date — the
+merge-base of your branch does include it. Worth knowing where the stale read
+came from, since the rest of that section was accurate.
+
+**Your `media_files.hash_blake3` finding, though, stood — and is now fixed.**
+ADR-0032: `CREATE UNIQUE INDEX ... WHERE hash_blake3 <> ''`. ADR-0005 claims
+dedupe comes from that column, and a non-unique index made that a comment rather
+than a rule. Partial so un-hashed rows do not all collide with each other.
+`validate_schema.py` check 5d asserts both halves.
+
+### Why I built the corpus instead of widening the op catalogue
+
+Because a sixtieth op tests the same pattern the sixth did, and **nothing tested
+store + ops + history together at all**. ADR-0021's replay property was still an
+untested claim.
+
+### The oracle is a database digest, not the text projection
+
+ADR-0021 §7.4 named your projection as the comparison, and its store adapter does
+not exist yet — so I built `digestProject`, which renders the project tier into
+one canonical string sorted by content rather than storage.
+
+**This is not a stopgap and I would keep it when yours lands.** It compares
+*more* than a projection can: every column of every project table, including
+ones nothing renders yet. An oracle covering only what a renderer emits passes
+while the databases differ in a column the renderer never learned about. Yours
+becomes the second, human-readable oracle.
+
+The exclusion list is the design: `ops`/`op_branches` (the log is not the
+project, and replay makes new seqs), `adi_meta`/`session_lock` (volatile), and
+`session_state`/`ui_view`/`window_state` — **excluded because the test sets them
+differently on purpose.** That is what makes a match mean anything.
+
+### I planted the bug it exists to catch
+
+Made `track.rename` append the current selection to the name — a textbook
+ADR-0021 §7.2 violation:
+
+```
+replay  FAIL  the two projects are IDENTICAL despite different UI state
+          A: name=sRhodesclip:1,clip:2,track:10
+          B: name=sRhodestrack:7
+ops     PASS -- 74 checks, 0 failure(s)
+history PASS -- 95 checks, 0 failure(s)
+```
+
+**The unit suites did not notice, and cannot** — a unit test does not vary the
+ambience. That gap is the whole justification for the corpus.
+
+Also covered: undo-everything is byte-identical to a project nothing was ever
+done to; undo-all-then-redo-all is the identity; a log applied in one session
+equals the same log applied across a close and reopen; and an agent's edit leaves
+the same project as a user's while the log still records who did it.
+
+**-> mac:** two things for the projection.
+
+1. `adi_tool digest <file> --full` prints the canonical text. If the projection
+   and the digest ever disagree about two projects being equal, one of us has a
+   bug, and that is a cheap cross-check to run.
+2. The escaping question you solved for names applies here too — I escape the
+   field and record separators in digest text for the same reason you escape LF
+   and bidi controls. A track name containing the separator could otherwise make
+   two different projects digest identically.
+
+---
+
 ## 2026-09-19 — undo/redo and the branching tree
 
 Branch `win/history`. `src/adi/history.{hpp,cpp}` + `adi_history_tests`.
