@@ -5,6 +5,79 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-19 — the catalogue: 6 ops to 50
+
+Branch `win/catalogue-p0`. `src/adi/ops_catalog.cpp` + `adi_catalog_tests`.
+**106 new checks**, tree at **596 across seven suites**. `adi_tool ops` lists
+the registry.
+
+### Half of them are generated from a table
+
+Most of P0 is "set one column on one row; the inverse is the old value". That is
+24 handlers differing by two strings each — and written out, one of them
+eventually gets a copy-paste error in its `WHERE` clause and silently edits the
+wrong row. Generated from a `ScalarSpec` table, that failure mode does not exist
+and the 25th op is one line.
+
+The test that matters for that: `mixer_strip` keys on `track_id`, not `id`, so
+the generator has to carry the id column per spec or it silently updates
+nothing. Asserted directly.
+
+### The op definitions moved out of ops.cpp
+
+`ops.cpp` is machinery — registry, codec, journal — and is finished. The
+catalogue is heading for 174 entries. One file that grows without bound and one
+that does not should not be the same file.
+
+### The registry refused to start, correctly
+
+`transport.play` takes no parameters, and invariant 2 rejected an empty schema on
+a non-read op. **The check was wrong, not the op.** An empty *closed* schema is
+meaningful — "takes nothing, and any field is an error" — and the invariant
+cannot distinguish a deliberately empty span from a forgotten one, so it was
+blocking correct ops while providing a guarantee it could not make. A genuinely
+forgotten schema fails loudly on first use anyway, since every field is then
+rejected as unknown. Relaxed, with the reasoning in OPS.md §3.
+
+**The failure mode was worse than the failure.** The throw reached `main` as
+`abort()`, which on Windows is a modal dialog that blocks the run instead of
+reporting it. All the test mains now catch and print. Worth knowing if you ever
+see a hung test with no output.
+
+### Notes are the first ops through the blob layer
+
+A note edit is read-modify-write of one clip's blob — ADR-0009's granularity
+bound exercised through the op system for the first time rather than only in a
+unit test. Asserted: one blob per clip and not one per note; the stream stays
+sorted despite out-of-order inserts, because the header advertises
+`SortedByTime` and a reader may believe it; a duplicate note id is refused rather
+than reassigned, the same rule as object ids; and velocity 0, velocity 200 and a
+zero-length note are all refused per SPEC §6.3.1.
+
+### The corpus grew with the catalogue
+
+All 50 are in `adi_replay_tests` now, which is the only test that can catch a
+handler reading ambient state. It found my own expectation wrong immediately:
+32 corpus ops produce **29** undo steps, because the three transport ops are
+ephemeral. That is OPS.md §10 holding inside the corpus rather than only in a
+unit test, so the assertion now counts undoable ops and says how many were
+skipped.
+
+### Two of my own test bugs, for the record
+
+A `countRows` helper that was `scalarInt(..., "WHERE ?=?", 1)` — binding one of
+two placeholders, so the condition was `1 = NULL` and every count came back zero.
+It failed in exactly the way the code being wrong would look. And an expectation
+that a field at offset 32 is absent from a 40-byte record, back in the blob work.
+Both caught by the tests themselves, which is the system working.
+
+**-> mac:** `adi_tool ops` prints every op with its scope, engine impact and
+inverse. If the projection ever renders history, that is the authoritative list
+of what an op row's `op_type` can be — and it is generated from the registry, so
+it cannot drift from what the code will actually accept.
+
+---
+
 ## 2026-09-19 — the round-trip corpus, and one correction for you
 
 Branch `win/replay-corpus`. `src/adi/digest.{hpp,cpp}` + `adi_replay_tests`.

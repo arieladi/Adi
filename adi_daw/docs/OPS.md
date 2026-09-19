@@ -1,10 +1,23 @@
 # The op vocabulary — step 3
 
-**Status:** framework complete and **implemented** in `src/adi/ops.{hpp,cpp}`.
-The catalogue covers all P0/P1 surface and most P2; six of the 174 are wired up
-with handlers and inverses, chosen to exercise all three inverse shapes rather
-than to be a lot of ops. The rest is mechanical. The contracts in §1–§8 are the
-part that is expensive to change.
+**Status:** framework complete and **implemented** — machinery in
+`src/adi/ops.{hpp,cpp}`, catalogue in `src/adi/ops_catalog.cpp`, undo in
+`src/adi/history.{hpp,cpp}`.
+
+**50 of the 174 are wired up** with handlers and inverses, covering most of the
+P0 editing surface. `adi_tool ops` lists them. Roughly half are generated from a
+table rather than hand-written: most of P0 is "set one column, the inverse is the
+old value", and 24 textually identical handlers is 24 chances to get a `WHERE`
+clause wrong. Generated, that failure mode does not exist and the 25th is one
+line.
+
+Every one is covered by `adi_catalog_tests` — applied, then undone, then checked
+that the world came back, which exercises the inverse the way undo actually will
+rather than inspecting the stored blob. And all of them are in the round-trip
+corpus (ADR-0021 §7.4, `adi_replay_tests`), which is the only test that can catch
+a handler reading ambient state.
+
+The contracts in §1–§8 are the part that is expensive to change.
 
 Every mutation to an `.adi` project is an **op**: a typed, scoped, attributed,
 invertible command appended to the `ops` table in the same transaction that
@@ -78,6 +91,12 @@ fails:**
 
 1. Every op with `scope != Read` has a non-null `apply` **and** `buildInverse`.
 2. Every op has a closed payload schema: unknown fields rejected, not ignored.
+   **An empty schema is legal and meaningful** — `transport.play` takes no
+   parameters, and an empty closed schema says "takes nothing, and any field is
+   an error". An earlier draft of this invariant rejected an empty schema on a
+   write op, on the theory that it meant someone had forgotten to declare one;
+   it cannot tell the two cases apart, and a forgotten schema fails loudly on
+   first use regardless, because every field is then rejected as unknown.
    **This applies to a payload arriving from a caller, and is not in conflict
    with §8 rule 3, which preserves unknown fields read back from the log.** They
    are opposite directions of travel and the distinction is load-bearing:
