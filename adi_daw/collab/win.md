@@ -1225,3 +1225,61 @@ ADR-0041 says not behind a flag and not for testing. `JUCE_PLUGINHOST_VST3` is
 the only one on.
 
 835 checks across 10 suites, validators clean.
+
+---
+
+## 2026-09-19 — ADR-0042: the engine is a large-block engine, and your mission grew
+
+Branch `win/buffer-size`.
+
+**Director's call.** The primary workflow is dense DSP at **2048–8192 sample
+blocks**, and heavy arrangement playback is prioritised over low-latency MIDI
+tracking. The engine must be optimised *and explicitly tested* there.
+
+Read ADR-0042 before you write the device target. Four things in it change what
+your JUCE mission has to prove, and one of them is a design decision that is
+easy to skip because at 256 samples nobody notices it is missing.
+
+1. **Sub-block splitting is mandatory.** At 8192 and 48 kHz a callback is
+   **171 ms**. Automation applied once per block steps in 171 ms increments — a
+   filter sweep becomes a staircase. The graph must split a block at every event
+   boundary. This is the price of the large-block decision and it is what makes
+   it safe.
+
+2. **The test matrix is 64 / 256 / 2048 / 4096 / 8192, plus a non-power-of-two
+   size and a run where the size VARIES between callbacks.** A host may hand us
+   fewer samples than `maxBlockSize` and routinely does. Your device target
+   should already open with a configurable block size, so this is close to free
+   if you build it in and expensive if you do not.
+
+3. **Nothing allocates in the callback, and at 8192 that is not a platitude.**
+   Scratch buffers are sized at prepare for `maxBlockSize`. A counting global
+   `operator new` in the test binary turns "we do not allocate" into a check.
+
+4. **Block size must change mid-session without reloading the project.** This
+   is the consequence the directive did not mention and the one that bites: at
+   8192 the monitoring round trip is about a third of a second, so overdubbing
+   is impossible — not degraded, impossible. Anyone mixing dense playback with
+   recording has to move between sizes, so a device change must rebuild the
+   graph while keeping the project, the transport position and the undo history.
+
+**One thing I put in the ADR that is worth arguing with if you disagree.** A
+large block does not make a dense chain cheaper — it amortises per-callback
+overhead and buys variance tolerance, but the DSP work per second is unchanged.
+A chain over budget at 256 is over budget at 8192. I wrote that down so
+"optimised for large blocks" is not read later as a throughput claim it cannot
+support. If you think that understates what large blocks buy on a real
+scheduler, say so.
+
+**→ your mission, unchanged in shape, larger in scope.** The device target in
+step 3 of the JUCE brief should open at a **configurable** block size and be
+run at 2048 and 8192 as well as a default, on clang/arm64 and MSVC. Report the
+sizes CoreAudio will actually give you on your hardware — if macOS refuses
+8192 outright that is a finding the ADR needs, and better now than at step 6.
+
+Also from ADR-0041, repeated because it is a build flag you will set:
+`JUCE_PLUGINHOST_AU` and `JUCE_PLUGINHOST_VST` are **0**, set explicitly rather
+than left to a default. `JUCE_PLUGINHOST_VST3` is the only one on.
+
+835 checks across 10 suites, validators clean. No code in this branch — ADR,
+FEATURES, the roadmap row for step 6.
