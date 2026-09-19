@@ -7,7 +7,8 @@ through the same undoable operations a human uses.
 
 **Status:** format specified, reference implementation building.
 **627 checks across 8 suites**, green on 7 ABIs. Nothing is frozen.
-**Language:** C++ with JUCE (ADR-0014) · **Licence:** GPLv3 (ADR-0015)
+**Language:** C++ with JUCE (ADR-0014) · **Licence:** GPLv3 (ADR-0015); a build
+linking JUCE is a combined work with AGPLv3 obligations on the JUCE part (ADR-0048)
 
 A long-term project built step by step. The format came first because it is the
 only part that is genuinely expensive to change later; the store, op log, undo
@@ -59,7 +60,7 @@ than frightening.
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
 | [`docs/UI-ARCHITECTURE.md`](docs/UI-ARCHITECTURE.md) | The Ableton-shaped shell, the component tree, and how the graph carries a hybrid track. |
 | [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 48 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 49 entries. |
 | [`docs/EXTERNAL-CODE.md`](docs/EXTERNAL-CODE.md) | The nine external repos we read or link against, and the licence boundary between them. Read before copying a line out of `reference/`. |
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
 | [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 160-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |
@@ -67,7 +68,7 @@ than frightening.
 | [`tools/test_all.sh`](tools/test_all.sh) | Every test binary, both validators, and the spec-vs-binary layout check. Binaries are discovered, not listed. |
 | [`tools/build.bat`](tools/build.bat) | Windows build. A `.bat` because `vcvars64` must run in the same shell. |
 | [`src/adi/`](src/adi/) | The reference implementation: `blob` (SPEC §6.3 layouts), `store` (the `.adi` itself), `ops` + `ops_catalog` (50 ops), `history` (branching undo), `digest` (the replay oracle), `check` (what SQLite cannot enforce), `textproj` (the canonical text projection). |
-| [`LICENSE`](LICENSE) | GPLv3. |
+| [`LICENSE`](LICENSE) | GPLv3. Our code. JUCE is AGPLv3 and a build that links it carries AGPL obligations on that part — ADR-0048. |
 
 ## The tool
 

@@ -41,25 +41,15 @@ class Store;
 namespace adi::textproj {
 
 // ---------------------------------------------------------------------------
-// Positions (TEXT-PROJECTION 8)
+// Positions
 // ---------------------------------------------------------------------------
 
-/// `bar|beat|tick`, 1-based bar and beat, tick 0-based within the beat.
+/// `rows::TimeSignature` rows as the pure layer's `Meter`s.
 ///
-/// Takes the signature map by value rather than living in `textproj.hpp`,
-/// because the pure layer has no type for a signature map and inventing one
-/// there to hold four integers would put a schema shape in the file that is
-/// deliberately free of them. If that trade is wrong the fix is a pure
-/// `Meter` type, not a query in here.
-///
-/// An empty map, or one whose first event is after tick 0, is 4/4 from the
-/// start -- the same assumption the engine makes about a missing initial tempo
-/// (`snapshot.cpp`), for the same reason: a projector cannot render a warning.
-///
-/// A signature change part-way through a bar starts a new bar at the change,
-/// which is what every DAW does and what a musician reading the file expects.
-[[nodiscard]] std::string renderPosition(std::int64_t ticks,
-                                         const std::vector<rows::TimeSignature>& sigs);
+/// `renderPosition` lives in `textproj.hpp` beside `renderDuration`, where
+/// mac moved it: a `Meter` is a fact about music, and `time_signature_map` is
+/// a table that happens to store some. This is the whole of the conversion.
+[[nodiscard]] std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>&);
 
 // ---------------------------------------------------------------------------
 // Coverage (TEXT-PROJECTION 10)

@@ -33,12 +33,14 @@ cd "$(dirname "$0")/.."
 
 WANT_REFERENCE=1
 WANT_ALL_THIRD_PARTY=1
+WANT_JUCE=0
 case "${1:-}" in
     --build-only)        WANT_REFERENCE=0; WANT_ALL_THIRD_PARTY=0 ;;
+    --with-juce)         WANT_REFERENCE=0; WANT_ALL_THIRD_PARTY=0; WANT_JUCE=1 ;;
     --third-party-only)  WANT_REFERENCE=0 ;;
     "")                  ;;
     *) echo "unknown option: $1" >&2
-       echo "usage: $0 [--build-only | --third-party-only]" >&2; exit 2 ;;
+       echo "usage: $0 [--build-only | --with-juce | --third-party-only]" >&2; exit 2 ;;
 esac
 
 mkdir -p third_party
@@ -46,14 +48,21 @@ if [ "$WANT_REFERENCE" = 1 ]; then mkdir -p reference; fi
 
 # repo                          dir         licence   tag       commit that tag pointed at            role
 #
-# `role` is build|later. build = the CMake tree links it today, and CI fetches
-# exactly these with --build-only. later = pinned and ready, not yet linked.
+# `role` is build|later|juce.
+#   build  the CMake tree links it today; CI fetches exactly these with
+#          --build-only.
+#   later  pinned and ready, not yet linked.
+#   juce   fetched only by --with-juce. JUCE is ~800MB and ADI_WITH_JUCE is OFF
+#          by default (ADR-0036 keeps adi_core and all ten suites buildable with
+#          no JUCE present at all), so pulling it into every CI leg would cost
+#          every ABI a large clone to build something none of them build.
 # Moving a pin is a reviewed change, not a refresh: see ADR-0024.
 THIRD_PARTY=(
   "SRombauts/SQLiteCpp          SQLiteCpp   MIT       3.3.3     59a047b8d3fe8574406ed73ab9fac0474e87bd03  build"
   "nlohmann/json                json        MIT       v3.12.0   55f93686c01528224f448c19128836e7df245f72  build"
   "bungee-audio-stretch/bungee  bungee      MPL-2.0   v2.4.30   8cb6977d0c1a1b411ac320493b3c7f5182ed2d22  later"
   "DNedic/lockfree              lockfree    MIT       3.0.1     ae6c4df124536218b0b1adfc21ab4921810a00a5  later"
+  "juce-framework/JUCE          JUCE        AGPL-3.0  9.0.2     72782788ce18c2d4d760b28e0921d6ffc6431102  juce"
 )
 
 # NOTE: helio is helio-fm/helio-sequencer, NOT Ahornberg/helio-workstation --
@@ -74,7 +83,11 @@ fetch_pinned() {
     read -r repo dir lic tag want role <<<"$1"
     path="third_party/$dir"
 
-    if [ "$WANT_ALL_THIRD_PARTY" = 0 ] && [ "$role" != build ]; then
+    if [ "$role" = juce ] && [ "$WANT_JUCE" = 0 ] && [ "$WANT_ALL_THIRD_PARTY" = 0 ]; then
+        printf '  %-18s skipped       (needs --with-juce)\n' "$dir"
+        return 0
+    fi
+    if [ "$WANT_ALL_THIRD_PARTY" = 0 ] && [ "$role" != build ] && [ "$role" != juce ]; then
         printf '  %-18s skipped       (--build-only; role=%s)\n' "$dir" "$role"
         return 0
     fi
