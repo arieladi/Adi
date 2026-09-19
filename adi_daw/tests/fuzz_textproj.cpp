@@ -23,6 +23,12 @@
 //   P5  STATUS HONESTY. Ambiguous is reported when, and only when, a tie
 //       survived that K4 could not resolve -- which, with no renderer passed,
 //       is any tie at all.
+//   P7  PATH INTEGRITY. A designator contains exactly one `/` per segment,
+//       for any segment bytes. A name that can contribute a literal `/` can
+//       forge a path boundary and make a send appear to target another track.
+//   P8  MEDIA PREFIXES. Uniform length, and they separate exactly as well as
+//       the whole hashes do -- no more, which would be diff noise, and no
+//       less, which would merge two media files.
 //   P6  ESCAPE CLOSURE. A quoted string contains no raw LF, no raw control
 //       character and no bidi control, for ANY input bytes. Nesting is by
 //       indentation with no closing delimiter, so a name that can emit a raw
@@ -252,11 +258,67 @@ void checkRenderers(Bytes& b) {
         __builtin_trap();
 }
 
+void checkDesignators(Bytes& b) {
+    // P7 -- PATH INTEGRITY. A designator is one quoted string whose segments
+    // are separated by `/`, and segment content is attacker-influenced (it is
+    // a track name). So the number of literal `/` in the output must equal the
+    // number of segments, for ANY segment bytes: a name that can contribute a
+    // literal `/` can forge a path boundary and make a send appear to target a
+    // different track than it does.
+    const std::size_t count = b.below(5);
+    std::vector<std::string> segs;
+    segs.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) segs.push_back(b.text(12));
+
+    const std::string d = designator(segs);
+    if (d.size() < 2 || d.front() != '"' || d.back() != '"') __builtin_trap();
+
+    std::size_t slashes = 0;
+    for (std::size_t i = 1; i + 1 < d.size(); ++i) {
+        const auto c = static_cast<unsigned char>(d[i]);
+        if (c == '/') ++slashes;
+        // Escape closure applies inside a designator too.
+        if (c == '\n' || c == '\r' || c == '\t') __builtin_trap();
+        if (c < 0x20 || c == 0x7F) __builtin_trap();
+    }
+    if (slashes != count) __builtin_trap();
+    for (const char* bidi : {"\xE2\x80\xAE", "\xE2\x81\xA6", "\xE2\x80\x8F"})
+        if (d.find(bidi) != std::string::npos) __builtin_trap();
+
+    // P8 -- MEDIA PREFIXES. Uniform length; equal hashes give equal prefixes;
+    // and a prefix separates exactly as well as the whole hash does, because
+    // anything less would silently merge two media files and anything more is
+    // noise in every diff that cites one.
+    const std::size_t n = b.below(6);
+    std::vector<std::string> hashes;
+    hashes.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        // Hex-shaped, with deliberate shared leading runs so collisions at the
+        // 16-digit minimum are actually reachable.
+        static const char kHex[] = "0123456789abcdef";
+        const std::size_t shared = b.below(24);
+        std::string h;
+        for (std::size_t k = 0; k < 32; ++k)
+            h.push_back(kHex[(k < shared ? k : k + b.u8()) % 16]);
+        hashes.push_back(std::move(h));
+    }
+    const std::vector<std::string> pre = mediaPrefixes(hashes);
+    if (pre.size() != hashes.size()) __builtin_trap();
+    for (std::size_t i = 0; i < pre.size(); ++i) {
+        if (!pre.empty() && pre[i].size() != pre[0].size()) __builtin_trap();
+        if (hashes[i].compare(0, pre[i].size(), pre[i]) != 0) __builtin_trap();
+        for (std::size_t j = 0; j < i; ++j) {
+            if ((hashes[i] == hashes[j]) != (pre[i] == pre[j])) __builtin_trap();
+        }
+    }
+}
+
 }  // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
     Bytes b(data, size);
     checkRenderers(b);
+    checkDesignators(b);
     checkOrdering(b);
     return 0;
 }

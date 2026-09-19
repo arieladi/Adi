@@ -150,10 +150,12 @@ bool isBareSafe(std::string_view s) {
     return true;
 }
 
-std::string quoteString(std::string_view s) {
-    std::string out;
-    out.reserve(s.size() + 2);
-    out += '"';
+namespace {
+
+/// The body of a quoted string, without the quotes. `escape_slash` is set when
+/// the result goes inside a designator, where an unescaped `/` would forge a
+/// path boundary.
+void appendEscaped(std::string& out, std::string_view s, bool escape_slash) {
     for (std::size_t i = 0; i < s.size();) {
         const Scalar sc = decodeUtf8(s, i);
         if (sc.len == 0) {
@@ -170,11 +172,21 @@ std::string quoteString(std::string_view s) {
             case '\r': out += "\\r";  break;
             case '\t': out += "\\t";  break;
             default:
-                if (mustEscape(sc.cp)) appendHex(out, sc.cp, "\\u{");
-                else                   out.append(s.substr(i, sc.len));
+                if (escape_slash && sc.cp == '/') appendHex(out, sc.cp, "\\u{");
+                else if (mustEscape(sc.cp))       appendHex(out, sc.cp, "\\u{");
+                else                              out.append(s.substr(i, sc.len));
         }
         i += sc.len;
     }
+}
+
+}  // namespace
+
+std::string quoteString(std::string_view s) {
+    std::string out;
+    out.reserve(s.size() + 2);
+    out += '"';
+    appendEscaped(out, s, /*escape_slash=*/false);
     out += '"';
     return out;
 }
@@ -205,6 +217,82 @@ std::vector<std::string> assignLabels(const std::vector<std::string>& base_label
             out[i] += "~" + std::to_string(k);
         }
     }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Designators (TEXT-PROJECTION 6.2 - 6.4)
+// ---------------------------------------------------------------------------
+
+std::string_view roleRoot(TrackRole r) {
+    switch (r) {
+        case TrackRole::Track:  return "trk";
+        case TrackRole::Return: return "ret";
+        case TrackRole::Vca:    return "vca";
+        case TrackRole::Master: return "master";
+        case TrackRole::Global: return "glob";
+    }
+    return "trk";
+}
+
+TrackRole roleOfKind(std::string_view kind) {
+    if (kind == "return") return TrackRole::Return;
+    if (kind == "master") return TrackRole::Master;
+    if (kind == "vca")    return TrackRole::Vca;
+    // The timeline's global lanes. SPEC 6.1 lists these as track kinds, but
+    // they carry no audio and nothing sends to them, so keeping them out of
+    // /trk leaves that rank space to the tracks a user actually addresses.
+    if (kind == "marker" || kind == "tempo" || kind == "signature"
+        || kind == "chord" || kind == "arranger" || kind == "transposition")
+        return TrackRole::Global;
+    // audio, midi, instrument, group, folder, video -- and anything a newer
+    // writer invents. Guessing Track keeps the projection total across a
+    // version boundary; refusing would lose a file we can otherwise render.
+    return TrackRole::Track;
+}
+
+std::string designator(const std::vector<std::string>& segments) {
+    std::string out;
+    out += '"';
+    for (const auto& seg : segments) {
+        out += '/';
+        appendEscaped(out, seg, /*escape_slash=*/true);
+    }
+    out += '"';
+    return out;
+}
+
+std::string unresolved(std::string_view kind) {
+    std::string out = "\"!unresolved(";
+    appendEscaped(out, kind, /*escape_slash=*/true);
+    out += ")\"";
+    return out;
+}
+
+std::vector<std::string> mediaPrefixes(const std::vector<std::string>& hashes) {
+    std::size_t longest = 0;
+    for (const auto& h : hashes) longest = (std::max)(longest, h.size());
+
+    // Grow in steps of 4 from the minimum until every DISTINCT hash has a
+    // distinct prefix. Equal hashes stay equal -- idx_media_hash is not unique,
+    // so that case is legal and is left to assignLabels.
+    std::size_t len = kMediaPrefixMin;
+    for (; len < longest; len += 4) {
+        std::vector<std::string> pre;
+        pre.reserve(hashes.size());
+        for (const auto& h : hashes) pre.push_back(h.substr(0, (std::min)(len, h.size())));
+
+        std::vector<std::string> full = hashes, cut = pre;
+        std::sort(full.begin(), full.end());
+        full.erase(std::unique(full.begin(), full.end()), full.end());
+        std::sort(cut.begin(), cut.end());
+        cut.erase(std::unique(cut.begin(), cut.end()), cut.end());
+        if (full.size() == cut.size()) break;    // the prefix separates as well
+    }                                            // as the whole hash does
+
+    std::vector<std::string> out;
+    out.reserve(hashes.size());
+    for (const auto& h : hashes) out.push_back(h.substr(0, (std::min)(len, h.size())));
     return out;
 }
 

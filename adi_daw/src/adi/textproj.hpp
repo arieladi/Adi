@@ -129,6 +129,73 @@ inline constexpr std::int64_t kMaxDenominator = 1024;
     const std::vector<std::string>& base_labels);
 
 // ---------------------------------------------------------------------------
+// Designators (TEXT-PROJECTION 6.2 - 6.4)
+// ---------------------------------------------------------------------------
+//
+// Inlining every object that has exactly one owner turns most references into
+// containment and removes the identifier entirely. Seven cross-references
+// genuinely survive that, and these are what address them.
+
+/// The role partition of the top-level track forest.
+///
+/// Sends overwhelmingly target returns and the master, and those rank spaces
+/// are untouched by inserting an audio track -- so partitioning by role is a
+/// cheap halving of the churn an insertion causes in every designator that
+/// cites past it.
+enum class TrackRole { Track, Return, Vca, Master, Global };
+
+/// `/trk`, `/ret`, `/vca`, `/master`, `/glob`.
+[[nodiscard]] std::string_view roleRoot(TrackRole r);
+
+/// The role a `tracks.kind` value belongs to. An unknown kind -- a newer
+/// writer's -- is a Track, which keeps the projection total across a version
+/// boundary rather than refusing a file it could mostly render.
+[[nodiscard]] TrackRole roleOfKind(std::string_view kind);
+
+/// A designator: a quoted, slash-separated path of already-assigned labels.
+///
+///     "/trk/Rhythm/Drums"      "/trk/Bass/clip/Verse"
+///     "/scene/Chorus"          "/media/1f4a9c2e7b0d3a51"
+///
+/// The whole path is ONE quoted string, not a sequence of quoted segments, so
+/// renaming `Bass` to `Bass Gtr` cannot change the token's shape. A literal `/`
+/// inside a segment escapes to `\u{2F}` and therefore cannot forge a path
+/// boundary; everything else follows the escape rules of section 4, including
+/// the bidi controls.
+///
+/// Segments are labels as `assignLabels` returned them, and selectors such as
+/// `clip`, `dev`, `auto`, `macro` -- passed in already, because which selector
+/// applies is a fact about the schema and not about a string.
+[[nodiscard]] std::string designator(const std::vector<std::string>& segments);
+
+/// A reference whose target does not exist. Renders `"!unresolved(<kind>)"`,
+/// never a number, and the caller is expected to fail under `--strict`.
+///
+/// This is reachable by construction today, not merely in principle:
+/// `routing.src_kind` and `routing.dst_kind` both admit `'bus'` and there is no
+/// `buses` table in schema.sql, so every bus endpoint is unresolvable. A CHECK
+/// constraint that admits a reference kind with no referent -- win's call
+/// whether the table or the enum member is the one that is missing.
+[[nodiscard]] std::string unresolved(std::string_view kind);
+
+/// Media is addressed by content, because the format already made content the
+/// identity of a media file -- for dedup, integrity and relink. The schema
+/// tells you which collection deserves hash addressing, and exactly one does.
+///
+/// Returns one prefix per input hash: the shortest length that is at least
+/// `kMediaPrefixMin`, a multiple of 4, and distinguishes every DISTINCT hash in
+/// the pool.
+///
+/// Two rows may legitimately share a hash -- `idx_media_hash` is not unique --
+/// and when they do no prefix can separate them. They receive equal prefixes
+/// here and are disambiguated by `assignLabels`, which is the same `~k`
+/// treatment any other duplicate label gets.
+inline constexpr std::size_t kMediaPrefixMin = 16;
+
+[[nodiscard]] std::vector<std::string> mediaPrefixes(
+    const std::vector<std::string>& hashes);
+
+// ---------------------------------------------------------------------------
 // Ordering (TEXT-PROJECTION 7)
 // ---------------------------------------------------------------------------
 //
