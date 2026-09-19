@@ -235,6 +235,86 @@ void testDeterminism() {
           "assignLabels is stable");
 }
 
+// --- designators ------------------------------------------------------------
+void testDesignators() {
+    section("designators");
+    eq(designator({"trk", "Rhythm", "Drums"}), "\"/trk/Rhythm/Drums\"", "a nested track");
+    eq(designator({"trk", "Bass", "clip", "Verse"}), "\"/trk/Bass/clip/Verse\"", "a clip");
+    eq(designator({"scene", "Chorus"}), "\"/scene/Chorus\"", "a scene");
+    eq(designator({}), "\"\"", "an empty path is representable");
+
+    // The whole path is ONE quoted string, so a name with a space does not
+    // change the token's shape -- renaming Bass to Bass Gtr is a text edit
+    // inside the quotes, not a re-quoting of the line.
+    eq(designator({"trk", "Bass Gtr"}), "\"/trk/Bass Gtr\"", "a space needs no extra quoting");
+
+    // A literal slash must not forge a path boundary.
+    eq(designator({"trk", "AC/DC"}), "\"/trk/AC\\u{2F}DC\"", "a literal / is escaped");
+    check(designator({"trk", "a/b"}) != designator({"trk", "a", "b"}),
+          "an escaped slash is distinct from a real segment break");
+
+    // Everything section 4 escapes is still escaped inside a designator.
+    eq(designator({"trk", "a\xE2\x80\xAE""b"}), "\"/trk/a\\u{202E}b\"",
+       "a bidi control cannot hide inside a designator either");
+    eq(designator({"trk", "a\nb"}), "\"/trk/a\\nb\"", "a newline cannot break the line");
+    eq(designator({"trk", "a\"b"}), "\"/trk/a\\\"b\"", "a quote cannot close the token");
+
+    section("track roles");
+    eq(std::string(roleRoot(roleOfKind("audio"))),      "trk",    "audio is a track");
+    eq(std::string(roleRoot(roleOfKind("instrument"))), "trk",    "so is an instrument");
+    eq(std::string(roleRoot(roleOfKind("group"))),      "trk",    "so is a group");
+    eq(std::string(roleRoot(roleOfKind("return"))),     "ret",    "a return has its own space");
+    eq(std::string(roleRoot(roleOfKind("master"))),     "master", "so does the master");
+    eq(std::string(roleRoot(roleOfKind("vca"))),        "vca",    "so do VCAs");
+    eq(std::string(roleRoot(roleOfKind("tempo"))),      "glob",   "the tempo lane is global");
+    eq(std::string(roleRoot(roleOfKind("signature"))),  "glob",   "so is the signature lane");
+    eq(std::string(roleRoot(roleOfKind("marker"))),     "glob",   "so is the marker lane");
+    // A kind a newer writer invented. Refusing would lose a file we can
+    // otherwise render, so it lands in /trk.
+    eq(std::string(roleRoot(roleOfKind("holographic"))), "trk",
+       "an unknown kind is a track, not a refusal");
+
+    section("unresolvable references");
+    eq(unresolved("bus"), "\"!unresolved(bus)\"", "a bus endpoint, which is reachable today");
+    eq(unresolved("track"), "\"!unresolved(track)\"", "a dangling track reference");
+    check(unresolved("bus").find("0") == std::string::npos,
+          "never a number, so it cannot be mistaken for an id");
+
+    section("media prefixes");
+    {
+        // Distinct at 16, so 16 it is.
+        const auto p = mediaPrefixes({"1f4a9c2e7b0d3a51aaaa", "9b3e0c7d2a145f88bbbb"});
+        eq(p[0], "1f4a9c2e7b0d3a51", "the minimum prefix is 16 hex digits");
+        eq(p[1], "9b3e0c7d2a145f88", "and both are cut to the same length");
+    }
+    {
+        // Colliding at 16, so it grows -- in steps of 4, not 1.
+        const auto p = mediaPrefixes({"1f4a9c2e7b0d3a51aaaa", "1f4a9c2e7b0d3a51bbbb"});
+        check(p[0].size() == 20, "the length grows by 4 when 16 collides");
+        check(p[0] != p[1], "and it separates them");
+    }
+    {
+        // Two rows may legitimately share a hash: idx_media_hash is not unique.
+        // No prefix can separate those, and none should try.
+        const auto p = mediaPrefixes({"1f4a9c2e7b0d3a51aaaa", "1f4a9c2e7b0d3a51aaaa"});
+        eq(p[0], p[1], "identical hashes get identical prefixes");
+        check(p[0].size() == 16, "and the length does not grow chasing them");
+        // They are then disambiguated exactly like any other duplicate label.
+        const auto labels = assignLabels({p[0], p[1]});
+        eq(labels[0], "1f4a9c2e7b0d3a51~1", "the duplicate falls through to ~k");
+        eq(labels[1], "1f4a9c2e7b0d3a51~2", "both suffixed, as always");
+    }
+    {
+        const auto p = mediaPrefixes({});
+        check(p.empty(), "an empty media pool yields no prefixes");
+    }
+    {
+        // Shorter than the minimum: take what there is rather than read past it.
+        const auto p = mediaPrefixes({"abc"});
+        eq(p[0], "abc", "a short hash is not padded or over-read");
+    }
+}
+
 // --- ordering ---------------------------------------------------------------
 
 Member mem(std::vector<SortKey> keys, std::string skel,
@@ -436,6 +516,7 @@ int main() {
     testEscaping();
     testLabels();
     testDeterminism();
+    testDesignators();
     testOrderingKeys();
     testOrderingSkeleton();
     testOrderingRefinement();
