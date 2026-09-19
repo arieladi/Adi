@@ -120,9 +120,12 @@ to be earned on the timeline instead. That is the point.
 
 | Feature | From | P | Fmt | Notes |
 |---|---|---|---|---|
-| VST3 / CLAP hosting | — | P0 | ✅ | `plugin_state.stream_role` |
-| AU (macOS), LV2 (Linux) | — | P2 | ✅ | same |
-| ~~VST2~~ | — | **no** | — | **Ruled out** (ADR-0015): SDK unobtainable for years, and its terms were never GPL-compatible. Not recoverable. |
+| VST3 hosting | — | P0 | ✅ | `plugin_state.stream_role` |
+| CLAP hosting | — | P0 | ✅ | same. **JUCE has no CLAP host**, so this is our code and is not the same size of job as the row above (ADR-0041). |
+| LV2 (Linux) | — | P2 | ✅ | same |
+| ~~AU / AUv3 (macOS)~~ | — | **no** | ✅ | **Ruled out** (ADR-0041). Not the hosting wrapper — JUCE ships one — but the registry-based discovery, `auval`, a third stream role and a macOS-only bug class around it. |
+| ~~VST2~~ | — | **no** | ✅ | **Ruled out** (ADR-0015): SDK unobtainable for years, and its terms were never GPL-compatible. Not recoverable. |
+| *Unhosted formats still open as placeholders* | — | **P0** | ✅ | `plugin_refs.format` still admits `au`, `auv3`, `vst2`. We do not host them; the format must still be able to say one was **there**, or a converter silently drops devices (ADR-0011, ADR-0041). |
 | **Missing-plugin preservation** | both | **P0** | ✅ | SPEC §7.1 — non-negotiable |
 | Racks: instrument / effect / drum | Ableton | P2 | ✅ | `device_chains` with key/vel/chain zones |
 | Macros with per-target range and curve | Ableton | P2 | ✅ | `macros`, `macro_mappings` |
@@ -189,6 +192,9 @@ Saying no now is cheaper than saying no later.
 - **Being a live-performance instrument.** There is no clip launcher
   (ADR-0037), and competing with Ableton's on-stage reliability story is a
   different project with a different engineering budget.
+- **Audio Units and VST2 hosting.** VST3, and CLAP when we write it. A
+  project that references an AU still opens, with the device preserved as a
+  bypassed placeholder — never dropped. (ADR-0041, ADR-0011)
 - **Mobile.** Not until desktop is genuinely good.
 
 ---

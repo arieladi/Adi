@@ -394,6 +394,11 @@ CREATE UNIQUE INDEX idx_autodata ON automation_data(lane_id, IFNULL(clip_id, -1)
 
 CREATE TABLE plugin_refs (
     id          INTEGER PRIMARY KEY,
+    -- Every format this table can NAME, which is deliberately wider than the
+    -- set ADI can HOST (SPEC §7.4, ADR-0041). We host VST3, and CLAP once it
+    -- is written; an 'au' or 'vst2' row opens as a bypassed placeholder with
+    -- its state preserved, because a converter from a macOS project must be
+    -- able to say a device was there rather than silently discard it.
     format      TEXT    NOT NULL CHECK (format IN ('vst3','vst2','clap','au','auv3','lv2','ladspa','internal')),
     uid         TEXT    NOT NULL,       -- format-specific unique id, hex/URI
     vendor      TEXT    NOT NULL DEFAULT '',
