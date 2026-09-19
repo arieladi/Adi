@@ -408,6 +408,44 @@ Linear-time objects render `s` / `ms` / `ns` per their declared `time_base`.
 | 3 Session | **excluded entirely** — this is what makes ADR-0021's test possible |
 | 4 Extensions | namespace, key, scope and a digest; `essential` flagged |
 
+### 9.1 The pipeline
+
+The circularity is the whole difficulty, and it is worth stating plainly before
+the resolution:
+
+    a container's ORDER depends on its members' SKELETONS,
+    a member's DESIGNATOR depends on that order,
+    and a member's rendering contains designators.
+
+If rendering fed ordering, the projection would be defined in terms of itself.
+
+**It is broken by rendering twice.**
+
+**Pass 1 — bottom-up.** Render every node's *skeleton*: its full recursive form
+with each cross-reference replaced by the single token `?`. A skeleton therefore
+contains no designator, so ordering may depend on it without circularity. Each
+child collection is ordered separately — clips among clips, devices among
+devices, since a clip and a device never compete for a position and their
+designators differ by selector anyway. Bottom-up because a node's skeleton
+contains its children's skeletons, so children must be ordered first.
+
+Sibling references become the edges K3 refines on. A reference to a non-sibling
+cannot separate two siblings at that level, and is left to K2, which already
+holds it as `?` in both.
+
+**Pass 2 — top-down.** Every order is now fixed, so `assignLabels` is
+determined, and a label plus its parent's path is a designator. Then the real
+text is emitted with references resolved.
+
+**Containment cycles.** `tracks.parent_id` has no constraint forbidding a loop,
+so pass 1 marks nodes in progress and renders a revisited node as `<cycle>`
+rather than recursing forever. A corrupt file must produce output, not a stack
+overflow.
+
+**Status.** If any collection's order could not be made canonical the whole
+projection reports `Ambiguous`. ADR-0021's oracle should require `Exact`:
+comparing bytes only means something if the bytes were canonical.
+
 ### Opaque plugin state
 
 A `plugin_state` blob renders as its length and a BLAKE3 digest, never as a hex

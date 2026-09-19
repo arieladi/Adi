@@ -394,6 +394,26 @@ jobs:
           n=$(ctest --test-dir build-strict -N | grep -c "^  Test +#" || true)
           echo "ok    every target built warning-free at -Werror; $n test binaries run"
 
+          # Fuzz harnesses are NOT in that build: ADI_BUILD_FUZZERS is off by
+          # default and clang-gated, so they are compiled by exactly one job, on
+          # one compiler, against one standard library. That is how a
+          # `std::memcpy` with no <cstring> reached CI -- fine on libc++, a hard
+          # error on libstdc++, and invisible to every leg but the fuzz one.
+          #
+          # They define LLVMFuzzerTestOneInput rather than main, so they cannot
+          # be linked here. They can be compiled, and that is the half that
+          # catches this.
+          W="-std=c++20 -Wall -Wextra -Wpedantic -Wcast-align -Wconversion"
+          W="$W -Wsign-conversion -Wno-unused-parameter -Werror -Iadi_daw/src"
+          harnesses=0
+          for f in adi_daw/tests/fuzz_*.cpp; do
+            [ -e "$f" ] || continue
+            harnesses=$((harnesses + 1))
+            echo "--- $(basename "$f") (syntax only)"
+            "$CXX" $W "$HARDEN" -fsyntax-only "$f"
+          done
+          echo "ok    $harnesses fuzz harness(es) compile on this standard library"
+
   # ---------------------------------------------------------------------------
   # What did we actually build against?
   #
@@ -520,7 +540,7 @@ jobs:
           set -euo pipefail
           cmake -S adi_daw -B adi_daw/build-fuzz \
                 -DCMAKE_BUILD_TYPE=Debug -DADI_BUILD_FUZZERS=ON
-          cmake --build adi_daw/build-fuzz --target adi_fuzz_blob --parallel
+          cmake --build adi_daw/build-fuzz --target adi_fuzzers --parallel
 
       # Deterministic. Every seed is a shape that has already mattered: the four
       # findings from the first audit, the boundaries of the rules ADR-0023
@@ -529,22 +549,42 @@ jobs:
       # does not exist, so this is created before the first run rather than
       # before the second. It is where a reproducer lands, and a reproducer is
       # only useful if the run that found it got as far as writing one.
-      - name: Replay the seed corpus
+      # Every binary the build produced, not a list written here. The -Werror
+      # gate was a hardcoded list once, and the first file added to the tree
+      # landed outside it; a fuzz job is worth even less when it silently
+      # stops covering half of what exists.
+      - name: Replay the seed corpora
         run: |
           set -euo pipefail
           mkdir -p /tmp/fuzz-artifacts
-          ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
-            ./adi_daw/build-fuzz/adi_fuzz_blob adi_daw/build-fuzz/fuzz_corpus \
-              -runs=0 -artifact_prefix=/tmp/fuzz-artifacts/
+          found=0
+          for f in adi_daw/build-fuzz/adi_fuzz_*; do
+            [ -x "$f" ] || continue
+            found=$((found + 1))
+            stem=$(basename "$f")
+            corpus="adi_daw/build-fuzz/fuzz_corpus/${stem#adi_fuzz_}"
+            mkdir -p "$corpus"
+            echo "--- $stem  ($(ls "$corpus" | wc -l) seeds)"
+            ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
+              "$f" "$corpus" -runs=0 -artifact_prefix=/tmp/fuzz-artifacts/
+          done
+          [ "$found" -gt 0 ] || { echo "::error::no fuzz binaries were built"; exit 1; }
+          echo "ok    replayed $found fuzz target(s)"
 
       - name: Fuzz
         run: |
           set -euo pipefail
           mkdir -p /tmp/fuzz-artifacts
-          ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
-            ./adi_daw/build-fuzz/adi_fuzz_blob adi_daw/build-fuzz/fuzz_corpus \
-              -max_total_time=120 -rss_limit_mb=2048 -print_final_stats=1 \
-              -artifact_prefix=/tmp/fuzz-artifacts/
+          for f in adi_daw/build-fuzz/adi_fuzz_*; do
+            [ -x "$f" ] || continue
+            stem=$(basename "$f")
+            corpus="adi_daw/build-fuzz/fuzz_corpus/${stem#adi_fuzz_}"
+            mkdir -p "$corpus"
+            echo "=== $stem"
+            ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
+              "$f" "$corpus" -max_total_time=120 -rss_limit_mb=2048 \
+                -print_final_stats=1 -artifact_prefix=/tmp/fuzz-artifacts/
+          done
 
       # A crash is worth more than the log line announcing it: the artifact IS
       # the reproducer, and it goes straight into the seed corpus once fixed.
