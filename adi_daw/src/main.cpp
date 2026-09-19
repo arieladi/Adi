@@ -30,9 +30,9 @@ int usage() {
         "  adi_tool create <file>   create an empty .adi project\n"
         "  adi_tool info <file>     inspect an existing .adi\n"
         "  adi_tool digest <file>   canonical digest of the project tier\n"
+        "                           --full prints it; default prints the id\n"
         "  adi_tool ops             list every registered op\n"
         "  adi_tool check <file>    verify what SQLite cannot\n"
-        "                           --full prints it; default prints the id\n"
         "\n"
         "Ops arrive next; see docs/OPS.md.\n");
     return 2;
