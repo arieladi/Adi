@@ -83,6 +83,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_library(adi_core STATIC
     src/adi/blob.cpp
+    src/adi/textproj.cpp
 )
 target_include_directories(adi_core PUBLIC src)
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
@@ -102,6 +103,13 @@ enable_testing()
 add_executable(adi_tests tests/test_main.cpp)
 target_link_libraries(adi_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_tests COMMAND adi_tests)
+
+# A second binary rather than a second file in adi_tests: the projection has no
+# dependency on the blob layer and testing it in isolation keeps that true. If
+# textproj ever needs blob.hpp to build its tests, that is worth noticing.
+add_executable(adi_tests_textproj tests/test_textproj.cpp)
+target_link_libraries(adi_tests_textproj PRIVATE adi_core adi_warnings)
+add_test(NAME adi_tests_textproj COMMAND adi_tests_textproj)
 
 # ---------------------------------------------------------------------------
 # Fuzzing — optional, clang-only, OFF by default.
