@@ -123,6 +123,7 @@ add_library(adi_core STATIC
     # run on all seven ABIs. VST3 hosting can only ever be exercised in the
     # one job that has a plugin SDK. See src/juce/clap_host.hpp (ADR-0075).
     src/juce/clap_host.cpp
+    src/juce/device_host.cpp
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
@@ -225,6 +226,10 @@ add_test(NAME adi_device_tests COMMAND adi_device_tests)
 # resolution surviving rather than values being roughly right.
 # The CLAP host. No JUCE and no plugin SDK, so it runs on all seven ABIs --
 # which is the headline difference from VST3 hosting (ADR-0075).
+add_executable(adi_device_host_tests tests/test_device_host.cpp)
+target_link_libraries(adi_device_host_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_device_host_tests COMMAND adi_device_host_tests)
+
 add_executable(adi_clap_tests tests/test_clap.cpp)
 target_link_libraries(adi_clap_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_clap_tests COMMAND adi_clap_tests)

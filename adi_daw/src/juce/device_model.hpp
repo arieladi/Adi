@@ -157,6 +157,23 @@ public:
     /// `engine::Node::latencySamples`.
     [[nodiscard]] virtual std::int32_t latencySamples() const noexcept { return 0; }
 
+    /// A counter that increases every time this device reports that its
+    /// latency moved. ADR-0082's coalescer polls it; ADR-0066 says the
+    /// report must do nothing else.
+    ///
+    /// ON THE CONTRACT rather than on the format types, and that is the
+    /// point. `DeviceHost` registered its sources with a `dynamic_cast` to
+    /// `Vst3Device` in its first version, which is a format-agnostic host
+    /// asking what format it has — ADR-0052 decision 4's exact failure. The
+    /// compiler caught it, because the cast needs a JUCE header in a file
+    /// that has none.
+    ///
+    /// **0 means "this device does not report here."** A CLAP device returns
+    /// 0 and reports through `ClapHostGlue` instead, because
+    /// `clap_host_latency.changed` is a HOST callback — the notification
+    /// belongs to the host object, not to the plugin (ADR-0084).
+    [[nodiscard]] virtual std::uint64_t latencyEpoch() const noexcept { return 0; }
+
     // --- parameters --------------------------------------------------------
 
     [[nodiscard]] virtual std::int32_t paramCount() const noexcept { return 0; }

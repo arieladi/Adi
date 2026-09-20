@@ -151,7 +151,7 @@ public:
     /// exists to prevent: a Pro-Q 3 switching to linear phase reports several
     /// times in milliseconds, and each report would build a schedule nobody
     /// uses while holding up whatever thread Steinberg chose to call us on.
-    [[nodiscard]] std::uint64_t latencyEpoch() const noexcept {
+    [[nodiscard]] std::uint64_t latencyEpoch() const noexcept override {
         return latencyEpoch_.load(std::memory_order_acquire);
     }
 
