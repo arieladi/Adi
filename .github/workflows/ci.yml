@@ -114,7 +114,7 @@ jobs:
             echo "::error::found only $found validator(s) -- the glob is wrong"
             exit 1
           fi
-          echo "ran $found validators
+          echo "ran $found validators"
 
   # ---------------------------------------------------------------------------
   # The real build: configure, compile, run adi_tests, then check the sizes this
