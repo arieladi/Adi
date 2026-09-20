@@ -85,7 +85,13 @@ fi
 
 echo "=== validators ==="
 echo "  interpreter: $PY ($("$PY" --version 2>&1))"
-for v in tools/validate_schema.py tools/validate_ops.py; do
+# DISCOVERED, not listed. A hardcoded list is a list somebody forgets to add
+# to -- the same defect that made the -Werror gate skip new files, and that
+# made this script miss two suites. tools/validate_ci.py was added after a CI
+# step landed in the wrong job, and it was picked up here without touching
+# this line, which is the point.
+for v in tools/validate_*.py; do
+    [ -f "$v" ] || continue
     if "$PY" "$v" >/dev/null 2>&1; then
         printf '  %-26s PASS\n' "$(basename "$v")"
     else
