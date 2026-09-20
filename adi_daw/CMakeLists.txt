@@ -132,6 +132,7 @@ add_library(adi_core STATIC
     src/adi/engine/snapshot.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
+    src/adi/engine/latency.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/mpe_input.cpp
     src/adi/textproj.cpp

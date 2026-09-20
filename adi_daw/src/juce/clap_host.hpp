@@ -39,6 +39,7 @@
 
 #include <clap/clap.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -274,9 +275,17 @@ public:
 
     [[nodiscard]] const clap_host_t* host() noexcept { return &host_; }
 
-    [[nodiscard]] std::uint64_t restartRequests() const noexcept { return restarts_; }
-    [[nodiscard]] std::uint64_t processRequests() const noexcept { return processes_; }
-    [[nodiscard]] std::uint64_t callbackRequests() const noexcept { return callbacks_; }
+    // ACQUIRE, because these are written from whatever thread the plugin
+    // picked. See the counters below.
+    [[nodiscard]] std::uint64_t restartRequests() const noexcept {
+        return restarts_.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] std::uint64_t processRequests() const noexcept {
+        return processes_.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] std::uint64_t callbackRequests() const noexcept {
+        return callbacks_.load(std::memory_order_acquire);
+    }
 
 private:
     static const void* getExtension(const clap_host_t*, const char* id);
@@ -285,7 +294,12 @@ private:
     static void requestCallback(const clap_host_t*);
 
     clap_host_t host_{};
-    std::uint64_t restarts_ = 0, processes_ = 0, callbacks_ = 0;
+    // ATOMIC, because `requestRestart` says in its own comment that the plugin
+    // may call it from any thread -- and a plain `++` from an arbitrary thread,
+    // read from the message thread, is a data race whatever the width. On the
+    // 32-bit CI job a 64-bit non-atomic read can also tear, so the counter
+    // could be observed as a value it never held.
+    std::atomic<std::uint64_t> restarts_{0}, processes_{0}, callbacks_{0};
 };
 
 }  // namespace adi::device

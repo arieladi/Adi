@@ -13,12 +13,14 @@
 // ring with a movable tap instead of a buffer that gets replaced.
 
 #include "adi/engine/graph.hpp"
+#include "adi/engine/latency.hpp"
 
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -427,6 +429,238 @@ void testAZeroEdgeCanStillBeGivenADelay() {
         "an edge that was at zero now carries 100 -- the glide was not dropped");
 }
 
+// === the coalescer (ADR-0066 d2) ==========================================
+
+/// A graph with one switchable plugin, so a coalescer has something to retap.
+struct Rig {
+    RampNode src;
+    SwitchableNode plugin{64, 512};
+    SumNode direct, mix;
+    Graph g;
+    NodeId ns{}, np{}, nd{}, nm{};
+
+    Rig() {
+        ns = g.addNode(src); np = g.addNode(plugin);
+        nd = g.addNode(direct); nm = g.addNode(mix);
+        g.connect(ns, np);
+        g.connect(ns, nd);
+        g.connect(np, nm);
+        g.connect(nd, nm);
+        g.setOutput(nm);
+        g.setLatencyHeadroom(512);
+        g.prepare(48000.0, 256);
+    }
+};
+
+void testABurstBecomesOneRetap() {
+    section("ADR-0066 d2 -- many reports in a burst, one retap");
+
+    Rig r;
+    std::atomic<std::uint64_t> epoch{0};
+    LatencyCoalescer c;
+    c.attach(r.g);
+    c.addSource("plugin", [&] { return epoch.load(std::memory_order_acquire); });
+    c.setQuietPeriodMs(50);
+    c.setMaxWaitMs(500);
+
+    check(!c.poll(0), "nothing reported, nothing done");
+
+    // A mode switch that reports five times over 20ms, as a real one does.
+    for (int i = 0; i < 5; ++i) {
+        r.plugin.setLatency(128 + i);
+        epoch.fetch_add(1, std::memory_order_release);
+        check(!c.poll(10 + i * 5),
+              "still inside the burst at t=" + std::to_string(10 + i * 5));
+    }
+    eqi(c.stats().reports, 5, "all five reports were seen");
+    eqi(c.stats().bursts, 1, "as ONE burst");
+    check(c.pending(), "which is still open");
+
+    check(!c.poll(60), "49ms after the last report is not yet quiet");
+    check(c.poll(80), "50ms after it is");
+    eqi(c.stats().retaps, 1,
+        "and the graph was retapped exactly once for the whole burst");
+    check(!c.pending(), "with nothing left open");
+
+    eqi(r.g.latencySamples(), 132, "against the LAST value reported, not the first");
+    check(!c.poll(200), "and a quiet poll afterwards does nothing");
+    eqi(c.stats().retaps, 1, "still once");
+}
+
+void testAContinuousReporterIsNotStarved() {
+    section("ADR-0066 d2 -- a plugin that never goes quiet is still acted on");
+
+    // The failure mode a pure debounce has: report on every block, never be
+    // quiet, never be acted on, and the compensation stays wrong forever while
+    // the coalescer looks busy.
+    Rig r;
+    std::atomic<std::uint64_t> epoch{0};
+    LatencyCoalescer c;
+    c.attach(r.g);
+    c.addSource("chatty", [&] { return epoch.load(std::memory_order_acquire); });
+    c.setQuietPeriodMs(50);
+    c.setMaxWaitMs(200);
+
+    r.plugin.setLatency(200);
+    bool acted = false;
+    for (std::int64_t t = 0; t <= 300; t += 10) {
+        epoch.fetch_add(1, std::memory_order_release);   // never quiet
+        if (c.poll(t)) { acted = true; break; }
+    }
+    check(acted, "the ceiling fired even though the burst never went quiet");
+    eqi(c.stats().maxWaitTrips, 1, "and it is counted as such, not as a normal retap");
+    eqi(r.g.latencySamples(), 200, "the compensation followed");
+}
+
+void testTheQuietPeriodIsTheThingBeingTested() {
+    section("ADR-0066 d2 -- the boundary, to the millisecond");
+
+    // The clock is an argument, which is what makes this assertable at all.
+    // A coalescer that read std::chrono itself could only be tested by
+    // sleeping, and a sleep cannot reliably distinguish 49ms from 50.
+    Rig r;
+    std::atomic<std::uint64_t> epoch{0};
+    LatencyCoalescer c;
+    c.attach(r.g);
+    c.addSource("p", [&] { return epoch.load(std::memory_order_acquire); });
+    c.setQuietPeriodMs(50);
+
+    r.plugin.setLatency(100);
+    epoch.fetch_add(1, std::memory_order_release);
+    check(!c.poll(1000), "the report arrives at t=1000");
+    check(!c.poll(1049), "t+49 is not enough");
+    check(c.poll(1050), "t+50 is");
+
+    // Zero means now, and that is what an offline render wants.
+    LatencyCoalescer imm;
+    imm.attach(r.g);
+    imm.addSource("p", [&] { return epoch.load(std::memory_order_acquire); });
+    imm.setQuietPeriodMs(0);
+    epoch.fetch_add(1, std::memory_order_release);
+    check(imm.poll(2000), "with a quiet period of zero it acts on the first poll");
+}
+
+void testSourcesAreSeededSoJoiningIsNotAReport() {
+    section("a device that already reported does not retap when it is registered");
+
+    Rig r;
+    std::atomic<std::uint64_t> epoch{7};      // it has lived a life already
+    LatencyCoalescer c;
+    c.attach(r.g);
+    c.addSource("veteran", [&] { return epoch.load(std::memory_order_acquire); });
+
+    check(!c.poll(0), "adding it reported nothing");
+    eqi(c.stats().reports, 0, "because the source was SEEDED, not zeroed");
+    eqi(c.stats().retaps, 0, "so loading a project does not retap once per plugin");
+}
+
+void testAnEdgeThatDoesNotFitAsksForARebuild() {
+    section("ADR-0079 d4 -- what does not fit is reported, not clamped");
+
+    RampNode src;
+    SwitchableNode plugin(0, 4096);
+    SumNode direct, mix;
+    Graph g;
+    const NodeId ns = g.addNode(src), np = g.addNode(plugin);
+    const NodeId nd = g.addNode(direct), nm = g.addNode(mix);
+    g.connect(ns, np);
+    g.connect(ns, nd);
+    g.connect(np, nm);
+    g.connect(nd, nm);
+    g.setOutput(nm);
+    g.setLatencyHeadroom(64);          // deliberately small
+    g.prepare(48000.0, 256);
+
+    std::atomic<std::uint64_t> epoch{0};
+    LatencyCoalescer c;
+    c.attach(g);
+    c.addSource("linear-phase", [&] { return epoch.load(std::memory_order_acquire); });
+    c.setQuietPeriodMs(0);
+
+    plugin.setLatency(2048);           // far beyond 64 samples of headroom
+    epoch.fetch_add(1, std::memory_order_release);
+    check(c.poll(0), "the retap ran");
+    check(c.rebuildNeeded(),
+          "and says a rebuild is needed -- the ring cannot hold 2048 and "
+          "growing it means allocating");
+    eqi(c.stats().rebuildsNeeded, 1, "counted");
+    check(c.lastReporter() == std::string("linear-phase"),
+          "and the culprit is named: got " + c.lastReporter());
+
+    c.clearRebuildNeeded();
+    check(!c.rebuildNeeded(), "the flag is sticky until the rebuilder clears it");
+}
+
+void testTwoSourcesCoalesceIntoOne() {
+    section("ADR-0066 d2 -- two plugins reporting at once is still one retap");
+
+    Rig r;
+    std::atomic<std::uint64_t> a{0}, b{0};
+    LatencyCoalescer c;
+    c.attach(r.g);
+    c.addSource("a", [&] { return a.load(std::memory_order_acquire); });
+    c.addSource("b", [&] { return b.load(std::memory_order_acquire); });
+    c.setQuietPeriodMs(50);
+    eqi(static_cast<long long>(c.sourceCount()), 2, "two sources");
+
+    r.plugin.setLatency(96);
+    a.fetch_add(1, std::memory_order_release);
+    b.fetch_add(1, std::memory_order_release);
+    check(!c.poll(0), "both reported on the same poll");
+    eqi(c.stats().reports, 2, "and BOTH were counted -- neither was skipped");
+    eqi(c.stats().bursts, 1, "inside one burst");
+    check(c.poll(60), "acted once");
+    eqi(c.stats().retaps, 1, "once, for two reporters");
+}
+
+void testAReporterOnAnotherThread() {
+    section("the producer has no thread affinity, and that is the whole design");
+
+    // mac's constraint, stated plainly: CLAP's request_restart is called from
+    // whatever thread the plugin picked. So the reporter does ONE thing -- bump
+    // an atomic -- and the coalescer reads it on the thread it chose.
+    //
+    // This is also why ClapHostGlue's counters had to become atomic: they were
+    // a plain ++ under a comment saying "the plugin may call this from any
+    // thread", which is a data race whatever the width, and a torn 64-bit read
+    // on the 32-bit CI target besides.
+    Rig r;
+    std::atomic<std::uint64_t> epoch{0};
+    std::atomic<bool> done{false};
+
+    LatencyCoalescer c;
+    c.attach(r.g);
+    c.addSource("elsewhere", [&] { return epoch.load(std::memory_order_acquire); });
+    c.setQuietPeriodMs(0);
+
+    std::thread producer([&] {
+        for (int i = 0; i < 20000; ++i)
+            epoch.fetch_add(1, std::memory_order_release);
+        done.store(true, std::memory_order_release);
+    });
+
+    // POLL UNTIL THE PRODUCER IS DONE, not a fixed number of times. The first
+    // version ran 500 polls and saw nothing at all: 500 polls of trivial work
+    // finish long before a thread has even started, so the test asserted
+    // "reports from another thread were seen" against a thread that had not
+    // yet run. It failed for the one reason that says nothing about the code.
+    std::int64_t t = 0;
+    long long acted = 0;
+    while (!done.load(std::memory_order_acquire))
+        if (c.poll(t++)) ++acted;
+    producer.join();
+
+    if (c.poll(t++)) ++acted;    // drain whatever arrived after the last poll
+    c.poll(t++);
+
+    check(acted > 0, "reports from another thread were seen: " + std::to_string(acted));
+    check(c.stats().retaps <= c.stats().reports,
+          "and never more retaps than reports -- coalescing only ever reduces");
+    eqi(r.g.latencySamples(), 64,
+        "the graph is untouched in value, because only the COUNTER moved: a "
+        "report is a hint to re-read, never the new number itself");
+}
+
 }  // namespace
 
 int main() {
@@ -438,6 +672,13 @@ int main() {
     testARetapFollowsTheNewLatency();
     testARetapAllocatesNothingOnTheAudioThread();
     testAZeroEdgeCanStillBeGivenADelay();
+    testABurstBecomesOneRetap();
+    testAContinuousReporterIsNotStarved();
+    testTheQuietPeriodIsTheThingBeingTested();
+    testSourcesAreSeededSoJoiningIsNotAReport();
+    testAnEdgeThatDoesNotFitAsksForARebuild();
+    testTwoSourcesCoalesceIntoOne();
+    testAReporterOnAnotherThread();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

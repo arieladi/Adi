@@ -372,7 +372,9 @@ public:
     /// The graph's own latency: how far behind the output is (ADR-0058).
     /// Excludes the device buffer -- that is ADR-0042 decision 7, and folding
     /// it in here makes every compensated track wrong by up to a block.
-    [[nodiscard]] std::int32_t latencySamples() const noexcept { return graphLatency_; }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept {
+        return graphLatency_.load(std::memory_order_acquire);
+    }
 
     /// Samples of compensation inserted on the edge `from -> to`, or -1 when
     /// there is no such edge. Exposed so the arithmetic is testable directly
@@ -458,7 +460,11 @@ private:
     std::int32_t eventCapacity_ = 0;      ///< 0 = derive at prepare
     std::int32_t maxPolyphony_ = 16;
     std::int32_t floor_ = 64;
-    std::int32_t graphLatency_ = 0;
+    // ATOMIC, because `retapLatency` writes it from the message thread while
+    // the transport may be reading it to compensate the playhead. A torn read
+    // is not the real risk on the platforms we target; the data race is, and
+    // an int32 costs nothing to do properly.
+    std::atomic<std::int32_t> graphLatency_{0};
     std::int32_t latencyHeadroom_ = 0;
     bool ok_ = false;
     bool prepared_ = false;

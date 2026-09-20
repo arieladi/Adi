@@ -548,13 +548,16 @@ void ClapHostGlue::requestRestart(const clap_host_t* h) {
     // REPORT AND RETURN. This is ADR-0066's rule arriving from the other
     // format: the plugin may call this from any thread, and rebuilding a
     // graph on that thread while it waits is the bug that ADR exists to stop.
-    ++static_cast<ClapHostGlue*>(h->host_data)->restarts_;
+    static_cast<ClapHostGlue*>(h->host_data)->restarts_.fetch_add(
+        1, std::memory_order_release);
 }
 void ClapHostGlue::requestProcess(const clap_host_t* h) {
-    ++static_cast<ClapHostGlue*>(h->host_data)->processes_;
+    static_cast<ClapHostGlue*>(h->host_data)->processes_.fetch_add(
+        1, std::memory_order_release);
 }
 void ClapHostGlue::requestCallback(const clap_host_t* h) {
-    ++static_cast<ClapHostGlue*>(h->host_data)->callbacks_;
+    static_cast<ClapHostGlue*>(h->host_data)->callbacks_.fetch_add(
+        1, std::memory_order_release);
 }
 
 }  // namespace adi::device

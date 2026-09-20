@@ -294,7 +294,8 @@ void Graph::computeCompensation() {
     }
 
     const Slot& out = slots_[static_cast<std::size_t>(output_)];
-    graphLatency_ = out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0);
+    graphLatency_.store(out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0),
+                        std::memory_order_release);
 }
 
 bool Graph::retapLatency() noexcept {
@@ -346,7 +347,8 @@ bool Graph::retapLatency() noexcept {
     }
 
     const Slot& out = slots_[static_cast<std::size_t>(output_)];
-    graphLatency_ = out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0);
+    graphLatency_.store(out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0),
+                        std::memory_order_release);
     return allFit;
 }
 

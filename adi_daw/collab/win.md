@@ -88,9 +88,14 @@ last one wins and the rest of the block keeps last block's audio. At ADR-0054's
 missing-plugin path runs through the same function, so **a project opened
 without its plugins was worst affected**.
 
-Nothing caught it because **no device test set `blockOffset`** — zero
-occurrences across `tests/`. With `blockOffset == 0` the wrong code and the
-right code are identical, so every existing fixture was blind by construction.
+Nothing caught it because **no device test set `blockOffset`**. With
+`blockOffset == 0` the wrong code and the right code are identical, so every
+existing device fixture was blind by construction.
+
+*(Corrected after mac read this: I first wrote "zero occurrences across
+`tests/`", which is false — `test_graph.cpp` has ten. The claim that holds is
+the narrow one about device tests. Worth fixing in place because it is the
+sentence someone greps against.)*
 
 I fixed all four and wrote coverage that fails on every assertion against the
 old code, checking the whole buffer rather than the segment. ADR-0078 records

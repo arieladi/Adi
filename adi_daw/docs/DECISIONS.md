@@ -4992,3 +4992,101 @@ middle two **passed** before this ADR's counter and bound test existed.
 None of it can fail in a block with a single segment, which is why every
 earlier CLAP test missed it. A scheduler test that never splits is a test of
 the unsplit case.
+
+---
+
+## ADR-0082 — The latency coalescer polls, its clock is an argument, and a burst has a ceiling — `DECIDED` (2026-09-20) — **IMPLEMENTS ADR-0066 decision 2**
+
+ADR-0066 decision 2 said a latency report is coalesced rather than acted on
+immediately, and left the shape open. ADR-0079 replaced what it does at the far
+end — a tap move, not a republished schedule. This is the middle: the thing that
+turns a stream of reports into at most one `Graph::retapLatency()`.
+
+Three decisions, each ruling out the obvious alternative.
+
+### 1. It POLLS, because the producer has no thread affinity
+
+mac's constraint, and it is the load-bearing one: **CLAP's `request_restart` may
+be called from any thread the plugin picks**, and VST3's `audioProcessorChanged`
+is no better. A callback-driven coalescer would therefore run the recompute on
+the plugin's thread while the plugin waits — which is precisely the bug ADR-0066
+was written to prevent, reintroduced by the thing meant to implement it.
+
+So the reporters do exactly one thing — bump an atomic and return — and the
+coalescer reads them from a thread it chose. Polling is usually the lazy answer.
+Here it is the only one that keeps the work where we want it, and the cost is
+one acquire load per device per tick.
+
+**This forced a correction in the producers.** `ClapHostGlue` incremented
+`restarts_`, `processes_` and `callbacks_` with a plain `++` on a plain
+`std::uint64_t`, directly under a comment reading *"the plugin may call this
+from any thread"*. The comment was right and the code contradicted it: a
+non-atomic read-modify-write from an arbitrary thread is a data race whatever
+the width, and on the i386 CI target a 64-bit non-atomic read can tear, so the
+counter could be observed holding a value it never had. All three are now
+`std::atomic<std::uint64_t>`. A consumer cannot be correct on top of a racy
+producer, however careful the consumer is.
+
+### 2. The clock is an ARGUMENT, not a call to `std::chrono` inside
+
+`poll(nowMs)` takes the time from the caller. A coalescer that reads the clock
+itself can only be tested by sleeping, and a sleeping test is slow, flaky on a
+loaded CI box, and — the part that matters — **unable to exercise the boundary
+it exists to implement**. A `std::this_thread::sleep_for(50ms)` cannot
+distinguish 49 from 50.
+
+With the clock injected, the test asserts exactly that: a report at t=1000 is
+not acted on at t=1049 and is acted on at t=1050. That assertion is the whole
+specification of the quiet period, and it runs in microseconds.
+
+### 3. A burst has a CEILING, not only a quiet period
+
+A pure debounce has a failure mode that looks like health: a plugin reporting on
+every block is never quiet, so the timer is always resetting, so nothing ever
+fires — and the compensation stays wrong indefinitely while the coalescer looks
+busy. Some plugins do exactly this.
+
+`maxWaitMs` bounds it. A burst is acted on after that long whether or not it has
+gone quiet, and those are counted separately (`maxWaitTrips`) so "this session
+retaps constantly" is diagnosable rather than mysterious. Defaults: 50 ms quiet,
+500 ms ceiling.
+
+### Smaller decisions that each cost a test
+
+- **A source is SEEDED at registration, not zeroed.** A device that had already
+  reported once before it joined would otherwise look like a fresh report the
+  moment it was added, so opening a project would retap the graph once per
+  plugin.
+- **Every source is sampled on every poll, even after one has changed.**
+  Stopping early leaves the others' `seen` stale, so their reports are
+  attributed to the next burst and counted twice.
+- **A failed retap sets a sticky flag.** `retapLatency()` returns false when an
+  edge needs more than its ring holds (ADR-0079 d4). That is not an error to
+  swallow: it is the signal that this change needs new buffers. The flag is
+  sticky because whoever rebuilds is not necessarily whoever polls.
+- **Changing the set of sources is a rebuild, not a retap.** The topology
+  changed, so the rings must be sized again regardless.
+- **A report is a hint to re-read, never the new number.** The coalescer never
+  carries a latency value; it observes that a counter moved and asks the graph
+  to re-read what the nodes now declare. A report that arrives with a value is a
+  report that can be stale by the time it is applied.
+
+### Verified non-vacuously
+
+Six planted defects, all caught: no debounce (16 checks), no ceiling (4), the
+burst not extended by later reports so it fires on the first report's clock (6),
+sources zeroed rather than seeded (2), sampling stopping at the first change (4),
+and a failed retap swallowed (3).
+
+One of them failed to **compile** first — `const bool quiet = true;` trips MSVC
+C4127 under `-Werror`. This is the second time; ADR-0077 records the rule and
+this is it recurring. Re-planted as `>= 0`, which is a runtime comparison the
+compiler will not fold.
+
+The concurrency claim is checked with a real second thread rather than argued.
+**That test failed first for a reason worth recording:** it polled a fixed 500
+times, and 500 polls of trivial work finish long before a spawned thread has
+started, so it asserted "reports from another thread were seen" against a thread
+that had not yet run. It now polls until the producer signals completion. A
+timing test written as a fixed iteration count is testing the scheduler, not the
+code.
