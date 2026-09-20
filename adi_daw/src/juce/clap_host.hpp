@@ -89,13 +89,35 @@ public:
     void clear() noexcept { events_.clear(); }
 
     [[nodiscard]] std::int64_t dropped() const noexcept { return dropped_; }
+
+    /// Events refused because their frame fell outside the segment.
+    ///
+    /// COUNTED SEPARATELY FROM A CAPACITY DROP, and counted at all, which it
+    /// was not. An event the scheduler assigned to this segment that lands
+    /// outside it means the two sides disagree about the coordinate system --
+    /// ADR-0078's bug. Returning false and saying nothing turned that into
+    /// "some events went missing", which is the shape of defect this project
+    /// keeps finding weeks late.
+    [[nodiscard]] std::int64_t outOfRange() const noexcept { return outOfRange_; }
     [[nodiscard]] std::int32_t size() const noexcept {
         return static_cast<std::int32_t>(events_.size());
     }
 
-    /// Translate one ADI event. False when it has no CLAP form, which is not
-    /// an error — a ParamMod has its own event type and its own path.
-    bool add(const engine::Event& e) noexcept;
+    /// Translate one ADI event.
+    ///
+    /// `blockOffset` is where this SEGMENT starts inside the block, and it is
+    /// subtracted because the two sides use different origins:
+    /// `engine::Event::frame` is block-relative (events.hpp says so, and it
+    /// must be — a segment-relative frame would change every time the
+    /// scheduler split differently), while a plugin handed one segment wants
+    /// offsets inside that segment. Same trap as ADR-0078, one layer up, and
+    /// it does not show in a block with a single segment.
+    ///
+    /// False when the event has no CLAP form, which is not an error, or when
+    /// it lands outside this segment, which is the caller passing an event
+    /// the graph did not assign here.
+    bool add(const engine::Event& e, std::int32_t blockOffset = 0,
+             std::int32_t segmentFrames = 0) noexcept;
 
     /// The struct a plugin is handed. Valid until the next `clear`.
     [[nodiscard]] const clap_input_events_t* inputEvents() const noexcept { return &in_; }
@@ -121,6 +143,7 @@ private:
     std::vector<Slot> events_;
     std::int32_t cap_ = 0;
     std::int64_t dropped_ = 0;
+    std::int64_t outOfRange_ = 0;
     clap_input_events_t in_{this, &ClapEventList::sizeCb, &ClapEventList::getCb};
 };
 
@@ -173,12 +196,25 @@ public:
     /// This is the zero-truncation path. `engine::Event` carries a double and
     /// CLAP's note expression takes a double in the same unit, so nothing in
     /// between rounds, scales or clamps except at CLAP's own declared range.
-    bool pushEvent(const engine::Event& e) noexcept { return events_.add(e); }
+    /// Frames are BLOCK-relative, matching `engine::Event`. Held until the
+    /// next `process`, which converts them along with the graph's own
+    /// `io.events` and clears them.
+    ///
+    /// For callers with no graph — the probe, and tests. A node inside a
+    /// graph does not need this: `io.events` already carries exactly the
+    /// events the scheduler assigned to the segment being processed.
+    bool pushEvent(const engine::Event& e) noexcept;
 
     /// Events refused because a queue was full. Non-zero means the capacity
     /// derived at prepare was too small for what arrived (ADR-0056).
     [[nodiscard]] std::int64_t eventsDropped() const noexcept {
         return events_.dropped() + pendingDropped_;
+    }
+
+    /// Events whose frame fell outside the segment they were handed with.
+    /// Non-zero means a coordinate-system disagreement, not a busy block.
+    [[nodiscard]] std::int64_t eventsOutOfRange() const noexcept {
+        return events_.outOfRange();
     }
 
     /// How many blocks have been processed, and the plugin's last answer.
@@ -218,7 +254,9 @@ private:
     /// pair), so the bridging happens here.
     std::vector<float*> inPtrs_, outPtrs_;
     std::vector<float>  inScratch_, outScratch_;
-    ClapEventList       events_;
+    ClapEventList       events_;     ///< rebuilt per process call
+    std::vector<engine::Event> injected_;   ///< from pushEvent, block-relative
+    std::size_t injectedUsed_ = 0;
     clap_output_events_t outEvents_{};
     std::int64_t steadyTime_ = 0;
     std::int32_t channels_ = 2;

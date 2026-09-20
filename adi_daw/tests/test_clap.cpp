@@ -21,7 +21,9 @@
 #include "juce/clap_host.hpp"
 
 #include <cmath>
+#include <algorithm>
 #include <cstring>
+#include <utility>
 #include <vector>
 #include <cstdio>
 #include <string>
@@ -308,6 +310,13 @@ struct Fake {
     /// then compared garbage.
     std::vector<clap_event_param_value_t> seenParams;
 
+    /// One entry per process() call: the segment length, and every expression
+    /// event's offset and value. Recorded per call because "the offset is
+    /// inside its own segment" is a per-segment claim and a flat list cannot
+    /// express it.
+    struct Seg { std::uint32_t frames; std::vector<std::pair<std::uint32_t, double>> exprs; };
+    std::vector<Seg> segments;
+
     static Fake& self(const clap_plugin_t* p) {
         return *static_cast<Fake*>(p->plugin_data);
     }
@@ -329,6 +338,7 @@ struct Fake {
             f.lastSteady = pd->steady_time;
             f.seenEvents.clear();
             f.seenParams.clear();
+            Fake::Seg seg{pd->frames_count, {}};
             if (pd->in_events != nullptr) {
                 const std::uint32_t n = pd->in_events->size(pd->in_events);
                 for (std::uint32_t i = 0; i < n; ++i) {
@@ -337,8 +347,14 @@ struct Fake {
                     if (h->type == CLAP_EVENT_PARAM_VALUE)
                         f.seenParams.push_back(
                             *reinterpret_cast<const clap_event_param_value_t*>(h));
+                    if (h->type == CLAP_EVENT_NOTE_EXPRESSION) {
+                        const auto* x =
+                            reinterpret_cast<const clap_event_note_expression_t*>(h);
+                        seg.exprs.emplace_back(h->time, x->value);
+                    }
                 }
             }
+            f.segments.push_back(std::move(seg));
             if (f.failNext) { f.failNext = false; return CLAP_PROCESS_ERROR; }
             // Write something distinguishable from silence and from the input.
             for (std::uint32_t c = 0; c < pd->audio_outputs[0].channel_count; ++c)
@@ -678,6 +694,140 @@ void testEventOverflowIsCountedNotTruncated() {
     check(accepted + d.eventsDropped() == 4000, "every event is accounted for");
 }
 
+// --- the whole pipeline, through the real scheduler --------------------------
+
+void testMpePlusReachesThePluginThroughTheGraph() {
+    section("ADR-0054/0075 -- 500 Hz MPE+ through the real split path, no quantisation");
+
+    Fake f;
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake";
+    ClapDevice dev(&f.plugin, id);
+    DeviceNode node(dev);
+
+    engine::Graph g;
+    g.setChannels(2);
+    const engine::NodeId n = g.addNode(node);
+    g.setOutput(n);
+    g.prepare(48000.0, 4096);
+    check(g.ok(), "the graph prepares: " + g.error());
+
+    // 500 Hz at 48 kHz is one update every 96 frames -- ADR-0054's rate, and
+    // the number ADR-0042's floor was clamped to protect. 4096 frames holds
+    // 42 of them, so this block gets split many times and every device path
+    // that ignores blockOffset or segment-relative time is exercised.
+    const std::int32_t period = 96;
+    std::vector<double> sent;
+    for (std::int32_t fr = 0; fr + period <= 4096; fr += period) {
+        engine::Event e;
+        e.type = engine::EventType::NoteExpression;
+        e.dim = static_cast<std::uint16_t>(ExpressionDim::Pitch);
+        e.noteId = 42;
+        e.frame = fr;
+        // One 14-bit LSB apart each time, at MPE's +/-48 range. If anything
+        // in the chain narrows, adjacent values collide.
+        e.value = 12.0 + static_cast<double>(fr / period) * (96.0 / 16384.0);
+        sent.push_back(e.value);
+        check(g.pushInputEvent(n, e), "event queued at frame " + std::to_string(fr));
+    }
+    check(sent.size() >= 42, "42 updates in a 4096 block, saw " + std::to_string(sent.size()));
+
+    std::vector<float> l(4096, 0.0f), r(4096, 0.0f);
+    float* outp[2] = {l.data(), r.data()};
+    engine::AudioIo io;
+    io.out = outp; io.numOut = 2; io.frames = 4096;
+    g.process(io);
+
+    check(g.stats().segments > 10,
+          "the block really was split, " + std::to_string(g.stats().segments) + " segments");
+    check(static_cast<std::int64_t>(f.segments.size()) == g.stats().segments,
+          "and the plugin was called once per segment");
+
+    // EVERY OFFSET INSIDE ITS OWN SEGMENT. This is the assertion that fails
+    // when block-relative frames are passed through -- and it cannot fail in
+    // a single-segment block, which is why every earlier test missed it.
+    std::size_t received = 0;
+    bool allInside = true;
+    std::int32_t worst = -1;
+    for (const auto& seg : f.segments) {
+        for (const auto& [time, value] : seg.exprs) {
+            ++received;
+            if (time >= seg.frames) {
+                allInside = false;
+                worst = static_cast<std::int32_t>(time);
+            }
+        }
+    }
+    check(allInside,
+          "every event offset is inside its own segment" +
+          (worst < 0 ? std::string() :
+           " -- saw " + std::to_string(worst) + ", a block-relative frame"));
+    check(received == sent.size(),
+          "every event reached the plugin: " + std::to_string(received) + " of " +
+          std::to_string(sent.size()));
+
+    // NO QUANTISATION. Every value distinct, and each exactly what was sent.
+    std::vector<double> got;
+    for (const auto& seg : f.segments)
+        for (const auto& [time, value] : seg.exprs) got.push_back(value);
+    std::sort(got.begin(), got.end());
+    std::sort(sent.begin(), sent.end());
+    check(got == sent, "the plugin received exactly the values that were sent");
+
+    std::size_t collisions = 0;
+    for (std::size_t i = 1; i < got.size(); ++i) if (got[i] == got[i - 1]) ++collisions;
+    check(collisions == 0,
+          "and all " + std::to_string(got.size()) +
+          " remain distinct -- one 14-bit LSB apart survives end to end, saw " +
+          std::to_string(collisions) + " collisions");
+
+    check(dev.eventsDropped() == 0, "nothing was dropped for want of capacity");
+
+    // THE ASSERTION THAT ACTUALLY CATCHES THE COORDINATE BUG. Planting
+    // "pass block-relative frames straight through" does NOT trip the
+    // inside-its-own-segment check above, because the bound rejects them
+    // first and they simply never arrive -- "1 of 42" instead of a visible
+    // offset violation. Until this counter existed that rejection was
+    // silent, which is the same shape of defect ADR-0078 was.
+    check(dev.eventsOutOfRange() == 0,
+          "and none was refused for landing outside its segment, saw " +
+          std::to_string(dev.eventsOutOfRange()));
+}
+
+void testTheSegmentBoundItself() {
+    section("an event outside its segment is refused AND counted, never silent");
+
+    ClapEventList list;
+    list.reserve(16);
+
+    engine::Event e;
+    e.type = engine::EventType::NoteExpression;
+    e.dim = static_cast<std::uint16_t>(ExpressionDim::Pressure);
+    e.noteId = 1;
+    e.value = 0.5;
+
+    // Segment [256, 256+128). Three events: before it, inside it, after it.
+    e.frame = 300;
+    check(list.add(e, 256, 128), "an event inside the segment is accepted");
+    check(list.at(0)->time == 44u, "and its offset is segment-relative: 300 - 256");
+
+    e.frame = 100;
+    check(!list.add(e, 256, 128), "one before the segment is refused");
+    e.frame = 500;
+    check(!list.add(e, 256, 128), "one after it is refused");
+    check(list.outOfRange() == 2, "both refusals are COUNTED, saw " +
+                                  std::to_string(list.outOfRange()));
+    check(list.dropped() == 0, "and not confused with a capacity drop");
+    check(list.size() == 1, "only the one inside made it in");
+
+    // The bound itself: exactly at the end is outside, exactly at the start
+    // is inside. Off by one here puts an event in the next segment's first
+    // sample, which a plugin reads as a different instant.
+    e.frame = 256;
+    check(list.add(e, 256, 128), "the first sample of the segment is inside");
+    e.frame = 256 + 128;
+    check(!list.add(e, 256, 128), "the sample after the last is outside");
+}
+
 }  // namespace
 
 int main() {
@@ -697,6 +847,8 @@ int main() {
     testClapProcessHonoursTheSegmentOffset();
     testProcessErrorSilencesRatherThanLeaking();
     testEventOverflowIsCountedNotTruncated();
+    testMpePlusReachesThePluginThroughTheGraph();
+    testTheSegmentBoundItself();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

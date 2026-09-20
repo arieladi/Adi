@@ -4919,3 +4919,76 @@ worth resolving once, for both ADRs, rather than separately.
 **This lands in mac's lane.** `docs/UI-ARCHITECTURE.md` is theirs and the
 top-level component hierarchy is theirs to build; this entry records the
 decision and the one trap in it, not the implementation.
+
+---
+
+## ADR-0081 — An event's frame is block-relative; the device subtracts, and a mismatch is counted — `DECIDED` (2026-09-20) — **EXTENDS ADR-0078**
+
+ADR-0078 fixed the coordinate system for **audio**: `NodeIo::in`/`out` address
+the block, `frames` and `blockOffset` address the segment. The same question
+exists one layer up for **events**, it had the same answer nowhere written
+down, and the CLAP device got it wrong in a way no test could see.
+
+### The two origins
+
+- **`engine::Event::frame` is BLOCK-relative**, and must be. events.hpp already
+  says why: a segment-relative frame would have to be rewritten every time the
+  scheduler split differently, and a value that changes with how it was
+  scheduled is not a property of the music.
+- **A plugin handed one segment wants offsets inside that segment.** CLAP's
+  `clap_event_header.time` and VST3's `Event.sampleOffset` are both relative to
+  the buffer they arrive with.
+
+**So the device subtracts `io.blockOffset` on the way in.** Nowhere else — the
+graph keeps block coordinates end to end, and only the last hop converts.
+
+### What was actually broken
+
+`ClapDevice::process` **never read `io.events` at all** — zero occurrences in
+`clap_host.cpp`. It sent only what `pushEvent` had queued plus pending
+parameter changes at frame 0, so the scheduler's per-segment `EventSpan` never
+reached a plugin. Every claim this project has made about MPE+ end to end was,
+until now, about a path that stopped one function short.
+
+### A mismatch is COUNTED, and that is the part worth keeping
+
+The first version refused an out-of-range event by returning `false` and saying
+nothing. Planting the defect this ADR exists to prevent — pass block-relative
+frames straight through — then produced **"1 of 42 events arrived"**, and the
+assertion written to catch it, *every offset is inside its own segment*, could
+not fail at all: the bound rejected the events before any bad offset could be
+observed.
+
+Two things wrong there, and both are general:
+
+1. **A silent refusal turns a coordinate bug into a missing-data bug**, which
+   is a much harder thing to diagnose and exactly the shape this project keeps
+   finding weeks late.
+2. **A guard that rejects bad input can hide the defect it guards against**,
+   so the guard needs its own counter or its own test. Removing the bound
+   entirely passed every check before one was added.
+
+`ClapEventList::outOfRange()` is therefore separate from `dropped()`: a
+capacity drop means the block was busy, an out-of-range means the two sides
+disagree about the coordinate system. They want different responses and the
+same counter would have conflated them.
+
+### The test, which is the one that was asked for
+
+A real `Graph` at 4096 frames, a 500 Hz expression stream on one note — ADR-0054's
+rate, one update every 96 samples — driven through the actual split path so the
+block is segmented 40-odd times, asserting:
+
+- every event reaches the plugin,
+- every offset is inside its own segment,
+- every value is exactly what was sent, and all remain **distinct** at one
+  14-bit LSB apart, and
+- `outOfRange()` is zero.
+
+Four defects planted, four caught: block-relative frames passed through, the
+segment bound removed, the bound off by one, and `io.events` not read. The
+middle two **passed** before this ADR's counter and bound test existed.
+
+None of it can fail in a block with a single segment, which is why every
+earlier CLAP test missed it. A scheduler test that never splits is a test of
+the unsplit case.

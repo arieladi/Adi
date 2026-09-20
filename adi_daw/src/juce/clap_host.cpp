@@ -40,11 +40,20 @@ const clap_event_header_t* ClapEventList::at(std::int32_t i) const noexcept {
     return &events_[static_cast<std::size_t>(i)].hdr;
 }
 
-bool ClapEventList::add(const engine::Event& in) noexcept {
+bool ClapEventList::add(const engine::Event& in, std::int32_t blockOffset,
+                        std::int32_t segmentFrames) noexcept {
     if (cap_ > 0 && static_cast<std::int32_t>(events_.size()) >= cap_) {
         ++dropped_;
         return false;
     }
+
+    // BLOCK-relative in, SEGMENT-relative out. See the header: this is
+    // ADR-0078's trap one layer up, and a block with one segment cannot
+    // show it because the offset is zero.
+    const std::int32_t t = in.frame - blockOffset;
+    if (t < 0) { ++outOfRange_; return false; }
+    if (segmentFrames > 0 && t >= segmentFrames) { ++outOfRange_; return false; }
+    const auto time = static_cast<std::uint32_t>(t);
 
     Slot slot{};
     switch (in.type) {
@@ -52,7 +61,7 @@ bool ClapEventList::add(const engine::Event& in) noexcept {
         case engine::EventType::NoteOff: {
             slot.note = clap_event_note_t{};
             slot.note.header.size     = sizeof(clap_event_note_t);
-            slot.note.header.time     = static_cast<std::uint32_t>(in.frame);
+            slot.note.header.time     = time;
             slot.note.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
             // CLAP's event constants are an unnamed int enum and `type` is a
             // uint16_t, so the assignment narrows. MSVC /W4 raises C4244 and
@@ -80,7 +89,7 @@ bool ClapEventList::add(const engine::Event& in) noexcept {
             if (id < 0) return false;
             slot.expr = clap_event_note_expression_t{};
             slot.expr.header.size     = sizeof(clap_event_note_expression_t);
-            slot.expr.header.time     = static_cast<std::uint32_t>(in.frame);
+            slot.expr.header.time     = time;
             slot.expr.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
             slot.expr.header.type     = CLAP_EVENT_NOTE_EXPRESSION;
             slot.expr.header.flags    = 0;
@@ -106,7 +115,7 @@ bool ClapEventList::add(const engine::Event& in) noexcept {
         case engine::EventType::ParamMod: {
             slot.param = clap_event_param_value_t{};
             slot.param.header.size     = sizeof(clap_event_param_value_t);
-            slot.param.header.time     = static_cast<std::uint32_t>(in.frame);
+            slot.param.header.time     = time;
             slot.param.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
             // CLAP CARRIES MODULATION NATIVELY, and this is the line that says
             // so. ADR-0046 and ADR-0052: a modulation offset leaves the user's
@@ -137,6 +146,12 @@ bool ClapEventList::add(const engine::Event& in) noexcept {
 // ---------------------------------------------------------------------------
 // ClapDevice
 // ---------------------------------------------------------------------------
+
+bool ClapDevice::pushEvent(const engine::Event& e) noexcept {
+    if (injectedUsed_ >= injected_.size()) { ++pendingDropped_; return false; }
+    injected_[injectedUsed_++] = e;
+    return true;
+}
 
 std::string ClapDevice::paramIdToText(clap_id id) {
     char buf[16];
@@ -378,6 +393,9 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
 
     pending_.assign(256, PendingParam{});
     pendingUsed_ = 0;
+    injected_.assign(static_cast<std::size_t>((perNote > 0 ? perNote : 8) * 16),
+                     engine::Event{});
+    injectedUsed_ = 0;
 
     outEvents_.ctx = this;
     outEvents_.try_push = &ClapDevice::outPush;
@@ -417,7 +435,24 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
         else                for (std::int32_t i = 0; i < n; ++i) dst[i] = 0.0f;
     }
 
-    // Queued parameter changes go in as EVENTS at offset 0. CLAP parameters
+    // THE GRAPH'S EVENTS, which is the path that makes MPE+ real. `io.events`
+    // is the span the scheduler assigned to THIS segment, already sorted by
+    // frame (NodeIo). Nothing else reaches the plugin, and until now nothing
+    // read it at all -- the device sent only what pushEvent had queued.
+    //
+    // `io.blockOffset` is subtracted because Event::frame is block-relative
+    // and the plugin is being handed one segment. ADR-0078's trap, one layer
+    // up, and invisible in any test whose block has a single segment.
+    events_.clear();
+    for (const auto& e : io.events) events_.add(e, io.blockOffset, n);
+
+    // Injected events, for callers with no graph. Also block-relative, so
+    // they take the same subtraction, and they are consumed once.
+    for (std::size_t i = 0; i < injectedUsed_; ++i)
+        events_.add(injected_[i], io.blockOffset, n);
+    injectedUsed_ = 0;
+
+    // Queued parameter changes, at the start of this segment. CLAP parameters
     // are sample-accurate and this is the floor of that, not the ceiling:
     // once the graph drives them per segment they carry a real offset and
     // nothing here changes (ADR-0042).
@@ -426,8 +461,8 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
         e.type = engine::EventType::ParamValue;
         e.paramId = static_cast<std::uint32_t>(pending_[i].id);
         e.value = pending_[i].value;
-        e.frame = 0;
-        events_.add(e);
+        e.frame = io.blockOffset;      // segment start, once the offset goes
+        events_.add(e, io.blockOffset, n);
     }
     pendingUsed_ = 0;
 
