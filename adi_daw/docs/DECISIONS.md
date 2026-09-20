@@ -4464,6 +4464,23 @@ found by a test that only ever passes.
 
 ### 6. What is not built
 
+> **Updated 2026-09-20, later the same day.** Four of the five items below were
+> built within hours of this being written, and a status list that says
+> "absent" about working code is the Blueprint-vs-Reality failure running
+> backwards — the same one this project keeps catching in handoffs. Corrected
+> here rather than left, per `collab/README.md`: when the docs and the code
+> disagree, decide which is the bug, fix that one, and say which in the log.
+>
+> **Built since:** the real `process` call, `.clap` bundle loading
+> (`clap_entry`, the factory, `dlopen`/`LoadLibrary`), `setParam` delivering
+> through the event queue, and `audio-ports` — which turned out to be
+> mandatory rather than optional, because hardcoding one bus each way crashed
+> Pro-Q 3 inside its own `process` (ADR-0087).
+>
+> **Still absent:** `note-ports`, `gui`, `thread-check`.
+
+The list as originally written:
+
 `ClapDevice::process` passes audio through; the real call needs
 `clap_audio_buffer_t` wiring and a `clap_process_t`, and a half-built one that
 silently passed audio would look like a plugin doing nothing rather than like

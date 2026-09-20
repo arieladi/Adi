@@ -17,6 +17,7 @@
 // supposed to have one.
 
 #include "juce/vst3_events.hpp"
+#include "juce/device_bridge.hpp"
 #include "juce/vst3_host.hpp"
 
 #include <algorithm>
@@ -438,6 +439,33 @@ int main(int argc, char** argv) {
         check(list.add(e, 256, 128), "the first sample of the segment is inside");
         e.frame = 256 + 128;
         check(!list.add(e, 256, 128), "the sample after the last is outside");
+    }
+
+    // --- ADR-0082: something actually calls poll() now ---------------------
+    std::printf("\n[ADR-0082] the timer that ticks DeviceHost\n");
+    {
+        adi::device::DeviceHost dh;
+        adi::engine::Graph g;
+        adi::engine::SumNode only;
+        g.setOutput(g.addNode(only));
+        g.prepare(48000.0, 512);
+        dh.attachGraph(g);
+
+        adi::device::DeviceHostTimer timer(dh);
+        check(timer.ticks() == 0, "no ticks before it is started");
+        timer.start(20);
+        // Pump the message loop, which is where juce::Timer fires and where
+        // reconfiguring the graph is allowed (ADR-0066).
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(200);
+        timer.stop();
+        check(timer.ticks() >= 5,
+              "the timer fired on the message thread, " +
+              std::to_string(timer.ticks()) + " ticks in 200ms at 20ms");
+        check(timer.retaps() == 0, "and retapped nothing, because nothing reported");
+
+        const std::int64_t frozen = timer.ticks();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
+        check(timer.ticks() == frozen, "stop() actually stops it");
     }
 
     // --- ADR-0011, with no plugin needed -----------------------------------

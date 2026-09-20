@@ -1533,3 +1533,92 @@ possible because ADR-0075's CLAP host has no JUCE and no
 `clap-juce-extensions` in it — header-only MIT, plain C ABI, portable into
 someone else's codebase because it never depended on ours. Recorded as a
 payoff rather than a plan.
+
+---
+
+## 2026-09-20 — real plugins, and three bugs no fake could find
+
+Since the last entry: the `.clap` loader, `ClapHost`, `DeviceHost` wired, the
+VST3 raw takeover, and ADR-0083/0084/0086/0087. 1760 checks across 20 suites.
+
+### → win: your parked question is answered, and one default is still wrong
+
+**ADR-0087. The cheap path is SOUND on CLAP.** Pro-Q 3 3.24 ships as CLAP, so
+I measured instead of guessing. Sweeping Processing Mode:
+
+| mode | latency | `changed()` | `request_restart()` |
+|---|---|---|---|
+| 0.00–0.75 | 0 | 0 | 0 |
+| 1.00 | 320 | +1 | 0 |
+| 2.00 | **5120** | +1 | **0** |
+
+After reactivating: 5120, identical. So re-reading without reactivating is
+correct and your two-way split stands — no third case.
+
+**`request_restart()` was never called, not once.** The extension callback is
+this plugin's only signal, which means that before ADR-0084 offered
+`clap_host_latency` — `getExtension` returned nullptr for everything — a CLAP
+plugin changing its latency was **invisible to us**. Not mis-handled,
+unobserved.
+
+**Your quiet period and ceiling hold; your headroom default does not.**
+Largest gap 26 ms against 50 ms, longest burst 75 ms against 500 ms. But
+`latencyHeadroom_` defaults to **0**, so the cheap path never runs at all out
+of the box. 8192 absorbs the measured 5120. Still your call.
+
+**And the whole chain is verified live**, which is what you asked for:
+
+```
+Pro-Q 3 CLAP in a compensated graph, switched to linear phase
+  latency 0 -> 5120
+  reports 1  bursts 1  retaps 1  rebuildsNeeded 0
+  graph still renders finite samples after the retap
+```
+
+### Three bugs of mine that only real plugins could find
+
+**1. I hardcoded the CLAP bus layout.** `audio_inputs_count = 1`,
+`audio_outputs_count = 1`. Every plugin here disagrees: Pro-Q 3 has 2 inputs
+(Main + Sidechain), Vital has 0, Surge XT has 3 outputs. A plugin indexes
+`audio_inputs[i]` up to its declared count, so Pro-Q 3 read past my array and
+crashed inside its own `process`. **It appeared to work standalone** because
+the adjacent stack object was readable — UB being polite, which is exactly why
+no passing test could find it. Queried now, per bus, with every declared input
+given real memory even when the graph is not driving it.
+
+**2. A non-null extension struct can still have NULL function pointers.**
+Pro-Q 3 returns a `clap_plugin_tail_t` whose `get` is null. I checked the
+struct and called the member. Every extension and vtable call is guarded now.
+The fake plugin in the tests fills in every pointer, which is precisely why it
+could never have found this; there is a "hollow" fixture that leaves them null.
+
+**3. Surge XT told me off in its own log:** *"It is wrong to query the latency
+before the plugin is activated."* `ext/latency.h` agrees —
+`[main-thread & (being-activated | active)]` — and nothing enforced it.
+`Node::latencySamples()` is exactly what a compensation pass calls whenever it
+likes. Guarded, and **my existing test was doing the illegal thing**: it
+queried before activate throughout and called the answers correct, so adding
+the guard broke it.
+
+### The process failure, which cost more than the bugs
+
+My own guard audit printed `stop_processing: guarded=2 calls=3`. **I read that
+line and moved on.** The third site was `release()`, and it was the crash I
+then spent several minutes re-bisecting. Counting is not checking.
+
+Two more: a bisecting `cp` from a snapshot taken mid-edit silently reverted
+guards I had already added, and a stale `/tmp` binary made a fixed crash look
+unfixed. Neither was the bug; both cost more than it.
+
+### Smaller things that touch you
+
+- `dlopen` is not portable. `ClapLibrary` was POSIX-only and both Windows jobs
+  failed on `dlfcn.h` — while my own header comment said "the bundle (macOS) or
+  the library (elsewhere)". Interface designed cross-platform, implementation
+  not. Split on `_WIN32` now.
+- `latencyEpoch()` is on `DeviceInstance`, not the format types. My first
+  `DeviceHost` registered sources with a `dynamic_cast<Vst3Device*>`, which is
+  a format-agnostic host asking what format it has. It does not compile,
+  because that cast needs a JUCE header in a file with none.
+- **24 CLAP plugins installed here**, not one — FabFilter ships CLAP. Vital,
+  Surge XT and Twin are instruments, so MPE+ has real targets on both formats.
