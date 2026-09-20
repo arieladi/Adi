@@ -5,6 +5,76 @@ Only the `mac` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-21 — ADR-0005 is written, and my own instinct was wrong
+
+Branch `mac/adi-surge-adr0005`. An adversarial pass over the bootstrap docs
+produced seven refutations; four changed something real, and one of them was
+mine.
+
+**I was wrong about the sequencing, and the reason is worth reading.** In my
+bootstrap entry below I said my instinct was that OSC (option b) was a genuine
+stepping stone to the in-plugin overlay, "because the patch representation and
+the prompt work are the same either way and only the transport differs". That
+is false, and the falsifying fact is one I had already written down without
+following through on it:
+
+**`fxN_pM` and `a_oscN_paramM` are polymorphic.** Their ctrltype, valtype, min,
+max, default and display name all change when the parent `fxN_type` /
+`a_oscN_type` changes. So no path works from a hand-written schema — every one
+of them needs a *generated* per-type table (32 FX types × 16 slots, 12
+oscillator types). **Only `surgepy` can generate it.** That makes (c) a
+precondition for (a) rather than an alternative to it, and the choice collapses.
+
+And the transports are *not* interchangeable, because the key spaces differ:
+(a) wants `get_storage_name()` (`a_osc1_pitch`), which is the `.fxp` XML element
+name; (b) needs the curated OSC taxonomy (`a/osc/1/pitch`). Build on the OSC
+namespace and you port it wholesale later.
+
+**Corrections to the docs I merged in #43**, all now fixed:
+
+- **`/param/a_osc1_pitch` does not exist.** I had the two namespaces listed
+  separately and said "keep the mapping explicit", which was right, but I had
+  not established that the apparent fallback in `Parameter.cpp:215-216` is
+  **dead code** — `altOSCname` is required and zero of 100 `assign()` sites pass
+  an empty literal. Anyone reading the old text could still have assumed
+  derivability.
+- **The sparse loader is not a map lookup.** It is a sequential
+  `NextSibling` walk with a `FirstChild` fallback, so a sparse 40-of-766 patch
+  costs ~726 linear scans. Conclusion unchanged; cost was wrong. Fine one-shot,
+  not fine per keystroke.
+- **"12 concrete overlays" → 12 *direct* subclasses**, one of which
+  (`CodeEditorContainerWithApply`) is itself a base.
+- **The OSC §4.1 PENDING is answered:** OSC *can* be started on a plugin
+  instance from the DAW state blob alone, no C++ change
+  (`SurgeSynthProcessor.cpp:1545-1554`, `:1629-1644`). Ironically that makes
+  option (b) more viable than I thought while still not making it the product.
+
+**Two new traps found:**
+
+- **`startOSCIn` / `startOSCOut` user defaults are live-looking dead config.**
+  Declared at `UserDefaults.h:181-182`, named at `UserDefaults.cpp:393-398`,
+  and **never read**. A user who sets them gets silence.
+- **`-DSURGE_SKIP_STANDALONE=TRUE` breaks configure on macOS but does NOT block
+  `surgepy`**, because `setup.py` also passes `-DSURGE_SKIP_JUCE_FOR_RACK=TRUE`,
+  which gates `surge-xt` out entirely.
+
+**Two costs I removed by checking**, both in your favour: the AI feature needs
+**no new HTTP dependency** (`juce_URL` / `juce_WebInputStream` ship in
+`juce_core`), which also dissolves the MSVC `/MT` `LNK2038` hazard for it; and
+the macOS `surgepy` blocker is illusory.
+
+**Still open and genuinely unknown:** nobody has verified the ~766 OSC addresses
+are **unique**. It is unasserted, untested and not statically decidable. A
+collision writes the wrong parameter silently. Needs a runtime `/q/all_params`
+sweep before any OSC tooling is trusted.
+
+**What changes for you:** nothing about steps 1–4 below. Build the CLAP, run
+ctest, load it in Reaper. But when you get to the open question, it is now
+answered, and the thing that blocks progress is the fork `origin` (ADR-0006),
+not the choice of transport.
+
+---
+
 ## 2026-09-20 — bootstrap, and what win can pick up
 
 Adi's call: a **second** AI synth, on Surge XT, shipping a CLAP, alongside

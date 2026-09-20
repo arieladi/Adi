@@ -274,10 +274,18 @@ Two flags that bite:
 - `-DSURGE_SKIP_LUA=TRUE` is used on upstream's Windows ARM64 legs. If LuaJIT is
   what breaks your build, that is the escape hatch — at the cost of the formula
   modulator (§4.4).
-- `-DSURGE_SKIP_STANDALONE=TRUE` **hard-breaks CMake configure on macOS**, because
-  the CLI-into-`.app` copy step at `src/surge-xt/CMakeLists.txt:262-276` depends
-  on the Standalone target existing. Do not reach for it to speed up a CLAP-only
-  build.
+- `-DSURGE_SKIP_STANDALONE=TRUE` **hard-breaks CMake configure on macOS**,
+  because the CLI-into-`.app` copy step at `src/surge-xt/CMakeLists.txt:262-276`
+  is a bare `if(APPLE)` with no `TARGET` check. Do not reach for it to speed up
+  a CLAP-only build; name the target instead.
+
+  **It does not block `surgepy`**, though it looks like it should.
+  `src/surge-python/setup.py` passes that exact flag — alongside
+  `-DSURGE_SKIP_JUCE_FOR_RACK=TRUE`, which gates `add_subdirectory(surge-xt)`
+  out entirely at `src/CMakeLists.txt:171`, so the pip path never reaches the
+  broken block. Upstream CI builds `surgepy` on Windows and Ubuntu but **never
+  on macOS**, so `mac` is first to exercise it — the one obvious blocker does
+  not apply, but nothing else about that path is proven.
 
 ### 2.5 The post-build copy hazard that cost `adi-vst` eight builds is absent here
 
@@ -311,7 +319,7 @@ targeting `~/Library/Audio/Plug-Ins/CLAP`, no admin needed.
 | Trap | Evidence | What to do |
 |---|---|---|
 | **`/WX` has no escape hatch on MSVC.** `SURGE_SKIP_WERROR` suppresses `-Werror` for clang/gcc, but the MSVC branch adds `/WX` with no equivalent guard (skipped only for arm64/arm64ec). Code clean on macOS can fail Windows on an unused variable. | `CMakeLists.txt:126` vs `:204-208`; MSVC-only suppressions at `:213-221` (4244/4305/4267/4018/4388/4065/4702/4005/5105) | Build with the other platform's strictness in mind. Anything outside that suppression list is fatal on Windows only. |
-| **MSVC static runtime `/MT` is forced** via CMP0091. Any prebuilt third-party library — an HTTP client, a JSON or ONNX lib — built `/MD` gives `LNK2038` on Windows only. | `CMakeLists.txt:3-4` | **This will bite the AI feature specifically**, which needs an HTTP client. Build every new Windows dependency from source inside the CMake tree so it inherits `CMAKE_MSVC_RUNTIME_LIBRARY`. |
+| **MSVC static runtime `/MT` is forced** via CMP0091. Any prebuilt third-party library built `/MD` gives `LNK2038` on Windows only. | `CMakeLists.txt:3-4` | Build every new Windows dependency from source inside the CMake tree so it inherits `CMAKE_MSVC_RUNTIME_LIBRARY`. **Note this does *not* apply to the obvious case**: the AI feature needs no new HTTP dependency, because `juce_core/network/` already ships `juce_URL` and `juce_WebInputStream`. `JUCE_USE_CURL=0` (`src/CMakeLists.txt:85`) only affects the Linux native path. |
 | **LTO is on by default for Release**, so every Release link of a very large TU set is slow. | `CMakeLists.txt:13-15`, `:92-99` | Iterate with `-DENABLE_LTO=OFF` explicitly. Note `RelWithDebInfo` also matches the `Release` regex, so it does not disable LTO on its own. |
 | **`surge-xt-distribution` fails opaquely on Windows** without 7-Zip and Inno Setup on `PATH`, and needs `SURGE_BUILD_FX=ON` because the portable-zip step copies FX artifacts by literal filename. | `src/cmake/lib.cmake:184,189,191,220`; `src/CMakeLists.txt:184` | Build `surge-staged-assets` (the README's recommendation) for day-to-day work. |
 | **`stage-extra-content` writes into the SOURCE tree** and `download-extra-content` git-clones from the network mid-build. | `cmake/stage-extra-content.cmake:11-31` — `copy_directory ... resources/data/skins` with `WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}` | Never build these in our fork unless you intend the source-tree mutation. They are not in the default `all`. |
@@ -373,19 +381,50 @@ Plus `ui_identifier` for the skin engine, and a fifth namespace in `surgepy`
 (C++ member names). `adi-vst` has exactly one namespace for this; we have five.
 
 > **The AI-facing key is `get_storage_name()`.** It is the serialization
-> contract, it is unique, and it is what the patch loader looks up. Do not use
-> `oscName` for the schema — use it for the OSC transport only, and keep the
-> mapping explicit.
+> contract and it is what the patch writer uses as the XML element name
+> (`SurgePatch.cpp:4086`).
+
+**`oscName` is NOT derivable from `name_storage`, and assuming it is would ship
+an AI that writes to addresses that do not exist.** The two are independent,
+hand-maintained namespaces. `Parameter.cpp:215-216` looks like it has a
+fallback —
+
+```cpp
+oscName = fmt::format("/param/{}", altOSCname.empty() ? name_storage : altOSCname);
+```
+
+— but that fallback is **dead code**: `altOSCname` is a required positional
+argument and **zero of the 100 `assign()` call sites** in `SurgePatch.cpp` pass
+an empty literal. The address is always hand-authored, and built by separate
+`fmt::format` calls:
+
+| Parameter | `name_storage` | actual OSC address |
+|---|---|---|
+| Osc 1 pitch | `a_osc1_pitch` | `/param/a/osc/1/pitch` (`SurgePatch.cpp:176-178`) |
+| Scene A volume | `a_volume` | `/param/a/amp/volume` (`SurgePatch.cpp:231`) |
+
+`/param/a_osc1_pitch` **does not exist.** Keep a mapping; never derive one.
 
 #### Sparse patches are native to Surge — we do not need `adi-vst`'s merge trick
 
 `adi-vst` had to merge an AI patch into a full state object first, because
 Vital's `loadControls` resets anything absent to Init defaults (their §3.3a).
 
-Surge does not have that problem. The `.fxp` loader looks each parameter up **by
-storage name** and **silently leaves absent ones at their current values**
-(`SurgePatch.cpp:1943-1965`). A ~40-key sparse patch is native to Surge's own
-format. Two further routes exist for applying one parameter at a time:
+Surge does not have that problem. The `.fxp` loader **silently leaves absent
+parameters at their current values** (`SurgePatch.cpp:1943-1965`), so a ~40-key
+sparse patch is native to Surge's own format.
+
+**Be precise about the mechanism, because it has a cost.** It is *not* a map
+lookup. The loader walks `param_ptr` in order doing `p->NextSibling(name)`, with
+a `parameters->FirstChild(name)` fallback when the sibling walk misses — an
+optimisation that assumes document order matches `param_ptr` order. On a sparse
+40-of-766 patch the sibling walk misses constantly, so each of the ~726 absent
+parameters costs a full `FirstChild` scan of the `<parameters>` element.
+
+Fine for a one-shot patch apply. **Not** cheap enough for a per-keystroke live
+edit loop — use `setParameter01` for that instead.
+
+Two routes exist for applying one parameter at a time:
 
 - `SurgeSynthesizer::setParameter01(ID, float)` (`SurgeSynthesizer.cpp:2875`) —
   sets exactly one parameter by synth-side id and touches nothing else;
@@ -574,6 +613,54 @@ That is, almost exactly, the schema `adi-vst/tools/extract_schema.py` had to
 reconstruct by parsing C++ tables. Here it is queryable at runtime, over a
 socket, by upstream's own code.
 
+#### OSC can be switched on from the DAW state blob, with no C++ changes
+
+`setStateInformation` drives OSC startup directly
+(`SurgeSynthProcessor.cpp:1545-1554`): it calls `enqueuePatchForLoad`, then
+either sets `oscCheckStartup = true` (audio running) or calls
+`tryLazyOscStartupFromStreamedState()`. That function (`:1629-1644`) checks
+`storage.oscStartIn && storage.oscPortIn > 0` and calls
+`oscHandler.tryOSCStartup()`, behind a `rawLoadEnqueued` guard for load
+ordering. `prepareToPlay` sets the flag at `:537`; `processBlockPostFunction`
+drains it at `:1089-1092`. `oscStartIn` / `oscPortIn` are read from the patch
+XML's `dawExtraState` at `SurgePatch.cpp:3745-3758`.
+
+**So a DAW state blob carrying `oscStartIn=1` and `oscPortIn>0` starts the OSC
+receiver on that plugin instance.** The mechanism is deliberate and was recently
+hardened for exactly this ordering bug.
+
+> ### ⚠ `startOSCIn` / `startOSCOut` user defaults are live-looking dead config
+>
+> The keys exist — `UserDefaults.h:181-182` declares the enum and
+> `UserDefaults.cpp:393-398` maps them to `"startOSCIn"` / `"startOSCOut"`.
+> **Nothing reads them.** `grep -rn "getUserDefaultValue(.*StartOSC" src/`
+> returns nothing, and `SurgeStorage.cpp:591-596` reads `OSCPortIn`,
+> `OSCPortOut` and `OSCIPOut` from user defaults but *not* the two start flags.
+>
+> A user who sets `startOSCIn=1` in their preferences gets silence. Do not build
+> anything on those keys.
+
+#### What OSC cannot do, which is what decides ADR-0005
+
+- **Addresses are curated, not derivable** (§3.1). The only authoritative source
+  is a runtime `/q/all_params` sweep. The shipped spec HTML is labelled 1.3 in a
+  1.4.0 tree.
+- **You cannot emit `"440 Hz"` over OSC.** `set_value_from_string` covers 114 of
+  170 control types but is in-process only and unreachable over the wire. Floats
+  go as normalised 0..1, ints raw.
+- **No atomicity.** N parameters is N UDP datagrams — lossy, drained per block,
+  and `setParameter01` has order-dependent side effects (`ct_filtertype` writes
+  `param_ptr[index+1]`).
+- **No instance identity.** OSC out defaults to a fixed port 53270, so two Surge
+  instances in one DAW produce an indistinguishable merged stream.
+
+> **STILL OPEN, and it blocks trusting any OSC tooling.** Nothing asserts the
+> ~766 OSC addresses are **unique**, nothing tests it, and it cannot be settled
+> statically because they are `fmt::format` calls inside loops. A collision
+> writes the wrong parameter, silently. Resolve it with a runtime
+> `/q/all_params` sweep plus a uniqueness check before relying on OSC for
+> anything — including a throwaway tool.
+
 ### 4.2 `surgepy` — a complete headless synth, and the schema extractor
 
 `src/surge-python/` (`surgepy.cpp`, `setup.py`, `pyproject.toml`, `tests/`),
@@ -650,14 +737,20 @@ coalescing, or every token is a repaint.
 
 ### 5.2 The overlay system is a registry, and adding one is demonstrably cheap
 
-19 headers in `src/surge-xt/gui/overlays/`, 12 concrete subclasses of
+19 headers in `src/surge-xt/gui/overlays/`, **12 direct subclasses** of
 
 ```cpp
 struct OverlayComponent : juce::Component     // overlays/OverlayComponent.h:39
 ```
 
+Be precise: 12 is the count of *direct* subclasses, not of instantiable
+overlays. One of the 12 — `CodeEditorContainerWithApply` — is itself a base, for
+`FormulaModulatorEditor` and `WavetableScriptEditor`. Do not quote "12 overlays
+exist".
+
 Registration is an enum plus a factory (`SurgeGUIEditor.h:456-481`): a 14-entry
-`OverlayTags` enum, `createOverlay()` switch, and
+`OverlayTags` enum (verified: `NO_EDITOR` … `OPEN_SOUND_CONTROL_SETTINGS`, plus
+an `n_overlay_tags` sentinel), a `createOverlay()` switch, and
 `showOverlay` / `closeOverlay` / `toggleOverlay`.
 
 `OverlayComponent` is a richer contract than Vital's `Overlay`: tear-out into a
@@ -718,10 +811,20 @@ guarded by a `juce::Component::SafePointer`. Use it rather than inventing one.
 
 ## 7. Open items
 
-- [ ] **ADR-0005 — the AI write path.** OSC-driven with no C++ change, `surgepy`
-      offline, or a C++ overlay like `adi-vst`? Reserved, not yet written.
+**Decided since the bootstrap:** ADR-0005 settles the AI write path — `surgepy`
+first (it is the only thing that can generate the contextual per-type schema
+§3.1 requires), then a C++ overlay. OSC is scaffolding, not the product.
+
+- [ ] **Publish the fork `origin`** (ADR-0006). This now blocks ADR-0005's
+      step 2 and the one-line `surgepy` `oscName` binding. Adi's call.
+- [ ] **Verify the ~766 OSC addresses are unique** with a runtime
+      `/q/all_params` sweep. Unasserted and untested upstream; a collision
+      writes the wrong parameter silently. Blocks trusting any OSC tool.
 - [ ] Build `surge-xt_CLAP` on Windows and record the result. Nothing has been
       compiled on either platform yet.
+- [ ] Build `surgepy` on macOS — upstream CI never does, so `mac` is first.
+- [ ] Generate the contextual per-type schema: 32 FX types × 16 slots, 12
+      oscillator types. `scripts/misc/surgepy-params.py` is the starting point.
 - [ ] Build on macOS/arm64 and record it.
 - [ ] Run `ctest -j 4` on both platforms and record the baseline count, the way
       `adi-vst` records "15/15".

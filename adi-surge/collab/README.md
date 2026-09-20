@@ -111,7 +111,7 @@ agents writing the same ADR; reading the other agent's subject does.
 | 0002 | mac | `mac/adi-surge-bootstrap` | `surge/` is a fork tracked against upstream, not vendored | used |
 | 0003 | mac | `mac/adi-surge-bootstrap` | CLAP is the primary target here | used |
 | 0004 | mac | `mac/adi-surge-bootstrap` | submodules are gitlinks; the `protocol.file.allow` trap | used |
-| 0005 | mac | `mac/adi-surge-bootstrap` | the AI write path is OSC first, C++ overlay later | used |
+| 0005 | mac | `mac/adi-surge-adr0005` | the AI write path: surgepy first, C++ overlay second, OSC is scaffolding | used |
 | 0006 | mac | `mac/adi-surge-bootstrap` | the fork has no `origin` yet, and why that does not block win | used |
 | 0007 | mac | `mac/adi-surge-bootstrap` | CMake >= 3.22 is hard; a build must assert the artifact | used |
 
