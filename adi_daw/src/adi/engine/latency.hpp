@@ -47,6 +47,8 @@
 
 namespace adi::engine {
 
+class GraphHost;
+
 /// Turns bumps from any number of reporters into at most one retap.
 ///
 /// `poll`, `addSource`, `attach` and the setters are MESSAGE THREAD. The
@@ -81,7 +83,16 @@ public:
         Shape,
     };
 
-    void attach(Graph& g) noexcept { graph_ = &g; }
+    /// Attach to one graph directly. Fine for a test or an offline render,
+    /// and WRONG for a session that can rebuild: the pointer is dangling the
+    /// moment `GraphHost::collect()` frees the graph it names.
+    void attach(Graph& g) noexcept { graph_ = &g; host_ = nullptr; }
+
+    /// Attach to the HOST, which is what a live session does. The graph is
+    /// re-read on every poll, so a rebuild between two polls is invisible here
+    /// -- where storing the graph once would be a use-after-free the first
+    /// time a plugin rescanned its ports.
+    void attach(GraphHost& h) noexcept { host_ = &h; graph_ = nullptr; }
 
     /// `epoch` returns a counter that only ever increases. The name is for
     /// diagnostics: "which plugin keeps doing this" is the first question
@@ -145,7 +156,12 @@ private:
         Kind kind = Kind::Latency;
     };
 
+    /// Whichever graph this poll should act on: the one attached directly, or
+    /// the host's current one. Never stored.
+    [[nodiscard]] Graph* target() const noexcept;
+
     Graph* graph_ = nullptr;
+    GraphHost* host_ = nullptr;
     std::vector<Source> sources_;
     Stats stats_;
     std::string lastReporter_;

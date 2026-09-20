@@ -5547,3 +5547,150 @@ portable and is not. Split now on `_WIN32` with `LoadLibrary` /
 Worth naming because ADR-0075's claim is that CLAP hosting runs on every ABI
 the suite runs on, and that claim was false for one of them for as long as
 this took to notice.
+
+---
+
+## ADR-0088 — The compensation headroom default is measured, and it is not zero — `DECIDED` (2026-09-20) — **CORRECTS ADR-0079**
+
+ADR-0079 introduced `Graph::setLatencyHeadroom` and defaulted it to **0**, with
+this justification:
+
+> *"Zero — the default — is a graph whose compensation is fixed at `prepare`,
+> and it allocates exactly what it did before this existed."*
+
+That reasoning is about memory and it is correct about memory. It is wrong about
+everything else, and the way it is wrong is the interesting part.
+
+### Zero does not mean "the feature is off". It means the feature never runs
+
+With no headroom, an edge's ring is sized to exactly its current delay. So
+**every** latency change misses its ring, returns false from `retapLatency`,
+escalates, and primes (ADR-0085). And ADR-0085 grows to `want + latencyHeadroom_`
+— which at a headroom of 0 is `want` exactly, so the *next* change misses again.
+
+The cheap path — the whole of ADR-0079, the tap move, the crossfade, the
+"nothing to publish and nothing to reclaim" — would never have executed once in
+a real session. Every test of it passed, because every test set headroom
+explicitly. **A default that disables the thing it configures is not a default,
+and a suite where every test opts in cannot see that.**
+
+### The number is 8192, and it is measured rather than guessed
+
+My own comment said a useful value "sits in the low thousands of samples". mac
+measured FabFilter Pro-Q 3 3.24 as CLAP across its phase modes:
+
+| mode | reported latency |
+|---|---|
+| 0.00 – 0.75 | 0 |
+| 1.00 | 320 |
+| 2.00 | 5120 |
+
+"Low thousands" would have made **2048 and 4096 both look sufficient and both
+miss**. 8192 is the next power of two above the measured worst case.
+
+### The cost is measured too
+
+`Graph::compensationBytes()` reports what the rings actually hold, so the
+trade-off is a number a test asserts rather than a sentence in a comment:
+four stereo edges at 8192 samples of headroom is 256 KB, which scales linearly
+to roughly 16 MB for a 200-edge project. That is the price, stated.
+
+It exists because "low thousands" is exactly the kind of estimate that survives
+review — it sounds measured — and nothing in the file could contradict it.
+
+### What this does not fix
+
+A convolution reverb declaring seconds of latency still misses 8192 and still
+escalates. That is ADR-0085's open item and this does not close it; it moves the
+line to cover the case that was actually in front of us.
+
+---
+
+## ADR-0089 — The rebuild path: a new graph is published, and the swap is faded in — `DECIDED` (2026-09-20) — **ANSWERS ADR-0085 and ADR-0084**
+
+`LatencyCoalescer::rebuildNeeded()` has been raised and counted since ADR-0084
+taught it to tell a shape change from a latency change. **Nothing has ever
+answered it.** A port rescan was detected, categorised, counted, and then
+ignored — which is worse than not detecting it, because the counter makes it
+look handled.
+
+### Decision
+
+**1. `GraphHost` owns the replacement, because a `Graph` is the thing being
+replaced.** The publisher, the reclamation, the fade across the seam and the
+coalescer all have to outlive the swap. mac made this point about the coalescer
+and it generalises: the host is whatever survives.
+
+**2. The order is plan → realise → prepare → publish, and publishing is last.**
+A failed rebuild does not disturb the running graph. A model with a cycle, with
+no master, or with a block size `prepare` refuses leaves the session playing
+exactly what it was playing. Swapping first and discovering second turns a bad
+edit into silence.
+
+Realisation and `prepare` are **separate gates** and both are load-bearing:
+realisation refuses what is wrong with the *plan* (ADR-0077), `prepare` refuses
+what is wrong with the *run*. A graph that realises perfectly still fails to
+prepare at a block size of zero, which is a thing a driver can hand us
+(ADR-0049).
+
+**3. Reclamation is ADR-0019's, unchanged.** `SnapshotPublisher` already has the
+strictly-greater free condition and its memory ordering is commented line by
+line. The retired graph is freed only once the audio thread has demonstrably
+moved past it. Nothing here re-implements that.
+
+The payload needed one observation to fit: `AudioRead` hands out
+`const PublishedGraph*` because the snapshot's **identity** is immutable — which
+graph this is, and its sequence number. The graph's buffers are not; they are
+the single reader's scratch. `const` on a `unique_ptr` does not propagate to the
+pointee, so this needs no `mutable` and no cast.
+
+**4. The swap is FADED IN, not crossfaded — and deliberately not faded out.**
+
+Crossfading is dead for the reason that killed ADR-0066 decision 4: both graphs
+hold the **same** `Node*`s, because devices are injected and outlive a rebuild
+(ADR-0042 d5). Rendering both would call `process()` twice on every plugin.
+
+Fading *out* is dead for a different reason, and it is a decision rather than an
+omission. Fading out means deferring the swap by a block — deliberately running
+a graph we have already decided is wrong. A rebuild is triggered by a **topology**
+change, so the stale graph may be routing audio through a node whose port layout
+just moved underneath it. One more block of that is worse than a clean cut, and
+the incoming graph's rings are empty anyway, so what it renders first is
+near-silence the fade simply bounds.
+
+**5. The first graph is not faded.** There is nothing to fade from, and ramping
+the opening milliseconds of every session is an artefact rather than the absence
+of one.
+
+**6. The coalescer attaches to the HOST, not to a graph.** `attach(Graph&)`
+stores a raw pointer that `collect()` frees; the first port rescan in a session
+would have been a use-after-free. `attach(GraphHost&)` re-reads the current
+graph on every poll, so a rebuild between two polls is invisible to it.
+
+### Verified non-vacuously
+
+Six planted defects, all caught: publishing before preparing (5 checks), a
+refused realisation published anyway (3), no silence when nothing is published
+(2), the fade restarting every block instead of carrying (3), the fade applied
+to the first graph (2), and no fade at all (3).
+
+**Two survived the first round and both for the same reason: the assertion could
+not distinguish the defect from correct behaviour.**
+
+- Publishing before `prepare` survived because no test made a graph that
+  *realised* and then *failed to prepare* — the two gates were never separated.
+- Fading the first graph survived because the first block was silent, and
+  **fading silence looks exactly like not fading it**. The test now feeds the
+  master before the first block, so full level from sample 0 is observable.
+
+ADR-0010's claim is observed rather than argued: picking up a new graph, fading
+it in and rendering allocate **zero** times, with the counter proven live
+immediately afterwards.
+
+### Not decided
+
+Whether a rebuild can preserve the compensation history of edges that exist
+unchanged in both graphs. It would remove the seam entirely for the common case
+— one plugin's ports moved, the other 199 tracks are identical — and it means
+sharing ring buffers across two graphs with two lifetimes. Worth doing; not
+worth doing at the same time as the thing that makes rebuilds possible at all.

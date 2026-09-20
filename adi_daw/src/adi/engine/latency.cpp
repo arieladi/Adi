@@ -2,6 +2,8 @@
 
 #include "adi/engine/latency.hpp"
 
+#include "adi/engine/host.hpp"
+
 #include <utility>
 
 namespace adi::engine {
@@ -26,8 +28,16 @@ void LatencyCoalescer::clearSources() {
     lastReporter_.clear();
 }
 
+Graph* LatencyCoalescer::target() const noexcept {
+    if (graph_ != nullptr) return graph_;
+    return host_ != nullptr ? host_->currentGraph() : nullptr;
+}
+
 bool LatencyCoalescer::poll(std::int64_t nowMs) {
-    if (graph_ == nullptr) return false;
+    // RESOLVED ONCE PER POLL, never stored. A rebuild between two polls
+    // retires the graph this would otherwise be holding.
+    Graph* const graph = target();
+    if (graph == nullptr) return false;
 
     // --- 1. sample everything, once ----------------------------------------
     //
@@ -39,7 +49,7 @@ bool LatencyCoalescer::poll(std::int64_t nowMs) {
     // only ever freed on a poll that also retapped, and a graph that settled
     // and went quiet held its retired buffers until the next plugin happened
     // to report. Collection has nothing to do with whether anything changed.
-    stats_.ringsReclaimed += static_cast<std::int64_t>(graph_->collectRings());
+    stats_.ringsReclaimed += static_cast<std::int64_t>(graph->collectRings());
 
     bool changed = false;
     for (Source& s : sources_) {
@@ -94,11 +104,11 @@ bool LatencyCoalescer::poll(std::int64_t nowMs) {
     // ADR-0079: this moves the taps that fit and reports when one does not.
     // A false is not an error to swallow -- it is the signal that this change
     // needs new buffers, and only a rebuild off-thread can supply them.
-    if (!graph_->retapLatency()) {
+    if (!graph->retapLatency()) {
         // ADR-0085. An edge wants more delay than its ring holds, so grow that
         // ring -- here, on the message thread, where allocating is allowed.
         // Per EDGE and not per graph: the others keep their history.
-        const std::size_t grown = autoEscalate_ ? graph_->escalateLatency() : 0;
+        const std::size_t grown = autoEscalate_ ? graph->escalateLatency() : 0;
         if (grown > 0) {
             stats_.escalations += static_cast<std::int64_t>(grown);
         } else if (!shapeMoved) {

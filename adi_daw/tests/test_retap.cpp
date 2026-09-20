@@ -280,7 +280,15 @@ void testWithoutHeadroomARetapIsRefused() {
     g.connect(np, nm);
     g.connect(nd, nm);
     g.setOutput(nm);
-    eqi(g.latencyHeadroom(), 0, "a graph has no headroom unless asked");
+
+    // THE DEFAULT IS NOT ZERO ANY MORE (ADR-0088), so this test has to opt
+    // OUT to say what it is about. Zero is still a legal setting and still
+    // means "compensation is fixed at prepare" -- it is just no longer what
+    // you get by accident, because what you got by accident was the cheap
+    // path never running.
+    eqi(g.latencyHeadroom(), 8192, "8192 by default, measured on a real plugin");
+    g.setLatencyHeadroom(0);
+    eqi(g.latencyHeadroom(), 0, "and zero when explicitly asked for");
     g.prepare(48000.0, 256);
     check(g.ok(), "prepared: " + g.error());
 
@@ -291,6 +299,43 @@ void testWithoutHeadroomARetapIsRefused() {
     eqi(g.compensationFor(nd, nm), 0,
         "and nothing moved, so the graph is still internally consistent with "
         "the compensation it has");
+}
+
+void testTheHeadroomCostIsMeasuredNotGuessed() {
+    section("ADR-0088 -- what the default actually costs, in bytes");
+
+    // The default was wrong for a year of comments because the comment said
+    // "low thousands" and nothing measured it. This asserts the arithmetic so
+    // the next person choosing a number is choosing against a fact.
+    RampNode src;
+    SumNode a, b, mix;
+    Graph g;
+    const NodeId ns = g.addNode(src), na = g.addNode(a);
+    const NodeId nb = g.addNode(b), nm = g.addNode(mix);
+    g.connect(ns, na);
+    g.connect(ns, nb);
+    g.connect(na, nm);
+    g.connect(nb, nm);
+    g.setOutput(nm);
+
+    g.setLatencyHeadroom(0);
+    g.prepare(48000.0, 256);
+    eqi(static_cast<long long>(g.compensationBytes()), 0,
+        "with no headroom and no latency, the rings cost nothing at all");
+
+    // Four edges, stereo, (8192 + 1) floats each: the +1 is the ring's extra
+    // slot, which is why this is measured rather than multiplied out.
+    g.setLatencyHeadroom(8192);
+    g.prepare(48000.0, 256);
+    const long long want = 4LL * 2 * (8192 + 1) * 4;
+    eqi(static_cast<long long>(g.compensationBytes()), want,
+        "and 8192 samples of headroom on four stereo edges is " +
+            std::to_string(want / 1024) + " KB");
+
+    // Which scales linearly, so a 200-edge project is fifty times this and
+    // still single-digit megabytes. That is the trade the default makes.
+    check(g.compensationBytes() < 300u * 1024u,
+          "under 300 KB for this graph, so a 200-edge project is ~16 MB");
 }
 
 void testARetapFollowsTheNewLatency() {
@@ -945,6 +990,7 @@ int main() {
     testTheTapMovesInsideItsRing();
     testTheGlideCrossfadesAndSettles();
     testWithoutHeadroomARetapIsRefused();
+    testTheHeadroomCostIsMeasuredNotGuessed();
     testARetapFollowsTheNewLatency();
     testARetapAllocatesNothingOnTheAudioThread();
     testAZeroEdgeCanStillBeGivenADelay();

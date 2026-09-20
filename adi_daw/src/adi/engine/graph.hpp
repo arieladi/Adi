@@ -268,6 +268,11 @@ public:
         return primeRemaining_;
     }
 
+    /// Bytes this line holds, both rings included while one is in flight.
+    [[nodiscard]] std::size_t bytes() const noexcept {
+        return (buf_.size() + incoming_.size()) * sizeof(float);
+    }
+
     /// Anything that spans a block is in progress, so the caller must not take
     /// a shortcut. One predicate rather than two, because the fast path in
     /// `Graph::accumulate` forgot `gliding()` once already.
@@ -425,14 +430,21 @@ public:
     [[nodiscard]] static std::int32_t maxFloorFor(double sampleRate) noexcept;
 
     /// Spare ring capacity on every compensated edge, in samples, so a
-    /// plugin's latency can change while the graph runs (ADR-0079). Zero --
-    /// the default -- is a graph whose compensation is fixed at `prepare`, and
-    /// it allocates exactly what it did before this existed.
+    /// plugin's latency can change while the graph runs without anyone
+    /// allocating (ADR-0079).
     ///
-    /// A useful number is the largest latency swing expected from a plugin
-    /// mode switch; linear-phase EQ is the case this was written for and sits
-    /// in the low thousands of samples. Cost is `channels * headroom * 4`
-    /// bytes per edge.
+    /// THE DEFAULT IS 8192, AND IT IS MEASURED (ADR-0088). It was 0, and 0
+    /// switches the feature off: with no headroom every change misses its
+    /// ring, escalates and primes, so the cheap path never once runs. A
+    /// default that disables the thing it configures is not a default.
+    ///
+    /// 8192 is the next power of two above the largest swing measured on a
+    /// real plugin -- Pro-Q 3 3.24 moves 0 -> 320 -> 5120 samples across its
+    /// phase modes. The sentence this replaces guessed "low thousands", which
+    /// would have made 2048 and 4096 both look sufficient and both miss.
+    ///
+    /// Cost is `channels * (delay + headroom) * 4` bytes per edge; see
+    /// `compensationBytes()`, which measures it rather than estimating.
     void setLatencyHeadroom(std::int32_t n) noexcept {
         latencyHeadroom_ = n > 0 ? n : 0;
     }
@@ -469,6 +481,13 @@ public:
     /// Edges with an offer still in flight, so a test can assert the handover
     /// rather than describe it.
     [[nodiscard]] std::size_t growingEdges() const noexcept;
+
+    /// Bytes currently held by every compensation ring in the graph, including
+    /// one that has been offered but not yet swapped. Exposed so the memory
+    /// cost of a headroom setting is MEASURED in a test rather than asserted
+    /// in a comment -- which is how "low thousands" survived long enough to
+    /// make the default wrong.
+    [[nodiscard]] std::size_t compensationBytes() const noexcept;
 
     /// The graph's own latency: how far behind the output is (ADR-0058).
     /// Excludes the device buffer -- that is ADR-0042 decision 7, and folding
@@ -566,7 +585,7 @@ private:
     // is not the real risk on the platforms we target; the data race is, and
     // an int32 costs nothing to do properly.
     std::atomic<std::int32_t> graphLatency_{0};
-    std::int32_t latencyHeadroom_ = 0;
+    std::int32_t latencyHeadroom_ = 8192;
     bool ok_ = false;
     bool prepared_ = false;
     bool reverseWithinLevel_ = false;

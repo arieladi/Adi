@@ -540,6 +540,15 @@ std::size_t Graph::collectRings() {
     return freed;
 }
 
+std::size_t Graph::compensationBytes() const noexcept {
+    std::size_t n = 0;
+    for (const Slot& s : slots_) {
+        for (const DelayLine& d : s.inDelays) n += d.bytes();
+        for (const DelayLine& d : s.sideDelays) n += d.bytes();
+    }
+    return n;
+}
+
 std::size_t Graph::growingEdges() const noexcept {
     std::size_t n = 0;
     for (const Slot& s : slots_) {

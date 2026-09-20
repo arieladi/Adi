@@ -134,6 +134,7 @@ add_library(adi_core STATIC
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
     src/adi/engine/latency.cpp
+    src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/mpe_input.cpp
     src/adi/textproj.cpp
@@ -254,6 +255,10 @@ add_test(NAME adi_device_ops_tests COMMAND adi_device_ops_tests)
 add_executable(adi_plan_tests tests/test_plan.cpp)
 target_link_libraries(adi_plan_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_plan_tests COMMAND adi_plan_tests)
+
+add_executable(adi_host_tests tests/test_host.cpp)
+target_link_libraries(adi_host_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_host_tests COMMAND adi_host_tests)
 
 add_executable(adi_retap_tests tests/test_retap.cpp)
 target_link_libraries(adi_retap_tests PRIVATE adi_core adi_warnings)
