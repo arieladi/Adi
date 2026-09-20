@@ -395,20 +395,6 @@
     "display_name": "High Upper Threshold",
     "group": "global"
   },
-  "compressor_low_band_unused": {
-    "name": "compressor_low_band_unused",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 1.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Compressor Unused",
-    "group": "global"
-  },
   "compressor_low_gain": {
     "name": "compressor_low_gain",
     "version_added": 0,
@@ -2126,63 +2112,6 @@
       "On"
     ]
   },
-  "filter_1_osc1_input": {
-    "name": "filter_1_osc1_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 1.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter 1 OSC 1 Input",
-    "group": "filter",
-    "instance": "1",
-    "enum": [
-      "Off",
-      "On"
-    ]
-  },
-  "filter_1_osc2_input": {
-    "name": "filter_1_osc2_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter 1 OSC 2 Input",
-    "group": "filter",
-    "instance": "1",
-    "enum": [
-      "Off",
-      "On"
-    ]
-  },
-  "filter_1_osc3_input": {
-    "name": "filter_1_osc3_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter 1 OSC 3 Input",
-    "group": "filter",
-    "instance": "1",
-    "enum": [
-      "Off",
-      "On"
-    ]
-  },
   "filter_1_resonance": {
     "name": "filter_1_resonance",
     "version_added": 0,
@@ -2197,25 +2126,6 @@
     "display_name": "Filter 1 Resonance",
     "group": "filter",
     "instance": "1"
-  },
-  "filter_1_sample_input": {
-    "name": "filter_1_sample_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter 1 SAMPLE Input",
-    "group": "filter",
-    "instance": "1",
-    "enum": [
-      "Off",
-      "On"
-    ]
   },
   "filter_1_style": {
     "name": "filter_1_style",
@@ -2467,63 +2377,6 @@
       "On"
     ]
   },
-  "filter_2_osc1_input": {
-    "name": "filter_2_osc1_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter 2 OSC 1 Input",
-    "group": "filter",
-    "instance": "2",
-    "enum": [
-      "Off",
-      "On"
-    ]
-  },
-  "filter_2_osc2_input": {
-    "name": "filter_2_osc2_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 1.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter 2 OSC 2 Input",
-    "group": "filter",
-    "instance": "2",
-    "enum": [
-      "Off",
-      "On"
-    ]
-  },
-  "filter_2_osc3_input": {
-    "name": "filter_2_osc3_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter 2 OSC 3 Input",
-    "group": "filter",
-    "instance": "2",
-    "enum": [
-      "Off",
-      "On"
-    ]
-  },
   "filter_2_resonance": {
     "name": "filter_2_resonance",
     "version_added": 0,
@@ -2538,25 +2391,6 @@
     "display_name": "Filter 2 Resonance",
     "group": "filter",
     "instance": "2"
-  },
-  "filter_2_sample_input": {
-    "name": "filter_2_sample_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter 2 SAMPLE Input",
-    "group": "filter",
-    "instance": "2",
-    "enum": [
-      "Off",
-      "On"
-    ]
   },
   "filter_2_style": {
     "name": "filter_2_style",
@@ -2639,25 +2473,6 @@
     "display_name": "Filter fx Drive",
     "group": "filter",
     "instance": "fx"
-  },
-  "filter_fx_filter_input": {
-    "name": "filter_fx_filter_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter fx FILTER Input",
-    "group": "filter",
-    "instance": "fx",
-    "enum": [
-      "Off",
-      "On"
-    ]
   },
   "filter_fx_formant_resonance": {
     "name": "filter_fx_formant_resonance",
@@ -2808,63 +2623,6 @@
       "On"
     ]
   },
-  "filter_fx_osc1_input": {
-    "name": "filter_fx_osc1_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter fx OSC 1 Input",
-    "group": "filter",
-    "instance": "fx",
-    "enum": [
-      "Off",
-      "On"
-    ]
-  },
-  "filter_fx_osc2_input": {
-    "name": "filter_fx_osc2_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter fx OSC 2 Input",
-    "group": "filter",
-    "instance": "fx",
-    "enum": [
-      "Off",
-      "On"
-    ]
-  },
-  "filter_fx_osc3_input": {
-    "name": "filter_fx_osc3_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter fx OSC 3 Input",
-    "group": "filter",
-    "instance": "fx",
-    "enum": [
-      "Off",
-      "On"
-    ]
-  },
   "filter_fx_resonance": {
     "name": "filter_fx_resonance",
     "version_added": 0,
@@ -2879,25 +2637,6 @@
     "display_name": "Filter fx Resonance",
     "group": "filter",
     "instance": "fx"
-  },
-  "filter_fx_sample_input": {
-    "name": "filter_fx_sample_input",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Filter fx SAMPLE Input",
-    "group": "filter",
-    "instance": "fx",
-    "enum": [
-      "Off",
-      "On"
-    ]
   },
   "filter_fx_style": {
     "name": "filter_fx_style",
@@ -6733,7 +6472,7 @@
     "scale": "Exponential",
     "display_invert": true,
     "units": " secs",
-    "display_name": "Random 1 Frequency",
+    "display_name": "Random LFO 1 Frequency",
     "group": "random",
     "instance": "1"
   },
@@ -6748,7 +6487,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Transpose",
+    "display_name": "Random LFO 1 Transpose",
     "group": "random",
     "instance": "1"
   },
@@ -6763,7 +6502,7 @@
     "scale": "Linear",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Tune",
+    "display_name": "Random LFO 1 Tune",
     "group": "random",
     "instance": "1"
   },
@@ -6778,7 +6517,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Stereo",
+    "display_name": "Random LFO 1 Stereo",
     "group": "random",
     "instance": "1",
     "enum": [
@@ -6797,7 +6536,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Style",
+    "display_name": "Random LFO 1 Style",
     "group": "random",
     "instance": "1",
     "enum": [
@@ -6818,7 +6557,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Sync",
+    "display_name": "Random LFO 1 Sync",
     "group": "random",
     "instance": "1",
     "enum": [
@@ -6840,7 +6579,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Sync Type",
+    "display_name": "Random LFO 1 Sync Type",
     "group": "random",
     "instance": "1",
     "enum": [
@@ -6859,7 +6598,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Tempo",
+    "display_name": "Random LFO 1 Tempo",
     "group": "random",
     "instance": "1",
     "enum": [
@@ -6889,7 +6628,7 @@
     "scale": "Exponential",
     "display_invert": true,
     "units": " secs",
-    "display_name": "Random 2 Frequency",
+    "display_name": "Random LFO 2 Frequency",
     "group": "random",
     "instance": "2"
   },
@@ -6904,7 +6643,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Transpose",
+    "display_name": "Random LFO 2 Transpose",
     "group": "random",
     "instance": "2"
   },
@@ -6919,7 +6658,7 @@
     "scale": "Linear",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Tune",
+    "display_name": "Random LFO 2 Tune",
     "group": "random",
     "instance": "2"
   },
@@ -6934,7 +6673,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Stereo",
+    "display_name": "Random LFO 2 Stereo",
     "group": "random",
     "instance": "2",
     "enum": [
@@ -6953,7 +6692,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Style",
+    "display_name": "Random LFO 2 Style",
     "group": "random",
     "instance": "2",
     "enum": [
@@ -6974,7 +6713,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Sync",
+    "display_name": "Random LFO 2 Sync",
     "group": "random",
     "instance": "2",
     "enum": [
@@ -6996,7 +6735,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Sync Type",
+    "display_name": "Random LFO 2 Sync Type",
     "group": "random",
     "instance": "2",
     "enum": [
@@ -7015,7 +6754,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Tempo",
+    "display_name": "Random LFO 2 Tempo",
     "group": "random",
     "instance": "2",
     "enum": [
@@ -7045,7 +6784,7 @@
     "scale": "Exponential",
     "display_invert": true,
     "units": " secs",
-    "display_name": "Random 3 Frequency",
+    "display_name": "Random LFO 3 Frequency",
     "group": "random",
     "instance": "3"
   },
@@ -7060,7 +6799,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Transpose",
+    "display_name": "Random LFO 3 Transpose",
     "group": "random",
     "instance": "3"
   },
@@ -7075,7 +6814,7 @@
     "scale": "Linear",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Tune",
+    "display_name": "Random LFO 3 Tune",
     "group": "random",
     "instance": "3"
   },
@@ -7090,7 +6829,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Stereo",
+    "display_name": "Random LFO 3 Stereo",
     "group": "random",
     "instance": "3",
     "enum": [
@@ -7109,7 +6848,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Style",
+    "display_name": "Random LFO 3 Style",
     "group": "random",
     "instance": "3",
     "enum": [
@@ -7130,7 +6869,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Sync",
+    "display_name": "Random LFO 3 Sync",
     "group": "random",
     "instance": "3",
     "enum": [
@@ -7152,7 +6891,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Sync Type",
+    "display_name": "Random LFO 3 Sync Type",
     "group": "random",
     "instance": "3",
     "enum": [
@@ -7171,7 +6910,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Tempo",
+    "display_name": "Random LFO 3 Tempo",
     "group": "random",
     "instance": "3",
     "enum": [
@@ -7201,7 +6940,7 @@
     "scale": "Exponential",
     "display_invert": true,
     "units": " secs",
-    "display_name": "Random 4 Frequency",
+    "display_name": "Random LFO 4 Frequency",
     "group": "random",
     "instance": "4"
   },
@@ -7216,7 +6955,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Transpose",
+    "display_name": "Random LFO 4 Transpose",
     "group": "random",
     "instance": "4"
   },
@@ -7231,7 +6970,7 @@
     "scale": "Linear",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Tune",
+    "display_name": "Random LFO 4 Tune",
     "group": "random",
     "instance": "4"
   },
@@ -7246,7 +6985,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Stereo",
+    "display_name": "Random LFO 4 Stereo",
     "group": "random",
     "instance": "4",
     "enum": [
@@ -7265,7 +7004,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Style",
+    "display_name": "Random LFO 4 Style",
     "group": "random",
     "instance": "4",
     "enum": [
@@ -7286,7 +7025,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Sync",
+    "display_name": "Random LFO 4 Sync",
     "group": "random",
     "instance": "4",
     "enum": [
@@ -7308,7 +7047,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Sync Type",
+    "display_name": "Random LFO 4 Sync Type",
     "group": "random",
     "instance": "4",
     "enum": [
@@ -7327,7 +7066,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Tempo",
+    "display_name": "Random LFO 4 Tempo",
     "group": "random",
     "instance": "4",
     "enum": [
@@ -7752,122 +7491,6 @@
     "display_invert": false,
     "units": "%",
     "display_name": "Stereo Routing",
-    "group": "global"
-  },
-  "sub_direct_out": {
-    "name": "sub_direct_out",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Sub Direct Out",
-    "group": "global"
-  },
-  "sub_level": {
-    "name": "sub_level",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.70710678119,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Quadratic",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Sub Level",
-    "group": "global"
-  },
-  "sub_on": {
-    "name": "sub_on",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Sub Switch",
-    "group": "global",
-    "enum": [
-      "Off",
-      "On"
-    ]
-  },
-  "sub_pan": {
-    "name": "sub_pan",
-    "version_added": 0,
-    "min": -1.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 100.0,
-    "scale": "Linear",
-    "display_invert": false,
-    "units": "%",
-    "display_name": "Sub Pan",
-    "group": "global"
-  },
-  "sub_transpose": {
-    "name": "sub_transpose",
-    "version_added": 0,
-    "min": -48.0,
-    "max": 48.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Sub Transpose",
-    "group": "global"
-  },
-  "sub_transpose_quantize": {
-    "name": "sub_transpose_quantize",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 8191.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Sub Transpose Quantize",
-    "group": "global"
-  },
-  "sub_tune": {
-    "name": "sub_tune",
-    "version_added": 0,
-    "min": -1.0,
-    "max": 1.0,
-    "default": 0.0,
-    "post_offset": 0.0,
-    "display_multiply": 100.0,
-    "scale": "Linear",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Sub Tune",
-    "group": "global"
-  },
-  "sub_waveform": {
-    "name": "sub_waveform",
-    "version_added": 0,
-    "min": 0.0,
-    "max": 5.0,
-    "default": 2.0,
-    "post_offset": 0.0,
-    "display_multiply": 1.0,
-    "scale": "Indexed",
-    "display_invert": false,
-    "units": "",
-    "display_name": "Sub Osc Waveform",
     "group": "global"
   },
   "velocity_track": {

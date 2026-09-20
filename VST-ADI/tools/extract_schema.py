@@ -35,17 +35,33 @@ MAX_MODULATION_CONNECTIONS = 64
 ID_DELIMITER = "_"
 NAME_DELIMITER = " "
 
-# (array name, id prefix, name prefix, instance count or list of ids)
+# (array name, id-prefix constant, name-prefix constant, instance count or ids).
+# The prefix VALUES are read out of synth_parameters.cpp rather than hardcoded:
+# kRandomNamePrefix is "Random LFO", not "Random", and hardcoding it produced
+# display_names that silently failed to join against the host's parameter list.
 GROUPS = [
-    ("env_parameter_list", "env", "Envelope", NUM_ENVELOPES),
-    ("lfo_parameter_list", "lfo", "LFO", NUM_LFOS),
-    ("random_lfo_parameter_list", "random", "Random", NUM_RANDOM_LFOS),
-    ("osc_parameter_list", "osc", "Oscillator", NUM_OSCILLATORS),
+    ("env_parameter_list", "kEnvIdPrefix", "kEnvNamePrefix", NUM_ENVELOPES),
+    ("lfo_parameter_list", "kLfoIdPrefix", "kLfoNamePrefix", NUM_LFOS),
+    ("random_lfo_parameter_list", "kRandomIdPrefix", "kRandomNamePrefix", NUM_RANDOM_LFOS),
+    ("osc_parameter_list", "kOscIdPrefix", "kOscNamePrefix", NUM_OSCILLATORS),
     # filters are 1..kNumFilters plus a literal "fx" instance
-    ("filter_parameter_list", "filter", "Filter",
+    ("filter_parameter_list", "kFilterIdPrefix", "kFilterNamePrefix",
      [str(i + 1) for i in range(NUM_FILTERS)] + ["fx"]),
-    ("mod_parameter_list", "modulation", "Modulation", MAX_MODULATION_CONNECTIONS),
+    ("mod_parameter_list", "kModulationIdPrefix", "kModulationNamePrefix",
+     MAX_MODULATION_CONNECTIONS),
 ]
+
+PREFIX_RE = re.compile(r'static\s+const\s+std::string\s+(k\w*Prefix)\s*=\s*"([^"]*)"\s*;')
+
+
+def parse_prefixes(src):
+    """Read the kXxxIdPrefix / kXxxNamePrefix string constants from the source."""
+    found = {m.group(1): m.group(2) for m in PREFIX_RE.finditer(src)}
+    needed = {c for _a, i, n, _x in GROUPS for c in (i, n)}
+    missing = needed - set(found)
+    if missing:
+        raise SystemExit(f"could not find prefix constants: {sorted(missing)}")
+    return found
 
 # Applied after expansion, matching synth_parameters.cpp:586-590
 DEFAULT_OVERRIDES = {
@@ -334,8 +350,15 @@ def main():
             d["group"] = "global"
             schema[d["name"]] = d
 
+    prefixes = parse_prefixes(src)
+    print("prefixes read from source:")
+    for _a, i, n, _x in GROUPS:
+        print(f"  {prefixes[i]:<12} -> {prefixes[n]!r}")
+    print()
+
     # Replay the group expansion.
-    for array_name, id_prefix, name_prefix, instances in GROUPS:
+    for array_name, id_const, name_const, instances in GROUPS:
+        id_prefix, name_prefix = prefixes[id_const], prefixes[name_const]
         ids = ([str(i + 1) for i in range(instances)]
                if isinstance(instances, int) else instances)
         entries = parse_entries(extract_array_body(src, array_name))
@@ -373,15 +396,34 @@ def main():
     out_dir.mkdir(exist_ok=True)
 
     full = dict(sorted(schema.items()))
+
+    # LLM-facing subset: drop the 64 mod slots (routing lives in "modulations"),
+    # and drop phantom parameters -- table entries the engine never registers,
+    # so setting them does nothing. See find_phantom_params.py, which derives
+    # them from a running plugin; we consume its output rather than hardcoding
+    # a list that would rot the moment upstream changes.
+    phantom_file = out_dir / "phantom_params.json"
+    phantom = set()
+    if phantom_file.exists():
+        phantom = set(json.loads(phantom_file.read_text(encoding="utf-8"))["phantom"])
+        for name in phantom:
+            if name in full:
+                full[name]["phantom"] = True
+    else:
+        print("  WARNING: out/phantom_params.json missing -- the LLM subset will")
+        print("           include phantom parameters. Regenerate it with:")
+        print("             VitalValidator.exe <plugin>.vst3 --dump-params out/host_params.tsv")
+        print("             python find_phantom_params.py")
+        print()
+
+    # Written after phantom tagging so the full schema carries the flag too.
     (out_dir / "vital_schema_full.json").write_text(
         json.dumps(full, indent=2), encoding="utf-8"
     )
 
-    # LLM-facing subset: drop the 64 mod slots (routing lives in "modulations")
-    # and drop anything the UI doesn't expose as a sound-design control.
     llm = {
         k: v for k, v in full.items()
-        if v.get("group") != "modulation"
+        if v.get("group") != "modulation" and k not in phantom
     }
     (out_dir / "vital_schema_llm.json").write_text(
         json.dumps(llm, indent=2), encoding="utf-8"
@@ -400,6 +442,7 @@ def main():
         print(f"  {g:12} {n:5}")
     print(f"  {'TOTAL':12} {len(full):5}")
     print()
+    print(f"phantom parameters excluded: {len(phantom)}")
     print(f"LLM-facing subset: {len(llm)} parameters")
     print("  by scale:")
     for s, n in sorted(by_scale.items(), key=lambda x: -x[1]):

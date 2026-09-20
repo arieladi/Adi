@@ -240,3 +240,86 @@ Note on size: the working tree is ~180 MB but the **packed repo is 31.5 MiB**
 this ADR rejected vendoring on size; that reasoning was wrong. Vendoring is
 rejected on the loss of upstream tracking, which is the argument that actually
 holds.
+
+---
+
+## ADR-0012 — Phantom parameters are excluded from the model-facing schema
+
+**Date:** 2026-09-20 · **Agent:** win
+
+**Context.** `SynthPlugin`'s constructor skips any `ValueDetails` entry with no
+matching key in the engine's `control_map`
+(`src/plugin/synth_plugin.cpp:28-30`). So the table is a superset of what the
+engine actually registers, and our extracted schema inherited the surplus.
+Measured rather than assumed: the host exposes 2852 parameters, of which 2080
+are JUCE's MIDI-CC emulation (16 channels × `kCountCtrlNumber` = 130), leaving
+**772** real Vital parameters against **794** table entries — **22 phantoms**.
+
+All 22 are legacy migration artifacts, in three clusters:
+
+| Cluster | n | Why it survives |
+|---|---|---|
+| `filter_{1,2,fx}_{osc1,osc2,osc3,sample,filter}_input` | 13 | Pre-1.0 per-input routing toggles, superseded by the `osc_N_destination` enum. Still read by `updateFromOldVersion`. |
+| `sub_*` | 9 | The old sub-oscillator. `sub_octave` is the marker `jsonToState` uses to detect a pre-0.2.0 preset (`load_save.cpp:277`). |
+| `compressor_low_band_unused` | 1 | Named "unused". Referenced nowhere. |
+
+**Decision.** `tools/find_phantom_params.py` derives the list from a running
+plugin and writes `out/phantom_params.json`; `extract_schema.py` consumes it and
+drops those names from `vital_schema_llm.json`. The model-facing subset is
+**452 parameters**, not 474. The full schema keeps all 794 and tags the 22 with
+`"phantom": true`, because the migration code still needs them.
+
+The list is **derived, never hardcoded** — a literal list in the extractor would
+rot silently the first time upstream registers or retires a control.
+
+**Consequences.** Handing a model a name the engine ignores produces a patch
+that validates, applies, and does nothing — the worst failure mode available,
+because it looks like success. The chain is now
+`VitalValidator --dump-params` → `host_params.tsv` → `find_phantom_params.py` →
+`phantom_params.json` → `extract_schema.py`. If `phantom_params.json` is absent
+the extractor warns loudly and emits 474 rather than silently guessing.
+
+Finding this also exposed a real bug in our extractor: display names were built
+from hardcoded prefixes, and `kRandomNamePrefix` is `"Random LFO"`, not
+`"Random"`. That mismatch made all 32 random-LFO parameters fail to join and
+masqueraded as phantoms. The prefixes are now read from
+`synth_parameters.cpp`. The join is only trustworthy because the tool reports
+unmapped names and exits non-zero on them — without that check the bug would
+have shipped a 420-parameter schema.
+
+---
+
+## ADR-0013 — Keep JUCE's VST3 MIDI-CC parameter emulation; MPE depends on it
+
+**Date:** 2026-09-20 · **Agent:** win
+
+**Context.** The Windows VST3 exposes 2852 automatable parameters, 2080 of them
+JUCE's MIDI-CC emulation. That is a large list and some hosts cope with it
+badly, so `JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS=0` was previously suggested
+in `ARCHITECTURE.md` as the lever if a DAW struggled. **That suggestion was
+wrong and is withdrawn here.** Target hardware is a Haken Continuum Slim,
+which needs MPE: per-note pitch bend and a continuous Y-axis.
+
+**Decision.** The emulation stays on. `JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS`
+is left at its default of 1 and must not be disabled.
+
+**Consequences.** VST3 deliberately has no native MIDI-CC input path — the
+parameter emulation *is* the CC path. With it off, JUCE's
+`getMidiControllerAssignment` returns `kResultFalse`
+(`juce_VST3_Wrapper.cpp:712-718`), the host is told the plugin has no controller
+assignments, and CC never arrives. Verified against the dumped parameter list:
+the block runs `MIDI CC 0|0` … `MIDI CC 15|129`, i.e. **per channel**, covering
+CC 0–127 plus 128 = aftertouch and **129 = pitch bend**. Per-channel pitch bend
+and CC74 are precisely MPE's two extra dimensions, so disabling the emulation
+would silently break MPE while leaving notes working — a failure that would look
+like a Continuum problem, not a plugin one.
+
+Vital's engine side already supports MPE (`SynthBase::setMpeEnabled`,
+`MidiManager` zone handling, an `mpe_enabled` parameter), so nothing else is
+needed to receive it.
+
+Not yet established: whether this path carries **MPE+**'s higher-than-7-bit
+resolution and 500 Hz update rate, or whether it quantises. VST3 parameters are
+normalised doubles, so the *container* is not the limit, but JUCE's MIDI→
+parameter conversion and the host's automation rate both need measuring before
+any claim is made. Treat MPE+ as unverified until something tests it.

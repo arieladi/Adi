@@ -407,7 +407,8 @@
     "display_invert": false,
     "units": "",
     "display_name": "Compressor Unused",
-    "group": "global"
+    "group": "global",
+    "phantom": true
   },
   "compressor_low_gain": {
     "name": "compressor_low_gain",
@@ -2143,7 +2144,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_1_osc2_input": {
     "name": "filter_1_osc2_input",
@@ -2162,7 +2164,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_1_osc3_input": {
     "name": "filter_1_osc3_input",
@@ -2181,7 +2184,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_1_resonance": {
     "name": "filter_1_resonance",
@@ -2215,7 +2219,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_1_style": {
     "name": "filter_1_style",
@@ -2484,7 +2489,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_2_osc2_input": {
     "name": "filter_2_osc2_input",
@@ -2503,7 +2509,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_2_osc3_input": {
     "name": "filter_2_osc3_input",
@@ -2522,7 +2529,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_2_resonance": {
     "name": "filter_2_resonance",
@@ -2556,7 +2564,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_2_style": {
     "name": "filter_2_style",
@@ -2657,7 +2666,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_fx_formant_resonance": {
     "name": "filter_fx_formant_resonance",
@@ -2825,7 +2835,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_fx_osc2_input": {
     "name": "filter_fx_osc2_input",
@@ -2844,7 +2855,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_fx_osc3_input": {
     "name": "filter_fx_osc3_input",
@@ -2863,7 +2875,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_fx_resonance": {
     "name": "filter_fx_resonance",
@@ -2897,7 +2910,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "filter_fx_style": {
     "name": "filter_fx_style",
@@ -12301,7 +12315,7 @@
     "scale": "Exponential",
     "display_invert": true,
     "units": " secs",
-    "display_name": "Random 1 Frequency",
+    "display_name": "Random LFO 1 Frequency",
     "group": "random",
     "instance": "1"
   },
@@ -12316,7 +12330,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Transpose",
+    "display_name": "Random LFO 1 Transpose",
     "group": "random",
     "instance": "1"
   },
@@ -12331,7 +12345,7 @@
     "scale": "Linear",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Tune",
+    "display_name": "Random LFO 1 Tune",
     "group": "random",
     "instance": "1"
   },
@@ -12346,7 +12360,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Stereo",
+    "display_name": "Random LFO 1 Stereo",
     "group": "random",
     "instance": "1",
     "enum": [
@@ -12365,7 +12379,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Style",
+    "display_name": "Random LFO 1 Style",
     "group": "random",
     "instance": "1",
     "enum": [
@@ -12386,7 +12400,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Sync",
+    "display_name": "Random LFO 1 Sync",
     "group": "random",
     "instance": "1",
     "enum": [
@@ -12408,7 +12422,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Sync Type",
+    "display_name": "Random LFO 1 Sync Type",
     "group": "random",
     "instance": "1",
     "enum": [
@@ -12427,7 +12441,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 1 Tempo",
+    "display_name": "Random LFO 1 Tempo",
     "group": "random",
     "instance": "1",
     "enum": [
@@ -12457,7 +12471,7 @@
     "scale": "Exponential",
     "display_invert": true,
     "units": " secs",
-    "display_name": "Random 2 Frequency",
+    "display_name": "Random LFO 2 Frequency",
     "group": "random",
     "instance": "2"
   },
@@ -12472,7 +12486,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Transpose",
+    "display_name": "Random LFO 2 Transpose",
     "group": "random",
     "instance": "2"
   },
@@ -12487,7 +12501,7 @@
     "scale": "Linear",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Tune",
+    "display_name": "Random LFO 2 Tune",
     "group": "random",
     "instance": "2"
   },
@@ -12502,7 +12516,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Stereo",
+    "display_name": "Random LFO 2 Stereo",
     "group": "random",
     "instance": "2",
     "enum": [
@@ -12521,7 +12535,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Style",
+    "display_name": "Random LFO 2 Style",
     "group": "random",
     "instance": "2",
     "enum": [
@@ -12542,7 +12556,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Sync",
+    "display_name": "Random LFO 2 Sync",
     "group": "random",
     "instance": "2",
     "enum": [
@@ -12564,7 +12578,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Sync Type",
+    "display_name": "Random LFO 2 Sync Type",
     "group": "random",
     "instance": "2",
     "enum": [
@@ -12583,7 +12597,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 2 Tempo",
+    "display_name": "Random LFO 2 Tempo",
     "group": "random",
     "instance": "2",
     "enum": [
@@ -12613,7 +12627,7 @@
     "scale": "Exponential",
     "display_invert": true,
     "units": " secs",
-    "display_name": "Random 3 Frequency",
+    "display_name": "Random LFO 3 Frequency",
     "group": "random",
     "instance": "3"
   },
@@ -12628,7 +12642,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Transpose",
+    "display_name": "Random LFO 3 Transpose",
     "group": "random",
     "instance": "3"
   },
@@ -12643,7 +12657,7 @@
     "scale": "Linear",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Tune",
+    "display_name": "Random LFO 3 Tune",
     "group": "random",
     "instance": "3"
   },
@@ -12658,7 +12672,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Stereo",
+    "display_name": "Random LFO 3 Stereo",
     "group": "random",
     "instance": "3",
     "enum": [
@@ -12677,7 +12691,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Style",
+    "display_name": "Random LFO 3 Style",
     "group": "random",
     "instance": "3",
     "enum": [
@@ -12698,7 +12712,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Sync",
+    "display_name": "Random LFO 3 Sync",
     "group": "random",
     "instance": "3",
     "enum": [
@@ -12720,7 +12734,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Sync Type",
+    "display_name": "Random LFO 3 Sync Type",
     "group": "random",
     "instance": "3",
     "enum": [
@@ -12739,7 +12753,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 3 Tempo",
+    "display_name": "Random LFO 3 Tempo",
     "group": "random",
     "instance": "3",
     "enum": [
@@ -12769,7 +12783,7 @@
     "scale": "Exponential",
     "display_invert": true,
     "units": " secs",
-    "display_name": "Random 4 Frequency",
+    "display_name": "Random LFO 4 Frequency",
     "group": "random",
     "instance": "4"
   },
@@ -12784,7 +12798,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Transpose",
+    "display_name": "Random LFO 4 Transpose",
     "group": "random",
     "instance": "4"
   },
@@ -12799,7 +12813,7 @@
     "scale": "Linear",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Tune",
+    "display_name": "Random LFO 4 Tune",
     "group": "random",
     "instance": "4"
   },
@@ -12814,7 +12828,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Stereo",
+    "display_name": "Random LFO 4 Stereo",
     "group": "random",
     "instance": "4",
     "enum": [
@@ -12833,7 +12847,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Style",
+    "display_name": "Random LFO 4 Style",
     "group": "random",
     "instance": "4",
     "enum": [
@@ -12854,7 +12868,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Sync",
+    "display_name": "Random LFO 4 Sync",
     "group": "random",
     "instance": "4",
     "enum": [
@@ -12876,7 +12890,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Sync Type",
+    "display_name": "Random LFO 4 Sync Type",
     "group": "random",
     "instance": "4",
     "enum": [
@@ -12895,7 +12909,7 @@
     "scale": "Indexed",
     "display_invert": false,
     "units": "",
-    "display_name": "Random 4 Tempo",
+    "display_name": "Random LFO 4 Tempo",
     "group": "random",
     "instance": "4",
     "enum": [
@@ -13334,7 +13348,8 @@
     "display_invert": false,
     "units": "",
     "display_name": "Sub Direct Out",
-    "group": "global"
+    "group": "global",
+    "phantom": true
   },
   "sub_level": {
     "name": "sub_level",
@@ -13348,7 +13363,8 @@
     "display_invert": false,
     "units": "",
     "display_name": "Sub Level",
-    "group": "global"
+    "group": "global",
+    "phantom": true
   },
   "sub_on": {
     "name": "sub_on",
@@ -13366,7 +13382,8 @@
     "enum": [
       "Off",
       "On"
-    ]
+    ],
+    "phantom": true
   },
   "sub_pan": {
     "name": "sub_pan",
@@ -13380,7 +13397,8 @@
     "display_invert": false,
     "units": "%",
     "display_name": "Sub Pan",
-    "group": "global"
+    "group": "global",
+    "phantom": true
   },
   "sub_transpose": {
     "name": "sub_transpose",
@@ -13394,7 +13412,8 @@
     "display_invert": false,
     "units": "",
     "display_name": "Sub Transpose",
-    "group": "global"
+    "group": "global",
+    "phantom": true
   },
   "sub_transpose_quantize": {
     "name": "sub_transpose_quantize",
@@ -13408,7 +13427,8 @@
     "display_invert": false,
     "units": "",
     "display_name": "Sub Transpose Quantize",
-    "group": "global"
+    "group": "global",
+    "phantom": true
   },
   "sub_tune": {
     "name": "sub_tune",
@@ -13422,7 +13442,8 @@
     "display_invert": false,
     "units": "",
     "display_name": "Sub Tune",
-    "group": "global"
+    "group": "global",
+    "phantom": true
   },
   "sub_waveform": {
     "name": "sub_waveform",
@@ -13436,7 +13457,8 @@
     "display_invert": false,
     "units": "",
     "display_name": "Sub Osc Waveform",
-    "group": "global"
+    "group": "global",
+    "phantom": true
   },
   "velocity_track": {
     "name": "velocity_track",

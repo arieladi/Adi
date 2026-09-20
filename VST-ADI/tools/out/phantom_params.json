@@ -1,0 +1,59 @@
+{
+  "phantom": [
+    "compressor_low_band_unused",
+    "filter_1_osc1_input",
+    "filter_1_osc2_input",
+    "filter_1_osc3_input",
+    "filter_1_sample_input",
+    "filter_2_osc1_input",
+    "filter_2_osc2_input",
+    "filter_2_osc3_input",
+    "filter_2_sample_input",
+    "filter_fx_filter_input",
+    "filter_fx_osc1_input",
+    "filter_fx_osc2_input",
+    "filter_fx_osc3_input",
+    "filter_fx_sample_input",
+    "sub_direct_out",
+    "sub_level",
+    "sub_on",
+    "sub_pan",
+    "sub_transpose",
+    "sub_transpose_quantize",
+    "sub_tune",
+    "sub_waveform"
+  ],
+  "phantom_by_group": {
+    "global": [
+      "compressor_low_band_unused",
+      "sub_direct_out",
+      "sub_level",
+      "sub_on",
+      "sub_pan",
+      "sub_transpose",
+      "sub_transpose_quantize",
+      "sub_tune",
+      "sub_waveform"
+    ],
+    "filter": [
+      "filter_1_osc1_input",
+      "filter_1_osc2_input",
+      "filter_1_osc3_input",
+      "filter_1_sample_input",
+      "filter_2_osc1_input",
+      "filter_2_osc2_input",
+      "filter_2_osc3_input",
+      "filter_2_sample_input",
+      "filter_fx_filter_input",
+      "filter_fx_osc1_input",
+      "filter_fx_osc2_input",
+      "filter_fx_osc3_input",
+      "filter_fx_sample_input"
+    ]
+  },
+  "unmapped_host_names": [],
+  "registered_count": 772,
+  "table_count": 794,
+  "midi_cc_count": 2080,
+  "llm_facing_real": 452
+}

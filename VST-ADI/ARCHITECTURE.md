@@ -179,16 +179,33 @@ there is no separate install.
 **Baseline result (unmodified Vital, 2026-09-17): 15/15 checks passed.**
 Scanned as `Vial` / `Vial Audio` / `Instrument|Synth`, uid `c2dcb7b2`, 0 in / 2
 out, rendered peak 0.357 / rms 0.144 on MIDI note 60, no NaN/Inf, and
-`getStateInformation` returned **232,438 bytes** — which is the §3.3c wavetable
-size claim confirmed empirically. Keep this as the regression baseline.
+`getStateInformation` returned **232,438 bytes**. Keep this as the regression
+baseline.
 
-One number to be aware of before loading this in a DAW: the host sees **2852
-automatable parameters**, not the 794 in our schema. The ~2058 extra are JUCE's
-VST3 MIDI-CC parameter emulation (16 channels × 128 controllers ≈ 2048; the exact
-accounting doesn't quite close and hasn't been pinned down). Some hosts cope
-poorly with parameter lists that large. If Reason struggles, the lever is
-`JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS=0` — at the cost of MIDI CC
-automation from the host.
+Be precise about what that 232 KB is: host-side `getStateInformation` on a VST3
+returns **JUCE's wrapper** (`VC2!` magic + an XML envelope carrying base64
+component state), not Vital's inner preset JSON. It corroborates the §3.3c
+wavetable size claim but is not itself the preset.
+
+The host also sees **2852 automatable parameters**, not the 794 in our schema.
+That breaks down exactly: **772** Vital parameters (794 table entries minus 22
+phantoms, ADR-0012) plus **2080** of JUCE's VST3 MIDI-CC emulation
+(16 channels × `kCountCtrlNumber` = 130). Confirmed by dumping the host's own
+list — Vital's parameters occupy indices 0–771 and the CC block runs
+`MIDI CC 0|0` … `MIDI CC 15|129`.
+
+> **Do not disable `JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS`.** An earlier
+> version of this document suggested it as a lever if a DAW struggled with the
+> parameter count. That was wrong: VST3 has no native MIDI-CC input path, so
+> that emulation *is* the CC path, and turning it off silently breaks MPE
+> (per-channel pitch bend and CC74) while leaving notes working. See ADR-0013.
+
+Two useful dump flags:
+
+```
+VitalValidator.exe <plugin>.vst3 --dump-params out/host_params.tsv
+VitalValidator.exe <plugin>.vst3 --dump-state  state.bin
+```
 
 Note also that `getTotalNumOutputChannels()` reports **0 until
 `enableAllBuses()` is called** on a freshly instantiated VST3. That cost us a
@@ -408,8 +425,25 @@ resolve them. Currently **794 parameters, 0 unresolved**.
 | | | **Total** | **794** |
 
 `out/vital_schema_llm.json` drops the 320 mod-slot params — modulation *routing*
-lives in the top-level `"modulations"` array, not in these — leaving **474
+lives in the top-level `"modulations"` array, not in these — and the **22
+phantom parameters** the engine never registers (ADR-0012), leaving **452
 sound-design parameters** as the model-facing contract.
+
+The phantom list is derived, never hardcoded. Regenerate the whole chain after
+any change under `vital/src/common/`:
+
+```bash
+VitalValidator.exe <plugin>.vst3 --dump-params VST-ADI/tools/out/host_params.tsv
+python VST-ADI/tools/find_phantom_params.py     # -> out/phantom_params.json
+python VST-ADI/tools/extract_schema.py          # -> 794 full / 452 LLM
+```
+
+`find_phantom_params.py` exits non-zero if the host reports a parameter our
+extractor doesn't know about, because that is a bug in us rather than a fact
+about Vital. That check earned its keep immediately: hardcoded display-name
+prefixes had `"Random"` where `synth_parameters.cpp` says `"Random LFO"`, which
+made 32 real parameters look phantom and would have shipped a 420-parameter
+contract.
 
 Naming: `<prefix>_<instance>_<param>`, e.g. `osc_1_on`, `env_3_decay`,
 `filter_2_cutoff`. Filters are `filter_1`, `filter_2`, **`filter_fx`** (not a number).

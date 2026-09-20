@@ -54,13 +54,17 @@ int main (int argc, char* argv[])
     }
 
     const juce::File pluginFile (args[0]);
-    double seconds = 1.0;
-    int    note    = 60;
+    double       seconds = 1.0;
+    int          note    = 60;
+    juce::String dumpStatePath;
+    juce::String dumpParamsPath;
 
     for (int i = 1; i < args.size() - 1; ++i)
     {
-        if (args[i] == "--seconds") seconds = args[i + 1].getDoubleValue();
-        if (args[i] == "--note")    note    = args[i + 1].getIntValue();
+        if (args[i] == "--seconds")     seconds        = args[i + 1].getDoubleValue();
+        if (args[i] == "--note")        note           = args[i + 1].getIntValue();
+        if (args[i] == "--dump-state")  dumpStatePath  = args[i + 1];
+        if (args[i] == "--dump-params") dumpParamsPath = args[i + 1];
     }
 
     constexpr double sampleRate = 44100.0;
@@ -131,6 +135,25 @@ int main (int argc, char* argv[])
 
     check (numParams > 0, "exposes automatable parameters",
            juce::String (numParams) + " parameters");
+
+    // --dump-params lists every parameter the host can see, in registration
+    // order. For Vital this is the ground truth for which ValueDetails entries
+    // the engine actually registered: SynthPlugin's constructor skips any entry
+    // with no matching control_map key (synth_plugin.cpp:28-30), and
+    // ValueBridge::getName() returns that entry's display_name. Everything
+    // after Vital's own parameters is JUCE's MIDI-CC emulation block.
+    if (dumpParamsPath.isNotEmpty())
+    {
+        juce::StringArray lines;
+        const auto& params = instance->getParameters();
+        for (int i = 0; i < params.size(); ++i)
+            lines.add (juce::String (i) + "\t" + params[i]->getName (512));
+
+        juce::File out (dumpParamsPath);
+        out.replaceWithText (lines.joinIntoString ("\n"));
+        std::cout << "  dumped " << params.size() << " parameter names -> "
+                  << out.getFullPathName() << std::endl;
+    }
     check (instance->getTotalNumOutputChannels() >= 2, "has at least a stereo output",
            juce::String (instance->getTotalNumOutputChannels()) + " output channels");
     check (instance->acceptsMidi(), "accepts MIDI input");
@@ -210,6 +233,27 @@ int main (int argc, char* argv[])
     {
         instance->setStateInformation (state.getData(), (int) state.getSize());
         check (true, "setStateInformation round-tripped without crashing");
+    }
+
+    // --dump-state writes the raw preset JSON out. stateToJson() builds it by
+    // iterating the engine's live control_map, so its "settings" keys are the
+    // ground truth for which parameters actually exist -- as opposed to the
+    // ValueDetails table, which contains entries the engine never registers.
+    if (dumpStatePath.isNotEmpty() && state.getSize() > 0)
+    {
+        // Write the raw bytes. getStateInformation() wrote the JSON with
+        // MemoryOutputStream::writeString, which appends a null terminator --
+        // strip it, but do not try to re-decode the block as a stream.
+        auto size = state.getSize();
+        const char* raw = static_cast<const char*> (state.getData());
+        while (size > 0 && raw[size - 1] == '\0')
+            --size;
+
+        juce::File out (dumpStatePath);
+        out.deleteFile();
+        out.appendData (raw, size);
+        std::cout << "  dumped state -> " << out.getFullPathName()
+                  << " (" << size << " bytes)" << std::endl;
     }
 
     instance->releaseResources();
