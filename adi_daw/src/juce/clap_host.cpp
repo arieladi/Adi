@@ -207,15 +207,22 @@ ClapDevice::ClapDevice(const clap_plugin_t* plugin, DeviceIdentity id)
 }
 
 ClapDevice::~ClapDevice() {
+    // Guard each CALL, never the whole body: an early return here would
+    // skip destroy() and leak the plugin. The first version of this did
+    // exactly that, by being pasted in from prepare().
     if (plugin_ == nullptr) return;
-    if (activated_) { plugin_->stop_processing(plugin_); plugin_->deactivate(plugin_); }
-    plugin_->destroy(plugin_);
+    if (activated_) {
+        if (plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
+        if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
+    }
+    if (plugin_->destroy != nullptr) plugin_->destroy(plugin_);
 }
 
 void ClapDevice::rescanParams() {
     params_.clear();
     paramIds_.clear();
-    if (plugin_ == nullptr || paramsExt_ == nullptr) return;
+    if (plugin_ == nullptr || paramsExt_ == nullptr ||
+        paramsExt_->count == nullptr || paramsExt_->get_info == nullptr) return;
 
     const std::uint32_t n = paramsExt_->count(plugin_);
     params_.reserve(n);
@@ -255,7 +262,8 @@ const ParamDescriptor* ClapDevice::paramAt(std::int32_t i) const noexcept {
 }
 
 ParamValue ClapDevice::getParam(const std::string& paramId) const noexcept {
-    if (plugin_ == nullptr || paramsExt_ == nullptr) return {};
+    if (plugin_ == nullptr || paramsExt_ == nullptr ||
+        paramsExt_->get_value == nullptr) return {};
     for (std::size_t i = 0; i < params_.size(); ++i) {
         if (params_[i].id != paramId) continue;
         double plain = 0.0;
@@ -292,7 +300,8 @@ bool ClapDevice::setParam(const std::string& paramId, const ParamValue& v) {
 }
 
 std::vector<std::string> ClapDevice::stateRoles() const {
-    if (plugin_ == nullptr || stateExt_ == nullptr) return {};
+    if (plugin_ == nullptr || stateExt_ == nullptr ||
+        stateExt_->save == nullptr || stateExt_->load == nullptr) return {};
     // One opaque stream. CLAP has a single state blob, unlike VST3's component
     // plus controller -- so 'chunk' and nothing else, and plugin_state still
     // admits the other roles because the FORMAT must represent a file another
@@ -343,7 +352,8 @@ struct VecIn {
 }  // namespace
 
 std::vector<std::uint8_t> ClapDevice::saveState(const std::string& role) const {
-    if (plugin_ == nullptr || stateExt_ == nullptr || role != "chunk") return {};
+    if (plugin_ == nullptr || stateExt_ == nullptr || stateExt_->save == nullptr ||
+        role != "chunk") return {};
     std::vector<std::uint8_t> out;
     VecOut sink(out);
     if (!stateExt_->save(plugin_, &sink.os)) return {};
@@ -351,13 +361,27 @@ std::vector<std::uint8_t> ClapDevice::saveState(const std::string& role) const {
 }
 
 bool ClapDevice::loadState(const std::string& role, const std::vector<std::uint8_t>& b) {
-    if (plugin_ == nullptr || stateExt_ == nullptr || role != "chunk") return false;
+    if (plugin_ == nullptr || stateExt_ == nullptr || stateExt_->load == nullptr ||
+        role != "chunk") return false;
     VecIn src(b);
     return stateExt_->load(plugin_, &src.is);
 }
 
 std::int64_t ClapDevice::tailSamples() const noexcept {
-    if (plugin_ == nullptr || tailExt_ == nullptr) return engine::kInfiniteTail;
+    // `tailExt_ != nullptr` IS NOT ENOUGH, and this cost a segfault against a
+    // real plugin. FabFilter Pro-Q 3's CLAP returns a non-null
+    // clap_plugin_tail_t whose `get` is NULL, so checking the struct and
+    // calling the member crashes the host.
+    //
+    // A plugin returning an extension it does not implement is sloppy, and a
+    // host that dies because of it is worse: ADR-0011's whole posture is that
+    // a misbehaving plugin must not take the project down with it. So every
+    // extension function pointer is checked, not just the struct.
+    //
+    // The fake plugin in the tests fills in every pointer, which is exactly
+    // why it could never have found this.
+    if (plugin_ == nullptr || tailExt_ == nullptr || tailExt_->get == nullptr)
+        return engine::kInfiniteTail;
     // NOT BEFORE ACTIVATE. Same rule as the latency below and the same
     // reason -- a tail is a number of samples and the plugin does not know
     // the sample rate yet. The conservative answer here is infinite, which
@@ -372,7 +396,10 @@ std::int64_t ClapDevice::tailSamples() const noexcept {
 }
 
 std::int32_t ClapDevice::latencySamples() const noexcept {
-    if (plugin_ == nullptr || latencyExt_ == nullptr) return 0;
+    // See tailSamples(): a non-null extension struct may still have a null
+    // function pointer.
+    if (plugin_ == nullptr || latencyExt_ == nullptr || latencyExt_->get == nullptr)
+        return 0;
 
     // NOT BEFORE ACTIVATE, and this was found by a real plugin telling us
     // off. Surge XT 1.3.4 prints, from inside clap_plugin_latency.get:
@@ -399,8 +426,16 @@ std::int32_t ClapDevice::latencySamples() const noexcept {
 }
 
 void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
-    if (plugin_ == nullptr) return;
-    if (activated_) { plugin_->stop_processing(plugin_); plugin_->deactivate(plugin_); }
+    // Every one of these is checked, not just the plugin pointer. A plugin
+    // may return an incomplete vtable, and a host that dies because of it is
+    // ADR-0011's failure: a misbehaving plugin must not take the project
+    // down. Restored after a bisecting `cp` quietly reverted them -- which
+    // is its own lesson about restoring from a snapshot taken mid-edit.
+    if (plugin_ == nullptr || plugin_->activate == nullptr) return;
+    if (activated_) {
+        if (plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
+        if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
+    }
     sampleRate_ = sampleRate;
     maxFrames_ = maxFrames;
     // ADR-0049: the GRANTED size, as both the min and the max. A plugin told
@@ -409,20 +444,54 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     activated_ = plugin_->activate(plugin_, sampleRate,
                                    static_cast<std::uint32_t>(maxFrames),
                                    static_cast<std::uint32_t>(maxFrames));
-    if (activated_) plugin_->start_processing(plugin_);
+    if (activated_ && plugin_->start_processing != nullptr)
+        plugin_->start_processing(plugin_);
 
     // Everything the audio thread touches, allocated here and never again
     // (ADR-0010). Sized from the GRANTED block size (ADR-0049).
-    const auto n = static_cast<std::size_t>(maxFrames) * static_cast<std::size_t>(channels_);
-    inScratch_.assign(n, 0.0f);
-    outScratch_.assign(n, 0.0f);
-    inPtrs_.resize(static_cast<std::size_t>(channels_));
-    outPtrs_.resize(static_cast<std::size_t>(channels_));
-    for (std::int32_t c = 0; c < channels_; ++c) {
-        const auto off = static_cast<std::size_t>(c) * static_cast<std::size_t>(maxFrames);
-        inPtrs_[static_cast<std::size_t>(c)]  = inScratch_.data() + off;
-        outPtrs_[static_cast<std::size_t>(c)] = outScratch_.data() + off;
+    // ASK THE PLUGIN WHAT IT WANTS. See the header: hardcoding one bus each
+    // way crashed Pro-Q 3 inside its own process, because it declares two
+    // inputs and indexed the second one past the end of our array.
+    inBuses_.clear();
+    outBuses_.clear();
+    const auto* ports = static_cast<const clap_plugin_audio_ports_t*>(
+        plugin_->get_extension(plugin_, CLAP_EXT_AUDIO_PORTS));
+
+    auto addBus = [&](std::vector<Bus>& into, std::int32_t chans) {
+        Bus b;
+        b.channels = chans > 0 ? chans : 0;
+        b.storage.assign(static_cast<std::size_t>(b.channels) *
+                         static_cast<std::size_t>(maxFrames), 0.0f);
+        b.ptrs.resize(static_cast<std::size_t>(b.channels));
+        for (std::int32_t c = 0; c < b.channels; ++c)
+            b.ptrs[static_cast<std::size_t>(c)] =
+                b.storage.data() + static_cast<std::size_t>(c) *
+                                   static_cast<std::size_t>(maxFrames);
+        into.push_back(std::move(b));
+    };
+
+    if (ports != nullptr && ports->count != nullptr && ports->get != nullptr) {
+        for (bool isInput : {true, false}) {
+            const std::uint32_t n = ports->count(plugin_, isInput);
+            for (std::uint32_t i = 0; i < n; ++i) {
+                clap_audio_port_info_t info{};
+                const std::int32_t chans =
+                    ports->get(plugin_, i, isInput, &info)
+                        ? static_cast<std::int32_t>(info.channel_count) : channels_;
+                addBus(isInput ? inBuses_ : outBuses_, chans);
+            }
+        }
+    } else {
+        // No extension: CLAP's default is one stereo bus each way.
+        addBus(inBuses_, channels_);
+        addBus(outBuses_, channels_);
     }
+    // A plugin with no output bus cannot be rendered; give it one so the
+    // graph gets silence rather than a null dereference.
+    if (outBuses_.empty()) addBus(outBuses_, channels_);
+
+    inBufs_.assign(inBuses_.size(), clap_audio_buffer_t{});
+    outBufs_.assign(outBuses_.size(), clap_audio_buffer_t{});
 
     // ADR-0056's arithmetic, applied to this device rather than re-derived:
     // 500 Hz MPE+ across the block, three dimensions per note, at the
@@ -444,8 +513,11 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
 
 void ClapDevice::release() {
     if (plugin_ == nullptr || !activated_) return;
-    plugin_->stop_processing(plugin_);
-    plugin_->deactivate(plugin_);
+    // The THIRD call site, and the one the guard audit found by arithmetic --
+    // "stop_processing: guarded=2 calls=3" -- which I read and did not act
+    // on. Counting is not checking.
+    if (plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
+    if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     activated_ = false;
 }
 
@@ -458,7 +530,8 @@ bool ClapDevice::outPush(const clap_output_events_t*, const clap_event_header_t*
 }
 
 void ClapDevice::process(const engine::NodeIo& io) noexcept {
-    if (plugin_ == nullptr || !activated_ || io.out == nullptr) { passThrough(io); return; }
+    if (plugin_ == nullptr || !activated_ || plugin_->process == nullptr ||
+        io.out == nullptr) { passThrough(io); return; }
 
     const std::int32_t n  = io.frames < maxFrames_ ? io.frames : maxFrames_;
     const std::int32_t ch = io.channels < channels_ ? io.channels : channels_;
@@ -469,11 +542,18 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     // are segment-sized and always start at 0, so the offset applies on the
     // graph's side of every copy and nowhere else (ADR-0042).
     const std::int32_t off = io.blockOffset;
-    for (std::int32_t c = 0; c < ch; ++c) {
-        float* dst = inPtrs_[static_cast<std::size_t>(c)];
-        const float* src = (io.in != nullptr) ? io.in[c] + off : nullptr;
-        if (src != nullptr) for (std::int32_t i = 0; i < n; ++i) dst[i] = src[i];
-        else                for (std::int32_t i = 0; i < n; ++i) dst[i] = 0.0f;
+    // Bus 0 is the main input; every other declared bus is fed silence.
+    // A sidechain bus the graph is not driving must still be VALID memory,
+    // because the plugin will read it.
+    for (std::size_t b = 0; b < inBuses_.size(); ++b) {
+        Bus& bus = inBuses_[b];
+        for (std::int32_t c = 0; c < bus.channels; ++c) {
+            float* dst = bus.ptrs[static_cast<std::size_t>(c)];
+            const float* src = (b == 0 && io.in != nullptr && c < ch)
+                                 ? io.in[c] + off : nullptr;
+            if (src != nullptr) for (std::int32_t i = 0; i < n; ++i) dst[i] = src[i];
+            else                for (std::int32_t i = 0; i < n; ++i) dst[i] = 0.0f;
+        }
     }
 
     // THE GRAPH'S EVENTS, which is the path that makes MPE+ real. `io.events`
@@ -507,24 +587,29 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     }
     pendingUsed_ = 0;
 
-    clap_audio_buffer_t inBus{};
-    inBus.data32 = inPtrs_.data();
-    inBus.data64 = nullptr;
-    inBus.channel_count = static_cast<std::uint32_t>(ch);
-    inBus.latency = 0;
-    inBus.constant_mask = 0;
-
-    clap_audio_buffer_t outBus = inBus;
-    outBus.data32 = outPtrs_.data();
+    for (std::size_t b = 0; b < inBuses_.size(); ++b) {
+        inBufs_[b].data32 = inBuses_[b].ptrs.data();
+        inBufs_[b].data64 = nullptr;
+        inBufs_[b].channel_count = static_cast<std::uint32_t>(inBuses_[b].channels);
+        inBufs_[b].latency = 0;
+        inBufs_[b].constant_mask = 0;
+    }
+    for (std::size_t b = 0; b < outBuses_.size(); ++b) {
+        outBufs_[b].data32 = outBuses_[b].ptrs.data();
+        outBufs_[b].data64 = nullptr;
+        outBufs_[b].channel_count = static_cast<std::uint32_t>(outBuses_[b].channels);
+        outBufs_[b].latency = 0;
+        outBufs_[b].constant_mask = 0;
+    }
 
     clap_process_t pd{};
     pd.steady_time = steadyTime_;
     pd.frames_count = static_cast<std::uint32_t>(n);
     pd.transport = nullptr;              // free-running; ADR-0050 owns the clock
-    pd.audio_inputs = &inBus;
-    pd.audio_outputs = &outBus;
-    pd.audio_inputs_count = 1;
-    pd.audio_outputs_count = 1;
+    pd.audio_inputs = inBufs_.empty() ? nullptr : inBufs_.data();
+    pd.audio_outputs = outBufs_.data();
+    pd.audio_inputs_count = static_cast<std::uint32_t>(inBufs_.size());
+    pd.audio_outputs_count = static_cast<std::uint32_t>(outBufs_.size());
     pd.in_events = events_.inputEvents();
     pd.out_events = &outEvents_;
 
@@ -546,8 +631,8 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
         float* out = io.out[c];
         if (out == nullptr) continue;
         out += off;
-        if (c < ch) {
-            const float* src = outPtrs_[static_cast<std::size_t>(c)];
+        if (!outBuses_.empty() && c < outBuses_[0].channels) {
+            const float* src = outBuses_[0].ptrs[static_cast<std::size_t>(c)];
             for (std::int32_t i = 0; i < n; ++i) out[i] = src[i];
         } else {
             for (std::int32_t i = 0; i < n; ++i) out[i] = 0.0f;

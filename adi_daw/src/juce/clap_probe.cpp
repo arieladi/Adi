@@ -154,16 +154,129 @@ int answerTheLatencyQuestion(const std::string& want) {
 
 }  // namespace
 
+namespace {
+
+/// The whole chain, with a real plugin in it. ADR-0082 + ADR-0084 + ADR-0079.
+///
+/// win built the coalescer against synthetic fixtures and asked for this:
+/// a real plugin reporting a real latency change, debounced, retapping a
+/// real graph, without the audio breaking. Every piece existed; none of them
+/// had been run together with a plugin at the front.
+int endToEndCoalescer(const std::string& want) {
+    adi::device::ClapHost chost;
+    chost.scan(adi::device::ClapHost::defaultSearchPaths());
+
+    const adi::device::ClapPluginRef* pick = nullptr;
+    for (const auto& r : chost.plugins())
+        if (r.name.find(want) != std::string::npos) { pick = &r; break; }
+    if (pick == nullptr) { std::printf("  skip  no CLAP '%s'\n", want.c_str()); return 0; }
+
+    std::string err;
+    auto dev = chost.makeDevice(*pick, 48000.0, 512, err);
+    if (dev == nullptr || !dev->loaded()) { std::printf("  FAIL  %s\n", err.c_str()); return 1; }
+
+    // Find the mode parameter before the device is moved into the host.
+    std::string modeId;
+    double modeMax = 1.0;
+    for (std::int32_t i = 0; i < dev->paramCount(); ++i) {
+        const auto* d = dev->paramAt(i);
+        if (d != nullptr && (d->name.find("hase") != std::string::npos ||
+                             d->name.find("rocessing") != std::string::npos)) {
+            modeId = d->id; modeMax = d->maxReal; break;
+        }
+    }
+    if (modeId.empty()) { std::printf("  skip  no mode parameter\n"); return 0; }
+
+    adi::device::DeviceHost host;
+    adi::device::DeviceNode& node = host.add(std::move(dev), pick->name);
+    host.watchClapGlue(chost.glue(), pick->name);
+    auto& inst = host.deviceAt(0);
+
+    // Two paths into one sum, the compensated shape ADR-0058's own test uses.
+    // Headroom 8192, which is the MEASURED worst case: Pro-Q 3 swings 5120.
+    adi::engine::Graph g;
+    g.setLatencyHeadroom(8192);
+    adi::engine::SumNode src, mix;
+    const adi::engine::NodeId nSrc = g.addNode(src);
+    const adi::engine::NodeId nDev = g.addNode(node);
+    const adi::engine::NodeId nMix = g.addNode(mix);
+    g.connect(nSrc, nDev);
+    g.connect(nSrc, nMix);        // the dry path, which must stay aligned
+    g.connect(nDev, nMix);
+    g.setOutput(nMix);
+    g.prepare(48000.0, 512);
+    check(g.ok(), "the compensated graph prepares: " + g.error());
+    host.attachGraph(g);
+    host.coalescer().setQuietPeriodMs(50);
+
+    std::vector<float> l(512, 0.0f), r(512, 0.0f);
+    float* outp[2] = {l.data(), r.data()};
+    adi::engine::AudioIo aio;
+    aio.out = outp; aio.numOut = 2; aio.frames = 512;
+
+    std::printf("  latency at rest   %d\n", inst.latencySamples());
+    std::printf("  sources watched   %zu\n", host.coalescer().sourceCount());
+
+    std::int64_t now = 1000;
+    for (int i = 0; i < 3; ++i) { g.process(aio); host.tick(now); now += 20; }
+    check(host.coalescer().stats().retaps == 0, "nothing retaps while nothing changes");
+
+    // THE SWITCH. Linear phase, the 5120-sample case.
+    inst.setParam(modeId, adi::device::ParamValue::withReal(0.0, modeMax));
+    for (int i = 0; i < 20; ++i) { g.process(aio); host.tick(now); now += 5; }
+
+    const std::int32_t after = inst.latencySamples();
+    std::printf("  latency after     %d\n", after);
+    check(after != 0, "the plugin moved its latency, saw " + std::to_string(after));
+    check(host.coalescer().stats().reports > 0,
+          "and the coalescer SAW it, reports=" +
+          std::to_string(host.coalescer().stats().reports));
+
+    // Past the quiet period: the burst closes and the tap moves.
+    now += 80;
+    host.tick(now);
+    const auto& st = host.coalescer().stats();
+    std::printf("  reports %lld  bursts %lld  retaps %lld  rebuildsNeeded %lld\n",
+                (long long) st.reports, (long long) st.bursts,
+                (long long) st.retaps, (long long) st.rebuildsNeeded);
+    check(st.retaps >= 1, "the tap MOVED after the quiet period");
+    check(st.retaps < st.reports || st.reports == 1,
+          "and coalesced -- fewer retaps than reports");
+    check(!host.coalescer().rebuildNeeded(),
+          "8192 of headroom absorbed a 5120 swing, so no rebuild was needed");
+
+    // And the audio still runs. A retap that broke the graph would show here.
+    bool finite = true;
+    for (int i = 0; i < 10; ++i) {
+        g.process(aio);
+        for (float v : l) if (!std::isfinite(v)) finite = false;
+    }
+    check(finite, "the graph still renders finite samples after the retap");
+    check(g.ok(), "and is still ok: " + g.error());
+    return 0;
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_clap_probe -- a real .clap, and ADR-0084's open question\n\n");
 
     std::string path = "/Library/Audio/Plug-Ins/CLAP/Surge XT.clap";
-    std::string latencyWant;
+    std::string latencyWant, coalesceWant;
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--plugin") path = argv[i + 1];
         if (std::string(argv[i]) == "--latency") latencyWant = argv[i + 1];
+        if (std::string(argv[i]) == "--coalesce") coalesceWant = argv[i + 1];
     }
+    if (!coalesceWant.empty()) {
+        std::printf("[ADR-0082/0084/0079] a real plugin, through the whole chain\n");
+        const int rc = endToEndCoalescer(coalesceWant);
+        std::printf("\n%s -- %d checks, %d failure(s)\n",
+                    g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : rc;
+    }
+
     if (!latencyWant.empty()) {
         std::printf("[ADR-0084] does the cheap path read stale on CLAP?\n");
         return answerTheLatencyQuestion(latencyWant);

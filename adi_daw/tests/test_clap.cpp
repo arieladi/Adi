@@ -1005,6 +1005,180 @@ void testClapHostWithoutAnyPlugin() {
     check(host.glue().restartRequests() == 0, "which has seen nothing yet");
 }
 
+void testAnExtensionWithNullMembers() {
+    section("a non-null extension struct may still have NULL function pointers");
+
+    // THE TEST THAT WOULD HAVE CAUGHT IT. FabFilter Pro-Q 3's CLAP returns a
+    // non-null clap_plugin_tail_t whose `get` is NULL. Checking the struct
+    // and calling the member segfaulted the host on the first query.
+    //
+    // The Fake above fills in every pointer, which is exactly why no test
+    // could find this. This one deliberately does not.
+    struct Hollow {
+        clap_plugin_t plugin{};
+        clap_plugin_tail_t tail{};        // get == nullptr
+        clap_plugin_latency_t latency{};  // get == nullptr
+        clap_plugin_params_t params{};    // every member nullptr
+        clap_plugin_state_t state{};      // save/load nullptr
+
+        static Hollow& self(const clap_plugin_t* p) {
+            return *static_cast<Hollow*>(p->plugin_data);
+        }
+        Hollow() {
+            plugin.plugin_data = this;
+            plugin.init = [](const clap_plugin_t*) { return true; };
+            plugin.destroy = [](const clap_plugin_t*) {};
+            plugin.activate = [](const clap_plugin_t*, double, std::uint32_t,
+                                 std::uint32_t) { return true; };
+            plugin.deactivate = [](const clap_plugin_t*) {};
+            // start_processing, stop_processing, process, reset and
+            // on_main_thread are ALL left null on purpose: a plugin may
+            // return an incomplete vtable and the host must not die.
+            plugin.get_extension = [](const clap_plugin_t* p, const char* id)
+                -> const void* {
+                Hollow& h = self(p);
+                if (std::strcmp(id, CLAP_EXT_TAIL) == 0)    return &h.tail;
+                if (std::strcmp(id, CLAP_EXT_LATENCY) == 0) return &h.latency;
+                if (std::strcmp(id, CLAP_EXT_PARAMS) == 0)  return &h.params;
+                if (std::strcmp(id, CLAP_EXT_STATE) == 0)   return &h.state;
+                return nullptr;
+            };
+        }
+    };
+
+    Hollow h;
+    DeviceIdentity id;
+    id.name = "Hollow";
+    ClapDevice d(&h.plugin, id);          // must not crash in rescanParams
+
+    check(d.loaded(), "it constructs");
+    check(d.paramCount() == 0, "a params extension with a null count yields no parameters");
+    check(d.tailSamples() == engine::kInfiniteTail,
+          "a null tail->get reads as INFINITE -- never suspend what we cannot ask");
+    check(d.latencySamples() == 0, "a null latency->get reads as 0 -- never shift it either");
+    check(d.stateRoles().empty(), "a state extension with null save/load offers no roles");
+    check(d.saveState("chunk").empty(), "and saving yields nothing rather than crashing");
+    check(!d.loadState("chunk", {1, 2, 3}), "and loading is refused");
+
+    d.prepare(48000.0, 256);              // null start_processing must be survived
+    check(d.tailSamples() == engine::kInfiniteTail, "still infinite once activated");
+    check(d.latencySamples() == 0, "and still zero");
+
+    // A null process() must fall through to pass-through rather than call it.
+    std::vector<float> in(64, 0.5f), out(64, -1.0f);
+    const float* ip[1] = {in.data()};
+    float* op[1] = {out.data()};
+    engine::NodeIo io;
+    io.in = ip; io.out = op; io.channels = 1; io.frames = 64; io.sampleRate = 48000.0;
+    d.process(io);
+    bool through = true;
+    for (std::size_t i = 0; i < out.size(); ++i) if (out[i] != 0.5f) through = false;
+    check(through, "a null process() passes audio through instead of calling nothing");
+
+    d.release();                          // null stop_processing must be survived
+    check(true, "release survives an incomplete vtable");
+}
+
+void testTheBusLayoutIsAsked() {
+    section("ADR-0075 -- the plugin's bus count is QUERIED, never assumed");
+
+    // THE BUG THIS EXISTS FOR. The first version hardcoded one input bus and
+    // one output bus. Every plugin measured disagrees:
+    //
+    //   Pro-Q 3   2 inputs (Main + Sidechain), 1 output
+    //   Vital     0 inputs,                    1 output
+    //   Surge XT  1 input  (Sidechain),        3 outputs
+    //
+    // A plugin indexes audio_inputs[i] up to the count it declared, so
+    // passing 1 when it declares 2 reads past the end of the host's array.
+    // Pro-Q 3 crashed inside its own process because of it -- and it
+    // APPEARED TO WORK when called standalone, because the object next to it
+    // on the stack was readable. That is undefined behaviour being polite,
+    // and it is why no test could have found this by passing.
+    struct Wide {
+        clap_plugin_t plugin{};
+        clap_plugin_audio_ports_t ports{};
+        std::uint32_t sawInputs = 0, sawOutputs = 0;
+        bool indexedEveryInput = false;
+
+        static Wide& self(const clap_plugin_t* p) {
+            return *static_cast<Wide*>(p->plugin_data);
+        }
+        Wide() {
+            plugin.plugin_data = this;
+            plugin.init = [](const clap_plugin_t*) { return true; };
+            plugin.destroy = [](const clap_plugin_t*) {};
+            plugin.activate = [](const clap_plugin_t*, double, std::uint32_t,
+                                 std::uint32_t) { return true; };
+            plugin.deactivate = [](const clap_plugin_t*) {};
+            plugin.start_processing = [](const clap_plugin_t*) { return true; };
+            plugin.stop_processing = [](const clap_plugin_t*) {};
+            plugin.reset = [](const clap_plugin_t*) {};
+            plugin.on_main_thread = [](const clap_plugin_t*) {};
+            plugin.get_extension = [](const clap_plugin_t* p, const char* id)
+                -> const void* {
+                if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0) return &self(p).ports;
+                return nullptr;
+            };
+            plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd)
+                -> clap_process_status {
+                Wide& w = self(p);
+                w.sawInputs = pd->audio_inputs_count;
+                w.sawOutputs = pd->audio_outputs_count;
+                // Touch EVERY declared input, which is what a real plugin
+                // does and what crashed against a host that under-declared.
+                w.indexedEveryInput = true;
+                for (std::uint32_t i = 0; i < pd->audio_inputs_count; ++i)
+                    if (pd->audio_inputs[i].data32 == nullptr ||
+                        pd->audio_inputs[i].channel_count == 0)
+                        w.indexedEveryInput = false;
+                for (std::uint32_t i = 0; i < pd->audio_outputs_count; ++i)
+                    for (std::uint32_t c = 0; c < pd->audio_outputs[i].channel_count; ++c)
+                        for (std::uint32_t f = 0; f < pd->frames_count; ++f)
+                            pd->audio_outputs[i].data32[c][f] = 0.25f;
+                return CLAP_PROCESS_CONTINUE;
+            };
+
+            // Two inputs, three outputs -- Pro-Q 3's shape crossed with
+            // Surge XT's, so one fixture covers both failures.
+            ports.count = [](const clap_plugin_t*, bool isInput) -> std::uint32_t {
+                return isInput ? 2u : 3u; };
+            ports.get = [](const clap_plugin_t*, std::uint32_t index, bool isInput,
+                           clap_audio_port_info_t* info) {
+                *info = clap_audio_port_info_t{};
+                info->id = index;
+                info->channel_count = 2;
+                std::snprintf(info->name, sizeof info->name, "%s%u",
+                              isInput ? "in" : "out", index);
+                return true;
+            };
+        }
+    };
+
+    Wide w;
+    DeviceIdentity id;
+    ClapDevice d(&w.plugin, id);
+    d.prepare(48000.0, 128);
+
+    std::vector<float> in(128, 0.5f), outL(128, -1.0f), outR(128, -1.0f);
+    const float* ip[2] = {in.data(), in.data()};
+    float* op[2] = {outL.data(), outR.data()};
+    engine::NodeIo io;
+    io.in = ip; io.out = op; io.channels = 2; io.frames = 128; io.sampleRate = 48000.0;
+    d.process(io);
+
+    check(w.sawInputs == 2,
+          "the plugin was handed TWO input buses, as it declared -- saw " +
+          std::to_string(w.sawInputs));
+    check(w.sawOutputs == 3,
+          "and THREE output buses -- saw " + std::to_string(w.sawOutputs));
+    check(w.indexedEveryInput,
+          "every declared input bus has real memory behind it, including the "
+          "sidechain the graph is not driving -- the plugin reads it regardless");
+    check(outL[0] == 0.25f && outR[127] == 0.25f,
+          "and bus 0's output reached the graph");
+}
+
 }  // namespace
 
 int main() {
@@ -1030,6 +1204,8 @@ int main() {
     testRestartCausesAreDistinguished();
     testMainThreadCallbackIsDispatched();
     testClapHostWithoutAnyPlugin();
+    testAnExtensionWithNullMembers();
+    testTheBusLayoutIsAsked();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

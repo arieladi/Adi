@@ -225,6 +225,10 @@ public:
     /// `clap_id` is a uint32; `plugin_params.param_id` is TEXT. The conversion
     /// is fixed-width hex so it sorts stably and cannot collide with a Pd
     /// symbol or a VST3 id in the same column.
+    /// The raw plugin, for a host that needs an extension this class does
+    /// not wrap yet. Null when nothing loaded.
+    [[nodiscard]] const void* rawPlugin() const noexcept { return plugin_; }
+
     [[nodiscard]] static std::string paramIdToText(clap_id id);
     [[nodiscard]] static bool paramIdFromText(const std::string& s, clap_id& out) noexcept;
 
@@ -254,8 +258,25 @@ private:
     /// Audio, allocated at prepare. CLAP wants an array of channel pointers
     /// per bus; the graph hands separate in and out pointers (ADR-0045's port
     /// pair), so the bridging happens here.
-    std::vector<float*> inPtrs_, outPtrs_;
-    std::vector<float>  inScratch_, outScratch_;
+    /// THE PLUGIN'S OWN BUS LAYOUT, queried rather than assumed.
+    ///
+    /// The first version hardcoded one input bus and one output bus. Every
+    /// plugin tested disagrees: Pro-Q 3 has TWO inputs (main + sidechain),
+    /// Vital has ZERO, Surge XT has THREE outputs. A plugin indexes
+    /// `audio_inputs[i]` up to the count it declared, so passing 1 when it
+    /// declares 2 reads past the end of the host's array -- which is how
+    /// Pro-Q 3 crashed inside its own `process`.
+    ///
+    /// It appeared to work standalone because the object next to it on the
+    /// stack was readable. That is what undefined behaviour looks like when
+    /// it is being polite.
+    struct Bus {
+        std::int32_t channels = 0;
+        std::vector<float> storage;      ///< channels * maxFrames
+        std::vector<float*> ptrs;
+    };
+    std::vector<Bus> inBuses_, outBuses_;
+    std::vector<clap_audio_buffer_t> inBufs_, outBufs_;
     ClapEventList       events_;     ///< rebuilt per process call
     std::vector<engine::Event> injected_;   ///< from pushEvent, block-relative
     std::size_t injectedUsed_ = 0;
