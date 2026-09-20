@@ -3462,3 +3462,140 @@ packets from ten notes onwards** on exactly that instrument.
 Recording it as a fourth ADR would suggest something new was decided. Nothing
 was, and the log is more useful if a restatement points at the entry rather than
 duplicating it.
+
+
+---
+
+## ADR-0065 — Absence of a main routing row means the default, and `track.setParent` is composite — `DECIDED` (2026-09-20) — **REFINES ADR-0044**
+
+ADR-0044 decision 4 said `track.setParent` must stop being a scalar op, because
+a re-parent that does not also move the routing produces exactly the state the
+ADR forbids — a track visually inside a group and still routed to the master.
+Implementing it surfaced a problem the ADR had not seen.
+
+### The problem: an op that inserts a row needs that row's id
+
+ADR-0021 §7.3 requires an object's id to come from the **payload**, never from
+SQLite: undo a create, redo it, and the object must return with the *same* id or
+every later op referencing it points at nothing.
+
+So if `setParent` had to **insert** a `routing` row for a track that did not yet
+have one, that row's id would have to be in the payload — `{id, parent,
+routeId}` — and every caller would have to allocate a routing id for an
+operation that is, to the user, dragging a track into a folder.
+
+### Decision
+
+**A track with no `main` routing row routes to its parent, or to the master if
+it has none.** The default is a rule, not a row.
+
+| state | meaning |
+|---|---|
+| no `main` row | the default: my parent, or the master |
+| `origin = 'auto'` | a materialisation of that default, kept pointing at the right place |
+| `origin = 'user'` | the user's own routing; grouping never touches it |
+
+So `setParent` **updates** an existing `auto` row and **inserts nothing**. The
+payload stays `{id, parent}`, no id is invented, and ADR-0021 is not bent.
+
+Two things fall out that are better than the alternative rather than merely
+cheaper:
+
+- **The common case stores nothing.** A project where every track routes the
+  obvious way has no `routing` rows at all, and a reader knows exactly what that
+  means.
+- **The row id survives a regroup.** Updating rather than delete-and-insert
+  matters because an automation lane can be owned by a routing row (a send's
+  level), and a new id would orphan it.
+
+### The inverse captures the parent and not the route
+
+Re-applying `setParent` with the old parent recomputes the same destination from
+the same rule. A captured destination would be **wrong** in a specific case: if
+the old parent was itself moved between the op and the undo, restoring a
+remembered `dst_id` would route the track to where that group used to be. The
+rule is stable under exactly the edits a captured value is not.
+
+### Also decided here: the cycle guard belongs in the op
+
+`tracks` CHECKs only `id <> parent_id`, which stops the one-element case and
+nothing else. Parenting a group into its own descendant is a cycle in the track
+forest, and `Graph::topoSort` would refuse to run the resulting graph
+(ADR-0055) — correctly, but at the wrong moment, with the project already in
+that state. `setParent` walks the ancestor chain and refuses, so the whole
+transaction rolls back and the project never holds the state at all.
+
+---
+
+## ADR-0066 — A latency change is recomputed off-thread, published, and crossfaded — `DECIDED` (2026-09-20) — **CLOSES AN OPEN ITEM IN ADR-0058**
+
+**Director's call**, and it closes the one thing ADR-0058 explicitly deferred:
+when a plugin changes its reported latency at runtime — Pro-Q 3 switching to
+linear phase is the canonical case — the graph must recalculate and shift the
+levelled schedule **without dropping the audio engine**.
+
+### Why this cannot be done where the change arrives
+
+A latency increase needs **more delay memory**. Allocating it is forbidden on
+the audio thread (ADR-0010), and the notification from a plugin arrives on the
+message thread, which must not block waiting for the audio thread either.
+
+So the shape is already decided and has been since ADR-0019: **build the new
+thing off-thread, publish it by an atomic pointer swap, and let the audio thread
+pick it up at a block boundary.** This is the snapshot handoff applied to the
+schedule rather than to the project, and reusing it is the whole of the design.
+
+### Decisions
+
+1. **The compensated schedule is an immutable, published object**, like a
+   snapshot. It carries the levels, the per-edge delay amounts, **and the delay
+   buffers themselves**, so a swap never requires the audio thread to allocate.
+   Epoch-based reclamation (ADR-0019) frees the old one once no callback is
+   inside it — the strictly-greater rule, unchanged.
+
+2. **A latency report is coalesced, not acted on immediately.** A plugin
+   switching modes can report several times in a few milliseconds, and
+   recomputing per report would build schedules nobody uses. The message thread
+   debounces, recomputes once, publishes once.
+
+3. **The swap happens at a block boundary and never mid-block.** A schedule
+   changing inside a callback would compensate the first half of a block
+   differently from the second.
+
+4. **The transition is crossfaded over one block, and this is the honest
+   part.** A latency change *is* a time shift: audio that was aligned one way is
+   now aligned another, and no amount of engineering makes that inaudible,
+   because the correct output genuinely differs. What can be guaranteed is that
+   it is **not a dropout and not a click** — the old and new schedules both
+   render one block and are crossfaded.
+
+   Saying "seamless" without this paragraph would be promising something
+   unachievable. The mandate is met in the sense that matters: the engine does
+   not stop, does not glitch, and does not xrun.
+
+5. **Offline render never crossfades; it re-renders.** A bounce has no real-time
+   constraint, so it takes the new schedule exactly, from the top if it must.
+   ADR-0043 already establishes that render and playback may differ in
+   *mechanism* while agreeing in *output*, and this is the same rule.
+
+6. **A latency change is not an op.** It is a plugin reporting a fact about
+   itself, not a user editing the project, so it does not enter the op log
+   (ADR-0003). What *is* an op is whatever the user did to cause it — the
+   preset change or the parameter that switched the mode — and undoing that
+   restores the latency by re-reporting.
+
+### What this costs, named
+
+Two compensated schedules exist during a swap, so the delay memory peaks at
+roughly double for one block. At the sizes involved — a few thousand samples per
+compensated edge — that is kilobytes, and it buys never allocating on the audio
+thread.
+
+### The test that proves it
+
+Drive the graph while a node changes its declared latency between blocks.
+Assert: **no allocation during any callback** (the counting `operator new` the
+device suite already uses), the output is continuous across the swap with no
+sample of silence and no discontinuity larger than the crossfade permits, and
+the alignment after the swap is correct — a delayed path and a direct path still
+sum to 2× rather than comb-filtering.
