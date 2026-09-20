@@ -405,9 +405,14 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     const std::int32_t ch = io.channels < channels_ ? io.channels : channels_;
     if (n <= 0 || ch <= 0) { passThrough(io); return; }
 
+    // `io.in` and `io.out` address the BLOCK; `io.frames` is this segment's
+    // length and `io.blockOffset` is where it starts. The plugin's own buffers
+    // are segment-sized and always start at 0, so the offset applies on the
+    // graph's side of every copy and nowhere else (ADR-0042).
+    const std::int32_t off = io.blockOffset;
     for (std::int32_t c = 0; c < ch; ++c) {
         float* dst = inPtrs_[static_cast<std::size_t>(c)];
-        const float* src = (io.in != nullptr) ? io.in[c] : nullptr;
+        const float* src = (io.in != nullptr) ? io.in[c] + off : nullptr;
         if (src != nullptr) for (std::int32_t i = 0; i < n; ++i) dst[i] = src[i];
         else                for (std::int32_t i = 0; i < n; ++i) dst[i] = 0.0f;
     }
@@ -456,7 +461,7 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     if (st == CLAP_PROCESS_ERROR) {
         for (std::int32_t c = 0; c < io.channels; ++c)
             if (io.out[c] != nullptr)
-                for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][i] = 0.0f;
+                for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][off + i] = 0.0f;
         events_.clear();
         return;
     }
@@ -464,6 +469,7 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     for (std::int32_t c = 0; c < io.channels; ++c) {
         float* out = io.out[c];
         if (out == nullptr) continue;
+        out += off;
         if (c < ch) {
             const float* src = outPtrs_[static_cast<std::size_t>(c)];
             for (std::int32_t i = 0; i < n; ++i) out[i] = src[i];

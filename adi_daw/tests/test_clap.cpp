@@ -553,6 +553,74 @@ void testTheRealProcessCall() {
           "and the gap is exactly one LSB of a +/-48 semitone range");
 }
 
+void testClapProcessHonoursTheSegmentOffset() {
+    section("ADR-0042 -- a segment goes where blockOffset says, not at the block start");
+
+    // `in` and `out` are BLOCK pointers; `frames` is this SEGMENT's length and
+    // `blockOffset` is where it starts. A device that reads and writes from
+    // index 0 processes the wrong samples AND overwrites the segments that
+    // already ran. At ADR-0054's 500 Hz a block carrying a controller stream is
+    // split many times, so this is the normal case rather than a corner.
+    Fake f;
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake";
+    ClapDevice d(&f.plugin, id);
+    d.prepare(48000.0, 64);
+
+    constexpr int kBlock = 64, kOffset = 16, kSeg = 8;
+    std::vector<float> in(kBlock), out(kBlock, -1.0f);
+    for (int i = 0; i < kBlock; ++i) in[static_cast<std::size_t>(i)] = static_cast<float>(i);
+    const float* inp[1] = {in.data()};
+    float* outp[1] = {out.data()};
+
+    engine::NodeIo io;
+    io.in = inp; io.out = outp; io.channels = 1;
+    io.frames = kSeg; io.blockOffset = kOffset; io.sampleRate = 48000.0;
+    d.process(io);
+
+    check(f.lastFrames == static_cast<std::uint32_t>(kSeg),
+          "the plugin is handed the SEGMENT length, saw " + std::to_string(f.lastFrames));
+
+    // The fake adds 0.5 to whatever it is given, so the expected output names
+    // both halves at once: the right samples, in the right place.
+    bool placed = true, spilled = false;
+    int firstBad = -1;
+    for (int i = 0; i < kBlock; ++i) {
+        const bool inSeg = (i >= kOffset && i < kOffset + kSeg);
+        const float want = inSeg ? static_cast<float>(i) + 0.5f : -1.0f;
+        if (out[static_cast<std::size_t>(i)] != want) {
+            if (inSeg) placed = false; else spilled = true;
+            if (firstBad < 0) firstBad = i;
+        }
+    }
+    check(placed,
+          "the segment is written at blockOffset, from the input at blockOffset" +
+              (placed ? std::string()
+                      : " -- sample " + std::to_string(firstBad) + " is " +
+                            std::to_string(out[static_cast<std::size_t>(firstBad)])));
+    check(!spilled,
+          "and nothing outside the segment is touched -- writing at index 0 "
+          "would overwrite whatever earlier segments produced" +
+              (!spilled ? std::string()
+                        : " -- sample " + std::to_string(firstBad) + " is " +
+                              std::to_string(out[static_cast<std::size_t>(firstBad)])));
+
+    // CLAP_PROCESS_ERROR silences, and it must silence the SEGMENT only.
+    std::vector<float> out2(kBlock, -1.0f);
+    float* outp2[1] = {out2.data()};
+    engine::NodeIo io2 = io;
+    io2.out = outp2;
+    f.failNext = true;
+    d.process(io2);
+    bool errOk = true;
+    for (int i = 0; i < kBlock; ++i) {
+        const bool inSeg = (i >= kOffset && i < kOffset + kSeg);
+        if (out2[static_cast<std::size_t>(i)] != (inSeg ? 0.0f : -1.0f)) errOk = false;
+    }
+    check(errOk,
+          "a failed process silences its own segment and leaves the rest of the "
+          "block alone");
+}
+
 void testProcessErrorSilencesRatherThanLeaking() {
     section("CLAP_PROCESS_ERROR writes silence, not whatever was in the buffer");
 
@@ -626,6 +694,7 @@ int main() {
     testClapDeviceWithNoPluginIsSafe();
     testAgainstAFakePlugin();
     testTheRealProcessCall();
+    testClapProcessHonoursTheSegmentOffset();
     testProcessErrorSilencesRatherThanLeaking();
     testEventOverflowIsCountedNotTruncated();
     std::printf("\n%s -- %d checks, %d failure(s)\n",

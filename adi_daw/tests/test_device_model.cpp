@@ -228,6 +228,94 @@ void testBypassPassesAudioThrough() {
     check(out3.all(0.0f, 64), "with no input, a bypassed node writes silence rather than stale memory");
 }
 
+void testPassThroughHonoursTheSegmentOffset() {
+    section("ADR-0042 -- a pass-through writes where the SEGMENT is, not where the block starts");
+
+    // `NodeIo::in` and `NodeIo::out` are WHOLE-BLOCK pointers and `blockOffset`
+    // says where this segment begins inside them. Every node in the graph adds
+    // it -- `io.out[c] + io.blockOffset` -- and a node that does not writes
+    // every segment on top of the first.
+    //
+    // This is not a hypothetical split. ADR-0042 splits a block at every
+    // distinct event frame, and ADR-0054's MPE+ target is 500 Hz, so a block
+    // carrying a controller stream is split many times over. The two things
+    // that go through here -- a bypassed insert and, by ADR-0011, EVERY device
+    // in a project opened without its plugins -- would then emit the last
+    // segment at the block start and stale memory everywhere else.
+    //
+    // The whole buffer is checked, not just the segment, because writing to
+    // the wrong place is only half the defect: the samples that should have
+    // been written are the other half.
+    constexpr int kBlock = 16;
+    constexpr int kOffset = 8;
+    constexpr int kSeg = 4;
+
+    FakeDevice d({});
+    DeviceNode n(d);
+    n.setBypassed(true);
+
+    Buffers in(2, kBlock, 0.0f);
+    for (auto& c : in.chans)
+        for (int i = 0; i < kBlock; ++i) c[static_cast<std::size_t>(i)] = static_cast<float>(i);
+
+    Buffers out(2, kBlock, -1.0f);
+    auto io = makeIo(out, &in, 2, kSeg);
+    io.blockOffset = kOffset;
+    n.process(io);
+
+    bool placed = true, untouched = true;
+    int firstBad = -1;
+    for (const auto& c : out.chans)
+        for (int i = 0; i < kBlock; ++i) {
+            const float got = c[static_cast<std::size_t>(i)];
+            const bool inSeg = (i >= kOffset && i < kOffset + kSeg);
+            const float want = inSeg ? static_cast<float>(i) : -1.0f;
+            if (got != want) {
+                if (inSeg) placed = false; else untouched = false;
+                if (firstBad < 0) firstBad = i;
+            }
+        }
+
+    check(placed,
+          "a bypassed insert writes its segment at blockOffset" +
+              (placed ? std::string()
+                      : " -- first wrong sample at " + std::to_string(firstBad)));
+    check(untouched,
+          "and touches nothing outside it -- writing segment 2 at offset 0 "
+          "overwrites segment 1, which is the audible half of this bug" +
+              (untouched ? std::string()
+                         : " -- first wrong sample at " + std::to_string(firstBad)));
+
+    // Same path, same rule, and this one is ADR-0011: a project opened on a
+    // machine without the plugin runs entirely through here.
+    MissingDevice m(DeviceIdentity{"vst3", "u", "Gone", "Vendor", "1.0"});
+    Buffers out2(2, kBlock, -1.0f);
+    auto io2 = makeIo(out2, &in, 2, kSeg);
+    io2.blockOffset = kOffset;
+    m.process(io2);
+    bool missingOk = true;
+    for (const auto& c : out2.chans)
+        for (int i = 0; i < kBlock; ++i) {
+            const bool inSeg = (i >= kOffset && i < kOffset + kSeg);
+            if (c[static_cast<std::size_t>(i)] != (inSeg ? static_cast<float>(i) : -1.0f))
+                missingOk = false;
+        }
+    check(missingOk, "and so does a missing plugin, which is the same code path");
+
+    // With no input the segment is SILENCED -- still only the segment.
+    Buffers out3(2, kBlock, -1.0f);
+    auto io3 = makeIo(out3, nullptr, 2, kSeg);
+    io3.blockOffset = kOffset;
+    n.process(io3);
+    bool zeroedOk = true;
+    for (const auto& c : out3.chans)
+        for (int i = 0; i < kBlock; ++i) {
+            const bool inSeg = (i >= kOffset && i < kOffset + kSeg);
+            if (c[static_cast<std::size_t>(i)] != (inSeg ? 0.0f : -1.0f)) zeroedOk = false;
+        }
+    check(zeroedOk, "with no input, only the segment is zeroed, not the block");
+}
+
 void testPrepareAndReleaseReachTheDevice() {
     section("prepare and release are forwarded");
     FakeDevice d({});
@@ -379,6 +467,7 @@ int main() {
     testForwardingAndOverrides();
     testBypassReportsNothing();
     testBypassPassesAudioThrough();
+    testPassThroughHonoursTheSegmentOffset();
     testPrepareAndReleaseReachTheDevice();
     testMissingPluginIsStillADevice();
     testMissingPluginPassesAudio();

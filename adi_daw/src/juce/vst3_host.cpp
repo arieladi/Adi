@@ -218,9 +218,13 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
     // channel AudioBuffer for both directions; the graph hands separate in and
     // out pointers (ADR-0045's port pair), so the bridging happens here and
     // not in the graph.
+    // `io.in` and `io.out` address the BLOCK; `io.frames` is this segment's
+    // length and `io.blockOffset` is where it starts (ADR-0042). `scratch_` is
+    // segment-sized and starts at 0, so the offset applies on the graph's side.
+    const std::int32_t off = io.blockOffset;
     for (std::int32_t c = 0; c < ch; ++c) {
         float* dst = scratch_.getWritePointer(c);
-        const float* src = (io.in != nullptr) ? io.in[c] : nullptr;
+        const float* src = (io.in != nullptr) ? io.in[c] + off : nullptr;
         if (src != nullptr) std::copy(src, src + n, dst);
         else                std::fill(dst, dst + n, 0.0f);
     }
@@ -243,6 +247,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
     for (std::int32_t c = 0; c < io.channels; ++c) {
         float* out = io.out[c];
         if (out == nullptr) continue;
+        out += off;
         if (c < ch) std::copy(view.getReadPointer(c), view.getReadPointer(c) + n, out);
         else        std::fill(out, out + n, 0.0f);
         // A segment shorter than the buffer leaves the tail untouched, and the

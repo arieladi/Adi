@@ -55,8 +55,17 @@ void passThrough(const engine::NodeIo& io) noexcept {
     for (std::int32_t c = 0; c < io.channels; ++c) {
         float* dst = io.out[c];
         if (dst == nullptr) continue;
+        // BLOCK-relative, not segment-relative. `in` and `out` point at the
+        // start of the BLOCK and `blockOffset` says where this segment begins
+        // in them; `frames` is the segment's length alone. Omitting the offset
+        // wrote every segment on top of the first, so a block that ADR-0042
+        // split into four -- which at ADR-0054's 500 Hz is most blocks
+        // carrying a controller stream -- emitted the last segment at the
+        // block start and stale memory for the rest of it.
+        dst += io.blockOffset;
         const float* src = (io.in != nullptr) ? io.in[c] : nullptr;
         if (src != nullptr) {
+            src += io.blockOffset;
             for (std::int32_t i = 0; i < io.frames; ++i) dst[i] = src[i];
         } else {
             // No input at all. Writing nothing would hand the next node
