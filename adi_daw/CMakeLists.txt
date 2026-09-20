@@ -226,6 +226,11 @@ add_test(NAME adi_device_tests COMMAND adi_device_tests)
 # resolution surviving rather than values being roughly right.
 # The CLAP host. No JUCE and no plugin SDK, so it runs on all seven ABIs --
 # which is the headline difference from VST3 hosting (ADR-0075).
+# A real .clap, loaded with no JUCE and no plugin SDK -- dlopen and one
+# exported symbol. Not a test: it needs a plugin installed, and CI has none.
+add_executable(adi_clap_probe src/juce/clap_probe.cpp)
+target_link_libraries(adi_clap_probe PRIVATE adi_core adi_warnings)
+
 add_executable(adi_device_host_tests tests/test_device_host.cpp)
 target_link_libraries(adi_device_host_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_host_tests COMMAND adi_device_host_tests)

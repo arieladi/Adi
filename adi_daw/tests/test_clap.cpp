@@ -301,6 +301,7 @@ struct Fake {
     std::vector<std::uint8_t> saved{0xDE, 0x00, 0xAD, 0x00, 0xBE};  // embedded NULs
     int activations = 0, starts = 0, mainThreadCalls = 0;
     std::uint32_t lastFrames = 0;
+    mutable int latencyQueries = 0, tailQueries = 0;
     std::int64_t lastSteady = -1;
     bool failNext = false;
     std::vector<clap_event_header_t> seenEvents;   ///< headers, for counting
@@ -373,8 +374,10 @@ struct Fake {
             return nullptr;
         };
 
-        tail.get = [](const clap_plugin_t* p) { return self(p).tailValue; };
-        latency.get = [](const clap_plugin_t* p) { return self(p).latencyValue; };
+        tail.get = [](const clap_plugin_t* p) {
+            ++self(p).tailQueries; return self(p).tailValue; };
+        latency.get = [](const clap_plugin_t* p) {
+            ++self(p).latencyQueries; return self(p).latencyValue; };
 
         params.count = [](const clap_plugin_t*) -> std::uint32_t { return 1; };
         params.get_info = [](const clap_plugin_t*, std::uint32_t i,
@@ -426,6 +429,14 @@ void testAgainstAFakePlugin() {
     {
         ClapDevice d(&f.plugin, id);
         check(d.loaded(), "it loaded");
+
+        // ACTIVATE FIRST, and this line was missing until a real plugin
+        // objected. ext/latency.h annotates get() `[main-thread &
+        // (being-activated | active)]`, and this test queried before
+        // activate throughout -- so it was exercising the illegal case and
+        // calling the answers correct. Surge XT 1.3.4 prints a warning from
+        // inside get() when a host does it.
+        d.prepare(48000.0, 512);
 
         // THE MAPPING THE PLANTED DEFECT SLIPPED THROUGH. CLAP spells an
         // unbounded tail UINT32_MAX; ours is INT64_MAX. A plain cast makes
@@ -479,13 +490,45 @@ void testAgainstAFakePlugin() {
         check(d.saveState("nosuchrole").empty(), "an unknown role yields nothing");
 
         d.prepare(48000.0, 512);
-        check(f.activations == 1, "prepare activated the plugin once");
-        check(f.starts == 1, "and started processing");
+        check(f.activations == 2, "preparing again re-activates");
+        check(f.starts == 2, "and starts processing again");
         d.prepare(44100.0, 256);
-        check(f.activations == 2, "re-preparing re-activates at the new size");
+        check(f.activations == 3, "re-preparing at a new size re-activates");
     }
     // The destructor must deactivate and destroy without a double-free.
     check(true, "destruction did not crash");
+}
+
+void testNothingIsQueriedBeforeActivate() {
+    section("ext/latency.h -- the plugin must not be asked before it is activated");
+
+    // Found by a real plugin complaining. Surge XT 1.3.4 prints a warning
+    // from inside clap_plugin_latency.get when a host asks too early, and
+    // the header annotation agrees: [main-thread & (being-activated |
+    // active)]. Nothing enforced it, and Node::latencySamples() is exactly
+    // what a compensation pass calls whenever it likes.
+    Fake f;
+    f.tailValue = 48000;
+    f.latencyValue = 2048;
+    DeviceIdentity id;
+    ClapDevice d(&f.plugin, id);
+
+    check(d.latencySamples() == 0,
+          "before activate the latency reads 0 -- a latency we cannot ask "
+          "about must not move audio (ADR-0058's default, for its reason)");
+    check(d.tailSamples() == engine::kInfiniteTail,
+          "and the tail reads infinite -- never suspend something we cannot "
+          "ask about (ADR-0055's default, for its reason)");
+    check(f.latencyQueries == 0, "the plugin was NOT called");
+    check(f.tailQueries == 0, "for either");
+
+    d.prepare(48000.0, 256);
+    check(d.latencySamples() == 2048, "after activate the real value arrives");
+    check(d.tailSamples() == 48000, "and the real tail");
+    check(f.latencyQueries > 0, "now the plugin IS called");
+
+    d.release();
+    check(d.latencySamples() == 0, "and after release it goes quiet again");
 }
 
 void testTheRealProcessCall() {
@@ -921,6 +964,7 @@ int main() {
     testHostGlueReportsAndReturns();
     testClapDeviceWithNoPluginIsSafe();
     testAgainstAFakePlugin();
+    testNothingIsQueriedBeforeActivate();
     testTheRealProcessCall();
     testClapProcessHonoursTheSegmentOffset();
     testProcessErrorSilencesRatherThanLeaking();

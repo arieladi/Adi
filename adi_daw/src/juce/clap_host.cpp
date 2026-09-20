@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <dlfcn.h>
 
 namespace adi::device {
 
@@ -339,6 +340,11 @@ bool ClapDevice::loadState(const std::string& role, const std::vector<std::uint8
 
 std::int64_t ClapDevice::tailSamples() const noexcept {
     if (plugin_ == nullptr || tailExt_ == nullptr) return engine::kInfiniteTail;
+    // NOT BEFORE ACTIVATE. Same rule as the latency below and the same
+    // reason -- a tail is a number of samples and the plugin does not know
+    // the sample rate yet. The conservative answer here is infinite, which
+    // is ADR-0055's default: never suspend something we cannot ask about.
+    if (!activated_) return engine::kInfiniteTail;
     const std::uint32_t t = tailExt_->get(plugin_);
     // CLAP spells an unbounded tail UINT32_MAX; ours is INT64_MAX. Mapped
     // rather than cast, or "never suspend" becomes 4294967295 samples --
@@ -349,6 +355,23 @@ std::int64_t ClapDevice::tailSamples() const noexcept {
 
 std::int32_t ClapDevice::latencySamples() const noexcept {
     if (plugin_ == nullptr || latencyExt_ == nullptr) return 0;
+
+    // NOT BEFORE ACTIVATE, and this was found by a real plugin telling us
+    // off. Surge XT 1.3.4 prints, from inside clap_plugin_latency.get:
+    //
+    //   "It is wrong to query the latency before the plugin is activated,
+    //    because if the plugin dosen't know the sample rate, it can't know
+    //    the number of samples of latency."
+    //
+    // It is right, and `ext/latency.h` says so in its annotation:
+    // `[main-thread & (being-activated | active)]`. Nothing here enforced
+    // it, and `Node::latencySamples()` is precisely the kind of thing a
+    // compensation pass calls whenever it likes -- ADR-0058 computes at
+    // prepare, but a node can be asked before its device has been.
+    //
+    // 0 is the right answer, and it is ADR-0058's default for the same
+    // reason: a latency we cannot ask about must not move audio.
+    if (!activated_) return 0;
     const std::uint32_t l = latencyExt_->get(plugin_);
     // Clamped into int32. A plugin reporting a latency larger than that is
     // reporting nonsense, and a negative compensation moves audio EARLIER
@@ -518,6 +541,109 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
 
     events_.clear();
     steadyTime_ += n;
+}
+
+// ---------------------------------------------------------------------------
+// ClapLibrary -- loading a .clap bundle (ADR-0075 listed this as unbuilt)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Where the loadable object lives inside what the user points us at.
+///
+/// On macOS a .clap is a BUNDLE -- a directory -- and the library is at
+/// Contents/MacOS/<name>. Passing the directory to dlopen fails with a
+/// message about a file that is not a Mach-O, which reads like a corrupt
+/// plugin rather than like the wrong path.
+std::string resolveLoadPath(const std::string& path) {
+#if defined(__APPLE__)
+    const std::string suffix = ".clap";
+    if (path.size() > suffix.size() &&
+        path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        std::size_t slash = path.find_last_of('/');
+        std::string leaf = (slash == std::string::npos) ? path : path.substr(slash + 1);
+        leaf = leaf.substr(0, leaf.size() - suffix.size());
+        return path + "/Contents/MacOS/" + leaf;
+    }
+#endif
+    return path;
+}
+
+}  // namespace
+
+ClapLibrary::~ClapLibrary() { close(); }
+
+bool ClapLibrary::open(const std::string& path, std::string& error) {
+    close();
+    path_ = path;
+    const std::string load = resolveLoadPath(path);
+
+    lib_ = dlopen(load.c_str(), RTLD_LOCAL | RTLD_NOW);
+    if (lib_ == nullptr) {
+        const char* e = dlerror();
+        error = "dlopen failed: " + std::string(e != nullptr ? e : "unknown");
+        return false;
+    }
+
+    // ONE exported symbol, and that is the whole protocol.
+    entry_ = static_cast<const clap_plugin_entry_t*>(dlsym(lib_, "clap_entry"));
+    if (entry_ == nullptr) {
+        error = "no clap_entry symbol -- not a CLAP plugin";
+        close();
+        return false;
+    }
+    if (!clap_version_is_compatible(entry_->clap_version)) {
+        error = "built against an incompatible CLAP version";
+        entry_ = nullptr;
+        close();
+        return false;
+    }
+    // init() takes the bundle path, NOT the library inside it: a plugin
+    // finds its own resources relative to what it is handed, and handing it
+    // Contents/MacOS means its factory presets are two directories away.
+    if (!entry_->init(path_.c_str())) {
+        error = "clap_entry->init refused";
+        entry_ = nullptr;
+        close();
+        return false;
+    }
+
+    factory_ = static_cast<const clap_plugin_factory_t*>(
+        entry_->get_factory(CLAP_PLUGIN_FACTORY_ID));
+    if (factory_ == nullptr) {
+        error = "no plugin factory";
+        entry_->deinit();
+        entry_ = nullptr;
+        close();
+        return false;
+    }
+    return true;
+}
+
+void ClapLibrary::close() {
+    // deinit BEFORE dlclose, and both after every plugin is destroyed. The
+    // other order calls a destructor through a pointer into unmapped memory.
+    if (entry_ != nullptr) { entry_->deinit(); entry_ = nullptr; }
+    factory_ = nullptr;
+    if (lib_ != nullptr) { dlclose(lib_); lib_ = nullptr; }
+}
+
+std::uint32_t ClapLibrary::pluginCount() const noexcept {
+    return factory_ != nullptr ? factory_->get_plugin_count(factory_) : 0;
+}
+
+const clap_plugin_descriptor_t* ClapLibrary::descriptorAt(std::uint32_t i) const noexcept {
+    if (factory_ == nullptr || i >= pluginCount()) return nullptr;
+    return factory_->get_plugin_descriptor(factory_, i);
+}
+
+const clap_plugin_t* ClapLibrary::create(const clap_host_t* host,
+                                         const char* pluginId) const {
+    if (factory_ == nullptr || host == nullptr || pluginId == nullptr) return nullptr;
+    const clap_plugin_t* p = factory_->create_plugin(factory_, host, pluginId);
+    if (p == nullptr) return nullptr;
+    if (!p->init(p)) { p->destroy(p); return nullptr; }
+    return p;
 }
 
 // ---------------------------------------------------------------------------

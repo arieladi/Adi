@@ -263,6 +263,46 @@ private:
     std::int32_t channels_ = 2;
 };
 
+/// One loaded `.clap` bundle.
+///
+/// A CLAP plugin is a shared library exporting one symbol, `clap_entry`, and
+/// that is the whole of the loading protocol — no SDK, no registry, no
+/// framework. ADR-0075 listed this as unbuilt; it is about eighty lines.
+///
+/// RAII because the entry point must be `deinit`'d and the library closed
+/// AFTER every plugin from it is destroyed. Getting that order wrong calls a
+/// destructor through a function pointer in unmapped memory, which is a crash
+/// with a stack trace pointing at nothing.
+class ClapLibrary {
+public:
+    ClapLibrary() = default;
+    ~ClapLibrary();
+    ClapLibrary(const ClapLibrary&) = delete;
+    ClapLibrary& operator=(const ClapLibrary&) = delete;
+
+    /// `path` is the bundle (macOS) or the library (elsewhere). Returns false
+    /// and sets `error` rather than throwing, because a plugin that will not
+    /// load is ADR-0011's ordinary case and not an exception.
+    bool open(const std::string& path, std::string& error);
+    void close();
+
+    [[nodiscard]] bool isOpen() const noexcept { return entry_ != nullptr; }
+    [[nodiscard]] std::uint32_t pluginCount() const noexcept;
+    [[nodiscard]] const clap_plugin_descriptor_t* descriptorAt(std::uint32_t i) const noexcept;
+
+    /// Create by id. The returned plugin is `init`'d and ready to activate;
+    /// null when the factory refused, which a caller turns into ADR-0011's
+    /// placeholder rather than an error.
+    [[nodiscard]] const clap_plugin_t* create(const clap_host_t* host,
+                                              const char* pluginId) const;
+
+private:
+    void* lib_ = nullptr;
+    const clap_plugin_entry_t* entry_ = nullptr;
+    const clap_plugin_factory_t* factory_ = nullptr;
+    std::string path_;
+};
+
 /// The `clap_host_t` a plugin is given, and the callbacks behind it.
 ///
 /// Every callback here runs on whichever thread the PLUGIN chose, and the
