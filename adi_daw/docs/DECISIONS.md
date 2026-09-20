@@ -4259,3 +4259,107 @@ works everywhere else.
 MIDI buffer stays **empty rather than 7-bit** (ADR-0057). That remains the
 right default: an instrument that makes no sound is a bug report, and one that
 sounds nearly right is what ships.
+
+---
+
+## ADR-0074 — A broadcast node is a sink node; the graph already allows one, and the licence is the open question — `DECIDED (direction)` (2026-09-20)
+
+**Director's mandate.** Reliance on OS-level virtual audio cables — BlackHole,
+VB-Cable — is rejected. `adi_daw` will have a **native Broadcast Node**,
+insertable anywhere in the graph, sending audio directly to OBS or Elgato over
+NDI or IPC.
+
+**Phase 2, and that constraint is part of the decision.** No network or IPC C++
+is written this sprint. What follows is the architecture and one verified
+property; the transport is deliberately left open.
+
+### 1. Why the virtual cable is worth rejecting
+
+The obvious objection to writing this ourselves is that a virtual cable already
+works. Three things it costs, in order of how often they bite:
+
+1. **It is a second clock.** A virtual cable is a device, and a device has its
+   own rate. Two devices on one machine drift, and the fix is resampling
+   somebody did not ask for or a click every few minutes.
+2. **It is one tap, at the end.** A cable carries whatever the output device
+   carries. Sending the drum bus dry while the master stays wet means a second
+   cable and a second routing in the DAW, and the two are configured in
+   different applications.
+3. **It is a per-machine install with kernel-level components**, which is a
+   support burden we cannot debug and a thing to break on every OS upgrade.
+
+An in-graph node has none of those: one clock, any tap point, nothing installed.
+
+### 2. A broadcast node is a SINK NODE, and the graph already supports one
+
+The mandate asks that the graph support nodes that accept audio and do not feed
+the master. **It already does, and that is checked rather than asserted** —
+`tests/test_graph.cpp`, `testSinkNodeRunsWithoutFeedingTheOutput`.
+
+Why it works: `process` walks `levels_`, and `topoSort` fills `levels_` from
+**every** node. `prepare` refuses a cycle and nothing else — it never refuses
+an unreachable node. So a node with an input edge and no output edge is
+scheduled, run, and counted in the levelled schedule like any other.
+
+**The property that needed pinning is the absence of a reachability check.**
+A future optimisation that pruned nodes nothing consumes would be entirely
+reasonable-looking and would silently kill every broadcast tap, every meter and
+every recorder in the project. Planted exactly that — skip a node from
+`levels_` unless something consumes it — and it fails four checks, one of them
+a sidechain test of win's, because a sidechain source is also a node nothing
+consumes through `inputs`.
+
+A meter, a recorder and a broadcast tap are the same shape. This is not a
+feature for one node; it is the shape of a class of them.
+
+### 3. The real-time half is a ring buffer, and the dependency is already pinned
+
+The audio thread **pushes and never blocks**. ADR-0010 is the whole constraint:
+no allocation, no locks, no syscalls on that thread, and a network send is all
+three.
+
+`DNedic/lockfree` **3.0.1, MIT, is already in `tools/fetch_external.sh`** with
+role `later` — pinned by tag and commit per ADR-0024 and fetched by nothing
+yet. It is an SPSC ring buffer and this is what it was pinned for.
+
+Three things that follow and are easy to get wrong:
+
+- **Capacity is sized at `prepare`,** from the granted block size and the
+  transmit thread's worst-case latency. ADR-0049: the granted size, never the
+  requested one.
+- **An overrun is COUNTED, not blocked on.** If the transmit thread stalls —
+  and a network thread will — the audio thread drops the block and increments
+  a counter. Blocking would turn a dropped frame at the far end into a dropout
+  in the room, which is the wrong trade for a monitoring path.
+- **The consumer is an ordinary thread, not the message thread.** The message
+  thread drives the UI at a frame rate (ADR-0050), and a send that missed its
+  slot would show up as a dropped frame in the interface.
+
+### 4. The open question, and it is a licence rather than a technical one
+
+**NDI is not open source.** It is Vizrt's SDK, distributed under its own
+agreement, and this project is GPLv3 (ADR-0015). Whether we may link it, and
+under what terms, is exactly the class of question that ADR-0048 had to answer
+for JUCE — where the finding was that JUCE is **AGPL**-3.0 rather than GPL-3.0,
+and it was found by reading the licence rather than by assuming.
+
+**I have not read NDI's terms and am not asserting what they say.** What this
+ADR decides is that the question is answered before any NDI code is written,
+not after, and that the answer goes in an ADR of its own.
+
+That is also why the mandate's "NDI/IPC" is left as two options rather than
+resolved here. A plain local IPC transport — a shared-memory ring or a local
+socket carrying raw frames — has no licence question at all, works for OBS
+through a small plugin, and is a smaller piece of work. It may turn out to be
+the better first target precisely because it is boring.
+
+### 5. What is not decided
+
+The transport. The wire format and whether it carries a clock. Whether a
+broadcast node appears in the device chain or as a track output. How many taps
+a project may have. Whether video sync matters, which decides whether
+timestamps travel with the audio.
+
+None of those block the Phase 2 label, and none of them are worth deciding
+before something needs them — which is the same reason ADR-0055 named its
+limits instead of generalising past them.

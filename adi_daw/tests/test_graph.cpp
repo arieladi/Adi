@@ -156,6 +156,56 @@ void testTopologicalOrder() {
           "two branches summed into the sink: got " + std::to_string(o.l[0]));
 }
 
+void testSinkNodeRunsWithoutFeedingTheOutput() {
+    section("ADR-0074 -- a node may consume audio and produce nothing downstream");
+
+    // A broadcast tap, a meter, a recorder: all the same shape -- audio in, no
+    // edge out. ADR-0074 needs this and the mandate behind it asked whether
+    // the graph supports it. It does, and this is the check that says so
+    // rather than the ADR asserting it.
+    //
+    // It works because `process` walks `levels_`, which `topoSort` fills from
+    // EVERY node, and `prepare` refuses only a cycle -- never an unreachable
+    // node. That is a property worth pinning: a future reachability check
+    // added to prune dead nodes would silently stop every tap in the project.
+
+    std::vector<int> log;
+    OrderNode src(log, 0), tap(log, 1);
+    SumNode master;
+
+    Graph g;
+    const NodeId ns = g.addNode(src);
+    const NodeId nt = g.addNode(tap);
+    const NodeId nm = g.addNode(master);
+    g.connect(ns, nm);
+    g.connect(ns, nt);      // the tap consumes, and feeds nothing
+    g.setOutput(nm);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "a graph with a sink node prepares: " + g.error());
+
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+    g.process(io);
+
+    check(log.size() == 2, "both the source and the tap ran, saw " +
+                           std::to_string(log.size()));
+    bool tapRan = false;
+    for (int id : log) if (id == 1) tapRan = true;
+    check(tapRan, "the tap ran even though nothing consumes it");
+
+    // And it did not disturb the master. A tap that changed the mix would be
+    // worse than one that did not run.
+    check(std::fabs(o.l[0] - 1.0f) < 1e-6f,
+          "the master output is unchanged by the tap: got " + std::to_string(o.l[0]));
+
+    // The tap is in the levelled schedule too, so a future thread pool runs it
+    // like any other node rather than forgetting it (ADR-0056).
+    std::size_t inLevels = 0;
+    for (const auto& lvl : g.levels()) inLevels += lvl.size();
+    check(inLevels == 3, "all three nodes are in the levelled schedule, saw " +
+                         std::to_string(inLevels));
+}
+
 void testCycleIsRefused() {
     section("a feedback loop is refused, not run and not hung");
 
@@ -786,6 +836,7 @@ int main() {
     std::printf("adi_graph_tests -- the audio graph\n\n");
     try {
         testTopologicalOrder();
+        testSinkNodeRunsWithoutFeedingTheOutput();
         testCycleIsRefused();
         testRampIsNotAStaircase();
         testFloorCoalesces();
