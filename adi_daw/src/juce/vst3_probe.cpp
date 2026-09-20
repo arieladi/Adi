@@ -400,6 +400,46 @@ int main(int argc, char** argv) {
         check(small.dropped() == 1, "and counted, not allocated for");
     }
 
+    // --- ADR-0081 on the VST3 side, which had only a weak `== 0` check -----
+    std::printf("\n[ADR-0081] a VST3 event outside its segment is counted, not dropped quietly\n");
+    {
+        adi::device::Vst3EventList list;
+        list.reserve(16);
+
+        adi::engine::Event e;
+        e.type = adi::engine::EventType::NoteExpression;
+        e.dim = static_cast<std::uint16_t>(adi::ExpressionDim::Pitch);
+        e.noteId = 3;
+        e.value = 12.0;
+
+        // Segment [256, 256+128). Event::frame is BLOCK-relative and
+        // sampleOffset is SEGMENT-relative, so 300 becomes 44.
+        e.frame = 300;
+        check(list.add(e, 256, 128), "an event inside the segment is accepted");
+        check(list.getEventCount() == 1, "and is in the list");
+        Steinberg::Vst::Event out{};
+        list.getEvent(0, out);
+        check(out.sampleOffset == 44,
+              "its sampleOffset is segment-relative: 300 - 256, saw " +
+              std::to_string(out.sampleOffset));
+
+        e.frame = 100;
+        check(!list.add(e, 256, 128), "one before the segment is refused");
+        e.frame = 500;
+        check(!list.add(e, 256, 128), "one after it is refused");
+        check(list.outOfRange() == 2,
+              "and BOTH are counted -- a refusal that looks like absence reads as "
+              "someone forgetting to send rather than sending the wrong thing");
+        check(list.dropped() == 0, "not confused with a capacity drop");
+
+        // The bound itself. Off by one here puts an event in the next
+        // segment's first sample, which a plugin reads as a different instant.
+        e.frame = 256;
+        check(list.add(e, 256, 128), "the first sample of the segment is inside");
+        e.frame = 256 + 128;
+        check(!list.add(e, 256, 128), "the sample after the last is outside");
+    }
+
     // --- ADR-0011, with no plugin needed -----------------------------------
     std::printf("\n[ADR-0011] a plugin that cannot be instantiated becomes a placeholder\n");
     {
