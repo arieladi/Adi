@@ -127,6 +127,7 @@ add_library(adi_core STATIC
     src/adi/engine/snapshot.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
+    src/adi/engine/mpe_input.cpp
     src/adi/textproj.cpp
     src/adi/store_rows.cpp
     src/adi/textproj_store.cpp
@@ -203,6 +204,13 @@ add_test(NAME adi_device_tests COMMAND adi_device_tests)
 # plugin_params away before the comparison. See the file header.
 # The device CONTRACT -- no JUCE, no VST3, so it runs on all seven ABIs. That
 # it needs no plugin SDK to compile is part of what it asserts.
+# ADR-0054's input parser. No JUCE, so it runs on all seven ABIs -- and the
+# mandate's failure mode is that nothing fails, so the checks are about
+# resolution surviving rather than values being roughly right.
+add_executable(adi_mpe_tests tests/test_mpe.cpp)
+target_link_libraries(adi_mpe_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_mpe_tests COMMAND adi_mpe_tests)
+
 add_executable(adi_device_model_tests tests/test_device_model.cpp)
 target_link_libraries(adi_device_model_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_model_tests COMMAND adi_device_model_tests)
