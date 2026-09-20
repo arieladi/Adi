@@ -76,6 +76,7 @@ subject, say so in your log instead of writing it twice.
 | 0058-0064 | win | `win/blueprint` | the director's five-pillar blueprint: PDC, freezing, racks, stretch, native DSP, undocking, async AI | used |
 | 0065 | win | `win/setparent` | absence of a main routing row means the default, and setParent is composite | used |
 | 0066 | win | `win/setparent` | latency changes while running: recompute off-thread, publish, crossfade | used |
+| 0067-0071 | win | `win/routing-mandates` | aux sends, multi-project tabs, item FX, region export, the export queue | reserved |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
