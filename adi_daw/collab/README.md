@@ -88,6 +88,7 @@ subject, say so in your log instead of writing it twice.
 | 0080 | win | `agent/win-dev` | swapping the docked side of a panel: width follows the pane, not the side | used |
 | 0081 | mac | `agent/mac-dev` | event frames are block-relative; a device subtracts, and a mismatch is counted | used |
 | 0082 | win | `agent/win-dev` | the latency coalescer: it polls, the clock is an argument, and a burst has a ceiling | used |
+| 0083-0084 | mac | `agent/mac-dev` | AudioGridder native integration and the CLAP fork; CLAP restart causes | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

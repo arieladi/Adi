@@ -535,21 +535,87 @@ ClapHostGlue::ClapHostGlue() {
     host_.request_restart = &ClapHostGlue::requestRestart;
     host_.request_process = &ClapHostGlue::requestProcess;
     host_.request_callback = &ClapHostGlue::requestCallback;
+
+    // THE EXTENSIONS WE OFFER. Until now getExtension returned nullptr for
+    // everything, so a plugin could not tell us WHY it wanted a restart --
+    // only that it did. CLAP distinguishes the causes and we were not
+    // listening (ADR-0084).
+    latencyExt_.changed = &ClapHostGlue::latencyChanged;
+    portsExt_.rescan    = &ClapHostGlue::portsRescan;
 }
 
-const void* ClapHostGlue::getExtension(const clap_host_t*, const char*) {
-    // Nothing offered yet. Returning nullptr for an unknown id is the
-    // contract, and a host that lied here would have plugins calling into
-    // functions it does not implement.
+const void* ClapHostGlue::getExtension(const clap_host_t* h, const char* id) {
+    if (h == nullptr || id == nullptr) return nullptr;
+    auto* self = static_cast<ClapHostGlue*>(h->host_data);
+    if (std::strcmp(id, CLAP_EXT_LATENCY) == 0)     return &self->latencyExt_;
+    if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0) return &self->portsExt_;
+    // Returning nullptr for an unknown id is the contract, and a host that
+    // lied here would have plugins calling into functions it does not
+    // implement.
     return nullptr;
+}
+
+void ClapHostGlue::latencyChanged(const clap_host_t* h) {
+    // THE CHEAP PATH. A latency change is a tap move (ADR-0079), not a
+    // rebuild. Report and return -- the coalescer on the message thread
+    // debounces and calls retapLatency (ADR-0082).
+    static_cast<ClapHostGlue*>(h->host_data)
+        ->latencyChanges_.fetch_add(1, std::memory_order_release);
+}
+
+void ClapHostGlue::portsRescan(const clap_host_t* h, std::uint32_t flags) {
+    // THE EXPENSIVE PATH, and only for the flags that actually change shape.
+    // NAMES and FLAGS are cosmetic; CHANNEL_COUNT, PORT_TYPE, IN_PLACE_PAIR
+    // and LIST change what the graph is wired to, and no tap move fixes that.
+    constexpr std::uint32_t kShape =
+        CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT | CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE |
+        CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR | CLAP_AUDIO_PORTS_RESCAN_LIST;
+    if ((flags & kShape) != 0)
+        static_cast<ClapHostGlue*>(h->host_data)
+            ->portChanges_.fetch_add(1, std::memory_order_release);
+}
+
+void ClapHostGlue::registerPlugin(const clap_plugin_t* p) {
+    if (p == nullptr) return;
+    for (const auto* q : plugins_) if (q == p) return;
+    plugins_.push_back(p);
+}
+
+void ClapHostGlue::unregisterPlugin(const clap_plugin_t* p) {
+    for (std::size_t i = 0; i < plugins_.size(); ++i) {
+        if (plugins_[i] == p) { plugins_.erase(plugins_.begin() + static_cast<long>(i)); return; }
+    }
+}
+
+void ClapHostGlue::dispatchMainThread() {
+    const std::uint64_t want = callbacks_.load(std::memory_order_acquire);
+    if (want == dispatched_) return;
+    dispatched_ = want;
+    // Every registered plugin, not just the one that asked: request_callback
+    // carries no identity, so there is no way to know which. Calling
+    // on_main_thread on a plugin that did not ask is explicitly allowed and
+    // costs a no-op; not calling the one that did is silent work never done.
+    for (const auto* p : plugins_)
+        if (p != nullptr && p->on_main_thread != nullptr) p->on_main_thread(p);
 }
 
 void ClapHostGlue::requestRestart(const clap_host_t* h) {
     // REPORT AND RETURN. This is ADR-0066's rule arriving from the other
     // format: the plugin may call this from any thread, and rebuilding a
     // graph on that thread while it waits is the bug that ADR exists to stop.
-    static_cast<ClapHostGlue*>(h->host_data)->restarts_.fetch_add(
-        1, std::memory_order_release);
+    auto* self = static_cast<ClapHostGlue*>(h->host_data);
+    const std::uint64_t n = self->restarts_.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+    // A restart with NO preceding notification has an unknown cause, and
+    // ADR-0084 escalates it to a rebuild. The conservative answer differs
+    // per question and this is the one that cannot corrupt: a needless
+    // rebuild costs a graph swap, a missed port change plays the wrong
+    // channel count.
+    const std::uint64_t explained =
+        self->latencyChanges_.load(std::memory_order_acquire) +
+        self->portChanges_.load(std::memory_order_acquire);
+    if (n > explained)
+        self->unexplained_.fetch_add(1, std::memory_order_release);
 }
 void ClapHostGlue::requestProcess(const clap_host_t* h) {
     static_cast<ClapHostGlue*>(h->host_data)->processes_.fetch_add(

@@ -299,7 +299,7 @@ struct Fake {
     std::uint32_t latencyValue = 0;
     double paramValue = 0.25;
     std::vector<std::uint8_t> saved{0xDE, 0x00, 0xAD, 0x00, 0xBE};  // embedded NULs
-    int activations = 0, starts = 0;
+    int activations = 0, starts = 0, mainThreadCalls = 0;
     std::uint32_t lastFrames = 0;
     std::int64_t lastSteady = -1;
     bool failNext = false;
@@ -363,7 +363,7 @@ struct Fake {
                         pd->audio_inputs[0].data32[c][i] + 0.5f;
             return CLAP_PROCESS_CONTINUE;
         };
-        plugin.on_main_thread = [](const clap_plugin_t*) {};
+        plugin.on_main_thread = [](const clap_plugin_t* p) { ++self(p).mainThreadCalls; };
         plugin.get_extension = [](const clap_plugin_t* p, const char* id) -> const void* {
             Fake& f = self(p);
             if (std::strcmp(id, CLAP_EXT_TAIL) == 0)    return &f.tail;
@@ -828,6 +828,84 @@ void testTheSegmentBoundItself() {
     check(!list.add(e, 256, 128), "the sample after the last is outside");
 }
 
+void testRestartCausesAreDistinguished() {
+    section("ADR-0084 -- CLAP says WHY it wants a restart, and we now ask");
+
+    ClapHostGlue glue;
+    const clap_host_t* h = glue.host();
+
+    // The extensions we offer. Until now getExtension returned nullptr for
+    // everything, so a plugin could not tell us anything -- it could only
+    // call request_restart, and every cause looked identical.
+    const auto* lat = static_cast<const clap_host_latency_t*>(
+        h->get_extension(h, CLAP_EXT_LATENCY));
+    const auto* ports = static_cast<const clap_host_audio_ports_t*>(
+        h->get_extension(h, CLAP_EXT_AUDIO_PORTS));
+    check(lat != nullptr && lat->changed != nullptr, "we offer clap_host_latency");
+    check(ports != nullptr && ports->rescan != nullptr, "and clap_host_audio_ports");
+    check(h->get_extension(h, "clap.nonexistent") == nullptr,
+          "and still nullptr for anything we do not implement");
+
+    // THE CHEAP PATH: latency changed, then a restart. The coalescer reads
+    // latencyChanges(), moves the tap, and never rebuilds.
+    lat->changed(h);
+    h->request_restart(h);
+    check(glue.latencyChanges() == 1, "a latency change is counted as one");
+    check(glue.portChanges() == 0, "and is not a port change");
+    check(glue.unexplainedRestarts() == 0,
+          "the restart is EXPLAINED, so it does not escalate");
+
+    // THE EXPENSIVE PATH: a shape change needs a rebuild, and no tap move
+    // fixes a different channel count.
+    ports->rescan(h, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT);
+    h->request_restart(h);
+    check(glue.portChanges() == 1, "a channel-count rescan is a port change");
+    check(glue.unexplainedRestarts() == 0, "and also explains its restart");
+
+    // Cosmetic flags are NOT a rebuild. A renamed port is a label.
+    ports->rescan(h, CLAP_AUDIO_PORTS_RESCAN_NAMES);
+    check(glue.portChanges() == 1, "renaming a port does not force a rebuild");
+
+    // THE UNKNOWN CAUSE. A bare restart with nothing before it escalates,
+    // because the conservative answer is the one that cannot corrupt: a
+    // needless rebuild costs a graph swap, a missed port change plays the
+    // wrong channel count.
+    h->request_restart(h);
+    check(glue.unexplainedRestarts() == 1,
+          "a restart with no preceding notification is counted as unexplained");
+    check(glue.restartRequests() == 3, "all three restarts are still counted");
+}
+
+void testMainThreadCallbackIsDispatched() {
+    section("a plugin that defers work to the main thread actually gets it");
+
+    Fake f;
+    ClapHostGlue glue;
+    glue.registerPlugin(&f.plugin);
+    const clap_host_t* h = glue.host();
+
+    check(!glue.mainThreadWorkPending(), "nothing pending to begin with");
+    check(f.mainThreadCalls == 0, "and the plugin has not been called");
+
+    h->request_callback(h);
+    check(glue.mainThreadWorkPending(), "the request is pending");
+
+    glue.dispatchMainThread();
+    check(f.mainThreadCalls == 1,
+          "on_main_thread was actually CALLED -- nothing called it before, so a "
+          "plugin deferring work simply did less than it was written to do");
+    check(!glue.mainThreadWorkPending(), "and the request is drained");
+
+    glue.dispatchMainThread();
+    check(f.mainThreadCalls == 1, "a second dispatch with nothing pending is a no-op");
+
+    // Unregistering stops the calls, or a destroyed plugin gets dispatched to.
+    glue.unregisterPlugin(&f.plugin);
+    h->request_callback(h);
+    glue.dispatchMainThread();
+    check(f.mainThreadCalls == 1, "an unregistered plugin is not called");
+}
+
 }  // namespace
 
 int main() {
@@ -849,6 +927,8 @@ int main() {
     testEventOverflowIsCountedNotTruncated();
     testMpePlusReachesThePluginThroughTheGraph();
     testTheSegmentBoundItself();
+    testRestartCausesAreDistinguished();
+    testMainThreadCallbackIsDispatched();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

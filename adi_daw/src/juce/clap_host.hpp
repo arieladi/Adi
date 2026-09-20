@@ -280,6 +280,43 @@ public:
     [[nodiscard]] std::uint64_t restartRequests() const noexcept {
         return restarts_.load(std::memory_order_acquire);
     }
+
+    // --- ADR-0084: the cause of a restart, which CLAP does distinguish -----
+
+    /// A latency change. THIS is the coalescer's cheap path (ADR-0082): a
+    /// plugin signals `clap_host_latency.changed()` and only then asks for a
+    /// restart, so the specific notification arrives BEFORE the generic one.
+    [[nodiscard]] std::uint64_t latencyChanges() const noexcept {
+        return latencyChanges_.load(std::memory_order_acquire);
+    }
+
+    /// A port-layout change that alters SHAPE. Not a tap move -- the graph
+    /// is wired differently and has to be rebuilt.
+    [[nodiscard]] std::uint64_t portChanges() const noexcept {
+        return portChanges_.load(std::memory_order_acquire);
+    }
+
+    /// A restart asked for with no preceding notification, so the cause is
+    /// unknown. Escalates to a rebuild: a needless rebuild costs a graph
+    /// swap, a missed port change plays the wrong channel count.
+    [[nodiscard]] std::uint64_t unexplainedRestarts() const noexcept {
+        return unexplained_.load(std::memory_order_acquire);
+    }
+
+    /// True when a plugin deferred work to the main thread and nothing has
+    /// run it yet.
+    [[nodiscard]] bool mainThreadWorkPending() const noexcept {
+        return callbacks_.load(std::memory_order_acquire) != dispatched_;
+    }
+
+    /// MESSAGE THREAD. Calls `on_main_thread` on every registered plugin.
+    /// Without this a CLAP plugin that defers work never runs it, and nothing
+    /// reports that -- the plugin simply does less than it was written to do.
+    void dispatchMainThread();
+
+    /// Plugins this glue serves, so `dispatchMainThread` knows who to call.
+    void registerPlugin(const clap_plugin_t* p);
+    void unregisterPlugin(const clap_plugin_t* p);
     [[nodiscard]] std::uint64_t processRequests() const noexcept {
         return processes_.load(std::memory_order_acquire);
     }
@@ -289,11 +326,20 @@ public:
 
 private:
     static const void* getExtension(const clap_host_t*, const char* id);
+    static void latencyChanged(const clap_host_t*);
+    static void portsRescan(const clap_host_t*, std::uint32_t flags);
     static void requestRestart(const clap_host_t*);
     static void requestProcess(const clap_host_t*);
     static void requestCallback(const clap_host_t*);
 
     clap_host_t host_{};
+    clap_host_latency_t     latencyExt_{};
+    clap_host_audio_ports_t portsExt_{};
+    std::atomic<std::uint64_t> latencyChanges_{0};
+    std::atomic<std::uint64_t> portChanges_{0};
+    std::atomic<std::uint64_t> unexplained_{0};
+    std::uint64_t dispatched_ = 0;
+    std::vector<const clap_plugin_t*> plugins_;
     // ATOMIC, because `requestRestart` says in its own comment that the plugin
     // may call it from any thread -- and a plain `++` from an arbitrary thread,
     // read from the message thread, is a data race whatever the width. On the

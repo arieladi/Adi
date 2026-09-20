@@ -5090,3 +5090,157 @@ started, so it asserted "reports from another thread were seen" against a thread
 that had not yet run. It now polls until the producer signals completion. A
 timing test written as a fixed iteration count is testing the scheduler, not the
 code.
+
+---
+
+## ADR-0083 — AudioGridder is integrated natively, and the server is forked to host CLAP — `DECIDED (direction)` (2026-09-20) — **REFINES ADR-0053**
+
+**Director's mandate.** ADR-0053 established that a remote plugin is a device
+and the network never touches the audio thread. Two decisions on top of it.
+
+### 1. No client wrapper; the browser shows remote plugins beside local ones
+
+The stock AudioGridder client is a VST3/AU plugin you insert, which then hosts
+the remote one. **We do not use it.** The client logic is embedded in the DAW,
+and a server's plugins populate the left-pane search browser alongside local
+ones, distinguished by a small server icon and nothing else.
+
+Why this is worth the work rather than shipping the wrapper:
+
+- **The wrapper is a device that contains a device**, and this project already
+  decided that shape is wrong. ADR-0052 decision 4 and ADR-0053 decision 1 both
+  say a remote plugin goes behind the *same* `DeviceInstance` as a local one,
+  so that hybrid tracks, modulation, suspension and delay compensation are
+  implemented once. A wrapper reintroduces the second chain those ADRs exist to
+  prevent.
+- **Discovery is the actual feature.** A user who has to remember which
+  machine a plugin is on, insert a wrapper, and browse inside it is doing the
+  host's job. One browser with one search box is the whole point.
+- **Latency is already ours to handle.** ADR-0058's compensation reads
+  `Node::latencySamples()`, and a remote device's latency is its own plus the
+  link's. Through a wrapper that number is hidden inside somebody else's
+  plugin; natively it is a declaration like any other.
+
+`devices.remote_host_id` already exists for this (ADR-0053), and
+`plugin_refs.format` is untouched: a remote VST3 is a VST3. **Where it runs is
+not what it is.**
+
+### 2. The server is forked to host CLAP
+
+Upstream AudioGridder's server hosts VST2, VST3 and AU. It does not host CLAP,
+and ADR-0052 mandates CLAP.
+
+**We fork the server and inject our own CLAP hosting into it** — the
+`clap/clap.h` code written for `ClapDevice` (ADR-0075). That is possible
+specifically because of how that was built: no JUCE, no `clap-juce-extensions`,
+a header-only MIT dependency and a plain C ABI. The host side is portable into
+another codebase because it never depended on ours.
+
+That was not why it was written that way, and it is worth recording as a
+payoff rather than a plan: ADR-0075 chose to build from scratch because there
+was no add-a-format route, and the reusable artefact is a side effect.
+
+### What has to be checked before any of this is built
+
+- **AudioGridder's licence.** Unverified here, and this project has been caught
+  twice on exactly this — JUCE is AGPL rather than GPL (ADR-0048), and NDI was
+  dropped once its terms became the question (ADR-0074). A fork we ship is a
+  distribution, so the terms decide whether the fork can be public, must be,
+  or cannot be. **Answer this before writing code, not after.**
+- **What the server and client actually speak.** A fork that adds CLAP hosting
+  has to carry CLAP's richer event set over that wire, and ADR-0054's
+  floating-point per-note expression is the part most likely not to survive a
+  protocol designed around VST3 and MIDI. If the wire quantises, the fork
+  inherits the exact failure ADR-0081 was written about.
+- **Whether the link's latency is measurable or merely estimated.** ADR-0058
+  compensates a declared number; a number that drifts is worse than one that
+  is honest about being unknown.
+
+### Not decided
+
+The discovery protocol for finding servers. Whether a server's plugin list is
+cached in the project or re-fetched. What happens to a project opened with a
+server unreachable — ADR-0011's missing-plugin rule is the obvious answer and
+should probably just be applied, but a remote device has a second failure mode
+(reachable later) that a missing local plugin does not.
+
+---
+
+## ADR-0084 — CLAP already says why it wants a restart; we were not listening — `DECIDED` (2026-09-20) — **REFINES ADR-0082**
+
+ADR-0082's coalescer treats every `request_restart()` as "re-read latency".
+win named the gap precisely: a latency change is only one cause, a port-layout
+change is another, and that needs a graph **rebuild** rather than a tap move.
+He offered two shapes — the glue distinguishes them, or every CLAP restart
+escalates — and left the format question to me.
+
+**Neither was needed. CLAP distinguishes them already, and we were not asking.**
+
+### What the headers say
+
+`ext/latency.h`:
+
+> `clap_host_latency.changed(host)` — *Tell the host that the latency changed.
+> The latency is only allowed to change during `plugin->activate`. If the
+> plugin is activated, call `host->request_restart()`.* `[main-thread &
+> being-activated]`
+
+`ext/audio-ports.h` has `clap_host_audio_ports.rescan(host, flags)`, with
+flags naming exactly what moved: `NAMES`, `FLAGS`, `CHANNEL_COUNT`,
+`PORT_TYPE`, `IN_PLACE_PAIR`, `LIST`.
+
+So the **specific notification arrives before the generic one**.
+`request_restart()` is "reactivate me"; the extension callback already said
+why. The reason we saw only the generic one is that `ClapHostGlue::getExtension`
+returned `nullptr` for everything — we offered no host extensions at all, so a
+plugin had no channel to tell us anything.
+
+### Decision
+
+1. **The glue offers `clap_host_latency` and `clap_host_audio_ports`**, and
+   counts their callbacks separately: `latencyChanges()` and `portChanges()`.
+2. **`latencyChanges()` is the coalescer's cheap path** — ADR-0079's tap move.
+   `portChanges()` escalates to a rebuild.
+3. **Only SHAPE flags count as a port change.** `CHANNEL_COUNT`, `PORT_TYPE`,
+   `IN_PLACE_PAIR` and `LIST` change what the graph is wired to.
+   `NAMES` and `FLAGS` are cosmetic and a rebuild for a renamed port is a
+   graph swap for a label.
+4. **A restart with no preceding notification escalates**, counted as
+   `unexplainedRestarts()`. The conservative answer differs per question and
+   this is the one that cannot corrupt: a needless rebuild costs a graph swap,
+   a missed port change plays the wrong channel count. Same reasoning as
+   ADR-0055's tail default and the opposite of ADR-0058's latency default,
+   for the same reason both are what they are.
+
+VST3 keeps the cheap path unconditionally, because `restartComponent` takes a
+flag word and `kLatencyChanged` is one bit of it — that format never had this
+ambiguity.
+
+### The second gap, which is smaller and worse
+
+`request_callback` incremented a counter and **nothing ever called
+`plugin->on_main_thread()`** — zero occurrences in `src/`. A CLAP plugin that
+defers work that way never ran it.
+
+Nothing fails when this is broken. The plugin does less than it was written to
+do, quietly, and the symptom is whatever that deferred work was: a preset that
+does not finish loading, a scan that never completes. `dispatchMainThread()`
+now drains it.
+
+It calls `on_main_thread` on **every** registered plugin rather than the one
+that asked, because `request_callback` carries no identity — there is no way
+to know which. Calling a plugin that did not ask is explicitly allowed and
+costs a no-op; not calling one that did is silent work never done.
+
+### One thing this does not fix
+
+A latency change in CLAP is *"only allowed during `plugin->activate`"*. So the
+CLAP timeline is: plugin asks for restart → host deactivates → host activates
+→ plugin reports new latency during that activate. Our cheap path re-reads
+latency without reactivating, which is right for VST3 and may read a stale
+value on CLAP.
+
+Named rather than guessed at, because it wants a real plugin that moves its
+latency to answer, and the answer decides whether CLAP's cheap path is a tap
+move at all or always a deactivate/activate pair that happens to be cheaper
+than a rebuild.
