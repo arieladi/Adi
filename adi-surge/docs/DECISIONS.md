@@ -181,14 +181,96 @@ clean, with no `+` drift markers.
 
 ---
 
-## ADR-0005 — reserved: the AI write path
+## ADR-0005 — The AI write path is `surgepy` first, then a C++ overlay. OSC is scaffolding, not the product.
 
-**Date:** 2026-09-20 · **Agent:** mac · **Status:** RESERVED, not yet written
+**Date:** 2026-09-21 · **Agent:** mac
 
-Number claimed per `collab/README.md`. Subject: whether the AI drives Surge over
-its existing OSC surface, through `surgepy` offline, or through a C++ overlay in
-the plugin the way `adi-vst` is doing — and whether the cheap options are a
-stepping stone to the in-plugin one or a dead end.
+**Context.** Three candidate write paths, and the project's shape depends on
+picking right:
+
+- **(a)** a C++ overlay inside the plugin, as `adi-vst` is building for Vital;
+- **(b)** driving Surge over its existing OSC surface with zero C++ changes;
+- **(c)** headless `surgepy`, plugin unchanged, for offline generation.
+
+The attractive answer was (b) — Surge ships a complete OSC control plane, and I
+verified it is more viable than it first looked: OSC can be switched on for a
+plugin instance **from the DAW state blob alone**, with no code change
+(`SurgeSynthProcessor.cpp:1545-1554`, `:1629-1644`). Discrete selectors are
+writable too, because the receiver rescales `vt_int` through
+`intScaledToFloat`.
+
+**The fact that decides it is none of those, and it is the polymorphism in
+§3.1.** `fxN_pM` and `a_oscN_paramM` have no fixed meaning: their ctrltype,
+valtype, min, max, default, display name and even whether they accept a string
+all change when the parent `fxN_type` / `a_oscN_type` changes. FX params are
+created as `ct_none` / `"Param 1"` (`SurgePatch.cpp:118-124`) and retyped by
+each effect's `init_ctrltypes()`.
+
+So **no path can work from a hand-written schema.** All three need a *generated*
+per-type parameter table covering 32 FX types × 16 slots and 12 oscillator
+types. **Only `surgepy` can generate that table**, and
+`scripts/misc/surgepy-params.py` is already a working demonstration of exactly
+it. That collapses the choice: (c) is not an alternative to (a), it is a
+**precondition** for it.
+
+**Decision.**
+
+1. **(c) first.** Build `surgepy`, generate the contextual per-type schema,
+   and use its offline render to audition and score generated patches. This is
+   the prerequisite artifact and it is reusable unchanged by everything after.
+2. **(a) second**, once there is a schema and a fork `origin` to push to. The
+   in-plugin apply seam is `enqueuePatchForLoad` ("safe from any thread",
+   `SurgeSynthesizer.h:433`) plus the `setPatchFromUndo` pattern, or in-process
+   `setParameter01` keyed on `get_storage_name()`.
+3. **(b) is not the product path.** It is legitimate as a throwaway debugging
+   tap and a no-build demo while (a) is being written. Treat it as scaffolding
+   with a known demolition date, and **do not let its address table leak into
+   the patch schema.**
+
+**Why (b) does not carry forward — the key spaces differ.** (a) resolves names
+in-process and uses `get_storage_name()` (`a_osc1_pitch`), which is literally the
+XML element name the `.fxp` writer emits (`SurgePatch.cpp:4086`). (b) requires
+the curated OSC taxonomy (`a/osc/1/pitch`). These are two independent,
+hand-maintained namespaces (§3.1) — build the AI's key space on the OSC one and
+you must port it wholesale later, having carried an address table with
+unverified uniqueness that (a) never needed.
+
+(b)'s other disqualifiers as a *product* path are in §4.1: no atomicity (N
+parameters is N lossy UDP datagrams, and `setParameter01` has order-dependent
+side effects), no `"440 Hz"` string setting over the wire, no instance identity
+with a fixed out-port, and no in-plugin UX at all.
+
+**Two costs removed by checking, which shift the balance toward (a) as the
+destination:**
+
+- **(a) needs no new HTTP dependency.** `juce_core/network/` ships `juce_URL`
+  and `juce_WebInputStream`. That also dissolves the MSVC `/MT` `LNK2038` hazard
+  for this feature specifically (§2.6).
+- **The macOS blocker on `surgepy` is illusory.** `setup.py`'s
+  `-DSURGE_SKIP_STANDALONE=TRUE` never reaches the broken `if(APPLE)` block,
+  because `-DSURGE_SKIP_JUCE_FOR_RACK=TRUE` gates `surge-xt` out at
+  `src/CMakeLists.txt:171`.
+
+**Consequences.**
+
+**Sequencing constraint that overrides the above:** publish the fork `origin`
+first. Both (a) and the one-line `surgepy` binding addition that (c) wants are
+C++ changes to `adi-surge/surge`, which has no `origin` today — so `win` has
+nowhere to push. `adi-vst` hit this exact blockage and resolved it in their
+ADR-0016; re-learning it here is the avoidable mistake. See ADR-0006.
+
+**One thing this ADR does not settle, deliberately.** Whether the ~766 OSC
+addresses are **unique** is unasserted, untested, and not statically decidable
+(they are `fmt::format` calls inside loops). It does not block this decision,
+because (b) is not the product path — but it must be resolved by a runtime
+`/q/all_params` sweep before *any* OSC tooling is trusted, including a
+throwaway one.
+
+Two further `surgepy` limitations to design around: it does not expose `oscName`
+(a one-line binding addition, which needs the fork), and its `constants` module
+is **stale** — 8 of 12 oscillator types, missing exactly the interesting ones
+(Modern, String, Twist, Alias). Mirror the integers from the C++ enums; never
+use `surgepy.constants`.
 
 ---
 

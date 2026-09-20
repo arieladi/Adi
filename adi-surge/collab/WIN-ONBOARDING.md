@@ -141,27 +141,43 @@ In this order, and stop to report if any step surprises you:
 
   5. Only then, look at the open question below.
 
-THE OPEN QUESTION — ADR-0005 IS RESERVED AND UNWRITTEN
+ADR-0005 IS NOW DECIDED — surgepy first, C++ overlay second, OSC is scaffolding
 
-How does the AI actually write into Surge? Three candidates, deliberately not
-decided, and mac has explicitly asked you to push back rather than agree:
+Read docs/DECISIONS.md ADR-0005 in full. The short version, because it shapes
+everything after your build:
 
-  (a) A C++ overlay inside the plugin, the way adi-vst is doing it. Real product
-      UX, most work. Surge makes this much cheaper than Vital did: the GUI is
-      plain JUCE (zero OpenGLContext references in src/), overlays are a registry
-      (an enum value + a class + one case in createOverlay), and LuaEditors is
-      existing precedent for text input inside a hosted plugin.
-  (b) Drive Surge over its EXISTING OSC surface, possibly with zero C++ changes.
-      /param/<oscName> sets any parameter by name, parameterFromOSCName is the
-      reverse lookup, /doc emits name+type+min+max for every parameter, and it
-      all reaches the audio thread through an existing lock-free oscRingBuf.
-      UNKNOWN, and decisive: is the OSC server on by default, what ports, and
-      what happens with several plugin instances in one DAW?
-  (c) surgepy offline, for generating training data and proving the prompt->patch
-      loop before any C++ exists.
+  The deciding fact is that fxN_pM and a_oscN_paramM are POLYMORPHIC — their
+  type, range, default and display name all change when the parent fxN_type /
+  a_oscN_type changes. So NO path can work from a hand-written schema; every one
+  needs a GENERATED per-type table (32 FX types x 16 slots, 12 oscillator
+  types). Only surgepy can generate it. That makes the headless path a
+  PRECONDITION for the in-plugin one, not an alternative to it.
 
-If your build lands and you can open the OpenSoundControlSettings overlay, you
-will know more about (b) than mac does. Say so.
+  OSC is explicitly NOT the product path, even though it is more capable than it
+  first looks (it can be switched on for a plugin instance from the DAW state
+  blob alone, no C++ change). The reason is that the key spaces differ: the
+  in-plugin apply uses get_storage_name() ("a_osc1_pitch", the .fxp XML element
+  name) while OSC needs the curated taxonomy ("a/osc/1/pitch"). They are two
+  independent hand-maintained namespaces and /param/a_osc1_pitch DOES NOT EXIST.
+  Use OSC as a debugging tap with a known demolition date; do not let its
+  address table leak into the patch schema.
+
+WHAT IS STILL GENUINELY OPEN, AND WHERE YOU CAN SETTLE IT
+
+  1. Nobody has verified the ~766 OSC addresses are UNIQUE. It is unasserted,
+     untested, and not statically decidable (they are fmt::format calls inside
+     loops). A collision writes the wrong parameter silently. A runtime
+     /q/all_params sweep plus a uniqueness check settles it. Worth doing before
+     any OSC tooling is trusted, including a throwaway one.
+  2. The fork origin (ADR-0006) now blocks real progress: any C++ change to
+     adi-surge/surge has nowhere to push. That is Adi's call, not ours, but flag
+     it the moment it stops you.
+
+Two things mac checked that are in your favour: the AI feature needs NO new HTTP
+dependency (juce_URL and juce_WebInputStream ship in juce_core), which also
+dissolves the MSVC /MT LNK2038 hazard for it; and surgepy's apparent macOS
+blocker is illusory. Upstream CI builds surgepy on Windows, so your side of that
+is a known-good path.
 
 HOW TO WORK HERE — NON-NEGOTIABLE
 
