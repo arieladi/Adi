@@ -4335,7 +4335,20 @@ Three things that follow and are easy to get wrong:
   thread drives the UI at a frame rate (ADR-0050), and a send that missed its
   slot would show up as a dropped frame in the interface.
 
-### 4. The open question, and it is a licence rather than a technical one
+### 4. RULED: IPC, not NDI — so there is no licence question
+
+**Director's ruling, 2026-09-20, taken after the section below was written:**
+NDI is not needed; a C++ IPC transport is acceptable. That closes this as an
+open item before any code depended on it, and it removes the licence problem
+entirely rather than answering it.
+
+What follows is the reasoning that was live when the question was open. It is
+kept because the *shape* of it recurs — a proprietary SDK inside a GPLv3
+project is the same question ADR-0048 had to answer for JUCE — and because the
+conclusion it reached is the one the ruling picked: **the boring transport was
+the better first target, and it turned out to be the only one we need.**
+
+### 4b. The question as it stood, and why the answer was not obvious
 
 **NDI is not open source.** It is Vizrt's SDK, distributed under its own
 agreement, and this project is GPLv3 (ADR-0015). Whether we may link it, and
@@ -4355,7 +4368,7 @@ the better first target precisely because it is boring.
 
 ### 5. What is not decided
 
-The transport. The wire format and whether it carries a clock. Whether a
+The wire format and whether it carries a clock. Whether a
 broadcast node appears in the device chain or as a track output. How many taps
 a project may have. Whether video sync matters, which decides whether
 timestamps travel with the audio.
@@ -4363,3 +4376,100 @@ timestamps travel with the audio.
 None of those block the Phase 2 label, and none of them are worth deciding
 before something needs them — which is the same reason ADR-0055 named its
 limits instead of generalising past them.
+
+---
+
+## ADR-0075 — The CLAP host is ours, and it needs no JUCE — `DECIDED` (2026-09-20)
+
+ADR-0052 mandated CLAP hosting and said the route to it was ours to build.
+It is built far enough to say what shape it has, and the shape is better than
+expected.
+
+### 1. There was never an add-a-format route, and that turned out to be lucky
+
+`clap-juce-extensions` builds JUCE plugins **as** CLAP; its own README says
+*"It does not support JUCE-based CLAP hosting."* So hosting meant implementing
+against `clap/clap.h` ourselves, which read as a large multiple of the VST3 job.
+
+It is not. **CLAP is a header-only MIT C API with no dependencies**, pinned at
+1.2.10 / `195b42a0` (ADR-0024). The consequence is structural rather than
+convenient:
+
+> **`ClapDevice` compiles into `adi_core` and its tests run on all seven ABIs.**
+
+VST3 hosting can only ever be exercised in the single CI job that has JUCE. The
+CLAP host is checked on clang, gcc and MSVC, on arm64, x86_64 and ILP32, on
+every push. The format that looked like the bigger job has the cheaper test
+story by a wide margin.
+
+### 2. The contract needed no concessions, which is the panel's finding a third time
+
+`docs/DEVICE-CONTRACT-PANEL.md` said the plugin-shaped design was *"named after
+the format that conforms to it worst"*. Three places where the contract built
+for ADR-0057 fits CLAP exactly and had to bend for VST3:
+
+| | CLAP | VST3 |
+|---|---|---|
+| parameter value | `min_value`, `max_value`, `default_value` are **plain doubles** | a display string; `real_value` is NULL |
+| per-note pitch | TUNING is **semitones, −120..+120** — no conversion | `norm = plain/240 + 0.5`, plus a clamp |
+| per-note pressure | a **named** `CLAP_NOTE_EXPRESSION_PRESSURE` | no such type; MPE's Z mapped onto `kExpressionTypeID` by convention |
+| modulation | `CLAP_EVENT_PARAM_MOD`, separate from the value | the host resolves both into one number and shadows the user's setting |
+
+So a CLAP automation lane is `real` and stays meaningful with the plugin
+missing (SPEC §6.3.3), and ADR-0046's rule — a modulation offset never changes
+the stored value — is expressible rather than emulated.
+
+**Had the contract been shaped around VST3, every one of those would now be an
+exception.** ADR-0052 decision 4 exists for exactly this and it has now paid.
+
+### 3. Two mappings that are wrong by default
+
+- **`UINT32_MAX` is CLAP's infinite tail; ours is `INT64_MAX`.** A plain cast
+  turns "never suspend" into 4294967295 samples — about twenty-four hours,
+  which is wrong in a way nobody would ever observe. Mapped, not cast.
+- **`clap_id` is a `uint32`; `plugin_params.param_id` is TEXT.** Converted as
+  fixed-width lowercase hex, so it sorts stably and cannot collide with a VST3
+  id or a Pd symbol in the same column. Uppercase is refused on the way back:
+  one spelling per id, or two rows collide on a key that thinks they differ.
+
+### 4. The host callbacks report and return
+
+`request_restart`, `request_process` and `request_callback` may be called from
+any thread the plugin chooses. They increment a counter and nothing else.
+
+That is ADR-0066's rule arriving from the other format: rebuilding a graph on
+the thread a plugin called us from, while it waits, is the bug that ADR exists
+to prevent. It was written for VST3's `restartComponent` and applies here
+unchanged — which is a sign the rule was about the right thing.
+
+### 5. A fake plugin, and the hole that produced it
+
+CLAP is a plain C ABI, so a fake plugin is a struct of function pointers and
+about thirty lines. `tests/test_clap.cpp` has one, and it makes tail, latency,
+parameters and opaque state testable end to end **with nothing installed**.
+
+It exists because planting a defect found a hole. The `UINT32_MAX` mapping
+above had no test: every earlier check used a null plugin, which has no tail
+extension and returns `kInfiniteTail` from the guard instead. **The planted
+defect passed.** Four of five plants were caught and the fifth was not, and the
+fifth was the one worth catching.
+
+That is the second time this week a negative test has failed to test the thing
+it named — the first was a fixture seeded at `ord 0` in ADR-0057's branch. Both
+were found by planting rather than by reading, and neither would have been
+found by a test that only ever passes.
+
+### 6. What is not built
+
+`ClapDevice::process` passes audio through; the real call needs
+`clap_audio_buffer_t` wiring and a `clap_process_t`, and a half-built one that
+silently passed audio would look like a plugin doing nothing rather than like
+an unfinished host.
+
+Also absent: loading a `.clap` bundle from disk (`clap_entry`, the factory, and
+`dlopen`/`LoadLibrary`), `setParam` delivering through the event queue rather
+than recording one pending value, and every extension beyond params, state,
+tail and latency — `audio-ports`, `note-ports`, `gui`, `thread-check`.
+
+None of that changes the decisions above, and an untested generalisation is
+worth less than a named limit (ADR-0055).

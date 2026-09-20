@@ -118,6 +118,11 @@ add_library(adi_core STATIC
     # missing-plugin placeholder and the node wrapper are tested on every ABI
     # rather than only where a plugin SDK exists. See src/juce/device_model.hpp.
     src/juce/device_model.cpp
+    # CLAP hosting, and it needs NO JUCE -- clap is a header-only MIT C API
+    # with no dependencies, so the host side lives in adi_core and its tests
+    # run on all seven ABIs. VST3 hosting can only ever be exercised in the
+    # one job that has a plugin SDK. See src/juce/clap_host.hpp (ADR-0075).
+    src/juce/clap_host.cpp
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
@@ -137,6 +142,15 @@ target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generate
 target_compile_definitions(adi_core PUBLIC
     ADI_VERSION_STRING="${PROJECT_VERSION}")
 target_include_directories(adi_core PUBLIC src)
+
+# Header-only, MIT, pinned by tag and commit (ADR-0024). SYSTEM so a C API's
+# headers do not have to survive this tree's warning wall.
+if(NOT EXISTS "${ADI_THIRD_PARTY}/clap/include/clap/clap.h")
+    message(FATAL_ERROR
+        "third_party/clap is absent. It is pinned and fetched by:\n"
+        "    bash adi_daw/tools/fetch_external.sh --build-only")
+endif()
+target_include_directories(adi_core SYSTEM PUBLIC "${ADI_THIRD_PARTY}/clap/include")
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
 target_link_libraries(adi_core PRIVATE adi_warnings)
 
@@ -207,6 +221,12 @@ add_test(NAME adi_device_tests COMMAND adi_device_tests)
 # ADR-0054's input parser. No JUCE, so it runs on all seven ABIs -- and the
 # mandate's failure mode is that nothing fails, so the checks are about
 # resolution surviving rather than values being roughly right.
+# The CLAP host. No JUCE and no plugin SDK, so it runs on all seven ABIs --
+# which is the headline difference from VST3 hosting (ADR-0075).
+add_executable(adi_clap_tests tests/test_clap.cpp)
+target_link_libraries(adi_clap_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_clap_tests COMMAND adi_clap_tests)
+
 add_executable(adi_mpe_tests tests/test_mpe.cpp)
 target_link_libraries(adi_mpe_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_mpe_tests COMMAND adi_mpe_tests)

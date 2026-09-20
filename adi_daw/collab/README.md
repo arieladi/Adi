@@ -80,6 +80,7 @@ subject, say so in your log instead of writing it twice.
 | 0072 | mac | `agent/mac-dev` | the director's ruling on aux sends: supersedes ADR-0067 | used |
 | 0073 | mac | `agent/mac-dev` | the VST3 process call is indivisible: events and parameters ride together | used |
 | 0074 | mac | `agent/mac-dev` | the native broadcast node, and sink nodes as a graph property (Phase 2) | used |
+| 0075 | mac | `agent/mac-dev` | the CLAP host: built from scratch, and it needs no JUCE | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

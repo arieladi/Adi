@@ -62,6 +62,7 @@ THIRD_PARTY=(
   "nlohmann/json                json        MIT       v3.12.0   55f93686c01528224f448c19128836e7df245f72  build"
   "bungee-audio-stretch/bungee  bungee      MPL-2.0   v2.4.30   8cb6977d0c1a1b411ac320493b3c7f5182ed2d22  later"
   "DNedic/lockfree              lockfree    MIT       3.0.1     ae6c4df124536218b0b1adfc21ab4921810a00a5  later"
+  "free-audio/clap              clap        MIT       1.2.10    195b42a004144fab0b3cf95e9c067187d15365b7  build"
   "juce-framework/JUCE          JUCE        AGPL-3.0  9.0.2     72782788ce18c2d4d760b28e0921d6ffc6431102  juce"
 )
 
