@@ -456,16 +456,32 @@ int main(int argc, char** argv) {
         timer.start(20);
         // Pump the message loop, which is where juce::Timer fires and where
         // reconfiguring the graph is allowed (ADR-0066).
-        juce::MessageManager::getInstance()->runDispatchLoopUntil(200);
+        //
+        // ASSERT THAT IT FIRES, NOT HOW OFTEN. The first version required
+        // five ticks in 200 ms at a 20 ms interval, which is arithmetic about
+        // the MACHINE rather than about the code: a loaded CI runner
+        // delivered two and the job went red. That is the same flaky-test
+        // shape I had diagnosed in win's snapshot suite an hour earlier --
+        // an assertion whose truth depends on scheduling.
+        //
+        // What the code promises is that the timer runs on the message
+        // thread and that stop() stops it. The RATE is a tuning number
+        // measured from Pro-Q 3 (26 ms largest report gap), and a test that
+        // pins it would fail on any busy machine without finding a defect.
+        for (int i = 0; i < 20 && timer.ticks() == 0; ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
         timer.stop();
-        check(timer.ticks() >= 5,
+        check(timer.ticks() >= 1,
               "the timer fired on the message thread, " +
-              std::to_string(timer.ticks()) + " ticks in 200ms at 20ms");
+              std::to_string(timer.ticks()) + " tick(s)");
         check(timer.retaps() == 0, "and retapped nothing, because nothing reported");
 
+        // stop() is not timing-dependent: after it, no further pumping may
+        // produce a tick however long the loop runs.
         const std::int64_t frozen = timer.ticks();
-        juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
-        check(timer.ticks() == frozen, "stop() actually stops it");
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(150);
+        check(timer.ticks() == frozen,
+              "stop() actually stops it -- still " + std::to_string(frozen));
     }
 
     // --- ADR-0011, with no plugin needed -----------------------------------
