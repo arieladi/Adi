@@ -4160,3 +4160,102 @@ and **exactly one problem naming it**. Planting the old behaviour — letting a
 send fall through to a `Bus::Main` edge, which is what the code did before this
 ADR — must fail that test. Without the negative half, a future refactor that
 re-adds the fall-through passes everything.
+
+---
+
+## ADR-0073 — The VST3 process call is indivisible: taking the events means taking the parameters — `DECIDED` (2026-09-20) — **AMENDS ADR-0057**
+
+ADR-0057 decision 7 said:
+
+> Discovery, instantiation, parameters and opaque state stay JUCE's. The event
+> path for instruments becomes ours, driven through the raw `IAudioProcessor`
+> with our own `IEventList`.
+
+**The parameters half of that is wrong**, and it was checked before building on
+it rather than after. Recording the correction here rather than editing
+ADR-0057, per ADR-0028.
+
+### What the source says
+
+`juce_VST3PluginFormatImpl.h`'s `processAudio` builds one `ProcessData` and
+fills every field of it in one place:
+
+```
+data.inputParameterChanges  = inputParameterChanges.get();
+data.outputParameterChanges = outputParameterChanges.get();
+associateWith (data, buffer);          // audio buses
+associateWith (data, midiMessages);    // the MidiBuffer -> IEventList hop
+cachedParamValues.ifSet ([&] (index, value) {
+    inputParameterChanges->set (cachedParamValues.getParamID (index), value, 0);
+});
+processor->process (data);
+outputParameterChanges->forEach (...);  // back into JUCE's parameter objects
+```
+
+Three consequences, and the third is the one that kills the split:
+
+1. **Events reach the plugin only through `associateWith(data, midiMessages)`**,
+   which reads a `MidiBuffer`. ADR-0057 already established what that costs.
+2. **There is no MIDI 2.0 / UMP alternative.** JUCE 9.0.2's VST3 host contains
+   no reference to `universal_midi_packets`, so the 32-bit per-note controllers
+   of MIDI 2.0 are not a way round it either. Checked, because it would have
+   been the cheap answer.
+3. **`cachedParamValues` is flushed into `inputParameterChanges` inside this
+   function, and `outputParameterChanges` is read back out of it.** A host that
+   calls `processor->process()` itself therefore bypasses both directions of
+   JUCE's parameter plumbing: a value set through a JUCE parameter object never
+   reaches the plugin, and a value the plugin changes never reaches JUCE.
+
+So parameters and events are not two paths that happen to be adjacent. They are
+**fields of one struct passed to one call**, and owning either means owning the
+call, which means owning both.
+
+### Decision
+
+**`Vst3Device` takes over the whole process call.** It builds its own
+`ProcessData`: audio buses, `IEventList` (`Vst3EventList`, built), **and
+`IParameterChanges`**. JUCE keeps what happens outside that call — scanning,
+instantiation, bus layout negotiation, `getStateInformation`, the
+`AudioProcessorListener` that ADR-0066 reads.
+
+`setParam` keeps calling `beginChangeGesture` / `setValueNotifyingHost` /
+`endChangeGesture`, because SPEC §7.3 wants the gesture boundary and because
+that is what an editor and a parameter-automation UI read. What changes is
+**delivery**: the value is also queued into our own `IParameterChanges` for the
+next block, rather than relying on JUCE to flush it.
+
+### Why this is the right trade rather than a forced one
+
+It is more work than ADR-0057 implied and it buys something ADR-0057 did not
+count:
+
+- **It is most of the CLAP host.** ADR-0052 mandates CLAP, and a CLAP host must
+  own its process call, its event queue and its parameter events anyway. Doing
+  it for VST3 first produces the shape both need instead of a VST3-only
+  detour — which is the ADR-0052 decision 4 argument arriving from a third
+  direction.
+- **It removes a layer from the audio thread.** JUCE's `processAudio` does bus
+  bookkeeping, bypass handling and two parameter sweeps per block that a host
+  which already knows its own topology does not need.
+
+### The cost, named
+
+**We lose JUCE's parameter dispatcher.** Plugin-initiated parameter changes
+currently reach JUCE's `AudioProcessorParameter` objects through
+`outputParameterChanges`, and a plugin editor reads those. We have no editor
+yet (ADR-0057 lists it as unbuilt), and ADR-0038 makes the op log the source of
+truth rather than the plugin's own view — but when an editor arrives, feeding
+it is our job and not JUCE's, and that is a real obligation this decision
+creates.
+
+**And a plugin that misbehaves now misbehaves against our `ProcessData`
+rather than JUCE's**, which has been exercised by thousands of hosts. Any bug
+in bus setup or timing information is ours and will present as a plugin that
+works everywhere else.
+
+### What this does not change
+
+`supportsNoteExpression()` stays false until the takeover is built, and the
+MIDI buffer stays **empty rather than 7-bit** (ADR-0057). That remains the
+right default: an instrument that makes no sound is a bug report, and one that
+sounds nearly right is what ships.

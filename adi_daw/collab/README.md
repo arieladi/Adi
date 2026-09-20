@@ -78,6 +78,7 @@ subject, say so in your log instead of writing it twice.
 | 0066 | win | `win/setparent` | latency changes while running: recompute off-thread, publish, crossfade | used |
 | 0067-0071 | win | `win/routing-mandates` | aux sends, multi-project tabs, item FX, region export, the export queue | used |
 | 0072 | mac | `agent/mac-dev` | the director's ruling on aux sends: supersedes ADR-0067 | used |
+| 0073 | mac | `agent/mac-dev` | the VST3 process call is indivisible: events and parameters ride together | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
