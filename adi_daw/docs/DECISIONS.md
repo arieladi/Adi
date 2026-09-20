@@ -3603,7 +3603,7 @@ sum to 2× rather than comb-filtering.
 
 ---
 
-## ADR-0067 — Aux sends: the premise is wrong, the remedy relocates the problem, and the format keeps them — `DECIDED` (2026-09-20)
+## ADR-0067 — Aux sends: the premise is wrong, the remedy relocates the problem, and the format keeps them — `SUPERSEDED BY ADR-0072` (2026-09-20)
 
 **Director's call.** Drop traditional Send/Return tracks. On 150-track projects
 aux routing "frequently causes PDC misalignment and phase smearing", so parallel
@@ -4045,3 +4045,118 @@ twenty preset auditions share one blob each. And `plugin_state` carries one
 `'chunk'` role for a JUCE-hosted VST3, because `getStateInformation` already
 merges component and controller; the format keeps admitting both roles because
 it must represent a file another implementation wrote (SPEC §7).
+
+---
+
+## ADR-0072 — Aux sends are abolished: parallelism is encapsulated in nodes that declare a latency — `DECIDED` (2026-09-20) — **SUPERSEDES ADR-0067**
+
+**Director's ruling, and it overrides ADR-0067 in full.** ADR-0067 argued that
+the premise behind abolishing aux sends was wrong and that the format should
+keep them. That argument is overruled: the practical phase-smearing of heavy
+parallel aux routing in a real mixdown outweighs the CPU cost of the
+alternative. **ADI enforces a strict linear PDC model.**
+
+ADR-0067 is marked superseded rather than edited, per ADR-0028.
+
+### The ruling
+
+1. **ADI never creates an aux send.** No UI affordance, no op, no default.
+2. **The planner never plans one.** A `send` row reaching `buildPlan` is
+   refused into `plan.problems` and surfaced. It is not silently dropped —
+   silently rewiring somebody's signal path is the failure ADR-0011 exists to
+   prevent, and it does not become acceptable because the row is a routing row
+   rather than a device.
+3. **Parallel FX happen in a Device Rack (ADR-0060) or an auto-routing Group
+   Folder (ADR-0044).**
+
+### Why this is coherent and not merely an instruction
+
+ADR-0067's second objection was the strongest: *"a rack with parallel chains is
+a DAG, exactly like a send, and two chains of different latency need the
+identical calculation one level further in."* The calculation is indeed
+identical. **What changes is where it lives, and that is the whole point.**
+
+A rack is a node that owns a sub-graph and **declares one latency to the graph
+above it** (ADR-0060, and ADR-0062 already requires the multiband splitter to
+declare its own). So the parallelism is *encapsulated*: the top-level graph sees
+a chain of nodes each reporting a single number, and the compensation there is
+a linear progression. With aux sends the top-level graph is itself an arbitrary
+DAG, and every path through it is a place the calculation can be got wrong.
+
+One place that must be right beats arbitrarily many places that must all be
+right. That is the argument ADR-0067 did not answer.
+
+### The objection that turned out to be false in practice
+
+ADR-0067's first and load-bearing claim was: *"We already compensate them.
+ADR-0058's rule is arrival = max over inputs of (arrival + latency), and a send
+is an input."*
+
+**We do not.** ADR-0058 decisions 2–5 are unbuilt. Audited against types and
+functions rather than prose: zero occurrences of `arrival`, `compensat` or
+`DelayLine` anywhere in `src/`. `Node::latencySamples()` — decision 1 — was
+itself written only in ADR-0057's branch, days after ADR-0067 asserted that the
+compensation existed.
+
+So the sentence was a statement about the design reading as a statement about
+the code. That is the same Blueprint-vs-Reality failure this project has now
+hit three times, and it happened to be holding up the load-bearing argument of
+the ADR being superseded. Recorded here because the pattern matters more than
+this instance.
+
+### The cost, which is real and is the director's to accept
+
+ADR-0067's third objection stands and is not answered away: **forty tracks
+sharing one convolution reverb is one instance; forty racks is forty.** On a
+150-track session that is the difference between a reverb bus and an unusable
+project.
+
+The mitigation is the auto-routing group folder, and it is genuine rather than
+a consolation: put the forty tracks in a group, put the reverb in a rack on the
+**group**, and it is one instance again — with the dry/wet parallelism inside
+the rack, where it is compensated locally and declared upward as one number.
+That is the same CPU as an aux send with the phase behaviour the ruling is
+after.
+
+What is genuinely lost is *partial* sends — thirty percent of track 7 and ten
+percent of track 12 into one reverb, with the rest dry. Expressing that now
+means a group, and a group is all-or-nothing. **That is a real capability
+removed, and naming it is cheaper than a user discovering it.**
+
+### What the FORMAT does, which is deliberately not the same question
+
+`routing.kind` keeps admitting `'send'`, and the CHECK constraint is unchanged.
+
+This is not a softening of the ruling and it does not re-open it. The ruling is
+about what ADI **offers and plans**; the format is about what a file can
+**represent**. The project already decided that split, in SPEC §7.4, for plugin
+formats: ADI hosts VST3 and CLAP and nothing else, while `plugin_refs.format`
+keeps admitting `au`, `vst2` and `lv2` forever — because *"refusing to host a
+format costs us code we do not write; refusing to name it costs a user their
+session."*
+
+The identical reasoning applies here:
+
+- Every `.adi` written before today can contain a `send` row. Removing the
+  string from the CHECK makes those files fail to open, which is data loss
+  caused by a UI decision.
+- A converter from a Live or Logic project must be able to represent what was
+  there. A converter that cannot express a send has to either fail or silently
+  discard the routing.
+- A third-party implementation that *does* offer sends is still conforming, and
+  a file it writes is still readable here.
+
+So a `send` row loads, is preserved on save, and is reported by the planner as
+unsupported with the group/rack alternative named. **The signal path is never
+silently changed.** If the director wants the string removed from the format as
+well, that is a separate and irreversible decision and it should be its own
+ADR — a format removal cannot be undone in an afternoon, which is the one part
+of ADR-0067 that was about reversibility rather than about sends.
+
+### The test, and it is a negative one
+
+`buildPlan` over a model containing a `send` row must produce **no edge for it**
+and **exactly one problem naming it**. Planting the old behaviour — letting a
+send fall through to a `Bus::Main` edge, which is what the code did before this
+ADR — must fail that test. Without the negative half, a future refactor that
+re-adds the fall-through passes everything.

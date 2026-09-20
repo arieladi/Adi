@@ -104,6 +104,25 @@ GraphPlan planGraph(const rows::Model& m) {
                                     ": cue sends are not planned yet");
             continue;
         }
+        if (r->kind == "send") {
+            // ADR-0072 supersedes ADR-0067. An aux send makes the top-level
+            // graph an arbitrary DAG, and every path through it is somewhere
+            // the compensation can be got wrong. Parallelism now lives inside
+            // a rack or a group, which declares ONE latency upward, so the
+            // graph above it is a linear progression.
+            //
+            // Refused, and SURFACED. Dropping it quietly would rewire
+            // somebody's signal path without telling them -- the failure
+            // ADR-0011 exists to prevent, which does not become acceptable
+            // because the row is a routing row rather than a device. The row
+            // itself is untouched and survives the save (ADR-0072: the format
+            // keeps admitting 'send' so that older files and converter output
+            // still open).
+            plan.problems.push_back("routing#" + std::to_string(r->id) +
+                                    ": aux sends are not planned (ADR-0072); "
+                                    "use a device rack or a group folder");
+            continue;
+        }
 
         // A hardware port is not a row and never was (SPEC 6.7). It is device
         // I/O, not a node, so it is skipped without being called an error.
