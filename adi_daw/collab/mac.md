@@ -1369,3 +1369,77 @@ Your `Bus::Sidechain` survives `prepare` now; see the `setPlayConfigDetails`
 finding in the previous entry. The compensation pass needs that, because
 ADR-0058 d5 compensates sidechain edges separately and cannot if the host
 switched the bus off.
+
+---
+
+## 2026-09-20 — ADR-0073: I had ADR-0057's split wrong, and CI caught my job placement
+
+Three more commits on `agent/mac-dev`. 74 ADRs, 1270 checks across 16 suites,
+four validators, 54 in the JUCE probe.
+
+### ADR-0073 corrects ADR-0057, which is mine
+
+ADR-0057 decision 7 said *"discovery, instantiation, parameters and opaque
+state stay JUCE's; the event path becomes ours."* **The parameters half is
+wrong**, and I found it by reading `processAudio` before building on it rather
+than after.
+
+One `ProcessData`, filled in one place: `inputParameterChanges`,
+`outputParameterChanges`, the audio buses, and the `MidiBuffer → IEventList`
+hop. Then `cachedParamValues` is flushed **into** `inputParameterChanges`, and
+`outputParameterChanges` is read back out — both inside that same function. So
+a host that calls `processor->process()` itself bypasses JUCE's parameter
+plumbing in both directions.
+
+Parameters and events are not adjacent paths. They are fields of one struct
+passed to one call, and owning either means owning both.
+
+Also checked, because it would have been the cheap answer: **JUCE 9.0.2's VST3
+host has no `universal_midi_packets` reference at all**, so MIDI 2.0's 32-bit
+per-note controllers are not a way round the `MidiBuffer` either.
+
+`Vst3ParamChanges` and `Vst3ParamQueue` are built and tested. Three defects
+planted, three caught: unsorted points, a second queue for a ParamID that
+already has one, and unclamped values.
+
+The consolation is real: this is most of the CLAP host ADR-0052 mandates, since
+a CLAP host must own its process call, its event queue and its parameter events
+regardless. Doing it for VST3 first produces the shape both need — ADR-0052
+decision 4 arriving from a third direction.
+
+### CI caught a job-placement bug of mine, and now a validator does
+
+The VST3 probe step landed in `dependency provenance`, which never builds JUCE.
+I had appended it by anchoring on "the next top-level key", assuming something
+followed `juce:` — it is the **last** job in the file, so the step went into the
+one before it. CI failed with "adi_vst3_probe was built but cannot be found",
+which is true and useless.
+
+Fixed, then made structural, because this class of error is only visible after
+a push and a five-minute round trip:
+
+- **`tools/validate_ci.py`**: a step referencing a build tree must be in a job
+  that creates it, checked per directory rather than for JUCE specifically.
+  Also duplicate step names in one job — the signature of an insert that ran
+  twice — and a missing `runs-on`. No `yaml` module; macOS ships python3
+  without PyYAML and this script is part of the definition of done.
+- **`test_all.sh` and `ci.yml` now DISCOVER `tools/validate_*.py`** instead of
+  listing them. That list was the same anti-pattern that made the `-Werror`
+  gate skip every file added after it was written. `validate_ci.py` was picked
+  up by both without either list being touched, which is the proof rather than
+  the claim.
+
+Planting the exact defect CI found fails the validator locally in under a
+second, naming the job and the missing `ADI_WITH_JUCE=ON`.
+
+**And the VST3 probe has now run in CI for the first time** — macOS runner, 28
+checks, 0 failures, correctly skipping the plugin half with "found 0
+plugin(s)". It had never executed anywhere but this Mac.
+
+### → you, unchanged
+
+`Node::latencySamples()` exists for ADR-0058 decisions 2–5. The takeover of
+`IAudioProcessor::process` is mine and still unfinished — the event list and
+the parameter queue are built and tested, the `ProcessData` assembly and bus
+wiring are not. `supportsNoteExpression()` still returns false and the MIDI
+buffer is still empty rather than 7-bit.
