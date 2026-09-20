@@ -2886,3 +2886,88 @@ is curves and the zone that carried it is history. The recording path does not
 exist, so the table does not either, and it arrives with that work rather than
 speculatively. Noted here so the gap is on the record instead of being
 rediscovered by whoever builds MIDI input.
+
+
+---
+
+## ADR-0055 — The node contract, and what the scheduler decides per block rather than per segment — `DECIDED` (2026-09-20)
+
+The graph exists now (`src/adi/engine/graph.{hpp,cpp}`). Five earlier ADRs meet
+in one loop there, and building it forced three decisions none of them had
+taken. This records those, and one defect the building found.
+
+### 1. A node declares; it never asks
+
+`Node` has three virtuals beyond `process`, and **every default is the
+conservative answer**: `tailSamples()` returns `kInfiniteTail`, so a node that
+says nothing is never suspended. That matches ADR-0040's rule for devices, and
+the reason is the same — the default that is merely slow beats the default that
+is silently wrong.
+
+The cost landed immediately and is worth recording because it will land on
+whoever writes the first real node. **A source declaring `tailSamples() == 0`
+is suspended on its first block**, because a node with no inputs has vacuously
+silent input, no events, and an expired tail. That is correct — it is how a
+synth with no notes stops — and it means **a generator must declare
+`kInfiniteTail`**. Four test fixtures got this wrong before the rule was
+written down here.
+
+### 2. Suspension is decided per block; splitting happens per segment
+
+Two different resolutions in one loop, deliberately:
+
+- **Per block**: whether a node runs at all (ADR-0043). The tail counter is in
+  samples and a decision that changed mid-block would let a node run through
+  part of its own tail. The cost is that a node wakes at a block boundary
+  rather than at the exact sample its input returns, which is inaudible and far
+  easier to reason about.
+- **Per segment**: the processing itself (ADR-0042), so automation and
+  modulation move inside the block.
+
+### 3. Split on distinct timestamps, not on events
+
+The scheduler cuts at each distinct event *frame*. A 500 Hz MPE+ update frame
+carrying ten notes across three dimensions is **one instant, not thirty**, so
+the bound is 500 splits per second rather than 15,000. Without this ADR-0054's
+requirement would have been unaffordable at exactly the polyphony it was asked
+for; with it, a 64-frame floor caps a 4096-frame block at 64 segments whatever
+arrives.
+
+### 4. Silence is measured, not declared
+
+After a node runs, the graph checks whether its output buffer is actually zero
+rather than trusting a flag the node set. A node that claims silence and writes
+samples is a bug the whole downstream chain inherits, and the check is one pass
+over a buffer that was just written and is therefore in cache.
+
+### 5. A cycle is refused, not repaired
+
+`tracks.parent_id` has no constraint against a loop and neither does a patch
+cable. `prepare` fails and says how many nodes were reachable. The alternative —
+inserting a one-block delay to break the loop, which is what a feedback-capable
+engine eventually does — turns the graph into something other than what was
+asked for, silently. When feedback is wanted it should be a node that says so.
+
+### The defect this found, which is the useful part
+
+`tailRemaining` was initialised to 0 at `prepare` rather than armed from
+`tailSamples()`. **Every `kInfiniteTail` node was therefore suspended on its
+first block** — the one thing ADR-0043 says must never happen — because the
+counter had expired before anything could arm it. It presented as four unrelated
+test failures that all looked like fixture mistakes, and two of them were.
+
+Then the fix for it turned out to be untestable. With `kInfiniteTail` stored in
+the counter as a sentinel and decremented, removing the never-suspend guard
+changes nothing observable: INT64_MAX takes some quadrillions of blocks to reach
+zero. **A decision that cannot be falsified is one nobody can maintain**, so
+infinite tail is now a branch and the counter stays a counter. That is the
+second time in this project a guard has had to be restructured to be provable
+rather than merely correct, after ADR-0034.
+
+### What this is not, named rather than discovered
+
+One channel count for the whole graph. One input bus and one output per node.
+No parallelism across nodes — which is the thing ADR-0052 says actually matters
+for a dense chain, and it is unbuilt. Each is a real DAW requirement, none
+changes the decisions above, and an untested generalisation is worth less than
+a named limit.

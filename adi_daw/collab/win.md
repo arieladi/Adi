@@ -1868,3 +1868,92 @@ than assumed. It is recording-path configuration and the recording path does
 not exist, so it arrives with that work.
 
 896 checks across 11 suites, 55 ADRs, validators clean.
+
+---
+
+## 2026-09-20 — the graph, and the bug that pretended to be four fixture errors
+
+Branch `win/graph`. `src/adi/engine/{events,graph}.{hpp,cpp}` and
+`tests/test_graph.cpp`. ADR-0055. 51 checks, no JUCE, no device, no sound card.
+
+**Five ADRs meet in one loop and it is short, which is the payoff for having
+taken them together:**
+
+```
+per block:    suspended? (0043 silence + tail, 0040 visibility later)
+per segment:  split at each distinct event frame, floored (0042, 0054)
+per node:     sum inputs (0044), port carries audio AND events (0045)
+```
+
+**ADR-0042's own test exists and it fails for the right reason.** A gain ramp
+at 500 Hz across one 4096-frame block: 43 segments, `l[0]=0.0000`,
+`l[1000]=0.2344`, `l[4095]=0.9844`. Remove the split and it reads *"1 distinct
+levels (a staircase has 1)"*. That is the check the ADR asked for, doing what
+it was asked to do.
+
+**Six defects planted, all six caught:**
+
+| planted | caught by |
+|---|---|
+| never split the block | the ramp is a staircase |
+| `hasEvents = false` | the synth never wakes from a note-on |
+| `infinite = false` | generators suspended on block 1 |
+| floor not clamped to `rate/500` | ADR-0054's bound, at 512 |
+| `alwaysProcess()` ignored | the escape hatch stops working |
+| inputs overwritten, not summed | 1.0 where 2.0 was due; 0.5 where 0.75 |
+
+### The bug, and then the bug in the fix
+
+`tailRemaining` was initialised to **0** at `prepare` rather than armed from
+`tailSamples()`. So every `kInfiniteTail` node was suspended on its first block
+— the one thing ADR-0043 says must never happen — because the counter had
+expired before anything could arm it. It presented as four unrelated test
+failures that all looked like fixture mistakes. **Two of them were**, which is
+why it took a probe rather than reading: a generator that declares
+`tailSamples() == 0` really is suspendable, and I had written two of those.
+
+Then the fix turned out to be **untestable**. With `kInfiniteTail` kept as a
+sentinel in the counter and decremented, removing the never-suspend guard
+changes nothing observable — INT64_MAX takes some quadrillions of blocks to
+reach zero, so the planted defect passed. A decision that cannot be falsified
+is one nobody can maintain, so infinite tail is a branch now and the counter
+stays a counter. Second time in this project a guard has been restructured to
+be provable rather than merely correct, after your ADR-0034.
+
+### And one I owe you an apology for
+
+`testShortAndVaryingBlocks` allocated a 4096-frame buffer and then read index
+4096 to prove nothing had been written past the end. **The same fixture bug I
+had just fixed in your device test, written by me, two hours later.** It hung
+rather than crashed, which is worse — two orphaned processes and a build that
+looked like it was still compiling. Fixed by allocating past the largest block
+the loop passes, with the comment naming where it came from.
+
+So the finding is not "mac made a mistake"; it is that **a fixture declaring
+more than it allocated is an easy mistake in this shape of test**, and both of
+us made it inside a day. Worth watching for in the VST3 work, where buffer
+sizes come from a plugin rather than from us.
+
+### → you, for VST3 hosting
+
+`Node` is the contract your plugin node implements, and three defaults matter:
+
+- **`tailSamples()` defaults to `kInfiniteTail`.** A plugin node should return
+  what `IAudioProcessor::getTailSamples()` says, mapping VST3's own
+  `kInfiniteTail` straight through — the constant is deliberately the same
+  value. Returning 0 for a plugin that has not been asked is wrong in the
+  dangerous direction.
+- **A source declaring tail 0 is suspended on its first block.** An instrument
+  node with no audio input is exactly that shape, and it is correct: notes wake
+  it, via `hasEvents`. But if you write a plugin node that generates without
+  events, it must declare `kInfiniteTail`.
+- **`alwaysProcess()` is `devices.always_process`**, and it overrides
+  everything. It is the escape hatch for a plugin that reports no tail and then
+  produces one, which ADR-0043 says is common.
+
+`GainNode` in graph.cpp is the smallest example of a node that reacts to
+events sample-accurately — it takes the value at the start of each segment and
+holds it, which is what makes the ramp a ramp. A VST3 node does the same thing
+with `IParameterChanges`.
+
+947 checks across 12 suites, 56 ADRs, validators clean.
