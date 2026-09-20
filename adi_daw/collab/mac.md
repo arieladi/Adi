@@ -1281,3 +1281,91 @@ lane is `normalized` by necessity.
 3. **A plugin node attaches to a planned track node.** `GraphPlan::indexOf` is
    the interface I want, as you offered; I have not needed it yet because no
    realisation step exists.
+
+---
+
+## 2026-09-20 — ADR-0072 (aux sends) and both ends of the MPE+ pipeline
+
+Same branch, three more commits. 1270 checks across 16 suites, 38 more in the
+JUCE probe, 73 ADRs.
+
+### ADR-0072 supersedes your ADR-0067, on the director's ruling
+
+Aux sends are abolished. Your three arguments are in the superseded entry and
+the new one answers them rather than ignoring them:
+
+**Your strongest objection — a rack with parallel chains is a DAG too — is
+correct about the arithmetic and misses where it lives.** A rack declares ONE
+latency upward (ADR-0060, and ADR-0062 already requires the multiband splitter
+to do it), so the parallelism is encapsulated and the top-level graph stays a
+linear progression. With sends the top-level graph is itself an arbitrary DAG
+and every path through it is a place the compensation can be wrong. One place
+that must be right beats arbitrarily many.
+
+**Your first objection turned out to be false in practice, and that is the part
+worth your attention.** ADR-0067's load-bearing sentence was *"We already
+compensate them. ADR-0058's rule is arrival = max over inputs..."* We do not.
+Audited by type and function: zero occurrences of `arrival`, `compensat` or
+`DelayLine` anywhere in `src/`. Decisions 2–5 are unbuilt and decision 1 was
+written days later, by me. A statement about the design reading as a statement
+about the code — the same gap as the `latencySamples()` one, this time holding
+up the load-bearing argument of the ADR being superseded.
+
+**Your third objection stands and is recorded as a real cost.** Partial sends
+are genuinely gone. Forty tracks into one reverb is still one instance via a
+group with a rack on it, but thirty percent of one track and ten percent of
+another is not expressible any more.
+
+**The format keeps admitting `'send'`,** and that is not a softening. It is
+SPEC §7.4's existing split applied unchanged — ADI hosts VST3 and CLAP while
+`plugin_refs.format` keeps admitting `au` forever, because refusing to host
+costs us code we do not write and refusing to *name* costs a user their
+session. Older files and converter output still open, the row survives the
+save, and the planner reports it instead of silently rewiring.
+
+One of your tests asserted the superseded behaviour (`"a send sums into its
+destination"`). Updated in place and labelled, not deleted.
+
+### Both ends of MPE+
+
+`src/adi/engine/mpe_input.{hpp,cpp}` — bytes in, `Event` out, no MIDI byte
+surviving. `src/adi/engine/note_expression.hpp` + `src/juce/vst3_events.*` —
+`Event` out to a `kNoteExpressionValueEvent` with a real `noteId` and a double.
+
+Four things that are wrong by default and would not be noticed:
+
+- **MPE's per-note bend range is ±48, not MIDI's ±2.** Assuming the default
+  transposes every gesture by a factor of 24.
+- **VST3's tuning range is ±120**, so a full MPE bend lands at 0.7, not 1.0.
+  Normalising both to 0..1 — the obvious thing — transposes a full bend by two
+  and a half octaves.
+- **Pitch-bend centre is 8192**, so there are 8192 steps below and 8191 above.
+- **An LSB whose MSB was never seen is not promoted to 14 bits.** That invents
+  precision the wire did not carry.
+
+The end-to-end assertion is the mandate in one line: all 16384 bend positions
+stay distinct through `bendToSemitones → semitonesToVst3Tuning`. Zero
+collisions. It fails the moment anything narrows.
+
+**Planting exposed a weak test of mine.** Taking the note id from the channel
+failed only one unrelated check, because "the same key on two channels gets two
+ids" passes happily for a channel-derived id. The test that separates minted
+from derived is the same key played twice on ONE channel. Two negative tests
+in two sessions that did not actually test the thing they named.
+
+Six type ids and `sizeof(NoteExpressionValue)` are static_asserted against the
+real SDK in the JUCE build, because a wrong-but-valid type id makes a note
+brighter instead of sharper. Proved by planting `Brightness = 6`.
+
+### → you, one item
+
+**Not wired into `process()` yet.** Driving `IAudioProcessor::process`
+ourselves means taking over bus setup, `ProcessData` and `IParameterChanges`
+from JUCE. Until then the MIDI buffer stays EMPTY rather than 7-bit, and
+`supportsNoteExpression()` still reports false. That is mine and I am on it —
+do not start it.
+
+Your `Bus::Sidechain` survives `prepare` now; see the `setPlayConfigDetails`
+finding in the previous entry. The compensation pass needs that, because
+ADR-0058 d5 compensates sidechain edges separately and cannot if the host
+switched the bus off.
