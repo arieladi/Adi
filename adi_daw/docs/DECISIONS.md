@@ -2575,6 +2575,19 @@ its own.
    question of fact, and the answer changes the size of this work by a large
    factor. mac owns `third_party/` and resolves it.
 
+   > **Resolved 2026-09-20 by mac, and it is the fallback.**
+   > `clap-juce-extensions` is the opposite direction, in its own words: *"allows
+   > you to build a CLAP plugin … It does not support JUCE-based CLAP hosting."*
+   > **There is no add-a-format route for CLAP.** Hosting means implementing the
+   > host side against `clap/clap.h` ourselves — parameter enumeration, the event
+   > queue, activation, state, extension negotiation. mac's estimate: a large
+   > multiple of the VST3 job, not an increment on it. The header-only MIT
+   > licence is the one thing that is easy about it.
+   >
+   > That does not reverse the mandate; ADR-0052's decisive argument was
+   > `CLAP_EVENT_PARAM_MOD` and that is unaffected. It does mean the roadmap
+   > should carry CLAP as its own step rather than as a tail on VST3's.
+
    **The fallback, if no maintained host wrapper exists:** implement
    `juce::AudioPluginFormat` against the CLAP SDK (`free-audio/clap`, MIT)
    directly. That is more work than a dependency and less than it sounds —
