@@ -10,6 +10,119 @@ handover notes addressed to you.
 
 ---
 
+## 2026-09-20 (later still) — INSTRUCTIONS FOR win: the macOS exporter in `plugin/vital.jucer`
+
+Adi's call: **win is sole owner of `Vital.jucer`.** I am not building Projucer
+locally and not touching the file. Everything below is a request, verified
+against the file as it stands at `ai-preset-generator`.
+
+Every value is quoted verbatim. `&#10;` is the newline entity the `.jucer` uses —
+keep it. Resave with `Projucer --resave` afterwards; a resave rewrites *all*
+exporters, so keep this in its own short-lived PR (README's own advice).
+
+### A. `<XCODE_MAC …>` tag attributes
+
+| Attribute | Current | Change to | Why |
+|---|---|---|---|
+| `extraDefs` | `JUCE_OPENGL3=1&#10;REQUIRE_AUTH=1` | `JUCE_OPENGL3=1&#10;NO_AUTH=1&#10;JUCE_VST3_CAN_REPLACE_VST2=0` | `REQUIRE_AUTH` is dead (ADR-0006). **`NO_AUTH=1` is mandatory on arm64** — without it the link fails outright, see below. `JUCE_VST3_CAN_REPLACE_VST2=0` mirrors ADR-0007. |
+| `extraCustomFrameworks` | `firebase.framework&#10;firebase_auth.framework` | *(empty)* | **This one line is 561 of the 797 warnings.** |
+| `frameworkSearchPaths` | `../../../third_party/firebase_cpp_sdk/frameworks/darwin/` | *(empty)* | Companion to the above. |
+| `externalLibraries` | `gssapi_krb5` | *(empty)* | Firebase dependency only. |
+| `extraFrameworks` | `Security,GSS` | *(empty)* | Firebase dependencies only. **Verify the link after** — if anything else pulled them in, put `Security` back alone. |
+| `iosDevelopmentTeamID` | `EFXDM6K3KJ` | *(empty)* | Tytel's team. It is a hard build blocker for anyone without that cert, and it is third-party identity. |
+| `postbuildCommand` | `if [ -f ~/Library/Audio/Plug-Ins/Components/Vital.component ]; then&#10;  auval -v aumu Vita Tyte&#10;fi` | *(empty)* | Validates an AU we no longer build, and names a restricted mark. |
+| `customPList` | the `NSAppTransportSecurity` block for **`tytel.org`** | *(empty)* | Grants `NSTemporaryExceptionAllowsInsecureHTTPLoads` + TLS 1.1 to a domain §7 forbids contacting. |
+| `vst3Folder` | `../third_party/VST3_SDK` | *(empty)* | Path does not exist (real one is `VST_SDK/VST3_SDK`). ADR-0007 already cleared this on Windows; macOS was missed. |
+| `vstLegacyFolder` | `../third_party/VST_SDK/VST2_SDK` | **delete the attribute** | Nonexistent VST2 SDK. ADR-0007 removed it on Windows. |
+
+### B. Both `<CONFIGURATION>` elements inside `<XCODE_MAC>` (Debug **and** Release)
+
+| Attribute | Current | Change to | Why |
+|---|---|---|---|
+| `enablePluginBinaryCopyStep` | `1` | `0` | **The blocker that cost me four builds.** VS2017/VS2019 are already `0`; ADR-0007 says macOS was "left untouched". On macOS it does not fail politely — Xcode gates an `MkDir` of the real `~/Library/Audio/Plug-Ins/VST3/` against build-directory creation and reports `Cycle inside a single target … rooted at /`, naming neither the copy step nor the path in the headline. |
+| `osxCompatibility` | `10.12 SDK` | `10.13 SDK` | Xcode 16: *"deployment target is set to 10.12, but the range of supported versions is 10.13 to 15.5.99."* |
+| `fastMath` | `1` | **leave at `1`** | See §D. |
+
+### C. `<JUCERPROJECT>` format flags — read the caveat first
+
+| Attribute | Current | Change to |
+|---|---|---|
+| `buildAU` | `1` | `0` |
+| `buildAUv3` | `1` | `0` |
+| `buildStandalone` | `1` | `0` |
+
+**The caveat, because this is the one that could bite you.** These are
+project-level, so they hit Windows too. `buildStandalone` here is the *Standalone
+Plugin wrapper inside `plugin/vital.jucer`* — **not** your primary dev target.
+That is `standalone/vital.jucer`, a separate file this request does not touch, and
+it stays exactly as it is. I have verified they are two distinct files. If you
+disagree, leave `buildStandalone` alone and say so — losing your dev loop is worse
+than one extra target.
+
+`buildVST=0`, `buildRTAS=0`, `buildAAX=0` are already correct. Naming
+(`pluginName="Vial"`, `pluginManufacturer="Vial Audio"`, `bundleIdentifier=
+"audio.vial.synth"`) is fine — `Vial` is upstream's own trademark-stripped name
+(§7), so nothing there needs changing.
+
+### D. The remaining 133 warnings — my recommendation is to do nothing
+
+`-Wnan-infinity-disabled` × 133 comes from `fastMath="1"` → `GCC_FAST_MATH=YES`.
+Two ways to silence it, and I recommend **neither, for now**:
+
+- `fastMath="0"` would remove them, but that is a real DSP behaviour change and it
+  is the *same* change entangled with the open question of whether
+  `isnan()`/`isinf()` get folded to constant false — which would make ADR-0009's
+  "no NaN or Inf in the output" check vacuous. Adi has explicitly deferred that to
+  a NaN-injection test. Do not pre-empt it with a build-flag change.
+- `-Wno-nan-infinity-disabled` would hide exactly the signal that test needs.
+
+They are also harmless as they stand: **all 133 are third-party** —
+`juce_CharacterFunctions.h` (120), `json.h` (8), `juce_Javascript.cpp` (4),
+`juce_VST3_Wrapper.cpp` (1) — text parsing using infinity as a sentinel.
+**Zero fire anywhere in `vital/src/`.** Revisit after the NaN test, not before.
+
+The other residue needs no action: 63 `-Wunused-function` is unity-build noise
+(`spectral_morph.h`'s header-inline morph helpers are unused in most of the 5 TUs
+that include them); 25 `-Wdeprecated-ofast` is clang 17 deprecating `-Ofast` and
+will matter at some future clang, not now; 2 `-Wshorten-64-to-32` are inside JUCE.
+
+### E. Why `NO_AUTH=1` is not optional on macOS
+
+Worth putting in ADR-0006's consequences. Without it the arm64 link fails:
+
+```
+ld: warning: ignoring file '.../firebase.framework/firebase(..._forkunsafe.o)':
+    found architecture 'x86_64', required architecture 'arm64'
+Undefined symbols for architecture arm64:
+  "firebase::g_auth_initializer", "firebase::App::GetInstance()",
+  "firebase::auth::Auth::GetAuth(...)", "firebase::auth::User::GetToken(bool)", …
+```
+
+`lipo -info` on `third_party/firebase_cpp_sdk/frameworks/darwin/firebase.framework/firebase`
+returns **`Non-fat file: … is architecture: x86_64`**. arm64 slices exist only
+under `libs/ios/`. The vendored SDK predates Apple Silicon. So on Apple Silicon
+`NO_AUTH=1` is not a don't-phone-home preference — **it is the only way the macOS
+VST3 links.** Anyone restoring `REQUIRE_AUTH` for cross-platform parity breaks
+the macOS build outright.
+
+### F. How to check you have it right
+
+After the resave, this should build with **no overrides at all**:
+
+```bash
+cd adi-vst/vital/plugin/builds/osx
+xcodebuild -project Vial.xcodeproj -target "Vial - VST3" -configuration Release build
+```
+
+That is the acceptance test: today the same build needs six command-line
+overrides, and each one is a defect in the file. Expect ~236 warnings rather than
+797, and `xcodebuild -list` should show only `Vial - VST3` and `Vial - Shared Code`.
+
+I will re-run it on arm64 and report. I have **not** changed `plugin/vital.jucer`,
+`standalone/vital.jucer`, or anything else in the fork — the fork's working tree
+is clean and nothing has been committed to `adi-vst-synth`.
+
+
 ## 2026-09-20 (later) — macOS VST3 sprint: cloned, and the first wave
 
 Unblocked by ADR-0016. Cloned `arieladi/adi-vst-synth` into `adi-vst/vital`;
