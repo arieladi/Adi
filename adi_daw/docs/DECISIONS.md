@@ -5244,3 +5244,113 @@ Named rather than guessed at, because it wants a real plugin that moves its
 latency to answer, and the answer decides whether CLAP's cheap path is a tap
 move at all or always a deactivate/activate pair that happens to be cheaper
 than a rebuild.
+
+---
+
+## ADR-0085 — Escalation grows ONE edge's ring, primed against the old one — `DECIDED` (2026-09-20) — **COMPLETES ADR-0079 decision 4**
+
+ADR-0079 decision 4 said `retapLatency()` returns false when an edge needs more
+delay than its ring holds, and called that *"the signal to build a new schedule
+off-thread"* — ADR-0066's original shape, surviving in the one place it still
+fitted. Building it showed that it does not fit there either.
+
+### Why a whole-schedule swap is the wrong unit
+
+A new schedule means new rings. **A new ring holds no history** — ADR-0079 said
+so about the crossfade and the same fact applies here, harder: swapping a whole
+schedule resets *every* edge's history, not just the one that needed more room.
+So one plugin going linear-phase would glitch every compensated edge in the
+project. The blast radius is the entire graph, to fix one number.
+
+Growing **one edge** leaves every other edge's ring, history and tap exactly
+where they were. Nothing else in the project can tell that it happened.
+
+### The wait is the data not existing, not an implementation shortcut
+
+When an edge at capacity `C` is asked for a delay `D > C`, the history for `D`
+**was never stored anywhere**. We kept `C` samples. There is no buffer to copy
+from, no off-thread preparation that helps, and no ordering of operations that
+produces a valid tap at `D` sooner than `D` samples from now.
+
+That is worth stating plainly because it looks like a problem to engineer around
+and it is not. Every design that promises an instant handover is promising to
+read samples nobody retained.
+
+### Decision
+
+1. **The allocation happens on the message thread, in `Graph::escalateLatency()`.**
+   The audio thread receives a ready-made, pre-zeroed buffer through
+   `DelayLine::offerRing`.
+
+2. **Both rings are written while one is read.** During priming the line writes
+   every incoming sample into the old ring AND the new one, and keeps reading
+   the **old tap at the old delay**. The compensation is stale by the
+   difference for the priming window. Stale is the correct failure here: the
+   alternative is reading a ring of zeros, which is a dropout, and a dropout is
+   not recoverable by listening.
+
+3. **Priming ends on a block boundary, then one block crossfades.** The two taps
+   are genuinely different samples — that is what a latency change is — so the
+   handover is the same crossfade ADR-0079 uses, except the taps live in
+   different rings. Ending priming mid-call would mean one call that is part
+   prime and part fade, and that bookkeeping costs more than the one extra block
+   it saves.
+
+4. **The audio thread swaps and parks; it never deallocates.** `buf_.swap(incoming_)`
+   moves pointers and touches no allocator. The retired buffer lands in
+   `incoming_` and waits for `Graph::collectRings()` on the message thread.
+
+5. **A grown ring gets headroom too.** The new capacity is the requirement plus
+   the graph's headroom, not the requirement exactly. A plugin that steps its
+   latency up in stages — a mode switch with an oversampling option — would
+   otherwise escalate on every step, and every escalation costs another priming
+   window. Growing to exactly what was asked for guarantees the next movement
+   misses again.
+
+6. **One offer at a time.** A second `offerRing` while one is in flight is
+   refused rather than queued; two rings in flight would need three buffers to
+   be correct, and the caller simply retries after collecting.
+
+7. **Escalation is on by default and can be declined.** `LatencyCoalescer::setAutoEscalate(false)`
+   turns a misfit back into `rebuildNeeded()`. An offline render has no
+   real-time constraint and can rebuild from the top (ADR-0066 d5), so it should
+   not carry priming machinery it has no use for.
+
+### What `rebuildNeeded()` means now
+
+It no longer means "an edge is too small" — that is fixed by growing. It means
+**growing could not help**, which means it was never a size problem: the
+topology changed and only a rebuild will do.
+
+### Verified non-vacuously
+
+Six planted defects, all caught: a cold swap with no priming (6 checks), priming
+reading the new empty ring instead of the old one (2), the new ring not being
+written during priming so it never fills (4), the handover hard-switching
+instead of crossfading (2), the retired buffer never parked so nothing is
+reclaimed (4), and escalation ignoring the headroom (3).
+
+**The sixth survived the first round**, and its test had to be written
+afterwards — the headroom-on-escalation rule was implemented, commented and
+untested. A rule with a comment and no assertion is a rule that will be tidied
+away.
+
+ADR-0010 is checked rather than argued: the counting `operator new` sees zero
+allocations across priming, the crossfade and the swap itself, and the retired
+buffer is then handed back to the message thread and freed there.
+
+### One real bug this found in ADR-0082's coalescer
+
+`collectRings()` sat at the *bottom* of `poll`, after every early return. So a
+retired ring was only ever freed on a poll that also retapped — and a graph that
+settled and went quiet held its retired buffers until some unrelated plugin
+happened to report. Reclamation has nothing to do with whether anything changed,
+and it now runs first and unconditionally.
+
+### Not decided
+
+What happens when a single latency change is larger than any sensible ring —
+a convolution reverb declaring several seconds. The priming window is then
+seconds long and the compensation is stale for all of it. A transport-aware
+answer (take the change at the next stop, not mid-playback) is probably right
+and wants a transport to exist first.

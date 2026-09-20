@@ -60,8 +60,10 @@ public:
         std::int64_t reports = 0;         ///< epoch changes observed
         std::int64_t bursts = 0;          ///< distinct quiet periods started
         std::int64_t retaps = 0;          ///< times the graph was retapped
-        std::int64_t rebuildsNeeded = 0;  ///< retaps that did not fit the rings
+        std::int64_t rebuildsNeeded = 0;  ///< misfits nothing could fix
         std::int64_t maxWaitTrips = 0;    ///< bursts cut short by the ceiling
+        std::int64_t escalations = 0;     ///< edges handed a bigger ring (ADR-0085)
+        std::int64_t ringsReclaimed = 0;  ///< old rings freed on the message thread
     };
 
     void attach(Graph& g) noexcept { graph_ = &g; }
@@ -98,10 +100,19 @@ public:
     /// A burst is open and has not been acted on yet.
     [[nodiscard]] bool pending() const noexcept { return pending_; }
 
-    /// Some edge needed more delay than its ring holds (ADR-0079 decision 4).
-    /// The graph has to be rebuilt off-thread; everything that DID fit has
-    /// already moved. Sticky until cleared, because the caller that rebuilds
-    /// may not be the one that polls.
+    /// ADR-0085: when a retap reports a misfit, grow that edge's ring rather
+    /// than giving up. On by default, because it is the only sensible response
+    /// to "this delay does not fit" and there is no second option to weigh.
+    /// The switch exists so an offline render -- which has no real-time
+    /// constraint and can simply rebuild from the top -- can decline the
+    /// machinery entirely.
+    void setAutoEscalate(bool v) noexcept { autoEscalate_ = v; }
+    [[nodiscard]] bool autoEscalate() const noexcept { return autoEscalate_; }
+
+    /// A misfit that growing could NOT fix, which means it was never a size
+    /// problem: the topology changed under us and only a rebuild will do.
+    /// Sticky until cleared, because whoever rebuilds is not necessarily
+    /// whoever polls.
     [[nodiscard]] bool rebuildNeeded() const noexcept { return rebuildNeeded_; }
     void clearRebuildNeeded() noexcept { rebuildNeeded_ = false; }
 
@@ -127,6 +138,7 @@ private:
     std::int64_t firstAt_ = 0;       ///< when the open burst started
     std::int64_t lastAt_ = 0;        ///< when it last saw a report
     bool pending_ = false;
+    bool autoEscalate_ = true;
     bool rebuildNeeded_ = false;
 };
 

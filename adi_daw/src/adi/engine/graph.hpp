@@ -166,7 +166,7 @@ class DelayLine {
 public:
     DelayLine() = default;
 
-    // MOVE, WRITTEN BY HAND, because the two atomics make the implicit one
+    // MOVE, WRITTEN BY HAND, because the atomics make the implicit one
     // disappear and `Slot::inDelays` is a vector that resizes. Only the
     // message thread moves a delay line -- during construction, before the
     // graph runs -- so loading the atomics relaxed here is not a shortcut.
@@ -174,15 +174,23 @@ public:
     DelayLine& operator=(DelayLine&& o) noexcept {
         if (this == &o) return *this;
         buf_ = std::move(o.buf_);
+        incoming_ = std::move(o.incoming_);
         capacity_ = o.capacity_;
         ring_ = o.ring_;
         delay_ = o.delay_;
         channels_ = o.channels_;
         write_ = o.write_;
+        inCapacity_ = o.inCapacity_;
+        inRing_ = o.inRing_;
+        inWrite_ = o.inWrite_;
+        targetDelay_ = o.targetDelay_;
+        primeRemaining_ = o.primeRemaining_;
         target_.store(o.target_.load(std::memory_order_relaxed),
                       std::memory_order_relaxed);
         gliding_.store(o.gliding_.load(std::memory_order_relaxed),
                        std::memory_order_relaxed);
+        grow_.store(o.grow_.load(std::memory_order_relaxed),
+                    std::memory_order_relaxed);
         return *this;
     }
     DelayLine(const DelayLine&) = delete;
@@ -208,22 +216,16 @@ public:
     [[nodiscard]] std::int32_t delay() const noexcept { return delay_; }
     [[nodiscard]] std::int32_t capacity() const noexcept { return capacity_; }
 
-    // --- moving the tap while running (ADR-0079) ---------------------------
+    // --- moving the tap within the ring (ADR-0079) -------------------------
 
     /// Ask for a new delay, reached by a crossfade across the next block.
     /// Refused -- and returns false -- when it does not fit the ring, because
     /// growing the ring means allocating and that is the audio thread's one
-    /// prohibition (ADR-0010). A false here is the signal to build a new
-    /// schedule off-thread.
+    /// prohibition (ADR-0010). A false here is the signal to escalate.
     ///
     /// Safe to call from the message thread while the audio thread processes:
     /// it writes one atomic and nothing else.
     bool beginGlide(std::int32_t d) noexcept;
-
-    /// Finish it. Called ONCE per edge, after every channel has been
-    /// processed -- the same discipline as the write cursor, and for the same
-    /// reason: the state is shared across the channels of one edge.
-    void endGlide() noexcept;
 
     [[nodiscard]] bool gliding() const noexcept {
         return gliding_.load(std::memory_order_relaxed);
@@ -232,18 +234,86 @@ public:
         return target_.load(std::memory_order_relaxed);
     }
 
-    /// The shared write cursor. A caller processing several channels of one
-    /// edge must restore it between them; see `Graph::accumulate`.
-    [[nodiscard]] std::int32_t cursor() const noexcept { return write_; }
-    void setCursor(std::int32_t c) noexcept { write_ = c; }
+    // --- growing the ring itself (ADR-0085) --------------------------------
+
+    /// Hand this line a BIGGER ring for a delay that does not fit the current
+    /// one. MESSAGE THREAD: the allocation happens in the caller, which is the
+    /// entire point.
+    ///
+    /// The handover is not instant and cannot be. A new ring holds no history,
+    /// and the history for a delay longer than the old capacity **was never
+    /// stored anywhere** -- so there is nothing to copy and no cleverness that
+    /// avoids waiting. The line therefore writes into BOTH rings while
+    /// continuing to read the old one at the old delay, and switches once the
+    /// new ring genuinely holds `targetDelay` samples. The compensation is
+    /// stale for that window, and stale is the right failure: the alternative
+    /// is silence, which is a dropout.
+    ///
+    /// Returns false when a previous offer is still in flight; the caller
+    /// retries after `collectRing`.
+    bool offerRing(std::vector<float> ring, std::int32_t capacity,
+                   std::int32_t targetDelay);
+
+    /// MESSAGE THREAD. Takes back the buffer the audio thread finished with,
+    /// and frees the line for another offer. Empty when there is nothing to
+    /// collect. The audio thread never deallocates; it swaps and parks.
+    std::vector<float> collectRing();
+
+    /// An offer is in flight: priming, fading, or waiting to be collected.
+    [[nodiscard]] bool growing() const noexcept {
+        return grow_.load(std::memory_order_acquire) != Grow::Idle;
+    }
+    /// Samples of history the new ring still needs. Zero once it is ready.
+    [[nodiscard]] std::int32_t primeRemaining() const noexcept {
+        return primeRemaining_;
+    }
+
+    /// Anything that spans a block is in progress, so the caller must not take
+    /// a shortcut. One predicate rather than two, because the fast path in
+    /// `Graph::accumulate` forgot `gliding()` once already.
+    [[nodiscard]] bool busy() const noexcept { return gliding() || growing(); }
+
+    // --- per-edge state, shared across channels ----------------------------
+
+    /// The cursors and counters an edge shares across its channels. A caller
+    /// processing several channels must restore these between them and call
+    /// `endEdge` once after the last: getting it wrong does not pull stereo
+    /// apart -- every channel drifts identically -- it makes the compensation
+    /// the wrong LENGTH from the next block on. See `Graph::accumulate`.
+    struct Cursors {
+        std::int32_t write = 0;
+        std::int32_t inWrite = 0;
+        std::int32_t primeRemaining = 0;
+    };
+    [[nodiscard]] Cursors cursors() const noexcept {
+        return Cursors{write_, inWrite_, primeRemaining_};
+    }
+    void setCursors(const Cursors& c) noexcept {
+        write_ = c.write;
+        inWrite_ = c.inWrite;
+        primeRemaining_ = c.primeRemaining;
+    }
+
+    /// Called ONCE per edge, after every channel has been processed. Ends a
+    /// glide and advances the grow state machine.
+    void endEdge() noexcept;
 
 private:
-    [[nodiscard]] float tap(const float* hist, std::int32_t w,
-                            std::int32_t d) const noexcept {
+    enum class Grow : std::uint8_t {
+        Idle,      ///< one ring
+        Priming,   ///< two rings; writing both, reading the old
+        Fading,    ///< two rings; crossfading old tap to new
+        Spent,     ///< swapped; the old buffer is parked for collection
+    };
+
+    [[nodiscard]] static float tapAt(const float* hist, std::int32_t w,
+                                     std::int32_t ring, std::int32_t d) noexcept {
         std::int32_t r = w - d;
-        if (r < 0) r += ring_;
+        if (r < 0) r += ring;
         return hist[r];
     }
+    void processGrowing(std::int32_t channel, const float* src, float* dst,
+                        std::int32_t frames, Grow state) noexcept;
 
     std::vector<float> buf_;        ///< channels * ring_
     std::int32_t capacity_ = 0;     ///< the largest delay that fits
@@ -252,12 +322,24 @@ private:
     std::int32_t channels_ = 0;
     std::int32_t write_ = 0;
 
+    // The offered ring, and after the swap the retired one. Only ever touched
+    // by one thread at a time: the message thread fills it before publishing
+    // `Priming`, the audio thread owns it until it publishes `Spent`, and the
+    // message thread takes it back after observing that.
+    std::vector<float> incoming_;
+    std::int32_t inCapacity_ = 0;
+    std::int32_t inRing_ = 0;
+    std::int32_t inWrite_ = 0;
+    std::int32_t targetDelay_ = 0;
+    std::int32_t primeRemaining_ = 0;
+
     // Written by the message thread, read by the audio thread. Two plain
     // atomics rather than a published schedule: while the new delay FITS, a
     // latency change needs no new buffers, so there is nothing to publish and
     // nothing to reclaim (ADR-0079).
     std::atomic<std::int32_t> target_{0};
     std::atomic<bool> gliding_{false};
+    std::atomic<Grow> grow_{Grow::Idle};
 };
 
 /// A DAG of nodes, scheduled per block.
@@ -368,6 +450,25 @@ public:
     /// publishing it (ADR-0019). Everything that DID fit has already been
     /// moved, because a partial correction is closer than none.
     bool retapLatency() noexcept;
+
+    /// ADR-0085. For every edge whose required delay does not fit its ring,
+    /// ALLOCATE a bigger one here -- on the message thread -- and hand it over.
+    /// The audio thread primes it against the old one and switches when it
+    /// genuinely holds the history. Returns how many edges were grown.
+    ///
+    /// This is the escalation ADR-0079 decision 4 named. It is per EDGE and
+    /// not per graph: growing one ring leaves every other edge's history
+    /// untouched, where swapping a whole schedule would reset all of them and
+    /// glitch the entire project to fix one plugin.
+    std::size_t escalateLatency();
+
+    /// Message thread, on a timer. Frees the rings the audio thread has
+    /// finished with. Returns how many were reclaimed.
+    std::size_t collectRings();
+
+    /// Edges with an offer still in flight, so a test can assert the handover
+    /// rather than describe it.
+    [[nodiscard]] std::size_t growingEdges() const noexcept;
 
     /// The graph's own latency: how far behind the output is (ADR-0058).
     /// Excludes the device buffer -- that is ADR-0042 decision 7, and folding

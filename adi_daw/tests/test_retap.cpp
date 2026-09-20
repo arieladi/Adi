@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <new>
 #include <thread>
@@ -104,9 +105,9 @@ public:
     [[nodiscard]] std::int64_t epoch() const noexcept { return epoch_; }
 
     void process(const NodeIo& io) noexcept override {
-        const std::int32_t before = line_.cursor();
+        const DelayLine::Cursors before = line_.cursors();
         for (std::int32_t c = 0; c < io.channels; ++c) {
-            line_.setCursor(before);
+            line_.setCursors(before);
             float* o = io.out[c] + io.blockOffset;
             const float* i = (io.in != nullptr && io.in[c] != nullptr)
                                  ? io.in[c] + io.blockOffset : nullptr;
@@ -223,7 +224,7 @@ void testTheGlideCrossfadesAndSettles() {
     for (int i = 0; i < 16; ++i) b[static_cast<std::size_t>(i)] = static_cast<float>(16 + i);
     check(d.beginGlide(6), "asked to move from 2 to 6");
     d.process(0, b.data(), out2.data(), 16);
-    d.endGlide();
+    d.endEdge();
     eqi(d.delay(), 6, "and the move has taken effect");
     check(!d.gliding(), "with nothing still pending");
 
@@ -554,43 +555,6 @@ void testSourcesAreSeededSoJoiningIsNotAReport() {
     eqi(c.stats().retaps, 0, "so loading a project does not retap once per plugin");
 }
 
-void testAnEdgeThatDoesNotFitAsksForARebuild() {
-    section("ADR-0079 d4 -- what does not fit is reported, not clamped");
-
-    RampNode src;
-    SwitchableNode plugin(0, 4096);
-    SumNode direct, mix;
-    Graph g;
-    const NodeId ns = g.addNode(src), np = g.addNode(plugin);
-    const NodeId nd = g.addNode(direct), nm = g.addNode(mix);
-    g.connect(ns, np);
-    g.connect(ns, nd);
-    g.connect(np, nm);
-    g.connect(nd, nm);
-    g.setOutput(nm);
-    g.setLatencyHeadroom(64);          // deliberately small
-    g.prepare(48000.0, 256);
-
-    std::atomic<std::uint64_t> epoch{0};
-    LatencyCoalescer c;
-    c.attach(g);
-    c.addSource("linear-phase", [&] { return epoch.load(std::memory_order_acquire); });
-    c.setQuietPeriodMs(0);
-
-    plugin.setLatency(2048);           // far beyond 64 samples of headroom
-    epoch.fetch_add(1, std::memory_order_release);
-    check(c.poll(0), "the retap ran");
-    check(c.rebuildNeeded(),
-          "and says a rebuild is needed -- the ring cannot hold 2048 and "
-          "growing it means allocating");
-    eqi(c.stats().rebuildsNeeded, 1, "counted");
-    check(c.lastReporter() == std::string("linear-phase"),
-          "and the culprit is named: got " + c.lastReporter());
-
-    c.clearRebuildNeeded();
-    check(!c.rebuildNeeded(), "the flag is sticky until the rebuilder clears it");
-}
-
 void testTwoSourcesCoalesceIntoOne() {
     section("ADR-0066 d2 -- two plugins reporting at once is still one retap");
 
@@ -661,6 +625,254 @@ void testAReporterOnAnotherThread() {
         "report is a hint to re-read, never the new number itself");
 }
 
+// === growing the ring (ADR-0085) ==========================================
+
+void testTheRingGrowsWithoutLosingAudio() {
+    section("ADR-0085 -- a bigger ring is primed against the old one, never swapped cold");
+
+    // The arithmetic is spelled out because the whole claim is continuity, and
+    // continuity is a statement about specific samples.
+    DelayLine d;
+    d.prepare(1, 4);
+    d.setDelay(2);
+
+    auto run = [&d](std::vector<float> in) {
+        std::vector<float> out(in.size(), -1.0f);
+        d.process(0, in.data(), out.data(), static_cast<std::int32_t>(in.size()));
+        d.endEdge();
+        return out;
+    };
+
+    std::vector<float> o = run({1, 2, 3, 4, 5, 6, 7, 8});
+    check(o[2] == 1.0f && o[7] == 6.0f,
+          "delayed by two to start with: got " + std::to_string(o[2]) + ", " +
+              std::to_string(o[7]));
+
+    // A delay of 10 does not fit a capacity of 4. The history for it was never
+    // stored, so there is nothing to copy and the wait is not an implementation
+    // shortcut -- it is the data not existing.
+    check(!d.beginGlide(10), "a tap at 10 does not fit a ring of 4");
+    check(d.offerRing(std::vector<float>(17, 0.0f), 16, 10),
+          "so it is handed a bigger ring instead");
+    check(d.growing(), "which is now in flight");
+    eqi(d.primeRemaining(), 10, "needing ten samples of history");
+    eqi(d.delay(), 2, "while STILL DELAYING BY TWO -- the old tap keeps serving");
+
+    // Priming. The output must be the old compensation throughout: continuous,
+    // stale by the difference, and above all not silence. Silence here would be
+    // a dropout every time a plugin went linear-phase.
+    o = run({9, 10, 11, 12});
+    check(o[0] == 7.0f && o[3] == 10.0f,
+          "block 1 of priming is still the old tap: got " + std::to_string(o[0]) +
+              ".." + std::to_string(o[3]));
+    eqi(d.primeRemaining(), 6, "six samples still needed");
+
+    o = run({13, 14, 15, 16});
+    check(o[0] == 11.0f && o[3] == 14.0f, "block 2, unbroken");
+    o = run({17, 18, 19, 20});
+    check(o[0] == 15.0f && o[3] == 18.0f, "block 3, unbroken");
+    eqi(d.primeRemaining(), 0, "and now the new ring holds ten real samples");
+
+    // The crossfade block. The two taps are eight samples apart, which is what
+    // a latency change IS, so this is bracketed rather than equal to either.
+    o = run({21, 22, 23, 24});
+    bool bracketed = true;
+    for (int i = 0; i < 4; ++i) {
+        const float hi = 19.0f + static_cast<float>(i);   // old tap, delay 2
+        const float lo = 11.0f + static_cast<float>(i);   // new tap, delay 10
+        if (o[static_cast<std::size_t>(i)] > hi + 0.001f ||
+            o[static_cast<std::size_t>(i)] < lo - 0.001f) bracketed = false;
+    }
+    check(bracketed, "the fade lies between the two taps");
+    // NOT "equals the old tap": with a four-sample fade the first sample is
+    // already a quarter of the way across, so the honest claim is that it
+    // starts NEARER the old tap than the new one. A cold swap sits exactly on
+    // the new tap at sample 0, so this still fails for the defect it is here
+    // to catch.
+    check(std::fabs(o[0] - 19.0f) < std::fabs(o[0] - 11.0f),
+          "and starts nearer the OLD tap than the new -- a cold swap would sit "
+          "exactly on the new one at sample 0: got " + std::to_string(o[0]));
+
+    eqi(d.delay(), 10, "after the fade the new delay is in effect");
+    eqi(d.capacity(), 16, "in the new ring");
+
+    o = run({25, 26, 27, 28});
+    check(o[0] == 15.0f && o[3] == 18.0f,
+          "and the block after it is the new delay exactly: got " +
+              std::to_string(o[0]) + ", want 15");
+}
+
+void testAnOfferIsRefusedWhileOneIsInFlight() {
+    section("ADR-0085 -- one handover at a time");
+
+    DelayLine d;
+    d.prepare(1, 4);
+    d.setDelay(2);
+    check(d.offerRing(std::vector<float>(17, 0.0f), 16, 10), "the first offer is taken");
+    check(!d.offerRing(std::vector<float>(33, 0.0f), 32, 20),
+          "the second is refused rather than queued -- the caller retries after "
+          "collecting, and two rings in flight would need three buffers to be "
+          "correct");
+    check(d.collectRing().empty(),
+          "and nothing can be collected until the audio thread has finished");
+}
+
+void testTheAudioThreadNeverDeallocates() {
+    section("ADR-0010 + ADR-0085 -- the swap allocates and frees NOTHING on the audio thread");
+
+    DelayLine d;
+    d.prepare(1, 4);
+    d.setDelay(2);
+    std::vector<float> in{1, 2, 3, 4}, out(4, 0.0f);
+    d.process(0, in.data(), out.data(), 4);
+    d.endEdge();
+
+    // The allocation is the caller's, on the message thread. That split is the
+    // entire design: the audio thread receives a ready-made buffer, writes into
+    // it, and swaps two vectors -- which moves pointers and touches no
+    // allocator.
+    check(d.offerRing(std::vector<float>(17, 0.0f), 16, 10), "offered");
+
+    g_allocs.store(0, std::memory_order_relaxed);
+    g_counting.store(true, std::memory_order_relaxed);
+    for (int b = 0; b < 6; ++b) {       // priming, the fade, and past the swap
+        d.process(0, in.data(), out.data(), 4);
+        d.endEdge();
+    }
+    g_counting.store(false, std::memory_order_relaxed);
+    eqi(g_allocs.load(std::memory_order_relaxed), 0,
+        "priming, the crossfade and the swap itself allocate nothing");
+    eqi(d.delay(), 10, "and the handover did happen -- this is not zero because "
+                       "nothing ran");
+
+    // The old buffer is parked, not freed, and the message thread takes it.
+    std::vector<float> old = d.collectRing();
+    check(!old.empty(), "the retired ring comes back to the message thread");
+    eqi(static_cast<long long>(old.size()), 5, "and it is the OLD one: 4 + 1");
+    check(!d.growing(), "with the line free for another offer");
+    check(d.offerRing(std::vector<float>(65, 0.0f), 64, 40), "which it now accepts");
+}
+
+void testAMisfitGrowsTheRingThroughTheCoalescer() {
+    section("ADR-0085 -- the coalescer escalates a misfit instead of giving up");
+
+    RampNode src;
+    SwitchableNode plugin(0, 4096);
+    SumNode direct, mix;
+    Graph g;
+    const NodeId ns = g.addNode(src), np = g.addNode(plugin);
+    const NodeId nd = g.addNode(direct), nm = g.addNode(mix);
+    g.connect(ns, np);
+    g.connect(ns, nd);
+    g.connect(np, nm);
+    g.connect(nd, nm);
+    g.setOutput(nm);
+    g.setLatencyHeadroom(64);          // deliberately far too small
+    g.prepare(48000.0, 256);
+
+    std::atomic<std::uint64_t> epoch{0};
+    LatencyCoalescer c;
+    c.attach(g);
+    c.addSource("linear-phase", [&] { return epoch.load(std::memory_order_acquire); });
+    c.setQuietPeriodMs(0);
+    check(c.autoEscalate(), "escalation is on by default");
+
+    plugin.setLatency(2048);           // thirty-two times the headroom
+    epoch.fetch_add(1, std::memory_order_release);
+    check(c.poll(0), "the retap ran");
+    eqi(c.stats().escalations, 1, "one edge was handed a bigger ring");
+    eqi(static_cast<long long>(g.growingEdges()), 1, "and has an offer in flight");
+    check(!c.rebuildNeeded(),
+          "and NO rebuild was demanded -- a size problem is fixed by growing, "
+          "which is the whole of ADR-0085");
+    check(c.lastReporter() == std::string("linear-phase"), "the culprit is named");
+
+    // Run it out. Priming is 2048 samples = eight blocks of 256, then one
+    // block of crossfade.
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+    int blocks = 0;
+    auto run = [&](int n) { for (int b = 0; b < n; ++b) { g.process(io); src.advance(); ++blocks; } };
+    run(12);
+
+    eqi(g.compensationFor(nd, nm), 2048,
+        "the direct path now carries the full 2048 samples");
+    eqi(g.latencySamples(), 2048, "and the graph reports it");
+
+    eqi(static_cast<long long>(c.stats().ringsReclaimed), 0, "nothing reclaimed yet");
+    c.poll(1000);
+    eqi(c.stats().ringsReclaimed, 1, "a poll reclaims the retired ring");
+    eqi(static_cast<long long>(g.growingEdges()), 0, "and the edge is settled");
+
+    // THE NEW RING CARRIES HEADROOM TOO, and that is not decoration. A plugin
+    // that steps its latency up in stages -- which a mode switch with an
+    // oversampling option does -- would otherwise escalate on every step, and
+    // every escalation costs a priming window during which the compensation is
+    // stale. Growing to exactly the requirement guarantees the next sample of
+    // movement misses again.
+    plugin.setLatency(2080);
+    epoch.fetch_add(1, std::memory_order_release);
+    check(c.poll(2000), "a further small step is retapped");
+    eqi(c.stats().escalations, 1,
+        "and does NOT escalate again -- it fits the headroom the grown ring "
+        "was given");
+    eqi(static_cast<long long>(g.growingEdges()), 0, "so nothing is in flight");
+
+    // Alignment, once both paths have filled. This is the point of all of it:
+    // a plugin went linear-phase mid-session and the kick still lines up.
+    run(16);
+    // Settled at 2080 now, after the second step above.
+    // `o` holds the LAST block rendered, so its first sample is at
+    // (blocks - 1) * 256. Counting the blocks rather than writing the product
+    // by hand, because the first version of this line was one block out and
+    // the failure read as a misalignment rather than as arithmetic.
+    const std::int64_t t0 = static_cast<std::int64_t>(blocks - 1) * 256;
+    bool aligned = true;
+    std::size_t bad = 0;
+    for (std::size_t i = 0; i < o.l.size(); ++i) {
+        const float want = 2.0f * (static_cast<float>(t0 + static_cast<std::int64_t>(i)) - 2080.0f);
+        if (o.l[i] != want) { aligned = false; bad = i; break; }
+    }
+    check(aligned, "and the two paths sum in phase again" +
+                       (aligned ? std::string()
+                                : " -- sample " + std::to_string(bad) + " is " +
+                                      std::to_string(o.l[bad])));
+}
+
+void testEscalationCanBeDeclined() {
+    section("ADR-0085 -- an offline render can decline the machinery");
+
+    RampNode src;
+    SwitchableNode plugin(0, 4096);
+    SumNode direct, mix;
+    Graph g;
+    const NodeId ns = g.addNode(src), np = g.addNode(plugin);
+    const NodeId nd = g.addNode(direct), nm = g.addNode(mix);
+    g.connect(ns, np);
+    g.connect(ns, nd);
+    g.connect(np, nm);
+    g.connect(nd, nm);
+    g.setOutput(nm);
+    g.setLatencyHeadroom(64);
+    g.prepare(48000.0, 256);
+
+    std::atomic<std::uint64_t> epoch{0};
+    LatencyCoalescer c;
+    c.attach(g);
+    c.addSource("p", [&] { return epoch.load(std::memory_order_acquire); });
+    c.setQuietPeriodMs(0);
+    c.setAutoEscalate(false);
+
+    plugin.setLatency(2048);
+    epoch.fetch_add(1, std::memory_order_release);
+    check(c.poll(0), "the retap ran");
+    eqi(c.stats().escalations, 0, "nothing was grown");
+    check(c.rebuildNeeded(),
+          "and the misfit is reported instead -- a bounce has no real-time "
+          "constraint and can simply rebuild from the top (ADR-0066 d5)");
+    eqi(static_cast<long long>(g.growingEdges()), 0, "with no offer in flight");
+}
+
 }  // namespace
 
 int main() {
@@ -676,9 +888,13 @@ int main() {
     testAContinuousReporterIsNotStarved();
     testTheQuietPeriodIsTheThingBeingTested();
     testSourcesAreSeededSoJoiningIsNotAReport();
-    testAnEdgeThatDoesNotFitAsksForARebuild();
     testTwoSourcesCoalesceIntoOne();
     testAReporterOnAnotherThread();
+    testTheRingGrowsWithoutLosingAudio();
+    testAnOfferIsRefusedWhileOneIsInFlight();
+    testTheAudioThreadNeverDeallocates();
+    testAMisfitGrowsTheRingThroughTheCoalescer();
+    testEscalationCanBeDeclined();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

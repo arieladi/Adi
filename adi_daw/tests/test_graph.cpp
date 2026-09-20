@@ -852,9 +852,9 @@ public:
         // the thing turns a correct implementation into a failing test, which
         // is the most expensive kind of test bug -- it argues for changing
         // working code.
-        const std::int32_t before = line_.cursor();
+        const DelayLine::Cursors before = line_.cursors();
         for (std::int32_t c = 0; c < io.channels; ++c) {
-            line_.setCursor(before);
+            line_.setCursors(before);
             float* o = io.out[c] + io.blockOffset;
             const float* i = (io.in != nullptr && io.in[c] != nullptr)
                                  ? io.in[c] + io.blockOffset : nullptr;

@@ -32,6 +32,13 @@ bool LatencyCoalescer::poll(std::int64_t nowMs) {
     // Every source is read on every poll even after one has changed. Stopping
     // early would leave the others' `seen` stale, so their reports would be
     // attributed to the NEXT burst and counted twice.
+    // RECLAIM FIRST, AND UNCONDITIONALLY. This sat at the bottom of the
+    // function to begin with, after every early return -- so an old ring was
+    // only ever freed on a poll that also retapped, and a graph that settled
+    // and went quiet held its retired buffers until the next plugin happened
+    // to report. Collection has nothing to do with whether anything changed.
+    stats_.ringsReclaimed += static_cast<std::int64_t>(graph_->collectRings());
+
     bool changed = false;
     for (Source& s : sources_) {
         const std::uint64_t e = s.epoch ? s.epoch() : 0;
@@ -71,9 +78,20 @@ bool LatencyCoalescer::poll(std::int64_t nowMs) {
     // A false is not an error to swallow -- it is the signal that this change
     // needs new buffers, and only a rebuild off-thread can supply them.
     if (!graph_->retapLatency()) {
-        rebuildNeeded_ = true;
-        ++stats_.rebuildsNeeded;
+        // ADR-0085. An edge wants more delay than its ring holds, so grow that
+        // ring -- here, on the message thread, where allocating is allowed.
+        // Per EDGE and not per graph: the others keep their history.
+        const std::size_t grown = autoEscalate_ ? graph_->escalateLatency() : 0;
+        if (grown > 0) {
+            stats_.escalations += static_cast<std::int64_t>(grown);
+        } else {
+            // Nothing could be grown, so this is not a size problem. The
+            // topology changed under us and only a rebuild will do.
+            rebuildNeeded_ = true;
+            ++stats_.rebuildsNeeded;
+        }
     }
+
     return true;
 }
 
