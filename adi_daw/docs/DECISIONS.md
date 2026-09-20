@@ -5382,3 +5382,75 @@ a convolution reverb declaring several seconds. The priming window is then
 seconds long and the compensation is stale for all of it. A transport-aware
 answer (take the change at the next stop, not mid-playback) is probably right
 and wants a transport to exist first.
+
+---
+
+## ADR-0086 — Native C++ DSP is embedded; AI runs as an RPC service — `DECIDED` (2026-09-20) — **REFINES ADR-0039, ADR-0064**
+
+**Director's mandate.** The dividing line between what lives inside the binary
+and what lives behind an RPC boundary, stated once so that every future
+dependency question has an answer that is already decided.
+
+### Tier 1 — embedded natively in C++
+
+| library | licence | why it is inside |
+|---|---|---|
+| **AudioGridder** | MIT | forked and embedded, for network DSP and browser integration (ADR-0083) |
+| **Rubber Band** | GPL | high-quality offline stretch and pitch (ADR-0061) |
+| **Bungee** | MPL-2.0 | already pinned; continuous rate change — tape stops, reverse scrubbing |
+| **libpd** | BSD-3 | the headless DSP engine behind Tier 1 device panels (ADR-0035, ADR-0076) |
+
+**Rationale:** these are small, pure C++ or C DSP libraries that must run
+*inside* the real-time graph. A block boundary is 85 ms at 4096 frames
+(ADR-0049), and anything in the signal path has to finish inside it.
+
+### Tier 2 — asynchronous RPC services
+
+Demucs, Whisper, RAVE, Matchering, and whatever else arrives — PyTorch, CUDA
+and the rest of that stack with them.
+
+**Rationale, and the second half is the load-bearing one:**
+
+1. **Size.** Embedding a Python and GPU stack takes the binary past 10 GB. A
+   DAW that ships a CUDA runtime to a user who wants to record a guitar is the
+   wrong trade.
+2. **The audio thread cannot survive them.** Python's garbage collector stops
+   the world at a moment it chooses, and dynamic VRAM allocation blocks. Either
+   one inside the process is a dropout with no fix available at the call site
+   — ADR-0010 forbids allocation and locks on that thread precisely because
+   there is no way to make them safe, only ways to keep them out.
+3. **Isolation is a crash boundary, and this is the part worth stating.** An
+   AI model that dies out of memory takes its own process with it. The DAW
+   keeps playing. Nothing about the tier split is load-bearing for
+   *performance* the way (2) is — it is load-bearing for **the user not losing
+   a take because a stem separator ran out of VRAM.**
+
+ADR-0064 already made AI asynchronous, remote and optional, and ADR-0039 built
+the RPC boundary with loopback default-off. This names what goes through it and
+why, so the question is not re-argued per feature.
+
+### The test the split has to pass
+
+**The DAW is whole with every Tier 2 service absent.** Not degraded into an
+error state — whole. ADR-0064 said so and it now has a dependency rule behind
+it: nothing in Tier 1 may come to depend on anything in Tier 2, because the
+first such dependency turns "AI is optional" into a sentence in a document.
+
+### What this does not settle
+
+**Rubber Band is GPL and that is a constraint, not a note.** This project is
+GPLv3 (ADR-0015) so embedding it is fine — but it forecloses a future
+non-GPL distribution in a way MIT and MPL dependencies do not. Recorded
+because the project has been caught on licences twice (JUCE is AGPL not GPL,
+ADR-0048; NDI dropped once its terms became the question, ADR-0074), and
+because "we can always relicense later" stops being true the moment this
+links.
+
+**libpd's licence is stated here as BSD-3 and has not been verified** against
+the repository. It is pinned by nobody yet. Check it at the same time as
+AudioGridder's, which ADR-0083 already flagged as unverified — both before
+code, not after.
+
+**And the wire format for Tier 2 is undecided.** ADR-0039 has the boundary;
+what crosses it for a stem separator — a file path, a buffer, a handle — is a
+real decision that wants the first consumer in front of it.

@@ -91,7 +91,7 @@ subject, say so in your log instead of writing it twice.
 | 0083 | mac | `agent/mac-dev` | AudioGridder natively, and the server forked to host CLAP | used |
 | 0084 | mac | `agent/mac-dev` | CLAP already says why it wants a restart; we were not listening | used |
 | 0085 | win | `agent/win-dev` | escalation: a ring that is too small is GROWN per edge, primed against the old one | used |
-| 0086 | mac | `agent/mac-dev` | dependency architecture: native C++ DSP core vs RPC AI services | reserved |
+| 0086 | mac | `agent/mac-dev` | dependency architecture: native C++ DSP core vs RPC AI services | used |
 | 0083-0084 | mac | `agent/mac-dev` | AudioGridder native integration and the CLAP fork; CLAP restart causes | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
