@@ -4716,3 +4716,111 @@ and each fails on every assertion against the old code. `Vst3Device` is behind
 `ADI_WITH_JUCE`, does not compile on the Windows machine, and is fixed by
 inspection — it rides on CI's JUCE job and is called out as the one part of this
 that no test on this branch exercises.
+
+---
+
+## ADR-0079 — A latency change is a TAP MOVE, not a second render — `DECIDED` (2026-09-20) — **AMENDS ADR-0066 decisions 1 and 4**
+
+ADR-0066 is mine, and two of its decisions do not survive contact with the code
+they describe. Recording that rather than quietly building something else.
+
+### What ADR-0066 decision 4 asked for, and why it cannot be built
+
+> *"the old and new schedules both render one block and are crossfaded."*
+
+**A `Graph` does not own its nodes** — `graph.hpp` says so explicitly, because
+ADR-0042 decision 5 requires a device to survive a graph rebuild. So two
+published schedules reference the *same* `Node*`s.
+
+Rendering both therefore calls `process()` twice on every node in the block. **A
+plugin is stateful.** A reverb rendered twice advances its tail twice, and the
+second render begins from a state the first already advanced — so the two
+renders are not two views of one block, they are consecutive blocks. Crossfading
+them yields neither alignment, and on a feedback delay it yields something
+unrelated to either.
+
+There is no fix inside that shape. Snapshotting plugin state per block is not
+available (opaque bytes, ADR-0038, and far too slow), and duplicating the nodes
+means duplicating the plugins.
+
+### What decision 1 asked for, and why it defeats the crossfade independently
+
+> *"It carries the levels, the per-edge delay amounts, **and the delay buffers
+> themselves**."*
+
+**A freshly allocated delay buffer has no history.** Fading from the old ring
+into a new, zero-filled one is a fade to *silence* for `newDelay` samples — not
+a transition between two alignments. The history cannot be copied in off-thread
+either, because the audio thread is still writing it.
+
+### The observation both of these missed
+
+**Only the delay amounts differ between the two schedules.** A node never sees
+the compensation: it is applied on the edges, between nodes. Under either
+schedule every node renders bit-identically. So the transition is entirely a
+property of the delay lines, and that is where it belongs.
+
+### Decision
+
+**1. A compensated edge is a ring with a movable TAP, not a buffer sized to the
+delay.** `DelayLine::prepare(channels, capacity)` allocates for the largest
+delay the edge will ever be asked for; `setDelay` chooses the tap. The ring is
+`capacity + 1` long, because the write happens before the read and a tap at the
+full capacity must not land on the slot just written — with a ring of exactly
+`capacity` the longest delay silently becomes no delay at all.
+
+**2. A latency change moves the tap, crossfaded across one block.** Both taps
+read the **same** history, which is the whole reason this works where a
+published buffer does not. The nodes render exactly **once**.
+
+**3. While the new delay fits the ring, there is nothing to publish.**
+`beginGlide` writes two atomics; the audio thread reads them at the top of the
+next segment. No new buffers, no pointer swap, no epoch, no reclamation. ADR-0019's
+machinery is for a change of *topology or capacity* — it is not needed for a
+change of *number*, and using it there was solving a harder problem than the one
+in front of me.
+
+**4. Headroom is opt-in and its absence is reported, never worked around.**
+`Graph::setLatencyHeadroom(n)` adds `n` samples of spare capacity to every
+compensated edge. The default is **0**, which allocates exactly what the graph
+allocated before this existed. `retapLatency()` returns **false** when some edge
+needs more than its ring holds — that is the signal to build a new schedule
+off-thread, and it is the one case where ADR-0066's original shape is still
+right.
+
+**5. A partial retap is applied, not rolled back.** When one edge fails to fit,
+every edge that did fit has already moved. A partial correction is closer to
+right than none, and the graph is about to be rebuilt anyway.
+
+**6. The crossfade is still honest.** ADR-0066's fourth paragraph stands
+unchanged: a latency change *is* a time shift, the two taps genuinely differ, and
+no crossfade makes that inaudible. What it buys is that the difference arrives
+as a brief flange instead of a click.
+
+### What this costs
+
+`channels * headroom * 4` bytes per compensated edge, and only when headroom is
+set. At 512 samples and stereo that is 4 KB an edge. The honest limitation: a
+latency change **larger than the headroom** still needs the full off-thread
+rebuild, so headroom is a bet on how far a plugin will move, not a guarantee.
+Linear-phase EQ — the case ADR-0066 named — sits in the low thousands of samples.
+
+### Verified non-vacuously
+
+Five planted defects, all caught: `beginGlide` accepting a delay that does not
+fit (3 checks), the ring sized to exactly the capacity (2), the `memcpy` fast
+path swallowing a pending glide on an edge currently at zero (2), the glide never
+ending so the tap never settles (4), and the tap switching hard instead of
+crossfading (2).
+
+**The fifth needed an assertion the first draft did not have.** Checking that
+every sample of the fade lies *between* the two taps does not distinguish a
+crossfade from a hard switch — a jump straight to the new tap is inside that
+bracket at every sample. It takes an assertion that the fade *starts* at the old
+tap. Written down because "the value is bounded by the endpoints" is a natural
+thing to assert about an interpolation and is satisfied by not interpolating.
+
+ADR-0010's claim is checked directly rather than argued: global `operator new` is
+replaced in `adi_retap_tests`, and the switch, the crossfade block and the two
+blocks after it allocate **zero** times. The counter is itself proven live by
+allocating on purpose immediately afterwards.

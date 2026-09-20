@@ -30,9 +30,11 @@
 #include "adi/engine/events.hpp"
 #include "adi/engine/process.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace adi::engine {
@@ -162,7 +164,40 @@ struct GraphStats {
 /// Prepared once, never allocates afterwards.
 class DelayLine {
 public:
-    void prepare(std::int32_t channels, std::int32_t delaySamples);
+    DelayLine() = default;
+
+    // MOVE, WRITTEN BY HAND, because the two atomics make the implicit one
+    // disappear and `Slot::inDelays` is a vector that resizes. Only the
+    // message thread moves a delay line -- during construction, before the
+    // graph runs -- so loading the atomics relaxed here is not a shortcut.
+    DelayLine(DelayLine&& o) noexcept { *this = std::move(o); }
+    DelayLine& operator=(DelayLine&& o) noexcept {
+        if (this == &o) return *this;
+        buf_ = std::move(o.buf_);
+        capacity_ = o.capacity_;
+        ring_ = o.ring_;
+        delay_ = o.delay_;
+        channels_ = o.channels_;
+        write_ = o.write_;
+        target_.store(o.target_.load(std::memory_order_relaxed),
+                      std::memory_order_relaxed);
+        gliding_.store(o.gliding_.load(std::memory_order_relaxed),
+                       std::memory_order_relaxed);
+        return *this;
+    }
+    DelayLine(const DelayLine&) = delete;
+    DelayLine& operator=(const DelayLine&) = delete;
+
+    /// `capacity` is the LARGEST delay this line will ever be asked for, not
+    /// the delay itself. Sizing the ring bigger than the tap is what makes a
+    /// runtime latency change possible without allocating: the tap moves
+    /// inside a ring that already holds the history (ADR-0079).
+    void prepare(std::int32_t channels, std::int32_t capacity);
+
+    /// The delay in effect, taking hold at once. Message thread, before the
+    /// graph runs.
+    void setDelay(std::int32_t d) noexcept;
+
     void reset() noexcept;
 
     /// `frames` samples of `src` delayed into `dst`, for one channel. Safe to
@@ -171,6 +206,31 @@ public:
                  std::int32_t frames) noexcept;
 
     [[nodiscard]] std::int32_t delay() const noexcept { return delay_; }
+    [[nodiscard]] std::int32_t capacity() const noexcept { return capacity_; }
+
+    // --- moving the tap while running (ADR-0079) ---------------------------
+
+    /// Ask for a new delay, reached by a crossfade across the next block.
+    /// Refused -- and returns false -- when it does not fit the ring, because
+    /// growing the ring means allocating and that is the audio thread's one
+    /// prohibition (ADR-0010). A false here is the signal to build a new
+    /// schedule off-thread.
+    ///
+    /// Safe to call from the message thread while the audio thread processes:
+    /// it writes one atomic and nothing else.
+    bool beginGlide(std::int32_t d) noexcept;
+
+    /// Finish it. Called ONCE per edge, after every channel has been
+    /// processed -- the same discipline as the write cursor, and for the same
+    /// reason: the state is shared across the channels of one edge.
+    void endGlide() noexcept;
+
+    [[nodiscard]] bool gliding() const noexcept {
+        return gliding_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::int32_t target() const noexcept {
+        return target_.load(std::memory_order_relaxed);
+    }
 
     /// The shared write cursor. A caller processing several channels of one
     /// edge must restore it between them; see `Graph::accumulate`.
@@ -178,10 +238,26 @@ public:
     void setCursor(std::int32_t c) noexcept { write_ = c; }
 
 private:
-    std::vector<float> buf_;        ///< channels * delay
+    [[nodiscard]] float tap(const float* hist, std::int32_t w,
+                            std::int32_t d) const noexcept {
+        std::int32_t r = w - d;
+        if (r < 0) r += ring_;
+        return hist[r];
+    }
+
+    std::vector<float> buf_;        ///< channels * ring_
+    std::int32_t capacity_ = 0;     ///< the largest delay that fits
+    std::int32_t ring_ = 0;         ///< capacity_ + 1; see graph.cpp
     std::int32_t delay_ = 0;
     std::int32_t channels_ = 0;
     std::int32_t write_ = 0;
+
+    // Written by the message thread, read by the audio thread. Two plain
+    // atomics rather than a published schedule: while the new delay FITS, a
+    // latency change needs no new buffers, so there is nothing to publish and
+    // nothing to reclaim (ADR-0079).
+    std::atomic<std::int32_t> target_{0};
+    std::atomic<bool> gliding_{false};
 };
 
 /// A DAG of nodes, scheduled per block.
@@ -266,6 +342,33 @@ public:
     /// trust the comment.
     [[nodiscard]] static std::int32_t maxFloorFor(double sampleRate) noexcept;
 
+    /// Spare ring capacity on every compensated edge, in samples, so a
+    /// plugin's latency can change while the graph runs (ADR-0079). Zero --
+    /// the default -- is a graph whose compensation is fixed at `prepare`, and
+    /// it allocates exactly what it did before this existed.
+    ///
+    /// A useful number is the largest latency swing expected from a plugin
+    /// mode switch; linear-phase EQ is the case this was written for and sits
+    /// in the low thousands of samples. Cost is `channels * headroom * 4`
+    /// bytes per edge.
+    void setLatencyHeadroom(std::int32_t n) noexcept {
+        latencyHeadroom_ = n > 0 ? n : 0;
+    }
+    [[nodiscard]] std::int32_t latencyHeadroom() const noexcept {
+        return latencyHeadroom_;
+    }
+
+    /// Re-read every node's `latencySamples()` and move the taps to match,
+    /// crossfaded across the next block. MESSAGE THREAD, while the audio
+    /// thread runs.
+    ///
+    /// Returns false when some edge needs more delay than its ring holds. That
+    /// is not a failure to handle here: it is the signal that this change
+    /// needs new buffers, which means building a schedule off-thread and
+    /// publishing it (ADR-0019). Everything that DID fit has already been
+    /// moved, because a partial correction is closer than none.
+    bool retapLatency() noexcept;
+
     /// The graph's own latency: how far behind the output is (ADR-0058).
     /// Excludes the device buffer -- that is ADR-0042 decision 7, and folding
     /// it in here makes every compensated track wrong by up to a block.
@@ -332,6 +435,7 @@ private:
     void accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& delay,
                     std::int32_t begin, std::int32_t frames, bool first) noexcept;
     void computeCompensation();
+    void prepareLine(DelayLine& line, std::int32_t delaySamples);
     void runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept;
 
     std::vector<Slot> slots_;
@@ -355,6 +459,7 @@ private:
     std::int32_t maxPolyphony_ = 16;
     std::int32_t floor_ = 64;
     std::int32_t graphLatency_ = 0;
+    std::int32_t latencyHeadroom_ = 0;
     bool ok_ = false;
     bool prepared_ = false;
     bool reverseWithinLevel_ = false;

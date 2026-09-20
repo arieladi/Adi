@@ -841,6 +841,7 @@ public:
 
     void prepare(double, std::int32_t) override {
         line_.prepare(2, latency_);
+        line_.setDelay(latency_);
     }
 
     void process(const NodeIo& io) noexcept override {
@@ -897,6 +898,7 @@ void testDelayLineItself() {
 
     DelayLine d;
     d.prepare(1, 3);
+    d.setDelay(3);
     std::vector<float> in{1, 2, 3, 4, 5, 6, 7, 8};
     std::vector<float> out(in.size(), -1.0f);
     d.process(0, in.data(), out.data(), static_cast<std::int32_t>(in.size()));
@@ -910,6 +912,7 @@ void testDelayLineItself() {
     // In place, because `accumulate` does exactly that on a second input.
     DelayLine e;
     e.prepare(1, 2);
+    e.setDelay(2);
     std::vector<float> both{9, 8, 7, 6};
     e.process(0, both.data(), both.data(), 4);
     check(both[0] == 0.0f && both[2] == 9.0f && both[3] == 8.0f,
@@ -917,6 +920,7 @@ void testDelayLineItself() {
 
     DelayLine z;
     z.prepare(2, 0);
+    z.setDelay(0);
     std::vector<float> pass{5, 6};
     z.process(0, pass.data(), pass.data(), 2);
     check(pass[0] == 5.0f, "zero delay is a pass-through, not a one-sample shift");

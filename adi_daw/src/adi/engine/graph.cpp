@@ -133,12 +133,28 @@ bool Graph::topoSort() {
 // Delay, and the compensation that uses it
 // ---------------------------------------------------------------------------
 
-void DelayLine::prepare(std::int32_t channels, std::int32_t delaySamples) {
+void DelayLine::prepare(std::int32_t channels, std::int32_t capacity) {
     channels_ = channels > 0 ? channels : 0;
-    delay_ = delaySamples > 0 ? delaySamples : 0;
-    buf_.assign(static_cast<std::size_t>(channels_) *
-                static_cast<std::size_t>(delay_), 0.0f);
+    capacity_ = capacity > 0 ? capacity : 0;
+    // ONE MORE THAN THE CAPACITY. The write happens before the read, so a tap
+    // at distance `capacity_` must land on a slot the write has not just
+    // overwritten. With a ring of exactly `capacity_` it lands on the write
+    // index itself and the longest delay silently becomes no delay at all.
+    ring_ = capacity_ > 0 ? capacity_ + 1 : 0;
+    buf_.assign(static_cast<std::size_t>(channels_) * static_cast<std::size_t>(ring_),
+                0.0f);
+    delay_ = 0;
     write_ = 0;
+    target_.store(0, std::memory_order_relaxed);
+    gliding_.store(false, std::memory_order_relaxed);
+}
+
+void DelayLine::setDelay(std::int32_t d) noexcept {
+    if (d < 0) d = 0;
+    if (d > capacity_) d = capacity_;
+    delay_ = d;
+    target_.store(d, std::memory_order_relaxed);
+    gliding_.store(false, std::memory_order_relaxed);
 }
 
 void DelayLine::reset() noexcept {
@@ -146,23 +162,86 @@ void DelayLine::reset() noexcept {
     write_ = 0;
 }
 
+bool DelayLine::beginGlide(std::int32_t d) noexcept {
+    if (d < 0 || d > capacity_) return false;
+    if (d == delay_) return true;               // nothing to do, and not a failure
+    target_.store(d, std::memory_order_relaxed);
+    gliding_.store(true, std::memory_order_release);
+    return true;
+}
+
+void DelayLine::endGlide() noexcept {
+    if (!gliding_.load(std::memory_order_acquire)) return;
+    delay_ = target_.load(std::memory_order_relaxed);
+    gliding_.store(false, std::memory_order_relaxed);
+}
+
 void DelayLine::process(std::int32_t channel, const float* src, float* dst,
                         std::int32_t frames) noexcept {
-    if (delay_ <= 0 || channel < 0 || channel >= channels_) {
+    if (ring_ <= 0 || channel < 0 || channel >= channels_) {
         if (src != dst)
             std::memcpy(dst, src, static_cast<std::size_t>(frames) * sizeof(float));
         return;
     }
     float* hist = buf_.data() + static_cast<std::size_t>(channel) *
-                                static_cast<std::size_t>(delay_);
+                                static_cast<std::size_t>(ring_);
     std::int32_t w = write_;
+
+    const bool glide = gliding_.load(std::memory_order_acquire);
+    const std::int32_t to = glide ? target_.load(std::memory_order_relaxed) : delay_;
+
+    if (!glide || to == delay_ || frames <= 0) {
+        const std::int32_t d = delay_;
+        for (std::int32_t i = 0; i < frames; ++i) {
+            const float in = src[i];   // src == dst is legal, so read before writing
+            hist[w] = in;
+            dst[i] = tap(hist, w, d);
+            if (++w == ring_) w = 0;
+        }
+        write_ = w;
+        return;
+    }
+
+    // THE TAP MOVES, THE AUDIO IS RENDERED ONCE (ADR-0079).
+    //
+    // Both taps read the SAME history, which is the whole reason this works
+    // and the reason a freshly published buffer cannot: a new ring holds
+    // nothing, so fading into it is a fade to silence for `delay` samples,
+    // not a transition between two alignments.
+    //
+    // A latency change IS a time shift, so the two taps genuinely differ and
+    // no crossfade makes that inaudible. What it does buy is that the
+    // difference arrives as a brief flange rather than as a click.
+    const std::int32_t from = delay_;
+    const float step = 1.0f / static_cast<float>(frames);
+    float t = 0.0f;
     for (std::int32_t i = 0; i < frames; ++i) {
-        const float in = src[i];        // src == dst is legal, so read before writing
-        dst[i] = hist[w];
+        const float in = src[i];
         hist[w] = in;
-        if (++w == delay_) w = 0;
+        t += step;
+        const float a = tap(hist, w, from);
+        const float b = tap(hist, w, to);
+        dst[i] = a + (b - a) * t;
+        if (++w == ring_) w = 0;
     }
     write_ = w;
+}
+
+void Graph::prepareLine(DelayLine& line, std::int32_t delaySamples) {
+    const std::int32_t d = delaySamples > 0 ? delaySamples : 0;
+    // The ring is the delay PLUS the headroom, so a plugin that switches to
+    // linear phase can move its tap without anyone allocating (ADR-0079).
+    // Headroom 0 -- the default -- gives exactly today's behaviour and costs
+    // exactly today's memory, so a project that never changes latency at
+    // runtime pays nothing for the ability.
+    //
+    // An edge with no delay AND no headroom gets no ring at all. With headroom
+    // it gets one, because an edge at zero today is the one most likely to
+    // need a delay tomorrow: it is the direct path everything else is
+    // compensated against.
+    const std::int32_t cap = d + latencyHeadroom_;
+    line.prepare(channels_, cap);
+    line.setDelay(d);
 }
 
 void Graph::computeCompensation() {
@@ -202,7 +281,7 @@ void Graph::computeCompensation() {
             const std::int32_t ready =
                 u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
             const std::int32_t d = s.arrival - ready;
-            s.inDelays[k].prepare(channels_, d > 0 ? d : 0);
+            prepareLine(s.inDelays[k], d);
         }
         s.sideDelays.resize(s.sidechains.size());
         for (std::size_t k = 0; k < s.sidechains.size(); ++k) {
@@ -210,12 +289,65 @@ void Graph::computeCompensation() {
             const std::int32_t ready =
                 u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
             const std::int32_t d = s.arrival - ready;
-            s.sideDelays[k].prepare(channels_, d > 0 ? d : 0);
+            prepareLine(s.sideDelays[k], d);
         }
     }
 
     const Slot& out = slots_[static_cast<std::size_t>(output_)];
     graphLatency_ = out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0);
+}
+
+bool Graph::retapLatency() noexcept {
+    if (!prepared_) return false;
+
+    // The same arithmetic as `computeCompensation`, against the latencies the
+    // nodes report NOW. Deliberately not factored into one function with it:
+    // that one ALLOCATES and this one must not, and a shared helper is one
+    // edit away from allocating on the audio thread's behalf.
+    bool allFit = true;
+
+    for (NodeId id : order_) {
+        Slot& s = slots_[static_cast<std::size_t>(id)];
+        std::int64_t latest = 0;
+        for (NodeId in : s.inputs) {
+            const Slot& u = slots_[static_cast<std::size_t>(in)];
+            const std::int64_t ready = static_cast<std::int64_t>(u.arrival) +
+                (u.node != nullptr ? u.node->latencySamples() : 0);
+            if (ready > latest) latest = ready;
+        }
+        for (NodeId in : s.sidechains) {
+            const Slot& u = slots_[static_cast<std::size_t>(in)];
+            const std::int64_t ready = static_cast<std::int64_t>(u.arrival) +
+                (u.node != nullptr ? u.node->latencySamples() : 0);
+            if (ready > latest) latest = ready;
+        }
+        s.arrival = static_cast<std::int32_t>(latest);
+    }
+
+    for (NodeId id : order_) {
+        Slot& s = slots_[static_cast<std::size_t>(id)];
+        for (std::size_t k = 0; k < s.inputs.size() && k < s.inDelays.size(); ++k) {
+            const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
+            const std::int32_t ready =
+                u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
+            const std::int32_t d = s.arrival - ready;
+            // EVERYTHING THAT FITS IS MOVED, even when something else does not.
+            // A partial correction is closer to right than none, and the edges
+            // that failed are about to be rebuilt anyway.
+            if (!s.inDelays[k].beginGlide(d > 0 ? d : 0)) allFit = false;
+        }
+        for (std::size_t k = 0; k < s.sidechains.size() && k < s.sideDelays.size(); ++k) {
+            const Slot& u = slots_[static_cast<std::size_t>(s.sidechains[k])];
+            const std::int32_t ready =
+                u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
+            const std::int32_t d = s.arrival - ready;
+            if (!s.sideDelays[k].beginGlide(d > 0 ? d : 0)) allFit = false;
+        }
+    }
+
+    const Slot& out = slots_[static_cast<std::size_t>(output_)];
+    graphLatency_ = out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0);
+    return allFit;
 }
 
 std::int32_t Graph::arrivalOf(NodeId id) const noexcept {
@@ -322,7 +454,11 @@ void Graph::accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& del
 
     // Zero compensation is the common case and must cost nothing: most edges in
     // most projects join paths of equal latency, and this is the path they take.
-    if (delay.delay() == 0) {
+    //
+    // A PENDING GLIDE DISQUALIFIES IT. An edge at zero that has been asked to
+    // move to 128 is exactly the case this fast path would swallow: it would
+    // memcpy, return, and leave the glide pending forever (ADR-0079).
+    if (!delay.gliding() && delay.delay() == 0) {
         for (std::size_t c = 0; c < ch; ++c) {
             const float* s = src.chanPtrs[c] + begin;
             float* d = dst[c] + begin;
@@ -364,6 +500,11 @@ void Graph::accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& del
             for (std::int32_t i = 0; i < frames; ++i) d[i] += tmp[i];
         }
     }
+    // ONCE PER EDGE, after every channel -- the same rule as the cursor, and
+    // for the same reason: the glide state is shared across the channels of
+    // one edge. Ending it inside the loop would crossfade the left channel and
+    // hard-switch the right.
+    delay.endGlide();
 }
 
 void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept {

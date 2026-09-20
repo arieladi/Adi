@@ -244,6 +244,10 @@ add_executable(adi_plan_tests tests/test_plan.cpp)
 target_link_libraries(adi_plan_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_plan_tests COMMAND adi_plan_tests)
 
+add_executable(adi_retap_tests tests/test_retap.cpp)
+target_link_libraries(adi_retap_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_retap_tests COMMAND adi_retap_tests)
+
 add_executable(adi_realize_tests tests/test_realize.cpp)
 target_link_libraries(adi_realize_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
