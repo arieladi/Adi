@@ -298,6 +298,15 @@ struct Fake {
     double paramValue = 0.25;
     std::vector<std::uint8_t> saved{0xDE, 0x00, 0xAD, 0x00, 0xBE};  // embedded NULs
     int activations = 0, starts = 0;
+    std::uint32_t lastFrames = 0;
+    std::int64_t lastSteady = -1;
+    bool failNext = false;
+    std::vector<clap_event_header_t> seenEvents;   ///< headers, for counting
+    /// Full copies, because a clap_event_header_t is 16 bytes and casting one
+    /// to a 48-byte param event reads past the end of the struct -- which is
+    /// exactly what the first version of this fake did, and the assertions
+    /// then compared garbage.
+    std::vector<clap_event_param_value_t> seenParams;
 
     static Fake& self(const clap_plugin_t* p) {
         return *static_cast<Fake*>(p->plugin_data);
@@ -313,8 +322,31 @@ struct Fake {
         plugin.start_processing = [](const clap_plugin_t* p) { ++self(p).starts; return true; };
         plugin.stop_processing = [](const clap_plugin_t*) {};
         plugin.reset = [](const clap_plugin_t*) {};
-        plugin.process = [](const clap_plugin_t*, const clap_process_t*)
-            -> clap_process_status { return CLAP_PROCESS_CONTINUE; };
+        plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd)
+            -> clap_process_status {
+            Fake& f = self(p);
+            f.lastFrames = pd->frames_count;
+            f.lastSteady = pd->steady_time;
+            f.seenEvents.clear();
+            f.seenParams.clear();
+            if (pd->in_events != nullptr) {
+                const std::uint32_t n = pd->in_events->size(pd->in_events);
+                for (std::uint32_t i = 0; i < n; ++i) {
+                    const clap_event_header_t* h = pd->in_events->get(pd->in_events, i);
+                    f.seenEvents.push_back(*h);
+                    if (h->type == CLAP_EVENT_PARAM_VALUE)
+                        f.seenParams.push_back(
+                            *reinterpret_cast<const clap_event_param_value_t*>(h));
+                }
+            }
+            if (f.failNext) { f.failNext = false; return CLAP_PROCESS_ERROR; }
+            // Write something distinguishable from silence and from the input.
+            for (std::uint32_t c = 0; c < pd->audio_outputs[0].channel_count; ++c)
+                for (std::uint32_t i = 0; i < pd->frames_count; ++i)
+                    pd->audio_outputs[0].data32[c][i] =
+                        pd->audio_inputs[0].data32[c][i] + 0.5f;
+            return CLAP_PROCESS_CONTINUE;
+        };
         plugin.on_main_thread = [](const clap_plugin_t*) {};
         plugin.get_extension = [](const clap_plugin_t* p, const char* id) -> const void* {
             Fake& f = self(p);
@@ -440,6 +472,144 @@ void testAgainstAFakePlugin() {
     check(true, "destruction did not crash");
 }
 
+void testTheRealProcessCall() {
+    section("ADR-0075 -- the process call: audio, events, and MPE+ with no truncation");
+
+    Fake f;
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake";
+    ClapDevice d(&f.plugin, id);
+    d.prepare(48000.0, 256);
+
+    std::vector<float> l(256, 0.25f), r(256, 0.25f);
+    std::vector<float> ol(256, -1.0f), orr(256, -1.0f);
+    const float* inp[2] = {l.data(), r.data()};
+    float* outp[2] = {ol.data(), orr.data()};
+    engine::NodeIo io;
+    io.in = inp; io.out = outp; io.channels = 2; io.frames = 256; io.sampleRate = 48000.0;
+
+    // A note and a 14-bit-resolution bend, through the real path.
+    d.pushEvent(noteOn(11, 60, 100.0 / 127.0));
+    const double bendA = 12.0 + 1.0 / 16384.0 * 96.0;   // one 14-bit LSB above an octave
+    d.pushEvent(expr(11, ExpressionDim::Pitch, bendA));
+    d.pushEvent(expr(11, ExpressionDim::Pressure, 0.75));
+
+    d.process(io);
+
+    check(f.lastFrames == 256, "the plugin was handed the block, saw " +
+                               std::to_string(f.lastFrames));
+    check(f.lastSteady == 0, "steady_time starts at zero");
+    check(f.seenEvents.size() == 3, "all three events arrived, saw " +
+                                    std::to_string(f.seenEvents.size()));
+
+    // The audio actually round-tripped: in + 0.5, not silence and not
+    // pass-through.
+    check(std::abs(ol[0] - 0.75f) < 1e-6f, "the plugin's output reached the graph");
+    check(std::abs(orr[255] - 0.75f) < 1e-6f, "across the whole block and both channels");
+
+    d.process(io);
+    check(f.lastSteady == 256, "steady_time advanced by the block");
+
+    // What setParam ACTUALLY SENDS, which nothing checked until a planted
+    // defect walked straight through. CLAP parameter events carry the PLAIN
+    // value: sending 0.45 to a 20 Hz..20 kHz cutoff sets it to 0.45 Hz, a
+    // valid number in the wrong unit.
+    check(d.setParam("1234abcd", ParamValue::withReal(0.45, 9000.0)), "queue a parameter");
+    d.process(io);
+    const clap_event_param_value_t* pev =
+        f.seenParams.empty() ? nullptr : &f.seenParams.back();
+    check(pev != nullptr, "a parameter event reached the plugin");
+    check(pev != nullptr && pev->param_id == 0x1234abcd, "with the right id");
+    check(pev != nullptr && std::abs(pev->value - 9000.0) < 1e-9,
+          "carrying 9000 Hz, the PLAIN value -- not 0.45");
+
+    // And from a normalised-only ParamValue, the plain value is derived from
+    // the declared range rather than passed through raw.
+    check(d.setParam("1234abcd", ParamValue::fromNormalized(0.5)), "queue a normalised one");
+    d.process(io);
+    pev = f.seenParams.empty() ? nullptr : &f.seenParams.back();
+    const double expect = 20.0 + 0.5 * (20000.0 - 20.0);
+    check(pev != nullptr && std::abs(pev->value - expect) < 1e-9,
+          "0.5 becomes the midpoint of 20..20000, not 0.5 Hz");
+
+    // D. THE LIST IS CLEARED BETWEEN BLOCKS. Without this a note-on is
+    // re-sent every block forever, which is a stuck note that also retriggers.
+    d.process(io);
+    check(f.seenEvents.empty(),
+          "a block with nothing pushed sends NO events, saw " +
+          std::to_string(f.seenEvents.size()));
+
+    // ZERO TRUNCATION, end to end. A 14-bit LSB of an MPE bend is ~0.0059
+    // semitones; if anything in the chain narrowed, these two would be equal
+    // by the time the plugin saw them.
+    ClapEventList probe;
+    probe.reserve(4);
+    probe.add(expr(11, ExpressionDim::Pitch, bendA));
+    probe.add(expr(11, ExpressionDim::Pitch, 12.0));
+    const auto* e0 = reinterpret_cast<const clap_event_note_expression_t*>(probe.at(0));
+    const auto* e1 = reinterpret_cast<const clap_event_note_expression_t*>(probe.at(1));
+    check(e0->value != e1->value,
+          "one 14-bit LSB apart is still two distinct doubles at the plugin");
+    check(std::abs(e0->value - e1->value - 96.0 / 16384.0) < 1e-12,
+          "and the gap is exactly one LSB of a +/-48 semitone range");
+}
+
+void testProcessErrorSilencesRatherThanLeaking() {
+    section("CLAP_PROCESS_ERROR writes silence, not whatever was in the buffer");
+
+    Fake f;
+    DeviceIdentity id;
+    ClapDevice d(&f.plugin, id);
+    d.prepare(48000.0, 64);
+
+    std::vector<float> l(64, 0.25f), ol(64, -1.0f);
+    const float* inp[1] = {l.data()};
+    float* outp[1] = {ol.data()};
+    engine::NodeIo io;
+    io.in = inp; io.out = outp; io.channels = 1; io.frames = 64; io.sampleRate = 48000.0;
+
+    // ONE GOOD BLOCK FIRST, and it is the whole point of the test. The output
+    // scratch is zero-filled at prepare, so on a first block "we silenced it"
+    // and "we copied out a buffer the plugin never wrote" produce the same
+    // zeros -- and a planted defect passes. Run a real block so the scratch
+    // holds 0.75, and only then fail.
+    d.process(io);
+    check(std::abs(ol[0] - 0.75f) < 1e-6f, "a good block first, so the scratch is not zero");
+
+    f.failNext = true;
+    d.process(io);
+
+    // The plugin did not write the output. Copying it out anyway hands the
+    // graph uninitialised memory on a first block and last block's audio on
+    // a later one -- both reach the monitors.
+    bool silent = true;
+    for (int i = 0; i < 64; ++i) if (ol[i] != 0.0f) silent = false;
+    check(silent, "the output is silent after a process error");
+
+    d.process(io);
+    check(std::abs(ol[0] - 0.75f) < 1e-6f, "and recovers on the next block");
+}
+
+void testEventOverflowIsCountedNotTruncated() {
+    section("ADR-0056 -- the derived capacity, and an overflow that is counted");
+
+    Fake f;
+    DeviceIdentity id;
+    ClapDevice d(&f.plugin, id);
+    // 4096 at 48 kHz is 42.7 update frames; x3 dims x16 voices is the number
+    // ADR-0056 derived. The capacity is computed from the block, not fixed.
+    d.prepare(48000.0, 4096);
+
+    int accepted = 0;
+    for (int i = 0; i < 4000; ++i)
+        if (d.pushEvent(expr(1, ExpressionDim::Pressure, 0.5))) ++accepted;
+
+    check(accepted > 2000,
+          "the derived capacity holds MPE+ at polyphony 16, took " +
+          std::to_string(accepted));
+    check(d.eventsDropped() > 0, "and the excess is COUNTED rather than silently dropped");
+    check(accepted + d.eventsDropped() == 4000, "every event is accounted for");
+}
+
 }  // namespace
 
 int main() {
@@ -455,6 +625,9 @@ int main() {
     testHostGlueReportsAndReturns();
     testClapDeviceWithNoPluginIsSafe();
     testAgainstAFakePlugin();
+    testTheRealProcessCall();
+    testProcessErrorSilencesRatherThanLeaking();
+    testEventOverflowIsCountedNotTruncated();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

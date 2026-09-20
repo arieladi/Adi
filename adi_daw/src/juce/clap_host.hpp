@@ -162,6 +162,28 @@ public:
     /// the plugin asks for a rescan.
     void rescanParams();
 
+private:
+    static bool outPush(const clap_output_events_t*, const clap_event_header_t*);
+
+public:
+
+    /// Events for the NEXT block, in block-relative frames. Called from the
+    /// graph before `process`, or by whatever produced them.
+    ///
+    /// This is the zero-truncation path. `engine::Event` carries a double and
+    /// CLAP's note expression takes a double in the same unit, so nothing in
+    /// between rounds, scales or clamps except at CLAP's own declared range.
+    bool pushEvent(const engine::Event& e) noexcept { return events_.add(e); }
+
+    /// Events refused because a queue was full. Non-zero means the capacity
+    /// derived at prepare was too small for what arrived (ADR-0056).
+    [[nodiscard]] std::int64_t eventsDropped() const noexcept {
+        return events_.dropped() + pendingDropped_;
+    }
+
+    /// How many blocks have been processed, and the plugin's last answer.
+    [[nodiscard]] std::int64_t steadyTime() const noexcept { return steadyTime_; }
+
     /// `clap_id` is a uint32; `plugin_params.param_id` is TEXT. The conversion
     /// is fixed-width hex so it sorts stably and cannot collide with a Pd
     /// symbol or a VST3 id in the same column.
@@ -183,12 +205,23 @@ private:
     std::int32_t maxFrames_ = 0;
 
     /// A CLAP parameter is set by an EVENT, not a setter, so `setParam`
-    /// records intent and the next process block carries it. One slot is
-    /// enough today because nothing drives more than one at a time yet; when
-    /// the graph does, this becomes the same pooled queue the VST3 path has.
-    clap_id pendingId_ = 0;
-    double pendingReal_ = 0.0;
-    bool hasPending_ = false;
+    /// queues one and the next process block carries it. Pooled at prepare
+    /// and never allocated on the audio thread (ADR-0010); an overflow is
+    /// counted, like every other queue in this project.
+    struct PendingParam { clap_id id; double value; };
+    std::vector<PendingParam> pending_;
+    std::size_t pendingUsed_ = 0;
+    std::int64_t pendingDropped_ = 0;
+
+    /// Audio, allocated at prepare. CLAP wants an array of channel pointers
+    /// per bus; the graph hands separate in and out pointers (ADR-0045's port
+    /// pair), so the bridging happens here.
+    std::vector<float*> inPtrs_, outPtrs_;
+    std::vector<float>  inScratch_, outScratch_;
+    ClapEventList       events_;
+    clap_output_events_t outEvents_{};
+    std::int64_t steadyTime_ = 0;
+    std::int32_t channels_ = 2;
 };
 
 /// The `clap_host_t` a plugin is given, and the callbacks behind it.

@@ -4476,3 +4476,85 @@ tail and latency — `audio-ports`, `note-ports`, `gui`, `thread-check`.
 
 None of that changes the decisions above, and an untested generalisation is
 worth less than a named limit (ADR-0055).
+
+---
+
+## ADR-0076 — Two tiers of device UI: the DAW renders what it can read, and never embeds what it cannot — `DECIDED` (2026-09-20)
+
+**Product owner's call.** The bottom Device Rack keeps one uniform workflow, so
+DAW-generated UI and third-party custom GUIs are strictly separated.
+
+### The two tiers
+
+**Tier 1 — inline, DAW-rendered.** Pure Data patches (ADR-0035) and native C++
+nodes (ADR-0062: vocoder, splitters, shaper) are **headless**. They declare
+parameters and nothing else; the DAW reads the declaration and draws uniform
+knobs directly in the horizontal bottom panel, Max-for-Live style.
+
+**Tier 2 — floating, plugin-rendered.** Third-party CLAP and VST3 plugins
+**never** embed their GUI in the bottom panel. In the rack they are standard
+blocks showing macro controls, collapsible the way Ableton's are. Their own
+interface opens in a free-floating OS window.
+
+### Tier 1 needs nothing new, and that is worth stating
+
+`DeviceInstance` already exposes exactly what a renderer needs:
+`paramCount()`, `paramAt()` giving name, unit, domain, real range and default,
+and `getParam()`/`setParam()`. A headless device is one whose `stateRoles()` is
+empty and whose parameters are the whole of it.
+
+So Tier 1 is not a feature to build into the device layer — it is what the
+device layer already is, and ADR-0075 showed why: a CLAP parameter arrives with
+`min_value`, `max_value` and `default_value` as plain doubles, which is
+precisely what "draw me a knob with the right range and unit" requires. A
+contract that had been shaped around VST3's normalised-only values would have
+made Tier 1 draw 0..1 knobs with no units on them.
+
+### The mechanism for Tier 2, corrected
+
+The mandate says to *"leverage CLAP's `is_visible` state to suspend GPU/UI
+rendering when these floating windows are closed."* **There is no `is_visible`
+in `clap/ext/gui.h`** — checked rather than assumed, because naming a specific
+API in a decision is a claim.
+
+The intent is right and the actual API serves it better:
+
+1. **Floating is first-class, not a workaround.** `gui->create(plugin, api,
+   is_floating)` takes floating as a parameter. Tier 2 passes `true` and the
+   plugin makes its own OS window; it never has to be reparented into ours.
+   That is exactly the separation this ADR wants, supported by the format.
+2. **Visibility is host state, which is why there is nothing to query.** The
+   host calls `show()` and `hide()`, so the host already knows. A getter would
+   be a second copy of a fact we own.
+3. **`hide()` IS the suspension signal**, and `destroy()` is the stronger one.
+   A plugin is required to stop drawing when hidden; there is no separate GPU
+   API to call and none is needed.
+4. **The plugin tells us when the user closes its window**, through
+   `clap_host_gui.closed(host, was_destroyed)`. Without handling that, the
+   host's idea of visibility drifts from reality the first time somebody
+   clicks the red button — which is how a "closed" window keeps rendering.
+
+VST3's equivalent is `IPlugView` with no parent, and JUCE already wraps that.
+The tiers are a product rule, not a format one, and both formats support it.
+
+### What this rules out, named because it is a real cost
+
+**A plugin's own GUI will never sit inline in the rack**, and some users prefer
+that. The trade is deliberate: an embedded third-party GUI sets the height of
+the whole bottom panel to whatever the largest plugin wants, and one rack row
+then contains a 200-pixel synth beside a 700-pixel one. Uniformity in the rack
+is worth more than inline access to a GUI that opens in a window a keystroke
+away.
+
+**And macros become load-bearing.** If the rack shows macros rather than
+parameters for Tier 2, then ADR-0060's macro mapping is the only way to
+automate a third-party plugin without opening its window. That raises the
+priority of macros from "rack convenience" to "the Tier 2 control surface", and
+it should be built with that in mind.
+
+### Not decided
+
+Which parameters a Tier 2 block shows before any macro is mapped — the first
+eight, the ones marked automatable, or nothing. Whether a Tier 1 panel is
+scrollable or paged when a Pd patch declares forty parameters. Neither blocks
+the tier split, and both want a real patch in front of them.

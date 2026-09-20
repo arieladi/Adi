@@ -236,10 +236,16 @@ bool ClapDevice::setParam(const std::string& paramId, const ParamValue& v) {
     // boundary and lose the offset ADR-0042 exists to preserve.
     for (std::size_t i = 0; i < params_.size(); ++i) {
         if (params_[i].id != paramId) continue;
+        if (pendingUsed_ >= pending_.size()) { ++pendingDropped_; return false; }
         const double span = params_[i].maxReal - params_[i].minReal;
-        pendingReal_ = v.hasReal ? v.real : params_[i].minReal + v.normalized * span;
-        pendingId_ = paramIds_[i];
-        hasPending_ = true;
+        // CLAP parameter events carry the PLAIN value, not a normalised one.
+        // Sending 0.42 to a 20 Hz..20 kHz cutoff would set it to 0.42 Hz --
+        // a valid number in the wrong unit, which is the failure mode this
+        // whole contract exists to keep visible (ADR-0057, ADR-0075).
+        pending_[pendingUsed_].id = paramIds_[i];
+        pending_[pendingUsed_].value =
+            v.hasReal ? v.real : params_[i].minReal + v.normalized * span;
+        ++pendingUsed_;
         return true;
     }
     return false;
@@ -342,6 +348,33 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
                                    static_cast<std::uint32_t>(maxFrames),
                                    static_cast<std::uint32_t>(maxFrames));
     if (activated_) plugin_->start_processing(plugin_);
+
+    // Everything the audio thread touches, allocated here and never again
+    // (ADR-0010). Sized from the GRANTED block size (ADR-0049).
+    const auto n = static_cast<std::size_t>(maxFrames) * static_cast<std::size_t>(channels_);
+    inScratch_.assign(n, 0.0f);
+    outScratch_.assign(n, 0.0f);
+    inPtrs_.resize(static_cast<std::size_t>(channels_));
+    outPtrs_.resize(static_cast<std::size_t>(channels_));
+    for (std::int32_t c = 0; c < channels_; ++c) {
+        const auto off = static_cast<std::size_t>(c) * static_cast<std::size_t>(maxFrames);
+        inPtrs_[static_cast<std::size_t>(c)]  = inScratch_.data() + off;
+        outPtrs_[static_cast<std::size_t>(c)] = outScratch_.data() + off;
+    }
+
+    // ADR-0056's arithmetic, applied to this device rather than re-derived:
+    // 500 Hz MPE+ across the block, three dimensions per note, at the
+    // polyphony the graph is configured for -- plus room for note on/off.
+    const double frames = static_cast<double>(maxFrames);
+    const double updateFrames = (sampleRate > 0.0) ? (frames / sampleRate) * 500.0 : 1.0;
+    const auto perNote = static_cast<std::int32_t>(updateFrames * 3.0) + 2;
+    events_.reserve((perNote > 0 ? perNote : 8) * 16);
+
+    pending_.assign(256, PendingParam{});
+    pendingUsed_ = 0;
+
+    outEvents_.ctx = this;
+    outEvents_.try_push = &ClapDevice::outPush;
 }
 
 void ClapDevice::release() {
@@ -351,12 +384,93 @@ void ClapDevice::release() {
     activated_ = false;
 }
 
+bool ClapDevice::outPush(const clap_output_events_t*, const clap_event_header_t*) {
+    // A plugin may report its own parameter changes and note ends back to us.
+    // Accepted and discarded for now: routing them into the op log is
+    // ADR-0038's business and needs the message thread, which is not this
+    // one. Returning false would tell the plugin we are broken.
+    return true;
+}
+
 void ClapDevice::process(const engine::NodeIo& io) noexcept {
-    // The full process call is the next step and is deliberately not faked
-    // here: it needs clap_audio_buffer_t wiring and a clap_process_t, and a
-    // half-built one that silently passed audio through would look like a
-    // plugin doing nothing rather than like an unfinished host.
-    passThrough(io);
+    if (plugin_ == nullptr || !activated_ || io.out == nullptr) { passThrough(io); return; }
+
+    const std::int32_t n  = io.frames < maxFrames_ ? io.frames : maxFrames_;
+    const std::int32_t ch = io.channels < channels_ ? io.channels : channels_;
+    if (n <= 0 || ch <= 0) { passThrough(io); return; }
+
+    for (std::int32_t c = 0; c < ch; ++c) {
+        float* dst = inPtrs_[static_cast<std::size_t>(c)];
+        const float* src = (io.in != nullptr) ? io.in[c] : nullptr;
+        if (src != nullptr) for (std::int32_t i = 0; i < n; ++i) dst[i] = src[i];
+        else                for (std::int32_t i = 0; i < n; ++i) dst[i] = 0.0f;
+    }
+
+    // Queued parameter changes go in as EVENTS at offset 0. CLAP parameters
+    // are sample-accurate and this is the floor of that, not the ceiling:
+    // once the graph drives them per segment they carry a real offset and
+    // nothing here changes (ADR-0042).
+    for (std::size_t i = 0; i < pendingUsed_; ++i) {
+        engine::Event e;
+        e.type = engine::EventType::ParamValue;
+        e.paramId = static_cast<std::uint32_t>(pending_[i].id);
+        e.value = pending_[i].value;
+        e.frame = 0;
+        events_.add(e);
+    }
+    pendingUsed_ = 0;
+
+    clap_audio_buffer_t inBus{};
+    inBus.data32 = inPtrs_.data();
+    inBus.data64 = nullptr;
+    inBus.channel_count = static_cast<std::uint32_t>(ch);
+    inBus.latency = 0;
+    inBus.constant_mask = 0;
+
+    clap_audio_buffer_t outBus = inBus;
+    outBus.data32 = outPtrs_.data();
+
+    clap_process_t pd{};
+    pd.steady_time = steadyTime_;
+    pd.frames_count = static_cast<std::uint32_t>(n);
+    pd.transport = nullptr;              // free-running; ADR-0050 owns the clock
+    pd.audio_inputs = &inBus;
+    pd.audio_outputs = &outBus;
+    pd.audio_inputs_count = 1;
+    pd.audio_outputs_count = 1;
+    pd.in_events = events_.inputEvents();
+    pd.out_events = &outEvents_;
+
+    const clap_process_status st = plugin_->process(plugin_, &pd);
+
+    // CLAP_PROCESS_ERROR means the plugin did not write the output, so
+    // copying it out would hand the graph uninitialised memory -- which on a
+    // first block is whatever was there and on a later one is last block,
+    // repeated. Silence is the only safe answer.
+    if (st == CLAP_PROCESS_ERROR) {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            if (io.out[c] != nullptr)
+                for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][i] = 0.0f;
+        events_.clear();
+        return;
+    }
+
+    for (std::int32_t c = 0; c < io.channels; ++c) {
+        float* out = io.out[c];
+        if (out == nullptr) continue;
+        if (c < ch) {
+            const float* src = outPtrs_[static_cast<std::size_t>(c)];
+            for (std::int32_t i = 0; i < n; ++i) out[i] = src[i];
+        } else {
+            for (std::int32_t i = 0; i < n; ++i) out[i] = 0.0f;
+        }
+        // A segment shorter than the buffer leaves the tail untouched, and
+        // the tail is last block's audio.
+        for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0f;
+    }
+
+    events_.clear();
+    steadyTime_ += n;
 }
 
 // ---------------------------------------------------------------------------
