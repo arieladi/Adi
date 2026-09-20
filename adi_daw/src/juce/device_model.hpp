@@ -135,7 +135,11 @@ public:
     /// audio through and holds its bytes.
     [[nodiscard]] virtual bool loaded() const noexcept = 0;
 
-    virtual void prepare(double sampleRate, std::int32_t maxFrames) {}
+    // Names commented out, matching `engine::Node::prepare`: MSVC /W4 raises
+    // C4100 on an unreferenced parameter in a defaulted body, and the
+    // -Werror build turns that into a hard failure that the default local
+    // build never shows.
+    virtual void prepare(double /*sampleRate*/, std::int32_t /*maxFrames*/) {}
     virtual void release() {}
 
     /// Audio thread. Same contract as `engine::Node::process`.

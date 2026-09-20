@@ -54,8 +54,13 @@ bool ClapEventList::add(const engine::Event& in) noexcept {
             slot.note.header.size     = sizeof(clap_event_note_t);
             slot.note.header.time     = static_cast<std::uint32_t>(in.frame);
             slot.note.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-            slot.note.header.type     = (in.type == engine::EventType::NoteOn)
-                                            ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF;
+            // CLAP's event constants are an unnamed int enum and `type` is a
+            // uint16_t, so the assignment narrows. MSVC /W4 raises C4244 and
+            // -Werror makes it fatal; the cast says the narrowing is intended
+            // rather than leaving a warning the Windows job stops on.
+            slot.note.header.type     = static_cast<std::uint16_t>(
+                (in.type == engine::EventType::NoteOn) ? CLAP_EVENT_NOTE_ON
+                                                       : CLAP_EVENT_NOTE_OFF);
             slot.note.header.flags    = 0;
             // A REAL note id, not -1. CLAP anchors note expression to it in
             // exactly the way VST3 does -- the difference is that JUCE's VST3
@@ -108,8 +113,9 @@ bool ClapEventList::add(const engine::Event& in) noexcept {
             // stored value alone. On VST3 the host has to resolve the two into
             // one number and shadow the user's setting; here they are separate
             // event types and the plugin does it properly.
-            slot.param.header.type = (in.type == engine::EventType::ParamMod)
-                                         ? CLAP_EVENT_PARAM_MOD : CLAP_EVENT_PARAM_VALUE;
+            slot.param.header.type = static_cast<std::uint16_t>(
+                (in.type == engine::EventType::ParamMod) ? CLAP_EVENT_PARAM_MOD
+                                                         : CLAP_EVENT_PARAM_VALUE);
             slot.param.header.flags = 0;
             slot.param.param_id  = static_cast<clap_id>(in.paramId);
             slot.param.cookie    = nullptr;
