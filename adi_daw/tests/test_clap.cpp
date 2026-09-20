@@ -582,7 +582,7 @@ void testProcessErrorSilencesRatherThanLeaking() {
     // graph uninitialised memory on a first block and last block's audio on
     // a later one -- both reach the monitors.
     bool silent = true;
-    for (int i = 0; i < 64; ++i) if (ol[i] != 0.0f) silent = false;
+    for (std::size_t i = 0; i < ol.size(); ++i) if (ol[i] != 0.0f) silent = false;
     check(silent, "the output is silent after a process error");
 
     d.process(io);
