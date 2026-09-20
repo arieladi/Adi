@@ -109,6 +109,30 @@ public:
         return kInfiniteTail;
     }
 
+    /// How many samples this node DELAYS its output by (ADR-0058 decision 1).
+    ///
+    /// The default is **0, which is the opposite of the tail's default, and
+    /// deliberately so.** A node that fails to declare a tail is merely
+    /// processed more often than it needed to be. A node that fails to declare
+    /// a LATENCY is compensated wrongly -- and a wrong compensation is worse
+    /// than none, because it moves audio that was already aligned. Kick
+    /// against bass is the case that exposes it, and it would be our own code
+    /// producing the complaint.
+    ///
+    /// So the conservative answer differs per question: never suspend, and
+    /// never shift. Both defaults are the one that cannot corrupt.
+    ///
+    /// NOT included: the device buffer (ADR-0042 decision 7, ADR-0058
+    /// decision 4). This is the node's own latency and nothing else; folding
+    /// the block size in here makes every compensated track wrong by up to
+    /// 4096 samples, which is 85 ms at 48 kHz.
+    ///
+    /// Reported in samples at the rate passed to `prepare`. A node whose
+    /// latency changes at runtime -- a VST3 switching to linear phase --
+    /// reports it and does NOT recompute anything itself; ADR-0066 owns what
+    /// happens next, off this thread.
+    [[nodiscard]] virtual std::int32_t latencySamples() const noexcept { return 0; }
+
     /// The `devices.always_process` escape hatch (ADR-0043), for a plugin that
     /// reports no tail and then produces one.
     [[nodiscard]] virtual bool alwaysProcess() const noexcept { return false; }

@@ -1,0 +1,323 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// See vst3_host.hpp, in particular for what JUCE's host path cannot carry.
+
+#include "juce/vst3_host.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
+namespace adi::device {
+
+namespace {
+
+/// VST3 identifies a parameter by a 32-bit `ParamID`, and `plugin_params`
+/// stores TEXT. The conversion is fixed-width hex so it sorts stably and can
+/// never collide with a CLAP or Pd symbol, which are the other things that end
+/// up in that column.
+std::string paramIdToText(juce::AudioProcessorParameter* p) {
+    if (auto* withId = dynamic_cast<juce::HostedAudioProcessorParameter*>(p))
+        return withId->getParameterID().toStdString();
+    // No hosted id: fall back to the index, tagged so it is obviously an
+    // index rather than a plugin-supplied symbol. A project saved against
+    // such a plugin is index-bound, which SPEC 6.3.3 warns about.
+    char buf[24];
+    std::snprintf(buf, sizeof buf, "idx:%d", p != nullptr ? p->getParameterIndex() : -1);
+    return buf;
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Vst3Host
+// ---------------------------------------------------------------------------
+
+Vst3Host::Vst3Host() {
+    // NOT addDefaultFormats(). That adds every format JUCE was compiled with,
+    // which is how an AU host appears on a Mac without anyone deciding to add
+    // one. ADR-0041 says VST3 and nothing else, and the one-line difference
+    // between these two calls is the whole enforcement.
+    formats_.addFormat(std::make_unique<juce::VST3PluginFormat>());
+}
+
+std::vector<std::string> Vst3Host::formatNames() const {
+    std::vector<std::string> out;
+    for (int i = 0; i < formats_.getNumFormats(); ++i)
+        out.push_back(formats_.getFormat(i)->getName().toStdString());
+    return out;
+}
+
+juce::FileSearchPath Vst3Host::defaultSearchPaths() const {
+    juce::VST3PluginFormat fmt;
+    return fmt.getDefaultLocationsToSearch();
+}
+
+void Vst3Host::scan(const juce::FileSearchPath& paths, juce::KnownPluginList& into) {
+    for (int i = 0; i < formats_.getNumFormats(); ++i) {
+        auto* fmt = formats_.getFormat(i);
+        juce::PluginDirectoryScanner scanner(into, *fmt, paths,
+                                             /*recursive*/ true,
+                                             /*deadMansPedal*/ juce::File());
+        juce::String name;
+        while (scanner.scanNextFile(true, name)) { /* one plugin per turn */ }
+    }
+}
+
+std::unique_ptr<juce::AudioPluginInstance> Vst3Host::instantiate(
+    const juce::PluginDescription& desc, double sampleRate, int blockSize,
+    std::string& error) {
+    juce::String err;
+    auto inst = formats_.createPluginInstance(desc, sampleRate, blockSize, err);
+    if (inst == nullptr) error = err.toStdString();
+    return inst;
+}
+
+DeviceIdentity identityOf(const juce::PluginDescription& desc) {
+    DeviceIdentity id;
+    // Lower-case, matching plugin_refs.format's admitted spellings.
+    id.format  = desc.pluginFormatName.toLowerCase().toStdString();
+    if (id.format.empty()) id.format = "vst3";
+    id.uid     = desc.createIdentifierString().toStdString();
+    id.name    = desc.name.toStdString();
+    id.vendor  = desc.manufacturerName.toStdString();
+    id.version = desc.version.toStdString();
+    return id;
+}
+
+std::unique_ptr<DeviceInstance> Vst3Host::makeDevice(const juce::PluginDescription& desc,
+                                                     double sampleRate, int blockSize,
+                                                     std::string& error) {
+    const DeviceIdentity id = identityOf(desc);
+    auto inst = instantiate(desc, sampleRate, blockSize, error);
+    if (inst == nullptr) {
+        // ADR-0011 / SPEC 7.1. Not nullptr, not an exception, not a skip: the
+        // device stays in the chain as a bypassed placeholder carrying the
+        // identity, so the signal path is unchanged and the user is told what
+        // is missing rather than that "a plugin" is.
+        return std::make_unique<MissingDevice>(id);
+    }
+    return std::make_unique<Vst3Device>(std::move(inst), id);
+}
+
+// ---------------------------------------------------------------------------
+// Vst3Device
+// ---------------------------------------------------------------------------
+
+Vst3Device::Vst3Device(std::unique_ptr<juce::AudioPluginInstance> inst, DeviceIdentity id)
+    : inst_(std::move(inst)), id_(std::move(id)) {
+    if (inst_ != nullptr) {
+        inst_->addListener(this);
+        readParameters();
+    }
+}
+
+Vst3Device::~Vst3Device() {
+    if (inst_ != nullptr) inst_->removeListener(this);
+}
+
+void Vst3Device::readParameters() {
+    params_.clear();
+    handles_.clear();
+    for (auto* p : inst_->getParameters()) {
+        if (p == nullptr) continue;
+        ParamDescriptor d;
+        d.id   = paramIdToText(p);
+        d.name = p->getName(128).toStdString();
+        d.unit = p->getLabel().toStdString();
+
+        // THE VST3 EDGE, and the reason ParamValue has `hasReal` at all.
+        // VST3 exposes a real value only through getParamStringByValue, which
+        // hands back a localised display string -- "4.80 kHz", "-inf dB",
+        // "1/4 D". Parsing that back into a number is a guess that fails
+        // differently per plugin and per locale, so the domain is normalized
+        // and `real` is absent. That is a fact about VST3, not a gap in this
+        // adapter: CLAP, Pd and native devices fill it in.
+        d.domain = ParamDomain::Normalized;
+        d.defaultValue = ParamValue::fromNormalized(
+            static_cast<double>(p->getDefaultValue()));
+        d.automatable = p->isAutomatable();
+        params_.push_back(std::move(d));
+        handles_.push_back(p);
+    }
+}
+
+const ParamDescriptor* Vst3Device::paramAt(std::int32_t i) const noexcept {
+    if (i < 0 || i >= static_cast<std::int32_t>(params_.size())) return nullptr;
+    return &params_[static_cast<std::size_t>(i)];
+}
+
+ParamValue Vst3Device::getParam(const std::string& paramId) const noexcept {
+    for (std::size_t i = 0; i < params_.size(); ++i) {
+        if (params_[i].id != paramId) continue;
+        auto* h = handles_[i];
+        if (h == nullptr) return {};
+        return ParamValue::fromNormalized(static_cast<double>(h->getValue()));
+    }
+    return {};
+}
+
+bool Vst3Device::setParam(const std::string& paramId, const ParamValue& v) {
+    for (std::size_t i = 0; i < params_.size(); ++i) {
+        if (params_[i].id != paramId) continue;
+        auto* h = handles_[i];
+        if (h == nullptr) return false;
+
+        // SPEC 7.3: the gesture boundary is what makes one user movement one
+        // undo step. beginChangeGesture/endChangeGesture are JUCE's spelling
+        // of VST3's beginEdit/endEdit, and a setValueNotifyingHost without
+        // them is a change the plugin's own automation recording never sees.
+        h->beginChangeGesture();
+        h->setValueNotifyingHost(static_cast<float>(v.normalized));
+        h->endChangeGesture();
+        return true;
+    }
+    return false;
+}
+
+void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
+    if (inst_ == nullptr) return;
+    maxFrames_ = maxFrames;
+    channels_ = std::max(inst_->getTotalNumInputChannels(),
+                         inst_->getTotalNumOutputChannels());
+    if (channels_ < 1) channels_ = 2;
+
+    // ADR-0049: the GRANTED size. Everything allocated here is sized from what
+    // the driver returned, never from what was requested, and the plugin is
+    // told the same number the graph will actually hand it.
+    //
+    // NOT setPlayConfigDetails, and this cost a JUCE assertion to find.
+    // That function calls `disableNonMainBuses()` -- its own comment says "the
+    // user does not want any side-buses or aux outputs" -- so it would have
+    // silently switched off the sidechain input on every plugin that has one.
+    // ADR-0043 requires a LIVE SIDECHAIN to prevent suspension and ADR-0056
+    // added `Bus::Sidechain` to express it, so a compressor keyed from another
+    // track would have had its key input disabled by the host, at prepare,
+    // with nothing reported. The plugin's own bus layout is left alone and
+    // only the rate and block size are set.
+    inst_->setRateAndBufferSizeDetails(sampleRate, maxFrames);
+    inst_->prepareToPlay(sampleRate, maxFrames);
+
+    // Allocated at prepare, never in process (ADR-0010).
+    scratch_.setSize(channels_, maxFrames, false, true, true);
+    midi_.ensureSize(4096);
+}
+
+void Vst3Device::release() {
+    if (inst_ != nullptr) inst_->releaseResources();
+}
+
+void Vst3Device::process(const engine::NodeIo& io) noexcept {
+    if (inst_ == nullptr || io.out == nullptr) return;
+
+    const std::int32_t n = std::min(io.frames, maxFrames_);
+    const std::int32_t ch = std::min(io.channels, channels_);
+    if (n <= 0 || ch <= 0) return;
+
+    // Copy in, process in place, copy out. JUCE wants one interleaved-by-
+    // channel AudioBuffer for both directions; the graph hands separate in and
+    // out pointers (ADR-0045's port pair), so the bridging happens here and
+    // not in the graph.
+    for (std::int32_t c = 0; c < ch; ++c) {
+        float* dst = scratch_.getWritePointer(c);
+        const float* src = (io.in != nullptr) ? io.in[c] : nullptr;
+        if (src != nullptr) std::copy(src, src + n, dst);
+        else                std::fill(dst, dst + n, 0.0f);
+    }
+
+    midi_.clear();
+    // THE EVENT PATH IS NOT WIRED, AND IT IS EMPTY RATHER THAN APPROXIMATE.
+    //
+    // Translating `engine::Event` into this MidiBuffer is the obvious next
+    // line and it is deliberately not written. Every per-note expression value
+    // would be quantised to 7 bits and anchored to a noteId JUCE hardcodes to
+    // -1, so an instrument would play and MPE+ would silently not work -- the
+    // exact shape ADR-0054 warns about, where nothing fails and the extra bits
+    // simply stop arriving. An empty buffer is a plugin that makes no sound,
+    // which is a bug report; a 7-bit buffer is a plugin that sounds nearly
+    // right, which is not. ADR-0057 has the route.
+
+    juce::AudioBuffer<float> view(scratch_.getArrayOfWritePointers(), ch, n);
+    inst_->processBlock(view, midi_);
+
+    for (std::int32_t c = 0; c < io.channels; ++c) {
+        float* out = io.out[c];
+        if (out == nullptr) continue;
+        if (c < ch) std::copy(view.getReadPointer(c), view.getReadPointer(c) + n, out);
+        else        std::fill(out, out + n, 0.0f);
+        // A segment shorter than the buffer leaves the tail untouched, and the
+        // tail is last block's audio.
+        for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0f;
+    }
+}
+
+std::int64_t Vst3Device::tailSamples() const noexcept {
+    if (inst_ == nullptr) return 0;
+    const double secs = inst_->getTailLengthSeconds();
+
+    // A branch, not arithmetic. JUCE reports an unbounded tail as infinity,
+    // and `infinity * sampleRate` cast to int64 is undefined behaviour rather
+    // than a large number -- which is how a "never suspend" declaration turns
+    // into a node suspended on its first block.
+    if (!std::isfinite(secs) || secs < 0.0) return engine::kInfiniteTail;
+
+    const double rate = inst_->getSampleRate();
+    if (rate <= 0.0) return engine::kInfiniteTail;   // not prepared yet: conservative
+
+    const double samples = secs * rate;
+    if (samples >= static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+        return engine::kInfiniteTail;
+    return static_cast<std::int64_t>(samples);
+}
+
+std::int32_t Vst3Device::latencySamples() const noexcept {
+    if (inst_ == nullptr) return 0;
+    const int l = inst_->getLatencySamples();
+    // A plugin reporting a negative latency is reporting nonsense, and
+    // compensating by a negative number moves audio EARLIER than the source.
+    return l > 0 ? l : 0;
+}
+
+std::vector<std::string> Vst3Device::stateRoles() const {
+    if (inst_ == nullptr) return {};
+    // One role today. JUCE's getStateInformation already merges VST3's
+    // component and controller streams into one opaque block, so splitting
+    // them here would invent a boundary we cannot honour on the way back in.
+    // `plugin_state.stream_role` still admits both because the FORMAT must
+    // represent a file another implementation wrote (SPEC 7).
+    return {"chunk"};
+}
+
+std::vector<std::uint8_t> Vst3Device::saveState(const std::string& role) const {
+    if (inst_ == nullptr || role != "chunk") return {};
+    juce::MemoryBlock mb;
+    inst_->getStateInformation(mb);
+    const auto* p = static_cast<const std::uint8_t*>(mb.getData());
+    return std::vector<std::uint8_t>(p, p + mb.getSize());
+}
+
+bool Vst3Device::loadState(const std::string& role, const std::vector<std::uint8_t>& b) {
+    if (inst_ == nullptr || role != "chunk") return false;
+    inst_->setStateInformation(b.data(), static_cast<int>(b.size()));
+    return true;
+}
+
+void* Vst3Device::rawComponent() const noexcept {
+    if (inst_ == nullptr) return nullptr;
+    if (const auto* c = inst_->getVST3Client()) return c->getIComponentPtr();
+    return nullptr;
+}
+
+void Vst3Device::audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails& d) {
+    // ADR-0066. REPORT AND RETURN. Steinberg calls restartComponent from
+    // whichever thread the plugin felt like, and recomputing the compensated
+    // schedule here -- on that thread, while it waits -- is the bug the ADR
+    // exists to prevent. A mode switch reports several times in milliseconds,
+    // so the message thread coalesces these and republishes once.
+    if (d.latencyChanged)
+        latencyEpoch_.fetch_add(1, std::memory_order_release);
+    if (d.parameterInfoChanged || d.programChanged || d.nonParameterStateChanged)
+        stateEpoch_.fetch_add(1, std::memory_order_release);
+}
+
+}  // namespace adi::device

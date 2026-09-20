@@ -315,18 +315,52 @@ def main() -> int:
     db.execute("INSERT INTO device_chains(id, track_id) VALUES (900, 900)")
     db.execute("INSERT INTO devices(id, chain_id, plugin_ref_id) VALUES (900, 900, 900)")
     try:
-        db.execute("INSERT INTO plugin_state(id, device_id, stream_role, state_hash) "
-                   "VALUES (900, 900, 'component', 'nosuchhash')")
+        db.execute("INSERT INTO plugin_state(device_id, stream_role, state_hash) "
+                   "VALUES (900, 'component', 'nosuchhash')")
         fail("plugin_state accepted a hash with no state_blobs row")
     except sqlite3.IntegrityError:
         ok("a dangling state_hash is rejected")
     db.execute("INSERT INTO state_blobs(hash_blake3, data, size_bytes) "
                "VALUES ('abc123', X'00', 1)")
-    db.execute("INSERT INTO plugin_state(id, device_id, stream_role, state_hash) "
-               "VALUES (901, 900, 'component', 'abc123')")
-    db.execute("INSERT INTO plugin_state(id, device_id, stream_role, state_hash) "
-               "VALUES (902, 900, 'controller', 'abc123')")
+    db.execute("INSERT INTO plugin_state(device_id, stream_role, state_hash) "
+               "VALUES (900, 'component', 'abc123')")
+    db.execute("INSERT INTO plugin_state(device_id, stream_role, state_hash) "
+               "VALUES (900, 'controller', 'abc123')")
     ok("two streams may share one blob -- that is the point of ADR-0038")
+
+    # ADR-0057: both device-state tables are keyed on their natural key with no
+    # surrogate id, which is what lets `device.setParam` and `device.loadState`
+    # be UPSERTs that allocate nothing (ADR-0021 7.3). A surrogate reappearing
+    # here would silently reintroduce the id allocation those ops exist without.
+    for tbl, key in (("plugin_state", "(device_id, stream_role)"),
+                     ("plugin_params", "(device_id, param_id)")):
+        cols = [r[1] for r in db.execute(f"PRAGMA table_info({tbl})")]
+        if "id" in cols:
+            fail(f"{tbl} has a surrogate id again -- ADR-0057 removed it")
+        else:
+            ok(f"{tbl} has no surrogate id; it is keyed on {key}")
+        pk = [r[1] for r in db.execute(f"PRAGMA table_info({tbl})") if r[5]]
+        want = [c.strip() for c in key.strip("()").split(",")]
+        if pk == want:
+            ok(f"{tbl} primary key is {key}")
+        else:
+            fail(f"{tbl} primary key is {pk}, expected {want}")
+
+    # The UPSERT the ops depend on: writing the same natural key twice REPLACES
+    # rather than duplicating. Without the primary key this silently inserts a
+    # second row and the parameter has two values.
+    db.execute("INSERT INTO plugin_params(device_id, param_id, normalized_value) "
+               "VALUES (900, 'cutoff', 0.25)")
+    db.execute("INSERT INTO plugin_params(device_id, param_id, normalized_value) "
+               "VALUES (900, 'cutoff', 0.75) "
+               "ON CONFLICT(device_id, param_id) DO UPDATE SET "
+               "normalized_value = excluded.normalized_value")
+    rows = list(db.execute("SELECT normalized_value FROM plugin_params "
+                           "WHERE device_id = 900 AND param_id = 'cutoff'"))
+    if len(rows) == 1 and abs(rows[0][0] - 0.75) < 1e-12:
+        ok("setting a parameter twice upserts rather than duplicating")
+    else:
+        fail(f"upsert on (device_id, param_id) produced {rows}")
 
     # --- 5g. ADR-0044/0045: one grouping concept, and hybrid tracks ---------
     print("[5g] grouping and hybrid tracks (ADR-0044, ADR-0045)")

@@ -63,9 +63,39 @@ struct Scratch {
     fs::path operator/(const char* l) const { return dir / l; }
 };
 
+/// The `state_blobs` row `device.loadState` references.
+///
+/// CONTENT, not an op, and seeded into every store this file makes rather than
+/// applied through the log. That distinction is ADR-0038: opaque plugin state
+/// is addressed by hash and travels with the file exactly as media does
+/// (ADR-0032), so an op carries the hash and never the bytes. An op that
+/// inlined them would put a sampler's embedded content into the undo log once
+/// per tweak, and the undo log would become the largest thing in the project.
+///
+/// The hash is a LITERAL because ADR-0021 says an op never derives a value it
+/// was not handed: the host digests the bytes when it reads them out of the
+/// plugin, and the op carries the result.
+constexpr const char* kCorpusBlobHash = "b3f00dcafe0000000000000000000000";
+
+void seedStateBlob(Store& s) {
+    SQLite::Statement st(s.db(),
+        "INSERT OR IGNORE INTO state_blobs(hash_blake3, data, size_bytes) "
+        "VALUES (?, ?, ?)");
+    st.bind(1, kCorpusBlobHash);
+    const std::string bytes = "opaque-vst3-chunk";
+    st.bind(2, bytes.data(), static_cast<int>(bytes.size()));
+    st.bind(3, static_cast<std::int64_t>(bytes.size()));
+    st.exec();
+}
+
+/// Every store here is born with the blob already in it -- including the one
+/// the reopen test replays the log's second half into, which is a store the
+/// corpus runner never touches.
 std::unique_ptr<Store> blank(const fs::path& p) {
     StoreError e = StoreError::Ok;
-    return Store::create(p, e);
+    auto s = Store::create(p, e);
+    if (s) seedStateBlob(*s);
+    return s;
 }
 
 // --- the corpus ---------------------------------------------------------------
@@ -137,6 +167,55 @@ std::vector<OpRequest> corpus() {
        "Move G to A");
     op("note.delete", {{"clip", 40}, {"note", 1}}, "Drop the C");
     op("clip.resize", {{"id", 40}, {"pos", 1441440}, {"length", 11531520}}, "Trim");
+
+    // Devices (OPS.md 9.7). The chain first, because device.chain_id is NOT
+    // NULL with foreign keys on, and then the whole device lifecycle: insert,
+    // parameters, opaque state, preset, move, and the scalars.
+    //
+    // The state blob these reference is seeded identically into both stores
+    // before the corpus runs. That is not a shortcut: `state_blobs` is
+    // CONTENT, addressed by hash and travelling with the file, exactly as
+    // media does (ADR-0032, ADR-0038). An op that inlined the bytes would put
+    // a sampler's embedded content into the undo log twice.
+    op("chain.create", {{"id", 60}, {"track", 10}, {"name", "Rhodes FX"}},
+       "A chain on Rhodes");
+    op("device.insert", {{"id", 70}, {"chain", 60}, {"ord", 0},
+                         {"name", "Compressor"}}, "Insert a compressor");
+    op("device.insert", {{"id", 71}, {"chain", 60}, {"ord", 1},
+                         {"name", "Reverb"}, {"always", true}}, "Insert a reverb");
+    // ADR-0011: a device whose plugin did not load is STILL INSERTED. Undoing
+    // a removal must restore a placeholder, not a device claiming to have
+    // loaded, so `missing` travels in the payload.
+    op("device.insert", {{"id", 72}, {"chain", 60}, {"ord", 2},
+                         {"name", "Valhalla VintageVerb"}, {"missing", true}},
+       "A device whose plugin is absent");
+
+    op("device.setParam", {{"dev", 70}, {"param", "threshold"},
+                           {"norm", 0.25}, {"real", -18.0}, {"display", "-18.0 dB"}},
+       "Threshold");
+    // No real value: the VST3 case, where the API gives a display string and
+    // nothing parseable (ADR-0057). `real` stays NULL rather than becoming 0.
+    op("device.setParam", {{"dev", 70}, {"param", "ratio"}, {"norm", 0.5}},
+       "Ratio, normalized only");
+    op("device.setParam", {{"dev", 70}, {"param", "threshold"},
+                           {"norm", 0.4}, {"real", -12.0}, {"display", "-12.0 dB"}},
+       "Move the threshold again");
+    // Absence: setting `norm` to null REMOVES the stored row, which is what
+    // the inverse of a first-ever touch has to do.
+    op("device.setParam", {{"dev", 70}, {"param", "ratio"}, {"norm", nullptr}},
+       "Untouch the ratio");
+
+    op("device.loadState", {{"dev", 70}, {"role", "component"},
+                            {"hash", kCorpusBlobHash}, {"hint", "vst3"}},
+       "Component state");
+    op("device.loadState", {{"dev", 70}, {"role", "controller"},
+                            {"hash", kCorpusBlobHash}}, "Controller state");
+    op("device.setPreset", {{"dev", 70}, {"preset", "Vocal Bus"}}, "Name the preset");
+    op("device.setEnabled", {{"id", 71}, {"enabled", false}}, "Bypass the reverb");
+    op("device.rename", {{"id", 71}, {"name", "Plate"}}, "Rename it");
+    op("device.setLatency", {{"id", 70}, {"latency", 2048}}, "Report lookahead");
+    op("device.move", {{"id", 71}, {"chain", 60}, {"ord", 0}}, "Reverb first");
+    op("device.remove", {{"id", 72}}, "Remove the missing device");
 
     // Ephemeral, interleaved: they must not disturb the project OR the digest.
     op("transport.seek", {{"pos", 5765760}}, "Locate", Actor::User);

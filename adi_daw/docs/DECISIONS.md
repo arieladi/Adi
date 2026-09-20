@@ -3865,3 +3865,183 @@ batch asynchronously.
 5. **Wildcards resolve at render time, not at queue time**, so a job created
    before a tempo change exports with the tempo it was rendered at. A `$bpm`
    frozen at the moment a user typed a sentence is a filename that lies.
+
+---
+
+## ADR-0057 — The device contract is format-agnostic, its surrogate keys are gone, and JUCE's host path cannot carry MPE+ — `DECIDED` (2026-09-20)
+
+VST3 hosting, built. `src/juce/device_model.{hpp,cpp}` is the contract,
+`src/juce/vst3_host.{hpp,cpp}` is the one adapter, and the nine device ops of
+OPS.md §9.7 exist for the first time. Five decisions came out of building it
+and one of them is a finding about JUCE rather than about us.
+
+### 1. The contract contains no VST3, and the adapter is the only thing that does
+
+`docs/DEVICE-CONTRACT-PANEL.md` scored four designs and the one shaped like a
+plugin was, in its own words, *"named after the format that conforms to it
+worst."* That is the trap this decision avoids: VST3 is the format in hand, and
+shaping the contract around it would make Pure Data (ADR-0035), CLAP (ADR-0052)
+and a remote AudioGridder device (ADR-0053) each an exception.
+
+So `DeviceInstance` is the boundary, `DeviceNode` is an `engine::Node` wrapping
+one, and hybrid tracks, modulation, suspension and delay compensation are
+implemented once against `Node`. There is no `Vst3Device` with a chain behind
+it (ADR-0052 decision 4).
+
+### 2. A parameter carries both representations, or says it cannot
+
+`plugin_params.normalized_value` is `NOT NULL` and `real_value` is nullable,
+and that asymmetry is now the decision rather than an accident of the schema.
+
+- **normalized is always authoritative.** Every format produces it, it is what
+  goes back to the plugin, and it round-trips.
+- **real is the readable one** — 4800 Hz, −6 dB — and it is what keeps an
+  automation lane meaningful when the plugin is missing (SPEC §6.3.3) or has
+  remapped its range between versions.
+
+VST3 exposes a real value only through `getParamStringByValue`, which returns a
+localised display string. Parsing `"4.80 kHz"` back into a number is a guess
+that fails differently per plugin and per locale, so **a VST3 lane is
+`normalized` by necessity, not by choice**, while CLAP, Pd and native devices
+fill in the real value. `ParamValue::hasReal` makes that a fact code has to
+read rather than a zero it can mistake for a value: `real_value` is NULL, never
+0.0, because 0.0 reads as "this parameter is at zero Hz".
+
+### 3. The surrogate keys are removed, and that is what makes the ops possible
+
+`plugin_params` and `plugin_state` each had an `INTEGER PRIMARY KEY id` beside
+a `UNIQUE` natural key. Nothing referenced either — no foreign key, no code,
+only the validator's own inserts.
+
+They had to go, and the reason is ADR-0021 §7.3: **an op that INSERTs a row
+carries that row's id in its payload**, because undo-then-redo must produce the
+same id or every later op referencing it points at nothing. So `device.setParam`
+— which is coalescable and fires on every knob movement — would have had to
+either invent an id or ask SQLite whether the row already existed, and the
+second is the ambient read ADR-0021 forbids.
+
+Both tables are now keyed on their natural key, `WITHOUT ROWID`. Every write is
+an UPSERT and there is nothing to allocate. This is **author-symbol's
+contribution from the panel — determinism by subtraction**: every id nobody has
+to allocate is an ADR-0021 problem that does not exist. It is the same move
+ADR-0065 made for routing rows, arrived at independently and from the other
+direction.
+
+`validate_schema.py` fails if a surrogate reappears, and the check was proved by
+putting one back.
+
+### 4. Absence is a value, and `norm: null` is how the op says it
+
+`plugin_params` holds a row only for a parameter somebody has touched. So the
+inverse of *"set cutoff to 0.8"* is **not always** *"set cutoff to 0.5"* — when
+no row existed, the inverse is *"there was no row"*, and re-applying that as a
+number leaves a row that was not there.
+
+`norm: null` therefore means absence and deletes the row. That keeps the inverse
+**symmetric** — the same op with swapped arguments — which OPS.md §9.7 requires,
+because `device.setParam` is coalescable and coalescing keeps the *first* op's
+inverse (OPS.md §6.4).
+
+The op additionally refuses a payload with no `norm` key at all. The validator
+cannot express "required but nullable", and an omitted key silently deleting a
+parameter value is a typo with a consequence.
+
+### 5. The round-trip corpus could not see any of this, and the reason generalises
+
+The device ops went into ADR-0021's corpus, which applies a scripted session
+and then undoes it. An inverse that recorded `0.0` instead of absence was
+planted, and **the corpus stayed green at 58 checks, 0 failures.**
+
+Because undoing `device.insert` deletes the device, and `plugin_params` and
+`plugin_state` **CASCADE** on `device_id`. The spurious row is swept away by an
+undo further down the stack, before the comparison against a blank project ever
+happens.
+
+The corpus is not wrong — it tests replay determinism and it does. But **a
+cascade is an extremely effective way to hide a per-row defect**, and that is
+worth stating as a general property: a whole-project oracle cannot see a defect
+in a row that something else is about to delete. `tests/test_device_ops.cpp`
+exists for that reason and undoes exactly one transaction per check. Five
+defects planted there, five caught.
+
+> One of the five was planted wrong the first time. The move test seeded its
+> device at `ord 0`, so a defect making the inverse capture `0` was
+> indistinguishable from a correct capture — comparing a right answer against
+> a *different* right answer that coincides. The fixture now seeds at `ord 2`.
+> Second time this exact mistake has been made here; it is a property of
+> negative tests, not of one test.
+
+### 6. ADR-0058 decision 1 was DECIDED and was not built
+
+`Node::latencySamples()` did not exist. It does now, defaulting to **0** — the
+opposite of `tailSamples()`'s `kInfiniteTail`, and for the asymmetry ADR-0058
+gives: a missed tail is merely processed too often, a missed latency **moves
+audio that was aligned**.
+
+Two consequences that the building settled:
+
+- **A bypassed device reports no latency and no tail.** Continuing to report a
+  bypassed plugin's latency compensates the rest of the graph against a delay
+  that is no longer there, which is the exact failure the default was chosen to
+  avoid.
+- **`always_process` forces an infinite tail and does NOT touch latency.**
+  Forcing a device to keep processing says nothing about how far it shifts its
+  output, and ADR-0043's escape hatch overriding a *latency* report would be
+  nonsense the compensator acts on.
+
+`Vst3Device::tailSamples()` converts JUCE's seconds to samples with the
+infinite case as a **branch**, not arithmetic: JUCE reports an unbounded tail as
+infinity, and `infinity * sampleRate` cast to `int64` is undefined behaviour
+rather than a large number — which is how a "never suspend" declaration becomes
+a node suspended on its first block, the defect ADR-0055 already found once.
+
+### 7. JUCE's VST3 host path cannot carry per-note expression
+
+The finding, checked against JUCE 9.0.2's own source rather than assumed,
+because ADR-0054 says a single `uint8_t` in an event struct undoes the mandate
+while every document still claims compliance.
+
+`AudioPluginInstance::processBlock` takes a `juce::MidiBuffer`, and
+`juce_VST3Common.h`'s `toEventList` iterates exactly that. Three facts from that
+file settle it:
+
+1. `createNoteOnEvent` sets `e.noteOn.noteId = -1`, and so do `createNoteOffEvent`
+   and the poly-pressure case. **VST3 anchors note expression to a note's
+   `noteId`**, so per-note values cannot be addressed to a note even if they
+   could be sent.
+2. Nothing in JUCE constructs a `kNoteExpressionValueEvent`. The only occurrence
+   is the switch case on the way *in*, which converts one to `{}`.
+3. Velocity goes through `normaliseMidiValue`, which is `value / 127.0f`.
+
+Separately, `toEventList` caps at `maxNumEvents = 2048` and `break`s — silently.
+That is the same number ADR-0056 derived for our own event capacity, and the
+same silent-drop shape, in the framework.
+
+**The route out is not a rewrite.** JUCE 9.0.2 hands a host the raw interface:
+`AudioPluginInstance::getVST3Client()->getIComponentPtr()` returns
+`Steinberg::Vst::IComponent*`, from which `IAudioProcessor` and
+`INoteExpressionController` are a `queryInterface` away. So the decision is:
+
+> **Discovery, instantiation, parameters and opaque state stay JUCE's. The
+> event path for instruments becomes ours, driven through the raw
+> `IAudioProcessor` with our own `IEventList`.**
+
+That is a bounded piece of work against an SDK already vendored inside JUCE, and
+it is the same shape as the CLAP host ADR-0052 mandates — which makes it the
+first half of that job rather than a detour.
+
+**Until it is built, the event path is EMPTY rather than approximate**, and
+`Vst3Device::supportsNoteExpression()` returns false. An empty MIDI buffer is a
+plugin that makes no sound, which is a bug report. A 7-bit buffer is a plugin
+that sounds nearly right, which is the failure that gets shipped.
+
+### What is not built, named rather than discovered
+
+The event path above. Sidechain bus negotiation (`Bus::Sidechain` exists in the
+graph; the adapter does not yet map it onto a VST3 aux input). Plugin editors.
+Multi-bus layouts. The `device.setPreset` op sets the preset *name* only — the
+bytes are a `device.loadState` in the same transaction, which is what lets
+twenty preset auditions share one blob each. And `plugin_state` carries one
+`'chunk'` role for a JUCE-hosted VST3, because `getStateInformation` already
+merges component and controller; the format keeps admitting both roles because
+it must represent a file another implementation wrote (SPEC §7).

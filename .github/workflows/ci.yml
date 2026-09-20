@@ -495,6 +495,26 @@ jobs:
   # catch a reintroduction on the first second of the run. The timed campaign
   # after it is the part that looks for something new.
   # ---------------------------------------------------------------------------
+      # VST3 hosting (ADR-0057). Most of what this asserts needs NO PLUGIN
+      # INSTALLED, which is the point: a CI runner has none, and a check that
+      # needs one is a check that does not run. It proves the format manager
+      # carries VST3 and nothing else at RUN time, and that a plugin which
+      # cannot be instantiated becomes a bypassed placeholder carrying its
+      # identity rather than a null (ADR-0011). If the runner does happen to
+      # have a VST3, it scans and round-trips its state as well.
+      - name: ADR-0057 — VST3 hosting behind the device contract
+        run: |
+          set -euo pipefail
+          found=""
+          while IFS= read -r cand; do
+            case "$cand" in *adi_vst3_probe|*adi_vst3_probe.exe) found="$cand"; break ;; esac
+          done < <(find adi_daw/build-juce -type f -name 'adi_vst3_probe*' 2>/dev/null)
+          if [ -z "$found" ]; then
+            echo "::error::adi_vst3_probe was built but cannot be found"
+            exit 1
+          fi
+          "$found"
+
   fuzz:
     name: 'fuzz StreamReader (clang · ASan + UBSan)'
     runs-on: ubuntu-latest
@@ -637,6 +657,8 @@ jobs:
                 -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON
           cmake --build adi_daw/build-juce --config Debug \
                 --target adi_audio_probe --parallel
+          cmake --build adi_daw/build-juce --config Debug \
+                --target adi_vst3_probe --parallel
 
       - name: Locate the probe
         run: |

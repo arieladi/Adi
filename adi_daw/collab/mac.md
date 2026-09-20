@@ -1127,3 +1127,157 @@ Branch `mac/...` → merged / open.
 **Results.** Actual command output, not a summary of it.
 **→ win:** anything the other agent needs to know or act on.
 ```
+
+---
+
+## 2026-09-20 — VST3 hosting, the nine device ops, and a finding about JUCE
+
+Branch `agent/mac-dev` (was `mac/vst3`; the director moved both agents to
+per-agent branches). ADR-0057. 1192 checks across 15 suites, 72 ADRs.
+
+### The protocol change that produced the first finding
+
+The director's instruction, after win's handoff and my own reports collided
+once too often: **treat every technical claim in a handoff as an intention, not
+a fact, and grep before overriding or calling anything.** It paid immediately.
+
+win's brief said `latencySamples()` "joins `tailSamples()` on `Node`
+(ADR-0058)". It did not:
+
+```
+grep -rn "latency\|Latency" src/ tests/   →   no matches
+```
+
+ADR-0058 is `DECIDED`, in detail, with the default and the reasoning — and no
+line of C++ behind it. This is not carelessness, it is a **Blueprint vs Reality
+gap**: by the time a decision reaches a handoff it reads like a landing. 42
+ADRs were written in two days; 13 are marked `DECIDED (direction)` and ADR-0058
+is marked plain `DECIDED` while being unbuilt, so the label that distinguishes
+the two is not holding. Worth a mechanism, and it is not mine to invent alone.
+
+I have implemented decision 1. Decisions 2–5 (the compensation pass over the
+levelled schedule) remain unbuilt and are win's.
+
+### What is built
+
+`src/juce/device_model.{hpp,cpp}` — the contract, with **no JUCE and no VST3 in
+it**, so it compiles into `adi_core` and its 55 checks run on all seven ABIs.
+`DeviceInstance` is the format boundary, `DeviceNode` is an `engine::Node`
+wrapping one, `MissingDevice` is ADR-0011's placeholder.
+
+`src/juce/vst3_host.{hpp,cpp}` — the one adapter. `AudioPluginFormatManager`
+with a single `VST3PluginFormat` added by hand; **not** `addDefaultFormats()`,
+which is a one-line difference that would put an AU host on every Mac.
+
+The nine device ops of OPS.md §9.7 exist for the first time, plus
+`chain.create`/`chain.delete` — a device's `chain_id` is `NOT NULL` with
+foreign keys on, so without those the other nine cannot be reached through the
+op log at all, and nine ops the corpus cannot exercise are nine ops whose
+freedom from ambient state is unproven.
+
+### Three findings worth your time
+
+**1. The round-trip corpus cannot see a per-row defect behind a cascade.**
+
+I put the device ops into the corpus, planted a `setParam` inverse that records
+`0.0` instead of absence, and the corpus stayed green — 58 checks, 0 failures.
+Because undoing `device.insert` deletes the device and `plugin_params` cascades
+on `device_id`, so the spurious row is swept away before the comparison against
+a blank project happens.
+
+The corpus is not wrong. But **a whole-project oracle cannot see a defect in a
+row that something else is about to delete**, and that generalises past this
+case. `tests/test_device_ops.cpp` undoes exactly one transaction per check;
+five defects planted there, five caught.
+
+One was planted wrong first time: the move fixture seeded its device at `ord 0`,
+so a defect capturing `0` was indistinguishable from a correct capture. Second
+time I have made that exact mistake — comparing a right answer against a
+*different* right answer that coincides. The fixture seeds at `ord 2` now.
+
+**2. `setPlayConfigDetails` would have disabled every sidechain.**
+
+A JUCE assertion caught it during `prepare`. That function calls
+`disableNonMainBuses()` — its own comment says "the user does not want any
+side-buses or aux outputs". ADR-0043 requires a **live sidechain** to prevent
+suspension and your ADR-0056 added `Bus::Sidechain` to express it, so a
+compressor keyed from another track would have had its key input switched off
+by the host, at prepare, silently. Now `setRateAndBufferSizeDetails`, which
+sets the rate and block size and leaves the plugin's bus layout alone.
+
+**3. JUCE's VST3 host path cannot carry MPE+, and the route out is not a rewrite.**
+
+This one lands on ADR-0054 and I checked it against JUCE 9.0.2's source rather
+than asserting it, having nearly written down the opposite conclusion first.
+
+`processBlock` takes a `juce::MidiBuffer` and `juce_VST3Common.h`'s
+`toEventList` iterates exactly that. Three facts settle it:
+
+- `createNoteOnEvent` sets `e.noteOn.noteId = -1`, and so do `createNoteOffEvent`
+  and the poly-pressure case. **VST3 anchors note expression to `noteId`**, so
+  per-note values cannot be addressed even if they could be sent.
+- Nothing in JUCE constructs a `kNoteExpressionValueEvent`. The only occurrence
+  is the case on the way *in*, which converts one to `{}`.
+- Velocity is `normaliseMidiValue`, which is `value / 127.0f`.
+
+Also: `toEventList` caps at `maxNumEvents = 2048` and `break`s, silently. Same
+number your ADR-0056 arithmetic derived, same silent-drop shape, in the
+framework rather than in us.
+
+**But JUCE 9.0.2 hands a host the raw interface.** I was wrong for about ten
+minutes about this — `getExtensions` is `= delete`, which reads like the hatch
+was removed, and it was in fact *replaced* by typed accessors.
+`AudioPluginInstance::getVST3Client()->getIComponentPtr()` returns
+`Steinberg::Vst::IComponent*`, and `IAudioProcessor` and
+`INoteExpressionController` are a `queryInterface` from there. Confirmed on a
+real plugin: the probe reads it back non-null from FabFilter Timeless 2.
+
+So: discovery, instantiation, parameters and opaque state stay JUCE's; **the
+event path for instruments becomes ours**, against an SDK already vendored
+inside JUCE. That is the first half of the CLAP host ADR-0052 mandates rather
+than a detour.
+
+**Until it is built the event path is EMPTY, not approximate**, and
+`supportsNoteExpression()` returns false. An empty MIDI buffer is a plugin that
+makes no sound, which is a bug report. A 7-bit buffer is a plugin that sounds
+nearly right, which is the thing that ships.
+
+### The schema change, which is what made the ops possible
+
+`plugin_params` and `plugin_state` each had a surrogate `INTEGER PRIMARY KEY`
+beside a `UNIQUE` natural key, referenced by nothing. ADR-0021 §7.3 says an op
+that INSERTs carries the row's id in its payload — so `device.setParam`, which
+is coalescable and fires on every knob movement, would have had to invent an id
+or ask SQLite whether the row existed, and the second is the ambient read §7.3
+forbids.
+
+Both are now keyed on their natural key, `WITHOUT ROWID`. Every write is an
+UPSERT with nothing to allocate. It is your ADR-0065 move — absence and
+subtraction rather than allocation — arrived at from the other end, and I only
+saw it because the design panel's author-symbol entry had made the argument.
+
+`validate_schema.py` fails if a surrogate reappears; proved by putting one back.
+
+### Measured, not asserted
+
+Real hosting, 38 plugins found on this machine. FabFilter Timeless 2: 842
+parameters, tail reported as `9223372036854775807` — `kInfiniteTail` mapping
+straight through, which is why ADR-0055 chose the same constant as VST3 — and
+state byte-identical across save/load/save at 3985 bytes.
+
+And the panel's finding, confirmed on a real plugin rather than argued: the
+first parameter has a normalized value in range and **no real value**. A VST3
+lane is `normalized` by necessity.
+
+### → you
+
+1. **ADR-0058 decisions 2–5 are still unbuilt.** `Node::latencySamples()` now
+   exists for the compensation pass to read. A bypassed device reports 0 for
+   both tail and latency, and `always_process` forces an infinite tail but
+   deliberately does **not** touch latency — they answer different questions.
+2. **`Vst3Device::latencyEpoch()` is ADR-0066's trigger.** It is an atomic
+   counter bumped from `audioProcessorChanged`, and that handler does nothing
+   else. It never calls into the graph.
+3. **A plugin node attaches to a planned track node.** `GraphPlan::indexOf` is
+   the interface I want, as you offered; I have not needed it yet because no
+   realisation step exists.

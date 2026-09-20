@@ -114,6 +114,10 @@ add_library(adi_core STATIC
     # includes no JUCE, so its tests run on all seven ABIs instead of only in
     # the one JUCE job. See src/juce/device_core.hpp.
     src/juce/device_core.cpp
+    # Same rule, same payoff: the device CONTRACT has no JUCE in it, so the
+    # missing-plugin placeholder and the node wrapper are tested on every ABI
+    # rather than only where a plugin SDK exists. See src/juce/device_model.hpp.
+    src/juce/device_model.cpp
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
@@ -193,6 +197,19 @@ add_test(NAME adi_check_tests COMMAND adi_check_tests)
 add_executable(adi_device_tests tests/test_device.cpp)
 target_link_libraries(adi_device_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_tests COMMAND adi_device_tests)
+
+# The nine device ops. Its own binary because its findings are per-row: the
+# round-trip corpus cannot see them, since undoing device.insert cascades
+# plugin_params away before the comparison. See the file header.
+# The device CONTRACT -- no JUCE, no VST3, so it runs on all seven ABIs. That
+# it needs no plugin SDK to compile is part of what it asserts.
+add_executable(adi_device_model_tests tests/test_device_model.cpp)
+target_link_libraries(adi_device_model_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_device_model_tests COMMAND adi_device_model_tests)
+
+add_executable(adi_device_ops_tests tests/test_device_ops.cpp)
+target_link_libraries(adi_device_ops_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_device_ops_tests COMMAND adi_device_ops_tests)
 
 add_executable(adi_plan_tests tests/test_plan.cpp)
 target_link_libraries(adi_plan_tests PRIVATE adi_core adi_warnings)
@@ -374,6 +391,39 @@ if(ADI_WITH_JUCE)
         JUCE_PLUGINHOST_LV2=0
         JUCE_PLUGINHOST_LADSPA=0
         JUCE_PLUGINHOST_ARA=0)
+
+    # --- adi_vst3_probe ----------------------------------------------------
+    # VST3 hosting, in the one job that has a plugin SDK. It asserts what can
+    # be asserted with NO PLUGIN INSTALLED -- that the format manager carries
+    # VST3 and nothing else (ADR-0041), that a description that resolves to
+    # nothing yields a MissingDevice rather than a null (ADR-0011) -- and
+    # scans and instantiates only when a plugin is actually there.
+    juce_add_console_app(adi_vst3_probe PRODUCT_NAME "adi_vst3_probe")
+    target_sources(adi_vst3_probe PRIVATE
+        src/juce/vst3_probe.cpp
+        src/juce/vst3_host.cpp)
+    target_compile_features(adi_vst3_probe PRIVATE cxx_std_20)
+    target_compile_definitions(adi_vst3_probe PRIVATE
+        JUCE_STANDALONE_APPLICATION=1
+        JUCE_USE_CURL=0
+        JUCE_WEB_BROWSER=0
+        JUCE_DISPLAY_SPLASH_SCREEN=0
+        JUCE_PLUGINHOST_VST3=1
+        JUCE_PLUGINHOST_VST=0
+        JUCE_PLUGINHOST_AU=0
+        JUCE_PLUGINHOST_LV2=0
+        JUCE_PLUGINHOST_LADSPA=0
+        JUCE_PLUGINHOST_ARA=0)
+    target_link_libraries(adi_vst3_probe PRIVATE
+        adi_core
+        juce::juce_audio_processors
+        juce::juce_audio_utils
+        adi_warnings)
+    get_target_property(_adi_proc_incs juce::juce_audio_processors
+                        INTERFACE_INCLUDE_DIRECTORIES)
+    if(_adi_proc_incs)
+        target_include_directories(adi_vst3_probe SYSTEM PRIVATE ${_adi_proc_incs})
+    endif()
 
     # adi_core carries device_core.cpp and, through its PUBLIC include dir, the
     # engine seam. Linking it rather than recompiling the source means the probe

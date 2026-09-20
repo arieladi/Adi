@@ -80,6 +80,21 @@ constexpr ScalarSpec kScalars[] = {
      "index_in_parent", "index", FieldType::Int, EngineImpact::Snapshot, false},
 
     // --- clips ----------------------------------------------------------
+    // --- devices (OPS.md 9.7) -------------------------------------------
+    // The three that ARE a single column. The other six are hand-written
+    // below; a device that carries parameter values and opaque state is not
+    // a function of one row.
+    {"device.setEnabled", "Enable or bypass a device", "devices", "id",
+     "enabled", "enabled", FieldType::Bool, EngineImpact::Snapshot, false},
+    {"device.rename", "Rename a device", "devices", "id", "name", "name",
+     FieldType::Text, EngineImpact::None, false},
+    // GraphRebuild, not Snapshot: a latency change moves every compensated
+    // node downstream of it, so the schedule is recomputed (ADR-0058,
+    // ADR-0066). Reporting it as a snapshot would leave the old compensation
+    // in force and shift audio that was aligned.
+    {"device.setLatency", "Set a device's reported latency", "devices", "id",
+     "latency_samples", "latency", FieldType::Int, EngineImpact::GraphRebuild, false},
+
     {"clip.setName", "Rename a clip", "clips", "id", "name", "name",
      FieldType::Text, EngineImpact::None, false},
     {"clip.setMute", "Mute or unmute a clip", "clips", "id", "muted", "muted",
@@ -756,6 +771,48 @@ constexpr Field kFRouting[] = {{"id", FieldType::Int, true},
                                {"dstKind", FieldType::Text, true},
                                {"dst", FieldType::Int, true},
                                {"kind", FieldType::Text, true}};
+constexpr Field kFChainCreate[] = {{"id", FieldType::Int, true},
+                                   {"track", FieldType::Int, false},
+                                   {"device", FieldType::Int, false},
+                                   {"ord", FieldType::Int, false},
+                                   {"name", FieldType::Text, false}};
+constexpr Field kFDeviceInsert[] = {{"id", FieldType::Int, true},
+                                    {"chain", FieldType::Int, true},
+                                    {"ord", FieldType::Int, false},
+                                    {"ref", FieldType::Int, false},
+                                    {"name", FieldType::Text, false},
+                                    {"enabled", FieldType::Bool, false},
+                                    {"rack", FieldType::Bool, false},
+                                    {"preset", FieldType::Text, false},
+                                    {"latency", FieldType::Int, false},
+                                    {"always", FieldType::Bool, false},
+                                    {"missing", FieldType::Bool, false},
+                                    {"params", FieldType::Array, false},
+                                    {"state", FieldType::Array, false}};
+constexpr Field kFDeviceMove[] = {{"id", FieldType::Int, true},
+                                  {"chain", FieldType::Int, true},
+                                  {"ord", FieldType::Int, true}};
+// `norm` is OPTIONAL-and-nullable, following the convention `track.setParent`
+// set for `parent`: the validator treats an explicit null on an optional field
+// as "clear this". A null `norm` MEANS the parameter has no stored row -- see
+// the absence problem in the handler comment; it is what keeps this
+// coalescable op's inverse symmetric.
+//
+// The handler then insists the KEY is present, which the validator cannot
+// express. Omitting `norm` entirely and deleting the row would be a silent
+// discard of a parameter value from a typo, and the closed-schema check only
+// catches a misspelling, not an absence.
+constexpr Field kFDeviceParam[] = {{"dev", FieldType::Int, true},
+                                   {"param", FieldType::Text, true},
+                                   {"norm", FieldType::Real, false},
+                                   {"real", FieldType::Real, false},
+                                   {"display", FieldType::Text, false}};
+constexpr Field kFDeviceState[] = {{"dev", FieldType::Int, true},
+                                   {"role", FieldType::Text, true},
+                                   {"hash", FieldType::Text, false},
+                                   {"hint", FieldType::Text, false}};
+constexpr Field kFDevicePreset[] = {{"dev", FieldType::Int, true},
+                                    {"preset", FieldType::Text, true}};
 constexpr Field kFSetParent[] = {{"id", FieldType::Int, true},
                                  {"parent", FieldType::Int, false}};
 constexpr Field kFTransportSeek[] = {{"pos", FieldType::Int, true}};
@@ -902,6 +959,485 @@ bool trackSetParentInverse(OpContext& c, const Payload& p, Payload& inv, std::st
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 
+
+// --- devices: the nine ops of OPS.md 9.7 -----------------------------------
+//
+// Three of them are generated scalars in kScalars above. These six are not,
+// and each is hand-written for a reason worth naming:
+//
+//   device.insert/remove  a device carries its parameter values and its opaque
+//                         state, so the pair has to move all three together or
+//                         undoing a delete returns a device at its defaults.
+//   device.move           two columns, and reordering a chain is what it means.
+//   device.setParam       the UPSERT, and the absence problem below.
+//   device.loadState      content-addressed bytes (ADR-0038).
+//   device.setPreset      a capture, because the name and the state change
+//                         together and only the name lives in `devices`.
+//
+// THE ABSENCE PROBLEM, which is the one that would have been got wrong.
+// `plugin_params` holds a row only for a parameter somebody has touched. So
+// the inverse of "set cutoff to 0.8" is NOT always "set cutoff to 0.5" -- when
+// no row existed before, the inverse is "there was no row", and re-applying it
+// as a value leaves a row that was not there. ADR-0021's oracle compares
+// BYTES, so that surfaces as a replay mismatch rather than as anything a user
+// would notice, weeks later, in an unrelated branch.
+//
+// Hence `norm: null` means absence, and the op deletes the row. That keeps the
+// inverse SYMMETRIC -- the same op with swapped arguments -- which OPS.md 9.7
+// requires because setParam is coalescable and validate_ops.py check 6 refuses
+// a coalescable op with a state-capture inverse.
+//
+// None of these allocates an id for a plugin_params or plugin_state row,
+// because ADR-0057 removed those surrogate keys. Both tables are keyed on
+// their natural key, so every write here is an UPSERT and ADR-0021 7.3 has
+// nothing to say about it.
+
+namespace {
+
+/// Read `plugin_params` for one device into an array the insert path can
+/// replay. Used only by inverse builders, which run before apply inside the
+/// caller's transaction (OPS.md 6.1).
+Payload captureParams(OpContext& c, std::int64_t deviceId) {
+    Payload arr = Payload::array();
+    SQLite::Statement st(c.db,
+        "SELECT param_id, name, normalized_value, real_value, display, unit, flags "
+        "FROM plugin_params WHERE device_id = ? ORDER BY param_id");
+    st.bind(1, deviceId);
+    while (st.executeStep()) {
+        Payload row = Payload::object();
+        row["param"]   = st.getColumn(0).getString();
+        row["name"]    = st.getColumn(1).getString();
+        row["norm"]    = st.getColumn(2).getDouble();
+        if (st.getColumn(3).isNull()) row["real"] = nullptr;
+        else                          row["real"] = st.getColumn(3).getDouble();
+        row["display"] = st.getColumn(4).getString();
+        row["unit"]    = st.getColumn(5).getString();
+        row["flags"]   = st.getColumn(6).getInt64();
+        arr.push_back(std::move(row));
+    }
+    return arr;
+}
+
+/// Same for `plugin_state`. Only hashes travel -- the bytes stay in
+/// `state_blobs`, which is the whole of ADR-0038: twenty tweaks that end where
+/// they started cost one blob, and an undo log that inlined them would be the
+/// largest thing in the file.
+Payload captureState(OpContext& c, std::int64_t deviceId) {
+    Payload arr = Payload::array();
+    SQLite::Statement st(c.db,
+        "SELECT stream_role, state_hash, format_hint FROM plugin_state "
+        "WHERE device_id = ? ORDER BY stream_role");
+    st.bind(1, deviceId);
+    while (st.executeStep()) {
+        Payload row = Payload::object();
+        row["role"] = st.getColumn(0).getString();
+        row["hash"] = st.getColumn(1).getString();
+        row["hint"] = st.getColumn(2).getString();
+        arr.push_back(std::move(row));
+    }
+    return arr;
+}
+
+void replayParams(OpContext& c, std::int64_t deviceId, const Payload& arr) {
+    if (!arr.is_array()) return;
+    for (const auto& row : arr) {
+        SQLite::Statement st(c.db,
+            "INSERT INTO plugin_params(device_id, param_id, name, normalized_value, "
+            "real_value, display, unit, flags) VALUES (?,?,?,?,?,?,?,?)");
+        st.bind(1, deviceId);
+        st.bind(2, row.at("param").get<std::string>());
+        st.bind(3, row.value("name", std::string{}));
+        st.bind(4, row.value("norm", 0.0));
+        if (row.contains("real") && !row.at("real").is_null())
+            st.bind(5, row.at("real").get<double>());
+        else
+            st.bind(5);
+        st.bind(6, row.value("display", std::string{}));
+        st.bind(7, row.value("unit", std::string{}));
+        st.bind(8, static_cast<std::int64_t>(row.value("flags", 0)));
+        st.exec();
+    }
+}
+
+void replayState(OpContext& c, std::int64_t deviceId, const Payload& arr) {
+    if (!arr.is_array()) return;
+    for (const auto& row : arr) {
+        SQLite::Statement st(c.db,
+            "INSERT INTO plugin_state(device_id, stream_role, state_hash, format_hint) "
+            "VALUES (?,?,?,?)");
+        st.bind(1, deviceId);
+        st.bind(2, row.at("role").get<std::string>());
+        st.bind(3, row.at("hash").get<std::string>());
+        st.bind(4, row.value("hint", std::string{}));
+        st.exec();
+    }
+}
+
+}  // namespace
+
+// --- chain.create / chain.delete -------------------------------------------
+//
+// Not among the nine device ops, and added anyway: a device's `chain_id` is
+// NOT NULL and references `device_chains`, so with foreign keys on there is no
+// way to reach `device.insert` through the op log without one of these. Nine
+// ops that cannot be exercised by the round-trip corpus are nine ops whose
+// freedom from ambient state is unproven, which is the only property that test
+// can establish.
+//
+// The exactly-one-owner CHECK is the schema's (a chain hangs off a rack device
+// or directly off a track, never both and never neither), so this does not
+// restate it -- a payload with both set fails at the INSERT, loudly.
+
+bool chainCreateApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        SQLite::Statement st(c.db,
+            "INSERT INTO device_chains(id, parent_device_id, track_id, ord, name) "
+            "VALUES (?,?,?,?,?)");
+        st.bind(1, p.at("id").get<std::int64_t>());
+        if (p.contains("device") && !p.at("device").is_null())
+            st.bind(2, p.at("device").get<std::int64_t>());
+        else
+            st.bind(2);
+        if (p.contains("track") && !p.at("track").is_null())
+            st.bind(3, p.at("track").get<std::int64_t>());
+        else
+            st.bind(3);
+        st.bind(4, static_cast<std::int64_t>(p.value("ord", 0)));
+        st.bind(5, p.value("name", std::string{}));
+        st.exec();
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool chainCreateInverse(OpContext&, const Payload& p, Payload& inv, std::string& err) {
+    if (!p.contains("id")) { err = "chain.create payload has no id"; return false; }
+    inv = Payload::object();
+    inv["id"] = p.at("id");
+    return true;   // paired: chain.delete
+}
+
+bool chainDeleteApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        SQLite::Statement st(c.db, "DELETE FROM device_chains WHERE id = ?");
+        st.bind(1, p.at("id").get<std::int64_t>());
+        if (st.exec() == 0) { err = "no such chain"; return false; }
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool chainDeleteInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        const auto id = p.at("id").get<std::int64_t>();
+        SQLite::Statement st(c.db,
+            "SELECT parent_device_id, track_id, ord, name FROM device_chains WHERE id = ?");
+        st.bind(1, id);
+        if (!st.executeStep()) { err = "no such chain to capture"; return false; }
+        inv = Payload::object();
+        inv["id"] = id;
+        if (st.getColumn(0).isNull()) inv["device"] = nullptr;
+        else                          inv["device"] = st.getColumn(0).getInt64();
+        if (st.getColumn(1).isNull()) inv["track"] = nullptr;
+        else                          inv["track"] = st.getColumn(1).getInt64();
+        inv["ord"]  = st.getColumn(2).getInt64();
+        inv["name"] = st.getColumn(3).getString();
+        // Devices in the chain cascade away with it. They are NOT captured
+        // here: deleting a chain that still holds devices is a composite the
+        // UI does not offer, and a capture that silently restored them would
+        // make this look like an op it is not.
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+// --- device.insert / device.remove -----------------------------------------
+
+bool deviceInsertApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        const auto id = p.at("id").get<std::int64_t>();
+        SQLite::Statement st(c.db,
+            "INSERT INTO devices(id, chain_id, ord, plugin_ref_id, name, enabled, "
+            "is_rack, preset_name, latency_samples, always_process, missing) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+        st.bind(1, id);
+        st.bind(2, p.at("chain").get<std::int64_t>());
+        st.bind(3, static_cast<std::int64_t>(p.value("ord", 0)));
+        if (p.contains("ref") && !p.at("ref").is_null())
+            st.bind(4, p.at("ref").get<std::int64_t>());
+        else
+            st.bind(4);
+        st.bind(5, p.value("name", std::string{}));
+        st.bind(6, p.value("enabled", true) ? 1 : 0);
+        st.bind(7, p.value("rack", false) ? 1 : 0);
+        st.bind(8, p.value("preset", std::string{}));
+        st.bind(9, static_cast<std::int64_t>(p.value("latency", 0)));
+        st.bind(10, p.value("always", false) ? 1 : 0);
+        // ADR-0011: a device whose plugin did not load is inserted MISSING
+        // rather than not inserted. The flag travels so that undoing the
+        // removal of a placeholder restores a placeholder, not a device that
+        // claims to have loaded.
+        st.bind(11, p.value("missing", false) ? 1 : 0);
+        st.exec();
+
+        if (p.contains("params")) replayParams(c, id, p.at("params"));
+        if (p.contains("state"))  replayState(c, id, p.at("state"));
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool deviceInsertInverse(OpContext&, const Payload& p, Payload& inv, std::string& err) {
+    if (!p.contains("id")) { err = "device.insert payload has no id"; return false; }
+    inv = Payload::object();
+    inv["id"] = p.at("id");
+    return true;   // paired: device.remove
+}
+
+bool deviceRemoveApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        // plugin_params and plugin_state cascade on device_id, so this one
+        // statement takes the parameter values and the state references with
+        // it. The inverse captured them first, which is the order OPS.md 6.1
+        // requires and the reason it requires it.
+        SQLite::Statement st(c.db, "DELETE FROM devices WHERE id = ?");
+        st.bind(1, p.at("id").get<std::int64_t>());
+        if (st.exec() == 0) { err = "no such device"; return false; }
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        const auto id = p.at("id").get<std::int64_t>();
+        SQLite::Statement st(c.db,
+            "SELECT chain_id, ord, plugin_ref_id, name, enabled, is_rack, "
+            "preset_name, latency_samples, always_process, missing "
+            "FROM devices WHERE id = ?");
+        st.bind(1, id);
+        if (!st.executeStep()) { err = "no such device to capture"; return false; }
+
+        inv = Payload::object();
+        inv["id"]    = id;
+        inv["chain"] = st.getColumn(0).getInt64();
+        inv["ord"]   = st.getColumn(1).getInt64();
+        if (st.getColumn(2).isNull()) inv["ref"] = nullptr;
+        else                          inv["ref"] = st.getColumn(2).getInt64();
+        inv["name"]    = st.getColumn(3).getString();
+        inv["enabled"] = st.getColumn(4).getInt() != 0;
+        inv["rack"]    = st.getColumn(5).getInt() != 0;
+        inv["preset"]  = st.getColumn(6).getString();
+        inv["latency"] = st.getColumn(7).getInt64();
+        inv["always"]  = st.getColumn(8).getInt() != 0;
+        inv["missing"] = st.getColumn(9).getInt() != 0;
+
+        // The part that makes undoing a delete actually restore the device
+        // rather than a device with that name. Without these the plugin comes
+        // back at its factory defaults and the user's sound is gone -- which
+        // looks like the undo worked.
+        inv["params"] = captureParams(c, id);
+        inv["state"]  = captureState(c, id);
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+// --- device.move ------------------------------------------------------------
+
+bool deviceMoveApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        SQLite::Statement st(c.db,
+            "UPDATE devices SET chain_id = ?, ord = ? WHERE id = ?");
+        st.bind(1, p.at("chain").get<std::int64_t>());
+        st.bind(2, p.at("ord").get<std::int64_t>());
+        st.bind(3, p.at("id").get<std::int64_t>());
+        if (st.exec() == 0) { err = "no such device"; return false; }
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool deviceMoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        const auto id = p.at("id").get<std::int64_t>();
+        SQLite::Statement st(c.db, "SELECT chain_id, ord FROM devices WHERE id = ?");
+        st.bind(1, id);
+        if (!st.executeStep()) { err = "no such device to capture"; return false; }
+        inv = Payload::object();
+        inv["id"]    = id;
+        inv["chain"] = st.getColumn(0).getInt64();
+        inv["ord"]   = st.getColumn(1).getInt64();
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+// --- device.setParam --------------------------------------------------------
+
+bool deviceSetParamApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        const auto dev   = p.at("dev").get<std::int64_t>();
+        const auto param = p.at("param").get<std::string>();
+
+        // Presence is required even though the validator cannot say so: a
+        // payload that simply forgot `norm` must not read as "delete it".
+        if (!p.contains("norm")) {
+            err = "device.setParam needs a 'norm' key; use null to clear";
+            return false;
+        }
+
+        // Absence. See the header comment: this is the branch that makes the
+        // inverse byte-exact when the parameter had never been touched.
+        if (p.at("norm").is_null()) {
+            SQLite::Statement del(c.db,
+                "DELETE FROM plugin_params WHERE device_id = ? AND param_id = ?");
+            del.bind(1, dev);
+            del.bind(2, param);
+            del.exec();
+            return true;
+        }
+
+        // An UPSERT on the natural key, which is what ADR-0057 bought. `name`,
+        // `unit` and `flags` are DECLARATION and are not touched here: they
+        // come from reading the plugin, and a knob movement is not new
+        // information about what the knob is called. On a first write they
+        // take their column defaults.
+        SQLite::Statement st(c.db,
+            "INSERT INTO plugin_params(device_id, param_id, normalized_value, "
+            "real_value, display) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(device_id, param_id) DO UPDATE SET "
+            "normalized_value = excluded.normalized_value, "
+            "real_value = excluded.real_value, "
+            "display = excluded.display");
+        st.bind(1, dev);
+        st.bind(2, param);
+        st.bind(3, p.at("norm").get<double>());
+        // NULL rather than 0.0 when the device cannot give a real value. VST3
+        // exposes one only as a display string, so this column is genuinely
+        // absent for most VST3 parameters -- and a 0.0 there would read as
+        // "this parameter is at zero Hz" (ADR-0057).
+        if (p.contains("real") && !p.at("real").is_null())
+            st.bind(4, p.at("real").get<double>());
+        else
+            st.bind(4);
+        st.bind(5, p.value("display", std::string{}));
+        st.exec();
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool deviceSetParamInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        const auto dev   = p.at("dev").get<std::int64_t>();
+        const auto param = p.at("param").get<std::string>();
+
+        inv = Payload::object();
+        inv["dev"]   = dev;
+        inv["param"] = param;
+
+        SQLite::Statement st(c.db,
+            "SELECT normalized_value, real_value, display FROM plugin_params "
+            "WHERE device_id = ? AND param_id = ?");
+        st.bind(1, dev);
+        st.bind(2, param);
+        if (!st.executeStep()) {
+            // There was no row. The inverse of creating one is removing it,
+            // and `norm: null` is how this op says that.
+            inv["norm"] = nullptr;
+            return true;
+        }
+        inv["norm"] = st.getColumn(0).getDouble();
+        if (st.getColumn(1).isNull()) inv["real"] = nullptr;
+        else                          inv["real"] = st.getColumn(1).getDouble();
+        inv["display"] = st.getColumn(2).getString();
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+// --- device.loadState -------------------------------------------------------
+
+bool deviceLoadStateApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        const auto dev  = p.at("dev").get<std::int64_t>();
+        const auto role = p.at("role").get<std::string>();
+
+        if (!p.contains("hash")) {
+            err = "device.loadState needs a 'hash' key; use null to clear";
+            return false;
+        }
+        if (p.at("hash").is_null()) {
+            SQLite::Statement del(c.db,
+                "DELETE FROM plugin_state WHERE device_id = ? AND stream_role = ?");
+            del.bind(1, dev);
+            del.bind(2, role);
+            del.exec();
+            return true;
+        }
+
+        // Only the hash travels. The bytes are in `state_blobs`, put there by
+        // whoever read them out of the plugin -- the same treatment media gets
+        // (ADR-0032), and the reason an undo log does not grow with the size
+        // of a sampler's embedded content. The foreign key refuses a hash with
+        // no blob behind it, so a payload that forgot to store the bytes fails
+        // here rather than producing a device whose state is gone.
+        SQLite::Statement st(c.db,
+            "INSERT INTO plugin_state(device_id, stream_role, state_hash, format_hint) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT(device_id, stream_role) DO UPDATE SET "
+            "state_hash = excluded.state_hash, format_hint = excluded.format_hint");
+        st.bind(1, dev);
+        st.bind(2, role);
+        st.bind(3, p.at("hash").get<std::string>());
+        st.bind(4, p.value("hint", std::string{}));
+        st.exec();
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool deviceLoadStateInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        const auto dev  = p.at("dev").get<std::int64_t>();
+        const auto role = p.at("role").get<std::string>();
+
+        inv = Payload::object();
+        inv["dev"]  = dev;
+        inv["role"] = role;
+
+        SQLite::Statement st(c.db,
+            "SELECT state_hash, format_hint FROM plugin_state "
+            "WHERE device_id = ? AND stream_role = ?");
+        st.bind(1, dev);
+        st.bind(2, role);
+        if (!st.executeStep()) { inv["hash"] = nullptr; return true; }
+        inv["hash"] = st.getColumn(0).getString();
+        inv["hint"] = st.getColumn(1).getString();
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+// --- device.setPreset -------------------------------------------------------
+//
+// Only the NAME. A preset change is a name and a pile of opaque bytes, and the
+// bytes are `device.loadState`'s job in the same transaction -- separating
+// them is what lets twenty preset auditions share one blob each rather than
+// duplicating them through the undo log.
+
+bool deviceSetPresetApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        SQLite::Statement st(c.db, "UPDATE devices SET preset_name = ? WHERE id = ?");
+        st.bind(1, p.at("preset").get<std::string>());
+        st.bind(2, p.at("dev").get<std::int64_t>());
+        if (st.exec() == 0) { err = "no such device"; return false; }
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool deviceSetPresetInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        const auto dev = p.at("dev").get<std::int64_t>();
+        SQLite::Statement st(c.db, "SELECT preset_name FROM devices WHERE id = ?");
+        st.bind(1, dev);
+        if (!st.executeStep()) { err = "no such device to capture"; return false; }
+        inv = Payload::object();
+        inv["dev"]    = dev;
+        inv["preset"] = st.getColumn(0).getString();
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
 const OpDescriptor kHandWritten[] = {
     {"project.setName", "Rename the project", Scope::Edit, EngineImpact::None,
      kFProjectName, false, false, setProjectNameApply, setProjectNameInverse, ""},
@@ -948,6 +1484,34 @@ const OpDescriptor kHandWritten[] = {
     {"project.removeTimeSignature", "Remove a time signature change", Scope::Edit,
      EngineImpact::Snapshot, kFPos, false, false,
      sigRemoveApply, sigRemoveInverse, "project.insertTimeSignature"},
+
+    {"chain.create", "Create a device chain", Scope::Edit,
+     EngineImpact::GraphRebuild, kFChainCreate, false, false,
+     chainCreateApply, chainCreateInverse, "chain.delete"},
+    {"chain.delete", "Delete a device chain", Scope::Edit,
+     EngineImpact::GraphRebuild, kFId, false, false,
+     chainDeleteApply, chainDeleteInverse, "chain.create"},
+
+    {"device.insert", "Add a device to a chain", Scope::Edit,
+     EngineImpact::GraphRebuild, kFDeviceInsert, false, false,
+     deviceInsertApply, deviceInsertInverse, "device.remove"},
+    {"device.remove", "Remove a device from a chain", Scope::Edit,
+     EngineImpact::GraphRebuild, kFId, false, false,
+     deviceRemoveApply, deviceRemoveInverse, "device.insert"},
+    {"device.move", "Move a device within or between chains", Scope::Edit,
+     EngineImpact::GraphRebuild, kFDeviceMove, false, false,
+     deviceMoveApply, deviceMoveInverse, ""},
+    // Coalescable: one knob gesture is a stream of these and undo should step
+    // over the gesture, not through it (OPS.md 9.7, SPEC 7.3).
+    {"device.setParam", "Set a device parameter", Scope::Edit,
+     EngineImpact::Snapshot, kFDeviceParam, true, false,
+     deviceSetParamApply, deviceSetParamInverse, ""},
+    {"device.loadState", "Load opaque device state", Scope::Edit,
+     EngineImpact::Snapshot, kFDeviceState, false, false,
+     deviceLoadStateApply, deviceLoadStateInverse, ""},
+    {"device.setPreset", "Set a device's preset name", Scope::Edit,
+     EngineImpact::Snapshot, kFDevicePreset, false, false,
+     deviceSetPresetApply, deviceSetPresetInverse, ""},
 
     {"routing.connect", "Connect two points in the signal path", Scope::Edit,
      EngineImpact::GraphRebuild, kFRouting, false, false,
