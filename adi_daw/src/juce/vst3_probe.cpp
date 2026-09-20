@@ -127,6 +127,67 @@ int main(int argc, char** argv) {
         check(small.dropped() == 1, "and COUNTED -- JUCE's own path breaks silently");
     }
 
+    // --- ADR-0073: parameters ride the same call as the events -------------
+    std::printf("\n[ADR-0073] the parameter queue is ours, and sample-accurate\n");
+    {
+        adi::device::Vst3ParamChanges changes;
+        changes.reserve(4);
+
+        check(changes.getParameterCount() == 0, "empty to begin with");
+        check(changes.set(7, 0.25, 0), "a value at offset 0");
+        check(changes.set(7, 0.75, 256), "and another mid-block");
+        check(changes.getParameterCount() == 1,
+              "both went into ONE queue -- two queues for one ParamID is "
+              "malformed and some plugins read only the first");
+
+        auto* q = changes.getParameterData(0);
+        check(q != nullptr && q->getParameterId() == 7, "the queue knows its id");
+        check(q != nullptr && q->getPointCount() == 2, "with two points");
+
+        // Sample-accurate by construction. ADR-0042 splits a block at every
+        // event boundary so automation does not step at 85 ms; a parameter
+        // path that could only place a value at offset 0 would undo that for
+        // every plugin parameter, which is most of the automation there is.
+        Steinberg::int32 off = -1;
+        Steinberg::Vst::ParamValue v = -1.0;
+        q->getPoint(1, off, v);
+        check(off == 256, "the second point keeps its sample offset");
+        check(std::abs(v - 0.75) < 1e-15, "and its value");
+
+        // Points stay in sample order however they arrive. Out of order makes
+        // a ramp jump backwards mid-block, which sounds like a click.
+        changes.clear();
+        check(changes.set(9, 0.9, 512), "a late point first");
+        check(changes.set(9, 0.1, 64), "then an early one");
+        q = changes.getParameterData(0);
+        Steinberg::int32 o0 = -1, o1 = -1;
+        Steinberg::Vst::ParamValue v0 = 0.0, v1 = 0.0;
+        q->getPoint(0, o0, v0);
+        q->getPoint(1, o1, v1);
+        check(o0 == 64 && o1 == 512, "they come back in sample order");
+        check(std::abs(v0 - 0.1) < 1e-15, "with the right values attached");
+
+        // Out of range is clamped: the SDK does not define behaviour outside
+        // 0..1 and a plugin handed 1.4 may do anything at all.
+        changes.clear();
+        changes.set(1, 1.4, 0);
+        changes.set(2, -0.3, 0);
+        Steinberg::int32 oo = 0;
+        Steinberg::Vst::ParamValue hi = 0.0, lo = 0.0;
+        changes.getParameterData(0)->getPoint(0, oo, hi);
+        changes.getParameterData(1)->getPoint(0, oo, lo);
+        check(hi == 1.0 && lo == 0.0, "values are clamped to 0..1");
+
+        // Pool exhaustion is counted rather than allocated through -- ADR-0010
+        // says process() does not allocate, and a std::vector that grows on
+        // the audio thread is exactly that.
+        adi::device::Vst3ParamChanges small;
+        small.reserve(2);
+        check(small.set(1, 0.5, 0) && small.set(2, 0.5, 0), "two fit");
+        check(!small.set(3, 0.5, 0), "the third is refused");
+        check(small.dropped() == 1, "and counted, not allocated for");
+    }
+
     // --- ADR-0011, with no plugin needed -----------------------------------
     std::printf("\n[ADR-0011] a plugin that cannot be instantiated becomes a placeholder\n");
     {

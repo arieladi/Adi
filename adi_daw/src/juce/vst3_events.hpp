@@ -19,9 +19,12 @@
 #include "adi/engine/note_expression.hpp"
 
 #include <pluginterfaces/vst/ivstevents.h>
+#include <pluginterfaces/vst/ivstparameterchanges.h>
 #include <pluginterfaces/vst/ivstnoteexpression.h>
 
 #include <cstdint>
+#include <memory>
+#include <utility>
 #include <vector>
 
 namespace adi::device {
@@ -104,6 +107,84 @@ public:
 private:
     std::vector<SV::Event> events_;
     std::int32_t cap_ = 0;
+    std::int64_t dropped_ = 0;
+};
+
+/// One parameter's points within a block. ADR-0073.
+///
+/// A queue per parameter that actually changed, which is what VST3 means by
+/// "changes": a plugin is handed only the parameters somebody touched, each
+/// with its points in sample order.
+///
+/// SAMPLE-ACCURATE BY CONSTRUCTION, and that is the point rather than a
+/// bonus. ADR-0042 splits a block at every event boundary so automation does
+/// not step at 85 ms; a parameter path that could only place a value at offset
+/// 0 would undo that for every plugin parameter, which is most of the
+/// automation in a real project.
+class Vst3ParamQueue final : public SV::IParamValueQueue {
+public:
+    void reset(SV::ParamID id) noexcept { id_ = id; points_.clear(); }
+    [[nodiscard]] SV::ParamID id() const noexcept { return id_; }
+
+    SV::ParamID PLUGIN_API getParameterId() override { return id_; }
+    Steinberg::int32 PLUGIN_API getPointCount() override {
+        return static_cast<Steinberg::int32>(points_.size());
+    }
+    Steinberg::tresult PLUGIN_API getPoint(Steinberg::int32 index,
+                                           Steinberg::int32& sampleOffset,
+                                           SV::ParamValue& value) override;
+    Steinberg::tresult PLUGIN_API addPoint(Steinberg::int32 sampleOffset,
+                                           SV::ParamValue value,
+                                           Steinberg::int32& index) override;
+
+    Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID, void**) override;
+    Steinberg::uint32 PLUGIN_API addRef() override { return 1000; }
+    Steinberg::uint32 PLUGIN_API release() override { return 1000; }
+
+private:
+    SV::ParamID id_ = 0;
+    std::vector<std::pair<Steinberg::int32, SV::ParamValue>> points_;
+};
+
+/// Every parameter that changed this block. ADR-0073.
+///
+/// Ours rather than JUCE's, and not by preference: `processAudio` flushes
+/// JUCE's `cachedParamValues` into its own `inputParameterChanges` inside the
+/// same call that converts the MidiBuffer, so a host that takes the event path
+/// takes the parameter path with it. See ADR-0073.
+///
+/// Queues are POOLED, never allocated per block. `set()` runs from the
+/// message thread and `getParameterData` from the audio thread, but only one
+/// of them at a time: the pointer the plugin reads is published before
+/// `process` and not touched during it.
+class Vst3ParamChanges final : public SV::IParameterChanges {
+public:
+    /// Pool size. A block in which more than `n` distinct parameters changed
+    /// drops the rest and counts them, rather than allocating on the audio
+    /// thread (ADR-0010).
+    void reserve(std::int32_t n);
+    void clear() noexcept;
+
+    /// Queue a value for `id` at `sampleOffset` within the block. Returns
+    /// false when the pool is exhausted.
+    bool set(SV::ParamID id, double normalized, std::int32_t sampleOffset) noexcept;
+
+    [[nodiscard]] std::int64_t dropped() const noexcept { return dropped_; }
+
+    Steinberg::int32 PLUGIN_API getParameterCount() override {
+        return static_cast<Steinberg::int32>(used_);
+    }
+    SV::IParamValueQueue* PLUGIN_API getParameterData(Steinberg::int32 index) override;
+    SV::IParamValueQueue* PLUGIN_API addParameterData(const SV::ParamID& id,
+                                                      Steinberg::int32& index) override;
+
+    Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID, void**) override;
+    Steinberg::uint32 PLUGIN_API addRef() override { return 1000; }
+    Steinberg::uint32 PLUGIN_API release() override { return 1000; }
+
+private:
+    std::vector<std::unique_ptr<Vst3ParamQueue>> pool_;
+    std::size_t used_ = 0;
     std::int64_t dropped_ = 0;
 };
 
