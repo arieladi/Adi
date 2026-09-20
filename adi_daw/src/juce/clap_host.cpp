@@ -881,12 +881,35 @@ void ClapHostGlue::requestCallback(const clap_host_t* h) {
 
 ClapHost::ClapHost() = default;
 
+namespace {
+
+/// `std::getenv`, with MSVC's C4996 silenced at ONE site instead of four.
+///
+/// MSVC deprecates it because the returned pointer is invalidated by a later
+/// `getenv`/`putenv` on another thread. We read a handful of variables once, at
+/// startup, on the message thread, and copy each into a `std::string`
+/// immediately -- so the hazard it warns about cannot arise. The suggested
+/// replacement, `_dupenv_s`, is Windows-only and would put an `#ifdef` at every
+/// call site rather than in this one function.
+const char* envOr(const char* name) noexcept {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv(name);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
+}  // namespace
+
 std::vector<std::string> ClapHost::defaultSearchPaths() {
     std::vector<std::string> out;
 
     // CLAP_PATH first, because a user who sets it means it. Colon-separated
     // on POSIX, semicolon on Windows -- the same convention as PATH itself.
-    if (const char* env = std::getenv("CLAP_PATH")) {
+    if (const char* env = envOr("CLAP_PATH")) {
 #if defined(_WIN32)
         const char sep = ';';
 #else
@@ -900,14 +923,19 @@ std::vector<std::string> ClapHost::defaultSearchPaths() {
         if (!cur.empty()) out.push_back(cur);
     }
 
-    const char* home = std::getenv("HOME");
+    // DECLARED ONLY WHERE IT IS USED. On Windows nothing reads HOME, and an
+    // initialised-but-unreferenced local is C4189 -- fatal under -Werror, and
+    // invisible on a platform that does read it.
+#if !defined(_WIN32)
+    const char* home = envOr("HOME");
+#endif
 #if defined(__APPLE__)
     out.emplace_back("/Library/Audio/Plug-Ins/CLAP");
     if (home != nullptr) out.emplace_back(std::string(home) + "/Library/Audio/Plug-Ins/CLAP");
 #elif defined(_WIN32)
-    if (const char* pf = std::getenv("COMMONPROGRAMFILES"))
+    if (const char* pf = envOr("COMMONPROGRAMFILES"))
         out.emplace_back(std::string(pf) + "\\CLAP");
-    if (const char* la = std::getenv("LOCALAPPDATA"))
+    if (const char* la = envOr("LOCALAPPDATA"))
         out.emplace_back(std::string(la) + "\\Programs\\Common\\CLAP");
 #else
     out.emplace_back("/usr/lib/clap");
