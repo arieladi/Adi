@@ -5454,3 +5454,79 @@ code, not after.
 **And the wire format for Tier 2 is undecided.** ADR-0039 has the boundary;
 what crosses it for a stem separator — a file path, a buffer, a handle — is a
 real decision that wants the first consumer in front of it.
+
+---
+
+## ADR-0087 — The CLAP cheap path is sound, measured; and a host that offers no extensions learns nothing — `DECIDED` (2026-09-20) — **CLOSES AN OPEN ITEM IN ADR-0084**
+
+ADR-0084 left one question open and said it wanted a real CLAP plugin that
+moves its latency. FabFilter Pro-Q 3 3.24 ships as CLAP. Here is the answer.
+
+### The question
+
+`ext/latency.h` says the latency *"is only allowed to change during
+`plugin->activate`"* and annotates `clap_host_latency.changed` as
+`[main-thread & being-activated]`. Read literally, the sequence is restart →
+deactivate → activate → new latency, and ADR-0082's cheap path — re-read the
+latency **without** reactivating — would read a stale value on CLAP even
+though it is correct on VST3.
+
+### The measurement
+
+Pro-Q 3 3.24 (CLAP), 358 parameters, sweeping `Processing Mode` across its
+declared real range, processing blocks between steps:
+
+| mode | latency | `changed()` | `request_restart()` |
+|---|---|---|---|
+| 0.00 – 0.75 | 0 | 0 | 0 |
+| **1.00** | **320** | **+1** | 0 |
+| 1.25 – 1.75 | 320 | 0 | 0 |
+| **2.00** | **5120** | **+1** | 0 |
+
+Latency after re-activating: **5120** — identical to what was read without it.
+
+### Three findings, in order of how much they matter
+
+**1. The cheap path is sound on CLAP. ADR-0084's two-way split stands.** The
+new value was readable immediately and matched what reactivating gives, so no
+third case is needed and a CLAP latency report is a tap move exactly as a VST3
+one is.
+
+**2. `request_restart()` was never called — not once across the whole sweep.**
+So for this plugin the extension callback is the **only** signal that the
+latency moved. Before ADR-0084 added `clap_host_latency` to
+`ClapHostGlue::getExtension`, which returned `nullptr` for everything, a CLAP
+plugin changing its latency was **completely invisible to us**. Not
+mis-handled — unobserved. That is the strongest argument for offering the
+extensions that has been made, and it is a measurement rather than an
+argument.
+
+**3. One report per change, not a burst.** Each mode transition produced
+exactly one `changed()`. Through the VST3 path the same plugin produced five
+reports in 73 ms — but that was rapid-fire parameter changes against JUCE's
+listener, and this was stepped changes against the raw extension. **The two
+are not measured the same way and should not be compared**; what can be said
+is that nothing here produced a burst, so CLAP's coalescing requirement is at
+most VST3's and possibly much less.
+
+### The values, for ADR-0079's ring
+
+0, 320 and 5120 samples — the same three the VST3 path measured, which is a
+useful cross-check on both host implementations. `latencyHeadroom_` still
+defaults to 0, so the cheap path never runs out of the box; 8192 covers the
+measured worst case on both formats.
+
+### And a portability defect this found, which is unrelated and worse
+
+`ClapLibrary` was written with `dlopen`/`dlsym`/`dlclose` and `<dlfcn.h>`.
+**Both Windows CI jobs failed**: `Cannot open include file: 'dlfcn.h'`.
+
+The header comment said *"`path` is the bundle (macOS) or the library
+(elsewhere)"* — so the interface was designed cross-platform and the
+implementation was POSIX-only, which is the worst of both: it reads as
+portable and is not. Split now on `_WIN32` with `LoadLibrary` /
+`GetProcAddress` / `FreeLibrary`, three calls against three.
+
+Worth naming because ADR-0075's claim is that CLAP hosting runs on every ABI
+the suite runs on, and that claim was false for one of them for as long as
+this took to notice.

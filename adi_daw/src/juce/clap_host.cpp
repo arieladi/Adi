@@ -7,7 +7,21 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <dlfcn.h>
+// Dynamic loading is the one genuinely platform-specific thing in a CLAP
+// host, and it is three calls. Split here rather than behind a wrapper
+// library: a wrapper for `LoadLibrary` versus `dlopen` is more code than
+// the thing it wraps.
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#else
+#  include <dlfcn.h>
+#endif
 
 #include <cstdlib>
 #include <filesystem>
@@ -560,6 +574,9 @@ namespace {
 /// message about a file that is not a Mach-O, which reads like a corrupt
 /// plugin rather than like the wrong path.
 std::string resolveLoadPath(const std::string& path) {
+    // Only macOS wraps a .clap in a bundle. On Windows and Linux the .clap
+    // IS the loadable file, so it is handed through unchanged -- which is
+    // what the #if below leaves happening.
 #if defined(__APPLE__)
     const std::string suffix = ".clap";
     if (path.size() > suffix.size() &&
@@ -582,15 +599,24 @@ bool ClapLibrary::open(const std::string& path, std::string& error) {
     path_ = path;
     const std::string load = resolveLoadPath(path);
 
+#if defined(_WIN32)
+    lib_ = static_cast<void*>(::LoadLibraryA(load.c_str()));
+    if (lib_ == nullptr) {
+        error = "LoadLibrary failed, error " + std::to_string(::GetLastError());
+        return false;
+    }
+    entry_ = reinterpret_cast<const clap_plugin_entry_t*>(
+        ::GetProcAddress(static_cast<HMODULE>(lib_), "clap_entry"));
+#else
     lib_ = dlopen(load.c_str(), RTLD_LOCAL | RTLD_NOW);
     if (lib_ == nullptr) {
         const char* e = dlerror();
         error = "dlopen failed: " + std::string(e != nullptr ? e : "unknown");
         return false;
     }
-
     // ONE exported symbol, and that is the whole protocol.
     entry_ = static_cast<const clap_plugin_entry_t*>(dlsym(lib_, "clap_entry"));
+#endif
     if (entry_ == nullptr) {
         error = "no clap_entry symbol -- not a CLAP plugin";
         close();
@@ -629,7 +655,14 @@ void ClapLibrary::close() {
     // other order calls a destructor through a pointer into unmapped memory.
     if (entry_ != nullptr) { entry_->deinit(); entry_ = nullptr; }
     factory_ = nullptr;
-    if (lib_ != nullptr) { dlclose(lib_); lib_ = nullptr; }
+    if (lib_ != nullptr) {
+#if defined(_WIN32)
+        ::FreeLibrary(static_cast<HMODULE>(lib_));
+#else
+        dlclose(lib_);
+#endif
+        lib_ = nullptr;
+    }
 }
 
 std::uint32_t ClapLibrary::pluginCount() const noexcept {

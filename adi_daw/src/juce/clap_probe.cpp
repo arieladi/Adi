@@ -36,13 +36,138 @@ void check(bool c, const std::string& w) {
 
 }  // namespace
 
+namespace {
+
+/// ADR-0084's parked question, answered against a real CLAP plugin.
+///
+/// `ext/latency.h` says the latency "is only allowed to change during
+/// plugin->activate" and annotates `clap_host_latency.changed` as
+/// `[main-thread & being-activated]`. If that is literal, the sequence is
+/// restart -> deactivate -> activate -> new latency, and ADR-0082's cheap
+/// path -- re-read WITHOUT reactivating -- reads a stale value on CLAP even
+/// though it is correct on VST3.
+///
+/// Pro-Q 3 is the canonical mover: measured at 5120 samples in linear phase
+/// through the VST3 path. This drives the same switch through CLAP.
+int answerTheLatencyQuestion(const std::string& want) {
+    adi::device::ClapHost host;
+    host.scan(adi::device::ClapHost::defaultSearchPaths());
+
+    const adi::device::ClapPluginRef* pick = nullptr;
+    for (const auto& r : host.plugins())
+        if (r.name.find(want) != std::string::npos) { pick = &r; break; }
+    if (pick == nullptr) {
+        std::printf("  skip  no CLAP plugin matching '%s'\n", want.c_str());
+        return 0;
+    }
+
+    std::string err;
+    auto dev = host.makeDevice(*pick, 48000.0, 512, err);
+    if (dev == nullptr || !dev->loaded()) {
+        std::printf("  FAIL  %s did not load: %s\n", pick->name.c_str(), err.c_str());
+        return 1;
+    }
+    std::printf("  plugin   %s %s (CLAP)\n", pick->name.c_str(), pick->version.c_str());
+    std::printf("  params   %d\n", dev->paramCount());
+    std::printf("  latency  %d samples at rest\n", dev->latencySamples());
+
+    const adi::device::ParamDescriptor* mode = nullptr;
+    for (std::int32_t i = 0; i < dev->paramCount(); ++i) {
+        const auto* d = dev->paramAt(i);
+        if (d == nullptr) continue;
+        if (d->name.find("hase") != std::string::npos ||
+            d->name.find("rocessing") != std::string::npos) { mode = d; break; }
+    }
+    if (mode == nullptr) { std::printf("  skip  no phase/processing parameter\n"); return 0; }
+    std::printf("  sweeping '%s'  %.3f .. %.3f\n",
+                mode->name.c_str(), mode->minReal, mode->maxReal);
+
+    std::vector<float> l(512, 0.0f), r(512, 0.0f);
+    float* outp[2] = {l.data(), r.data()};
+    adi::engine::NodeIo io;
+    io.out = outp; io.channels = 2; io.frames = 512; io.sampleRate = 48000.0;
+
+    const std::int32_t before = dev->latencySamples();
+    const std::uint64_t changesBefore = host.glue().latencyChanges();
+    const std::uint64_t restartsBefore = host.glue().restartRequests();
+
+    // Walk the parameter's real range. Pro-Q 3's modes are discrete points
+    // in it, so stepping finds them without knowing the encoding.
+    // EVERY mode, not just the first that moves. 320 samples is a small
+    // change that fits any ring; 5120 -- linear phase, measured through the
+    // VST3 path -- is the one ADR-0079's escalation exists for, and the
+    // plugin may well behave differently for it.
+    std::int32_t moved = -1;
+    std::int32_t largest = before;
+    for (int step = 0; step <= 8; ++step) {
+        const double v = mode->minReal
+                       + (mode->maxReal - mode->minReal) * (double) step / 8.0;
+        const std::uint64_t cBefore = host.glue().latencyChanges();
+        const std::uint64_t rBefore = host.glue().restartRequests();
+        dev->setParam(mode->id, adi::device::ParamValue::withReal(0.0, v));
+        std::int32_t now = dev->latencySamples();
+        for (int blk = 0; blk < 20; ++blk) {
+            dev->process(io);
+            host.glue().dispatchMainThread();
+            now = dev->latencySamples();
+        }
+        std::printf("    mode %.3f -> latency %-6d  changed+%llu restart+%llu\n", v, now,
+                    (unsigned long long)(host.glue().latencyChanges() - cBefore),
+                    (unsigned long long)(host.glue().restartRequests() - rBefore));
+        if (now != before && moved < 0) moved = now;
+        if (now > largest) largest = now;
+    }
+    if (largest != before) moved = largest;
+
+    std::printf("\n  [result]\n");
+    std::printf("  latency before          %d\n", before);
+    std::printf("  latency after (no re-activate) %s\n",
+                moved < 0 ? "UNCHANGED" : std::to_string(moved).c_str());
+    std::printf("  latencyChanges()        %llu\n",
+                (unsigned long long)(host.glue().latencyChanges() - changesBefore));
+    std::printf("  restartRequests()       %llu\n",
+                (unsigned long long)(host.glue().restartRequests() - restartsBefore));
+
+    // Now reactivate and look again. If the value only appears HERE, the
+    // cheap path is reading stale and ADR-0084 needs a third case.
+    dev->prepare(48000.0, 512);
+    const std::int32_t afterReactivate = dev->latencySamples();
+    std::printf("  latency after re-activate      %d\n", afterReactivate);
+
+    std::printf("\n  [ADR-0084 verdict]\n");
+    if (moved >= 0 && moved == afterReactivate) {
+        std::printf("  The cheap path is SOUND on CLAP: the new latency was readable\n"
+                    "  without reactivating, and matches what reactivating gives.\n");
+    } else if (moved < 0 && afterReactivate != before) {
+        std::printf("  The cheap path reads STALE on CLAP: the value only appeared\n"
+                    "  after a deactivate/activate. ADR-0084 needs a third case --\n"
+                    "  a CLAP latency report must drive reactivation before the retap.\n");
+    } else if (moved < 0 && afterReactivate == before) {
+        std::printf("  INCONCLUSIVE: this plugin did not move its latency at all,\n"
+                    "  so the question is untouched. Try another.\n");
+    } else {
+        std::printf("  MIXED: read %d without reactivating, %d after. Worth a look.\n",
+                    moved, afterReactivate);
+    }
+    return 0;
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_clap_probe -- a real .clap, and ADR-0084's open question\n\n");
 
     std::string path = "/Library/Audio/Plug-Ins/CLAP/Surge XT.clap";
-    for (int i = 1; i + 1 < argc; ++i)
+    std::string latencyWant;
+    for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--plugin") path = argv[i + 1];
+        if (std::string(argv[i]) == "--latency") latencyWant = argv[i + 1];
+    }
+    if (!latencyWant.empty()) {
+        std::printf("[ADR-0084] does the cheap path read stale on CLAP?\n");
+        return answerTheLatencyQuestion(latencyWant);
+    }
 
     // --- the sibling of Vst3Host, end to end ------------------------------
     {
