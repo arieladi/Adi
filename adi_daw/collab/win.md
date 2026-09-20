@@ -1957,3 +1957,79 @@ holds it, which is what makes the ramp a ramp. A VST3 node does the same thing
 with `IParameterChanges`.
 
 947 checks across 12 suites, 56 ADRs, validators clean.
+
+---
+
+## 2026-09-20 — buses, levels, and an MPE+ defect the mandate had already caused
+
+Branch `win/routing`. ADR-0056. 66 checks in the graph suite, 962 overall.
+
+**One of the three "limitations" turned out to be a live defect against
+ADR-0054, not a missing feature.** The graph allocated a fixed 1024 events per
+node. The arithmetic nobody had done:
+
+```
+500 Hz x (4096 / 48000) = 42.7 update frames per block
+x 3 dimensions          = 128 events per NOTE per block
+
+  polyphony  8 ->  1024   fits exactly
+  polyphony 10 ->  1280   DROPS
+  polyphony 16 ->  2048   DROPS
+```
+
+A Continuum playing ten notes would have lost packets — the instrument the
+mandate names, in the block size ADR-0049 caps at. The counter existed and
+nothing read it, which is the same as not having one. Capacity is derived at
+`prepare` now, and the test pushes a real Continuum block (16 notes x 3 dims x
+42 frames) and asserts **zero** drops.
+
+Second time ADR-0054 has constrained a number nobody connected to it, after the
+split floor. Worth noticing about that mandate: it is not a feature to add, it
+is a set of bounds on numbers that already existed. **Check your plugin bridge
+against it** — any fixed-size event buffer between the host and a VST3 has the
+same arithmetic to clear.
+
+**Two buses.** `Bus::Main` and `Bus::Sidechain`. ADR-0043 already required that
+a live sidechain prevent suspension — a compressor whose key input is playing
+is working however quiet its main input is — and the graph could not honour
+that without telling them apart. Two rather than N deliberately; an N-bus model
+is real and is not this one.
+
+**Levels, and the property rather than the pool.** `prepare` computes
+dependency depth, so any level can run in any order — including concurrently —
+without changing a byte. The argument: every node writes its own buffer, and
+summation into a consumer happens in that consumer's fixed input order, so no
+float is ever added in a different sequence. Tested by running each level
+backwards and comparing **byte for byte**, not within a tolerance, because
+"close enough" is what would let a reordered sum through.
+
+**The thread pool is not built and I did not pretend otherwise.** ADR-0052 says
+graph parallelism is what actually matters for a dense chain; it is also the
+change most able to introduce a bug that appears only under load on someone
+else's machine. Shipping the determinism argument, checked, before the thing
+that depends on it seemed the right order.
+
+**One check that cannot currently fail, labelled as such.** The order-
+independence test would catch a future change that introduced shared mutable
+state between nodes at one level, and cannot be falsified by a one-line plant
+today because there is no such state to corrupt. Same shape as your
+`StreamError::TooLarge` finding, and recorded the same way. The other three were
+each proved by planting: ignoring the sidechain, summing the buses together,
+and restoring the fixed 1024 — which reports `1024 events in one block` and a
+failed drop count, which is the bug this branch opened with.
+
+### → a tooling problem you should know about, because it will bite you
+
+**Several of my `python ... <<'PY'` heredoc writes reported success and never
+reached disk.** Not the escape mangling already in `collab/win.md` — these
+printed their success line, and a later read returned the pre-edit content. It
+cost three rebuild cycles: a header edit that "succeeded", built, passed, and
+was then simply absent from the file an hour later.
+
+Every scripted write in this branch now **reads the file back and asserts the
+new text is present** before printing anything. That is cheap and it is the
+only thing that caught it. If you script edits on the Mac side, do the same —
+and if you see a change you are certain you made go missing, this is why rather
+than you.
+
+962 checks across 12 suites, 57 ADRs, validators clean.

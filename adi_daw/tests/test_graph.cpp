@@ -611,6 +611,173 @@ void testShortAndVaryingBlocks() {
     check(o.l[0] == 0.0f, "an oversize block is refused and silenced");
 }
 
+
+// --- ADR-0056 ---------------------------------------------------------------
+
+void testSidechainKeepsItAwake() {
+    section("ADR-0043/0056 -- a live sidechain prevents suspension");
+
+    ConstNode main(0.0f);              // main input silent
+    ConstNode key(1.0f);               // key input playing
+    TailNode comp(0);                  // no tail of its own
+
+    Graph g;
+    const NodeId nm = g.addNode(main), nk = g.addNode(key), nc = g.addNode(comp);
+    g.connect(nm, nc, Bus::Main);
+    g.connect(nk, nc, Bus::Sidechain);
+    g.setOutput(nc);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared with two buses: " + g.error());
+
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+    for (int i = 0; i < 5; ++i) g.process(io);
+
+    eqi(comp.calls, 5,
+        "a compressor whose key input is playing keeps working, however quiet "
+        "its main input is -- suspending it would release the gain reduction");
+
+    // And when the key stops too, it is suspended like anything else.
+    key.set(0.0f);
+    g.process(io);
+    const int afterKeyStops = comp.calls;
+    for (int i = 0; i < 3; ++i) g.process(io);
+    eqi(comp.calls, afterKeyStops, "and stops once the key input stops as well");
+}
+
+void testSidechainIsSeparateFromMain() {
+    section("ADR-0056 -- the two buses arrive separately, not summed together");
+
+    class Probe final : public Node {
+    public:
+        void process(const NodeIo& io) noexcept override {
+            sawMain = io.in != nullptr ? io.in[0][io.blockOffset] : -1.0f;
+            sawSide = io.sidechain != nullptr ? io.sidechain[0][io.blockOffset] : -1.0f;
+            mainSilent = io.inputSilent;
+            sideSilent = io.sidechainSilent;
+            for (std::int32_t c = 0; c < io.channels; ++c)
+                for (std::int32_t i = 0; i < io.frames; ++i)
+                    io.out[c][io.blockOffset + i] = 0.0f;
+        }
+        [[nodiscard]] bool alwaysProcess() const noexcept override { return true; }
+        float sawMain = -1.0f, sawSide = -1.0f;
+        bool mainSilent = false, sideSilent = false;
+    } probe;
+
+    ConstNode a(0.25f), b(0.75f);
+    Graph g;
+    const NodeId na = g.addNode(a), nb = g.addNode(b), np = g.addNode(probe);
+    g.connect(na, np, Bus::Main);
+    g.connect(nb, np, Bus::Sidechain);
+    g.setOutput(np);
+    g.prepare(48000.0, 128);
+
+    Out o(128);
+    AudioIo io = makeIo(o, 128);
+    g.process(io);
+
+    check(std::fabs(probe.sawMain - 0.25f) < 1e-6f,
+          "main carries only the main input: " + std::to_string(probe.sawMain));
+    check(std::fabs(probe.sawSide - 0.75f) < 1e-6f,
+          "and the sidechain only the key: " + std::to_string(probe.sawSide));
+    check(!probe.mainSilent && !probe.sideSilent, "both are reported live");
+}
+
+void testLevelOrderDoesNotChangeOutput() {
+    section("ADR-0056 -- any order within a level gives identical bytes");
+
+    // Four independent sources into a sum, then a gain. Levels are
+    // {sources}, {sum}, {gain} -- so level 0 has four members whose order a
+    // thread pool would not fix.
+    ConstNode a(0.1f), b(0.2f), c(0.3f), d(0.4f);
+    SumNode mix;
+    GainNode gain(3);
+
+    Graph g;
+    const NodeId na = g.addNode(a), nb = g.addNode(b);
+    const NodeId nc = g.addNode(c), nd = g.addNode(d);
+    const NodeId nm = g.addNode(mix), ng = g.addNode(gain);
+    for (NodeId src : {na, nb, nc, nd}) g.connect(src, nm);
+    g.connect(nm, ng);
+    g.setOutput(ng);
+    g.prepare(48000.0, 512);
+    check(g.ok(), "prepared: " + g.error());
+
+    check(g.levels().size() == 3,
+          "three dependency levels, got " + std::to_string(g.levels().size()));
+    check(!g.levels().empty() && g.levels()[0].size() == 4,
+          "four independent sources share level 0");
+
+    Out forward(512);
+    AudioIo io1 = makeIo(forward, 512);
+    g.setReverseWithinLevel(false);
+    g.process(io1);
+
+    Out reverse(512);
+    AudioIo io2 = makeIo(reverse, 512);
+    g.setReverseWithinLevel(true);
+    g.process(io2);
+
+    // BYTE for byte, not within a tolerance. ADR-0021's oracle compares bytes,
+    // and "close enough" is exactly the answer that lets a reordered float sum
+    // through -- which is the one thing that would make a thread pool unsafe.
+    bool identical = true;
+    for (std::size_t i = 0; i < forward.l.size(); ++i)
+        if (forward.l[i] != reverse.l[i] || forward.r[i] != reverse.r[i])
+            identical = false;
+    check(identical,
+          "running level 0 backwards changes nothing: this is the property a "
+          "thread pool would depend on, and it is why one is safe to add");
+    check(std::fabs(forward.l[0] - 1.0f) < 1e-6f,
+          "and the sum is right: " + std::to_string(forward.l[0]));
+}
+
+void testEventCapacityFitsTheContinuum() {
+    section("ADR-0056 -- the derived capacity survives MPE+ at full polyphony");
+
+    // The arithmetic the default has to clear: 500 Hz across a 4096-frame
+    // block is 42.7 update frames, three dimensions each, per note. A fixed
+    // 1024 drops from ten notes onwards -- on exactly the instrument ADR-0054
+    // was written for, and silently apart from a counter nobody reads.
+    const std::int32_t derived = Graph::deriveEventCapacity(48000.0, 4096, 16);
+    check(derived >= 2048,
+          "16 notes of MPE+ at 4096 frames needs >= 2048, derived " +
+              std::to_string(derived));
+    check(Graph::deriveEventCapacity(48000.0, 64, 16) >= 256,
+          "and a 64-frame block still has room for a chord arriving at once");
+
+    ConstNode src(1.0f);
+    Graph g;
+    const NodeId n = g.addNode(src);
+    g.setOutput(n);
+    g.setMaxPolyphony(16);
+    g.prepare(48000.0, 4096);
+    check(g.eventCapacity() == derived,
+          "prepare uses the derived figure: " + std::to_string(g.eventCapacity()));
+
+    // A full Continuum block: 16 notes x 3 dimensions x 42 update frames.
+    int pushed = 0;
+    for (int frame = 0; frame < 4032; frame += 96)
+        for (int note = 0; note < 16; ++note)
+            for (int dim = 0; dim < 3; ++dim) {
+                Event e;
+                e.frame = frame;
+                e.type = EventType::NoteExpression;
+                e.dim = static_cast<std::uint16_t>(dim);
+                e.noteId = static_cast<std::uint64_t>(note);
+                e.value = 0.5;
+                if (g.pushInputEvent(n, e)) ++pushed;
+            }
+
+    Out o(4096);
+    AudioIo io = makeIo(o, 4096);
+    g.process(io);
+
+    eqi(g.stats().eventsDropped, 0,
+        "not one packet dropped at 16-note MPE+ polyphony (" +
+            std::to_string(pushed) + " events in one block)");
+}
+
 }  // namespace
 
 int main() {
@@ -632,6 +799,10 @@ int main() {
         testExpressionKeepsItsPrecision();
         testEventOverflowIsCounted();
         testShortAndVaryingBlocks();
+        testSidechainKeepsItAwake();
+        testSidechainIsSeparateFromMain();
+        testLevelOrderDoesNotChangeOutput();
+        testEventCapacityFitsTheContinuum();
     } catch (const std::exception& e) {
         std::printf("\nFAILED -- exception escaped: %s\n", e.what());
         return 1;

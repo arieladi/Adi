@@ -41,12 +41,25 @@ namespace adi::engine {
 /// uses the same convention and this is deliberately the same value.
 inline constexpr std::int64_t kInfiniteTail = INT64_MAX;
 
+/// Which input bus an edge feeds.
+///
+/// Two, not N, and deliberately: a sidechain is the one auxiliary input the
+/// rest of the system already names -- ADR-0043 requires that a live sidechain
+/// prevent suspension, and it could not say that without the graph being able
+/// to tell one apart. An arbitrary bus count is a real requirement and is not
+/// this one; it arrives when something needs it.
+enum class Bus : std::uint8_t { Main = 0, Sidechain = 1 };
+
 /// What a node is handed for one SEGMENT of one block.
 struct NodeIo {
     /// Summed inputs. Null when the node has none — an instrument or a clip
     /// reader — and a node must check rather than assume.
     const float* const* in = nullptr;
     float* const* out = nullptr;
+
+    /// Summed sidechain inputs, or null when nothing feeds that bus. A
+    /// compressor reads this; everything else ignores it.
+    const float* const* sidechain = nullptr;
 
     std::int32_t channels = 0;
     std::int32_t frames = 0;        ///< frames in THIS segment
@@ -63,6 +76,10 @@ struct NodeIo {
     /// it to skip work; the scheduler has already used it to decide whether to
     /// call at all.
     bool inputSilent = false;
+
+    /// Separately, because a node may want to know its key input is live while
+    /// its main input is not -- which is the point of a sidechain.
+    bool sidechainSilent = true;
 
     double sampleRate = 0.0;
 };
@@ -129,7 +146,7 @@ public:
     /// `from` feeds `to`. Multiple edges into one node are SUMMED, which is
     /// what makes a group a node with no device rather than a special case
     /// (ADR-0044).
-    bool connect(NodeId from, NodeId to);
+    bool connect(NodeId from, NodeId to, Bus bus = Bus::Main);
 
     /// The node whose output is the graph's output. Exactly one.
     void setOutput(NodeId id) { output_ = id; }
@@ -140,7 +157,27 @@ public:
 
     /// Per-node event capacity. At 500 Hz with heavy polyphony this is a real
     /// design number rather than a formality (events.hpp).
-    void setEventCapacity(std::int32_t n) { eventCapacity_ = n > 0 ? n : 1024; }
+    /// Per-node event capacity. Zero -- the default -- DERIVES it at `prepare`
+    /// from the block size, because one fixed number is wrong at one end or
+    /// the other of a 64-to-4096 range.
+    ///
+    /// The arithmetic that forced this: a Continuum at 500 Hz across a
+    /// 4096-frame block is 42.7 update frames, and at three dimensions that is
+    /// 128 events per note. A fixed 1024 therefore drops packets from TEN
+    /// NOTES onwards -- on exactly the instrument ADR-0054 was written for,
+    /// and silently apart from a counter nobody was reading.
+    void setEventCapacity(std::int32_t n) { eventCapacity_ = n > 0 ? n : 0; }
+
+    /// Simultaneous notes the derived capacity is sized for.
+    void setMaxPolyphony(std::int32_t n) { maxPolyphony_ = n > 0 ? n : 16; }
+
+    /// What `prepare` would allocate per node, so the arithmetic is testable
+    /// rather than a comment (ADR-0056).
+    [[nodiscard]] static std::int32_t deriveEventCapacity(
+        double sampleRate, std::int32_t maxFrames, std::int32_t polyphony) noexcept;
+
+    /// The capacity actually in use after `prepare`.
+    [[nodiscard]] std::int32_t eventCapacity() const noexcept { return eventCapacity_; }
 
     /// Events for the next block, in block-relative frames. Called from the
     /// message thread before the block, or by a clip reader node.
@@ -173,10 +210,35 @@ public:
     /// Topological order, valid after a successful `prepare`. For tests.
     [[nodiscard]] const std::vector<NodeId>& order() const noexcept { return order_; }
 
+    /// Nodes grouped by dependency depth: everything in `levels()[k]` depends
+    /// only on levels below it, so a level may be run in ANY order -- including
+    /// concurrently -- without changing a single output byte.
+    ///
+    /// That determinism is the reason this is safe, and it is not incidental.
+    /// Every node writes its own buffer, and summation into a consumer happens
+    /// in that consumer's fixed input order, so no float is ever added in a
+    /// different sequence. ADR-0021's oracle compares bytes, and a scheduler
+    /// that reordered a sum would break it in a way that surfaces as a digest
+    /// mismatch weeks later.
+    ///
+    /// The thread pool that would exploit this is NOT built. The levels and
+    /// the property are, and the property is tested by running each level in
+    /// the opposite order and comparing output byte for byte (ADR-0056).
+    [[nodiscard]] const std::vector<std::vector<NodeId>>& levels() const noexcept {
+        return levels_;
+    }
+
+    /// Run each level backwards. Exists so a test can demonstrate
+    /// order-independence without a thread pool; a real pool would produce
+    /// some other order and must produce the same bytes.
+    void setReverseWithinLevel(bool v) noexcept { reverseWithinLevel_ = v; }
+
 private:
     struct Slot {
         Node* node = nullptr;
         std::vector<NodeId> inputs;
+        std::vector<NodeId> sidechains;
+        std::int32_t level = 0;
         std::vector<float> audio;       ///< channels * maxFrames, interleaved by channel
         std::vector<float*> chanPtrs;
         std::vector<Event> eventStore;
@@ -190,15 +252,19 @@ private:
     /// Accumulate one input's segment into the mix scratch. `first` copies,
     /// the rest add -- which is the whole of ADR-0044's summing, and why a
     /// group is a node with no device rather than a case in the scheduler.
-    void accumulate(const Slot& src, std::int32_t begin, std::int32_t frames,
-                    bool first) noexcept;
+    void accumulate(std::vector<float*>& dst, const Slot& src, std::int32_t begin,
+                    std::int32_t frames, bool first) noexcept;
+    void runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept;
 
     std::vector<Slot> slots_;
     std::vector<NodeId> order_;
     NodeId output_ = kInvalidNode;
 
-    std::vector<float> mixBuf_;         ///< summed inputs for the node in hand
+    std::vector<float> mixBuf_;         ///< summed main inputs for the node in hand
     std::vector<float*> mixPtrs_;
+    std::vector<float> sideBuf_;        ///< summed sidechain inputs
+    std::vector<float*> sidePtrs_;
+    std::vector<std::vector<NodeId>> levels_;
     std::vector<Event> mixEventStore_;
     EventList mixEvents_;
     std::vector<std::int32_t> splits_;  ///< segment boundaries, sized at prepare
@@ -206,10 +272,12 @@ private:
     double sampleRate_ = 0.0;
     std::int32_t maxFrames_ = 0;
     std::int32_t channels_ = 2;
-    std::int32_t eventCapacity_ = 1024;
+    std::int32_t eventCapacity_ = 0;      ///< 0 = derive at prepare
+    std::int32_t maxPolyphony_ = 16;
     std::int32_t floor_ = 64;
     bool ok_ = false;
     bool prepared_ = false;
+    bool reverseWithinLevel_ = false;
     std::string error_;
     GraphStats stats_;
 };
