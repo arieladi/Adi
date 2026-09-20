@@ -289,7 +289,7 @@ Model readModel(const Store& store) {
 
     query(m, db, "routing",
           "SELECT id, src_kind, src_id, dst_kind, dst_id, kind, ord, gain_db, "
-          "       pan, pre_fader, enabled FROM routing",
+          "       pan, pre_fader, enabled, origin FROM routing",
           [&](const SQLite::Statement& st) {
               Routing r;
               r.id = st.getColumn(0).getInt64();
@@ -303,6 +303,7 @@ Model readModel(const Store& store) {
               r.pan = st.getColumn(8).getDouble();
               r.preFader = flag(st, 9);
               r.enabled = flag(st, 10);
+              r.origin = st.getColumn(11).getString();
               m.routing.push_back(std::move(r));
           });
 
