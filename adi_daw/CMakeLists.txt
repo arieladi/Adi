@@ -444,6 +444,10 @@ if(ADI_WITH_JUCE)
     target_compile_features(adi_vst3_probe PRIVATE cxx_std_20)
     target_compile_definitions(adi_vst3_probe PRIVATE
         JUCE_STANDALONE_APPLICATION=1
+        # The probe pumps the message loop to observe a plugin reporting a
+        # latency change, which JUCE delivers on that thread. Console app,
+        # no UI, so a modal loop is the whole program rather than a hazard.
+        JUCE_MODAL_LOOPS_PERMITTED=1
         JUCE_USE_CURL=0
         JUCE_WEB_BROWSER=0
         JUCE_DISPLAY_SPLASH_SCREEN=0

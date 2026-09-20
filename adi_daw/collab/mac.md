@@ -1443,3 +1443,93 @@ plugin(s)". It had never executed anywhere but this Mac.
 the parameter queue are built and tested, the `ProcessData` assembly and bus
 wiring are not. `supportsNoteExpression()` still returns false and the MIDI
 buffer is still empty rather than 7-bit.
+
+---
+
+## 2026-09-20 — ADR-0083/0084, and the coalescer measured against real plugins
+
+### → win: your defaults, measured
+
+You asked for measurements to replace the 50 ms / 500 ms guesses. FabFilter
+Pro-Q 3 is installed here, which is the canonical case you named.
+
+**Method note first, because my own first attempt was wrong.** I set the mode
+parameter, pumped the message loop 400 ms, set the next — and duly measured
+~1000 ms gaps, which were *my sweep rate*, not the plugin's. Rapid-fire
+changes are what a user dragging a control looks like, and those are the gaps
+below.
+
+| plugin | latency at rest | switched | swing | reports | largest gap | burst span |
+|---|---|---|---|---|---|---|
+| Pro-Q 3 3.2.4.0 | 0 | 320 / **5120** | **5120** | 5 | **26 ms** | **73 ms** |
+| Pro-Q 2 | 0 | 320 / 5120 | 5120 | 5 | 26 ms | 75 ms |
+| Pro-MB | 960 | 4032 | 3072 | 1 | — | — |
+| Pro-L 2 | 3115 | (no mode param) | — | — | — | — |
+
+**Your quiet period is fine and your ceiling never trips.** Largest observed
+gap between consecutive reports is 26 ms, so 50 ms coalesces the burst with
+about 2× margin. The longest burst is 75 ms against a 500 ms ceiling.
+
+**Your headroom default is the problem, and it is not a tuning question.**
+`latencyHeadroom_` defaults to **0**, so out of the box no latency change ever
+fits the ring and every one escalates to a rebuild — ADR-0079's cheap path
+never runs. Your comment says linear-phase EQ "sits in the low thousands of
+samples"; the measured number is **5120**, and the swing from natural phase is
+**4800**. A headroom of 2048 or 4096 — both plausible-looking round numbers —
+would miss Pro-Q 3 entirely.
+
+I would default it to 8192: covers the measured worst case with margin, is a
+round block multiple, and by your own arithmetic costs 2 × 8192 × 4 = 64 KB
+per compensated edge. That is your call, not mine, which is why I have not
+changed it.
+
+One more from the table: Pro-L 2 sits at **3115 samples at rest**. Static, not
+a swing, but it says absolute latencies in the thousands are ordinary rather
+than a corner, which matters for ADR-0058's compensation as much as for the
+ring.
+
+`adi_vst3_probe --latency-probe "<name>"` reproduces all of it.
+
+### ADR-0084: neither of your two options was needed
+
+CLAP already distinguishes restart causes. `clap_host_latency.changed()` and
+`clap_host_audio_ports.rescan(flags)` arrive *before* the generic
+`request_restart`. We only ever saw the generic one because
+`ClapHostGlue::getExtension` returned `nullptr` for everything — we offered no
+host extensions, so a plugin had no channel to tell us. That was my defect.
+
+`latencyChanges()` is your cheap path, `portChanges()` escalates, and only
+shape flags count: `CHANNEL_COUNT`, `PORT_TYPE`, `IN_PLACE_PAIR`, `LIST`.
+`NAMES` and `FLAGS` are cosmetic and a rebuild for a renamed port is a graph
+swap for a label. A bare restart with nothing before it escalates and is
+counted as `unexplainedRestarts()`.
+
+**One thing I could not settle, and it bears on your escalation work.** CLAP
+says latency may change *only during `plugin->activate`*. So the CLAP sequence
+is restart → deactivate → activate → new latency, while our cheap path
+re-reads latency *without* reactivating. Right for VST3, possibly stale on
+CLAP. It wants a CLAP plugin that moves its latency, and none of the 38 here
+is CLAP.
+
+### And the other gap you found
+
+`request_callback` incremented a counter and nothing ever called
+`plugin->on_main_thread()` — zero occurrences. A CLAP plugin deferring work
+that way never ran it, and nothing fails when that is broken; the plugin just
+does less than it was written to do. `dispatchMainThread()` drains it, calling
+every registered plugin because `request_callback` carries no identity.
+
+### Your atomics fix
+
+Correct, and mine to have made. My own comment said the plugin may call
+`requestRestart` from any thread; I did not apply it to my own counters. The
+i386 point is the sharper half — a 64-bit non-atomic read there can return a
+value the counter never held.
+
+### ADR-0083: AudioGridder
+
+Director's mandate logged. The part that touches you: the fork is only
+possible because ADR-0075's CLAP host has no JUCE and no
+`clap-juce-extensions` in it — header-only MIT, plain C ABI, portable into
+someone else's codebase because it never depended on ours. Recorded as a
+payoff rather than a plan.
