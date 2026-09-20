@@ -9,6 +9,10 @@
 #include <cstring>
 #include <dlfcn.h>
 
+#include <cstdlib>
+#include <filesystem>
+#include <system_error>
+
 namespace adi::device {
 
 // ---------------------------------------------------------------------------
@@ -750,6 +754,123 @@ void ClapHostGlue::requestProcess(const clap_host_t* h) {
 void ClapHostGlue::requestCallback(const clap_host_t* h) {
     static_cast<ClapHostGlue*>(h->host_data)->callbacks_.fetch_add(
         1, std::memory_order_release);
+}
+
+
+// ---------------------------------------------------------------------------
+// ClapHost -- the sibling of Vst3Host
+// ---------------------------------------------------------------------------
+
+ClapHost::ClapHost() = default;
+
+std::vector<std::string> ClapHost::defaultSearchPaths() {
+    std::vector<std::string> out;
+
+    // CLAP_PATH first, because a user who sets it means it. Colon-separated
+    // on POSIX, semicolon on Windows -- the same convention as PATH itself.
+    if (const char* env = std::getenv("CLAP_PATH")) {
+#if defined(_WIN32)
+        const char sep = ';';
+#else
+        const char sep = ':';
+#endif
+        std::string s(env), cur;
+        for (char c : s) {
+            if (c == sep) { if (!cur.empty()) out.push_back(cur); cur.clear(); }
+            else cur += c;
+        }
+        if (!cur.empty()) out.push_back(cur);
+    }
+
+    const char* home = std::getenv("HOME");
+#if defined(__APPLE__)
+    out.emplace_back("/Library/Audio/Plug-Ins/CLAP");
+    if (home != nullptr) out.emplace_back(std::string(home) + "/Library/Audio/Plug-Ins/CLAP");
+#elif defined(_WIN32)
+    if (const char* pf = std::getenv("COMMONPROGRAMFILES"))
+        out.emplace_back(std::string(pf) + "\\CLAP");
+    if (const char* la = std::getenv("LOCALAPPDATA"))
+        out.emplace_back(std::string(la) + "\\Programs\\Common\\CLAP");
+#else
+    out.emplace_back("/usr/lib/clap");
+    out.emplace_back("/usr/local/lib/clap");
+    if (home != nullptr) out.emplace_back(std::string(home) + "/.clap");
+#endif
+    return out;
+}
+
+ClapLibrary* ClapHost::libraryFor(const std::string& path, std::string& error) {
+    for (auto& [p, lib] : libs_)
+        if (p == path) return lib.get();
+
+    auto lib = std::make_unique<ClapLibrary>();
+    if (!lib->open(path, error)) return nullptr;
+    libs_.emplace_back(path, std::move(lib));
+    return libs_.back().second.get();
+}
+
+void ClapHost::scan(const std::vector<std::string>& paths) {
+    found_.clear();
+    for (const auto& dir : paths) {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(dir, ec)) continue;
+        for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+            if (ec) break;
+            const std::string p = e.path().string();
+            if (p.size() < 5 || p.compare(p.size() - 5, 5, ".clap") != 0) continue;
+
+            std::string err;
+            ClapLibrary* lib = libraryFor(p, err);
+            if (lib == nullptr) continue;      // not ours to report; a browser shows what loaded
+
+            const std::uint32_t n = lib->pluginCount();
+            for (std::uint32_t i = 0; i < n; ++i) {
+                const clap_plugin_descriptor_t* d = lib->descriptorAt(i);
+                if (d == nullptr || d->id == nullptr) continue;
+                ClapPluginRef r;
+                r.bundlePath = p;
+                r.id      = d->id;
+                r.name    = d->name    != nullptr ? d->name    : "";
+                r.vendor  = d->vendor  != nullptr ? d->vendor  : "";
+                r.version = d->version != nullptr ? d->version : "";
+                for (const char* const* f = d->features; f != nullptr && *f != nullptr; ++f) {
+                    if (!r.features.empty()) r.features += ',';
+                    r.features += *f;
+                    if (std::strcmp(*f, CLAP_PLUGIN_FEATURE_INSTRUMENT) == 0)
+                        r.isInstrument = true;
+                }
+                found_.push_back(std::move(r));
+            }
+        }
+    }
+}
+
+std::unique_ptr<DeviceInstance> ClapHost::makeDevice(const ClapPluginRef& ref,
+                                                     double sampleRate,
+                                                     std::int32_t blockSize,
+                                                     std::string& error) {
+    DeviceIdentity id;
+    id.format  = "clap";
+    id.uid     = ref.id;
+    id.name    = ref.name;
+    id.vendor  = ref.vendor;
+    id.version = ref.version;
+
+    ClapLibrary* lib = libraryFor(ref.bundlePath, error);
+    const clap_plugin_t* p = (lib != nullptr) ? lib->create(glue_.host(), ref.id.c_str())
+                                              : nullptr;
+    if (p == nullptr) {
+        // ADR-0011 / SPEC 7.1. Not nullptr, not an exception, not a skip:
+        // the device stays in the chain as a bypassed placeholder carrying
+        // the identity, so the signal path is unchanged and the user is told
+        // what is missing rather than that "a plugin" is.
+        if (error.empty()) error = "the factory refused to create " + ref.id;
+        return std::make_unique<MissingDevice>(id);
+    }
+    glue_.registerPlugin(p);
+    auto dev = std::make_unique<ClapDevice>(p, id);
+    dev->prepare(sampleRate, blockSize);
+    return dev;
 }
 
 }  // namespace adi::device

@@ -949,6 +949,62 @@ void testMainThreadCallbackIsDispatched() {
     check(f.mainThreadCalls == 1, "an unregistered plugin is not called");
 }
 
+void testClapHostWithoutAnyPlugin() {
+    section("ClapHost -- the parts that need no plugin installed");
+
+    const auto paths = ClapHost::defaultSearchPaths();
+    check(!paths.empty(), "there is at least one default search path on this OS");
+    for (const auto& p : paths)
+        check(!p.empty(), "and none of them is empty");
+
+    // A scan over nothing must be safe and must not invent plugins. CI has
+    // no CLAP installed, so this IS the CI case.
+    ClapHost host;
+    host.scan({"/nonexistent/path/one", "/nonexistent/path/two"});
+    check(host.plugins().empty(), "scanning directories that do not exist finds nothing");
+    check(host.libraryCount() == 0, "and opens no libraries");
+
+    // ADR-0011 through the CLAP path. A reference that resolves to nothing
+    // must still produce a device, carrying its identity, or a project
+    // opened without its plugins silently rewires itself.
+    ClapPluginRef bogus;
+    bogus.bundlePath = "/nonexistent/Nope.clap";
+    bogus.id = "com.example.nope";
+    bogus.name = "Nope";
+    bogus.vendor = "Nobody";
+    bogus.version = "9.9";
+
+    std::string err;
+    auto dev = host.makeDevice(bogus, 48000.0, 512, err);
+    check(dev != nullptr, "makeDevice NEVER returns null");
+    check(dev && !dev->loaded(), "and the device knows it did not load");
+    check(!err.empty(), "with a reason: " + err);
+    check(dev && dev->identity().name == "Nope", "the identity survives");
+    check(dev && dev->identity().format == "clap", "including the format");
+    check(dev && dev->identity().describe().find("Nobody") != std::string::npos,
+          "so the user is told WHAT is missing, not that something is");
+
+    // A FAILED OPEN IS NOT CACHED, which a planted defect walked straight
+    // through until this existed. Caching one means a plugin that becomes
+    // available later -- a remounted drive, a reinstall, a permissions fix --
+    // is never retried, and the user gets a placeholder forever with no way
+    // to clear it short of restarting.
+    check(host.libraryCount() == 0,
+          "a library that failed to open is NOT kept, so a later attempt retries");
+    std::string err2;
+    auto again = host.makeDevice(bogus, 48000.0, 512, err2);
+    check(again != nullptr && !again->loaded(), "a second attempt fails the same way");
+    check(host.libraryCount() == 0, "and still caches nothing");
+
+    // And it behaves like the placeholder it is.
+    check(dev && dev->tailSamples() == 0, "a placeholder holds nothing back");
+    check(dev && dev->latencySamples() == 0, "and delays nothing");
+
+    // The glue is one per host, and it is what DeviceHost watches.
+    check(host.glue().host() != nullptr, "the host exposes its glue for ADR-0084");
+    check(host.glue().restartRequests() == 0, "which has seen nothing yet");
+}
+
 }  // namespace
 
 int main() {
@@ -973,6 +1029,7 @@ int main() {
     testTheSegmentBoundItself();
     testRestartCausesAreDistinguished();
     testMainThreadCallbackIsDispatched();
+    testClapHostWithoutAnyPlugin();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

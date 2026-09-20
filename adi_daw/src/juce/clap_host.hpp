@@ -42,6 +42,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace adi::device {
@@ -386,6 +387,78 @@ private:
     // 32-bit CI job a 64-bit non-atomic read can also tear, so the counter
     // could be observed as a value it never held.
     std::atomic<std::uint64_t> restarts_{0}, processes_{0}, callbacks_{0};
+};
+
+/// One plugin a scan found, before it is instantiated.
+///
+/// Deliberately the same shape as `juce::PluginDescription` is used for VST3:
+/// enough to put a row in a browser and to instantiate later, and nothing
+/// that requires the plugin to be loaded.
+struct ClapPluginRef {
+    std::string bundlePath;   ///< the .clap, which is what `ClapLibrary::open` wants
+    std::string id;           ///< `clap_plugin_descriptor.id`, stable and reverse-DNS
+    std::string name;
+    std::string vendor;
+    std::string version;
+    std::string features;     ///< joined `clap_plugin_descriptor.features`
+
+    /// True when the descriptor declares CLAP_PLUGIN_FEATURE_INSTRUMENT.
+    /// A browser needs it, and so does anything asserting "a note should
+    /// make sound" -- an effect handed no input is correctly silent.
+    bool isInstrument = false;
+};
+
+/// The sibling of `Vst3Host`: scan, enumerate, instantiate.
+///
+/// LIFETIME, which is the sharp edge and is not obvious. A `ClapDevice` holds
+/// a `clap_plugin_t*` that lives inside a `ClapLibrary`'s loaded image. The
+/// library must therefore outlive every device made from it — `dlclose` while
+/// a plugin is alive unmaps the code its destructor is about to run.
+///
+/// So the host OWNS the libraries, keyed by path, and never closes one while
+/// it is open. A caller keeps the host alive for as long as any device it
+/// made. That is stated here because the compiler cannot say it.
+///
+/// No JUCE: CLAP needs none, so this scans, loads and instantiates on every
+/// ABI the suite runs on. `Vst3Host` cannot.
+class ClapHost {
+public:
+    ClapHost();
+
+    /// Where CLAP plugins live, per the format's own convention, plus
+    /// `CLAP_PATH` when it is set. Read rather than hardcoded to one OS.
+    [[nodiscard]] static std::vector<std::string> defaultSearchPaths();
+
+    /// Walk `paths` for `.clap` bundles and read their factories. Opening a
+    /// bundle runs its `init`, so a scan is not free and is not a loop to
+    /// put on a timer.
+    void scan(const std::vector<std::string>& paths);
+
+    [[nodiscard]] const std::vector<ClapPluginRef>& plugins() const noexcept {
+        return found_;
+    }
+
+    /// ADR-0011: never null. A plugin that cannot be instantiated becomes a
+    /// `MissingDevice` carrying the same identity, so the chain keeps its
+    /// shape and the user is told what is missing.
+    std::unique_ptr<DeviceInstance> makeDevice(const ClapPluginRef& ref,
+                                               double sampleRate,
+                                               std::int32_t blockSize,
+                                               std::string& error);
+
+    /// The glue every plugin from this host reports through. Registered once
+    /// with `DeviceHost::watchClapGlue`, because `clap_host_latency.changed`
+    /// is a HOST callback and belongs to the host object (ADR-0084).
+    [[nodiscard]] ClapHostGlue& glue() noexcept { return glue_; }
+
+    [[nodiscard]] std::size_t libraryCount() const noexcept { return libs_.size(); }
+
+private:
+    ClapLibrary* libraryFor(const std::string& path, std::string& error);
+
+    ClapHostGlue glue_;
+    std::vector<ClapPluginRef> found_;
+    std::vector<std::pair<std::string, std::unique_ptr<ClapLibrary>>> libs_;
 };
 
 }  // namespace adi::device
