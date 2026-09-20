@@ -839,6 +839,70 @@ void testAMisfitGrowsTheRingThroughTheCoalescer() {
                                       std::to_string(o.l[bad])));
 }
 
+void testAShapeChangeEscalatesStraightToARebuild() {
+    section("ADR-0084 -- CLAP says WHY it wants a restart, and the two are not the same");
+
+    // clap_host_latency.changed and clap_host_audio_ports.rescan are different
+    // notifications. Treating both as "re-read the latency" throws away the
+    // only information that says a retap cannot possibly help: a port-layout
+    // change is a different graph, not a number that moved.
+    Rig r;
+    std::atomic<std::uint64_t> latency{0}, ports{0};
+    LatencyCoalescer c;
+    c.attach(r.g);
+    c.addSource("latency", [&] { return latency.load(std::memory_order_acquire); },
+                LatencyCoalescer::Kind::Latency);
+    c.addSource("ports", [&] { return ports.load(std::memory_order_acquire); },
+                LatencyCoalescer::Kind::Shape);
+    c.setQuietPeriodMs(0);
+
+    // A latency report alone: the cheap path, and no rebuild.
+    r.plugin.setLatency(96);
+    latency.fetch_add(1, std::memory_order_release);
+    check(c.poll(0), "the latency report is acted on");
+    eqi(r.g.latencySamples(), 96, "and the compensation followed");
+    check(!c.rebuildNeeded(), "with no rebuild demanded");
+    eqi(c.stats().shapeReports, 0, "and nothing counted as a shape change");
+
+    // A port report: no retap can fix a different topology.
+    ports.fetch_add(1, std::memory_order_release);
+    check(c.poll(100), "the port report is acted on too");
+    eqi(c.stats().shapeReports, 1, "counted as a shape change");
+    check(c.rebuildNeeded(),
+          "and it escalates straight to a rebuild -- retapping a graph whose "
+          "shape moved is answering the wrong question");
+    eqi(c.stats().rebuildsNeeded, 1, "once, not twice");
+
+    c.clearRebuildNeeded();
+    check(!c.rebuildNeeded(), "cleared by whoever rebuilds");
+
+    // And a burst carrying BOTH still demands the rebuild: the expensive
+    // answer wins, because the cheap one cannot be sufficient.
+    r.plugin.setLatency(128);
+    latency.fetch_add(1, std::memory_order_release);
+    ports.fetch_add(1, std::memory_order_release);
+    check(c.poll(200), "a mixed burst is acted on");
+    check(c.rebuildNeeded(), "and the shape half wins");
+    eqi(r.g.latencySamples(), 128,
+        "while the latency half is still applied -- a partial correction is "
+        "closer to right than none, and the rebuild may be a frame away");
+
+    // AND THE FLAG DOES NOT LEAK INTO THE NEXT BURST. Without this the whole
+    // distinction collapses after the first port change: every later latency
+    // report would demand a rebuild, and the cheap path would exist but never
+    // be taken again. Asserting the shape case alone cannot see that -- it
+    // takes a LATENCY-ONLY burst afterwards.
+    c.clearRebuildNeeded();
+    const std::int64_t before = c.stats().rebuildsNeeded;
+    r.plugin.setLatency(160);
+    latency.fetch_add(1, std::memory_order_release);
+    check(c.poll(300), "a later latency-only burst is acted on");
+    check(!c.rebuildNeeded(),
+          "and demands NO rebuild -- the shape flag belonged to its own burst");
+    eqi(c.stats().rebuildsNeeded, before, "and nothing new was counted");
+    eqi(r.g.latencySamples(), 160, "with the cheap path still working");
+}
+
 void testEscalationCanBeDeclined() {
     section("ADR-0085 -- an offline render can decline the machinery");
 
@@ -894,6 +958,7 @@ int main() {
     testAnOfferIsRefusedWhileOneIsInFlight();
     testTheAudioThreadNeverDeallocates();
     testAMisfitGrowsTheRingThroughTheCoalescer();
+    testAShapeChangeEscalatesStraightToARebuild();
     testEscalationCanBeDeclined();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);

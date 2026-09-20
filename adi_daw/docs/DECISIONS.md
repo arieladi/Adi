@@ -5347,6 +5347,34 @@ settled and went quiet held its retired buffers until some unrelated plugin
 happened to report. Reclamation has nothing to do with whether anything changed,
 and it now runs first and unconditionally.
 
+### Consuming ADR-0084: not every report is a number that moved
+
+mac's ADR-0084 landed while this was being built, and it changes what a source
+IS. CLAP says *why* it wants a restart — `clap_host_latency.changed` and
+`clap_host_audio_ports.rescan` are different notifications — and a coalescer
+that treats both as "re-read the latency" throws away the only fact that says a
+retap cannot possibly help.
+
+So a source now carries a `Kind`:
+
+- **`Latency`** takes the cheap path: re-read, move the taps, grow a ring if one
+  is too small.
+- **`Shape`** — ports, channel counts, or a bare restart with no explanation —
+  escalates straight to `rebuildNeeded()`. A topology change is a different
+  graph, and no amount of retapping answers it.
+
+A burst carrying both still demands the rebuild, and **still applies the
+latency half**: the expensive answer wins because the cheap one cannot be
+sufficient, but a partial correction is closer to right than none and the
+rebuild may be a frame away.
+
+The flag is per BURST, not sticky. Without that the distinction collapses after
+the first port change — every later latency report would demand a rebuild and
+the cheap path would exist but never be taken again. That defect survived the
+first round of planting, because asserting the shape case alone cannot see it:
+it takes a **latency-only burst afterwards**, which is now the last four checks
+of that test.
+
 ### Not decided
 
 What happens when a single latency change is larger than any sensible ring —

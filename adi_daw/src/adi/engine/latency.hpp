@@ -64,6 +64,21 @@ public:
         std::int64_t maxWaitTrips = 0;    ///< bursts cut short by the ceiling
         std::int64_t escalations = 0;     ///< edges handed a bigger ring (ADR-0085)
         std::int64_t ringsReclaimed = 0;  ///< old rings freed on the message thread
+        std::int64_t shapeReports = 0;    ///< reports that were a topology change
+    };
+
+    /// What a source's counter MEANS when it moves. ADR-0084: CLAP says why it
+    /// wants a restart, through `clap_host_latency.changed` and
+    /// `clap_host_audio_ports.rescan`, and treating those two the same throws
+    /// the distinction away.
+    enum class Kind {
+        /// The node's latency moved and nothing else. This is the cheap path:
+        /// re-read, move the taps, grow a ring if one is too small.
+        Latency,
+        /// The node's SHAPE moved -- ports, channel counts -- or it asked for a
+        /// restart without saying why. No amount of retapping fixes a topology
+        /// change, so this escalates straight to a rebuild.
+        Shape,
     };
 
     void attach(Graph& g) noexcept { graph_ = &g; }
@@ -71,7 +86,8 @@ public:
     /// `epoch` returns a counter that only ever increases. The name is for
     /// diagnostics: "which plugin keeps doing this" is the first question
     /// anyone asks when a session retaps every second.
-    void addSource(std::string name, std::function<std::uint64_t()> epoch);
+    void addSource(std::string name, std::function<std::uint64_t()> epoch,
+                   Kind kind = Kind::Latency);
 
     /// Changing the SET of sources is a rebuild, not a retap: the graph's
     /// topology changed, so its rings have to be sized again anyway.
@@ -126,6 +142,7 @@ private:
         std::string name;
         std::function<std::uint64_t()> epoch;
         std::uint64_t seen = 0;
+        Kind kind = Kind::Latency;
     };
 
     Graph* graph_ = nullptr;
@@ -138,6 +155,7 @@ private:
     std::int64_t firstAt_ = 0;       ///< when the open burst started
     std::int64_t lastAt_ = 0;        ///< when it last saw a report
     bool pending_ = false;
+    bool burstNeedsRebuild_ = false;
     bool autoEscalate_ = true;
     bool rebuildNeeded_ = false;
 };

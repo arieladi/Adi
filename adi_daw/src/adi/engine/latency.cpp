@@ -7,10 +7,11 @@
 namespace adi::engine {
 
 void LatencyCoalescer::addSource(std::string name,
-                                 std::function<std::uint64_t()> epoch) {
+                                 std::function<std::uint64_t()> epoch, Kind kind) {
     Source s;
     s.name = std::move(name);
     s.epoch = std::move(epoch);
+    s.kind = kind;
     // SEEDED, not zeroed. A device that has already reported once before it was
     // registered would otherwise look like a fresh report the moment it joined,
     // so adding a plugin to a project would retap the graph for no reason.
@@ -21,6 +22,7 @@ void LatencyCoalescer::addSource(std::string name,
 void LatencyCoalescer::clearSources() {
     sources_.clear();
     pending_ = false;
+    burstNeedsRebuild_ = false;
     lastReporter_.clear();
 }
 
@@ -47,6 +49,10 @@ bool LatencyCoalescer::poll(std::int64_t nowMs) {
             changed = true;
             ++stats_.reports;
             lastReporter_ = s.name;
+            if (s.kind == Kind::Shape) {
+                burstNeedsRebuild_ = true;
+                ++stats_.shapeReports;
+            }
         }
     }
 
@@ -74,6 +80,17 @@ bool LatencyCoalescer::poll(std::int64_t nowMs) {
     pending_ = false;
     ++stats_.retaps;
 
+    // ADR-0084: a shape change is not a number that moved, it is a different
+    // graph. Retapping still runs -- a partial correction is closer to right
+    // than none, and the rebuild may be a frame away -- but the flag is raised
+    // regardless of whether the retap happens to succeed.
+    const bool shapeMoved = burstNeedsRebuild_;
+    burstNeedsRebuild_ = false;
+    if (shapeMoved) {
+        rebuildNeeded_ = true;
+        ++stats_.rebuildsNeeded;
+    }
+
     // ADR-0079: this moves the taps that fit and reports when one does not.
     // A false is not an error to swallow -- it is the signal that this change
     // needs new buffers, and only a rebuild off-thread can supply them.
@@ -84,9 +101,11 @@ bool LatencyCoalescer::poll(std::int64_t nowMs) {
         const std::size_t grown = autoEscalate_ ? graph_->escalateLatency() : 0;
         if (grown > 0) {
             stats_.escalations += static_cast<std::int64_t>(grown);
-        } else {
+        } else if (!shapeMoved) {
             // Nothing could be grown, so this is not a size problem. The
-            // topology changed under us and only a rebuild will do.
+            // topology changed under us and only a rebuild will do. Guarded on
+            // `shapeMoved` so a burst that already raised the flag is not
+            // counted twice.
             rebuildNeeded_ = true;
             ++stats_.rebuildsNeeded;
         }
