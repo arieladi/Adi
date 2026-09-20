@@ -2971,3 +2971,101 @@ No parallelism across nodes — which is the thing ADR-0052 says actually matter
 for a dense chain, and it is unbuilt. Each is a real DAW requirement, none
 changes the decisions above, and an untested generalisation is worth less than
 a named limit.
+
+
+---
+
+## ADR-0056 — Two buses, levelled scheduling, and an event capacity derived rather than guessed — `DECIDED` (2026-09-20)
+
+Three limits ADR-0055 named as unbuilt, addressed. One of them turned out to be
+a live defect against ADR-0054's mandate rather than a missing feature.
+
+### 1. The event capacity was wrong for the instrument it was written for
+
+`Graph` allocated a fixed 1024 events per node. The arithmetic ADR-0054 did not
+do:
+
+```
+500 Hz x (4096 frames / 48 kHz) = 42.7 update frames per block
+x 3 dimensions                  = 128 events per note per block
+
+  polyphony  8  ->  1024 events   fits exactly
+  polyphony 10  ->  1280 events   DROPS
+  polyphony 16  ->  2048 events   DROPS
+```
+
+**A Continuum playing ten notes would have lost packets**, on the instrument the
+mandate names, in the configuration ADR-0049 caps at. Not silently — the
+counter existed — but nothing read it and nothing tested it, which is the same
+thing.
+
+`prepare` now derives the capacity from the block size, the sample rate and a
+polyphony target, and `deriveEventCapacity` is public so the arithmetic is
+testable rather than a comment. The test pushes a real Continuum block — 16
+notes × 3 dimensions × 42 frames — and asserts **zero** drops.
+
+This is the second time ADR-0054 has turned out to constrain a number nobody
+had connected to it, after ADR-0042's split floor. That is worth noticing about
+the mandate: it is not a feature to add, it is a set of bounds on numbers that
+already existed.
+
+### 2. Two buses, not N
+
+`Bus::Main` and `Bus::Sidechain`. ADR-0043 already required that **a live
+sidechain prevent suspension** — a compressor whose key input is playing is
+working however quiet its main input is, and suspending it would release the
+gain reduction. The graph could not honour that without being able to tell the
+two apart, so the ADR had a requirement the code could not express.
+
+Two rather than an arbitrary count, deliberately. A sidechain is the one
+auxiliary input the rest of the system already names. An N-bus model is a real
+requirement — multi-output instruments, drum racks — and it is not this one; it
+arrives when something needs it, rather than being generalised into existence
+now and tested by nothing.
+
+### 3. Levels, and the property that makes parallelism safe
+
+`prepare` computes each node's dependency depth. Everything in one level depends
+only on levels below it, so **a level may be run in any order, including
+concurrently, without changing a single output byte.**
+
+That determinism is the whole decision, and it is not incidental:
+
+- every node writes its **own** buffer, so no two nodes at one level touch the
+  same memory;
+- summation into a consumer happens in that consumer's **fixed input order**,
+  so no float is ever added in a different sequence.
+
+ADR-0021's oracle compares bytes. A scheduler that reordered a floating-point
+sum would break it in a way that surfaces as a digest mismatch weeks later, in
+a test that does not mention threads.
+
+**The thread pool is NOT built.** The levels are, and the property is tested by
+running each level backwards and comparing output byte for byte — not within a
+tolerance, because "close enough" is exactly the answer that would let a
+reordered sum through.
+
+Shipping the property and not the pool is the honest split. ADR-0052 says
+graph-level parallelism is what actually matters for a dense chain; it is also
+the change most able to introduce a bug that only appears under load on someone
+else's machine, and doing it without the determinism argument written down and
+checked first would be building the fast version of something unproven.
+
+### What the order-independence test can and cannot catch
+
+It demonstrates the property and would catch a future change that introduced
+shared mutable state between nodes at one level — an aliased scratch buffer, a
+counter a node reads as well as writes.
+
+**It cannot be falsified by a one-line plant**, because the design has no such
+state today: there is nothing to corrupt. That is the same shape as mac's
+finding about `StreamError::TooLarge` being unreachable on 64-bit hosts, and it
+is recorded for the same reason. A check that cannot currently fail is worth
+keeping when it guards a property a future change could break, and worth
+labelling so nobody mistakes it for evidence that the hard part is proven.
+
+The three checks that *can* fail were each proved by planting their defect:
+ignoring the sidechain when deciding suspension, summing the two buses
+together, and returning to the fixed 1024 capacity — which reports
+`1024 events in one block` and a failed drop count, which is the bug this ADR
+opened with.

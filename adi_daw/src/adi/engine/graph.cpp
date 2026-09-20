@@ -20,10 +20,12 @@ NodeId Graph::addNode(Node& node) {
     return static_cast<NodeId>(slots_.size() - 1);
 }
 
-bool Graph::connect(NodeId from, NodeId to) {
+bool Graph::connect(NodeId from, NodeId to, Bus bus) {
     const auto n = static_cast<NodeId>(slots_.size());
     if (from < 0 || from >= n || to < 0 || to >= n || from == to) return false;
-    slots_[static_cast<std::size_t>(to)].inputs.push_back(from);
+    Slot& dst = slots_[static_cast<std::size_t>(to)];
+    if (bus == Bus::Sidechain) dst.sidechains.push_back(from);
+    else                       dst.inputs.push_back(from);
     prepared_ = false;
     return true;
 }
@@ -31,6 +33,19 @@ bool Graph::connect(NodeId from, NodeId to) {
 bool Graph::pushInputEvent(NodeId to, const Event& e) {
     if (to < 0 || to >= static_cast<NodeId>(slots_.size())) return false;
     return slots_[static_cast<std::size_t>(to)].events.push(e);
+}
+
+std::int32_t Graph::deriveEventCapacity(double sampleRate, std::int32_t maxFrames,
+                                        std::int32_t polyphony) noexcept {
+    // ADR-0054's instrument at ADR-0049's largest block: 500 Hz update frames
+    // x three dimensions x polyphony, plus a note-on and note-off each, plus a
+    // floor so a 64-frame block still holds a chord arriving at once.
+    if (sampleRate <= 0.0 || maxFrames <= 0) return 1024;
+    const double frames = 500.0 * (static_cast<double>(maxFrames) / sampleRate);
+    const double total = frames * 3.0 * static_cast<double>(polyphony)
+                       + 2.0 * static_cast<double>(polyphony);
+    const auto v = static_cast<std::int32_t>(total) + 64;
+    return v < 256 ? 256 : v;
 }
 
 std::int32_t Graph::maxFloorFor(double sampleRate) noexcept {
@@ -53,9 +68,11 @@ bool Graph::topoSort() {
     order_.reserve(static_cast<std::size_t>(n));
 
     std::vector<std::int32_t> indegree(static_cast<std::size_t>(n), 0);
-    for (std::int32_t i = 0; i < n; ++i)
+    for (std::int32_t i = 0; i < n; ++i) {
+        const Slot& sl = slots_[static_cast<std::size_t>(i)];
         indegree[static_cast<std::size_t>(i)] =
-            static_cast<std::int32_t>(slots_[static_cast<std::size_t>(i)].inputs.size());
+            static_cast<std::int32_t>(sl.inputs.size() + sl.sidechains.size());
+    }
 
     // Kahn's algorithm. Ready nodes are taken in id order rather than from a
     // stack, so the order is deterministic for a given graph -- two runs that
@@ -71,9 +88,33 @@ bool Graph::topoSort() {
         order_.push_back(id);
 
         for (std::int32_t j = 0; j < n; ++j) {
-            auto& ins = slots_[static_cast<std::size_t>(j)].inputs;
-            if (std::find(ins.begin(), ins.end(), id) == ins.end()) continue;
-            if (--indegree[static_cast<std::size_t>(j)] == 0) ready.push_back(j);
+            Slot& sj = slots_[static_cast<std::size_t>(j)];
+            std::int32_t edges = 0;
+            for (NodeId in : sj.inputs)     if (in == id) ++edges;
+            for (NodeId in : sj.sidechains) if (in == id) ++edges;
+            if (edges == 0) continue;
+            indegree[static_cast<std::size_t>(j)] -= edges;
+            if (indegree[static_cast<std::size_t>(j)] == 0) ready.push_back(j);
+        }
+    }
+
+    // Dependency depth. Every node in one level depends only on levels below
+    // it, so a level may run in any order -- including concurrently -- and the
+    // output is unchanged, because each node writes its own buffer and every
+    // sum happens in its consumer's fixed input order (ADR-0056).
+    levels_.clear();
+    if (static_cast<std::int32_t>(order_.size()) == n) {
+        for (NodeId id : order_) {
+            Slot& sl = slots_[static_cast<std::size_t>(id)];
+            std::int32_t depth = 0;
+            for (NodeId in : sl.inputs)
+                depth = (std::max)(depth, slots_[static_cast<std::size_t>(in)].level + 1);
+            for (NodeId in : sl.sidechains)
+                depth = (std::max)(depth, slots_[static_cast<std::size_t>(in)].level + 1);
+            sl.level = depth;
+            if (static_cast<std::int32_t>(levels_.size()) <= depth)
+                levels_.resize(static_cast<std::size_t>(depth) + 1);
+            levels_[static_cast<std::size_t>(depth)].push_back(id);
         }
     }
 
@@ -116,6 +157,9 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     if (floor_ > cap) floor_ = cap;
     if (floor_ < 1) floor_ = 1;
 
+    if (eventCapacity_ <= 0)
+        eventCapacity_ = deriveEventCapacity(sampleRate, maxFrames, maxPolyphony_);
+
     const auto ch = static_cast<std::size_t>(channels_);
     const auto fr = static_cast<std::size_t>(maxFrames);
 
@@ -139,6 +183,9 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     mixBuf_.assign(ch * fr, 0.0f);
     mixPtrs_.resize(ch);
     for (std::size_t c = 0; c < ch; ++c) mixPtrs_[c] = mixBuf_.data() + c * fr;
+    sideBuf_.assign(ch * fr, 0.0f);
+    sidePtrs_.resize(ch);
+    for (std::size_t c = 0; c < ch; ++c) sidePtrs_[c] = sideBuf_.data() + c * fr;
     mixEventStore_.assign(static_cast<std::size_t>(eventCapacity_), Event{});
     mixEvents_ = EventList(mixEventStore_.data(), eventCapacity_);
 
@@ -160,18 +207,120 @@ void Graph::release() {
 // process
 // ---------------------------------------------------------------------------
 
-void Graph::accumulate(const Slot& src, std::int32_t begin, std::int32_t frames,
-                       bool first) noexcept {
+void Graph::accumulate(std::vector<float*>& dst, const Slot& src, std::int32_t begin,
+                       std::int32_t frames, bool first) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
     for (std::size_t c = 0; c < ch; ++c) {
         const float* s = src.chanPtrs[c] + begin;
-        float* d = mixPtrs_[c] + begin;
+        float* d = dst[c] + begin;
         if (first) {
             std::memcpy(d, s, static_cast<std::size_t>(frames) * sizeof(float));
         } else {
             for (std::int32_t i = 0; i < frames; ++i) d[i] += s[i];
         }
     }
+}
+
+void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept {
+    const auto ch = static_cast<std::size_t>(channels_);
+
+    bool mainSilent = true;
+    for (NodeId in : s.inputs)
+        if (!slots_[static_cast<std::size_t>(in)].silent) mainSilent = false;
+
+    // A LIVE SIDECHAIN PREVENTS SUSPENSION, which ADR-0043 requires by name: a
+    // compressor whose key input is playing is working, however quiet its main
+    // input is, and suspending it would release the gain reduction.
+    bool sideSilent = true;
+    for (NodeId in : s.sidechains)
+        if (!slots_[static_cast<std::size_t>(in)].silent) sideSilent = false;
+
+    const bool inputSilent = mainSilent && sideSilent;
+
+    // Events are NOT silence. A node with a pending event, or an instrument
+    // with no audio input at all, must run -- this is the bug every
+    // implementation of this feature ships once, because naive silence
+    // detection suspends every synth in the project.
+    const bool hasEvents = !s.events.empty();
+
+    // An infinite tail is a SEPARATE FLAG, not a sentinel in the counter.
+    // Storing kInfiniteTail and decrementing it works -- INT64_MAX takes some
+    // quadrillions of blocks to reach zero -- but it makes the never-suspend
+    // rule impossible to test: planting a defect in the guard changes nothing
+    // observable at any realistic duration. A decision that cannot be
+    // falsified is one nobody can maintain, so it is a branch instead.
+    const bool infinite = s.node->tailSamples() == kInfiniteTail;
+
+    if (!inputSilent || hasEvents) {
+        s.tailRemaining = infinite ? 0 : s.node->tailSamples();
+    } else if (!infinite) {
+        s.tailRemaining -= frames;
+        if (s.tailRemaining < 0) s.tailRemaining = 0;
+    }
+
+    const bool suspend = !infinite && !s.node->alwaysProcess() &&
+                         inputSilent && !hasEvents && s.tailRemaining == 0;
+    if (suspend) {
+        ++stats_.nodesSuspended;
+        s.silent = true;
+        for (std::size_t c = 0; c < ch; ++c)
+            std::memset(s.chanPtrs[c], 0,
+                        static_cast<std::size_t>(frames) * sizeof(float));
+        return;
+    }
+
+    for (std::int32_t seg = 0; seg < nsplit; ++seg) {
+        const std::int32_t begin = splits_[static_cast<std::size_t>(seg)];
+        const std::int32_t end = splits_[static_cast<std::size_t>(seg + 1)];
+        const std::int32_t n = end - begin;
+        if (n <= 0) continue;
+
+        // Summing here, for every node, is what makes a group (ADR-0044) a
+        // node with no device rather than a special case in the scheduler.
+        bool anyMain = false;
+        for (NodeId in : s.inputs) {
+            accumulate(mixPtrs_, slots_[static_cast<std::size_t>(in)], begin, n, !anyMain);
+            anyMain = true;
+        }
+        bool anySide = false;
+        for (NodeId in : s.sidechains) {
+            accumulate(sidePtrs_, slots_[static_cast<std::size_t>(in)], begin, n, !anySide);
+            anySide = true;
+        }
+
+        NodeIo nio;
+        nio.in = anyMain ? mixPtrs_.data() : nullptr;
+        nio.sidechain = anySide ? sidePtrs_.data() : nullptr;
+        nio.out = s.chanPtrs.data();
+        nio.channels = channels_;
+        nio.frames = n;
+        nio.blockOffset = begin;
+        nio.inputSilent = mainSilent;
+        nio.sidechainSilent = sideSilent;
+        nio.sampleRate = sampleRate_;
+
+        const Event* first = nullptr;
+        std::int32_t count = 0;
+        for (const Event& e : s.events) {
+            if (e.frame >= begin && e.frame < end) {
+                if (first == nullptr) first = &e;
+                ++count;
+            }
+        }
+        nio.events = EventSpan{first, count};
+
+        s.node->process(nio);
+        ++stats_.nodeCalls;
+    }
+
+    // Is this node's output silent? Measured rather than declared: a node that
+    // claims silence and writes samples is a bug the next node inherits, and
+    // the check is one pass over a buffer just written and therefore in cache.
+    bool allZero = true;
+    for (std::size_t c = 0; c < ch && allZero; ++c)
+        for (std::int32_t i = 0; i < frames; ++i)
+            if (s.chanPtrs[c][i] != 0.0f) { allZero = false; break; }
+    s.silent = allZero;
 }
 
 void Graph::process(const AudioIo& io) noexcept {
@@ -189,7 +338,6 @@ void Graph::process(const AudioIo& io) noexcept {
 
     ++stats_.blocks;
     const std::int32_t frames = io.frames;
-    const auto ch = static_cast<std::size_t>(channels_);
 
     // --- segment boundaries (ADR-0042) -------------------------------------
     //
@@ -222,95 +370,17 @@ void Graph::process(const AudioIo& io) noexcept {
     // cost is that a node wakes at a block boundary rather than at the exact
     // sample its input returns, which is inaudible and much easier to reason
     // about.
-    for (NodeId id : order_) {
-        Slot& s = slots_[static_cast<std::size_t>(id)];
-
-        bool inputSilent = true;
-        for (NodeId in : s.inputs)
-            if (!slots_[static_cast<std::size_t>(in)].silent) inputSilent = false;
-
-        // Events are NOT silence. A node with a pending event, or an
-        // instrument with no audio input at all, must run -- this is the bug
-        // every implementation of this feature ships once, because naive
-        // silence detection suspends every synth in the project.
-        const bool hasEvents = !s.events.empty();
-
-        // An infinite tail is a SEPARATE FLAG, not a sentinel in the counter.
-        // Storing kInfiniteTail and decrementing it works -- INT64_MAX takes
-        // some quadrillions of blocks to reach zero -- but it makes the
-        // never-suspend rule impossible to test: planting a defect in the
-        // guard changes nothing observable at any realistic duration. A
-        // decision that cannot be falsified is one nobody can maintain, so it
-        // is a branch instead, and the counter stays a counter.
-        const bool infinite = s.node->tailSamples() == kInfiniteTail;
-
-        if (!inputSilent || hasEvents) {
-            s.tailRemaining = infinite ? 0 : s.node->tailSamples();
-        } else if (!infinite) {
-            s.tailRemaining -= frames;
-            if (s.tailRemaining < 0) s.tailRemaining = 0;
+    for (const auto& level : levels_) {
+        // Any order within a level gives the same bytes -- that is the property
+        // a thread pool would rely on, and it is exercised here rather than
+        // asserted. See ADR-0056 and setReverseWithinLevel.
+        if (reverseWithinLevel_) {
+            for (auto it = level.rbegin(); it != level.rend(); ++it)
+                runNode(slots_[static_cast<std::size_t>(*it)], frames, nsplit);
+        } else {
+            for (NodeId id : level)
+                runNode(slots_[static_cast<std::size_t>(id)], frames, nsplit);
         }
-
-        const bool suspend = !infinite && !s.node->alwaysProcess() &&
-                             inputSilent && !hasEvents && s.tailRemaining == 0;
-        if (suspend) {
-            ++stats_.nodesSuspended;
-            s.silent = true;
-            for (std::size_t c = 0; c < ch; ++c)
-                std::memset(s.chanPtrs[c], 0,
-                            static_cast<std::size_t>(frames) * sizeof(float));
-            continue;
-        }
-
-        // --- run it, segment by segment ------------------------------------
-        for (std::int32_t seg = 0; seg < nsplit; ++seg) {
-            const std::int32_t begin = splits_[static_cast<std::size_t>(seg)];
-            const std::int32_t end = splits_[static_cast<std::size_t>(seg + 1)];
-            const std::int32_t n = end - begin;
-            if (n <= 0) continue;
-
-            // Sum this node's inputs into the scratch buffer. Summing here,
-            // for every node, is what makes a group (ADR-0044) a node with no
-            // device rather than a special case in the scheduler.
-            bool any = false;
-            for (NodeId in : s.inputs) {
-                accumulate(slots_[static_cast<std::size_t>(in)], begin, n, !any);
-                any = true;
-            }
-
-            NodeIo nio;
-            nio.in = any ? mixPtrs_.data() : nullptr;
-            nio.out = s.chanPtrs.data();
-            nio.channels = channels_;
-            nio.frames = n;
-            nio.blockOffset = begin;
-            nio.inputSilent = inputSilent;
-            nio.sampleRate = sampleRate_;
-
-            // Events of this segment only, in block-relative frames.
-            const Event* first = nullptr;
-            std::int32_t count = 0;
-            for (const Event& e : s.events) {
-                if (e.frame >= begin && e.frame < end) {
-                    if (first == nullptr) first = &e;
-                    ++count;
-                }
-            }
-            nio.events = EventSpan{first, count};
-
-            s.node->process(nio);
-            ++stats_.nodeCalls;
-        }
-
-        // Is this node's output silent? Measured rather than declared: a node
-        // that claims silence and writes samples is a bug the next node
-        // inherits, and the check is one pass over a buffer we have just
-        // written and is therefore in cache.
-        bool allZero = true;
-        for (std::size_t c = 0; c < ch && allZero; ++c)
-            for (std::int32_t i = 0; i < frames; ++i)
-                if (s.chanPtrs[c][i] != 0.0f) { allZero = false; break; }
-        s.silent = allZero;
     }
 
     // --- out ---------------------------------------------------------------
