@@ -374,6 +374,12 @@ int runAll() {
 }
 
 int main() {
+    // Unbuffered, so the last line before a crash survives. On Windows a
+    // crashing test binary loses its whole block-buffered stdout, and the
+    // harness then prints a blank line where a failure should be -- which is
+    // how adi_device_tests' 383 KB overrun looked like a harness glitch for
+    // two runs before anyone ran the binary directly.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     // OpRegistry::instance() throws if the catalogue is malformed (OPS.md 3).
     // Uncaught, that is abort() -- on Windows a modal dialog that blocks the
     // run rather than reporting it. Catch it and say what is wrong.
