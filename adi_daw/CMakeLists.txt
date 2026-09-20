@@ -132,6 +132,7 @@ add_library(adi_core STATIC
     src/adi/engine/snapshot.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
+    src/adi/engine/realize.cpp
     src/adi/engine/mpe_input.cpp
     src/adi/textproj.cpp
     src/adi/store_rows.cpp
@@ -242,6 +243,10 @@ add_test(NAME adi_device_ops_tests COMMAND adi_device_ops_tests)
 add_executable(adi_plan_tests tests/test_plan.cpp)
 target_link_libraries(adi_plan_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_plan_tests COMMAND adi_plan_tests)
+
+add_executable(adi_realize_tests tests/test_realize.cpp)
+target_link_libraries(adi_realize_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
 
 add_executable(adi_graph_tests tests/test_graph.cpp)
 target_link_libraries(adi_graph_tests PRIVATE adi_core adi_warnings)

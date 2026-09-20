@@ -202,6 +202,11 @@ public:
     /// (ADR-0044).
     bool connect(NodeId from, NodeId to, Bus bus = Bus::Main);
 
+    /// How many nodes have been added. Lets a caller assert what it built
+    /// rather than describe it -- realisation's decision to emit no node for a
+    /// VCA is only a claim without this.
+    [[nodiscard]] std::size_t nodeCount() const noexcept { return slots_.size(); }
+
     /// The node whose output is the graph's output. Exactly one.
     void setOutput(NodeId id) { output_ = id; }
 

@@ -222,10 +222,12 @@ GraphPlan planGraph(const rows::Model& m) {
                 if (e.from == id && e.to < n && --indegree[e.to] == 0)
                     ready.push_back(e.to);
         }
-        if (seen != n)
+        if (seen != n) {
+            plan.cycle = true;
             plan.problems.push_back(
                 "the routing has a cycle; " + std::to_string(seen) + " of " +
                 std::to_string(n) + " nodes are reachable in order");
+        }
     }
 
     return plan;
