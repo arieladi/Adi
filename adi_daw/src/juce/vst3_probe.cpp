@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <cstddef>
 #include <vector>
 #include <cstdio>
@@ -144,13 +145,106 @@ int measureLatencyChange(adi::device::Vst3Host& host, const juce::String& want) 
 
 }  // namespace
 
+/// Drive a real instrument through the RAW path and check sound comes out.
+///
+/// Reaching `IAudioProcessor` only proves `queryInterface` worked. This
+/// proves our own `ProcessData` — our buses, our `IEventList`, our
+/// `IParameterChanges` — actually makes a plugin produce audio, which is the
+/// whole of ADR-0073's takeover.
+int renderThrough(adi::device::Vst3Host& host, const juce::String& want) {
+    juce::KnownPluginList list;
+    host.scan(host.defaultSearchPaths(), list);
+
+    juce::PluginDescription found;
+    bool haveIt = false;
+    for (const auto& d : list.getTypes())
+        if (d.name.containsIgnoreCase(want)) { found = d; haveIt = true; break; }
+    if (!haveIt) { std::printf("  skip  no plugin matching '%s'\n", want.toRawUTF8()); return 0; }
+
+    std::string err;
+    auto dev = host.makeDevice(found, 48000.0, 512, err);
+    auto* v3 = dynamic_cast<adi::device::Vst3Device*>(dev.get());
+    if (v3 == nullptr || !v3->loaded()) {
+        std::printf("  FAIL  %s did not load: %s\n", found.name.toRawUTF8(), err.c_str());
+        return 1;
+    }
+    v3->prepare(48000.0, 512);
+    std::printf("  plugin  %s  raw=%s  noteExpr=%s\n", found.name.toRawUTF8(),
+                v3->usingRawProcessor() ? "yes" : "NO (fell back to JUCE)",
+                v3->supportsNoteExpression() ? "yes" : "no");
+    if (!v3->usingRawProcessor()) return 1;
+
+    // CONTROL FIRST. Without this, "peak > 0" proves only that the plugin
+    // makes noise, not that OUR note caused it -- a synth with a free-running
+    // oscillator or a tail would pass either way. Render silence first and
+    // require it to actually be silent.
+    std::vector<float> ql(512, 0.0f), qr(512, 0.0f);
+    float* quiet[2] = {ql.data(), qr.data()};
+    adi::engine::NodeIo qio;
+    qio.out = quiet; qio.channels = 2; qio.frames = 512; qio.sampleRate = 48000.0;
+    double idle = 0.0;
+    for (int blk = 0; blk < 10; ++blk) {
+        v3->process(qio);
+        for (int i = 0; i < 512; ++i) idle = std::max(idle, std::abs((double) ql[i]));
+    }
+    std::printf("  idle    %.9f with no events\n", idle);
+    check(idle < 1e-6, "the plugin is SILENT before any note -- so what follows is ours");
+
+    // A note, and a 14-bit-resolution bend on it. Frames are BLOCK-relative
+    // (ADR-0081); this block is one segment so the offset is zero.
+    adi::engine::Event on;
+    on.type = adi::engine::EventType::NoteOn;
+    on.noteId = 77; on.dim = 60; on.value = 100.0 / 127.0; on.frame = 0; on.channel = 2;
+    v3->pushEvent(on);
+    adi::engine::Event bend;
+    bend.type = adi::engine::EventType::NoteExpression;
+    bend.dim = static_cast<std::uint16_t>(adi::ExpressionDim::Pitch);
+    bend.noteId = 77;
+    bend.value = 12.0 + 96.0 / 16384.0;      // one 14-bit LSB above an octave
+    bend.frame = 8;
+    v3->pushEvent(bend);
+
+    std::vector<float> l(512, 0.0f), r(512, 0.0f);
+    float* outp[2] = {l.data(), r.data()};
+    adi::engine::NodeIo io;
+    io.out = outp; io.channels = 2; io.frames = 512; io.sampleRate = 48000.0;
+
+    double peak = 0.0;
+    for (int blk = 0; blk < 40; ++blk) {      // ~0.4 s; synths have attacks
+        v3->process(io);
+        for (int i = 0; i < 512; ++i) peak = std::max(peak, std::abs((double) l[i]));
+    }
+
+    std::printf("  peak    %.6f after 40 blocks\n", peak);
+    // An EFFECT handed no input is correctly silent, so asserting audio on
+    // one says nothing about our ProcessData. Only an instrument can answer
+    // "did our note reach it". Pointing this at 'Serum 2 FX' -- the effect
+    // half of that bundle -- produced a red check that was entirely my
+    // matcher picking the wrong plugin.
+    if (found.isInstrument) {
+        check(peak > idle * 1000.0 && peak > 1e-5,
+              "the plugin produced AUDIO through our own ProcessData -- buses, "
+              "IEventList and IParameterChanges all ours (ADR-0073)");
+    } else {
+        std::printf("  skip  %s is an effect, not an instrument; silence with no "
+                    "input proves nothing either way\n", found.name.toRawUTF8());
+    }
+    check(v3->eventsOutOfRange() == 0, "no event was refused for landing outside its segment");
+    check(v3->eventsDropped() == 0, "and none dropped for capacity");
+    return 0;
+}
+
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
     bool requirePlugin = false;
     juce::String latencyProbe;
-    for (int i = 1; i + 1 < argc; ++i)
+    juce::String renderName;
+    for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--latency-probe") latencyProbe = argv[i + 1];
+        if (std::string(argv[i]) == "--render") renderName = argv[i + 1];
+    }
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--require-plugin") requirePlugin = true;
 
@@ -158,6 +252,14 @@ int main(int argc, char** argv) {
 
     juce::ScopedJuceInitialiser_GUI juceInit;
     adi::device::Vst3Host host;
+
+    if (renderName.isNotEmpty()) {
+        std::printf("[ADR-0073] rendering through our own ProcessData\n");
+        const int rc = renderThrough(host, renderName);
+        std::printf("\n%s -- %d checks, %d failure(s)\n",
+                    g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : rc;
+    }
 
     if (latencyProbe.isNotEmpty()) {
         std::printf("[ADR-0082] measuring a real runtime latency change\n");
@@ -186,10 +288,7 @@ int main(int argc, char** argv) {
 
     // --- ADR-0054, reported rather than assumed ----------------------------
     std::printf("\n[ADR-0054] the note-expression capability is declared honestly\n");
-    check(!adi::device::Vst3Device::supportsNoteExpression(),
-          "note expression through JUCE's MidiBuffer path is reported UNSUPPORTED "
-          "-- see vst3_host.hpp; claiming it while sending 7-bit values is the "
-          "failure the ADR names");
+    std::printf("  (per instance now, not per build -- checked on a real plugin below)\n");
 
     // --- ADR-0057: the event path VST3 actually needs -----------------------
     std::printf("\n[ADR-0054/0057] the event list carries a note id and a double\n");
@@ -400,6 +499,13 @@ int main(int argc, char** argv) {
             // one format can answer, or it stops being format-agnostic at the
             // first place somebody calls it.
             if (auto* v3 = dynamic_cast<adi::device::Vst3Device*>(dev.get())) {
+                // ADR-0073: did the takeover actually take? A false here
+                // means we fell back to JUCE's MidiBuffer, where noteId is
+                // hardcoded to -1 and velocity is value/127.
+                check(v3->usingRawProcessor(),
+                      "the raw IAudioProcessor was reached -- the note-expression path is live");
+                check(v3->supportsNoteExpression(),
+                      "and this instance reports note expression as SUPPORTED");
                 check(v3->rawComponent() != nullptr,
                       "the raw IComponent is reachable -- this is the route to "
                       "note expression without reimplementing discovery and state");

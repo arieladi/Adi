@@ -198,9 +198,46 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     inst_->setRateAndBufferSizeDetails(sampleRate, maxFrames);
     inst_->prepareToPlay(sampleRate, maxFrames);
 
+    // ADR-0073's takeover. JUCE has now activated the component and set
+    // processing; what it cannot do is carry note expression, because its
+    // only event path is a MidiBuffer with noteId hardcoded to -1. So we
+    // reach past it for `process` alone and leave discovery, state and
+    // parameters where they are.
+    processor_ = nullptr;
+    if (const auto* client = inst_->getVST3Client()) {
+        if (auto* comp = client->getIComponentPtr()) {
+            void* raw = nullptr;
+            if (comp->queryInterface(Steinberg::Vst::IAudioProcessor::iid, &raw)
+                    == Steinberg::kResultOk && raw != nullptr) {
+                processor_ = static_cast<Steinberg::Vst::IAudioProcessor*>(raw);
+            }
+        }
+    }
+
+    // Sized from the GRANTED block (ADR-0049) and allocated here, never in
+    // process (ADR-0010). Capacity is ADR-0056's arithmetic: a 500 Hz MPE+
+    // stream across this block, three dimensions, at polyphony 16.
+    const double updates = (sampleRate > 0.0)
+                             ? (static_cast<double>(maxFrames) / sampleRate) * 500.0 : 1.0;
+    const auto perNote = static_cast<std::int32_t>(updates * 3.0) + 2;
+    events_.reserve((perNote > 0 ? perNote : 8) * 16);
+    paramChanges_.reserve(256);
+    outParams_.reserve(256);
+    injected_.assign(static_cast<std::size_t>((perNote > 0 ? perNote : 8) * 16),
+                     engine::Event{});
+    injectedUsed_ = 0;
+    rawIn_.resize(static_cast<std::size_t>(channels_));
+    rawOut_.resize(static_cast<std::size_t>(channels_));
+
     // Allocated at prepare, never in process (ADR-0010).
     scratch_.setSize(channels_, maxFrames, false, true, true);
     midi_.ensureSize(4096);
+}
+
+bool Vst3Device::pushEvent(const engine::Event& e) noexcept {
+    if (injectedUsed_ >= injected_.size()) return false;
+    injected_[injectedUsed_++] = e;
+    return true;
 }
 
 void Vst3Device::release() {
@@ -227,6 +264,69 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         const float* src = (io.in != nullptr) ? io.in[c] + off : nullptr;
         if (src != nullptr) std::copy(src, src + n, dst);
         else                std::fill(dst, dst + n, 0.0f);
+    }
+
+    // --- ADR-0073: the raw path, where note expression actually works ----
+    if (processor_ != nullptr) {
+        events_.clear();
+        paramChanges_.clear();
+        outParams_.clear();
+
+        // ADR-0081: Event::frame is BLOCK-relative and the plugin is handed
+        // one segment, so the offset comes off here and a mismatch is
+        // counted rather than silently refused.
+        for (const auto& e : io.events) events_.add(e, off, n);
+        for (std::size_t i = 0; i < injectedUsed_; ++i)
+            events_.add(injected_[i], off, n);
+        injectedUsed_ = 0;
+
+        for (std::int32_t c = 0; c < ch; ++c) {
+            rawIn_[static_cast<std::size_t>(c)]  = scratch_.getWritePointer(c);
+            rawOut_[static_cast<std::size_t>(c)] = scratch_.getWritePointer(c);
+        }
+
+        Steinberg::Vst::AudioBusBuffers inBus{};
+        inBus.numChannels = ch;
+        inBus.silenceFlags = 0;
+        inBus.channelBuffers32 = rawIn_.data();
+        Steinberg::Vst::AudioBusBuffers outBus = inBus;
+        outBus.channelBuffers32 = rawOut_.data();
+
+        Steinberg::Vst::ProcessData pd{};
+        pd.processMode = Steinberg::Vst::kRealtime;
+        pd.symbolicSampleSize = Steinberg::Vst::kSample32;
+        pd.numSamples = n;
+        pd.numInputs = 1;
+        pd.numOutputs = 1;
+        pd.inputs = &inBus;
+        pd.outputs = &outBus;
+        pd.inputEvents = &events_;
+        pd.outputEvents = nullptr;
+        pd.inputParameterChanges = &paramChanges_;
+        pd.outputParameterChanges = &outParams_;
+        pd.processContext = nullptr;
+
+        const Steinberg::tresult r = processor_->process(pd);
+        if (r != Steinberg::kResultOk) {
+            // The plugin did not write the output, so copying it out hands
+            // the graph last block's audio. Silence for this segment only.
+            for (std::int32_t c = 0; c < io.channels; ++c)
+                if (io.out[c] != nullptr)
+                    for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][i] = 0.0f;
+            return;
+        }
+
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* out = io.out[c];
+            if (out == nullptr) continue;
+            out += off;
+            if (c < ch) std::copy(rawOut_[static_cast<std::size_t>(c)],
+                                  rawOut_[static_cast<std::size_t>(c)] + n, out);
+            else        std::fill(out, out + n, 0.0f);
+            for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0f;
+        }
+        continuousTime_ += n;
+        return;
     }
 
     midi_.clear();

@@ -41,6 +41,7 @@
 #pragma once
 
 #include "juce/device_model.hpp"
+#include "juce/vst3_events.hpp"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -161,9 +162,33 @@ public:
         return stateEpoch_.load(std::memory_order_acquire);
     }
 
-    /// False, today, and see the header. Reported rather than assumed so that
-    /// nothing silently sends 7-bit values while claiming ADR-0054.
-    [[nodiscard]] static bool supportsNoteExpression() noexcept { return false; }
+    /// Whether THIS instance can carry per-note expression.
+    ///
+    /// No longer a constant. It is true when the raw `IAudioProcessor` was
+    /// reachable and we are driving `process()` ourselves (ADR-0073), false
+    /// when we fell back to JUCE's `processBlock` — whose MidiBuffer path
+    /// hardcodes `noteId = -1` and quantises velocity to 7 bits (ADR-0057).
+    ///
+    /// Reported per instance rather than per build, because the fallback is
+    /// a real runtime possibility and a plugin on the slow path must not be
+    /// described as if it were on the fast one.
+    [[nodiscard]] bool supportsNoteExpression() const noexcept {
+        return processor_ != nullptr;
+    }
+
+    /// Events for the next block, BLOCK-relative (ADR-0081). A node inside a
+    /// graph does not need this — `process` reads `io.events` directly.
+    bool pushEvent(const engine::Event& e) noexcept;
+
+    /// Events refused because a queue was full, and because they fell outside
+    /// their segment. Kept apart for the reason ADR-0081 gives.
+    [[nodiscard]] std::int64_t eventsDropped() const noexcept { return events_.dropped(); }
+    [[nodiscard]] std::int64_t eventsOutOfRange() const noexcept {
+        return events_.outOfRange();
+    }
+
+    /// True when the raw interface was reached and the fast path is live.
+    [[nodiscard]] bool usingRawProcessor() const noexcept { return processor_ != nullptr; }
 
     /// The raw interface JUCE exposes, and the route to note expression
     /// without reimplementing discovery, state and parameters. Null when the
@@ -185,6 +210,17 @@ private:
 
     juce::AudioBuffer<float> scratch_;
     juce::MidiBuffer midi_;
+
+    /// The raw interface, when we could reach it. Null means JUCE's
+    /// processBlock is driving and note expression is unavailable.
+    Steinberg::Vst::IAudioProcessor* processor_ = nullptr;
+    Vst3EventList   events_;
+    Vst3ParamChanges paramChanges_;
+    Vst3ParamChanges outParams_;
+    std::vector<engine::Event> injected_;
+    std::size_t injectedUsed_ = 0;
+    std::vector<float*> rawIn_, rawOut_;
+    std::int64_t continuousTime_ = 0;
 
     std::atomic<std::uint64_t> latencyEpoch_{0};
     std::atomic<std::uint64_t> stateEpoch_{0};

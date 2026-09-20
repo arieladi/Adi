@@ -18,6 +18,7 @@
 #include "adi/engine/events.hpp"
 #include "adi/engine/note_expression.hpp"
 
+#include <pluginterfaces/vst/ivstaudioprocessor.h>
 #include <pluginterfaces/vst/ivstevents.h>
 #include <pluginterfaces/vst/ivstparameterchanges.h>
 #include <pluginterfaces/vst/ivstnoteexpression.h>
@@ -86,9 +87,25 @@ public:
     [[nodiscard]] std::int64_t dropped() const noexcept { return dropped_; }
     void resetDropped() noexcept { dropped_ = 0; }
 
-    /// Translate one ADI event. Returns false when it has no VST3 form, which
-    /// is not an error: a ParamMod has its own path.
-    bool add(const engine::Event& e) noexcept;
+    /// Translate one ADI event.
+    ///
+    /// `blockOffset` is subtracted and `segmentFrames` bounds the result, for
+    /// the reason ADR-0081 gives for CLAP: `engine::Event::frame` is
+    /// BLOCK-relative and a plugin handed one segment wants offsets inside
+    /// that segment. The trap is identical in both formats and invisible in
+    /// any block with a single segment.
+    ///
+    /// False when the event has no VST3 form — a ParamMod has its own path —
+    /// or when it falls outside the segment, which is COUNTED rather than
+    /// silently dropped (ADR-0081: a refusal that looks like absence is worse
+    /// than a wrong value).
+    bool add(const engine::Event& e, std::int32_t blockOffset = 0,
+             std::int32_t segmentFrames = 0) noexcept;
+
+    /// Events refused for landing outside their segment. Separate from
+    /// `dropped()`: a capacity drop means a busy block, an out-of-range means
+    /// the two sides disagree about coordinates.
+    [[nodiscard]] std::int64_t outOfRange() const noexcept { return outOfRange_; }
 
     // --- IEventList ---------------------------------------------------------
     Steinberg::int32 PLUGIN_API getEventCount() override {
@@ -108,6 +125,7 @@ private:
     std::vector<SV::Event> events_;
     std::int32_t cap_ = 0;
     std::int64_t dropped_ = 0;
+    std::int64_t outOfRange_ = 0;
 };
 
 /// One parameter's points within a block. ADR-0073.

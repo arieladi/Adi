@@ -6,7 +6,8 @@
 
 namespace adi::device {
 
-bool Vst3EventList::add(const engine::Event& in) noexcept {
+bool Vst3EventList::add(const engine::Event& in, std::int32_t blockOffset,
+                        std::int32_t segmentFrames) noexcept {
     if (cap_ > 0 && static_cast<std::int32_t>(events_.size()) >= cap_) {
         // Counted, not a silent break. JUCE's own path stops at 2048 and says
         // nothing, which is how ten notes of MPE+ lose their packets with
@@ -15,9 +16,14 @@ bool Vst3EventList::add(const engine::Event& in) noexcept {
         return false;
     }
 
+    // BLOCK-relative in, SEGMENT-relative out (ADR-0081).
+    const std::int32_t t = in.frame - blockOffset;
+    if (t < 0) { ++outOfRange_; return false; }
+    if (segmentFrames > 0 && t >= segmentFrames) { ++outOfRange_; return false; }
+
     SV::Event e{};
     e.busIndex = 0;
-    e.sampleOffset = in.frame;
+    e.sampleOffset = t;
     e.ppqPosition = 0.0;
     e.flags = SV::Event::kIsLive;
 
