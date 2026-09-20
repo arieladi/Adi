@@ -109,10 +109,19 @@ out of the monorepo because vendoring it would lose `git diff upstream/main`,
 currently the only thing that tells us what we have actually forked. (Size is
 not the reason: the working tree is ~180 MB but the packed repo is 31.5 MiB.)
 
-**The fork lives at `arieladi/adi-vst-synth` (public, GPLv3)** — ADR-0016. Clone
-it into `adi-vst/vital`; it carries both `origin` (ours) and `upstream`
-(mtytel), so `git diff upstream/main` shows the whole fork delta. `mac` is no
-longer blocked on the C++.
+**The fork lives at `arieladi/adi-vst-synth` (public, GPLv3)** — ADR-0016.
+
+```bash
+git clone https://github.com/arieladi/adi-vst-synth.git adi-vst/vital
+git -C adi-vst/vital remote add upstream https://github.com/mtytel/vital.git
+git -C adi-vst/vital fetch upstream
+```
+
+**The second line is not optional.** Remotes are per-clone local config, not
+repository content, so a fresh clone has **only `origin`** — `upstream` does not
+come with it. Without adding it back `git diff upstream/main` fails, and that
+command is the only thing telling us what we have actually forked (ADR-0001). An
+earlier version of this file wrongly said a clone "carries both remotes".
 
 Do not "fix" this by `git add`-ing `vital/` into the monorepo. The ignore rule is
 deliberate and stops it becoming a stray gitlink.
@@ -195,6 +204,10 @@ A branch is ready to merge when:
   is a bug — decide which, fix that one, and say which in your log.
 - **Decisions go in `docs/DECISIONS.md` as a new numbered ADR.** Append only.
   Superseding means a new entry that says so, never editing the old one.
+- **Reserve the ADR number before writing the entry**, in a trivial commit you
+  push immediately — the rule `adi_daw` adopted as its own ADR-0051. Two agents
+  drafting at once otherwise pick the same number from the same stale `main`;
+  this already happened once here, with two different ADR-0017s.
 - **`vital/` is GPLv3 and carries naming restrictions.** Upstream forbids using
   "Vital", "Vital Audio" or "Tytel" to name a distribution built from this
   source, and forbids connecting to vital.audio. The build is already named

@@ -524,3 +524,86 @@ already reasons this way. Nothing here constrains that.
 If CLAP export is ever wanted, it is a new ADR and its own branch: the honest
 cost is a second build system, a second wrapper to keep in sync with the
 Projucer one, and a third plugin format to validate.
+
+---
+
+## ADR-0018 — Amends ADR-0006: `NO_AUTH=1` is mandatory on macOS arm64
+
+**Date:** 2026-09-20 · **Agent:** win · **Amends:** ADR-0006
+
+*A new entry rather than an edit to ADR-0006: the log is append-only. ADR-0006
+stands; this adds the macOS half.*
+
+**Context.** ADR-0006 replaced `REQUIRE_AUTH=1` with `NO_AUTH=1` on the Windows
+exporters. macOS was never touched and still carried upstream's configuration,
+including Firebase on the link line. mac reports the arm64 VST3 building with
+**797 warnings**, 561 of them from that one attribute. (Counts are mac's
+measurements on hardware win does not have, recorded as reported.)
+
+**Decision.** The macOS exporter gets `NO_AUTH=1`, and its four Firebase link
+inputs are emptied: `extraCustomFrameworks`, `frameworkSearchPaths`,
+`externalLibraries` (`gssapi_krb5`) and `extraFrameworks` (`Security,GSS`).
+
+**On macOS this is not a warning cleanup — it is a build fix.** The Firebase
+frameworks upstream ships are **x86_64-only**, so on arm64 `ld` ignores them and
+then cannot resolve what the code still calls:
+
+```
+ld: warning: ignoring file '.../firebase.framework/firebase(..._forkunsafe.o)':
+    found architecture 'x86_64', required architecture 'arm64'
+Undefined symbols for architecture arm64:
+  "firebase::g_auth_initializer", "firebase::App::GetInstance()", …
+```
+
+The two halves are separate mechanisms and it is worth not conflating them,
+because a plausible-sounding wrong version of this was in circulation.
+`NO_AUTH=1` is a *preprocessor* define: it removes the Firebase includes and the
+`Authentication` class (`authentication.h:19`) and the `AuthenticationSection` UI
+(`full_interface.cpp:213`). A define cannot alter a link line. What removes the
+dead x86_64 frameworks is emptying the four attributes. What makes that safe —
+and what makes the build link at all on arm64 — is `NO_AUTH=1` removing the call
+sites. Neither alone is sufficient.
+
+**Consequences.** Three further attributes were emptied, two mattering beyond
+warnings:
+
+- `iosDevelopmentTeamID` was **`EFXDM6K3KJ`**, upstream's Apple Developer team —
+  third-party identity, and a hard build blocker for anyone without that cert.
+- `postbuildCommand` ran `auval -v aumu Vita Tyte`, validating an AU we no longer
+  build under upstream's manufacturer code.
+- `customPList` granted `NSTemporaryExceptionAllowsInsecureHTTPLoads` and TLS 1.1
+  to **`tytel.org`** — a domain ADR-0006 exists to stop our builds contacting.
+
+`vst3Folder` and `vstLegacyFolder` were the same dead paths ADR-0007 already
+cleared on Windows; macOS had simply been missed.
+
+macOS configs also set `enablePluginBinaryCopyStep="0"` and move to the
+`10.13 SDK`. The copy step is worth calling out: on Windows it failed politely
+after a successful link, but on macOS Xcode reports
+`Cycle inside a single target … rooted at /`, naming neither the copy step nor
+the path. It cost mac four builds.
+
+`buildAU`, `buildAUv3` and `buildStandalone` go to `0`, with `pluginFormats`
+updated to agree — otherwise Projucer regenerates targets that were just turned
+off. This completes what ADR-0017 mandated. `standalone/vital.jucer` is a
+separate project and is untouched, so win's standalone dev loop is unaffected.
+
+**Deliberately not changed.** `fastMath` stays `1` and no
+`-Wno-nan-infinity-disabled` is added. The 133 `-Wnan-infinity-disabled` warnings
+are kept visible as input to a planned NaN-injection test; mac confirmed all 133
+are third-party (`juce_CharacterFunctions.h` 120, `json.h` 8,
+`juce_Javascript.cpp` 4, `juce_VST3_Wrapper.cpp` 1) with **zero in
+`vital/src/`**. Silencing them would hide exactly the signal that test needs, and
+`fastMath="0"` would be a real DSP behaviour change entangled with whether
+`isnan()`/`isinf()` fold to constant false — which would make ADR-0009's
+"no NaN or Inf" check vacuous.
+
+**To verify after the next macOS build:** mac flagged that emptying
+`extraFrameworks` assumes nothing but Firebase pulled in `Security` and `GSS`. If
+the link now fails on either, put `Security` back **alone** and say so.
+
+**Process note.** This entry was first written as ADR-0017 and renumbered: mac
+had already taken that number for the CLAP decision, in a branch not yet visible
+when drafting began. `adi_daw` solved this with its ADR-0051 rule — reserve the
+number in a trivial commit before writing the entry. `adi-vst` should adopt the
+same; see `collab/README.md`.
