@@ -3599,3 +3599,269 @@ device suite already uses), the output is continuous across the swap with no
 sample of silence and no discontinuity larger than the crossfade permits, and
 the alignment after the swap is correct — a delayed path and a direct path still
 sum to 2× rather than comb-filtering.
+
+
+---
+
+## ADR-0067 — Aux sends: the premise is wrong, the remedy relocates the problem, and the format keeps them — `DECIDED` (2026-09-20)
+
+**Director's call.** Drop traditional Send/Return tracks. On 150-track projects
+aux routing "frequently causes PDC misalignment and phase smearing", so parallel
+processing moves into Device Racks or group folders, ensuring "PDC is calculated
+as a strict linear progression".
+
+This is the one directive in the blueprint where the stated reasoning does not
+hold, and the ADR says so before recording the decision, because the decision
+deserves to be made against the right facts.
+
+### 1. Aux sends do not inherently misalign
+
+ADR-0058 already compensates them. Its rule is: *a node's arrival time is the
+maximum over its inputs of (that input's arrival time + that input's latency)*,
+and a send is an input like any other. A send path with a 2048-sample
+lookahead limiter on the return arrives 2048 samples late, the dry path is
+delayed to match, and the sum is aligned.
+
+**What actually goes wrong in other DAWs** is an implementation defect: the
+return bus is compensated and the *tap point* on the source track is not, or
+sends are excluded from the compensation graph entirely. That is a bug in those
+hosts, not a property of aux routing, and ADR-0058 does not have it.
+
+### 2. The remedy does not do what it claims
+
+"PDC as a strict linear progression" is not what a rack gives. **A rack with
+parallel chains is a DAG, exactly like a send.** One chain containing a
+linear-phase EQ and another containing nothing have different latencies and
+must be compensated against each other — the identical calculation, one level
+further in.
+
+So moving parallel processing into racks does not eliminate the alignment
+requirement. It relocates it from a place where it is already solved to a place
+where it will have to be solved again.
+
+### 3. The cost is largest at exactly the project size cited
+
+A send exists so that **one** expensive effect serves many sources. Forty tracks
+sharing one convolution reverb is one instance; forty tracks each with a reverb
+in a rack is forty. On the 150-track project the directive names, that is the
+difference between a reverb bus and an unusable session.
+
+### Decision
+
+1. **`routing.kind = 'send'` stays in the format, and the planner keeps
+   planning it.** Nothing is removed from `schema.sql`, SPEC or
+   `plan.cpp`. Removing a capability on a premise that does not hold would be
+   the expensive kind of mistake — it propagates into every file ever saved,
+   which is the one thing ADR-0001 exists to avoid.
+
+2. **Whether the *product* offers a "create send" affordance is a UI decision,
+   and the director's to make.** A DAW can decline to put a button on something
+   its format supports. That is reversible in an afternoon; a format change is
+   not.
+
+3. **Parallel chains inside a rack are built anyway** (ADR-0060), because they
+   are genuinely wanted for parallel compression and multiband work — just not
+   *instead of* sends.
+
+4. **The alignment claim gets a test rather than an assurance.** ADR-0058's
+   phase test is extended to cover a send path: a source, a direct path, and a
+   send through a node declaring N samples of latency, summed. Assert the result
+   is bit-identical to the same graph with no latency anywhere. If sends ever
+   do misalign here, that test fails, and the directive's concern becomes a bug
+   report with a line number rather than an architectural belief.
+
+**Recommendation, stated once:** keep sends in the product too. The problem they
+were blamed for is one we do not have, and the substitute costs an instance per
+source. If the director still wants them gone from the UI after this, that is a
+product call and this ADR does not argue with it further.
+
+---
+
+## ADR-0068 — Several projects open at once, and the clipboard between them is a transaction — `DECIDED (direction)` (2026-09-20)
+
+**Director's call.** Cubase-style multi-project tabs. Several `.adi` open
+simultaneously, and a unified cross-project clipboard: copy a hybrid track or a
+group from tab A, paste into tab B, with `state_blobs` and routing following.
+
+### Decisions
+
+1. **One `Store` per open project, and they do not know about each other.**
+   `session_lock` is already per file (SPEC §3.6), so two tabs are two
+   single-writer sessions and nothing in the container layer changes.
+
+2. **Exactly one project is *active* at a time.** It owns the graph and the
+   audio device; the others are open, editable and silent. Cubase behaves this
+   way and the alternative — mixing N projects into one output — multiplies
+   every question in ADR-0058 by N for a feature nobody asked for.
+
+3. **The clipboard is a transaction, not a data structure.** This is the
+   decision that makes the rest fall out.
+
+   **Copy** generates the sequence of ops that would create the selection in an
+   empty project. **Paste** applies that sequence to the target, with ids
+   remapped to ones the target has free.
+
+   Everything then comes for free and correctly:
+
+   - paste is **undoable in the target**, because it is ops (ADR-0003), and one
+     `txn_id` makes it one Ctrl-Z;
+   - ids are allocated by the caller, which is ADR-0021 §7.3's rule, not an
+     exception to it;
+   - cross-project paste and duplicate-within-project are the **same
+     mechanism**, so there is one code path and one set of bugs;
+   - the agent can paste, because it can already emit ops.
+
+   A clipboard that copied *rows* would need its own id remapping, its own undo
+   integration, and its own answer for every table added later.
+
+4. **Blobs travel by hash, and most of them do not travel at all.** ADR-0038
+   content-addresses `state_blobs` and ADR-0005 does the same for media. Paste
+   inserts a blob into the target only when that hash is not already there, so
+   pasting the same guitar chain into twenty projects copies it once per
+   project and never twice within one.
+
+5. **Referenced media is the one thing that can break, and it is named.** An
+   embedded file copies. A *referenced* file is a path that was relative to
+   project A's location, and pasting into B does not move the file on disk. The
+   paste records the absolute path it resolved and B relinks by content hash
+   (ADR-0032) if the file moves later — the same machinery that already handles
+   a missing sample, rather than a second story.
+
+**Open:** whether an inactive tab's engine state is torn down or kept warm.
+Keeping four projects' graphs prepared costs four sets of buffers; tearing them
+down makes tab switching slow. Needs measuring, not guessing.
+
+---
+
+## ADR-0069 — Item-level offline processing is freeze at clip granularity — `DECIDED (direction)` (2026-09-20)
+
+**Director's call.** Cubase F7: apply a VST3 chain directly to one audio clip,
+render offline through a headless graph, park the state in `state_blobs`, keep
+the parameters editable later, pay no real-time CPU.
+
+**This is ADR-0059's freeze with a different scope**, and saying so is most of
+the design: render a subgraph, store the audio, park the state, swap in a file
+reader. What differs is what is frozen (a clip, not a track) and that it is
+explicitly *re-editable*.
+
+### Decisions
+
+1. **The original media is never touched.** The render produces a new
+   `media_files` row; the clip points at it and remembers what it pointed at
+   before. "Destructive" in the Cubase sense means the timeline hears the
+   processed audio, not that anything was overwritten — and ADR-0005's
+   content-addressed pool gives that for nothing.
+
+2. **It is one op, and undo restores the clip's source.** The rendered file
+   survives an undo, because redo must not re-render and the undo tree may come
+   back to it (ADR-0038's collection rule applies unchanged).
+
+3. **The chain and its state live with the clip, so the render is
+   re-editable.** This needs schema that does not exist: `device_chains` is
+   owned by a device or a track, with a CHECK that exactly one is set, and a
+   clip is neither. It gains a third owner when this is built — not
+   speculatively now.
+
+4. **Re-editing re-renders, and the fingerprint decides whether it must.**
+   ADR-0059's freeze fingerprint applies unchanged: the render is valid for the
+   chain and parameters that produced it, and changing a parameter invalidates
+   it. Without that, the user edits a parameter, hears nothing change, and
+   concludes the feature is broken.
+
+5. **The offline graph is the same `Graph`.** A headless render is a `Graph`
+   driven by a loop instead of a device — which is what `BlockProcessor`
+   already allows, and ADR-0066's rule that offline render re-renders rather
+   than crossfading is the same rule.
+
+---
+
+## ADR-0070 — Region export is sample-exact, and zero-crossing snapping would break it — `DECIDED` (2026-09-20)
+
+**Director's call.** Region markers, and a "Batch Export by Region" that slices
+a continuous timeline into "multiple, perfectly contiguous `.wav` files at
+zero-crossing boundaries, allowing gapless playback for album exports".
+
+**Two of those requirements contradict each other, and the ADR picks the one
+that is the actual goal.**
+
+### Contiguous and zero-crossing cannot both hold
+
+Gapless means file *N* ends at sample *X* and file *N+1* begins at sample *X*:
+concatenating them reproduces the original render exactly. That requires the
+boundary to be at the sample the region boundary names.
+
+**Snapping to a zero crossing moves the boundary.** The nearest zero crossing is
+some samples away, so either those samples appear in both files or in neither.
+Concatenation then no longer reproduces the original, which is precisely the
+thing "gapless album export" means.
+
+Zero-crossing snapping is the right technique for a *different* problem —
+cutting a region out of context, where a discontinuity at the cut would click.
+It does not apply here, because in a continuous export there is no
+discontinuity: the next file simply continues the waveform.
+
+### Decisions
+
+1. **Boundaries are exact, at the sample the region names.** No snapping, no
+   fades, no dither reset per file.
+
+2. **The property is tested by concatenation, not by inspection.** Export a
+   timeline as one file and as N regions, concatenate the N, and assert the
+   result is **bit-identical** to the single render. That is the whole
+   specification of "gapless" and it is checkable without listening.
+
+3. **Region markers are `markers` with a length**, which the schema already
+   has — `markers.kind` admits `'cycle'` and `length_ticks` is there. No format
+   change.
+
+4. **Tails crossing a boundary are rendered into the next file, not truncated.**
+   A reverb that decays across a region edge belongs to the audio that follows
+   it; truncating at the boundary is exactly the gap this feature exists to
+   avoid. This falls out of rendering one continuous pass and slicing it,
+   rather than rendering each region independently — which is also why the
+   render is one pass.
+
+---
+
+## ADR-0071 — The export queue is jobs and wildcards; the NLP layer fills the form and never presses the button — `DECIDED (direction)` (2026-09-20)
+
+**Director's call.** A Cubase-style job queue with wildcard naming
+(`$track_$group_$bpm`), routing-aware bouncing, and a semantic text prompt whose
+RPC backend parses natural language, configures the queue, and executes the
+batch asynchronously.
+
+### Decisions
+
+1. **A job is a value, and the queue is a list of them.** Source (track, group,
+   region, master), range, routing treatment (through the master or not, wet or
+   dry), format, and a name template. A batch is a list of jobs, so wildcards
+   and routing-awareness are properties of a job rather than of a UI.
+
+2. **Rendering runs on the offline graph** (ADR-0069's, ADR-0066's rule), never
+   on the audio thread, and asynchronously as ADR-0064 requires.
+
+3. **The NLP layer fills the form. The user presses render.** This is the load-
+   bearing one.
+
+   An export **writes files to disk**, and that is outside the op log — there is
+   no inverse for "wrote 40 wav files into the wrong folder", and undo cannot
+   help. AI-AGENT §2 already requires explicit confirmation for anything
+   destructive or leaving the machine, and this is both.
+
+   So a prompt like *"export all drum stems dry, and render the intro region of
+   the master bus"* produces a **visible, editable queue** — which is exactly
+   AI-AGENT's Propose tier applied to a form instead of to a changeset. The
+   user sees eleven jobs, their names, and their destinations, and commits.
+
+   This is not caution for its own sake. "All drum stems" is a parse, and a
+   parse can be wrong in ways that are invisible until forty files exist.
+
+4. **The parse is ops where it can be, and configuration where it cannot.**
+   Anything the prompt does that changes the *project* — soloing, bypassing a
+   plugin for a dry stem — goes through the op log like everything else
+   (ADR-0003). Only the job list itself is configuration, because it is not
+   project state.
+
+5. **Wildcards resolve at render time, not at queue time**, so a job created
+   before a tempo change exports with the tempo it was rendered at. A `$bpm`
+   frozen at the moment a user typed a sentence is a filename that lies.
