@@ -5,8 +5,14 @@
 // This suite needs NO PLUGIN and NO JUCE, and that is the point being made as
 // much as anything tested here. `clap/clap.h` is a header-only MIT C API with
 // no dependencies, so the host side compiles into `adi_core` and every check
-// below runs on all seven ABIs. The VST3 equivalents can only ever run in the
-// single CI job that has a plugin SDK.
+// below runs wherever the main suite runs. The VST3 equivalents can only ever
+// run in the single CI job that has a plugin SDK.
+//
+// "Wherever the main suite runs" is six CI configurations, not seven: the
+// i386/ILP32 job never builds the tree or runs ctest -- it hand-compiles
+// test_main.cpp and blob.cpp with a 32-bit g++ to prove the StreamReader
+// size_t behaviour. Stated exactly because the first version of this comment
+// said "all seven ABIs" and that was an assertion rather than a check.
 //
 // What it checks is mostly the CONVERSION, because that is where a host gets
 // things silently wrong: a well-formed event carrying the wrong number makes a

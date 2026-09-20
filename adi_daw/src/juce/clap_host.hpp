@@ -7,8 +7,11 @@
 // its own README says "It does not support JUCE-based CLAP hosting", so there
 // was never an add-a-format route. What there is instead is better than one:
 // CLAP is a header-only MIT C API with no dependencies, so the host side
-// compiles into `adi_core` and its tests run on all seven ABIs — where VST3
-// hosting can only be exercised in the single CI job that has JUCE.
+// compiles into `adi_core` and its tests run wherever the main suite runs —
+// clang, gcc and MSVC on arm64 and x86_64, plus the hardened jobs. Not the
+// i386/ILP32 job, which never builds the tree: it hand-compiles the blob
+// reader to prove 32-bit size_t behaviour. VST3 hosting can only ever be
+// exercised in the single CI job that has JUCE.
 //
 // THE PANEL'S FINDING, A THIRD TIME. `docs/DEVICE-CONTRACT-PANEL.md` said the
 // plugin-shaped design was "named after the format that conforms to it worst".

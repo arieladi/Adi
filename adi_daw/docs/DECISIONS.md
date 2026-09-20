@@ -4395,12 +4395,15 @@ It is not. **CLAP is a header-only MIT C API with no dependencies**, pinned at
 1.2.10 / `195b42a0` (ADR-0024). The consequence is structural rather than
 convenient:
 
-> **`ClapDevice` compiles into `adi_core` and its tests run on all seven ABIs.**
+> **`ClapDevice` compiles into `adi_core`, so its tests run wherever the main
+> suite runs.**
 
-VST3 hosting can only ever be exercised in the single CI job that has JUCE. The
-CLAP host is checked on clang, gcc and MSVC, on arm64, x86_64 and ILP32, on
-every push. The format that looked like the bigger job has the cheaper test
-story by a wide margin.
+Precisely — and the first draft of this ADR said "all seven ABIs", which was
+checked afterwards and is wrong: **every ABI on which the test suites run at all — clang, gcc and MSVC, on arm64 and x86_64, plus all three hardened-standard-library jobs.** The one exception is the i386/ILP32 job, and not because CLAP fails there: that job never builds the tree or runs ctest. It hand-compiles `test_main.cpp` and `blob.cpp` with a 32-bit g++ to prove the `StreamReader` size_t behaviour, and nothing else.
+
+VST3 hosting, by contrast, can only ever be exercised in the single CI job that
+has JUCE. The format that looked like the bigger job still has the cheaper test
+story by a wide margin; the number is six configurations rather than seven.
 
 ### 2. The contract needed no concessions, which is the panel's finding a third time
 
