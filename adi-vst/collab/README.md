@@ -52,6 +52,28 @@ One row per active branch. Delete your row when it merges.
 |---|---|---|---|
 | `collab/**`, `docs/**` | win | `main` (bootstrap) | 2026-09-18 |
 
+## Reserved ADR numbers
+
+**Claim the number BEFORE writing the entry. Push immediately.** Mark the row
+`used` once the entry exists, and leave it there.
+
+Carried over from `adi_daw` ADR-0051, which this project's protocol mirrors (see
+the top of this file). The argument transfers unchanged: "pull main before
+writing an ADR" cannot work, because the collision does not happen at the pull.
+It happens in the window between pulling and merging, which is however long the
+work takes. Pulling earlier closes nothing.
+
+**A row is never deleted, only marked.** An abandoned reservation is `burned` and
+the number is never reused — a gap costs nothing.
+
+**The Subject column is load-bearing.** A number reservation does not stop both
+agents writing the same ADR; reading the other agent's subject does.
+
+| Number(s) | Agent | Branch | Subject | Status |
+|---|---|---|---|---|
+| 0017 | mac | `mac/vst3-macos` | VST3 only; CLAP dropped from this repo | used |
+| 0018 | mac | `mac/vst3-macos` | the macOS exporter defects (NO_AUTH, copy step, team id) | reserved |
+
 ## Before you start work, every time
 
 ```bash

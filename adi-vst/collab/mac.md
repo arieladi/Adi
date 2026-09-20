@@ -115,6 +115,59 @@ Not yet done, and not claimed: the plugin has **not** been loaded in a host, and
 and exports a factory" is the whole of what is verified. No audio has been
 rendered on macOS.
 
+### The predicted Clang 17 / arm64 compiler errors did not happen
+
+Clean-room rebuild — `rm -rf build ~/Library/Developer/Xcode/DerivedData/Vial-*`
+then `xcodebuild clean build`:
+
+```
+** BUILD SUCCEEDED **     errors=0     warnings=797     TUs=25
+```
+
+25 translation units is not a partial build: `src/unity_build/` holds 10 unity
+files and the rest are JUCE module TUs plus `BinaryData`. That is the whole
+codebase.
+
+No missing standard-library headers, and no implicit-conversion *errors*. The
+Windows build's ~1850 conversion warnings (ADR-0004) do not have a macOS
+counterpart — Apple clang 17 at Vital's warning level emits a different and much
+smaller set. Full corpus:
+
+| Count | Warning | Where |
+|---|---|---|
+| **561** | `ignoring file … found architecture 'x86_64', required 'arm64'` | **all 561 Firebase** |
+| 133 | `-Wnan-infinity-disabled` | JUCE + json only; **0 in Vital's DSP** |
+| 63 | `-Wunused-function` | `spectral_morph.h` (50), `synth_constants.h` (12) |
+| 25 | `-Wdeprecated-ofast` | `-Ofast` deprecated in clang 17 |
+| 3 | `-Wdeprecated-declarations` | — |
+| 2 | `-Wshorten-64-to-32` | JUCE `gui_basics` / `graphics` |
+| 2 | `MACOSX_DEPLOYMENT_TARGET` 10.12 below supported 10.13 | project setting |
+
+**70% of all warnings are one root cause.** Every one of the 561 is an object
+from `firebase_auth.framework` / `firebase.framework` being skipped as x86_64.
+`NO_AUTH=1` compiles the Firebase *headers* out but the frameworks are still on
+the **link line**. The macOS exporter should stop linking them entirely under
+`NO_AUTH`, not merely stop calling them. That is a one-line `.jucer` change and
+it removes 561 warnings.
+
+**The `-Wnan-infinity-disabled` cluster is not the DSP hazard it first looks
+like.** All 133 are third-party: `juce_CharacterFunctions.h` (120), `json.h` (8),
+`juce_Javascript.cpp` (4), `juce_VST3_Wrapper.cpp` (1) — text parsing using
+infinity as a sentinel. **Zero fire in `vital/src/synthesis` or `vital/src/common`.**
+
+It does raise one question I am *not* claiming an answer to. `GCC_FAST_MATH = YES`
+is set in all 10 build configurations (upstream's own setting, inherited). Under
+`-ffast-math`, `-ffinite-math-only` permits the compiler to fold `isnan()` /
+`isinf()` to constant false. ADR-0009's validator asserts **"no NaN or Inf in the
+output"**. If that check is compiled away, the assertion is vacuous — and the
+Windows baseline would not transfer, because MSVC `/fp:fast` is less aggressive
+here than clang's `-ffast-math`. Worth one experiment before the macOS validator
+is trusted: feed a deliberately NaN-producing state and confirm the check still
+fails. I have not run it.
+
+The `-Wunused-function` count is unity-build noise: `spectral_morph.h`'s morph
+helpers are header-inline and unused in most of the 5 TUs that include them.
+
 ### Four latent breakages in the macOS exporter, all of the class win predicted
 
 The `XCODE_MAC` block never received the fixes ADR-0005/0006/0007 applied to the

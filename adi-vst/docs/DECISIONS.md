@@ -480,3 +480,47 @@ monorepo (ADR-0014, reverted by ADR-0015), then proposing a private repo here.
 Both traded away something real and wanted — a second agent being able to work —
 to guard against a risk that turned out not to exist on inspection. Check what
 the constraint actually says before escalating the remedy.
+
+---
+
+## ADR-0017 — `adi-vst` ships VST3 only; CLAP is dropped from this repo's mandate
+
+**Date:** 2026-09-20 · **Agent:** mac · **Directed by:** Adi
+
+**Context.** The macOS sprint brief asked for "VST3 and CLAP only". CLAP is not a
+format toggle in this codebase and cannot be made one cheaply:
+
+- JUCE 6.0.5 predates CLAP entirely. There are **zero** occurrences of `clap` in
+  `third_party/JUCE/modules/juce_audio_plugin_client/`, and **zero** in either
+  `.jucer` — there is no `buildCLAP` flag to set.
+- `third_party/` vendors `JUCE`, `VST_SDK`, `concurrentqueue`,
+  `firebase_cpp_sdk`, `json` and `kissfft`. No `clap-juce-extensions`, no CLAP
+  SDK.
+
+Shipping CLAP would therefore mean vendoring `free-audio/clap-juce-extensions`
+plus the CLAP SDK and adding a CMake build path alongside the Projucer one —
+against ADR-0002, which keeps this project on Projucer precisely to avoid a
+second build system. The alternative, upgrading JUCE, is ruled out by ADR-0003:
+the vendored JUCE is patched in 39 files and Vital's DSP does not compile against
+stock JUCE.
+
+**Decision.** CLAP is **dropped** from `adi-vst`. The sole plugin target for this
+repository is the **macOS and Windows VST3**. Do not upgrade JUCE and do not
+patch the audio plugin wrappers to force CLAP support.
+
+**Consequences.** ADR-0007 already established VST3-only on Windows for a
+different reason (no VST2 SDK, and Steinberg no longer licenses VST2); this
+extends the same shape to macOS and states it as a property of the repo rather
+than of one platform. AU, AUv3, LV2, LADSPA and Standalone are likewise not
+shipping targets — note that `plugin/vital.jucer` still has `buildAU="1"`,
+`buildAUv3="1"` and `buildStandalone="1"`, so the `All` target still builds them;
+turning those off is a pending `.jucer` edit, not a completed one.
+
+This decision is scoped to `adi-vst`. **`adi_daw`, as a host, is still intended
+to support loading CLAP plugins** — hosting a format and exporting one are
+unrelated capabilities, and ADR-0041 over there ("Hosting is not identity")
+already reasons this way. Nothing here constrains that.
+
+If CLAP export is ever wanted, it is a new ADR and its own branch: the honest
+cost is a second build system, a second wrapper to keep in sync with the
+Projucer one, and a third plugin format to validate.
