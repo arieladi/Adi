@@ -2266,3 +2266,68 @@ node. A plan that cannot be realised should say so before anything is built.
    node index for track N", which `GraphPlan::indexOf` already is.
 
 1028 checks across 13 suites, 66 ADRs, validators clean.
+
+---
+
+## 2026-09-20 — five routing and export mandates: ADR-0067 to ADR-0071
+
+Branch `win/routing-mandates`. Two of the five contain a technical claim that
+does not hold, and both corrections are in the ADRs rather than in a reply that
+would be lost.
+
+**ADR-0067, aux sends.** The mandate drops Send/Return tracks because aux
+routing "frequently causes PDC misalignment". Three things wrong with that, in
+order:
+
+1. **We already compensate them.** ADR-0058's rule is *arrival = max over
+   inputs of (arrival + latency)*, and a send is an input. What goes wrong in
+   other DAWs is an implementation defect — the return compensated and the tap
+   point not — which is a bug in those hosts, not a property of aux routing.
+2. **The remedy relocates the problem.** "PDC as a strict linear progression" is
+   not what a rack gives: a rack with parallel chains is a DAG, exactly like a
+   send, and two chains of different latency need the identical calculation one
+   level further in.
+3. **The cost is worst at the project size cited.** Forty tracks sharing one
+   convolution reverb is one instance; forty racks is forty. On 150 tracks that
+   is the difference between a reverb bus and an unusable session.
+
+So: **the format keeps `send` and the planner keeps planning it.** Whether the
+*product* puts a "create send" button on screen is a UI call and the director's
+to make — reversible in an afternoon, where a format removal is not. And
+ADR-0058's phase test is extended to cover a send path, so if sends ever do
+misalign it is a failing test rather than an architectural belief.
+
+**ADR-0070, region export.** The mandate asks for files that are "perfectly
+contiguous" AND cut "at zero-crossing boundaries". **Those contradict.** Gapless
+means file N ends at sample X and N+1 begins at X, so concatenation reproduces
+the original; snapping to a zero crossing *moves* the boundary, so samples land
+in both files or neither. Zero-crossing snapping is right for cutting a region
+out of context, where the discontinuity would click — here there is no
+discontinuity, because the next file continues the waveform.
+
+Decided: exact boundaries, no snapping, no per-file fades, and the property is
+tested by **concatenation** — export as one file and as N regions, concatenate,
+assert bit-identical. That is the whole specification of "gapless" and it needs
+no ears.
+
+**ADR-0068, multi-project tabs.** The good part is the clipboard: it is a
+**transaction, not a data structure**. Copy generates the ops that would create
+the selection in an empty project; paste applies them with remapped ids. Then
+paste is undoable in the target for free, ids stay caller-allocated per
+ADR-0021 §7.3, cross-project paste and duplicate-within-project are the same
+code path, and the agent can paste because it can already emit ops. Blobs
+travel by hash and mostly do not travel at all.
+
+**ADR-0069, item-level FX.** Freeze at clip granularity — ADR-0059 with a
+different scope, which is most of the design. Needs one schema addition when
+built: `device_chains` is owned by a device or a track with a CHECK that exactly
+one is set, and a clip is neither.
+
+**ADR-0071, the export queue.** The NLP layer **fills the form and never presses
+the button**. An export writes files to disk, which is outside the op log —
+there is no inverse for "wrote 40 wavs into the wrong folder". So a prompt
+produces a visible, editable queue, which is AI-AGENT's Propose tier applied to
+a form instead of a changeset. "All drum stems" is a parse, and a parse can be
+wrong in ways invisible until forty files exist.
+
+1028 checks across 13 suites, 71 ADRs, validators clean.
