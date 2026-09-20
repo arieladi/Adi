@@ -4824,3 +4824,98 @@ ADR-0010's claim is checked directly rather than argued: global `operator new` i
 replaced in `adi_retap_tests`, and the switch, the crossfade block and the two
 blocks after it allocate **zero** times. The counter is itself proven live by
 allocating on purpose immediately afterwards.
+
+---
+
+## ADR-0080 — A docked panel's side is a property of the panel, and so is its width — `DECIDED (direction)` (2026-09-20) — **COMPANION TO ADR-0063**
+
+**Director's call.** The DAW defaults to an Ableton-style single window — browser
+and search on the left, mixer and master on the right — and must be able to
+**swap those two sides instantly**, for people coming from Bitwig or Cubase. The
+mandate also prescribes the mechanism: *"ensure the top-level JUCE component
+layout utilizes a FlexBox or Grid structure to make this pane-swapping
+trivial."*
+
+Adopted. The mechanism is adopted as an implementation detail rather than as the
+decision, because it is not the part that makes the swap trivial, and taking it
+as the design invites a specific bug.
+
+### Where the prescribed mechanism is not the load-bearing part
+
+`juce::FlexBox` is a **layout algorithm invoked inside `resized()`**. It holds no
+state between calls: you build it, call `performLayout`, and it is gone. So it
+cannot itself "hold" an arrangement that gets swapped.
+
+Swapping is trivial under FlexBox. It is equally trivial under plain
+`setBounds`. What decides whether it is trivial is not the algorithm but whether
+**a panel's identity is separated from its slot**:
+
+```
+browser_.setBounds(leftArea);          // no layout algorithm rescues this
+mixer_.setBounds(rightArea);
+
+for (auto& [panel, slot] : layout_)    // and none is needed for this
+    place(panel, slot);
+```
+
+FlexBox is a good choice for the second form — it handles the nested toolbar and
+bottom-panel cases cleanly, and `flexGrow` expresses "the arrangement takes the
+remaining width" without arithmetic. It is adopted on those merits. It is not
+what makes the swap possible.
+
+### The bug the framing invites, and the decision that prevents it
+
+**Width must be stored per PANEL, not per SIDE.**
+
+`leftWidth` / `rightWidth` is the obvious shape and it is wrong. A user with a
+280-pixel browser and a 620-pixel mixer swaps sides and finds a **620-pixel
+browser** — the panel kept the slot's width instead of its own. Nobody reports
+this as a data-loss bug; they report that the swap "resizes everything", and
+then they stop using it.
+
+So the persisted state is a small record per panel: which side, and how wide.
+Not a `bool swapped` with two widths beside it.
+
+### Decisions
+
+1. **Layout is an ordered mapping from panel to slot**, not a boolean. `Side {
+   Left, Right }` per panel costs a line more than `bool swapped` and does not
+   have to be redesigned the first time a third dockable panel exists.
+
+2. **A panel's width belongs to the panel.** It follows the panel across a swap.
+   Stored in `ui_view` alongside ADR-0063's dock state — same table, same
+   persistence, so a workspace remembers side and width together or neither.
+
+3. **Minimum widths are per panel, and the swap respects them.** A mixer showing
+   N strips has a much larger sensible minimum than a browser. On a narrow
+   window the two minima may not both fit after a swap. The behaviour is to
+   **clamp to the minima and take the remaining width from the arrangement**,
+   and to refuse the swap outright only when even the minima do not fit — with a
+   message, not silently. Squashing the mixer to 120 pixels is the outcome to
+   avoid, because it looks like a rendering fault rather than a space problem.
+
+4. **A swap REORDERS; it never reconstructs.** This is ADR-0063 decision 1
+   applied to the same components for a different reason: a browser rebuilt on
+   swap loses its scroll position, its selection and its search text, and a
+   mixer rebuilt on swap loses scroll and any open plugin editor. Same component
+   instances, new bounds.
+
+5. **FlexBox or Grid at the top level, adopted as prescribed** — with the note
+   that neither provides **draggable splitters**. JUCE's flex layout has no
+   notion of a user dragging a divider. The splitter components own the widths,
+   write them into the per-panel state, and the layout pass consumes them. So
+   the structure is: persisted per-panel widths → splitters that edit them →
+   FlexBox that places the panels in the current order.
+
+### What this does not decide
+
+Whether the bottom panel (rack, editors) participates in side-swapping at all —
+it is horizontal and the mandate is about the vertical panes. Whether a swap
+animates. Whether the default is per project, per workspace or per install;
+ADR-0063 put dock state in `ui_view`, which is per project, and a preference
+this personal probably wants to be per install as well. That interaction is
+worth resolving once, for both ADRs, rather than separately.
+
+**This lands in mac's lane.** `docs/UI-ARCHITECTURE.md` is theirs and the
+top-level component hierarchy is theirs to build; this entry records the
+decision and the one trap in it, not the implementation.

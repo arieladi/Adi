@@ -85,7 +85,7 @@ subject, say so in your log instead of writing it twice.
 | 0077 | win | `agent/win-dev` | realising a plan into a live graph: the junction, the chain, and what a VCA is not | used |
 | 0078 | win | `agent/win-dev` | `NodeIo` addresses the BLOCK; `frames`/`blockOffset` address the segment | used |
 | 0079 | win | `agent/win-dev` | a latency change is a TAP MOVE, not a second render: amends ADR-0066 d1 and d4 | used |
-| 0080 | win | `agent/win-dev` | swapping the docked side of a panel: width follows the pane, not the side | reserved |
+| 0080 | win | `agent/win-dev` | swapping the docked side of a panel: width follows the pane, not the side | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

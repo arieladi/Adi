@@ -172,6 +172,7 @@ to be earned on the timeline instead. That is the point.
 | **Branching undo tree** | neither | P2 | ✅ | `op_branches` |
 | Project-scoped controller maps | partially | P2 | ✅ | `controller_maps` |
 | Templates | both | P1 | — | a `.adi` with a flag |
+| **Swap the docked side of browser and mixer** | Bitwig/Cubase muscle memory | P2 | ✅ | `ui_view` — ADR-0080; width follows the panel, not the side |
 
 ## 10. What neither DAW has — the actual reason to build this
 
