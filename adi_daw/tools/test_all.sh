@@ -107,6 +107,22 @@ if [ -x "$tool" ] && [ -f ../.github/scripts/check_spec_layout.py ]; then
 fi
 
 echo
+# The README states these two numbers and nothing checked them: it claimed 627
+# checks across 8 suites while the real figures were 962 and 12. `validate_ops`
+# has checked its own headline since the 152-vs-174 drift, and check 7 does it
+# for tables and ADRs; this is the same rule for the one pair of numbers only
+# this script can know.
+readme="README.md"
+if [ -f "$readme" ]; then
+    claimed=$(grep -oE '\*\*[0-9]+ checks across [0-9]+ suites\*\*' "$readme" | head -1)
+    want="**$total checks across $suites suites**"
+    if [ -n "$claimed" ] && [ "$claimed" != "$want" ]; then
+        echo
+        echo "  README says '$claimed', this run is '$want'"
+        fail=1
+    fi
+fi
+
 if [ "$fail" -eq 0 ]; then
     echo "PASS -- $total checks across $suites suites, validators clean"
 else

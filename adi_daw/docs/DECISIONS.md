@@ -3082,3 +3082,383 @@ ignoring the sidechain when deciding suspension, summing the two buses
 together, and returning to the fixed 1024 capacity — which reports
 `1024 events in one block` and a failed drop count, which is the bug this ADR
 opened with.
+
+
+---
+
+## ADR-0058 — Plugin delay compensation is computed over the graph, and phase alignment is the requirement it serves — `DECIDED` (2026-09-20)
+
+**Director's call.** The graph must natively calculate and compensate for latency
+across hybrid tracks and auto-routing group folders, to preserve absolute phase
+alignment — kick against bass being the case that matters.
+
+**The 4096 half is already ADR-0049** and is unchanged. PDC across a graph with
+groups in it has never been decided, and it is the harder half.
+
+### Decisions
+
+1. **Latency is a property of a node, declared like a tail.** `Node` grows
+   `latencySamples()` beside `tailSamples()`, defaulting to **0** — the opposite
+   default from the tail, and deliberately: a node that fails to declare a tail
+   is merely processed too often, while a node that fails to declare *latency*
+   would be compensated wrongly, and a wrong compensation is worse than none
+   because it moves audio that was aligned.
+
+2. **Compensation is computed at `prepare`, over the levelled schedule
+   (ADR-0056).** For each node, its **arrival time** is the maximum over its
+   inputs of (that input's arrival time + that input's latency). A node whose
+   inputs arrive at different times gets a delay inserted on the early ones.
+   This is one pass over the existing levels; the levels exist and this is what
+   they are for beyond parallelism.
+
+3. **A group compensates its children against each other, and then itself
+   against its siblings.** That is the whole of "PDC across auto-routing
+   folders": a group is a summing node (ADR-0044), so it is the same rule
+   applied at the same place, with no code that knows what a group is.
+
+4. **The reported total excludes the device buffer** (ADR-0042 decision 7,
+   restated because this is where it bites). If the number a track is
+   compensated by silently includes the block size, every compensated track is
+   wrong by up to 4096 samples — 85 ms — and the kick/bass case this ADR exists
+   for is exactly the one that exposes it.
+
+5. **Sidechain edges are compensated too, and separately.** A compressor keyed
+   from a track with a 2048-sample lookahead plugin on it must receive the key
+   at the same point in time as the audio it is ducking, or the ducking lands
+   early. The `Bus::Sidechain` edges of ADR-0056 exist to make this expressible.
+
+### The test that proves it, rather than one that agrees with it
+
+Two paths from one source to one sum, one path carrying a node that declares
+N samples of latency. **Assert the summed output is bit-identical to the same
+graph with no latency in it** — a phase-aligned sum of two identical signals is
+2× amplitude, and a misaligned one is comb-filtered. Remove the compensation and
+the amplitude check fails at a specific, computable frequency, which is the
+kick/bass complaint made numeric.
+
+### What is not decided
+
+Latency changes **while running**. A plugin may report a new latency after a
+preset change, and the correct response — re-prepare, or ramp — is a real
+decision that depends on how disruptive a re-prepare turns out to be. Deferred
+until there is a plugin to measure.
+
+---
+
+## ADR-0059 — Freezing renders a node's output and parks its state; a group freezes as one — `DECIDED (direction)` (2026-09-20)
+
+**Director's call.** Instant track freezing and **group** freezing. Freezing a
+group renders the summed bus to one audio file, suspends the CPU of every child,
+and parks plugin and MIDI state in `state_blobs` for seamless unfreezing.
+
+**The schema already carries most of this**, which is worth checking rather than
+assuming: `tracks.frozen` and `tracks.freeze_media_id` have been there since the
+first draft, `state_blobs` arrived with ADR-0038, and `media_files` content-
+addresses the render.
+
+### Decisions
+
+1. **A frozen node is replaced in the graph by a file reader**, not flagged and
+   skipped. The frozen render is an ordinary audio source; everything
+   downstream — PDC, silence, tails, groups — treats it as one, and nothing in
+   the scheduler learns the word "frozen".
+
+2. **Freezing a group freezes the subtree, and the children are removed from
+   the graph rather than suspended.** The director's phrasing is "suspend the
+   CPU of all child tracks"; the stronger and simpler thing is that they are not
+   in the graph at all, so there is no per-block decision to get wrong and
+   ADR-0043's suspension machinery is not load-bearing for the CPU saving.
+
+3. **State is parked, not discarded, and content-addressed.** Every child's
+   plugin state goes to `state_blobs` under ADR-0038's existing rule. Two frozen
+   tracks whose plugins are in identical states cost one blob.
+
+4. **A freeze carries a fingerprint of what it froze, and unfreezing verifies
+   it.** This is the decision that makes "seamless" honest. A render is only
+   valid for the graph that produced it; if a plugin was updated, a device
+   added, or automation edited while frozen, the audio on disk is no longer what
+   the chain would produce. Without a fingerprint the user gets silently stale
+   audio, which is the worst failure mode available here — it sounds fine and is
+   wrong.
+
+   The fingerprint is a digest over the frozen subtree's contributing state: the
+   device list, each device's `state_hash`, the automation in range, and the
+   clip content. It reuses ADR-0031's digest machinery rather than inventing a
+   second one.
+
+5. **Freeze is an op and is undoable** (ADR-0003). The render is a new
+   `media_files` row; unfreezing does not delete it, because the agent and the
+   undo tree may both come back to it. Collection is the compaction concern
+   ADR-0038 already describes.
+
+### One consequence worth stating
+
+**A frozen group cannot be soloed into.** Its children are not in the graph, so
+soloing a child means unfreezing first. That is how Ableton behaves and it is
+the right trade, but it should be a message rather than a control that does
+nothing.
+
+---
+
+## ADR-0060 — A rack is a node that owns a sub-graph, and a macro is a modulator — `DECIDED (direction)` (2026-09-20)
+
+**Director's call.** `DeviceCore` must wrap several VST3 plugins into one Rack
+container with 8–16 global macros, for modulation and hardware mapping.
+
+**Schema support exists:** `devices.is_rack`, `devices.rack_kind`,
+`device_chains` nesting via `parent_device_id`, and `macros` /
+`macro_mappings` with per-target range and curve.
+
+### Decisions
+
+1. **A rack is a `Node` that owns a nested `Graph`.** Not a special case in the
+   scheduler: the outer graph sees one node with a latency and a tail, and the
+   inner graph is scheduled by the same code with the same rules. Nesting the
+   type rather than special-casing it is what keeps ADR-0042's splitting,
+   ADR-0043's suspension and ADR-0058's PDC working inside a rack for free.
+
+2. **A rack's latency is its inner graph's, and its tail is the maximum of its
+   children's.** Both fall out of the nested-graph model and neither needs a
+   rule of its own.
+
+3. **A macro is a modulator in ADR-0046's sense, not a parameter that writes
+   parameters.** `macro_mappings` is already shaped for it — target, range,
+   curve, inverted. The distinction ADR-0046 drew applies unchanged: **the
+   mapping persists and is undoable; the value the macro produces does not.**
+
+4. **8 to 16 is not a schema constraint.** `macros.ord` is an integer and the
+   UI decides how many it draws. A hard limit in the format would be a number
+   someone regrets, and there is no cost to leaving it open.
+
+5. **Hardware mapping is `controller_maps`, which already exists** and is
+   project-scoped. A Stream Deck mapping a macro is that table's existing job.
+   The open question ADR-0047 raised — that a *keyboard* map is app-scoped and
+   has no home — is unaffected and still open.
+
+---
+
+## ADR-0061 — Rubber Band joins Bungee; they are for different jobs and we already chose one — `DECIDED` (2026-09-20)
+
+**Director's call.** No proprietary engines, and Rubber Band Library natively
+integrated for high-quality warping and pitch-shifting.
+
+**A correction that matters, because a choice was already made.** ADR-0017 and
+`docs/EXTERNAL-CODE.md` pin **Bungee** (MPL-2.0, 426 KB) for exactly this, and
+have since week one, feeding `audio_clips.warp_markers`. Bungee is not
+proprietary — the zplane objection does not reach it — so the directive is
+adding an engine rather than replacing a bad one, and nobody said which of them
+wins where.
+
+### Decisions
+
+1. **Both, with the division stated.** They are good at different things and the
+   reason Bungee was pinned is the reason it stays:
+
+   | | Bungee | Rubber Band |
+   |---|---|---|
+   | pinned for | continuous rate change, zero and **negative** speed | high-quality stretch and pitch-shift |
+   | the case it serves | scrubbing, varispeed, tape stop | warped clips, offline render, transposition |
+   | licence | MPL-2.0, file-level copyleft | **GPL-2.0-or-later** or commercial |
+
+   Scrubbing through zero is not a quality problem, it is a continuity problem,
+   and an engine that cannot do it cannot be the only one. Warping a four-bar
+   loop to a new tempo is a quality problem and is where Rubber Band earns its
+   place.
+
+2. **The licence needs verifying before a line is written against it, under
+   ADR-0024.** Rubber Band is dual-licensed GPL-2.0-**or-later** and commercial.
+   The "or later" is what makes it compatible with our GPLv3 (ADR-0015); a
+   GPL-2.0-**only** dependency would not be, and the difference is one word in a
+   header. Whoever pins it records the finding in `EXTERNAL-CODE.md` the way mac
+   recorded JUCE's AGPL, and pins by tag *and* commit.
+
+3. **Neither is in the audio thread's allocation path.** Both are prepared with
+   a maximum block and reused, like everything else under ADR-0010.
+
+4. **Time-stretch has latency and therefore participates in ADR-0058.** A warped
+   clip is not free; the reader declares what it costs and PDC compensates it
+   like any other node.
+
+---
+
+## ADR-0062 — The native DSP node set, and what "native" actually buys — `DECIDED (direction)` (2026-09-20)
+
+**Director's call.** Six DSP utilities built into `DeviceCore` as native nodes
+rather than hosted as VSTs: vocoder, frequency shifter, grid-locked volume
+shaper, multiband graph splitter, sub-sample phase utility, and an audio-rate
+envelope follower.
+
+The set is right and the reasoning needs one correction, because it will
+otherwise be repeated into a design.
+
+### The correction: native does not mean zero latency
+
+The stated reason is "to guarantee zero latency, phase accuracy, and deep
+routing integration". **Latency is a property of the algorithm, not of where it
+is compiled.** A native linear-phase crossover has exactly the same latency as a
+VST3 one, because linear phase *is* latency — a symmetric FIR delays by half its
+length, and there is no implementation that avoids it.
+
+What being native genuinely buys, and it is worth having:
+
+- **Transport and timeline access.** The grid-locked volume shaper needs the bar
+  line, and a VST3 gets musical position only as whatever the host chose to put
+  in `ProcessContext`. A native node reads the tempo map.
+- **The event stream at full resolution.** ADR-0054's MPE+ values are doubles in
+  the graph; a VST3 sees whatever the bridge chose to expose.
+- **Sidechain without a bus.** `Bus::Sidechain` (ADR-0056) is an edge in the
+  graph, not a routed channel pair the user has to wire.
+- **No format round-trip**, which is a real per-block saving on small utilities
+  and nothing on large ones.
+
+So: build them native for routing and timeline integration, and let each one
+declare its honest latency.
+
+### Decisions
+
+1. **Each is a `Node` with the contract of ADR-0055 and the latency declaration
+   of ADR-0058.** No new machinery; six subclasses.
+
+2. **The multiband graph splitter is blocked on N-bus outputs, which ADR-0056
+   named as unbuilt.** It splits into three bands that host independent VST3s —
+   that is three output buses from one node, and the graph has one. This is now
+   the concrete requirement that justifies the N-bus work, rather than a
+   generalisation done in advance.
+
+3. **The multiband splitter is not zero-latency and must not be described as
+   such.** Linear phase at a crossover low enough to be useful for bass costs
+   thousands of samples. It declares them, PDC compensates, and the user is told
+   — a multiband device that silently adds 40 ms is the phase problem ADR-0058
+   exists to prevent, arriving from inside our own code.
+
+   A minimum-phase mode at zero latency is a legitimate second option and a user
+   choice, not a default hidden behind the same name.
+
+4. **The envelope follower is a modulator under ADR-0046**, not an effect: it
+   produces a control signal, its routing persists and is undoable, and its
+   output is never written to the op log. That it can modulate a VST3 parameter
+   is exactly ADR-0052's `CLAP_EVENT_PARAM_MOD` problem — on CLAP it is clean,
+   on VST3 it needs the shadow copy — and it is the first concrete consumer of
+   that decision.
+
+5. **The sub-sample phase utility is the one that is genuinely near-zero cost**,
+   and polarity inversion is exactly free. Sub-sample delay is a fractional
+   interpolator and costs a little; "zero-CPU" is close enough for polarity and
+   not true for the nudge.
+
+---
+
+## ADR-0063 — Panels undock by reparenting into their own window — `DECIDED (direction)` (2026-09-20)
+
+**Director's call.** Ableton-style single window by default; mixer and MIDI
+editor undockable into free-floating native windows for multi-monitor work.
+
+### Decisions
+
+1. **One component tree, reparented — never a second instance.** A panel that
+   undocks is removed from its parent and added to a new
+   `juce::DocumentWindow`'s content, keeping its identity and its state. Building
+   a second mixer that mirrors the first is how two mixers end up disagreeing,
+   and it would break ADR-0047's "one `TrackOrderModel`, two readers" rule by
+   creating a third reader nobody owns.
+
+2. **Dock state is `ui_view`** (ADR-0047): which panels are floating, where, and
+   on which monitor. `window_state` already carries monitor bounds and the
+   clamp rule for a monitor that no longer exists.
+
+3. **Each window gets its own frame clock.** This is the interaction worth
+   catching now rather than at step 7: ADR-0050 has one `VBlankAttachment`
+   draining coalesced dirty bits, and a second window on a second monitor has a
+   *different refresh rate*. One clock driving two displays either tears on one
+   or wastes frames on the other. So the clock is per window, and the coalesced
+   dirty set is per window with a shared source of truth.
+
+**This lands in mac's lane.** `docs/UI-ARCHITECTURE.md` is theirs and ADR-0050
+is theirs; the interaction in decision 3 is a consequence of their design that
+this directive exposes, not a correction to it.
+
+---
+
+## ADR-0064 — AI is asynchronous, remote, and optional; the DAW is whole without it — `DECIDED` (2026-09-20)
+
+**Director's call**, two pillars that are one decision. Heavy AI work never
+blocks the audio thread and runs via background threads or remote RPC; the DAW
+ships no local Python and no model weights; offline, the features grey out and
+everything else works.
+
+**Fifteen workflows were listed** — stem splitting, audio-to-MIDI, vocal
+chopping, timbre transfer, reference matching, morphing, text-to-audio, drum
+humanisation, sample tagging, super-resolution, infilling, de-reverberation,
+pitch-tracking synthesis, speech generation, and a YouTube subtitle scraper.
+**They are a backlog, not fifteen decisions**, and they are in `FEATURES.md`
+where backlogs live. What follows is what is actually being decided, which is
+the same for all fifteen and for the sixteenth nobody has thought of.
+
+### Decisions
+
+1. **Never the audio thread, and never the message thread either.** ADR-0010
+   already forbids the first. The second matters just as much in practice: a
+   thirty-second stem split on the message thread is a frozen UI, which users
+   report as a crash. Work happens on a worker or over ADR-0039's RPC boundary.
+
+2. **Every result arrives as ops** (ADR-0003, AI-AGENT §3). A stem split that
+   creates a group and four tracks emits `track.create` and the rest, in one
+   `txn_id`, undoable with one keystroke. There is no path from a model to the
+   project that bypasses the op log, and an AI feature that cannot be expressed
+   as ops is a missing op rather than a reason for a side door.
+
+3. **Destructive processing is destructive to a *copy*.** Timbre transfer,
+   de-reverberation and super-resolution render new audio; the op repoints the
+   clip at a new `media_files` row and the original survives. So "destructive
+   offline morphing" is still undoable, and that falls out of ADR-0005's
+   content-addressed pool rather than needing anything new.
+
+4. **No local Python, no bundled weights, remote APIs only.** A DAW that ships a
+   gigabyte of model weights is a DAW people cannot download, and a DAW that
+   ships a Python environment inherits every version conflict on the user's
+   machine. The cost is honest: **these features do not work offline**, and
+   somebody's studio has no internet.
+
+5. **Graceful degradation is a requirement on the core, not on the features.**
+   Offline, the AI surfaces grey out and **recording, VST3 hosting, graph
+   processing and SQLite saving are unaffected**. The way to guarantee that is
+   structural rather than disciplined: nothing in `adi_core` may link or call an
+   AI path, so the degradation cannot be forgotten because there is nothing to
+   forget.
+
+6. **What leaves the machine is named, per project, and off by default.**
+   AI-AGENT §2's "anything that leaves the machine" rule applies unchanged. Stem
+   splitting uploads *audio*, not a projection, and that is a bigger disclosure
+   than anything the agent does today.
+
+### Two things about the list that need saying
+
+**The YouTube subtitle scraper carries legal exposure the others do not.**
+Searching subtitles and importing the matching audio as a `.wav` is downloading
+from YouTube, which its terms of service prohibit, and the audio is somebody's
+copyrighted recording. `yt-dlp` is a legitimate tool with legitimate uses and
+this is not a refusal — but shipping it as a built-in browser feature of a
+distributed open-source DAW is a different act from a user running it
+themselves, and the project should decide that deliberately rather than discover
+it in an inbox. Recommended: build the *timestamp search* against a URL the user
+supplies, and let the import be an explicit action on material the user asserts
+they may use.
+
+**AGPL §13 does not fire here** (ADR-0048). Calling a remote API makes the DAW a
+*client*; the network clause attaches to a work users interact with *over* a
+network, which this is not. ADR-0039's RPC boundary is the case that does fire,
+and it is unchanged.
+
+---
+
+## Not an ADR: MPE+ was decided in ADR-0054
+
+The blueprint's pillar I.3 restates the MPE and MPE+ mandate. It is **ADR-0054**,
+decided 2026-09-19, and it has already produced two findings rather than a
+feature: ADR-0042's split floor gained a hard bound of `sample_rate/500`, and
+ADR-0056 found that the graph's fixed 1024-event capacity **would have dropped
+packets from ten notes onwards** on exactly that instrument.
+
+Recording it as a fourth ADR would suggest something new was decided. Nothing
+was, and the log is more useful if a restatement points at the entry rather than
+duplicating it.

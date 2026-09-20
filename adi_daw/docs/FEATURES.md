@@ -189,6 +189,76 @@ to be earned on the timeline instead. That is the point.
 
 ---
 
+## 10.5 Native DSP nodes, and asynchronous AI
+
+Two blocks of the director's blueprint (2026-09-20). The **decisions** are
+ADR-0058 to ADR-0064; this is the backlog they govern.
+
+### Native DSP nodes (ADR-0062)
+
+Built into the graph rather than hosted, for transport access, the full-
+resolution event stream, and sidechain-as-an-edge — **not** for zero latency,
+which is a property of the algorithm and not of where it is compiled.
+
+| Node | P | Latency | Notes |
+|---|---|---|---|
+| Sub-sample phase utility | P1 | polarity **0**, nudge ~0 | polarity inversion is exactly free; a fractional delay is not |
+| Audio-rate envelope follower | P1 | 0 | a modulator under ADR-0046; first real consumer of ADR-0052's `PARAM_MOD` problem |
+| Grid-locked volume shaper | P1 | 0 | reads the tempo map directly — the reason it is native |
+| Frequency shifter | P2 | Hilbert transform is not free | ring-mod / Hilbert, sample-accurate linear shift |
+| Vocoder | P2 | filter-bank dependent | sidechain via `Bus::Sidechain`, no user wiring |
+| Multiband graph splitter | P2 | **thousands of samples in linear phase** | **blocked on N-bus outputs** (ADR-0056). Declares its latency; a minimum-phase mode is a user choice, not a silent default |
+
+### Time-stretch (ADR-0061)
+
+| Engine | P | Job |
+|---|---|---|
+| Bungee (MPL-2.0, pinned) | P1 | scrubbing, varispeed, zero and negative speed |
+| Rubber Band (GPL-2.0-**or-later**) | P1 | high-quality warp and pitch-shift; licence to verify under ADR-0024 before use |
+
+### Freezing and racks
+
+| Feature | From | P | Fmt | Notes |
+|---|---|---|---|---|
+| Track freeze | both | P1 | ✅ | `tracks.frozen`, `freeze_media_id` — present since the first draft |
+| **Group** freeze | Ableton | P1 | ✅ | renders the summed bus; children leave the graph entirely (ADR-0059) |
+| Freeze fingerprint | neither | **P1** | ✅ | an unfreeze against a changed chain is silently stale audio, which sounds fine and is wrong (ADR-0059) |
+| Racks with 8–16 macros | Ableton | P2 | ✅ | a rack is a node owning a nested graph; a macro is a modulator (ADR-0060) |
+
+### Asynchronous AI (ADR-0064)
+
+**Remote APIs only. No bundled Python, no model weights.** Offline these grey
+out and recording, VST3 hosting, graph processing and saving are untouched —
+guaranteed structurally, because nothing in `adi_core` may link an AI path.
+
+Every one of these lands as **ops** in one `txn_id`, so each is one Ctrl-Z.
+
+| Workflow | Upstream | P | What it emits |
+|---|---|---|---|
+| Stem splitting | Demucs | P1 | a group folder and N tracks, phase-aligned |
+| Audio → MIDI | Basic Pitch | P1 | notes onto a hybrid track |
+| Intelligent sample management | Essentia / CLAP | P1 | BPM, key and text-searchable tags in the browser |
+| Reference matching | Matchering | P2 | a native EQ curve, not a rendered file |
+| Vocal chopping | Whisper | P2 | clip splits at word transients from speech timestamps |
+| Drum humanisation | Magenta | P2 | micro-timing and velocity edits to existing notes |
+| De-reverberation | DeepFilterNet | P2 | new media; the original survives |
+| Super-resolution | AudioSR | P2 | new media; the original survives |
+| Timbre transfer | IRCAM RAVE | P3 | new media; the original survives |
+| Neural morphing | NSynth | P3 | new media |
+| Text → audio | Stable Audio Open / AudioGen | P3 | new media on a new clip |
+| Infilling and looping | VampNet / AudioLDM 2 | P3 | new media over an erased range |
+| Pitch-tracking synthesis | DDSP | P3 | notes plus expression from humming |
+| Spoken word | Coqui XTTS | P3 | new media |
+| YouTube subtitle search | yt-dlp + transcript API | **P3, legal review first** | see below |
+
+> **The YouTube scraper is not like the others.** Importing the audio is a
+> download YouTube's terms prohibit, of somebody's copyrighted recording.
+> `yt-dlp` is a legitimate tool and this is not a refusal — but shipping it as a
+> built-in feature of a distributed DAW is a different act from a user running
+> it themselves. ADR-0064 recommends building the **timestamp search** against a
+> URL the user supplies and making the import an explicit action on material the
+> user asserts they may use.
+
 ## 11. Deliberately out of scope
 
 Saying no now is cheaper than saying no later.

@@ -73,7 +73,7 @@ subject, say so in your log instead of writing it twice.
 | 0055 | win | `win/graph` | the node contract, and what the scheduler decides per block vs per segment | used |
 | 0056 | win | `win/routing` | buses, levelled scheduling for parallelism, and MPE+ event capacity | used |
 | 0057 | mac | `mac/vst3` | VST3 hosting behind the format-agnostic device model | reserved |
-| 0058-0064 | win | `win/blueprint` | the director's five-pillar blueprint: PDC, freezing, racks, stretch, native DSP, undocking, async AI | reserved |
+| 0058-0064 | win | `win/blueprint` | the director's five-pillar blueprint: PDC, freezing, racks, stretch, native DSP, undocking, async AI | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
