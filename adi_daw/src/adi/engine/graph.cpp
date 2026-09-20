@@ -130,6 +130,110 @@ bool Graph::topoSort() {
 }
 
 // ---------------------------------------------------------------------------
+// Delay, and the compensation that uses it
+// ---------------------------------------------------------------------------
+
+void DelayLine::prepare(std::int32_t channels, std::int32_t delaySamples) {
+    channels_ = channels > 0 ? channels : 0;
+    delay_ = delaySamples > 0 ? delaySamples : 0;
+    buf_.assign(static_cast<std::size_t>(channels_) *
+                static_cast<std::size_t>(delay_), 0.0f);
+    write_ = 0;
+}
+
+void DelayLine::reset() noexcept {
+    for (auto& v : buf_) v = 0.0f;
+    write_ = 0;
+}
+
+void DelayLine::process(std::int32_t channel, const float* src, float* dst,
+                        std::int32_t frames) noexcept {
+    if (delay_ <= 0 || channel < 0 || channel >= channels_) {
+        if (src != dst)
+            std::memcpy(dst, src, static_cast<std::size_t>(frames) * sizeof(float));
+        return;
+    }
+    float* hist = buf_.data() + static_cast<std::size_t>(channel) *
+                                static_cast<std::size_t>(delay_);
+    std::int32_t w = write_;
+    for (std::int32_t i = 0; i < frames; ++i) {
+        const float in = src[i];        // src == dst is legal, so read before writing
+        dst[i] = hist[w];
+        hist[w] = in;
+        if (++w == delay_) w = 0;
+    }
+    write_ = w;
+}
+
+void Graph::computeCompensation() {
+    // ADR-0058 decision 2. A node's input is whole only once the LATEST of its
+    // feeds has arrived, so its arrival is the max over inputs of (that input's
+    // arrival + that input's own latency). Every earlier feed is then delayed
+    // to match, and that is the whole of phase alignment.
+    //
+    // Walking `order_` means every input's arrival is already final when it is
+    // read. That is what the topological order is for, beyond scheduling.
+    for (NodeId id : order_) {
+        Slot& s = slots_[static_cast<std::size_t>(id)];
+        std::int64_t latest = 0;
+        for (NodeId in : s.inputs) {
+            const Slot& u = slots_[static_cast<std::size_t>(in)];
+            const std::int64_t ready = static_cast<std::int64_t>(u.arrival) +
+                (u.node != nullptr ? u.node->latencySamples() : 0);
+            if (ready > latest) latest = ready;
+        }
+        // ADR-0058 decision 5: a sidechain is compensated WITH the rest, not
+        // apart from it. A compressor whose key arrives early ducks early,
+        // which is the same defect as a misaligned kick and harder to hear.
+        for (NodeId in : s.sidechains) {
+            const Slot& u = slots_[static_cast<std::size_t>(in)];
+            const std::int64_t ready = static_cast<std::int64_t>(u.arrival) +
+                (u.node != nullptr ? u.node->latencySamples() : 0);
+            if (ready > latest) latest = ready;
+        }
+        s.arrival = static_cast<std::int32_t>(latest);
+    }
+
+    for (NodeId id : order_) {
+        Slot& s = slots_[static_cast<std::size_t>(id)];
+        s.inDelays.resize(s.inputs.size());
+        for (std::size_t k = 0; k < s.inputs.size(); ++k) {
+            const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
+            const std::int32_t ready =
+                u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
+            const std::int32_t d = s.arrival - ready;
+            s.inDelays[k].prepare(channels_, d > 0 ? d : 0);
+        }
+        s.sideDelays.resize(s.sidechains.size());
+        for (std::size_t k = 0; k < s.sidechains.size(); ++k) {
+            const Slot& u = slots_[static_cast<std::size_t>(s.sidechains[k])];
+            const std::int32_t ready =
+                u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
+            const std::int32_t d = s.arrival - ready;
+            s.sideDelays[k].prepare(channels_, d > 0 ? d : 0);
+        }
+    }
+
+    const Slot& out = slots_[static_cast<std::size_t>(output_)];
+    graphLatency_ = out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0);
+}
+
+std::int32_t Graph::arrivalOf(NodeId id) const noexcept {
+    if (id < 0 || id >= static_cast<NodeId>(slots_.size())) return -1;
+    return slots_[static_cast<std::size_t>(id)].arrival;
+}
+
+std::int32_t Graph::compensationFor(NodeId from, NodeId to, Bus bus) const noexcept {
+    if (to < 0 || to >= static_cast<NodeId>(slots_.size())) return -1;
+    const Slot& s = slots_[static_cast<std::size_t>(to)];
+    const auto& edges = (bus == Bus::Sidechain) ? s.sidechains : s.inputs;
+    const auto& lines = (bus == Bus::Sidechain) ? s.sideDelays : s.inDelays;
+    for (std::size_t k = 0; k < edges.size() && k < lines.size(); ++k)
+        if (edges[k] == from) return lines[k].delay();
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
 // prepare / release
 // ---------------------------------------------------------------------------
 
@@ -191,6 +295,11 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
 
     // One more than the worst case: every distinct frame a split, plus the end.
     splits_.assign(fr + 2, 0);
+    delayScratch_.assign(fr, 0.0f);
+
+    // ADR-0058 decisions 2-5, after the buffers exist: a delay line is a
+    // buffer too, and `process` may not allocate.
+    computeCompensation();
 
     ok_ = true;
     prepared_ = true;
@@ -207,16 +316,52 @@ void Graph::release() {
 // process
 // ---------------------------------------------------------------------------
 
-void Graph::accumulate(std::vector<float*>& dst, const Slot& src, std::int32_t begin,
-                       std::int32_t frames, bool first) noexcept {
+void Graph::accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& delay,
+                       std::int32_t begin, std::int32_t frames, bool first) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
+
+    // Zero compensation is the common case and must cost nothing: most edges in
+    // most projects join paths of equal latency, and this is the path they take.
+    if (delay.delay() == 0) {
+        for (std::size_t c = 0; c < ch; ++c) {
+            const float* s = src.chanPtrs[c] + begin;
+            float* d = dst[c] + begin;
+            if (first) {
+                std::memcpy(d, s, static_cast<std::size_t>(frames) * sizeof(float));
+            } else {
+                for (std::int32_t i = 0; i < frames; ++i) d[i] += s[i];
+            }
+        }
+        return;
+    }
+
+    // One write cursor is shared across the channels of an edge, so every
+    // channel must start from the same position and only the last may leave it
+    // advanced. Each channel owns its own history region, and the cursor is the
+    // only thing that says where in that region it stopped.
+    //
+    // Getting this wrong does NOT pull the channels apart -- every channel
+    // drifts by the same (channels - 1) * frames, so left still matches right
+    // exactly, which is why a stereo comparison cannot see it. What it does is
+    // make the compensation the wrong LENGTH on every block after the first:
+    // the ring is self-consistent within a call, so a single-block test is also
+    // blind to it. It takes two blocks and a delay that does not divide the
+    // block size. See testPhaseAlignment.
+    const std::int32_t before = delay.cursor();
     for (std::size_t c = 0; c < ch; ++c) {
+        delay.setCursor(before);
         const float* s = src.chanPtrs[c] + begin;
         float* d = dst[c] + begin;
         if (first) {
-            std::memcpy(d, s, static_cast<std::size_t>(frames) * sizeof(float));
+            delay.process(static_cast<std::int32_t>(c), s, d, frames);
         } else {
-            for (std::int32_t i = 0; i < frames; ++i) d[i] += s[i];
+            // Through scratch, then summed. `process` WRITES its output; used
+            // directly on a second input it would clobber the first rather than
+            // add to it, and the first input would vanish silently.
+            float* tmp = delayScratch_.data();
+            std::memcpy(tmp, s, static_cast<std::size_t>(frames) * sizeof(float));
+            delay.process(static_cast<std::int32_t>(c), tmp, tmp, frames);
+            for (std::int32_t i = 0; i < frames; ++i) d[i] += tmp[i];
         }
     }
 }
@@ -278,13 +423,15 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept 
         // Summing here, for every node, is what makes a group (ADR-0044) a
         // node with no device rather than a special case in the scheduler.
         bool anyMain = false;
-        for (NodeId in : s.inputs) {
-            accumulate(mixPtrs_, slots_[static_cast<std::size_t>(in)], begin, n, !anyMain);
+        for (std::size_t k = 0; k < s.inputs.size(); ++k) {
+            accumulate(mixPtrs_, slots_[static_cast<std::size_t>(s.inputs[k])],
+                       s.inDelays[k], begin, n, !anyMain);
             anyMain = true;
         }
         bool anySide = false;
-        for (NodeId in : s.sidechains) {
-            accumulate(sidePtrs_, slots_[static_cast<std::size_t>(in)], begin, n, !anySide);
+        for (std::size_t k = 0; k < s.sidechains.size(); ++k) {
+            accumulate(sidePtrs_, slots_[static_cast<std::size_t>(s.sidechains[k])],
+                       s.sideDelays[k], begin, n, !anySide);
             anySide = true;
         }
 

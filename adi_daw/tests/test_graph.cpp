@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -828,6 +829,309 @@ void testEventCapacityFitsTheContinuum() {
             std::to_string(pushed) + " events in one block)");
 }
 
+// --- ADR-0058 decisions 2-5: plugin delay compensation ----------------------
+
+/// Declares latency and passes audio through unchanged. The latency is a
+/// CLAIM, not a delay the node performs -- which is exactly a plugin: it
+/// reports what it costs and the host aligns everything else to it. If the node
+/// also delayed, the test would measure the node rather than the compensation.
+class LatentNode final : public Node {
+public:
+    explicit LatentNode(std::int32_t latency) : latency_(latency) {}
+
+    void prepare(double, std::int32_t) override {
+        line_.prepare(2, latency_);
+    }
+
+    void process(const NodeIo& io) noexcept override {
+        // It REPORTS latency and it ALSO INCURS IT. The first version only
+        // reported: it passed audio through instantly while claiming to be 64
+        // samples late, so compensating the other path by 64 CREATED the
+        // misalignment the test was checking for. A fixture that does not model
+        // the thing turns a correct implementation into a failing test, which
+        // is the most expensive kind of test bug -- it argues for changing
+        // working code.
+        const std::int32_t before = line_.cursor();
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            line_.setCursor(before);
+            float* o = io.out[c] + io.blockOffset;
+            const float* i = (io.in != nullptr && io.in[c] != nullptr)
+                                 ? io.in[c] + io.blockOffset : nullptr;
+            if (i == nullptr) {
+                std::memset(o, 0, static_cast<std::size_t>(io.frames) * sizeof(float));
+                continue;
+            }
+            line_.process(c, i, o, io.frames);
+        }
+    }
+
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override { return latency_; }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return kInfiniteTail; }
+    [[nodiscard]] const char* name() const noexcept override { return "latent"; }
+
+private:
+    std::int32_t latency_ = 0;
+    DelayLine line_;
+};
+
+/// A ramp, so a misalignment is visible in the values rather than only in a sum.
+class RampNode final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            for (std::int32_t i = 0; i < io.frames; ++i)
+                o[i] = static_cast<float>(t_ + io.blockOffset + i);
+        }
+        if (io.blockOffset + io.frames > last_) last_ = io.blockOffset + io.frames;
+    }
+    void advance() noexcept { t_ += last_; last_ = 0; }
+    [[nodiscard]] const char* name() const noexcept override { return "ramp"; }
+private:
+    std::int64_t t_ = 0;
+    std::int32_t last_ = 0;
+};
+
+void testDelayLineItself() {
+    section("ADR-0058 -- the delay line delays by exactly what it says");
+
+    DelayLine d;
+    d.prepare(1, 3);
+    std::vector<float> in{1, 2, 3, 4, 5, 6, 7, 8};
+    std::vector<float> out(in.size(), -1.0f);
+    d.process(0, in.data(), out.data(), static_cast<std::int32_t>(in.size()));
+
+    check(out[0] == 0.0f && out[1] == 0.0f && out[2] == 0.0f,
+          "three samples of history come out first");
+    check(out[3] == 1.0f && out[4] == 2.0f && out[7] == 5.0f,
+          "then the input, three late: got " + std::to_string(out[3]) + ", " +
+              std::to_string(out[7]));
+
+    // In place, because `accumulate` does exactly that on a second input.
+    DelayLine e;
+    e.prepare(1, 2);
+    std::vector<float> both{9, 8, 7, 6};
+    e.process(0, both.data(), both.data(), 4);
+    check(both[0] == 0.0f && both[2] == 9.0f && both[3] == 8.0f,
+          "and src == dst is safe: the input is read before it is overwritten");
+
+    DelayLine z;
+    z.prepare(2, 0);
+    std::vector<float> pass{5, 6};
+    z.process(0, pass.data(), pass.data(), 2);
+    check(pass[0] == 5.0f, "zero delay is a pass-through, not a one-sample shift");
+}
+
+void testArrivalArithmetic() {
+    section("ADR-0058 d2 -- arrival is the max over inputs, and the delay is the gap");
+
+    RampNode src;
+    LatentNode slow(128);
+    SumNode direct, mix;
+
+    Graph g;
+    const NodeId ns = g.addNode(src);
+    const NodeId nl = g.addNode(slow);
+    const NodeId nd = g.addNode(direct);
+    const NodeId nm = g.addNode(mix);
+    g.connect(ns, nl);      // the long path: through 128 samples of declared latency
+    g.connect(ns, nd);      // the short path
+    g.connect(nl, nm);
+    g.connect(nd, nm);
+    g.setOutput(nm);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared: " + g.error());
+
+    eqi(g.arrivalOf(ns), 0, "the source arrives at zero");
+    eqi(g.arrivalOf(nl), 0, "and so does the node that merely CLAIMS latency");
+    eqi(g.arrivalOf(nm), 128, "the sum waits for the later of its two feeds");
+
+    eqi(g.compensationFor(nl, nm), 0, "the late path is not delayed further");
+    eqi(g.compensationFor(nd, nm), 128,
+        "the early path is delayed by the gap -- which is the whole of PDC");
+
+    eqi(g.latencySamples(), 128, "and the graph reports what it costs");
+}
+
+void testPhaseAlignment() {
+    section("ADR-0058 -- two paths to one sum, aligned to the sample, block after block");
+
+    // The test ADR-0058 named. A ramp splits, one branch both declares AND
+    // incurs latency, and both sum.
+    //
+    // THREE BLOCKS, NOT ONE, and 100 samples of latency rather than a round 64.
+    // Both of those are load-bearing, and a one-block/64-sample version of this
+    // test passed with the cursor carry completely broken:
+    //
+    //   - A delay ring is self-consistent WITHIN a call. Past the first `delay`
+    //     samples, the output is read from what this same call wrote, whatever
+    //     the cursor started at. Only the carry ACROSS a block boundary depends
+    //     on each channel resuming where it actually left off.
+    //   - 512 frames over a 64-sample ring wraps exactly eight times, so any
+    //     cursor error is a whole number of ring sizes and lands back on
+    //     itself. 512 % 100 is 12, so an error of one block shows as twelve.
+    //
+    // The comparison skips the graph's own reported latency, and that is the
+    // property rather than a fudge: PDC guarantees the branches are aligned
+    // WITH EACH OTHER, not that the graph is instantaneous. A graph containing
+    // a 100-sample plugin genuinely produces nothing for 100 samples, reports
+    // exactly that, and the transport compensates it -- which is what
+    // `latencySamples()` is for. Comparing from sample 0 would be asserting
+    // that latency does not exist.
+    //
+    // If the compensation is wrong the branches are apart, and on a ramp that
+    // is a constant offset in the sum: easy to see, impossible to argue with.
+    constexpr std::int32_t kBlock = 512;
+    constexpr int kBlocks = 3;
+
+    auto run = [](std::int32_t latency, std::vector<float>& out,
+                  bool& stereoMatches, std::int32_t& reported) {
+        RampNode src;
+        LatentNode branch(latency);
+        SumNode direct, mix;
+        Graph g;
+        const NodeId ns = g.addNode(src), nb = g.addNode(branch);
+        const NodeId nd = g.addNode(direct), nm = g.addNode(mix);
+        g.connect(ns, nb);
+        g.connect(ns, nd);
+        g.connect(nb, nm);
+        g.connect(nd, nm);
+        g.setOutput(nm);
+        g.prepare(48000.0, kBlock);
+        reported = g.latencySamples();
+
+        out.clear();
+        stereoMatches = true;
+        for (int b = 0; b < kBlocks; ++b) {
+            Out o(kBlock);
+            AudioIo io = makeIo(o, kBlock, static_cast<std::int64_t>(b) * kBlock);
+            g.process(io);
+            src.advance();
+            for (std::size_t i = 0; i < o.l.size(); ++i)
+                if (o.l[i] != o.r[i]) stereoMatches = false;
+            out.insert(out.end(), o.l.begin(), o.l.end());
+        }
+    };
+
+    std::vector<float> withLatency, without;
+    bool stereoA = false, stereoB = false;
+    std::int32_t reported = 0, none = 0;
+    run(100, withLatency, stereoA, reported);
+    run(0, without, stereoB, none);
+
+    eqi(reported, 100, "the graph reports what it costs");
+    eqi(none, 0, "and reports nothing when nothing costs anything");
+
+    bool aligned = true;
+    std::size_t firstDiff = 0;
+    for (std::size_t i = 0; i + 100 < withLatency.size(); ++i)
+        if (withLatency[i + 100] != without[i]) {
+            aligned = false;
+            firstDiff = i;
+            break;
+        }
+
+    check(aligned,
+          "past the reported latency the sum is bit-identical to the graph with "
+          "no latency at all, across every block" +
+              (aligned ? std::string()
+                       : " -- first difference at sample " +
+                             std::to_string(firstDiff) + " (block " +
+                             std::to_string(firstDiff / kBlock) + "): " +
+                             std::to_string(withLatency[firstDiff + 100]) + " vs " +
+                             std::to_string(without[firstDiff])));
+
+    // And it really is the doubled ramp rather than two zeroes agreeing.
+    check(without[600] == 1200.0f,
+          "the reference really is 2x the ramp, past the first block: got " +
+              std::to_string(without[600]));
+
+    check(stereoA && stereoB,
+          "both channels of the edge carry the same signal -- this holds even "
+          "with the cursor carry broken, because every channel drifts by the "
+          "same (channels-1)*frames, so it is a symmetry check and NOT a test "
+          "of the per-channel cursor");
+}
+
+void testSidechainIsCompensatedToo() {
+    section("ADR-0058 d5 -- a sidechain is aligned with the audio it controls");
+
+    RampNode src;
+    LatentNode slowKey(96);
+    SumNode chain, comp;
+
+    Graph g;
+    const NodeId ns = g.addNode(src);
+    const NodeId nk = g.addNode(slowKey);
+    const NodeId nc = g.addNode(chain);
+    const NodeId nx = g.addNode(comp);
+    g.connect(ns, nk);
+    g.connect(ns, nc);
+    g.connect(nc, nx, Bus::Main);
+    g.connect(nk, nx, Bus::Sidechain);
+    g.setOutput(nx);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared with a latent key: " + g.error());
+
+    eqi(g.arrivalOf(nx), 96, "the compressor waits for its key");
+    eqi(g.compensationFor(nc, nx, Bus::Main), 96,
+        "the main input is delayed to meet it -- a key that arrives early ducks "
+        "early, and that is the same defect as a misaligned kick");
+    eqi(g.compensationFor(nk, nx, Bus::Sidechain), 0, "the key itself is not delayed");
+}
+
+void testGroupsCompensateAsOne() {
+    section("ADR-0058 d3 -- a group aligns its children, then itself");
+
+    // Two children into a group, one of them latent; the group and a bare track
+    // into the master. The rule is applied at both levels by the same code,
+    // which is the point -- nothing here knows what a group is.
+    RampNode a, b, c;
+    LatentNode latent(32);
+    SumNode group, master;
+
+    Graph g;
+    const NodeId na = g.addNode(a), nb = g.addNode(b), nc = g.addNode(c);
+    const NodeId nl = g.addNode(latent);
+    const NodeId ng = g.addNode(group), nm = g.addNode(master);
+    g.connect(na, nl);        // child A through 32 samples
+    g.connect(nl, ng);
+    g.connect(nb, ng);        // child B direct
+    g.connect(ng, nm);        // the group into the master
+    g.connect(nc, nm);        // and a bare track alongside it
+    g.setOutput(nm);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared: " + g.error());
+
+    eqi(g.arrivalOf(ng), 32, "inside the group, B waits for A");
+    eqi(g.compensationFor(nb, ng), 32, "so B is delayed by 32");
+    eqi(g.arrivalOf(nm), 32, "and the master waits for the group");
+    eqi(g.compensationFor(nc, nm), 32,
+        "so the bare track is delayed by the same 32 -- the group's latency "
+        "propagated upward with no code that knows what a group is");
+    eqi(g.compensationFor(ng, nm), 0, "and the group itself is not delayed twice");
+}
+
+void testNoLatencyMeansNoDelayLines() {
+    section("ADR-0058 -- the common case costs nothing");
+
+    RampNode src;
+    SumNode a, b, out;
+    Graph g;
+    const NodeId ns = g.addNode(src), na = g.addNode(a);
+    const NodeId nb = g.addNode(b), no = g.addNode(out);
+    g.connect(ns, na);
+    g.connect(ns, nb);
+    g.connect(na, no);
+    g.connect(nb, no);
+    g.setOutput(no);
+    g.prepare(48000.0, 256);
+
+    eqi(g.latencySamples(), 0, "a project with no latency reports none");
+    eqi(g.compensationFor(na, no), 0, "and inserts no delay");
+    eqi(g.compensationFor(nb, no), 0, "on either edge");
+}
+
 }  // namespace
 
 int main() {
@@ -854,6 +1158,12 @@ int main() {
         testSidechainIsSeparateFromMain();
         testLevelOrderDoesNotChangeOutput();
         testEventCapacityFitsTheContinuum();
+        testDelayLineItself();
+        testArrivalArithmetic();
+        testPhaseAlignment();
+        testSidechainIsCompensatedToo();
+        testGroupsCompensateAsOne();
+        testNoLatencyMeansNoDelayLines();
     } catch (const std::exception& e) {
         std::printf("\nFAILED -- exception escaped: %s\n", e.what());
         return 1;

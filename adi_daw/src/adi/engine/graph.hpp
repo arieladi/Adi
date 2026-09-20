@@ -154,6 +154,36 @@ struct GraphStats {
     std::int64_t eventsDropped = 0;
 };
 
+/// A fixed delay, applied to one input edge so that two paths of unequal
+/// latency reach their consumer aligned (ADR-0058).
+///
+/// A ring rather than a memmove: at 4096 frames and a few thousand samples of
+/// compensation, shuffling the history every block is real work for no reason.
+/// Prepared once, never allocates afterwards.
+class DelayLine {
+public:
+    void prepare(std::int32_t channels, std::int32_t delaySamples);
+    void reset() noexcept;
+
+    /// `frames` samples of `src` delayed into `dst`, for one channel. Safe to
+    /// call with src == dst.
+    void process(std::int32_t channel, const float* src, float* dst,
+                 std::int32_t frames) noexcept;
+
+    [[nodiscard]] std::int32_t delay() const noexcept { return delay_; }
+
+    /// The shared write cursor. A caller processing several channels of one
+    /// edge must restore it between them; see `Graph::accumulate`.
+    [[nodiscard]] std::int32_t cursor() const noexcept { return write_; }
+    void setCursor(std::int32_t c) noexcept { write_ = c; }
+
+private:
+    std::vector<float> buf_;        ///< channels * delay
+    std::int32_t delay_ = 0;
+    std::int32_t channels_ = 0;
+    std::int32_t write_ = 0;
+};
+
 /// A DAG of nodes, scheduled per block.
 class Graph final : public BlockProcessor {
 public:
@@ -231,6 +261,21 @@ public:
     /// trust the comment.
     [[nodiscard]] static std::int32_t maxFloorFor(double sampleRate) noexcept;
 
+    /// The graph's own latency: how far behind the output is (ADR-0058).
+    /// Excludes the device buffer -- that is ADR-0042 decision 7, and folding
+    /// it in here makes every compensated track wrong by up to a block.
+    [[nodiscard]] std::int32_t latencySamples() const noexcept { return graphLatency_; }
+
+    /// Samples of compensation inserted on the edge `from -> to`, or -1 when
+    /// there is no such edge. Exposed so the arithmetic is testable directly
+    /// rather than only through its audible effect.
+    [[nodiscard]] std::int32_t compensationFor(NodeId from, NodeId to,
+                                               Bus bus = Bus::Main) const noexcept;
+
+    /// When the whole signal a node sees is expected to arrive, in samples
+    /// from the block start. For tests and for a mixer that wants to show it.
+    [[nodiscard]] std::int32_t arrivalOf(NodeId) const noexcept;
+
     /// Topological order, valid after a successful `prepare`. For tests.
     [[nodiscard]] const std::vector<NodeId>& order() const noexcept { return order_; }
 
@@ -262,6 +307,9 @@ private:
         Node* node = nullptr;
         std::vector<NodeId> inputs;
         std::vector<NodeId> sidechains;
+        std::vector<DelayLine> inDelays;     ///< parallel to `inputs`
+        std::vector<DelayLine> sideDelays;   ///< parallel to `sidechains`
+        std::int32_t arrival = 0;            ///< ADR-0058: when this node's input is whole
         std::int32_t level = 0;
         std::vector<float> audio;       ///< channels * maxFrames, interleaved by channel
         std::vector<float*> chanPtrs;
@@ -276,8 +324,9 @@ private:
     /// Accumulate one input's segment into the mix scratch. `first` copies,
     /// the rest add -- which is the whole of ADR-0044's summing, and why a
     /// group is a node with no device rather than a case in the scheduler.
-    void accumulate(std::vector<float*>& dst, const Slot& src, std::int32_t begin,
-                    std::int32_t frames, bool first) noexcept;
+    void accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& delay,
+                    std::int32_t begin, std::int32_t frames, bool first) noexcept;
+    void computeCompensation();
     void runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept;
 
     std::vector<Slot> slots_;
@@ -292,6 +341,7 @@ private:
     std::vector<Event> mixEventStore_;
     EventList mixEvents_;
     std::vector<std::int32_t> splits_;  ///< segment boundaries, sized at prepare
+    std::vector<float> delayScratch_;   ///< one channel of one segment
 
     double sampleRate_ = 0.0;
     std::int32_t maxFrames_ = 0;
@@ -299,6 +349,7 @@ private:
     std::int32_t eventCapacity_ = 0;      ///< 0 = derive at prepare
     std::int32_t maxPolyphony_ = 16;
     std::int32_t floor_ = 64;
+    std::int32_t graphLatency_ = 0;
     bool ok_ = false;
     bool prepared_ = false;
     bool reverseWithinLevel_ = false;
