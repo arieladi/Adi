@@ -429,3 +429,54 @@ wrong, the instinct to make the failure structurally impossible is not always
 right-sized. Here it traded a real capability — a second agent being able to work
 — for protection against a mistake that better practice already prevents. Check
 what the person actually asked for before escalating the remedy.
+
+---
+
+## ADR-0016 — Resolves ADR-0011: the fork's origin is public `arieladi/adi-vst-synth`
+
+**Date:** 2026-09-20 · **Agent:** win · **Resolves:** ADR-0011
+
+**Context.** ADR-0011 left open where `adi-vst/vital` would get an `origin`. Until
+it had one there was nowhere to push the fork, so `mac` could not clone the C++
+at all and was limited to backend work, tooling and review.
+
+I twice proposed making it **private**, on the reasoning that private "sidesteps
+GPLv3 distribution obligations and upstream's naming restrictions." Adi pushed
+back, and checking rather than asserting showed the reasoning did not hold:
+
+- `mtytel/vital` is itself **public, with 224 forks**. GPLv3 explicitly
+  guarantees the right to redistribute source; a public fork is the normal case,
+  not an edge case.
+- Publishing source **is** the GPLv3 compliance path, not something to sidestep.
+  Private only avoids obligations by avoiding distribution entirely, which buys
+  nothing for a project that is open source anyway.
+- Upstream's naming restriction, read literally, covers using the marks "to name
+  any **distribution of binaries** built with this source" — it is about what a
+  build is called and how it is marketed, not about repository visibility.
+
+**Decision.** `arieladi/adi-vst-synth`, **public**, GPLv3. Both branches pushed:
+`main` (mirroring `upstream/main`) and `ai-preset-generator` (our work). The fork
+keeps both remotes, so `git diff upstream/main` still works and upstream changes
+can still be pulled.
+
+**Consequences.** `mac` is unblocked on the C++ and macOS build work can start.
+
+The push initially failed: the clone was shallow (`--depth=1` from the original
+`upstream` fetch) and GitHub rejects a push whose graft boundary references
+objects it does not have — *"did not receive expected object"*. Fixed with
+`git fetch --unshallow upstream`, which cost nothing because the whole upstream
+repo is only 31 MB.
+
+The repository name deliberately contains none of the restricted marks, and the
+build was already named `Vial` — upstream's own trademark-stripped name. The one
+restriction that could have bitten, redistributing the non-redistributable
+factory presets, does not apply: **no `.vital` files exist anywhere in the fork**,
+verified before publishing. That is also why training data must come from Adi's
+own library rather than from the repo.
+
+**Pattern worth naming.** This is the second time in one day that an
+over-cautious structural instinct produced the wrong answer — first splitting the
+monorepo (ADR-0014, reverted by ADR-0015), then proposing a private repo here.
+Both traded away something real and wanted — a second agent being able to work —
+to guard against a risk that turned out not to exist on inspection. Check what
+the constraint actually says before escalating the remedy.

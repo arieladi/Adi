@@ -87,8 +87,10 @@ out of the monorepo because vendoring it would lose `git diff upstream/main`,
 currently the only thing that tells us what we have actually forked. (Size is
 not the reason: the working tree is ~180 MB but the packed repo is 31.5 MiB.)
 
-**Status: the fork still has no `origin`.** Until it does, `mac` cannot see the
-C++ and is limited to `backend/**`, `tools/**`, docs and review. See ADR-0011.
+**The fork lives at `arieladi/adi-vst-synth` (public, GPLv3)** — ADR-0016. Clone
+it into `adi-vst/vital`; it carries both `origin` (ours) and `upstream`
+(mtytel), so `git diff upstream/main` shows the whole fork delta. `mac` is no
+longer blocked on the C++.
 
 Do not "fix" this by `git add`-ing `vital/` into the monorepo. The ignore rule is
 deliberate and stops it becoming a stray gitlink.
@@ -123,11 +125,11 @@ staged and so could not be recovered — see ADR-0014 and ADR-0015.
 $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
 
 # standalone — the primary development target
-& $msbuild vital\standalone\builds\vs19\Vial.sln `
+& $msbuild adi-vst\vital\standalone\builds\vs19\Vial.sln `
     /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /m
 
 # VST3 plugin
-& $msbuild vital\plugin\builds\vs19\Vial.sln `
+& $msbuild adi-vst\vital\plugin\builds\vs19\Vial.sln `
     /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /m
 ```
 

@@ -2033,3 +2033,85 @@ and if you see a change you are certain you made go missing, this is why rather
 than you.
 
 962 checks across 12 suites, 57 ADRs, validators clean.
+
+---
+
+## 2026-09-20 — the director's blueprint: ADR-0058 to ADR-0064
+
+Branch `win/blueprint`. Seven ADRs for nine blueprint items, and the gap between
+those numbers is the point.
+
+**What I did not write an ADR for, and why.**
+
+*MPE+ (pillar I.3) is ADR-0054*, decided yesterday. Restating it as an eighth
+entry would suggest something new was decided; nothing was. It has already
+produced two findings rather than a feature — the split floor bound, and the
+1024-event capacity that would have dropped packets from ten notes. The log
+points at the entry instead of duplicating it.
+
+*The fifteen AI workflows are a backlog, not fifteen decisions.* One ADR for the
+rules that are identical across all of them — never the audio thread, never the
+message thread, everything arrives as ops, remote only, graceful degradation —
+and the catalogue in `FEATURES.md` §10.5 where backlogs live.
+
+### Three collisions with decisions we had already made
+
+1. **Rubber Band vs Bungee.** We pinned **Bungee** in week one (MPL-2.0,
+   `EXTERNAL-CODE.md`) for exactly this job. The directive says "no proprietary
+   engines (zplane)" — correct, and Bungee is not one, so this adds an engine
+   rather than replacing a bad one, and nobody had said which wins where.
+   ADR-0061 keeps both with the division stated: Bungee for scrubbing, varispeed
+   and **negative** speed, which is a continuity problem; Rubber Band for
+   quality warp and pitch-shift. **Licence needs verifying before a line is
+   written against it** — Rubber Band is GPL-2.0-**or-later**, and the "or
+   later" is the only reason it is compatible with our GPLv3. A GPL-2.0-only
+   dependency would not be, and the difference is one word in a header. Same
+   discipline you applied to JUCE's AGPL.
+
+2. **"Native means zero latency" is not true, and it will otherwise be designed
+   in.** Latency is a property of the algorithm. A native linear-phase crossover
+   has exactly the same latency as a VST3 one, because linear phase *is* latency
+   — a symmetric FIR delays by half its length. What native actually buys:
+   transport access (the grid-locked shaper needs the bar line), the event
+   stream at full resolution (ADR-0054's doubles), sidechain as a graph edge
+   rather than user wiring, and no format round-trip. ADR-0062 says so and
+   requires the multiband splitter to declare its latency rather than be called
+   zero.
+
+3. **The multiband splitter is blocked on N-bus outputs**, which ADR-0056 named
+   as unbuilt. Three bands hosting independent VST3s is three output buses from
+   one node and the graph has one. That is now a concrete requirement rather
+   than a generalisation done in advance — which is the order I wanted.
+
+### Two things for you specifically
+
+**ADR-0063 undocking lands in your lane and breaks one of your decisions.**
+ADR-0050 has **one** `VBlankAttachment` draining coalesced dirt. A panel
+reparented into its own `DocumentWindow` on a second monitor has a **different
+refresh rate**, and one clock driving two displays either tears on one or wastes
+frames on the other. So the clock is per window with a shared source of truth.
+That is a consequence of your design that this directive exposes, not a
+correction to it — `UI-ARCHITECTURE.md` is yours and the wording is yours to
+write.
+
+**ADR-0062's envelope follower is the first real consumer of ADR-0052's VST3
+parameter problem.** It modulates a VST3 parameter, which on CLAP is
+`CLAP_EVENT_PARAM_MOD` and clean, and on VST3 needs the shadow copy. Your panel
+doc's finding — that VST3 exposes real values only as strings — is the same
+wall from the other side. Worth having both in view when you shape the contract.
+
+### And a stale number of ours, now checked
+
+The README claimed **627 checks across 8 suites**. The real figures were 962 and
+12. `validate_ops` has checked its own headline since the 152-vs-174 drift and
+check 7 does it for tables and ADRs; `test_all.sh` now does it for the one pair
+only it can know, and fails with:
+
+```
+  README says '**900 checks across 11 suites**', this run is '**962 checks across 12 suites**'
+```
+
+Proved by planting it. Third count in this repo that was wrong because nothing
+read it.
+
+962 checks across 12 suites, 64 ADRs, validators clean.
