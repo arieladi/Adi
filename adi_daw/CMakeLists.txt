@@ -409,7 +409,8 @@ if(ADI_WITH_JUCE)
     juce_add_console_app(adi_vst3_probe PRODUCT_NAME "adi_vst3_probe")
     target_sources(adi_vst3_probe PRIVATE
         src/juce/vst3_probe.cpp
-        src/juce/vst3_host.cpp)
+        src/juce/vst3_host.cpp
+        src/juce/vst3_events.cpp)
     target_compile_features(adi_vst3_probe PRIVATE cxx_std_20)
     target_compile_definitions(adi_vst3_probe PRIVATE
         JUCE_STANDALONE_APPLICATION=1

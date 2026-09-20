@@ -16,9 +16,11 @@
 // turns the second group from a skip into a failure, for a machine that is
 // supposed to have one.
 
+#include "juce/vst3_events.hpp"
 #include "juce/vst3_host.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <string>
@@ -75,6 +77,55 @@ int main(int argc, char** argv) {
           "note expression through JUCE's MidiBuffer path is reported UNSUPPORTED "
           "-- see vst3_host.hpp; claiming it while sending 7-bit values is the "
           "failure the ADR names");
+
+    // --- ADR-0057: the event path VST3 actually needs -----------------------
+    std::printf("\n[ADR-0054/0057] the event list carries a note id and a double\n");
+    {
+        adi::device::Vst3EventList list;
+        list.reserve(2048);
+
+        adi::engine::Event on;
+        on.type = adi::engine::EventType::NoteOn;
+        on.channel = 2;
+        on.dim = 60;
+        on.noteId = 7;
+        on.value = 100.0 / 127.0;
+        check(list.add(on), "a note on is translated");
+
+        adi::engine::Event bend;
+        bend.type = adi::engine::EventType::NoteExpression;
+        bend.dim = static_cast<std::uint16_t>(adi::ExpressionDim::Pitch);
+        bend.noteId = 7;
+        bend.value = 12.0;                     // one octave up, in semitones
+        check(list.add(bend), "and a pitch expression");
+
+        check(list.getEventCount() == 2, "both are in the list");
+
+        Steinberg::Vst::Event e{};
+        list.getEvent(0, e);
+        // THE LINE JUCE HARDCODES TO -1. Without it VST3 has nothing to
+        // anchor note expression to and every per-note value goes channel-wide.
+        check(e.noteOn.noteId == 7, "the note on carries a REAL note id, not -1");
+        check(e.type == Steinberg::Vst::Event::kNoteOnEvent, "and is a note-on event");
+
+        list.getEvent(1, e);
+        check(e.type == Steinberg::Vst::Event::kNoteExpressionValueEvent,
+              "the expression is a kNoteExpressionValueEvent -- the type JUCE "
+              "never constructs");
+        check(e.noteExpressionValue.noteId == 7, "anchored to the same note");
+        check(e.noteExpressionValue.typeId == Steinberg::Vst::kTuningTypeID,
+              "pitch is VST3's Tuning");
+        const double expect = 12.0 / 240.0 + 0.5;
+        check(std::abs(e.noteExpressionValue.value - expect) < 1e-15,
+              "and the value is the SDK's own formula, as a double");
+
+        // Overflow is counted rather than a silent break.
+        adi::device::Vst3EventList small;
+        small.reserve(1);
+        check(small.add(on), "one fits");
+        check(!small.add(bend), "the second is refused");
+        check(small.dropped() == 1, "and COUNTED -- JUCE's own path breaks silently");
+    }
 
     // --- ADR-0011, with no plugin needed -----------------------------------
     std::printf("\n[ADR-0011] a plugin that cannot be instantiated becomes a placeholder\n");

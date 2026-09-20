@@ -9,6 +9,7 @@
 // not about values being roughly right.
 
 #include "adi/engine/mpe_input.hpp"
+#include "adi/engine/note_expression.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -329,6 +330,84 @@ void testThroughputAtTheMandatedRate() {
     check(p.notesStarted() == poly, "ten notes started");
 }
 
+// --- the OUTPUT half of the pipeline -----------------------------------------
+
+void testVst3NoteExpressionMapping() {
+    section("ADR-0057 -- ADI's dimensions map onto VST3's, and pitch is not already normalised");
+
+    check(vst3TypeFor(ExpressionDim::Pitch) == Vst3NoteExprType::Tuning,
+          "Pitch is VST3's Tuning");
+    check(vst3TypeFor(ExpressionDim::Timbre) == Vst3NoteExprType::Brightness,
+          "MPE's Y axis is Brightness");
+    check(vst3TypeFor(ExpressionDim::Pressure) == Vst3NoteExprType::Expression,
+          "MPE's Z axis is Expression");
+
+    // The SDK's own formula: norm = plain / 240 + 0.5.
+    check(std::abs(semitonesToVst3Tuning(0.0) - 0.5) < 1e-15, "no detune is 0.5");
+    check(std::abs(semitonesToVst3Tuning(120.0) - 1.0) < 1e-15, "+120 semitones is 1.0");
+    check(std::abs(semitonesToVst3Tuning(-120.0)) < 1e-15, "-120 is 0.0");
+
+    // The conversion most likely to be got wrong, and it is silent when it is.
+    // MPE's per-note range is +/-48 and VST3's is +/-120. Mapping MPE's
+    // extreme onto VST3's extreme -- which "normalise both to 0..1" would do
+    // -- transposes a full bend by two and a half octaves.
+    const double mpeFull = semitonesToVst3Tuning(48.0);
+    check(std::abs(mpeFull - (48.0 / 240.0 + 0.5)) < 1e-15,
+          "a full MPE bend lands at 0.7, NOT at 1.0");
+    check(mpeFull < 1.0, "and is nowhere near VST3's extreme");
+
+    // Out of range is clamped rather than passed through: the SDK does not
+    // define behaviour outside 0..1, and a controller set to +/-127 semitones
+    // would otherwise produce one.
+    check(semitonesToVst3Tuning(500.0) == 1.0, "beyond +120 clamps to 1.0");
+    check(semitonesToVst3Tuning(-500.0) == 0.0, "and below -120 to 0.0");
+
+    // Round trip.
+    for (double s : {-48.0, -12.0, -0.5, 0.0, 0.25, 12.0, 48.0}) {
+        const double back = vst3TuningToSemitones(semitonesToVst3Tuning(s));
+        check(std::abs(back - s) < 1e-12,
+              "semitones round-trip through the normalised form: " + std::to_string(s));
+    }
+}
+
+void testResolutionSurvivesTheVst3Conversion() {
+    section("14 bits survive the conversion to VST3's normalised domain");
+
+    // The end-to-end property. One LSB of a 14-bit bend at MPE's +/-48 range
+    // is ~0.00586 semitones; after dividing by 240 that is ~2.4e-5 in the
+    // normalised domain. A double holds it with room to spare -- but this is
+    // the check that fails if anything in the chain narrows to a float or,
+    // worse, rounds to VST3's own 7-bit-era assumptions.
+    const double a = bendToSemitones(8192 + 1, 48.0);
+    const double b = bendToSemitones(8192 + 2, 48.0);
+    const double na = semitonesToVst3Tuning(a);
+    const double nb = semitonesToVst3Tuning(b);
+    check(na != nb,
+          "two adjacent 14-bit bend words are still distinct after conversion");
+
+    // And at the extreme, where the values are largest and absolute precision
+    // is worst.
+    const double c = bendToSemitones(16383 - 1, 48.0);
+    const double d = bendToSemitones(16383, 48.0);
+    check(semitonesToVst3Tuning(c) != semitonesToVst3Tuning(d),
+          "including at the top of the range, where precision is worst");
+
+    // Every one of the 16384 words must map to a distinct normalised value,
+    // or some part of the controller's travel is dead. This is the whole
+    // mandate as one assertion.
+    int collisions = 0;
+    double prev = -1.0;
+    for (int w = 0; w < 16384; ++w) {
+        const double n = semitonesToVst3Tuning(bendToSemitones(
+            static_cast<std::uint16_t>(w), 48.0));
+        if (w > 0 && n == prev) ++collisions;
+        prev = n;
+    }
+    check(collisions == 0,
+          "all 16384 bend positions remain distinct end to end, saw " +
+          std::to_string(collisions) + " collisions");
+}
+
 }  // namespace
 
 int main() {
@@ -344,6 +423,8 @@ int main() {
     testNoZoneStillWorks();
     testGarbageIsRefused();
     testThroughputAtTheMandatedRate();
+    testVst3NoteExpressionMapping();
+    testResolutionSurvivesTheVst3Conversion();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
