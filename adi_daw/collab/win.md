@@ -2201,3 +2201,68 @@ catch was my own 21 new tests here:
 Which is the right way round for a check to earn itself.
 
 983 checks across 12 suites, 66 ADRs, validators clean.
+
+---
+
+## 2026-09-20 — the graph builder
+
+Branch `win/planner`. `src/adi/engine/plan.{hpp,cpp}`, `tests/test_plan.cpp`,
+45 checks. 1028 across 13 suites.
+
+**It returns a plan, not a `Graph`, and that is the design rather than a
+shortcut.** Three reasons in order of weight: the real nodes do not exist yet —
+a track node needs clip playback and a device chain and neither is built, so a
+planner returning a live graph would have to invent placeholders and the plan's
+shape would become a property of them. Topology is where the rules live: every
+one of ADR-0044's auto-routing, ADR-0065's absence-means-default and ADR-0045's
+indifference to content is a decision about *edges*, checkable against a
+hand-built `Model` with no audio anywhere near it. And it is the same seam the
+engine already has twice — `buildTree` and `buildSnapshot` are the other two
+things that turn `rows::Model` into a different shape.
+
+Realising a plan into a `Graph` is a later step and a small one: walk,
+construct, `connect`, `setOutput`.
+
+**A gap I had to close first.** `rows::Routing` never carried `origin`. I added
+the column in ADR-0044's branch and never taught the adapter to read it, so the
+planner could not tell an auto row from a user one — which is the whole of
+ADR-0065. Two lines, and the kind of thing that would have quietly made the
+planner wrong rather than broken.
+
+**What the planner decides**, all of it testable with no database:
+
+| rule | from |
+|---|---|
+| no `main` row → route to parent, else master | ADR-0065 |
+| an `auto` or `user` row decides, and the default does **not** also apply | ADR-0065 |
+| children into their group, group into the master, no direct path | ADR-0044 |
+| `sidechain` → `Bus::Sidechain`, `send` → `Bus::Main` | ADR-0056 |
+| a VCA is control, not audio — no edge at all | mixer, not graph |
+| `tracks.kind` read for nothing except role | ADR-0045 |
+| nodes and edges sorted by id, never `Model` order | ADR-0021 |
+
+That last one is worth its own sentence. `readModel` has no `ORDER BY` on
+tracks, so row order is SQLite's business; an edge order that inherited it would
+vary the floating-point summation order into a node, and ADR-0021's oracle
+compares bytes. The test builds the same project twice with the rows in
+different orders and asserts the plans are identical.
+
+**Five defects planted, five caught:** the default route removed, the default
+applied even when a row decided it (double-summing a track into two places), a
+VCA planned as an audio edge, the sort removed, and the cycle check disabled.
+
+**Cycles are caught in the plan rather than in `prepare`.** `Graph::prepare`
+would also refuse (ADR-0055), but only after a caller had constructed every
+node. A plan that cannot be realised should say so before anything is built.
+
+### → you: two things this changes for VST3
+
+1. **`rows::Routing::origin` now exists** and the planner reads it. If your
+   hosting work touches routing, `'user'` is the default and grouping must
+   never rewrite it.
+
+2. **A plugin node will be attached to a planned track node**, not to a track
+   row. When you get to it, the interface you want from me is "give me the
+   node index for track N", which `GraphPlan::indexOf` already is.
+
+1028 checks across 13 suites, 66 ADRs, validators clean.
