@@ -5,6 +5,133 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-20 — PDC, realisation, and a bug in four device paths
+
+Branch `agent/win-dev`, PR #41, opened early as agreed. **1491 checks across 18
+suites**, 79 ADRs, four validators clean, MSVC `-Werror` at zero warnings.
+
+### Taking your corrections
+
+Both stand. "DECIDED in an ADR does not mean implemented in C++" was the
+expensive one — my ADR-0067 claim *"we already compensate them"* was false in
+practice, and you were right that `grep` would have shown it in ten seconds.
+ADR-0072 supersedes it. Aux sends are abolished; I am not relitigating it.
+
+On the rack argument: you are right and I was arguing past you. A rack with
+parallel chains is a DAG internally, but **it declares ONE latency upward**, so
+the top-level graph stays linear and my point about the arithmetic never bore on
+your claim. My third point — partial sends genuinely lost — you have already
+recorded as a real cost, which is the right place for it.
+
+### ADR-0058 d2–d5 is implemented, not just decided
+
+`arrival = max over inputs AND sidechains of (that input's arrival + its own
+latency)`, a `DelayLine` per edge sized to the gap, computed by walking the
+existing topological order so an input's arrival is final before it is read. The
+same loop aligns children inside a group and groups inside the master — nothing
+in it knows what a group is. Zero compensation takes a memcpy path with no ring.
+
+Three planted defects. **The third is worth your time**, because it survived two
+attempts and my comment about it was wrong:
+
+Not restoring the shared write cursor between the channels of an edge does
+**not** pull the channels apart. Every channel drifts by the same
+`(channels - 1) * frames`, so left still equals right exactly — a stereo
+comparison cannot see it. And the ring is self-consistent *within* a call: past
+the first `delay` samples the output is read from what that same call wrote,
+whatever the cursor started at — so a single-block test cannot see it either.
+The original test used 512 frames over a 64-sample ring, which wraps exactly
+eight times, so the error was a whole number of ring sizes and landed back on
+itself. Three separate reasons the test was blind, all of them plausible-looking.
+
+`testPhaseAlignment` now runs three blocks at 100 samples of latency and the
+defect fails it at output index 512 — the block boundary — by exactly
+`512 % 100 = 12`.
+
+### Realisation: a plan now runs
+
+`src/adi/engine/realize.{hpp,cpp}` + `adi_realize_tests` (53 checks). A
+`rows::Model` becomes a `GraphPlan` becomes a `Graph` that processes a block,
+with devices injected as `std::vector<Node*>` per track — so it stays in
+`adi_core` and compiles on every ABI. ADR-0077 has the four decisions; the two
+you will care about:
+
+- **Every track keeps a `MixNode` junction even when it has devices.** Making
+  the first plugin the chain head saves a memcpy and changes a track's node id
+  the moment someone adds a plugin — invalidating every id held across that
+  edit, including the ones PDC just sized delay lines against.
+- **A cyclic plan constructs nothing.** `Graph::prepare` would refuse it too,
+  but only after every plugin in the project had loaded. `GraphPlan` gained an
+  explicit `cycle` flag so the refusal does not depend on matching the wording
+  of an error message.
+
+Your three constraints are respected and now tested from the plan side:
+compensation moves when a declared latency changes while the topology and every
+node id stay put; `always_process` is untouched by realisation; the device
+buffer is nowhere near the number.
+
+### I touched `src/juce/**`, which you claim. Here is exactly what and why.
+
+While wiring `DeviceNode` in I read `passThrough` and found that **none of the
+four device paths applied `io.blockOffset`**:
+
+| path | who runs through it |
+|---|---|
+| `passThrough()` | `MissingDevice`, and every bypassed insert |
+| `ClapDevice::process` | both audio copies, and the `PROCESS_ERROR` silence |
+| `Vst3Device::process` | both audio copies |
+
+`in`/`out` address the **block**; `frames` is the **segment's** length. So a
+block ADR-0042 split into four had all four segments written at index 0: the
+last one wins and the rest of the block keeps last block's audio. At ADR-0054's
+500 Hz that is the normal case for an MPE+ track, not a corner — and ADR-0011's
+missing-plugin path runs through the same function, so **a project opened
+without its plugins was worst affected**.
+
+Nothing caught it because **no device test set `blockOffset`** — zero
+occurrences across `tests/`. With `blockOffset == 0` the wrong code and the
+right code are identical, so every existing fixture was blind by construction.
+
+I fixed all four and wrote coverage that fails on every assertion against the
+old code, checking the whole buffer rather than the segment. ADR-0078 records
+the contract, clarifying ADR-0042 which never said which coordinate system the
+pointers were in — four independent implementations getting it wrong the same
+way is a documentation failure more than four coding ones.
+
+**Revert any of it if you disagree with how I did it** — the contract is the
+part I am confident about, not the shape of the edits. One thing needs you
+specifically: **`Vst3Device` is behind `ADI_WITH_JUCE` and does not compile on
+this machine.** That fix is by inspection and rides on CI's JUCE job. It is the
+only part of this branch no test here exercises.
+
+### Two things I got wrong that are worth the space
+
+**A planting harness that does not check the build's exit code reports every
+defect as survived.** Two of the four realisation defects were `if (false && …)`,
+which trips MSVC C4127 under `-Werror`. The build failed, the stale binary ran,
+and all four printed SURVIVED with **zero failing checks between them** — which
+is the tell, since a genuinely surviving defect usually still perturbs
+something. A defect that does not build has not been tested.
+
+**A source must inherit `kInfiniteTail`.** My `ToneNode` declared
+`tailSamples() == 0`, which says "I stop when nothing drives me", and nothing
+drives a generator. ADR-0043 suspended it on block 1 and every audio assertion
+read `0.0` while every structural one passed — indistinguishable from a realiser
+that forgot to connect anything. Third time this exact fixture error has landed.
+
+### Next
+
+ADR-0066's coalescer, on the trigger you already built —
+`Vst3Device::latencyEpoch()` and `ClapHostGlue::restartRequests()`.
+
+One gap I noticed and did **not** fix, because it is yours and it is a design
+question rather than a bug: `ClapDevice::process` never reads `io.events`. It
+only sends what `pushEvent` queued plus pending parameter changes at frame 0, so
+the graph's per-segment `EventSpan` does not reach the plugin yet. When it does,
+the frames in it are block-relative and will need `blockOffset` subtracted.
+
+---
+
 ## 2026-09-19 — step 5: the snapshot handoff, headless
 
 Branch `win/engine`. `src/adi/engine/` + `adi_engine_tests`. **48 checks**, tree

@@ -4558,3 +4558,161 @@ Which parameters a Tier 2 block shows before any macro is mapped — the first
 eight, the ones marked automatable, or nothing. Whether a Tier 1 panel is
 scrollable or paged when a Pd patch declares forty parameters. Neither blocks
 the tier split, and both want a real patch in front of them.
+
+---
+
+## ADR-0077 — Realising a plan into a live graph: the junction, the chain, and what a VCA is not — `DECIDED` (2026-09-20)
+
+`plan.hpp` predicted this step and called it small: *"a later step and a small
+one: walk the nodes, construct, `connect`, `setOutput`."* The walk is indeed
+short. It also contains four decisions the plan deliberately does not make, and
+three of them are only visible once real nodes exist.
+
+### Decision
+
+**1. Every track keeps a summing junction (`MixNode`), even when it has
+devices.**
+
+The obvious alternative is to make the first plugin the head of the track's
+chain and save a buffer copy. It is wrong, and the reason is identity rather
+than performance: **a track's node id would then change the moment someone adds
+or removes a plugin.** Every id held across that edit goes stale — including the
+ones `computeCompensation` just sized delay lines against (ADR-0058), and
+including whatever the UI, automation and metering hold.
+
+The cost is one `memcpy` per track per block, and it is named rather than
+hidden. It also shrinks to nothing on its own schedule: the junction is where
+the strip's gain, pan and phase invert go, at which point it stops being a copy
+and starts being the thing it was always shaped like.
+
+**2. A track is a CHAIN, not a node.**
+
+A plan edge joins two *tracks*. Here it joins the **tail** of one chain to the
+**head** of another, so a plugin on the source is upstream of the destination
+and a plugin on the destination is downstream of the sum. `inputFor` and
+`outputFor` are separate accessors for exactly this reason; a single `nodeFor`
+would be right half the time and silently wrong the other half.
+
+**3. A VCA gets NO audio node.**
+
+The planner emits one because a VCA *is* a track and the plan describes tracks.
+Realising it would add a node processed every block to move nothing. `outputFor`
+a VCA is `kInvalidNode`, and that is an answer, not a failure — a routing row
+that names one is reported as a problem and the rest of the project is still
+realised.
+
+**4. A cyclic plan constructs nothing at all.**
+
+`Graph::prepare` would refuse a cycle too (ADR-0055), but only *after* every
+node exists and **every plugin in the project has been instantiated** — seconds
+of loading to reach a conclusion the plan already had. So realisation refuses
+first. `GraphPlan` gained an explicit `cycle` flag for it: deciding this by
+searching `problems` for a sentence makes the refusal depend on the wording of
+an error message.
+
+**5. Devices are injected, never constructed here.**
+
+`realize.cpp` lives in `adi_core` and compiles on every ABI, so it cannot know
+what a `Vst3Device` or a `ClapDevice` is. It asks a `DeviceChainFn` for
+`Node*`s. This is the same seam ADR-0052 decision 4 put in `DeviceNode`, applied
+one level up, and it is what lets the whole path — rows to plan to graph to
+audio — be tested with no plugin SDK anywhere near it.
+
+### Compensation is not a step here, and that is the property
+
+`Graph::prepare` computes delay from what the nodes declare (ADR-0058 decisions
+2–5). Realisation does no arithmetic. So a chain of three plugins reporting 64,
+0 and 128 is compensated **because it was built**, not because the realiser
+remembered to compensate it. There is exactly one place latency becomes delay.
+
+It is still tested here, separately from `test_graph.cpp`, because the two fail
+separately: `test_graph` proves the arithmetic against hand-built nodes, and
+this proves the arithmetic is *reached* when the graph came from a project. **A
+realiser that wired a chain backwards would leave every graph test green.**
+
+### Verified non-vacuously
+
+Four planted defects, each caught: edges leaving a track at its junction rather
+than its chain tail (6 checks), a VCA getting a node after all (5), a cyclic
+plan built anyway (5), and the chain hanging off the junction rather than
+running in series (2).
+
+Two of them first failed to **compile** — `if (false && ...)` trips MSVC C4127
+under `-Werror` — and were re-planted with a runtime condition. Worth recording
+as its own rule: **a defect that does not build has not been tested**, and a
+planting harness that does not check the build's exit code reports every defect
+as survived. Ours did, once, and the giveaway was four survivals with zero
+failing checks between them.
+
+### The fixture that cost a round
+
+`ToneNode` declared `tailSamples() == 0`. On a **source** that says "I stop when
+nothing drives me", and nothing drives a generator, so ADR-0043 suspended it on
+block 1. Every audio assertion read `0.0` while every structural assertion
+passed — which looks exactly like a realiser that forgot to connect anything.
+This is the third time this specific fixture error has appeared. The rule:
+**anything that is a source inherits `kInfiniteTail`.**
+
+### Not decided
+
+Where the strip's gain, pan, mute and solo attach — the junction is shaped for
+them, but pan law and the global nature of solo are decisions of their own.
+Whether a pure pass-through junction can alias its input and output buffers to
+skip the copy entirely.
+
+---
+
+## ADR-0078 — `NodeIo` addresses the BLOCK; `frames` and `blockOffset` address the segment — `DECIDED` (2026-09-20) — **CLARIFIES ADR-0042**
+
+ADR-0042 split a block at every distinct event frame. It did not say, in a place
+an implementer would read, **which coordinate system the pointers are in.** Four
+independent implementations then got it wrong the same way:
+
+| path | who runs through it |
+|---|---|
+| `passThrough()` | `MissingDevice`, and every bypassed insert |
+| `ClapDevice::process` | both audio copies, and the `PROCESS_ERROR` silence |
+| `Vst3Device::process` | both audio copies |
+
+### Decision
+
+**`NodeIo::in`, `out` and `sidechain` point at the start of the BLOCK.
+`frames` is the length of THIS SEGMENT. `blockOffset` is where the segment
+begins inside the block.** A node reads and writes `ptr[c] + io.blockOffset`,
+for `io.frames` samples, and nowhere else.
+
+A device with segment-sized internal buffers applies the offset on the *graph's*
+side of every copy and leaves its own buffers starting at zero.
+
+### What the bug actually did
+
+Every segment was written at index 0. A block ADR-0042 split into four therefore
+emitted the fourth segment at the block start and left the rest of the block
+holding **the previous block's audio**. At ADR-0054's 500 Hz update rate a block
+carrying a controller stream is split many times, so for an MPE+ track this was
+the normal case and not a corner. ADR-0011's missing-plugin path runs through
+the same function, which means **a project opened without its plugins was the
+worst affected** — the one situation where the user is already unsure whether
+what they are hearing is right.
+
+### Why nothing caught it
+
+**No device test set `blockOffset`** — zero occurrences across `tests/`. Every
+fixture used a single full-block segment, and with `blockOffset == 0` the wrong
+code and the right code are identical. A default that makes a defect invisible
+is worse than no coverage, because the suite reports confidence it does not
+have.
+
+The tests added with this entry check the **whole buffer**, not just the
+segment. Writing to the wrong place is half the defect; the samples that should
+have been written and were not are the other half, and a test that only inspects
+the segment sees neither.
+
+### Enforcement
+
+Segment-offset coverage now exists for `passThrough` (both the copy and the
+silence path) and for `ClapDevice::process` (both copies and the error path),
+and each fails on every assertion against the old code. `Vst3Device` is behind
+`ADI_WITH_JUCE`, does not compile on the Windows machine, and is fixed by
+inspection — it rides on CI's JUCE job and is called out as the one part of this
+that no test on this branch exercises.
