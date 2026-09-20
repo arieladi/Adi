@@ -38,6 +38,17 @@ adi-vst/Reason_*/
 adi-vst/Reason_*.zip
 adi-vst/*.exe
 
+# adi-surge/surge is its own git repo: a clone of surge-synthesizer/surge carrying
+# an `upstream` remote, so `git diff upstream/main` keeps showing our whole fork
+# delta. Same arrangement as adi-vst/vital (ADR-0001 over there).
+# Ignored here so staging in this repo cannot turn it into a stray gitlink.
+adi-surge/surge/
+
+# CMake build trees for the Surge fork and our headless CLAP validator.
+adi-surge/build/
+adi-surge/build-*/
+adi-surge/tools/validator/build/
+
 # adi_daw external code. Each of these is its own git repo, cloned for building
 # against (third_party) or for reading (reference). Ignored here so a `git add -A`
 # cannot turn one into a stray gitlink -- the same arrangement adi-vst uses for its Vital fork.
