@@ -8,6 +8,7 @@
 //   * DETERMINISM -- identical payloads encode to identical bytes, or ADR-0007's
 //     text projection and ADR-0021's replay test both become impossible.
 
+#include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 
@@ -18,6 +19,7 @@
 #include <exception>
 #include <filesystem>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -431,6 +433,164 @@ void testPersistsAcrossReopen() {
           "and its payload still decodes -- this is what in-memory undo cannot do");
 }
 
+// --- ADR-0044 / ADR-0065: setParent is composite -----------------------------
+
+void testSetParentMovesRouting() {
+    section("ADR-0044 -- parenting rewrites the auto route in the SAME txn");
+    Scratch s("setparent");
+    auto st = freshProject(s / "p.adi");
+    check(st != nullptr, "project created");
+    if (!st) return;
+    OpJournal j(*st);
+
+    auto mk = [&](std::int64_t id, const char* kind, const char* name) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}};
+        const auto res = j.commit(r);
+        check(res.ok, std::string("track.create ") + name + ": " + res.error);
+    };
+    mk(1, "master", "Master");
+    mk(2, "group", "Drums");
+    mk(3, "audio", "Kick");
+
+    // A materialised default: Kick -> Master, marked auto.
+    st->db().exec(
+        "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind, origin) "
+        "VALUES (10, 'track', 3, 'track', 1, 'main', 'auto')");
+
+    OpRequest r;
+    r.opType = "track.setParent";
+    r.payload = {{"id", 3}, {"parent", 2}};
+    const auto res = j.commit(r);
+    check(res.ok, "track.setParent commits: " + res.error);
+
+    const auto parent = st->db().execAndGet(
+        "SELECT parent_id FROM tracks WHERE id = 3").getInt64();
+    check(parent == 2, "the track is inside the group");
+
+    const auto dst = st->db().execAndGet(
+        "SELECT dst_id FROM routing WHERE id = 10").getInt64();
+    check(dst == 2,
+          "and its output followed, in the same transaction -- there is no "
+          "state where it is visually grouped and still routed to master");
+
+    // The row ID is unchanged, which is why this is an UPDATE and not a
+    // delete-and-insert: an automation lane owned by that routing row would be
+    // orphaned by a new id, and ADR-0021 7.3 forbids taking one from SQLite.
+    const auto rows = st->db().execAndGet(
+        "SELECT COUNT(*) FROM routing WHERE src_id = 3 AND kind = 'main'").getInt();
+    check(rows == 1, "still one main route, the same row");
+}
+
+void testSetParentLeavesUserRouting() {
+    section("ADR-0044 -- a hand-made route survives every regroup");
+    Scratch s("setparent_user");
+    auto st = freshProject(s / "p.adi");
+    if (!st) return;
+    OpJournal j(*st);
+
+    for (auto [id, kind, name] : {std::tuple<std::int64_t, const char*, const char*>
+             {1, "master", "Master"}, {2, "group", "Bus"}, {3, "audio", "Odd"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}};
+        j.commit(r);
+    }
+
+    // The user pointed this track somewhere deliberately. origin defaults to
+    // 'user', which is the safe default ADR-0044 chose precisely so that a row
+    // written by anything that has not thought about this is left alone.
+    st->db().exec(
+        "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind) "
+        "VALUES (11, 'track', 3, 'track', 1, 'main')");
+
+    OpRequest r;
+    r.opType = "track.setParent";
+    r.payload = {{"id", 3}, {"parent", 2}};
+    check(j.commit(r).ok, "setParent still commits");
+
+    check(st->db().execAndGet("SELECT parent_id FROM tracks WHERE id = 3").getInt64() == 2,
+          "the track moved");
+    check(st->db().execAndGet("SELECT dst_id FROM routing WHERE id = 11").getInt64() == 1,
+          "and its hand-made route did NOT -- grouping never touches a user row");
+    check(st->db().execAndGet("SELECT origin FROM routing WHERE id = 11").getString() == "user",
+          "which is what origin='user' is for");
+}
+
+void testSetParentUndoRestoresBoth() {
+    section("ADR-0065 -- undo restores the parent, and the route follows the rule");
+    Scratch s("setparent_undo");
+    auto st = freshProject(s / "p.adi");
+    if (!st) return;
+    OpJournal j(*st);
+
+    for (auto [id, kind, name] : {std::tuple<std::int64_t, const char*, const char*>
+             {1, "master", "Master"}, {2, "group", "Bus"}, {3, "audio", "Kick"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}};
+        j.commit(r);
+    }
+    st->db().exec(
+        "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind, origin) "
+        "VALUES (12, 'track', 3, 'track', 1, 'main', 'auto')");
+
+    OpRequest r;
+    r.opType = "track.setParent";
+    r.payload = {{"id", 3}, {"parent", 2}};
+    check(j.commit(r).ok, "grouped");
+    check(st->db().execAndGet("SELECT dst_id FROM routing WHERE id = 12").getInt64() == 2,
+          "routed to the group");
+
+    History h(*st);
+    const auto u = h.undo();
+    check(u.ok, "undo: " + u.error);
+
+    check(st->db().execAndGet("SELECT parent_id FROM tracks WHERE id = 3").isNull(),
+          "the track is out of the group again");
+    check(st->db().execAndGet("SELECT dst_id FROM routing WHERE id = 12").getInt64() == 1,
+          "and its route is back on the master -- recomputed from the rule, not "
+          "restored from a captured id that could have gone stale");
+}
+
+void testSetParentRefusesACycle() {
+    section("ADR-0065 -- a track cannot be parented into its own descendant");
+    Scratch s("setparent_cycle");
+    auto st = freshProject(s / "p.adi");
+    if (!st) return;
+    OpJournal j(*st);
+
+    for (auto [id, kind, name] : {std::tuple<std::int64_t, const char*, const char*>
+             {1, "group", "Outer"}, {2, "group", "Inner"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}};
+        j.commit(r);
+    }
+    OpRequest in;
+    in.opType = "track.setParent";
+    in.payload = {{"id", 2}, {"parent", 1}};
+    check(j.commit(in).ok, "Inner goes inside Outer");
+
+    // Now put Outer inside Inner. `tracks` CHECKs only id <> parent_id, so
+    // nothing in the schema stops this and the graph would have a cycle its
+    // topological sort refuses to run.
+    OpRequest bad;
+    bad.opType = "track.setParent";
+    bad.payload = {{"id", 1}, {"parent", 2}};
+    const auto res = j.commit(bad);
+    check(!res.ok, "refused rather than committed");
+
+    check(st->db().execAndGet("SELECT parent_id FROM tracks WHERE id = 1").isNull(),
+          "and nothing was written -- the whole transaction rolled back");
+
+    OpRequest self;
+    self.opType = "track.setParent";
+    self.payload = {{"id", 1}, {"parent", 1}};
+    check(!j.commit(self).ok, "a track cannot be its own parent either");
+}
+
 }  // namespace
 
 int runAll() {
@@ -451,6 +611,10 @@ int runAll() {
     testAgentAttribution();
     testBatchSharesTxn();
     testPersistsAcrossReopen();
+    testSetParentMovesRouting();
+    testSetParentLeavesUserRouting();
+    testSetParentUndoRestoresBoth();
+    testSetParentRefusesACycle();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;

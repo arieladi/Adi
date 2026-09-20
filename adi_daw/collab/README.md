@@ -74,6 +74,8 @@ subject, say so in your log instead of writing it twice.
 | 0056 | win | `win/routing` | buses, levelled scheduling for parallelism, and MPE+ event capacity | used |
 | 0057 | mac | `mac/vst3` | VST3 hosting behind the format-agnostic device model | reserved |
 | 0058-0064 | win | `win/blueprint` | the director's five-pillar blueprint: PDC, freezing, racks, stretch, native DSP, undocking, async AI | used |
+| 0065 | win | `win/setparent` | absence of a main routing row means the default, and setParent is composite | used |
+| 0066 | win | `win/setparent` | latency changes while running: recompute off-thread, publish, crossfade | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

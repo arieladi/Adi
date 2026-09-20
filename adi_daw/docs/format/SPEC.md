@@ -251,10 +251,16 @@ Ableton's bus are distinct and we model both. ADI follows Ableton, and carrying
 the other alongside it would leave a container that looks like a group and
 whose fader does nothing.
 
-Parenting a track into a group **MUST** write its `routing` row to the group's
-bus in the same transaction. `routing.origin` records whether a connection was
-made by grouping (`'auto'`) or by the user (`'user'`); grouping may rewrite the
-first and **MUST NOT** touch the second.
+**A track with no `main` routing row routes to its parent, or to the master if
+it has none** (ADR-0065). The default is a rule, not a row, so a project where
+every track routes the obvious way stores no `routing` rows at all.
+
+`routing.origin` records whether a connection was made by grouping (`'auto'`)
+or by the user (`'user'`). An `'auto'` row is a materialisation of that
+default and grouping keeps it pointing at the right place; a `'user'` row is
+the user's own routing and grouping **MUST NOT** touch it. Re-parenting a
+track **MUST** leave no state in which it is inside a group and routed
+elsewhere by an `'auto'` row.
 
 **`audio`, `midi` and `instrument` are hints** (ADR-0045). They set the icon,
 the default device and what a double-click creates. A reader **MUST NOT** infer

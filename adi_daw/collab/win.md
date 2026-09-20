@@ -2115,3 +2115,89 @@ Proved by planting it. Third count in this repo that was wrong because nothing
 read it.
 
 962 checks across 12 suites, 64 ADRs, validators clean.
+
+---
+
+## 2026-09-20 — setParent is composite now, and two ADRs came out of building it
+
+Branch `win/setparent`. ADR-0065 and ADR-0066. 983 checks.
+
+**`track.setParent` was a generated scalar and is now hand-written**, which
+ADR-0044 required: a re-parent that does not move the routing leaves a track
+visually inside a group and still routed to master. It is the first op in the
+catalogue that touches two tables.
+
+**Building it surfaced a problem ADR-0044 had not seen, and the fix is better
+than the thing it replaced.** ADR-0021 §7.3 says an object's id comes from the
+payload, never from SQLite — so an op that INSERTS a routing row needs that
+row's id in its payload, and every caller would have to allocate a routing id
+to drag a track into a folder.
+
+ADR-0065's answer: **absence of a `main` row means the default** — route to my
+parent, or the master. So `setParent` only ever UPDATEs, inserts nothing, needs
+no id, and the payload stays `{id, parent}`. Two things fall out that are better
+rather than merely cheaper: a project where everything routes obviously stores
+**no routing rows at all**, and the row id survives a regroup, which matters
+because an automation lane can be owned by a routing row and a new id would
+orphan it.
+
+**The inverse captures the parent and NOT the route.** Re-applying with the old
+parent recomputes the destination from the same rule. A captured `dst_id` would
+be wrong in a specific case — if the old parent was itself moved in between,
+restoring it would route the track to where that group used to be. The rule is
+stable under exactly the edits a captured value is not.
+
+**The cycle guard is in the op.** `tracks` CHECKs only `id <> parent_id`, so
+parenting a group into its own descendant is legal SQL and `topoSort` would
+refuse the resulting graph — correctly, but at the wrong moment, with the
+project already in that state. Now the transaction rolls back and the project
+never holds it.
+
+Three defects planted, three caught: routing never updated, `origin` ignored so
+a user row is rewritten, and the cycle guard removed.
+
+### ADR-0066 closes what ADR-0058 deferred, on the director's mandate
+
+Dynamic PDC: a plugin that changes its reported latency at runtime — Pro-Q 3
+switching to linear phase — must not drop the engine.
+
+**The shape was already decided in ADR-0019 and this reuses it.** A latency
+increase needs more delay memory, which cannot be allocated on the audio thread;
+the report arrives on the message thread, which must not block. So the
+compensated schedule becomes an immutable published object carrying **the delay
+buffers themselves**, swapped by atomic pointer at a block boundary, reclaimed
+by the same epoch rule. Reports are coalesced — a mode switch reports several
+times in milliseconds and recomputing per report builds schedules nobody uses.
+
+**One honest paragraph in it.** A latency change *is* a time shift; the correct
+output genuinely differs before and after, so no amount of engineering makes it
+inaudible. What is guaranteed is that it is **not a dropout and not a click** —
+both schedules render one block and are crossfaded. Saying "seamless" without
+that would be promising something unachievable, and the mandate is met in the
+sense that matters.
+
+### → you: two of these land on the VST3 bridge
+
+1. **`latencySamples()` joins `tailSamples()` on `Node`** (ADR-0058), and the
+   defaults are OPPOSITE on purpose: tail defaults to infinite, latency defaults
+   to **0**. A missed tail is merely processed too often; a missed latency
+   **moves audio that was aligned**, which is the kick/bass complaint arriving
+   from inside our own code.
+
+2. **A VST3 reporting a latency change is ADR-0066's trigger**, and your bridge
+   is where it arrives. It must not recompute anything itself — it reports, the
+   message thread coalesces, the graph republishes. Do not call back into the
+   graph from `restartComponent`.
+
+### And the README check caught me first
+
+`test_all.sh` gained a README-count check in the last branch. Its first real
+catch was my own 21 new tests here:
+
+```
+  README says '**962 checks across 12 suites**', this run is '**983 checks across 12 suites**'
+```
+
+Which is the right way round for a check to earn itself.
+
+983 checks across 12 suites, 66 ADRs, validators clean.
