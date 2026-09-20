@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -77,9 +78,6 @@ constexpr ScalarSpec kScalars[] = {
      "automation_mode", "mode", FieldType::Int, EngineImpact::None, false},
     {"track.reorder", "Move a track within its parent", "tracks", "id",
      "index_in_parent", "index", FieldType::Int, EngineImpact::Snapshot, false},
-    {"track.setParent", "Move a track into or out of a folder or group",
-     "tracks", "id", "parent_id", "parent", FieldType::Int,
-     EngineImpact::GraphRebuild, false},
 
     // --- clips ----------------------------------------------------------
     {"clip.setName", "Rename a clip", "clips", "id", "name", "name",
@@ -758,11 +756,151 @@ constexpr Field kFRouting[] = {{"id", FieldType::Int, true},
                                {"dstKind", FieldType::Text, true},
                                {"dst", FieldType::Int, true},
                                {"kind", FieldType::Text, true}};
+constexpr Field kFSetParent[] = {{"id", FieldType::Int, true},
+                                 {"parent", FieldType::Int, false}};
 constexpr Field kFTransportSeek[] = {{"pos", FieldType::Int, true}};
 constexpr Field kFTransportFlag[] = {{"on", FieldType::Bool, true}};
 constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
                                      {"start", FieldType::Int, false},
                                      {"end", FieldType::Int, false}};
+
+// --- track.setParent: the first op that is not a function of one row -------
+//
+// ADR-0044 requires that parenting a track into a group route it to that
+// group's bus IN THE SAME TRANSACTION, so there is no state in which a track is
+// visually inside a group and still routed to the master. That makes this the
+// first op in the catalogue that touches two tables, and it was a generated
+// scalar until ADR-0065.
+//
+// The routing model it implements (ADR-0065, SPEC 6.1):
+//
+//   * NO main row      -> the default: route to my parent, or to the master if
+//                         I have none. The common case stores nothing.
+//   * an 'auto' row    -> a materialisation of that default; grouping keeps it
+//                         pointing at the right place.
+//   * a 'user' row     -> the user's own routing. Grouping NEVER touches it.
+//
+// Absence-means-default is what keeps this op from having to INVENT a routing
+// row id. ADR-0021 7.3 says an id comes from the payload and never from SQLite,
+// because undo-then-redo must return the same id or every later op referencing
+// it points at nothing -- so an op that inserts a row needs that row's id in
+// its payload. Making the default implicit means nothing is inserted, so
+// nothing needs an id, and the payload stays `{id, parent}`.
+
+namespace {
+
+/// Where a track's audio goes by default: its parent, or the master.
+/// `std::nullopt` means nowhere -- a project with no master and no parent,
+/// which is legal and silent rather than an error.
+std::optional<std::int64_t> defaultDestination(OpContext& c,
+                                               std::optional<std::int64_t> parent) {
+    if (parent) return parent;
+    SQLite::Statement st(c.db,
+        "SELECT id FROM tracks WHERE kind = 'master' ORDER BY id LIMIT 1");
+    if (st.executeStep()) return st.getColumn(0).getInt64();
+    return std::nullopt;
+}
+
+/// The track's own main output row, if it has one. Returns (rowId, dst, origin).
+struct MainRoute {
+    std::int64_t rowId = 0;
+    std::int64_t dst = 0;
+    std::string origin;
+    bool found = false;
+};
+
+MainRoute findMainRoute(OpContext& c, std::int64_t trackId) {
+    MainRoute r;
+    SQLite::Statement st(c.db,
+        "SELECT id, dst_id, origin FROM routing "
+        "WHERE src_kind = 'track' AND src_id = ? AND kind = 'main' "
+        "ORDER BY id LIMIT 1");
+    st.bind(1, trackId);
+    if (st.executeStep()) {
+        r.rowId = st.getColumn(0).getInt64();
+        r.dst = st.getColumn(1).getInt64();
+        r.origin = st.getColumn(2).getString();
+        r.found = true;
+    }
+    return r;
+}
+
+}  // namespace
+
+bool trackSetParentApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        const auto id = p.at("id").get<std::int64_t>();
+
+        std::optional<std::int64_t> parent;
+        if (p.contains("parent") && !p.at("parent").is_null())
+            parent = p.at("parent").get<std::int64_t>();
+
+        // A track parented into itself, or into its own descendant, is a cycle
+        // in the track forest. `tracks` CHECKs only `id <> parent_id`, which
+        // stops the one-element case and nothing else, so the walk is here.
+        if (parent) {
+            std::int64_t at = *parent;
+            for (int steps = 0;; ++steps) {
+                if (at == id) { err = "that would put the track inside itself"; return false; }
+                SQLite::Statement up(c.db, "SELECT parent_id FROM tracks WHERE id = ?");
+                up.bind(1, at);
+                if (!up.executeStep()) break;               // parent does not exist
+                if (up.getColumn(0).isNull()) break;        // reached a root
+                at = up.getColumn(0).getInt64();
+                if (steps > 10000) { err = "the track forest already has a cycle"; return false; }
+            }
+        }
+
+        {
+            SQLite::Statement st(c.db, "UPDATE tracks SET parent_id = ? WHERE id = ?");
+            if (parent) st.bind(1, *parent); else st.bind(1);
+            st.bind(2, id);
+            if (st.exec() == 0) { err = "no such track"; return false; }
+        }
+
+        // The routing half. A 'user' row is the user's own decision and
+        // survives every regroup -- that is the whole of routing.origin.
+        const MainRoute route = findMainRoute(c, id);
+        if (route.found && route.origin == "auto") {
+            const auto dst = defaultDestination(c, parent);
+            if (dst) {
+                SQLite::Statement st(c.db, "UPDATE routing SET dst_id = ? WHERE id = ?");
+                st.bind(1, *dst);
+                st.bind(2, route.rowId);
+                st.exec();
+            } else {
+                // Nowhere to route: the materialised default no longer names
+                // anything. Dropped rather than left pointing at a stale track.
+                SQLite::Statement st(c.db, "DELETE FROM routing WHERE id = ?");
+                st.bind(1, route.rowId);
+                st.exec();
+            }
+        }
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool trackSetParentInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        const auto id = p.at("id").get<std::int64_t>();
+
+        SQLite::Statement st(c.db, "SELECT parent_id FROM tracks WHERE id = ?");
+        st.bind(1, id);
+        if (!st.executeStep()) { err = "no such track to capture"; return false; }
+
+        inv = Payload::object();
+        inv["id"] = id;
+        if (st.getColumn(0).isNull()) inv["parent"] = nullptr;
+        else inv["parent"] = st.getColumn(0).getInt64();
+
+        // The routing row is NOT captured, and that is the point of ADR-0065.
+        // Re-applying setParent with the old parent recomputes the same
+        // destination from the same rule, so the inverse is symmetric and the
+        // row id is never invented. A captured dst would also be wrong the
+        // moment the old parent was itself moved in between.
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
 
 const OpDescriptor kHandWritten[] = {
     {"project.setName", "Rename the project", Scope::Edit, EngineImpact::None,
@@ -772,6 +910,9 @@ const OpDescriptor kHandWritten[] = {
      kFTrackCreate, false, false, trackCreateApply, trackCreateInverse, "track.delete"},
     {"track.delete", "Delete a track", Scope::Edit, EngineImpact::GraphRebuild,
      kFId, false, false, trackDeleteApply, trackDeleteInverse, "track.create"},
+    {"track.setParent", "Move a track into or out of a group", Scope::Edit,
+     EngineImpact::GraphRebuild, kFSetParent, false, false,
+     trackSetParentApply, trackSetParentInverse, ""},
 
     {"clip.create", "Create a clip", Scope::Edit, EngineImpact::Snapshot,
      kFClipCreate, false, false, clipCreateApply, clipCreateInverse, "clip.delete"},

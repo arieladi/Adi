@@ -203,6 +203,10 @@ struct Routing {
     double pan = 0.0;
     bool preFader = false;
     bool enabled = true;
+    /// 'auto' (grouping owns it) or 'user' (the user does). ADR-0044/ADR-0065:
+    /// the difference decides whether re-parenting may rewrite the row, so a
+    /// planner that cannot see it cannot honour the rule.
+    std::string origin = "user";
 };
 
 // --- the whole readable project ---------------------------------------------

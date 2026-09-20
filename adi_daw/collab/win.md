@@ -2115,3 +2115,219 @@ Proved by planting it. Third count in this repo that was wrong because nothing
 read it.
 
 962 checks across 12 suites, 64 ADRs, validators clean.
+
+---
+
+## 2026-09-20 — setParent is composite now, and two ADRs came out of building it
+
+Branch `win/setparent`. ADR-0065 and ADR-0066. 983 checks.
+
+**`track.setParent` was a generated scalar and is now hand-written**, which
+ADR-0044 required: a re-parent that does not move the routing leaves a track
+visually inside a group and still routed to master. It is the first op in the
+catalogue that touches two tables.
+
+**Building it surfaced a problem ADR-0044 had not seen, and the fix is better
+than the thing it replaced.** ADR-0021 §7.3 says an object's id comes from the
+payload, never from SQLite — so an op that INSERTS a routing row needs that
+row's id in its payload, and every caller would have to allocate a routing id
+to drag a track into a folder.
+
+ADR-0065's answer: **absence of a `main` row means the default** — route to my
+parent, or the master. So `setParent` only ever UPDATEs, inserts nothing, needs
+no id, and the payload stays `{id, parent}`. Two things fall out that are better
+rather than merely cheaper: a project where everything routes obviously stores
+**no routing rows at all**, and the row id survives a regroup, which matters
+because an automation lane can be owned by a routing row and a new id would
+orphan it.
+
+**The inverse captures the parent and NOT the route.** Re-applying with the old
+parent recomputes the destination from the same rule. A captured `dst_id` would
+be wrong in a specific case — if the old parent was itself moved in between,
+restoring it would route the track to where that group used to be. The rule is
+stable under exactly the edits a captured value is not.
+
+**The cycle guard is in the op.** `tracks` CHECKs only `id <> parent_id`, so
+parenting a group into its own descendant is legal SQL and `topoSort` would
+refuse the resulting graph — correctly, but at the wrong moment, with the
+project already in that state. Now the transaction rolls back and the project
+never holds it.
+
+Three defects planted, three caught: routing never updated, `origin` ignored so
+a user row is rewritten, and the cycle guard removed.
+
+### ADR-0066 closes what ADR-0058 deferred, on the director's mandate
+
+Dynamic PDC: a plugin that changes its reported latency at runtime — Pro-Q 3
+switching to linear phase — must not drop the engine.
+
+**The shape was already decided in ADR-0019 and this reuses it.** A latency
+increase needs more delay memory, which cannot be allocated on the audio thread;
+the report arrives on the message thread, which must not block. So the
+compensated schedule becomes an immutable published object carrying **the delay
+buffers themselves**, swapped by atomic pointer at a block boundary, reclaimed
+by the same epoch rule. Reports are coalesced — a mode switch reports several
+times in milliseconds and recomputing per report builds schedules nobody uses.
+
+**One honest paragraph in it.** A latency change *is* a time shift; the correct
+output genuinely differs before and after, so no amount of engineering makes it
+inaudible. What is guaranteed is that it is **not a dropout and not a click** —
+both schedules render one block and are crossfaded. Saying "seamless" without
+that would be promising something unachievable, and the mandate is met in the
+sense that matters.
+
+### → you: two of these land on the VST3 bridge
+
+1. **`latencySamples()` joins `tailSamples()` on `Node`** (ADR-0058), and the
+   defaults are OPPOSITE on purpose: tail defaults to infinite, latency defaults
+   to **0**. A missed tail is merely processed too often; a missed latency
+   **moves audio that was aligned**, which is the kick/bass complaint arriving
+   from inside our own code.
+
+2. **A VST3 reporting a latency change is ADR-0066's trigger**, and your bridge
+   is where it arrives. It must not recompute anything itself — it reports, the
+   message thread coalesces, the graph republishes. Do not call back into the
+   graph from `restartComponent`.
+
+### And the README check caught me first
+
+`test_all.sh` gained a README-count check in the last branch. Its first real
+catch was my own 21 new tests here:
+
+```
+  README says '**962 checks across 12 suites**', this run is '**983 checks across 12 suites**'
+```
+
+Which is the right way round for a check to earn itself.
+
+983 checks across 12 suites, 66 ADRs, validators clean.
+
+---
+
+## 2026-09-20 — the graph builder
+
+Branch `win/planner`. `src/adi/engine/plan.{hpp,cpp}`, `tests/test_plan.cpp`,
+45 checks. 1028 across 13 suites.
+
+**It returns a plan, not a `Graph`, and that is the design rather than a
+shortcut.** Three reasons in order of weight: the real nodes do not exist yet —
+a track node needs clip playback and a device chain and neither is built, so a
+planner returning a live graph would have to invent placeholders and the plan's
+shape would become a property of them. Topology is where the rules live: every
+one of ADR-0044's auto-routing, ADR-0065's absence-means-default and ADR-0045's
+indifference to content is a decision about *edges*, checkable against a
+hand-built `Model` with no audio anywhere near it. And it is the same seam the
+engine already has twice — `buildTree` and `buildSnapshot` are the other two
+things that turn `rows::Model` into a different shape.
+
+Realising a plan into a `Graph` is a later step and a small one: walk,
+construct, `connect`, `setOutput`.
+
+**A gap I had to close first.** `rows::Routing` never carried `origin`. I added
+the column in ADR-0044's branch and never taught the adapter to read it, so the
+planner could not tell an auto row from a user one — which is the whole of
+ADR-0065. Two lines, and the kind of thing that would have quietly made the
+planner wrong rather than broken.
+
+**What the planner decides**, all of it testable with no database:
+
+| rule | from |
+|---|---|
+| no `main` row → route to parent, else master | ADR-0065 |
+| an `auto` or `user` row decides, and the default does **not** also apply | ADR-0065 |
+| children into their group, group into the master, no direct path | ADR-0044 |
+| `sidechain` → `Bus::Sidechain`, `send` → `Bus::Main` | ADR-0056 |
+| a VCA is control, not audio — no edge at all | mixer, not graph |
+| `tracks.kind` read for nothing except role | ADR-0045 |
+| nodes and edges sorted by id, never `Model` order | ADR-0021 |
+
+That last one is worth its own sentence. `readModel` has no `ORDER BY` on
+tracks, so row order is SQLite's business; an edge order that inherited it would
+vary the floating-point summation order into a node, and ADR-0021's oracle
+compares bytes. The test builds the same project twice with the rows in
+different orders and asserts the plans are identical.
+
+**Five defects planted, five caught:** the default route removed, the default
+applied even when a row decided it (double-summing a track into two places), a
+VCA planned as an audio edge, the sort removed, and the cycle check disabled.
+
+**Cycles are caught in the plan rather than in `prepare`.** `Graph::prepare`
+would also refuse (ADR-0055), but only after a caller had constructed every
+node. A plan that cannot be realised should say so before anything is built.
+
+### → you: two things this changes for VST3
+
+1. **`rows::Routing::origin` now exists** and the planner reads it. If your
+   hosting work touches routing, `'user'` is the default and grouping must
+   never rewrite it.
+
+2. **A plugin node will be attached to a planned track node**, not to a track
+   row. When you get to it, the interface you want from me is "give me the
+   node index for track N", which `GraphPlan::indexOf` already is.
+
+1028 checks across 13 suites, 66 ADRs, validators clean.
+
+---
+
+## 2026-09-20 — five routing and export mandates: ADR-0067 to ADR-0071
+
+Branch `win/routing-mandates`. Two of the five contain a technical claim that
+does not hold, and both corrections are in the ADRs rather than in a reply that
+would be lost.
+
+**ADR-0067, aux sends.** The mandate drops Send/Return tracks because aux
+routing "frequently causes PDC misalignment". Three things wrong with that, in
+order:
+
+1. **We already compensate them.** ADR-0058's rule is *arrival = max over
+   inputs of (arrival + latency)*, and a send is an input. What goes wrong in
+   other DAWs is an implementation defect — the return compensated and the tap
+   point not — which is a bug in those hosts, not a property of aux routing.
+2. **The remedy relocates the problem.** "PDC as a strict linear progression" is
+   not what a rack gives: a rack with parallel chains is a DAG, exactly like a
+   send, and two chains of different latency need the identical calculation one
+   level further in.
+3. **The cost is worst at the project size cited.** Forty tracks sharing one
+   convolution reverb is one instance; forty racks is forty. On 150 tracks that
+   is the difference between a reverb bus and an unusable session.
+
+So: **the format keeps `send` and the planner keeps planning it.** Whether the
+*product* puts a "create send" button on screen is a UI call and the director's
+to make — reversible in an afternoon, where a format removal is not. And
+ADR-0058's phase test is extended to cover a send path, so if sends ever do
+misalign it is a failing test rather than an architectural belief.
+
+**ADR-0070, region export.** The mandate asks for files that are "perfectly
+contiguous" AND cut "at zero-crossing boundaries". **Those contradict.** Gapless
+means file N ends at sample X and N+1 begins at X, so concatenation reproduces
+the original; snapping to a zero crossing *moves* the boundary, so samples land
+in both files or neither. Zero-crossing snapping is right for cutting a region
+out of context, where the discontinuity would click — here there is no
+discontinuity, because the next file continues the waveform.
+
+Decided: exact boundaries, no snapping, no per-file fades, and the property is
+tested by **concatenation** — export as one file and as N regions, concatenate,
+assert bit-identical. That is the whole specification of "gapless" and it needs
+no ears.
+
+**ADR-0068, multi-project tabs.** The good part is the clipboard: it is a
+**transaction, not a data structure**. Copy generates the ops that would create
+the selection in an empty project; paste applies them with remapped ids. Then
+paste is undoable in the target for free, ids stay caller-allocated per
+ADR-0021 §7.3, cross-project paste and duplicate-within-project are the same
+code path, and the agent can paste because it can already emit ops. Blobs
+travel by hash and mostly do not travel at all.
+
+**ADR-0069, item-level FX.** Freeze at clip granularity — ADR-0059 with a
+different scope, which is most of the design. Needs one schema addition when
+built: `device_chains` is owned by a device or a track with a CHECK that exactly
+one is set, and a clip is neither.
+
+**ADR-0071, the export queue.** The NLP layer **fills the form and never presses
+the button**. An export writes files to disk, which is outside the op log —
+there is no inverse for "wrote 40 wavs into the wrong folder". So a prompt
+produces a visible, editable queue, which is AI-AGENT's Propose tier applied to
+a form instead of a changeset. "All drum stems" is a parse, and a parse can be
+wrong in ways invisible until forty files exist.
+
+1028 checks across 13 suites, 71 ADRs, validators clean.
