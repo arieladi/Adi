@@ -176,6 +176,26 @@ void testConcurrentHandoff() {
     }
     stop.store(true, std::memory_order_relaxed);
     audio.join();
+
+    // ONE MORE READ BEFORE THE FINAL COLLECT, and it is not a formality.
+    //
+    // `inUse_` only advances when a reader acquires. Once the audio thread
+    // has stopped it is frozen at whatever sequence that thread last took,
+    // and `collect()` frees strictly `inUse > seq` -- so every snapshot the
+    // writer published after the reader's last acquire is unreclaimable.
+    // Whether any exist is pure timing: it depends on which thread got the
+    // last turn before `stop` was seen.
+    //
+    // That made the two assertions below FLAKY, which is how it presented --
+    // "32 left" out of 943040 on a hardened-libc++ CI run, reproducible here
+    // about once in thirty. The publisher is not leaking: its destructor
+    // frees `retired_`, and in a running DAW the audio thread never stops, so
+    // `inUse_` never freezes. The test was asserting a property that only
+    // holds while somebody is still reading.
+    //
+    // So: read once more, exactly as a real audio thread would on its next
+    // block, and then collect.
+    { SnapshotPublisher<Probe>::AudioRead r(p); (void) r.valid(); }
     freed += p.collect();
 
     std::printf("        %llu blocks read, %llu published, %llu freed, %zu retained\n",
