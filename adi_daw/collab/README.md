@@ -72,6 +72,7 @@ subject, say so in your log instead of writing it twice.
 | 0054 | win | `win/mpe` | MPE and MPE+ end to end, and the floor bound they impose | used |
 | 0055 | win | `win/graph` | the node contract, and what the scheduler decides per block vs per segment | used |
 | 0056 | win | `win/routing` | buses, levelled scheduling for parallelism, and MPE+ event capacity | used |
+| 0057 | mac | `mac/vst3` | VST3 hosting behind the format-agnostic device model | reserved |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -84,6 +85,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `src/juce/**`, `tests/test_device.cpp`, `docs/DEVICE-CONTRACT-PANEL.md` | mac | `mac/vst3` | 2026-09-20 |
 | `src/juce/**`, `tests/test_device.cpp` | mac | `mac/device` | 2026-09-20 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp` | win | `win/graph` | 2026-09-20 |
