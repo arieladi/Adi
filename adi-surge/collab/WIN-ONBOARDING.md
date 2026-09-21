@@ -78,7 +78,7 @@ STEP 3 — READ, IN THIS ORDER
     adi-surge/collab/README.md      the protocol: roster, claims, branch rules
     adi-surge/collab/mac.md         what mac did, and notes addressed to you
     adi-surge/ARCHITECTURE.md       how it all works, with evidence for every claim
-    adi-surge/docs/DECISIONS.md     ADR-0001..0006, settled; do not re-litigate
+    adi-surge/docs/DECISIONS.md     ADR-0001..0007, settled; do not re-litigate
 
 ARCHITECTURE.md is written FROM SOURCE, not from a build. Nobody has compiled
 this on any platform. Sections marked PENDING are genuinely unknown, not
