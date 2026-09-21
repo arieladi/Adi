@@ -98,7 +98,7 @@ subject, say so in your log instead of writing it twice.
 | 0090 | mac | `agent/mac-dev` | closing the rebuild loop: who decides to rebuild, and what a failed rebuild means | used |
 | 0091 | win | `agent/win-dev` | events travel along edges: what a node emits reaches what it feeds | used |
 | 0092 | win | `agent/win-dev` | a rebuild keeps the history of every edge that exists in both graphs | used |
-| 0093 | win | `agent/win-dev` | the DSP plugin roadmap: references fetched not vendored, and what each goal needs first | reserved |
+| 0093 | win | `agent/win-dev` | the DSP plugin roadmap: references fetched not vendored, and what each goal needs first | used |
 | 0083-0084 | mac | `agent/mac-dev` | AudioGridder native integration and the CLAP fork; CLAP restart causes | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in

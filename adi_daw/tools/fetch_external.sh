@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Clone or refresh the external code adi_daw reads and links against.
 #
-#   bash adi_daw/tools/fetch_external.sh              everything, ~630MB
+#   bash adi_daw/tools/fetch_external.sh              everything, ~930MB
 #   bash adi_daw/tools/fetch_external.sh --build-only just what the build links
 #   bash adi_daw/tools/fetch_external.sh --third-party-only
 #
@@ -76,6 +76,27 @@ REFERENCE=(
   "Ardour/ardour                          ardour              GPL-2.0-or-later"
   "helio-fm/helio-sequencer               helio-sequencer     GPL-3.0"
   "zrythm/zrythm                          zrythm              AGPL-3.0  READ-ONLY"
+
+  # --- DSP references for the plugin roadmap (ADR-0093) ---------------------
+  # Each is here for ONE piece of maths; the comment says which. Two of these
+  # replace what was asked for by name, because the name did not hold the maths:
+  #   * lsp-plugins is a META-repo -- a 660 KB build index with no DSP in it at
+  #     all. The limiter core, oversampler and true-peak meter live in
+  #     lsp-dsp-units; the modes and lookahead logic in lsp-plugins-limiter.
+  #   * ChowCentaur (jatinchowdhury18/KlonCentaur) contains NO ADAA. Its clipper
+  #     is a wave-digital-filter diode pair. The ADAA maths is in the ADAA repo
+  #     (the derivations) and chowdsp_utils (the production waveshapers). Both
+  #     are fetched; KlonCentaur stays, for what it actually is.
+  # ZLEqualizer is AGPL-3.0: the Zrythm rule applies. Read the design, implement
+  # matched-phase from the published papers, copy nothing.
+  "ZL-Audio/ZLEqualizer                   ZLEqualizer         AGPL-3.0  READ-ONLY"
+  "lsp-plugins/lsp-dsp-units              lsp-dsp-units       LGPL-3.0-or-later"
+  "lsp-plugins/lsp-plugins-limiter        lsp-plugins-limiter LGPL-3.0-or-later"
+  "Sakhnovkrg/vitOTTx                     vitOTTx             GPL-3.0"
+  "jatinchowdhury18/ADAA                  ADAA                BSD-3-Clause"
+  "Chowdhury-DSP/chowdsp_utils            chowdsp_utils       per-module; waveshapers GPL-3.0"
+  "jatinchowdhury18/KlonCentaur           KlonCentaur         BSD-3-Clause"
+  "JDSherbert/Audio-Soft-Clip-Distortion  Audio-Soft-Clip-Distortion  MIT"
 )
 
 # --- pinned: third_party/ ---------------------------------------------------

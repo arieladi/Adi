@@ -6100,3 +6100,115 @@ only the history that existed; the rest of its tap reads silence until it fills.
 That is ADR-0085's priming problem arriving from a different direction, and it
 wants the same answer — but it needs a rebuild that changes compensation to be
 measured first, and none has been.
+
+---
+
+## ADR-0093 — The DSP plugin roadmap: references fetched, not vendored, and what each goal needs first — `DECIDED (direction)` (2026-09-21)
+
+**Director's call**, and explicitly a *future* one: six DSP goals to prepare for
+without shifting focus from the DAW, plus the reference repositories, which are
+wanted **now**.
+
+| # | Goal | Form | Primary reference |
+|---|---|---|---|
+| 1 | Dynamic EQ with matched phase, linear phase, per-band dynamics (working title "Pro-Q 3 clone") | CLAP plugin | ZLEqualizer — **design only** |
+| 2 | True-peak mastering limiter: lookahead, oversampling, selectable modes ("Pro-L 2 clone") | CLAP plugin | `lsp-dsp-units`, `lsp-plugins-limiter` |
+| 3 | Lookahead brickwall limiter, 1.5 / 3 / 6 ms ("Ableton Limiter clone") | Pd module (ADR-0035) | — |
+| 4 | Eight-band parametric EQ ("Ableton EQ8 clone") | Pd module | — |
+| 5 | Aliasing-free clipper with adjustable knee, up to 4x oversampling ("K-Clip clone") | CLAP plugin | `chowdsp_utils` ADAA waveshapers, `ADAA`, `Audio-Soft-Clip-Distortion` |
+| 6 | Ring-modulation sidechain ducker, dry/wet depth ("RMSC") | Pd module | — |
+
+### Decision
+
+**1. References live in `reference/`, fetched by `tools/fetch_external.sh`, never
+vendored.** This is ADR-0024's existing arrangement, extended rather than
+duplicated: the request was for "a Bash script to clone into `adi-daw`", and that
+script already exists and already does it (the directory is `adi_daw`). Clones are
+gitignored so a `git add -A` cannot turn one into a stray gitlink, unpinned
+because nothing in `reference/` reaches a build, and listed with their licences
+in `docs/EXTERNAL-CODE.md`.
+
+**The core CLAP SDK was already there** — pinned in `third_party/clap` at 1.2.10,
+verified by commit, and built against since ADR-0075. The librarian's caveat that
+some of this might already be done was right about that item.
+
+**2. Two references did not contain what they were requested for, and are
+replaced by what does.**
+
+- **`lsp-plugins` is a meta-repository**: a 660 KB build index with no DSP in it
+  at all. The limiter maths is in `lsp-dsp-units` (`Limiter.h`, `Oversampler.h`,
+  `TruePeakMeter.h`, `LoudnessMeter.h`) and its driving logic in
+  `lsp-plugins-limiter`. Both are fetched; the meta-repo is not.
+- **ChowCentaur contains no ADAA** — not one match for it in the tree. Its
+  clipper is a wave-digital-filter diode pair, and its repository is
+  `jatinchowdhury18/KlonCentaur`; `Chowdhury-DSP/ChowCentaur` does not exist.
+  Jatin Chowdhury's ADAA is in `jatinchowdhury18/ADAA` (the derivations) and
+  `chowdsp_utils` (production `ADAAHardClipper`, `ADAASoftClipper`,
+  `ADAASineClipper`). All three are fetched, and KlonCentaur is labelled for
+  what it is.
+
+**3. The licence of the plugin line decides which references it may copy from,
+and it is not decided here.** Everything fetched except ZLEqualizer can be copied
+into a **GPLv3** plugin with attribution. A **closed or proprietary** plugin — as
+AdiGuard is — could copy only from the BSD and MIT sources: `ADAA`, `KlonCentaur`
+and `Audio-Soft-Clip-Distortion`. That rules out the LSP limiter, the chowdsp
+waveshapers and vitOTTx for a proprietary line. Where the plugins live — inside
+`adi_daw`, or as a sibling project the way `adi-surge` and AdiGuard are — follows
+from the same answer. **Both are the director's call and both come before the
+first line of code.**
+
+**4. Behaviour is cloned; names are not.** "Pro-Q 3", "Pro-L 2", "EQ Eight",
+"K-Clip" and "Newfangled" are other companies' product names and trademarks.
+They are working titles in this log and nowhere else: a shipped plugin gets our
+name and may describe itself only in terms of what it does. The same rule
+AdiGuard already follows.
+
+**5. Every goal that has latency must declare it, and these plugins are the best
+test instruments this project will ever have for its own compensation.** Linear
+phase is latency; lookahead is latency; linear-phase oversampling filters are
+latency (ADR-0062 made the general point). Goals 1, 2, 3 and 5 all carry it, and
+all four will report it through the paths ADR-0079, 0085 and 0092 built. Until
+now every real-plugin measurement of that machinery borrowed FabFilter's Pro-Q 3;
+our own linear-phase EQ and lookahead limiter would let the suite measure it with
+plugins whose source we can read.
+
+### Prerequisites recorded now, so the goals do not arrive blocked
+
+- **A Pd patch has no way to declare latency.** ADR-0035 never mentions it, and
+  no libpd code exists yet. Goal 3's lookahead cannot be compensated until the Pd
+  device contract carries a latency, and it has to be *exact*: see below.
+- **Matched phase is implemented from the literature, not from ZLEqualizer.**
+  Vicanek, *Matched Second Order Digital Filters* (2016), is the primary source
+  for de-cramping and is what keeps goal 1 clear of the AGPL.
+
+### Corrections to the goals as written
+
+Recorded now because each would otherwise surface as a bug.
+
+- **Goal 3 lists `env~` for a limiter that must use peak detection, not RMS.**
+  `env~` is an RMS follower — it outputs power in dB over a window, which is the
+  thing the goal excludes. Peak detection needs a running maximum: `abs~` into a
+  max-hold, or `fexpr~`.
+- **Goal 3's 1.5 ms lookahead sits just above Pd's block boundary.** At 48 kHz it
+  is 72 samples against a 64-sample block, and a `vd~` sorted before its
+  `delwrite~` cannot read less than one block back. The effective delay therefore
+  depends on DSP sort order, and a declared latency that is off by a block
+  compensates every other track wrongly. The patch must pin the order.
+- **Goal 4: Pd's `biquad~` feedback coefficients have the opposite sign to the
+  RBJ cookbook's.** Pd's `fb1`, `fb2` are `−a1/a0`, `−a2/a0`; copying the
+  cookbook's `a1`, `a2` straight in makes a filter unstable. Its coefficients are
+  also control-rate messages, so an automated band moves in block-sized steps. And
+  EQ Eight's steepest cuts are 48 dB/oct, which is **four** cascaded biquads per
+  band, not one.
+- **Goal 6: `abs~` of the sidechain is rectification, not an envelope.**
+  Multiplying the main signal by it is audio-rate amplitude modulation — which is
+  what RMSC is, and why it sounds as it does: low sidechains produce sidebands,
+  not clean gain reduction. It should be judged as that effect, not as a
+  compressor without ballistics.
+- **Goal 5's ADAA reference is `chowdsp_utils`, not ChowCentaur** (decision 2).
+
+### Not decided
+
+The licence and location of the plugin line (decision 3). Whether the Pd modules
+ship as `.pd` patches users can open and edit, which is ADR-0035's premise, or as
+compiled nodes, which would make them ADR-0062's instead.

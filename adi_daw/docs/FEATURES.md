@@ -210,6 +210,23 @@ which is a property of the algorithm and not of where it is compiled.
 | Vocoder | P2 | filter-bank dependent | sidechain via `Bus::Sidechain`, no user wiring |
 | Multiband graph splitter | P2 | **thousands of samples in linear phase** | **blocked on N-bus outputs** (ADR-0056). Declares its latency; a minimum-phase mode is a user choice, not a silent default |
 
+### The DSP plugin line — future (ADR-0093)
+
+Prepared for, not started. References are fetched into `reference/` now; no code
+exists. Working titles only — shipped names are ours (ADR-0093 d4).
+
+| Goal | Form | P | Needs first |
+|---|---|---|---|
+| Dynamic EQ: matched phase, linear phase, per-band dynamics | CLAP | P3 | Plugin-line licence decided; matched phase from Vicanek (2016), not the AGPL reference |
+| True-peak limiter: lookahead, oversampling, modes | CLAP | P3 | Plugin-line licence decided (the LSP maths is LGPL) |
+| Lookahead brickwall limiter, 1.5 / 3 / 6 ms | Pd | P3 | **A Pd patch able to declare its latency** (ADR-0035 has no such thing), and pinned DSP sort order |
+| Eight-band parametric EQ | Pd | P3 | Pd's inverted `biquad~` feedback signs; four biquads for a 48 dB/oct cut |
+| ADAA clipper, adjustable knee, up to 4x oversampling | CLAP | P3 | Plugin-line licence decided (the chowdsp waveshapers are GPLv3) |
+| Ring-modulation sidechain ducker (RMSC) | Pd | P3 | Judged as amplitude modulation, which is what it is |
+
+Four of the six carry latency, which makes them the first plugins able to test
+ADR-0079/0085/0092 with source we can read instead of borrowing FabFilter's.
+
 ### Time-stretch (ADR-0061)
 
 | Engine | P | Job |
