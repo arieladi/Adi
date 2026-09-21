@@ -8,6 +8,20 @@ namespace adi::device {
 
 bool Vst3EventList::add(const engine::Event& in, std::int32_t blockOffset,
                         std::int32_t segmentFrames) noexcept {
+    // The NoteExpression route's rule for one event (ADR-0097): channel 0,
+    // the note id kept, expression as a double. A parameter event has no
+    // event form -- it travels in IParameterChanges -- and returns false
+    // rather than inventing an event a caller might assume was sent.
+    engine::MpeOut o;
+    if (!engine::noteExpressionOut(in, engine::ExpressionCaps{}, o)) return false;
+    return addOut(o, blockOffset, segmentFrames);
+}
+
+bool Vst3EventList::addOut(const engine::MpeOut& in, std::int32_t blockOffset,
+                           std::int32_t segmentFrames) noexcept {
+    using K = engine::MpeOut::Kind;
+    if (in.kind == K::Control && in.paramId != engine::kNoParam) return false;
+
     if (cap_ > 0 && static_cast<std::int32_t>(events_.size()) >= cap_) {
         // Counted, not a silent break. JUCE's own path stops at 2048 and says
         // nothing, which is how ten notes of MPE+ lose their packets with
@@ -26,12 +40,13 @@ bool Vst3EventList::add(const engine::Event& in, std::int32_t blockOffset,
     e.sampleOffset = t;
     e.ppqPosition = 0.0;
     e.flags = SV::Event::kIsLive;
+    const auto chan = static_cast<Steinberg::int16>(in.channel & 0x0F);
 
-    switch (in.type) {
-        case engine::EventType::NoteOn:
+    switch (in.kind) {
+        case K::NoteOn:
             e.type = SV::Event::kNoteOnEvent;
-            e.noteOn.channel  = static_cast<Steinberg::int16>(in.channel > 0 ? in.channel - 1 : 0);
-            e.noteOn.pitch    = static_cast<Steinberg::int16>(in.dim);
+            e.noteOn.channel  = chan;
+            e.noteOn.pitch    = in.key;
             e.noteOn.tuning   = 0.0f;
             e.noteOn.velocity = static_cast<float>(in.value);
             e.noteOn.length   = 0;
@@ -41,36 +56,46 @@ bool Vst3EventList::add(const engine::Event& in, std::int32_t blockOffset,
             e.noteOn.noteId   = toVst3NoteId(in.noteId);
             break;
 
-        case engine::EventType::NoteOff:
+        case K::NoteOff:
             e.type = SV::Event::kNoteOffEvent;
-            e.noteOff.channel  = static_cast<Steinberg::int16>(in.channel > 0 ? in.channel - 1 : 0);
-            e.noteOff.pitch    = static_cast<Steinberg::int16>(in.dim);
+            e.noteOff.channel  = chan;
+            e.noteOff.pitch    = in.key;
             e.noteOff.velocity = static_cast<float>(in.value);
             e.noteOff.tuning   = 0.0f;
             e.noteOff.noteId   = toVst3NoteId(in.noteId);
             break;
 
-        case engine::EventType::NoteExpression: {
-            engine::Vst3NoteExprType t{};
-            double norm = 0.0;
-            if (!engine::toVst3NoteExpression(
-                    static_cast<ExpressionDim>(in.dim), in.value, t, norm))
-                return false;
+        case K::Expression:
             e.type = SV::Event::kNoteExpressionValueEvent;
-            e.noteExpressionValue.typeId = static_cast<SV::NoteExpressionTypeID>(t);
+            e.noteExpressionValue.typeId = static_cast<SV::NoteExpressionTypeID>(in.exprType);
             e.noteExpressionValue.noteId = toVst3NoteId(in.noteId);
             // A double, all the way to the plugin. This is the last hop of
             // ADR-0054 and the one JUCE never reaches at all.
-            e.noteExpressionValue.value = norm;
+            e.noteExpressionValue.value = in.value;
             break;
-        }
 
-        // A parameter change is not an event in VST3 -- it travels in
-        // IParameterChanges alongside the event list. Returning false rather
-        // than inventing an event is what stops a caller assuming it was sent.
-        case engine::EventType::ParamValue:
-        case engine::EventType::ParamMod:
-            return false;
+        case K::PolyPressure:
+            e.type = SV::Event::kPolyPressureEvent;
+            e.polyPressure.channel  = chan;
+            e.polyPressure.pitch    = in.key;
+            e.polyPressure.pressure = static_cast<float>(in.value);
+            e.polyPressure.noteId   = toVst3NoteId(in.noteId);
+            break;
+
+        case K::Control:
+            // The one event JUCE's VST3 client turns back into MIDI on the
+            // channel it names -- a CC, channel pressure, or a 14-bit bend
+            // with its LSB in `value` and MSB in `value2`. The SDK describes
+            // it as a plugin's OUTPUT; a plugin that does not read it on input
+            // ignores it, which on the MpeMidi route costs only expression.
+            e.type = SV::Event::kLegacyMIDICCOutEvent;
+            e.midiCCOut.controlNumber = static_cast<Steinberg::uint8>(in.ctrl);
+            e.midiCCOut.channel = static_cast<Steinberg::int8>(chan);
+            e.midiCCOut.value   = static_cast<Steinberg::int8>(in.word & 0x7F);
+            e.midiCCOut.value2  = in.ctrl == engine::kCtrlPitchBend
+                                      ? static_cast<Steinberg::int8>((in.word >> 7) & 0x7F)
+                                      : static_cast<Steinberg::int8>(0);
+            break;
     }
 
     events_.push_back(e);
@@ -123,6 +148,14 @@ Steinberg::tresult PLUGIN_API Vst3ParamQueue::getPoint(Steinberg::int32 index,
 Steinberg::tresult PLUGIN_API Vst3ParamQueue::addPoint(Steinberg::int32 sampleOffset,
                                                        SV::ParamValue value,
                                                        Steinberg::int32& index) {
+    // Bounded: see reserve(). A full queue refuses rather than allocating on
+    // the audio thread, and says so.
+    if (static_cast<std::int32_t>(points_.size()) >= cap_) {
+        ++dropped_;
+        index = 0;
+        return Steinberg::kResultFalse;
+    }
+
     // Clamped, because the SDK does not define behaviour outside 0..1 and a
     // plugin handed 1.4 is entitled to do anything at all.
     if (value < 0.0) value = 0.0;
@@ -153,13 +186,21 @@ Steinberg::tresult PLUGIN_API Vst3ParamQueue::queryInterface(const Steinberg::TU
 
 // ---------------------------------------------------------------------------
 
-void Vst3ParamChanges::reserve(std::int32_t n) {
+void Vst3ParamChanges::reserve(std::int32_t n, std::int32_t pointsPerQueue) {
     // Allocated at prepare, never in process. ADR-0010.
     pool_.clear();
     pool_.reserve(static_cast<std::size_t>(n));
-    for (std::int32_t i = 0; i < n; ++i)
+    for (std::int32_t i = 0; i < n; ++i) {
         pool_.push_back(std::make_unique<Vst3ParamQueue>());
+        pool_.back()->reserve(pointsPerQueue);
+    }
     used_ = 0;
+}
+
+std::int64_t Vst3ParamChanges::dropped() const noexcept {
+    std::int64_t n = dropped_;
+    for (const auto& q : pool_) n += q->dropped();
+    return n;
 }
 
 void Vst3ParamChanges::clear() noexcept { used_ = 0; }
@@ -194,8 +235,7 @@ bool Vst3ParamChanges::set(SV::ParamID id, double normalized,
     auto* q = addParameterData(id, index);
     if (q == nullptr) return false;     // pool exhausted; already counted
     Steinberg::int32 pointIndex = 0;
-    q->addPoint(sampleOffset, normalized, pointIndex);
-    return true;
+    return q->addPoint(sampleOffset, normalized, pointIndex) == Steinberg::kResultOk;
 }
 
 Steinberg::tresult PLUGIN_API Vst3ParamChanges::queryInterface(const Steinberg::TUID id,

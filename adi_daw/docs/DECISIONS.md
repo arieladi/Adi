@@ -6485,3 +6485,198 @@ release to be "back to unity after 60 ms", which is 1.3 time constants.
 The patches have never run. Once libpd lands (ADR-0095), the first test to write
 compares each against its C++ reference sample for sample. Auto-release, which the
 original goal mentioned, is not built.
+
+---
+
+## ADR-0097 — MPE+ through VST3: three routes, and the controller's channel never reaches a plugin — `DECIDED` (2026-09-21) — **AMENDS ADR-0057 and ADR-0073**
+
+**Director's call:** "Proceed with mapping MPE+ through VST3. Ensure per-note
+expression maps cleanly without breaking standard MIDI backward compatibility."
+
+### What was wrong
+
+ADR-0073's fast path sent every note with its note id and every expression value
+as a `kNoteExpressionValueEvent` carrying a double. That is VST3's native model,
+and it had three defects that no test could see, because each one produces
+well-formed events:
+
+1. **It broke plain MIDI.** A note kept the channel the controller sent it on.
+   An MPE controller sends each note on channel 2..16, so a plugin that listens
+   on channel 1 — a multitimbral sampler, anything channel-filtered — played the
+   wrong part or nothing. ADR-0054 already says the channel is transport, not
+   identity; the output path had not applied it.
+2. **The biggest family of MPE synths received no expression at all.** JUCE's
+   VST3 client converts incoming events to MIDI and returns nothing for
+   `kNoteExpressionValueEvent`. Most MPE synths are built on JUCE, and they
+   understand MPE only as MIDI on member channels.
+3. **A plugin with no per-note support got nothing it could use,** although
+   poly aftertouch is a per-note expression plain MIDI has always had.
+
+### Decision
+
+**1. Three routes, chosen per plugin.** `src/adi/engine/mpe_output.{hpp,cpp}`,
+SDK-free and tested on every ABI:
+
+| Route | Notes | Expression | Resolution |
+|---|---|---|---|
+| **NoteExpression** | channel 0, with note id | `kNoteExpressionValueEvent`, anchored to the id | a double, end to end |
+| **MpeMidi** | each on its own **member channel** 1..15 | that channel's pitch bend, channel pressure and CC74 | a double into a mapped parameter; 14/7/7 bits as a legacy event |
+| **Plain** | channel 0 | pressure as **poly aftertouch**; pitch, timbre, gain and pan dropped and **counted** | a float |
+
+**2. The controller's channel never reaches a plugin.** NoteExpression and Plain
+put every note on channel 0. MpeMidi chooses member channels itself; three notes
+that all arrived on channel 2 go out on three different channels. This is the
+backward-compatibility rule, and every route keeps it.
+
+**3. How a route is chosen.** An explicit choice (`Vst3Device::setExpressionRoute`)
+always wins. `Auto` asks the plugin's edit controller once, in the constructor:
+
+- it lists Tuning in `INoteExpressionController`, or names a type for X in
+  `INoteExpressionPhysicalUIMapping` → **NoteExpression**;
+- `IMidiMapping` maps pitch bend to a **different parameter on two or more
+  channels** → **MpeMidi**;
+- otherwise → **Plain**;
+- **the controller cannot be reached → NoteExpression.**
+
+That last case is the common one, and it has a cause. JUCE publishes only
+`IComponent` to a host and keeps its edit controller private, so the controller
+is reachable only when the component answers for it — a single-component plugin.
+Every JUCE-built plugin ships its controller as a separate class. For those,
+`Auto` has no information, and NoteExpression is the default because it costs a
+plugin that does not support it nothing: it ignores the events and plays the
+notes on channel 0. A user with a JUCE MPE synth chooses MpeMidi.
+
+Three alternatives were checked and rejected:
+
+- **Instantiating a second controller from the plugin's factory to read its
+  MIDI mapping.** A JUCE controller receives its processor only when a
+  component connects to it. Until then it answers every mapping query "yes",
+  from a table nothing has filled, so a second controller reports wrong
+  parameter ids. A correct one needs a second full plugin instance.
+- **Patching JUCE to expose the controller.** This is a local modification of a
+  pinned AGPL dependency (ADR-0024, ADR-0048). `OPEN_SOURCE_POLICY.md` §4
+  covers copying AGPL code into ours; it does not cover maintaining changes to
+  JUCE. That is a decision for the director, not something to do quietly
+  inside an ADR about MPE.
+- **MpeMidi as the default.** A plugin that is not an MPE receiver treats a
+  member channel's pitch bend as the channel's bend — every note bends when one
+  does. That breaks exactly the compatibility this ADR is for.
+
+**4. MpeMidi, precisely.**
+
+- **Lower zone, members 1..15.** Channel 0 is the master and never carries a note.
+- **The MPE Configuration Message is sent first** — RPN 6 on channel 0 with the
+  member count — after every prepare and on switching into the route. It is
+  what makes "a member channel bends ±48" true at the receiver, and the bend
+  encoding assumes exactly that (`kMpeOutBendSemitones`).
+- **Each note-on is preceded by a reset of its channel**: bend, CC74 and
+  pressure, at the note's frame. Without it a note starts wherever the last
+  note on that channel left off — a fifth sharp, say. Where the stream carries
+  the note's own starting values at the same instant, those are used, since
+  MPE sends a note's initial bend and timbre before its note-on; otherwise
+  centre, 64 and 0.
+- **Allocation takes the free channel released longest ago**, so a note does
+  not reset the bend under a release tail that is still ringing.
+- **When all 15 are sounding, a new note shares** the channel whose note began
+  first, and it is counted. MPE 1.0's degradation blurs expression; cutting
+  that note off would change what the player is holding.
+- **The bend encoder is the exact inverse of the input parser**: 8192 steps
+  below centre and 8191 above, so −48 and +48 reach words 0 and 16383. All
+  16384 words round-trip.
+- **Where the plugin maps a message to a parameter, it goes as a parameter
+  change** in the same process call (ADR-0073). The value is unrounded: bend as
+  the exact word over 16383, pressure and timbre as the double they were.
+  Over 16383 and 127 is the scale JUCE's own host uses; its client decodes
+  every word back exactly.
+- **Where it does not, it goes as a `kLegacyMIDICCOutEvent`**, with the bend's
+  LSB in `value` and MSB in `value2`. The SDK describes that event as plugin
+  output, but JUCE's client turns it back into MIDI on the named channel. A
+  plugin that does not read it ignores it, which on this route costs only
+  expression.
+
+**5. Switching route ends every sounding note first, on the channel it began
+on.** A note started on member channel 5 and ended on channel 0 under the new
+route would never end. The switch is requested from any thread and applied at
+the start of the next process call.
+
+**6. `Vst3EventList::add` is now `noteExpressionOut` + `addOut`.** One
+translation, not two; the single-event path gets the channel rule too.
+
+### Two older bugs, found on the way
+
+- **`Vst3ParamQueue::addPoint` allocated on the audio thread** (ADR-0010): it
+  inserted into a vector with no reserved capacity. One point per block had
+  hidden it; MpeMidi's parameter path puts a 500 Hz stream into one queue per
+  member channel. Queues now reserve at prepare and count a refused point.
+- **`Vst3Device::prepare` re-activated the plugin every time.** Since ADR-0073,
+  `prepared_ = true` had sat after the `return` in `pushEvent`, unreachable, so
+  the guard that skips an identical re-prepare never fired. Re-activation is
+  the state loss that guard exists to prevent. MSVC's C4702 found it in a JUCE
+  build with `-Werror`; **CI's JUCE job builds without `-Werror`**, which is why
+  it shipped. The probe now asserts one activation across two identical prepares.
+
+### Verified non-vacuously
+
+`adi_mpe_output_tests`, 88 checks. Seventeen planted defects, all caught:
+
+- the controller's channel passed through, in `noteExpressionOut` and,
+  separately, in the router's note path;
+- no bend reset before a note;
+- the master channel allocated to notes;
+- the most recently released channel reused;
+- the MCM repeated every segment;
+- a symmetric bend encoder (4095 words wrong);
+- poly pressure on the wrong key;
+- a route switch ending notes on channel 0;
+- the parameter path rounding the bend;
+- MpeMidi preferred over declared note expression;
+- one-parameter-for-all-channels counted as per-channel bend;
+- an unassigned-id note-off matching any key;
+- a note's starting values ignored;
+- MpeMidi expression sent as note-expression events;
+- a note beyond the table sent untracked;
+- a full zone cutting a held note instead of sharing.
+
+The first run left the channel defect in `noteExpressionOut` **surviving**: the
+router's own note path hard-codes channel 0, so nothing exercised that line. A
+direct test now covers the single-event path.
+
+`adi_vst3_probe`, built locally with JUCE and `-Werror`, run against the real
+SDK structs. A note from channel 5 comes out on channel 0. A legacy bend's two
+halves reassemble to the word. A mapped control is not an event. Poly pressure
+lands on its key and id. The router's MCM, reset and note arrive with the note
+on member channel 1. A full parameter queue refuses and counts.
+
+With the installed Reason Rack Plugin: its controller is reachable (it is a
+single-component plugin), it maps pitch bend on all 16 channels to **one**
+parameter, and `Auto` resolves to **Plain** — the global-bend case, correctly.
+
+The gcc/clang `-Wconversion` legs that failed on 112ac0b were reproduced locally
+through clang-tidy's compiler diagnostics before the fix was pushed, and the
+sweep was shown to fail on a planted narrowing before it was trusted.
+
+### Not verified
+
+- **No MPE-capable VST3 is installed here**, and no plugin with note-expression
+  support. Neither MpeMidi nor NoteExpression has made sound from a real MPE
+  synth; the legacy-event path is verified against JUCE's source, not a running
+  JUCE plugin.
+- **The route choice is not saved.** It lives on the device at runtime; its
+  natural home is the device's row in the project, which is a SPEC change of
+  its own.
+- **The CLAP host has the same channel pass-through** (`clap_host.cpp`, note
+  and expression). CLAP negotiates its own dialect through note ports (CLAP,
+  MIDI, MIDI-MPE), so it needs its own decision rather than this one copied.
+- **MPE+ LSBs are not sent on the legacy route.** Pairing CC74 with CC106 is
+  the same unverified convention ADR-0054 flagged in `isHighResMsb`. MPE+
+  resolution survives on the NoteExpression route and the parameter path,
+  where values are doubles.
+- **The probe's state round-trip check fails on this machine**, with the Reason
+  Rack Plugin: its state is not byte-identical across save, load, save. It
+  fails identically when built from the commit before this one, in a separate
+  worktree, so it is the plugin's and not this change's. CI never sees it
+  because its runners have no plugin installed.
+- **CI's JUCE job should build with `-DADI_WERROR=ON`**, which is what would
+  have caught the misplaced `prepared_`. The Windows leg is proven to pass it
+  here; the macOS leg is not, and the job is not required, so the change is
+  left for a commit that can watch both legs.

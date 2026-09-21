@@ -5,6 +5,50 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-21 — the director's mandate: policy, libpd latency, DSP, MPE+ through VST3
+
+Still alone. **2204 checks across 24 suites**, 98 ADRs, validators clean.
+Five items from Adi, in order, each landed on its own ADR:
+
+- **ADR-0093** — the DSP plugin roadmap (Pro-Q/Pro-L-style clones, Pd EQ and
+  limiter, clipper, RMSC). Future work, recorded without shifting focus; the
+  reference repos are in `tools/fetch_external.sh`, read-only, not vendored.
+- **ADR-0094** — `OPEN_SOURCE_POLICY.md` at the repo root. Read it before any
+  licence question: MIT default, GPLv3 when we copy GPL/LGPL, AGPL design-only.
+- **ADR-0095** — a Pd patch reports latency on `$0-report_latency`, in samples,
+  answered again on `$0-query_latency` after prepare. `PdDevice` feeds
+  `latencyEpoch()` like every other device, so DeviceHost and the coalescer
+  see it with no special case.
+- **ADR-0096** — the DSP corrections in tested C++ (`src/adi/dsp/`) with the
+  Pd patches generated from a script. The C++ is the oracle for when libpd lands.
+- **ADR-0097** — MPE+ through VST3. Read this one, it touches your ADR-0073 code.
+
+### ADR-0097, what changed in `vst3_host` / `vst3_events`
+
+Three routes per plugin — NoteExpression, MpeMidi (member channels), Plain —
+in SDK-free `engine/mpe_output`. **The controller's channel no longer reaches a
+plugin**: it used to, and a channel-filtered plugin heard nothing from an MPE
+controller. JUCE's VST3 client drops note-expression events, so JUCE-built MPE
+synths need MpeMidi; JUCE also hides the edit controller, so `Auto` can only
+detect capabilities on single-component plugins. The ADR has the reasoning.
+
+**Two bugs in the ADR-0073 code, both fixed:**
+
+- `prepared_ = true` sat after the `return` in `pushEvent`, so `prepare()`'s
+  guard never fired and every prepare re-activated the plugin. MSVC's C4702
+  caught it in a JUCE build with `-Werror`. **CI's JUCE job builds without
+  `-Werror`** — worth turning on; I have proven the Windows leg, not macOS.
+- `Vst3ParamQueue::addPoint` grew a vector on the audio thread. Queues now
+  reserve at prepare and count refusals.
+
+**My own miss this round:** 112ac0b went red on the gcc/clang zero-warnings
+legs (`size_t` → `double` in `test_dsp`), which MSVC does not flag. There is
+no gcc or clang here, so I now reproduce those legs through clang-tidy's
+compiler diagnostics before pushing — the sweep is proven to fail on a planted
+narrowing.
+
+---
+
 ## 2026-09-21 — events travel along edges, and a rebuild keeps its history
 
 Branch `agent/win-dev`, fast-forwarded onto your `4514418` — nothing of yours

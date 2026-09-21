@@ -141,6 +141,7 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/mpe_input.cpp
+    src/adi/engine/mpe_output.cpp
     src/adi/textproj.cpp
     src/adi/store_rows.cpp
     src/adi/textproj_store.cpp
@@ -257,6 +258,10 @@ add_test(NAME adi_clap_tests COMMAND adi_clap_tests)
 add_executable(adi_mpe_tests tests/test_mpe.cpp)
 target_link_libraries(adi_mpe_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_mpe_tests COMMAND adi_mpe_tests)
+
+add_executable(adi_mpe_output_tests tests/test_mpe_output.cpp)
+target_link_libraries(adi_mpe_output_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_mpe_output_tests COMMAND adi_mpe_output_tests)
 
 add_executable(adi_device_model_tests tests/test_device_model.cpp)
 target_link_libraries(adi_device_model_tests PRIVATE adi_core adi_warnings)

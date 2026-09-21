@@ -152,6 +152,18 @@ int measureLatencyChange(adi::device::Vst3Host& host, const juce::String& want) 
 /// proves our own `ProcessData` — our buses, our `IEventList`, our
 /// `IParameterChanges` — actually makes a plugin produce audio, which is the
 /// whole of ADR-0073's takeover.
+/// ADR-0097: what this plugin declared, and the route it got. Reported, not
+/// asserted -- the right answer depends on the plugin.
+void reportExpression(const adi::device::Vst3Device& v3) {
+    const auto& c = v3.expressionCaps();
+    const char* route = v3.expressionRoute() == adi::engine::ExpressionRoute::MpeMidi ? "MpeMidi"
+                        : v3.expressionRoute() == adi::engine::ExpressionRoute::Plain ? "Plain"
+                                                                                       : "NoteExpression";
+    std::printf("  expression  controller=%s noteExpr=%s perChannelBend=%d -> route %s\n",
+                c.controllerReachable ? "reachable" : "UNREACHABLE (separate class)",
+                c.noteExpression ? "yes" : "no", c.perChannelBend(), route);
+}
+
 int renderThrough(adi::device::Vst3Host& host, const juce::String& want) {
     juce::KnownPluginList list;
     host.scan(host.defaultSearchPaths(), list);
@@ -173,6 +185,7 @@ int renderThrough(adi::device::Vst3Host& host, const juce::String& want) {
     std::printf("  plugin  %s  raw=%s  noteExpr=%s\n", found.name.toRawUTF8(),
                 v3->usingRawProcessor() ? "yes" : "NO (fell back to JUCE)",
                 v3->supportsNoteExpression() ? "yes" : "no");
+    reportExpression(*v3);
     if (!v3->usingRawProcessor()) return 1;
 
     // CONTROL FIRST. Without this, "peak > 0" proves only that the plugin
@@ -443,6 +456,87 @@ int main(int argc, char** argv) {
         check(!list.add(e, 256, 128), "the sample after the last is outside");
     }
 
+    // --- ADR-0097: MPE+ out, in Steinberg's own structs ---------------------
+    std::printf("\n[ADR-0097] per-note expression without breaking plain MIDI\n");
+    {
+        namespace SV = Steinberg::Vst;
+        using adi::engine::MpeOut;
+
+        // THE BACKWARD-COMPATIBILITY LINE. An MPE controller sends each note
+        // on channel 2..16; a plugin that listens on channel 1 must still
+        // hear it.
+        adi::device::Vst3EventList list;
+        list.reserve(64);
+        adi::engine::Event on;
+        on.type = adi::engine::EventType::NoteOn;
+        on.channel = 5;
+        on.dim = 60;
+        on.noteId = 9;
+        on.value = 0.5;
+        check(list.add(on), "a note from member channel 5 is translated");
+        SV::Event e{};
+        list.getEvent(0, e);
+        check(e.type == SV::Event::kNoteOnEvent && e.noteOn.channel == 0,
+              "and goes to the plugin on channel 0 -- the controller's channel is transport");
+
+        // A 14-bit bend as a legacy event: LSB in value, MSB in value2, which
+        // is how JUCE's VST3 client reassembles it.
+        MpeOut bend;
+        bend.kind = MpeOut::Kind::Control;
+        bend.channel = 3;
+        bend.ctrl = adi::engine::kCtrlPitchBend;
+        bend.word = 10239;
+        check(list.addOut(bend), "a member-channel bend with no mapping is an event");
+        list.getEvent(1, e);
+        const int back = (e.midiCCOut.value & 0x7F) | ((e.midiCCOut.value2 & 0x7F) << 7);
+        check(e.type == SV::Event::kLegacyMIDICCOutEvent &&
+                  e.midiCCOut.controlNumber == SV::kPitchBend && e.midiCCOut.channel == 3,
+              "a kLegacyMIDICCOutEvent for pitch bend, on member channel 3");
+        check(back == 10239, "whose two 7-bit halves reassemble to the word, saw " +
+                                 std::to_string(back));
+
+        MpeOut mapped = bend;
+        mapped.paramId = 1234;
+        check(!list.addOut(mapped) && list.getEventCount() == 2 && list.dropped() == 0,
+              "with a mapped parameter it is NOT an event, and not counted as a drop");
+
+        MpeOut poly;
+        poly.kind = MpeOut::Kind::PolyPressure;
+        poly.key = 64;
+        poly.noteId = 9;
+        poly.value = 0.25;
+        check(list.addOut(poly), "poly pressure is an event");
+        list.getEvent(2, e);
+        check(e.type == SV::Event::kPolyPressureEvent && e.polyPressure.pitch == 64 &&
+                  e.polyPressure.noteId == 9 && e.polyPressure.pressure == 0.25f,
+              "a kPolyPressureEvent on the note's key and id");
+
+        // The router through the real structs: a note from channel 2 on the
+        // MpeMidi route is announced (MCM), reset, and played on member 1.
+        adi::engine::MpeRouter router;
+        router.configure(adi::engine::ExpressionRoute::MpeMidi, adi::engine::ExpressionCaps{});
+        std::vector<MpeOut> store(16);
+        adi::engine::MpeOutList routed(store.data(), 16);
+        on.channel = 2;
+        router.route(&on, 1, 0, routed);
+        adi::device::Vst3EventList mpe;
+        mpe.reserve(16);
+        for (const MpeOut& o : routed) mpe.addOut(o);
+        check(mpe.getEventCount() == 7, "MCM (3) + channel reset (3) + the note, saw " +
+                                            std::to_string(mpe.getEventCount()));
+        mpe.getEvent(6, e);
+        check(e.type == SV::Event::kNoteOnEvent && e.noteOn.channel == 1 && e.noteOn.noteId == 9,
+              "the note is on member channel 1, with its id");
+
+        // The parameter queue is bounded now (ADR-0010).
+        adi::device::Vst3ParamChanges changes;
+        changes.reserve(2, 3);
+        check(changes.set(7, 0.1, 0) && changes.set(7, 0.2, 1) && changes.set(7, 0.3, 2),
+              "three points fit a three-point queue");
+        check(!changes.set(7, 0.4, 3) && changes.dropped() == 1,
+              "the fourth is refused and counted rather than allocated for");
+    }
+
     // --- ADR-0082: something actually calls poll() now ---------------------
     std::printf("\n[ADR-0082] the timer that ticks DeviceHost\n");
     {
@@ -597,6 +691,15 @@ int main(int argc, char** argv) {
                       "note expression without reimplementing discovery and state");
                 check(v3->latencyEpoch() == 0,
                       "no latency change has been reported yet");
+                reportExpression(*v3);
+
+                // The guard at the top of prepare(). Unreachable until
+                // ADR-0097, so every prepare re-activated the plugin.
+                const std::int64_t activated = v3->activations();
+                v3->prepare(48000.0, 512);
+                check(v3->activations() == activated && activated == 1,
+                      "a second prepare with the same numbers does NOT re-activate "
+                      "the plugin: " + std::to_string(v3->activations()) + " activation(s)");
             } else {
                 check(false, "a loaded VST3 should be a Vst3Device");
             }

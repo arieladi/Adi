@@ -16,10 +16,12 @@
 #pragma once
 
 #include "adi/engine/events.hpp"
+#include "adi/engine/mpe_output.hpp"
 #include "adi/engine/note_expression.hpp"
 
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
 #include <pluginterfaces/vst/ivstevents.h>
+#include <pluginterfaces/vst/ivstmidicontrollers.h>
 #include <pluginterfaces/vst/ivstparameterchanges.h>
 #include <pluginterfaces/vst/ivstnoteexpression.h>
 
@@ -46,6 +48,12 @@ static_assert(static_cast<std::uint32_t>(engine::Vst3NoteExprType::Expression)
               == SV::kExpressionTypeID, "kExpressionTypeID drifted");
 static_assert(static_cast<std::uint32_t>(engine::Vst3NoteExprType::Brightness)
               == SV::kBrightnessTypeID, "kBrightnessTypeID drifted");
+
+// --- ADR-0097's constants, checked the same way ----------------------------
+
+static_assert(engine::kCtrlAfterTouch == SV::kAfterTouch, "kAfterTouch drifted");
+static_assert(engine::kCtrlPitchBend == SV::kPitchBend, "kPitchBend drifted");
+static_assert(engine::kNoParam == SV::kNoParamId, "kNoParamId drifted");
 
 /// `NoteExpressionValue` must be a double, or the mandate dies at the last
 /// hop. ADR-0054 names this exact failure and it would be invisible: a float
@@ -102,6 +110,16 @@ public:
     bool add(const engine::Event& e, std::int32_t blockOffset = 0,
              std::int32_t segmentFrames = 0) noexcept;
 
+    /// Translate one output of `engine::MpeRouter` (ADR-0097). The same
+    /// offset rule and the same counting as `add`, which is now this applied
+    /// to `engine::noteExpressionOut` -- one translation, not two.
+    ///
+    /// False, and not counted, for a `Control` that carries a parameter id:
+    /// that is a parameter change, and the caller sends it through
+    /// `Vst3ParamChanges` in the same process call (ADR-0073).
+    bool addOut(const engine::MpeOut& o, std::int32_t blockOffset = 0,
+                std::int32_t segmentFrames = 0) noexcept;
+
     /// Events refused for landing outside their segment. Separate from
     /// `dropped()`: a capacity drop means a busy block, an out-of-range means
     /// the two sides disagree about coordinates.
@@ -141,7 +159,19 @@ private:
 /// automation in a real project.
 class Vst3ParamQueue final : public SV::IParamValueQueue {
 public:
+    /// Points this queue holds, allocated here and never in `addPoint`.
+    ///
+    /// Until ADR-0097 there was no limit and `addPoint` inserted into a vector
+    /// that grew on the audio thread (ADR-0010). One point per block hid it;
+    /// MPE over IMidiMapping puts a 500 Hz stream into one queue per member
+    /// channel, and the first busy block would have allocated.
+    void reserve(std::int32_t points) {
+        points_.reserve(static_cast<std::size_t>(points > 0 ? points : 0));
+        cap_ = points > 0 ? points : 0;
+    }
     void reset(SV::ParamID id) noexcept { id_ = id; points_.clear(); }
+    /// Points refused because the queue was full. Counted, like every limit.
+    [[nodiscard]] std::int64_t dropped() const noexcept { return dropped_; }
     [[nodiscard]] SV::ParamID id() const noexcept { return id_; }
 
     SV::ParamID PLUGIN_API getParameterId() override { return id_; }
@@ -162,6 +192,8 @@ public:
 private:
     SV::ParamID id_ = 0;
     std::vector<std::pair<Steinberg::int32, SV::ParamValue>> points_;
+    std::int32_t cap_ = 0;
+    std::int64_t dropped_ = 0;
 };
 
 /// Every parameter that changed this block. ADR-0073.
@@ -179,15 +211,17 @@ class Vst3ParamChanges final : public SV::IParameterChanges {
 public:
     /// Pool size. A block in which more than `n` distinct parameters changed
     /// drops the rest and counts them, rather than allocating on the audio
-    /// thread (ADR-0010).
-    void reserve(std::int32_t n);
+    /// thread (ADR-0010). Each queue holds `pointsPerQueue` points, the same.
+    void reserve(std::int32_t n, std::int32_t pointsPerQueue = 64);
     void clear() noexcept;
 
     /// Queue a value for `id` at `sampleOffset` within the block. Returns
     /// false when the pool is exhausted.
     bool set(SV::ParamID id, double normalized, std::int32_t sampleOffset) noexcept;
 
-    [[nodiscard]] std::int64_t dropped() const noexcept { return dropped_; }
+    /// Parameters refused for want of a queue, plus points refused for want of
+    /// room in one.
+    [[nodiscard]] std::int64_t dropped() const noexcept;
 
     Steinberg::int32 PLUGIN_API getParameterCount() override {
         return static_cast<Steinberg::int32>(used_);

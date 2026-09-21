@@ -182,10 +182,41 @@ public:
 
     /// Events refused because a queue was full, and because they fell outside
     /// their segment. Kept apart for the reason ADR-0081 gives.
-    [[nodiscard]] std::int64_t eventsDropped() const noexcept { return events_.dropped(); }
-    [[nodiscard]] std::int64_t eventsOutOfRange() const noexcept {
-        return events_.outOfRange();
+    [[nodiscard]] std::int64_t eventsDropped() const noexcept {
+        return events_.dropped() + routed_.dropped();
     }
+    /// Parameter changes refused: no free queue, or a full one. MpeMidi's
+    /// IMidiMapping path lands here as well as ordinary automation.
+    [[nodiscard]] std::int64_t paramsDropped() const noexcept { return paramChanges_.dropped(); }
+    [[nodiscard]] std::int64_t eventsOutOfRange() const noexcept {
+        return events_.outOfRange() + routedOutOfRange_;
+    }
+
+    // --- ADR-0097: which way per-note expression reaches this plugin -------
+
+    /// Ask for a route. Any thread; the audio thread applies it at the start
+    /// of the next process call, ending every sounding note on the channel it
+    /// began on first. `Auto` resolves against `expressionCaps()`.
+    void setExpressionRoute(engine::RouteChoice c) noexcept {
+        requestedRoute_.store(static_cast<std::uint8_t>(c), std::memory_order_release);
+    }
+
+    /// The route in use now. Any thread.
+    [[nodiscard]] engine::ExpressionRoute expressionRoute() const noexcept {
+        return static_cast<engine::ExpressionRoute>(routeInUse_.load(std::memory_order_acquire));
+    }
+
+    /// What the plugin declared, probed once in the constructor. Immutable
+    /// afterwards, so any thread may read it.
+    [[nodiscard]] const engine::ExpressionCaps& expressionCaps() const noexcept { return caps_; }
+
+    /// The router, for its counters. Audio thread, or while not processing.
+    [[nodiscard]] const engine::MpeRouter& expressionRouter() const noexcept { return router_; }
+
+    /// How many times `prepare` actually re-activated the plugin. A second
+    /// prepare with the same rate, size and channels must not -- see the guard
+    /// at the top of `prepare`, which never fired until ADR-0097 found why.
+    [[nodiscard]] std::int64_t activations() const noexcept { return activations_; }
 
     /// True when the raw interface was reached and the fast path is live.
     [[nodiscard]] bool usingRawProcessor() const noexcept { return processor_ != nullptr; }
@@ -224,6 +255,17 @@ private:
     /// processBlock is driving and note expression is unavailable.
     Steinberg::Vst::IAudioProcessor* processor_ = nullptr;
     Vst3EventList   events_;
+
+    // ADR-0097. The router's output is sized at prepare and reused.
+    engine::ExpressionCaps caps_{};
+    engine::MpeRouter router_;
+    std::vector<engine::MpeOut> routedStore_;
+    engine::MpeOutList routed_;
+    std::int64_t routedOutOfRange_ = 0;
+    std::atomic<std::uint8_t> requestedRoute_{0};    ///< engine::RouteChoice
+    std::uint8_t appliedRoute_ = 0;                  ///< audio thread only
+    std::atomic<std::uint8_t> routeInUse_{0};        ///< engine::ExpressionRoute
+
     Vst3ParamChanges paramChanges_;
     Vst3ParamChanges outParams_;
     std::vector<engine::Event> injected_;
@@ -237,6 +279,7 @@ private:
     std::int32_t channels_ = 2;
     double sampleRate_ = 0.0;
     bool prepared_ = false;
+    std::int64_t activations_ = 0;
 };
 
 }  // namespace adi::device

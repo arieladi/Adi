@@ -4,6 +4,9 @@
 
 #include "juce/vst3_host.hpp"
 
+#include <pluginterfaces/vst/ivsteditcontroller.h>
+#include <pluginterfaces/vst/ivstphysicalui.h>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -104,6 +107,100 @@ std::unique_ptr<DeviceInstance> Vst3Host::makeDevice(const juce::PluginDescripti
 // Vst3Device
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// Everything `engine::resolveRoute` needs, asked of the plugin's EDIT
+/// CONTROLLER on the message thread (ADR-0097).
+///
+/// JUCE keeps its controller private and publishes only `IComponent`, so the
+/// controller is reachable here only when the component IS the controller --
+/// a single-component plugin. For a plugin with a separate controller class,
+/// which includes every JUCE-built plugin, this returns `controllerReachable
+/// = false` and the route is the user's to choose.
+///
+/// Every interface obtained through queryInterface is released before
+/// returning: each one carries a reference, and a probe that leaked them would
+/// keep a plugin's controller alive after the plugin was deleted.
+engine::ExpressionCaps probeExpressionCaps(juce::AudioPluginInstance& inst) {
+    namespace SV = Steinberg::Vst;
+    engine::ExpressionCaps caps;
+
+    const auto* client = inst.getVST3Client();
+    if (client == nullptr) return caps;
+    auto* comp = client->getIComponentPtr();
+    if (comp == nullptr) return caps;
+
+    void* raw = nullptr;
+    if (comp->queryInterface(SV::IEditController::iid, &raw) != Steinberg::kResultOk ||
+        raw == nullptr)
+        return caps;
+    auto* ec = static_cast<SV::IEditController*>(raw);
+    caps.controllerReachable = true;
+
+    raw = nullptr;
+    if (ec->queryInterface(SV::INoteExpressionController::iid, &raw) == Steinberg::kResultOk &&
+        raw != nullptr) {
+        auto* nec = static_cast<SV::INoteExpressionController*>(raw);
+        const Steinberg::int32 n = nec->getNoteExpressionCount(0, 0);
+        for (Steinberg::int32 i = 0; i < n; ++i) {
+            SV::NoteExpressionTypeInfo info{};
+            if (nec->getNoteExpressionInfo(0, 0, i, info) == Steinberg::kResultOk &&
+                info.typeId == SV::kTuningTypeID)
+                caps.noteExpression = true;
+        }
+        nec->release();
+    }
+
+    // VST3's own bridge for MPE controllers: the plugin names the type it
+    // wants for X, Y and pressure.
+    raw = nullptr;
+    if (ec->queryInterface(SV::INoteExpressionPhysicalUIMapping::iid, &raw) ==
+            Steinberg::kResultOk && raw != nullptr) {
+        auto* pui = static_cast<SV::INoteExpressionPhysicalUIMapping*>(raw);
+        SV::PhysicalUIMap map[3] = {{SV::kPUIXMovement, SV::kInvalidTypeID},
+                                    {SV::kPUIYMovement, SV::kInvalidTypeID},
+                                    {SV::kPUIPressure, SV::kInvalidTypeID}};
+        SV::PhysicalUIMapList list{3, map};
+        if (pui->getPhysicalUIMapping(0, 0, list) == Steinberg::kResultOk) {
+            if (map[0].noteExpressionTypeID != SV::kInvalidTypeID) {
+                caps.pitchType = map[0].noteExpressionTypeID;
+                caps.noteExpression = true;
+            }
+            if (map[1].noteExpressionTypeID != SV::kInvalidTypeID)
+                caps.timbreType = map[1].noteExpressionTypeID;
+            if (map[2].noteExpressionTypeID != SV::kInvalidTypeID)
+                caps.pressureType = map[2].noteExpressionTypeID;
+        }
+        pui->release();
+    }
+
+    raw = nullptr;
+    if (ec->queryInterface(SV::IMidiMapping::iid, &raw) == Steinberg::kResultOk &&
+        raw != nullptr) {
+        auto* mm = static_cast<SV::IMidiMapping*>(raw);
+        auto mapped = [mm](Steinberg::int16 ch, SV::CtrlNumber ctrl) {
+            SV::ParamID id = SV::kNoParamId;
+            return mm->getMidiControllerAssignment(0, ch, ctrl, id) == Steinberg::kResultTrue
+                       ? static_cast<std::uint32_t>(id) : engine::kNoParam;
+        };
+        for (Steinberg::int16 ch = 0; ch < 16; ++ch) {
+            const auto c = static_cast<std::size_t>(ch);
+            caps.bendParam[c]     = mapped(ch, SV::kPitchBend);
+            caps.pressureParam[c] = mapped(ch, SV::kAfterTouch);
+            caps.timbreParam[c]   = mapped(ch, static_cast<SV::CtrlNumber>(engine::kCtrlTimbre));
+        }
+        caps.rpnParam[0] = mapped(0, 101);
+        caps.rpnParam[1] = mapped(0, 100);
+        caps.rpnParam[2] = mapped(0, 6);
+        mm->release();
+    }
+
+    ec->release();
+    return caps;
+}
+
+}  // namespace
+
 Vst3Device::Vst3Device(std::unique_ptr<juce::AudioPluginInstance> inst, DeviceIdentity id)
     : inst_(std::move(inst)), id_(std::move(id)) {
     if (inst_ != nullptr) {
@@ -112,7 +209,13 @@ Vst3Device::Vst3Device(std::unique_ptr<juce::AudioPluginInstance> inst, DeviceId
         // on the audio thread (ADR-0091).
         instrument_ = inst_->getPluginDescription().isInstrument;
         readParameters();
+        // ADR-0097: once, here, on the message thread -- IMidiMapping and the
+        // note-expression interfaces belong to the controller, which is not
+        // called from the audio thread.
+        caps_ = probeExpressionCaps(*inst_);
     }
+    router_.configure(engine::resolveRoute(engine::RouteChoice::Auto, caps_), caps_);
+    routeInUse_.store(static_cast<std::uint8_t>(router_.current()), std::memory_order_release);
 }
 
 Vst3Device::~Vst3Device() {
@@ -221,6 +324,7 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // only the rate and block size are set.
     inst_->setRateAndBufferSizeDetails(sampleRate, maxFrames);
     inst_->prepareToPlay(sampleRate, maxFrames);
+    ++activations_;
 
     // ADR-0073's takeover. JUCE has now activated the component and set
     // processing; what it cannot do is carry note expression, because its
@@ -245,8 +349,17 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
                              ? (static_cast<double>(maxFrames) / sampleRate) * 500.0 : 1.0;
     const auto perNote = static_cast<std::int32_t>(updates * 3.0) + 2;
     events_.reserve((perNote > 0 ? perNote : 8) * 16);
-    paramChanges_.reserve(256);
-    outParams_.reserve(256);
+    // ADR-0097: every queue holds a block's worth of one dimension's stream,
+    // which is what MpeMidi's IMidiMapping path puts into one parameter.
+    const std::int32_t points = (perNote > 0 ? perNote : 8) + 8;
+    paramChanges_.reserve(256, points);
+    outParams_.reserve(256, points);
+    // The router can turn one note-on into four outputs (three channel resets
+    // and the note), plus the Configuration Message once.
+    const std::int32_t routedCap = (perNote > 0 ? perNote : 8) * 16 + 16 * 4 + 8;
+    routedStore_.assign(static_cast<std::size_t>(routedCap), engine::MpeOut{});
+    routed_ = engine::MpeOutList(routedStore_.data(), routedCap);
+    router_.reset();
     injected_.assign(static_cast<std::size_t>((perNote > 0 ? perNote : 8) * 16),
                      engine::Event{});
     injectedUsed_ = 0;
@@ -256,14 +369,19 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // Allocated at prepare, never in process (ADR-0010).
     scratch_.setSize(channels_, maxFrames, false, true, true);
     midi_.ensureSize(4096);
+
+    // HERE, and it was not. Since ADR-0073 this line sat after the `return`
+    // in pushEvent -- unreachable -- so the guard at the top of this function
+    // never fired and every prepare re-activated the plugin, the state loss
+    // that guard exists to prevent. MSVC's C4702 found it in a -Werror JUCE
+    // build; CI's JUCE job builds without -Werror (ADR-0097).
+    prepared_ = true;
 }
 
 bool Vst3Device::pushEvent(const engine::Event& e) noexcept {
     if (injectedUsed_ >= injected_.size()) return false;
     injected_[injectedUsed_++] = e;
     return true;
-
-    prepared_ = true;
 }
 
 void Vst3Device::release() {
@@ -299,13 +417,38 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         paramChanges_.clear();
         outParams_.clear();
 
+        // ADR-0097: a route change asked for since the last call. Every
+        // sounding note ends on its own channel before the new route starts.
+        routed_.clear();
+        const auto want = requestedRoute_.load(std::memory_order_acquire);
+        if (want != appliedRoute_) {
+            router_.switchTo(engine::resolveRoute(static_cast<engine::RouteChoice>(want), caps_),
+                             off, routed_);
+            appliedRoute_ = want;
+            routeInUse_.store(static_cast<std::uint8_t>(router_.current()),
+                              std::memory_order_release);
+        }
+
+        // The route decides what the plugin receives: channel 0 and note
+        // expression, member channels and channel messages, or plain MIDI.
+        router_.route(io.events.first, io.events.count, off, routed_);
+        router_.route(injected_.data(), static_cast<std::int32_t>(injectedUsed_), off, routed_);
+        injectedUsed_ = 0;
+
         // ADR-0081: Event::frame is BLOCK-relative and the plugin is handed
         // one segment, so the offset comes off here and a mismatch is
-        // counted rather than silently refused.
-        for (const auto& e : io.events) events_.add(e, off, n);
-        for (std::size_t i = 0; i < injectedUsed_; ++i)
-            events_.add(injected_[i], off, n);
-        injectedUsed_ = 0;
+        // counted rather than silently refused. A channel message the plugin
+        // mapped to a parameter rides IParameterChanges in this same call
+        // (ADR-0073); everything else is an event.
+        for (const engine::MpeOut& o : routed_) {
+            if (o.kind == engine::MpeOut::Kind::Control && o.paramId != engine::kNoParam) {
+                const std::int32_t t = o.frame - off;
+                if (t < 0 || t >= n) { ++routedOutOfRange_; continue; }
+                paramChanges_.set(o.paramId, o.value, t);
+            } else {
+                events_.addOut(o, off, n);
+            }
+        }
 
         for (std::int32_t c = 0; c < ch; ++c) {
             rawIn_[static_cast<std::size_t>(c)]  = scratch_.getWritePointer(c);
