@@ -153,6 +153,15 @@ the raw `clap_process` struct and implements:
 - and, because `supportsDirectProcess()` / `supportsVoiceInfo()` are true, it
   advertises and **prefers `CLAP_NOTE_DIALECT_CLAP`** on its note port
 
+**Measured from the built CLAP** (`tools/clap_smoke`, Windows, 2026-09-21):
+
+- the factory holds one plugin, `org.surge-synth-team.surge-xt`, "Surge XT"
+  1.4.0;
+- `clap.audio-ports` reports **one stereo input, "Sidechain"**, and **three
+  stereo outputs, "Output", "Scene A" and "Scene B"**. CLAP requires a host to
+  supply buffers for all four (`clap/process.h:47-49`), not just the main
+  output.
+
 That is precisely the surface `adi_daw` wants from a hosted CLAP. It is a
 coincidence worth noticing but **not** a design commitment: see ADR-0003's scope
 paragraph. Nothing here decides how the two projects integrate.
@@ -223,8 +232,15 @@ cmake --build adi-surge\surge\build --config Release --target surge-xt_CLAP --pa
 
 **`adi-surge\tools\build_clap_win.bat` does all of that**, then asserts that
 `build\surge_xt_products\Surge XT.clap` exists (exit 4 if not). With the
-`tests` argument it also builds `surge-testrunner` and runs `ctest -j 4`. It
-also clears the one environment variable that breaks agent-driven builds (§2.6).
+`tests` argument it also does two more things:
+
+1. It builds `surge-testrunner` and runs `ctest -j 4`.
+2. It builds and runs `tools/clap_smoke` (§4.4), which **loads the CLAP and
+   checks it makes the right sound**.
+
+The script also clears the one environment variable that breaks agent-driven
+builds (§2.6). `ADI_SURGE_SURGE_DIR` points it at a Surge clone elsewhere, for
+running it from a git worktree.
 On the VS generator, plain `ctest -j 4` needs no `-C Release`: Catch2's
 discovery runs at build time (`POST_BUILD`) and records absolute paths.
 
@@ -728,6 +744,27 @@ What the suite contains:
   (`UnitTestsIO.cpp:568`);
 - a DAW **stream/unstream round-trip** (`UnitTestsIO.cpp:588`).
 
+**None of upstream's tests loads the CLAP itself.** They link the engine
+directly. `tools/clap_smoke` is ours, and it covers that gap.
+
+It is a headless CLAP host of about 500 lines, with no JUCE and no DAW. It is
+built against the CLAP headers Surge already vendors, so it adds no
+dependency. It loads the `.clap` through the C ABI and plays A4 for one
+second, then runs 8 checks:
+
+- silence before the note;
+- sound on both channels while the note is held;
+- the pitch, which must be 440 Hz within 1%, measured by a YIN pitch
+  estimate;
+- no NaN or Inf in the output;
+- silence after the release;
+- the CLAP lifecycle: the output is stereo, processing starts, and no block
+  returns an error.
+
+A 9th check runs with `--wav`, when it writes the audio to a file. Windows,
+2026-09-21: **9/9**, with the pitch measured at 440.08 Hz and the held note at
+-19.9 dBFS RMS. This is onboarding step 4.4, done without installing a DAW.
+
 That last one matters to us the way `adi-vst`'s 232,438-byte state round-trip
 does: it exercises the exact serialization path an AI apply has to survive.
 
@@ -851,6 +888,10 @@ first (it is the only thing that can generate the contextual per-type schema
       writes the wrong parameter silently. Blocks trusting any OSC tool.
 - [x] Build `surge-xt_CLAP` on Windows and record the result. Done 2026-09-21:
       builds, `Surge XT.clap` asserted on disk (`collab/win.md`).
+- [x] Load the built CLAP in a host and confirm it makes sound. Done 2026-09-21
+      headless, with `tools/clap_smoke`: 9/9, A4 measured at 440.08 Hz (§4.4).
+      macOS: pending. The host uses `dlopen`, so pass it the binary inside the
+      `.clap` bundle; it has not been built on macOS yet.
 - [ ] Build `surgepy` on macOS — upstream CI never does, so `mac` is first.
 - [ ] Generate the contextual per-type schema: 32 FX types × 16 slots, 12
       oscillator types. `scripts/misc/surgepy-params.py` is the starting point.
