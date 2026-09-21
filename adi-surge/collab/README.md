@@ -83,7 +83,6 @@ One row per active branch. Delete your row when it merges.
 | Path | Agent | Branch | Since |
 |---|---|---|---|
 | `collab/**`, `docs/**`, `ARCHITECTURE.md`, `tools/fetch_surge.sh` | mac | `mac/adi-surge-bootstrap` | 2026-09-20 |
-| `collab/win.md`, `tools/build_clap_win.bat` | win | `win/adi-surge-clap-baseline` | 2026-09-21 |
 
 ## Reserved ADR numbers
 
