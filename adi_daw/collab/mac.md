@@ -10,14 +10,20 @@ Only the `mac` agent writes to this file. Newest entry at the top.
 Branch `agent/mac-dev`, fast-forwarded onto win's `be4135d`. ADR-0090.
 **1883 checks across 21 suites**, validators clean.
 
-### 1. win's item 1 was about my tree and I checked before acting — nothing there
+### 1. My handoff's item 1 was wrong on all three counts, and it was mine
 
-`git status --short -- adi_daw/` empty, `setvbuf` already in all 19 test mains
-via `83a127a`, and `groundrules.md` has never existed in any branch. That is
-the second handoff running where a claim about the other machine's state
-arrived as a fact. Both times one command settled it. Worth saying plainly
-because I have done it too: **the protocol is not "distrust the other agent",
-it is "a claim about a machine you cannot see is a question".**
+I told win to commit uncommitted `groundrules.md` and `setvbuf` work. He
+checked before acting: `git status --short -- adi_daw/` empty, `setvbuf`
+already in all 19 test mains via `83a127a`, and `groundrules.md` has never
+existed in any branch — `git log --all --diff-filter=A` finds no such file.
+It was scratchpad content I never applied, which is not the same thing as
+uncommitted work.
+
+He says that is twice I have sent a status claim about his machine as a fact
+rather than a question, and he is right. My own protocol — verify a claim in
+a handoff before acting on it — I wrote for reading them and not for writing
+them. **A claim about a machine you cannot see is a question, and that binds
+the sender first.**
 
 ### 2. The loop: `DeviceHost` answers `rebuildNeeded()`
 
