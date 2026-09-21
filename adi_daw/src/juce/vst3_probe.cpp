@@ -19,10 +19,12 @@
 #include "juce/vst3_events.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/probe_audio.hpp"
+#include "juce/probe_surge.hpp"
 #include "juce/vst3_host.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <string>
 #include <cstddef>
 #include <vector>
@@ -480,8 +482,294 @@ int mpeAcceptance(adi::device::Vst3Host& host, const juce::String& want) {
                 autoDelivers ? "DELIVERS" : "delivers NOTHING -- the user must choose");
     check(mpeDelivers || neDelivers,
           "per-note pitch reaches this synth through at least one route");
+
+    // Measured 2026-09-21 (ADR-0098). Scene A per route.
+    static const pr::Baseline kBase[] = {
+        {"Surge XT", "1.3.4", "MpeMidi", "bent"},
+        {"Surge XT", "1.3.4", "NoteExpression", "unbent"},
+        {"Surge XT", "1.3.4", "Plain", "unbent"},
+        {"Serum 2", "2.0.16", "MpeMidi", "unbent"},
+        {"Serum 2", "2.0.16", "NoteExpression", "bent"},
+        {"Serum 2", "2.0.16", "Plain", "unbent"},
+    };
+    const std::size_t nBase = sizeof kBase / sizeof kBase[0];
+    const std::string pname = found.name.toStdString(), pver = found.version.toStdString();
+    if (!pr::hasBaseline(kBase, nBase, pname, pver)) {
+        std::printf("  (no baseline for %s %s: judged by the general rule only)\n", pname.c_str(), pver.c_str());
+        return 0;
+    }
+    const std::pair<const char*, Heard> got[] = {{"MpeMidi", mA}, {"NoteExpression", nA}, {"Plain", pA}};
+    for (const auto& g : got)
+        if (const char* expected = pr::baselineFor(kBase, nBase, pname, pver, g.first))
+            check(std::string(expected) == name(g.second),
+                  std::string(g.first) + ": " + name(g.second) + ", as measured before (" + expected + ")");
     return 0;
 }
+
+/// ADR-0100: pressure and timbre through the VST3 host, measured on Surge XT
+/// with a patch that makes each audible. Surge's VST3 state is JUCE's
+/// "VST3PluginState" wrapper: the plugin's own stream is the IComponent child,
+/// in JUCE's base64 -- unwrapped and rewrapped here with JUCE's own functions.
+int vst3Dimensions(adi::device::Vst3Host& host, const juce::String& want) {
+    using adi::engine::ExpressionRoute;
+    using adi::engine::RouteChoice;
+    namespace pr = adi::probe;
+
+    juce::KnownPluginList list;
+    host.scan(host.defaultSearchPaths(), list);
+    juce::PluginDescription found;
+    if (!pickPlugin(list, want, found) || !found.isInstrument) {
+        check(false, "an INSTRUMENT matching '" + want.toStdString() + "' is installed");
+        return 1;
+    }
+
+    // The plugin's own stream, out of JUCE's wrapper and back.
+    auto routeState = [](std::vector<std::uint8_t>& state, adi::ExpressionDim d, std::string& why) {
+        auto xml = juce::AudioProcessor::getXmlFromBinary(state.data(), static_cast<int>(state.size()));
+        juce::XmlElement* comp = xml != nullptr ? xml->getChildByName("IComponent") : nullptr;
+        if (comp == nullptr) { why = "no IComponent stream in JUCE's VST3 state"; return false; }
+        juce::MemoryBlock mb;
+        if (!mb.fromBase64Encoding(comp->getAllSubText())) { why = "the IComponent stream is not base64"; return false; }
+        std::vector<std::uint8_t> raw(static_cast<const std::uint8_t*>(mb.getData()),
+                                      static_cast<const std::uint8_t*>(mb.getData()) + mb.getSize());
+        if (!pr::routeSurgePatch(raw, d, why)) return false;
+        comp->deleteAllTextElements();
+        comp->addTextElement(juce::MemoryBlock(raw.data(), raw.size()).toBase64Encoding());
+        juce::MemoryBlock out;
+        juce::AudioProcessor::copyXmlToBinary(*xml, out);
+        state.assign(static_cast<const std::uint8_t*>(out.getData()),
+                     static_cast<const std::uint8_t*>(out.getData()) + out.getSize());
+        return true;
+    };
+
+    const double sr = 48000.0;
+    const std::size_t from = 32768 - 16384, n = 16384;
+    struct Route { const char* label; RouteChoice choice; };
+    const Route routes[] = {{"MpeMidi", RouteChoice::MpeMidi}, {"Plain", RouteChoice::Plain},
+                            {"NoteExpr", RouteChoice::NoteExpression}};
+    const adi::ExpressionDim dims[] = {adi::ExpressionDim::Pressure, adi::ExpressionDim::Timbre};
+    bool delivered[2] = {false, false};
+    // Measured 2026-09-21 (ADR-0100).
+    static const pr::Baseline kBase[] = {
+        {"Surge XT", "1.3.4", "MpeMidi pressure", "per note"},
+        {"Surge XT", "1.3.4", "MpeMidi timbre", "per note"},
+        {"Surge XT", "1.3.4", "Plain pressure", "per note"},
+        {"Surge XT", "1.3.4", "Plain timbre", "not delivered"},
+        {"Surge XT", "1.3.4", "NoteExpr pressure", "not delivered"},
+        {"Surge XT", "1.3.4", "NoteExpr timbre", "not delivered"},
+    };
+    const std::size_t nBase = sizeof kBase / sizeof kBase[0];
+    const std::string pname = found.name.toStdString(), pver = found.version.toStdString();
+    if (!pr::hasBaseline(kBase, nBase, pname, pver))
+        std::printf("  (no baseline for %s %s: judged by the general rule only)\n", pname.c_str(), pver.c_str());
+
+    std::printf("\n  %-8s %-9s %9s %9s  verdict\n", "route", "dimension", "single", "pair");
+    for (const Route& rt : routes) {
+        for (int di = 0; di < 2; ++di) {
+            const adi::ExpressionDim d = dims[di];
+            bool routed = true;
+            auto render = [&](const std::vector<adi::engine::Event>& ev) {
+                std::string err;
+                auto dev = host.makeDevice(found, sr, 512, err);
+                auto* v3 = dynamic_cast<adi::device::Vst3Device*>(dev.get());
+                if (v3 == nullptr || !v3->loaded()) { routed = false; return std::vector<float>{}; }
+                auto state = v3->saveState("chunk");
+                std::string why;
+                if (!routeState(state, d, why) || !v3->loadState("chunk", state)) {
+                    std::printf("  could not route the patch: %s\n", why.c_str());
+                    routed = false;
+                    return std::vector<float>{};
+                }
+                v3->setExpressionRoute(rt.choice);
+                v3->prepare(sr, 512);
+                pr::render(*v3, {}, 16, 512, sr);          // let the new patch land first
+                return pr::render(*v3, ev, 64, 512, sr);
+            };
+            // MPE's timbre neutral is CC74 64 -- see dimScenes.
+            const double low = (d == adi::ExpressionDim::Timbre && rt.choice == RouteChoice::MpeMidi)
+                                   ? 0.5 : 0.0;
+            const pr::DimHeard h = pr::measureDimension(d, render, from, n, sr, low);
+            const char* dname = d == adi::ExpressionDim::Pressure ? "pressure" : "timbre";
+            std::printf("  %-8s %-9s %+8.1f %+8.1f  %s\n", rt.label, dname, h.single, h.pair,
+                        pr::verdictName(h.verdict));
+            std::printf("           C4 alone %+.1f/%+.1f   pair A: C4 %+.1f E4 %+.1f   pair B: C4 %+.1f E4 %+.1f\n",
+                        h.c4Hi, h.c4Lo, h.c4A, h.e4A, h.c4B, h.e4B);
+            check(routed, std::string(rt.label) + " " + dname + ": the patch was routed and loaded");
+            check(h.verdict != pr::DimHeard::Verdict::Wrong,
+                  std::string(rt.label) + " " + dname +
+                      ": per note or not at all -- never applied to every note");
+            if (h.verdict == pr::DimHeard::Verdict::PerNote) delivered[di] = true;
+            const std::string what = std::string(rt.label) + " " + dname;
+            if (const char* expected = pr::baselineFor(kBase, nBase, pname, pver, what))
+                check(std::string(expected) == pr::verdictName(h.verdict),
+                      what + ": " + pr::verdictName(h.verdict) + ", as measured before (" + expected + ")");
+        }
+    }
+    std::printf("\n");
+    check(delivered[0], "pressure reaches this synth per note on at least one route");
+    check(delivered[1], "timbre reaches this synth per note on at least one route");
+    return 0;
+}
+
+#ifdef ADI_TEST_VST3
+/// ADR-0100: the fixture synth (tests/fixtures/vst3_expression_synth.cpp),
+/// whose edit controller IS reachable. Everything ADR-0097 built for such a
+/// plugin -- reading its capabilities, Auto's choice, MpeMidi's IMidiMapping
+/// parameter path, the physical-UI mapping's custom types -- runs here for the
+/// first time, and is judged by ear. Needs no installed plugin, so CI's
+/// Windows JUCE job runs it.
+void fixtureAcceptance(adi::device::Vst3Host& host) {
+    using adi::engine::Event;
+    using adi::engine::EventType;
+    using adi::engine::ExpressionRoute;
+    using adi::engine::RouteChoice;
+    namespace pr = adi::probe;
+
+    std::printf("\n[ADR-0100] the fixture synth: a VST3 whose edit controller is reachable\n");
+    juce::OwnedArray<juce::PluginDescription> types;
+    host.formats().getFormat(0)->findAllTypesForFile(types, ADI_TEST_VST3);
+    check(types.size() == 3, "the fixture bundle declares three instruments, saw " +
+                                 std::to_string(types.size()));
+
+    const auto brightness = static_cast<std::uint32_t>(adi::engine::Vst3NoteExprType::Brightness);
+    const auto expression = static_cast<std::uint32_t>(adi::engine::Vst3NoteExprType::Expression);
+    struct Expect {
+        const char* name;
+        bool noteExpr; int perChannelBend; bool rpn;
+        std::uint32_t timbreType, pressureType;
+        ExpressionRoute route; bool bends; const char* pressure; const char* timbre;
+    };
+    const Expect expects[] = {
+        {"ADI Test MPE", false, 16, true, brightness, expression,
+         ExpressionRoute::MpeMidi, true, "per note", "per note"},
+        {"ADI Test NoteExpr", true, 0, false, 100001, 100002,
+         ExpressionRoute::NoteExpression, true, "per note", "per note"},
+        {"ADI Test Plain", false, 1, false, brightness, expression,
+         ExpressionRoute::Plain, false, "per note", "not delivered"},
+    };
+
+    const double sr = 48000.0;
+    const std::size_t from = 32768 - 16384, n = 16384;
+    auto note = [](std::uint64_t id, int key, int chan, std::int32_t frame = 0) {
+        Event e; e.type = EventType::NoteOn; e.noteId = id; e.dim = static_cast<std::uint16_t>(key);
+        e.channel = static_cast<std::uint8_t>(chan); e.value = 0.8; e.frame = frame; return e;
+    };
+    auto off = [](std::uint64_t id, int key, std::int32_t frame) {
+        Event e; e.type = EventType::NoteOff; e.noteId = id; e.dim = static_cast<std::uint16_t>(key);
+        e.channel = 2; e.frame = frame; return e;
+    };
+    auto bend = [](std::uint64_t id, double semis, int chan) {
+        Event e; e.type = EventType::NoteExpression; e.noteId = id; e.channel = static_cast<std::uint8_t>(chan);
+        e.dim = static_cast<std::uint16_t>(adi::ExpressionDim::Pitch); e.value = semis; return e;
+    };
+    auto find = [&](const char* name) -> const juce::PluginDescription* {
+        for (auto* t : types) if (t->name == name) return t;
+        return nullptr;
+    };
+    auto render = [&](const juce::PluginDescription& d, RouteChoice choice, const std::vector<Event>& ev) {
+        std::string err;
+        auto dev = host.makeDevice(d, sr, 512, err);
+        auto* v3 = dynamic_cast<adi::device::Vst3Device*>(dev.get());
+        if (v3 == nullptr || !v3->loaded()) { check(false, "the fixture loads: " + err); return std::vector<float>{}; }
+        v3->setExpressionRoute(choice);
+        v3->prepare(sr, 512);
+        auto a = pr::render(*v3, ev, 64, 512, sr);
+        check(v3->eventsDropped() == 0 && v3->paramsDropped() == 0 && v3->eventsOutOfRange() == 0,
+              "nothing dropped: events, parameter points or offsets");
+        return a;
+    };
+    auto octave = [&](const std::vector<float>& a) {
+        const double hz = pr::estimateHz(a, from, n, sr, 80.0, 1200.0);
+        if (std::abs(pr::centsBetween(hz, pr::midiHz(72))) < 15.0) return std::string("bent");
+        if (std::abs(pr::centsBetween(hz, pr::midiHz(60))) < 15.0) return std::string("unbent");
+        return "WRONG (" + std::to_string(hz) + " Hz)";
+    };
+    auto pair = [&](const std::vector<float>& a) {
+        const double g4 = pr::toneLevel(a, from, n, sr, 392.0), e4 = pr::toneLevel(a, from, n, sr, pr::midiHz(64));
+        const double b4 = pr::toneLevel(a, from, n, sr, pr::midiHz(71)), c4 = pr::toneLevel(a, from, n, sr, pr::midiHz(60));
+        const double top = std::max({g4, e4, b4, c4});
+        auto present = [&](double l) { return pr::dbRel(l, top) > -12.0; };
+        auto absent = [&](double l) { return pr::dbRel(l, top) < -30.0; };
+        if (present(g4) && present(e4) && absent(b4) && absent(c4)) return std::string("bent");
+        if (present(c4) && present(e4) && absent(g4) && absent(b4)) return std::string("unbent");
+        return std::string("WRONG");
+    };
+
+    for (const Expect& x : expects) {
+        const juce::PluginDescription* d = find(x.name);
+        const std::string who = x.name;
+        check(d != nullptr && d->isInstrument, who + ": found, as an instrument");
+        if (d == nullptr) continue;
+
+        // --- what the controller says, and what Auto makes of it ---------
+        {
+            std::string err;
+            auto dev = host.makeDevice(*d, sr, 512, err);
+            auto* v3 = dynamic_cast<adi::device::Vst3Device*>(dev.get());
+            check(v3 != nullptr && v3->loaded(), who + ": loads: " + err);
+            if (v3 == nullptr) continue;
+            const auto& c = v3->expressionCaps();
+            reportExpression(*v3);
+            check(c.controllerReachable, who + ": the controller is REACHABLE -- the one arrangement our host can see");
+            check(c.noteExpression == x.noteExpr, who + ": note expression declared " + (x.noteExpr ? "yes" : "no"));
+            check(c.perChannelBend() == x.perChannelBend,
+                  who + ": bend on its own parameter on " + std::to_string(x.perChannelBend) + " channel(s), saw " +
+                      std::to_string(c.perChannelBend()));
+            check((c.rpnParam[0] != adi::engine::kNoParam && c.rpnParam[2] != adi::engine::kNoParam) == x.rpn,
+                  who + ": the Configuration Message's CCs are mapped: " + (x.rpn ? "yes" : "no"));
+            check(c.timbreType == x.timbreType && c.pressureType == x.pressureType,
+                  who + ": timbre and pressure types " + std::to_string(c.timbreType) + "/" +
+                      std::to_string(c.pressureType) + (x.noteExpr ? " -- the plugin's own, from its physical-UI mapping"
+                                                                   : " -- the defaults"));
+            check(v3->expressionRoute() == x.route, who + ": Auto chose the route the controller implies");
+        }
+
+        // --- pitch, on Auto ---------------------------------------------
+        const std::string want = x.bends ? "bent" : "unbent";
+        const std::string a = octave(render(*d, RouteChoice::Auto, {note(1, 60, 2), bend(1, 12.0, 2)}));
+        check(a == want, who + ": +12 sounds " + a + ", expected " + want +
+                             (x.route == ExpressionRoute::MpeMidi ? " -- through PARAMETERS, and at +/-48 because the "
+                                                                    "MCM arrived as parameters too" : ""));
+        const std::string b = pair(render(*d, RouteChoice::Auto, {note(1, 60, 2), bend(1, 7.0, 2), note(2, 64, 3)}));
+        const std::string c1 = pair(render(*d, RouteChoice::Auto, {note(1, 60, 1), bend(1, 7.0, 1), note(2, 64, 1)}));
+        check(b == want, who + ": C4 +7 beside E4 -- " + b);
+        check(c1 == want, who + ": the same with both notes from ONE channel -- " + c1);
+
+        // --- pressure and timbre ------------------------------------------
+        for (adi::ExpressionDim dim : {adi::ExpressionDim::Pressure, adi::ExpressionDim::Timbre}) {
+            const pr::DimHeard h = pr::measureDimension(
+                dim, [&](const std::vector<Event>& ev) { return render(*d, RouteChoice::Auto, ev); }, from, n, sr, 0.0);
+            const bool isP = dim == adi::ExpressionDim::Pressure;
+            const std::string expected = isP ? x.pressure : x.timbre;
+            std::printf("  %-18s %-8s single %+6.1f  pair %+6.1f  %s\n", x.name, isP ? "pressure" : "timbre",
+                        h.single, h.pair, pr::verdictName(h.verdict));
+            check(expected == pr::verdictName(h.verdict),
+                  who + ": " + (isP ? "pressure " : "timbre ") + pr::verdictName(h.verdict) + ", expected " + expected);
+        }
+
+        // --- MpeMidi: a reused member channel starts in tune ---------------
+        if (x.route == ExpressionRoute::MpeMidi) {
+            std::vector<Event> ev = {note(1, 60, 2), bend(1, 12.0, 2), off(1, 60, 10)};
+            for (int k = 2; k <= 15; ++k) {
+                ev.push_back(note(static_cast<std::uint64_t>(k), 40 + k, 2, 20 + 4 * k));
+                ev.push_back(off(static_cast<std::uint64_t>(k), 40 + k, 22 + 4 * k));
+            }
+            ev.push_back(note(16, 64, 2, 120));
+            const double hz = pr::estimateHz(render(*d, RouteChoice::Auto, ev), from, n, sr, 80.0, 1200.0);
+            check(std::abs(pr::centsBetween(hz, pr::midiHz(64))) < 15.0,
+                  who + ": note 16 on a reused member channel is reset -- " + std::to_string(hz) + " Hz");
+        }
+    }
+
+    // --- Auto's choice matters: the wrong route delivers nothing ---------
+    if (const auto* mpe = find("ADI Test MPE"))
+        check(octave(render(*mpe, RouteChoice::NoteExpression, {note(1, 60, 2), bend(1, 12.0, 2)})) == "unbent",
+              "ADI Test MPE on NoteExpression: unbent -- it reads MIDI as parameters, not note expression");
+    if (const auto* ne = find("ADI Test NoteExpr"))
+        check(octave(render(*ne, RouteChoice::MpeMidi, {note(1, 60, 2), bend(1, 12.0, 2)})) == "unbent",
+              "ADI Test NoteExpr on MpeMidi: unbent -- no mapping, and it ignores legacy MIDI events");
+}
+#endif
 
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -491,7 +779,12 @@ int main(int argc, char** argv) {
     juce::String renderName;
     juce::String mpeName;
     juce::String pluginName;
+    juce::String dimName;
+    bool fixtureOnly = false;
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--fixture") fixtureOnly = true;
     for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string(argv[i]) == "--dimensions") dimName = argv[i + 1];
         if (std::string(argv[i]) == "--plugin") pluginName = argv[i + 1];
         if (std::string(argv[i]) == "--mpe") mpeName = argv[i + 1];
         if (std::string(argv[i]) == "--latency-probe") latencyProbe = argv[i + 1];
@@ -504,6 +797,43 @@ int main(int argc, char** argv) {
 
     juce::ScopedJuceInitialiser_GUI juceInit;
     adi::device::Vst3Host host;
+
+    // --dump-state <plugin> <file>: the plugin's opaque state as our host
+    // saves it -- for reading a format before a test edits it (ADR-0100).
+    for (int i = 1; i + 2 < argc; ++i) {
+        if (std::string(argv[i]) != "--dump-state") continue;
+        juce::KnownPluginList list;
+        host.scan(host.defaultSearchPaths(), list);
+        juce::PluginDescription desc;
+        if (!pickPlugin(list, argv[i + 1], desc)) { std::printf("no plugin '%s'\n", argv[i + 1]); return 1; }
+        std::string err;
+        auto dev = host.makeDevice(desc, 48000.0, 512, err);
+        if (!dev || !dev->loaded()) { std::printf("did not load: %s\n", err.c_str()); return 1; }
+        const auto st = dev->saveState("chunk");
+        std::ofstream f(argv[i + 2], std::ios::binary);
+        f.write(reinterpret_cast<const char*>(st.data()), static_cast<std::streamsize>(st.size()));
+        std::printf("dumped %zu bytes of %s\n", st.size(), desc.name.toRawUTF8());
+        return f.good() ? 0 : 1;
+    }
+
+    if (fixtureOnly) {
+#ifdef ADI_TEST_VST3
+        fixtureAcceptance(host);
+#else
+        std::printf("  skip  the fixture synth is built on Windows only (ADR-0100)\n");
+#endif
+        std::printf("\n%s -- %d checks, %d failure(s)\n",
+                    g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : 0;
+    }
+
+    if (dimName.isNotEmpty()) {
+        std::printf("[ADR-0100] pressure and timbre through VST3, measured on a real synth\n");
+        const int rc = vst3Dimensions(host, dimName);
+        std::printf("\n%s -- %d checks, %d failure(s)\n",
+                    g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : rc;
+    }
 
     if (mpeName.isNotEmpty()) {
         std::printf("[ADR-0097/0098] MPE+ through VST3, measured on a real synth\n");
@@ -860,6 +1190,11 @@ int main(int argc, char** argv) {
             if (ol[i] != 0.25f || orr[i] != 0.25f) through = false;
         check(through, "and the signal continues past it unchanged");
     }
+
+#ifdef ADI_TEST_VST3
+    // --- ADR-0100: the fixture, which needs nothing installed ---------------
+    fixtureAcceptance(host);
+#endif
 
     // --- with a plugin, if there is one ------------------------------------
     std::printf("\n[scan] looking for an installed VST3\n");

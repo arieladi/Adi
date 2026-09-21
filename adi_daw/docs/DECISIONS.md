@@ -6949,3 +6949,151 @@ audio showed otherwise. It now reads the dialect after.
 - **Acting on a note-port rescan while the plugin is active.** It is counted;
   a restart that does not change the audio layout does not re-read the ports.
 - **MIDI 2.0.**
+
+---
+
+## ADR-0100 — The expression test rig: pressure and timbre by ear, baselines, and a fixture VST3 with a reachable controller — `DECIDED` (2026-09-21) — **FOLLOWS ADR-0098/0099**
+
+**Director's call:** test "pressure and timbre (the init patches don't route
+them to anything audible), and the MIDI-mapping parameter path (every MPE synth
+here hides the interface it needs)", finding a way where one is needed.
+
+### 1. Making pressure and timbre audible on Surge XT
+
+`src/juce/probe_surge.hpp` edits Surge's own saved patch before each scene,
+through either host. The format is Surge's, GPL-3.0 like ours: a `sub3`
+header carrying the XML's length, the XML, then wavetables. **One dimension per
+patch:**
+
+- **pressure** → oscillator 1 level = 0.25 + 0.75 × pressure, driven by channel
+  aftertouch (source 4) and poly aftertouch (source 3); the filter stays off;
+- **timbre** → a 24 dB low-pass at ~311 Hz, opened +48 semitones by timbre
+  (source 29); the level stays fixed.
+
+The base level is 0.25, not 0, so a pressure that never arrives reads as
+"unchanged", not as "silent".
+
+Each dimension is measured two ways:
+
+- **single:** one note at the high value against the same note at the low
+  value;
+- **pair:** C4 and E4 together, played both ways round (C4 high/E4 low, then
+  swapped), taking half the difference. That cancels anything the two keys
+  differ by anyway — a filter tilt — and a **global** application reads 0
+  there while `single` does not.
+
+The verdict is *per note*, *not delivered*, or *WRONG*. The first design had the
+filter on in the pressure patch, and E4 is darker and quieter than C4 whether
+or not anything arrives; that was caught on paper, before a run.
+
+### 2. Results
+
+| Host | Route / dialect | Pressure | Timbre |
+|---|---|---|---|
+| VST3 | MpeMidi | per note (+36 dB) | per note (+25 dB) |
+| VST3 | Plain | per note (poly AT) | not delivered |
+| VST3 | NoteExpression | not delivered | not delivered |
+| CLAP | CLAP | per note | per note |
+| CLAP | MIDI-MPE | per note | per note |
+| CLAP | MIDI | per note (poly AT) | not delivered |
+
+Every "not delivered" is correct. Plain MIDI has no per-note timbre, and Surge
+ignores VST3 note expression (ADR-0098).
+
+### 3. Two things the measurements corrected
+
+**Surge 1.3.4 reads MPE's CC74 as BIPOLAR around 64.** The first MIDI-MPE timbre
+runs gave pair values of +8.9 and +11.0, then a WRONG. Absolute levels showed
+why: a note at timbre 0 sat at **−123 dB**. CC74 0 is −1 to Surge, which closes
+the filter a further 48 semitones, so the "dark" note had vanished and its
+brightness was two noise floors.
+
+- MPE does not define CC74's polarity. CLAP's BRIGHTNESS is unipolar by
+  definition.
+- **ADI carries the value faithfully**: the router resets a channel to 64, and
+  0..1 maps to 0..127.
+- On the MPE route the scene's low value is therefore **0.5 (CC74 64)**, the
+  neutral. MIDI-MPE timbre then measures +25.1 / +26.7, identical to CLAP's, on
+  every run.
+- Newer Surge has a `mpeTimbreIsUnipolar` setting; 1.3.4's saved state has none.
+
+**CLAP's PRESSURE expression reaches Surge outside MPE mode.** Surge's source
+suggested it would be ignored there. It was measured delivered per note, and
+the measurement stands.
+
+### 4. Baselines: "not delivered" is not always allowed
+
+The pass rule from ADR-0098 allows "not delivered", because a plugin may ignore
+a route. For a plugin that **has** been measured, that is too weak. So all
+four probe modes now carry the verdicts measured today, **keyed by plugin name
+and version**: Surge XT 1.3.4 (VST3 and CLAP) and Serum 2 2.0.16. Any change
+fails. A different version is reported and not judged.
+
+Four planted defects, each played through Surge:
+
+- MPE timbre sent on CC71;
+- MPE pressure sent as CC2;
+- Plain's poly aftertouch dropped;
+- CLAP pressure sent as EXPRESSION.
+
+**All caught — and all but one only by the baseline.** Only CC71 on VST3 also
+trips the general rule, because there no route delivers timbre at all.
+
+### 5. The fixture: a VST3 whose edit controller is reachable
+
+`tests/fixtures/vst3_expression_synth.cpp` is one class that is both component
+and controller: the one arrangement our host can see into. It is built only
+against Steinberg's VST3 SDK, which is MIT; no JUCE code. It comes in three
+variants:
+
+| Variant | Declares | Auto chose | Pitch | Pressure | Timbre |
+|---|---|---|---|---|---|
+| ADI Test MPE | IMidiMapping per channel + MCM CCs; ignores legacy events | MpeMidi | per note | per note (+12.0 dB) | per note (+26.0 dB) |
+| ADI Test NoteExpr | Tuning + custom types 100001/100002 via physical-UI mapping | NoteExpression | per note | per note | per note |
+| ADI Test Plain | bend on channel 0 only | Plain | unbent | per note (poly AT) | not delivered |
+
+**79 checks, first run.** For the first time these ran against anything:
+
+- `probeExpressionCaps` reading a real controller;
+- Auto choosing each of the three routes;
+- the IMidiMapping **parameter path**, including the MCM sent as parameters;
+- the physical-UI mapping's custom types.
+
+The +12 lands on the octave only because the MCM arrived as parameters. The
+wrong route delivers nothing: the MPE variant on NoteExpression, and the
+NoteExpr variant on MpeMidi. The reused-channel reset holds.
+
+Five planted defects in the host's controller-reading code, all caught:
+
+- the physical-UI mapping read and not applied;
+- IMidiMapping asked for the wrong controller as pitch bend;
+- a mapped message sent as a legacy event;
+- the MCM's CCs never looked up;
+- the controller never asked for at all.
+
+The MCM defect makes the fixture sound **269.29 Hz** — the same +50 cents Surge
+gave without the MCM (ADR-0098), from an independent synth.
+
+**It runs in CI.** The fixture is built on Windows as a dependency of
+`adi_vst3_probe`, and the probe's default run tests it with no plugin
+installed.
+
+### 6. Probe tools added
+
+- `--dimensions <synth>` (both hosts): the pressure and timbre scenes.
+- `--fixture` (VST3): the fixture alone.
+- `--dump-state <plugin> <file>` (both): a plugin's opaque state as our host
+  saves it — how Surge's two wrappings were read before editing them.
+
+### Not verified
+
+- **The fixture on macOS.** A VST3 bundle there needs an Info.plist and bundle
+  entry points, and nobody here can test them.
+- **A commercial plugin with a reachable controller that maps MPE through
+  IMidiMapping.** The fixture proves our host honours what a plugin declares,
+  not that any shipping plugin declares it this way.
+- **Serum 2's pressure and timbre.** Its state is proprietary, so no patch can
+  be edited to make them audible.
+- **Timbre polarity on other synths.** Surge 1.3.4's reading is recorded, and
+  a synth that reads CC74 differently will sound different on MIDI-MPE than on
+  CLAP.

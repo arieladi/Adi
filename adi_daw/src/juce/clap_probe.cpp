@@ -18,11 +18,13 @@
 #include "juce/clap_host.hpp"
 #include "juce/device_host.hpp"
 #include "juce/probe_audio.hpp"
+#include "juce/probe_surge.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -777,6 +779,17 @@ int clapMpeAcceptance(const std::string& want) {
         return d == ClapDialect::Clap ? "Clap" : d == ClapDialect::MidiMpe ? "MidiMpe"
              : d == ClapDialect::Midi ? "Midi" : "None";
     };
+    // Measured 2026-09-21 (ADR-0099). Scene A per dialect asked for.
+    static const pr::Baseline kBase[] = {
+        {"Surge XT", "1.3.4", "Auto", "bent"},
+        {"Surge XT", "1.3.4", "Clap", "bent"},
+        {"Surge XT", "1.3.4", "MidiMpe", "bent"},
+        {"Surge XT", "1.3.4", "Midi", "unbent"},
+    };
+    const std::size_t nBase = sizeof kBase / sizeof kBase[0];
+    if (!pr::hasBaseline(kBase, nBase, pick->name, pick->version))
+        std::printf("  (no baseline for %s %s: judged by the general rule only)\n",
+                    pick->name.c_str(), pick->version.c_str());
     std::printf("\n");
     bool anyDelivers = false;
     for (const Row& row : rows) {
@@ -795,8 +808,96 @@ int clapMpeAcceptance(const std::string& want) {
         if (row.used == ClapDialect::Midi)
             check(row.a == Heard::Unbent, who + ": plain MIDI carries no per-note pitch, so nothing bends");
         if (row.a == Heard::Bent) anyDelivers = true;
+        if (const char* expected = pr::baselineFor(kBase, nBase, pick->name, pick->version, row.label))
+            check(std::string(expected) == name(row.a),
+                  who + ": " + name(row.a) + ", as measured before (" + expected + ")");
     }
     check(anyDelivers, "per-note pitch reaches this synth in at least one dialect");
+    return 0;
+}
+
+/// ADR-0100: pressure and timbre through the CLAP host, measured on Surge XT
+/// with a patch that makes each audible (probe_surge.hpp). Every dialect, both
+/// dimensions: delivered PER NOTE, or not delivered -- never globally.
+int clapDimensions(const std::string& want) {
+    using adi::device::ClapDialect;
+    using adi::device::ClapDialectChoice;
+    namespace pr = adi::probe;
+
+    adi::device::ClapHost chost;
+    chost.scan(adi::device::ClapHost::defaultSearchPaths());
+    const adi::device::ClapPluginRef* pick = nullptr;
+    for (const auto& r : chost.plugins())
+        if (r.isInstrument && r.name.find(want) != std::string::npos) { pick = &r; break; }
+    check(pick != nullptr, "a CLAP INSTRUMENT matching '" + want + "' is installed");
+    if (pick == nullptr) return 1;
+
+    const double sr = 48000.0;
+    const std::size_t from = 32768 - 16384, n = 16384;
+    struct Dialect { const char* label; ClapDialectChoice choice; };
+    const Dialect dialects[] = {{"Clap", ClapDialectChoice::Clap}, {"MidiMpe", ClapDialectChoice::MidiMpe},
+                                {"Midi", ClapDialectChoice::Midi}};
+    const adi::ExpressionDim dims[] = {adi::ExpressionDim::Pressure, adi::ExpressionDim::Timbre};
+    bool delivered[2] = {false, false};
+    // Measured 2026-09-21 (ADR-0100).
+    static const pr::Baseline kBase[] = {
+        {"Surge XT", "1.3.4", "Clap pressure", "per note"},
+        {"Surge XT", "1.3.4", "Clap timbre", "per note"},
+        {"Surge XT", "1.3.4", "MidiMpe pressure", "per note"},
+        {"Surge XT", "1.3.4", "MidiMpe timbre", "per note"},
+        {"Surge XT", "1.3.4", "Midi pressure", "per note"},
+        {"Surge XT", "1.3.4", "Midi timbre", "not delivered"},
+    };
+    const std::size_t nBase = sizeof kBase / sizeof kBase[0];
+    if (!pr::hasBaseline(kBase, nBase, pick->name, pick->version))
+        std::printf("  (no baseline for %s %s: judged by the general rule only)\n",
+                    pick->name.c_str(), pick->version.c_str());
+
+    std::printf("\n  %-8s %-9s %9s %9s  verdict\n", "dialect", "dimension", "single", "pair");
+    for (const Dialect& dl : dialects) {
+        for (int di = 0; di < 2; ++di) {
+            const adi::ExpressionDim d = dims[di];
+            bool routed = true;
+            auto render = [&](const std::vector<adi::engine::Event>& ev) {
+                std::string err;
+                auto dev = chost.makeDevice(*pick, sr, 512, err);
+                auto* cd = dynamic_cast<adi::device::ClapDevice*>(dev.get());
+                if (cd == nullptr || !cd->loaded()) { routed = false; return std::vector<float>{}; }
+                auto state = cd->saveState("chunk");
+                std::string why;
+                if (!pr::routeSurgePatch(state, d, why) || !cd->loadState("chunk", state)) {
+                    std::printf("  could not route the patch: %s\n", why.c_str());
+                    routed = false;
+                    return std::vector<float>{};
+                }
+                cd->setNoteDialect(dl.choice);
+                cd->prepare(sr, 512);
+                pr::render(*cd, {}, 16, 512, sr);          // let the new patch land first
+                return pr::render(*cd, ev, 64, 512, sr);
+            };
+            // MPE's timbre neutral is CC74 64 -- see dimScenes.
+            const double low = (d == adi::ExpressionDim::Timbre && dl.choice == ClapDialectChoice::MidiMpe)
+                                   ? 0.5 : 0.0;
+            const pr::DimHeard h = pr::measureDimension(d, render, from, n, sr, low);
+            const char* dname = d == adi::ExpressionDim::Pressure ? "pressure" : "timbre";
+            std::printf("  %-8s %-9s %+8.1f %+8.1f  %s\n", dl.label, dname, h.single, h.pair,
+                        pr::verdictName(h.verdict));
+            std::printf("           C4 alone %+.1f/%+.1f   pair A: C4 %+.1f E4 %+.1f   pair B: C4 %+.1f E4 %+.1f\n",
+                        h.c4Hi, h.c4Lo, h.c4A, h.e4A, h.c4B, h.e4B);
+            check(routed, std::string(dl.label) + " " + dname + ": the patch was routed and loaded");
+            check(h.verdict != pr::DimHeard::Verdict::Wrong,
+                  std::string(dl.label) + " " + dname +
+                      ": per note or not at all -- never applied to every note");
+            if (h.verdict == pr::DimHeard::Verdict::PerNote) delivered[di] = true;
+            const std::string what = std::string(dl.label) + " " + dname;
+            if (const char* expected = pr::baselineFor(kBase, nBase, pick->name, pick->version, what))
+                check(std::string(expected) == pr::verdictName(h.verdict),
+                      what + ": " + pr::verdictName(h.verdict) + ", as measured before (" + expected + ")");
+        }
+    }
+    std::printf("\n");
+    check(delivered[0], "pressure reaches this synth per note in at least one dialect");
+    check(delivered[1], "timbre reaches this synth per note in at least one dialect");
     return 0;
 }
 
@@ -805,7 +906,7 @@ int main(int argc, char** argv) {
     std::printf("adi_clap_probe -- a real .clap, and ADR-0084's open question\n\n");
 
     std::string path = "/Library/Audio/Plug-Ins/CLAP/Surge XT.clap";
-    std::string latencyWant, coalesceWant, rebuildWant, seamWant, mpeWant;
+    std::string latencyWant, coalesceWant, rebuildWant, seamWant, mpeWant, dimWant;
     bool wetOnly = false;
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--wet-only") wetOnly = true;
@@ -816,6 +917,34 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--rebuild") rebuildWant = argv[i + 1];
         if (std::string(argv[i]) == "--seam") seamWant = argv[i + 1];
         if (std::string(argv[i]) == "--mpe") mpeWant = argv[i + 1];
+        if (std::string(argv[i]) == "--dimensions") dimWant = argv[i + 1];
+    }
+    if (!dimWant.empty()) {
+        std::printf("[ADR-0100] pressure and timbre through the CLAP host, measured\n");
+        const int rc = clapDimensions(dimWant);
+        std::printf("\n%s -- %d checks, %d failure(s)\n",
+                    g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : rc;
+    }
+    // --dump-state <plugin> <file>: the plugin's opaque state, as our host
+    // saves it -- for reading a format before a test edits it (ADR-0100).
+    for (int i = 1; i + 2 < argc; ++i) {
+        if (std::string(argv[i]) != "--dump-state") continue;
+        adi::device::ClapHost chost;
+        chost.scan(adi::device::ClapHost::defaultSearchPaths());
+        for (const auto& r : chost.plugins()) {
+            if (r.name != argv[i + 1]) continue;
+            std::string err;
+            auto dev = chost.makeDevice(r, 48000.0, 512, err);
+            if (!dev || !dev->loaded()) break;
+            const auto st = dev->saveState("chunk");
+            std::ofstream f(argv[i + 2], std::ios::binary);
+            f.write(reinterpret_cast<const char*>(st.data()), static_cast<std::streamsize>(st.size()));
+            std::printf("dumped %zu bytes of %s\n", st.size(), r.name.c_str());
+            return f.good() ? 0 : 1;
+        }
+        std::printf("no CLAP plugin named '%s'\n", argv[i + 1]);
+        return 1;
     }
     if (!mpeWant.empty()) {
         std::printf("[ADR-0098] per-note expression through the CLAP host, measured\n");

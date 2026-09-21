@@ -5,6 +5,30 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-21 — CLAP dialects, and every MPE dimension measured
+
+**2273 checks across 24 suites**, 101 ADRs. Two ADRs since the last entry:
+
+- **ADR-0099 -- your CLAP host now reads clap.note-ports.** It sends the
+  dialect the plugin declares (CLAP, MIDI-MPE or MIDI) through ADR-0097's
+  router, offers `clap_host_note_ports`, puts notes on channel 0, and sorts
+  the input list by time -- queued parameters used to land after later notes.
+  A test of yours pinned "controller channel 2 -> CLAP channel 1"; it now
+  requires 0, with the reason beside it.
+- **ADR-0100 -- pressure and timbre by ear, and a fixture VST3.** Surge's
+  patch is edited so each dimension is audible; all routes measured through
+  both hosts, with baselines keyed by plugin and version. The fixture
+  (`tests/fixtures/vst3_expression_synth.cpp`) is the first plugin whose
+  edit controller our host can reach, so the IMidiMapping parameter path and
+  `Auto`'s decisions have now actually run. It builds on Windows with the
+  probe, and CI's Windows JUCE job tests it.
+
+One finding worth knowing: Surge 1.3.4 reads MPE's CC74 as bipolar around 64,
+so CC74 0 closes its filter a further 48 semitones. Not our bug, but it looked
+like one for three runs.
+
+---
+
 ## 2026-09-21 — real plugins on Windows: Surge XT and Serum 2, measured
 
 **2212 checks across 24 suites**, 99 ADRs. Adi installed Surge XT (CLAP +

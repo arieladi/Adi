@@ -502,6 +502,45 @@ if(ADI_WITH_JUCE)
         target_include_directories(adi_vst3_probe SYSTEM PRIVATE ${_adi_proc_incs})
     endif()
 
+    # --- adi_test_vst3: a VST3 whose edit controller IS reachable (ADR-0100) --
+    # Every MPE synth on the development machine hides its controller, so the
+    # host's capability probe and MpeMidi's IMidiMapping parameter path had
+    # never run. This fixture is one class that is both component and
+    # controller. Built only against Steinberg's MIT VST3 SDK -- the copy JUCE
+    # carries -- and only on Windows for now: a macOS bundle needs an
+    # Info.plist and bundle entry points nobody here can test.
+    if(WIN32)
+        set(_adi_vst3sdk
+            "${ADI_THIRD_PARTY}/JUCE/modules/juce_audio_processors_headless/format_types/VST3_SDK")
+        # The SDK's own interface-id definitions, compiled WITHOUT our warning
+        # wall: they are Steinberg's, and a warning in them is not ours to fix.
+        add_library(adi_test_vst3_sdk OBJECT
+            "${_adi_vst3sdk}/pluginterfaces/base/coreiids.cpp"
+            "${_adi_vst3sdk}/pluginterfaces/base/funknown.cpp"
+            "${_adi_vst3sdk}/public.sdk/source/vst/vstinitiids.cpp")
+        target_include_directories(adi_test_vst3_sdk SYSTEM PRIVATE "${_adi_vst3sdk}")
+        target_compile_features(adi_test_vst3_sdk PRIVATE cxx_std_20)
+
+        add_library(adi_test_vst3 MODULE
+            tests/fixtures/vst3_expression_synth.cpp
+            $<TARGET_OBJECTS:adi_test_vst3_sdk>)
+        target_include_directories(adi_test_vst3 SYSTEM PRIVATE "${_adi_vst3sdk}")
+        target_compile_features(adi_test_vst3 PRIVATE cxx_std_20)
+        target_link_libraries(adi_test_vst3 PRIVATE adi_warnings ole32)   # ole32: FUID's CoCreateGuid
+        # The DLL is built apart from its bundle: a file and a directory cannot
+        # both be called "ADI Expression Test.vst3" in one folder.
+        set_target_properties(adi_test_vst3 PROPERTIES
+            PREFIX "" SUFFIX ".vst3" OUTPUT_NAME "ADI Expression Test"
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixture_dll")
+        set(_adi_fixture "${CMAKE_CURRENT_BINARY_DIR}/fixtures/ADI Expression Test.vst3")
+        add_custom_command(TARGET adi_test_vst3 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_adi_fixture}/Contents/x86_64-win"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:adi_test_vst3>" "${_adi_fixture}/Contents/x86_64-win/")
+        add_dependencies(adi_vst3_probe adi_test_vst3)
+        target_compile_definitions(adi_vst3_probe PRIVATE ADI_TEST_VST3="${_adi_fixture}")
+    endif()
+
     # adi_core carries device_core.cpp and, through its PUBLIC include dir, the
     # engine seam. Linking it rather than recompiling the source means the probe
     # exercises exactly the DeviceCore that ships and that the ABI suites test.
