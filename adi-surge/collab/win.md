@@ -5,6 +5,54 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-21 — ADR-0008, and the docs corrected
+
+Branch `win/adi-surge-adr0008`. mac is away for a week. Adi's call: win
+proceeds alone, and win writes the ADR-0007 correction.
+
+**ADR-0008** supersedes ADR-0007's *Context*. Its *Decision* stands: CMake ≥ 3.22,
+record the version, assert the `.clap`. Two pieces of evidence were added since
+the entry below:
+
+- **JUCE 7 has the same floor.** `surge-7.0.12`, the JUCE that upstream's
+  "JUCE 7" CI leg swaps in, also demands 3.22 (line 24). So no JUCE Surge
+  builds against reopens the silent path.
+- **The ordering argument reproduces.** I built a scratch project with the same
+  shape: a 3.15 root, then a subdirectory demanding 99.0 added first, then the
+  "Skipping CLAP" warning. On CMake 3.31.6 the configure exits 1 and the
+  warning never prints.
+
+**Docs corrected** to match that and the six corrections below:
+
+- `ARCHITECTURE.md`:
+  - the status line;
+  - the §2.1 warning box, rewritten;
+  - §2.2's `protocol.file` reason, now marked unverified;
+  - §2.3 now points at `build_clap_win.bat` and says `ctest` needs no `-C`;
+  - a new §2.6 row for the configure-time LuaJIT trap;
+  - §4.4: the gate is 145, the golden test covers one oscillator, the
+    citations are fixed, and upstream's `--rerun-failed` leniency is noted;
+  - §7: the Windows items are ticked.
+- `collab/WIN-ONBOARDING.md`:
+  - the `findstr` drift check;
+  - step 4.1's CMake claim;
+  - the test count;
+  - the `/MT`-and-HTTP bullet, which contradicted the prompt's own later
+    paragraph;
+  - ADR range 0001..0008;
+  - the "nobody has compiled" sentence.
+- `collab/README.md`: the Building paragraph repeated the silent-no-CLAP claim.
+
+**Claims:** I removed mac's stale `mac/adi-surge-bootstrap` row rather than
+work around it. That branch merged as #43, and the row was blocking `collab/**`,
+`docs/**` and `ARCHITECTURE.md` for a week with nobody behind it.
+
+**Left out on purpose:** the LTO-on-VS-generator note from the entry below.
+It is from source and untested, and ARCHITECTURE.md holds only numbers a
+command produced.
+
+---
+
 ## 2026-09-21 — the CLAP builds, ctest is 145/145, and six corrections
 
 Branch `win/adi-surge-clap-baseline`. Steps 1 to 3 of the onboarding, plus 4.1

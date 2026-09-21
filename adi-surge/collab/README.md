@@ -82,7 +82,6 @@ One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `docs/DECISIONS.md`, `ARCHITECTURE.md`, `collab/README.md`, `collab/WIN-ONBOARDING.md`, `collab/win.md` | win | `win/adi-surge-adr0008` | 2026-09-21 |
 
 ## Reserved ADR numbers
 
@@ -114,7 +113,7 @@ agents writing the same ADR; reading the other agent's subject does.
 | 0005 | mac | `mac/adi-surge-adr0005` | the AI write path: surgepy first, C++ overlay second, OSC is scaffolding | used |
 | 0006 | mac | `mac/adi-surge-bootstrap` | the fork has no `origin` yet, and why that does not block win | used |
 | 0007 | mac | `mac/adi-surge-bootstrap` | CMake >= 3.22 is hard; a build must assert the artifact | used |
-| 0008 | win | `win/adi-surge-adr0008` | ADR-0007's context is wrong: old CMake fails configure loudly; its decision stands | reserved |
+| 0008 | win | `win/adi-surge-adr0008` | ADR-0007's context is wrong: old CMake fails configure loudly; its decision stands | used |
 
 ## Before you start work, every time
 
@@ -193,9 +192,11 @@ staged and so could not be recovered — see adi-vst ADR-0014 and ADR-0015.
 
 Full detail, including the traps, is in `ARCHITECTURE.md` §2. The short form:
 
-**CMake ≥ 3.22 is a hard requirement (ADR-0007).** Below 3.21 the build
-*succeeds* and silently produces no CLAP. Check your version first, and check
-that `surge-xt_CLAP` exists afterwards — the exit code will not tell you.
+**CMake ≥ 3.22 is a hard requirement (ADR-0007).** Below it, configure fails
+with an error naming 3.22 (ADR-0008 corrects ADR-0007's claim that the build
+silently succeeds without a CLAP). Check your version first. Afterwards, check
+that the `.clap` exists; an exit code proves the command ran, not what it
+produced. On Windows, `tools/build_clap_win.bat` does both.
 
 ### Windows (win)
 
