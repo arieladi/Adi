@@ -524,3 +524,66 @@ descriptor and generator until the in-plugin version exists. It is MIT-licensed
 original code and can move into the GPLv3 plugin as it is. Tables made from
 third-party references stay local; only tables made from random or AI-written
 descriptors are ours to ship.
+
+---
+
+## ADR-0010 — A table generated from a reference's descriptor is ours if it does not null against it
+
+**Date:** 2026-09-21 · **Agent:** win · **Directed by:** Adi · **Supersedes:**
+the last sentence of ADR-0009's Consequences
+
+**Context.** ADR-0009 ended cautiously: tables made from third-party
+references stay local. Adi's decision replaces that. The references were only
+examples. If our tables do not null against them, the tables are ours, and the
+references are not named again.
+
+Copyright protects a waveform's actual data, not measurements such as
+brightness, slope or odd/even balance. The descriptor carries only those
+measurements (ADR-0009). A null test checks directly whether any data came
+across: flip the polarity, sum the two, and hear what is left.
+
+**Decision.**
+
+1. **The test is the best-case null.** For every generated frame against
+   every reference frame, take the best gain, the best circular shift and
+   either polarity. The residual is `10·log10(1 − xcorr²)` of the reference's
+   energy. A plain phase-inverted A/B in a DAW can only null less deeply.
+   Identical audio nulls to −90 dB and below.
+2. **Two exemptions, because the shape is shared, not the data.**
+   - A pure sine nulls against any pure sine. We measured −55 dB, limited only
+     by whole-sample alignment.
+   - A band-limited square, saw or triangle reaches about −30 dB against any
+     other of its kind.
+   Nobody owns these shapes. Every other frame must stay well clear of a null.
+3. **The tools report it.** `wtgen compare` prints `null_dB` for every frame
+   pair. `wtgen pack` reports each table's `deepest_null_dB` and the deepest
+   in the pack. The ripple-correlation check and its seeded null (ADR-0009)
+   stay as secondary evidence.
+4. **References stay local and unnamed.** A reference is never committed, and
+   is never named in a file name, folder name, doc or commit message. A
+   generated table is named from its own descriptor.
+
+**The first pack: `adi-gen-01`**, in `wavetables/adi-gen-01/`. It holds 80
+tables in five categories of our own (Tones, Core, Voices, Grit, Chimes).
+Frames are 2048 samples, float32, with `clm ` and `srge` chunks. The pack is
+MIT-licensed. Against its references:
+
+- **The deepest best-case null of any frame is −30.5 dB.** Of the 146 frame
+  pairs deeper than −20 dB, 89 share only 1–4 harmonics (sine-like) and 36
+  share 5–24. The richest of those pairs are band-limited squares and saws, at
+  −27 to −29 dB. They are all covered by the exemptions.
+- **No table nulls as a whole.** In 60 of the 80, the matched frames leave on
+  average more than a quarter of the signal behind (shallower than −6 dB).
+- **78/80 are similar by descriptor, and the ripple check flags 0.**
+
+The references were deleted once the pack was made. **The files are now the
+canonical artifact.** The pack cannot be regenerated, and does not need to be.
+
+**Consequences.**
+
+- The in-plugin generator (ADR-0009) inherits this rule. When the AI feature
+  is asked to make a table like one the user supplies, the plugin must run the
+  null test before keeping the result.
+- Factory placement in `surge/resources/data/wavetables/` waits for the fork
+  origin (ADR-0006). Until then the pack lives in `wavetables/` in the
+  monorepo, and users copy it into Surge's user `Wavetables` folder.

@@ -5,6 +5,50 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-21 — ADR-0010 and the first pack, `wavetables/adi-gen-01/`
+
+Branch `win/adi-surge-wavetables`.
+
+**Adi's call replaces ADR-0009's caution.** Tables generated from a
+reference's descriptor are ours if they don't null against it, and the
+references are not named again. ADR-0010 records the rule and its two
+exemptions: pure sines, and textbook shapes.
+
+**Null test on the 80 tables (best gain, shift and polarity; `null_dB`):**
+
+- **Deepest frame: −30.5 dB.** Identical audio would go to −90 dB and below.
+- **146 frame pairs go deeper than −20 dB, and they are all simple shapes.**
+  89 of them share 1–4 harmonics, 36 share 5–24. The richest are band-limited
+  squares and saws, at −27 to −29 dB.
+- **60 of 80 tables** leave more than a quarter of the signal behind, averaged
+  over matched frames.
+
+**A mistake of mine the null test exposed.** `compare` printed the correlation
+to 3 decimals. So 0.9995 read as 1.000, and five tables showed −120 dB
+"perfect nulls" that were really −30 dB. It now prints 9 decimals plus the
+null in dB. Separately, a run against our own tables found that two pure sines
+null to −55 dB. That is why sines are an explicit exemption, not just "about
+−30 dB".
+
+**The pack.**
+
+- 80 files, byte-identical to the verified output, in five categories of our
+  own: Tones 14, Core 10, Voices 23, Grit 15, Chimes 18.
+- The names come from each table's own descriptor: brightness, then
+  character, then movement ("Warm Hollow Rise"). Old names and groupings are
+  gone.
+- MIT, with a `LICENSE` and a `README` in the folder.
+- The references were deleted afterwards, so the files are now the canonical
+  artifact.
+- `wtgen pack` now reports `deepest_null_dB` per table. I checked that on a
+  run using the pack's own `Core/` tables as references, where it caught a
+  −55.2 dB sine pair.
+
+**Not done:** factory placement in `surge/resources/data/wavetables/` waits on
+ADR-0006. Loading a table in a running Surge is still unverified.
+
+---
+
 ## 2026-09-21 — ADR-0009: a wavetable generator goal, and a working prototype
 
 Branch `win/adi-surge-wtgen`. Adi added a goal: an **auto/random wavetable

@@ -833,6 +833,28 @@ out of building it:
   of frame pairs.** A table is flagged only if it resembles its reference more
   than 0.3 above the null, and more than 0.6 overall.
 
+**The primary test is the best-case null (ADR-0010).** For every frame pair,
+take the best gain, circular shift and polarity; the residual is
+`10·log10(1 − xcorr²)`. `wtgen compare` prints it as `null_dB`, and `wtgen pack`
+reports `deepest_null_dB` per table.
+
+- **Print correlations to 9 decimals.** At 3 decimals, 0.9995 reads as
+  1.000, and a −30 dB null shows as the −120 dB floor. That happened once.
+- **Pure sines and textbook shapes are exempt.** Two pure sines null to about
+  −55 dB against each other. Band-limited squares and saws reach about −30 dB.
+  The shape is shared, not the data.
+
+**The first pack is `wavetables/adi-gen-01/`**: 80 tables, MIT, in five
+categories of our own. Their names come from each table's own descriptor
+(brightness, then character, then movement). Its deepest null against its
+references is −30.5 dB, only on sine-like or textbook frames (ADR-0010). Two
+steps are still pending:
+
+- **Surge's user folder:** users copy the pack into
+  `<user data>/Wavetables`, which Surge scans (`SurgeStorage.cpp:661`).
+- **Factory content:** `surge/resources/data/wavetables/`, after the fork
+  origin exists (ADR-0006).
+
 ---
 
 ## 5. GUI — where the prompt bar goes
@@ -970,6 +992,9 @@ first (it is the only thing that can generate the contextual per-type schema
         `WtGenService`;
       - whether the patch stores the descriptor and seed, the frames, or both.
       Prototype: `tools/wtgen/`, 15/15 selftest.
+- [ ] Move `wavetables/adi-gen-01/` into Surge's factory wavetables
+      (`surge/resources/data/wavetables/`) once the fork origin exists
+      (ADR-0006, ADR-0010).
 - [ ] Load a `wtgen` table in a running Surge. So far only its structure has
       been checked, against `WAVFileSupport.cpp`.
 - [ ] Integration with `adi_daw` — **required by ADR-0009**, still undesigned,
