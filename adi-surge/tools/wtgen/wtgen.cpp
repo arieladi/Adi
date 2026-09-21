@@ -993,9 +993,9 @@ int cmdPack(const fs::path &refDir, const fs::path &outDir, uint64_t seed, const
 
     std::ostringstream rep, descs;
     rep << "file\tframes\tcentroid_err%\toddRatio_err\tbandwidth_err%\tslope_err_dB/oct\tcrest_err"
-           "\txcorr_rich\tripple_corr\tripple_null\tsimilar\tcopy_check\n";
+           "\tdeepest_null_dB\txcorr_rich\tripple_corr\tripple_null\tsimilar\tcopy_check\n";
     int ok = 0, similar = 0, failed = 0, flagged = 0;
-    double worstRipple = -2, worstNull = -2, worstXc = -1;
+    double worstRipple = -2, worstNull = -2, worstXc = -1, deepestNull = 0;
     descs << "{\n";
     auto fmt3 = [](double v) { return v < -1 ? std::string("n/a") : std::to_string(v).substr(0, v < 0 ? 6 : 5); };
     for (const auto &path : files)
@@ -1044,12 +1044,18 @@ int cmdPack(const fs::path &refDir, const fs::path &outDir, uint64_t seed, const
             crErr = std::max(crErr, std::fabs(g.crest - w.crest));
         }
 
-        // Not a copy? Waveform correlation only means something against
-        // reference frames with content to copy: a near-sine correlates ~1 with
-        // any other sine. Ripple correlation needs 24+ shared harmonics
-        // (rippleCorr returns NaN otherwise). The null is the same descriptor
-        // with a different seed: how much ripple two tables share when the
-        // descriptor is ALL they share. A copy would sit far above it.
+        // Not a copy? ADR-0010's test comes first: the deepest best-case null of
+        // any generated frame against any reference frame (best gain, circular
+        // shift and polarity; 10 log10(1 - xcorr^2)). Identical audio nulls to
+        // -90 dB and below. Two exemptions, because the shape is shared, not
+        // the data: a pure sine nulls against any pure sine (-55 dB seen, limited
+        // only by whole-sample alignment), and a band-limited square, saw or
+        // triangle reaches about -30 dB against any other of its kind.
+        // Waveform correlation is then reported only against reference frames
+        // with content to copy. Ripple correlation needs 48+ shared harmonics
+        // (rippleCorr returns NaN otherwise). The ripple null is the same
+        // descriptor with a different seed: how much ripple two tables share
+        // when the descriptor is ALL they share. A copy would sit far above it.
         std::vector<char> rich(again.frames.size());
         for (size_t r = 0; r < again.frames.size(); ++r)
         {
@@ -1057,13 +1063,15 @@ int cmdPack(const fs::path &refDir, const fs::path &outDir, uint64_t seed, const
             rich[r] = fd.centroid >= 2.0 && fd.bandwidth >= 24.0;
         }
         const Table alt = generateBest(desc, fileSeed ^ 0x5EEDull, 4);
-        double xc = -2, rc = -2, rn = -2;
+        double xc = -2, rc = -2, rn = -2, xcAll = 0;
         for (size_t f = 0; f < back.frames.size(); ++f)
         {
             for (size_t r = 0; r < again.frames.size(); ++r)
             {
+                const double x = maxXcorr(back.frames[f], again.frames[r]);
+                xcAll = std::max(xcAll, x);
                 if (rich[r])
-                    xc = std::max(xc, maxXcorr(back.frames[f], again.frames[r]));
+                    xc = std::max(xc, x);
                 const double rr = rippleCorr(back.frames[f], again.frames[r]);
                 if (!std::isnan(rr))
                     rc = std::max(rc, rr);
@@ -1077,6 +1085,7 @@ int cmdPack(const fs::path &refDir, const fs::path &outDir, uint64_t seed, const
                     rn = std::max(rn, nn);
             }
         }
+        const double nullDb = 10.0 * std::log10(std::max(1e-15, 1.0 - xcAll * xcAll));
         const bool sim = got.frames == desc.frames && cErr < 0.15 && oErr < 0.1;
         const bool check = rc > 0.6 && rc > rn + 0.3;
         if (sim)
@@ -1086,23 +1095,24 @@ int cmdPack(const fs::path &refDir, const fs::path &outDir, uint64_t seed, const
         worstRipple = std::max(worstRipple, rc);
         worstNull = std::max(worstNull, rn);
         worstXc = std::max(worstXc, xc);
+        deepestNull = std::min(deepestNull, nullDb);
         descs << (ok ? ",\n" : "") << "\"" << rel.generic_string() << "\": " << toJson(desc);
         ++ok;
         char line[512];
-        std::snprintf(line, sizeof(line), "%s\t%d\t%.1f\t%.3f\t%.1f\t%.2f\t%.2f\t%s\t%s\t%s\t%s\t%s\n",
-                      rel.generic_string().c_str(), got.frames, cErr * 100, oErr, bErr * 100, sErr, crErr,
+        std::snprintf(line, sizeof(line), "%s\t%d\t%.1f\t%.3f\t%.1f\t%.2f\t%.2f\t%.1f\t%s\t%s\t%s\t%s\t%s\n",
+                      rel.generic_string().c_str(), got.frames, cErr * 100, oErr, bErr * 100, sErr, crErr, nullDb,
                       fmt3(xc).c_str(), fmt3(rc).c_str(), fmt3(rn).c_str(), sim ? "yes" : "no",
                       rc < -1 ? "n/a" : (check ? "CHECK" : "ok"));
         rep << line;
-        std::printf("  %-44s %2d fr  centroid %4.1f%%  odd %.3f  xcorr %-6s ripple %-6s null %-6s %s%s\n",
-                    rel.generic_string().c_str(), got.frames, cErr * 100, oErr, fmt3(xc).c_str(),
-                    fmt3(rc).c_str(), fmt3(rn).c_str(), sim ? "similar" : "DIFFERENT", check ? "  COPY-CHECK" : "");
+        std::printf("  %-44s %2d fr  centroid %4.1f%%  odd %.3f  null %6.1f dB  ripple %-6s (null %-6s) %s%s\n",
+                    rel.generic_string().c_str(), got.frames, cErr * 100, oErr, nullDb, fmt3(rc).c_str(),
+                    fmt3(rn).c_str(), sim ? "similar" : "DIFFERENT", check ? "  COPY-CHECK" : "");
     }
     descs << "\n}\n";
     std::printf("wtgen pack: %d written, %d similar by descriptor, %d failed\n", ok, similar, failed);
-    std::printf("            not-a-copy: max ripple vs reference %s (null %s), max xcorr on rich frames %s, "
-                "%d flagged\n",
-                fmt3(worstRipple).c_str(), fmt3(worstNull).c_str(), fmt3(worstXc).c_str(), flagged);
+    std::printf("            not-a-copy: deepest best-case null %.1f dB; max ripple vs reference %s (null %s), "
+                "max xcorr on rich frames %s, %d flagged\n",
+                deepestNull, fmt3(worstRipple).c_str(), fmt3(worstNull).c_str(), fmt3(worstXc).c_str(), flagged);
     if (reportPath)
     {
         std::ofstream(reportPath) << rep.str();
@@ -1228,13 +1238,18 @@ int main(int argc, char **argv)
         std::string err;
         if (!readTable(fs::u8path(argv[2]), a, err) || !readTable(fs::u8path(argv[3]), b, err))
             return std::fprintf(stderr, "wtgen: %s\n", err.c_str()), 2;
-        std::printf("A\tB\txcorr\tripple\tharmonics\n");
+        // null_dB: what is left after the best gain, circular shift and polarity,
+        // relative to B's energy -- 10 log10(1 - xcorr^2). A phase-inverted A/B
+        // in a DAW, with no alignment, can only null less deeply than this.
+        std::printf("A\tB\txcorr\tnull_dB\tripple\tharmonics\n");
         for (size_t f = 0; f < a.frames.size(); ++f)
             for (size_t r = 0; r < b.frames.size(); ++r)
             {
                 int m = 0;
                 const double rr = rippleCorr(a.frames[f], b.frames[r], &m);
-                std::printf("%zu\t%zu\t%.3f\t%s\t%d\n", f, r, maxXcorr(a.frames[f], b.frames[r]),
+                const double xc = maxXcorr(a.frames[f], b.frames[r]);
+                std::printf("%zu\t%zu\t%.9f\t%.1f\t%s\t%d\n", f, r, xc,
+                            10.0 * std::log10(std::max(1e-15, 1.0 - xc * xc)),
                             std::isnan(rr) ? "n/a" : std::to_string(rr).substr(0, 6).c_str(), m);
             }
         return 0;
