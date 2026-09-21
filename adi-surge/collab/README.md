@@ -82,7 +82,7 @@ One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `collab/**`, `docs/**`, `ARCHITECTURE.md`, `tools/fetch_surge.sh` | mac | `mac/adi-surge-bootstrap` | 2026-09-20 |
+| `docs/DECISIONS.md`, `ARCHITECTURE.md`, `collab/README.md`, `collab/WIN-ONBOARDING.md`, `collab/win.md` | win | `win/adi-surge-adr0008` | 2026-09-21 |
 
 ## Reserved ADR numbers
 
@@ -114,6 +114,7 @@ agents writing the same ADR; reading the other agent's subject does.
 | 0005 | mac | `mac/adi-surge-adr0005` | the AI write path: surgepy first, C++ overlay second, OSC is scaffolding | used |
 | 0006 | mac | `mac/adi-surge-bootstrap` | the fork has no `origin` yet, and why that does not block win | used |
 | 0007 | mac | `mac/adi-surge-bootstrap` | CMake >= 3.22 is hard; a build must assert the artifact | used |
+| 0008 | win | `win/adi-surge-adr0008` | ADR-0007's context is wrong: old CMake fails configure loudly; its decision stands | reserved |
 
 ## Before you start work, every time
 
