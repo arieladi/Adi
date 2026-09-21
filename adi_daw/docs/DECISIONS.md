@@ -6212,3 +6212,179 @@ Recorded now because each would otherwise surface as a bug.
 The licence and location of the plugin line (decision 3). Whether the Pd modules
 ship as `.pd` patches users can open and edit, which is ADR-0035's premise, or as
 compiled nodes, which would make them ADR-0062's instead.
+
+---
+
+## ADR-0094 — The open-source mandate, applied: ADR-0093's licence question is answered — `DECIDED` (2026-09-21)
+
+**Director's permanent mandate.** Every project Adi owns is open source, with no
+intent to commercialise, sell or close any of it. The rules live in
+`OPEN_SOURCE_POLICY.md` at the repository root, which is the authority on every
+licensing, copyright and reuse question from now on — agents read it and act on
+what it authorises without asking.
+
+### What it settles for adi_daw
+
+**ADR-0093 decision 3 is no longer open.** That decision said the plugin line's
+licence decided which references it could copy from, and left it to the
+director. The policy answers it:
+
+- Original code defaults to **MIT**.
+- A project that copies from **GPL or LGPL** code is **GPLv3**, automatically.
+- Reuse from GPL, LGPL, BSD and MIT references is **pre-authorised**, keeping the
+  original headers and naming the source in the commit.
+- **AGPL-3.0 is banned from reuse** — design-only, clean-room.
+
+So a plugin built from the LSP limiter maths (LGPL), the chowdsp waveshapers
+(GPLv3) or vitOTTx (GPLv3) is a GPLv3 plugin, and may use all three. ZLEqualizer
+stays design-only; matched phase comes from Vicanek (2016).
+
+**adi_daw itself is unchanged**: GPLv3 since ADR-0015, and the escalation rule
+would put it there anyway.
+
+### Written into the policy so its rules stay correct
+
+- **GPL-2.0-only code cannot enter a GPLv3 project.** The licences are
+  incompatible; only GPL-2.0-*or-later* can. None of our references is
+  GPL-2.0-only today — Ardour is "or later" — but the rule is what protects the
+  next one.
+- **JUCE is AGPL-3.0, and adi_daw links it** for VST3 hosting and audio I/O
+  (ADR-0048). The ban covers copying, and linking is not copying, but a build
+  with `ADI_WITH_JUCE=ON` is a GPLv3 + AGPLv3 combination. If the goal becomes
+  "no AGPL anywhere", JUCE is the one dependency to replace.
+- **Open source covers our code, not other people's content.** Commercial
+  binaries, presets, samples and wavetables stay local and gitignored, and other
+  companies' product names are never shipped.
+
+### Where the file lives
+
+At the root, on its own pull request to `main` (#49), and cherry-picked onto this
+branch. A rule for every project should not wait behind one project's branch:
+sessions for other projects work from `main`.
+
+---
+
+## ADR-0095 — A Pd patch reports its latency through `$0-report_latency`, and answers `$0-query_latency` — `DECIDED` (2026-09-21) — **EXTENDS ADR-0035**
+
+ADR-0035 put a visual-patching tier into the project through libpd and never said
+how a patch tells the graph it has latency. A lookahead limiter in Pd delays its
+audio by its lookahead; if the graph does not know, every other track is
+compensated against a delay that is not there (ADR-0058). ADR-0093 recorded this
+as a prerequisite for the Pd limiter.
+
+**Director's call**: a wrapper that listens for a send from the patch and forwards
+the exact sample count to `DeviceHost` and the coalescer. Built as asked, with two
+corrections to the obvious version.
+
+### The protocol
+
+    [r $0-query_latency]     the host asks, after every prepare
+    |
+    [compute samples]        the patch works out its delay IN SAMPLES, at the current rate
+    |
+    [s $0-report_latency]    and answers -- also unprompted, whenever the delay changes
+
+### Decision
+
+**1. `$0-`, not a bare `report_latency`.** Pd's send and receive names are
+**global within a Pd instance**. Two limiters on two tracks both sending to
+`report_latency` put two numbers on one name, and the host cannot tell which patch
+said which. `$0` is unique per opened patch and libpd returns it
+(`libpd_getdollarzero`), so the host binds one name per patch.
+
+**2. A query, not only a report.** A patch that reports from `[loadbang]` reports
+at whatever rate Pd has at that moment, and libpd has not yet been told the real
+one — Pd starts at 44.1 kHz. A 1.5 ms lookahead then claims 66 samples in a 48 kHz
+session that needs 72. So `PdDevice::prepare` prepares the engine at the real rate
+**first**, then bangs `$0-query_latency`; libpd delivers messages synchronously, so
+the corrected answer has arrived when it returns.
+
+**3. The unit is samples.** The graph compensates whole samples, and a patch and a
+host converting milliseconds each their own way disagree by one exactly when
+their rounding differs.
+
+**4. No new plumbing into the graph.** `PdDevice` is a `DeviceInstance` whose
+`latencySamples()` and `latencyEpoch()` come from the protocol. `DeviceHost::add`
+already registers every device's epoch with the coalescer through the contract,
+without asking its format (ADR-0090), so a Pd patch is compensated by exactly the
+machinery a VST3 or a CLAP plugin is. The test drives a limiter from 1.5 ms to
+6 ms and watches a dry track's compensation move from 72 to 288 samples.
+
+**5. The receiver behaves like every other reporter.** libpd calls its hooks from
+inside `libpd_process_*`, which is the audio thread. The receiver validates,
+stores, bumps and returns; it never calls into the graph. Details that each cost
+a test:
+
+- The epoch moves once per **change**, not per report, so a patch that re-sends
+  its latency on every parameter touch does not retap the graph on every knob turn.
+- The value is stored **before** the epoch is bumped, both with release, so a poll
+  that sees the new epoch reads the new value.
+- A rejected report — negative, not finite, beyond ten seconds — **keeps** the
+  last good value rather than zeroing it.
+- A report half a sample from a whole number is rounded **and counted**, so a patch
+  that forgot to round shows in its stats; single-precision noise such as
+  `288.00002` is not counted as rounding.
+- A patch that failed to open claims **0**: it passes audio straight through
+  (ADR-0011), and compensating against a delay that is not happening moves
+  everything else.
+
+**6. libpd's single hook is routed allocation-free.** One float hook serves every
+bound receiver. `PdReceiverTable` routes each message to its patch through fixed
+character arrays compared with `strcmp`, because looking a `const char*` up in a
+map of `std::string` constructs one — an allocation per message on the audio
+thread. Binding is safe while audio runs: an entry is written in full before the
+count that exposes it is published. Unbinding tombstones the slot rather than
+reusing it, so a dispatch never reads a half-overwritten name.
+
+### Two engine bugs this found
+
+The end-to-end test failed at first, and not because of the protocol. The master
+in that test had no audio, ADR-0043 put it to sleep, and a sleeping node never
+finishes a tap move. Tracing why it slept found two older bugs in suspension, both
+of which cut audio off:
+
+- **The last partial block of every finite tail was dropped.** The tail counter
+  was decremented *before* the suspend decision, so the block a tail's final
+  samples belonged to was itself skipped. A tail of one block or less was never
+  heard at all; every longer one lost up to a block — 85 ms at 4096 frames. The
+  existing test accepted "3 to 6 blocks" for a 1000-sample tail at 256 frames,
+  whose exact answer is 4; the bug gave 3. It is now asserted exactly, with the
+  boundary cases 100, 256 and 257.
+- **Compensated audio still in flight was cut when its node slept.** A junction's
+  own tail is zero, so when every input went silent it suspended at once — with up
+  to `reach` samples still in its compensation rings. A dry track compensated
+  against a linear-phase plugin, if it was the last thing playing, lost its final
+  107 ms. A node's re-armed tail now includes the longest reach on its inputs,
+  sidechains included; `DelayLine::reach()` counts a pending tap move and a
+  growing ring as well as the current delay.
+
+Each needed the other fixed before its own fix showed: with only the reach added,
+the off-by-one still skipped the block it had to play in.
+
+### Verified non-vacuously
+
+Eight planted defects in the protocol, all caught: the epoch moving on every
+report (3 checks), no `$0` so patches share a name (22), unbinding leaving the
+receiver attached (6), prepare never querying (4), querying before the engine
+knows the rate (3), a failed patch claiming latency (2), a rejection zeroing the
+latency (2), and dispatch comparing through `std::string` (2, via the allocation
+counter).
+
+Three in the suspension fix, all caught: the tail spent before the decision (6),
+compensation left out of the tail (2), and sidechain compensation left out of the
+reach. **That third survived the first round**: no test had a compensated key as
+the last input to stop, so a test was added in which it is.
+
+My own concurrency test also failed first, for the reason this project has written
+down twice already: binding a hundred entries finished before the dispatch thread
+had started, so nothing overlapped. It now waits for the thread to be running.
+
+### What is not verified
+
+- **libpd itself is not in the tree.** The engine adapter is five calls, listed in
+  `pd_device.hpp`, and none of them carries logic. Everything else — validation,
+  attribution, routing, thread safety, the device and its path into the
+  coalescer — is compiled on every ABI and tested against a fake patch that speaks
+  the protocol through the same `dispatchFloat` libpd's hook will call.
+- The value-before-epoch ordering is argued, not exercised: a single-threaded test
+  cannot interleave a poll between the two stores.

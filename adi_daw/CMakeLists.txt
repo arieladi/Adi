@@ -124,6 +124,7 @@ add_library(adi_core STATIC
     # one job that has a plugin SDK. See src/juce/clap_host.hpp (ADR-0075).
     src/juce/clap_host.cpp
     src/juce/device_host.cpp
+    src/juce/pd_device.cpp
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
@@ -231,6 +232,10 @@ add_test(NAME adi_device_tests COMMAND adi_device_tests)
 # exported symbol. Not a test: it needs a plugin installed, and CI has none.
 add_executable(adi_clap_probe src/juce/clap_probe.cpp)
 target_link_libraries(adi_clap_probe PRIVATE adi_core adi_warnings)
+
+add_executable(adi_pd_tests tests/test_pd.cpp)
+target_link_libraries(adi_pd_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pd_tests COMMAND adi_pd_tests)
 
 add_executable(adi_device_host_tests tests/test_device_host.cpp)
 target_link_libraries(adi_device_host_tests PRIVATE adi_core adi_warnings)

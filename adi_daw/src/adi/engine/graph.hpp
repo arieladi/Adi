@@ -297,6 +297,23 @@ public:
         return primeRemaining_;
     }
 
+    /// The furthest back any tap in flight reads: the current delay, a glide's
+    /// target, or a growing ring's target, whichever is longest. AUDIO THREAD.
+    ///
+    /// This is how many samples of this edge's past are still due to come out.
+    /// A node whose inputs have gone silent must keep running at least this
+    /// long, or those samples are never heard (see `Graph::runNode`).
+    [[nodiscard]] std::int32_t reach() const noexcept {
+        std::int32_t r = delay_;
+        if (gliding_.load(std::memory_order_acquire)) {
+            const std::int32_t t = target_.load(std::memory_order_relaxed);
+            if (t > r) r = t;
+        }
+        const Grow g = grow_.load(std::memory_order_acquire);
+        if ((g == Grow::Priming || g == Grow::Fading) && targetDelay_ > r) r = targetDelay_;
+        return r;
+    }
+
     /// Bytes this line holds, both rings included while one is in flight.
     [[nodiscard]] std::size_t bytes() const noexcept {
         return (buf_.size() + incoming_.size()) * sizeof(float);

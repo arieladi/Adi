@@ -427,13 +427,13 @@ void testTailKeepsRunning() {
         for (int i = 0; i < 12; ++i) g.process(io);
         const int ran = verb.calls - atSilence;
 
-        // 1000 samples of tail at 256 frames a block is four more blocks, and
-        // the exact figure depends on when the counter arms. What matters is
-        // that it is neither 0 (cut off, the complaint ADR-0043 exists to
-        // prevent) nor 12 (never stops, and the feature does nothing).
-        check(ran >= 3 && ran <= 6,
-              "it ran on past the silence and then stopped: " +
-                  std::to_string(ran) + " blocks of tail, expected about 4");
+        // EXACTLY ceil(1000 / 256) = 4 blocks. This used to accept "3 to 6",
+        // with a comment that the figure "depends on when the counter arms" --
+        // and 3 was the bug: the counter was decremented BEFORE the decision,
+        // so the block in which the last 232 samples of tail should play was
+        // itself skipped. A tolerance wide enough to be safe was wide enough
+        // to hide a defect. The tail is judged at the START of a block now.
+        eqi(ran, 4, "a 1000-sample tail runs exactly four 256-frame blocks");
     }
     {
         ConstNode src(1.0f);
@@ -893,6 +893,127 @@ private:
     std::int64_t t_ = 0;
     std::int32_t last_ = 0;
 };
+
+void testATailShorterThanABlockStillPlays() {
+    section("ADR-0043 -- a tail no longer than one block is not skipped entirely");
+
+    // The boundary cases of the same off-by-one. With the counter decremented
+    // before the decision, a tail of exactly one block, or less, suspended the
+    // node on the very block that tail belonged to -- the tail was never heard.
+    for (const std::int64_t tail : {std::int64_t{100}, std::int64_t{256}, std::int64_t{257}}) {
+        ConstNode src(1.0f);
+        TailNode verb(tail);
+        Graph g;
+        const NodeId ns = g.addNode(src), nv = g.addNode(verb);
+        g.connect(ns, nv);
+        g.setOutput(nv);
+        g.prepare(48000.0, 256);
+        Out o(256);
+        AudioIo io = makeIo(o, 256);
+        g.process(io);
+        const int before = verb.calls;
+        src.set(0.0f);
+        for (int i = 0; i < 6; ++i) g.process(io);
+        const long long want = (tail + 255) / 256;
+        eqi(verb.calls - before, want,
+            "a " + std::to_string(tail) + "-sample tail runs " + std::to_string(want) +
+                " block(s) past the silence");
+    }
+}
+
+void testACompensatedInputIsPlayedOutBeforeItsNodeSleeps() {
+    section("ADR-0058 + ADR-0043 -- compensation in flight is flushed, not cut");
+
+    // A dry path compensated 64 samples against a latent one, and the dry path
+    // is the LAST thing playing. When it stops, the master's compensation ring
+    // still holds its final 64 samples, due out over the next 64 -- but the
+    // master's inputs are both silent, its own tail is zero, and ADR-0043 put
+    // it to sleep on the spot. Those samples were never heard.
+    //
+    // At 5120 samples of linear-phase compensation that is the last 107 ms of
+    // a dry track, cut, whenever a plugin with latency sits anywhere else.
+    ConstNode quiet(0.0f), dry(1.0f);
+    LatentNode slow(64);
+    SumNode direct, master;
+    Graph g;
+    const NodeId nq = g.addNode(quiet), ns = g.addNode(slow);
+    const NodeId nd = g.addNode(dry), nx = g.addNode(direct), nm = g.addNode(master);
+    g.connect(nq, ns);
+    g.connect(ns, nm);
+    g.connect(nd, nx);
+    g.connect(nx, nm);
+    g.setOutput(nm);
+    g.prepare(48000.0, 256);
+    eqi(g.compensationFor(nx, nm), 64, "the dry path is held back 64 samples");
+
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+    for (int b = 0; b < 4; ++b) g.process(io);
+    check(o.l[255] == 1.0f, "the dry signal reaches the master");
+
+    dry.set(0.0f);                  // the last thing playing stops
+    g.process(io);
+    check(o.l[0] == 1.0f && o.l[63] == 1.0f,
+          "its last 64 samples still come out of the ring: got " +
+              std::to_string(o.l[0]) + " .. " + std::to_string(o.l[63]));
+    check(o.l[64] == 0.0f && o.l[255] == 0.0f, "and then silence, exactly when it should");
+
+    g.process(io);
+    bool silent = true;
+    for (float v : o.l) if (v != 0.0f) silent = false;
+    check(silent, "after which the master may sleep");
+}
+
+/// Writes its SIDECHAIN input to its output, so the key a compressor would
+/// see is observable. Tail zero, like any node with no state of its own.
+class KeyThrough final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            const float* k = (io.sidechain != nullptr && io.sidechain[c] != nullptr)
+                                 ? io.sidechain[c] + io.blockOffset : nullptr;
+            for (std::int32_t i = 0; i < io.frames; ++i) o[i] = (k != nullptr ? k[i] : 0.0f);
+        }
+    }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    [[nodiscard]] const char* name() const noexcept override { return "key"; }
+};
+
+void testACompensatedKeyIsPlayedOutToo() {
+    section("ADR-0058 d5 + ADR-0043 -- a compensated sidechain is flushed as well");
+
+    // ADR-0058 compensates a sidechain with the rest (decision 5), so a key
+    // input has a ring too. If the key is the last input to stop, the node
+    // must stay awake to hear the end of it -- otherwise a compressor's gain
+    // reduction releases early by exactly the compensation.
+    ConstNode quiet(0.0f), key(1.0f);
+    LatentNode slow(64);
+    SumNode direct;
+    KeyThrough comp;
+    Graph g;
+    const NodeId nq = g.addNode(quiet), ns = g.addNode(slow);
+    const NodeId nk = g.addNode(key), nd = g.addNode(direct), nc = g.addNode(comp);
+    g.connect(nq, ns);
+    g.connect(ns, nc, Bus::Main);
+    g.connect(nk, nd);
+    g.connect(nd, nc, Bus::Sidechain);
+    g.setOutput(nc);
+    g.prepare(48000.0, 256);
+    eqi(g.compensationFor(nd, nc, Bus::Sidechain), 64, "the key is held back 64 samples");
+
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+    for (int b = 0; b < 4; ++b) g.process(io);
+    check(o.l[255] == 1.0f, "the key reaches the compressor");
+
+    key.set(0.0f);
+    g.process(io);
+    check(o.l[0] == 1.0f && o.l[63] == 1.0f,
+          "the key's last 64 samples still reach it: got " + std::to_string(o.l[0]) +
+              " .. " + std::to_string(o.l[63]));
+    check(o.l[64] == 0.0f, "and then it ends");
+}
 
 void testDelayLineItself() {
     section("ADR-0058 -- the delay line delays by exactly what it says");
@@ -1567,6 +1688,9 @@ int main() {
         testSidechainIsSeparateFromMain();
         testLevelOrderDoesNotChangeOutput();
         testEventCapacityFitsTheContinuum();
+        testATailShorterThanABlockStillPlays();
+        testACompensatedInputIsPlayedOutBeforeItsNodeSleeps();
+        testACompensatedKeyIsPlayedOutToo();
         testDelayLineItself();
         testArrivalArithmetic();
         testPhaseAlignment();

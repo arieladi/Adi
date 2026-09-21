@@ -902,12 +902,30 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept 
     const bool infinite = s.node->tailSamples() == kInfiniteTail;
 
     if (!inputSilent || hasEvents) {
-        s.tailRemaining = infinite ? 0 : s.node->tailSamples();
-    } else if (!infinite) {
-        s.tailRemaining -= frames;
-        if (s.tailRemaining < 0) s.tailRemaining = 0;
+        // RE-ARMED WITH WHAT IS STILL IN FLIGHT, not only the node's own tail.
+        //
+        // A compensated input delays its audio on the way in (ADR-0058). When
+        // every input goes silent, the rings still hold up to `reach` samples
+        // that are due out over the next `reach` samples -- and a junction's
+        // own tail is zero, so it used to sleep on the spot and those samples
+        // were never heard. At 5120 samples of linear-phase compensation that
+        // was the last 107 ms of a dry track, whenever it was the last thing
+        // playing.
+        std::int64_t reach = 0;
+        for (const DelayLine& d : s.inDelays)
+            if (d.reach() > reach) reach = d.reach();
+        for (const DelayLine& d : s.sideDelays)
+            if (d.reach() > reach) reach = d.reach();
+        s.tailRemaining = infinite ? 0 : s.node->tailSamples() + reach;
     }
 
+    // JUDGED AT THE START OF THE BLOCK, before any tail is spent.
+    //
+    // This used to decrement first and decide after, so the block in which a
+    // tail's last samples belonged was itself skipped: a tail of one block or
+    // less was never heard at all, and every longer one lost its final partial
+    // block -- up to 85 ms at the 4096-frame blocks this engine is built for.
+    // The old test accepted "3 to 6 blocks" for a tail that is exactly 4.
     const bool suspend = !infinite && !s.node->alwaysProcess() &&
                          inputSilent && !hasEvents && s.tailRemaining == 0;
     if (suspend) {
@@ -917,6 +935,12 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept 
             std::memset(s.chanPtrs[c], 0,
                         static_cast<std::size_t>(frames) * sizeof(float));
         return;
+    }
+
+    // Only a block that actually runs on silence spends tail.
+    if (inputSilent && !hasEvents && !infinite) {
+        s.tailRemaining -= frames;
+        if (s.tailRemaining < 0) s.tailRemaining = 0;
     }
 
     for (std::int32_t seg = 0; seg < nsplit; ++seg) {

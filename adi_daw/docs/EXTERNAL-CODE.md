@@ -88,11 +88,11 @@ what the roadmap was going to do with them.
 | [`KlonCentaur`](https://github.com/jatinchowdhury18/KlonCentaur) | BSD-3-Clause | 220 MB (training data and PDFs; the code is small) | ✅ with attribution | ChowCentaur. A wave-digital-filter diode clipper and the paper describing it. **It contains no ADAA**, which is what it was requested for. |
 | [`Audio-Soft-Clip-Distortion`](https://github.com/JDSherbert/Audio-Soft-Clip-Distortion) | MIT | 0.1 MB | ✅ with attribution | Basic hard and soft clip curves with oversampling. Introductory, but MIT. |
 
-**The licence of the plugin line decides which rows are usable.** Everything
-above except ZLEqualizer can be copied into a **GPLv3** plugin. A plugin meant to
-be closed or proprietary — as AdiGuard is — could copy only from the BSD and MIT
-rows: `ADAA`, `KlonCentaur` and `Audio-Soft-Clip-Distortion`. That is a decision
-to make before the first line is written, not after.
+**Decided by `OPEN_SOURCE_POLICY.md` (ADR-0094).** Every project is open source:
+MIT by default, GPLv3 once it copies from a GPL or LGPL source. So everything above
+except ZLEqualizer may be copied, keeping the original headers — and a plugin that
+takes the LSP limiter, the chowdsp waveshapers or vitOTTx is a GPLv3 plugin.
+ZLEqualizer is AGPL and stays design-only.
 
 ### The Zrythm rule
 
