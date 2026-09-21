@@ -1028,38 +1028,54 @@ ClapLibrary* ClapHost::libraryFor(const std::string& path, std::string& error) {
     return libs_.back().second.get();
 }
 
-void ClapHost::scan(const std::vector<std::string>& paths) {
-    found_.clear();
+std::vector<std::string> ClapHost::findBundles(const std::vector<std::string>& paths) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> out;
     for (const auto& dir : paths) {
         std::error_code ec;
-        if (!std::filesystem::is_directory(dir, ec)) continue;
-        for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
-            if (ec) break;
-            const std::string p = e.path().string();
-            if (p.size() < 5 || p.compare(p.size() - 5, 5, ".clap") != 0) continue;
+        if (!fs::is_directory(dir, ec)) continue;
+        // skip_permission_denied: one unreadable vendor folder must not end
+        // the walk for everything after it.
+        fs::recursive_directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
+        const fs::recursive_directory_iterator end;
+        for (; !ec && it != end; it.increment(ec)) {
+            std::string ext = it->path().extension().string();
+            for (char& c : ext) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+            if (ext != ".clap") continue;
+            out.push_back(it->path().string());
+            std::error_code dirEc;
+            if (it->is_directory(dirEc)) it.disable_recursion_pending();   // a macOS bundle
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
 
-            std::string err;
-            ClapLibrary* lib = libraryFor(p, err);
-            if (lib == nullptr) continue;      // not ours to report; a browser shows what loaded
+void ClapHost::scan(const std::vector<std::string>& paths) {
+    found_.clear();
+    for (const std::string& p : findBundles(paths)) {
+        std::string err;
+        ClapLibrary* lib = libraryFor(p, err);
+        if (lib == nullptr) continue;      // not ours to report; a browser shows what loaded
 
-            const std::uint32_t n = lib->pluginCount();
-            for (std::uint32_t i = 0; i < n; ++i) {
-                const clap_plugin_descriptor_t* d = lib->descriptorAt(i);
-                if (d == nullptr || d->id == nullptr) continue;
-                ClapPluginRef r;
-                r.bundlePath = p;
-                r.id      = d->id;
-                r.name    = d->name    != nullptr ? d->name    : "";
-                r.vendor  = d->vendor  != nullptr ? d->vendor  : "";
-                r.version = d->version != nullptr ? d->version : "";
-                for (const char* const* f = d->features; f != nullptr && *f != nullptr; ++f) {
-                    if (!r.features.empty()) r.features += ',';
-                    r.features += *f;
-                    if (std::strcmp(*f, CLAP_PLUGIN_FEATURE_INSTRUMENT) == 0)
-                        r.isInstrument = true;
-                }
-                found_.push_back(std::move(r));
+        const std::uint32_t n = lib->pluginCount();
+        for (std::uint32_t i = 0; i < n; ++i) {
+            const clap_plugin_descriptor_t* d = lib->descriptorAt(i);
+            if (d == nullptr || d->id == nullptr) continue;
+            ClapPluginRef r;
+            r.bundlePath = p;
+            r.id      = d->id;
+            r.name    = d->name    != nullptr ? d->name    : "";
+            r.vendor  = d->vendor  != nullptr ? d->vendor  : "";
+            r.version = d->version != nullptr ? d->version : "";
+            for (const char* const* f = d->features; f != nullptr && *f != nullptr; ++f) {
+                if (!r.features.empty()) r.features += ',';
+                r.features += *f;
+                if (std::strcmp(*f, CLAP_PLUGIN_FEATURE_INSTRUMENT) == 0)
+                    r.isInstrument = true;
             }
+            found_.push_back(std::move(r));
         }
     }
 }

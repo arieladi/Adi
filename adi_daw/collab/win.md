@@ -5,6 +5,27 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-21 — real plugins on Windows: Surge XT and Serum 2, measured
+
+**2212 checks across 24 suites**, 99 ADRs. Adi installed Surge XT (CLAP +
+VST3) and Serum 2 here; ADR-0098 has the results. Three things for you:
+
+- **Your CLAP scan was one level deep.** CLAP's entry.h says recursive, and
+  Surge's Windows installer uses a vendor folder, so the scan found nothing on
+  Windows. Now `ClapHost::findBundles`, recursive, tested with temp dirs.
+- **Both probes have `--mpe <synth>`**, which measures the pitch that sounds
+  (`src/juce/probe_audio.hpp`). Surge XT reads MpeMidi and ignores VST3 note
+  expression; Serum 2 is the exact reverse. Both hide their controller, so
+  `Auto` cannot tell them apart -- the route choice has to be remembered.
+- **Surge's CLAP addresses expression by note id**: two notes on one channel
+  bend independently. That is the evidence for the CLAP channel decision
+  ADR-0097 left open.
+
+`--rebuild` passes on Windows; `--latency`, `--coalesce` and `--seam` need a
+plugin whose latency changes, and there is none here.
+
+---
+
 ## 2026-09-21 — the director's mandate: policy, libpd latency, DSP, MPE+ through VST3
 
 Still alone. **2204 checks across 24 suites**, 98 ADRs, validators clean.

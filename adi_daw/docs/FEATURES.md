@@ -89,7 +89,7 @@ flagged, and it is a bug in the format, not in the plan.
 | Per-note microtuning | neither, fully | P2 | ✅ | `tuning_cents` in the v1 note record |
 | **Per-note expression / MPE** | both, partially | **P1** | ✅ | `note_expression` — first-class, SPEC §6.3.2 |
 | **MPE+ (Haken), 14-bit Y and Z at 500 Hz** | neither | **P1** | ✅ | `ExpressionPoint.value` is f32, so bit depth was never the constraint. The binding constraint is ADR-0042's sub-block floor, which MUST NOT exceed `sample_rate/500` (ADR-0054). |
-| **MPE out to VST3 plugins** | both, partially | **P1** | — | runtime (ADR-0097): per plugin, VST3 note expression, MPE over MIDI on member channels, or plain MIDI with poly aftertouch. The controller's channel never reaches a plugin. The route choice is not yet saved in the project. |
+| **MPE out to VST3 plugins** | both, partially | **P1** | — | runtime (ADR-0097): per plugin, VST3 note expression, MPE over MIDI on member channels, or plain MIDI with poly aftertouch. The controller's channel never reaches a plugin. Measured by ear (ADR-0098): Surge XT reads MpeMidi, Serum 2 reads note expression, and `Auto` can only be right for one of them -- so the route choice must be remembered, which it is not yet. |
 | Scale-aware / scale-locked editing | Ableton 12 | P2 | ✅ | reads `key_map` |
 | Expression Maps (articulations) | Cubase | P3 | ❌ | needs its own schema; big win for orchestral |
 | Logical Editor / Project Logical Editor | Cubase | P3 | — | query+transform over the model; no schema |

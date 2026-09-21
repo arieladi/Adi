@@ -26,6 +26,8 @@
 #include <utility>
 #include <vector>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <type_traits>
 
@@ -1002,6 +1004,45 @@ void testMainThreadCallbackIsDispatched() {
     check(f.mainThreadCalls == 1, "an unregistered plugin is not called");
 }
 
+void testBundleSearchIsRecursive() {
+    section("ADR-0098 -- the CLAP search is recursive, as the format requires");
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path root = fs::temp_directory_path(ec) / "adi_clap_scan_test";
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "Vendor" / "Sub", ec);
+    fs::create_directories(root / "Bundle.clap" / "Contents", ec);
+    auto touch = [](const fs::path& f) { std::ofstream(f) << "x"; };
+    touch(root / "Top.clap");
+    touch(root / "Vendor" / "Deep.clap");            // Surge XT's layout on Windows
+    touch(root / "Vendor" / "Sub" / "Deeper.CLAP");  // extension case does not matter
+    touch(root / "Vendor" / "readme.txt");
+    touch(root / "Bundle.clap" / "Contents" / "Inner.clap");
+
+    auto has = [](const std::vector<std::string>& v, const std::string& tail) {
+        for (const auto& p : v)
+            if (p.size() >= tail.size() && p.compare(p.size() - tail.size(), tail.size(), tail) == 0)
+                return true;
+        return false;
+    };
+
+    const auto found = ClapHost::findBundles({root.string()});
+    check(has(found, "Top.clap"), "a bundle at the top of a search path is found");
+    check(has(found, "Deep.clap"),
+          "one in a VENDOR FOLDER is found -- Surge XT on Windows, missed until ADR-0098");
+    check(has(found, "Deeper.CLAP"), "and deeper, whatever the extension's case");
+    check(has(found, "Bundle.clap"), "a directory named .clap is a bundle, and a candidate");
+    check(!has(found, "Inner.clap"), "which is NOT entered -- its contents are not plugins");
+    check(!has(found, "readme.txt"), "nothing that is not a .clap");
+    check(found.size() == 4, "four candidates, saw " + std::to_string(found.size()));
+
+    const auto twice = ClapHost::findBundles({root.string(), root.string()});
+    check(twice.size() == 4, "a path listed twice (CLAP_PATH repeating a default) finds each once");
+
+    fs::remove_all(root, ec);
+}
+
 void testClapHostWithoutAnyPlugin() {
     section("ClapHost -- the parts that need no plugin installed");
 
@@ -1333,6 +1374,7 @@ int main() {
     testTheSegmentBoundItself();
     testRestartCausesAreDistinguished();
     testMainThreadCallbackIsDispatched();
+    testBundleSearchIsRecursive();
     testClapHostWithoutAnyPlugin();
     testAnExtensionWithNullMembers();
     testTheBusLayoutIsAsked();

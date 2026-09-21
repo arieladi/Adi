@@ -18,6 +18,7 @@
 
 #include "juce/vst3_events.hpp"
 #include "juce/device_bridge.hpp"
+#include "juce/probe_audio.hpp"
 #include "juce/vst3_host.hpp"
 
 #include <algorithm>
@@ -51,14 +52,26 @@ namespace {
 /// measurement that replaces them: drive a plugin that genuinely moves its
 /// latency -- a linear-phase EQ mode switch is the canonical case -- and
 /// record how many reports arrive and over what span.
+/// The plugin a name means: an exact match, else an INSTRUMENT containing it,
+/// else anything containing it. Substring-first picked "Surge XT Effects" for
+/// "Surge XT", the same trap as 'Serum 2 FX' below -- an effect handed no
+/// input is silent and proves nothing.
+bool pickPlugin(const juce::KnownPluginList& list, const juce::String& want,
+                juce::PluginDescription& out) {
+    const auto types = list.getTypes();
+    for (const auto& d : types) if (d.name.equalsIgnoreCase(want)) { out = d; return true; }
+    for (const auto& d : types)
+        if (d.isInstrument && d.name.containsIgnoreCase(want)) { out = d; return true; }
+    for (const auto& d : types) if (d.name.containsIgnoreCase(want)) { out = d; return true; }
+    return false;
+}
+
 int measureLatencyChange(adi::device::Vst3Host& host, const juce::String& want) {
     juce::KnownPluginList list;
     host.scan(host.defaultSearchPaths(), list);
 
     juce::PluginDescription found;
-    bool haveIt = false;
-    for (const auto& d : list.getTypes())
-        if (d.name.containsIgnoreCase(want)) { found = d; haveIt = true; break; }
+    const bool haveIt = pickPlugin(list, want, found);
     if (!haveIt) {
         std::printf("  skip  no plugin matching '%s' is installed\n", want.toRawUTF8());
         return 0;
@@ -169,9 +182,7 @@ int renderThrough(adi::device::Vst3Host& host, const juce::String& want) {
     host.scan(host.defaultSearchPaths(), list);
 
     juce::PluginDescription found;
-    bool haveIt = false;
-    for (const auto& d : list.getTypes())
-        if (d.name.containsIgnoreCase(want)) { found = d; haveIt = true; break; }
+    const bool haveIt = pickPlugin(list, want, found);
     if (!haveIt) { std::printf("  skip  no plugin matching '%s'\n", want.toRawUTF8()); return 0; }
 
     std::string err;
@@ -182,7 +193,7 @@ int renderThrough(adi::device::Vst3Host& host, const juce::String& want) {
         return 1;
     }
     v3->prepare(48000.0, 512);
-    std::printf("  plugin  %s  raw=%s  noteExpr=%s\n", found.name.toRawUTF8(),
+    std::printf("  plugin  %s  raw=%s  canCarryNoteExpr=%s\n", found.name.toRawUTF8(),
                 v3->usingRawProcessor() ? "yes" : "NO (fell back to JUCE)",
                 v3->supportsNoteExpression() ? "yes" : "no");
     reportExpression(*v3);
@@ -251,13 +262,238 @@ int renderThrough(adi::device::Vst3Host& host, const juce::String& want) {
 }
 
 
+/// ADR-0098: does per-note expression reach a REAL synth as the music meant?
+///
+/// Every route, on a fresh instance each time, two scenes:
+///   A  one note (C4) bent +12 semitones -- it must SOUND an octave up, or not
+///      at all where the route drops pitch;
+///   B  C4 bent +7 and E4 left alone -- MPE's whole point. A bend that lands
+///      globally moves E4 to B4, and that is what this listens for.
+/// Pitch is measured from the audio, not inferred from what was sent.
+int mpeAcceptance(adi::device::Vst3Host& host, const juce::String& want) {
+    using adi::engine::Event;
+    using adi::engine::EventType;
+    using adi::engine::ExpressionRoute;
+    using adi::engine::RouteChoice;
+    namespace pr = adi::probe;
+
+    double worst = 0.0;
+    const bool trusted = pr::selfTest(&worst);
+    check(trusted, "the pitch and level measurements pass their own self-test (worst " +
+                       std::to_string(worst) + " cents on a known sawtooth)");
+    if (!trusted) return 1;
+
+    juce::KnownPluginList list;
+    host.scan(host.defaultSearchPaths(), list);
+    juce::PluginDescription found;
+    bool haveIt = false;
+    for (const auto& d : list.getTypes())
+        if (d.isInstrument && d.name.containsIgnoreCase(want)) { found = d; haveIt = true; break; }
+    if (!haveIt) { check(false, "an INSTRUMENT matching '" + want.toStdString() + "' is installed"); return 1; }
+    std::printf("  plugin  %s by %s %s\n", found.name.toRawUTF8(),
+                found.manufacturerName.toRawUTF8(), found.version.toRawUTF8());
+
+    const double sr = 48000.0;
+    const int blocks = 64;                        // 0.68 s: past the attack
+    const std::size_t from = 32768 - 16384, n = 16384;
+
+    auto note = [](std::uint64_t id, int key, int chan) {
+        Event e; e.type = EventType::NoteOn; e.noteId = id; e.dim = static_cast<std::uint16_t>(key);
+        e.channel = static_cast<std::uint8_t>(chan); e.value = 0.8; return e;
+    };
+    auto bend = [](std::uint64_t id, double semis, int chan) {
+        Event e; e.type = EventType::NoteExpression; e.noteId = id; e.channel = static_cast<std::uint8_t>(chan);
+        e.dim = static_cast<std::uint16_t>(adi::ExpressionDim::Pitch); e.value = semis; return e;
+    };
+
+    auto off = [](std::uint64_t id, int key, int chan, std::int32_t frame) {
+        Event e; e.type = EventType::NoteOff; e.noteId = id; e.dim = static_cast<std::uint16_t>(key);
+        e.channel = static_cast<std::uint8_t>(chan); e.frame = frame; return e;
+    };
+
+    struct Result {
+        double hzA = 0, hzD = 0;
+        double l392 = 0, l330 = 0, l494 = 0, l262 = 0;      // scene B
+        double c392 = 0, c330 = 0, c494 = 0, c262 = 0;      // scene C
+        ExpressionRoute used{};
+    };
+    auto run = [&](RouteChoice choice, Result& res) -> bool {
+        // Scenes C and D test allocation and the channel reset, which mean
+        // something only on MpeMidi.
+        const int scenes = choice == RouteChoice::MpeMidi ? 4 : 2;
+        for (int scene = 0; scene < scenes; ++scene) {
+            std::string err;
+            auto dev = host.makeDevice(found, sr, 512, err);
+            auto* v3 = dynamic_cast<adi::device::Vst3Device*>(dev.get());
+            if (v3 == nullptr || !v3->loaded()) {
+                check(false, "the plugin loads: " + err);
+                return false;
+            }
+            if (scene == 0 && choice == RouteChoice::Auto) reportExpression(*v3);
+            v3->setExpressionRoute(choice);
+            v3->prepare(sr, 512);
+            // The raw processor is acquired IN prepare (ADR-0073), so this is
+            // the first moment the question has an answer.
+            if (!v3->usingRawProcessor()) {
+                check(false, "the raw IAudioProcessor path is live -- JUCE's fallback cannot carry any of this");
+                return false;
+            }
+            std::vector<Event> ev;
+            if (scene == 0) {
+                // The controller sends it on channel 2, as an MPE controller would.
+                ev = {note(1, 60, 2), bend(1, 12.0, 2)};
+            } else if (scene == 1) {
+                ev = {note(1, 60, 2), bend(1, 7.0, 2), note(2, 64, 3)};
+            } else if (scene == 3) {
+                // C: B again, but BOTH notes arrive on channel 1, as from a
+                // plain keyboard. The route must still give them separate
+                // member channels, or the bend lands on both.
+                ev = {note(1, 60, 1), bend(1, 7.0, 1), note(2, 64, 1)};
+            } else {
+                // D: note 1 is bent an octave and released; 14 more notes use
+                // and release channels 2..15; note 16, unbent, then lands on
+                // channel 1 again -- released longest ago. Without the reset
+                // before its note-on it would inherit note 1's octave.
+                ev = {note(1, 60, 2), bend(1, 12.0, 2)};
+                ev.push_back(off(1, 60, 2, 10));
+                for (int k = 2; k <= 15; ++k) {
+                    Event on = note(static_cast<std::uint64_t>(k), 40 + k, 2);
+                    on.frame = 20 + 4 * k;
+                    ev.push_back(on);
+                    ev.push_back(off(static_cast<std::uint64_t>(k), 40 + k, 2, 22 + 4 * k));
+                }
+                Event last = note(16, 64, 2);
+                last.frame = 120;
+                ev.push_back(last);
+            }
+            const auto audio = pr::render(*v3, ev, blocks, 512, sr);
+            res.used = v3->expressionRoute();
+            if (scene == 0) {
+                res.hzA = pr::estimateHz(audio, from, n, sr, 80.0, 1200.0);
+            } else if (scene == 3) {
+                res.c392 = pr::toneLevel(audio, from, n, sr, 392.0);
+                res.c330 = pr::toneLevel(audio, from, n, sr, pr::midiHz(64));
+                res.c494 = pr::toneLevel(audio, from, n, sr, pr::midiHz(71));
+                res.c262 = pr::toneLevel(audio, from, n, sr, pr::midiHz(60));
+            } else if (scene == 2) {
+                res.hzD = pr::estimateHz(audio, from, n, sr, 80.0, 1200.0);
+                check(v3->expressionRouter().sharedChannels() == 0,
+                      "scene D used 16 notes on 15 channels one after another, never sharing");
+            } else {
+                res.l392 = pr::toneLevel(audio, from, n, sr, 392.0);
+                res.l330 = pr::toneLevel(audio, from, n, sr, pr::midiHz(64));
+                res.l494 = pr::toneLevel(audio, from, n, sr, pr::midiHz(71));
+                res.l262 = pr::toneLevel(audio, from, n, sr, pr::midiHz(60));
+            }
+            check(v3->eventsDropped() == 0 && v3->eventsOutOfRange() == 0,
+                  "nothing dropped or out of range in the scene");
+        }
+        return true;
+    };
+
+    auto describe = [&](const char* name, const Result& r) {
+        const double top = std::max({r.l392, r.l330, r.l494, r.l262});
+        std::printf("  %-15s A: %8.2f Hz (%+7.1f c from C5, %+7.1f c from C4)   "
+                    "B: G4 %6.1f  E4 %6.1f  B4 %6.1f  C4 %6.1f dB\n",
+                    name, r.hzA, pr::centsBetween(r.hzA, pr::midiHz(72)),
+                    pr::centsBetween(r.hzA, pr::midiHz(60)), pr::dbRel(r.l392, top),
+                    pr::dbRel(r.l330, top), pr::dbRel(r.l494, top), pr::dbRel(r.l262, top));
+    };
+    auto present = [](double l, double top) { return pr::dbRel(l, top) > -12.0; };
+    auto absent = [](double l, double top) { return pr::dbRel(l, top) < -30.0; };
+
+    Result autoR, plain, mpe, ne;
+    if (!run(RouteChoice::Auto, autoR) || !run(RouteChoice::Plain, plain) ||
+        !run(RouteChoice::MpeMidi, mpe) || !run(RouteChoice::NoteExpression, ne))
+        return 1;
+    std::printf("\n");
+    describe("Auto", autoR);
+    describe("Plain", plain);
+    describe("MpeMidi", mpe);
+    describe("NoteExpression", ne);
+    std::printf("\n");
+
+    check(mpe.used == ExpressionRoute::MpeMidi && plain.used == ExpressionRoute::Plain &&
+              ne.used == ExpressionRoute::NoteExpression,
+          "each device ran the route it was asked for");
+
+    // WHAT A ROUTE MAY DO, AND WHAT IT MAY NOT. Whether a plugin reads a
+    // route is the plugin's business: Surge XT reads MpeMidi and ignores note
+    // expression, Serum 2 the reverse. What no route may ever do is sound a
+    // note at a WRONG pitch -- a bend at the wrong range, or a bend that drags
+    // another note with it. So each scene must come out BENT exactly as sent,
+    // or UNBENT, and nothing else; and at least one route must deliver.
+    enum class Heard { Bent, Unbent, Wrong };
+    auto single = [&](double hz) {
+        if (std::abs(pr::centsBetween(hz, pr::midiHz(72))) < 15.0) return Heard::Bent;
+        if (std::abs(pr::centsBetween(hz, pr::midiHz(60))) < 15.0) return Heard::Unbent;
+        return Heard::Wrong;
+    };
+    auto pair = [&](double g4, double e4, double b4, double c4) {
+        const double top = std::max({g4, e4, b4, c4});
+        if (present(g4, top) && present(e4, top) && absent(b4, top) && absent(c4, top))
+            return Heard::Bent;                  // C4 moved to G4, E4 stayed
+        if (present(c4, top) && present(e4, top) && absent(g4, top) && absent(b4, top))
+            return Heard::Unbent;                // nothing moved
+        return Heard::Wrong;                     // e.g. E4 dragged to B4
+    };
+    auto name = [](Heard h) {
+        return h == Heard::Bent ? "bent" : (h == Heard::Unbent ? "unbent" : "WRONG");
+    };
+
+    const Heard pA = single(plain.hzA), pB = pair(plain.l392, plain.l330, plain.l494, plain.l262);
+    const Heard mA = single(mpe.hzA), mB = pair(mpe.l392, mpe.l330, mpe.l494, mpe.l262);
+    const Heard mC = pair(mpe.c392, mpe.c330, mpe.c494, mpe.c262);
+    const Heard nA = single(ne.hzA), nB = pair(ne.l392, ne.l330, ne.l494, ne.l262);
+    std::printf("  heard    Plain A %s B %s | MpeMidi A %s B %s C %s | NoteExpression A %s B %s\n",
+                name(pA), name(pB), name(mA), name(mB), name(mC), name(nA), name(nB));
+
+    // Plain: pitch has no per-note MIDI 1.0 form.
+    check(pA == Heard::Unbent && pB == Heard::Unbent,
+          "Plain: the bend is dropped and both notes sound unbent");
+
+    // MpeMidi. C is B with both notes from ONE controller channel: the route
+    // must allocate member channels itself, or the bend lands on both.
+    check(mA != Heard::Wrong, "MpeMidi A: C4 sounds bent an octave or unbent -- never at a wrong "
+                              "pitch (a missing MCM leaves Surge at +50 cents)");
+    check(mB != Heard::Wrong, "MpeMidi B: no note is dragged by another's bend");
+    check(mC != Heard::Wrong, "MpeMidi C: two notes from ONE controller channel still bend alone");
+    check(mA == mB && mB == mC, "MpeMidi: the plugin reads the route in every scene or in none");
+    std::printf("  MpeMidi D: note 16 on a reused channel sounds %.2f Hz (%+.1f c from E4)\n",
+                mpe.hzD, pr::centsBetween(mpe.hzD, pr::midiHz(64)));
+    check(std::abs(pr::centsBetween(mpe.hzD, pr::midiHz(64))) < 15.0,
+          "MpeMidi D: a note on a REUSED member channel starts in tune -- reset, not left an "
+          "octave up by the note before it");
+
+    // NoteExpression.
+    check(nA != Heard::Wrong && nB != Heard::Wrong,
+          "NoteExpression: bent exactly or not at all, and never dragging another note");
+    check(nA == nB, "NoteExpression: the plugin reads the route in every scene or in none");
+
+    const bool mpeDelivers = mA == Heard::Bent, neDelivers = nA == Heard::Bent;
+    const bool autoDelivers = (autoR.used == ExpressionRoute::MpeMidi && mpeDelivers) ||
+                              (autoR.used == ExpressionRoute::NoteExpression && neDelivers);
+    std::printf("  observe  %s reads: MpeMidi %s, NoteExpression %s; Auto chose %s, which %s\n",
+                found.name.toRawUTF8(), mpeDelivers ? "YES" : "no", neDelivers ? "YES" : "no",
+                autoR.used == ExpressionRoute::MpeMidi ? "MpeMidi"
+                    : autoR.used == ExpressionRoute::Plain ? "Plain" : "NoteExpression",
+                autoDelivers ? "DELIVERS" : "delivers NOTHING -- the user must choose");
+    check(mpeDelivers || neDelivers,
+          "per-note pitch reaches this synth through at least one route");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
     bool requirePlugin = false;
     juce::String latencyProbe;
     juce::String renderName;
+    juce::String mpeName;
+    juce::String pluginName;
     for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string(argv[i]) == "--plugin") pluginName = argv[i + 1];
+        if (std::string(argv[i]) == "--mpe") mpeName = argv[i + 1];
         if (std::string(argv[i]) == "--latency-probe") latencyProbe = argv[i + 1];
         if (std::string(argv[i]) == "--render") renderName = argv[i + 1];
     }
@@ -268,6 +504,14 @@ int main(int argc, char** argv) {
 
     juce::ScopedJuceInitialiser_GUI juceInit;
     adi::device::Vst3Host host;
+
+    if (mpeName.isNotEmpty()) {
+        std::printf("[ADR-0097/0098] MPE+ through VST3, measured on a real synth\n");
+        const int rc = mpeAcceptance(host, mpeName);
+        std::printf("\n%s -- %d checks, %d failure(s)\n",
+                    g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : rc;
+    }
 
     if (renderName.isNotEmpty()) {
         std::printf("[ADR-0073] rendering through our own ProcessData\n");
@@ -632,8 +876,10 @@ int main(int argc, char** argv) {
                         "that must hold everywhere\n");
         }
     } else {
-        const auto types = list.getTypes();
-        const auto& desc = types.getReference(0);
+        // --plugin chooses; otherwise the first the scan found.
+        juce::PluginDescription desc = list.getTypes().getReference(0);
+        if (pluginName.isNotEmpty() && !pickPlugin(list, pluginName, desc))
+            check(false, "a plugin matching --plugin '" + pluginName.toStdString() + "' is installed");
         std::printf("  using %s by %s\n", desc.name.toRawUTF8(),
                     desc.manufacturerName.toRawUTF8());
 
@@ -685,7 +931,8 @@ int main(int argc, char** argv) {
                 check(v3->usingRawProcessor(),
                       "the raw IAudioProcessor was reached -- the note-expression path is live");
                 check(v3->supportsNoteExpression(),
-                      "and this instance reports note expression as SUPPORTED");
+                      "and our path can CARRY note expression to it -- whether the plugin "
+                      "READS it is expressionCaps' question, and Surge XT does not (ADR-0098)");
                 check(v3->rawComponent() != nullptr,
                       "the raw IComponent is reachable -- this is the route to "
                       "note expression without reimplementing discovery and state");

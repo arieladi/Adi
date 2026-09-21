@@ -103,7 +103,7 @@ subject, say so in your log instead of writing it twice.
 | 0095 | win | `agent/win-dev` | the libpd latency protocol: a patch reports its latency through `$0-report_latency` | used |
 | 0096 | win | `agent/win-dev` | the DSP corrections: Pd biquad signs, peak detection, RMSC's clamp and sidebands | used |
 | 0097 | win | `agent/win-dev` | MPE+ through VST3: per-note expression without breaking plain MIDI | used |
-| 0098 | win | `agent/win-dev` | real plugins on Windows: Surge XT through both hosts, and what it found | reserved |
+| 0098 | win | `agent/win-dev` | real plugins on Windows: Surge XT through both hosts, and what it found | used |
 | 0083-0084 | mac | `agent/mac-dev` | AudioGridder native integration and the CLAP fork; CLAP restart causes | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in

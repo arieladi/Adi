@@ -6680,3 +6680,151 @@ sweep was shown to fail on a planted narrowing before it was trusted.
   have caught the misplaced `prepared_`. The Windows leg is proven to pass it
   here; the macOS leg is not, and the job is not required, so the change is
   left for a commit that can watch both legs.
+
+---
+
+## ADR-0098 — Real plugins on Windows: Surge XT and Serum 2, measured by ear, and what they found — `DECIDED` (2026-09-21) — **FOLLOWS ADR-0097**
+
+**Director's call:** Surge XT (CLAP and VST3) and Serum 2 installed on the
+Windows machine, "please do all the tests you need".
+
+ADR-0097 was verified against the SDK's structs and one plugin that takes no
+per-note expression. Nothing had yet made sound from a real MPE synth. This ADR
+records what did, one bug the attempt found in the CLAP host, and what the
+results mean for ADR-0097's `Auto`.
+
+### 1. The CLAP host found no plugin installed in a vendor folder
+
+`ClapHost::scan` read each search path **one level deep**. CLAP's `entry.h` says
+"Each directory should be recursively searched". Surge XT's Windows installer
+puts its bundle at `CLAP\Surge Synth Team\Surge XT.clap`, so the scan found
+**nothing**. On macOS Surge installs at the top level, which is why this never
+showed there.
+
+Fixed. The walk is now `ClapHost::findBundles`: a pure, recursive, sorted,
+de-duplicated filesystem search. A `.clap` directory is a macOS bundle, listed
+and not entered. It is tested with temporary directories, and four planted
+defects are caught: one level only, a bundle entered, no de-duplication, and
+the extension's case. With the fix, `adi_clap_probe` finds Surge XT on Windows
+and renders a note through the graph.
+
+### 2. Pitch is measured from the audio, not inferred from what was sent
+
+"The plugin produced audio" proves an event arrived, not that it meant what we
+intended. A bend at the wrong range, or on the wrong channel, still makes sound.
+`src/juce/probe_audio.hpp` (probes only) renders a device and measures:
+
+- the fundamental, by YIN with parabolic interpolation;
+- the level at exact frequencies, by a Hann-windowed Goertzel.
+
+Both are checked on known sawtooths before any plugin is judged; the worst
+error is 0.9 cents.
+
+`adi_vst3_probe --mpe <synth>` and `adi_clap_probe --mpe <synth>` run each route
+on a fresh instance:
+
+- **A:** C4 bent +12.
+- **B:** C4 bent +7, with E4 on another channel.
+- **C:** scene B with both notes on **one** controller channel.
+- **D (MpeMidi only):** note 1 bent an octave and released, 14 more notes cycling
+  the other channels, then note 16 unbent on channel 1 again.
+
+The pass rule is not "the plugin bends", because whether a plugin reads a route
+is the plugin's business. It is:
+
+- every scene sounds **bent exactly as sent, or unbent** — never at a wrong
+  pitch, never with one note dragged by another's bend;
+- a plugin reads a route in every scene or in none;
+- at least one route delivers.
+
+### 3. What the two synths do
+
+| | controller | MpeMidi | NoteExpression | `Auto` chose | `Auto` delivers |
+|---|---|---|---|---|---|
+| **Surge XT 1.3.4** (VST3) | unreachable | **per note** — +12 at 523.06 Hz, −0.6 c; E4 stays, B4 at −105 dB | ignored | NoteExpression | **nothing** |
+| **Serum 2 2.0.16** (VST3) | unreachable | ignored — no bend at all, not even global | **per note** — 522.97 Hz | NoteExpression | **yes** |
+| **Surge XT 1.3.4** (CLAP host) | — | — | **per note**, including two notes on one channel | — | — |
+
+**MpeMidi works end to end on Surge XT.** The Configuration Message switched it
+into MPE mode at ±48, since +12 lands on the octave. Scene C proves the route
+allocates channels itself. In scene D, the reused channel's note sounds at
+329.56 Hz, 0.3 cents from E4.
+
+**Serum 2 ignores `kLegacyMIDICCOutEvent` on input**, exactly the case ADR-0097
+said costs only expression. Its notes on member channels still play, and nothing
+bends wrongly.
+
+**Surge XT ignores VST3 note expression**, as ADR-0097 read from JUCE's client.
+
+**Surge XT's CLAP addresses expression by note id.** Two notes on one channel
+bend independently. That is the evidence ADR-0097's open CLAP question needed:
+putting every CLAP note on one channel would not cost per-note expression here.
+
+### 4. The real-audio planted defects
+
+Three router defects, each planted in turn, rebuilt, and played through Surge
+XT. All were caught:
+
+| Planted | What Surge XT did |
+|---|---|
+| no channel reset before a note | note 16 on the reused channel sounded **659.00 Hz** — E5, an octave sharp |
+| no MPE Configuration Message | +12 sounded **+50 cents**: Surge stayed at its non-MPE ±2 |
+| the controller's channel passed through | scene C sounded **unbent** while A and B bent: both notes landed on channel 1, the zone's master, where Surge treats bend as global at ±2 |
+
+The third **survived the first version of this test**: scenes A, B and D never
+held two notes from one controller channel. Scene C exists because of that.
+The one-level CLAP scan, planted back, also fails the real probe: Surge XT is
+not found.
+
+The first version also asserted that MpeMidi must bend on every synth. Serum 2
+failed it, correctly — the assertion was wrong, not the host — and the pass
+rule in §2 replaced it.
+
+### 5. What this means for `Auto`
+
+With the controller unreachable, **both synths look identical to a host**:
+
+- JUCE hides the controller;
+- no VST3 interface says "reads MPE over MIDI";
+- both are instruments.
+
+They need **opposite** routes, and `Auto` can only be right for one. It stays
+NoteExpression, which is right for Serum 2 and harmless for Surge XT: its notes
+play, without expression.
+
+The consequence is a priority change, not a code change: **the route choice has
+to be remembered**, and ADR-0097 left it runtime-only. Two ways to make `Auto`
+right for more plugins, both the director's to choose:
+
+- **a per-plugin memory** — the user picks once per plugin class, and it is kept
+  as a preference and in the project;
+- **a measured table** — plugin class id → route, filled only from runs of
+  `--mpe` like these, never from guesses. Today it would hold two rows: Surge XT
+  → MpeMidi, Serum 2 → NoteExpression.
+
+### 6. Smaller things the plugins showed
+
+- **The probe picked "Surge XT Effects" for "Surge XT"**, the same trap as
+  'Serum 2 FX' before it, and an effect with no input proves nothing. It now
+  prefers an exact name, then an instrument.
+- **`supportsNoteExpression()` read as "the plugin supports it".** It means
+  "our path can carry it"; Surge XT carries it and ignores it. The probe says so.
+- **Surge XT passes the whole generic probe (81 checks)**, including a
+  byte-identical state round trip of 67 KB. The one probe failure on this
+  machine, Reason Rack Plugin's state round trip (ADR-0097), is that plugin's.
+- **mac's real-plugin CLAP modes on Windows:** `--rebuild` passes all 13
+  checks. `--latency`, `--coalesce` and `--seam` need a plugin whose latency
+  changes at runtime, as Pro-Q 3's does, and none is installed here.
+- **Cubase 15 and REAPER 7 were not needed.** The host under test is ours, and
+  Cubase installed no instruments.
+
+### Not verified
+
+- **MpeMidi's parameter path** (`IMidiMapping`). Every MPE synth here hides its
+  controller, so only the legacy-event path has made sound.
+- **Pressure and timbre.** The synths' init patches route neither to anything
+  audible; pitch is the only dimension measured.
+- **Plain's poly aftertouch.** It is sent and translated, but no audible effect
+  was measured, for the same reason.
+- **The CLAP channel decision** is still ADR-0097's open item. §3 is its
+  evidence, from one plugin.

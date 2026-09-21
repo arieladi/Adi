@@ -17,6 +17,7 @@
 #include "adi/engine/host.hpp"
 #include "juce/clap_host.hpp"
 #include "juce/device_host.hpp"
+#include "juce/probe_audio.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -655,12 +656,89 @@ int measureTheSeam(const std::string& want, bool wetOnly) {
 
 }  // namespace
 
+/// ADR-0098: per-note expression through the CLAP host, measured on a real
+/// synth. The CLAP twin of adi_vst3_probe --mpe, plus the question ADR-0097
+/// left open for CLAP: if every note went out on ONE channel, would each still
+/// bend alone? Scene C answers it -- two notes on the same channel, one bent,
+/// which works only if the plugin addresses expression by note id.
+int clapMpeAcceptance(const std::string& want) {
+    using adi::engine::Event;
+    using adi::engine::EventType;
+    namespace pr = adi::probe;
+
+    double worst = 0.0;
+    const bool trusted = pr::selfTest(&worst);
+    check(trusted, "the pitch and level measurements pass their own self-test (worst " +
+                       std::to_string(worst) + " cents)");
+    if (!trusted) return 1;
+
+    adi::device::ClapHost chost;
+    chost.scan(adi::device::ClapHost::defaultSearchPaths());
+    const adi::device::ClapPluginRef* pick = nullptr;
+    for (const auto& r : chost.plugins())
+        if (r.isInstrument && r.name.find(want) != std::string::npos) { pick = &r; break; }
+    check(pick != nullptr, "a CLAP INSTRUMENT matching '" + want + "' is installed");
+    if (pick == nullptr) return 1;
+    std::printf("  plugin  %s by %s %s\n", pick->name.c_str(), pick->vendor.c_str(),
+                pick->version.c_str());
+
+    const double sr = 48000.0;
+    const std::size_t from = 32768 - 16384, n = 16384;
+    auto note = [](std::uint64_t id, int key, int chan) {
+        Event e; e.type = EventType::NoteOn; e.noteId = id; e.dim = static_cast<std::uint16_t>(key);
+        e.channel = static_cast<std::uint8_t>(chan); e.value = 0.8; return e;
+    };
+    auto bend = [](std::uint64_t id, double semis, int chan) {
+        Event e; e.type = EventType::NoteExpression; e.noteId = id; e.channel = static_cast<std::uint8_t>(chan);
+        e.dim = static_cast<std::uint16_t>(adi::ExpressionDim::Pitch); e.value = semis; return e;
+    };
+    auto play = [&](const std::vector<Event>& ev, std::vector<float>& audio) {
+        std::string err;
+        auto dev = chost.makeDevice(*pick, sr, 512, err);
+        if (!dev || !dev->loaded()) { check(false, "the plugin loads: " + err); return false; }
+        dev->prepare(sr, 512);
+        audio = pr::render(*dev, ev, 64, 512, sr);
+        return true;
+    };
+    auto levels = [&](const std::vector<float>& a, const char* name, bool& perNote) {
+        const double g4 = pr::toneLevel(a, from, n, sr, 392.0);
+        const double e4 = pr::toneLevel(a, from, n, sr, pr::midiHz(64));
+        const double b4 = pr::toneLevel(a, from, n, sr, pr::midiHz(71));
+        const double c4 = pr::toneLevel(a, from, n, sr, pr::midiHz(60));
+        const double top = std::max({g4, e4, b4, c4});
+        std::printf("  %-34s G4 %6.1f  E4 %6.1f  B4 %6.1f  C4 %6.1f dB\n", name,
+                    pr::dbRel(g4, top), pr::dbRel(e4, top), pr::dbRel(b4, top), pr::dbRel(c4, top));
+        perNote = pr::dbRel(g4, top) > -12.0 && pr::dbRel(e4, top) > -12.0 &&
+                  pr::dbRel(b4, top) < -30.0 && pr::dbRel(c4, top) < -30.0;
+    };
+
+    std::vector<float> a, b, c;
+    if (!play({note(1, 60, 2), bend(1, 12.0, 2)}, a)) return 1;
+    if (!play({note(1, 60, 2), bend(1, 7.0, 2), note(2, 64, 3)}, b)) return 1;
+    if (!play({note(1, 60, 1), bend(1, 7.0, 1), note(2, 64, 1)}, c)) return 1;
+
+    const double hz = pr::estimateHz(a, from, n, sr, 80.0, 1200.0);
+    std::printf("\n  A  C4 bent +12                      %.2f Hz (%+.1f c from C5)\n", hz,
+                pr::centsBetween(hz, pr::midiHz(72)));
+    bool bPer = false, cPer = false;
+    levels(b, "B  C4 +7 on ch 2, E4 on ch 3", bPer);
+    levels(c, "C  C4 +7 and E4, BOTH on ch 1", cPer);
+    std::printf("\n");
+
+    check(std::abs(pr::centsBetween(hz, pr::midiHz(72))) < 15.0,
+          "A: CLAP's tuning expression bends C4 to C5 -- semitones, no conversion");
+    check(bPer, "B: on separate channels, only the bent note moves");
+    check(cPer, "C: on ONE channel, still only the bent note moves -- the plugin addresses "
+                "expression by note id, so one channel costs nothing");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_clap_probe -- a real .clap, and ADR-0084's open question\n\n");
 
     std::string path = "/Library/Audio/Plug-Ins/CLAP/Surge XT.clap";
-    std::string latencyWant, coalesceWant, rebuildWant, seamWant;
+    std::string latencyWant, coalesceWant, rebuildWant, seamWant, mpeWant;
     bool wetOnly = false;
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--wet-only") wetOnly = true;
@@ -670,6 +748,14 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--coalesce") coalesceWant = argv[i + 1];
         if (std::string(argv[i]) == "--rebuild") rebuildWant = argv[i + 1];
         if (std::string(argv[i]) == "--seam") seamWant = argv[i + 1];
+        if (std::string(argv[i]) == "--mpe") mpeWant = argv[i + 1];
+    }
+    if (!mpeWant.empty()) {
+        std::printf("[ADR-0098] per-note expression through the CLAP host, measured\n");
+        const int rc = clapMpeAcceptance(mpeWant);
+        std::printf("\n%s -- %d checks, %d failure(s)\n",
+                    g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : rc;
     }
     if (!seamWant.empty()) {
         std::printf("[ADR-0090] does a rebuild's lost compensation history show?\n");

@@ -465,9 +465,20 @@ public:
     /// `CLAP_PATH` when it is set. Read rather than hardcoded to one OS.
     [[nodiscard]] static std::vector<std::string> defaultSearchPaths();
 
-    /// Walk `paths` for `.clap` bundles and read their factories. Opening a
-    /// bundle runs its `init`, so a scan is not free and is not a loop to
-    /// put on a timer.
+    /// Every `.clap` under `paths`, searched RECURSIVELY -- CLAP's entry.h:
+    /// "Each directory should be recursively searched". Sorted, without
+    /// duplicates (CLAP_PATH may repeat a default). A `.clap` that is a
+    /// directory is a macOS bundle: it is a candidate, and it is not entered.
+    /// Pure filesystem; nothing is loaded.
+    ///
+    /// One level was searched until ADR-0098, which is every CLAP on Windows
+    /// whose installer uses a vendor folder -- Surge XT's does,
+    /// `CLAP\Surge Synth Team\Surge XT.clap` -- found by nothing.
+    [[nodiscard]] static std::vector<std::string> findBundles(
+        const std::vector<std::string>& paths);
+
+    /// `findBundles`, then read each bundle's factory. Opening a bundle runs
+    /// its `init`, so a scan is not free and is not a loop to put on a timer.
     void scan(const std::vector<std::string>& paths);
 
     [[nodiscard]] const std::vector<ClapPluginRef>& plugins() const noexcept {
