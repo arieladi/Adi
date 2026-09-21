@@ -70,11 +70,44 @@ void GraphHost::fadeIn(const AudioIo& io) noexcept {
     fadeRemaining_ -= n;
 }
 
+std::int32_t GraphHost::handover(const PublishedGraph& from,
+                                const PublishedGraph& to) noexcept {
+    const auto& a = from.graph().planEdges();
+    const auto& b = to.graph().planEdges();
+    Graph& ga = from.graph().graph();
+    Graph& gb = to.graph().graph();
+
+    // One walk over two sorted lists: no allocation, no map, and linear in the
+    // number of edges. Keyed by (track, track, bus), because node ids shift
+    // when a track is added and every junction is a new object per rebuild.
+    std::int32_t carried = 0;
+    std::size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        if (a[i].key < b[j].key) { ++i; continue; }
+        if (b[j].key < a[i].key) { ++j; continue; }
+        const DelayLine* oldLine = ga.edgeLine(a[i].from, a[i].to, a[i].bus);
+        DelayLine* newLine = gb.edgeLine(b[j].from, b[j].to, b[j].bus);
+        // Only a line that DELAYS has history anyone will hear. A zero tap
+        // reads the sample just written, so there is nothing to carry.
+        if (oldLine != nullptr && newLine != nullptr && newLine->delay() > 0) {
+            newLine->adoptHistory(*oldLine);
+            ++carried;
+        }
+        ++i;
+        ++j;
+    }
+    return carried;
+}
+
 void GraphHost::process(const AudioIo& io) noexcept {
     ++stats_.blocks;
 
-    Pub::AudioRead read(pub_);
-    if (!read.valid()) {
+    // PEEK, DO NOT ANNOUNCE YET (ADR-0092). The graph rendered last block was
+    // announced last block, so it is protected by the publisher's strictly-
+    // greater rule until we announce something newer -- which is the only
+    // window in which it is safe to read its rings.
+    const PublishedGraph* snap = pub_.peek();
+    if (snap == nullptr) {
         // Silence, WRITTEN. Returning without writing hands the driver
         // uninitialised memory on the first call and the previous block on
         // every one after, which is the artefact people describe as a stutter.
@@ -86,9 +119,10 @@ void GraphHost::process(const AudioIo& io) noexcept {
         return;
     }
 
-    const std::uint64_t seq = read->seq;
-    const bool swapped = (seq != lastSeq_);
-    if (swapped) {
+    if (snap->seq != lastSeq_) {
+        if (lastSnap_ != nullptr && keepHistory_)
+            stats_.historyCarried += handover(*lastSnap_, *snap);
+
         // NOT on the first graph. `lastSeq_` is 0 until something has played,
         // and ramping the opening milliseconds of every session is an artefact
         // rather than the absence of one -- there is nothing to fade FROM.
@@ -96,11 +130,16 @@ void GraphHost::process(const AudioIo& io) noexcept {
             fadeLength_ = fadeFrames_;
             fadeRemaining_ = fadeFrames_;
         }
-        lastSeq_ = seq;
+        lastSeq_ = snap->seq;
         ++stats_.swaps;
     }
 
-    read->graph().graph().process(io);
+    // NOW, and only now. From this store on the previous graph may be freed,
+    // and nothing below touches it.
+    pub_.announce(snap);
+    lastSnap_ = snap;
+
+    snap->graph().graph().process(io);
     fadeIn(io);
 }
 

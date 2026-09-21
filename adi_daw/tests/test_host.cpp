@@ -16,6 +16,7 @@
 #include "adi/engine/latency.hpp"
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -552,6 +553,227 @@ void testProblemsSurviveWithoutHoldingTheGraph() {
           "and the dangling route is named without the caller holding the graph");
 }
 
+// === ADR-0092: a rebuild keeps the ring history ===========================
+
+/// A source INSIDE a chain: ignores its input, writes a constant. Injected as
+/// a device, so a rebuild re-injects the same object and the model alone
+/// decides the graph -- nothing is added by hand after each swap.
+class DcDevice final : public Node {
+public:
+    explicit DcDevice(float v) : v_(v) {}
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            for (std::int32_t i = 0; i < io.frames; ++i) o[i] = v_;
+        }
+    }
+    // A SOURCE: inherits kInfiniteTail (ADR-0043).
+    [[nodiscard]] const char* name() const noexcept override { return "dc"; }
+private:
+    float v_;
+};
+
+/// Delays by `latency` and says so -- and, like `ClapDevice` since ADR-0090,
+/// does NOT reset its own history when prepared again at the same rate and
+/// size. Without that the rebuild would re-prime it, and the seam would be the
+/// PLUGIN's: the other cause, which mac had to separate before this one showed.
+class LatentDevice final : public Node {
+public:
+    explicit LatentDevice(std::int32_t l) : latency_(l) {}
+    void prepare(double sr, std::int32_t frames) override {
+        if (sr == sr_ && frames == frames_) return;
+        sr_ = sr;
+        frames_ = frames;
+        line_.prepare(2, latency_);
+        line_.setDelay(latency_);
+        ++primes;
+    }
+    void process(const NodeIo& io) noexcept override {
+        const DelayLine::Cursors before = line_.cursors();
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            line_.setCursors(before);
+            float* o = io.out[c] + io.blockOffset;
+            const float* i = (io.in != nullptr && io.in[c] != nullptr)
+                                 ? io.in[c] + io.blockOffset : nullptr;
+            if (i == nullptr) {
+                std::memset(o, 0, static_cast<std::size_t>(io.frames) * sizeof(float));
+                continue;
+            }
+            line_.process(c, i, o, io.frames);
+        }
+        line_.endEdge();
+    }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override { return latency_; }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return kInfiniteTail; }
+    [[nodiscard]] const char* name() const noexcept override { return "latent"; }
+    int primes = 0;
+private:
+    std::int32_t latency_;
+    double sr_ = 0.0;
+    std::int32_t frames_ = 0;
+    DelayLine line_;
+};
+
+struct Seam {
+    double settled = 0.0;
+    std::int64_t below = 0;      ///< samples after the swap under 99% of settled
+    double worst = 0.0;
+    std::int64_t carried = 0;
+    int primes = 0;
+};
+
+/// mac's `adi_clap_probe --seam`, rebuilt from fixtures: a wet track through
+/// 5120 samples of latency and a dry track compensated to meet it, DC on both
+/// at DISTINGUISHABLE levels -- 0.25 wet, 0.75 dry -- so the level during a
+/// hole names which path went missing.
+Seam measureSeam(bool keepHistory, bool wetOnly, int rebuildsInARow,
+                 bool collectBetween = false, int cycles = 1) {
+    GraphHost host;
+    host.setKeepHistory(keepHistory);
+    DcDevice wet(0.25f), dry(wetOnly ? 0.0f : 0.75f);
+    LatentDevice latent(5120);
+
+    RealizeOptions opts;
+    opts.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        if (id == 1) return {&wet, &latent};
+        if (id == 2) return {&dry};
+        return {};
+    };
+    const rows::Model m = twoTracks();
+
+    Seam s;
+    if (!host.rebuild(m, opts, 48000.0, 512)) return s;
+    Out o(512);
+    AudioIo io = makeIo(o, 512);
+    for (int b = 0; b < 30; ++b) host.process(io);     // well past 5120
+    s.settled = std::fabs(static_cast<double>(o.l[511]));
+    s.worst = s.settled;
+
+    for (int c = 0; c < cycles; ++c) {
+        for (int r = 0; r < rebuildsInARow; ++r) host.rebuild(m, opts, 48000.0, 512);
+        for (int b = 0; b < 30; ++b) {
+            host.process(io);
+            if (collectBetween) host.collect();
+            for (float v : o.l) {
+                const double a = std::fabs(static_cast<double>(v));
+                if (a < s.settled * 0.99) {
+                    ++s.below;
+                    if (a < s.worst) s.worst = a;
+                }
+            }
+        }
+    }
+    s.carried = host.stats().historyCarried;
+    s.primes = latent.primes;
+    return s;
+}
+
+void testWithoutHistoryTheSeamIsExactlyTheCompensation() {
+    section("ADR-0092 -- the BEFORE: mac's 5120 samples, reproduced in the suite");
+
+    // The measurement has to be able to see the defect or the next test proves
+    // nothing. So first, with history carrying switched OFF, the number mac
+    // measured on Pro-Q 3 must come out -- exactly, because the dry edge's
+    // ring is 5120 samples of silence and nothing else is wrong.
+    const Seam s = measureSeam(false, false, 1);
+    check(s.settled > 0.99 && s.settled < 1.01,
+          "settled at 0.25 wet + 0.75 dry = 1.0: got " + std::to_string(s.settled));
+    eqi(s.below, 5120,
+        "the master sits below settled for EXACTLY the dry edge's 5120 samples");
+    check(s.worst > 0.24 && s.worst < 0.26,
+          "and at 0.25 while it does -- the WET path alone, so it is the dry ring "
+          "that emptied: got " + std::to_string(s.worst));
+    eqi(s.primes, 1,
+        "the latent plugin was primed ONCE -- the rebuild did not re-prime it, so "
+        "this seam is the ring's and not the plugin's (ADR-0090)");
+}
+
+void testARebuildKeepsTheRingHistory() {
+    section("ADR-0092 -- the AFTER: a rebuild that changes nothing audible is seamless");
+
+    const Seam s = measureSeam(true, false, 1);
+    eqi(s.below, 0,
+        "not one sample below settled -- the dry edge took the old ring's history");
+    check(s.carried >= 1, "and the host says it carried: " + std::to_string(s.carried));
+}
+
+void testTheControlHasNoSeamEitherWay() {
+    section("ADR-0092 -- the CONTROL: with no dry path there was never a seam");
+
+    // mac's --wet-only. If this showed a hole the fix would be aimed at the
+    // wrong thing; that it shows none with history OFF is what makes the 5120
+    // above the dry ring's and nobody else's.
+    eqi(measureSeam(false, true, 1).below, 0, "wet only, history off: no hole");
+    eqi(measureSeam(true, true, 1).below, 0, "wet only, history on: still none");
+}
+
+void testHistoryComesFromTheGraphThatActuallyRan() {
+    section("ADR-0092 -- two rebuilds between blocks carry from the graph that RAN");
+
+    // The audio thread goes from graph 1 straight to graph 3; graph 2 was
+    // published and superseded before any block rendered it, so its rings hold
+    // nothing. Carrying from "the last one published" would carry silence.
+    // Carrying from the last one RENDERED carries the music.
+    eqi(measureSeam(true, false, 2).below, 0, "no seam across a skipped graph");
+    eqi(measureSeam(true, false, 5).below, 0, "nor across four skipped graphs");
+}
+
+void testHistoryIsCarriedAcrossRepeatedRebuilds() {
+    section("ADR-0092 -- rebuild, render, collect, repeat: every swap is seamless");
+
+    // Collecting between swaps is what frees each retired graph, so a host
+    // that kept carrying from a stale pointer would read freed memory here --
+    // the defect that only appears on the SECOND swap, never the first.
+    eqi(measureSeam(true, false, 1, true, 4).below, 0,
+        "four rebuilds, each collected, none audible");
+}
+
+void testTheSameEdgeIsMatchedHoweverTheRowSaysIt() {
+    section("ADR-0092 -- an edge is matched by what it IS, not by how the model spells it");
+
+    // The planner emits explicit routing rows first and ADR-0065's defaults
+    // after, so edge order depends on how each route happens to be spelled.
+    // Here the DRY track (id 1, the compensated one) routes by default, and
+    // the wet track (id 2) by an explicit row naming the same master its
+    // default would -- identical audio, different emission order.
+    //
+    // The audio thread matches two graphs' edges in one merge walk, which is
+    // only correct over lists SORTED by key. Unsorted, the old graph lists
+    // (2->9, 1->9) and the new one (1->9, 2->9); the walk passes 1->9 in the
+    // new list before reaching it in the old, and the one edge that has
+    // history to carry is the one it skips.
+    GraphHost host;
+    DcDevice dry(0.75f), wet(0.25f);
+    LatentDevice latent(5120);
+    RealizeOptions opts;
+    opts.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        if (id == 1) return {&dry};
+        if (id == 2) return {&wet, &latent};
+        return {};
+    };
+
+    rows::Model spelled = twoTracks();
+    spelled.routing.push_back(route(100, 2, 9));     // says what the default says
+    const rows::Model plain = twoTracks();
+
+    check(host.rebuild(spelled, opts, 48000.0, 512), "built with the explicit row");
+    Out o(512);
+    AudioIo io = makeIo(o, 512);
+    for (int b = 0; b < 30; ++b) host.process(io);
+    const double settled = std::fabs(static_cast<double>(o.l[511]));
+    check(settled > 0.99 && settled < 1.01, "settled at 1.0: " + std::to_string(settled));
+
+    check(host.rebuild(plain, opts, 48000.0, 512), "rebuilt with the row removed");
+    std::int64_t below = 0;
+    for (int b = 0; b < 30; ++b) {
+        host.process(io);
+        for (float v : o.l)
+            if (std::fabs(static_cast<double>(v)) < settled * 0.99) ++below;
+    }
+    eqi(below, 0,
+        "no seam: 1->9 is the same edge whether a row or the default produced it");
+}
+
 }  // namespace
 
 int main() {
@@ -569,6 +791,12 @@ int main() {
     testTheCoalescerSurvivesARebuild();
     testRebuildNeededFinallyHasAnAnswer();
     testProblemsSurviveWithoutHoldingTheGraph();
+    testWithoutHistoryTheSeamIsExactlyTheCompensation();
+    testARebuildKeepsTheRingHistory();
+    testTheControlHasNoSeamEitherWay();
+    testHistoryComesFromTheGraphThatActuallyRan();
+    testHistoryIsCarriedAcrossRepeatedRebuilds();
+    testTheSameEdgeIsMatchedHoweverTheRowSaysIt();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -332,6 +332,17 @@ public:
     /// glide and advances the grow state machine.
     void endEdge() noexcept;
 
+    /// ADR-0092: take the history `old` has been accumulating, so this line's
+    /// tap reads what the old one would have read. AUDIO THREAD, at a graph
+    /// swap: it copies and allocates nothing.
+    ///
+    /// Only what THIS line's tap reaches is copied -- `min(delay, capacity,
+    /// old capacity)` samples per channel. A ring carries thousands of samples
+    /// of headroom (ADR-0088), and copying all of it would make a rebuild cost
+    /// in proportion to headroom rather than to compensation. What lies beyond
+    /// the old ring's capacity was never stored, and is not invented.
+    void adoptHistory(const DelayLine& old) noexcept;
+
 private:
     enum class Grow : std::uint8_t {
         Idle,      ///< one ring
@@ -517,6 +528,13 @@ public:
     /// in a comment -- which is how "low thousands" survived long enough to
     /// make the default wrong.
     [[nodiscard]] std::size_t compensationBytes() const noexcept;
+
+    /// The compensation ring on the edge `from -> to`, or null. Resolved each
+    /// time rather than cached by a caller, because `prepare` rebuilds the
+    /// per-slot ring vectors and a pointer held across it can dangle -- which
+    /// the probe's pattern of feeding a graph and re-preparing it after a
+    /// rebuild would hit on the first swap.
+    [[nodiscard]] DelayLine* edgeLine(NodeId from, NodeId to, Bus bus) noexcept;
 
     /// The graph's own latency: how far behind the output is (ADR-0058).
     /// Excludes the device buffer -- that is ADR-0042 decision 7, and folding

@@ -5971,3 +5971,132 @@ which cannot be known before the splits are computed. That needs either a second
 scheduling phase or accepting that emitted events arrive inside a segment rather
 than on a boundary. Nothing emits events today, so it is deferred rather than
 guessed at.
+
+---
+
+## ADR-0092 — A rebuild keeps the history of every edge that exists in both graphs — `DECIDED` (2026-09-21) — **AMENDS ADR-0089 decision 4**
+
+ADR-0089 named this as not-decided: a rebuild resets every edge's compensation
+history, including the edges whose routing did not change. mac measured whether
+it is audible, and had to remove a larger effect first — every plugin in the
+project was being re-primed by a rebuild, fixed in ADR-0090. With that gone:
+
+    adi_clap_probe --seam "Pro-Q 3"             5120 samples, the DRY path missing
+    adi_clap_probe --seam "Pro-Q 3" --wet-only  0 samples   (the control)
+
+The dry path is compensated by exactly Pro-Q 3's linear-phase latency. A rebuild
+gave it a fresh ring, so for 5120 samples — 107 ms — the master carried the wet
+path alone. `--wet-only`, with no compensated edge anywhere, shows nothing,
+which is what makes the 5120 the ring's and nobody else's. mac: *"Yes. Build
+it. The number to hold it to is 5120 samples on that graph."*
+
+### The history can only be copied on the audio thread, at the swap
+
+The old graph is live until the swap: the audio thread is writing its rings
+every block. Reading them from the message thread would be a data race and a
+torn copy. So the copy happens where the rings are owned — on the audio thread,
+in the block that picks up the new graph, before anything renders.
+
+**That is only safe if the old graph cannot be freed during the copy, and the
+publisher already guarantees it — once its two steps are pulled apart.** The
+graph rendered last block was announced last block, so its sequence number is
+`inUse_`. `collect()` frees only what is *strictly* older than `inUse_` — the
+rule ADR-0019 spends a page defending. So until the audio thread announces the
+new graph, the old one is protected, however many times the message thread
+publishes and collects in between.
+
+`AudioRead` loads and announces in one constructor, which is right for every
+reader that only touches the snapshot it is on. `SnapshotPublisher` gained
+`peek()` and `announce()` for the one reader that must read its previous
+snapshot once more before moving on. The rule that makes it safe is the
+caller's — finish with the previous snapshot before announcing — and it is
+written into the publisher next to the rule it depends on.
+
+### Decision
+
+**1. Edges are matched by what they ARE: `(fromTrack, toTrack, bus)`.**
+
+Not by node id: a new track shifts every id after it. Not by node pointer: every
+junction is a fresh `MixNode` per realisation (ADR-0077). What the history on an
+edge *means* is "what track A has been sending to track B", and that is exactly
+the key. Realisation records it for every plan edge and sorts the list, so the
+audio thread matches two graphs in one allocation-free merge walk.
+
+**2. The rings are looked up at the swap, never cached.** `prepare` rebuilds the
+per-slot ring vectors, so a `DelayLine*` held across it can dangle — and mac's
+probe feeds a graph and re-prepares it *after* the rebuild publishes it, which
+would hit that on the first swap. `Graph::edgeLine()` resolves each one when it
+is needed.
+
+**3. Only what the new tap reads is copied: `min(delay, capacity, old capacity)`.**
+A ring holds `delay + 8192` samples (ADR-0088). Copying all of it would make a
+rebuild cost in proportion to headroom rather than to compensation. What lies
+beyond the old ring's capacity was never stored and is not invented.
+
+**4. History comes from the graph that RAN, not the last one published.** Two
+rebuilds between blocks send the audio thread from graph 1 straight to graph 3;
+graph 2 was superseded before any block rendered it, and its rings hold nothing.
+The host carries from the snapshot it rendered last.
+
+**5. The fade defaults to 0, where ADR-0089 made it 256.** The fade existed to
+bound a seam, and the seam was two things: every plugin re-primed (ADR-0090) and
+every compensation ring emptied (this). With both gone, a swap that changed
+nothing audible is seamless — and ramping the whole mix up from silence across
+it would be the only artefact left, a dip of our own making. The setting remains
+for the case it suits: a swap across a change of block size or rate, where
+plugins genuinely do re-prime.
+
+### Verified non-vacuously
+
+The measurement had to be able to see the defect first, so the suite rebuilds
+mac's probe from fixtures — a wet track through 5120 samples of latency, a dry
+track compensated to meet it, DC at 0.25 and 0.75 so the level during a hole
+names the missing path — with a latent device that, like `ClapDevice` since
+ADR-0090, does not re-prime when prepared again unchanged.
+
+| | history | seam |
+|---|---|---|
+| before | off | **exactly 5120 samples**, at 0.25 — the wet path alone |
+| after | on | **0** |
+| control, wet only | off / on | 0 / 0 |
+| two rebuilds between blocks | on | 0 |
+| four rebuilds, each collected | on | 0 |
+
+Nine planted defects, all caught: history never carried (6 checks), carried from
+the new graph into itself (5), the delay guard inverted (5), the old ring read
+from the wrong end (3), the write cursor left where it was (8), the whole ring
+copied rather than the tap's reach (2), a channel-count mismatch not refused
+(2), the edge list left unsorted (1), and the last-rendered pointer set once and
+never updated.
+
+**That last one was caught by an access violation, not a failed check.** With
+`lastSnap_` stale, the second swap reads a graph `collect()` has already freed.
+The repeated-rebuild test collects between swaps precisely so that this path is
+reachable; a defect that only appears on the second swap is invisible to every
+test that performs one.
+
+**The unsorted edge list needed its own test.** The planner emits explicit
+routing rows before ADR-0065's defaults, so edge order depends on how each route
+happens to be spelled. A dry track routed by default and a wet track routed by a
+row naming the same master put the lists in different orders across a rebuild
+that changes only the spelling — and an unsorted merge walk skips the one edge
+with history to carry.
+
+### What is not verified here
+
+- **The concurrency argument is not exercised by any test.** Announcing *after*
+  the handover is what keeps the old graph alive, and a single-threaded test
+  cannot run `collect()` between the two. It rests on the publisher's documented
+  ordering, which is where ADR-0019's own safety argument rests.
+- **No real plugin on this machine.** The probe's pin — `check(belowFor > 0,
+  "THE RING HISTORY IS STILL LOST")`, written so that fixing this would make it
+  fail — now asserts `belowFor == 0`. Running `adi_clap_probe --seam "Pro-Q 3"`
+  on a machine with plugins is the real-world confirmation.
+
+### Not decided
+
+An edge whose compensation grew in the rebuild past what the old ring held gets
+only the history that existed; the rest of its tap reads silence until it fills.
+That is ADR-0085's priming problem arriving from a different direction, and it
+wants the same answer — but it needs a rebuild that changes compensation to be
+measured first, and none has been.

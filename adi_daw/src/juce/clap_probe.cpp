@@ -641,12 +641,14 @@ int measureTheSeam(const std::string& want, bool wetOnly) {
               "the plugin is NOT re-primed by a rebuild: no hole with no ring "
               "in the path, was 5120 samples before prepare became idempotent");
     } else {
-        // And what is left is exactly the cost win named and did not fix.
-        check(belowFor > 0,
-              "THE RING HISTORY IS STILL LOST: with the plugin no longer "
-              "re-primed, a rebuild still drops the DRY path for as long as "
-              "its compensation delay -- which is what preserving unchanged "
-              "edges would fix");
+        // This used to assert belowFor > 0 -- a pin on the cost ADR-0089
+        // named and did not fix, written so that fixing it would make this
+        // line fail. ADR-0092 carries ring history across the swap, so the
+        // dry path no longer drops for its compensation delay.
+        check(belowFor == 0,
+              "the ring history survives the rebuild: the DRY path does not "
+              "drop, where it dropped for exactly its compensation delay "
+              "(5120 samples on Pro-Q 3) before ADR-0092");
     }
     return 0;
 }

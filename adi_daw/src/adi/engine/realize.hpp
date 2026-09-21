@@ -130,6 +130,35 @@ public:
     /// described.
     [[nodiscard]] std::size_t nodeCount() const noexcept { return graph_.nodeCount(); }
 
+    /// An edge's identity ACROSS rebuilds (ADR-0092): which track feeds which,
+    /// on which bus. Node ids are not it -- a new track shifts every id after
+    /// it, and every junction is a fresh object per realisation. What the
+    /// history on an edge means is "what track A has been sending to track B",
+    /// and that is exactly this key.
+    struct EdgeKey {
+        std::int64_t fromTrack = 0;
+        std::int64_t toTrack = 0;
+        std::uint8_t bus = 0;
+        friend bool operator<(const EdgeKey& a, const EdgeKey& b) noexcept {
+            if (a.fromTrack != b.fromTrack) return a.fromTrack < b.fromTrack;
+            if (a.toTrack != b.toTrack) return a.toTrack < b.toTrack;
+            return a.bus < b.bus;
+        }
+    };
+    struct EdgeRecord {
+        EdgeKey key;
+        NodeId from = kInvalidNode;
+        NodeId to = kInvalidNode;
+        Bus bus = Bus::Main;
+    };
+
+    /// Every edge realisation made from the plan, SORTED by key, so two
+    /// graphs' lists can be matched in one allocation-free walk on the audio
+    /// thread. The rings themselves are looked up at the swap, never cached.
+    [[nodiscard]] const std::vector<EdgeRecord>& planEdges() const noexcept {
+        return planEdges_;
+    }
+
 private:
     friend std::unique_ptr<RealizedGraph> realize(const GraphPlan&,
                                                   const RealizeOptions&);
@@ -143,6 +172,7 @@ private:
     /// Only the nodes realisation itself created. Devices are owned elsewhere.
     std::vector<std::unique_ptr<Node>> owned_;
     std::unordered_map<std::int64_t, Chain> chains_;
+    std::vector<EdgeRecord> planEdges_;
     std::vector<std::string> problems_;
     std::string error_;
     bool ok_ = false;

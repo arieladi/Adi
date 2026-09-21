@@ -68,6 +68,7 @@ public:
         std::int64_t swaps = 0;       ///< times the audio thread picked up a new graph
         std::int64_t reclaimed = 0;   ///< retired graphs freed
         std::int64_t blocks = 0;
+        std::int64_t historyCarried = 0; ///< edges whose ring history crossed a swap
     };
 
     GraphHost() = default;
@@ -110,9 +111,24 @@ public:
     void setLatencyHeadroom(std::int32_t n) noexcept { headroom_ = n > 0 ? n : 0; }
     [[nodiscard]] std::int32_t latencyHeadroom() const noexcept { return headroom_; }
 
-    /// Samples the incoming graph is ramped up over. 0 disables the fade,
-    /// which is what an offline render wants: a bounce has no seam to hide,
-    /// because it re-renders rather than swapping mid-stream (ADR-0066 d5).
+    /// ADR-0092: at a swap, every edge that exists in both graphs takes the
+    /// old one's ring history, so a rebuild that changed nothing audible
+    /// changes nothing audible. On by default; off reproduces ADR-0089's
+    /// behaviour, which is what the seam test uses as its "before".
+    void setKeepHistory(bool v) noexcept { keepHistory_ = v; }
+    [[nodiscard]] bool keepHistory() const noexcept { return keepHistory_; }
+
+    /// Samples the incoming graph is ramped up over.
+    ///
+    /// **0 BY DEFAULT since ADR-0092**, and it was 256. The fade existed to
+    /// bound a seam, and the seam was two things: every plugin re-primed
+    /// (fixed by mac, ADR-0090) and every compensation ring emptied (fixed by
+    /// carrying history). With both gone, a swap that changed nothing audible
+    /// is seamless -- and ramping the whole mix up from silence across it would
+    /// be the only artefact left, a dip of our own making.
+    ///
+    /// Still here for the case it suits: a swap across a change of block size
+    /// or rate, where plugins genuinely do re-prime.
     void setFadeFrames(std::int32_t n) noexcept { fadeFrames_ = n > 0 ? n : 0; }
     [[nodiscard]] std::int32_t fadeFrames() const noexcept { return fadeFrames_; }
 
@@ -140,15 +156,24 @@ private:
 
     void fadeIn(const AudioIo& io) noexcept;
 
+    /// Carry ring history from `from` to `to`. Audio thread, allocation-free:
+    /// one merge walk over two sorted edge lists. Returns edges carried.
+    std::int32_t handover(const PublishedGraph& from, const PublishedGraph& to) noexcept;
+
     Pub pub_;
     Stats stats_;
     std::string error_;
     std::vector<std::string> problems_;
     std::int32_t headroom_ = 8192;
-    std::int32_t fadeFrames_ = 256;
+    std::int32_t fadeFrames_ = 0;
+    bool keepHistory_ = true;
 
     // Audio thread only.
     std::uint64_t lastSeq_ = 0;
+    /// The snapshot rendered LAST block -- the one history is carried FROM.
+    /// Not whatever the message thread last published: two rebuilds between
+    /// blocks skip a graph that never ran, and its rings hold nothing.
+    const PublishedGraph* lastSnap_ = nullptr;
     std::int32_t fadeRemaining_ = 0;
     std::int32_t fadeLength_ = 0;
 

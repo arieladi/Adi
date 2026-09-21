@@ -2,6 +2,7 @@
 
 #include "adi/engine/realize.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <utility>
@@ -145,10 +146,26 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                                    "connection was not made");
             continue;
         }
-        if (!r->graph_.connect(from, to, e.bus))
+        if (!r->graph_.connect(from, to, e.bus)) {
             r->problems_.push_back(trackRef(srcId) + " -> " + trackRef(dstId) +
                                    ": the graph refused the connection");
+            continue;
+        }
+        RealizedGraph::EdgeRecord rec;
+        rec.key.fromTrack = srcId;
+        rec.key.toTrack = dstId;
+        rec.key.bus = static_cast<std::uint8_t>(e.bus);
+        rec.from = from;
+        rec.to = to;
+        rec.bus = e.bus;
+        r->planEdges_.push_back(rec);
     }
+    // Sorted here, on the message thread, so the audio thread can match two
+    // graphs' edges by walking both lists once (ADR-0092).
+    std::sort(r->planEdges_.begin(), r->planEdges_.end(),
+              [](const RealizedGraph::EdgeRecord& a, const RealizedGraph::EdgeRecord& b) {
+                  return a.key < b.key;
+              });
 
     // --- the output ---------------------------------------------------------
     const std::int64_t masterId = plan.nodes[*plan.output].trackId;

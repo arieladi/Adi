@@ -982,6 +982,104 @@ void testEscalationCanBeDeclined() {
     eqi(static_cast<long long>(g.growingEdges()), 0, "with no offer in flight");
 }
 
+// === ADR-0092: a ring adopts another's history ============================
+
+void testAdoptedHistoryContinuesTheStream() {
+    section("ADR-0092 -- after adopting, the new ring says exactly what the old would have");
+
+    // The whole contract in one comparison: feed both lines the same next
+    // samples, and the outputs must be identical. Not "close" -- identical,
+    // because this is a copy and not an estimate.
+    DelayLine old;
+    old.prepare(1, 8);
+    old.setDelay(3);
+    std::vector<float> warm(20), sink(20);
+    for (int i = 0; i < 20; ++i) warm[static_cast<std::size_t>(i)] = static_cast<float>(i + 1);
+    old.process(0, warm.data(), sink.data(), 20);
+
+    // A BIGGER ring, as a rebuild with headroom produces, at the same delay.
+    DelayLine fresh;
+    fresh.prepare(1, 16);
+    fresh.setDelay(3);
+    fresh.adoptHistory(old);
+
+    std::vector<float> next{21, 22, 23, 24}, a(4), b(4);
+    old.process(0, next.data(), a.data(), 4);
+    fresh.process(0, next.data(), b.data(), 4);
+    check(a == b, "identical output: old " + std::to_string(a[0]) + ".." +
+                      std::to_string(a[3]) + ", new " + std::to_string(b[0]) + ".." +
+                      std::to_string(b[3]));
+    check(b[0] == 18.0f && b[3] == 21.0f,
+          "and it is the right thing: three samples late, so 18..21");
+
+    // Without adoption the fresh ring would have said four zeros -- the seam.
+    DelayLine cold;
+    cold.prepare(1, 16);
+    cold.setDelay(3);
+    std::vector<float> c(4);
+    cold.process(0, next.data(), c.data(), 4);
+    check(c[0] == 0.0f && c[2] == 0.0f,
+          "whereas a ring that adopted nothing starts in silence -- which is the "
+          "5120-sample hole, at a size small enough to read");
+}
+
+void testAdoptionCopiesOnlyWhatTheTapReaches() {
+    section("ADR-0092 -- a swap costs in proportion to compensation, not headroom");
+
+    // A ring holds `delay + 8192` samples by default (ADR-0088). Copying all of
+    // it at every swap would make a rebuild cost scale with headroom. Only
+    // what the new tap reads is copied, so a tap moved further back afterwards
+    // reads silence rather than stale history -- the observable edge of the
+    // rule, pinned so nobody "helpfully" copies the lot.
+    DelayLine old;
+    old.prepare(1, 16);
+    old.setDelay(10);
+    std::vector<float> warm(40), sink(40);
+    for (int i = 0; i < 40; ++i) warm[static_cast<std::size_t>(i)] = static_cast<float>(i + 1);
+    old.process(0, warm.data(), sink.data(), 40);
+
+    DelayLine fresh;
+    fresh.prepare(1, 16);
+    fresh.setDelay(3);
+    fresh.adoptHistory(old);        // carries 3, not 16
+
+    fresh.setDelay(10);             // reach back past what was carried
+    std::vector<float> one{41}, out(1, -1.0f);
+    fresh.process(0, one.data(), out.data(), 1);
+    check(out[0] == 0.0f,
+          "a tap moved beyond the carried history reads silence, not a stale "
+          "copy -- only three samples crossed: got " + std::to_string(out[0]));
+}
+
+void testAdoptionRefusesWhatItCannotDoHonestly() {
+    section("ADR-0092 -- no history is invented");
+
+    DelayLine old;
+    old.prepare(2, 8);
+    old.setDelay(4);
+    std::vector<float> w(8, 1.0f), s(8);
+    old.process(0, w.data(), s.data(), 8);
+    old.process(1, w.data(), s.data(), 8);
+
+    // A mono ring cannot take stereo history: which channel would it be?
+    DelayLine mono;
+    mono.prepare(1, 8);
+    mono.setDelay(4);
+    mono.adoptHistory(old);
+    std::vector<float> z{0.0f}, o(1, -1.0f);
+    mono.process(0, z.data(), o.data(), 1);
+    check(o[0] == 0.0f, "a channel-count mismatch adopts nothing");
+
+    // A zero tap reads the sample just written, so there is no history to take.
+    DelayLine zero;
+    zero.prepare(2, 8);
+    zero.setDelay(0);
+    zero.adoptHistory(old);
+    std::vector<float> seven{7.0f}, oz(1, -1.0f);
+    zero.process(0, seven.data(), oz.data(), 1);
+    check(oz[0] == 7.0f, "a zero-delay ring passes the current sample, untouched by adoption");
+}
+
 }  // namespace
 
 int main() {
@@ -1006,6 +1104,9 @@ int main() {
     testAMisfitGrowsTheRingThroughTheCoalescer();
     testAShapeChangeEscalatesStraightToARebuild();
     testEscalationCanBeDeclined();
+    testAdoptedHistoryContinuesTheStream();
+    testAdoptionCopiesOnlyWhatTheTapReaches();
+    testAdoptionRefusesWhatItCannotDoHonestly();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

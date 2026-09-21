@@ -207,6 +207,37 @@ std::vector<float> DelayLine::collectRing() {
     return old;
 }
 
+void DelayLine::adoptHistory(const DelayLine& old) noexcept {
+    if (ring_ <= 0 || old.ring_ <= 0 || channels_ != old.channels_) return;
+
+    std::int32_t k = delay_;
+    if (k > capacity_) k = capacity_;
+    if (k > old.capacity_) k = old.capacity_;
+    if (k <= 0) return;
+
+    // `buf_` and `write_` are the live history in every state: while an old
+    // ring is growing both rings are written and `buf_` is the one read, and
+    // after its swap `buf_` IS the grown ring. So nothing here has to know
+    // what the old line was in the middle of.
+    for (std::int32_t c = 0; c < channels_; ++c) {
+        const float* src = old.buf_.data() + static_cast<std::size_t>(c) *
+                                             static_cast<std::size_t>(old.ring_);
+        float* dst = buf_.data() + static_cast<std::size_t>(c) *
+                                   static_cast<std::size_t>(ring_);
+        for (std::int32_t i = 0; i < k; ++i) {
+            // dst[0] is the OLDEST sample carried and dst[k-1] the newest.
+            // `old.write_` is the NEXT write, so the newest written sample is
+            // one behind it.
+            std::int32_t r = (old.write_ - k + i) % old.ring_;
+            if (r < 0) r += old.ring_;
+            dst[i] = src[r];
+        }
+    }
+    // The next write lands right after the newest carried sample, so a tap at
+    // `delay_` reads exactly what the old line's tap would have read next.
+    write_ = k % ring_;
+}
+
 void DelayLine::endEdge() noexcept {
     if (gliding_.load(std::memory_order_acquire)) {
         delay_ = target_.load(std::memory_order_relaxed);
@@ -538,6 +569,16 @@ std::size_t Graph::collectRings() {
         for (DelayLine& d : s.sideDelays) take(d);
     }
     return freed;
+}
+
+DelayLine* Graph::edgeLine(NodeId from, NodeId to, Bus bus) noexcept {
+    if (to < 0 || to >= static_cast<NodeId>(slots_.size())) return nullptr;
+    Slot& s = slots_[static_cast<std::size_t>(to)];
+    auto& edges = (bus == Bus::Sidechain) ? s.sidechains : s.inputs;
+    auto& lines = (bus == Bus::Sidechain) ? s.sideDelays : s.inDelays;
+    for (std::size_t k = 0; k < edges.size() && k < lines.size(); ++k)
+        if (edges[k] == from) return &lines[k];
+    return nullptr;
 }
 
 std::size_t Graph::compensationBytes() const noexcept {
