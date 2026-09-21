@@ -82,6 +82,7 @@ One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `tools/clap_smoke/**`, `tools/build_clap_win.bat`, `collab/win.md`, `ARCHITECTURE.md` | win | `win/adi-surge-clap-smoke` | 2026-09-21 |
 
 ## Reserved ADR numbers
 
