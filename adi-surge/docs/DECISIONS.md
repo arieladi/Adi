@@ -357,3 +357,78 @@ came out", and it is precisely the claim the exit code does not make.
 
 This is also a reminder that `cmake_minimum_required` in a vendored tree is a
 floor for *that file*, not for the build. Check what the submodules demand.
+
+---
+
+## ADR-0008 — ADR-0007's context is wrong: old CMake fails loudly. Its decision stands.
+
+**Date:** 2026-09-21 · **Agent:** win · **Supersedes:** the *Context* of
+ADR-0007, not its *Decision*
+
+**Context.** ADR-0007 says that on CMake 3.15–3.20, "the configure succeeds,
+the build succeeds, the exit code is 0, and **there is no CLAP**". It was
+written from source, before anyone had built. The first Windows build tested
+the claim, and it does not hold. **Nothing in Surge's CMake produces the
+silent no-CLAP outcome in any configuration that could produce a CLAP.** There
+are two reasons.
+
+**1. JUCE's version check runs before the CLAP warning.** `src/CMakeLists.txt`
+runs `add_subdirectory(${SURGE_JUCE_PATH} ...)` at **line 27**. The
+`VERSION_LESS 3.21` warning comes after it, at **line 35**. JUCE's own file
+demands `cmake_minimum_required(VERSION 3.22)`. That is true of the pinned
+8.0.12 (`libs/JUCE/CMakeLists.txt:33`), and also of `surge-7.0.12`, the tree
+upstream's "Windows MSVC JUCE 7" CI leg swaps in (line 24, read via
+`gh api repos/surge-synthesizer/JUCE/contents/CMakeLists.txt?ref=surge-7.0.12`).
+A `cmake_minimum_required` above the running version is a hard error in any
+directory. So on CMake below 3.22, configure **stops at JUCE**, and the warning
+is never reached.
+
+Tested by shape, not with an old CMake. I built a scratch project with a 3.15
+root, then a subdirectory demanding 99.0 added first, then the "Skipping CLAP"
+`message(WARNING)`. On CMake 3.31.6 the configure exits 1 with
+`CMake 99.0 or higher is required`. The warning line never prints.
+
+The one configuration that skips JUCE, `SURGE_SKIP_JUCE_FOR_RACK`, also skips
+`add_subdirectory(surge-xt)` (`src/CMakeLists.txt:171`), so it cannot produce a
+CLAP on any CMake version. That is not a silent failure; that configuration
+never builds a CLAP at all.
+
+**2. The documented build names the target.** Both platforms' commands pass
+`--target surge-xt_CLAP`. If that target did not exist, the build would fail.
+Tested on Windows: `cmake --build ... --target surge-xt_CLAP_does_not_exist`
+gives `MSBUILD : error MSB1009: Project file does not exist.`, rc=1. Only a bare
+`cmake --build build` with no target could ever exit 0 without a CLAP, and only
+after an explicit `-DSURGE_BUILD_CLAP=OFF`. That is a choice someone made, not
+a trap.
+
+The `FATAL_ERROR` in `libs/clap-juce-extensions/CMakeLists.txt:13` adds nothing
+to the argument. CMake has ignored that keyword since 2.6, and an unmet
+minimum is fatal either way.
+
+**Decision.** ADR-0007's Decision stands unchanged:
+
+1. CMake ≥ 3.22 is required.
+2. Record the version before the first build.
+3. A build counts only if the `.clap` exists on disk.
+
+What changes is the **reason**: CMake below 3.22 is a **loud configure
+error**, not a silent success. The `src/CMakeLists.txt:35-41` warning is dead
+code for any build that could make a CLAP. Do not describe it as the main risk.
+
+Point 3 is kept on its own merits, not because of the failure ADR-0007
+described. An exit code proves a command ran, not what it produced, and
+checking for the file is one line. `tools/build_clap_win.bat` asserts it and
+exits 4 if the file is missing.
+
+**Consequences.**
+
+- `ARCHITECTURE.md` §2.1's warning box is rewritten to say this.
+- `collab/WIN-ONBOARDING.md` step 4.1 is corrected to match.
+- Anyone meeting a CMake-version problem should expect a configure error that
+  names 3.22, not a green build with a missing file.
+- When we write CI, it asserts the artifact because an exit code proves
+  nothing about output in general, not because of this particular path.
+
+The general lesson ADR-0007 closed on still holds, and this ADR is an instance
+of it. `cmake_minimum_required` in a vendored tree is a floor for that file;
+**the order in which files are processed** decides which floor you hit first.

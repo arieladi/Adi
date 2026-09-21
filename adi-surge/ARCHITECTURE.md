@@ -4,9 +4,10 @@ Working notes for the CLAP half of the AI synth work. Living document: update it
 when a decision changes, don't let it drift.
 
 **Status:** bootstrap. The Surge XT fork is cloned and complete (all 22
-submodules checked out clean); nothing has been built yet on either platform and
-no AI code is written. Every number below was produced by a command, and the
-command is written next to it.
+submodules checked out clean). **`surge-xt_CLAP` builds on Windows** and
+`ctest -j 4` passes **145/145** there (2026-09-21, `collab/win.md`). macOS has
+not been built yet, and no AI code is written. Every number below was produced
+by a command, and the command is written next to it.
 
 **Two agents work on this project.** Read these first:
 
@@ -112,36 +113,32 @@ pinned at `16e9d4c`). Note for anyone coming from `adi_daw`: that library builds
 CLAP **plugins** out of JUCE projects. It is explicitly *not* a CLAP host, which
 is the fact adi_daw ADR-0052 already records.
 
-> ### ⚠ The CLAP build is silently skipped on CMake < 3.21
+> ### ⚠ CMake below 3.22 fails configure, loudly (ADR-0008 corrects ADR-0007)
 >
-> This is the single most dangerous trap in this project, because it fails
-> *quietly* and it targets the exact artifact we care about:
+> Surge's root file says `cmake_minimum_required(VERSION 3.15)`. **Do not trust
+> it.** The real floor is **3.22**, because JUCE demands it
+> (`libs/JUCE/CMakeLists.txt:33`), and so does the `surge-7.0.12` JUCE that
+> upstream's "JUCE 7" CI leg uses.
 >
-> ```cmake
-> if(${CMAKE_VERSION} VERSION_LESS 3.21)
->   message(WARNING "CMake version is lower than 3.21. Skipping CLAP builds. ...")
->   set(SURGE_BUILD_CLAP FALSE)
-> endif()
-> ```
-> — `src/CMakeLists.txt:35-41`
->
-> It is a **`WARNING`, not a `FATAL_ERROR`**. The configure succeeds, the build
-> succeeds, and there is no CLAP at the end of it. Meanwhile the top-level file
-> says `cmake_minimum_required(VERSION 3.15)`, so 3.15–3.20 is a *supported*
-> configuration that cannot produce our primary target.
->
-> **The real floor is 3.22**, because `libs/JUCE/CMakeLists.txt:33` requires it
-> and `libs/clap-juce-extensions/CMakeLists.txt:13` requires 3.21 as a
-> `FATAL_ERROR`. Do not trust the 3.15 figure in the root file.
+> `src/CMakeLists.txt:35-41` does contain a check that *looks* like a silent
+> trap: a `WARNING`, not a `FATAL_ERROR`, that turns off the CLAP on CMake
+> below 3.21. **It cannot be reached in a build that could make a CLAP.** JUCE
+> is added at line 27, before it, and JUCE's own 3.22 minimum is a hard error.
+> So on old CMake the configure **stops at JUCE with an error naming 3.22**. The
+> only configuration that skips JUCE (`SURGE_SKIP_JUCE_FOR_RACK`) also skips
+> `surge-xt` (line 171), so it never makes a CLAP on any CMake. ADR-0007 said
+> the opposite, from source reading; the first build disproved it. Evidence is
+> in ADR-0008.
 >
 > **Check your CMake version before your first build and record it in your log.**
 > On Windows, CMake ships inside the Visual Studio install rather than on `PATH`
-> (§2.3), so the version you get is whatever VS bundled — verify it, do not
-> assume. Verified on the Mac: `cmake --version` → 4.3.3, fine.
+> (§2.3), so the version you get is whatever VS bundled. Verify it; do not
+> assume. Verified: Mac 4.3.3; Windows 3.31.6-msvc6 (VS 17.14.41).
 >
-> **And assert the artifact, not the exit code.** A build is only successful if
-> `surge-xt_CLAP` actually exists afterwards. Any CI we write must check for the
-> file, because the exit code will be 0 either way.
+> **Still assert the artifact, not the exit code** (ADR-0007 point 3). An exit
+> code proves a command ran, not what it produced. Naming
+> `--target surge-xt_CLAP` already fails loudly if the target is missing
+> (`MSB1009`, rc=1, tested), and checking the file costs one line.
 
 **Surge is an unusually complete CLAP citizen**, which matters because
 `adi_daw` mandated CLAP hosting (adi_daw ADR-0052) specifically for
@@ -171,9 +168,12 @@ fatal: transport 'file' not allowed
 ```
 
 ...even though every URL in `.gitmodules` is `https`. Git ≥ 2.38 refuses the
-local `file://` transport by default (CVE-2022-39253) and git's submodule clone
-path tries the superproject's object store first. Reproduced on git 2.50.1
-(Apple Git-155). The fix is to scope the permission to the one command:
+local `file://` transport by default (CVE-2022-39253). The failure was
+reproduced on git 2.50.1 (Apple Git-155). *Why* a local transport is involved
+is **not established**. The earlier explanation, "the submodule clone path
+tries the superproject's object store first", is unverified: every URL in every
+`.gitmodules`, nested ones included, is `https`. The fix works either way.
+Scope the permission to the one command:
 
 ```bash
 git -C adi-surge/surge -c protocol.file.allow=always \
@@ -220,6 +220,13 @@ cmake -S adi-surge\surge -B adi-surge\surge\build -G "Visual Studio 17 2022" -A 
       -DCMAKE_BUILD_TYPE=Release
 cmake --build adi-surge\surge\build --config Release --target surge-xt_CLAP --parallel
 ```
+
+**`adi-surge\tools\build_clap_win.bat` does all of that**, then asserts that
+`build\surge_xt_products\Surge XT.clap` exists (exit 4 if not). With the
+`tests` argument it also builds `surge-testrunner` and runs `ctest -j 4`. It
+also clears the one environment variable that breaks agent-driven builds (§2.6).
+On the VS generator, plain `ctest -j 4` needs no `-C Release`: Catch2's
+discovery runs at build time (`POST_BUILD`) and records absolute paths.
 
 **macOS (mac).** Upstream's macOS legs use Ninja:
 
@@ -314,10 +321,11 @@ on Windows and point the host at `build/surge_xt_products`, or copy
 `Surge XT.clap` by hand to `%CommonProgramFiles%\CLAP\`. On macOS it does work,
 targeting `~/Library/Audio/Plug-Ins/CLAP`, no admin needed.
 
-### 2.6 Five more build traps worth knowing before you hit them
+### 2.6 Six more build traps worth knowing before you hit them
 
 | Trap | Evidence | What to do |
 |---|---|---|
+| **LuaJIT is built at *configure* time, by launching a `.bat` by bare name**, and that launch fails under Claude Code. The harness sets `NoDefaultCurrentDirectoryInExePath=1` in its own process environment. With it set, Windows will not look in `WORKING_DIRECTORY` for the script, and configure dies with `Build script exit code: no such file or directory`. A person in a Developer Prompt never has the variable set. | `libs/luajitlib/CMakeLists.txt`: `execute_process(COMMAND build-msvc-luajit.bat ...)`. Reproduced with a `cmake -P` probe: a bare `.bat` fails with the variable set and runs without it (`collab/win.md`, 2026-09-21). | Clear it for the build's process tree only: `set "NoDefaultCurrentDirectoryInExePath="`. `tools/build_clap_win.bat` does. `-DSURGE_SKIP_LUA=TRUE` also avoids it, but costs the formula modulator. |
 | **`/WX` has no escape hatch on MSVC.** `SURGE_SKIP_WERROR` suppresses `-Werror` for clang/gcc, but the MSVC branch adds `/WX` with no equivalent guard (skipped only for arm64/arm64ec). Code clean on macOS can fail Windows on an unused variable. | `CMakeLists.txt:126` vs `:204-208`; MSVC-only suppressions at `:213-221` (4244/4305/4267/4018/4388/4065/4702/4005/5105) | Build with the other platform's strictness in mind. Anything outside that suppression list is fatal on Windows only. |
 | **MSVC static runtime `/MT` is forced** via CMP0091. Any prebuilt third-party library built `/MD` gives `LNK2038` on Windows only. | `CMakeLists.txt:3-4` | Build every new Windows dependency from source inside the CMake tree so it inherits `CMAKE_MSVC_RUNTIME_LIBRARY`. **Note this does *not* apply to the obvious case**: the AI feature needs no new HTTP dependency, because `juce_core/network/` already ships `juce_URL` and `juce_WebInputStream`. `JUCE_USE_CURL=0` (`src/CMakeLists.txt:85`) only affects the Linux native path. |
 | **LTO is on by default for Release**, so every Release link of a very large TU set is slow. | `CMakeLists.txt:13-15`, `:92-99` | Iterate with `-DENABLE_LTO=OFF` explicitly. Note `RelWithDebInfo` also matches the `Release` regex, so it does not disable LTO on its own. |
@@ -692,12 +700,33 @@ OSC-drivable Surge with no DAW in the loop.
 ### 4.4 Test runner — the regression gate, already written
 
 `src/surge-testrunner/`, wired to `ctest`, green in upstream CI on macOS, Linux
-and Windows. **147 catch2 `TEST_CASE`s / 409 `SECTION`s**, including:
+and Windows.
 
-- a genuine **golden numeric regression harness** — `UnitTestsGOLDEN.cpp:41-45`,
-  1e-5 tolerance, `SURGE_GOLDEN=1` to regenerate;
-- **"All Patches Are Loadable"** over 641 factory + 2920 third-party `.fxp`s;
-- a DAW **stream/unstream round-trip** (`UnitTestsIO.cpp:568`, `:588`).
+**The gate is 145/145.** There are 147 `TEST_CASE`s in the source, and ctest
+registers 145. The other two never run:
+
+- `Modern Oscillator Perf` is hidden with the `[.]` tag
+  (`UnitTestsGOLDEN.cpp:327`).
+- `NaN Patch From Issue #1514` is inside `#if 0` (`UnitTestsDSP.cpp:479`).
+
+Neither exclusion depends on the platform. Measured on Windows: 145/145 in
+53 s. `ctest` counts `TEST_CASE`s, so the `SECTION` total does not affect the
+gate; there are 355 `SECTION(` and 46 `DYNAMIC_SECTION(` call sites.
+
+Upstream CI runs `ctest -j 4 || ctest --rerun-failed` (`build-pr.yml:140`), so
+a test that fails once and then passes still goes green there. **Our gate is
+the first run.**
+
+What the suite contains:
+
+- **one** golden-value test: `Modern Oscillator Golden`
+  (`UnitTestsGOLDEN.cpp:313`, `GOLDEN_TOL = 1e-5f` at `:60`, `SURGE_GOLDEN=1`
+  to regenerate). It covers the Modern oscillator only. The other 11
+  oscillators, the filters and the FX have **no** numeric-regression coverage,
+  so the suite catches breakage broadly but numeric drift narrowly;
+- **"All Patches Are Loadable"** over 641 factory + 2920 third-party `.fxp`s
+  (`UnitTestsIO.cpp:568`);
+- a DAW **stream/unstream round-trip** (`UnitTestsIO.cpp:588`).
 
 That last one matters to us the way `adi-vst`'s 232,438-byte state round-trip
 does: it exercises the exact serialization path an AI apply has to survive.
@@ -820,14 +849,15 @@ first (it is the only thing that can generate the contextual per-type schema
 - [ ] **Verify the ~766 OSC addresses are unique** with a runtime
       `/q/all_params` sweep. Unasserted and untested upstream; a collision
       writes the wrong parameter silently. Blocks trusting any OSC tool.
-- [ ] Build `surge-xt_CLAP` on Windows and record the result. Nothing has been
-      compiled on either platform yet.
+- [x] Build `surge-xt_CLAP` on Windows and record the result. Done 2026-09-21:
+      builds, `Surge XT.clap` asserted on disk (`collab/win.md`).
 - [ ] Build `surgepy` on macOS — upstream CI never does, so `mac` is first.
 - [ ] Generate the contextual per-type schema: 32 FX types × 16 slots, 12
       oscillator types. `scripts/misc/surgepy-params.py` is the starting point.
 - [ ] Build on macOS/arm64 and record it.
 - [ ] Run `ctest -j 4` on both platforms and record the baseline count, the way
-      `adi-vst` records "15/15".
+      `adi-vst` records "15/15". Windows: **145/145** (§4.4). macOS: pending,
+      and anything other than 145 means something differs.
 - [ ] Resolve the §3.1 parameter-naming question.
 - [ ] Fill in §3.4 (patch format) and §4.1's OSC defaults.
 - [ ] Decide whether the schema extractor is an OSC client or a `surgepy`

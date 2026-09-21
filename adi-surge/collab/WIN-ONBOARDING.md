@@ -70,18 +70,22 @@ Two traps it absorbs, which WILL bite you if you run git by hand instead:
      it. That is not a broken checkout. Do not try to fix it.
 
 Verify when it finishes:
-    git -C adi-surge/surge submodule status --recursive | findstr /V "^ "
-Any output means drift; empty means clean.
+    git -C adi-surge/surge submodule status --recursive | findstr /V /R /C:"^ "
+Any output means drift; empty means clean. (Not `findstr /V "^ "`: findstr
+splits a quoted string on spaces, searches for "^" alone, matches every line,
+and so can never report drift.)
 
 STEP 3 — READ, IN THIS ORDER
 
     adi-surge/collab/README.md      the protocol: roster, claims, branch rules
     adi-surge/collab/mac.md         what mac did, and notes addressed to you
     adi-surge/ARCHITECTURE.md       how it all works, with evidence for every claim
-    adi-surge/docs/DECISIONS.md     ADR-0001..0007, settled; do not re-litigate
+    adi-surge/docs/DECISIONS.md     ADR-0001..0008, settled; do not re-litigate
 
-ARCHITECTURE.md is written FROM SOURCE, not from a build. Nobody has compiled
-this on any platform. Sections marked PENDING are genuinely unknown, not
+ARCHITECTURE.md was mostly written FROM SOURCE, not from a build. Only the
+Windows CLAP and ctest have been run so far (2026-09-21, collab/win.md), and the
+first build already overturned one claim (ADR-0008). Sections marked PENDING are
+genuinely unknown, not
 rhetorical. If you find something in it that is wrong, that is a useful result —
 say so plainly.
 
@@ -92,11 +96,11 @@ In this order, and stop to report if any step surprises you:
   1. CHECK YOUR CMAKE VERSION FIRST. This is not a formality — see ADR-0007.
          call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
          cmake --version
-     It MUST be >= 3.22. On CMake < 3.21, src/CMakeLists.txt:35-41 emits only a
-     WARNING, sets SURGE_BUILD_CLAP FALSE, and the build then SUCCEEDS WITH NO
-     CLAP. Exit code 0, no artifact. Surge's root file claims 3.15 is enough; it
-     is not — libs/JUCE demands 3.22 and libs/clap-juce-extensions demands 3.21
-     FATAL_ERROR. Record the version you have in your log.
+     It MUST be >= 3.22. Surge's root file claims 3.15 is enough; it is not —
+     libs/JUCE demands 3.22. Below that, configure FAILS with an error naming
+     3.22 (JUCE is added before the CLAP version check, so the "skipping CLAP"
+     WARNING in src/CMakeLists.txt:35-41 is never reached — ADR-0008 corrects
+     ADR-0007 on this). Record the version you have in your log.
 
      CMake and Ninja ship INSIDE the Visual Studio install and are not on PATH,
      so the version you get is whatever VS bundled. vcvars64.bat must be called
@@ -107,9 +111,15 @@ In this order, and stop to report if any step surprises you:
          cmake -S adi-surge\surge -B adi-surge\surge\build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
          cmake --build adi-surge\surge\build --config Release --target surge-xt_CLAP --parallel
 
-     THEN ASSERT THE ARTIFACT, NOT THE EXIT CODE. Confirm the .clap actually
-     exists under adi-surge\surge\build\surge_xt_products before you call it a
-     success. The exit code is 0 either way.
+     THEN ASSERT THE ARTIFACT, NOT THE EXIT CODE. Confirm
+     adi-surge\surge\build\surge_xt_products\Surge XT.clap actually exists
+     before you call it a success.
+
+     Or run adi-surge\tools\build_clap_win.bat, which does all of the above and
+     asserts the artifact. If you drive the build yourself as a Claude Code
+     agent, first clear NoDefaultCurrentDirectoryInExePath (the harness sets it
+     to 1). Otherwise Surge's configure-time LuaJIT build fails with
+     "no such file or directory". ARCHITECTURE.md §2.6.
 
      Good news on the hazard you might be expecting: the post-build copy that
      cost adi-vst four Windows builds (admin rights on C:\Program Files\Common
@@ -124,16 +134,18 @@ In this order, and stop to report if any step surprises you:
          clang/gcc), so code that is clean on mac can fail here on an unused
          variable. Suppression list is at CMakeLists.txt:213-221.
        - MSVC static runtime /MT is forced. Any prebuilt dependency built /MD
-         gives LNK2038 — this WILL matter when the AI feature needs an HTTP
-         client. Build new deps from source inside the CMake tree.
+         gives LNK2038. Build new deps from source inside the CMake tree. (The
+         AI feature's HTTP needs are covered by juce_core, so this does not
+         apply there — see below.)
        - LTO is ON for Release. Use -DENABLE_LTO=OFF while iterating.
 
   3. Run the tests and RECORD THE COUNT.
          cd adi-surge\surge\build && ctest -j 4
-     This is upstream's own suite — 147 catch2 TEST_CASEs / 409 SECTIONs,
-     including a golden numeric harness at 1e-5 tolerance and an "All Patches
-     Are Loadable" pass over 3561 .fxp files. It becomes our regression gate,
-     the way adi-vst uses "15/15". The number goes in your log.
+     This is upstream's own suite. Expect 145 tests: there are 147 TEST_CASEs,
+     but one is hidden [.] and one is #if 0. It includes a golden-value test
+     for the Modern oscillator and an "All Patches Are Loadable" pass over
+     3561 .fxp files. 145/145 is our regression gate, the way adi-vst uses
+     "15/15". The number goes in your log.
 
   4. Load the built CLAP in a host and confirm it makes sound. Reaper hosts CLAP
      natively. This is the thing adi-vst cannot do at all, so it is the first
