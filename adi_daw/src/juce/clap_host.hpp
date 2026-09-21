@@ -188,6 +188,11 @@ public:
     void rescanParams();
 
 private:
+    /// What the plugin declares RIGHT NOW, asked rather than remembered.
+    /// Used by `prepare` to decide whether reactivating is necessary at all.
+    [[nodiscard]] std::vector<std::int32_t> declaredChannels(bool isInput) const;
+    [[nodiscard]] bool layoutMatches() const;
+
     static bool outPush(const clap_output_events_t*, const clap_event_header_t*);
 
 public:

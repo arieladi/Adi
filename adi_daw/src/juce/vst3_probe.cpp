@@ -186,7 +186,8 @@ int renderThrough(adi::device::Vst3Host& host, const juce::String& want) {
     double idle = 0.0;
     for (int blk = 0; blk < 10; ++blk) {
         v3->process(qio);
-        for (int i = 0; i < 512; ++i) idle = std::max(idle, std::abs((double) ql[i]));
+        for (std::size_t i = 0; i < ql.size(); ++i)
+            idle = std::max(idle, std::abs((double) ql[i]));
     }
     std::printf("  idle    %.9f with no events\n", idle);
     check(idle < 1e-6, "the plugin is SILENT before any note -- so what follows is ours");
@@ -213,7 +214,8 @@ int renderThrough(adi::device::Vst3Host& host, const juce::String& want) {
     double peak = 0.0;
     for (int blk = 0; blk < 40; ++blk) {      // ~0.4 s; synths have attacks
         v3->process(io);
-        for (int i = 0; i < 512; ++i) peak = std::max(peak, std::abs((double) l[i]));
+        for (std::size_t i = 0; i < l.size(); ++i)
+            peak = std::max(peak, std::abs((double) l[i]));
     }
 
     std::printf("  peak    %.6f after 40 blocks\n", peak);

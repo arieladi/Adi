@@ -14,6 +14,7 @@
 //
 // No JUCE. A .clap is a shared library exporting one symbol.
 
+#include "adi/engine/host.hpp"
 #include "juce/clap_host.hpp"
 #include "juce/device_host.hpp"
 
@@ -22,6 +23,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -256,6 +258,401 @@ int endToEndCoalescer(const std::string& want) {
     return 0;
 }
 
+
+/// A constant. With DC in, the master's level is a number a test can name,
+/// and a delay line that lost its history is a STEP in that number.
+class Dc final : public adi::engine::Node {
+public:
+    explicit Dc(float v) : v_(v) {}
+    void process(const adi::engine::NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            for (std::int32_t i = 0; i < io.frames; ++i) o[i] = v_;
+        }
+    }
+    [[nodiscard]] const char* name() const noexcept override { return "dc"; }
+private:
+    float v_;
+};
+
+/// ADR-0090, against a real plugin. win asked for exactly this: force a port
+/// rescan, show the rebuild happens, show the audio does not break, show the
+/// retired graph is reclaimed.
+///
+/// WHAT IS REAL HERE AND WHAT IS NOT. The plugin is real, its declared bus
+/// layout is real, the graph is realised from a model the way a session
+/// realises one, and the rebuild runs the whole plan-realise-prepare-publish
+/// path. The TRIGGER is synthesised: no installed plugin changes its port
+/// count on demand, so the rescan is delivered through the same
+/// `clap_host_audio_ports.rescan` entry a plugin would call, on the real
+/// glue the real plugin is registered with. That is the honest split, and
+/// saying it here is cheaper than someone later believing the plugin moved
+/// its own ports.
+int rebuildAgainstARealPlugin(const std::string& want) {
+    adi::device::ClapHost chost;
+    chost.scan(adi::device::ClapHost::defaultSearchPaths());
+
+    const adi::device::ClapPluginRef* pick = nullptr;
+    for (const auto& r : chost.plugins())
+        if (r.name.find(want) != std::string::npos) { pick = &r; break; }
+    if (pick == nullptr) { std::printf("  skip  no CLAP '%s'\n", want.c_str()); return 0; }
+
+    std::string err;
+    auto dev = chost.makeDevice(*pick, 48000.0, 512, err);
+    if (dev == nullptr || !dev->loaded()) { std::printf("  FAIL  %s\n", err.c_str()); return 1; }
+    const bool instrument = pick->isInstrument;
+
+    adi::engine::GraphHost gh;
+    gh.setLatencyHeadroom(8192);
+    gh.setFadeFrames(0);   // ADR-0089's fade would scale what this measures
+
+    adi::device::DeviceHost host;
+    host.add(std::move(dev), pick->name, /*trackId=*/1);
+    host.watchClapGlue(chost.glue(), pick->name);
+
+    // Two audio tracks and a master: the smallest model a session has.
+    adi::rows::Model model;
+    for (const auto& t : {std::pair<std::int64_t, const char*>{1, "audio"},
+                          {2, "audio"}, {9, "master"}}) {
+        adi::rows::Track row;
+        row.id = t.first;
+        row.kind = t.second;
+        row.name = t.second;
+        model.tracks.push_back(row);
+    }
+
+    adi::device::DeviceHost::RebuildSpec spec;
+    spec.model = [&model] { return &model; };
+    spec.sampleRate = 48000.0;
+    spec.maxFrames = 512;
+    host.attachHost(gh, spec);
+    host.coalescer().setQuietPeriodMs(50);
+
+    check(host.rebuildNow(), "the first graph realises with the plugin in it: " +
+                                 host.lastRebuildError());
+    std::printf("  plugin            %s%s\n", pick->name.c_str(),
+                instrument ? "  [instrument]" : "");
+
+    std::vector<float> l(512, 0.0f), r(512, 0.0f);
+    float* outp[2] = {l.data(), r.data()};
+    adi::engine::AudioIo aio;
+    aio.out = outp; aio.numOut = 2; aio.frames = 512;
+
+    // A held note, so an instrument is actually producing something across
+    // the seam rather than being silent on both sides of it.
+    //
+    // PUSHED AT THE CHAIN TAIL, NOT THE HEAD, and that is a finding rather
+    // than a preference. `inputFor(trackId)` is where a clip reader pushes
+    // AUDIO; events pushed there do not reach an instrument further down the
+    // chain, because the scheduler accumulates audio along edges and does
+    // NOT route events along them -- a slot's `events` come only from a
+    // `pushInputEvent` naming that slot. ADR-0045 says every port carries
+    // both. The graph does not yet. `--event-routing` below measures it.
+    auto noteAt = [&](adi::engine::NodeId where) {
+        adi::engine::RealizedGraph* rg = gh.current();
+        if (rg == nullptr || where == adi::engine::kInvalidNode) return;
+        adi::engine::Event on;
+        on.type = adi::engine::EventType::NoteOn;
+        on.noteId = 7; on.dim = 60; on.value = 0.8; on.frame = 0; on.channel = 2;
+        rg->graph().pushInputEvent(where, on);
+    };
+    auto noteOn = [&] {
+        adi::engine::RealizedGraph* rg = gh.current();
+        if (rg != nullptr) noteAt(rg->outputFor(1));
+    };
+
+    auto render = [&](int blocks) {
+        double peak = 0.0;
+        bool finite = true;
+        for (int b = 0; b < blocks; ++b) {
+            gh.process(aio);
+            for (std::size_t i = 0; i < l.size(); ++i) {
+                if (!std::isfinite(l[i])) finite = false;
+                peak = std::max(peak, std::abs((double) l[i]));
+            }
+        }
+        return std::pair<double, bool>{peak, finite};
+    };
+
+    // THE GAP, MEASURED BEFORE IT IS WORKED AROUND. A note at the chain head
+    // is what win's handoff describes a clip reader doing, and on a track
+    // with a device chain it produces silence.
+    if (instrument) {
+        adi::engine::RealizedGraph* rg0 = gh.current();
+        noteAt(rg0->inputFor(1));
+        auto [headPeak, headFinite] = render(20);
+        (void) headFinite;
+        std::printf("  note at HEAD      peak %.6f  (inputFor -- a clip reader's push)\n",
+                    headPeak);
+        std::printf("  note at TAIL      the instrument itself\n");
+        check(headPeak <= 1e-5,
+              "ADR-0045 IS NOT IMPLEMENTED: events do not travel along edges, so "
+              "a note pushed at the chain head never reaches the instrument. If "
+              "this check FAILS, someone fixed it and this line should go");
+    }
+
+    noteOn();
+    auto [peakBefore, finiteBefore] = render(40);
+    std::printf("  before rebuild    peak %.6f\n", peakBefore);
+    check(finiteBefore, "the graph renders finite samples before the rebuild");
+    if (instrument)
+        check(peakBefore > 1e-5, "and the instrument is sounding");
+
+    adi::engine::Graph* before = gh.currentGraph();
+    const std::int64_t publishedBefore = gh.stats().published;
+
+    // --- THE PORT RESCAN --------------------------------------------------
+    const clap_host_t* h = chost.glue().host();
+    const auto* ports = static_cast<const clap_host_audio_ports_t*>(
+        h->get_extension(h, CLAP_EXT_AUDIO_PORTS));
+    if (ports == nullptr) { std::printf("  FAIL  no audio-ports host extension\n"); return 1; }
+    ports->rescan(h, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT);
+
+    std::int64_t now = 1000;
+    host.tick(now);
+    check(host.stats().rebuilds == 0, "nothing rebuilds while the burst is open");
+    now += 60;
+    host.tick(now);
+
+    const auto& st = host.coalescer().stats();
+    std::printf("  shapeReports %lld  rebuildsNeeded %lld  rebuilds %lld  failed %lld\n",
+                (long long) st.shapeReports, (long long) st.rebuildsNeeded,
+                (long long) host.stats().rebuilds,
+                (long long) host.stats().rebuildsFailed);
+
+    check(host.stats().rebuilds == 1, "the rescan produced exactly one rebuild");
+    check(host.stats().rebuildsFailed == 0,
+          "which succeeded: " + host.lastRebuildError());
+    check(gh.stats().published == publishedBefore + 1, "a new graph is published");
+    check(gh.currentGraph() != before, "and it is a different graph");
+    check(!host.coalescer().rebuildNeeded(), "the flag is answered");
+
+    // The SAME plugin instance, re-injected rather than reloaded.
+    check(host.chainFor(1).size() == 1 && host.chainFor(1)[0] == &host.nodeAt(0),
+          "the same device node is in the new graph -- no plugin was reloaded");
+
+    // --- DOES THE PLUGIN'S OWN STATE SURVIVE THE SWAP? -------------------
+    //
+    // Not re-triggered. `Graph::prepare` calls `prepare` on every node, and
+    // a `DeviceNode`'s prepare activates the plugin -- so a rebuild
+    // re-activates every plugin in the project whether or not anything about
+    // it changed. If a held note is gone here, ADR-0042 d5's "a rebuild is
+    // not a reason to reload a plugin" holds for LOADING and not for STATE.
+    if (instrument) {
+        auto [heldPeak, heldFinite] = render(20);
+        (void) heldFinite;
+        std::printf("  held note, not retriggered, after swap: peak %.6f\n", heldPeak);
+        check(heldPeak > 1e-5,
+              "the note held across the rebuild -- the plugin was not reset");
+    }
+
+    // --- the audio across the seam ---------------------------------------
+    noteOn();
+    auto [peakAfter, finiteAfter] = render(40);
+    std::printf("  after rebuild     peak %.6f\n", peakAfter);
+    check(finiteAfter, "the new graph renders finite samples");
+    if (instrument)
+        check(peakAfter > 1e-5, "and the instrument is still sounding after the swap");
+
+    check(gh.stats().swaps >= 2, "the audio thread picked up the new graph, swaps=" +
+                                     std::to_string(gh.stats().swaps));
+
+    // --- reclamation ------------------------------------------------------
+    check(gh.stats().reclaimed == 0,
+          "nothing was freed while the reader might still have held it");
+    now += 60;
+    host.tick(now);
+
+    // --- AND DOES IT SURVIVE THE RECLAMATION? ----------------------------
+    //
+    // The retired graph is freed here, and a Graph's teardown calls
+    // `release()` on every node it holds -- including the devices it SHARES
+    // with the graph that is currently rendering.
+    if (instrument) {
+        auto [afterFree, freeFinite] = render(20);
+        (void) freeFinite;
+        std::printf("  still sounding after the old graph was freed: peak %.6f\n",
+                    afterFree);
+        check(afterFree > 1e-5,
+              "freeing the RETIRED graph did not release the device the LIVE "
+              "graph is using");
+    }
+
+    std::printf("  published %lld  swaps %lld  reclaimed %lld  refused %lld\n",
+                (long long) gh.stats().published, (long long) gh.stats().swaps,
+                (long long) gh.stats().reclaimed, (long long) gh.stats().refused);
+    check(gh.stats().reclaimed == 1, "the tick reclaimed the retired graph");
+
+    return 0;
+}
+
+
+/// win asked one question and named it as a real cost he did not fix: a
+/// rebuild resets EVERY edge's compensation history, including the edges
+/// whose routing did not change. Is that audible?
+///
+/// This measures it rather than arguing it. Two tracks into a master, a
+/// plugin with 5120 samples of latency on one of them, DC on both so the
+/// master's level is a number. PDC delays the DRY path to match the wet one;
+/// a rebuild hands that edge a fresh ring, and a fresh ring is empty.
+int measureTheSeam(const std::string& want, bool wetOnly) {
+    adi::device::ClapHost chost;
+    chost.scan(adi::device::ClapHost::defaultSearchPaths());
+
+    const adi::device::ClapPluginRef* pick = nullptr;
+    for (const auto& r : chost.plugins())
+        if (r.name.find(want) != std::string::npos) { pick = &r; break; }
+    if (pick == nullptr) { std::printf("  skip  no CLAP '%s'\n", want.c_str()); return 0; }
+
+    std::string err;
+    auto dev = chost.makeDevice(*pick, 48000.0, 512, err);
+    if (dev == nullptr || !dev->loaded()) { std::printf("  FAIL  %s\n", err.c_str()); return 1; }
+
+    std::string modeId;
+    double modeMax = 1.0;
+    for (std::int32_t i = 0; i < dev->paramCount(); ++i) {
+        const auto* d = dev->paramAt(i);
+        if (d != nullptr && (d->name.find("hase") != std::string::npos ||
+                             d->name.find("rocessing") != std::string::npos)) {
+            modeId = d->id; modeMax = d->maxReal; break;
+        }
+    }
+    if (modeId.empty()) { std::printf("  skip  no mode parameter on %s\n",
+                                      pick->name.c_str()); return 0; }
+
+    adi::engine::GraphHost gh;
+    gh.setLatencyHeadroom(8192);
+    gh.setFadeFrames(0);   // the fade is ADR-0089's and would mask the seam
+
+    adi::device::DeviceHost host;
+    host.add(std::move(dev), pick->name, /*trackId=*/1);
+    host.watchClapGlue(chost.glue(), pick->name);
+    auto& inst = host.deviceAt(0);
+
+    adi::rows::Model model;
+    for (const auto& t : {std::pair<std::int64_t, const char*>{1, "audio"},
+                          {2, "audio"}, {9, "master"}}) {
+        adi::rows::Track row;
+        row.id = t.first; row.kind = t.second; row.name = t.second;
+        model.tracks.push_back(row);
+    }
+
+    adi::device::DeviceHost::RebuildSpec spec;
+    spec.model = [&model] { return &model; };
+    spec.sampleRate = 48000.0;
+    spec.maxFrames = 512;
+    host.attachHost(gh, spec);
+    host.coalescer().setQuietPeriodMs(50);
+
+    check(host.rebuildNow(), "the compensated graph realises: " + host.lastRebuildError());
+
+    // DC on both tracks: the master's level is then a number, and a lost
+    // delay line is a step in it rather than a subtle smear.
+    // DISTINGUISHABLE LEVELS, so the hole says WHICH path is missing rather
+    // than only that one is. Settled is 1.0; a hole at 0.75 is the wet path
+    // gone, at 0.25 the dry path's ring, at 0.0 both.
+    Dc wet(0.25f), dry(wetOnly ? 0.0f : 0.75f);
+    auto feedBoth = [&] {
+        adi::engine::RealizedGraph* rg = gh.current();
+        adi::engine::Graph& g = rg->graph();
+        g.connect(g.addNode(wet), rg->inputFor(1));
+        g.connect(g.addNode(dry), rg->inputFor(2));
+        g.prepare(48000.0, 512);
+        return g.ok();
+    };
+    check(feedBoth(), "both tracks are fed");
+
+    std::vector<float> l(512, 0.0f), r(512, 0.0f);
+    float* outp[2] = {l.data(), r.data()};
+    adi::engine::AudioIo aio;
+    aio.out = outp; aio.numOut = 2; aio.frames = 512;
+
+    // LINEAR PHASE, AFTER ACTIVATION. Setting it before the first rebuild
+    // sets it on a plugin that has not been activated, and a CLAP plugin's
+    // latency may not be read before activate (ADR-0087) -- so the graph
+    // would be built compensating a zero it was not allowed to ask for.
+    std::int64_t now = 1000;
+    for (int b = 0; b < 4; ++b) { gh.process(aio); host.tick(now); now += 20; }
+    inst.setParam(modeId, adi::device::ParamValue::withReal(0.0, modeMax));
+    for (int b = 0; b < 40; ++b) { gh.process(aio); host.tick(now); now += 5; }
+    now += 120;
+    host.tick(now);
+
+    std::printf("  plugin latency    %d samples\n", inst.latencySamples());
+    std::printf("  retaps            %lld\n",
+                (long long) host.coalescer().stats().retaps);
+    if (inst.latencySamples() <= 0) {
+        std::printf("  skip  %s reports no latency in this mode; nothing to compensate\n",
+                    pick->name.c_str());
+        return 0;
+    }
+
+    // Settle: past the plugin's own latency, the master is at its steady
+    // level and that level is what a seam has to be measured against.
+    for (int b = 0; b < 40; ++b) gh.process(aio);
+    const double settled = std::abs((double) l[511]);
+    std::printf("  settled level     %.6f\n", settled);
+
+    // --- the rebuild ------------------------------------------------------
+    const clap_host_t* h = chost.glue().host();
+    const auto* ports = static_cast<const clap_host_audio_ports_t*>(
+        h->get_extension(h, CLAP_EXT_AUDIO_PORTS));
+    ports->rescan(h, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT);
+    host.tick(now);
+    now += 60;
+    host.tick(now);
+    check(host.stats().rebuilds == 1, "one rebuild");
+    check(feedBoth(), "the new graph is fed the same two sources");
+
+    // --- how long is the hole, and how deep -------------------------------
+    double worst = settled;
+    std::int64_t belowFor = 0;
+    bool stillBelow = true;
+    for (int b = 0; b < 60; ++b) {
+        gh.process(aio);
+        for (std::size_t i = 0; i < l.size(); ++i) {
+            const double v = std::abs((double) l[i]);
+            if (v < settled * 0.99) {
+                worst = std::min(worst, v);
+                if (stillBelow) ++belowFor;
+            } else {
+                stillBelow = false;
+            }
+        }
+    }
+
+    std::printf("  worst after swap  %.6f  (%.1f%% of settled)\n",
+                worst, settled > 0.0 ? 100.0 * worst / settled : 0.0);
+    // wet 0.25 + dry 0.75 = 1.0, so the level DURING the hole names what
+    // survived: 0.25 is the wet path alone, 0.75 the dry path alone.
+    if (!wetOnly)
+        std::printf("  attribution       %s\n",
+                    worst < 0.1 ? "BOTH paths went silent"
+                    : (worst < 0.4 ? "the DRY path is missing (its ring)"
+                                   : "the WET path is missing (the plugin)"));
+    std::printf("  below settled for %lld samples  (%.1f ms at 48k)\n",
+                (long long) belowFor, (double) belowFor / 48.0);
+    std::printf("  plugin latency    %d samples\n", inst.latencySamples());
+
+    // Two findings, and they are different findings.
+    if (wetOnly) {
+        // Nothing but the plugin's own path. A hole here would mean the
+        // rebuild re-primed the plugin, which it did until `ClapDevice::
+        // prepare` learned to do nothing when nothing changed.
+        check(belowFor == 0,
+              "the plugin is NOT re-primed by a rebuild: no hole with no ring "
+              "in the path, was 5120 samples before prepare became idempotent");
+    } else {
+        // And what is left is exactly the cost win named and did not fix.
+        check(belowFor > 0,
+              "THE RING HISTORY IS STILL LOST: with the plugin no longer "
+              "re-primed, a rebuild still drops the DRY path for as long as "
+              "its compensation delay -- which is what preserving unchanged "
+              "edges would fix");
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -263,12 +660,33 @@ int main(int argc, char** argv) {
     std::printf("adi_clap_probe -- a real .clap, and ADR-0084's open question\n\n");
 
     std::string path = "/Library/Audio/Plug-Ins/CLAP/Surge XT.clap";
-    std::string latencyWant, coalesceWant;
+    std::string latencyWant, coalesceWant, rebuildWant, seamWant;
+    bool wetOnly = false;
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--wet-only") wetOnly = true;
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--plugin") path = argv[i + 1];
         if (std::string(argv[i]) == "--latency") latencyWant = argv[i + 1];
         if (std::string(argv[i]) == "--coalesce") coalesceWant = argv[i + 1];
+        if (std::string(argv[i]) == "--rebuild") rebuildWant = argv[i + 1];
+        if (std::string(argv[i]) == "--seam") seamWant = argv[i + 1];
     }
+    if (!seamWant.empty()) {
+        std::printf("[ADR-0090] does a rebuild's lost compensation history show?\n");
+        const int rc = measureTheSeam(seamWant, wetOnly);
+        std::printf("\n%s -- %d checks, %d failure(s)\n",
+                    g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : rc;
+    }
+
+    if (!rebuildWant.empty()) {
+        std::printf("[ADR-0089/0090] a real plugin, a port rescan, and a new graph\n");
+        const int rc = rebuildAgainstARealPlugin(rebuildWant);
+        std::printf("\n%s -- %d checks, %d failure(s)\n",
+                    g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : rc;
+    }
+
     if (!coalesceWant.empty()) {
         std::printf("[ADR-0082/0084/0079] a real plugin, through the whole chain\n");
         const int rc = endToEndCoalescer(coalesceWant);

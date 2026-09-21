@@ -177,9 +177,30 @@ bool Vst3Device::setParam(const std::string& paramId, const ParamValue& v) {
 
 void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     if (inst_ == nullptr) return;
+
+    const std::int32_t chans = std::max(inst_->getTotalNumInputChannels(),
+                                        inst_->getTotalNumOutputChannels());
+
+    // ALREADY RUNNING AND NOTHING CHANGED: DO NOTHING. The same rule as
+    // `ClapDevice::prepare`, for the same reason and with the same evidence
+    // behind it -- ADR-0089 prepares a whole new graph on every rebuild, and
+    // `Graph::prepare` calls `prepare` on every node, so without this one
+    // plugin's port rescan resets every plugin in the project. Measured
+    // through the CLAP side of the same device contract: 5120 samples of
+    // silence, 106.7 ms, from a Pro-Q 3 that had nothing to do with the
+    // rescan.
+    //
+    // `prepareToPlay` is not a cheap no-op on a JUCE VST3 wrapper: it runs
+    // `setupProcessing` and reactivates the component, which is exactly the
+    // state loss this is here to avoid.
+    if (prepared_ && sampleRate == sampleRate_ && maxFrames == maxFrames_ &&
+        (chans < 1 ? 2 : chans) == channels_) {
+        return;
+    }
+
     maxFrames_ = maxFrames;
-    channels_ = std::max(inst_->getTotalNumInputChannels(),
-                         inst_->getTotalNumOutputChannels());
+    sampleRate_ = sampleRate;
+    channels_ = chans;
     if (channels_ < 1) channels_ = 2;
 
     // ADR-0049: the GRANTED size. Everything allocated here is sized from what
@@ -238,9 +259,12 @@ bool Vst3Device::pushEvent(const engine::Event& e) noexcept {
     if (injectedUsed_ >= injected_.size()) return false;
     injected_[injectedUsed_++] = e;
     return true;
+
+    prepared_ = true;
 }
 
 void Vst3Device::release() {
+    prepared_ = false;
     if (inst_ != nullptr) inst_->releaseResources();
 }
 

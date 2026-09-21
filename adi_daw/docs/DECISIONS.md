@@ -5694,3 +5694,118 @@ unchanged in both graphs. It would remove the seam entirely for the common case
 — one plugin's ports moved, the other 199 tracks are identical — and it means
 sharing ring buffers across two graphs with two lifetimes. Worth doing; not
 worth doing at the same time as the thing that makes rebuilds possible at all.
+
+---
+
+## ADR-0090 — Closing the rebuild loop: who decides, what a failed rebuild means, and why `prepare` must do nothing — `DECIDED` (2026-09-21) — **COMPLETES ADR-0089, CORRECTS ADR-0042 d5**
+
+ADR-0089 built the rebuild and left the trigger disconnected: `GraphHost::rebuild`
+existed and nothing called it. This connects `LatencyCoalescer::rebuildNeeded()`
+to it, and in doing so found that a rebuild was silencing the project for 106.7
+milliseconds.
+
+### Decision
+
+**1. `DeviceHost` closes the loop, because it is what already holds both ends.**
+It owns the devices, so it can answer `RealizeOptions::devicesFor`; it owns the
+coalescer, so it sees `rebuildNeeded()`; and it already has a timer. `tick` is
+now: drain plugin callbacks → poll → rebuild if asked → collect. One thread, one
+cadence, one thing to remember to start.
+
+**2. The model is supplied as a CALLBACK, not a pointer.** This is the same
+lesson ADR-0089 decision 6 learned about the graph, one level out. A coalescer
+storing a `Graph*` dangled the first time the graph was replaced. A device host
+storing a `const rows::Model*` would dangle the first time the projection was
+re-read after an edit — which is every edit. Whatever outlives the thing it
+points at has to ask again.
+
+**3. The flag is cleared BEFORE the attempt and is not re-raised on failure.**
+
+`rebuildNeeded()` means *"a report asked for a rebuild"*, not *"the graph is
+wrong"*. Leaving it raised when the rebuild fails turns one unrealisable model
+into a full plan–realise–prepare cycle on every tick — fifty a second, for a
+model that will refuse identically every time.
+
+The cost is real and is stated rather than hidden: a failed rebuild leaves the
+graph stale against a plugin whose ports moved, and nothing retries until the
+next report. What makes that survivable is that the failure is not silent —
+`stats().rebuildsFailed` counts it and `lastRebuildError()` names it. A retry
+policy that is not a storm needs a reason to retry, and "the same model, 20 ms
+later" is not one.
+
+**4. `collect()` runs after the rebuild, on the same tick.** A graph retired on
+this tick cannot be freed on this tick — the audio thread has not moved past it
+— so this frees the one retired earlier. Collecting first would delay every
+reclamation by one tick and gain nothing.
+
+**5. `DeviceInstance::prepare` MUST DO NOTHING when the sample rate, the block
+size and the declared bus layout are all unchanged.**
+
+This is the decision that matters, and it corrects ADR-0042 decision 5. That
+decision says a rebuild is not a reason to reload a plugin, and it was honoured:
+the same `DeviceInstance` is re-injected and no library is opened twice. But
+`Graph::prepare` calls `prepare` on every node, and ADR-0089 prepares a whole
+new graph on every rebuild — so **one plugin's port rescan deactivated and
+reactivated every plugin in the project.** Not reloaded. Reset.
+
+Measured, on FabFilter Pro-Q 3 in linear phase with 5120 samples of latency:
+
+| | before | after |
+|---|---|---|
+| master silent after a rebuild | **5120 samples / 106.7 ms** | 0 |
+
+**A plugin is not reloaded and a plugin is not disturbed are different claims,
+and only the first one was true.**
+
+The bus layout is *re-read* rather than assumed on this path, because a port
+rescan is the one case that must still reactivate — re-reading is a few
+`get_extension` calls and loses no state by asking. Both formats take the same
+rule: `ClapDevice` compares the declared layout, `Vst3Device` compares the
+channel count JUCE reports.
+
+### How the diagnosis was nearly wrong
+
+The first measurement had a dry path whose compensation ring the rebuild had
+emptied, and an empty ring is the obvious culprit — it is also exactly the cost
+ADR-0089 named as not-decided, so the explanation arrived pre-agreed. Feeding
+**only** the wet path, where there is no ring in the signal chain at all,
+produced the same 5120-sample hole. The ring was not the cause; it was the
+second cause.
+
+An instrument hid it from the other direction: Surge XT held a note straight
+through a rebuild, which reads as proof that plugins survive. A synth's voices
+are internal state and survive reactivation. A linear-phase FIR's buffer is
+**input history**, and does not. One plugin sounding across the seam says
+nothing about another.
+
+### And now the ring history is the whole of what is left
+
+With plugins no longer re-primed, the same measurement isolates exactly what
+ADR-0089 left undecided: the dry path alone drops out, for exactly as long as
+its compensation delay. `adi_clap_probe --seam "Pro-Q 3"` prints it, and
+`--wet-only` prints the control. **So preserving the history of edges unchanged
+between two graphs is worth building, and there is now a number to hold it to.**
+
+### Verified non-vacuously
+
+Eight planted defects, all caught: `tick` never rebuilding (11 checks), the flag
+not cleared (4), `collect` never called (1), `chainFor` ignoring the track (1),
+the rebuild omitting `devicesFor` (2), the flag re-raised on failure (2),
+`prepare` always reactivating (7), and `prepare` ignoring a layout change (3).
+
+**Two survived the first round, both because the assertion could not tell the
+defect from correct behaviour.** The omitted `devicesFor` survived because the
+test device was a pass-through — a graph without it renders the same number as
+a graph with it. It now halves, so its presence is 0.25 and its absence 0.5. The
+re-raised flag survived because the defect I planted still left the real
+`clearRebuildNeeded()` above it: I planted a no-op and read a PASS as a result.
+
+### Also found on the way
+
+`adi_vst3_probe` had two `-Werror` sign conversions that no build had ever
+reported, because the objects were up to date from a configure that predated the
+flag. A warning gate only gates what it compiles.
+
+Proved against real plugins: `adi_clap_probe --rebuild "Surge XT"` — a port
+rescan, one rebuild, a held note still sounding across the swap and still
+sounding after the retired graph is freed.

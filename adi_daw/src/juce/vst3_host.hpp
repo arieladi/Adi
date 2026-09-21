@@ -226,6 +226,8 @@ private:
     std::atomic<std::uint64_t> stateEpoch_{0};
     std::int32_t maxFrames_ = 0;
     std::int32_t channels_ = 2;
+    double sampleRate_ = 0.0;
+    bool prepared_ = false;
 };
 
 }  // namespace adi::device

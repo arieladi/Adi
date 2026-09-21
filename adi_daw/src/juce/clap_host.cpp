@@ -432,6 +432,29 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     // down. Restored after a bisecting `cp` quietly reverted them -- which
     // is its own lesson about restoring from a snapshot taken mid-edit.
     if (plugin_ == nullptr || plugin_->activate == nullptr) return;
+
+    // ALREADY RUNNING AND NOTHING CHANGED: DO NOTHING.
+    //
+    // `Graph::prepare` calls `prepare` on every node, and ADR-0089 prepares a
+    // whole new graph on every rebuild -- so without this, one plugin
+    // rescanning its ports deactivates and reactivates EVERY plugin in the
+    // project. That is not a theoretical cost. Measured on Pro-Q 3 in linear
+    // phase: a rebuild silenced the master for 5120 samples, 106.7 ms,
+    // because reactivating threw away the FIR's input history.
+    //
+    // It also nearly cost the right diagnosis. The first measurement had a
+    // dry path whose compensation ring the rebuild had emptied, and a ring
+    // is the obvious culprit; feeding ONLY the wet path -- no ring to lose --
+    // produced exactly the same 5120-sample hole.
+    //
+    // The declared BUS LAYOUT is re-read rather than assumed, because a port
+    // rescan is the one thing that must not take this path: re-reading is a
+    // few `get_extension` calls and no state is lost by asking.
+    if (activated_ && sampleRate == sampleRate_ && maxFrames == maxFrames_ &&
+        layoutMatches()) {
+        return;
+    }
+
     if (activated_) {
         if (plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
         if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
@@ -509,6 +532,47 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
 
     outEvents_.ctx = this;
     outEvents_.try_push = &ClapDevice::outPush;
+}
+
+std::vector<std::int32_t> ClapDevice::declaredChannels(bool isInput) const {
+    std::vector<std::int32_t> out;
+    if (plugin_ == nullptr) return out;
+    const auto* ports = static_cast<const clap_plugin_audio_ports_t*>(
+        plugin_->get_extension(plugin_, CLAP_EXT_AUDIO_PORTS));
+    if (ports == nullptr || ports->count == nullptr || ports->get == nullptr) {
+        // No extension: CLAP's default is one stereo bus each way. Stated in
+        // ONE place, so `prepare` and this cannot disagree about what a
+        // plugin that declares nothing has.
+        out.push_back(channels_);
+        return out;
+    }
+    const std::uint32_t n = ports->count(plugin_, isInput);
+    for (std::uint32_t i = 0; i < n; ++i) {
+        clap_audio_port_info_t info{};
+        out.push_back(ports->get(plugin_, i, isInput, &info)
+                          ? static_cast<std::int32_t>(info.channel_count)
+                          : channels_);
+    }
+    return out;
+}
+
+bool ClapDevice::layoutMatches() const {
+    const std::vector<std::int32_t> in = declaredChannels(true);
+    const std::vector<std::int32_t> outC = declaredChannels(false);
+
+    if (in.size() != inBuses_.size()) return false;
+    for (std::size_t i = 0; i < in.size(); ++i)
+        if (in[i] != inBuses_[i].channels) return false;
+
+    // `prepare` gives a plugin declaring no output bus one anyway, so a
+    // plugin that really has none matches a single allocated bus rather than
+    // zero. Anything else would reactivate such a plugin on every rebuild.
+    if (outC.empty()) return outBuses_.size() == 1;
+
+    if (outC.size() != outBuses_.size()) return false;
+    for (std::size_t i = 0; i < outC.size(); ++i)
+        if (outC[i] != outBuses_[i].channels) return false;
+    return true;
 }
 
 void ClapDevice::release() {

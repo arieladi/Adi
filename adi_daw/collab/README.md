@@ -95,7 +95,7 @@ subject, say so in your log instead of writing it twice.
 | 0087 | mac | `agent/mac-dev` | ADR-0084 closed: measured CLAP latency reporting on Pro-Q 3 | used |
 | 0088 | win | `agent/win-dev` | the compensation headroom default is measured, not zero | used |
 | 0089 | win | `agent/win-dev` | the rebuild path: a new graph is published, and the swap is faded not cut | used |
-| 0090 | mac | `agent/mac-dev` | closing the rebuild loop: who decides to rebuild, and what a failed rebuild means | reserved |
+| 0090 | mac | `agent/mac-dev` | closing the rebuild loop: who decides to rebuild, and what a failed rebuild means | used |
 | 0083-0084 | mac | `agent/mac-dev` | AudioGridder native integration and the CLAP fork; CLAP restart causes | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in

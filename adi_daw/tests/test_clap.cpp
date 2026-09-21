@@ -489,11 +489,21 @@ void testAgainstAFakePlugin() {
         check(d.saveState("chunk") == blob, "round trip is byte-identical");
         check(d.saveState("nosuchrole").empty(), "an unknown role yields nothing");
 
+        // ADR-0090. This asserted the OPPOSITE until a real plugin showed
+        // what it costs: `Graph::prepare` calls `prepare` on every node and
+        // ADR-0089 builds a whole new graph on every rebuild, so one
+        // plugin's port rescan reactivated every plugin in the project.
+        // Measured on Pro-Q 3 in linear phase: 5120 samples -- 106.7 ms --
+        // of silence from a plugin that had nothing to do with the rescan,
+        // because reactivating threw away its FIR's input history.
         d.prepare(48000.0, 512);
-        check(f.activations == 2, "preparing again re-activates");
-        check(f.starts == 2, "and starts processing again");
+        check(f.activations == 1,
+              "preparing again with the SAME rate and size does nothing, saw " +
+                  std::to_string(f.activations) + " activation(s)");
+        check(f.starts == 1, "and does not start processing again");
+
         d.prepare(44100.0, 256);
-        check(f.activations == 3, "re-preparing at a new size re-activates");
+        check(f.activations == 2, "a NEW rate or size does re-activate");
     }
     // The destructor must deactivate and destroy without a double-free.
     check(true, "destruction did not crash");
@@ -1179,6 +1189,82 @@ void testTheBusLayoutIsAsked() {
           "and bus 0's output reached the graph");
 }
 
+
+/// ADR-0090. `prepare` doing nothing when nothing changed is only safe if it
+/// can tell that something DID change -- and a port rescan is precisely the
+/// case where it must reactivate, because re-reading the bus layout is the
+/// reason the rebuild happened at all.
+void testPrepareReactivatesWhenTheLayoutMoves() {
+    section("ADR-0090 -- prepare is idempotent, EXCEPT when the ports moved");
+
+    struct Shifty {
+        clap_plugin_t plugin{};
+        clap_plugin_audio_ports_t ports{};
+        std::uint32_t inputs = 1;
+        int activations = 0, deactivations = 0;
+
+        static Shifty& self(const clap_plugin_t* p) {
+            return *static_cast<Shifty*>(p->plugin_data);
+        }
+        Shifty() {
+            plugin.plugin_data = this;
+            plugin.init = [](const clap_plugin_t*) { return true; };
+            plugin.destroy = [](const clap_plugin_t*) {};
+            plugin.activate = [](const clap_plugin_t* p, double, std::uint32_t,
+                                 std::uint32_t) {
+                ++self(p).activations; return true;
+            };
+            plugin.deactivate = [](const clap_plugin_t* p) { ++self(p).deactivations; };
+            plugin.start_processing = [](const clap_plugin_t*) { return true; };
+            plugin.stop_processing = [](const clap_plugin_t*) {};
+            plugin.reset = [](const clap_plugin_t*) {};
+            plugin.on_main_thread = [](const clap_plugin_t*) {};
+            plugin.process = [](const clap_plugin_t*, const clap_process_t*)
+                -> clap_process_status { return CLAP_PROCESS_CONTINUE; };
+            plugin.get_extension = [](const clap_plugin_t* p, const char* id)
+                -> const void* {
+                if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0) return &self(p).ports;
+                return nullptr;
+            };
+            ports.count = [](const clap_plugin_t* p, bool isInput) -> std::uint32_t {
+                return isInput ? self(p).inputs : 1u;
+            };
+            ports.get = [](const clap_plugin_t* p, std::uint32_t idx, bool isInput,
+                           clap_audio_port_info_t* info) -> bool {
+                (void) p; (void) idx;
+                info->channel_count = isInput ? 2u : 2u;
+                return true;
+            };
+        }
+    };
+
+    Shifty f;
+    DeviceIdentity id;
+    id.format = "clap";
+    id.name = "Shifty";
+    ClapDevice d(&f.plugin, id);
+
+    d.prepare(48000.0, 256);
+    check(f.activations == 1, "the first prepare activates");
+
+    d.prepare(48000.0, 256);
+    check(f.activations == 1,
+          "the same rate, size and layout: NOTHING, saw " +
+              std::to_string(f.activations));
+
+    // The rescan a real plugin announces through clap_host_audio_ports.
+    f.inputs = 2;
+    d.prepare(48000.0, 256);
+    check(f.activations == 2,
+          "a plugin that now declares a SECOND input bus is reactivated, so the "
+          "host allocates the array it will index -- saw " +
+              std::to_string(f.activations));
+    check(f.deactivations == 1, "and was deactivated exactly once to do it");
+
+    d.prepare(48000.0, 256);
+    check(f.activations == 2, "and settles again once the layout stops moving");
+}
+
 }  // namespace
 
 int main() {
@@ -1206,6 +1292,7 @@ int main() {
     testClapHostWithoutAnyPlugin();
     testAnExtensionWithNullMembers();
     testTheBusLayoutIsAsked();
+    testPrepareReactivatesWhenTheLayoutMoves();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
