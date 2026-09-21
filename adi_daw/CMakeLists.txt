@@ -134,6 +134,9 @@ add_library(adi_core STATIC
     src/adi/engine/snapshot.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
+    src/adi/dsp/biquad.cpp
+    src/adi/dsp/limiter.cpp
+    src/adi/dsp/rmsc.cpp
     src/adi/engine/latency.cpp
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
@@ -232,6 +235,12 @@ add_test(NAME adi_device_tests COMMAND adi_device_tests)
 # exported symbol. Not a test: it needs a plugin installed, and CI has none.
 add_executable(adi_clap_probe src/juce/clap_probe.cpp)
 target_link_libraries(adi_clap_probe PRIVATE adi_core adi_warnings)
+
+add_executable(adi_dsp_tests tests/test_dsp.cpp)
+target_link_libraries(adi_dsp_tests PRIVATE adi_core adi_warnings)
+# The Pd patches are read from the source tree, not copied next to the binary.
+target_compile_definitions(adi_dsp_tests PRIVATE ADI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME adi_dsp_tests COMMAND adi_dsp_tests)
 
 add_executable(adi_pd_tests tests/test_pd.cpp)
 target_link_libraries(adi_pd_tests PRIVATE adi_core adi_warnings)

@@ -6388,3 +6388,100 @@ had started, so nothing overlapped. It now waits for the thread to be running.
   the protocol through the same `dispatchFloat` libpd's hook will call.
 - The value-before-epoch ordering is argued, not exercised: a single-threaded test
   cannot interleave a poll between the two stores.
+
+---
+
+## ADR-0096 — The DSP corrections: tested maths in C++, and Pd patches that take their numbers from it — `DECIDED` (2026-09-21) — **CORRECTS ADR-0093's goals 3, 4 and 6**
+
+**Director's call:** fix the reversed `biquad~` coefficients, the limiter's peak
+detection, and RMSC's sidebands, "to ensure total stability". ADR-0093 had
+recorded each as a defect in the goal as written.
+
+### Decision
+
+**1. The maths lives in C++, where it can be proven; the patches get their numbers
+from it.** `src/adi/dsp/` holds `biquad`, `limiter` and `rmsc`, compiled into
+`adi_core` and tested in `adi_dsp_tests`. There is no Pd on the machine that wrote
+this, so an unrun patch cannot be the place a correction is verified. The EQ
+patch contains **no coefficient maths at all**: the host computes each section and
+sends it the five numbers.
+
+**2. `biquad~` gets the feedback terms negated, in one tested function.** The
+cookbook writes `y = b0x + b1x1 + b2x2 − a1y1 − a2y2`; Pd's `biquad~` writes
+`w = x + fb1·w1 + fb2·w2`. So `fb1 = −a1`, `fb2 = −a2`. `dsp::toPd()` does it, and
+the test runs both through a model of `biquad~`: converted, it reproduces the
+cookbook filter to 1e-12; copied straight, the same impulse runs away to infinity.
+
+**A correction to my own ADR-0093:** I wrote that a 48 dB/oct cut is "four
+biquads". Four *identical* Q = 0.707 sections sag to −12 dB at the cutoff. An
+8th-order Butterworth needs **staggered** Qs — 2.563, 0.900, 0.601, 0.510 — and
+`dsp::cut()` builds them; every slope from 12 to 48 dB/oct measures −3.01 dB at
+its cutoff and 48 dB/oct measures −48 dB an octave out.
+
+**3. The limiter detects SAMPLE PEAK, and its ceiling is a guarantee.** `env~` is
+an RMS follower; a single-sample spike has almost no RMS over a 1.5 ms window, and
+driven through an RMS detector the test's +20 dB spike leaves at **8.25** against a
+ceiling of 0.97. `dsp::LookaheadLimiter` holds the minimum target gain over the
+lookahead window, lets it rise only exponentially, then averages it over the same
+window. Every value in that average is at most the target for the sample about to
+leave the delay line, so the output cannot exceed the ceiling on any sample. It is
+checked across a +12 dB sine, the spike, square bursts and +12 dB noise at four
+lookaheads.
+
+**4. RMSC clamps its envelope, and its sidebands become optional.** A key above
+full scale made the gain `1 − |key|` negative and turned the music upside down; the
+envelope is clamped to `[0, 1]`. The sidebands are amplitude modulation — they are
+what RMSC sounds like, about −16 dB either side of each partial at half depth — so
+they are not removed but made optional: a low-pass on the rectified key takes them
+down by more than 18 dB, at the price of its own lag. The goal's "multiply/subtract"
+becomes multiply only: subtracting the key adds a rectified kick into the mix.
+
+**5. The Pd patches are generated, and checked.** `tools/gen_pd_patches.py` writes
+`adi_daw/pd/`, because a Pd file wires objects by creation index and a hand edit
+re-points every later connection. `validate_pd.py` fails when a committed patch
+differs from its generator, tolerating Windows line endings, and `adi_dsp_tests`
+parses the patches and asserts the specific design.
+
+### Three bugs in my own generated patch, found by review
+
+The first generated limiter would have shipped with all of these, and a
+connection check alone would have passed it:
+
+- **It reported zero latency, forever.** The sample rate went into an `[f]` that
+  nothing ever banged, so the sample-count `expr` always multiplied by 0.
+- **The query could report at the old rate.** `$0-query_latency` fanned out to
+  "read the rate" and "compute the report", and Pd does not order a fan-out — which
+  quietly reinstates the bug ADR-0095 decision 2 exists to prevent. Fixed with
+  `[t b b]`, which fires right to left.
+- **A comment described a fix that was not there.** It said the delay writer and
+  reader sat in ordered subpatches; the generator had never built them. It does now:
+  `[pd write]` wired into `[pd read]`, which is what makes Pd's DSP sort run the
+  writer first.
+
+The structural test now asserts each of these by name, so none can come back
+quietly. The vanilla-Pd limiter cannot reproduce the C++ guarantee — Pd has no
+sliding-window minimum — so it uses an instant-attack peak follower plus a `clip~`
+at the ceiling for the residual the release leaves; the C++ version is the one with
+the exact bound, and the oracle the patch will be compared against.
+
+### Verified non-vacuously
+
+Seven planted defects in the maths, all caught: the cookbook's signs copied into
+`biquad~` (3 checks), identical Qs for a steep cut (8), RMS detection (19), no
+sliding minimum (16), a release allowed above the hold (23), RMSC unclamped (2),
+and its smoothing ignored (2).
+
+Six in the patches, all caught: the query fanning out (5), the rate never reaching
+the arithmetic (2), nothing ordering the writer before the reader (2), detection by
+`env~` (3), one EQ section's coefficients reaching one channel (2), and RMSC
+without its clamp (2).
+
+Two of my own test expectations were wrong the first time, not the code: I listed
+the Butterworth Qs in the opposite order to the formula, and expected a 50 ms
+release to be "back to unity after 60 ms", which is 1.3 time constants.
+
+### Not verified
+
+The patches have never run. Once libpd lands (ADR-0095), the first test to write
+compares each against its C++ reference sample for sample. Auto-release, which the
+original goal mentioned, is not built.
