@@ -121,7 +121,11 @@ void testEventListCarriesNoteIdAndDouble() {
     const auto* n = reinterpret_cast<const clap_event_note_t*>(h0);
     check(n->note_id == 7, "carrying a REAL note id, not -1");
     check(n->key == 60, "the key");
-    check(n->channel == 1, "and the channel, zero-based as CLAP wants it");
+    // Channel 0, NOT the controller's channel 2 (ADR-0099). This check used
+    // to require 1 -- "zero-based as CLAP wants it" -- which pinned the
+    // controller's channel through to the plugin, and a CLAP plugin that
+    // filters on channel 0 then heard nothing from an MPE controller.
+    check(n->channel == 0, "and channel 0, whatever channel the controller sent it on");
     check(std::abs(n->velocity - 100.0 / 127.0) < 1e-15,
           "velocity is a double, not value/127 rounded to 7 bits");
 
@@ -296,6 +300,17 @@ struct Fake {
     clap_plugin_latency_t latency{};
     clap_plugin_params_t params{};
     clap_plugin_state_t state{};
+    clap_plugin_note_ports_t notePorts{};
+
+    /// ADR-0099: off by default, so every older test still sees a plugin with
+    /// no clap.note-ports -- which is sent CLAP note events, as before.
+    bool declareNotePorts = false;
+    std::uint32_t noteInputs = 1;
+    std::uint32_t noteSupported = CLAP_NOTE_DIALECT_CLAP;
+    std::uint32_t notePreferred = CLAP_NOTE_DIALECT_CLAP;
+    std::vector<clap_event_midi_t> seenMidi;
+    std::vector<clap_event_note_t> seenNotes;
+    std::vector<clap_event_note_expression_t> seenExprs;
 
     std::uint32_t tailValue = 0;
     std::uint32_t latencyValue = 0;
@@ -341,6 +356,9 @@ struct Fake {
             f.lastSteady = pd->steady_time;
             f.seenEvents.clear();
             f.seenParams.clear();
+            f.seenMidi.clear();
+            f.seenNotes.clear();
+            f.seenExprs.clear();
             Fake::Seg seg{pd->frames_count, {}};
             if (pd->in_events != nullptr) {
                 const std::uint32_t n = pd->in_events->size(pd->in_events);
@@ -354,7 +372,12 @@ struct Fake {
                         const auto* x =
                             reinterpret_cast<const clap_event_note_expression_t*>(h);
                         seg.exprs.emplace_back(h->time, x->value);
+                        f.seenExprs.push_back(*x);
                     }
+                    if (h->type == CLAP_EVENT_MIDI)
+                        f.seenMidi.push_back(*reinterpret_cast<const clap_event_midi_t*>(h));
+                    if (h->type == CLAP_EVENT_NOTE_ON || h->type == CLAP_EVENT_NOTE_OFF)
+                        f.seenNotes.push_back(*reinterpret_cast<const clap_event_note_t*>(h));
                 }
             }
             f.segments.push_back(std::move(seg));
@@ -373,7 +396,23 @@ struct Fake {
             if (std::strcmp(id, CLAP_EXT_LATENCY) == 0) return &f.latency;
             if (std::strcmp(id, CLAP_EXT_PARAMS) == 0)  return &f.params;
             if (std::strcmp(id, CLAP_EXT_STATE) == 0)   return &f.state;
+            if (std::strcmp(id, CLAP_EXT_NOTE_PORTS) == 0)
+                return f.declareNotePorts ? &f.notePorts : nullptr;
             return nullptr;
+        };
+
+        notePorts.count = [](const clap_plugin_t* p, bool isInput) -> std::uint32_t {
+            return isInput ? self(p).noteInputs : 0; };
+        notePorts.get = [](const clap_plugin_t* p, std::uint32_t i, bool isInput,
+                           clap_note_port_info_t* info) {
+            const Fake& f = self(p);
+            if (!isInput || i >= f.noteInputs) return false;
+            *info = clap_note_port_info_t{};
+            info->id = 0;
+            info->supported_dialects = f.noteSupported;
+            info->preferred_dialect = f.notePreferred;
+            std::snprintf(info->name, sizeof info->name, "notes");
+            return true;
         };
 
         tail.get = [](const clap_plugin_t* p) {
@@ -1004,6 +1043,297 @@ void testMainThreadCallbackIsDispatched() {
     check(f.mainThreadCalls == 1, "an unregistered plugin is not called");
 }
 
+// --- ADR-0099: note dialects ---------------------------------------------------
+
+void testDialectResolution() {
+    section("ADR-0099 -- the dialect a CLAP plugin gets is the one it declares");
+
+    ClapNotePorts none;
+    check(resolveClapDialect(ClapDialectChoice::Auto, none) == ClapDialect::Clap,
+          "no clap.note-ports at all -> CLAP events, the spec's preferred encoding");
+
+    ClapNotePorts noInput;
+    noInput.extension = true;
+    check(resolveClapDialect(ClapDialectChoice::Auto, noInput) == ClapDialect::None,
+          "the extension with no input port -> no notes: it declared it takes none");
+
+    ClapNotePorts all;
+    all.extension = all.input = true;
+    all.supported = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI | CLAP_NOTE_DIALECT_MIDI_MPE;
+    all.preferred = CLAP_NOTE_DIALECT_MIDI_MPE;
+    check(resolveClapDialect(ClapDialectChoice::Auto, all) == ClapDialect::MidiMpe,
+          "Auto takes the PREFERRED dialect when we speak it, even over CLAP");
+    all.preferred = CLAP_NOTE_DIALECT_CLAP;
+    check(resolveClapDialect(ClapDialectChoice::Auto, all) == ClapDialect::Clap, "CLAP when preferred");
+    check(resolveClapDialect(ClapDialectChoice::Midi, all) == ClapDialect::Midi &&
+              resolveClapDialect(ClapDialectChoice::MidiMpe, all) == ClapDialect::MidiMpe,
+          "an explicit choice the plugin declares wins");
+
+    ClapNotePorts midiOnly;
+    midiOnly.extension = midiOnly.input = true;
+    midiOnly.supported = CLAP_NOTE_DIALECT_MIDI;
+    midiOnly.preferred = CLAP_NOTE_DIALECT_MIDI;
+    check(resolveClapDialect(ClapDialectChoice::Auto, midiOnly) == ClapDialect::Midi,
+          "a MIDI-only plugin gets MIDI -- CLAP note events would play nothing");
+    check(resolveClapDialect(ClapDialectChoice::Clap, midiOnly) == ClapDialect::Midi,
+          "and asking for CLAP does not send it a dialect it never declared");
+
+    ClapNotePorts badPref = midiOnly;
+    badPref.supported = CLAP_NOTE_DIALECT_MIDI_MPE;
+    badPref.preferred = CLAP_NOTE_DIALECT_CLAP;           // preferred but not supported
+    check(resolveClapDialect(ClapDialectChoice::Auto, badPref) == ClapDialect::MidiMpe,
+          "a preference the plugin does not also declare is ignored");
+
+    ClapNotePorts midi2;
+    midi2.extension = midi2.input = true;
+    midi2.supported = midi2.preferred = CLAP_NOTE_DIALECT_MIDI2;
+    check(resolveClapDialect(ClapDialectChoice::Auto, midi2) == ClapDialect::None,
+          "MIDI 2.0 only -> None: this host does not speak it");
+
+    check(routeFor(ClapDialect::MidiMpe) == engine::ExpressionRoute::MpeMidi &&
+              routeFor(ClapDialect::Midi) == engine::ExpressionRoute::Plain &&
+              routeFor(ClapDialect::Clap) == engine::ExpressionRoute::NoteExpression,
+          "each dialect runs ADR-0097's matching route");
+}
+
+void testDialectEncodings() {
+    section("ADR-0099 -- the bytes and structs each dialect puts in the list");
+
+    using K = engine::MpeOut::Kind;
+    auto out = [](K k, int chan, int key, double value) {
+        engine::MpeOut o; o.kind = k; o.channel = static_cast<std::uint8_t>(chan);
+        o.key = static_cast<std::int16_t>(key); o.value = value; o.noteId = 5; return o;
+    };
+    auto ctl = [](int chan, std::uint16_t ctrl, std::uint16_t word) {
+        engine::MpeOut o; o.kind = K::Control; o.channel = static_cast<std::uint8_t>(chan);
+        o.ctrl = ctrl; o.word = word; return o;
+    };
+    auto midi = [](const ClapEventList& l, std::int32_t i) {
+        const auto* h = l.at(i);
+        return h != nullptr && h->type == CLAP_EVENT_MIDI
+                   ? *reinterpret_cast<const clap_event_midi_t*>(h) : clap_event_midi_t{};
+    };
+    auto bytes = [](const clap_event_midi_t& m, int a, int b, int c) {
+        return m.data[0] == a && m.data[1] == b && m.data[2] == c;
+    };
+
+    ClapEventList l;
+    l.reserve(32);
+    check(l.addOut(out(K::NoteOn, 3, 60, 0.8), ClapDialect::MidiMpe), "a note-on as MIDI");
+    check(l.addOut(out(K::NoteOn, 3, 61, 0.0), ClapDialect::MidiMpe), "a silent note-on");
+    check(l.addOut(out(K::NoteOff, 3, 60, 0.5), ClapDialect::MidiMpe), "a note-off");
+    check(l.addOut(out(K::PolyPressure, 0, 64, 1.0), ClapDialect::Midi), "poly pressure");
+    check(l.addOut(ctl(3, engine::kCtrlPitchBend, 10239), ClapDialect::MidiMpe), "a bend");
+    check(l.addOut(ctl(3, engine::kCtrlAfterTouch, 127), ClapDialect::MidiMpe), "channel pressure");
+    check(l.addOut(ctl(3, engine::kCtrlTimbre, 64), ClapDialect::MidiMpe), "CC74");
+    check(bytes(midi(l, 0), 0x93, 60, 102), "note-on: 93 3C 66 -- channel 4, 0.8 -> 102");
+    check(bytes(midi(l, 1), 0x93, 61, 1),
+          "velocity 0 goes out as 1: a MIDI note-on at 0 IS a note-off");
+    check(bytes(midi(l, 2), 0x83, 60, 64), "note-off: 83 3C 40");
+    check(bytes(midi(l, 3), 0xA0, 64, 127), "poly pressure: A0 40 7F, on the note's key");
+    check(bytes(midi(l, 4), 0xE3, 0x7F, 0x4F),
+          "bend: LSB first, then MSB -- 10239 is 7F 4F");
+    check(bytes(midi(l, 5), 0xD3, 127, 0), "channel pressure: D3 7F");
+    check(bytes(midi(l, 6), 0xB3, 74, 64), "CC74: B3 4A 40");
+
+    engine::MpeOut x;
+    x.kind = K::Expression;
+    check(!l.addOut(x, ClapDialect::Midi), "a MIDI dialect refuses a note-expression output");
+    check(!l.addOut(out(K::NoteOn, 0, 60, 0.5), ClapDialect::None), "and None refuses everything");
+
+    // The CLAP dialect takes the PLAIN value -- semitones -- and the key.
+    ClapEventList c;
+    c.reserve(8);
+    engine::MpeOut e;
+    e.kind = K::Expression; e.noteId = 9; e.key = 60;
+    e.dim = static_cast<std::uint16_t>(ExpressionDim::Pitch);
+    e.plain = 12.0;
+    e.value = 12.0 / 240.0 + 0.5;                          // VST3's scale, NOT for CLAP
+    check(c.addOut(e, ClapDialect::Clap), "a pitch expression in the CLAP dialect");
+    const auto* ex = reinterpret_cast<const clap_event_note_expression_t*>(c.at(0));
+    check(ex != nullptr && ex->value == 12.0,
+          "carries 12 semitones exactly -- the engine's value, not VST3's 0.55");
+    check(ex != nullptr && ex->key == 60 && ex->note_id == 9 && ex->channel == 0,
+          "addressed by note id AND by the note's key, on channel 0");
+}
+
+void testTheListIsSortedByTime() {
+    section("ADR-0099 -- a plugin's input events are in time order");
+
+    ClapEventList l;
+    l.reserve(8);
+    engine::Event p;
+    p.type = engine::EventType::ParamValue;
+    for (std::int32_t f : {5, 0, 5, 3}) {
+        p.frame = f;
+        p.value = f + 0.25 * static_cast<double>(l.size());   // tags insertion order
+        l.add(p);
+    }
+    l.sortByTime();
+    std::vector<std::uint32_t> times;
+    for (std::int32_t i = 0; i < l.size(); ++i) times.push_back(l.at(i)->time);
+    check(times == std::vector<std::uint32_t>{0, 3, 5, 5}, "sorted by time");
+    const auto* a = reinterpret_cast<const clap_event_param_value_t*>(l.at(2));
+    const auto* b = reinterpret_cast<const clap_event_param_value_t*>(l.at(3));
+    check(a->value < b->value, "and STABLE: two events at one time keep their order");
+}
+
+void testDialectsThroughTheDevice() {
+    section("ADR-0099 -- the device sends each plugin the dialect it declared");
+
+    std::vector<float> l(256, 0.0f), r(256, 0.0f), ol(256), orr(256);
+    const float* inp[2] = {l.data(), r.data()};
+    float* outp[2] = {ol.data(), orr.data()};
+    engine::NodeIo io;
+    io.in = inp; io.out = outp; io.channels = 2; io.frames = 256; io.sampleRate = 48000.0;
+
+    auto bend = expr(11, ExpressionDim::Pitch, 12.0);
+    bend.frame = 10;
+    auto press = expr(11, ExpressionDim::Pressure, 1.0);
+    press.frame = 20;
+
+    // MPE over MIDI, because the plugin PREFERS it.
+    {
+        Fake f;
+        f.declareNotePorts = true;
+        f.noteSupported = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI_MPE;
+        f.notePreferred = CLAP_NOTE_DIALECT_MIDI_MPE;
+        DeviceIdentity id; id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.prepare(48000.0, 256);
+        check(d.notePorts().extension && d.notePorts().input, "the note ports were read");
+        check(d.noteDialect() == ClapDialect::MidiMpe, "MidiMpe, as the plugin prefers");
+        d.pushEvent(noteOn(11, 60, 0.8, 5));               // controller channel 2
+        d.pushEvent(bend);
+        d.process(io);
+        check(f.seenNotes.empty() && f.seenExprs.empty(), "no CLAP note events at all");
+        const auto& m = f.seenMidi;
+        check(m.size() == 3 + 3 + 1 + 1, "MCM, the channel reset, the note, the bend; saw " +
+                                             std::to_string(m.size()));
+        check(m.size() >= 3 && m[0].data[0] == 0xB0 && m[0].data[1] == 101 &&
+                  m[2].data[1] == 6 && m[2].data[2] == 15,
+              "the Configuration Message first, on the master channel");
+        bool noteOnMember = false, bendOnMember = false;
+        for (const auto& e : m) {
+            if (e.data[0] == 0x91 && e.data[1] == 60) noteOnMember = true;
+            if (e.data[0] == 0xE1 && e.data[1] == 0x00 && e.data[2] == 0x50 && e.header.time == 10)
+                bendOnMember = true;             // 10240 = 00 50: +12 of 48
+        }
+        check(noteOnMember, "the note on member channel 2 (0x91), chosen by the route");
+        check(bendOnMember, "and its +12 bend on the same channel at its own frame");
+        bool sorted = true;
+        for (std::size_t i = 1; i < f.seenEvents.size(); ++i)
+            if (f.seenEvents[i].time < f.seenEvents[i - 1].time) sorted = false;
+        check(sorted, "in time order");
+    }
+
+    // A MIDI-only plugin: notes on channel 0, pressure as poly aftertouch.
+    {
+        Fake f;
+        f.declareNotePorts = true;
+        f.noteSupported = f.notePreferred = CLAP_NOTE_DIALECT_MIDI;
+        DeviceIdentity id; id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.prepare(48000.0, 256);
+        check(d.noteDialect() == ClapDialect::Midi, "Midi, the only dialect it declares");
+        d.pushEvent(noteOn(11, 60, 0.8, 5));
+        d.pushEvent(bend);
+        d.pushEvent(press);
+        d.process(io);
+        const auto& m = f.seenMidi;
+        check(m.size() == 2, "the note and its pressure; the bend has no MIDI 1.0 per-note form");
+        check(m.size() == 2 && m[0].data[0] == 0x90 && m[1].data[0] == 0xA0 && m[1].data[1] == 60,
+              "note-on on channel 1 (0x90), then poly aftertouch on its key");
+        check(d.noteRouter().dropped(ExpressionDim::Pitch) == 1, "and the bend is counted");
+    }
+
+    // The CLAP dialect: channel 0, and expression addressed by id AND key.
+    {
+        Fake f;
+        f.declareNotePorts = true;
+        DeviceIdentity id; id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.prepare(48000.0, 256);
+        check(d.noteDialect() == ClapDialect::Clap, "Clap");
+        d.pushEvent(noteOn(11, 60, 0.8, 5));
+        d.pushEvent(bend);
+        d.process(io);
+        check(f.seenMidi.empty(), "no MIDI");
+        check(f.seenNotes.size() == 1 && f.seenNotes[0].channel == 0 && f.seenNotes[0].note_id == 11,
+              "the note on channel 0 with its id");
+        check(f.seenExprs.size() == 1 && f.seenExprs[0].key == 60 && f.seenExprs[0].value == 12.0,
+              "its bend carries the note's key and 12 semitones exactly");
+    }
+
+    // No note input: no notes, but parameters still arrive.
+    {
+        Fake f;
+        f.declareNotePorts = true;
+        f.noteInputs = 0;
+        DeviceIdentity id; id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.prepare(48000.0, 256);
+        check(d.noteDialect() == ClapDialect::None, "None");
+        d.pushEvent(noteOn(11, 60, 0.8, 5));
+        d.setParam("1234abcd", ParamValue::withReal(0.5, 440.0));
+        d.process(io);
+        check(f.seenNotes.empty() && f.seenMidi.empty(), "no notes to a plugin that takes none");
+        check(f.seenParams.size() == 1, "but its parameter still arrives");
+    }
+
+    // Switching dialect mid-note ends the note in the dialect it began in.
+    {
+        Fake f;
+        f.declareNotePorts = true;
+        f.noteSupported = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI_MPE;
+        f.notePreferred = CLAP_NOTE_DIALECT_MIDI_MPE;
+        DeviceIdentity id; id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.prepare(48000.0, 256);
+        d.pushEvent(noteOn(11, 60, 0.8, 5));
+        d.process(io);
+        d.setNoteDialect(ClapDialectChoice::Clap);
+        d.process(io);
+        check(d.noteDialect() == ClapDialect::Clap, "the switch took");
+        check(f.seenMidi.size() == 1 && f.seenMidi[0].data[0] == 0x81 && f.seenMidi[0].data[1] == 60,
+              "and the MIDI note on member channel 2 was ended with a MIDI note-off THERE");
+        check(f.seenNotes.empty(), "not with a CLAP note-off it would never match");
+    }
+
+    // A parameter queued before a note later in the block comes FIRST.
+    {
+        Fake f;
+        DeviceIdentity id; id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.prepare(48000.0, 256);
+        d.pushEvent(noteOn(11, 60, 0.8, 100));
+        d.setParam("1234abcd", ParamValue::withReal(0.5, 440.0));
+        d.process(io);
+        check(f.seenEvents.size() == 2 && f.seenEvents[0].type == CLAP_EVENT_PARAM_VALUE &&
+                  f.seenEvents[0].time == 0 && f.seenEvents[1].time == 100,
+              "the queued parameter at 0, then the note at 100 -- it used to arrive after it");
+    }
+}
+
+void testTheHostSaysWhichDialectsItSpeaks() {
+    section("ADR-0099 -- the host's side of clap.note-ports");
+
+    ClapHostGlue glue;
+    const clap_host_t* h = glue.host();
+    const auto* np = static_cast<const clap_host_note_ports_t*>(h->get_extension(h, CLAP_EXT_NOTE_PORTS));
+    check(np != nullptr && np->supported_dialects != nullptr && np->rescan != nullptr,
+          "the host offers clap.note-ports");
+    check(np != nullptr && np->supported_dialects(h) ==
+              (CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI | CLAP_NOTE_DIALECT_MIDI_MPE),
+          "and speaks CLAP, MIDI and MIDI-MPE -- not MIDI 2.0");
+    if (np != nullptr) {
+        np->rescan(h, CLAP_NOTE_PORTS_RESCAN_NAMES);
+        check(glue.noteRescans() == 0, "a names-only rescan is cosmetic");
+        np->rescan(h, CLAP_NOTE_PORTS_RESCAN_ALL);
+        check(glue.noteRescans() == 1, "a full rescan is counted -- the dialects may have moved");
+    }
+}
+
 void testBundleSearchIsRecursive() {
     section("ADR-0098 -- the CLAP search is recursive, as the format requires");
 
@@ -1374,6 +1704,11 @@ int main() {
     testTheSegmentBoundItself();
     testRestartCausesAreDistinguished();
     testMainThreadCallbackIsDispatched();
+    testDialectResolution();
+    testDialectEncodings();
+    testTheListIsSortedByTime();
+    testDialectsThroughTheDevice();
+    testTheHostSaysWhichDialectsItSpeaks();
     testBundleSearchIsRecursive();
     testClapHostWithoutAnyPlugin();
     testAnExtensionWithNullMembers();

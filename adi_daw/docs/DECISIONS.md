@@ -6828,3 +6828,124 @@ right for more plugins, both the director's to choose:
   was measured, for the same reason.
 - **The CLAP channel decision** is still ADR-0097's open item. §3 is its
   evidence, from one plugin.
+
+---
+
+## ADR-0099 — CLAP note dialects: the host sends what the plugin's note port declares — `DECIDED` (2026-09-21) — **CLOSES ADR-0097's open CLAP item**
+
+**Director's call:** "why surge xt clap have a -- on the mpe+ test? if we need
+to enable mpe in the plugin or host to test we should find a way to do this."
+
+The "—" in ADR-0098's table meant the CLAP host had no MPE-over-MIDI route to
+test. It sent every plugin CLAP note events and note expressions. Those carry
+MPE+ natively, as doubles by note id, and Surge honoured them. Reading why
+there was no other route turned up a real gap: **CLAP makes a plugin declare
+which note dialects it accepts, and this host never asked.**
+
+### What was wrong
+
+- **No `clap.note-ports` on either side.** The host never read a plugin's
+  `supported_dialects` or `preferred_dialect`, and never offered
+  `clap_host_note_ports`. A plugin that declares only the MIDI dialect is
+  entitled to ignore `CLAP_EVENT_NOTE_ON`, so it played nothing.
+- **The controller's channel reached the plugin** — the same defect ADR-0097
+  fixed for VST3, still in the CLAP host. A test pinned it: "controller channel
+  2 → CLAP channel 1".
+- **The input list was not in time order.** CLAP requires it, but queued
+  parameter changes were appended after the notes with time 0.
+
+### Decision
+
+**1. The plugin's declaration decides.** `resolveClapDialect`:
+
+- **No `clap.note-ports` at all** → CLAP events: the spec's preferred encoding,
+  and what every plugin got before.
+- **The extension, but no input port** → no notes. The plugin declared it
+  takes none; its parameters still arrive.
+- **An explicit choice** → that dialect, **only if the plugin declares it**.
+  Otherwise fall back to Auto; an undeclared dialect is never sent.
+- **Auto** → the plugin's preferred dialect when we speak it, else the first it
+  declares of CLAP, MIDI-MPE, MIDI. MIDI 2.0 only → no notes.
+
+Unlike VST3's `Auto` (ADR-0097), which usually has nothing to go on, this one
+reads the answer.
+
+**2. Each dialect runs ADR-0097's route through the same `engine::MpeRouter`.**
+
+| Dialect | Route | What the plugin receives |
+|---|---|---|
+| CLAP | NoteExpression | `CLAP_EVENT_NOTE_*` on channel 0 with the note id; `CLAP_EVENT_NOTE_EXPRESSION` in **semitones**, addressed by note id **and the note's key** |
+| MIDI-MPE | MpeMidi | `CLAP_EVENT_MIDI`: the MCM, a member channel per note, reset before each note, 14-bit bend, pressure, CC74 |
+| MIDI | Plain | `CLAP_EVENT_MIDI`: notes on channel 0, pressure as poly aftertouch, the rest counted |
+
+- The router's outputs now carry each expression's dimension and the engine's
+  plain value, so CLAP gets semitones without a trip through VST3's scale.
+- An expression names the tracked note's key, so a plugin that matches on
+  (channel, key) instead of the id still finds one note.
+- A note-on at velocity 0 goes out as 1, since MIDI 1.0 reads 0 as a note-off.
+
+**3. The host offers `clap_host_note_ports`.** `supported_dialects` returns
+CLAP | MIDI | MIDI-MPE. A `RESCAN_ALL` is counted, and a device re-reads its
+note ports at every activation, which is when the spec allows the scan.
+
+**4. Switching dialect ends each note in the dialect it began in.** A MIDI
+note-on is not ended by a CLAP note-off. The switch is asked for from any
+thread and applied at the next process call.
+
+**5. `ClapEventList::sortByTime()`** puts the finished list in time order,
+stably. `add()` for notes now goes through the CLAP dialect's translation, so
+there is one rule, not two.
+
+### Measured on Surge XT's CLAP
+
+Surge declares all three dialects (`0x7`) and prefers CLAP (`0x1`). The scenes
+and pass rule are ADR-0098's:
+
+| Asked | Got | A (+12) | B (per note) | C (one channel) | D (reused channel) |
+|---|---|---|---|---|---|
+| Auto | CLAP | bent | bent | bent | — |
+| CLAP | CLAP | bent | bent | bent | — |
+| MIDI-MPE | MIDI-MPE | bent | bent | bent | 329.56 Hz, −0.3 c |
+| MIDI | MIDI | unbent | unbent | unbent | — |
+
+**The cell that was "—" is filled.** Per-note expression reaches Surge's CLAP
+in two dialects, and plain MIDI correctly carries none.
+
+### Verified non-vacuously
+
+`adi_clap_tests`, 58 new checks, using a fake plugin that declares
+configurable note ports and records the MIDI, note and expression events it
+receives.
+
+Ten planted defects, all caught:
+
+- Auto ignoring the preference;
+- an undeclared choice sent anyway;
+- the list unsorted;
+- the bend's bytes swapped;
+- velocity 0 sent as 0;
+- a switch ending notes in the new dialect;
+- a plugin with no note input given notes;
+- expression without the key;
+- expression in VST3's scale;
+- `add()` passing the channel through.
+
+The swapped bytes and the VST3 scale also fail **audibly in Surge**:
+MIDI-MPE and CLAP respectively go WRONG in every scene.
+
+The no-input plant **changed nothing the first time**: a plugin with no input
+port has no supported dialects, so the resolution fell through to None anyway.
+Planted instead as "no input → CLAP", it was caught.
+
+### A measurement note for the probe
+
+`makeDevice` activates the plugin, so the probe's own `prepare` changes nothing,
+and a requested dialect is applied by the first process call. The first probe
+read the dialect before rendering and printed "Clap" for every row while the
+audio showed otherwise. It now reads the dialect after.
+
+### Not built
+
+- **Acting on a note-port rescan while the plugin is active.** It is counted;
+  a restart that does not change the audio layout does not re-read the ports.
+- **MIDI 2.0.**

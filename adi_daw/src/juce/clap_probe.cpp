@@ -656,14 +656,19 @@ int measureTheSeam(const std::string& want, bool wetOnly) {
 
 }  // namespace
 
-/// ADR-0098: per-note expression through the CLAP host, measured on a real
-/// synth. The CLAP twin of adi_vst3_probe --mpe, plus the question ADR-0097
-/// left open for CLAP: if every note went out on ONE channel, would each still
-/// bend alone? Scene C answers it -- two notes on the same channel, one bent,
-/// which works only if the plugin addresses expression by note id.
+/// ADR-0098/0099: per-note expression through the CLAP host, measured on a
+/// real synth, in EVERY dialect the plugin declares. The CLAP twin of
+/// adi_vst3_probe --mpe, with the same pass rule: each scene sounds bent
+/// exactly as sent, or unbent -- never at a wrong pitch, never dragging
+/// another note -- and at least one dialect delivers.
+///
+///   A  C4 bent +12                       B  C4 +7 on ch 2, E4 on ch 3
+///   C  B with both notes on ONE channel   D  (MidiMpe) a reused channel is reset
 int clapMpeAcceptance(const std::string& want) {
     using adi::engine::Event;
     using adi::engine::EventType;
+    using adi::device::ClapDialect;
+    using adi::device::ClapDialectChoice;
     namespace pr = adi::probe;
 
     double worst = 0.0;
@@ -692,44 +697,106 @@ int clapMpeAcceptance(const std::string& want) {
         Event e; e.type = EventType::NoteExpression; e.noteId = id; e.channel = static_cast<std::uint8_t>(chan);
         e.dim = static_cast<std::uint16_t>(adi::ExpressionDim::Pitch); e.value = semis; return e;
     };
-    auto play = [&](const std::vector<Event>& ev, std::vector<float>& audio) {
-        std::string err;
-        auto dev = chost.makeDevice(*pick, sr, 512, err);
-        if (!dev || !dev->loaded()) { check(false, "the plugin loads: " + err); return false; }
-        dev->prepare(sr, 512);
-        audio = pr::render(*dev, ev, 64, 512, sr);
-        return true;
+    auto off = [](std::uint64_t id, int key, std::int32_t frame) {
+        Event e; e.type = EventType::NoteOff; e.noteId = id; e.dim = static_cast<std::uint16_t>(key);
+        e.channel = 2; e.frame = frame; return e;
     };
-    auto levels = [&](const std::vector<float>& a, const char* name, bool& perNote) {
+
+    enum class Heard { Bent, Unbent, Wrong };
+    auto name = [](Heard h) { return h == Heard::Bent ? "bent" : (h == Heard::Unbent ? "unbent" : "WRONG"); };
+    auto single = [&](const std::vector<float>& a) {
+        const double hz = pr::estimateHz(a, from, n, sr, 80.0, 1200.0);
+        if (std::abs(pr::centsBetween(hz, pr::midiHz(72))) < 15.0) return Heard::Bent;
+        if (std::abs(pr::centsBetween(hz, pr::midiHz(60))) < 15.0) return Heard::Unbent;
+        return Heard::Wrong;
+    };
+    auto pair = [&](const std::vector<float>& a) {
         const double g4 = pr::toneLevel(a, from, n, sr, 392.0);
         const double e4 = pr::toneLevel(a, from, n, sr, pr::midiHz(64));
         const double b4 = pr::toneLevel(a, from, n, sr, pr::midiHz(71));
         const double c4 = pr::toneLevel(a, from, n, sr, pr::midiHz(60));
         const double top = std::max({g4, e4, b4, c4});
-        std::printf("  %-34s G4 %6.1f  E4 %6.1f  B4 %6.1f  C4 %6.1f dB\n", name,
-                    pr::dbRel(g4, top), pr::dbRel(e4, top), pr::dbRel(b4, top), pr::dbRel(c4, top));
-        perNote = pr::dbRel(g4, top) > -12.0 && pr::dbRel(e4, top) > -12.0 &&
-                  pr::dbRel(b4, top) < -30.0 && pr::dbRel(c4, top) < -30.0;
+        auto present = [&](double l) { return pr::dbRel(l, top) > -12.0; };
+        auto absent = [&](double l) { return pr::dbRel(l, top) < -30.0; };
+        if (present(g4) && present(e4) && absent(b4) && absent(c4)) return Heard::Bent;
+        if (present(c4) && present(e4) && absent(g4) && absent(b4)) return Heard::Unbent;
+        return Heard::Wrong;
     };
 
-    std::vector<float> a, b, c;
-    if (!play({note(1, 60, 2), bend(1, 12.0, 2)}, a)) return 1;
-    if (!play({note(1, 60, 2), bend(1, 7.0, 2), note(2, 64, 3)}, b)) return 1;
-    if (!play({note(1, 60, 1), bend(1, 7.0, 1), note(2, 64, 1)}, c)) return 1;
+    struct Row { const char* label; ClapDialectChoice choice; ClapDialect used{}; Heard a{}, b{}, c{};
+                 double hzD = 0; bool haveD = false; };
+    Row rows[] = {{"Auto", ClapDialectChoice::Auto}, {"Clap", ClapDialectChoice::Clap},
+                  {"MidiMpe", ClapDialectChoice::MidiMpe}, {"Midi", ClapDialectChoice::Midi}};
 
-    const double hz = pr::estimateHz(a, from, n, sr, 80.0, 1200.0);
-    std::printf("\n  A  C4 bent +12                      %.2f Hz (%+.1f c from C5)\n", hz,
-                pr::centsBetween(hz, pr::midiHz(72)));
-    bool bPer = false, cPer = false;
-    levels(b, "B  C4 +7 on ch 2, E4 on ch 3", bPer);
-    levels(c, "C  C4 +7 and E4, BOTH on ch 1", cPer);
+    for (Row& row : rows) {
+        for (int scene = 0; scene < 4; ++scene) {
+            std::string err;
+            auto dev = chost.makeDevice(*pick, sr, 512, err);
+            auto* cd = dynamic_cast<adi::device::ClapDevice*>(dev.get());
+            if (cd == nullptr || !cd->loaded()) { check(false, "the plugin loads: " + err); return 1; }
+            if (scene == 0 && row.choice == ClapDialectChoice::Auto) {
+                const auto& np = cd->notePorts();
+                std::printf("  note ports  extension=%s input=%s supported=0x%x preferred=0x%x\n",
+                            np.extension ? "yes" : "no", np.input ? "yes" : "no",
+                            static_cast<unsigned>(np.supported), static_cast<unsigned>(np.preferred));
+            }
+            cd->setNoteDialect(row.choice);
+            cd->prepare(sr, 512);
+            // Scene D is MidiMpe's reset. The dialect is read AFTER rendering:
+            // makeDevice already activated the plugin, so this prepare changes
+            // nothing and the request is applied by the first process call.
+            if (scene == 3 && row.choice != ClapDialectChoice::MidiMpe) continue;
+            std::vector<Event> ev;
+            if (scene == 0) ev = {note(1, 60, 2), bend(1, 12.0, 2)};
+            if (scene == 1) ev = {note(1, 60, 2), bend(1, 7.0, 2), note(2, 64, 3)};
+            if (scene == 2) ev = {note(1, 60, 1), bend(1, 7.0, 1), note(2, 64, 1)};
+            if (scene == 3) {
+                ev = {note(1, 60, 2), bend(1, 12.0, 2), off(1, 60, 10)};
+                for (int k = 2; k <= 15; ++k) {
+                    Event on = note(static_cast<std::uint64_t>(k), 40 + k, 2);
+                    on.frame = 20 + 4 * k;
+                    ev.push_back(on);
+                    ev.push_back(off(static_cast<std::uint64_t>(k), 40 + k, 22 + 4 * k));
+                }
+                Event last = note(16, 64, 2);
+                last.frame = 120;
+                ev.push_back(last);
+            }
+            const auto audio = pr::render(*cd, ev, 64, 512, sr);
+            row.used = cd->noteDialect();
+            if (scene == 0) row.a = single(audio);
+            if (scene == 1) row.b = pair(audio);
+            if (scene == 2) row.c = pair(audio);
+            if (scene == 3) { row.hzD = pr::estimateHz(audio, from, n, sr, 80.0, 1200.0); row.haveD = true; }
+            check(cd->eventsDropped() == 0 && cd->eventsOutOfRange() == 0,
+                  "nothing dropped or out of range in the scene");
+        }
+    }
+
+    auto dialectName = [](ClapDialect d) {
+        return d == ClapDialect::Clap ? "Clap" : d == ClapDialect::MidiMpe ? "MidiMpe"
+             : d == ClapDialect::Midi ? "Midi" : "None";
+    };
     std::printf("\n");
-
-    check(std::abs(pr::centsBetween(hz, pr::midiHz(72))) < 15.0,
-          "A: CLAP's tuning expression bends C4 to C5 -- semitones, no conversion");
-    check(bPer, "B: on separate channels, only the bent note moves");
-    check(cPer, "C: on ONE channel, still only the bent note moves -- the plugin addresses "
-                "expression by note id, so one channel costs nothing");
+    bool anyDelivers = false;
+    for (const Row& row : rows) {
+        std::printf("  %-8s -> %-8s A %-7s B %-7s C %-7s", row.label, dialectName(row.used),
+                    name(row.a), name(row.b), name(row.c));
+        if (row.haveD)
+            std::printf(" D %.2f Hz (%+.1f c from E4)", row.hzD, pr::centsBetween(row.hzD, pr::midiHz(64)));
+        std::printf("\n");
+        const std::string who = std::string(row.label) + " (" + dialectName(row.used) + ")";
+        check(row.a != Heard::Wrong && row.b != Heard::Wrong && row.c != Heard::Wrong,
+              who + ": every scene bent exactly or not at all -- never a wrong pitch, never dragged");
+        check(row.a == row.b && row.b == row.c, who + ": the plugin reads it in every scene or in none");
+        if (row.haveD)
+            check(std::abs(pr::centsBetween(row.hzD, pr::midiHz(64))) < 15.0,
+                  who + " D: a reused member channel starts in tune");
+        if (row.used == ClapDialect::Midi)
+            check(row.a == Heard::Unbent, who + ": plain MIDI carries no per-note pitch, so nothing bends");
+        if (row.a == Heard::Bent) anyDelivers = true;
+    }
+    check(anyDelivers, "per-note pitch reaches this synth in at least one dialect");
     return 0;
 }
 

@@ -237,6 +237,17 @@ void testNoteExpressionRoute() {
           "pressure, timbre, gain and pan -> Expression, Brightness, Volume, Pan");
     check(v.size() == 7 && v[6].kind == MpeOut::Kind::NoteOff && v[6].channel == 0,
           "and the note ends on channel 0 too");
+    check(v.size() == 7 && v[1].dim == static_cast<std::uint16_t>(ExpressionDim::Pitch) &&
+              v[1].plain == 12.0 && v[2].plain == 0.3,
+          "each expression also carries its dimension and the engine's plain value -- "
+          "semitones for CLAP, which must not be converted back from VST3's scale");
+    check(v.size() == 7 && v[1].key == 60,
+          "and the key of the note it addresses, for CLAP's (channel, key, id) address");
+
+    Out oUnknown;
+    route(r, {expr(20, 999, ExpressionDim::Pitch, 1.0)}, oUnknown);
+    check(oUnknown.list.size() == 1 && oUnknown.list.at(0).key == -1,
+          "an expression for a note the router is not tracking says key -1, not 0");
 
     // A plugin that answered the physical-UI mapping gets ITS types.
     ExpressionCaps pui = reachable();

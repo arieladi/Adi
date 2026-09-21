@@ -5,6 +5,7 @@
 #include "juce/clap_host.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 // Dynamic loading is the one genuinely platform-specific thing in a CLAP
@@ -74,61 +75,22 @@ bool ClapEventList::add(const engine::Event& in, std::int32_t blockOffset,
     if (segmentFrames > 0 && t >= segmentFrames) { ++outOfRange_; return false; }
     const auto time = static_cast<std::uint32_t>(t);
 
+    // Notes and expressions: the Clap dialect's rule, in ONE place (ADR-0099).
+    // Channel 0 whatever the controller used -- ADR-0054's channel is
+    // transport, and a CLAP plugin filtering on channel 0 would otherwise not
+    // hear an MPE controller's notes. Expression is addressed by note id.
+    if (engine::isNoteStream(in.type)) {
+        engine::MpeOut o;
+        if (!engine::noteExpressionOut(in, engine::ExpressionCaps{}, o)) return false;
+        return addOut(o, ClapDialect::Clap, blockOffset, segmentFrames);
+    }
+
     Slot slot{};
     switch (in.type) {
         case engine::EventType::NoteOn:
-        case engine::EventType::NoteOff: {
-            slot.note = clap_event_note_t{};
-            slot.note.header.size     = sizeof(clap_event_note_t);
-            slot.note.header.time     = time;
-            slot.note.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-            // CLAP's event constants are an unnamed int enum and `type` is a
-            // uint16_t, so the assignment narrows. MSVC /W4 raises C4244 and
-            // -Werror makes it fatal; the cast says the narrowing is intended
-            // rather than leaving a warning the Windows job stops on.
-            slot.note.header.type     = static_cast<std::uint16_t>(
-                (in.type == engine::EventType::NoteOn) ? CLAP_EVENT_NOTE_ON
-                                                       : CLAP_EVENT_NOTE_OFF);
-            slot.note.header.flags    = 0;
-            // A REAL note id, not -1. CLAP anchors note expression to it in
-            // exactly the way VST3 does -- the difference is that JUCE's VST3
-            // host hardcodes -1 and we are not going through anyone's host.
-            slot.note.note_id    = (in.noteId == 0)
-                                     ? -1
-                                     : static_cast<std::int32_t>(in.noteId % 0x7FFFFFFFu);
-            slot.note.port_index = 0;
-            slot.note.channel    = static_cast<std::int16_t>(in.channel > 0 ? in.channel - 1 : 0);
-            slot.note.key        = static_cast<std::int16_t>(in.dim);
-            slot.note.velocity   = in.value;          // a double, 0..1
-            break;
-        }
-
-        case engine::EventType::NoteExpression: {
-            const std::int32_t id = clapExprFor(static_cast<ExpressionDim>(in.dim));
-            if (id < 0) return false;
-            slot.expr = clap_event_note_expression_t{};
-            slot.expr.header.size     = sizeof(clap_event_note_expression_t);
-            slot.expr.header.time     = time;
-            slot.expr.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-            slot.expr.header.type     = CLAP_EVENT_NOTE_EXPRESSION;
-            slot.expr.header.flags    = 0;
-            slot.expr.expression_id   = id;
-            slot.expr.note_id    = (in.noteId == 0)
-                                     ? -1
-                                     : static_cast<std::int32_t>(in.noteId % 0x7FFFFFFFu);
-            slot.expr.port_index = 0;
-            slot.expr.channel    = static_cast<std::int16_t>(in.channel > 0 ? in.channel - 1 : 0);
-            slot.expr.key        = -1;                // wildcard: the note_id decides
-            // NO CONVERSION for tuning. CLAP's TUNING is "relative tuning in
-            // semitones, from -120 to +120", which is the unit engine::Event
-            // already carries. The clamp is still applied, because an MPE zone
-            // configured beyond +/-120 would otherwise exceed the range CLAP's
-            // API declares. VST3 needed norm = plain/240 + 0.5 here.
-            slot.expr.value = (id == CLAP_NOTE_EXPRESSION_TUNING)
-                                ? semitonesToClapTuning(in.value)
-                                : std::clamp(in.value, 0.0, 1.0);
-            break;
-        }
+        case engine::EventType::NoteOff:
+        case engine::EventType::NoteExpression:
+            return false;                 // handled above
 
         case engine::EventType::ParamValue:
         case engine::EventType::ParamMod: {
@@ -162,9 +124,189 @@ bool ClapEventList::add(const engine::Event& in, std::int32_t blockOffset,
     return true;
 }
 
+namespace {
+
+std::int32_t clapNoteId(std::uint64_t id) noexcept {
+    return id == 0 ? -1 : static_cast<std::int32_t>(id % 0x7FFFFFFFu);
+}
+
+std::uint8_t unit7(double v) noexcept {
+    const double c = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
+    return static_cast<std::uint8_t>(std::lround(c * 127.0));
+}
+
+}  // namespace
+
+ClapDialect resolveClapDialect(ClapDialectChoice choice, const ClapNotePorts& p) noexcept {
+    if (!p.extension) return ClapDialect::Clap;
+    if (!p.input) return ClapDialect::None;
+    const auto has = [&p](std::uint32_t d) { return (p.supported & d) != 0; };
+    switch (choice) {
+        case ClapDialectChoice::Clap:    if (has(CLAP_NOTE_DIALECT_CLAP)) return ClapDialect::Clap; break;
+        case ClapDialectChoice::MidiMpe: if (has(CLAP_NOTE_DIALECT_MIDI_MPE)) return ClapDialect::MidiMpe; break;
+        case ClapDialectChoice::Midi:    if (has(CLAP_NOTE_DIALECT_MIDI)) return ClapDialect::Midi; break;
+        case ClapDialectChoice::Auto:    break;
+    }
+    if (p.preferred == CLAP_NOTE_DIALECT_CLAP && has(CLAP_NOTE_DIALECT_CLAP)) return ClapDialect::Clap;
+    if (p.preferred == CLAP_NOTE_DIALECT_MIDI_MPE && has(CLAP_NOTE_DIALECT_MIDI_MPE))
+        return ClapDialect::MidiMpe;
+    if (p.preferred == CLAP_NOTE_DIALECT_MIDI && has(CLAP_NOTE_DIALECT_MIDI)) return ClapDialect::Midi;
+    if (has(CLAP_NOTE_DIALECT_CLAP)) return ClapDialect::Clap;
+    if (has(CLAP_NOTE_DIALECT_MIDI_MPE)) return ClapDialect::MidiMpe;
+    if (has(CLAP_NOTE_DIALECT_MIDI)) return ClapDialect::Midi;
+    return ClapDialect::None;
+}
+
+bool ClapEventList::addOut(const engine::MpeOut& o, ClapDialect dialect,
+                           std::int32_t blockOffset, std::int32_t segmentFrames) noexcept {
+    using K = engine::MpeOut::Kind;
+    if (dialect == ClapDialect::None) return false;
+    if (cap_ > 0 && static_cast<std::int32_t>(events_.size()) >= cap_) {
+        ++dropped_;
+        return false;
+    }
+    const std::int32_t t = o.frame - blockOffset;
+    if (t < 0) { ++outOfRange_; return false; }
+    if (segmentFrames > 0 && t >= segmentFrames) { ++outOfRange_; return false; }
+    const auto time = static_cast<std::uint32_t>(t);
+
+    Slot slot{};
+    if (dialect == ClapDialect::Clap) {
+        switch (o.kind) {
+            case K::NoteOn:
+            case K::NoteOff:
+                slot.note = clap_event_note_t{};
+                slot.note.header.size     = sizeof(clap_event_note_t);
+                slot.note.header.time     = time;
+                slot.note.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                slot.note.header.type     = static_cast<std::uint16_t>(
+                    o.kind == K::NoteOn ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF);
+                slot.note.header.flags    = 0;
+                // A REAL note id, not -1: CLAP anchors note expression to it.
+                slot.note.note_id    = clapNoteId(o.noteId);
+                slot.note.port_index = 0;
+                slot.note.channel    = static_cast<std::int16_t>(o.channel & 0x0F);
+                slot.note.key        = o.key;
+                slot.note.velocity   = o.value;       // a double, 0..1
+                break;
+            case K::Expression: {
+                const std::int32_t id = clapExprFor(static_cast<ExpressionDim>(o.dim));
+                if (id < 0) return false;
+                slot.expr = clap_event_note_expression_t{};
+                slot.expr.header.size     = sizeof(clap_event_note_expression_t);
+                slot.expr.header.time     = time;
+                slot.expr.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                slot.expr.header.type     = CLAP_EVENT_NOTE_EXPRESSION;
+                slot.expr.header.flags    = 0;
+                slot.expr.expression_id   = id;
+                slot.expr.note_id    = clapNoteId(o.noteId);
+                slot.expr.port_index = 0;
+                slot.expr.channel    = static_cast<std::int16_t>(o.channel & 0x0F);
+                // The note's own key when the route is tracking it, -1 (any)
+                // when not: a plugin that matches on (channel, key) and not on
+                // the id must still find ONE note on the one channel.
+                slot.expr.key        = o.key;
+                // NO CONVERSION for tuning: CLAP's TUNING is semitones, which
+                // is what the engine carries. The plain value, not VST3's.
+                slot.expr.value = (id == CLAP_NOTE_EXPRESSION_TUNING)
+                                    ? semitonesToClapTuning(o.plain)
+                                    : std::clamp(o.plain, 0.0, 1.0);
+                break;
+            }
+            case K::PolyPressure:
+            case K::Control:
+                return false;                  // not on the Clap dialect's route
+        }
+    } else {
+        // Raw MIDI. The route already chose channels and words (ADR-0097);
+        // this only lays out the bytes.
+        const auto ch = static_cast<std::uint8_t>(o.channel & 0x0F);
+        const auto key = static_cast<std::uint8_t>(o.key & 0x7F);
+        std::uint8_t b0 = 0, b1 = 0, b2 = 0;
+        switch (o.kind) {
+            case K::NoteOn: {
+                // Velocity 0 is a note-off in MIDI 1.0, so a note-on never sends it.
+                const std::uint8_t v = unit7(o.value);
+                b0 = static_cast<std::uint8_t>(0x90 | ch); b1 = key; b2 = v == 0 ? 1 : v;
+                break;
+            }
+            case K::NoteOff:
+                b0 = static_cast<std::uint8_t>(0x80 | ch); b1 = key; b2 = unit7(o.value);
+                break;
+            case K::PolyPressure:
+                b0 = static_cast<std::uint8_t>(0xA0 | ch); b1 = key; b2 = unit7(o.value);
+                break;
+            case K::Control:
+                if (o.ctrl == engine::kCtrlPitchBend) {
+                    b0 = static_cast<std::uint8_t>(0xE0 | ch);
+                    b1 = static_cast<std::uint8_t>(o.word & 0x7F);
+                    b2 = static_cast<std::uint8_t>((o.word >> 7) & 0x7F);
+                } else if (o.ctrl == engine::kCtrlAfterTouch) {
+                    b0 = static_cast<std::uint8_t>(0xD0 | ch);
+                    b1 = static_cast<std::uint8_t>(o.word & 0x7F);
+                } else if (o.ctrl < 128) {
+                    b0 = static_cast<std::uint8_t>(0xB0 | ch);
+                    b1 = static_cast<std::uint8_t>(o.ctrl);
+                    b2 = static_cast<std::uint8_t>(o.word & 0x7F);
+                } else {
+                    return false;
+                }
+                break;
+            case K::Expression:
+                return false;                  // MIDI routes never produce one
+        }
+        slot.midi = clap_event_midi_t{};
+        slot.midi.header.size     = sizeof(clap_event_midi_t);
+        slot.midi.header.time     = time;
+        slot.midi.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        slot.midi.header.type     = CLAP_EVENT_MIDI;
+        slot.midi.header.flags    = 0;
+        slot.midi.port_index = 0;
+        slot.midi.data[0] = b0;
+        slot.midi.data[1] = b1;
+        slot.midi.data[2] = b2;
+    }
+    events_.push_back(slot);
+    return true;
+}
+
+void ClapEventList::sortByTime() noexcept {
+    for (std::size_t i = 1; i < events_.size(); ++i) {
+        const Slot key = events_[i];
+        std::size_t j = i;
+        while (j > 0 && events_[j - 1].hdr.time > key.hdr.time) {
+            events_[j] = events_[j - 1];
+            --j;
+        }
+        events_[j] = key;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ClapDevice
 // ---------------------------------------------------------------------------
+
+void ClapDevice::readNotePorts() {
+    notePorts_ = ClapNotePorts{};
+    // Checked field by field: mac found plugins that return an extension
+    // struct with null function pointers inside.
+    if (notePortsExt_ == nullptr || notePortsExt_->count == nullptr || notePortsExt_->get == nullptr)
+        return;
+    notePorts_.extension = true;
+    if (notePortsExt_->count(plugin_, true) == 0) return;
+    clap_note_port_info_t info{};
+    if (!notePortsExt_->get(plugin_, 0, true, &info)) return;
+    notePorts_.input = true;
+    notePorts_.supported = info.supported_dialects;
+    notePorts_.preferred = info.preferred_dialect;
+}
+
+void ClapDevice::applyDialect(ClapDialectChoice choice) {
+    appliedDialect_ = static_cast<std::uint8_t>(choice);
+    dialect_ = resolveClapDialect(choice, notePorts_);
+    router_.configure(routeFor(dialect_), engine::ExpressionCaps{});
+    dialectInUse_.store(static_cast<std::uint8_t>(dialect_), std::memory_order_release);
+}
 
 bool ClapDevice::pushEvent(const engine::Event& e) noexcept {
     if (injectedUsed_ >= injected_.size()) { ++pendingDropped_; return false; }
@@ -203,6 +345,12 @@ ClapDevice::ClapDevice(const clap_plugin_t* plugin, DeviceIdentity id)
         plugin_->get_extension(plugin_, CLAP_EXT_TAIL));
     latencyExt_ = static_cast<const clap_plugin_latency_t*>(
         plugin_->get_extension(plugin_, CLAP_EXT_LATENCY));
+    notePortsExt_ = static_cast<const clap_plugin_note_ports_t*>(
+        plugin_->get_extension(plugin_, CLAP_EXT_NOTE_PORTS));
+    // ADR-0099: the plugin is not active yet, which is when the spec allows
+    // the note-port scan.
+    readNotePorts();
+    applyDialect(ClapDialectChoice::Auto);
 
     // Read once, here, on the message thread. `desc` is required by the spec
     // and checked anyway: mac found plugins that return a non-null extension
@@ -470,6 +618,12 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     }
     sampleRate_ = sampleRate;
     maxFrames_ = maxFrames;
+    // ADR-0099: deactivated now, so the note ports may be scanned -- they can
+    // change between activations -- and the dialect resolved against them.
+    // The route forgets its notes, which a reactivated plugin has too, and
+    // MpeMidi's Configuration Message is sent again.
+    readNotePorts();
+    applyDialect(static_cast<ClapDialectChoice>(requestedDialect_.load(std::memory_order_acquire)));
     // ADR-0049: the GRANTED size, as both the min and the max. A plugin told
     // a larger maximum than it will get allocates more than it needs; one
     // told a smaller maximum overruns when the driver hands over a full block.
@@ -532,6 +686,11 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     const double updateFrames = (sampleRate > 0.0) ? (frames / sampleRate) * 500.0 : 1.0;
     const auto perNote = static_cast<std::int32_t>(updateFrames * 3.0) + 2;
     events_.reserve((perNote > 0 ? perNote : 8) * 16);
+    // The route can turn one note-on into four outputs (three channel resets
+    // and the note), plus the Configuration Message once.
+    const std::int32_t routedCap = (perNote > 0 ? perNote : 8) * 16 + 16 * 4 + 8;
+    routedStore_.assign(static_cast<std::size_t>(routedCap), engine::MpeOut{});
+    routed_ = engine::MpeOutList(routedStore_.data(), routedCap);
 
     pending_.assign(256, PendingParam{});
     pendingUsed_ = 0;
@@ -638,12 +797,37 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     // and the plugin is being handed one segment. ADR-0078's trap, one layer
     // up, and invisible in any test whose block has a single segment.
     events_.clear();
-    for (const auto& e : io.events) events_.add(e, io.blockOffset, n);
 
-    // Injected events, for callers with no graph. Also block-relative, so
-    // they take the same subtraction, and they are consumed once.
+    // ADR-0099: a dialect change asked for since the last call. Every sounding
+    // note is ended IN THE DIALECT IT BEGAN IN -- a MIDI note-on is not ended
+    // by a CLAP note-off -- before the new one starts.
+    routed_.clear();
+    const auto want = requestedDialect_.load(std::memory_order_acquire);
+    if (want != appliedDialect_) {
+        const ClapDialect next = resolveClapDialect(static_cast<ClapDialectChoice>(want), notePorts_);
+        router_.switchTo(routeFor(next), io.blockOffset, routed_);
+        for (const engine::MpeOut& o : routed_) events_.addOut(o, dialect_, io.blockOffset, n);
+        routed_.clear();
+        dialect_ = next;
+        appliedDialect_ = want;
+        dialectInUse_.store(static_cast<std::uint8_t>(dialect_), std::memory_order_release);
+    }
+
+    // The note stream, through the route the dialect implies. The graph's
+    // events and the injected ones (callers with no graph), both
+    // block-relative, both consumed once. A plugin with no note input port
+    // is sent no notes: it declared it takes none.
+    if (dialect_ != ClapDialect::None) {
+        router_.route(io.events.first, io.events.count, io.blockOffset, routed_);
+        router_.route(injected_.data(), static_cast<std::int32_t>(injectedUsed_),
+                      io.blockOffset, routed_);
+        for (const engine::MpeOut& o : routed_) events_.addOut(o, dialect_, io.blockOffset, n);
+    }
+    // Parameters address the plugin and are never a note stream (ADR-0091).
+    for (const auto& e : io.events)
+        if (!engine::isNoteStream(e.type)) events_.add(e, io.blockOffset, n);
     for (std::size_t i = 0; i < injectedUsed_; ++i)
-        events_.add(injected_[i], io.blockOffset, n);
+        if (!engine::isNoteStream(injected_[i].type)) events_.add(injected_[i], io.blockOffset, n);
     injectedUsed_ = 0;
 
     // Queued parameter changes, at the start of this segment. CLAP parameters
@@ -659,6 +843,11 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
         events_.add(e, io.blockOffset, n);
     }
     pendingUsed_ = 0;
+
+    // CLAP requires input events in time order, and the list above was built
+    // from three sources. Queued parameters went in last at the segment's
+    // start, AFTER notes later in it, until ADR-0099 sorted the list.
+    events_.sortByTime();
 
     for (std::size_t b = 0; b < inBuses_.size(); ++b) {
         inBufs_[b].data32 = inBuses_[b].ptrs.data();
@@ -863,6 +1052,10 @@ ClapHostGlue::ClapHostGlue() {
     // listening (ADR-0084).
     latencyExt_.changed = &ClapHostGlue::latencyChanged;
     portsExt_.rescan    = &ClapHostGlue::portsRescan;
+    // ADR-0099: which dialects we speak, and word that a plugin's note ports
+    // changed.
+    notePortsExt_.supported_dialects = &ClapHostGlue::noteDialects;
+    notePortsExt_.rescan             = &ClapHostGlue::noteRescan;
 }
 
 const void* ClapHostGlue::getExtension(const clap_host_t* h, const char* id) {
@@ -870,6 +1063,7 @@ const void* ClapHostGlue::getExtension(const clap_host_t* h, const char* id) {
     auto* self = static_cast<ClapHostGlue*>(h->host_data);
     if (std::strcmp(id, CLAP_EXT_LATENCY) == 0)     return &self->latencyExt_;
     if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0) return &self->portsExt_;
+    if (std::strcmp(id, CLAP_EXT_NOTE_PORTS) == 0)  return &self->notePortsExt_;
     // Returning nullptr for an unknown id is the contract, and a host that
     // lied here would have plugins calling into functions it does not
     // implement.
@@ -894,6 +1088,17 @@ void ClapHostGlue::portsRescan(const clap_host_t* h, std::uint32_t flags) {
     if ((flags & kShape) != 0)
         static_cast<ClapHostGlue*>(h->host_data)
             ->portChanges_.fetch_add(1, std::memory_order_release);
+}
+
+std::uint32_t ClapHostGlue::noteDialects(const clap_host_t*) { return kClapHostDialects; }
+
+void ClapHostGlue::noteRescan(const clap_host_t* h, std::uint32_t flags) {
+    // RESCAN_ALL means the ports -- and so the dialects -- may have changed;
+    // it is legal only while the plugin is inactive, and a device re-reads
+    // them when it next activates. NAMES is cosmetic.
+    if ((flags & CLAP_NOTE_PORTS_RESCAN_ALL) != 0)
+        static_cast<ClapHostGlue*>(h->host_data)
+            ->noteRescans_.fetch_add(1, std::memory_order_release);
 }
 
 void ClapHostGlue::registerPlugin(const clap_plugin_t* p) {

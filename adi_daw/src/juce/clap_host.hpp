@@ -35,6 +35,7 @@
 #pragma once
 
 #include "adi/blob.hpp"          // ExpressionDim
+#include "adi/engine/mpe_output.hpp"
 #include "juce/device_model.hpp"
 
 #include <clap/clap.h>
@@ -85,6 +86,60 @@ inline constexpr double kClapTuningLimit = 120.0;
 /// Same shape and same reasoning as `Vst3EventList`: capacity comes from
 /// `reserve` at prepare, overflow is COUNTED rather than silently broken past
 /// (ADR-0056, and the 2048-with-a-silent-break that JUCE does).
+// --- ADR-0099: note dialects --------------------------------------------------
+
+/// What a plugin's notes are sent as.
+///
+/// CLAP lets a plugin DECLARE this, per note port: `supported_dialects` and a
+/// `preferred_dialect`. A host that sends a dialect the plugin did not declare
+/// is sending events the plugin is entitled to ignore -- a MIDI-only plugin
+/// handed CLAP_EVENT_NOTE_ON plays nothing. So unlike VST3 (ADR-0097), where
+/// `Auto` usually has nothing to go on, here it reads the answer.
+enum class ClapDialect : std::uint8_t {
+    Clap,      ///< CLAP_EVENT_NOTE_* and note expressions: doubles, by note id
+    MidiMpe,   ///< raw MIDI with MPE: ADR-0097's MpeMidi route
+    Midi,      ///< raw MIDI on one channel: ADR-0097's Plain route
+    None,      ///< the plugin declares no note input
+};
+
+/// What the user asked for. An explicit choice the plugin does not declare
+/// falls back to `Auto` -- never an undeclared dialect.
+enum class ClapDialectChoice : std::uint8_t { Auto = 0, Clap = 1, MidiMpe = 2, Midi = 3 };
+
+/// What `clap.note-ports` declared for the plugin's first input port.
+struct ClapNotePorts {
+    bool extension = false;       ///< the plugin implements clap.note-ports at all
+    bool input = false;           ///< and declares at least one input port
+    std::uint32_t supported = 0;  ///< CLAP_NOTE_DIALECT_* bits
+    std::uint32_t preferred = 0;
+};
+
+/// The dialects this host speaks; `clap_host_note_ports.supported_dialects`.
+/// MIDI 2.0 is not among them.
+inline constexpr std::uint32_t kClapHostDialects =
+    CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI | CLAP_NOTE_DIALECT_MIDI_MPE;
+
+/// The dialect a plugin gets.
+///   * no clap.note-ports at all -> Clap: the spec's preferred encoding, and
+///     what this host sent every plugin before ADR-0099.
+///   * the extension, but no input port -> None: it takes no notes.
+///   * an explicit choice the plugin declares -> that.
+///   * otherwise its preferred dialect when we speak it, else the first it
+///     declares of Clap, MidiMpe, Midi -- else None (MIDI 2.0 only).
+[[nodiscard]] ClapDialect resolveClapDialect(ClapDialectChoice choice,
+                                             const ClapNotePorts& ports) noexcept;
+
+/// The ADR-0097 route each dialect runs through `engine::MpeRouter`.
+[[nodiscard]] constexpr engine::ExpressionRoute routeFor(ClapDialect d) noexcept {
+    switch (d) {
+        case ClapDialect::MidiMpe: return engine::ExpressionRoute::MpeMidi;
+        case ClapDialect::Midi:    return engine::ExpressionRoute::Plain;
+        case ClapDialect::Clap:
+        case ClapDialect::None:    break;
+    }
+    return engine::ExpressionRoute::NoteExpression;
+}
+
 class ClapEventList {
 public:
     void reserve(std::int32_t n);
@@ -121,6 +176,18 @@ public:
     bool add(const engine::Event& e, std::int32_t blockOffset = 0,
              std::int32_t segmentFrames = 0) noexcept;
 
+    /// One output of `engine::MpeRouter`, in the plugin's dialect (ADR-0099):
+    /// CLAP note and note-expression events, or CLAP_EVENT_MIDI bytes. The
+    /// same offset rule and counting as `add`, which now uses this for notes.
+    bool addOut(const engine::MpeOut& o, ClapDialect dialect, std::int32_t blockOffset = 0,
+                std::int32_t segmentFrames = 0) noexcept;
+
+    /// Stable, by time. CLAP requires a plugin's input events in time order,
+    /// and a list built from several sources -- the route, the graph's
+    /// parameters, the queued ones -- is not, until this runs. Insertion
+    /// sort: short, nearly sorted, and allocation-free.
+    void sortByTime() noexcept;
+
     /// The struct a plugin is handed. Valid until the next `clear`.
     [[nodiscard]] const clap_input_events_t* inputEvents() const noexcept { return &in_; }
 
@@ -140,6 +207,7 @@ private:
         clap_event_note_t            note;
         clap_event_note_expression_t expr;
         clap_event_param_value_t     param;
+        clap_event_midi_t            midi;
     };
 
     std::vector<Slot> events_;
@@ -232,6 +300,23 @@ public:
     /// How many blocks have been processed, and the plugin's last answer.
     [[nodiscard]] std::int64_t steadyTime() const noexcept { return steadyTime_; }
 
+    // --- ADR-0099: note dialects -------------------------------------------
+
+    /// Ask for a dialect. Any thread; applied at the start of the next process
+    /// call, after every sounding note is ended in the dialect it began in.
+    void setNoteDialect(ClapDialectChoice c) noexcept {
+        requestedDialect_.store(static_cast<std::uint8_t>(c), std::memory_order_release);
+    }
+    /// The dialect in use now. Any thread.
+    [[nodiscard]] ClapDialect noteDialect() const noexcept {
+        return static_cast<ClapDialect>(dialectInUse_.load(std::memory_order_acquire));
+    }
+    /// What the plugin declared. Read at construction and at every activation
+    /// -- the spec allows the scan only while the plugin is deactivated.
+    [[nodiscard]] const ClapNotePorts& notePorts() const noexcept { return notePorts_; }
+    /// The router, for its counters. Audio thread, or while not processing.
+    [[nodiscard]] const engine::MpeRouter& noteRouter() const noexcept { return router_; }
+
     /// `clap_id` is a uint32; `plugin_params.param_id` is TEXT. The conversion
     /// is fixed-width hex so it sorts stably and cannot collide with a Pd
     /// symbol or a VST3 id in the same column.
@@ -293,6 +378,19 @@ private:
     std::vector<Bus> inBuses_, outBuses_;
     std::vector<clap_audio_buffer_t> inBufs_, outBufs_;
     ClapEventList       events_;     ///< rebuilt per process call
+
+    // ADR-0099. The route's output is sized at prepare and reused.
+    void readNotePorts();
+    void applyDialect(ClapDialectChoice choice);
+    const clap_plugin_note_ports_t* notePortsExt_ = nullptr;
+    ClapNotePorts notePorts_{};
+    ClapDialect dialect_ = ClapDialect::Clap;        ///< audio thread, and prepare
+    std::atomic<std::uint8_t> requestedDialect_{0};  ///< ClapDialectChoice
+    std::uint8_t appliedDialect_ = 0;                ///< audio thread, and prepare
+    std::atomic<std::uint8_t> dialectInUse_{0};      ///< ClapDialect
+    engine::MpeRouter router_;
+    std::vector<engine::MpeOut> routedStore_;
+    engine::MpeOutList routed_;
     std::vector<engine::Event> injected_;   ///< from pushEvent, block-relative
     std::size_t injectedUsed_ = 0;
     clap_output_events_t outEvents_{};
@@ -380,6 +478,13 @@ public:
         return unexplained_.load(std::memory_order_acquire);
     }
 
+    /// `clap_host_note_ports.rescan(CLAP_NOTE_PORTS_RESCAN_ALL)` calls: the
+    /// plugin's note ports, and so possibly its dialects, changed (ADR-0099).
+    /// A device re-reads them at its next activation.
+    [[nodiscard]] std::uint64_t noteRescans() const noexcept {
+        return noteRescans_.load(std::memory_order_acquire);
+    }
+
     /// True when a plugin deferred work to the main thread and nothing has
     /// run it yet.
     [[nodiscard]] bool mainThreadWorkPending() const noexcept {
@@ -405,6 +510,8 @@ private:
     static const void* getExtension(const clap_host_t*, const char* id);
     static void latencyChanged(const clap_host_t*);
     static void portsRescan(const clap_host_t*, std::uint32_t flags);
+    static std::uint32_t noteDialects(const clap_host_t*);
+    static void noteRescan(const clap_host_t*, std::uint32_t flags);
     static void requestRestart(const clap_host_t*);
     static void requestProcess(const clap_host_t*);
     static void requestCallback(const clap_host_t*);
@@ -412,6 +519,8 @@ private:
     clap_host_t host_{};
     clap_host_latency_t     latencyExt_{};
     clap_host_audio_ports_t portsExt_{};
+    clap_host_note_ports_t  notePortsExt_{};
+    std::atomic<std::uint64_t> noteRescans_{0};
     std::atomic<std::uint64_t> latencyChanges_{0};
     std::atomic<std::uint64_t> portChanges_{0};
     std::atomic<std::uint64_t> unexplained_{0};

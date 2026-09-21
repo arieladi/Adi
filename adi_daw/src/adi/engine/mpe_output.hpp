@@ -172,6 +172,10 @@ struct MpeOut {
 
     Kind kind = Kind::NoteOn;
     std::uint8_t channel = 0;       ///< 0-based, as VST3 numbers them
+    /// The note's key. For an `Expression`, the key of the note it addresses
+    /// when the router is tracking that note, else -1 -- CLAP's address is
+    /// (port, channel, key, note_id) and a plugin that matches on key alone
+    /// must still find ONE note (ADR-0099).
     std::int16_t key = 0;
     std::uint16_t ctrl = 0;
     /// The wire value for a legacy event: 7 bits, or 14 for pitch bend.
@@ -185,6 +189,12 @@ struct MpeOut {
     /// Control's parameter value. A double: the route decides what is
     /// quantised, and only the MIDI wire is.
     double value = 0.0;
+    /// For an `Expression`: the dimension, and the engine's own value --
+    /// semitones for pitch, 0..1 otherwise. `value` is VST3's normalised form;
+    /// CLAP takes semitones directly, and converting back from VST3's would
+    /// round-trip a double through a scale it never needed (ADR-0099).
+    std::uint16_t dim = 0;
+    double plain = 0.0;
 };
 
 /// A fixed-capacity list over storage someone else owns. Overflow is COUNTED,

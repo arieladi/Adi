@@ -78,6 +78,9 @@ bool noteExpressionOut(const Event& in, const ExpressionCaps& caps, MpeOut& out)
 
         case EventType::NoteExpression: {
             out.kind = MpeOut::Kind::Expression;
+            out.key = -1;                       // unknown here; the router fills it
+            out.dim = in.dim;
+            out.plain = in.value;
             switch (static_cast<ExpressionDim>(in.dim)) {
                 case ExpressionDim::Pitch:
                     out.exprType = caps.pitchType;
@@ -354,8 +357,9 @@ void MpeRouter::expression(const Event& e, MpeOutList& out) noexcept {
         // Anchored by note id, so no channel or key is needed and the note
         // need not have been seen: a plugin ignores an id it does not know.
         MpeOut o;
-        if (noteExpressionOut(e, caps_, o)) out.push(o);
-        else drop();
+        if (!noteExpressionOut(e, caps_, o)) { drop(); return; }
+        if (const Note* nt = e.noteId != 0 ? find(e.noteId) : nullptr) o.key = nt->key;
+        out.push(o);
         return;
     }
 
