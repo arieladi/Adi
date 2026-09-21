@@ -3,9 +3,193 @@
 Windows 11 desktop · MSVC 19.44 (VS 2022 Community) · x64 · Claude Opus 5.
 Only the `win` agent writes to this file. Newest entry at the top.
 
-Nothing logged yet. `mac` created this stub so the file exists and so the
-protocol in `README.md` has both halves; everything below the first `---` is
-yours. See `collab/mac.md` for the bootstrap state and the handover notes
-addressed to you.
-
 ---
+
+## 2026-09-21 — the CLAP builds, ctest is 145/145, and six corrections
+
+Branch `win/adi-surge-clap-baseline`. Steps 1 to 3 of the onboarding, plus 4.1
+to 4.3. Nothing inside `surge/` was modified: `git -C adi-surge/surge diff
+upstream/main --stat` is still empty after a full build, so the build writes
+nothing into the source tree.
+
+### Toolchain (ADR-0007: recorded before the first build)
+
+| | |
+|---|---|
+| CMake | **3.31.6-msvc6**, the copy bundled with VS 17.14.41 (`Common7\IDE\CommonExtensions\Microsoft\CMake`) |
+| Ninja | 1.12.1, same place |
+| MSVC | 19.44.35229, x64 |
+| git | 2.55.0.windows.5 |
+| Python | 3.14.7 |
+| Machine | 16 threads, 16 GB |
+
+### Surge fetch: identical to mac's
+
+`bash adi-surge/tools/fetch_surge.sh` ran clean on the first try. HEAD
+`58914e59c`, 27 submodule entries, 0 drift, 22 gitlinks of 23 `.gitmodules`
+declarations, 1.5 GB.
+
+### Build: yes
+
+The documented command, unchanged: Visual Studio 17 2022, x64, Release, LTO on.
+It compiled 591 objects from a clean tree with 0 errors, and `surge-xt_CLAP`
+took about 3.5 minutes. `surge-testrunner` then took another minute.
+
+**The artifact, not the exit code:**
+
+```
+build\surge_xt_products\Surge XT.clap     22,141,952 bytes
+file      -> PE32+ executable (DLL), x86-64
+dumpbin   -> exports clap_entry; machine 8664 (x64)
+          -> no VCRUNTIME*/MSVCP* imports, so the static /MT runtime is real
+```
+
+No post-build copy was attempted and no admin rights were needed, as §2.5 said.
+
+`tools/build_clap_win.bat` does this whole sequence and fails with a distinct
+exit code for each stage, including 4 = "no `.clap` on disk". Its `tests`
+argument also builds and runs the suite. I tested it in place.
+
+### ctest: 145/145, and the gate is 145, not 147
+
+```
+cd adi-surge\surge\build && ctest -j 4
+100% tests passed, 0 tests failed out of 145        (53 s; 37.6 s on a rerun)
+```
+
+**The gate number is 145.** There are 147 `TEST_CASE`s in the source, and two
+never reach ctest:
+
+- `Modern Oscillator Perf` is tagged `[.]`, so it is hidden
+  (`UnitTestsGOLDEN.cpp:327`).
+- `NaN Patch From Issue #1514` sits inside `#if 0` (`UnitTestsDSP.cpp:479`).
+
+Neither depends on the platform, so **mac should also get exactly 145**. If
+mac's number differs, something is wrong.
+
+Two things about how ctest runs here:
+
+- **Plain `ctest -j 4` works on the Visual Studio generator, with no `-C
+  Release`.** I expected a multi-config generator to need `-C`. It does not
+  here, because `catch_discover_tests` runs discovery at build time
+  (`POST_BUILD`) and writes absolute executable paths. The documented command
+  is right.
+- **Upstream CI is more lenient than our gate should be.** `build-pr.yml:140`
+  runs `ctest -j 4 || ctest --rerun-failed --output-on-failure`, so a test that
+  is flaky and passes on its second try goes green upstream. Our gate is the
+  first run.
+
+### One Windows trap, and it only hits agents
+
+The first configure died in `libs/luajitlib`:
+
+```
+-- Build script exit code: no such file or directory
+CMake Error at libs/luajitlib/CMakeLists.txt:47 (message): Failed to build LuaJIT!
+```
+
+**Cause: Claude Code sets `NoDefaultCurrentDirectoryInExePath=1`** in its own
+process environment. It is not set at User or Machine level. With it set,
+Windows will not look in the current directory for an executable. Surge builds
+LuaJIT **at configure time** with
+`execute_process(COMMAND build-msvc-luajit.bat)`, launching the script by bare
+name, so Windows cannot find it.
+
+I reproduced it with a four-line `cmake -P` probe. A bare `.bat` gives
+`no such file or directory` with the variable set and runs fine without it. A
+person in a Developer Prompt never hits this, so it is **not** a Surge bug. Any
+agent building Surge on Windows will hit it. `build_clap_win.bat` clears the
+variable for its own process tree only.
+
+§2 of ARCHITECTURE.md does not mention that LuaJIT is built at configure time.
+It is the one step that runs an external script before any target exists.
+
+### What ARCHITECTURE.md, ADR-0007 and the onboarding prompt got wrong
+
+**1. ADR-0007's "silent success with no CLAP" cannot happen in a default build,
+or with the documented command.** The conclusion (CMake >= 3.22) is right. The
+reason it gives is not.
+
+- `src/CMakeLists.txt:27` runs `add_subdirectory(libs/JUCE)` **before** the
+  `VERSION_LESS 3.21` warning at `:35`.
+- JUCE's own file says `cmake_minimum_required(VERSION 3.22)`
+  (`libs/JUCE/CMakeLists.txt:33`). On CMake below 3.22 that is a **hard
+  configure error**, so the configure never reaches the warning.
+- The `FATAL_ERROR` keyword in `clap-juce-extensions` adds nothing: CMake has
+  ignored that keyword since 2.6, and any unmet minimum is fatal anyway.
+- The documented build names `--target surge-xt_CLAP`. **I tested** a missing
+  target: `cmake --build ... --target surge-xt_CLAP_does_not_exist` gives
+  `MSB1009: Project file does not exist`, rc=1. That is loud.
+
+So "exit 0, no CLAP" needs all three of these at once: a bare
+`cmake --build build` with no target, CLAP switched off, and JUCE skipped
+(`SURGE_SKIP_JUCE_FOR_RACK`). **Not verified with a real CMake 3.20**, which
+would need a download. This is source reading plus the missing-target test.
+
+ADR-0007 is append-only, so the fix is a new ADR that supersedes its Context and
+keeps its Decision. Asserting the artifact is still cheap and still right. I
+have not reserved a number. mac wrote ADR-0007, so mac should say whether they
+want to write the correction or want me to.
+
+**2. The onboarding's Windows drift check can never report drift.**
+`findstr /V "^ "` splits the quoted string on the space, so it searches for `^`
+alone, which matches every line. I tested it with a `+` (drifted) line and a `-`
+(uninitialised) line: it printed nothing and returned rc=1. **`findstr /V /R
+/C:"^ "` works.** My "0 drift" above came from `grep -vc '^ '` in Git Bash,
+not from this command. The file is `collab/WIN-ONBOARDING.md`, under mac's
+`collab/**` claim, so I have not edited it.
+
+**3. "147 TEST_CASEs / 409 SECTIONs" (§4.4).** The regression gate is 145 (see
+above). I could not reproduce 409 SECTIONs: I count 355 `SECTION(` plus 46
+`DYNAMIC_SECTION(`, which is 401. The SECTION count does not affect the gate,
+because ctest counts `TEST_CASE`s.
+
+**4. The "golden numeric regression harness" (§4.4) covers one oscillator.**
+It is a single test case, `Modern Oscillator Golden`
+(`UnitTestsGOLDEN.cpp:313`, tolerance `GOLDEN_TOL = 1e-5f` at `:60`). The
+other 11 oscillators, the filters and the FX have no golden-value test. The
+cited lines `:41-45` are `#include`s. This matters for how much we trust the
+gate: it catches crashes and gross misbehaviour broadly, but numeric drift in
+only one oscillator.
+
+**5. The stream round-trip citation (§4.4).** `UnitTestsIO.cpp:568` is
+`All Patches Are Loadable`. The DAW round-trip is `:588` alone.
+
+**6. The reason given for the `protocol.file.allow` trap (§2.2, ADR-0004) is
+unverified.** It says git "tries the superproject's object store first". Every
+URL in every `.gitmodules`, nested ones included, is https. I did not run the
+submodule update without the flag, so I have neither confirmed nor refuted
+this. The fix is right either way.
+
+**From source, not tested:** on the VS generator, LTO is decided by
+`CMAKE_BUILD_TYPE` at configure time (`CMakeLists.txt:96`), not by `--config`.
+`:9-11` forces `Release` when no build type is given. So `--config Debug` on a
+tree configured the default way should still have IPO on. Use
+`-DENABLE_LTO=OFF`.
+
+**Checked and correct:** everything else I checked matched the source:
+
+- the 3.22 / 3.21 minimums
+- JUCE 8.0.12, C++20 at `:80`
+- `/WX` at `:204-208` and the suppression list after it
+- `/MT` via CMP0091, which the binary confirms
+- `SURGE_COPY_AFTER_BUILD` OFF at `src/CMakeLists.txt:8`
+- `ClapTargetHelpers.cmake:171-189` is Darwin/Linux only
+- 641 factory + 2920 third-party patches, 3797 `.fxp` in total
+
+### Housekeeping
+
+- **mac's claims row for `mac/adi-surge-bootstrap` is stale.** PR #43 merged on
+  2026-09-20 and the row still claims `collab/**`, `docs/**` and
+  `ARCHITECTURE.md`. I added my own row anyway, since that branch is merged.
+  mac, please remove yours.
+- On this machine the monorepo checkout is shared with an adi_daw session that
+  switches branches under me. I commit adi-surge work from a separate git
+  worktree so I never move that session's HEAD.
+
+### Not done yet
+
+- **Step 4.4 (load it in a host) is blocked: there is no CLAP host on this
+  machine.** There is no Reaper, Bitwig or FL. That needs Adi.
+- The OSC address uniqueness sweep has not been started.
+- No ADR written. Item 1 above needs one; who writes it is open.
