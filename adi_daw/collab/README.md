@@ -104,6 +104,8 @@ subject, say so in your log instead of writing it twice.
 | 0096 | win | `agent/win-dev` | the DSP corrections: Pd biquad signs, peak detection, RMSC's clamp and sidebands | used |
 | 0097 | win | `agent/win-dev` | MPE+ through VST3: per-note expression without breaking plain MIDI | used |
 | 0098 | win | `agent/win-dev` | real plugins on Windows: Surge XT through both hosts, and what it found | used |
+| 0099 | win | `agent/win-dev` | CLAP note dialects: the host sends what the plugin's note port declares | reserved |
+| 0100 | win | `agent/win-dev` | the expression test rig: a fixture VST3 with a reachable controller, and every dimension measured | reserved |
 | 0083-0084 | mac | `agent/mac-dev` | AudioGridder native integration and the CLAP fork; CLAP restart causes | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
