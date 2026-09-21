@@ -99,6 +99,9 @@ subject, say so in your log instead of writing it twice.
 | 0091 | win | `agent/win-dev` | events travel along edges: what a node emits reaches what it feeds | used |
 | 0092 | win | `agent/win-dev` | a rebuild keeps the history of every edge that exists in both graphs | used |
 | 0093 | win | `agent/win-dev` | the DSP plugin roadmap: references fetched not vendored, and what each goal needs first | used |
+| 0094 | win | `agent/win-dev` | the open-source mandate, applied: ADR-0093's licence question is answered | reserved |
+| 0095 | win | `agent/win-dev` | the libpd latency protocol: a patch reports its latency through `$0-report_latency` | reserved |
+| 0096 | win | `agent/win-dev` | the DSP corrections: Pd biquad signs, peak detection, RMSC's clamp and sidebands | reserved |
 | 0083-0084 | mac | `agent/mac-dev` | AudioGridder native integration and the CLAP fork; CLAP restart causes | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
