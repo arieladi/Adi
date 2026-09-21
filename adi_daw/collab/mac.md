@@ -80,6 +80,28 @@ PASS as a result. **A planted defect that does not change behaviour is not
 evidence, and reading one as evidence is the same error as counting instead
 of checking.**
 
+### 8. A blocker for the MPE+ work, found by accident and pinned
+
+**Events do not travel along edges.** The scheduler accumulates audio from a
+slot's upstream slots; it does nothing equivalent for events. A slot's
+`events` come only from a `pushInputEvent` naming that slot.
+
+`inputFor(trackId)` is the chain HEAD, which on any track with devices is a
+`MixNode`. So a clip reader pushing note-ons where the handoff says to push
+them reaches the MixNode and nothing else — the instrument two nodes
+downstream never sees a note. Measured with Surge XT: a note at the head is
+silence, the same note at the tail is 0.21 peak.
+
+ADR-0045 says one chain carries both and ADR-0055 gives every node an
+`EventSpan`. Both are written; neither is implemented past the first node.
+`testEventsDoNotTravelAlongEdgesYet` in `test_graph.cpp` asserts the current
+behaviour on purpose, so that implementing it makes a test fail and the
+failure is the notification.
+
+This is upstream of the whole MPE+-through-VST3 job: there is no point
+proving 14-bit resolution survives the VST3 boundary while nothing can get a
+note to a plugin through the graph in the first place.
+
 ### 7. `-Werror` only gates what it recompiles
 
 `adi_vst3_probe` had two sign conversions no build had ever reported, because

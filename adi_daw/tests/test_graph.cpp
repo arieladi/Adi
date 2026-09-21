@@ -1136,6 +1136,72 @@ void testNoLatencyMeansNoDelayLines() {
     eqi(g.compensationFor(nb, no), 0, "on either edge");
 }
 
+
+/// Counts the events its slot was handed. Nothing else -- the question is
+/// only whether they arrive.
+class EventCounter final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        seen += io.events.count;
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            const float* i = (io.in != nullptr && io.in[c] != nullptr)
+                                 ? io.in[c] + io.blockOffset : nullptr;
+            for (std::int32_t k = 0; k < io.frames; ++k)
+                o[k] = (i != nullptr ? i[k] : 0.0f);
+        }
+    }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    [[nodiscard]] const char* name() const noexcept override { return "count"; }
+    std::int64_t seen = 0;
+};
+
+/// A NOT-YET, pinned so it cannot be discovered twice.
+///
+/// ADR-0045 says a track carries audio AND events through one chain, and
+/// ADR-0055's node contract gives every node an `EventSpan`. The scheduler
+/// accumulates AUDIO along edges and does not accumulate events: a slot's
+/// `events` come only from a `pushInputEvent` naming that slot.
+///
+/// The consequence is not theoretical and it is not small. `inputFor(trackId)`
+/// is where a clip reader pushes, and on any track with a device chain it is
+/// the MixNode at the head -- so a MIDI clip pushes note-ons at the head and
+/// the instrument two nodes downstream never sees one. Measured with Surge XT
+/// through `adi_clap_probe --rebuild`: a note at the head is silence, the same
+/// note at the tail is 0.21 peak.
+///
+/// This test asserts the CURRENT behaviour, deliberately. When events learn to
+/// travel along edges, it fails, and the failure is the notification.
+void testEventsDoNotTravelAlongEdgesYet() {
+    section("NOT YET -- events do not travel along edges (ADR-0045 is unimplemented)");
+
+    Graph g;
+    EventCounter head, tail;
+    const NodeId nh = g.addNode(head);
+    const NodeId nt = g.addNode(tail);
+    g.connect(nh, nt);
+    g.setOutput(nt);
+    g.prepare(48000.0, 64);
+    check(g.ok(), "the two-node chain prepares: " + g.error());
+
+    Event on;
+    on.type = EventType::NoteOn;
+    on.noteId = 1; on.dim = 60; on.value = 1.0; on.frame = 0; on.channel = 1;
+    check(g.pushInputEvent(nh, on), "a note is pushed at the HEAD");
+
+    std::vector<float> l(64, 0.0f), r(64, 0.0f);
+    float* outp[2] = {l.data(), r.data()};
+    AudioIo io;
+    io.out = outp; io.numOut = 2; io.frames = 64;
+    g.process(io);
+
+    eqi(head.seen, 1, "the head node saw it");
+    eqi(tail.seen, 0,
+        "and the tail node did NOT -- if this now reads 1, events travel along "
+        "edges and this whole test should be deleted, along with the workaround "
+        "in adi_clap_probe that pushes at outputFor() instead of inputFor()");
+}
+
 }  // namespace
 
 int main() {
@@ -1168,6 +1234,7 @@ int main() {
         testSidechainIsCompensatedToo();
         testGroupsCompensateAsOne();
         testNoLatencyMeansNoDelayLines();
+    testEventsDoNotTravelAlongEdgesYet();
     } catch (const std::exception& e) {
         std::printf("\nFAILED -- exception escaped: %s\n", e.what());
         return 1;
