@@ -5,6 +5,75 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-21 — step 4.4: the CLAP loads headless and plays A4 at 440.08 Hz
+
+Branch `win/adi-surge-clap-smoke`. Adi's call was to load Surge in a headless
+CLAP host rather than install a DAW.
+
+**Why the host is new rather than one we already had:**
+
+- adi_daw's CLAP host exists only on the unmerged `agent/win-dev` and
+  `agent/mac-dev` branches, and another session was editing it at the time.
+  Building on another project's unmerged, moving code would couple adi-surge to
+  adi_daw, which ADR-0003 says not to assume.
+- No other project's tooling was a fit either.
+
+So the host is ours: `tools/clap_smoke/`, with no JUCE and no DAW. It builds
+against Surge's own vendored CLAP headers (1.2.7, MIT), so it adds no
+dependency. It compiled clean under `/W4 /WX` the first time.
+
+```
+clap_smoke: ...\surge_xt_products\Surge XT.clap
+  factory[0]: org.surge-synth-team.surge-xt  "Surge XT" 1.4.0
+  in  port 0: "Sidechain", 2 ch
+  out port 0: "Output", 2 ch
+  out port 1: "Scene A", 2 ch
+  out port 2: "Scene B", 2 ch
+  ok   main output is stereo                    3 output port(s)
+  ok   start_processing() accepted
+  ok   process() never returned ERROR           0 error block(s)
+  ok   no NaN or Inf in the output              155136 frames
+  ok   silent before the note                   peak -999.0 dBFS
+  ok   sound while the note is held             RMS L -19.9 dBFS, R -19.9 dBFS
+  ok   pitch of key 69 is 440 Hz                measured 440.08 Hz
+  ok   silent again after the release           tail -419.7 dBFS vs held -19.9 dBFS
+  ok   wrote the WAV                            ...\build-clap-smoke\surge-xt-a4.wav
+clap_smoke: 9/9 checks passed
+```
+
+The measured values are far from the thresholds, so none of these passes is
+marginal:
+
+| Check | Measured | Threshold |
+|---|---|---|
+| Held note | -19.9 dBFS | -40 dBFS |
+| Pitch error | 0.02% | 1% |
+| Silence before the note | exactly 0 | below -80 dBFS |
+
+Two things the run established that nobody had measured before:
+
+- **Surge's CLAP has 4 audio ports, not 1.** It has 1 stereo input
+  ("Sidechain") and 3 stereo outputs. CLAP requires the buffer counts in
+  `clap_process` to equal `audio_ports->count()` (`clap/process.h:47-49`), so
+  a host must supply all four. I have not tested what Surge does if a host
+  supplies fewer. This is now in ARCHITECTURE.md §2.1.
+- **A fresh instance plays straight away.** It needs no editor and no patch
+  load before sound comes out. The 250 ms before the note is exactly 0, and
+  the first note sounds.
+
+`build_clap_win.bat tests` now runs three stages: the Surge build, ctest
+(145/145), then `clap_smoke`. It exits 6 if a smoke check fails. It also takes
+`ADI_SURGE_SURGE_DIR`, so it runs from a git worktree without re-pointing the
+Surge build cache. That is how I ran it: from the worktree, against the real
+clone. Afterwards the cache still names the real path.
+
+**Not done:** macOS. The host has a `dlopen` branch, but it has never been
+compiled on macOS. It must be given the binary inside the `.clap` bundle. It
+is not in the README's "done" definition; making it part of the gate would be
+a decision, so it needs an ADR, not a log line.
+
+---
+
 ## 2026-09-21 — ADR-0008, and the docs corrected
 
 Branch `win/adi-surge-adr0008`. mac is away for a week. Adi's call: win
