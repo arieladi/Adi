@@ -432,3 +432,95 @@ exits 4 if the file is missing.
 The general lesson ADR-0007 closed on still holds, and this ADR is an instance
 of it. `cmake_minimum_required` in a vendored tree is a floor for that file;
 **the order in which files are processed** decides which floor you hit first.
+
+---
+
+## ADR-0009 — Goal: an in-plugin wavetable generator, driven by the AI and integrated with adi_daw
+
+**Date:** 2026-09-21 · **Agent:** win · **Directed by:** Adi · **Status:** goal
+DECIDED; interface PROPOSED
+
+**Context.** Adi added a goal to the project. adi-surge gets an
+**auto/random wavetable generator inside the plugin**. The AI integration must
+be able to drive it, and it must be **fully integrated with `adi_daw`**.
+
+Surge already has most of the substrate. Each oscillator can carry a Lua
+wavetable script: `wavetable_script`, `wavetable_script_res_base` and
+`wavetable_script_nframes` on the oscillator's storage.
+`WavetableScriptEvaluator` runs the script. `WtGenService`
+(`src/common/dsp/WtGenService.{h,cpp}`) runs it on a background worker, in
+`Preview` or `Generate` mode, and publishes the result into the oscillator's
+wavetable. Upstream tests cover it: `WtGenService`, `Wavetable Script`,
+`Wavetable Script Snapshots`. The script is saved in the patch (§4.5).
+
+**Decision.**
+
+1. **The goal is adopted.** A table can come from a "random" action or from a
+   description, and it is made inside the plugin. Nothing is loaded from a
+   sample library.
+2. **Proposed interface: the AI emits a descriptor, not samples and not
+   code.** A descriptor is a few dozen named numbers: frame count, motion, and,
+   at the start, middle and end of the table, brightness, slope, odd/even
+   balance, bandwidth, two formants, roughness, density, crest and level. A
+   generator turns descriptor plus seed into the table, deterministically. The
+   reasons:
+   - A language model is good at emitting a handful of named, bounded numbers.
+     It is bad at emitting 2048-sample frames.
+   - Descriptor plus seed is a few hundred bytes. Stored in the patch, it
+     reproduces the table exactly on reload.
+   - A descriptor is data. Having the model write Lua wavetable scripts
+     instead would mean executing model-written code inside the plugin, which
+     this avoids.
+   - A descriptor carries no waveform data. So "make one like X" can be
+     answered without copying X.
+3. **Determinism is part of the contract.** The same descriptor and seed must
+   give the same table on every platform, because the patch stores only those.
+   The prototype therefore uses its own splitmix64 generator, not `<random>`,
+   whose distributions differ between standard libraries.
+4. **adi_daw integration is now a requirement.** How it works is still
+   undesigned. This changes the stance ADR-0003 took (integration intended,
+   nothing assumed) to integration **required**. The mechanism stays open,
+   below.
+
+**Evidence the interface works (prototype `tools/wtgen/`, standalone C++, no
+dependencies).**
+
+- `wtgen selftest`, 15/15:
+  - the analyzer reads a saw as −6.0206 dB/oct with odd ratio 0.7501, which
+    is the theoretical π²/8 ÷ π²/6;
+  - a synthetic table round-trips through descriptor and generator with
+    brightness within 0.15% and odd ratio exact;
+  - the generated table's fine ripple correlates 0.05 with the source's,
+    against 1.00 for a real copy.
+- Run against a local third-party pack of 80 Serum-format tables (2–35
+  frames; not ours, in no repository, used only as descriptor sources):
+  - 80/80 written, with identical paths and frame counts;
+  - 78/80 within 15% brightness and 0.1 odd ratio at every keypoint;
+  - **0 flagged as possible copies**.
+- The copy check has a null control: the same descriptor, generated with
+  another seed. The highest ripple correlation with any source (0.836) sat
+  below that null (0.909). What resemblance there is, the descriptor carries.
+- Details are in `collab/win.md`.
+
+**Still open.** Each item needs its own ADR before code lands.
+
+- **How the descriptor reaches the plugin from adi_daw.** CLAP parameters are
+  scalar and cannot carry a descriptor. The candidates are the plugin state
+  blob, a custom CLAP extension, or adi_daw composing a preset. Whichever is
+  chosen, the adi_daw session writes the matching ADR on its side.
+- **Where generation runs in the plugin.** One option is our own C++ generator
+  beside `WtGenService`. The other is a fixed, trusted Lua template with the
+  descriptor passed in as constants, which reuses `WtGenService` unchanged.
+  The second keeps the fork delta smallest (ADR-0002).
+- **How the table is stored in the patch.** Either the descriptor and seed
+  (small, reproducible, needs the generator at load time), or the rendered
+  frames (large, self-contained). Probably both: frames for compatibility, the
+  descriptor to edit later.
+- **The fork origin (ADR-0006).** Any in-plugin work is a C++ change inside
+  `surge/`, and that is blocked until the fork has an origin.
+
+**Consequences.** `tools/wtgen/` is the reference implementation of the
+descriptor and generator until the in-plugin version exists. It is MIT-licensed
+original code and can move into the GPLv3 plugin as it is. Tables made from
+third-party references stay local; only tables made from random or AI-written
+descriptors are ours to ship.
