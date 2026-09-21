@@ -622,6 +622,49 @@ void testTheRealProcessCall() {
           "and the gap is exactly one LSB of a +/-48 semitone range");
 }
 
+void testTheDescriptorDecidesWhetherItIsAnInstrument() {
+    section("ADR-0091 -- CLAP_PLUGIN_FEATURE_INSTRUMENT, read once, at construction");
+
+    // An instrument consumes the note stream. CLAP says so in the descriptor,
+    // and the answer is cached because eventFlow() runs on the audio thread.
+    static const char* const synthFeatures[] = {CLAP_PLUGIN_FEATURE_INSTRUMENT,
+                                                "synthesizer", nullptr};
+    static const char* const fxFeatures[] = {"audio-effect", "equalizer", nullptr};
+
+    clap_plugin_descriptor_t synthDesc{};
+    synthDesc.id = "test.synth";
+    synthDesc.features = synthFeatures;
+    clap_plugin_descriptor_t fxDesc{};
+    fxDesc.id = "test.eq";
+    fxDesc.features = fxFeatures;
+
+    DeviceIdentity id; id.format = "clap";
+
+    Fake synth;
+    synth.plugin.desc = &synthDesc;
+    ClapDevice ds(&synth.plugin, id);
+    check(ds.eventFlow() == engine::EventFlow::Consume, "a synth consumes notes");
+
+    Fake eq;
+    eq.plugin.desc = &fxDesc;
+    ClapDevice de(&eq.plugin, id);
+    check(de.eventFlow() == engine::EventFlow::Through, "an EQ passes them on");
+
+    // A null descriptor is a spec violation and is survived rather than
+    // dereferenced -- the same promise mac found broken for function pointers.
+    Fake hollow;
+    hollow.plugin.desc = nullptr;
+    ClapDevice dh(&hollow.plugin, id);
+    check(dh.eventFlow() == engine::EventFlow::Through,
+          "a plugin with no descriptor is treated as an effect, not crashed on");
+
+    // Cached, not re-read: changing the array afterwards changes nothing,
+    // which is the observable half of "decided at construction".
+    synthDesc.features = fxFeatures;
+    check(ds.eventFlow() == engine::EventFlow::Consume,
+          "and the answer was read ONCE -- the audio thread never walks this array");
+}
+
 void testClapProcessHonoursTheSegmentOffset() {
     section("ADR-0042 -- a segment goes where blockOffset says, not at the block start");
 
@@ -1282,6 +1325,7 @@ int main() {
     testAgainstAFakePlugin();
     testNothingIsQueriedBeforeActivate();
     testTheRealProcessCall();
+    testTheDescriptorDecidesWhetherItIsAnInstrument();
     testClapProcessHonoursTheSegmentOffset();
     testProcessErrorSilencesRatherThanLeaking();
     testEventOverflowIsCountedNotTruncated();

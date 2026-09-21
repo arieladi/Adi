@@ -157,6 +157,14 @@ public:
     /// `engine::Node::latencySamples`.
     [[nodiscard]] virtual std::int32_t latencySamples() const noexcept { return 0; }
 
+    /// Whether this device turns notes into audio, and so stops the note
+    /// stream (ADR-0091). Through by default, the harmless failure: see
+    /// `engine::Node::eventFlow`, including its rule that this is read on the
+    /// audio thread and must return a value decided at construction.
+    [[nodiscard]] virtual engine::EventFlow eventFlow() const noexcept {
+        return engine::EventFlow::Through;
+    }
+
     /// A counter that increases every time this device reports that its
     /// latency moved. ADR-0082's coalescer polls it; ADR-0066 says the
     /// report must do nothing else.
@@ -300,6 +308,7 @@ public:
     [[nodiscard]] std::int64_t tailSamples() const noexcept override;
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
     [[nodiscard]] bool alwaysProcess() const noexcept override { return always_; }
+    [[nodiscard]] engine::EventFlow eventFlow() const noexcept override;
     [[nodiscard]] const char* name() const noexcept override { return "device"; }
 
     /// `devices.always_process`. Message thread.

@@ -170,6 +170,15 @@ std::int64_t DeviceNode::tailSamples() const noexcept {
     return inst_->tailSamples();
 }
 
+engine::EventFlow DeviceNode::eventFlow() const noexcept {
+    // A bypassed instrument is not running, so it consumes nothing -- the same
+    // transparency that makes bypass report no tail and no latency. Notes then
+    // reach whatever follows it, which is what bypassing a synth in front of
+    // a second one should do.
+    if (bypassed_ || inst_ == nullptr) return engine::EventFlow::Through;
+    return inst_->eventFlow();
+}
+
 std::int32_t DeviceNode::latencySamples() const noexcept {
     // Bypass reports ZERO, and this is the half most likely to be got wrong.
     // A bypassed device delays nothing, so continuing to report its latency

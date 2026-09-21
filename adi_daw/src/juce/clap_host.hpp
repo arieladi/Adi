@@ -165,6 +165,11 @@ public:
     [[nodiscard]] const DeviceIdentity& identity() const noexcept override { return id_; }
     [[nodiscard]] bool loaded() const noexcept override { return plugin_ != nullptr; }
 
+    /// ADR-0091: an instrument consumes the note stream.
+    [[nodiscard]] engine::EventFlow eventFlow() const noexcept override {
+        return instrument_ ? engine::EventFlow::Consume : engine::EventFlow::Through;
+    }
+
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
@@ -243,6 +248,11 @@ private:
     const clap_plugin_state_t* stateExt_ = nullptr;
     const clap_plugin_tail_t* tailExt_ = nullptr;
     const clap_plugin_latency_t* latencyExt_ = nullptr;
+
+    /// CLAP_PLUGIN_FEATURE_INSTRUMENT, read once from the descriptor at
+    /// construction. `eventFlow` is on the audio thread and must not walk a
+    /// string array per block (ADR-0091).
+    bool instrument_ = false;
 
     DeviceIdentity id_;
     std::vector<ParamDescriptor> params_;

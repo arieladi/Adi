@@ -108,6 +108,9 @@ Vst3Device::Vst3Device(std::unique_ptr<juce::AudioPluginInstance> inst, DeviceId
     : inst_(std::move(inst)), id_(std::move(id)) {
     if (inst_ != nullptr) {
         inst_->addListener(this);
+        // Here and only here: the description allocates, and eventFlow() is
+        // on the audio thread (ADR-0091).
+        instrument_ = inst_->getPluginDescription().isInstrument;
         readParameters();
     }
 }

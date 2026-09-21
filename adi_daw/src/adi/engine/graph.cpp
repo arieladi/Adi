@@ -613,6 +613,11 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         for (std::size_t c = 0; c < ch; ++c) s.chanPtrs[c] = s.audio.data() + c * fr;
         s.eventStore.assign(static_cast<std::size_t>(eventCapacity_), Event{});
         s.events = EventList(s.eventStore.data(), eventCapacity_);
+        // Same capacity as the live list. A deferred event is one that WOULD
+        // have been in the list if its delay had been shorter, so the two
+        // share one budget rather than one being an afterthought.
+        s.pending.assign(static_cast<std::size_t>(eventCapacity_), Slot::Pending{});
+        s.pendingCount = 0;
         // ARMED FROM THE DECLARATION, not zero. Starting at zero suspends a
         // kInfiniteTail node on its very first block -- the one thing ADR-0043
         // says must never happen -- because the counter has expired before
@@ -635,6 +640,8 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
 
     // One more than the worst case: every distinct frame a split, plus the end.
     splits_.assign(fr + 2, 0);
+    frameMark_.assign(fr, 0);
+    now_ = 0;
     delayScratch_.assign(fr, 0.0f);
 
     // ADR-0058 decisions 2-5, after the buffers exist: a delay line is a
@@ -713,6 +720,114 @@ void Graph::accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& del
     // one edge. Ending it inside the loop would crossfade the left channel and
     // hard-switch the right.
     delay.endEdge();
+}
+
+void Graph::forwardEvents(std::int32_t frames) noexcept {
+    const std::int64_t end = now_ + frames;
+
+    // TOPOLOGICAL ORDER, which is the whole of the correctness argument: when a
+    // slot is reached, every slot feeding it has already received everything it
+    // will receive this block, so what it forwards is complete.
+    for (NodeId id : order_) {
+        Slot& s = slots_[static_cast<std::size_t>(id)];
+
+        // 1. Anything deferred INTO this slot on an earlier block that is due
+        //    now. Compacted in place: no allocation, and order does not matter
+        //    because the list is sorted by frame before anyone reads it.
+        if (s.pendingCount > 0) {
+            std::int32_t w = 0;
+            for (std::int32_t i = 0; i < s.pendingCount; ++i) {
+                const Slot::Pending& p = s.pending[static_cast<std::size_t>(i)];
+                if (p.due < end) {
+                    Event e = p.e;
+                    const std::int64_t f = p.due - now_;
+                    e.frame = f > 0 ? static_cast<std::int32_t>(f) : 0;
+                    s.events.push(e);            // overflow is counted by the list
+                } else {
+                    s.pending[static_cast<std::size_t>(w++)] = p;
+                }
+            }
+            s.pendingCount = w;
+        }
+
+        // 2. What this slot's MAIN inputs forward to it.
+        //
+        // Main edges only. A sidechain is an audio KEY: a compressor keyed from
+        // a kick track has no use for that track's notes, and handing them to
+        // it would make every keyed plugin a second instrument. Notes from
+        // another track are a note-input bus, which is a different feature and
+        // is not designed yet.
+        for (std::size_t k = 0; k < s.inputs.size(); ++k) {
+            const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
+            if (u.node == nullptr || u.events.empty()) continue;
+            if (u.node->eventFlow() == EventFlow::Consume) continue;
+
+            // THE SAME DELAY AS THE AUDIO BESIDE IT. The node's own latency,
+            // because its output audio emerges that much later than its input;
+            // plus this edge's compensation, because that is how far this input
+            // is held back to meet the others. An event that skipped either
+            // would reach an instrument ahead of the graph's own arithmetic --
+            // ADR-0058 right for audio and wrong for everything a note drives.
+            const std::int64_t delay =
+                static_cast<std::int64_t>(u.node->latencySamples()) +
+                (k < s.inDelays.size() ? s.inDelays[k].delay() : 0);
+
+            for (const Event& e : u.events) {
+                if (!isNoteStream(e.type)) continue;   // addressed: stays put
+                const std::int64_t due = now_ + e.frame + delay;
+                if (due < end) {
+                    Event f = e;
+                    f.frame = static_cast<std::int32_t>(due - now_);
+                    if (s.events.push(f)) ++stats_.eventsForwarded;
+                } else if (s.pendingCount < static_cast<std::int32_t>(s.pending.size())) {
+                    s.pending[static_cast<std::size_t>(s.pendingCount++)] =
+                        Slot::Pending{due, e};
+                    ++stats_.eventsForwarded;
+                    ++stats_.eventsDeferred;
+                } else {
+                    // Counted, never allocated for. A delay queue that grew
+                    // would be the audio thread allocating on the one path a
+                    // plugin latency change makes busiest.
+                    ++stats_.eventsDropped;
+                }
+            }
+        }
+    }
+}
+
+std::int32_t Graph::computeSplits(std::int32_t frames) noexcept {
+    // MARK, THEN WALK.
+    //
+    // The loop this replaces coalesced WHILE it collected, comparing each event
+    // with the last split pushed. That is only right if events arrive in time
+    // order, and they arrive in SLOT order: a later slot's event at frame 100,
+    // met after an earlier slot's event at frame 200, came out as -100 against
+    // the floor and was dropped. A real, distinct frame with no boundary at it.
+    //
+    // A byte per frame makes the collection order irrelevant. It costs one
+    // memset and one pass over the block -- 8192 byte tests at the largest
+    // block ADR-0049 allows -- and it does not care how many slots hold the
+    // same frame, which after forwarding is most of them.
+    std::memset(frameMark_.data(), 0, static_cast<std::size_t>(frames));
+    for (auto& s : slots_) {
+        // Sorted here because `runNode` slices each segment's events as one
+        // contiguous run, which is only true of a list in frame order.
+        s.events.sortByFrame();
+        for (const Event& e : s.events)
+            if (e.frame > 0 && e.frame < frames)
+                frameMark_[static_cast<std::size_t>(e.frame)] = 1;
+    }
+
+    std::int32_t nsplit = 0;
+    splits_[static_cast<std::size_t>(nsplit++)] = 0;
+    for (std::int32_t f = 1; f < frames; ++f) {
+        if (frameMark_[static_cast<std::size_t>(f)] == 0) continue;
+        const std::int32_t last = splits_[static_cast<std::size_t>(nsplit - 1)];
+        if (f - last < floor_) continue;          // coalesce to the boundary
+        splits_[static_cast<std::size_t>(nsplit++)] = f;
+    }
+    splits_[static_cast<std::size_t>(nsplit)] = frames;
+    return nsplit;
 }
 
 void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept {
@@ -835,27 +950,23 @@ void Graph::process(const AudioIo& io) noexcept {
     ++stats_.blocks;
     const std::int32_t frames = io.frames;
 
+    // --- ADR-0091: events travel along edges, BEFORE the splits ------------
+    //
+    // A note pushed at the head of a chain has to reach the instrument at the
+    // tail. It is forwarded now, up front, rather than as each node runs:
+    // forwarding during the run would hand a node an event at a frame the
+    // splits were chosen without, and ADR-0042's promise that a value lands on
+    // its own segment boundary would hold for pushed events and quietly fail
+    // for forwarded ones.
+    forwardEvents(frames);
+
     // --- segment boundaries (ADR-0042) -------------------------------------
     //
     // Split at every DISTINCT event frame, not at every event. A 500 Hz MPE+
     // frame carrying ten notes across three dimensions is one instant, not
     // thirty, so the bound is 500 splits per second rather than 15,000 --
     // which is what makes ADR-0054's requirement affordable at all.
-    std::int32_t nsplit = 0;
-    splits_[static_cast<std::size_t>(nsplit++)] = 0;
-    for (auto& s : slots_) {
-        s.events.sortByFrame();
-        for (const Event& e : s.events) {
-            if (e.frame <= 0 || e.frame >= frames) continue;
-            const std::int32_t last = splits_[static_cast<std::size_t>(nsplit - 1)];
-            if (e.frame - last < floor_) continue;   // coalesce to the boundary
-            splits_[static_cast<std::size_t>(nsplit++)] = e.frame;
-        }
-    }
-    std::sort(splits_.begin(), splits_.begin() + nsplit);
-    nsplit = static_cast<std::int32_t>(
-        std::unique(splits_.begin(), splits_.begin() + nsplit) - splits_.begin());
-    splits_[static_cast<std::size_t>(nsplit)] = frames;
+    const std::int32_t nsplit = computeSplits(frames);
 
     stats_.segments += nsplit;
 
@@ -894,6 +1005,10 @@ void Graph::process(const AudioIo& io) noexcept {
         s.events.resetDropped();
         s.events.clear();
     }
+
+    // Last, after every use of this block's times. Deferred events are keyed
+    // to it, so advancing it early would make everything due one block late.
+    now_ += frames;
 }
 
 // ---------------------------------------------------------------------------

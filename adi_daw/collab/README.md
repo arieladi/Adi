@@ -96,7 +96,7 @@ subject, say so in your log instead of writing it twice.
 | 0088 | win | `agent/win-dev` | the compensation headroom default is measured, not zero | used |
 | 0089 | win | `agent/win-dev` | the rebuild path: a new graph is published, and the swap is faded not cut | used |
 | 0090 | mac | `agent/mac-dev` | closing the rebuild loop: who decides to rebuild, and what a failed rebuild means | used |
-| 0091 | win | `agent/win-dev` | events travel along edges: what a node emits reaches what it feeds | reserved |
+| 0091 | win | `agent/win-dev` | events travel along edges: what a node emits reaches what it feeds | used |
 | 0092 | win | `agent/win-dev` | a rebuild keeps the history of every edge that exists in both graphs | reserved |
 | 0083-0084 | mac | `agent/mac-dev` | AudioGridder native integration and the CLAP fork; CLAP restart causes | used |
 

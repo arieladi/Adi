@@ -70,14 +70,18 @@ public:
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return tail_; }
     [[nodiscard]] std::int32_t latencySamples() const noexcept override { return lat_; }
 
+    [[nodiscard]] engine::EventFlow eventFlow() const noexcept override { return flow_; }
+
     void setTail(std::int64_t t) { tail_ = t; }
     void setLatency(std::int32_t l) { lat_ = l; }
+    void setFlow(engine::EventFlow f) { flow_ = f; }
 
     [[nodiscard]] int prepares() const { return prepares_; }
     [[nodiscard]] int releases() const { return releases_; }
     [[nodiscard]] int calls() const { return calls_; }
 
 private:
+    engine::EventFlow flow_ = engine::EventFlow::Through;
     DeviceIdentity id_;
     std::int64_t tail_ = 0;
     std::int32_t lat_ = 0;
@@ -316,6 +320,37 @@ void testPassThroughHonoursTheSegmentOffset() {
     check(zeroedOk, "with no input, only the segment is zeroed, not the block");
 }
 
+void testAnInstrumentConsumesAndBypassDoesNot() {
+    section("ADR-0091 -- a device says whether it stops the note stream");
+
+    FakeDevice d({});
+    DeviceNode n(d);
+    check(n.eventFlow() == engine::EventFlow::Through,
+          "a device that says nothing passes notes on -- the harmless default");
+
+    d.setFlow(engine::EventFlow::Consume);
+    check(n.eventFlow() == engine::EventFlow::Consume,
+          "an instrument's answer reaches the graph through DeviceNode");
+
+    // Bypass is transparency, all the way down: no tail, no latency, and no
+    // consumption. A bypassed synth that still swallowed notes would silence
+    // whatever it sits in front of, which is not what bypass means.
+    n.setBypassed(true);
+    check(n.eventFlow() == engine::EventFlow::Through,
+          "a BYPASSED instrument consumes nothing -- it is not running");
+    n.setBypassed(false);
+    check(n.eventFlow() == engine::EventFlow::Consume, "and un-bypassing restores it");
+
+    // A missing plugin is a placeholder (ADR-0011). If it was a synth, the
+    // notes reach the effects after it, which ignore them; if it was an
+    // effect, they reach the synth after it, which needs them. Through is the
+    // only answer that is right in both cases.
+    MissingDevice m(DeviceIdentity{"clap", "u", "Gone", "Vendor", "1.0"});
+    DeviceNode mn(m);
+    check(mn.eventFlow() == engine::EventFlow::Through,
+          "a missing plugin passes notes on, because we cannot know what it was");
+}
+
 void testPrepareAndReleaseReachTheDevice() {
     section("prepare and release are forwarded");
     FakeDevice d({});
@@ -468,6 +503,7 @@ int main() {
     testBypassReportsNothing();
     testBypassPassesAudioThrough();
     testPassThroughHonoursTheSegmentOffset();
+    testAnInstrumentConsumesAndBypassDoesNot();
     testPrepareAndReleaseReachTheDevice();
     testMissingPluginIsStillADevice();
     testMissingPluginPassesAudio();

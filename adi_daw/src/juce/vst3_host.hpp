@@ -190,6 +190,13 @@ public:
     /// True when the raw interface was reached and the fast path is live.
     [[nodiscard]] bool usingRawProcessor() const noexcept { return processor_ != nullptr; }
 
+    /// ADR-0091: an instrument consumes the note stream. CACHED, because
+    /// `getPluginDescription()` builds a `PluginDescription` full of `String`s
+    /// and this is read on the audio thread every block.
+    [[nodiscard]] engine::EventFlow eventFlow() const noexcept override {
+        return instrument_ ? engine::EventFlow::Consume : engine::EventFlow::Through;
+    }
+
     /// The raw interface JUCE exposes, and the route to note expression
     /// without reimplementing discovery, state and parameters. Null when the
     /// instance is not actually a VST3 -- which cannot happen while VST3 is
@@ -197,6 +204,8 @@ public:
     [[nodiscard]] void* rawComponent() const noexcept;
 
 private:
+    bool instrument_ = false;   ///< see eventFlow(); set once in the constructor
+
     // juce::AudioProcessorListener
     void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails& d) override;
     void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override {}

@@ -341,13 +341,11 @@ int rebuildAgainstARealPlugin(const std::string& want) {
     // A held note, so an instrument is actually producing something across
     // the seam rather than being silent on both sides of it.
     //
-    // PUSHED AT THE CHAIN TAIL, NOT THE HEAD, and that is a finding rather
-    // than a preference. `inputFor(trackId)` is where a clip reader pushes
-    // AUDIO; events pushed there do not reach an instrument further down the
-    // chain, because the scheduler accumulates audio along edges and does
-    // NOT route events along them -- a slot's `events` come only from a
-    // `pushInputEvent` naming that slot. ADR-0045 says every port carries
-    // both. The graph does not yet. `--event-routing` below measures it.
+    // PUSHED AT THE CHAIN HEAD, which is where a clip reader pushes. This
+    // used to push at the TAIL, because events did not travel along edges and
+    // a note at the head reached the MixNode and nothing else. ADR-0091 made
+    // them travel; pushing at `inputFor` is now both correct and the thing
+    // this probe proves.
     auto noteAt = [&](adi::engine::NodeId where) {
         adi::engine::RealizedGraph* rg = gh.current();
         if (rg == nullptr || where == adi::engine::kInvalidNode) return;
@@ -358,7 +356,7 @@ int rebuildAgainstARealPlugin(const std::string& want) {
     };
     auto noteOn = [&] {
         adi::engine::RealizedGraph* rg = gh.current();
-        if (rg != nullptr) noteAt(rg->outputFor(1));
+        if (rg != nullptr) noteAt(rg->inputFor(1));
     };
 
     auto render = [&](int blocks) {
@@ -776,8 +774,13 @@ int main(int argc, char** argv) {
     std::string err;
     if (!lib.open(path, err)) {
         std::printf("  skip  %s: %s\n", path.c_str(), err.c_str());
-        std::printf("\nPASS -- 0 checks, 0 failure(s)\n");
-        return 0;
+        // THE REAL COUNTERS, not a literal. This used to print a hard-coded
+        // "PASS -- 0 checks, 0 failure(s)" and return 0 -- after the scan
+        // section above had already recorded a FAIL. The skip is honest about
+        // this one bundle; the summary has to stay honest about the whole run.
+        std::printf("\n%s -- %d checks, %d failure(s)\n",
+                    g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : 0;
     }
     check(lib.isOpen(), "the bundle loaded");
     std::printf("  %u plugin(s) in the factory\n", lib.pluginCount());

@@ -5809,3 +5809,165 @@ flag. A warning gate only gates what it compiles.
 Proved against real plugins: `adi_clap_probe --rebuild "Surge XT"` — a port
 rescan, one rebuild, a held note still sounding across the swap and still
 sounding after the retired graph is freed.
+
+---
+
+## ADR-0091 — Events travel along edges, delayed by exactly what the audio beside them is — `DECIDED` (2026-09-21) — **IMPLEMENTS ADR-0045 and ADR-0055**
+
+ADR-0045 said every graph port carries audio **and** an event list. ADR-0055 gave
+every node an `EventSpan`. Both were written and neither was implemented past the
+first node: the scheduler accumulated audio from a slot's upstream slots and did
+nothing equivalent for events. A slot's events came only from a
+`pushInputEvent` naming that slot.
+
+mac found it with a real plugin. `inputFor(trackId)` is the chain **head** — a
+`MixNode` on any track with devices (ADR-0077) — and that is where a clip reader
+pushes. So a note pushed where every handoff said to push it reached the
+`MixNode` and nothing else. Surge XT: a note at the head, silence; the same note
+at the tail, 0.21 peak.
+
+This was upstream of the entire MPE+-through-VST3 job. There is no point proving
+14-bit resolution survives the plugin boundary while nothing can get a note to a
+plugin through the graph at all.
+
+### Decision
+
+**1. Note-stream events travel along MAIN edges. Addressed events do not.**
+
+`NoteOn`, `NoteOff` and `NoteExpression` belong to a note stream and flow down
+the chain. `ParamValue` and `ParamMod` name a parameter **of the node they were
+pushed to**; forwarding one would have the next node apply node A's parameter 3
+as its own parameter 3. `GainNode` does exactly that with any matching id. So
+they are delivered where they were pushed and nowhere else —
+`isNoteStream(EventType)` is the whole classification.
+
+**2. `EventFlow { Through, Consume }`, and the default is `Through`.**
+
+An instrument turns notes into audio and the effects after it have no use for
+them, so it consumes. Everything else — junctions, audio effects, note effects —
+passes them on. The default is the conservative one, and conservative here means
+the opposite of what it meant for the tail:
+
+- A node that forgets to say `Consume` passes notes to effects that ignore them.
+- A node that consumed by default and forgot `Through` would swallow every note
+  before it reached the instrument — silence, which is precisely this defect.
+
+Same principle as ADR-0043's tail and ADR-0058's latency: choose the default
+whose failure is the harmless one. A bypassed device reports `Through`, for the
+same reason bypass reports no tail and no latency — it is not running. A missing
+plugin (ADR-0011) reports `Through` because we cannot know whether it was a synth
+or an effect, and `Through` is the only answer right in both cases.
+
+**3. An event is delayed by exactly what the audio beside it is delayed by.**
+
+mac asked whether PDC delays event frames the way it delays audio. It must, and
+the case that proves it is ordinary: a node with latency `L` in front of an
+instrument. The graph believes that instrument's input is `L` late — `arrival = L`
+— and holds every *other* track back by `L` to match. If the note skipped the
+delay, the instrument would play `L` early: aligned in the graph's arithmetic and
+early in the room.
+
+So a forwarded event carries the upstream node's latency, plus the compensation
+on the edge it travels. The test that shows this is right is the two-path one: a
+note splits, one branch declares 64 samples, both rejoin — and the note reaches
+the merge at **the same frame by both paths**, one through the latency and one
+through the compensation that meets it. That is ADR-0058's alignment property,
+stated for events.
+
+**4. Forwarding happens BEFORE the splits are computed.**
+
+ADR-0042 promises that a value lands on its own segment boundary. Forwarding as
+nodes run would hand a node an event at a frame the splits were chosen without —
+a note pushed at 70 and delayed 80 reaches the tail at 150, a frame no pushed
+event occupies. So the whole graph is forwarded up front, in topological order,
+and only then split. This works because forwarding depends on topology and
+declared delays, never on what a node computes.
+
+**5. A delay that crosses a block boundary is deferred, in a bounded queue.**
+
+ADR-0088 sized compensation for 5120 samples; a block is often 256. Each slot has
+a fixed-capacity queue keyed by absolute sample, sharing the live list's budget,
+drained into the block the event falls in at the frame it falls on. Overflow is
+counted. A queue that grew would be the audio thread allocating on exactly the
+path a plugin's latency change makes busiest.
+
+**6. Fan-in delivers one copy per path, and is not de-duplicated.**
+
+A note that fans out and rejoins arrives once per path. That is what a *layering*
+rack needs — each parallel instrument must receive the note — and ADR-0072 already
+puts re-converging parallel paths inside racks, where the rack decides. Silent
+de-duplication would have its own failure: two genuinely distinct events that
+happen to be identical are one event too few.
+
+**7. Sidechains carry no notes.** A sidechain is an audio key. A compressor keyed
+from a kick track has no use for that track's notes, and handing them over would
+make every keyed plugin a second instrument. Notes from another track are a
+note-input bus, which is a different feature and not designed yet.
+
+**8. `eventFlow()` is read on the audio thread, so it is decided at construction.**
+
+It is called per edge, every block. JUCE's `getPluginDescription()` builds a
+`PluginDescription` full of `String`s — it allocates — so `Vst3Device` reads
+`isInstrument` once in its constructor. `ClapDevice` walks
+`CLAP_PLUGIN_FEATURE_INSTRUMENT` in the descriptor once, likewise, and survives a
+null descriptor rather than dereferencing it.
+
+### A bug this exposed, older than any of it
+
+The split loop coalesced **while** it collected, comparing each event with the
+last split *pushed* rather than the last split in *time*. Slots are walked in
+index order, so a later slot's earlier event came out negative against the
+floor and was dropped: a slot-1 event at frame 100, met after slot 0 pushed 200,
+is `100 − 200 < 64`. A real, distinct frame with no segment boundary at it.
+
+It survived because every test that split a block kept all its events in one
+slot. Forwarding puts the same note in many slots, so it stopped being a corner.
+The replacement marks one byte per frame and walks the block once — 8192 byte
+tests at ADR-0049's largest block — and is indifferent to collection order and to
+how many slots share a frame.
+
+### And a probe that reported success it had not measured
+
+`adi_clap_probe`'s default mode printed a **hard-coded**
+`"PASS -- 0 checks, 0 failure(s)"` and returned 0 when its fallback bundle failed
+to load — after the scan section had already recorded a `FAIL`. On a machine with
+no CLAP plugins it printed a failure and then reported a pass. It now prints the
+real counters. Nothing runs the probe automatically, so its exit code changing
+cannot break CI; it just stops lying to whoever runs it.
+
+### Verified non-vacuously
+
+Fourteen planted defects, all caught. In the graph: addressed events forwarded
+(3 checks), notes crossing a sidechain (3), `Consume` ignored (2), the node's
+latency left out of the delay (10), the edge's compensation left out (2),
+deferred events never drained (4), splits computed before forwarding (3), the
+frame mark not cleared between blocks, deferral overflow uncounted (2), and the
+clock never advancing (4). On the devices: `DeviceNode` ignoring bypass (2), never
+asking the instance (3), CLAP never reading the instrument feature (3), and CLAP
+re-reading the descriptor per call instead of caching it (1).
+
+**The stale frame mark survived the first round.** A leftover mark only shows in
+the block *after* one with events, and no test ran a second block. The split test
+now runs an empty block afterwards and asserts it is one segment.
+
+mac's pinning test, `testEventsDoNotTravelAlongEdgesYet`, did exactly what it was
+written to do: it failed the moment events started to travel, and its own message
+said to delete it and the probe's `outputFor()` workaround. Both are gone.
+
+### What is not verified here
+
+- **No real CLAP plugin on this machine**, so "a note at the head now sounds" is
+  proven against fixtures and not yet against Surge XT. The probe pushes at
+  `inputFor` now; rerunning `adi_clap_probe` on a machine with plugins is the
+  real-world confirmation.
+- `Vst3Device`'s instrument detection is compiled by CI's JUCE jobs and exercised
+  by no test on this branch.
+
+### Not decided
+
+**Events a node emits.** Everything above forwards events that exist when the
+block starts. An arpeggiator or a note effect *produces* events during `process`,
+which cannot be known before the splits are computed. That needs either a second
+scheduling phase or accepting that emitted events arrive inside a segment rather
+than on a boundary. Nothing emits events today, so it is deferred rather than
+guessed at.

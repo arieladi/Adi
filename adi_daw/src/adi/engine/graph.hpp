@@ -86,6 +86,16 @@ struct NodeIo {
     double sampleRate = 0.0;
 };
 
+/// What a node does with the note stream passing through it (ADR-0091).
+enum class EventFlow : std::uint8_t {
+    /// Note events pass on to whatever this node feeds. The default, and the
+    /// right answer for a junction, an audio effect, and a note effect alike.
+    Through,
+    /// They stop here: an instrument turns notes into audio, and the effects
+    /// after it have no use for them.
+    Consume,
+};
+
 /// One processing node.
 ///
 /// The three ADR-0043 declarations default to the CONSERVATIVE answer, matching
@@ -139,6 +149,23 @@ public:
     /// reports no tail and then produces one.
     [[nodiscard]] virtual bool alwaysProcess() const noexcept { return false; }
 
+    /// Whether note events stop at this node or pass on (ADR-0091).
+    ///
+    /// **Through by default, and that is the conservative answer here.** The
+    /// two failures are not symmetric. A node that forgets to say `Consume`
+    /// passes notes to the effects after it, which ignore them. A node that
+    /// said `Consume` by default and forgot `Through` would swallow every note
+    /// before it reached the instrument -- silence, which is precisely the
+    /// defect this ADR exists to remove. Same principle as the tail and
+    /// latency defaults: choose the default whose failure is the harmless one.
+    ///
+    /// CALLED ON THE AUDIO THREAD, per edge, every block (`forwardEvents`). It
+    /// must not allocate, lock or call into a plugin. A device that learns
+    /// whether it is an instrument from something expensive -- JUCE's
+    /// `getPluginDescription()` builds a description full of `String`s --
+    /// answers once at construction and returns the cached value here.
+    [[nodiscard]] virtual EventFlow eventFlow() const noexcept { return EventFlow::Through; }
+
     [[nodiscard]] virtual const char* name() const noexcept { return "node"; }
 
 protected:
@@ -154,6 +181,8 @@ struct GraphStats {
     std::int64_t nodeCalls = 0;
     std::int64_t nodesSuspended = 0; ///< node-blocks skipped by ADR-0043
     std::int64_t eventsDropped = 0;
+    std::int64_t eventsForwarded = 0; ///< deliveries made along an edge (ADR-0091)
+    std::int64_t eventsDeferred = 0;  ///< held for a later block by a delay
 };
 
 /// A fixed delay, applied to one input edge so that two paths of unequal
@@ -545,6 +574,18 @@ private:
         std::vector<float*> chanPtrs;
         std::vector<Event> eventStore;
         EventList events;
+
+        /// ADR-0091: note events delayed past the end of this block, by a
+        /// node's latency or an edge's compensation, keyed by the absolute
+        /// sample they are due. Fixed capacity, sized at `prepare`; an event
+        /// that does not fit is counted as dropped rather than allocated for.
+        struct Pending {
+            std::int64_t due = 0;
+            Event e;
+        };
+        std::vector<Pending> pending;
+        std::int32_t pendingCount = 0;
+
         std::int64_t tailRemaining = 0;
         bool silent = true;
     };
@@ -560,6 +601,17 @@ private:
     void prepareLine(DelayLine& line, std::int32_t delaySamples);
     void runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept;
 
+    /// ADR-0091, before the splits are computed: carry each slot's note events
+    /// to the slots it feeds, delayed by what the audio beside them is delayed
+    /// by. Doing it up front is what keeps a forwarded event on a segment
+    /// boundary -- forwarding as nodes run would put it in a segment chosen
+    /// before it existed.
+    void forwardEvents(std::int32_t frames) noexcept;
+
+    /// ADR-0042's split points, computed from a per-frame mark rather than
+    /// while walking slots. See the comment at the call.
+    std::int32_t computeSplits(std::int32_t frames) noexcept;
+
     std::vector<Slot> slots_;
     std::vector<NodeId> order_;
     NodeId output_ = kInvalidNode;
@@ -572,6 +624,12 @@ private:
     std::vector<Event> mixEventStore_;
     EventList mixEvents_;
     std::vector<std::int32_t> splits_;  ///< segment boundaries, sized at prepare
+    std::vector<std::uint8_t> frameMark_; ///< one byte per frame: an event lands here
+
+    /// Samples rendered since `prepare`. Deferred events are keyed to it, so a
+    /// delay that crosses any number of block boundaries needs no bookkeeping
+    /// beyond one subtraction.
+    std::int64_t now_ = 0;
     std::vector<float> delayScratch_;   ///< one channel of one segment
 
     double sampleRate_ = 0.0;

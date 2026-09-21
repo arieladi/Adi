@@ -203,6 +203,15 @@ ClapDevice::ClapDevice(const clap_plugin_t* plugin, DeviceIdentity id)
         plugin_->get_extension(plugin_, CLAP_EXT_TAIL));
     latencyExt_ = static_cast<const clap_plugin_latency_t*>(
         plugin_->get_extension(plugin_, CLAP_EXT_LATENCY));
+
+    // Read once, here, on the message thread. `desc` is required by the spec
+    // and checked anyway: mac found plugins that return a non-null extension
+    // struct with null function pointers inside, and a required field is the
+    // same promise.
+    if (plugin_->desc != nullptr)
+        for (const char* const* f = plugin_->desc->features; f != nullptr && *f != nullptr; ++f)
+            if (std::strcmp(*f, CLAP_PLUGIN_FEATURE_INSTRUMENT) == 0) instrument_ = true;
+
     rescanParams();
 }
 
