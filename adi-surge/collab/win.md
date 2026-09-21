@@ -5,6 +5,87 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-21 — ADR-0009: a wavetable generator goal, and a working prototype
+
+Branch `win/adi-surge-wtgen`. Adi added a goal: an **auto/random wavetable
+generator inside the plugin**, drivable by the AI, **fully integrated with
+adi_daw**. ADR-0009 records it.
+
+**Upstream already has the substrate, and nobody had written it down.**
+`WtGenService` runs a per-oscillator Lua wavetable script on a background
+worker and publishes the finished table into the oscillator (§4.6).
+
+**Prototype: `tools/wtgen/`.** It is standalone C++ with no dependencies, MIT,
+and 1,247 lines. It has two layers:
+
+- `analyze` reduces a table to 41 numbers.
+- `generate` makes a new table from those numbers and a seed, and from nothing
+  else.
+
+That boundary is the point. It is what lets "make one like X" work without
+copying X. It is also the natural thing for an AI to write: a model can emit
+41 named numbers, but not 2048-sample frames.
+
+**`wtgen selftest`: 15/15.**
+
+- The analyzer matches theory exactly: a saw reads −6.0206 dB/oct with odd
+  ratio 0.7501; a square has odd ratio 1.0; a sine has centroid 1.0.
+- A synthetic table round-trips: brightness within 0.15%, odd ratio exact.
+- The copy detector separates cleanly: 0.05 for an independent table against
+  1.00 for a copy.
+- The same seed gives the same table.
+
+**Adi's test: 80 reference tables in, 80 of our own out.** The references are
+a local third-party pack of Serum-format tables (2048 samples a frame, 2–35
+frames). It is not ours, it is in no repository, and it was used only as
+descriptor sources. Output went to a local folder outside this repo.
+
+- **80/80** written, with identical relative paths and frame counts. Each
+  carries the `clm ` and `srge` chunks. It took 67 s.
+- **78/80** landed within 15% brightness and 0.1 odd ratio at every keypoint.
+  The median brightness error is 0.0%, the 90th percentile 0.7%, and the worst
+  odd-ratio error 0.020. The two misses (16.6%, 38.3%) are very sparse, narrow
+  tables.
+- **0 flagged as possible copies.** The highest ripple correlation with any
+  reference is 0.836. That is below the null: the same descriptor, generated
+  with another seed, reaches 0.909. The median is 0.20.
+- **Watch items.** Three tables sit more than 0.3 above their own null, though
+  at only 0.13–0.42 in absolute terms, where a copy gives about 1.0. One of
+  them is a 35-frame table, whose maximum is taken over 1,225 frame pairs.
+- **Waveform correlation reaches 0.999, and only on textbook shapes** (squares,
+  saws, sines). A band-limited square is a square. On frames with real
+  content, the median is 0.81.
+- **The guarantee is structural, not statistical.** `generate()` receives the
+  descriptor and a seed, and cannot see a sample. The metrics are secondary
+  evidence.
+
+**Four of my own bugs were caught by that verification** before any of this was
+reported:
+
+1. **Gaps counted as ripple.** Missing harmonics were measured as roughness,
+   and every generated frame hit the 12 dB cap.
+2. **An odd/even imbalance counted as ripple.** It inflated the copy metric to
+   0.42 for independent tables.
+3. **The copy test had no power on near-sines.** Two sines correlate at 0.999;
+   ripple over 8–31 harmonics is noise; and the null used fewer frame pairs
+   than the test, which biased the flag.
+4. **Chord masks were chosen blind to brightness and parity.** An even-rooted
+   chord cannot hold 88% odd power at brightness 9.8, and Chrome-like tables
+   came out at 40 instead. The fix is a parity-aware chord choice plus
+   best-of-4 generation, judged against the descriptor only.
+
+**Not done.**
+
+- No `wtgen` table has been loaded in a running Surge yet. The format is
+  checked only structurally, against `WAVFileSupport.cpp:221-261`.
+- Nothing is in the plugin: that needs the fork origin (ADR-0006).
+- The adi_daw half is undesigned, and ADR-0009 lists its questions.
+
+**Licence:** `wtgen` is original and copies nothing from Surge, so it is MIT,
+the default in `OPEN_SOURCE_POLICY.md` §1.
+
+---
+
 ## 2026-09-21 — step 4.4: the CLAP loads headless and plays A4 at 440.08 Hz
 
 Branch `win/adi-surge-clap-smoke`. Adi's call was to load Surge in a headless

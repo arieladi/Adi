@@ -777,6 +777,62 @@ output target — but they are stored base64-encoded inside the patch XML
 route for setting that text**. It must go through the patch file. Note that
 before treating LUA as a cheap win.
 
+### 4.6 Wavetable generation — upstream's substrate and our prototype (ADR-0009)
+
+**Upstream already generates wavetables inside the plugin.** Each oscillator
+carries a Lua script (`wavetable_script`), a resolution (`_res_base`, e.g. 5 =
+512 samples) and a frame count (`_nframes`). `WavetableScriptEvaluator` runs
+the script. `WtGenService` (`src/common/dsp/WtGenService.{h,cpp}`, 280 lines)
+runs it on a background worker in `Preview` or `Generate` mode and publishes
+the finished table into the oscillator. The upstream test `WtGenService`
+(`UnitTestsLUA.cpp:1302`) round-trips a script this way.
+
+**Our prototype: `tools/wtgen/`.** It is standalone C++ with no dependencies,
+MIT, and about 1,200 lines. It works in two layers:
+
+- **`analyze`** reduces a table to a flat descriptor JSON: frame count, motion,
+  and 13 numbers at the start, middle and end. Brightness is the
+  power-weighted centroid, in harmonics. The slope is a dB-per-octave fit with
+  each octave weighted once. The rest are odd/even ratio, the −60 dB
+  bandwidth, two formant bumps, a roughness figure (a 5-point same-parity
+  median, which ignores edges and broad bumps), density (odd and even
+  harmonics counted separately, so a square is not "sparse"), crest, and
+  level.
+- **`generate`** turns a descriptor and a seed into a table. It builds a
+  harmonic spectrum from the descriptor, calibrates it to the targets, and
+  synthesizes it by inverse FFT. Only the descriptor goes in.
+  - The calibration iterates cutoff, tilt and odd weight to a fixed point.
+  - Sparse frames keep either a chord's harmonic series (our own ratio sets,
+    chosen to be able to reach the target's brightness and parity) or a
+    seeded, stable subset.
+  - A seeded phase blend matches crest factor.
+- **`random`** draws a descriptor from broad priors and prints it. The printed
+  descriptor is what an AI would write instead.
+- **`pack`** does analyze → generate → verify over a folder.
+- **`compare`** prints per-frame-pair correlations between two tables.
+- **`selftest`** checks the analyzer on exact shapes and runs a round trip.
+
+Output is 2048-sample frames, 32-bit float, with both the Serum `clm ` chunk
+and Surge's `srge` chunk, as Surge's own exporter writes them
+(`WAVFileSupport.cpp:690-737`). Surge's reader accepts either
+(`:221-261`). **Structurally checked against that reader; not yet loaded in a
+running Surge.**
+
+**The "not a copy" check is only meaningful with a null.** Several lessons came
+out of building it:
+
+- **Waveform correlation is useless against near-sines and textbook shapes.**
+  Two sines correlate at 1.0 whatever their origin. So it is reported only
+  against reference frames with centroid ≥ 2 and bandwidth ≥ 24.
+- **Ripple correlation needs at least 48 shared harmonics.** Below that its
+  spread (about 1/√m) produces 0.7 by chance somewhere across a pack.
+- **Ripple must be measured per parity with an edge-preserving median.**
+  Otherwise a shared roll-off or a shared odd/even imbalance reads as copied
+  ripple.
+- **The null is the same descriptor with another seed, over the same number
+  of frame pairs.** A table is flagged only if it resembles its reference more
+  than 0.3 above the null, and more than 0.6 overall.
+
 ---
 
 ## 5. GUI — where the prompt bar goes
@@ -908,5 +964,14 @@ first (it is the only thing that can generate the contextual per-type schema
 - [ ] CI. There is none for this project yet. Follow `.github/workflows/ci.yml`'s
       philosophy: a green tick should prove a specific claim, not merely that it
       compiled.
-- [ ] Integration with `adi_daw` — intended, undesigned, and deliberately not
+- [ ] **In-plugin wavetable generator (ADR-0009), and its open questions:**
+      - how a descriptor gets from adi_daw to the plugin;
+      - whether generation uses our C++ generator or a trusted Lua template on
+        `WtGenService`;
+      - whether the patch stores the descriptor and seed, the frames, or both.
+      Prototype: `tools/wtgen/`, 15/15 selftest.
+- [ ] Load a `wtgen` table in a running Surge. So far only its structure has
+      been checked, against `WAVFileSupport.cpp`.
+- [ ] Integration with `adi_daw` — **required by ADR-0009**, still undesigned,
+      and deliberately not
       assumed anywhere in this repo (ADR-0003).

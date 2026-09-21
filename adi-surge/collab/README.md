@@ -31,7 +31,7 @@ the ways that matter for the AI work:
 The last two rows are why this project exists as more than a second coat of
 paint: Surge ships most of the scaffolding `adi-vst` had to hand-build.
 
-**Intended integration with `adi_daw` is real but not yet designed.** `adi_daw`
+**Integration with `adi_daw` is required (ADR-0009) but not yet designed.** `adi_daw`
 has mandated CLAP *hosting* (its ADR-0052), specifically for CLAP's
 non-destructive parameter modulation. Hosting a format and exporting one are
 unrelated capabilities and neither decision constrains the other. Do not write
@@ -114,6 +114,7 @@ agents writing the same ADR; reading the other agent's subject does.
 | 0006 | mac | `mac/adi-surge-bootstrap` | the fork has no `origin` yet, and why that does not block win | used |
 | 0007 | mac | `mac/adi-surge-bootstrap` | CMake >= 3.22 is hard; a build must assert the artifact | used |
 | 0008 | win | `win/adi-surge-adr0008` | ADR-0007's context is wrong: old CMake fails configure loudly; its decision stands | used |
+| 0009 | win | `win/adi-surge-wtgen` | goal: in-plugin auto/random wavetable generator, AI-drivable, integrated with adi_daw | used |
 
 ## Before you start work, every time
 
