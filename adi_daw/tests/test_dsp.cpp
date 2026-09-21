@@ -268,7 +268,7 @@ void testTheLimiterIsTransparentBelowTheCeiling() {
 
     Buf in(4096);
     for (std::size_t i = 0; i < in.l.size(); ++i) {
-        in.l[i] = static_cast<float>(0.5 * std::sin(2.0 * kPi * 440.0 * i / kFs));
+        in.l[i] = static_cast<float>(0.5 * std::sin(2.0 * kPi * 440.0 * static_cast<double>(i) / kFs));
         in.r[i] = in.l[i];
     }
     const Buf out = limit(lim, in);
@@ -286,7 +286,7 @@ void testTheLimiterNeverPassesTheCeiling() {
     {
         Buf b(8192);
         for (std::size_t i = 0; i < b.l.size(); ++i)
-            b.l[i] = b.r[i] = static_cast<float>(4.0 * std::sin(2.0 * kPi * 100.0 * i / kFs));
+            b.l[i] = b.r[i] = static_cast<float>(4.0 * std::sin(2.0 * kPi * 100.0 * static_cast<double>(i) / kFs));
         signals.emplace_back("a +12 dB sine", b);
     }
     {
@@ -474,8 +474,8 @@ void testAHotKeyNeverInvertsTheMusic() {
     // 1 - 2 = -1. The music comes out polarity-inverted on every kick.
     std::vector<float> main(4800), key(4800);
     for (std::size_t i = 0; i < main.size(); ++i) {
-        main[i] = static_cast<float>(0.5 * std::sin(2.0 * kPi * 440.0 * i / kFs));
-        key[i] = static_cast<float>(2.0 * std::sin(2.0 * kPi * 50.0 * i / kFs));
+        main[i] = static_cast<float>(0.5 * std::sin(2.0 * kPi * 440.0 * static_cast<double>(i) / kFs));
+        key[i] = static_cast<float>(2.0 * std::sin(2.0 * kPi * 50.0 * static_cast<double>(i) / kFs));
     }
     RingModSidechain r;
     r.prepare(kFs);
@@ -497,8 +497,8 @@ void testTheSidebandsAreACharacterYouCanTurnOff() {
     const std::size_t n = 48000 * 2;
     std::vector<float> main(n), key(n);
     for (std::size_t i = 0; i < n; ++i) {
-        main[i] = static_cast<float>(0.5 * std::sin(2.0 * kPi * 1000.0 * i / kFs));
-        key[i] = static_cast<float>(0.9 * std::sin(2.0 * kPi * 60.0 * i / kFs));
+        main[i] = static_cast<float>(0.5 * std::sin(2.0 * kPi * 1000.0 * static_cast<double>(i) / kFs));
+        key[i] = static_cast<float>(0.9 * std::sin(2.0 * kPi * 60.0 * static_cast<double>(i) / kFs));
     }
     auto sidebandDb = [&](double smoothingHz) {
         RingModSidechain r;
