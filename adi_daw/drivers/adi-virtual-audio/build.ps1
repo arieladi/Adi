@@ -12,9 +12,17 @@
         out/adi-virtual-audio-<platform>-<configuration>/
             TabletAudioSample.sys           the driver
             ComponentizedAudioSample.inf    the stamped INF, with our strings
-            adi-virtual-audio.cat           the unsigned catalogue
+            adi-virtual-audio.cat           the unsigned catalogue for the driver INF
+            *.dll, *.inf, *.cat             the sample's APOs and keyword detector, which its
+                                            INFs copy and Inf2Cat therefore requires (for now)
             LICENSE-MS-PL.txt               the sample's licence (Microsoft Public License)
             PROVENANCE.txt                  repo, commit, configuration, date
+
+    The build goes through the sample's own Package project, which builds the
+    driver, the EndpointsCommon library, the APOs and the keyword-detector
+    adapter, stamps the INFs, and runs Inf2Cat over the package directory. The
+    real ADI driver will expose two endpoints and copy one file; until it
+    exists, this is the unmodified sample with our names on it.
 
     Signing is never done here (ADR-0118, ADR-0119): the package is what a CI
     release workflow hands to SignPath. The sample's licence is MS-PL, which
@@ -117,6 +125,27 @@ $text = [regex]::Replace($text, $catPattern, ('${1}' + $CatalogName))
 [System.IO.File]::WriteAllBytes($inx, $enc.GetBytes($text))
 
 # ------------------------------------------------------------------ 3. build
+Step "WDK"
+$kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+$kitBin = Get-ChildItem -Path $kits -Directory -Filter '10.0.*' -ErrorAction SilentlyContinue |
+    Where-Object { Test-Path (Join-Path $_.FullName 'x86\InfVerif.dll') } |
+    Sort-Object Name -Descending | Select-Object -First 1
+if (-not $kitBin) { throw "no WDK found under $kits (no 10.0.*\x86\InfVerif.dll); install the WDK with its Visual Studio extension" }
+Write-Host "    $($kitBin.FullName)"
+# The WDK's INF verification task loads 'x86\InfVerif.dll' by a relative path, which
+# the loader resolves against the DLL search path, and the kit's bin directory is not
+# on it on a stock GitHub runner. Putting it on PATH is the honest fix. The copy into
+# x86\x86 is the workaround Virtual-Audio-Driver's workflow uses; kept as a fallback
+# and skipped without complaint where the kit directory is not writable.
+$env:PATH = "$($kitBin.FullName);$env:PATH"
+$fallback = Join-Path $kitBin.FullName 'x86\x86\InfVerif.dll'
+if (-not (Test-Path $fallback)) {
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path $fallback) | Out-Null
+        Copy-Item (Join-Path $kitBin.FullName 'x86\InfVerif.dll') $fallback
+    } catch { Write-Host "    (could not place the x86\x86 fallback copy: $($_.Exception.Message))" }
+}
+
 Step "MSBuild"
 $msbuild = (Get-Command msbuild.exe -ErrorAction SilentlyContinue).Source
 if (-not $msbuild) {
@@ -126,32 +155,35 @@ if (-not $msbuild) {
     }
 }
 if (-not $msbuild) { throw "MSBuild not found; install Visual Studio 2022 with the C++ workload and the WDK" }
+# The Package project references the driver, its library, the APOs and the keyword
+# detector, stamps every INF and runs Inf2Cat over the package directory.
 $common = @('/m', '/nologo', '/v:minimal', "/p:Configuration=$Configuration", "/p:Platform=$Platform", '/p:SignMode=Off')
-Run $msbuild (@((Join-Path $sysvad 'EndpointsCommon\EndpointsCommon.vcxproj')) + $common)
-Run $msbuild (@((Join-Path $sysvad 'TabletAudioSample\TabletAudioSample.vcxproj')) + $common)
+Run $msbuild (@((Join-Path $sysvad 'Package\package.VcxProj')) + $common)
 
-$projOut = Join-Path $sysvad "TabletAudioSample\$Platform\$Configuration"
-$sys = Get-ChildItem -Path $projOut -Filter 'TabletAudioSample.sys' -Recurse | Select-Object -First 1
-$inf = Get-ChildItem -Path $projOut -Filter 'ComponentizedAudioSample.inf' -Recurse | Select-Object -First 1
-if (-not $sys) { throw "TabletAudioSample.sys not produced under $projOut" }
-if (-not $inf) { throw "ComponentizedAudioSample.inf not produced under $projOut (StampInf did not run?)" }
+$built = Get-ChildItem -Path $sysvad -Filter 'TabletAudioSample.sys' -Recurse |
+    Where-Object { $_.Directory.Name -ieq 'package' -and $_.FullName -match "\\$Platform\\$Configuration\\" } |
+    Select-Object -First 1
+if (-not $built) { throw "no <...>\$Platform\$Configuration\package\TabletAudioSample.sys under $sysvad; the Package project did not package" }
+$pkgSrc = $built.Directory.FullName
+$inf = Join-Path $pkgSrc 'ComponentizedAudioSample.inf'
+if (-not (Test-Path $inf)) { throw "ComponentizedAudioSample.inf missing from $pkgSrc (StampInf did not run?)" }
 
 # ------------------------------------------------------------------ 4. package + catalogue
 Step "package"
 $pkg = Join-Path $OutDir "adi-virtual-audio-$Platform-$Configuration"
 if (Test-Path $pkg) { Remove-Item -Recurse -Force $pkg }
 New-Item -ItemType Directory -Force -Path $pkg | Out-Null
-Copy-Item $sys.FullName $pkg
-Copy-Item $inf.FullName $pkg
+Copy-Item (Join-Path $pkgSrc '*') $pkg -Recurse
 Copy-Item $licenseFile (Join-Path $pkg 'LICENSE-MS-PL.txt')
 
-$kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-$inf2cat = Get-ChildItem -Path $kits -Filter 'Inf2Cat.exe' -Recurse -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -match '\\x86\\Inf2Cat\.exe$' } |
-    Sort-Object FullName -Descending | Select-Object -First 1
-if (-not $inf2cat) { throw "Inf2Cat.exe not found under $kits; the WDK is required" }
-Run $inf2cat.FullName @("/driver:$pkg", '/os:10_X64', '/verbose')
-if (-not (Test-Path (Join-Path $pkg $CatalogName))) { throw "Inf2Cat did not produce $CatalogName" }
+if (-not (Test-Path (Join-Path $pkg $CatalogName))) {
+    # The Package project normally runs Inf2Cat itself; if this build did not, do it here.
+    $inf2cat = Join-Path $kitBin.FullName 'x86\Inf2Cat.exe'
+    if (-not (Test-Path $inf2cat)) { throw "no catalogue was produced and $inf2cat is missing" }
+    Run $inf2cat @("/driver:$pkg", '/os:10_X64', '/verbose')
+    if (-not (Test-Path (Join-Path $pkg $CatalogName))) { throw "Inf2Cat did not produce $CatalogName" }
+}
+if (-not (Test-Path (Join-Path $pkg 'TabletAudioSample.sys'))) { throw "TabletAudioSample.sys missing from the package" }
 
 $ourCommit = try { (& git -C $PSScriptRoot rev-parse HEAD 2>$null).Trim() } catch { 'unknown' }
 @"

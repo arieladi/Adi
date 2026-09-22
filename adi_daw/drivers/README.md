@@ -50,12 +50,16 @@ pwsh ./adi_daw/drivers/adi-virtual-audio/build.ps1 -Configuration Release -Platf
    the build fails, so an upstream rename is noticed rather than silently kept.
    The sample's other, jack-detected endpoints keep their names until the real
    driver exposes exactly two.
-3. `EndpointsCommon.vcxproj` (static library) then
-   `TabletAudioSample.vcxproj` (the driver) with the WDK toolset,
-   `SignMode=Off`.
-4. `Inf2Cat` writes `adi-virtual-audio.cat`; the package under `out/` is the
-   `.sys`, the stamped `.inf`, the `.cat`, `LICENSE-MS-PL.txt` and
-   `PROVENANCE.txt`.
+3. The sample's own `Package\package.VcxProj` with the WDK toolset and
+   `SignMode=Off`. It builds the driver, its `EndpointsCommon` library, the
+   sample's APOs and keyword-detector adapter (the INFs copy those DLLs, so
+   Inf2Cat requires them until the real driver's INF copies one file), stamps
+   the INFs and runs Inf2Cat over its package directory. The WDK's INF
+   verifier loads `x86\InfVerif.dll` by a relative path that a stock runner
+   cannot resolve; the script puts the kit's bin directory on `PATH`.
+4. The package under `out/` is that directory plus `LICENSE-MS-PL.txt` and
+   `PROVENANCE.txt`: `TabletAudioSample.sys`, the stamped INFs,
+   `adi-virtual-audio.cat` and the sample's other catalogue and DLLs.
 
 The workflow runs on `windows-2022`, which ships the WDK 10.1.26100 with its
 Visual Studio extension, and uploads the package as
