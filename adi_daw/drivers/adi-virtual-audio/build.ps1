@@ -126,25 +126,38 @@ $text = [regex]::Replace($text, $catPattern, ('${1}' + $CatalogName))
 
 # ------------------------------------------------------------------ 3. build
 Step "WDK"
-$kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-$kitBin = Get-ChildItem -Path $kits -Directory -Filter '10.0.*' -ErrorAction SilentlyContinue |
-    Where-Object { Test-Path (Join-Path $_.FullName 'x86\InfVerif.dll') } |
-    Sort-Object Name -Descending | Select-Object -First 1
-if (-not $kitBin) { throw "no WDK found under $kits (no 10.0.*\x86\InfVerif.dll); install the WDK with its Visual Studio extension" }
-Write-Host "    $($kitBin.FullName)"
-# The WDK's INF verification task loads 'x86\InfVerif.dll' by a relative path, which
-# the loader resolves against the DLL search path, and the kit's bin directory is not
-# on it on a stock GitHub runner. Putting it on PATH is the honest fix. The copy into
-# x86\x86 is the workaround Virtual-Audio-Driver's workflow uses; kept as a fallback
-# and skipped without complaint where the kit directory is not writable.
-$env:PATH = "$($kitBin.FullName);$env:PATH"
-$fallback = Join-Path $kitBin.FullName 'x86\x86\InfVerif.dll'
-if (-not (Test-Path $fallback)) {
-    try {
-        New-Item -ItemType Directory -Force -Path (Split-Path $fallback) | Out-Null
-        Copy-Item (Join-Path $kitBin.FullName 'x86\InfVerif.dll') $fallback
-    } catch { Write-Host "    (could not place the x86\x86 fallback copy: $($_.Exception.Message))" }
+$kitRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
+if (-not (Test-Path $kitRoot)) { throw "no Windows Kits\10 under ${env:ProgramFiles(x86)}; install the WDK with its Visual Studio extension" }
+# The WDK's INF verification task loads 'x86\InfVerif.dll' by a RELATIVE path, which
+# the loader resolves against the DLL search path; on a stock GitHub runner no kit
+# directory is on it. Recent kits keep the tool under Tools\<version>\x86, older ones
+# under bin\<version>\x86, so search rather than assume, and put the parent of every
+# 'x86' directory that holds it on PATH. The build has been seen to finish with the
+# verifier unloadable (its errors did not fail MSBuild), so a missing DLL is a
+# warning here, not a stop.
+$infVerifDlls = @(Get-ChildItem -Path $kitRoot -Recurse -Filter 'InfVerif.dll' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Directory.Name -ieq 'x86' })
+if ($infVerifDlls.Count -eq 0) {
+    Write-Warning "no x86\InfVerif.dll found under $kitRoot; INF verification will not run"
+} else {
+    foreach ($dll in $infVerifDlls) {
+        $parent = $dll.Directory.Parent.FullName
+        Write-Host "    InfVerif: $($dll.FullName)"
+        $env:PATH = "$parent;$env:PATH"
+        # Virtual-Audio-Driver's workflow copies the DLL into x86\x86 as well; kept as a
+        # fallback, skipped without complaint where the kit directory is not writable.
+        $fallback = Join-Path $dll.Directory.FullName 'x86\InfVerif.dll'
+        if (-not (Test-Path $fallback)) {
+            try {
+                New-Item -ItemType Directory -Force -Path (Split-Path $fallback) | Out-Null
+                Copy-Item $dll.FullName $fallback
+            } catch { Write-Host "    (no x86\x86 fallback copy: $($_.Exception.Message))" }
+        }
+    }
 }
+$inf2catExe = Get-ChildItem -Path $kitRoot -Recurse -Filter 'Inf2Cat.exe' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Directory.Name -ieq 'x86' } | Sort-Object FullName -Descending | Select-Object -First 1
+if ($inf2catExe) { Write-Host "    Inf2Cat:  $($inf2catExe.FullName)" } else { Write-Warning "no x86\Inf2Cat.exe found under $kitRoot" }
 
 Step "MSBuild"
 $msbuild = (Get-Command msbuild.exe -ErrorAction SilentlyContinue).Source
@@ -178,9 +191,8 @@ Copy-Item $licenseFile (Join-Path $pkg 'LICENSE-MS-PL.txt')
 
 if (-not (Test-Path (Join-Path $pkg $CatalogName))) {
     # The Package project normally runs Inf2Cat itself; if this build did not, do it here.
-    $inf2cat = Join-Path $kitBin.FullName 'x86\Inf2Cat.exe'
-    if (-not (Test-Path $inf2cat)) { throw "no catalogue was produced and $inf2cat is missing" }
-    Run $inf2cat @("/driver:$pkg", '/os:10_X64', '/verbose')
+    if (-not $inf2catExe) { throw "no catalogue was produced and Inf2Cat.exe was not found under $kitRoot" }
+    Run $inf2catExe.FullName @("/driver:$pkg", '/os:10_X64', '/verbose')
     if (-not (Test-Path (Join-Path $pkg $CatalogName))) { throw "Inf2Cat did not produce $CatalogName" }
 }
 if (-not (Test-Path (Join-Path $pkg 'TabletAudioSample.sys'))) { throw "TabletAudioSample.sys missing from the package" }
