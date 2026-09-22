@@ -1,0 +1,11 @@
+# The PDFs dropped here, and the chapter folders written from them, are usually
+# someone else's copyrighted manuals: they never go into this public repo. Only
+# the tool itself is tracked.
+/*
+!/.gitignore
+!/LICENSE
+!/README.md
+!/install.cmd
+!/pdf_to_chapters.py
+!/requirements.txt
+!/run.cmd
