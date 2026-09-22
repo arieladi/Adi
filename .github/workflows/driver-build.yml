@@ -1,0 +1,59 @@
+# Builds the ADI virtual audio device for Windows (adi_daw/drivers/adi-virtual-audio)
+# and uploads the UNSIGNED package as an artefact. Nothing is signed here; this is
+# the build half of what SignPath Foundation will later sign (ADR-0118, ADR-0119,
+# ADR-0120). The driver source is Microsoft's sysvad sample, fetched at a pinned
+# commit by build.ps1 and never committed to this repository.
+name: driver-build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'adi_daw/drivers/**'
+      - '.github/workflows/driver-build.yml'
+  pull_request:
+    paths:
+      - 'adi_daw/drivers/**'
+      - '.github/workflows/driver-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: driver-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # windows-2022 ships the Windows Driver Kit 10.1.26100 with its Visual Studio
+    # extension, ATL and the Spectre-mitigated libraries, so nothing is installed
+    # here. windows-latest now means Windows Server 2025 with Visual Studio 2026,
+    # whose WDK state is not something this workflow wants to discover by failing.
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Release, Debug]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build (fetches sysvad at the pinned commit, applies our INF strings, Inf2Cat)
+        shell: pwsh
+        run: ./adi_daw/drivers/adi-virtual-audio/build.ps1 -Configuration ${{ matrix.configuration }} -Platform x64
+
+      - name: Show the package
+        shell: pwsh
+        run: |
+          $pkg = "adi_daw/drivers/adi-virtual-audio/out/adi-virtual-audio-x64-${{ matrix.configuration }}"
+          Get-ChildItem $pkg | Format-Table Name, Length
+          Get-Content "$pkg/PROVENANCE.txt"
+
+      - name: Upload the unsigned package
+        uses: actions/upload-artifact@v4
+        with:
+          name: adi-virtual-audio-x64-${{ matrix.configuration }}-unsigned
+          path: adi_daw/drivers/adi-virtual-audio/out/adi-virtual-audio-x64-${{ matrix.configuration }}
+          if-no-files-found: error
+          retention-days: 30

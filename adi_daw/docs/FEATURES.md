@@ -57,7 +57,7 @@ flagged, and it is a bug in the format, not in the plan.
 | Direct Routing (multiple simultaneous outs) | Cubase | P2 | ✅ | falls out of `routing` being a table |
 | Up to 64 buses per node; no cable UI | REAPER (engine), Ableton (UI) | P2 | ✅ | replaces ADR-0056's two buses; routing stays Ableton's menus and auto-grouping (ADR-0113) |
 | System-audio (loopback) input on any track | neither | P1 | — | WASAPI loopback, Core Audio process taps; a resampler with declared latency (ADR-0106) |
-| ADI virtual audio device out (master or any bus as an OS input) | REAPER (ReaRoute) | P2 | — | an OS driver: BlackHole fork on macOS; on Windows our own `sysvad`-based (MIT) kernel driver signed for free through SignPath Foundation, the route Virtual-Audio-Driver has used since 2025; bundling VB-CABLE was proposed and rejected (ADR-0106, ADR-0117, ADR-0118) |
+| ADI virtual audio device out (master or any bus as an OS input) | REAPER (ReaRoute) | P2 | — | an OS driver: BlackHole fork on macOS; on Windows our own `sysvad`-based kernel driver (sysvad is MS-PL, fetched at build time, never vendored; the ruling on shipping MS-PL-derived code is the director's, ADR-0120) signed for free through SignPath Foundation, the route Virtual-Audio-Driver has used since 2025; bundling VB-CABLE was proposed and rejected (ADR-0106, ADR-0117, ADR-0118). Build workflow: `driver-build.yml` |
 | Track freeze / bounce in place | both | P1 | ✅ | `tracks.frozen`, `freeze_media_id` |
 | Control Room (separate monitor path, cue mixes, talkback) | Cubase | P3 | 🔶 | `routing.kind='cue'` reserved; no monitor-section model |
 | Crossfader, DJ-style mixing | Ableton | P3 | 🔶 | needs a master-section table |

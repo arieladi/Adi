@@ -18,11 +18,17 @@ declined and costs the reviewers' time.
 
 - [ ] The driver is **released in the form to be signed**: at least one tagged
       pre-release of the unsigned driver package exists on GitHub.
-- [ ] A **GitHub Actions release workflow** builds the driver from source with
-      the WDK and produces the package as a CI artefact. Only that workflow will
-      sign; **local builds are never signed.**
-- [ ] The **licence is OSI-approved**: `drivers/LICENSE` is MIT. (The repository
-      is GPLv3; both are OSI licences.)
+- [x] A **GitHub Actions workflow** builds the driver with the WDK and produces
+      the package as a CI artefact: `.github/workflows/driver-build.yml`, on
+      `windows-2022`, via `adi-virtual-audio/build.ps1` (ADR-0120). The
+      *release* half — the SignPath connector step, triggered by a tag — is
+      added when the certificate exists. Only that workflow will sign; **local
+      builds are never signed.**
+- [ ] The **licence is OSI-approved**: our files are MIT (`drivers/LICENSE`);
+      the driver is derived from Microsoft's `sysvad`, which is **MS-PL**, also
+      OSI-approved. Whether the shipped driver may be MS-PL-derived is the
+      director's ruling under `OPEN_SOURCE_POLICY.md` (ADR-0120); the form
+      names both licences honestly.
 - [ ] The repository is **public and visibly maintained**: recent commits, an
       issue tracker, documentation (this directory's README, ADR-0106 to
       ADR-0119).
@@ -30,10 +36,10 @@ declined and costs the reviewers' time.
       approve releases.
 - [ ] A **release approver** is named (Adi), and the process for approving a
       signing request is written down (below).
-- [ ] The build is **reproducible from the public repository**: no private
+- [x] The build is **reproducible from the public repository**: no private
       dependencies, no vendored binaries; `sysvad` is fetched from
-      `microsoft/Windows-driver-samples` at a pinned commit or copied in with
-      its MIT header intact.
+      `microsoft/Windows-driver-samples` at the commit pinned in `build.ps1`,
+      and the build fails if the checkout is any other commit.
 
 ## Draft answers for the form
 
@@ -43,10 +49,10 @@ Fill in from these; keep them true on the day of sending.
 |---|---|
 | Project name | ADI DAW — virtual audio device (`adi_daw/drivers/adi-virtual-audio`) |
 | Project URL | `https://github.com/arieladi/Adi` (path `adi_daw/drivers/`) — or the graduated repository if ADR-0013 has happened by then |
-| Licence | MIT (driver); the surrounding DAW is GPLv3 |
+| Licence | MS-PL for the driver, derived from Microsoft's sysvad sample; MIT for our build and packaging files; the surrounding DAW is GPLv3 |
 | What is signed | A Windows kernel-mode audio driver package (`.sys`, `.inf`, `.cat`) for x64 (and ARM64 if built) exposing two virtual endpoints, "ADI DAW Stream Output" and "ADI DAW Stream Input" |
 | Why it needs signing | Windows 10 and 11 x64 load only signed kernel drivers; users must not enable test-signing mode |
-| Build system | GitHub Actions, workflow `<name>.yml` in the repository, WDK on `windows-latest`; the artefact uploaded to SignPath is the unsigned package produced by that workflow and nothing else |
+| Build system | GitHub Actions, workflow `.github/workflows/driver-build.yml`, WDK 10.1.26100 as shipped on `windows-2022`; the artefact uploaded to SignPath is the unsigned package (`.sys`, `.inf`, `.cat`) produced by that workflow and nothing else |
 | Who approves signing requests | Adi Ariel (repository owner), 2FA enabled |
 | Release process | A tag on `main` triggers the release workflow; the workflow submits the artefact to SignPath; the approver reviews the diff since the last signed release and approves; the signed package is attached to the GitHub release |
 | Users | Musicians using ADI DAW who want the DAW's output as an input device in Zoom, Discord, OBS or Parsec without third-party virtual cables |

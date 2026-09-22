@@ -7957,3 +7957,74 @@ anyway:
 **Not decided:** nothing. The driver itself is unscheduled work behind the
 first release's needs (ADR-0118 decision 2 stands: it ships only once signed).
 
+
+---
+
+## ADR-0120 — The driver build workflow; sysvad is MS-PL, not MIT, and is fetched, never vendored — `DECIDED` (2026-09-22) — **CORRECTS ADR-0117, ADR-0118, ADR-0119; OPENS A LICENCE RULING**
+
+**Director's instruction.** Set up the WDK build workflow for the driver.
+
+**A correction first, because the workflow's design follows from it.**
+ADR-0117 §4, ADR-0118 decision 1 and ADR-0119 decision 1 call Microsoft's
+`sysvad` sample "MIT". **It is not.** `microsoft/Windows-driver-samples` carries
+one licence at its root, the **Microsoft Public License (MS-PL)**; `audio/
+sysvad/` has no licence of its own and its source headers say only "Copyright
+(c) Microsoft Corporation All Rights Reserved". The Virtual-Audio-Driver README
+said as much ("third-party Microsoft sample code under MS-PL") and it was read
+and not followed. The three entries stay as written (ADR-0028); this one
+corrects them.
+
+**What MS-PL changes.** MS-PL is OSI-approved and permits use, modification
+and redistribution, so a driver derived from it can be shipped, and SignPath
+Foundation's "OSI licence" condition is met. MS-PL is not GPL-compatible, but
+the driver is its own program under its own licence (ADR-0119), so the DAW's
+GPLv3 is untouched. What MS-PL is *not* is a row in `OPEN_SOURCE_POLICY.md`
+§3's table, and §3 says copying from a licence the table does not cover is a
+question for Adi. So:
+
+### Decisions
+
+1. **Nothing from the sample enters this repository.** `build.ps1` fetches
+   `microsoft/Windows-driver-samples` at a pinned commit (`3c3fb490…`,
+   2026-09-18) into an ignored `.build/` directory, checks the commit and that
+   the licence file still says MS-PL, and rewrites only the INF strings. The
+   pin changes deliberately, in the script, with a log entry.
+2. **The workflow is `.github/workflows/driver-build.yml`**, on
+   `windows-2022`, which ships the Windows Driver Kit 10.1.26100 with its
+   Visual Studio extension, ATL and the Spectre-mitigated libraries; no
+   Chocolatey install step. `windows-latest` is not used: it now means Windows
+   Server 2025 with Visual Studio 2026, whose WDK state a build workflow should
+   not discover by failing. It runs on pushes and pull requests that touch
+   `adi_daw/drivers/**` or itself, and on demand, for Release and Debug on
+   x64, and uploads `adi-virtual-audio-x64-<configuration>-unsigned`.
+3. **The package** is the `.sys`, the stamped `.inf`, the `.cat` from Inf2Cat,
+   the sample's MS-PL text and a provenance file naming the source commit,
+   the build-script commit, the configuration and the date. **Nothing is
+   signed**, `SignMode=Off`; signing is the SignPath step of ADR-0119.
+4. **Endpoint names, provisionally on the sample's topology.** The sample's two
+   always-present internal endpoints — the speaker and the front microphone
+   array — carry "ADI DAW Stream Output" and "ADI DAW Stream Input"; the
+   sample's jack-detected endpoints keep their names until the real driver
+   exposes exactly two. Every string key must exist exactly once in the
+   sample's `.inx` or the build fails, so an upstream rename is noticed.
+5. **Build order** follows the sample's solution: `EndpointsCommon` (static
+   library) then `TabletAudioSample` (the driver, which links it).
+6. **`.github/workflows/` is mac's standing claim.** Taken for this one file
+   on the director's direct instruction (ADR-0109 governance), recorded in the
+   claims table and in win's log rather than quietly.
+
+### Open, and the director's
+
+**Whether a shipped ADI driver may be derived from MS-PL code.** Two honest
+routes if the answer is no: a clean-room virtual audio driver written against
+the WDK's PortCls and WaveRT documentation (large; the sample exists because
+that is hard), or a different open base whose licence the policy already
+covers (none of the known Windows virtual-audio drivers is MIT or BSD;
+Synchronous Audio Router is GPL-3.0 and ASIO-shaped). If the answer is yes,
+the policy gains an MS-PL row scoped to `drivers/`, and the driver's own
+`LICENSE` becomes MS-PL for the derived files with MIT for ours.
+
+**Not verified locally.** The machine that wrote this has no WDK and an
+unelevated shell; the workflow is proven by its first run in CI, whose result
+is recorded in the log by commit SHA.
+

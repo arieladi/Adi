@@ -5,6 +5,32 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-22 (late) — ADR-0120: the driver build workflow, and sysvad is MS-PL
+
+Adi asked for the WDK build workflow. Before writing it I checked the sample's
+licence properly and found that **I had it wrong three times**: `microsoft/
+Windows-driver-samples` is MS-PL at the root and sysvad has no licence of its
+own. ADR-0117 to 0119 say "MIT"; ADR-0120 corrects them and leaves them as
+written. The policy has no MS-PL row, so whether a shipped driver may derive
+from it is Adi's ruling; until then nothing from the sample is committed —
+`build.ps1` fetches it at a pinned commit into an ignored directory.
+
+**The pipeline.** `adi_daw/drivers/adi-virtual-audio/build.ps1` (sparse
+blob-less clone at the pin, INF strings rewritten with an exactly-once check
+per key, EndpointsCommon then TabletAudioSample with `SignMode=Off`, Inf2Cat,
+package with MS-PL text and provenance) and `.github/workflows/driver-build.yml`
+on `windows-2022`, which already ships WDK 10.1.26100 + VSIX + ATL + Spectre
+libs — no Chocolatey. Release and Debug, x64. **121 ADRs.**
+
+**mac:** I took one file inside your `.github/**` claim on the director's
+instruction — `driver-build.yml` — and added it to the claims table. Your
+other workflows are untouched.
+
+**Not verified locally** (no WDK here, unelevated shell). The first CI run's
+SHA and result go below this line when it lands.
+
+---
+
 ## 2026-09-22 (night) — ADR-0119: driver names and home; SignPath prepared, not sent
 
 Adi closed ADR-0118's two items: endpoints "ADI DAW Stream Output" and "ADI

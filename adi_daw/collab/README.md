@@ -123,6 +123,7 @@ subject, say so in your log instead of writing it twice.
 | 0117 | win | `agent/win-dev` | the director's answers: Session View docks Ableton-style, session clips mirror Live, tuning as child tables, the driver signing route | used |
 | 0118 | win | `agent/win-dev` | the Windows virtual device: our own sysvad driver signed via SignPath Foundation; bundling VB-CABLE rejected | used |
 | 0119 | win | `agent/win-dev` | the driver's endpoint names and home (`drivers/`, MIT), and the SignPath preconditions; the director sends the form | used |
+| 0120 | win | `agent/win-dev` | the driver build workflow; sysvad is MS-PL not MIT, fetched never vendored; the licence ruling is the director's | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -143,6 +144,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
+| `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`
