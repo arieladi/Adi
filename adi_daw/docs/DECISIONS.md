@@ -7902,3 +7902,58 @@ route exists and works; ours is the same application.
 `adi_daw/` or in its own repository (it is its own program, MIT, and the
 sibling-repository pattern of adi-surge fits).
 
+
+---
+
+## ADR-0119 — The driver's endpoint names and home, and what has to exist before SignPath is asked — `DECIDED` (2026-09-22) — **CLOSES ADR-0118's OPEN ITEMS**
+
+**Director's answers.** Endpoint names in the INF: **"ADI DAW Stream Output"**
+(the playback endpoint the DAW routes a bus to) and **"ADI DAW Stream Input"**
+(the recording endpoint Zoom, Discord or OBS select). The driver lives **inside
+`adi_daw/`, under `drivers/`**, under its own MIT licence: MIT code inside a
+GPLv3 repository is fine in that direction, and a `LICENSE` file in `drivers/`
+is what keeps the boundary visible.
+
+**And an instruction: apply to SignPath Foundation for the signing.** Checked
+before acting, because a claim came with it that Claude would "open a pull
+request on SignPath's GitHub repository" that their reviewers would see today.
+That is not how the programme works, and the application would fail today
+anyway:
+
+- **The application is a form, sent by email**, with the project's and the
+  applicant's details, followed by a review. There is no pull request to open.
+- **Preconditions the Foundation states:** an OSI licence; a public repository
+  with visibly active maintenance; the project **already released in the form
+  to be signed**; a **CI release workflow that performs the signing** (never a
+  local build), with SignPath's GitHub connector; a named approver for
+  releases; two-factor authentication on the GitHub account. As of this entry
+  there is no driver source, no `drivers/` build, no release and no workflow,
+  so every technical precondition is unmet.
+- **Who submits.** The form carries an identity and accepts the Foundation's
+  terms on the project's behalf. That is the director's act, not an agent's.
+
+### Decisions
+
+1. **Names and home as answered.** INF strings "ADI DAW Stream Output" and
+   "ADI DAW Stream Input"; path `adi_daw/drivers/adi-virtual-audio/`; MIT, with
+   `drivers/LICENSE` and a `README.md` stating the boundary: nothing in
+   `drivers/` includes anything from `src/adi/**`, and nothing in `src/`
+   includes anything from `drivers/`. The two talk through the shared ring's
+   layout, a header of plain C structs that both may copy.
+2. **The application is prepared now and sent later.** `drivers/SIGNING.md`
+   holds the checklist of the Foundation's requirements with the project's
+   answers drafted, so the submission is a copy-paste on the day the
+   preconditions hold. The director sends it.
+3. **Order of work, so the application is not declined:** (a) the driver
+   builds from `sysvad` in a GitHub Actions workflow with the WDK, producing an
+   unsigned package as a CI artefact; (b) a first tagged pre-release of that
+   package exists; (c) two-factor authentication is on for the account and the
+   release approver is named; (d) then the form goes. Test-signing on a
+   developer machine is how it is exercised until then.
+4. **The MS-PL question stays closed** (ADR-0117, ADR-0118): `sysvad` from
+   `microsoft/Windows-driver-samples` (MIT) is the base; Virtual-Audio-Driver
+   is read-only reference.
+
+**Not decided:** nothing. The driver itself is unscheduled work behind the
+first release's needs (ADR-0118 decision 2 stands: it ships only once signed).
+

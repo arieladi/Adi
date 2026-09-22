@@ -5,6 +5,24 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-22 (night) — ADR-0119: driver names and home; SignPath prepared, not sent
+
+Adi closed ADR-0118's two items: endpoints "ADI DAW Stream Output" and "ADI
+DAW Stream Input" in the INF; the driver lives in `adi_daw/drivers/` under
+its own MIT licence. `drivers/README.md`, `drivers/LICENSE` and
+`drivers/SIGNING.md` now exist; no driver code does. **120 ADRs.**
+
+He also asked me to apply to SignPath Foundation, with a claim attached that
+this meant opening a PR on SignPath's GitHub that reviewers would see today.
+Checked: the application is an emailed form, and the Foundation's conditions
+require the project to be *already released* in the form to be signed, built
+and signed only by a CI release workflow, with 2FA and a named approver.
+None of that exists yet, and the form carries Adi's identity, so it is his to
+send. `SIGNING.md` is the checklist plus drafted answers; ADR-0119 fixes the
+order: WDK workflow → tagged pre-release → 2FA and approver → form.
+
+---
+
 ## 2026-09-22 (evening) — ADR-0118: the Windows virtual device, decided against a VB-CABLE proposal
 
 Adi ruled `sysvad` (MIT) as the driver base with Virtual-Audio-Driver read-only,
