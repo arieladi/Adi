@@ -1,17 +1,29 @@
-# Working in parallel — two Claude agents, one repo
+# Working in parallel — three agents, one repo
 
-Two Claude Code agents work on `adi_daw`, on different machines and different
-accounts, synced only through this git repository. This file is the protocol.
-Read it before your first commit, and re-read it if you have been away.
+Three agents work on `adi_daw`, on different machines and different accounts,
+synced only through this git repository. This file is the protocol. Read it
+before your first commit, and re-read it if you have been away.
 
 ## Roster
 
 | Agent | Machine | Model | Owns | Cannot |
 |---|---|---|---|---|
-| **win** | Windows 11 desktop, MSVC 19.44 / x64 | Claude Opus 5 | The format spec, `src/adi/**`, `tests/**`, `tools/**`, docs | Build or test on macOS/clang/arm64 |
-| **mac** | macOS, Apple clang / arm64 | Claude (team licence) | `.github/workflows/**`, macOS portability, review | Nothing structural — see below |
+| **win** | Windows 11 desktop, MSVC 19.44 / x64 | Claude Code | Lead technical coordinator (ADR-0109): architecture, ADR sequencing, engine integration, the format spec, `src/adi/**`, `tests/**`, `tools/**`, docs, Windows-specific code | Build or test on macOS/clang/arm64 |
+| **mac** | macOS, Apple clang / arm64 | Claude Code (team licence) | `.github/workflows/**`, `docs/UI-ARCHITECTURE.md`, macOS platform and CoreAudio, review | Nothing structural — see below |
+| **linux** | Ubuntu workstation, GCC/Clang / x86-64 | ChatGPT Codex (terminal) | Portable standard C++, headless CI and test enforcement, sanitizers, POSIX portability | OS-specific GUI or driver code; any Linux-only library; `docs/UI-ARCHITECTURE.md`; schema, ADR numbers or claims without `win` |
 
-Neither agent is senior to the other. Disagree in a PR, not by reverting.
+## Governance (ADR-0109)
+
+- **The director (Adi) is the authority.** A direct instruction from Adi to any
+  agent overrides the roadmap, any ADR and any assignment, immediately. The log
+  is kept true afterwards by a superseding ADR, never by editing history.
+- **Without a direct instruction, `win` coordinates.** Schema changes, new ADR
+  number allocations and cross-agent claims synchronise through `win`, so that
+  two agents never write the same ADR or edit the same file through git.
+- Disagree in a PR, not by reverting. Nobody reverts another agent's work.
+- The `linux` agent's onboarding is `collab/linux/ONBOARDING.md`; its log is
+  `collab/linux.md`. Linux desktop work is phase 3 and has not started
+  (ADR-0109).
 
 ## The three rules
 
@@ -28,8 +40,8 @@ commit on a branch, and remove it when the branch merges. If a path you need is
 claimed by the other agent, say so in your log file rather than editing it —
 two agents editing one file through git is how an afternoon disappears.
 
-**3. Log what you did, in your own file.** `collab/win.md` and `collab/mac.md`.
-Only ever write to your own. This is deliberate: a shared log is a guaranteed
+**3. Log what you did, in your own file.** `collab/win.md`, `collab/mac.md` and
+`collab/linux.md`. Only ever write to your own. This is deliberate: a shared log is a guaranteed
 merge conflict on every single push, and the whole point of splitting the files
 is that neither agent ever has to resolve one.
 
@@ -107,6 +119,7 @@ subject, say so in your log instead of writing it twice.
 | 0099 | win | `agent/win-dev` | CLAP note dialects: the host sends what the plugin's note port declares | used |
 | 0100 | win | `agent/win-dev` | the expression test rig: a fixture VST3 with a reachable controller, and every dimension measured | used |
 | 0083-0084 | mac | `agent/mac-dev` | AudioGridder native integration and the CLAP fork; CLAP restart causes | used |
+| 0101-0116 | win | `agent/win-dev` | the director's V0.2 directives: Session View returns last (0101), small blocks (0102), microtonal scales (0103), app-scoped browser (0104), the ADI Suite (0105), loopback and virtual device (0106), PTP (0107), parity gate (0108), portability and three agents (0109), parameter ops (0110), historical tabs (0111), views (0112), 64 buses (0113), macro curves (0114), editing behaviours (0115), Pd second view (0116) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -144,7 +157,9 @@ and a source, resolved by keeping both.
 ```bash
 git -C <repo> checkout main && git pull
 cat adi_daw/collab/README.md          # claims may have changed
-cat adi_daw/collab/<other-agent>.md   # what they did since you last looked
+cat adi_daw/collab/win.md             # what the others did since you last looked
+cat adi_daw/collab/mac.md
+cat adi_daw/collab/linux.md
 ```
 
 ## Building
@@ -232,7 +247,7 @@ A branch is ready to merge when:
   confidently reported corruption that did not exist. Where a hazard closes at
   the type level for one line, close it (ADR-0034).
 
-## Working with the other agent
+## Working with the other agents
 
 - **The repository is PUBLIC**, and it is a monorepo containing unrelated
   projects and whatever work-in-progress is sitting in the tree. **Stage

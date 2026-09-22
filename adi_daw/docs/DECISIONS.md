@@ -7097,3 +7097,646 @@ installed.
 - **Timbre polarity on other synths.** Surge 1.3.4's reading is recorded, and
   a synth that reads CC74 differently will sound different on MIDI-MPE than on
   CLAP.
+
+---
+
+## ADR-0101 — Session View returns as a secondary window, built last — `DECIDED (direction)` (2026-09-22) — **SUPERSEDES ADR-0037 IN PART**
+
+**Director's call.** Reverse the two rejections in FEATURES §11: the clip
+launcher and the live-performance instrument. Session View comes back, not as
+the default paradigm but as an **undockable secondary window** summoned by a
+shortcut (F3, the way Cubase summons the MixConsole). The same window carries a
+Cubase-style MixConsole view, with a button switching between the Ableton-style
+Session view and the Cubase view, so the mixer abilities the right dock does not
+show have a home. Strictly last: the linear Arrangement View must be finished and
+verified before this, and before any ADI Live work (ADR-0105), begins.
+
+**What ADR-0037 said, and what survives.** ADR-0037 cut the data model
+(`scenes`, `clip_slots`, fourteen `scene.*` / `session.*` ops) and kept the
+layout. It also wrote its own escape clause: *"if it ever returns it returns as a
+Layer 4 extension under a reserved namespace, or as a `user_version` bump — not
+as a quiet re-addition to Layer 1."* This entry exercises that clause. What
+survives of 0037: the Arrangement is the primary paradigm, the default screen and
+the first thing built, and everything sketched has to be earned on the timeline
+first. What is superseded: the two product rejections, and "the DAW is
+linear-only" as a permanent statement.
+
+### Decisions
+
+1. **Product.** Session View is a secondary, undockable window under ADR-0063's
+   rule: the same component tree reparented, never a second instance. Hidden by
+   default; F3 toggles it. Its roadmap step comes after the arrangement passes
+   ADR-0108's verification gate and before ADI Live.
+2. **Format: the schema returns now, not with the UI.** Nothing has shipped
+   (`user_version` is still 1000), so restoring `scenes` and `clip_slots` to
+   Layer 1 costs nothing today and a migration later — the README's "why start
+   with the file format" argument, applied in the other direction. It is a schema
+   PR under `validate_schema.py`, and it re-examines the two constraints ADR-0037
+   tightened: `clips.track_id NOT NULL` stays (a slot clip still belongs to a
+   track); a slot clip carries a slot reference *instead of* a timeline position,
+   which is a CHECK either/or to be designed in that PR. The fourteen ops return
+   to the catalogue when the window is built, not before, so `validate_ops.py`'s
+   prose counts keep matching.
+3. **Two views over one model.** (a) Session: the clip matrix with Ableton-style
+   mixer strips beneath it. (b) MixConsole: Cubase-style channel strips — racks,
+   inserts, EQ, strip, fader (Cubase 20a to 20d). A toggle switches them. Neither
+   is a second mixer: the strips are the `MixerPanel`'s components reparented, or
+   readers of the same `TrackOrderModel` — ADR-0063 decision 1 and
+   UI-ARCHITECTURE §4 ("one model, two readers, no second ordering") hold.
+4. **Agent.** ADR-0027's rule is untouched; its membership grows back: the four
+   `session.*` launch ops persist nothing and rejoin the non-undoable set when
+   they exist. AI-AGENT §1's count returns to ten at that point.
+5. **Live performance is ADI Live** (ADR-0105), not this window. This window is
+   for sketching and mixing inside the DAW.
+
+**Cost, stated.** Reversing a cut is cheap only now. SPEC §6.5, FEATURES §5,
+README commitment 3 and TEXT-PROJECTION's designators change back; ADR-0037's
+blast-radius table is the checklist, run in reverse.
+
+**Not decided:** launch quantisation and follow actions; whether a Session clip is
+a `clips` row with a slot column or its own table.
+
+---
+
+## ADR-0102 — The engine must be excellent at small blocks too — `DECIDED` (2026-09-22) — **AMENDS ADR-0042**
+
+**Director's call.** 4096 stays the universal cap for heavy mixing (ADR-0049).
+But the engine must be ruthlessly optimised for 32, 64 and 128-sample blocks for
+tracking and lightweight projects: better CPU efficiency than Ableton Live at low
+latency and low channel counts, and more stable than it on huge projects at high
+buffer sizes.
+
+**What ADR-0042 said.** Tuned for large blocks; sub-block accuracy is what makes
+that safe; low-latency tracking was explicitly not the tuning target. This amends
+the target and keeps the mechanism.
+
+### Decisions
+
+1. **Two operating points, both first-class:** 32 to 128 for tracking, 2048 to
+   4096 for mixing. Block size changes without reload (ADR-0042 decision 6).
+2. **Per-callback fixed cost is the enemy at 32 samples** (0.67 ms at 48 kHz).
+   Snapshot acquisition, the level walk, event routing, meter publishing and the
+   coalescer poll (ADR-0082) must be proportional to *active* nodes, allocation
+   free, with a measured per-node overhead. ADR-0054's sub-block floor
+   (`sample_rate/500`) is moot below 96 frames: a block smaller than the floor is
+   one segment.
+3. **"Outperform Ableton" is a benchmark, not a sentence.** A benchmark suite
+   ships with the engine: fixed projects (N tracks by M devices; a silence-heavy
+   project; an MPE+ storm) at 32, 64, 128, 2048 and 4096, reporting callback time
+   p50/p99/max and dropouts. Numbers against Live on the same machine are recorded
+   in the agent log per release, and the README may make the claim only with that
+   table beside it.
+4. **Threading.** ADR-0056's levelled schedule allows a pool; at 32 samples a
+   pool's wake-up cost (tens of microseconds) is a large fraction of the budget,
+   so the scheduler must run single-threaded below a measured block size. The
+   pool is built with that switch from the start.
+5. **Suspension is the stability lever** for huge projects (ADR-0043), and its
+   cost per sleeping node must be near zero at 4096 as well.
+
+**Consequence for ADR-0053.** At 64 samples a remote plugin pipelined one block
+behind is 1.3 ms, not 85. Its "unplayable for live tracking" sentence was about
+the block size, and this entry is what retires it — see ADR-0107.
+
+**Not decided:** the block-size switch heuristic; whether JUCE's device layer or
+a direct ASIO/CoreAudio path is used at 32 samples. Measure first.
+
+---
+
+## ADR-0103 — Scale-aware editing covers every scale, Arabic and microtonal ones included; notation stays out — `DECIDED (direction)` (2026-09-22)
+
+**Director's call.** Standard notation (Dorico style) is explicitly discarded.
+Scale-aware editing must include all standard scales plus full Arabic and
+microtonal scale support, which pairs with the per-note expression curves.
+
+**The correction that sets the work.** `key_map.scale_mask` is 12 bits (FEATURES
+§1). It can name any subset of the twelve 12-TET pitch classes and nothing else.
+A maqam — Rast, Bayati, Saba — has quarter-tone steps (E half-flat) that are not
+members of 12-TET at all; a 12-bit mask cannot say them, and neither can
+Ableton's Scale feature, which is why Live 12 has a separate Tuning Systems
+chapter (15). What the format does have is `tuning_cents` in the v1 note record
+and per-note pitch expression (SPEC §6.3.2). So a note can already *sound*
+microtonal; the editor cannot yet *know* a scale that is.
+
+### Decisions
+
+1. **A scale is defined over a tuning system, not over twelve keys.** A tuning
+   system is a Scala pair (`.scl`/`.kbm`) or an equal division (12, 24, 53, ...).
+   The format gains a `tuning_systems` table; `key_map` gains a tuning reference
+   and a membership that is a list of degrees of that tuning. `scale_mask` stays
+   as the 12-TET fast path. This is FEATURES §12's sixth format gap, P2 with
+   scale-aware editing.
+2. **The piano roll draws the tuning's degrees:** 24 rows per octave in 24-TET,
+   unequal rows for a Scala scale; Fold hides non-members; note names follow the
+   tuning (E half-flat, not "E minus 50 cents").
+3. **Playback.** A note in a microtonal scale carries its offset as
+   `tuning_cents`, delivered as per-note pitch where the plugin route is CLAP
+   note expression or MPE (ADR-0097, ADR-0099 already carry it). Plugins with no
+   per-note pitch get MIDI Tuning Standard or a per-channel bend; the router
+   chooses per plugin, as ADR-0097 does.
+4. **Ships with:** every 12-TET mode Live 12 offers, the standard maqamat as
+   Scala files, 24-TET and 53-TET, and `.scl` import. Surge XT's microtuning
+   chapter (07) and Ableton's chapter 15 are the references.
+5. **Notation:** nothing beyond what FEATURES §11 already keeps — enough
+   engraving data not to destroy it, P3, and no editor.
+
+**Not decided:** whether the degree list is a BLOB with an ADR-0008 header or a
+child table; how the agent's projection names a microtonal note.
+
+---
+
+## ADR-0104 — The browser, the sample library and the floating palette are app-scoped — `DECIDED (direction)` (2026-09-22)
+
+**Director's call.** The sample library and the floating palette (Cmd+I / Ctrl+I)
+are global: search and audition with no project open; dragging into a timeline
+needs an active project.
+
+### Decisions
+
+1. **The library index is an app-scoped store**, not in any `.adi`: paths, tags,
+   BPM, key and the embeddings from the P1 tagging workflow, in a SQLite database
+   in the app data directory. Same category as the keymap
+   (UI-ARCHITECTURE §11): a property of the installation. Content-addressed by
+   BLAKE3 like the project pool, so a sample already in a project is recognised.
+2. **Audition needs an audio device and no project graph.** The engine keeps a
+   preview path — a source node into the device — that exists with zero projects
+   open. ADR-0068's "exactly one active project owns the device" becomes "the app
+   owns the device; the active project's graph and the preview path feed it".
+3. **The palette** is a floating, keyboard-first window. Prefix syntax: `V/name`
+   for plugins, local and remote alike (ADR-0083); `S/name` for samples; `P/name`
+   for presets; free text for tasks. Arrow keys navigate, Space auditions, Enter
+   loads onto the selected track or a new one, drag does anything else. A task
+   goes to the agent at its tier (AI-AGENT §2): "export master 0 to 64 bars"
+   fills the export queue (ADR-0071) and the user presses render.
+4. **With no project open**, actions that need one are disabled with the reason
+   shown, never hidden.
+
+**Not decided:** the store's schema; whether library tags sync between machines.
+
+---
+
+## ADR-0105 — The ADI Suite: ADI Live and ADI DJ, after the DAW, on the same engine — `DECIDED (direction)` (2026-09-22)
+
+**Director's call.** Two companion applications, strictly after the DAW is
+complete: **ADI Live**, a lightweight live-performance-only app, and **ADI DJ**,
+a DJ preparation and performance app in the mould of Rekordbox.
+
+### Decisions
+
+1. **Sequencing.** DAW complete (arrangement verified under ADR-0108, Session
+   window built under ADR-0101), then ADI Live, then ADI DJ. Linux desktop work
+   (ADR-0109) follows the suite.
+2. **One engine, three products.** `adi_core` — format, ops, graph, devices, the
+   CLAP and VST3 hosts — is the shared library and each app is a shell over it.
+   Nothing product-specific enters the core: the rule ADR-0086 applies to AI
+   applies here.
+3. **ADI Live** strips the arrangement engine and plays a *prepared* project: a
+   DAW project frozen or pre-rendered (ADR-0059's machinery) into a lightweight
+   playback form — stems, clips, a Session-style launch matrix, live inputs and a
+   minimal device set. Stability over features: no editing, no plugin GUIs by
+   default, ADR-0086's crash boundaries. The "lightweight format" is a `.adi`
+   profile, not a new format: a flag plus a validator that refuses what the app
+   cannot play.
+4. **ADI DJ.** Decks, cue and loop and grid editing, key and BPM analysis (the
+   P1 tagging workflow's analysers), CLAP and VST3 hosting for effects and
+   instruments, and **no AudioGridder or network path** in this app, for
+   stability. A "Mini DAW mode": per-track automation drawn on a deck's waveform
+   beside the regular grid and quantise edits — the DAW's automation lanes and
+   ops, not new ones. Library, cues, grids and playlists are SQLite and ours;
+   nothing is ever written into the audio files. Extensive MIDI mapping for
+   Pioneer and AlphaTheta controllers through app-scoped controller maps.
+5. **Export to hardware USBs** (CDJ-3000 and newer; Omnis Duo, XDJ-RX3 and the
+   like). The device database and analysis files are proprietary formats known
+   only by reverse engineering. Prior art to read: Deep Symmetry's crate-digger
+   (the PDB and ANLZ formats, documented) and Mixxx (GPL-2.0-or-later, reads
+   them). Newer devices use a changed library format whose coverage must be
+   checked before the feature is promised. The export strips what the hardware
+   cannot read (plugins, automation) and keeps cues, loops, grid and waveform
+   data. Behaviour is cloned and names are ours (OPEN_SOURCE_POLICY §5):
+   "Rekordbox clone" is a working title.
+
+**Not decided:** whether ADI Live is a binary or a mode of the DAW; the DJ
+analysis engine; the licence position of the export references (verify
+crate-digger's licence before a line is copied).
+
+---
+
+## ADR-0106 — System audio in, and an ADI virtual audio device out — `DECIDED (direction)` (2026-09-22) — **EXTENDS ADR-0074**
+
+**Director's call.** No third-party virtual cables (BlackHole, VoiceMeeter,
+VB-Cable). Two things: **system audio as a native input** on any track — WASAPI
+loopback on Windows, the CoreAudio equivalent on macOS — so YouTube, Spotify or
+the desktop can be sampled straight into the timeline; and **a virtual audio
+driver in the installer** that exposes the master bus, or any output bus, as a
+standard input device to the OS, for Zoom, Discord, OBS and Parsec, without ASIO
+conflicts or routing matrices.
+
+**Two corrections.**
+
+- *"Proprietary"* cannot be right under OPEN_SOURCE_POLICY: the driver is ours
+  and open source. The best macOS reference, BlackHole, is GPL-3.0, which the
+  policy pre-authorises us to fork.
+- *"Zero-latency"* is not a property a virtual device can have. It adds at least
+  one device buffer on each side — typically 5 to 20 ms end to end through the
+  consuming app. The honest claim is: no extra tools, no ASIO conflicts, one
+  buffer of latency, stated on screen.
+
+### Decisions
+
+1. **Loopback input is an input device in the engine's device layer**, not a
+   plugin. Windows: WASAPI `AUDCLNT_STREAMFLAGS_LOOPBACK` on the render endpoint,
+   plus per-process loopback (Windows 10 2004 and later) so one application can
+   be captured alone. macOS: Core Audio process taps (macOS 14.2 and later,
+   `AudioHardwareCreateProcessTap`), with ScreenCaptureKit audio capture (13 and
+   later) as the fallback. It appears as "System Audio" and "App: name" in a
+   track's input menu. JUCE's device layer exposes neither; this is our code
+   beside it, which ADR-0036 made normal.
+2. **The sample-rate mismatch is the trap.** The loopback stream runs at the
+   render endpoint's rate, not the ASIO device's. A resampler with a declared
+   latency sits between, and the input is compensated like any other latency
+   (ADR-0058).
+3. **The output is an OS driver and a separate deliverable.** macOS: an
+   AudioServerPlugIn in user space, a BlackHole fork. Windows: a kernel-mode
+   virtual endpoint fed from user space — Synchronous Audio Router (GPL-3.0) is
+   the reference; Scream is MS-PL, GPL-incompatible, read only — which must be
+   attestation-signed through Microsoft for Windows 10 and 11 x64. A Partner
+   Center account and an EV certificate are a project cost, not a code detail.
+   Linux needs nothing: PipeWire and JACK already do this (phase 3, ADR-0109).
+4. **In the graph it is ADR-0074's sink node.** The master or any bus feeds a
+   sink that writes to the virtual device's shared ring; neither the driver's
+   IPC nor anything else touches the audio thread except a lock-free ring with a
+   declared latency.
+5. **Licensing.** The Windows driver, its own program, is GPLv3 under the
+   escalation rule if it copies SAR; the AudioServerPlugIn fork stays GPL-3.0.
+
+**Not decided:** whether the Windows driver ships in the first release (the
+signing cost) or the first release ships loopback in plus the macOS device.
+
+---
+
+## ADR-0107 — PTP awareness: a shared timebase for remote processing, with the latency reasoning corrected — `DECIDED (direction)` (2026-09-22) — **REFINES ADR-0053, ADR-0083**
+
+**Director's call.** The AudioGridder fork and the combined AI/plugin browser
+become PTP-aware (IEEE 1588 PTPv2; 802.1AS gPTP on macOS). With a
+hardware-synchronised PTP network — ConnectX-4-class NICs and DAC cables, or a
+direct Thunderbolt link between two Macs — the remote engine locks to the local
+interface's sample clock, the safety buffer disappears, and remote latency drops
+from 85 ms to the wire plus the plugin's maths.
+
+**The premise, corrected before it is built on.** The 85 ms was never a
+clock-drift buffer. ADR-0053 decision 3: the remote node is *pipelined one block
+behind*, and 85 ms is one 4096-frame block at 48 kHz. There is no server-side
+clock to drift against: the AudioGridder server processes the blocks the client
+sends it, on demand, and has no audio device of its own. PTP therefore cannot
+remove that latency, because clock uncertainty is not what causes it. What
+removes it is a **small block** (ADR-0102): at 64 frames the pipeline is 1.3 ms,
+and with a direct 25 or 100 GbE link (round trip in the tens of microseconds)
+plus the plugin's processing inside the 1.33 ms deadline, "1 to 3 ms" is reached
+with no clock synchronisation at all. "ConnectX-4 and DAC cables give true
+real-time audio over the network" is right for a different reason: that link's
+round trip and jitter are what matter, and they are excellent on that hardware.
+
+**Where a shared clock genuinely matters, which is the part worth building:**
+
+- any *streaming* mode in which the remote end has its own audio device or
+  free-running clock — a second machine playing alongside, ADI Live across two
+  machines (ADR-0105), a broadcast or sink peer (ADR-0074). Without a shared
+  timebase the two sample clocks drift and something has to resample;
+- measurement: PTP-stamped packets give the exact one-way latency and jitter of
+  each link, which turns ADR-0053 decision 4's dropped-deadline counter from a
+  symptom into a diagnosis;
+- several servers behind one browser (ADR-0083) aligned to one clock;
+- and one contradiction in the brief, resolved: 802.1AS *is* AVB's timing
+  profile. Using gPTP on macOS is not "skipping AVB", it is taking AVB's clock
+  without AVB's streams and switches — which is exactly right, and is what the
+  Thunderbolt Bridge case gives for free.
+
+### Decisions
+
+1. **The engine gets a `Clock` abstraction:** the audio device's sample clock,
+   and optionally a PTP-disciplined system clock the OS provides. Linux:
+   linuxptp with a hardware PHC and hardware timestamps, the strongest of the
+   three. macOS: gPTP over Thunderbolt Bridge or Ethernet. Windows: the W32Time
+   PTP client, software timestamps by default; hardware timestamping depends on
+   NIC and OS version and is to be verified, not assumed. The engine *reads* the
+   clock; it never implements PTP.
+2. **The AudioGridder fork stamps every block** with PTP time at send and at
+   receive when a PTP clock is present; the stamps feed a per-link latency and
+   jitter estimate and the dropped-deadline diagnostics. Standard mode is
+   unchanged when no PTP clock exists.
+3. **The remote-plugin latency target is met by ADR-0102 over a fast link.**
+   ADR-0053's "unplayable for live tracking" sentence is retired by that entry,
+   not by this one.
+4. **Streaming peers** — a remote with its own clock — are a future mode that
+   *requires* the shared timebase. This entry reserves it and builds none of it.
+5. **Measured before promised.** The first deliverable is a probe reporting
+   one-way latency and jitter over a given link, with and without PTP. The master
+   reference may quote numbers only from it.
+
+**Not decided:** whether a PTP client ships with the DAW on Windows or the OS's
+is required; the security posture of a PTP domain on an untrusted LAN, where a
+rogue grandmaster moves everyone's clock.
+
+---
+
+## ADR-0108 — Behavioural parity over visual mimicry, and the side-by-side verification gate — `DECIDED` (2026-09-22)
+
+**Director's call, two rules.** *Behavioural parity:* implementing the look of
+Ableton's MIDI editor or Cubase's arrangement tools is not enough; the functional
+behaviour — editing ergonomics, modifier-key behaviours (Alt and Cmd drags,
+selection snapping), transformation logic — must match the reference DAW 1:1
+before enhancements are layered on top. *Step verification gate:* the developer
+tests and approves each implementation directly against live instances of
+Ableton Live, Cubase and Bitwig. Any deviation from the expected workflow is
+logged as a defect unless approved by Adi or explicitly rejected by an ADR.
+
+### Decisions
+
+1. **Every feature that copies a reference names its chapter** (the master
+   reference's Appendix A, the FEATURES row) and carries a **parity checklist**:
+   the gestures, modifiers and outcomes in that chapter. The checklist is written
+   from the manual before the feature, and it is the acceptance test, run against
+   the live reference application.
+2. **Deviation triage is three-valued:** defect (the default); director-approved
+   (Adi said so, dated, in the checklist); ADR-rejected (a decision names it —
+   ADR-0072 for sends, ADR-0047 for the Inspector). Anything else stays a defect.
+3. **Enhancements layer on top of parity, never instead of it.** A feature that
+   improves on the reference before matching it fails the gate.
+4. **A roadmap step is done when its checklists pass and Adi has signed the
+   side-by-side session.** The agent logs record the session date and every
+   deviation found.
+5. **Scripted input against our build is welcome; the side-by-side is a human
+   session.** That is the point of it.
+
+**Consequences.** FEATURES.md gains a Verification section; the README's roadmap
+says "verified" rather than "done" from step 7 onward.
+
+---
+
+## ADR-0109 — Design commitment 8: portability first, platforms later; Linux phasing; three agents and their governance — `DECIDED` (2026-09-22)
+
+**Director's call, three parts.**
+
+### 1. Commitment 8: write for portability first, target platforms later
+
+All shared logic — the SQLite persistence layer, graph execution, the op log and
+undo, the Pure Data bridge, CLAP hosting — is strictly standard, portable modern
+C++. Platform sequencing:
+
+| Phase | Target | Scope |
+|---|---|---|
+| 1 and 2 (active) | Windows (ASIO, Lynx E44, WASAPI loopback) and macOS (CoreAudio, Metal) | desktop UI, low-latency drivers, release packaging, the full suite (ADR-0105) |
+| 3 (after the suite ships) | Linux desktop | ALSA and PipeWire backends, LV2 hosting (FEATURES P2), Wayland/X11 reparenting for Tier 2 GUIs, packaging |
+| now | Linux headless | portable engine compilation, unit tests, ABI verification, sanitizers |
+
+Already partly true — ADR-0036 builds the engine without JUCE and CI runs seven
+ABIs — and now a commitment with a phase behind it, so that a Linux-only library
+or a platform `#ifdef` in shared code is a defect rather than a convenience.
+
+### 2. Three agents
+
+| Agent | Runs on | Owns | Never |
+|---|---|---|---|
+| **win** (Claude Code, Windows) | Windows 11, MSVC | lead technical coordinator: architecture, ADR sequencing, engine integration, Windows implementation | — |
+| **mac** (Claude Code, macOS) | macOS, clang/arm64 | `docs/UI-ARCHITECTURE.md`, macOS platform and CoreAudio, CI workflows | — |
+| **linux** (ChatGPT Codex, Ubuntu) | Ubuntu terminal | portable standard C++, headless CI and test enforcement, sanitizers, POSIX portability | OS-specific GUI or driver code; a Linux-only library; UI-ARCHITECTURE |
+
+The protocol is `collab/README.md`; the third log is `collab/linux.md`; the
+onboarding prompt is `collab/linux/ONBOARDING.md`.
+
+### 3. Governance
+
+The director (Adi) is the authority. A direct instruction to any agent overrides
+the roadmap, any ADR and any assignment, immediately. The log stays true by
+recording the override afterwards as a superseding entry — as ADR-0072 did —
+never by editing history. Absent a direct instruction, **win coordinates**:
+schema changes, ADR number allocation and cross-agent claims synchronise through
+win. "Neither agent is senior" in `collab/README.md` is superseded for that
+purpose only; disagreement still goes in a PR, not a revert.
+
+**Not decided:** whether phase 3 includes the DJ app on Linux or the DAW alone.
+
+---
+
+## ADR-0110 — Plugin parameter edits are ops; the chunk stays for everything a parameter is not — `DECIDED` (2026-09-22) — **AMENDS ADR-0038**
+
+**Director's call, marked required for MVP.** A tweak made inside a plugin's
+own window — Serum's cutoff — must be one global Ctrl-Z. Mechanism: intercept the
+plugin's parameter-change broadcasts and write them as typed parameter ops; undo
+sends the inverse value back through the host API; the content-addressed chunk
+(ADR-0038) stays for instantiation, freezing, offline processing and
+cross-project paste.
+
+**The mechanism is right, and needs four corrections to be complete rather than
+mostly working.**
+
+1. **Not every change is a parameter.** Preset loads, sample and wavetable loads,
+   internal modulation assignments — anything the plugin keeps outside its
+   parameter list — change the chunk with no parameter broadcast. Undoing those
+   still needs ADR-0038's capture: a state-snapshot op at a capture boundary, and
+   the plugin tells us where those are: VST3 `restartComponent
+   (kParamValuesChanged)` and CLAP `params.rescan` are exactly that signal. So it
+   is two layers, not a replacement: parameter ops at fine grain, chunk snapshots
+   for the rest, and a rescan signal triggers a snapshot.
+2. **One gesture, one op.** A slider drag broadcasts hundreds of values. VST3
+   brackets them with `beginEdit`/`endEdit`, CLAP with
+   `param_gesture_begin`/`end`. The op is written at gesture end with the
+   pre-gesture value as its inverse; intermediate values are never ops (OPS.md's
+   coalescing rule).
+3. **Echo suppression.** Undo sets the parameter through the host API; the
+   plugin then broadcasts the change; without a re-entrancy guard the undo writes
+   a new op. The guard is per parameter and lives on the message thread.
+4. **Threads.** VST3 broadcasts arrive on the plugin's UI thread; CLAP's arrive
+   on the audio thread as output events. Both go through a lock-free queue to the
+   message thread, where the op is made (ADR-0010: nothing on the audio thread
+   touches the store). A macro or modulator moving a parameter (ADR-0060,
+   ADR-0046) is modulation, not an edit, and writes no op.
+
+### Decisions
+
+1. The two layers above. ADR-0038's "not yet undoable" becomes "undoable at
+   parameter grain; snapshot-undoable at chunk grain".
+2. `plugin_state` keeps its hash deduplication; a snapshot op references a
+   hash, so a preset toggled back and forth costs two rows in total.
+3. The fixture VST3 (ADR-0100) gains a parameter broadcast and the CLAP probe a
+   gesture test. Each planted defect — a missing guard, an op per value, the
+   wrong thread — must fail before the feature is called done.
+4. Priority: MVP, as directed. It sits in roadmap step 6 beside hosting.
+
+**Not decided:** whether a Propose-tier agent may write parameter ops directly.
+They are ops, so ADR-0003 says yes; AI-AGENT §6's rate cap applies.
+
+---
+
+## ADR-0111 — A historical undo state opens in a silent tab — `DECIDED (direction)` (2026-09-22) — **EXTENDS ADR-0068, ADR-0030**
+
+**Director's call.** A context action on any node of the undo tree: open that
+project state in a new, inactive background tab. Recovering a deleted
+configuration — dense routing, a heavy group — then never forces the live graph
+to re-instantiate plugins during undo and redo; recovery is the cross-project
+paste transaction, so only what is explicitly copied re-enters the timeline.
+
+**One constraint the design has to respect.** A `.adi` has one writer
+(`session_lock`, SPEC §3.6). Two tabs on the same file at two undo heads would be
+two writers. So the historical tab is a **materialised copy**: a temporary `.adi`
+built by replaying to that node — ADR-0031's replay oracle is what guarantees it
+is the same state — opened read-only and inactive. It is never the same file.
+
+### Decisions
+
+1. **Replay to the node into a temporary file; open it inactive** (ADR-0068:
+   silent, no audio device) **and read-only.** No plugin is instantiated in it:
+   their state is blobs, and paste carries blobs by hash (ADR-0068 decision 4).
+   This answers ADR-0068's open question for this case: a historical tab is torn
+   down, never kept warm.
+2. **Paste from it into the active project is the ordinary transaction:** one
+   `txn_id`, one Ctrl-Z.
+3. **The tab says which node it is** — branch, op index, timestamp — and cannot
+   be edited or saved; "Save as" exports it as a new project.
+4. **Cost, named.** Replay time on a long history; and where compaction (SPEC
+   §8.3) has folded early history, the earliest openable node is the compaction
+   boundary, which the UI says plainly.
+
+**Not decided:** whether the undo-tree view is the right surface for the action;
+that view does not exist yet.
+
+---
+
+## ADR-0112 — Views: named filters, AI view groups, far/close scaling, the three states settled, and collapsible mixer and device strips — `DECIDED (direction)` (2026-09-22) — **EXTENDS ADR-0047**
+
+**Director's call**, approving the view wishes in the master reference's Appendix
+B and two notes on its §3.7.
+
+### Decisions
+
+1. **The three view states stay three, and the open question is settled.** The
+   normal Ableton-style working view *is* Group focus: with nothing focused it
+   shows every track at working height. So Global is Macro (all tracks fitted),
+   Group focus is Main, Detailed zoom is Micro. There is no fourth state.
+2. **Named view filters** (Bitwig's project filter, chapters 02 and 03). A view is
+   a saved predicate over tracks — explicit membership, group, kind, colour, name
+   pattern — stored in `ui_view` and applied to timeline and mixer through the
+   one `TrackOrderModel`; plus a manual filter tab and an un-filter toggle. A view
+   never changes routing or order.
+3. **AI view groups.** "Put all percussion in a view group" is a `view.*` op
+   family the agent emits at its tier; Propose shows the membership before it
+   applies. The agent classifies by name, colour, devices and content (projection
+   Levels 0 and 1), and the classification is checkable.
+4. **Far and close UI scaling:** a global scale factor over the OS DPI, as a user
+   control with two remembered presets. The arrangement's OpenGL question
+   (UI-ARCHITECTURE §8) is measured at step 7 with far and close in the test.
+5. **`MixerPanel` and `DeviceChainStrip` are collapsible**, like `BrowserPanel`
+   and `DetailEditor`; collapse state lives in `ui_view` beside the widths
+   (ADR-0080), and collapsing never reconstructs (ADR-0063 decision 1). For mac to
+   fold into `docs/UI-ARCHITECTURE.md`.
+
+---
+
+## ADR-0113 — Up to 64 buses per node, and no cables on screen — `DECIDED (direction)` (2026-09-22) — **AMENDS ADR-0056**
+
+**Director's call.** "Not 2 but up to 64 buses, like REAPER." And a concern worth
+answering in the same entry: does REAPER-style routing fit Ableton's
+auto-everything philosophy?
+
+### Decisions
+
+1. **N buses per node, N at most 64**, replacing ADR-0056's "two, not N". Main
+   and Sidechain keep their names as buses 0 and 1; the rest are numbered and
+   nameable. Consumers: multi-output instruments (a drum rack with one output per
+   pad), the multiband splitter (ADR-0062), direct routing to several
+   destinations (FEATURES §2, P2), the DJ app's decks. The planner (ADR-0077)
+   gains per-bus edges; the levelled schedule is unchanged, because a bus is an
+   edge and not a level.
+2. **The user interface is Ableton's, entirely.** Routing is set from the track
+   header's input and output menus; grouping auto-routes (ADR-0044); sidechains
+   for native nodes need no wiring (ADR-0062); a multi-output instrument offers
+   its outputs as choices in a child track's input menu — exactly Live's Drum
+   Rack behaviour. There is no cable diagram and no routing matrix as an editing
+   surface. REAPER's matrix and wiring figures in the master reference illustrate
+   the engine's graph, not a screen to build.
+3. **A read-only routing overview** — who feeds whom — is allowed as a diagnostic
+   for the user and the agent. It edits nothing.
+4. **Test:** a 64-output node summed into 64 tracks, order independence held
+   (ADR-0056 §3), compensation across every bus (ADR-0058 decision 5's sidechain
+   test, generalised).
+
+**Not decided:** whether the event stream rides every bus or bus 0 only.
+ADR-0091 says events travel beside the audio they belong to; for a 64-output
+instrument that is bus 0.
+
+---
+
+## ADR-0114 — Macros: curves per target, several mappings on one target, per-macro enable; and cross-track modulation — `DECIDED (direction)` (2026-09-22) — **AMENDS ADR-0060, EXTENDS ADR-0046**
+
+**Director's call:** the multimapper wish and the cross-track wish, approved.
+
+### Decisions
+
+1. **A mapping's `curve` is a multi-breakpoint curve**, a BLOB with an ADR-0008
+   header holding up to N (x, y) points with linear or smooth interpolation, not
+   a shape enum. Ableton's min/max is the two-point case.
+2. **Several mappings may target one parameter**, from the same macro or from
+   different ones; their results combine by a rule declared per target — sum then
+   clamp, or last writer — so "dial 1 moves the filter up, dial 2 moves it down
+   along a curve, dials 3 to 8 flat" is expressible without a patch.
+3. **Each mapping and each macro has an enable.** A disabled mapping contributes
+   nothing and stays in the file.
+4. **A mapping may target a parameter on another track**, and so may any
+   modulator (ADR-0046). The modulation routing table, when it arrives with the
+   device contract, keys targets by (track, device, parameter) with no same-track
+   restriction. Compensation: a modulator's output is a control signal delayed by
+   the same arrival rule as audio, so a follower keyed from a lookahead-limited
+   kick lands with the kick (ADR-0058 decision 5, generalised).
+5. **All of it persists and is undoable; none of the produced values is**
+   (ADR-0046 decision 2).
+
+---
+
+## ADR-0115 — Editing behaviours adopted: Cubase event volume curves, Shift-drag inside a clip, and markers that hold notes and prompts — `DECIDED (direction)` (2026-09-22)
+
+**Director's call**, three notes on the master reference.
+
+1. **Event volume curves (Cubase 14).** Every audio clip carries a volume curve
+   drawn on the event itself — breakpoints on the waveform — beside the clip gain
+   handle and the fades. In automation mode the curve is edited in Cubase 14's
+   style; out of automation mode Cubase's classic event volume and gain handles
+   are the gold standard. Format: a clip-scoped automation lane on gain
+   (FEATURES §7 clip envelopes, `automation_data.clip_id`) rendered on the clip;
+   no new table. The curve is pre-fader and pre-effects — part of the clip's
+   playback — and stretches with the clip.
+2. **Shift-drag slides the audio inside the clip** (Ableton: hold Shift and drag
+   the waveform) without moving the clip's edges. It is the op on the clip's
+   source offset, constrained by the loop-window rule (SPEC §6.2), and a parity
+   item under ADR-0108 for the comping and clip chapters.
+3. **Markers hold a note body and, optionally, a prompt for the agent** —
+   "tighten the drums here". `markers` gains nullable `note` and `prompt` text
+   columns, in Layer 1 while nothing has shipped. The agent reads them as Level 0
+   projection items; a prompt runs only on the user's action at that marker, at
+   the agent's tier, never automatically on playback: a note on a timeline is
+   data, not an instruction (AI-AGENT §7.2).
+
+---
+
+## ADR-0116 — A Pure Data device may have a second, floating view — `DECIDED (direction)` (2026-09-22) — **EXTENDS ADR-0076**
+
+**Director's call.** Adi's analyser — Max for Live today — ported to Pd wants a
+big-window mode: full-screen capable and movable like a VST3 or CLAP window,
+while its main interface stays docked in the device panel. The panel itself does
+not undock.
+
+### Decisions
+
+1. **Tier 1 stays inline.** A Pd device may declare a second view: a canvas the
+   DAW renders in a floating window under ADR-0063's reparenting rules, with hide
+   as the stop-drawing signal exactly as for Tier 2. One device, two views of one
+   state; opening the big view never removes the panel.
+2. **The big view is drawn by the DAW from data the patch publishes** — arrays
+   and tables for spectrum, meters, correlation — not by Pd's own GUI, because
+   libpd is headless and Pd's canvas is never embedded. The device contract gains
+   *published arrays* beside parameters; this is the contract item ADR-0076 left
+   open for large Pd panels.
+3. **Reads happen at meter rate, off the audio thread:** ADR-0050's meter tap
+   generalised to arrays, a lock-free double buffer per published array.
+4. **The analyser is the first such device and its acceptance test:** spectrum
+   with peak hold, peak, RMS and dynamic readouts, stereo field and correlation,
+   in the panel and in the big window at once.
+

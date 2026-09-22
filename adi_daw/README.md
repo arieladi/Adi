@@ -60,7 +60,7 @@ than frightening.
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
 | [`docs/UI-ARCHITECTURE.md`](docs/UI-ARCHITECTURE.md) | The Ableton-shaped shell, the component tree, and how the graph carries a hybrid track. |
 | [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 101 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 117 entries. |
 | [`docs/EXTERNAL-CODE.md`](docs/EXTERNAL-CODE.md) | The nine external repos we read or link against, and the licence boundary between them. Read before copying a line out of `reference/`. |
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
 | [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 160-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |
@@ -108,11 +108,12 @@ These are the load-bearing ones. Full reasoning in
 2. **Every mutation is a typed, attributed op.** This is what makes undo
    persistent and branching, scripting free, and the AI agent structurally
    incapable of doing anything a user couldn't undo with one keystroke. (ADR-0003)
-3. **Linear only: there is no Session View.** The clip-launching matrix was
-   core schema until ADR-0037 cut it. The *layout* still follows Ableton —
-   channels right, device chain along the bottom — while the arrangement and
-   the editing depth behind it follow Cubase. Layout and clip matrix were never
-   the same claim. (ADR-0037, superseding ADR-0006)
+3. **Arrangement first.** The timeline is the default screen and the first
+   thing built; the *layout* follows Ableton — channels right, device chain
+   along the bottom — while the arrangement and the editing depth behind it
+   follow Cubase. Session View, cut by ADR-0037, returns as a secondary F3
+   window with a Cubase-style MixConsole view beside it, built **last**, after
+   the arrangement is verified. (ADR-0101, superseding ADR-0037 in part)
 4. **Per-note expression is first-class.** Continuum, Osmose, Seaboard and MPE
    performances are stored as real curves, decoupled from the 16-channel
    transport that carried them. Neither Ableton's nor Cubase's model is a
@@ -126,6 +127,11 @@ These are the load-bearing ones. Full reasoning in
 7. **Interop is a converter, not a shared file.** Steinberg and Ableton are not
    going to open our format. `.dawproject`, MIDI, AAF and stems are import/export
    paths. Claiming otherwise would be naive. (RATIONALE §4)
+8. **Write for portability first, target platforms later.** Everything shared —
+   the store, the graph, the op log and undo, the Pd bridge, the CLAP host — is
+   standard, portable C++. Windows and macOS are the shipping targets through
+   the whole ADI Suite; Linux is headless-only now (build, test, ABI, sanitizers)
+   and a desktop target only after the suite ships. (ADR-0109)
 
 ---
 
@@ -140,11 +146,19 @@ Each step gates the next. No step starts before the previous one is written down
 | **3** | The op vocabulary: every op type, payload, inverse | **done** — 160 ops, `docs/OPS.md` |
 | **4** | Reference reader/writer library + round-trip test corpus | **done** — store, ops, undo, digest, check |
 | **5** | Audio engine skeleton: snapshot handoff, model, transport | **done** — headless, no JUCE (ADR-0036) |
-| **6** | JUCE: audio device, the graph, VST3 hosting (ADR-0041), large-block engine (ADR-0042) | **next** |
+| **6** | JUCE: audio device, the graph, VST3 hosting (ADR-0041), CLAP hosting (ADR-0075), the engine at 32 to 4096 samples (ADR-0042, ADR-0102), plugin parameter ops (ADR-0110) | **next** |
 | **7** | Minimal arrangement UI — the first thing you can make a track in | |
 | **8** | The agent, at Observe tier only | |
 | **9** | Propose and Apply tiers, and the RPC boundary (ADR-0039) | |
 | **10** | Visual patching devices — Pure Data via `libpd` (ADR-0035, ADR-0040) | direction decided, contract not designed |
+| **11** | The arrangement DAW complete and **verified side by side** against Live, Cubase and Bitwig (ADR-0108) | |
+| **12** | The Session View and MixConsole window (F3), last (ADR-0101) | |
+| **13** | **ADI Live**, then **ADI DJ** — the suite on the same engine (ADR-0105) | |
+| **14** | Linux desktop: ALSA/PipeWire, LV2, Wayland/X11, packaging (ADR-0109 phase 3) | |
+
+From step 7 on, a step is finished when its parity checklists pass against the
+live reference DAWs and Adi has signed the session — "verified", not "done"
+(ADR-0108).
 
 ---
 

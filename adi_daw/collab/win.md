@@ -5,6 +5,66 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-22 — The director's V0.2 directives: sixteen ADRs, a third agent
+
+Adi reviewed the master reference (`reference/DOCS/WORD/5_...v0.1`, git-ignored)
+and returned a page of directives and corrections. Written up as
+**ADR-0101 to ADR-0116**, numbers reserved in the table here, the reference
+rebuilt as v0.2. Nothing in `src/` changed; `FEATURES.md`, `README.md` and
+`collab/` did. **117 ADRs.** Not pushed yet — Adi decides when.
+
+What each directive became, and where the brief was corrected before it was
+built on (the corrections are in the entries, not only here):
+
+- **ADR-0101, Session View returns**, as a secondary F3 window with a Cubase
+  MixConsole view beside it, built last. Supersedes ADR-0037 in part and uses
+  0037's own escape clause. The schema returns *now* (nothing has shipped) in a
+  schema PR that is not written yet — SPEC §6.5 and `schema.sql` still say
+  "no Session View" until it lands. **mac:** the window is your component
+  tree reparented, never a second mixer.
+- **ADR-0102, small blocks.** 32/64/128 are first-class beside 2048/4096;
+  "outperform Ableton" is a benchmark target with a suite, not a sentence.
+  Retires ADR-0053's "unplayable for live tracking".
+- **ADR-0103, microtonal scales.** The 12-bit `scale_mask` cannot name a
+  quarter tone; a `tuning_systems` table is gap 6 in FEATURES §12.
+- **ADR-0104, app-scoped browser and palette.** The engine needs a preview
+  path that exists with no project open.
+- **ADR-0105, the ADI Suite**: ADI Live, then ADI DJ, on `adi_core`. The
+  Pioneer USB export is reverse-engineered formats; coverage of the newer
+  devices is unverified and said so.
+- **ADR-0106, loopback in and a virtual device out.** "Proprietary" and
+  "zero-latency" both corrected. macOS is a BlackHole fork (GPL-3.0, allowed);
+  Windows is a signed kernel driver, and the signing is a project cost.
+- **ADR-0107, PTP.** The brief's premise was wrong and the entry says why: the
+  85 ms is one 4096 block of pipeline, not clock-drift buffering, and the
+  AudioGridder server has no clock of its own. Small blocks give the 1 to 3 ms;
+  PTP earns its place as a shared timebase for streaming peers and as a
+  measurement tool. Probe first, numbers after.
+- **ADR-0108, parity and the side-by-side gate.** FEATURES §13 is new; the
+  README roadmap says "verified".
+- **ADR-0109, commitment 8 and three agents.** Portability first; Linux
+  headless now, desktop after the suite. **`linux` (ChatGPT Codex) joins**:
+  roster, governance and its log added here, onboarding prompt in
+  `collab/linux/ONBOARDING.md`. `win` coordinates schema, numbers and claims;
+  Adi overrides everyone.
+- **ADR-0110, plugin parameter ops.** Amends ADR-0038 rather than overriding
+  it: one gesture one op, echo guard, off-thread queue, and chunk snapshots for
+  what is not a parameter (preset loads do not broadcast).
+- **ADR-0111, historical undo state in a silent tab** — a materialised copy by
+  replay, because one file has one writer.
+- **ADR-0112 to ADR-0116, the wishes approved**: views and the settled three
+  states (Main *is* Group focus), 64 buses with no cable UI, macro curves and
+  cross-track targets, event volume curves and Shift-drag and marker prompts,
+  a Pd device's second view for the analyser.
+
+**For mac:** ADR-0112 d5 (collapsible `MixerPanel` and `DeviceChainStrip`) and
+ADR-0101 d3 land in your `UI-ARCHITECTURE.md`; I did not touch it.
+
+**Validators:** `validate_schema.py` clean, including check 8 against the
+reserved table.
+
+---
+
 ## 2026-09-21 — CLAP dialects, and every MPE dimension measured
 
 **2273 checks across 24 suites**, 101 ADRs. Two ADRs since the last entry:
