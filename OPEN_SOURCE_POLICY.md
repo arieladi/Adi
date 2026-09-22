@@ -56,6 +56,7 @@ notices are kept and the source is named in the commit message:
 | ISC, Zlib, Boost, Unlicense | ✅ same legal effect as MIT/BSD | none beyond keeping the notice |
 | Apache-2.0 | ✅ same effect as MIT, **GPLv3-compatible only** | fine in GPLv3 or MIT projects; never into a GPLv2-only one |
 | MPL-2.0 | ✅ file-level copyleft, GPLv3-compatible | copied files stay MPL; the project need not escalate |
+| MS-PL (Microsoft Public License) | ✅ **only under `adi_daw/drivers/`** — ruled by Adi on 2026-09-22 (ADR-0121) for the Windows virtual audio device, derived from Microsoft's `sysvad` sample | **GPL-incompatible**: never into `src/`, never into anything a GPLv3 binary links. A driver is its own program: derived files stay MS-PL with the licence text beside them, our own files there are MIT, and the DAW's GPLv3 is untouched |
 | **GPL-2.0-only** | ❌ | incompatible with GPLv3 (§2) |
 | **AGPL-3.0** | ❌ **banned** | §4 |
 | No licence at all | ❌ | "all rights reserved" by default; read it, copy nothing |

@@ -24,10 +24,9 @@ declined and costs the reviewers' time.
       *release* half — the SignPath connector step, triggered by a tag — is
       added when the certificate exists. Only that workflow will sign; **local
       builds are never signed.**
-- [ ] The **licence is OSI-approved**: our files are MIT (`drivers/LICENSE`);
+- [x] The **licence is OSI-approved**: our files are MIT (`drivers/LICENSE`);
       the driver is derived from Microsoft's `sysvad`, which is **MS-PL**, also
-      OSI-approved. Whether the shipped driver may be MS-PL-derived is the
-      director's ruling under `OPEN_SOURCE_POLICY.md` (ADR-0120); the form
+      OSI-approved and ruled acceptable under `drivers/` (ADR-0121). The form
       names both licences honestly.
 - [ ] The repository is **public and visibly maintained**: recent commits, an
       issue tracker, documentation (this directory's README, ADR-0106 to

@@ -19,8 +19,11 @@ lock-free ring buffer, a header of plain C structs that both may copy.
   does not pre-authorise copying it. So **nothing from the sample is committed
   here**: `build.ps1` fetches it at a pinned commit into an ignored `.build/`
   directory and rewrites only the INF strings. The built package carries the
-  MS-PL text and a provenance file. Whether a shipped driver may be
-  MS-PL-derived is the director's ruling (ADR-0120, open).
+  MS-PL text and a provenance file. **Adi ruled on 2026-09-22 that MS-PL is
+  fine under `drivers/`** (ADR-0121, and a row in `OPEN_SOURCE_POLICY.md`
+  scoped to this directory): a shipped driver may derive from the sample;
+  when derived source is committed here it stays MS-PL with the licence text
+  beside it; our own files stay MIT; MS-PL never enters `src/`.
 - Earlier entries (ADR-0117 to ADR-0119) called sysvad "MIT". That was wrong
   and is corrected by ADR-0120; the entries stay as written, per ADR-0028.
 

@@ -35,6 +35,9 @@ the keyword-detector DLL the INF copies. The Release artefact's INF, decoded
 from UTF-16, carries our strings and `CatalogFile = adi-virtual-audio.cat`;
 the catalogue lists the .sys, the .dll and the .inf.
 
+**Then Adi ruled:** MS-PL is fine under `drivers/`. ADR-0121 and a policy row
+scoped to that directory; MS-PL never enters `src/`. **122 ADRs.**
+
 ---
 
 ## 2026-09-22 (night) — ADR-0119: driver names and home; SignPath prepared, not sent

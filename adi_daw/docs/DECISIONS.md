@@ -8028,3 +8028,27 @@ the policy gains an MS-PL row scoped to `drivers/`, and the driver's own
 unelevated shell; the workflow is proven by its first run in CI, whose result
 is recorded in the log by commit SHA.
 
+
+---
+
+## ADR-0121 — MS-PL is acceptable under `drivers/` — `DECIDED` (2026-09-22) — **CLOSES ADR-0120's OPEN ITEM**
+
+**Director's ruling.** MS-PL is fine for `drivers/`; add it to the policy.
+
+### Decisions
+
+1. `OPEN_SOURCE_POLICY.md` §3 gains an MS-PL row, **scoped to
+   `adi_daw/drivers/` only**. MS-PL is OSI-approved and GPL-incompatible; a
+   driver is its own program, so the DAW's GPLv3 is untouched, and MS-PL never
+   enters `src/` or anything a GPLv3 binary links.
+2. The Windows virtual audio device may derive from Microsoft's `sysvad`
+   sample. `build.ps1` may keep fetching it at a pinned commit, and derived
+   source may now also be committed under `drivers/` when the real driver is
+   written — MS-PL, with the licence text beside it. Our own files there stay
+   MIT (`drivers/LICENSE`).
+3. `VirtualDrivers/Virtual-Audio-Driver` remains read-only reference
+   (ADR-0118); this ruling is about Microsoft's sample, not about copying a
+   third project's mix of licences.
+
+**Not decided:** nothing. The driver itself is still unscheduled work behind
+the first release's needs.

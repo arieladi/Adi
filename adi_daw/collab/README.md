@@ -124,6 +124,7 @@ subject, say so in your log instead of writing it twice.
 | 0118 | win | `agent/win-dev` | the Windows virtual device: our own sysvad driver signed via SignPath Foundation; bundling VB-CABLE rejected | used |
 | 0119 | win | `agent/win-dev` | the driver's endpoint names and home (`drivers/`, MIT), and the SignPath preconditions; the director sends the form | used |
 | 0120 | win | `agent/win-dev` | the driver build workflow; sysvad is MS-PL not MIT, fetched never vendored; the licence ruling is the director's | used |
+| 0121 | win | `agent/win-dev` | MS-PL ruled acceptable under drivers/; policy row added | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
