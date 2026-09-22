@@ -26,8 +26,14 @@ libs — no Chocolatey. Release and Debug, x64. **121 ADRs.**
 instruction — `driver-build.yml` — and added it to the claims table. Your
 other workflows are untouched.
 
-**Not verified locally** (no WDK here, unelevated shell). The first CI run's
-SHA and result go below this line when it lands.
+**Not verified locally** (no WDK here, unelevated shell). **Verified in CI:**
+`driver-build` run 35772707235 on `468854e` is green for Release and Debug
+x64 after three fixes the runner taught me: the kit has no InfVerif.dll
+anywhere (its in-build errors are non-fatal), the sample's APOs need WIL
+from NuGet (so only what the driver INF ships is built), and Inf2Cat wants
+the keyword-detector DLL the INF copies. The Release artefact's INF, decoded
+from UTF-16, carries our strings and `CatalogFile = adi-virtual-audio.cat`;
+the catalogue lists the .sys, the .dll and the .inf.
 
 ---
 
