@@ -121,6 +121,7 @@ subject, say so in your log instead of writing it twice.
 | 0083-0084 | mac | `agent/mac-dev` | AudioGridder native integration and the CLAP fork; CLAP restart causes | used |
 | 0101-0116 | win | `agent/win-dev` | the director's V0.2 directives: Session View returns last (0101), small blocks (0102), microtonal scales (0103), app-scoped browser (0104), the ADI Suite (0105), loopback and virtual device (0106), PTP (0107), parity gate (0108), portability and three agents (0109), parameter ops (0110), historical tabs (0111), views (0112), 64 buses (0113), macro curves (0114), editing behaviours (0115), Pd second view (0116) | used |
 | 0117 | win | `agent/win-dev` | the director's answers: Session View docks Ableton-style, session clips mirror Live, tuning as child tables, the driver signing route | used |
+| 0118 | win | `agent/win-dev` | the Windows virtual device: our own sysvad driver signed via SignPath Foundation; bundling VB-CABLE rejected | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

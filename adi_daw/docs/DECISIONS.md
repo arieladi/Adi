@@ -7825,3 +7825,80 @@ own licence (MIT if built from `sysvad`, GPLv3 if from SAR), signed in CI.
 **Not decided:** nothing new. The open items of 0101, 0103 and 0106 are closed
 by this entry.
 
+
+---
+
+## ADR-0118 — The Windows virtual audio device is our own `sysvad`-based driver, signed through SignPath Foundation; bundling VB-CABLE is rejected — `DECIDED` (2026-09-22) — **CLOSES ADR-0117 §4's OPEN ITEM, REJECTS A PROPOSAL AGAINST ADR-0106**
+
+**Director's ruling, first sentence.** Microsoft's official MIT `sysvad` sample
+is the code base for the ADI virtual audio device; `VirtualDrivers/
+Virtual-Audio-Driver` stays a read-only reference, so the licence boundary is
+clean.
+
+**A proposal that arrived with it, examined.** Drop the custom driver and its
+signing entirely: bundle the WHQL-signed VB-CABLE redistributable in our
+installer with a silent install, then rename its endpoints to "ADI DAW Stream"
+by writing `PKEY_Device_FriendlyName` into the `MMDevices` registry keys and
+restarting the Windows Audio service, "legal and free of certificate fees".
+
+### Checked, and it does not hold
+
+1. **It is not free and not automatic.** VB-Audio's licensing page says
+   distribution, integration and bundle licences are *available on request*,
+   and that distribution deals above ten units need a quotation and an
+   agreement adapted to the project. Bundling VB-CABLE in the ADI installer is
+   a distribution deal. The zero-cost claim is the donationware price for an
+   end user, which we are not.
+2. **It contradicts the policy and the directive it claims to serve.**
+   OPEN_SOURCE_POLICY §5 keeps commercial binaries and installers out of every
+   repository, and ADR-0106's own first line is *"no third-party virtual cables
+   (BlackHole, VoiceMeeter, VB-Cable)"*. Shipping VB-CABLE inside our installer
+   is the thing the directive forbade, with a rename on top.
+3. **The rename is a hack on somebody else's product, and it breaks people.**
+   The friendly-name property in the `MMDevices` property store is the
+   mechanism Settings uses, but it is not a documented API, restarting
+   `audiosrv` cuts audio in every running application including ours, VB-CABLE
+   is one cable, and a user who already routes OBS or Voicemeeter through it
+   by name loses that the moment we rename it. An installer that alters an
+   existing third-party device is a support burden, not a feature.
+4. **It is technically worse than our own driver.** VB-CABLE is a device with
+   its own clock; the DAW would feed it as a second WASAPI output beside the
+   ASIO interface, and two clocks drift, so a resampler would sit in the
+   broadcast path. Our own endpoint takes the DAW's ring at the DAW's clock
+   (ADR-0106 decision 4) and needs none.
+
+### What the second check found instead, which settles ADR-0117 §4
+
+`VirtualDrivers/Virtual-Audio-Driver` has shipped **signed kernel-driver
+builds since release 25.7.14 (July 2025), signed for free through SignPath
+Foundation**, installing on stock Windows 10 and 11 without test-signing mode.
+That is an open-source project on the same `sysvad` base, through the same
+programme ADR-0117 named, past the exact step that entry left unproven. The
+route exists and works; ours is the same application.
+
+### Decisions
+
+1. **The driver is ours, from `sysvad` (MIT).** Endpoint names ("ADI Virtual
+   Audio Device", or "ADI DAW Stream" if the director prefers) are set in the
+   INF, which is how a driver names its endpoints; no registry rename is ever
+   needed or performed.
+2. **Signed through SignPath Foundation**, applied for as soon as the driver
+   repository exists, following Virtual-Audio-Driver's precedent; EV signing
+   is the fallback if the application is declined, and its cost is then
+   stated. ADR-0117 §4 decision (b) stands: the Windows device ships in the
+   first release only once it is signed.
+3. **Bundling VB-CABLE is rejected**, and so is renaming any third-party
+   endpoint. A virtual cable the user has installed themselves remains an
+   ordinary WASAPI output in the routing menu under its own name, as any device
+   is; nothing is added for it.
+4. **`Virtual-Audio-Driver` is read-only reference** — its installer, enable and
+   disable flow, and its SignPath pipeline are the things to read; its MS-PL
+   sample code is not copied (ADR-0117 §4).
+5. **OBS needs none of this**: it captures application audio directly on
+   Windows 10 2004 and later. The documentation says so, so users do not
+   install a device they do not need.
+
+**Not decided:** the endpoint's final name; whether the driver lives in
+`adi_daw/` or in its own repository (it is its own program, MIT, and the
+sibling-repository pattern of adi-surge fits).
+

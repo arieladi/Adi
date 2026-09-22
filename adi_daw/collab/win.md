@@ -5,6 +5,26 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-22 (evening) — ADR-0118: the Windows virtual device, decided against a VB-CABLE proposal
+
+Adi ruled `sysvad` (MIT) as the driver base with Virtual-Audio-Driver read-only,
+and forwarded a proposal to bundle VB-CABLE instead and rename its endpoints
+through the registry. **119 ADRs.** Two checks decided it:
+
+- **VB-Audio's licensing page** says bundle and distribution licences are
+  granted on request, with a quotation above ten units. Not free, not
+  automatic, and a commercial binary in our installer is what
+  OPEN_SOURCE_POLICY §5 and ADR-0106's own first line rule out. Rejected, with
+  the registry rename rejected beside it (undocumented, restarts `audiosrv`,
+  hijacks a cable the user may already be using).
+- **Virtual-Audio-Driver ships SignPath-Foundation-signed builds** since
+  25.7.14 (July 2025). That closes ADR-0117 §4's open question in our favour:
+  an OSS `sysvad` driver can be signed for free, and ours takes the same route.
+
+Reference doc v0.2 rebuilt with it. Nothing in `src/`.
+
+---
+
 ## 2026-09-22 (later) — ADR-0117: the director's answers to 0101, 0103, 0106
 
 Adi answered the open items in the same day. **118 ADRs.** Pushed to PR #41.
