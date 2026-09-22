@@ -57,7 +57,7 @@ flagged, and it is a bug in the format, not in the plan.
 | Direct Routing (multiple simultaneous outs) | Cubase | P2 | ✅ | falls out of `routing` being a table |
 | Up to 64 buses per node; no cable UI | REAPER (engine), Ableton (UI) | P2 | ✅ | replaces ADR-0056's two buses; routing stays Ableton's menus and auto-grouping (ADR-0113) |
 | System-audio (loopback) input on any track | neither | P1 | — | WASAPI loopback, Core Audio process taps; a resampler with declared latency (ADR-0106) |
-| ADI virtual audio device out (master or any bus as an OS input) | REAPER (ReaRoute) | P2 | — | an OS driver: BlackHole fork on macOS, a signed kernel driver on Windows (ADR-0106) |
+| ADI virtual audio device out (master or any bus as an OS input) | REAPER (ReaRoute) | P2 | — | an OS driver: BlackHole fork on macOS; on Windows a `sysvad`-based kernel driver signed through an open-source signing programme once that route is confirmed to cover attestation (ADR-0106, ADR-0117) |
 | Track freeze / bounce in place | both | P1 | ✅ | `tracks.frozen`, `freeze_media_id` |
 | Control Room (separate monitor path, cue mixes, talkback) | Cubase | P3 | 🔶 | `routing.kind='cue'` reserved; no monitor-section model |
 | Crossfader, DJ-style mixing | Ableton | P3 | 🔶 | needs a master-section table |
@@ -93,7 +93,7 @@ flagged, and it is a bug in the format, not in the plan.
 | **Per-note expression / MPE** | both, partially | **P1** | ✅ | `note_expression` — first-class, SPEC §6.3.2 |
 | **MPE+ (Haken), 14-bit Y and Z at 500 Hz** | neither | **P1** | ✅ | `ExpressionPoint.value` is f32, so bit depth was never the constraint. The binding constraint is ADR-0042's sub-block floor, which MUST NOT exceed `sample_rate/500` (ADR-0054). |
 | **MPE out to plugins, VST3 and CLAP** | both, partially | **P1** | — | CLAP (ADR-0099): the dialect the plugin declares -- CLAP note expression, MIDI-MPE or MIDI. VST3 (ADR-0097): per plugin, VST3 note expression, MPE over MIDI on member channels, or plain MIDI with poly aftertouch. The controller's channel never reaches a plugin. Pitch, pressure and timbre measured by ear per route (ADR-0098, ADR-0100); a fixture VST3 exercises the IMidiMapping parameter path in CI. Surge XT reads MpeMidi, Serum 2 reads note expression, and `Auto` can only be right for one of them -- so the route choice must be remembered, which it is not yet. |
-| Scale-aware / scale-locked editing, **every scale including Arabic and microtonal** | Ableton 12 + | P2 | 🔶 | reads `key_map`; a 12-bit `scale_mask` cannot name a quarter tone, so a `tuning_systems` table and a per-degree membership are needed first (ADR-0103, gap 6). Notation stays out. |
+| Scale-aware / scale-locked editing, **every scale including Arabic and microtonal** | Ableton 12 + | P2 | 🔶 | reads `key_map`; a 12-bit `scale_mask` cannot name a quarter tone, so `tuning_systems` + `tuning_degrees` + `key_map_degrees` child tables come first (ADR-0103, ADR-0117, gap 6). Notation stays out. |
 | Expression Maps (articulations) | Cubase | P3 | ❌ | needs its own schema; big win for orchestral |
 | Logical Editor / Project Logical Editor | Cubase | P3 | — | query+transform over the model; no schema |
 | Score editor / notation | Cubase | P3 | ❌ | engraving data is **not** derivable from MIDI |
@@ -116,8 +116,8 @@ Cubase-style MixConsole view with a toggle between the two.
 
 | Feature | From | P | Fmt | Notes |
 |---|---|---|---|---|
-| Session View window: clip matrix + Ableton mixer strips | Ableton | P3 (last) | ❌ | `scenes`, `clip_slots` return to Layer 1 in a schema PR now, while nothing has shipped; the 14 ops return with the UI (ADR-0101) |
-| MixConsole view in the same window | Cubase | P3 (last) | ✅ | same strips, reparented; one `TrackOrderModel` (ADR-0063) |
+| Session View, docked in the main window Ableton-style, detachable | Ableton | P3 (last) | ❌ | `scenes`, `clip_slots` return to Layer 1 in a schema PR now, mirroring Live's shape: a scene list, one slot per track per scene, launch settings on the clip (ADR-0101, ADR-0117); the 14 ops return with the UI |
+| MixConsole view toggled inside it | Cubase | P3 (last) | ✅ | same strips, reparented; one `TrackOrderModel` (ADR-0063) |
 | Live performance | — | **ADI Live app** | — | a separate product on the same engine, after the DAW (ADR-0105) |
 
 ADI is still an arrangement-first DAW: the timeline is the default screen and the

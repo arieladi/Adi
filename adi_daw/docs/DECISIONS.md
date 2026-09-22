@@ -7740,3 +7740,88 @@ not undock.
    with peak hold, peak, RMS and dynamic readouts, stereo field and correlation,
    in the panel and in the big window at once.
 
+
+---
+
+## ADR-0117 — The director's answers: Session View docks Ableton-style, session clips mirror Live's structure, tuning is a child table, and the Windows driver is signed through an open-source programme — `DECIDED` (2026-09-22) — **CLOSES OPEN ITEMS IN ADR-0101, ADR-0103, ADR-0106**
+
+Four answers to the "not decided" items the V0.2 entries left, and one
+verification of a claim that came with them.
+
+### 1. Session View placement (amends ADR-0101 decision 1)
+
+ADR-0101 made Session View a separate, hidden-by-default window. **Ruling:** it
+**docks inside the main window, Ableton-style** — it takes the centre in place
+of the arrangement, switched the way Live switches Session and Arrangement —
+and it **detaches freely** into its own window under ADR-0063's reparenting
+rule. The Cubase-style MixConsole toggle inside it stands. F3 remains the
+shortcut for showing it. Everything else in ADR-0101 is unchanged: built last,
+schema now, one `TrackOrderModel`, live performance is ADI Live.
+
+### 2. Session schema (closes ADR-0101's open item)
+
+**Session clips get their own table, mirroring Live's structure.** One
+correction to the wording: Live's set format is XML, not a database, so what is
+mirrored is the *shape*, which is: a scene list at project level; per track one
+slot per scene; a slot holds at most one clip; launch settings (launch mode,
+legato, launch quantisation, velocity sensitivity, follow actions) live on the
+clip, as Live keeps them. That is exactly the `scenes` and `clip_slots` shape
+ADR-0037 removed, so the schema PR restores those two tables rather than adding
+a slot column to `clips`. The CHECK is: a clip carries either a timeline
+position or a slot reference, never both, and `clips.track_id` stays `NOT NULL`.
+The launch settings are columns on `clips`, nullable, present only on slot
+clips.
+
+### 3. Tuning systems (closes ADR-0103's open item)
+
+**Relational child tables, for the agent's sake.** `tuning_systems` (id, name,
+source: equal division or Scala file, period in cents) with a child
+`tuning_degrees` (tuning_id, index, cents, name), and `key_map` membership as a
+child `key_map_degrees` (key_map_id, degree_index). No header BLOB: rows are
+what the projection (AI-AGENT §4) can read and name without a decoder, and a
+maqam's E half-flat is then a named degree the agent can say. `scale_mask`
+stays as the 12-TET fast path.
+
+### 4. The virtual audio device, and the signing claim (closes ADR-0106's open item)
+
+The brief that arrived with the answers says the whole of ADR-0106 can ship at
+zero cost: loopback needs no driver, and the Windows virtual endpoint can be
+signed for free through open-source signing programmes. Checked rather than
+adopted:
+
+- **Loopback input needs no driver, and never did.** ADR-0106 decision 1 stands
+  as written: WASAPI process loopback (Windows 10 2004 and later), Core Audio
+  process taps on macOS, a resampler with a declared latency, compensated.
+- **The free signing routes exist and are not yet proven for a driver.**
+  SignPath Foundation gives qualifying open-source projects free code signing
+  with an OV-level certificate; Microsoft's attestation signing for a kernel
+  driver requires an **EV** certificate registered on a Partner Center account,
+  which an OV certificate does not satisfy on its own. OSSign says it signs
+  drivers for open-source projects and is **not accepting applications at the
+  time of writing**. So the claim "zero cost" may turn out true, and "no
+  process" does not: the route has to be applied for and confirmed to cover the
+  Hardware Dev Center step before the driver is scheduled.
+- **The driver base.** Microsoft's `sysvad` sample in `Windows-driver-samples`
+  is MIT and is the natural base; Synchronous Audio Router (GPL-3.0) is the
+  ASIO-side reference (ADR-0106). `VirtualDrivers/Virtual-Audio-Driver` is MIT
+  for its own code but carries Microsoft sample code under **MS-PL**, which
+  `OPEN_SOURCE_POLICY.md` does not pre-authorise; it is read-only until Adi
+  rules on MS-PL, and nothing forces the question because `sysvad` itself is
+  MIT.
+
+**Decisions.** (a) ADR-0106 decision 3 stands, with "a Partner Center account
+and an EV certificate are a project cost" replaced by: *a signing route is
+secured through an open-source signing programme (SignPath Foundation, OSSign)
+before the driver is scheduled, and confirmed to cover Microsoft attestation;
+if none does, the EV route is the fallback and its cost is stated.* (b) The
+Windows driver ships in the first release **only if** that route is secured by
+then; the first release otherwise ships loopback input and the macOS device,
+and says so. (c) The user-facing shape as briefed: the master or any bus routes
+to "OS Output"; Zoom, Discord or OBS select "ADI Virtual Audio Device" as
+their input; the sink node (ADR-0074) writes a lock-free shared ring the driver
+reads, with a declared latency. (d) The driver is its own program under its
+own licence (MIT if built from `sysvad`, GPLv3 if from SAR), signed in CI.
+
+**Not decided:** nothing new. The open items of 0101, 0103 and 0106 are closed
+by this entry.
+

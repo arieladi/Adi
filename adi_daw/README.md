@@ -60,7 +60,7 @@ than frightening.
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
 | [`docs/UI-ARCHITECTURE.md`](docs/UI-ARCHITECTURE.md) | The Ableton-shaped shell, the component tree, and how the graph carries a hybrid track. |
 | [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 117 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 118 entries. |
 | [`docs/EXTERNAL-CODE.md`](docs/EXTERNAL-CODE.md) | The nine external repos we read or link against, and the licence boundary between them. Read before copying a line out of `reference/`. |
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
 | [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 160-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |
@@ -111,9 +111,10 @@ These are the load-bearing ones. Full reasoning in
 3. **Arrangement first.** The timeline is the default screen and the first
    thing built; the *layout* follows Ableton — channels right, device chain
    along the bottom — while the arrangement and the editing depth behind it
-   follow Cubase. Session View, cut by ADR-0037, returns as a secondary F3
-   window with a Cubase-style MixConsole view beside it, built **last**, after
-   the arrangement is verified. (ADR-0101, superseding ADR-0037 in part)
+   follow Cubase. Session View, cut by ADR-0037, returns docked in the main
+   window Ableton-style and freely detachable, with a Cubase-style MixConsole
+   toggle inside it, built **last**, after the arrangement is verified.
+   (ADR-0101 and ADR-0117, superseding ADR-0037 in part)
 4. **Per-note expression is first-class.** Continuum, Osmose, Seaboard and MPE
    performances are stored as real curves, decoupled from the 16-channel
    transport that carried them. Neither Ableton's nor Cubase's model is a

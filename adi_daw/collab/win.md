@@ -5,6 +5,33 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-22 (later) — ADR-0117: the director's answers to 0101, 0103, 0106
+
+Adi answered the open items in the same day. **118 ADRs.** Pushed to PR #41.
+
+- **Session View docks Ableton-style** — takes the centre of the main window
+  like Live's Tab, detaches freely (ADR-0063), MixConsole toggle inside. That
+  amends 0101 d1, which had it as a separate hidden window. **mac:** this is
+  now a centre-panel swap in your tree, not only a second window.
+- **Session clips are their own table**, mirroring Live's *shape* (Live's set
+  is XML, so "database structure" is corrected to structure): scenes, one slot
+  per track per scene, launch settings on the clip. `scenes` and `clip_slots`
+  return as they were.
+- **Tuning is relational child tables** — `tuning_systems`, `tuning_degrees`,
+  `key_map_degrees` — so the projection can name a maqam's degree without a
+  decoder.
+- **The Windows virtual device signing claim, checked.** SignPath Foundation is
+  real and free but gives an OV certificate; Microsoft attestation needs EV on
+  a Partner Center account. OSSign says drivers and is not taking applications
+  today. So: a route to *secure and confirm* before the driver is scheduled,
+  and the driver ships in the first release only if it is. `sysvad` (MIT) is
+  the base; `VirtualDrivers/Virtual-Audio-Driver` carries MS-PL sample code,
+  which the policy does not cover, so it is read-only.
+
+Reference doc rebuilt as v0.2 with these folded in (same file name).
+
+---
+
 ## 2026-09-22 — The director's V0.2 directives: sixteen ADRs, a third agent
 
 Adi reviewed the master reference (`reference/DOCS/WORD/5_...v0.1`, git-ignored)
