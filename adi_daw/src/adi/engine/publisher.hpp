@@ -169,6 +169,39 @@ public:
         const T* snap_ = nullptr;
     };
 
+    // --- audio thread, in two steps (ADR-0092) ---------------------------------
+    //
+    // `AudioRead` loads and announces in one constructor, and that is right for
+    // every reader that only ever touches the snapshot it is on. A reader that
+    // must read its PREVIOUS snapshot once more before moving on -- to carry
+    // state out of it -- needs the two steps apart, and the gap between them is
+    // exactly the window in which the previous snapshot is still protected.
+    //
+    // WHY IT IS SAFE. The previous snapshot has seq == inUse_, because it was
+    // the last one announced. `collect()` frees only what is STRICTLY older
+    // than inUse_ -- the same strictly-greater rule the top of this file spends
+    // a page on. So until `announce()` runs, the previous snapshot cannot be
+    // freed, however many times the message thread publishes and collects in
+    // between. The snapshot `peek()` returned is safe too: if something newer
+    // is published it is retired with a seq above inUse_, and so kept.
+    //
+    // THE RULE THAT MAKES IT SAFE IS THE CALLER'S: finish with the previous
+    // snapshot BEFORE `announce()`. Announcing first is a use-after-free, and
+    // nothing here can detect it -- which is why `AudioRead` remains the way to
+    // read for anyone who does not need this.
+
+    /// The current snapshot, WITHOUT announcing it. Acquire, pairing with
+    /// `publish`'s release, so its contents are visible and not just its address.
+    [[nodiscard]] const T* peek() const noexcept {
+        return current_.load(std::memory_order_acquire);
+    }
+
+    /// Announce that the audio thread is now on `s`, which permits everything
+    /// older to be freed. Release, pairing with `collect`'s acquire.
+    void announce(const T* s) noexcept {
+        if (s != nullptr) inUse_.store(s->seq, std::memory_order_release);
+    }
+
 private:
     std::atomic<T*> current_{nullptr};
     std::atomic<std::uint64_t> inUse_{0};

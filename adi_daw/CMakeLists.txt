@@ -114,6 +114,17 @@ add_library(adi_core STATIC
     # includes no JUCE, so its tests run on all seven ABIs instead of only in
     # the one JUCE job. See src/juce/device_core.hpp.
     src/juce/device_core.cpp
+    # Same rule, same payoff: the device CONTRACT has no JUCE in it, so the
+    # missing-plugin placeholder and the node wrapper are tested on every ABI
+    # rather than only where a plugin SDK exists. See src/juce/device_model.hpp.
+    src/juce/device_model.cpp
+    # CLAP hosting, and it needs NO JUCE -- clap is a header-only MIT C API
+    # with no dependencies, so the host side lives in adi_core and its tests
+    # run on all seven ABIs. VST3 hosting can only ever be exercised in the
+    # one job that has a plugin SDK. See src/juce/clap_host.hpp (ADR-0075).
+    src/juce/clap_host.cpp
+    src/juce/device_host.cpp
+    src/juce/pd_device.cpp
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
@@ -123,6 +134,14 @@ add_library(adi_core STATIC
     src/adi/engine/snapshot.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
+    src/adi/dsp/biquad.cpp
+    src/adi/dsp/limiter.cpp
+    src/adi/dsp/rmsc.cpp
+    src/adi/engine/latency.cpp
+    src/adi/engine/host.cpp
+    src/adi/engine/realize.cpp
+    src/adi/engine/mpe_input.cpp
+    src/adi/engine/mpe_output.cpp
     src/adi/textproj.cpp
     src/adi/store_rows.cpp
     src/adi/textproj_store.cpp
@@ -132,6 +151,15 @@ target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generate
 target_compile_definitions(adi_core PUBLIC
     ADI_VERSION_STRING="${PROJECT_VERSION}")
 target_include_directories(adi_core PUBLIC src)
+
+# Header-only, MIT, pinned by tag and commit (ADR-0024). SYSTEM so a C API's
+# headers do not have to survive this tree's warning wall.
+if(NOT EXISTS "${ADI_THIRD_PARTY}/clap/include/clap/clap.h")
+    message(FATAL_ERROR
+        "third_party/clap is absent. It is pinned and fetched by:\n"
+        "    bash adi_daw/tools/fetch_external.sh --build-only")
+endif()
+target_include_directories(adi_core SYSTEM PUBLIC "${ADI_THIRD_PARTY}/clap/include")
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
 target_link_libraries(adi_core PRIVATE adi_warnings)
 
@@ -194,9 +222,70 @@ add_executable(adi_device_tests tests/test_device.cpp)
 target_link_libraries(adi_device_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_tests COMMAND adi_device_tests)
 
+# The nine device ops. Its own binary because its findings are per-row: the
+# round-trip corpus cannot see them, since undoing device.insert cascades
+# plugin_params away before the comparison. See the file header.
+# The device CONTRACT -- no JUCE, no VST3, so it runs on all seven ABIs. That
+# it needs no plugin SDK to compile is part of what it asserts.
+# ADR-0054's input parser. No JUCE, so it runs on all seven ABIs -- and the
+# mandate's failure mode is that nothing fails, so the checks are about
+# resolution surviving rather than values being roughly right.
+# The CLAP host. No JUCE and no plugin SDK, so it runs on all seven ABIs --
+# which is the headline difference from VST3 hosting (ADR-0075).
+# A real .clap, loaded with no JUCE and no plugin SDK -- dlopen and one
+# exported symbol. Not a test: it needs a plugin installed, and CI has none.
+add_executable(adi_clap_probe src/juce/clap_probe.cpp)
+target_link_libraries(adi_clap_probe PRIVATE adi_core adi_warnings)
+
+add_executable(adi_dsp_tests tests/test_dsp.cpp)
+target_link_libraries(adi_dsp_tests PRIVATE adi_core adi_warnings)
+# The Pd patches are read from the source tree, not copied next to the binary.
+target_compile_definitions(adi_dsp_tests PRIVATE ADI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME adi_dsp_tests COMMAND adi_dsp_tests)
+
+add_executable(adi_pd_tests tests/test_pd.cpp)
+target_link_libraries(adi_pd_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pd_tests COMMAND adi_pd_tests)
+
+add_executable(adi_device_host_tests tests/test_device_host.cpp)
+target_link_libraries(adi_device_host_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_device_host_tests COMMAND adi_device_host_tests)
+
+add_executable(adi_clap_tests tests/test_clap.cpp)
+target_link_libraries(adi_clap_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_clap_tests COMMAND adi_clap_tests)
+
+add_executable(adi_mpe_tests tests/test_mpe.cpp)
+target_link_libraries(adi_mpe_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_mpe_tests COMMAND adi_mpe_tests)
+
+add_executable(adi_mpe_output_tests tests/test_mpe_output.cpp)
+target_link_libraries(adi_mpe_output_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_mpe_output_tests COMMAND adi_mpe_output_tests)
+
+add_executable(adi_device_model_tests tests/test_device_model.cpp)
+target_link_libraries(adi_device_model_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_device_model_tests COMMAND adi_device_model_tests)
+
+add_executable(adi_device_ops_tests tests/test_device_ops.cpp)
+target_link_libraries(adi_device_ops_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_device_ops_tests COMMAND adi_device_ops_tests)
+
 add_executable(adi_plan_tests tests/test_plan.cpp)
 target_link_libraries(adi_plan_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_plan_tests COMMAND adi_plan_tests)
+
+add_executable(adi_host_tests tests/test_host.cpp)
+target_link_libraries(adi_host_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_host_tests COMMAND adi_host_tests)
+
+add_executable(adi_retap_tests tests/test_retap.cpp)
+target_link_libraries(adi_retap_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_retap_tests COMMAND adi_retap_tests)
+
+add_executable(adi_realize_tests tests/test_realize.cpp)
+target_link_libraries(adi_realize_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
 
 add_executable(adi_graph_tests tests/test_graph.cpp)
 target_link_libraries(adi_graph_tests PRIVATE adi_core adi_warnings)
@@ -374,6 +463,83 @@ if(ADI_WITH_JUCE)
         JUCE_PLUGINHOST_LV2=0
         JUCE_PLUGINHOST_LADSPA=0
         JUCE_PLUGINHOST_ARA=0)
+
+    # --- adi_vst3_probe ----------------------------------------------------
+    # VST3 hosting, in the one job that has a plugin SDK. It asserts what can
+    # be asserted with NO PLUGIN INSTALLED -- that the format manager carries
+    # VST3 and nothing else (ADR-0041), that a description that resolves to
+    # nothing yields a MissingDevice rather than a null (ADR-0011) -- and
+    # scans and instantiates only when a plugin is actually there.
+    juce_add_console_app(adi_vst3_probe PRODUCT_NAME "adi_vst3_probe")
+    target_sources(adi_vst3_probe PRIVATE
+        src/juce/vst3_probe.cpp
+        src/juce/vst3_host.cpp
+        src/juce/vst3_events.cpp)
+    target_compile_features(adi_vst3_probe PRIVATE cxx_std_20)
+    target_compile_definitions(adi_vst3_probe PRIVATE
+        JUCE_STANDALONE_APPLICATION=1
+        # The probe pumps the message loop to observe a plugin reporting a
+        # latency change, which JUCE delivers on that thread. Console app,
+        # no UI, so a modal loop is the whole program rather than a hazard.
+        JUCE_MODAL_LOOPS_PERMITTED=1
+        JUCE_USE_CURL=0
+        JUCE_WEB_BROWSER=0
+        JUCE_DISPLAY_SPLASH_SCREEN=0
+        JUCE_PLUGINHOST_VST3=1
+        JUCE_PLUGINHOST_VST=0
+        JUCE_PLUGINHOST_AU=0
+        JUCE_PLUGINHOST_LV2=0
+        JUCE_PLUGINHOST_LADSPA=0
+        JUCE_PLUGINHOST_ARA=0)
+    target_link_libraries(adi_vst3_probe PRIVATE
+        adi_core
+        juce::juce_audio_processors
+        juce::juce_audio_utils
+        adi_warnings)
+    get_target_property(_adi_proc_incs juce::juce_audio_processors
+                        INTERFACE_INCLUDE_DIRECTORIES)
+    if(_adi_proc_incs)
+        target_include_directories(adi_vst3_probe SYSTEM PRIVATE ${_adi_proc_incs})
+    endif()
+
+    # --- adi_test_vst3: a VST3 whose edit controller IS reachable (ADR-0100) --
+    # Every MPE synth on the development machine hides its controller, so the
+    # host's capability probe and MpeMidi's IMidiMapping parameter path had
+    # never run. This fixture is one class that is both component and
+    # controller. Built only against Steinberg's MIT VST3 SDK -- the copy JUCE
+    # carries -- and only on Windows for now: a macOS bundle needs an
+    # Info.plist and bundle entry points nobody here can test.
+    if(WIN32)
+        set(_adi_vst3sdk
+            "${ADI_THIRD_PARTY}/JUCE/modules/juce_audio_processors_headless/format_types/VST3_SDK")
+        # The SDK's own interface-id definitions, compiled WITHOUT our warning
+        # wall: they are Steinberg's, and a warning in them is not ours to fix.
+        add_library(adi_test_vst3_sdk OBJECT
+            "${_adi_vst3sdk}/pluginterfaces/base/coreiids.cpp"
+            "${_adi_vst3sdk}/pluginterfaces/base/funknown.cpp"
+            "${_adi_vst3sdk}/public.sdk/source/vst/vstinitiids.cpp")
+        target_include_directories(adi_test_vst3_sdk SYSTEM PRIVATE "${_adi_vst3sdk}")
+        target_compile_features(adi_test_vst3_sdk PRIVATE cxx_std_20)
+
+        add_library(adi_test_vst3 MODULE
+            tests/fixtures/vst3_expression_synth.cpp
+            $<TARGET_OBJECTS:adi_test_vst3_sdk>)
+        target_include_directories(adi_test_vst3 SYSTEM PRIVATE "${_adi_vst3sdk}")
+        target_compile_features(adi_test_vst3 PRIVATE cxx_std_20)
+        target_link_libraries(adi_test_vst3 PRIVATE adi_warnings ole32)   # ole32: FUID's CoCreateGuid
+        # The DLL is built apart from its bundle: a file and a directory cannot
+        # both be called "ADI Expression Test.vst3" in one folder.
+        set_target_properties(adi_test_vst3 PROPERTIES
+            PREFIX "" SUFFIX ".vst3" OUTPUT_NAME "ADI Expression Test"
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixture_dll")
+        set(_adi_fixture "${CMAKE_CURRENT_BINARY_DIR}/fixtures/ADI Expression Test.vst3")
+        add_custom_command(TARGET adi_test_vst3 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_adi_fixture}/Contents/x86_64-win"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:adi_test_vst3>" "${_adi_fixture}/Contents/x86_64-win/")
+        add_dependencies(adi_vst3_probe adi_test_vst3)
+        target_compile_definitions(adi_vst3_probe PRIVATE ADI_TEST_VST3="${_adi_fixture}")
+    endif()
 
     # adi_core carries device_core.cpp and, through its PUBLIC include dir, the
     # engine seam. Linking it rather than recompiling the source means the probe

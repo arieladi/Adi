@@ -323,6 +323,12 @@ void testMediaEmbedding() {
 }  // namespace
 
 int main() {
+    // Unbuffered, so the last line before a crash survives. On Windows a
+    // crashing test binary loses its whole block-buffered stdout, and the
+    // harness then prints a blank line where a failure should be -- which is
+    // how adi_device_tests' 383 KB overrun looked like a harness glitch for
+    // two runs before anyone ran the binary directly.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_check_tests -- ADR-0029/0033, what SQLite cannot enforce\n\n");
     try {
         testCleanProject();

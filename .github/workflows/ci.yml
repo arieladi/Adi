@@ -96,11 +96,25 @@ jobs:
 
       # Invoked exactly as collab/README.md documents, from the repository root,
       # so that CI is testing the command a human is told to run.
-      - name: validate_schema.py
-        run: python adi_daw/tools/validate_schema.py
-
-      - name: validate_ops.py
-        run: python adi_daw/tools/validate_ops.py
+      # DISCOVERED, not listed. Two named steps is two places to forget, and
+      # the -Werror gate already taught this lesson once by silently skipping
+      # every file added after its list was written. A new tools/validate_*.py
+      # is covered here the moment it exists.
+      - name: every validator
+        run: |
+          set -euo pipefail
+          found=0
+          for v in adi_daw/tools/validate_*.py; do
+            [ -f "$v" ] || continue
+            echo "--- $v"
+            python "$v"
+            found=$((found + 1))
+          done
+          if [ "$found" -lt 2 ]; then
+            echo "::error::found only $found validator(s) -- the glob is wrong"
+            exit 1
+          fi
+          echo "ran $found validators"
 
   # ---------------------------------------------------------------------------
   # The real build: configure, compile, run adi_tests, then check the sizes this
@@ -495,6 +509,7 @@ jobs:
   # catch a reintroduction on the first second of the run. The timed campaign
   # after it is the part that looks for something new.
   # ---------------------------------------------------------------------------
+
   fuzz:
     name: 'fuzz StreamReader (clang · ASan + UBSan)'
     runs-on: ubuntu-latest
@@ -637,6 +652,8 @@ jobs:
                 -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON
           cmake --build adi_daw/build-juce --config Debug \
                 --target adi_audio_probe --parallel
+          cmake --build adi_daw/build-juce --config Debug \
+                --target adi_vst3_probe --parallel
 
       - name: Locate the probe
         run: |
@@ -682,3 +699,23 @@ jobs:
       # ran far enough to ask the system for one.
       - name: Open a device at 256, 2048 and 8192
         run: "$ADI_PROBE"
+
+      # VST3 hosting (ADR-0057). Most of what this asserts needs NO PLUGIN
+      # INSTALLED, which is the point: a CI runner has none, and a check that
+      # needs one is a check that does not run. It proves the format manager
+      # carries VST3 and nothing else at RUN time, and that a plugin which
+      # cannot be instantiated becomes a bypassed placeholder carrying its
+      # identity rather than a null (ADR-0011). If the runner does happen to
+      # have a VST3, it scans and round-trips its state as well.
+      - name: ADR-0057 — VST3 hosting behind the device contract
+        run: |
+          set -euo pipefail
+          found=""
+          while IFS= read -r cand; do
+            case "$cand" in *adi_vst3_probe|*adi_vst3_probe.exe) found="$cand"; break ;; esac
+          done < <(find adi_daw/build-juce -type f -name 'adi_vst3_probe*' 2>/dev/null)
+          if [ -z "$found" ]; then
+            echo "::error::adi_vst3_probe was built but cannot be found"
+            exit 1
+          fi
+          "$found"

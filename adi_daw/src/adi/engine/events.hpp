@@ -34,6 +34,19 @@ enum class EventType : std::uint8_t {
     ParamMod = 4,
 };
 
+/// Does this event belong to a NOTE STREAM, and so travel along the chain until
+/// something consumes it (ADR-0091)?
+///
+/// The other two kinds are ADDRESSED: a `ParamValue` or `ParamMod` names a
+/// parameter of the node it was pushed to. Forwarding one would have the next
+/// node apply node A's parameter 3 as its own parameter 3 -- `GainNode` does
+/// exactly that with any matching id -- so they are delivered where they were
+/// pushed and nowhere else.
+[[nodiscard]] constexpr bool isNoteStream(EventType t) noexcept {
+    return t == EventType::NoteOn || t == EventType::NoteOff ||
+           t == EventType::NoteExpression;
+}
+
 struct Event {
     /// Offset from the start of the BLOCK, not of the segment. Segment-relative
     /// offsets would have to be rewritten every time the scheduler split

@@ -119,6 +119,57 @@ void testGroupsAutoRoute() {
     check(g && p.nodes[*g].kind == PlannedKind::Group, "the group is planned as one");
 }
 
+void testAuxSendsAreRefusedAndSurfaced() {
+    section("ADR-0072 -- an aux send is refused, and SAID so rather than dropped");
+
+    rows::Model m;
+    m.tracks = {track(1, "master", "Master"),
+                track(2, "audio", "Reverb Bus"),
+                track(3, "audio", "Snare")};
+    // The snare's main output, plus a send into the reverb bus. The main edge
+    // must survive; only the send is refused.
+    m.routing = {route(10, 3, 1, "main", "user"),
+                 route(11, 3, 2, "send", "user")};
+
+    const GraphPlan p = planGraph(m);
+
+    // The NEGATIVE half, and it is the half that matters. Before ADR-0072 a
+    // send fell through to a Bus::Main edge -- a parallel path making the
+    // top-level graph an arbitrary DAG, which is what the ruling abolishes. A
+    // refactor that re-adds the fall-through has to fail here.
+    check(!hasEdge(p, 3, 2), "no edge is planned for the send");
+    check(hasEdge(p, 3, 1), "and the track's own main output is untouched");
+
+    // Refused is not the same as dropped. Quietly rewiring a signal path is
+    // the failure ADR-0011 exists to prevent, and a routing row is not exempt.
+    bool named = false;
+    for (const auto& q : p.problems)
+        if (q.find("routing#11") != std::string::npos &&
+            q.find("ADR-0072") != std::string::npos) named = true;
+    check(named, "the refusal names the row and the ADR:" + problems(p));
+
+    bool suggests = false;
+    for (const auto& q : p.problems)
+        if (q.find("rack") != std::string::npos || q.find("group") != std::string::npos)
+            suggests = true;
+    check(suggests, "and says what to use instead");
+
+    // A sidechain is NOT a send and must keep working: ADR-0043 requires a
+    // live sidechain to prevent suspension, and ADR-0056 added Bus::Sidechain
+    // to express it. An over-broad refusal would take it out with the sends.
+    rows::Model m2;
+    m2.tracks = {track(1, "master", "Master"),
+                 track(2, "audio", "Bass"),
+                 track(3, "audio", "Kick")};
+    m2.routing = {route(20, 3, 2, "sidechain", "user")};
+    const GraphPlan p2 = planGraph(m2);
+    check(hasEdge(p2, 3, 2, Bus::Sidechain), "a sidechain edge is still planned");
+    bool sidechainRefused = false;
+    for (const auto& q : p2.problems)
+        if (q.find("routing#20") != std::string::npos) sidechainRefused = true;
+    check(!sidechainRefused, "and is not caught by the send refusal:" + problems(p2));
+}
+
 void testUserRoutingWins() {
     section("ADR-0065 -- a user row overrides the default and is not doubled");
 
@@ -174,9 +225,16 @@ void testSidechainAndSends() {
     const GraphPlan p = planGraph(m);
     check(hasEdge(p, 2, 3, Bus::Sidechain),
           "a sidechain row becomes a sidechain edge (ADR-0056)");
-    check(hasEdge(p, 3, 4, Bus::Main), "a send sums into its destination");
 
-    // Neither is a main output, so both tracks still take the default.
+    // CHANGED BY ADR-0072. This asserted "a send sums into its destination",
+    // which was correct under ADR-0067 and is the behaviour the ruling
+    // abolishes: a send makes the top-level graph an arbitrary DAG, and the
+    // compensation can be got wrong on every path through it.
+    check(!hasEdge(p, 3, 4, Bus::Main), "a send no longer sums into its destination");
+
+    // Neither is a main output, so both tracks still take the default. This
+    // half is unchanged and is the reason the refusal has to be narrow: it
+    // must take out the send and nothing else.
     check(hasEdge(p, 2, 1), "the kick still reaches the master");
     check(hasEdge(p, 3, 1), "and so does the bass");
 }
@@ -332,6 +390,7 @@ int main() {
         testDefaultRouting();
         testGroupsAutoRoute();
         testUserRoutingWins();
+        testAuxSendsAreRefusedAndSurfaced();
         testAutoRowIsTheDefaultMaterialised();
         testSidechainAndSends();
         testVcaIsNotAudio();

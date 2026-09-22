@@ -24,6 +24,7 @@
 
 #include "adi/engine/process.hpp"
 #include "juce/device_core.hpp"
+#include "juce/device_host.hpp"
 
 #include <juce_audio_devices/juce_audio_devices.h>
 
@@ -91,6 +92,51 @@ private:
     std::int32_t requested_ = 0;
     OpenResult last_;
     juce::String lastError_;
+};
+
+/// The timer that ticks `DeviceHost`, and the only JUCE-shaped part of it.
+///
+/// ADR-0082 left "what calls poll()" open and `DeviceHost` answered the
+/// ownership half. This is the other half, and it is deliberately three
+/// lines: everything worth testing lives in `DeviceHost::tick`, which takes a
+/// plain millisecond clock and runs on every ABI. A `juce::Timer` here would
+/// otherwise have dragged the whole latency path into the one CI job that has
+/// JUCE.
+///
+/// THE RATE IS MEASURED, not chosen. FabFilter Pro-Q 3's reports arrive with
+/// a largest gap of 26 ms and a burst spanning 75 ms, against a 50 ms quiet
+/// period. A tick slower than the quiet period would let a burst close
+/// between ticks and be seen as several; 20 ms gives at least two ticks
+/// inside the shortest useful window without being a busy loop.
+///
+/// Message thread, because that is where `juce::Timer` fires and where
+/// reconfiguring the graph is allowed (ADR-0066: never on the thread a plugin
+/// reported from).
+class DeviceHostTimer final : private juce::Timer {
+public:
+    explicit DeviceHostTimer(DeviceHost& host) : host_(&host) {}
+    ~DeviceHostTimer() override { stopTimer(); }
+
+    void start(int intervalMs = 20) { startTimer(intervalMs > 0 ? intervalMs : 20); }
+    void stop() { stopTimer(); }
+
+    /// Ticks observed, and retaps caused. Exposed so a test or a probe can
+    /// assert the timer is actually running rather than trust that it is.
+    [[nodiscard]] std::int64_t ticks() const noexcept { return ticks_; }
+    [[nodiscard]] std::int64_t retaps() const noexcept { return retaps_; }
+
+private:
+    void timerCallback() override {
+        ++ticks_;
+        // juce::Time's counter is monotonic and in milliseconds, which is all
+        // the coalescer wants -- it only ever subtracts two of them.
+        if (host_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter())))
+            ++retaps_;
+    }
+
+    DeviceHost* host_ = nullptr;
+    std::int64_t ticks_ = 0;
+    std::int64_t retaps_ = 0;
 };
 
 }  // namespace adi::device

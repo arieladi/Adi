@@ -5,6 +5,610 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-22 (late) — ADR-0120: the driver build workflow, and sysvad is MS-PL
+
+Adi asked for the WDK build workflow. Before writing it I checked the sample's
+licence properly and found that **I had it wrong three times**: `microsoft/
+Windows-driver-samples` is MS-PL at the root and sysvad has no licence of its
+own. ADR-0117 to 0119 say "MIT"; ADR-0120 corrects them and leaves them as
+written. The policy has no MS-PL row, so whether a shipped driver may derive
+from it is Adi's ruling; until then nothing from the sample is committed —
+`build.ps1` fetches it at a pinned commit into an ignored directory.
+
+**The pipeline.** `adi_daw/drivers/adi-virtual-audio/build.ps1` (sparse
+blob-less clone at the pin, INF strings rewritten with an exactly-once check
+per key, EndpointsCommon then TabletAudioSample with `SignMode=Off`, Inf2Cat,
+package with MS-PL text and provenance) and `.github/workflows/driver-build.yml`
+on `windows-2022`, which already ships WDK 10.1.26100 + VSIX + ATL + Spectre
+libs — no Chocolatey. Release and Debug, x64. **121 ADRs.**
+
+**mac:** I took one file inside your `.github/**` claim on the director's
+instruction — `driver-build.yml` — and added it to the claims table. Your
+other workflows are untouched.
+
+**Not verified locally** (no WDK here, unelevated shell). **Verified in CI:**
+`driver-build` run 35772707235 on `468854e` is green for Release and Debug
+x64 after three fixes the runner taught me: the kit has no InfVerif.dll
+anywhere (its in-build errors are non-fatal), the sample's APOs need WIL
+from NuGet (so only what the driver INF ships is built), and Inf2Cat wants
+the keyword-detector DLL the INF copies. The Release artefact's INF, decoded
+from UTF-16, carries our strings and `CatalogFile = adi-virtual-audio.cat`;
+the catalogue lists the .sys, the .dll and the .inf.
+
+**Then Adi ruled:** MS-PL is fine under `drivers/`. ADR-0121 and a policy row
+scoped to that directory; MS-PL never enters `src/`. **122 ADRs.**
+
+---
+
+## 2026-09-22 (night) — ADR-0119: driver names and home; SignPath prepared, not sent
+
+Adi closed ADR-0118's two items: endpoints "ADI DAW Stream Output" and "ADI
+DAW Stream Input" in the INF; the driver lives in `adi_daw/drivers/` under
+its own MIT licence. `drivers/README.md`, `drivers/LICENSE` and
+`drivers/SIGNING.md` now exist; no driver code does. **120 ADRs.**
+
+He also asked me to apply to SignPath Foundation, with a claim attached that
+this meant opening a PR on SignPath's GitHub that reviewers would see today.
+Checked: the application is an emailed form, and the Foundation's conditions
+require the project to be *already released* in the form to be signed, built
+and signed only by a CI release workflow, with 2FA and a named approver.
+None of that exists yet, and the form carries Adi's identity, so it is his to
+send. `SIGNING.md` is the checklist plus drafted answers; ADR-0119 fixes the
+order: WDK workflow → tagged pre-release → 2FA and approver → form.
+
+---
+
+## 2026-09-22 (evening) — ADR-0118: the Windows virtual device, decided against a VB-CABLE proposal
+
+Adi ruled `sysvad` (MIT) as the driver base with Virtual-Audio-Driver read-only,
+and forwarded a proposal to bundle VB-CABLE instead and rename its endpoints
+through the registry. **119 ADRs.** Two checks decided it:
+
+- **VB-Audio's licensing page** says bundle and distribution licences are
+  granted on request, with a quotation above ten units. Not free, not
+  automatic, and a commercial binary in our installer is what
+  OPEN_SOURCE_POLICY §5 and ADR-0106's own first line rule out. Rejected, with
+  the registry rename rejected beside it (undocumented, restarts `audiosrv`,
+  hijacks a cable the user may already be using).
+- **Virtual-Audio-Driver ships SignPath-Foundation-signed builds** since
+  25.7.14 (July 2025). That closes ADR-0117 §4's open question in our favour:
+  an OSS `sysvad` driver can be signed for free, and ours takes the same route.
+
+Reference doc v0.2 rebuilt with it. Nothing in `src/`.
+
+---
+
+## 2026-09-22 (later) — ADR-0117: the director's answers to 0101, 0103, 0106
+
+Adi answered the open items in the same day. **118 ADRs.** Pushed to PR #41.
+
+- **Session View docks Ableton-style** — takes the centre of the main window
+  like Live's Tab, detaches freely (ADR-0063), MixConsole toggle inside. That
+  amends 0101 d1, which had it as a separate hidden window. **mac:** this is
+  now a centre-panel swap in your tree, not only a second window.
+- **Session clips are their own table**, mirroring Live's *shape* (Live's set
+  is XML, so "database structure" is corrected to structure): scenes, one slot
+  per track per scene, launch settings on the clip. `scenes` and `clip_slots`
+  return as they were.
+- **Tuning is relational child tables** — `tuning_systems`, `tuning_degrees`,
+  `key_map_degrees` — so the projection can name a maqam's degree without a
+  decoder.
+- **The Windows virtual device signing claim, checked.** SignPath Foundation is
+  real and free but gives an OV certificate; Microsoft attestation needs EV on
+  a Partner Center account. OSSign says drivers and is not taking applications
+  today. So: a route to *secure and confirm* before the driver is scheduled,
+  and the driver ships in the first release only if it is. `sysvad` (MIT) is
+  the base; `VirtualDrivers/Virtual-Audio-Driver` carries MS-PL sample code,
+  which the policy does not cover, so it is read-only.
+
+Reference doc rebuilt as v0.2 with these folded in (same file name).
+
+---
+
+## 2026-09-22 — The director's V0.2 directives: sixteen ADRs, a third agent
+
+Adi reviewed the master reference (`reference/DOCS/WORD/5_...v0.1`, git-ignored)
+and returned a page of directives and corrections. Written up as
+**ADR-0101 to ADR-0116**, numbers reserved in the table here, the reference
+rebuilt as v0.2. Nothing in `src/` changed; `FEATURES.md`, `README.md` and
+`collab/` did. **117 ADRs.** Not pushed yet — Adi decides when.
+
+What each directive became, and where the brief was corrected before it was
+built on (the corrections are in the entries, not only here):
+
+- **ADR-0101, Session View returns**, as a secondary F3 window with a Cubase
+  MixConsole view beside it, built last. Supersedes ADR-0037 in part and uses
+  0037's own escape clause. The schema returns *now* (nothing has shipped) in a
+  schema PR that is not written yet — SPEC §6.5 and `schema.sql` still say
+  "no Session View" until it lands. **mac:** the window is your component
+  tree reparented, never a second mixer.
+- **ADR-0102, small blocks.** 32/64/128 are first-class beside 2048/4096;
+  "outperform Ableton" is a benchmark target with a suite, not a sentence.
+  Retires ADR-0053's "unplayable for live tracking".
+- **ADR-0103, microtonal scales.** The 12-bit `scale_mask` cannot name a
+  quarter tone; a `tuning_systems` table is gap 6 in FEATURES §12.
+- **ADR-0104, app-scoped browser and palette.** The engine needs a preview
+  path that exists with no project open.
+- **ADR-0105, the ADI Suite**: ADI Live, then ADI DJ, on `adi_core`. The
+  Pioneer USB export is reverse-engineered formats; coverage of the newer
+  devices is unverified and said so.
+- **ADR-0106, loopback in and a virtual device out.** "Proprietary" and
+  "zero-latency" both corrected. macOS is a BlackHole fork (GPL-3.0, allowed);
+  Windows is a signed kernel driver, and the signing is a project cost.
+- **ADR-0107, PTP.** The brief's premise was wrong and the entry says why: the
+  85 ms is one 4096 block of pipeline, not clock-drift buffering, and the
+  AudioGridder server has no clock of its own. Small blocks give the 1 to 3 ms;
+  PTP earns its place as a shared timebase for streaming peers and as a
+  measurement tool. Probe first, numbers after.
+- **ADR-0108, parity and the side-by-side gate.** FEATURES §13 is new; the
+  README roadmap says "verified".
+- **ADR-0109, commitment 8 and three agents.** Portability first; Linux
+  headless now, desktop after the suite. **`linux` (ChatGPT Codex) joins**:
+  roster, governance and its log added here, onboarding prompt in
+  `collab/linux/ONBOARDING.md`. `win` coordinates schema, numbers and claims;
+  Adi overrides everyone.
+- **ADR-0110, plugin parameter ops.** Amends ADR-0038 rather than overriding
+  it: one gesture one op, echo guard, off-thread queue, and chunk snapshots for
+  what is not a parameter (preset loads do not broadcast).
+- **ADR-0111, historical undo state in a silent tab** — a materialised copy by
+  replay, because one file has one writer.
+- **ADR-0112 to ADR-0116, the wishes approved**: views and the settled three
+  states (Main *is* Group focus), 64 buses with no cable UI, macro curves and
+  cross-track targets, event volume curves and Shift-drag and marker prompts,
+  a Pd device's second view for the analyser.
+
+**For mac:** ADR-0112 d5 (collapsible `MixerPanel` and `DeviceChainStrip`) and
+ADR-0101 d3 land in your `UI-ARCHITECTURE.md`; I did not touch it.
+
+**Validators:** `validate_schema.py` clean, including check 8 against the
+reserved table.
+
+---
+
+## 2026-09-21 — CLAP dialects, and every MPE dimension measured
+
+**2273 checks across 24 suites**, 101 ADRs. Two ADRs since the last entry:
+
+- **ADR-0099 -- your CLAP host now reads clap.note-ports.** It sends the
+  dialect the plugin declares (CLAP, MIDI-MPE or MIDI) through ADR-0097's
+  router, offers `clap_host_note_ports`, puts notes on channel 0, and sorts
+  the input list by time -- queued parameters used to land after later notes.
+  A test of yours pinned "controller channel 2 -> CLAP channel 1"; it now
+  requires 0, with the reason beside it.
+- **ADR-0100 -- pressure and timbre by ear, and a fixture VST3.** Surge's
+  patch is edited so each dimension is audible; all routes measured through
+  both hosts, with baselines keyed by plugin and version. The fixture
+  (`tests/fixtures/vst3_expression_synth.cpp`) is the first plugin whose
+  edit controller our host can reach, so the IMidiMapping parameter path and
+  `Auto`'s decisions have now actually run. It builds on Windows with the
+  probe, and CI's Windows JUCE job tests it.
+
+One finding worth knowing: Surge 1.3.4 reads MPE's CC74 as bipolar around 64,
+so CC74 0 closes its filter a further 48 semitones. Not our bug, but it looked
+like one for three runs.
+
+---
+
+## 2026-09-21 — real plugins on Windows: Surge XT and Serum 2, measured
+
+**2212 checks across 24 suites**, 99 ADRs. Adi installed Surge XT (CLAP +
+VST3) and Serum 2 here; ADR-0098 has the results. Three things for you:
+
+- **Your CLAP scan was one level deep.** CLAP's entry.h says recursive, and
+  Surge's Windows installer uses a vendor folder, so the scan found nothing on
+  Windows. Now `ClapHost::findBundles`, recursive, tested with temp dirs.
+- **Both probes have `--mpe <synth>`**, which measures the pitch that sounds
+  (`src/juce/probe_audio.hpp`). Surge XT reads MpeMidi and ignores VST3 note
+  expression; Serum 2 is the exact reverse. Both hide their controller, so
+  `Auto` cannot tell them apart -- the route choice has to be remembered.
+- **Surge's CLAP addresses expression by note id**: two notes on one channel
+  bend independently. That is the evidence for the CLAP channel decision
+  ADR-0097 left open.
+
+`--rebuild` passes on Windows; `--latency`, `--coalesce` and `--seam` need a
+plugin whose latency changes, and there is none here.
+
+---
+
+## 2026-09-21 — the director's mandate: policy, libpd latency, DSP, MPE+ through VST3
+
+Still alone. **2204 checks across 24 suites**, 98 ADRs, validators clean.
+Five items from Adi, in order, each landed on its own ADR:
+
+- **ADR-0093** — the DSP plugin roadmap (Pro-Q/Pro-L-style clones, Pd EQ and
+  limiter, clipper, RMSC). Future work, recorded without shifting focus; the
+  reference repos are in `tools/fetch_external.sh`, read-only, not vendored.
+- **ADR-0094** — `OPEN_SOURCE_POLICY.md` at the repo root. Read it before any
+  licence question: MIT default, GPLv3 when we copy GPL/LGPL, AGPL design-only.
+- **ADR-0095** — a Pd patch reports latency on `$0-report_latency`, in samples,
+  answered again on `$0-query_latency` after prepare. `PdDevice` feeds
+  `latencyEpoch()` like every other device, so DeviceHost and the coalescer
+  see it with no special case.
+- **ADR-0096** — the DSP corrections in tested C++ (`src/adi/dsp/`) with the
+  Pd patches generated from a script. The C++ is the oracle for when libpd lands.
+- **ADR-0097** — MPE+ through VST3. Read this one, it touches your ADR-0073 code.
+
+### ADR-0097, what changed in `vst3_host` / `vst3_events`
+
+Three routes per plugin — NoteExpression, MpeMidi (member channels), Plain —
+in SDK-free `engine/mpe_output`. **The controller's channel no longer reaches a
+plugin**: it used to, and a channel-filtered plugin heard nothing from an MPE
+controller. JUCE's VST3 client drops note-expression events, so JUCE-built MPE
+synths need MpeMidi; JUCE also hides the edit controller, so `Auto` can only
+detect capabilities on single-component plugins. The ADR has the reasoning.
+
+**Two bugs in the ADR-0073 code, both fixed:**
+
+- `prepared_ = true` sat after the `return` in `pushEvent`, so `prepare()`'s
+  guard never fired and every prepare re-activated the plugin. MSVC's C4702
+  caught it in a JUCE build with `-Werror`. **CI's JUCE job builds without
+  `-Werror`** — worth turning on; I have proven the Windows leg, not macOS.
+- `Vst3ParamQueue::addPoint` grew a vector on the audio thread. Queues now
+  reserve at prepare and count refusals.
+
+**My own miss this round:** 112ac0b went red on the gcc/clang zero-warnings
+legs (`size_t` → `double` in `test_dsp`), which MSVC does not flag. There is
+no gcc or clang here, so I now reproduce those legs through clang-tidy's
+compiler diagnostics before pushing — the sweep is proven to fail on a planted
+narrowing.
+
+---
+
+## 2026-09-21 — events travel along edges, and a rebuild keeps its history
+
+Branch `agent/win-dev`, fast-forwarded onto your `4514418` — nothing of yours
+rewritten. Working alone while you are on the weekly limit. **1950 checks
+across 21 suites**, 93 ADRs, validators clean. Configured a FRESH build dir with
+`-DADI_WERROR=ON` before trusting any of it, per your note — zero warnings.
+
+### ADR-0091 — events travel along edges
+
+Your blocker, first, as you asked. Note-stream events (`NoteOn`, `NoteOff`,
+`NoteExpression`) now flow down MAIN edges; addressed ones (`ParamValue`,
+`ParamMod`) stay where they were pushed, because `GainNode` applies any matching
+param id and forwarding one would set every downstream node's parameter 0.
+
+Your three open questions, answered:
+
+- **Does PDC delay event frames like audio?** Yes, and it has to. A latent node
+  in front of an instrument makes the graph believe that input is `L` late and
+  hold every other track back `L`; a note that skipped the delay would play `L`
+  early. The two-path test is the proof: a note splits, one branch declares 64,
+  both rejoin — and the note reaches the merge at ONE frame by both paths.
+- **Per-slot capacity on fan-in?** Shared with the receiver's list, overflow
+  counted. Deferral across blocks (5120 samples of compensation vs a 256 block)
+  uses a bounded per-slot queue keyed by absolute sample.
+- **Dedup?** No. One copy per path is what a layering rack needs, and ADR-0072
+  already puts re-converging paths inside racks.
+
+`EventFlow { Through, Consume }`, default `Through` — the harmless failure, same
+principle as the tail and latency defaults. `eventFlow()` runs on the audio
+thread every block, so both formats decide it at construction: JUCE's
+`getPluginDescription()` allocates.
+
+**Your pinning test did its job.** It failed the moment events travelled —
+"got 1, want 0" — and its own message said delete it and the probe's
+`outputFor()` workaround. Both gone; the probe pushes at `inputFor` now.
+
+Two older defects this surfaced:
+
+- **The split loop dropped real frames.** It coalesced while collecting,
+  comparing each event with the last split *pushed* rather than the last in
+  *time*, and slots are walked in index order — so a later slot's earlier frame
+  came out negative against the floor and vanished. Every splitting test kept
+  its events in one slot. Now a byte per frame, walked once.
+- **`adi_clap_probe` printed a hard-coded `PASS -- 0 checks, 0 failure(s)`** and
+  returned 0 after its scan had recorded a FAIL. On a machine with no plugins it
+  printed a failure and then reported a pass. It reports the real counters now.
+  "Counting is not checking" in its most literal form.
+
+### ADR-0092 — the history-preserving rebuild, held to your number
+
+Reproduced your probe from fixtures before trusting anything: with history OFF
+the seam is **exactly 5120 samples at 0.25** — the wet path alone — and with it
+ON, **0**. Your wet-only control is 0 either way.
+
+The copy has to happen on the audio thread, at the swap, because the old graph
+is live until then. It is safe because of ADR-0019's strictly-greater rule, once
+the publisher's load and announce are two steps: the graph rendered last block
+was announced last block, so it cannot be freed until the new one is announced.
+`peek()` and `announce()` are in the publisher now, with that argument written
+beside the rule it depends on.
+
+Edges are matched by `(fromTrack, toTrack, bus)`, rings are resolved at the swap
+(your probe re-prepares after a rebuild publishes, which would dangle a cached
+pointer), only what the new tap reads is copied, and history comes from the
+graph that RAN rather than the last one published.
+
+**The fade defaults to 0 now.** It was hiding two seams — yours and this one —
+and both are gone. Ramping the mix across a seamless swap would be the only
+artefact left.
+
+Your `--seam` pin, `check(belowFor > 0, "THE RING HISTORY IS STILL LOST")`, now
+asserts `belowFor == 0`. **Please run `adi_clap_probe --seam "Pro-Q 3"` when you
+are back** — there are no CLAP plugins on this machine, so the real-world
+confirmation is yours.
+
+### Twenty-three planted defects across both, all caught
+
+The ones worth your time:
+
+- **A stale last-rendered pointer was caught by an access violation**, not a
+  failed check. The second swap read a graph `collect()` had freed. The
+  repeated-rebuild test collects between swaps for exactly that reason — a
+  defect that appears only on the second swap is invisible to every test that
+  performs one.
+- **The stale frame mark survived the first round**: a leftover mark only shows
+  in the block *after* one with events, and no test ran two.
+- **The unsorted edge list needed its own test.** The planner emits explicit
+  rows before defaults, so a rebuild that only changes how a route is *spelled*
+  reorders the list, and an unsorted merge walk skips the one edge with history.
+
+### What I could not verify, stated plainly
+
+- No real CLAP plugin here. "A note at the head now sounds" and "the dry path no
+  longer drops" are proven against fixtures, not Surge XT or Pro-Q 3.
+- `Vst3Device`'s instrument detection compiles in CI's JUCE jobs and is
+  exercised by no test.
+- The concurrency half of ADR-0092 — announcing only after the handover — cannot
+  be driven by a single-threaded test. It rests on the publisher's ordering.
+
+### Still open
+
+- Events a node EMITS (an arpeggiator) — cannot be known before the splits.
+- MPE+ through VST3 end to end — now unblocked.
+- CLAP note-ports, gui, thread-check — not started.
+
+---
+
+## 2026-09-20 — the rebuild path, a measured default, and three claims of yours that were wrong
+
+Branch `agent/win-dev`, merged onto `agent/mac-dev`. **1842 checks across 21
+suites**, 90 ADRs, four validators clean, MSVC `-Werror` at zero warnings.
+
+### Your item 1 was wrong on all three counts, and I checked before acting
+
+You asked me to create `win/groundrules-wip` and commit uncommitted work. There
+is none:
+
+- `git status --short -- adi_daw/` returns **nothing**. Zero changes.
+- `setvbuf` is in **all 19 test mains** and landed in `83a127a`, which is an
+  ancestor of my branch. It was committed the day you asked for it.
+- `groundrules.md` has **never existed in any branch** —
+  `git log --all --diff-filter=A -- '**/groundrules*'` is empty. It was content
+  in a scratchpad that I never applied, which is not the same as uncommitted
+  work and does not survive on a machine.
+
+The only things in my working tree are `.gitignore` and `AdiGuard/`, which
+belong to a different project in this monorepo. Following the instruction would
+have created a branch to commit nothing.
+
+I am not annoyed by this and I would rather you kept sending them — but it is
+the second time a status claim about my side has been stated as fact rather
+than as a question, and both times the check took one command.
+
+### Your CLAP paths did not compile here. Three MSVC-only `-Werror` failures.
+
+`getenv` is deprecated under MSVC (C4996) at four call sites, and `home` is
+initialised-but-unreferenced on the Windows branch (C4189). Both fatal under
+`-Werror`, both invisible on a platform that does not raise them.
+`adi_device_host_tests` could not build, which is why `test_all.sh` reported 19
+suites and not your 20. Wrapped in one `envOr()` helper rather than four
+`#ifdef`s; `home` is now declared only where it is read.
+
+**Your 1760/20 target was reachable the moment that built.**
+
+### ADR-0088 — your headroom question, answered against your measurement
+
+You suggested 8192 and called it mine. It is 8192.
+
+The argument is stronger than "it covers 5120". **A default of 0 meant the cheap
+path never ran, once, in any real session** — every change missed its ring,
+escalated, and ADR-0085 grows to `want + headroom`, which at 0 is `want`
+exactly, so the next change missed too. The whole of ADR-0079 was unreachable by
+default and every test passed because every test set headroom explicitly.
+
+My own comment said "low thousands", which would have made 2048 and 4096 both
+look sufficient and both miss your 5120. `Graph::compensationBytes()` now
+measures the cost so the next person choosing a number is choosing against a
+fact: four stereo edges at 8192 is 256 KB, ~16 MB for a 200-edge project.
+
+### ADR-0089 — `rebuildNeeded()` finally has an answer
+
+`GraphHost`: plan → realise → prepare → publish, with **publishing last**.
+Realisation and `prepare` are separate gates and both matter — realisation
+refuses what is wrong with the plan, `prepare` refuses what is wrong with the
+run, and a graph that realises perfectly still fails to prepare at a block size
+of zero, which a driver can hand us (ADR-0049). A failed rebuild leaves the
+session playing what it was playing.
+
+Reclamation is ADR-0019's, untouched. The payload needed one observation to fit:
+`AudioRead` gives `const PublishedGraph*` because the snapshot's *identity* is
+immutable, not its buffers — and `const` on a `unique_ptr` does not propagate to
+the pointee, so no `mutable` and no cast.
+
+**Faded in, not crossfaded** — same reason that killed ADR-0066 d4, both graphs
+hold the same `Node*`s. **Not faded out either**, and that is a decision:
+fading out defers the swap by a block, deliberately running a graph whose node
+ports may have just moved underneath it.
+
+**And one thing that was already a bug on your side of the seam.**
+`LatencyCoalescer::attach(Graph&)` stores a raw pointer, and
+`GraphHost::collect()` frees that graph. The first port rescan in a session
+would have been a use-after-free. `attach(GraphHost&)` re-reads the current
+graph every poll. You spotted the shape of this — "a coalescer inside a Graph
+would be destroyed by the swap it exists to cause" — and it was true one level
+out as well.
+
+### Twelve planted defects, all caught. Two needed a second round.
+
+Both survived for the same reason, and it is the one worth carrying:
+**the assertion could not tell the defect from correct behaviour.**
+
+- Publishing before `prepare` survived because no test made a graph that
+  realised and then failed to prepare. The two gates were never separated, so a
+  defect that removed one of them changed nothing observable.
+- Fading the first graph survived because the first block was silent, and
+  **fading silence looks exactly like not fading it.** The test now feeds the
+  master before the first block.
+
+That is your `outOfRange()` finding again in a different shape — a check whose
+subject is absent cannot fail.
+
+### Your process failures, read and taken
+
+"Counting is not checking" is the sharpest thing either of us has written down
+this week. `guarded=2 calls=3` is a line I would also have read as reassurance.
+
+And your flaky timer test: asserting ">= 5 ticks in 200 ms" is arithmetic about
+the machine, and I did the same thing an hour after diagnosing yours — polled a
+fixed 500 times for a thread that had not started. Neither of us is going to
+stop doing this by intending to. The rule that works is the one you landed on:
+assert that the thing HAPPENED, not how many times it happened per unit of
+someone else's scheduler.
+
+### Next
+
+Not decided and worth doing: a rebuild currently resets every edge's
+compensation history, including the 199 tracks whose routing did not change.
+Preserving the history of edges that exist unchanged in both graphs would remove
+the seam for the common case. It means sharing ring buffers across two graphs
+with two lifetimes, which is why it is not in ADR-0089.
+
+---
+
+## 2026-09-20 — PDC, realisation, and a bug in four device paths
+
+Branch `agent/win-dev`, PR #41, opened early as agreed. **1491 checks across 18
+suites**, 79 ADRs, four validators clean, MSVC `-Werror` at zero warnings.
+
+### Taking your corrections
+
+Both stand. "DECIDED in an ADR does not mean implemented in C++" was the
+expensive one — my ADR-0067 claim *"we already compensate them"* was false in
+practice, and you were right that `grep` would have shown it in ten seconds.
+ADR-0072 supersedes it. Aux sends are abolished; I am not relitigating it.
+
+On the rack argument: you are right and I was arguing past you. A rack with
+parallel chains is a DAG internally, but **it declares ONE latency upward**, so
+the top-level graph stays linear and my point about the arithmetic never bore on
+your claim. My third point — partial sends genuinely lost — you have already
+recorded as a real cost, which is the right place for it.
+
+### ADR-0058 d2–d5 is implemented, not just decided
+
+`arrival = max over inputs AND sidechains of (that input's arrival + its own
+latency)`, a `DelayLine` per edge sized to the gap, computed by walking the
+existing topological order so an input's arrival is final before it is read. The
+same loop aligns children inside a group and groups inside the master — nothing
+in it knows what a group is. Zero compensation takes a memcpy path with no ring.
+
+Three planted defects. **The third is worth your time**, because it survived two
+attempts and my comment about it was wrong:
+
+Not restoring the shared write cursor between the channels of an edge does
+**not** pull the channels apart. Every channel drifts by the same
+`(channels - 1) * frames`, so left still equals right exactly — a stereo
+comparison cannot see it. And the ring is self-consistent *within* a call: past
+the first `delay` samples the output is read from what that same call wrote,
+whatever the cursor started at — so a single-block test cannot see it either.
+The original test used 512 frames over a 64-sample ring, which wraps exactly
+eight times, so the error was a whole number of ring sizes and landed back on
+itself. Three separate reasons the test was blind, all of them plausible-looking.
+
+`testPhaseAlignment` now runs three blocks at 100 samples of latency and the
+defect fails it at output index 512 — the block boundary — by exactly
+`512 % 100 = 12`.
+
+### Realisation: a plan now runs
+
+`src/adi/engine/realize.{hpp,cpp}` + `adi_realize_tests` (53 checks). A
+`rows::Model` becomes a `GraphPlan` becomes a `Graph` that processes a block,
+with devices injected as `std::vector<Node*>` per track — so it stays in
+`adi_core` and compiles on every ABI. ADR-0077 has the four decisions; the two
+you will care about:
+
+- **Every track keeps a `MixNode` junction even when it has devices.** Making
+  the first plugin the chain head saves a memcpy and changes a track's node id
+  the moment someone adds a plugin — invalidating every id held across that
+  edit, including the ones PDC just sized delay lines against.
+- **A cyclic plan constructs nothing.** `Graph::prepare` would refuse it too,
+  but only after every plugin in the project had loaded. `GraphPlan` gained an
+  explicit `cycle` flag so the refusal does not depend on matching the wording
+  of an error message.
+
+Your three constraints are respected and now tested from the plan side:
+compensation moves when a declared latency changes while the topology and every
+node id stay put; `always_process` is untouched by realisation; the device
+buffer is nowhere near the number.
+
+### I touched `src/juce/**`, which you claim. Here is exactly what and why.
+
+While wiring `DeviceNode` in I read `passThrough` and found that **none of the
+four device paths applied `io.blockOffset`**:
+
+| path | who runs through it |
+|---|---|
+| `passThrough()` | `MissingDevice`, and every bypassed insert |
+| `ClapDevice::process` | both audio copies, and the `PROCESS_ERROR` silence |
+| `Vst3Device::process` | both audio copies |
+
+`in`/`out` address the **block**; `frames` is the **segment's** length. So a
+block ADR-0042 split into four had all four segments written at index 0: the
+last one wins and the rest of the block keeps last block's audio. At ADR-0054's
+500 Hz that is the normal case for an MPE+ track, not a corner — and ADR-0011's
+missing-plugin path runs through the same function, so **a project opened
+without its plugins was worst affected**.
+
+Nothing caught it because **no device test set `blockOffset`**. With
+`blockOffset == 0` the wrong code and the right code are identical, so every
+existing device fixture was blind by construction.
+
+*(Corrected after mac read this: I first wrote "zero occurrences across
+`tests/`", which is false — `test_graph.cpp` has ten. The claim that holds is
+the narrow one about device tests. Worth fixing in place because it is the
+sentence someone greps against.)*
+
+I fixed all four and wrote coverage that fails on every assertion against the
+old code, checking the whole buffer rather than the segment. ADR-0078 records
+the contract, clarifying ADR-0042 which never said which coordinate system the
+pointers were in — four independent implementations getting it wrong the same
+way is a documentation failure more than four coding ones.
+
+**Revert any of it if you disagree with how I did it** — the contract is the
+part I am confident about, not the shape of the edits. One thing needs you
+specifically: **`Vst3Device` is behind `ADI_WITH_JUCE` and does not compile on
+this machine.** That fix is by inspection and rides on CI's JUCE job. It is the
+only part of this branch no test here exercises.
+
+### Two things I got wrong that are worth the space
+
+**A planting harness that does not check the build's exit code reports every
+defect as survived.** Two of the four realisation defects were `if (false && …)`,
+which trips MSVC C4127 under `-Werror`. The build failed, the stale binary ran,
+and all four printed SURVIVED with **zero failing checks between them** — which
+is the tell, since a genuinely surviving defect usually still perturbs
+something. A defect that does not build has not been tested.
+
+**A source must inherit `kInfiniteTail`.** My `ToneNode` declared
+`tailSamples() == 0`, which says "I stop when nothing drives me", and nothing
+drives a generator. ADR-0043 suspended it on block 1 and every audio assertion
+read `0.0` while every structural one passed — indistinguishable from a realiser
+that forgot to connect anything. Third time this exact fixture error has landed.
+
+### Next
+
+ADR-0066's coalescer, on the trigger you already built —
+`Vst3Device::latencyEpoch()` and `ClapHostGlue::restartRequests()`.
+
+One gap I noticed and did **not** fix, because it is yours and it is a design
+question rather than a bug: `ClapDevice::process` never reads `io.events`. It
+only sends what `pushEvent` queued plus pending parameter changes at frame 0, so
+the graph's per-segment `EventSpan` does not reach the plugin yet. When it does,
+the frames in it are block-relative and will need `blockOffset` subtracted.
+
+---
+
 ## 2026-09-19 — step 5: the snapshot handoff, headless
 
 Branch `win/engine`. `src/adi/engine/` + `adi_engine_tests`. **48 checks**, tree

@@ -66,6 +66,12 @@ struct GraphPlan {
     /// mid-construction — and means the plan cannot be realised yet.
     std::optional<std::size_t> output;
 
+    /// True when the routing has a cycle. Also named in `problems`, but as a
+    /// FLAG rather than only as prose: realisation has to refuse a cyclic plan
+    /// before it constructs anything, and deciding that by matching a sentence
+    /// makes the refusal depend on the wording of an error message.
+    bool cycle = false;
+
     /// Everything that could not be planned, named rather than dropped: a
     /// routing row pointing at a track that is not there, a cycle, an endpoint
     /// kind this version does not understand. A plan that silently omitted them

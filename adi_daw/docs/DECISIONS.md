@@ -3603,7 +3603,7 @@ sum to 2× rather than comb-filtering.
 
 ---
 
-## ADR-0067 — Aux sends: the premise is wrong, the remedy relocates the problem, and the format keeps them — `DECIDED` (2026-09-20)
+## ADR-0067 — Aux sends: the premise is wrong, the remedy relocates the problem, and the format keeps them — `SUPERSEDED BY ADR-0072` (2026-09-20)
 
 **Director's call.** Drop traditional Send/Return tracks. On 150-track projects
 aux routing "frequently causes PDC misalignment and phase smearing", so parallel
@@ -3865,3 +3865,4190 @@ batch asynchronously.
 5. **Wildcards resolve at render time, not at queue time**, so a job created
    before a tempo change exports with the tempo it was rendered at. A `$bpm`
    frozen at the moment a user typed a sentence is a filename that lies.
+
+---
+
+## ADR-0057 — The device contract is format-agnostic, its surrogate keys are gone, and JUCE's host path cannot carry MPE+ — `DECIDED` (2026-09-20)
+
+VST3 hosting, built. `src/juce/device_model.{hpp,cpp}` is the contract,
+`src/juce/vst3_host.{hpp,cpp}` is the one adapter, and the nine device ops of
+OPS.md §9.7 exist for the first time. Five decisions came out of building it
+and one of them is a finding about JUCE rather than about us.
+
+### 1. The contract contains no VST3, and the adapter is the only thing that does
+
+`docs/DEVICE-CONTRACT-PANEL.md` scored four designs and the one shaped like a
+plugin was, in its own words, *"named after the format that conforms to it
+worst."* That is the trap this decision avoids: VST3 is the format in hand, and
+shaping the contract around it would make Pure Data (ADR-0035), CLAP (ADR-0052)
+and a remote AudioGridder device (ADR-0053) each an exception.
+
+So `DeviceInstance` is the boundary, `DeviceNode` is an `engine::Node` wrapping
+one, and hybrid tracks, modulation, suspension and delay compensation are
+implemented once against `Node`. There is no `Vst3Device` with a chain behind
+it (ADR-0052 decision 4).
+
+### 2. A parameter carries both representations, or says it cannot
+
+`plugin_params.normalized_value` is `NOT NULL` and `real_value` is nullable,
+and that asymmetry is now the decision rather than an accident of the schema.
+
+- **normalized is always authoritative.** Every format produces it, it is what
+  goes back to the plugin, and it round-trips.
+- **real is the readable one** — 4800 Hz, −6 dB — and it is what keeps an
+  automation lane meaningful when the plugin is missing (SPEC §6.3.3) or has
+  remapped its range between versions.
+
+VST3 exposes a real value only through `getParamStringByValue`, which returns a
+localised display string. Parsing `"4.80 kHz"` back into a number is a guess
+that fails differently per plugin and per locale, so **a VST3 lane is
+`normalized` by necessity, not by choice**, while CLAP, Pd and native devices
+fill in the real value. `ParamValue::hasReal` makes that a fact code has to
+read rather than a zero it can mistake for a value: `real_value` is NULL, never
+0.0, because 0.0 reads as "this parameter is at zero Hz".
+
+### 3. The surrogate keys are removed, and that is what makes the ops possible
+
+`plugin_params` and `plugin_state` each had an `INTEGER PRIMARY KEY id` beside
+a `UNIQUE` natural key. Nothing referenced either — no foreign key, no code,
+only the validator's own inserts.
+
+They had to go, and the reason is ADR-0021 §7.3: **an op that INSERTs a row
+carries that row's id in its payload**, because undo-then-redo must produce the
+same id or every later op referencing it points at nothing. So `device.setParam`
+— which is coalescable and fires on every knob movement — would have had to
+either invent an id or ask SQLite whether the row already existed, and the
+second is the ambient read ADR-0021 forbids.
+
+Both tables are now keyed on their natural key, `WITHOUT ROWID`. Every write is
+an UPSERT and there is nothing to allocate. This is **author-symbol's
+contribution from the panel — determinism by subtraction**: every id nobody has
+to allocate is an ADR-0021 problem that does not exist. It is the same move
+ADR-0065 made for routing rows, arrived at independently and from the other
+direction.
+
+`validate_schema.py` fails if a surrogate reappears, and the check was proved by
+putting one back.
+
+### 4. Absence is a value, and `norm: null` is how the op says it
+
+`plugin_params` holds a row only for a parameter somebody has touched. So the
+inverse of *"set cutoff to 0.8"* is **not always** *"set cutoff to 0.5"* — when
+no row existed, the inverse is *"there was no row"*, and re-applying that as a
+number leaves a row that was not there.
+
+`norm: null` therefore means absence and deletes the row. That keeps the inverse
+**symmetric** — the same op with swapped arguments — which OPS.md §9.7 requires,
+because `device.setParam` is coalescable and coalescing keeps the *first* op's
+inverse (OPS.md §6.4).
+
+The op additionally refuses a payload with no `norm` key at all. The validator
+cannot express "required but nullable", and an omitted key silently deleting a
+parameter value is a typo with a consequence.
+
+### 5. The round-trip corpus could not see any of this, and the reason generalises
+
+The device ops went into ADR-0021's corpus, which applies a scripted session
+and then undoes it. An inverse that recorded `0.0` instead of absence was
+planted, and **the corpus stayed green at 58 checks, 0 failures.**
+
+Because undoing `device.insert` deletes the device, and `plugin_params` and
+`plugin_state` **CASCADE** on `device_id`. The spurious row is swept away by an
+undo further down the stack, before the comparison against a blank project ever
+happens.
+
+The corpus is not wrong — it tests replay determinism and it does. But **a
+cascade is an extremely effective way to hide a per-row defect**, and that is
+worth stating as a general property: a whole-project oracle cannot see a defect
+in a row that something else is about to delete. `tests/test_device_ops.cpp`
+exists for that reason and undoes exactly one transaction per check. Five
+defects planted there, five caught.
+
+> One of the five was planted wrong the first time. The move test seeded its
+> device at `ord 0`, so a defect making the inverse capture `0` was
+> indistinguishable from a correct capture — comparing a right answer against
+> a *different* right answer that coincides. The fixture now seeds at `ord 2`.
+> Second time this exact mistake has been made here; it is a property of
+> negative tests, not of one test.
+
+### 6. ADR-0058 decision 1 was DECIDED and was not built
+
+`Node::latencySamples()` did not exist. It does now, defaulting to **0** — the
+opposite of `tailSamples()`'s `kInfiniteTail`, and for the asymmetry ADR-0058
+gives: a missed tail is merely processed too often, a missed latency **moves
+audio that was aligned**.
+
+Two consequences that the building settled:
+
+- **A bypassed device reports no latency and no tail.** Continuing to report a
+  bypassed plugin's latency compensates the rest of the graph against a delay
+  that is no longer there, which is the exact failure the default was chosen to
+  avoid.
+- **`always_process` forces an infinite tail and does NOT touch latency.**
+  Forcing a device to keep processing says nothing about how far it shifts its
+  output, and ADR-0043's escape hatch overriding a *latency* report would be
+  nonsense the compensator acts on.
+
+`Vst3Device::tailSamples()` converts JUCE's seconds to samples with the
+infinite case as a **branch**, not arithmetic: JUCE reports an unbounded tail as
+infinity, and `infinity * sampleRate` cast to `int64` is undefined behaviour
+rather than a large number — which is how a "never suspend" declaration becomes
+a node suspended on its first block, the defect ADR-0055 already found once.
+
+### 7. JUCE's VST3 host path cannot carry per-note expression
+
+The finding, checked against JUCE 9.0.2's own source rather than assumed,
+because ADR-0054 says a single `uint8_t` in an event struct undoes the mandate
+while every document still claims compliance.
+
+`AudioPluginInstance::processBlock` takes a `juce::MidiBuffer`, and
+`juce_VST3Common.h`'s `toEventList` iterates exactly that. Three facts from that
+file settle it:
+
+1. `createNoteOnEvent` sets `e.noteOn.noteId = -1`, and so do `createNoteOffEvent`
+   and the poly-pressure case. **VST3 anchors note expression to a note's
+   `noteId`**, so per-note values cannot be addressed to a note even if they
+   could be sent.
+2. Nothing in JUCE constructs a `kNoteExpressionValueEvent`. The only occurrence
+   is the switch case on the way *in*, which converts one to `{}`.
+3. Velocity goes through `normaliseMidiValue`, which is `value / 127.0f`.
+
+Separately, `toEventList` caps at `maxNumEvents = 2048` and `break`s — silently.
+That is the same number ADR-0056 derived for our own event capacity, and the
+same silent-drop shape, in the framework.
+
+**The route out is not a rewrite.** JUCE 9.0.2 hands a host the raw interface:
+`AudioPluginInstance::getVST3Client()->getIComponentPtr()` returns
+`Steinberg::Vst::IComponent*`, from which `IAudioProcessor` and
+`INoteExpressionController` are a `queryInterface` away. So the decision is:
+
+> **Discovery, instantiation, parameters and opaque state stay JUCE's. The
+> event path for instruments becomes ours, driven through the raw
+> `IAudioProcessor` with our own `IEventList`.**
+
+That is a bounded piece of work against an SDK already vendored inside JUCE, and
+it is the same shape as the CLAP host ADR-0052 mandates — which makes it the
+first half of that job rather than a detour.
+
+**Until it is built, the event path is EMPTY rather than approximate**, and
+`Vst3Device::supportsNoteExpression()` returns false. An empty MIDI buffer is a
+plugin that makes no sound, which is a bug report. A 7-bit buffer is a plugin
+that sounds nearly right, which is the failure that gets shipped.
+
+### What is not built, named rather than discovered
+
+The event path above. Sidechain bus negotiation (`Bus::Sidechain` exists in the
+graph; the adapter does not yet map it onto a VST3 aux input). Plugin editors.
+Multi-bus layouts. The `device.setPreset` op sets the preset *name* only — the
+bytes are a `device.loadState` in the same transaction, which is what lets
+twenty preset auditions share one blob each. And `plugin_state` carries one
+`'chunk'` role for a JUCE-hosted VST3, because `getStateInformation` already
+merges component and controller; the format keeps admitting both roles because
+it must represent a file another implementation wrote (SPEC §7).
+
+---
+
+## ADR-0072 — Aux sends are abolished: parallelism is encapsulated in nodes that declare a latency — `DECIDED` (2026-09-20) — **SUPERSEDES ADR-0067**
+
+**Director's ruling, and it overrides ADR-0067 in full.** ADR-0067 argued that
+the premise behind abolishing aux sends was wrong and that the format should
+keep them. That argument is overruled: the practical phase-smearing of heavy
+parallel aux routing in a real mixdown outweighs the CPU cost of the
+alternative. **ADI enforces a strict linear PDC model.**
+
+ADR-0067 is marked superseded rather than edited, per ADR-0028.
+
+### The ruling
+
+1. **ADI never creates an aux send.** No UI affordance, no op, no default.
+2. **The planner never plans one.** A `send` row reaching `buildPlan` is
+   refused into `plan.problems` and surfaced. It is not silently dropped —
+   silently rewiring somebody's signal path is the failure ADR-0011 exists to
+   prevent, and it does not become acceptable because the row is a routing row
+   rather than a device.
+3. **Parallel FX happen in a Device Rack (ADR-0060) or an auto-routing Group
+   Folder (ADR-0044).**
+
+### Why this is coherent and not merely an instruction
+
+ADR-0067's second objection was the strongest: *"a rack with parallel chains is
+a DAG, exactly like a send, and two chains of different latency need the
+identical calculation one level further in."* The calculation is indeed
+identical. **What changes is where it lives, and that is the whole point.**
+
+A rack is a node that owns a sub-graph and **declares one latency to the graph
+above it** (ADR-0060, and ADR-0062 already requires the multiband splitter to
+declare its own). So the parallelism is *encapsulated*: the top-level graph sees
+a chain of nodes each reporting a single number, and the compensation there is
+a linear progression. With aux sends the top-level graph is itself an arbitrary
+DAG, and every path through it is a place the calculation can be got wrong.
+
+One place that must be right beats arbitrarily many places that must all be
+right. That is the argument ADR-0067 did not answer.
+
+### The objection that turned out to be false in practice
+
+ADR-0067's first and load-bearing claim was: *"We already compensate them.
+ADR-0058's rule is arrival = max over inputs of (arrival + latency), and a send
+is an input."*
+
+**We do not.** ADR-0058 decisions 2–5 are unbuilt. Audited against types and
+functions rather than prose: zero occurrences of `arrival`, `compensat` or
+`DelayLine` anywhere in `src/`. `Node::latencySamples()` — decision 1 — was
+itself written only in ADR-0057's branch, days after ADR-0067 asserted that the
+compensation existed.
+
+So the sentence was a statement about the design reading as a statement about
+the code. That is the same Blueprint-vs-Reality failure this project has now
+hit three times, and it happened to be holding up the load-bearing argument of
+the ADR being superseded. Recorded here because the pattern matters more than
+this instance.
+
+### The cost, which is real and is the director's to accept
+
+ADR-0067's third objection stands and is not answered away: **forty tracks
+sharing one convolution reverb is one instance; forty racks is forty.** On a
+150-track session that is the difference between a reverb bus and an unusable
+project.
+
+The mitigation is the auto-routing group folder, and it is genuine rather than
+a consolation: put the forty tracks in a group, put the reverb in a rack on the
+**group**, and it is one instance again — with the dry/wet parallelism inside
+the rack, where it is compensated locally and declared upward as one number.
+That is the same CPU as an aux send with the phase behaviour the ruling is
+after.
+
+What is genuinely lost is *partial* sends — thirty percent of track 7 and ten
+percent of track 12 into one reverb, with the rest dry. Expressing that now
+means a group, and a group is all-or-nothing. **That is a real capability
+removed, and naming it is cheaper than a user discovering it.**
+
+### What the FORMAT does, which is deliberately not the same question
+
+`routing.kind` keeps admitting `'send'`, and the CHECK constraint is unchanged.
+
+This is not a softening of the ruling and it does not re-open it. The ruling is
+about what ADI **offers and plans**; the format is about what a file can
+**represent**. The project already decided that split, in SPEC §7.4, for plugin
+formats: ADI hosts VST3 and CLAP and nothing else, while `plugin_refs.format`
+keeps admitting `au`, `vst2` and `lv2` forever — because *"refusing to host a
+format costs us code we do not write; refusing to name it costs a user their
+session."*
+
+The identical reasoning applies here:
+
+- Every `.adi` written before today can contain a `send` row. Removing the
+  string from the CHECK makes those files fail to open, which is data loss
+  caused by a UI decision.
+- A converter from a Live or Logic project must be able to represent what was
+  there. A converter that cannot express a send has to either fail or silently
+  discard the routing.
+- A third-party implementation that *does* offer sends is still conforming, and
+  a file it writes is still readable here.
+
+So a `send` row loads, is preserved on save, and is reported by the planner as
+unsupported with the group/rack alternative named. **The signal path is never
+silently changed.** If the director wants the string removed from the format as
+well, that is a separate and irreversible decision and it should be its own
+ADR — a format removal cannot be undone in an afternoon, which is the one part
+of ADR-0067 that was about reversibility rather than about sends.
+
+### The test, and it is a negative one
+
+`buildPlan` over a model containing a `send` row must produce **no edge for it**
+and **exactly one problem naming it**. Planting the old behaviour — letting a
+send fall through to a `Bus::Main` edge, which is what the code did before this
+ADR — must fail that test. Without the negative half, a future refactor that
+re-adds the fall-through passes everything.
+
+---
+
+## ADR-0073 — The VST3 process call is indivisible: taking the events means taking the parameters — `DECIDED` (2026-09-20) — **AMENDS ADR-0057**
+
+ADR-0057 decision 7 said:
+
+> Discovery, instantiation, parameters and opaque state stay JUCE's. The event
+> path for instruments becomes ours, driven through the raw `IAudioProcessor`
+> with our own `IEventList`.
+
+**The parameters half of that is wrong**, and it was checked before building on
+it rather than after. Recording the correction here rather than editing
+ADR-0057, per ADR-0028.
+
+### What the source says
+
+`juce_VST3PluginFormatImpl.h`'s `processAudio` builds one `ProcessData` and
+fills every field of it in one place:
+
+```
+data.inputParameterChanges  = inputParameterChanges.get();
+data.outputParameterChanges = outputParameterChanges.get();
+associateWith (data, buffer);          // audio buses
+associateWith (data, midiMessages);    // the MidiBuffer -> IEventList hop
+cachedParamValues.ifSet ([&] (index, value) {
+    inputParameterChanges->set (cachedParamValues.getParamID (index), value, 0);
+});
+processor->process (data);
+outputParameterChanges->forEach (...);  // back into JUCE's parameter objects
+```
+
+Three consequences, and the third is the one that kills the split:
+
+1. **Events reach the plugin only through `associateWith(data, midiMessages)`**,
+   which reads a `MidiBuffer`. ADR-0057 already established what that costs.
+2. **There is no MIDI 2.0 / UMP alternative.** JUCE 9.0.2's VST3 host contains
+   no reference to `universal_midi_packets`, so the 32-bit per-note controllers
+   of MIDI 2.0 are not a way round it either. Checked, because it would have
+   been the cheap answer.
+3. **`cachedParamValues` is flushed into `inputParameterChanges` inside this
+   function, and `outputParameterChanges` is read back out of it.** A host that
+   calls `processor->process()` itself therefore bypasses both directions of
+   JUCE's parameter plumbing: a value set through a JUCE parameter object never
+   reaches the plugin, and a value the plugin changes never reaches JUCE.
+
+So parameters and events are not two paths that happen to be adjacent. They are
+**fields of one struct passed to one call**, and owning either means owning the
+call, which means owning both.
+
+### Decision
+
+**`Vst3Device` takes over the whole process call.** It builds its own
+`ProcessData`: audio buses, `IEventList` (`Vst3EventList`, built), **and
+`IParameterChanges`**. JUCE keeps what happens outside that call — scanning,
+instantiation, bus layout negotiation, `getStateInformation`, the
+`AudioProcessorListener` that ADR-0066 reads.
+
+`setParam` keeps calling `beginChangeGesture` / `setValueNotifyingHost` /
+`endChangeGesture`, because SPEC §7.3 wants the gesture boundary and because
+that is what an editor and a parameter-automation UI read. What changes is
+**delivery**: the value is also queued into our own `IParameterChanges` for the
+next block, rather than relying on JUCE to flush it.
+
+### Why this is the right trade rather than a forced one
+
+It is more work than ADR-0057 implied and it buys something ADR-0057 did not
+count:
+
+- **It is most of the CLAP host.** ADR-0052 mandates CLAP, and a CLAP host must
+  own its process call, its event queue and its parameter events anyway. Doing
+  it for VST3 first produces the shape both need instead of a VST3-only
+  detour — which is the ADR-0052 decision 4 argument arriving from a third
+  direction.
+- **It removes a layer from the audio thread.** JUCE's `processAudio` does bus
+  bookkeeping, bypass handling and two parameter sweeps per block that a host
+  which already knows its own topology does not need.
+
+### The cost, named
+
+**We lose JUCE's parameter dispatcher.** Plugin-initiated parameter changes
+currently reach JUCE's `AudioProcessorParameter` objects through
+`outputParameterChanges`, and a plugin editor reads those. We have no editor
+yet (ADR-0057 lists it as unbuilt), and ADR-0038 makes the op log the source of
+truth rather than the plugin's own view — but when an editor arrives, feeding
+it is our job and not JUCE's, and that is a real obligation this decision
+creates.
+
+**And a plugin that misbehaves now misbehaves against our `ProcessData`
+rather than JUCE's**, which has been exercised by thousands of hosts. Any bug
+in bus setup or timing information is ours and will present as a plugin that
+works everywhere else.
+
+### What this does not change
+
+`supportsNoteExpression()` stays false until the takeover is built, and the
+MIDI buffer stays **empty rather than 7-bit** (ADR-0057). That remains the
+right default: an instrument that makes no sound is a bug report, and one that
+sounds nearly right is what ships.
+
+---
+
+## ADR-0074 — A broadcast node is a sink node; the graph already allows one, and the licence is the open question — `DECIDED (direction)` (2026-09-20)
+
+**Director's mandate.** Reliance on OS-level virtual audio cables — BlackHole,
+VB-Cable — is rejected. `adi_daw` will have a **native Broadcast Node**,
+insertable anywhere in the graph, sending audio directly to OBS or Elgato over
+NDI or IPC.
+
+**Phase 2, and that constraint is part of the decision.** No network or IPC C++
+is written this sprint. What follows is the architecture and one verified
+property; the transport is deliberately left open.
+
+### 1. Why the virtual cable is worth rejecting
+
+The obvious objection to writing this ourselves is that a virtual cable already
+works. Three things it costs, in order of how often they bite:
+
+1. **It is a second clock.** A virtual cable is a device, and a device has its
+   own rate. Two devices on one machine drift, and the fix is resampling
+   somebody did not ask for or a click every few minutes.
+2. **It is one tap, at the end.** A cable carries whatever the output device
+   carries. Sending the drum bus dry while the master stays wet means a second
+   cable and a second routing in the DAW, and the two are configured in
+   different applications.
+3. **It is a per-machine install with kernel-level components**, which is a
+   support burden we cannot debug and a thing to break on every OS upgrade.
+
+An in-graph node has none of those: one clock, any tap point, nothing installed.
+
+### 2. A broadcast node is a SINK NODE, and the graph already supports one
+
+The mandate asks that the graph support nodes that accept audio and do not feed
+the master. **It already does, and that is checked rather than asserted** —
+`tests/test_graph.cpp`, `testSinkNodeRunsWithoutFeedingTheOutput`.
+
+Why it works: `process` walks `levels_`, and `topoSort` fills `levels_` from
+**every** node. `prepare` refuses a cycle and nothing else — it never refuses
+an unreachable node. So a node with an input edge and no output edge is
+scheduled, run, and counted in the levelled schedule like any other.
+
+**The property that needed pinning is the absence of a reachability check.**
+A future optimisation that pruned nodes nothing consumes would be entirely
+reasonable-looking and would silently kill every broadcast tap, every meter and
+every recorder in the project. Planted exactly that — skip a node from
+`levels_` unless something consumes it — and it fails four checks, one of them
+a sidechain test of win's, because a sidechain source is also a node nothing
+consumes through `inputs`.
+
+A meter, a recorder and a broadcast tap are the same shape. This is not a
+feature for one node; it is the shape of a class of them.
+
+### 3. The real-time half is a ring buffer, and the dependency is already pinned
+
+The audio thread **pushes and never blocks**. ADR-0010 is the whole constraint:
+no allocation, no locks, no syscalls on that thread, and a network send is all
+three.
+
+`DNedic/lockfree` **3.0.1, MIT, is already in `tools/fetch_external.sh`** with
+role `later` — pinned by tag and commit per ADR-0024 and fetched by nothing
+yet. It is an SPSC ring buffer and this is what it was pinned for.
+
+Three things that follow and are easy to get wrong:
+
+- **Capacity is sized at `prepare`,** from the granted block size and the
+  transmit thread's worst-case latency. ADR-0049: the granted size, never the
+  requested one.
+- **An overrun is COUNTED, not blocked on.** If the transmit thread stalls —
+  and a network thread will — the audio thread drops the block and increments
+  a counter. Blocking would turn a dropped frame at the far end into a dropout
+  in the room, which is the wrong trade for a monitoring path.
+- **The consumer is an ordinary thread, not the message thread.** The message
+  thread drives the UI at a frame rate (ADR-0050), and a send that missed its
+  slot would show up as a dropped frame in the interface.
+
+### 4. RULED: IPC, not NDI — so there is no licence question
+
+**Director's ruling, 2026-09-20, taken after the section below was written:**
+NDI is not needed; a C++ IPC transport is acceptable. That closes this as an
+open item before any code depended on it, and it removes the licence problem
+entirely rather than answering it.
+
+What follows is the reasoning that was live when the question was open. It is
+kept because the *shape* of it recurs — a proprietary SDK inside a GPLv3
+project is the same question ADR-0048 had to answer for JUCE — and because the
+conclusion it reached is the one the ruling picked: **the boring transport was
+the better first target, and it turned out to be the only one we need.**
+
+### 4b. The question as it stood, and why the answer was not obvious
+
+**NDI is not open source.** It is Vizrt's SDK, distributed under its own
+agreement, and this project is GPLv3 (ADR-0015). Whether we may link it, and
+under what terms, is exactly the class of question that ADR-0048 had to answer
+for JUCE — where the finding was that JUCE is **AGPL**-3.0 rather than GPL-3.0,
+and it was found by reading the licence rather than by assuming.
+
+**I have not read NDI's terms and am not asserting what they say.** What this
+ADR decides is that the question is answered before any NDI code is written,
+not after, and that the answer goes in an ADR of its own.
+
+That is also why the mandate's "NDI/IPC" is left as two options rather than
+resolved here. A plain local IPC transport — a shared-memory ring or a local
+socket carrying raw frames — has no licence question at all, works for OBS
+through a small plugin, and is a smaller piece of work. It may turn out to be
+the better first target precisely because it is boring.
+
+### 5. What is not decided
+
+The wire format and whether it carries a clock. Whether a
+broadcast node appears in the device chain or as a track output. How many taps
+a project may have. Whether video sync matters, which decides whether
+timestamps travel with the audio.
+
+None of those block the Phase 2 label, and none of them are worth deciding
+before something needs them — which is the same reason ADR-0055 named its
+limits instead of generalising past them.
+
+---
+
+## ADR-0075 — The CLAP host is ours, and it needs no JUCE — `DECIDED` (2026-09-20)
+
+ADR-0052 mandated CLAP hosting and said the route to it was ours to build.
+It is built far enough to say what shape it has, and the shape is better than
+expected.
+
+### 1. There was never an add-a-format route, and that turned out to be lucky
+
+`clap-juce-extensions` builds JUCE plugins **as** CLAP; its own README says
+*"It does not support JUCE-based CLAP hosting."* So hosting meant implementing
+against `clap/clap.h` ourselves, which read as a large multiple of the VST3 job.
+
+It is not. **CLAP is a header-only MIT C API with no dependencies**, pinned at
+1.2.10 / `195b42a0` (ADR-0024). The consequence is structural rather than
+convenient:
+
+> **`ClapDevice` compiles into `adi_core`, so its tests run wherever the main
+> suite runs.**
+
+Precisely — and the first draft of this ADR said "all seven ABIs", which was
+checked afterwards and is wrong: **every ABI on which the test suites run at all — clang, gcc and MSVC, on arm64 and x86_64, plus all three hardened-standard-library jobs.** The one exception is the i386/ILP32 job, and not because CLAP fails there: that job never builds the tree or runs ctest. It hand-compiles `test_main.cpp` and `blob.cpp` with a 32-bit g++ to prove the `StreamReader` size_t behaviour, and nothing else.
+
+VST3 hosting, by contrast, can only ever be exercised in the single CI job that
+has JUCE. The format that looked like the bigger job still has the cheaper test
+story by a wide margin; the number is six configurations rather than seven.
+
+### 2. The contract needed no concessions, which is the panel's finding a third time
+
+`docs/DEVICE-CONTRACT-PANEL.md` said the plugin-shaped design was *"named after
+the format that conforms to it worst"*. Three places where the contract built
+for ADR-0057 fits CLAP exactly and had to bend for VST3:
+
+| | CLAP | VST3 |
+|---|---|---|
+| parameter value | `min_value`, `max_value`, `default_value` are **plain doubles** | a display string; `real_value` is NULL |
+| per-note pitch | TUNING is **semitones, −120..+120** — no conversion | `norm = plain/240 + 0.5`, plus a clamp |
+| per-note pressure | a **named** `CLAP_NOTE_EXPRESSION_PRESSURE` | no such type; MPE's Z mapped onto `kExpressionTypeID` by convention |
+| modulation | `CLAP_EVENT_PARAM_MOD`, separate from the value | the host resolves both into one number and shadows the user's setting |
+
+So a CLAP automation lane is `real` and stays meaningful with the plugin
+missing (SPEC §6.3.3), and ADR-0046's rule — a modulation offset never changes
+the stored value — is expressible rather than emulated.
+
+**Had the contract been shaped around VST3, every one of those would now be an
+exception.** ADR-0052 decision 4 exists for exactly this and it has now paid.
+
+### 3. Two mappings that are wrong by default
+
+- **`UINT32_MAX` is CLAP's infinite tail; ours is `INT64_MAX`.** A plain cast
+  turns "never suspend" into 4294967295 samples — about twenty-four hours,
+  which is wrong in a way nobody would ever observe. Mapped, not cast.
+- **`clap_id` is a `uint32`; `plugin_params.param_id` is TEXT.** Converted as
+  fixed-width lowercase hex, so it sorts stably and cannot collide with a VST3
+  id or a Pd symbol in the same column. Uppercase is refused on the way back:
+  one spelling per id, or two rows collide on a key that thinks they differ.
+
+### 4. The host callbacks report and return
+
+`request_restart`, `request_process` and `request_callback` may be called from
+any thread the plugin chooses. They increment a counter and nothing else.
+
+That is ADR-0066's rule arriving from the other format: rebuilding a graph on
+the thread a plugin called us from, while it waits, is the bug that ADR exists
+to prevent. It was written for VST3's `restartComponent` and applies here
+unchanged — which is a sign the rule was about the right thing.
+
+### 5. A fake plugin, and the hole that produced it
+
+CLAP is a plain C ABI, so a fake plugin is a struct of function pointers and
+about thirty lines. `tests/test_clap.cpp` has one, and it makes tail, latency,
+parameters and opaque state testable end to end **with nothing installed**.
+
+It exists because planting a defect found a hole. The `UINT32_MAX` mapping
+above had no test: every earlier check used a null plugin, which has no tail
+extension and returns `kInfiniteTail` from the guard instead. **The planted
+defect passed.** Four of five plants were caught and the fifth was not, and the
+fifth was the one worth catching.
+
+That is the second time this week a negative test has failed to test the thing
+it named — the first was a fixture seeded at `ord 0` in ADR-0057's branch. Both
+were found by planting rather than by reading, and neither would have been
+found by a test that only ever passes.
+
+### 6. What is not built
+
+> **Updated 2026-09-20, later the same day.** Four of the five items below were
+> built within hours of this being written, and a status list that says
+> "absent" about working code is the Blueprint-vs-Reality failure running
+> backwards — the same one this project keeps catching in handoffs. Corrected
+> here rather than left, per `collab/README.md`: when the docs and the code
+> disagree, decide which is the bug, fix that one, and say which in the log.
+>
+> **Built since:** the real `process` call, `.clap` bundle loading
+> (`clap_entry`, the factory, `dlopen`/`LoadLibrary`), `setParam` delivering
+> through the event queue, and `audio-ports` — which turned out to be
+> mandatory rather than optional, because hardcoding one bus each way crashed
+> Pro-Q 3 inside its own `process` (ADR-0087).
+>
+> **Still absent:** `note-ports`, `gui`, `thread-check`.
+
+The list as originally written:
+
+`ClapDevice::process` passes audio through; the real call needs
+`clap_audio_buffer_t` wiring and a `clap_process_t`, and a half-built one that
+silently passed audio would look like a plugin doing nothing rather than like
+an unfinished host.
+
+Also absent: loading a `.clap` bundle from disk (`clap_entry`, the factory, and
+`dlopen`/`LoadLibrary`), `setParam` delivering through the event queue rather
+than recording one pending value, and every extension beyond params, state,
+tail and latency — `audio-ports`, `note-ports`, `gui`, `thread-check`.
+
+None of that changes the decisions above, and an untested generalisation is
+worth less than a named limit (ADR-0055).
+
+---
+
+## ADR-0076 — Two tiers of device UI: the DAW renders what it can read, and never embeds what it cannot — `DECIDED` (2026-09-20)
+
+**Product owner's call.** The bottom Device Rack keeps one uniform workflow, so
+DAW-generated UI and third-party custom GUIs are strictly separated.
+
+### The two tiers
+
+**Tier 1 — inline, DAW-rendered.** Pure Data patches (ADR-0035) and native C++
+nodes (ADR-0062: vocoder, splitters, shaper) are **headless**. They declare
+parameters and nothing else; the DAW reads the declaration and draws uniform
+knobs directly in the horizontal bottom panel, Max-for-Live style.
+
+**Tier 2 — floating, plugin-rendered.** Third-party CLAP and VST3 plugins
+**never** embed their GUI in the bottom panel. In the rack they are standard
+blocks showing macro controls, collapsible the way Ableton's are. Their own
+interface opens in a free-floating OS window.
+
+### Tier 1 needs nothing new, and that is worth stating
+
+`DeviceInstance` already exposes exactly what a renderer needs:
+`paramCount()`, `paramAt()` giving name, unit, domain, real range and default,
+and `getParam()`/`setParam()`. A headless device is one whose `stateRoles()` is
+empty and whose parameters are the whole of it.
+
+So Tier 1 is not a feature to build into the device layer — it is what the
+device layer already is, and ADR-0075 showed why: a CLAP parameter arrives with
+`min_value`, `max_value` and `default_value` as plain doubles, which is
+precisely what "draw me a knob with the right range and unit" requires. A
+contract that had been shaped around VST3's normalised-only values would have
+made Tier 1 draw 0..1 knobs with no units on them.
+
+### The mechanism for Tier 2, corrected
+
+The mandate says to *"leverage CLAP's `is_visible` state to suspend GPU/UI
+rendering when these floating windows are closed."* **There is no `is_visible`
+in `clap/ext/gui.h`** — checked rather than assumed, because naming a specific
+API in a decision is a claim.
+
+The intent is right and the actual API serves it better:
+
+1. **Floating is first-class, not a workaround.** `gui->create(plugin, api,
+   is_floating)` takes floating as a parameter. Tier 2 passes `true` and the
+   plugin makes its own OS window; it never has to be reparented into ours.
+   That is exactly the separation this ADR wants, supported by the format.
+2. **Visibility is host state, which is why there is nothing to query.** The
+   host calls `show()` and `hide()`, so the host already knows. A getter would
+   be a second copy of a fact we own.
+3. **`hide()` IS the suspension signal**, and `destroy()` is the stronger one.
+   A plugin is required to stop drawing when hidden; there is no separate GPU
+   API to call and none is needed.
+4. **The plugin tells us when the user closes its window**, through
+   `clap_host_gui.closed(host, was_destroyed)`. Without handling that, the
+   host's idea of visibility drifts from reality the first time somebody
+   clicks the red button — which is how a "closed" window keeps rendering.
+
+VST3's equivalent is `IPlugView` with no parent, and JUCE already wraps that.
+The tiers are a product rule, not a format one, and both formats support it.
+
+### What this rules out, named because it is a real cost
+
+**A plugin's own GUI will never sit inline in the rack**, and some users prefer
+that. The trade is deliberate: an embedded third-party GUI sets the height of
+the whole bottom panel to whatever the largest plugin wants, and one rack row
+then contains a 200-pixel synth beside a 700-pixel one. Uniformity in the rack
+is worth more than inline access to a GUI that opens in a window a keystroke
+away.
+
+**And macros become load-bearing.** If the rack shows macros rather than
+parameters for Tier 2, then ADR-0060's macro mapping is the only way to
+automate a third-party plugin without opening its window. That raises the
+priority of macros from "rack convenience" to "the Tier 2 control surface", and
+it should be built with that in mind.
+
+### Not decided
+
+Which parameters a Tier 2 block shows before any macro is mapped — the first
+eight, the ones marked automatable, or nothing. Whether a Tier 1 panel is
+scrollable or paged when a Pd patch declares forty parameters. Neither blocks
+the tier split, and both want a real patch in front of them.
+
+---
+
+## ADR-0077 — Realising a plan into a live graph: the junction, the chain, and what a VCA is not — `DECIDED` (2026-09-20)
+
+`plan.hpp` predicted this step and called it small: *"a later step and a small
+one: walk the nodes, construct, `connect`, `setOutput`."* The walk is indeed
+short. It also contains four decisions the plan deliberately does not make, and
+three of them are only visible once real nodes exist.
+
+### Decision
+
+**1. Every track keeps a summing junction (`MixNode`), even when it has
+devices.**
+
+The obvious alternative is to make the first plugin the head of the track's
+chain and save a buffer copy. It is wrong, and the reason is identity rather
+than performance: **a track's node id would then change the moment someone adds
+or removes a plugin.** Every id held across that edit goes stale — including the
+ones `computeCompensation` just sized delay lines against (ADR-0058), and
+including whatever the UI, automation and metering hold.
+
+The cost is one `memcpy` per track per block, and it is named rather than
+hidden. It also shrinks to nothing on its own schedule: the junction is where
+the strip's gain, pan and phase invert go, at which point it stops being a copy
+and starts being the thing it was always shaped like.
+
+**2. A track is a CHAIN, not a node.**
+
+A plan edge joins two *tracks*. Here it joins the **tail** of one chain to the
+**head** of another, so a plugin on the source is upstream of the destination
+and a plugin on the destination is downstream of the sum. `inputFor` and
+`outputFor` are separate accessors for exactly this reason; a single `nodeFor`
+would be right half the time and silently wrong the other half.
+
+**3. A VCA gets NO audio node.**
+
+The planner emits one because a VCA *is* a track and the plan describes tracks.
+Realising it would add a node processed every block to move nothing. `outputFor`
+a VCA is `kInvalidNode`, and that is an answer, not a failure — a routing row
+that names one is reported as a problem and the rest of the project is still
+realised.
+
+**4. A cyclic plan constructs nothing at all.**
+
+`Graph::prepare` would refuse a cycle too (ADR-0055), but only *after* every
+node exists and **every plugin in the project has been instantiated** — seconds
+of loading to reach a conclusion the plan already had. So realisation refuses
+first. `GraphPlan` gained an explicit `cycle` flag for it: deciding this by
+searching `problems` for a sentence makes the refusal depend on the wording of
+an error message.
+
+**5. Devices are injected, never constructed here.**
+
+`realize.cpp` lives in `adi_core` and compiles on every ABI, so it cannot know
+what a `Vst3Device` or a `ClapDevice` is. It asks a `DeviceChainFn` for
+`Node*`s. This is the same seam ADR-0052 decision 4 put in `DeviceNode`, applied
+one level up, and it is what lets the whole path — rows to plan to graph to
+audio — be tested with no plugin SDK anywhere near it.
+
+### Compensation is not a step here, and that is the property
+
+`Graph::prepare` computes delay from what the nodes declare (ADR-0058 decisions
+2–5). Realisation does no arithmetic. So a chain of three plugins reporting 64,
+0 and 128 is compensated **because it was built**, not because the realiser
+remembered to compensate it. There is exactly one place latency becomes delay.
+
+It is still tested here, separately from `test_graph.cpp`, because the two fail
+separately: `test_graph` proves the arithmetic against hand-built nodes, and
+this proves the arithmetic is *reached* when the graph came from a project. **A
+realiser that wired a chain backwards would leave every graph test green.**
+
+### Verified non-vacuously
+
+Four planted defects, each caught: edges leaving a track at its junction rather
+than its chain tail (6 checks), a VCA getting a node after all (5), a cyclic
+plan built anyway (5), and the chain hanging off the junction rather than
+running in series (2).
+
+Two of them first failed to **compile** — `if (false && ...)` trips MSVC C4127
+under `-Werror` — and were re-planted with a runtime condition. Worth recording
+as its own rule: **a defect that does not build has not been tested**, and a
+planting harness that does not check the build's exit code reports every defect
+as survived. Ours did, once, and the giveaway was four survivals with zero
+failing checks between them.
+
+### The fixture that cost a round
+
+`ToneNode` declared `tailSamples() == 0`. On a **source** that says "I stop when
+nothing drives me", and nothing drives a generator, so ADR-0043 suspended it on
+block 1. Every audio assertion read `0.0` while every structural assertion
+passed — which looks exactly like a realiser that forgot to connect anything.
+This is the third time this specific fixture error has appeared. The rule:
+**anything that is a source inherits `kInfiniteTail`.**
+
+### Not decided
+
+Where the strip's gain, pan, mute and solo attach — the junction is shaped for
+them, but pan law and the global nature of solo are decisions of their own.
+Whether a pure pass-through junction can alias its input and output buffers to
+skip the copy entirely.
+
+---
+
+## ADR-0078 — `NodeIo` addresses the BLOCK; `frames` and `blockOffset` address the segment — `DECIDED` (2026-09-20) — **CLARIFIES ADR-0042**
+
+ADR-0042 split a block at every distinct event frame. It did not say, in a place
+an implementer would read, **which coordinate system the pointers are in.** Four
+independent implementations then got it wrong the same way:
+
+| path | who runs through it |
+|---|---|
+| `passThrough()` | `MissingDevice`, and every bypassed insert |
+| `ClapDevice::process` | both audio copies, and the `PROCESS_ERROR` silence |
+| `Vst3Device::process` | both audio copies |
+
+### Decision
+
+**`NodeIo::in`, `out` and `sidechain` point at the start of the BLOCK.
+`frames` is the length of THIS SEGMENT. `blockOffset` is where the segment
+begins inside the block.** A node reads and writes `ptr[c] + io.blockOffset`,
+for `io.frames` samples, and nowhere else.
+
+A device with segment-sized internal buffers applies the offset on the *graph's*
+side of every copy and leaves its own buffers starting at zero.
+
+### What the bug actually did
+
+Every segment was written at index 0. A block ADR-0042 split into four therefore
+emitted the fourth segment at the block start and left the rest of the block
+holding **the previous block's audio**. At ADR-0054's 500 Hz update rate a block
+carrying a controller stream is split many times, so for an MPE+ track this was
+the normal case and not a corner. ADR-0011's missing-plugin path runs through
+the same function, which means **a project opened without its plugins was the
+worst affected** — the one situation where the user is already unsure whether
+what they are hearing is right.
+
+### Why nothing caught it
+
+**No device test set `blockOffset`** — zero occurrences across `tests/`. Every
+fixture used a single full-block segment, and with `blockOffset == 0` the wrong
+code and the right code are identical. A default that makes a defect invisible
+is worse than no coverage, because the suite reports confidence it does not
+have.
+
+The tests added with this entry check the **whole buffer**, not just the
+segment. Writing to the wrong place is half the defect; the samples that should
+have been written and were not are the other half, and a test that only inspects
+the segment sees neither.
+
+### Enforcement
+
+Segment-offset coverage now exists for `passThrough` (both the copy and the
+silence path) and for `ClapDevice::process` (both copies and the error path),
+and each fails on every assertion against the old code. `Vst3Device` is behind
+`ADI_WITH_JUCE`, does not compile on the Windows machine, and is fixed by
+inspection — it rides on CI's JUCE job and is called out as the one part of this
+that no test on this branch exercises.
+
+---
+
+## ADR-0079 — A latency change is a TAP MOVE, not a second render — `DECIDED` (2026-09-20) — **AMENDS ADR-0066 decisions 1 and 4**
+
+ADR-0066 is mine, and two of its decisions do not survive contact with the code
+they describe. Recording that rather than quietly building something else.
+
+### What ADR-0066 decision 4 asked for, and why it cannot be built
+
+> *"the old and new schedules both render one block and are crossfaded."*
+
+**A `Graph` does not own its nodes** — `graph.hpp` says so explicitly, because
+ADR-0042 decision 5 requires a device to survive a graph rebuild. So two
+published schedules reference the *same* `Node*`s.
+
+Rendering both therefore calls `process()` twice on every node in the block. **A
+plugin is stateful.** A reverb rendered twice advances its tail twice, and the
+second render begins from a state the first already advanced — so the two
+renders are not two views of one block, they are consecutive blocks. Crossfading
+them yields neither alignment, and on a feedback delay it yields something
+unrelated to either.
+
+There is no fix inside that shape. Snapshotting plugin state per block is not
+available (opaque bytes, ADR-0038, and far too slow), and duplicating the nodes
+means duplicating the plugins.
+
+### What decision 1 asked for, and why it defeats the crossfade independently
+
+> *"It carries the levels, the per-edge delay amounts, **and the delay buffers
+> themselves**."*
+
+**A freshly allocated delay buffer has no history.** Fading from the old ring
+into a new, zero-filled one is a fade to *silence* for `newDelay` samples — not
+a transition between two alignments. The history cannot be copied in off-thread
+either, because the audio thread is still writing it.
+
+### The observation both of these missed
+
+**Only the delay amounts differ between the two schedules.** A node never sees
+the compensation: it is applied on the edges, between nodes. Under either
+schedule every node renders bit-identically. So the transition is entirely a
+property of the delay lines, and that is where it belongs.
+
+### Decision
+
+**1. A compensated edge is a ring with a movable TAP, not a buffer sized to the
+delay.** `DelayLine::prepare(channels, capacity)` allocates for the largest
+delay the edge will ever be asked for; `setDelay` chooses the tap. The ring is
+`capacity + 1` long, because the write happens before the read and a tap at the
+full capacity must not land on the slot just written — with a ring of exactly
+`capacity` the longest delay silently becomes no delay at all.
+
+**2. A latency change moves the tap, crossfaded across one block.** Both taps
+read the **same** history, which is the whole reason this works where a
+published buffer does not. The nodes render exactly **once**.
+
+**3. While the new delay fits the ring, there is nothing to publish.**
+`beginGlide` writes two atomics; the audio thread reads them at the top of the
+next segment. No new buffers, no pointer swap, no epoch, no reclamation. ADR-0019's
+machinery is for a change of *topology or capacity* — it is not needed for a
+change of *number*, and using it there was solving a harder problem than the one
+in front of me.
+
+**4. Headroom is opt-in and its absence is reported, never worked around.**
+`Graph::setLatencyHeadroom(n)` adds `n` samples of spare capacity to every
+compensated edge. The default is **0**, which allocates exactly what the graph
+allocated before this existed. `retapLatency()` returns **false** when some edge
+needs more than its ring holds — that is the signal to build a new schedule
+off-thread, and it is the one case where ADR-0066's original shape is still
+right.
+
+**5. A partial retap is applied, not rolled back.** When one edge fails to fit,
+every edge that did fit has already moved. A partial correction is closer to
+right than none, and the graph is about to be rebuilt anyway.
+
+**6. The crossfade is still honest.** ADR-0066's fourth paragraph stands
+unchanged: a latency change *is* a time shift, the two taps genuinely differ, and
+no crossfade makes that inaudible. What it buys is that the difference arrives
+as a brief flange instead of a click.
+
+### What this costs
+
+`channels * headroom * 4` bytes per compensated edge, and only when headroom is
+set. At 512 samples and stereo that is 4 KB an edge. The honest limitation: a
+latency change **larger than the headroom** still needs the full off-thread
+rebuild, so headroom is a bet on how far a plugin will move, not a guarantee.
+Linear-phase EQ — the case ADR-0066 named — sits in the low thousands of samples.
+
+### Verified non-vacuously
+
+Five planted defects, all caught: `beginGlide` accepting a delay that does not
+fit (3 checks), the ring sized to exactly the capacity (2), the `memcpy` fast
+path swallowing a pending glide on an edge currently at zero (2), the glide never
+ending so the tap never settles (4), and the tap switching hard instead of
+crossfading (2).
+
+**The fifth needed an assertion the first draft did not have.** Checking that
+every sample of the fade lies *between* the two taps does not distinguish a
+crossfade from a hard switch — a jump straight to the new tap is inside that
+bracket at every sample. It takes an assertion that the fade *starts* at the old
+tap. Written down because "the value is bounded by the endpoints" is a natural
+thing to assert about an interpolation and is satisfied by not interpolating.
+
+ADR-0010's claim is checked directly rather than argued: global `operator new` is
+replaced in `adi_retap_tests`, and the switch, the crossfade block and the two
+blocks after it allocate **zero** times. The counter is itself proven live by
+allocating on purpose immediately afterwards.
+
+---
+
+## ADR-0080 — A docked panel's side is a property of the panel, and so is its width — `DECIDED (direction)` (2026-09-20) — **COMPANION TO ADR-0063**
+
+**Director's call.** The DAW defaults to an Ableton-style single window — browser
+and search on the left, mixer and master on the right — and must be able to
+**swap those two sides instantly**, for people coming from Bitwig or Cubase. The
+mandate also prescribes the mechanism: *"ensure the top-level JUCE component
+layout utilizes a FlexBox or Grid structure to make this pane-swapping
+trivial."*
+
+Adopted. The mechanism is adopted as an implementation detail rather than as the
+decision, because it is not the part that makes the swap trivial, and taking it
+as the design invites a specific bug.
+
+### Where the prescribed mechanism is not the load-bearing part
+
+`juce::FlexBox` is a **layout algorithm invoked inside `resized()`**. It holds no
+state between calls: you build it, call `performLayout`, and it is gone. So it
+cannot itself "hold" an arrangement that gets swapped.
+
+Swapping is trivial under FlexBox. It is equally trivial under plain
+`setBounds`. What decides whether it is trivial is not the algorithm but whether
+**a panel's identity is separated from its slot**:
+
+```
+browser_.setBounds(leftArea);          // no layout algorithm rescues this
+mixer_.setBounds(rightArea);
+
+for (auto& [panel, slot] : layout_)    // and none is needed for this
+    place(panel, slot);
+```
+
+FlexBox is a good choice for the second form — it handles the nested toolbar and
+bottom-panel cases cleanly, and `flexGrow` expresses "the arrangement takes the
+remaining width" without arithmetic. It is adopted on those merits. It is not
+what makes the swap possible.
+
+### The bug the framing invites, and the decision that prevents it
+
+**Width must be stored per PANEL, not per SIDE.**
+
+`leftWidth` / `rightWidth` is the obvious shape and it is wrong. A user with a
+280-pixel browser and a 620-pixel mixer swaps sides and finds a **620-pixel
+browser** — the panel kept the slot's width instead of its own. Nobody reports
+this as a data-loss bug; they report that the swap "resizes everything", and
+then they stop using it.
+
+So the persisted state is a small record per panel: which side, and how wide.
+Not a `bool swapped` with two widths beside it.
+
+### Decisions
+
+1. **Layout is an ordered mapping from panel to slot**, not a boolean. `Side {
+   Left, Right }` per panel costs a line more than `bool swapped` and does not
+   have to be redesigned the first time a third dockable panel exists.
+
+2. **A panel's width belongs to the panel.** It follows the panel across a swap.
+   Stored in `ui_view` alongside ADR-0063's dock state — same table, same
+   persistence, so a workspace remembers side and width together or neither.
+
+3. **Minimum widths are per panel, and the swap respects them.** A mixer showing
+   N strips has a much larger sensible minimum than a browser. On a narrow
+   window the two minima may not both fit after a swap. The behaviour is to
+   **clamp to the minima and take the remaining width from the arrangement**,
+   and to refuse the swap outright only when even the minima do not fit — with a
+   message, not silently. Squashing the mixer to 120 pixels is the outcome to
+   avoid, because it looks like a rendering fault rather than a space problem.
+
+4. **A swap REORDERS; it never reconstructs.** This is ADR-0063 decision 1
+   applied to the same components for a different reason: a browser rebuilt on
+   swap loses its scroll position, its selection and its search text, and a
+   mixer rebuilt on swap loses scroll and any open plugin editor. Same component
+   instances, new bounds.
+
+5. **FlexBox or Grid at the top level, adopted as prescribed** — with the note
+   that neither provides **draggable splitters**. JUCE's flex layout has no
+   notion of a user dragging a divider. The splitter components own the widths,
+   write them into the per-panel state, and the layout pass consumes them. So
+   the structure is: persisted per-panel widths → splitters that edit them →
+   FlexBox that places the panels in the current order.
+
+### What this does not decide
+
+Whether the bottom panel (rack, editors) participates in side-swapping at all —
+it is horizontal and the mandate is about the vertical panes. Whether a swap
+animates. Whether the default is per project, per workspace or per install;
+ADR-0063 put dock state in `ui_view`, which is per project, and a preference
+this personal probably wants to be per install as well. That interaction is
+worth resolving once, for both ADRs, rather than separately.
+
+**This lands in mac's lane.** `docs/UI-ARCHITECTURE.md` is theirs and the
+top-level component hierarchy is theirs to build; this entry records the
+decision and the one trap in it, not the implementation.
+
+---
+
+## ADR-0081 — An event's frame is block-relative; the device subtracts, and a mismatch is counted — `DECIDED` (2026-09-20) — **EXTENDS ADR-0078**
+
+ADR-0078 fixed the coordinate system for **audio**: `NodeIo::in`/`out` address
+the block, `frames` and `blockOffset` address the segment. The same question
+exists one layer up for **events**, it had the same answer nowhere written
+down, and the CLAP device got it wrong in a way no test could see.
+
+### The two origins
+
+- **`engine::Event::frame` is BLOCK-relative**, and must be. events.hpp already
+  says why: a segment-relative frame would have to be rewritten every time the
+  scheduler split differently, and a value that changes with how it was
+  scheduled is not a property of the music.
+- **A plugin handed one segment wants offsets inside that segment.** CLAP's
+  `clap_event_header.time` and VST3's `Event.sampleOffset` are both relative to
+  the buffer they arrive with.
+
+**So the device subtracts `io.blockOffset` on the way in.** Nowhere else — the
+graph keeps block coordinates end to end, and only the last hop converts.
+
+### What was actually broken
+
+`ClapDevice::process` **never read `io.events` at all** — zero occurrences in
+`clap_host.cpp`. It sent only what `pushEvent` had queued plus pending
+parameter changes at frame 0, so the scheduler's per-segment `EventSpan` never
+reached a plugin. Every claim this project has made about MPE+ end to end was,
+until now, about a path that stopped one function short.
+
+### A mismatch is COUNTED, and that is the part worth keeping
+
+The first version refused an out-of-range event by returning `false` and saying
+nothing. Planting the defect this ADR exists to prevent — pass block-relative
+frames straight through — then produced **"1 of 42 events arrived"**, and the
+assertion written to catch it, *every offset is inside its own segment*, could
+not fail at all: the bound rejected the events before any bad offset could be
+observed.
+
+Two things wrong there, and both are general:
+
+1. **A silent refusal turns a coordinate bug into a missing-data bug**, which
+   is a much harder thing to diagnose and exactly the shape this project keeps
+   finding weeks late.
+2. **A guard that rejects bad input can hide the defect it guards against**,
+   so the guard needs its own counter or its own test. Removing the bound
+   entirely passed every check before one was added.
+
+`ClapEventList::outOfRange()` is therefore separate from `dropped()`: a
+capacity drop means the block was busy, an out-of-range means the two sides
+disagree about the coordinate system. They want different responses and the
+same counter would have conflated them.
+
+### The test, which is the one that was asked for
+
+A real `Graph` at 4096 frames, a 500 Hz expression stream on one note — ADR-0054's
+rate, one update every 96 samples — driven through the actual split path so the
+block is segmented 40-odd times, asserting:
+
+- every event reaches the plugin,
+- every offset is inside its own segment,
+- every value is exactly what was sent, and all remain **distinct** at one
+  14-bit LSB apart, and
+- `outOfRange()` is zero.
+
+Four defects planted, four caught: block-relative frames passed through, the
+segment bound removed, the bound off by one, and `io.events` not read. The
+middle two **passed** before this ADR's counter and bound test existed.
+
+None of it can fail in a block with a single segment, which is why every
+earlier CLAP test missed it. A scheduler test that never splits is a test of
+the unsplit case.
+
+---
+
+## ADR-0082 — The latency coalescer polls, its clock is an argument, and a burst has a ceiling — `DECIDED` (2026-09-20) — **IMPLEMENTS ADR-0066 decision 2**
+
+ADR-0066 decision 2 said a latency report is coalesced rather than acted on
+immediately, and left the shape open. ADR-0079 replaced what it does at the far
+end — a tap move, not a republished schedule. This is the middle: the thing that
+turns a stream of reports into at most one `Graph::retapLatency()`.
+
+Three decisions, each ruling out the obvious alternative.
+
+### 1. It POLLS, because the producer has no thread affinity
+
+mac's constraint, and it is the load-bearing one: **CLAP's `request_restart` may
+be called from any thread the plugin picks**, and VST3's `audioProcessorChanged`
+is no better. A callback-driven coalescer would therefore run the recompute on
+the plugin's thread while the plugin waits — which is precisely the bug ADR-0066
+was written to prevent, reintroduced by the thing meant to implement it.
+
+So the reporters do exactly one thing — bump an atomic and return — and the
+coalescer reads them from a thread it chose. Polling is usually the lazy answer.
+Here it is the only one that keeps the work where we want it, and the cost is
+one acquire load per device per tick.
+
+**This forced a correction in the producers.** `ClapHostGlue` incremented
+`restarts_`, `processes_` and `callbacks_` with a plain `++` on a plain
+`std::uint64_t`, directly under a comment reading *"the plugin may call this
+from any thread"*. The comment was right and the code contradicted it: a
+non-atomic read-modify-write from an arbitrary thread is a data race whatever
+the width, and on the i386 CI target a 64-bit non-atomic read can tear, so the
+counter could be observed holding a value it never had. All three are now
+`std::atomic<std::uint64_t>`. A consumer cannot be correct on top of a racy
+producer, however careful the consumer is.
+
+### 2. The clock is an ARGUMENT, not a call to `std::chrono` inside
+
+`poll(nowMs)` takes the time from the caller. A coalescer that reads the clock
+itself can only be tested by sleeping, and a sleeping test is slow, flaky on a
+loaded CI box, and — the part that matters — **unable to exercise the boundary
+it exists to implement**. A `std::this_thread::sleep_for(50ms)` cannot
+distinguish 49 from 50.
+
+With the clock injected, the test asserts exactly that: a report at t=1000 is
+not acted on at t=1049 and is acted on at t=1050. That assertion is the whole
+specification of the quiet period, and it runs in microseconds.
+
+### 3. A burst has a CEILING, not only a quiet period
+
+A pure debounce has a failure mode that looks like health: a plugin reporting on
+every block is never quiet, so the timer is always resetting, so nothing ever
+fires — and the compensation stays wrong indefinitely while the coalescer looks
+busy. Some plugins do exactly this.
+
+`maxWaitMs` bounds it. A burst is acted on after that long whether or not it has
+gone quiet, and those are counted separately (`maxWaitTrips`) so "this session
+retaps constantly" is diagnosable rather than mysterious. Defaults: 50 ms quiet,
+500 ms ceiling.
+
+### Smaller decisions that each cost a test
+
+- **A source is SEEDED at registration, not zeroed.** A device that had already
+  reported once before it joined would otherwise look like a fresh report the
+  moment it was added, so opening a project would retap the graph once per
+  plugin.
+- **Every source is sampled on every poll, even after one has changed.**
+  Stopping early leaves the others' `seen` stale, so their reports are
+  attributed to the next burst and counted twice.
+- **A failed retap sets a sticky flag.** `retapLatency()` returns false when an
+  edge needs more than its ring holds (ADR-0079 d4). That is not an error to
+  swallow: it is the signal that this change needs new buffers. The flag is
+  sticky because whoever rebuilds is not necessarily whoever polls.
+- **Changing the set of sources is a rebuild, not a retap.** The topology
+  changed, so the rings must be sized again regardless.
+- **A report is a hint to re-read, never the new number.** The coalescer never
+  carries a latency value; it observes that a counter moved and asks the graph
+  to re-read what the nodes now declare. A report that arrives with a value is a
+  report that can be stale by the time it is applied.
+
+### Verified non-vacuously
+
+Six planted defects, all caught: no debounce (16 checks), no ceiling (4), the
+burst not extended by later reports so it fires on the first report's clock (6),
+sources zeroed rather than seeded (2), sampling stopping at the first change (4),
+and a failed retap swallowed (3).
+
+One of them failed to **compile** first — `const bool quiet = true;` trips MSVC
+C4127 under `-Werror`. This is the second time; ADR-0077 records the rule and
+this is it recurring. Re-planted as `>= 0`, which is a runtime comparison the
+compiler will not fold.
+
+The concurrency claim is checked with a real second thread rather than argued.
+**That test failed first for a reason worth recording:** it polled a fixed 500
+times, and 500 polls of trivial work finish long before a spawned thread has
+started, so it asserted "reports from another thread were seen" against a thread
+that had not yet run. It now polls until the producer signals completion. A
+timing test written as a fixed iteration count is testing the scheduler, not the
+code.
+
+---
+
+## ADR-0083 — AudioGridder is integrated natively, and the server is forked to host CLAP — `DECIDED (direction)` (2026-09-20) — **REFINES ADR-0053**
+
+**Director's mandate.** ADR-0053 established that a remote plugin is a device
+and the network never touches the audio thread. Two decisions on top of it.
+
+### 1. No client wrapper; the browser shows remote plugins beside local ones
+
+The stock AudioGridder client is a VST3/AU plugin you insert, which then hosts
+the remote one. **We do not use it.** The client logic is embedded in the DAW,
+and a server's plugins populate the left-pane search browser alongside local
+ones, distinguished by a small server icon and nothing else.
+
+Why this is worth the work rather than shipping the wrapper:
+
+- **The wrapper is a device that contains a device**, and this project already
+  decided that shape is wrong. ADR-0052 decision 4 and ADR-0053 decision 1 both
+  say a remote plugin goes behind the *same* `DeviceInstance` as a local one,
+  so that hybrid tracks, modulation, suspension and delay compensation are
+  implemented once. A wrapper reintroduces the second chain those ADRs exist to
+  prevent.
+- **Discovery is the actual feature.** A user who has to remember which
+  machine a plugin is on, insert a wrapper, and browse inside it is doing the
+  host's job. One browser with one search box is the whole point.
+- **Latency is already ours to handle.** ADR-0058's compensation reads
+  `Node::latencySamples()`, and a remote device's latency is its own plus the
+  link's. Through a wrapper that number is hidden inside somebody else's
+  plugin; natively it is a declaration like any other.
+
+`devices.remote_host_id` already exists for this (ADR-0053), and
+`plugin_refs.format` is untouched: a remote VST3 is a VST3. **Where it runs is
+not what it is.**
+
+### 2. The server is forked to host CLAP
+
+Upstream AudioGridder's server hosts VST2, VST3 and AU. It does not host CLAP,
+and ADR-0052 mandates CLAP.
+
+**We fork the server and inject our own CLAP hosting into it** — the
+`clap/clap.h` code written for `ClapDevice` (ADR-0075). That is possible
+specifically because of how that was built: no JUCE, no `clap-juce-extensions`,
+a header-only MIT dependency and a plain C ABI. The host side is portable into
+another codebase because it never depended on ours.
+
+That was not why it was written that way, and it is worth recording as a
+payoff rather than a plan: ADR-0075 chose to build from scratch because there
+was no add-a-format route, and the reusable artefact is a side effect.
+
+### What has to be checked before any of this is built
+
+- **AudioGridder's licence.** Unverified here, and this project has been caught
+  twice on exactly this — JUCE is AGPL rather than GPL (ADR-0048), and NDI was
+  dropped once its terms became the question (ADR-0074). A fork we ship is a
+  distribution, so the terms decide whether the fork can be public, must be,
+  or cannot be. **Answer this before writing code, not after.**
+- **What the server and client actually speak.** A fork that adds CLAP hosting
+  has to carry CLAP's richer event set over that wire, and ADR-0054's
+  floating-point per-note expression is the part most likely not to survive a
+  protocol designed around VST3 and MIDI. If the wire quantises, the fork
+  inherits the exact failure ADR-0081 was written about.
+- **Whether the link's latency is measurable or merely estimated.** ADR-0058
+  compensates a declared number; a number that drifts is worse than one that
+  is honest about being unknown.
+
+### Not decided
+
+The discovery protocol for finding servers. Whether a server's plugin list is
+cached in the project or re-fetched. What happens to a project opened with a
+server unreachable — ADR-0011's missing-plugin rule is the obvious answer and
+should probably just be applied, but a remote device has a second failure mode
+(reachable later) that a missing local plugin does not.
+
+---
+
+## ADR-0084 — CLAP already says why it wants a restart; we were not listening — `DECIDED` (2026-09-20) — **REFINES ADR-0082**
+
+ADR-0082's coalescer treats every `request_restart()` as "re-read latency".
+win named the gap precisely: a latency change is only one cause, a port-layout
+change is another, and that needs a graph **rebuild** rather than a tap move.
+He offered two shapes — the glue distinguishes them, or every CLAP restart
+escalates — and left the format question to me.
+
+**Neither was needed. CLAP distinguishes them already, and we were not asking.**
+
+### What the headers say
+
+`ext/latency.h`:
+
+> `clap_host_latency.changed(host)` — *Tell the host that the latency changed.
+> The latency is only allowed to change during `plugin->activate`. If the
+> plugin is activated, call `host->request_restart()`.* `[main-thread &
+> being-activated]`
+
+`ext/audio-ports.h` has `clap_host_audio_ports.rescan(host, flags)`, with
+flags naming exactly what moved: `NAMES`, `FLAGS`, `CHANNEL_COUNT`,
+`PORT_TYPE`, `IN_PLACE_PAIR`, `LIST`.
+
+So the **specific notification arrives before the generic one**.
+`request_restart()` is "reactivate me"; the extension callback already said
+why. The reason we saw only the generic one is that `ClapHostGlue::getExtension`
+returned `nullptr` for everything — we offered no host extensions at all, so a
+plugin had no channel to tell us anything.
+
+### Decision
+
+1. **The glue offers `clap_host_latency` and `clap_host_audio_ports`**, and
+   counts their callbacks separately: `latencyChanges()` and `portChanges()`.
+2. **`latencyChanges()` is the coalescer's cheap path** — ADR-0079's tap move.
+   `portChanges()` escalates to a rebuild.
+3. **Only SHAPE flags count as a port change.** `CHANNEL_COUNT`, `PORT_TYPE`,
+   `IN_PLACE_PAIR` and `LIST` change what the graph is wired to.
+   `NAMES` and `FLAGS` are cosmetic and a rebuild for a renamed port is a
+   graph swap for a label.
+4. **A restart with no preceding notification escalates**, counted as
+   `unexplainedRestarts()`. The conservative answer differs per question and
+   this is the one that cannot corrupt: a needless rebuild costs a graph swap,
+   a missed port change plays the wrong channel count. Same reasoning as
+   ADR-0055's tail default and the opposite of ADR-0058's latency default,
+   for the same reason both are what they are.
+
+VST3 keeps the cheap path unconditionally, because `restartComponent` takes a
+flag word and `kLatencyChanged` is one bit of it — that format never had this
+ambiguity.
+
+### The second gap, which is smaller and worse
+
+`request_callback` incremented a counter and **nothing ever called
+`plugin->on_main_thread()`** — zero occurrences in `src/`. A CLAP plugin that
+defers work that way never ran it.
+
+Nothing fails when this is broken. The plugin does less than it was written to
+do, quietly, and the symptom is whatever that deferred work was: a preset that
+does not finish loading, a scan that never completes. `dispatchMainThread()`
+now drains it.
+
+It calls `on_main_thread` on **every** registered plugin rather than the one
+that asked, because `request_callback` carries no identity — there is no way
+to know which. Calling a plugin that did not ask is explicitly allowed and
+costs a no-op; not calling one that did is silent work never done.
+
+### One thing this does not fix
+
+A latency change in CLAP is *"only allowed during `plugin->activate`"*. So the
+CLAP timeline is: plugin asks for restart → host deactivates → host activates
+→ plugin reports new latency during that activate. Our cheap path re-reads
+latency without reactivating, which is right for VST3 and may read a stale
+value on CLAP.
+
+Named rather than guessed at, because it wants a real plugin that moves its
+latency to answer, and the answer decides whether CLAP's cheap path is a tap
+move at all or always a deactivate/activate pair that happens to be cheaper
+than a rebuild.
+
+---
+
+## ADR-0085 — Escalation grows ONE edge's ring, primed against the old one — `DECIDED` (2026-09-20) — **COMPLETES ADR-0079 decision 4**
+
+ADR-0079 decision 4 said `retapLatency()` returns false when an edge needs more
+delay than its ring holds, and called that *"the signal to build a new schedule
+off-thread"* — ADR-0066's original shape, surviving in the one place it still
+fitted. Building it showed that it does not fit there either.
+
+### Why a whole-schedule swap is the wrong unit
+
+A new schedule means new rings. **A new ring holds no history** — ADR-0079 said
+so about the crossfade and the same fact applies here, harder: swapping a whole
+schedule resets *every* edge's history, not just the one that needed more room.
+So one plugin going linear-phase would glitch every compensated edge in the
+project. The blast radius is the entire graph, to fix one number.
+
+Growing **one edge** leaves every other edge's ring, history and tap exactly
+where they were. Nothing else in the project can tell that it happened.
+
+### The wait is the data not existing, not an implementation shortcut
+
+When an edge at capacity `C` is asked for a delay `D > C`, the history for `D`
+**was never stored anywhere**. We kept `C` samples. There is no buffer to copy
+from, no off-thread preparation that helps, and no ordering of operations that
+produces a valid tap at `D` sooner than `D` samples from now.
+
+That is worth stating plainly because it looks like a problem to engineer around
+and it is not. Every design that promises an instant handover is promising to
+read samples nobody retained.
+
+### Decision
+
+1. **The allocation happens on the message thread, in `Graph::escalateLatency()`.**
+   The audio thread receives a ready-made, pre-zeroed buffer through
+   `DelayLine::offerRing`.
+
+2. **Both rings are written while one is read.** During priming the line writes
+   every incoming sample into the old ring AND the new one, and keeps reading
+   the **old tap at the old delay**. The compensation is stale by the
+   difference for the priming window. Stale is the correct failure here: the
+   alternative is reading a ring of zeros, which is a dropout, and a dropout is
+   not recoverable by listening.
+
+3. **Priming ends on a block boundary, then one block crossfades.** The two taps
+   are genuinely different samples — that is what a latency change is — so the
+   handover is the same crossfade ADR-0079 uses, except the taps live in
+   different rings. Ending priming mid-call would mean one call that is part
+   prime and part fade, and that bookkeeping costs more than the one extra block
+   it saves.
+
+4. **The audio thread swaps and parks; it never deallocates.** `buf_.swap(incoming_)`
+   moves pointers and touches no allocator. The retired buffer lands in
+   `incoming_` and waits for `Graph::collectRings()` on the message thread.
+
+5. **A grown ring gets headroom too.** The new capacity is the requirement plus
+   the graph's headroom, not the requirement exactly. A plugin that steps its
+   latency up in stages — a mode switch with an oversampling option — would
+   otherwise escalate on every step, and every escalation costs another priming
+   window. Growing to exactly what was asked for guarantees the next movement
+   misses again.
+
+6. **One offer at a time.** A second `offerRing` while one is in flight is
+   refused rather than queued; two rings in flight would need three buffers to
+   be correct, and the caller simply retries after collecting.
+
+7. **Escalation is on by default and can be declined.** `LatencyCoalescer::setAutoEscalate(false)`
+   turns a misfit back into `rebuildNeeded()`. An offline render has no
+   real-time constraint and can rebuild from the top (ADR-0066 d5), so it should
+   not carry priming machinery it has no use for.
+
+### What `rebuildNeeded()` means now
+
+It no longer means "an edge is too small" — that is fixed by growing. It means
+**growing could not help**, which means it was never a size problem: the
+topology changed and only a rebuild will do.
+
+### Verified non-vacuously
+
+Six planted defects, all caught: a cold swap with no priming (6 checks), priming
+reading the new empty ring instead of the old one (2), the new ring not being
+written during priming so it never fills (4), the handover hard-switching
+instead of crossfading (2), the retired buffer never parked so nothing is
+reclaimed (4), and escalation ignoring the headroom (3).
+
+**The sixth survived the first round**, and its test had to be written
+afterwards — the headroom-on-escalation rule was implemented, commented and
+untested. A rule with a comment and no assertion is a rule that will be tidied
+away.
+
+ADR-0010 is checked rather than argued: the counting `operator new` sees zero
+allocations across priming, the crossfade and the swap itself, and the retired
+buffer is then handed back to the message thread and freed there.
+
+### One real bug this found in ADR-0082's coalescer
+
+`collectRings()` sat at the *bottom* of `poll`, after every early return. So a
+retired ring was only ever freed on a poll that also retapped — and a graph that
+settled and went quiet held its retired buffers until some unrelated plugin
+happened to report. Reclamation has nothing to do with whether anything changed,
+and it now runs first and unconditionally.
+
+### Consuming ADR-0084: not every report is a number that moved
+
+mac's ADR-0084 landed while this was being built, and it changes what a source
+IS. CLAP says *why* it wants a restart — `clap_host_latency.changed` and
+`clap_host_audio_ports.rescan` are different notifications — and a coalescer
+that treats both as "re-read the latency" throws away the only fact that says a
+retap cannot possibly help.
+
+So a source now carries a `Kind`:
+
+- **`Latency`** takes the cheap path: re-read, move the taps, grow a ring if one
+  is too small.
+- **`Shape`** — ports, channel counts, or a bare restart with no explanation —
+  escalates straight to `rebuildNeeded()`. A topology change is a different
+  graph, and no amount of retapping answers it.
+
+A burst carrying both still demands the rebuild, and **still applies the
+latency half**: the expensive answer wins because the cheap one cannot be
+sufficient, but a partial correction is closer to right than none and the
+rebuild may be a frame away.
+
+The flag is per BURST, not sticky. Without that the distinction collapses after
+the first port change — every later latency report would demand a rebuild and
+the cheap path would exist but never be taken again. That defect survived the
+first round of planting, because asserting the shape case alone cannot see it:
+it takes a **latency-only burst afterwards**, which is now the last four checks
+of that test.
+
+### Not decided
+
+What happens when a single latency change is larger than any sensible ring —
+a convolution reverb declaring several seconds. The priming window is then
+seconds long and the compensation is stale for all of it. A transport-aware
+answer (take the change at the next stop, not mid-playback) is probably right
+and wants a transport to exist first.
+
+---
+
+## ADR-0086 — Native C++ DSP is embedded; AI runs as an RPC service — `DECIDED` (2026-09-20) — **REFINES ADR-0039, ADR-0064**
+
+**Director's mandate.** The dividing line between what lives inside the binary
+and what lives behind an RPC boundary, stated once so that every future
+dependency question has an answer that is already decided.
+
+### Tier 1 — embedded natively in C++
+
+| library | licence | why it is inside |
+|---|---|---|
+| **AudioGridder** | MIT | forked and embedded, for network DSP and browser integration (ADR-0083) |
+| **Rubber Band** | GPL | high-quality offline stretch and pitch (ADR-0061) |
+| **Bungee** | MPL-2.0 | already pinned; continuous rate change — tape stops, reverse scrubbing |
+| **libpd** | BSD-3 | the headless DSP engine behind Tier 1 device panels (ADR-0035, ADR-0076) |
+
+**Rationale:** these are small, pure C++ or C DSP libraries that must run
+*inside* the real-time graph. A block boundary is 85 ms at 4096 frames
+(ADR-0049), and anything in the signal path has to finish inside it.
+
+### Tier 2 — asynchronous RPC services
+
+Demucs, Whisper, RAVE, Matchering, and whatever else arrives — PyTorch, CUDA
+and the rest of that stack with them.
+
+**Rationale, and the second half is the load-bearing one:**
+
+1. **Size.** Embedding a Python and GPU stack takes the binary past 10 GB. A
+   DAW that ships a CUDA runtime to a user who wants to record a guitar is the
+   wrong trade.
+2. **The audio thread cannot survive them.** Python's garbage collector stops
+   the world at a moment it chooses, and dynamic VRAM allocation blocks. Either
+   one inside the process is a dropout with no fix available at the call site
+   — ADR-0010 forbids allocation and locks on that thread precisely because
+   there is no way to make them safe, only ways to keep them out.
+3. **Isolation is a crash boundary, and this is the part worth stating.** An
+   AI model that dies out of memory takes its own process with it. The DAW
+   keeps playing. Nothing about the tier split is load-bearing for
+   *performance* the way (2) is — it is load-bearing for **the user not losing
+   a take because a stem separator ran out of VRAM.**
+
+ADR-0064 already made AI asynchronous, remote and optional, and ADR-0039 built
+the RPC boundary with loopback default-off. This names what goes through it and
+why, so the question is not re-argued per feature.
+
+### The test the split has to pass
+
+**The DAW is whole with every Tier 2 service absent.** Not degraded into an
+error state — whole. ADR-0064 said so and it now has a dependency rule behind
+it: nothing in Tier 1 may come to depend on anything in Tier 2, because the
+first such dependency turns "AI is optional" into a sentence in a document.
+
+### What this does not settle
+
+**Rubber Band is GPL and that is a constraint, not a note.** This project is
+GPLv3 (ADR-0015) so embedding it is fine — but it forecloses a future
+non-GPL distribution in a way MIT and MPL dependencies do not. Recorded
+because the project has been caught on licences twice (JUCE is AGPL not GPL,
+ADR-0048; NDI dropped once its terms became the question, ADR-0074), and
+because "we can always relicense later" stops being true the moment this
+links.
+
+**libpd's licence is stated here as BSD-3 and has not been verified** against
+the repository. It is pinned by nobody yet. Check it at the same time as
+AudioGridder's, which ADR-0083 already flagged as unverified — both before
+code, not after.
+
+**And the wire format for Tier 2 is undecided.** ADR-0039 has the boundary;
+what crosses it for a stem separator — a file path, a buffer, a handle — is a
+real decision that wants the first consumer in front of it.
+
+---
+
+## ADR-0087 — The CLAP cheap path is sound, measured; and a host that offers no extensions learns nothing — `DECIDED` (2026-09-20) — **CLOSES AN OPEN ITEM IN ADR-0084**
+
+ADR-0084 left one question open and said it wanted a real CLAP plugin that
+moves its latency. FabFilter Pro-Q 3 3.24 ships as CLAP. Here is the answer.
+
+### The question
+
+`ext/latency.h` says the latency *"is only allowed to change during
+`plugin->activate`"* and annotates `clap_host_latency.changed` as
+`[main-thread & being-activated]`. Read literally, the sequence is restart →
+deactivate → activate → new latency, and ADR-0082's cheap path — re-read the
+latency **without** reactivating — would read a stale value on CLAP even
+though it is correct on VST3.
+
+### The measurement
+
+Pro-Q 3 3.24 (CLAP), 358 parameters, sweeping `Processing Mode` across its
+declared real range, processing blocks between steps:
+
+| mode | latency | `changed()` | `request_restart()` |
+|---|---|---|---|
+| 0.00 – 0.75 | 0 | 0 | 0 |
+| **1.00** | **320** | **+1** | 0 |
+| 1.25 – 1.75 | 320 | 0 | 0 |
+| **2.00** | **5120** | **+1** | 0 |
+
+Latency after re-activating: **5120** — identical to what was read without it.
+
+### Three findings, in order of how much they matter
+
+**1. The cheap path is sound on CLAP. ADR-0084's two-way split stands.** The
+new value was readable immediately and matched what reactivating gives, so no
+third case is needed and a CLAP latency report is a tap move exactly as a VST3
+one is.
+
+**2. `request_restart()` was never called — not once across the whole sweep.**
+So for this plugin the extension callback is the **only** signal that the
+latency moved. Before ADR-0084 added `clap_host_latency` to
+`ClapHostGlue::getExtension`, which returned `nullptr` for everything, a CLAP
+plugin changing its latency was **completely invisible to us**. Not
+mis-handled — unobserved. That is the strongest argument for offering the
+extensions that has been made, and it is a measurement rather than an
+argument.
+
+**3. One report per change, not a burst.** Each mode transition produced
+exactly one `changed()`. Through the VST3 path the same plugin produced five
+reports in 73 ms — but that was rapid-fire parameter changes against JUCE's
+listener, and this was stepped changes against the raw extension. **The two
+are not measured the same way and should not be compared**; what can be said
+is that nothing here produced a burst, so CLAP's coalescing requirement is at
+most VST3's and possibly much less.
+
+### The values, for ADR-0079's ring
+
+0, 320 and 5120 samples — the same three the VST3 path measured, which is a
+useful cross-check on both host implementations. `latencyHeadroom_` still
+defaults to 0, so the cheap path never runs out of the box; 8192 covers the
+measured worst case on both formats.
+
+### And a portability defect this found, which is unrelated and worse
+
+`ClapLibrary` was written with `dlopen`/`dlsym`/`dlclose` and `<dlfcn.h>`.
+**Both Windows CI jobs failed**: `Cannot open include file: 'dlfcn.h'`.
+
+The header comment said *"`path` is the bundle (macOS) or the library
+(elsewhere)"* — so the interface was designed cross-platform and the
+implementation was POSIX-only, which is the worst of both: it reads as
+portable and is not. Split now on `_WIN32` with `LoadLibrary` /
+`GetProcAddress` / `FreeLibrary`, three calls against three.
+
+Worth naming because ADR-0075's claim is that CLAP hosting runs on every ABI
+the suite runs on, and that claim was false for one of them for as long as
+this took to notice.
+
+---
+
+## ADR-0088 — The compensation headroom default is measured, and it is not zero — `DECIDED` (2026-09-20) — **CORRECTS ADR-0079**
+
+ADR-0079 introduced `Graph::setLatencyHeadroom` and defaulted it to **0**, with
+this justification:
+
+> *"Zero — the default — is a graph whose compensation is fixed at `prepare`,
+> and it allocates exactly what it did before this existed."*
+
+That reasoning is about memory and it is correct about memory. It is wrong about
+everything else, and the way it is wrong is the interesting part.
+
+### Zero does not mean "the feature is off". It means the feature never runs
+
+With no headroom, an edge's ring is sized to exactly its current delay. So
+**every** latency change misses its ring, returns false from `retapLatency`,
+escalates, and primes (ADR-0085). And ADR-0085 grows to `want + latencyHeadroom_`
+— which at a headroom of 0 is `want` exactly, so the *next* change misses again.
+
+The cheap path — the whole of ADR-0079, the tap move, the crossfade, the
+"nothing to publish and nothing to reclaim" — would never have executed once in
+a real session. Every test of it passed, because every test set headroom
+explicitly. **A default that disables the thing it configures is not a default,
+and a suite where every test opts in cannot see that.**
+
+### The number is 8192, and it is measured rather than guessed
+
+My own comment said a useful value "sits in the low thousands of samples". mac
+measured FabFilter Pro-Q 3 3.24 as CLAP across its phase modes:
+
+| mode | reported latency |
+|---|---|
+| 0.00 – 0.75 | 0 |
+| 1.00 | 320 |
+| 2.00 | 5120 |
+
+"Low thousands" would have made **2048 and 4096 both look sufficient and both
+miss**. 8192 is the next power of two above the measured worst case.
+
+### The cost is measured too
+
+`Graph::compensationBytes()` reports what the rings actually hold, so the
+trade-off is a number a test asserts rather than a sentence in a comment:
+four stereo edges at 8192 samples of headroom is 256 KB, which scales linearly
+to roughly 16 MB for a 200-edge project. That is the price, stated.
+
+It exists because "low thousands" is exactly the kind of estimate that survives
+review — it sounds measured — and nothing in the file could contradict it.
+
+### What this does not fix
+
+A convolution reverb declaring seconds of latency still misses 8192 and still
+escalates. That is ADR-0085's open item and this does not close it; it moves the
+line to cover the case that was actually in front of us.
+
+---
+
+## ADR-0089 — The rebuild path: a new graph is published, and the swap is faded in — `DECIDED` (2026-09-20) — **ANSWERS ADR-0085 and ADR-0084**
+
+`LatencyCoalescer::rebuildNeeded()` has been raised and counted since ADR-0084
+taught it to tell a shape change from a latency change. **Nothing has ever
+answered it.** A port rescan was detected, categorised, counted, and then
+ignored — which is worse than not detecting it, because the counter makes it
+look handled.
+
+### Decision
+
+**1. `GraphHost` owns the replacement, because a `Graph` is the thing being
+replaced.** The publisher, the reclamation, the fade across the seam and the
+coalescer all have to outlive the swap. mac made this point about the coalescer
+and it generalises: the host is whatever survives.
+
+**2. The order is plan → realise → prepare → publish, and publishing is last.**
+A failed rebuild does not disturb the running graph. A model with a cycle, with
+no master, or with a block size `prepare` refuses leaves the session playing
+exactly what it was playing. Swapping first and discovering second turns a bad
+edit into silence.
+
+Realisation and `prepare` are **separate gates** and both are load-bearing:
+realisation refuses what is wrong with the *plan* (ADR-0077), `prepare` refuses
+what is wrong with the *run*. A graph that realises perfectly still fails to
+prepare at a block size of zero, which is a thing a driver can hand us
+(ADR-0049).
+
+**3. Reclamation is ADR-0019's, unchanged.** `SnapshotPublisher` already has the
+strictly-greater free condition and its memory ordering is commented line by
+line. The retired graph is freed only once the audio thread has demonstrably
+moved past it. Nothing here re-implements that.
+
+The payload needed one observation to fit: `AudioRead` hands out
+`const PublishedGraph*` because the snapshot's **identity** is immutable — which
+graph this is, and its sequence number. The graph's buffers are not; they are
+the single reader's scratch. `const` on a `unique_ptr` does not propagate to the
+pointee, so this needs no `mutable` and no cast.
+
+**4. The swap is FADED IN, not crossfaded — and deliberately not faded out.**
+
+Crossfading is dead for the reason that killed ADR-0066 decision 4: both graphs
+hold the **same** `Node*`s, because devices are injected and outlive a rebuild
+(ADR-0042 d5). Rendering both would call `process()` twice on every plugin.
+
+Fading *out* is dead for a different reason, and it is a decision rather than an
+omission. Fading out means deferring the swap by a block — deliberately running
+a graph we have already decided is wrong. A rebuild is triggered by a **topology**
+change, so the stale graph may be routing audio through a node whose port layout
+just moved underneath it. One more block of that is worse than a clean cut, and
+the incoming graph's rings are empty anyway, so what it renders first is
+near-silence the fade simply bounds.
+
+**5. The first graph is not faded.** There is nothing to fade from, and ramping
+the opening milliseconds of every session is an artefact rather than the absence
+of one.
+
+**6. The coalescer attaches to the HOST, not to a graph.** `attach(Graph&)`
+stores a raw pointer that `collect()` frees; the first port rescan in a session
+would have been a use-after-free. `attach(GraphHost&)` re-reads the current
+graph on every poll, so a rebuild between two polls is invisible to it.
+
+### Verified non-vacuously
+
+Six planted defects, all caught: publishing before preparing (5 checks), a
+refused realisation published anyway (3), no silence when nothing is published
+(2), the fade restarting every block instead of carrying (3), the fade applied
+to the first graph (2), and no fade at all (3).
+
+**Two survived the first round and both for the same reason: the assertion could
+not distinguish the defect from correct behaviour.**
+
+- Publishing before `prepare` survived because no test made a graph that
+  *realised* and then *failed to prepare* — the two gates were never separated.
+- Fading the first graph survived because the first block was silent, and
+  **fading silence looks exactly like not fading it**. The test now feeds the
+  master before the first block, so full level from sample 0 is observable.
+
+ADR-0010's claim is observed rather than argued: picking up a new graph, fading
+it in and rendering allocate **zero** times, with the counter proven live
+immediately afterwards.
+
+### Not decided
+
+Whether a rebuild can preserve the compensation history of edges that exist
+unchanged in both graphs. It would remove the seam entirely for the common case
+— one plugin's ports moved, the other 199 tracks are identical — and it means
+sharing ring buffers across two graphs with two lifetimes. Worth doing; not
+worth doing at the same time as the thing that makes rebuilds possible at all.
+
+---
+
+## ADR-0090 — Closing the rebuild loop: who decides, what a failed rebuild means, and why `prepare` must do nothing — `DECIDED` (2026-09-21) — **COMPLETES ADR-0089, CORRECTS ADR-0042 d5**
+
+ADR-0089 built the rebuild and left the trigger disconnected: `GraphHost::rebuild`
+existed and nothing called it. This connects `LatencyCoalescer::rebuildNeeded()`
+to it, and in doing so found that a rebuild was silencing the project for 106.7
+milliseconds.
+
+### Decision
+
+**1. `DeviceHost` closes the loop, because it is what already holds both ends.**
+It owns the devices, so it can answer `RealizeOptions::devicesFor`; it owns the
+coalescer, so it sees `rebuildNeeded()`; and it already has a timer. `tick` is
+now: drain plugin callbacks → poll → rebuild if asked → collect. One thread, one
+cadence, one thing to remember to start.
+
+**2. The model is supplied as a CALLBACK, not a pointer.** This is the same
+lesson ADR-0089 decision 6 learned about the graph, one level out. A coalescer
+storing a `Graph*` dangled the first time the graph was replaced. A device host
+storing a `const rows::Model*` would dangle the first time the projection was
+re-read after an edit — which is every edit. Whatever outlives the thing it
+points at has to ask again.
+
+**3. The flag is cleared BEFORE the attempt and is not re-raised on failure.**
+
+`rebuildNeeded()` means *"a report asked for a rebuild"*, not *"the graph is
+wrong"*. Leaving it raised when the rebuild fails turns one unrealisable model
+into a full plan–realise–prepare cycle on every tick — fifty a second, for a
+model that will refuse identically every time.
+
+The cost is real and is stated rather than hidden: a failed rebuild leaves the
+graph stale against a plugin whose ports moved, and nothing retries until the
+next report. What makes that survivable is that the failure is not silent —
+`stats().rebuildsFailed` counts it and `lastRebuildError()` names it. A retry
+policy that is not a storm needs a reason to retry, and "the same model, 20 ms
+later" is not one.
+
+**4. `collect()` runs after the rebuild, on the same tick.** A graph retired on
+this tick cannot be freed on this tick — the audio thread has not moved past it
+— so this frees the one retired earlier. Collecting first would delay every
+reclamation by one tick and gain nothing.
+
+**5. `DeviceInstance::prepare` MUST DO NOTHING when the sample rate, the block
+size and the declared bus layout are all unchanged.**
+
+This is the decision that matters, and it corrects ADR-0042 decision 5. That
+decision says a rebuild is not a reason to reload a plugin, and it was honoured:
+the same `DeviceInstance` is re-injected and no library is opened twice. But
+`Graph::prepare` calls `prepare` on every node, and ADR-0089 prepares a whole
+new graph on every rebuild — so **one plugin's port rescan deactivated and
+reactivated every plugin in the project.** Not reloaded. Reset.
+
+Measured, on FabFilter Pro-Q 3 in linear phase with 5120 samples of latency:
+
+| | before | after |
+|---|---|---|
+| master silent after a rebuild | **5120 samples / 106.7 ms** | 0 |
+
+**A plugin is not reloaded and a plugin is not disturbed are different claims,
+and only the first one was true.**
+
+The bus layout is *re-read* rather than assumed on this path, because a port
+rescan is the one case that must still reactivate — re-reading is a few
+`get_extension` calls and loses no state by asking. Both formats take the same
+rule: `ClapDevice` compares the declared layout, `Vst3Device` compares the
+channel count JUCE reports.
+
+### How the diagnosis was nearly wrong
+
+The first measurement had a dry path whose compensation ring the rebuild had
+emptied, and an empty ring is the obvious culprit — it is also exactly the cost
+ADR-0089 named as not-decided, so the explanation arrived pre-agreed. Feeding
+**only** the wet path, where there is no ring in the signal chain at all,
+produced the same 5120-sample hole. The ring was not the cause; it was the
+second cause.
+
+An instrument hid it from the other direction: Surge XT held a note straight
+through a rebuild, which reads as proof that plugins survive. A synth's voices
+are internal state and survive reactivation. A linear-phase FIR's buffer is
+**input history**, and does not. One plugin sounding across the seam says
+nothing about another.
+
+### And now the ring history is the whole of what is left
+
+With plugins no longer re-primed, the same measurement isolates exactly what
+ADR-0089 left undecided: the dry path alone drops out, for exactly as long as
+its compensation delay. `adi_clap_probe --seam "Pro-Q 3"` prints it, and
+`--wet-only` prints the control. **So preserving the history of edges unchanged
+between two graphs is worth building, and there is now a number to hold it to.**
+
+### Verified non-vacuously
+
+Eight planted defects, all caught: `tick` never rebuilding (11 checks), the flag
+not cleared (4), `collect` never called (1), `chainFor` ignoring the track (1),
+the rebuild omitting `devicesFor` (2), the flag re-raised on failure (2),
+`prepare` always reactivating (7), and `prepare` ignoring a layout change (3).
+
+**Two survived the first round, both because the assertion could not tell the
+defect from correct behaviour.** The omitted `devicesFor` survived because the
+test device was a pass-through — a graph without it renders the same number as
+a graph with it. It now halves, so its presence is 0.25 and its absence 0.5. The
+re-raised flag survived because the defect I planted still left the real
+`clearRebuildNeeded()` above it: I planted a no-op and read a PASS as a result.
+
+### Also found on the way
+
+`adi_vst3_probe` had two `-Werror` sign conversions that no build had ever
+reported, because the objects were up to date from a configure that predated the
+flag. A warning gate only gates what it compiles.
+
+Proved against real plugins: `adi_clap_probe --rebuild "Surge XT"` — a port
+rescan, one rebuild, a held note still sounding across the swap and still
+sounding after the retired graph is freed.
+
+---
+
+## ADR-0091 — Events travel along edges, delayed by exactly what the audio beside them is — `DECIDED` (2026-09-21) — **IMPLEMENTS ADR-0045 and ADR-0055**
+
+ADR-0045 said every graph port carries audio **and** an event list. ADR-0055 gave
+every node an `EventSpan`. Both were written and neither was implemented past the
+first node: the scheduler accumulated audio from a slot's upstream slots and did
+nothing equivalent for events. A slot's events came only from a
+`pushInputEvent` naming that slot.
+
+mac found it with a real plugin. `inputFor(trackId)` is the chain **head** — a
+`MixNode` on any track with devices (ADR-0077) — and that is where a clip reader
+pushes. So a note pushed where every handoff said to push it reached the
+`MixNode` and nothing else. Surge XT: a note at the head, silence; the same note
+at the tail, 0.21 peak.
+
+This was upstream of the entire MPE+-through-VST3 job. There is no point proving
+14-bit resolution survives the plugin boundary while nothing can get a note to a
+plugin through the graph at all.
+
+### Decision
+
+**1. Note-stream events travel along MAIN edges. Addressed events do not.**
+
+`NoteOn`, `NoteOff` and `NoteExpression` belong to a note stream and flow down
+the chain. `ParamValue` and `ParamMod` name a parameter **of the node they were
+pushed to**; forwarding one would have the next node apply node A's parameter 3
+as its own parameter 3. `GainNode` does exactly that with any matching id. So
+they are delivered where they were pushed and nowhere else —
+`isNoteStream(EventType)` is the whole classification.
+
+**2. `EventFlow { Through, Consume }`, and the default is `Through`.**
+
+An instrument turns notes into audio and the effects after it have no use for
+them, so it consumes. Everything else — junctions, audio effects, note effects —
+passes them on. The default is the conservative one, and conservative here means
+the opposite of what it meant for the tail:
+
+- A node that forgets to say `Consume` passes notes to effects that ignore them.
+- A node that consumed by default and forgot `Through` would swallow every note
+  before it reached the instrument — silence, which is precisely this defect.
+
+Same principle as ADR-0043's tail and ADR-0058's latency: choose the default
+whose failure is the harmless one. A bypassed device reports `Through`, for the
+same reason bypass reports no tail and no latency — it is not running. A missing
+plugin (ADR-0011) reports `Through` because we cannot know whether it was a synth
+or an effect, and `Through` is the only answer right in both cases.
+
+**3. An event is delayed by exactly what the audio beside it is delayed by.**
+
+mac asked whether PDC delays event frames the way it delays audio. It must, and
+the case that proves it is ordinary: a node with latency `L` in front of an
+instrument. The graph believes that instrument's input is `L` late — `arrival = L`
+— and holds every *other* track back by `L` to match. If the note skipped the
+delay, the instrument would play `L` early: aligned in the graph's arithmetic and
+early in the room.
+
+So a forwarded event carries the upstream node's latency, plus the compensation
+on the edge it travels. The test that shows this is right is the two-path one: a
+note splits, one branch declares 64 samples, both rejoin — and the note reaches
+the merge at **the same frame by both paths**, one through the latency and one
+through the compensation that meets it. That is ADR-0058's alignment property,
+stated for events.
+
+**4. Forwarding happens BEFORE the splits are computed.**
+
+ADR-0042 promises that a value lands on its own segment boundary. Forwarding as
+nodes run would hand a node an event at a frame the splits were chosen without —
+a note pushed at 70 and delayed 80 reaches the tail at 150, a frame no pushed
+event occupies. So the whole graph is forwarded up front, in topological order,
+and only then split. This works because forwarding depends on topology and
+declared delays, never on what a node computes.
+
+**5. A delay that crosses a block boundary is deferred, in a bounded queue.**
+
+ADR-0088 sized compensation for 5120 samples; a block is often 256. Each slot has
+a fixed-capacity queue keyed by absolute sample, sharing the live list's budget,
+drained into the block the event falls in at the frame it falls on. Overflow is
+counted. A queue that grew would be the audio thread allocating on exactly the
+path a plugin's latency change makes busiest.
+
+**6. Fan-in delivers one copy per path, and is not de-duplicated.**
+
+A note that fans out and rejoins arrives once per path. That is what a *layering*
+rack needs — each parallel instrument must receive the note — and ADR-0072 already
+puts re-converging parallel paths inside racks, where the rack decides. Silent
+de-duplication would have its own failure: two genuinely distinct events that
+happen to be identical are one event too few.
+
+**7. Sidechains carry no notes.** A sidechain is an audio key. A compressor keyed
+from a kick track has no use for that track's notes, and handing them over would
+make every keyed plugin a second instrument. Notes from another track are a
+note-input bus, which is a different feature and not designed yet.
+
+**8. `eventFlow()` is read on the audio thread, so it is decided at construction.**
+
+It is called per edge, every block. JUCE's `getPluginDescription()` builds a
+`PluginDescription` full of `String`s — it allocates — so `Vst3Device` reads
+`isInstrument` once in its constructor. `ClapDevice` walks
+`CLAP_PLUGIN_FEATURE_INSTRUMENT` in the descriptor once, likewise, and survives a
+null descriptor rather than dereferencing it.
+
+### A bug this exposed, older than any of it
+
+The split loop coalesced **while** it collected, comparing each event with the
+last split *pushed* rather than the last split in *time*. Slots are walked in
+index order, so a later slot's earlier event came out negative against the
+floor and was dropped: a slot-1 event at frame 100, met after slot 0 pushed 200,
+is `100 − 200 < 64`. A real, distinct frame with no segment boundary at it.
+
+It survived because every test that split a block kept all its events in one
+slot. Forwarding puts the same note in many slots, so it stopped being a corner.
+The replacement marks one byte per frame and walks the block once — 8192 byte
+tests at ADR-0049's largest block — and is indifferent to collection order and to
+how many slots share a frame.
+
+### And a probe that reported success it had not measured
+
+`adi_clap_probe`'s default mode printed a **hard-coded**
+`"PASS -- 0 checks, 0 failure(s)"` and returned 0 when its fallback bundle failed
+to load — after the scan section had already recorded a `FAIL`. On a machine with
+no CLAP plugins it printed a failure and then reported a pass. It now prints the
+real counters. Nothing runs the probe automatically, so its exit code changing
+cannot break CI; it just stops lying to whoever runs it.
+
+### Verified non-vacuously
+
+Fourteen planted defects, all caught. In the graph: addressed events forwarded
+(3 checks), notes crossing a sidechain (3), `Consume` ignored (2), the node's
+latency left out of the delay (10), the edge's compensation left out (2),
+deferred events never drained (4), splits computed before forwarding (3), the
+frame mark not cleared between blocks, deferral overflow uncounted (2), and the
+clock never advancing (4). On the devices: `DeviceNode` ignoring bypass (2), never
+asking the instance (3), CLAP never reading the instrument feature (3), and CLAP
+re-reading the descriptor per call instead of caching it (1).
+
+**The stale frame mark survived the first round.** A leftover mark only shows in
+the block *after* one with events, and no test ran a second block. The split test
+now runs an empty block afterwards and asserts it is one segment.
+
+mac's pinning test, `testEventsDoNotTravelAlongEdgesYet`, did exactly what it was
+written to do: it failed the moment events started to travel, and its own message
+said to delete it and the probe's `outputFor()` workaround. Both are gone.
+
+### What is not verified here
+
+- **No real CLAP plugin on this machine**, so "a note at the head now sounds" is
+  proven against fixtures and not yet against Surge XT. The probe pushes at
+  `inputFor` now; rerunning `adi_clap_probe` on a machine with plugins is the
+  real-world confirmation.
+- `Vst3Device`'s instrument detection is compiled by CI's JUCE jobs and exercised
+  by no test on this branch.
+
+### Not decided
+
+**Events a node emits.** Everything above forwards events that exist when the
+block starts. An arpeggiator or a note effect *produces* events during `process`,
+which cannot be known before the splits are computed. That needs either a second
+scheduling phase or accepting that emitted events arrive inside a segment rather
+than on a boundary. Nothing emits events today, so it is deferred rather than
+guessed at.
+
+---
+
+## ADR-0092 — A rebuild keeps the history of every edge that exists in both graphs — `DECIDED` (2026-09-21) — **AMENDS ADR-0089 decision 4**
+
+ADR-0089 named this as not-decided: a rebuild resets every edge's compensation
+history, including the edges whose routing did not change. mac measured whether
+it is audible, and had to remove a larger effect first — every plugin in the
+project was being re-primed by a rebuild, fixed in ADR-0090. With that gone:
+
+    adi_clap_probe --seam "Pro-Q 3"             5120 samples, the DRY path missing
+    adi_clap_probe --seam "Pro-Q 3" --wet-only  0 samples   (the control)
+
+The dry path is compensated by exactly Pro-Q 3's linear-phase latency. A rebuild
+gave it a fresh ring, so for 5120 samples — 107 ms — the master carried the wet
+path alone. `--wet-only`, with no compensated edge anywhere, shows nothing,
+which is what makes the 5120 the ring's and nobody else's. mac: *"Yes. Build
+it. The number to hold it to is 5120 samples on that graph."*
+
+### The history can only be copied on the audio thread, at the swap
+
+The old graph is live until the swap: the audio thread is writing its rings
+every block. Reading them from the message thread would be a data race and a
+torn copy. So the copy happens where the rings are owned — on the audio thread,
+in the block that picks up the new graph, before anything renders.
+
+**That is only safe if the old graph cannot be freed during the copy, and the
+publisher already guarantees it — once its two steps are pulled apart.** The
+graph rendered last block was announced last block, so its sequence number is
+`inUse_`. `collect()` frees only what is *strictly* older than `inUse_` — the
+rule ADR-0019 spends a page defending. So until the audio thread announces the
+new graph, the old one is protected, however many times the message thread
+publishes and collects in between.
+
+`AudioRead` loads and announces in one constructor, which is right for every
+reader that only touches the snapshot it is on. `SnapshotPublisher` gained
+`peek()` and `announce()` for the one reader that must read its previous
+snapshot once more before moving on. The rule that makes it safe is the
+caller's — finish with the previous snapshot before announcing — and it is
+written into the publisher next to the rule it depends on.
+
+### Decision
+
+**1. Edges are matched by what they ARE: `(fromTrack, toTrack, bus)`.**
+
+Not by node id: a new track shifts every id after it. Not by node pointer: every
+junction is a fresh `MixNode` per realisation (ADR-0077). What the history on an
+edge *means* is "what track A has been sending to track B", and that is exactly
+the key. Realisation records it for every plan edge and sorts the list, so the
+audio thread matches two graphs in one allocation-free merge walk.
+
+**2. The rings are looked up at the swap, never cached.** `prepare` rebuilds the
+per-slot ring vectors, so a `DelayLine*` held across it can dangle — and mac's
+probe feeds a graph and re-prepares it *after* the rebuild publishes it, which
+would hit that on the first swap. `Graph::edgeLine()` resolves each one when it
+is needed.
+
+**3. Only what the new tap reads is copied: `min(delay, capacity, old capacity)`.**
+A ring holds `delay + 8192` samples (ADR-0088). Copying all of it would make a
+rebuild cost in proportion to headroom rather than to compensation. What lies
+beyond the old ring's capacity was never stored and is not invented.
+
+**4. History comes from the graph that RAN, not the last one published.** Two
+rebuilds between blocks send the audio thread from graph 1 straight to graph 3;
+graph 2 was superseded before any block rendered it, and its rings hold nothing.
+The host carries from the snapshot it rendered last.
+
+**5. The fade defaults to 0, where ADR-0089 made it 256.** The fade existed to
+bound a seam, and the seam was two things: every plugin re-primed (ADR-0090) and
+every compensation ring emptied (this). With both gone, a swap that changed
+nothing audible is seamless — and ramping the whole mix up from silence across
+it would be the only artefact left, a dip of our own making. The setting remains
+for the case it suits: a swap across a change of block size or rate, where
+plugins genuinely do re-prime.
+
+### Verified non-vacuously
+
+The measurement had to be able to see the defect first, so the suite rebuilds
+mac's probe from fixtures — a wet track through 5120 samples of latency, a dry
+track compensated to meet it, DC at 0.25 and 0.75 so the level during a hole
+names the missing path — with a latent device that, like `ClapDevice` since
+ADR-0090, does not re-prime when prepared again unchanged.
+
+| | history | seam |
+|---|---|---|
+| before | off | **exactly 5120 samples**, at 0.25 — the wet path alone |
+| after | on | **0** |
+| control, wet only | off / on | 0 / 0 |
+| two rebuilds between blocks | on | 0 |
+| four rebuilds, each collected | on | 0 |
+
+Nine planted defects, all caught: history never carried (6 checks), carried from
+the new graph into itself (5), the delay guard inverted (5), the old ring read
+from the wrong end (3), the write cursor left where it was (8), the whole ring
+copied rather than the tap's reach (2), a channel-count mismatch not refused
+(2), the edge list left unsorted (1), and the last-rendered pointer set once and
+never updated.
+
+**That last one was caught by an access violation, not a failed check.** With
+`lastSnap_` stale, the second swap reads a graph `collect()` has already freed.
+The repeated-rebuild test collects between swaps precisely so that this path is
+reachable; a defect that only appears on the second swap is invisible to every
+test that performs one.
+
+**The unsorted edge list needed its own test.** The planner emits explicit
+routing rows before ADR-0065's defaults, so edge order depends on how each route
+happens to be spelled. A dry track routed by default and a wet track routed by a
+row naming the same master put the lists in different orders across a rebuild
+that changes only the spelling — and an unsorted merge walk skips the one edge
+with history to carry.
+
+### What is not verified here
+
+- **The concurrency argument is not exercised by any test.** Announcing *after*
+  the handover is what keeps the old graph alive, and a single-threaded test
+  cannot run `collect()` between the two. It rests on the publisher's documented
+  ordering, which is where ADR-0019's own safety argument rests.
+- **No real plugin on this machine.** The probe's pin — `check(belowFor > 0,
+  "THE RING HISTORY IS STILL LOST")`, written so that fixing this would make it
+  fail — now asserts `belowFor == 0`. Running `adi_clap_probe --seam "Pro-Q 3"`
+  on a machine with plugins is the real-world confirmation.
+
+### Not decided
+
+An edge whose compensation grew in the rebuild past what the old ring held gets
+only the history that existed; the rest of its tap reads silence until it fills.
+That is ADR-0085's priming problem arriving from a different direction, and it
+wants the same answer — but it needs a rebuild that changes compensation to be
+measured first, and none has been.
+
+---
+
+## ADR-0093 — The DSP plugin roadmap: references fetched, not vendored, and what each goal needs first — `DECIDED (direction)` (2026-09-21)
+
+**Director's call**, and explicitly a *future* one: six DSP goals to prepare for
+without shifting focus from the DAW, plus the reference repositories, which are
+wanted **now**.
+
+| # | Goal | Form | Primary reference |
+|---|---|---|---|
+| 1 | Dynamic EQ with matched phase, linear phase, per-band dynamics (working title "Pro-Q 3 clone") | CLAP plugin | ZLEqualizer — **design only** |
+| 2 | True-peak mastering limiter: lookahead, oversampling, selectable modes ("Pro-L 2 clone") | CLAP plugin | `lsp-dsp-units`, `lsp-plugins-limiter` |
+| 3 | Lookahead brickwall limiter, 1.5 / 3 / 6 ms ("Ableton Limiter clone") | Pd module (ADR-0035) | — |
+| 4 | Eight-band parametric EQ ("Ableton EQ8 clone") | Pd module | — |
+| 5 | Aliasing-free clipper with adjustable knee, up to 4x oversampling ("K-Clip clone") | CLAP plugin | `chowdsp_utils` ADAA waveshapers, `ADAA`, `Audio-Soft-Clip-Distortion` |
+| 6 | Ring-modulation sidechain ducker, dry/wet depth ("RMSC") | Pd module | — |
+
+### Decision
+
+**1. References live in `reference/`, fetched by `tools/fetch_external.sh`, never
+vendored.** This is ADR-0024's existing arrangement, extended rather than
+duplicated: the request was for "a Bash script to clone into `adi-daw`", and that
+script already exists and already does it (the directory is `adi_daw`). Clones are
+gitignored so a `git add -A` cannot turn one into a stray gitlink, unpinned
+because nothing in `reference/` reaches a build, and listed with their licences
+in `docs/EXTERNAL-CODE.md`.
+
+**The core CLAP SDK was already there** — pinned in `third_party/clap` at 1.2.10,
+verified by commit, and built against since ADR-0075. The librarian's caveat that
+some of this might already be done was right about that item.
+
+**2. Two references did not contain what they were requested for, and are
+replaced by what does.**
+
+- **`lsp-plugins` is a meta-repository**: a 660 KB build index with no DSP in it
+  at all. The limiter maths is in `lsp-dsp-units` (`Limiter.h`, `Oversampler.h`,
+  `TruePeakMeter.h`, `LoudnessMeter.h`) and its driving logic in
+  `lsp-plugins-limiter`. Both are fetched; the meta-repo is not.
+- **ChowCentaur contains no ADAA** — not one match for it in the tree. Its
+  clipper is a wave-digital-filter diode pair, and its repository is
+  `jatinchowdhury18/KlonCentaur`; `Chowdhury-DSP/ChowCentaur` does not exist.
+  Jatin Chowdhury's ADAA is in `jatinchowdhury18/ADAA` (the derivations) and
+  `chowdsp_utils` (production `ADAAHardClipper`, `ADAASoftClipper`,
+  `ADAASineClipper`). All three are fetched, and KlonCentaur is labelled for
+  what it is.
+
+**3. The licence of the plugin line decides which references it may copy from,
+and it is not decided here.** Everything fetched except ZLEqualizer can be copied
+into a **GPLv3** plugin with attribution. A **closed or proprietary** plugin — as
+AdiGuard is — could copy only from the BSD and MIT sources: `ADAA`, `KlonCentaur`
+and `Audio-Soft-Clip-Distortion`. That rules out the LSP limiter, the chowdsp
+waveshapers and vitOTTx for a proprietary line. Where the plugins live — inside
+`adi_daw`, or as a sibling project the way `adi-surge` and AdiGuard are — follows
+from the same answer. **Both are the director's call and both come before the
+first line of code.**
+
+**4. Behaviour is cloned; names are not.** "Pro-Q 3", "Pro-L 2", "EQ Eight",
+"K-Clip" and "Newfangled" are other companies' product names and trademarks.
+They are working titles in this log and nowhere else: a shipped plugin gets our
+name and may describe itself only in terms of what it does. The same rule
+AdiGuard already follows.
+
+**5. Every goal that has latency must declare it, and these plugins are the best
+test instruments this project will ever have for its own compensation.** Linear
+phase is latency; lookahead is latency; linear-phase oversampling filters are
+latency (ADR-0062 made the general point). Goals 1, 2, 3 and 5 all carry it, and
+all four will report it through the paths ADR-0079, 0085 and 0092 built. Until
+now every real-plugin measurement of that machinery borrowed FabFilter's Pro-Q 3;
+our own linear-phase EQ and lookahead limiter would let the suite measure it with
+plugins whose source we can read.
+
+### Prerequisites recorded now, so the goals do not arrive blocked
+
+- **A Pd patch has no way to declare latency.** ADR-0035 never mentions it, and
+  no libpd code exists yet. Goal 3's lookahead cannot be compensated until the Pd
+  device contract carries a latency, and it has to be *exact*: see below.
+- **Matched phase is implemented from the literature, not from ZLEqualizer.**
+  Vicanek, *Matched Second Order Digital Filters* (2016), is the primary source
+  for de-cramping and is what keeps goal 1 clear of the AGPL.
+
+### Corrections to the goals as written
+
+Recorded now because each would otherwise surface as a bug.
+
+- **Goal 3 lists `env~` for a limiter that must use peak detection, not RMS.**
+  `env~` is an RMS follower — it outputs power in dB over a window, which is the
+  thing the goal excludes. Peak detection needs a running maximum: `abs~` into a
+  max-hold, or `fexpr~`.
+- **Goal 3's 1.5 ms lookahead sits just above Pd's block boundary.** At 48 kHz it
+  is 72 samples against a 64-sample block, and a `vd~` sorted before its
+  `delwrite~` cannot read less than one block back. The effective delay therefore
+  depends on DSP sort order, and a declared latency that is off by a block
+  compensates every other track wrongly. The patch must pin the order.
+- **Goal 4: Pd's `biquad~` feedback coefficients have the opposite sign to the
+  RBJ cookbook's.** Pd's `fb1`, `fb2` are `−a1/a0`, `−a2/a0`; copying the
+  cookbook's `a1`, `a2` straight in makes a filter unstable. Its coefficients are
+  also control-rate messages, so an automated band moves in block-sized steps. And
+  EQ Eight's steepest cuts are 48 dB/oct, which is **four** cascaded biquads per
+  band, not one.
+- **Goal 6: `abs~` of the sidechain is rectification, not an envelope.**
+  Multiplying the main signal by it is audio-rate amplitude modulation — which is
+  what RMSC is, and why it sounds as it does: low sidechains produce sidebands,
+  not clean gain reduction. It should be judged as that effect, not as a
+  compressor without ballistics.
+- **Goal 5's ADAA reference is `chowdsp_utils`, not ChowCentaur** (decision 2).
+
+### Not decided
+
+The licence and location of the plugin line (decision 3). Whether the Pd modules
+ship as `.pd` patches users can open and edit, which is ADR-0035's premise, or as
+compiled nodes, which would make them ADR-0062's instead.
+
+---
+
+## ADR-0094 — The open-source mandate, applied: ADR-0093's licence question is answered — `DECIDED` (2026-09-21)
+
+**Director's permanent mandate.** Every project Adi owns is open source, with no
+intent to commercialise, sell or close any of it. The rules live in
+`OPEN_SOURCE_POLICY.md` at the repository root, which is the authority on every
+licensing, copyright and reuse question from now on — agents read it and act on
+what it authorises without asking.
+
+### What it settles for adi_daw
+
+**ADR-0093 decision 3 is no longer open.** That decision said the plugin line's
+licence decided which references it could copy from, and left it to the
+director. The policy answers it:
+
+- Original code defaults to **MIT**.
+- A project that copies from **GPL or LGPL** code is **GPLv3**, automatically.
+- Reuse from GPL, LGPL, BSD and MIT references is **pre-authorised**, keeping the
+  original headers and naming the source in the commit.
+- **AGPL-3.0 is banned from reuse** — design-only, clean-room.
+
+So a plugin built from the LSP limiter maths (LGPL), the chowdsp waveshapers
+(GPLv3) or vitOTTx (GPLv3) is a GPLv3 plugin, and may use all three. ZLEqualizer
+stays design-only; matched phase comes from Vicanek (2016).
+
+**adi_daw itself is unchanged**: GPLv3 since ADR-0015, and the escalation rule
+would put it there anyway.
+
+### Written into the policy so its rules stay correct
+
+- **GPL-2.0-only code cannot enter a GPLv3 project.** The licences are
+  incompatible; only GPL-2.0-*or-later* can. None of our references is
+  GPL-2.0-only today — Ardour is "or later" — but the rule is what protects the
+  next one.
+- **JUCE is AGPL-3.0, and adi_daw links it** for VST3 hosting and audio I/O
+  (ADR-0048). The ban covers copying, and linking is not copying, but a build
+  with `ADI_WITH_JUCE=ON` is a GPLv3 + AGPLv3 combination. If the goal becomes
+  "no AGPL anywhere", JUCE is the one dependency to replace.
+- **Open source covers our code, not other people's content.** Commercial
+  binaries, presets, samples and wavetables stay local and gitignored, and other
+  companies' product names are never shipped.
+
+### Where the file lives
+
+At the root, on its own pull request to `main` (#49), and cherry-picked onto this
+branch. A rule for every project should not wait behind one project's branch:
+sessions for other projects work from `main`.
+
+---
+
+## ADR-0095 — A Pd patch reports its latency through `$0-report_latency`, and answers `$0-query_latency` — `DECIDED` (2026-09-21) — **EXTENDS ADR-0035**
+
+ADR-0035 put a visual-patching tier into the project through libpd and never said
+how a patch tells the graph it has latency. A lookahead limiter in Pd delays its
+audio by its lookahead; if the graph does not know, every other track is
+compensated against a delay that is not there (ADR-0058). ADR-0093 recorded this
+as a prerequisite for the Pd limiter.
+
+**Director's call**: a wrapper that listens for a send from the patch and forwards
+the exact sample count to `DeviceHost` and the coalescer. Built as asked, with two
+corrections to the obvious version.
+
+### The protocol
+
+    [r $0-query_latency]     the host asks, after every prepare
+    |
+    [compute samples]        the patch works out its delay IN SAMPLES, at the current rate
+    |
+    [s $0-report_latency]    and answers -- also unprompted, whenever the delay changes
+
+### Decision
+
+**1. `$0-`, not a bare `report_latency`.** Pd's send and receive names are
+**global within a Pd instance**. Two limiters on two tracks both sending to
+`report_latency` put two numbers on one name, and the host cannot tell which patch
+said which. `$0` is unique per opened patch and libpd returns it
+(`libpd_getdollarzero`), so the host binds one name per patch.
+
+**2. A query, not only a report.** A patch that reports from `[loadbang]` reports
+at whatever rate Pd has at that moment, and libpd has not yet been told the real
+one — Pd starts at 44.1 kHz. A 1.5 ms lookahead then claims 66 samples in a 48 kHz
+session that needs 72. So `PdDevice::prepare` prepares the engine at the real rate
+**first**, then bangs `$0-query_latency`; libpd delivers messages synchronously, so
+the corrected answer has arrived when it returns.
+
+**3. The unit is samples.** The graph compensates whole samples, and a patch and a
+host converting milliseconds each their own way disagree by one exactly when
+their rounding differs.
+
+**4. No new plumbing into the graph.** `PdDevice` is a `DeviceInstance` whose
+`latencySamples()` and `latencyEpoch()` come from the protocol. `DeviceHost::add`
+already registers every device's epoch with the coalescer through the contract,
+without asking its format (ADR-0090), so a Pd patch is compensated by exactly the
+machinery a VST3 or a CLAP plugin is. The test drives a limiter from 1.5 ms to
+6 ms and watches a dry track's compensation move from 72 to 288 samples.
+
+**5. The receiver behaves like every other reporter.** libpd calls its hooks from
+inside `libpd_process_*`, which is the audio thread. The receiver validates,
+stores, bumps and returns; it never calls into the graph. Details that each cost
+a test:
+
+- The epoch moves once per **change**, not per report, so a patch that re-sends
+  its latency on every parameter touch does not retap the graph on every knob turn.
+- The value is stored **before** the epoch is bumped, both with release, so a poll
+  that sees the new epoch reads the new value.
+- A rejected report — negative, not finite, beyond ten seconds — **keeps** the
+  last good value rather than zeroing it.
+- A report half a sample from a whole number is rounded **and counted**, so a patch
+  that forgot to round shows in its stats; single-precision noise such as
+  `288.00002` is not counted as rounding.
+- A patch that failed to open claims **0**: it passes audio straight through
+  (ADR-0011), and compensating against a delay that is not happening moves
+  everything else.
+
+**6. libpd's single hook is routed allocation-free.** One float hook serves every
+bound receiver. `PdReceiverTable` routes each message to its patch through fixed
+character arrays compared with `strcmp`, because looking a `const char*` up in a
+map of `std::string` constructs one — an allocation per message on the audio
+thread. Binding is safe while audio runs: an entry is written in full before the
+count that exposes it is published. Unbinding tombstones the slot rather than
+reusing it, so a dispatch never reads a half-overwritten name.
+
+### Two engine bugs this found
+
+The end-to-end test failed at first, and not because of the protocol. The master
+in that test had no audio, ADR-0043 put it to sleep, and a sleeping node never
+finishes a tap move. Tracing why it slept found two older bugs in suspension, both
+of which cut audio off:
+
+- **The last partial block of every finite tail was dropped.** The tail counter
+  was decremented *before* the suspend decision, so the block a tail's final
+  samples belonged to was itself skipped. A tail of one block or less was never
+  heard at all; every longer one lost up to a block — 85 ms at 4096 frames. The
+  existing test accepted "3 to 6 blocks" for a 1000-sample tail at 256 frames,
+  whose exact answer is 4; the bug gave 3. It is now asserted exactly, with the
+  boundary cases 100, 256 and 257.
+- **Compensated audio still in flight was cut when its node slept.** A junction's
+  own tail is zero, so when every input went silent it suspended at once — with up
+  to `reach` samples still in its compensation rings. A dry track compensated
+  against a linear-phase plugin, if it was the last thing playing, lost its final
+  107 ms. A node's re-armed tail now includes the longest reach on its inputs,
+  sidechains included; `DelayLine::reach()` counts a pending tap move and a
+  growing ring as well as the current delay.
+
+Each needed the other fixed before its own fix showed: with only the reach added,
+the off-by-one still skipped the block it had to play in.
+
+### Verified non-vacuously
+
+Eight planted defects in the protocol, all caught: the epoch moving on every
+report (3 checks), no `$0` so patches share a name (22), unbinding leaving the
+receiver attached (6), prepare never querying (4), querying before the engine
+knows the rate (3), a failed patch claiming latency (2), a rejection zeroing the
+latency (2), and dispatch comparing through `std::string` (2, via the allocation
+counter).
+
+Three in the suspension fix, all caught: the tail spent before the decision (6),
+compensation left out of the tail (2), and sidechain compensation left out of the
+reach. **That third survived the first round**: no test had a compensated key as
+the last input to stop, so a test was added in which it is.
+
+My own concurrency test also failed first, for the reason this project has written
+down twice already: binding a hundred entries finished before the dispatch thread
+had started, so nothing overlapped. It now waits for the thread to be running.
+
+### What is not verified
+
+- **libpd itself is not in the tree.** The engine adapter is five calls, listed in
+  `pd_device.hpp`, and none of them carries logic. Everything else — validation,
+  attribution, routing, thread safety, the device and its path into the
+  coalescer — is compiled on every ABI and tested against a fake patch that speaks
+  the protocol through the same `dispatchFloat` libpd's hook will call.
+- The value-before-epoch ordering is argued, not exercised: a single-threaded test
+  cannot interleave a poll between the two stores.
+
+---
+
+## ADR-0096 — The DSP corrections: tested maths in C++, and Pd patches that take their numbers from it — `DECIDED` (2026-09-21) — **CORRECTS ADR-0093's goals 3, 4 and 6**
+
+**Director's call:** fix the reversed `biquad~` coefficients, the limiter's peak
+detection, and RMSC's sidebands, "to ensure total stability". ADR-0093 had
+recorded each as a defect in the goal as written.
+
+### Decision
+
+**1. The maths lives in C++, where it can be proven; the patches get their numbers
+from it.** `src/adi/dsp/` holds `biquad`, `limiter` and `rmsc`, compiled into
+`adi_core` and tested in `adi_dsp_tests`. There is no Pd on the machine that wrote
+this, so an unrun patch cannot be the place a correction is verified. The EQ
+patch contains **no coefficient maths at all**: the host computes each section and
+sends it the five numbers.
+
+**2. `biquad~` gets the feedback terms negated, in one tested function.** The
+cookbook writes `y = b0x + b1x1 + b2x2 − a1y1 − a2y2`; Pd's `biquad~` writes
+`w = x + fb1·w1 + fb2·w2`. So `fb1 = −a1`, `fb2 = −a2`. `dsp::toPd()` does it, and
+the test runs both through a model of `biquad~`: converted, it reproduces the
+cookbook filter to 1e-12; copied straight, the same impulse runs away to infinity.
+
+**A correction to my own ADR-0093:** I wrote that a 48 dB/oct cut is "four
+biquads". Four *identical* Q = 0.707 sections sag to −12 dB at the cutoff. An
+8th-order Butterworth needs **staggered** Qs — 2.563, 0.900, 0.601, 0.510 — and
+`dsp::cut()` builds them; every slope from 12 to 48 dB/oct measures −3.01 dB at
+its cutoff and 48 dB/oct measures −48 dB an octave out.
+
+**3. The limiter detects SAMPLE PEAK, and its ceiling is a guarantee.** `env~` is
+an RMS follower; a single-sample spike has almost no RMS over a 1.5 ms window, and
+driven through an RMS detector the test's +20 dB spike leaves at **8.25** against a
+ceiling of 0.97. `dsp::LookaheadLimiter` holds the minimum target gain over the
+lookahead window, lets it rise only exponentially, then averages it over the same
+window. Every value in that average is at most the target for the sample about to
+leave the delay line, so the output cannot exceed the ceiling on any sample. It is
+checked across a +12 dB sine, the spike, square bursts and +12 dB noise at four
+lookaheads.
+
+**4. RMSC clamps its envelope, and its sidebands become optional.** A key above
+full scale made the gain `1 − |key|` negative and turned the music upside down; the
+envelope is clamped to `[0, 1]`. The sidebands are amplitude modulation — they are
+what RMSC sounds like, about −16 dB either side of each partial at half depth — so
+they are not removed but made optional: a low-pass on the rectified key takes them
+down by more than 18 dB, at the price of its own lag. The goal's "multiply/subtract"
+becomes multiply only: subtracting the key adds a rectified kick into the mix.
+
+**5. The Pd patches are generated, and checked.** `tools/gen_pd_patches.py` writes
+`adi_daw/pd/`, because a Pd file wires objects by creation index and a hand edit
+re-points every later connection. `validate_pd.py` fails when a committed patch
+differs from its generator, tolerating Windows line endings, and `adi_dsp_tests`
+parses the patches and asserts the specific design.
+
+### Three bugs in my own generated patch, found by review
+
+The first generated limiter would have shipped with all of these, and a
+connection check alone would have passed it:
+
+- **It reported zero latency, forever.** The sample rate went into an `[f]` that
+  nothing ever banged, so the sample-count `expr` always multiplied by 0.
+- **The query could report at the old rate.** `$0-query_latency` fanned out to
+  "read the rate" and "compute the report", and Pd does not order a fan-out — which
+  quietly reinstates the bug ADR-0095 decision 2 exists to prevent. Fixed with
+  `[t b b]`, which fires right to left.
+- **A comment described a fix that was not there.** It said the delay writer and
+  reader sat in ordered subpatches; the generator had never built them. It does now:
+  `[pd write]` wired into `[pd read]`, which is what makes Pd's DSP sort run the
+  writer first.
+
+The structural test now asserts each of these by name, so none can come back
+quietly. The vanilla-Pd limiter cannot reproduce the C++ guarantee — Pd has no
+sliding-window minimum — so it uses an instant-attack peak follower plus a `clip~`
+at the ceiling for the residual the release leaves; the C++ version is the one with
+the exact bound, and the oracle the patch will be compared against.
+
+### Verified non-vacuously
+
+Seven planted defects in the maths, all caught: the cookbook's signs copied into
+`biquad~` (3 checks), identical Qs for a steep cut (8), RMS detection (19), no
+sliding minimum (16), a release allowed above the hold (23), RMSC unclamped (2),
+and its smoothing ignored (2).
+
+Six in the patches, all caught: the query fanning out (5), the rate never reaching
+the arithmetic (2), nothing ordering the writer before the reader (2), detection by
+`env~` (3), one EQ section's coefficients reaching one channel (2), and RMSC
+without its clamp (2).
+
+Two of my own test expectations were wrong the first time, not the code: I listed
+the Butterworth Qs in the opposite order to the formula, and expected a 50 ms
+release to be "back to unity after 60 ms", which is 1.3 time constants.
+
+### Not verified
+
+The patches have never run. Once libpd lands (ADR-0095), the first test to write
+compares each against its C++ reference sample for sample. Auto-release, which the
+original goal mentioned, is not built.
+
+---
+
+## ADR-0097 — MPE+ through VST3: three routes, and the controller's channel never reaches a plugin — `DECIDED` (2026-09-21) — **AMENDS ADR-0057 and ADR-0073**
+
+**Director's call:** "Proceed with mapping MPE+ through VST3. Ensure per-note
+expression maps cleanly without breaking standard MIDI backward compatibility."
+
+### What was wrong
+
+ADR-0073's fast path sent every note with its note id and every expression value
+as a `kNoteExpressionValueEvent` carrying a double. That is VST3's native model,
+and it had three defects that no test could see, because each one produces
+well-formed events:
+
+1. **It broke plain MIDI.** A note kept the channel the controller sent it on.
+   An MPE controller sends each note on channel 2..16, so a plugin that listens
+   on channel 1 — a multitimbral sampler, anything channel-filtered — played the
+   wrong part or nothing. ADR-0054 already says the channel is transport, not
+   identity; the output path had not applied it.
+2. **The biggest family of MPE synths received no expression at all.** JUCE's
+   VST3 client converts incoming events to MIDI and returns nothing for
+   `kNoteExpressionValueEvent`. Most MPE synths are built on JUCE, and they
+   understand MPE only as MIDI on member channels.
+3. **A plugin with no per-note support got nothing it could use,** although
+   poly aftertouch is a per-note expression plain MIDI has always had.
+
+### Decision
+
+**1. Three routes, chosen per plugin.** `src/adi/engine/mpe_output.{hpp,cpp}`,
+SDK-free and tested on every ABI:
+
+| Route | Notes | Expression | Resolution |
+|---|---|---|---|
+| **NoteExpression** | channel 0, with note id | `kNoteExpressionValueEvent`, anchored to the id | a double, end to end |
+| **MpeMidi** | each on its own **member channel** 1..15 | that channel's pitch bend, channel pressure and CC74 | a double into a mapped parameter; 14/7/7 bits as a legacy event |
+| **Plain** | channel 0 | pressure as **poly aftertouch**; pitch, timbre, gain and pan dropped and **counted** | a float |
+
+**2. The controller's channel never reaches a plugin.** NoteExpression and Plain
+put every note on channel 0. MpeMidi chooses member channels itself; three notes
+that all arrived on channel 2 go out on three different channels. This is the
+backward-compatibility rule, and every route keeps it.
+
+**3. How a route is chosen.** An explicit choice (`Vst3Device::setExpressionRoute`)
+always wins. `Auto` asks the plugin's edit controller once, in the constructor:
+
+- it lists Tuning in `INoteExpressionController`, or names a type for X in
+  `INoteExpressionPhysicalUIMapping` → **NoteExpression**;
+- `IMidiMapping` maps pitch bend to a **different parameter on two or more
+  channels** → **MpeMidi**;
+- otherwise → **Plain**;
+- **the controller cannot be reached → NoteExpression.**
+
+That last case is the common one, and it has a cause. JUCE publishes only
+`IComponent` to a host and keeps its edit controller private, so the controller
+is reachable only when the component answers for it — a single-component plugin.
+Every JUCE-built plugin ships its controller as a separate class. For those,
+`Auto` has no information, and NoteExpression is the default because it costs a
+plugin that does not support it nothing: it ignores the events and plays the
+notes on channel 0. A user with a JUCE MPE synth chooses MpeMidi.
+
+Three alternatives were checked and rejected:
+
+- **Instantiating a second controller from the plugin's factory to read its
+  MIDI mapping.** A JUCE controller receives its processor only when a
+  component connects to it. Until then it answers every mapping query "yes",
+  from a table nothing has filled, so a second controller reports wrong
+  parameter ids. A correct one needs a second full plugin instance.
+- **Patching JUCE to expose the controller.** This is a local modification of a
+  pinned AGPL dependency (ADR-0024, ADR-0048). `OPEN_SOURCE_POLICY.md` §4
+  covers copying AGPL code into ours; it does not cover maintaining changes to
+  JUCE. That is a decision for the director, not something to do quietly
+  inside an ADR about MPE.
+- **MpeMidi as the default.** A plugin that is not an MPE receiver treats a
+  member channel's pitch bend as the channel's bend — every note bends when one
+  does. That breaks exactly the compatibility this ADR is for.
+
+**4. MpeMidi, precisely.**
+
+- **Lower zone, members 1..15.** Channel 0 is the master and never carries a note.
+- **The MPE Configuration Message is sent first** — RPN 6 on channel 0 with the
+  member count — after every prepare and on switching into the route. It is
+  what makes "a member channel bends ±48" true at the receiver, and the bend
+  encoding assumes exactly that (`kMpeOutBendSemitones`).
+- **Each note-on is preceded by a reset of its channel**: bend, CC74 and
+  pressure, at the note's frame. Without it a note starts wherever the last
+  note on that channel left off — a fifth sharp, say. Where the stream carries
+  the note's own starting values at the same instant, those are used, since
+  MPE sends a note's initial bend and timbre before its note-on; otherwise
+  centre, 64 and 0.
+- **Allocation takes the free channel released longest ago**, so a note does
+  not reset the bend under a release tail that is still ringing.
+- **When all 15 are sounding, a new note shares** the channel whose note began
+  first, and it is counted. MPE 1.0's degradation blurs expression; cutting
+  that note off would change what the player is holding.
+- **The bend encoder is the exact inverse of the input parser**: 8192 steps
+  below centre and 8191 above, so −48 and +48 reach words 0 and 16383. All
+  16384 words round-trip.
+- **Where the plugin maps a message to a parameter, it goes as a parameter
+  change** in the same process call (ADR-0073). The value is unrounded: bend as
+  the exact word over 16383, pressure and timbre as the double they were.
+  Over 16383 and 127 is the scale JUCE's own host uses; its client decodes
+  every word back exactly.
+- **Where it does not, it goes as a `kLegacyMIDICCOutEvent`**, with the bend's
+  LSB in `value` and MSB in `value2`. The SDK describes that event as plugin
+  output, but JUCE's client turns it back into MIDI on the named channel. A
+  plugin that does not read it ignores it, which on this route costs only
+  expression.
+
+**5. Switching route ends every sounding note first, on the channel it began
+on.** A note started on member channel 5 and ended on channel 0 under the new
+route would never end. The switch is requested from any thread and applied at
+the start of the next process call.
+
+**6. `Vst3EventList::add` is now `noteExpressionOut` + `addOut`.** One
+translation, not two; the single-event path gets the channel rule too.
+
+### Two older bugs, found on the way
+
+- **`Vst3ParamQueue::addPoint` allocated on the audio thread** (ADR-0010): it
+  inserted into a vector with no reserved capacity. One point per block had
+  hidden it; MpeMidi's parameter path puts a 500 Hz stream into one queue per
+  member channel. Queues now reserve at prepare and count a refused point.
+- **`Vst3Device::prepare` re-activated the plugin every time.** Since ADR-0073,
+  `prepared_ = true` had sat after the `return` in `pushEvent`, unreachable, so
+  the guard that skips an identical re-prepare never fired. Re-activation is
+  the state loss that guard exists to prevent. MSVC's C4702 found it in a JUCE
+  build with `-Werror`; **CI's JUCE job builds without `-Werror`**, which is why
+  it shipped. The probe now asserts one activation across two identical prepares.
+
+### Verified non-vacuously
+
+`adi_mpe_output_tests`, 88 checks. Seventeen planted defects, all caught:
+
+- the controller's channel passed through, in `noteExpressionOut` and,
+  separately, in the router's note path;
+- no bend reset before a note;
+- the master channel allocated to notes;
+- the most recently released channel reused;
+- the MCM repeated every segment;
+- a symmetric bend encoder (4095 words wrong);
+- poly pressure on the wrong key;
+- a route switch ending notes on channel 0;
+- the parameter path rounding the bend;
+- MpeMidi preferred over declared note expression;
+- one-parameter-for-all-channels counted as per-channel bend;
+- an unassigned-id note-off matching any key;
+- a note's starting values ignored;
+- MpeMidi expression sent as note-expression events;
+- a note beyond the table sent untracked;
+- a full zone cutting a held note instead of sharing.
+
+The first run left the channel defect in `noteExpressionOut` **surviving**: the
+router's own note path hard-codes channel 0, so nothing exercised that line. A
+direct test now covers the single-event path.
+
+`adi_vst3_probe`, built locally with JUCE and `-Werror`, run against the real
+SDK structs. A note from channel 5 comes out on channel 0. A legacy bend's two
+halves reassemble to the word. A mapped control is not an event. Poly pressure
+lands on its key and id. The router's MCM, reset and note arrive with the note
+on member channel 1. A full parameter queue refuses and counts.
+
+With the installed Reason Rack Plugin: its controller is reachable (it is a
+single-component plugin), it maps pitch bend on all 16 channels to **one**
+parameter, and `Auto` resolves to **Plain** — the global-bend case, correctly.
+
+The gcc/clang `-Wconversion` legs that failed on 112ac0b were reproduced locally
+through clang-tidy's compiler diagnostics before the fix was pushed, and the
+sweep was shown to fail on a planted narrowing before it was trusted.
+
+### Not verified
+
+- **No MPE-capable VST3 is installed here**, and no plugin with note-expression
+  support. Neither MpeMidi nor NoteExpression has made sound from a real MPE
+  synth; the legacy-event path is verified against JUCE's source, not a running
+  JUCE plugin.
+- **The route choice is not saved.** It lives on the device at runtime; its
+  natural home is the device's row in the project, which is a SPEC change of
+  its own.
+- **The CLAP host has the same channel pass-through** (`clap_host.cpp`, note
+  and expression). CLAP negotiates its own dialect through note ports (CLAP,
+  MIDI, MIDI-MPE), so it needs its own decision rather than this one copied.
+- **MPE+ LSBs are not sent on the legacy route.** Pairing CC74 with CC106 is
+  the same unverified convention ADR-0054 flagged in `isHighResMsb`. MPE+
+  resolution survives on the NoteExpression route and the parameter path,
+  where values are doubles.
+- **The probe's state round-trip check fails on this machine**, with the Reason
+  Rack Plugin: its state is not byte-identical across save, load, save. It
+  fails identically when built from the commit before this one, in a separate
+  worktree, so it is the plugin's and not this change's. CI never sees it
+  because its runners have no plugin installed.
+- **CI's JUCE job should build with `-DADI_WERROR=ON`**, which is what would
+  have caught the misplaced `prepared_`. The Windows leg is proven to pass it
+  here; the macOS leg is not, and the job is not required, so the change is
+  left for a commit that can watch both legs.
+
+---
+
+## ADR-0098 — Real plugins on Windows: Surge XT and Serum 2, measured by ear, and what they found — `DECIDED` (2026-09-21) — **FOLLOWS ADR-0097**
+
+**Director's call:** Surge XT (CLAP and VST3) and Serum 2 installed on the
+Windows machine, "please do all the tests you need".
+
+ADR-0097 was verified against the SDK's structs and one plugin that takes no
+per-note expression. Nothing had yet made sound from a real MPE synth. This ADR
+records what did, one bug the attempt found in the CLAP host, and what the
+results mean for ADR-0097's `Auto`.
+
+### 1. The CLAP host found no plugin installed in a vendor folder
+
+`ClapHost::scan` read each search path **one level deep**. CLAP's `entry.h` says
+"Each directory should be recursively searched". Surge XT's Windows installer
+puts its bundle at `CLAP\Surge Synth Team\Surge XT.clap`, so the scan found
+**nothing**. On macOS Surge installs at the top level, which is why this never
+showed there.
+
+Fixed. The walk is now `ClapHost::findBundles`: a pure, recursive, sorted,
+de-duplicated filesystem search. A `.clap` directory is a macOS bundle, listed
+and not entered. It is tested with temporary directories, and four planted
+defects are caught: one level only, a bundle entered, no de-duplication, and
+the extension's case. With the fix, `adi_clap_probe` finds Surge XT on Windows
+and renders a note through the graph.
+
+### 2. Pitch is measured from the audio, not inferred from what was sent
+
+"The plugin produced audio" proves an event arrived, not that it meant what we
+intended. A bend at the wrong range, or on the wrong channel, still makes sound.
+`src/juce/probe_audio.hpp` (probes only) renders a device and measures:
+
+- the fundamental, by YIN with parabolic interpolation;
+- the level at exact frequencies, by a Hann-windowed Goertzel.
+
+Both are checked on known sawtooths before any plugin is judged; the worst
+error is 0.9 cents.
+
+`adi_vst3_probe --mpe <synth>` and `adi_clap_probe --mpe <synth>` run each route
+on a fresh instance:
+
+- **A:** C4 bent +12.
+- **B:** C4 bent +7, with E4 on another channel.
+- **C:** scene B with both notes on **one** controller channel.
+- **D (MpeMidi only):** note 1 bent an octave and released, 14 more notes cycling
+  the other channels, then note 16 unbent on channel 1 again.
+
+The pass rule is not "the plugin bends", because whether a plugin reads a route
+is the plugin's business. It is:
+
+- every scene sounds **bent exactly as sent, or unbent** — never at a wrong
+  pitch, never with one note dragged by another's bend;
+- a plugin reads a route in every scene or in none;
+- at least one route delivers.
+
+### 3. What the two synths do
+
+| | controller | MpeMidi | NoteExpression | `Auto` chose | `Auto` delivers |
+|---|---|---|---|---|---|
+| **Surge XT 1.3.4** (VST3) | unreachable | **per note** — +12 at 523.06 Hz, −0.6 c; E4 stays, B4 at −105 dB | ignored | NoteExpression | **nothing** |
+| **Serum 2 2.0.16** (VST3) | unreachable | ignored — no bend at all, not even global | **per note** — 522.97 Hz | NoteExpression | **yes** |
+| **Surge XT 1.3.4** (CLAP host) | — | — | **per note**, including two notes on one channel | — | — |
+
+**MpeMidi works end to end on Surge XT.** The Configuration Message switched it
+into MPE mode at ±48, since +12 lands on the octave. Scene C proves the route
+allocates channels itself. In scene D, the reused channel's note sounds at
+329.56 Hz, 0.3 cents from E4.
+
+**Serum 2 ignores `kLegacyMIDICCOutEvent` on input**, exactly the case ADR-0097
+said costs only expression. Its notes on member channels still play, and nothing
+bends wrongly.
+
+**Surge XT ignores VST3 note expression**, as ADR-0097 read from JUCE's client.
+
+**Surge XT's CLAP addresses expression by note id.** Two notes on one channel
+bend independently. That is the evidence ADR-0097's open CLAP question needed:
+putting every CLAP note on one channel would not cost per-note expression here.
+
+### 4. The real-audio planted defects
+
+Three router defects, each planted in turn, rebuilt, and played through Surge
+XT. All were caught:
+
+| Planted | What Surge XT did |
+|---|---|
+| no channel reset before a note | note 16 on the reused channel sounded **659.00 Hz** — E5, an octave sharp |
+| no MPE Configuration Message | +12 sounded **+50 cents**: Surge stayed at its non-MPE ±2 |
+| the controller's channel passed through | scene C sounded **unbent** while A and B bent: both notes landed on channel 1, the zone's master, where Surge treats bend as global at ±2 |
+
+The third **survived the first version of this test**: scenes A, B and D never
+held two notes from one controller channel. Scene C exists because of that.
+The one-level CLAP scan, planted back, also fails the real probe: Surge XT is
+not found.
+
+The first version also asserted that MpeMidi must bend on every synth. Serum 2
+failed it, correctly — the assertion was wrong, not the host — and the pass
+rule in §2 replaced it.
+
+### 5. What this means for `Auto`
+
+With the controller unreachable, **both synths look identical to a host**:
+
+- JUCE hides the controller;
+- no VST3 interface says "reads MPE over MIDI";
+- both are instruments.
+
+They need **opposite** routes, and `Auto` can only be right for one. It stays
+NoteExpression, which is right for Serum 2 and harmless for Surge XT: its notes
+play, without expression.
+
+The consequence is a priority change, not a code change: **the route choice has
+to be remembered**, and ADR-0097 left it runtime-only. Two ways to make `Auto`
+right for more plugins, both the director's to choose:
+
+- **a per-plugin memory** — the user picks once per plugin class, and it is kept
+  as a preference and in the project;
+- **a measured table** — plugin class id → route, filled only from runs of
+  `--mpe` like these, never from guesses. Today it would hold two rows: Surge XT
+  → MpeMidi, Serum 2 → NoteExpression.
+
+### 6. Smaller things the plugins showed
+
+- **The probe picked "Surge XT Effects" for "Surge XT"**, the same trap as
+  'Serum 2 FX' before it, and an effect with no input proves nothing. It now
+  prefers an exact name, then an instrument.
+- **`supportsNoteExpression()` read as "the plugin supports it".** It means
+  "our path can carry it"; Surge XT carries it and ignores it. The probe says so.
+- **Surge XT passes the whole generic probe (81 checks)**, including a
+  byte-identical state round trip of 67 KB. The one probe failure on this
+  machine, Reason Rack Plugin's state round trip (ADR-0097), is that plugin's.
+- **mac's real-plugin CLAP modes on Windows:** `--rebuild` passes all 13
+  checks. `--latency`, `--coalesce` and `--seam` need a plugin whose latency
+  changes at runtime, as Pro-Q 3's does, and none is installed here.
+- **Cubase 15 and REAPER 7 were not needed.** The host under test is ours, and
+  Cubase installed no instruments.
+
+### Not verified
+
+- **MpeMidi's parameter path** (`IMidiMapping`). Every MPE synth here hides its
+  controller, so only the legacy-event path has made sound.
+- **Pressure and timbre.** The synths' init patches route neither to anything
+  audible; pitch is the only dimension measured.
+- **Plain's poly aftertouch.** It is sent and translated, but no audible effect
+  was measured, for the same reason.
+- **The CLAP channel decision** is still ADR-0097's open item. §3 is its
+  evidence, from one plugin.
+
+---
+
+## ADR-0099 — CLAP note dialects: the host sends what the plugin's note port declares — `DECIDED` (2026-09-21) — **CLOSES ADR-0097's open CLAP item**
+
+**Director's call:** "why surge xt clap have a -- on the mpe+ test? if we need
+to enable mpe in the plugin or host to test we should find a way to do this."
+
+The "—" in ADR-0098's table meant the CLAP host had no MPE-over-MIDI route to
+test. It sent every plugin CLAP note events and note expressions. Those carry
+MPE+ natively, as doubles by note id, and Surge honoured them. Reading why
+there was no other route turned up a real gap: **CLAP makes a plugin declare
+which note dialects it accepts, and this host never asked.**
+
+### What was wrong
+
+- **No `clap.note-ports` on either side.** The host never read a plugin's
+  `supported_dialects` or `preferred_dialect`, and never offered
+  `clap_host_note_ports`. A plugin that declares only the MIDI dialect is
+  entitled to ignore `CLAP_EVENT_NOTE_ON`, so it played nothing.
+- **The controller's channel reached the plugin** — the same defect ADR-0097
+  fixed for VST3, still in the CLAP host. A test pinned it: "controller channel
+  2 → CLAP channel 1".
+- **The input list was not in time order.** CLAP requires it, but queued
+  parameter changes were appended after the notes with time 0.
+
+### Decision
+
+**1. The plugin's declaration decides.** `resolveClapDialect`:
+
+- **No `clap.note-ports` at all** → CLAP events: the spec's preferred encoding,
+  and what every plugin got before.
+- **The extension, but no input port** → no notes. The plugin declared it
+  takes none; its parameters still arrive.
+- **An explicit choice** → that dialect, **only if the plugin declares it**.
+  Otherwise fall back to Auto; an undeclared dialect is never sent.
+- **Auto** → the plugin's preferred dialect when we speak it, else the first it
+  declares of CLAP, MIDI-MPE, MIDI. MIDI 2.0 only → no notes.
+
+Unlike VST3's `Auto` (ADR-0097), which usually has nothing to go on, this one
+reads the answer.
+
+**2. Each dialect runs ADR-0097's route through the same `engine::MpeRouter`.**
+
+| Dialect | Route | What the plugin receives |
+|---|---|---|
+| CLAP | NoteExpression | `CLAP_EVENT_NOTE_*` on channel 0 with the note id; `CLAP_EVENT_NOTE_EXPRESSION` in **semitones**, addressed by note id **and the note's key** |
+| MIDI-MPE | MpeMidi | `CLAP_EVENT_MIDI`: the MCM, a member channel per note, reset before each note, 14-bit bend, pressure, CC74 |
+| MIDI | Plain | `CLAP_EVENT_MIDI`: notes on channel 0, pressure as poly aftertouch, the rest counted |
+
+- The router's outputs now carry each expression's dimension and the engine's
+  plain value, so CLAP gets semitones without a trip through VST3's scale.
+- An expression names the tracked note's key, so a plugin that matches on
+  (channel, key) instead of the id still finds one note.
+- A note-on at velocity 0 goes out as 1, since MIDI 1.0 reads 0 as a note-off.
+
+**3. The host offers `clap_host_note_ports`.** `supported_dialects` returns
+CLAP | MIDI | MIDI-MPE. A `RESCAN_ALL` is counted, and a device re-reads its
+note ports at every activation, which is when the spec allows the scan.
+
+**4. Switching dialect ends each note in the dialect it began in.** A MIDI
+note-on is not ended by a CLAP note-off. The switch is asked for from any
+thread and applied at the next process call.
+
+**5. `ClapEventList::sortByTime()`** puts the finished list in time order,
+stably. `add()` for notes now goes through the CLAP dialect's translation, so
+there is one rule, not two.
+
+### Measured on Surge XT's CLAP
+
+Surge declares all three dialects (`0x7`) and prefers CLAP (`0x1`). The scenes
+and pass rule are ADR-0098's:
+
+| Asked | Got | A (+12) | B (per note) | C (one channel) | D (reused channel) |
+|---|---|---|---|---|---|
+| Auto | CLAP | bent | bent | bent | — |
+| CLAP | CLAP | bent | bent | bent | — |
+| MIDI-MPE | MIDI-MPE | bent | bent | bent | 329.56 Hz, −0.3 c |
+| MIDI | MIDI | unbent | unbent | unbent | — |
+
+**The cell that was "—" is filled.** Per-note expression reaches Surge's CLAP
+in two dialects, and plain MIDI correctly carries none.
+
+### Verified non-vacuously
+
+`adi_clap_tests`, 58 new checks, using a fake plugin that declares
+configurable note ports and records the MIDI, note and expression events it
+receives.
+
+Ten planted defects, all caught:
+
+- Auto ignoring the preference;
+- an undeclared choice sent anyway;
+- the list unsorted;
+- the bend's bytes swapped;
+- velocity 0 sent as 0;
+- a switch ending notes in the new dialect;
+- a plugin with no note input given notes;
+- expression without the key;
+- expression in VST3's scale;
+- `add()` passing the channel through.
+
+The swapped bytes and the VST3 scale also fail **audibly in Surge**:
+MIDI-MPE and CLAP respectively go WRONG in every scene.
+
+The no-input plant **changed nothing the first time**: a plugin with no input
+port has no supported dialects, so the resolution fell through to None anyway.
+Planted instead as "no input → CLAP", it was caught.
+
+### A measurement note for the probe
+
+`makeDevice` activates the plugin, so the probe's own `prepare` changes nothing,
+and a requested dialect is applied by the first process call. The first probe
+read the dialect before rendering and printed "Clap" for every row while the
+audio showed otherwise. It now reads the dialect after.
+
+### Not built
+
+- **Acting on a note-port rescan while the plugin is active.** It is counted;
+  a restart that does not change the audio layout does not re-read the ports.
+- **MIDI 2.0.**
+
+---
+
+## ADR-0100 — The expression test rig: pressure and timbre by ear, baselines, and a fixture VST3 with a reachable controller — `DECIDED` (2026-09-21) — **FOLLOWS ADR-0098/0099**
+
+**Director's call:** test "pressure and timbre (the init patches don't route
+them to anything audible), and the MIDI-mapping parameter path (every MPE synth
+here hides the interface it needs)", finding a way where one is needed.
+
+### 1. Making pressure and timbre audible on Surge XT
+
+`src/juce/probe_surge.hpp` edits Surge's own saved patch before each scene,
+through either host. The format is Surge's, GPL-3.0 like ours: a `sub3`
+header carrying the XML's length, the XML, then wavetables. **One dimension per
+patch:**
+
+- **pressure** → oscillator 1 level = 0.25 + 0.75 × pressure, driven by channel
+  aftertouch (source 4) and poly aftertouch (source 3); the filter stays off;
+- **timbre** → a 24 dB low-pass at ~311 Hz, opened +48 semitones by timbre
+  (source 29); the level stays fixed.
+
+The base level is 0.25, not 0, so a pressure that never arrives reads as
+"unchanged", not as "silent".
+
+Each dimension is measured two ways:
+
+- **single:** one note at the high value against the same note at the low
+  value;
+- **pair:** C4 and E4 together, played both ways round (C4 high/E4 low, then
+  swapped), taking half the difference. That cancels anything the two keys
+  differ by anyway — a filter tilt — and a **global** application reads 0
+  there while `single` does not.
+
+The verdict is *per note*, *not delivered*, or *WRONG*. The first design had the
+filter on in the pressure patch, and E4 is darker and quieter than C4 whether
+or not anything arrives; that was caught on paper, before a run.
+
+### 2. Results
+
+| Host | Route / dialect | Pressure | Timbre |
+|---|---|---|---|
+| VST3 | MpeMidi | per note (+36 dB) | per note (+25 dB) |
+| VST3 | Plain | per note (poly AT) | not delivered |
+| VST3 | NoteExpression | not delivered | not delivered |
+| CLAP | CLAP | per note | per note |
+| CLAP | MIDI-MPE | per note | per note |
+| CLAP | MIDI | per note (poly AT) | not delivered |
+
+Every "not delivered" is correct. Plain MIDI has no per-note timbre, and Surge
+ignores VST3 note expression (ADR-0098).
+
+### 3. Two things the measurements corrected
+
+**Surge 1.3.4 reads MPE's CC74 as BIPOLAR around 64.** The first MIDI-MPE timbre
+runs gave pair values of +8.9 and +11.0, then a WRONG. Absolute levels showed
+why: a note at timbre 0 sat at **−123 dB**. CC74 0 is −1 to Surge, which closes
+the filter a further 48 semitones, so the "dark" note had vanished and its
+brightness was two noise floors.
+
+- MPE does not define CC74's polarity. CLAP's BRIGHTNESS is unipolar by
+  definition.
+- **ADI carries the value faithfully**: the router resets a channel to 64, and
+  0..1 maps to 0..127.
+- On the MPE route the scene's low value is therefore **0.5 (CC74 64)**, the
+  neutral. MIDI-MPE timbre then measures +25.1 / +26.7, identical to CLAP's, on
+  every run.
+- Newer Surge has a `mpeTimbreIsUnipolar` setting; 1.3.4's saved state has none.
+
+**CLAP's PRESSURE expression reaches Surge outside MPE mode.** Surge's source
+suggested it would be ignored there. It was measured delivered per note, and
+the measurement stands.
+
+### 4. Baselines: "not delivered" is not always allowed
+
+The pass rule from ADR-0098 allows "not delivered", because a plugin may ignore
+a route. For a plugin that **has** been measured, that is too weak. So all
+four probe modes now carry the verdicts measured today, **keyed by plugin name
+and version**: Surge XT 1.3.4 (VST3 and CLAP) and Serum 2 2.0.16. Any change
+fails. A different version is reported and not judged.
+
+Four planted defects, each played through Surge:
+
+- MPE timbre sent on CC71;
+- MPE pressure sent as CC2;
+- Plain's poly aftertouch dropped;
+- CLAP pressure sent as EXPRESSION.
+
+**All caught — and all but one only by the baseline.** Only CC71 on VST3 also
+trips the general rule, because there no route delivers timbre at all.
+
+### 5. The fixture: a VST3 whose edit controller is reachable
+
+`tests/fixtures/vst3_expression_synth.cpp` is one class that is both component
+and controller: the one arrangement our host can see into. It is built only
+against Steinberg's VST3 SDK, which is MIT; no JUCE code. It comes in three
+variants:
+
+| Variant | Declares | Auto chose | Pitch | Pressure | Timbre |
+|---|---|---|---|---|---|
+| ADI Test MPE | IMidiMapping per channel + MCM CCs; ignores legacy events | MpeMidi | per note | per note (+12.0 dB) | per note (+26.0 dB) |
+| ADI Test NoteExpr | Tuning + custom types 100001/100002 via physical-UI mapping | NoteExpression | per note | per note | per note |
+| ADI Test Plain | bend on channel 0 only | Plain | unbent | per note (poly AT) | not delivered |
+
+**79 checks, first run.** For the first time these ran against anything:
+
+- `probeExpressionCaps` reading a real controller;
+- Auto choosing each of the three routes;
+- the IMidiMapping **parameter path**, including the MCM sent as parameters;
+- the physical-UI mapping's custom types.
+
+The +12 lands on the octave only because the MCM arrived as parameters. The
+wrong route delivers nothing: the MPE variant on NoteExpression, and the
+NoteExpr variant on MpeMidi. The reused-channel reset holds.
+
+Five planted defects in the host's controller-reading code, all caught:
+
+- the physical-UI mapping read and not applied;
+- IMidiMapping asked for the wrong controller as pitch bend;
+- a mapped message sent as a legacy event;
+- the MCM's CCs never looked up;
+- the controller never asked for at all.
+
+The MCM defect makes the fixture sound **269.29 Hz** — the same +50 cents Surge
+gave without the MCM (ADR-0098), from an independent synth.
+
+**It runs in CI.** The fixture is built on Windows as a dependency of
+`adi_vst3_probe`, and the probe's default run tests it with no plugin
+installed.
+
+### 6. Probe tools added
+
+- `--dimensions <synth>` (both hosts): the pressure and timbre scenes.
+- `--fixture` (VST3): the fixture alone.
+- `--dump-state <plugin> <file>` (both): a plugin's opaque state as our host
+  saves it — how Surge's two wrappings were read before editing them.
+
+### Not verified
+
+- **The fixture on macOS.** A VST3 bundle there needs an Info.plist and bundle
+  entry points, and nobody here can test them.
+- **A commercial plugin with a reachable controller that maps MPE through
+  IMidiMapping.** The fixture proves our host honours what a plugin declares,
+  not that any shipping plugin declares it this way.
+- **Serum 2's pressure and timbre.** Its state is proprietary, so no patch can
+  be edited to make them audible.
+- **Timbre polarity on other synths.** Surge 1.3.4's reading is recorded, and
+  a synth that reads CC74 differently will sound different on MIDI-MPE than on
+  CLAP.
+
+---
+
+## ADR-0101 — Session View returns as a secondary window, built last — `DECIDED (direction)` (2026-09-22) — **SUPERSEDES ADR-0037 IN PART**
+
+**Director's call.** Reverse the two rejections in FEATURES §11: the clip
+launcher and the live-performance instrument. Session View comes back, not as
+the default paradigm but as an **undockable secondary window** summoned by a
+shortcut (F3, the way Cubase summons the MixConsole). The same window carries a
+Cubase-style MixConsole view, with a button switching between the Ableton-style
+Session view and the Cubase view, so the mixer abilities the right dock does not
+show have a home. Strictly last: the linear Arrangement View must be finished and
+verified before this, and before any ADI Live work (ADR-0105), begins.
+
+**What ADR-0037 said, and what survives.** ADR-0037 cut the data model
+(`scenes`, `clip_slots`, fourteen `scene.*` / `session.*` ops) and kept the
+layout. It also wrote its own escape clause: *"if it ever returns it returns as a
+Layer 4 extension under a reserved namespace, or as a `user_version` bump — not
+as a quiet re-addition to Layer 1."* This entry exercises that clause. What
+survives of 0037: the Arrangement is the primary paradigm, the default screen and
+the first thing built, and everything sketched has to be earned on the timeline
+first. What is superseded: the two product rejections, and "the DAW is
+linear-only" as a permanent statement.
+
+### Decisions
+
+1. **Product.** Session View is a secondary, undockable window under ADR-0063's
+   rule: the same component tree reparented, never a second instance. Hidden by
+   default; F3 toggles it. Its roadmap step comes after the arrangement passes
+   ADR-0108's verification gate and before ADI Live.
+2. **Format: the schema returns now, not with the UI.** Nothing has shipped
+   (`user_version` is still 1000), so restoring `scenes` and `clip_slots` to
+   Layer 1 costs nothing today and a migration later — the README's "why start
+   with the file format" argument, applied in the other direction. It is a schema
+   PR under `validate_schema.py`, and it re-examines the two constraints ADR-0037
+   tightened: `clips.track_id NOT NULL` stays (a slot clip still belongs to a
+   track); a slot clip carries a slot reference *instead of* a timeline position,
+   which is a CHECK either/or to be designed in that PR. The fourteen ops return
+   to the catalogue when the window is built, not before, so `validate_ops.py`'s
+   prose counts keep matching.
+3. **Two views over one model.** (a) Session: the clip matrix with Ableton-style
+   mixer strips beneath it. (b) MixConsole: Cubase-style channel strips — racks,
+   inserts, EQ, strip, fader (Cubase 20a to 20d). A toggle switches them. Neither
+   is a second mixer: the strips are the `MixerPanel`'s components reparented, or
+   readers of the same `TrackOrderModel` — ADR-0063 decision 1 and
+   UI-ARCHITECTURE §4 ("one model, two readers, no second ordering") hold.
+4. **Agent.** ADR-0027's rule is untouched; its membership grows back: the four
+   `session.*` launch ops persist nothing and rejoin the non-undoable set when
+   they exist. AI-AGENT §1's count returns to ten at that point.
+5. **Live performance is ADI Live** (ADR-0105), not this window. This window is
+   for sketching and mixing inside the DAW.
+
+**Cost, stated.** Reversing a cut is cheap only now. SPEC §6.5, FEATURES §5,
+README commitment 3 and TEXT-PROJECTION's designators change back; ADR-0037's
+blast-radius table is the checklist, run in reverse.
+
+**Not decided:** launch quantisation and follow actions; whether a Session clip is
+a `clips` row with a slot column or its own table.
+
+---
+
+## ADR-0102 — The engine must be excellent at small blocks too — `DECIDED` (2026-09-22) — **AMENDS ADR-0042**
+
+**Director's call.** 4096 stays the universal cap for heavy mixing (ADR-0049).
+But the engine must be ruthlessly optimised for 32, 64 and 128-sample blocks for
+tracking and lightweight projects: better CPU efficiency than Ableton Live at low
+latency and low channel counts, and more stable than it on huge projects at high
+buffer sizes.
+
+**What ADR-0042 said.** Tuned for large blocks; sub-block accuracy is what makes
+that safe; low-latency tracking was explicitly not the tuning target. This amends
+the target and keeps the mechanism.
+
+### Decisions
+
+1. **Two operating points, both first-class:** 32 to 128 for tracking, 2048 to
+   4096 for mixing. Block size changes without reload (ADR-0042 decision 6).
+2. **Per-callback fixed cost is the enemy at 32 samples** (0.67 ms at 48 kHz).
+   Snapshot acquisition, the level walk, event routing, meter publishing and the
+   coalescer poll (ADR-0082) must be proportional to *active* nodes, allocation
+   free, with a measured per-node overhead. ADR-0054's sub-block floor
+   (`sample_rate/500`) is moot below 96 frames: a block smaller than the floor is
+   one segment.
+3. **"Outperform Ableton" is a benchmark, not a sentence.** A benchmark suite
+   ships with the engine: fixed projects (N tracks by M devices; a silence-heavy
+   project; an MPE+ storm) at 32, 64, 128, 2048 and 4096, reporting callback time
+   p50/p99/max and dropouts. Numbers against Live on the same machine are recorded
+   in the agent log per release, and the README may make the claim only with that
+   table beside it.
+4. **Threading.** ADR-0056's levelled schedule allows a pool; at 32 samples a
+   pool's wake-up cost (tens of microseconds) is a large fraction of the budget,
+   so the scheduler must run single-threaded below a measured block size. The
+   pool is built with that switch from the start.
+5. **Suspension is the stability lever** for huge projects (ADR-0043), and its
+   cost per sleeping node must be near zero at 4096 as well.
+
+**Consequence for ADR-0053.** At 64 samples a remote plugin pipelined one block
+behind is 1.3 ms, not 85. Its "unplayable for live tracking" sentence was about
+the block size, and this entry is what retires it — see ADR-0107.
+
+**Not decided:** the block-size switch heuristic; whether JUCE's device layer or
+a direct ASIO/CoreAudio path is used at 32 samples. Measure first.
+
+---
+
+## ADR-0103 — Scale-aware editing covers every scale, Arabic and microtonal ones included; notation stays out — `DECIDED (direction)` (2026-09-22)
+
+**Director's call.** Standard notation (Dorico style) is explicitly discarded.
+Scale-aware editing must include all standard scales plus full Arabic and
+microtonal scale support, which pairs with the per-note expression curves.
+
+**The correction that sets the work.** `key_map.scale_mask` is 12 bits (FEATURES
+§1). It can name any subset of the twelve 12-TET pitch classes and nothing else.
+A maqam — Rast, Bayati, Saba — has quarter-tone steps (E half-flat) that are not
+members of 12-TET at all; a 12-bit mask cannot say them, and neither can
+Ableton's Scale feature, which is why Live 12 has a separate Tuning Systems
+chapter (15). What the format does have is `tuning_cents` in the v1 note record
+and per-note pitch expression (SPEC §6.3.2). So a note can already *sound*
+microtonal; the editor cannot yet *know* a scale that is.
+
+### Decisions
+
+1. **A scale is defined over a tuning system, not over twelve keys.** A tuning
+   system is a Scala pair (`.scl`/`.kbm`) or an equal division (12, 24, 53, ...).
+   The format gains a `tuning_systems` table; `key_map` gains a tuning reference
+   and a membership that is a list of degrees of that tuning. `scale_mask` stays
+   as the 12-TET fast path. This is FEATURES §12's sixth format gap, P2 with
+   scale-aware editing.
+2. **The piano roll draws the tuning's degrees:** 24 rows per octave in 24-TET,
+   unequal rows for a Scala scale; Fold hides non-members; note names follow the
+   tuning (E half-flat, not "E minus 50 cents").
+3. **Playback.** A note in a microtonal scale carries its offset as
+   `tuning_cents`, delivered as per-note pitch where the plugin route is CLAP
+   note expression or MPE (ADR-0097, ADR-0099 already carry it). Plugins with no
+   per-note pitch get MIDI Tuning Standard or a per-channel bend; the router
+   chooses per plugin, as ADR-0097 does.
+4. **Ships with:** every 12-TET mode Live 12 offers, the standard maqamat as
+   Scala files, 24-TET and 53-TET, and `.scl` import. Surge XT's microtuning
+   chapter (07) and Ableton's chapter 15 are the references.
+5. **Notation:** nothing beyond what FEATURES §11 already keeps — enough
+   engraving data not to destroy it, P3, and no editor.
+
+**Not decided:** whether the degree list is a BLOB with an ADR-0008 header or a
+child table; how the agent's projection names a microtonal note.
+
+---
+
+## ADR-0104 — The browser, the sample library and the floating palette are app-scoped — `DECIDED (direction)` (2026-09-22)
+
+**Director's call.** The sample library and the floating palette (Cmd+I / Ctrl+I)
+are global: search and audition with no project open; dragging into a timeline
+needs an active project.
+
+### Decisions
+
+1. **The library index is an app-scoped store**, not in any `.adi`: paths, tags,
+   BPM, key and the embeddings from the P1 tagging workflow, in a SQLite database
+   in the app data directory. Same category as the keymap
+   (UI-ARCHITECTURE §11): a property of the installation. Content-addressed by
+   BLAKE3 like the project pool, so a sample already in a project is recognised.
+2. **Audition needs an audio device and no project graph.** The engine keeps a
+   preview path — a source node into the device — that exists with zero projects
+   open. ADR-0068's "exactly one active project owns the device" becomes "the app
+   owns the device; the active project's graph and the preview path feed it".
+3. **The palette** is a floating, keyboard-first window. Prefix syntax: `V/name`
+   for plugins, local and remote alike (ADR-0083); `S/name` for samples; `P/name`
+   for presets; free text for tasks. Arrow keys navigate, Space auditions, Enter
+   loads onto the selected track or a new one, drag does anything else. A task
+   goes to the agent at its tier (AI-AGENT §2): "export master 0 to 64 bars"
+   fills the export queue (ADR-0071) and the user presses render.
+4. **With no project open**, actions that need one are disabled with the reason
+   shown, never hidden.
+
+**Not decided:** the store's schema; whether library tags sync between machines.
+
+---
+
+## ADR-0105 — The ADI Suite: ADI Live and ADI DJ, after the DAW, on the same engine — `DECIDED (direction)` (2026-09-22)
+
+**Director's call.** Two companion applications, strictly after the DAW is
+complete: **ADI Live**, a lightweight live-performance-only app, and **ADI DJ**,
+a DJ preparation and performance app in the mould of Rekordbox.
+
+### Decisions
+
+1. **Sequencing.** DAW complete (arrangement verified under ADR-0108, Session
+   window built under ADR-0101), then ADI Live, then ADI DJ. Linux desktop work
+   (ADR-0109) follows the suite.
+2. **One engine, three products.** `adi_core` — format, ops, graph, devices, the
+   CLAP and VST3 hosts — is the shared library and each app is a shell over it.
+   Nothing product-specific enters the core: the rule ADR-0086 applies to AI
+   applies here.
+3. **ADI Live** strips the arrangement engine and plays a *prepared* project: a
+   DAW project frozen or pre-rendered (ADR-0059's machinery) into a lightweight
+   playback form — stems, clips, a Session-style launch matrix, live inputs and a
+   minimal device set. Stability over features: no editing, no plugin GUIs by
+   default, ADR-0086's crash boundaries. The "lightweight format" is a `.adi`
+   profile, not a new format: a flag plus a validator that refuses what the app
+   cannot play.
+4. **ADI DJ.** Decks, cue and loop and grid editing, key and BPM analysis (the
+   P1 tagging workflow's analysers), CLAP and VST3 hosting for effects and
+   instruments, and **no AudioGridder or network path** in this app, for
+   stability. A "Mini DAW mode": per-track automation drawn on a deck's waveform
+   beside the regular grid and quantise edits — the DAW's automation lanes and
+   ops, not new ones. Library, cues, grids and playlists are SQLite and ours;
+   nothing is ever written into the audio files. Extensive MIDI mapping for
+   Pioneer and AlphaTheta controllers through app-scoped controller maps.
+5. **Export to hardware USBs** (CDJ-3000 and newer; Omnis Duo, XDJ-RX3 and the
+   like). The device database and analysis files are proprietary formats known
+   only by reverse engineering. Prior art to read: Deep Symmetry's crate-digger
+   (the PDB and ANLZ formats, documented) and Mixxx (GPL-2.0-or-later, reads
+   them). Newer devices use a changed library format whose coverage must be
+   checked before the feature is promised. The export strips what the hardware
+   cannot read (plugins, automation) and keeps cues, loops, grid and waveform
+   data. Behaviour is cloned and names are ours (OPEN_SOURCE_POLICY §5):
+   "Rekordbox clone" is a working title.
+
+**Not decided:** whether ADI Live is a binary or a mode of the DAW; the DJ
+analysis engine; the licence position of the export references (verify
+crate-digger's licence before a line is copied).
+
+---
+
+## ADR-0106 — System audio in, and an ADI virtual audio device out — `DECIDED (direction)` (2026-09-22) — **EXTENDS ADR-0074**
+
+**Director's call.** No third-party virtual cables (BlackHole, VoiceMeeter,
+VB-Cable). Two things: **system audio as a native input** on any track — WASAPI
+loopback on Windows, the CoreAudio equivalent on macOS — so YouTube, Spotify or
+the desktop can be sampled straight into the timeline; and **a virtual audio
+driver in the installer** that exposes the master bus, or any output bus, as a
+standard input device to the OS, for Zoom, Discord, OBS and Parsec, without ASIO
+conflicts or routing matrices.
+
+**Two corrections.**
+
+- *"Proprietary"* cannot be right under OPEN_SOURCE_POLICY: the driver is ours
+  and open source. The best macOS reference, BlackHole, is GPL-3.0, which the
+  policy pre-authorises us to fork.
+- *"Zero-latency"* is not a property a virtual device can have. It adds at least
+  one device buffer on each side — typically 5 to 20 ms end to end through the
+  consuming app. The honest claim is: no extra tools, no ASIO conflicts, one
+  buffer of latency, stated on screen.
+
+### Decisions
+
+1. **Loopback input is an input device in the engine's device layer**, not a
+   plugin. Windows: WASAPI `AUDCLNT_STREAMFLAGS_LOOPBACK` on the render endpoint,
+   plus per-process loopback (Windows 10 2004 and later) so one application can
+   be captured alone. macOS: Core Audio process taps (macOS 14.2 and later,
+   `AudioHardwareCreateProcessTap`), with ScreenCaptureKit audio capture (13 and
+   later) as the fallback. It appears as "System Audio" and "App: name" in a
+   track's input menu. JUCE's device layer exposes neither; this is our code
+   beside it, which ADR-0036 made normal.
+2. **The sample-rate mismatch is the trap.** The loopback stream runs at the
+   render endpoint's rate, not the ASIO device's. A resampler with a declared
+   latency sits between, and the input is compensated like any other latency
+   (ADR-0058).
+3. **The output is an OS driver and a separate deliverable.** macOS: an
+   AudioServerPlugIn in user space, a BlackHole fork. Windows: a kernel-mode
+   virtual endpoint fed from user space — Synchronous Audio Router (GPL-3.0) is
+   the reference; Scream is MS-PL, GPL-incompatible, read only — which must be
+   attestation-signed through Microsoft for Windows 10 and 11 x64. A Partner
+   Center account and an EV certificate are a project cost, not a code detail.
+   Linux needs nothing: PipeWire and JACK already do this (phase 3, ADR-0109).
+4. **In the graph it is ADR-0074's sink node.** The master or any bus feeds a
+   sink that writes to the virtual device's shared ring; neither the driver's
+   IPC nor anything else touches the audio thread except a lock-free ring with a
+   declared latency.
+5. **Licensing.** The Windows driver, its own program, is GPLv3 under the
+   escalation rule if it copies SAR; the AudioServerPlugIn fork stays GPL-3.0.
+
+**Not decided:** whether the Windows driver ships in the first release (the
+signing cost) or the first release ships loopback in plus the macOS device.
+
+---
+
+## ADR-0107 — PTP awareness: a shared timebase for remote processing, with the latency reasoning corrected — `DECIDED (direction)` (2026-09-22) — **REFINES ADR-0053, ADR-0083**
+
+**Director's call.** The AudioGridder fork and the combined AI/plugin browser
+become PTP-aware (IEEE 1588 PTPv2; 802.1AS gPTP on macOS). With a
+hardware-synchronised PTP network — ConnectX-4-class NICs and DAC cables, or a
+direct Thunderbolt link between two Macs — the remote engine locks to the local
+interface's sample clock, the safety buffer disappears, and remote latency drops
+from 85 ms to the wire plus the plugin's maths.
+
+**The premise, corrected before it is built on.** The 85 ms was never a
+clock-drift buffer. ADR-0053 decision 3: the remote node is *pipelined one block
+behind*, and 85 ms is one 4096-frame block at 48 kHz. There is no server-side
+clock to drift against: the AudioGridder server processes the blocks the client
+sends it, on demand, and has no audio device of its own. PTP therefore cannot
+remove that latency, because clock uncertainty is not what causes it. What
+removes it is a **small block** (ADR-0102): at 64 frames the pipeline is 1.3 ms,
+and with a direct 25 or 100 GbE link (round trip in the tens of microseconds)
+plus the plugin's processing inside the 1.33 ms deadline, "1 to 3 ms" is reached
+with no clock synchronisation at all. "ConnectX-4 and DAC cables give true
+real-time audio over the network" is right for a different reason: that link's
+round trip and jitter are what matter, and they are excellent on that hardware.
+
+**Where a shared clock genuinely matters, which is the part worth building:**
+
+- any *streaming* mode in which the remote end has its own audio device or
+  free-running clock — a second machine playing alongside, ADI Live across two
+  machines (ADR-0105), a broadcast or sink peer (ADR-0074). Without a shared
+  timebase the two sample clocks drift and something has to resample;
+- measurement: PTP-stamped packets give the exact one-way latency and jitter of
+  each link, which turns ADR-0053 decision 4's dropped-deadline counter from a
+  symptom into a diagnosis;
+- several servers behind one browser (ADR-0083) aligned to one clock;
+- and one contradiction in the brief, resolved: 802.1AS *is* AVB's timing
+  profile. Using gPTP on macOS is not "skipping AVB", it is taking AVB's clock
+  without AVB's streams and switches — which is exactly right, and is what the
+  Thunderbolt Bridge case gives for free.
+
+### Decisions
+
+1. **The engine gets a `Clock` abstraction:** the audio device's sample clock,
+   and optionally a PTP-disciplined system clock the OS provides. Linux:
+   linuxptp with a hardware PHC and hardware timestamps, the strongest of the
+   three. macOS: gPTP over Thunderbolt Bridge or Ethernet. Windows: the W32Time
+   PTP client, software timestamps by default; hardware timestamping depends on
+   NIC and OS version and is to be verified, not assumed. The engine *reads* the
+   clock; it never implements PTP.
+2. **The AudioGridder fork stamps every block** with PTP time at send and at
+   receive when a PTP clock is present; the stamps feed a per-link latency and
+   jitter estimate and the dropped-deadline diagnostics. Standard mode is
+   unchanged when no PTP clock exists.
+3. **The remote-plugin latency target is met by ADR-0102 over a fast link.**
+   ADR-0053's "unplayable for live tracking" sentence is retired by that entry,
+   not by this one.
+4. **Streaming peers** — a remote with its own clock — are a future mode that
+   *requires* the shared timebase. This entry reserves it and builds none of it.
+5. **Measured before promised.** The first deliverable is a probe reporting
+   one-way latency and jitter over a given link, with and without PTP. The master
+   reference may quote numbers only from it.
+
+**Not decided:** whether a PTP client ships with the DAW on Windows or the OS's
+is required; the security posture of a PTP domain on an untrusted LAN, where a
+rogue grandmaster moves everyone's clock.
+
+---
+
+## ADR-0108 — Behavioural parity over visual mimicry, and the side-by-side verification gate — `DECIDED` (2026-09-22)
+
+**Director's call, two rules.** *Behavioural parity:* implementing the look of
+Ableton's MIDI editor or Cubase's arrangement tools is not enough; the functional
+behaviour — editing ergonomics, modifier-key behaviours (Alt and Cmd drags,
+selection snapping), transformation logic — must match the reference DAW 1:1
+before enhancements are layered on top. *Step verification gate:* the developer
+tests and approves each implementation directly against live instances of
+Ableton Live, Cubase and Bitwig. Any deviation from the expected workflow is
+logged as a defect unless approved by Adi or explicitly rejected by an ADR.
+
+### Decisions
+
+1. **Every feature that copies a reference names its chapter** (the master
+   reference's Appendix A, the FEATURES row) and carries a **parity checklist**:
+   the gestures, modifiers and outcomes in that chapter. The checklist is written
+   from the manual before the feature, and it is the acceptance test, run against
+   the live reference application.
+2. **Deviation triage is three-valued:** defect (the default); director-approved
+   (Adi said so, dated, in the checklist); ADR-rejected (a decision names it —
+   ADR-0072 for sends, ADR-0047 for the Inspector). Anything else stays a defect.
+3. **Enhancements layer on top of parity, never instead of it.** A feature that
+   improves on the reference before matching it fails the gate.
+4. **A roadmap step is done when its checklists pass and Adi has signed the
+   side-by-side session.** The agent logs record the session date and every
+   deviation found.
+5. **Scripted input against our build is welcome; the side-by-side is a human
+   session.** That is the point of it.
+
+**Consequences.** FEATURES.md gains a Verification section; the README's roadmap
+says "verified" rather than "done" from step 7 onward.
+
+---
+
+## ADR-0109 — Design commitment 8: portability first, platforms later; Linux phasing; three agents and their governance — `DECIDED` (2026-09-22)
+
+**Director's call, three parts.**
+
+### 1. Commitment 8: write for portability first, target platforms later
+
+All shared logic — the SQLite persistence layer, graph execution, the op log and
+undo, the Pure Data bridge, CLAP hosting — is strictly standard, portable modern
+C++. Platform sequencing:
+
+| Phase | Target | Scope |
+|---|---|---|
+| 1 and 2 (active) | Windows (ASIO, Lynx E44, WASAPI loopback) and macOS (CoreAudio, Metal) | desktop UI, low-latency drivers, release packaging, the full suite (ADR-0105) |
+| 3 (after the suite ships) | Linux desktop | ALSA and PipeWire backends, LV2 hosting (FEATURES P2), Wayland/X11 reparenting for Tier 2 GUIs, packaging |
+| now | Linux headless | portable engine compilation, unit tests, ABI verification, sanitizers |
+
+Already partly true — ADR-0036 builds the engine without JUCE and CI runs seven
+ABIs — and now a commitment with a phase behind it, so that a Linux-only library
+or a platform `#ifdef` in shared code is a defect rather than a convenience.
+
+### 2. Three agents
+
+| Agent | Runs on | Owns | Never |
+|---|---|---|---|
+| **win** (Claude Code, Windows) | Windows 11, MSVC | lead technical coordinator: architecture, ADR sequencing, engine integration, Windows implementation | — |
+| **mac** (Claude Code, macOS) | macOS, clang/arm64 | `docs/UI-ARCHITECTURE.md`, macOS platform and CoreAudio, CI workflows | — |
+| **linux** (ChatGPT Codex, Ubuntu) | Ubuntu terminal | portable standard C++, headless CI and test enforcement, sanitizers, POSIX portability | OS-specific GUI or driver code; a Linux-only library; UI-ARCHITECTURE |
+
+The protocol is `collab/README.md`; the third log is `collab/linux.md`; the
+onboarding prompt is `collab/linux/ONBOARDING.md`.
+
+### 3. Governance
+
+The director (Adi) is the authority. A direct instruction to any agent overrides
+the roadmap, any ADR and any assignment, immediately. The log stays true by
+recording the override afterwards as a superseding entry — as ADR-0072 did —
+never by editing history. Absent a direct instruction, **win coordinates**:
+schema changes, ADR number allocation and cross-agent claims synchronise through
+win. "Neither agent is senior" in `collab/README.md` is superseded for that
+purpose only; disagreement still goes in a PR, not a revert.
+
+**Not decided:** whether phase 3 includes the DJ app on Linux or the DAW alone.
+
+---
+
+## ADR-0110 — Plugin parameter edits are ops; the chunk stays for everything a parameter is not — `DECIDED` (2026-09-22) — **AMENDS ADR-0038**
+
+**Director's call, marked required for MVP.** A tweak made inside a plugin's
+own window — Serum's cutoff — must be one global Ctrl-Z. Mechanism: intercept the
+plugin's parameter-change broadcasts and write them as typed parameter ops; undo
+sends the inverse value back through the host API; the content-addressed chunk
+(ADR-0038) stays for instantiation, freezing, offline processing and
+cross-project paste.
+
+**The mechanism is right, and needs four corrections to be complete rather than
+mostly working.**
+
+1. **Not every change is a parameter.** Preset loads, sample and wavetable loads,
+   internal modulation assignments — anything the plugin keeps outside its
+   parameter list — change the chunk with no parameter broadcast. Undoing those
+   still needs ADR-0038's capture: a state-snapshot op at a capture boundary, and
+   the plugin tells us where those are: VST3 `restartComponent
+   (kParamValuesChanged)` and CLAP `params.rescan` are exactly that signal. So it
+   is two layers, not a replacement: parameter ops at fine grain, chunk snapshots
+   for the rest, and a rescan signal triggers a snapshot.
+2. **One gesture, one op.** A slider drag broadcasts hundreds of values. VST3
+   brackets them with `beginEdit`/`endEdit`, CLAP with
+   `param_gesture_begin`/`end`. The op is written at gesture end with the
+   pre-gesture value as its inverse; intermediate values are never ops (OPS.md's
+   coalescing rule).
+3. **Echo suppression.** Undo sets the parameter through the host API; the
+   plugin then broadcasts the change; without a re-entrancy guard the undo writes
+   a new op. The guard is per parameter and lives on the message thread.
+4. **Threads.** VST3 broadcasts arrive on the plugin's UI thread; CLAP's arrive
+   on the audio thread as output events. Both go through a lock-free queue to the
+   message thread, where the op is made (ADR-0010: nothing on the audio thread
+   touches the store). A macro or modulator moving a parameter (ADR-0060,
+   ADR-0046) is modulation, not an edit, and writes no op.
+
+### Decisions
+
+1. The two layers above. ADR-0038's "not yet undoable" becomes "undoable at
+   parameter grain; snapshot-undoable at chunk grain".
+2. `plugin_state` keeps its hash deduplication; a snapshot op references a
+   hash, so a preset toggled back and forth costs two rows in total.
+3. The fixture VST3 (ADR-0100) gains a parameter broadcast and the CLAP probe a
+   gesture test. Each planted defect — a missing guard, an op per value, the
+   wrong thread — must fail before the feature is called done.
+4. Priority: MVP, as directed. It sits in roadmap step 6 beside hosting.
+
+**Not decided:** whether a Propose-tier agent may write parameter ops directly.
+They are ops, so ADR-0003 says yes; AI-AGENT §6's rate cap applies.
+
+---
+
+## ADR-0111 — A historical undo state opens in a silent tab — `DECIDED (direction)` (2026-09-22) — **EXTENDS ADR-0068, ADR-0030**
+
+**Director's call.** A context action on any node of the undo tree: open that
+project state in a new, inactive background tab. Recovering a deleted
+configuration — dense routing, a heavy group — then never forces the live graph
+to re-instantiate plugins during undo and redo; recovery is the cross-project
+paste transaction, so only what is explicitly copied re-enters the timeline.
+
+**One constraint the design has to respect.** A `.adi` has one writer
+(`session_lock`, SPEC §3.6). Two tabs on the same file at two undo heads would be
+two writers. So the historical tab is a **materialised copy**: a temporary `.adi`
+built by replaying to that node — ADR-0031's replay oracle is what guarantees it
+is the same state — opened read-only and inactive. It is never the same file.
+
+### Decisions
+
+1. **Replay to the node into a temporary file; open it inactive** (ADR-0068:
+   silent, no audio device) **and read-only.** No plugin is instantiated in it:
+   their state is blobs, and paste carries blobs by hash (ADR-0068 decision 4).
+   This answers ADR-0068's open question for this case: a historical tab is torn
+   down, never kept warm.
+2. **Paste from it into the active project is the ordinary transaction:** one
+   `txn_id`, one Ctrl-Z.
+3. **The tab says which node it is** — branch, op index, timestamp — and cannot
+   be edited or saved; "Save as" exports it as a new project.
+4. **Cost, named.** Replay time on a long history; and where compaction (SPEC
+   §8.3) has folded early history, the earliest openable node is the compaction
+   boundary, which the UI says plainly.
+
+**Not decided:** whether the undo-tree view is the right surface for the action;
+that view does not exist yet.
+
+---
+
+## ADR-0112 — Views: named filters, AI view groups, far/close scaling, the three states settled, and collapsible mixer and device strips — `DECIDED (direction)` (2026-09-22) — **EXTENDS ADR-0047**
+
+**Director's call**, approving the view wishes in the master reference's Appendix
+B and two notes on its §3.7.
+
+### Decisions
+
+1. **The three view states stay three, and the open question is settled.** The
+   normal Ableton-style working view *is* Group focus: with nothing focused it
+   shows every track at working height. So Global is Macro (all tracks fitted),
+   Group focus is Main, Detailed zoom is Micro. There is no fourth state.
+2. **Named view filters** (Bitwig's project filter, chapters 02 and 03). A view is
+   a saved predicate over tracks — explicit membership, group, kind, colour, name
+   pattern — stored in `ui_view` and applied to timeline and mixer through the
+   one `TrackOrderModel`; plus a manual filter tab and an un-filter toggle. A view
+   never changes routing or order.
+3. **AI view groups.** "Put all percussion in a view group" is a `view.*` op
+   family the agent emits at its tier; Propose shows the membership before it
+   applies. The agent classifies by name, colour, devices and content (projection
+   Levels 0 and 1), and the classification is checkable.
+4. **Far and close UI scaling:** a global scale factor over the OS DPI, as a user
+   control with two remembered presets. The arrangement's OpenGL question
+   (UI-ARCHITECTURE §8) is measured at step 7 with far and close in the test.
+5. **`MixerPanel` and `DeviceChainStrip` are collapsible**, like `BrowserPanel`
+   and `DetailEditor`; collapse state lives in `ui_view` beside the widths
+   (ADR-0080), and collapsing never reconstructs (ADR-0063 decision 1). For mac to
+   fold into `docs/UI-ARCHITECTURE.md`.
+
+---
+
+## ADR-0113 — Up to 64 buses per node, and no cables on screen — `DECIDED (direction)` (2026-09-22) — **AMENDS ADR-0056**
+
+**Director's call.** "Not 2 but up to 64 buses, like REAPER." And a concern worth
+answering in the same entry: does REAPER-style routing fit Ableton's
+auto-everything philosophy?
+
+### Decisions
+
+1. **N buses per node, N at most 64**, replacing ADR-0056's "two, not N". Main
+   and Sidechain keep their names as buses 0 and 1; the rest are numbered and
+   nameable. Consumers: multi-output instruments (a drum rack with one output per
+   pad), the multiband splitter (ADR-0062), direct routing to several
+   destinations (FEATURES §2, P2), the DJ app's decks. The planner (ADR-0077)
+   gains per-bus edges; the levelled schedule is unchanged, because a bus is an
+   edge and not a level.
+2. **The user interface is Ableton's, entirely.** Routing is set from the track
+   header's input and output menus; grouping auto-routes (ADR-0044); sidechains
+   for native nodes need no wiring (ADR-0062); a multi-output instrument offers
+   its outputs as choices in a child track's input menu — exactly Live's Drum
+   Rack behaviour. There is no cable diagram and no routing matrix as an editing
+   surface. REAPER's matrix and wiring figures in the master reference illustrate
+   the engine's graph, not a screen to build.
+3. **A read-only routing overview** — who feeds whom — is allowed as a diagnostic
+   for the user and the agent. It edits nothing.
+4. **Test:** a 64-output node summed into 64 tracks, order independence held
+   (ADR-0056 §3), compensation across every bus (ADR-0058 decision 5's sidechain
+   test, generalised).
+
+**Not decided:** whether the event stream rides every bus or bus 0 only.
+ADR-0091 says events travel beside the audio they belong to; for a 64-output
+instrument that is bus 0.
+
+---
+
+## ADR-0114 — Macros: curves per target, several mappings on one target, per-macro enable; and cross-track modulation — `DECIDED (direction)` (2026-09-22) — **AMENDS ADR-0060, EXTENDS ADR-0046**
+
+**Director's call:** the multimapper wish and the cross-track wish, approved.
+
+### Decisions
+
+1. **A mapping's `curve` is a multi-breakpoint curve**, a BLOB with an ADR-0008
+   header holding up to N (x, y) points with linear or smooth interpolation, not
+   a shape enum. Ableton's min/max is the two-point case.
+2. **Several mappings may target one parameter**, from the same macro or from
+   different ones; their results combine by a rule declared per target — sum then
+   clamp, or last writer — so "dial 1 moves the filter up, dial 2 moves it down
+   along a curve, dials 3 to 8 flat" is expressible without a patch.
+3. **Each mapping and each macro has an enable.** A disabled mapping contributes
+   nothing and stays in the file.
+4. **A mapping may target a parameter on another track**, and so may any
+   modulator (ADR-0046). The modulation routing table, when it arrives with the
+   device contract, keys targets by (track, device, parameter) with no same-track
+   restriction. Compensation: a modulator's output is a control signal delayed by
+   the same arrival rule as audio, so a follower keyed from a lookahead-limited
+   kick lands with the kick (ADR-0058 decision 5, generalised).
+5. **All of it persists and is undoable; none of the produced values is**
+   (ADR-0046 decision 2).
+
+---
+
+## ADR-0115 — Editing behaviours adopted: Cubase event volume curves, Shift-drag inside a clip, and markers that hold notes and prompts — `DECIDED (direction)` (2026-09-22)
+
+**Director's call**, three notes on the master reference.
+
+1. **Event volume curves (Cubase 14).** Every audio clip carries a volume curve
+   drawn on the event itself — breakpoints on the waveform — beside the clip gain
+   handle and the fades. In automation mode the curve is edited in Cubase 14's
+   style; out of automation mode Cubase's classic event volume and gain handles
+   are the gold standard. Format: a clip-scoped automation lane on gain
+   (FEATURES §7 clip envelopes, `automation_data.clip_id`) rendered on the clip;
+   no new table. The curve is pre-fader and pre-effects — part of the clip's
+   playback — and stretches with the clip.
+2. **Shift-drag slides the audio inside the clip** (Ableton: hold Shift and drag
+   the waveform) without moving the clip's edges. It is the op on the clip's
+   source offset, constrained by the loop-window rule (SPEC §6.2), and a parity
+   item under ADR-0108 for the comping and clip chapters.
+3. **Markers hold a note body and, optionally, a prompt for the agent** —
+   "tighten the drums here". `markers` gains nullable `note` and `prompt` text
+   columns, in Layer 1 while nothing has shipped. The agent reads them as Level 0
+   projection items; a prompt runs only on the user's action at that marker, at
+   the agent's tier, never automatically on playback: a note on a timeline is
+   data, not an instruction (AI-AGENT §7.2).
+
+---
+
+## ADR-0116 — A Pure Data device may have a second, floating view — `DECIDED (direction)` (2026-09-22) — **EXTENDS ADR-0076**
+
+**Director's call.** Adi's analyser — Max for Live today — ported to Pd wants a
+big-window mode: full-screen capable and movable like a VST3 or CLAP window,
+while its main interface stays docked in the device panel. The panel itself does
+not undock.
+
+### Decisions
+
+1. **Tier 1 stays inline.** A Pd device may declare a second view: a canvas the
+   DAW renders in a floating window under ADR-0063's reparenting rules, with hide
+   as the stop-drawing signal exactly as for Tier 2. One device, two views of one
+   state; opening the big view never removes the panel.
+2. **The big view is drawn by the DAW from data the patch publishes** — arrays
+   and tables for spectrum, meters, correlation — not by Pd's own GUI, because
+   libpd is headless and Pd's canvas is never embedded. The device contract gains
+   *published arrays* beside parameters; this is the contract item ADR-0076 left
+   open for large Pd panels.
+3. **Reads happen at meter rate, off the audio thread:** ADR-0050's meter tap
+   generalised to arrays, a lock-free double buffer per published array.
+4. **The analyser is the first such device and its acceptance test:** spectrum
+   with peak hold, peak, RMS and dynamic readouts, stereo field and correlation,
+   in the panel and in the big window at once.
+
+
+---
+
+## ADR-0117 — The director's answers: Session View docks Ableton-style, session clips mirror Live's structure, tuning is a child table, and the Windows driver is signed through an open-source programme — `DECIDED` (2026-09-22) — **CLOSES OPEN ITEMS IN ADR-0101, ADR-0103, ADR-0106**
+
+Four answers to the "not decided" items the V0.2 entries left, and one
+verification of a claim that came with them.
+
+### 1. Session View placement (amends ADR-0101 decision 1)
+
+ADR-0101 made Session View a separate, hidden-by-default window. **Ruling:** it
+**docks inside the main window, Ableton-style** — it takes the centre in place
+of the arrangement, switched the way Live switches Session and Arrangement —
+and it **detaches freely** into its own window under ADR-0063's reparenting
+rule. The Cubase-style MixConsole toggle inside it stands. F3 remains the
+shortcut for showing it. Everything else in ADR-0101 is unchanged: built last,
+schema now, one `TrackOrderModel`, live performance is ADI Live.
+
+### 2. Session schema (closes ADR-0101's open item)
+
+**Session clips get their own table, mirroring Live's structure.** One
+correction to the wording: Live's set format is XML, not a database, so what is
+mirrored is the *shape*, which is: a scene list at project level; per track one
+slot per scene; a slot holds at most one clip; launch settings (launch mode,
+legato, launch quantisation, velocity sensitivity, follow actions) live on the
+clip, as Live keeps them. That is exactly the `scenes` and `clip_slots` shape
+ADR-0037 removed, so the schema PR restores those two tables rather than adding
+a slot column to `clips`. The CHECK is: a clip carries either a timeline
+position or a slot reference, never both, and `clips.track_id` stays `NOT NULL`.
+The launch settings are columns on `clips`, nullable, present only on slot
+clips.
+
+### 3. Tuning systems (closes ADR-0103's open item)
+
+**Relational child tables, for the agent's sake.** `tuning_systems` (id, name,
+source: equal division or Scala file, period in cents) with a child
+`tuning_degrees` (tuning_id, index, cents, name), and `key_map` membership as a
+child `key_map_degrees` (key_map_id, degree_index). No header BLOB: rows are
+what the projection (AI-AGENT §4) can read and name without a decoder, and a
+maqam's E half-flat is then a named degree the agent can say. `scale_mask`
+stays as the 12-TET fast path.
+
+### 4. The virtual audio device, and the signing claim (closes ADR-0106's open item)
+
+The brief that arrived with the answers says the whole of ADR-0106 can ship at
+zero cost: loopback needs no driver, and the Windows virtual endpoint can be
+signed for free through open-source signing programmes. Checked rather than
+adopted:
+
+- **Loopback input needs no driver, and never did.** ADR-0106 decision 1 stands
+  as written: WASAPI process loopback (Windows 10 2004 and later), Core Audio
+  process taps on macOS, a resampler with a declared latency, compensated.
+- **The free signing routes exist and are not yet proven for a driver.**
+  SignPath Foundation gives qualifying open-source projects free code signing
+  with an OV-level certificate; Microsoft's attestation signing for a kernel
+  driver requires an **EV** certificate registered on a Partner Center account,
+  which an OV certificate does not satisfy on its own. OSSign says it signs
+  drivers for open-source projects and is **not accepting applications at the
+  time of writing**. So the claim "zero cost" may turn out true, and "no
+  process" does not: the route has to be applied for and confirmed to cover the
+  Hardware Dev Center step before the driver is scheduled.
+- **The driver base.** Microsoft's `sysvad` sample in `Windows-driver-samples`
+  is MIT and is the natural base; Synchronous Audio Router (GPL-3.0) is the
+  ASIO-side reference (ADR-0106). `VirtualDrivers/Virtual-Audio-Driver` is MIT
+  for its own code but carries Microsoft sample code under **MS-PL**, which
+  `OPEN_SOURCE_POLICY.md` does not pre-authorise; it is read-only until Adi
+  rules on MS-PL, and nothing forces the question because `sysvad` itself is
+  MIT.
+
+**Decisions.** (a) ADR-0106 decision 3 stands, with "a Partner Center account
+and an EV certificate are a project cost" replaced by: *a signing route is
+secured through an open-source signing programme (SignPath Foundation, OSSign)
+before the driver is scheduled, and confirmed to cover Microsoft attestation;
+if none does, the EV route is the fallback and its cost is stated.* (b) The
+Windows driver ships in the first release **only if** that route is secured by
+then; the first release otherwise ships loopback input and the macOS device,
+and says so. (c) The user-facing shape as briefed: the master or any bus routes
+to "OS Output"; Zoom, Discord or OBS select "ADI Virtual Audio Device" as
+their input; the sink node (ADR-0074) writes a lock-free shared ring the driver
+reads, with a declared latency. (d) The driver is its own program under its
+own licence (MIT if built from `sysvad`, GPLv3 if from SAR), signed in CI.
+
+**Not decided:** nothing new. The open items of 0101, 0103 and 0106 are closed
+by this entry.
+
+
+---
+
+## ADR-0118 — The Windows virtual audio device is our own `sysvad`-based driver, signed through SignPath Foundation; bundling VB-CABLE is rejected — `DECIDED` (2026-09-22) — **CLOSES ADR-0117 §4's OPEN ITEM, REJECTS A PROPOSAL AGAINST ADR-0106**
+
+**Director's ruling, first sentence.** Microsoft's official MIT `sysvad` sample
+is the code base for the ADI virtual audio device; `VirtualDrivers/
+Virtual-Audio-Driver` stays a read-only reference, so the licence boundary is
+clean.
+
+**A proposal that arrived with it, examined.** Drop the custom driver and its
+signing entirely: bundle the WHQL-signed VB-CABLE redistributable in our
+installer with a silent install, then rename its endpoints to "ADI DAW Stream"
+by writing `PKEY_Device_FriendlyName` into the `MMDevices` registry keys and
+restarting the Windows Audio service, "legal and free of certificate fees".
+
+### Checked, and it does not hold
+
+1. **It is not free and not automatic.** VB-Audio's licensing page says
+   distribution, integration and bundle licences are *available on request*,
+   and that distribution deals above ten units need a quotation and an
+   agreement adapted to the project. Bundling VB-CABLE in the ADI installer is
+   a distribution deal. The zero-cost claim is the donationware price for an
+   end user, which we are not.
+2. **It contradicts the policy and the directive it claims to serve.**
+   OPEN_SOURCE_POLICY §5 keeps commercial binaries and installers out of every
+   repository, and ADR-0106's own first line is *"no third-party virtual cables
+   (BlackHole, VoiceMeeter, VB-Cable)"*. Shipping VB-CABLE inside our installer
+   is the thing the directive forbade, with a rename on top.
+3. **The rename is a hack on somebody else's product, and it breaks people.**
+   The friendly-name property in the `MMDevices` property store is the
+   mechanism Settings uses, but it is not a documented API, restarting
+   `audiosrv` cuts audio in every running application including ours, VB-CABLE
+   is one cable, and a user who already routes OBS or Voicemeeter through it
+   by name loses that the moment we rename it. An installer that alters an
+   existing third-party device is a support burden, not a feature.
+4. **It is technically worse than our own driver.** VB-CABLE is a device with
+   its own clock; the DAW would feed it as a second WASAPI output beside the
+   ASIO interface, and two clocks drift, so a resampler would sit in the
+   broadcast path. Our own endpoint takes the DAW's ring at the DAW's clock
+   (ADR-0106 decision 4) and needs none.
+
+### What the second check found instead, which settles ADR-0117 §4
+
+`VirtualDrivers/Virtual-Audio-Driver` has shipped **signed kernel-driver
+builds since release 25.7.14 (July 2025), signed for free through SignPath
+Foundation**, installing on stock Windows 10 and 11 without test-signing mode.
+That is an open-source project on the same `sysvad` base, through the same
+programme ADR-0117 named, past the exact step that entry left unproven. The
+route exists and works; ours is the same application.
+
+### Decisions
+
+1. **The driver is ours, from `sysvad` (MIT).** Endpoint names ("ADI Virtual
+   Audio Device", or "ADI DAW Stream" if the director prefers) are set in the
+   INF, which is how a driver names its endpoints; no registry rename is ever
+   needed or performed.
+2. **Signed through SignPath Foundation**, applied for as soon as the driver
+   repository exists, following Virtual-Audio-Driver's precedent; EV signing
+   is the fallback if the application is declined, and its cost is then
+   stated. ADR-0117 §4 decision (b) stands: the Windows device ships in the
+   first release only once it is signed.
+3. **Bundling VB-CABLE is rejected**, and so is renaming any third-party
+   endpoint. A virtual cable the user has installed themselves remains an
+   ordinary WASAPI output in the routing menu under its own name, as any device
+   is; nothing is added for it.
+4. **`Virtual-Audio-Driver` is read-only reference** — its installer, enable and
+   disable flow, and its SignPath pipeline are the things to read; its MS-PL
+   sample code is not copied (ADR-0117 §4).
+5. **OBS needs none of this**: it captures application audio directly on
+   Windows 10 2004 and later. The documentation says so, so users do not
+   install a device they do not need.
+
+**Not decided:** the endpoint's final name; whether the driver lives in
+`adi_daw/` or in its own repository (it is its own program, MIT, and the
+sibling-repository pattern of adi-surge fits).
+
+
+---
+
+## ADR-0119 — The driver's endpoint names and home, and what has to exist before SignPath is asked — `DECIDED` (2026-09-22) — **CLOSES ADR-0118's OPEN ITEMS**
+
+**Director's answers.** Endpoint names in the INF: **"ADI DAW Stream Output"**
+(the playback endpoint the DAW routes a bus to) and **"ADI DAW Stream Input"**
+(the recording endpoint Zoom, Discord or OBS select). The driver lives **inside
+`adi_daw/`, under `drivers/`**, under its own MIT licence: MIT code inside a
+GPLv3 repository is fine in that direction, and a `LICENSE` file in `drivers/`
+is what keeps the boundary visible.
+
+**And an instruction: apply to SignPath Foundation for the signing.** Checked
+before acting, because a claim came with it that Claude would "open a pull
+request on SignPath's GitHub repository" that their reviewers would see today.
+That is not how the programme works, and the application would fail today
+anyway:
+
+- **The application is a form, sent by email**, with the project's and the
+  applicant's details, followed by a review. There is no pull request to open.
+- **Preconditions the Foundation states:** an OSI licence; a public repository
+  with visibly active maintenance; the project **already released in the form
+  to be signed**; a **CI release workflow that performs the signing** (never a
+  local build), with SignPath's GitHub connector; a named approver for
+  releases; two-factor authentication on the GitHub account. As of this entry
+  there is no driver source, no `drivers/` build, no release and no workflow,
+  so every technical precondition is unmet.
+- **Who submits.** The form carries an identity and accepts the Foundation's
+  terms on the project's behalf. That is the director's act, not an agent's.
+
+### Decisions
+
+1. **Names and home as answered.** INF strings "ADI DAW Stream Output" and
+   "ADI DAW Stream Input"; path `adi_daw/drivers/adi-virtual-audio/`; MIT, with
+   `drivers/LICENSE` and a `README.md` stating the boundary: nothing in
+   `drivers/` includes anything from `src/adi/**`, and nothing in `src/`
+   includes anything from `drivers/`. The two talk through the shared ring's
+   layout, a header of plain C structs that both may copy.
+2. **The application is prepared now and sent later.** `drivers/SIGNING.md`
+   holds the checklist of the Foundation's requirements with the project's
+   answers drafted, so the submission is a copy-paste on the day the
+   preconditions hold. The director sends it.
+3. **Order of work, so the application is not declined:** (a) the driver
+   builds from `sysvad` in a GitHub Actions workflow with the WDK, producing an
+   unsigned package as a CI artefact; (b) a first tagged pre-release of that
+   package exists; (c) two-factor authentication is on for the account and the
+   release approver is named; (d) then the form goes. Test-signing on a
+   developer machine is how it is exercised until then.
+4. **The MS-PL question stays closed** (ADR-0117, ADR-0118): `sysvad` from
+   `microsoft/Windows-driver-samples` (MIT) is the base; Virtual-Audio-Driver
+   is read-only reference.
+
+**Not decided:** nothing. The driver itself is unscheduled work behind the
+first release's needs (ADR-0118 decision 2 stands: it ships only once signed).
+
+
+---
+
+## ADR-0120 — The driver build workflow; sysvad is MS-PL, not MIT, and is fetched, never vendored — `DECIDED` (2026-09-22) — **CORRECTS ADR-0117, ADR-0118, ADR-0119; OPENS A LICENCE RULING**
+
+**Director's instruction.** Set up the WDK build workflow for the driver.
+
+**A correction first, because the workflow's design follows from it.**
+ADR-0117 §4, ADR-0118 decision 1 and ADR-0119 decision 1 call Microsoft's
+`sysvad` sample "MIT". **It is not.** `microsoft/Windows-driver-samples` carries
+one licence at its root, the **Microsoft Public License (MS-PL)**; `audio/
+sysvad/` has no licence of its own and its source headers say only "Copyright
+(c) Microsoft Corporation All Rights Reserved". The Virtual-Audio-Driver README
+said as much ("third-party Microsoft sample code under MS-PL") and it was read
+and not followed. The three entries stay as written (ADR-0028); this one
+corrects them.
+
+**What MS-PL changes.** MS-PL is OSI-approved and permits use, modification
+and redistribution, so a driver derived from it can be shipped, and SignPath
+Foundation's "OSI licence" condition is met. MS-PL is not GPL-compatible, but
+the driver is its own program under its own licence (ADR-0119), so the DAW's
+GPLv3 is untouched. What MS-PL is *not* is a row in `OPEN_SOURCE_POLICY.md`
+§3's table, and §3 says copying from a licence the table does not cover is a
+question for Adi. So:
+
+### Decisions
+
+1. **Nothing from the sample enters this repository.** `build.ps1` fetches
+   `microsoft/Windows-driver-samples` at a pinned commit (`3c3fb490…`,
+   2026-09-18) into an ignored `.build/` directory, checks the commit and that
+   the licence file still says MS-PL, and rewrites only the INF strings. The
+   pin changes deliberately, in the script, with a log entry.
+2. **The workflow is `.github/workflows/driver-build.yml`**, on
+   `windows-2022`, which ships the Windows Driver Kit 10.1.26100 with its
+   Visual Studio extension, ATL and the Spectre-mitigated libraries; no
+   Chocolatey install step. `windows-latest` is not used: it now means Windows
+   Server 2025 with Visual Studio 2026, whose WDK state a build workflow should
+   not discover by failing. It runs on pushes and pull requests that touch
+   `adi_daw/drivers/**` or itself, and on demand, for Release and Debug on
+   x64, and uploads `adi-virtual-audio-x64-<configuration>-unsigned`.
+3. **The package** is the `.sys`, the stamped `.inf`, the `.cat` from Inf2Cat,
+   the sample's MS-PL text and a provenance file naming the source commit,
+   the build-script commit, the configuration and the date. **Nothing is
+   signed**, `SignMode=Off`; signing is the SignPath step of ADR-0119.
+4. **Endpoint names, provisionally on the sample's topology.** The sample's two
+   always-present internal endpoints — the speaker and the front microphone
+   array — carry "ADI DAW Stream Output" and "ADI DAW Stream Input"; the
+   sample's jack-detected endpoints keep their names until the real driver
+   exposes exactly two. Every string key must exist exactly once in the
+   sample's `.inx` or the build fails, so an upstream rename is noticed.
+5. **Build order** follows the sample's solution: `EndpointsCommon` (static
+   library) then `TabletAudioSample` (the driver, which links it).
+6. **`.github/workflows/` is mac's standing claim.** Taken for this one file
+   on the director's direct instruction (ADR-0109 governance), recorded in the
+   claims table and in win's log rather than quietly.
+
+### Open, and the director's
+
+**Whether a shipped ADI driver may be derived from MS-PL code.** Two honest
+routes if the answer is no: a clean-room virtual audio driver written against
+the WDK's PortCls and WaveRT documentation (large; the sample exists because
+that is hard), or a different open base whose licence the policy already
+covers (none of the known Windows virtual-audio drivers is MIT or BSD;
+Synchronous Audio Router is GPL-3.0 and ASIO-shaped). If the answer is yes,
+the policy gains an MS-PL row scoped to `drivers/`, and the driver's own
+`LICENSE` becomes MS-PL for the derived files with MIT for ours.
+
+**Not verified locally.** The machine that wrote this has no WDK and an
+unelevated shell; the workflow is proven by its first run in CI, whose result
+is recorded in the log by commit SHA.
+
+
+---
+
+## ADR-0121 — MS-PL is acceptable under `drivers/` — `DECIDED` (2026-09-22) — **CLOSES ADR-0120's OPEN ITEM**
+
+**Director's ruling.** MS-PL is fine for `drivers/`; add it to the policy.
+
+### Decisions
+
+1. `OPEN_SOURCE_POLICY.md` §3 gains an MS-PL row, **scoped to
+   `adi_daw/drivers/` only**. MS-PL is OSI-approved and GPL-incompatible; a
+   driver is its own program, so the DAW's GPLv3 is untouched, and MS-PL never
+   enters `src/` or anything a GPLv3 binary links.
+2. The Windows virtual audio device may derive from Microsoft's `sysvad`
+   sample. `build.ps1` may keep fetching it at a pinned commit, and derived
+   source may now also be committed under `drivers/` when the real driver is
+   written — MS-PL, with the licence text beside it. Our own files there stay
+   MIT (`drivers/LICENSE`).
+3. `VirtualDrivers/Virtual-Audio-Driver` remains read-only reference
+   (ADR-0118); this ruling is about Microsoft's sample, not about copying a
+   third project's mix of licences.
+
+**Not decided:** nothing. The driver itself is still unscheduled work behind
+the first release's needs.

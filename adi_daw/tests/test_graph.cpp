@@ -16,6 +16,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -154,6 +156,56 @@ void testTopologicalOrder() {
     // summing actually happened rather than one branch winning.
     check(std::fabs(o.l[0] - 2.0f) < 1e-6f,
           "two branches summed into the sink: got " + std::to_string(o.l[0]));
+}
+
+void testSinkNodeRunsWithoutFeedingTheOutput() {
+    section("ADR-0074 -- a node may consume audio and produce nothing downstream");
+
+    // A broadcast tap, a meter, a recorder: all the same shape -- audio in, no
+    // edge out. ADR-0074 needs this and the mandate behind it asked whether
+    // the graph supports it. It does, and this is the check that says so
+    // rather than the ADR asserting it.
+    //
+    // It works because `process` walks `levels_`, which `topoSort` fills from
+    // EVERY node, and `prepare` refuses only a cycle -- never an unreachable
+    // node. That is a property worth pinning: a future reachability check
+    // added to prune dead nodes would silently stop every tap in the project.
+
+    std::vector<int> log;
+    OrderNode src(log, 0), tap(log, 1);
+    SumNode master;
+
+    Graph g;
+    const NodeId ns = g.addNode(src);
+    const NodeId nt = g.addNode(tap);
+    const NodeId nm = g.addNode(master);
+    g.connect(ns, nm);
+    g.connect(ns, nt);      // the tap consumes, and feeds nothing
+    g.setOutput(nm);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "a graph with a sink node prepares: " + g.error());
+
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+    g.process(io);
+
+    check(log.size() == 2, "both the source and the tap ran, saw " +
+                           std::to_string(log.size()));
+    bool tapRan = false;
+    for (int id : log) if (id == 1) tapRan = true;
+    check(tapRan, "the tap ran even though nothing consumes it");
+
+    // And it did not disturb the master. A tap that changed the mix would be
+    // worse than one that did not run.
+    check(std::fabs(o.l[0] - 1.0f) < 1e-6f,
+          "the master output is unchanged by the tap: got " + std::to_string(o.l[0]));
+
+    // The tap is in the levelled schedule too, so a future thread pool runs it
+    // like any other node rather than forgetting it (ADR-0056).
+    std::size_t inLevels = 0;
+    for (const auto& lvl : g.levels()) inLevels += lvl.size();
+    check(inLevels == 3, "all three nodes are in the levelled schedule, saw " +
+                         std::to_string(inLevels));
 }
 
 void testCycleIsRefused() {
@@ -375,13 +427,13 @@ void testTailKeepsRunning() {
         for (int i = 0; i < 12; ++i) g.process(io);
         const int ran = verb.calls - atSilence;
 
-        // 1000 samples of tail at 256 frames a block is four more blocks, and
-        // the exact figure depends on when the counter arms. What matters is
-        // that it is neither 0 (cut off, the complaint ADR-0043 exists to
-        // prevent) nor 12 (never stops, and the feature does nothing).
-        check(ran >= 3 && ran <= 6,
-              "it ran on past the silence and then stopped: " +
-                  std::to_string(ran) + " blocks of tail, expected about 4");
+        // EXACTLY ceil(1000 / 256) = 4 blocks. This used to accept "3 to 6",
+        // with a comment that the figure "depends on when the counter arms" --
+        // and 3 was the bug: the counter was decremented BEFORE the decision,
+        // so the block in which the last 232 samples of tail should play was
+        // itself skipped. A tolerance wide enough to be safe was wide enough
+        // to hide a defect. The tail is judged at the START of a block now.
+        eqi(ran, 4, "a 1000-sample tail runs exactly four 256-frame blocks");
     }
     {
         ConstNode src(1.0f);
@@ -778,6 +830,838 @@ void testEventCapacityFitsTheContinuum() {
             std::to_string(pushed) + " events in one block)");
 }
 
+// --- ADR-0058 decisions 2-5: plugin delay compensation ----------------------
+
+/// Declares latency and passes audio through unchanged. The latency is a
+/// CLAIM, not a delay the node performs -- which is exactly a plugin: it
+/// reports what it costs and the host aligns everything else to it. If the node
+/// also delayed, the test would measure the node rather than the compensation.
+class LatentNode final : public Node {
+public:
+    explicit LatentNode(std::int32_t latency) : latency_(latency) {}
+
+    void prepare(double, std::int32_t) override {
+        line_.prepare(2, latency_);
+        line_.setDelay(latency_);
+    }
+
+    void process(const NodeIo& io) noexcept override {
+        // It REPORTS latency and it ALSO INCURS IT. The first version only
+        // reported: it passed audio through instantly while claiming to be 64
+        // samples late, so compensating the other path by 64 CREATED the
+        // misalignment the test was checking for. A fixture that does not model
+        // the thing turns a correct implementation into a failing test, which
+        // is the most expensive kind of test bug -- it argues for changing
+        // working code.
+        const DelayLine::Cursors before = line_.cursors();
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            line_.setCursors(before);
+            float* o = io.out[c] + io.blockOffset;
+            const float* i = (io.in != nullptr && io.in[c] != nullptr)
+                                 ? io.in[c] + io.blockOffset : nullptr;
+            if (i == nullptr) {
+                std::memset(o, 0, static_cast<std::size_t>(io.frames) * sizeof(float));
+                continue;
+            }
+            line_.process(c, i, o, io.frames);
+        }
+    }
+
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override { return latency_; }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return kInfiniteTail; }
+    [[nodiscard]] const char* name() const noexcept override { return "latent"; }
+
+private:
+    std::int32_t latency_ = 0;
+    DelayLine line_;
+};
+
+/// A ramp, so a misalignment is visible in the values rather than only in a sum.
+class RampNode final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            for (std::int32_t i = 0; i < io.frames; ++i)
+                o[i] = static_cast<float>(t_ + io.blockOffset + i);
+        }
+        if (io.blockOffset + io.frames > last_) last_ = io.blockOffset + io.frames;
+    }
+    void advance() noexcept { t_ += last_; last_ = 0; }
+    [[nodiscard]] const char* name() const noexcept override { return "ramp"; }
+private:
+    std::int64_t t_ = 0;
+    std::int32_t last_ = 0;
+};
+
+void testATailShorterThanABlockStillPlays() {
+    section("ADR-0043 -- a tail no longer than one block is not skipped entirely");
+
+    // The boundary cases of the same off-by-one. With the counter decremented
+    // before the decision, a tail of exactly one block, or less, suspended the
+    // node on the very block that tail belonged to -- the tail was never heard.
+    for (const std::int64_t tail : {std::int64_t{100}, std::int64_t{256}, std::int64_t{257}}) {
+        ConstNode src(1.0f);
+        TailNode verb(tail);
+        Graph g;
+        const NodeId ns = g.addNode(src), nv = g.addNode(verb);
+        g.connect(ns, nv);
+        g.setOutput(nv);
+        g.prepare(48000.0, 256);
+        Out o(256);
+        AudioIo io = makeIo(o, 256);
+        g.process(io);
+        const int before = verb.calls;
+        src.set(0.0f);
+        for (int i = 0; i < 6; ++i) g.process(io);
+        const long long want = (tail + 255) / 256;
+        eqi(verb.calls - before, want,
+            "a " + std::to_string(tail) + "-sample tail runs " + std::to_string(want) +
+                " block(s) past the silence");
+    }
+}
+
+void testACompensatedInputIsPlayedOutBeforeItsNodeSleeps() {
+    section("ADR-0058 + ADR-0043 -- compensation in flight is flushed, not cut");
+
+    // A dry path compensated 64 samples against a latent one, and the dry path
+    // is the LAST thing playing. When it stops, the master's compensation ring
+    // still holds its final 64 samples, due out over the next 64 -- but the
+    // master's inputs are both silent, its own tail is zero, and ADR-0043 put
+    // it to sleep on the spot. Those samples were never heard.
+    //
+    // At 5120 samples of linear-phase compensation that is the last 107 ms of
+    // a dry track, cut, whenever a plugin with latency sits anywhere else.
+    ConstNode quiet(0.0f), dry(1.0f);
+    LatentNode slow(64);
+    SumNode direct, master;
+    Graph g;
+    const NodeId nq = g.addNode(quiet), ns = g.addNode(slow);
+    const NodeId nd = g.addNode(dry), nx = g.addNode(direct), nm = g.addNode(master);
+    g.connect(nq, ns);
+    g.connect(ns, nm);
+    g.connect(nd, nx);
+    g.connect(nx, nm);
+    g.setOutput(nm);
+    g.prepare(48000.0, 256);
+    eqi(g.compensationFor(nx, nm), 64, "the dry path is held back 64 samples");
+
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+    for (int b = 0; b < 4; ++b) g.process(io);
+    check(o.l[255] == 1.0f, "the dry signal reaches the master");
+
+    dry.set(0.0f);                  // the last thing playing stops
+    g.process(io);
+    check(o.l[0] == 1.0f && o.l[63] == 1.0f,
+          "its last 64 samples still come out of the ring: got " +
+              std::to_string(o.l[0]) + " .. " + std::to_string(o.l[63]));
+    check(o.l[64] == 0.0f && o.l[255] == 0.0f, "and then silence, exactly when it should");
+
+    g.process(io);
+    bool silent = true;
+    for (float v : o.l) if (v != 0.0f) silent = false;
+    check(silent, "after which the master may sleep");
+}
+
+/// Writes its SIDECHAIN input to its output, so the key a compressor would
+/// see is observable. Tail zero, like any node with no state of its own.
+class KeyThrough final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            const float* k = (io.sidechain != nullptr && io.sidechain[c] != nullptr)
+                                 ? io.sidechain[c] + io.blockOffset : nullptr;
+            for (std::int32_t i = 0; i < io.frames; ++i) o[i] = (k != nullptr ? k[i] : 0.0f);
+        }
+    }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    [[nodiscard]] const char* name() const noexcept override { return "key"; }
+};
+
+void testACompensatedKeyIsPlayedOutToo() {
+    section("ADR-0058 d5 + ADR-0043 -- a compensated sidechain is flushed as well");
+
+    // ADR-0058 compensates a sidechain with the rest (decision 5), so a key
+    // input has a ring too. If the key is the last input to stop, the node
+    // must stay awake to hear the end of it -- otherwise a compressor's gain
+    // reduction releases early by exactly the compensation.
+    ConstNode quiet(0.0f), key(1.0f);
+    LatentNode slow(64);
+    SumNode direct;
+    KeyThrough comp;
+    Graph g;
+    const NodeId nq = g.addNode(quiet), ns = g.addNode(slow);
+    const NodeId nk = g.addNode(key), nd = g.addNode(direct), nc = g.addNode(comp);
+    g.connect(nq, ns);
+    g.connect(ns, nc, Bus::Main);
+    g.connect(nk, nd);
+    g.connect(nd, nc, Bus::Sidechain);
+    g.setOutput(nc);
+    g.prepare(48000.0, 256);
+    eqi(g.compensationFor(nd, nc, Bus::Sidechain), 64, "the key is held back 64 samples");
+
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+    for (int b = 0; b < 4; ++b) g.process(io);
+    check(o.l[255] == 1.0f, "the key reaches the compressor");
+
+    key.set(0.0f);
+    g.process(io);
+    check(o.l[0] == 1.0f && o.l[63] == 1.0f,
+          "the key's last 64 samples still reach it: got " + std::to_string(o.l[0]) +
+              " .. " + std::to_string(o.l[63]));
+    check(o.l[64] == 0.0f, "and then it ends");
+}
+
+void testDelayLineItself() {
+    section("ADR-0058 -- the delay line delays by exactly what it says");
+
+    DelayLine d;
+    d.prepare(1, 3);
+    d.setDelay(3);
+    std::vector<float> in{1, 2, 3, 4, 5, 6, 7, 8};
+    std::vector<float> out(in.size(), -1.0f);
+    d.process(0, in.data(), out.data(), static_cast<std::int32_t>(in.size()));
+
+    check(out[0] == 0.0f && out[1] == 0.0f && out[2] == 0.0f,
+          "three samples of history come out first");
+    check(out[3] == 1.0f && out[4] == 2.0f && out[7] == 5.0f,
+          "then the input, three late: got " + std::to_string(out[3]) + ", " +
+              std::to_string(out[7]));
+
+    // In place, because `accumulate` does exactly that on a second input.
+    DelayLine e;
+    e.prepare(1, 2);
+    e.setDelay(2);
+    std::vector<float> both{9, 8, 7, 6};
+    e.process(0, both.data(), both.data(), 4);
+    check(both[0] == 0.0f && both[2] == 9.0f && both[3] == 8.0f,
+          "and src == dst is safe: the input is read before it is overwritten");
+
+    DelayLine z;
+    z.prepare(2, 0);
+    z.setDelay(0);
+    std::vector<float> pass{5, 6};
+    z.process(0, pass.data(), pass.data(), 2);
+    check(pass[0] == 5.0f, "zero delay is a pass-through, not a one-sample shift");
+}
+
+void testArrivalArithmetic() {
+    section("ADR-0058 d2 -- arrival is the max over inputs, and the delay is the gap");
+
+    RampNode src;
+    LatentNode slow(128);
+    SumNode direct, mix;
+
+    Graph g;
+    const NodeId ns = g.addNode(src);
+    const NodeId nl = g.addNode(slow);
+    const NodeId nd = g.addNode(direct);
+    const NodeId nm = g.addNode(mix);
+    g.connect(ns, nl);      // the long path: through 128 samples of declared latency
+    g.connect(ns, nd);      // the short path
+    g.connect(nl, nm);
+    g.connect(nd, nm);
+    g.setOutput(nm);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared: " + g.error());
+
+    eqi(g.arrivalOf(ns), 0, "the source arrives at zero");
+    eqi(g.arrivalOf(nl), 0, "and so does the node that merely CLAIMS latency");
+    eqi(g.arrivalOf(nm), 128, "the sum waits for the later of its two feeds");
+
+    eqi(g.compensationFor(nl, nm), 0, "the late path is not delayed further");
+    eqi(g.compensationFor(nd, nm), 128,
+        "the early path is delayed by the gap -- which is the whole of PDC");
+
+    eqi(g.latencySamples(), 128, "and the graph reports what it costs");
+}
+
+void testPhaseAlignment() {
+    section("ADR-0058 -- two paths to one sum, aligned to the sample, block after block");
+
+    // The test ADR-0058 named. A ramp splits, one branch both declares AND
+    // incurs latency, and both sum.
+    //
+    // THREE BLOCKS, NOT ONE, and 100 samples of latency rather than a round 64.
+    // Both of those are load-bearing, and a one-block/64-sample version of this
+    // test passed with the cursor carry completely broken:
+    //
+    //   - A delay ring is self-consistent WITHIN a call. Past the first `delay`
+    //     samples, the output is read from what this same call wrote, whatever
+    //     the cursor started at. Only the carry ACROSS a block boundary depends
+    //     on each channel resuming where it actually left off.
+    //   - 512 frames over a 64-sample ring wraps exactly eight times, so any
+    //     cursor error is a whole number of ring sizes and lands back on
+    //     itself. 512 % 100 is 12, so an error of one block shows as twelve.
+    //
+    // The comparison skips the graph's own reported latency, and that is the
+    // property rather than a fudge: PDC guarantees the branches are aligned
+    // WITH EACH OTHER, not that the graph is instantaneous. A graph containing
+    // a 100-sample plugin genuinely produces nothing for 100 samples, reports
+    // exactly that, and the transport compensates it -- which is what
+    // `latencySamples()` is for. Comparing from sample 0 would be asserting
+    // that latency does not exist.
+    //
+    // If the compensation is wrong the branches are apart, and on a ramp that
+    // is a constant offset in the sum: easy to see, impossible to argue with.
+    constexpr std::int32_t kBlock = 512;
+    constexpr int kBlocks = 3;
+
+    auto run = [](std::int32_t latency, std::vector<float>& out,
+                  bool& stereoMatches, std::int32_t& reported) {
+        RampNode src;
+        LatentNode branch(latency);
+        SumNode direct, mix;
+        Graph g;
+        const NodeId ns = g.addNode(src), nb = g.addNode(branch);
+        const NodeId nd = g.addNode(direct), nm = g.addNode(mix);
+        g.connect(ns, nb);
+        g.connect(ns, nd);
+        g.connect(nb, nm);
+        g.connect(nd, nm);
+        g.setOutput(nm);
+        g.prepare(48000.0, kBlock);
+        reported = g.latencySamples();
+
+        out.clear();
+        stereoMatches = true;
+        for (int b = 0; b < kBlocks; ++b) {
+            Out o(kBlock);
+            AudioIo io = makeIo(o, kBlock, static_cast<std::int64_t>(b) * kBlock);
+            g.process(io);
+            src.advance();
+            for (std::size_t i = 0; i < o.l.size(); ++i)
+                if (o.l[i] != o.r[i]) stereoMatches = false;
+            out.insert(out.end(), o.l.begin(), o.l.end());
+        }
+    };
+
+    std::vector<float> withLatency, without;
+    bool stereoA = false, stereoB = false;
+    std::int32_t reported = 0, none = 0;
+    run(100, withLatency, stereoA, reported);
+    run(0, without, stereoB, none);
+
+    eqi(reported, 100, "the graph reports what it costs");
+    eqi(none, 0, "and reports nothing when nothing costs anything");
+
+    bool aligned = true;
+    std::size_t firstDiff = 0;
+    for (std::size_t i = 0; i + 100 < withLatency.size(); ++i)
+        if (withLatency[i + 100] != without[i]) {
+            aligned = false;
+            firstDiff = i;
+            break;
+        }
+
+    check(aligned,
+          "past the reported latency the sum is bit-identical to the graph with "
+          "no latency at all, across every block" +
+              (aligned ? std::string()
+                       : " -- first difference at sample " +
+                             std::to_string(firstDiff) + " (block " +
+                             std::to_string(firstDiff / kBlock) + "): " +
+                             std::to_string(withLatency[firstDiff + 100]) + " vs " +
+                             std::to_string(without[firstDiff])));
+
+    // And it really is the doubled ramp rather than two zeroes agreeing.
+    check(without[600] == 1200.0f,
+          "the reference really is 2x the ramp, past the first block: got " +
+              std::to_string(without[600]));
+
+    check(stereoA && stereoB,
+          "both channels of the edge carry the same signal -- this holds even "
+          "with the cursor carry broken, because every channel drifts by the "
+          "same (channels-1)*frames, so it is a symmetry check and NOT a test "
+          "of the per-channel cursor");
+}
+
+void testSidechainIsCompensatedToo() {
+    section("ADR-0058 d5 -- a sidechain is aligned with the audio it controls");
+
+    RampNode src;
+    LatentNode slowKey(96);
+    SumNode chain, comp;
+
+    Graph g;
+    const NodeId ns = g.addNode(src);
+    const NodeId nk = g.addNode(slowKey);
+    const NodeId nc = g.addNode(chain);
+    const NodeId nx = g.addNode(comp);
+    g.connect(ns, nk);
+    g.connect(ns, nc);
+    g.connect(nc, nx, Bus::Main);
+    g.connect(nk, nx, Bus::Sidechain);
+    g.setOutput(nx);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared with a latent key: " + g.error());
+
+    eqi(g.arrivalOf(nx), 96, "the compressor waits for its key");
+    eqi(g.compensationFor(nc, nx, Bus::Main), 96,
+        "the main input is delayed to meet it -- a key that arrives early ducks "
+        "early, and that is the same defect as a misaligned kick");
+    eqi(g.compensationFor(nk, nx, Bus::Sidechain), 0, "the key itself is not delayed");
+}
+
+void testGroupsCompensateAsOne() {
+    section("ADR-0058 d3 -- a group aligns its children, then itself");
+
+    // Two children into a group, one of them latent; the group and a bare track
+    // into the master. The rule is applied at both levels by the same code,
+    // which is the point -- nothing here knows what a group is.
+    RampNode a, b, c;
+    LatentNode latent(32);
+    SumNode group, master;
+
+    Graph g;
+    const NodeId na = g.addNode(a), nb = g.addNode(b), nc = g.addNode(c);
+    const NodeId nl = g.addNode(latent);
+    const NodeId ng = g.addNode(group), nm = g.addNode(master);
+    g.connect(na, nl);        // child A through 32 samples
+    g.connect(nl, ng);
+    g.connect(nb, ng);        // child B direct
+    g.connect(ng, nm);        // the group into the master
+    g.connect(nc, nm);        // and a bare track alongside it
+    g.setOutput(nm);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared: " + g.error());
+
+    eqi(g.arrivalOf(ng), 32, "inside the group, B waits for A");
+    eqi(g.compensationFor(nb, ng), 32, "so B is delayed by 32");
+    eqi(g.arrivalOf(nm), 32, "and the master waits for the group");
+    eqi(g.compensationFor(nc, nm), 32,
+        "so the bare track is delayed by the same 32 -- the group's latency "
+        "propagated upward with no code that knows what a group is");
+    eqi(g.compensationFor(ng, nm), 0, "and the group itself is not delayed twice");
+}
+
+void testNoLatencyMeansNoDelayLines() {
+    section("ADR-0058 -- the common case costs nothing");
+
+    RampNode src;
+    SumNode a, b, out;
+    Graph g;
+    const NodeId ns = g.addNode(src), na = g.addNode(a);
+    const NodeId nb = g.addNode(b), no = g.addNode(out);
+    g.connect(ns, na);
+    g.connect(ns, nb);
+    g.connect(na, no);
+    g.connect(nb, no);
+    g.setOutput(no);
+    g.prepare(48000.0, 256);
+
+    eqi(g.latencySamples(), 0, "a project with no latency reports none");
+    eqi(g.compensationFor(na, no), 0, "and inserts no delay");
+    eqi(g.compensationFor(nb, no), 0, "on either edge");
+}
+
+
+/// Counts the events its slot was handed. Nothing else -- the question is
+/// only whether they arrive.
+class EventCounter final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        seen += io.events.count;
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            const float* i = (io.in != nullptr && io.in[c] != nullptr)
+                                 ? io.in[c] + io.blockOffset : nullptr;
+            for (std::int32_t k = 0; k < io.frames; ++k)
+                o[k] = (i != nullptr ? i[k] : 0.0f);
+        }
+    }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    [[nodiscard]] const char* name() const noexcept override { return "count"; }
+    std::int64_t seen = 0;
+};
+
+/// A NOT-YET, pinned so it cannot be discovered twice.
+///
+/// ADR-0045 says a track carries audio AND events through one chain, and
+/// ADR-0055's node contract gives every node an `EventSpan`. The scheduler
+/// accumulates AUDIO along edges and does not accumulate events: a slot's
+/// `events` come only from a `pushInputEvent` naming that slot.
+///
+/// The consequence is not theoretical and it is not small. `inputFor(trackId)`
+/// is where a clip reader pushes, and on any track with a device chain it is
+/// the MixNode at the head -- so a MIDI clip pushes note-ons at the head and
+/// the instrument two nodes downstream never sees one. Measured with Surge XT
+/// through `adi_clap_probe --rebuild`: a note at the head is silence, the same
+/// note at the tail is 0.21 peak.
+///
+/// This test asserts the CURRENT behaviour, deliberately. When events learn to
+/// travel along edges, it fails, and the failure is the notification.
+void testSplitsAreExactAcrossSlots() {
+    section("ADR-0042 -- every distinct event frame is a split, whichever slot holds it");
+
+    // The split loop coalesced WHILE it collected, comparing each event with
+    // the last split PUSHED rather than the last split in TIME. Slots are
+    // walked in index order, so a later slot's earlier event came out
+    // negative against the previous slot's later one, fell under the floor,
+    // and was dropped: a real, distinct frame with no segment boundary at it.
+    //
+    // It survived because every test that split a block kept all its events
+    // in one slot. Forwarding (ADR-0091) puts the same note in many slots, so
+    // this stops being a corner.
+    Graph g;
+    EventCounter a, b;
+    SumNode out;
+    const NodeId na = g.addNode(a), nb = g.addNode(b), no = g.addNode(out);
+    g.connect(na, no);
+    g.connect(nb, no);
+    g.setOutput(no);
+    g.prepare(48000.0, 256);
+    check(g.floorFrames() <= 96, "the floor is under the 100-frame gap used here");
+
+    Event late;  late.type = EventType::ParamValue;  late.frame = 200;
+    Event early; early.type = EventType::ParamValue; early.frame = 100;
+    check(g.pushInputEvent(na, late), "slot 0 gets frame 200");
+    check(g.pushInputEvent(nb, early), "slot 1 gets frame 100 -- EARLIER, in a LATER slot");
+
+    std::vector<float> l(256, 0.0f), r(256, 0.0f);
+    float* outp[2] = {l.data(), r.data()};
+    AudioIo io;
+    io.out = outp; io.numOut = 2; io.frames = 256;
+    g.process(io);
+
+    eqi(g.stats().segments, 3,
+        "three segments -- [0,100), [100,200), [200,256) -- and not two, which "
+        "is what dropping frame 100 gives");
+
+    // AND THE NEXT BLOCK STARTS CLEAN. The marks are per block; one left over
+    // splits an empty block at frames that belonged to the previous one. A
+    // single-block test cannot see that, so this runs a second, empty block.
+    g.process(io);
+    eqi(g.stats().segments, 4,
+        "an empty block after it is ONE segment, not three -- the previous "
+        "block's frames do not carry over");
+}
+
+// --- ADR-0091: events travel along edges ------------------------------------
+
+/// Records every event it is handed, with the ABSOLUTE time it arrived and the
+/// segment it arrived in, so a delay and a split are both observable.
+class EventProbe final : public Node {
+public:
+    explicit EventProbe(EventFlow flow = EventFlow::Through, std::int32_t latency = 0)
+        : flow_(flow), latency_(latency) {
+        at.reserve(64); types.reserve(64); segs.reserve(64);
+    }
+    void process(const NodeIo& io) noexcept override {
+        for (const Event& e : io.events) {
+            at.push_back(base + e.frame);
+            types.push_back(e.type);
+            segs.push_back(io.blockOffset);
+        }
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            const float* i = (io.in != nullptr && io.in[c] != nullptr)
+                                 ? io.in[c] + io.blockOffset : nullptr;
+            for (std::int32_t k = 0; k < io.frames; ++k)
+                o[k] = (i != nullptr ? i[k] : 0.0f);
+        }
+    }
+    [[nodiscard]] EventFlow eventFlow() const noexcept override { return flow_; }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override { return latency_; }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    [[nodiscard]] const char* name() const noexcept override { return "probe"; }
+
+    [[nodiscard]] std::size_t notes() const {
+        std::size_t n = 0;
+        for (EventType t : types) if (isNoteStream(t)) ++n;
+        return n;
+    }
+
+    std::int64_t base = 0;              ///< the absolute sample this block starts at
+    std::vector<std::int64_t> at;
+    std::vector<EventType> types;
+    std::vector<std::int32_t> segs;
+
+private:
+    EventFlow flow_;
+    std::int32_t latency_;
+};
+
+Event noteOn(std::int32_t frame) {
+    Event e;
+    e.type = EventType::NoteOn;
+    e.frame = frame;
+    e.noteId = 1;
+    e.dim = 60;
+    e.value = 1.0;
+    e.channel = 1;
+    return e;
+}
+
+/// One block through `g`, with every probe told where that block starts.
+void runBlock(Graph& g, std::int32_t frames, std::int64_t base,
+              std::initializer_list<EventProbe*> probes) {
+    for (EventProbe* p : probes) p->base = base;
+    std::vector<float> l(static_cast<std::size_t>(frames), 0.0f);
+    std::vector<float> r(static_cast<std::size_t>(frames), 0.0f);
+    float* outp[2] = {l.data(), r.data()};
+    AudioIo io;
+    io.out = outp; io.numOut = 2; io.frames = frames;
+    g.process(io);
+}
+
+void testANoteTravelsTheChain() {
+    section("ADR-0091 -- a note pushed at the head reaches the instrument at the tail");
+
+    // mac measured this failing with a real plugin: a note pushed at the chain
+    // head was silence, the same note pushed at the tail was 0.21 peak. The
+    // head is a MixNode on every track with devices (ADR-0077), so that is
+    // where a clip reader pushes -- and until now it went nowhere.
+    Graph g;
+    EventProbe head, mid, synth(EventFlow::Consume);
+    const NodeId nh = g.addNode(head), nm = g.addNode(mid), ns = g.addNode(synth);
+    g.connect(nh, nm);
+    g.connect(nm, ns);
+    g.setOutput(ns);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared: " + g.error());
+
+    check(g.pushInputEvent(nh, noteOn(10)), "a note is pushed at the HEAD");
+    runBlock(g, 256, 0, {&head, &mid, &synth});
+
+    eqi(static_cast<long long>(head.notes()), 1, "the head sees it");
+    eqi(static_cast<long long>(mid.notes()), 1, "so does the node in between");
+    eqi(static_cast<long long>(synth.notes()), 1,
+        "and so does the instrument at the tail -- which is the whole point");
+    check(!synth.at.empty() && synth.at[0] == 10,
+          "at the frame it was pushed, since nothing on the way has latency");
+    eqi(g.stats().eventsForwarded, 2, "two hops, two forwards");
+}
+
+void testAnInstrumentConsumesTheNote() {
+    section("ADR-0091 -- the note stops at the instrument");
+
+    // An effect after a synth has no use for the synth's notes. Without
+    // Consume they would flow on to the master through every effect, costing a
+    // split in each and meaning something to any second instrument downstream.
+    Graph g;
+    EventProbe head, synth(EventFlow::Consume), eq;
+    const NodeId nh = g.addNode(head), ns = g.addNode(synth), ne = g.addNode(eq);
+    g.connect(nh, ns);
+    g.connect(ns, ne);
+    g.setOutput(ne);
+    g.prepare(48000.0, 256);
+
+    g.pushInputEvent(nh, noteOn(10));
+    runBlock(g, 256, 0, {&head, &synth, &eq});
+
+    eqi(static_cast<long long>(synth.notes()), 1,
+        "the instrument RECEIVES it -- Consume stops onward travel, not delivery");
+    eqi(static_cast<long long>(eq.notes()), 0, "the effect after it does not");
+}
+
+void testParametersStayWherePushed() {
+    section("ADR-0091 -- an addressed event is not forwarded");
+
+    // ParamValue names a parameter OF THE NODE IT WAS PUSHED TO. GainNode
+    // applies any ParamValue whose id matches its own, so forwarding one would
+    // have every node downstream set its parameter 0 to this node's value.
+    Graph g;
+    EventProbe head, tail;
+    const NodeId nh = g.addNode(head), nt = g.addNode(tail);
+    g.connect(nh, nt);
+    g.setOutput(nt);
+    g.prepare(48000.0, 256);
+
+    Event param;
+    param.type = EventType::ParamValue;
+    param.frame = 20;
+    param.paramId = 0;
+    param.value = 0.5;
+    g.pushInputEvent(nh, param);
+    g.pushInputEvent(nh, noteOn(30));
+    runBlock(g, 256, 0, {&head, &tail});
+
+    eqi(static_cast<long long>(head.types.size()), 2, "the head sees both");
+    eqi(static_cast<long long>(tail.types.size()), 1, "the tail sees one");
+    check(!tail.types.empty() && tail.types[0] == EventType::NoteOn,
+          "and it is the note, not the parameter");
+}
+
+void testASidechainCarriesNoNotes() {
+    section("ADR-0091 -- main edges only; a sidechain is an audio key");
+
+    // A compressor keyed from a kick track has no use for that track's notes,
+    // and handing them over would make every keyed plugin a second instrument.
+    Graph g;
+    EventProbe music, kick, comp;
+    const NodeId nm = g.addNode(music), nk = g.addNode(kick), nc = g.addNode(comp);
+    g.connect(nm, nc, Bus::Main);
+    g.connect(nk, nc, Bus::Sidechain);
+    g.setOutput(nc);
+    g.prepare(48000.0, 256);
+
+    g.pushInputEvent(nk, noteOn(10));
+    runBlock(g, 256, 0, {&music, &kick, &comp});
+
+    eqi(static_cast<long long>(kick.notes()), 1, "the key track has its note");
+    eqi(static_cast<long long>(comp.notes()), 0, "and it does not cross the sidechain");
+
+    g.pushInputEvent(nm, noteOn(10));
+    runBlock(g, 256, 256, {&music, &kick, &comp});
+    eqi(static_cast<long long>(comp.notes()), 1, "while the main input's note does");
+}
+
+void testLatencyDelaysTheNote() {
+    section("ADR-0091 -- a note is delayed by the latency of what it passes through");
+
+    // The case that makes this necessary. A node with latency L before an
+    // instrument: the graph believes the instrument's input is L late
+    // (arrival = L) and compensates every OTHER track by L to match. If the
+    // note skipped the delay the instrument would play L early -- aligned in
+    // the graph's arithmetic and early in the room.
+    Graph g;
+    EventProbe head(EventFlow::Through, 30), synth(EventFlow::Consume);
+    const NodeId nh = g.addNode(head), ns = g.addNode(synth);
+    g.connect(nh, ns);
+    g.setOutput(ns);
+    g.prepare(48000.0, 256);
+    eqi(g.arrivalOf(ns), 30, "the graph believes the instrument's input is 30 late");
+
+    g.pushInputEvent(nh, noteOn(10));
+    runBlock(g, 256, 0, {&head, &synth});
+    check(!synth.at.empty() && synth.at[0] == 40,
+          "so the note reaches it at 10 + 30, not 10: got " +
+              (synth.at.empty() ? std::string("nothing") : std::to_string(synth.at[0])));
+}
+
+void testTwoPathsDeliverTheNoteAligned() {
+    section("ADR-0091 -- compensation applies to events exactly as to audio");
+
+    // The note splits, one branch declares 64 samples, both rejoin. PDC holds
+    // the direct branch back 64 so the audio meets. The note must be held back
+    // the same 64 -- and then it reaches the merge at ONE frame by both paths,
+    // which is ADR-0058's alignment property, stated for events.
+    Graph g;
+    EventProbe src, slow(EventFlow::Through, 64), fast, mix;
+    const NodeId ns = g.addNode(src), nl = g.addNode(slow);
+    const NodeId nf = g.addNode(fast), nm = g.addNode(mix);
+    g.connect(ns, nl);
+    g.connect(ns, nf);
+    g.connect(nl, nm);
+    g.connect(nf, nm);
+    g.setOutput(nm);
+    g.prepare(48000.0, 256);
+    eqi(g.compensationFor(nf, nm), 64, "the fast path's audio is held back 64");
+
+    g.pushInputEvent(ns, noteOn(10));
+    runBlock(g, 256, 0, {&src, &slow, &fast, &mix});
+
+    eqi(static_cast<long long>(mix.notes()), 2,
+        "the merge receives one copy PER PATH -- which is what a layering rack "
+        "needs, and why ADR-0072 puts re-converging paths inside racks");
+    check(mix.at.size() == 2 && mix.at[0] == 74 && mix.at[1] == 74,
+          "and both arrive at 74: the slow one through its latency, the fast one "
+          "through the compensation that meets it");
+}
+
+void testADelayCrossesBlockBoundaries() {
+    section("ADR-0091 -- a delay longer than the block defers to a later one");
+
+    // ADR-0088 sized compensation for 5120 samples, a block is often 256, so a
+    // forwarded note is routinely due several blocks from now. It is held in a
+    // fixed-capacity queue keyed by absolute sample, and delivered in the block
+    // it falls in, at the frame it falls on.
+    Graph g;
+    EventProbe head(EventFlow::Through, 300), synth(EventFlow::Consume);
+    const NodeId nh = g.addNode(head), ns = g.addNode(synth);
+    g.connect(nh, ns);
+    g.setOutput(ns);
+    g.prepare(48000.0, 256);
+
+    g.pushInputEvent(nh, noteOn(100));
+    runBlock(g, 256, 0, {&head, &synth});
+    eqi(static_cast<long long>(synth.notes()), 0, "nothing reaches the synth in block 0");
+    eqi(g.stats().eventsDeferred, 1, "because the note was deferred");
+
+    runBlock(g, 256, 256, {&head, &synth});
+    eqi(static_cast<long long>(synth.notes()), 1, "it arrives in block 1");
+    check(!synth.at.empty() && synth.at[0] == 400,
+          "at absolute sample 100 + 300 = 400, i.e. frame 144 of block 1: got " +
+              (synth.at.empty() ? std::string("nothing") : std::to_string(synth.at[0])));
+
+    runBlock(g, 256, 512, {&head, &synth});
+    eqi(static_cast<long long>(synth.notes()), 1, "and exactly once");
+}
+
+void testAForwardedNoteGetsItsOwnSegment() {
+    section("ADR-0091 + ADR-0042 -- a forwarded note lands ON a segment boundary");
+
+    // Why forwarding happens BEFORE the splits and not while nodes run. The
+    // note is pushed at 70 and delayed 80, so it reaches the tail at 150 --
+    // a frame no pushed event occupies. Forwarding during the run would hand
+    // it over inside a segment chosen without it.
+    Graph g;
+    EventProbe head(EventFlow::Through, 80), tail;
+    const NodeId nh = g.addNode(head), nt = g.addNode(tail);
+    g.connect(nh, nt);
+    g.setOutput(nt);
+    g.prepare(48000.0, 256);
+
+    g.pushInputEvent(nh, noteOn(70));
+    runBlock(g, 256, 0, {&head, &tail});
+    eqi(g.stats().segments, 3, "three segments: the pushed frame AND the forwarded one");
+    check(!tail.segs.empty() && tail.segs[0] == 150,
+          "and the tail receives it in the segment that STARTS at 150: got " +
+              (tail.segs.empty() ? std::string("nothing") : std::to_string(tail.segs[0])));
+}
+
+void testFanInOverflowIsCountedNotAllocated() {
+    section("ADR-0091 -- fan-in shares the receiver's capacity, and overflow is counted");
+
+    Graph g;
+    g.setEventCapacity(4);
+    EventProbe a, b, c, sink;
+    const NodeId na = g.addNode(a), nb = g.addNode(b), nc = g.addNode(c);
+    const NodeId nk = g.addNode(sink);
+    g.connect(na, nk);
+    g.connect(nb, nk);
+    g.connect(nc, nk);
+    g.setOutput(nk);
+    g.prepare(48000.0, 256);
+    eqi(g.eventCapacity(), 4, "four events per slot");
+
+    for (NodeId n : {na, nb, nc}) {
+        g.pushInputEvent(n, noteOn(10));
+        g.pushInputEvent(n, noteOn(90));
+    }
+    runBlock(g, 256, 0, {&a, &b, &c, &sink});
+    eqi(static_cast<long long>(sink.notes()), 4, "the sink holds what fits");
+    eqi(g.stats().eventsDropped, 2,
+        "and the two that did not are COUNTED -- a list that grew would be the "
+        "audio thread allocating");
+}
+
+void testDeferredOverflowIsCounted() {
+    section("ADR-0091 -- the deferral queue is bounded too");
+
+    Graph g;
+    g.setEventCapacity(2);
+    EventProbe head(EventFlow::Through, 1000), tail;
+    const NodeId nh = g.addNode(head), nt = g.addNode(tail);
+    g.connect(nh, nt);
+    g.setOutput(nt);
+    g.prepare(48000.0, 256);
+
+    g.pushInputEvent(nh, noteOn(10));
+    g.pushInputEvent(nh, noteOn(80));
+    runBlock(g, 256, 0, {&head, &tail});
+    eqi(g.stats().eventsDeferred, 2, "two fit the queue");
+
+    g.pushInputEvent(nh, noteOn(10));
+    runBlock(g, 256, 256, {&head, &tail});
+    eqi(g.stats().eventsDropped, 1,
+        "the third does not, and is counted rather than allocated for");
+}
+
 }  // namespace
 
 int main() {
@@ -786,6 +1670,7 @@ int main() {
     std::printf("adi_graph_tests -- the audio graph\n\n");
     try {
         testTopologicalOrder();
+        testSinkNodeRunsWithoutFeedingTheOutput();
         testCycleIsRefused();
         testRampIsNotAStaircase();
         testFloorCoalesces();
@@ -803,6 +1688,26 @@ int main() {
         testSidechainIsSeparateFromMain();
         testLevelOrderDoesNotChangeOutput();
         testEventCapacityFitsTheContinuum();
+        testATailShorterThanABlockStillPlays();
+        testACompensatedInputIsPlayedOutBeforeItsNodeSleeps();
+        testACompensatedKeyIsPlayedOutToo();
+        testDelayLineItself();
+        testArrivalArithmetic();
+        testPhaseAlignment();
+        testSidechainIsCompensatedToo();
+        testGroupsCompensateAsOne();
+        testNoLatencyMeansNoDelayLines();
+    testSplitsAreExactAcrossSlots();
+        testANoteTravelsTheChain();
+        testAnInstrumentConsumesTheNote();
+        testParametersStayWherePushed();
+        testASidechainCarriesNoNotes();
+        testLatencyDelaysTheNote();
+        testTwoPathsDeliverTheNoteAligned();
+        testADelayCrossesBlockBoundaries();
+        testAForwardedNoteGetsItsOwnSegment();
+        testFanInOverflowIsCountedNotAllocated();
+        testDeferredOverflowIsCounted();
     } catch (const std::exception& e) {
         std::printf("\nFAILED -- exception escaped: %s\n", e.what());
         return 1;

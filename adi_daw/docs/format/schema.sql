@@ -515,21 +515,39 @@ CREATE TABLE state_blobs (
 
 -- Plugin state is not always one stream (SPEC §7): VST3 has component +
 -- controller, LV2 has state + files, AU has a classinfo dict. Separate rows.
+--
+-- KEYED ON (device_id, stream_role), WITH NO SURROGATE id (ADR-0057). The
+-- surrogate was referenced by nothing and cost an allocation: ADR-0021 7.3
+-- says an op that INSERTs a row carries that row's id in its payload, so
+-- `device.loadState` would have had to invent one -- or read SQLite to find
+-- out whether the row already existed, which is the ambient read 0021
+-- forbids. A natural key makes the op an UPSERT with nothing to allocate.
 CREATE TABLE plugin_state (
-    id          INTEGER PRIMARY KEY,
     device_id   INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     stream_role TEXT    NOT NULL,       -- 'component'|'controller'|'state'|'classinfo'|'chunk'|'files'
     -- The bytes live in state_blobs, shared with whatever op payloads and
     -- inverses reference the same value (ADR-0038).
     state_hash  TEXT    NOT NULL REFERENCES state_blobs(hash_blake3),
-    format_hint TEXT    NOT NULL DEFAULT ''
-) STRICT;
-CREATE UNIQUE INDEX idx_pstate ON plugin_state(device_id, stream_role);
+    format_hint TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (device_id, stream_role)
+) STRICT, WITHOUT ROWID;
 
 -- The missing-plugin safety net (SPEC §7.1). Redundant while the plugin loads;
 -- the entire reason the project is still workable when it does not.
+--
+-- KEYED ON (device_id, param_id), WITH NO SURROGATE id -- same reason as
+-- plugin_state above, and it bites harder here. `device.setParam` is
+-- coalescable and fires on every knob movement; an id in that payload would
+-- mean allocating one the first time each parameter is ever touched, and
+-- knowing WHICH time that was is an ambient read.
+--
+-- normalized_value is NOT NULL and real_value is nullable, and that asymmetry
+-- is the VST3 edge stated in the schema rather than in a comment elsewhere:
+-- VST3 exposes a real value only as a display STRING (getParamStringByValue),
+-- so a real value is recoverable for CLAP, Pd and native devices and
+-- sometimes not for VST3. The normalized value is always authoritative; the
+-- real value is the readable one where it can be had (ADR-0057).
 CREATE TABLE plugin_params (
-    id               INTEGER PRIMARY KEY,
     device_id        INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     param_id         TEXT    NOT NULL,
     name             TEXT    NOT NULL DEFAULT '',
@@ -537,9 +555,9 @@ CREATE TABLE plugin_params (
     real_value       REAL,
     display          TEXT    NOT NULL DEFAULT '',
     unit             TEXT    NOT NULL DEFAULT '',
-    flags            INTEGER NOT NULL DEFAULT 0
-) STRICT;
-CREATE UNIQUE INDEX idx_pparam ON plugin_params(device_id, param_id);
+    flags            INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (device_id, param_id)
+) STRICT, WITHOUT ROWID;
 
 -- Rack macros and their mappings (SPEC §6.6).
 CREATE TABLE macros (

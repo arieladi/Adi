@@ -35,7 +35,7 @@ flagged, and it is a bug in the format, not in the plan.
 | Time signature map | both | P0 | ✅ | separate table, deliberately (SPEC §4.4) |
 | Musical **and** linear time per track | Cubase | P0 | ✅ | `time_base`; the reason for the dual-domain model |
 | Loop / cycle, punch in-out | both | P0 | ✅ | `markers.kind='cycle'` |
-| Markers, marker track | both | P1 | ✅ | |
+| Markers, marker track, **with a note and an optional agent prompt** | both + | P1 | 🔶 | `markers` gains nullable `note`, `prompt` (ADR-0115) |
 | Arranger track / section playlist | Cubase | P2 | ✅ | `arranger_sections` + `arranger_chain` |
 | Key/scale track | Cubase-ish | P2 | ✅ | `key_map`, with a 12-bit `scale_mask` so any scale fits |
 | Chord track, chord pads, harmonic linking | Cubase | P3 | 🔶 | `key_map` is the anchor; chord events need their own table |
@@ -55,6 +55,9 @@ flagged, and it is a bug in the format, not in the plan.
 | Sidechain routing | both | P1 | ✅ | `routing.kind='sidechain'` |
 | VCA faders | Cubase | P2 | ✅ | `kind='vca'`, `mixer_strip.vca_group_id` |
 | Direct Routing (multiple simultaneous outs) | Cubase | P2 | ✅ | falls out of `routing` being a table |
+| Up to 64 buses per node; no cable UI | REAPER (engine), Ableton (UI) | P2 | ✅ | replaces ADR-0056's two buses; routing stays Ableton's menus and auto-grouping (ADR-0113) |
+| System-audio (loopback) input on any track | neither | P1 | — | WASAPI loopback, Core Audio process taps; a resampler with declared latency (ADR-0106) |
+| ADI virtual audio device out (master or any bus as an OS input) | REAPER (ReaRoute) | P2 | — | an OS driver: BlackHole fork on macOS; on Windows our own `sysvad`-based kernel driver (sysvad is MS-PL, fetched at build time, never vendored; the ruling on shipping MS-PL-derived code is the director's, ADR-0120) signed for free through SignPath Foundation, the route Virtual-Audio-Driver has used since 2025; bundling VB-CABLE was proposed and rejected (ADR-0106, ADR-0117, ADR-0118). Build workflow: `driver-build.yml` |
 | Track freeze / bounce in place | both | P1 | ✅ | `tracks.frozen`, `freeze_media_id` |
 | Control Room (separate monitor path, cue mixes, talkback) | Cubase | P3 | 🔶 | `routing.kind='cue'` reserved; no monitor-section model |
 | Crossfader, DJ-style mixing | Ableton | P3 | 🔶 | needs a master-section table |
@@ -89,7 +92,8 @@ flagged, and it is a bug in the format, not in the plan.
 | Per-note microtuning | neither, fully | P2 | ✅ | `tuning_cents` in the v1 note record |
 | **Per-note expression / MPE** | both, partially | **P1** | ✅ | `note_expression` — first-class, SPEC §6.3.2 |
 | **MPE+ (Haken), 14-bit Y and Z at 500 Hz** | neither | **P1** | ✅ | `ExpressionPoint.value` is f32, so bit depth was never the constraint. The binding constraint is ADR-0042's sub-block floor, which MUST NOT exceed `sample_rate/500` (ADR-0054). |
-| Scale-aware / scale-locked editing | Ableton 12 | P2 | ✅ | reads `key_map` |
+| **MPE out to plugins, VST3 and CLAP** | both, partially | **P1** | — | CLAP (ADR-0099): the dialect the plugin declares -- CLAP note expression, MIDI-MPE or MIDI. VST3 (ADR-0097): per plugin, VST3 note expression, MPE over MIDI on member channels, or plain MIDI with poly aftertouch. The controller's channel never reaches a plugin. Pitch, pressure and timbre measured by ear per route (ADR-0098, ADR-0100); a fixture VST3 exercises the IMidiMapping parameter path in CI. Surge XT reads MpeMidi, Serum 2 reads note expression, and `Auto` can only be right for one of them -- so the route choice must be remembered, which it is not yet. |
+| Scale-aware / scale-locked editing, **every scale including Arabic and microtonal** | Ableton 12 + | P2 | 🔶 | reads `key_map`; a 12-bit `scale_mask` cannot name a quarter tone, so `tuning_systems` + `tuning_degrees` + `key_map_degrees` child tables come first (ADR-0103, ADR-0117, gap 6). Notation stays out. |
 | Expression Maps (articulations) | Cubase | P3 | ❌ | needs its own schema; big win for orchestral |
 | Logical Editor / Project Logical Editor | Cubase | P3 | — | query+transform over the model; no schema |
 | Score editor / notation | Cubase | P3 | ❌ | engraving data is **not** derivable from MIDI |
@@ -103,20 +107,23 @@ flagged, and it is a bug in the format, not in the plan.
 > no later version can recover it. This is the one place where being late is
 > equivalent to being wrong.
 
-## 5. Session View — removed
+## 5. Session View — returns last, as a secondary window
 
-**There is no Session View.** ADR-0037 removed the clip-launching matrix from the
-project: `scenes` and `clip_slots` are gone from the schema and the fourteen
-`scene.*` / `session.*` ops are gone from the catalogue.
+ADR-0037 removed the clip-launching matrix; **ADR-0101 brings it back as a
+secondary, undockable window** (F3, like Cubase's MixConsole), built after the
+arrangement is finished and verified (ADR-0108). The same window carries a
+Cubase-style MixConsole view with a toggle between the two.
 
-ADI is a linear, arrangement-timeline DAW. What it takes from Ableton is the
-**interface** — channel strips on the right, device chain along the bottom, one
-window — and what it takes from Cubase is **arrangement and audio-editing
-depth**: comping, take lanes, crossfade control, the sample editor. See SPEC
-§6.5.
+| Feature | From | P | Fmt | Notes |
+|---|---|---|---|---|
+| Session View, docked in the main window Ableton-style, detachable | Ableton | P3 (last) | ❌ | `scenes`, `clip_slots` return to Layer 1 in a schema PR now, mirroring Live's shape: a scene list, one slot per track per scene, launch settings on the clip (ADR-0101, ADR-0117); the 14 ops return with the UI |
+| MixConsole view toggled inside it | Cubase | P3 (last) | ✅ | same strips, reparented; one `TrackOrderModel` (ADR-0063) |
+| Live performance | — | **ADI Live app** | — | a separate product on the same engine, after the DAW (ADR-0105) |
 
-Everything that used to be justified by "you can sketch in Session View" now has
-to be earned on the timeline instead. That is the point.
+ADI is still an arrangement-first DAW: the timeline is the default screen and the
+first thing built, and what it takes from Cubase is **arrangement and
+audio-editing depth**. Sketching has to be earned on the timeline *first*; the
+Session window is the last step, not a way around that.
 
 ## 6. Devices, racks and plugins
 
@@ -129,8 +136,11 @@ to be earned on the timeline instead. That is the point.
 | ~~VST2~~ | — | **no** | ✅ | **Ruled out** (ADR-0015): SDK unobtainable for years, and its terms were never GPL-compatible. Not recoverable. |
 | *Unhosted formats still open as placeholders* | — | **P0** | ✅ | `plugin_refs.format` still admits `au`, `auv3`, `vst2`. We do not host them; the format must still be able to say one was **there**, or a converter silently drops devices (ADR-0011, ADR-0041). |
 | **Missing-plugin preservation** | both | **P0** | ✅ | SPEC §7.1 — non-negotiable |
+| **Plugin parameter edits inside the plugin's window are ops** (global Ctrl-Z) | neither | **P0** | ✅ | one gesture, one op; chunk snapshots for what is not a parameter (ADR-0110, amends ADR-0038) |
 | Racks: instrument / effect / drum | Ableton | P2 | ✅ | `device_chains` with key/vel/chain zones |
-| Macros with per-target range and curve | Ableton | P2 | ✅ | `macros`, `macro_mappings` |
+| Macros with per-target range and **multi-breakpoint curve**, several mappings per target, per-macro enable | Ableton + | P2 | 🔶 | `macros`, `macro_mappings`; `curve` becomes a breakpoint BLOB (ADR-0114) |
+| Cross-track modulation and macro targets | Bitwig | P2 | 🔶 | arrives with the modulation schema (ADR-0114, ADR-0046) |
+| A Pd device with a second, floating view (the analyser) | neither | P2 | — | published arrays in the device contract (ADR-0116) |
 | Plugin delay compensation | both | P0 | ✅ | `devices.latency_samples`. Reported in samples and **excludes** the device buffer — ADR-0042. |
 | 2048–4096-sample blocks, tested | — | **P0** | — | runtime. Dense chains, not low-latency tracking (ADR-0042). **4096 is the cap on every platform** and the granted size is the only one that exists (ADR-0049). |
 | Sub-block automation and MIDI accuracy | both | **P0** | ✅ | runtime. At 8192 a block is 171 ms; per-block updates would step audibly. The price of the row above (ADR-0042). |
@@ -146,6 +156,7 @@ to be earned on the timeline instead. That is the point.
 |---|---|---|---|---|
 | Track and device automation | both | P0 | ✅ | `automation_lanes` |
 | Clip envelopes / clip modulation | Ableton | P1 | ✅ | `automation_data.clip_id` |
+| Event volume curves drawn on the clip (Cubase 14) | Cubase | P1 | ✅ | a clip-scoped gain lane rendered on the event (ADR-0115) |
 | Automation modes: touch/latch/cross/overwrite/trim | Cubase | P2 | ✅ | `tracks.automation_mode` |
 | Curved automation segments | both | P1 | ✅ | `curve` + `tension` per point |
 | Automation in real units, not just normalized | neither | P1 | ✅ | `value_domain='real'` — SPEC §6.3.3 |
@@ -172,6 +183,10 @@ to be earned on the timeline instead. That is the point.
 | **Branching undo tree** | neither | P2 | ✅ | `op_branches` |
 | Project-scoped controller maps | partially | P2 | ✅ | `controller_maps` |
 | Templates | both | P1 | — | a `.adi` with a flag |
+| **Swap the docked side of browser and mixer** | Bitwig/Cubase muscle memory | P2 | ✅ | `ui_view` — ADR-0080; width follows the panel, not the side |
+| Named view filters, AI view groups, far/close scaling, collapsible mixer and device strips | Bitwig | P2 | ✅ | `ui_view`; a `view.*` op family (ADR-0112) |
+| App-scoped sample library and the floating palette (Cmd+I), usable with no project open | neither | P1 | — | an app-level SQLite store; a preview path in the engine (ADR-0104) |
+| Open a historical undo node in a silent, read-only tab | neither | P2 | — | a materialised copy by replay; paste back is the ordinary transaction (ADR-0111) |
 
 ## 10. What neither DAW has — the actual reason to build this
 
@@ -208,6 +223,23 @@ which is a property of the algorithm and not of where it is compiled.
 | Frequency shifter | P2 | Hilbert transform is not free | ring-mod / Hilbert, sample-accurate linear shift |
 | Vocoder | P2 | filter-bank dependent | sidechain via `Bus::Sidechain`, no user wiring |
 | Multiband graph splitter | P2 | **thousands of samples in linear phase** | **blocked on N-bus outputs** (ADR-0056). Declares its latency; a minimum-phase mode is a user choice, not a silent default |
+
+### The DSP plugin line — future (ADR-0093)
+
+Prepared for, not started. References are fetched into `reference/` now; no code
+exists. Working titles only — shipped names are ours (ADR-0093 d4).
+
+| Goal | Form | P | Needs first |
+|---|---|---|---|
+| Dynamic EQ: matched phase, linear phase, per-band dynamics | CLAP | P3 | Plugin-line licence decided; matched phase from Vicanek (2016), not the AGPL reference |
+| True-peak limiter: lookahead, oversampling, modes | CLAP | P3 | Plugin-line licence decided (the LSP maths is LGPL) |
+| Lookahead brickwall limiter, 1.5 / 3 / 6 ms | Pd | P3 | **A Pd patch able to declare its latency** (ADR-0035 has no such thing), and pinned DSP sort order |
+| Eight-band parametric EQ | Pd | P3 | Pd's inverted `biquad~` feedback signs; four biquads for a 48 dB/oct cut |
+| ADAA clipper, adjustable knee, up to 4x oversampling | CLAP | P3 | Plugin-line licence decided (the chowdsp waveshapers are GPLv3) |
+| Ring-modulation sidechain ducker (RMSC) | Pd | P3 | Judged as amplitude modulation, which is what it is |
+
+Four of the six carry latency, which makes them the first plugins able to test
+ADR-0079/0085/0092 with source we can read instead of borrowing FabFilter's.
 
 ### Time-stretch (ADR-0061)
 
@@ -264,12 +296,14 @@ Every one of these lands as **ops** in one `txn_id`, so each is one Ctrl-Z.
 Saying no now is cheaper than saying no later.
 
 - **Notation-first workflow.** Dorico and MuseScore exist. We carry enough
-  engraving data to not destroy it (P3), and stop there.
+  engraving data to not destroy it (P3), and stop there. Scale-aware editing,
+  microtonal scales included, is in (ADR-0103); an engraving editor is not.
 - **Mastering suite, spectral repair.** Plugins do this.
-- **Sample library management beyond the project media pool.**
-- **Being a live-performance instrument.** There is no clip launcher
-  (ADR-0037), and competing with Ableton's on-stage reliability story is a
-  different project with a different engineering budget.
+- **Sample library management beyond the app-scoped library index** (ADR-0104).
+- ~~**Being a live-performance instrument.**~~ Reversed by ADR-0101 and
+  ADR-0105: the clip launcher returns as a secondary window, built last, and
+  live performance is the **ADI Live** app on the same engine, after the DAW.
+  Neither is on the path to the first release.
 - **Audio Units and VST2 hosting.** VST3, and CLAP when we write it. A
   project that references an AU still opens, with the device preserved as a
   bypassed placeholder — never dropped. (ADR-0041, ADR-0011)
@@ -291,7 +325,28 @@ neither:
 4. **Groove pool / groove templates** — shared, project-scoped, no table.
    *Not in SPEC §12.*
 5. **VariAudio-class pitch-segment editing** — no model. *Not in SPEC §12.*
+6. **Tuning systems and microtonal scale membership** — `scale_mask` is 12
+   bits; a maqam is not a subset of 12-TET (ADR-0103). *Not in SPEC §12.*
 
 None of them is P0 or P1. That is the useful result: **the v1.0 schema is
 sufficient for everything in P0 and P1**, which means we can start building
 without a format migration hanging over the first release.
+
+Two small Layer 1 additions are taken while nothing has shipped, and belong in
+the same schema PR: `scenes` and `clip_slots` return (ADR-0101), and `markers`
+gains `note` and `prompt` (ADR-0115).
+
+## 13. Verification — behavioural parity and the side-by-side gate (ADR-0108)
+
+Copying the look of a reference is not the feature; the behaviour is.
+
+- Every feature that copies Ableton, Cubase, Bitwig or REAPER names its manual
+  chapter and carries a **parity checklist** written from that chapter before
+  the feature: gestures, modifier keys (Alt/Cmd drags, snapping), outcomes.
+- The checklist is run **side by side against a live instance of the reference
+  DAW**, by the developer, and Adi signs the session. A roadmap step is
+  "verified", not "done", when that has happened.
+- Every deviation is a **defect** unless Adi approved it (dated, in the
+  checklist) or an ADR explicitly rejects it (ADR-0072 for sends, ADR-0047 for
+  the Inspector).
+- Enhancements layer on top of parity, never instead of it.

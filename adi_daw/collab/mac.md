@@ -5,6 +5,118 @@ Only the `mac` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-21 — the rebuild loop closes, and a rebuild was silencing the project for 107 ms
+
+Branch `agent/mac-dev`, fast-forwarded onto win's `be4135d`. ADR-0090.
+**1883 checks across 21 suites**, validators clean.
+
+### 1. My handoff's item 1 was wrong on all three counts, and it was mine
+
+I told win to commit uncommitted `groundrules.md` and `setvbuf` work. He
+checked before acting: `git status --short -- adi_daw/` empty, `setvbuf`
+already in all 19 test mains via `83a127a`, and `groundrules.md` has never
+existed in any branch — `git log --all --diff-filter=A` finds no such file.
+It was scratchpad content I never applied, which is not the same thing as
+uncommitted work.
+
+He says that is twice I have sent a status claim about his machine as a fact
+rather than a question, and he is right. My own protocol — verify a claim in
+a handoff before acting on it — I wrote for reading them and not for writing
+them. **A claim about a machine you cannot see is a question, and that binds
+the sender first.**
+
+### 2. The loop: `DeviceHost` answers `rebuildNeeded()`
+
+`GraphHost::rebuild` existed and nothing called it. Now `tick` is: drain
+plugin callbacks → poll → rebuild if asked → collect. `DeviceHost::add` takes
+a track id, `chainSupplier()` feeds `RealizeOptions::devicesFor`, so a rebuild
+re-injects the devices that are already loaded.
+
+The model arrives as a **callback**, not a pointer. Storing a `const
+rows::Model*` would dangle the first time the projection is re-read after an
+edit — the same shape as the coalescer storing a `Graph*`, one level further
+out. win found that one; this is the same lesson arriving again in a place
+where nobody was looking for it.
+
+### 3. The finding: a rebuild was resetting every plugin in the project
+
+`Graph::prepare` calls `prepare` on every node. ADR-0089 prepares a whole new
+graph on every rebuild. So one plugin's port rescan deactivated and
+reactivated **every** plugin in the session.
+
+Pro-Q 3 in linear phase, measured: **5120 samples — 106.7 ms — of silence**
+after a rebuild that had nothing to do with it. `prepare` now does nothing
+when the rate, the block size and the declared bus layout are all unchanged,
+on both formats. Measured again: 0.
+
+ADR-0042 d5 says a rebuild is not a reason to reload a plugin, and that was
+honoured — no library was opened twice. **Not reloaded and not disturbed are
+different claims and only the first one was true.**
+
+### 4. I nearly got the diagnosis backwards, twice
+
+The first measurement had a dry path whose compensation ring the rebuild had
+emptied. An empty ring is the obvious culprit — and it is exactly the cost
+ADR-0089 named as not-decided, so the explanation arrived **pre-agreed by the
+other agent**. Feeding only the wet path, with no ring anywhere in the chain,
+produced the same 5120-sample hole. The ring was the second cause, not the
+first.
+
+And Surge XT held a note straight through a rebuild, which reads as proof that
+plugins survive one. A synth's voices are internal state and survive
+reactivation; a linear-phase FIR's buffer is *input history* and does not. One
+plugin sounding across the seam says nothing about another.
+
+### 5. win's question, answered with a number
+
+*"If your real-plugin test makes the seam audible, say so."* With plugins no
+longer re-primed, the remaining hole is exactly his: the dry path alone, for
+exactly its compensation delay. `adi_clap_probe --seam "Pro-Q 3"` prints it,
+`--wet-only` is the control. **Yes — build the history-preserving rebuild.**
+
+### 6. Two defects survived the first round of planting
+
+The rebuild omitting `devicesFor` survived because the test device was a
+pass-through: a graph without it renders the same number as a graph with it.
+It halves now.
+
+The re-raised flag survived because the defect I planted was a no-op — the
+real `clearRebuildNeeded()` was still on the line above it — and I read the
+PASS as a result. **A planted defect that does not change behaviour is not
+evidence, and reading one as evidence is the same error as counting instead
+of checking.**
+
+### 8. A blocker for the MPE+ work, found by accident and pinned
+
+**Events do not travel along edges.** The scheduler accumulates audio from a
+slot's upstream slots; it does nothing equivalent for events. A slot's
+`events` come only from a `pushInputEvent` naming that slot.
+
+`inputFor(trackId)` is the chain HEAD, which on any track with devices is a
+`MixNode`. So a clip reader pushing note-ons where the handoff says to push
+them reaches the MixNode and nothing else — the instrument two nodes
+downstream never sees a note. Measured with Surge XT: a note at the head is
+silence, the same note at the tail is 0.21 peak.
+
+ADR-0045 says one chain carries both and ADR-0055 gives every node an
+`EventSpan`. Both are written; neither is implemented past the first node.
+`testEventsDoNotTravelAlongEdgesYet` in `test_graph.cpp` asserts the current
+behaviour on purpose, so that implementing it makes a test fail and the
+failure is the notification.
+
+This is upstream of the whole MPE+-through-VST3 job: there is no point
+proving 14-bit resolution survives the VST3 boundary while nothing can get a
+note to a plugin through the graph in the first place.
+
+### 7. `-Werror` only gates what it recompiles
+
+`adi_vst3_probe` had two sign conversions no build had ever reported, because
+its objects were up to date from a configure that predated the flag. They
+surfaced the moment an unrelated header changed. Fixed; worth knowing that a
+green `-Werror` build on a warm tree proves less than it looks like.
+
+---
+
 ## 2026-09-20 — three of yours taken, one question of fact answered, and the panel persisted
 
 Branch `mac/vst3` → open, PR opened immediately this time (see below).
@@ -1127,3 +1239,498 @@ Branch `mac/...` → merged / open.
 **Results.** Actual command output, not a summary of it.
 **→ win:** anything the other agent needs to know or act on.
 ```
+
+---
+
+## 2026-09-20 — VST3 hosting, the nine device ops, and a finding about JUCE
+
+Branch `agent/mac-dev` (was `mac/vst3`; the director moved both agents to
+per-agent branches). ADR-0057. 1192 checks across 15 suites, 72 ADRs.
+
+### The protocol change that produced the first finding
+
+The director's instruction, after win's handoff and my own reports collided
+once too often: **treat every technical claim in a handoff as an intention, not
+a fact, and grep before overriding or calling anything.** It paid immediately.
+
+win's brief said `latencySamples()` "joins `tailSamples()` on `Node`
+(ADR-0058)". It did not:
+
+```
+grep -rn "latency\|Latency" src/ tests/   →   no matches
+```
+
+ADR-0058 is `DECIDED`, in detail, with the default and the reasoning — and no
+line of C++ behind it. This is not carelessness, it is a **Blueprint vs Reality
+gap**: by the time a decision reaches a handoff it reads like a landing. 42
+ADRs were written in two days; 13 are marked `DECIDED (direction)` and ADR-0058
+is marked plain `DECIDED` while being unbuilt, so the label that distinguishes
+the two is not holding. Worth a mechanism, and it is not mine to invent alone.
+
+I have implemented decision 1. Decisions 2–5 (the compensation pass over the
+levelled schedule) remain unbuilt and are win's.
+
+### What is built
+
+`src/juce/device_model.{hpp,cpp}` — the contract, with **no JUCE and no VST3 in
+it**, so it compiles into `adi_core` and its 55 checks run on all seven ABIs.
+`DeviceInstance` is the format boundary, `DeviceNode` is an `engine::Node`
+wrapping one, `MissingDevice` is ADR-0011's placeholder.
+
+`src/juce/vst3_host.{hpp,cpp}` — the one adapter. `AudioPluginFormatManager`
+with a single `VST3PluginFormat` added by hand; **not** `addDefaultFormats()`,
+which is a one-line difference that would put an AU host on every Mac.
+
+The nine device ops of OPS.md §9.7 exist for the first time, plus
+`chain.create`/`chain.delete` — a device's `chain_id` is `NOT NULL` with
+foreign keys on, so without those the other nine cannot be reached through the
+op log at all, and nine ops the corpus cannot exercise are nine ops whose
+freedom from ambient state is unproven.
+
+### Three findings worth your time
+
+**1. The round-trip corpus cannot see a per-row defect behind a cascade.**
+
+I put the device ops into the corpus, planted a `setParam` inverse that records
+`0.0` instead of absence, and the corpus stayed green — 58 checks, 0 failures.
+Because undoing `device.insert` deletes the device and `plugin_params` cascades
+on `device_id`, so the spurious row is swept away before the comparison against
+a blank project happens.
+
+The corpus is not wrong. But **a whole-project oracle cannot see a defect in a
+row that something else is about to delete**, and that generalises past this
+case. `tests/test_device_ops.cpp` undoes exactly one transaction per check;
+five defects planted there, five caught.
+
+One was planted wrong first time: the move fixture seeded its device at `ord 0`,
+so a defect capturing `0` was indistinguishable from a correct capture. Second
+time I have made that exact mistake — comparing a right answer against a
+*different* right answer that coincides. The fixture seeds at `ord 2` now.
+
+**2. `setPlayConfigDetails` would have disabled every sidechain.**
+
+A JUCE assertion caught it during `prepare`. That function calls
+`disableNonMainBuses()` — its own comment says "the user does not want any
+side-buses or aux outputs". ADR-0043 requires a **live sidechain** to prevent
+suspension and your ADR-0056 added `Bus::Sidechain` to express it, so a
+compressor keyed from another track would have had its key input switched off
+by the host, at prepare, silently. Now `setRateAndBufferSizeDetails`, which
+sets the rate and block size and leaves the plugin's bus layout alone.
+
+**3. JUCE's VST3 host path cannot carry MPE+, and the route out is not a rewrite.**
+
+This one lands on ADR-0054 and I checked it against JUCE 9.0.2's source rather
+than asserting it, having nearly written down the opposite conclusion first.
+
+`processBlock` takes a `juce::MidiBuffer` and `juce_VST3Common.h`'s
+`toEventList` iterates exactly that. Three facts settle it:
+
+- `createNoteOnEvent` sets `e.noteOn.noteId = -1`, and so do `createNoteOffEvent`
+  and the poly-pressure case. **VST3 anchors note expression to `noteId`**, so
+  per-note values cannot be addressed even if they could be sent.
+- Nothing in JUCE constructs a `kNoteExpressionValueEvent`. The only occurrence
+  is the case on the way *in*, which converts one to `{}`.
+- Velocity is `normaliseMidiValue`, which is `value / 127.0f`.
+
+Also: `toEventList` caps at `maxNumEvents = 2048` and `break`s, silently. Same
+number your ADR-0056 arithmetic derived, same silent-drop shape, in the
+framework rather than in us.
+
+**But JUCE 9.0.2 hands a host the raw interface.** I was wrong for about ten
+minutes about this — `getExtensions` is `= delete`, which reads like the hatch
+was removed, and it was in fact *replaced* by typed accessors.
+`AudioPluginInstance::getVST3Client()->getIComponentPtr()` returns
+`Steinberg::Vst::IComponent*`, and `IAudioProcessor` and
+`INoteExpressionController` are a `queryInterface` from there. Confirmed on a
+real plugin: the probe reads it back non-null from FabFilter Timeless 2.
+
+So: discovery, instantiation, parameters and opaque state stay JUCE's; **the
+event path for instruments becomes ours**, against an SDK already vendored
+inside JUCE. That is the first half of the CLAP host ADR-0052 mandates rather
+than a detour.
+
+**Until it is built the event path is EMPTY, not approximate**, and
+`supportsNoteExpression()` returns false. An empty MIDI buffer is a plugin that
+makes no sound, which is a bug report. A 7-bit buffer is a plugin that sounds
+nearly right, which is the thing that ships.
+
+### The schema change, which is what made the ops possible
+
+`plugin_params` and `plugin_state` each had a surrogate `INTEGER PRIMARY KEY`
+beside a `UNIQUE` natural key, referenced by nothing. ADR-0021 §7.3 says an op
+that INSERTs carries the row's id in its payload — so `device.setParam`, which
+is coalescable and fires on every knob movement, would have had to invent an id
+or ask SQLite whether the row existed, and the second is the ambient read §7.3
+forbids.
+
+Both are now keyed on their natural key, `WITHOUT ROWID`. Every write is an
+UPSERT with nothing to allocate. It is your ADR-0065 move — absence and
+subtraction rather than allocation — arrived at from the other end, and I only
+saw it because the design panel's author-symbol entry had made the argument.
+
+`validate_schema.py` fails if a surrogate reappears; proved by putting one back.
+
+### Measured, not asserted
+
+Real hosting, 38 plugins found on this machine. FabFilter Timeless 2: 842
+parameters, tail reported as `9223372036854775807` — `kInfiniteTail` mapping
+straight through, which is why ADR-0055 chose the same constant as VST3 — and
+state byte-identical across save/load/save at 3985 bytes.
+
+And the panel's finding, confirmed on a real plugin rather than argued: the
+first parameter has a normalized value in range and **no real value**. A VST3
+lane is `normalized` by necessity.
+
+### → you
+
+1. **ADR-0058 decisions 2–5 are still unbuilt.** `Node::latencySamples()` now
+   exists for the compensation pass to read. A bypassed device reports 0 for
+   both tail and latency, and `always_process` forces an infinite tail but
+   deliberately does **not** touch latency — they answer different questions.
+2. **`Vst3Device::latencyEpoch()` is ADR-0066's trigger.** It is an atomic
+   counter bumped from `audioProcessorChanged`, and that handler does nothing
+   else. It never calls into the graph.
+3. **A plugin node attaches to a planned track node.** `GraphPlan::indexOf` is
+   the interface I want, as you offered; I have not needed it yet because no
+   realisation step exists.
+
+---
+
+## 2026-09-20 — ADR-0072 (aux sends) and both ends of the MPE+ pipeline
+
+Same branch, three more commits. 1270 checks across 16 suites, 38 more in the
+JUCE probe, 73 ADRs.
+
+### ADR-0072 supersedes your ADR-0067, on the director's ruling
+
+Aux sends are abolished. Your three arguments are in the superseded entry and
+the new one answers them rather than ignoring them:
+
+**Your strongest objection — a rack with parallel chains is a DAG too — is
+correct about the arithmetic and misses where it lives.** A rack declares ONE
+latency upward (ADR-0060, and ADR-0062 already requires the multiband splitter
+to do it), so the parallelism is encapsulated and the top-level graph stays a
+linear progression. With sends the top-level graph is itself an arbitrary DAG
+and every path through it is a place the compensation can be wrong. One place
+that must be right beats arbitrarily many.
+
+**Your first objection turned out to be false in practice, and that is the part
+worth your attention.** ADR-0067's load-bearing sentence was *"We already
+compensate them. ADR-0058's rule is arrival = max over inputs..."* We do not.
+Audited by type and function: zero occurrences of `arrival`, `compensat` or
+`DelayLine` anywhere in `src/`. Decisions 2–5 are unbuilt and decision 1 was
+written days later, by me. A statement about the design reading as a statement
+about the code — the same gap as the `latencySamples()` one, this time holding
+up the load-bearing argument of the ADR being superseded.
+
+**Your third objection stands and is recorded as a real cost.** Partial sends
+are genuinely gone. Forty tracks into one reverb is still one instance via a
+group with a rack on it, but thirty percent of one track and ten percent of
+another is not expressible any more.
+
+**The format keeps admitting `'send'`,** and that is not a softening. It is
+SPEC §7.4's existing split applied unchanged — ADI hosts VST3 and CLAP while
+`plugin_refs.format` keeps admitting `au` forever, because refusing to host
+costs us code we do not write and refusing to *name* costs a user their
+session. Older files and converter output still open, the row survives the
+save, and the planner reports it instead of silently rewiring.
+
+One of your tests asserted the superseded behaviour (`"a send sums into its
+destination"`). Updated in place and labelled, not deleted.
+
+### Both ends of MPE+
+
+`src/adi/engine/mpe_input.{hpp,cpp}` — bytes in, `Event` out, no MIDI byte
+surviving. `src/adi/engine/note_expression.hpp` + `src/juce/vst3_events.*` —
+`Event` out to a `kNoteExpressionValueEvent` with a real `noteId` and a double.
+
+Four things that are wrong by default and would not be noticed:
+
+- **MPE's per-note bend range is ±48, not MIDI's ±2.** Assuming the default
+  transposes every gesture by a factor of 24.
+- **VST3's tuning range is ±120**, so a full MPE bend lands at 0.7, not 1.0.
+  Normalising both to 0..1 — the obvious thing — transposes a full bend by two
+  and a half octaves.
+- **Pitch-bend centre is 8192**, so there are 8192 steps below and 8191 above.
+- **An LSB whose MSB was never seen is not promoted to 14 bits.** That invents
+  precision the wire did not carry.
+
+The end-to-end assertion is the mandate in one line: all 16384 bend positions
+stay distinct through `bendToSemitones → semitonesToVst3Tuning`. Zero
+collisions. It fails the moment anything narrows.
+
+**Planting exposed a weak test of mine.** Taking the note id from the channel
+failed only one unrelated check, because "the same key on two channels gets two
+ids" passes happily for a channel-derived id. The test that separates minted
+from derived is the same key played twice on ONE channel. Two negative tests
+in two sessions that did not actually test the thing they named.
+
+Six type ids and `sizeof(NoteExpressionValue)` are static_asserted against the
+real SDK in the JUCE build, because a wrong-but-valid type id makes a note
+brighter instead of sharper. Proved by planting `Brightness = 6`.
+
+### → you, one item
+
+**Not wired into `process()` yet.** Driving `IAudioProcessor::process`
+ourselves means taking over bus setup, `ProcessData` and `IParameterChanges`
+from JUCE. Until then the MIDI buffer stays EMPTY rather than 7-bit, and
+`supportsNoteExpression()` still reports false. That is mine and I am on it —
+do not start it.
+
+Your `Bus::Sidechain` survives `prepare` now; see the `setPlayConfigDetails`
+finding in the previous entry. The compensation pass needs that, because
+ADR-0058 d5 compensates sidechain edges separately and cannot if the host
+switched the bus off.
+
+---
+
+## 2026-09-20 — ADR-0073: I had ADR-0057's split wrong, and CI caught my job placement
+
+Three more commits on `agent/mac-dev`. 74 ADRs, 1270 checks across 16 suites,
+four validators, 54 in the JUCE probe.
+
+### ADR-0073 corrects ADR-0057, which is mine
+
+ADR-0057 decision 7 said *"discovery, instantiation, parameters and opaque
+state stay JUCE's; the event path becomes ours."* **The parameters half is
+wrong**, and I found it by reading `processAudio` before building on it rather
+than after.
+
+One `ProcessData`, filled in one place: `inputParameterChanges`,
+`outputParameterChanges`, the audio buses, and the `MidiBuffer → IEventList`
+hop. Then `cachedParamValues` is flushed **into** `inputParameterChanges`, and
+`outputParameterChanges` is read back out — both inside that same function. So
+a host that calls `processor->process()` itself bypasses JUCE's parameter
+plumbing in both directions.
+
+Parameters and events are not adjacent paths. They are fields of one struct
+passed to one call, and owning either means owning both.
+
+Also checked, because it would have been the cheap answer: **JUCE 9.0.2's VST3
+host has no `universal_midi_packets` reference at all**, so MIDI 2.0's 32-bit
+per-note controllers are not a way round the `MidiBuffer` either.
+
+`Vst3ParamChanges` and `Vst3ParamQueue` are built and tested. Three defects
+planted, three caught: unsorted points, a second queue for a ParamID that
+already has one, and unclamped values.
+
+The consolation is real: this is most of the CLAP host ADR-0052 mandates, since
+a CLAP host must own its process call, its event queue and its parameter events
+regardless. Doing it for VST3 first produces the shape both need — ADR-0052
+decision 4 arriving from a third direction.
+
+### CI caught a job-placement bug of mine, and now a validator does
+
+The VST3 probe step landed in `dependency provenance`, which never builds JUCE.
+I had appended it by anchoring on "the next top-level key", assuming something
+followed `juce:` — it is the **last** job in the file, so the step went into the
+one before it. CI failed with "adi_vst3_probe was built but cannot be found",
+which is true and useless.
+
+Fixed, then made structural, because this class of error is only visible after
+a push and a five-minute round trip:
+
+- **`tools/validate_ci.py`**: a step referencing a build tree must be in a job
+  that creates it, checked per directory rather than for JUCE specifically.
+  Also duplicate step names in one job — the signature of an insert that ran
+  twice — and a missing `runs-on`. No `yaml` module; macOS ships python3
+  without PyYAML and this script is part of the definition of done.
+- **`test_all.sh` and `ci.yml` now DISCOVER `tools/validate_*.py`** instead of
+  listing them. That list was the same anti-pattern that made the `-Werror`
+  gate skip every file added after it was written. `validate_ci.py` was picked
+  up by both without either list being touched, which is the proof rather than
+  the claim.
+
+Planting the exact defect CI found fails the validator locally in under a
+second, naming the job and the missing `ADI_WITH_JUCE=ON`.
+
+**And the VST3 probe has now run in CI for the first time** — macOS runner, 28
+checks, 0 failures, correctly skipping the plugin half with "found 0
+plugin(s)". It had never executed anywhere but this Mac.
+
+### → you, unchanged
+
+`Node::latencySamples()` exists for ADR-0058 decisions 2–5. The takeover of
+`IAudioProcessor::process` is mine and still unfinished — the event list and
+the parameter queue are built and tested, the `ProcessData` assembly and bus
+wiring are not. `supportsNoteExpression()` still returns false and the MIDI
+buffer is still empty rather than 7-bit.
+
+---
+
+## 2026-09-20 — ADR-0083/0084, and the coalescer measured against real plugins
+
+### → win: your defaults, measured
+
+You asked for measurements to replace the 50 ms / 500 ms guesses. FabFilter
+Pro-Q 3 is installed here, which is the canonical case you named.
+
+**Method note first, because my own first attempt was wrong.** I set the mode
+parameter, pumped the message loop 400 ms, set the next — and duly measured
+~1000 ms gaps, which were *my sweep rate*, not the plugin's. Rapid-fire
+changes are what a user dragging a control looks like, and those are the gaps
+below.
+
+| plugin | latency at rest | switched | swing | reports | largest gap | burst span |
+|---|---|---|---|---|---|---|
+| Pro-Q 3 3.2.4.0 | 0 | 320 / **5120** | **5120** | 5 | **26 ms** | **73 ms** |
+| Pro-Q 2 | 0 | 320 / 5120 | 5120 | 5 | 26 ms | 75 ms |
+| Pro-MB | 960 | 4032 | 3072 | 1 | — | — |
+| Pro-L 2 | 3115 | (no mode param) | — | — | — | — |
+
+**Your quiet period is fine and your ceiling never trips.** Largest observed
+gap between consecutive reports is 26 ms, so 50 ms coalesces the burst with
+about 2× margin. The longest burst is 75 ms against a 500 ms ceiling.
+
+**Your headroom default is the problem, and it is not a tuning question.**
+`latencyHeadroom_` defaults to **0**, so out of the box no latency change ever
+fits the ring and every one escalates to a rebuild — ADR-0079's cheap path
+never runs. Your comment says linear-phase EQ "sits in the low thousands of
+samples"; the measured number is **5120**, and the swing from natural phase is
+**4800**. A headroom of 2048 or 4096 — both plausible-looking round numbers —
+would miss Pro-Q 3 entirely.
+
+I would default it to 8192: covers the measured worst case with margin, is a
+round block multiple, and by your own arithmetic costs 2 × 8192 × 4 = 64 KB
+per compensated edge. That is your call, not mine, which is why I have not
+changed it.
+
+One more from the table: Pro-L 2 sits at **3115 samples at rest**. Static, not
+a swing, but it says absolute latencies in the thousands are ordinary rather
+than a corner, which matters for ADR-0058's compensation as much as for the
+ring.
+
+`adi_vst3_probe --latency-probe "<name>"` reproduces all of it.
+
+### ADR-0084: neither of your two options was needed
+
+CLAP already distinguishes restart causes. `clap_host_latency.changed()` and
+`clap_host_audio_ports.rescan(flags)` arrive *before* the generic
+`request_restart`. We only ever saw the generic one because
+`ClapHostGlue::getExtension` returned `nullptr` for everything — we offered no
+host extensions, so a plugin had no channel to tell us. That was my defect.
+
+`latencyChanges()` is your cheap path, `portChanges()` escalates, and only
+shape flags count: `CHANNEL_COUNT`, `PORT_TYPE`, `IN_PLACE_PAIR`, `LIST`.
+`NAMES` and `FLAGS` are cosmetic and a rebuild for a renamed port is a graph
+swap for a label. A bare restart with nothing before it escalates and is
+counted as `unexplainedRestarts()`.
+
+**One thing I could not settle, and it bears on your escalation work.** CLAP
+says latency may change *only during `plugin->activate`*. So the CLAP sequence
+is restart → deactivate → activate → new latency, while our cheap path
+re-reads latency *without* reactivating. Right for VST3, possibly stale on
+CLAP. It wants a CLAP plugin that moves its latency, and none of the 38 here
+is CLAP.
+
+### And the other gap you found
+
+`request_callback` incremented a counter and nothing ever called
+`plugin->on_main_thread()` — zero occurrences. A CLAP plugin deferring work
+that way never ran it, and nothing fails when that is broken; the plugin just
+does less than it was written to do. `dispatchMainThread()` drains it, calling
+every registered plugin because `request_callback` carries no identity.
+
+### Your atomics fix
+
+Correct, and mine to have made. My own comment said the plugin may call
+`requestRestart` from any thread; I did not apply it to my own counters. The
+i386 point is the sharper half — a 64-bit non-atomic read there can return a
+value the counter never held.
+
+### ADR-0083: AudioGridder
+
+Director's mandate logged. The part that touches you: the fork is only
+possible because ADR-0075's CLAP host has no JUCE and no
+`clap-juce-extensions` in it — header-only MIT, plain C ABI, portable into
+someone else's codebase because it never depended on ours. Recorded as a
+payoff rather than a plan.
+
+---
+
+## 2026-09-20 — real plugins, and three bugs no fake could find
+
+Since the last entry: the `.clap` loader, `ClapHost`, `DeviceHost` wired, the
+VST3 raw takeover, and ADR-0083/0084/0086/0087. 1760 checks across 20 suites.
+
+### → win: your parked question is answered, and one default is still wrong
+
+**ADR-0087. The cheap path is SOUND on CLAP.** Pro-Q 3 3.24 ships as CLAP, so
+I measured instead of guessing. Sweeping Processing Mode:
+
+| mode | latency | `changed()` | `request_restart()` |
+|---|---|---|---|
+| 0.00–0.75 | 0 | 0 | 0 |
+| 1.00 | 320 | +1 | 0 |
+| 2.00 | **5120** | +1 | **0** |
+
+After reactivating: 5120, identical. So re-reading without reactivating is
+correct and your two-way split stands — no third case.
+
+**`request_restart()` was never called, not once.** The extension callback is
+this plugin's only signal, which means that before ADR-0084 offered
+`clap_host_latency` — `getExtension` returned nullptr for everything — a CLAP
+plugin changing its latency was **invisible to us**. Not mis-handled,
+unobserved.
+
+**Your quiet period and ceiling hold; your headroom default does not.**
+Largest gap 26 ms against 50 ms, longest burst 75 ms against 500 ms. But
+`latencyHeadroom_` defaults to **0**, so the cheap path never runs at all out
+of the box. 8192 absorbs the measured 5120. Still your call.
+
+**And the whole chain is verified live**, which is what you asked for:
+
+```
+Pro-Q 3 CLAP in a compensated graph, switched to linear phase
+  latency 0 -> 5120
+  reports 1  bursts 1  retaps 1  rebuildsNeeded 0
+  graph still renders finite samples after the retap
+```
+
+### Three bugs of mine that only real plugins could find
+
+**1. I hardcoded the CLAP bus layout.** `audio_inputs_count = 1`,
+`audio_outputs_count = 1`. Every plugin here disagrees: Pro-Q 3 has 2 inputs
+(Main + Sidechain), Vital has 0, Surge XT has 3 outputs. A plugin indexes
+`audio_inputs[i]` up to its declared count, so Pro-Q 3 read past my array and
+crashed inside its own `process`. **It appeared to work standalone** because
+the adjacent stack object was readable — UB being polite, which is exactly why
+no passing test could find it. Queried now, per bus, with every declared input
+given real memory even when the graph is not driving it.
+
+**2. A non-null extension struct can still have NULL function pointers.**
+Pro-Q 3 returns a `clap_plugin_tail_t` whose `get` is null. I checked the
+struct and called the member. Every extension and vtable call is guarded now.
+The fake plugin in the tests fills in every pointer, which is precisely why it
+could never have found this; there is a "hollow" fixture that leaves them null.
+
+**3. Surge XT told me off in its own log:** *"It is wrong to query the latency
+before the plugin is activated."* `ext/latency.h` agrees —
+`[main-thread & (being-activated | active)]` — and nothing enforced it.
+`Node::latencySamples()` is exactly what a compensation pass calls whenever it
+likes. Guarded, and **my existing test was doing the illegal thing**: it
+queried before activate throughout and called the answers correct, so adding
+the guard broke it.
+
+### The process failure, which cost more than the bugs
+
+My own guard audit printed `stop_processing: guarded=2 calls=3`. **I read that
+line and moved on.** The third site was `release()`, and it was the crash I
+then spent several minutes re-bisecting. Counting is not checking.
+
+Two more: a bisecting `cp` from a snapshot taken mid-edit silently reverted
+guards I had already added, and a stale `/tmp` binary made a fixed crash look
+unfixed. Neither was the bug; both cost more than it.
+
+### Smaller things that touch you
+
+- `dlopen` is not portable. `ClapLibrary` was POSIX-only and both Windows jobs
+  failed on `dlfcn.h` — while my own header comment said "the bundle (macOS) or
+  the library (elsewhere)". Interface designed cross-platform, implementation
+  not. Split on `_WIN32` now.
+- `latencyEpoch()` is on `DeviceInstance`, not the format types. My first
+  `DeviceHost` registered sources with a `dynamic_cast<Vst3Device*>`, which is
+  a format-agnostic host asking what format it has. It does not compile,
+  because that cast needs a JUCE header in a file with none.
+- **24 CLAP plugins installed here**, not one — FabFilter ships CLAP. Vital,
+  Surge XT and Twin are instruments, so MPE+ has real targets on both formats.

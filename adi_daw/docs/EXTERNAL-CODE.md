@@ -71,6 +71,29 @@ explicit.
 | [`helio-sequencer`](https://github.com/helio-fm/helio-sequencer) | GPL-3.0 | 19 MB | ✅ with attribution | Readable, modern, pure-JUCE UI. Piano roll rendering and timeline drawing without a UI framework underneath. |
 | [`zrythm`](https://github.com/zrythm/zrythm) | **AGPL-3.0** + trademark | 161 MB | ❌ **design only** | Its undoable-action architecture — the best open-source event-sourced DAW model. Read the *shape*, write our own code. |
 
+### DSP references for the plugin roadmap (ADR-0093)
+
+Fetched for specific maths, not for architecture. The **Copy?** column is what
+matters: it depends on the licence, and for two of these the licence forbids
+what the roadmap was going to do with them.
+
+| Repo | Licence | Size | Copy? | Read it for |
+|---|---|---|---|---|
+| [`ZLEqualizer`](https://github.com/ZL-Audio/ZLEqualizer) | **AGPL-3.0** | 6 MB | ❌ **design only** | Dynamic EQ structure, matched-phase ("de-cramped") bells, linear-phase mode. The Zrythm rule applies. Implement matched-phase from Vicanek, *Matched Second Order Digital Filters* (2016), not from this code. |
+| [`lsp-dsp-units`](https://github.com/lsp-plugins/lsp-dsp-units) | LGPL-3.0-or-later | 19 MB | ✅ with attribution | `dynamics/Limiter.h`, `util/Oversampler.h`, `meters/TruePeakMeter.h`, `meters/LoudnessMeter.h` — the true-peak limiter maths. LGPL is GPL-compatible. |
+| [`lsp-plugins-limiter`](https://github.com/lsp-plugins/lsp-plugins-limiter) | LGPL-3.0-or-later | 4 MB | ✅ with attribution | How the limiter core is driven: lookahead, oversampling ratio, and its Classic/Mixed/Modern modes. |
+| [`vitOTTx`](https://github.com/Sakhnovkrg/vitOTTx) | GPL-3.0 | 1 MB | ✅ with attribution | Vital's OTT multiband upward/downward compressor, extracted standalone. Matt Tytel's original is also in `adi-vst/`'s Vital fork. |
+| [`ADAA`](https://github.com/jatinchowdhury18/ADAA) | BSD-3-Clause | 33 MB | ✅ with attribution | The antiderivative anti-aliasing derivations: first- and second-order ADAA, and the ill-conditioned case when consecutive inputs are close. |
+| [`chowdsp_utils`](https://github.com/Chowdhury-DSP/chowdsp_utils) | **per module**; `chowdsp_waveshapers` is GPL-3.0 | 19 MB | ✅ waveshapers, with attribution — **check each module's own header first** | `ADAAHardClipper`, `ADAASoftClipper`, `ADAASineClipper`: production ADAA, the part a clipper actually ships. |
+| [`KlonCentaur`](https://github.com/jatinchowdhury18/KlonCentaur) | BSD-3-Clause | 220 MB (training data and PDFs; the code is small) | ✅ with attribution | ChowCentaur. A wave-digital-filter diode clipper and the paper describing it. **It contains no ADAA**, which is what it was requested for. |
+| [`Audio-Soft-Clip-Distortion`](https://github.com/JDSherbert/Audio-Soft-Clip-Distortion) | MIT | 0.1 MB | ✅ with attribution | Basic hard and soft clip curves with oversampling. Introductory, but MIT. |
+
+**Decided by `OPEN_SOURCE_POLICY.md` (ADR-0094).** Every project is open source:
+MIT by default, GPLv3 once it copies from a GPL or LGPL source. So everything above
+except ZLEqualizer may be copied, keeping the original headers — and a plugin that
+takes the LSP limiter, the chowdsp waveshapers or vitOTTx is a GPLv3 plugin.
+ZLEqualizer is AGPL and stays design-only.
+
 ### The Zrythm rule
 
 Zrythm is **AGPLv3**, not GPLv3. The incompatibility runs one way: GPLv3 code can

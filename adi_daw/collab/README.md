@@ -1,17 +1,29 @@
-# Working in parallel — two Claude agents, one repo
+# Working in parallel — three agents, one repo
 
-Two Claude Code agents work on `adi_daw`, on different machines and different
-accounts, synced only through this git repository. This file is the protocol.
-Read it before your first commit, and re-read it if you have been away.
+Three agents work on `adi_daw`, on different machines and different accounts,
+synced only through this git repository. This file is the protocol. Read it
+before your first commit, and re-read it if you have been away.
 
 ## Roster
 
 | Agent | Machine | Model | Owns | Cannot |
 |---|---|---|---|---|
-| **win** | Windows 11 desktop, MSVC 19.44 / x64 | Claude Opus 5 | The format spec, `src/adi/**`, `tests/**`, `tools/**`, docs | Build or test on macOS/clang/arm64 |
-| **mac** | macOS, Apple clang / arm64 | Claude (team licence) | `.github/workflows/**`, macOS portability, review | Nothing structural — see below |
+| **win** | Windows 11 desktop, MSVC 19.44 / x64 | Claude Code | Lead technical coordinator (ADR-0109): architecture, ADR sequencing, engine integration, the format spec, `src/adi/**`, `tests/**`, `tools/**`, docs, Windows-specific code | Build or test on macOS/clang/arm64 |
+| **mac** | macOS, Apple clang / arm64 | Claude Code (team licence) | `.github/workflows/**`, `docs/UI-ARCHITECTURE.md`, macOS platform and CoreAudio, review | Nothing structural — see below |
+| **linux** | Ubuntu workstation, GCC/Clang / x86-64 | ChatGPT Codex (terminal) | Portable standard C++, headless CI and test enforcement, sanitizers, POSIX portability | OS-specific GUI or driver code; any Linux-only library; `docs/UI-ARCHITECTURE.md`; schema, ADR numbers or claims without `win` |
 
-Neither agent is senior to the other. Disagree in a PR, not by reverting.
+## Governance (ADR-0109)
+
+- **The director (Adi) is the authority.** A direct instruction from Adi to any
+  agent overrides the roadmap, any ADR and any assignment, immediately. The log
+  is kept true afterwards by a superseding ADR, never by editing history.
+- **Without a direct instruction, `win` coordinates.** Schema changes, new ADR
+  number allocations and cross-agent claims synchronise through `win`, so that
+  two agents never write the same ADR or edit the same file through git.
+- Disagree in a PR, not by reverting. Nobody reverts another agent's work.
+- The `linux` agent's onboarding is `collab/linux/ONBOARDING.md`; its log is
+  `collab/linux.md`. Linux desktop work is phase 3 and has not started
+  (ADR-0109).
 
 ## The three rules
 
@@ -28,8 +40,8 @@ commit on a branch, and remove it when the branch merges. If a path you need is
 claimed by the other agent, say so in your log file rather than editing it —
 two agents editing one file through git is how an afternoon disappears.
 
-**3. Log what you did, in your own file.** `collab/win.md` and `collab/mac.md`.
-Only ever write to your own. This is deliberate: a shared log is a guaranteed
+**3. Log what you did, in your own file.** `collab/win.md`, `collab/mac.md` and
+`collab/linux.md`. Only ever write to your own. This is deliberate: a shared log is a guaranteed
 merge conflict on every single push, and the whole point of splitting the files
 is that neither agent ever has to resolve one.
 
@@ -72,11 +84,47 @@ subject, say so in your log instead of writing it twice.
 | 0054 | win | `win/mpe` | MPE and MPE+ end to end, and the floor bound they impose | used |
 | 0055 | win | `win/graph` | the node contract, and what the scheduler decides per block vs per segment | used |
 | 0056 | win | `win/routing` | buses, levelled scheduling for parallelism, and MPE+ event capacity | used |
-| 0057 | mac | `mac/vst3` | VST3 hosting behind the format-agnostic device model | reserved |
+| 0057 | mac | `agent/mac-dev` | VST3 hosting behind the format-agnostic device model | used |
 | 0058-0064 | win | `win/blueprint` | the director's five-pillar blueprint: PDC, freezing, racks, stretch, native DSP, undocking, async AI | used |
 | 0065 | win | `win/setparent` | absence of a main routing row means the default, and setParent is composite | used |
 | 0066 | win | `win/setparent` | latency changes while running: recompute off-thread, publish, crossfade | used |
 | 0067-0071 | win | `win/routing-mandates` | aux sends, multi-project tabs, item FX, region export, the export queue | used |
+| 0072 | mac | `agent/mac-dev` | the director's ruling on aux sends: supersedes ADR-0067 | used |
+| 0073 | mac | `agent/mac-dev` | the VST3 process call is indivisible: events and parameters ride together | used |
+| 0074 | mac | `agent/mac-dev` | the native broadcast node, and sink nodes as a graph property (Phase 2) | used |
+| 0075 | mac | `agent/mac-dev` | the CLAP host: built from scratch, and it needs no JUCE | used |
+| 0076 | mac | `agent/mac-dev` | the two-tier UI: DAW-rendered panels vs floating third-party GUIs | used |
+| 0077 | win | `agent/win-dev` | realising a plan into a live graph: the junction, the chain, and what a VCA is not | used |
+| 0078 | win | `agent/win-dev` | `NodeIo` addresses the BLOCK; `frames`/`blockOffset` address the segment | used |
+| 0079 | win | `agent/win-dev` | a latency change is a TAP MOVE, not a second render: amends ADR-0066 d1 and d4 | used |
+| 0080 | win | `agent/win-dev` | swapping the docked side of a panel: width follows the pane, not the side | used |
+| 0081 | mac | `agent/mac-dev` | event frames are block-relative; a device subtracts, and a mismatch is counted | used |
+| 0082 | win | `agent/win-dev` | the latency coalescer: it polls, the clock is an argument, and a burst has a ceiling | used |
+| 0083 | mac | `agent/mac-dev` | AudioGridder natively, and the server forked to host CLAP | used |
+| 0084 | mac | `agent/mac-dev` | CLAP already says why it wants a restart; we were not listening | used |
+| 0085 | win | `agent/win-dev` | escalation: a ring that is too small is GROWN per edge, primed against the old one | used |
+| 0086 | mac | `agent/mac-dev` | dependency architecture: native C++ DSP core vs RPC AI services | used |
+| 0087 | mac | `agent/mac-dev` | ADR-0084 closed: measured CLAP latency reporting on Pro-Q 3 | used |
+| 0088 | win | `agent/win-dev` | the compensation headroom default is measured, not zero | used |
+| 0089 | win | `agent/win-dev` | the rebuild path: a new graph is published, and the swap is faded not cut | used |
+| 0090 | mac | `agent/mac-dev` | closing the rebuild loop: who decides to rebuild, and what a failed rebuild means | used |
+| 0091 | win | `agent/win-dev` | events travel along edges: what a node emits reaches what it feeds | used |
+| 0092 | win | `agent/win-dev` | a rebuild keeps the history of every edge that exists in both graphs | used |
+| 0093 | win | `agent/win-dev` | the DSP plugin roadmap: references fetched not vendored, and what each goal needs first | used |
+| 0094 | win | `agent/win-dev` | the open-source mandate, applied: ADR-0093's licence question is answered | used |
+| 0095 | win | `agent/win-dev` | the libpd latency protocol: a patch reports its latency through `$0-report_latency` | used |
+| 0096 | win | `agent/win-dev` | the DSP corrections: Pd biquad signs, peak detection, RMSC's clamp and sidebands | used |
+| 0097 | win | `agent/win-dev` | MPE+ through VST3: per-note expression without breaking plain MIDI | used |
+| 0098 | win | `agent/win-dev` | real plugins on Windows: Surge XT through both hosts, and what it found | used |
+| 0099 | win | `agent/win-dev` | CLAP note dialects: the host sends what the plugin's note port declares | used |
+| 0100 | win | `agent/win-dev` | the expression test rig: a fixture VST3 with a reachable controller, and every dimension measured | used |
+| 0083-0084 | mac | `agent/mac-dev` | AudioGridder native integration and the CLAP fork; CLAP restart causes | used |
+| 0101-0116 | win | `agent/win-dev` | the director's V0.2 directives: Session View returns last (0101), small blocks (0102), microtonal scales (0103), app-scoped browser (0104), the ADI Suite (0105), loopback and virtual device (0106), PTP (0107), parity gate (0108), portability and three agents (0109), parameter ops (0110), historical tabs (0111), views (0112), 64 buses (0113), macro curves (0114), editing behaviours (0115), Pd second view (0116) | used |
+| 0117 | win | `agent/win-dev` | the director's answers: Session View docks Ableton-style, session clips mirror Live, tuning as child tables, the driver signing route | used |
+| 0118 | win | `agent/win-dev` | the Windows virtual device: our own sysvad driver signed via SignPath Foundation; bundling VB-CABLE rejected | used |
+| 0119 | win | `agent/win-dev` | the driver's endpoint names and home (`drivers/`, MIT), and the SignPath preconditions; the director sends the form | used |
+| 0120 | win | `agent/win-dev` | the driver build workflow; sysvad is MS-PL not MIT, fetched never vendored; the licence ruling is the director's | used |
+| 0121 | win | `agent/win-dev` | MS-PL ruled acceptable under drivers/; policy row added | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -97,6 +145,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
+| `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`
@@ -114,7 +163,9 @@ and a source, resolved by keeping both.
 ```bash
 git -C <repo> checkout main && git pull
 cat adi_daw/collab/README.md          # claims may have changed
-cat adi_daw/collab/<other-agent>.md   # what they did since you last looked
+cat adi_daw/collab/win.md             # what the others did since you last looked
+cat adi_daw/collab/mac.md
+cat adi_daw/collab/linux.md
 ```
 
 ## Building
@@ -202,7 +253,7 @@ A branch is ready to merge when:
   confidently reported corruption that did not exist. Where a hazard closes at
   the type level for one line, close it (ADR-0034).
 
-## Working with the other agent
+## Working with the other agents
 
 - **The repository is PUBLIC**, and it is a monorepo containing unrelated
   projects and whatever work-in-progress is sitting in the tree. **Stage
