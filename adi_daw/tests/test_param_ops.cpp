@@ -7,6 +7,10 @@
 //
 // No JUCE. The VST3 listener is the same three calls into the same sink and
 // is exercised by the JUCE build.
+//
+// Every device here is declared BEFORE the glue: the glue's destructor unhooks
+// the sinks it installed, so the devices must still exist. linux's ASan run
+// (#75) caught the first version of this file getting that backwards.
 
 #include "temp_directory.hpp"
 
@@ -126,8 +130,8 @@ private:
 
 void testAGestureBecomesOneOp() {
     section("ADR-0110 d2 / ADR-0124 -- one gesture, one op, with the real value beside the normalized one");
+    Knobs k;        // the device outlives the glue (ADR-0124 contract)
     ParamOps ops;
-    Knobs k;
     check(ops.attach(7, k), "attached");
     check(!ops.attach(7, k), "and not twice");
     check(k.hasParamSink(), "the device has its sink");
@@ -173,8 +177,8 @@ void testAGestureBecomesOneOp() {
 
 void testAppliedArmsTheEcho() {
     section("ADR-0110 d3 -- an op from elsewhere reaches the device; its echo is not a new op");
+    Knobs k;        // the device outlives the glue (ADR-0124 contract)
     ParamOps ops;
-    Knobs k;
     k.echoOnSet = true;
     ops.attach(3, k);
 
@@ -199,8 +203,8 @@ void testAppliedArmsTheEcho() {
 
 void testOwnOpsComeBackEqual() {
     section("ADR-0124 d3 -- our own op returning through the journal sets nothing");
+    Knobs k;        // the device outlives the glue (ADR-0124 contract)
     ParamOps ops;
-    Knobs k;
     ops.attach(4, k);
     k.begin(0); k.value(0, 0.6); k.end(0);
     std::vector<OpRequest> out;
@@ -214,8 +218,8 @@ void testOwnOpsComeBackEqual() {
 
 void testUnknownsAreCounted() {
     section("ADR-0124 -- unknown device, unknown parameter, a cleared row: counted, never thrown");
+    Knobs k;        // the device outlives the glue (ADR-0124 contract)
     ParamOps ops;
-    Knobs k;
     ops.attach(1, k);
     check(!ops.applied({{"dev", 99}, {"param", "cutoff"}, {"norm", 0.5}}, 1), "unknown device");
     eqi(ops.stats().unknownDevice, 1, "counted");
@@ -234,8 +238,8 @@ void testUnknownsAreCounted() {
 
 void testTwoDevicesTwoRings() {
     section("ADR-0124 d1 -- one ring per device; interleaved gestures on two devices are two edits");
-    ParamOps ops;
     Knobs a, b;
+    ParamOps ops;
     ops.attach(1, a);
     ops.attach(2, b);
     a.begin(0); b.begin(1);
