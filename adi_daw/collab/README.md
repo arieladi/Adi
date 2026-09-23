@@ -145,7 +145,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `docs/BENCHMARKS.md` (standing regression watch for #73/#74) | linux | `linux/watch-73-74` | 2026-09-23 |
 | `src/juce/**`, `tests/test_device.cpp`, `docs/DEVICE-CONTRACT-PANEL.md` | mac | `mac/vst3` | 2026-09-20 |
 | `src/juce/**`, `tests/test_device.cpp` | mac | `mac/device` | 2026-09-20 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
