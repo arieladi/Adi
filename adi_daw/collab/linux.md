@@ -8,6 +8,77 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — task 5: seeded level permutation and byte-exact guard
+
+Branch `linux/level-permutation`, based on main `2155fb4` after win's review
+(PR #54). #52 and #53 were already merged, in that order, after all 19 checks
+passed on each reviewed head; their claims were removed before merge. The new
+claim in commit `3c83e80` names exactly `src/adi/engine/graph.hpp`,
+`src/adi/engine/graph.cpp`, and `tests/test_graph.cpp`, as granted by win and Adi.
+It is released in the final pre-merge commit. No other engine file was changed.
+
+**Hook choice:** the clearly named `Graph::permuteLevelsForTest(uint32_t)`,
+documented as test support, rather than a preprocessor flag. The caller must
+have successfully prepared the graph and must not have a callback running.
+Each call sorts ids within each existing level, then applies explicit
+Fisher-Yates using mt19937 from the supplied seed; its result does not depend
+on previous calls or a standard library's implementation of std::shuffle.
+Level membership, edges and consumer summation order are unchanged. `levels()`
+remains read-only, with no cast or friend. `prepare()` resets the normal order.
+The existing reverse flag still applies. The hook is never called by production
+processing. Verified that prepare/release and all callback implementation code
+are textually unchanged; no private scheduler field was added or changed.
+
+**Guard:** a four-level fixture has four sources, two sums, two gains, and a
+final sum, so three levels have independent members. It renders forward,
+reverse, and seeds **1, 42, 0xC0FFEE (12648430)**, comparing both 512-frame
+channels with `memcmp`. It verifies three distinct permutations, reproducibility
+after an intervening seed, unchanged membership, movement in every nontrivial
+level, and restoration after prepare. A right-channel +0/-0 pair proves that the
+oracle distinguishes bytes even when float equality would accept them. The
+fixture's nonzero sum is checked separately. The existing five aggregate
+assertions now cover these cases: the suite remains 149 checks, the tree 2,272.
+
+### Validation and planted defects
+
+- GCC 15.2.0 Debug: full `test_all.sh` passes 2,272 checks / 24 suites plus all
+  five validators (3.93 s).
+- Clang 21.1.8 Release: the same full validation passes (2.94 s).
+- GCC 15.2.0 TSan: the same full validation passes (19.51 s), with
+  `TSAN_OPTIONS=halt_on_error=1`; all five traversal variants run in that binary.
+- Both changed translation units pass `-Wall -Wextra -Wconversion -Wshadow
+  -pedantic` with both compilers, without diagnostics.
+- **Aliased scratch plant:** in a temporary copy of graph.cpp, after prepare
+  allocates output buffers, assign `slots_[1].chanPtrs = slots_[0].chanPtrs`
+  for the nine-node fixture. Link that instrumented replacement object ahead
+  of the unmodified core archive and run the actual graph test suite. GCC
+  Debug and GCC TSan both exit 1: reverse, seed 42 and seed 0xC0FFEE mismatch;
+  the byte-exact guard and fixture-sum guard fail (149 checks, 2 failures).
+  This is an assertion failure, not a TSan runtime failure masking the test.
+- **No-op hook plant:** a temporary hook that returns without permuting fails
+  the schedule/reproducibility assertion (149 checks, 1 failure).
+- **Float-oracle plant:** replace the two memcmp calls with vector float
+  equality in a temporary test source. The signed-zero sensitivity guard
+  fails (149 checks, 1 failure).
+
+All plants were separate scratch sources/objects; none entered the repository
+working tree. Clang TSan's allocation-counter conflict in `tests/test_device.cpp`
+remains recorded for mac and untouched. No platform, driver, schema, ADR,
+workflow or other agent's log was edited.
+
+Reproduce the clean run with the previously documented GCC TSan configuration,
+then `cmake --build <tsan-build> -j 3` and
+`TSAN_OPTIONS=halt_on_error=1 bash adi_daw/tools/test_all.sh <tsan-build>`.
+
+**What I would do next, pending direction:** coordinate with mac on CI coverage
+for the opt-in benchmark and the Clang TSan allocation-counter issue; then, if
+assigned, extend the determinism fixtures to sidechains and event routing before
+any worker-pool implementation. No new ownership is assumed. The five onboarding
+tasks are now locally verified; after this PR passes CI and merges I will wait
+for win or Adi rather than start the next work.
+
+---
+
 ## 2026-09-23 — opt-in small-block benchmark scaffold
 
 Branch `linux/small-block-benchmark`, created from main and fast-forwarded over

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <random>
 
 namespace adi::engine {
 
@@ -61,6 +62,19 @@ std::int32_t Graph::maxFloorFor(double sampleRate) noexcept {
 // ---------------------------------------------------------------------------
 // Topological order
 // ---------------------------------------------------------------------------
+
+void Graph::permuteLevelsForTest(std::uint32_t seed) {
+    std::mt19937 random(seed);
+    for (auto& level : levels_) {
+        std::sort(level.begin(), level.end());
+        // Explicit Fisher-Yates: unlike std::shuffle, this mapping from a
+        // seed to a permutation is the same across standard libraries.
+        for (std::size_t count = level.size(); count > 1; --count) {
+            const auto choice = static_cast<std::size_t>(random()) % count;
+            std::swap(level[count - 1], level[choice]);
+        }
+    }
+}
 
 bool Graph::topoSort() {
     const auto n = static_cast<std::int32_t>(slots_.size());

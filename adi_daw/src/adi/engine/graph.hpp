@@ -596,6 +596,15 @@ public:
     /// some other order and must produce the same bytes.
     void setReverseWithinLevel(bool v) noexcept { reverseWithinLevel_ = v; }
 
+    /// Test support ONLY: call after a successful prepare, while no process()
+    /// call is running. Permutes node traversal inside each dependency level;
+    /// never changes level membership, edges or consumer summation order.
+    /// Each call starts from ascending node ids, so a seed is reproducible
+    /// independently of previous permutations. prepare() restores the normal
+    /// schedule. The existing reverse-within-level flag still applies.
+    /// Sorting and random-number generation happen here, never in process().
+    void permuteLevelsForTest(std::uint32_t seed);
+
 private:
     struct Slot {
         Node* node = nullptr;
