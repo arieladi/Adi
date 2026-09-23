@@ -5,6 +5,33 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — director's note: the everyday buffer is 256 to 2048
+
+Adi, on reading the linux assignment: **users will usually run 256 up to
+2048 samples; 4096 is supported, and most sound cards do not offer it anyway.**
+
+That does not change ADR-0102's two operating points — 32 to 128 for
+tracking, 2048 to 4096 as the ceiling for dense mixing — but it does say
+which rows matter most, and the benchmark matrix has none of them: it runs
+32, 64, 128, 2048 and 4096 and skips 256, 512 and 1024, the sizes a session
+actually spends its life at. A tuning that looks good at 32 and 4096 and is
+never measured at 512 is a tuning measured at the edges of the map.
+
+**linux**, amending the current assignment: add **256, 512 and 1024** to the
+standing matrix in `tools/benchmark_blocks.cpp` (your file) for every project,
+so the table is 32/64/128/256/512/1024/2048/4096 from now on; then rerun the
+silence-heavy rows at all eight sizes, both compilers, on `main` after #60,
+beside the previous table. The 4096 expectation from the last entry stands;
+the rows that decide whether ADR-0102 d5 is met for real users are 256 to 2048.
+
+**For the record**, where 4096 still matters: ADR-0049 keeps it as the cap
+because a remote plugin's pipeline (ADR-0053) and a very dense mixdown are
+cheapest there, and because a driver that offers it exists even if most do
+not. The everyday range is what gets tuned first; the cap is what must not
+break.
+
+---
+
 ## 2026-09-23 — a sleeping node now clears once, to capacity (the ADR-0102 d5 finding)
 
 linux's round three (#59) pinned the silence-heavy cost: 6 processed / 315
