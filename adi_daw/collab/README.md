@@ -138,6 +138,8 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `src/adi/engine/param_edits.hpp`, `src/adi/engine/param_edits.cpp`, `tests/test_param_edits.cpp`; `CMakeLists.txt` source and test-target integration only (win grant, ADR-0122 d11) | linux | `linux/param-edits` | 2026-09-23 |
+| `docs/BENCHMARKS.md` (standing regression measurements only) | linux | `linux/param-edits` | 2026-09-23 |
 | `src/juce/**`, `tests/test_device.cpp`, `docs/DEVICE-CONTRACT-PANEL.md` | mac | `mac/vst3` | 2026-09-20 |
 | `src/juce/**`, `tests/test_device.cpp` | mac | `mac/device` | 2026-09-20 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
