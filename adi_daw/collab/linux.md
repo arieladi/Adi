@@ -8,6 +8,161 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — round two: Release callback measurements and routing guards
+
+Branch `linux/routing-determinism`, main `cb686ff` (win's PR #56).
+The first commit claims only `tests/test_graph.cpp` for the granted fixtures.
+
+### 1. Benchmark matrix, before changing tests
+
+Intel Core i5-3550S @ 3.00 GHz, 4 cores / 4 threads, governor **schedutil**
+on all four CPUs. GCC 15.2.0 and Clang 21.1.8, CMake Release (`-O3 -DNDEBUG`),
+JUCE off, `ADI_BUILD_BENCHMARKS=ON`. Rebuilt from this main. Each executable's
+`--self-test` passed, followed by `adi_block_benchmark --iterations 10000`.
+GCC then Clang, sequentially; no concurrent builds, no affinity, governor or
+real-time priority changes. 48 kHz stereo, 32 warmup callbacks then 10,000
+measured callbacks **per row**. Times are microseconds; nearest-rank percentiles.
+These are desktop synthetic callback measurements, not device xruns or an
+Ableton comparison. Scheduling noise is included in max and deadline misses.
+
+| Compiler | Project | Frames | p50 µs | p99 µs | Max µs | Deadline misses |
+|---|---|---:|---:|---:|---:|---:|
+| GCC | active | 32 | 2.679 | 3.675 | 1653.823 | 1 |
+| GCC | active | 64 | 3.526 | 11.858 | 60.224 | 0 |
+| GCC | active | 128 | 4.938 | 15.631 | 87.642 | 0 |
+| GCC | active | 2048 | 68.256 | 105.461 | 866.570 | 0 |
+| GCC | active | 4096 | 148.549 | 209.553 | 2834.428 | 0 |
+| GCC | silence-heavy | 32 | 13.608 | 28.885 | 132.283 | 0 |
+| GCC | silence-heavy | 64 | 18.315 | 36.006 | 144.188 | 0 |
+| GCC | silence-heavy | 128 | 29.911 | 59.231 | 176.032 | 0 |
+| GCC | silence-heavy | 2048 | 598.044 | 1416.755 | 12670.563 | 0 |
+| GCC | silence-heavy | 4096 | 1829.263 | 3075.095 | 11624.108 | 0 |
+| GCC | mpe-storm | 32 | 2.848 | 13.787 | 566.789 | 0 |
+| GCC | mpe-storm | 64 | 5.939 | 16.881 | 101.649 | 0 |
+| GCC | mpe-storm | 128 | 9.050 | 22.681 | 83.610 | 0 |
+| GCC | mpe-storm | 2048 | 256.581 | 342.481 | 1344.379 | 0 |
+| GCC | mpe-storm | 4096 | 764.955 | 1173.893 | 5129.600 | 0 |
+| Clang | active | 32 | 2.847 | 4.030 | 1190.550 | 2 |
+| Clang | active | 64 | 3.584 | 4.596 | 1293.505 | 0 |
+| Clang | active | 128 | 4.783 | 15.590 | 3064.446 | 1 |
+| Clang | active | 2048 | 66.393 | 104.751 | 465.184 | 0 |
+| Clang | active | 4096 | 150.086 | 207.958 | 352.499 | 0 |
+| Clang | silence-heavy | 32 | 13.852 | 30.201 | 289.770 | 0 |
+| Clang | silence-heavy | 64 | 19.007 | 40.218 | 4306.622 | 4 |
+| Clang | silence-heavy | 128 | 30.287 | 54.533 | 86.413 | 0 |
+| Clang | silence-heavy | 2048 | 625.201 | 1356.289 | 5470.874 | 0 |
+| Clang | silence-heavy | 4096 | 1745.826 | 3433.002 | 8837.661 | 0 |
+| Clang | mpe-storm | 32 | 2.878 | 13.546 | 50.048 | 0 |
+| Clang | mpe-storm | 64 | 7.870 | 19.367 | 77.163 | 0 |
+| Clang | mpe-storm | 128 | 11.493 | 28.126 | 115.142 | 0 |
+| Clang | mpe-storm | 2048 | 412.200 | 524.126 | 663.415 | 0 |
+| Clang | mpe-storm | 4096 | 1372.418 | 1977.345 | 5058.860 | 0 |
+
+All 30 rows had zero event drops and zero rejected events; fixture output
+validation passed. Active and MPE-storm each have 8 tracks × 4 effects (41 nodes);
+silence-heavy has 64 × 4 (321 nodes), 63 silent tracks. MPE is 16 notes × 3
+expression dimensions at 500 Hz into track one. The table reports one run per
+compiler, not an isolated estimate of compiler speed or a performance gate.
+
+### 2. Fixture proposal and scope
+
+The tests have `RampNode`, `LatentNode`, and a sidechain `KeyThrough`, but no
+compressor-shaped node. Proposed test support: a **test-local** ducking probe
+with `main / (1 + abs(key))`, capturing both inputs in preallocated buffers.
+It models dependency/alignment, not a production compressor's DSP. An event
+probe will capture explicit fields and render note/expression changes into
+samples at their block-relative frame. Neither belongs in `src/`; no production
+node type, engine change, workflow or `test_device.cpp` change is proposed.
+
+### 3. Sidechain and event traversal guards
+
+`tests/test_graph.cpp` alone implements the proposed test-local probes. Fresh
+graphs render forward, reverse, and seeds **1, 42, 0xC0FFEE** through the existing
+off-callback hook. The shared `memcmp` stereo oracle retains its signed-zero
+sensitivity check. These fixtures extend the existing aggregate determinism
+assertion (with per-fixture/per-variant failure diagnostics); graph/tree counts
+remain **149 / 2,272 checks across 24 suites**, without changing the README.
+
+- Sidechain: two ramp sources, a real 64-sample latent branch and its direct
+  sibling, two compressor-shaped probes, and their sum. One probe delays the
+  key; the mirror delays main to meet the latent key. Four 256-frame blocks
+  check both channels of the actual main/key captures against the independently
+  delayed ramp, and compare ducked output to calculated samples and to forward
+  bytes. Startup and compensation history across blocks are included.
+- Events: a head fans out through latent/direct siblings, then both paths feed
+  two test instruments. NoteOn, three expression dimensions, and NoteOff reach
+  each instrument once per path. Their absolute arrivals are independently
+  expected at **96, 160, 255, 256, 288**: the 255/256 pair tests adjacent samples
+  across a block boundary, and a third block checks no repeat delivery.
+  Captures retain frame, segment start/length, type, channel, dimension, full
+  note id, parameter id and exact double bits. Each event must be inside its
+  segment while its frame stays block-relative. Explicit integer-field arrays
+  avoid comparing uninitialised Event padding. Both instruments render changes
+  at those frames; samples and complete event records compare byte-for-byte
+  across traversal variants. Push rejection, loss, capture overflow, expected
+  fan-in multiplicity and actual deferral are checked. Probe storage is fixed
+  before callbacks; there is no test-callback allocation.
+
+### Validation and deliberate failures
+
+- GCC 15.2.0 Debug: `test_all.sh` **2,272 / 24**, validators clean, **3.93 s**.
+- Clang 21.1.8 Release: the same full run passes, **2.98 s**.
+- GCC 15.2.0 TSan, `TSAN_OPTIONS=halt_on_error=1`: the same full run passes,
+  **19.00 s**, including all five variants of both new fixtures.
+- The changed translation unit is warning-clean with both compilers under
+  `-Wall -Wextra -Wconversion -Wshadow -pedantic`; `git diff --check` is clean.
+- **Sidechain plant:** in a scratch copy of graph.cpp, set the seven-node
+  fixture's sidechain delay to zero just before accumulation. Compensation
+  metadata still reports 64 before processing, but the real key arrives early.
+  The new sidechain guard fails in **all five modes**, exit 1, 149 checks /
+  1 aggregate failure, under both GCC Debug and GCC TSan.
+- **Event-offset plant:** in another scratch copy, add one sample to
+  `now_ + e.frame + delay` on the six-node event fixture's forwarding edges.
+  All modes are identically wrong, so cross-mode comparison alone could pass;
+  the independent frame/audio oracle rejects **all five modes**. Exit 1,
+  149 checks / 1 aggregate failure, under both GCC Debug and GCC TSan.
+  Neither negative TSan run reported a runtime warning: the guard itself fired.
+
+Plants were compiled into replacement graph objects linked before the clean
+core archive, against the real test object; none entered the tracked tree.
+The clean builds and full suites above ran after the final test code changes.
+To reproduce: build the existing GCC Debug / Clang Release / GCC TSan trees,
+then `bash adi_daw/tools/test_all.sh <build-dir>` (with the TSan option above).
+The claim is released in the final pre-merge commit; only tests and this log
+remain in the PR's net diff.
+
+### 4. Worker-pool handoff — proposed only, then wait
+
+The fixtures supply repeatable serial baselines, exact expected audio/key
+samples and event records, nonzero segments, and carried delay/event state.
+A pool would need to run these SAME fixtures through its real executor with
+one and multiple workers, deliberately varied completion orders, repeated
+blocks and seeded stress under TSan, comparing against the serial baseline.
+The current level permutations are serial: passing them under TSan does not
+prove a concurrent scheduler race-free.
+
+Before parallel dispatch, preserve the complete event-forwarding pass and its
+split calculation; preserve fan-in edge summation/event ordering. A level's
+completion barrier must include main AND sidechain dependencies. Each node's
+output/history and each consumer's delay rings need a single writer. The
+current `mixPtrs_`/`sidePtrs_` scratch is shared by Graph: it must become safe
+for simultaneous runNode calls (for example, preallocated worker-local
+scratch), and shared GraphStats writes need a race-free collection strategy.
+Probe captures already belong to individual nodes; inspect them after joining,
+not from worker threads. Keep preparation, allocation, seeds and test setup off
+the callback. Use mutation checks for omitted dependencies, scratch aliasing,
+and event-offset mistakes against the parallel path too. Then measure the
+32/64/128-frame dispatch/barrier overhead and tail latency with the benchmark
+before choosing a pool threshold; these fixtures alone do not establish speed.
+
+No pool implementation has started. The GCC TSan CI leg and Clang allocation-
+counter conflict remain with mac. No `.github/**`, `test_device.cpp`, `src/`,
+platform code, schema, ADR or other agent's log was changed. After green CI and
+merge, this round stops here awaiting win/Adi.
+
+
+---
+
 ## 2026-09-23 — task 5: seeded level permutation and byte-exact guard
 
 Branch `linux/level-permutation`, based on main `2155fb4` after win's review
