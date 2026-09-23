@@ -13,6 +13,7 @@
 
 #include "adi/engine/graph.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -736,52 +737,95 @@ void testSidechainIsSeparateFromMain() {
 }
 
 void testLevelOrderDoesNotChangeOutput() {
-    section("ADR-0056 -- any order within a level gives identical bytes");
+    section("ADR-0056 -- forward, reverse and seeded levels give identical bytes");
 
-    // Four independent sources into a sum, then a gain. Levels are
-    // {sources}, {sum}, {gain} -- so level 0 has four members whose order a
-    // thread pool would not fix.
+    // Multiple independent nodes at THREE levels: sources, sums and gains.
+    // Consumer input order stays fixed while traversal changes. The last sum
+    // makes every branch observable in both output channels.
     ConstNode a(0.1f), b(0.2f), c(0.3f), d(0.4f);
-    SumNode mix;
-    GainNode gain(3);
-
+    SumNode first, second, master;
+    GainNode firstGain, secondGain;
     Graph g;
     const NodeId na = g.addNode(a), nb = g.addNode(b);
     const NodeId nc = g.addNode(c), nd = g.addNode(d);
-    const NodeId nm = g.addNode(mix), ng = g.addNode(gain);
-    for (NodeId src : {na, nb, nc, nd}) g.connect(src, nm);
-    g.connect(nm, ng);
-    g.setOutput(ng);
+    const NodeId nfirst = g.addNode(first), nsecond = g.addNode(second);
+    const NodeId ngfirst = g.addNode(firstGain), ngsecond = g.addNode(secondGain);
+    const NodeId nmaster = g.addNode(master);
+    g.connect(na, nfirst); g.connect(nb, nfirst);
+    g.connect(nc, nsecond); g.connect(nd, nsecond);
+    g.connect(nfirst, ngfirst); g.connect(nsecond, ngsecond);
+    g.connect(ngfirst, nmaster); g.connect(ngsecond, nmaster);
+    g.setOutput(nmaster);
     g.prepare(48000.0, 512);
     check(g.ok(), "prepared: " + g.error());
 
-    check(g.levels().size() == 3,
-          "three dependency levels, got " + std::to_string(g.levels().size()));
-    check(!g.levels().empty() && g.levels()[0].size() == 4,
-          "four independent sources share level 0");
+    const auto normal = g.levels();  // copy from the read-only interface
+    check(normal.size() == 4 && normal[0].size() == 4 &&
+          normal[1].size() == 2 && normal[2].size() == 2 && normal[3].size() == 1,
+          "four levels; three have independently reorderable nodes");
 
-    Out forward(512);
-    AudioIo io1 = makeIo(forward, 512);
+    const auto sameBytes = [](const Out& x, const Out& y) {
+        return x.l.size() == y.l.size() && x.r.size() == y.r.size() &&
+               std::memcmp(x.l.data(), y.l.data(), x.l.size() * sizeof(float)) == 0 &&
+               std::memcmp(x.r.data(), y.r.data(), x.r.size() * sizeof(float)) == 0;
+    };
+    Out forward(512), reverse(512);
     g.setReverseWithinLevel(false);
-    g.process(io1);
-
-    Out reverse(512);
-    AudioIo io2 = makeIo(reverse, 512);
+    g.process(makeIo(forward, 512));
     g.setReverseWithinLevel(true);
-    g.process(io2);
+    g.process(makeIo(reverse, 512));
+    bool identical = sameBytes(forward, reverse);
+    if (!identical) std::puts("  traversal mismatch: reverse");
 
-    // BYTE for byte, not within a tolerance. ADR-0021's oracle compares bytes,
-    // and "close enough" is exactly the answer that lets a reordered float sum
-    // through -- which is the one thing that would make a thread pool unsafe.
-    bool identical = true;
-    for (std::size_t i = 0; i < forward.l.size(); ++i)
-        if (forward.l[i] != reverse.l[i] || forward.r[i] != reverse.r[i])
-            identical = false;
-    check(identical,
-          "running level 0 backwards changes nothing: this is the property a "
-          "thread pool would depend on, and it is why one is safe to add");
-    check(std::fabs(forward.l[0] - 1.0f) < 1e-6f,
-          "and the sum is right: " + std::to_string(forward.l[0]));
+    bool permutationsValid = true;
+    std::vector<bool> changed(normal.size(), false);
+    std::vector<std::vector<std::vector<NodeId>>> seen;
+    g.setReverseWithinLevel(false);
+    for (std::uint32_t seed : {1u, 42u, 0xC0FFEEu}) {
+        // All calls to the hook occur before a callback, on the test thread.
+        g.permuteLevelsForTest(seed);
+        const auto permuted = g.levels();
+        permutationsValid &= permuted.size() == normal.size();
+        for (std::size_t level = 0; level < normal.size(); ++level) {
+            if (level >= permuted.size()) { permutationsValid = false; continue; }
+            permutationsValid &= std::is_permutation(
+                normal[level].begin(), normal[level].end(),
+                permuted[level].begin(), permuted[level].end());
+            changed[level] = changed[level] || permuted[level] != normal[level];
+        }
+        permutationsValid &= std::find(seen.begin(), seen.end(), permuted) == seen.end();
+        seen.push_back(permuted);
+        g.permuteLevelsForTest(seed ^ 0xA5A5A5A5u);
+        g.permuteLevelsForTest(seed);
+        permutationsValid &= g.levels() == permuted;
+
+        Out shuffled(512);
+        g.process(makeIo(shuffled, 512));
+        const bool equal = sameBytes(forward, shuffled);
+        if (!equal) std::printf("  traversal mismatch: seed %u\n", static_cast<unsigned>(seed));
+        identical &= equal;
+    }
+    for (std::size_t level = 0; level < normal.size(); ++level)
+        if (normal[level].size() > 1) permutationsValid &= changed[level];
+    // Re-preparing must discard the test permutation and recover the schedule.
+    g.prepare(48000.0, 512);
+    permutationsValid &= g.ok() && g.levels() == normal;
+    check(permutationsValid,
+          "three distinct reproducible seeds preserve membership, exercise every "
+          "nontrivial level, and prepare restores normal traversal");
+
+    // Prove the oracle is byte-sensitive, including the right channel. A float
+    // comparison would accept these two buffers despite their different bytes.
+    Out positiveZero(1), negativeZero(1);
+    negativeZero.r[0] = -0.0f;
+    const bool byteSensitive = positiveZero.r[0] == negativeZero.r[0] &&
+                               !sameBytes(positiveZero, negativeZero);
+    check(identical && byteSensitive,
+          "forward, reverse and all three seeds match both channels byte-for-byte; "
+          "the oracle distinguishes signed zero");
+    check(std::fabs(forward.l[0] - 1.0f) < 1e-6f &&
+          std::fabs(forward.r[0] - 1.0f) < 1e-6f,
+          "the fixture sums to one in both channels, rather than matching silence");
 }
 
 void testEventCapacityFitsTheContinuum() {
