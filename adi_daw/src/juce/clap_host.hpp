@@ -285,6 +285,12 @@ public:
     /// events the scheduler assigned to the segment being processed.
     bool pushEvent(const engine::Event& e) noexcept;
 
+    /// `start_processing` calls that returned false (ADR-0123). Such a plugin
+    /// is active but not processing, and `process` passes audio through
+    /// rather than calling it: plugin.h makes `process` legal only while
+    /// processing, and a start that failed says the plugin is not.
+    [[nodiscard]] std::int64_t startFailures() const noexcept { return startFailures_; }
+
     /// Events refused because a queue was full. Non-zero means the capacity
     /// derived at prepare was too small for what arrived (ADR-0056).
     [[nodiscard]] std::int64_t eventsDropped() const noexcept {
@@ -343,6 +349,8 @@ private:
     std::vector<ParamDescriptor> params_;
     std::vector<clap_id> paramIds_;
     bool activated_ = false;
+    bool processing_ = false;          ///< start_processing succeeded (ADR-0123)
+    std::int64_t startFailures_ = 0;
     double sampleRate_ = 0.0;
     std::int32_t maxFrames_ = 0;
 
@@ -510,6 +518,7 @@ private:
     static const void* getExtension(const clap_host_t*, const char* id);
     static void latencyChanged(const clap_host_t*);
     static void portsRescan(const clap_host_t*, std::uint32_t flags);
+    static bool portsRescanSupported(const clap_host_t*, std::uint32_t flag);
     static std::uint32_t noteDialects(const clap_host_t*);
     static void noteRescan(const clap_host_t*, std::uint32_t flags);
     static void requestRestart(const clap_host_t*);

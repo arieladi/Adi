@@ -130,7 +130,7 @@ Session window is the last step, not a way around that.
 | Feature | From | P | Fmt | Notes |
 |---|---|---|---|---|
 | VST3 hosting | — | P0 | ✅ | `plugin_state.stream_role` |
-| CLAP hosting | — | **P0, mandated** | ✅ | same. **JUCE has no CLAP host**, so this is our code (ADR-0041). Level with VST3 and sequenced after it — CLAP's `PARAM_MOD` is ADR-0046's rule expressed in a plugin API, so the modulation architecture depends on it (ADR-0052). |
+| CLAP hosting | — | **P0, mandated** | ✅ | same. **JUCE has no CLAP host**, so this is our code (ADR-0041). Level with VST3 and sequenced after it — CLAP's `PARAM_MOD` is ADR-0046's rule expressed in a plugin API, so the modulation architecture depends on it (ADR-0052). Audited against the pinned headers (linux, #72): activation bounds, the start result, the host's rescan query, pre-activation flushes and the main-thread latency rule corrected (ADR-0123); the active-state port scan is mac's. |
 | LV2 (Linux) | — | P2 | ✅ | same |
 | ~~AU / AUv3 (macOS)~~ | — | **no** | ✅ | **Ruled out** (ADR-0041). Not the hosting wrapper — JUCE ships one — but the registry-based discovery, `auval`, a third stream role and a macOS-only bug class around it. |
 | ~~VST2~~ | — | **no** | ✅ | **Ruled out** (ADR-0015): SDK unobtainable for years, and its terms were never GPL-compatible. Not recoverable. |

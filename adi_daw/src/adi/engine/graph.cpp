@@ -460,6 +460,14 @@ void Graph::computeCompensation() {
         }
     }
 
+    // ADR-0123: the answers, kept for the audio thread. Asked here, on the
+    // message thread, because a node may be a CLAP plugin whose latency
+    // getter is main-thread only.
+    if (slotLatency_.size() != slots_.size())
+        slotLatency_ = std::vector<std::atomic<std::int32_t>>(slots_.size());
+    for (std::size_t i = 0; i < slots_.size(); ++i)
+        slotLatency_[i].store(slots_[i].node != nullptr ? slots_[i].node->latencySamples() : 0,
+                              std::memory_order_relaxed);
     const Slot& out = slots_[static_cast<std::size_t>(output_)];
     graphLatency_.store(out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0),
                         std::memory_order_release);
@@ -513,6 +521,12 @@ bool Graph::retapLatency() noexcept {
         }
     }
 
+    // ADR-0123: refresh the audio thread's copies. The event delay jumps to the
+    // new value while the audio tap glides; that is what it did before, when
+    // the audio thread asked the node itself.
+    for (std::size_t i = 0; i < slots_.size() && i < slotLatency_.size(); ++i)
+        slotLatency_[i].store(slots_[i].node != nullptr ? slots_[i].node->latencySamples() : 0,
+                              std::memory_order_relaxed);
     const Slot& out = slots_[static_cast<std::size_t>(output_)];
     graphLatency_.store(out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0),
                         std::memory_order_release);
@@ -847,8 +861,14 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
             // is held back to meet the others. An event that skipped either
             // would reach an instrument ahead of the graph's own arithmetic --
             // ADR-0058 right for audio and wrong for everything a note drives.
+            // The node's latency as last asked on the message thread, never
+            // the node itself: this is the audio thread, and a CLAP plugin's
+            // getter is main-thread only (linux's audit, C6; ADR-0123).
+            const std::size_t ui = static_cast<std::size_t>(s.inputs[k]);
             const std::int64_t delay =
-                static_cast<std::int64_t>(u.node->latencySamples()) +
+                static_cast<std::int64_t>(ui < slotLatency_.size()
+                                              ? slotLatency_[ui].load(std::memory_order_relaxed)
+                                              : 0) +
                 (k < s.inDelays.size() ? s.inDelays[k].delay() : 0);
 
             for (const Event& e : u.events) {
