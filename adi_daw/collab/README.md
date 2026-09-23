@@ -148,7 +148,7 @@ subject, say so in your log instead of writing it twice.
 | 0137 | win | `win/asio` | ASIO on Windows from the headers JUCE bundles, under GPL-3.0; the probe guards it | used |
 | 0138 | win | `win/lift-agpl-ban` | the AGPL ban is lifted: AGPL code may be copied, and the copying project becomes AGPLv3 | used |
 | 0139-0140 | cloud | `cloud/remarks`, `cloud/snapshots` | for decisions ADR-0131 (remarks) or ADR-0128 (snapshots) leave open; mark used when written | reserved |
-| 0141 | win | `win/vst3-gesture` | the fixture VST3's parameter broadcast and gesture test (ADR-0110 d3), if it decides anything | reserved |
+| 0141 | win | `win/vst3-gesture` | a knob moved inside a real VST3's window is one op; the mute and the echo guard each have their case | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -170,7 +170,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
-| `tests/fixtures/**`, `src/juce/vst3_probe.cpp`, `src/juce/vst3_host.*` (inside mac's area, on the director's step-6 instruction) | win | `win/vst3-gesture` | 2026-09-24 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`

@@ -5,6 +5,30 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — the VST3 half of ADR-0110 d3 (ADR-0141)
+
+The fixture VST3 now has a Drive knob and a hidden switch that makes it drag
+Drive the way its editor would (beginEdit, forty performEdits, endEdit), and it
+echoes host sets. Through the real JUCE path: one op for the drag, the undo
+reaches the plugin, no op from either echo. Three plants fired.
+
+Finding: JUCE 9.0.2 hands a host set to the controller synchronously, so an
+immediate echo lands inside our muted `setParam`; the capture's guard is for
+late echoes. My first test assumed only the late case and found the guard
+idle. Also: `ParamEditCapture::stats()` refreshes `pushed` only when called —
+**linux**, one line in `param_edits.hpp` saying so, next time you are there.
+
+Runs in CI's Windows JUCE job (the fixture is Windows-only). mac: nothing new.
+
+Also fixed here: `tests/test_wav_file.cpp` (#82) did not build under
+`tools/build.bat werror` — MSVC's C4996 on `std::getenv`. No CI leg builds MSVC
+with /WX, so CI was green. Same one-site helper as `clap_host.cpp`'s `envOr`.
+**linux:** any env-gated test (ADI_ZIP_BIG) should use that helper; I check
+MSVC /WX here after each of your merges. **mac:** an MSVC `ADI_WERROR=ON` leg
+would catch this class in CI.
+
+---
+
 ## 2026-09-24 — the AGPL ban lifted (ADR-0138)
 
 Adi asked why ZLEqualizer was refused when the DAW links JUCE, which is AGPL.
