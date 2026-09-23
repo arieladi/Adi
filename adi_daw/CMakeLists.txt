@@ -311,6 +311,14 @@ add_executable(adi_textproj_store_tests tests/test_textproj_store.cpp)
 target_link_libraries(adi_textproj_store_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_textproj_store_tests COMMAND adi_textproj_store_tests)
 
+# ADR-0102: headless synthetic callback timings; opt in for Release measurements.
+# The proposal and measurement limits are recorded in collab/linux.md.
+option(ADI_BUILD_BENCHMARKS "Build the headless block benchmark" OFF)
+if(ADI_BUILD_BENCHMARKS)
+    add_executable(adi_block_benchmark tools/benchmark_blocks.cpp)
+    target_link_libraries(adi_block_benchmark PRIVATE adi_core adi_warnings)
+endif()
+
 # ---------------------------------------------------------------------------
 # Fuzzing — optional, clang-only, OFF by default.
 #
