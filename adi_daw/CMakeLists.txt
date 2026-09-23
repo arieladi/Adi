@@ -47,6 +47,33 @@ set(JSON_Install               OFF CACHE BOOL "" FORCE)
 add_subdirectory("${ADI_THIRD_PARTY}/SQLiteCpp" EXCLUDE_FROM_ALL SYSTEM)
 add_subdirectory("${ADI_THIRD_PARTY}/json"      EXCLUDE_FROM_ALL SYSTEM)
 
+# ADR-0127: pinned C dependencies; portable BLAKE3 only on every ABI.
+foreach(source BLAKE3/c/blake3.c miniz/miniz.c)
+    if(NOT EXISTS "${ADI_THIRD_PARTY}/${source}")
+        message(FATAL_ERROR "Missing ${source}; run tools/fetch_external.sh --build-only")
+    endif()
+endforeach()
+add_library(adi_blake3 STATIC
+    "${ADI_THIRD_PARTY}/BLAKE3/c/blake3.c"
+    "${ADI_THIRD_PARTY}/BLAKE3/c/blake3_dispatch.c"
+    "${ADI_THIRD_PARTY}/BLAKE3/c/blake3_portable.c")
+target_compile_definitions(adi_blake3 PRIVATE BLAKE3_NO_SSE2 BLAKE3_NO_SSE41
+    BLAKE3_NO_AVX2 BLAKE3_NO_AVX512 BLAKE3_USE_NEON=0)
+target_include_directories(adi_blake3 SYSTEM PUBLIC "${ADI_THIRD_PARTY}/BLAKE3/c")
+# Select the upstream C sources without introducing its global build options.
+add_library(adi_miniz STATIC
+    "${ADI_THIRD_PARTY}/miniz/miniz.c" "${ADI_THIRD_PARTY}/miniz/miniz_zip.c"
+    "${ADI_THIRD_PARTY}/miniz/miniz_tdef.c" "${ADI_THIRD_PARTY}/miniz/miniz_tinfl.c")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/miniz")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/miniz/miniz_export.h"
+    "#pragma once\n#define MINIZ_EXPORT\n")
+target_include_directories(adi_miniz SYSTEM PUBLIC "${ADI_THIRD_PARTY}/miniz"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/miniz")
+# All disk I/O uses C++ path-aware streams and 64-bit offsets, including i386.
+# Filesystem timestamps are not part of this media container contract. Avoid
+# miniz's unused local-time conversion and its process-global CRT timezone state.
+target_compile_definitions(adi_miniz PUBLIC MINIZ_NO_STDIO MINIZ_NO_TIME MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
+
 # ---------------------------------------------------------------------------
 # Warnings. The whole value of choosing C++ here is that layout and lifetime
 # mistakes become compile errors, so the warnings that catch them matter.
@@ -109,6 +136,8 @@ add_custom_command(
     VERBATIM)
 
 add_library(adi_core STATIC
+    src/adi/media/blake3.cpp
+    src/adi/media/zip_writer.cpp
     src/adi/audio/wav_file.cpp
     src/adi/blob.cpp
     # Deliberately in adi_core rather than behind ADI_WITH_JUCE: device_core
@@ -166,7 +195,7 @@ if(NOT EXISTS "${ADI_THIRD_PARTY}/clap/include/clap/clap.h")
 endif()
 target_include_directories(adi_core SYSTEM PUBLIC "${ADI_THIRD_PARTY}/clap/include")
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
-target_link_libraries(adi_core PRIVATE adi_warnings)
+target_link_libraries(adi_core PRIVATE adi_warnings adi_blake3 adi_miniz)
 
 # ---------------------------------------------------------------------------
 # adi_tool — headless CLI. The only executable until step 5.
@@ -648,3 +677,13 @@ add_test(NAME adi_wav_file_tests COMMAND adi_wav_file_tests)
 add_executable(adi_play_quantize_tests tests/test_play_quantize.cpp)
 target_link_libraries(adi_play_quantize_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_play_quantize_tests COMMAND adi_play_quantize_tests)
+
+add_executable(adi_media_hash_tests tests/test_media_hash.cpp)
+target_link_libraries(adi_media_hash_tests PRIVATE adi_core adi_warnings Threads::Threads)
+target_compile_definitions(adi_media_hash_tests PRIVATE
+    ADI_BLAKE3_VECTORS="${ADI_THIRD_PARTY}/BLAKE3/test_vectors/test_vectors.json")
+add_test(NAME adi_media_hash_tests COMMAND adi_media_hash_tests)
+
+add_executable(adi_zip_writer_tests tests/test_zip_writer.cpp)
+target_link_libraries(adi_zip_writer_tests PRIVATE adi_core adi_warnings adi_miniz Threads::Threads)
+add_test(NAME adi_zip_writer_tests COMMAND adi_zip_writer_tests)
