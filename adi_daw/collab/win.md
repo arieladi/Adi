@@ -5,6 +5,70 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — adi_play: a project through a real device, heard and measured
+
+PR #68 (the session, ADR-0122) merged at `457f6bd`, 19/19 green. This entry
+is the JUCE half it promised: branch `win/step6-play`.
+
+### Built
+
+- **`src/juce/juce_device_loader.*`** — a `DeviceLoader` over `Vst3Host` and
+  `ClapHost`. VST3: `path_hint` first (one `findAllTypesForFile`), then the
+  scan, matched on `plugin_refs.uid` = JUCE's identifier string; CLAP: the
+  descriptor id, `path_hint` as the tie-break. Both hosts return a
+  `MissingDevice` on failure; the loader turns `loaded() == false` into null
+  plus the error, so every placeholder in a session is the session's, with
+  the mirror and the bytes (ADR-0122 d4). Unhosted formats refuse with the
+  ADR that says so.
+- **`adi_play`** (`src/juce/play.cpp`): open a `.adi`, resolve, report,
+  play through the default device; `--tone [TRACK]` (220 Hz, −18 dBFS into a
+  track's junction, through `sourcesFor`), `--resize M` half way through,
+  `--type` / `--device`, `--search`, `--fixture`, `--dry`, `--list`. A peak
+  meter on the master says what LEFT the graph, per phase, because "the
+  graph ran" and "audio came out" are different claims.
+
+### Measured, on this box (Windows 11, JUCE 9.0.2, `adi_play` at the commit of this entry)
+
+Demo project: Keys → fixture VST3 "ADI Test MPE" (an instrument) then a
+VST3 that does not exist; Bass → **Surge XT Effects, the real CLAP** from
+`C:\Program Files\Common Files\CLAP`. Loader: 1 vst3, 1 clap, 1 not found,
+one scan; the absent one a PLACEHOLDER with its reason on the line.
+
+| device type | asked | granted | resize | master peak | verdict |
+|---|---|---|---|---|---|
+| Windows Audio (shared) | 512 | **480** | 480 → 480: not exercised | — | ok; WASAPI shared grants its own 10 ms period, said so |
+| Windows Audio (Exclusive Mode) | 512 | 512 | **512 → 2048**, one format change, graphs 1 → 2, swaps 2 | −18.3 dBFS before, −18.4 after | ok |
+| DirectSound | 512 | 512 | 512 → 2048, same numbers | −18.3 / −18.4 | ok |
+
+The tone crosses a real CLAP effect and comes out at the level it went in;
+the resize built a second graph on the same instances, the audio thread
+swapped once, the retired graph was reclaimed by the timer, and no plugin
+was reloaded (one loader call per row, before the device ever opened). The
+first run put the tone on Keys and measured silence — an instrument
+replaces its input, which is correct and now a note in the report rather
+than a surprise.
+
+### What this closes in ADR-0122's table
+
+- *the graph, live, from a `.adi`*: closed (suite on seven ABIs; `adi_play`
+  on this box).
+- *CLAP hosting*: closed — a real CLAP in a real project's chain, audible.
+- *VST3 hosting*: the fixture loads by uid from a `plugin_refs` row; the
+  **state round-trip is not exercised yet** (the demo has no `plugin_state`
+  rows). Closes when a VST3 with a saved chunk opens and reports
+  `statesLoaded 1`. Next, with the ADR-0110 glue.
+- *plugin parameter ops*: open (linux's layer, then the glue).
+
+### Not in CI
+
+`adi_play` is built by nobody but me: the JUCE job's build list is mac's
+(`.github/**`), and Adi ruled that mac's items wait for Saturday. Verified
+here by build and by run; macOS is the same JUCE API and unverified until
+mac adds the target. The linux agent cannot help — the JUCE job is not
+Linux, on purpose (ci.yml says why).
+
+---
+
 ## 2026-09-23 — step 6 opens: the session runtime (ADR-0122); linux gets the parameter-capture layer
 
 Adi: "start step 6, the JUCE audio device and VST3 hosting, then give codex
