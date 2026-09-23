@@ -21,6 +21,11 @@ before your first commit, and re-read it if you have been away.
   number allocations and cross-agent claims synchronise through `win`, so that
   two agents never write the same ADR or edit the same file through git.
 - Disagree in a PR, not by reverting. Nobody reverts another agent's work.
+- **A tool an agent runs is that agent.** Gemini CLI on the Ubuntu box, or any
+  other model an agent delegates to, writes nothing to the repository, opens no
+  PRs, holds no credentials and has no log. What it finds is a claim the agent
+  makes, verified by that agent with a test or a plant before it is written
+  down. Audit reports live under the agent's own folder (`collab/linux/audits/`).
 - The `linux` agent's onboarding is `collab/linux/ONBOARDING.md`; its log is
   `collab/linux.md`. Linux desktop work is phase 3 and has not started
   (ADR-0109).
@@ -147,7 +152,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
-| `src/juce/juce_device_loader.*`, `src/juce/play.cpp` (NEW files inside mac's area, on the director's instruction to start step 6, ADR-0122 d10) and the `adi_play` target in `CMakeLists.txt` | win | `win/step6-play` | 2026-09-23 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`
