@@ -16,6 +16,8 @@
 //
 // No framework, matching tests/test_main.cpp.
 
+#include "temp_directory.hpp"
+
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include "adi/store_rows.hpp"
@@ -351,7 +353,9 @@ void testReferences() {
 //  Coverage (TEXT-PROJECTION 10)
 // ===========================================================================
 
-void testCoverage(const fs::path& dir) {
+void testCoverage() {
+    const adi::test::TempDirectory scratch("textproj_store", "testCoverage");
+    const fs::path& dir = scratch.path();
     section("the coverage manifest names every table, and only real ones");
 
     StoreError e = StoreError::Ok;
@@ -389,7 +393,9 @@ void testCoverage(const fs::path& dir) {
 //  End to end
 // ===========================================================================
 
-void testEndToEnd(const fs::path& dir) {
+void testEndToEnd() {
+    const adi::test::TempDirectory scratch("textproj_store", "testEndToEnd");
+    const fs::path& dir = scratch.path();
     section("a real .adi, driven through the op registry");
 
     StoreError e = StoreError::Ok;
@@ -448,7 +454,9 @@ void testEndToEnd(const fs::path& dir) {
 }
 
 /// ADR-0021's property, which is the reason this whole layer exists.
-void testSessionStateIsInvisible(const fs::path& dir) {
+void testSessionStateIsInvisible() {
+    const adi::test::TempDirectory scratch("textproj_store", "testSessionStateIsInvisible");
+    const fs::path& dir = scratch.path();
     section("session state cannot reach the projection (ADR-0021)");
 
     StoreError e = StoreError::Ok;
@@ -478,7 +486,9 @@ void testSessionStateIsInvisible(const fs::path& dir) {
 
 /// `Model::problems` is only worth having if it is reachable, and the way to
 /// know is to reach it.
-void testCorruptBlobIsNamed(const fs::path& dir) {
+void testCorruptBlobIsNamed() {
+    const adi::test::TempDirectory scratch("textproj_store", "testCorruptBlobIsNamed");
+    const fs::path& dir = scratch.path();
     section("a corrupt note stream is named, not swallowed and not thrown");
 
     StoreError e = StoreError::Ok;
@@ -528,20 +538,16 @@ int main() {
     // how adi_device_tests' 383 KB overrun looked like a harness glitch for
     // two runs before anyone ran the binary directly.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    const fs::path dir = fs::temp_directory_path() / "adi_textproj_store";
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir, ec);
 
     try {
         testPositions();
         testDefaultsOmitted();
         testHierarchy();
         testReferences();
-        testCoverage(dir);
-        testEndToEnd(dir);
-        testSessionStateIsInvisible(dir);
-        testCorruptBlobIsNamed(dir);
+        testCoverage();
+        testEndToEnd();
+        testSessionStateIsInvisible();
+        testCorruptBlobIsNamed();
     } catch (const std::exception& ex) {
         // A modal abort dialog on Windows is a worse failure than the failure.
         std::printf("\nFAILED -- exception escaped: %s\n", ex.what());

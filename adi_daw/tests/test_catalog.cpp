@@ -10,6 +10,8 @@
 // a BLOB, so they are the first to exercise the ADR-0009 granularity bound
 // through the op system rather than only in a unit test.
 
+#include "temp_directory.hpp"
+
 #include "adi/blob.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
@@ -40,21 +42,14 @@ void check(bool cond, const std::string& what) {
 void section(const char* s) { std::printf("[%s]\n", s); }
 
 struct Fixture {
+    adi::test::TempDirectory temp; // destroyed after store/file members
     fs::path dir;
     std::unique_ptr<Store> store;
-    explicit Fixture(const char* n) {
-        dir = fs::temp_directory_path() / ("adi_cat_" + std::string(n));
-        std::error_code ec;
-        fs::remove_all(dir, ec);
-        fs::create_directories(dir, ec);
+    explicit Fixture(const char* n)
+        : temp("catalog", n), dir(temp.path()) {
         StoreError e = StoreError::Ok;
         store = Store::create(dir / "p.adi", e);
         if (store) store->db().exec("INSERT INTO project(id,name) VALUES (1,'Cat')");
-    }
-    ~Fixture() {
-        store.reset();
-        std::error_code ec;
-        fs::remove_all(dir, ec);
     }
 };
 

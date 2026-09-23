@@ -37,7 +37,109 @@ share one path was too broad. Concurrent copies of the SAME suite/build do
 share paths. Pure-memory suites need no scratch directory. Use the existing
 CTest registration for `ctest -j 4`; no test_all.sh or CMake change is needed.
 
-Results follow when measured; then stop.
+### Measurement results (before test edits)
+
+Intel Core i5-3550S, four cores, schedutil on all cores; GCC 15.2.0 and
+Clang 21.1.8 Release (-O3 -DNDEBUG), JUCE off. Compilers ran sequentially,
+control then instrumented; 48 kHz stereo, 32 warmups and 2,000 measured
+callbacks per combination. `--self-test` passed. Ordinary mode now includes
+`active-64`; `--breakdown --iterations 2000` emits one row per measured callback
+for silence-heavy and active-64, with printing after measurement. No engine
+hook was added. All fixture output/event checks passed.
+
+Every silence-heavy callback: **6 processed / 315 skipped**. Every active-64
+callback: **321 processed / 0 skipped**. Thus suspension is engaging. Body time
+covers Node::process only, not mixing or scheduler work. Timer overhead is
+included in callback/residual; do not subtract these from uninstrumented runs
+as if instrumentation were free. Table times are microseconds, nearest-rank
+p50; separate medians need not add exactly. The last column is uninstrumented
+callback p50 / processed count, an amortized cost including the whole graph.
+
+| Compiler | Project | Frames | Control callback p50 | Instrumented callback p50 | Body p50 | Residual p50 | Body / processed p50 | Control / processed |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| gcc | silence-heavy | 32 | 13.296 | 15.438 | 0.258 | 15.167 | 0.043 | 2.216 |
+| gcc | silence-heavy | 64 | 18.599 | 21.325 | 0.326 | 20.989 | 0.054 | 3.100 |
+| gcc | silence-heavy | 128 | 30.451 | 31.076 | 0.428 | 30.631 | 0.071 | 5.075 |
+| gcc | silence-heavy | 2048 | 604.085 | 659.031 | 12.350 | 646.554 | 2.058 | 100.681 |
+| gcc | silence-heavy | 4096 | 1729.522 | 1777.594 | 39.983 | 1734.288 | 6.664 | 288.254 |
+| gcc | active-64 | 32 | 24.501 | 39.534 | 12.634 | 26.831 | 0.039 | 0.076 |
+| gcc | active-64 | 64 | 34.517 | 48.231 | 15.634 | 32.433 | 0.049 | 0.108 |
+| gcc | active-64 | 128 | 49.562 | 64.105 | 21.206 | 42.598 | 0.066 | 0.154 |
+| gcc | active-64 | 2048 | 2096.371 | 2031.531 | 1029.046 | 1024.683 | 3.206 | 6.531 |
+| gcc | active-64 | 4096 | 4745.682 | 4829.890 | 2397.882 | 2427.628 | 7.470 | 14.784 |
+| clang | silence-heavy | 32 | 14.211 | 14.784 | 0.281 | 14.494 | 0.047 | 2.369 |
+| clang | silence-heavy | 64 | 18.983 | 19.991 | 0.312 | 19.668 | 0.052 | 3.164 |
+| clang | silence-heavy | 128 | 30.680 | 31.115 | 0.415 | 30.681 | 0.069 | 5.113 |
+| clang | silence-heavy | 2048 | 660.180 | 657.451 | 11.424 | 642.725 | 1.904 | 110.030 |
+| clang | silence-heavy | 4096 | 1792.442 | 1745.820 | 40.715 | 1702.603 | 6.786 | 298.740 |
+| clang | active-64 | 32 | 24.646 | 39.626 | 12.953 | 26.554 | 0.040 | 0.077 |
+| clang | active-64 | 64 | 34.112 | 47.744 | 15.851 | 31.724 | 0.049 | 0.106 |
+| clang | active-64 | 128 | 48.951 | 62.970 | 21.201 | 41.550 | 0.066 | 0.152 |
+| clang | active-64 | 2048 | 1930.943 | 2042.314 | 1106.801 | 944.904 | 3.448 | 6.015 |
+| clang | active-64 | 4096 | 4797.749 | 4573.593 | 2283.536 | 2279.074 | 7.114 | 14.946 |
+
+**Does skipped work scale with frames?** The suspended branch in Graph::runNode
+clears every output channel with `memset(... frames * sizeof(float))` before
+returning. For these 315 skipped stereo nodes that is **80,640 bytes at 32
+frames, 10,321,920 bytes at 4096** (128×), so the skipped path explicitly has
+frame-proportional memory work. The measured silent residual rises strongly
+with frames, consistent with that work, but it is not an isolated skipped-node
+time or proof of a linear timing law. Cache and scheduler overhead remain
+mixed into it. `skipped_scheduler_us` is explicitly **NA** in each breakdown
+row until win supplies the proposed hook. No attribution of the entire
+residual to skipping, no engine fix, no Ableton comparison.
+
+### Test isolation and validation
+
+The ten audited file-writing suites now use `tests/temp_directory.hpp`:
+catalog, check, CLAP bundle search, device ops, engine, history, ops, replay,
+store and textproj/store. Each Scratch/Fixture instance owns its own directory;
+the four textproj/store file-writing tests no longer share the main function's
+directory. Paths include suite, process id, per-test token and atomic counter.
+Creation is exclusive, with bounded retries on collision (including PID reuse),
+never remove-and-recreate. RAII removes only the claimed directory after all
+SQLite/file members close. The OS PID adapter is confined to tests, supporting
+Windows `_getpid` and POSIX `getpid`; no production platform path or library.
+
+The existing create/open guard now also checks two overlapping scratch scopes
+with the same test token, marker survival and cleanup of only the peer. This
+extends its existing assertion, keeping the tree at **2,272 / 24**.
+
+| Configuration | CTest -j 4 (24/24) | test_all.sh (2,272 / 24 + validators) |
+|---|---:|---:|
+| GCC 15.2.0 Debug | 2.02 s | 3.94 s |
+| Clang 21.1.8 Release | 1.69 s | 2.73 s |
+| GCC 15.2.0 TSan | 5.41 s | 16.76 s |
+
+TSan used `TSAN_OPTIONS=halt_on_error=1`, with no report. Two independent CTest
+controllers then overlapped the SAME TSan binaries, each at `-j 4`: **48/48
+suite executions passed**, both controllers exit 0, 11.11 s combined wall
+clock. They used separate copies of the generated CTest registration so the
+runners' own LastTest.log did not collide; the test data shared the same system
+temporary root. The normal `ctest --test-dir <tsan-build> --output-on-failure
+-j 4` run above used the original build registration.
+
+All eleven changed C++ units (ten tests plus benchmark) are warning-clean with
+GCC and Clang under `-Wall -Wextra -Wconversion -Wshadow -pedantic`.
+`git diff --check` passes. No CMake, `test_all.sh`, `.github/**`,
+`test_device.cpp`, production engine, schema or ADR changes.
+
+**Plants observed to fail, outside the tracked tree:**
+
+- Replace the temporary-directory helper with the old fixed-token,
+  remove-and-recreate behavior. The new overlap-isolation assertion fails
+  under GCC Debug AND GCC TSan (exit 1; the ensuing failed store creation
+  also triggers its error assertion: 37 checks, 2 failures). This demonstrates
+  data destruction rather than relying on a probabilistic parallel collision.
+- Double the timed-node call counter in a scratch benchmark source.
+  `--breakdown --iterations 1` exits 1 with
+  `invalid processed/skipped timing partition`. Clean GCC/Clang self-tests
+  and all measured callback partitions pass.
+
+The claim is removed in the final pre-merge commit. The skipped-scheduler
+elapsed-time hook remains proposed for win, not implemented or claimed.
+After all CI checks pass and merge, round three stops here awaiting win/Adi.
+
 
 ---
 

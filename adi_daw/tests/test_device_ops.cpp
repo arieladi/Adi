@@ -21,6 +21,8 @@
 //
 // ADR-0057 is the decision these implement against.
 
+#include "temp_directory.hpp"
+
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -49,14 +51,11 @@ void check(bool cond, const std::string& what) {
 void section(const char* s) { std::printf("[%s]\n", s); }
 
 struct Scratch {
+    adi::test::TempDirectory temp; // destroyed after store/file members
     fs::path dir;
-    explicit Scratch(const char* name) {
-        dir = fs::temp_directory_path() / ("adi_devops_" + std::string(name));
-        std::error_code ec;
-        fs::remove_all(dir, ec);
-        fs::create_directories(dir, ec);
+    explicit Scratch(const char* name)
+        : temp("device_ops", name), dir(temp.path()) {
     }
-    ~Scratch() { std::error_code ec; fs::remove_all(dir, ec); }
     fs::path operator/(const char* leaf) const { return dir / leaf; }
 };
 

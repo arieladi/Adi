@@ -5,6 +5,8 @@
 // silent — the project still opens, just missing everything since the last
 // checkpoint — so it is asserted by counting files, not by trusting a pragma.
 
+#include "temp_directory.hpp"
+
 #include "adi/blob.hpp"
 #include "adi/store.hpp"
 
@@ -36,16 +38,10 @@ void section(const char* s) { std::printf("[%s]\n", s); }
 /// A scratch directory that cleans itself up, so a failing test does not leave
 /// a .adi behind that the next run then fails to create over.
 struct Scratch {
+    adi::test::TempDirectory temp; // destroyed after store/file members
     fs::path dir;
-    explicit Scratch(const char* name) {
-        dir = fs::temp_directory_path() / ("adi_store_test_" + std::string(name));
-        std::error_code ec;
-        fs::remove_all(dir, ec);
-        fs::create_directories(dir, ec);
-    }
-    ~Scratch() {
-        std::error_code ec;
-        fs::remove_all(dir, ec);
+    explicit Scratch(const char* name)
+        : temp("store", name), dir(temp.path()) {
     }
     fs::path operator/(const char* leaf) const { return dir / leaf; }
 };
@@ -63,12 +59,22 @@ std::vector<std::string> siblings(const fs::path& p) {
 void testCreateAndOpen() {
     section("create and open");
     Scratch s("create");
+    const auto marker = s / "owner.txt";
+    { std::ofstream file(marker); file << "first owner"; }
+    fs::path peerPath;
+    bool isolated = false;
+    {
+        Scratch peer("create"); // same test token, overlapping lifetime
+        peerPath = peer.dir;
+        isolated = peer.dir != s.dir && fs::exists(marker);
+    }
+    isolated &= !fs::exists(peerPath) && fs::exists(marker);
     const auto p = s / "song.adi";
 
     StoreError err = StoreError::Ok;
     {
         auto st = Store::create(p, err);
-        check(st != nullptr, "create() returns a store");
+        check(st != nullptr && isolated, "create() returns a store; overlapping scratch scopes stay isolated and clean up only themselves");
         check(err == StoreError::Ok, "create() reports Ok");
         if (!st) return;
         check(!st->readOnly(), "a created store is writable");

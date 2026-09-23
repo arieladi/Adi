@@ -8,6 +8,8 @@
 // which is precisely why a checker is needed — they arrive from a crash, a bad
 // merge, a third-party writer, or a future version of us with a bug.
 
+#include "temp_directory.hpp"
+
 #include "adi/blob.hpp"
 #include "adi/check.hpp"
 #include "adi/ops.hpp"
@@ -39,13 +41,11 @@ void check(bool cond, const std::string& what) {
 void section(const char* s) { std::printf("[%s]\n", s); }
 
 struct Fixture {
+    adi::test::TempDirectory temp; // destroyed after store/file members
     fs::path dir;
     std::unique_ptr<Store> store;
-    explicit Fixture(const char* n) {
-        dir = fs::temp_directory_path() / ("adi_check_" + std::string(n));
-        std::error_code ec;
-        fs::remove_all(dir, ec);
-        fs::create_directories(dir, ec);
+    explicit Fixture(const char* n)
+        : temp("check", n), dir(temp.path()) {
         StoreError e = StoreError::Ok;
         store = Store::create(dir / "p.adi", e);
         if (!store) return;
@@ -63,11 +63,6 @@ struct Fixture {
         r.payload = {{"clip", 5}, {"note", 1}, {"start", 0}, {"dur", 1441440},
                      {"key", 60}};
         j.commit(r);
-    }
-    ~Fixture() {
-        store.reset();
-        std::error_code ec;
-        fs::remove_all(dir, ec);
     }
     SQLite::Database& db() { return store->db(); }
 };
