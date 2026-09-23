@@ -148,7 +148,8 @@ subject, say so in your log instead of writing it twice.
 | 0136 | win | `win/schema-1.1` | schema 1.1: embedded media forbidden by triggers, removed only at 2.0 (corrects ADR-0127 d2) | used |
 | 0137 | win | `win/asio` | ASIO on Windows from the headers JUCE bundles, under GPL-3.0; the probe guards it | used |
 | 0138 | win | `win/lift-agpl-ban` | the AGPL ban is lifted: AGPL code may be copied, and the copying project becomes AGPLv3 | used |
-| 0139-0140 | cloud | `cloud/remarks`, `cloud/snapshots` | for decisions ADR-0131 (remarks) or ADR-0128 (snapshots) leave open; mark used when written | reserved |
+| 0139 | cloud | `cloud/remarks` | for a decision ADR-0131 (remarks) leaves open; mark used when written | reserved |
+| 0140 | cloud | `cloud/snapshots` | history snapshots live in `history_snapshots`: `snapshots` is already the mixer-snapshot table | reserved |
 | 0141 | win | `win/vst3-gesture` | a knob moved inside a real VST3's window is one op; the mute and the echo guard each have their case | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
@@ -171,6 +172,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
+| `docs/format/schema.sql`, `docs/format/SPEC.md`, `docs/DECISIONS.md` (ADR-0140 only), `src/adi/history.*`, `src/adi/store.hpp`, `src/adi/digest.*` (one exclusion), `src/adi/textproj_store.*`, `tools/validate_schema.py`, `tests/test_snapshots.cpp`, `tests/test_textproj_store.cpp` (director's assignment) | cloud | `cloud/snapshots` | 2026-09-24 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`
