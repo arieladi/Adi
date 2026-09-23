@@ -681,6 +681,7 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         const std::int64_t t = s.node != nullptr ? s.node->tailSamples() : 0;
         s.tailRemaining = (t == kInfiniteTail) ? 0 : t;
         s.silent = true;
+        s.zeroed = true;                 // `assign` above filled it with zeros
         if (s.node != nullptr) s.node->prepare(sampleRate, maxFrames);
     }
 
@@ -945,11 +946,24 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept 
     if (suspend) {
         ++stats_.nodesSuspended;
         s.silent = true;
-        for (std::size_t c = 0; c < ch; ++c)
-            std::memset(s.chanPtrs[c], 0,
-                        static_cast<std::size_t>(frames) * sizeof(float));
+        // ONCE, TO CAPACITY, not every block to `frames`. Consumers read this
+        // buffer as zeros for as long as the node sleeps, so it has to BE zeros
+        // -- all of it, because a later block may be longer than this one and
+        // would read what an earlier loud block left beyond `frames`. Clearing
+        // it every block was the whole cost of a sleeping node, and it scaled
+        // with frames: 315 sleeping nodes cost 1.8 ms at 4096 (ADR-0102 d5).
+        // Cleared once per silence and the flag does the rest; `process`
+        // below clears the flag because the node has written.
+        if (!s.zeroed) {
+            for (std::size_t c = 0; c < ch; ++c)
+                std::memset(s.chanPtrs[c], 0,
+                            static_cast<std::size_t>(maxFrames_) * sizeof(float));
+            s.zeroed = true;
+            ++stats_.suspendClears;
+        }
         return;
     }
+    s.zeroed = false;   // the node is about to write; what it leaves is its own
 
     // Only a block that actually runs on silence spends tail.
     if (inputSilent && !hasEvents && !infinite) {

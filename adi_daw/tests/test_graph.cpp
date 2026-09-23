@@ -381,6 +381,83 @@ void testSilenceSuspends() {
           "and the scheduler counted the suspension");
 }
 
+void testSuspendedNodeClearsOnceToCapacity() {
+    section("ADR-0043 / ADR-0102 d5 -- a sleeping node clears its buffer once, "
+            "to capacity, and costs nothing per block after that");
+
+    // A node that copies its input: the one kind whose buffer can hold stale
+    // audio when it falls asleep. TailNode writes zeros and could never leak.
+    class PassNode final : public Node {
+    public:
+        void process(const NodeIo& io) noexcept override {
+            for (std::int32_t c = 0; c < io.channels; ++c) {
+                const float* in = io.in != nullptr ? io.in[c] + io.blockOffset : nullptr;
+                float* o = io.out[c] + io.blockOffset;
+                for (std::int32_t i = 0; i < io.frames; ++i) o[i] = in ? in[i] : 0.0f;
+            }
+        }
+        [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+        [[nodiscard]] const char* name() const noexcept override { return "pass"; }
+    };
+
+    ConstNode src(1.0f);
+    PassNode pass;
+    Graph g;
+    const NodeId ns = g.addNode(src), np = g.addNode(pass);
+    g.connect(ns, np);
+    g.setOutput(np);
+    g.prepare(48000.0, 256);
+
+    Out o(256);
+    AudioIo big = makeIo(o, 256);
+    AudioIo small = makeIo(o, 64);
+
+    auto allZero = [&](std::int32_t frames) {
+        for (std::int32_t i = 0; i < frames; ++i)
+            if (o.l[static_cast<std::size_t>(i)] != 0.0f || o.r[static_cast<std::size_t>(i)] != 0.0f)
+                return false;
+        return true;
+    };
+
+    // Loud at 256: pass's whole buffer holds ones.
+    for (int i = 0; i < 2; ++i) g.process(big);
+    check(!allZero(256), "loud first, so the buffer genuinely holds audio");
+
+    // Quiet at 64: pass falls asleep on a SHORT block. A clear sized to that
+    // block leaves ones at [64, 256) -- which the next long block would read.
+    src.set(0.0f);
+    g.process(small);
+    const std::int64_t clearsAfterSleep = g.stats().suspendClears;
+    check(clearsAfterSleep >= 1, "falling asleep cleared the buffer: " +
+                                     std::to_string(clearsAfterSleep));
+
+    g.process(big);
+    check(allZero(256), "a longer block after a short sleep reads zeros to the "
+                        "end -- the clear was to capacity, not to that block");
+
+    // Asleep for a while: no further clears. This is the cost that scaled with
+    // frames times sleeping nodes; a plant that clears every block fails here.
+    for (int i = 0; i < 5; ++i) g.process(big);
+    check(g.stats().suspendClears == clearsAfterSleep,
+          "and five more silent blocks cleared nothing: " +
+              std::to_string(g.stats().suspendClears));
+    check(g.stats().nodesSuspended >= 6, "while the node stayed suspended");
+
+    // Wake, then sleep again: the flag was dropped when the node wrote, so the
+    // second sleep clears again. A plant that never drops the flag leaks the
+    // ones from the second loud stretch.
+    src.set(1.0f);
+    for (int i = 0; i < 2; ++i) g.process(big);
+    check(!allZero(256), "awake again, audio flows");
+    src.set(0.0f);
+    g.process(small);
+    g.process(big);
+    check(allZero(256), "asleep again, zeros to the end again");
+    check(g.stats().suspendClears == clearsAfterSleep + 1,
+          "which took exactly one more clear: " +
+              std::to_string(g.stats().suspendClears));
+}
+
 void testEventsAreNotSilence() {
     section("ADR-0043 -- a node with a pending event runs, silent input or not");
 
@@ -1943,6 +2020,7 @@ int main() {
         testFloorCoalesces();
         testFloorBound();
         testSilenceSuspends();
+        testSuspendedNodeClearsOnceToCapacity();
         testEventsAreNotSilence();
         testTailKeepsRunning();
         testAlwaysProcess();

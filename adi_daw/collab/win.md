@@ -5,6 +5,44 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — a sleeping node now clears once, to capacity (the ADR-0102 d5 finding)
+
+linux's round three (#59) pinned the silence-heavy cost: 6 processed / 315
+skipped nodes per callback, and the skipped nodes' cost was **buffer clearing
+that scales with frames** — `runNode`'s suspend path cleared every sleeping
+node's whole output every block, 315 × 2 ch × 4096 × 4 bytes ≈ 10 MB per
+callback. That is what ADR-0102 d5 forbids and what ADR-0043's "flag outputs
+silent; skip" never meant.
+
+**The change** (`src/adi/engine/graph.{hpp,cpp}`, mine): `Slot::zeroed` says
+the whole buffer, every channel to `maxFrames`, is known to be zero. True
+after `prepare`; false the moment the node processes; a suspended node with it
+false clears **once, to capacity** — not to this block's `frames`, because a
+later block may be longer and would read what an earlier loud block left
+beyond it — sets it, and every later silent block skips the clear.
+`GraphStats::suspendClears` counts the clears, so the test can see that they
+stop. Consumers are untouched; the accumulate path still reads the zeros. A
+second saving is possible there (skip a sleeping source with an idle delay
+line) and is NOT taken: `-0.0f + 0.0f` is `+0.0f`, so skipping the add would
+change bytes exactly where linux's oracle looks, and it needs its own test.
+
+**Proof:** `testSuspendedNodeClearsOnceToCapacity` in `test_graph.cpp`, with a
+pass-through node so the buffer can actually hold stale audio (TailNode writes
+zeros and could never leak). Loud at 256, asleep on a 64-frame block, then a
+256-frame block must read zeros to the end; five more silent blocks must not
+clear; wake and sleep again must clear exactly once more. Three plants, each
+failing on the assertion written for it: clear every block (2 failures),
+clear only `frames` (2), never drop the flag (4). Graph suite 149 → 157;
+tree **2,280 across 24 suites**; validators clean; MSVC `-Werror` clean.
+
+**Not measured here:** this machine has no Linux benchmark run. **linux**, next:
+rerun the silence-heavy rows at 32 and 4096 on `main` after this merges and
+record them beside the previous table; the expectation is that the 4096 row
+falls from 1.8 ms toward the active project's 150 µs plus the mix cost. If it
+does not, the residual is the accumulate reads and that is the next item.
+
+---
+
 ## 2026-09-23 — round two landed; the first numbers say something about ADR-0043
 
 #57 merged: sidechain and event-routing determinism guards in `test_graph.cpp`,

@@ -180,6 +180,7 @@ struct GraphStats {
     std::int64_t segments = 0;       ///< sum over blocks; 1 per block when no events
     std::int64_t nodeCalls = 0;
     std::int64_t nodesSuspended = 0; ///< node-blocks skipped by ADR-0043
+    std::int64_t suspendClears = 0;  ///< buffer clears on suspension: once per silence, not per block
     std::int64_t eventsDropped = 0;
     std::int64_t eventsForwarded = 0; ///< deliveries made along an edge (ADR-0091)
     std::int64_t eventsDeferred = 0;  ///< held for a later block by a delay
@@ -632,6 +633,15 @@ private:
 
         std::int64_t tailRemaining = 0;
         bool silent = true;
+
+        /// The WHOLE audio buffer -- every channel, to maxFrames -- is known to
+        /// hold zeros. True after `prepare` and after a suspension clear; false
+        /// the moment the node processes. A suspended node clears its buffer
+        /// once, when this is false, and then skips the clear for every block
+        /// it stays silent: clearing every block cost 315 sleeping nodes 1.8 ms
+        /// at 4096 frames, twelve times a 41-node project that was all awake
+        /// (linux's measurement, 2026-09-23).
+        bool zeroed = false;
     };
 
     bool topoSort();
