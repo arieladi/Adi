@@ -1378,8 +1378,11 @@ void testClapHostWithoutAnyPlugin() {
 
     const auto paths = ClapHost::defaultSearchPaths();
     check(!paths.empty(), "there is at least one default search path on this OS");
-    for (const auto& p : paths)
-        check(!p.empty(), "and none of them is empty");
+    // Count this property once: the number of search paths varies by OS and
+    // environment, but test_all.sh compares one portable check total.
+    check(std::all_of(paths.begin(), paths.end(),
+                      [](const auto& p) { return !p.empty(); }),
+          "and none of them is empty");
 
     // A scan over nothing must be safe and must not invent plugins. CI has
     // no CLAP installed, so this IS the CI case.
