@@ -30,7 +30,8 @@ adi_block_benchmark --breakdown --iterations 2000
 
 The existing CLI runs the full matrix; the requested silence-heavy 32/4096
 rows are extracted below. Old values are from the previous round-three run
-at `f9d5c6a`, not the earlier 10,000-iteration run. All times are microseconds;
+(engine base `f9d5c6a`, benchmark published in #59 / `d49bfd1`), not the earlier
+10,000-iteration run. All times are microseconds;
 p50/p99 use nearest rank. Historical entries below remain unchanged.
 
 | Compiler | Frames | Old p50 | New p50 | Reduction µs | Reduction % | Old p99 | New p99 | Old max | New max |
@@ -66,8 +67,8 @@ compiler/mode, not a statistical claim about the small GCC/Clang difference.
 Validation after measurement: both benchmark self-tests pass;
 `test_all.sh` passes **2,280 checks across 24 suites**, validators clean, in
 **2.74 s (GCC Release), 2.73 s (Clang Release)**. No hook was added. The only
-net change is this log entry, with its claim removed in the final pre-merge
-commit. After green CI and merge, stop here and await win/Adi.
+net change is this log entry, with its claim removed before merge. After
+green CI and merge, stop here and await win/Adi.
 
 ---
 
