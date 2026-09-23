@@ -8,6 +8,241 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — Adi-requested #76 validation and #74/#76 matrix reruns
+
+Scheduled regression watch deleted at Adi's instruction. This is one explicit
+assignment, on `linux/watch-76`; no recurring watch, feature work or tuning.
+Only this log is changed (the branch's first commit claimed it; claim removed
+before merge). No engine, CMake or workflow edits.
+
+### 1. Parameter-op sanitizer verification on #76
+
+Checked out **`3eb45cc` (#76)** before building and running
+`adi_param_ops_tests`: **75 checks, zero failures under each sanitizer**.
+Clang 21.1.8 ASan+UBSan: Debug, `-fsanitize=address,undefined
+-fno-omit-frame-pointer`, `ASAN_OPTIONS=halt_on_error=1`,
+`UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`. GCC 15.2.0 TSan:
+Debug, `-fsanitize=thread -fno-omit-frame-pointer`,
+`TSAN_OPTIONS=halt_on_error=1`. JUCE off in both builds.
+ASan build/run wall time: 10.41/0.18 s; TSan: 8.04/0.23 s.
+
+**win — the #74 stack-use-after-scope does not recur on #76.** Both runs
+reach all 75 checks, including the real session/journal/undo loop. This verifies
+the fixture lifetime correction; no new guard or plant was added. This request
+covers the parameter-op suite under sanitizers, not a fresh whole-tree sanitizer
+run. Raw successful output is retained in `work/watch-76/asan-ubsan-param-ops.log`
+and `gcc-tsan-param-ops.log` in this task's local work directory.
+
+### 2. Separate benchmark reruns of #74 and #76
+
+Measured **`e1a4a5a` (#74)**, then **`3eb45cc` (#76)**, separately. Both tables
+below use the latest #75-published **#74 (`e1a4a5a`) table** as their common
+baseline, matching compiler/project/size; they do not chain their deltas.
+The earlier #73 table in #75 remains historical context.
+
+Same Intel Core i5-3550S @ 3.00 GHz, Ubuntu 26.04.1, GCC 15.2.0-16ubuntu1
+and Clang 21.1.8, Release `-O3 -DNDEBUG`, JUCE off, 48 kHz stereo.
+All four projects (active, silence-heavy, active-64 control, mpe-storm), all
+eight sizes (32/64/128/256/512/1024/2048/4096), **32 warmups plus 2,000 measured
+callbacks per cell**. Both builds finished before sequential GCC then Clang
+sampling for each revision. No build/test workload ran alongside sampling;
+no affinity, priority or governor changes. **schedutil on all four CPUs was
+verified before and after each revision**. No known configuration difference
+from #75; the runs are not an isolated or affinity-pinned experiment.
+Benchmark self-tests passed for each compiler/revision. CSVs, governor captures,
+full SHAs, build logs and timings: task-local `work/watch-76/pr74/` and `pr76/`.
+
+Times below are microseconds. Δ is signed p50 percent versus #75's #74 row.
+Misses are callback wall time above the frames/48k deadline, not device xruns.
+All cells have zero event drops and rejected events. The scheduler and OS tail
+remain part of these wall-time measurements; no device-latency or Ableton claim.
+
+#### #74 rerun — e1a4a5a
+
+| Compiler | Project | Frames | #75 p50 | New p50 | Δ % | p99 | Max | Misses |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| gcc | active | 32 | 2.850 | 2.902 | +1.82 | 4.292 | 125.523 | 0 |
+| gcc | active | 64 | 3.664 | 3.565 | -2.70 | 10.957 | 2199.083 | 1 |
+| gcc | active | 128 | 4.882 | 4.741 | -2.89 | 15.980 | 28.105 | 0 |
+| gcc | active | 256 | 8.410 | 8.325 | -1.01 | 19.715 | 86.228 | 0 |
+| gcc | active | 512 | 14.748 | 14.036 | -4.83 | 31.764 | 118.970 | 0 |
+| gcc | active | 1024 | 28.117 | 27.983 | -0.48 | 54.020 | 72.789 | 0 |
+| gcc | active | 2048 | 66.284 | 66.319 | +0.05 | 101.786 | 149.057 | 0 |
+| gcc | active | 4096 | 150.329 | 149.063 | -0.84 | 251.122 | 2249.787 | 0 |
+| gcc | silence-heavy | 32 | 7.230 | 6.342 | -12.28 | 16.823 | 20.485 | 0 |
+| gcc | silence-heavy | 64 | 7.391 | 7.111 | -3.79 | 18.020 | 181.974 | 0 |
+| gcc | silence-heavy | 128 | 7.794 | 6.701 | -14.02 | 16.911 | 29.642 | 0 |
+| gcc | silence-heavy | 256 | 8.298 | 7.892 | -4.89 | 19.789 | 78.095 | 0 |
+| gcc | silence-heavy | 512 | 9.689 | 8.881 | -8.34 | 20.876 | 59.642 | 0 |
+| gcc | silence-heavy | 1024 | 11.351 | 11.128 | -1.96 | 24.012 | 45.144 | 0 |
+| gcc | silence-heavy | 2048 | 16.453 | 16.536 | +0.50 | 36.266 | 90.593 | 0 |
+| gcc | silence-heavy | 4096 | 29.666 | 30.254 | +1.98 | 56.325 | 92.869 | 0 |
+| gcc | active-64 | 32 | 24.556 | 23.700 | -3.49 | 43.109 | 62.057 | 0 |
+| gcc | active-64 | 64 | 34.209 | 34.884 | +1.97 | 63.071 | 86.568 | 0 |
+| gcc | active-64 | 128 | 49.594 | 49.341 | -0.51 | 81.821 | 109.559 | 0 |
+| gcc | active-64 | 256 | 81.512 | 82.294 | +0.96 | 125.096 | 141.289 | 0 |
+| gcc | active-64 | 512 | 137.438 | 138.321 | +0.64 | 198.992 | 249.808 | 0 |
+| gcc | active-64 | 1024 | 398.438 | 345.252 | -13.35 | 1269.518 | 1647.129 | 0 |
+| gcc | active-64 | 2048 | 2017.571 | 1964.915 | -2.61 | 3680.145 | 11717.338 | 0 |
+| gcc | active-64 | 4096 | 4494.689 | 4517.189 | +0.50 | 6768.520 | 14687.717 | 0 |
+| gcc | mpe-storm | 32 | 2.820 | 2.776 | -1.56 | 11.339 | 226.368 | 0 |
+| gcc | mpe-storm | 64 | 6.235 | 6.339 | +1.67 | 18.197 | 246.750 | 0 |
+| gcc | mpe-storm | 128 | 8.679 | 9.117 | +5.05 | 23.203 | 255.815 | 0 |
+| gcc | mpe-storm | 256 | 18.679 | 19.815 | +6.08 | 39.655 | 1692.578 | 0 |
+| gcc | mpe-storm | 512 | 40.693 | 41.264 | +1.40 | 76.403 | 357.793 | 0 |
+| gcc | mpe-storm | 1024 | 96.253 | 96.216 | -0.04 | 140.009 | 270.582 | 0 |
+| gcc | mpe-storm | 2048 | 256.279 | 263.140 | +2.68 | 382.137 | 1197.639 | 0 |
+| gcc | mpe-storm | 4096 | 760.300 | 799.219 | +5.12 | 1333.534 | 2125.669 | 0 |
+| clang | active | 32 | 2.876 | 2.880 | +0.14 | 3.569 | 1084.999 | 1 |
+| clang | active | 64 | 3.536 | 3.608 | +2.04 | 4.235 | 24.671 | 0 |
+| clang | active | 128 | 4.879 | 4.860 | -0.39 | 5.994 | 880.560 | 0 |
+| clang | active | 256 | 7.736 | 7.512 | -2.90 | 18.381 | 3629.798 | 0 |
+| clang | active | 512 | 13.450 | 13.825 | +2.79 | 33.508 | 1029.189 | 0 |
+| clang | active | 1024 | 27.768 | 28.164 | +1.43 | 90.169 | 8104.477 | 0 |
+| clang | active | 2048 | 66.754 | 66.657 | -0.15 | 99.174 | 148.018 | 0 |
+| clang | active | 4096 | 147.266 | 150.528 | +2.22 | 200.160 | 306.815 | 0 |
+| clang | silence-heavy | 32 | 6.746 | 7.085 | +5.03 | 18.245 | 39.360 | 0 |
+| clang | silence-heavy | 64 | 7.120 | 7.189 | +0.97 | 18.743 | 28.751 | 0 |
+| clang | silence-heavy | 128 | 7.132 | 7.040 | -1.29 | 17.083 | 23.518 | 0 |
+| clang | silence-heavy | 256 | 7.604 | 7.491 | -1.49 | 18.058 | 29.833 | 0 |
+| clang | silence-heavy | 512 | 8.980 | 9.427 | +4.98 | 21.354 | 38.744 | 0 |
+| clang | silence-heavy | 1024 | 11.144 | 11.548 | +3.63 | 26.692 | 53.791 | 0 |
+| clang | silence-heavy | 2048 | 16.927 | 16.290 | -3.76 | 36.295 | 65.699 | 0 |
+| clang | silence-heavy | 4096 | 29.322 | 29.853 | +1.81 | 53.676 | 69.016 | 0 |
+| clang | active-64 | 32 | 24.153 | 24.815 | +2.74 | 49.500 | 73.363 | 0 |
+| clang | active-64 | 64 | 34.538 | 35.623 | +3.14 | 65.749 | 80.636 | 0 |
+| clang | active-64 | 128 | 49.505 | 49.692 | +0.38 | 84.684 | 132.163 | 0 |
+| clang | active-64 | 256 | 76.470 | 76.993 | +0.68 | 119.212 | 206.601 | 0 |
+| clang | active-64 | 512 | 130.097 | 131.979 | +1.45 | 186.363 | 221.444 | 0 |
+| clang | active-64 | 1024 | 302.831 | 351.350 | +16.02 | 1114.810 | 3015.419 | 0 |
+| clang | active-64 | 2048 | 1855.141 | 1848.477 | -0.36 | 3354.381 | 3787.830 | 0 |
+| clang | active-64 | 4096 | 4482.861 | 4731.923 | +5.56 | 21191.214 | 96156.343 | 1 |
+| clang | mpe-storm | 32 | 2.864 | 2.977 | +3.95 | 18.436 | 35.584 | 0 |
+| clang | mpe-storm | 64 | 8.309 | 8.561 | +3.03 | 19.575 | 25.652 | 0 |
+| clang | mpe-storm | 128 | 11.444 | 11.884 | +3.84 | 27.823 | 5097.352 | 1 |
+| clang | mpe-storm | 256 | 25.817 | 27.276 | +5.65 | 50.947 | 3124.332 | 0 |
+| clang | mpe-storm | 512 | 56.614 | 58.582 | +3.48 | 139.491 | 2185.784 | 0 |
+| clang | mpe-storm | 1024 | 141.244 | 146.363 | +3.62 | 1159.622 | 16505.966 | 0 |
+| clang | mpe-storm | 2048 | 411.562 | 434.992 | +5.69 | 3962.434 | 13138.744 | 0 |
+| clang | mpe-storm | 4096 | 1411.788 | 1467.078 | +3.92 | 4369.079 | 15189.990 | 0 |
+
+**win — absolute p50 movements greater than 20% against #75:**
+
+None in this rerun.
+
+Deadline misses (all other cells have none):
+
+- gcc active/64: 1 miss(es), p99 10.957 µs, max 2199.083 µs.
+- clang active/32: 1 miss(es), p99 3.569 µs, max 1084.999 µs.
+- clang active-64/4096: 1 miss(es), p99 21191.214 µs, max 96156.343 µs.
+- clang mpe-storm/128: 1 miss(es), p99 27.823 µs, max 5097.352 µs.
+
+#### #76 — 3eb45cc
+
+| Compiler | Project | Frames | #75 p50 | New p50 | Δ % | p99 | Max | Misses |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| gcc | active | 32 | 2.850 | 2.837 | -0.46 | 3.739 | 184.931 | 0 |
+| gcc | active | 64 | 3.664 | 3.497 | -4.56 | 14.619 | 121.760 | 0 |
+| gcc | active | 128 | 4.882 | 4.974 | +1.88 | 18.187 | 3259.518 | 1 |
+| gcc | active | 256 | 8.410 | 8.294 | -1.38 | 19.499 | 119.570 | 0 |
+| gcc | active | 512 | 14.748 | 14.943 | +1.32 | 55.019 | 4365.427 | 0 |
+| gcc | active | 1024 | 28.117 | 29.269 | +4.10 | 91.205 | 3674.618 | 0 |
+| gcc | active | 2048 | 66.284 | 68.186 | +2.87 | 103.625 | 148.137 | 0 |
+| gcc | active | 4096 | 150.329 | 152.956 | +1.75 | 240.541 | 6691.816 | 0 |
+| gcc | silence-heavy | 32 | 7.230 | 6.763 | -6.46 | 17.049 | 21.793 | 0 |
+| gcc | silence-heavy | 64 | 7.391 | 6.845 | -7.39 | 17.168 | 31.624 | 0 |
+| gcc | silence-heavy | 128 | 7.794 | 7.258 | -6.88 | 18.429 | 32.252 | 0 |
+| gcc | silence-heavy | 256 | 8.298 | 7.836 | -5.57 | 19.908 | 43.923 | 0 |
+| gcc | silence-heavy | 512 | 9.689 | 8.720 | -10.00 | 21.563 | 38.303 | 0 |
+| gcc | silence-heavy | 1024 | 11.351 | 11.539 | +1.66 | 24.809 | 2341.550 | 0 |
+| gcc | silence-heavy | 2048 | 16.453 | 17.156 | +4.27 | 34.645 | 56.121 | 0 |
+| gcc | silence-heavy | 4096 | 29.666 | 29.178 | -1.64 | 56.647 | 74.403 | 0 |
+| gcc | active-64 | 32 | 24.556 | 24.582 | +0.11 | 50.847 | 63.634 | 0 |
+| gcc | active-64 | 64 | 34.209 | 35.001 | +2.32 | 61.471 | 80.809 | 0 |
+| gcc | active-64 | 128 | 49.594 | 49.319 | -0.55 | 82.523 | 118.393 | 0 |
+| gcc | active-64 | 256 | 81.512 | 84.187 | +3.28 | 130.823 | 374.657 | 0 |
+| gcc | active-64 | 512 | 137.438 | 140.389 | +2.15 | 214.526 | 1523.546 | 0 |
+| gcc | active-64 | 1024 | 398.438 | 431.092 | +8.20 | 1458.960 | 2227.985 | 0 |
+| gcc | active-64 | 2048 | 2017.571 | 715.409 | -64.54 | 2982.367 | 7602.882 | 0 |
+| gcc | active-64 | 4096 | 4494.689 | 1974.888 | -56.06 | 3790.952 | 5149.892 | 0 |
+| gcc | mpe-storm | 32 | 2.820 | 2.532 | -10.21 | 5.502 | 16.842 | 0 |
+| gcc | mpe-storm | 64 | 6.235 | 5.918 | -5.08 | 14.740 | 52.225 | 0 |
+| gcc | mpe-storm | 128 | 8.679 | 9.419 | +8.53 | 19.734 | 33.636 | 0 |
+| gcc | mpe-storm | 256 | 18.679 | 18.701 | +0.12 | 30.091 | 67.218 | 0 |
+| gcc | mpe-storm | 512 | 40.693 | 39.268 | -3.50 | 66.518 | 93.970 | 0 |
+| gcc | mpe-storm | 1024 | 96.253 | 88.655 | -7.89 | 127.735 | 181.227 | 0 |
+| gcc | mpe-storm | 2048 | 256.279 | 231.853 | -9.53 | 296.361 | 392.833 | 0 |
+| gcc | mpe-storm | 4096 | 760.300 | 653.667 | -14.03 | 866.196 | 980.120 | 0 |
+| clang | active | 32 | 2.876 | 2.877 | +0.03 | 3.260 | 35.875 | 0 |
+| clang | active | 64 | 3.536 | 3.646 | +3.11 | 3.937 | 118.942 | 0 |
+| clang | active | 128 | 4.879 | 4.690 | -3.87 | 10.410 | 14.029 | 0 |
+| clang | active | 256 | 7.736 | 7.179 | -7.20 | 15.804 | 26.416 | 0 |
+| clang | active | 512 | 13.450 | 13.090 | -2.68 | 21.893 | 27.857 | 0 |
+| clang | active | 1024 | 27.768 | 24.526 | -11.68 | 38.473 | 73.892 | 0 |
+| clang | active | 2048 | 66.754 | 66.547 | -0.31 | 83.356 | 151.673 | 0 |
+| clang | active | 4096 | 147.266 | 146.606 | -0.45 | 188.024 | 327.950 | 0 |
+| clang | silence-heavy | 32 | 6.746 | 6.441 | -4.52 | 14.694 | 20.403 | 0 |
+| clang | silence-heavy | 64 | 7.120 | 7.400 | +3.93 | 15.864 | 25.875 | 0 |
+| clang | silence-heavy | 128 | 7.132 | 7.067 | -0.91 | 15.803 | 70.891 | 0 |
+| clang | silence-heavy | 256 | 7.604 | 7.356 | -3.26 | 10.413 | 26.155 | 0 |
+| clang | silence-heavy | 512 | 8.980 | 8.428 | -6.15 | 12.315 | 74.053 | 0 |
+| clang | silence-heavy | 1024 | 11.144 | 10.327 | -7.33 | 19.151 | 74.868 | 0 |
+| clang | silence-heavy | 2048 | 16.927 | 15.295 | -9.64 | 24.358 | 106.989 | 0 |
+| clang | silence-heavy | 4096 | 29.322 | 27.619 | -5.81 | 45.180 | 61.910 | 0 |
+| clang | active-64 | 32 | 24.153 | 23.844 | -1.28 | 39.397 | 58.119 | 0 |
+| clang | active-64 | 64 | 34.538 | 31.383 | -9.13 | 42.459 | 110.861 | 0 |
+| clang | active-64 | 128 | 49.505 | 45.645 | -7.80 | 71.866 | 103.395 | 0 |
+| clang | active-64 | 256 | 76.470 | 68.120 | -10.92 | 99.732 | 130.772 | 0 |
+| clang | active-64 | 512 | 130.097 | 116.817 | -10.21 | 162.496 | 206.332 | 0 |
+| clang | active-64 | 1024 | 302.831 | 222.625 | -26.49 | 490.398 | 611.603 | 0 |
+| clang | active-64 | 2048 | 1855.141 | 652.192 | -64.84 | 1590.980 | 1892.682 | 0 |
+| clang | active-64 | 4096 | 4482.861 | 1828.406 | -59.21 | 3551.976 | 3925.517 | 0 |
+| clang | mpe-storm | 32 | 2.864 | 2.790 | -2.58 | 18.664 | 31.596 | 0 |
+| clang | mpe-storm | 64 | 8.309 | 7.867 | -5.32 | 20.021 | 32.084 | 0 |
+| clang | mpe-storm | 128 | 11.444 | 10.856 | -5.14 | 26.040 | 45.990 | 0 |
+| clang | mpe-storm | 256 | 25.817 | 23.658 | -8.36 | 36.731 | 54.878 | 0 |
+| clang | mpe-storm | 512 | 56.614 | 51.503 | -9.03 | 76.029 | 118.113 | 0 |
+| clang | mpe-storm | 1024 | 141.244 | 126.901 | -10.15 | 170.440 | 213.332 | 0 |
+| clang | mpe-storm | 2048 | 411.562 | 364.679 | -11.39 | 452.943 | 643.845 | 0 |
+| clang | mpe-storm | 4096 | 1411.788 | 1176.029 | -16.70 | 1619.509 | 1829.692 | 0 |
+
+**win — absolute p50 movements greater than 20% against #75:**
+
+- gcc active-64/2048: -64.54% (2017.571 → 715.409 µs), p99 2982.367 µs.
+- gcc active-64/4096: -56.06% (4494.689 → 1974.888 µs), p99 3790.952 µs.
+- clang active-64/1024: -26.49% (302.831 → 222.625 µs), p99 490.398 µs.
+- clang active-64/2048: -64.84% (1855.141 → 652.192 µs), p99 1590.980 µs.
+- clang active-64/4096: -59.21% (4482.861 → 1828.406 µs), p99 3551.976 µs.
+
+Deadline misses (all other cells have none):
+
+- gcc active/128: 1 miss(es), p99 18.187 µs, max 3259.518 µs.
+
+### 3. GCC active-64/1024 remains an observation
+
+| Measurement | p50 µs | p99 µs | p99/p50 | Δ p50 versus #75 |
+|---|---:|---:|---:|---:|
+| #75's #74 table | 398.438 | 1747.243 | 4.39 | — |
+| This #74 rerun | 345.252 | 1269.518 | 3.68 | -13.35% |
+| This #76 run | 431.092 | 1458.960 | 3.38 | +8.20% |
+
+**win — yes, the cell moved again:** #76 is +24.86% versus this fresh #74
+rerun, but +8.20% versus the requested #75 baseline. Both new rows have zero
+deadline misses. It stays an observation, not an established regression; no
+baseline replacement or tuning is inferred. The accepted #66 reference remains.
+The large improvements in other active-64 rows listed above are also observations:
+#76 changes fixture declaration order and a header's lifetime contract, not
+production processing, so these runs do not establish a causal engine speedup.
+No unrequested reruns or attribution experiment was started.
+
+After returning to `linux/watch-76`, local `test_all.sh` passed with both GCC
+and Clang Release: **2,958 checks across 27 suites, all validators clean**
+(wall times 3.30 s and 3.16 s). The benchmark guide and its historical tables
+remain unchanged; this prompt's two new tables are recorded together here.
+One PR to main; merge only with every CI check green. Stop after merge.
+
+---
+
 ## 2026-09-23 — regression watch #74: parameter-op glue; ASan lifetime finding
 
 Measured qualifying merge **`e1a4a5a` (#74)**, parameter-op glue; ASan lifetime finding. Prior table for deltas: **`fb97ea8`**; every compiler/project/size is compared to its matching row. Times are µs, delta is signed p50 percentage.
