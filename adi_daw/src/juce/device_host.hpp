@@ -70,6 +70,12 @@ public:
         std::int32_t channels = 2;
         double sampleRate = 48000.0;
         std::int32_t maxFrames = 512;
+        /// ADR-0122: a session places devices from the ROWS, so it supplies
+        /// the chain itself. Unset, `chainSupplier()` places by the track id
+        /// given to `add` (ADR-0090's behaviour, and every test of it).
+        engine::DeviceChainFn devicesFor;
+        /// What pushes into a track's junction (ADR-0122). Unset, nothing.
+        engine::SourceFn sourcesFor;
     };
 
     /// Attach to the HOST that owns the live graph, and take responsibility

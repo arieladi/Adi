@@ -77,12 +77,24 @@ public:
 /// the project and a rebuild is not a reason to reload a plugin.
 using DeviceChainFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
 
+/// How a track's SOURCES are supplied: what pushes audio into the junction
+/// ahead of the devices -- a clip reader, a live input, a test tone. Same
+/// contract as `DeviceChainFn`: caller-owned nodes, outliving any graph that
+/// holds them, so a rebuild re-injects rather than re-creates (ADR-0122).
+using SourceFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
+
 struct RealizeOptions {
     std::int32_t channels = 2;
 
     /// Unset means every track is bare, which is the right behaviour for a
     /// project with no plugins and for every test that is about topology.
     DeviceChainFn devicesFor;
+
+    /// Unset means no track has a source, which is every topology test and
+    /// a project that is only routing. A source is connected INTO the
+    /// junction, so `inputFor` is unchanged by its presence: everything
+    /// that feeds a track, from inside or upstream, meets at one node.
+    SourceFn sourcesFor;
 };
 
 /// A live graph and everything it owns.

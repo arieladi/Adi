@@ -70,7 +70,8 @@ bool DeviceHost::rebuildNow() {
 
     engine::RealizeOptions opts;
     opts.channels = spec_.channels;
-    opts.devicesFor = chainSupplier();
+    opts.devicesFor = spec_.devicesFor ? spec_.devicesFor : chainSupplier();
+    opts.sourcesFor = spec_.sourcesFor;
 
     if (!host_->rebuild(*model, opts, spec_.sampleRate, spec_.maxFrames)) {
         lastError_ = host_->error();

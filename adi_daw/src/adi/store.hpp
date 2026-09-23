@@ -108,6 +108,13 @@ public:
     [[nodiscard]] std::optional<std::vector<std::byte>>
     getAutomationData(std::int64_t laneId, std::optional<std::int64_t> clipId) const;
 
+    /// One `state_blobs` row by hash: the bytes a device loader hands back to
+    /// a plugin, or keeps beside a placeholder, byte for byte (SPEC §7.1 rule 1,
+    /// ADR-0122). `nullopt` when no such row exists, which a loader reports
+    /// rather than treats as empty state.
+    [[nodiscard]] std::optional<std::vector<std::byte>>
+    getStateBlob(const std::string& hashBlake3) const;
+
     /// Last SQLite message, for diagnostics when a put/get returns false.
     [[nodiscard]] const std::string& lastError() const { return lastError_; }
 

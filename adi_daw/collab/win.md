@@ -5,6 +5,168 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — step 6 opens: the session runtime (ADR-0122); linux gets the parameter-capture layer
+
+Adi: "start step 6, the JUCE audio device and VST3 hosting, then give codex
+more assignments (he has tokens left); mac enters Saturday, so whatever we
+need from mac waits."
+
+### Inventory first
+
+Every part of the roadmap row already existed as a piece — bridge and core at
+the granted size, model → plan → graph, `GraphHost` publish and swap,
+`DeviceHost` with the restart loop, `Vst3Device`, `ClapDevice`, the benchmark
+at every size — and nothing joined them. There was no object that owns them
+for the life of an open project, no way to turn a `.adi`'s device rows into
+instances (the device tables were not in `rows::Model` at all), and nothing
+that pushes audio into a track. ADR-0122 says what "done" means for the step,
+row by row, and builds the joining object headless.
+
+### Built, branch `win/step6-session`
+
+- **`rows::Model` carries the device tables**: `pluginRefs`, `deviceChains`,
+  `devices`, `pluginParams`, `pluginState` — ordered (chain, ord, id) so a
+  chain is a walk. `plugin_state` carries the hash; `Store::getStateBlob`
+  fetches bytes on demand (the model is re-read on every edit, ADR-0090 d2).
+- **`RealizeOptions::sourcesFor`**: caller-owned nodes connected INTO the
+  junction — the seam the clip reader will use, and the tone `adi_play` will.
+- **`RebuildSpec::devicesFor` and `::sourcesFor`** — two additive, default-off
+  lines in mac's `device_host.{hpp,cpp}`, on the director's instruction. Every
+  existing caller behaves as before; `adi_device_host_tests` unchanged at 56.
+- **`engine::Session`** (`src/adi/engine/session.*`): owns `GraphHost`,
+  `DeviceHost`, the model, the loader and the sources; IS a `BlockProcessor`.
+  The rows place devices (instances are added unplaced; `chainFor` walks the
+  rows); a plugin that will not load is a `MissingDevice` with its mirror and
+  its bytes, bypassed, in place (ADR-0011); state loads first and the mirror
+  is the fallback; `prepare` at a new format rebuilds on the same instances
+  and at the same format is a no-op; `release` defeats that no-op; a removed
+  row retires its instance and an undo finds it waiting; racks are skipped,
+  named and counted (ADR-0060 owns them).
+- **`adi_session_tests`, 169 checks**, no JUCE: a real `.adi` written through
+  the op registry (three tracks, two chains, a rack with a nested chain, a
+  plugin the loader has and one it does not); load, chains, the placeholder's
+  answers and bytes, audio through the chain, **all eight block sizes in one
+  session with three loader calls total**, same-format no-op, release then
+  prepare, refresh after insert/enable/remove/undo, state-vs-mirror, a
+  project with no master (refused, silent, fixed by a refresh), an empty
+  session. **`adi_realize_tests` +11** for sources.
+- **Eight defects planted, eight fired** (table in ADR-0122). One plant had
+  to be re-planted: my first version left unreachable code and `-Werror`
+  refused to build it — a plant that does not compile has proved nothing.
+- Tree: **2467 checks across 25 suites**; validators clean; `-Werror` build.
+
+### Next, win
+
+PR B: `src/juce/juce_device_loader.*` (a `DeviceLoader` over `Vst3Host` and
+`ClapHost`: match `plugin_refs.format` + `uid`, then `path_hint`; the fixture
+VST3 first) and `adi_play` (open a `.adi`, the default device at `--block`,
+`--resize` mid-run to hear decision 6, `--tone`, `--seconds`, a report of what
+loaded, what stood in and why). Verified by ear on this box. Then the
+ADR-0110 glue once linux's layer lands.
+
+### mac — on return (Saturday 2026-09-26), in this order
+
+1. Review the two `RebuildSpec` lines in `device_host.{hpp,cpp}` (ADR-0122
+   d10). Disagree in a PR, not a revert.
+2. Add `adi_play` to the JUCE CI job's build list once PR B is in
+   (`.github/**` is yours).
+3. Standing: the GCC TSan CI leg; the Clang TSan conflict with
+   `test_device.cpp`'s allocation counter; whether `ADI_BUILD_BENCHMARKS`
+   gets a build-only job.
+4. `docs/UI-ARCHITECTURE.md` for ADR-0101 and ADR-0112 (unchanged ask).
+5. ADR-0122's not-decided item on `DeviceNode::setBypassed` from the message
+   thread: your file, your call whether the bools become atomics.
+
+### linux — assignment: `engine::ParamEditCapture` (ADR-0110 d1–d3, ADR-0122 d11)
+
+Pure C++, no JUCE, no CLAP headers, no ops. **Claim exactly**:
+`src/adi/engine/param_edits.hpp`, `src/adi/engine/param_edits.cpp`,
+`tests/test_param_edits.cpp`, plus the two CMake lines that add the source to
+`adi_core` and the target `adi_param_edits_tests`. Branch `linux/param-edits`,
+one PR, merge it yourself when green. No ADR to write: this is the contract.
+If the contract is wrong, say so in `linux.md` and stop; win rules.
+
+**Interface** (names are the contract; bodies are yours):
+
+```cpp
+namespace adi::engine {
+enum class ParamEventKind : std::uint8_t { Begin, Value, End };
+struct ParamEvent { std::int64_t deviceId = 0; std::int32_t paramIndex = 0;
+                    ParamEventKind kind = ParamEventKind::Value; double value = 0.0; };
+struct ParamEdit  { std::int64_t deviceId = 0; std::int32_t paramIndex = 0;
+                    double before = 0.0; double after = 0.0; bool implicit = false; };
+
+class ParamEditCapture {
+public:
+    explicit ParamEditCapture(std::int32_t capacity);   // allocates the ring here, never again
+    bool push(const ParamEvent&) noexcept;              // PRODUCER: one thread, any thread; false + counted when full
+    void seed(std::int64_t deviceId, std::int32_t paramIndex, double value);            // consumer: last-known
+    void expectEcho(std::int64_t deviceId, std::int32_t paramIndex, double value, std::int64_t nowMs);
+    std::size_t drain(std::int64_t nowMs, std::vector<ParamEdit>& out);   // CONSUMER: message thread; appends; returns count
+    void setQuietMs(std::int64_t ms);        // default 150
+    void setEchoTtlMs(std::int64_t ms);      // default 500
+    void setEchoTolerance(double tol);       // default 1e-6
+    struct Stats { std::int64_t pushed = 0, dropped = 0, edits = 0, implicitEdits = 0,
+                   echoesSwallowed = 0, guardsExpired = 0, strayBegins = 0, strayEnds = 0,
+                   unseeded = 0; };
+    [[nodiscard]] const Stats& stats() const noexcept;
+};
+}
+```
+
+**Semantics**, numbered so a test can cite them:
+
+1. **One gesture, one edit.** `Begin` opens a gesture on (device, param);
+   `Value`s update its pending `after`; `End` emits `{before = last-known,
+   after = last Value}` and sets last-known = after. `Begin`..`End` with no
+   `Value` between emits nothing. `Begin` while open: `strayBegins++`,
+   ignored. `End` with nothing open: `strayEnds++`; if an implicit gesture
+   (rule 3) is open on that param, `End` closes it instead.
+2. **`before` is last-known.** `seed` sets it (the glue seeds every parameter
+   at load from `getParam`). Unseeded and never ended: `before` = the first
+   `Value` of the gesture and `unseeded++` — the inverse is then one step
+   coarse, and the counter says so rather than the edit lying.
+3. **Unbracketed values coalesce.** A `Value` with no open gesture opens an
+   *implicit* one; it closes at a `drain` where `nowMs − lastValueMs ≥
+   quietMs`, emitting with `implicit = true`. A `Value` inside the window
+   extends it. Plugins that never bracket, and hosts replaying automation,
+   thereby cost one edit per settle, never one per value.
+4. **Echo guard, per parameter.** `expectEcho(d, p, v, now)` arms one guard on
+   (d, p); re-arming replaces. While armed and **no gesture is open** on
+   (d, p), a `Value` with `|value − v| ≤ tolerance` is swallowed: last-known =
+   v, guard cleared, `echoesSwallowed++`, no edit, no implicit gesture. A
+   non-matching `Value` while armed is a real edit; the guard stays armed. A
+   matching `Value` inside an OPEN gesture is part of the gesture (undo
+   mid-drag is the UI's problem, not this layer's). `Begin`/`End` are never
+   swallowed. A guard older than `echoTtlMs` at `drain` expires:
+   `guardsExpired++`.
+5. **The ring.** Single producer, single consumer, fixed capacity, wait-free
+   `push`, no allocation after construction. `drain` may allocate only in
+   `out` and in its own per-(device, param) table — consumer side, message
+   thread. Drops are counted, never silent.
+6. **Modulation and automation playback never push** (ADR-0110 d4). That is
+   the glue's rule, restated here so the layer does not guess at intent.
+
+**Tests, each with a plant that must fail before it is called done:**
+(a) one drag of 200 `Value`s → one edit, right `before`/`after`; (b) an armed
+echo is swallowed and the same value unarmed is an edit; (c) unbracketed →
+one edit after quiet, a value inside the window extends it; (d) stray
+`Begin`/`End` counted, nothing emitted; (e) full ring → `dropped` counts,
+`drain` unaffected; (f) two params interleaved within one window → two
+edits, each with its own `before`/`after`; (g) tolerance: 0.5 vs 0.5000001
+swallowed at 1e-6, 0.51 not; (h) guard TTL; (i) a matching value inside an
+open gesture is NOT swallowed; (j) unseeded → `before` = first value and the
+counter; (k) zero allocations in `push` (count `operator new` as
+`tests/test_host.cpp` does). Plus a two-thread producer/consumer run under
+TSan in your sanitizer job. Your standing regression watch still applies —
+this touches `src/adi/engine/**`, so rerun the matrix after it merges.
+
+Not in scope: turning a `ParamEdit` into a `device.setParam` op, wiring
+`Vst3Device` / `ClapDevice` to `push`, any change to `Session`. Those are
+win's, after the loader.
+
+---
+
 ## 2026-09-23 — the sleeping-node episode closed; linux gets a standing role
 
 linux's #66: the post-#65 table on the same i5-3550S, and `docs/BENCHMARKS.md`

@@ -217,6 +217,75 @@ struct Routing {
 /// the projection cannot see half of one edit and half of the next. A projector
 /// that queried lazily would be racing a writer on the same connection, and
 /// would produce a file that never existed.
+/// `plugin_refs`: the identity a device row points at. Wider than what ADI
+/// hosts (SPEC §7.4): an `au` row opens as a placeholder, never as nothing.
+struct PluginRef {
+    std::int64_t id = 0;
+    std::string format;
+    std::string uid;
+    std::string vendor;
+    std::string name;
+    std::string version;
+    std::string subtype;
+    std::string pathHint;
+    bool isShell = false;
+    std::optional<std::int64_t> shellId;
+};
+
+/// `device_chains`: exactly one owner, a track or a rack device (the schema's
+/// CHECK). A chain directly on a track IS that track's signal path.
+struct DeviceChain {
+    std::int64_t id = 0;
+    std::optional<std::int64_t> parentDeviceId;
+    std::optional<std::int64_t> trackId;
+    std::int64_t ord = 0;
+    std::string name;
+    bool muted = false;
+    bool soloed = false;
+};
+
+/// `devices`: one row per device in a chain, in `ord` order. Read in
+/// (chain, ord, id) order so a consumer can walk a chain without sorting.
+struct Device {
+    std::int64_t id = 0;
+    std::int64_t chainId = 0;
+    std::int64_t ord = 0;
+    std::optional<std::int64_t> pluginRefId;
+    std::string name;
+    bool enabled = true;
+    bool isRack = false;
+    std::optional<std::string> rackKind;
+    std::string presetName;
+    std::int64_t latencySamples = 0;
+    std::optional<std::int64_t> remoteHostId;
+    bool alwaysProcess = false;
+    bool missing = false;
+};
+
+/// `plugin_params`: the missing-plugin safety net (SPEC §7.1), and the
+/// values a placeholder answers `getParam` with.
+struct PluginParam {
+    std::int64_t deviceId = 0;
+    std::string paramId;
+    std::string name;
+    double normalized = 0.0;
+    std::optional<double> real;
+    std::string display;
+    std::string unit;
+    std::int64_t flags = 0;
+};
+
+/// `plugin_state`: a role and a HASH. The bytes stay in `state_blobs` and
+/// come through `Store::getStateBlob` when a loader wants them -- the model
+/// is re-read after every edit (ADR-0090 d2) and a sampler's state is not
+/// something to re-read on every edit.
+struct PluginState {
+    std::int64_t deviceId = 0;
+    std::string role;
+    std::string hash;
+    std::string formatHint;
+};
+
 struct Model {
     Project project;
     std::vector<TempoEvent> tempo;
@@ -230,6 +299,11 @@ struct Model {
     std::vector<Marker> markers;
     std::vector<Media> media;
     std::vector<Routing> routing;
+    std::vector<PluginRef> pluginRefs;
+    std::vector<DeviceChain> deviceChains;
+    std::vector<Device> devices;
+    std::vector<PluginParam> pluginParams;
+    std::vector<PluginState> pluginState;
 
     /// Tables that were present but unreadable — a newer schema that dropped a
     /// column we name, a corrupt blob. Named rather than swallowed, because a

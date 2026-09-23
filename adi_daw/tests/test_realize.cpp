@@ -475,6 +475,53 @@ void testSilenceIsWrittenNotLeft() {
                       std::to_string(o.l[0]));
 }
 
+/// ADR-0122: a source is injected like a device, and it lands in the
+/// JUNCTION -- ahead of the chain, summed with everything upstream. Planted
+/// and watched fail: `sourcesFor` ignored (three nodes, no tone), and the
+/// edge reversed so the junction feeds the source (the tone goes nowhere).
+void testASourceFeedsTheJunction() {
+    section("ADR-0122 -- a source is connected into the junction, ahead of the devices");
+    rows::Model m;
+    m.tracks.push_back(track(1, "audio", "A"));
+    m.tracks.push_back(track(9, "master", "Master"));
+    const GraphPlan plan = planGraph(m);
+
+    ToneNode tone(0.5f);
+    AddNode add(0.25f);
+    RealizeOptions opts;
+    opts.sourcesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        return id == 1 ? std::vector<Node*>{&tone} : std::vector<Node*>{};
+    };
+    opts.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        return id == 1 ? std::vector<Node*>{&add} : std::vector<Node*>{};
+    };
+    auto r = realize(plan, opts);
+    check(r->ok(), "realised" + problems(*r));
+    eqi(static_cast<long long>(r->nodeCount()), 4, "junction, source, device, master");
+    check(r->inputFor(1) != kInvalidNode && r->inputFor(1) != r->outputFor(1),
+          "the source did not become the track's input: the junction is still it");
+
+    r->graph().prepare(48000.0, 64);
+    check(r->graph().ok(), "prepared: " + r->graph().error());
+    Out o(64);
+    AudioIo io = makeIo(o, 64);
+    r->graph().process(io);
+    check(o.l[0] == 0.75f,
+          "the tone went THROUGH the device: 0.5 + 0.25, got " + std::to_string(o.l[0]));
+    eqi(add.calls, 1, "the device ran once");
+
+    // A null source is named, like a null device.
+    RealizeOptions bad;
+    bad.sourcesFor = [](std::int64_t) -> std::vector<Node*> { return {nullptr}; };
+    auto rb = realize(plan, bad);
+    check(rb->ok(), "a null source does not refuse the graph");
+    bool named = false;
+    for (const auto& p : rb->problems())
+        if (p.find("tracks#1: a null source was dropped") != std::string::npos) named = true;
+    check(named, "and it is named" + problems(*rb));
+    check(!named || rb->problems().size() == 2, "once per track (both tracks were asked)");
+}
+
 void testRealisationIsDeterministic() {
     section("ADR-0021 -- the same project realises to the same ids, every time");
 
@@ -521,6 +568,7 @@ int main() {
     testProblemsAreCarriedForward();
     testANullDeviceIsNamedRatherThanSkipped();
     testSilenceIsWrittenNotLeft();
+    testASourceFeedsTheJunction();
     testRealisationIsDeterministic();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);

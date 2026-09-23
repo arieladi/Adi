@@ -307,6 +307,95 @@ Model readModel(const Store& store) {
               m.routing.push_back(std::move(r));
           });
 
+    // --- the device tables (ADR-0122) -----------------------------------
+    //
+    // Ordered where the consumer walks in order: chains by (track, ord, id),
+    // devices by (chain, ord, id). A session builds a track's chain by
+    // walking these as read, so the ORDER BY is part of the contract, not a
+    // nicety -- see `Session::chainFor`.
+    query(m, db, "plugin_refs",
+          "SELECT id, format, uid, vendor, name, version, subtype, path_hint, "
+          "       is_shell, shell_id FROM plugin_refs ORDER BY id",
+          [&](const SQLite::Statement& st) {
+              PluginRef r;
+              r.id = st.getColumn(0).getInt64();
+              r.format = st.getColumn(1).getString();
+              r.uid = st.getColumn(2).getString();
+              r.vendor = st.getColumn(3).getString();
+              r.name = st.getColumn(4).getString();
+              r.version = st.getColumn(5).getString();
+              r.subtype = st.getColumn(6).getString();
+              r.pathHint = st.getColumn(7).getString();
+              r.isShell = flag(st, 8);
+              r.shellId = optInt(st, 9);
+              m.pluginRefs.push_back(std::move(r));
+          });
+
+    query(m, db, "device_chains",
+          "SELECT id, parent_device_id, track_id, ord, name, muted, soloed "
+          "FROM device_chains ORDER BY track_id, parent_device_id, ord, id",
+          [&](const SQLite::Statement& st) {
+              DeviceChain c;
+              c.id = st.getColumn(0).getInt64();
+              c.parentDeviceId = optInt(st, 1);
+              c.trackId = optInt(st, 2);
+              c.ord = st.getColumn(3).getInt64();
+              c.name = st.getColumn(4).getString();
+              c.muted = flag(st, 5);
+              c.soloed = flag(st, 6);
+              m.deviceChains.push_back(std::move(c));
+          });
+
+    query(m, db, "devices",
+          "SELECT id, chain_id, ord, plugin_ref_id, name, enabled, is_rack, "
+          "       rack_kind, preset_name, latency_samples, remote_host_id, "
+          "       always_process, missing FROM devices ORDER BY chain_id, ord, id",
+          [&](const SQLite::Statement& st) {
+              Device d;
+              d.id = st.getColumn(0).getInt64();
+              d.chainId = st.getColumn(1).getInt64();
+              d.ord = st.getColumn(2).getInt64();
+              d.pluginRefId = optInt(st, 3);
+              d.name = st.getColumn(4).getString();
+              d.enabled = flag(st, 5);
+              d.isRack = flag(st, 6);
+              d.rackKind = optText(st, 7);
+              d.presetName = st.getColumn(8).getString();
+              d.latencySamples = st.getColumn(9).getInt64();
+              d.remoteHostId = optInt(st, 10);
+              d.alwaysProcess = flag(st, 11);
+              d.missing = flag(st, 12);
+              m.devices.push_back(std::move(d));
+          });
+
+    query(m, db, "plugin_params",
+          "SELECT device_id, param_id, name, normalized_value, real_value, "
+          "       display, unit, flags FROM plugin_params ORDER BY device_id, param_id",
+          [&](const SQLite::Statement& st) {
+              PluginParam p;
+              p.deviceId = st.getColumn(0).getInt64();
+              p.paramId = st.getColumn(1).getString();
+              p.name = st.getColumn(2).getString();
+              p.normalized = st.getColumn(3).getDouble();
+              if (!st.getColumn(4).isNull()) p.real = st.getColumn(4).getDouble();
+              p.display = st.getColumn(5).getString();
+              p.unit = st.getColumn(6).getString();
+              p.flags = st.getColumn(7).getInt64();
+              m.pluginParams.push_back(std::move(p));
+          });
+
+    query(m, db, "plugin_state",
+          "SELECT device_id, stream_role, state_hash, format_hint "
+          "FROM plugin_state ORDER BY device_id, stream_role",
+          [&](const SQLite::Statement& st) {
+              PluginState s;
+              s.deviceId = st.getColumn(0).getInt64();
+              s.role = st.getColumn(1).getString();
+              s.hash = st.getColumn(2).getString();
+              s.formatHint = st.getColumn(3).getString();
+              m.pluginState.push_back(std::move(s));
+          });
+
     // Notes come through the Store's blob accessors rather than a SELECT,
     // because ADR-0009's granularity rule lives there and this should not be a
     // second place that knows how an event stream is addressed.
