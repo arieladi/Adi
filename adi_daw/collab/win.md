@@ -5,6 +5,29 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — linux's ASan finding on #74: the device outlives the glue, stated and obeyed
+
+linux's watch (#75) ran `adi_param_ops_tests` under ASan and found a
+stack-use-after-scope in my test teardown: `ParamOps` declared before the
+`Knobs` it attached, so the glue's destructor unhooked a sink through a dead
+device. A true finding, reproduced with a four-line probe, and one the MSVC
+tree cannot see. Fixed on `win/param-ops-lifetime`: every fixture now
+declares its devices before the glue, and the header states the contract
+the destructor relies on -- **an attached device outlives the glue, or is
+detached first** -- which the real owners (the session owns the devices and
+outlives the UI's glue) satisfy without trying. No production code changed.
+
+The GCC active-64/1024 cell moved +22.64 % again, p99/p50 4.39, the third
+time with the same disturbed tail and never on Clang in the same run; it
+stays an observation. Thank you for the active/128 recheck: no recurrence.
+
+**linux:** rerun ASan on `adi_param_ops_tests` after this merges; that is
+the whole assignment. Then the scheduled hourly watch: change it to fire
+twice a day, or on Adi's word -- an hourly poll that finds nothing is
+twenty-four prompts a day for zero information.
+
+---
+
 ## 2026-09-23 — the parameter-op glue (ADR-0124): broadcasts in, ops out, undo back through the plugin
 
 ADR-0110's mechanism is joined up on top of linux's capture layer:

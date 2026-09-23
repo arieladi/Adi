@@ -18,6 +18,14 @@
 //      `process`). Two devices are two producers, so each device owns a ring
 //      and `drain` walks them all. A ring is never freed while its device may
 //      still push; `detach` only unhooks the sink.
+//
+//      LIFETIME, one-sided: **an attached device outlives the glue, or is
+//      detached first.** The destructor unhooks every sink it installed, and it
+//      writes through the device to do so; a device that is already gone is a
+//      write into freed memory (linux found it with ASan in the first test
+//      suite, #75). The natural owners obey this without trying: the session
+//      owns the devices and outlives the UI's glue. The other order -- glue
+//      alive, device gone -- is what `detach` exists for.
 //   2. **Normalized is the wire unit.** Both formats can produce 0..1 (VST3
 //      natively; CLAP from the declared range), and `device.setParam` carries
 //      `norm` always and `real` when the descriptor has a range (ADR-0057).
