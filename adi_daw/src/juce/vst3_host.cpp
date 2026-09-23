@@ -225,8 +225,10 @@ Vst3Device::~Vst3Device() {
 void Vst3Device::readParameters() {
     params_.clear();
     handles_.clear();
+    juceToOurs_.clear();
     for (auto* p : inst_->getParameters()) {
-        if (p == nullptr) continue;
+        if (p == nullptr) { juceToOurs_.push_back(-1); continue; }
+        juceToOurs_.push_back(static_cast<std::int32_t>(params_.size()));
         ParamDescriptor d;
         d.id   = paramIdToText(p);
         d.name = p->getName(128).toStdString();
@@ -273,12 +275,41 @@ bool Vst3Device::setParam(const std::string& paramId, const ParamValue& v) {
         // undo step. beginChangeGesture/endChangeGesture are JUCE's spelling
         // of VST3's beginEdit/endEdit, and a setValueNotifyingHost without
         // them is a change the plugin's own automation recording never sees.
+        // Muted from our own listener (ADR-0124): the three calls below tell
+        // every listener, including us, and a host-initiated set is not an
+        // edit. Scoped, so an early return cannot leave it set.
+        struct Mute {
+            bool& flag;
+            explicit Mute(bool& f) : flag(f) { flag = true; }
+            ~Mute() { flag = false; }
+        } mute(settingFromHost_);
         h->beginChangeGesture();
         h->setValueNotifyingHost(static_cast<float>(v.normalized));
         h->endChangeGesture();
         return true;
     }
     return false;
+}
+
+void Vst3Device::audioProcessorParameterChanged(juce::AudioProcessor*, int index, float value) {
+    if (settingFromHost_) return;
+    if (index < 0 || static_cast<std::size_t>(index) >= juceToOurs_.size()) return;
+    const std::int32_t ours = juceToOurs_[static_cast<std::size_t>(index)];
+    if (ours >= 0) broadcastParam(ours, engine::ParamEventKind::Value, static_cast<double>(value));
+}
+
+void Vst3Device::audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int index) {
+    if (settingFromHost_) return;
+    if (index < 0 || static_cast<std::size_t>(index) >= juceToOurs_.size()) return;
+    const std::int32_t ours = juceToOurs_[static_cast<std::size_t>(index)];
+    if (ours >= 0) broadcastParam(ours, engine::ParamEventKind::Begin, 0.0);
+}
+
+void Vst3Device::audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*, int index) {
+    if (settingFromHost_) return;
+    if (index < 0 || static_cast<std::size_t>(index) >= juceToOurs_.size()) return;
+    const std::int32_t ours = juceToOurs_[static_cast<std::size_t>(index)];
+    if (ours >= 0) broadcastParam(ours, engine::ParamEventKind::End, 0.0);
 }
 
 void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {

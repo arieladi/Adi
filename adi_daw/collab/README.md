@@ -132,6 +132,7 @@ subject, say so in your log instead of writing it twice.
 | 0121 | win | `agent/win-dev` | MS-PL ruled acceptable under drivers/; policy row added | used |
 | 0122 | win | `win/step6-session` | step 6 opens: the session runtime -- rows place devices, placeholders never gaps, a format change rebuilds and never reloads; what "done" means for step 6 | used |
 | 0123 | win | `win/adr-0123-clap-contract` | CLAP host contract corrections from linux's audit (C1, C2, C3, C5 fixed; C4 to mac) and the audio thread never asks a node its latency (C6) | used |
+| 0124 | win | `win/adr-0124-param-ops` | the parameter-op glue: one ring per device, normalized on the wire, applied compares before it sets, the first edit writes where it started | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -153,7 +154,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
-| `src/juce/clap_host.{hpp,cpp}` (inside mac's area, on the director's step-6 instruction; ADR-0123), `src/adi/engine/graph.*`, `tests/test_clap.cpp`, `tests/test_graph.cpp`, `CMakeLists.txt` | win | `win/adr-0123-clap-contract` | 2026-09-23 |
+| `src/adi/engine/param_ops.*`, `tests/test_param_ops.cpp`; additive edits inside mac's area on the director's step-6 instruction (ADR-0124): `src/juce/device_model.*`, `src/juce/clap_host.*`, `src/juce/vst3_host.*` | win | `win/adr-0124-param-ops` | 2026-09-23 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`

@@ -8343,3 +8343,110 @@ watched fail; then the fix was put back.
 **Not decided:** C4's design (a per-instance host object); whether
 `pendingDropped_` and `startFailures_` surface as session problems rather than
 counters — the glue decides when it reads them.
+
+
+---
+
+## ADR-0124 — The parameter-op glue: one ring per device, normalized on the wire, `applied` compares before it sets, and the first edit of a parameter writes where it started — `DECIDED` (2026-09-23) — **COMPLETES ADR-0110's MECHANISM; BUILDS ON ADR-0122 d11**
+
+**Context.** ADR-0110 decided the mechanism: a plugin's own parameter edits
+are ops, one per gesture, with an echo guard on the way back. linux built the
+portable capture layer to that contract (`engine::ParamEditCapture`, #70). What
+remained was everything the capture layer deliberately did not know: which
+device a broadcast belongs to, what unit it is in, how an op becomes a
+`device.setParam` with a correct inverse, and how an op from an undo reaches
+the plugin without becoming a new op. `engine::ParamOps` is that layer, and
+the two hosts now broadcast into it.
+
+### Decisions
+
+1. **One ring per device.** The capture is single-producer, and the producers
+   are not one thread: a VST3 broadcasts on the message thread (JUCE's
+   `AudioProcessorListener`), a CLAP on the audio thread (output events of
+   `process`). Two devices are two producers. Each attached device gets its
+   own `ParamEditCapture`, seeded from `getParam` at attach, and `drain` walks
+   them all. A ring is never freed while its device may still push: `detach`
+   unhooks the sink, and the rings live as long as the glue.
+
+2. **Normalized is the wire unit.** `DeviceInstance::broadcastParam(index,
+   kind, normalized)` is the one entry point. VST3 broadcasts are 0..1 already;
+   `ClapDevice` converts its plain output values through the declared range.
+   The op carries `norm` always and `real` when the descriptor has a range
+   (ADR-0057's NULL-means-cannot-say is kept: no range, no `real`).
+
+3. **`applied` compares before it sets.** Any `device.setParam` written by
+   something other than the plugin — an undo, the UI, the agent — is handed to
+   `ParamOps::applied`, which arms the echo guard and calls `setParam` **only if
+   the device does not already hold the value**. That is how our own ops,
+   coming back through the journal, do nothing; and how a plugin that echoes a
+   host set (some do) produces no second op.
+
+4. **The first edit of a parameter in a session writes its starting value
+   first.** `plugin_params` has no row for a never-touched parameter
+   (ADR-0057), so the inverse of the first op is "delete the row" — and an undo
+   would leave the plugin where the gesture put it, with nothing recorded to
+   put it back. So the first gesture on a parameter emits two requests in one
+   transaction: a `setParam` with the pre-gesture value, then the edit. Undo
+   of that transaction applies the edit's inverse (the starting value) and
+   then the opener's (the row's absence): the plugin ends where it started and
+   the file says "never touched" again. Later gestures on the same parameter
+   emit one op.
+
+5. **A host-initiated VST3 set is muted from our own listener.** JUCE tells
+   every listener, synchronously, about the value `setValueNotifyingHost` just
+   set and about the gesture bracket around it. `Vst3Device::setParam` raises
+   a flag for the duration; the listener drops what arrives under it. A plugin
+   that re-broadcasts *later* is the echo guard's case (decision 3), not this
+   one. JUCE's parameter index is mapped to ours, because `readParameters`
+   skips null entries.
+
+6. **A CLAP's output events are the plugin's edits.** `ClapDevice::outPush`,
+   which accepted and discarded everything since ADR-0075, now forwards
+   `CLAP_EVENT_PARAM_GESTURE_BEGIN/END` and `CLAP_EVENT_PARAM_VALUE` into the
+   sink on the audio thread — a linear scan of the parameter list for the
+   index, no allocation — and still drops the rest.
+
+7. **`History::undo` applies inverses and logs nothing; the caller feeds them
+   to `applied`.** The undone transaction's ops, newest first, each hand their
+   stored `inverse` to `applied`. That is the UI's job in step 7; the test is
+   the UI for now.
+
+### Verified non-vacuously
+
+| Reverted | Check that failed |
+|---|---|
+| `real` omitted beside `norm` | and the real value from the declared range |
+| `applied` without `expectEcho` | the echo did not become an op |
+| `applied` re-sends an equal value | the device was never set by its own edit (sets 1) |
+| CLAP gesture events dropped | bracketed: an explicit gesture, not an implicit one |
+| no first-touch opener | and the plugin is back at 0.5, where the gesture found it (0.9) |
+
+Each plant fails on the check named; the whole-loop test — a real `.adi`,
+`Session`, the glue, `OpJournal::commit`, `History::undo`, the inverses back
+through `applied` — is the one that ties them together.
+
+### Consequences
+
+- `adi_param_ops_tests` (75 checks, no JUCE, all seven ABIs); the tree at
+  2958 checks across 27 suites.
+- `DeviceInstance` gains the sink (two atomics and a protected `broadcastParam`);
+  `ClapDevice::outPush` and `Vst3Device`'s three listener overrides feed it.
+  `device_model.*`, `clap_host.*` and `vst3_host.*` are inside mac's claim;
+  edited on the director's step-6 instruction, additive, logged.
+- The VST3 path is compiled in the JUCE build and not yet exercised by a test:
+  ADR-0110 d3 asked for a fixture broadcast, and that is the next JUCE item
+  (the fixture synth gains a parameter that, when set, makes its controller
+  `beginEdit`/`performEdit`/`endEdit` another).
+
+### Not decided
+
+- Who calls `ParamOps::drain` and `applied` at run time: the UI's 20 ms timer
+  beside `DeviceHostTimer`, and its op-commit path. Step 7.
+- Whether `History::Result` should carry the payloads it applied, so a caller
+  does not re-read the journal (decision 7's second half).
+- Stale-row detection: `ParamEdit::before` is not compared with the mirror
+  row, so a value changed outside ops (a preset load, ADR-0110 d1's snapshot
+  case) is not yet noticed. Arrives with the chunk-snapshot op.
+- Modulation exclusion (ADR-0110 d4): no host-side modulation exists yet;
+  when it does, its sets go through `applied` and are therefore compared and
+  guarded, but they should not be ops at all — a separate entry point.

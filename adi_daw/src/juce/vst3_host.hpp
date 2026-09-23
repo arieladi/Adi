@@ -236,10 +236,21 @@ public:
 
 private:
     bool instrument_ = false;   ///< see eventFlow(); set once in the constructor
+    /// True while `setParam` runs. JUCE tells its listeners about the value
+    /// we just set, synchronously, on this thread; that is not an edit
+    /// (ADR-0124). A plugin that re-broadcasts later is the echo guard's.
+    bool settingFromHost_ = false;
+    /// JUCE's parameter index -> ours. `readParameters` skips null entries,
+    /// so the two are not the same list.
+    std::vector<std::int32_t> juceToOurs_;
 
     // juce::AudioProcessorListener
     void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails& d) override;
-    void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override {}
+    // ADR-0110: VST3 broadcasts arrive on the plugin's UI thread through
+    // JUCE's listener; begin/end are VST3's beginEdit/endEdit.
+    void audioProcessorParameterChanged(juce::AudioProcessor*, int index, float value) override;
+    void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int index) override;
+    void audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*, int index) override;
 
     void readParameters();
 

@@ -267,6 +267,9 @@ private:
     [[nodiscard]] bool layoutMatches() const;
 
     static bool outPush(const clap_output_events_t*, const clap_event_header_t*);
+    /// Our index for a plugin's `clap_id`, or -1. Audio thread: a linear
+    /// scan over the parameter list, no allocation.
+    [[nodiscard]] std::int32_t indexOfParam(clap_id id) const noexcept;
 
 public:
 
