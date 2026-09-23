@@ -146,6 +146,7 @@ subject, say so in your log instead of writing it twice.
 | 0135 | win | `win/settings-rulings` | the sibling projects' names, and the DSP56300 emulation project | used |
 | 0136 | win | `win/schema-1.1` | schema 1.1: embedded media forbidden by triggers, removed only at 2.0 (corrects ADR-0127 d2) | used |
 | 0137 | win | `win/asio` | ASIO on Windows from the headers JUCE bundles, under GPL-3.0; the probe guards it | used |
+| 0138 | win | `win/lift-agpl-ban` | the AGPL ban is lifted: AGPL code may be copied, and the copying project becomes AGPLv3 | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -255,9 +256,9 @@ A branch is ready to merge when:
 - **Decisions go in `docs/DECISIONS.md` as a new numbered ADR.** Append only.
   Superseding an old decision means writing a new entry that says so, never
   editing the old one.
-- **`reference/` is read-only, and `reference/zrythm` is AGPL** — read it for
-  design, never copy code from it. See `docs/EXTERNAL-CODE.md` before copying
-  anything from any of those repos.
+- **`reference/` is read-only.** Its code may be copied with attribution under
+  `OPEN_SOURCE_POLICY.md` (AGPL included since ADR-0138: the first AGPL copy
+  makes `adi_daw` AGPLv3). See `docs/EXTERNAL-CODE.md` before copying anything.
 - **Check claims rather than asserting them.** Both validators exist because a
   confident sentence in a spec turned out to be false — see the `152 ops` and
   `960 PPQ quintuplet` entries in the logs. If you write a number or a

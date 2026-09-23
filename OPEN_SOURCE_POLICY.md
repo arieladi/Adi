@@ -17,11 +17,13 @@ so that nobody — human or agent — has to stop and ask.
 
 Original code is released under the **MIT License** wherever that is possible.
 
-## 2. Escalation to GPLv3
+## 2. Escalation to GPLv3, and to AGPLv3
 
 A project that copies code from a **GPL** or **LGPL** source is licensed
-**GPLv3** instead, so that the copy is lawful. Escalation is per project and
-automatic: no decision is needed, only a correct `LICENSE` file.
+**GPLv3** instead, so that the copy is lawful. A project that copies code from
+an **AGPL** source is licensed **AGPLv3** (§4). Escalation is per project and
+automatic: no decision is needed, only a correct `LICENSE` file. The rule in
+one line: **a project takes the strictest licence of the code it copies.**
 
 Where each project stands today:
 
@@ -58,32 +60,33 @@ notices are kept and the source is named in the commit message:
 | MPL-2.0 | ✅ file-level copyleft, GPLv3-compatible | copied files stay MPL; the project need not escalate |
 | MS-PL (Microsoft Public License) | ✅ **only under `adi_daw/drivers/`** — ruled by Adi on 2026-09-22 (ADR-0121) for the Windows virtual audio device, derived from Microsoft's `sysvad` sample | **GPL-incompatible**: never into `src/`, never into anything a GPLv3 binary links. A driver is its own program: derived files stay MS-PL with the licence text beside them, our own files there are MIT, and the DAW's GPLv3 is untouched |
 | **GPL-2.0-only** | ❌ | incompatible with GPLv3 (§2) |
-| **AGPL-3.0** | ❌ **banned** | §4 |
+| AGPL-3.0 | ✅ directly by Adi (2026-09-24) | escalates to AGPLv3 (§4) |
 | No licence at all | ❌ | "all rights reserved" by default; read it, copy nothing |
 
 The rows marked "same legal effect" were added when this file was written, so
 that licences behaving like the ones Adi named are handled the same way. Strike
 them if that was not the intent.
 
-## 4. The AGPL ban
+## 4. AGPL is allowed
 
-**AGPL-3.0 code is never copied into any of our projects** — not verbatim, not
-adapted, not translated to another language. Today that means **ZLEqualizer**
-and **Zrythm**.
+**Ruled by Adi on 2026-09-24; this replaces the earlier ban.** AGPL-3.0 code
+may be copied, adapted and reused like GPL code. Today that means
+**ZLEqualizer** and **Zrythm** are usable sources, not only design references.
 
-AGPL references are **design-only (clean-room)**: read them to understand the
-approach, then implement from the published literature or from first
-principles. Copyright protects source lines, not ideas; architecture, algorithms
-and API shape are free to learn from. Example: the matched-phase EQ in
-ZLEqualizer is implemented from Vicanek, *Matched Second Order Digital Filters*
-(2016), not from ZLEqualizer's source.
+Why it is safe: AGPL is GPLv3 plus one extra rule — if someone runs the program
+as a **network service**, its users must be able to get the source. GPLv3 §13
+and AGPLv3 §13 explicitly allow the two to be combined. Our projects are open
+source anyway, so the extra rule costs nothing, and every `adi_daw` build that
+links JUCE (AGPL-3.0, ADR-0048) already carries it.
 
-**The one AGPL dependency we already have: JUCE.** `adi_daw` *links* JUCE
-(AGPL-3.0) for VST3 hosting and audio I/O when built with `ADI_WITH_JUCE=ON`
-(ADR-0048). That is not copying and this ban does not cover it — but a binary
-built that way is a GPLv3 + AGPLv3 combination carrying AGPL §13 obligations. If
-the aim is no AGPL anywhere in the ecosystem, JUCE is the one thing to replace,
-and that is a decision of its own.
+What it changes: a project that copies AGPL code becomes **AGPLv3** (§2) — its
+`LICENSE` says so and its copied files keep their headers. Nothing escalates
+before a copy actually happens. An MIT project that wants to stay MIT does not
+copy AGPL (or GPL) code.
+
+One thing AGPL code can bring that is not a licence term: **trademarks.**
+Zrythm's licence adds a trademark notice under AGPL §7; copying its code is
+fine, using its name is not (§5).
 
 ## 5. What "open source" does not cover
 

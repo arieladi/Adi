@@ -69,7 +69,7 @@ explicit.
 | [`tracktion_engine`](https://github.com/Tracktion/tracktion_engine) | GPL-3.0-or-later / commercial | 112 MB | ✅ with attribution | Plugin hosting, latency compensation math, audio graph construction. The most directly applicable JUCE-side reference we have. |
 | [`ardour`](https://github.com/Ardour/ardour) | GPL-2.0-**or-later** | 164 MB | ✅ with attribution | Sub-sample fades, region splitting, comping, varispeed. Thirty years of getting the hard editing maths right. |
 | [`helio-sequencer`](https://github.com/helio-fm/helio-sequencer) | GPL-3.0 | 19 MB | ✅ with attribution | Readable, modern, pure-JUCE UI. Piano roll rendering and timeline drawing without a UI framework underneath. |
-| [`zrythm`](https://github.com/zrythm/zrythm) | **AGPL-3.0** + trademark | 161 MB | ❌ **design only** | Its undoable-action architecture — the best open-source event-sourced DAW model. Read the *shape*, write our own code. |
+| [`zrythm`](https://github.com/zrythm/zrythm) | **AGPL-3.0** + trademark | 161 MB | ✅ with attribution — makes `adi_daw` AGPLv3 on first copy; never its name | Its undoable-action architecture — the best open-source event-sourced DAW model. |
 
 ### DSP references for the plugin roadmap (ADR-0093)
 
@@ -79,7 +79,7 @@ what the roadmap was going to do with them.
 
 | Repo | Licence | Size | Copy? | Read it for |
 |---|---|---|---|---|
-| [`ZLEqualizer`](https://github.com/ZL-Audio/ZLEqualizer) | **AGPL-3.0** | 6 MB | ❌ **design only** | Dynamic EQ structure, matched-phase ("de-cramped") bells, linear-phase mode. The Zrythm rule applies. Implement matched-phase from Vicanek, *Matched Second Order Digital Filters* (2016), not from this code. |
+| [`ZLEqualizer`](https://github.com/ZL-Audio/ZLEqualizer) | **AGPL-3.0** | 6 MB | ✅ with attribution — the plugin that copies it is AGPLv3 | Dynamic EQ structure, matched-phase ("de-cramped") bells, linear-phase mode. Vicanek, *Matched Second Order Digital Filters* (2016), remains the maths behind the bells. |
 | [`lsp-dsp-units`](https://github.com/lsp-plugins/lsp-dsp-units) | LGPL-3.0-or-later | 19 MB | ✅ with attribution | `dynamics/Limiter.h`, `util/Oversampler.h`, `meters/TruePeakMeter.h`, `meters/LoudnessMeter.h` — the true-peak limiter maths. LGPL is GPL-compatible. |
 | [`lsp-plugins-limiter`](https://github.com/lsp-plugins/lsp-plugins-limiter) | LGPL-3.0-or-later | 4 MB | ✅ with attribution | How the limiter core is driven: lookahead, oversampling ratio, and its Classic/Mixed/Modern modes. |
 | [`vitOTTx`](https://github.com/Sakhnovkrg/vitOTTx) | GPL-3.0 | 1 MB | ✅ with attribution | Vital's OTT multiband upward/downward compressor, extracted standalone. Matt Tytel's original is also in `adi-vst/`'s Vital fork. |
@@ -90,24 +90,17 @@ what the roadmap was going to do with them.
 
 **Decided by `OPEN_SOURCE_POLICY.md` (ADR-0094).** Every project is open source:
 MIT by default, GPLv3 once it copies from a GPL or LGPL source. So everything above
-except ZLEqualizer may be copied, keeping the original headers — and a plugin that
-takes the LSP limiter, the chowdsp waveshapers or vitOTTx is a GPLv3 plugin.
-ZLEqualizer is AGPL and stays design-only.
+may be copied, keeping the original headers — a plugin that takes the LSP
+limiter, the chowdsp waveshapers or vitOTTx is a GPLv3 plugin, and one that
+takes ZLEqualizer is an AGPLv3 plugin (ADR-0138: the AGPL ban is lifted).
 
-### The Zrythm rule
+### The Zrythm rule, as of ADR-0138
 
-Zrythm is **AGPLv3**, not GPLv3. The incompatibility runs one way: GPLv3 code can
-go into an AGPL project, AGPL code cannot come into ours without dragging AGPL
-§13 network obligations onto the combination. It also carries a trademark clause
-under AGPL §7.
-
-So: **read Zrythm for its action vocabulary and undo-stack design, and write our
-own implementation.** Architecture and API shape are not what copyright protects;
-source lines are. This is a real and useful distinction, not a formality — the
-thing we actually want from Zrythm is *how they decomposed edits into undoable
-actions*, and that is an idea, not a file.
-
-If in doubt about a specific piece, don't.
+Zrythm is **AGPLv3**. Until 2026-09-24 that made it design-only; Adi lifted the
+AGPL ban (ADR-0138, `OPEN_SOURCE_POLICY.md` §4). Its code may now be copied with
+attribution, and the first copy makes `adi_daw` **AGPLv3** — which changes little,
+because every build that links JUCE already carries AGPL obligations. Its
+trademark clause (AGPL §7) still applies: never its name.
 
 ### Licence corrections worth recording
 
