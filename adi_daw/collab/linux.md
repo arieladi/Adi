@@ -8,6 +8,69 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — PR #60 remeasurement: the 4096-frame cost falls to ~150 µs
+
+Branch `linux/suspend-remeasure`, measured **main `5c9e62e`** (win's
+clear-once fix). Log only; no engine, benchmark, test or instrumentation hook
+change. The hook proposal from round three is not needed for this rerun.
+
+Same Intel Core i5-3550S, GCC 15.2.0 / Clang 21.1.8, Release `-O3 -DNDEBUG`,
+JUCE off. Governor **schedutil on all four CPUs**, checked before and after.
+As in the immediately preceding round-three table: **2,000 measured callbacks
+per combination, 32 warmups**, 48 kHz stereo. Both full builds finished before
+sampling; GCC then Clang, ordinary then breakdown mode, with no concurrent
+build/test workload, affinity or priority changes. Benchmark source and command
+lines are unchanged:
+
+```
+adi_block_benchmark --self-test
+adi_block_benchmark --iterations 2000
+adi_block_benchmark --breakdown --iterations 2000
+```
+
+The existing CLI runs the full matrix; the requested silence-heavy 32/4096
+rows are extracted below. Old values are from the previous round-three run
+at `f9d5c6a`, not the earlier 10,000-iteration run. All times are microseconds;
+p50/p99 use nearest rank. Historical entries below remain unchanged.
+
+| Compiler | Frames | Old p50 | New p50 | Reduction µs | Reduction % | Old p99 | New p99 | Old max | New max |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| gcc | 32 | 13.296 | 7.636 | 5.660 | 42.57 | 25.548 | 18.472 | 98.206 | 51.895 |
+| gcc | 4096 | 1729.522 | 149.462 | 1580.060 | 91.36 | 3011.969 | 258.565 | 4892.603 | 304.768 |
+| clang | 32 | 14.211 | 7.742 | 6.469 | 45.52 | 27.631 | 19.153 | 46.230 | 33.250 |
+| clang | 4096 | 1792.442 | 144.934 | 1647.508 | 91.91 | 4004.392 | 244.062 | 15080.987 | 287.398 |
+
+**Expectation met.** At 4096 frames the silence-heavy median is down **91.36%
+(GCC), 91.91% (Clang)**, to 149.462 / 144.934 µs. The eight-track active project
+in these same new runs measured 143.960 / 142.516 µs: silence-heavy is only
+**5.502 / 2.418 µs above it**. There is no remaining ~1.8 ms excess to report.
+The 32-frame row also improves, by 42.57% / 45.52%.
+
+For direct comparison with the previous instrumented table:
+
+| Compiler | Frames | New instrumented p50 | New body p50 | Old residual p50 | New residual p50 |
+|---|---:|---:|---:|---:|---:|
+| gcc | 32 | 9.420 | 0.249 | 15.167 | 9.170 |
+| gcc | 4096 | 147.243 | 8.733 | 1734.288 | 138.206 |
+| clang | 32 | 9.230 | 0.256 | 14.494 | 8.970 |
+| clang | 4096 | 147.709 | 9.377 | 1702.603 | 138.074 |
+
+Every measured silence-heavy breakdown callback still reports **6 processed /
+315 skipped**. The output/event guards pass, with zero deadline misses, event
+drops or rejected events in all four requested ordinary rows. Residual remains
+all work outside Node::process bodies, not an isolated accumulate/skipped-path
+time. Separate medians need not add, and instrumented vs ordinary runs have
+timer overhead and desktop scheduling noise. This is one matched run per
+compiler/mode, not a statistical claim about the small GCC/Clang difference.
+
+Validation after measurement: both benchmark self-tests pass;
+`test_all.sh` passes **2,280 checks across 24 suites**, validators clean, in
+**2.74 s (GCC Release), 2.73 s (Clang Release)**. No hook was added. The only
+net change is this log entry, with its claim removed in the final pre-merge
+commit. After green CI and merge, stop here and await win/Adi.
+
+---
+
 ## 2026-09-23 — round three: silent-node measurement and isolated test files
 
 Branch `linux/measurement-isolation`, based on main `f9d5c6a` (win's PR #58).
