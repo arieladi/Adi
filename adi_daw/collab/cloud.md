@@ -56,6 +56,11 @@ and the README headline and counts (39 tables, 164 ops). `docs/format/**` and
 `textproj_store.*` are standing claims of win's; Adi assigned them to me for
 this work, so I edited them under that assignment and I'm saying so here.
 
+**Rebase.** win's #85 landed mid-review: it reserved 0139-0140 for me and
+released their param-ops claim. Rebased; the claims-table conflict was
+resolved keeping both sides' rows. My claims row is removed in the last commit
+before merging.
+
 **Not done.** No ADR: ADR-0131 plus Adi's assignment decide everything here.
 There's no migration: a 1.2 build opening a 1.1 file has no `remarks` table, so
 `remark.add` fails there with "no such table". That is the same gap ADR-0136
