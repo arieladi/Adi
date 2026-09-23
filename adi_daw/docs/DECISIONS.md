@@ -9071,3 +9071,49 @@ ZLEqualizer's code was refused for being AGPL.
 
 **Not decided:** nothing. `adi_daw`'s own `LICENSE` stays GPLv3 until the first
 AGPL copy lands, and that PR changes it.
+
+
+---
+
+## ADR-0141 — A knob moved inside a real VST3's window is one undoable op, and neither echo of the undo becomes one — `DECIDED` (2026-09-24) — **CLOSES ADR-0110 d3 FOR VST3**
+
+**Context.** ADR-0110 d3 required the fixture VST3 to gain a parameter
+broadcast, with planted defects — a missing guard, an op per value — failing
+before the feature is called done. The CLAP half was proved against a fake
+plugin in `adi_param_ops_tests` (ADR-0124); the VST3 half needed the real host
+path: the plugin's `IComponentHandler` calls, through JUCE, into our listener.
+
+### Decisions
+
+1. **The fixture gains Drive and two hidden switches**
+   (`tests/fixtures/vst3_expression_synth.cpp`). Flipping *Gesture Trigger*
+   makes the plugin do what its editor does when a user drags Drive from 0.2 to
+   0.7: `beginEdit`, forty `performEdit`s, `endEdit`. Drive also **echoes** a
+   host set back with `performEdit` — at once, and again when *Deferred Echo*
+   is flipped, as a plugin's own timer would.
+2. **The test** (`adi_vst3_probe`, run by CI's Windows JUCE job): the drag is
+   two requests — the first-touch opener at 0.2 and one edit at 0.7, not forty
+   — an explicit gesture, forty-two broadcasts; the undo's `applied` sets the
+   plugin; neither echo becomes an op.
+3. **Two defences, each with its own case — the finding.** JUCE 9.0.2 hands a
+   host's parameter set to the plugin's controller **synchronously**, so a
+   plugin that echoes at once does it *inside our own `setParam`*, where the
+   mute of ADR-0124 d5 drops it. The capture's echo guard (ADR-0110 d3) is for
+   the plugin that echoes **later**. The first version of this test assumed the
+   echo would be deferred and found the guard idle; neither defence alone is
+   enough, and both are now tested.
+
+### Verified non-vacuously
+
+| Planted | Check that failed |
+|---|---|
+| our own VST3 set not muted | the immediate echo landed inside our own set: pushed 46 (and 47 after the deferred echo) |
+| gesture begin/end dropped | bracketed: an explicit gesture, not a coalesced one; forty-two broadcasts: got 41 |
+| `applied` without the echo guard | the guard swallowed it: 0; the undo produced no op: got 1 |
+
+"The wrong thread" (ADR-0110 d3's third plant) has no case here: a VST3
+edit arrives on the message thread and so does everything the test does.
+
+**Not decided:** nothing new. One API note for the capture layer:
+`ParamEditCapture::stats()` refreshes the producer's counters only when it is
+called, so a held pointer reads a stale `pushed`; the header should say so.
