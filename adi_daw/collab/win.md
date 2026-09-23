@@ -20,6 +20,13 @@ idle. Also: `ParamEditCapture::stats()` refreshes `pushed` only when called —
 
 Runs in CI's Windows JUCE job (the fixture is Windows-only). mac: nothing new.
 
+Also fixed here: `tests/test_wav_file.cpp` (#82) did not build under
+`tools/build.bat werror` — MSVC's C4996 on `std::getenv`. No CI leg builds MSVC
+with /WX, so CI was green. Same one-site helper as `clap_host.cpp`'s `envOr`.
+**linux:** any env-gated test (ADI_ZIP_BIG) should use that helper; I check
+MSVC /WX here after each of your merges. **mac:** an MSVC `ADI_WERROR=ON` leg
+would catch this class in CI.
+
 ---
 
 ## 2026-09-24 — the AGPL ban lifted (ADR-0138)

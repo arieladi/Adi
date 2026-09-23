@@ -12,6 +12,19 @@
 #include <algorithm>
 using namespace adi::audio;
 namespace {
+// std::getenv, with MSVC's C4996 silenced at ONE site -- the same helper as
+// clap_host.cpp's envOr. MSVC with /WX (tools/build.bat werror) refuses the
+// bare call; no CI leg builds MSVC with /WX, so only a Windows build sees it.
+const char* envVar(const char* name) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv(name);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
 int checks=0, failures=0;
 void check(bool ok,const char* name) { ++checks; if(!ok){++failures;std::printf("FAIL %s\n",name);} }
 using Bytes=std::vector<unsigned char>;
@@ -90,7 +103,7 @@ void metadata(const std::filesystem::path& p) {
  auto bad=b;set(bad,chunk(bad,"fmt ")+36,1,1);refuses(p,bad,"invalid extensible GUID refused");
 }
 void big(const std::filesystem::path& p) {
- if(!std::getenv("ADI_WAV_BIG") || std::strcmp(std::getenv("ADI_WAV_BIG"),"1")!=0){std::puts("SKIP real >4GiB test (set ADI_WAV_BIG=1)");return;}
+ if(!envVar("ADI_WAV_BIG") || std::strcmp(envVar("ADI_WAV_BIG"),"1")!=0){std::puts("SKIP real >4GiB test (set ADI_WAV_BIG=1)");return;}
  constexpr std::uint32_t block=262144; constexpr std::uint64_t frames=(std::uint64_t{1}<<30)+block;
  std::vector<float> buf(block,0.25f);{WavWriter w(p,48000,1,WavFormat::Float32);for(std::uint64_t n=0;n<frames;n+=block)w.write(buf.data(),block);w.close();}
  check(std::filesystem::file_size(p)>(std::uint64_t{1}<<32),"real file exceeds 4GiB");
