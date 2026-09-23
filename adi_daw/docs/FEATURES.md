@@ -209,6 +209,8 @@ Session window is the last step, not a way around that.
 Two blocks of the director's blueprint (2026-09-20). The **decisions** are
 ADR-0058 to ADR-0064; this is the backlog they govern.
 
+**Measured, not asserted:** the engine's callback cost per project and block size lives in [`BENCHMARKS.md`](BENCHMARKS.md) (ADR-0102 d3): how to run the headless benchmark, the eight-size matrix, and the recorded tables before and after the sleeping-node fixes (#60, #65).
+
 ### Native DSP nodes (ADR-0062)
 
 Built into the graph rather than hosted, for transport access, the full-
