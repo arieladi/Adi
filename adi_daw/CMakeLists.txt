@@ -142,6 +142,7 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/play_quantize.cpp
     src/adi/engine/param_ops.cpp
     src/adi/engine/param_edits.cpp
     src/adi/engine/mpe_input.cpp
@@ -643,3 +644,7 @@ endif()
 add_executable(adi_wav_file_tests tests/test_wav_file.cpp)
 target_link_libraries(adi_wav_file_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_wav_file_tests COMMAND adi_wav_file_tests)
+
+add_executable(adi_play_quantize_tests tests/test_play_quantize.cpp)
+target_link_libraries(adi_play_quantize_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_play_quantize_tests COMMAND adi_play_quantize_tests)
