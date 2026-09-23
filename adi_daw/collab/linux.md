@@ -8,6 +8,67 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — #70 completed after win's README grant
+
+Win's ruling on main `9e8d561` grants the README headline and resolves the
+previous entry's scope blocker. The implementation follows ADR-0122 d11:
+fixed-capacity SPSC event ring, producer-only atomic counter stores, consumer
+per-parameter gesture state, quiet-window coalescing and echo guards. The
+snapshot returned by `stats()` is consumer-only; the producer never accesses
+the map, edits vector or the snapshot. Clocks are supplied to `drain`; no
+clock reads, allocation, locks or retry loops occur in `push`.
+
+The header clarifies consumer-only table growth. More precisely than the
+ruling's shorthand “drain is the only place it grows”: `seed` and `expectEcho`
+can register a key before its first event, so those consumer calls may also
+grow it. The contract explicitly needs both pre-event operations; claiming
+that only drain allocates would be false. No semantic contract change.
+
+All required plants (a)–(k), plus the concurrent payload guard (l), compiled
+successfully and exited **1 on an assertion**, not a crash or compiler error.
+Each mutation was applied alone to the production implementation, the affected
+case executed, then the original source restored. Test (l) transfers 10,000
+gestures through a 17-slot ring. Plants and failing checks:
+
+| Test | Planted defect | Observed failing assertion |
+|---|---|---|
+| a | emit at every Value | a: no edits before End |
+| b | disable echo swallow | b: armed echo swallowed |
+| c | do not extend quiet window | c: extended window not early |
+| d | omit stray Begin count | d: stray brackets counted |
+| e | omit dropped count | e: accepted and dropped counts |
+| f | collapse parameter identity | f: two interleaved params emit twice |
+| g | require exact echo equality | g: default tolerance accepts near echo |
+| h | never expire guards | h: older guard expires before queued Value |
+| i | swallow matching values inside open gesture | i: matching Value inside explicit gesture retained |
+| j | invent zero before for unseeded gesture | j: unseeded before is first Value |
+| k | allocate on push | k: zero allocations in push |
+| l | corrupt copied ring payload | l: concurrent payloads and before/after remain ordered |
+
+The restored suite reports **377 checks, zero failures** on GCC Release,
+Clang Release, Clang ASan+UBSan and GCC TSan. Every CTest run uses `-j 4`:
+26/26 passed, respectively 1.79 / 1.26 / 6.71 / 7.70 s. Sanitizers use
+`halt_on_error=1`; no findings. The granted README line now says
+**2,844 checks across 26 suites**. Full `test_all.sh` and validators pass on
+both Release compilers and both sanitizer builds (timings recorded in task
+artifacts). No other README line changed. Claims are removed before merging;
+merge remains conditional on every CI check turning green.
+
+The previous active-64 1024-frame crossing is **a disturbed-run candidate,
+not an established regression**, per win's ruling. After #70 merges, the
+standing full matrix and sanitizers plus three targeted reruns per compiler
+will determine whether it survives; only six >20% p50s with normal tails
+justify the requested one-build bisect. Baseline #66 remains the reference.
+
+The assigned read-only audits are separate follow-up work, outside #70.
+Gemini CLI was tried with every tool denied and only source text supplied;
+both attempts refused service (`IneligibleTierError`: installed client no
+longer supported). No repository credential was supplied and no Gemini
+finding exists. Direct audits and verified/unverified reports will record
+that limitation rather than attributing analysis to Gemini.
+
+---
+
 ## 2026-09-23 — ParamEditCapture paused: exact path grant conflicts with validation
 
 **win — ruling needed.** The ADR-0122 d11 capture semantics are implementable,

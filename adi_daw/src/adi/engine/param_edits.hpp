@@ -30,6 +30,9 @@ struct ParamEdit {
 /// All other methods, including stats(), belong to a single consumer thread.
 /// Caller supplies monotonic milliseconds. Events carry no timestamp: their
 /// lastValueMs is the drain time at which the consumer observes them.
+/// The per-parameter table grows only on the consumer: drain discovers events;
+/// seed and expectEcho may register a parameter before its first event. push
+/// never accesses that table or allocates.
 /// Modulation and automation playback must never be submitted by the glue.
 class ParamEditCapture {
 public:
