@@ -176,12 +176,42 @@ int main(int argc, char** argv) {
         std::printf("JUCE_PLUGINHOST_AU=%d\n",     JUCE_PLUGINHOST_AU);
         std::printf("JUCE_PLUGINHOST_LV2=%d\n",    JUCE_PLUGINHOST_LV2);
         std::printf("JUCE_PLUGINHOST_LADSPA=%d\n", JUCE_PLUGINHOST_LADSPA);
+        std::printf("JUCE_ASIO=%d\n",             JUCE_ASIO);   // ADR-0137: 1 on Windows
         return 0;
     }
 
     juce::ScopedJuceInitialiser_GUI juce_init;   // JUCE needs its singletons
 
     std::printf("adi_audio_probe -- %s\n\n", juce::SystemStats::getJUCEVersion().toRawUTF8());
+
+    // Every device type this build carries, and how many devices each sees.
+    // On Windows, ASIO MUST be among them (ADR-0137): until 2026-09-24 it was
+    // not, and a Windows DAW with only WASAPI and DirectSound was the gap
+    // nothing reported. CI runs this probe on a Windows runner with no ASIO
+    // driver, so the TYPE is what is checked -- a type with zero devices is a
+    // pass, a missing type is a failure.
+    {
+        juce::AudioDeviceManager types;
+        bool haveAsio = false;
+        std::printf("  device types:");
+        for (auto* t : types.getAvailableDeviceTypes()) {
+            if (t == nullptr) continue;
+            t->scanForDevices();
+            std::printf("  %s (%d)", t->getTypeName().toRawUTF8(), t->getDeviceNames().size());
+            if (t->getTypeName() == "ASIO") haveAsio = true;
+        }
+        std::printf("\n\n");
+#if JUCE_WINDOWS
+        if (!haveAsio) {
+            std::printf("FAILED -- ADR-0137: this Windows build has no ASIO device type "
+                        "(JUCE_ASIO is off)\n");
+            return 1;
+        }
+#else
+        (void) haveAsio;
+#endif
+    }
+
     std::printf("  %-6s  %-8s  %-8s  %s\n", "want", "got", "rate", "callback period");
     std::printf("  %-6s  %-8s  %-8s  %s\n", "------", "--------", "--------", "---------------");
 

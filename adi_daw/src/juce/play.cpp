@@ -125,8 +125,8 @@ int usage() {
         "  device at the granted block size. --resize changes the block size half way\n"
         "  through the run without reloading a plugin (ADR-0122). --tone pushes a 220 Hz\n"
         "  sine into TRACK's chain (default: the first non-master track). --type picks a\n"
-        "  device type: WASAPI shared mode grants its own period, so use \"Windows Audio\n"
-        "  (Exclusive Mode)\" or \"DirectSound\" to exercise a real block-size change.\n");
+        "  device type: ASIO (Windows, ADR-0137), \"Windows Audio (Exclusive Mode)\" or\n"
+        "  \"DirectSound\" exercise a real block-size change; WASAPI shared grants its own period.\n");
     return 2;
 }
 
