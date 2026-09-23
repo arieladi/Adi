@@ -626,5 +626,15 @@ if(ADI_WITH_JUCE)
         target_include_directories(adi_audio_probe SYSTEM PRIVATE ${_adi_juce_incs})
     endif()
 
+    # ADR-0137: ASIO on Windows. JUCE 9 bundles the three ASIO SDK headers
+    # (modules/juce_audio_devices/native/asio), dual-licensed by Steinberg
+    # since October 2025 as its ASIO licence OR GPL-3.0; we take GPL-3.0,
+    # which OPEN_SOURCE_POLICY.md authorises. Nothing is fetched. The targets
+    # that open devices get it; the audio probe fails on Windows without it.
+    if(WIN32)
+        target_compile_definitions(adi_audio_probe PRIVATE JUCE_ASIO=1)
+        target_compile_definitions(adi_play PRIVATE JUCE_ASIO=1)
+    endif()
+
     message(STATUS "adi: JUCE enabled (${ADI_JUCE_DIR})")
 endif()
