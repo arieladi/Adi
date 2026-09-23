@@ -60,7 +60,7 @@ than frightening.
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
 | [`docs/UI-ARCHITECTURE.md`](docs/UI-ARCHITECTURE.md) | The Ableton-shaped shell, the component tree, and how the graph carries a hybrid track. |
 | [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 125 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 136 entries. |
 | [`drivers/`](drivers/) | OS-level pieces that are their own programs: the ADI virtual audio device for Windows, built from Microsoft's MS-PL `sysvad` sample fetched at a pinned commit by `drivers/adi-virtual-audio/build.ps1` and `.github/workflows/driver-build.yml`; our own files there are MIT (ADR-0106, 0117 to 0120). Nothing in `src/` includes it. |
 | [`docs/EXTERNAL-CODE.md`](docs/EXTERNAL-CODE.md) | The nine external repos we read or link against, and the licence boundary between them. Read before copying a line out of `reference/`. |
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
@@ -155,7 +155,7 @@ Each step gates the next. No step starts before the previous one is written down
 | **10** | Visual patching devices — Pure Data via `libpd` (ADR-0035, ADR-0040) | direction decided, contract not designed |
 | **11** | The arrangement DAW complete and **verified side by side** against Live, Cubase and Bitwig (ADR-0108) | |
 | **12** | The Session View and MixConsole window (F3), last (ADR-0101) | |
-| **13** | **ADI Live**, then **ADI DJ** — the suite on the same engine (ADR-0105) | |
+| **13** | **ADI Live**, then **aDiJ** — the suite on the same engine (ADR-0105, ADR-0133) | |
 | **14** | Linux desktop: ALSA/PipeWire, LV2, Wayland/X11, packaging (ADR-0109 phase 3) | |
 
 From step 7 on, a step is finished when its parity checklists pass against the

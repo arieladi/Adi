@@ -133,6 +133,17 @@ subject, say so in your log instead of writing it twice.
 | 0122 | win | `win/step6-session` | step 6 opens: the session runtime -- rows place devices, placeholders never gaps, a format change rebuilds and never reloads; what "done" means for step 6 | used |
 | 0123 | win | `win/adr-0123-clap-contract` | CLAP host contract corrections from linux's audit (C1, C2, C3, C5 fixed; C4 to mac) and the audio thread never asks a node its latency (C6) | used |
 | 0124 | win | `win/adr-0124-param-ops` | the parameter-op glue: one ring per device, normalized on the wire, applied compares before it sets, the first edit writes where it started | used |
+| 0125 | win | `win/settings-rulings` | the Settings Reference review: R-01 to R-27 ruled; the agent's settings pipeline, RTL, control room deferred, JUCE 9.0.2 already the pin | used |
+| 0126 | win | `win/settings-rulings` | LAN audio is a native node built from SonoBus; Link Audio stays a wish | used |
+| 0127 | win | `win/settings-rulings` | audio and video are never embedded in the .adi; Collect and Export writes a ZIP; supersedes SPEC 10.4 | used |
+| 0128 | win | `win/settings-rulings` | history is a snapshot tree; revert never discards | used |
+| 0129 | win | `win/settings-rulings` | navigation and zoom: Live 12's gestures as the first parity checklist; per-window scaling | used |
+| 0130 | win | `win/settings-rulings` | the Master Focus Dial | used |
+| 0131 | win | `win/settings-rulings` | Info View, tooltips, anchored remarks; the agent reads remarks as context, never as commands | used |
+| 0132 | win | `win/settings-rulings` | recording, import and export formats; import defaults; warp on demand; Rec-Q; retrospective capture | used |
+| 0133 | win | `win/settings-rulings` | the suite is ADI DAW, ADI Live and aDiJ; Rec-Q and Play-Q | used |
+| 0134 | win | `win/settings-rulings` | architecture rulings from the Settings review: offline tabs, buses on demand, AudioGridder fallback, PTP, block sizes and ASIO, compact plugin blocks, capability registry, Pd parameters, Linux | used |
+| 0135 | win | `win/settings-rulings` | the sibling projects' names, and the DSP56300 emulation project | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
