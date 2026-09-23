@@ -147,7 +147,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
-| `src/adi/engine/session.*`, `tests/test_session.cpp`; two additive lines in `src/juce/device_host.{hpp,cpp}` (`RebuildSpec::devicesFor`, `::sourcesFor`) inside mac's area on the director's instruction to start step 6 (ADR-0122); later `src/juce/juce_device_loader.*` and `src/juce/play.cpp` as NEW files there | win | `win/step6-session` | 2026-09-23 |
+| `src/juce/juce_device_loader.*`, `src/juce/play.cpp` (NEW files inside mac's area, on the director's instruction to start step 6, ADR-0122 d10) and the `adi_play` target in `CMakeLists.txt` | win | `win/step6-play` | 2026-09-23 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`

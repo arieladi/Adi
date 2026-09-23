@@ -561,6 +561,42 @@ if(ADI_WITH_JUCE)
     # adi_core carries device_core.cpp and, through its PUBLIC include dir, the
     # engine seam. Linking it rather than recompiling the source means the probe
     # exercises exactly the DeviceCore that ships and that the ABI suites test.
+    # ADR-0122: a project through a real device -- the session's proof by ear.
+    # Links both hosts: VST3 through JUCE, CLAP through ours. The fixture VST3
+    # is reachable with --fixture on Windows, where it is built.
+    juce_add_console_app(adi_play PRODUCT_NAME "adi_play")
+    target_sources(adi_play PRIVATE
+        src/juce/play.cpp
+        src/juce/juce_device_loader.cpp
+        src/juce/vst3_host.cpp
+        src/juce/vst3_events.cpp)
+    target_compile_features(adi_play PRIVATE cxx_std_20)
+    target_compile_definitions(adi_play PRIVATE
+        JUCE_STANDALONE_APPLICATION=1
+        JUCE_MODAL_LOOPS_PERMITTED=1
+        JUCE_USE_CURL=0
+        JUCE_WEB_BROWSER=0
+        JUCE_DISPLAY_SPLASH_SCREEN=0
+        JUCE_PLUGINHOST_VST3=1
+        JUCE_PLUGINHOST_VST=0
+        JUCE_PLUGINHOST_AU=0
+        JUCE_PLUGINHOST_LV2=0
+        JUCE_PLUGINHOST_LADSPA=0
+        JUCE_PLUGINHOST_ARA=0)
+    target_link_libraries(adi_play PRIVATE
+        adi_core
+        juce::juce_audio_processors
+        juce::juce_audio_utils
+        juce::juce_audio_devices
+        adi_warnings)
+    if(_adi_proc_incs)
+        target_include_directories(adi_play SYSTEM PRIVATE ${_adi_proc_incs})
+    endif()
+    if(WIN32)
+        add_dependencies(adi_play adi_test_vst3)
+        target_compile_definitions(adi_play PRIVATE ADI_TEST_VST3="${_adi_fixture}")
+    endif()
+
     target_link_libraries(adi_audio_probe PRIVATE
         adi_core
         juce::juce_audio_devices
