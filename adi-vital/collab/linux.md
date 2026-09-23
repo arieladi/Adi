@@ -11,12 +11,10 @@ Path/name substitutions in existing agent logs and ADRs are explicitly
 requested housekeeping, not new claims about historical work. ADR-0015’s
 obsolete standalone `arieladi/adi-vst` repository keeps its historical name.
 
-The requested separate-fork rename from `arieladi/adi-vst-synth` to
-`arieladi/adi-vital` is blocked: GitHub PATCH returned HTTP 403,
-"Resource not accessible by personal access token". The existing browser
-session is signed out. The local clone’s origin is retained until the remote
-rename succeeds. Documentation points to the intended final name; this PR
-should remain draft until the GitHub rename and description update are verified.
+The separate fork is now `arieladi/adi-vital`; GitHub's returned name and
+description verify the rename. The local clone's origin now points to
+`https://github.com/arieladi/adi-vital.git`. The initial HTTP 403 was resolved
+when Adi enabled repository Administration write access.
 The built plugin remains Vial; upstream URLs, code, licensing and binary names
 are unchanged. No source or generated schema changes.
 
