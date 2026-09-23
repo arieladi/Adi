@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1001;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1002;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '1'),
+    ('schema_minor',        '2'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -645,6 +645,41 @@ BEGIN SELECT RAISE(ABORT, 'ADR-0127: media is never embedded in the .adi'); END;
 CREATE TRIGGER media_blobs_forbidden
     BEFORE INSERT ON media_blobs
 BEGIN SELECT RAISE(ABORT, 'ADR-0127: media is never embedded in the .adi'); END;
+
+-- ============================================================================
+--  LAYER 1 — CORE: remarks anchored to objects (ADR-0131, schema 1.2)
+-- ============================================================================
+
+-- A note a person or the agent pins to a track, a clip, a device, or one
+-- parameter of a device. Project data: it travels with the file and every
+-- change to it is an op (remark.add/edit/resolve/remove, OPS.md 9.12), so it
+-- undoes like anything else.
+--
+-- (target_kind, target_id) is POLYMORPHIC, like routing's endpoints, so no
+-- FOREIGN KEY can hold it and nothing cascades. That is deliberate: deleting a
+-- track leaves its remarks in place, undoing the delete re-anchors them, and
+-- `adi_tool check` reports a remark whose target is gone as the warning
+-- `remark.danglingTarget` (SPEC 6.8).
+--
+-- `author` is who WROTE the text, which is what the UI marks (ADR-0131 d3);
+-- `ops.actor` stays the record of who submitted the op. `text` is untrusted
+-- input to the agent: it is read as context and never obeyed (ADR-0131 d5,
+-- AI-AGENT 7.3).
+CREATE TABLE remarks (
+    id           INTEGER PRIMARY KEY,
+    target_kind  TEXT    NOT NULL CHECK (target_kind IN ('track','clip','device')),
+    target_id    INTEGER NOT NULL,
+    -- A plugin_params.param_id: set only on a device's remark. No FK either --
+    -- a parameter has no row until its first edit (ADR-0057).
+    param_id     TEXT,
+    author       TEXT    NOT NULL CHECK (author IN ('user','agent')),
+    actor_detail TEXT    NOT NULL DEFAULT '',   -- the model or person, as ops.actor_detail
+    text         TEXT    NOT NULL CHECK (length(text) > 0),
+    created_utc  INTEGER NOT NULL,              -- from the op payload, never a clock (OPS.md 7)
+    resolved     INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0,1)),
+    CHECK (param_id IS NULL OR target_kind = 'device')
+) STRICT;
+CREATE INDEX idx_remarks_target ON remarks(target_kind, target_id);
 
 -- ============================================================================
 --  LAYER 3 — SESSION: the op log (SPEC §8)

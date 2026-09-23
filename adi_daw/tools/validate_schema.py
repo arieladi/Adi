@@ -23,6 +23,8 @@ Checks, in order:
      once (ADR-0044, ADR-0045).
   5h. routing.origin defaults to 'user' so grouping cannot rewrite a
      hand-made connection (ADR-0044).
+  5i. A remark names a known target kind and an author the UI can mark, has
+     text, and carries a parameter only on a device (ADR-0131).
   6. The tick base really has the arithmetic properties SPEC 4.2 claims,
      because a specification should not assert what it can check.
   7. The counts README states are the counts that exist, and no ADR
@@ -40,7 +42,7 @@ import sqlite3
 import sys
 
 SPEC_APPLICATION_ID = 1094994225  # 0x41444931 == 'ADI1'
-SPEC_USER_VERSION = 1001   # schema 1.1 (ADR-0136); SPEC §2 and the DDL say the same
+SPEC_USER_VERSION = 1002   # schema 1.2 (remarks, ADR-0131); SPEC §2 and the DDL say the same
 ADI_PPQ = 5765760  # SPEC 4.2
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -417,6 +419,45 @@ def main() -> int:
         fail("devices.always_process accepted a non-boolean")
     except sqlite3.IntegrityError:
         ok("devices.always_process is 0 or 1 (ADR-0043)")
+
+    # --- 5i. ADR-0131: remarks -----------------------------------------------
+    # author is what the UI marks, so a human can always tell who wrote what
+    # (d3); a value outside user|agent is a remark nobody can attribute. A
+    # parameter belongs to a device, so a parameter on a track's remark is a
+    # pip drawn on nothing.
+    print("[5i] remarks (ADR-0131)")
+    try:
+        db.execute("INSERT INTO remarks(id, target_kind, target_id, author, text, created_utc) "
+                   "VALUES (920, 'track', 1, 'agent', 'check the low end', 0)")
+        db.execute("INSERT INTO remarks(id, target_kind, target_id, param_id, author, text, "
+                   "created_utc, resolved) VALUES (921, 'device', 900, 'cutoff', 'user', 'too bright', 0, 1)")
+        ok("a track remark and a resolved device-parameter remark are accepted")
+    except sqlite3.Error as exc:
+        fail(f"a valid remark was refused: {exc}")
+    for label, sql in (
+        ("an author outside user|agent",
+         "INSERT INTO remarks(id, target_kind, target_id, author, text, created_utc) "
+         "VALUES (922, 'track', 1, 'remote', 'x', 0)"),
+        ("a parameter on a non-device remark",
+         "INSERT INTO remarks(id, target_kind, target_id, param_id, author, text, created_utc) "
+         "VALUES (923, 'track', 1, 'cutoff', 'user', 'x', 0)"),
+        ("an unknown target kind",
+         "INSERT INTO remarks(id, target_kind, target_id, author, text, created_utc) "
+         "VALUES (924, 'bus', 1, 'user', 'x', 0)"),
+        ("empty text",
+         "INSERT INTO remarks(id, target_kind, target_id, author, text, created_utc) "
+         "VALUES (925, 'track', 1, 'user', '', 0)"),
+        ("a missing target id",
+         "INSERT INTO remarks(id, target_kind, author, text, created_utc) "
+         "VALUES (926, 'track', 'user', 'x', 0)"),
+        ("a non-boolean resolved",
+         "UPDATE remarks SET resolved = 2 WHERE id = 920"),
+    ):
+        try:
+            db.execute(sql)
+            fail(f"remarks accepted {label}")
+        except sqlite3.IntegrityError:
+            ok(f"remarks refuse {label}")
 
     # --- 6. the tick base actually has the properties SPEC 4.2 claims --------
     # These are load-bearing claims in a specification, so they get checked

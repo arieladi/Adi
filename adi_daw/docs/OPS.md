@@ -539,7 +539,34 @@ silent truncation in JSON, a non-issue in CBOR.
 | `extension.write` | e | N | cap | P1 |
 | `extension.delete` | e | N | cap | P1 |
 
-**160 ops** — 63 P0, 50 P1, 44 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+### 9.12 Remarks (ADR-0131)
+
+| Op | S | E | Inv | P |
+|---|---|---|---|---|
+| `remark.add` | e | N | pair `remark.remove` | P2 |
+| `remark.edit` | e | N | sym | P2 |
+| `remark.resolve` | e | N | sym | P2 |
+| `remark.remove` | e | N | cap | P2 |
+
+A remark is project data, so it is edited through ops and undoes like anything
+else (ADR-0131 d2). Payloads, all keys permanent:
+
+- `remark.add {id, kind, target, param?, author, detail?, text, created, resolved?}`
+  — `kind` is `track`, `clip` or `device`; `param` names a device parameter and
+  is legal only when `kind` is `device`; `author` is `user` or `agent`.
+- `remark.edit {id, text}` · `remark.resolve {id, resolved}` · `remark.remove {id}`.
+
+Two §7 points specific to remarks:
+
+- **`created` is in the payload.** The handler never reads a clock; the caller
+  stamps the time once, and a replay writes the same row.
+- **`author` is in the payload, and `ops.actor` is not consulted.** A handler
+  cannot see who submitted it (§7.2: who ran an op must not change what it did).
+  The agent's tool layer therefore **MUST** always send `author: "agent"` — the rule
+  that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
+  agent's requests are built, not in the handler.
+
+**164 ops** — 63 P0, 50 P1, 48 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

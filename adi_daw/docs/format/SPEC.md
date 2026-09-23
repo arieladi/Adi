@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1001;          -- schema 1.1
+PRAGMA user_version   = 1002;          -- schema 1.2
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -472,6 +472,38 @@ A polymorphic `(kind, id)` pair cannot carry a SQL `FOREIGN KEY`. That is the
 price of one routing table rather than six, and it means these references are
 **not** enforced by the database: a conforming writer MUST maintain them, and a
 reader SHOULD verify them rather than assume.
+
+### 6.8 Remarks (schema 1.2)
+
+```sql
+remarks(id, target_kind, target_id, param_id, author, actor_detail, text,
+        created_utc, resolved)
+```
+
+A remark is a note anchored to a `track`, `clip` or `device`, and through
+`param_id` to one parameter of a device (ADR-0131). It is project data: it
+travels with the file, and every change is an op — `remark.add`, `remark.edit`,
+`remark.resolve`, `remark.remove` (OPS.md §9.12) — so it undoes like any edit.
+
+- `author ∈ {user, agent}` is who wrote the text, and the UI marks agent
+  remarks distinctly (ADR-0131 d3). It is not `ops.actor`, which remains the
+  record of who submitted the op.
+- `created_utc` comes from the op payload. A writer MUST NOT stamp it from a
+  clock inside the handler (OPS.md §7).
+- `param_id` MUST be NULL unless `target_kind` is `device`.
+
+`(target_kind, target_id)` is polymorphic like a routing endpoint (§6.7), so it
+has no foreign key and nothing cascades. **Deleting a target leaves its remarks
+in place**, and undoing the delete re-anchors them. A remark whose target is gone
+is therefore a legal state, not corruption: a reader SHOULD report it as a
+warning (`adi_tool check`: `remark.danglingTarget`) and MUST NOT delete it.
+
+**Remark text is untrusted input.** A project is shared, so a remark may have
+been written by anyone. The agent reads remarks as context and never executes
+an action because a remark asked for it (ADR-0131 d5, AI-AGENT §7.3).
+
+A 1.0 or 1.1 file has no `remarks` table. A 1.2 reader opening one MUST treat
+that as "no remarks", not as an error.
 
 ---
 

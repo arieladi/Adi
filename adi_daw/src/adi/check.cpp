@@ -403,6 +403,38 @@ void checkMedia(Ctx& c) {
     }
 }
 
+// --- 6. remarks (ADR-0131) ---------------------------------------------------------
+
+/// A remark whose track, clip or device is gone. A WARNING, not an error:
+/// deleting the object is an ordinary edit and undoing it re-anchors the remark,
+/// so the orphan is expected state between the two -- but a user who never
+/// undoes should be told their note now points at nothing.
+void checkRemarks(Ctx& c) {
+    c.ran();
+    try {
+        // A 1.0 or 1.1 file has no remarks table (schema 1.2). Nothing to check.
+        if (c.db.execAndGet("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
+                            "AND name = 'remarks'").getInt() == 0)
+            return;
+        // Only the kinds 1.2 defines. A kind a newer minor adds is its business,
+        // and "no longer exists" would be a false statement about it.
+        SQLite::Statement st(c.db,
+            "SELECT r.id, r.target_kind, r.target_id FROM remarks r "
+            "WHERE r.target_kind IN ('track','clip','device') AND NOT ("
+            "  (r.target_kind = 'track'  AND EXISTS (SELECT 1 FROM tracks  WHERE id = r.target_id)) OR "
+            "  (r.target_kind = 'clip'   AND EXISTS (SELECT 1 FROM clips   WHERE id = r.target_id)) OR "
+            "  (r.target_kind = 'device' AND EXISTS (SELECT 1 FROM devices WHERE id = r.target_id)))");
+        while (st.executeStep())
+            c.add(Severity::Warning, "remark.danglingTarget",
+                  "remarks#" + std::to_string(st.getColumn(0).getInt64()),
+                  "anchored to " + st.getColumn(1).getString() + " " +
+                      std::to_string(st.getColumn(2).getInt64()) +
+                      ", which no longer exists");
+    } catch (const std::exception& e) {
+        c.add(Severity::Error, "remark.checkFailed", "remarks", e.what());
+    }
+}
+
 }  // namespace
 
 CheckReport checkProject(const Store& s) {
@@ -415,6 +447,7 @@ CheckReport checkProject(const Store& s) {
     checkHistory(c);
     checkTimeBase(c);
     checkMedia(c);
+    checkRemarks(c);
     return r;
 }
 

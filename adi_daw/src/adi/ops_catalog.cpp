@@ -705,6 +705,116 @@ bool routingDisconnectInverse(OpContext& c, const Payload& p, Payload& inv, std:
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 
+// --- remarks (ADR-0131, OPS.md 9.12) ------------------------------------------
+//
+// The time a remark was written is in the payload (`created`), never read from
+// a clock here: replayed a year later the row must come back identical (OPS.md
+// 7.2). Likewise `author` is the payload's, not the submitting actor's -- a
+// handler cannot see who submitted it, and must not (the replay corpus runs one
+// log under two actors and demands the same project).
+
+bool remarkAddApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        SQLite::Statement st(c.db,
+            "INSERT INTO remarks(id, target_kind, target_id, param_id, author, "
+            "actor_detail, text, created_utc, resolved) VALUES (?,?,?,?,?,?,?,?,?)");
+        st.bind(1, p.at("id").get<std::int64_t>());
+        st.bind(2, p.at("kind").get<std::string>());
+        st.bind(3, p.at("target").get<std::int64_t>());
+        if (p.contains("param") && !p.at("param").is_null())
+            st.bind(4, p.at("param").get<std::string>());
+        else
+            st.bind(4);
+        st.bind(5, p.at("author").get<std::string>());
+        st.bind(6, p.value("detail", std::string{}));
+        st.bind(7, p.at("text").get<std::string>());
+        st.bind(8, p.at("created").get<std::int64_t>());
+        st.bind(9, p.value("resolved", false) ? 1 : 0);
+        st.exec();
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+bool remarkAddInverse(OpContext&, const Payload& p, Payload& inv, std::string& err) {
+    if (!p.contains("id")) { err = "remark.add payload has no id"; return false; }
+    inv = Payload::object();
+    inv["id"] = p.at("id");
+    return true;   // paired: remark.remove
+}
+
+bool remarkRemoveApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        SQLite::Statement st(c.db, "DELETE FROM remarks WHERE id = ?");
+        st.bind(1, p.at("id").get<std::int64_t>());
+        if (st.exec() == 0) { err = "no such remark"; return false; }
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+bool remarkRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    // State capture: every column, so the remark.add that undoes this puts back
+    // the same row -- author, time and resolved flag included.
+    try {
+        SQLite::Statement st(c.db,
+            "SELECT target_kind, target_id, param_id, author, actor_detail, text, "
+            "created_utc, resolved FROM remarks WHERE id = ?");
+        st.bind(1, p.at("id").get<std::int64_t>());
+        if (!st.executeStep()) { err = "no such remark to capture"; return false; }
+        inv = Payload::object();
+        inv["id"] = p.at("id");
+        inv["kind"] = st.getColumn(0).getString();
+        inv["target"] = st.getColumn(1).getInt64();
+        if (st.getColumn(2).isNull()) inv["param"] = nullptr;
+        else inv["param"] = st.getColumn(2).getString();
+        inv["author"] = st.getColumn(3).getString();
+        inv["detail"] = st.getColumn(4).getString();
+        inv["text"] = st.getColumn(5).getString();
+        inv["created"] = st.getColumn(6).getInt64();
+        inv["resolved"] = st.getColumn(7).getInt() != 0;
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool remarkEditApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        SQLite::Statement st(c.db, "UPDATE remarks SET text = ? WHERE id = ?");
+        st.bind(1, p.at("text").get<std::string>());
+        st.bind(2, p.at("id").get<std::int64_t>());
+        if (st.exec() == 0) { err = "no such remark"; return false; }
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+bool remarkEditInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        SQLite::Statement st(c.db, "SELECT text FROM remarks WHERE id = ?");
+        st.bind(1, p.at("id").get<std::int64_t>());
+        if (!st.executeStep()) { err = "no such remark"; return false; }
+        inv = Payload::object();
+        inv["id"] = p.at("id");
+        inv["text"] = st.getColumn(0).getString();
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool remarkResolveApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        SQLite::Statement st(c.db, "UPDATE remarks SET resolved = ? WHERE id = ?");
+        st.bind(1, p.at("resolved").get<bool>() ? 1 : 0);
+        st.bind(2, p.at("id").get<std::int64_t>());
+        if (st.exec() == 0) { err = "no such remark"; return false; }
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+bool remarkResolveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        SQLite::Statement st(c.db, "SELECT resolved FROM remarks WHERE id = ?");
+        st.bind(1, p.at("id").get<std::int64_t>());
+        if (!st.executeStep()) { err = "no such remark"; return false; }
+        inv = Payload::object();
+        inv["id"] = p.at("id");
+        inv["resolved"] = st.getColumn(0).getInt() != 0;
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
 // --- transport: the first real ephemeral ops ----------------------------------
 //
 // They persist nothing (ADR-0027), so there is nothing to apply until an engine
@@ -815,6 +925,19 @@ constexpr Field kFDevicePreset[] = {{"dev", FieldType::Int, true},
                                     {"preset", FieldType::Text, true}};
 constexpr Field kFSetParent[] = {{"id", FieldType::Int, true},
                                  {"parent", FieldType::Int, false}};
+constexpr Field kFRemarkAdd[] = {{"id", FieldType::Int, true},
+                                 {"kind", FieldType::Text, true},
+                                 {"target", FieldType::Int, true},
+                                 {"param", FieldType::Text, false},
+                                 {"author", FieldType::Text, true},
+                                 {"detail", FieldType::Text, false},
+                                 {"text", FieldType::Text, true},
+                                 {"created", FieldType::Int, true},
+                                 {"resolved", FieldType::Bool, false}};
+constexpr Field kFRemarkEdit[] = {{"id", FieldType::Int, true},
+                                  {"text", FieldType::Text, true}};
+constexpr Field kFRemarkResolve[] = {{"id", FieldType::Int, true},
+                                     {"resolved", FieldType::Bool, true}};
 constexpr Field kFTransportSeek[] = {{"pos", FieldType::Int, true}};
 constexpr Field kFTransportFlag[] = {{"on", FieldType::Bool, true}};
 constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
@@ -1519,6 +1642,19 @@ const OpDescriptor kHandWritten[] = {
     {"routing.disconnect", "Remove a connection", Scope::Edit,
      EngineImpact::GraphRebuild, kFId, false, false,
      routingDisconnectApply, routingDisconnectInverse, "routing.connect"},
+
+    // ADR-0131. No engine impact: a remark is read by people and the agent,
+    // never by the audio graph.
+    {"remark.add", "Anchor a remark to a track, clip, device or parameter",
+     Scope::Edit, EngineImpact::None, kFRemarkAdd, false, false,
+     remarkAddApply, remarkAddInverse, "remark.remove"},
+    {"remark.remove", "Remove a remark", Scope::Edit, EngineImpact::None,
+     kFId, false, false, remarkRemoveApply, remarkRemoveInverse, "remark.add"},
+    {"remark.edit", "Change a remark's text", Scope::Edit, EngineImpact::None,
+     kFRemarkEdit, false, false, remarkEditApply, remarkEditInverse, ""},
+    {"remark.resolve", "Mark a remark resolved, or reopen it", Scope::Edit,
+     EngineImpact::None, kFRemarkResolve, false, false,
+     remarkResolveApply, remarkResolveInverse, ""},
 
     // Ephemeral: performance, not editing. No inverse, and undo skips them.
     {"transport.play", "Start playback", Scope::Transport, EngineImpact::None,
