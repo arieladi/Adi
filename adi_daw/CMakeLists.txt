@@ -141,6 +141,7 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/param_ops.cpp
     src/adi/engine/param_edits.cpp
     src/adi/engine/mpe_input.cpp
     src/adi/engine/mpe_output.cpp
@@ -302,6 +303,11 @@ target_link_libraries(adi_graph_tests PRIVATE adi_core adi_warnings)
 find_package(Threads REQUIRED)   # ADR-0123: one test renders on a second thread
 target_link_libraries(adi_graph_tests PRIVATE Threads::Threads)
 add_test(NAME adi_graph_tests COMMAND adi_graph_tests)
+
+# ADR-0124: broadcasts in, ops out; the CLAP path renders on a second thread.
+add_executable(adi_param_ops_tests tests/test_param_ops.cpp)
+target_link_libraries(adi_param_ops_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_param_ops_tests COMMAND adi_param_ops_tests)
 
 add_executable(adi_engine_tests tests/test_engine.cpp)
 target_link_libraries(adi_engine_tests PRIVATE adi_core adi_warnings)

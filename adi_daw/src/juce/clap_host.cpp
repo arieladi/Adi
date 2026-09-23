@@ -790,11 +790,40 @@ void ClapDevice::release() {
     activated_ = false;
 }
 
-bool ClapDevice::outPush(const clap_output_events_t*, const clap_event_header_t*) {
-    // A plugin may report its own parameter changes and note ends back to us.
-    // Accepted and discarded for now: routing them into the op log is
-    // ADR-0038's business and needs the message thread, which is not this
-    // one. Returning false would tell the plugin we are broken.
+std::int32_t ClapDevice::indexOfParam(clap_id id) const noexcept {
+    for (std::size_t i = 0; i < paramIds_.size(); ++i)
+        if (paramIds_[i] == id) return static_cast<std::int32_t>(i);
+    return -1;
+}
+
+bool ClapDevice::outPush(const clap_output_events_t* list, const clap_event_header_t* h) {
+    // A plugin reports its own parameter edits here, on the audio thread,
+    // as output events of `process`: a gesture bracket and the values inside
+    // it. They go into the device's ring (ADR-0110 d4: a lock-free queue to
+    // the message thread, where the op is made; ADR-0124) and nowhere else.
+    // Note ends and anything else are still accepted and dropped. Returning
+    // false would tell the plugin we are broken.
+    if (list == nullptr || h == nullptr || h->space_id != CLAP_CORE_EVENT_SPACE_ID) return true;
+    auto* self = static_cast<ClapDevice*>(list->ctx);
+    if (self == nullptr) return true;
+    if (h->type == CLAP_EVENT_PARAM_GESTURE_BEGIN || h->type == CLAP_EVENT_PARAM_GESTURE_END) {
+        const auto* g = reinterpret_cast<const clap_event_param_gesture_t*>(h);
+        const std::int32_t i = self->indexOfParam(g->param_id);
+        if (i >= 0)
+            self->broadcastParam(i, h->type == CLAP_EVENT_PARAM_GESTURE_BEGIN
+                                        ? engine::ParamEventKind::Begin
+                                        : engine::ParamEventKind::End, 0.0);
+    } else if (h->type == CLAP_EVENT_PARAM_VALUE) {
+        const auto* v = reinterpret_cast<const clap_event_param_value_t*>(h);
+        const std::int32_t i = self->indexOfParam(v->param_id);
+        if (i >= 0) {
+            // CLAP values are PLAIN; the wire unit is normalized (ADR-0124 d2).
+            const ParamDescriptor& d = self->params_[static_cast<std::size_t>(i)];
+            const double span = d.maxReal - d.minReal;
+            const double norm = span > 0.0 ? (v->value - d.minReal) / span : 0.0;
+            self->broadcastParam(i, engine::ParamEventKind::Value, norm);
+        }
+    }
     return true;
 }
 

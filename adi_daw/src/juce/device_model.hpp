@@ -24,6 +24,9 @@
 #pragma once
 
 #include "adi/engine/graph.hpp"
+#include "adi/engine/param_edits.hpp"
+
+#include <atomic>
 
 #include <cstdint>
 #include <string>
@@ -212,8 +215,28 @@ public:
         return false;
     }
 
+    /// Where this device's own parameter broadcasts go (ADR-0110, ADR-0124).
+    /// Set by the glue on the message thread; read by whichever thread the
+    /// format broadcasts on. The capture behind it is single-producer, which
+    /// is why it is per device. Null unhooks; the capture must outlive the
+    /// unhooking, because a push may be in flight.
+    void setParamSink(engine::ParamEditCapture* capture, std::int64_t deviceId) noexcept;
+    [[nodiscard]] bool hasParamSink() const noexcept {
+        return sink_.load(std::memory_order_acquire) != nullptr;
+    }
+
 protected:
     DeviceInstance() = default;
+
+    /// A format's broadcast, on the format's thread: pushed into the sink if
+    /// one is set, dropped otherwise. `normalized` is the wire unit; a
+    /// gesture begin or end carries no value.
+    void broadcastParam(std::int32_t index, engine::ParamEventKind kind,
+                        double normalized) noexcept;
+
+private:
+    std::atomic<engine::ParamEditCapture*> sink_{nullptr};
+    std::atomic<std::int64_t> sinkDevice_{0};
 };
 
 // ---------------------------------------------------------------------------

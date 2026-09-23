@@ -192,4 +192,34 @@ std::int32_t DeviceNode::latencySamples() const noexcept {
     return inst_->latencySamples();
 }
 
+// ---------------------------------------------------------------------------
+// The parameter sink (ADR-0124)
+// ---------------------------------------------------------------------------
+
+void DeviceInstance::setParamSink(engine::ParamEditCapture* capture,
+                                  std::int64_t deviceId) noexcept {
+    // Device id first, capture second: a producer that loads a non-null
+    // capture then sees the id that goes with it. Unhooking stores the null
+    // capture first for the same reason.
+    if (capture == nullptr) {
+        sink_.store(nullptr, std::memory_order_release);
+        sinkDevice_.store(0, std::memory_order_release);
+        return;
+    }
+    sinkDevice_.store(deviceId, std::memory_order_release);
+    sink_.store(capture, std::memory_order_release);
+}
+
+void DeviceInstance::broadcastParam(std::int32_t index, engine::ParamEventKind kind,
+                                    double normalized) noexcept {
+    engine::ParamEditCapture* c = sink_.load(std::memory_order_acquire);
+    if (c == nullptr) return;
+    engine::ParamEvent e;
+    e.deviceId = sinkDevice_.load(std::memory_order_acquire);
+    e.paramIndex = index;
+    e.kind = kind;
+    e.value = normalized;
+    c->push(e);   // a full ring is counted by the capture, never blocked on
+}
+
 }  // namespace adi::device

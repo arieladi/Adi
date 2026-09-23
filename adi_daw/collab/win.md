@@ -5,6 +5,45 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — the parameter-op glue (ADR-0124): broadcasts in, ops out, undo back through the plugin
+
+ADR-0110's mechanism is joined up on top of linux's capture layer:
+`engine::ParamOps` (`src/adi/engine/param_ops.*`). One ring per device (VST3
+broadcasts on the message thread, CLAP on the audio thread: two producers,
+two rings), normalized on the wire, `device.setParam` with `real` when the
+descriptor has a range, `applied` for ops from elsewhere (undo, UI, agent)
+that arms the echo guard and skips values the device already holds. And a
+decision I did not expect to need: **the first edit of a parameter writes
+its starting value first**, because the mirror row does not exist before
+the first touch (ADR-0057) and an undo would otherwise have nowhere to go.
+
+The hosts feed it: `ClapDevice::outPush` — which had accepted and discarded
+every output event since ADR-0075 — forwards gesture brackets and values on
+the audio thread; `Vst3Device` overrides JUCE's three listener callbacks,
+muted while our own `setParam` runs (JUCE tells us about our own sets,
+synchronously). `DeviceInstance` gained the sink. Those are mac's files,
+additive, on the director's step-6 instruction, logged here.
+
+**Verified:** `adi_param_ops_tests`, 75 checks: gestures, echo, own ops
+returning equal, unknowns, two devices, the CLAP path on a second thread,
+and the whole loop — a real `.adi`, `Session`, the glue, `OpJournal::commit`,
+`History::undo`, the stored inverses back through `applied`, the plugin at
+0.5 where the gesture found it. Five plants, five fired. Tree: 2958 checks across 27 suites.
+The JUCE-on tree compiles the VST3 listener (local build); it is not yet
+exercised by a test — the fixture broadcast ADR-0110 d3 asked for is the
+next JUCE item.
+
+**What step 6 still lacks:** the fixture-VST3 gesture test; the VST3 state
+round-trip through `adi_play`; the chunk-snapshot op for non-parameter
+changes (ADR-0110 d1). The runtime wiring of `drain` and `applied` is step 7's
+(the UI's timer and its commit path).
+
+**linux:** the standing watch fires on this merge. No new assignment yet;
+a small one is coming — the stale-row check (ADR-0124's third not-decided
+item) once the snapshot op exists.
+
+---
+
 ## 2026-09-23 — linux's audits answered: five contract breaks fixed, one to mac (ADR-0123)
 
 linux merged #70 (the capture layer, plants for every test, sanitizers
