@@ -65,6 +65,17 @@ constexpr NoteExpressionTypeID kPressureType = 100002;   ///< custom: named for 
 
 constexpr ParamID kBend = 1000, kPressure = 2000, kTimbre = 3000;   ///< + channel
 constexpr ParamID kRpnMsb = 500, kRpnLsb = 501, kDataEntry = 502;    ///< channel 0
+/// ADR-0110 d3: a knob the user can move inside the plugin's own window, and a
+/// hidden switch a test flips to make the plugin perform that drag -- beginEdit,
+/// forty performEdits, endEdit through the host's IComponentHandler -- exactly as
+/// a real editor does. Drive also ECHOES a host set back with performEdit, as
+/// some real plugins do, twice: at once (JUCE 9 hands a host set to the
+/// controller synchronously, so this lands inside the host's own set) and
+/// again when the deferred-echo switch is flipped (as a plugin's own timer
+/// would), which is the case the host's echo guard exists for.
+constexpr ParamID kDrive = 4000, kGestureTrigger = 4001, kDeferredEcho = 4002;
+constexpr double kDriveDefault = 0.2, kDriveDragTarget = 0.7;
+constexpr int kDriveDragSteps = 40;
 
 constexpr double kPi = 3.14159265358979323846;
 
@@ -136,7 +147,7 @@ public:
 
     // --- IPluginBase (shared by IComponent and IEditController) ------------
     tresult PLUGIN_API initialize(FUnknown*) override { return kResultOk; }
-    tresult PLUGIN_API terminate() override { return kResultOk; }
+    tresult PLUGIN_API terminate() override { setComponentHandler(nullptr); return kResultOk; }
 
     // --- IComponent ------------------------------------------------------------
     tresult PLUGIN_API getControllerClassId(TUID) override { return kResultFalse; }   // we ARE it
@@ -192,15 +203,28 @@ public:
 
     // --- IEditController ------------------------------------------------------
     tresult PLUGIN_API setComponentState(IBStream*) override { return kResultOk; }
-    int32 PLUGIN_API getParameterCount() override {
+    /// The expression parameters each variant had before ADR-0110's two were added.
+    int32 baseParameterCount() const {
         if (variant_ == Variant::Mpe) return 16 * 3 + 3;
         if (variant_ == Variant::Plain) return 1;
         return 0;
     }
+    int32 PLUGIN_API getParameterCount() override { return baseParameterCount() + 3; }
     tresult PLUGIN_API getParameterInfo(int32 index, ParameterInfo& info) override {
         if (index < 0 || index >= getParameterCount()) return kInvalidArgument;
         info = ParameterInfo{};
         char name[64];
+        if (index >= baseParameterCount()) {
+            const int32 k = index - baseParameterCount();
+            const bool drive = k == 0;
+            info.id = drive ? kDrive : (k == 1 ? kGestureTrigger : kDeferredEcho);
+            copy128(info.title, drive ? "Drive" : (k == 1 ? "Gesture Trigger" : "Deferred Echo"));
+            copy128(info.shortTitle, drive ? "Drive" : (k == 1 ? "Trigger" : "Echo"));
+            info.defaultNormalizedValue = drive ? kDriveDefault : 0.0;
+            info.unitId = kRootUnitId;
+            info.flags = drive ? ParameterInfo::kCanAutomate : ParameterInfo::kIsHidden;
+            return kResultOk;
+        }
         if (index < 48) {
             const int kind = index / 16, ch = index % 16;
             const ParamID base = kind == 0 ? kBend : (kind == 1 ? kPressure : kTimbre);
@@ -226,9 +250,48 @@ public:
     tresult PLUGIN_API getParamValueByString(ParamID, TChar*, ParamValue&) override { return kResultFalse; }
     ParamValue PLUGIN_API normalizedParamToPlain(ParamID, ParamValue v) override { return v; }
     ParamValue PLUGIN_API plainParamToNormalized(ParamID, ParamValue v) override { return v; }
-    ParamValue PLUGIN_API getParamNormalized(ParamID) override { return 0.0; }
-    tresult PLUGIN_API setParamNormalized(ParamID, ParamValue) override { return kResultOk; }
-    tresult PLUGIN_API setComponentHandler(IComponentHandler*) override { return kResultOk; }
+    ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
+        return id == kDrive ? drive_ : 0.0;
+    }
+    tresult PLUGIN_API setParamNormalized(ParamID id, ParamValue v) override {
+        if (id == kDrive) {
+            const bool changed = std::fabs(v - drive_) > 1e-9;
+            drive_ = v;
+            // The echo: tell the host about the value it just set. Harmless to a
+            // careful host, an extra undo step to a careless one.
+            if (changed && !dragging_) {
+                pendingEcho_ = v;
+                hasPendingEcho_ = true;
+                if (handler_ != nullptr) handler_->performEdit(kDrive, v);
+            }
+            return kResultOk;
+        }
+        if (id == kDeferredEcho && v > 0.5 && hasPendingEcho_ && handler_ != nullptr) {
+            hasPendingEcho_ = false;
+            handler_->performEdit(kDrive, pendingEcho_);
+            return kResultOk;
+        }
+        if (id == kGestureTrigger && v > 0.5 && handler_ != nullptr && !dragging_) {
+            // The user's drag, as an editor reports it.
+            dragging_ = true;
+            const double from = drive_;
+            handler_->beginEdit(kDrive);
+            for (int i = 1; i <= kDriveDragSteps; ++i) {
+                drive_ = from + (kDriveDragTarget - from) * i / kDriveDragSteps;
+                handler_->performEdit(kDrive, drive_);
+            }
+            handler_->endEdit(kDrive);
+            dragging_ = false;
+        }
+        return kResultOk;
+    }
+    tresult PLUGIN_API setComponentHandler(IComponentHandler* h) override {
+        if (h == handler_) return kResultOk;
+        if (handler_ != nullptr) handler_->release();
+        handler_ = h;
+        if (handler_ != nullptr) handler_->addRef();
+        return kResultOk;
+    }
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
 
     // --- IMidiMapping --------------------------------------------------------
@@ -402,6 +465,11 @@ private:
 
     Variant variant_;
     std::atomic<uint32> refs_{1};
+    IComponentHandler* handler_ = nullptr;   ///< the host's, held with a reference
+    double drive_ = kDriveDefault;
+    bool dragging_ = false;
+    double pendingEcho_ = 0.0;
+    bool hasPendingEcho_ = false;
     double sampleRate_ = 48000.0;
     std::array<Voice, 16> voices_{};
     std::array<double, 16> bend_{}, pressure_{}, timbre_{};

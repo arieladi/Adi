@@ -21,6 +21,10 @@
 #include "juce/probe_audio.hpp"
 #include "juce/probe_surge.hpp"
 #include "juce/vst3_host.hpp"
+#include "adi/engine/param_ops.hpp"
+
+#include <pluginterfaces/vst/ivstcomponent.h>
+#include <pluginterfaces/vst/ivsteditcontroller.h>
 
 #include <algorithm>
 #include <cmath>
@@ -618,6 +622,96 @@ int vst3Dimensions(adi::device::Vst3Host& host, const juce::String& want) {
 /// parameter path, the physical-UI mapping's custom types -- runs here for the
 /// first time, and is judged by ear. Needs no installed plugin, so CI's
 /// Windows JUCE job runs it.
+/// ADR-0110 d3 and ADR-0124, against a real VST3 through JUCE: the fixture's
+/// own window drags Drive from 0.2 to 0.7 (beginEdit, forty performEdits,
+/// endEdit), which must become ONE op with the right inverse; the undo's set
+/// must reach the plugin; and neither our own set nor the plugin's echoes of it
+/// -- one at once, one later -- may become an op. Planted and watched fail:
+/// the host's set unmuted, the gesture callbacks dropped, and `applied`
+/// without its echo guard.
+void fixtureGesture(adi::device::Vst3Host& host) {
+    std::printf("\n[ADR-0110 d3] a knob moved inside the plugin's window is one op; undo reaches the plugin without an echo\n");
+    juce::OwnedArray<juce::PluginDescription> types;
+    host.formats().getFormat(0)->findAllTypesForFile(types, ADI_TEST_VST3);
+    const juce::PluginDescription* plain = nullptr;
+    for (auto* t : types) if (t->name == "ADI Test Plain") plain = t;
+    check(plain != nullptr, "the Plain fixture is in the bundle");
+    if (plain == nullptr) return;
+
+    std::string err;
+    // The device is declared before the glue: it must outlive it (ADR-0124).
+    std::unique_ptr<adi::device::DeviceInstance> dev = host.makeDevice(*plain, 48000.0, 512, err);
+    auto* v3 = dynamic_cast<adi::device::Vst3Device*>(dev.get());
+    check(v3 != nullptr && v3->loaded(), "the fixture loads: " + err);
+    if (v3 == nullptr || !v3->loaded()) return;
+
+    std::string driveId;
+    for (std::int32_t i = 0; i < v3->paramCount(); ++i)
+        if (const auto* d = v3->paramAt(i); d != nullptr && d->name == "Drive") driveId = d->id;
+    check(!driveId.empty(), "the fixture declares Drive");
+    if (driveId.empty()) return;
+    check(std::fabs(v3->getParam(driveId).normalized - 0.2) < 1e-6, "Drive starts at 0.2");
+
+    adi::engine::ParamOps ops;
+    check(ops.attach(1, *v3), "the parameter-op glue is attached");
+
+    auto* comp = static_cast<Steinberg::Vst::IComponent*>(v3->rawComponent());
+    Steinberg::Vst::IEditController* ec = nullptr;
+    if (comp != nullptr)
+        comp->queryInterface(Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&ec));
+    check(ec != nullptr, "its edit controller is reachable (ADR-0100)");
+    if (ec == nullptr) return;
+
+    // --- the user drags Drive in the plugin's window ------------------------
+    ec->setParamNormalized(4001 /* kGestureTrigger */, 1.0);
+    std::vector<adi::OpRequest> out;
+    const std::size_t n = ops.drain(10000, out);
+    check(n == 2, "one gesture is two requests -- the first-touch opener and ONE edit, not forty: got " +
+                      std::to_string(n));
+    if (out.size() == 2) {
+        check(out[0].payload.value("param", std::string()) == driveId, "both on Drive");
+        check(std::fabs(out[0].payload.value("norm", -1.0) - 0.2) < 1e-6, "the opener carries where the drag started: 0.2");
+        check(std::fabs(out[1].payload.value("norm", -1.0) - 0.7) < 1e-6, "the edit carries where it ended: 0.7");
+    }
+    const auto* cs = ops.captureStats(1);
+    // `stats()` refreshes the producer's counters when it is CALLED, so a held
+    // pointer reads a stale `pushed`: ask again each time.
+    auto pushed = [&ops]() -> long long {
+        const auto* st = ops.captureStats(1);
+        return st != nullptr ? static_cast<long long>(st->pushed) : -1;
+    };
+    check(cs != nullptr && cs->implicitEdits == 0,
+          "bracketed by beginEdit/endEdit: an explicit gesture, not a coalesced one");
+    check(pushed() == 42,
+          "forty-two broadcasts arrived: begin, forty values, end -- got " +
+              std::to_string(pushed()));
+    check(std::fabs(v3->getParam(driveId).normalized - 0.7) < 1e-6, "JUCE's parameter followed the plugin to 0.7");
+
+    // --- undo: the edit's inverse goes back through applied() ---------------
+    const adi::Payload undo = {{"dev", 1}, {"param", driveId}, {"norm", 0.2}};
+    check(ops.applied(undo, 20000), "the undo sets the plugin");
+    check(std::fabs(v3->getParam(driveId).normalized - 0.2) < 1e-6, "JUCE's parameter is back at 0.2");
+    check(std::fabs(ec->getParamNormalized(4000 /* kDrive */) - 0.2) < 1e-6,
+          "the plugin's controller received it at once: JUCE 9 hands a host set over synchronously");
+    std::vector<adi::OpRequest> after;
+    ops.drain(20100, after);   // the capture's counters are the consumer's: read them after a drain
+    check(pushed() == 42,
+          "and the plugin's immediate echo landed inside our own set, which is muted: nothing broadcast -- "
+          "pushed " + std::to_string(pushed()) + ", swallowed " +
+          std::to_string(cs != nullptr ? cs->echoesSwallowed : -1));
+
+    // A plugin that echoes LATER, from its own timer: the capture's guard.
+    ec->setParamNormalized(4002 /* kDeferredEcho */, 1.0);
+    ops.drain(20200, after);   // the echo, inside the guard's lifetime
+    ops.drain(21000, after);   // and past the quiet window, so nothing is left open
+    check(pushed() == 43, "the deferred echo arrived through JUCE's listener: pushed " +
+                                                 std::to_string(pushed()));
+    check(cs != nullptr && cs->echoesSwallowed == 1,
+          "and the guard swallowed it: " + std::to_string(cs != nullptr ? cs->echoesSwallowed : -1));
+    check(after.empty(), "the undo produced no op, from either echo -- got " + std::to_string(after.size()));
+    ec->release();
+}
+
 void fixtureAcceptance(adi::device::Vst3Host& host) {
     using adi::engine::Event;
     using adi::engine::EventType;
@@ -768,6 +862,8 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
     if (const auto* ne = find("ADI Test NoteExpr"))
         check(octave(render(*ne, RouteChoice::MpeMidi, {note(1, 60, 2), bend(1, 12.0, 2)})) == "unbent",
               "ADI Test NoteExpr on MpeMidi: unbent -- no mapping, and it ignores legacy MIDI events");
+
+    fixtureGesture(host);
 }
 #endif
 
