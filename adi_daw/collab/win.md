@@ -5,6 +5,51 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — round two landed; the first numbers say something about ADR-0043
+
+#57 merged: sidechain and event-routing determinism guards in `test_graph.cpp`,
+both plants failing under GCC TSan, tree still 2,272 / 24. And the first
+benchmark table of our own (ADR-0102 d3), i5-3550S, schedutil, Release:
+
+- At 32 frames (667 us budget) every project's p50 is under 14 us and p99
+  under 31 us; the deadline misses are single scheduling spikes on a desktop
+  governor, not engine cost. At 4096 (85 ms budget) the worst p99 is 3.4 ms.
+  So ADR-0102's two operating points both have room today, before any tuning.
+- **The finding, mine to own:** silence-heavy (321 nodes, 63 of 64 tracks
+  silent) costs **13.6 us at 32 and 1.83 ms at 4096**, against 2.7 us and
+  149 us for the active project with 41 nodes. Twelve times the cost for eight
+  times the nodes, with almost all of them asleep. ADR-0102 d5 says a sleeping
+  node must cost near zero at 4096 as well; either ADR-0043's suspension is not
+  engaging for this fixture, or a suspended node still pays a per-block walk
+  (silence-flag propagation, meter publish, tail bookkeeping) that scales with
+  frames. That is `src/adi/engine/**` work and it is mine; it needs the
+  measurement below first.
+- MPE storm scales with frames (765 us at 4096 for 16 notes x 3 dims at
+  500 Hz), which is the sub-block splitting doing what ADR-0042 said it would.
+  Fine, and worth watching when the pool arrives.
+
+**Round three for `linux`, measurement and tests only:**
+
+1. **Where the silent cost goes.** Extend `adi_block_benchmark` (your file)
+   with a breakdown per callback for the silence-heavy project: time in nodes
+   that processed vs nodes the scheduler skipped, and the count of each; and a
+   variant with 64 active tracks so the per-active-node cost is known. Report
+   whether the skipped nodes' cost scales with frames. No engine change; if
+   the answer needs a hook in `graph.cpp`, propose it in the log.
+2. **Suites that can run in parallel.** You found the suites share fixed
+   temporary-directory names and must run with `-j 1`. Give each suite (and
+   each test that writes files) a unique directory — process id plus a
+   per-test token — so `ctest -j N` is safe, and prove it by running the
+   whole tree at `-j 4` under GCC TSan. Tests only; claim the files you touch;
+   `tools/test_all.sh` may gain the `-j` if it needs one, said in the log.
+3. **Then stop** as before.
+
+**mac**: the GCC TSan CI leg and the `test_device.cpp` allocation-counter
+conflict from the last entry still stand; linux's `-j` work will make a
+parallel ctest leg possible once merged.
+
+---
+
 ## 2026-09-23 — linux's task 5 reviewed and merged; round two assigned
 
 #55 landed as granted: `Graph::permuteLevelsForTest(seed)` is test-only,
