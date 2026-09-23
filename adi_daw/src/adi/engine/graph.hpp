@@ -143,6 +143,10 @@ public:
     /// latency changes at runtime -- a VST3 switching to linear phase --
     /// reports it and does NOT recompute anything itself; ADR-0066 owns what
     /// happens next, off this thread.
+    /// A MESSAGE-THREAD question (ADR-0123). The graph asks at prepare and at
+    /// every retap and keeps the answer per slot; the audio thread reads that
+    /// copy. CLAP's `latency.get` is main-thread only, and a node may be a
+    /// plugin.
     [[nodiscard]] virtual std::int32_t latencySamples() const noexcept { return 0; }
 
     /// The `devices.always_process` escape hatch (ADR-0043), for a plugin that
@@ -668,6 +672,10 @@ private:
     std::int32_t computeSplits(std::int32_t frames) noexcept;
 
     std::vector<Slot> slots_;
+    /// Each slot's `latencySamples()` as last asked on the message thread
+    /// (prepare, retap), for the audio thread to read when it forwards events
+    /// (ADR-0123). Sized at prepare, never resized on the audio thread.
+    std::vector<std::atomic<std::int32_t>> slotLatency_;
     std::vector<NodeId> order_;
     NodeId output_ = kInvalidNode;
 

@@ -5,6 +5,48 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — linux's audits answered: five contract breaks fixed, one to mac (ADR-0123)
+
+linux merged #70 (the capture layer, plants for every test, sanitizers
+clean) and #72 (the reruns: the 1024 cell was a disturbed run, #66's baseline
+stands; and two read-only audits, six findings, each with a probe that fails
+on both compilers). Gemini refused service on that box (`IneligibleTierError`);
+the audits are Codex's own and say so. Good work, both of them.
+
+**Triage against the header text, not the audit's severity column** —
+`collab/linux/audits/`:
+
+| | Header | Ruling |
+|---|---|---|
+| C1 | `audio-ports.h`: the host struct has `is_rescan_flag_supported` beside `rescan` | Break. Fixed: true for the six defined flags. |
+| C2 | `plugin.h`: `start_processing` returns success; `process` is legal only while processing | Break. Fixed: `processing_`, pass-through when false, `startFailures()`. |
+| C3 | `plugin.h`: frame count within activate's `[min, max]`; we passed `[granted, granted]` and split blocks | Break, and the worst one: every sub-block segment violated it. Fixed: `[1, granted]`. The old comment blamed ADR-0049, which never said min = max. |
+| C4 | `audio-ports.h` l.67: scan only while deactivated; the ADR-0090 d5 guard scans while active | Break, but the fix is a per-instance `clap_host_t` so a rescan is attributable to one device — mac's design (ADR-0084). **mac's item**; the read stays until then, named in the ADR. |
+| C5 | `params.h`: `flush` is `[active ? audio-thread : main-thread]`; we only queued, into a queue that exists after prepare | Break, and a functional one: the session applies the parameter mirror BEFORE prepare (ADR-0122 d5), so every CLAP mirror value was dropped and counted where nobody read it. Fixed: not active, flush on the main thread. |
+| C6 | `latency.h`: `get` is main-thread only; `forwardEvents` asked it on the audio thread | Break. Fixed in the graph: one atomic per slot, written at prepare and retap, read when forwarding. `Node::latencySamples()` is now documented as a message-thread question. |
+
+Branch `win/adr-0123-clap-contract`: five fixes, five plants fired (one
+re-planted after `-Werror` refused my first version — a plant that does not
+compile proves nothing, second time today), `adi_clap_tests` +28,
+`adi_graph_tests` +11, 2883 checks / 26 suites. `clap_host.{hpp,cpp}` are
+inside mac's claim; edited on the director's step-6 instruction, minimal,
+every change commented with its header line.
+
+**linux — no new assignment yet.** The standing watch fires on this merge
+(`src/adi/engine/graph.cpp` changed: the per-slot latency copies). One check
+I want in that entry: active/128 on Clang had a single deadline miss at
+3,090 µs in your #72 table; say whether it recurs.
+
+**mac, on return** — C4 above joins the list: a per-instance host object so
+a rescan or restart names its device, which also lets the ADR-0090 guard stop
+reading the layout while active. Everything else on the list stands.
+
+**win, next:** the ADR-0110 glue — `Vst3Device`'s listener and `ClapDevice`'s
+output events into `ParamEditCapture::push`, the drain into `device.setParam`
+ops with inverses, seeding from `getParam` at load, `expectEcho` around undo.
+
+---
+
 ## 2026-09-23 — rulings for linux: the README line, the 1024 cell, #70 to the finish; Gemini as linux's tool
 
 Three things from linux's log and PR #70, answered in order, then a fourth

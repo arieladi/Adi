@@ -22,6 +22,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace adi::engine;
@@ -2101,6 +2102,70 @@ void testDeferredOverflowIsCounted() {
         "the third does not, and is counted rather than allocated for");
 }
 
+
+// ---------------------------------------------------------------------------
+// ADR-0123 -- latency is a message-thread question. A node may be a CLAP
+// plugin whose `latency.get` is main-thread only; the audio thread must read
+// the answer the graph kept, never ask the node. Planted (the live call put
+// back in forwardEvents) this fails on `asked on another thread`.
+// ---------------------------------------------------------------------------
+
+/// Counts every latency question and on which thread it was asked.
+class AskedNode final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            const float* i = (io.in != nullptr && io.in[c] != nullptr) ? io.in[c] + io.blockOffset : nullptr;
+            for (std::int32_t k = 0; k < io.frames; ++k) o[k] = i != nullptr ? i[k] : 0.0f;
+        }
+    }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override {
+        ++asks;
+        if (std::this_thread::get_id() != main) ++offMain;
+        return 64;
+    }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    [[nodiscard]] const char* name() const noexcept override { return "asked"; }
+    mutable int asks = 0;
+    mutable int offMain = 0;
+    std::thread::id main = std::this_thread::get_id();
+};
+
+void testTheAudioThreadNeverAsksALatency() {
+    section("ADR-0123 -- the audio thread forwards events with the latency the message thread asked");
+    Graph g;
+    AskedNode a, b;
+    const NodeId ia = g.addNode(a);
+    const NodeId ib = g.addNode(b);
+    check(g.connect(ia, ib), "a feeds b");
+    g.setOutput(ib);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared: " + g.error());
+    check(a.asks > 0, "prepare asked a's latency, on this thread");
+    check(a.offMain == 0, "and only on this thread");
+
+    Event e;
+    e.type = EventType::NoteOn; e.noteId = 1; e.dim = 60; e.value = 1.0; e.frame = 0;
+    check(g.pushInputEvent(ia, e), "an event waits on a, to be forwarded to b");
+
+    std::vector<float> l(256, 0.0f), r(256, 0.0f);
+    std::vector<float*> out{l.data(), r.data()};
+    AudioIo io;
+    io.out = out.data(); io.numOut = 2; io.frames = 256;
+    const int asksBefore = a.asks;
+    std::thread audio([&] { g.process(io); g.process(io); });
+    audio.join();
+    eqi(g.stats().eventsForwarded, 1, "the event was forwarded along the edge");
+    eqi(a.asks - asksBefore, 0, "and a was not asked its latency during process");
+    eqi(a.offMain, 0, "asked on another thread");
+
+    // A retap re-asks on THIS thread and the audio thread sees the new answer.
+    check(g.retapLatency(), "retap on the message thread");
+    check(a.asks > asksBefore, "the retap asked again, here");
+    eqi(a.offMain, 0, "still never off the message thread");
+}
+
 }  // namespace
 
 int main() {
@@ -2117,6 +2182,7 @@ int main() {
         testSilenceSuspends();
         testSuspendedNodeClearsOnceToCapacity();
         testMixSkipsSleepingSources();
+        testTheAudioThreadNeverAsksALatency();
         testEventsAreNotSilence();
         testTailKeepsRunning();
         testAlwaysProcess();

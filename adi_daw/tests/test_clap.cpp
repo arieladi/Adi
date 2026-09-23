@@ -323,6 +323,10 @@ struct Fake {
     mutable int latencyQueries = 0, tailQueries = 0;
     std::int64_t lastSteady = -1;
     bool failNext = false;
+    bool startOk = true;                       ///< ADR-0123 (C2)
+    int stops = 0;
+    std::uint32_t minFrames = 0, maxFrames = 0; ///< ADR-0123 (C3)
+    int flushes = 0;                           ///< ADR-0123 (C5)
     std::vector<clap_event_header_t> seenEvents;   ///< headers, for counting
     /// Full copies, because a clap_event_header_t is 16 bytes and casting one
     /// to a 48-byte param event reads past the end of the struct -- which is
@@ -345,11 +349,13 @@ struct Fake {
         plugin.plugin_data = this;
         plugin.init = [](const clap_plugin_t*) { return true; };
         plugin.destroy = [](const clap_plugin_t*) {};
-        plugin.activate = [](const clap_plugin_t* p, double, std::uint32_t, std::uint32_t) {
-            ++self(p).activations; return true; };
+        plugin.activate = [](const clap_plugin_t* p, double, std::uint32_t lo, std::uint32_t hi) {
+            Fake& f = self(p);
+            ++f.activations; f.minFrames = lo; f.maxFrames = hi; return true; };
         plugin.deactivate = [](const clap_plugin_t*) {};
-        plugin.start_processing = [](const clap_plugin_t* p) { ++self(p).starts; return true; };
-        plugin.stop_processing = [](const clap_plugin_t*) {};
+        plugin.start_processing = [](const clap_plugin_t* p) {
+            ++self(p).starts; return self(p).startOk; };
+        plugin.stop_processing = [](const clap_plugin_t* p) { ++self(p).stops; };
         plugin.reset = [](const clap_plugin_t*) {};
         plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd)
             -> clap_process_status {
@@ -445,8 +451,18 @@ struct Fake {
             std::snprintf(buf, n, "x"); return true; };
         params.text_to_value = [](const clap_plugin_t*, clap_id, const char*, double*) {
             return false; };
-        params.flush = [](const clap_plugin_t*, const clap_input_events_t*,
-                          const clap_output_events_t*) {};
+        params.flush = [](const clap_plugin_t* p, const clap_input_events_t* in,
+                          const clap_output_events_t*) {
+            Fake& f = self(p);
+            ++f.flushes;
+            if (in == nullptr) return;
+            const std::uint32_t n = in->size(in);
+            for (std::uint32_t i = 0; i < n; ++i) {
+                const clap_event_header_t* h = in->get(in, i);
+                if (h != nullptr && h->type == CLAP_EVENT_PARAM_VALUE)
+                    f.paramValue = reinterpret_cast<const clap_event_param_value_t*>(h)->value;
+            }
+        };
 
         state.save = [](const clap_plugin_t* p, const clap_ostream_t* os) {
             Fake& f = self(p);
@@ -1683,6 +1699,111 @@ void testPrepareReactivatesWhenTheLayoutMoves() {
     check(f.activations == 2, "and settles again once the layout stops moving");
 }
 
+
+// ---------------------------------------------------------------------------
+// ADR-0123 -- the contract corrections linux's audit found (C1, C2, C3, C5).
+// Each planted back (the fix reverted) fails its named check.
+// ---------------------------------------------------------------------------
+
+void testTheHostAnswersRescanSupport() {
+    section("ext/audio-ports.h -- an advertised host extension supplies every function it declares (C1)");
+    ClapHostGlue glue;
+    const clap_host_t* h = glue.host();
+    const auto* ports = static_cast<const clap_host_audio_ports_t*>(
+        h->get_extension(h, CLAP_EXT_AUDIO_PORTS));
+    check(ports != nullptr, "the audio-ports host extension is offered");
+    if (ports == nullptr) return;
+    check(ports->is_rescan_flag_supported != nullptr,
+          "is_rescan_flag_supported is not a null pointer");
+    if (ports->is_rescan_flag_supported == nullptr) return;
+    check(ports->is_rescan_flag_supported(h, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT),
+          "a channel-count rescan is supported: a rebuild answers it");
+    check(ports->is_rescan_flag_supported(h, CLAP_AUDIO_PORTS_RESCAN_LIST), "and a list rescan");
+    check(ports->is_rescan_flag_supported(h, CLAP_AUDIO_PORTS_RESCAN_NAMES), "and names");
+    check(!ports->is_rescan_flag_supported(h, 1u << 7), "a flag the header does not define is refused");
+    check(!ports->is_rescan_flag_supported(h, 0), "and so is no flag at all");
+}
+
+void testAFailedStartIsNotProcessed() {
+    section("plugin.h -- process is legal only while processing; a start that failed is not processed (C2)");
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake";
+    std::vector<float> l(256, 0.25f), r(256, 0.25f), ol(256, -1.0f), orr(256, -1.0f);
+    const float* inp[2] = {l.data(), r.data()};
+    float* outp[2] = {ol.data(), orr.data()};
+    engine::NodeIo io;
+    io.in = inp; io.out = outp; io.channels = 2; io.frames = 256; io.sampleRate = 48000.0;
+
+    Fake f;
+    f.startOk = false;
+    ClapDevice d(&f.plugin, id);
+    d.prepare(48000.0, 256);
+    check(f.activations == 1, "activated");
+    check(f.starts == 1, "start_processing was asked");
+    check(d.startFailures() == 1, "and its refusal was counted: " + std::to_string(d.startFailures()));
+    d.process(io);
+    check(f.segments.empty(), "process was NOT called");
+    check(ol[0] == 0.25f, "the audio passes through instead: got " + std::to_string(ol[0]));
+    d.release();
+    check(f.stops == 0, "stop_processing is not called on a plugin that never started");
+
+    Fake g;
+    ClapDevice e(&g.plugin, id);
+    e.prepare(48000.0, 256);
+    e.process(io);
+    check(!g.segments.empty(), "a plugin that started is processed");
+    check(e.startFailures() == 0, "with nothing counted");
+    e.release();
+    check(g.stops == 1, "and stopped exactly once on release: " + std::to_string(g.stops));
+}
+
+void testActivationBoundsAdmitSegments() {
+    section("plugin.h -- every frame count lies in activate's [min, max]; a segment can be one frame (C3)");
+    Fake f;
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake";
+    ClapDevice d(&f.plugin, id);
+    d.prepare(48000.0, 512);
+    check(f.minFrames == 1, "min_frames_count is 1 -- sub-block splitting (ADR-0042 d2): got " +
+                                std::to_string(f.minFrames));
+    check(f.maxFrames == 512, "max_frames_count is the granted block (ADR-0049): got " +
+                                  std::to_string(f.maxFrames));
+    std::vector<float> l(512, 0.25f), r(512, 0.25f), ol(512, -1.0f), orr(512, -1.0f);
+    const float* inp[2] = {l.data(), r.data()};
+    float* outp[2] = {ol.data(), orr.data()};
+    engine::NodeIo io;
+    io.in = inp; io.out = outp; io.channels = 2; io.frames = 128; io.blockOffset = 64;
+    io.sampleRate = 48000.0;
+    d.process(io);
+    check(f.lastFrames == 128 && f.lastFrames >= f.minFrames && f.lastFrames <= f.maxFrames,
+          "a 128-frame segment lies inside the bounds the plugin was told");
+}
+
+void testAParameterSetBeforeActivationIsFlushed() {
+    section("ext/params.h -- not active: flush on the main thread; active: the next process carries it (C5)");
+    Fake f;
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake";
+    ClapDevice d(&f.plugin, id);
+    const ParamDescriptor* p = d.paramAt(0);
+    check(p != nullptr, "one parameter");
+    if (p == nullptr) return;
+    check(d.setParam(p->id, ParamValue::withReal(0.5, 800.0)), "a set BEFORE prepare is accepted");
+    check(f.flushes == 1, "through one flush: " + std::to_string(f.flushes));
+    check(f.paramValue == 800.0, "carrying the PLAIN value: got " + std::to_string(f.paramValue));
+    check(d.getParam(p->id).real == 800.0, "and it reads back");
+
+    d.prepare(48000.0, 256);
+    check(d.setParam(p->id, ParamValue::withReal(0.1, 200.0)), "a set AFTER prepare is accepted");
+    check(f.flushes == 1, "but not flushed -- active means the audio thread's process carries it");
+    std::vector<float> l(256, 0.0f), r(256, 0.0f), ol(256, 0.0f), orr(256, 0.0f);
+    const float* inp[2] = {l.data(), r.data()};
+    float* outp[2] = {ol.data(), orr.data()};
+    engine::NodeIo io;
+    io.in = inp; io.out = outp; io.channels = 2; io.frames = 256; io.sampleRate = 48000.0;
+    d.process(io);
+    check(f.seenParams.size() == 1 && f.seenParams[0].value == 200.0,
+          "the next process block carried it: " + std::to_string(f.seenParams.size()));
+    check(f.flushes == 1, "and still no flush");
+}
+
 }  // namespace
 
 int main() {
@@ -1718,6 +1839,10 @@ int main() {
     testAnExtensionWithNullMembers();
     testTheBusLayoutIsAsked();
     testPrepareReactivatesWhenTheLayoutMoves();
+    testTheHostAnswersRescanSupport();
+    testAFailedStartIsNotProcessed();
+    testActivationBoundsAdmitSegments();
+    testAParameterSetBeforeActivationIsFlushed();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -351,6 +351,11 @@ ClapDevice::ClapDevice(const clap_plugin_t* plugin, DeviceIdentity id)
     // the note-port scan.
     readNotePorts();
     applyDialect(ClapDialectChoice::Auto);
+    // The output-event sink exists from construction, not from prepare: a
+    // parameter set before activation is flushed (ADR-0123), and flush hands
+    // the plugin this sink.
+    outEvents_.ctx = this;
+    outEvents_.try_push = &ClapDevice::outPush;
 
     // Read once, here, on the message thread. `desc` is required by the spec
     // and checked anyway: mac found plugins that return a non-null extension
@@ -435,21 +440,41 @@ ParamValue ClapDevice::getParam(const std::string& paramId) const noexcept {
 
 bool ClapDevice::setParam(const std::string& paramId, const ParamValue& v) {
     // A CLAP parameter is set by sending a CLAP_EVENT_PARAM_VALUE, not by a
-    // setter -- values are sample-accurate and arrive with the block. So this
-    // records intent; the event goes in on the next process. Deliberately not
-    // faked with a flush(), which would place the change at the block
-    // boundary and lose the offset ADR-0042 exists to preserve.
+    // setter -- values are sample-accurate and arrive with the block. While
+    // the plugin is ACTIVE this records intent and the event goes in on the
+    // next process: a flush() would place the change at the block boundary
+    // and lose the offset ADR-0042 exists to preserve, and params.h makes
+    // flush the audio thread's while active anyway.
+    //
+    // NOT ACTIVE is the other half of that same annotation --
+    // `[active ? audio-thread : main-thread]` -- and it is the half a project
+    // load lives in: the session applies the parameter mirror BEFORE the
+    // first prepare (ADR-0122 d5). Queueing there dropped every value into a
+    // queue that did not exist yet (linux's audit, C5; ADR-0123). So: not
+    // active, flush now on this thread, which is the main thread.
     for (std::size_t i = 0; i < params_.size(); ++i) {
         if (params_[i].id != paramId) continue;
-        if (pendingUsed_ >= pending_.size()) { ++pendingDropped_; return false; }
         const double span = params_[i].maxReal - params_[i].minReal;
         // CLAP parameter events carry the PLAIN value, not a normalised one.
         // Sending 0.42 to a 20 Hz..20 kHz cutoff would set it to 0.42 Hz --
         // a valid number in the wrong unit, which is the failure mode this
         // whole contract exists to keep visible (ADR-0057, ADR-0075).
+        const double plain = v.hasReal ? v.real : params_[i].minReal + v.normalized * span;
+        if (!activated_) {
+            if (paramsExt_ == nullptr || paramsExt_->flush == nullptr) return false;
+            ClapEventList one;
+            one.reserve(1);
+            engine::Event e;
+            e.type = engine::EventType::ParamValue;
+            e.paramId = paramIds_[i];
+            e.value = plain;
+            one.add(e);
+            paramsExt_->flush(plugin_, one.inputEvents(), &outEvents_);
+            return true;
+        }
+        if (pendingUsed_ >= pending_.size()) { ++pendingDropped_; return false; }
         pending_[pendingUsed_].id = paramIds_[i];
-        pending_[pendingUsed_].value =
-            v.hasReal ? v.real : params_[i].minReal + v.normalized * span;
+        pending_[pendingUsed_].value = plain;
         ++pendingUsed_;
         return true;
     }
@@ -613,7 +638,8 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     }
 
     if (activated_) {
-        if (plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
+        if (processing_ && plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
+        processing_ = false;
         if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     }
     sampleRate_ = sampleRate;
@@ -624,14 +650,23 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     // MpeMidi's Configuration Message is sent again.
     readNotePorts();
     applyDialect(static_cast<ClapDialectChoice>(requestedDialect_.load(std::memory_order_acquire)));
-    // ADR-0049: the GRANTED size, as both the min and the max. A plugin told
-    // a larger maximum than it will get allocates more than it needs; one
-    // told a smaller maximum overruns when the driver hands over a full block.
-    activated_ = plugin_->activate(plugin_, sampleRate,
-                                   static_cast<std::uint32_t>(maxFrames),
+    // The MAX is the granted size (ADR-0049): a plugin told a larger maximum
+    // than it will get allocates more than it needs; one told a smaller
+    // maximum overruns when the driver hands over a full block. The MIN is
+    // 1, not the granted size: plugin.h promises every process call's
+    // frame count lies inside [min, max], and sub-block splitting (ADR-0042
+    // d2) hands a plugin segments as short as one frame. Passing the block
+    // size as the minimum was a promise the graph breaks on every split
+    // (linux's audit, C3; ADR-0123).
+    activated_ = plugin_->activate(plugin_, sampleRate, 1u,
                                    static_cast<std::uint32_t>(maxFrames));
-    if (activated_ && plugin_->start_processing != nullptr)
-        plugin_->start_processing(plugin_);
+    // `start_processing` RETURNS whether it worked, and `process` is legal
+    // only while processing (plugin.h). A start that failed leaves the plugin
+    // active and silent: `process` passes audio through, and the refusal is
+    // counted where a host can see it (C2; ADR-0123).
+    processing_ = activated_ && plugin_->start_processing != nullptr &&
+                  plugin_->start_processing(plugin_);
+    if (activated_ && !processing_) ++startFailures_;
 
     // Everything the audio thread touches, allocated here and never again
     // (ADR-0010). Sized from the GRANTED block size (ADR-0049).
@@ -747,8 +782,10 @@ void ClapDevice::release() {
     if (plugin_ == nullptr || !activated_) return;
     // The THIRD call site, and the one the guard audit found by arithmetic --
     // "stop_processing: guarded=2 calls=3" -- which I read and did not act
-    // on. Counting is not checking.
-    if (plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
+    // on. Counting is not checking. And stop is legal only while processing
+    // (plugin.h), so a plugin whose start failed is not stopped (ADR-0123).
+    if (processing_ && plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
+    processing_ = false;
     if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     activated_ = false;
 }
@@ -762,7 +799,7 @@ bool ClapDevice::outPush(const clap_output_events_t*, const clap_event_header_t*
 }
 
 void ClapDevice::process(const engine::NodeIo& io) noexcept {
-    if (plugin_ == nullptr || !activated_ || plugin_->process == nullptr ||
+    if (plugin_ == nullptr || !activated_ || !processing_ || plugin_->process == nullptr ||
         io.out == nullptr) { passThrough(io); return; }
 
     const std::int32_t n  = io.frames < maxFrames_ ? io.frames : maxFrames_;
@@ -1052,6 +1089,11 @@ ClapHostGlue::ClapHostGlue() {
     // listening (ADR-0084).
     latencyExt_.changed = &ClapHostGlue::latencyChanged;
     portsExt_.rescan    = &ClapHostGlue::portsRescan;
+    // Both functions, not one. audio-ports.h declares the host struct with
+    // `is_rescan_flag_supported` beside `rescan`, and a plugin asks the first
+    // before calling the second; a null there was a crash waiting for the
+    // first plugin polite enough to ask (linux's audit, C1; ADR-0123).
+    portsExt_.is_rescan_flag_supported = &ClapHostGlue::portsRescanSupported;
     // ADR-0099: which dialects we speak, and word that a plugin's note ports
     // changed.
     notePortsExt_.supported_dialects = &ClapHostGlue::noteDialects;
@@ -1068,6 +1110,21 @@ const void* ClapHostGlue::getExtension(const clap_host_t* h, const char* id) {
     // lied here would have plugins calling into functions it does not
     // implement.
     return nullptr;
+}
+
+bool ClapHostGlue::portsRescanSupported(const clap_host_t*, std::uint32_t flag) {
+    // Every rescan the header defines is answered the same way -- the
+    // coalescer sees a shape change and a new graph is built (ADR-0090) --
+    // so every defined flag is supported. The [!active] ones oblige the
+    // PLUGIN to be deactivated when it asks; that obligation is the plugin's
+    // (see ADR-0123 on the per-instance host this still needs).
+    constexpr std::uint32_t known = CLAP_AUDIO_PORTS_RESCAN_NAMES |
+                                    CLAP_AUDIO_PORTS_RESCAN_FLAGS |
+                                    CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT |
+                                    CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE |
+                                    CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR |
+                                    CLAP_AUDIO_PORTS_RESCAN_LIST;
+    return flag != 0 && (flag & ~known) == 0;
 }
 
 void ClapHostGlue::latencyChanged(const clap_host_t* h) {

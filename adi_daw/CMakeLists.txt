@@ -299,6 +299,8 @@ add_test(NAME adi_session_tests COMMAND adi_session_tests)
 
 add_executable(adi_graph_tests tests/test_graph.cpp)
 target_link_libraries(adi_graph_tests PRIVATE adi_core adi_warnings)
+find_package(Threads REQUIRED)   # ADR-0123: one test renders on a second thread
+target_link_libraries(adi_graph_tests PRIVATE Threads::Threads)
 add_test(NAME adi_graph_tests COMMAND adi_graph_tests)
 
 add_executable(adi_engine_tests tests/test_engine.cpp)

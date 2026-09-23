@@ -8243,3 +8243,103 @@ named check watched fail; then the defect was removed.
 - Whether `Session::refresh` is driven by the journal (an op whose
   `EngineImpact` is `GraphRebuild` or `Snapshot`) rather than by the caller.
   Step 7 decides, when there is a caller.
+
+
+---
+
+## ADR-0123 — CLAP host contract corrections: activation bounds admit segments, a failed start is not processed, the host answers rescan support, a pre-activation parameter change is flushed; and the audio thread never asks a node its latency — `DECIDED` (2026-09-23) — **CORRECTS ADR-0075 AND ADR-0090 d5's GUARD; FOLLOWS ADR-0122**
+
+**Source:** linux's read-only audit of `src/juce/clap_host.cpp` against the
+pinned CLAP headers (`collab/linux/audits/clap-host-contract.md` and
+`audio-thread.md`, PR #72). Six findings, C1 to C6, each with a standalone
+probe that links the unchanged library and fails its assertion on GCC and
+Clang. This entry is win's triage against the header text, not the audit's
+severity column: five are contract breaks and are fixed here with a test
+that fails when the fix is reverted; one is a contract break whose fix is a
+design change in mac's host glue and goes to mac.
+
+### Decisions
+
+1. **Activation bounds are `[1, granted]`, not `[granted, granted]`** (C3).
+   `plugin.h`: "process's frame count will be included in the [min, max]
+   range". Sub-block splitting (ADR-0042 d2) hands a plugin segments as short
+   as one frame, so a minimum equal to the block size was a promise the graph
+   broke on every split. The old comment cited ADR-0049 for `min = max`;
+   ADR-0049 says only that the granted size is the maximum that exists.
+
+2. **A start that failed is not processed** (C2). `start_processing` returns
+   whether it worked and `process` is legal only while processing. `ClapDevice`
+   now keeps `processing_`; `process` passes audio through when it is false,
+   `stop_processing` is called only when it is true, and `startFailures()`
+   counts the refusals where a host can read them. Before, the result was
+   discarded and `process` was gated on activation alone.
+
+3. **The host's audio-ports extension supplies both of its functions** (C1).
+   `audio-ports.h` declares `is_rescan_flag_supported` beside `rescan`, and a
+   plugin asks the first before calling the second. It returns true for the
+   six flags the header defines, because every rescan is answered the same
+   way — a shape change, a rebuild (ADR-0090) — and false for anything else.
+
+4. **A parameter set while the plugin is not active is flushed on the main
+   thread** (C5). `params.h` annotates `flush` as
+   `[active ? audio-thread : main-thread]`. Active: the change is queued and
+   the next `process` carries it with its offset, as before. Not active: it is
+   flushed now. This is the case a project load lives in — the session applies
+   the `plugin_params` mirror before the first prepare (ADR-0122 d5) — and
+   until now every one of those values fell into a queue that did not exist
+   yet, counted in `pendingDropped_` and read by nobody. The output-event sink
+   is set up at construction so the flush can hand it over.
+
+5. **The audio thread never asks a node its latency** (C6). `latency.h`
+   annotates `get` as main-thread only, and `Graph::forwardEvents` called
+   `Node::latencySamples()` on the audio thread for every through-node with
+   queued events. The graph now keeps one atomic per slot, written at prepare
+   and at every retap on the message thread, and the audio thread reads that.
+   Behaviour is unchanged: the event delay already jumped at a retap while the
+   audio tap glided. `Node::latencySamples()` is documented as a message-thread
+   question; a node may be a plugin.
+
+6. **The port layout is still read while active — mac's** (C4). `audio-ports.h`
+   line 67: "the audio ports scan has to be done while the plugin is
+   deactivated", and `plugin.h`: the port configuration cannot change while
+   active. ADR-0090 d5's guard re-reads the layout on every prepare to catch a
+   rescan, which is both illegal and — by the second rule — unable to see a
+   change. The right signal is a rescan or restart request *attributable to
+   one device*, which needs a `clap_host_t` per plugin instance; today the glue
+   is one per host (ADR-0084), and a per-host counter would reactivate every
+   plugin on any plugin's rescan, the 106.7 ms cost ADR-0090 measured. That is
+   mac's design and mac's file; the active-state read stays until then, named.
+
+7. **Thread annotations honoured by serialisation, recorded.**
+   `start_processing` and `stop_processing` are `[audio-thread]` and are called
+   from `prepare` and `release` on the main thread while no audio runs;
+   `thread-check.h` lets the main thread act as the audio thread when the two
+   are serialised. Not changed; written down so the next audit does not
+   rediscover it.
+
+### Verified non-vacuously
+
+Each fix was reverted alone, the suite rebuilt and run, and the named check
+watched fail; then the fix was put back.
+
+| Reverted | Check that failed |
+|---|---|
+| C1: `is_rescan_flag_supported` left null | is_rescan_flag_supported is not a null pointer |
+| C2: the start result discarded | and its refusal was counted: 0 (and three more) |
+| C3: minimum = block size | min_frames_count is 1 — sub-block splitting (ADR-0042 d2): got 512 |
+| C5: the pre-activation flush skipped | through one flush: 0 |
+| C6: forwardEvents asks the node | and a was not asked its latency during process |
+
+### Consequences
+
+- `adi_clap_tests` 352 checks (+28), `adi_graph_tests` 177 (+11); the tree at
+  2883 checks across 26 suites.
+- `src/juce/clap_host.{hpp,cpp}` edited inside mac's standing claim, on the
+  director's instruction to complete step 6 (hosting); logged for mac's review
+  on return, with C4 as mac's item.
+- The ADR-0110 glue can rely on decision 4 for values applied before
+  activation, and on `startFailures()` to name a plugin that refused to run.
+
+**Not decided:** C4's design (a per-instance host object); whether
+`pendingDropped_` and `startFailures_` surface as session problems rather than
+counters — the glue decides when it reads them.
