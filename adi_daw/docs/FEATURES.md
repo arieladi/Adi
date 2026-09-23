@@ -383,5 +383,5 @@ unless it says so.
 | Play-Q: live input released on the grid, late forgiveness, amber warning | — | P2 | ADR-0133 d4 |
 | Inactive tabs offline; buses allocated on demand | — | P1 | ADR-0134 d1-d2 |
 | AudioGridder: local fallback, placeholder, Remap Remote Host | — | P1 | ADR-0134 d3 |
-| **ASIO on Windows** (not enabled today) | all | **P0** | ADR-0134 d5 |
+| **ASIO on Windows**: built (JUCE's bundled headers, GPL-3.0); the audio probe fails CI without it; not yet heard on a real ASIO driver | all | **P0** | ADR-0134 d5, ADR-0137 |
 | Plugin capabilities registry; the chosen expression route stored in the project | — | P1 | ADR-0134 d7 |

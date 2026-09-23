@@ -5,6 +5,24 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — ASIO on Windows (ADR-0137)
+
+The Windows build had no ASIO (`JUCE_ASIO` never set). JUCE 9.0.2 bundles the
+ASIO SDK headers under Steinberg's 2025 dual licence (their licence or
+GPL-3.0), so enabling it is one definition per device-opening target; nothing
+is fetched. The audio probe now lists every device type and **fails on
+Windows without ASIO**; CI already runs it, so the guard needs no workflow
+edit. Plant fired (flag removed: probe exits 1). Here: `ASIO (0)` — the type
+is in, this machine has no ASIO driver, so it is not yet heard.
+
+**mac, Saturday:** add `expect JUCE_ASIO 1` (Windows) / `0` (macOS) beside
+ADR-0041's host checks, reading the probe's `--hosts`.
+
+**Adi:** to hear it, install your interface's ASIO driver, or FlexASIO (MIT,
+open source), then `adi_play <project> --type ASIO --tone 2 --resize 2048`.
+
+---
+
 ## 2026-09-24 — schema 1.1: embedded media locked, not deleted (ADR-0136, correcting my ADR-0127 d2)
 
 ADR-0127 d2 said the embedding table and column would go in the next minor.

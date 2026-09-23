@@ -8999,3 +8999,46 @@ would fail in the one reader that exists. Removal is a major change.
 | `check` looks only at the flag | `adi_check_tests`: and so are blob chunks without the flag |
 
 **Not decided:** the migration pass that upgrades a 1.0 file to 1.1 in place.
+
+
+---
+
+## ADR-0137 — ASIO on Windows, from the headers JUCE bundles, under GPL-3.0 — `DECIDED` (2026-09-24) — **CLOSES ADR-0134 d5's GAP**
+
+**Context.** ADR-0134 d5 found that the Windows build had no ASIO at all:
+`JUCE_ASIO` was never set, so the only Windows device types were WASAPI and
+DirectSound. For a DAW that is the low-latency gap, and nothing reported it.
+
+### Decisions
+
+1. **`JUCE_ASIO=1` on Windows** for the targets that open devices
+   (`adi_audio_probe`, `adi_play`). Nothing is fetched: JUCE 9.0.2 bundles the
+   three ASIO SDK headers (`modules/juce_audio_devices/native/asio`).
+2. **Licence.** Those headers carry Steinberg's October 2025 dual licence:
+   the proprietary Steinberg ASIO licence **or** GPL Version 3 (JUCE's SBOM
+   records `LicenseRef-Steinberg-ASIO OR GPL-3.0-only`). We take GPL-3.0,
+   which `OPEN_SOURCE_POLICY.md` §3 authorises. One consequence, stated: our
+   files say GPL-3.0-or-later, and a Windows binary that includes ASIO is
+   distributable under GPLv3 exactly, not "or later" — as a JUCE build already
+   carries AGPLv3 obligations (ADR-0048). No ASIO logo is used; "ASIO" appears
+   only as the device type's name.
+3. **The probe is the guard.** On Windows, `adi_audio_probe` lists every device
+   type and **fails if ASIO is missing**. CI already runs the probe on its
+   Windows runner, so a build that loses the flag fails CI, with no workflow
+   change. A runner has no ASIO driver, so the type with zero devices passes;
+   the type absent fails. `--hosts` also prints `JUCE_ASIO=1` for mac to assert
+   beside ADR-0041's checks.
+4. **No bypass of the wrapper** (ADR-0134 d5): JUCE's ASIO class is the driver
+   callback, and `DeviceBridge` → `DeviceCore` above it is a few branches.
+
+### Verified
+
+- The planted build without the flag: the probe prints "FAILED -- ADR-0137:
+  this Windows build has no ASIO device type" and exits 1. Restored: the probe
+  lists `ASIO (0)` and passes.
+- `adi_play --type ASIO` is accepted by the build. **Not verified by ear**: this
+  machine has no ASIO driver. An interface's own driver, or FlexASIO (MIT) over
+  WASAPI, is the way to hear it; the run is recorded in the log when it happens.
+
+**Not decided:** whether the device settings page shows ASIO first on Windows
+(Live and Cubase do when a driver exists).
