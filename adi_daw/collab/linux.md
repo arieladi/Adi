@@ -81,10 +81,27 @@ exercise the exposed 32-byte unkeyed API, not unexposed keyed/XOF modes.
 
 ### Validation
 
-Final validation and merge revision are recorded here before merge. Current
-coverage includes real gated >4 GiB payload and aggregate archives, Python
-`zipfile` and `unzip -t` external readers, GCC/Clang Release full-tree checks,
-and Clang ASan+UBSan/GCC TSan with `halt_on_error=1` on both new suites.
+Rebased onto main `d900056` (win's ADR/claims update), preserving every other
+agent's row. README recomputed from the actual suite output: **3207 checks
+across 31 suites**, validators clean with both GCC 15.2.0 and Clang 21.1.8
+Release (`test_all.sh`). New suites: **42 hash + 39 ZIP checks**. Both pass
+Clang ASan+UBSan and GCC TSan with `halt_on_error=1`; the C dependencies are
+instrumented too. Concurrent independent hashes and writers/readers are covered.
+Sanitizer coverage here is the two new suites, not a claimed whole-tree rerun.
+
+`ADI_ZIP_BIG=1` ran on real disk-backed files (TMPDIR on the work disk, not the
+small /tmp tmpfs): a 4 GiB + 123 byte STORE entry, a following entry above the
+4 GiB offset, and two 2 GiB + 123 byte entries crossing the aggregate limit.
+Full extraction verifies every byte and CRC with bounded buffers. Native x86-64
+passed the large cases; a separately compiled native i386 executable using the
+same sources/dependency definitions passed **53 checks**, 76.04 s wall time,
+5416 KiB peak RSS. This also disproves the proposed 32-bit stream-offset defect.
+The large tests are opt-in, excluded from the README's default check count.
+
+Python `zipfile` checked all names, payloads, methods and CRCs; `unzip -t` passed
+all three sample entries. These are local external checks, not CI dependencies.
+PR #88 requires all **19 CI checks green** before self-merge. The claims row is
+removed in the closing commit. No tuning or next feature work follows this PR.
 Local evidence (audit, before/after findings, plants, external archive, compiler
 and test logs): `/home/adi/Documents/Codex/2026-09-23/i-n/work/blake3-zip/`.
 
