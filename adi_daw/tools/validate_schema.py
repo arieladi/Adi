@@ -40,7 +40,7 @@ import sqlite3
 import sys
 
 SPEC_APPLICATION_ID = 1094994225  # 0x41444931 == 'ADI1'
-SPEC_USER_VERSION = 1000
+SPEC_USER_VERSION = 1001   # schema 1.1 (ADR-0136); SPEC §2 and the DDL say the same
 ADI_PPQ = 5765760  # SPEC 4.2
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -276,6 +276,21 @@ def main() -> int:
         ok("un-hashed rows do not collide (the index is partial)")
     except sqlite3.IntegrityError as exc:
         fail(f"un-hashed media rows collide: {exc}")
+
+    # --- 5d2. ADR-0127/0136: media is never embedded -------------------------
+    # The lock is three triggers. Without them the retired table and column
+    # accept bytes again and nothing in the schema says otherwise.
+    print("[5d2] media is never embedded")
+    for label, sql in (
+        ("inserting embedded media", "INSERT INTO media_files(id, hash_blake3, embedded) VALUES (110, 'emb', 1)"),
+        ("marking media embedded", "UPDATE media_files SET embedded = 1 WHERE id = 100"),
+        ("writing a blob chunk", "INSERT INTO media_blobs(media_id, chunk_index, data) VALUES (100, 0, X'00')"),
+    ):
+        try:
+            db.execute(sql)
+            fail(f"{label} is accepted -- the ADR-0136 lock is missing")
+        except sqlite3.IntegrityError:
+            ok(f"{label} is refused")
 
     # --- 5e. ADR-0037: every clip is placed, on a track ----------------------
     # These columns were nullable only because a clip owned by a clip_slot had

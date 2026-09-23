@@ -302,17 +302,32 @@ void testNoInitialTempo() {
 }
 
 void testMediaEmbedding() {
-    section("media.embeddedButAbsent");
+    section("ADR-0136 -- media is never embedded: refused in 1.1, reported in 1.0");
     Fixture f("media");
     if (!f.store) return;
-    f.db().exec("INSERT INTO media_files(id, hash_blake3, embedded) "
-                "VALUES (1, 'abc123', 1)");
-    check(has(checkProject(*f.store), "media.embeddedButAbsent"),
-          "a file marked embedded with no chunks is caught");
+    f.db().exec("INSERT INTO media_files(id, hash_blake3) VALUES (1, 'abc123')");
+    auto refused = [&](const char* sql) {
+        try { f.db().exec(sql); return false; } catch (const std::exception&) { return true; }
+    };
+    check(refused("UPDATE media_files SET embedded = 1 WHERE id = 1"),
+          "a 1.1 file refuses marking media embedded");
+    check(refused("INSERT INTO media_files(id, hash_blake3, embedded) VALUES (2, 'def', 1)"),
+          "and refuses inserting it embedded");
+    check(refused("INSERT INTO media_blobs(media_id, chunk_index, data) VALUES (1, 0, X'00')"),
+          "and refuses any blob chunk");
+    check(!has(checkProject(*f.store), "media.embedded"), "a clean file reports nothing");
 
+    // A 1.0-shaped file: the lock is not there, so the check is the guard.
+    f.db().exec("DROP TRIGGER media_never_embedded_insert");
+    f.db().exec("DROP TRIGGER media_never_embedded_update");
+    f.db().exec("DROP TRIGGER media_blobs_forbidden");
+    f.db().exec("UPDATE media_files SET embedded = 1 WHERE id = 1");
+    check(has(checkProject(*f.store), "media.embedded"),
+          "a 1.0 file marked embedded is an error");
+    f.db().exec("UPDATE media_files SET embedded = 0 WHERE id = 1");
     f.db().exec("INSERT INTO media_blobs(media_id, chunk_index, data) VALUES (1, 0, X'00')");
-    check(!has(checkProject(*f.store), "media.embeddedButAbsent"),
-          "and clears once the chunk is there");
+    check(has(checkProject(*f.store), "media.embedded"),
+          "and so are blob chunks without the flag");
 }
 
 }  // namespace

@@ -8959,3 +8959,43 @@ DSP56300 emulation core, each in its own dedicated session.
    the firmware's display and LED output from the same stream.
 6. **Its own session, its own `ARCHITECTURE.md` and `DECISIONS.md`**, like the
    others; nothing of it lives in `adi_daw`.
+
+
+---
+
+## ADR-0136 — Schema 1.1: embedded media is forbidden by triggers, and removed only at 2.0 — `DECIDED` (2026-09-24) — **CORRECTS ADR-0127 d2**
+
+**Context.** ADR-0127 d2 said `media_blobs` and `media_files.embedded` would be
+"removed in the next schema minor version". That was wrong, and SPEC §11 says
+why: a newer **minor** must open read-write in an older reader, and a 1.0
+reader queries `media_blobs` (its `check` does). A 1.1 file without the table
+would fail in the one reader that exists. Removal is a major change.
+
+### Decisions
+
+1. **Schema 1.1** (`user_version` 1001). The table and the column stay, empty,
+   and are **locked by three triggers**: an insert or update that sets
+   `embedded` to anything but 0, and any insert into `media_blobs`, aborts with
+   "ADR-0127: media is never embedded in the .adi". Triggers rather than a
+   CHECK, because a CHECK cannot be added to an existing column and a trigger
+   can be dropped by a test that needs a 1.0-shaped file.
+2. **Removal at 2.0**, with whatever else a major version collects.
+3. **`check` reports embedded media as an error** (`media.embedded`), replacing
+   `media.embeddedButAbsent` and `media.blobsButNotEmbedded`: in a 1.1 file it
+   cannot happen unless the triggers were dropped; in a 1.0 file it means media
+   to extract.
+4. **1.0 files are not rewritten on open.** They stay 1.0 until a migration
+   pass exists; the extraction tool arrives with Collect and Export.
+5. **SPEC §10**: resolution no longer starts at an embedded blob (a 1.0 reader
+   MAY); §10.3 is "referenced, always"; §10.4 is Collect and Export; §10.5
+   records the retired tables. The `.adibundle` alias is retired.
+
+### Verified non-vacuously
+
+| Reverted | Check that failed |
+|---|---|
+| the insert trigger dropped from the DDL | `validate_schema` 5d2: inserting embedded media is accepted |
+| the blob trigger dropped | `validate_schema` 5d2: writing a blob chunk is accepted |
+| `check` looks only at the flag | `adi_check_tests`: and so are blob chunks without the flag |
+
+**Not decided:** the migration pass that upgrades a 1.0 file to 1.1 in place.

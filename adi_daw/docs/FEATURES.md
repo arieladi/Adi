@@ -170,7 +170,7 @@ Session window is the last step, not a way around that.
 | Loop record to take lanes | both | P1 | ✅ | |
 | Input monitoring modes | both | P0 | ✅ | `tracks.monitor_mode` |
 | Media pool with content addressing | Cubase-ish | P1 | ✅ | BLAKE3, SPEC §10.1 |
-| Collect & Embed / Extract Media | both | P1 | ✅ | `media_blobs`, SPEC §10.4 |
+| ~~Collect & Embed~~ **Collect and Export to ZIP** | both | P1 | ✅ | media is never embedded (ADR-0127); `media_blobs` and `media_files.embedded` retired and locked in schema 1.1, removed at 2.0 (ADR-0136); SPEC §10.4 |
 | Missing-file relink by content hash | neither | P1 | ✅ | SPEC §10.2 |
 | Stem / batch / queued export | Cubase | P2 | — | runtime |
 

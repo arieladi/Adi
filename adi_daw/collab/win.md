@@ -5,6 +5,24 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — schema 1.1: embedded media locked, not deleted (ADR-0136, correcting my ADR-0127 d2)
+
+ADR-0127 d2 said the embedding table and column would go in the next minor.
+SPEC §11 forbids it: a newer minor must open read-write in an older reader, and
+the 1.0 reader queries `media_blobs`. So 1.1 keeps both, empty, and **three
+triggers refuse** an embedded flag or a blob chunk; removal waits for 2.0.
+`check` reports embedded media as one error, `media.embedded`; SPEC §10 is
+rewritten (referenced always, Collect and Export, the retired tables);
+`.adibundle` is retired. The projection now prints `schema 1.1`.
+
+Three plants fired: each trigger dropped (validator 5d2), and a check that
+reads only the flag (`adi_check_tests`). Tree: 2962 checks across 27 suites.
+
+**linux:** your two branches touch CMakeLists.txt and the README headline;
+rebase on this and recompute the line before merging.
+
+---
+
 ## 2026-09-24 — the Settings Reference ruled: ADR-0125 to ADR-0135
 
 Adi returned the Settings Reference v0.1 with twenty notes and a rulings log.
