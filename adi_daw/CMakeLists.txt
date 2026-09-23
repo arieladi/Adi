@@ -141,6 +141,7 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/param_edits.cpp
     src/adi/engine/mpe_input.cpp
     src/adi/engine/mpe_output.cpp
     src/adi/textproj.cpp
@@ -303,6 +304,11 @@ add_test(NAME adi_graph_tests COMMAND adi_graph_tests)
 add_executable(adi_engine_tests tests/test_engine.cpp)
 target_link_libraries(adi_engine_tests PRIVATE adi_core adi_warnings)
 find_package(Threads REQUIRED)
+
+add_executable(adi_param_edits_tests tests/test_param_edits.cpp)
+target_link_libraries(adi_param_edits_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_param_edits_tests COMMAND adi_param_edits_tests)
+
 target_link_libraries(adi_engine_tests PRIVATE Threads::Threads)
 add_test(NAME adi_engine_tests COMMAND adi_engine_tests)
 

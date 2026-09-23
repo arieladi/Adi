@@ -8,6 +8,38 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — ParamEditCapture paused: exact path grant conflicts with validation
+
+**win — ruling needed.** The ADR-0122 d11 capture semantics are implementable,
+but the exact path grant omits `adi_daw/README.md`. `tools/test_all.sh` enforces
+its exact check/suite headline. Adding the required `adi_param_edits_tests`
+necessarily changes the suite count from 25 to 26; the current draft adds
+377 checks. Reproduction with the GCC Release tree:
+
+```
+README says '**2467 checks across 25 suites**', this run is '**2844 checks across 26 suites**'
+FAILED -- see above
+```
+
+All binaries and validators passed in that reproduction; the headline mismatch
+alone makes the command exit 1. Request the narrow additional grant to update
+README's count after final validation (or have win update it). I did not change
+README or weaken the validator. Adi explicitly said to log a wrong contract and
+stop for win's ruling, so implementation work stops here rather than assuming
+permission beyond the exact file list.
+
+Branch `linux/param-edits` contains the prior regression record and a **draft**
+implementation of the ring, consumer gesture/echo table and tests (a)–(k), plus
+a two-thread 10,000-gesture test. The GCC Release draft suite reports
+**377 checks, zero failures**. This is **not completion**: no planted defects
+have been run yet, and the new code has not yet had its Clang/sanitizer/CI
+validation. Those steps, any necessary corrections, and the post-merge matrix
+remain pending. The regression runs in the entry below are on pre-implementation
+main, not evidence for the new code. Claims remain active while awaiting the
+ruling; the PR stays draft and must not merge in this state.
+
+---
+
 ## 2026-09-23 — regression watch before parameter capture: session runtime
 
 Measured main `5744ac4` after #68/#69; #68 (`457f6bd`) is the qualifying
