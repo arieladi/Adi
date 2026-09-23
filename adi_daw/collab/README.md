@@ -144,6 +144,7 @@ subject, say so in your log instead of writing it twice.
 | 0133 | win | `win/settings-rulings` | the suite is ADI DAW, ADI Live and aDiJ; Rec-Q and Play-Q | used |
 | 0134 | win | `win/settings-rulings` | architecture rulings from the Settings review: offline tabs, buses on demand, AudioGridder fallback, PTP, block sizes and ASIO, compact plugin blocks, capability registry, Pd parameters, Linux | used |
 | 0135 | win | `win/settings-rulings` | the sibling projects' names, and the DSP56300 emulation project | used |
+| 0136 | win | `win/schema-1.1` | schema 1.1: embedded media forbidden by triggers, removed only at 2.0 (corrects ADR-0127 d2) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

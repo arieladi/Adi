@@ -387,14 +387,16 @@ void checkMedia(Ctx& c) {
             const auto id = st.getColumn(0).getInt64();
             const bool embedded = st.getColumn(1).getInt() != 0;
             const auto chunks = st.getColumn(2).getInt();
-            if (embedded && chunks == 0)
-                c.add(Severity::Error, "media.embeddedButAbsent",
+            // ADR-0127 / ADR-0136: media is never embedded. A 1.1 file cannot
+            // hold any (the schema's triggers refuse it), so this finds 1.0
+            // files, and a 1.1 file whose triggers someone dropped.
+            if (embedded || chunks > 0)
+                c.add(Severity::Error, "media.embedded",
                       "media_files#" + std::to_string(id),
-                      "marked embedded but has no blob chunks");
-            if (!embedded && chunks > 0)
-                c.add(Severity::Warning, "media.blobsButNotEmbedded",
-                      "media_files#" + std::to_string(id),
-                      std::to_string(chunks) + " blob chunks present but embedded = 0");
+                      std::string(embedded ? "marked embedded" : "not marked embedded") +
+                          " with " + std::to_string(chunks) +
+                          " blob chunk(s); media is never embedded (ADR-0127): "
+                          "extract it to the project's audio/ folder");
         }
     } catch (const std::exception& e) {
         c.add(Severity::Error, "media.checkFailed", "media_files", e.what());

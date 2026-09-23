@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1000;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1001;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '0'),
+    ('schema_minor',        '1'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -600,6 +600,9 @@ CREATE TABLE media_files (
     format          TEXT    NOT NULL DEFAULT '',
     bit_depth       INTEGER,
     size_bytes      INTEGER,
+    -- Always 0 from schema 1.1 (ADR-0127, ADR-0136): media is never embedded.
+    -- Kept rather than dropped so a 1.0 reader can open a 1.1 file (SPEC
+    -- §11); the triggers below refuse anything else; removed at 2.0.
     embedded        INTEGER NOT NULL DEFAULT 0,
     missing         INTEGER NOT NULL DEFAULT 0,
     imported_utc    INTEGER,
@@ -619,14 +622,29 @@ CREATE TABLE media_files (
 CREATE UNIQUE INDEX idx_media_hash ON media_files(hash_blake3)
     WHERE hash_blake3 <> '';
 
--- Embedding is a flag, not a different format (SPEC §10.4). Chunked so a large
--- file does not depend on a raised SQLITE_MAX_LENGTH in a third-party reader.
+-- RETIRED (ADR-0127, ADR-0136). Schema 1.0 could embed audio here; from 1.1
+-- media is never embedded, and a shareable project is a ZIP (SPEC §10.4).
+-- The table stays, empty and locked, because SPEC §11 promises a 1.0 reader
+-- can open any 1.x file, and that reader queries it. Dropped at 2.0.
 CREATE TABLE media_blobs (
     media_id    INTEGER NOT NULL REFERENCES media_files(id) ON DELETE CASCADE,
     chunk_index INTEGER NOT NULL,
     data        BLOB    NOT NULL,
     PRIMARY KEY (media_id, chunk_index)
 ) STRICT, WITHOUT ROWID;
+
+-- The lock. Triggers rather than a CHECK: a CHECK cannot be added to an
+-- existing column, and a trigger can be dropped by a test that needs to build
+-- a 1.0-shaped file.
+CREATE TRIGGER media_never_embedded_insert
+    BEFORE INSERT ON media_files WHEN NEW.embedded <> 0
+BEGIN SELECT RAISE(ABORT, 'ADR-0127: media is never embedded in the .adi'); END;
+CREATE TRIGGER media_never_embedded_update
+    BEFORE UPDATE OF embedded ON media_files WHEN NEW.embedded <> 0
+BEGIN SELECT RAISE(ABORT, 'ADR-0127: media is never embedded in the .adi'); END;
+CREATE TRIGGER media_blobs_forbidden
+    BEFORE INSERT ON media_blobs
+BEGIN SELECT RAISE(ABORT, 'ADR-0127: media is never embedded in the .adi'); END;
 
 -- ============================================================================
 --  LAYER 3 — SESSION: the op log (SPEC §8)

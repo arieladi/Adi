@@ -174,7 +174,7 @@ std::span<const TableCoverage> coverage() {
         {"arranger_sections", Coverage::Excluded, "no op writes it"},
         {"arranger_chain", Coverage::Excluded, "no op writes it"},
         {"key_map", Coverage::Excluded, "no op writes it"},
-        {"media_blobs", Coverage::Excluded, "embedded bytes; the media row carries the flag"},
+        {"media_blobs", Coverage::Excluded, "retired and locked since 1.1 (ADR-0136); a 1.0 file's bytes are not projected"},
         {"extensions", Coverage::Excluded, "digest projection not designed"},
     }};
     return kTables;

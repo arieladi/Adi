@@ -42,7 +42,7 @@ Key words **MUST**, **MUST NOT**, **SHOULD**, **MAY** are used as in RFC 2119.
 | Property | Value |
 |---|---|
 | Extension | `.adi` |
-| Alias extension | `.adibundle` — same format, signals embedded media (§10.4) |
+| Alias extension | none. `.adibundle` is retired (ADR-0127): media is never embedded, and a shareable project is a ZIP (§10.4) |
 | MIME type | `application/vnd.adi.project` |
 | SQLite `application_id` | `1094994225` (= `0x41444931`, ASCII `ADI1`) |
 | SQLite `user_version` | `schema_major * 1000 + schema_minor` |
@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1000;          -- schema 1.0
+PRAGMA user_version   = 1001;          -- schema 1.1
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -693,6 +693,8 @@ id, hash_blake3, orig_name, rel_path, abs_path_hint, sample_rate, channels,
 frames, format, duration_ns, embedded, size_bytes, imported_utc, missing
 ```
 
+`embedded` is always 0 from schema 1.1 (§10.5).
+
 Content addressing by BLAKE3 gives us, from one column: deduplication (the same
 sample dropped in twenty times is one file), integrity verification (detect a
 truncated or replaced file *before* it renders as silence), and reliable relink
@@ -702,41 +704,43 @@ truncated or replaced file *before* it renders as silence), and reliable relink
 
 A reader resolving a media file **MUST** try, in order:
 
-1. embedded blob, if `embedded = 1`;
-2. `rel_path` relative to the `.adi`;
-3. registered project media folders;
-4. `abs_path_hint`;
-5. the user's configured search paths, matched by `hash_blake3`;
-6. mark `missing = 1` and surface a relink prompt.
+1. `rel_path` relative to the `.adi`;
+2. registered project media folders (the project's `audio/` first);
+3. `abs_path_hint`;
+4. the user's configured search paths, matched by `hash_blake3`;
+5. mark `missing = 1` and surface a relink prompt.
+
+A reader of a schema 1.0 file that still holds embedded media **MAY** resolve
+it from `media_blobs` first; a writer **MUST** extract it (§10.5).
 
 A hash mismatch at any step **MUST** be reported, never silently accepted. A
 sample that has been replaced on disk by a different file of the same name is one
 of the most disorienting failures in a DAW, and it is entirely detectable.
 
-### 10.3 Referenced by default
+### 10.3 Referenced, always
 
-By default media is **referenced**, not copied. A 4-minute project that touches a
+Media is **referenced**, never copied into the database (ADR-0127). A 4-minute project that touches a
 90 GB sample library must not become a 90 GB file.
 
-### 10.4 Embedding is a flag, not a different format
+### 10.4 Collect and Export
 
-`media_blobs(media_id, data)` holds embedded audio. **Collect & Embed** populates
-it; **Extract Media** empties it.
+The database holds device state (`state_blobs`: plugin chunks, custom
+wavetables, preset blobs) and event streams, and never a media file. To share or
+archive a project, **Collect and Export** copies every referenced file into the
+project's `audio/` folder, verifies each against `hash_blake3` (a mismatch stops
+the export and names the file), rewrites its `rel_path`, and writes the `.adi`
+and `audio/` into one ZIP64 archive, audio stored uncompressed. Extracted
+anywhere, every relative path resolves (ADR-0127).
 
-A `.adi` with embedded media is **the same format** read by the same code — the
-only difference is which branch of §10.2 resolves. `.adibundle` is an alias
-extension that signals "this one is large and self-contained" to humans and to
-mail clients. It carries no semantic difference whatsoever.
+### 10.5 The retired embedding tables
 
-This is deliberately simpler than the usual project/bundle/archive split: one
-schema, one reader, one code path, and the decision is reversible at any time.
-
-### 10.5 Size limits
-
-SQLite's default max BLOB is 1 GB and its max database size is ~281 TB. A single
-embedded file over 512 MB **SHOULD** be chunked across `media_blobs` rows (the
-schema allows it via `chunk_index`) rather than relying on a raised
-`SQLITE_MAX_LENGTH` that a third-party reader may not have.
+Schema 1.0 could embed audio in `media_blobs`, flagged by `media_files.embedded`.
+From 1.1 both are **retired**: kept in the DDL, empty, and locked by three
+triggers that refuse an embedded flag and any blob chunk (ADR-0136). They are
+not dropped because §11 promises that a 1.0 reader opens any 1.x file, and a
+1.0 reader queries them. They are removed at schema 2.0. A 1.0 file that holds
+embedded media is reported by `check` as an error (`media.embedded`) and must
+be extracted before it is written again.
 
 ---
 
