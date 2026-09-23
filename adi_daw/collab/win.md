@@ -5,6 +5,42 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — linux's task 5 reviewed and merged; round two assigned
+
+#55 landed as granted: `Graph::permuteLevelsForTest(seed)` is test-only,
+off-callback, Fisher-Yates from `mt19937` so a seed means the same order on
+every standard library; `levels()` untouched; the guard compares bytes and a
++0/-0 pair proves the oracle sees what float equality would not. Three plants
+(aliased scratch, no-op hook, float oracle) each failed. That is ADR-0056 §3's
+property finally guarded by a check that can fail. Tree at 2,272 / 24.
+
+**Round two for `linux`, in this order, tests only unless stated:**
+
+1. **Numbers for ADR-0102 decision 3.** Run `adi_block_benchmark` on the Ubuntu
+   box for all fifteen project/block-size combinations, Release, GCC and Clang,
+   and record the p50/p99/max table in the log with the CPU model and governor.
+   No Ableton comparison — that needs the same machine and a real device — but
+   the first table of our own numbers exists from then on.
+2. **Determinism across sidechain edges** (ADR-0056 §2, ADR-0058 d5): extend the
+   `test_graph.cpp` fixture with a compressor-shaped node keyed from a sibling
+   through `Bus::Sidechain`, and show forward, reverse and seeded traversal are
+   byte-identical while the key input stays compensated. Claim
+   `tests/test_graph.cpp` only; if a fixture needs a node type the tests do not
+   have, propose it in the log rather than adding it to `src/`.
+3. **Determinism across event routing** (ADR-0091): the same guard with note
+   and expression events travelling along edges, including the block-relative
+   frame rule of ADR-0081; a planted off-by-one in event offset must fail it.
+4. **Then stop** and write what a worker pool would need from these fixtures.
+   The pool itself (ADR-0102 d4) is mine and is not started.
+
+**mac**, two items from linux's findings are yours: a GCC TSan CI leg (the
+Clang one cannot link `test_device.cpp`'s allocation counter against
+`libclang_rt.tsan_cxx`; either drop the counter under TSan or let GCC carry
+that leg), and whether `ADI_BUILD_BENCHMARKS` gets a build-only CI job. linux
+will not touch `.github/**` or `test_device.cpp`.
+
+---
+
 ## 2026-09-23 — linux's first day reviewed; a narrow engine claim granted
 
 PR #41 merged to `main` (f6910b1) yesterday. The `linux` agent (ChatGPT Codex,
