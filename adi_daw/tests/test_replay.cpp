@@ -17,6 +17,8 @@
 // exclusion is what makes a match meaningful — the two projects have different
 // UI state by construction, so matching proves the ops did not consume it.
 
+#include "temp_directory.hpp"
+
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
@@ -49,16 +51,10 @@ void check(bool cond, const std::string& what) {
 void section(const char* s) { std::printf("[%s]\n", s); }
 
 struct Scratch {
+    adi::test::TempDirectory temp; // destroyed after store/file members
     fs::path dir;
-    explicit Scratch(const char* n) {
-        dir = fs::temp_directory_path() / ("adi_replay_" + std::string(n));
-        std::error_code ec;
-        fs::remove_all(dir, ec);
-        fs::create_directories(dir, ec);
-    }
-    ~Scratch() {
-        std::error_code ec;
-        fs::remove_all(dir, ec);
+    explicit Scratch(const char* n)
+        : temp("replay", n), dir(temp.path()) {
     }
     fs::path operator/(const char* l) const { return dir / l; }
 };

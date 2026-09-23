@@ -18,6 +18,8 @@
 // things silently wrong: a well-formed event carrying the wrong number makes a
 // note brighter instead of sharper, and nothing fails.
 
+#include "temp_directory.hpp"
+
 #include "juce/clap_host.hpp"
 
 #include <cmath>
@@ -1339,8 +1341,8 @@ void testBundleSearchIsRecursive() {
 
     namespace fs = std::filesystem;
     std::error_code ec;
-    const fs::path root = fs::temp_directory_path(ec) / "adi_clap_scan_test";
-    fs::remove_all(root, ec);
+    const adi::test::TempDirectory scratch("clap", "bundle_search");
+    const fs::path& root = scratch.path();
     fs::create_directories(root / "Vendor" / "Sub", ec);
     fs::create_directories(root / "Bundle.clap" / "Contents", ec);
     auto touch = [](const fs::path& f) { std::ofstream(f) << "x"; };
@@ -1370,7 +1372,6 @@ void testBundleSearchIsRecursive() {
     const auto twice = ClapHost::findBundles({root.string(), root.string()});
     check(twice.size() == 4, "a path listed twice (CLAP_PATH repeating a default) finds each once");
 
-    fs::remove_all(root, ec);
 }
 
 void testClapHostWithoutAnyPlugin() {

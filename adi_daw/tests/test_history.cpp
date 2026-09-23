@@ -7,6 +7,8 @@
 //   * a transaction undoes AS ONE, however many ops it made
 //   * undoing then doing something new FORKS rather than destroying
 
+#include "temp_directory.hpp"
+
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -36,16 +38,10 @@ void check(bool cond, const std::string& what) {
 void section(const char* s) { std::printf("[%s]\n", s); }
 
 struct Scratch {
+    adi::test::TempDirectory temp; // destroyed after store/file members
     fs::path dir;
-    explicit Scratch(const char* n) {
-        dir = fs::temp_directory_path() / ("adi_hist_" + std::string(n));
-        std::error_code ec;
-        fs::remove_all(dir, ec);
-        fs::create_directories(dir, ec);
-    }
-    ~Scratch() {
-        std::error_code ec;
-        fs::remove_all(dir, ec);
+    explicit Scratch(const char* n)
+        : temp("history", n), dir(temp.path()) {
     }
     fs::path operator/(const char* l) const { return dir / l; }
 };

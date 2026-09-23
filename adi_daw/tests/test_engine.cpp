@@ -7,6 +7,8 @@
 // use-after-free that only happens when the reader and writer race — and that
 // race is the entire reason this mechanism exists.
 
+#include "temp_directory.hpp"
+
 #include "adi/engine/process.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/ops.hpp"
@@ -60,20 +62,13 @@ struct Probe : Sequenced {
 };
 
 struct Scratch {
+    adi::test::TempDirectory temp; // destroyed after store/file members
     fs::path dir;
     std::unique_ptr<Store> store;
-    explicit Scratch(const char* n) {
-        dir = fs::temp_directory_path() / ("adi_eng_" + std::string(n));
-        std::error_code ec;
-        fs::remove_all(dir, ec);
-        fs::create_directories(dir, ec);
+    explicit Scratch(const char* n)
+        : temp("engine", n), dir(temp.path()) {
         StoreError e = StoreError::Ok;
         store = Store::create(dir / "p.adi", e);
-    }
-    ~Scratch() {
-        store.reset();
-        std::error_code ec;
-        fs::remove_all(dir, ec);
     }
 };
 

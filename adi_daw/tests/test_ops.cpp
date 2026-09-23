@@ -8,6 +8,8 @@
 //   * DETERMINISM -- identical payloads encode to identical bytes, or ADR-0007's
 //     text projection and ADR-0021's replay test both become impossible.
 
+#include "temp_directory.hpp"
+
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -40,16 +42,10 @@ void check(bool cond, const std::string& what) {
 void section(const char* s) { std::printf("[%s]\n", s); }
 
 struct Scratch {
+    adi::test::TempDirectory temp; // destroyed after store/file members
     fs::path dir;
-    explicit Scratch(const char* name) {
-        dir = fs::temp_directory_path() / ("adi_ops_test_" + std::string(name));
-        std::error_code ec;
-        fs::remove_all(dir, ec);
-        fs::create_directories(dir, ec);
-    }
-    ~Scratch() {
-        std::error_code ec;
-        fs::remove_all(dir, ec);
+    explicit Scratch(const char* name)
+        : temp("ops", name), dir(temp.path()) {
     }
     fs::path operator/(const char* leaf) const { return dir / leaf; }
 };
