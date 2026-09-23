@@ -67,8 +67,9 @@ bash adi_daw/tools/test_all.sh /tmp/adi-gcc-debug
 Repeat with `clang`/`clang++` and Release. The earlier 1,028/13 run was on
 `aedf0fa` and is superseded by this baseline.
 
-**Delivery status:** local validation complete; PR/CI/merge pending replacement
-of the existing OAuth credential with Adi's requested repository-scoped token.
+**Delivery status:** local validation complete; PR/CI/merge pending. The existing
+OAuth login is usable for the authorized Adi-only operations; replacing it with
+Adi's requested repository-scoped token remains a separate user terminal step.
 The authentication note contains no token. No credential was requested in chat,
 printed, or read from the gh configuration store. Existing CI on main passed,
 but is not evidence for this branch; no claim of branch CI success is made.
