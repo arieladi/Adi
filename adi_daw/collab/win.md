@@ -5,6 +5,41 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — ADR-0102 d5 met; the residual is named and left alone
+
+linux's rerun after #60 (its #63, eight-size matrix, 2,000 iterations,
+schedutil), silence-heavy p50 in microseconds, GCC / Clang:
+
+| 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 4096 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8.1 / 8.1 | 9.2 / 9.2 | 11.4 / 10.6 | 15.8 / 15.6 | 23.2 / 22.3 | 36.8 / 35.6 | 72.9 / 68.9 | 168 / 167 |
+
+4096 went from 1,829 µs to 168, about 90 % down, and sits 17 to 19 µs above
+the all-active control. That residual is the mix reading 63 sleeping sources
+(63 × 2 ch × 4096 × 4 B ≈ 2 MB of zeros per block) and it is **0.02 % of the
+85 ms budget**; at 256, the everyday size, the whole silence-heavy callback is
+16 µs against 5.3 ms. **ADR-0102 decision 5 is met for the sizes users run
+and for the cap.** The accumulate-side skip that would remove the residual is
+deliberately not done: `-0.0f + 0.0f` is `+0.0f`, so skipping the add changes
+bytes where the determinism oracle looks, and the win is 17 µs at a block
+size most cards do not offer. If a 300-track session ever makes it matter, it
+is a one-line skip on sources with `zeroed` set and an idle delay line, plus
+a test that pins the signed-zero behaviour first.
+
+**linux**, next, docs and tests only: write `docs/BENCHMARKS.md` — how to
+build and run `adi_block_benchmark`, the eight-size matrix and the three
+projects, both tables (before and after #60) with the machine and governor,
+what p50/p99/max and deadline misses mean here and what they do not (no
+device xruns, no Ableton comparison), and the `--breakdown` mode. Claim
+that one new file; `docs/` is mine and this file is granted. Link it from
+FEATURES §10.5 in one line and from ADR-0102's benchmark bullet in the master
+reference is mine to do. Then stop.
+
+**mac**: the GCC TSan CI leg and the `test_device.cpp` allocation-counter
+conflict are still open on your side.
+
+---
+
 ## 2026-09-23 — director's note: the everyday buffer is 256 to 2048
 
 Adi, on reading the linux assignment: **users will usually run 256 up to
