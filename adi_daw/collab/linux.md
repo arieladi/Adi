@@ -8,6 +8,153 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — #70 merged: regression watch and read-only audits
+
+Measured main **`bad346e`** after #70 merged with all **19 CI jobs** green.
+All four projects, all eight sizes, both Release compilers; same Intel Core
+i5-3550S / Ubuntu 26.04.1, GCC 15.2.0 / Clang 21.1.8, 48 kHz stereo,
+32 warmups and **2,000** measured callbacks. **schedutil on all four CPUs**
+verified before/after; no affinity/priority changes. Builds and audit probes
+finished before sequential sampling, with no concurrent build/test workload.
+
+Times are µs; prior is the last recorded `5744ac4` run. Its disturbed
+active-64/1024 cell remains visible in that comparison; the accepted reference
+for the six reruns is #66's `e4c3b00`, per win. **win:** the Clang
+active-64/1024 movement is **−31.97%** versus the disturbed run, an observation
+rather than a code-improvement claim. No other p50 moves more than 20% versus
+that last run. One measured callback missed its deadline: Clang active/128,
+max **3,090.037 µs** against **2,666.667 µs**, with p50 **4.766 µs**. Every
+other row has zero misses; all rows have zero event drops and rejected events.
+
+| Compiler | Project | Frames | Prior p50 | New p50 | Delta % | p99 | Max | Misses |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| gcc | active | 32 | 2.839 | 2.930 | +3.21 | 14.061 | 118.394 | 0 |
+| gcc | active | 64 | 3.613 | 3.609 | -0.11 | 4.616 | 23.938 | 0 |
+| gcc | active | 128 | 4.984 | 5.074 | +1.81 | 16.065 | 25.848 | 0 |
+| gcc | active | 256 | 8.556 | 8.124 | -5.05 | 19.238 | 50.488 | 0 |
+| gcc | active | 512 | 15.133 | 14.621 | -3.38 | 35.426 | 747.471 | 0 |
+| gcc | active | 1024 | 28.744 | 27.625 | -3.89 | 55.316 | 94.367 | 0 |
+| gcc | active | 2048 | 67.278 | 67.523 | +0.36 | 114.936 | 241.419 | 0 |
+| gcc | active | 4096 | 147.774 | 153.008 | +3.54 | 229.177 | 3511.629 | 0 |
+| gcc | silence-heavy | 32 | 6.580 | 6.634 | +0.82 | 17.019 | 31.255 | 0 |
+| gcc | silence-heavy | 64 | 6.785 | 6.798 | +0.19 | 16.905 | 39.376 | 0 |
+| gcc | silence-heavy | 128 | 7.206 | 7.137 | -0.96 | 17.705 | 70.010 | 0 |
+| gcc | silence-heavy | 256 | 7.873 | 7.821 | -0.66 | 18.881 | 49.223 | 0 |
+| gcc | silence-heavy | 512 | 8.684 | 8.871 | +2.15 | 20.334 | 30.584 | 0 |
+| gcc | silence-heavy | 1024 | 11.137 | 10.943 | -1.74 | 23.970 | 37.882 | 0 |
+| gcc | silence-heavy | 2048 | 16.399 | 16.207 | -1.17 | 31.179 | 71.780 | 0 |
+| gcc | silence-heavy | 4096 | 29.186 | 29.429 | +0.83 | 51.673 | 74.975 | 0 |
+| gcc | active-64 | 32 | 24.083 | 24.879 | +3.31 | 44.941 | 65.131 | 0 |
+| gcc | active-64 | 64 | 34.407 | 34.451 | +0.13 | 61.940 | 97.446 | 0 |
+| gcc | active-64 | 128 | 51.770 | 51.444 | -0.63 | 85.653 | 121.493 | 0 |
+| gcc | active-64 | 256 | 82.246 | 82.502 | +0.31 | 124.371 | 148.622 | 0 |
+| gcc | active-64 | 512 | 138.798 | 139.155 | +0.26 | 197.781 | 273.633 | 0 |
+| gcc | active-64 | 1024 | 369.831 | 340.412 | -7.95 | 775.235 | 1176.906 | 0 |
+| gcc | active-64 | 2048 | 2092.997 | 2335.669 | +11.59 | 4684.717 | 10264.848 | 0 |
+| gcc | active-64 | 4096 | 4713.983 | 4625.676 | -1.87 | 7130.490 | 11564.062 | 0 |
+| gcc | mpe-storm | 32 | 3.033 | 3.048 | +0.49 | 14.362 | 37.364 | 0 |
+| gcc | mpe-storm | 64 | 6.218 | 6.208 | -0.16 | 16.839 | 41.342 | 0 |
+| gcc | mpe-storm | 128 | 9.320 | 9.498 | +1.91 | 27.002 | 61.181 | 0 |
+| gcc | mpe-storm | 256 | 19.036 | 19.859 | +4.32 | 41.961 | 78.005 | 0 |
+| gcc | mpe-storm | 512 | 40.229 | 40.714 | +1.21 | 73.369 | 110.636 | 0 |
+| gcc | mpe-storm | 1024 | 98.288 | 96.616 | -1.70 | 138.760 | 186.731 | 0 |
+| gcc | mpe-storm | 2048 | 260.337 | 257.031 | -1.27 | 334.476 | 706.419 | 0 |
+| gcc | mpe-storm | 4096 | 780.128 | 758.032 | -2.83 | 1159.738 | 1437.291 | 0 |
+| clang | active | 32 | 2.883 | 2.845 | -1.32 | 3.791 | 25.061 | 0 |
+| clang | active | 64 | 3.590 | 3.515 | -2.09 | 13.720 | 32.522 | 0 |
+| clang | active | 128 | 4.789 | 4.766 | -0.48 | 14.844 | 3090.037 | 1 |
+| clang | active | 256 | 7.690 | 7.312 | -4.92 | 18.679 | 87.666 | 0 |
+| clang | active | 512 | 13.895 | 13.506 | -2.80 | 26.692 | 119.182 | 0 |
+| clang | active | 1024 | 27.025 | 27.475 | +1.67 | 56.645 | 316.595 | 0 |
+| clang | active | 2048 | 66.970 | 67.151 | +0.27 | 110.693 | 142.890 | 0 |
+| clang | active | 4096 | 148.687 | 147.913 | -0.52 | 212.296 | 279.830 | 0 |
+| clang | silence-heavy | 32 | 7.021 | 7.188 | +2.38 | 18.632 | 47.626 | 0 |
+| clang | silence-heavy | 64 | 7.414 | 7.191 | -3.01 | 18.874 | 49.853 | 0 |
+| clang | silence-heavy | 128 | 7.619 | 7.387 | -3.05 | 18.723 | 97.787 | 0 |
+| clang | silence-heavy | 256 | 8.197 | 7.944 | -3.09 | 19.491 | 103.646 | 0 |
+| clang | silence-heavy | 512 | 9.136 | 9.591 | +4.98 | 22.286 | 45.919 | 0 |
+| clang | silence-heavy | 1024 | 11.215 | 11.479 | +2.35 | 33.186 | 1103.771 | 0 |
+| clang | silence-heavy | 2048 | 16.506 | 16.397 | -0.66 | 33.474 | 91.849 | 0 |
+| clang | silence-heavy | 4096 | 30.018 | 29.893 | -0.42 | 54.021 | 113.613 | 0 |
+| clang | active-64 | 32 | 24.878 | 23.563 | -5.29 | 46.091 | 137.979 | 0 |
+| clang | active-64 | 64 | 35.120 | 34.931 | -0.54 | 67.009 | 125.168 | 0 |
+| clang | active-64 | 128 | 51.003 | 49.520 | -2.91 | 84.461 | 150.973 | 0 |
+| clang | active-64 | 256 | 78.784 | 78.243 | -0.69 | 122.774 | 185.869 | 0 |
+| clang | active-64 | 512 | 139.591 | 133.088 | -4.66 | 194.079 | 270.130 | 0 |
+| clang | active-64 | 1024 | 464.662 | 316.124 | -31.97 | 1011.644 | 2091.614 | 0 |
+| clang | active-64 | 2048 | 1940.686 | 1828.704 | -5.77 | 3538.979 | 23823.026 | 0 |
+| clang | active-64 | 4096 | 4713.592 | 4761.532 | +1.02 | 8188.883 | 17701.421 | 0 |
+| clang | mpe-storm | 32 | 2.899 | 2.887 | -0.41 | 18.663 | 37.066 | 0 |
+| clang | mpe-storm | 64 | 7.852 | 7.687 | -2.10 | 19.162 | 35.129 | 0 |
+| clang | mpe-storm | 128 | 11.030 | 11.432 | +3.64 | 28.553 | 67.901 | 0 |
+| clang | mpe-storm | 256 | 24.657 | 27.014 | +9.56 | 48.915 | 69.942 | 0 |
+| clang | mpe-storm | 512 | 54.007 | 56.645 | +4.88 | 94.329 | 131.415 | 0 |
+| clang | mpe-storm | 1024 | 137.922 | 141.845 | +2.84 | 198.659 | 333.816 | 0 |
+| clang | mpe-storm | 2048 | 407.093 | 412.475 | +1.32 | 516.691 | 574.917 | 0 |
+| clang | mpe-storm | 4096 | 1338.762 | 1401.860 | +4.71 | 2199.720 | 2585.671 | 0 |
+
+### Active-64 / 1024: three reruns per compiler
+
+| Compiler | Run | p50 µs | p99 µs | p99 / p50 | Δ vs #66 p50 |
+|---|---:|---:|---:|---:|---:|
+| gcc | 1 | 415.493 | 1394.852 | 3.36 | +38.48% |
+| gcc | 2 | 357.506 | 1138.925 | 3.19 | +19.16% |
+| gcc | 3 | 352.509 | 1305.059 | 3.70 | +17.49% |
+| clang | 1 | 406.762 | 1439.293 | 3.54 | +18.05% |
+| clang | 2 | 358.646 | 1071.335 | 2.99 | +4.09% |
+| clang | 3 | 406.154 | 1442.914 | 3.55 | +17.87% |
+
+**win:** only one of six rerun p50s is above +20%, and p99/p50 is
+2.99–3.70. The required conjunction (all six above threshold with normal
+tails) is false. The earlier crossing is a **disturbed run**, #66's baseline
+stands, and no bisect or tuning was started.
+
+The benchmark has no project/size selection flag. To run *only* that cell,
+a task-local driver compiles the unchanged benchmark declarations and
+`measure()` body with Release flags, substituting only main's selection with
+`measure(Project{"active-64",64,4,false,false},1024,2000,false)`. Both drivers
+link the corresponding main build's unchanged adi_core. No repository
+benchmark or CMake edit. The driver is not byte-identical to the full-matrix
+executable; selection and raw CSVs are retained in task-local
+`work/param-edits-postmerge/`.
+
+### Post-merge validation
+
+GCC and Clang `test_all.sh`: **2,844 checks / 26 suites**, 3.07 / 3.08 s;
+all validators pass. Clang ASan+UBSan: CTest `-j 4` 26/26 in 6.73 s,
+full validation in 14.43 s. GCC TSan: CTest `-j 4` 26/26 in 8.36 s,
+full validation in 20.30 s. `halt_on_error=1` throughout; **no sanitizer
+findings**, including the new two-thread capture fixture.
+
+### Assigned audits
+
+**win:** six standalone probe modes fail their contract assertions against
+unchanged host code on both GCC and Clang: (C1) advertised audio-port query
+callback is null; (C2) process called after start failed; (C3) 128-frame segment
+against declared 512–512 bounds; (C4) four audio-port queries while active;
+(C5) pre-prepare parameter change rejected with no flush; (C6) event forwarding
+calls CLAP's main-thread latency getter on audio. An allocating fake getter
+in C6 produces one callback allocation, showing why the thread contract
+matters. Severity and fixes belong to win's triage; no host fixes applied.
+
+Reports, exact header/source lines, coverage limitations and complete
+standalone reproducers are in [CLAP host contract](linux/audits/clap-host-contract.md)
+and [audio-thread paths](linux/audits/audio-thread.md). Publisher review also
+has a clean/plant pair: strict `>` reclamation passes; changing it to `>=` in
+a scratch header fails the live-reader destructor assertion. No production
+header was mutated for the audits. Runtime JUCE/VST3 coverage is explicitly
+unavailable; no unverified concern is promoted to a finding.
+
+Gemini was attempted as the granted read-only tool, all tools denied and no
+repository credentials supplied. Both requests failed before producing an
+audit (`IneligibleTierError`: installed client no longer supported). These
+are direct Codex audits, not Gemini output. No new dependency, host patch,
+workflow change or Session edit. This documentation follow-up is separate
+from #70. Stop after publication; next actions belong to win's triage and
+the standing regression watch.
+
+---
+
 ## 2026-09-23 — #70 completed after win's README grant
 
 Win's ruling on main `9e8d561` grants the README headline and resolves the
