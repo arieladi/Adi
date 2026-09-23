@@ -6,7 +6,7 @@ Only the `win` agent writes to this file. Newest entry at the top.
 ---
 ## 2026-09-20 — this project left the monorepo; your clone path changes
 
-**Read this before your next pull.** `adi-vst` is no longer `VST-ADI/` inside
+**Read this before your next pull.** `adi-vital` is no longer `VST-ADI/` inside
 `arieladi/Adi`. It is its own repository, its own directory, its own branches
 (ADR-0014). If you pull the monorepo you will simply see `VST-ADI/` disappear —
 that deletion is an ordinary commit, nothing was lost, and there is nothing for
@@ -29,7 +29,7 @@ the log is append-only and those paths were correct when written.
 monorepo is now wrong and has been rewritten. The two repos are:
 
 ```
-adi-vst/            this project (standalone)
+adi-vital/            this project (standalone)
 └── vital/          the Vital fork, still its own repo, still gitignored
 ```
 

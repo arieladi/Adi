@@ -29,7 +29,7 @@ Where each project stands today:
 |---|---|---|
 | `adi_daw/` | GPLv3 | ADR-0015; reads and copies from GPL references |
 | `adi-surge/` | GPLv3 | a fork of Surge XT, which is GPLv3 |
-| `adi-vst/` | GPLv3 | contains a fork of Vital, which is GPLv3 |
+| `adi-vital/` | GPLv3 | contains a fork of Vital, which is GPLv3 |
 | AdiGuard (own repository) | to be applied — see §6 | was private/proprietary under its ADR-0018; this mandate supersedes that |
 
 **Two legal limits the escalation rule has to respect:**
@@ -91,7 +91,7 @@ This policy governs **our code**. It gives no right to publish things we do not
 own, and it changes nothing about keeping them out of every repository:
 
 - **Commercial binaries and installers** — e.g. `Vanguard.dll`, the
-  `adi-vst/Reason_*` installers.
+  `adi-vital/Reason_*` installers.
 - **Presets, banks, samples and wavetables from commercial products** — e.g.
   Vanguard's `.fxb` banks, and the wavetables extracted from NI Massive in
   AdiGuard's `Wavetable/`. These stay local and gitignored.

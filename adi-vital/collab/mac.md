@@ -110,7 +110,7 @@ the macOS build outright.
 After the resave, this should build with **no overrides at all**:
 
 ```bash
-cd adi-vst/vital/plugin/builds/osx
+cd adi-vital/vital/plugin/builds/osx
 xcodebuild -project Vial.xcodeproj -target "Vial - VST3" -configuration Release build
 ```
 
@@ -120,17 +120,17 @@ overrides, and each one is a defect in the file. Expect ~236 warnings rather tha
 
 I will re-run it on arm64 and report. I have **not** changed `plugin/vital.jucer`,
 `standalone/vital.jucer`, or anything else in the fork — the fork's working tree
-is clean and nothing has been committed to `adi-vst-synth`.
+is clean and nothing has been committed to `adi-vital`.
 
 
 ## 2026-09-20 (later) — macOS VST3 sprint: cloned, and the first wave
 
-Unblocked by ADR-0016. Cloned `arieladi/adi-vst-synth` into `adi-vst/vital`;
+Unblocked by ADR-0016. Cloned `arieladi/adi-vital` into `adi-vital/vital`;
 `git check-ignore` confirms the monorepo ignores it and `git status` at the root
 stays clean, so no C++ can leak into `Adi`. Working on `ai-preset-generator`
 (fork `main` is the upstream mirror, per ADR-0001).
 
-**Added the `upstream` remote back.** A fresh clone of `adi-vst-synth` has only
+**Added the `upstream` remote back.** A fresh clone of `adi-vital` has only
 `origin`, so `git diff upstream/main` — the one command ADR-0001 exists to keep
 working — was dead on arrival for anyone cloning after me. ADR-0016 says "the
 fork keeps both remotes"; that is true of win's working copy, not of a clone.
@@ -334,7 +334,7 @@ local `main` (`git merge-base` returns nothing; `git pull` refused with
   present locally, all absent from the new `origin/main`, which stops at V65. I
   have left `main` untouched and branched from `origin/main` instead. Anyone who
   runs `git reset --hard origin/main` on this clone destroys that work.
-- **My review of 2026-09-20 did not survive the rewrite.** `adi-vst/collab/mac.md`
+- **My review of 2026-09-20 did not survive the rewrite.** `adi-vital/collab/mac.md`
   on the new `main` is the original stub. The review and ADR-0012..0015 are on
   `mac/vst-adi-review` (`4b2ec1a`) at the old `VST-ADI/` paths.
 
