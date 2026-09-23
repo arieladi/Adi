@@ -8,6 +8,62 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — sanitizer and portability audit; next targets proposed
+
+Audited the same main-based baseline plus the CLAP count correction, with
+`ADI_WITH_JUCE=OFF`. Separate instrumented C and C++ build trees; three build
+jobs, serial test execution (the suites share fixed temporary-directory names).
+
+| Configuration | Configure s | Build s | CTest s | test_all.sh s | Result |
+|---|---:|---:|---:|---:|---|
+| Clang 21.1.8 ASan+UBSan | 2.05 | 105.48 | 11.16 | 11.85 | 24/24 suites; 2,272 checks; five validators; no findings |
+| Clang 21.1.8 TSan | 2.08 | 90.25 | not run | not run | linker conflict with allocation-counting operator new/delete |
+| GCC 15.2.0 TSan | 1.15 | 82.92 | 18.05 | 18.10 | 24/24 suites; 2,272 checks; five validators; no reported races |
+
+Reproduce using the baseline configure command with both `CMAKE_C_FLAGS` and
+`CMAKE_CXX_FLAGS` set to `-fsanitize=address,undefined -fno-omit-frame-pointer`
+(Clang), or `-fsanitize=thread -fno-omit-frame-pointer` (GCC). Run
+`ctest --test-dir <build> --output-on-failure -j 1` and
+`bash adi_daw/tools/test_all.sh <build>`. Environment: `ASAN_OPTIONS=halt_on_error=1`,
+`UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`, `TSAN_OPTIONS=halt_on_error=1`.
+These are finite stress runs, not a proof that every possible race is absent.
+
+**Clang TSan reproduction:** configure the same thread-sanitized tree with
+Clang and build target `adi_device_tests`. The static `libclang_rt.tsan_cxx`
+defines operator new/delete strongly, conflicting with the allocation counter
+in `tests/test_device.cpp`. That file is mac's claim; no edit or suppression was
+made. GCC TSan links the unchanged counters and runs all suites. Clang TSan is
+not claimed as passing.
+
+**Portability sweep:** replayed `compile_commands.json` for every translation
+unit under `src/adi/**` and `tests/**`, using `-fsyntax-only -Wall -Wextra
+-Wconversion -Wshadow -pedantic` in addition to the existing project flags.
+GCC: 45 units, 72.79 s; Clang: 45 units, 124.60 s. Both exited zero with no
+warning/error diagnostics. No third-party translation unit or platform file was
+part of this sweep; no source change was necessary.
+
+**Benchmark proposal, before any CMake edit:** add an opt-in `ADI_BUILD_BENCHMARKS`
+option and `adi_block_benchmark` target in shared `CMakeLists.txt`, with its only
+new source in `tools/benchmark_blocks.cpp`. Drive Graph through BlockProcessor,
+48 kHz stereo, 32/64/128/2048/4096 frames, fixed active chains, silence-heavy
+chains and a 16-note / three-dimension / 500 Hz expression stream. Report measured
+callback p50/p99/max and deadline misses separately from event drops. Warm up
+before measurement; exclude preparation, event-production and output formatting
+from callback timing. This is a headless scaffold, not evidence about physical
+audio xruns or Ableton performance. No claimed engine implementation changes.
+
+**win — claim request; waiting, no edit:** task 5 needs a way to shuffle every
+prepared dependency level. Graph currently exposes reverse traversal only and
+read-only `levels()`. Please grant a narrow claim on
+`src/adi/engine/graph.hpp` and `src/adi/engine/graph.cpp`, or provide an off-callback
+seeded permutation test hook, so `tests/test_graph.cpp` can verify forward,
+reverse and shuffled traversal with memcmp under TSan. I will not cast away the
+read-only interface or modify your engine claim. The current test compares floats
+with `!=`, which is not a byte comparison (e.g. signed zero); the planned guard
+must compare bytes and fail a planted scheduling/output defect.
+
+---
+
 ## 2026-09-23 — main baseline and a portable check count
 
 Branch `linux/baseline`, based on main `f6910b1474f306bef70b21f50ce6e4f9475846cf`
