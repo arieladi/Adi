@@ -8,6 +8,83 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-24 — ADR-0132 WAV/RF64 and ADR-0133 Play-Q (Adi's two assignments)
+
+The adi-vital rename was completed first in #79, including the GitHub rename
+and local fork origin. These two DAW assignments are separate PRs, in order;
+this single entry records both. No graph wiring, benchmark reruns or tuning.
+
+### 1. linux/wav-rf64 — streaming WAV writer and WAV/RF64/BW64 reader
+
+Portable, off-callback standard C++ file streams; explicit little-endian sample
+and header bytes. Float32, PCM24 and PCM16, 1/2/6/32-channel roundtrips;
+EXTENSIBLE above stereo. JUNK reserves 28 payload bytes before fmt, becoming
+ds64 in place at the injectable data threshold (default 4 GiB), or earlier
+when RIFF's total size would overflow. Odd chunks are padded without including
+padding in their data sizes. Float files have fact; optional version-0 bext
+contains description, originator and sample time reference, with optional iXML.
+The reader bounds-checks chunks, supports ds64 extra chunk-size entries and
+refuses truncated or unsupported headers. BW64's reserved ds64 words are ignored.
+
+**Gemini:** `agy --model gemini-3.1-pro-high` was used. I reviewed its draft,
+replaced the incomplete implementation (including host-endian I/O and truncated
+input acceptance), and kept its subsequent audit read-only. No Gemini commits,
+pushes or merges. Local audit artifacts: `work/wav-rf64/gemini-audit.log`.
+
+**Verified audit finding:** a reader rejected non-sentinel 32-bit RIFF sizes in
+RF64/BW64 instead of using them. Added two independent fixtures with actual
+32-bit sizes and unused zero ds64 lengths: both failed before the fix and pass
+after it. The writer continues emitting canonical sentinel sizes on promotion.
+Reviewed against [EBU Tech 3306 (2009), §3.4–3.5 and Annex A](https://tech.ebu.ch/files/live/sites/tech/files/shared/tech/tech3306v1_1.pdf)
+and [ITU-R BS.2088-2, §2.4 and §4](https://www.itu.int/dms_pubrec/itu-r/rec/bs/R-REC-BS.2088-2-202511-I!!PDF-E.pdf).
+Terminology for win: bext metadata does not itself change the top-level ID from
+RF64 to BW64; the reader handles both IDs explicitly, without rewriting an ADR.
+
+**Plants:** each compiled, then returned nonzero from the actual suite. Mutant
+sources/binaries and complete outputs are outside the repository in
+`work/wav-rf64/`; production source was never left planted.
+
+| Planted defect | Observed failing guard |
+|---|---|
+| no-promotion | promotion visible before close; RF64 sentinels |
+| wrong-ds64-riff | ds64 exact sizes and frames |
+| wrong-ds64-data | ds64 exact sizes and frames |
+| wrong-format-tag | roundtrip reader refuses the incompatible encoding |
+| no-extensible | format tag / EXTENSIBLE above stereo; subformat |
+| ignore-ds64 | promoted-file reader refuses invalid sizes |
+| pcm-scale | roundtrip identical samples; seek |
+| premature-promotion | plain WAV and JUNK; below 1MiB stays WAV |
+| wrong-bext-time | bext size and time reference |
+| bw64-reserved-as-frames | BW64 reserved-word fixture refused |
+| ignore-short-riff-size | non-sentinel 32-bit sizes take precedence over ds64 (both fixtures) |
+| accept-bad-riff-length | truncated data refused |
+| accept-truncated-as-empty | truncated header refused (six inputs) |
+| ignore-ds64-frame-count | wrong RF64 sample count refused |
+| Truncate ds64 RIFF size to 32 bits in real >4 GiB run | reader rejects the large file; gated suite exits 1 |
+
+The PCM-scale plant initially survived values limited to ±0.5; expanded the
+fixture to ±0.875 and it now fails the sample comparisons. The first Clang
+integration run caught the two intentionally failing audit fixtures before the
+corrected source was rebuilt; the final runs below supersede it.
+
+**Local validation:** GCC 15.2.0 and Clang 21.1.8 Release `test_all.sh`: **3,086
+checks / 28 suites**, validators clean, on the schema-1.1 base from #80.
+New suite: **124 checks**, Clang ASan+UBSan and GCC TSan Debug,
+`halt_on_error=1` for ASan/UBSan/TSan, UBSan stack traces enabled.
+The real big-file run (`ADI_WAV_BIG=1`, disk-backed TMPDIR): **127 checks**,
+writing more than 4 GiB of actual float samples and verifying tail seek/read.
+Default CI skips these three expensive checks. SoX_ng 14.7.0.9 decoded all
+18 WAV/RF64 combinations (three formats × mono/stereo/six-channel) locally;
+SoX is not a build or CI dependency. Raw generated files, SoX output, sanitizer
+logs, plants and big-file results are retained under task-local `work/wav-rf64/`.
+
+### 2. linux/play-quantize
+
+To follow after the WAV/RF64 PR merges, on current main; results will be added
+to this same entry.
+
+---
+
 ## 2026-09-23 — Adi-requested #76 validation and #74/#76 matrix reruns
 
 Scheduled regression watch deleted at Adi's instruction. This is one explicit

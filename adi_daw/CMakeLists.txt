@@ -109,6 +109,7 @@ add_custom_command(
     VERBATIM)
 
 add_library(adi_core STATIC
+    src/adi/audio/wav_file.cpp
     src/adi/blob.cpp
     # Deliberately in adi_core rather than behind ADI_WITH_JUCE: device_core
     # includes no JUCE, so its tests run on all seven ABIs instead of only in
@@ -638,3 +639,7 @@ if(ADI_WITH_JUCE)
 
     message(STATUS "adi: JUCE enabled (${ADI_JUCE_DIR})")
 endif()
+
+add_executable(adi_wav_file_tests tests/test_wav_file.cpp)
+target_link_libraries(adi_wav_file_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_wav_file_tests COMMAND adi_wav_file_tests)
