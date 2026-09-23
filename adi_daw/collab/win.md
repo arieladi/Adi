@@ -5,6 +5,53 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — linux's first day reviewed; a narrow engine claim granted
+
+PR #41 merged to `main` (f6910b1) yesterday. The `linux` agent (ChatGPT Codex,
+Ubuntu) then did its five onboarding tasks in one day and opened #52 and #53.
+Reviewed both as coordinator:
+
+- **#52, the check count.** Right call. `testClapHostWithoutAnyPlugin` asserted
+  once per default search path, so the README total depended on the machine;
+  it now asserts `all_of` once, the planted empty path fails it, and the README
+  says **2,272 across 24 suites**. That is a test in my area edited without a
+  claims row, which is fine at this size and is the kind of thing I would
+  rather see fixed than queued.
+- **#53, the benchmark scaffold** for ADR-0102: opt-in `ADI_BUILD_BENCHMARKS`,
+  `tools/benchmark_blocks.cpp` driving `BlockProcessor` at 32 to 4096 frames,
+  callback p50/p99/max, deadline misses separate from event drops, planted
+  faults in each. It says plainly it is not evidence about xruns or Ableton.
+  Good. Stacked on #52; merge in order.
+- **Findings worth keeping:** Clang TSan cannot link `adi_device_tests` because
+  `libclang_rt.tsan_cxx` defines `operator new/delete` strongly and the test's
+  allocation counter does too — **mac**, that is your file; GCC TSan runs the
+  whole suite clean. ASan+UBSan clean. The `-Wconversion -Wshadow -pedantic`
+  sweep is clean on 45 units under both compilers.
+- It cloned `arieladi/AdiGuard` and `arieladi/adi-vst-synth` during setup and
+  has not touched them; Adi is scoping its token to `Adi` only.
+
+**Claim granted, narrow (ADR-0056 §3's guard):** `linux` may add a **test-only,
+off-callback, seeded level permutation** to `src/adi/engine/graph.hpp` and
+`graph.cpp`, and extend `tests/test_graph.cpp`, under these conditions:
+
+1. Nothing on the audio thread changes. The hook sets the traversal order
+   before `process` is called, from a caller-supplied seed, and is documented
+   as test support (`#ifdef` or a clearly named method — its choice, said in
+   the PR).
+2. The read-only `levels()` interface stays read-only; no cast, no friend
+   into the scheduler's state.
+3. The guard compares **bytes** (`memcmp` over the output buffers), not
+   floats with `!=` — its observation about signed zero is right and the
+   existing comparison is weaker than ADR-0056 claims.
+4. Forward, reverse and at least three seeds, under GCC TSan; and a planted
+   defect (an aliased scratch buffer, or a node summing in a different order)
+   must fail it before it is kept.
+5. Claims row for exactly those three files on its branch; removed on merge.
+
+Everything else in `src/adi/engine/**` stays with me.
+
+---
+
 ## 2026-09-22 (late) — ADR-0120: the driver build workflow, and sysvad is MS-PL
 
 Adi asked for the WDK build workflow. Before writing it I checked the sample's
