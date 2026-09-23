@@ -8,6 +8,196 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — #70 completed after win's README grant
+
+Win's ruling on main `9e8d561` grants the README headline and resolves the
+previous entry's scope blocker. The implementation follows ADR-0122 d11:
+fixed-capacity SPSC event ring, producer-only atomic counter stores, consumer
+per-parameter gesture state, quiet-window coalescing and echo guards. The
+snapshot returned by `stats()` is consumer-only; the producer never accesses
+the map, edits vector or the snapshot. Clocks are supplied to `drain`; no
+clock reads, allocation, locks or retry loops occur in `push`.
+
+The header clarifies consumer-only table growth. More precisely than the
+ruling's shorthand “drain is the only place it grows”: `seed` and `expectEcho`
+can register a key before its first event, so those consumer calls may also
+grow it. The contract explicitly needs both pre-event operations; claiming
+that only drain allocates would be false. No semantic contract change.
+
+All required plants (a)–(k), plus the concurrent payload guard (l), compiled
+successfully and exited **1 on an assertion**, not a crash or compiler error.
+Each mutation was applied alone to the production implementation, the affected
+case executed, then the original source restored. Test (l) transfers 10,000
+gestures through a 17-slot ring. Plants and failing checks:
+
+| Test | Planted defect | Observed failing assertion |
+|---|---|---|
+| a | emit at every Value | a: no edits before End |
+| b | disable echo swallow | b: armed echo swallowed |
+| c | do not extend quiet window | c: extended window not early |
+| d | omit stray Begin count | d: stray brackets counted |
+| e | omit dropped count | e: accepted and dropped counts |
+| f | collapse parameter identity | f: two interleaved params emit twice |
+| g | require exact echo equality | g: default tolerance accepts near echo |
+| h | never expire guards | h: older guard expires before queued Value |
+| i | swallow matching values inside open gesture | i: matching Value inside explicit gesture retained |
+| j | invent zero before for unseeded gesture | j: unseeded before is first Value |
+| k | allocate on push | k: zero allocations in push |
+| l | corrupt copied ring payload | l: concurrent payloads and before/after remain ordered |
+
+The restored suite reports **377 checks, zero failures** on GCC Release,
+Clang Release, Clang ASan+UBSan and GCC TSan. Every CTest run uses `-j 4`:
+26/26 passed, respectively 1.79 / 1.26 / 6.71 / 7.70 s. Sanitizers use
+`halt_on_error=1`; no findings. The granted README line now says
+**2,844 checks across 26 suites**. Full `test_all.sh` and validators pass on
+both Release compilers and both sanitizer builds (timings recorded in task
+artifacts). No other README line changed. Claims are removed before merging;
+merge remains conditional on every CI check turning green.
+
+The previous active-64 1024-frame crossing is **a disturbed-run candidate,
+not an established regression**, per win's ruling. After #70 merges, the
+standing full matrix and sanitizers plus three targeted reruns per compiler
+will determine whether it survives; only six >20% p50s with normal tails
+justify the requested one-build bisect. Baseline #66 remains the reference.
+
+The assigned read-only audits are separate follow-up work, outside #70.
+Gemini CLI was tried with every tool denied and only source text supplied;
+both attempts refused service (`IneligibleTierError`: installed client no
+longer supported). No repository credential was supplied and no Gemini
+finding exists. Direct audits and verified/unverified reports will record
+that limitation rather than attributing analysis to Gemini.
+
+---
+
+## 2026-09-23 — ParamEditCapture paused: exact path grant conflicts with validation
+
+**win — ruling needed.** The ADR-0122 d11 capture semantics are implementable,
+but the exact path grant omits `adi_daw/README.md`. `tools/test_all.sh` enforces
+its exact check/suite headline. Adding the required `adi_param_edits_tests`
+necessarily changes the suite count from 25 to 26; the current draft adds
+377 checks. Reproduction with the GCC Release tree:
+
+```
+README says '**2467 checks across 25 suites**', this run is '**2844 checks across 26 suites**'
+FAILED -- see above
+```
+
+All binaries and validators passed in that reproduction; the headline mismatch
+alone makes the command exit 1. Request the narrow additional grant to update
+README's count after final validation (or have win update it). I did not change
+README or weaken the validator. Adi explicitly said to log a wrong contract and
+stop for win's ruling, so implementation work stops here rather than assuming
+permission beyond the exact file list.
+
+Branch `linux/param-edits` contains the prior regression record and a **draft**
+implementation of the ring, consumer gesture/echo table and tests (a)–(k), plus
+a two-thread 10,000-gesture test. The GCC Release draft suite reports
+**377 checks, zero failures**. This is **not completion**: no planted defects
+have been run yet, and the new code has not yet had its Clang/sanitizer/CI
+validation. Those steps, any necessary corrections, and the post-merge matrix
+remain pending. The regression runs in the entry below are on pre-implementation
+main, not evidence for the new code. Claims remain active while awaiting the
+ruling; the PR stays draft and must not merge in this state.
+
+---
+
+## 2026-09-23 — regression watch before parameter capture: session runtime
+
+Measured main `5744ac4` after #68/#69; #68 (`457f6bd`) is the qualifying
+engine merge. #69 changes only JUCE/CMake/docs; the headless engine is identical.
+Before starting `ParamEditCapture`, GCC 15.2.0 and Clang 21.1.8 Release ran
+all four projects, eight sizes, 2,000 callbacks after 32 warmups, 48 kHz stereo.
+Intel Core i5-3550S, Ubuntu 26.04.1, schedutil on all four CPUs before/after;
+no affinity/priority changes, both builds finished before sequential sampling.
+Baseline is the full CSV captured for #66 at `e4c3b00`; its silence-heavy rows
+were published then. All times below are microseconds. Delta is signed p50
+percentage change against that matching compiler/project/size baseline.
+
+**win:** active-64 at 1024 frames crosses the 20% reporting threshold:
+GCC **+23.27%** (300.029 → 369.831 µs), Clang **+34.85%**
+(344.565 → 464.662 µs). These are observations from one matched run, not a
+causal attribution to Session. No tuning performed. All other p50 deltas
+are within 20%; every row has zero deadline misses, event drops and rejected
+events. Silence-heavy at 4096 is 29.186 / 30.018 µs (GCC / Clang).
+
+| Compiler | Project | Frames | Prior p50 | New p50 | Delta % | p99 | Max | Misses |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| gcc | active | 32 | 2.773 | 2.839 | +2.38 | 13.024 | 105.713 | 0 |
+| gcc | active | 64 | 3.557 | 3.613 | +1.57 | 14.214 | 233.205 | 0 |
+| gcc | active | 128 | 4.770 | 4.984 | +4.49 | 14.791 | 75.299 | 0 |
+| gcc | active | 256 | 7.852 | 8.556 | +8.97 | 19.974 | 458.775 | 0 |
+| gcc | active | 512 | 14.195 | 15.133 | +6.61 | 35.148 | 1425.879 | 0 |
+| gcc | active | 1024 | 28.900 | 28.744 | -0.54 | 52.202 | 301.605 | 0 |
+| gcc | active | 2048 | 68.723 | 67.278 | -2.10 | 107.874 | 137.936 | 0 |
+| gcc | active | 4096 | 151.137 | 147.774 | -2.23 | 199.251 | 248.109 | 0 |
+| gcc | silence-heavy | 32 | 6.815 | 6.580 | -3.45 | 17.753 | 48.428 | 0 |
+| gcc | silence-heavy | 64 | 6.844 | 6.785 | -0.86 | 18.431 | 36.887 | 0 |
+| gcc | silence-heavy | 128 | 6.693 | 7.206 | +7.66 | 17.834 | 38.994 | 0 |
+| gcc | silence-heavy | 256 | 7.218 | 7.873 | +9.07 | 18.903 | 29.400 | 0 |
+| gcc | silence-heavy | 512 | 8.254 | 8.684 | +5.21 | 19.741 | 41.433 | 0 |
+| gcc | silence-heavy | 1024 | 10.891 | 11.137 | +2.26 | 23.026 | 41.472 | 0 |
+| gcc | silence-heavy | 2048 | 16.997 | 16.399 | -3.52 | 33.324 | 448.954 | 0 |
+| gcc | silence-heavy | 4096 | 29.359 | 29.186 | -0.59 | 50.794 | 89.678 | 0 |
+| gcc | active-64 | 32 | 24.156 | 24.083 | -0.30 | 45.952 | 81.148 | 0 |
+| gcc | active-64 | 64 | 35.342 | 34.407 | -2.65 | 64.489 | 94.404 | 0 |
+| gcc | active-64 | 128 | 50.642 | 51.770 | +2.23 | 84.767 | 119.583 | 0 |
+| gcc | active-64 | 256 | 81.519 | 82.246 | +0.89 | 125.866 | 154.797 | 0 |
+| gcc | active-64 | 512 | 136.756 | 138.798 | +1.49 | 197.808 | 881.049 | 0 |
+| gcc | active-64 | 1024 | 300.029 | 369.831 | +23.27 | 1540.195 | 1721.819 | 0 |
+| gcc | active-64 | 2048 | 1861.155 | 2092.997 | +12.46 | 3670.987 | 7530.732 | 0 |
+| gcc | active-64 | 4096 | 4414.370 | 4713.983 | +6.79 | 6709.851 | 9631.511 | 0 |
+| gcc | mpe-storm | 32 | 2.897 | 3.033 | +4.69 | 16.405 | 43.480 | 0 |
+| gcc | mpe-storm | 64 | 5.807 | 6.218 | +7.08 | 13.802 | 53.955 | 0 |
+| gcc | mpe-storm | 128 | 9.285 | 9.320 | +0.38 | 24.159 | 68.688 | 0 |
+| gcc | mpe-storm | 256 | 18.730 | 19.036 | +1.63 | 39.960 | 380.770 | 0 |
+| gcc | mpe-storm | 512 | 40.741 | 40.229 | -1.26 | 73.707 | 133.913 | 0 |
+| gcc | mpe-storm | 1024 | 97.539 | 98.288 | +0.77 | 142.582 | 239.663 | 0 |
+| gcc | mpe-storm | 2048 | 257.330 | 260.337 | +1.17 | 350.103 | 530.011 | 0 |
+| gcc | mpe-storm | 4096 | 749.657 | 780.128 | +4.06 | 1180.548 | 2140.896 | 0 |
+| clang | active | 32 | 2.924 | 2.883 | -1.40 | 3.773 | 549.912 | 0 |
+| clang | active | 64 | 3.657 | 3.590 | -1.83 | 4.353 | 57.295 | 0 |
+| clang | active | 128 | 4.848 | 4.789 | -1.22 | 15.464 | 68.805 | 0 |
+| clang | active | 256 | 7.527 | 7.690 | +2.17 | 18.217 | 118.376 | 0 |
+| clang | active | 512 | 13.816 | 13.895 | +0.57 | 31.031 | 133.193 | 0 |
+| clang | active | 1024 | 28.229 | 27.025 | -4.27 | 53.964 | 111.320 | 0 |
+| clang | active | 2048 | 68.204 | 66.970 | -1.81 | 108.251 | 180.907 | 0 |
+| clang | active | 4096 | 156.136 | 148.687 | -4.77 | 214.146 | 481.599 | 0 |
+| clang | silence-heavy | 32 | 7.294 | 7.021 | -3.74 | 18.064 | 32.247 | 0 |
+| clang | silence-heavy | 64 | 7.416 | 7.414 | -0.03 | 19.933 | 277.628 | 0 |
+| clang | silence-heavy | 128 | 7.619 | 7.619 | +0.00 | 19.653 | 149.325 | 0 |
+| clang | silence-heavy | 256 | 8.295 | 8.197 | -1.18 | 19.736 | 39.556 | 0 |
+| clang | silence-heavy | 512 | 9.303 | 9.136 | -1.80 | 20.982 | 162.480 | 0 |
+| clang | silence-heavy | 1024 | 11.556 | 11.215 | -2.95 | 23.769 | 51.987 | 0 |
+| clang | silence-heavy | 2048 | 16.416 | 16.506 | +0.55 | 36.221 | 119.807 | 0 |
+| clang | silence-heavy | 4096 | 29.486 | 30.018 | +1.80 | 51.987 | 94.721 | 0 |
+| clang | active-64 | 32 | 23.719 | 24.878 | +4.89 | 47.974 | 155.180 | 0 |
+| clang | active-64 | 64 | 35.597 | 35.120 | -1.34 | 66.385 | 119.974 | 0 |
+| clang | active-64 | 128 | 49.582 | 51.003 | +2.87 | 85.480 | 130.087 | 0 |
+| clang | active-64 | 256 | 76.447 | 78.784 | +3.06 | 128.604 | 696.366 | 0 |
+| clang | active-64 | 512 | 138.382 | 139.591 | +0.87 | 326.969 | 5719.331 | 0 |
+| clang | active-64 | 1024 | 344.565 | 464.662 | +34.85 | 1737.305 | 4892.843 | 0 |
+| clang | active-64 | 2048 | 1932.462 | 1940.686 | +0.43 | 3488.579 | 3695.650 | 0 |
+| clang | active-64 | 4096 | 4840.828 | 4713.592 | -2.63 | 6806.684 | 9345.092 | 0 |
+| clang | mpe-storm | 32 | 2.854 | 2.899 | +1.58 | 13.669 | 45.364 | 0 |
+| clang | mpe-storm | 64 | 7.932 | 7.852 | -1.01 | 19.152 | 59.396 | 0 |
+| clang | mpe-storm | 128 | 11.359 | 11.030 | -2.90 | 25.758 | 53.024 | 0 |
+| clang | mpe-storm | 256 | 25.645 | 24.657 | -3.85 | 50.167 | 126.489 | 0 |
+| clang | mpe-storm | 512 | 54.245 | 54.007 | -0.44 | 88.241 | 186.755 | 0 |
+| clang | mpe-storm | 1024 | 136.032 | 137.922 | +1.39 | 192.168 | 259.897 | 0 |
+| clang | mpe-storm | 2048 | 397.148 | 407.093 | +2.50 | 534.346 | 787.529 | 0 |
+| clang | mpe-storm | 4096 | 1358.913 | 1338.762 | -1.48 | 1895.828 | 2379.674 | 0 |
+
+Full validation before implementation: GCC Release **2,467 checks / 25 suites**
+in 3.13 s; Clang Release the same in 3.05 s. Clang ASan+UBSan:
+CTest `-j 4` 25/25 in 7.09 s, `test_all.sh` 2,467 checks in 13.97 s.
+GCC TSan: CTest `-j 4` 25/25 in 8.09 s, full validation 2,467 checks in
+19.92 s. `halt_on_error=1` for each sanitizer; **no sanitizer findings**.
+Both benchmark self-tests and all validators pass. The changed measurements
+are recorded in BENCHMARKS without replacing its three historical tables.
+Raw CSVs and logs: task-local `work/param-edits-regression/`.
+
+---
+
 ## 2026-09-23 — after #65: accumulate skips sleeping sources; benchmark guide
 
 Branch `linux/benchmark-guide`, measured **main `e4c3b00`**. Claimed exactly
