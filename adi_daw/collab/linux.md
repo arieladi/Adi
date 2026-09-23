@@ -8,6 +8,110 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — everyday buffer sizes become standing benchmark rows
+
+Branch `linux/everyday-blocks`, based on **main `54947a0`** (Adi's note in
+PR #62, including win's #60 clear-once fix). The only code edit adds **256,
+512 and 1024** to the shared project loop and lists the full matrix in help:
+**32/64/128/256/512/1024/2048/4096**. It applies to active, silence-heavy,
+active-64 and MPE-storm, and the two projects selected by breakdown mode.
+No engine, test, hook, CMake or workflow change.
+
+### Matched setup and silence-heavy results
+
+Same Intel Core i5-3550S (4 cores / 4 threads), GCC 15.2.0 / Clang 21.1.8,
+Release `-O3 -DNDEBUG`, JUCE off, **schedutil on all four CPUs** checked before
+and after. **2,000 measured callbacks after 32 warmups per combination**,
+48 kHz stereo. Completed both builds before running GCC then Clang, control
+then breakdown, without concurrent builds/tests or affinity/priority changes.
+Commands: `adi_block_benchmark --self-test`, `--iterations 2000`, and
+`--breakdown --iterations 2000`.
+
+Times below are microseconds, nearest-rank p50/p99. Pre-fix values are the
+round-three table published in #59; previous post-fix values are the two rows
+published in #61. A dash means no earlier published measurement at that size,
+not zero. **256/512/1024 are new baselines**, so no before/after drop is claimed
+for them. Historical tables below remain unchanged.
+
+| Compiler | Frames | Pre-fix p50 (#59) | Prior post-fix p50 (#61) | New p50 | New p99 | New max | Deadline misses |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| gcc | 32 | 13.296 | 7.636 | 8.138 | 19.458 | 168.255 | 0 |
+| gcc | 64 | 18.599 | — | 9.204 | 20.830 | 69.184 | 0 |
+| gcc | 128 | 30.451 | — | 11.426 | 26.645 | 65.004 | 0 |
+| gcc | 256 | — | — | 15.767 | 32.378 | 74.570 | 0 |
+| gcc | 512 | — | — | 23.168 | 44.143 | 105.593 | 0 |
+| gcc | 1024 | — | — | 36.761 | 69.675 | 160.215 | 0 |
+| gcc | 2048 | 604.085 | — | 72.922 | 121.518 | 202.778 | 0 |
+| gcc | 4096 | 1729.522 | 149.462 | 168.191 | 496.971 | 597.161 | 0 |
+| clang | 32 | 14.211 | 7.742 | 8.065 | 19.627 | 85.171 | 0 |
+| clang | 64 | 18.983 | — | 9.184 | 20.137 | 48.198 | 0 |
+| clang | 128 | 30.680 | — | 10.571 | 22.018 | 83.792 | 0 |
+| clang | 256 | — | — | 15.562 | 35.734 | 310.633 | 0 |
+| clang | 512 | — | — | 22.311 | 42.853 | 119.180 | 0 |
+| clang | 1024 | — | — | 35.633 | 70.740 | 667.865 | 0 |
+| clang | 2048 | 660.180 | — | 68.857 | 117.662 | 925.122 | 0 |
+| clang | 4096 | 1792.442 | 144.934 | 167.182 | 472.023 | 648.571 | 0 |
+
+**Everyday range, 256–2048:** median cost is **15.767–72.922 µs (GCC)** and
+**15.562–68.857 µs (Clang)**. The 48 kHz callback budgets are 5.333–42.667 ms;
+p99 is below 0.7% of the corresponding budget at each of these four sizes.
+At 2048 the median drops from 604.085 to 72.922 µs (GCC) and 660.180 to
+68.857 µs (Clang). These are total synthetic callback costs, not isolated
+per-sleeping-node timings or an audio-device xrun test.
+
+**4096 expectation:** 168.191 / 167.182 µs versus the pre-fix
+1729.522 / 1792.442 µs, roughly **90% lower**. The remaining excess over the
+approximate 150 µs reference is **18.191 / 17.182 µs**. The same-run eight-track
+active project measures 149.055 / 150.026 µs, so silence-heavy is
+**19.136 / 17.156 µs above that control**. This is close to the expected active
+cost plus mixing, with no millisecond-scale excess left.
+
+Compared with #61's post-fix run, the 4096 median is **18.729 / 22.248 µs
+higher**; that difference is retained, not hidden. This is one run per
+compiler/mode under a desktop governor; the expanded matrix also changes the
+preceding workload. It does not isolate a code-regression effect (the engine
+has not changed since #61).
+
+### Existing breakdown, no new hook
+
+Every silence-heavy measured callback still has **6 processed / 315 skipped**,
+at all eight sizes. Selected breakdown p50s for the everyday range and cap:
+
+| Compiler | Frames | Instrumented callback | Node bodies | Residual |
+|---|---:|---:|---:|---:|
+| gcc | 256 | 17.576 | 0.656 | 16.902 |
+| gcc | 512 | 24.674 | 1.076 | 23.561 |
+| gcc | 1024 | 38.659 | 1.908 | 36.704 |
+| gcc | 2048 | 72.830 | 3.916 | 68.832 |
+| gcc | 4096 | 175.062 | 9.596 | 164.984 |
+| clang | 256 | 16.383 | 0.592 | 15.778 |
+| clang | 512 | 23.049 | 0.931 | 22.095 |
+| clang | 1024 | 36.588 | 1.695 | 34.850 |
+| clang | 2048 | 68.752 | 3.706 | 64.957 |
+| clang | 4096 | 161.139 | 9.300 | 151.364 |
+
+The residual still grows with frames and includes the unchanged accumulate
+reads of sleeping sources, mixing and other scheduler work. Its exact split
+is not measured. Any further accumulate optimization remains win's; no hook
+is added or needed for this assignment. Separate medians need not add, and
+timer overhead means these rows are not interchangeable with ordinary mode.
+
+### Validation and stop
+
+Both self-tests pass. CSV verification finds exactly **32 distinct project/size
+rows per compiler** (four projects × eight sizes), and **32,000 breakdown rows
+per compiler** (two projects × eight sizes × 2,000 callbacks). Fixture output
+and event guards pass; all sixteen requested ordinary silence-heavy rows have
+zero deadline misses, event drops and rejected events.
+
+After measurements, `test_all.sh` passes **2,280 checks / 24 suites**, all
+validators clean, under GCC Release (**2.99 s**) and Clang Release (**2.98 s**).
+`git diff --check` is clean. The benchmark claim is removed in the final
+pre-merge commit; net diff is the two-line matrix/help edit and this log.
+After green CI and merge, stop here awaiting win/Adi. No further tuning started.
+
+---
+
 ## 2026-09-23 — PR #60 remeasurement: the 4096-frame cost falls to ~150 µs
 
 Branch `linux/suspend-remeasure`, measured **main `5c9e62e`** (win's

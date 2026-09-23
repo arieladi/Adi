@@ -251,6 +251,7 @@ int main(int argc, char** argv) {
         std::puts("adi_block_benchmark [--iterations N] [--breakdown] | --self-test\n"
                   "N: 1..1000000, default 1000; 32 warmup callbacks per row.\n"
                   "Use Release. 48 kHz stereo; CSV times in microseconds.\n"
+                  "Block sizes: 32/64/128/256/512/1024/2048/4096 for every project.\n"
                   "dropouts = callback time > frames/sample_rate, not device xruns.\n"
                   "Times include Graph processing; exclude event production and setup.\n"
                   "Fixed fixtures: 8x4 active, 64x4 silence-heavy/all-active, 8x4 MPE+.\n"
@@ -286,7 +287,7 @@ int main(int argc, char** argv) {
                  {"active-64", 64, 4, false, false},
                  {"mpe-storm", 8, 4, false, true}}}) {
             if (breakdown && project.tracks != 64) continue;
-            for (std::int32_t frames : {32, 64, 128, 2048, 4096})
+            for (std::int32_t frames : {32, 64, 128, 256, 512, 1024, 2048, 4096})
                 measure(project, frames, iterations, breakdown);
         }
     } catch (const std::exception& error) {
