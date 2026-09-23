@@ -158,7 +158,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `src/adi/audio/wav_file.hpp`, `src/adi/audio/wav_file.cpp`, `tests/test_wav_file.cpp`, `CMakeLists.txt` (source and test target), `README.md` (headline), `collab/linux.md` | linux | `linux/wav-rf64` | 2026-09-24 |
 | `src/juce/**`, `tests/test_device.cpp`, `docs/DEVICE-CONTRACT-PANEL.md` | mac | `mac/vst3` | 2026-09-20 |
 | `src/juce/**`, `tests/test_device.cpp` | mac | `mac/device` | 2026-09-20 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
