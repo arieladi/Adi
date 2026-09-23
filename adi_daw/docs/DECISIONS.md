@@ -8450,3 +8450,512 @@ through `applied` — is the one that ties them together.
 - Modulation exclusion (ADR-0110 d4): no host-side modulation exists yet;
   when it does, its sets go through `applied` and are therefore compared and
   guarded, but they should not be ops at all — a separate entry point.
+
+
+---
+
+## ADR-0125 — The Settings Reference review: R-01 to R-27 ruled — `DECIDED` (2026-09-24) — **CLOSES THE SETTINGS REFERENCE v0.1 CHECKLIST**
+
+**Director's review** of `reference/DOCS/WORD/6_Adi-Daw Settings Reference
+(claude draft v0.1)`, returned with twenty numbered notes and a rulings log.
+Every checklist item is ruled. The larger notes became their own decisions
+(ADR-0126 to ADR-0135); this entry records the checklist and points at them.
+
+### Rulings
+
+| Item | Ruling | Where the detail lives |
+|---|---|---|
+| R-01 window layout | approved: page list left, one page, floating, Esc closes | Settings Reference I §1 |
+| R-02 Find box | approved: names and help text | I §1 |
+| R-03 scope badges | approved, single window, `[App]` `[Project]` `[Device]` on every setting | I §3 |
+| R-04 presets | approved, whole and partial | I §3 |
+| R-05 settings bundles | approved, one `.zip`, paths stored as roles | I §3, ADR-0127 d5 |
+| R-06 Safe Mode | approved | I §5 |
+| R-07 agent and app settings | **approved with a secondary pipeline** — decisions 1 to 3 below | this ADR |
+| R-08 language and RTL | **approved** — decision 4 | this ADR |
+| R-09 knob/slider/value modes | approved, Live's vertical drag the default | II §1 |
+| R-10 meters | approved | II §2 |
+| R-11 output roles | approved: speakers, headphones/cue, output, on physical and virtual outputs | II §3 |
+| R-12 PDC threshold when recording | approved | II §3 |
+| R-13 Link Audio | **Link Audio stays a WISH; LAN audio is our own node** | ADR-0126 |
+| R-14 controller extensions | approved, auto-add | II §5 |
+| R-15 chase | approved: controllers, pitch bend, program change | II §5 |
+| R-16 central cache | approved: never an analysis file beside the user's samples | II §6 |
+| R-17 out-of-process scan | approved, with quarantine and blocklist | II §8 |
+| R-18 prefer CLAP | approved | II §8 |
+| R-19 retrospective audio | approved, 30 s default | ADR-0132 d7 |
+| R-20 privacy | approved: opt-in, off by default | II §10 |
+| R-21 Cubase editing switches | approved | III §1 |
+| R-22 modifier presets | approved: Live, Cubase, Bitwig | III §1 |
+| R-23 control room | **deferred to a v2 backlog** — decision 5 | this ADR |
+| R-24 performance panel | approved | III §1 |
+| R-25 shortcuts editor | approved, keys and MIDI, import/export | III §2 |
+| R-26 new-track defaults | approved, project scope | III §3 |
+| R-27 suite mode | **three applications** | ADR-0133 d1 |
+
+### Decisions
+
+1. **The agent may change application settings, through a pipeline of its
+   own** (R-07). Application settings are not ops (ADR-0021), so the op log
+   cannot carry them; a second, narrow command path does. It accepts the
+   agent at Apply tier only.
+2. **A whitelist, not a blacklist.** The agent may change UI and workflow
+   settings — theme, colours, display toggles, zoom defaults, follow modes,
+   tooltip timing. It can never touch the audio device, driver, sample rate,
+   block size, I/O configuration, the virtual device, plugin folders, any
+   file path, the scan blocklist, privacy switches, or its own tier. A new
+   setting is off the list until someone adds it on purpose — which is the
+   property a blacklist cannot have.
+3. **No undo, but a record.** Settings changes, human or agent, bypass the undo
+   system (the director's ruling). **Correction, one line:** an agent change
+   with no record is invisible, so every agent change is appended to a
+   settings-change log in the settings folder — time, setting, before, after —
+   shown on the AI page. Recovery is as ruled: a settings bundle, or the page's
+   Defaults button.
+4. **Hebrew from day one, RTL where text runs** (R-08). JUCE shapes text with
+   HarfBuzz and resolves bidirectional runs with SheenBidi — **both embedded in
+   JUCE since version 8**, not new in 9 (verified in `third_party/JUCE`:
+   `juce_graphics/fonts/harfbuzz`, and "Updated Sheen Bidi to 2.9.0" in the
+   change list). RTL is confined to text containers: track names, settings,
+   device and parameter labels, remarks. The timeline, playhead, waveforms and
+   mixer layout are left-to-right always.
+5. **No control room in the first cycle** (R-23): talkback, cue mixes and
+   monitor matrices are a v2 backlog item. Monitoring follows Live: an output
+   choice, plus the headphones role of R-11 for pre-listen. Interface software
+   downstream does the rest.
+6. **JUCE 9.0.2 needs no upgrade: it is already the pin** (ADR-0048,
+   `tools/fetch_external.sh`: 9.0.2 at `7278278`). The director's list of what
+   9 brings checks out against `CHANGE_LIST.md`: a new SVG parser (lunasvg,
+   9.0.0) and a new macOS CoreAudio implementation (9.0.0), with multi-output
+   device fixes in 9.0.2. "Improved drift compensation" is not in the change
+   list and is not claimed here. The tree is C++20 on VS 2022, above JUCE's
+   floor of C++17 and VS 2019.
+
+**Not decided:** the settings-change log's retention; whether a human's
+changes are logged too (the recommendation is yes, same file).
+
+---
+
+## ADR-0126 — LAN audio is a native node built from SonoBus; Link Audio stays a wish — `DECIDED (direction)` (2026-09-24) — **ANSWERS R-13, AMENDS ADR-0062**
+
+**Director's call.** A native DSP node for open LAN audio streaming, adapted
+from SonoBus, as the open alternative to Ableton's proprietary Link Audio.
+Link Audio stays `[WISH]` for zero-configuration compatibility with Live and
+iOS peers, if a licence ever exists.
+
+### Decisions
+
+1. **A Tier 1 native node** (ADR-0062, ADR-0076): a send/receive pair (a source
+   on the receiving track, a device on the sending one), with a DAW-rendered
+   panel in the device view — peer address or group name, jitter buffer,
+   codec and bitrate, level meters, connection state. Never a floating window.
+2. **The network never touches the audio thread** (ADR-0053's rule, applied
+   again): a dedicated I/O thread sends and receives; the audio thread reads
+   and writes lock-free rings sized at prepare. A dropped or late packet is
+   silence counted, never a wait.
+3. **Latency is declared, so compensation aligns it** (ADR-0058). The receiving
+   node reports **jitter buffer + codec frame** as its latency — the codec's
+   frame (Opus: 2.5 to 60 ms, 20 by default) is part of the delay, and a node that reported
+   only the buffer would be compensated short by exactly that. A user change of
+   the buffer is a latency change, which is a tap move, not a rebuild
+   (ADR-0079).
+4. **Two clocks, not one.** A remote machine's audio clock drifts against ours;
+   the receive side resamples to our rate, as SonoBus does. Without it a
+   jitter buffer only postpones the underrun.
+5. **Licence**: SonoBus is GPLv3 and so is its transport, AOO (Audio over OSC);
+   Opus is BSD. All are authorised by `OPEN_SOURCE_POLICY.md` §3. Fetched at a
+   pinned commit and copied from, never vendored whole (ADR-0093, ADR-0094);
+   the licence file at the pinned commit is read before the first copy.
+6. **PTP** (ADR-0107) is not required: the node is timestamped by its own
+   stream. When PTP is present the peer offset is shown beside the latency.
+
+**Not decided:** whether the node also streams MIDI (SonoBus does not); the
+discovery method (AOO groups vs manual addresses) for the first version.
+
+---
+
+## ADR-0127 — Audio and video are never embedded in the `.adi`; Collect and Export writes a ZIP — `DECIDED` (2026-09-24) — **SUPERSEDES SPEC §10.4 ("Collect & Embed") AND THE `.adibundle` ALIAS**
+
+**Director's ruling.** Embedding into the database is restricted to plugin
+chunks, custom wavetables and preset blobs. Raw audio and video are always
+external: relative paths, and the project's own `audio/` folder.
+
+### Decisions
+
+1. **What the database may hold:** `state_blobs` (plugin chunks, custom
+   wavetables and preset blobs are all device state, ADR-0038) and the event
+   streams it already holds (ADR-0009). Nothing that is a media file.
+2. **SPEC §10.4 is superseded, and the schema follows.** `media_blobs`, the
+   `media.embedded` column, `check`'s `media.embeddedButAbsent` rule and the
+   `.adibundle` alias are removed in the next schema minor version; SPEC §10.3
+   ("referenced by default") becomes "referenced, always". A file written
+   before that with embedded media is read once and its media extracted to
+   `audio/`.
+3. **Collect and Export** replaces Collect and Embed: every media file the
+   project references is copied into `audio/` beside the `.adi`, its BLAKE3
+   hash checked against `media.hash_blake3`, its row rewritten to a relative
+   path, and the `.adi` plus `audio/` written into one `.zip`. Extracted
+   anywhere, the relative paths resolve. The archive is ZIP64 (a session over
+   4 GB is normal) and uses STORE for audio, which does not compress.
+4. **A hash mismatch stops the export and names the file.** Collecting a file
+   that is not the one the project was made with is exactly the silent
+   corruption the hash exists to catch.
+5. **Settings bundles are a separate ZIP** (R-05): key maps, themes, presets,
+   controller mappings, library tags — no project data. Paths inside are roles
+   ("user library", "content folder 2"), re-resolved on import.
+6. **The export paths already decided, confirmed:** the asynchronous queue of
+   jobs with wildcards (ADR-0071), sample-exact region export with zero-crossing
+   snapping rejected (ADR-0070), stems through the 64-bus routing (ADR-0113)
+   with Ableton-style choosers and no cables. The NLP layer fills the queue and
+   **never presses Render** (ADR-0071).
+7. **DAWproject**, both directions. The format is Bitwig's open specification
+   under MIT, authorised by the policy.
+
+**Not decided:** the ZIP library (miniz, MIT, is the candidate; a
+`third_party/` addition is mac's area); whether `audio/` is the folder name for
+video too (`media/` is the alternative).
+
+---
+
+## ADR-0128 — History is a snapshot tree — `DECIDED (direction)` (2026-09-24) — **EXTENDS ADR-0111, ADR-0068, ADR-0030**
+
+**Director's call.** The History window shows the branching op log as a tree
+in the manner of ESXi's snapshot manager: named milestones, visible branches,
+revert, open read-only, manual snapshots, rename, and an automatic name.
+
+### Decisions
+
+1. **A snapshot is a name on a point in the log**: a row `(id, name, op seq,
+   branch, created, auto)`. It copies nothing; the log already is the history
+   (ADR-0030) and already branches (ADR-0068).
+2. **"Revert to this snapshot" never discards.** ESXi's revert throws away the
+   current state unless you snapshot first. Ours moves the head to the
+   snapshot's point, and everything after it stays as a branch, reachable in
+   the same tree. Nothing is lost by clicking.
+3. **"Open" opens a silent, read-only tab** (ADR-0111): inspect it, copy from
+   it, play it; the copy crosses tabs as a transaction (ADR-0068).
+4. **Manual snapshot: File › Take Snapshot**, and a button in the History
+   window. Without a typed name the default is **`[Project Name] [YYYY-MM-DD
+   HH:MM]`**, local time.
+5. **Snapshots and branches are renamed in the tree.** A name is history
+   metadata, like a branch name today: it is not an op and not undoable,
+   because an op that renamed history would itself be history.
+6. **The tree draws milestones, not every op**: snapshots and branch points are
+   nodes; runs of ops between them collapse into a count that expands on click.
+
+**Not decided:** automatic snapshots (on export, on open, every N minutes?) —
+none until asked for.
+
+---
+
+## ADR-0129 — Navigation, zoom and scaling: Live 12's gestures as the parity checklist, windows scaled one by one — `DECIDED` (2026-09-24) — **FIRST CHECKLIST UNDER ADR-0108; UPGRADES SETTINGS REFERENCE II §1**
+
+**Director's call** (notes 8 and 9): continuous trackpad and wheel input, pinch
+zoom, Live's modifier bindings, ruler and overview gestures, and zoom and
+optimise shortcuts, as strict Ableton parity; and independent zoom per window.
+
+### The checklist, verified against the Live 12 manual
+
+| Gesture | Live 12 source | ADI |
+|---|---|---|
+| `+` / `-` zoom | §6.2: "around the current selection" | same anchor (see deviation 2) |
+| Ctrl/Cmd + wheel zoom | §6.2: same, around the selection | **cursor-centred** (deviation 1) |
+| Ctrl+Alt / Cmd+Option + drag pans | §6.2; §41 "Scroll Display Left/Right of Selection" | same |
+| Shift + wheel scrolls horizontally | §41.9 | same |
+| Alt/Option + wheel: height of the track under the cursor; all tracks with selected content when there is a time selection | §6.2 | same |
+| Alt/Option while resizing one track resizes all | §6.9 | same |
+| Alt/Option + pinch resizes track height | §6.9 | same |
+| `Z` zoom to selection, `X` back one step each press | §6.2, §41.16 | same |
+| `H` optimise height, `W` optimise width | §6.1, §41.16 | same |
+| Ruler: drag sideways scrolls, vertically zooms | §6.1 | same |
+| Ruler double-click: zoom to selection; with none, zoom out to the whole arrangement | §6.1 | same |
+| Overview: drag sideways scrolls, vertically zooms; double-click in the outline zooms out fully | §6.1 | same |
+| Overview: drag the outline's left/right edges to set the visible range; drag its top/bottom to resize the panel | not in Live | **enhancement** (deviation 3) |
+
+### Decisions
+
+1. **Continuous input.** Wheel and trackpad deltas are read as floats through
+   JUCE's `MouseWheelDetails` (`isSmooth` distinguishes trackpads, verified in
+   `juce_MouseEvent.h`), with the OS's momentum and inertia untouched and the
+   canvas redrawn at the display's refresh rate. Pinch arrives through
+   `mouseMagnify(event, scaleFactor)` and maps to horizontal zoom at the cursor.
+2. **Deviations, recorded under ADR-0108 d2 as director-approved:**
+   (1) Ctrl/Cmd + wheel zooms **around the cursor**, where Live zooms around the
+   selection — the note asks for the cursor explicitly; (2) `+`/`-` keep Live's
+   selection anchor, falling back to the playhead when there is no selection;
+   (3) the overview's edge handles are an enhancement Live does not have, so
+   they are built after the parity rows pass (ADR-0108 d3).
+3. **Every native window scales on its own** (note 8, replacing per-display
+   scaling). Arrangement, mixer, piano roll, each detached window: its own zoom
+   state and scale multiplier, changed with Ctrl/Cmd + `+`/`-` or its window
+   menu, persisted per window per display.
+4. **Plugin windows are never scaled by us.** A third-party GUI gets the
+   monitor's DPI and its own scaling menu, and nothing else — scaling someone
+   else's pixels is how plugin windows end up blurred or clipped.
+
+**Not decided:** whether the per-window scale is also a per-project setting
+(the recommendation is no: it is about the screen, not the song).
+
+---
+
+## ADR-0130 — The Master Focus Dial: one encoder, whatever you last touched — `DECIDED (direction)` (2026-09-24)
+
+**Director's call.** One MIDI encoder bound once, in Settings › MIDI, controls
+whichever parameter is under the mouse (native controls) or was last touched
+(plugin windows); a push-switch locks it; a HUD shows what it controls;
+Shift divides the step by ten.
+
+### Decisions
+
+1. **The binding is an application setting**: MIDI port, channel, CC, and the
+   encoder's mode (absolute, relative two's-complement, relative binary offset
+   — endless encoders disagree). The target, `activeParameterRef`, lives in
+   memory only.
+2. **Native controls follow the hover** (`mouseEnter`).
+3. **Plugins follow the touch, and the signal already exists** — a correction
+   of the mechanism named in the note. A plugin's window cannot report hovers
+   to the host; it reports **gesture begins**. For VST3 that is
+   `IComponentHandler::beginEdit`, which JUCE surfaces as
+   `audioProcessorParameterChangeGestureBegin`; for CLAP it is
+   `CLAP_EVENT_PARAM_GESTURE_BEGIN` in `process`'s output events. **Both are
+   already captured by ADR-0124's sink.** `clap_plugin_gui` has no part in it;
+   CLAP's param-indication extension is the other direction — the host telling
+   the plugin a parameter is mapped — and is used for that: the plugin may
+   colour the knob the dial now owns.
+4. **Turning the dial is an edit, so it is an op.** Its values go through the
+   same capture as a plugin's own edits (ADR-0124): unbracketed values coalesce
+   into one `device.setParam` per settle (the capture's quiet window). The dial
+   has **its own ring** — it is a producer on the message thread, and each
+   device's ring already has its producer.
+5. **Lock** on a Note or CC push: the target freezes while the mouse wanders.
+6. **HUD**: a 1 px ring on the target control; a status-bar capsule
+   `[Device] → [Parameter] → [formatted value]`; cyan while following, amber
+   while locked.
+7. **Fine mode**: Shift, or a second bound button, divides the step by 10.
+
+**Not decided:** acceleration curves for fast turns; a second dial.
+
+---
+
+## ADR-0131 — Info View, tooltips, and remarks anchored to objects; the agent reads them as context, never as commands — `DECIDED (direction)` (2026-09-24)
+
+**Director's call** (note 11): an instant docked Info View and delayed floating
+tooltips; user remarks anchored to tracks, clips, devices and parameters, with a
+visible pip and a split Info View; and a two-way remark API for the agent.
+
+### Decisions
+
+1. **Info View** updates on `mouseEnter`, docked, instant (Live §2.2.2).
+   **Tooltips** are floating, behind one `juce::Timer` delay (default 600 ms,
+   500 to 800 settable) so a mouse sweep does not strobe.
+2. **Remarks are project data.** A `remarks` table: `(id, target kind, target
+   id, parameter id or null, author: user|agent, actor detail, text, created,
+   resolved)`, and ops `remark.add`, `remark.edit`, `remark.resolve`,
+   `remark.remove`. They travel with the file and undo like anything else. An
+   object with a remark shows a corner pip; hovering it splits the Info View
+   into the documentation and the remark.
+3. **Agent remarks are marked as such**: a distinct colour and glyph, and
+   `author = agent` in the row, so a human can always tell who wrote what.
+4. **Agent write access** is through the ops above, at the agent's tier, and
+   under its rate cap (AI-AGENT §6).
+5. **Reading is context, not command — the one correction.** A remark is text
+   inside a project file, and project files are shared: a remark from somebody
+   else's project is untrusted input. The agent may read every remark and
+   **propose** an action because of one; it **never executes** an action
+   because a remark said so, at any tier, without the user confirming that
+   action. Otherwise a sentence in a downloaded project is a way to drive
+   someone's agent.
+
+**Not decided:** remark threads (replies); checklists as a remark kind (the
+recommendation: a remark with `[ ]` lines, rendered as boxes).
+
+---
+
+## ADR-0132 — Recording, import and export formats; import defaults; warp on demand; record quantize; retrospective capture — `DECIDED` (2026-09-24)
+
+**Director's calls** (notes 12, 13, 15, 17).
+
+### Decisions
+
+1. **Recording: 32-bit float, 4 GB-safe — written as WAV, promoted to RF64 in
+   place.** Correction of the container rule, same goal. Every recording starts
+   as a WAV with a JUNK chunk sized for RF64's `ds64` header; if the file
+   crosses 4 GiB the header is rewritten in place to RF64, with no copy and no
+   pause. Files under 4 GiB — nearly all of them — stay plain WAV that every
+   tool reads; files over it become RF64 exactly as ruled. This is the scheme
+   EBU Tech 3306 describes for exactly this reason.
+2. **BWF is not a different container**: it is a WAV (or RF64, which makes it
+   BW64) with a `bext` chunk. So timecode, description and originator are an
+   option on any recording, and iXML beside it — not an alternative to 4 GB
+   safety.
+3. **Import: one decoder, every listed format.** JUCE reads WAV, AIFF, FLAC,
+   Ogg and MP3 itself. The rest — ALAC, APE, M4A/M4B/AAC, Opus, WMA, RealAudio,
+   DSF/DFF, Musepack, MKA, AC-3, DTS — go through FFmpeg's decoders, one GPL
+   dependency authorised by the policy, decode-only.
+4. **Decoded copies live in the decoding cache, not the project** — the second
+   correction. The note asks for "project-native working stems"; the cost is a
+   project that references a 90 GB library becoming 180 GB (SPEC §10.3's reason
+   for referencing at all). Live keeps decoded audio in its decoding cache
+   (§2.3.6) and so does this: keyed by the source's BLAKE3, 32-bit float,
+   rebuilt on any machine. The timeline plays PCM with zero real-time decoding
+   either way; Collect and Export (ADR-0127) collects the originals.
+5. **Export**: 16/24-bit PCM, 32-bit and 64-bit float, with `bext` timecode,
+   iXML, and split-mono or multi-bus layouts.
+6. **Import defaults: no warp and no fade** — director-approved deviations from
+   Live (ADR-0108 d2), whose defaults are Auto-Warp Long Samples **on** and
+   Create Fades on Clip Edges **on**. One consequence, stated once: a clip that
+   starts or ends away from a zero crossing clicks, which is what Live's 4 ms
+   edge fade exists to prevent; the setting is there to turn on.
+7. **Warp on demand is Live's Auto-Warp**: pressing Warp on a raw clip detects
+   the tempo, sets 1.1.1 on the first clear downbeat and fits the clip to the
+   grid, rather than stretching it at the project tempo. Then Bitwig's two
+   choices apply — detect tempo changes or assume fixed; insert from the first
+   beat or the sample start. With no clear beat the clip is grid-locked and an
+   inline BPM field asks for the tempo.
+8. **Record quantize**: a default in Settings (Bitwig: 1/16), inherited by new
+   tracks, and a **Rec-Q toggle on every MIDI track header** (`[1/16]` or
+   `[Free]`). Live's detail kept: the quantize is **its own step in the undo
+   history** (Live §19.5), so undoing it keeps the take.
+9. **Retrospective capture**: MIDI always listening, one Capture command, tempo
+   and loop length guessed when stopped (Live); audio a RAM ring per
+   **armed or monitored input**, default 30 s (Cubase: Audio Pre-Record
+   Seconds) — 11.5 MB per stereo input at 48 kHz, so it is kept to the inputs
+   that can be captured.
+10. **Keep Monitoring Latency in recorded audio**: Live's behaviour, on for
+    In/Auto monitoring (already in FEATURES).
+
+**Not decided:** "fade only the edges a user cuts" as a middle ground for d6.
+
+---
+
+## ADR-0133 — The suite is ADI DAW, ADI Live and aDiJ; Rec-Q and Play-Q — `DECIDED` (2026-09-24) — **RENAMES ADR-0105's "ADI DJ"; ANSWERS R-27**
+
+### Decisions
+
+1. **Three applications** on one engine and one file (ADR-0105 d2), sharing one
+   settings folder: **ADI DAW** (arrangement, mixing, editing, the agent), **ADI
+   Live** (prepared projects, clips and stems, Play-Q), **aDiJ** (decks,
+   beatgrids, CLAP and VST3 effect chains, and a small DAW mode for drawn
+   automation on waveforms).
+2. **The rename is to names, not code.** There is no `adi-dj` target, no
+   `adi-suite` repository and nothing to search and replace: the suite lives in
+   `adi_daw` and has no application code yet. The name changes in the README,
+   FEATURES and the master reference; ADR-0105 keeps its words (the log is
+   append-only) and this entry supersedes its name.
+3. **Rec-Q** (studio): zero added latency; the recorded notes are snapped to the
+   grid in the clip after recording (ADR-0132 d8).
+4. **Play-Q** (performance): live notes are held and released on the next grid
+   line. **Correction of the mechanism:** no new lock-free FIFO. MIDI input
+   already crosses to the audio thread through its input queue; holding a note
+   until a later sample is a same-thread delay, and the graph already does it —
+   the per-node pending list with due times (ADR-0091). The release sample is
+   the next subdivision computed from the tempo map at the block's position.
+   **Late forgiveness**: a note within the threshold after a grid line plays at
+   once. Play-Q adds up to one subdivision of latency — 125 ms at 1/16 and
+   120 BPM — which is why its **amber header state** is required, not
+   decorative.
+5. **Cross-application drag**: channels, instruments, racks and automation
+   carried as the CBOR clipboard transaction of ADR-0068, in the OS drag
+   payload.
+6. **Delivery order**: Windows, then macOS at parity, then Linux desktop after
+   the suite stabilises (ADR-0109 phase 3).
+
+**Not decided:** Play-Q's default forgiveness (the recommendation is 30 ms);
+whether the DAW's track header offers Play-Q too.
+
+---
+
+## ADR-0134 — Architecture rulings from the Settings review — `DECIDED` (2026-09-24) — **AMENDS ADR-0068, ADR-0113, ADR-0053, ADR-0107, ADR-0102, ADR-0076, ADR-0098, ADR-0035, ADR-0104**
+
+### Decisions
+
+1. **Inactive tabs are offline** (ADR-0068). Leaving a tab tears down its graph,
+   threads and plugin instances; its model and op log stay in memory, so
+   cross-tab copy still works. Returning rebuilds through the session
+   (ADR-0122). The cost, stated: switching back re-instantiates every plugin,
+   seconds on a large project. ADR-0111's silent tabs are this state by design.
+2. **Buses are allocated on demand** (ADR-0113). Every track is stereo bus 0 with
+   one event stream; auxiliary buses, up to 64, and their event queues are
+   allocated only when a plugin declares auxiliary I/O or the user configures
+   them.
+3. **AudioGridder degrades, never breaks** (ADR-0053). Plugin identity and state
+   are stored apart from `remote_host_id` — already true of the schema. Opening
+   without the server: load the plugin locally; failing that, a placeholder
+   keeping every byte (ADR-0011). **Remap Remote Host** reassigns every device
+   on one server to another. (Today's loader ignores `remote_host_id` and loads
+   locally, which is this fallback by accident; when the remote path exists the
+   order is remote, then local, then placeholder.)
+4. **PTP** (ADR-0107): a whitelist of network adapters and PTP domains; an
+   announcement from anything else is ignored, so a rogue grandmaster cannot
+   move our clock. **Correction on Windows:** start with an in-process,
+   user-space PTP client using software timestamps — no service, no installer,
+   no administrator rights. A system service only if hardware timestamping is
+   measured necessary.
+5. **Block sizes are chosen, never guessed** (ADR-0102): 32, 64, 128, 256, 512,
+   1024, 2048, 4096, with requested and granted shown side by side (ADR-0049).
+   **Two corrections to the direct-path note.** First, the Windows build has no
+   ASIO at all today — `JUCE_ASIO` is 0 in our CMake, so only WASAPI and
+   DirectSound exist; enabling ASIO is the real low-latency item (it needs
+   Steinberg's ASIO SDK, whose licence is checked at fetch against the policy).
+   Second, JUCE's ASIO and CoreAudio classes *are* the driver callback; what
+   sits above them is `DeviceBridge` → `DeviceCore`, a few branches per
+   callback. Bypassing it is rejected unless the benchmark shows it costing more
+   than 1 % of the 32-frame budget.
+6. **Plugins in the device view are compact blocks** (ADR-0076): power, bypass,
+   preset chooser, open-GUI button; parameters appear only when mapped to rack
+   macros or exposed through Configure. **A director-approved deviation**
+   (ADR-0108 d2): Live 12 shows up to 64 parameters as sliders automatically
+   (§23.3.1, p.460).
+7. **A plugin capabilities registry** (ADR-0098): application-scoped SQLite, the
+   expression dialect detected and remembered per plugin ID, and an override
+   chooser in the device header (`Auto | VST3 Expression | MIDI-MPE | Poly-AT`).
+   **Correction:** the route in effect is also written to the device row in the
+   project, because it changes what the plugin plays — a project must sound the
+   same on another machine whatever that machine's registry says. The registry
+   supplies the default for a new instance; the project stores the choice.
+8. **Pure Data parameters** (ADR-0035, ADR-0040): a patch declares
+   `[adi.param name min max default]`; the host renders native controls in the
+   device view; the `.pd` opens in an external editor.
+9. **Sample-rate mismatch** is a non-blocking bar: switch the device to the
+   project's rate, or resample for this session. The project's rate stays in
+   the file.
+10. **Linux, phase 3** (ADR-0109): ALSA direct and PipeWire/JACK; CLAP and LV2
+    search paths per the Linux conventions (`/usr/lib/clap`, `~/.clap`, and the
+    LV2 equivalents). **Correction:** JUCE 9.0.2 has no Wayland backend (none in
+    its sources or change list), so the realistic default is X11, through
+    XWayland on Wayland desktops; native Wayland needs JUCE to add it or a
+    backend of our own, decided at phase 3.
+11. **The library store** (ADR-0104): application-scoped SQLite of sample paths,
+    BLAKE3 hashes, key, tempo and semantic descriptors; tags, ratings and
+    collections export and import as JSON, paths staying local.
+
+---
+
+## ADR-0135 — The sibling projects' names, and the DSP56300 emulation project — `DECIDED (direction)` (2026-09-24) — **BACKLOG, LOWEST PRIORITY**
+
+**Director's call.** The sibling synth projects get names that say what they
+are, and a new one joins them: a CLAP instrument built on the open `gearmulator`
+DSP56300 emulation core, each in its own dedicated session.
+
+### Decisions
+
+1. **Names:** `AdiGuard` (unchanged); **`adi-vital`** for today's `adi-vst/`
+   (the Vital fork) and its GitHub repository `adi-vst-synth`; **`adi-surge`**
+   (unchanged — it is the project once called the CLAP half). Each rename is
+   done **by that project's own session**: its paths, logs, CI and remotes are
+   its own (the separate-sessions rule), and a rename made from here would move
+   the ground under work in progress.
+2. **The DSP56300 project** — working name `adi-dsp56300`, the chip rather than
+   any product — is a GPLv3 CLAP instrument wrapping `gearmulator`'s emulation
+   of the DSP56303 and dual DSP56367 (the policy authorises GPL-3.0). A new
+   vector UI; the original control software is not used.
+3. **Bring your own ROM.** No firmware binary is ever hosted, bundled or
+   distributed (policy §5). The plugin loads silently without one; a user places
+   a ROM extracted from the manufacturer's own update, and the plugin boots the
+   matching emulation (single DSP56303 for A/B/C, dual DSP56367 for TI/TI2).
+4. **No trademarks in the name** (policy §5): no manufacturer or product names.
+5. **The AI works through the synth's own language**: SysEx and CC injected into
+   the emulated machine, on a worker thread off the audio thread. The UI reads
+   the firmware's display and LED output from the same stream.
+6. **Its own session, its own `ARCHITECTURE.md` and `DECISIONS.md`**, like the
+   others; nothing of it lives in `adi_daw`.

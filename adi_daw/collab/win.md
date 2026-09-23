@@ -5,6 +5,42 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — the Settings Reference ruled: ADR-0125 to ADR-0135
+
+Adi returned the Settings Reference v0.1 with twenty notes and a rulings log.
+Every checklist item is ruled (ADR-0125); the larger notes are ten decisions.
+Verified before writing, and corrected where the sources disagreed:
+
+- **JUCE 9.0.2 is already the pin** (ADR-0048), so note 7's upgrade is done.
+  HarfBuzz and SheenBidi are in JUCE since 8; 9.0.0 brought the SVG parser and
+  a new CoreAudio implementation. "Drift compensation" is not in the change list.
+- **ASIO is not enabled** in our build (`JUCE_ASIO` 0): a Windows DAW with only
+  WASAPI and DirectSound. That is the low-latency item, not bypassing JUCE's
+  wrapper (ADR-0134 d5). New P0 row in FEATURES §14.
+- **Live's zoom gestures** checked against the manual (ADR-0129): all match,
+  with three recorded deviations — cursor-centred wheel zoom (Live zooms around
+  the selection), `+`/`-` keep Live's anchor, the overview edge handles are an
+  enhancement.
+- **Import defaults and compact plugin blocks deviate from Live** (Auto-Warp and
+  edge fades are on in Live; Live shows up to 64 plugin parameters): recorded as
+  director-approved deviations under ADR-0108 d2.
+- **Corrections argued**: recording as WAV promoted in place to RF64 at 4 GiB
+  (same safety, full compatibility); decoded imports in the cache, not the
+  project; the capability route stored on the device row too; the agent never
+  executes an action because a remark said so; the Focus Dial follows plugins
+  through the gesture-begin signals ADR-0124 already captures; Play-Q reuses
+  the graph's pending events; a user-space PTP client before a Windows service;
+  the agent's settings changes are logged although not undoable; no Wayland
+  backend in JUCE.
+- **Sibling renames** (adi-vst → adi-vital, its repo adi-vst-synth) are for that
+  project's own session; the DSP56300 project is backlog with its own session.
+
+Next for win: the schema change ADR-0127 d2 requires (remove `media_blobs`,
+`media.embedded`, the check rule, `.adibundle`), then ASIO. Settings Reference
+v0.2 and the master reference v0.5 are rebuilt from these rulings.
+
+---
+
 ## 2026-09-23 — linux's ASan finding on #74: the device outlives the glue, stated and obeyed
 
 linux's watch (#75) ran `adi_param_ops_tests` under ASan and found a

@@ -92,7 +92,7 @@ flagged, and it is a bug in the format, not in the plan.
 | Per-note microtuning | neither, fully | P2 | ✅ | `tuning_cents` in the v1 note record |
 | **Per-note expression / MPE** | both, partially | **P1** | ✅ | `note_expression` — first-class, SPEC §6.3.2 |
 | **MPE+ (Haken), 14-bit Y and Z at 500 Hz** | neither | **P1** | ✅ | `ExpressionPoint.value` is f32, so bit depth was never the constraint. The binding constraint is ADR-0042's sub-block floor, which MUST NOT exceed `sample_rate/500` (ADR-0054). |
-| **MPE out to plugins, VST3 and CLAP** | both, partially | **P1** | — | CLAP (ADR-0099): the dialect the plugin declares -- CLAP note expression, MIDI-MPE or MIDI. VST3 (ADR-0097): per plugin, VST3 note expression, MPE over MIDI on member channels, or plain MIDI with poly aftertouch. The controller's channel never reaches a plugin. Pitch, pressure and timbre measured by ear per route (ADR-0098, ADR-0100); a fixture VST3 exercises the IMidiMapping parameter path in CI. Surge XT reads MpeMidi, Serum 2 reads note expression, and `Auto` can only be right for one of them -- so the route choice must be remembered, which it is not yet. |
+| **MPE out to plugins, VST3 and CLAP** | both, partially | **P1** | — | CLAP (ADR-0099): the dialect the plugin declares -- CLAP note expression, MIDI-MPE or MIDI. VST3 (ADR-0097): per plugin, VST3 note expression, MPE over MIDI on member channels, or plain MIDI with poly aftertouch. The controller's channel never reaches a plugin. Pitch, pressure and timbre measured by ear per route (ADR-0098, ADR-0100); a fixture VST3 exercises the IMidiMapping parameter path in CI. Surge XT reads MpeMidi, Serum 2 reads note expression, and `Auto` can only be right for one of them -- so the route choice must be remembered: decided, in an application registry per plugin and on the device row per project (ADR-0134 d7), not built yet. |
 | Scale-aware / scale-locked editing, **every scale including Arabic and microtonal** | Ableton 12 + | P2 | 🔶 | reads `key_map`; a 12-bit `scale_mask` cannot name a quarter tone, so `tuning_systems` + `tuning_degrees` + `key_map_degrees` child tables come first (ADR-0103, ADR-0117, gap 6). Notation stays out. |
 | Expression Maps (articulations) | Cubase | P3 | ❌ | needs its own schema; big win for orchestral |
 | Logical Editor / Project Logical Editor | Cubase | P3 | — | query+transform over the model; no schema |
@@ -118,7 +118,7 @@ Cubase-style MixConsole view with a toggle between the two.
 |---|---|---|---|---|
 | Session View, docked in the main window Ableton-style, detachable | Ableton | P3 (last) | ❌ | `scenes`, `clip_slots` return to Layer 1 in a schema PR now, mirroring Live's shape: a scene list, one slot per track per scene, launch settings on the clip (ADR-0101, ADR-0117); the 14 ops return with the UI |
 | MixConsole view toggled inside it | Cubase | P3 (last) | ✅ | same strips, reparented; one `TrackOrderModel` (ADR-0063) |
-| Live performance | — | **ADI Live app** | — | a separate product on the same engine, after the DAW (ADR-0105) |
+| Live performance | — | **ADI Live app** | — | a separate product on the same engine, after the DAW (ADR-0105); the suite is ADI DAW, ADI Live and aDiJ (ADR-0133) |
 
 ADI is still an arrangement-first DAW: the timeline is the default screen and the
 first thing built, and what it takes from Cubase is **arrangement and
@@ -353,3 +353,35 @@ Copying the look of a reference is not the feature; the behaviour is.
   checklist) or an ADR explicitly rejects it (ADR-0072 for sends, ADR-0047 for
   the Inspector).
 - Enhancements layer on top of parity, never instead of it.
+
+## 14. Decided in the Settings review (ADR-0125 to ADR-0135)
+
+The Settings Reference's checklist (R-01 to R-27) is ruled, and the director's
+review notes added these. Status is the decision's; nothing below is built yet
+unless it says so.
+
+| Feature | From | P | Decision |
+|---|---|---|---|
+| Settings window: page list, Find box, scope badges, presets, bundles, Safe Mode | Live + REAPER + Cubase | P1 | ADR-0125 |
+| The agent may change UI and workflow settings only, through its own logged pipeline | neither | P2 | ADR-0125 d1-d3 |
+| Hebrew and RTL text; the timeline stays left-to-right | — | P1 | ADR-0125 d4 |
+| LAN audio streaming node (from SonoBus), jitter buffer declared as latency | SonoBus | P2 | ADR-0126 |
+| Media never embedded; **Collect and Export to ZIP** with BLAKE3 checks | — | P0 | ADR-0127 (supersedes SPEC §10.4) |
+| DAWproject import and export | Bitwig | P1 | ADR-0127 d7 |
+| History as a snapshot tree: named milestones, revert without loss, read-only tabs | ESXi | P1 | ADR-0128 |
+| Live 12's navigation and zoom gestures, verified against the manual | Ableton | P0 | ADR-0129 |
+| Per-window UI scaling; plugin windows never scaled by us | — | P1 | ADR-0129 d3-d4 |
+| Master Focus Dial: hover for native controls, touch for plugins, lock, HUD, fine mode | Steinberg / REAPER + | P1 | ADR-0130 |
+| Info View and delayed tooltips | Ableton | P0 | ADR-0131 |
+| Remarks anchored to tracks, clips, devices, parameters; agent remarks marked | Word | P2 | ADR-0131 |
+| Recording 32-bit float, WAV promoted to RF64 at 4 GiB; `bext` and iXML | Cubase | P0 | ADR-0132 d1-d2 |
+| Import of every common format through one decoder, decoded into the cache | — | P1 | ADR-0132 d3-d4 |
+| Import defaults: no warp, no fade (deviations from Live, approved); Warp = Auto-Warp on demand | Ableton + Bitwig | P0 | ADR-0132 d6-d7 |
+| Rec-Q toggle on the MIDI track header; quantize is its own undo step | Bitwig + Ableton | P1 | ADR-0132 d8 |
+| Retrospective capture: MIDI always, audio 30 s ring per armed input | Ableton + Cubase | P1 | ADR-0132 d9 |
+| Control room | Cubase | **v2** | deferred, ADR-0125 d5 |
+| Play-Q: live input released on the grid, late forgiveness, amber warning | — | P2 | ADR-0133 d4 |
+| Inactive tabs offline; buses allocated on demand | — | P1 | ADR-0134 d1-d2 |
+| AudioGridder: local fallback, placeholder, Remap Remote Host | — | P1 | ADR-0134 d3 |
+| **ASIO on Windows** (not enabled today) | all | **P0** | ADR-0134 d5 |
+| Plugin capabilities registry; the chosen expression route stored in the project | — | P1 | ADR-0134 d7 |
