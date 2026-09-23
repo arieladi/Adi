@@ -181,6 +181,7 @@ struct GraphStats {
     std::int64_t nodeCalls = 0;
     std::int64_t nodesSuspended = 0; ///< node-blocks skipped by ADR-0043
     std::int64_t suspendClears = 0;  ///< buffer clears on suspension: once per silence, not per block
+    std::int64_t inputsSkipped = 0;  ///< sleeping sources a consumer did not read (zero-delay edges)
     std::int64_t eventsDropped = 0;
     std::int64_t eventsForwarded = 0; ///< deliveries made along an edge (ADR-0091)
     std::int64_t eventsDeferred = 0;  ///< held for a later block by a delay

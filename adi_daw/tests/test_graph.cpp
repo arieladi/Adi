@@ -458,6 +458,101 @@ void testSuspendedNodeClearsOnceToCapacity() {
               std::to_string(g.stats().suspendClears));
 }
 
+void testMixSkipsSleepingSources() {
+    section("ADR-0102 d5 -- a mix does not read a sleeping source, and reads "
+            "everything that is merely quiet");
+
+    // Generators inherit kInfiniteTail and never sleep; a pass-through behind
+    // one of them is the node that actually suspends. The mixer is a
+    // pass-through too, so the output IS the mix the graph handed it.
+    class PassNode final : public Node {
+    public:
+        void process(const NodeIo& io) noexcept override {
+            for (std::int32_t c = 0; c < io.channels; ++c) {
+                const float* in = io.in != nullptr ? io.in[c] + io.blockOffset : nullptr;
+                float* o = io.out[c] + io.blockOffset;
+                for (std::int32_t i = 0; i < io.frames; ++i) o[i] = in ? in[i] : 0.0f;
+            }
+        }
+        [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+        [[nodiscard]] bool alwaysProcess() const noexcept override { return always; }
+        [[nodiscard]] const char* name() const noexcept override { return "pass"; }
+        bool always = false;
+    };
+    auto bits = [](float f) { std::uint32_t u; std::memcpy(&u, &f, sizeof u); return u; };
+    Out o(128);
+    AudioIo io = makeIo(o, 128);
+
+    // --- 1. three inputs: a generator, the sleeper, a live generator ---------
+    {
+        ConstNode a(0.25f), b(0.5f), c(0.125f);
+        PassNode sleeper, mixer;
+        Graph g;
+        const NodeId na = g.addNode(a), nb = g.addNode(b), nc = g.addNode(c),
+                     ns = g.addNode(sleeper), nm = g.addNode(mixer);
+        // The sleeper is the FIRST input on purpose: a skipped first input must
+        // still zero the mix, or the previous block's mix is summed into this one.
+        g.connect(na, ns);
+        g.connect(ns, nm);          // first: the sleeper, fed by a
+        g.connect(nc, nm);          // second: live
+        g.connect(nb, nm);          // third: live
+        g.setOutput(nm);
+        g.prepare(48000.0, 128);
+
+        g.process(io);
+        check(o.l[0] == 0.875f && o.r[127] == 0.875f, "awake: the mix is the sum of all three");
+        check(g.stats().inputsSkipped == 0, "and nothing was skipped");
+
+        a.set(0.0f);
+        g.process(io);              // the sleeper runs once more, on zeros
+        g.process(io);              // and is now asleep and cleared
+        const std::int64_t skipped = g.stats().inputsSkipped;
+        check(skipped >= 1, "asleep: the mix skipped the sleeping input: " + std::to_string(skipped));
+        check(o.l[0] == 0.625f && o.r[127] == 0.625f,
+              "and the mix is exactly the live inputs: " + std::to_string(o.l[0]));
+        for (int i = 0; i < 4; ++i) g.process(io);
+        check(g.stats().inputsSkipped == skipped + 4, "one skip per block while it sleeps");
+
+        a.set(0.25f);
+        g.process(io);
+        g.process(io);
+        check(o.l[0] == 0.875f, "the sleeper woke and its audio is summed again");
+    }
+
+    // --- 2. quiet is not asleep: a -0.0f generator is READ, not skipped -----
+    //
+    // The scheduler measures -0.0f as silence (it compares with != 0.0f) but
+    // a generator never sleeps, so it is never `zeroed` and must be read. With
+    // only it and a sleeping input feeding the mix, its sign reaches the
+    // output. This also pins the one visible difference the skip makes: the
+    // old code added the sleeper's +0.0f and produced +0.0f here.
+    {
+        ConstNode z(-0.0f), a(0.25f);
+        PassNode sleeper, mixer;
+        // Every input of the mixer is 'silent' once the sleeper sleeps, so the
+        // scheduler would suspend the MIXER too -- correctly. Keep it awake so
+        // that what it is handed can be observed.
+        mixer.always = true;
+        Graph g;
+        const NodeId nz = g.addNode(z), na = g.addNode(a), ns = g.addNode(sleeper),
+                     nm = g.addNode(mixer);
+        g.connect(nz, nm);          // first: -0.0f
+        g.connect(na, ns);
+        g.connect(ns, nm);          // second: the sleeper
+        g.setOutput(nm);
+        g.prepare(48000.0, 128);
+
+        g.process(io);
+        check(o.l[0] == 0.25f, "awake: -0.0 + 0.25");
+        a.set(0.0f);
+        for (int i = 0; i < 3; ++i) g.process(io);
+        check(g.stats().inputsSkipped >= 1, "the sleeper is skipped");
+        check(bits(o.l[0]) == 0x80000000u && bits(o.r[127]) == 0x80000000u,
+              "and the -0.0f generator was read, not skipped: its sign survives "
+              "(bits " + std::to_string(bits(o.l[0])) + ")");
+    }
+}
+
 void testEventsAreNotSilence() {
     section("ADR-0043 -- a node with a pending event runs, silent input or not");
 
@@ -2021,6 +2116,7 @@ int main() {
         testFloorBound();
         testSilenceSuspends();
         testSuspendedNodeClearsOnceToCapacity();
+        testMixSkipsSleepingSources();
         testEventsAreNotSilence();
         testTailKeepsRunning();
         testAlwaysProcess();
