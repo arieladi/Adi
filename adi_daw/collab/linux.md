@@ -8,6 +8,39 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — round three: silent-node measurement and isolated test files
+
+Branch `linux/measurement-isolation`, based on main `f9d5c6a` (win's PR #58).
+The round-three assignment authorizes test scratch changes including win's
+`test_engine.cpp` and `test_textproj_store.cpp`; the claim lists only the
+benchmark, the test helper and ten affected test sources. No production code.
+
+**Measurement limit / hook proposal:** GraphStats exposes node calls and
+suspended node-block counts. A benchmark-local Node decorator can time actual
+Node::process bodies, but a skipped node never enters that decorator. The
+remaining callback duration includes skipped nodes, processed-node scheduling,
+mixing, silence detection, event forwarding and output copies; it must NOT be
+labelled skipped-node time. I propose win add opt-in, preallocated per-callback
+instrumentation around Graph::runNode, recording elapsed time into processed
+and suspended buckets (classification already exists there), with the outer
+Graph::process time recorded separately. Disabled instrumentation must have
+no clock reads. That hook needs win's engine ownership; it is only a proposal
+here. The benchmark will expose body time, counts and clearly named residual,
+with skipped time explicitly unavailable rather than inferred by subtraction.
+
+**Test plan:** a test-only RAII directory helper uses suite + process id +
+per-test token + atomic counter and exclusive create_directory, retrying a
+collision without deleting the existing directory. Each file-writing test
+owns its scope; SQLite stores close before cleanup. Audit found ten file-writing
+suites; their prefixes differ, so the old claim that different suites all
+share one path was too broad. Concurrent copies of the SAME suite/build do
+share paths. Pure-memory suites need no scratch directory. Use the existing
+CTest registration for `ctest -j 4`; no test_all.sh or CMake change is needed.
+
+Results follow when measured; then stop.
+
+---
+
 ## 2026-09-23 — round two: Release callback measurements and routing guards
 
 Branch `linux/routing-determinism`, main `cb686ff` (win's PR #56).
