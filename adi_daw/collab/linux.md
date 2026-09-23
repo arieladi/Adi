@@ -8,6 +8,76 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — round two: Release callback measurements and routing guards
+
+Branch `linux/routing-determinism`, main `cb686ff` (win's PR #56).
+The first commit claims only `tests/test_graph.cpp` for the granted fixtures.
+
+### 1. Benchmark matrix, before changing tests
+
+Intel Core i5-3550S @ 3.00 GHz, 4 cores / 4 threads, governor **schedutil**
+on all four CPUs. GCC 15.2.0 and Clang 21.1.8, CMake Release (`-O3 -DNDEBUG`),
+JUCE off, `ADI_BUILD_BENCHMARKS=ON`. Rebuilt from this main. Each executable's
+`--self-test` passed, followed by `adi_block_benchmark --iterations 10000`.
+GCC then Clang, sequentially; no concurrent builds, no affinity, governor or
+real-time priority changes. 48 kHz stereo, 32 warmup callbacks then 10,000
+measured callbacks **per row**. Times are microseconds; nearest-rank percentiles.
+These are desktop synthetic callback measurements, not device xruns or an
+Ableton comparison. Scheduling noise is included in max and deadline misses.
+
+| Compiler | Project | Frames | p50 µs | p99 µs | Max µs | Deadline misses |
+|---|---|---:|---:|---:|---:|---:|
+| GCC | active | 32 | 2.679 | 3.675 | 1653.823 | 1 |
+| GCC | active | 64 | 3.526 | 11.858 | 60.224 | 0 |
+| GCC | active | 128 | 4.938 | 15.631 | 87.642 | 0 |
+| GCC | active | 2048 | 68.256 | 105.461 | 866.570 | 0 |
+| GCC | active | 4096 | 148.549 | 209.553 | 2834.428 | 0 |
+| GCC | silence-heavy | 32 | 13.608 | 28.885 | 132.283 | 0 |
+| GCC | silence-heavy | 64 | 18.315 | 36.006 | 144.188 | 0 |
+| GCC | silence-heavy | 128 | 29.911 | 59.231 | 176.032 | 0 |
+| GCC | silence-heavy | 2048 | 598.044 | 1416.755 | 12670.563 | 0 |
+| GCC | silence-heavy | 4096 | 1829.263 | 3075.095 | 11624.108 | 0 |
+| GCC | mpe-storm | 32 | 2.848 | 13.787 | 566.789 | 0 |
+| GCC | mpe-storm | 64 | 5.939 | 16.881 | 101.649 | 0 |
+| GCC | mpe-storm | 128 | 9.050 | 22.681 | 83.610 | 0 |
+| GCC | mpe-storm | 2048 | 256.581 | 342.481 | 1344.379 | 0 |
+| GCC | mpe-storm | 4096 | 764.955 | 1173.893 | 5129.600 | 0 |
+| Clang | active | 32 | 2.847 | 4.030 | 1190.550 | 2 |
+| Clang | active | 64 | 3.584 | 4.596 | 1293.505 | 0 |
+| Clang | active | 128 | 4.783 | 15.590 | 3064.446 | 1 |
+| Clang | active | 2048 | 66.393 | 104.751 | 465.184 | 0 |
+| Clang | active | 4096 | 150.086 | 207.958 | 352.499 | 0 |
+| Clang | silence-heavy | 32 | 13.852 | 30.201 | 289.770 | 0 |
+| Clang | silence-heavy | 64 | 19.007 | 40.218 | 4306.622 | 4 |
+| Clang | silence-heavy | 128 | 30.287 | 54.533 | 86.413 | 0 |
+| Clang | silence-heavy | 2048 | 625.201 | 1356.289 | 5470.874 | 0 |
+| Clang | silence-heavy | 4096 | 1745.826 | 3433.002 | 8837.661 | 0 |
+| Clang | mpe-storm | 32 | 2.878 | 13.546 | 50.048 | 0 |
+| Clang | mpe-storm | 64 | 7.870 | 19.367 | 77.163 | 0 |
+| Clang | mpe-storm | 128 | 11.493 | 28.126 | 115.142 | 0 |
+| Clang | mpe-storm | 2048 | 412.200 | 524.126 | 663.415 | 0 |
+| Clang | mpe-storm | 4096 | 1372.418 | 1977.345 | 5058.860 | 0 |
+
+All 30 rows had zero event drops and zero rejected events; fixture output
+validation passed. Active and MPE-storm each have 8 tracks × 4 effects (41 nodes);
+silence-heavy has 64 × 4 (321 nodes), 63 silent tracks. MPE is 16 notes × 3
+expression dimensions at 500 Hz into track one. The table reports one run per
+compiler, not an isolated estimate of compiler speed or a performance gate.
+
+### 2. Fixture proposal and scope
+
+The tests have `RampNode`, `LatentNode`, and a sidechain `KeyThrough`, but no
+compressor-shaped node. Proposed test support: a **test-local** ducking probe
+with `main / (1 + abs(key))`, capturing both inputs in preallocated buffers.
+It models dependency/alignment, not a production compressor's DSP. An event
+probe will capture explicit fields and render note/expression changes into
+samples at their block-relative frame. Neither belongs in `src/`; no production
+node type, engine change, workflow or `test_device.cpp` change is proposed.
+
+Validation and the worker-pool handoff follow below when measured.
+
+---
+
 ## 2026-09-23 — task 5: seeded level permutation and byte-exact guard
 
 Branch `linux/level-permutation`, based on main `2155fb4` after win's review
