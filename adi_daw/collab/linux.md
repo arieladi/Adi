@@ -74,7 +74,92 @@ probe will capture explicit fields and render note/expression changes into
 samples at their block-relative frame. Neither belongs in `src/`; no production
 node type, engine change, workflow or `test_device.cpp` change is proposed.
 
-Validation and the worker-pool handoff follow below when measured.
+### 3. Sidechain and event traversal guards
+
+`tests/test_graph.cpp` alone implements the proposed test-local probes. Fresh
+graphs render forward, reverse, and seeds **1, 42, 0xC0FFEE** through the existing
+off-callback hook. The shared `memcmp` stereo oracle retains its signed-zero
+sensitivity check. These fixtures extend the existing aggregate determinism
+assertion (with per-fixture/per-variant failure diagnostics); graph/tree counts
+remain **149 / 2,272 checks across 24 suites**, without changing the README.
+
+- Sidechain: two ramp sources, a real 64-sample latent branch and its direct
+  sibling, two compressor-shaped probes, and their sum. One probe delays the
+  key; the mirror delays main to meet the latent key. Four 256-frame blocks
+  check both channels of the actual main/key captures against the independently
+  delayed ramp, and compare ducked output to calculated samples and to forward
+  bytes. Startup and compensation history across blocks are included.
+- Events: a head fans out through latent/direct siblings, then both paths feed
+  two test instruments. NoteOn, three expression dimensions, and NoteOff reach
+  each instrument once per path. Their absolute arrivals are independently
+  expected at **96, 160, 255, 256, 288**: the 255/256 pair tests adjacent samples
+  across a block boundary, and a third block checks no repeat delivery.
+  Captures retain frame, segment start/length, type, channel, dimension, full
+  note id, parameter id and exact double bits. Each event must be inside its
+  segment while its frame stays block-relative. Explicit integer-field arrays
+  avoid comparing uninitialised Event padding. Both instruments render changes
+  at those frames; samples and complete event records compare byte-for-byte
+  across traversal variants. Push rejection, loss, capture overflow, expected
+  fan-in multiplicity and actual deferral are checked. Probe storage is fixed
+  before callbacks; there is no test-callback allocation.
+
+### Validation and deliberate failures
+
+- GCC 15.2.0 Debug: `test_all.sh` **2,272 / 24**, validators clean, **3.93 s**.
+- Clang 21.1.8 Release: the same full run passes, **2.98 s**.
+- GCC 15.2.0 TSan, `TSAN_OPTIONS=halt_on_error=1`: the same full run passes,
+  **19.00 s**, including all five variants of both new fixtures.
+- The changed translation unit is warning-clean with both compilers under
+  `-Wall -Wextra -Wconversion -Wshadow -pedantic`; `git diff --check` is clean.
+- **Sidechain plant:** in a scratch copy of graph.cpp, set the seven-node
+  fixture's sidechain delay to zero just before accumulation. Compensation
+  metadata still reports 64 before processing, but the real key arrives early.
+  The new sidechain guard fails in **all five modes**, exit 1, 149 checks /
+  1 aggregate failure, under both GCC Debug and GCC TSan.
+- **Event-offset plant:** in another scratch copy, add one sample to
+  `now_ + e.frame + delay` on the six-node event fixture's forwarding edges.
+  All modes are identically wrong, so cross-mode comparison alone could pass;
+  the independent frame/audio oracle rejects **all five modes**. Exit 1,
+  149 checks / 1 aggregate failure, under both GCC Debug and GCC TSan.
+  Neither negative TSan run reported a runtime warning: the guard itself fired.
+
+Plants were compiled into replacement graph objects linked before the clean
+core archive, against the real test object; none entered the tracked tree.
+The clean builds and full suites above ran after the final test code changes.
+To reproduce: build the existing GCC Debug / Clang Release / GCC TSan trees,
+then `bash adi_daw/tools/test_all.sh <build-dir>` (with the TSan option above).
+The claim is released in the final pre-merge commit; only tests and this log
+remain in the PR's net diff.
+
+### 4. Worker-pool handoff — proposed only, then wait
+
+The fixtures supply repeatable serial baselines, exact expected audio/key
+samples and event records, nonzero segments, and carried delay/event state.
+A pool would need to run these SAME fixtures through its real executor with
+one and multiple workers, deliberately varied completion orders, repeated
+blocks and seeded stress under TSan, comparing against the serial baseline.
+The current level permutations are serial: passing them under TSan does not
+prove a concurrent scheduler race-free.
+
+Before parallel dispatch, preserve the complete event-forwarding pass and its
+split calculation; preserve fan-in edge summation/event ordering. A level's
+completion barrier must include main AND sidechain dependencies. Each node's
+output/history and each consumer's delay rings need a single writer. The
+current `mixPtrs_`/`sidePtrs_` scratch is shared by Graph: it must become safe
+for simultaneous runNode calls (for example, preallocated worker-local
+scratch), and shared GraphStats writes need a race-free collection strategy.
+Probe captures already belong to individual nodes; inspect them after joining,
+not from worker threads. Keep preparation, allocation, seeds and test setup off
+the callback. Use mutation checks for omitted dependencies, scratch aliasing,
+and event-offset mistakes against the parallel path too. Then measure the
+32/64/128-frame dispatch/barrier overhead and tail latency with the benchmark
+before choosing a pool threshold; these fixtures alone do not establish speed.
+
+No pool implementation has started. The GCC TSan CI leg and Clang allocation-
+counter conflict remain with mac. No `.github/**`, `test_device.cpp`, `src/`,
+platform code, schema, ADR or other agent's log was changed. After green CI and
+merge, this round stops here awaiting win/Adi.
+
 
 ---
 

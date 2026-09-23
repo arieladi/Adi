@@ -14,6 +14,8 @@
 #include "adi/engine/graph.hpp"
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -736,6 +738,28 @@ void testSidechainIsSeparateFromMain() {
     check(!probe.mainSilent && !probe.sideSilent, "both are reported live");
 }
 
+// The routing fixtures below use the same traversal matrix and byte oracle.
+bool sidechainTraversalIsDeterministic();
+bool eventTraversalIsDeterministic();
+
+bool sameSamples(const std::vector<float>& a, const std::vector<float>& b) {
+    return a.size() == b.size() &&
+           std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+}
+
+bool sameOutput(const Out& a, const Out& b) {
+    return sameSamples(a.l, b.l) && sameSamples(a.r, b.r);
+}
+
+void selectTraversal(Graph& g, int variant) {
+    // Called only after prepare, before any callback; each render owns a new graph.
+    g.setReverseWithinLevel(variant == 1);
+    if (variant >= 2) {
+        constexpr std::uint32_t seeds[] = {1u, 42u, 0xC0FFEEu};
+        g.permuteLevelsForTest(seeds[variant - 2]);
+    }
+}
+
 void testLevelOrderDoesNotChangeOutput() {
     section("ADR-0056 -- forward, reverse and seeded levels give identical bytes");
 
@@ -764,17 +788,12 @@ void testLevelOrderDoesNotChangeOutput() {
           normal[1].size() == 2 && normal[2].size() == 2 && normal[3].size() == 1,
           "four levels; three have independently reorderable nodes");
 
-    const auto sameBytes = [](const Out& x, const Out& y) {
-        return x.l.size() == y.l.size() && x.r.size() == y.r.size() &&
-               std::memcmp(x.l.data(), y.l.data(), x.l.size() * sizeof(float)) == 0 &&
-               std::memcmp(x.r.data(), y.r.data(), x.r.size() * sizeof(float)) == 0;
-    };
     Out forward(512), reverse(512);
     g.setReverseWithinLevel(false);
     g.process(makeIo(forward, 512));
     g.setReverseWithinLevel(true);
     g.process(makeIo(reverse, 512));
-    bool identical = sameBytes(forward, reverse);
+    bool identical = sameOutput(forward, reverse);
     if (!identical) std::puts("  traversal mismatch: reverse");
 
     bool permutationsValid = true;
@@ -801,7 +820,7 @@ void testLevelOrderDoesNotChangeOutput() {
 
         Out shuffled(512);
         g.process(makeIo(shuffled, 512));
-        const bool equal = sameBytes(forward, shuffled);
+        const bool equal = sameOutput(forward, shuffled);
         if (!equal) std::printf("  traversal mismatch: seed %u\n", static_cast<unsigned>(seed));
         identical &= equal;
     }
@@ -819,10 +838,12 @@ void testLevelOrderDoesNotChangeOutput() {
     Out positiveZero(1), negativeZero(1);
     negativeZero.r[0] = -0.0f;
     const bool byteSensitive = positiveZero.r[0] == negativeZero.r[0] &&
-                               !sameBytes(positiveZero, negativeZero);
-    check(identical && byteSensitive,
+                               !sameOutput(positiveZero, negativeZero);
+    const bool sidechain = sidechainTraversalIsDeterministic();
+    const bool events = eventTraversalIsDeterministic();
+    check(identical && byteSensitive && sidechain && events,
           "forward, reverse and all three seeds match both channels byte-for-byte; "
-          "the oracle distinguishes signed zero");
+          "the oracle distinguishes signed zero; sidechain and event fixtures agree");
     check(std::fabs(forward.l[0] - 1.0f) < 1e-6f &&
           std::fabs(forward.r[0] - 1.0f) < 1e-6f,
           "the fixture sums to one in both channels, rather than matching silence");
@@ -1250,6 +1271,81 @@ void testSidechainIsCompensatedToo() {
     eqi(g.compensationFor(nk, nx, Bus::Sidechain), 0, "the key itself is not delayed");
 }
 
+/// Test-only compressor shape, NOT production compressor DSP. Buffers are
+/// allocated by the caller, before process; captures are private to this node.
+class DuckingProbe final : public Node {
+public:
+    explicit DuckingProbe(std::int32_t frames) : mainSeen(frames), keySeen(frames) {}
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            auto& main = c == 0 ? mainSeen.l : mainSeen.r;
+            auto& key = c == 0 ? keySeen.l : keySeen.r;
+            for (std::int32_t f = io.blockOffset; f < io.blockOffset + io.frames; ++f) {
+                const auto index = static_cast<std::size_t>(f);
+                main[index] = io.in != nullptr ? io.in[c][f] : 0.0f;
+                key[index] = io.sidechain != nullptr ? io.sidechain[c][f] : 0.0f;
+                io.out[c][f] = main[index] / (1.0f + std::fabs(key[index]));
+            }
+        }
+    }
+    Out mainSeen, keySeen;
+};
+
+bool sidechainTraversalIsDeterministic() {
+    section("ADR-0056/0058 -- traversal preserves compensated compressor keys");
+    constexpr std::int32_t frames = 256, blocks = 4, latency = 64;
+    Out reference(frames * blocks);
+    bool all = true;
+    for (int variant = 0; variant < 5; ++variant) {
+        RampNode music, key;
+        LatentNode slow(latency);
+        SumNode fast, master;
+        DuckingProbe comp(frames), mirror(frames);
+        Graph g;
+        const auto nm = g.addNode(music), nk = g.addNode(key);
+        const auto ns = g.addNode(slow), nf = g.addNode(fast);
+        const auto nc = g.addNode(comp), nx = g.addNode(mirror), no = g.addNode(master);
+        bool valid = g.connect(nm, ns) && g.connect(nk, nf) &&
+                     g.connect(ns, nc) && g.connect(nf, nc, Bus::Sidechain) &&
+                     g.connect(nf, nx) && g.connect(ns, nx, Bus::Sidechain) &&
+                     g.connect(nc, no) && g.connect(nx, no);
+        g.setOutput(no);
+        g.prepare(48000.0, frames);
+        valid &= g.ok() && g.compensationFor(nf, nc, Bus::Sidechain) == latency &&
+                 g.compensationFor(ns, nc) == 0 &&
+                 g.compensationFor(nf, nx) == latency &&
+                 g.compensationFor(ns, nx, Bus::Sidechain) == 0;
+        selectTraversal(g, variant);
+        Out rendered(frames * blocks), expected(frames * blocks);
+        for (std::int32_t block = 0; block < blocks; ++block) {
+            Out out(frames), aligned(frames);
+            g.process(makeIo(out, frames, block * frames));
+            for (std::int32_t f = 0; f < frames; ++f) {
+                const auto i = static_cast<std::size_t>(f);
+                const auto absolute = block * frames + f;
+                const auto j = static_cast<std::size_t>(absolute);
+                const float sample = absolute < latency ? 0.0f :
+                                     static_cast<float>(absolute - latency);
+                aligned.l[i] = aligned.r[i] = sample;
+                const float ducked = sample / (1.0f + std::fabs(sample));
+                expected.l[j] = expected.r[j] = ducked + ducked;
+                rendered.l[j] = out.l[i]; rendered.r[j] = out.r[i];
+            }
+            // Metadata alone cannot prove PDC: inspect the samples the key and
+            // main buses actually deliver, including startup and block crossings.
+            valid &= sameOutput(comp.mainSeen, aligned) && sameOutput(comp.keySeen, aligned) &&
+                     sameOutput(mirror.mainSeen, aligned) && sameOutput(mirror.keySeen, aligned);
+            music.advance(); key.advance();
+        }
+        valid &= sameOutput(rendered, expected);
+        if (variant == 0) { reference.l = rendered.l; reference.r = rendered.r; }
+        else valid &= sameOutput(rendered, reference);
+        if (!valid) std::printf("  FAIL  sidechain traversal variant %d: key/main alignment or output bytes\n", variant);
+        all &= valid;
+    }
+    return all;
+}
+
 void testGroupsCompensateAsOne() {
     section("ADR-0058 d3 -- a group aligns its children, then itself");
 
@@ -1450,6 +1546,133 @@ void runBlock(Graph& g, std::int32_t frames, std::int64_t base,
     AudioIo io;
     io.out = outp; io.numOut = 2; io.frames = frames;
     g.process(io);
+}
+
+/// Test-only instrument: renders note/expression values at the actual event
+/// frame, and records explicit fields rather than memcmp-ing Event padding.
+/// Fixed storage keeps the callback allocation-free, with a counted overflow.
+class EventRenderProbe final : public Node {
+public:
+    using Record = std::array<std::uint64_t, 10>;
+    void process(const NodeIo& io) noexcept override {
+        for (const Event& e : io.events) {
+            inRange &= e.frame >= io.blockOffset && e.frame < io.blockOffset + io.frames;
+            if (count == records.size()) { overflow = true; continue; }
+            records[count++] = {
+                static_cast<std::uint64_t>(base + e.frame),
+                static_cast<std::uint64_t>(e.frame),
+                static_cast<std::uint64_t>(io.blockOffset),
+                static_cast<std::uint64_t>(io.frames),
+                static_cast<std::uint64_t>(e.type), e.channel, e.dim, e.noteId,
+                e.paramId, std::bit_cast<std::uint64_t>(e.value)};
+        }
+        for (std::int32_t f = io.blockOffset; f < io.blockOffset + io.frames; ++f) {
+            for (const Event& e : io.events) {
+                // Engine events remain block-relative even in a late segment.
+                if (e.frame != f) continue;
+                if (e.type == EventType::NoteOn) value_ = static_cast<float>(e.value);
+                else if (e.type == EventType::NoteExpression) value_ = static_cast<float>(e.value);
+                else if (e.type == EventType::NoteOff) value_ = 0.0f;
+            }
+            for (std::int32_t c = 0; c < io.channels; ++c)
+                io.out[c][f] = value_ * static_cast<float>(c + 1);
+        }
+    }
+    [[nodiscard]] EventFlow eventFlow() const noexcept override { return EventFlow::Consume; }
+    std::array<Record, 32> records{};
+    std::size_t count = 0;
+    std::int64_t base = 0;
+    bool inRange = true, overflow = false;
+private:
+    float value_ = 0.0f;
+};
+
+bool eventTraversalIsDeterministic() {
+    section("ADR-0091/0081 -- traversal preserves routed event bytes and block frames");
+    constexpr std::int32_t frames = 256, blocks = 3, latency = 64;
+    std::array<Event, 5> input{};
+    constexpr std::int32_t offsets[] = {32, 96, 191, 192, 224};
+    constexpr double values[] = {0.25, 0.5, 0.75, 0.125, 0.0};
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        input[i] = noteOn(offsets[i]);
+        input[i].noteId = 0x123456789ABCull;
+        input[i].channel = 3;
+        input[i].value = values[i];
+        input[i].type = i == 0 ? EventType::NoteOn :
+                        i == input.size() - 1 ? EventType::NoteOff : EventType::NoteExpression;
+        input[i].dim = i == 0 || i == input.size() - 1 ? 60 : static_cast<std::uint16_t>(i - 1);
+    }
+    Out reference(frames * blocks), expected(frames * blocks);
+    std::array<EventRenderProbe::Record, 32> referenceRecords{};
+    std::size_t referenceCount = 0;
+    float value = 0.0f;
+    for (std::int32_t f = 0; f < frames * blocks; ++f) {
+        for (const auto& e : input) if (f == e.frame + latency) value = static_cast<float>(e.value);
+        const auto i = static_cast<std::size_t>(f);
+        expected.l[i] = value + value;
+        expected.r[i] = (value * 2.0f) + (value * 2.0f);
+    }
+    bool all = true;
+    for (int variant = 0; variant < 5; ++variant) {
+        SumNode head, fast, master;
+        LatentNode slow(latency);
+        EventRenderProbe first, second;
+        Graph g;
+        const auto nh = g.addNode(head), ns = g.addNode(slow), nf = g.addNode(fast);
+        const auto na = g.addNode(first), nb = g.addNode(second), nm = g.addNode(master);
+        bool valid = g.connect(nh, ns) && g.connect(nh, nf) &&
+                     g.connect(ns, na) && g.connect(nf, na) &&
+                     g.connect(ns, nb) && g.connect(nf, nb) &&
+                     g.connect(na, nm) && g.connect(nb, nm);
+        g.setOutput(nm);
+        g.prepare(48000.0, frames);
+        valid &= g.ok() && g.compensationFor(nf, na) == latency &&
+                 g.compensationFor(nf, nb) == latency;
+        selectTraversal(g, variant);
+        for (const auto& e : input) valid &= g.pushInputEvent(nh, e);
+        Out rendered(frames * blocks);
+        for (std::int32_t block = 0; block < blocks; ++block) {
+            first.base = second.base = block * frames;
+            Out out(frames);
+            g.process(makeIo(out, frames, block * frames));
+            std::copy(out.l.begin(), out.l.end(), rendered.l.begin() + block * frames);
+            std::copy(out.r.begin(), out.r.end(), rendered.r.begin() + block * frames);
+        }
+        valid &= sameOutput(rendered, expected) && g.stats().eventsDropped == 0 &&
+                 g.stats().eventsDeferred > 0 && g.stats().eventsForwarded > 0;
+        for (const auto* probe : {&first, &second}) {
+            valid &= probe->count == input.size() * 2 && probe->inRange && !probe->overflow;
+            // One copy per fan-in path, at 96,160,255,256,288 absolute samples.
+            // The two middle expressions straddle a block boundary by ONE sample.
+            for (std::size_t i = 0; i < input.size(); ++i) {
+                const auto& e = input[i];
+                const auto due = static_cast<std::uint64_t>(e.frame + latency);
+                for (std::size_t path = 0; path < 2; ++path) {
+                    const auto& r = probe->records[2 * i + path];
+                    valid &= r[0] == due && r[1] == due % frames &&
+                             r[1] >= r[2] && r[1] < r[2] + r[3] &&
+                             r[4] == static_cast<std::uint64_t>(e.type) &&
+                             r[5] == e.channel && r[6] == e.dim && r[7] == e.noteId &&
+                             r[8] == e.paramId && r[9] == std::bit_cast<std::uint64_t>(e.value);
+                }
+            }
+        }
+        // Compare the emitted samples and the complete observed event sequence,
+        // including segment coordinates, by bytes. Equal wrong schedules also
+        // fail the independent expected-frame/output oracle above.
+        if (variant == 0) {
+            reference.l = rendered.l; reference.r = rendered.r;
+            referenceRecords = first.records; referenceCount = first.count;
+        }
+        valid &= sameOutput(rendered, reference);
+        for (const auto* probe : {&first, &second})
+            valid &= probe->count == referenceCount &&
+                     std::memcmp(probe->records.data(), referenceRecords.data(),
+                                 referenceCount * sizeof(EventRenderProbe::Record)) == 0;
+        if (!valid) std::printf("  FAIL  event traversal variant %d: routed fields, block frames or output bytes\n", variant);
+        all &= valid;
+    }
+    return all;
 }
 
 void testANoteTravelsTheChain() {
