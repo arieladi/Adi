@@ -730,6 +730,29 @@ void Graph::accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& del
     // move to 128 is exactly the case this fast path would swallow: it would
     // memcpy, return, and leave the glide pending forever (ADR-0079).
     if (!delay.busy() && delay.delay() == 0) {
+        // A SLEEPING SOURCE IS NOT READ. `zeroed` says its whole buffer holds
+        // +0.0f (set only by the suspension clear, dropped the moment it
+        // processes), and this edge has nothing in flight, so reading it is
+        // 2 MB of zeros per block for 63 sleeping tracks -- the residual left
+        // after #60. This is the "active inputs" list, derived rather than
+        // kept: the source ran before this consumer in topological order on
+        // this same thread, so the flag is current, and no signalling, no
+        // second list and no lock can be more right than reading it.
+        //
+        // Bytes: `first` writes the zeros it would have copied, identical. A
+        // later input's add of +0.0f is skipped, which differs from the sum
+        // in exactly one case -- a -0.0f already in the mix stays -0.0f
+        // instead of becoming +0.0f -- and testMixSkipsSleepingSources pins
+        // that so it is a fact rather than a surprise. A source that is
+        // silent but NOT zeroed (a generator emitting -0.0f, a node whose
+        // block was all zero but never slept) is read as before.
+        if (src.zeroed) {
+            if (first)
+                for (std::size_t c = 0; c < ch; ++c)
+                    std::memset(dst[c] + begin, 0, static_cast<std::size_t>(frames) * sizeof(float));
+            ++stats_.inputsSkipped;
+            return;
+        }
         for (std::size_t c = 0; c < ch; ++c) {
             const float* s = src.chanPtrs[c] + begin;
             float* d = dst[c] + begin;

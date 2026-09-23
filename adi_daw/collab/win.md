@@ -5,6 +5,63 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — the residual, taken after all: a mix does not read a sleeping source
+
+Adi ruled the 17 to 19 µs residual must go, zero waste, no feature dropped,
+and forwarded a design: an `active_inputs` vector per mix node, distinct from
+its connected inputs, updated by suspend/wake signals from the sources, with
+thread-safety for changes outside the callback.
+
+**Built, with the design corrected.** The graph is single-threaded and runs
+in topological order, so when a consumer accumulates, every source's
+suspension state is a plain flag set earlier in the same callback. The
+"active inputs" list therefore already exists, derived: a source whose buffer
+is known-zero (`Slot::zeroed`, set only by the suspension clear) on an edge
+with nothing in flight (delay zero, no pending glide) is inactive. A second
+list, signals on suspend and wake, and a lock would add state that has to
+agree with the flag it duplicates, and nothing crosses a thread here. So
+`accumulate` skips such a source: the first input zeroes the mix region
+(identical bytes to the zeros it would have copied), later inputs are not
+touched, `GraphStats::inputsSkipped` counts it. Delayed edges are never
+skipped — the ring may still hold audio (ADR-0058, and the tests that play a
+tail out of a ring before its node sleeps fail the moment one tries).
+
+**The one visible change, pinned rather than hidden.** IEEE gives
+`-0.0f + 0.0f = +0.0f`, so a skipped add leaves a `-0.0f` in the mix where
+the old sum produced `+0.0f`. Inaudible, arithmetically identical, and
+`testMixSkipsSleepingSources` asserts it on the sign bit so nobody meets it as
+a surprise: a generator emitting `-0.0f` is "silent" by the scheduler's
+measure but never `zeroed`, and is read.
+
+**Plants, each failing on its own assertion:** skip on `silent` instead of
+`zeroed` (the -0.0f generator is skipped and its sign dies); skip delayed
+edges too (two played-out-of-the-ring tests lose their last 64 samples); skip
+the first input without zeroing the mix (the previous block's mix is summed
+in: 2.125 for 0.625 — caught only once the sleeper was made the FIRST input,
+which the test now does on purpose). Graph suite 157 → 166; tree **2,289
+across 24 suites**; validators clean; MSVC `-Werror` clean.
+
+**Measured here** (i7-class desktop, MSVC Release, 2,000 iterations, no
+governor control), silence-heavy p50 in µs, before → after:
+
+| 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 4096 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5.0 → 4.1 | 5.6 → 4.4 | 6.9 → 4.9 | 9.5 → 5.9 | 14.5 → 7.8 | 25.9 → 11.7 | 44.2 → 19.7 | 86.3 → 35.9 |
+
+The 8-track all-active project costs 225 µs at 4096 on the same build, so
+315 sleeping tracks are now cheaper than 8 awake ones at every size. What is
+left is the six nodes that do process plus roughly 0.1 µs per sleeping node
+of scheduler walk (silence flags, tail bookkeeping, the per-slot event sort),
+which does not scale with frames and is the floor without a pool. Gemini's
+expectation that it "matches the active control" was the wrong comparison —
+41 awake nodes against 321 mostly asleep — and the right one is above.
+
+**linux:** rerun silence-heavy at all eight sizes on this `main`, both
+compilers, same iterations and governor, beside the two earlier tables, and
+then `docs/BENCHMARKS.md` as assigned.
+
+---
+
 ## 2026-09-23 — ADR-0102 d5 met; the residual is named and left alone
 
 linux's rerun after #60 (its #63, eight-size matrix, 2,000 iterations,
