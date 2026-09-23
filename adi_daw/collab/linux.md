@@ -8,6 +8,83 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — opt-in small-block benchmark scaffold
+
+Branch `linux/small-block-benchmark`, created from main and fast-forwarded over
+the pending baseline correction (PR #52); merge that prerequisite first.
+The target was proposed in the preceding audit entry before CMake was changed.
+Claim: `tools/benchmark_blocks.cpp`, shared `CMakeLists.txt`, and this log only.
+
+`ADI_BUILD_BENCHMARKS=ON` adds `adi_block_benchmark`, off by default. It drives
+Graph through BlockProcessor at 48 kHz stereo, with 32 warmup callbacks and
+1,000 measured callbacks per row. Fixtures: eight active tracks with four gains
+each; 64 tracks with four gains each, 63 tracks silent; eight tracks with four
+gains and 16 notes of three-dimensional MPE+ into track 1, at exactly 500 Hz
+on a global sample clock. Node counts are 41 / 321 / 41. Sources and gains are
+synthetic; this is not a real plugin-load or Ableton comparison.
+
+CSV output includes nearest-rank p50/p99/max microseconds, callback deadline
+misses (`time > frames / 48000`, labelled dropouts), and separate dropped and
+rejected event counts. These misses are not physical device xruns. Preparation,
+event production, statistics and printing stay outside callback timing; the
+measured call includes graph scheduling and event routing. All fixtures verify
+their final stereo output sum and reject lost expression events.
+
+### Verification
+
+- GCC 15.2.0 and Clang 21.1.8 Release: build, statistics self-test, all 15 fixture
+  rows with 1,000 callbacks each; `test_all.sh` passes 2,272/24 plus all validators.
+- New source passes the full requested warning flags with both compilers.
+- Clang ASan+UBSan and GCC TSan: self-test and all 15 fixture rows with ten
+  measured callbacks each, no sanitizer diagnostics (timings not used below).
+- Eight temporary-source plants all exit 1: wrong p50, wrong p99, wrong maximum,
+  inclusive deadline comparison, source forced to silence, event capacity 1,
+  invalid edge, invalid output node. They hit their corresponding statistics,
+  output, event-loss or graph-validity guard. Plants never enter the working tree.
+- Invalid CLI cases exit 2: 0, 1000001, -1, `3x`, missing value and unknown flag.
+  The self-test also exercises the one-observation and empty-input cases.
+- CI's default configuration leaves the opt-in benchmark off. macOS/Windows
+  execution of the new target is not claimed; the source uses standard C++20.
+
+### Example measurements, this Ubuntu host only
+
+Each timing cell is p50 / p99 / max in microseconds. The machine is not isolated
+or real-time scheduled; these are one-run observations, not performance promises.
+All rows in both runs recorded zero callback deadline misses and zero lost events.
+
+| Project | Frames | GCC Release | Clang Release |
+|---|---:|---|---|
+| active | 32 | 2.686 / 12.962 / 31.679 | 2.804 / 3.266 / 43.870 |
+| active | 64 | 3.524 / 5.133 / 49.672 | 3.589 / 13.824 / 42.845 |
+| active | 128 | 4.929 / 15.510 / 41.166 | 4.868 / 5.632 / 31.567 |
+| active | 2048 | 69.055 / 193.435 / 486.929 | 68.478 / 143.248 / 211.518 |
+| active | 4096 | 149.316 / 217.498 / 387.213 | 146.387 / 234.495 / 316.881 |
+| silence-heavy | 32 | 13.862 / 32.432 / 125.358 | 13.698 / 27.802 / 57.226 |
+| silence-heavy | 64 | 18.855 / 45.230 / 103.036 | 18.603 / 40.588 / 57.371 |
+| silence-heavy | 128 | 30.268 / 60.083 / 89.697 | 30.326 / 64.443 / 252.775 |
+| silence-heavy | 2048 | 630.544 / 1345.162 / 2187.876 | 543.865 / 1282.262 / 1762.641 |
+| silence-heavy | 4096 | 1716.111 / 3556.011 / 6484.844 | 1748.928 / 3034.787 / 4424.129 |
+| mpe-storm | 32 | 2.622 / 5.645 / 25.330 | 3.060 / 16.563 / 121.652 |
+| mpe-storm | 64 | 5.990 / 16.712 / 48.143 | 8.034 / 18.475 / 40.855 |
+| mpe-storm | 128 | 9.546 / 23.895 / 138.006 | 11.014 / 34.084 / 61.509 |
+| mpe-storm | 2048 | 256.406 / 356.222 / 426.012 | 403.284 / 524.634 / 770.518 |
+| mpe-storm | 4096 | 773.321 / 1425.007 / 1709.331 | 1350.188 / 2235.646 / 2838.879 |
+
+```sh
+cmake -S adi_daw -B /tmp/adi-bench -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DADI_WITH_JUCE=OFF -DADI_BUILD_BENCHMARKS=ON
+cmake --build /tmp/adi-bench -j 3
+/tmp/adi-bench/adi_block_benchmark --self-test
+/tmp/adi-bench/adi_block_benchmark --iterations 1000
+bash adi_daw/tools/test_all.sh /tmp/adi-bench
+```
+
+Task 5 remains waiting on win's engine claim response in the preceding entry;
+no engine file was changed. Next after that response: add the permitted shuffle
+hook, use memcmp for both output channels, plant a defect and run under GCC TSan.
+
+---
+
 ## 2026-09-23 — sanitizer and portability audit; next targets proposed
 
 Audited the same main-based baseline plus the CLAP count correction, with
