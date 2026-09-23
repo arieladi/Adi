@@ -12,6 +12,18 @@
 #include <vector>
 #include <thread>
 namespace {
+// Keep the standard getenv API while silencing MSVC C4996 at this one site,
+// matching win's test_wav_file helper (2026-09-24).
+const char* envVar(const char* name) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv(name);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
 using namespace adi::media;
 int checks = 0, failures = 0;
 void check(bool ok, const char* name) { ++checks; if (!ok) { ++failures; std::printf("FAIL %s\n", name); } }
@@ -84,7 +96,7 @@ void roundtrip() {
     });
     for (auto& thread : threads) thread.join();
     check(matches[0] && matches[1] && matches[2] && matches[3], "independent concurrent ZIP writers roundtrip");
-    if (const auto* sample = std::getenv("ADI_ZIP_SAMPLE"))
+    if (const auto* sample = envVar("ADI_ZIP_SAMPLE"))
         std::filesystem::copy_file(archive, std::filesystem::path(sample), std::filesystem::copy_options::overwrite_existing);
     check(!writer.addFile(source, "late") && writer.error() == ZipError::state, "add after finish rejected");
 }
@@ -164,7 +176,7 @@ void aggregateBig() {
           compare.equal && compare.seen == size, "aggregate ZIP64 second entry CRC and bytes");
 }
 void big() {
-    if (const auto* flag = std::getenv("ADI_ZIP_BIG"); !flag || std::string_view(flag) != "1") return;
+    if (const auto* flag = envVar("ADI_ZIP_BIG"); !flag || std::string_view(flag) != "1") return;
     adi::test::TempDirectory tmp("zip_writer", "zip64");
     constexpr mz_uint64 size = (mz_uint64{1} << 32) + 123;
     const auto source = tmp.path() / "large";
@@ -196,7 +208,7 @@ void big() {
 int main() {
     std::setbuf(stdout, nullptr);
     try { roundtrip(); errors(); big();
-        if (const auto* flag = std::getenv("ADI_ZIP_BIG"); flag && std::string_view(flag) == "1") aggregateBig();
+        if (const auto* flag = envVar("ADI_ZIP_BIG"); flag && std::string_view(flag) == "1") aggregateBig();
     } catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

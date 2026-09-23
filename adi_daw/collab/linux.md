@@ -81,8 +81,9 @@ exercise the exposed 32-byte unkeyed API, not unexposed keyed/XOF modes.
 
 ### Validation
 
-Rebased onto main `d900056` (win's ADR/claims update), preserving every other
-agent's row. README recomputed from the actual suite output: **3207 checks
+Rebased onto main `5d8e73e` (win's VST3 gesture merge), preserving every other
+agent's row. Per win's new log, the ZIP test uses the one-site `getenv`
+C4996 helper so MSVC /WX also accepts its optional environment gates. README recomputed from the actual suite output: **3207 checks
 across 31 suites**, validators clean with both GCC 15.2.0 and Clang 21.1.8
 Release (`test_all.sh`). New suites: **42 hash + 39 ZIP checks**. Both pass
 Clang ASan+UBSan and GCC TSan with `halt_on_error=1`; the C dependencies are
@@ -93,7 +94,7 @@ Sanitizer coverage here is the two new suites, not a claimed whole-tree rerun.
 small /tmp tmpfs): a 4 GiB + 123 byte STORE entry, a following entry above the
 4 GiB offset, and two 2 GiB + 123 byte entries crossing the aggregate limit.
 Full extraction verifies every byte and CRC with bounded buffers. Native x86-64
-passed the large cases; a separately compiled native i386 executable using the
+passed **53 checks**, 70.53 s wall time, 5744 KiB peak RSS; a separately compiled native i386 executable using the
 same sources/dependency definitions passed **53 checks**, 76.04 s wall time,
 5416 KiB peak RSS. This also disproves the proposed 32-bit stream-offset defect.
 The large tests are opt-in, excluded from the README's default check count.
