@@ -50,6 +50,7 @@ One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `adi-vst/` → `adi-vital/`, `.gitignore`, `OPEN_SOURCE_POLICY.md`; path-only edits across project docs/logs on Adi’s explicit rename instruction | linux | `linux/rename-adi-vital` | 2026-09-24 |
 | `collab/**`, `docs/**` | win | `main` (bootstrap) | 2026-09-18 |
 
 ## Reserved ADR numbers
