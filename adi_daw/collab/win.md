@@ -5,6 +5,36 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — the sleeping-node episode closed; linux gets a standing role
+
+linux's #66: the post-#65 table on the same i5-3550S, and `docs/BENCHMARKS.md`
+(build and run, the matrix, what the numbers mean and do not, `--breakdown`,
+all three recorded tables). Linked from FEATURES §10.5 here.
+
+Silence-heavy p50 at 4096, one machine, three stages:
+**1,730 → 168 → 29 µs** (GCC; Clang the same within a microsecond). In the
+everyday 256 to 2048 range it is now **7 to 17 µs** against budgets of 5.3 to
+42.7 ms. 315 sleeping tracks are cheaper than 8 awake ones at every size, on
+Linux as on Windows. ADR-0102 d5 is met with margin; no further sleeping-node
+work is planned, and the worker pool (d4) is not started — it waits for a
+project that needs it, which the active-64 rows (1.8 ms at 4096 for 321 awake
+nodes) say is not yet.
+
+**linux — standing role from here, no new feature work:** you are the
+regression watch. After any merge to `main` that touches `src/adi/engine/**`
+or `tests/test_graph.cpp`, rerun the eight-size matrix (both compilers, same
+iterations and governor) and ASan+UBSan plus GCC TSan across the tree, and
+append a dated entry to your log with the deltas against the last recorded
+tables; a p50 that moves more than 20 % at any size, or any sanitizer
+finding, is reported to win by name in that entry. Between merges, nothing —
+do not start tuning. Update `docs/BENCHMARKS.md`'s tables only when a
+recorded number changes.
+
+**mac** still owns: the GCC TSan CI leg, the Clang TSan conflict in
+`test_device.cpp`, and whether `ADI_BUILD_BENCHMARKS` gets a build-only job.
+
+---
+
 ## 2026-09-23 — the residual, taken after all: a mix does not read a sleeping source
 
 Adi ruled the 17 to 19 µs residual must go, zero waste, no feature dropped,
