@@ -8052,3 +8052,194 @@ is recorded in the log by commit SHA.
 
 **Not decided:** nothing. The driver itself is still unscheduled work behind
 the first release's needs.
+
+
+---
+
+## ADR-0122 — Step 6 opens: the session runtime; the rows place devices, a missing plugin is a placeholder never a gap, a format change rebuilds and never reloads — `DECIDED` (2026-09-23) — **OPENS ROADMAP STEP 6**
+
+**Director's instruction:** "start step 6, the JUCE audio device and VST3
+hosting". Inventory before writing. Every part of step 6 turned out to exist
+as a piece: a `.adi` reads into `rows::Model` (ADR-0090's projection); a model
+plans into a graph (ADR-0077) that `GraphHost` publishes and replaces
+(ADR-0089, ADR-0092); `DeviceHost` holds plugin instances and answers their
+restart requests (ADR-0090); `Vst3Device` and `ClapDevice` are devices behind
+one contract (ADR-0057, ADR-0075); `DeviceBridge` turns a driver callback into
+`BlockProcessor::process` at the granted size (ADR-0049); the engine is
+measured from 32 to 4096 (ADR-0102, `docs/BENCHMARKS.md`). What did not exist
+was the object that owns all of them for the life of an open project and is
+the one thing a device callback talks to — and the device tables were not
+even in the row model. This ADR builds that object headless, so it runs on
+all seven ABIs, and leaves JUCE exactly two jobs: the callback and the loader.
+
+### What "done" means for step 6
+
+The roadmap row names five things. Each, with its state and what closes it:
+
+| Part | State | Closed by |
+|---|---|---|
+| audio device at the granted size | done before this ADR (ADR-0049, probe green on two platforms) | — |
+| the graph, live, from a `.adi` | **this ADR**: `engine::Session` | `adi_session_tests` on seven ABIs; `adi_play` playing a project on the Windows box |
+| VST3 hosting (ADR-0041, ADR-0057) | `Vst3Device` exists; nothing turns a `plugin_refs` row into one | `src/juce/juce_device_loader.*` behind `DeviceLoader`; a project with a real VST3 opens through `adi_play` and its state round-trips |
+| CLAP hosting (ADR-0075) | `ClapDevice` exists; same gap | same loader, same criterion |
+| 32 to 4096 samples (ADR-0042, ADR-0102) | measured; now exercised through the session at every size | done (`testBlockSizeChangesWithoutReload`) |
+| plugin parameter ops (ADR-0110) | not started | the portable capture layer (assigned to linux, decision 11) plus the VST3/CLAP glue (win) |
+
+Step 6 is **done** — not "verified"; ADR-0108's side-by-side gate begins at
+step 7 — when every row above is closed and `collab/win.md` records `adi_play`
+on one real project holding one VST3 and one CLAP, at two block sizes, with a
+parameter edit undone.
+
+### Decisions
+
+1. **The row model carries the device tables.** `rows::Model` gains
+   `pluginRefs`, `deviceChains`, `devices`, `pluginParams` and `pluginState`,
+   read inside the same transaction as everything else, ordered where a
+   consumer walks in order — chains by (track, ord, id), devices by (chain,
+   ord, id) — so a chain is a walk, not a sort. `plugin_state` carries the
+   **hash only**; the bytes come through `Store::getStateBlob` when a loader
+   wants them. The model is re-read after every edit (ADR-0090 d2), and a
+   sampler's state is not something to re-read on every edit.
+
+2. **`engine::Session` is the runtime, and it is portable.** It owns the
+   `GraphHost`, the `DeviceHost`, the model, the loader and the sources, and
+   it *is* a `BlockProcessor`: `prepare` rebuilds at the format the driver
+   granted, `process` renders through the published graph, `release` releases
+   the live graph's nodes. It lives in `src/adi/engine/` and compiles without
+   JUCE. JUCE contributes exactly two things, both injected:
+   `DeviceBridge(session)` — the callback — and a `DeviceLoader` that turns a
+   `plugin_refs` row into a `Vst3Device` or a `ClapDevice`. A session with no
+   loader is the headless case, and every row then becomes a placeholder.
+
+3. **The rows place devices; the host only holds them.** `DeviceHost::add`
+   takes a track id and `chainSupplier()` places by it — right for a probe,
+   wrong for a project, where a device's position is `devices.chain_id` and
+   `devices.ord` and an edit moves it without re-instantiating anything. So
+   every instance is added *unplaced* and the session answers
+   `RealizeOptions::devicesFor` from the rows, through a new optional
+   `RebuildSpec::devicesFor`; `chainSupplier()` stays for probes and for every
+   test of ADR-0090. Consequence: `Session::refresh` after an edit follows the
+   rows — a device inserted ahead of another by `ord`, moved, enabled — on the
+   same instances, with the loader asked only for rows it has not seen.
+
+4. **A plugin that will not load is a placeholder, and so is a row without a
+   reference or a session without a loader** (ADR-0011, SPEC §7.1). The
+   `MissingDevice` carries the mirrored `plugin_params` as its answers —
+   normalised and real — and keeps every `plugin_state` stream byte for byte;
+   its node is bypassed. A blob the project does not hold is a **named
+   problem**, never an empty state: saving an empty state would write a row
+   whose hash points at nothing, and that is how a corrupt project becomes a
+   corrupt project that validates. A row whose `missing` flag is set is still
+   offered to the loader — the flag records the last load, and the user may
+   have installed the plugin since.
+
+5. **State first; the mirror is the fallback, not a second pass.** For a
+   loaded instance every `plugin_state` role is offered through `loadState`;
+   the `plugin_params` mirror is applied **only when no role loaded**. A chunk
+   that loaded already carries every value the mirror has, and pushing the
+   mirror over it would fight a plugin whose parameters are derived from its
+   chunk — a sampler's zone count, a modular's patch. A role the plugin refuses
+   is named in `problems()`.
+
+6. **A format change is a rebuild, never a reload; the same format is a
+   no-op.** `prepare` at a new rate or block size builds and publishes a new
+   graph at that size; the same instances are re-injected and re-prepared
+   (ADR-0042 d5, honoured by ADR-0090 d5's guard, which makes the unchanged
+   ones free). `prepare` at the *same* format on a live graph does nothing: a
+   driver that stops and restarts unchanged — a device-list change, a
+   sleep/wake — must not cause a seam. `release` marks the session not live,
+   so the *next* `prepare`, even at the same format, does rebuild: the plugins
+   were released, and the guard would otherwise leave them so.
+
+7. **Sources are injected like devices.** `RealizeOptions::sourcesFor` (and
+   `RebuildSpec::sourcesFor`) supplies caller-owned nodes that are connected
+   *into* a track's junction, ahead of the chain, so `inputFor` is unchanged by
+   their presence and everything that feeds a track meets at one node
+   (ADR-0044). The clip reader — step 7's first engine piece — is a source; so
+   is a live input; so is the test tone `adi_play` uses. Same ownership rule
+   as devices: the nodes outlive every graph that holds them.
+
+8. **Racks are skipped, named and counted — never silently flattened.** A
+   rack device and everything in its nested chains stay out of the signal
+   path until ADR-0060's rack node exists. `stats().skipped` counts them and
+   `problems()` names each, because an instrument rack skipped is a silent
+   track and the problem list is how the user learns why.
+
+9. **A removed row retires its instance; it is not destroyed.** The instance
+   leaves every chain and is kept until the session closes, because a graph
+   the audio thread may still be rendering holds its node. A row that comes
+   *back* — an undone removal — finds its instance waiting, state and all,
+   which is the payoff: the undo restores the sound, not a fresh default.
+   Live destruction needs two things this ADR does not build and states
+   instead: free only after every graph that held the node has been collected
+   (the publisher's reclamation, one level out), and a removal API on
+   `DeviceHost`.
+
+10. **Two additive lines inside mac's claim, on the director's instruction.**
+    `RebuildSpec::devicesFor` and `RebuildSpec::sourcesFor` in
+    `src/juce/device_host.{hpp,cpp}`, unset by default, so every existing
+    caller behaves as before. Logged in `collab/win.md`; mac reviews on
+    return. The JUCE half of this step — `juce_device_loader.*` and
+    `play.cpp` — will be *new* files under `src/juce/`, not edits.
+
+11. **Plugin parameter ops (ADR-0110) split into a portable layer and a
+    glue.** The layer, `engine::ParamEditCapture`, is pure C++ with no plugin
+    SDK: a lock-free single-producer ring of `{device, parameter index, kind
+    Begin|Value|End, value}` fed from whichever thread the plugin chooses; a
+    message-thread `drain` that turns one gesture into one edit `{before,
+    after}` at gesture end (d2), keeps a last-known value per parameter so
+    `before` is always defined, swallows the echo of a host-initiated set
+    armed through `expectEcho` (d3, per parameter), coalesces unbracketed
+    values into one edit after a quiet window, and counts everything it drops,
+    swallows or invents. It is assigned to **linux** (the contract is in win's
+    log entry of this date). Turning an edit into a `device.setParam` op with
+    its inverse, and wiring `Vst3Device`'s listener and `ClapDevice`'s output
+    events to the ring, is the glue, and it is win's after the loader lands.
+
+### Verified non-vacuously
+
+Each defect below was planted, the affected suite rebuilt and run, and the
+named check watched fail; then the defect was removed.
+
+| Planted defect | Check that failed |
+|---|---|
+| `realize` ignores `sourcesFor` | junction, source, device, master (got 3 nodes); the tone never arrived |
+| the source edge reversed (junction → source) | the tone went THROUGH the device: 0.5 + 0.25 (got 0) |
+| `chainFor` answers in insertion order, not row order | Bass is New (ord 1) then Off (ord 5) — row order, not insertion order |
+| `prepare` at the same format rebuilds anyway | prepare at the SAME format publishes nothing |
+| a placeholder's node is not bypassed | and its node is bypassed |
+| the mirror applied on top of a loaded state | Warm's mirror was NOT applied on top of its state |
+| a returning row re-instantiated instead of un-retired | nothing retired now (a second instance was made, and the loader asked again) |
+| `release` leaves the session marked live | a prepare after release rebuilds |
+
+### Consequences
+
+- `adi_session_tests` (169 checks, no JUCE, all seven ABIs) and one more
+  realisation test; 25 suites.
+- FEATURES: "Change block size without reloading" is built at the engine;
+  a new row for the session. README: step 6 **in progress**, with this ADR.
+- Next, in order: PR B — `src/juce/juce_device_loader.*` (a `DeviceLoader`
+  over `Vst3Host` and `ClapHost`, matching `plugin_refs.format` + `uid`, then
+  `path_hint`) and `adi_play` (open a `.adi`, the default device at a
+  requested size, `--resize` mid-run to prove decision 6 by ear, `--tone` to
+  hear the chain, a report of what loaded, what stood in, and why); mac adds
+  `adi_play` to the JUCE CI job's build list on return (`.github/**` is
+  mac's). Then the ADR-0110 glue.
+
+### Not decided
+
+- A fade across a *format-change* swap. `GraphHost::setFadeFrames` is
+  persistent, and a fade that suits a swap where plugins genuinely re-prime
+  would then apply to every rebuild; a per-swap fade needs host support.
+- How a `plugin_refs` row comes to exist through the op log. `device.insert`
+  names one; no op creates one. Needed before step 7's "add a plugin".
+- Live destruction of a retired instance (decision 9).
+- Several `device_chains` rows directly on one track: SPEC §6.6 describes one
+  ordered list; the session concatenates them in `ord` order and names it.
+- `DeviceNode::setBypassed` and `setAlwaysProcess` are plain bools written on
+  the message thread while the audio thread reads them — benign on every
+  platform we build for, and not a memory-model guarantee. Mac's file; mac's
+  call whether they become atomics.
+- Whether `Session::refresh` is driven by the journal (an op whose
+  `EngineImpact` is `GraphRebuild` or `Snapshot`) rather than by the caller.
+  Step 7 decides, when there is a caller.

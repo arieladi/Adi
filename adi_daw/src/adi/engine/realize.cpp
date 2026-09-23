@@ -100,6 +100,21 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
         r->owned_.push_back(std::move(mix));
 
         NodeId tail = head;
+        // Sources first, so a track's own audio is an edge into the junction
+        // like every upstream track's (ADR-0044 sums them all there). Not
+        // owned: the same rule as devices, for the same reason.
+        if (opts.sourcesFor) {
+            const std::vector<Node*> sources = opts.sourcesFor(pn.trackId);
+            for (Node* s : sources) {
+                if (s == nullptr) {
+                    r->problems_.push_back(trackRef(pn.trackId) +
+                                           ": a null source was dropped");
+                    continue;
+                }
+                const NodeId id = r->graph_.addNode(*s);
+                r->graph_.connect(id, head);
+            }
+        }
         if (opts.devicesFor) {
             const std::vector<Node*> chain = opts.devicesFor(pn.trackId);
             for (Node* d : chain) {

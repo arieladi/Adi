@@ -140,6 +140,7 @@ add_library(adi_core STATIC
     src/adi/engine/latency.cpp
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
+    src/adi/engine/session.cpp
     src/adi/engine/mpe_input.cpp
     src/adi/engine/mpe_output.cpp
     src/adi/textproj.cpp
@@ -286,6 +287,14 @@ add_test(NAME adi_retap_tests COMMAND adi_retap_tests)
 add_executable(adi_realize_tests tests/test_realize.cpp)
 target_link_libraries(adi_realize_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
+
+# ADR-0122: a real .adi, loaded, its devices resolved, played through the
+# device contract at every block size. No JUCE, so it runs on all seven
+# ABIs; the JUCE half (adi_play) only has to prove a device callback
+# reaches it.
+add_executable(adi_session_tests tests/test_session.cpp)
+target_link_libraries(adi_session_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_session_tests COMMAND adi_session_tests)
 
 add_executable(adi_graph_tests tests/test_graph.cpp)
 target_link_libraries(adi_graph_tests PRIVATE adi_core adi_warnings)

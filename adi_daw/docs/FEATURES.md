@@ -135,7 +135,8 @@ Session window is the last step, not a way around that.
 | ~~AU / AUv3 (macOS)~~ | — | **no** | ✅ | **Ruled out** (ADR-0041). Not the hosting wrapper — JUCE ships one — but the registry-based discovery, `auval`, a third stream role and a macOS-only bug class around it. |
 | ~~VST2~~ | — | **no** | ✅ | **Ruled out** (ADR-0015): SDK unobtainable for years, and its terms were never GPL-compatible. Not recoverable. |
 | *Unhosted formats still open as placeholders* | — | **P0** | ✅ | `plugin_refs.format` still admits `au`, `auv3`, `vst2`. We do not host them; the format must still be able to say one was **there**, or a converter silently drops devices (ADR-0011, ADR-0041). |
-| **Missing-plugin preservation** | both | **P0** | ✅ | SPEC §7.1 — non-negotiable |
+| **Missing-plugin preservation** | both | **P0** | ✅ | SPEC §7.1 — non-negotiable. Live in the session: a plugin that will not load stands in as a placeholder carrying its parameter mirror and its state bytes, bypassed, in its place in the chain (ADR-0122 d4, d5) |
+| **A project, live: the session runtime** | — | **P0** | ✅ | `engine::Session` (ADR-0122): a `.adi` read, its device rows resolved through an injected loader, the graph published to the device callback. The rows place devices — an edit re-read follows `ord` on the same instances; a removed device retires rather than dies, and an undo finds it waiting. Sources (a clip reader, a tone) inject like devices. Headless, all seven ABIs; JUCE supplies only the callback and the loader. Racks are skipped and named until ADR-0060's node exists. |
 | **Plugin parameter edits inside the plugin's window are ops** (global Ctrl-Z) | neither | **P0** | ✅ | one gesture, one op; chunk snapshots for what is not a parameter (ADR-0110, amends ADR-0038) |
 | Racks: instrument / effect / drum | Ableton | P2 | ✅ | `device_chains` with key/vel/chain zones |
 | Macros with per-target range and **multi-breakpoint curve**, several mappings per target, per-macro enable | Ableton + | P2 | 🔶 | `macros`, `macro_mappings`; `curve` becomes a breakpoint BLOB (ADR-0114) |
@@ -144,7 +145,7 @@ Session window is the last step, not a way around that.
 | Plugin delay compensation | both | P0 | ✅ | `devices.latency_samples`. Reported in samples and **excludes** the device buffer — ADR-0042. |
 | 2048–4096-sample blocks, tested | — | **P0** | — | runtime. Dense chains, not low-latency tracking (ADR-0042). **4096 is the cap on every platform** and the granted size is the only one that exists (ADR-0049). |
 | Sub-block automation and MIDI accuracy | both | **P0** | ✅ | runtime. At 8192 a block is 171 ms; per-block updates would step audibly. The price of the row above (ADR-0042). |
-| Change block size without reloading | both | **P0** | — | runtime. At 8192 overdubbing is impossible, so moving between sizes mid-session is not optional (ADR-0042). |
+| Change block size without reloading | both | **P0** | — | runtime. At 8192 overdubbing is impossible, so moving between sizes mid-session is not optional (ADR-0042). **Built at the engine** (ADR-0122 d6): `Session::prepare` at a new size rebuilds the graph on the same instances, tested at every size from 32 to 4096; a same-format restart is a no-op. |
 | VST3 silence flags + tail-aware suspension | — | **P0** | ✅ | runtime; `devices.always_process` opts out (ADR-0043) |
 | Host-side modulation to any VST3 parameter | Bitwig | P1 | — | routing persists, output never does (ADR-0046) |
 | ~~Plugin sandboxing (crash isolation)~~ | Cubase | **no** | — | **Rejected** (ADR-0047). Not for IPC cost — that amortises over a 171 ms block and is cheapest here — but for latency and complexity. Affordable because a crash loses one gesture, not the session (ADR-0001). |

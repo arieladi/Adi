@@ -252,6 +252,20 @@ Store::getEventStream(std::int64_t clipId, const std::string& streamKind) const 
     }
 }
 
+std::optional<std::vector<std::byte>>
+Store::getStateBlob(const std::string& hashBlake3) const {
+    try {
+        SQLite::Statement st(*db_, "SELECT data FROM state_blobs WHERE hash_blake3 = ?");
+        st.bind(1, hashBlake3);
+        if (!st.executeStep()) return std::nullopt;
+        const auto col = st.getColumn(0);
+        return toBytes(col.getBlob(), static_cast<std::size_t>(col.getBytes()));
+    } catch (const SQLite::Exception& e) {
+        lastError_ = e.what();
+        return std::nullopt;
+    }
+}
+
 bool Store::putNoteExpression(std::int64_t clipId, std::uint64_t noteId, int dimension,
                               std::span<const std::byte> blob) {
     try {

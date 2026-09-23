@@ -125,6 +125,7 @@ subject, say so in your log instead of writing it twice.
 | 0119 | win | `agent/win-dev` | the driver's endpoint names and home (`drivers/`, MIT), and the SignPath preconditions; the director sends the form | used |
 | 0120 | win | `agent/win-dev` | the driver build workflow; sysvad is MS-PL not MIT, fetched never vendored; the licence ruling is the director's | used |
 | 0121 | win | `agent/win-dev` | MS-PL ruled acceptable under drivers/; policy row added | used |
+| 0122 | win | `win/step6-session` | step 6 opens: the session runtime -- rows place devices, placeholders never gaps, a format change rebuilds and never reloads; what "done" means for step 6 | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -146,6 +147,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
+| `src/adi/engine/session.*`, `tests/test_session.cpp`; two additive lines in `src/juce/device_host.{hpp,cpp}` (`RebuildSpec::devicesFor`, `::sourcesFor`) inside mac's area on the director's instruction to start step 6 (ADR-0122); later `src/juce/juce_device_loader.*` and `src/juce/play.cpp` as NEW files there | win | `win/step6-session` | 2026-09-23 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`
