@@ -26,8 +26,8 @@ below.
    `adi_daw/docs/OPS.md` §1 to §4.
 4. `OPEN_SOURCE_POLICY.md` at the repository root, and
    `adi_daw/docs/EXTERNAL-CODE.md`: what may be copied from where. `reference/`
-   is read-only; `reference/zrythm` and `reference/ZLEqualizer` are AGPL and
-   design-only.
+   is read-only; `reference/zrythm` and `reference/ZLEqualizer` are AGPL and,
+   since ADR-0138, copyable with attribution (the copying project becomes AGPLv3).
 
 ## Your role
 

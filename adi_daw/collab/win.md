@@ -5,6 +5,17 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — the AGPL ban lifted (ADR-0138)
+
+Adi asked why ZLEqualizer was refused when the DAW links JUCE, which is AGPL.
+There was no good answer: GPLv3 and AGPLv3 may be combined, AGPL's extra
+condition is about network services, and every JUCE build already carries it.
+Ruled: AGPL code may be copied; the copying project becomes AGPLv3. Policy and
+the six docs that repeated the old rule are updated. ZLEqualizer's code is now
+usable for the dynamic EQ; Zrythm's too, never its name.
+
+---
+
 ## 2026-09-24 — ASIO on Windows (ADR-0137)
 
 The Windows build had no ASIO (`JUCE_ASIO` never set). JUCE 9.0.2 bundles the

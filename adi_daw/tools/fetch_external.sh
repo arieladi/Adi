@@ -68,8 +68,8 @@ THIRD_PARTY=(
 
 # NOTE: helio is helio-fm/helio-sequencer, NOT Ahornberg/helio-workstation --
 # that fork has been stale since January 2022.
-# NOTE: zrythm is AGPL-3.0. Read it for design only; never copy code from it
-# into a GPLv3 project. See docs/EXTERNAL-CODE.md.
+# NOTE: zrythm is AGPL-3.0. Since ADR-0138 its code may be copied with
+# attribution, making the copying project AGPLv3. See docs/EXTERNAL-CODE.md.
 REFERENCE=(
   "Conceptual-Machines/magda-core         magda-core          GPL-3.0"
   "Tracktion/tracktion_engine             tracktion_engine    GPL-3.0-or-later/commercial"

@@ -9042,3 +9042,32 @@ DirectSound. For a DAW that is the low-latency gap, and nothing reported it.
 
 **Not decided:** whether the device settings page shows ASIO first on Windows
 (Live and Cubase do when a driver exists).
+
+
+---
+
+## ADR-0138 — The AGPL ban is lifted: AGPL code may be copied, and the copying project becomes AGPLv3 — `DECIDED` (2026-09-24) — **AMENDS ADR-0094 AND `OPEN_SOURCE_POLICY.md` §4**
+
+**Director's ruling.** "Lift the AGPL ban and update the policy." Adi had
+noticed the inconsistency: `adi_daw` links JUCE, which is AGPL-3.0, yet
+ZLEqualizer's code was refused for being AGPL.
+
+### Decisions
+
+1. **AGPL-3.0 joins the authorised licences** (`OPEN_SOURCE_POLICY.md` §3). Its
+   code may be copied, adapted and reused with its headers kept.
+2. **Escalation**: a project that copies AGPL code becomes AGPLv3 (§2), as one
+   that copies GPL code becomes GPLv3. The rule in one line: a project takes the
+   strictest licence of the code it copies. Nothing escalates before a copy.
+3. **Why it is safe**: GPLv3 §13 and AGPLv3 §13 permit the combination; AGPL's
+   extra condition applies to network services, which a desktop DAW is not; and
+   every JUCE build of `adi_daw` already carries it (ADR-0048).
+4. **Trademarks are separate**: Zrythm's §7 trademark notice still means its
+   name is never used.
+5. **Updated**: the policy (§2, §3, §4), `docs/EXTERNAL-CODE.md` (Zrythm and
+   ZLEqualizer rows, the Zrythm rule), `collab/README.md`,
+   `collab/linux/ONBOARDING.md`, the note in `tools/fetch_external.sh`, and the
+   dynamic-EQ row in FEATURES. Logs and earlier ADRs keep their history.
+
+**Not decided:** nothing. `adi_daw`'s own `LICENSE` stays GPLv3 until the first
+AGPL copy lands, and that PR changes it.

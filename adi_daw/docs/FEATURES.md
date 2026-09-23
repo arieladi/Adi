@@ -234,7 +234,7 @@ exists. Working titles only — shipped names are ours (ADR-0093 d4).
 
 | Goal | Form | P | Needs first |
 |---|---|---|---|
-| Dynamic EQ: matched phase, linear phase, per-band dynamics | CLAP | P3 | Plugin-line licence decided; matched phase from Vicanek (2016), not the AGPL reference |
+| Dynamic EQ: matched phase, linear phase, per-band dynamics | CLAP | P3 | Plugin-line licence decided; matched phase from Vicanek (2016); ZLEqualizer's code usable since ADR-0138, making the plugin AGPLv3 |
 | True-peak limiter: lookahead, oversampling, modes | CLAP | P3 | Plugin-line licence decided (the LSP maths is LGPL) |
 | Lookahead brickwall limiter, 1.5 / 3 / 6 ms | Pd | P3 | **A Pd patch able to declare its latency** (ADR-0035 has no such thing), and pinned DSP sort order |
 | Eight-band parametric EQ | Pd | P3 | Pd's inverted `biquad~` feedback signs; four biquads for a 48 dB/oct cut |
