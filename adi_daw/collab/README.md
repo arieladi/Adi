@@ -149,7 +149,7 @@ subject, say so in your log instead of writing it twice.
 | 0137 | win | `win/asio` | ASIO on Windows from the headers JUCE bundles, under GPL-3.0; the probe guards it | used |
 | 0138 | win | `win/lift-agpl-ban` | the AGPL ban is lifted: AGPL code may be copied, and the copying project becomes AGPLv3 | used |
 | 0139 | cloud | `cloud/remarks` | for a decision ADR-0131 (remarks) leaves open; mark used when written | reserved |
-| 0140 | cloud | `cloud/snapshots` | history snapshots live in `history_snapshots`: `snapshots` is already the mixer-snapshot table | reserved |
+| 0140 | cloud | `cloud/snapshots` | history snapshots live in `history_snapshots`: `snapshots` is already the mixer-snapshot table | used |
 | 0141 | win | `win/vst3-gesture` | a knob moved inside a real VST3's window is one op; the mute and the echo guard each have their case | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in

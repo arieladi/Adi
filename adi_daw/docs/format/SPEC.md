@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1002;          -- schema 1.2
+PRAGMA user_version   = 1003;          -- schema 1.3
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -663,7 +663,8 @@ the difference between the agent being usable and being frightening.
 An unbounded op log grows without limit. Policy is stored in the project
 (`adi_meta`): keep at most N ops or M days, whichever is larger, with a default
 of 10,000 / 90 days. Compaction squashes the tail into a checkpoint and MUST NOT
-cross a branch point that is still reachable from a named branch.
+cross a branch point that is still reachable from a named branch, nor drop an
+op that a history snapshot names (§8.6).
 
 ### 8.4 UI and session state
 
@@ -683,6 +684,35 @@ scale) per binding. Project-scoped rather than global, because a template for
 orchestral mockups and one for a club track want different mappings, and because
 a project handed to a collaborator should arrive with its controller layout
 intact.
+
+### 8.6 History snapshots (schema 1.3)
+
+```sql
+history_snapshots(id, name, op_seq, branch_id, created_utc, auto)
+```
+
+A history snapshot is **a name on a point in the log** (ADR-0128). It copies
+nothing. `op_seq` is the head when it was taken (NULL: the root, before any op),
+and `branch_id` records the branch that was current then. `branch_id` is a
+record, not a pointer: a later fork can leave that branch holding another line,
+and `op_seq` is what a revert follows (ADR-0140). This is not the `snapshots`
+table, which holds mixer snapshots and track versions (Layer 1, OPS.md §9.9).
+
+- **Revert never discards.** It moves the head to the snapshot's point by
+  rewinding to the common ancestor and replaying forward, in one transaction,
+  on the same branch or across branches. Whatever the head's line held beyond
+  that point MUST stay reachable. If no other branch holds its tip and redo from
+  the snapshot's point does not lead there, the writer creates a branch for it,
+  named `before revert to '<name>'`.
+- **Metadata, not ops** (ADR-0128 d5). Taking, renaming and reverting append no
+  op row and are not undoable. The replay digest does not cover the table.
+- **The automatic name** is `<Project Name> <YYYY-MM-DD HH:MM>` in local time,
+  "Untitled" for an unnamed project. The time and the local offset are supplied
+  by the caller. A writer MUST NOT stamp `created_utc` from inside the history
+  layer, so that tests and replays are exact.
+
+A file older than 1.3 has no `history_snapshots` table; a 1.3 reader treats that
+as "no snapshots".
 
 ---
 

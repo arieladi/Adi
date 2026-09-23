@@ -125,7 +125,7 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 39> kTables{{
+    static constexpr std::array<TableCoverage, 40> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
@@ -150,6 +150,7 @@ std::span<const TableCoverage> coverage() {
         {"session_lock", Coverage::Excluded, "Layer 3"},
         {"controller_maps", Coverage::Excluded, "Layer 3"},
         {"snapshots", Coverage::Excluded, "Layer 3"},
+        {"history_snapshots", Coverage::Excluded, "Layer 3: history metadata, like op_branches (ADR-0128)"},
         {"adi_meta", Coverage::Excluded, "Layer 0 bookkeeping, not project content"},
         {"remarks", Coverage::Excluded, "ADR-0131: not yet projected -- needs a rows::Model field and a node syntax; the replay digest covers them meanwhile"},
 

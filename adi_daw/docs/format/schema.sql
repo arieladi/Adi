@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1002;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1003;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '2'),
+    ('schema_minor',        '3'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -744,6 +744,31 @@ INSERT INTO op_branches(id, name, head_seq, created_utc, is_current, created_by)
 -- the failure would surface much later, as the wrong history (ADR-0026).
 CREATE UNIQUE INDEX idx_branch_current ON op_branches(is_current)
     WHERE is_current = 1;
+
+-- History snapshots (ADR-0128, schema 1.3): a NAME ON A POINT in the op log.
+-- A row copies nothing -- the log already is the history (ADR-0030) and
+-- already branches -- so taking one costs a row, and reverting to one moves the
+-- head there and leaves everything after it reachable as a branch (SPEC 8.6).
+--
+-- Named history_snapshots, not `snapshots`: that table is Cubase's mixer
+-- snapshots and track versions (below), a different thing that a 1.2 reader
+-- already knows by that name (ADR-0140).
+--
+-- History metadata, NOT an op (ADR-0128 d5): taking, renaming and reverting
+-- are not undoable, because an op that renamed history would be history.
+CREATE TABLE history_snapshots (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT    NOT NULL CHECK (length(name) > 0),
+    -- The point: the head when it was taken. NULL is the root, before any op.
+    op_seq       INTEGER REFERENCES ops(seq),
+    -- The branch that was current when it was taken. A record, not a pointer:
+    -- op_seq is what a revert follows, and a later fork can leave this branch
+    -- holding a different line (ADR-0140).
+    branch_id    INTEGER NOT NULL REFERENCES op_branches(id),
+    created_utc  INTEGER NOT NULL,   -- passed in by the caller, never a clock read
+    auto         INTEGER NOT NULL DEFAULT 0 CHECK (auto IN (0,1))
+) STRICT;
+CREATE INDEX idx_hsnap_seq ON history_snapshots(op_seq);
 
 -- ============================================================================
 --  LAYER 3 — SESSION: UI, windows, controllers, snapshots

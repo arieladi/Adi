@@ -10,6 +10,66 @@ so nothing is left unpushed.
 
 ---
 
+## 2026-09-24 — history snapshots: schema 1.3 (ADR-0128, ADR-0140)
+
+Branch `cloud/snapshots`, stacked on `cloud/remarks` and rebased onto main
+once it merged.
+
+**What landed.** Schema 1.3 adds a STRICT `history_snapshots` table: `id, name
+(non-empty), op_seq (NULL = the root), branch_id -> op_branches, created_utc,
+auto`. It is not named `snapshots`, because that table has held mixer
+snapshots and track versions since 1.0, and a minor bump cannot change its
+shape. That is **ADR-0140**, the one decision ADR-0128 left open that needed a
+number. `History` gains `takeSnapshot`, `renameSnapshot`, `listSnapshots`,
+`revertToSnapshot` and `defaultSnapshotName`. Every time is an argument: the
+snapshot's time, the local offset for the automatic name, and the time on the
+preserved branch. The date comes from Hinnant's `civil_from_days`, not from
+`localtime`. SPEC §8.6 is new, and §8.3 now says compaction must not drop a
+snapshot's point. The replay digest and the text projection exclude the
+table, as they exclude `op_branches`. `validate_schema` 5j checks it.
+
+**Revert never discards.** The rewind to the common ancestor and the replay
+forward happen in one transaction, so a revert works across branches. That
+machinery replaced `switchToBranch`'s refusal to cross diverged branches, and
+the tests use `switchToBranch` to actually reach what a revert kept. A branch
+`before revert to '<name>'` is created only when the head's line would
+otherwise be unreachable. When the snapshot is an ancestor on the same line,
+that line is the redo line, and the next edit forks it exactly as after an
+undo. That means no duplicate branch rows.
+
+**Tests.** `adi_snapshots_tests` (new, 65 checks); validate_schema 5j (6 rows).
+Tree: 3256 checks across 31 suites.
+
+**Plants, eight, all fired** (each reverted after):
+
+| # | Defect planted | Failing check |
+|---|---|---|
+| S1 | revert never creates the preserved branch | `C's line was kept, by the revert itself`; `and is reachable: A,C again: A,B` |
+| S2 | preserve even when redo already reaches the tip | `no branch yet: the line is exactly where redo from here leads`; `exactly one branch holds B's line, saw 2` |
+| S3 | the common ancestor ignored (rewind everything, replay nothing) | `A,B: C rewound, B replayed: ` (empty) |
+| S4 | the caller's UTC offset ignored | `the caller's offset is applied (+03:00): My Song 2026-09-24 12:34` |
+| S5 | minutes truncated rather than floored | `before the epoch, floored not truncated: X 1970-01-01 00:00` |
+| S6 | a snapshot records the root, not the head | `the second names the head, on the current branch`; `byte for byte, by the replay digest` |
+| S7 | revert's transaction removed | `the project is untouched: A,B` (C's rewind survived the failure) |
+| S8 | schema: `branch_id`'s foreign key removed | validator `history_snapshots accepted a branch that does not exist` |
+
+My first draft of the revert test expected the preserved branch immediately
+after reverting to a same-line ancestor. The code was right and the test was
+wrong: until the next edit, that line is the redo line. The branch-naming
+assertion moved to the cross-branch test, where the revert itself has to
+create the branch.
+
+**Outside the listed paths.** `digest.cpp`/`.hpp` (one exclusion and its
+comment), `DECISIONS.md` (ADR-0140 only), `CMakeLists.txt` (one target),
+README counts.
+
+**Not done.** ADR-0139 stays reserved and unused: remarks needed no decision
+beyond ADR-0131 and the assignment. No automatic snapshots (ADR-0128 defers
+them), no compaction (it doesn't exist yet), no "open read-only" tab (d3,
+UI work), and no History window (d6).
+
+---
+
 ## 2026-09-24 — remarks: schema 1.2 (ADR-0131 d2-d5)
 
 Branch `cloud/remarks`, my first. Joined the roster (four agents now) on

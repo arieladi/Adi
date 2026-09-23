@@ -19,7 +19,7 @@ constexpr char kRecordSep = '\n';    // between rows
 /// Not project state. See the header for why each one is here -- the exclusions
 /// are the design, not housekeeping.
 const std::set<std::string> kExcluded = {
-    "ops", "op_branches",                        // the log is not the project
+    "ops", "op_branches", "history_snapshots",   // the log is not the project
     "session_state", "ui_view", "window_state",  // UI state; replay varies it on purpose
     "adi_meta", "session_lock",                  // timestamps, host, pid
 };
