@@ -8,6 +8,69 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-23 — after #65: accumulate skips sleeping sources; benchmark guide
+
+Branch `linux/benchmark-guide`, measured **main `e4c3b00`**. Claimed exactly
+`docs/BENCHMARKS.md`, the one new docs file granted in #64. No benchmark,
+engine, test, CMake, workflow or other documentation edits. Links from FEATURES
+and the master reference remain win's assignment.
+
+Same Intel Core i5-3550S, Ubuntu 26.04.1, GCC 15.2.0 / Clang 21.1.8 Release
+(`-O3 -DNDEBUG`), JUCE off; **schedutil on all four CPUs**, checked before and
+after. **2,000 measured callbacks after 32 warmups per project/size**, 48 kHz
+stereo. Both builds completed first, then GCC control/breakdown followed by
+Clang control/breakdown, with no concurrent build/test workload and no affinity
+or priority changes. Benchmark source and commands are unchanged.
+
+New ordinary silence-heavy rows, beside the before-#60 (#59) and after-#60
+(#63) measurements:
+
+| Compiler | Frames | Before #60 p50 | After #60 p50 | After #65 p50 | New p99 | New max | Deadline misses |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| gcc | 32 | 13.296 | 8.138 | 6.815 | 17.158 | 29.172 | 0 |
+| gcc | 64 | 18.599 | 9.204 | 6.844 | 18.026 | 33.218 | 0 |
+| gcc | 128 | 30.451 | 11.426 | 6.693 | 17.060 | 32.916 | 0 |
+| gcc | 256 | — | 15.767 | 7.218 | 18.138 | 40.911 | 0 |
+| gcc | 512 | — | 23.168 | 8.254 | 19.400 | 44.719 | 0 |
+| gcc | 1024 | — | 36.761 | 10.891 | 23.182 | 42.985 | 0 |
+| gcc | 2048 | 604.085 | 72.922 | 16.997 | 36.594 | 79.059 | 0 |
+| gcc | 4096 | 1729.522 | 168.191 | 29.359 | 53.357 | 67.332 | 0 |
+| clang | 32 | 14.211 | 8.065 | 7.294 | 17.258 | 101.436 | 0 |
+| clang | 64 | 18.983 | 9.184 | 7.416 | 17.901 | 25.367 | 0 |
+| clang | 128 | 30.680 | 10.571 | 7.619 | 19.010 | 41.191 | 0 |
+| clang | 256 | — | 15.562 | 8.295 | 19.410 | 99.596 | 0 |
+| clang | 512 | — | 22.311 | 9.303 | 20.535 | 88.450 | 0 |
+| clang | 1024 | — | 35.633 | 11.556 | 24.766 | 65.859 | 0 |
+| clang | 2048 | 660.180 | 68.857 | 16.416 | 31.104 | 69.892 | 0 |
+| clang | 4096 | 1792.442 | 167.182 | 29.486 | 51.570 | 113.213 | 0 |
+
+All times are µs; dashes mean unmeasured. At 4096, #65 reduces p50 by
+**138.832 µs (GCC)** and **137.696 µs (Clang)** versus the previous table,
+about **82%**. Everyday 256–2048 now measures **7.218–16.997 µs (GCC)** /
+**8.295–16.416 µs (Clang)**. These are whole-callback measurements: no isolated
+per-sleeping-node cost is inferred by dividing by the 315 sleeping nodes.
+No misses, event drops or rejected events in the sixteen new ordinary rows.
+All measured breakdown callbacks still report **6 processed / 315 skipped**;
+those are node counts, not `inputsSkipped` edge counts, which this unchanged
+CSV does not export. No hook added.
+
+`docs/BENCHMARKS.md` now documents reproducible GCC/Clang builds and runs,
+the eight-size matrix, the three primary projects plus active-64 control,
+quantile/deadline definitions, measurement boundaries, full CSV field meanings,
+`--breakdown`, and all three historical tables with machine/governor metadata.
+It explicitly distinguishes synthetic deadline misses from device xruns and
+makes no Ableton comparison. Missing historical sizes remain missing.
+
+Validation: both benchmark self-tests pass; each compiler emits 32 unique
+ordinary project/size rows and 32,000 breakdown rows. After sampling,
+`test_all.sh` passes **2,289 checks / 24 suites**, validators clean, in
+**2.94 s for each compiler**. Guide tables are copied from the recorded CSVs;
+relative links and command options are checked against the repository/CLI.
+The docs claim is removed in the final pre-merge commit. After green CI and
+merge, stop here awaiting win/Adi; no additional engine work started.
+
+---
+
 ## 2026-09-23 — everyday buffer sizes become standing benchmark rows
 
 Branch `linux/everyday-blocks`, based on **main `54947a0`** (Adi's note in
