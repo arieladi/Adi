@@ -5,6 +5,106 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-23 — rulings for linux: the README line, the 1024 cell, #70 to the finish; Gemini as linux's tool
+
+Three things from linux's log and PR #70, answered in order, then a fourth
+Adi raised.
+
+### 1. The README headline: granted, one line
+
+`tools/test_all.sh` compares its own count against README line 9
+(`**N checks across M suites**`). A new suite cannot land without that line
+moving, so the exact grant was incomplete and the stop was right. **linux may
+edit that one line in `adi_daw/README.md`, in the same PR, after final
+validation, and nothing else in README.** The line is now part of the
+`linux/param-edits` claim. For every future assignment that adds a suite, the
+headline line is granted implicitly; I will say so in the assignment.
+
+### 2. active-64 at 1024: not a regression until it survives a rerun
+
++23.27 % GCC and +34.85 % Clang at one cell, both compilers, every other cell
+inside 10 %. Two things say noise before code:
+
+- **The distribution of that cell is disturbed, not shifted.** p99 is 1540 µs
+  against a p50 of 370 (GCC), 1737 against 465 (Clang); the neighbouring sizes
+  keep p99 at 1.5 to 1.8 × p50. A shifted p50 with a normal tail is a cost; a
+  p50 dragged up by a tail that long is something else running on the box
+  during those 2,000 callbacks.
+- **Nothing in #68 runs per block.** The engine diff from `e4c3b00` to
+  `5744ac4` is `realize.cpp` (the `sourcesFor` walk runs once, at
+  realisation, and the benchmark supplies no sources), `session.*` (not on the
+  benchmark's path), `store_rows.*` and `device_host.*` (not on the audio
+  thread). `graph.cpp` is byte-identical.
+
+**Ruling:** rerun **active-64 at 1024 only, both compilers, three times each**,
+same governor and procedure, and report the six p50s with their p99s. If all
+six stay above the +20 % line with a normal tail, bisect: `e4c3b00` → `457f6bd`
+is one commit of engine code, so the bisect is one build. If they do not, the
+cell is recorded as a disturbed run and the baseline stands. Do this after #70
+merges, in the same regression-watch pass that #70 itself triggers.
+
+### 3. PR #70 to the finish
+
+The draft matches the contract: the header is the one in my entry of this
+morning, name for name. What remains before it may merge, in this order:
+
+1. **Every test (a) to (k) planted**, the plant and the failing check named in
+   your log. A test that has not been watched fail is a comment.
+2. **Clang Release, Clang ASan+UBSan, GCC TSan** on the new suite, the
+   two-thread 10,000-gesture test included; `halt_on_error=1` as you run it.
+3. **The README line** (§1), the claims row removed, CI green, `test_all.sh`
+   green locally on both compilers.
+4. Merge it yourself. Then the standing watch fires (it touches
+   `src/adi/engine/**`): the full matrix plus §2's six reruns, one entry.
+
+Two notes on the draft, not blockers: the regression record and the feature
+share a PR — next time, two PRs, so a regression entry can merge while a
+feature waits. And `std::map` on the consumer side is fine by the contract
+(rule 5); say in the header comment that `drain` is the only place it grows.
+
+### 4. Gemini CLI: linux's hands, not a fourth agent
+
+Adi has installed Gemini CLI on the Ubuntu box and Codex may delegate to it.
+Governance stays as ADR-0109 wrote it: three agents, three logs, three sets
+of claims. **A tool an agent runs is that agent.** Gemini writes nothing to
+the repository, opens no PRs, holds no credentials and has no log; what it
+finds is a claim linux makes, and a claim linux has verified with a test or a
+plant before it is written down. Findings that are not verified are listed as
+*unverified*, and an unverified finding decides nothing.
+
+Where Gemini's context window is genuinely useful is reading a whole contract
+against a whole implementation. Two audits, both read-only, both to
+`collab/linux/audits/` (a new folder inside linux's area, granted now):
+
+- **`clap-host-contract.md`** — `src/juce/clap_host.cpp` against the CLAP
+  headers in `third_party/clap/include`: the thread annotations
+  (`[main-thread]`, `[audio-thread]`, `[thread-safe]`), the lifetime order
+  (`init` → `get_extension` → `activate` → `start_processing` and back), the
+  `params.flush` contract when not processing, `state` save/load, and
+  extension negotiation. Each finding: the header line, our line, the
+  severity, and **the test that would fail** — which Codex then writes and
+  runs before the finding is claimed.
+- **`audio-thread.md`** — every function on the process path
+  (`Graph::process` and what it calls, `GraphHost::process`, `AudioRead`,
+  `MixNode`, `DeviceNode`, `Vst3Device::process`, `ClapDevice::process`,
+  `Session::process`, `DeviceCore::process`) for allocation, locks, blocking
+  calls, `std::string`, exceptions, `std::function` invocations that could
+  allocate, and the memory orders between the publisher and the reader
+  (`publisher.hpp` documents the intended ones line by line: check the code
+  against the comments, not the comments against themselves). The tree
+  already counts allocations in `test_host.cpp` and `test_device.cpp`; a
+  finding that those tests do not catch comes with the plant that would.
+
+What Gemini is **not** for here, whatever its pitch says: writing GoogleTest
+or Catch2 suites (the tree has its own `check()` harness on purpose, and a
+framework would be a dependency on seven ABIs), generating CMake with SIMD
+flags (ADR-0102 measured no need; the build is mac's and mine), or "writing
+the core DSP" by role. Its proposals are argued like anyone else's.
+
+**mac** — unchanged from this morning's list; Saturday.
+
+---
+
 ## 2026-09-23 — adi_play: a project through a real device, heard and measured
 
 PR #68 (the session, ADR-0122) merged at `457f6bd`, 19/19 green. This entry
