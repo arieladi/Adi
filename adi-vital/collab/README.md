@@ -1,6 +1,6 @@
 # Working in parallel — two Claude agents, one project
 
-Two Claude Code agents work on `adi-vst`, on different machines and different
+Two Claude Code agents work on `adi-vital`, on different machines and different
 accounts, synced only through git. This file is the protocol. Read it before
 your first commit, and re-read it if you have been away.
 
@@ -78,9 +78,9 @@ agents writing the same ADR; reading the other agent's subject does.
 
 ```bash
 git -C <Adi repo> checkout main && git pull
-cat adi-vst/collab/README.md      # claims may have changed
-cat adi-vst/collab/<other>.md     # what they did since you last looked
-cat adi-vst/docs/DECISIONS.md     # settled questions; do not re-litigate
+cat adi-vital/collab/README.md      # claims may have changed
+cat adi-vital/collab/<other>.md     # what they did since you last looked
+cat adi-vital/docs/DECISIONS.md     # settled questions; do not re-litigate
 ```
 
 `ARCHITECTURE.md` is the how-it-works reference. `docs/DECISIONS.md` is the
@@ -90,13 +90,13 @@ load-bearing and the reason is written down.
 
 ## Repo topology — read this before cloning
 
-`adi-vst/` is a project directory in the `arieladi/Adi` monorepo, exactly like
+`adi-vital/` is a project directory in the `arieladi/Adi` monorepo, exactly like
 `adi_daw/` (ADR-0015). One repo, one clone, public.
 
 ```
 arieladi/Adi
 ├── adi_daw/            the DAW — a DIFFERENT project
-└── adi-vst/            this project
+└── adi-vital/            this project
     ├── ARCHITECTURE.md
     ├── docs/DECISIONS.md
     ├── collab/
@@ -109,8 +109,8 @@ out of the monorepo because vendoring it would lose `git diff upstream/main`,
 currently the only thing that tells us what we have actually forked. (Size is
 not the reason: the working tree is ~180 MB but the packed repo is 31.5 MiB.)
 
-**The fork lives at `arieladi/adi-vst-synth` (public, GPLv3)** — ADR-0016. Clone
-it into `adi-vst/vital`; it carries both `origin` (ours) and `upstream`
+**The fork lives at `arieladi/adi-vital` (public, GPLv3)** — ADR-0016. Clone
+it into `adi-vital/vital`; it carries both `origin` (ours) and `upstream`
 (mtytel), so `git diff upstream/main` shows the whole fork delta. `mac` is no
 longer blocked on the C++.
 
@@ -123,7 +123,7 @@ deliberate and stops it becoming a stray gitlink.
 by different sessions. Separation here is a **working practice**, not a
 structure, so it has to be kept deliberately:
 
-- **Touch only `adi-vst/**`.** Never edit, stage or revert anything under
+- **Touch only `adi-vital/**`.** Never edit, stage or revert anything under
   `adi_daw/`, even to "fix" something obvious. Raise it instead.
 - **Stage explicit paths.** Never `git add -A` or `git add .` — the monorepo
   routinely holds other people's untracked work in progress.
@@ -147,11 +147,11 @@ staged and so could not be recovered — see ADR-0014 and ADR-0015.
 $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
 
 # standalone — the primary development target
-& $msbuild adi-vst\vital\standalone\builds\vs19\Vial.sln `
+& $msbuild adi-vital\vital\standalone\builds\vs19\Vial.sln `
     /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /m
 
 # VST3 plugin
-& $msbuild adi-vst\vital\plugin\builds\vs19\Vial.sln `
+& $msbuild adi-vital\vital\plugin\builds\vs19\Vial.sln `
     /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /m
 ```
 
@@ -182,7 +182,7 @@ A branch is ready to merge when:
 
 - it builds on your platform,
 - `VitalValidator` passes against the built VST3 (win) — 15/15 is the baseline,
-- `python adi-vst/tools/extract_schema.py` still reports 794 parameters,
+- `python adi-vital/tools/extract_schema.py` still reports 794 parameters,
   0 unresolved, if you touched anything under `vital/src/common/`,
 - any decision you made is a new ADR in `docs/DECISIONS.md`,
 - you have appended an entry to your own log file,
@@ -199,7 +199,7 @@ A branch is ready to merge when:
   "Vital", "Vital Audio" or "Tytel" to name a distribution built from this
   source, and forbids connecting to vital.audio. The build is already named
   "Vial" upstream — that is Tytel's own trademark-stripped name, not a typo.
-- **Keep the fork delta small and legible.** `git -C adi-vst/vital diff
+- **Keep the fork delta small and legible.** `git -C adi-vital/vital diff
   upstream/main --stat` should stay something a human can read. Prefer adding
   files over editing Vital's, and prefer one small edit at a seam over a
   refactor.

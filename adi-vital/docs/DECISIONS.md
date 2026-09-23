@@ -346,7 +346,7 @@ happened to be on `adi_daw`'s active branch, moving that branch's pointer and
 **destroying uncommitted work** in `adi_daw/src/adi/engine/graph.hpp` that had
 never been staged and was therefore unrecoverable.
 
-**Decision.** `adi-vst` is its own git repository, in its own working directory,
+**Decision.** `adi-vital` is its own git repository, in its own working directory,
 with its own branches. Not a directory in the monorepo, not a submodule, not a
 worktree of it. `VST-ADI/` is removed from `arieladi/Adi`.
 
@@ -380,7 +380,7 @@ failures above came from combining the check and the action in one command.
 
 ---
 
-## ADR-0015 — Supersedes ADR-0014: `adi-vst` stays in the monorepo
+## ADR-0015 — Supersedes ADR-0014: `adi-vital` stays in the monorepo
 
 **Date:** 2026-09-20 · **Agent:** win · **Supersedes:** ADR-0014
 
@@ -402,7 +402,7 @@ fine there; the ask was "stop interfering with adi_daw's files", not "leave the
 repo". The split made the project **private**, which cut `mac` off from work they
 were meant to be able to do, and broke the symmetry with `adi_daw` for no gain.
 
-**Decision.** `adi-vst/` is a project directory in `arieladi/Adi`, alongside
+**Decision.** `adi-vital/` is a project directory in `arieladi/Adi`, alongside
 `adi_daw/`. Same repository, same clone, same public visibility. The separation
 between the two projects is one of **scope and session**, not of repository:
 separate Claude sessions, separate ADR logs, separate collab protocols, and a
@@ -411,9 +411,9 @@ hard rule that work on one never touches the other's files.
 The standalone `arieladi/adi-vst` repository created under ADR-0014 is redundant
 and is to be deleted.
 
-**Consequences.** `vital/` moves back to `adi-vst/vital`, still its own repo with
+**Consequences.** `vital/` moves back to `adi-vital/vital`, still its own repo with
 its `upstream` remote, still gitignored by the monorepo (ADR-0001 unchanged).
-Documentation paths return to monorepo-root-relative (`adi-vst/tools/...`),
+Documentation paths return to monorepo-root-relative (`adi-vital/tools/...`),
 matching `adi_daw`'s convention.
 
 ADR-0014 is left in place unedited, including its reasoning, because the log is
@@ -432,11 +432,11 @@ what the person actually asked for before escalating the remedy.
 
 ---
 
-## ADR-0016 — Resolves ADR-0011: the fork's origin is public `arieladi/adi-vst-synth`
+## ADR-0016 — Resolves ADR-0011: the fork's origin is public `arieladi/adi-vital`
 
 **Date:** 2026-09-20 · **Agent:** win · **Resolves:** ADR-0011
 
-**Context.** ADR-0011 left open where `adi-vst/vital` would get an `origin`. Until
+**Context.** ADR-0011 left open where `adi-vital/vital` would get an `origin`. Until
 it had one there was nowhere to push the fork, so `mac` could not clone the C++
 at all and was limited to backend work, tooling and review.
 
@@ -454,7 +454,7 @@ back, and checking rather than asserting showed the reasoning did not hold:
   any **distribution of binaries** built with this source" — it is about what a
   build is called and how it is marketed, not about repository visibility.
 
-**Decision.** `arieladi/adi-vst-synth`, **public**, GPLv3. Both branches pushed:
+**Decision.** `arieladi/adi-vital`, **public**, GPLv3. Both branches pushed:
 `main` (mirroring `upstream/main`) and `ai-preset-generator` (our work). The fork
 keeps both remotes, so `git diff upstream/main` still works and upstream changes
 can still be pulled.
@@ -483,7 +483,7 @@ the constraint actually says before escalating the remedy.
 
 ---
 
-## ADR-0017 — `adi-vst` ships VST3 only; CLAP is dropped from this repo's mandate
+## ADR-0017 — `adi-vital` ships VST3 only; CLAP is dropped from this repo's mandate
 
 **Date:** 2026-09-20 · **Agent:** mac · **Directed by:** Adi
 
@@ -504,7 +504,7 @@ second build system. The alternative, upgrading JUCE, is ruled out by ADR-0003:
 the vendored JUCE is patched in 39 files and Vital's DSP does not compile against
 stock JUCE.
 
-**Decision.** CLAP is **dropped** from `adi-vst`. The sole plugin target for this
+**Decision.** CLAP is **dropped** from `adi-vital`. The sole plugin target for this
 repository is the **macOS and Windows VST3**. Do not upgrade JUCE and do not
 patch the audio plugin wrappers to force CLAP support.
 
@@ -516,7 +516,7 @@ shipping targets — note that `plugin/vital.jucer` still has `buildAU="1"`,
 `buildAUv3="1"` and `buildStandalone="1"`, so the `All` target still builds them;
 turning those off is a pending `.jucer` edit, not a completed one.
 
-This decision is scoped to `adi-vst`. **`adi_daw`, as a host, is still intended
+This decision is scoped to `adi-vital`. **`adi_daw`, as a host, is still intended
 to support loading CLAP plugins** — hosting a format and exporting one are
 unrelated capabilities, and ADR-0041 over there ("Hosting is not identity")
 already reasons this way. Nothing here constrains that.

@@ -1,4 +1,4 @@
-# adi-vst — Architecture
+# adi-vital — Architecture
 
 Working notes for the AI-powered music production tools. Living document: update
 it when a decision changes, don't let it drift.
@@ -23,13 +23,13 @@ most of the odd things are load-bearing and the reason is written down.
 
 ## 1. Repository layout
 
-`adi-vst/` is a project directory in the `arieladi/Adi` monorepo, alongside
+`adi-vital/` is a project directory in the `arieladi/Adi` monorepo, alongside
 `adi_daw/` — same arrangement, same repo, same public visibility (ADR-0015).
 
 ```
 arieladi/Adi                 the monorepo
 ├── adi_daw/                 the DAW — a DIFFERENT project, do not touch
-└── adi-vst/                 this project
+└── adi-vital/                 this project
     ├── ARCHITECTURE.md      this file
     ├── docs/DECISIONS.md    append-only ADR log
     ├── collab/              two-agent protocol + per-agent logs
@@ -42,8 +42,8 @@ arieladi/Adi                 the monorepo
 ```
 
 **The two projects share a repo and a working tree, so separation is a working
-practice, not a structure** (ADR-0015). Work on `adi-vst` in its own session,
-touch only `adi-vst/**`, and never run a destructive git command without first
+practice, not a structure** (ADR-0015). Work on `adi-vital` in its own session,
+touch only `adi-vital/**`, and never run a destructive git command without first
 checking `git status` and `git branch --show-current` as a separate step. That
 rule exists because ignoring it destroyed unstaged `adi_daw` work once already.
 
@@ -51,7 +51,7 @@ rule exists because ignoring it destroyed unstaged `adi_daw` work once already.
 `.gitignore`). It has an `upstream` remote, so the entire fork delta is always:
 
 ```bash
-git -C adi-vst/vital diff upstream/main --stat
+git -C adi-vital/vital diff upstream/main --stat
 ```
 
 - `main` — clean mirror of `upstream/main` (currently `636ca0e`). Never commit here.
@@ -171,7 +171,7 @@ $cmake = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\Co
 & $cmake -S tools\validator -B tools\validator\build -G "Visual Studio 17 2022" -A x64
 & $cmake --build tools\validator\build --config Release --parallel
 
-adi-vst\tools\validator\build\VitalValidator_artefacts\Release\VitalValidator.exe `
+adi-vital\tools\validator\build\VitalValidator_artefacts\Release\VitalValidator.exe `
     vital\plugin\builds\vs19\x64\Release\VST3\Vial.vst3
 ```
 
@@ -217,7 +217,7 @@ list — Vital's parameters occupy indices 0–771 and the CC block runs
 Two useful dump flags:
 
 ```
-VitalValidator.exe <plugin>.vst3 --dump-params adi-vst/tools/out/host_params.tsv
+VitalValidator.exe <plugin>.vst3 --dump-params adi-vital/tools/out/host_params.tsv
 VitalValidator.exe <plugin>.vst3 --dump-state  state.bin
 ```
 
@@ -413,7 +413,7 @@ object** (`base` above), so undo costs one extra copy and no extra work.
 Generated from the C++ source, never hand-maintained:
 
 ```bash
-python adi-vst/tools/extract_schema.py
+python adi-vital/tools/extract_schema.py
 ```
 
 It parses the `ValueDetails` tables in `synth_parameters.cpp` and the enum label
@@ -447,9 +447,9 @@ The phantom list is derived, never hardcoded. Regenerate the whole chain after
 any change under `vital/src/common/`:
 
 ```bash
-VitalValidator.exe <plugin>.vst3 --dump-params adi-vst/tools/out/host_params.tsv
-python adi-vst/tools/find_phantom_params.py     # -> out/phantom_params.json
-python adi-vst/tools/extract_schema.py          # -> 794 full / 452 LLM
+VitalValidator.exe <plugin>.vst3 --dump-params adi-vital/tools/out/host_params.tsv
+python adi-vital/tools/find_phantom_params.py     # -> out/phantom_params.json
+python adi-vital/tools/extract_schema.py          # -> 794 full / 452 LLM
 ```
 
 `find_phantom_params.py` exits non-zero if the host reports a parameter our
