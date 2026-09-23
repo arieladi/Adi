@@ -78,10 +78,49 @@ Default CI skips these three expensive checks. SoX_ng 14.7.0.9 decoded all
 SoX is not a build or CI dependency. Raw generated files, SoX output, sanitizer
 logs, plants and big-file results are retained under task-local `work/wav-rf64/`.
 
-### 2. linux/play-quantize
+### 2. linux/play-quantize — pure absolute-sample release calculation
 
-To follow after the WAV/RF64 PR merges, on current main; results will be added
-to this same entry.
+Started from main only after WAV/RF64 #82 merged with all 19 CI checks green.
+`PlayTempoPoint` is a caller-owned sample-domain map (not snapshot's tick-domain
+`TempoEvent`); `playQuantizeRelease` integrates its piecewise-constant tempo from
+sample 0 in 960-PPQ ticks. Grid phase is continuous across changes. Fractional
+sample positions round up, and the forgiveness edge is inclusive. Invalid inputs
+or unrepresentable releases return `nullopt`; no exception, allocation, queue,
+graph mutation or block-size argument. Header documents this API contract.
+Graph wiring stays with win.
+
+**40 checks:** sixteenth at 120 BPM / 48 kHz = 6,000 samples; sixteenth triplet
+= 4,000; tempo changes before the next line (including two changes); exact grid
+lines; forgiveness inside/at/past the edge; fractional-sample grids; eight stream
+cuts from 32 through 4096 with the same absolute expected results; 20,000 calls
+with global `operator new` counting enabled and **zero allocations**; shared
+immutable map calls from two threads; invalid/overflow inputs refused.
+
+| Compiled plant | Observed failing guard |
+|---|---|
+| Halve tempo denominator | sixteenth exact/next line and triplet checks |
+| Force gridTicks=240 | triplet exact/next line |
+| Use first tempo everywhere | tempo change before next line; two changes |
+| Reset accumulated phase at a change | second tempo change; block invariance |
+| Remove late forgiveness | forgiveness inside and inclusive edge |
+| Exclude the exact forgiveness edge | forgiveness inclusive edge |
+| Forgive one extra sample | forgiveness just past edge |
+| Treat absolute time modulo 4096 as local | all eight block-size invariant checks |
+| Round fractional lines down | fractional line rounds up; rounded line is now |
+| Insert operator new/delete into tick conversion | zero allocations guard |
+| Return negative input as a valid release | negative event rejected |
+
+Each mutant compiled and its suite exited 1; the unmodified suite then passed.
+Full plant sources and outputs: task-local `work/play-quantize/`. All repository
+edits, commits, pushes and merges were performed by linux; no Gemini edits in
+this second assignment.
+
+**Validation:** GCC 15.2.0 and Clang 21.1.8 Release `test_all.sh` both pass
+**3,126 checks across 29 suites**, validators clean. The 40-check Play-Q suite
+passes Clang ASan+UBSan and GCC TSan Debug, `halt_on_error=1` throughout and
+UBSan stack traces enabled. This is targeted sanitizer coverage of each new
+suite, plus whole-tree Release validation on both compilers. README headline
+recomputed against current main; claims removed before merge. No benchmark rerun.
 
 ---
 
