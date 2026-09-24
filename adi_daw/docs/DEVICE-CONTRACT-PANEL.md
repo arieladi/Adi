@@ -114,3 +114,125 @@ bakes in the one format that conforms worst — `normalized`-only values,
 host-assigned `ParamID`s, no author symbols — and then Pd, CLAP and a remote
 device each need an exception. ADR-0052 decision 4 exists to prevent exactly
 that.
+
+---
+
+## 6. Blueprint: Porting Max for Live to ADI Pd
+
+**Status:** a porting guide at the director's request (2026-09-25), written
+against ADR-0035 (the Pd tier), ADR-0076 (Tier 1 devices are headless and the
+DAW draws their knobs), ADR-0095 (the `$0-` message convention) and ADR-0096
+(patches are generated, not hand-edited). The device contract is still open
+(§4), so where a rule needs it, the rule says what the contract must carry,
+not the syntax it will use. No porting tool exists. An M4L device (`.amxd`) is
+a Max patcher, not Pd text, so a port is a rewrite, object by object, checked
+against the original by ear and by rendering both.
+
+**Before anything: may it be ported?** A Max for Live device is a copyrighted
+work, and translating its patch object by object makes a derivative of it.
+`OPEN_SOURCE_POLICY.md` decides:
+- **May be ported, with its notice kept:** a device under a licence the
+  policy pre-authorises (MIT, BSD, GPL, LGPL, and the rest of its §3 table).
+- **Behaviour only, nothing copied** (policy §3 and §5):
+  - Ableton's own devices, and every commercial device;
+  - devices with no licence at all;
+  - devices under Creative Commons *NonCommercial* terms, which are common on
+    maxforlive.com and cannot go into a GPLv3 project.
+
+  Behaviour means what the device does to the sound, measured, rebuilt from
+  our own patch.
+- **Ask the director:** any other licence, CC BY-SA included, which the policy
+  does not cover.
+
+### Rule 1 — Core DSP: a direct translation, object by object
+
+The signal processing ports closely, because Pd and Max share an ancestor
+(ADR-0035) and most MSP objects have a Pd equivalent. Most, not all: every
+translation is checked, and the port's DSP maths lives in `src/adi/dsp/`,
+tested, as the limiter's does (ADR-0096).
+
+| Max / MSP | ADI Pd (vanilla) |
+|---|---|
+| `[buffer~]` | `[array define]` or `[table]`, loaded with `[soundfiler]` |
+| `[groove~]` (looping, variable-speed playback of a buffer) | `[tabread4~]` driven by `[phasor~]` or `[vline~]`; `[tabplay~]` for a one-shot |
+| `[tapin~]` / `[tapout~]` (a delay line) | `[delwrite~]` / `[delread4~]` |
+| `[cycle~]` | `[osc~]`, or `[tabosc4~]` for a wavetable |
+| `[poly~]` | `[clone]` |
+| `[pfft~]` | a subpatch with `[block~ N 4]` and `[rfft~]` / `[rifft~]` |
+
+*A correction to the rule as proposed:* `[delwrite~]` and `[vd~]` are a delay
+line, the translation of `[tapin~]`/`[tapout~]`, not of `[groove~]`, which
+plays a buffer and maps to `[tabread4~]`. `[vd~]` is also the old name of
+`[delread4~]`, kept for compatibility; a port writes `[delread4~]`.
+
+**Vanilla only.** `cyclone`, a Pd library of Max clones, would shortcut the
+work, but shipping any Pd external is a per-library decision (ADR-0035) and
+none has been made.
+
+### Rule 2 — The UI: headless, and the DAW draws the knobs
+
+libpd is headless, and Tier 1 devices never draw their own interface
+(ADR-0076). So every GUI object is deleted: `[live.dial]`, `[live.slider]`,
+`[live.numbox]`, `[live.menu]`, `[live.toggle]`, `[live.text]`, panels,
+`[jsui]`.
+
+**But in M4L those objects *are* the parameters.** A `live.dial` whose
+parameter visibility is "Automated and Stored" is a host parameter, and its
+Inspector holds the parameter's name, range, unit, initial value, exponent and
+steps. Deleting the dial without carrying those over loses the parameter. For
+each parameter object, the port declares:
+- the name;
+- the minimum, maximum and default;
+- the unit, and the curve (M4L's exponent);
+- for a menu, the enumerated items.
+
+The DAW draws the knobs from that declaration, as Live draws M4L's.
+
+- **The declaration's syntax is the open contract's to decide** (§4). The rule
+  as proposed wrote it `[adi.param name min max default]`. That is one of the
+  panel's candidates (author-symbol, §2), not a decision, and §3 records
+  against every candidate that an ADI-specific object inside the patch breaks
+  ADR-0035's promise that a patch stays vanilla Pd. Until the contract is
+  decided, a port lists its declarations in the generator (ADR-0096), which is
+  where the patch comes from anyway.
+- **Values arrive at `$0-` receives: `[r $0-cutoff]`, never a bare
+  `[r cutoff]`.** Pd's send and receive names are global within an instance,
+  so two copies of one device on two tracks would share a bare name. This is
+  ADR-0095's rule, and the shipped patches follow it (`[r $0-release]`).
+- **UI objects with DSP inside do port.** `[live.gain~]` becomes `[*~]` with
+  `[line~]` smoothing, driven by its parameter. A meter the device drew is the
+  DAW's to draw.
+
+### Rule 3 — The Live API (LOM) does not port
+
+`[live.path]`, `[live.object]`, `[live.observer]`, `[live.remote~]` and
+`[live.thisdevice]` query and drive the Live Object Model, and there is no Live
+Object Model in ADI. Two consequences:
+- **Transport comes from the host as messages.** Tempo, play state and the
+  beat position arrive at `$0-` receives like any other host message. The
+  names and the rate are the contract's to fix.
+  - They arrive once per Pd block (64 samples), not sample-accurately.
+  - A tempo-synced device therefore derives its phase from the beat position
+    it is sent, never by counting its own blocks.
+  - This replaces `[plugsync~]`, `[transport]` and `[live.observer]` on tempo.
+- **A device whose purpose is the LOM is not a Pd device in ADI.** Clip
+  generators, track and device remote controls, and MIDI-clip tools change
+  the project, and in ADI the project changes only through ops (ADR-0003). So
+  they port as scripts over the op API, the agent's vocabulary, not as
+  patches.
+
+### Rule 4 — Compiled code: `[gen~]` does not port
+
+Pd has no `[gen~]`, and ADI will not ship one. A `gen~` box is rebuilt in one
+of two ways:
+1. **In vanilla Pd objects,** which suits block-rate maths. `gen~` is often
+   used for what Pd's block-based signal objects cannot do: feedback within one
+   sample, as in a one-pole filter or a short feedback delay. For that,
+   `[fexpr~]` evaluates a per-sample expression with access to its own past
+   outputs. A `[block~ 1]` subpatch also works, but it is costly.
+2. **As a native C++ node** (Tier 1, ADR-0062). This suits a `gen~` that is
+   hot, reused or subtle. Its maths lives in `src/adi/dsp/`, tested against a
+   reference, and the Pd patch or the device uses it.
+
+RNBO, Cycling '74's exporter, is not a route: it needs Max and RNBO to author
+(ADR-0035).
