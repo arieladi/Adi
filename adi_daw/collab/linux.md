@@ -8,6 +8,106 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-24 — ADR-0127 building blocks: portable BLAKE3 and streaming ZIP64
+
+Branch `linux/blake3-zip`, from `f74348a`. Adi granted the new media directory,
+two tests, dependency-fetch rows, external-code inventory rows, CMake lines and
+README headline. No Collect/Export command, ops, schema, JUCE, fixtures, workflow,
+engine wiring or benchmark changes. Claims were the first commit.
+
+`media/blake3.hpp`: `blake3Bytes(span<const byte>)` and `blake3File(path)` return
+`HashResult` (`hex`, `HashError`, explicit bool); success is a 64-character
+lowercase unkeyed BLAKE3 digest. Missing/non-regular files and read/resource
+failures return errors, never exceptions. File input uses 64 KiB chunks.
+Official C **1.8.7 / f3149ec5bb5449af877ba20377a11008ff499fa2**, portable sources
+only; SSE2/SSE4.1/AVX2/AVX512 and NEON disabled, no assembler.
+
+`media/zip_writer.hpp`: `ZipWriter(path)`, `addFile(source, UTF-8 archivePath,
+ZipCompression::store|deflate)`, explicit `finish()`, sticky `ZipError`.
+STORE is the default. C++ filesystem-aware streams handle Unicode disk paths;
+archive names carry the UTF-8 flag. Relative archive paths reject traversal,
+absolute names, backslashes and NUL. Destruction cleans up; it does not silently
+finalize. A failed export leaves a partial output for the caller to remove.
+Sources must remain unchanged during addFile. Payload I/O is bounded to 64 KiB;
+miniz keeps central-directory metadata proportional to the number of entries.
+No filesystem timestamps are copied. Official miniz **3.1.2 /
+77d0dce8627735138c51770d1799a1ef48f2117d**, MIT. Both dependencies are pinned by
+tag AND full SHA in `fetch_external.sh --build-only`, successfully fetched locally.
+
+**win — verified dependency findings, resolved in this wrapper's configuration:**
+
+- miniz's automatic ZIP64 promotion misses an archive crossing 4 GiB through
+  smaller entries. A real file of 2 GiB + 123 bytes added twice failed
+  `ZIP64 aggregate archive finalizes without oversized entry` and
+  `aggregate ZIP64 end records` (51 checks, two failures before the fix).
+  We deliberately start ZIP64 even for small archives, as ADR-0127 permits.
+  The aggregate guard is retained alongside the >4 GiB single-entry guard.
+- The concurrent reader roundtrip under GCC TSan reported a race in
+  `tzset_internal`, reached through miniz's `mz_zip_dos_to_time_t`/file-stat
+  conversion. The original halt-on-error report is preserved. Time conversion
+  is unused here; `MINIZ_NO_TIME` disables it in the dependency and all consumers,
+  with no sanitizer suppression. Both suites then passed TSan (42 + 39 checks).
+
+**Gemini:** read-only audit through `agy --model gemini-3.1-pro-high`; no repo
+writes or git actions. It independently reported the aggregate-promotion defect,
+which the test above proves. Its other claim, that a 32-bit build necessarily
+has a 32-bit `streamoff` without `_FILE_OFFSET_BITS=64`, was not accepted:
+a compiled native i386 probe has sizeof(void*)=4, sizeof(streamoff)=8 and
+successfully writes/seeks to 4 GiB + 123 bytes. No speculative macro change.
+
+### Defect plants
+
+Mutants were compiled from scratch copies; none is kept in production. Each
+listed plant exited nonzero at the named guard(s). The official JSON's 35 cases
+exercise the exposed 32-byte unkeyed API, not unexposed keyed/XOF modes.
+
+| Plant | Failing guard |
+|---|---|
+| Wrong digest hex nibble | Official unkeyed 32-byte hash vectors |
+| Hash only the first read | File hash matches memory across streaming boundaries |
+| Missing hash file returns success | Missing file reported without throwing; directory refused |
+| Swap STORE and deflate levels | STORE default and deflate optional methods |
+| Set miniz's ASCII-name flag | Unicode name preserved with UTF-8 flag |
+| ZIP input capped at 64 KiB | Streamed length; miniz roundtrip bytes/CRC |
+| Omit archive finalization | Completed central directory; empty archive readback |
+| Bypass archive-path validation | Unsafe paths and embedded NUL rejected |
+| Missing/non-regular source returns success | Missing source; sticky failure; directory source |
+| Permit output as its own input | Output cannot be its own source |
+| Second finish returns failure | Finish is idempotent |
+| Add after finish reports success | Add after finish rejected |
+| Refuse empty-archive finalization | Empty archive finalizes/readback |
+| Truncate input size to 32 bits (`ADI_ZIP_BIG=1`) | ZIP64 sizes, entire payload/CRC, later entry's >4 GiB offset |
+| Leave miniz's auto-promotion enabled | Aggregate >4 GiB archive finalization and ZIP64 end records (above) |
+
+### Validation
+
+Rebased onto main `5d8e73e` (win's VST3 gesture merge), preserving every other
+agent's row. Per win's new log, the ZIP test uses the one-site `getenv`
+C4996 helper so MSVC /WX also accepts its optional environment gates. README recomputed from the actual suite output: **3207 checks
+across 31 suites**, validators clean with both GCC 15.2.0 and Clang 21.1.8
+Release (`test_all.sh`). New suites: **42 hash + 39 ZIP checks**. Both pass
+Clang ASan+UBSan and GCC TSan with `halt_on_error=1`; the C dependencies are
+instrumented too. Concurrent independent hashes and writers/readers are covered.
+Sanitizer coverage here is the two new suites, not a claimed whole-tree rerun.
+
+`ADI_ZIP_BIG=1` ran on real disk-backed files (TMPDIR on the work disk, not the
+small /tmp tmpfs): a 4 GiB + 123 byte STORE entry, a following entry above the
+4 GiB offset, and two 2 GiB + 123 byte entries crossing the aggregate limit.
+Full extraction verifies every byte and CRC with bounded buffers. Native x86-64
+passed **53 checks**, 70.53 s wall time, 5744 KiB peak RSS; a separately compiled native i386 executable using the
+same sources/dependency definitions passed **53 checks**, 76.04 s wall time,
+5416 KiB peak RSS. This also disproves the proposed 32-bit stream-offset defect.
+The large tests are opt-in, excluded from the README's default check count.
+
+Python `zipfile` checked all names, payloads, methods and CRCs; `unzip -t` passed
+all three sample entries. These are local external checks, not CI dependencies.
+PR #88 requires all **19 CI checks green** before self-merge. The claims row is
+removed in the closing commit. No tuning or next feature work follows this PR.
+Local evidence (audit, before/after findings, plants, external archive, compiler
+and test logs): `/home/adi/Documents/Codex/2026-09-23/i-n/work/blake3-zip/`.
+
+---
+
 ## 2026-09-24 — ADR-0132 WAV/RF64 and ADR-0133 Play-Q (Adi's two assignments)
 
 The adi-vital rename was completed first in #79, including the GitHub rename

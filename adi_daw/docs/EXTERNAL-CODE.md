@@ -16,6 +16,8 @@ Permissive licences, all GPLv3-compatible in the direction we need.
 
 | Repo | Licence | Size | Purpose |
 |---|---|---|---|
+| [`BLAKE3`](https://github.com/BLAKE3-team/BLAKE3) | CC0-1.0 or Apache-2.0 | 2.5 MB shallow | Media hashes (ADR-0127). Pinned **1.8.7 / `f3149ec5bb5449af877ba20377a11008ff499fa2`**; official C portable implementation only, SIMD disabled. Official test vectors exercise the 32-byte unkeyed hash. Fetched by `--build-only`. |
+| [`miniz`](https://github.com/richgel999/miniz) | MIT | 2 MB shallow | Streaming STORE/deflate and ZIP64 for Collect and Export (ADR-0127). Pinned **3.1.2 / `77d0dce8627735138c51770d1799a1ef48f2117d`**; C sources with custom path-aware stream callbacks. Fetched by `--build-only`. |
 | [`SQLiteCpp`](https://github.com/SRombauts/SQLiteCpp) | MIT | 14 MB | RAII C++ wrapper over the SQLite C API. Transactions, prepared statements, BLOB binding. Removes an entire class of leak and error-handling bug from the `.adi` reader/writer. |
 | [`json`](https://github.com/nlohmann/json) | MIT | 29 MB | nlohmann/json. We want it for its **CBOR** codec (`to_cbor`/`from_cbor`), not its JSON — for `ops.payload` and `ops.inverse`. See ADR-0016. |
 | [`bungee`](https://github.com/bungee-audio-stretch/bungee) | MPL-2.0 | 426 KB | Time-stretch / pitch-shift. Feeds `audio_clips.warp_markers` (SPEC §6.4). Handles continuous rate change and zero/negative speed, which is what scrubbing needs. |
