@@ -4,9 +4,10 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <stop_token>
 
 namespace adi::media {
-enum class HashError { none, open, read, resource };
+enum class HashError { none, open, read, resource, cancelled };
 struct HashResult {
     std::string hex; // 64 lowercase hex digits on success; empty on failure.
     HashError error = HashError::none;
@@ -16,4 +17,5 @@ struct HashResult {
 // returned, never thrown. File hashing uses a fixed 64 KiB buffer.
 [[nodiscard]] HashResult blake3Bytes(std::span<const std::byte> bytes) noexcept;
 [[nodiscard]] HashResult blake3File(const std::filesystem::path& path) noexcept;
+[[nodiscard]] HashResult blake3File(const std::filesystem::path& path, std::stop_token stop) noexcept;
 } // namespace adi::media

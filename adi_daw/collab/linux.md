@@ -8,6 +8,133 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-24 — Library index and measured BLAKE3 SIMD (ADR-0147; PR 2)
+
+Branch `linux/library-index`, from `dc20e7e`, after #101 merged green on all 19
+checks. The director granted these files and the one utf8proc dependency line
+in each of mac's fetch script and external-code inventory. No .adi schema,
+Store, ops catalogue, CLI, changeset, JUCE or workflow edits. The caller supplies
+the index path (`appdata::libraryIndexFile()`, ADR-0149, is already win's API).
+ADR-0147 records the publication and library decisions; reservation marked used.
+
+### Implementation and deliberate limits
+
+Application database ADIL (`0x4144494c`), version 1. Foreign/project/populated
+unlabelled databases and future versions are refused. Volume marker IDs survive
+mount changes; paths are relative to the caller-supplied actual volume root.
+The Linux marker provider probes case behavior; the same documented marker
+protocol is the Windows/macOS fallback. A read-only/unwritable root needs a
+supplied provider with stable identity and known case behavior. No mount-path
+identity, root escalation, or OS-name case assumption. Do not copy a volume
+marker onto a different logical volume. Native discovery/adapters remain win
+and mac's integration work; this core takes the root and provider explicitly.
+
+Names use utf8proc NFC and conditional case folding; actual on-disk spelling
+is retained. Ambiguous canonical names and invalid UTF-8 fail explicitly.
+File/directory symlinks are not followed. An incomplete enumeration fails without
+marking old rows missing; callers can retry when the directory settles. A
+successful scoped scan marks missing rows only under that folder. One indexing
+owner per database is the caller's responsibility; other applications may read
+committed WAL state. The metadata pass exposes pending rows before hashing,
+not an incremental UI stream during filesystem enumeration.
+
+Size plus UTC nanosecond modification time invalidates a hash. The inclusive
+2-second tolerance is anchored to the last hashed time, not moved on each scan.
+This deliberately cannot detect same-size edits preserving a time inside that
+window; it is the director's rule, not a claim that metadata proves contents.
+A cancellable low-priority worker reads 64 KiB chunks outside the DB mutex,
+checks exact metadata before/after hashing, and uses generations to reject stale
+jobs. Cancellation preserves pending rows for resume/reopen. Worker stats expose
+priority success and failures. JSON merges NFC tags, BPM and ratings by BLAKE3;
+omitted scalars stay, supplied values win, null clears. Import is atomic and
+may precede the file. There is no semantic tagging or UI.
+
+### Plants, compiled and observed failing, all reverted
+
+| Plant | Failing guard |
+|---|---|
+| Skip size/time shortcut | `unchanged scan hashes nothing` |
+| Derive volume identity from mount path | `moved mount rehashes nothing` |
+| Skip NFC for sensitive volumes | `NFD NFC rename is one unchanged file` |
+| Store imported annotations under a path key | `import matches by hash not path` |
+
+Gemini performed a read-only audit. Its unnecessary-write concern became a new
+test: `unchanged scan performs no database writes` failed on the first draft,
+then passed after removing present=0/1 churn and same-root updates. A second
+new guard, `normalized folder spelling is accepted`, proved `samples/.` was
+wrongly rejected; canonical string comparison was replaced by explicit symlink
+component checks and lexical cleanup. Its exact claim about macOS/Windows
+canonical casing was not reproduced locally and is not claimed as a finding.
+Its full-table-scan claim was too broad (the old query could use volume), but
+partial scans now use the full `(volume,path_key)` range, confirmed by EXPLAIN:
+`SEARCH files USING PRIMARY KEY (volume=? AND path_key>? AND path_key<?)`.
+Its suggested removal of the 2-second tolerance conflicts with Adi's contract
+and was rejected. Failing incomplete enumeration is intentional and documented.
+
+### 100,000 files, real remount, no re-hashing
+
+Intel i5-3550S, GCC 15.2 Release, all four governors `schedutil` before/after;
+no concurrent build/test workload. Dedicated 1 GiB ext4 loop image, 200,000
+inodes, 100 subfolders × 1,000 files, 1,024 bytes per file with distinct content.
+Database outside the image. Fresh process per run, warm filesystem caches for
+repeated scans; actual unmount/remount to a different path before the last three.
+One marker ID persisted throughout. Worker priority succeeded; zero hash errors.
+
+| Run | Metadata scan seconds | Through hash completion | Files hashed |
+|---|---:|---:|---:|
+| First index | 1.874963 | 71.164850 | 100000 |
+| Unchanged 1 | 1.153795 | 1.153796 | 0 |
+| Unchanged 2 | 1.140105 | 1.140107 | 0 |
+| Unchanged 3 | 1.137011 | 1.137012 | 0 |
+| Remounted 1 | 2.064971 | 2.064972 | 0 |
+| Remounted 2 | 1.156979 | 1.156981 | 0 |
+| Remounted 3 | 1.134627 | 1.134629 | 0 |
+
+Unchanged median **1.140105 s**; moved-root median **1.156979 s**, with a
+**2.064971 s** first remount scan. All six scans queued zero hashes. The first
+setup attempt used default ext4 inode density and exhausted ~65k inodes before
+measurement; that was not a 100k result. Its first unmount was busy during
+exception cleanup; retry after process exit succeeded. Recreated with enough
+inodes and completed the above run; final image is unmounted.
+
+### BLAKE3 decision and measurements
+
+Official pinned 1.8.7 C sources, GCC 15.2 `-O3 -DNDEBUG`, same i5/governors.
+Five alternating runs per mode, 1 GiB per run in 64 KiB updates. Memory uses a
+repeated 64 KiB input; file mode reads the same bytes from a warm-cache file.
+Every digest identical (`da98f7b7…e3d90da`); dispatch degree 1 portable, 4 SIMD.
+Raw CSV and complete hash are preserved; these do not predict cold USB speed.
+
+| Median MiB/s | Portable | SSE2/SSE4.1 | Ratio |
+|---|---:|---:|---:|
+| Memory | 476.398 | 1186.018 | 2.49× |
+| Warm file | 441.631 | 969.176 | 2.19× |
+
+Enabled runtime-dispatched SSE2/4.1 in our existing BLAKE3 target for all helpers
+on single-architecture x86 builds. MSVC uses upstream intrinsic C sources;
+GCC/Clang ISA flags are per source, never global. ARM and universal Apple builds
+stay portable; unmeasured AVX2/AVX-512/NEON remain off. This accelerates bulk
+hashing, not unchanged scans (which hash nothing). Official vector tests pass.
+**mac:** the historical BLAKE3 inventory row still says "portable only". The
+current grant permits one utf8proc inventory row; please replace that older
+backend clause with "portable plus runtime SSE2/4.1 on single-architecture x86;
+ADR-0147". Its dependency pin/licence did not change.
+
+### Validation
+
+Library suite: 47 checks, including 20 idle cancel/restart cycles. Shutdown
+changes its wait predicate under the condition-variable mutex so notification
+cannot be lost between predicate evaluation and waiting. Full GCC tree: **3783 checks across 38 suites**, all
+validators clean (Windows retains its two additional registry checks). Final
+Clang/sanitizer/CI outcomes are added before merge. The new warning caught on
+the first build was misleading indentation in our open helper; fixed.
+MSVC /WX is not available locally; CI compiles/tests Windows and win owns /WX.
+
+Scripts, complete CSVs, failed setup evidence, plant and audit logs are under
+`/home/adi/Documents/Codex/2026-09-23/i-n/work/library-index/`.
+
+---
+
 ## 2026-09-24 — Publication on removable filesystems (PR 1 of the library mission)
 
 Branch `linux/publish-files`, from `7682737`. Adi's new assignment supersedes
