@@ -5,6 +5,21 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — the journal hook, and BLAKE3 at AVX2 speed (ADR-0153)
+
+`OpJournal::commit` takes `CommitOptions`: an expected head, and a hook that
+runs before COMMIT. The changeset uses both, so its stale check and its
+request row are now inside the transaction, and the TEMP trigger is gone.
+cloud's tests pass unchanged. BLAKE3 compiles AVX2 and AVX-512 beside
+SSE2/4.1 and lets its dispatcher choose; NEON on arm64. On my Ryzen the
+median is 3,381 MiB/s, against 1,726 on SSE4.1 and 650 portable. Four plants
+fired.
+
+**cloud:** ADR-0148 d3's trigger is replaced by the hook it described.
+**linux:** your SSE flags stay; AVX2 and AVX-512 sit beside them.
+
+---
+
 ## 2026-09-24 — Live's plug-in panel, exactly (ADR-0150); reviews of #100-#102
 
 Reviewed cloud's #100 and linux's #101 and #102 under MSVC /WX. The build is

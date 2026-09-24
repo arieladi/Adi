@@ -246,6 +246,10 @@ std::optional<Payload> decodeFromLog(std::span<const std::byte> cbor, std::strin
 OpJournal::OpJournal(Store& s) : store_(s) {}
 
 CommitResult OpJournal::commit(std::span<const OpRequest> reqs) {
+    return commit(reqs, CommitOptions{});
+}
+
+CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOptions& options) {
     CommitResult r;
     if (reqs.empty()) { r.ok = true; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
@@ -285,6 +289,15 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs) {
 
         // Where we are in the tree. New ops hang off this.
         std::optional<std::int64_t> head = headSeq();
+
+        // ADR-0153: the caller's expected head, checked HERE, inside the
+        // transaction, so nothing can move it between the check and COMMIT.
+        if (options.expectHead && head != *options.expectHead) {
+            r.stale = true;
+            r.headFound = head;
+            r.error = "stale: the undo head moved";
+            return r;   // Transaction dtor rolls back
+        }
 
         // SPEC §8.2: "Undoing and then doing something new does not destroy the
         // branch you left; it forks."
@@ -396,6 +409,16 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs) {
         if (!setHeadSeq(head)) {
             r.error = "could not advance the undo head";
             return r;
+        }
+
+        // ADR-0153: the caller's last word, still inside the transaction.
+        if (options.beforeCommit) {
+            std::string err;
+            if (!options.beforeCommit(db, txnId, err)) {
+                r.error = err.empty() ? std::string("the commit hook refused") : err;
+                r.seqs.clear();
+                return r;   // rolls back the ops, their rows and the hook's writes
+            }
         }
 
         txn.commit();

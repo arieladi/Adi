@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -210,6 +211,24 @@ struct CommitResult {
     std::vector<std::int64_t> seqs;   // one per op, in order
     std::string error;
     std::vector<ValidationIssue> issues;
+    /// ADR-0153: refused because the undo head was not `expectHead`.
+    bool stale = false;
+    std::optional<std::int64_t> headFound;   ///< the head it found, when stale
+};
+
+/// ADR-0153: what a caller may ask of one commit, INSIDE its transaction.
+/// Both exist for the Propose-tier changeset (ADR-0148), which had to check
+/// staleness in a separate step and write its request row from a temporary
+/// trigger because the journal offered no way in.
+struct CommitOptions {
+    /// Refuse, with `stale` set and nothing written, unless the undo head is
+    /// exactly this. Checked inside the transaction, so no writer can move
+    /// the head between the check and the commit. Unset: no check.
+    std::optional<std::optional<std::int64_t>> expectHead;
+    /// Runs after every op and its log row are written and the head moved,
+    /// before COMMIT, with the txn id. False, with `error`, rolls back
+    /// everything: the rows it may have written and every op.
+    std::function<bool(SQLite::Database&, std::int64_t txnId, std::string& error)> beforeCommit;
 };
 
 /// Applies a batch of ops as ONE transaction and appends their rows in it.
@@ -223,6 +242,7 @@ public:
     explicit OpJournal(Store&);
 
     CommitResult commit(std::span<const OpRequest>);
+    CommitResult commit(std::span<const OpRequest>, const CommitOptions& options);
     CommitResult commit(const OpRequest& one) { return commit({&one, 1}); }
 
     /// Ops in the log, newest first. For audit and for tests.

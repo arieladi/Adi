@@ -9909,3 +9909,59 @@ was added, and a Pro-Q 3 panel carrying thirty-six parameters.
    (ADR-0127) and the ASIO implementation", names finished work: schema 1.1
    (ADR-0136), Collect and Export (ADR-0143), ASIO (ADR-0137). What remains of
    ASIO is hearing it through the director's own interface driver.
+
+
+---
+
+## ADR-0153 — The journal takes a caller inside its transaction; BLAKE3 runs AVX2, AVX-512 and NEON — `DECIDED` (2026-09-24) — **REPLACES ADR-0148 d3's TRIGGER; IMPLEMENTS ADR-0150 d4**
+
+### Decisions
+
+1. **`OpJournal::commit(ops, CommitOptions)`.** Two options, both run inside
+   the commit's own transaction:
+   - `expectHead`: refuse, with `stale` set and nothing written, unless the undo
+     head is exactly this. No writer can move the head between the check and
+     COMMIT.
+   - `beforeCommit(db, txnId, error)`: runs after every op, its log row and the
+     head move, before COMMIT. Returning false rolls back everything, the
+     hook's own writes included.
+
+   The plain `commit(ops)` is unchanged.
+2. **The Propose changeset uses both** (ADR-0148). The stale check that was a
+   separate step before the commit is now `expectHead`, so checking and
+   committing are one step. The request row that a connection-local TEMP
+   trigger wrote is now written by `beforeCommit`. The trigger and its TEMP
+   table are gone. The refusal message and every one of cloud's checks are
+   unchanged, including the one that a request row already there fails the
+   whole apply.
+3. **BLAKE3 takes every SIMD path the CPU has** (ADR-0150 d4, extending
+   ADR-0147 d8). On single-architecture x86 builds, AVX2 and AVX-512 compile
+   beside SSE2 and SSE4.1, each ISA flag on its own file only. BLAKE3's own
+   dispatcher (cpuid and xgetbv) picks at run time, so one binary runs on any
+   x86 CPU. On arm64, including Apple Silicon, NEON. Universal Apple builds stay
+   portable, because one compile for two architectures cannot carry a per-file
+   ISA flag. Measured on win's Ryzen 7 5700X3D, 1 GiB in memory, MSVC `/O2`,
+   median of five runs, identical digests:
+
+   | Path | MiB/s |
+   |---|---|
+   | portable | 650 |
+   | SSE2 + SSE4.1 (ADR-0147) | 1,726 |
+   | AVX2 (this CPU has no AVX-512) | 3,381 |
+
+   AVX2 is 1.96 times SSE4.1 and 5.2 times portable. Correctness is the official
+   test vectors, on whichever path each machine's dispatcher takes. Speed is
+   measured, not asserted, so no test fails if a path is slower; a plant would
+   prove nothing there.
+
+### Verified non-vacuously
+
+| Planted | Check that failed |
+|---|---|
+| the expected head not checked | refused as stale (journal, and cloud's changeset) |
+| the hook's refusal ignored | the op and its log row were rolled back; a request row that cannot be written fails the apply |
+| the changeset sets no expected head | refused as stale |
+| the request row skipped when one exists | a request row that cannot be written fails the apply |
+
+**Not decided:** whether `adi_tool` reports which BLAKE3 path the dispatcher
+took; upstream offers no public call for it.
