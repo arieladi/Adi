@@ -365,6 +365,9 @@ void Session::attach() {
     rs.devicesFor = [this](std::int64_t trackId) {
         std::vector<Node*> nodes;
         for (device::DeviceNode* n : chainFor(trackId)) nodes.push_back(n);
+        // ADR-0163: the strip is the last node of every chain, after the
+        // devices, so whatever the track feeds takes its output.
+        if (StripNode* strip = strips_.stripFor(trackId)) nodes.push_back(strip);
         return nodes;
     };
     auto* clipSource = clips();
@@ -395,6 +398,7 @@ bool Session::rebuild() {
                                                 spec_.channels, spec_.maxFrames);
         midi_ = std::make_unique<MidiClips>(model_, transport_, spec_.sampleRate, midiState_);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
+    strips_.sync(model_);   // ADR-0163: every strip's target, before the graph names them
     attach();   // the spec, the sources or the placement may have changed
     ++stats_.rebuilds;
     const bool ok = devices_.rebuildNow();
@@ -405,6 +409,7 @@ bool Session::rebuild() {
     if (midi_) problems_.insert(problems_.end(), midi_->problems().begin(), midi_->problems().end());
     if (auto* c = clips()) problems_.insert(problems_.end(), c->problems().begin(), c->problems().end());
     problems_.insert(problems_.end(), sessionProblems_.begin(), sessionProblems_.end());
+    problems_.insert(problems_.end(), strips_.problems().begin(), strips_.problems().end());
     const std::vector<std::string>& fromGraph = graph_.problems();
     problems_.insert(problems_.end(), fromGraph.begin(), fromGraph.end());
     return ok;

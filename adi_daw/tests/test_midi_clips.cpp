@@ -142,7 +142,7 @@ void overflowRelease(){
     Fixture f;f.clip(1,0,240240);f.load();
     auto* graph=f.session.graph().currentGraph();graph->setEventCapacity(4);graph->prepare(48000,512);
     f.render();
-    const auto target=f.session.graph().current()->outputFor(1);
+    const auto target=graph->find(*f.session.nodeFor(1)); // the instrument itself: outputFor is the strip (ADR-0163)
     Event filler;filler.type=EventType::ParamValue;
     for(int i=0;i<4;++i)graph->pushInputEvent(target,filler);
     f.render();check(f.instrument->balance()==1,"full destination refused the scheduled off");

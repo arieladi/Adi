@@ -205,6 +205,7 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/mixer.cpp
     src/adi/engine/play_quantize.cpp
     src/adi/engine/param_ops.cpp
     src/adi/engine/param_edits.cpp
@@ -404,6 +405,11 @@ add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
 add_executable(adi_session_tests tests/test_session.cpp)
 target_link_libraries(adi_session_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_session_tests COMMAND adi_session_tests)
+
+# ADR-0163: the mixer strip in the graph.
+add_executable(adi_mixer_tests tests/test_mixer.cpp)
+target_link_libraries(adi_mixer_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_mixer_tests COMMAND adi_mixer_tests)
 
 add_executable(adi_graph_tests tests/test_graph.cpp)
 target_link_libraries(adi_graph_tests PRIVATE adi_core adi_warnings)

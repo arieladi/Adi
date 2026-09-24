@@ -44,6 +44,7 @@
 #include "adi/engine/host.hpp"
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
+#include "adi/engine/mixer.hpp"
 #include "adi/engine/process.hpp"
 #include "adi/engine/realize.hpp"
 #include "adi/store_rows.hpp"
@@ -212,6 +213,9 @@ private:
     std::unique_ptr<ClipPlayback> clips_;
     std::shared_ptr<MidiClipState> midiState_ = makeMidiClipState();
     std::unique_ptr<MidiClips> midi_;
+    // ADR-0163: one strip per track, for the whole session. Declared before
+    // the graphs so it outlives every graph that names one of its strips.
+    MixerStrips strips_;
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;
