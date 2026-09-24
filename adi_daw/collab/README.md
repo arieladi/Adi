@@ -181,7 +181,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
 | `src/adi/ops.*`, `src/adi/changeset.*`, `tests/test_changeset.cpp`, `tests/test_media_hash.cpp`; the BLAKE3 lines of `CMakeLists.txt` | win | `win/journal-simd` | 2026-09-24 |
-| `src/adi/engine/clip_*` (new, inside win's engine area), `src/adi/audio/**`, `tests/test_clip_playback.cpp` (new) | linux | `linux/clip-playback` | 2026-09-24 |
+| `src/adi/engine/clip_*` and `src/adi/engine/transport.*` (new, inside win's engine area), `src/adi/audio/**`, `tests/test_clip_playback.cpp` (new); lent for small logged hooks: `src/adi/engine/session.*`, `src/adi/engine/graph.*`, `src/adi/engine/realize.*` | linux | `linux/clip-playback` | 2026-09-24 |
 | `src/adi/settings/**` (new), `tests/test_settings.cpp` (new), `docs/SETTINGS.md` (new) | cloud | `cloud/settings` | 2026-09-24 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
