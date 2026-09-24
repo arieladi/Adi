@@ -390,6 +390,7 @@ unless it says so.
 | "Zoom on Selection" setting restores Live's wheel-zoom anchor | Ableton | P1 | ADR-0145 d2 |
 | Sample-rate mismatch bar: Switch Hardware / Resample Temporarily, "Don't ask me again" | — | P1 | ADR-0145 d3 |
 | Buffer sizes 64 to 4096 by hand; ASIO through JUCE only, no raw bypass | — | P0 | ADR-0145 d5 |
+| Sample rates 44.1 kHz to 192 kHz, and up to 768 kHz where the hardware goes | — | P0 | ADR-0157 |
 | AudioGridder: mDNS discovery; server plugin lists cached per application | AudioGridder | P1 | ADR-0145 d6 |
 | PTP grandmaster whitelist by IP and MAC | — | P1 | ADR-0145 d7 |
 | Pure Data editor inside the DAW, built on plugdata; the agent proposes, the user approves | Max for Live | P1 | ADR-0145 d8 |

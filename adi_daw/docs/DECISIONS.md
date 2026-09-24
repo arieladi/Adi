@@ -10133,3 +10133,46 @@ GCC 15.2 Release, 997 Hz at amplitude 0.5 (excluding the first 512 edge samples)
 of universal converter dynamic range, worst-case bandwidth or CPU performance.
 The guards allow RMS 1e-5 / peak 1e-4 across ABIs. Plants and sanitizer evidence
 are recorded in `collab/linux.md`.
+
+
+---
+
+## ADR-0157 — Every sample rate from 44.1 kHz to 192 kHz, and beyond it wherever the hardware goes — `DECIDED` (2026-09-24) — **DIRECTOR'S RULING; BOUNDS ADR-0151's RATE CHECK**
+
+**Director's ruling:** "we also need to support up to 192 kHz, not just 44.1 and
+48; and if we can support higher, then also support higher."
+
+**What already holds.** The format stores any positive `project.sample_rate`
+(SPEC §4, `CHECK (sample_rate > 0)`), and media keeps each file's own rate
+(SPEC §4.3). The WAV reader takes any rate the header states. The graph's
+timing rules are written in time and scale with the rate: the 500 Hz floor is
+384 samples at 192 kHz (ADR-0054). JUCE opens whatever rate a device offers.
+
+**What did not.** Clip playback (ADR-0151) refuses a session or a source rate
+above 192 kHz, so a 384 kHz project would play silent. Its read-ahead is
+16,384 frames whatever the rate: 341 ms at 48 kHz, but 85 ms at 192 kHz and
+43 ms at 384 kHz, which is where disk hiccups become audible.
+
+### Decisions
+
+1. **The supported range is 8 kHz to 768 kHz**, any integer rate a device or a
+   file presents. The project-rate chooser offers the standard ladder:
+   44.1 / 48, 88.2 / 96, 176.4 / 192, 352.8 / 384 and 705.6 / 768 kHz. The
+   hardware chooser offers what the device reports. The engine runs whatever
+   rate the device grants, as it already does for block sizes (ADR-0049).
+2. **Clip playback lifts its cap to 768 kHz and reads ahead in time, not
+   frames**: at least the 341 ms it gives at 48 kHz, at every rate, with pages
+   sized to match. Its tests run at 192 and 384 kHz. linux, in ADR-0155's
+   mission, because clip playback is linux's code.
+3. **Every sample-count constant in the engine is audited for rate.** One that
+   stands for a time, such as the latency-compensation headroom of ADR-0088
+   (8,192 samples, 171 ms at 48 kHz but 43 ms at 192 kHz), scales with the rate
+   or is stated in time. One that stands for a buffer, such as the 4,096-frame
+   block cap, stays in frames. win, after the device panel.
+4. **Tests at 192 and 384 kHz** for everything rate-dependent. A hardware run
+   at 192 kHz, and at 352.8 or 384 kHz if the director's interface offers them,
+   is row 4 of `docs/AWAITING.md`.
+
+**Not decided:** whether the 4,096-frame block cap should rise at very high
+rates, where it is 10.7 ms at 384 kHz and 5.3 ms at 768 kHz. Only a measured
+need would raise it.
