@@ -128,6 +128,9 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                                            ": a null device in the chain was dropped");
                     continue;
                 }
+                // ADR-0164: a chain node may hold data the audio thread reads
+                // -- a strip's automation lanes -- and this graph keeps it alive.
+                if (auto owner = d->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
                 const NodeId id = r->graph_.addNode(*d);
                 r->graph_.connect(tail, id);
                 tail = id;

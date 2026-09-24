@@ -160,7 +160,7 @@ Session window is the last step, not a way around that.
 
 | Feature | From | P | Fmt | Notes |
 |---|---|---|---|---|
-| Track and device automation | both | P0 | ✅ | `automation_lanes` |
+| Track and device automation | both | P0 | ✅ | `automation_lanes`. **Track lanes play** (ADR-0164): volume, pan and mute, read by the strip every 32 samples at the playhead, with Live's override and Re-Enable (ADR-0162). Device lanes are compiled and named, and not played yet. |
 | Clip envelopes / clip modulation | Ableton | P1 | ✅ | `automation_data.clip_id` |
 | Event volume curves drawn on the clip (Cubase 14) | Cubase | P1 | ✅ | a clip-scoped gain lane rendered on the event (ADR-0115) |
 | Automation modes: touch/latch/cross/overwrite/trim | Cubase | P2 | ✅ | `tracks.automation_mode` |

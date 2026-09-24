@@ -5,6 +5,39 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — automation plays on the strip, with Live's override (ADR-0164); the .amxd pre-flight scan
+
+**Automation.** The strip reads its own lanes (volume, pan, mute) at the
+playhead every 32 samples, through its 5 ms ramp, playing or parked, so no
+event path was needed for it. ADR-0162's override is in:
+- a refresh that finds an automated strip value changed overrides that lane;
+- `automationOverridden()` is Live's Re-Enable button, and
+  `reenableAutomation()` works for all lanes or for one.
+
+The realiser now keeps chain nodes' `sourceLifetime()` too, so a retired
+graph never reads freed lanes. Volume and pan lanes must be in real units,
+because a normalized fader has no curve yet. Device lanes are named and not
+played: they need the device host's event path and a ParamOps override, both
+in mac's area.
+
+**Checks and plants.** +22 checks (54 in the mixer suite), 4533 in all.
+Plants A1 to A5 each fail a named check. A5, lanes read only at a block's
+start, is caught only because the mute test's step falls 100 samples off the
+block grid; with the step on the grid, the first version of the test missed
+it.
+
+**The .amxd translator's pre-flight scan** (#122, on the director's
+instruction, in DEVICE-CONTRACT-PANEL §6). What checking it changed:
+- An allowlist, not a blacklist.
+- `live.dial` and its kin are converted, not refused; they are the
+  parameters.
+- Max's right-to-left fan-out is made explicit with `[trigger]`s.
+- The AI's patch passes a second, vanilla-only scan: no `[netsend]`,
+  `[file]`, `[pdcontrol]` or messages to `pd`.
+- The director's prompt gains `$0-` receives with a parameter table.
+
+---
+
 ## 2026-09-25 — the mixer strip in the graph (ADR-0163)
 
 **Found while preparing automation playback:** the engine applied no track's

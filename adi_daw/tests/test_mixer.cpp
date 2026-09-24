@@ -6,6 +6,7 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/blob.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/ops.hpp"
@@ -19,6 +20,7 @@
 #include <filesystem>
 #include <map>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -111,6 +113,53 @@ struct Mix {
     void settle() {
         render();
         render();
+    }
+    /// ADR-0164: a lane on a track's strip parameter, points in nanoseconds.
+    struct Point {
+        double seconds;
+        double value;
+        std::uint8_t curve = 1;   // linear; 0 holds
+    };
+    void lane(std::int64_t id, std::int64_t trackId, const char* param, std::vector<Point> points,
+              const char* domain = "real", const char* owner = "track") {
+        SQLite::Statement q(store->db(),
+            "INSERT INTO automation_lanes(id, owner_kind, owner_id, param_ref, time_base, value_domain) "
+            "VALUES (?, ?, ?, ?, 1, ?)");
+        q.bind(1, id);
+        q.bind(2, owner);
+        q.bind(3, trackId);
+        q.bind(4, param);
+        q.bind(5, domain);
+        q.exec();
+        std::vector<AutomationPoint> recs;
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            AutomationPoint a{};
+            a.time = static_cast<std::int64_t>(std::llround(points[i].seconds * 1e9));
+            a.value = points[i].value;
+            a.curve = points[i].curve;
+            a.point_id = i + 1;
+            recs.push_back(a);
+        }
+        // Nanosecond times, and the header says so: a lane with time_base 1
+        // refuses a stream that claims ticks (SPEC 6.3).
+        const auto blob = writeStream<AutomationPoint>(FourCC::Automation, recs, 1,
+                                                        StreamFlags::SortedByTime | StreamFlags::TimeIsNanos);
+        if (!store->putAutomationData(id, std::nullopt, blob)) throw std::runtime_error("AAUT");
+    }
+    /// Render `seconds` of playback into `hist`, left channel.
+    std::vector<float> hist;
+    void play(double seconds) {
+        const auto frames = static_cast<std::int64_t>(seconds * 48000.0);
+        for (std::int64_t done = 0; done < frames; done += 512) {
+            render(512);
+            hist.insert(hist.end(), l.begin(), l.end());
+        }
+    }
+    [[nodiscard]] float at(double seconds) const { return hist[static_cast<std::size_t>(seconds * 48000.0)]; }
+    [[nodiscard]] bool mentions(const std::string& needle) const {
+        for (const auto& p : session.problems())
+            if (p.find(needle) != std::string::npos) return true;
+        return false;
     }
 };
 
@@ -261,6 +310,113 @@ void testStripsOutliveGraphs() {
     check(m.l[0] > 0.45f, "and the new graph's strip starts where the old one was, not at the target");
 }
 
+void testAutomationPlays() {
+    section("ADR-0164 -- a strip plays its own lanes: volume, pan and mute");
+    {
+        Mix m("volume");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(9, "master", "Master");
+        m.lane(1, 1, "volume", {{0.0, 0.0}, {1.0, -20.0}});
+        m.load();
+        m.session.transport().play();
+        m.play(1.5);
+        check(near(m.at(0.0), 0.5, 1e-4), "a volume lane starts at its first point: 0 dB");
+        check(near(m.at(0.5), 0.5 * std::pow(10.0, -10.0 / 20.0), 0.004),
+              "and at 0.5 s reads -10 dB, half way down a linear ramp to -20 dB");
+        check(near(m.at(1.25), 0.05, 5e-4), "after the last point it holds the last value (ADR-0159)");
+        bool falling = true;
+        for (std::size_t i = 1; i < 48000; ++i)
+            if (m.hist[i] > m.hist[i - 1] + 1e-6f) falling = false;
+        check(falling, "and the sweep only ever falls: no steps back up between control points");
+
+        m.session.transport().play(false);
+        m.session.transport().locate(36000);
+        m.render();
+        m.render();
+        check(near(m.l[511], 0.5 * std::pow(10.0, -15.0 / 20.0), 0.003),
+              "parked at 0.75 s, the strip reads the lane at the playhead: -15 dB");
+    }
+    {
+        Mix m("pan-mute");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(9, "master", "Master");
+        m.lane(1, 1, "pan", {{0.0, 0.0, 0}, {0.5, 1.0, 0}});
+        m.load();
+        m.session.transport().play();
+        m.play(1.0);
+        check(m.at(0.25) == 0.5f, "a held pan lane keeps the centre, exactly, before its step");
+        check(m.at(0.75) == 0.0f, "and after the step to hard right the left channel is silent");
+    }
+    {
+        Mix m("mute");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(9, "master", "Master");
+        // The step falls 100 samples into a 512-sample block, off every grid.
+        m.lane(1, 1, "mute", {{0.0, 0.0, 0}, {24100.0 / 48000.0, 1.0, 0}});
+        m.load();
+        m.session.transport().play();
+        m.play(1.0);
+        check(m.at(0.25) == 0.5f && m.at(0.75) == 0.0f, "a mute lane silences the track at its step");
+        check(m.hist[24110] > 0.0f, "through the ramp, not a click");
+        check(m.hist[24400] == 0.0f,
+              "and within one control interval and one ramp of the step: read every 32 samples, "
+              "not at the next block");
+    }
+    {
+        Mix m("refused");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(9, "master", "Master");
+        m.lane(1, 1, "volume", {{0.0, 0.0}, {1.0, -20.0}}, "normalized");
+        m.lane(2, 1, "width", {{0.0, 1.0}});
+        m.load();
+        check(m.mentions("automation_lanes#1: a volume lane must be in real units"),
+              "a normalized volume lane is named and not played: no fader curve is decided");
+        check(m.mentions("automation_lanes#2: a track has no parameter 'width'"),
+              "a lane for a parameter the strip does not have is named");
+        m.session.transport().play();
+        m.play(0.5);
+        check(m.at(0.4) == 0.5f, "and the strip keeps the model's value");
+    }
+}
+
+void testOverride() {
+    section("ADR-0162 -- touching an automated control overrides its lane until re-enabled");
+    Mix m("override");
+    m.track(1, "audio", "A", 0.5f);
+    m.track(2, "audio", "B", 0.25f);
+    m.track(9, "master", "Master");
+    m.lane(7, 1, "volume", {{0.0, 0.0}, {1.0, -20.0}});
+    m.load();
+    m.session.transport().play();
+    m.play(0.25);
+    check(!m.session.automationOverridden(), "nothing is overridden before anyone touches anything");
+
+    m.set("mixer.setVolume", 2, "db", -6.0);
+    m.refresh();
+    check(!m.session.automationOverridden(), "moving a fader with no automation overrides nothing");
+
+    m.set("mixer.setVolume", 1, "db", -6.0206);
+    m.refresh();
+    check(m.session.automationOverridden() && m.session.overriddenLanes().count(7) == 1,
+          "moving A's automated fader overrides its lane: the Re-Enable button lights");
+    m.hist.clear();
+    m.play(1.0);
+    const double b = 0.25 * std::pow(10.0, -6.0 / 20.0);
+    check(near(m.at(0.9), 0.25 + b, 1e-3), "and the value just set stands while the lane would keep falling");
+
+    check(!m.session.reenableAutomation(99), "re-enabling a lane that was not overridden is refused");
+    check(m.session.reenableAutomation(7) && !m.session.automationOverridden(), "re-enabling that lane clears it");
+    m.hist.clear();
+    m.play(0.25);
+    check(near(m.at(0.2), 0.05 + b, 1e-3), "and the strip follows the lane again at once, from the playhead");
+
+    m.set("mixer.setVolume", 1, "db", -3.0);
+    m.refresh();
+    check(m.session.automationOverridden(), "overridden again");
+    check(m.session.reenableAutomation() && !m.session.automationOverridden(),
+          "and Re-Enable Automation clears every lane");
+}
+
 }  // namespace
 
 int main() {
@@ -271,6 +427,8 @@ int main() {
         testVolumePanMute();
         testSolo();
         testStripsOutliveGraphs();
+        testAutomationPlays();
+        testOverride();
     } catch (const std::exception& e) {
         check(false, std::string("exception: ") + e.what());
     }

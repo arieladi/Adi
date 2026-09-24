@@ -604,6 +604,16 @@ track's devices, and whatever the track feeds takes the strip's output
   - A sidechain keeps nothing audible.
 - **`width`, `input_gain_db`, `phase_invert`, `delay_samples` and
   `vca_group_id`** are carried and not yet applied (ADR-0163 d6).
+- **Automation** (ADR-0164). A lane with `owner_kind = 'track'` moves its
+  strip's `param_ref`:
+  - `volume`, in dB;
+  - `pan`, from -1 to +1;
+  - `mute`, where 0.5 or more is muted.
+
+  Volume and pan lanes MUST be `real`, and a reader SHOULD report any
+  other domain rather than guess a curve. While a lane is not overridden
+  (ADR-0162), it replaces the stored value; a mute lane joins `muted`
+  and solo.
 
 ---
 
