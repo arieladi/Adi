@@ -5,6 +5,41 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — schema 1.6: op clients and Lamport clocks (ADR-0161); Live's automation override (ADR-0162)
+
+**The director's instruction:** remote multiplayer (Excel or Figma style)
+goes in the backlog at P3, with no network or UI code, but the op log gains a
+client id and a Lamport clock now. The checking changed four things:
+- **Beside `ops`, not in it.** ADR-0144 forbids a column added to an existing
+  table in a minor, so schema 1.6 adds `op_clocks(seq, client_id, lamport)`
+  and `op_clients`.
+- **A client is an open Store, not a person.** `actor` already says who.
+- **Excel and Figma are server-ordered, not CRDTs.** The clock serves either
+  model, so the model stays open (SPEC §12 item 6, rewritten).
+- **The harder problems are named, not solved:** concurrent row ids (solvable
+  without schema, since ops carry their ids), integer `ord`, shared undo.
+
+**Disruption:** none. No mission is running, and clip playback never reads
+the op log. The collect-and-export fixture needed its legacy tables dropped
+newest first, because `op_clocks` references `op_clients`.
+
+**Checks and plants.** +42 checks: ops +24, migrate +12 (the 1.5 upgrade),
+textproj +6. The total is 4479. Plants K1 to K5 each fail a named check. K4, a
+`recent()` that ignores the clock, is caught only by a remote-clock case: in a
+single-client file the clock equals `seq`, so a test without a remote op cannot
+tell them apart.
+
+**ADR-0162, the director's ruling:** automation override is Live 12's
+§25.4:
+- a touched automated control stops following its lane until re-enabled;
+- re-enable works for all lanes or for one;
+- an override is session state, not saved until side-by-side parity shows
+  whether Live saves it.
+
+**Next:** the mixer strip (ADR-0163 reserved).
+
+---
+
 ## 2026-09-25 — cloud's ADR-0159 reviewed; FL Studio backlog (ADR-0160); working alone
 
 **Availability changed (director):** cloud receives no new missions. mac

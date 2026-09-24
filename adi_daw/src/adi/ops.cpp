@@ -290,6 +290,21 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
         // Where we are in the tree. New ops hang off this.
         std::optional<std::int64_t> head = headSeq();
 
+        // ADR-0161: this Store's client, and the clock its ops continue from.
+        // One more than every clock in the file, and than every seq, because
+        // an op older than 1.6 reads as lamport = seq (SPEC 8.8).
+        {
+            SQLite::Statement client(db,
+                "INSERT OR IGNORE INTO op_clients(client_id, label, first_seen_utc) VALUES (?,?,?)");
+            client.bind(1, store_.clientId());
+            client.bind(2, store_.clientLabel());
+            client.bind(3, ts);
+            client.exec();
+        }
+        std::int64_t lamport = db.execAndGet(
+            "SELECT MAX(IFNULL((SELECT MAX(lamport) FROM op_clocks), 0),"
+            "           IFNULL((SELECT MAX(seq) FROM ops), 0))").getInt64();
+
         // ADR-0153: the caller's expected head, checked HERE, inside the
         // transaction, so nothing can move it between the check and COMMIT.
         if (options.expectHead && head != *options.expectHead) {
@@ -400,6 +415,13 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
             st.exec();
             const std::int64_t seq = db.getLastInsertRowid();
             r.seqs.push_back(seq);
+
+            SQLite::Statement clock(db,
+                "INSERT INTO op_clocks(seq, client_id, lamport) VALUES (?,?,?)");
+            clock.bind(1, seq);
+            clock.bind(2, store_.clientId());
+            clock.bind(3, ++lamport);
+            clock.exec();
             if (!d->ephemeral) head = seq;   // the chain advances; ephemeral does not
         }
 
@@ -434,9 +456,14 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
 std::vector<OpJournal::LoggedOp> OpJournal::recent(int limit) const {
     std::vector<LoggedOp> out;
     try {
-        SQLite::Statement st(store_.db(),
-            "SELECT seq, txn_id, ts_utc, actor, actor_detail, op_type, label, "
-            "payload, inverse, parent_seq, tags FROM ops ORDER BY seq DESC LIMIT ?");
+        // A file older than 1.6 opened read-only has no op_clocks (ADR-0161).
+        const bool clocks = store_.schemaMinor() >= 6;
+        SQLite::Statement st(store_.db(), clocks
+            ? "SELECT o.seq, o.txn_id, o.ts_utc, o.actor, o.actor_detail, o.op_type, o.label, "
+              "o.payload, o.inverse, o.parent_seq, o.tags, c.client_id, c.lamport "
+              "FROM ops o LEFT JOIN op_clocks c ON c.seq = o.seq ORDER BY o.seq DESC LIMIT ?"
+            : "SELECT seq, txn_id, ts_utc, actor, actor_detail, op_type, label, "
+              "payload, inverse, parent_seq, tags FROM ops ORDER BY seq DESC LIMIT ?");
         st.bind(1, limit);
         while (st.executeStep()) {
             LoggedOp o;
@@ -463,6 +490,12 @@ std::vector<OpJournal::LoggedOp> OpJournal::recent(int limit) const {
             }
             if (!st.getColumn(9).isNull()) o.parentSeq = st.getColumn(9).getInt64();
             o.ephemeral = st.getColumn(10).getString() == "ephemeral";
+            // An op without a clock row predates 1.6: lamport = seq (SPEC 8.8).
+            o.lamport = o.seq;
+            if (clocks && !st.getColumn(12).isNull()) {
+                o.clientId = st.getColumn(11).getString();
+                o.lamport = st.getColumn(12).getInt64();
+            }
             out.push_back(std::move(o));
         }
     } catch (const std::exception&) {

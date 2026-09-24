@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1005;          -- schema 1.5
+PRAGMA user_version   = 1006;          -- schema 1.6
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -746,6 +746,8 @@ transaction that performs it (§3.5).
 - `inverse` holds the data needed to revert, so undo never has to replay from the
   beginning.
 - `parent_seq` makes the history a **tree, not a stack** (§8.2).
+- Since 1.6 each op also has a client and a Lamport clock, beside it in
+  `op_clocks` (§8.8).
 
 ### 8.2 The undo tree
 
@@ -830,6 +832,34 @@ row in the same transaction as its ops, with `actor_detail` equal to theirs.
 Log metadata, like the ops rows: not an op, never undone, not in the replay
 digest. `created_utc` is supplied by the caller. A file older than 1.4 has no
 requests recorded.
+
+### 8.8 Op clients and clocks (schema 1.6)
+
+```sql
+op_clients(client_id, label, first_seen_utc)
+op_clocks(seq, client_id, lamport)
+```
+
+Who wrote each op, and a Lamport clock to order it by, so that a future remote
+session can merge two clients' logs (§12 item 6, ADR-0161).
+
+- **A client is one open Store** of one application on one machine: 32
+  lowercase hex characters, random, new each time a Store is opened. It is not
+  a person. `ops.actor` and `actor_detail` still say user or agent. `label` is
+  for display only.
+- **A writer MUST add an `op_clocks` row in the same transaction as each op
+  row.** It MUST register its client in `op_clients` first, in that transaction.
+- **`lamport`** is one more than the greatest clock the writer has seen,
+  counting every `op_clocks.lamport` in the file and every `ops.seq`. Ops within
+  one transaction take consecutive clocks. A client that later receives another
+  client's ops advances past their clocks before it writes again.
+- **`(lamport, client_id)` is unique**, and it is the op's identity across
+  clients. Ordering by it respects causality: an op written after another was
+  seen has a greater clock.
+- **An op with no `op_clocks` row predates 1.6.** It reads as client unknown,
+  lamport = `seq`.
+- **Log metadata.** Like the ops rows, these are not ops, are never undone, and
+  are not in the replay digest.
 
 ---
 
@@ -986,9 +1016,18 @@ Named here so they are visible gaps rather than accidental omissions:
    `key_map` and reserved; not specified.
 5. **Video.** A video track kind exists; frame-rate/timecode/pull-up handling is
    not specified.
-6. **Collaboration.** The op log is the right substrate for it. Whether we go
-   CRDT or OT, and what the identity and conflict model is, is out of scope for
-   0.1 and must not accidentally be foreclosed by 0.1's choices.
+6. **Collaboration.** The op log is the right substrate for it, and since 1.6
+   every op carries a client and a Lamport clock (§8.8). Still undecided, and
+   not to be foreclosed:
+   - **The conflict model.** Server-ordered, as Figma and Excel co-authoring
+     are, or peer CRDT.
+   - **Row identity when two clients create at once.** Ops already carry the
+     ids they create (`clip.create` names its id), so client-partitioned ids
+     need no schema change.
+   - **Concurrent reordering.** The `ord` columns are integers; two clients
+     inserting at one position need fractional or sequence ordering.
+   - **Media and plug-in state** travel by BLAKE3 hash, as they already do on
+     disk.
 7. **Encryption / signing.** Out of scope. Note that SQLCipher exists if we ever
    want it, and that it changes the file header — so a `.adi` cannot be both
    encrypted and recognisable by `application_id`.

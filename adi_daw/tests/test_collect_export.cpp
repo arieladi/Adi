@@ -175,7 +175,9 @@ void legacy(Fixture& f, bool upgraded, bool badSecond = false) {
     // Match the declared old minor, not a modern schema with only its version
     // number lowered: drop every table a later minor added (1.1 added only the
     // triggers, dropped above), so a schema bump cannot leave one behind.
-    for (const auto& table : adi::tablesAddedAfter(1)) db.exec("DROP TABLE " + table);
+    // Newest first: a later table may reference an earlier one (op_clocks -> op_clients).
+    const auto added = adi::tablesAddedAfter(1);
+    for (auto t = added.rbegin(); t != added.rend(); ++t) db.exec("DROP TABLE " + *t);
     db.exec(upgraded ? "PRAGMA user_version=1001" : "PRAGMA user_version=1000");
     if (upgraded) db.exec(
         "CREATE TRIGGER media_never_embedded_insert BEFORE INSERT ON media_files WHEN NEW.embedded<>0 BEGIN SELECT RAISE(ABORT,'no embedded'); END;"

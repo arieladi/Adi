@@ -10,6 +10,7 @@ byte for byte, taken from git history:
 | `schema-1.2.sql` | `74ac501` | remarks (ADR-0131) |
 | `schema-1.3.sql` | `f593fd7` | history snapshots (ADR-0128, ADR-0140) |
 | `schema-1.4.sql` | `9805616` | expression routes, agent requests (ADR-0146) |
+| `schema-1.5.sql` | `42d0000` | the plug-in panel (ADR-0154) |
 
 They are test inputs, never edited. `tests/test_migrate.cpp` builds real 1.N
 files from them and upgrades each one. `tools/validate_schema.py` check 9 proves
