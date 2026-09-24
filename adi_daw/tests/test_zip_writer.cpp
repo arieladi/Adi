@@ -206,7 +206,7 @@ void big() {
 }
 }
 int main() {
-    std::setbuf(stdout, nullptr);
+    std::setvbuf(stdout, nullptr, _IONBF, 0);   // as every suite; MSVC /WX refuses setbuf (C4996)
     try { roundtrip(); errors(); big();
         if (const auto* flag = envVar("ADI_ZIP_BIG"); flag && std::string_view(flag) == "1") aggregateBig();
     } catch (const std::exception& e) { check(false, e.what()); }
