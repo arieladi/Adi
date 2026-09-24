@@ -51,7 +51,13 @@ node. After the fix the fixture holds the chord at -13.4 dBFS from 4 s to
 - Windows CI's core job went from 10 to 20 minutes with the extreme-rate
   conversion tests in Debug.
 
-**My next.** The decoder pins that are never released; then automation
+**Done since:** the decoder pins. A decoded clip now releases its cache pin
+when the clip goes, where every rebuild used to pin the copy again for good.
+`test_clip_playback` sets `ADI_HOME` too: its not-audio case had created the
+user's real cache folder. +3 checks; a plant that never releases fails two of
+them.
+
+**My next.** Automation
 emission once cloud's ADR-0159 lands and the director rules on override;
 then the per-track MIDI generation above.
 
