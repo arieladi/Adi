@@ -153,7 +153,7 @@ subject, say so in your log instead of writing it twice.
 | 0141 | win | `win/vst3-gesture` | a knob moved inside a real VST3's window is one op; the mute and the echo guard each have their case | used |
 | 0142 | win | `win/vst3-state` | plugin state round-trips through the project; a preset picked in the plugin's window is one `device.loadState`; rows go on top of a chunk | used |
 | 0143 | linux | `linux/collect-export` | Collect and Export and the media ops (ADR-0127 d3-d4, ADR-0136 d4), if it decides anything | reserved |
-| 0144 | cloud | `cloud/migrate` | how an older 1.x file is upgraded when opened for writing, if it decides anything | reserved |
+| 0144 | cloud | `cloud/migrate` | how an older 1.x file is upgraded when opened for writing; read-only opens read missing tables as empty | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -171,7 +171,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing; lent to cloud while `cloud/migrate` is open) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
 | `src/adi/ops_catalog.cpp` (the `media.*` ops only), `docs/OPS.md`, `src/adi/media/**`, `src/adi/check.*`, `src/main.cpp`, `tests/test_media_ops.cpp`, `tests/test_collect_export.cpp`, `tools/validate_ops.py` | linux | `linux/collect-export` | 2026-09-24 |
-| `src/adi/store.*`, `docs/format/**`, `tools/validate_schema.py`, `tests/test_store.cpp`, `tests/test_migrate.cpp`, then `src/adi/textproj_store.*`, `src/adi/store_rows.*`, `tests/test_textproj_store.cpp`, `src/adi/digest.cpp` (lent by win) | cloud | `cloud/migrate` | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; `docs/format/**` lent to cloud; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |

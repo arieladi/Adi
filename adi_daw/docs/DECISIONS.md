@@ -9293,3 +9293,68 @@ in ADR-0141.
 - SPEC §7.1 still calls the mirror "redundant when the plugin loads". It
   gains decision 5's reader and writer rules when `docs/format/**` comes back
   from cloud.
+---
+
+## ADR-0144 — An older 1.x file is upgraded in place when opened for writing; opened read-only, its missing tables read as empty — `DECIDED` (2026-09-24) — **CLOSES THE GAP ADR-0136 AND ADR-0140 LEFT**
+
+**Director's assignment** to `cloud`. Before this, a 1.3 build opening a 1.1
+or 1.2 file wrote into it with the old schema: `remark.add` failed with "no such
+table", and so did taking a history snapshot.
+
+### Decisions
+
+1. **Opening an older minor of our major for writing upgrades it**, in
+   `Store::open`, before anything else touches the file. There is one
+   transaction. Each later minor's objects are created in minor order, then
+   `adi_meta.schema_minor` is set, then `user_version`, **last**. A failure
+   anywhere rolls back everything: the file stays at its old version and the
+   open fails with `StoreError::MigrationFailed`. No half-upgraded file can
+   exist, and no file claims a version whose objects it lacks.
+2. **The steps are a table of names, not SQL** (`migrationSteps()` in
+   `store.cpp`): one row per minor, listing the objects that minor added. Their
+   DDL is read from the embedded `schema.sql`, so an upgraded file is built from
+   the same statements as a fresh one. There is no second copy of the DDL to
+   drift.
+3. **A minor is additive, and that is now checked.** Every earlier minor's
+   `schema.sql` is frozen under `docs/format/history/`. `validate_schema.py`
+   check 9 fails if a minor dropped or changed an object, and also if applying
+   the missing objects to a frozen file does not give the current schema. A
+   future minor that must change an existing object needs a different
+   mechanism and its own ADR.
+4. **Read-only: missing tables read as empty, decided in one place.** A
+   read-only open never writes. For each table the file lacks, `Store::open`
+   creates an empty `TEMP` table of the same name on its own connection.
+   SQLite resolves unqualified names to `temp` first, so every reader (History,
+   `check`, the digest, future ones) sees "no rows" without a guard of its own.
+   The alternative was an error saying "open for writing to upgrade". It was
+   rejected because read-only is how a newer major and a shared or locked file
+   are opened, and those are exactly the cases where the user cannot upgrade.
+5. **Never touched**: a newer minor (SPEC §11: no upgrade, no downgrade, no
+   rewritten `user_version`) and existing rows. A 1.0 file with embedded media
+   is upgraded as it stands: the triggers refuse only new writes, and
+   extracting the media is `linux`'s explicit operation (ADR-0127 d3).
+6. **A comment inside an existing `CREATE` is not a difference.** SQLite stores
+   the statement verbatim, 1.1 added a comment inside `media_files`, and a
+   migration never rewrites a table. The comparisons (the test and check 9)
+   strip comments and collapse whitespace.
+
+### Verified
+
+`adi_migrate_tests` builds 1.0, 1.1 and 1.2 files from the frozen schemas and
+checks each one after an upgrading open:
+- `sqlite_master` matches a fresh file;
+- existing data is intact;
+- `remark.add` and a history snapshot work, and `check` is clean;
+- a 1.0 file's embedded media is kept, and the triggers refuse new embedded
+  bytes.
+
+Four more cases are checked:
+- a read-only open leaves the file byte-identical and reads the missing
+  tables as empty;
+- a newer minor is left alone;
+- a failing step leaves the file at 1.1 with the other writer's table intact;
+- a statement trace shows `user_version` set after every `CREATE`.
+
+The plants are in `collab/cloud.md`.
+
+**Not decided:** a 1.x → 2.0 upgrade, which by definition is not additive.

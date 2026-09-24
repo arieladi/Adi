@@ -8,6 +8,8 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 
 #include <chrono>
+#include <map>
+#include <stdexcept>
 #include <system_error>
 
 namespace adi {
@@ -24,7 +26,108 @@ std::vector<std::byte> toBytes(const void* p, std::size_t n) {
     return v;
 }
 
+/// Every object in the embedded schema.sql, by name: its type and the exact
+/// statement SQLite stored for it. Built once, from an in-memory database, so a
+/// migration creates each object with the same statement a fresh file does.
+struct SchemaObject {
+    std::string type;
+    std::string sql;
+};
+const std::map<std::string, SchemaObject>& currentSchemaObjects() {
+    static const std::map<std::string, SchemaObject> objects = [] {
+        std::map<std::string, SchemaObject> out;
+        SQLite::Database mem(":memory:", SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+        mem.exec(std::string(kSchemaSql));
+        SQLite::Statement st(mem,
+            "SELECT name, type, sql FROM sqlite_master WHERE sql IS NOT NULL");
+        while (st.executeStep())
+            out[st.getColumn(0).getString()] = {st.getColumn(1).getString(),
+                                                st.getColumn(2).getString()};
+        return out;
+    }();
+    return objects;
+}
+
 }  // namespace
+
+const std::vector<MigrationStep>& migrationSteps() {
+    // One entry per minor, in order, each naming what that minor ADDED. A new
+    // minor appends a row here and freezes the previous schema.sql under
+    // docs/format/history/ -- validate_schema check 9 fails until both exist.
+    static const std::vector<MigrationStep> steps = {
+        // 1.1 (ADR-0136): the lock on embedded media. The triggers refuse NEW
+        // writes only; a 1.0 file's embedded rows stay until extracted.
+        {1, {"media_never_embedded_insert", "media_never_embedded_update",
+             "media_blobs_forbidden"}},
+        // 1.2 (ADR-0131): remarks.
+        {2, {"remarks", "idx_remarks_target"}},
+        // 1.3 (ADR-0128, ADR-0140): history snapshots.
+        {3, {"history_snapshots", "idx_hsnap_seq"}},
+    };
+    return steps;
+}
+
+std::vector<std::string> tablesAddedAfter(int fromMinor) {
+    std::vector<std::string> out;
+    const auto& objects = currentSchemaObjects();
+    for (const auto& step : migrationSteps()) {
+        if (step.toMinor <= fromMinor) continue;
+        for (const auto& name : step.objects) {
+            const auto it = objects.find(name);
+            if (it != objects.end() && it->second.type == "table") out.push_back(name);
+        }
+    }
+    return out;
+}
+
+bool migrateToCurrent(SQLite::Database& db, int fromMinor, std::string& error) {
+    const auto& steps = migrationSteps();
+    // The table must cover every minor exactly once, in order; a gap would
+    // leave a file claiming a version whose objects it lacks.
+    for (std::size_t i = 0; i < steps.size(); ++i) {
+        if (steps[i].toMinor != static_cast<int>(i) + 1) {
+            error = "migration table is not contiguous at minor " + std::to_string(i + 1);
+            return false;
+        }
+    }
+    if (steps.empty() || steps.back().toMinor != kSchemaMinor) {
+        error = "migration table does not reach minor " + std::to_string(kSchemaMinor);
+        return false;
+    }
+    if (fromMinor < 0 || fromMinor >= kSchemaMinor) {
+        error = "nothing to upgrade from minor " + std::to_string(fromMinor);
+        return false;
+    }
+
+    try {
+        const auto& objects = currentSchemaObjects();
+        SQLite::Transaction txn(db);
+        for (const auto& step : steps) {
+            if (step.toMinor <= fromMinor) continue;
+            for (const auto& name : step.objects) {
+                const auto it = objects.find(name);
+                if (it == objects.end()) {
+                    error = "schema.sql has no object '" + name + "' for minor " +
+                            std::to_string(step.toMinor);
+                    return false;   // rolls back
+                }
+                db.exec(it->second.sql);
+            }
+        }
+        // Bookkeeping, then the version LAST: until this statement runs, the
+        // file still says what it was, and a failure above rolls back to that.
+        SQLite::Statement meta(db,
+            "UPDATE adi_meta SET value = ? WHERE key = 'schema_minor'");
+        meta.bind(1, std::to_string(kSchemaMinor));
+        meta.exec();
+        db.exec("PRAGMA user_version = " + std::to_string(kUserVersion));
+        txn.commit();
+        return true;
+    } catch (const std::exception& e) {
+        error = e.what();
+        return false;
+    }
+}
 
 const char* toString(StoreError e) {
     switch (e) {
@@ -36,6 +139,8 @@ const char* toString(StoreError e) {
         case StoreError::SchemaTooNew:  return "schema is newer than this build; opened read-only";
         case StoreError::SchemaCorrupt: return "schema present but unreadable";
         case StoreError::SqlError:      return "sql error";
+        case StoreError::MigrationFailed:
+            return "an older 1.x file could not be upgraded; it was left unchanged";
     }
     return "unknown";
 }
@@ -174,9 +279,43 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
         result = StoreError::SchemaTooNew;
     }
 
+    // ADR-0144: an older minor of OUR major. Opened for writing, it is upgraded
+    // now, before anything else touches it, so every writer after this point
+    // can assume the current schema. Opened read-only, it is never written:
+    // the tables it lacks get empty TEMP stand-ins on this connection -- the one
+    // place readers are protected, rather than a guard in every reader.
+    // A newer minor is never touched (SPEC §11): `minor < kSchemaMinor` only.
+    std::optional<int> upgradedFrom;
+    int openedMinor = minor;
+    if (major == kSchemaMajor && minor < kSchemaMinor) {
+        if (!effectiveReadOnly) {
+            std::string why;
+            if (!migrateToCurrent(*db, minor, why)) {
+                err = StoreError::MigrationFailed;
+                return nullptr;
+            }
+            upgradedFrom = minor;
+            openedMinor = kSchemaMinor;
+        } else {
+            try {
+                const auto& objects = currentSchemaObjects();
+                for (const auto& table : tablesAddedAfter(minor)) {
+                    std::string sql = objects.at(table).sql;
+                    const std::string prefix = "CREATE TABLE ";
+                    if (sql.rfind(prefix, 0) != 0) throw std::runtime_error("unexpected DDL for " + table);
+                    db->exec("CREATE TEMP TABLE " + sql.substr(prefix.size()));
+                }
+            } catch (const std::exception&) {
+                err = StoreError::SqlError;
+                return nullptr;
+            }
+        }
+    }
+
     auto store = std::unique_ptr<Store>(new Store(std::move(db), path, effectiveReadOnly));
     store->major_ = major;
-    store->minor_ = minor;
+    store->minor_ = openedMinor;
+    store->upgradedFrom_ = upgradedFrom;
     if (!store->applySessionPragmas()) {
         err = StoreError::SqlError;
         return nullptr;

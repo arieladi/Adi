@@ -253,6 +253,14 @@ add_executable(adi_snapshots_tests tests/test_snapshots.cpp)
 target_link_libraries(adi_snapshots_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_snapshots_tests COMMAND adi_snapshots_tests)
 
+# Upgrading an older 1.x file (ADR-0144): built from the frozen schema.sql of
+# each minor, which is why the test is told where the history lives.
+add_executable(adi_migrate_tests tests/test_migrate.cpp)
+target_link_libraries(adi_migrate_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_migrate_tests PRIVATE
+    ADI_SCHEMA_HISTORY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs/format/history")
+add_test(NAME adi_migrate_tests COMMAND adi_migrate_tests)
+
 # The engine skeleton. Its own binary because its concurrency test is the only
 # one in the tree that runs a second thread, and a failure there means something
 # categorically different from a failure anywhere else.

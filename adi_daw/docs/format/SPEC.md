@@ -823,6 +823,28 @@ be extracted before it is written again.
 **Writers MUST NOT use `SELECT *` or positional `INSERT`.** Both break silently
 the moment a column is added, and "silently" is the operative word.
 
+### 11.1 Upgrading an older minor (ADR-0144)
+
+A minor only **adds** objects (tables, indexes, triggers). It never changes or
+drops one. That is what makes an older file upgradable in place, and
+`validate_schema.py` check 9 enforces it against the frozen schemas in
+[`history/`](history/).
+
+| Opening a file of our major with an older minor | Required behaviour |
+|---|---|
+| **for writing** | Upgrade it before anything else reads or writes it: in **one transaction**, create each later minor's objects in minor order, set `adi_meta.schema_minor`, and set `user_version` **last**. If any step fails, roll back everything: the file stays at its old version and the open fails with a clear error. |
+| **read-only** | Never write. Every table the file lacks reads as **empty**. The reference implementation creates empty `TEMP` tables of the same names on its own connection, in one place (`Store::open`), so every reader is covered. |
+
+- Existing rows are never rewritten or dropped. A 1.0 file with embedded media
+  is upgraded as it is; the 1.1 triggers refuse only **new** embedded writes, and
+  extracting the old media is a separate, explicit operation (ADR-0127 d3).
+- The objects are created from the current `schema.sql`'s own statements, so an
+  upgraded file matches a fresh one, ignoring comments inside a `CREATE`
+  (SQLite stores those verbatim, and a migration never rewrites an existing
+  table).
+- A **newer** minor is never touched: no upgrade, no downgrade, no rewrite of
+  `user_version`. A newer **major** opens read-only, as above.
+
 Major version bumps are the expensive kind and we expect to make very few. The
 mechanisms in §6.3 (blob tails), §9 (extensions) and the "unknown column"
 rule exist specifically so that almost everything can be a minor bump.
