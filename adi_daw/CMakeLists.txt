@@ -136,6 +136,8 @@ add_custom_command(
     VERBATIM)
 
 add_library(adi_core STATIC
+    src/adi/appdata.cpp
+    src/adi/plugin_registry.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
     src/adi/audio/wav_file.cpp
@@ -361,6 +363,11 @@ add_test(NAME adi_param_ops_tests COMMAND adi_param_ops_tests)
 add_executable(adi_engine_tests tests/test_engine.cpp)
 target_link_libraries(adi_engine_tests PRIVATE adi_core adi_warnings)
 find_package(Threads REQUIRED)
+
+# ADR-0149: where application data lives, and the plugin capabilities registry.
+add_executable(adi_plugin_registry_tests tests/test_plugin_registry.cpp)
+target_link_libraries(adi_plugin_registry_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_plugin_registry_tests COMMAND adi_plugin_registry_tests)
 
 add_executable(adi_param_edits_tests tests/test_param_edits.cpp)
 target_link_libraries(adi_param_edits_tests PRIVATE adi_core adi_warnings Threads::Threads)

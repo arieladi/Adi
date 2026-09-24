@@ -457,6 +457,53 @@ void testChainPair() {
 
 }  // namespace
 
+std::optional<std::string> readRoute(Store& s, std::int64_t dev) {
+    SQLite::Statement st(s.db(), "SELECT route FROM device_expression_routes WHERE device_id = ?");
+    st.bind(1, dev);
+    if (!st.executeStep()) return std::nullopt;
+    return st.getColumn(0).getString();
+}
+
+void testTheExpressionRoute() {
+    section("ADR-0146, ADR-0149: the route a device plays with is an op, and travels with the device");
+    Scratch sc("route");
+    auto s = project(sc / "p.adi");
+    if (!s) { check(false, "project opens"); return; }
+    check(seedChainAndDevice(*s), "seeded");
+    check(!readRoute(*s, 9).has_value(), "no row: Auto");
+
+    check(run(*s, "device.setExpressionRoute", {{"dev", 9}, {"route", "mpe_midi"}}), "choose MPE over MIDI");
+    check(readRoute(*s, 9) == std::optional<std::string>("mpe_midi"), "the row says so");
+    check(run(*s, "device.setExpressionRoute", {{"dev", 9}, {"route", "plain"}}), "then plain");
+    History h(*s);
+    check(h.undo().ok, "undo");
+    check(readRoute(*s, 9) == std::optional<std::string>("mpe_midi"), "back to MPE over MIDI");
+    check(h.undo().ok, "undo again");
+    check(!readRoute(*s, 9).has_value(), "and back to Auto: the row is gone, not set to something");
+
+    std::string err;
+    check(!run(*s, "device.setExpressionRoute", {{"dev", 9}, {"route", "sideways"}}, &err),
+          "a route the format does not know is refused: " + err);
+    check(!run(*s, "device.setExpressionRoute", {{"dev", 9}}, &err),
+          "a missing route key is loud, not Auto: " + err);
+
+    // It travels with the device: removal and its undo, and an insert that
+    // carries the registry's proposal.
+    check(run(*s, "device.setExpressionRoute", {{"dev", 9}, {"route", "note_expression"}}), "a route again");
+    check(run(*s, "device.remove", {{"id", 9}}), "remove the device");
+    check(!readRoute(*s, 9).has_value(), "the route cascaded with it");
+    History h2(*s);
+    check(h2.undo().ok, "undo the removal");
+    check(readRoute(*s, 9) == std::optional<std::string>("note_expression"),
+          "and the route came back with the device");
+    check(run(*s, "device.insert", {{"id", 10}, {"chain", 5}, {"ord", 3}, {"name", "Synth"},
+                                    {"route", "mpe_midi"}}),
+          "a new device inserted with the registry's route in its payload");
+    check(readRoute(*s, 10) == std::optional<std::string>("mpe_midi"), "is inserted on that route");
+}
+
+// --- main ---------------------------------------------------------------------
+
 int main() {
     // Unbuffered: a crashing test binary loses its whole block-buffered stdout
     // on Windows, and the harness then prints a blank line where a failure
@@ -475,6 +522,7 @@ int main() {
     testMissingPluginSurvivesTheRoundTrip();
     testMoveAndScalars();
     testChainPair();
+    testTheExpressionRoute();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -396,6 +396,15 @@ Model readModel(const Store& store) {
               m.pluginState.push_back(std::move(s));
           });
 
+    query(m, db, "device_expression_routes",
+          "SELECT device_id, route FROM device_expression_routes ORDER BY device_id",
+          [&](const SQLite::Statement& st) {
+              DeviceRoute r;
+              r.deviceId = st.getColumn(0).getInt64();
+              r.route = st.getColumn(1).getString();
+              m.deviceRoutes.push_back(std::move(r));
+          });
+
     // Always present: Store::open upgrades an older file for writing, and
     // stands in an empty table for a read-only one (ADR-0144).
     query(m, db, "remarks",

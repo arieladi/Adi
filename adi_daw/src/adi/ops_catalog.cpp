@@ -899,7 +899,8 @@ constexpr Field kFDeviceInsert[] = {{"id", FieldType::Int, true},
                                     {"always", FieldType::Bool, false},
                                     {"missing", FieldType::Bool, false},
                                     {"params", FieldType::Array, false},
-                                    {"state", FieldType::Array, false}};
+                                    {"state", FieldType::Array, false},
+                                    {"route", FieldType::Text, false}};
 constexpr Field kFDeviceMove[] = {{"id", FieldType::Int, true},
                                   {"chain", FieldType::Int, true},
                                   {"ord", FieldType::Int, true}};
@@ -922,6 +923,11 @@ constexpr Field kFDeviceState[] = {{"dev", FieldType::Int, true},
                                    {"role", FieldType::Text, true},
                                    {"hash", FieldType::Text, false},
                                    {"hint", FieldType::Text, false}};
+// ADR-0146, ADR-0149: `route` optional-and-nullable, `device.setParam`'s
+// `norm` convention: null (or absent in an inverse) clears the row, which is
+// Auto. The handler still insists the key is present.
+constexpr Field kFDeviceRoute[] = {{"dev", FieldType::Int, true},
+                                   {"route", FieldType::Text, false}};
 constexpr Field kFDevicePreset[] = {{"dev", FieldType::Int, true},
                                     {"preset", FieldType::Text, true}};
 constexpr Field kFSetParent[] = {{"id", FieldType::Int, true},
@@ -1303,6 +1309,16 @@ bool deviceInsertApply(OpContext& c, const Payload& p, std::string& err) {
 
         if (p.contains("params")) replayParams(c, id, p.at("params"));
         if (p.contains("state"))  replayState(c, id, p.at("state"));
+        // ADR-0149: the route travels with the device, so undoing a removal
+        // plays it the way it played, and a new device takes the registry's
+        // default through here, once.
+        if (p.contains("route") && !p.at("route").is_null()) {
+            SQLite::Statement r(c.db,
+                "INSERT INTO device_expression_routes(device_id, route) VALUES (?,?)");
+            r.bind(1, id);
+            r.bind(2, p.at("route").get<std::string>());
+            r.exec();
+        }
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1357,6 +1373,11 @@ bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::stri
         // looks like the undo worked.
         inv["params"] = captureParams(c, id);
         inv["state"]  = captureState(c, id);
+        // The route cascades with the device like the rows above (ADR-0149).
+        SQLite::Statement r(c.db,
+            "SELECT route FROM device_expression_routes WHERE device_id = ?");
+        r.bind(1, id);
+        if (r.executeStep()) inv["route"] = r.getColumn(0).getString();
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1532,6 +1553,47 @@ bool deviceLoadStateInverse(OpContext& c, const Payload& p, Payload& inv, std::s
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 
+// --- device.setExpressionRoute --------------------------------------------
+//
+// ADR-0146, ADR-0149: the route a device plays with. A string sets it, null
+// clears it back to Auto. Symmetric: the inverse is the row as it was.
+
+bool deviceSetRouteApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        const auto dev = p.at("dev").get<std::int64_t>();
+        if (!p.contains("route")) {
+            err = "device.setExpressionRoute needs a 'route' key; use null for Auto";
+            return false;
+        }
+        if (p.at("route").is_null()) {
+            SQLite::Statement del(c.db, "DELETE FROM device_expression_routes WHERE device_id = ?");
+            del.bind(1, dev);
+            del.exec();
+            return true;
+        }
+        SQLite::Statement st(c.db,
+            "INSERT INTO device_expression_routes(device_id, route) VALUES (?,?) "
+            "ON CONFLICT(device_id) DO UPDATE SET route = excluded.route");
+        st.bind(1, dev);
+        st.bind(2, p.at("route").get<std::string>());
+        st.exec();
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool deviceSetRouteInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        const auto dev = p.at("dev").get<std::int64_t>();
+        inv = Payload::object();
+        inv["dev"] = dev;
+        SQLite::Statement st(c.db, "SELECT route FROM device_expression_routes WHERE device_id = ?");
+        st.bind(1, dev);
+        if (st.executeStep()) inv["route"] = st.getColumn(0).getString();
+        else                  inv["route"] = nullptr;
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
 // --- device.setPreset -------------------------------------------------------
 //
 // Only the NAME. A preset change is a name and a pile of opaque bytes, and the
@@ -1642,6 +1704,11 @@ const OpDescriptor kHandWritten[] = {
     {"device.loadState", "Load opaque device state", Scope::Edit,
      EngineImpact::Snapshot, kFDeviceState, false, false,
      deviceLoadStateApply, deviceLoadStateInverse, ""},
+    // ADR-0146, ADR-0149. Snapshot: the route is read by the device, not the
+    // graph's shape.
+    {"device.setExpressionRoute", "Choose how per-note expression reaches a device",
+     Scope::Edit, EngineImpact::Snapshot, kFDeviceRoute, false, false,
+     deviceSetRouteApply, deviceSetRouteInverse, ""},
     {"device.setPreset", "Set a device's preset name", Scope::Edit,
      EngineImpact::Snapshot, kFDevicePreset, false, false,
      deviceSetPresetApply, deviceSetPresetInverse, ""},

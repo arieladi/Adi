@@ -158,7 +158,7 @@ subject, say so in your log instead of writing it twice.
 | 0146 | win | `win/schema-1.4` | schema 1.4: the expression route a device plays with, and the agent's request beside its transaction | used |
 | 0147 | linux | `linux/library-index` | publishing files without hard links; the library index of ADR-0145 d11; BLAKE3's SIMD code for it, if it decides anything | reserved |
 | 0148 | cloud | `cloud/changeset` | the Propose-tier changeset of ADR-0145 d9, if it decides anything | reserved |
-| 0149 | win | `win/route-registry` | where application data lives, shared by the suite or per application; the plugin capabilities registry; the route op | reserved |
+| 0149 | win | `win/route-registry` | where application data lives, shared by the suite or per application; the capabilities registry proposes a route once, the project decides; the route op | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -176,7 +176,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
-| `src/adi/appdata.*`, `src/adi/plugin_registry.*`, `src/adi/store.*`, `src/adi/ops_catalog.cpp` (the `device.*` ops only), `docs/OPS.md`, `tools/validate_schema.py`, `tests/test_migrate.cpp`, `tests/test_plugin_registry.cpp`, `src/juce/vst3_*`, `src/juce/clap_host.*` (the last two inside mac's area, on the director's step-6 instruction) | win | `win/route-registry` | 2026-09-24 |
 | `src/adi/media/**`, `src/adi/library/**`, `tests/test_collect_export.cpp`, `tests/test_media_ops.cpp`, `tests/test_library.cpp`; one dependency line each in `tools/fetch_external.sh` and `docs/EXTERNAL-CODE.md` if utf8proc is needed (mac's area, on the director's instruction) | linux | `linux/library-index` | 2026-09-24 |
 | `src/adi/changeset.*`, `tests/test_changeset.cpp`, `src/main.cpp`, `docs/AI-AGENT.md` | cloud | `cloud/changeset` | 2026-09-24 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |

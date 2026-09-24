@@ -286,6 +286,13 @@ struct PluginState {
     std::string formatHint;
 };
 
+/// `device_expression_routes` (ADR-0146, schema 1.4): the route a device
+/// plays with. A device with no row is Auto.
+struct DeviceRoute {
+    std::int64_t deviceId = 0;
+    std::string route;   ///< note_expression | mpe_midi | plain
+};
+
 /// `remarks` (ADR-0131, schema 1.2): a note anchored to a track, a clip or a
 /// device, and through `paramId` to one of a device's parameters. The anchor
 /// is polymorphic, like a routing endpoint, so it may name nothing; the
@@ -320,6 +327,7 @@ struct Model {
     std::vector<Device> devices;
     std::vector<PluginParam> pluginParams;
     std::vector<PluginState> pluginState;
+    std::vector<DeviceRoute> deviceRoutes;
     std::vector<Remark> remarks;
 
     /// Tables that were present but unreadable — a newer schema that dropped a

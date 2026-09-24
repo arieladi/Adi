@@ -9611,3 +9611,76 @@ that use them build on main rather than on each other's branches.
 
 **Not decided here:** where application data lives and the capability registry
 itself (ADR-0149, win's next PR).
+
+
+---
+
+## ADR-0149 — Where application data lives; the plugin capabilities registry proposes a route once, and the project decides — `DECIDED` (2026-09-24) — **IMPLEMENTS ADR-0134 d7 AND ADR-0145 F-12; USES ADR-0146**
+
+**Context.** Three rulings need data that belongs to the machine, not the
+project: the library index (ADR-0145 d11, linux), the AudioGridder catalogue
+(d6), and the plugin capabilities registry that remembers "MPE over MIDI for
+this synth" (ADR-0134 d7, F-12). And the suite is three applications whose
+settings must not bleed into each other (d10). Nothing said where any of it
+lives.
+
+### Decisions
+
+1. **Three kinds of application data, each where its platform expects it**
+   (`src/adi/appdata.*`):
+
+   | Kind | Windows | macOS | Linux |
+   |---|---|---|---|
+   | config, **per application** | `%APPDATA%\ADI\<App>` | `~/Library/Application Support/ADI/<App>` | `$XDG_CONFIG_HOME/adi/<app>` |
+   | data, **shared by the suite** | `%LOCALAPPDATA%\ADI\Shared` | `~/Library/Application Support/ADI/Shared` | `$XDG_DATA_HOME/adi/shared` |
+   | cache, shared | `%LOCALAPPDATA%\ADI\Cache` | `~/Library/Caches/ADI` | `$XDG_CACHE_HOME/adi` |
+
+   `<App>` is `ADI DAW`, `ADI Live` or `aDiJ`. Settings roam on Windows; what
+   the suite learned about this machine's plugins and files does not. The
+   paths come from each platform's own environment variables, read in one
+   file, with the wide call on Windows so a profile folder with a Hebrew name
+   survives. `ADI_HOME` puts all three under one folder, for tests and a
+   portable install. Asking creates nothing.
+2. **The registry is `data/plugins.sqlite`**, its own application id (`ADIP`)
+   and version, refusing a file that is not ours or is newer, in WAL mode with
+   a busy timeout because two applications of the suite may hold it at once.
+   Today it holds one thing: the route a USER chose, per format and plugin ID.
+   Choosing Auto forgets it.
+3. **The registry proposes once; the project decides.** It is read when a
+   device is inserted, and its answer goes into `device.insert`'s payload as
+   `route`, so it becomes the project's row (ADR-0146). A session never asks
+   the registry: a project must play the same on a machine whose registry says
+   otherwise, which is ADR-0134 d7's correction. When the user changes a route
+   in a device header, the UI does two things: the op, and `remember`.
+4. **`device.setExpressionRoute`** (OPS.md 9.7, now 163 ops): a route name, or
+   null for Auto. Symmetric. `device.insert` carries `route`, and
+   `device.remove` captures it, so an undone removal plays the way it played.
+5. **The session applies the project's route** at load and on every refresh,
+   and asks a device again only when the row changed. A device that cannot
+   take the recorded route plays on, keeps the row, and is named in
+   `problems()` (SPEC 7.5). Today that is every CLAP, whose dialect follows its
+   note ports (ADR-0099); a VST3 takes all three. An unknown route name, from a
+   newer file, plays as Auto and says so.
+
+### Verified non-vacuously
+
+| Planted | Check that failed |
+|---|---|
+| `device.remove` forgets the route | the route came back with the device |
+| `device.insert` ignores the route | the route came back with the device (twice) |
+| the route op's inverse captures nothing | back to MPE over MIDI |
+| a refresh never re-applies the route | a refresh applies the new route |
+| an unchanged route is asked again | a device with no row is left on Auto |
+| a refused route goes uncounted | refused, and counted |
+| the registry's Auto forgets nothing | Auto forgets |
+| the registry opens a foreign file | another program's database is refused by its id |
+
+Two plants failed to prove anything on the first run. One did not compile,
+because MSVC /WX refused the unreachable code it left. The other passed,
+because the foreign test file was also newer, so the version check refused it
+first. A foreign file at version 0 now makes the id check the only guard.
+
+**Not decided:** when the scan cache and the AudioGridder catalogue join the
+registry file (a version 2 of it); whether a user can export the registry with
+the settings bundle (R-05). And the device header's route chooser is UI work
+(step 7).

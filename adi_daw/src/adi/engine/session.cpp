@@ -256,6 +256,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
     } else {
         restoreState(store, row, *inst);
         ++stats_.loaded;
+        syncRoute(e, *inst);
     }
 
     // UNPLACED (track 0): the session places from the rows -- decision 1.
@@ -311,9 +312,39 @@ void Session::syncFlags() {
             node.setAlwaysProcess(d.alwaysProcess);
             if (const rows::DeviceChain* c = chainOf(d.chainId))
                 e.trackId = c->trackId.value_or(0);
+            if (!e.placeholder) syncRoute(e, node.instance());
             break;
         }
     }
+}
+
+void Session::syncRoute(Entry& e, device::DeviceInstance& inst) {
+    // ADR-0146, ADR-0149: the project's route, and only the project's. The
+    // application registry chose it once, when the device was inserted; a
+    // session never asks the registry again, or a project would play
+    // differently on a machine whose registry says otherwise (ADR-0134 d7).
+    engine::RouteChoice want = engine::RouteChoice::Auto;
+    for (const rows::DeviceRoute& r : model_.deviceRoutes) {
+        if (r.deviceId != e.deviceId) continue;
+        bool known = false;
+        want = engine::routeChoiceFromName(r.route, &known);
+        if (!known)
+            sessionProblems_.push_back("devices#" + std::to_string(e.deviceId) + " (" + e.name +
+                                       "): route '" + r.route + "' is not one this build knows; played as Auto");
+        break;
+    }
+    if (static_cast<std::uint8_t>(want) == e.route) return;
+    e.route = static_cast<std::uint8_t>(want);
+    if (inst.setExpressionRoute(want)) {
+        if (want != engine::RouteChoice::Auto) ++stats_.routesApplied;
+        return;
+    }
+    if (want == engine::RouteChoice::Auto) return;   // nothing was asked of it
+    ++stats_.routesRefused;
+    sessionProblems_.push_back("devices#" + std::to_string(e.deviceId) + " (" + e.name +
+                               "): the project plays it on route '" +
+                               std::string(engine::routeChoiceName(want)) +
+                               "', which this device cannot take; the row is kept");
 }
 
 // ---------------------------------------------------------------------------

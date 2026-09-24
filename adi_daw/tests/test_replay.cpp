@@ -207,6 +207,10 @@ std::vector<OpRequest> corpus() {
     op("device.loadState", {{"dev", 70}, {"role", "controller"},
                             {"hash", kCorpusBlobHash}}, "Controller state");
     op("device.setPreset", {{"dev", 70}, {"preset", "Vocal Bus"}}, "Name the preset");
+    // ADR-0149: a route set, changed, and one that leaves with its device.
+    op("device.setExpressionRoute", {{"dev", 70}, {"route", "mpe_midi"}}, "MPE over MIDI");
+    op("device.setExpressionRoute", {{"dev", 70}, {"route", nullptr}}, "Back to Auto");
+    op("device.setExpressionRoute", {{"dev", 72}, {"route", "plain"}}, "Plain on the missing one");
     op("device.setEnabled", {{"id", 71}, {"enabled", false}}, "Bypass the reverb");
     op("device.rename", {{"id", 71}, {"name", "Plate"}}, "Rename it");
     op("device.setLatency", {{"id", 70}, {"latency", 2048}}, "Report lookahead");
