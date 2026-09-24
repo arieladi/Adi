@@ -9560,3 +9560,54 @@ a plugin with hundreds (Live's 64 is the starting point).
    registered-folder/search-path configuration yet; that remains a later caller
    responsibility. `adi_tool check` verifies external paths/hashes read-only;
    the existing structural checker API keeps its no-filesystem default.
+
+
+---
+
+## ADR-0146 — Schema 1.4: the expression route a device plays with, and the agent's request beside its transaction — `DECIDED` (2026-09-24) — **FOLLOWS ADR-0134 d7 AND AI-AGENT §6.8; USES ADR-0144'S UPGRADE**
+
+**Context.** ADR-0134 d7 ruled that the expression route in effect is written to
+the project, because it changes what a plugin plays: the project must sound the
+same on a machine whose capability registry says otherwise. The schema had no
+place for it. AI-AGENT §6.8 requires the request text to be stored beside the
+transaction an agent produced, and the Propose-tier changeset of ADR-0145 d9
+(cloud, ADR-0148) is the first writer; the schema had no place for that
+either. Both land first and together, in a minor of their own, so the missions
+that use them build on main rather than on each other's branches.
+
+### Decisions
+
+1. **`device_expression_routes(device_id, route)`**, `route` one of
+   `note_expression`, `mpe_midi`, `plain` (the engine's `ExpressionRoute`).
+   **No row is Auto.** A table, not a column on `devices`: ADR-0144's upgrade
+   adds whole objects, a new table is purely additive for every older reader,
+   and keying on the device with no surrogate id is plugin_state's pattern
+   (ADR-0057). `ON DELETE CASCADE` goes with the device. Until the op that
+   writes it exists (`device.setExpressionRoute`, with `device.insert` and
+   `device.remove` carrying the row, win's next PR), nothing writes a row, so
+   the cascade cannot lose one on an undo.
+2. **`agent_requests(txn_id, request, actor_detail, created_utc)`**, written by
+   the changeset's Apply in the same transaction as its ops. Log metadata like
+   the ops rows: not an op, never undone, excluded from the replay digest and
+   from the text projection. No foreign key, because `ops.txn_id` is not a
+   unique key.
+3. **The upgrade** is ADR-0144's, one step: `{4, {device_expression_routes,
+   agent_requests}}`. Schema 1.3 is frozen as `docs/format/history/schema-1.3.sql`
+   (commit `f593fd7`), and check 9 proves 1.0 to 1.3 each upgrade to 1.4.
+4. **SPEC §7.5 and §8.7** state both tables for any implementation: a reader
+   MUST play a device on its recorded route, and a writer that commits an
+   agent's changeset MUST write the request row in the same transaction.
+
+### Found on the way
+
+- The text projection's coverage table is a fixed-size array, so each new
+  table has to be counted in two places. The compiler says so, as `too many
+  initializers`.
+- Three projection tests spelled the header as `schema 1.3`, and linux's
+  legacy-media fixture dropped the 1.2 and 1.3 tables by name, so every bump
+  would break it. The fixture now drops whatever `tablesAddedAfter(1)` names.
+  **linux:** that is one changed line in `tests/test_collect_export.cpp`, in a
+  file you hold now; take it as yours when you rebase.
+
+**Not decided here:** where application data lives and the capability registry
+itself (ADR-0149, win's next PR).

@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1003;          -- schema 1.3
+PRAGMA user_version   = 1004;          -- schema 1.4
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -630,6 +630,20 @@ A third-party implementation that does host AU is conforming, and a `.adi` it
 writes is readable here. That is the point of specifying the format separately
 from the application.
 
+### 7.5 The expression route (schema 1.4)
+
+```sql
+device_expression_routes(device_id, route)   -- route: note_expression | mpe_midi | plain
+```
+
+How a device receives per-note expression: VST3 note expression, MPE over MIDI,
+or plain MIDI with poly aftertouch (ADR-0097, ADR-0134 d7). **No row is Auto**:
+the route resolves from what the plugin declares. A row records the user's
+choice, and a reader **MUST** play the device on that route whatever its own
+defaults say, because the route changes what the plugin plays. A reader that
+cannot deliver the recorded route keeps the row and reports it. Written only by
+ops (ADR-0146). A file older than 1.4 has no routes: every device is Auto.
+
 ---
 
 ## 8. Layer 3 — session state, and the op log
@@ -724,6 +738,19 @@ table, which holds mixer snapshots and track versions (Layer 1, OPS.md §9.9).
 
 A file older than 1.3 has no `history_snapshots` table; a 1.3 reader treats that
 as "no snapshots".
+
+### 8.7 Agent requests (schema 1.4)
+
+```sql
+agent_requests(txn_id, request, actor_detail, created_utc)
+```
+
+What the user asked the agent, beside the transaction it produced (AI-AGENT
+§6.8, ADR-0146). A writer that commits an agent's changeset **MUST** write the
+row in the same transaction as its ops, with `actor_detail` equal to theirs.
+Log metadata, like the ops rows: not an op, never undone, not in the replay
+digest. `created_utc` is supplied by the caller. A file older than 1.4 has no
+requests recorded.
 
 ---
 

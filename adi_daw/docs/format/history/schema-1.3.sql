@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1004;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1003;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '4'),
+    ('schema_minor',        '3'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -559,18 +559,6 @@ CREATE TABLE plugin_params (
     PRIMARY KEY (device_id, param_id)
 ) STRICT, WITHOUT ROWID;
 
--- The expression route a device plays with (ADR-0134 d7, ADR-0146). NO ROW IS
--- AUTO: the route resolves from what the plugin declares, and a new instance
--- takes its default from the application's capability registry. A row is the
--- user's choice, stored in the project because it changes what the plugin
--- plays: the project must sound the same on a machine whose registry says
--- otherwise. Keyed on the device, with no surrogate id, like plugin_state
--- (ADR-0057). The values are the engine's ExpressionRoute names.
-CREATE TABLE device_expression_routes (
-    device_id   INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
-    route       TEXT    NOT NULL CHECK (route IN ('note_expression','mpe_midi','plain'))
-) STRICT;
-
 -- Rack macros and their mappings (SPEC §6.6).
 CREATE TABLE macros (
     id          INTEGER PRIMARY KEY,
@@ -781,19 +769,6 @@ CREATE TABLE history_snapshots (
     auto         INTEGER NOT NULL DEFAULT 0 CHECK (auto IN (0,1))
 ) STRICT;
 CREATE INDEX idx_hsnap_seq ON history_snapshots(op_seq);
-
--- AI-AGENT §6.8: what the user asked the agent, stored beside the transaction
--- it produced, so "what did I ask it, and what did it do" is a query six months
--- later (ADR-0146). Written in the SAME transaction as that txn's ops, by the
--- Propose-tier changeset's Apply (ADR-0145 d9). Log metadata like the ops rows
--- themselves: not an op, never undone, not in the replay digest. No foreign
--- key: ops.txn_id is not a unique key.
-CREATE TABLE agent_requests (
-    txn_id       INTEGER PRIMARY KEY,
-    request      TEXT    NOT NULL,
-    actor_detail TEXT    NOT NULL DEFAULT '',   -- model and version, as ops.actor_detail
-    created_utc  INTEGER NOT NULL               -- passed in by the caller, never a clock read
-) STRICT;
 
 -- ============================================================================
 --  LAYER 3 — SESSION: UI, windows, controllers, snapshots

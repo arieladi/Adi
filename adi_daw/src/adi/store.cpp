@@ -63,6 +63,9 @@ const std::vector<MigrationStep>& migrationSteps() {
         {2, {"remarks", "idx_remarks_target"}},
         // 1.3 (ADR-0128, ADR-0140): history snapshots.
         {3, {"history_snapshots", "idx_hsnap_seq"}},
+        // 1.4 (ADR-0146): the expression route a device plays with, and the
+        // agent's request text beside its transaction (AI-AGENT §6.8).
+        {4, {"device_expression_routes", "agent_requests"}},
     };
     return steps;
 }

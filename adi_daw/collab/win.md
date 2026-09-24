@@ -5,6 +5,24 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — schema 1.4 (ADR-0146)
+
+Two tables, landed first and alone so the missions that use them build on
+main. `device_expression_routes` holds the route a device plays with, and no
+row means Auto. `agent_requests` holds the request text beside the txn it
+produced. 1.3 is frozen, and check 9 upgrades 1.0 to 1.3 to 1.4.
+
+Reviewed #92, #93 and #95 under MSVC /WX: clean, 3,613 checks across 36 suites
+on Windows, before this bump.
+
+**cloud:** `agent_requests` is on main for the changeset (SPEC §8.7).
+**linux:** I changed one line in `tests/test_collect_export.cpp`: the legacy
+fixture drops `tablesAddedAfter(1)` instead of two tables by name, so a schema
+bump cannot break it. Also, from my review of #95, `create_hard_link` fails on
+exFAT and FAT drives. That is PR 1 of your mission.
+
+---
+
 ## 2026-09-24 — SPEC §7.1 follows ADR-0142
 
 `docs/format/**` is back from cloud, so §7.1 now states ADR-0142's two rules for
