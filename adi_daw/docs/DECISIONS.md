@@ -9407,3 +9407,116 @@ The coverage manifest now lists `remarks` as projected. The plants are in
 
 **Not decided:** where a remark on a lane or a marker would go. There is no
 such anchor kind (the schema's CHECK allows only track, clip and device).
+
+---
+
+## ADR-0145 — The director's final rulings: Ableton parity for plugin blocks, 64 samples as the smallest buffer, a Pd editor built on plugdata, and the settings that follow — `DECIDED` (2026-09-24) — **AMENDS ADR-0134 d3–d10, ADR-0129 d2, ADR-0102 d1, ADR-0110; SUPERSEDES ADR-0134 d6 AND d8**
+
+**Director's rulings** on the open questions left by the Settings review,
+returned with a response to win's critique of them. Where the critique was
+accepted, the decision below is the adjusted form; where a ruling simply
+confirms an earlier decision, that decision is named and nothing changes.
+
+### Confirmed, unchanged
+
+- Import defaults: no warp, no fade; warp only when the user asks (ADR-0132 d6-d7).
+- One Settings window, pages on the left, `[App]` and `[Project]` badges (ADR-0125, R-03).
+  No separate project-settings dialog.
+- The plugin capabilities registry remembers a manual "MPE over MIDI" per plugin ID,
+  and the project still stores the route it plays with (ADR-0134 d7).
+- Three applications -- ADI DAW, ADI Live, aDiJ -- on one engine and one format (ADR-0133).
+- The in-process PTP client on Windows (ADR-0134 d4).
+
+### Decisions
+
+1. **Plugins in the device view follow Live, not compact blocks** (supersedes
+   ADR-0134 d6). A third-party plugin dropped on a track unfolds and shows its
+   parameters as sliders automatically, as Live 12 does (up to 64, §23.3.1),
+   with Configure to choose them. The deviation ADR-0134 d6 recorded is
+   withdrawn; the Tier 2 plugin view before macros is the same view.
+2. **Zoom: cursor-centred by default, with "Zoom on Selection" to restore Live**
+   (amends ADR-0129 d2). An `[App]` setting under Look & Feel switches
+   Ctrl/Cmd + wheel back to Live's selection anchor, for strict muscle memory.
+   The overview's edge handles and the `+`/`-` anchor stay as ADR-0129 has them.
+3. **Sample-rate mismatch bar, with "Don't ask me again"** (amends ADR-0134 d9).
+   The bar reads "Project is 48 kHz, hardware is 44.1 kHz" with two buttons,
+   **Switch Hardware** and **Resample Temporarily**. The checkbox makes the
+   choice silent from then on, and an `[App]` setting under Audio turns silent
+   resampling on and off again. The project's rate stays in the file whatever
+   is chosen.
+4. **Linux settings stay short** (amends ADR-0134 d10): a backend dropdown
+   (ALSA, or PipeWire/JACK), a JACK transport sync toggle, and custom CLAP and
+   LV2 folders. No kernel, period or routing matrices.
+5. **The smallest buffer is 64 samples, and ASIO goes only through JUCE**
+   (amends ADR-0102 d1 and ADR-0134 d5). The director's reasoning: players feel
+   the step down to 128, nobody feels 64 against 128, and 64 leaves the CPU room
+   32 does not. The offered sizes are **64, 128, 256, 512, 1024, 2048, 4096**,
+   chosen by hand, requested and granted side by side (ADR-0049). No
+   ASIO-Guard-style automatic switching. The raw ASIO bypass is **rejected
+   outright**: JUCE's ASIO wrapper is the only path. Two things stay as they
+   are, deliberately: a driver that grants fewer than 64 frames (an ASIO panel
+   set to 32) is still run and shown as granted, never refused; and the block
+   benchmark keeps 32 as its stress point, because it measures the fixed cost
+   per callback, not a size we offer. ADR-0102's tracking range is 64 to 128.
+6. **AudioGridder** (amends ADR-0134 d3). Servers are found by mDNS/Bonjour, as
+   AudioGridder itself announces them. Each server's plugin list is cached
+   **per application, not in the `.adi`**: a project already stores the
+   plugins it uses (`plugin_refs`), and a catalogue copied into every project
+   would go stale in all of them. Offline browsing reads the application
+   cache. AudioGridder is MIT (checked 2026-09-24), so using or forking it
+   changes nothing about our licence.
+7. **PTP whitelist by grandmaster** (amends ADR-0134 d4). Besides adapters and
+   domains, the sync settings list the grandmasters allowed, by IP address and
+   by MAC (a PTP clock identity is usually derived from the MAC). An
+   announcement from anything else -- a smart TV on the same LAN -- is ignored.
+8. **Pure Data gets its own editor, built on plugdata** (supersedes ADR-0134
+   d8's external editor). A `.pd` patch is stored as text in `state_blobs`,
+   like any device state (ADR-0035). The editor is a node-based window inside
+   the DAW, as Max for Live's is, built on plugdata (GPL-3.0, JUCE and libpd;
+   the policy authorises it) rather than written from scratch. **The agent never
+   edits patch text.** In the editor it proposes changes to the patch or its
+   maths, shown visually; the user approves each one; an approved change is a
+   `device.loadState` with the new text's hash, so the undo log is the patch's
+   version history (ADR-0142).
+9. **The Propose tier queues and waits for Apply** (closes ADR-0110's "not
+   decided"). An agent at Propose may assemble a batch of ops, parameter ops
+   included, but nothing reaches the graph or the log until the user presses
+   **Apply** on the changeset. Applied, it is one transaction and one undo step.
+10. **aDiJ.** Each application keeps its own settings store; nothing bleeds
+    between ADI DAW, ADI Live and aDiJ except the shared library. Beat grids
+    come from Essentia (AGPL-3.0, allowed since ADR-0138, and adding nothing:
+    JUCE already makes every build AGPL). Pioneer export uses the
+    reverse-engineered rekordbox formats, each library's licence checked
+    against the policy at fetch. The Linux DJ app is phase 4, after the Linux
+    DAW is stable.
+11. **Library sync is matched by content hash** (amends ADR-0134 d11). Tags,
+    BPMs and ratings export to JSON keyed by each file's BLAKE3 hash, so they
+    land on the right sample on a machine where the path differs. The
+    director's condition -- no long rescans, no new bugs when an external drive
+    moves between Windows and macOS -- sets the indexing rules:
+    - **Hash once.** A file is hashed when first indexed and again only if its
+      size or modification time changed. A mismatch costs a re-hash, never a
+      wrong match: the hash is the truth, the metadata only decides when to
+      look again.
+    - **Drives by identity, not by letter.** An external drive is recognised by
+      its volume identifier and stored paths are relative to its root, so
+      `E:\Samples` on Windows and `/Volumes/Samples` on macOS are the same
+      entries and nothing is re-hashed when the drive moves.
+    - **Names compared the way both systems mean them.** macOS often stores
+      names decomposed (NFD) and Windows composed (NFC); names are normalised
+      to NFC before comparing, and case is folded where the volume is
+      case-insensitive.
+    - **Coarse clocks forgiven.** exFAT and FAT keep coarser modification times
+      than NTFS or APFS; times within 2 seconds count as unchanged.
+    - **In the background.** New files appear in the browser at once and are
+      hashed at low priority; tags wait for the hash, browsing does not.
+12. **The repository moves to `arieladi/adi_daw` -- later.** Approved as the
+    official home, and delayed until the missions now open (linux's Collect
+    and Export, cloud's migration) have merged; creating the repository and
+    moving the history happen then, on the director's go. **No CLA**: a
+    contribution is accepted under the project's licence as submitted.
+
+**Not decided:** whether the library indexer should use BLAKE3's SIMD paths,
+which the portable build turned off (linux, #88) -- file hashing is the one
+place their speed would show; how many parameters the device view unfolds for
+a plugin with hundreds (Live's 64 is the starting point).

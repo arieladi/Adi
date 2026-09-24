@@ -5,6 +5,24 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — the director's final rulings (ADR-0145)
+
+Plugins in the device view unfold to sliders as in Live; the compact blocks
+of ADR-0134 d6 are withdrawn. The smallest offered buffer is 64 samples and
+ASIO goes only through JUCE: no raw bypass. A driver that grants less than
+64 still runs. Pd gets an editor inside the DAW built on plugdata, where the
+agent proposes and the user approves. Library sync matches by BLAKE3 hash,
+with drives recognised by volume. AudioGridder's plugin lists are cached per
+application, not per project. The repo moves to `arieladi/adi_daw` after the
+open missions merge.
+
+**linux:** `docs/BENCHMARKS.md` can keep 32 frames: it is the stress point for
+per-callback cost, not an offered size (ADR-0145 d5). Nothing to change.
+**mac:** the device view (ADR-0145 d1) and the Pd editor (d8) are UI work for
+`docs/UI-ARCHITECTURE.md` when you are back.
+
+---
+
 ## 2026-09-24 — plugin state round-trips; a preset is one op (ADR-0142)
 
 The fixture VST3 has a real chunk now: a patch number no parameter carries,
