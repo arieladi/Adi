@@ -10,6 +10,90 @@ so nothing is left unpushed.
 
 ---
 
+## 2026-09-24 — one decoder, into the decoding cache (ADR-0156)
+
+Branch `cloud/decoder`. New: `src/adi/audio/decode.{hpp,cpp}`,
+`decode_libs.c`, `tests/test_decode.cpp`, `tests/fixtures/decode/`.
+
+**What landed.**
+- **Formats.** FLAC (native and in Ogg), AIFF and AIFC, MP3, Ogg Vorbis, and
+  every WAV the `WavReader` refuses (8-bit, 32-bit integer, 64-bit float,
+  A-law, mu-law, ADPCM, W64, RIFX).
+- **Where it goes.** Each file decodes to `<appdata cache>/decoded/<BLAKE3>.wav`,
+  as 32-bit float at the source's own rate, anywhere up to 768 kHz. A WAV the
+  reader plays is returned untouched.
+- **The cache.**
+  - Keyed by the source's hash, so the same bytes at any path decode once.
+  - LRU eviction under a maximum size and a minimum free space.
+  - Pinned files are never evicted.
+  - `index.json` holds sizes and last use, as a hint; the directory is the
+    truth.
+  - A partial file is renamed into place only once it is complete.
+- **Refusals are named problems** (`decode.corrupt`, `decode.audio_thread`,
+  ...). A refusal on the audio thread comes before any I/O, and the decoders'
+  reads are instrumented with `fileIoPoint()`.
+
+**Libraries, and why.** dr_libs (`dr_flac`, `dr_mp3`, `dr_wav`), which is
+Unlicense or MIT-0, and `stb_vorbis`, which is MIT or public domain.
+- Single C files, compiled once in `adi_decoders`: nothing to build on seven CI
+  legs and no JUCE in adi_core.
+- libsndfile would drag in libFLAC, libogg, libvorbis, mpg123 and LAME, and its
+  LGPL escalates.
+- stb has no tags and the fetch script pins by tag, so stb_vorbis comes from
+  miniaudio's `0.11.25` tag. I checked `extras/stb_vorbis.c` byte-identical to
+  stb master.
+
+**Outside my files, on the director's instruction:**
+- One dependency line per library in `tools/fetch_external.sh` and
+  `docs/EXTERNAL-CODE.md`, which are mac's area.
+- One call site in linux's clip worker:
+  `WavReader(audio::playableFile(clip->path))`.
+- `CMakeLists.txt`: my own targets only (`adi_decoders`, `adi_decode_tests`),
+  plus `decode.cpp` into adi_core beside the worker that calls it.
+
+**Plants (7), each failing first as named checks:**
+1. The audio-thread refusal removed: "decoding on the audio thread is refused:
+   decode.audio_thread", "... before any file I/O on the callback", "... and
+   nothing is decoded", plus one more.
+2. A key hashed from the path: "the same file at another path decodes nothing:
+   keyed by BLAKE3, not path", "a changed file at the same path is decoded
+   afresh".
+3. Pinned files evicted: "a file a live session is reading is never evicted,
+   even over the size limit".
+4. FLAC one sample short: "FLAC 16-bit decodes bit-exact to its source PCM",
+   "FLAC 24-bit ...", "768 kHz FLAC decodes at 768 kHz, every frame", plus four
+   more.
+5. The size limit ignored: "the least recently used file goes first (B), not
+   the oldest decoded (A)", "the size limit holds", plus five more.
+6. The frame-count check dropped: "a truncated FLAC is refused as
+   decode.corrupt".
+7. The minimum free space ignored: "room for B is made by evicting A, not
+   refused". Its first version escaped as an exception, so I restructured the
+   test until it failed as a named check.
+
+Every plant built cleanly, and I read the link line before the result.
+- GCC Debug with `-Werror`, Clang with `-Werror`, and ASan+UBSan all pass.
+- The suite is 56 checks.
+- `test_all`: 4132 checks across 43 suites, validators clean.
+
+**Decisions written down:**
+- The Decoding Cache defaults are 10 GB maximum and 2 GB minimum free, stated in
+  MB.
+- 8-bit WAV follows dr_wav's `u / 127.5 - 1`. The libsndfile-compatible mode
+  also flips AIFF A-law and mu-law signs, so it stays off.
+- The MP3 floor is 25 dB (measured 30.3) and the Vorbis floor is 32 dB
+  (measured 37.7).
+- The clip worker never releases a pin, so in this process its files stay
+  pinned until exit. That is conservative, and releasing is linux's teardown.
+
+**Couldn't do, or not mine:**
+- The worker still refuses sources above 192 kHz. That is ADR-0157 d2, which is
+  linux's.
+- The registry keys for the two settings arrive in `cloud/settings-catalogue`.
+- FFmpeg for the other formats is not decided.
+
+---
+
 ## 2026-09-24 — the settings store (ADR-0152)
 
 Branch `cloud/settings`. A core library with no UI: `src/adi/settings/`
