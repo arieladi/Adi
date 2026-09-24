@@ -6,6 +6,7 @@
 // needs any of those, the layering in ADR-0010 has gone wrong.
 
 #include "adi/blob.hpp"
+#include "adi/changeset.hpp"
 #include "adi/check.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/digest.hpp"
@@ -19,6 +20,8 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 namespace {
@@ -39,6 +42,9 @@ int usage() {
         "  adi_tool extract-media <file.adi>  extract legacy embedded media\n"
         "  adi_tool export <file>   the canonical text projection (ADR-0007)\n"
         "                           --strict fails on a non-canonical order\n"
+        "  adi_tool propose <file.adi> <changeset.json> [--apply]\n"
+        "                           an agent's changeset: print the diff; with\n"
+        "                           --apply, commit it as one undo step (ADR-0148)\n"
         "\n"
         "Ops arrive next; see docs/OPS.md.\n");
     return 2;
@@ -227,6 +233,91 @@ int cmdCheck(const char* path) {
     return rep.errors ? 1 : 0;
 }
 
+/// ADR-0145 d9, ADR-0148. Exit codes: 0 previewed (or applied), 1 refused or
+/// failed, 3 stale -- the file moved on and the changeset must be rebuilt.
+int cmdPropose(const char* file, const char* changesetPath, bool doApply) {
+    using namespace adi;
+    const auto path = std::filesystem::absolute(file);
+
+    // A preview must not write the file, and opening an older 1.x file for
+    // writing upgrades it (ADR-0144). So a preview-only run looks first.
+    if (!doApply) {
+        try {
+            SQLite::Database peek(path.string(), SQLite::OPEN_READONLY);
+            const int uv = peek.execAndGet("PRAGMA user_version").getInt();
+            if (uv / 1000 == kSchemaMajor && uv % 1000 < kSchemaMinor) {
+                std::fprintf(stderr,
+                             "propose: %s is schema 1.%d; previewing would upgrade it to 1.%d. "
+                             "Open it for writing first (or pass --apply).\n",
+                             file, uv % 1000, kSchemaMinor);
+                return 1;
+            }
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "propose: cannot read %s: %s\n", file, e.what());
+            return 1;
+        }
+    }
+
+    std::ifstream in(changesetPath, std::ios::binary);
+    if (!in) {
+        std::fprintf(stderr, "propose: cannot read %s\n", changesetPath);
+        return 1;
+    }
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    const Payload json = Payload::parse(text, nullptr, /*allow_exceptions=*/false);
+    if (json.is_discarded()) {
+        std::fprintf(stderr, "propose: %s is not valid JSON\n", changesetPath);
+        return 1;
+    }
+
+    StoreError err = StoreError::Ok;
+    auto store = Store::open(path, err);
+    if (!store || store->readOnly()) {
+        std::fprintf(stderr, "propose: cannot open %s for writing: %s\n", file, toString(err));
+        return 1;
+    }
+    std::string why;
+    const auto cs = agent::changesetFromJson(*store, json, why);
+    if (!cs) {
+        std::fprintf(stderr, "propose: %s\n", why.c_str());
+        return 1;
+    }
+
+    const auto p = agent::preview(*store, *cs);
+    if (!p.ok) {
+        std::fprintf(stderr, "propose: refused (%s): %s\n", agent::toString(p.refusal), p.error.c_str());
+        return p.refusal == agent::Refusal::Stale ? 3 : 1;
+    }
+    std::printf("request: %s\nby: agent (%s)\n\n", cs->request.c_str(), cs->actorDetail.c_str());
+    std::printf("%s", p.unifiedDiff.empty() ? "(the text projection does not change)\n"
+                                            : p.unifiedDiff.c_str());
+    std::printf("\n%zu change(s):\n", p.changes.size());
+    for (const auto& c : p.changes) {
+        std::printf("  %s  [%s %s%s]\n", c.label.c_str(), c.opType.c_str(), c.targetKind.c_str(),
+                    c.targetId ? (" " + std::to_string(*c.targetId)).c_str() : "");
+        std::printf("      before %s\n      after  %s\n",
+                    c.before ? c.before->dump().c_str() : "(none)",
+                    c.after ? c.after->dump().c_str() : "(none)");
+    }
+    if (!doApply) {
+        std::printf("\nnot applied: run again with --apply to commit it as one undo step\n");
+        return 0;
+    }
+
+    const auto r = agent::apply(*store, *cs);
+    if (!r.ok) {
+        std::fprintf(stderr, "propose: apply refused (%s): %s\n", agent::toString(r.refusal),
+                     r.error.c_str());
+        return r.refusal == agent::Refusal::Stale ? 3 : 1;
+    }
+    if (!store->close()) {
+        std::fprintf(stderr, "propose: applied, but the close/checkpoint failed\n");
+        return 1;
+    }
+    std::printf("\napplied: txn %lld, one undo step\n", static_cast<long long>(r.txnId));
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -278,6 +369,12 @@ int main(int argc, char** argv) {
         for (int i = 3; i < argc; ++i)
             if (std::string(argv[i]) == "--strict") strict = true;
         return cmdExport(argv[2], strict);
+    }
+    if (cmd == "propose") {
+        if (argc < 4 || argc > 5) return usage();
+        const bool doApply = argc == 5 && std::string(argv[4]) == "--apply";
+        if (argc == 5 && !doApply) return usage();
+        return cmdPropose(argv[2], argv[3], doApply);
     }
     if (cmd == "check") {
         if (argc < 3) return usage();

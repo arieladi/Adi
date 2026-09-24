@@ -180,6 +180,30 @@ something sounds good.
    text is stored alongside the txn. "What did I ask it, and what did it do" is
    answerable six months later.
 
+### 6.1 The changeset (Propose tier, ADR-0145 d9, ADR-0148)
+
+At Propose, the agent's ops are a **changeset** (`src/adi/changeset.*`), not a
+commit. It carries the head the agent built on, the queued ops, the model
+(`actor_detail`) and the request text.
+
+- **Preview** runs every op with the same handlers Apply will use, inside a
+  transaction that is always rolled back. It then shows two things: a unified
+  diff of the text projection before and after, and a list with each op's
+  label, target, and before and after values. The before value comes from the
+  op's own inverse, so a parameter's old value is shown even though devices are
+  not in the text projection yet. **The file is not written.**
+- **Apply** commits the whole changeset as **one transaction and one undo
+  step**, with actor `agent`. Its `agent_requests` row is written inside that
+  same transaction (SPEC §8.7). Apply refuses a changeset whose head has moved
+  since it was built. It is reported as **stale** and never rebased silently.
+- **Guardrails are checked at preview and again at apply:**
+  - the per-request op cap (default 256, §6.6);
+  - only project edits, so transport and hardware ops are refused;
+  - of the media ops, only `media.unlink` and `media.relink`, which change a
+    reference and never a file (§6.4).
+- `adi_tool propose <file.adi> <changeset.json> [--apply]` is the headless form.
+  It prints the diff, and with `--apply` it commits. Exit code 3 means stale.
+
 ## 7. Where the model runs
 
 Pluggable, with no default that surprises anyone.

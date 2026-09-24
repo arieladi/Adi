@@ -9684,3 +9684,88 @@ first. A foreign file at version 0 now makes the id check the only guard.
 registry file (a version 2 of it); whether a user can export the registry with
 the settings bundle (R-05). And the device header's route chooser is UI work
 (step 7).
+
+---
+
+## ADR-0148 — The Propose-tier changeset: preview in a rolled-back transaction, the request row written by a connection-local trigger — `DECIDED` (2026-09-24) — **IMPLEMENTS ADR-0145 d9, AI-AGENT §6**
+
+**Director's assignment** to `cloud`. ADR-0145 d9 says a Propose-tier agent
+queues and nothing reaches the file until Apply. Three mechanisms were left
+open, and they are decided here.
+
+### Decisions
+
+1. **The preview is a transaction that is always rolled back.** The two
+   options were a rolled-back transaction on the project's own connection, and
+   a backup copy of the file with the ops committed to the copy. The rolled-back
+   transaction is chosen:
+   - it runs the **same handlers** Apply runs, in the same order: inverse from
+     the state about to be overwritten, then apply (OPS.md §6.1);
+   - it writes nothing to disk at all, and leaves no temporary file for a crash
+     to strand;
+   - it reads its own uncommitted state, so the "after" projection needs no
+     second store.
+
+   It cannot call `OpJournal::commit`, because commit opens its own `BEGIN` and
+   SQLite does not nest transactions. It calls the descriptors directly, which
+   is exactly what commit does minus the log rows, and a preview needs no log
+   rows. `readModel`'s own read transaction is refused inside the preview's
+   transaction; the harmless note that leaves is dropped, and every other
+   problem is kept.
+2. **Measured** (`adi_changeset_tests`, 200 tracks, 10,000 clips, one fader
+   change, this container):
+
+   | Build | Preview | One projection | The rolled-back ops |
+   |---|---|---|---|
+   | Release | 330–390 ms | ~160 ms | ~20 ms |
+   | Debug | ~2.0 s | ~1.1 s | small |
+
+   The preview's cost is **two projections**. The mechanism itself costs almost
+   nothing. A backup copy of the same file took 4–5 ms in Release, and it
+   grows with the file, but it would still need both projections, a second
+   store and a temporary file. So it costs more, and none of its cost buys
+   anything. If the preview ever needs to be faster, the saving is in the
+   projection: cache "before", or project only the touched subtrees. The
+   mechanism is not where the time goes.
+3. **The request row is written by a TEMP trigger, inside `OpJournal::commit`'s
+   own transaction.** SPEC §8.7 says the `agent_requests` row MUST be in the
+   same transaction as the ops. `OpJournal` opens that transaction and offers
+   no hook into it, and `ops.*` is win's. So Apply places the request in a
+   `TEMP` table, then creates a `TEMP` trigger `AFTER INSERT ON main.ops` that
+   copies it into `agent_requests` when the agent's first op row is written, and
+   empties the table so it fires once. Both objects belong to the connection:
+   they never reach the file's schema, and they are dropped after the apply.
+   There is deliberately **no "skip if a row exists" guard**. A conflicting row
+   must fail the insert, and with it the whole commit. My first version had
+   that guard, and the test caught it committing ops without their request.
+   **For win:** a `commit(reqs, inTransaction)` overload that runs a callback
+   before the COMMIT would replace the trigger in five lines. It is the better
+   long-term shape, and it belongs to the journal's owner.
+4. **Stale means refused.** A changeset records the head it was built on.
+   Preview and Apply both refuse it if the head has moved, with a message that
+   says "stale" and names both heads. It is never rebased silently: a proposal
+   built on a project that no longer exists is not a proposal about this one.
+5. **The guardrails are an allowlist**, checked at preview and again at apply:
+   - `Scope::Edit` ops that are not ephemeral, so no transport and no hardware;
+   - of `media.*`, only `unlink` and `relink`, which change a reference and
+     never a file (§6.4). `media.import` is refused, because it asserts what a
+     caller hashed on disk. Any future media op is refused until it is named;
+   - the per-request op cap, 256 by default (§6.6).
+6. **The review list takes "before" from the op's own inverse**, the same value
+   undo would restore:
+   - a symmetric op shows old and new;
+   - a paired op whose inverse is only an identity is a creation, shown with
+     "after" only;
+   - one whose inverse captured the row is a deletion, shown with "before" only.
+
+   A parameter's old and new values show here although devices are not yet in
+   the text projection.
+7. **`adi_tool propose`** prints the diff and the list, and with `--apply`
+   commits. Previewing an older-minor file is refused, because opening it for
+   writing would upgrade it (ADR-0144), and a preview must not write. Exit code
+   3 is stale.
+
+**Not decided:**
+- the wall-clock and token caps of §6.6 (the model layer's, not the journal's);
+- where the UI keeps a changeset while the user thinks about it;
+- editing a queued changeset op by op.

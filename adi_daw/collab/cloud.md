@@ -10,6 +10,99 @@ so nothing is left unpushed.
 
 ---
 
+## 2026-09-24 — the Propose-tier changeset (ADR-0145 d9, ADR-0148)
+
+Branch `cloud/changeset`. Schema 1.4 was already on main (win's #98), so
+`agent_requests` was there from the start.
+
+**What landed.** `src/adi/changeset.*`, its own library `adi_changeset`:
+- **`Changeset`:** the base head, the queued `OpRequest`s, `actorDetail`,
+  `request` and `createdUtc`.
+- **`preview`:** a unified diff (Myers, 3 lines of context) of the text
+  projection before and after, plus a review list per op: label, target, and
+  before and after values. The before value is the op's own inverse, so a
+  parameter shows 0.5 → 0.25 even though devices are not in the projection.
+- **`apply`:** one transaction, actor `agent`, the `agent_requests` row in that
+  same transaction. Stale head → refused.
+- **Guardrails, at preview and again at apply:**
+  - an allowlist: edit ops only, and of the media ops only `unlink` and
+    `relink`;
+  - the op cap, 256 by default.
+- **`adi_tool propose <file> <changeset.json> [--apply]`:** exit code 3 means
+  stale. A preview-only run refuses an older-minor file, because opening it
+  would upgrade it (ADR-0144).
+- **Docs:** AI-AGENT §6.1.
+
+**Decisions (ADR-0148).**
+- **The preview is a transaction that is always rolled back**, running the
+  same descriptor steps `commit` does. `commit` itself cannot be used, because
+  it opens its own BEGIN and SQLite does not nest.
+- **Measured** on 200 tracks and 10,000 clips:
+
+  | Build | Preview | One projection | A backup copy alone |
+  |---|---|---|---|
+  | Release | 330–390 ms | ~160 ms | 4–5 ms |
+  | Debug | ~2.0 s | ~1.1 s | — |
+
+  The mechanism costs about 20 ms; the time is the projection.
+- **The request row is written by a TEMP trigger on `ops`**, inside
+  `OpJournal`'s own transaction. `ops.*` is win's, and it has no hook for this.
+  **win:** a `commit(reqs, inTxn)` callback overload would replace the trigger;
+  ADR-0148 d3 describes it.
+
+**A bug the tests caught before any plant:** my first trigger skipped its
+insert when a row for that txn id already existed. It committed ops WITHOUT
+their request, silently. The fix has no guard: the trigger empties its pending
+row after its insert, so it fires once, and a conflicting row aborts the whole
+commit. That guard was then planted back as P6.
+
+**Tests.** `adi_changeset_tests`, 60 checks:
+- guardrails and the cap;
+- a preview leaves the digest, the op count, the head, the parameter, the
+  `.adi`'s bytes and a second connection's view unchanged;
+- the diff and the before and after values;
+- creation and deletion shapes;
+- apply is one txn with actor, model, request row, and one undo;
+- stale;
+- the request row lives or dies with the ops, both ways;
+- `media.unlink` leaves the file on disk;
+- exact unified-diff output;
+- JSON;
+- the large-project timing.
+
+The CLI was run end to end: preview, `--apply`, `check` clean. Tree: 3787
+checks across 38 suites.
+
+**Headline note for win:** main's README said 3729 across 37, and this Linux
+run of main gives 3727. Two checks are platform-dependent. I wrote this run's
+3787, as `test_all.sh` requires on Linux.
+
+**Plants, six, all fired** (each reverted):
+
+| # | Defect planted | Failing check |
+|---|---|---|
+| P1 | apply without the stale check | `refused as stale: `; `nothing was written`; `an explicit older baseHead is honoured -- and is stale` |
+| P2 | the preview commits its transaction | `the project is exactly as it was`; `the .adi's bytes are identical after a checkpoint`; `a second connection still reads 'Bass'` |
+| P3 | each op committed as its own transaction | `all three share ONE txn_id (AI-AGENT 6.2)`; `undoes all of it` |
+| P4 | no trigger; the request row inserted after the commit | `and no op was committed without its request` |
+| P5 | the op cap ignored | `three ops over a cap of two: preview refuses: `; `and so does apply, writing nothing` |
+| P6 | the trigger skips a txn id that already has a row | `a request row that cannot be written fails the apply`; `and no op was committed without its request` |
+
+P4's first version still created the trigger, so the row was written in the
+transaction anyway; it failed an unrelated check. I redid it as the real defect
+(no trigger, a late insert), and it fails the check that matters.
+
+**Not done.**
+- The wall-clock and token caps of §6.6 belong to the model layer.
+- There is no UI for the changeset.
+- The stale check and the commit are two steps on one connection. That is safe
+  under the single-writer lock (SPEC §3.6), and would need the journal hook to
+  be one step.
+- MSVC /WX is not built here. I checked the new code by hand: no `getenv`,
+  `setvbuf`, `ifstream`, explicit `ptrdiff_t` and `size_t` conversions.
+
+---
+
 ## 2026-09-24 — remarks in the text projection (ADR-0139)
 
 Branch `cloud/remarks-projection`, stacked on `cloud/migrate` (#92) until
