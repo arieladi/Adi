@@ -187,9 +187,9 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
                 // Prefix before the loop plays once. Notes crossing a repeat
                 // boundary are released there, and chased at the next origin.
                 const auto lb=clip.loopStartTicks, le=lb+loop, offset=clip.contentOffsetTicks;
-                if(offset<lb)add(note.startTicks-offset,std::min(note.startTicks+note.durTicks,lb)-offset);
+                if(offset<lb)add(note.startTicks-offset,std::min(note.startTicks+note.durTicks,le)-offset);
                 if(note.startTicks>=le||note.startTicks+note.durTicks<=lb)continue;
-                const auto firstRepeat=offset<lb?lb-offset:-(offset-lb)%loop;
+                const auto firstRepeat=offset<lb?le-offset:-(offset-lb)%loop;
                 for(auto base=firstRepeat;base<length;base+=loop) {
                     add(base+std::max(note.startTicks,lb)-lb,base+std::min(note.startTicks+note.durTicks,le)-lb);
                     if(static_cast<std::uint64_t>((length-base)/loop)>maxOccurrences)throw std::runtime_error("MIDI repeat budget exceeded; clip silent");

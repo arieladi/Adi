@@ -156,6 +156,16 @@ void maximumLocate(){
     f.session.transport().locate(std::numeric_limits<std::int64_t>::max());f.render();
     check(f.instrument->balance()==0,"maximum sample locate releases notes without overflow");
 }
+void loopEntry(){
+    Fixture f;f.clip(1,0,240240,240240);
+    f.store->db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048,content_offset_ticks=12012");
+    f.load();while(f.clock<1100)f.render();
+    int ons=0,offs=0;std::int64_t firstOff=-1;
+    for(std::size_t i=0;i<f.instrument->count;++i){const auto& h=f.instrument->heard[i];
+        if(h.e.type==EventType::NoteOn)++ons;
+        if(h.e.type==EventType::NoteOff){++offs;if(firstOff<0)firstOff=h.clock;}}
+    check(ons==5 && offs==5 && firstOff==250,"entering a clip loop does not retrigger before its first wrap");
+}
 void musical(){
     Fixture f;f.clip(1,0,240240,720720);f.clip(2,0,240240,720720);
     f.store->db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=0,loop_len_ticks=240240,content_offset_ticks=120120");f.load();
@@ -171,7 +181,7 @@ void musical(){
 }
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);const std::string only=argc>1?argv[1]:"all";
-    try{if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();}catch(const std::exception& e){check(false,e.what());}
+    try{if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }
