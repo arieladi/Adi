@@ -202,8 +202,13 @@ target_link_libraries(adi_core PRIVATE adi_warnings adi_blake3 adi_miniz)
 # ---------------------------------------------------------------------------
 # adi_tool — headless CLI. The only executable until step 5.
 # ---------------------------------------------------------------------------
+# The Propose-tier changeset (ADR-0145 d9, ADR-0148): its own library so the
+# agent's staging layer is a separate unit from the core it drives.
+add_library(adi_changeset STATIC src/adi/changeset.cpp)
+target_link_libraries(adi_changeset PUBLIC adi_core PRIVATE adi_warnings)
+
 add_executable(adi_tool src/main.cpp)
-target_link_libraries(adi_tool PRIVATE adi_core adi_warnings)
+target_link_libraries(adi_tool PRIVATE adi_core adi_changeset adi_warnings)
 
 # ---------------------------------------------------------------------------
 # Tests. No framework yet on purpose — a dependency we would have to justify,
@@ -257,6 +262,10 @@ add_test(NAME adi_snapshots_tests COMMAND adi_snapshots_tests)
 
 # Upgrading an older 1.x file (ADR-0144): built from the frozen schema.sql of
 # each minor, which is why the test is told where the history lives.
+add_executable(adi_changeset_tests tests/test_changeset.cpp)
+target_link_libraries(adi_changeset_tests PRIVATE adi_changeset adi_core adi_warnings)
+add_test(NAME adi_changeset_tests COMMAND adi_changeset_tests)
+
 add_executable(adi_migrate_tests tests/test_migrate.cpp)
 target_link_libraries(adi_migrate_tests PRIVATE adi_core adi_warnings)
 target_compile_definitions(adi_migrate_tests PRIVATE

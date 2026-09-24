@@ -157,7 +157,7 @@ subject, say so in your log instead of writing it twice.
 | 0145 | win | `win/final-rulings` | the director's final rulings: Live's plugin blocks, 64 samples the smallest buffer, JUCE-only ASIO, a Pd editor on plugdata, hash-matched library sync, the repo move later | used |
 | 0146 | win | `win/schema-1.4` | schema 1.4: the expression route a device plays with, and the agent's request beside its transaction | used |
 | 0147 | linux | `linux/library-index` | publishing files without hard links; the library index of ADR-0145 d11; BLAKE3's SIMD code for it, if it decides anything | reserved |
-| 0148 | cloud | `cloud/changeset` | the Propose-tier changeset of ADR-0145 d9, if it decides anything | reserved |
+| 0148 | cloud | `cloud/changeset` | the Propose-tier changeset: preview in a rolled-back transaction, the request row by a connection-local trigger | used |
 | 0149 | win | `win/route-registry` | where application data lives, shared by the suite or per application; the capabilities registry proposes a route once, the project decides; the route op | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
@@ -177,7 +177,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
 | `src/adi/media/**`, `src/adi/library/**`, `tests/test_collect_export.cpp`, `tests/test_media_ops.cpp`, `tests/test_library.cpp`; one dependency line each in `tools/fetch_external.sh` and `docs/EXTERNAL-CODE.md` if utf8proc is needed (mac's area, on the director's instruction) | linux | `linux/publish-files`, then `linux/library-index` | 2026-09-24 |
-| `src/adi/changeset.*`, `tests/test_changeset.cpp`, `src/main.cpp`, `docs/AI-AGENT.md` | cloud | `cloud/changeset` | 2026-09-24 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
