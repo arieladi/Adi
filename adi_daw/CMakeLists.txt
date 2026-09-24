@@ -821,6 +821,8 @@ target_link_libraries(adi_core PRIVATE samplerate)
 add_executable(adi_clip_playback_tests tests/test_clip_playback.cpp)
 target_link_libraries(adi_clip_playback_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_clip_playback_tests COMMAND adi_clip_playback_tests)
+target_compile_definitions(adi_clip_playback_tests PRIVATE
+    ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
 set_tests_properties(adi_clip_playback_tests PROPERTIES TIMEOUT 600)
 
 # ADR-0156: one decoder for imported audio, into the decoding cache. The

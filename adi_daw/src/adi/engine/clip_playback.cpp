@@ -75,7 +75,20 @@ struct Clip {
     int mode = 0;
     float gain = 1;
     fs::path path;
+    fs::path pinned; // the decoded copy this clip holds in ADI's cache, if any (ADR-0156)
     std::unique_ptr<audio::WavReader> reader; // touched ONLY by worker after construction
+    // The pin goes back with the clip. Every rebuild builds new clips and pins
+    // the decoded copy again, so without this a session's decoded files stayed
+    // pinned, and unevictable, until the process exited. The reader closes
+    // first: eviction deletes the file, and Windows cannot delete an open one.
+    // Never on the audio thread: a clip dies with its generation (ADR-0151).
+    Clip(const Clip&) = delete;
+    Clip& operator=(const Clip&) = delete;
+    ~Clip() {
+        reader.reset();
+        if (pinned.empty()) return;
+        try { audio::defaultDecodeCache().release(pinned); } catch (...) {}
+    }
     std::array<Page, slots> pages;
     std::array<std::atomic<std::int64_t>, slots> requests;
     std::atomic<std::uint32_t> requestSeq{0}, underruns{0}, errors{0};
@@ -352,7 +365,9 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             else throw std::runtime_error("no media path; silent");
             // WavReader sniffs RIFF/RF64/BW64; no decoder on the callback.
             // Any other format is decoded here, off it, into the cache (ADR-0156).
-            clip->reader=std::make_unique<audio::WavReader>(audio::playableFile(clip->path));
+            const auto file=audio::playableFile(clip->path);
+            if(file!=clip->path) clip->pinned=file; // pinned by the cache; released in ~Clip
+            clip->reader=std::make_unique<audio::WavReader>(file);
             clip->channels=clip->reader->channels(); clip->sourceRate=clip->reader->sampleRate(); clip->rate=static_cast<std::uint32_t>(rate);
             if(clip->channels>64 || clip->sourceRate<1 || clip->sourceRate>768000) throw std::runtime_error("source format outside supported bounds; silent");
 
