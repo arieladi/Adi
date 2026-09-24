@@ -48,7 +48,7 @@ import sqlite3
 import sys
 
 SPEC_APPLICATION_ID = 1094994225  # 0x41444931 == 'ADI1'
-SPEC_USER_VERSION = 1003   # schema 1.3 (history snapshots, ADR-0128); SPEC §3.1 and the DDL say the same
+SPEC_USER_VERSION = 1004   # schema 1.4 (expression routes, agent requests, ADR-0146); SPEC §3.1 and the DDL say the same
 ADI_PPQ = 5765760  # SPEC 4.2
 
 HERE = pathlib.Path(__file__).resolve().parent

@@ -143,8 +143,9 @@ void legacy(Fixture& f, bool upgraded, bool badSecond = false) {
         fs::remove(f.temp.path() / name);
     }
     // Match the declared old minor, not a modern schema with only its version
-    // number lowered. This fixture does not depend on cloud's future upgrader.
-    db.exec("DROP TABLE history_snapshots; DROP TABLE remarks;");
+    // number lowered: drop every table a later minor added (1.1 added only the
+    // triggers, dropped above), so a schema bump cannot leave one behind.
+    for (const auto& table : adi::tablesAddedAfter(1)) db.exec("DROP TABLE " + table);
     db.exec(upgraded ? "PRAGMA user_version=1001" : "PRAGMA user_version=1000");
     if (upgraded) db.exec(
         "CREATE TRIGGER media_never_embedded_insert BEFORE INSERT ON media_files WHEN NEW.embedded<>0 BEGIN SELECT RAISE(ABORT,'no embedded'); END;"

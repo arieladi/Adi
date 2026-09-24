@@ -155,9 +155,10 @@ subject, say so in your log instead of writing it twice.
 | 0143 | linux | `linux/collect-export` | Collect and Export and the media ops (ADR-0127 d3-d4, ADR-0136 d4), if it decides anything | used |
 | 0144 | cloud | `cloud/migrate` | how an older 1.x file is upgraded when opened for writing; read-only opens read missing tables as empty | used |
 | 0145 | win | `win/final-rulings` | the director's final rulings: Live's plugin blocks, 64 samples the smallest buffer, JUCE-only ASIO, a Pd editor on plugdata, hash-matched library sync, the repo move later | used |
-| 0146 | win | `win/route-registry` | where application data lives, shared by the suite or per application; the plugin capabilities registry; the expression route on the device row (schema 1.4) | reserved |
+| 0146 | win | `win/schema-1.4` | schema 1.4: the expression route a device plays with, and the agent's request beside its transaction | used |
 | 0147 | linux | `linux/library-index` | publishing files without hard links; the library index of ADR-0145 d11; BLAKE3's SIMD code for it, if it decides anything | reserved |
 | 0148 | cloud | `cloud/changeset` | the Propose-tier changeset of ADR-0145 d9, if it decides anything | reserved |
+| 0149 | win | `win/route-registry` | where application data lives, shared by the suite or per application; the plugin capabilities registry; the route op | reserved |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
