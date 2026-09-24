@@ -16,6 +16,7 @@ Permissive licences, all GPLv3-compatible in the direction we need.
 
 | Repo | Licence | Size | Purpose |
 |---|---|---|---|
+| [`libsamplerate`](https://github.com/libsndfile/libsamplerate) | BSD-2-Clause | 5 MB shallow | Off-callback clip rate conversion, sinc best (ADR-0151). Pinned **0.2.2 / `c96f5e3de9c4488f4e6c97f59f5245f22fda22f7`**; director-granted row, fetched by `--build-only`. |
 | [`utf8proc`](https://github.com/JuliaStrings/utf8proc) | MIT and Unicode data licence | 3 MB shallow | Library NFC/case-fold keys (ADR-0147). Pinned **v2.11.3 / `e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78`**, fetched by `--build-only`; director-granted dependency row. |
 | [`BLAKE3`](https://github.com/BLAKE3-team/BLAKE3) | CC0-1.0 or Apache-2.0 | 2.5 MB shallow | Media hashes (ADR-0127). Pinned **1.8.7 / `f3149ec5bb5449af877ba20377a11008ff499fa2`**; official C portable implementation only, SIMD disabled. Official test vectors exercise the 32-byte unkeyed hash. Fetched by `--build-only`. |
 | [`miniz`](https://github.com/richgel999/miniz) | MIT | 2 MB shallow | Streaming STORE/deflate and ZIP64 for Collect and Export (ADR-0127). Pinned **3.1.2 / `77d0dce8627735138c51770d1799a1ef48f2117d`**; C sources with custom path-aware stream callbacks. Fetched by `--build-only`. |

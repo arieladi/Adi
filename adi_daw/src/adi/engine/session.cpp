@@ -6,6 +6,7 @@
 #include "adi/engine/session.hpp"
 
 #include "adi/store.hpp"
+#include "adi/audio/io_audit.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -362,7 +363,15 @@ void Session::attach() {
         for (device::DeviceNode* n : chainFor(trackId)) nodes.push_back(n);
         return nodes;
     };
-    rs.sourcesFor = sources_;
+    auto* clipSource = clips();
+    rs.sourcesFor = [this, clipSource](std::int64_t id) {
+        auto nodes = sources_ ? sources_(id) : std::vector<Node*>{};
+        if (clipSource) {
+            auto audio = clipSource->sourcesFor(id);
+            nodes.insert(nodes.end(), audio.begin(), audio.end());
+        }
+        return nodes;
+    };
     devices_.attachHost(graph_, std::move(rs));
 }
 
@@ -372,6 +381,10 @@ bool Session::rebuild() {
         error_ = "no project loaded";
         return false;
     }
+    try {
+        clips_ = std::make_unique<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
+                                                spec_.channels, spec_.maxFrames);
+    } catch (const std::exception& e) { error_ = e.what(); return false; }
     attach();   // the spec, the sources or the placement may have changed
     ++stats_.rebuilds;
     const bool ok = devices_.rebuildNow();
@@ -379,6 +392,7 @@ bool Session::rebuild() {
     else live_ = true;
 
     problems_ = model_.problems;
+    if (auto* c = clips()) problems_.insert(problems_.end(), c->problems().begin(), c->problems().end());
     problems_.insert(problems_.end(), sessionProblems_.begin(), sessionProblems_.end());
     const std::vector<std::string>& fromGraph = graph_.problems();
     problems_.insert(problems_.end(), fromGraph.begin(), fromGraph.end());
@@ -397,6 +411,7 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     spec_ = spec;
     stats_ = Stats{};
     model_ = rows::readModel(store);
+    clipProject_ = readClipProject(store, model_);
     loaded_ = true;
     resolveNewRows(store);
     return rebuild();
@@ -409,6 +424,7 @@ bool Session::refresh(const Store& store) {
         return false;
     }
     model_ = rows::readModel(store);
+    clipProject_ = readClipProject(store, model_);
     resolveNewRows(store);
     retireDepartedRows();
     syncFlags();
@@ -441,7 +457,11 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     rebuild();
 }
 
-void Session::process(const AudioIo& io) noexcept { graph_.process(io); }
+void Session::process(const AudioIo& io) noexcept {
+    audio::CallbackScope callback;
+    graph_.process(io);
+    transport_.advance(io.frames);
+}
 
 void Session::release() {
     // The device has stopped; nothing is rendering. Release the plugins so a

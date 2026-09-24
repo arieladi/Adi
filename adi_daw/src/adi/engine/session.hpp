@@ -42,6 +42,7 @@
 #pragma once
 
 #include "adi/engine/host.hpp"
+#include "adi/engine/clip_playback.hpp"
 #include "adi/engine/process.hpp"
 #include "adi/engine/realize.hpp"
 #include "adi/store_rows.hpp"
@@ -164,6 +165,11 @@ public:
         return problems_;
     }
 
+    // Driver thread only, commands between callbacks; see transport.hpp.
+    [[nodiscard]] Transport& transport() noexcept { return transport_; }
+    // Message/offline driver inspection. Pointer valid until the next rebuild.
+    [[nodiscard]] ClipPlayback* clips() noexcept { return clips_.get(); }
+
     [[nodiscard]] device::DeviceHost& devices() noexcept { return devices_; }
     [[nodiscard]] GraphHost& graph() noexcept { return graph_; }
 
@@ -198,6 +204,10 @@ private:
     // Declared so that destruction runs graphs FIRST: a retired graph holds
     // raw pointers to device nodes, and the devices must still exist while
     // it is freed. (Nothing dereferences them today; the order is the rule.)
+    Transport transport_;
+    std::shared_ptr<const ClipProject> clipProject_;
+    // Published graphs retain their own old source generations until reclamation.
+    std::unique_ptr<ClipPlayback> clips_;
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;

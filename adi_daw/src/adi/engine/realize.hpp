@@ -79,8 +79,9 @@ using DeviceChainFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
 
 /// How a track's SOURCES are supplied: what pushes audio into the junction
 /// ahead of the devices -- a clip reader, a live input, a test tone. Same
-/// contract as `DeviceChainFn`: caller-owned nodes, outliving any graph that
-/// holds them, so a rebuild re-injects rather than re-creates (ADR-0122).
+/// contract as `DeviceChainFn`: caller-owned nodes by default, outliving any
+/// graph that holds them (ADR-0122). A streamed source may instead supply a
+/// sourceLifetime() token retained by the realised graph (ADR-0151).
 using SourceFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
 
 struct RealizeOptions {
@@ -180,6 +181,7 @@ private:
         NodeId tail = kInvalidNode;
     };
 
+    std::vector<std::shared_ptr<void>> sourceOwners_; // destroyed after graph_
     Graph graph_;
     /// Only the nodes realisation itself created. Devices are owned elsewhere.
     std::vector<std::unique_ptr<Node>> owned_;

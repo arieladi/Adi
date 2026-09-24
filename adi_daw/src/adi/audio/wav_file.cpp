@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/audio/io_audit.hpp"
 #include "wav_file.hpp"
 #include <algorithm>
 #include <array>
@@ -116,6 +117,7 @@ void WavWriter::write(const float* input, std::uint32_t frames) {
 void WavWriter::close() { if(file_.is_open()) { header(); file_.close(); } }
 
 WavReader::WavReader(const std::filesystem::path& path) {
+    fileIoPoint();
     file_.exceptions(std::ios::failbit|std::ios::badbit); file_.open(path,std::ios::binary);
     file_.seekg(0,std::ios::end); const auto physical=static_cast<std::uint64_t>(file_.tellg());
     require(physical>=12); file_.seekg(0);
@@ -172,10 +174,14 @@ WavReader::WavReader(const std::filesystem::path& path) {
     require(kind!="RF64" || sampleCount64==0 || sampleCount64==frames_);
     seek(0);
 }
+WavReader::~WavReader() { fileIoPoint(); }
+
 void WavReader::seek(std::uint64_t frame) {
+    fileIoPoint();
     require(frame<=frames_); file_.seekg(offset(dataOffset_+frame*align_)); position_=frame;
 }
 std::uint32_t WavReader::read(float* output, std::uint32_t frames) {
+    fileIoPoint();
     const auto n=static_cast<std::uint32_t>(std::min<std::uint64_t>(frames,frames_-position_)); require(output||!n);
     const auto samples=static_cast<std::uint64_t>(n)*channels_; require(samples<=std::numeric_limits<std::size_t>::max());
     std::array<unsigned char,65536> buffer{}; const auto capacity=buffer.size()/bytes_;

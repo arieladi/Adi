@@ -10044,3 +10044,92 @@ in `collab/cloud.md`.
 **Not decided:** the change log's retention; Device-scope settings, of which
 there are none in the registry yet; the Reference's settings that no ADR
 records.
+
+---
+
+## ADR-0151 — Headless clip playback: driver-owned transport, bounded disk pages and off-callback sinc conversion — `DECIDED` (2026-09-24)
+
+**Director's assignment.** Audio clips must play through `Session`, streamed
+from disk. Extends ADR-0010's callback prohibition to **all file I/O**, including
+open, read, seek and close; SQLite was never the only blocking resource.
+
+### Decisions
+
+1. **One driver owns `Transport`.** Play/stop, sample locate and an end-exclusive
+   loop range are commands between callbacks, or while the driver is stopped.
+   A UI must marshal them to that driver; this is not a concurrently writable
+   UI object. Nodes read one block origin without locks. `Session::process`
+   advances it exactly once after rendering. Loop wrap is computed per sample,
+   including a wrap inside a callback. The hardware stream clock is independent.
+2. **Rows resolve off-thread.** The session reads immutable clip/media/tempo
+   data and absolute path hints with the model. Relative media paths resolve
+   against the .adi's folder. Positions and endpoints use nanoseconds or
+   `TempoMap::ticksToSeconds`, rounded once to the nearest session sample.
+   Source start/length stay in source frames (SPEC 4.3). Unwarped material runs
+   at its recorded speed; changing the tempo changes musical placement and
+   boundaries, never silently time-stretches audio.
+3. **One source per track mixes overlapping clips before devices.** Existing
+   external `setSourcesFor` sources are additive. Clip mute, dB gain, source
+   window, content offset, end-exclusive length and clip loop are applied per
+   sample. No implicit edge fade (ADR-0132 d6). Fade lengths use tempo-integrated
+   ticks, with fade-out measured back from the clip end. Curve 0 is hold, 1
+   linear, 2 square, 3 square-root, 4 smoothstep; 5 uses neutral linear Bezier
+   handles because the clip row has no handle/tension columns. Unknown curves
+   are refused. Stereo preserves corresponding channels and zeroes extras;
+   mono duplicates; left/right duplicate the selected channel; mono-sum is the
+   arithmetic mean of source channels, duplicated to the output.
+4. **Disk never participates in the callback.** Each clip has eight preallocated
+   8192-frame interleaved pages (512 KiB for stereo), independent of file length.
+   One worker per live source generation opens/seeks/reads/converts off the
+   callback; initial header inspection is also off-callback. Request atomics
+   cover the current callback first, then a fixed 16384-frame horizon (341 ms
+   at 48 kHz), including loop discontinuities. Range arithmetic visits at most
+   one full repeat of a loop, never one iteration per read-ahead sample.
+   A page's ownership state prevents overwriting samples being read. The audio
+   thread makes bounded ownership attempts, never waits/notifies/allocates.
+   Unready samples are zeros; `underrunSamples()` counts missing **clip frames**,
+   not channels or device deadlines. Worker errors have a separate counter.
+5. **Locate invalidates demand, not the clock.** Pages are keyed by absolute
+   clip-source output frame. A locate or loop requests the appropriate pages;
+   cached correct pages are reusable, stale ones never masquerade as new data.
+   A cold seek may underrun until disk catches up. `prime()` is explicitly an
+   offline/test-driver wait between callbacks, never called by `process`.
+6. **Source lifetime belongs to the published graph.** A small optional
+   `Node::sourceLifetime()` token is queried only by the realiser off-thread.
+   The graph retains it through publisher reclamation. Old clips and their
+   worker therefore outlive old graphs but are not retained until project close.
+   No shared-pointer operation or worker destruction occurs on the audio thread.
+   Session hooks load/refresh the clip data, combine source suppliers, expose
+   transport/counters, and append clip problems. No scheduling change is needed.
+7. **libsamplerate 0.2.2, BSD-2-Clause, sinc best, on the worker only.** Pin
+   `c96f5e3de9c4488f4e6c97f59f5245f22fda22f7`; the director granted the one
+   dependency row in mac's fetch script and inventory. Each converted page is
+   computed with real overlapping source context, zero extension at the source
+   window edges, and an input origin aligned to the reduced rational rate
+   period. Only the interior is kept. This preserves phase after seeks and at
+   page seams; calling `src_simple` on adjacent unpadded chunks would not.
+   The guard is 1024 source frames times the downsampling factor rounded up.
+   Scratch is bounded by rates/channels/page size, never by file length.
+   Current bounds: integer rates 8–192 kHz, 1–64 channels, blocks up to 4096.
+8. **Unsupported audio is named silence.** Warped, reversed, non-WAV, pitch or
+   formant shifted, unresolved alias, embedded, malformed and unavailable
+   sources are listed by clip ID in `Session::problems()`. The row and original
+   media are untouched. Negative positions are refused by this initial source
+   (the existing TempoMap clamps negative ticks); the problem is named. Tempo
+   ramps are not implemented by TempoMap: a ramp map is reported in problems,
+   and placement uses its current step-tempo conversion, never a claimed ramp.
+   WAV includes the existing PCM16/24, float32 and
+   extensible/RF64/BW64 reader; this is not the decoding cache or warp engine.
+
+### Measured quality and proof
+
+The headless test writes float32 sine WAVs and renders through `Session`,
+including every 8192-frame page seam and a seek to sample 37001. On the i5-3550S,
+GCC 15.2 Release, 997 Hz at amplitude 0.5 (excluding the first 512 edge samples):
+44.1→48 kHz RMS error **1.19234341e-8**, peak **5.20014374e-8**, error SNR
+**149.441 dB**; 96→48 kHz RMS **7.51034535e-9**, peak **2.68614696e-8**,
+**153.456 dB**. A 30 kHz sine at 96 kHz downsampled to 48 kHz is attenuated
+**143.476 dB** in the interior. These are these float fixtures, not a claim
+of universal converter dynamic range, worst-case bandwidth or CPU performance.
+The guards allow RMS 1e-5 / peak 1e-4 across ABIs. Plants and sanitizer evidence
+are recorded in `collab/linux.md`.

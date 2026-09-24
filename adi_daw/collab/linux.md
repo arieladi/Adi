@@ -8,6 +8,129 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-24 — Streamed audio clips through Session (ADR-0151)
+
+Branch `linux/clip-playback`, from `7f3d874`; the director granted the engine
+subtree and small session/graph/realizer hooks, plus one dependency row in each
+of mac's fetch script and inventory. No ops, changeset, settings, JUCE, workflow
+or BLAKE3 CMake changes. libsamplerate 0.2.2 is pinned and `--build-only` fetches
+it; CMake isolates its legacy minimum-policy setting and disables its own
+examples/tests so our suite count remains the project's count.
+
+### What plays, and the hooks
+
+`Transport` is driver-owned: play/stop, locate and loop changes happen between
+callbacks. It advances once per `Session::process`; nodes read one origin,
+including sample-exact loop wrap mid-block. UI command marshalling is not built.
+Rows and media hints resolve off-callback; relative paths use the project folder.
+The opened database filename (PRAGMA database_list) anchors that folder even
+if Store was opened with a relative filename and the caller later changes CWD.
+That guard failed before replacing the raw Store::path() use. A fractional-time
+probe also failed: separately rounding start and duration lost a sample. Both
+absolute endpoints now round once; the guard remains in the suite.
+Each track source mixes overlapping clips before devices, in addition to
+external sources. Source frame windows, linear/musical placement, content
+offset, clip loops, mute, gain, fade curves and channel mode are resolved/applied
+as ADR-0151 specifies. There is no default fade and no implicit warp.
+
+Eight fixed 8192-frame pages per clip (512 KiB/stereo), one worker per live
+source generation. Atomics publish requests and grant exclusive page ownership;
+the callback never waits, allocates, opens, reads, seeks or closes a file.
+Demand covers a fixed 16384-frame horizon, not two callbacks: a guard for a
+clip 12000 samples ahead at block size 64 failed on the first draft, then passed
+after range-based read-ahead replaced the short horizon.
+Cold seeks/late disk pages output silence and increment missing **clip-frame**
+counts. Read failures have a separate counter. `prime()` is an explicitly
+offline/test-driver wait, never on the callback. Test instrumentation covers
+WAV open/read/seek/close, and allocation counting is scoped to callback threads.
+
+The hooks are small and mechanical: `Session` resolves clip data on load/refresh,
+combines its source supplier, exposes transport and clip counters, appends named
+problems, and advances after rendering. `Node::sourceLifetime()` is queried
+ONLY off-thread by `realize`; its token lives with the graph until publisher
+reclamation, so old source nodes/pages/workers survive a refresh and are then
+freed off-callback. No scheduler algorithm or JUCE adapter changes.
+
+Warped, reversed, non-WAV, pitch/formant-shifted, embedded, unresolved alias,
+missing/malformed and unsupported-row clips are **named silence** in
+`Session::problems()`, not misleading raw playback. Row/media contents are
+preserved. Current rate bounds are integer 8–192 kHz, channels 1–64, block sizes
+up to 4096; this is a headless playback core, not the decoding cache or warp
+engine. Negative clip positions are refused; tempo ramps use the existing step-tempo
+conversion with a named problem, since TempoMap does not implement ramps.
+No hardware/ear test was performed on this Linux machine.
+
+### Required plants — all compiled, failed their guards, then reverted
+
+| Plant | Observed failure |
+|---|---|
+| Open and read a WAV inside the source callback | `no file I/O on the audio thread` (also callback allocations) |
+| Add maxFrames to the source's timeline position | `sample-exact placement and source window across block sizes/pages` |
+| Ignore demand updates after the first request | `locate requests a refill before rendering` |
+| Sleep 100 ms on an underrun | `underrun callback never waits for worker` |
+| Bypass conversion for 96 kHz input | `sine conversion accurate including page seams` (also phase/rejection) |
+
+Gemini was a read-only auditor. Its per-sample atomic underrun-counter concern
+had already been corrected before its report: the source aggregates locally
+and adds once per clip/segment. Its suggested sub-block coverage became the
+explicit `NodeIo::blockOffset` fixture; it passes, so this is coverage, not a
+verified bug claim. Its proposed use of file context beyond the source window
+was not accepted as a defect: ADR-0151 deliberately converts the trimmed window
+with zero extension, then applies clip loops to those converted samples. A
+hard loop/trim may click (no implicit fade); that is distinct from phase drift
+at a streaming page seam. The cropped-window/page-seam guard passes. Gemini
+wrote no repository files; no credentials were passed to it.
+
+### Converter measurements
+
+libsamplerate **sinc best**, entirely on the disk worker; BSD-2-Clause allowed
+by policy. Rationally aligned input origins and overlapping context let a page
+be independently regenerated after locate. Callback block size is not the
+converter's chunk size. No whole-file decode/cache is made.
+
+Intel i5-3550S, GCC 15.2 Release; generated float32 sine fixtures at amplitude
+0.5, rendered through Session. Metrics cover every interior sample, including
+page seams, excluding the first 512 edge samples of the 997 Hz tests:
+
+| Source → session | Signal | RMS error | Peak error | Error SNR / attenuation |
+|---|---|---:|---:|---:|
+| 44100 → 48000 | 997 Hz | 1.19234341e-8 | 5.20014374e-8 | 149.441 dB SNR |
+| 96000 → 48000 | 997 Hz | 7.51034535e-9 | 2.68614696e-8 | 153.456 dB SNR |
+| 96000 → 48000 | 30000 Hz | — | — | 143.476 dB attenuation |
+
+These are measured float-fixture results, not a universal bandwidth/dynamic
+range, device deadline or CPU-throughput claim. The tests also seek to sample
+37001 and cross a page in a source cropped at frame 123. There is no engine
+benchmark rerun or Ableton comparison in this assignment.
+
+### Validation
+
+Rebased on `fa65229` (cloud's settings), preserving the settings sources,
+CMake target, released claim and used ADR-0152 reservation. Final GCC **15.2.0**
+and Clang **21.1.8** trees each pass **4000 checks across 41 suites**;
+validators clean. Clip playback contributes **62** platform-independent checks.
+Clang ASan+UBSan and GCC TSan each pass **62 clip + 214 session + 177 graph +
+62 realizer + 124 WAV = 639 checks**, with `halt_on_error=1` (UBSan stack traces
+also enabled), no findings. This is affected-suite sanitizer coverage, not a
+full-tree sanitizer claim. The pre-refinement runs and intentionally interrupted
+Clang build logs are retained; the final logs are explicitly named `*-final-*`.
+All five required plants were rechecked after the read-ahead change and reverted.
+The first CI head (`804ad93`) exposed a fresh-cache CMake issue: upstream
+libsamplerate's old CMP0077 behavior erased the normal BUILD_TESTING=OFF value,
+registering 13 unbuilt dependency tests. All 41 ADI suites passed, but CTest
+correctly failed those 13 missing executables. The dependency now gets scoped
+CMP0077=NEW. A fresh configuration registers exactly 41 ADI tests; local CTest
+passes 41/41 and test_all.sh again passes 4000 checks with validators clean.
+No workflow or upstream source was changed.
+Local MSVC /WX and a hardware listening test are unavailable here; CI compiles
+Windows and win owns /WX. All 19 checks must be green at the final head SHA
+before merge. The linux claim is released in this final commit.
+
+Scratch evidence (plants, builds, sanitizer output and Gemini audit):
+`/home/adi/Documents/Codex/2026-09-23/i-n/work/clip-playback/`.
+
+---
+
 ## 2026-09-24 — Library index and measured BLAKE3 SIMD (ADR-0147; PR 2)
 
 Branch `linux/library-index`, from `dc20e7e`, after #101 merged green on all 19

@@ -111,6 +111,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                                            ": a null source was dropped");
                     continue;
                 }
+                if (auto owner = s->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
                 const NodeId id = r->graph_.addNode(*s);
                 r->graph_.connect(id, head);
             }
