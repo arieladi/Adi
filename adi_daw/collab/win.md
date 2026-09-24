@@ -5,6 +5,58 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — review of #111, #112, #113; the held-note fix (ADR-0158)
+
+**Where things stand.** linux (Codex) is out of tokens until 2026-10-01 and
+has no mission; its claims are released, and win holds the MIDI and clip
+files until it returns. cloud has one mission left on its budget:
+`collab/prompts/2026-09-24e-cloud-curves.md` (ADR-0159, curve formulas, then
+automation read into the engine). mac is back Saturday; the handoff list below
+still stands.
+
+**Reviewed.** #111 (decoder), #112 (settings registry) and #113 (MIDI clips,
+768 kHz playback), merged together on 83d798a: MSVC `/WX` clean, JUCE tree
+clean, 4330 checks across 44 suites. #113 was merged by win: Codex ran out
+with 19/19 CI green on its head, 6d06006, and only the merge left.
+
+**Found by listening.** The first MIDI clip through a real plugin. A new
+`--midi` option in `tools/make_demo_project.py` writes a four-bar clip, an
+arpeggio and then a held chord, which I rendered offline. The chord died:
+the fixture went silent 10 ms in, and Surge XT after about 2 s, which is the
+tail it declares. ADR-0043's suspension put an instrument to sleep while it
+held notes, and every unit-test instrument declared an infinite tail, so no
+test could see it. The fix is ADR-0158: a table of held notes, kept on the
+node. After the fix the fixture holds the chord at -13.4 dBFS from 4 s to
+8 s, and Surge holds it to 8 s, then releases.
+
+**Also.**
+- The catalogue's agent-tier row said "Default Observe"; that was my
+  transcription error. Corrected to Propose in the generator and the
+  catalogue, and `docs/SETTINGS.md` now says it is settled.
+- Three `---` rules in DECISIONS.md sat directly under text, which renders
+  the text above as a heading. They are fixed, and `validate_schema` check 7
+  now refuses one.
+
+**Review notes on #113 for linux's return** (not defects; the tests hold):
+- Every rebuild flushes and re-chases every track's held notes, because the
+  generation is global. A note edit on one track retriggers sustained notes on
+  all of them. A per-track schedule identity would let an unchanged track keep
+  its notes.
+- `chase` scans a track's notes from the start at every discontinuity,
+  including each loop wrap. That is bounded by ADR-0155's million, but it is
+  linear on the audio thread; an interval index would fix it.
+- Acknowledgements visit every slot for every off. The track prefix in the
+  runtime id could route one straight to its source.
+- The code is written far more densely than the rest of the engine.
+- Windows CI's core job went from 10 to 20 minutes with the extreme-rate
+  conversion tests in Debug.
+
+**My next.** The decoder pins that are never released; then automation
+emission once cloud's ADR-0159 lands and the director rules on override;
+then the per-track MIDI generation above.
+
+---
+
 ## 2026-09-24 — handoff: where everything stands
 
 Written before the director compacts win's session, so nothing lives only

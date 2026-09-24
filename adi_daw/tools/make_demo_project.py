@@ -20,13 +20,18 @@ Their hashes are placeholders (no BLAKE3 in Python), so `adi_tool check`
 reports them; playback does not read them.
 
 --vst3-uid UID [--vst3-path PATH] adds a MIDI track with that VST3 as its
-instrument; `adi_play --list --fixture` prints the fixture's UIDs.
+instrument; `adi_play --list --fixture` prints the fixture's UIDs. With --midi
+that track also gets a four-bar MIDI clip at 120 BPM: a C major arpeggio in
+quarter notes for two bars, then the chord held for two, so a render shows the
+instrument sounding for 8 s and silent after (ADR-0155).
 """
 import argparse
 import math
 import os
 import sqlite3
 import struct
+
+PPQ = 5765760   # ticks per quarter note (textproj.hpp kPPQ)
 import wave
 
 
@@ -44,6 +49,23 @@ def write_sine(path, rate, seconds, freq):
     return frames
 
 
+def note_blob(notes):
+    # ANOT v1 (SPEC 6.3.1): a 16-byte stream header, then 40-byte records.
+    blob = struct.pack('<IHHII', 0x544F4E41, 1, 40, len(notes), 0)
+    for i, (start, dur, key) in enumerate(notes):
+        blob += struct.pack('<qqQBBBBHHfI', start, dur, i + 1, key, 100, 64, 0, 0, 10000, 0.0, 0)
+    return blob
+
+
+def add_midi_clip(c, clip_id, track_id):
+    notes = [(q * PPQ, PPQ, 60 + (0, 4, 7, 12)[q % 4]) for q in range(8)]
+    notes += [(8 * PPQ, 8 * PPQ, key) for key in (60, 64, 67)]
+    c.execute("INSERT INTO clips(id, track_id, kind, name, time_base, pos_ticks, length_ticks) "
+              "VALUES (?, ?, 'midi', 'C major', 0, 0, ?)", (clip_id, track_id, 16 * PPQ))
+    c.execute("INSERT INTO event_streams(clip_id, stream_kind, data) VALUES (?, 'notes', ?)",
+              (clip_id, note_blob(notes)))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('adi', help='an empty project from `adi_tool create`')
@@ -51,7 +73,10 @@ def main():
     ap.add_argument('--clip-rates', default='44100', help='comma-separated source rates, one clip each')
     ap.add_argument('--vst3-uid', default='')
     ap.add_argument('--vst3-path', default='')
+    ap.add_argument('--midi', action='store_true', help='a MIDI clip on the instrument track')
     a = ap.parse_args()
+    if a.midi and not a.vst3_uid:
+        raise SystemExit('--midi needs --vst3-uid: the notes need an instrument')
 
     folder = os.path.dirname(os.path.abspath(a.adi))
     rates = [int(r) for r in a.clip_rates.split(',') if r.strip()]
@@ -88,13 +113,16 @@ def main():
         c.execute("INSERT INTO device_chains(id, track_id, ord, name) VALUES (1, ?, 0, '')", (track,))
         c.execute("INSERT INTO devices(id, chain_id, ord, plugin_ref_id, name, enabled) "
                   "VALUES (1, 1, 0, 1, 'Synth', 1)")
+        if a.midi:
+            add_midi_clip(c, clip_id=100, track_id=track)
         track += 1
 
     c.execute("INSERT INTO tracks(id, kind, name, index_in_parent) VALUES (99, 'master', 'Master', ?)",
               (track - 1,))
     c.commit()
     print(f'{a.adi}: {len(rates)} clip(s) at {rates} Hz in a {a.project_rate} Hz project'
-          + (', plus a VST3 instrument track' if a.vst3_uid else ''))
+          + (', plus a VST3 instrument track' if a.vst3_uid else '')
+          + (' with a MIDI clip' if a.midi else ''))
 
 
 if __name__ == '__main__':

@@ -28,6 +28,7 @@
 #pragma once
 
 #include "adi/engine/events.hpp"
+#include "adi/engine/held_notes.hpp"
 #include "adi/engine/process.hpp"
 
 #include <atomic>
@@ -187,8 +188,21 @@ public:
 
     [[nodiscard]] virtual const char* name() const noexcept { return "node"; }
 
+    /// The notes this node has been handed and not released (ADR-0158).
+    /// Audio thread; the graph keeps it, and a node never needs to touch it.
+    ///
+    /// ON THE NODE, NOT THE GRAPH'S SLOT. Every edit publishes a new graph
+    /// with new slots, while the plugin behind the node goes on sounding what
+    /// it was holding. Only one graph renders a callback (ADR-0092), so one
+    /// audio thread is the only writer.
+    [[nodiscard]] HeldNotes& heldNotes() noexcept { return held_; }
+    [[nodiscard]] const HeldNotes& heldNotes() const noexcept { return held_; }
+
 protected:
     Node() = default;
+
+private:
+    HeldNotes held_;
 };
 
 using NodeId = std::int32_t;

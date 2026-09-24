@@ -186,9 +186,10 @@ test checks that their defaults are the decoder's own.
 **Decisions this fill made** (ADR-0156, part two):
 - **The theme follows the OS by default**, as the catalogue decides.
   `lookfeel.theme` gains `os`.
-- **The agent's tier stays Propose by default.** The catalogue says Observe,
-  while AI-AGENT §2 and ADR-0152 say Propose. The spec wins until the director
-  rules; this is flagged.
+- **The agent's tier is Propose by default.** The catalogue said Observe,
+  while AI-AGENT §2 and ADR-0152 say Propose. Settled 2026-09-24: the
+  catalogue row was win's transcription error, not a ruling (the row cited
+  AI-AGENT itself), and now reads Propose.
 - **The catalogue adds nothing to the agent's whitelist.** The same nine
   settings as before are marked. The Engine page joins the structural "never".
 - **New-track defaults are App scope,** on a *New track* page. The catalogue

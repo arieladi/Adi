@@ -33,10 +33,13 @@ struct Heard { Event e;std::int64_t clock; };
 struct Instrument final:device::DeviceInstance {
     device::DeviceIdentity id;
     std::array<Heard,8192> heard{};std::size_t count=0;std::int64_t clock=0;
+    std::int64_t tail=kInfiniteTail;int calls=0; // ADR-0158: most plugins report no tail
     const device::DeviceIdentity& identity()const noexcept override{return id;}
     bool loaded()const noexcept override{return true;}
     EventFlow eventFlow()const noexcept override{return EventFlow::Consume;}
+    std::int64_t tailSamples()const noexcept override{return tail;}
     void process(const NodeIo& io)noexcept override{
+        ++calls;
         for(const auto& e:io.events)if(count<heard.size())heard[count++]={e,clock+e.frame};
         for(int c=0;c<io.channels;++c)std::fill_n(io.out[c]+io.blockOffset,io.frames,0.0f);
     }
@@ -166,6 +169,14 @@ void loopEntry(){
         if(h.e.type==EventType::NoteOff){++offs;if(firstOff<0)firstOff=h.clock;}}
     check(ons==5 && offs==5 && firstOff==250,"entering a clip loop does not retrigger before its first wrap");
 }
+void heldNote(){
+    Fixture f;f.clip(1,0,5765760);f.load();f.instrument->tail=0;
+    for(int i=0;i<20;++i)f.render();
+    check(f.instrument->balance()==1 && f.instrument->calls>=20,"a zero-tail instrument keeps running a held clip note (ADR-0158)");
+    while(f.clock<26000)f.render();
+    const auto released=f.instrument->calls;f.render();f.render();
+    check(f.instrument->balance()==0 && f.instrument->calls==released,"and sleeps once the clip releases it");
+}
 void musical(){
     Fixture f;f.clip(1,0,240240,720720);f.clip(2,0,240240,720720);
     f.store->db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=0,loop_len_ticks=240240,content_offset_ticks=120120");f.load();
@@ -181,7 +192,7 @@ void musical(){
 }
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);const std::string only=argc>1?argv[1]:"all";
-    try{if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();}catch(const std::exception& e){check(false,e.what());}
+    try{if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }

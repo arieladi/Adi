@@ -167,6 +167,8 @@ subject, say so in your log instead of writing it twice.
 | 0155 | linux | `linux/midi-clips` | MIDI clip schedules, note ownership and time-based audio pages | used |
 | 0156 | cloud | `cloud/decoder` | one decoder for imported audio, into the cache; the settings registry filled from the catalogue, if it decides anything | used |
 | 0157 | win | `win/play-clips` | sample rates from 44.1 kHz to 768 kHz; lower-rate files still play, converted up (director's ruling) | used |
+| 0158 | win | `win/held-notes` | a held note keeps its instrument running (amends ADR-0043) | used |
+| 0159 | cloud | `cloud/curves` | curve formulas for automation and note expression; automation read into the engine, if it decides anything | reserved |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -182,7 +184,8 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/juce/**`, `tests/test_device.cpp`, `docs/DEVICE-CONTRACT-PANEL.md` | mac | `mac/vst3` | 2026-09-20 |
 | `src/juce/**`, `tests/test_device.cpp` | mac | `mac/device` | 2026-09-20 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
-| `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
+| `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
+| new `src/adi/engine/curves.*`, new `src/adi/engine/automation.*`, new `tests/test_curves.cpp`, new `tests/test_automation.cpp`; lent: `src/adi/store_rows.*` (the automation rows only), `docs/format/SPEC.md` §6.3.2–6.3.3, the CMake lines for the two suites | cloud | `cloud/curves` | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
