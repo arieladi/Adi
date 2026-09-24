@@ -161,7 +161,7 @@ subject, say so in your log instead of writing it twice.
 | 0149 | win | `win/route-registry` | where application data lives, shared by the suite or per application; the capabilities registry proposes a route once, the project decides; the route op | used |
 | 0150 | win | `win/rulings-0150` | the plug-in panel exactly as Live's; the Parameter List; BLAKE3 SIMD on every CPU | used |
 | 0151 | linux | `linux/clip-playback` | audio clips playing through the session, streamed from disk, if it decides anything | reserved |
-| 0152 | cloud | `cloud/settings` | the settings store, if it decides anything | reserved |
+| 0152 | cloud | `cloud/settings` | the settings store: typed registry, one file per application, roles in bundles, a two-lock agent whitelist | used |
 | 0153 | win | `win/journal-simd` | the journal takes a caller inside its transaction; BLAKE3 runs AVX2, AVX-512 and NEON | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in

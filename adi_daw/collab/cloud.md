@@ -10,6 +10,94 @@ so nothing is left unpushed.
 
 ---
 
+## 2026-09-24 — the settings store (ADR-0152)
+
+Branch `cloud/settings`. A core library with no UI: `src/adi/settings/`
+(`registry`, `store`, `bundle`), its own static library `adi_settings`, and
+`docs/SETTINGS.md`.
+
+**What landed.**
+- **Registry:** a typed table of 40 settings on 10 pages. Each entry has a key,
+  type, scope, page, label, help, default, choices or range, the op for Project
+  scope, and the agent flag. The Find box matches every word of the query
+  against the label, help, key and page.
+- **ADR-0145's settings are in:**
+  - Zoom on Selection;
+  - silent resampling;
+  - buffer sizes 64 to 4096, with 32 refused;
+  - ASIO as a single choice, opened through JUCE;
+  - the Linux backend and JACK transport sync;
+  - custom CLAP and LV2 folders.
+- **The per-application `settings.json`:**
+  - it names its application, and another application's file is refused and
+    never overwritten;
+  - unknown keys survive a save;
+  - a corrupt file moves aside to `.corrupt-N`;
+  - saves are atomic.
+- **The change log:** `settings-changes.jsonl`. It always records agent
+  changes, and by default user changes too; ADR-0125 left that open and this
+  decides it.
+- **Presets:** whole or partial. Applying one never touches a page it doesn't
+  hold.
+- **Bundles:** one ZIP of `manifest.json`, `settings.json` and `presets/`.
+  Paths travel as `role:user library/...` or `role:content folder N`, and are
+  resolved against the importing machine's folders. A path under no role is
+  left out, and export refuses to write any absolute path.
+- **The agent's pipeline:** `agentSet` works at Apply tier only and has two
+  locks: the per-setting flag, and a structural refusal of any path, the
+  Audio, Plug-ins, Privacy and AI pages, and anything not App scope.
+
+**Two bugs found before any plant.**
+1. The record folder was a bundle role, so it matched itself instead of the
+   user library that holds it. On another machine that role would resolve to
+   that machine's own, possibly empty, record folder rather than under its
+   user library. Roles are now only library roots (ADR-0152 d5).
+2. A segfault: `for (... : bring(x).items())` iterated `items()` of a
+   temporary, and range-for extends only the proxy's lifetime. It is now bound
+   to a name. After the fix I ran the suite under ASan and UBSan: clean.
+
+**Tests.** `adi_settings_tests`, 80 checks, the same on every platform:
+- the registry;
+- the store: basics, unknown keys, corrupt files, application isolation;
+- the change log;
+- the agent whitelist;
+- presets;
+- bundles.
+
+Tree: 3938 checks across 40 suites. GCC and Clang `-Werror` are clean. MSVC
+/WX is not built here; I checked the new code by hand. No `getenv`,
+`setvbuf`, streams rather than `fopen`, and every `size_t` conversion explicit.
+One of those I found only on re-reading: `sizeof name` passed to miniz as an
+`mz_uint`.
+
+**Plants, seven, all fired** (each reverted):
+
+| # | Defect planted | Failing check |
+|---|---|---|
+| P1 | one application reads another's file (the `app` check removed) | `ADI Live pointed at ADI DAW's file refuses it`; `and never overwrites it` |
+| P2 | an unknown key dropped on save | `and the newer build's key is still there, exactly` |
+| P3 | a partial preset applies keys from pages it doesn't hold | `a key from a page the preset does not hold is not applied`; `and is reported as skipped` |
+| P4 | paths written raw, not as roles | caught by export's own guard: `exported: an absolute path would have left this machine in the bundle` |
+| P4b | raw paths AND the guard removed | `no absolute path anywhere in the bundle's settings`; `a path under no role is left out and reported, not shipped` |
+| P5 | the agent's whitelist check removed | `refused: audio.bufferSize`, `refused: privacy.crashReports`, `and none of them changed` |
+| P6 | a corrupt file not kept aside | `the broken file is kept, byte for byte, beside it` |
+
+P2 and P4 first fired through an escaping JSON exception rather than a named
+check. A crash proves less than a check that names the broken promise, so I
+made those checks read defensively and planted again: both then failed by
+name. P4 alone showed export's guard catching the leak. P4b, with the guard
+removed too, showed the test catching it by reading the ZIP.
+
+**Not done.**
+- The Settings Reference text is not in this tree, so the registry holds
+  what the ADRs record. The Reference's other settings are one row each for
+  whoever has it.
+- No Device-scope settings yet.
+- The change log's retention is still open.
+- Safe Mode (R-06) is a startup behaviour, not a store; not built.
+
+---
+
 ## 2026-09-24 — the Propose-tier changeset (ADR-0145 d9, ADR-0148)
 
 Branch `cloud/changeset`. Schema 1.4 was already on main (win's #98), so

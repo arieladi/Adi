@@ -293,6 +293,20 @@ add_test(NAME adi_snapshots_tests COMMAND adi_snapshots_tests)
 
 # Upgrading an older 1.x file (ADR-0144): built from the frozen schema.sql of
 # each minor, which is why the test is told where the history lives.
+# The settings store (ADR-0152): the registry, the per-application file,
+# presets, bundles and the agent's pipeline. No UI.
+add_library(adi_settings STATIC
+    src/adi/settings/registry.cpp
+    src/adi/settings/store.cpp
+    src/adi/settings/bundle.cpp)
+target_link_libraries(adi_settings PUBLIC adi_core PRIVATE adi_miniz adi_warnings)
+
+add_executable(adi_settings_tests tests/test_settings.cpp)
+target_link_libraries(adi_settings_tests PRIVATE adi_settings adi_core adi_miniz adi_warnings)
+target_compile_definitions(adi_settings_tests PRIVATE
+    ADI_DOCS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs")
+add_test(NAME adi_settings_tests COMMAND adi_settings_tests)
+
 add_executable(adi_changeset_tests tests/test_changeset.cpp)
 target_link_libraries(adi_changeset_tests PRIVATE adi_changeset adi_core adi_warnings)
 add_test(NAME adi_changeset_tests COMMAND adi_changeset_tests)
