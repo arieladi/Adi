@@ -10082,7 +10082,9 @@ open, read, seek and close; SQLite was never the only blocking resource.
    8192-frame interleaved pages (512 KiB for stereo), independent of file length.
    One worker per live source generation opens/seeks/reads/converts off the
    callback; initial header inspection is also off-callback. Request atomics
-   cover the upcoming callbacks, their loop discontinuities and read-ahead.
+   cover the current callback first, then a fixed 16384-frame horizon (341 ms
+   at 48 kHz), including loop discontinuities. Range arithmetic visits at most
+   one full repeat of a loop, never one iteration per read-ahead sample.
    A page's ownership state prevents overwriting samples being read. The audio
    thread makes bounded ownership attempts, never waits/notifies/allocates.
    Unready samples are zeros; `underrunSamples()` counts missing **clip frames**,

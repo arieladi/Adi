@@ -180,6 +180,31 @@ void refreshAndVariableBlocks() {
     stop.store(true);driver.join();f.session.tick(3000);
     check(refreshed,"concurrent publication and graph reclamation keep sources alive");
 }
+void fractionalEndpoint() {
+    Fixture f;f.add(1,0,1000,0,1000);
+    f.store->db().exec("UPDATE clips SET pos_ns=10000,length_ns=10000");
+    f.load(64);const auto out=f.render(64);
+    check(out[0]==f.media[0] && out[1]==0,"absolute clip endpoints round once");
+}
+void relativeProject() {
+    Fixture f;f.add(1,0,1000,0,1000);f.store.reset();
+    const auto previous=std::filesystem::current_path();
+    std::filesystem::current_path(f.dir.path());
+    StoreError error{};f.store=Store::open("session.adi",error);
+    std::filesystem::current_path(previous);
+    if(!f.store)throw std::runtime_error("reopen relative project");
+    f.load(64);const auto out=f.render(64);
+    check(out[0]==f.media[0],"media stays relative to opened project after working directory changes");
+}
+void readAhead() {
+    Fixture f;f.add(1,12000,4000,0,4000);f.load(64);
+    if(!f.session.clips()->prime())throw std::runtime_error("ahead prime");
+    f.session.clips()->stallForTest(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    f.session.transport().locate(12000);
+    const auto out=f.render(64,false);
+    check(out[0]==f.media[0],"fixed horizon prefetches future clip at 64 samples");
+}
 void segmentsAndCrop() {
     Fixture f;f.add(1,63,12000,9,20000);f.load(4096);
     if(!f.session.clips()->prime())throw std::runtime_error("segment prime");
@@ -223,6 +248,9 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="refresh")refreshAndVariableBlocks();
         if(only=="all" || only=="unsupported")unsupported();
         if(only=="all" || only=="segments")segmentsAndCrop();
+        if(only=="all" || only=="ahead")readAhead();
+        if(only=="all" || only=="relative")relativeProject();
+        if(only=="all" || only=="endpoint")fractionalEndpoint();
     }
     catch(const std::exception& e){check(false,e.what());}
     check(callbackAllocations.load()==0,"callback allocates nothing");

@@ -13,6 +13,9 @@ public:
     [[nodiscard]] bool playing() const noexcept { return playing_; }
     [[nodiscard]] std::int64_t position() const noexcept { return position_; }
     [[nodiscard]] std::int64_t sampleAt(std::int64_t offset) const noexcept;
+    // Number of consecutive timeline samples before the next wrap. Used to
+    // request ranges without walking every sample of the read-ahead horizon.
+    [[nodiscard]] std::int64_t contiguousFrames(std::int64_t offset, std::int64_t count) const noexcept;
     void advance(std::int32_t frames) noexcept;
 private:
     std::int64_t position_ = 0, begin_ = 0, end_ = 0;

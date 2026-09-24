@@ -1,5 +1,5 @@
-#include "adi/audio/io_audit.hpp"
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/audio/io_audit.hpp"
 #include "wav_file.hpp"
 #include <algorithm>
 #include <array>

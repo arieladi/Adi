@@ -23,6 +23,11 @@ examples/tests so our suite count remains the project's count.
 callbacks. It advances once per `Session::process`; nodes read one origin,
 including sample-exact loop wrap mid-block. UI command marshalling is not built.
 Rows and media hints resolve off-callback; relative paths use the project folder.
+The opened database filename (PRAGMA database_list) anchors that folder even
+if Store was opened with a relative filename and the caller later changes CWD.
+That guard failed before replacing the raw Store::path() use. A fractional-time
+probe also failed: separately rounding start and duration lost a sample. Both
+absolute endpoints now round once; the guard remains in the suite.
 Each track source mixes overlapping clips before devices, in addition to
 external sources. Source frame windows, linear/musical placement, content
 offset, clip loops, mute, gain, fade curves and channel mode are resolved/applied
@@ -31,6 +36,9 @@ as ADR-0151 specifies. There is no default fade and no implicit warp.
 Eight fixed 8192-frame pages per clip (512 KiB/stereo), one worker per live
 source generation. Atomics publish requests and grant exclusive page ownership;
 the callback never waits, allocates, opens, reads, seeks or closes a file.
+Demand covers a fixed 16384-frame horizon, not two callbacks: a guard for a
+clip 12000 samples ahead at block size 64 failed on the first draft, then passed
+after range-based read-ahead replaced the short horizon.
 Cold seeks/late disk pages output silence and increment missing **clip-frame**
 counts. Read failures have a separate counter. `prime()` is an explicitly
 offline/test-driver wait, never on the callback. Test instrumentation covers
@@ -97,12 +105,19 @@ benchmark rerun or Ableton comparison in this assignment.
 
 ### Validation
 
-Before rebasing: GCC **3917 checks / 40 suites**, validators clean. GCC TSan
-passes **59 clip + 214 session + 177 graph + 62 realizer + 124 WAV checks**
-with `halt_on_error=1`. Clang ASan+UBSan initially passed the earlier 55-check
-clip suite plus those four affected suites; final-source verification and the
-full Clang build follow after rebasing on cloud's settings merge. No sanitizer
-finding so far. Final results will replace this progress note before merge.
+Rebased on `fa65229` (cloud's settings), preserving the settings sources,
+CMake target, released claim and used ADR-0152 reservation. Final GCC **15.2.0**
+and Clang **21.1.8** trees each pass **4000 checks across 41 suites**;
+validators clean. Clip playback contributes **62** platform-independent checks.
+Clang ASan+UBSan and GCC TSan each pass **62 clip + 214 session + 177 graph +
+62 realizer + 124 WAV = 639 checks**, with `halt_on_error=1` (UBSan stack traces
+also enabled), no findings. This is affected-suite sanitizer coverage, not a
+full-tree sanitizer claim. The pre-refinement runs and intentionally interrupted
+Clang build logs are retained; the final logs are explicitly named `*-final-*`.
+All five required plants were rechecked after the read-ahead change and reverted.
+Local MSVC /WX and a hardware listening test are unavailable here; CI compiles
+Windows and win owns /WX. All 19 checks must be green at the final head SHA
+before merge. The linux claim is released in this final commit.
 
 Scratch evidence (plants, builds, sanitizer output and Gemini audit):
 `/home/adi/Documents/Codex/2026-09-23/i-n/work/clip-playback/`.

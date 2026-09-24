@@ -24,7 +24,12 @@ struct ClipProject {
     std::unordered_map<std::int64_t, fs::path> hints;
 };
 std::shared_ptr<const ClipProject> readClipProject(const Store& store, const rows::Model& rows) {
-    auto p = std::make_shared<ClipProject>(); p->rows = rows; p->folder = store.path().parent_path();
+    auto p = std::make_shared<ClipProject>(); p->rows = rows;
+    // SQLite resolves its filename when opening. Store::path() can remain
+    // relative, and a subsequent working-directory change must not rebase media.
+    SQLite::Statement location(store.db(), "PRAGMA database_list");
+    while(location.executeStep()) if(location.getColumn(1).getString()=="main")
+        p->folder=utf8Path(location.getColumn(2).getString()).parent_path();
     SQLite::Statement q(store.db(), "SELECT id,abs_path_hint FROM media_files WHERE abs_path_hint IS NOT NULL");
     while (q.executeStep()) p->hints.emplace(q.getColumn(0).getInt64(), utf8Path(q.getColumn(1).getString()));
     return p;
@@ -90,19 +95,41 @@ struct Clip {
         std::array<std::int64_t,slots> out; out.fill(-1);
         if (!t.playing()) return out;
         std::size_t used = 0;
-        for (std::int32_t i=0; i<frames*2; ++i) {
-            const auto n = sourceAt(t.sampleAt(i));
-            if (n < 0) continue;
-            const auto p = n/pageFrames;
-            if (std::find(out.begin(),out.end(),p)==out.end() && used<slots) out[used++]=p;
-        }
-        // Read ahead beyond the two requested callbacks while preserving all
-        // discontinuity pages (locate, transport loop AND clip loop).
-        const auto mandatory = used;
-        for (std::size_t i=0;i<mandatory && used<slots;++i) {
-            const auto next=out[i]+1;
-            if (next*pageFrames<length && std::find(out.begin(),out.end(),next)==out.end()) out[used++]=next;
-        }
+        auto sourceRange = [&](std::int64_t from, std::int64_t count) {
+            if(from<0 || from>=length || count<=0) return;
+            const auto last=std::min(length,from+count)-1;
+            for(auto p=from/pageFrames;p<=last/pageFrames && used<slots;++p)
+                if(std::find(out.begin(),out.end(),p)==out.end()) out[used++]=p;
+        };
+        auto timelineRange = [&](std::int64_t from, std::int64_t count) {
+            if(from>=end || count<=0) return;
+            const auto to=from+std::min(count,end-from);
+            from=std::max(from,start);
+            if(to<=from) return;
+            auto n=from-start+offset;
+            count=to-from;
+            if(loopLength==0) { sourceRange(n,count); return; }
+            if(n<loopBegin) {
+                const auto before=std::min(count,loopBegin-n);
+                sourceRange(n,before); n+=before; count-=before;
+            }
+            if(count<=0) return;
+            n=loopBegin+(n-loopBegin)%loopLength;
+            const auto tail=std::min(count,loopBegin+loopLength-n);
+            sourceRange(n,tail); count-=tail;
+            // Further wraps repeat these same pages; never walk every sample
+            // or every repetition of a one-sample loop on the callback.
+            if(count>0) sourceRange(loopBegin,std::min(count,loopLength));
+        };
+        auto horizon = [&](std::int64_t count) {
+            const auto first=t.contiguousFrames(0,count);
+            timelineRange(t.sampleAt(0),first);
+            if(first<count) timelineRange(t.sampleAt(first),t.contiguousFrames(first,count-first));
+        };
+        // Mandatory current-block pages first, then a fixed 16384-frame lead
+        // (341 ms at 48 kHz), independent of a 64-sample callback's duration.
+        horizon(frames);
+        horizon(pageFrames*2);
         return out;
     }
     void request(const std::array<std::int64_t,slots>& w) noexcept {
@@ -289,10 +316,23 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 return samples(tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin),rate);
             };
             clip->start=samples(startSeconds,rate);
-            const auto len=row.timeBase==0?duration(row.lengthTicks.value_or(0)):samples(static_cast<double>(row.lengthNs.value_or(0))*1e-9,rate);
-            clip->end=clip->start+len; clip->offset=duration(row.contentOffsetTicks);
+            std::int64_t endTicks=origin;
+            double endSeconds=startSeconds;
+            if(row.timeBase==0) {
+                const auto ticks=row.lengthTicks.value_or(0);
+                if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid clip duration");
+                endTicks+=ticks;
+                endSeconds=tempo.ticksToSeconds(endTicks);
+            } else {
+                const auto nanos=row.lengthNs.value_or(0);
+                if(nanos<0) throw std::runtime_error("invalid clip duration");
+                endSeconds+=static_cast<double>(nanos)*1e-9;
+                endTicks=tempo.secondsToTicks(endSeconds);
+            }
+            // Quantise both absolute endpoints once. Rounding a duration and
+            // adding it to a rounded start can lose or add a sample.
+            clip->end=samples(endSeconds,rate); clip->offset=duration(row.contentOffsetTicks);
             clip->fadeIn=duration(row.fadeInTicks);
-            const auto endTicks=row.timeBase==0?origin+row.lengthTicks.value_or(0):tempo.secondsToTicks(startSeconds+static_cast<double>(row.lengthNs.value_or(0))*1e-9);
             if(row.fadeOutTicks<0 || endTicks<row.fadeOutTicks) throw std::runtime_error("invalid fade-out duration");
             clip->fadeOut=samples(tempo.ticksToSeconds(endTicks)-tempo.ticksToSeconds(endTicks-row.fadeOutTicks),rate);
             clip->inCurve=row.fadeInCurve;clip->outCurve=row.fadeOutCurve;

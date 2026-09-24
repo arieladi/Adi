@@ -21,6 +21,10 @@ std::int64_t Transport::sampleAt(std::int64_t offset) const noexcept {
     }
     return position_ + std::min(offset, std::numeric_limits<std::int64_t>::max() - position_);
 }
+std::int64_t Transport::contiguousFrames(std::int64_t offset, std::int64_t count) const noexcept {
+    count = std::max<std::int64_t>(0, count);
+    return looping_ ? std::min(count, end_ - sampleAt(offset)) : count;
+}
 void Transport::advance(std::int32_t frames) noexcept {
     if (playing_ && frames > 0) position_ = sampleAt(frames);
 }
