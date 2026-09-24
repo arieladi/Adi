@@ -304,8 +304,9 @@ CREATE TABLE clips (
     fade_out_ticks  INTEGER NOT NULL DEFAULT 0,
     fade_in_curve   INTEGER NOT NULL DEFAULT 1,
     fade_out_curve  INTEGER NOT NULL DEFAULT 1,
-    -- Non-NULL when this clip is an alias of another (Ableton linked clips,
-    -- Cubase shared parts): edits propagate to every alias of the same source.
+    -- Non-NULL when this clip is an alias of another (Cubase shared copies,
+    -- FL Studio pattern instances; Live has none): edits propagate to every
+    -- alias of the same source. clip.makeUnique ends one (ADR-0160).
     alias_of        INTEGER REFERENCES clips(id) ON DELETE SET NULL,
     CHECK (time_base = 1 OR pos_ns IS NULL),
     -- ADR-0037: a clip is placed, in exactly the domain it declares.

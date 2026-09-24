@@ -388,6 +388,7 @@ silent truncation in JSON, a non-issue in CBOR.
 | `clip.setContentOffset` | e | S | sym | P1 |
 | `clip.setFade` | e | S | sym | P0 |
 | `clip.setAlias` | e | S | sym | P2 |
+| `clip.makeUnique` | e | S | cap | P2 |
 | `clip.consolidate` | e | S | cap | P2 |
 | `clip.setLane` | e | S | sym | P1 |
 
@@ -596,7 +597,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**164 ops** — 64 P0, 49 P1, 48 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**165 ops** — 64 P0, 49 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

@@ -72,7 +72,8 @@ flagged, and it is a bug in the format, not in the plan.
 | Clip loop window separate from placement | Ableton | P0 | ✅ | one object, not N repeats (SPEC §6.2) |
 | Fades, crossfades, fade curves | both | P0 | ✅ | |
 | Take lanes and comping | both | P1 | ✅ | `lanes` |
-| Linked / aliased clips (edit one, change all) | both | P2 | ✅ | `clips.alias_of` |
+| Linked / aliased clips (edit one, change all) | Cubase, FL Studio | P2 | ✅ | `clips.alias_of`. Cubase's *shared copies*; in FL every Playlist clip is an instance of its pattern. Live has none (this row said "both" until ADR-0160). **Stays P2** (ADR-0160). The engine plays no alias yet and reports one as a problem (ADR-0155). |
+| **Make unique**: one linked clip becomes an independent copy | FL Studio, Cubase | P2 | ✅ | One op, `clip.makeUnique`: the source's content and settings are copied into the clip and `alias_of` is cleared; an audio clip keeps the same media file. Not a toggle: undo re-links, and `clip.setAlias` links again. Cubase: *Convert to Real Copy* (p. 272). FL's *Make unique as sample*, a new audio file, is `clip.consolidate`. FL's *Select all similar Clips* comes with it. **Ships with linked clips, never after them** (ADR-0160). |
 | Track versions | Cubase | P2 | ✅ | `snapshots.kind='track_version'` |
 | Ripple edit / insert-delete time | both | P1 | — | pure op, no schema needed |
 | Warp / elastic audio | Ableton | P1 | ✅ | `audio_clips.warp_markers` (AWRP) |
@@ -87,6 +88,8 @@ flagged, and it is a bug in the format, not in the plan.
 | Feature | From | P | Fmt | Notes |
 |---|---|---|---|---|
 | Piano roll, velocity, CC lanes | both | P0 | ✅ | `event_streams` |
+| Layered editing: several clips and tracks in one note editor, one in focus | both | P2 | — | ADR-0047 d2, opt-in. Live 12's multi-clip editing and Focus Mode (§10.8.1: inactive clips' notes in gray); Cubase's Key Editor with several parts and an active part (p. 1142). Rendering and hit-testing only; no schema. |
+| **Ghost-note focus switch** in layered editing | FL Studio, Live | P2 | — | Switch the editor to the clip and track that own a background note. **Parity gesture: a click on it**, as Live's Focus Mode does. FL's double right-click and X1 mouse button, from FL's own *Piano roll > Ghost notes*, are an optional binding in an FL-style mouse preset, because ADI's right-click opens the context menu, as Live's does. The context menu offers it too. Not ANOT's `ghost` flag (ADR-0160). |
 | Quantise, groove, swing | both | P0 | ✅ | |
 | Per-note probability | Ableton | P2 | ✅ | in the v1 note record |
 | Per-note microtuning | neither, fully | P2 | ✅ | `tuning_cents` in the v1 note record |

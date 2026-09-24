@@ -13,6 +13,10 @@ before your first commit, and re-read it if you have been away.
 | **linux** | Ubuntu workstation, GCC/Clang / x86-64 | ChatGPT Codex (terminal) | Portable standard C++, headless CI and test enforcement, sanitizers, POSIX portability | OS-specific GUI or driver code; any Linux-only library; `docs/UI-ARCHITECTURE.md`; schema, ADR numbers or claims without `win` |
 | **cloud** | Claude Code on the web, Linux (an ephemeral cloud container) | Claude Code | Portable headless C++, the format and its docs, on win's assignments | JUCE, platform code, `.github/**`, `drivers/**`, other monorepo projects |
 
+**Availability (director, 2026-09-25):** win works alone until mac returns on
+2026-09-27. linux (Codex) returns after 2026-10-01. cloud receives no new
+missions; its last, ADR-0159, is merged.
+
 ## Governance (ADR-0109)
 
 - **The director (Adi) is the authority.** A direct instruction from Adi to any
@@ -169,6 +173,7 @@ subject, say so in your log instead of writing it twice.
 | 0157 | win | `win/play-clips` | sample rates from 44.1 kHz to 768 kHz; lower-rate files still play, converted up (director's ruling) | used |
 | 0158 | win | `win/held-notes` | a held note keeps its instrument running (amends ADR-0043) | used |
 | 0159 | cloud | `cloud/curves` | curve formulas for automation and note expression; automation read into the engine, if it decides anything | used |
+| 0160 | win | `win/fl-backlog` | from FL Studio: Make Unique with linked clips at P2; a ghost-note focus switch for layered editing (director's backlog) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
