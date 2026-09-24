@@ -800,6 +800,9 @@ set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120)
 # our suite count and leave the parent BUILD_TESTING value untouched.
 function(adi_add_samplerate)
     set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+    # Its old cmake_minimum_required leaves CMP0077 unset. A fresh cache
+    # otherwise lets include(CTest)'s option() erase our normal OFF variable.
+    set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
     set(BUILD_TESTING OFF)
     set(LIBSAMPLERATE_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(LIBSAMPLERATE_INSTALL OFF CACHE BOOL "" FORCE)

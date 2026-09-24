@@ -115,6 +115,13 @@ also enabled), no findings. This is affected-suite sanitizer coverage, not a
 full-tree sanitizer claim. The pre-refinement runs and intentionally interrupted
 Clang build logs are retained; the final logs are explicitly named `*-final-*`.
 All five required plants were rechecked after the read-ahead change and reverted.
+The first CI head (`804ad93`) exposed a fresh-cache CMake issue: upstream
+libsamplerate's old CMP0077 behavior erased the normal BUILD_TESTING=OFF value,
+registering 13 unbuilt dependency tests. All 41 ADI suites passed, but CTest
+correctly failed those 13 missing executables. The dependency now gets scoped
+CMP0077=NEW. A fresh configuration registers exactly 41 ADI tests; local CTest
+passes 41/41 and test_all.sh again passes 4000 checks with validators clean.
+No workflow or upstream source was changed.
 Local MSVC /WX and a hardware listening test are unavailable here; CI compiles
 Windows and win owns /WX. All 19 checks must be green at the final head SHA
 before merge. The linux claim is released in this final commit.
