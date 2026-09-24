@@ -145,6 +145,7 @@ Session window is the last step, not a way around that.
 | Macros with per-target range and **multi-breakpoint curve**, several mappings per target, per-macro enable | Ableton + | P2 | 🔶 | `macros`, `macro_mappings`; `curve` becomes a breakpoint BLOB (ADR-0114) |
 | Cross-track modulation and macro targets | Bitwig | P2 | 🔶 | arrives with the modulation schema (ADR-0114, ADR-0046) |
 | A Pd device with a second, floating view (the analyser) | neither | P2 | — | published arrays in the device contract (ADR-0116) |
+| **`.amxd` translator** with a pre-flight scan: Max for Live devices into ADI Pd | neither | P2 | — | An allowlist scan first. If every box is in the translation table, the device converts automatically, with Max's right-to-left order made explicit. If not, nothing is written, and a dialog hands over the JSON and a prompt for an AI. Whatever comes back passes a second, vanilla-only scan. Needs the device contract (DEVICE-CONTRACT-PANEL §6). |
 | Plugin delay compensation | both | P0 | ✅ | `devices.latency_samples`. Reported in samples and **excludes** the device buffer — ADR-0042. |
 | 2048–4096-sample blocks, tested | — | **P0** | — | runtime. Dense chains, not low-latency tracking (ADR-0042). **4096 is the cap on every platform** and the granted size is the only one that exists (ADR-0049). |
 | Sub-block automation and MIDI accuracy | both | **P0** | ✅ | runtime. At 8192 a block is 171 ms; per-block updates would step audibly. The price of the row above (ADR-0042). |
