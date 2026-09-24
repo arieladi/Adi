@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/audio/decode.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/store.hpp"
@@ -13,9 +14,11 @@
 #include <numbers>
 #include <thread>
 #include <cstdlib>
+#include <filesystem>
 #include <new>
 using namespace adi;
 using namespace adi::engine;
+namespace fs = std::filesystem;
 namespace { std::atomic<std::uint32_t> callbackAllocations{0}; }
 void* operator new(std::size_t n) {
     if(audio::onAudioThread) callbackAllocations.fetch_add(1,std::memory_order_relaxed);
@@ -226,6 +229,37 @@ void segmentsAndCrop() {
     t.locate(std::numeric_limits<std::int64_t>::max());
     check(t.sampleAt(std::numeric_limits<std::int64_t>::max())>=10 && t.sampleAt(std::numeric_limits<std::int64_t>::max())<110,"large transport offsets avoid signed overflow");
 }
+// Tests set ADI_HOME, so a decoded clip's cache is a temporary folder and not
+// the user's (ADR-0149). The one place this suite writes an environment variable.
+void setHome(const fs::path& p) {
+#if defined(_WIN32)
+    _wputenv_s(L"ADI_HOME", p.wstring().c_str());
+#else
+    setenv("ADI_HOME", p.string().c_str(), 1);
+#endif
+}
+void decodedPins() {
+    // ADR-0156: a decoded clip pins its cache copy while a generation reads
+    // it, and the pin goes back with the generation. Every edit rebuilds, and
+    // each rebuild used to pin the copy again, for good.
+    auto pins=[]{int n=0;for(const auto& e:audio::defaultDecodeCache().entries())n+=e.pins;return n;};
+    {
+        Fixture f;
+        fs::copy_file(fs::path(ADI_DECODE_FIXTURES)/"tone16.flac",f.dir.path()/"tone.flac");
+        f.store->db().exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(2,'flac','tone.flac','flac');"
+                           "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,100000000);"
+                           "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,2,0,4800)");
+        f.load(512);
+        check(pins()==1,"a decoded clip pins its cache copy while it plays");
+        for(int i=0;i<5;++i) {
+            f.store->db().exec("UPDATE clips SET gain_db=gain_db-1");
+            if(!f.session.refresh(*f.store))throw std::runtime_error(f.session.error());
+            f.render(512);f.session.graph().collect();
+        }
+        check(pins()==1,"five rebuilds later it is still one pin, not six");
+    }
+    check(pins()==0,"closing the session gives every pin back");
+}
 void unsupported() {
     for(int kind=0;kind<3;++kind) {
         Fixture f;f.add(1,0,500,0,1000);
@@ -406,6 +440,7 @@ void highRates() {
 int main(int argc,char** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
     const std::string only=argc>1?argv[1]:"all";
+    test::TempDirectory home{"clip_playback","home"};setHome(home.path());
     try {
         if(only=="all" || only=="placement")placement();
         if(only=="all" || only=="properties")properties();
@@ -418,6 +453,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="relative")relativeProject();
         if(only=="all" || only=="endpoint")fractionalEndpoint();
         if(only=="all" || only=="highRates")highRates();
+        if(only=="all" || only=="pins")decodedPins();
     }
     catch(const std::exception& e){check(false,e.what());}
     check(callbackAllocations.load()==0,"callback allocates nothing");
