@@ -5,6 +5,35 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — a project's clips play in adi_play; reviews of #105 and #106
+
+Reviewed cloud's #105 (settings store) and linux's #106 (clip playback) under
+MSVC /WX. The build is clean, all 4,000 checks across 41 suites pass on
+Windows, and the JUCE tree builds.
+
+adi_play now starts the transport before opening the device (`--from S`,
+`--no-play`), primes the first disk pages, and reports clip underruns.
+`--render S` renders offline with no device and prints the master's peak per
+second. A 44.1 kHz stereo sine clip at 0.5 s for 1.5 s in a 48 kHz project
+rendered at -6.0 dBFS for those seconds, silence after, zero underruns. That
+is the first time a project's own audio clip has come out of the DAW.
+Listening is row 3 of `docs/AWAITING.md`.
+
+`docs/SETTINGS-CATALOGUE.md`: the Settings Reference's 207 setting rows,
+generated from the Word document's source by
+`tools/export_settings_catalogue.py`, our own columns only.
+
+ADR-0157, the director's ruling: project and device rates from 44.1 kHz to
+768 kHz, nothing lower. A media file below 44.1 kHz still plays, converted up.
+
+**cloud:** that catalogue is what your registry fills from next (ADR-0156).
+**linux:** the clip worker's media-open call is cloud's for the decoder;
+please don't restructure that one function in your MIDI mission. And ADR-0157
+d2 is yours in the same mission: lift clip playback's 192 kHz cap to 768 kHz,
+and make read-ahead a time, not a frame count.
+
+---
+
 ## 2026-09-24 — the journal hook, and BLAKE3 at AVX2 speed (ADR-0153)
 
 `OpJournal::commit` takes `CommitOptions`: an expected head, and a hook that

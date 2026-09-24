@@ -112,6 +112,9 @@ struct Options {
     bool list = false;
     bool fixture = false;
     bool saveState = false;   // ADR-0142
+    double from = 0.0;        // seconds; where the transport starts (ADR-0151)
+    bool noPlay = false;      // leave the transport stopped: devices and the tone only
+    double render = 0.0;      // seconds rendered offline, no audio device
     std::string deviceType;   // "Windows Audio (Exclusive Mode)", "DirectSound", "CoreAudio"...
     std::string deviceName;
     std::vector<std::string> searchDirs;
@@ -122,6 +125,7 @@ int usage() {
         "adi_play <project.adi> [--block N] [--rate HZ] [--seconds S] [--resize M]\n"
         "                       [--tone [TRACK]] [--type DEVICE-TYPE] [--device NAME]\n"
         "                       [--search DIR]... [--fixture] [--dry] [--save-state]\n"
+        "                       [--from SECONDS] [--no-play] [--render SECONDS]\n"
         "adi_play --list [--search DIR]... [--fixture]\n"
         "  Opens a project, resolves its devices, plays it through the default audio\n"
         "  device at the granted block size. --resize changes the block size half way\n"
@@ -131,7 +135,10 @@ int usage() {
         "  \"DirectSound\" exercise a real block-size change; WASAPI shared grants its own period.\n"
         "  --save-state opens the project for writing and, after the run, writes every\n"
         "  loaded plugin's chunk the project lacks or that differs, as one undoable\n"
-        "  transaction (ADR-0142); the next run reports it under 'states'.\n");
+        "  transaction (ADR-0142); the next run reports it under 'states'.\n"
+        "  The project's audio clips play from --from (default 0) through the transport" "\n"
+        "  (ADR-0151); --no-play leaves it stopped. --render renders that many seconds" "\n"
+        "  offline with no audio device and prints the master's peak per second." "\n");
     return 2;
 }
 
@@ -154,6 +161,9 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--list")    o.list = true;
         else if (a == "--fixture") o.fixture = true;
         else if (a == "--save-state") o.saveState = true;
+        else if (a == "--no-play") o.noPlay = true;
+        else if (a == "--from") { const char* v = next(i); if (!v) return false; o.from = std::atof(v); }
+        else if (a == "--render") { const char* v = next(i); if (!v) return false; o.render = std::atof(v); }
         else if (a == "--help" || a == "-h") return false;
         else if (!a.empty() && a[0] == '-') { std::printf("unknown option %s\n", a.c_str()); return false; }
         else o.file = a;
@@ -238,6 +248,50 @@ int saveStates(adi::engine::Session& session, adi::Store& store) {
     return 0;
 }
 
+/// ADR-0151: render `seconds` of the session offline, with no audio device, and
+/// print the master's peak for each second. This is the headless proof that a
+/// project's clips reach the master; it waits for the disk between blocks
+/// (`prime`), which only an offline driver may do.
+int renderOffline(adi::engine::Session& session, double rate, int block, double seconds) {
+    const int channels = 2;
+    std::vector<std::vector<float>> buf(channels, std::vector<float>(static_cast<std::size_t>(block)));
+    std::vector<float*> ptrs;
+    for (auto& b : buf) ptrs.push_back(b.data());
+    const auto total = static_cast<std::int64_t>(seconds * rate);
+    const auto perSecond = static_cast<std::int64_t>(rate);
+    std::int64_t done = 0, stream = 0;
+    float secondPeak = 0.0f, overall = 0.0f;
+    std::int64_t secondStart = 0;
+    while (done < total) {
+        const auto frames = static_cast<std::int32_t>(std::min<std::int64_t>(block, total - done));
+        if (auto* clips = session.clips()) clips->prime();
+        adi::engine::AudioIo io;
+        io.out = ptrs.data();
+        io.numOut = channels;
+        io.frames = frames;
+        io.streamTimeSamples = stream;
+        session.process(io);
+        for (int c = 0; c < channels; ++c)
+            for (std::int32_t i = 0; i < frames; ++i)
+                secondPeak = std::max(secondPeak, std::fabs(buf[static_cast<std::size_t>(c)][static_cast<std::size_t>(i)]));
+        done += frames;
+        stream += frames;
+        if (done - secondStart >= perSecond || done == total) {
+            std::printf("  render    %6.2f s  peak %s\n", static_cast<double>(secondStart) / rate,
+                        dbfs(secondPeak).c_str());
+            overall = std::max(overall, secondPeak);
+            secondPeak = 0.0f;
+            secondStart = done;
+        }
+    }
+    const auto* clips = session.clips();
+    std::printf("  clips     %s underrun frame(s), %s read error(s)\n",
+                n(clips ? static_cast<std::int64_t>(clips->underrunSamples()) : 0).c_str(),
+                n(clips ? static_cast<std::int64_t>(clips->readErrors()) : 0).c_str());
+    std::printf("\nok -- %.2f s rendered offline; master peak %s\n", seconds, dbfs(overall).c_str());
+    return 0;
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     Options o;
@@ -298,6 +352,18 @@ int main(int argc, char** argv) {
         std::printf("\nFAILED -- %s\n", session.error().c_str());
         return 1;
     }
+    // ADR-0151: a player plays. The transport belongs to the driver, and its
+    // commands go in between callbacks -- here, before any device is open.
+    // The first pages are read before the first callback, so the opening
+    // block is not an underrun.
+    if (!o.noPlay) {
+        session.transport().locate(static_cast<std::int64_t>(std::llround(o.from * rate)));
+        session.transport().play(true);
+        if (auto* clips = session.clips()) clips->prime();
+        std::printf("  transport playing from %.3f s%s\n", o.from,
+                    session.clips() != nullptr ? "" : "  (no audio clips in this project)");
+    }
+    if (o.render > 0.0) return renderOffline(session, rate, o.block, o.render);
     if (o.dry) {
         if (o.saveState && saveStates(session, *store) != 0) return 1;
         std::printf("\nok -- loaded and reported; --dry opens no device.\n");
@@ -413,6 +479,10 @@ int main(int argc, char** argv) {
         std::printf("  note      the tone did not reach the master -- is tracks#%s's chain an instrument? "
                     "(an instrument replaces its input; use --tone <track> on an effect chain)\n",
                     n(toneTrack).c_str());
+    if (const auto* clips = session.clips())
+        std::printf("  clips     %s underrun frame(s), %s read error(s)\n",
+                    n(static_cast<std::int64_t>(clips->underrunSamples())).c_str(),
+                    n(static_cast<std::int64_t>(clips->readErrors())).c_str());
     const juce::String mismatch = bridge.mismatchReport();
     if (mismatch.isNotEmpty()) std::printf("  note      %s\n", mismatch.toRawUTF8());
 
