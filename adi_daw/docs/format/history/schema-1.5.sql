@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1006;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1005;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '6'),
+    ('schema_minor',        '5'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -815,34 +815,6 @@ CREATE TABLE agent_requests (
     actor_detail TEXT    NOT NULL DEFAULT '',   -- model and version, as ops.actor_detail
     created_utc  INTEGER NOT NULL               -- passed in by the caller, never a clock read
 ) STRICT;
-
--- ADR-0161: who wrote each op, and a Lamport clock, so a future remote session
--- can order and merge two logs (SPEC 8.8). Beside `ops` rather than in it:
--- ADR-0144 lets a minor add whole objects only, and a column added to `ops`
--- could not be upgraded by a CREATE. Log metadata like the ops rows: not an
--- op, never undone, not in the replay digest.
---
--- A client is one open session of one application on one machine, not a
--- person: `actor` and `actor_detail` already say user or agent. 32 lowercase
--- hex characters, random, new each time a Store is opened.
-CREATE TABLE op_clients (
-    client_id      TEXT    PRIMARY KEY
-                   CHECK (length(client_id) = 32 AND client_id NOT GLOB '*[^0-9a-f]*'),
-    label          TEXT    NOT NULL DEFAULT '',   -- "ADI DAW 0.1.0 on ADI-DESKTOP", for display
-    first_seen_utc INTEGER NOT NULL
-) STRICT;
-
--- One row per op written since 1.6. `lamport` is one more than every clock
--- the writer has seen, the local log included, so (lamport, client_id) orders
--- every op of every client consistently with causality. An op without a row
--- predates 1.6: it reads as client unknown, lamport = seq, and a 1.6 writer's
--- first clock is above every such seq.
-CREATE TABLE op_clocks (
-    seq        INTEGER PRIMARY KEY REFERENCES ops(seq) ON DELETE CASCADE,
-    client_id  TEXT    NOT NULL REFERENCES op_clients(client_id),
-    lamport    INTEGER NOT NULL CHECK (lamport > 0)
-) STRICT;
-CREATE UNIQUE INDEX idx_opclk_lamport ON op_clocks(lamport, client_id);
 
 -- ============================================================================
 --  LAYER 3 — SESSION: UI, windows, controllers, snapshots

@@ -20,6 +20,7 @@ constexpr char kRecordSep = '\n';    // between rows
 /// are the design, not housekeeping.
 const std::set<std::string> kExcluded = {
     "ops", "op_branches", "history_snapshots", "agent_requests",   // the log is not the project
+    "op_clients", "op_clocks",                                     // who wrote it, and when (ADR-0161)
     "session_state", "ui_view", "window_state",  // UI state; replay varies it on purpose
     "adi_meta", "session_lock",                  // timestamps, host, pid
 };

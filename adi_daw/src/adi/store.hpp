@@ -34,7 +34,7 @@ namespace adi {
 // SPEC §2. 0x41444931 == 'ADI1'.
 inline constexpr std::int32_t kApplicationId = 1094994225;
 inline constexpr int kSchemaMajor = 1;
-inline constexpr int kSchemaMinor = 5;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154)
+inline constexpr int kSchemaMinor = 6;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161)
 inline constexpr int kUserVersion = kSchemaMajor * 1000 + kSchemaMinor;
 
 enum class StoreError {
@@ -129,6 +129,22 @@ public:
     /// Last SQLite message, for diagnostics when a put/get returns false.
     [[nodiscard]] const std::string& lastError() const { return lastError_; }
 
+    // --- who writes (ADR-0161) --------------------------------------------------
+    // Every op this Store commits is stamped with its client and a Lamport
+    // clock (`op_clocks`), so a future remote session can order and merge two
+    // logs. A client is this open Store, not a person: new and random each
+    // time a Store is opened; `ops.actor` still says user or agent.
+
+    /// 32 lowercase hex characters.
+    [[nodiscard]] const std::string& clientId() const noexcept { return clientId_; }
+    /// Refused, returning false, unless 32 lowercase hex characters. For tests
+    /// and for the sync layer that will one day hand a client its identity.
+    bool setClientId(std::string id);
+    /// Shown beside the client in `op_clients.label`. Takes effect for a client
+    /// the file has not seen yet, so set it before the first commit.
+    void setClientLabel(std::string label) { clientLabel_ = std::move(label); }
+    [[nodiscard]] const std::string& clientLabel() const noexcept { return clientLabel_; }
+
 private:
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly);
     bool applySessionPragmas();
@@ -141,6 +157,8 @@ private:
     int minor_ = kSchemaMinor;
     std::optional<int> upgradedFrom_;
     mutable std::string lastError_;
+    std::string clientId_;
+    std::string clientLabel_;
 };
 
 // --- upgrading an older 1.x file (ADR-0144, SPEC §11) -------------------------

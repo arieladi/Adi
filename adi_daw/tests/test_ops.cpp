@@ -334,6 +334,125 @@ void testCommitOptions() {
           "and so was the hook's own write");
 }
 
+// ADR-0161: every op is stamped with its client and a Lamport clock.
+void testOpClocks() {
+    section("ADR-0161 -- each op has a client and a Lamport clock (SPEC 8.8)");
+    Scratch s("clocks");
+    auto st = freshProject(s / "p.adi");
+    auto hexId = [](const std::string& id) {
+        if (id.size() != 32) return false;
+        for (const char c : id)
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+        return true;
+    };
+    check(hexId(st->clientId()), "a Store's client is 32 lowercase hex characters: " + st->clientId());
+    auto other = freshProject(s / "q.adi");
+    check(other->clientId() != st->clientId(), "and two Stores are two clients");
+    check(!st->setClientId("0123456789ABCDEF0123456789abcdef") && !st->setClientId("abc") &&
+              !st->setClientId("0123456789abcdef0123456789abcdeg"),
+          "setClientId refuses anything but 32 lowercase hex characters");
+    check(st->setClientId("00000000000000000000000000000abc") &&
+              st->clientId() == "00000000000000000000000000000abc",
+          "and takes one that is");
+    st->setClientLabel("ADI test on this machine");
+
+    OpJournal j(*st);
+    std::vector<OpRequest> batch(3);
+    for (int i = 0; i < 3; ++i) {
+        batch[static_cast<std::size_t>(i)].opType = "track.create";
+        batch[static_cast<std::size_t>(i)].payload = {{"id", 10 + i}, {"kind", "audio"}, {"name", "T" + std::to_string(i)}};
+    }
+    const auto r = j.commit(batch);
+    check(r.ok && r.seqs.size() == 3, "a three-op transaction commits: " + r.error);
+    auto& db = st->db();
+    check(db.execAndGet("SELECT COUNT(*) FROM op_clocks").getInt() == 3,
+          "every op has a clock row, written in the same transaction");
+    check(db.execAndGet("SELECT COUNT(DISTINCT lamport) FROM op_clocks").getInt() == 3 &&
+              db.execAndGet("SELECT MAX(lamport) - MIN(lamport) FROM op_clocks").getInt() == 2,
+          "one transaction takes consecutive clocks");
+    check(db.execAndGet("SELECT COUNT(*) FROM op_clocks WHERE client_id = '00000000000000000000000000000abc'").getInt() == 3,
+          "each stamped with this Store's client");
+    check(db.execAndGet("SELECT COUNT(*) FROM op_clients").getInt() == 1 &&
+              db.execAndGet("SELECT label FROM op_clients").getString() == "ADI test on this machine",
+          "the client is registered once, with its label");
+
+    const std::int64_t before = db.execAndGet("SELECT MAX(lamport) FROM op_clocks").getInt64();
+    OpRequest one;
+    one.opType = "track.rename";
+    one.payload = {{"id", 10}, {"name", "Kick"}};
+    check(j.commit(one).ok, "a second commit");
+    check(db.execAndGet("SELECT MAX(lamport) FROM op_clocks").getInt64() == before + 1 &&
+              db.execAndGet("SELECT COUNT(*) FROM op_clients").getInt() == 1,
+          "continues the clock, and registers nothing new");
+    const auto logged = j.recent(1);
+    check(logged.size() == 1 && logged[0].clientId == st->clientId() && logged[0].lamport == before + 1,
+          "recent() reports the op's client and clock");
+
+    // An op older than 1.6 has no clock row and reads as lamport = seq; the
+    // next clock goes above it.
+    db.exec("INSERT INTO ops(seq, txn_id, ts_utc, actor, op_type) VALUES (1000, 999, 0, 'import', 'track.rename')");
+    const auto old = j.recent(1);
+    check(old.size() == 1 && old[0].seq == 1000 && old[0].lamport == 1000 && old[0].clientId.empty(),
+          "an op without a clock reads as client unknown, lamport = seq");
+    OpRequest after;
+    after.opType = "track.rename";
+    after.payload = {{"id", 11}, {"name", "Snare"}};
+    check(j.commit(after).ok, "a commit after it");
+    check(j.recent(1).front().lamport > 1000, "and the next clock is above every seq in the file");
+
+    // A refused commit leaves neither a clock nor a client behind.
+    auto fresh = freshProject(s / "r.adi");
+    OpJournal fj(*fresh);
+    CommitOptions refuse;
+    refuse.beforeCommit = [](SQLite::Database&, std::int64_t, std::string& err) { err = "no"; return false; };
+    check(!fj.commit({&one, 1}, refuse).ok, "a refused commit");
+    check(fresh->db().execAndGet("SELECT COUNT(*) FROM op_clocks").getInt() == 0 &&
+              fresh->db().execAndGet("SELECT COUNT(*) FROM op_clients").getInt() == 0,
+          "rolls its clock and its client row back with the op");
+
+    // A second client on the same file: its own row, and the clock goes on.
+    const auto path = st->path();
+    const std::int64_t top = db.execAndGet("SELECT MAX(lamport) FROM op_clocks").getInt64();
+    check(st->close(), "close the first client");
+    st.reset();
+    StoreError err = StoreError::Ok;
+    auto again = Store::open(path, err);
+    check(again && again->clientId() != "00000000000000000000000000000abc", "reopened, it is a new client");
+    if (again) {
+        OpJournal aj(*again);
+        OpRequest third;
+        third.opType = "track.rename";
+        third.payload = {{"id", 12}, {"name", "Hat"}};
+        check(aj.commit(third).ok, "the second client commits");
+        check(again->db().execAndGet("SELECT COUNT(*) FROM op_clients").getInt() == 2 &&
+                  aj.recent(1).front().lamport == top + 1,
+              "two clients in the file, and one clock across both");
+
+        // An op received from another client, with a clock far ahead: the
+        // next local op goes past it (Lamport's receive rule), so here the
+        // clock and the seq part company.
+        auto& adb = again->db();
+        adb.exec("INSERT INTO op_clients(client_id, first_seen_utc) VALUES ('ffffffffffffffffffffffffffffffff', 0)");
+        adb.exec("INSERT INTO ops(seq, txn_id, ts_utc, actor, op_type) VALUES (2000, 1999, 0, 'remote', 'track.rename')");
+        adb.exec("INSERT INTO op_clocks(seq, client_id, lamport) VALUES (2000, 'ffffffffffffffffffffffffffffffff', 5000)");
+        OpRequest fourth;
+        fourth.opType = "track.rename";
+        fourth.payload = {{"id", 12}, {"name", "Ride"}};
+        check(aj.commit(fourth).ok, "a commit after a remote op");
+        const auto mine = aj.recent(1);
+        check(!mine.empty() && mine.front().lamport == 5001 && mine.front().seq == 2001,
+              "its clock goes past the remote one (5001) while its seq is 2001");
+        bool refused = false;
+        try {
+            again->db().exec("INSERT INTO op_clocks(seq, client_id, lamport) SELECT 1000, client_id, lamport "
+                             "FROM op_clocks ORDER BY lamport DESC LIMIT 1");
+        } catch (const std::exception&) {
+            refused = true;
+        }
+        check(refused, "(lamport, client) is unique: it is the op's identity across clients");
+    }
+}
+
 void testInverseShapes() {
     section("the three inverse shapes (OPS.md 6.2)");
     Scratch s("inverse");
@@ -668,6 +787,7 @@ int runAll() {
     testApplyAndLog();
     testAtomicity();
     testCommitOptions();
+    testOpClocks();
     testInverseShapes();
     testCallerAllocatedIds();
     testAgentAttribution();

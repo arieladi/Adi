@@ -203,7 +203,7 @@ Session window is the last step, not a way around that.
 | Undo that survives a reboot | P1 | ✅ | |
 | Undo you can *branch*, so exploring costs nothing | P2 | ✅ | |
 | Text projection for version control | P2 | — | ADR-0007 |
-| Real-time collaboration | P3 | 🔶 | op log is the substrate; model undecided |
+| **Multiplayer Remote Sync (CRDT op-based)**: several people editing one project over the internet, Excel or Figma style | P3 | 🔶 | The op log is the substrate. Since schema 1.6 every op carries its client and a Lamport clock (`op_clocks`, ADR-0161). Still to decide, in SPEC §12 item 6: server-ordered as Figma and Excel are, or peer CRDT; row ids from two clients; concurrent reordering; shared undo. Media and plug-in state travel by BLAKE3 hash already. No network or UI code before it is scheduled. |
 | Scripting API identical to the agent's op vocabulary | P2 | ✅ | one API, not two |
 
 ---

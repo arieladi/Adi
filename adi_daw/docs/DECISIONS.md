@@ -10836,3 +10836,122 @@ against sources:
      This switch is about display, and never reads or sets that flag.
 4. **Nothing is built now.** These are backlog rows for the UI and editing
    phase (step 7 on). Work in progress is not paused for them.
+
+---
+
+## ADR-0161 — Every op carries its client and a Lamport clock (schema 1.6), so remote multiplayer sync is not foreclosed — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION; KEEPS SPEC §12 ITEM 6 OPEN**
+
+**Director's instruction:** remote multiplayer editing over the internet,
+Excel or Figma style, joins the backlog as a P3 feature. No network or UI code
+is written for it now. The op log gains, immediately, a client id (who made the
+change) and a Lamport clock, for future conflict resolution.
+
+### Decisions
+
+1. **Beside `ops`, not in it: schema 1.6 adds `op_clients` and `op_clocks`.**
+   The instruction said "in the `ops` table". ADR-0144 lets a minor add only
+   whole objects, because an older file is upgraded by creating what later
+   minors added, and a column added to `ops` cannot be created that way. The
+   data is the same: one clock row per op, joined on `seq`.
+   - `op_clocks(seq, client_id, lamport)`.
+   - `op_clients(client_id, label, first_seen_utc)`.
+   - `(lamport, client_id)` is unique, and it is the op's identity across
+     clients.
+2. **A client is one open Store,** not a person.
+   - The id is 32 lowercase hex characters, random, and new each time a Store
+     is opened. Nothing is written to the user's configuration.
+   - "Who" in the human sense is already in the log: `ops.actor` says user,
+     agent, script or remote, and `actor_detail` names the agent or the
+     caller. A person's account belongs to the future sync layer, which
+     `Store::setClientId` lets hand a client its identity.
+   - `label` names the client for display.
+3. **The clock rule** (SPEC §8.8):
+   - A new op's clock is one more than every clock and every `seq` in the
+     file.
+   - The ops of one transaction take consecutive clocks.
+   - A received op's clock is counted like any other, so the next local op
+     goes past it: Lamport's receive rule is simply the file's maximum.
+   - An op from before 1.6 has no row and reads as lamport = `seq`.
+   - Every row is written in the op's own transaction, so a refused commit
+     leaves neither a clock nor a client.
+4. **What this does not decide, and must not foreclose** (SPEC §12 item 6,
+   rewritten):
+   - **The conflict model.** "Excel/Figma-style" names a server-ordered model:
+     Figma's multiplayer has a central server order the changes and keep the
+     last write per property, and Excel co-authoring is server-mediated too.
+     A peer CRDT is the other option. The instruction's title says "CRDT
+     op-based", and the clock serves either model, so the choice waits for the
+     work itself.
+   - **Row ids.** Ops already carry the ids they create (`clip.create` names
+     its id), so ids partitioned by client need no schema change.
+   - **Concurrent reordering.** Integer `ord` columns need fractional or
+     sequence ordering the day two clients insert at one place.
+   - **Undo.** Undo moves a local head today and writes no op; shared undo
+     would.
+   - **Media and plug-in state** already travel by BLAKE3 hash.
+5. **Not in the replay digest, not in the text projection, never undone:** log
+   metadata, like `ops` itself.
+6. **The current work is not disrupted.** No mission is running: linux (Codex)
+   is away until after 2026-10-01, and its last mission, audio and MIDI clip
+   playback (#113), is merged. Clip playback never reads the op log. Every
+   place that counts tables or names the schema minor is updated in this
+   change:
+   - the text projection's coverage list;
+   - the digest's exclusions;
+   - three test strings;
+   - the collect-and-export fixture, which now drops later tables newest
+     first, because `op_clocks` references `op_clients`.
+
+**Evidence.** `adi_ops_tests` +24 checks:
+- the id's shape and `setClientId`'s refusals;
+- three ops in one transaction taking consecutive clocks from one client
+  registered once;
+- a legacy op reading as lamport = seq, and the next clock going above it;
+- a refused commit leaving nothing behind;
+- a second client on the same file, with one clock across both;
+- a remote op's clock of 5000 pushing the next local op to 5001 while its
+  `seq` is 2001;
+- the uniqueness of `(lamport, client)`.
+
+`test_migrate` upgrades a frozen 1.5 file (`history/schema-1.5.sql`) to 1.6.
+
+Five plants were built under MSVC `/WX`, and each failed a named check:
+- K1: one clock for the whole transaction.
+- K2: the clock ignores older ops' `seq`.
+- K3: the client is registered with the wrong label.
+- K4: `recent()` ignores the clock row. Only the remote-clock case catches
+  this one, because in a single-client file the clock equals `seq`.
+- K5: an uppercase client id is accepted.
+
+---
+
+## ADR-0162 — Automation override is Live's: touching an automated control suspends that lane until re-enabled — `DECIDED` (2026-09-25) — **DIRECTOR'S RULING; CLOSES THE QUESTION ADR-0159 LEFT**
+
+**Director's ruling:** go with Live's override behaviour. Live 12 §25.4
+(p.494): changing an automated control while not recording turns its
+automation off, and the manual value stands. The Control Bar's *Re-Enable
+Automation* button lights, and it restores all automation. A parameter's
+context menu restores just that one.
+
+### Decisions
+
+1. **An override is per lane.** A value change to an automated parameter while
+   automation is not being recorded overrides that lane. The lane stops
+   emitting, and the parameter keeps the value just set. It counts whether the
+   transport is playing or stopped, and whether the change came from ADI's
+   controls, from the plug-in's own window (a gesture, ADR-0124) or from an op.
+2. **Re-enable, all or one.**
+   - One session action re-enables every overridden lane, and it lights while
+     any lane is overridden (Live's button).
+   - Another re-enables one lane, from that parameter's context menu.
+   - Re-enabling chases: the lane's value at the playhead is emitted at once.
+3. **Session state, not an op, and not saved yet.** Live 12's manual does not
+   say whether a saved Set remembers an override. Until the side-by-side check
+   (ADR-0108) shows it, an override lasts until re-enabled or the project is
+   closed. The check goes on the automation parity checklist.
+4. **Recording is separate.** While automation is being recorded, a touch
+   writes. The track's Cubase-style `automation_mode` (read, touch, latch,
+   cross, overwrite, trim) decides how. It arrives with automation recording,
+   which is not built.
+5. **Isolated.** The emitter holds the override as one policy, so a later
+   ruling changes one function, not the emitter.

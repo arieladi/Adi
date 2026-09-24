@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <map>
+#include <random>
 #include <stdexcept>
 #include <system_error>
 
@@ -68,6 +69,8 @@ const std::vector<MigrationStep>& migrationSteps() {
         {4, {"device_expression_routes", "agent_requests"}},
         // 1.5 (ADR-0154): the plug-in panel a device shows.
         {5, {"device_panels", "device_panel_params", "idx_panel_ord"}},
+        // 1.6 (ADR-0161): who wrote each op, and its Lamport clock.
+        {6, {"op_clients", "op_clocks", "idx_opclk_lamport"}},
     };
     return steps;
 }
@@ -150,8 +153,39 @@ const char* toString(StoreError e) {
     return "unknown";
 }
 
+namespace {
+// ADR-0161: 128 random bits, as 32 lowercase hex characters. Uniqueness is the
+// whole requirement -- the id orders ties between two clients' equal Lamport
+// clocks -- so it is drawn fresh for every Store rather than stored anywhere.
+std::string newClientId() {
+    std::random_device rd;
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string id;
+    id.reserve(32);
+    for (int word = 0; word < 4; ++word) {
+        const std::uint32_t v = rd();
+        for (int nibble = 0; nibble < 8; ++nibble)
+            id.push_back(kHex[(v >> (4 * nibble)) & 0xFu]);
+    }
+    return id;
+}
+
+bool isClientId(const std::string& id) {
+    if (id.size() != 32) return false;
+    for (const char c : id)
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    return true;
+}
+}  // namespace
+
 Store::Store(std::unique_ptr<SQLite::Database> db, std::filesystem::path p, bool ro)
-    : db_(std::move(db)), path_(std::move(p)), readOnly_(ro) {}
+    : db_(std::move(db)), path_(std::move(p)), readOnly_(ro), clientId_(newClientId()) {}
+
+bool Store::setClientId(std::string id) {
+    if (!isClientId(id)) return false;
+    clientId_ = std::move(id);
+    return true;
+}
 
 Store::~Store() {
     // Best effort. close() is where the result can actually be reported, which

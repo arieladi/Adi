@@ -258,6 +258,9 @@ public:
         std::optional<Payload> inverse;
         std::optional<std::int64_t> parentSeq;
         bool ephemeral = false;
+        /// ADR-0161. Empty, and lamport == seq, for an op older than 1.6.
+        std::string clientId;
+        std::int64_t lamport = 0;
     };
     [[nodiscard]] std::vector<LoggedOp> recent(int limit = 50) const;
     [[nodiscard]] std::int64_t count() const;
