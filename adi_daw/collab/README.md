@@ -172,7 +172,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
-| `docs/format/schema.sql`, `docs/format/SPEC.md`, `docs/DECISIONS.md` (ADR-0140 only), `src/adi/history.*`, `src/adi/store.hpp`, `src/adi/digest.*` (one exclusion), `src/adi/textproj_store.*`, `tools/validate_schema.py`, `tests/test_snapshots.cpp`, `tests/test_textproj_store.cpp` (director's assignment) | cloud | `cloud/snapshots` | 2026-09-24 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`

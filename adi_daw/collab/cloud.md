@@ -59,6 +59,13 @@ wrong: until the next edit, that line is the redo line. The branch-naming
 assertion moved to the cross-branch test, where the revert itself has to
 create the branch.
 
+**Rebases.** `cloud/remarks` was rebased twice before it merged (win's #85
+and #86, linux's #88; #88 also added BLAKE3 to `--build-only`). Each time the
+README headline was recomputed with `test_all.sh` rather than merged by hand,
+ADR-0140 went after win's ADR-0141 (the log is append-only), and the
+reservation rows were split so that 0140 is `used` and 0139 stays `reserved`.
+My claims row is removed before merging.
+
 **Outside the listed paths.** `digest.cpp`/`.hpp` (one exclusion and its
 comment), `DECISIONS.md` (ADR-0140 only), `CMakeLists.txt` (one target),
 README counts.
