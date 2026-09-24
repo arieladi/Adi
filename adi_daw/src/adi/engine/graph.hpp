@@ -462,6 +462,15 @@ public:
     /// VCA is only a claim without this.
     [[nodiscard]] std::size_t nodeCount() const noexcept { return slots_.size(); }
 
+    /// The id this graph gave `node`, or kInvalidNode. A linear scan, for the
+    /// message thread and tests: since ADR-0163 a track's output is its strip,
+    /// so `outputFor` no longer names the last device.
+    [[nodiscard]] NodeId find(const Node& node) const noexcept {
+        for (std::size_t i = 0; i < slots_.size(); ++i)
+            if (slots_[i].node == &node) return static_cast<NodeId>(i);
+        return kInvalidNode;
+    }
+
     /// The node whose output is the graph's output. Exactly one.
     void setOutput(NodeId id) { output_ = id; }
 

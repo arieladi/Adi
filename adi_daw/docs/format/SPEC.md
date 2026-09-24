@@ -568,6 +568,43 @@ an action because a remark asked for it (ADR-0131 d5, AI-AGENT §7.3).
 A 1.0 or 1.1 file has no `remarks` table. A 1.2 reader opening one MUST treat
 that as "no remarks", not as an error.
 
+### 6.9 The mixer strip
+
+```sql
+mixer_strip(track_id, volume_db, pan, pan_law, width, input_gain_db,
+            phase_invert, delay_samples, vca_group_id)
+```
+
+One row per track, created with it (`track.create`). A track with no row
+reads the defaults: 0 dB, centred, Live's pan law. The strip comes after the
+track's devices, and whatever the track feeds takes the strip's output
+(ADR-0163).
+
+- **`volume_db`**: the fader. At or below -150 dB it is silence, and so is
+  -inf.
+- **`pan`**: -1 is hard left, +1 hard right. It is clamped to that range.
+- **`pan_law`**: how a stereo channel is panned. A reader MUST treat any other
+  value as 0 and SHOULD report it.
+
+  | Value | Law | Centre | Hard side (near, far) |
+  |---|---|---|---|
+  | 0 | Live 12's Stereo Pan: constant power, unity at the centre | 0 dB | +3 dB, silent |
+  | 1 | Equal power | -3 dB | 0 dB, silent |
+  | 2 | Balance: the far channel falls linearly | 0 dB | 0 dB, silent |
+  | 3 | Linear | -6 dB | 0 dB, silent |
+
+  For laws 0 and 1, with θ = (pan + 1)·π/4: law 1 gives (cos θ, sin θ), and
+  law 0 gives √2 times that.
+- **Mute and solo live on `tracks`** (`muted`, `soloed`, `solo_defeat`).
+  - A muted track is silent.
+  - While any track other than the master is soloed, a track is heard only if
+    it is soloed, solo-defeated, or joined to a soloed track by main routes.
+    Joined means in either direction: its group and the master (what a soloed
+    track feeds), and a soloed group's children (what feeds it).
+  - A sidechain keeps nothing audible.
+- **`width`, `input_gain_db`, `phase_invert`, `delay_samples` and
+  `vca_group_id`** are carried and not yet applied (ADR-0163 d6).
+
 ---
 
 ## 7. Layer 2 — plugin state

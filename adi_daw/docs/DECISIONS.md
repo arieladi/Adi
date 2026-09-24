@@ -10955,3 +10955,86 @@ context menu restores just that one.
    which is not built.
 5. **Isolated.** The emitter holds the override as one policy, so a later
    ruling changes one function, not the emitter.
+
+---
+
+## ADR-0163 — The mixer strip in the graph: volume, pan and mute on every track, solo across the project, Live's pan law by default — `DECIDED` (2026-09-25) — **CLOSES ADR-0077'S "NOT DECIDED"**
+
+Nothing in the engine applied a track's volume, pan, mute or solo. The ops were
+P0 and built (`mixer.setVolume`, `mixer.setPan`, `track.setMute`,
+`track.setSolo`), the columns were in the schema, and the graph's junction only
+summed. ADR-0077 had left the strip's place open, with "pan law and the global
+nature of solo are decisions of their own". Automation playback (ADR-0159, next)
+needs a strip to drive.
+
+### Decisions
+
+1. **A strip is the last node of every track's chain**, after its devices, as
+   Live's mixer section follows the device chain. Whatever the track feeds, its
+   group or the master, takes the strip's output. Nothing in the realiser
+   changed: the session appends the strip to the chain it already hands over.
+   - **The session owns the strips, not the graph.** Every edit publishes a
+     new graph, a fader move included. A strip that died with its graph would
+     jump to its new gain at every edit instead of ramping to it.
+   - **One strip per track id,** kept for the whole session. A departed
+     track's strip is kept silent, as a departed device is (ADR-0122), because
+     a retired graph may still name it. One graph renders a callback
+     (ADR-0092), so one thread runs a strip.
+2. **The pan law is Live's by default, and the format names four** (SPEC §6.9):
+   - **Live's, value 0:** turning towards a side raises that channel and
+     lowers the other (Live 12 §18). Constant power with the centre at unity,
+     so a hard side is +3 dB. The manual gives no figure, so the +3 dB is a
+     prediction, to be measured against Live (`docs/AWAITING.md` row 5).
+   - **Equal power, value 1:** -3 dB at the centre.
+   - **Balance, value 2:** the far channel falls linearly.
+   - **Linear, value 3:** -6 dB at the centre.
+
+   The centre and the sides are exact, not computed. A centred track at
+   0 dB passes its samples through bit for bit, so every project rendered
+   before this change renders the same bytes (ADR-0021), and a hard side is
+   silence, not cos(π/2).
+3. **Every change ramps, over 5 ms at every rate.** A fader, a pan, a mute or
+   a solo sets a target on the message thread, and the audio thread ramps to
+   it linearly from wherever it is, mid-ramp included. So a mute does not
+   click. A strip starts at its target, and a project does not fade in when
+   it opens.
+4. **Solo is global, over main routes.** While any track but the master is
+   soloed, a track is heard only if it is:
+   - soloed;
+   - solo-defeated (Cubase's *solo defeat*);
+   - fed by a soloed track: its group, the master;
+   - feeding a soloed track: a soloed group's children.
+
+   A soloed child keeps its group open and silences its siblings. A muted
+   group silences its children. A sidechain keeps nothing audible, and the
+   key tap is post-strip, so a key from a track that solo silences goes
+   silent too. Whether Live keeps such a key alive goes on the parity
+   checklist. Soloing the master is ignored.
+5. **Problems are named, not thrown.** An unknown pan law reads as Live's, and
+   a volume or pan that is not finite reads as 0 dB or the centre. Each is in
+   the session's problems.
+6. **Not yet applied, though stored:** width, input gain, phase invert, the
+   per-channel delay offset and VCA groups. Each has its op, and none has an
+   engine effect until its own change. Sends do not exist in the graph
+   (ADR-0072).
+
+**Evidence.** A new suite, `adi_mixer_tests`, with 32 checks:
+- **pan laws:** the four laws at centre, sides and in between, exact where
+  they must be;
+- **fader, pan and mute through a session:** a fader move that does not jump,
+  ramps down monotonically and lands in 5 ms; a hard-right pan +3 dB on the
+  right; a mute that ramps and then silences; the master's fader;
+- **solo:** a soloed track, solo defeat, a soloed child keeping its group, a
+  soloed group keeping its children, a muted group;
+- **the strip outliving a rebuild:** a fader move publishes a new graph, and
+  its strip starts where the old one was.
+
+`adi_midi_clips_tests` now finds its instrument with the new `Graph::find`,
+because a track's `outputFor` is now its strip. Six plants were built under
+MSVC `/WX`, and each failed a named check:
+- X1: a change jumps.
+- X2: Live's law is computed as equal power.
+- X3: solo ignores a soloed track's feeders.
+- X4: solo ignores what a soloed track feeds.
+- X5: a fresh strip every rebuild.
+- X6: mute is ignored.

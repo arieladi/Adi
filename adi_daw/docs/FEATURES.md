@@ -47,6 +47,7 @@ flagged, and it is a bug in the format, not in the plan.
 | Feature | From | P | Fmt | Notes |
 |---|---|---|---|---|
 | Audio / MIDI / instrument tracks | both | P0 | ✅ | |
+| Volume, pan, mute and solo on every track; solo across groups | both | P0 | ✅ | `mixer_strip`, `tracks.muted/soloed/solo_defeat`. **In the engine** (ADR-0163): a strip after each chain, 5 ms ramps, four pan laws with Live's the default (SPEC §6.9), solo that keeps a soloed track's group and a soloed group's children. Width, input gain, phase, delay offset and VCA are stored, not yet applied. |
 | Group tracks: folder **and** bus, one object | Ableton | P0 | ✅ | `kind='group'`. Grouping auto-routes children into the bus in the same transaction; `routing.origin` protects a manual override (ADR-0044). |
 | ~~Folder (organisational) tracks~~ | Cubase | **no** | — | **Removed** (ADR-0044). One grouping concept. A container whose fader does nothing is the thing users pick by accident. |
 | Hybrid tracks: audio and MIDI on one channel | Bitwig | **P0** | ✅ | `tracks.kind` is a hint, never a constraint (ADR-0045) |

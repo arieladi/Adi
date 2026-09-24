@@ -5,6 +5,37 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — the mixer strip in the graph (ADR-0163)
+
+**Found while preparing automation playback:** the engine applied no track's
+volume, pan, mute or solo. The ops were P0 and built, and the schema had the
+columns, but the junction only summed. Automation needs something to drive,
+so the strip came first.
+
+- **Where:** a `StripNode` is the last node of every chain. The session
+  appends it to the chain it hands the realiser, so nothing in the realiser
+  changed.
+- **Ownership:** the session owns the strips, because every edit publishes a
+  new graph and a per-graph strip would jump rather than ramp.
+- **Ramps:** 5 ms for every change, a mute included. A strip starts at its
+  target, so a project does not fade in.
+- **Pan laws:** four in SPEC §6.9 (new), Live's the default. The centre and
+  the sides are exact, so old renders keep their bytes. Live's +3 dB at a
+  hard side is a prediction: `docs/AWAITING.md` row 5 asks the director to
+  measure it.
+- **Solo:** global over main routes. A soloed child keeps its group, and a
+  soloed group keeps its children. The sidechain key tap is post-strip, which
+  goes on the parity checklist.
+- **Other changes:** `Graph::find(const Node&)` is new. `test_midi_clips`
+  uses it, because `outputFor` is now the strip.
+- **Checks:** +32 in a new `adi_mixer_tests`, giving 4511 across 47 suites.
+  Plants X1 to X6 each fail a named check.
+
+**Next:** automation playback, device parameters and the strip, with
+ADR-0162's override.
+
+---
+
 ## 2026-09-25 — Max for Live porting blueprint (DEVICE-CONTRACT-PANEL §6)
 
 On the director's instruction, in a file mac holds (`docs/DEVICE-CONTRACT-PANEL.md`,
