@@ -10,6 +10,64 @@ so nothing is left unpushed.
 
 ---
 
+## 2026-09-24 — older 1.x files upgrade on a write open (ADR-0144)
+
+Branch `cloud/migrate`. This closes the gap I reported: `remark.add` and
+snapshots failed on 1.1 and 1.2 files with "no such table".
+
+**What landed.** `Store::open` on an older minor of our major:
+
+- **Opened for writing:** it upgrades the file in one transaction. Each later
+  minor's objects are created in order, then `adi_meta.schema_minor`, then
+  `user_version` last. A failure rolls back to the old version, and the open
+  returns `StoreError::MigrationFailed`.
+- **Opened read-only:** it never writes. Each missing table gets an empty
+  `TEMP` stand-in on the connection, so every reader sees no rows. That is the
+  one place ADR-0144 d4 decides it. I rejected an "open for writing to
+  upgrade" error, because read-only is how newer-major and locked files open.
+
+`migrationSteps()` lists object **names** per minor. The DDL comes from the
+embedded `schema.sql`, so there is no second copy to drift.
+
+The frozen schemas for 1.0, 1.1 and 1.2 were taken from git
+(`docs/format/history/`). `validate_schema.py` check 9 proves every minor was
+additive and that each frozen file upgrades to the current schema. SPEC §11.1
+states the rule.
+
+**Finding:** 1.1 added a comment inside `media_files`'s `CREATE TABLE`, and
+SQLite stores that verbatim. So an upgraded 1.0 file can never be
+byte-identical in `sqlite_master` without rewriting a table, which the rules
+forbid. The comparison ignores comments and whitespace (ADR-0144 d6).
+
+**Tests.** `adi_migrate_tests` (new, 62 checks). Validator check 9. Tree: 3399
+checks across 34 suites. Clang `-Werror` builds clean. I cannot build MSVC here;
+I checked the new code against your /WX rules by hand. No `getenv`, `setvbuf`
+not `setbuf`, `ifstream` not `fopen`, and every size_t conversion is an explicit
+cast.
+
+**Plants, eight, all fired** (each reverted):
+
+| # | Defect planted | Failing check |
+|---|---|---|
+| M1 | the 1.2 step skipped | `1.0: sqlite_master matches a fresh file: +index:idx_remarks_target +table:remarks`; `1.1: remark.add works` |
+| M2 | `user_version` set before the tables | `user_version is set after every CREATE and the adi_meta update (at 1, last CREATE 8)` |
+| M3 | the migration runs on a read-only open | `opens read-only` |
+| M4 | `minor != kSchemaMinor` (a newer minor migrated) | `opens for writing` (the newer-minor test) |
+| M5 | no transaction | `the 1.2 step's table was rolled back, not left half-upgraded` |
+| M6 | no TEMP stand-ins on a read-only open | `FAILED -- exception escaped: no such table: remarks` |
+| V1 | `history/schema-1.1.sql` missing | `docs/format/history/schema-1.1.sql is missing: freeze each minor's schema.sql before bumping` |
+| V2 | a frozen minor's DDL differs from what shipped | `1.3 changes the DDL of ['remarks'] -- a CREATE cannot migrate that` |
+
+M5's first attempt did not compile (`txn.commit()` left behind), and the run
+then printed the PREVIOUS plant's stale binary failing. That counts as nothing.
+I redid it with the commit removed too, and it compiled and fired. Lesson
+applied: every plant's build line is read before its test line.
+
+**Not done.** No 1.x → 2.0 path (not additive by definition). The upgrade does
+not extract embedded media: linux's operation does that.
+
+---
+
 ## 2026-09-24 — history snapshots: schema 1.3 (ADR-0128, ADR-0140)
 
 Branch `cloud/snapshots`, stacked on `cloud/remarks` and rebased onto main

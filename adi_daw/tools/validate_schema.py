@@ -35,6 +35,9 @@ Checks, in order:
   8. The ADR reservation table in collab/README.md agrees with the log:
      no number written while still marked reserved, no burned number
      reused, no number claimed and never spent (ADR-0051).
+  9. Every older minor is frozen under docs/format/history/, each minor
+     only ADDS objects, and applying the missing objects to each frozen
+     file yields this schema, ignoring order and comments (ADR-0144).
 """
 
 from __future__ import annotations
@@ -615,6 +618,70 @@ def main() -> int:
                     fail(f"{name} is marked used but is not in DECISIONS.md")
         if fail.count == before_8:  # type: ignore[attr-defined]
             ok(f"{len(rows)} reservation row(s), all consistent with the log")
+
+    # --- 9. older minors upgrade to this one (ADR-0144) ------------------------
+    # Store::open upgrades an older 1.x file by creating, in order, the objects
+    # each later minor added. That only works if every minor was additive: an
+    # object whose DDL CHANGED cannot be migrated by a CREATE, and the upgraded
+    # file would silently differ from a fresh one. Comments are ignored because
+    # SQLite stores a CREATE verbatim and a migration never rewrites a table.
+    print("[9] older minors upgrade to this schema (ADR-0144)")
+    before_9 = fail.count  # type: ignore[attr-defined]
+    history = SCHEMA.parent / "history"
+
+    def normalise(sql: str) -> str:
+        sql = re.sub(r"--[^\n]*", " ", sql or "")
+        return " ".join(sql.split())
+
+    def objects(conn):
+        return {(t_, n_, tb, normalise(s_)) for t_, n_, tb, s_ in
+                conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master")}
+
+    current = sqlite3.connect(":memory:")
+    current.executescript(SCHEMA.read_text(encoding="utf-8"))
+    cur_objects = objects(current)
+    cur_rows = current.execute(
+        "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY rowid").fetchall()
+    spec_minor = SPEC_USER_VERSION % 1000
+    previous = None
+    for minor in range(spec_minor + 1):
+        if minor < spec_minor:
+            path = history / f"schema-1.{minor}.sql"
+            if not path.exists():
+                fail(f"{path.relative_to(HERE.parent)} is missing: freeze each minor's schema.sql "
+                     f"before bumping, or 1.{minor} files cannot be tested")
+                continue
+            old = sqlite3.connect(":memory:")
+            old.executescript(path.read_text(encoding="utf-8"))
+            uv = old.execute("PRAGMA user_version").fetchone()[0]
+            if uv != 1000 + minor:
+                fail(f"{path.name} has user_version {uv}, not {1000 + minor}")
+            objs = objects(old)
+        else:
+            old, objs = None, cur_objects
+        if previous is not None:
+            lost = sorted(n for _t, n, _b, _s in previous[1] - objs
+                          if n not in {n2 for _t2, n2, _b2, _s2 in objs})
+            changed = sorted(n for _t, n, _b, _s in previous[1] - objs
+                             if n in {n2 for _t2, n2, _b2, _s2 in objs})
+            if lost:
+                fail(f"1.{minor} drops objects 1.{previous[0]} had: {lost} -- a minor may only add")
+            if changed:
+                fail(f"1.{minor} changes the DDL of {changed} -- a CREATE cannot migrate that")
+        if old is not None:
+            have = {n for (n,) in old.execute("SELECT name FROM sqlite_master")}
+            try:
+                for name, sql in cur_rows:
+                    if name not in have:
+                        old.execute(sql)
+            except sqlite3.Error as exc:
+                fail(f"upgrading a 1.{minor} file failed: {exc}")
+            if objects(old) != cur_objects:
+                diff = sorted(n for _t, n, _b, _s in objects(old) ^ cur_objects)
+                fail(f"an upgraded 1.{minor} file differs from a fresh one: {diff}")
+        previous = (minor, objs)
+    if fail.count == before_9:  # type: ignore[attr-defined]
+        ok(f"1.0 to 1.{spec_minor - 1} are frozen, additive, and upgrade to 1.{spec_minor}")
 
     n = fail.count  # type: ignore[attr-defined]
     print()

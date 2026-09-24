@@ -46,6 +46,7 @@ enum class StoreError {
     SchemaTooNew,    // major > ours; opened read-only instead (SPEC §11)
     SchemaCorrupt,
     SqlError,
+    MigrationFailed, // an older 1.x file could not be upgraded; it is unchanged (ADR-0144)
 };
 
 const char* toString(StoreError);
@@ -71,6 +72,13 @@ public:
     /// table, and downgrades to read-only if the file's major schema is newer
     /// than this build's (SPEC §11) — `err` is then `SchemaTooNew` and the
     /// returned Store is valid but `readOnly()`.
+    ///
+    /// An OLDER minor of the same major is upgraded in place when opened for
+    /// writing: one transaction, every missing minor in order, user_version
+    /// last (ADR-0144, SPEC §11). If that fails the file is unchanged, `err` is
+    /// `MigrationFailed` and nothing is returned. Opened read-only, the file is
+    /// never written: each table it lacks is stood in for by an empty TEMP
+    /// table on this connection, so every reader sees "no rows".
     static std::unique_ptr<Store> open(const std::filesystem::path&, StoreError&,
                                        bool readOnly = false);
 
@@ -84,6 +92,9 @@ public:
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
     [[nodiscard]] int schemaMajor() const { return major_; }
     [[nodiscard]] int schemaMinor() const { return minor_; }
+    /// The minor the file had before this open upgraded it; nullopt when no
+    /// upgrade happened (ADR-0144).
+    [[nodiscard]] std::optional<int> upgradedFromMinor() const { return upgradedFrom_; }
 
     [[nodiscard]] SQLite::Database& db() { return *db_; }
     [[nodiscard]] const SQLite::Database& db() const { return *db_; }
@@ -128,7 +139,30 @@ private:
     bool closed_ = false;
     int major_ = kSchemaMajor;
     int minor_ = kSchemaMinor;
+    std::optional<int> upgradedFrom_;
     mutable std::string lastError_;
 };
+
+// --- upgrading an older 1.x file (ADR-0144, SPEC §11) -------------------------
+//
+// Public so tests can drive it on a connection they instrument. Store::open is
+// the only production caller.
+
+/// One step per minor: the schema objects (tables, indexes, triggers) that
+/// minor added, by name. Their DDL is taken from the embedded schema.sql, so a
+/// migrated file and a fresh one are built from the same statements.
+struct MigrationStep {
+    int toMinor = 0;
+    std::vector<std::string> objects;
+};
+const std::vector<MigrationStep>& migrationSteps();
+
+/// Upgrades a major-1 file at `fromMinor` to kSchemaMinor, in ONE transaction:
+/// each step's objects in order, then adi_meta.schema_minor, then user_version
+/// last. On any failure everything rolls back and `error` says why.
+bool migrateToCurrent(SQLite::Database&, int fromMinor, std::string& error);
+
+/// The tables a file at `fromMinor` lacks, which a read-only open stands in for.
+std::vector<std::string> tablesAddedAfter(int fromMinor);
 
 }  // namespace adi
