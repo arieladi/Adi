@@ -82,12 +82,22 @@ commits or credentials. Reports and all plant logs are kept under
 
 ### Validation and handoff
 
+Full-tree `test_all.sh`: GCC and Clang each **3613 checks across 36 suites**,
+all validators clean, on the final rebased sources. README counts recomputed.
 New suites: 37 media-op checks and 53 collection/extraction checks. Both pass
 Clang ASan+UBSan and GCC TSan with `halt_on_error=1`, including sanitized CLI
 subprocesses. This is coverage of the new suites, not a claim that every old
 suite was rerun under sanitizers. All required plants fired at their named
-checks. Full-tree GCC/Clang totals and the final rebase are recorded here before
-merge. The first full GCC run caught the stale README ADR count; corrected.
+checks. Rebased onto `d31cd65` (cloud migration and remarks after win plugin
+state), then `2d123a5` (win's documentation-only ADR-0145) and `2188218`
+(SPEC §7.1 wording/standing claims), preserving all other claims and decisions.
+Source bytes are unchanged by these documentation rebases;
+full-tree tests/validators refreshed and the ADR inventory incremented. The first full GCC run caught
+the stale README ADR count; corrected. An in-flight sanitizer rebuild overlapped
+the rebase and failed because a new header was temporarily absent; discarded
+that build and rebuilt/reran both sanitizers after the rebase, with 37 + 53
+checks passing each. GCC also emitted the existing mismatched-new/delete
+warning in `test_pd.cpp`; no warning was in the new sources.
 MSVC /WX cannot be run on this Linux host; new code uses setvbuf, no getenv or
 unsafe CRT string/file APIs, and explicit narrowing at SQLite blob boundaries.
 
