@@ -10112,7 +10112,11 @@ open, read, seek and close; SQLite was never the only blocking resource.
 8. **Unsupported audio is named silence.** Warped, reversed, non-WAV, pitch or
    formant shifted, unresolved alias, embedded, malformed and unavailable
    sources are listed by clip ID in `Session::problems()`. The row and original
-   media are untouched. WAV includes the existing PCM16/24, float32 and
+   media are untouched. Negative positions are refused by this initial source
+   (the existing TempoMap clamps negative ticks); the problem is named. Tempo
+   ramps are not implemented by TempoMap: a ramp map is reported in problems,
+   and placement uses its current step-tempo conversion, never a claimed ramp.
+   WAV includes the existing PCM16/24, float32 and
    extensible/RF64/BW64 reader; this is not the decoding cache or warp engine.
 
 ### Measured quality and proof

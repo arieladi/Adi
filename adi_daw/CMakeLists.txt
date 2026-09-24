@@ -795,3 +795,20 @@ target_link_libraries(adi_library_tests PRIVATE adi_core adi_warnings Threads::T
 add_test(NAME adi_library_tests COMMAND adi_library_tests)
 
 set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120)
+
+# ADR-0151: worker-only clip conversion. Keep upstream tests/examples out of
+# our suite count and leave the parent BUILD_TESTING value untouched.
+function(adi_add_samplerate)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+    set(BUILD_TESTING OFF)
+    set(LIBSAMPLERATE_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(LIBSAMPLERATE_INSTALL OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${ADI_THIRD_PARTY}/libsamplerate" "${CMAKE_BINARY_DIR}/libsamplerate" EXCLUDE_FROM_ALL)
+endfunction()
+adi_add_samplerate()
+target_sources(adi_core PRIVATE src/adi/engine/transport.cpp src/adi/engine/clip_playback.cpp)
+target_link_libraries(adi_core PRIVATE samplerate)
+add_executable(adi_clip_playback_tests tests/test_clip_playback.cpp)
+target_link_libraries(adi_clip_playback_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_clip_playback_tests COMMAND adi_clip_playback_tests)
+set_tests_properties(adi_clip_playback_tests PROPERTIES TIMEOUT 120)

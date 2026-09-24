@@ -180,6 +180,7 @@ private:
         NodeId tail = kInvalidNode;
     };
 
+    std::vector<std::shared_ptr<void>> sourceOwners_; // destroyed after graph_
     Graph graph_;
     /// Only the nodes realisation itself created. Devices are owned elsewhere.
     std::vector<std::unique_ptr<Node>> owned_;

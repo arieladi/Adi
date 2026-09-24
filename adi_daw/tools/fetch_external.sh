@@ -58,6 +58,7 @@ if [ "$WANT_REFERENCE" = 1 ]; then mkdir -p reference; fi
 #          every ABI a large clone to build something none of them build.
 # Moving a pin is a reviewed change, not a refresh: see ADR-0024.
 THIRD_PARTY=(
+  "libsndfile/libsamplerate libsamplerate BSD-2-Clause 0.2.2 c96f5e3de9c4488f4e6c97f59f5245f22fda22f7 build"
   "JuliaStrings/utf8proc utf8proc MIT v2.11.3 e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78 build"
   "BLAKE3-team/BLAKE3          BLAKE3      CC0-1.0/Apache-2.0 1.8.7 f3149ec5bb5449af877ba20377a11008ff499fa2 build"
   "richgel999/miniz            miniz       MIT       3.1.2     77d0dce8627735138c51770d1799a1ef48f2117d build"

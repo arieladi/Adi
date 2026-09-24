@@ -45,6 +45,7 @@ private:
 class WavReader {
 public:
     explicit WavReader(const std::filesystem::path&);
+    ~WavReader();
     WavReader(const WavReader&) = delete;
     WavReader& operator=(const WavReader&) = delete;
     [[nodiscard]] std::uint32_t sampleRate() const noexcept { return rate_; }

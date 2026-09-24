@@ -111,6 +111,11 @@ public:
     virtual void prepare(double /*sampleRate*/, std::int32_t /*maxFrames*/) {}
     virtual void release() {}
 
+    /// Optional source ownership token, queried ONLY by the realiser off the
+    /// callback. A graph keeps streamed pages/workers alive until reclamation;
+    /// no reference counting or destruction occurs in process (ADR-0151).
+    virtual std::shared_ptr<void> sourceLifetime() const { return {}; }
+
     /// Audio thread. No allocation, no locks, no throwing.
     virtual void process(const NodeIo& io) noexcept = 0;
 
