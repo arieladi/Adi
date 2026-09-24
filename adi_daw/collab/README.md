@@ -177,7 +177,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
 | `src/adi/media/**`, `src/adi/library/**`, `tests/test_collect_export.cpp`, `tests/test_media_ops.cpp`, `tests/test_library.cpp`; one dependency line each in `tools/fetch_external.sh` and `docs/EXTERNAL-CODE.md` if utf8proc is needed (mac's area, on the director's instruction) | linux | `linux/publish-files`, then `linux/library-index` | 2026-09-24 |
-| `src/adi/changeset.*`, `tests/test_changeset.cpp`, `src/main.cpp`, `docs/AI-AGENT.md` | cloud | `cloud/changeset` | 2026-09-24 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
