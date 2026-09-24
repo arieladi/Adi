@@ -7,6 +7,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/check.hpp"
+#include "adi/media/collect_export.hpp"
 #include "adi/digest.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -33,7 +34,9 @@ int usage() {
         "  adi_tool digest <file>   canonical digest of the project tier\n"
         "                           --full prints it; default prints the id\n"
         "  adi_tool ops             list every registered op\n"
-        "  adi_tool check <file>    verify what SQLite cannot\n"
+        "  adi_tool check <file>    verify structure and external media hashes\n"
+        "  adi_tool collect-export <in.adi> <out.zip>  portable ZIP64 copy\n"
+        "  adi_tool extract-media <file.adi>  extract legacy embedded media\n"
         "  adi_tool export <file>   the canonical text projection (ADR-0007)\n"
         "                           --strict fails on a non-canonical order\n"
         "\n"
@@ -207,7 +210,7 @@ int cmdCheck(const char* path) {
         std::printf("cannot open: %s\n", adi::toString(err));
         return 2;
     }
-    const auto rep = adi::checkProject(*st);
+    const auto rep = adi::checkProject(*st, true);
     for (const auto& f : rep.findings)
         std::printf("  %-8s %-24s %-34s %s\n", adi::toString(f.severity),
                     f.code.c_str(), f.where.c_str(), f.detail.c_str());
@@ -230,6 +233,22 @@ int main(int argc, char** argv) {
     if (argc < 2) return usage();
     const std::string cmd = argv[1];
 
+    if (cmd == "collect-export" || cmd == "extract-media") {
+        if (argc != (cmd == "collect-export" ? 4 : 3)) return usage();
+        adi::media::FileResult result;
+        if (cmd == "collect-export") result = adi::media::collectExport(argv[2], argv[3]);
+        else {
+            adi::StoreError error;
+            auto store = adi::Store::open(std::filesystem::absolute(argv[2]), error);
+            if (!store) result = {false, adi::toString(error)};
+            else {
+                result = adi::media::extractMedia(*store);
+                if (result.ok && !store->close()) result = {false, "database close/checkpoint failed"};
+            }
+        }
+        if (!result.ok) std::fprintf(stderr, "%s: %s\n", cmd.c_str(), result.error.c_str());
+        return result.ok ? 0 : 1;
+    }
     if (cmd == "layout") {
         printLayout();
         return 0;

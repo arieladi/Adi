@@ -16,6 +16,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/ops.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -1561,7 +1562,16 @@ bool deviceSetPresetInverse(OpContext& c, const Payload& p, Payload& inv, std::s
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 
+// ADR-0143: path-taking media APIs capture these replayable payloads.
+constexpr Field kFMediaRow[] = {{"id", FieldType::Int}, {"row", FieldType::Object}};
+constexpr Field kFMediaRelink[] = {{"id", FieldType::Int}, {"hash", FieldType::Text}, {"paths", FieldType::Object}};
 const OpDescriptor kHandWritten[] = {
+    {"media.import", "Import captured media metadata", Scope::Edit, EngineImpact::None,
+     kFMediaRow, false, false, media::importApply, media::importInverse, "media.unlink"},
+    {"media.unlink", "Unlink unreferenced media without deleting files", Scope::Edit, EngineImpact::None,
+     kFId, false, false, media::unlinkApply, media::unlinkInverse, "media.import"},
+    {"media.relink", "Relink the same media content", Scope::Edit, EngineImpact::Snapshot,
+     kFMediaRelink, false, false, media::relinkApply, media::relinkInverse, ""},
     {"project.setName", "Rename the project", Scope::Edit, EngineImpact::None,
      kFProjectName, false, false, setProjectNameApply, setProjectNameInverse, ""},
 

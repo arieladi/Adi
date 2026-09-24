@@ -8,6 +8,99 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-24 — Collect and Export, media ops and legacy extraction (ADR-0143)
+
+Branch `linux/collect-export`, on Adi's assignment and the pre-existing claim
+from #90. ADR-0143 records the decisions; its reservation is marked used.
+Only the granted media/check/CLI/catalogue/doc/test files changed, plus this
+log, my CMake source/target lines, and README's measured counts (including the
+ADR inventory count). No store, schema, projection, engine, JUCE or fixture edits.
+
+### Operations and commands
+
+Path-taking `media::importMedia(store, path, id, importedUtc)` hashes the file
+with BLAKE3 and captures a deterministic journal payload. Relative inputs and
+stored paths use SQLite's absolute database filename as their base, not cwd.
+A same-hash import returns the existing id without logging a duplicate. The
+registered `media.import`/`media.unlink` pair captures every media column,
+including nullable metadata and peaks; unlink never deletes files and refuses
+rows still referenced by a clip/frozen track, or holding legacy chunks.
+`media::relinkMedia` accepts a moved file only when its content hash matches;
+its symmetric inverse restores paths/missing state. Handlers never re-open
+files during undo/redo/replay. Tests replay persisted CBOR with all original
+media files deleted and compare digests/inverses.
+
+`adi_tool collect-export <in.adi> <out.zip>` opens the source read-only and uses
+SQLite backup to capture committed WAL data. All copying, extraction and row
+rewrites happen in a private staging copy. Copied bytes are hashed, all current
+pool rows get relative `audio/` paths, and the copy passes the structural and
+external-media check before its WAL is folded and its Store closed. ZIP64
+contains the `.adi` and STORE audio. Publication refuses an existing output
+and leaves no partial ZIP on failure. Historical op payloads are retained;
+collection relocates current rows, not the historical record.
+
+`adi_tool extract-media <file.adi>` streams contiguous ordered legacy chunks,
+including chunks whose flag was already 0, into collision-safe audio files.
+Hashes are verified before publication. One SQL transaction clears flags,
+rewrites paths and deletes all chunks. Tests cover both 1.0-shaped files and
+upgraded files with the three forbidding triggers restored. The old fixtures
+also omit the post-1.1 remarks/snapshot tables so their declared minor is true;
+they do not depend on or duplicate cloud's automatic upgrader. A failure on
+the second media row rolls back the first row and removes its newly created
+file. Existing files are never overwritten.
+
+**Boundaries/limitations decided, not hidden:** publication uses same-filesystem
+hard links for no-clobber semantics and fails explicitly if unsupported. Normal
+failure cleanup is tested; SQLite and files are not one crash-atomic resource,
+so power/process loss can leave unreferenced files. Configured media/search
+folders do not yet exist in this headless layer; resolution tries relative,
+project audio basename, then absolute hint, and stops at the first hash
+mismatch. `adi_tool check` verifies files read-only; the structural checker API
+keeps its existing no-filesystem default. Undecoded media metadata stays null.
+
+### Defect plants (all reverted)
+
+| Plant | Guard observed failing |
+|---|---|
+| Skip content-hash comparisons in resolution and staging | `hash mismatch makes CLI fail`; no-partial-ZIP and extraction rollback guards also fail |
+| Open/rewrite the original database instead of the staged copy | `collection never rewrites rows in original database` |
+| Omit deleting extracted blob chunks | `all blob chunks deleted after extraction` |
+| Compute relative paths against cwd | `relative path is computed against adi folder, not cwd` |
+| Reuse the temporary inode after hard-link publication | `collect-export CLI succeeds with live source WAL` |
+| Remove media.relink from the registration text | validate_ops: media op missing from catalogue or implementation |
+| Unstrike the retired media.embed row | validate_ops: retired embedding op must stay struck and unimplemented |
+
+The staging-inode bug was a real first-draft failure: a second copy truncated
+an inode already linked into the staged audio folder. The post-copy hash check
+stopped publication. Unlinking the temporary staging name after each publication
+fixed it; two different files with the same basename roundtrip independently.
+Gemini's read-only audit independently identified this already-tested defect.
+Its assertion that the existing test retained only one row was wrong: that very
+test failed first, and explicitly checks two rows. No Gemini repository writes,
+commits or credentials. Reports and all plant logs are kept under
+`/home/adi/Documents/Codex/2026-09-23/i-n/work/collect-export/`.
+
+### Validation and handoff
+
+New suites: 37 media-op checks and 53 collection/extraction checks. Both pass
+Clang ASan+UBSan and GCC TSan with `halt_on_error=1`, including sanitized CLI
+subprocesses. This is coverage of the new suites, not a claim that every old
+suite was rerun under sanitizers. All required plants fired at their named
+checks. Full-tree GCC/Clang totals and the final rebase are recorded here before
+merge. The first full GCC run caught the stale README ADR count; corrected.
+MSVC /WX cannot be run on this Linux host; new code uses setvbuf, no getenv or
+unsafe CRT string/file APIs, and explicit narrowing at SQLite blob boundaries.
+
+**Proposed SPEC §10.4 wording for cloud/win (not edited in their files):**
+“Collect and Export takes a consistent snapshot of the `.adi`, copies each
+referenced media file into `audio/` beside that copy, verifies its BLAKE3,
+rewrites only the copy's media paths, folds the copy's WAL, and publishes a
+ZIP64 containing the copy and its audio. The user's original database and its
+media remain unchanged. A mismatch names the file, fails the command and
+leaves no partial archive.”
+
+---
+
 ## 2026-09-24 — ADR-0127 building blocks: portable BLAKE3 and streaming ZIP64
 
 Branch `linux/blake3-zip`, from `f74348a`. Adi granted the new media directory,

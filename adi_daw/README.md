@@ -6,7 +6,7 @@ Cubase's arrangement, editing and mixing depth, and an AI agent that can only ac
 through the same undoable operations a human uses.
 
 **Status:** format specified, reference implementation building.
-**3523 checks across 34 suites**, green on 7 ABIs. Nothing is frozen.
+**3613 checks across 36 suites**, green on 7 ABIs. Nothing is frozen.
 **Language:** C++ with JUCE (ADR-0014) · **Licence:** GPLv3 (ADR-0015); a build
 linking JUCE is a combined work with AGPLv3 obligations on the JUCE part (ADR-0048)
 
@@ -145,7 +145,7 @@ Each step gates the next. No step starts before the previous one is written down
 |---|---|---|
 | **1** | Format spec, schema, feature scope, agent design | **done, draft** |
 | **2** | Choose implementation language and licence | **done** — C++/JUCE, GPLv3 |
-| **3** | The op vocabulary: every op type, payload, inverse | **done** — 160 ops, `docs/OPS.md` |
+| **3** | The op vocabulary: every op type, payload, inverse | **done** — 162 ops, `docs/OPS.md` |
 | **4** | Reference reader/writer library + round-trip test corpus | **done** — store, ops, undo, digest, check |
 | **5** | Audio engine skeleton: snapshot handoff, model, transport | **done** — headless, no JUCE (ADR-0036) |
 | **6** | JUCE: audio device, the graph, VST3 hosting (ADR-0041), CLAP hosting (ADR-0075), the engine at 32 to 4096 samples (ADR-0042, ADR-0102), plugin parameter ops (ADR-0110) | **in progress** — the session runtime is built and tested headless (ADR-0122); the plugin loader, `adi_play` and the parameter-op layer follow |

@@ -4,6 +4,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/store.hpp"
+#include "adi/media/media_ops.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -437,7 +438,7 @@ void checkRemarks(Ctx& c) {
 
 }  // namespace
 
-CheckReport checkProject(const Store& s) {
+CheckReport checkProject(const Store& s, bool verifyMediaFiles) {
     CheckReport r;
     Ctx c{const_cast<SQLite::Database&>(s.db()), r};
     checkSqlite(c);
@@ -447,6 +448,18 @@ CheckReport checkProject(const Store& s) {
     checkHistory(c);
     checkTimeBase(c);
     checkMedia(c);
+    if (verifyMediaFiles) {
+        c.ran();
+        try {
+            SQLite::Statement rows(c.db, "SELECT id FROM media_files WHERE embedded=0 ORDER BY id");
+            while (rows.executeStep()) {
+                const auto id = rows.getColumn(0).getInt64();
+                std::string error;
+                if (media::resolveMedia(media::projectFolder(s), media::mediaRow(c.db, id), error).empty())
+                    c.add(Severity::Error, "media.unresolved", "media_files#" + std::to_string(id), error);
+            }
+        } catch (const std::exception& e) { c.add(Severity::Error, "media.checkFailed", "media_files", e.what()); }
+    }
     checkRemarks(c);
     return r;
 }

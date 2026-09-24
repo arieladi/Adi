@@ -51,6 +51,7 @@ struct CheckReport {
 
 /// Every check. Read-only: it never repairs, because a repair that guesses is
 /// how a corrupt project becomes a plausible-looking wrong one.
-CheckReport checkProject(const Store&);
+// With verifyMediaFiles, also resolve and hash external files (read-only).
+CheckReport checkProject(const Store&, bool verifyMediaFiles = false);
 
 }  // namespace adi
