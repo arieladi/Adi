@@ -23,8 +23,8 @@ Listening is row 3 of `docs/AWAITING.md`.
 generated from the Word document's source by
 `tools/export_settings_catalogue.py`, our own columns only.
 
-ADR-0157, the director's ruling: sample rates up to 192 kHz, and higher
-wherever the hardware goes; the engine takes 8 kHz to 768 kHz.
+ADR-0157, the director's ruling: project and device rates from 44.1 kHz to
+768 kHz, nothing lower. A media file below 44.1 kHz still plays, converted up.
 
 **cloud:** that catalogue is what your registry fills from next (ADR-0156).
 **linux:** the clip worker's media-open call is cloud's for the decoder;

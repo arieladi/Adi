@@ -10137,10 +10137,11 @@ are recorded in `collab/linux.md`.
 
 ---
 
-## ADR-0157 — Every sample rate from 44.1 kHz to 192 kHz, and beyond it wherever the hardware goes — `DECIDED` (2026-09-24) — **DIRECTOR'S RULING; BOUNDS ADR-0151's RATE CHECK**
+## ADR-0157 — Sample rates from 44.1 kHz to 768 kHz — `DECIDED` (2026-09-24) — **DIRECTOR'S RULING; BOUNDS ADR-0151's RATE CHECK**
 
 **Director's ruling:** "we also need to support up to 192 kHz, not just 44.1 and
-48; and if we can support higher, then also support higher."
+48; and if we can support higher, then also support higher", then "44.1 up to
+768, no need below 44.1".
 
 **What already holds.** The format stores any positive `project.sample_rate`
 (SPEC §4, `CHECK (sample_rate > 0)`), and media keeps each file's own rate
@@ -10155,13 +10156,16 @@ above 192 kHz, so a 384 kHz project would play silent. Its read-ahead is
 
 ### Decisions
 
-1. **The supported range is 8 kHz to 768 kHz**, any integer rate a device or a
-   file presents. The project-rate chooser offers the standard ladder:
-   44.1 / 48, 88.2 / 96, 176.4 / 192, 352.8 / 384 and 705.6 / 768 kHz. The
-   hardware chooser offers what the device reports. The engine runs whatever
-   rate the device grants, as it already does for block sizes (ADR-0049).
-2. **Clip playback lifts its cap to 768 kHz and reads ahead in time, not
-   frames**: at least the 341 ms it gives at 48 kHz, at every rate, with pages
+1. **Project and device rates run from 44.1 kHz to 768 kHz**, nothing lower.
+   The project-rate chooser offers the standard ladder: 44.1 / 48, 88.2 / 96,
+   176.4 / 192, 352.8 / 384 and 705.6 / 768 kHz. The hardware chooser offers
+   what the device reports within that range. The engine runs whatever rate the
+   device grants inside it, as it already does for block sizes (ADR-0049).
+   **A media file below 44.1 kHz still plays, converted up.** Old sample
+   libraries hold 22.05 kHz files, and refusing them would silence content the
+   user already owns. The floor is for the project, not for what it imports.
+2. **Clip playback runs sessions from 44.1 to 768 kHz, takes sources at any
+   rate up to 768 kHz, and reads ahead in time, not frames**: at least the 341 ms it gives at 48 kHz, at every rate, with pages
    sized to match. Its tests run at 192 and 384 kHz. linux, in ADR-0155's
    mission, because clip playback is linux's code.
 3. **Every sample-count constant in the engine is audited for rate.** One that
