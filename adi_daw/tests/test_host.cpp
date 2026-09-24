@@ -300,6 +300,26 @@ void testAGraphThatCannotBePreparedIsNotPublished() {
     eqi(host.stats().swaps, 1, "the audio thread never saw the unprepared one");
 }
 
+void testTheHeadroomIsATime() {
+    section("ADR-0157 d3 -- the latency headroom is a time: 8192 samples at 48 kHz, the same 171 ms at every rate");
+    const struct { double rate; std::int32_t want; } cases[] = {
+        {44100.0, 8192}, {48000.0, 8192}, {96000.0, 16384},
+        {192000.0, 32768}, {384000.0, 65536}, {768000.0, 131072},
+    };
+    for (const auto& c : cases) {
+        GraphHost host;
+        const bool built = host.rebuild(twoTracks(), RealizeOptions{}, c.rate, 64);
+        const RealizedGraph* rg = host.current();
+        const std::int32_t got = rg != nullptr ? rg->graph().latencyHeadroom() : -1;
+        check(built && got == c.want,
+              std::to_string(static_cast<int>(c.rate)) + " Hz: headroom " + std::to_string(got) +
+                  ", want " + std::to_string(c.want));
+    }
+    GraphHost off;
+    off.setLatencyHeadroom(0);
+    check(off.latencyHeadroomAt(192000.0) == 0, "zero stays zero: switching compensation headroom off is not scaled back on");
+}
+
 void testTheSwapIsFadedIn() {
     section("ADR-0089 -- the incoming graph is ramped up, not cut in");
 
@@ -781,6 +801,7 @@ int main() {
     std::printf("adi_host_tests -- the rebuild path\n\n");
     testSilenceBeforeAnythingIsPublished();
     testAModelBecomesAudio();
+    testTheHeadroomIsATime();
     testARebuildReplacesTheGraphTheAudioThreadUses();
     testAFailedRebuildLeavesTheSessionPlaying();
     testAGraphThatCannotBePreparedIsNotPublished();

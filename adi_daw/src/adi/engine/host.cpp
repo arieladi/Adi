@@ -2,10 +2,20 @@
 
 #include "adi/engine/host.hpp"
 
+#include <cmath>
 #include <cstring>
 #include <utility>
 
 namespace adi::engine {
+
+std::int32_t GraphHost::latencyHeadroomAt(double sampleRate) const noexcept {
+    // ADR-0157 d3: the configured headroom is samples at 48 kHz; a higher
+    // rate gets the same time, a lower one keeps the measured floor.
+    if (headroom_ <= 0 || !(sampleRate > 48000.0)) return headroom_;
+    const double scaled = std::ceil(static_cast<double>(headroom_) * sampleRate / 48000.0);
+    constexpr double kMax = 1 << 24;   // 16.7 M samples: far above any real rate's need
+    return static_cast<std::int32_t>(scaled < kMax ? scaled : kMax);
+}
 
 bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts,
                         double sampleRate, std::int32_t maxFrames) {
@@ -21,7 +31,7 @@ bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts,
         return false;
     }
 
-    rg->graph().setLatencyHeadroom(headroom_);
+    rg->graph().setLatencyHeadroom(latencyHeadroomAt(sampleRate));
     rg->graph().prepare(sampleRate, maxFrames);
     if (!rg->graph().ok()) {
         error_ = rg->graph().error();

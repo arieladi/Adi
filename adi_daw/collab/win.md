@@ -5,6 +5,23 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — the engine's sample-rate audit (ADR-0157 d3)
+
+Every sample-count constant in `src/adi/engine` and `src/juce` was checked.
+One stood for a time: the latency headroom of ADR-0088, 8,192 samples at
+every rate, which is 171 ms at 48 kHz but 43 ms at 192 kHz. `GraphHost` now
+reads it as samples at 48 kHz and scales it with the rate, never below the
+measured 8,192: 16,384 at 96 kHz, 32,768 at 192 kHz, 65,536 at 384 kHz. The
+cost scales too: 512 KiB of headroom per stereo edge at 384 kHz.
+
+What stays in frames, deliberately: the 4,096 block cap and the event
+capacity, which already derive from the rate (ADR-0054). The swap fade is 0
+by default (ADR-0092). The parameter capture's quiet window is already in
+milliseconds. Clip read-ahead is linux's, in its mission. Two plants fired:
+no scaling, and scaling below the floor at 44.1 kHz.
+
+---
+
 ## 2026-09-24 — the plug-in panel is project state (ADR-0154)
 
 Schema 1.5 adds `device_panels` and `device_panel_params`. No row is Live's
