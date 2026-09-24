@@ -850,3 +850,9 @@ target_sources(adi_core PRIVATE src/adi/engine/midi_clips.cpp)
 add_executable(adi_midi_clips_tests tests/test_midi_clips.cpp)
 target_link_libraries(adi_midi_clips_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_midi_clips_tests COMMAND adi_midi_clips_tests)
+
+# ADR-0159: the curve formulas of SPEC §6.3.2, one evaluator for every reader.
+target_sources(adi_core PRIVATE src/adi/engine/curves.cpp)
+add_executable(adi_curves_tests tests/test_curves.cpp)
+target_link_libraries(adi_curves_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_curves_tests COMMAND adi_curves_tests)

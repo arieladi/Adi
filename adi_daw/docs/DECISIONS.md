@@ -10618,3 +10618,82 @@ then sleeping after the clip releases it. Eight plants, each built under MSVC
 Heard again after the fix: the fixture holds the chord from 4 s to 8 s at
 -13.4 dBFS and is silent after. Surge XT holds it to 8 s, then releases at
 -40 dBFS. `tools/make_demo_project.py --midi` writes that project.
+
+---
+
+## ADR-0159 — Curve formulas for automation and note expression; automation read into the engine — `DECIDED` (2026-09-24) — **MAKES SPEC §6.3.2's CURVE SHAPES NORMATIVE**
+
+**Director's instruction:** AEXP and AAUT points carry `curve` (0 hold,
+1 linear, 2 exp, 3 log, 4 s-curve, 5 bezier) and `tension` (−1..+1). The SPEC
+named the shapes without defining them. Converters, the engine and the UI must
+draw the same line, so the formulas become normative. Part two reads
+automation into the engine, without playing it yet.
+
+**What held.** SPEC §6.3.2 listed the enum and "shape from `tension`". Nothing
+in the tree evaluated a curve. The tempo map's `curve` (0 jump, 1 linear,
+2 bezier) is a different enum and is out of scope.
+
+### Part one — the curve formulas (`cloud/curves`, first PR)
+
+1. **One evaluator:** `engine/curves.{hpp,cpp}`.
+   - `curveShape(curve, x, t)` gives the normalised u in [0, 1].
+     `curveValue(v0, v1, x, curve, t)` gives `v0 + (v1 − v0) · u`, with v0
+     at x ≤ 0 and v1 at x ≥ 1 bit for bit.
+   - Both are pure, noexcept and allocation-free, so the audio thread may call
+     them.
+   - SPEC §6.3.2 now states the formulas, and §6.3.3 points to them.
+2. **The exp family is `E(x, t) = (e^{kx} − 1)/(e^k − 1)` with `k = t · ln 1000`.**
+   - At |t| = 1 it spans 1000:1, the 60 dB of a classic exponential fade.
+   - It is computed with `expm1`, which stays accurate as k approaches 0.
+   - log is defined as its reflection, `1 − E(1 − x, t)`, so d holds by
+     construction.
+   - The s-curve is two half-exponentials mirrored through the centre, so it
+     is symmetric by construction.
+3. **Tension's sign: positive bends the way the shape's name says.** exp
+   starts slow, log starts fast, the s-curve is steepest in the middle, and
+   bezier bows below the line like exp. Negative tension bends the other way,
+   so exp at −t is log at +t.
+   - Why this sign: a user who picks "exp" and pushes tension up gets more of
+     what the name promised.
+   - Tension 0 is exactly linear for every shaped curve, so an importer that
+     knows no tension gets a line.
+4. **Bezier is one quadratic whose control point is (½ + t/2, ½ − t/2).**
+   - It sits on the anti-diagonal: at the centre when t = 0 (a line), at the
+     corner (1, 0) when t = +1 (convex), and at (0, 1) when t = −1.
+   - The control point stays inside the unit square, so the curve never
+     overshoots.
+   - x(s) is solved with the stable root, `s = 2x / (b + √(b² − 4tx))`.
+5. **Hold** is v0 on [x0, x1) and v1 at x1.
+6. **Out-of-range inputs.** Tension is clamped to [−1, 1], and a NaN tension
+   reads as 0. A NaN x reads as the start.
+   - A `curve` above 5 is refused by a reader (part two's validation). The
+     evaluator draws it as linear so that it stays total.
+   - `v1 − v0` can overflow near the ends of the double range. In that case
+     the value is blended as `v0(1 − u) + v1·u`, so every finite input gives a
+     finite result.
+7. **A golden table** in the SPEC gives u at x = ¼, ½ and ¾ for each shape
+   and several tensions. The test checks it to 1e-11, which allows each
+   platform's libm its last bits in `expm1` and `sqrt`.
+8. **Symmetry is exact where floating point allows it.** A pair {x, 1 − x} is
+   checked bit for bit from its lower half. From the upper half,
+   `1 − (1 − a)` may differ from `a` by one ulp; that is float, not shape.
+
+**Tested** by `adi_curves_tests`, 48 checks:
+- endpoints over the whole grid;
+- monotonicity (rising and falling) over 4,097 x values and 133 tensions;
+- tension 0 exactly linear on dyadic and non-dyadic x;
+- log as exp's reflection, bit for bit;
+- the s-curve's symmetry;
+- bezier's control point against the closed forms at ±1;
+- hold, finiteness at ±DBL_MAX, the tension clamp, and the goldens.
+
+Five plants, each failing first as named checks:
+- The x ≥ 1 endpoint weakened to x > 1 failed "a segment starts at v0 and
+  ends at v1 bit for bit".
+- Bezier not linear at tension 0 failed "tension 0 is exactly linear for
+  bezier".
+- log reflected with the wrong tension sign failed "log(x, t) = 1 − exp(1 − x,
+  t)" and the log goldens.
+- An exponent that turns back at tension 1 failed "s-curve is monotonic … for
+  every tension".
+- ln 999 in place of ln 1000 failed twelve golden rows.

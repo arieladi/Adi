@@ -168,7 +168,7 @@ subject, say so in your log instead of writing it twice.
 | 0156 | cloud | `cloud/decoder` | one decoder for imported audio, into the cache; the settings registry filled from the catalogue, if it decides anything | used |
 | 0157 | win | `win/play-clips` | sample rates from 44.1 kHz to 768 kHz; lower-rate files still play, converted up (director's ruling) | used |
 | 0158 | win | `win/held-notes` | a held note keeps its instrument running (amends ADR-0043) | used |
-| 0159 | cloud | `cloud/curves` | curve formulas for automation and note expression; automation read into the engine, if it decides anything | reserved |
+| 0159 | cloud | `cloud/curves` | curve formulas for automation and note expression; automation read into the engine, if it decides anything | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

@@ -10,6 +10,42 @@ so nothing is left unpushed.
 
 ---
 
+## 2026-09-24 — the curve formulas (ADR-0159, part one)
+
+Branch `cloud/curves`, first PR. New: `src/adi/engine/curves.{hpp,cpp}` and
+`tests/test_curves.cpp`. SPEC §6.3.2 now holds the formulas and a golden table,
+and §6.3.3 points to them.
+
+**Formulas chosen.**
+- exp: `E(x, t) = expm1(k·x) / expm1(k)`, with `k = t · ln 1000`, so tension 1
+  spans 60 dB.
+- log: `1 − E(1 − x, t)`.
+- s-curve: two half-exponentials, mirrored.
+- bezier: a quadratic whose control point is (½ + t/2, ½ − t/2), always inside
+  the unit square.
+- Tension: positive bends the way the name says. Tension 0 is exactly linear
+  for every shape.
+
+**Plants (5), each failing first as named checks:**
+1. The endpoint weakened from x ≥ 1 to x > 1: "a segment starts at v0 and ends
+   at v1 bit for bit".
+2. Bezier not linear at tension 0: "tension 0 is exactly linear for bezier".
+3. log reflected with −t: "log(x, t) = 1 − exp(1 − x, t)", plus four log
+   goldens.
+4. An exponent that turns back at tension 1: "s-curve is monotonic … for every
+   tension". My first attempt, t³, left tension 1 unchanged and failed only on
+   symmetry, so I replaced it.
+5. ln 999 in place of ln 1000: twelve golden rows.
+
+**Also.** The s-curve's symmetry is exact only from the lower half of each
+{x, 1 − x} pair. From the upper half, `1 − (1 − a)` can differ from `a` by one
+ulp; the test and the ADR say so.
+
+`test_all`: 4398 checks across 45 suites, validators clean. ASan+UBSan are
+clean, and so is Clang `-Werror`. The claims row stays for PR 2.
+
+---
+
 ## 2026-09-24 — the settings registry filled from the catalogue (ADR-0156, part two)
 
 Branch `cloud/settings-catalogue`. New: `src/adi/settings/catalogue.{hpp,cpp}`;
