@@ -10517,6 +10517,8 @@ stream; audio clips support the rate range of ADR-0157.
    off cannot match a newly chased or repeated start. A new playing
    position chases sustained notes. Clip ends and repeat boundaries release notes
    at the boundary, including notes whose stored duration extends beyond it.
+   A first traversal beginning before the loop range continues to loop end;
+   entering the range alone does not retrigger a held note.
 4. Note-on and release velocity are normalized from ANOT's 0–127 encoding;
    channel and key are retained. `tuning_cents / 100` becomes a note-expression
    Pitch event immediately after its note-on, sharing its runtime identity.

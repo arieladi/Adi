@@ -13,7 +13,8 @@ first tasks: `collab/linux/ONBOARDING.md`.
 Branch `linux/midi-clips`, from `bb8058d`, using the director's PR #107 claims.
 ADR-0155 records the decisions. Cloud's media-open constructor call is preserved;
 no decoder, store, schema, panel, JUCE, settings or workflow edits. Shared CMake
-changes add only the MIDI source and its test target; the README headline is
+changes add the MIDI source and its test target, plus the clip suite timeout
+needed by instrumented conversion; the README headline is
 recomputed from the suites before merging.
 
 ### Playback and small engine hooks
@@ -37,6 +38,9 @@ and a full destination list dropped an off that the source had already queued.
 The stopped-refresh variant also failed before its generation handling was fixed.
 A nanosecond clip ending at sample 100.500048 failed by ending at 100 instead of
 101; clipped note ends now use the absolute nanosecond endpoint directly.
+The first-entry loop guard also failed: a held note was retriggered when entering
+the loop range, before any wrap. Its initial traversal now reaches loop end
+before repeating; the guard checks all five starts/offs and the first off at 250.
 
 The callback allocates nothing, performs no SQLite/file I/O, waits for nothing,
 and touches neither the message-thread registry nor shared-pointer ownership.
@@ -111,11 +115,11 @@ proven findings; the lost deferred/rejected offs above have failing guards.
 
 ### Verification
 
-GCC 15.2.0 and Clang 21.1.8 Release: **4258 checks across 43 suites** under
-`tools/test_all.sh`, all five validators clean. A fresh configure registers
-exactly 43 CTest suites. The first full runs passed every binary but the schema
-validator caught the stale README ADR inventory; it now says 157. The final
-runs include the endpoint guard and corrected inventory. The unchanged GCC
+Final GCC 15.2.0 and Clang 21.1.8 Release runs, rebased on `8802318`:
+**4330 checks across 44 suites** under `tools/test_all.sh`, all five validators
+clean. CTest registers exactly 44 suites. Before cloud's decoder/settings merges,
+both compilers passed 4258/43. An early run caught a stale README ADR inventory;
+the final inventory is 158 and the validator passes. The unchanged GCC
 `test_pd.cpp` allocator-counter warning remains outside this claim.
 
 The first sanitizer attempts are retained, not counted as clean. ASan caught
@@ -131,16 +135,30 @@ the concurrent clip-refresh guard passes. Actual device flag changes still need
 the device layer's synchronization fix in mac's `src/juce/device_model.*`; this
 PR does not claim to fix that separate case or edit JUCE.
 
-The six affected suites passed Clang ASan+UBSan, 821 checks, with
-`halt_on_error=1` and UBSan stack traces. GCC TSan's MIDI, session, graph, realizer
-and WAV suites passed, but instrumented high-rate conversion exceeded the offline
-test driver's original 10-second prime allowance. The test-only allowance is now
-300 seconds and the clip-suite CTest limit 600 seconds; callback behavior and the
-production `prime()` default are unchanged. Final rebased results follow below.
+Clang ASan+UBSan and GCC TSan each passed **822 checks across the six affected
+suites**: MIDI 163, clip playback 82, session 214, graph 177, realizer 62 and
+WAV 124. Both use `halt_on_error=1`; UBSan also prints stack traces. This is
+sanitizer coverage of the affected suites, not a claim of all 44 suites under
+sanitizers. No suppression was added.
 
-Main advanced to `9945889` (cloud's #111 decoder) during verification. Rebase keeps
-its `audio::playableFile` call and all cloud build/dependency/claim/ADR additions;
-final totals are recomputed after that integration.
+An earlier instrumented high-rate conversion exceeded the offline test driver's
+original 10-second prime allowance. The test-only allowance is now 300 seconds
+and the clip-suite CTest limit 600 seconds; callback behavior and the production
+`prime()` default are unchanged. Both final instrumented clip runs pass all 82.
+
+Main advanced to `9945889` (cloud's #111 decoder), then `8802318` (#112 settings),
+during verification. Rebase preserves its `audio::playableFile` call and all
+cloud build/dependency/claim/ADR additions. All final runs above use that latest
+base and the first-loop-entry correction. The second rebase interrupted one
+redundant build; interrupted runs are not counted as results.
+
+Evidence is retained locally at
+`/home/adi/Documents/Codex/2026-09-23/i-n/work/midi-clips`: `plants.json` and
+individual failing logs; `loop-entry-before.txt`; `merge-*-tests.txt` for the
+full Release runs and final MIDI sanitizer runs; `merge-*-affected-results.json`
+for the other five sanitizer suites; and `final-ctest-registration.json`.
+Only this linux claim is released. Merge is gated on all 19 CI jobs succeeding
+against the exact final PR head; the PR records that SHA and outcome.
 
 
 ---
