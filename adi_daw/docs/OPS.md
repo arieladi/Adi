@@ -518,9 +518,37 @@ silent truncation in JSON, a non-issue in CBOR.
 | `media.import` | e | N | pair `media.unlink` | P0 |
 | `media.unlink` | e | N | cap | P1 |
 | `media.relink` | e | S | sym | P1 |
-| `media.embed` | e | N | pair `media.extract` | P1 |
-| `media.extract` | e | N | pair `media.embed` | P1 |
+| ~~`media.embed`~~ | — | — | retired, ADR-0127 | — |
+| ~~`media.extract`~~ | — | — | retired, ADR-0127 | — |
 | `media.setName` | e | N | sym | P2 |
+
+**Implemented media payloads (ADR-0143).** Path-taking callers use
+`media::importMedia(store, path, id, importedUtc)` and
+`media::relinkMedia(store, id, path)`. Relative input paths are relative to the
+`.adi` folder. These APIs hash the file before submitting a captured payload;
+the journal handlers never re-read files on undo, redo or replay. Duplicate
+content returns the existing media id without logging a duplicate import.
+
+- `media.import`: `{id, row}`. `row` contains exactly `hash_blake3`, `orig_name`,
+  `rel_path`, `abs_path_hint`, `sample_rate`, `channels`, `frames`, `duration_ns`,
+  `format`, `bit_depth`, `size_bytes`, `missing`, `imported_utc`, `peaks`.
+  Hash is 64 lowercase hexadecimal digits. Text: hash/name/format (non-null),
+  paths (nullable). Integer metadata is nullable except `missing` (0 or 1).
+  Peaks is a nullable byte array. Fresh import captures file size and the
+  caller's timestamp, leaves undecoded metadata null and format empty.
+  `embedded` is always 0 and cannot be supplied. Inverse: `media.unlink {id}`.
+- `media.unlink`: `{id}`. Captures every above column, including nulls and
+  peaks, into its inverse `media.import`. Never deletes a disk file. Refuses
+  embedded/chunk-backed rows and rows still used by audio clips or frozen
+  tracks, so undo cannot lose a cascading reference or legacy bytes.
+- `media.relink`: `{id, hash, paths: {rel_path, abs_path_hint, missing}}`.
+  Hash must equal the row's identity; the path-taking API verifies the new
+  file's BLAKE3. Captures the old three location fields as a symmetric inverse.
+  Moving/renaming content does not allocate a new media id.
+
+`adi_tool extract-media` is legacy maintenance, not the retired embedding op.
+`collect-export` snapshots and relocates a copy, never the original. These
+commands do not invent schema migrations or rewrite historical op payloads.
 
 ### 9.11 Transport, hardware, extensions
 
@@ -566,7 +594,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**164 ops** — 63 P0, 50 P1, 48 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**162 ops** — 63 P0, 48 P1, 48 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

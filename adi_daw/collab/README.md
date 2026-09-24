@@ -152,7 +152,7 @@ subject, say so in your log instead of writing it twice.
 | 0140 | cloud | `cloud/snapshots` | history snapshots live in `history_snapshots`: `snapshots` is already the mixer-snapshot table | used |
 | 0141 | win | `win/vst3-gesture` | a knob moved inside a real VST3's window is one op; the mute and the echo guard each have their case | used |
 | 0142 | win | `win/vst3-state` | plugin state round-trips through the project; a preset picked in the plugin's window is one `device.loadState`; rows go on top of a chunk | used |
-| 0143 | linux | `linux/collect-export` | Collect and Export and the media ops (ADR-0127 d3-d4, ADR-0136 d4), if it decides anything | reserved |
+| 0143 | linux | `linux/collect-export` | Collect and Export and the media ops (ADR-0127 d3-d4, ADR-0136 d4), if it decides anything | used |
 | 0144 | cloud | `cloud/migrate` | how an older 1.x file is upgraded when opened for writing; read-only opens read missing tables as empty | used |
 | 0145 | win | `win/final-rulings` | the director's final rulings: Live's plugin blocks, 64 samples the smallest buffer, JUCE-only ASIO, a Pd editor on plugdata, hash-matched library sync, the repo move later | used |
 
@@ -171,7 +171,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/juce/**`, `tests/test_device.cpp` | mac | `mac/device` | 2026-09-20 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
-| `src/adi/ops_catalog.cpp` (the `media.*` ops only), `docs/OPS.md`, `src/adi/media/**`, `src/adi/check.*`, `src/main.cpp`, `tests/test_media_ops.cpp`, `tests/test_collect_export.cpp`, `tools/validate_ops.py` | linux | `linux/collect-export` | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |

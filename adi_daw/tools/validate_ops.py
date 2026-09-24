@@ -16,6 +16,7 @@ Checks:
   6. Coalescable ops are symmetric -- coalescing a state-capture inverse would
      silently discard intermediate state.
   7. The headline count in the prose matches the tables.
+  8. Media ops are registered and retired embedding ops stay struck/unimplemented.
 """
 
 from __future__ import annotations
@@ -127,6 +128,19 @@ def main() -> int:
         fail(f"prose says {m.group(1)} ops, tables contain {len(rows)}")
     else:
         ok(f"prose and tables agree: {len(rows)}")
+
+    print("[8] media implementation and retired embedding ops (ADR-0143)")
+    catalog = (HERE.parent / "src/adi/ops_catalog.cpp").read_text(encoding="utf-8")
+    for name in ("media.import", "media.unlink", "media.relink"):
+        if name not in names or not re.search(r'\{"' + re.escape(name) + r'",', catalog):
+            fail(f"media op missing from catalogue or implementation: {name}")
+        else:
+            ok(f"{name} documented and implemented")
+    for name in ("media.embed", "media.extract"):
+        if name in names or f'"{name}"' in catalog or f"~~`{name}`~~" not in txt:
+            fail(f"retired embedding op must be struck and never implemented: {name}")
+        else:
+            ok(f"{name} retired (ADR-0127)")
 
     by_prio = collections.Counter(p for *_x, p in rows)
     for label, claimed in re.findall(r"(\d+) (P[0-3])", txt[m.start():m.start() + 120] if m else ""):
