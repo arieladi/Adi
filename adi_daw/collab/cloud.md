@@ -10,6 +10,66 @@ so nothing is left unpushed.
 
 ---
 
+## 2026-09-24 — the settings registry filled from the catalogue (ADR-0156, part two)
+
+Branch `cloud/settings-catalogue`. New: `src/adi/settings/catalogue.{hpp,cpp}`;
+grown: `registry.cpp`, `tests/test_settings.cpp`, `docs/SETTINGS.md` §7.
+
+**What landed.**
+- **The registry** grows from 40 settings to 222 on 21 pages.
+  - Type, default, legal values, scope, page and help text all come from the
+    catalogue's ADI column.
+  - Where the catalogue names no default, the help states the one chosen.
+- **The partition.** The catalogue's 207 rows split into 146 answered by
+  registry keys and 61 absent: 10 rejected, 2 notes, 12 backlog, 4 wishes and
+  33 that are not a setting.
+  - The test parses `docs/SETTINGS-CATALOGUE.md`, handling CRLF checkouts, and
+    proves every row is in exactly one list.
+  - It holds each status to its list. Every answered key exists, and every
+    absence has a reason.
+- **The sample-rate ladder.** `sampleRateLadder()` runs 44.1 to 768 kHz.
+  `project.sampleRate` is now a Choice over it, and `audio.sampleRate` is new.
+- **The Decoding Cache keys** are the decoder's (`cache.maxSizeMb`,
+  `cache.minFreeSpaceMb`), checked against `audio::limitsFromSettings`.
+
+**Decisions written down** (ADR-0156 d10-d18):
+- WISH is a fifth absence kind.
+- The theme follows the OS by default, as the catalogue decides.
+- The agent's tier stays Propose. AI-AGENT §2 and ADR-0152 say Propose, the
+  catalogue says Observe, and the conflict is flagged.
+- New-track defaults are App scope, because there is no op for them in the
+  `.adi`.
+- Per-port MIDI switches and per-plug-in overrides are Device scope.
+- The whitelist is unchanged at nine. The Engine page joins the structural
+  never-list.
+
+**Plants (8), each failing first as named checks:**
+1. A row dropped from the answered list: "every catalogue row is in exactly
+   one list", "answered 145 + absent 61 = 207".
+2. A row listed twice: the same two checks.
+3. A misspelt key: "every answered row names registry keys, and each exists".
+4. 32 kHz on the ladder: "the sample-rate ladder is …", "the project's rate
+   chooser offers the ladder", "the device's rate chooser …", "nothing below
+   44.1 kHz …".
+5. A REJECTED row answered: "REJECTED, NOTE, BACKLOG and WISH rows are absent
+   with their kind …", "no REJECTED, NOTE, BACKLOG or WISH row is answered by a
+   setting".
+6. `project.sampleRate` left an Int: "the project's rate chooser offers the
+   ladder", "nothing below 44.1 kHz …".
+7. The cache default at 1,024 MB: "the Decoding Cache settings are the
+   decoder's keys, with its defaults", "the registry's defaults give the
+   decoder its built-in limits".
+8. A REJECTED row labelled "not a setting": the status check. This plant first
+   showed that my second status check reused the first one's accumulator. I
+   fixed that, and plants 5 and 8 now fail exactly where they should.
+
+`test_all`: 4147 checks across 43 suites, validators clean.
+The two theme expectations in the store tests moved from "dark" to "os".
+
+**Couldn't do, or not mine:** the tier default is the director's call. List-shaped settings are comma-separated text for now.
+
+---
+
 ## 2026-09-24 — one decoder, into the decoding cache (ADR-0156)
 
 Branch `cloud/decoder`. New: `src/adi/audio/decode.{hpp,cpp}`,

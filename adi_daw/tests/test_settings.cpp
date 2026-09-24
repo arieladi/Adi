@@ -8,7 +8,9 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/audio/decode.hpp"
 #include "adi/settings/bundle.hpp"
+#include "adi/settings/catalogue.hpp"
 #include "adi/settings/registry.hpp"
 #include "adi/settings/store.hpp"
 
@@ -20,6 +22,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
+#include <sstream>
 #include <set>
 #include <string>
 
@@ -222,7 +226,7 @@ void testApplicationsNeverShare() {
     const auto before = readText(file);
     AppSettings live(appdata::App::Live, file);
     check(live.status() == LoadStatus::ForeignApp, "ADI Live pointed at ADI DAW's file refuses it");
-    check(live.get("lookfeel.theme") == "dark", "and reads none of its values");
+    check(live.get("lookfeel.theme") == "os", "and reads none of its values");
     std::string why;
     check(!live.save(why) && readText(file) == before,
           "and never overwrites it: " + why);
@@ -243,7 +247,7 @@ void testChangeLog() {
     };
     auto l = lines();
     check(l.size() == 1 && l[0].at("actor") == "user" && l[0].at("key") == "lookfeel.theme" &&
-              l[0].at("before") == "dark" && l[0].at("after") == "light" && l[0].at("time") == kT0,
+              l[0].at("before") == "os" && l[0].at("after") == "light" && l[0].at("time") == kT0,
           "a person's change: time, key, before, after");
     s.setLogUserChanges(false);
     s.set("lookfeel.theme", "dark", kUser, why);
@@ -410,9 +414,144 @@ void testBundles() {
           "the absolute-path test knows Windows, UNC and POSIX, and not roles or '1/16'");
 }
 
+
+// --- the catalogue (ADR-0156) ---------------------------------------------------------------
+
+struct CatalogueRow {
+    std::string name;     // "<section> / <setting up to its first ' ('>"
+    std::string status;   // DECIDED, DIRECTION, REJECTED, NOTE, BACKLOG, WISH ...
+};
+
+std::string trim(std::string s) {
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\r' || s.back() == '|')) s.pop_back();
+    std::size_t i = 0;
+    while (i < s.size() && (s[i] == ' ' || s[i] == '|')) ++i;
+    return s.substr(i);
+}
+
+/// docs/SETTINGS-CATALOGUE.md's rows, read as the file is generated: one
+/// table per "## Part / section" heading, three cells a row.
+std::vector<CatalogueRow> readCatalogue() {
+    std::istringstream in(readText(fs::path(ADI_DOCS_DIR) / "SETTINGS-CATALOGUE.md"));
+    std::vector<CatalogueRow> rows;
+    std::string line, section;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();   // a CRLF checkout
+        if (line.rfind("## ", 0) == 0) {
+            const auto slash = line.rfind(" / ");
+            section = line.substr(slash == std::string::npos ? 3 : slash + 3);
+            continue;
+        }
+        if (line.rfind("|", 0) != 0 || line.rfind("|---", 0) == 0 || line.rfind("| Setting |", 0) == 0) continue;
+        const auto first = line.find(" | ");
+        const auto last = line.rfind(" | ");
+        if (first == std::string::npos || last == first) continue;
+        std::string cell = trim(line.substr(0, first));
+        const auto paren = cell.find(" (");
+        if (paren != std::string::npos) cell.resize(paren);
+        rows.push_back({section + " / " + cell, trim(line.substr(last + 3))});
+    }
+    return rows;
+}
+
+void testCatalogue() {
+    section("the catalogue: every row a setting, or deliberately absent with a reason (ADR-0156)");
+    const auto rows = readCatalogue();
+    check(rows.size() == 207, "the catalogue has the Settings Reference's 207 rows, read " + std::to_string(rows.size()));
+
+    std::map<std::string, int> inAnswered, inAbsent;
+    for (const auto& a : answeredRows()) ++inAnswered[a.row];
+    for (const auto& a : absentRows()) ++inAbsent[a.row];
+    std::set<std::string> names;
+    for (const auto& r : rows) names.insert(r.name);
+    check(names.size() == rows.size(), "row names are unique: section and setting");
+
+    std::string strays;
+    for (const auto& r : rows) {
+        const int n = (inAnswered.count(r.name) ? inAnswered[r.name] : 0) + (inAbsent.count(r.name) ? inAbsent[r.name] : 0);
+        if (n != 1) strays += "\n        " + std::to_string(n) + "x " + r.name;
+    }
+    check(strays.empty(), "every catalogue row is in exactly one list, answered or absent:" + strays);
+    std::string unknown;
+    for (const auto& [name, n] : inAnswered) if (!names.count(name)) unknown += "\n        " + name;
+    for (const auto& [name, n] : inAbsent) if (!names.count(name)) unknown += "\n        " + name;
+    check(unknown.empty(), "every listed row is a row of the catalogue:" + unknown);
+    check(answeredRows().size() + absentRows().size() == rows.size(),
+          "answered " + std::to_string(answeredRows().size()) + " + absent " + std::to_string(absentRows().size()) + " = 207");
+
+    std::string missingKeys;
+    bool nonEmpty = true;
+    for (const auto& a : answeredRows()) {
+        nonEmpty = nonEmpty && !a.keys.empty();
+        for (const auto& k : a.keys) if (!find(k)) missingKeys += "\n        " + k + " (" + a.row + ")";
+    }
+    check(nonEmpty && missingKeys.empty(), "every answered row names registry keys, and each exists:" + missingKeys);
+
+    // The status decides which list a row may be in.
+    std::map<std::string, std::string> status;
+    for (const auto& r : rows) status[r.name] = r.status;
+    auto word = [](const std::string& st) { return st.substr(0, st.find(' ')); };
+    std::string misplaced;
+    for (const auto& a : answeredRows()) {
+        const auto w = word(status[a.row]);
+        if (w != "DECIDED" && w != "DIRECTION") misplaced += "\n        answered but " + status[a.row] + ": " + a.row;
+    }
+    for (const auto& a : absentRows()) {
+        const auto w = word(status[a.row]);
+        const bool ok = a.kind == Absence::Rejected ? w == "REJECTED"
+                      : a.kind == Absence::Note     ? w == "NOTE"
+                      : a.kind == Absence::Backlog  ? w == "BACKLOG"
+                      : a.kind == Absence::Wish     ? w == "WISH"
+                      : (w == "DECIDED" || w == "DIRECTION");
+        if (!ok || a.reason.empty()) misplaced += "\n        " + std::string(toString(a.kind)) + " but " + status[a.row] + ": " + a.row;
+    }
+    check(misplaced.empty(), "REJECTED, NOTE, BACKLOG and WISH rows are absent with their kind; only decided rows are 'not a setting'; every absence has a reason:" + misplaced);
+    std::string answeredButNot;
+    for (const auto& r : rows) {
+        const auto w = word(r.status);
+        if ((w == "REJECTED" || w == "NOTE" || w == "BACKLOG" || w == "WISH") && inAnswered.count(r.name))
+            answeredButNot += "\n        " + r.name;
+    }
+    check(answeredButNot.empty(), "no REJECTED, NOTE, BACKLOG or WISH row is answered by a setting:" + answeredButNot);
+
+    // ADR-0157: the ladder, and nothing below 44.1 kHz.
+    const std::vector<Value> ladder = {44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000};
+    check(sampleRateLadder() == ladder, "the sample-rate ladder is 44.1/48, 88.2/96, 176.4/192, 352.8/384, 705.6/768 kHz");
+    const auto* project = find("project.sampleRate");
+    const auto* device = find("audio.sampleRate");
+    check(project && project->type == Type::Choice && project->choices == ladder && project->defaultValue == 48000,
+          "the project's rate chooser offers the ladder, 48 kHz by default");
+    check(device && device->type == Type::Choice && device->choices == ladder, "the device's rate chooser offers the ladder");
+    std::string why;
+    check(project && device && !validate(*project, 32000, why) && !validate(*device, 22050, why) &&
+              validate(*device, 768000, why) && !validate(*device, 1536000, why),
+          "nothing below 44.1 kHz and nothing above 768 kHz is offered");
+
+    // ADR-0156: the decoder reads the Decoding Cache settings by these keys.
+    const auto* maxSize = find(adi::audio::kCacheMaxSizeKey);
+    const auto* minFree = find(adi::audio::kCacheMinFreeKey);
+    check(maxSize && minFree && maxSize->defaultValue == adi::audio::kCacheMaxSizeMbDefault &&
+              minFree->defaultValue == adi::audio::kCacheMinFreeMbDefault && maxSize->scope == Scope::App,
+          "the Decoding Cache settings are the decoder's keys, with its defaults");
+    Value defaults = Value::object();
+    for (const auto& st : registry()) defaults[st.key] = st.defaultValue;
+    const auto limits = adi::audio::limitsFromSettings(defaults);
+    const adi::audio::DecodeCacheLimits builtIn;
+    check(limits.maxBytes == builtIn.maxBytes && limits.minFreeBytes == builtIn.minFreeBytes,
+          "the registry's defaults give the decoder its built-in limits");
+
+    // The agent's whitelist stays what ADR-0152 marked: the catalogue adds no mark.
+    int marked = 0;
+    for (const auto& st : registry()) marked += st.agentMayChange ? 1 : 0;
+    check(marked == 9, "the catalogue added no setting to the agent's whitelist (" + std::to_string(marked) + " marked)");
+    std::printf("  %zu settings on %zu pages; %zu rows answered, %zu absent\n", registry().size(), pages().size(),
+                answeredRows().size(), absentRows().size());
+}
+
 int runAll() {
     std::printf("adi_settings_tests -- ADR-0125, ADR-0127 d5, ADR-0145, ADR-0152\n\n");
     testRegistry();
+    testCatalogue();
     testStoreBasics();
     testUnknownKeysSurvive();
     testCorruptKeptAside();

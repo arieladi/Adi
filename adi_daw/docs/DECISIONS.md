@@ -10407,3 +10407,82 @@ Seven plants, each failing first as named checks:
 - Hashing a large compressed file on every session load: a (path, size, mtime)
   memo could skip it, and would be the first thing to add if load time shows
   it.
+
+### Part two — the settings registry filled from the catalogue (`cloud/settings-catalogue`)
+
+**Director's instruction:** give every catalogue row that is a setting ADI has
+a registry entry, with its type, default, legal values, scope, page and help
+text from the ADI column. List the rest as deliberately absent, with the
+reason. A test proves each row is in exactly one list. The sample-rate chooser
+offers ADR-0157's ladder and nothing below 44.1 kHz.
+
+10. **The partition.** `settings/catalogue.{hpp,cpp}`:
+    - 146 rows are answered by registry keys, and a key may answer several
+      rows.
+    - 61 rows are absent, each with a kind and a reason.
+    - A row is named `<section> / <setting up to its first " (">`.
+    - The test reads `docs/SETTINGS-CATALOGUE.md` itself, so a regenerated
+      catalogue with a new row fails until the row is placed.
+11. **Five kinds of absence.** The instruction named four: rejected, note,
+    not a setting and backlog. The catalogue's four WISH rows are none of
+    these, so **wish** is a fifth kind.
+    - A REJECTED, NOTE, BACKLOG or WISH row is never answered.
+    - "Not a setting" is only for a DECIDED or DIRECTION row that is a
+      behaviour, a command, a display or a fixed rule. There are 33, among
+      them Zoom Display (per window), the latency readouts, Restore warnings
+      (a button), and Count-In (in the metronome menu, as in Live).
+12. **The registry grows from 40 settings to 222 on 21 pages.**
+    - Pages follow Live's tabs where the setting is Live's.
+    - They follow the catalogue's Part IV pages where it is ADI's own:
+      Engine, Sync, Windows, Music and Devices.
+    - Cubase's and REAPER's adoptions get Editing, Mixing, New track and
+      Transport.
+13. **The rate ladder.** `sampleRateLadder()` is 44,100 to 768,000 in ten
+    steps. `project.sampleRate` becomes a Choice over it (its op is
+    unchanged), and the new `audio.sampleRate` offers the same list.
+14. **Defaults the catalogue decides, applied.**
+    - The theme follows the OS: `lookfeel.theme` gains `os`, and `os` is the
+      default.
+    - Auto-arm covers instrument and MIDI tracks.
+    - Copy imported media asks.
+    - Import warp and fades stay off.
+15. **Defaults where the catalogue and the spec disagree: the spec wins, and
+    the conflict is flagged.** The catalogue's AI row says the tier defaults to
+    Observe, while AI-AGENT §2 and ADR-0152 say Propose. It stays **Propose**
+    until the director rules.
+16. **Scope where the catalogue names one that cannot hold.** R-26's new-track
+    defaults are App settings, not Project ones, because no op sets them in the
+    `.adi`, and a Project setting must name its op (ADR-0152).
+    - Per-port MIDI switches are Device scope, stored with the port.
+    - Per-plug-in window scaling and "ignore broadcasts" are Device scope,
+      stored with the device.
+17. **The agent's whitelist is unchanged**, at nine settings: no new setting
+    is marked. The Engine page joins the structural never-list in
+    `agentForbidden`.
+18. **Stated defaults where the catalogue names none**, all in the help text:
+    - the PDC threshold when recording, 10 ms;
+    - the rate cap, 600 ops a minute;
+    - the freeze tail, 4 s;
+    - the LAN audio jitter buffer, 40 ms;
+    - the Decoding Cache, 10 GB maximum and 2 GB minimum free (d8).
+
+**Tested** by `adi_settings_tests`, which grows from 80 checks to 95. Eight
+plants, each failing first as named checks:
+- A row dropped from the answered list, and the same row listed twice, each
+  failed "every catalogue row is in exactly one list".
+- A misspelt key failed "every answered row names registry keys, and each
+  exists".
+- 32 kHz added to the ladder failed "the sample-rate ladder is …" and
+  "nothing below 44.1 kHz …".
+- A REJECTED row answered failed "no REJECTED, NOTE, BACKLOG or WISH row is
+  answered".
+- `project.sampleRate` left as an Int failed "the project's rate chooser
+  offers the ladder".
+- The cache default at 1,024 MB failed "the Decoding Cache settings are the
+  decoder's keys, with its defaults".
+- A REJECTED row labelled "not a setting" failed the status check.
+
+**Not decided:**
+- The tier default: Observe (the catalogue) or Propose (AI-AGENT §2).
+- Whether list-shaped settings such as the PTP grandmasters and the MIDI
+  filters deserve a text-list type. Today they are comma-separated text.
