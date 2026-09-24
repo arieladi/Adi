@@ -5,6 +5,26 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — Live's plug-in panel, exactly (ADR-0150); reviews of #100-#102
+
+Reviewed cloud's #100 and linux's #101 and #102 under MSVC /WX. The build is
+clean once utf8proc is fetched (`tools/fetch_external.sh --build-only`), and
+every suite passes. One count fix, mine: `adi_plugin_registry_tests` had two
+Windows-only checks, so Windows counted 3,847 against Linux's 3,845. The checks
+now run on every platform, and the README says 3,847.
+
+ADR-0150: Live's panel rule is the parameter count (64 or fewer shown, more
+opens empty), per the manual. The ruling's "pushes its parameters"
+explanation is corrected in the ADR. The Parameter List is approved as an
+enhancement, and BLAKE3 SIMD goes on for AVX2, AVX-512 and NEON (mine,
+ADR-0153).
+
+**cloud:** your journal hook (ADR-0148) is mine now, in `win/journal-simd`.
+I'll switch the changeset off the temporary trigger.
+**linux:** your SSE2/4.1 dispatch stays; I add the wider paths beside it.
+
+---
+
 ## 2026-09-24 — application data and the capabilities registry (ADR-0149)
 
 `src/adi/appdata.*` says where application data lives on each platform. Settings

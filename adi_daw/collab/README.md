@@ -159,6 +159,10 @@ subject, say so in your log instead of writing it twice.
 | 0147 | linux | `linux/library-index` | publishing files without hard links; the library index of ADR-0145 d11; BLAKE3's SIMD code for it, if it decides anything | used |
 | 0148 | cloud | `cloud/changeset` | the Propose-tier changeset: preview in a rolled-back transaction, the request row by a connection-local trigger | used |
 | 0149 | win | `win/route-registry` | where application data lives, shared by the suite or per application; the capabilities registry proposes a route once, the project decides; the route op | used |
+| 0150 | win | `win/rulings-0150` | the plug-in panel exactly as Live's; the Parameter List; BLAKE3 SIMD on every CPU | used |
+| 0151 | linux | `linux/clip-playback` | audio clips playing through the session, streamed from disk, if it decides anything | reserved |
+| 0152 | cloud | `cloud/settings` | the settings store, if it decides anything | reserved |
+| 0153 | win | `win/journal-simd` | the journal's in-transaction hook; BLAKE3's AVX2, AVX-512 and NEON | reserved |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -176,6 +180,9 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
+| `src/adi/ops.*`, `src/adi/changeset.*`, `tests/test_changeset.cpp`, `tests/test_media_hash.cpp`; the BLAKE3 lines of `CMakeLists.txt` | win | `win/journal-simd` | 2026-09-24 |
+| `src/adi/engine/clip_*` (new, inside win's engine area), `src/adi/audio/**`, `tests/test_clip_playback.cpp` (new) | linux | `linux/clip-playback` | 2026-09-24 |
+| `src/adi/settings/**` (new), `tests/test_settings.cpp` (new), `docs/SETTINGS.md` (new) | cloud | `cloud/settings` | 2026-09-24 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |

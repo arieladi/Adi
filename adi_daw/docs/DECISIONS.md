@@ -9837,3 +9837,75 @@ open, and they are decided here.
    throughput figures, not a claim about cold USB-drive bandwidth.
 
 Measurements, defect plants and OS/build coverage are in `collab/linux.md`.
+
+
+---
+
+## ADR-0150 — The plug-in panel exactly as Live's, a searchable Parameter List beside Configure, and BLAKE3's SIMD on every CPU that has it — `DECIDED` (2026-09-24) — **MAKES ADR-0145 d1 EXACT; EXTENDS ADR-0147 d8**
+
+**Director's rulings** on the two questions ADR-0145 left open, with his
+screenshots of Live 12: Serum 2 opening empty with "To add plug-in parameters to
+this panel, click the Configure button", the same device after one parameter
+was added, and a Pro-Q 3 panel carrying thirty-six parameters.
+
+### Decisions
+
+1. **Strict parity, and Live's rule is the parameter count.** The Live 12
+   manual, §23.3.1 (p.460): "For plug-ins with up to 64 modifiable parameters, a
+   Live panel will represent all of the parameters as horizontal sliders.
+   Plug-ins that contain more than 64 parameters will open with an empty panel."
+   That is the rule ADI follows: **64 or fewer, all shown; more than 64, an empty
+   panel with the Configure hint.** The unfold button in the title bar shows and
+   hides the panel.
+
+   **A correction to the explanation that came with the ruling.** It described
+   the switch as whether a plug-in "pushes its parameters to the host", with
+   Pro-Q 3 unfolding and Serum 2 not. Live has no such switch. Serum 2 and
+   Pro-Q 3 both declare several hundred parameters, so both open empty. The
+   Pro-Q 3 panel in the screenshot lists its bands in the order someone touched
+   them (frequency, Q and gain first, then shape, slope and placement), which is
+   what Configure produces. The ruling's aim, Live's exact behaviour, is what is
+   built; the mechanism it named is recorded here so it is not built by mistake.
+2. **How parameters reach the panel, all of Live's routes** (§23.3.1.2, p.462-463):
+   - **Configure mode:** click a parameter in the plug-in's window to add it;
+     some plug-ins need the value changed. Drag to reorder; Delete removes, with
+     a warning when automation, clip envelopes or MIDI, key or macro mappings
+     use it.
+   - **Temporary entries:** adjusting a parameter in the plug-in window, outside
+     Configure, puts it in the automation, clip-envelope and X-Y choosers until
+     another is adjusted. Editing its automation or choosing it makes it
+     permanent.
+   - **Recording:** parameters automated while recording join the panel when
+     recording stops.
+   - **Mapping modes:** in MIDI, key or macro mapping mode, touching a parameter
+     adds it, selected, ready to map.
+   - The X-Y field with its two choosers heads the panel, as in the screenshots.
+
+   The configuration is per instance and **saved in the project**, and a
+   configured device can be saved as its default preset. That makes it project
+   state: a table and ops in a later minor, win's next step after this record.
+3. **The Parameter List, a director-approved enhancement** (ADR-0108 d2): a
+   button in the device header opens a searchable list of every parameter the
+   plug-in declares. Choosing one adds it to the panel, or opens its automation
+   lane. It solves the plug-in that does not report touches in its own window,
+   which the manual concedes exists ("certain plug-ins do not publish all of
+   their parameters"). It lists what the plug-in declares to the host. A
+   parameter a plug-in never declares cannot be added by any route, and the
+   list says how many it has.
+4. **BLAKE3's SIMD on every CPU that has it.** ADR-0147 d8 enabled SSE2 and
+   SSE4.1 with runtime dispatch and left AVX2, AVX-512 and NEON off because the
+   one machine that measured had none of them. The director's ruling is speed
+   on modern CPUs, so all of them go on: AVX2 and AVX-512 behind the same runtime
+   dispatch on x86-64, and NEON on arm64. win builds and measures it (ADR-0153).
+   AVX2 is measured on win's Ryzen 7 5700X3D. AVX-512 runs on CI's runners
+   through the official test vectors.
+5. **Appendix B's open list is cleaned up.** Two rows were already ruled when v0.6
+   listed them as open, as the director noticed: the event stream per bus
+   (ADR-0134 d2) and inactive tabs (ADR-0134 d1). Four more were ruled too and
+   come out with them: the historical-tab surface (ADR-0128), ADI Live as its own
+   application (ADR-0133), the DJ analysis engine (ADR-0145 d10), and the Pioneer
+   export licences, which are checked at fetch (ADR-0145 d10).
+6. **The closing line of the rulings**, "proceed with the schema changes
+   (ADR-0127) and the ASIO implementation", names finished work: schema 1.1
+   (ADR-0136), Collect and Export (ADR-0143), ASIO (ADR-0137). What remains of
+   ASIO is hearing it through the director's own interface driver.

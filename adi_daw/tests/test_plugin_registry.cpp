@@ -59,12 +59,21 @@ void testThePlatformDefaults() {
     check(daw.cache != daw.data && daw.config != daw.data, "config, data and cache are three places");
     check(appdata::pluginRegistryFile() == daw.data / "plugins.sqlite", "the registry lives in shared data");
     check(appdata::libraryIndexFile() == daw.data / "library.sqlite", "and so does the library index");
+    // The same number of checks on every platform: tools/test_all.sh compares
+    // the total with the README, and a platform-only check makes that total
+    // depend on where it ran (it did: 3,847 on Windows against 3,845).
 #if defined(_WIN32)
-    check(daw.config.string().find("Roaming") != std::string::npos || daw.config.string().find("APPDATA") != std::string::npos ||
-              daw.config.parent_path().filename() == "ADI",
-          "Windows: settings under %APPDATA%\\ADI");
-    check(daw.config.filename() == "ADI DAW" && dj.config.filename() == "aDiJ", "named as the products are");
+    const std::string vendor = "ADI";
+    const std::string dawName = "ADI DAW", djName = "aDiJ";
+#elif defined(__APPLE__)
+    const std::string vendor = "ADI";
+    const std::string dawName = "ADI DAW", djName = "aDiJ";
+#else
+    const std::string vendor = "adi";
+    const std::string dawName = "adi-daw", djName = "adij";
 #endif
+    check(daw.config.parent_path().filename() == vendor, "settings sit under the suite's folder: " + vendor);
+    check(daw.config.filename() == dawName && dj.config.filename() == djName, "named as the platform names them");
 }
 
 void testAdiHome() {
