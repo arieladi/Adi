@@ -9520,3 +9520,43 @@ confirms an earlier decision, that decision is named and nothing changes.
 which the portable build turned off (linux, #88) -- file hashing is the one
 place their speed would show; how many parameters the device view unfolds for
 a plugin with hundreds (Live's 64 is the starting point).
+
+---
+
+## ADR-0143 — Media op capture, copy-only collection and legacy extraction — `DECIDED` (2026-09-24)
+
+**Scope:** ADR-0127 d3-d4 and ADR-0136 d4. No schema change.
+
+1. Path-taking `media::importMedia` and `media::relinkMedia` perform file I/O
+   before submitting their ops. They capture the hash and paths in the payload;
+   the registered handlers only apply captured values. Undo/redo and replay do
+   not re-open media files (ADR-0021). Relative input paths and stored `rel_path`
+   are based on the open database's folder, never the working directory. The
+   database's SQLite filename supplies that stable base. Different filesystem
+   roots use `abs_path_hint`. Import of existing content returns its existing
+   id without creating an undoable duplicate. Unlink never deletes disk files
+   and refuses media still referenced by an audio clip or a frozen track; it
+   also refuses embedded legacy data, which must be extracted first.
+2. Collect and Export snapshots the input with SQLite's backup API, including
+   committed WAL data, into a private staging directory. Only the copy's media
+   rows change. Every staged media file is hashed after copying, and mismatches
+   stop the command with the offending filename. The copy is closed/checkpointed
+   before ZIP64 publication. Existing output files are refused, not overwritten.
+   Historical op payloads remain unchanged; collection relocates current media
+   rows, not the historical record. A later history replay may require relink.
+3. Legacy extraction streams ordered, contiguous blob chunks to staged files,
+   verifies their hashes, publishes collision-safe `audio/<orig_name>` paths,
+   and clears flags/deletes chunks in one SQLite transaction for all rows.
+   Blob rows without the embedded flag are extracted too. Existing files are
+   never overwritten. File publication uses same-filesystem hard links for
+   atomic no-clobber semantics; a filesystem that cannot provide them fails
+   explicitly. Normal failures roll back SQL and remove files this operation
+   created. SQLite and the filesystem are not one crash-atomic resource: a
+   process/power loss can leave unreferenced files, never committed references
+   to unverified or unpublished data. This is maintenance, not an embedding op
+   or a schema migration; it works on both 1.0 and upgraded files.
+4. This headless resolver tries the stored relative path, the project's audio/
+   basename, then the absolute hint, stopping on a hash mismatch. There is no
+   registered-folder/search-path configuration yet; that remains a later caller
+   responsibility. `adi_tool check` verifies external paths/hashes read-only;
+   the existing structural checker API keeps its no-filesystem default.

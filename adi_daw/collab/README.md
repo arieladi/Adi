@@ -152,7 +152,7 @@ subject, say so in your log instead of writing it twice.
 | 0140 | cloud | `cloud/snapshots` | history snapshots live in `history_snapshots`: `snapshots` is already the mixer-snapshot table | used |
 | 0141 | win | `win/vst3-gesture` | a knob moved inside a real VST3's window is one op; the mute and the echo guard each have their case | used |
 | 0142 | win | `win/vst3-state` | plugin state round-trips through the project; a preset picked in the plugin's window is one `device.loadState`; rows go on top of a chunk | used |
-| 0143 | linux | `linux/collect-export` | Collect and Export and the media ops (ADR-0127 d3-d4, ADR-0136 d4), if it decides anything | reserved |
+| 0143 | linux | `linux/collect-export` | Collect and Export and the media ops (ADR-0127 d3-d4, ADR-0136 d4), if it decides anything | used |
 | 0144 | cloud | `cloud/migrate` | how an older 1.x file is upgraded when opened for writing; read-only opens read missing tables as empty | used |
 | 0145 | win | `win/final-rulings` | the director's final rulings: Live's plugin blocks, 64 samples the smallest buffer, JUCE-only ASIO, a Pd editor on plugdata, hash-matched library sync, the repo move later | used |
 
