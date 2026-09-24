@@ -10697,3 +10697,81 @@ Five plants, each failing first as named checks:
 - An exponent that turns back at tension 1 failed "s-curve is monotonic … for
   every tension".
 - ln 999 in place of ln 1000 failed twelve golden rows.
+
+### Part two — automation read into the engine, not yet played (`cloud/curves`, second PR)
+
+9. **`rows::Model` gains `automationLanes` and `automationData`.**
+   - Each lane row is read whole, with its nullable min and max as optionals.
+   - Each stream arrives as its stored bytes, read through
+     `Store::getAutomationData`, the one place that addresses a lane's blob.
+   - Decoding is left to the engine's compiler, so what a bad point means is
+     decided once.
+10. **`AutomationProgram` is compiled off the audio thread, as MidiClips are
+    (ADR-0155).** Its inputs are the model, the tempo map and the session
+    rate. Once built it is immutable, and readers share it through a
+    `shared_ptr<const>`.
+    - **Which lanes compile:** each arrangement lane, meaning an owner of
+      `track` or `device` and the stream with no clip.
+    - **Placement:** points are in session samples. `time_base` 0 goes through
+      the tempo map, and `time_base` 1 from nanoseconds.
+    - **Values:** they stay in the lane's `value_domain`; mapping to a plugin's
+      normalised range belongs to playback.
+    - **A lane with no stream** reads its `default_value`.
+11. **Validation refuses a whole lane, never part of one, with a named
+    problem** (`automation_lanes#N: refused: point K: …`). Every point is
+    checked before any is kept, and the other lanes still compile. A lane is
+    refused for:
+    - times out of order;
+    - a value that is not finite;
+    - a value below `min_value` or above `max_value`, where set;
+    - a curve above 5;
+    - non-zero reserved bytes in a point;
+    - reserved header flag bits;
+    - a stream whose ns flag disagrees with the lane's `time_base`;
+    - a stream that is not a readable AAUT stream;
+    - a time before the project start, or beyond ADR-0155's 2^50 samples.
+
+    Two points at one time are a step, and allowed. A non-finite tension is
+    refused too, because the evaluator would otherwise read it silently as 0.
+12. **Reading a lane.**
+    - `valueAt(lane, sample)` is O(log n): a binary search for the first point
+      after the sample, then the segment through §6.3.2's `curveValue`.
+    - `fill(lane, first, stride, count, out)` writes into the caller's
+      buffer. With a forward stride it walks the points once; with a backward
+      one it falls back to `valueAt`.
+    - Both are noexcept and allocate nothing, and the test counts allocations.
+    - **Before the first point a lane reads its first value. At and after the
+      last point, its last value.**
+    - At a step, the later point's value holds from that sample on.
+13. **Reported, not played yet:**
+    - clip envelopes (`automation_data.clip_id` set), which never mix into
+      their lane's arrangement stream;
+    - lanes owned by `project`, `routing` or `clip`;
+    - tempo ramps, as ADR-0155 reports them: timing uses step tempos.
+
+    A disabled lane compiles and keeps `enabled = false`: whether that means
+    silence or the default value is playback's decision.
+14. **Not decided here: emitting parameter events.** User override, touch and
+    latch wait on the director's rulings, so the program is not yet wired into
+    the graph. That is the next mission, win's or linux's.
+
+**Tested** by `adi_automation_tests`, 39 checks:
+- ticks and nanoseconds placement at 44.1, 48, 96, 192, 384 and 768 kHz;
+- a tempo change moving a later point;
+- a step, and before, between and after the points;
+- every curve and tension through `curveValue`;
+- `fill` against `valueAt` at five strides, with zero allocations counted;
+- each refusal, beside a good lane that still compiles;
+- a bad point 97 of 100;
+- the not-yet-played reports;
+- the rows through a real store;
+- four threads reading one program while another compiles, clean under TSan
+  and under ASan+UBSan.
+
+Four plants, each failing first as named checks:
+- A lane half-accepted after a bad point failed "refused whole … times out of
+  order" and "a bad point 97 of 100 refuses the whole lane".
+- Ticks placed at a fixed 120 BPM failed "a tempo change moves a later point".
+- A vector copied inside `fill` failed "fill and valueAt allocate nothing".
+- `default_value` returned after the last point failed "at and after the last
+  point: the last value", and two more checks.

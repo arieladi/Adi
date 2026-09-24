@@ -439,6 +439,47 @@ Model readModel(const Store& store) {
               m.remarks.push_back(std::move(r));
           });
 
+    // Automation (ADR-0159): the lanes, then each stream through the Store's
+    // accessor, the one place that knows how a lane's blob is addressed.
+    query(m, db, "automation_lanes",
+          "SELECT id, owner_kind, owner_id, param_ref, param_name, time_base, value_domain, "
+          "       unit, default_value, min_value, max_value, enabled "
+          "FROM automation_lanes ORDER BY id",
+          [&](const SQLite::Statement& st) {
+              AutomationLane l;
+              l.id = st.getColumn(0).getInt64();
+              l.ownerKind = st.getColumn(1).getString();
+              l.ownerId = st.getColumn(2).getInt64();
+              l.paramRef = st.getColumn(3).getString();
+              l.paramName = st.getColumn(4).getString();
+              l.timeBase = st.getColumn(5).getInt64();
+              l.valueDomain = st.getColumn(6).getString();
+              l.unit = st.getColumn(7).getString();
+              l.defaultValue = st.getColumn(8).getDouble();
+              if (!st.getColumn(9).isNull()) l.minValue = st.getColumn(9).getDouble();
+              if (!st.getColumn(10).isNull()) l.maxValue = st.getColumn(10).getDouble();
+              l.enabled = flag(st, 11);
+              m.automationLanes.push_back(std::move(l));
+          });
+    std::vector<AutomationData> keys;
+    query(m, db, "automation_data",
+          "SELECT lane_id, clip_id FROM automation_data ORDER BY lane_id, IFNULL(clip_id, -1)",
+          [&](const SQLite::Statement& st) {
+              AutomationData d;
+              d.laneId = st.getColumn(0).getInt64();
+              d.clipId = optInt(st, 1);
+              keys.push_back(std::move(d));
+          });
+    for (AutomationData& d : keys) {
+        auto blob = store.getAutomationData(d.laneId, d.clipId);
+        if (!blob) {
+            m.problems.push_back("automation_data: lane " + std::to_string(d.laneId) + " could not be read");
+            continue;
+        }
+        d.blob = std::move(*blob);
+        m.automationData.push_back(std::move(d));
+    }
+
     // Notes come through the Store's blob accessors rather than a SELECT,
     // because ADR-0009's granularity rule lives there and this should not be a
     // second place that knows how an event stream is addressed.
