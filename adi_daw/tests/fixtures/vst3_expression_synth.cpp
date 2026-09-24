@@ -21,6 +21,15 @@
 //   Plain     IMidiMapping maps pitch bend on channel 0 only: a global bend,
 //             which is not an MPE receiver. Poly aftertouch drives pressure.
 //
+// ADR-0142: every variant also has a CHUNK -- a patch number and Drive -- and
+// two hidden switches for the state tests. Preset Trigger is the plugin's own
+// preset browser: a new patch, Drive moved with no gesture, then
+// restartComponent(kParamValuesChanged). Deferred Restart is the same notice
+// with nothing changed, as a plugin answering from its own timer sends it.
+// The patch is readable as a hidden, read-only parameter only so a test can
+// see it; it stands for what a real plugin keeps outside its parameter list.
+// Loading a chunk answers with restartComponent too, as real plugins do.
+//
 // Each voice is a sine at the note's pitch, with pressure as amplitude
 // (0.25 + 0.75 p) and timbre as a 3rd harmonic (0.05 + 0.95 t) -- chosen so a
 // dimension that never arrives still sounds, and reads "unchanged".
@@ -74,6 +83,11 @@ constexpr ParamID kRpnMsb = 500, kRpnLsb = 501, kDataEntry = 502;    ///< channe
 /// again when the deferred-echo switch is flipped (as a plugin's own timer
 /// would), which is the case the host's echo guard exists for.
 constexpr ParamID kDrive = 4000, kGestureTrigger = 4001, kDeferredEcho = 4002;
+constexpr ParamID kPresetTrigger = 4003, kPatch = 4004, kDeferredRestart = 4005;   // ADR-0142
+constexpr int32 kExtraParams = 6;
+constexpr double kPresetDrive7 = 0.45, kPresetDrive3 = 0.6;
+constexpr int32 kStateBytes = 16;   // 'ADS1', the patch, Drive
+constexpr char kStateMagic[4] = {'A', 'D', 'S', '1'};
 constexpr double kDriveDefault = 0.2, kDriveDragTarget = 0.7;
 constexpr int kDriveDragSteps = 40;
 
@@ -170,8 +184,35 @@ public:
     tresult PLUGIN_API getRoutingInfo(RoutingInfo&, RoutingInfo&) override { return kNotImplemented; }
     tresult PLUGIN_API activateBus(MediaType, BusDirection, int32, TBool) override { return kResultOk; }
     tresult PLUGIN_API setActive(TBool) override { return kResultOk; }
-    tresult PLUGIN_API setState(IBStream*) override { return kResultOk; }
-    tresult PLUGIN_API getState(IBStream*) override { return kResultOk; }
+    // ADR-0142. One override serves IComponent and IEditController alike: this
+    // class is both, so JUCE saves the same bytes twice and loads them twice.
+    tresult PLUGIN_API setState(IBStream* stream) override {
+        if (stream == nullptr) return kInvalidArgument;
+        unsigned char b[kStateBytes] = {};
+        int32 got = 0;
+        if (stream->read(b, kStateBytes, &got) != kResultOk || got != kStateBytes) return kResultFalse;
+        if (std::memcmp(b, kStateMagic, sizeof kStateMagic) != 0) return kResultFalse;
+        int32 patch = 0;
+        double drive = 0.0;
+        std::memcpy(&patch, b + 4, sizeof patch);
+        std::memcpy(&drive, b + 8, sizeof drive);
+        patch_ = patch;
+        drive_ = drive;
+        // What a real plugin does after a load: every value may have moved.
+        if (handler_ != nullptr) handler_->restartComponent(kParamValuesChanged);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getState(IBStream* stream) override {
+        if (stream == nullptr) return kInvalidArgument;
+        unsigned char b[kStateBytes] = {};
+        std::memcpy(b, kStateMagic, sizeof kStateMagic);
+        const int32 patch = patch_;
+        std::memcpy(b + 4, &patch, sizeof patch);
+        std::memcpy(b + 8, &drive_, sizeof drive_);
+        int32 put = 0;
+        return (stream->write(b, kStateBytes, &put) == kResultOk && put == kStateBytes) ? kResultOk
+                                                                                     : kResultFalse;
+    }
 
     // --- IAudioProcessor -----------------------------------------------------
     tresult PLUGIN_API setBusArrangements(SpeakerArrangement*, int32, SpeakerArrangement* outs,
@@ -209,20 +250,28 @@ public:
         if (variant_ == Variant::Plain) return 1;
         return 0;
     }
-    int32 PLUGIN_API getParameterCount() override { return baseParameterCount() + 3; }
+    int32 PLUGIN_API getParameterCount() override { return baseParameterCount() + kExtraParams; }
     tresult PLUGIN_API getParameterInfo(int32 index, ParameterInfo& info) override {
         if (index < 0 || index >= getParameterCount()) return kInvalidArgument;
         info = ParameterInfo{};
         char name[64];
         if (index >= baseParameterCount()) {
             const int32 k = index - baseParameterCount();
+            static constexpr ParamID ids[kExtraParams] = {kDrive, kGestureTrigger, kDeferredEcho,
+                                                          kPresetTrigger, kPatch, kDeferredRestart};
+            static constexpr const char* titles[kExtraParams] = {
+                "Drive", "Gesture Trigger", "Deferred Echo", "Preset Trigger", "Patch", "Deferred Restart"};
+            static constexpr const char* shorts[kExtraParams] = {"Drive", "Trigger", "Echo",
+                                                                 "Preset", "Patch", "Restart"};
             const bool drive = k == 0;
-            info.id = drive ? kDrive : (k == 1 ? kGestureTrigger : kDeferredEcho);
-            copy128(info.title, drive ? "Drive" : (k == 1 ? "Gesture Trigger" : "Deferred Echo"));
-            copy128(info.shortTitle, drive ? "Drive" : (k == 1 ? "Trigger" : "Echo"));
+            info.id = ids[k];
+            copy128(info.title, titles[k]);
+            copy128(info.shortTitle, shorts[k]);
             info.defaultNormalizedValue = drive ? kDriveDefault : 0.0;
             info.unitId = kRootUnitId;
-            info.flags = drive ? ParameterInfo::kCanAutomate : ParameterInfo::kIsHidden;
+            info.flags = drive ? ParameterInfo::kCanAutomate
+                               : (ids[k] == kPatch ? ParameterInfo::kIsHidden | ParameterInfo::kIsReadOnly
+                                                   : ParameterInfo::kIsHidden);
             return kResultOk;
         }
         if (index < 48) {
@@ -251,7 +300,9 @@ public:
     ParamValue PLUGIN_API normalizedParamToPlain(ParamID, ParamValue v) override { return v; }
     ParamValue PLUGIN_API plainParamToNormalized(ParamID, ParamValue v) override { return v; }
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
-        return id == kDrive ? drive_ : 0.0;
+        if (id == kDrive) return drive_;
+        if (id == kPatch) return patch_ / 127.0;
+        return 0.0;
     }
     tresult PLUGIN_API setParamNormalized(ParamID id, ParamValue v) override {
         if (id == kDrive) {
@@ -264,6 +315,19 @@ public:
                 hasPendingEcho_ = true;
                 if (handler_ != nullptr) handler_->performEdit(kDrive, v);
             }
+            return kResultOk;
+        }
+        if (id == kPresetTrigger && v > 0.5) {
+            // The user picks a preset in the plugin's own browser: a new patch,
+            // and Drive moved with no gesture and no performEdit. The plugin
+            // only says, afterwards, that every value may have changed.
+            patch_ = patch_ == 7 ? 3 : 7;
+            drive_ = patch_ == 7 ? kPresetDrive7 : kPresetDrive3;
+            if (handler_ != nullptr) handler_->restartComponent(kParamValuesChanged);
+            return kResultOk;
+        }
+        if (id == kDeferredRestart && v > 0.5) {
+            if (handler_ != nullptr) handler_->restartComponent(kParamValuesChanged);
             return kResultOk;
         }
         if (id == kDeferredEcho && v > 0.5 && hasPendingEcho_ && handler_ != nullptr) {
@@ -467,6 +531,7 @@ private:
     std::atomic<uint32> refs_{1};
     IComponentHandler* handler_ = nullptr;   ///< the host's, held with a reference
     double drive_ = kDriveDefault;
+    int32 patch_ = 0;                        ///< ADR-0142: state no parameter carries
     bool dragging_ = false;
     double pendingEcho_ = 0.0;
     bool hasPendingEcho_ = false;

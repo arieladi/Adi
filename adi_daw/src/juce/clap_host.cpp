@@ -546,7 +546,16 @@ bool ClapDevice::loadState(const std::string& role, const std::vector<std::uint8
     if (plugin_ == nullptr || stateExt_ == nullptr || stateExt_->load == nullptr ||
         role != "chunk") return false;
     VecIn src(b);
-    return stateExt_->load(plugin_, &src.is);
+    // ADR-0142: a plugin commonly answers a load with params.rescan(VALUES);
+    // that answer is not the user's boundary. Both calls are main-thread.
+    if (glue_ != nullptr) glue_->muteStateSignals();
+    const bool ok = stateExt_->load(plugin_, &src.is);
+    if (glue_ != nullptr) glue_->unmuteStateSignals();
+    return ok;
+}
+
+std::uint64_t ClapDevice::stateEpoch() const noexcept {
+    return glue_ != nullptr ? glue_->stateSignals() : 0;
 }
 
 std::int64_t ClapDevice::tailSamples() const noexcept {
@@ -1127,6 +1136,13 @@ ClapHostGlue::ClapHostGlue() {
     // changed.
     notePortsExt_.supported_dialects = &ClapHostGlue::noteDialects;
     notePortsExt_.rescan             = &ClapHostGlue::noteRescan;
+    // ADR-0142: how a plugin tells us its state changed outside its
+    // parameter events. Without these a preset loaded in a CLAP's own
+    // browser had no way to reach the undo log.
+    hostParamsExt_.rescan        = &ClapHostGlue::paramsRescan;
+    hostParamsExt_.clear         = &ClapHostGlue::paramsClear;
+    hostParamsExt_.request_flush = &ClapHostGlue::paramsRequestFlush;
+    hostStateExt_.mark_dirty     = &ClapHostGlue::stateMarkDirty;
 }
 
 const void* ClapHostGlue::getExtension(const clap_host_t* h, const char* id) {
@@ -1135,6 +1151,8 @@ const void* ClapHostGlue::getExtension(const clap_host_t* h, const char* id) {
     if (std::strcmp(id, CLAP_EXT_LATENCY) == 0)     return &self->latencyExt_;
     if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0) return &self->portsExt_;
     if (std::strcmp(id, CLAP_EXT_NOTE_PORTS) == 0)  return &self->notePortsExt_;
+    if (std::strcmp(id, CLAP_EXT_PARAMS) == 0)      return &self->hostParamsExt_;
+    if (std::strcmp(id, CLAP_EXT_STATE) == 0)       return &self->hostStateExt_;
     // Returning nullptr for an unknown id is the contract, and a host that
     // lied here would have plugins calling into functions it does not
     // implement.
@@ -1185,6 +1203,39 @@ void ClapHostGlue::noteRescan(const clap_host_t* h, std::uint32_t flags) {
     if ((flags & CLAP_NOTE_PORTS_RESCAN_ALL) != 0)
         static_cast<ClapHostGlue*>(h->host_data)
             ->noteRescans_.fetch_add(1, std::memory_order_release);
+}
+
+void ClapHostGlue::stateSignal() noexcept {
+    if (muteDepth_ > 0) mutedStateSignals_.fetch_add(1, std::memory_order_release);
+    else stateSignals_.fetch_add(1, std::memory_order_release);
+}
+
+void ClapHostGlue::paramsRescan(const clap_host_t* h, clap_param_rescan_flags flags) {
+    // VALUES: the values moved without events (a preset). ALL: the list
+    // itself may have changed, which also means the values did. TEXT and
+    // INFO alone are cosmetic. REPORT AND RETURN: the glue snapshots on the
+    // message thread, at its next drain. The parameter LIST is not re-read
+    // here -- ALL is legal only while the plugin is deactivated, and a
+    // re-read under a live glue would move every index it holds.
+    if (h == nullptr) return;
+    if ((flags & (CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_ALL)) != 0)
+        static_cast<ClapHostGlue*>(h->host_data)->stateSignal();
+}
+
+void ClapHostGlue::paramsClear(const clap_host_t*, clap_id, clap_param_clear_flags) {
+    // Automation and modulation references to a parameter the plugin is
+    // about to remove. We hold none yet that a plugin could invalidate.
+}
+
+void ClapHostGlue::paramsRequestFlush(const clap_host_t* h) {
+    if (h == nullptr) return;
+    static_cast<ClapHostGlue*>(h->host_data)
+        ->flushRequests_.fetch_add(1, std::memory_order_release);
+}
+
+void ClapHostGlue::stateMarkDirty(const clap_host_t* h) {
+    if (h == nullptr) return;
+    static_cast<ClapHostGlue*>(h->host_data)->stateSignal();
 }
 
 void ClapHostGlue::registerPlugin(const clap_plugin_t* p) {
@@ -1395,6 +1446,7 @@ std::unique_ptr<DeviceInstance> ClapHost::makeDevice(const ClapPluginRef& ref,
     }
     glue_.registerPlugin(p);
     auto dev = std::make_unique<ClapDevice>(p, id);
+    dev->setGlue(&glue_);
     dev->prepare(sampleRate, blockSize);
     return dev;
 }

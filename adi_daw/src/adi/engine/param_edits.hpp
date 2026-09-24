@@ -44,15 +44,23 @@ public:
     void expectEcho(std::int64_t deviceId, std::int32_t paramIndex, double value,
                     std::int64_t nowMs);
     std::size_t drain(std::int64_t nowMs, std::vector<ParamEdit>& out);
+    /// ADR-0142: the drain for an interval in which the plugin signalled a
+    /// state change (a preset load). Explicit gestures that END in it are
+    /// still edits; every ungestured edit open at the end of it is ABSORBED:
+    /// no edit, `last` moves to where it went, and the state snapshot the
+    /// caller takes next carries the change.
+    std::size_t drainAbsorbing(std::int64_t nowMs, std::vector<ParamEdit>& out);
     void setQuietMs(std::int64_t ms);
     void setEchoTtlMs(std::int64_t ms);
     void setEchoTolerance(double tol);
     struct Stats {
         std::int64_t pushed = 0, dropped = 0, edits = 0, implicitEdits = 0,
                      echoesSwallowed = 0, guardsExpired = 0, strayBegins = 0,
-                     strayEnds = 0, unseeded = 0;
+                     strayEnds = 0, unseeded = 0, absorbed = 0;
     };
     // Consumer snapshot; the returned reference is refreshed by the next call.
+    // `pushed` and `dropped` are the producer's, copied in only WHEN this is
+    // called: a pointer held across pushes reads stale values (ADR-0141).
     // pushed counts accepted events. dropped counts rejected push attempts.
     [[nodiscard]] const Stats& stats() const noexcept;
 
@@ -65,6 +73,7 @@ private:
     };
     using Key = std::pair<std::int64_t, std::int32_t>;
     void close(const Key&, Parameter&, std::vector<ParamEdit>&);
+    std::size_t drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out, bool absorb);
     std::vector<ParamEvent> ring_; // one additional sentinel slot
     std::atomic<std::size_t> read_{0}, write_{0};
     // Only the producer writes these counters; no contended RMW or retry loop.

@@ -17,6 +17,8 @@
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 
+#include <cmath>
+#include <map>
 #include <SQLiteCpp/SQLiteCpp.h>
 
 #include <cstdio>
@@ -86,10 +88,17 @@ public:
     bool loadState(const std::string& role, const std::vector<std::uint8_t>& b) override {
         statesSeen.push_back(role);
         lastState = b;
-        return role == "chunk";   // a plugin that knows one role
+        if (role != "chunk") return false;   // a plugin that knows one role
+        values["gain"] = 0.5;                // and whose chunk carries gain at 0.5
+        return true;
     }
-    bool setParam(const std::string& paramId, const device::ParamValue&) override {
+    [[nodiscard]] device::ParamValue getParam(const std::string& paramId) const noexcept override {
+        const auto it = values.find(paramId);
+        return device::ParamValue::fromNormalized(it == values.end() ? 0.0 : it->second);
+    }
+    bool setParam(const std::string& paramId, const device::ParamValue& v) override {
         paramsSet.push_back(paramId);
+        values[paramId] = v.normalized;
         return true;
     }
 
@@ -102,6 +111,7 @@ public:
     std::vector<std::string> statesSeen;
     std::vector<std::uint8_t> lastState;
     std::vector<std::string> paramsSet;
+    std::map<std::string, double> values;
 
 private:
     device::DeviceIdentity id_;
@@ -508,7 +518,7 @@ void testRefreshFollowsTheRows() {
 
 void testStateAndTheMirror() {
     const adi::test::TempDirectory scratch("session", "state");
-    section("SPEC 7.1 -- state loads first; the parameter mirror is the fallback, not a second pass");
+    section("SPEC 7.1, ADR-0142 -- state loads first; a row the chunk disagrees with is newer, and goes on top");
     auto store = makeProject(scratch.path() / "p.adi");
     if (!store) return;
 
@@ -520,7 +530,8 @@ void testStateAndTheMirror() {
     commits(j, r, "Warm out");
     r.opType = "device.insert";
     r.payload = {{"id", 100}, {"chain", 10}, {"ord", 0}, {"ref", 1}, {"name", "Warm"},
-                 {"params", nlohmann::json::array({{{"param", "gain"}, {"norm", 0.5}}})},
+                 {"params", nlohmann::json::array({{{"param", "gain"}, {"norm", 0.5}},
+                                                   {{"param", "mix"}, {"norm", 0.8}}})},
                  {"state", nlohmann::json::array({{{"role", "chunk"}, {"hash", "h1"}},
                                                   {{"role", "controller"}, {"hash", "h1"}}})}};
     commits(j, r, "Warm back with state and a mirror");
@@ -550,10 +561,16 @@ void testStateAndTheMirror() {
     eqi(s.stats().statesLoaded, 1, "one role was accepted (the fake knows 'chunk')");
     check(mentions(s.problems(), "devices#100 (Warm): the plugin refused its 'controller' state"),
           "the refused role is named");
-    check(warm->paramsSet.empty(), "Warm's mirror was NOT applied on top of its state");
+    // ADR-0142: the chunk carries gain at 0.5, as the row does -- not pushed.
+    // The mix row disagrees with it, so it is an edit made after the chunk
+    // was taken, and it goes on top.
+    check(warm->paramsSet.size() == 1 && warm->paramsSet[0] == "mix",
+          "Warm: only the row its chunk disagrees with was pushed on top of its state");
+    check(std::fabs(warm->getParam("mix").normalized - 0.8) < 1e-9, "Warm's mix is the row's 0.8");
+    eqi(s.stats().paramsMatched, 1, "the row the chunk agreed with is counted as matched");
     check(off->paramsSet.size() == 2 && off->paramsSet[0] == "gain" && off->paramsSet[1] == "mix",
           "Off, with no state, got its mirror");
-    eqi(s.stats().paramsApplied, 2, "counted");
+    eqi(s.stats().paramsApplied, 3, "counted: Warm's mix and Off's two");
 }
 
 void testAProjectWithoutAMasterIsRefusedNotCrashed() {

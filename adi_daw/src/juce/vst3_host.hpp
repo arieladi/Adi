@@ -158,8 +158,14 @@ public:
 
     /// Set by the same notification. A change of parameters, programs or
     /// anything else the plugin declares dirty (SPEC 7.3's boundary list).
-    [[nodiscard]] std::uint64_t stateEpoch() const noexcept {
+    /// Not moved by our own `loadState` or `setParam` (ADR-0142).
+    [[nodiscard]] std::uint64_t stateEpoch() const noexcept override {
         return stateEpoch_.load(std::memory_order_acquire);
+    }
+    /// The boundaries our own load or set caused, and which were therefore
+    /// not counted in `stateEpoch` -- how a test sees the mute engage.
+    [[nodiscard]] std::uint64_t mutedStateSignals() const noexcept {
+        return mutedStateSignals_.load(std::memory_order_acquire);
     }
 
     /// Whether THIS instance can carry per-note expression.
@@ -286,6 +292,7 @@ private:
 
     std::atomic<std::uint64_t> latencyEpoch_{0};
     std::atomic<std::uint64_t> stateEpoch_{0};
+    std::atomic<std::uint64_t> mutedStateSignals_{0};
     std::int32_t maxFrames_ = 0;
     std::int32_t channels_ = 2;
     double sampleRate_ = 0.0;

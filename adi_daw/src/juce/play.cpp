@@ -23,6 +23,7 @@
 // unless `--tone` pushes something into a track, or a device makes sound of
 // its own.
 
+#include "adi/engine/param_ops.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
 #include "adi/store_rows.hpp"
@@ -110,6 +111,7 @@ struct Options {
     bool dry = false;
     bool list = false;
     bool fixture = false;
+    bool saveState = false;   // ADR-0142
     std::string deviceType;   // "Windows Audio (Exclusive Mode)", "DirectSound", "CoreAudio"...
     std::string deviceName;
     std::vector<std::string> searchDirs;
@@ -119,14 +121,17 @@ int usage() {
     std::printf(
         "adi_play <project.adi> [--block N] [--rate HZ] [--seconds S] [--resize M]\n"
         "                       [--tone [TRACK]] [--type DEVICE-TYPE] [--device NAME]\n"
-        "                       [--search DIR]... [--fixture] [--dry]\n"
+        "                       [--search DIR]... [--fixture] [--dry] [--save-state]\n"
         "adi_play --list [--search DIR]... [--fixture]\n"
         "  Opens a project, resolves its devices, plays it through the default audio\n"
         "  device at the granted block size. --resize changes the block size half way\n"
         "  through the run without reloading a plugin (ADR-0122). --tone pushes a 220 Hz\n"
         "  sine into TRACK's chain (default: the first non-master track). --type picks a\n"
         "  device type: ASIO (Windows, ADR-0137), \"Windows Audio (Exclusive Mode)\" or\n"
-        "  \"DirectSound\" exercise a real block-size change; WASAPI shared grants its own period.\n");
+        "  \"DirectSound\" exercise a real block-size change; WASAPI shared grants its own period.\n"
+        "  --save-state opens the project for writing and, after the run, writes every\n"
+        "  loaded plugin's chunk the project lacks or that differs, as one undoable\n"
+        "  transaction (ADR-0142); the next run reports it under 'states'.\n");
     return 2;
 }
 
@@ -148,6 +153,7 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--dry")     o.dry = true;
         else if (a == "--list")    o.list = true;
         else if (a == "--fixture") o.fixture = true;
+        else if (a == "--save-state") o.saveState = true;
         else if (a == "--help" || a == "-h") return false;
         else if (!a.empty() && a[0] == '-') { std::printf("unknown option %s\n", a.c_str()); return false; }
         else o.file = a;
@@ -181,6 +187,8 @@ void report(const adi::engine::Session& s, const adi::device::JuceDeviceLoader& 
                 n(loader.stats().vst3).c_str(), n(loader.stats().clap).c_str(),
                 n(loader.stats().unhosted).c_str(), n(loader.stats().notFound).c_str(),
                 n(loader.stats().failed).c_str(), n(loader.stats().scans).c_str());
+    std::printf("  states   %s loaded; parameter rows %s applied on top, %s already matched (ADR-0142)\n",
+                n(st.statesLoaded).c_str(), n(st.paramsApplied).c_str(), n(st.paramsMatched).c_str());
     for (std::size_t i = 0; i < s.entryCount(); ++i) {
         const adi::engine::Session::Entry& e = s.entryAt(i);
         std::printf("    devices#%s  track %s  %-24s %s%s\n", n(e.deviceId).c_str(),
@@ -195,6 +203,40 @@ void report(const adi::engine::Session& s, const adi::device::JuceDeviceLoader& 
 }
 
 }  // namespace
+
+/// ADR-0142: --save-state. Every loaded device's chunk, where the project has
+/// none or the plugin's now differs, written as ONE transaction of
+/// `device.loadState` -- the save a UI will do, through the same glue.
+int saveStates(adi::engine::Session& session, adi::Store& store) {
+    adi::engine::ParamOps ops;   // after the session: its devices outlive the glue
+    ops.attachSession(session);
+    std::vector<adi::OpRequest> out;
+    for (std::size_t i = 0; i < session.entryCount(); ++i) {
+        const adi::engine::Session::Entry& e = session.entryAt(i);
+        if (ops.isAttached(e.deviceId)) ops.snapshot(e.deviceId, 0, out);
+    }
+    std::int64_t chunks = 0;
+    for (const adi::OpRequest& r : out)
+        if (r.opType == "device.loadState") ++chunks;
+    if (out.empty()) {
+        std::printf("  state    nothing to save: every chunk is already in the project\n");
+        return 0;
+    }
+    std::string err;
+    if (!ops.writeBlobs(store, err)) {
+        std::printf("\nFAILED -- writing state_blobs: %s\n", err.c_str());
+        return 1;
+    }
+    adi::OpJournal journal(store);
+    const adi::CommitResult res = journal.commit(out);
+    if (!res.ok) {
+        std::printf("\nFAILED -- committing the state: %s\n", res.error.c_str());
+        return 1;
+    }
+    std::printf("  state    saved %s chunk(s) in one transaction (%s op(s)); the next run loads them\n",
+                n(chunks).c_str(), n(static_cast<std::int64_t>(out.size())).c_str());
+    return 0;
+}
 
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -226,7 +268,7 @@ int main(int argc, char** argv) {
     }
 
     adi::StoreError se = adi::StoreError::Ok;
-    auto store = adi::Store::open(o.file, se, /*readOnly=*/true);
+    auto store = adi::Store::open(o.file, se, /*readOnly=*/!o.saveState);
     if (!store) {
         std::printf("FAILED -- cannot open %s (store error %d)\n", o.file.c_str(), static_cast<int>(se));
         return 1;
@@ -257,6 +299,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (o.dry) {
+        if (o.saveState && saveStates(session, *store) != 0) return 1;
         std::printf("\nok -- loaded and reported; --dry opens no device.\n");
         return 0;
     }
@@ -280,6 +323,7 @@ int main(int argc, char** argv) {
     if (initErr.isNotEmpty() || mgr.getCurrentAudioDevice() == nullptr) {
         std::printf("\nno audio device on this machine -- loaded and reported; nothing to open.%s%s\n",
                     initErr.isNotEmpty() ? " " : "", initErr.toRawUTF8());
+        if (o.saveState && saveStates(session, *store) != 0) return 1;
         return 0;
     }
     juce::AudioDeviceManager::AudioDeviceSetup setup = mgr.getAudioDeviceSetup();
@@ -384,6 +428,7 @@ int main(int argc, char** argv) {
         std::printf("\nFAILED -- the driver changed its block size and the session saw no format change.\n");
         return 1;
     }
+    if (o.saveState && saveStates(session, *store) != 0) return 1;
     if (o.resize > 0 && resizeExercised)
         std::printf("  resize    exercised: a new graph at the new size on the same instances (ADR-0122 d6)\n");
     std::printf("\nok -- %s blocks through the session, %s graph(s), nothing reloaded.\n",

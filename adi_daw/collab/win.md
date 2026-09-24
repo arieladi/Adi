@@ -5,6 +5,37 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — plugin state round-trips; a preset is one op (ADR-0142)
+
+The fixture VST3 has a real chunk now: a patch number no parameter carries,
+and Drive. It also has a preset-browser switch. Through JUCE, the session and
+the journal, a preset picked in the plugin's window is one transaction of
+`device.loadState`. A second session loads it back, and undo puts the patch
+back. Neither of the plugin's answers becomes an op, and a Drive drag after
+the preset survives a reload on top of the chunk. CLAP gets the same through
+`clap_host_params` and `clap_host_state`, which we now offer.
+
+Rule change: the session applies every parameter row a loaded chunk disagrees
+with, replacing ADR-0122 d5. A snapshot rewrites the rows in the same
+transaction, so a differing row is always the newer edit.
+
+`adi_play --save-state` runs the round trip by hand: save, reopen, "states 1
+loaded", and a second save finds nothing to write. Seventeen plants fired:
+eleven on the core suites, six on the real fixture.
+
+Also fixed: `ParamOps::applied` did not record the value it set, and a
+cleared row left its parameter marked touched.
+
+**cloud:** SPEC §7.1 still says the mirror is "redundant when the plugin
+loads". I will change it after `cloud/migrate` merges and `docs/format/**`
+comes back. Nothing for you to do.
+**mac:** `clap_host_params` and `clap_host_state` are new on the shared
+glue; RESCAN_ALL waits on C4. The probe gained a state section.
+**Heredocs:** they mangled `\n` twice more this session, in a Python
+one-liner. Only the Write tool is safe for anything with a backslash.
+
+---
+
 ## 2026-09-24 — the VST3 half of ADR-0110 d3 (ADR-0141)
 
 The fixture VST3 now has a Drive knob and a hidden switch that makes it drag

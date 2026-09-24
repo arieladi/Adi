@@ -223,6 +223,8 @@ private:
 /// `DeviceNode` wraps either without knowing which. That is ADR-0052 decision
 /// 4 holding — hybrid tracks, modulation, suspension and delay compensation
 /// exist once, against `engine::Node`.
+class ClapHostGlue;
+
 class ClapDevice final : public DeviceInstance {
 public:
     /// Takes an already-created plugin. Ownership: `destroy()` is called on
@@ -259,6 +261,12 @@ public:
     /// Read the plugin's parameter list. Called at construction and again when
     /// the plugin asks for a rescan.
     void rescanParams();
+
+    /// ADR-0142. The host this plugin was created against, for its
+    /// state-signal count. `ClapHost::makeDevice` sets it; a device built
+    /// by hand without one reports 0 and never signals.
+    void setGlue(ClapHostGlue* glue) noexcept { glue_ = glue; }
+    [[nodiscard]] std::uint64_t stateEpoch() const noexcept override;
 
 private:
     /// What the plugin declares RIGHT NOW, asked rather than remembered.
@@ -340,6 +348,7 @@ private:
     const clap_plugin_t* plugin_ = nullptr;
     const clap_plugin_params_t* paramsExt_ = nullptr;
     const clap_plugin_state_t* stateExt_ = nullptr;
+    ClapHostGlue* glue_ = nullptr;   ///< ADR-0142; not owned
     const clap_plugin_tail_t* tailExt_ = nullptr;
     const clap_plugin_latency_t* latencyExt_ = nullptr;
 
@@ -496,6 +505,27 @@ public:
         return noteRescans_.load(std::memory_order_acquire);
     }
 
+    /// ADR-0142: `clap_host_params.rescan` with VALUES or ALL, and
+    /// `clap_host_state.mark_dirty` -- a plugin saying its state changed
+    /// outside its parameter events. SHARED by every plugin this glue serves
+    /// (ADR-0123 C4); each `ClapDevice` reports it as its `stateEpoch`.
+    [[nodiscard]] std::uint64_t stateSignals() const noexcept {
+        return stateSignals_.load(std::memory_order_acquire);
+    }
+    /// Signals that arrived inside our own `loadState`, and were not counted.
+    [[nodiscard]] std::uint64_t mutedStateSignals() const noexcept {
+        return mutedStateSignals_.load(std::memory_order_acquire);
+    }
+    /// `clap_host_params.request_flush` calls. Counted, not yet answered:
+    /// before ADR-0142 a plugin could not ask at all.
+    [[nodiscard]] std::uint64_t flushRequests() const noexcept {
+        return flushRequests_.load(std::memory_order_acquire);
+    }
+    /// MAIN THREAD. Our own `loadState` brackets itself with these, so the
+    /// rescan a plugin answers a load with is not taken for the user's.
+    void muteStateSignals() noexcept { ++muteDepth_; }
+    void unmuteStateSignals() noexcept { if (muteDepth_ > 0) --muteDepth_; }
+
     /// True when a plugin deferred work to the main thread and nothing has
     /// run it yet.
     [[nodiscard]] bool mainThreadWorkPending() const noexcept {
@@ -524,11 +554,22 @@ private:
     static bool portsRescanSupported(const clap_host_t*, std::uint32_t flag);
     static std::uint32_t noteDialects(const clap_host_t*);
     static void noteRescan(const clap_host_t*, std::uint32_t flags);
+    static void paramsRescan(const clap_host_t*, clap_param_rescan_flags flags);
+    static void paramsClear(const clap_host_t*, clap_id, clap_param_clear_flags);
+    static void paramsRequestFlush(const clap_host_t*);
+    static void stateMarkDirty(const clap_host_t*);
+    void stateSignal() noexcept;
     static void requestRestart(const clap_host_t*);
     static void requestProcess(const clap_host_t*);
     static void requestCallback(const clap_host_t*);
 
     clap_host_t host_{};
+    clap_host_params_t      hostParamsExt_{};   ///< ADR-0142
+    clap_host_state_t       hostStateExt_{};    ///< ADR-0142
+    std::atomic<std::uint64_t> stateSignals_{0};
+    std::atomic<std::uint64_t> mutedStateSignals_{0};
+    std::atomic<std::uint64_t> flushRequests_{0};
+    int muteDepth_ = 0;                          ///< main thread only
     clap_host_latency_t     latencyExt_{};
     clap_host_audio_ports_t portsExt_{};
     clap_host_note_ports_t  notePortsExt_{};
