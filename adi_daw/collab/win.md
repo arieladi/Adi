@@ -5,6 +5,39 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — cloud's ADR-0159 reviewed; FL Studio backlog (ADR-0160); working alone
+
+**Availability changed (director):** cloud receives no new missions. mac
+returns 2026-09-27, not the 26th. linux (Codex) returns after 2026-10-01.
+Until the 27th, win works alone. The handoff list below still stands, with
+mac's date moved.
+
+**Reviewed.** #116 (curve formulas) and #117 (automation read into the
+engine), on c43edc6: MSVC `/WX` clean, the JUCE tree clean, 4437 checks
+across 46 suites. Nothing to fix. cloud's temporary branch
+`cloud/curves-automation` held only #117's pre-rebase commit, and its proxy
+could not delete it.
+
+**ADR-0160, the director's backlog request.** Make Unique and a ghost-note
+focus switch, checked against the FL guide in `reference/`, Image-Line's
+online manual, Live 12 §10.8.1 and Cubase pp. 272 and 1142. What the checking
+changed:
+- Linked clips were credited to "both", but Live has none. The FEATURES row
+  and the schema comment are corrected.
+- Make Unique is one-way, not a toggle. It ships with linked clips at P2.
+- Live's Focus Mode already switches clips on a click on a gray note. That is
+  the parity default, and FL's double right-click becomes an FL-style mouse
+  binding, because ADI's right-click opens a menu.
+- `clip.makeUnique` joins OPS.md: 165 ops.
+
+**Next, alone:** automation emission over ADR-0159's program. The user
+override rule is still the director's to give. Until he does, the emitter
+keeps override as one isolated policy, defaulting to Live's (a touched
+parameter stops following its lane until re-enabled), so a different ruling
+changes one function.
+
+---
+
 ## 2026-09-24 — review of #111, #112, #113; the held-note fix (ADR-0158)
 
 **Where things stand.** linux (Codex) is out of tokens until 2026-10-01 and

@@ -10775,3 +10775,64 @@ Four plants, each failing first as named checks:
 - A vector copied inside `fill` failed "fill and valueAt allocate nothing".
 - `default_value` returned after the last point failed "at and after the last
   point: the last value", and two more checks.
+
+---
+
+## ADR-0160 — From FL Studio: Make Unique ships with linked clips at P2, and a ghost-note focus switch joins layered editing — `DECIDED` (2026-09-25) — **DIRECTOR'S BACKLOG ADDITIONS**
+
+**Director's instruction:** add FL Studio's *Make Unique* and a *Ghost Channel
+Quick-Switch* to the backlog, confirm that linked clips stay at P2, and log
+both for the UI and editing phase without stopping current work. Checked
+against sources:
+- the FL Studio 20 getting-started guide in `reference/DOCS/DAWs/FL_Studio_20`;
+- Image-Line's online manual (*The Playlist*, *Piano roll*), because the guide
+  documents neither command;
+- Live 12 §10.8.1 and Cubase Pro 15 pp. 272 and 1142.
+
+### Decisions
+
+1. **Linked clips stay P2.** `clips.alias_of` has carried them since v1.0, and
+   `clip.setAlias` is a P2 op. The engine plays no alias today and reports one
+   as a problem (ADR-0155).
+   - *Correction:* FEATURES.md credited linked clips to "both", and the schema
+     comment said "Ableton linked clips". Live has no linked clips. The
+     feature is Cubase's *shared copies*, and FL's model, where every Playlist
+     clip is an instance of its pattern. Both texts are corrected; only the
+     schema comment changed, not the DDL.
+2. **Make Unique is one op, `clip.makeUnique`, and it ships with linked clips,
+   never after them.** Aliasing without a way out is the feature half-built:
+   the first "edit one, change all" surprise needs its escape in the same
+   release.
+   - **What it does:** copies the source clip's content streams and settings
+     into the clip and clears `alias_of`. An audio clip keeps the same media
+     file, as FL's *Make unique* does.
+   - **The inverse** is captured: it restores the link and drops the copies.
+   - **No schema change.** The op is added to OPS.md (165 ops).
+   - **Not a toggle,** as the request put it. It is one-way; undo re-links, and
+     `clip.setAlias` links again deliberately. A toggle would have to invent
+     which source to re-link to.
+   - **Cubase:** *Edit > Functions > Convert to Real Copy*.
+   - **FL's *Make unique as sample*,** a new audio file on disk, is ADI's
+     `clip.consolidate`, not this op.
+   - **FL's *Select all similar Clips*,** which selects every instance of a
+     source, comes with it as UI.
+3. **The ghost-note switch is Live's click, with FL's gesture as a binding.**
+   - **Where it lives:** ADR-0047 d2's layered editing shows several clips and
+     tracks in one note editor. It is now a FEATURES row at P2, because
+     ADR-0047 never gave it a priority, and the switch goes with it.
+   - **The parity gesture:** Live 12's Focus Mode already has the feature: the
+     inactive clips' notes are gray, and clicking one of them switches editing
+     to that clip. Parity (FEATURES §13) requires that gesture, so a click on
+     a background note is the default.
+   - **FL's gesture:** a double right-click, or the X1 mouse button, on a
+     ghost note in the same pattern. It cannot be the default, because ADI's
+     right-click opens a context menu, as Live's does. The first right-click
+     would open the menu. So FL's gesture is a binding in an FL-style mouse
+     preset, beside ADR-0125's Live, Cubase and Bitwig presets, and the
+     context menu of a background note offers the same switch.
+   - **Scope:** rendering and hit-testing only, no schema, as ADR-0047 d2
+     said.
+   - **Two meanings of "ghost".** ANOT's `ghost` flag (bit 4) is note data.
+     This switch is about display, and never reads or sets that flag.
+4. **Nothing is built now.** These are backlog rows for the UI and editing
+   phase (step 7 on). Work in progress is not paused for them.
