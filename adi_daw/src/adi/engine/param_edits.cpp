@@ -89,6 +89,9 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             ++stats_.guardsExpired;
         }
     }
+    // ADR-0154: this drain's last touch, and whether it was a gesture's.
+    std::int32_t touched = -1;
+    bool touchedExplicit = false;
     auto r = read_.load(std::memory_order_relaxed);
     // Snapshot the producer boundary: a busy producer cannot prolong this drain.
     const auto end = write_.load(std::memory_order_acquire);
@@ -98,6 +101,8 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
         auto& p = parameters_[key];
         switch (event.kind) {
         case ParamEventKind::Begin:
+            touched = event.paramIndex;
+            touchedExplicit = true;
             if (p.open) {
                 ++stats_.strayBegins;
             } else {
@@ -118,6 +123,8 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
                 ++stats_.echoesSwallowed;
                 break;
             }
+            touched = event.paramIndex;
+            touchedExplicit = p.open && !p.implicit;
             if (!p.open) {
                 p.open = true;
                 p.implicit = true;
@@ -135,6 +142,9 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
         r = r + 1 == ring_.size() ? 0 : r + 1;
         read_.store(r, std::memory_order_release);
     }
+    // A preset's broadcasts are the plug-in moving itself, not the user
+    // touching a knob: in an absorbing drain only a gesture counts.
+    if (touched >= 0 && (!absorb || touchedExplicit)) lastTouched_ = touched;
     for (auto& [key, p] : parameters_) {
         if (!p.open || !p.implicit) continue;
         if (absorb) {

@@ -396,6 +396,21 @@ Model readModel(const Store& store) {
               m.pluginState.push_back(std::move(s));
           });
 
+    query(m, db, "device_panels",
+          "SELECT device_id FROM device_panels ORDER BY device_id",
+          [&](const SQLite::Statement& st) {
+              DevicePanel p;
+              p.deviceId = st.getColumn(0).getInt64();
+              m.devicePanels.push_back(std::move(p));
+          });
+    query(m, db, "device_panel_params",
+          "SELECT device_id, param_id FROM device_panel_params ORDER BY device_id, ord",
+          [&](const SQLite::Statement& st) {
+              const std::int64_t dev = st.getColumn(0).getInt64();
+              for (DevicePanel& p : m.devicePanels)
+                  if (p.deviceId == dev) { p.params.push_back(st.getColumn(1).getString()); break; }
+          });
+
     query(m, db, "device_expression_routes",
           "SELECT device_id, route FROM device_expression_routes ORDER BY device_id",
           [&](const SQLite::Statement& st) {

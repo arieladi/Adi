@@ -75,6 +75,11 @@ bool ParamOps::isAttached(std::int64_t deviceId) const noexcept {
     return it != devices_.end() && it->second.active;
 }
 
+std::int32_t ParamOps::lastTouched(std::int64_t deviceId) const noexcept {
+    const auto it = devices_.find(deviceId);
+    return it == devices_.end() || !it->second.active ? -1 : it->second.capture->lastTouched();
+}
+
 const ParamEditCapture::Stats* ParamOps::captureStats(std::int64_t deviceId) const noexcept {
     const auto it = devices_.find(deviceId);
     return it == devices_.end() ? nullptr : &it->second.capture->stats();

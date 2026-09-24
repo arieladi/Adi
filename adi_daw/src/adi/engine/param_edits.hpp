@@ -50,6 +50,12 @@ public:
     /// no edit, `last` moves to where it went, and the state snapshot the
     /// caller takes next carries the change.
     std::size_t drainAbsorbing(std::int64_t nowMs, std::vector<ParamEdit>& out);
+    /// ADR-0154: the parameter most recently touched in the plug-in's own
+    /// window -- Live's "temporary entry" and the Master Focus Dial's target
+    /// (ADR-0130). Updated by a drain; -1 before any touch. An echo of our own
+    /// set is not a touch, and neither is a preset's broadcast absorbed into a
+    /// snapshot (drainAbsorbing), unless it was inside an explicit gesture.
+    [[nodiscard]] std::int32_t lastTouched() const noexcept { return lastTouched_; }
     void setQuietMs(std::int64_t ms);
     void setEchoTtlMs(std::int64_t ms);
     void setEchoTolerance(double tol);
@@ -80,6 +86,7 @@ private:
     std::atomic<std::int64_t> pushed_{0}, dropped_{0};
     std::map<Key, Parameter> parameters_;
     std::int64_t quietMs_ = 150, echoTtlMs_ = 500;
+    std::int32_t lastTouched_ = -1;
     double echoTolerance_ = 1e-6;
     mutable Stats stats_{};
 };

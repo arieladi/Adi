@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1004;          -- schema 1.4
+PRAGMA user_version   = 1005;          -- schema 1.5
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -643,6 +643,22 @@ choice, and a reader **MUST** play the device on that route whatever its own
 defaults say, because the route changes what the plugin plays. A reader that
 cannot deliver the recorded route keeps the row and reports it. Written only by
 ops (ADR-0146). A file older than 1.4 has no routes: every device is Auto.
+
+### 7.6 The plug-in panel (schema 1.5)
+
+```sql
+device_panels(device_id)                          -- a row: the panel is configured
+device_panel_params(device_id, ord, param_id)     -- its parameters, in order
+```
+
+The parameters a device shows as sliders in its panel (ADR-0150, ADR-0154).
+**No `device_panels` row is the default**: a reader shows every modifiable
+parameter of a plug-in that declares 64 or fewer, and none of one that declares
+more, with a prompt to configure it. A `device_panels` row means the user
+configured the panel, and it shows exactly its `device_panel_params` rows in
+`ord` order, even none. A reader keeps a configured parameter the plug-in no
+longer declares, shows it as missing, and does not drop the row. A file older
+than 1.5 has no panels: every device shows the default.
 
 ---
 

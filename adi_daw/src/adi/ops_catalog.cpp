@@ -900,7 +900,8 @@ constexpr Field kFDeviceInsert[] = {{"id", FieldType::Int, true},
                                     {"missing", FieldType::Bool, false},
                                     {"params", FieldType::Array, false},
                                     {"state", FieldType::Array, false},
-                                    {"route", FieldType::Text, false}};
+                                    {"route", FieldType::Text, false},
+                                    {"panel", FieldType::Array, false}};
 constexpr Field kFDeviceMove[] = {{"id", FieldType::Int, true},
                                   {"chain", FieldType::Int, true},
                                   {"ord", FieldType::Int, true}};
@@ -926,6 +927,11 @@ constexpr Field kFDeviceState[] = {{"dev", FieldType::Int, true},
 // ADR-0146, ADR-0149: `route` optional-and-nullable, `device.setParam`'s
 // `norm` convention: null (or absent in an inverse) clears the row, which is
 // Auto. The handler still insists the key is present.
+// ADR-0154: `params` optional-and-nullable, the same convention: null (or
+// absent in an inverse) is Live's default panel; an array, even empty, is a
+// configured one. The handler insists the key is present.
+constexpr Field kFDevicePanel[] = {{"dev", FieldType::Int, true},
+                                   {"params", FieldType::Array, false}};
 constexpr Field kFDeviceRoute[] = {{"dev", FieldType::Int, true},
                                    {"route", FieldType::Text, false}};
 constexpr Field kFDevicePreset[] = {{"dev", FieldType::Int, true},
@@ -1278,6 +1284,45 @@ bool chainDeleteInverse(OpContext& c, const Payload& p, Payload& inv, std::strin
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 
+// ADR-0154: the panel's rows, written and captured for device.setPanel and
+// for device.insert / device.remove's undo.
+namespace {
+
+void writePanel(OpContext& c, std::int64_t dev, const Payload& params) {
+    SQLite::Statement del(c.db, "DELETE FROM device_panels WHERE device_id = ?");
+    del.bind(1, dev);
+    del.exec();   // its parameter rows cascade
+    if (params.is_null()) return;
+    if (!params.is_array()) throw std::runtime_error("'params' must be an array or null");
+    SQLite::Statement mk(c.db, "INSERT INTO device_panels(device_id) VALUES (?)");
+    mk.bind(1, dev);
+    mk.exec();
+    SQLite::Statement row(c.db,
+        "INSERT INTO device_panel_params(device_id, ord, param_id) VALUES (?,?,?)");
+    std::int64_t ord = 0;
+    for (const auto& id : params) {
+        row.bind(1, dev);
+        row.bind(2, ord++);
+        row.bind(3, id.get<std::string>());
+        row.exec();
+        row.reset();
+    }
+}
+
+Payload capturePanel(OpContext& c, std::int64_t dev) {
+    SQLite::Statement has(c.db, "SELECT 1 FROM device_panels WHERE device_id = ?");
+    has.bind(1, dev);
+    if (!has.executeStep()) return nullptr;
+    Payload out = Payload::array();
+    SQLite::Statement st(c.db,
+        "SELECT param_id FROM device_panel_params WHERE device_id = ? ORDER BY ord");
+    st.bind(1, dev);
+    while (st.executeStep()) out.push_back(st.getColumn(0).getString());
+    return out;
+}
+
+}  // namespace
+
 // --- device.insert / device.remove -----------------------------------------
 
 bool deviceInsertApply(OpContext& c, const Payload& p, std::string& err) {
@@ -1309,6 +1354,8 @@ bool deviceInsertApply(OpContext& c, const Payload& p, std::string& err) {
 
         if (p.contains("params")) replayParams(c, id, p.at("params"));
         if (p.contains("state"))  replayState(c, id, p.at("state"));
+        // ADR-0154: the panel travels with the device too.
+        if (p.contains("panel") && !p.at("panel").is_null()) writePanel(c, id, p.at("panel"));
         // ADR-0149: the route travels with the device, so undoing a removal
         // plays it the way it played, and a new device takes the registry's
         // default through here, once.
@@ -1373,7 +1420,12 @@ bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::stri
         // looks like the undo worked.
         inv["params"] = captureParams(c, id);
         inv["state"]  = captureState(c, id);
-        // The route cascades with the device like the rows above (ADR-0149).
+        // The panel and the route cascade with the device like the rows above
+        // (ADR-0154, ADR-0149).
+        {
+            const Payload panel = capturePanel(c, id);
+            if (!panel.is_null()) inv["panel"] = panel;
+        }
         SQLite::Statement r(c.db,
             "SELECT route FROM device_expression_routes WHERE device_id = ?");
         r.bind(1, id);
@@ -1553,6 +1605,33 @@ bool deviceLoadStateInverse(OpContext& c, const Payload& p, Payload& inv, std::s
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 
+// --- device.setPanel --------------------------------------------------------
+//
+// ADR-0154: the whole panel list at once. Adding, removing and reordering are
+// all "the list is now this", which keeps the op symmetric and one gesture
+// one op. Null returns the device to Live's default panel.
+
+bool deviceSetPanelApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        if (!p.contains("params")) {
+            err = "device.setPanel needs a 'params' key; use null for Live's default panel";
+            return false;
+        }
+        writePanel(c, p.at("dev").get<std::int64_t>(), p.at("params"));
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool deviceSetPanelInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    try {
+        const auto dev = p.at("dev").get<std::int64_t>();
+        inv = Payload::object();
+        inv["dev"] = dev;
+        inv["params"] = capturePanel(c, dev);
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
 // --- device.setExpressionRoute --------------------------------------------
 //
 // ADR-0146, ADR-0149: the route a device plays with. A string sets it, null
@@ -1706,6 +1785,10 @@ const OpDescriptor kHandWritten[] = {
      deviceLoadStateApply, deviceLoadStateInverse, ""},
     // ADR-0146, ADR-0149. Snapshot: the route is read by the device, not the
     // graph's shape.
+    // ADR-0154. No engine impact: the panel is what the UI shows.
+    {"device.setPanel", "Choose the parameters a plug-in's panel shows",
+     Scope::Edit, EngineImpact::None, kFDevicePanel, false, false,
+     deviceSetPanelApply, deviceSetPanelInverse, ""},
     {"device.setExpressionRoute", "Choose how per-note expression reaches a device",
      Scope::Edit, EngineImpact::Snapshot, kFDeviceRoute, false, false,
      deviceSetRouteApply, deviceSetRouteInverse, ""},

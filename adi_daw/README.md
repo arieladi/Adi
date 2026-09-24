@@ -6,7 +6,7 @@ Cubase's arrangement, editing and mixing depth, and an AI agent that can only ac
 through the same undoable operations a human uses.
 
 **Status:** format specified, reference implementation building.
-**4000 checks across 41 suites**, green on 7 ABIs. Nothing is frozen.
+**4069 checks across 42 suites**, green on 7 ABIs. Nothing is frozen.
 **Language:** C++ with JUCE (ADR-0014) · **Licence:** GPLv3 (ADR-0015); a build
 linking JUCE is a combined work with AGPLv3 obligations on the JUCE part (ADR-0048)
 
@@ -54,19 +54,19 @@ than frightening.
 | | |
 |---|---|
 | [`docs/format/SPEC.md`](docs/format/SPEC.md) | The `.adi` format specification, v0.1 draft. Written so a third party can implement a reader from it without reading our source. |
-| [`docs/format/schema.sql`](docs/format/schema.sql) | Normative DDL. Executable, and verified on every change. 42 tables. |
+| [`docs/format/schema.sql`](docs/format/schema.sql) | Normative DDL. Executable, and verified on every change. 44 tables. |
 | [`docs/format/RATIONALE.md`](docs/format/RATIONALE.md) | Why SQLite, what we rejected, and the three errors in the original proposal that must not come back. |
 | [`docs/FEATURES.md`](docs/FEATURES.md) | Ableton ∪ Cubase, prioritised P0–P3, each row checked against the schema. |
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
 | [`docs/UI-ARCHITECTURE.md`](docs/UI-ARCHITECTURE.md) | The Ableton-shaped shell, the component tree, and how the graph carries a hybrid track. |
 | [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 155 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 156 entries. |
 | [`docs/SETTINGS-CATALOGUE.md`](docs/SETTINGS-CATALOGUE.md) | Every setting the Settings Reference describes, generated from it by `tools/export_settings_catalogue.py`, for the settings registry to fill from. |
 | [`docs/AWAITING.md`](docs/AWAITING.md) | Tests only the director's own hardware can run: AVX-512 on his i9 laptop, ASIO on his interface. |
 | [`drivers/`](drivers/) | OS-level pieces that are their own programs: the ADI virtual audio device for Windows, built from Microsoft's MS-PL `sysvad` sample fetched at a pinned commit by `drivers/adi-virtual-audio/build.ps1` and `.github/workflows/driver-build.yml`; our own files there are MIT (ADR-0106, 0117 to 0120). Nothing in `src/` includes it. |
 | [`docs/EXTERNAL-CODE.md`](docs/EXTERNAL-CODE.md) | The nine external repos we read or link against, and the licence boundary between them. Read before copying a line out of `reference/`. |
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
-| [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 163-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |
+| [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 164-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |
 | [`tools/fetch_external.sh`](tools/fetch_external.sh) | Clones/refreshes `third_party/` and `reference/`. Both gitignored, pinned by tag and commit. |
 | [`tools/test_all.sh`](tools/test_all.sh) | Every test binary, both validators, and the spec-vs-binary layout check. Binaries are discovered, not listed. |
 | [`tools/build.bat`](tools/build.bat) | Windows build. A `.bat` because `vcvars64` must run in the same shell. |
@@ -147,7 +147,7 @@ Each step gates the next. No step starts before the previous one is written down
 |---|---|---|
 | **1** | Format spec, schema, feature scope, agent design | **done, draft** |
 | **2** | Choose implementation language and licence | **done** — C++/JUCE, GPLv3 |
-| **3** | The op vocabulary: every op type, payload, inverse | **done** — 163 ops, `docs/OPS.md` |
+| **3** | The op vocabulary: every op type, payload, inverse | **done** — 164 ops, `docs/OPS.md` |
 | **4** | Reference reader/writer library + round-trip test corpus | **done** — store, ops, undo, digest, check |
 | **5** | Audio engine skeleton: snapshot handoff, model, transport | **done** — headless, no JUCE (ADR-0036) |
 | **6** | JUCE: audio device, the graph, VST3 hosting (ADR-0041), CLAP hosting (ADR-0075), the engine at 32 to 4096 samples (ADR-0042, ADR-0102), plugin parameter ops (ADR-0110) | **in progress** — the session runtime is built and tested headless (ADR-0122); the plugin loader, `adi_play` and the parameter-op layer follow |

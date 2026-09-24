@@ -386,7 +386,7 @@ unless it says so.
 | **ASIO on Windows**: built (JUCE's bundled headers, GPL-3.0); the audio probe fails CI without it; not yet heard on a real ASIO driver | all | **P0** | ADR-0134 d5, ADR-0137 |
 | Plugin capabilities registry; the chosen expression route stored in the project. **Built**: the registry, the route op, the session applying it (VST3) | — | P1 | ADR-0134 d7, ADR-0149 |
 | Plug-in panel exactly as Live: 64 or fewer parameters shown, more opens empty; Configure, temporary entries, recording and mapping add them (compact blocks withdrawn) | Ableton | P0 | ADR-0145 d1, ADR-0150 d1-d2 |
-| Parameter List: a searchable list of every declared parameter, beside Configure | — | P1 | ADR-0150 d3 |
+| Parameter List: a searchable list of every declared parameter, beside Configure. **Built** (core): `panel::search`; the panel is project state, `device.setPanel` | — | P1 | ADR-0150 d3, ADR-0154 |
 | "Zoom on Selection" setting restores Live's wheel-zoom anchor | Ableton | P1 | ADR-0145 d2 |
 | Sample-rate mismatch bar: Switch Hardware / Resample Temporarily, "Don't ask me again" | — | P1 | ADR-0145 d3 |
 | Buffer sizes 64 to 4096 by hand; ASIO through JUCE only, no raw bypass | — | P0 | ADR-0145 d5 |

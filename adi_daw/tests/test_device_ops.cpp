@@ -502,6 +502,56 @@ void testTheExpressionRoute() {
     check(readRoute(*s, 10) == std::optional<std::string>("mpe_midi"), "is inserted on that route");
 }
 
+
+std::optional<std::vector<std::string>> readPanel(Store& s, std::int64_t dev) {
+    SQLite::Statement has(s.db(), "SELECT 1 FROM device_panels WHERE device_id = ?");
+    has.bind(1, dev);
+    if (!has.executeStep()) return std::nullopt;
+    std::vector<std::string> out;
+    SQLite::Statement st(s.db(), "SELECT param_id FROM device_panel_params WHERE device_id = ? ORDER BY ord");
+    st.bind(1, dev);
+    while (st.executeStep()) out.push_back(st.getColumn(0).getString());
+    return out;
+}
+
+void testThePanel() {
+    section("ADR-0154: the plug-in panel is one op, the whole list, and travels with the device");
+    Scratch sc("panel");
+    auto s = project(sc / "p.adi");
+    if (!s) { check(false, "project opens"); return; }
+    check(seedChainAndDevice(*s), "seeded");
+    check(!readPanel(*s, 9).has_value(), "no row: Live's default panel");
+
+    check(run(*s, "device.setPanel", {{"dev", 9}, {"params", {"cutoff", "res"}}}), "configure two");
+    check(readPanel(*s, 9) == std::optional<std::vector<std::string>>({"cutoff", "res"}), "saved, in order");
+    check(run(*s, "device.setPanel", {{"dev", 9}, {"params", {"res", "cutoff", "drive"}}}),
+          "reorder and add: the list is now three");
+    check(run(*s, "device.setPanel", {{"dev", 9}, {"params", nlohmann::json::array()}}), "empty it");
+    check(readPanel(*s, 9) == std::optional<std::vector<std::string>>(std::vector<std::string>{}),
+          "a configured, empty panel -- not the default");
+    History h(*s);
+    check(h.undo().ok, "undo");
+    check(readPanel(*s, 9) == std::optional<std::vector<std::string>>({"res", "cutoff", "drive"}), "the three came back, in their order");
+    check(h.undo().ok && h.undo().ok, "undo twice more");
+    check(!readPanel(*s, 9).has_value(), "and back to the default: the row is gone");
+
+    std::string err;
+    check(!run(*s, "device.setPanel", {{"dev", 9}}, &err), "a missing params key is loud: " + err);
+    check(!run(*s, "device.setPanel", {{"dev", 9}, {"params", {"a", "a"}}}, &err),
+          "a parameter twice is refused: " + err);
+
+    check(run(*s, "device.setPanel", {{"dev", 9}, {"params", {"cutoff"}}}), "a panel again");
+    check(run(*s, "device.remove", {{"id", 9}}), "remove the device");
+    check(!readPanel(*s, 9).has_value(), "the panel cascaded with it");
+    History h2(*s);
+    check(h2.undo().ok, "undo the removal");
+    check(readPanel(*s, 9) == std::optional<std::vector<std::string>>({"cutoff"}), "and the panel came back with it");
+    check(run(*s, "device.insert", {{"id", 11}, {"chain", 5}, {"ord", 4}, {"name", "Configured"},
+                                    {"panel", {"x", "y"}}}),
+          "a device inserted with a panel, as a preset of a configured device would be");
+    check(readPanel(*s, 11) == std::optional<std::vector<std::string>>({"x", "y"}), "arrives configured");
+}
+
 // --- main ---------------------------------------------------------------------
 
 int main() {
@@ -523,6 +573,7 @@ int main() {
     testMoveAndScalars();
     testChainPair();
     testTheExpressionRoute();
+    testThePanel();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
