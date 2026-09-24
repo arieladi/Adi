@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -317,6 +318,33 @@ struct Remark {
     bool resolved = false;
 };
 
+/// `automation_lanes` (SPEC §6.3.3, ADR-0159): what a lane controls and how
+/// its values read. Its points live in `AutomationData`.
+struct AutomationLane {
+    std::int64_t id = 0;
+    std::string ownerKind;           ///< track | device | clip | project | routing
+    std::int64_t ownerId = 0;
+    std::string paramRef;
+    std::string paramName;
+    std::int64_t timeBase = 0;       ///< 0 ticks, 1 nanoseconds
+    std::string valueDomain = "normalized";
+    std::string unit;
+    double defaultValue = 0.0;
+    std::optional<double> minValue;
+    std::optional<double> maxValue;
+    bool enabled = true;
+};
+
+/// `automation_data`: one AAUT stream per lane, or per lane and clip for a
+/// clip envelope. Kept as the stored bytes: the engine's compiler validates
+/// and decodes them (engine/automation.hpp), and a reader that decoded here
+/// would have to decide what a bad point means twice.
+struct AutomationData {
+    std::int64_t laneId = 0;
+    std::optional<std::int64_t> clipId;
+    std::vector<std::byte> blob;
+};
+
 struct Model {
     Project project;
     std::vector<TempoEvent> tempo;
@@ -338,6 +366,8 @@ struct Model {
     std::vector<DeviceRoute> deviceRoutes;
     std::vector<DevicePanel> devicePanels;
     std::vector<Remark> remarks;
+    std::vector<AutomationLane> automationLanes;   ///< by id
+    std::vector<AutomationData> automationData;    ///< by lane, then clip
 
     /// Tables that were present but unreadable — a newer schema that dropped a
     /// column we name, a corrupt blob. Named rather than swallowed, because a

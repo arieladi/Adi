@@ -10,6 +10,62 @@ so nothing is left unpushed.
 
 ---
 
+## 2026-09-24 — automation read into the engine, not yet played (ADR-0159, part two)
+
+Branch `cloud/curves`, second PR, restarted from main after #116 merged. New:
+`src/adi/engine/automation.{hpp,cpp}` and `tests/test_automation.cpp`. Lent
+and used: `src/adi/store_rows.*`, for the automation rows only.
+
+**What landed.**
+- **Model:** `rows::Model` gains `automationLanes`, the lane rows with nullable
+  bounds, and `automationData`, each stream's stored bytes read through
+  `Store::getAutomationData`.
+- **Program:** an immutable `AutomationProgram`, compiled off the audio thread
+  from the model, the tempo map and the session rate.
+  - Each arrangement lane (owner track or device, the stream with no clip)
+    gets its points in session samples: ticks go through the tempo map,
+    nanoseconds by the rate.
+  - Validation refuses a whole lane, with a named problem.
+  - Clip envelopes, project, routing and clip-owned lanes are reported as not
+    played yet, and so are tempo ramps.
+- **Reads:** `valueAt` is O(log n). `fill` writes into the caller's buffer and
+  walks the points once for a forward stride. Both are noexcept and
+  allocation-free.
+- **Outside the points:** before the first point a lane reads its first value;
+  at and after the last, its last value. With no points it reads its
+  `default_value`.
+
+**Plants (4), each failing first as named checks:**
+1. A lane half-accepted after a bad point: "refused whole, with a named
+   problem: times out of order", "a bad point 97 of 100 refuses the whole
+   lane".
+2. Ticks placed at a fixed 120 BPM, without the tempo map: "a tempo change
+   moves a later point".
+3. A vector copied inside `fill`: "fill and valueAt allocate nothing". The
+   test counts `operator new`.
+4. `default_value` returned after the last point: "at and after the last
+   point: the last value", and two more checks.
+
+**Also.** The first store test put a clip envelope on clip 42, which does not
+exist, so the foreign key refused it. The test now creates the track and the
+clip first. PR 2 was pushed first to a temporary branch,
+`cloud/curves-automation`, so that #116's head was left alone while its CI
+ran. **That branch is left over and holds nothing new:** its one commit,
+ad28cf3, is this PR's content before the rebase. Deleting it from this
+container returned HTTP 403 (the git proxy refuses branch deletion), so
+whoever tidies branches may delete it.
+
+`test_all`: 4437 checks across 46 suites, validators clean. ASan+UBSan are
+clean on every suite. TSan is clean on the automation and curve suites, which
+include four threads reading one program while another compiles. Clang
+`-Werror` is clean. ADR-0159 is complete and marked used, and cloud's claims
+row is removed.
+
+**Next, for win or linux:** emitting parameter events from the program. That
+needs the director's rulings on user override, touch and latch.
+
+---
+
 ## 2026-09-24 — the curve formulas (ADR-0159, part one)
 
 Branch `cloud/curves`, first PR. New: `src/adi/engine/curves.{hpp,cpp}` and

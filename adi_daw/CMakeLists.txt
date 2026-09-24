@@ -856,3 +856,8 @@ target_sources(adi_core PRIVATE src/adi/engine/curves.cpp)
 add_executable(adi_curves_tests tests/test_curves.cpp)
 target_link_libraries(adi_curves_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_curves_tests COMMAND adi_curves_tests)
+# ADR-0159 part two: automation read into the engine, not yet played.
+target_sources(adi_core PRIVATE src/adi/engine/automation.cpp)
+add_executable(adi_automation_tests tests/test_automation.cpp)
+target_link_libraries(adi_automation_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_automation_tests COMMAND adi_automation_tests)
