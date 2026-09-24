@@ -9968,3 +9968,79 @@ was added, and a Pro-Q 3 panel carrying thirty-six parameters.
 
 **Not decided:** whether `adi_tool` reports which BLAKE3 path the dispatcher
 took; upstream offers no public call for it.
+
+---
+
+## ADR-0152 — The settings store: a typed registry, one file per application, presets, bundles with roles, the agent's pipeline — `DECIDED` (2026-09-24) — **IMPLEMENTS ADR-0125 R-01 TO R-07 AND d1–d3, ADR-0127 d5, ADR-0145's SETTINGS**
+
+**Director's assignment** to `cloud`. A core library with no UI:
+`src/adi/settings/**`, with `docs/SETTINGS.md` as its prose. Everything below
+that the rulings left open is decided here.
+
+### Decisions
+
+1. **One typed registry is the only source of what a setting is.** Each entry
+   has a key, type, scope, page, label, help, default, choices or range, and,
+   for a Project setting, the op that sets it. The Find box matches every word
+   of the query against the label, help, key and page. The store refuses a key
+   the registry does not know from a caller, and keeps one a newer build wrote.
+2. **The file is `settings.json` in the application's own config folder, with
+   `schema` and `app`.**
+   - A file naming another application is refused, and saving over it is
+     refused too, so no application ever reads or overwrites another's.
+   - A file that does not parse moves aside to `settings.json.corrupt-N`, the
+     first free name, and the application starts from defaults.
+   - A newer schema is read, and its number is never lowered on save.
+   - A stored value this build finds illegal reads as the default and stays in
+     the file until the setting is changed.
+   - Saves write a temporary file and rename it.
+3. **Both actors' changes are logged**, in `settings-changes.jsonl` beside the
+   file. ADR-0125 left open whether a person's changes are logged, and
+   recommended yes; this decides it. An agent's change is logged
+   unconditionally; logging a person's can be switched off. Each line carries
+   the time (passed in), the actor, the key, before and after, and the model
+   for the agent. Retention, also left open, stays open.
+4. **The agent's whitelist has two locks.**
+   - A per-setting `agentMayChange` flag, off unless someone turns it on for
+     that setting.
+   - A structural refusal no flag overrides: any path, anything on the Audio,
+     Plug-ins, Privacy or AI pages, and anything not App scope. This is ADR-0125
+     d2's "never" list written as structure, so a careless flag on
+     `audio.bufferSize` changes nothing.
+
+   The test checks that no whitelisted setting falls under the structural
+   refusal.
+5. **Bundle roles are the roots a user's material lives under**: `user
+   library`, and `content folder N` in order. A folder that is itself a
+   setting, such as the record folder, is not a role; it travels as a path
+   under one. My first version made it a role, which let the record folder
+   match itself before the user library that holds it. On another machine
+   that role would resolve to that machine's own, possibly empty, record
+   folder rather than to the same place under the user library.
+6. **A bundle never carries an absolute path.**
+   - A path under no role is left out and reported.
+   - Export then scans everything it is about to write for an absolute path
+     (POSIX, drive letter, UNC) and refuses if one remains, so the guarantee
+     does not rest on the conversion alone.
+   - Keys a newer build wrote do not travel, because this build cannot tell
+     whether they hold a path.
+   - A bundle names its application, and another application refuses it.
+   - Resolved paths are written with forward slashes on every platform.
+7. **ADR-0145's settings are entered as ruled.** Buffer sizes are 64 to 4096,
+   and 32 is refused as a value. ASIO is a single driver choice whose help
+   text says it opens through JUCE. The **default buffer of 256** is a choice,
+   not a ruling: ADR-0145 names the offered sizes, not the default.
+8. **The Settings Reference text is not in this tree** (`reference/` is not
+   fetched here). The registry is built from the rulings recorded in the ADRs:
+   ADR-0125, 0129, 0131, 0132, 0134 and 0145. Pages and settings the
+   Reference has that no ADR records are for whoever holds the Reference to
+   add, one row each.
+
+### Verified
+
+`adi_settings_tests`, 80 checks, also run under ASan and UBSan. The plants are
+in `collab/cloud.md`.
+
+**Not decided:** the change log's retention; Device-scope settings, of which
+there are none in the registry yet; the Reference's settings that no ADR
+records.

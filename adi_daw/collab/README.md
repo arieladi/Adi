@@ -161,7 +161,7 @@ subject, say so in your log instead of writing it twice.
 | 0149 | win | `win/route-registry` | where application data lives, shared by the suite or per application; the capabilities registry proposes a route once, the project decides; the route op | used |
 | 0150 | win | `win/rulings-0150` | the plug-in panel exactly as Live's; the Parameter List; BLAKE3 SIMD on every CPU | used |
 | 0151 | linux | `linux/clip-playback` | audio clips playing through the session, streamed from disk, if it decides anything | reserved |
-| 0152 | cloud | `cloud/settings` | the settings store, if it decides anything | reserved |
+| 0152 | cloud | `cloud/settings` | the settings store: typed registry, one file per application, roles in bundles, a two-lock agent whitelist | used |
 | 0153 | win | `win/journal-simd` | the journal takes a caller inside its transaction; BLAKE3 runs AVX2, AVX-512 and NEON | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
@@ -181,7 +181,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
 | `src/adi/engine/clip_*` and `src/adi/engine/transport.*` (new, inside win's engine area), `src/adi/audio/**`, `tests/test_clip_playback.cpp` (new); lent for small logged hooks: `src/adi/engine/session.*`, `src/adi/engine/graph.*`, `src/adi/engine/realize.*` | linux | `linux/clip-playback` | 2026-09-24 |
-| `src/adi/settings/**` (new), `tests/test_settings.cpp` (new), `docs/SETTINGS.md` (new) | cloud | `cloud/settings` | 2026-09-24 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
