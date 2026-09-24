@@ -176,7 +176,7 @@ subject, say so in your log instead of writing it twice.
 | 0160 | win | `win/fl-backlog` | from FL Studio: Make Unique with linked clips at P2; a ghost-note focus switch for layered editing (director's backlog) | used |
 | 0161 | win | `win/op-clocks` | every op carries its client and a Lamport clock (schema 1.6); multiplayer sync in the backlog (director) | used |
 | 0162 | win | `win/op-clocks` | automation override is Live's (director's ruling) | used |
-| 0163 | win | `win/mixer-strip` | the mixer strip in the graph: volume, pan, mute, solo; the pan law | reserved |
+| 0163 | win | `win/mixer-strip` | the mixer strip in the graph: volume, pan, mute, solo; the pan law | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
