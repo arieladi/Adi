@@ -39,6 +39,9 @@ void identityAndScan() {
     fs::create_directory(f.root/"samples");write(f.root/"samples/a", "alpha");write(f.root/"samples/b","beta");
     auto scan=f.scan();check(scan.ok&&scan.files==2&&scan.queued==2,"new files enumerated without hashing marker");
     check(f.index->entries().size()==2&&f.index->entries()[0].hash.empty()&&f.index->stats().hashed==0,"new files browsable before worker starts");
+    const auto epochNow=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    const auto stored=f.index->entries()[0].modifiedNs;
+    check(stored>=epochNow-10000000000LL&&stored<=epochNow+10000000000LL,"timestamps share the Unix epoch across platforms");
     f.finish();check(f.index->stats().hashed==2&&f.index->entries()[0].hash.size()==64,"background worker hashes new rows");
     check(f.index->stats().lowPriority,"worker lowers its own OS priority");
     SQLite::Database observer(media::pathUtf8(f.dir.path()/"index.sqlite"));
@@ -56,9 +59,10 @@ void identityAndScan() {
     auto a=f.root/"samples/a";const auto original=fs::last_write_time(a);
     fs::last_write_time(a,original+std::chrono::seconds(2));scan=f.scan();f.index->waitIdle();
     check(scan.unchanged==2&&f.index->stats().hashed==2,"exactly two seconds is unchanged");
-    fs::last_write_time(a,original+std::chrono::seconds(3));scan=f.scan();f.index->waitIdle();
+    // FAT rounds odd seconds; four seconds is representable and outside the window.
+    fs::last_write_time(a,original+std::chrono::seconds(4));scan=f.scan();f.index->waitIdle();
     check(scan.queued==1&&f.index->stats().hashed==3,"tolerance stays anchored to last hash time");
-    write(a,"longer content");fs::last_write_time(a,original+std::chrono::seconds(3));scan=f.scan();f.index->waitIdle();
+    write(a,"longer content");fs::last_write_time(a,original+std::chrono::seconds(4));scan=f.scan();f.index->waitIdle();
     check(scan.queued==1&&f.index->stats().hashed==4,"size change rehashes even with same time");
     check(!f.index->scan(f.volume,"..").ok,"scan cannot escape volume");
     fs::remove(a);scan=f.index->scan(f.volume,"samples");f.index->waitIdle();

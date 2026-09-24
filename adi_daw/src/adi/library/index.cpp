@@ -30,11 +30,23 @@ std::string normalized(const std::string& s, bool sensitive) {
 bool validHash(const std::string& hash) {
     return hash.size() == 64 && hash.find_first_not_of("0123456789abcdef") == std::string::npos;
 }
+// The standard permits file_clock to expose either sys or UTC conversion.
+// MSVC supplies to_utc; libstdc++/libc++ supply to_sys. Keep both dependent
+// so an unused clock API need not exist on the other implementation.
+template<class Clock, class Duration>
+auto systemTime(std::chrono::time_point<Clock, Duration> value) {
+    if constexpr (requires { Clock::to_sys(value); }) return Clock::to_sys(value);
+    else {
+        auto utc = Clock::to_utc(value);
+        using UtcClock = typename decltype(utc)::clock;
+        return UtcClock::to_sys(utc);
+    }
+}
 struct Metadata { std::int64_t size, time; };
 Metadata metadata(const fs::path& path) {
     const auto size = fs::file_size(path);
     if (size > static_cast<std::uintmax_t>(std::numeric_limits<std::int64_t>::max())) throw std::runtime_error("file too large");
-    const auto time = std::chrono::duration_cast<std::chrono::nanoseconds>(fs::file_time_type::clock::to_sys(fs::last_write_time(path)).time_since_epoch()).count();
+    const auto time = std::chrono::duration_cast<std::chrono::nanoseconds>(systemTime(fs::last_write_time(path)).time_since_epoch()).count();
     return {static_cast<std::int64_t>(size), time};
 }
 bool sameTime(std::int64_t a, std::int64_t b) {

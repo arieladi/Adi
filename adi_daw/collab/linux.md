@@ -122,17 +122,25 @@ ADR-0147". Its dependency pin/licence did not change.
 
 ### Validation
 
-Library suite: 47 checks, including 20 idle cancel/restart cycles. Shutdown
+Library suite: 48 checks, including 20 idle cancel/restart cycles. Shutdown
 changes its wait predicate under the condition-variable mutex so notification
 cannot be lost between predicate evaluation and waiting. Rebased on `5baebbc` (cloud's changeset), preserving every other claim and ADR.
-Full GCC and Clang trees: **3844 checks across 39 suites**, all validators clean
+Full GCC and Clang trees: **3845 checks across 39 suites**, all validators clean
 (Windows retains its two additional registry checks). Clang ASan+UBSan and GCC
-TSan each pass **47 library + 42 hash checks** with `halt_on_error=1` on the
+TSan each pass **48 library + 42 hash checks** with `halt_on_error=1` on the
 rebased sources; no findings. This is affected-suite sanitizer coverage, not a
 claim of a full-tree sanitizer run. All 19 CI jobs are required green at the
 final head SHA before merge. The shared library claim is released in this
 last PR, as instructed. The new warning caught on
-the first build was misleading indentation in our open helper; fixed.
+the first build was misleading indentation in our open helper; fixed. Real
+vfat testing caught a fixture assumption: FAT rounds a requested +3 seconds
+to +2, correctly inside the tolerance. The outside-window/drift test now uses
++4 seconds (representable on FAT); the implementation did not change.
+The first PR-102 Windows build found MSVC file_clock exposes `to_utc`, not
+`to_sys`. A dependent conversion helper now accepts either standard API, and
+`timestamps share the Unix epoch across platforms` guards the persisted epoch.
+Both loop-mounted vfat (UTF-8 names enabled) and exFAT pass the library suite;
+this exercises real case probing and coarse timestamps, beyond mock providers.
 MSVC /WX is not available locally; CI compiles/tests Windows and win owns /WX.
 
 Scripts, complete CSVs, failed setup evidence, plant and audit logs are under
