@@ -185,6 +185,20 @@ public:
     /// belongs to the host object, not to the plugin (ADR-0084).
     [[nodiscard]] virtual std::uint64_t latencyEpoch() const noexcept { return 0; }
 
+    /// ADR-0142 (ADR-0110 d1): a CAPTURE BOUNDARY. Moves when the plugin says
+    /// its state changed in a way its parameter broadcasts do not carry -- a
+    /// preset picked in its browser, a sample dropped on it: VST3's
+    /// `restartComponent` and `setDirty`, CLAP's `params.rescan` and
+    /// `state.mark_dirty`. The parameter-op glue compares it at every drain
+    /// and, when it moved, snapshots the chunk as a `device.loadState` op.
+    /// Our own `setParam` and `loadState` do not move it.
+    ///
+    /// 0, never moving, is "this device never signals". A CLAP device
+    /// reports its HOST's count, shared by every plugin that host serves
+    /// until each has a `clap_host_t` of its own (ADR-0123 C4); the glue's
+    /// hash comparison is what tells which plugin actually changed.
+    [[nodiscard]] virtual std::uint64_t stateEpoch() const noexcept { return 0; }
+
     // --- parameters --------------------------------------------------------
 
     [[nodiscard]] virtual std::int32_t paramCount() const noexcept { return 0; }

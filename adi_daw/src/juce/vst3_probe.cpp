@@ -22,6 +22,13 @@
 #include "juce/probe_surge.hpp"
 #include "juce/vst3_host.hpp"
 #include "adi/engine/param_ops.hpp"
+#include "adi/engine/session.hpp"
+#include "adi/history.hpp"
+#include "adi/ops.hpp"
+#include "adi/store.hpp"
+#include "../../tests/temp_directory.hpp"
+
+#include <SQLiteCpp/SQLiteCpp.h>
 
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
@@ -712,6 +719,182 @@ void fixtureGesture(adi::device::Vst3Host& host) {
     ec->release();
 }
 
+/// ADR-0142 against a real VST3 through JUCE, the session and the journal.
+/// The fixture's own preset browser picks patch 7 and moves Drive with no
+/// gesture, then says restartComponent(kParamValuesChanged). That must be ONE
+/// transaction of `device.loadState` (the chunk it replaced, then the new one)
+/// and no parameter op; a second session must load it back; undo must put the
+/// plugin's patch back; neither the plugin's answer to our load nor its late
+/// answer may become an op; and a Drive drag after the preset must survive a
+/// reload on top of the chunk.
+void fixtureState(adi::device::Vst3Host& host) {
+    std::printf("\n[ADR-0142] a preset picked in the plugin's browser is one op; the project reloads it; undo reaches the plugin\n");
+    juce::OwnedArray<juce::PluginDescription> types;
+    host.formats().getFormat(0)->findAllTypesForFile(types, ADI_TEST_VST3);
+    const juce::PluginDescription* plain = nullptr;
+    for (auto* t : types) if (t->name == "ADI Test Plain") plain = t;
+    check(plain != nullptr, "the Plain fixture is in the bundle");
+    if (plain == nullptr) return;
+    const adi::device::DeviceIdentity ident = adi::device::identityOf(*plain);
+
+    // Declared first: the store and every session close before it goes.
+    const adi::test::TempDirectory scratch("vst3_probe", "state");
+    adi::StoreError se = adi::StoreError::Ok;
+    auto store = adi::Store::create(scratch.path() / "state.adi", se);
+    check(store != nullptr, "a project is created");
+    if (!store) return;
+    adi::OpJournal j(*store);
+    auto commit1 = [&](const char* type, adi::Payload p) {
+        adi::OpRequest r;
+        r.opType = type;
+        r.payload = std::move(p);
+        const adi::CommitResult res = j.commit(r);
+        check(res.ok, std::string(type) + ": " + res.error);
+    };
+    commit1("track.create", {{"id", 1}, {"kind", "midi"}, {"name", "Keys"}});
+    commit1("track.create", {{"id", 9}, {"kind", "master"}, {"name", "Master"}, {"index", 1}});
+    try {
+        SQLite::Statement st(store->db(),
+            "INSERT INTO plugin_refs(id, format, uid, vendor, name, version, subtype, path_hint) "
+            "VALUES (1, 'vst3', ?, ?, ?, ?, 'instrument', ?)");
+        st.bind(1, ident.uid);
+        st.bind(2, ident.vendor);
+        st.bind(3, ident.name);
+        st.bind(4, ident.version);
+        st.bind(5, std::string(ADI_TEST_VST3));
+        st.exec();
+    } catch (const std::exception& e) {
+        check(false, std::string("the plugin_refs row: ") + e.what());
+        return;
+    }
+    commit1("chain.create", {{"id", 10}, {"track", 1}});
+    commit1("device.insert", {{"id", 100}, {"chain", 10}, {"ord", 0}, {"ref", 1}, {"name", "Plain"}});
+
+    auto loader = [&](const adi::engine::DeviceRequest& rq,
+                      std::string& err) -> std::unique_ptr<adi::device::DeviceInstance> {
+        if (rq.ref == nullptr || rq.ref->uid != ident.uid) { err = "not the fixture"; return nullptr; }
+        return host.makeDevice(*plain, rq.sampleRate, rq.maxFrames, err);
+    };
+    auto rowHash = [&]() -> std::string {
+        SQLite::Statement st(store->db(),
+            "SELECT state_hash FROM plugin_state WHERE device_id = 100 AND stream_role = 'chunk'");
+        return st.executeStep() ? st.getColumn(0).getString() : std::string("(none)");
+    };
+    auto idOf = [](const adi::device::DeviceInstance& d, const char* name) {
+        for (std::int32_t i = 0; i < d.paramCount(); ++i)
+            if (const auto* p = d.paramAt(i); p != nullptr && p->name == name) return p->id;
+        return std::string();
+    };
+    constexpr double kPatchStep = 1.0 / 127.0;
+    auto patchOf = [&](const adi::device::DeviceInstance& d) {
+        return static_cast<int>(std::lround(d.getParam(idOf(d, "Patch")).normalized / kPatchStep));
+    };
+    auto driveOf = [&](const adi::device::DeviceInstance& d) { return d.getParam(idOf(d, "Drive")).normalized; };
+
+    // The session first, the glue second: the devices outlive the glue (ADR-0124).
+    adi::engine::Session s;
+    check(s.load(*store, loader, adi::engine::SessionSpec{}), "the session loads: " + s.error());
+    auto* v3 = dynamic_cast<adi::device::Vst3Device*>(s.instanceFor(100));
+    check(v3 != nullptr && v3->loaded(), "the fixture is device 100");
+    if (v3 == nullptr || !v3->loaded()) return;
+    check(!idOf(*v3, "Patch").empty() && !idOf(*v3, "Drive").empty(), "it declares Patch and Drive");
+    check(patchOf(*v3) == 0 && std::fabs(driveOf(*v3) - 0.2) < 1e-6, "patch 0, Drive 0.2");
+    check(v3->stateRoles() == std::vector<std::string>{"chunk"}, "one state role: chunk");
+    const std::vector<std::uint8_t> baselineBytes = v3->saveState("chunk");
+    check(!baselineBytes.empty(), "and JUCE hands back a chunk: " + std::to_string(baselineBytes.size()) + " bytes");
+
+    adi::engine::ParamOps ops;
+    check(ops.attachSession(s) == 1, "the glue is attached");
+
+    auto* comp = static_cast<Steinberg::Vst::IComponent*>(v3->rawComponent());
+    Steinberg::Vst::IEditController* ec = nullptr;
+    if (comp != nullptr)
+        comp->queryInterface(Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&ec));
+    check(ec != nullptr, "its edit controller is reachable (ADR-0100)");
+    if (ec == nullptr) return;
+
+    // --- the user picks a preset in the plugin's window ----------------------
+    const std::uint64_t epoch0 = v3->stateEpoch();
+    ec->setParamNormalized(4003 /* kPresetTrigger */, 1.0);
+    check(v3->stateEpoch() == epoch0 + 1, "the plugin's restartComponent reached us as ONE boundary: epoch " +
+                                               std::to_string(v3->stateEpoch() - epoch0));
+    check(patchOf(*v3) == 7 && std::fabs(driveOf(*v3) - 0.45) < 1e-6,
+          "JUCE re-read the parameters: patch 7, Drive 0.45 -- got " + std::to_string(patchOf(*v3)) + ", " +
+              std::to_string(driveOf(*v3)));
+    std::vector<adi::OpRequest> out;
+    ops.drain(1000, out);
+    long long loads = 0, sets = 0;
+    for (const auto& r : out) (r.opType == "device.loadState" ? loads : sets) += 1;
+    check(loads == 2 && sets == 0,
+          "one preset is two device.loadState -- the chunk it replaced, then the new one -- and no "
+          "parameter op: got " + std::to_string(loads) + " and " + std::to_string(sets));
+    const auto* cs = ops.captureStats(100);
+    check(cs != nullptr && cs->absorbed >= 1,
+          "the preset's value broadcasts were absorbed into it: " + std::to_string(cs ? cs->absorbed : -1));
+    std::string err;
+    check(ops.writeBlobs(*store, err), "the chunks are written to state_blobs: " + err);
+    const adi::CommitResult res = j.commit(out);
+    check(res.ok, "and the pair commits as one transaction: " + res.error);
+    const std::string presetHash = out.size() == 2 ? out[1].payload.value("hash", std::string()) : "";
+    check(!presetHash.empty() && rowHash() == presetHash, "plugin_state holds the preset's chunk");
+
+    // --- a second session, from the file ---------------------------------------
+    {
+        adi::engine::Session s2;
+        check(s2.load(*store, loader, adi::engine::SessionSpec{}), "a second session loads: " + s2.error());
+        check(s2.stats().statesLoaded == 1, "statesLoaded 1: got " + std::to_string(s2.stats().statesLoaded));
+        const auto* d2 = s2.instanceFor(100);
+        check(d2 != nullptr && patchOf(*d2) == 7 && std::fabs(driveOf(*d2) - 0.45) < 1e-6,
+              "its fixture came up on patch 7 with Drive 0.45 -- the chunk, through JUCE, byte for byte");
+    }
+
+    // --- undo ----------------------------------------------------------------------
+    adi::History h(*store);
+    const adi::History::Result u = h.undo();
+    check(u.ok, "undone: " + u.error);
+    const std::uint64_t muted0 = v3->mutedStateSignals();
+    int loadedBack = 0;
+    for (const auto& op : j.recent(2))
+        if (op.opType == "device.loadState" && op.inverse && ops.appliedState(*store, *op.inverse, 2000))
+            ++loadedBack;
+    check(loadedBack == 1, "one inverse loaded a chunk back, the other cleared the row: " + std::to_string(loadedBack));
+    check(patchOf(*v3) == 0 && std::fabs(driveOf(*v3) - 0.2) < 1e-6,
+          "the undo reached the plugin: patch 0, Drive 0.2 -- got " + std::to_string(patchOf(*v3)) + ", " +
+              std::to_string(driveOf(*v3)));
+    check(v3->mutedStateSignals() > muted0, "the plugin answered our load with restartComponent, and it was muted");
+    check(rowHash() == "(none)", "the row is gone: the project had no chunk before the preset");
+    std::vector<adi::OpRequest> after;
+    ops.drain(2100, after);
+    check(after.empty(), "the undo made no op: got " + std::to_string(after.size()));
+    ec->setParamNormalized(4005 /* kDeferredRestart */, 1.0);   // the plugin answers again, later
+    ops.drain(2200, after);
+    check(after.empty(), "nor did its late answer, whose chunk is the one we loaded: got " + std::to_string(after.size()));
+
+    // --- redo, then a drag on top of the preset ----------------------------------
+    const adi::History::Result rd = h.redo();
+    check(rd.ok, "redone: " + rd.error);
+    const std::vector<adi::OpJournal::LoggedOp> fwd = j.recent(2);
+    for (auto it = fwd.rbegin(); it != fwd.rend(); ++it)
+        if (it->opType == "device.loadState") ops.appliedState(*store, it->payload, 2300);
+    check(patchOf(*v3) == 7, "redo: patch 7 again");
+    ec->setParamNormalized(4001 /* kGestureTrigger */, 1.0);    // drags Drive from 0.45 to 0.7
+    std::vector<adi::OpRequest> drag;
+    ops.drain(2400, drag);
+    check(drag.size() == 2 && std::fabs(drag[0].payload.value("norm", -1.0) - 0.45) < 1e-6,
+          "the drag starts where the preset put Drive: the opener is 0.45");
+    check(j.commit(drag).ok, "and commits");
+    {
+        adi::engine::Session s3;
+        check(s3.load(*store, loader, adi::engine::SessionSpec{}), "a third session loads: " + s3.error());
+        const auto* d3 = s3.instanceFor(100);
+        check(s3.stats().statesLoaded == 1 && s3.stats().paramsApplied == 1,
+              "the chunk loaded, and the one row it disagrees with went on top");
+        check(d3 != nullptr && patchOf(*d3) == 7 && std::fabs(driveOf(*d3) - 0.7) < 1e-6,
+              "patch 7 from the chunk, Drive 0.7 from the drag -- not the chunk's 0.45");
+    }
+    ec->release();
+}
+
 void fixtureAcceptance(adi::device::Vst3Host& host) {
     using adi::engine::Event;
     using adi::engine::EventType;
@@ -864,6 +1047,7 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
               "ADI Test NoteExpr on MpeMidi: unbent -- no mapping, and it ignores legacy MIDI events");
 
     fixtureGesture(host);
+    fixtureState(host);
 }
 #endif
 

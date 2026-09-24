@@ -106,6 +106,7 @@ public:
         std::int64_t retired = 0;        ///< rows that left the project after `load`
         std::int64_t statesLoaded = 0;   ///< `loadState` calls that succeeded
         std::int64_t paramsApplied = 0;  ///< `setParam` calls made from `plugin_params`
+        std::int64_t paramsMatched = 0;  ///< rows a loaded chunk already agreed with (ADR-0142)
         std::int64_t rebuilds = 0;       ///< graphs this session asked for
         std::int64_t prepares = 0;       ///< `prepare` calls, including no-ops
         std::int64_t formatChanges = 0;  ///< prepares that changed rate or size

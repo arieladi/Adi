@@ -328,6 +328,8 @@ struct Fake {
     std::uint32_t minFrames = 0, maxFrames = 0; ///< ADR-0123 (C3)
     int flushes = 0;                           ///< ADR-0123 (C5)
     std::vector<clap_event_header_t> seenEvents;   ///< headers, for counting
+    const clap_host_t* host = nullptr;             ///< ADR-0142: set by a test that needs it
+    bool dirtyOnLoad = false;                      ///< answer a load with mark_dirty
     /// Full copies, because a clap_event_header_t is 16 bytes and casting one
     /// to a 48-byte param event reads past the end of the struct -- which is
     /// exactly what the first version of this fake did, and the assertions
@@ -473,6 +475,11 @@ struct Fake {
             f.saved.assign(64, 0);
             const auto got = is->read(is, f.saved.data(), f.saved.size());
             f.saved.resize(got > 0 ? static_cast<std::size_t>(got) : 0);
+            if (f.dirtyOnLoad && f.host != nullptr) {
+                const auto* hs = static_cast<const clap_host_state_t*>(
+                    f.host->get_extension(f.host, CLAP_EXT_STATE));
+                if (hs != nullptr && hs->mark_dirty != nullptr) hs->mark_dirty(f.host);
+            }
             return true; };
     }
 };
@@ -1029,6 +1036,48 @@ void testRestartCausesAreDistinguished() {
     check(glue.unexplainedRestarts() == 1,
           "a restart with no preceding notification is counted as unexplained");
     check(glue.restartRequests() == 3, "all three restarts are still counted");
+}
+
+void testAPluginsStateSignalIsABoundary() {
+    section("ADR-0142 -- params.rescan(VALUES|ALL) and state.mark_dirty move the state epoch; our own load's answer does not");
+    ClapHostGlue glue;
+    const clap_host_t* h = glue.host();
+    const auto* hp = static_cast<const clap_host_params_t*>(h->get_extension(h, CLAP_EXT_PARAMS));
+    const auto* hs = static_cast<const clap_host_state_t*>(h->get_extension(h, CLAP_EXT_STATE));
+    check(hp != nullptr && hp->rescan != nullptr && hp->clear != nullptr && hp->request_flush != nullptr,
+          "we offer clap_host_params, all three functions");
+    check(hs != nullptr && hs->mark_dirty != nullptr, "and clap_host_state");
+    if (hp == nullptr || hs == nullptr) return;
+
+    hp->rescan(h, CLAP_PARAM_RESCAN_TEXT);
+    hp->rescan(h, CLAP_PARAM_RESCAN_INFO);
+    check(glue.stateSignals() == 0, "TEXT and INFO alone are cosmetic");
+    hp->rescan(h, CLAP_PARAM_RESCAN_VALUES);
+    check(glue.stateSignals() == 1, "VALUES is a boundary: the values moved without events");
+    hp->rescan(h, CLAP_PARAM_RESCAN_ALL);
+    check(glue.stateSignals() == 2, "ALL is one too");
+    hs->mark_dirty(h);
+    check(glue.stateSignals() == 3, "and so is mark_dirty");
+    hp->request_flush(h);
+    hp->clear(h, 7, CLAP_PARAM_CLEAR_ALL);
+    check(glue.flushRequests() == 1 && glue.stateSignals() == 3,
+          "a flush request is counted and is not a boundary; clear is neither");
+
+    Fake f;
+    f.host = h;
+    DeviceIdentity id;
+    id.format = "clap";
+    id.name = "Fake";
+    ClapDevice d(&f.plugin, id);
+    check(d.stateEpoch() == 0, "a device built with no glue never signals");
+    d.setGlue(&glue);
+    check(d.stateEpoch() == 3, "with one, it reports its host's count");
+    f.dirtyOnLoad = true;
+    check(d.loadState("chunk", {1, 2, 3}), "a load");
+    check(d.stateEpoch() == 3, "the plugin's answer to our own load did not move it");
+    check(glue.mutedStateSignals() == 1, "it was counted as muted instead");
+    hs->mark_dirty(h);
+    check(d.stateEpoch() == 4, "and the mute ended with the load");
 }
 
 void testMainThreadCallbackIsDispatched() {
@@ -1843,6 +1892,7 @@ int main() {
     testAFailedStartIsNotProcessed();
     testActivationBoundsAdmitSegments();
     testAParameterSetBeforeActivationIsFlushed();
+    testAPluginsStateSignalIsABoundary();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

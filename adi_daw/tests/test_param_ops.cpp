@@ -4,6 +4,8 @@
 // `device.setParam` per gesture; an op from anywhere else reaches the device
 // with the echo guard armed; a CLAP's output events arrive from the audio
 // thread; and the whole loop closes through the journal and an undo.
+// ADR-0142: a preset picked in the plugin's own browser is one
+// `device.loadState`, and that loop closes through the journal too.
 //
 // No JUCE. The VST3 listener is the same three calls into the same sink and
 // is exercised by the JUCE build.
@@ -17,6 +19,7 @@
 #include "adi/engine/param_ops.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include "juce/clap_host.hpp"
@@ -27,6 +30,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -452,6 +456,452 @@ void testTheWholeLoopThroughTheJournal() {
               std::to_string(knobs->getParam("cutoff").normalized));
     std::vector<OpRequest> after;
     eqi(static_cast<long long>(ops.drain(1300, after)), 0, "the undo's set produced no new op");
+
+    // ADR-0142 aside: the undo cleared the row, so cutoff is never-touched
+    // again, and its next edit must write where it starts -- or undoing THAT
+    // edit would only delete the row and leave the plugin where it went.
+    knobs->begin(0); knobs->value(0, 0.7); knobs->end(0);
+    std::vector<OpRequest> again;
+    eqi(static_cast<long long>(ops.drain(1400, again)), 2,
+        "the next edit after the undo: an opener again, then the edit");
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0142: the chunk. A device with state outside its parameters
+// ---------------------------------------------------------------------------
+
+/// A plugin with a preset browser. Its chunk is its two parameters AND a
+/// patch number that is no parameter at all -- the wavetable, the sample, the
+/// thing ADR-0110 d1 says a parameter op can never carry.
+///
+/// Its `loadState` behaves like a VST3 through our host: the answer to our own
+/// load is muted (the epoch does not move), and `answerLater` is the plugin
+/// that answers from its own timer instead.
+class Sampler final : public device::DeviceInstance {
+public:
+    Sampler() {
+        device::ParamDescriptor c;
+        c.id = "cutoff"; c.name = "Cutoff";
+        params_.push_back(c);
+        device::ParamDescriptor g;
+        g.id = "gain"; g.name = "Gain";
+        params_.push_back(g);
+        values_ = {0.5, 0.25};
+        id_.format = "test"; id_.name = "Sampler";
+    }
+    [[nodiscard]] const device::DeviceIdentity& identity() const noexcept override { return id_; }
+    [[nodiscard]] bool loaded() const noexcept override { return true; }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    void process(const NodeIo& io) noexcept override { device::passThrough(io); }
+    [[nodiscard]] std::int32_t paramCount() const noexcept override {
+        return static_cast<std::int32_t>(params_.size());
+    }
+    [[nodiscard]] const device::ParamDescriptor* paramAt(std::int32_t i) const noexcept override {
+        return (i < 0 || i >= paramCount()) ? nullptr : &params_[static_cast<std::size_t>(i)];
+    }
+    [[nodiscard]] device::ParamValue getParam(const std::string& id) const noexcept override {
+        for (std::size_t i = 0; i < params_.size(); ++i)
+            if (params_[i].id == id) return device::ParamValue::fromNormalized(values_[i]);
+        return {};
+    }
+    bool setParam(const std::string& id, const device::ParamValue& v) override {
+        for (std::size_t i = 0; i < params_.size(); ++i) {
+            if (params_[i].id != id) continue;
+            ++sets;
+            values_[i] = v.normalized;
+            return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] std::vector<std::string> stateRoles() const override {
+        if (stateless) return {};
+        return {"chunk"};
+    }
+    [[nodiscard]] std::vector<std::uint8_t> saveState(const std::string& role) const override {
+        if (stateless || role != "chunk") return {};
+        std::vector<std::uint8_t> b(1 + 2 * sizeof(double));
+        b[0] = static_cast<std::uint8_t>(patch_);
+        std::memcpy(b.data() + 1, &values_[0], sizeof(double));
+        std::memcpy(b.data() + 1 + sizeof(double), &values_[1], sizeof(double));
+        return b;
+    }
+    bool loadState(const std::string& role, const std::vector<std::uint8_t>& b) override {
+        if (stateless || role != "chunk" || b.size() != 1 + 2 * sizeof(double)) return false;
+        ++loads;
+        patch_ = b[0];
+        std::memcpy(&values_[0], b.data() + 1, sizeof(double));
+        std::memcpy(&values_[1], b.data() + 1 + sizeof(double), sizeof(double));
+        // Our own load: the plugin answers, and the host mutes it.
+        return true;
+    }
+    [[nodiscard]] std::uint64_t stateEpoch() const noexcept override { return epoch_; }
+
+    // --- the plugin's own window ------------------------------------------
+    /// Its preset browser: a new patch, the cutoff moved WITHOUT a gesture
+    /// (the parameter broadcast a preset load makes), then the boundary.
+    /// `broadcast` false is the plugin that moves its values silently and
+    /// only signals -- CLAP's params.rescan(VALUES) is exactly that.
+    void pickPreset(int patch, double cutoff, bool broadcast = true) {
+        patch_ = patch;
+        values_[0] = cutoff;
+        if (broadcast) broadcastParam(0, ParamEventKind::Value, cutoff);
+        ++epoch_;
+    }
+    /// A signal with nothing changed: a latency restart, a late echo.
+    void answerLater() { ++epoch_; }
+    void drag(std::int32_t i, double to) {
+        broadcastParam(i, ParamEventKind::Begin, 0.0);
+        values_[static_cast<std::size_t>(i)] = to;
+        broadcastParam(i, ParamEventKind::Value, to);
+        broadcastParam(i, ParamEventKind::End, 0.0);
+    }
+    [[nodiscard]] int patch() const noexcept { return patch_; }
+
+    bool stateless = false;
+    int sets = 0;
+    int loads = 0;
+
+private:
+    device::DeviceIdentity id_;
+    std::vector<device::ParamDescriptor> params_;
+    std::vector<double> values_;
+    int patch_ = 0;
+    std::uint64_t epoch_ = 0;
+};
+
+std::string hashOfState(const Sampler& s) {
+    const std::vector<std::uint8_t> b = s.saveState("chunk");
+    const auto h = adi::media::blake3Bytes(std::as_bytes(std::span(b.data(), b.size())));
+    return h.hex;
+}
+
+long long countOf(const std::vector<OpRequest>& v, const char* type) {
+    long long n = 0;
+    for (const OpRequest& r : v) if (r.opType == type) ++n;
+    return n;
+}
+
+void testAPresetIsOneSnapshot() {
+    section("ADR-0142 d1 -- a preset picked in the plugin's browser is ONE device.loadState, with the chunk it replaced first");
+    Sampler s;      // the device outlives the glue (ADR-0124 contract)
+    ParamOps ops;
+    ops.attach(5, s);
+    const std::string before = hashOfState(s);
+
+    s.pickPreset(7, 0.9);
+    const std::string after = hashOfState(s);
+    std::vector<OpRequest> out;
+    eqi(static_cast<long long>(ops.drain(1000, out)), 2, "two requests: the opener and the snapshot");
+    eqi(countOf(out, "device.loadState"), 2, "both device.loadState");
+    eqi(countOf(out, "device.setParam"), 0, "and NO parameter op: the preset's cutoff broadcast was absorbed");
+    if (out.size() == 2) {
+        check(out[0].payload.value("hash", std::string()) == before,
+              "the opener carries the chunk as it was at attach (decision 6)");
+        check(out[1].payload.value("hash", std::string()) == after, "the snapshot carries the new chunk");
+        check(out[1].payload.value("role", std::string()) == "chunk", "role chunk");
+        check(out[1].payload.value("hint", std::string()) == "test", "hinted with the format");
+        check(out[1].label == "Sampler: state", "labelled for the undo menu: " + out[1].label);
+    }
+    const ParamEditCapture::Stats* cs = ops.captureStats(5);
+    check(cs != nullptr && cs->absorbed == 1, "the capture absorbed the one ungestured edit: " +
+                                                  std::to_string(cs ? cs->absorbed : -1));
+    const std::vector<StateBlob> blobs = ops.takeBlobs();
+    eqi(static_cast<long long>(blobs.size()), 2, "and two blobs wait to be written");
+    if (blobs.size() == 2) {
+        check(blobs[0].hash == before && blobs[1].hash == after, "the blobs are the requests' hashes");
+        check(!blobs[1].bytes.empty() && blobs[1].bytes[0] == 7, "the new chunk holds the patch");
+    }
+    check(ops.takeBlobs().empty(), "taken once");
+
+    std::vector<OpRequest> again;
+    eqi(static_cast<long long>(ops.drain(1100, again)), 0, "nothing more without a new signal");
+    s.answerLater();
+    eqi(static_cast<long long>(ops.drain(1200, again)), 0, "a signal with an unchanged chunk writes nothing (decision 8)");
+    eqi(ops.stats().snapshotsUnchanged, 1, "counted as unchanged");
+
+    // The second preset has a row behind it now: no opener.
+    s.pickPreset(3, 0.6);
+    std::vector<OpRequest> second;
+    eqi(static_cast<long long>(ops.drain(1300, second)), 1, "the second preset: one snapshot, no opener");
+    eqi(ops.stats().snapshotOpeners, 1, "one opener in all");
+}
+
+void testAGestureAfterAPresetStartsFromIt() {
+    section("ADR-0142 -- the capture is re-seeded: a drag after a preset starts where the preset put it");
+    Sampler s;
+    ParamOps ops;
+    ops.attach(6, s);
+    s.pickPreset(2, 0.8);
+    std::vector<OpRequest> out;
+    ops.drain(1000, out);
+    s.drag(0, 0.3);
+    std::vector<OpRequest> drag;
+    eqi(static_cast<long long>(ops.drain(1100, drag)), 2, "first touch of cutoff: opener and edit");
+    if (drag.size() == 2)
+        check(near(drag[0].payload.at("norm").get<double>(), 0.8),
+              "the opener is the preset's 0.8, not the 0.5 before it: " +
+                  std::to_string(drag[0].payload.at("norm").get<double>()));
+
+    // A plugin that moves its values SILENTLY and only signals: nothing was
+    // broadcast for the capture to absorb, so only the re-seed knows.
+    Sampler quiet;
+    ParamOps ops2;
+    ops2.attach(16, quiet);
+    quiet.pickPreset(2, 0.8, /*broadcast=*/false);
+    std::vector<OpRequest> q1;
+    ops2.drain(1000, q1);
+    quiet.drag(0, 0.3);
+    std::vector<OpRequest> q2;
+    ops2.drain(1100, q2);
+    check(q2.size() == 2 && near(q2[0].payload.at("norm").get<double>(), 0.8),
+          "and after a SILENT preset too: the snapshot re-seeded the capture");
+}
+
+void testAppliedMovesTheBaselineWithoutAnEcho() {
+    section("ADR-0142 aside -- applied() records the value it set, even for a plugin that never echoes");
+    Knobs k;        // echoOnSet stays false: this plugin says nothing back
+    ParamOps ops;
+    ops.attach(4, k);
+    check(ops.applied({{"dev", 4}, {"param", "gain"}, {"norm", 0.7}}, 1000), "set to 0.7");
+    k.begin(1); k.value(1, 0.2); k.end(1);
+    std::vector<OpRequest> out;
+    eqi(static_cast<long long>(ops.drain(2000, out)), 2, "a gesture after it: opener and edit");
+    check(out.size() == 2 && near(out[0].payload.at("norm").get<double>(), 0.7),
+          "the opener is the applied 0.7, not the 0.25 the capture last saw broadcast");
+}
+
+void testRowsFollowTheChunk() {
+    section("ADR-0142 d3 -- a row the preset overtook is rewritten in the same transaction");
+    Sampler s;
+    ParamOps ops;
+    ops.attach(7, s);
+    s.drag(0, 0.7);                       // cutoff gets a row
+    std::vector<OpRequest> edit;
+    eqi(static_cast<long long>(ops.drain(1000, edit)), 2, "the drag: opener and edit");
+    s.pickPreset(4, 0.2);
+    std::vector<OpRequest> out;
+    ops.drain(1100, out);
+    eqi(countOf(out, "device.loadState"), 2, "opener and snapshot");
+    eqi(countOf(out, "device.setParam"), 1, "and the cutoff row, rewritten");
+    bool found = false;
+    for (const OpRequest& r : out)
+        if (r.opType == "device.setParam" && r.payload.value("param", std::string()) == "cutoff")
+            found = near(r.payload.at("norm").get<double>(), 0.2);
+    check(found, "to the preset's 0.2");
+    eqi(ops.stats().rowsFollowed, 1, "counted");
+    check(!out.empty() && out.back().opType == "device.setParam",
+          "after the snapshot, so a replay ends where the rows say");
+}
+
+void testASaveWritesTheFirstRow() {
+    section("ADR-0142 -- snapshot() is also the save: a chunk the project lacks is written, once");
+    Sampler s;
+    ParamOps ops;
+    ops.attach(10, s);
+    std::vector<OpRequest> out;
+    eqi(static_cast<long long>(ops.snapshot(10, 1000, out)), 1, "one request: the first row, no opener");
+    check(out.size() == 1 && out[0].payload.value("hash", std::string()) == hashOfState(s),
+          "the chunk the plugin holds");
+    eqi(static_cast<long long>(ops.takeBlobs().size()), 1, "and its blob");
+    std::vector<OpRequest> again;
+    eqi(static_cast<long long>(ops.snapshot(10, 1100, again)), 0, "a second save of the same chunk writes nothing");
+    s.answerLater();
+    eqi(static_cast<long long>(ops.drain(1200, again)), 0, "nor does a signal: the drain is not a save");
+    eqi(static_cast<long long>(ops.snapshot(99, 1300, again)), 0, "an unknown device saves nothing");
+}
+
+void testAStatelessDeviceWritesItsMoves() {
+    section("ADR-0142 -- a device with no chunk: the signal's moves are the only record, so they are edits");
+    Sampler s;
+    s.stateless = true;
+    ParamOps ops;
+    ops.attach(8, s);
+    s.pickPreset(9, 0.95);
+    std::vector<OpRequest> out;
+    eqi(static_cast<long long>(ops.drain(1000, out)), 2, "the cutoff move: opener and edit");
+    eqi(countOf(out, "device.loadState"), 0, "no chunk to write");
+    if (out.size() == 2) {
+        check(near(out[0].payload.at("norm").get<double>(), 0.5), "the opener is where it was");
+        check(near(out[1].payload.at("norm").get<double>(), 0.95), "the edit is where the preset put it");
+    }
+    eqi(ops.stats().statelessMoves, 1, "counted");
+}
+
+void testAnUndoneChunkReseedsTheCapture() {
+    const adi::test::TempDirectory scratch("param_ops", "reseed");
+    section("ADR-0142 -- an undone preset re-reads the plugin: the next drag starts where the undo put it");
+    StoreError e = StoreError::Ok;
+    auto store = Store::create(scratch.path() / "p.adi", e);
+    check(store != nullptr, "created");
+    if (!store) return;
+    Sampler s;
+    ParamOps ops;
+    ops.attach(9, s);
+    s.pickPreset(5, 0.9);
+    std::vector<OpRequest> out;
+    ops.drain(1000, out);
+    std::string err;
+    check(out.size() == 2 && ops.writeBlobs(*store, err), "opener and snapshot, blobs written: " + err);
+    if (out.size() != 2) return;
+    // The snapshot's inverse, by hand: the chunk the opener wrote.
+    const Payload back = {{"dev", 9}, {"role", "chunk"}, {"hash", out[0].payload.at("hash")}};
+    check(ops.appliedState(*store, back, 1100), "the chunk is loaded back");
+    eqi(s.patch(), 0, "patch 0");
+    check(!ops.appliedState(*store, back, 1150), "and a second time is a no-op: the device holds it");
+    eqi(ops.stats().statesAppliedEqual, 1, "counted as equal");
+    s.drag(0, 0.4);
+    std::vector<OpRequest> drag;
+    ops.drain(1200, drag);
+    check(drag.size() == 2 && near(drag[0].payload.at("norm").get<double>(), 0.5),
+          "the drag's opener is the undone 0.5, not the preset's 0.9");
+    const Payload missing = {{"dev", 9}, {"role", "chunk"}, {"hash", std::string(64, 'f')}};
+    check(!ops.appliedState(*store, missing, 1300), "a hash with no blob is refused");
+    eqi(ops.stats().statesRefused, 1, "and counted");
+}
+
+void testTheStateLoopThroughTheJournal() {
+    const adi::test::TempDirectory scratch("param_ops", "state");
+    section("ADR-0142 -- a preset through the journal: reload keeps it, undo reaches the plugin, a row on top survives");
+    StoreError e = StoreError::Ok;
+    auto store = Store::create(scratch.path() / "p.adi", e);
+    check(store != nullptr, "created");
+    if (!store) return;
+    {
+        OpJournal j(*store);
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", 1}, {"kind", "midi"}, {"name", "Keys"}};
+        commits(j, r, "Keys");
+        r.payload = {{"id", 9}, {"kind", "master"}, {"name", "Master"}, {"index", 1}};
+        commits(j, r, "Master");
+        store->db().exec("INSERT INTO plugin_refs(id, format, uid, vendor, name, version, subtype) "
+                         "VALUES (1, 'vst3', 'adi.test.sampler', 'ADI', 'Sampler', '1.0', 'instrument')");
+        r.opType = "chain.create";
+        r.payload = {{"id", 10}, {"track", 1}};
+        commits(j, r, "chain");
+        r.opType = "device.insert";
+        r.payload = {{"id", 100}, {"chain", 10}, {"ord", 0}, {"ref", 1}, {"name", "Sampler"}};
+        commits(j, r, "device");
+    }
+    std::vector<Sampler*> made;
+    auto loader = [&](const DeviceRequest& rq, std::string& err) -> std::unique_ptr<device::DeviceInstance> {
+        if (rq.ref != nullptr && rq.ref->uid == "adi.test.sampler") {
+            auto d = std::make_unique<Sampler>();
+            made.push_back(d.get());
+            return d;
+        }
+        err = "not here";
+        return nullptr;
+    };
+    auto rowHash = [&]() -> std::string {
+        SQLite::Statement st(store->db(),
+            "SELECT state_hash FROM plugin_state WHERE device_id = 100 AND stream_role = 'chunk'");
+        return st.executeStep() ? st.getColumn(0).getString() : std::string("(none)");
+    };
+
+    Session s;
+    check(s.load(*store, loader, SessionSpec{}), "loaded: " + s.error());
+    if (made.size() != 1) { check(false, "the loader made one Sampler"); return; }
+    Sampler& live = *made[0];
+    ParamOps ops;
+    eqi(static_cast<long long>(ops.attachSession(s)), 1, "attached");
+    const std::string baseline = hashOfState(live);
+
+    // --- the preset, committed -------------------------------------------
+    live.pickPreset(7, 0.9);
+    std::vector<OpRequest> out;
+    eqi(static_cast<long long>(ops.drain(1000, out)), 2, "opener and snapshot");
+    OpJournal j(*store);
+    const CommitResult bad = j.commit(out);
+    check(!bad.ok, "committed WITHOUT the blobs, the foreign key refuses it: " + bad.error);
+    std::string err;
+    check(ops.writeBlobs(*store, err), "the blobs are written: " + err);
+    // `writeBlobs` took them; the refused commit left the requests intact.
+    const CommitResult res = j.commit(out);
+    check(res.ok, "then the transaction commits: " + res.error);
+    const std::string presetHash = hashOfState(live);
+    check(rowHash() == presetHash, "the row holds the preset's chunk");
+
+    // --- a second session, from the file -----------------------------------
+    {
+        std::vector<Sampler*> keep;
+        keep.swap(made);
+        Session s2;
+        check(s2.load(*store, loader, SessionSpec{}), "reloaded: " + s2.error());
+        eqi(s2.stats().statesLoaded, 1, "the chunk loaded");
+        check(made.size() == 1 && made[0]->patch() == 7, "the patch came back: 7");
+        check(made.size() == 1 && near(made[0]->getParam("cutoff").normalized, 0.9), "and cutoff 0.9");
+        made.swap(keep);
+    }
+
+    // --- undo: the inverses reach the plugin, newest first -----------------
+    History h(*store);
+    const History::Result u = h.undo();
+    check(u.ok, "undone: " + u.error);
+    check(rowHash() == "(none)", "the row is gone again: the project had no chunk before the preset");
+    int loadedBack = 0;
+    for (const OpJournal::LoggedOp& op : j.recent(2))
+        if (op.opType == "device.loadState" && op.inverse && ops.appliedState(*store, *op.inverse, 1100))
+            ++loadedBack;
+    eqi(loadedBack, 1, "one inverse loaded a chunk; the other clears the row");
+    eqi(live.patch(), 0, "the plugin's patch is back to 0");
+    check(near(live.getParam("cutoff").normalized, 0.5), "and cutoff to 0.5");
+    check(hashOfState(live) == baseline, "byte for byte the chunk it had");
+    eqi(ops.stats().statesCleared, 1, "the opener's inverse was the clearing one");
+    std::vector<OpRequest> after;
+    eqi(static_cast<long long>(ops.drain(1200, after)), 0, "the undo made no op");
+    live.answerLater();   // the plugin answers the load from its timer
+    eqi(static_cast<long long>(ops.drain(1300, after)), 0, "nor did the plugin's late answer (decision 8)");
+
+    // --- redo: the forward payloads, oldest first -----------------------------
+    const History::Result rd = h.redo();
+    check(rd.ok, "redone: " + rd.error);
+    std::vector<OpJournal::LoggedOp> fwd = j.recent(2);
+    int redone = 0;
+    for (auto it = fwd.rbegin(); it != fwd.rend(); ++it)
+        if (it->opType == "device.loadState" && ops.appliedState(*store, it->payload, 1400)) ++redone;
+    eqi(redone, 1, "the opener's chunk is already there; the preset's is loaded");
+    eqi(live.patch(), 7, "the patch is 7 again");
+    check(rowHash() == presetHash, "and the row holds it");
+
+    // --- a drag after the preset: a row newer than the chunk ------------------
+    live.drag(0, 0.35);
+    std::vector<OpRequest> drag;
+    eqi(static_cast<long long>(ops.drain(1500, drag)), 2, "opener and edit");
+    check(j.commit(drag).ok, "committed");
+    {
+        std::vector<Sampler*> keep;
+        keep.swap(made);
+        Session s3;
+        check(s3.load(*store, loader, SessionSpec{}), "reloaded: " + s3.error());
+        eqi(s3.stats().statesLoaded, 1, "the chunk loaded");
+        eqi(s3.stats().paramsApplied, 1, "and the one row it disagrees with went on top");
+        check(made.size() == 1 && made[0]->patch() == 7, "the patch is the chunk's");
+        check(made.size() == 1 && near(made[0]->getParam("cutoff").normalized, 0.35),
+              "the cutoff is the drag's 0.35, not the chunk's 0.9");
+        made.swap(keep);
+    }
+
+    // --- a second preset overtakes the row -------------------------------------
+    live.pickPreset(3, 0.6);
+    std::vector<OpRequest> p2;
+    ops.drain(1600, p2);
+    eqi(countOf(p2, "device.loadState"), 1, "one snapshot: the project has a row now, no opener");
+    eqi(countOf(p2, "device.setParam"), 1, "and the cutoff row follows it");
+    check(ops.writeBlobs(*store, err), "blobs: " + err);
+    check(j.commit(p2).ok, "committed");
+    {
+        std::vector<Sampler*> keep;
+        keep.swap(made);
+        Session s4;
+        check(s4.load(*store, loader, SessionSpec{}), "reloaded: " + s4.error());
+        check(made.size() == 1 && made[0]->patch() == 3, "patch 3");
+        check(made.size() == 1 && near(made[0]->getParam("cutoff").normalized, 0.6),
+              "cutoff 0.6: the row followed the chunk, so it did not drag the old 0.35 back on top");
+        eqi(s4.stats().paramsMatched, 1, "the row matched the chunk");
+        made.swap(keep);
+    }
 }
 
 }  // namespace
@@ -466,6 +916,14 @@ int main() {
     testTwoDevicesTwoRings();
     testTheClapPathOnTheAudioThread();
     testTheWholeLoopThroughTheJournal();
+    testAPresetIsOneSnapshot();
+    testAGestureAfterAPresetStartsFromIt();
+    testAppliedMovesTheBaselineWithoutAnEcho();
+    testRowsFollowTheChunk();
+    testASaveWritesTheFirstRow();
+    testAStatelessDeviceWritesItsMoves();
+    testAnUndoneChunkReseedsTheCapture();
+    testTheStateLoopThroughTheJournal();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

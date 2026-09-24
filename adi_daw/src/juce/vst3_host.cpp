@@ -604,6 +604,17 @@ std::vector<std::uint8_t> Vst3Device::saveState(const std::string& role) const {
 
 bool Vst3Device::loadState(const std::string& role, const std::vector<std::uint8_t>& b) {
     if (inst_ == nullptr || role != "chunk") return false;
+    // ADR-0142: muted, as our own setParam is (ADR-0124). A plugin handed
+    // its state commonly answers with restartComponent(kParamValuesChanged),
+    // and JUCE turns that -- synchronously, on this thread -- into a value
+    // broadcast per changed parameter and a program-changed notification.
+    // None of it is an edit: the op that caused this load is in the log.
+    struct Mute {
+        bool& flag;
+        const bool was;
+        explicit Mute(bool& f) : flag(f), was(f) { flag = true; }
+        ~Mute() { flag = was; }
+    } mute(settingFromHost_);
     inst_->setStateInformation(b.data(), static_cast<int>(b.size()));
     return true;
 }
@@ -622,8 +633,11 @@ void Vst3Device::audioProcessorChanged(juce::AudioProcessor*, const ChangeDetail
     // so the message thread coalesces these and republishes once.
     if (d.latencyChanged)
         latencyEpoch_.fetch_add(1, std::memory_order_release);
-    if (d.parameterInfoChanged || d.programChanged || d.nonParameterStateChanged)
-        stateEpoch_.fetch_add(1, std::memory_order_release);
+    if (d.parameterInfoChanged || d.programChanged || d.nonParameterStateChanged) {
+        // ADR-0142: the answer to our own load or set is not a boundary.
+        if (settingFromHost_) mutedStateSignals_.fetch_add(1, std::memory_order_release);
+        else stateEpoch_.fetch_add(1, std::memory_order_release);
+    }
 }
 
 }  // namespace adi::device

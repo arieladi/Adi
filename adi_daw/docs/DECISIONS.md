@@ -9169,3 +9169,127 @@ validate_schema 5j. The plants are in `collab/cloud.md`.
 
 **Not decided:** automatic snapshots (ADR-0128 still defers them), and the
 compaction pass that must respect snapshot points (it does not exist yet).
+
+
+---
+
+## ADR-0142 — A plugin's state round-trips through the project, and a preset picked in its own window is one undoable op — `DECIDED` (2026-09-24) — **CLOSES ADR-0110 d1; AMENDS ADR-0122 d5**
+
+**Context.** ADR-0110 d1: not every change is a parameter. A preset picked in
+the plugin's own browser, a sample dropped on it, moves its state with no
+gesture at all, and the plugin says so afterwards -- VST3
+`restartComponent(kParamValuesChanged)`, CLAP `params.rescan`. That signal was
+to become a chunk snapshot op. Until now it became nothing, and the fixture
+VST3's `getState` and `setState` returned no bytes, so no plugin state had
+ever made the round trip through a real plugin and back.
+
+### Decisions
+
+1. **The signal is on the device contract.** `DeviceInstance::stateEpoch()`
+   moves when the plugin says its state changed outside its parameter
+   broadcasts. VST3: JUCE turns `restartComponent` and `setDirty` into
+   `audioProcessorChanged`, on the message thread and synchronously. CLAP: we
+   now offer `clap_host_params` (`rescan` with VALUES or ALL) and
+   `clap_host_state` (`mark_dirty`). Before this a CLAP plugin had no way to
+   tell us. A CLAP device reports its host's count, which every plugin that
+   host serves shares until C4 gives each its own `clap_host_t`. **Our own
+   `loadState` is muted in both formats**, as our own `setParam` already was
+   (ADR-0124 d5).
+2. **One preset, one transaction.** At the next drain the glue absorbs every
+   ungestured edit the device broadcast in that interval, saves the chunk,
+   hashes it with BLAKE3 and appends `device.loadState`. A gesture that ended
+   in the same interval is still its own op.
+3. **The first snapshot writes the chunk it replaced.** It is ADR-0124's
+   decision 4 again, for state. With no `plugin_state` row the inverse only
+   deletes the row, and undo would leave the preset in the plugin. The glue
+   keeps the chunk it saw at attach and writes it first, so the pair undoes to
+   it.
+4. **The same chunk is not a change.** A signal whose chunk hashes to what the
+   plugin last reported writes nothing: a latency restart, or a plugin
+   answering, from its own timer, the state our undo loaded into it. The
+   reference is what the plugin reports after a load, not the bytes it was
+   handed.
+5. **Rows follow the chunk, and go on top of it.** A snapshot rewrites every
+   `plugin_params` row of its device in the same transaction. The session now
+   applies every row that a loaded chunk disagrees with, replacing ADR-0122
+   d5's "the mirror only when no state loaded". A row that differs is an edit
+   newer than the chunk. Under the old rule a drag after a preset was lost on
+   reload. A row the chunk agrees with is still not pushed, which keeps d5's
+   reason: a plugin whose parameters derive from its chunk is not fought.
+6. **The bytes travel beside the requests.** `takeBlobs` or `writeBlobs` puts
+   them in `state_blobs` before the commit. The foreign key refuses a commit
+   that forgot, and a test commits without them to prove it.
+7. **Undo and redo** go through `appliedState`: load the blob, re-read every
+   parameter into the mirror and the capture. The opener's clearing inverse
+   arrives after its chunk was loaded back, so it only marks the role
+   unrecorded again.
+8. **A device with no chunk** writes the signal's parameter moves as edits,
+   openers included, because they are the only record of the change.
+9. **`ParamOps::snapshot` is also the save.** It writes a role the project has
+   no row for even when the chunk has not changed. `adi_play --save-state`
+   uses it, so the round trip can be run by hand: save, reopen, "states 1
+   loaded", and a second save finds nothing to write.
+10. **The fixture VST3 has a real chunk:** a patch number that no parameter
+    carries, plus Drive. It gains a preset-browser switch and a late-answer
+    switch. Loading a chunk answers with `restartComponent`, as real plugins
+    do.
+
+### Found while writing it
+
+- `ParamOps::applied` never recorded the value it set. Its comment said it
+  did. A plugin that stays silent after a host set left the capture at the
+  pre-undo value, and the next gesture's opener wrote that.
+- An undo that cleared a parameter's row left the parameter "touched". Its
+  next edit then had no opener, and undoing that edit only deleted the row.
+- The heredoc escape trap bit twice more (collab/win.md), and three plants
+  failed to build the first time, because MSVC /WX refuses a planted
+  `false &&`. They were re-planted in a form that compiles.
+
+### Verified non-vacuously
+
+Core, on all ABIs (`adi_param_ops_tests`, `adi_session_tests`, `adi_clap_tests`):
+
+| Planted | Check that failed |
+|---|---|
+| a signalled drain that does not absorb | the capture absorbed the one ungestured edit: 0 (6 failures) |
+| no opener before the first snapshot | two requests: the opener and the snapshot (12) |
+| an unchanged chunk still written | a signal with an unchanged chunk writes nothing (3) |
+| rows do not follow the chunk | the cutoff row, rewritten (7) |
+| the old restore rule | the one row it disagrees with went on top; Warm's mix (7) |
+| no re-seed after a snapshot | after a SILENT preset too: the snapshot re-seeded the capture |
+| `applied` without recording its value | the opener is the applied 0.7, not 0.25 |
+| a cleared row leaves the parameter touched | the next edit after the undo: an opener again |
+| `appliedState` without re-reading the plugin | the drag's opener is the undone 0.5, not 0.9 |
+| a CLAP load not muted | the plugin's answer to our own load did not move it |
+| CLAP `rescan(VALUES)` not a boundary | VALUES is a boundary (7) |
+
+The real fixture through JUCE (`adi_vst3_probe --fixture`, CI's Windows JUCE job):
+
+| Planted | Check that failed |
+|---|---|
+| a signalled drain that does not absorb | the preset's broadcasts were absorbed: 0; the undo made no op: got 4 |
+| no opener before the first snapshot | one preset is two `device.loadState`: got 1 |
+| an unchanged chunk still written | nor did its late answer: got 2 |
+| our own VST3 load not muted | the plugin answered our load, and it was muted |
+| `restartComponent` never reaches `stateEpoch` | reached us as ONE boundary: epoch 0 (14) |
+| the old restore rule | Drive 0.7 from the drag, not the chunk's 0.45 |
+
+Unmuting our own VST3 load trips only its own check. Decision 4 still keeps
+the plugin's answer out of the log: two defences, each with its own case, as
+in ADR-0141.
+
+**Not decided, and known limits:**
+
+- CLAP `RESCAN_ALL` does not re-read the parameter list yet: a re-read under a
+  live glue moves every index it holds. `request_flush` is counted, not
+  answered.
+- On a shared CLAP host, any plugin's signal makes every CLAP device save and
+  hash its chunk, until C4.
+- A plugin that marks itself dirty on every parameter change would give each
+  drag a snapshot beside its parameter op. That is still one transaction and
+  one undo step. No such plugin has been seen yet.
+- The glue holds one chunk per device in memory until that device's first
+  snapshot: the opener's bytes.
+- SPEC §7.1 still calls the mirror "redundant when the plugin loads". It
+  gains decision 5's reader and writer rules when `docs/format/**` comes back
+  from cloud.

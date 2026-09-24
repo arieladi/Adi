@@ -72,6 +72,15 @@ void ParamEditCapture::close(const Key& key, Parameter& p, std::vector<ParamEdit
 }
 
 std::size_t ParamEditCapture::drain(std::int64_t nowMs, std::vector<ParamEdit>& out) {
+    return drainImpl(nowMs, out, false);
+}
+
+std::size_t ParamEditCapture::drainAbsorbing(std::int64_t nowMs, std::vector<ParamEdit>& out) {
+    return drainImpl(nowMs, out, true);
+}
+
+std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out,
+                                        bool absorb) {
     const auto start = out.size();
     // Expire before processing queued values, even when the queue is empty.
     for (auto& [key, p] : parameters_) {
@@ -127,8 +136,20 @@ std::size_t ParamEditCapture::drain(std::int64_t nowMs, std::vector<ParamEdit>& 
         read_.store(r, std::memory_order_release);
     }
     for (auto& [key, p] : parameters_) {
-        if (p.open && p.implicit && elapsed(nowMs, p.lastValueMs) >= static_cast<std::uint64_t>(quietMs_))
+        if (!p.open || !p.implicit) continue;
+        if (absorb) {
+            // Folded into the snapshot: the value is where the plugin put it,
+            // and no edit says so.
+            if (p.hasValue) {
+                p.last = p.after;
+                p.known = true;
+                ++stats_.absorbed;
+            }
+            p.open = false;
+            p.hasValue = false;
+        } else if (elapsed(nowMs, p.lastValueMs) >= static_cast<std::uint64_t>(quietMs_)) {
             close(key, p, out);
+        }
     }
     return out.size() - start;
 }

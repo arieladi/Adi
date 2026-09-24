@@ -8,6 +8,7 @@
 #include "adi/store.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <string>
 #include <utility>
@@ -155,11 +156,16 @@ std::unique_ptr<device::DeviceInstance> Session::makePlaceholder(
 
 void Session::restoreState(const Store& store, const rows::Device& row,
                            device::DeviceInstance& inst) {
-    // State first. The parameter mirror is applied ONLY when no state stream
-    // loaded: a chunk that loaded already carries every value the mirror has,
-    // and pushing the mirror on top of it would fight a plugin whose
-    // parameters are derived from its chunk (a sampler's zone count, a
-    // modular's patch). The mirror is the fallback SPEC §7.1 made it.
+    // State first, then every mirror row the plugin does not already hold
+    // (ADR-0142, replacing ADR-0122's "the mirror only when no state
+    // loaded"). A chunk is now written when the plugin signals, not only at
+    // save, so a knob turned after a preset is a row NEWER than the chunk --
+    // and skipping the rows lost it. The other way round cannot happen: a
+    // snapshot rewrites every row of its device to match (param_ops.hpp,
+    // decision 7), so a row that differs from the loaded chunk is an edit
+    // made after it. A row the chunk already agrees with is not pushed,
+    // which is what keeps this from fighting a plugin whose parameters are
+    // derived from its chunk (a sampler's zone count, a modular's patch).
     bool any = false;
     for (const rows::PluginState& s : model_.pluginState) {
         if (s.deviceId != row.id) continue;
@@ -178,10 +184,14 @@ void Session::restoreState(const Store& store, const rows::Device& row,
                                        s.role + "' state");
         }
     }
-    if (any) return;
     for (const rows::PluginParam& p : model_.pluginParams) {
         if (p.deviceId != row.id) continue;
-        if (inst.setParam(p.paramId, valueOf(p))) ++stats_.paramsApplied;
+        const device::ParamValue want = valueOf(p);
+        if (any && std::fabs(inst.getParam(p.paramId).normalized - want.normalized) <= 1e-6) {
+            ++stats_.paramsMatched;
+            continue;
+        }
+        if (inst.setParam(p.paramId, want)) ++stats_.paramsApplied;
     }
 }
 
