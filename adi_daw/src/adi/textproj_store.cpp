@@ -90,6 +90,7 @@ enum Section : std::int64_t {
     SecTrack = 3,
     SecMarker = 4,
     SecRoute = 5,
+    SecRemark = 6,   // only remarks whose anchor is gone are roots (ADR-0139)
 };
 
 /// `roleRoot` returns `trk`, not `/trk` -- its own doc comment says otherwise,
@@ -139,6 +140,7 @@ std::span<const TableCoverage> coverage() {
         {"markers", Coverage::Projected, ""},
         {"media_files", Coverage::Projected, "peaks excluded: regenerable, never authoritative"},
         {"routing", Coverage::Projected, ""},
+        {"remarks", Coverage::Projected, "a child of the track or clip it is anchored to; a device's on its track (ADR-0139)"},
 
         // --- excluded by TEXT-PROJECTION 9: Layer 3 is not projected at all,
         //     and that exclusion is what makes ADR-0021's oracle possible ----
@@ -152,7 +154,6 @@ std::span<const TableCoverage> coverage() {
         {"snapshots", Coverage::Excluded, "Layer 3"},
         {"history_snapshots", Coverage::Excluded, "Layer 3: history metadata, like op_branches (ADR-0128)"},
         {"adi_meta", Coverage::Excluded, "Layer 0 bookkeeping, not project content"},
-        {"remarks", Coverage::Excluded, "ADR-0131: not yet projected -- needs a rows::Model field and a node syntax; the replay digest covers them meanwhile"},
 
         // --- excluded pending step 6 ----------------------------------------
         // No op can create any of these, so there is no way to build a fixture
@@ -467,6 +468,87 @@ Tree buildTree(const rows::Model& m) {
             // present, and TEXT-PROJECTION 3 forbids emitting a derived field.
             a.num("flags", note.flags & ~NoteFlags::HasExpression, 0);
             t.nodes[owner->second].children.push_back(n);
+        }
+    }
+
+    // --- remarks (ADR-0131, ADR-0139) -------------------------------------
+    // Containment, like everything else that belongs to something (TEXT-
+    // PROJECTION 2): a remark is a child of the track or clip it is anchored
+    // to. Devices are not projected yet, so a device's remark sits on the track
+    // whose chain holds the device and names it with `device`. A remark whose
+    // anchor is gone is legal (SPEC 6.8), so it is a root with an unresolved
+    // `on` ref -- never dropped, because a vanished remark would read in a
+    // diff as a deleted one.
+    {
+        std::unordered_map<std::int64_t, const rows::DeviceChain*> chainById;
+        for (const auto& c : m.deviceChains) chainById[c.id] = &c;
+        std::unordered_map<std::int64_t, const rows::Device*> deviceById;
+        for (const auto& d : m.devices) deviceById[d.id] = &d;
+
+        // A device's track: up through its chain, and through rack devices
+        // for a nested chain. Bounded, because nothing in the schema forbids a
+        // rack containing itself.
+        const auto trackOfDevice = [&](std::int64_t deviceId) -> std::optional<std::int64_t> {
+            std::int64_t at = deviceId;
+            for (std::size_t steps = 0; steps <= m.devices.size(); ++steps) {
+                const auto d = deviceById.find(at);
+                if (d == deviceById.end()) return std::nullopt;
+                const auto c = chainById.find(d->second->chainId);
+                if (c == chainById.end()) return std::nullopt;
+                if (c->second->trackId) return *c->second->trackId;
+                if (!c->second->parentDeviceId) return std::nullopt;
+                at = *c->second->parentDeviceId;
+            }
+            return std::nullopt;
+        };
+
+        for (const auto& r : m.remarks) {
+            std::optional<std::size_t> parent;
+            const rows::Device* device = nullptr;
+            if (r.targetKind == "track") {
+                if (const auto it = trackNode.find(r.targetId); it != trackNode.end())
+                    parent = it->second;
+            } else if (r.targetKind == "clip") {
+                if (const auto it = clipNode.find(r.targetId); it != clipNode.end())
+                    parent = it->second;
+            } else if (r.targetKind == "device") {
+                if (const auto d = deviceById.find(r.targetId); d != deviceById.end()) {
+                    device = d->second;
+                    if (const auto tr = trackOfDevice(r.targetId))
+                        if (const auto it = trackNode.find(*tr); it != trackNode.end())
+                            parent = it->second;
+                }
+            }
+
+            std::vector<SortKey> keys;
+            if (!parent) keys.push_back(SortKey::integer(SecRemark));
+            keys.push_back(SortKey::integer(r.createdUtc));
+            keys.push_back(SortKey::text(device ? device->name : std::string{}));
+            keys.push_back(SortKey::text(r.paramId.value_or(std::string{})));
+            keys.push_back(SortKey::text(r.author));
+            keys.push_back(SortKey::text(r.text));
+            const std::size_t n = addNode(t, "remark", "", "", std::move(keys));
+
+            Attrs a(t.nodes[n].attrs);
+            // ADR-0131 d3: who wrote it is always readable. `user` is the
+            // default and omitted like every default; `by agent` is never.
+            a.text("by", r.author, "user");
+            a.text("detail", r.actorDetail);
+            if (device) a.text("device", device->name);
+            if (r.paramId) a.raw("param " + renderLabelToken(*r.paramId));
+            a.raw("created " + std::to_string(r.createdUtc));
+            a.flag("resolved", r.resolved);
+            // Last, and always: the text is the remark. Escaped like every
+            // label (TEXT-PROJECTION 4), so a newline or a bidi override in a
+            // remark cannot forge the lines around it.
+            a.raw("text " + renderLabelToken(r.text));
+
+            if (parent) {
+                t.nodes[*parent].children.push_back(n);
+            } else {
+                t.nodes[n].refs.push_back(Ref{"on", Ref::kDangling, r.targetKind});
+                t.roots.push_back(n);
+            }
         }
     }
 

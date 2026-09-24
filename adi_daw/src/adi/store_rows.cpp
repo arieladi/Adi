@@ -396,6 +396,25 @@ Model readModel(const Store& store) {
               m.pluginState.push_back(std::move(s));
           });
 
+    // Always present: Store::open upgrades an older file for writing, and
+    // stands in an empty table for a read-only one (ADR-0144).
+    query(m, db, "remarks",
+          "SELECT id, target_kind, target_id, param_id, author, actor_detail, text, "
+          "       created_utc, resolved FROM remarks",
+          [&](const SQLite::Statement& st) {
+              Remark r;
+              r.id = st.getColumn(0).getInt64();
+              r.targetKind = st.getColumn(1).getString();
+              r.targetId = st.getColumn(2).getInt64();
+              r.paramId = optText(st, 3);
+              r.author = st.getColumn(4).getString();
+              r.actorDetail = st.getColumn(5).getString();
+              r.text = st.getColumn(6).getString();
+              r.createdUtc = st.getColumn(7).getInt64();
+              r.resolved = flag(st, 8);
+              m.remarks.push_back(std::move(r));
+          });
+
     // Notes come through the Store's blob accessors rather than a SELECT,
     // because ADR-0009's granularity rule lives there and this should not be a
     // second place that knows how an event stream is addressed.
