@@ -9769,3 +9769,71 @@ open, and they are decided here.
 - the wall-clock and token caps of §6.6 (the model layer's, not the journal's);
 - where the UI keeps a changeset while the user thinks about it;
 - editing a queued changeset op by op.
+
+---
+
+## ADR-0147 — Portable publication and the application library index — `DECIDED` (2026-09-24) — **AMENDS ADR-0143 d3; IMPLEMENTS ADR-0145 d11**
+
+1. **Publication does not require hard links.** PR #101 uses an OS no-clobber
+   rename, falling back to exclusive creation, bounded-buffer copying, flush,
+   close and BLAKE3 verification. Existing targets are never overwritten.
+   Ordinary failures remove only this call's new target. The fallback target is
+   visible during copying; success is the completion signal. A crash can leave
+   a partial file. This is not a cross-resource power-loss transaction.
+2. **The index is application data, not a project.** Its SQLite `application_id`
+   is `0x4144494c` (ADIL), version 1. A caller passes its path, normally obtained
+   from `appdata::libraryIndexFile()` (ADR-0149). Foreign/populated unlabelled
+   databases and unknown versions are refused. One indexing owner per database;
+   callers coordinate that owner, while other applications can read SQLite's
+   committed WAL state. No project schema or ops are added.
+3. **Volume identity is a persistent marker, not a location.** The caller
+   supplies the actual volume root to `VolumeIdentityProvider`. The Linux
+   implementation writes `.adi-volume-id` once without clobbering: UTF-8/ASCII
+   `ADI-VOLUME-1\n`, 32 random lowercase hex digits, then `\n`. That same file
+   is the identity on every OS; moving a mount/drive letter changes only its
+   current root. Do not copy the marker onto a different logical volume; cloned
+   markers, like cloned filesystem UUIDs, require assigning a new identity.
+   A unique temporary mixed-case filename probes actual case behavior; the OS
+   name is never used to guess it. Windows/macOS use the same portable marker
+   protocol as a documented fallback until their native adapters are supplied.
+   Read-only roots, including roots without probe permission, require a caller
+   provider carrying a stable identity and known/probed case behavior. Failure
+   is explicit; there is no path-derived identity fallback or hidden elevation.
+4. **Keys and metadata.** Store volume identity, actual UTF-8 relative spelling,
+   NFC comparison key, size, UTC nanosecond modification time, and nullable
+   BLAKE3. utf8proc v2.11.3 supplies NFC and case folding; fold only on a probed
+   insensitive volume. Simultaneous names collapsing to one key are rejected
+   atomically, not silently merged. File/directory symlinks are not followed.
+   Invalid UTF-8 and incomplete enumerations fail without declaring unseen
+   files missing. Complete scans mark missing rows only inside their folder.
+5. **The shortcut is exactly the director's rule.** Reuse a successful hash when
+   size is unchanged and the time is within two seconds inclusive of the last
+   hashed time. Keep that time anchored instead of updating it on every scan.
+   Unchanged scans do not write file rows. Metadata is a cache invalidator, never
+   a content-match key; it cannot detect edits which deliberately preserve size
+   and a timestamp inside that tolerance. Hashing checks exact size/time before
+   and after reading and refuses a concurrent change. A later scan retries it.
+6. **Browsing precedes hashing.** A metadata pass publishes browsable pending
+   rows before waiting for any hash. One low-priority, cancellable worker reads
+   fixed 64 KiB chunks, outside the database mutex. Stop checks occur between
+   chunks; cancellation joins the worker and leaves pending rows restartable.
+   A scan generation prevents an old job from overwriting a newer scan's row.
+   Failed jobs expose errors. Priority refusal is observable in worker stats.
+7. **Library metadata travels by hash.** JSON envelope `{version:1, media:{...}}`
+   keys are 64 lowercase hex BLAKE3 digests. Values contain tags, BPM and rating.
+   Import is atomic, unions NFC tags, preserves omitted scalar fields, and lets
+   supplied BPM/rating win (null clears). BPM is finite in (0,1000]; rating is an
+   integer 0–5. Unknown fields and path keys are refused. Metadata may precede
+   its file; no filename or mount point is required to match it.
+8. **Enable measured x86 SIMD for all BLAKE3 helpers.** GCC 15.2 `-O3`, i5-3550S,
+   schedutil, five alternating 1 GiB runs with identical digests: medians were
+   476.398 → 1186.018 MiB/s in memory and 441.631 → 969.176 MiB/s for warm-cache
+   files, portable → SSE2/SSE4.1. This justifies runtime CPU-dispatched SSE2/4.1
+   in the existing BLAKE3 target, including collection and the indexer. Intrinsic
+   C files keep MSVC supported; no ISA flags leak to the rest of the program.
+   Other architectures and universal Apple builds retain portable code. AVX2,
+   AVX-512 and NEON remain disabled: they were not measured on this machine.
+   Official vectors continue to check the same bytes. These are cache/CPU
+   throughput figures, not a claim about cold USB-drive bandwidth.
+
+Measurements, defect plants and OS/build coverage are in `collab/linux.md`.

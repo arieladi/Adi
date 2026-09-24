@@ -57,8 +57,20 @@ add_library(adi_blake3 STATIC
     "${ADI_THIRD_PARTY}/BLAKE3/c/blake3.c"
     "${ADI_THIRD_PARTY}/BLAKE3/c/blake3_dispatch.c"
     "${ADI_THIRD_PARTY}/BLAKE3/c/blake3_portable.c")
-target_compile_definitions(adi_blake3 PRIVATE BLAKE3_NO_SSE2 BLAKE3_NO_SSE41
-    BLAKE3_NO_AVX2 BLAKE3_NO_AVX512 BLAKE3_USE_NEON=0)
+# ADR-0147: measured SSE2/SSE4.1 benefit, runtime CPU dispatch. Keep
+# unmeasured AVX/NEON disabled and universal Apple builds portable.
+target_compile_definitions(adi_blake3 PRIVATE BLAKE3_NO_AVX2 BLAKE3_NO_AVX512 BLAKE3_USE_NEON=0)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i[3-6]86|x86)$"
+   AND NOT CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+    target_sources(adi_blake3 PRIVATE "${ADI_THIRD_PARTY}/BLAKE3/c/blake3_sse2.c"
+        "${ADI_THIRD_PARTY}/BLAKE3/c/blake3_sse41.c")
+    if(NOT MSVC)
+        set_source_files_properties("${ADI_THIRD_PARTY}/BLAKE3/c/blake3_sse2.c" PROPERTIES COMPILE_OPTIONS "-msse2")
+        set_source_files_properties("${ADI_THIRD_PARTY}/BLAKE3/c/blake3_sse41.c" PROPERTIES COMPILE_OPTIONS "-msse4.1")
+    endif()
+else()
+    target_compile_definitions(adi_blake3 PRIVATE BLAKE3_NO_SSE2 BLAKE3_NO_SSE41)
+endif()
 target_include_directories(adi_blake3 SYSTEM PUBLIC "${ADI_THIRD_PARTY}/BLAKE3/c")
 # Select the upstream C sources without introducing its global build options.
 add_library(adi_miniz STATIC
@@ -735,3 +747,18 @@ add_test(NAME adi_collect_export_tests COMMAND adi_collect_export_tests)
 
 # No-clobber publication platform boundary.
 target_sources(adi_core PRIVATE src/adi/media/publish_file.cpp)
+
+# ADR-0147: app-scoped library index, independent from the .adi schema.
+if(NOT EXISTS "${ADI_THIRD_PARTY}/utf8proc/utf8proc.c")
+    message(FATAL_ERROR "Missing utf8proc; run tools/fetch_external.sh --build-only")
+endif()
+add_library(adi_utf8proc STATIC "${ADI_THIRD_PARTY}/utf8proc/utf8proc.c")
+target_include_directories(adi_utf8proc SYSTEM PUBLIC "${ADI_THIRD_PARTY}/utf8proc")
+target_compile_definitions(adi_utf8proc PUBLIC UTF8PROC_STATIC)
+target_sources(adi_core PRIVATE src/adi/library/index.cpp src/adi/library/volume.cpp src/adi/library/platform.cpp)
+target_link_libraries(adi_core PRIVATE adi_utf8proc Threads::Threads)
+add_executable(adi_library_tests tests/test_library.cpp)
+target_link_libraries(adi_library_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_library_tests COMMAND adi_library_tests)
+
+set_tests_properties(adi_library_tests PROPERTIES TIMEOUT 120)

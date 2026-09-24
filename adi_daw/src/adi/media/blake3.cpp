@@ -26,7 +26,8 @@ HashResult blake3Bytes(std::span<const std::byte> bytes) noexcept {
         return finish(hasher);
     } catch (...) { return {{}, HashError::resource}; }
 }
-HashResult blake3File(const std::filesystem::path& path) noexcept {
+HashResult blake3File(const std::filesystem::path& path) noexcept { return blake3File(path, {}); }
+HashResult blake3File(const std::filesystem::path& path, std::stop_token stop) noexcept {
     try {
         std::error_code error;
         if (!std::filesystem::is_regular_file(path, error) || error)
@@ -37,6 +38,7 @@ HashResult blake3File(const std::filesystem::path& path) noexcept {
         blake3_hasher_init(&hasher);
         std::array<char, 65536> buffer{};
         while (input) {
+            if (stop.stop_requested()) return {{}, HashError::cancelled};
             input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
             const auto count = input.gcount();
             if (count > 0) blake3_hasher_update(&hasher, buffer.data(), static_cast<std::size_t>(count));

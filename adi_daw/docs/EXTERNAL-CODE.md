@@ -16,6 +16,7 @@ Permissive licences, all GPLv3-compatible in the direction we need.
 
 | Repo | Licence | Size | Purpose |
 |---|---|---|---|
+| [`utf8proc`](https://github.com/JuliaStrings/utf8proc) | MIT and Unicode data licence | 3 MB shallow | Library NFC/case-fold keys (ADR-0147). Pinned **v2.11.3 / `e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78`**, fetched by `--build-only`; director-granted dependency row. |
 | [`BLAKE3`](https://github.com/BLAKE3-team/BLAKE3) | CC0-1.0 or Apache-2.0 | 2.5 MB shallow | Media hashes (ADR-0127). Pinned **1.8.7 / `f3149ec5bb5449af877ba20377a11008ff499fa2`**; official C portable implementation only, SIMD disabled. Official test vectors exercise the 32-byte unkeyed hash. Fetched by `--build-only`. |
 | [`miniz`](https://github.com/richgel999/miniz) | MIT | 2 MB shallow | Streaming STORE/deflate and ZIP64 for Collect and Export (ADR-0127). Pinned **3.1.2 / `77d0dce8627735138c51770d1799a1ef48f2117d`**; C sources with custom path-aware stream callbacks. Fetched by `--build-only`. |
 | [`SQLiteCpp`](https://github.com/SRombauts/SQLiteCpp) | MIT | 14 MB | RAII C++ wrapper over the SQLite C API. Transactions, prepared statements, BLOB binding. Removes an entire class of leak and error-handling bug from the `.adi` reader/writer. |
