@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/media/collect_export.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/store.hpp"
@@ -78,6 +79,35 @@ struct ZipReader {
         return true;
     }
 };
+std::error_code refuseRename(const fs::path&, const fs::path&) {
+    return std::make_error_code(std::errc::operation_not_supported);
+}
+void corruptCopy(const fs::path& path) { write(path, "corrupt"); }
+void failCopy(const fs::path& path) { write(path, "partial"); throw std::runtime_error("injected copy failure"); }
+void publication() {
+    adi::test::TempDirectory temp{"publish", "fallback"};
+    const auto source = temp.path() / "source", target = temp.path() / "target";
+    const std::string bytes(200000, 'p'); write(source, bytes);
+    auto result = media::publishFile(source, target);
+    check(result.status == media::PublishStatus::published && read(target) == bytes, "native publisher preserves bytes");
+    check(!fs::exists(source), "successful publication consumes staging name");
+    write(source, "new data");
+    result = media::publishFile(source, target);
+    check(result.status == media::PublishStatus::exists && read(target) == bytes, "native publication never clobbers");
+    result = media::publishFile(source, target, {refuseRename});
+    check(result.status == media::PublishStatus::exists && read(target) == bytes, "fallback never overwrites existing file");
+    fs::remove(target); write(source, bytes);
+    result = media::publishFile(source, target, {refuseRename});
+    check(result.status == media::PublishStatus::published && result.usedFallback && read(target) == bytes, "refused rename takes verified streaming fallback");
+    check(!fs::exists(source), "fallback consumes staging only after verification");
+    fs::remove(target); write(source, bytes);
+    result = media::publishFile(source, target, {refuseRename, corruptCopy});
+    check(result.status == media::PublishStatus::failed, "fallback rehash catches corrupted target");
+    check(!fs::exists(target) && read(source) == bytes, "hash failure removes target and retains source");
+    result = media::publishFile(source, target, {refuseRename, failCopy});
+    check(result.status == media::PublishStatus::failed, "fallback reports injected copy failure");
+    check(!fs::exists(target), "failed fallback removes partial target");
+}
 void collection() {
     Fixture f;
     f.add("one/clip.wav", std::string(140000,'A') + "first", 1);
@@ -205,7 +235,7 @@ void rollbackAndCli() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { collection(); extraction(false); extraction(true); resolution(); rollbackAndCli(); }
+    try { publication(); collection(); extraction(false); extraction(true); resolution(); rollbackAndCli(); }
     catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

@@ -3,6 +3,7 @@
 #include "media_ops.hpp"
 #include "blake3.hpp"
 #include "zip_writer.hpp"
+#include "publish_file.hpp"
 #include "adi/store.hpp"
 #include "adi/check.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -62,10 +63,10 @@ fs::path publish(const fs::path& staged, const fs::path& folder, const std::stri
     for (unsigned i = 0; i < 10000; ++i) {
         const auto target = folder / "audio" / pathFromUtf8(i == 0 ? name : std::to_string(id) + "-" + std::to_string(i) + "-" + name);
         owned.paths.push_back(target);
-        std::error_code ec; fs::create_hard_link(staged, target, ec);
-        if (!ec) return target;
+        const auto result = publishFile(staged, target);
+        if (result.status == PublishStatus::published) return target;
         owned.paths.pop_back();
-        if (ec != std::errc::file_exists) throw fs::filesystem_error("publish media without overwriting", target, ec);
+        if (result.status != PublishStatus::exists) throw std::runtime_error("publish media: " + pathUtf8(target) + ": " + result.error);
     }
     throw std::runtime_error("too many filename collisions for " + original);
 }
@@ -122,7 +123,6 @@ FileResult extractMedia(Store& store) {
             const auto target = publish(staged, folder, name, id, published);
             relocate(store.db(), id, folder, target);
             SQLite::Statement erase(store.db(), "DELETE FROM media_blobs WHERE media_id=?"); erase.bind(1, id); erase.exec();
-            fs::remove(staged);
         }
         transaction.commit(); published.committed = true; return {true, {}};
     } catch (const std::exception& e) { return {false, e.what()}; }
@@ -167,7 +167,6 @@ FileResult collectExport(const fs::path& input, const fs::path& output) {
                 verify(staged, row.at("hash_blake3").get<std::string>());
                 const auto dest = publish(staged, project, row.at("orig_name").get<std::string>(), id, published);
                 relocate(copy->db(), id, project, dest);
-                fs::remove(staged); // Do not overwrite an inode linked into audio/.
             }
             transaction.commit(); published.committed = true;
         }
@@ -183,7 +182,8 @@ FileResult collectExport(const fs::path& input, const fs::path& output) {
             if (!zip.addFile(entry.path(), "audio/" + pathUtf8(entry.path().filename()))) throw std::runtime_error("cannot archive " + pathUtf8(entry.path()));
         }
         if (!zip.finish()) throw std::runtime_error("ZIP finalization failed");
-        fs::create_hard_link(zipPath, target); // Atomic no-clobber publication.
+        const auto publication = publishFile(zipPath, target);
+        if (publication.status != PublishStatus::published) throw std::runtime_error("publish archive: " + publication.error);
         return {true, {}};
     } catch (const std::exception& e) { return {false, e.what()}; }
 }
