@@ -5,6 +5,27 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — Max for Live porting blueprint (DEVICE-CONTRACT-PANEL §6)
+
+On the director's instruction, in a file mac holds (`docs/DEVICE-CONTRACT-PANEL.md`,
+claim `mac/vst3`): one section appended, nothing above it touched, and no
+unmerged mac commit touches the file. The director's four rules are kept.
+Four points were corrected against the repository and the Pd manual:
+- `[groove~]` maps to `[tabread4~]`. `[delwrite~]`/`[vd~]` are the delay
+  line, `[tapin~]`/`[tapout~]`'s translation, and `[vd~]` is now
+  `[delread4~]`.
+- `[adi.param ...]` is one of the panel's candidates, not the contract,
+  which is still open (§4).
+- Receives are `$0-` names (ADR-0095), never bare.
+- Per-sample `gen~` feedback goes to `[fexpr~]` or a native node.
+
+Added in front of the rules: a licence gate, because a port is a
+derivative. Ableton's devices, commercial ones, unlicensed ones and CC
+NonCommercial ones get behaviour only. Also added: LOM-driven devices
+port as op-API scripts, not patches.
+
+---
+
 ## 2026-09-25 — schema 1.6: op clients and Lamport clocks (ADR-0161); Live's automation override (ADR-0162)
 
 **The director's instruction:** remote multiplayer (Excel or Figma style)
