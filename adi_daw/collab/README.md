@@ -151,6 +151,9 @@ subject, say so in your log instead of writing it twice.
 | 0139 | cloud | `cloud/remarks` | for a decision ADR-0131 (remarks) leaves open; mark used when written | reserved |
 | 0140 | cloud | `cloud/snapshots` | history snapshots live in `history_snapshots`: `snapshots` is already the mixer-snapshot table | used |
 | 0141 | win | `win/vst3-gesture` | a knob moved inside a real VST3's window is one op; the mute and the echo guard each have their case | used |
+| 0142 | win | `win/vst3-state` | plugin state round-trips through the session, and a plugin's rescan signal becomes one `device.loadState` op (ADR-0110 d1) | reserved |
+| 0143 | linux | `linux/collect-export` | Collect and Export and the media ops (ADR-0127 d3-d4, ADR-0136 d4), if it decides anything | reserved |
+| 0144 | cloud | `cloud/migrate` | how an older 1.x file is upgraded when opened for writing, if it decides anything | reserved |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -165,9 +168,11 @@ Keep this short. One row per active branch. Delete your row when it merges.
 |---|---|---|---|
 | `src/juce/**`, `tests/test_device.cpp`, `docs/DEVICE-CONTRACT-PANEL.md` | mac | `mac/vst3` | 2026-09-20 |
 | `src/juce/**`, `tests/test_device.cpp` | mac | `mac/device` | 2026-09-20 |
-| `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
-| `src/adi/engine/**`, `tests/test_engine.cpp` | win | `win/graph` | 2026-09-20 |
-| `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing) | 2026-09-19 |
+| `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing; lent to cloud while `cloud/migrate` is open) | 2026-09-19 |
+| `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_clap.cpp`, `tests/test_state_capture.cpp`, `tests/fixtures/**`, `src/juce/vst3_*`, `src/juce/clap_host.*`, `src/juce/device_model.*`, `src/juce/juce_device_loader.*`, `src/juce/play.cpp` (the last six inside mac's area, on the director's step-6 instruction) | win | `win/vst3-state` | 2026-09-24 |
+| `src/adi/ops_catalog.cpp` (the `media.*` ops only), `docs/OPS.md`, `src/adi/media/**`, `src/adi/check.*`, `src/main.cpp`, `tests/test_media_ops.cpp`, `tests/test_collect_export.cpp`, `tools/validate_ops.py` | linux | `linux/collect-export` | 2026-09-24 |
+| `src/adi/store.*`, `docs/format/**`, `tools/validate_schema.py`, `tests/test_store.cpp`, `tests/test_migrate.cpp`, then `src/adi/textproj_store.*`, `src/adi/store_rows.*`, `tests/test_textproj_store.cpp`, `src/adi/digest.cpp` (lent by win) | cloud | `cloud/migrate` | 2026-09-24 |
+| `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; `docs/format/**` lent to cloud; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
