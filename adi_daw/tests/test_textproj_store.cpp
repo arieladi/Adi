@@ -18,6 +18,7 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include "adi/store_rows.hpp"
@@ -531,6 +532,163 @@ void testCorruptBlobIsNamed() {
 
 }  // namespace
 
+// ===========================================================================
+//  Remarks (ADR-0131, ADR-0139)
+// ===========================================================================
+
+rows::Remark remarkOn(const char* kind, std::int64_t id, const char* text,
+                      std::int64_t created = 1790000000000000) {
+    rows::Remark r;
+    r.id = 1;
+    r.targetKind = kind;
+    r.targetId = id;
+    r.text = text;
+    r.createdUtc = created;
+    return r;
+}
+
+void testRemarksModel() {
+    section("remarks: containment, author, anchors that are gone (ADR-0139)");
+
+    {
+        auto m = oneTrack();
+        m.remarks.push_back(remarkOn("track", 1, "muddy below 200 Hz"));
+        eq(body(m),
+           "trk Bass\n"
+           "  remark \"#0\"\n"
+           "    created 1790000000000000\n"
+           "    text \"muddy below 200 Hz\"\n",
+           "a user's remark is a child of its track; `user` is the omitted default");
+    }
+    {
+        auto m = oneTrack();
+        auto r = remarkOn("track", 1, "try a high-pass");
+        r.author = "agent";
+        r.actorDetail = "model-x";
+        r.resolved = true;
+        m.remarks.push_back(r);
+        const std::string b = body(m);
+        check(contains(b, "    by agent\n") && contains(b, "    detail model-x\n") &&
+                  contains(b, "    resolved\n"),
+              "an agent's remark always says so, with who and whether resolved:\n" + b);
+    }
+    {
+        auto m = oneTrack();
+        rows::Clip c;
+        c.id = 5;
+        c.trackId = 1;
+        c.kind = "midi";
+        c.name = "Riff";
+        c.posTicks = 0;
+        c.lengthTicks = 5765760;
+        m.clips.push_back(c);
+        m.remarks.push_back(remarkOn("clip", 5, "comp this"));
+        check(contains(body(m), "  clip Riff\n") &&
+                  contains(body(m), "    remark \"#0\"\n"),
+              "a clip's remark nests under the clip, not the track:\n" + body(m));
+    }
+    {
+        auto m = oneTrack();
+        rows::DeviceChain ch;
+        ch.id = 3;
+        ch.trackId = 1;
+        m.deviceChains.push_back(ch);
+        rows::Device d;
+        d.id = 7;
+        d.chainId = 3;
+        d.name = "EQ";
+        m.devices.push_back(d);
+        auto r = remarkOn("device", 7, "too bright");
+        r.paramId = "gain";
+        m.remarks.push_back(r);
+        const std::string b = body(m);
+        check(contains(b, "trk Bass\n  remark \"#0\"\n    device EQ\n    param gain\n"),
+              "a device's remark sits on the device's track and names the device "
+              "and parameter:\n" + b);
+    }
+    {
+        auto m = oneTrack();
+        m.remarks.push_back(remarkOn("track", 99, "orphan"));
+        eq(body(m),
+           "trk Bass\n"
+           "remark \"#0\"\n"
+           "  created 1790000000000000\n"
+           "  text orphan\n"
+           "  on -> \"!unresolved(track)\"\n",
+           "a remark whose track is gone is kept, at top level, unresolved");
+    }
+    {
+        auto m = oneTrack();
+        m.remarks.push_back(remarkOn("track", 1, "line one\nline two \xE2\x80\xAE"));
+        const std::string b = body(m);
+        check(contains(b, "text \"line one\\nline two \\u{202E}\"\n"),
+              "remark text is escaped: a newline or a bidi override cannot forge "
+              "the lines around it:\n" + b);
+    }
+    {
+        // Two remarks on one track, in either storage order: the same text.
+        auto a = oneTrack();
+        // Written first but alphabetically last, so only the time can put it first.
+        auto first = remarkOn("track", 1, "zebra", 1);
+        auto second = remarkOn("track", 1, "apple", 2);
+        second.id = 2;
+        a.remarks = {first, second};
+        auto b = oneTrack();
+        b.remarks = {second, first};
+        check(render(a) == render(b), "remark order is the content's, not the storage's");
+        check(render(a).find("text zebra") < render(a).find("text apple") &&
+                  render(a).find("text apple") != std::string::npos,
+              "and it is by the time each was written");
+    }
+}
+
+void testRemarksEndToEnd() {
+    const adi::test::TempDirectory scratch("textproj_store", "testRemarksEndToEnd");
+    section("remarks through the op registry, undo and redo, byte for byte");
+
+    StoreError e = StoreError::Ok;
+    const auto store = Store::create(scratch.path() / "remarks.adi", e);
+    if (!store) return;
+    OpJournal j(*store);
+    OpRequest r;
+    r.opType = "track.create";
+    r.payload = {{"id", 1}, {"kind", "audio"}, {"name", "Bass"}};
+    commits(j, r, "track.create");
+    const std::string before = projectStore(*store).text;
+
+    r.opType = "remark.add";
+    r.payload = {{"id", 1}, {"kind", "track"}, {"target", 1}, {"author", "agent"},
+                 {"detail", "model-x"}, {"text", "check the low end"},
+                 {"created", 1790000000000000}};
+    r.actor = Actor::Agent;
+    commits(j, r, "remark.add");
+
+    const rows::Model m = rows::readModel(*store);
+    check(m.problems.empty() && m.remarks.size() == 1 && m.remarks[0].author == "agent",
+          "the remark is read back into the model");
+    const Projection p = projectStore(*store);
+    check(p.status == OrderStatus::Exact, "the order is canonical");
+    eq(p.text,
+       "project \"#0\"\n"
+       "  format 0.1\n"
+       "  schema 1.3\n"
+       "  ppq 5765760\n"
+       "  defaults 1\n"
+       "trk Bass\n"
+       "  remark \"#0\"\n"
+       "    by agent\n"
+       "    detail model-x\n"
+       "    created 1790000000000000\n"
+       "    text \"check the low end\"\n",
+       "the agent's remark projected, byte for byte");
+
+    History h(*store);
+    check(h.undo().ok && projectStore(*store).text == before,
+          "undo takes the remark out of the projection");
+    check(h.redo().ok && projectStore(*store).text == p.text,
+          "redo puts back exactly the same text");
+}
+
 int main() {
     // Unbuffered, so the last line before a crash survives. On Windows a
     // crashing test binary loses its whole block-buffered stdout, and the
@@ -548,6 +706,8 @@ int main() {
         testEndToEnd();
         testSessionStateIsInvisible();
         testCorruptBlobIsNamed();
+        testRemarksModel();
+        testRemarksEndToEnd();
     } catch (const std::exception& ex) {
         // A modal abort dialog on Windows is a worse failure than the failure.
         std::printf("\nFAILED -- exception escaped: %s\n", ex.what());

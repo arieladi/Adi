@@ -10,6 +10,63 @@ so nothing is left unpushed.
 
 ---
 
+## 2026-09-24 — remarks in the text projection (ADR-0139)
+
+Branch `cloud/remarks-projection`, stacked on `cloud/migrate` (#92) until
+that merged.
+
+**What landed.**
+- **Rows:** `rows::Remark` and `Model::remarks`, read by `readModel`. The table
+  always exists now: an upgrading open adds it, and a read-only open gets an
+  empty stand-in (ADR-0144).
+- **Syntax:** a `remark` child of its track or clip. Lines, in order and only
+  when not default: `by agent`, `detail`, `device`, `param`, `created`,
+  `resolved`, then `text` last. The text is escaped like a label.
+- **Device remarks:** devices are not projected yet, so a device's remark sits
+  on the device's track, naming the device and the parameter.
+- **Orphans:** a remark whose anchor is gone becomes a top-level node with
+  `on -> "!unresolved(<kind>)"`, never dropped.
+- **Order:** by `created`, then device, parameter, author and text.
+- **Coverage:** `remarks` is Projected now, no longer Excluded. The decision is
+  ADR-0139, and TEXT-PROJECTION §9.2 documents it. `textproj.*` (mac's) is
+  untouched: the existing node, attribute and ref machinery was enough, so there
+  is nothing for mac to review there.
+
+**Tests.** `adi_textproj_store_tests` 158 → 173. Model-level cases cover:
+- containment on a track and on a clip;
+- the device anchor;
+- `by agent`, the detail and `resolved`;
+- the orphan;
+- escaping of a newline and U+202E;
+- storage-order independence.
+
+End to end, a remark goes through the op registry to the byte-exact
+projection; undo removes it and redo restores the same bytes. Tree: 3413 checks
+across 34 suites. GCC and Clang `-Werror` both build clean.
+
+**Plants, six, all fired** (each reverted):
+
+| # | Defect planted | Failing check |
+|---|---|---|
+| B1 | the default author flipped (`by` omitted for agents) | `an agent's remark always says so, with who and whether resolved` |
+| B2 | an orphaned remark dropped | `a remark whose track is gone is kept, at top level, unresolved` |
+| B3 | a device's remark not anchored to its track | `a device's remark sits on the device's track and names the device and parameter` |
+| B4 | the `created` sort key removed | `and it is by the time each was written` |
+| B5 | the text rendered unescaped | `remark text is escaped: a newline or a bidi override cannot forge the lines around it` |
+| B6 | `readModel` not collecting remarks | `the remark is read back into the model`; `the agent's remark projected, byte for byte` |
+
+B3's first version did not compile (an unused lambda under `-Werror`), and the
+FAIL it printed came from B2's stale binary. I redid it with `(void)` so that
+it compiled and fired on its own. The first draft of the ordering test would
+not have caught B4 at all: `first` and `second` sort alphabetically the same
+way they sort by time. It now uses `zebra` written before `apple`.
+
+**Not done.** `digest.cpp` was lent but needed nothing: remarks were already in
+the digest, and history snapshots were already excluded. There is no remark
+anchor for lanes or markers (the schema allows only track, clip and device).
+
+---
+
 ## 2026-09-24 — older 1.x files upgrade on a write open (ADR-0144)
 
 Branch `cloud/migrate`. This closes the gap I reported: `remark.add` and

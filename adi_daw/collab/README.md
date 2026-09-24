@@ -148,7 +148,7 @@ subject, say so in your log instead of writing it twice.
 | 0136 | win | `win/schema-1.1` | schema 1.1: embedded media forbidden by triggers, removed only at 2.0 (corrects ADR-0127 d2) | used |
 | 0137 | win | `win/asio` | ASIO on Windows from the headers JUCE bundles, under GPL-3.0; the probe guards it | used |
 | 0138 | win | `win/lift-agpl-ban` | the AGPL ban is lifted: AGPL code may be copied, and the copying project becomes AGPLv3 | used |
-| 0139 | cloud | `cloud/remarks` | for a decision ADR-0131 (remarks) leaves open; mark used when written | reserved |
+| 0139 | cloud | `cloud/remarks-projection` | remarks in the text projection: a `remark` child of its anchor, `by agent` always shown | used |
 | 0140 | cloud | `cloud/snapshots` | history snapshots live in `history_snapshots`: `snapshots` is already the mixer-snapshot table | used |
 | 0141 | win | `win/vst3-gesture` | a knob moved inside a real VST3's window is one op; the mute and the echo guard each have their case | used |
 | 0142 | win | `win/vst3-state` | plugin state round-trips through the project; a preset picked in the plugin's window is one `device.loadState`; rows go on top of a chunk | used |
@@ -172,6 +172,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
 | `src/adi/ops_catalog.cpp` (the `media.*` ops only), `docs/OPS.md`, `src/adi/media/**`, `src/adi/check.*`, `src/main.cpp`, `tests/test_media_ops.cpp`, `tests/test_collect_export.cpp`, `tools/validate_ops.py` | linux | `linux/collect-export` | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; `docs/format/**` lent to cloud; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
+| `src/adi/textproj_store.*`, `src/adi/store_rows.*`, `tests/test_textproj_store.cpp` (lent by win), `docs/format/TEXT-PROJECTION.md`, `docs/DECISIONS.md` (ADR-0139 only) | cloud | `cloud/remarks-projection` | 2026-09-24 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |

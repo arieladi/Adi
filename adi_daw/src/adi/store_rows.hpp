@@ -286,6 +286,22 @@ struct PluginState {
     std::string formatHint;
 };
 
+/// `remarks` (ADR-0131, schema 1.2): a note anchored to a track, a clip or a
+/// device, and through `paramId` to one of a device's parameters. The anchor
+/// is polymorphic, like a routing endpoint, so it may name nothing; the
+/// projection then shows it unresolved rather than dropping it (ADR-0139).
+struct Remark {
+    std::int64_t id = 0;
+    std::string targetKind;
+    std::int64_t targetId = 0;
+    std::optional<std::string> paramId;
+    std::string author = "user";
+    std::string actorDetail;
+    std::string text;
+    std::int64_t createdUtc = 0;
+    bool resolved = false;
+};
+
 struct Model {
     Project project;
     std::vector<TempoEvent> tempo;
@@ -304,6 +320,7 @@ struct Model {
     std::vector<Device> devices;
     std::vector<PluginParam> pluginParams;
     std::vector<PluginState> pluginState;
+    std::vector<Remark> remarks;
 
     /// Tables that were present but unreadable — a newer schema that dropped a
     /// column we name, a corrupt blob. Named rather than swallowed, because a

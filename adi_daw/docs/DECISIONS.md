@@ -9358,3 +9358,52 @@ Four more cases are checked:
 The plants are in `collab/cloud.md`.
 
 **Not decided:** a 1.x → 2.0 upgrade, which by definition is not additive.
+
+---
+
+## ADR-0139 — Remarks in the text projection: a `remark` child of its anchor, the author always visible — `DECIDED` (2026-09-24) — **EXTENDS ADR-0131, TEXT-PROJECTION §9**
+
+**Director's assignment** to `cloud`. The projection excluded `remarks` because
+it had no syntax for them. This is the syntax. ADR-0131's rules are kept:
+the anchor, and the author being visible.
+
+### Decisions
+
+1. **Containment, not reference.** A remark is a `remark` child of the track or
+   clip it is anchored to (TEXT-PROJECTION §2). The anchor is where the remark
+   sits, so it needs no id and no designator.
+2. **A device's remark sits on the device's track.** Devices are not projected
+   until step 6. Until then, the remark nests under the track whose chain holds
+   the device (following rack chains upward, with a bound) and names it with
+   `device <name>` and, for a parameter, `param <id>`. When devices are
+   projected, the remark moves under the device node. That is a visible diff
+   and a deliberate one.
+3. **`by agent` is always shown; `user` is the default and omitted**, the rule
+   every other default follows. Absent `by` means a person wrote it, so the
+   rendering stays unambiguous (ADR-0131 d3).
+4. **A remark whose anchor is gone is kept**, as a top-level `remark` with
+   `on -> "!unresolved(<kind>)"`. Dropping it would make a diff say it was
+   deleted, and SPEC §6.8 makes the orphan a legal state.
+5. **The text is escaped like a label** (TEXT-PROJECTION §4). A remark is free
+   text from possibly untrusted authors (ADR-0131 d5), and the bidi rule exists
+   exactly so that content cannot disguise what the diff says.
+6. **Order is content order**: `created`, then device, parameter, author,
+   text. Storage order never shows.
+
+### Verified
+
+`adi_textproj_store_tests`:
+- a track remark renders byte for byte, and a clip remark nests under its clip;
+- a device-parameter remark sits on its track;
+- the agent's remark shows `by agent` and its detail, and `resolved` renders;
+- an orphan stays at top level, unresolved;
+- a newline and U+202E are escaped;
+- two storage orders give one text;
+- through the op registry, the remark projects, undo removes it from the text,
+  and redo restores the same bytes.
+
+The coverage manifest now lists `remarks` as projected. The plants are in
+`collab/cloud.md`.
+
+**Not decided:** where a remark on a lane or a marker would go. There is no
+such anchor kind (the schema's CHECK allows only track, clip and device).

@@ -484,6 +484,38 @@ overflow.
 projection reports `Ambiguous`. ADR-0021's oracle should require `Exact`:
 comparing bytes only means something if the bytes were canonical.
 
+### 9.2 Remarks (ADR-0139)
+
+A remark (SPEC §6.8) is projected by **containment**, like everything that
+belongs to something: it is a `remark` child of the track or clip it is
+anchored to. Its attribute lines, in this order, with defaults omitted:
+
+```
+trk Bass
+  remark "#0"
+    by agent               only for an agent's remark; `user` is the default
+    detail model-x         actor_detail, when set
+    device EQ              a device's remark: see below
+    param gain             a device parameter, when set
+    created 1790000000000000
+    resolved               when resolved
+    text "check the low end"
+```
+
+- **Author.** `by agent` is never omitted. It is what keeps ADR-0131 d3 true in
+  a diff: a human can always tell a remark the agent wrote.
+- **Text** is always present, always last, and escaped like any label (§4). A
+  newline or a bidi override in a remark cannot forge the lines around it.
+- **Devices are not projected yet**, so a device's remark is a child of the
+  track whose chain holds the device (through rack chains too). The device is
+  named by `device`, and the parameter by `param`.
+- **An anchor that is gone** is a legal state (SPEC §6.8): the remark becomes a
+  top-level node with `on -> "!unresolved(<kind>)"`. It is never dropped,
+  because a remark missing from the projection reads in a diff as a deleted one.
+- **Order** among a node's remarks is by `created`, then device, parameter,
+  author and text. Two remarks written in different orders produce the same
+  bytes.
+
 ### Opaque plugin state
 
 A `plugin_state` blob renders as its length and a BLAKE3 digest, never as a hex
