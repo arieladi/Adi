@@ -34,7 +34,7 @@ namespace adi {
 // SPEC §2. 0x41444931 == 'ADI1'.
 inline constexpr std::int32_t kApplicationId = 1094994225;
 inline constexpr int kSchemaMajor = 1;
-inline constexpr int kSchemaMinor = 2;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131)
+inline constexpr int kSchemaMinor = 3;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128)
 inline constexpr int kUserVersion = kSchemaMajor * 1000 + kSchemaMinor;
 
 enum class StoreError {

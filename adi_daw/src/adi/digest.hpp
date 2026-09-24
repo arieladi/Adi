@@ -17,6 +17,8 @@
 //   ops, op_branches   The log is not the project. Replaying a log produces new
 //                      seq numbers and new timestamps; requiring those to match
 //                      would test the clock, not the ops.
+//   history_snapshots  Names on points in that log (ADR-0128); they point at
+//                      seqs, so they are the log's, not the project's.
 //   session_state,     UI state. ADR-0021 exists because ops must NOT read
 //   ui_view,           ambient state — so the replay test SETS THESE
 //   window_state       DIFFERENTLY in the two projects on purpose. Excluding

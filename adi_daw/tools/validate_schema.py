@@ -25,6 +25,9 @@ Checks, in order:
      hand-made connection (ADR-0044).
   5i. A remark names a known target kind and an author the UI can mark, has
      text, and carries a parameter only on a device (ADR-0131).
+  5j. A history snapshot names a real op (or the root) on a real branch, has
+     a name, and does not collide with the mixer `snapshots` table
+     (ADR-0128, ADR-0140).
   6. The tick base really has the arithmetic properties SPEC 4.2 claims,
      because a specification should not assert what it can check.
   7. The counts README states are the counts that exist, and no ADR
@@ -42,7 +45,7 @@ import sqlite3
 import sys
 
 SPEC_APPLICATION_ID = 1094994225  # 0x41444931 == 'ADI1'
-SPEC_USER_VERSION = 1002   # schema 1.2 (remarks, ADR-0131); SPEC §2 and the DDL say the same
+SPEC_USER_VERSION = 1003   # schema 1.3 (history snapshots, ADR-0128); SPEC §3.1 and the DDL say the same
 ADI_PPQ = 5765760  # SPEC 4.2
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -458,6 +461,44 @@ def main() -> int:
             fail(f"remarks accepted {label}")
         except sqlite3.IntegrityError:
             ok(f"remarks refuse {label}")
+
+    # --- 5j. ADR-0128/0140: history snapshots ---------------------------------
+    # A snapshot is a name on a point in the log. A point that is not an op, or
+    # a branch that does not exist, is a milestone the History window draws on
+    # nothing -- and revert would follow it.
+    print("[5j] history snapshots (ADR-0128, ADR-0140)")
+    seq = db.execute("SELECT MAX(seq) FROM ops").fetchone()[0]
+    try:
+        db.execute("INSERT INTO history_snapshots(id, name, op_seq, branch_id, created_utc) "
+                   "VALUES (930, 'Smoke Test 2026-09-24 12:34', ?, 1, 0)", (seq,))
+        db.execute("INSERT INTO history_snapshots(id, name, op_seq, branch_id, created_utc, auto) "
+                   "VALUES (931, 'the root', NULL, 1, 0, 1)")
+        ok("a snapshot on an op and an automatic one on the root are accepted")
+    except sqlite3.Error as exc:
+        fail(f"a valid history snapshot was refused: {exc}")
+    for label, sql in (
+        ("a point that is not an op",
+         "INSERT INTO history_snapshots(id, name, op_seq, branch_id, created_utc) "
+         "VALUES (932, 'x', 999999, 1, 0)"),
+        ("a branch that does not exist",
+         "INSERT INTO history_snapshots(id, name, op_seq, branch_id, created_utc) "
+         "VALUES (933, 'x', NULL, 99, 0)"),
+        ("an empty name",
+         "INSERT INTO history_snapshots(id, name, op_seq, branch_id, created_utc) "
+         "VALUES (934, '', NULL, 1, 0)"),
+        ("a non-boolean auto",
+         "UPDATE history_snapshots SET auto = 2 WHERE id = 930"),
+    ):
+        try:
+            db.execute(sql)
+            fail(f"history_snapshots accepted {label}")
+        except sqlite3.IntegrityError:
+            ok(f"history_snapshots refuse {label}")
+    cols = [r[1] for r in db.execute("PRAGMA table_info(snapshots)")]
+    if "kind" in cols and "data" in cols:
+        ok("the mixer `snapshots` table is unchanged, as a 1.2 reader expects (ADR-0140)")
+    else:
+        fail(f"`snapshots` lost its 1.2 shape: {cols}")
 
     # --- 6. the tick base actually has the properties SPEC 4.2 claims --------
     # These are load-bearing claims in a specification, so they get checked

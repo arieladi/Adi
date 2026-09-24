@@ -9117,3 +9117,55 @@ edit arrives on the message thread and so does everything the test does.
 **Not decided:** nothing new. One API note for the capture layer:
 `ParamEditCapture::stats()` refreshes the producer's counters only when it is
 called, so a held pointer reads a stale `pushed`; the header should say so.
+---
+
+## ADR-0140 — Schema 1.3: history snapshots live in `history_snapshots`, and a revert names what it leaves — `DECIDED` (2026-09-24) — **IMPLEMENTS ADR-0128 d1, d2, d4, d5**
+
+**Director's assignment** to `cloud`. ADR-0128 d1 gives a snapshot's row
+`(id, name, op seq, branch, created, auto)` but not its table, and d2 says what
+a revert must preserve but not how. Three things were left open. They are
+decided here.
+
+### Decisions
+
+1. **The table is `history_snapshots`, not `snapshots`.** `snapshots` has held
+   Cubase's mixer snapshots and track versions since 1.0 (`kind`, `scope_id`,
+   `data`; FEATURES rows "Mixer snapshots" and "Track versions"; OPS.md §9.9's
+   `snapshot.*` ops). Reusing the name would mean changing an existing table's
+   shape in a minor bump, which SPEC §11 forbids. A 1.2 reader must open a
+   1.3 file read-write and find `snapshots` as it expects. A history
+   snapshot is a different thing: a name on a point in the log, which copies
+   nothing. Schema 1.3, `user_version` 1003.
+2. **`op_seq` may be NULL**, meaning the root (the empty project). **`branch_id`
+   is a record, not a pointer**: the branch that was current when the snapshot
+   was taken. A later fork keeps the current branch row on the new line (SPEC
+   §8.2), so that branch can end up holding a different line. `op_seq` is what a
+   revert follows. Both are foreign keys.
+3. **A revert moves the head by rewinding to the common ancestor and replaying
+   forward**, in one transaction. So it works when the snapshot is on another
+   branch. `switchToBranch` now uses the same move; it used to refuse diverged
+   branches. **What the head leaves is named only when it would otherwise
+   become unreachable**: if the tip of the head's line is neither held by
+   another branch nor where redo from the snapshot's point leads, a branch
+   `before revert to '<name>'` is created for it. Otherwise it is the redo
+   line, as after an undo, and the next edit forks it (SPEC §8.2). One rule
+   and no duplicate branch rows.
+4. **Nothing reads a clock or a time zone.** The snapshot time, the offset for
+   the automatic name `[Project Name] [YYYY-MM-DD HH:MM]` (d4), and the new
+   branch's time are all arguments. The date is computed arithmetically, not by
+   `localtime`. An unnamed project's automatic name uses "Untitled".
+5. **Metadata, not ops** (d5): taking, renaming and reverting append nothing
+   to the log and are not undoable. The replay digest excludes the table, as it
+   excludes `op_branches`. Compaction (SPEC §8.3) MUST NOT drop a snapshot's
+   point.
+
+### Verified
+
+`adi_snapshots_tests`: the automatic name, including a caller's offset, crossing
+midnight, a leap day and pre-epoch times; take, list and rename appending no
+op; revert then a new edit with the old line reached by switching to it; a
+snapshot on another branch; the root; an atomic failure; read-only refusal.
+validate_schema 5j. The plants are in `collab/cloud.md`.
+
+**Not decided:** automatic snapshots (ADR-0128 still defers them), and the
+compaction pass that must respect snapshot points (it does not exist yet).

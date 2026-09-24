@@ -248,6 +248,11 @@ add_executable(adi_remarks_tests tests/test_remarks.cpp)
 target_link_libraries(adi_remarks_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_remarks_tests COMMAND adi_remarks_tests)
 
+# History snapshots (ADR-0128): revert never discards, across branches too.
+add_executable(adi_snapshots_tests tests/test_snapshots.cpp)
+target_link_libraries(adi_snapshots_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_snapshots_tests COMMAND adi_snapshots_tests)
+
 # The engine skeleton. Its own binary because its concurrency test is the only
 # one in the tree that runs a second thread, and a failure there means something
 # categorically different from a failure anywhere else.
