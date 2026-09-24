@@ -821,7 +821,7 @@ target_link_libraries(adi_core PRIVATE samplerate)
 add_executable(adi_clip_playback_tests tests/test_clip_playback.cpp)
 target_link_libraries(adi_clip_playback_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_clip_playback_tests COMMAND adi_clip_playback_tests)
-set_tests_properties(adi_clip_playback_tests PROPERTIES TIMEOUT 120)
+set_tests_properties(adi_clip_playback_tests PROPERTIES TIMEOUT 600)
 
 # ADR-0156: one decoder for imported audio, into the decoding cache. The
 # libraries' implementations compile once, as C, outside the warning wall;
@@ -842,3 +842,9 @@ target_compile_definitions(adi_decode_tests PRIVATE
     ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
 add_test(NAME adi_decode_tests COMMAND adi_decode_tests)
 set_tests_properties(adi_decode_tests PROPERTIES TIMEOUT 120)
+
+# ADR-0155: immutable MIDI clip schedules, emitted before graph forwarding.
+target_sources(adi_core PRIVATE src/adi/engine/midi_clips.cpp)
+add_executable(adi_midi_clips_tests tests/test_midi_clips.cpp)
+target_link_libraries(adi_midi_clips_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_midi_clips_tests COMMAND adi_midi_clips_tests)

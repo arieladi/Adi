@@ -8,6 +8,161 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-24 — MIDI clips through Session and audio rates to 768 kHz (ADR-0155 / ADR-0157)
+
+Branch `linux/midi-clips`, from `bb8058d`, using the director's PR #107 claims.
+ADR-0155 records the decisions. Cloud's media-open constructor call is preserved;
+no decoder, store, schema, panel, JUCE, settings or workflow edits. Shared CMake
+changes add the MIDI source and its test target, plus the clip suite timeout
+needed by instrumented conversion; the README headline is
+recomputed from the suites before merging.
+
+### Playback and small engine hooks
+
+Notes are prepared from the decoded ANOT rows off the callback. Absolute musical
+positions integrate the existing step-tempo map; clip content offsets/repeats
+and clip ends are resolved before publication. A source event hook runs before
+ADR-0091 forwarding and split selection, leaving the 500 Hz floor unchanged.
+The session combines its existing external/audio suppliers with the MIDI source.
+Transport commands carry a driver-owned revision; commands still run between
+callbacks. Every track, including an emptied track, retains a MIDI source so
+muting/deleting its last clip can release its previous generation's notes.
+
+Active-note state belongs to the audio consumer and survives graph publication.
+Locate, stop, loop wrap (inside or between callbacks), clip end, mute and deletion
+release ownership; playing at a new position chases sustained notes. Distinct
+runtime IDs prevent an old off from matching a new start. A note-off is acknowledged
+only after processing by an instrument/graph output. A rejected forward is retried.
+Two additional guards failed before these hooks: a refresh lost a deferred off,
+and a full destination list dropped an off that the source had already queued.
+The stopped-refresh variant also failed before its generation handling was fixed.
+A nanosecond clip ending at sample 100.500048 failed by ending at 100 instead of
+101; clipped note ends now use the absolute nanosecond endpoint directly.
+The first-entry loop guard also failed: a held note was retriggered when entering
+the loop range, before any wrap. Its initial traversal now reaches loop end
+before repeating; the guard checks all five starts/offs and the first off at 250.
+
+The callback allocates nothing, performs no SQLite/file I/O, waits for nothing,
+and touches neither the message-thread registry nor shared-pointer ownership.
+The concurrency guard publishes changed clips while a separate driver processes.
+Runtime polyphony is 128 owned notes per track; refused ons are counted by
+`MidiClips::droppedNotes()`, while owned offs retain their reserved capacity.
+Preparation refuses a clip exceeding the one-million-occurrence track budget.
+
+Key, on/release velocity and channel reach the instrument. Tuning cents become
+per-note Pitch in semitones. `rows::Note` currently drops ANOT's stable note ID,
+so runtime identity is not a claim of stored identity preservation. Stored AEXP,
+probability and ties are not rendered; affected clips report that limitation.
+Probability plays at 100%, ties independently, mute is honoured, and selection/
+ghost flags remain editing metadata. No changes to cloud/win's row projection.
+
+### High rates and measured conversion
+
+Sessions accept 44,100–768,000 Hz; positive source rates through 768,000 Hz remain
+valid below the session floor. Eight pages per clip now each hold
+`ceil(8192 * rate / 48000)` frames. The two-page demand horizon is at least
+341⅓ ms at every rate. Tests prime at zero, stall the worker, then locate to the
+last promised samples without priming again; cold locate and mid-block transport
+wrap are separate guards. The 192/384 kHz cases also check placement, content
+loop/offset, and 22.05/44.1/96 kHz conversion. The session floor is refused and
+768 kHz is exercised. Extremely low rates use bounded cascaded libsamplerate
+stages rather than violating its 256:1 ratio limit.
+
+Clang 21.1.8 Release on the i5-3550S, 997 Hz at amplitude 0.5. These fixtures
+exclude the first 512 output frames, so high-rate rows still include more of the
+zero-extended startup response; these are not universal converter specifications.
+
+| Source → session Hz | RMS error | Peak error |
+|---|---:|---:|
+| 22050 → 192000 | 8.98012044e-7 | 4.62369288e-5 |
+| 44100 → 192000 | 1.17915210e-8 | 5.96401842e-8 |
+| 96000 → 192000 | 9.42756756e-9 | 4.51948876e-8 |
+| 22050 → 384000 | 8.16840613e-6 | 2.76373945e-4 |
+| 44100 → 384000 | 4.46869746e-7 | 2.30211920e-5 |
+| 96000 → 384000 | 9.97391648e-9 | 4.51948746e-8 |
+
+The cascaded 1 Hz → 768 kHz constant, measured well inside its source window,
+has peak error 2.98023224e-8. The cascaded 100 Hz → 48 kHz, 5 Hz sine has RMS
+1.42181754e-8 / peak 5.00926101e-8. An initial constant fixture too close to its
+zero-extended edge failed the interior-DC assertion; the final fixture moves
+inside the filter support without loosening tolerance. No benchmark/tuning claim.
+
+### Required plants
+
+Each compiled, then exited 1 at the named guard, before restoration and a green
+160-check MIDI run. Scratch build and run logs retain each result.
+
+| Deliberate defect | Failing guard |
+|---|---|
+| Skip the discontinuity off on locate | `locate releases owned note` |
+| Skip the off at an interior transport wrap | `loop wrap releases note at exact interior frame` |
+| Move every note-on one 512-frame block late | `exact note frames across rates and block sizes` |
+| Explicit `operator new` on the callback | `MIDI callback allocates nothing` |
+| Send zero instead of cents / 100 | `tuning cents reaches instrument as per-note semitones` |
+
+### Gemini review and verification
+
+Gemini Pro (`agy`, existing authenticated installation) helped with the two
+high-rate files and provided a read-only MIDI audit. I reviewed its complete
+diffs, removed scratch/debug output, strengthened its read-ahead test (the first
+version primed after locating and did not prove the horizon), and ran the tests
+myself. Its initial ratio refusal was replaced by cascaded conversion to honour
+"any positive source rate". A build overlapping Gemini's diagnostic rewrite
+failed while reading the changing file; that run is discarded and all final
+builds use stable sources. The audit's concurrency gap is covered by the new
+concurrent-publication test. Speculative audit conclusions are not claimed as
+proven findings; the lost deferred/rejected offs above have failing guards.
+
+### Verification
+
+Final GCC 15.2.0 and Clang 21.1.8 Release runs, rebased on `8802318`:
+**4330 checks across 44 suites** under `tools/test_all.sh`, all five validators
+clean. CTest registers exactly 44 suites. Before cloud's decoder/settings merges,
+both compilers passed 4258/43. An early run caught a stale README ADR inventory;
+the final inventory is 158 and the validator passes. The unchanged GCC
+`test_pd.cpp` allocator-counter warning remains outside this claim.
+
+The first sanitizer attempts are retained, not counted as clean. ASan caught
+missing nothrow overloads in this test's new/delete allocation counter; matching
+nothrow overloads fixed it without suppression. UBSan then proved a maximum
+sample locate overflowed the MIDI block endpoint; saturating endpoint arithmetic
+and the maximum-locate guard fixed it.
+
+**Win/mac by name:** GCC TSan found `DeviceNode::setBypassed` / `tailSamples`
+racing when `Session::syncFlags` rewrote unchanged flags during a clip refresh.
+The small lent Session hook now avoids unchanged bypass/always-process writes;
+the concurrent clip-refresh guard passes. Actual device flag changes still need
+the device layer's synchronization fix in mac's `src/juce/device_model.*`; this
+PR does not claim to fix that separate case or edit JUCE.
+
+Clang ASan+UBSan and GCC TSan each passed **822 checks across the six affected
+suites**: MIDI 163, clip playback 82, session 214, graph 177, realizer 62 and
+WAV 124. Both use `halt_on_error=1`; UBSan also prints stack traces. This is
+sanitizer coverage of the affected suites, not a claim of all 44 suites under
+sanitizers. No suppression was added.
+
+An earlier instrumented high-rate conversion exceeded the offline test driver's
+original 10-second prime allowance. The test-only allowance is now 300 seconds
+and the clip-suite CTest limit 600 seconds; callback behavior and the production
+`prime()` default are unchanged. Both final instrumented clip runs pass all 82.
+
+Main advanced to `9945889` (cloud's #111 decoder), then `8802318` (#112 settings),
+during verification. Rebase preserves its `audio::playableFile` call and all
+cloud build/dependency/claim/ADR additions. All final runs above use that latest
+base and the first-loop-entry correction. The second rebase interrupted one
+redundant build; interrupted runs are not counted as results.
+
+Evidence is retained locally at
+`/home/adi/Documents/Codex/2026-09-23/i-n/work/midi-clips`: `plants.json` and
+individual failing logs; `loop-entry-before.txt`; `merge-*-tests.txt` for the
+full Release runs and final MIDI sanitizer runs; `merge-*-affected-results.json`
+for the other five sanitizer suites; and `final-ctest-registration.json`.
+Only this linux claim is released. Merge is gated on all 19 CI jobs succeeding
+against the exact final PR head; the PR records that SHA and outcome.
+
+
+---
+
 ## 2026-09-24 — Streamed audio clips through Session (ADR-0151)
 
 Branch `linux/clip-playback`, from `7f3d874`; the director granted the engine

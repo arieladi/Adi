@@ -309,8 +309,12 @@ void Session::syncFlags() {
         for (const rows::Device& d : model_.devices) {
             if (d.id != e.deviceId) continue;
             device::DeviceNode& node = devices_.nodeAt(e.hostIndex);
-            node.setBypassed(e.placeholder || !d.enabled);
-            node.setAlwaysProcess(d.alwaysProcess);
+            // A clip-only refresh must not write DeviceNode's plain flags
+            // while its audio consumer reads them. Actual flag changes still
+            // require the device layer's own synchronization contract.
+            const bool bypassed = e.placeholder || !d.enabled;
+            if (node.bypassed() != bypassed) node.setBypassed(bypassed);
+            if (node.alwaysProcess() != d.alwaysProcess) node.setAlwaysProcess(d.alwaysProcess);
             if (const rows::DeviceChain* c = chainOf(d.chainId))
                 e.trackId = c->trackId.value_or(0);
             if (!e.placeholder) syncRoute(e, node.instance());
@@ -364,11 +368,16 @@ void Session::attach() {
         return nodes;
     };
     auto* clipSource = clips();
-    rs.sourcesFor = [this, clipSource](std::int64_t id) {
+    auto* midiSource = midi_.get();
+    rs.sourcesFor = [this, clipSource, midiSource](std::int64_t id) {
         auto nodes = sources_ ? sources_(id) : std::vector<Node*>{};
         if (clipSource) {
             auto audio = clipSource->sourcesFor(id);
             nodes.insert(nodes.end(), audio.begin(), audio.end());
+        }
+        if (midiSource) {
+            auto notes = midiSource->sourcesFor(id);
+            nodes.insert(nodes.end(), notes.begin(), notes.end());
         }
         return nodes;
     };
@@ -384,6 +393,7 @@ bool Session::rebuild() {
     try {
         clips_ = std::make_unique<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
                                                 spec_.channels, spec_.maxFrames);
+        midi_ = std::make_unique<MidiClips>(model_, transport_, spec_.sampleRate, midiState_);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     attach();   // the spec, the sources or the placement may have changed
     ++stats_.rebuilds;
@@ -392,6 +402,7 @@ bool Session::rebuild() {
     else live_ = true;
 
     problems_ = model_.problems;
+    if (midi_) problems_.insert(problems_.end(), midi_->problems().begin(), midi_->problems().end());
     if (auto* c = clips()) problems_.insert(problems_.end(), c->problems().begin(), c->problems().end());
     problems_.insert(problems_.end(), sessionProblems_.begin(), sessionProblems_.end());
     const std::vector<std::string>& fromGraph = graph_.problems();

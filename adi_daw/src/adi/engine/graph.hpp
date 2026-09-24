@@ -119,6 +119,16 @@ public:
     /// Audio thread. No allocation, no locks, no throwing.
     virtual void process(const NodeIo& io) noexcept = 0;
 
+    /// Prepared source events, once per block BEFORE forwarding/splitting.
+    /// Audio-thread contract: bounded, allocation-free, no I/O. Defaults empty.
+    virtual void sourceEvents(EventList&, std::int32_t) noexcept {}
+    /// After processing, a note-off reached a consuming node or graph output.
+    /// Sources retain ownership until this acknowledgement, across PDC queues.
+    virtual void noteOffDelivered(const Event&) noexcept {}
+    /// Forwarding refused an off; its source must retain and retry ownership.
+    virtual void noteOffRejected(const Event&) noexcept {}
+
+
     /// How long this node keeps producing after its input goes quiet.
     /// `kInfiniteTail` means never suspend — the right answer for a feedback
     /// delay and for anything that does not know.
