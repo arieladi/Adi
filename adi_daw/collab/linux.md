@@ -124,9 +124,14 @@ ADR-0147". Its dependency pin/licence did not change.
 
 Library suite: 47 checks, including 20 idle cancel/restart cycles. Shutdown
 changes its wait predicate under the condition-variable mutex so notification
-cannot be lost between predicate evaluation and waiting. Full GCC tree: **3783 checks across 38 suites**, all
-validators clean (Windows retains its two additional registry checks). Final
-Clang/sanitizer/CI outcomes are added before merge. The new warning caught on
+cannot be lost between predicate evaluation and waiting. Rebased on `5baebbc` (cloud's changeset), preserving every other claim and ADR.
+Full GCC and Clang trees: **3844 checks across 39 suites**, all validators clean
+(Windows retains its two additional registry checks). Clang ASan+UBSan and GCC
+TSan each pass **47 library + 42 hash checks** with `halt_on_error=1` on the
+rebased sources; no findings. This is affected-suite sanitizer coverage, not a
+claim of a full-tree sanitizer run. All 19 CI jobs are required green at the
+final head SHA before merge. The shared library claim is released in this
+last PR, as instructed. The new warning caught on
 the first build was misleading indentation in our open helper; fixed.
 MSVC /WX is not available locally; CI compiles/tests Windows and win owns /WX.
 
