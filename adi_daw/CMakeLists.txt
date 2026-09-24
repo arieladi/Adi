@@ -723,3 +723,6 @@ target_link_libraries(adi_collect_export_tests PRIVATE adi_core adi_warnings adi
 add_dependencies(adi_collect_export_tests adi_tool)
 target_compile_definitions(adi_collect_export_tests PRIVATE ADI_TOOL_PATH="$<TARGET_FILE:adi_tool>")
 add_test(NAME adi_collect_export_tests COMMAND adi_collect_export_tests)
+
+# No-clobber publication platform boundary.
+target_sources(adi_core PRIVATE src/adi/media/publish_file.cpp)

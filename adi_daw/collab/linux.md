@@ -8,6 +8,68 @@ first tasks: `collab/linux/ONBOARDING.md`.
 
 ---
 
+## 2026-09-24 — Publication on removable filesystems (PR 1 of the library mission)
+
+Branch `linux/publish-files`, from `7682737`. Adi's new assignment supersedes
+ADR-0143's hard-link publication restriction. The pregranted claim now names
+this branch followed by `linux/library-index`; it remains until PR 2, as asked.
+ADR-0147 stays reserved for the combined publication/index/SIMD decisions.
+
+`media::publishFile` confines platform code to one translation unit: Linux
+`renameat2(RENAME_NOREPLACE)`, macOS `renamex_np(RENAME_EXCL)`, Windows
+`MoveFileExW` without replacement or cross-volume-copy flags. Existing targets
+are never replaced. Other rename errors take a bounded-buffer exclusive-create
+copy (`O_CREAT|O_EXCL` / `CREATE_NEW`), flush, close and BLAKE3 re-hash. Only a
+verified result succeeds; ordinary failures close/remove the target created
+by this call and retain the source. Destination collisions remain distinct
+from other errors so extraction can choose another safe name. Both audio and
+final ZIP publication use this helper.
+
+The fallback is **not atomic visibility**: the exclusively created target is
+visible during copying. Callers must use its returned success, not appearance,
+as completion. A crash can leave a partial output; normal failure cleanup is
+tested. No claim of power-loss atomicity or of a SQLite/filesystem transaction.
+Private staging files are closed and not concurrently modified by callers.
+
+API references checked: [Linux rename](https://www.man7.org/linux/man-pages/man2/rename.2.html),
+[Windows MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw).
+The OS branches are tested by CI; local MSVC /WX is unavailable to linux.
+
+### Plants, all compiled, observed failing, then reverted
+
+| Plant | Failing guard |
+|---|---|
+| Replace fallback exclusive-create with truncation | `fallback never overwrites existing file` |
+| Skip fallback BLAKE3 comparison | `fallback rehash catches corrupted target` |
+| Remove failure cleanup | `failed fallback removes partial target` |
+
+Gemini read the publisher without edits. It suggested clarifying the copy-route
+flag and removing obsolete post-publication removal/comment code; done. These
+are API/cleanup clarifications, not claimed new data-loss findings. The actual
+no-clobber, re-hash and failure-cleanup guarantees are proved by the plants.
+
+New tests inject a refused rename, corruption after flush/close, and a thrown
+copy failure. The full collection/extraction suite has 63 checks (+10).
+
+### Real removable-filesystem checks
+
+Created two private 128 MiB images and loop-mounted with `sudo -n`, uid/gid 1000.
+Ran the **entire 63-check suite** with TMPDIR pointing at each mount: **vfat
+63/63, exFAT 63/63**. Thus the source databases, extraction audio, staging and
+ZIP destination all lived on that filesystem. The same run exercises real
+native publication and the injected fallback. mkfs.fat 4.2; exfatprogs 1.3.2.
+Both unmounted successfully. Logs, image setup script and plant outputs:
+`/home/adi/Documents/Codex/2026-09-23/i-n/work/publish-files/`.
+
+Clang ASan+UBSan and GCC TSan each pass all 63 collection checks with
+`halt_on_error=1`, including the CLI subprocesses. GCC and Clang full tree: 3737 checks
+across 37 suites, validators clean. The first full-tree run only failed the
+README count: win's 3729 baseline includes two Windows-only registry checks;
+Linux has 3727, plus these ten gives 3737. No test failed. Both full-tree runs passed; all CI jobs are checked by final head SHA before
+merge. Claims stay for the second PR, as Adi explicitly instructed.
+
+---
+
 ## 2026-09-24 — Collect and Export, media ops and legacy extraction (ADR-0143)
 
 Branch `linux/collect-export`, on Adi's assignment and the pre-existing claim
