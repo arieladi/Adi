@@ -152,12 +152,15 @@ void formats(const fs::path& root) {
     bool exact = u8.frames() == 2400 && u8.rate == 48000;
     for (std::size_t i = 0; exact && i < u8.frames(); ++i) {
         // The fixture's byte is the 16-bit source's top byte plus 128. dr_wav
-        // maps an unsigned byte u to u / 127.5 - 1 (ADR-0156 d5).
+        // maps an unsigned byte u to u / 127.5 - 1 (ADR-0156 d5), as a
+        // multiply and a subtract that a compiler may fuse (Apple clang on
+        // arm64 does), so the last bit of the float is the compiler's: the
+        // check allows 1e-6, far under the 1/128 step of 8-bit audio.
         const auto v16 = static_cast<long>(std::lround(src16.samples[2 * i] * 32768.0f));
-        const auto u = static_cast<float>(((v16 >> 8) + 128) & 255);
-        exact = u8.samples[i] == u * 0.00784313725490196078f - 1.0f;
+        const double u = static_cast<double>(((v16 >> 8) + 128) & 255);
+        exact = std::fabs(static_cast<double>(u8.samples[i]) - (u / 127.5 - 1.0)) <= 1e-6;
     }
-    check(exact, "8-bit WAV the reader refuses: decoded, exact to dr_wav's u8 mapping");
+    check(exact, "8-bit WAV the reader refuses: decoded to dr_wav's u8 mapping");
 
     long lag = 0;
     const auto mp3 = load(cache.playable(fixture("tone.mp3")));

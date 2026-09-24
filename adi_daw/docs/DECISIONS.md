@@ -10314,8 +10314,10 @@ BW64 holding 16- or 24-bit PCM or 32-bit float, and refuses anything else.
 
    The clip worker's existing catch turns it into `clips#N: decode.corrupt: …;
    silent`.
-5. **8-bit WAV follows dr_wav's mapping, `u / 127.5 − 1`.** 16- and 24-bit
-   PCM decode bit-exact to what the `WavReader` gives: `v / 2^(bits−1)`. dr_wav
+5. **8-bit WAV follows dr_wav's mapping, `u / 127.5 − 1`,** to within the
+   last bit of the float: dr_wav computes it as a multiply and a subtract,
+   which Apple clang on arm64 fuses. 16- and 24-bit PCM decode bit-exact to
+   what the `WavReader` gives on every leg: `v / 2^(bits−1)`, a power of two. dr_wav
    offers a libsndfile-compatible mode that would make 8-bit `(u − 128) / 128`,
    but it also flips the sign of AIFF A-law and μ-law, so it stays off. Nothing
    ADI writes is 8-bit.

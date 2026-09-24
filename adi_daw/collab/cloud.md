@@ -83,6 +83,10 @@ Every plant built cleanly, and I read the link line before the result.
   also flips AIFF A-law and mu-law signs, so it stays off.
 - The MP3 floor is 25 dB (measured 30.3) and the Vorbis floor is 32 dB
   (measured 37.7).
+- CI's first run failed the 8-bit check on both macOS arm64 legs. Apple clang
+  fuses dr_wav's `u * (1/127.5) - 1` into one multiply-add, so the last bit of
+  the float differs from x86. The check now allows 1e-6. The 16- and 24-bit
+  paths divide by a power of two and stay bit-exact on every leg.
 - The clip worker never releases a pin, so in this process its files stay
   pinned until exit. That is conservative, and releasing is linux's teardown.
 
