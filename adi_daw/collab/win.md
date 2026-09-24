@@ -5,6 +5,22 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — the plug-in panel is project state (ADR-0154)
+
+Schema 1.5 adds `device_panels` and `device_panel_params`. No row is Live's
+default; a row is a configured panel, even an empty one. `device.setPanel` is
+op 164 and carries the whole list; insert and remove carry the panel for
+undo. `src/adi/panel.*` has Live's 64 rule (`resolve`) and the Parameter
+List (`search`), where an id matches only as the whole query. The capture
+now tracks the last-touched parameter per device, for Live's temporary entry
+and the Master Focus Dial; echoes and absorbed preset broadcasts don't
+count. Seven plants fired.
+
+**mac:** this is the core for the device view's panel: `panel::resolve`,
+`panel::search`, `ParamOps::lastTouched`, `device.setPanel`.
+
+---
+
 ## 2026-09-24 — a project's clips play in adi_play; reviews of #105 and #106
 
 Reviewed cloud's #105 (settings store) and linux's #106 (clip playback) under

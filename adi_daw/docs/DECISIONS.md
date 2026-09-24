@@ -10180,3 +10180,65 @@ above 192 kHz, so a 384 kHz project would play silent. Its read-ahead is
 **Not decided:** whether the 4,096-frame block cap should rise at very high
 rates, where it is 10.7 ms at 384 kHz and 5.3 ms at 768 kHz. Only a measured
 need would raise it.
+
+
+---
+
+## ADR-0154 — The plug-in panel is project state: schema 1.5, one op for the whole list, Live's rule and the Parameter List as functions — `DECIDED` (2026-09-24) — **IMPLEMENTS ADR-0150 d1-d3**
+
+**Context.** ADR-0150 made the panel exactly Live's: 64 or fewer modifiable
+parameters shown, more opens empty; Configure, temporary entries, recording and
+mapping add parameters, per instance, saved with the project. Nothing stored a
+panel, and nothing computed the rule.
+
+### Decisions
+
+1. **Schema 1.5: `device_panels(device_id)` and `device_panel_params(device_id,
+   ord, param_id)`.** No `device_panels` row is Live's default. A row marks the
+   panel configured, and its parameters are exactly the second table's rows,
+   which may be none: a panel the user emptied is not the default. Two tables,
+   because "configured and empty" and "never configured" must differ. Whole
+   tables, so ADR-0144's upgrade adds them; 1.4 is frozen. `param_id` has no
+   foreign key, for the same reason `remarks` has none: a parameter has no
+   `plugin_params` row until its first edit. SPEC §7.6 states the reader's rule.
+2. **`device.setPanel {dev, params}`**, op 164: the whole list, or null for the
+   default. Adding, removing and reordering are all "the list is now this", so
+   the op is symmetric and one Configure gesture is one undo step. Engine impact
+   none. `device.insert` carries `panel` and `device.remove` captures it, as
+   with the route (ADR-0149).
+3. **`panel::resolve`** gives the UI and the agent one answer: the configured
+   list, with parameters the plug-in no longer declares kept and marked
+   missing; or Live's default from the modifiable count, with the Configure
+   prompt when it is over 64. A placeholder declares nothing, so it shows its
+   configured panel as missing entries, or an empty panel with no prompt.
+4. **`panel::search`**, the Parameter List: every word of the query must start
+   or sit inside a word of the name; word starts rank above insides, an exact
+   name above both, and the plug-in's order breaks ties. **An id matches only as
+   the whole query.** The first version matched ids word by word, and "filter
+   3" found the parameter whose id is 3: VST3 ids are bare numbers. The test
+   caught it before any plant.
+5. **The temporary entry is the parameter last touched in the plug-in's
+   window**, per device, from the capture: `ParamOps::lastTouched`. A gesture
+   or a bare knob turn counts; an echo of our own set does not, and neither
+   does a preset's broadcast absorbed into its snapshot (ADR-0142). The Master
+   Focus Dial (ADR-0130) reads the same value. Promoting it to the panel is the
+   UI's `device.setPanel`.
+
+### Verified non-vacuously
+
+| Planted | Check that failed |
+|---|---|
+| the limit off by one (64 opens empty) | 64 modifiable: all 64 shown |
+| hidden parameters counted | the same check: hidden meters do not count |
+| `device.remove` forgets the panel | the panel came back with it |
+| the op's inverse captures nothing | the three came back, in their order |
+| an empty configured panel becomes the default | a configured, empty panel, not the default |
+| a preset's broadcast counts as a touch | a preset's own broadcast does not steal the temporary entry |
+| a word matches an id | every word must match: no "Filter 3" |
+
+The inverse plant did not compile the first time, because MSVC /WX refused the
+unused parameter it left. It was re-planted to capture the wrong device.
+
+**Not decided:** Live's Delete warning when the parameter has automation,
+envelopes or mappings is the UI's, checked against those rows before it emits
+`device.setPanel`; recording's panel additions arrive with recording automation.

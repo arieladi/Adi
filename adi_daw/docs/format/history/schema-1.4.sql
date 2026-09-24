@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1005;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1004;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '5'),
+    ('schema_minor',        '4'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -570,26 +570,6 @@ CREATE TABLE device_expression_routes (
     device_id   INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
     route       TEXT    NOT NULL CHECK (route IN ('note_expression','mpe_midi','plain'))
 ) STRICT;
-
--- The plug-in panel (ADR-0150, ADR-0154): the parameters a device shows as
--- sliders, in order. NO ROW IN device_panels IS LIVE'S DEFAULT: every
--- parameter when the plug-in declares 64 or fewer, none when it declares more
--- (Live 12 manual 23.3.1). A row marks the panel CONFIGURED, and its
--- parameters are exactly device_panel_params' rows -- which may be none, a
--- panel the user emptied. Per instance and saved in the project, as in Live.
--- Written only by device.setPanel, and by device.insert / device.remove for
--- undo. param_id has no foreign key: a parameter has no plugin_params row
--- until its first edit (ADR-0057), and a missing plug-in keeps its panel.
-CREATE TABLE device_panels (
-    device_id   INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE
-) STRICT;
-CREATE TABLE device_panel_params (
-    device_id   INTEGER NOT NULL REFERENCES device_panels(device_id) ON DELETE CASCADE,
-    ord         INTEGER NOT NULL,
-    param_id    TEXT    NOT NULL,
-    PRIMARY KEY (device_id, param_id)
-) STRICT, WITHOUT ROWID;
-CREATE UNIQUE INDEX idx_panel_ord ON device_panel_params(device_id, ord);
 
 -- Rack macros and their mappings (SPEC §6.6).
 CREATE TABLE macros (

@@ -211,6 +211,10 @@ std::vector<OpRequest> corpus() {
     op("device.setExpressionRoute", {{"dev", 70}, {"route", "mpe_midi"}}, "MPE over MIDI");
     op("device.setExpressionRoute", {{"dev", 70}, {"route", nullptr}}, "Back to Auto");
     op("device.setExpressionRoute", {{"dev", 72}, {"route", "plain"}}, "Plain on the missing one");
+    // ADR-0154: a panel configured, reordered, and one that leaves with its device.
+    op("device.setPanel", {{"dev", 70}, {"params", {"ratio", "attack"}}}, "Configure the panel");
+    op("device.setPanel", {{"dev", 70}, {"params", {"attack", "ratio"}}}, "Reorder it");
+    op("device.setPanel", {{"dev", 72}, {"params", nlohmann::json::array()}}, "Empty the missing one's");
     op("device.setEnabled", {{"id", 71}, {"enabled", false}}, "Bypass the reverb");
     op("device.rename", {{"id", 71}, {"name", "Plate"}}, "Rename it");
     op("device.setLatency", {{"id", 70}, {"latency", 2048}}, "Report lookahead");

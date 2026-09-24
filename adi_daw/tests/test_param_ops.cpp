@@ -760,6 +760,38 @@ void testAnUndoneChunkReseedsTheCapture() {
     eqi(ops.stats().statesRefused, 1, "and counted");
 }
 
+void testTheLastTouchedParameter() {
+    section("ADR-0154 -- the parameter last touched in the plug-in's window: gestures and knob turns, never echoes or presets");
+    Sampler s;
+    ParamOps ops;
+    ops.attach(20, s);
+    std::vector<OpRequest> out;
+    eqi(ops.lastTouched(20), -1, "nothing touched yet");
+    s.drag(1, 0.6);
+    ops.drain(1000, out);
+    eqi(ops.lastTouched(20), 1, "a drag of gain: gain is the temporary entry");
+    // A plug-in with no gestures: a bare value is a touch too.
+    s.drag(0, 0.3);
+    ops.drain(1100, out);
+    eqi(ops.lastTouched(20), 0, "then cutoff");
+    // Our own set, echoed back, is not the user's touch.
+    Knobs k;
+    k.echoOnSet = true;
+    ParamOps ops2;
+    ops2.attach(21, k);
+    check(ops2.applied({{"dev", 21}, {"param", "gain"}, {"norm", 0.9}}, 2000), "our own set");
+    std::vector<OpRequest> o2;
+    ops2.drain(2100, o2);
+    eqi(ops2.lastTouched(21), -1, "its echo is not a touch");
+    // A preset moves cutoff with no gesture: absorbed, and not a touch.
+    s.drag(1, 0.7);
+    ops.drain(1200, out);
+    s.pickPreset(4, 0.9);
+    ops.drain(1300, out);
+    eqi(ops.lastTouched(20), 1, "a preset's own broadcast does not steal the temporary entry");
+    eqi(ops.lastTouched(99), -1, "an unknown device has none");
+}
+
 void testTheStateLoopThroughTheJournal() {
     const adi::test::TempDirectory scratch("param_ops", "state");
     section("ADR-0142 -- a preset through the journal: reload keeps it, undo reaches the plugin, a row on top survives");
@@ -924,6 +956,7 @@ int main() {
     testAStatelessDeviceWritesItsMoves();
     testAnUndoneChunkReseedsTheCapture();
     testTheStateLoopThroughTheJournal();
+    testTheLastTouchedParameter();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

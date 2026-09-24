@@ -168,6 +168,7 @@ add_custom_command(
 
 add_library(adi_core STATIC
     src/adi/appdata.cpp
+    src/adi/panel.cpp
     src/adi/plugin_registry.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
@@ -417,6 +418,11 @@ add_test(NAME adi_param_ops_tests COMMAND adi_param_ops_tests)
 add_executable(adi_engine_tests tests/test_engine.cpp)
 target_link_libraries(adi_engine_tests PRIVATE adi_core adi_warnings)
 find_package(Threads REQUIRED)
+
+# ADR-0154: the plug-in panel's rule and the Parameter List's search.
+add_executable(adi_panel_tests tests/test_panel.cpp)
+target_link_libraries(adi_panel_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_panel_tests COMMAND adi_panel_tests)
 
 # ADR-0149: where application data lives, and the plugin capabilities registry.
 add_executable(adi_plugin_registry_tests tests/test_plugin_registry.cpp)

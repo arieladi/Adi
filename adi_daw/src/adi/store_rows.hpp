@@ -293,6 +293,14 @@ struct DeviceRoute {
     std::string route;   ///< note_expression | mpe_midi | plain
 };
 
+/// `device_panels` / `device_panel_params` (ADR-0154, schema 1.5): a
+/// configured plug-in panel and its parameters in order. A device with no
+/// DevicePanel is on Live's default (panel.hpp resolves it).
+struct DevicePanel {
+    std::int64_t deviceId = 0;
+    std::vector<std::string> params;   ///< in `ord` order; may be empty
+};
+
 /// `remarks` (ADR-0131, schema 1.2): a note anchored to a track, a clip or a
 /// device, and through `paramId` to one of a device's parameters. The anchor
 /// is polymorphic, like a routing endpoint, so it may name nothing; the
@@ -328,6 +336,7 @@ struct Model {
     std::vector<PluginParam> pluginParams;
     std::vector<PluginState> pluginState;
     std::vector<DeviceRoute> deviceRoutes;
+    std::vector<DevicePanel> devicePanels;
     std::vector<Remark> remarks;
 
     /// Tables that were present but unreadable — a newer schema that dropped a

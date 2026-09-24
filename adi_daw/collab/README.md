@@ -163,7 +163,7 @@ subject, say so in your log instead of writing it twice.
 | 0151 | linux | `linux/clip-playback` | audio clips playing through the session, streamed from disk | used |
 | 0152 | cloud | `cloud/settings` | the settings store: typed registry, one file per application, roles in bundles, a two-lock agent whitelist | used |
 | 0153 | win | `win/journal-simd` | the journal takes a caller inside its transaction; BLAKE3 runs AVX2, AVX-512 and NEON | used |
-| 0154 | win | `win/device-panel` | the plug-in panel as project state (schema 1.5), its ops, the Parameter List search | reserved |
+| 0154 | win | `win/device-panel` | the plug-in panel is project state: schema 1.5, `device.setPanel`, Live's rule and the Parameter List as functions | used |
 | 0155 | linux | `linux/midi-clips` | MIDI clips playing into instruments, if it decides anything | reserved |
 | 0156 | cloud | `cloud/decoder` | one decoder for imported audio, into the cache; the settings registry filled from the catalogue, if it decides anything | reserved |
 | 0157 | win | `win/play-clips` | sample rates from 44.1 kHz to 768 kHz; lower-rate files still play, converted up (director's ruling) | used |
@@ -184,7 +184,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
-| `src/adi/store.*`, `src/adi/store_rows.*`, `src/adi/ops_catalog.cpp` (the `device.*` panel ops), `docs/OPS.md`, `docs/format/**`, `tools/validate_schema.py`, `tests/test_migrate.cpp`, `src/adi/panel.*` (new), `tests/test_panel.cpp` (new) | win | `win/device-panel` | 2026-09-24 |
 | `src/adi/engine/clip_*` (not the worker's media-open call, which is cloud's), `src/adi/engine/transport.*`, new `src/adi/engine/midi_*`, `tests/test_clip_playback.cpp`, `tests/test_midi_clips.cpp` (new); lent: `src/adi/engine/session.*`, `graph.*`, `realize.*` | linux | `linux/midi-clips` | 2026-09-24 |
 | `src/adi/audio/decode*` (new), `tests/test_decode.cpp` (new), the media-open call in the clip worker (one call site), one dependency line each in `tools/fetch_external.sh` and `docs/EXTERNAL-CODE.md`; then `src/adi/settings/**`, `tests/test_settings.cpp` | cloud | `cloud/decoder` | 2026-09-24 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |

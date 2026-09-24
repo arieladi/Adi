@@ -66,6 +66,8 @@ const std::vector<MigrationStep>& migrationSteps() {
         // 1.4 (ADR-0146): the expression route a device plays with, and the
         // agent's request text beside its transaction (AI-AGENT §6.8).
         {4, {"device_expression_routes", "agent_requests"}},
+        // 1.5 (ADR-0154): the plug-in panel a device shows.
+        {5, {"device_panels", "device_panel_params", "idx_panel_ord"}},
     };
     return steps;
 }

@@ -186,6 +186,11 @@ public:
     [[nodiscard]] const ParamEditCapture::Stats* captureStats(std::int64_t deviceId) const noexcept;
     [[nodiscard]] bool isAttached(std::int64_t deviceId) const noexcept;
 
+    /// ADR-0154: the parameter last touched in this device's own window,
+    /// as of the last drain; -1 when none, or the device is not attached.
+    /// Live's temporary entry, and the Master Focus Dial's target (ADR-0130).
+    [[nodiscard]] std::int32_t lastTouched(std::int64_t deviceId) const noexcept;
+
     /// How close is "the same value" for `applied` (decision 3). Default 1e-6,
     /// the capture's own echo tolerance.
     void setTolerance(double t) noexcept { tolerance_ = t > 0.0 ? t : 0.0; }

@@ -126,7 +126,7 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 42> kTables{{
+    static constexpr std::array<TableCoverage, 44> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
@@ -155,6 +155,8 @@ std::span<const TableCoverage> coverage() {
         {"history_snapshots", Coverage::Excluded, "Layer 3: history metadata, like op_branches (ADR-0128)"},
         {"agent_requests", Coverage::Excluded, "Layer 3: log metadata beside a txn, like the ops rows (ADR-0146)"},
         {"device_expression_routes", Coverage::Excluded, "devices are not projected yet; the route goes with them (ADR-0146)"},
+        {"device_panels", Coverage::Excluded, "devices are not projected yet; the panel goes with them (ADR-0154)"},
+        {"device_panel_params", Coverage::Excluded, "devices are not projected yet; the panel goes with them (ADR-0154)"},
         {"adi_meta", Coverage::Excluded, "Layer 0 bookkeeping, not project content"},
 
         // --- excluded pending step 6 ----------------------------------------
