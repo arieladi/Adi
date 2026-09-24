@@ -118,3 +118,85 @@ bundle.zip
 - **A bundle from another application is refused.**
 - **Unknown keys do not travel:** this build cannot tell whether they hold a
   path.
+
+## 7. The catalogue (ADR-0156)
+
+`docs/SETTINGS-CATALOGUE.md` lists the Settings Reference's 207 rows, and the
+registry is filled from it. `catalogue.{hpp,cpp}` puts every row in exactly
+one of two lists, and `tests/test_settings.cpp` reads the catalogue and proves
+the split.
+
+- **Answered: 146 rows.** Each names the registry keys that answer it. A key
+  may answer several rows: Part III's Cubase, Bitwig and REAPER rows mostly
+  point back to settings on Live's pages, and `audio.bufferSize` answers both
+  Audio and Engine.
+- **Absent: 61 rows.** Each has a kind and a reason:
+
+  | Kind | When | Rows |
+  |---|---|---|
+  | rejected | the catalogue says REJECTED | 10 |
+  | note | NOTE | 2 |
+  | backlog | BACKLOG: arrives with its feature | 12 |
+  | wish | WISH: not planned | 4 |
+  | not a setting | decided or proposed, but a behaviour, a command, a display or a fixed rule | 33 |
+
+  The test holds the status to the list. A REJECTED, NOTE, BACKLOG or WISH row
+  is never answered, and "not a setting" is only for a DECIDED or DIRECTION
+  row.
+
+A row is named `<section> / <setting>`: the section as the catalogue heads it,
+and the setting cell up to its first ` (`. Two settings, PTP and AudioGridder
+servers, appear in two sections each, so the section is part of the name.
+
+**222 settings on 21 pages:**
+
+| Page | Settings | Notes |
+|---|---|---|
+| Look & Feel | 48 | Live's Display & Input and Theme & Colors |
+| Audio | 24 | 2 Device scope |
+| Record | 18 | |
+| MIDI | 23 | 8 Device scope (per port) |
+| Editing | 20 | |
+| Plug-ins | 12 | 2 Device scope (per plug-in) |
+| Library | 6 | |
+| Privacy | 3 | |
+| AI | 6 | |
+| File & Folder | 11 | |
+| Mixing | 5 | |
+| New track | 5 | |
+| Transport | 6 | |
+| Sync | 13 | |
+| Engine | 1 | |
+| Updates | 2 | |
+| Windows | 3 | |
+| Devices | 5 | |
+| Music | 5 | |
+| Shortcuts | 2 | |
+| Project | 4 | |
+
+**The sample rate.** `project.sampleRate` and `audio.sampleRate` are choices
+from ADR-0157's ladder: 44.1 / 48, 88.2 / 96, 176.4 / 192, 352.8 / 384 and
+705.6 / 768 kHz. Nothing below 44.1 kHz is offered; a media file below it
+still plays, converted (ADR-0157 d1). `sampleRateLadder()` is the one list.
+
+**The Decoding Cache.** `cache.maxSizeMb` (10,240) and `cache.minFreeSpaceMb`
+(2,048) are the keys the decoder reads (`audio::limitsFromSettings`), and the
+test checks that their defaults are the decoder's own.
+
+**Decisions this fill made** (ADR-0156, part two):
+- **The theme follows the OS by default**, as the catalogue decides.
+  `lookfeel.theme` gains `os`.
+- **The agent's tier stays Propose by default.** The catalogue says Observe,
+  while AI-AGENT §2 and ADR-0152 say Propose. The spec wins until the director
+  rules; this is flagged.
+- **The catalogue adds nothing to the agent's whitelist.** The same nine
+  settings as before are marked. The Engine page joins the structural "never".
+- **New-track defaults are App scope,** on a *New track* page. The catalogue
+  calls R-26's page Project scope, but no op sets them in the `.adi`, and a
+  Project setting must name its op.
+- **Per-port MIDI switches and per-plug-in overrides are Device scope:**
+  listed for the badge and stored with the port or device.
+- **Where the catalogue names no default, the default is Live's where Live
+  has one, and otherwise stated in the help.** For example: the PDC threshold
+  when recording is 10 ms, the rate cap is 600 ops a minute, and the freeze
+  tail is 4 s.

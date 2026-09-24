@@ -185,7 +185,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
 | `src/adi/engine/clip_*` (not the worker's media-open call, which is cloud's), `src/adi/engine/transport.*`, new `src/adi/engine/midi_*`, `tests/test_clip_playback.cpp`, `tests/test_midi_clips.cpp` (new); lent: `src/adi/engine/session.*`, `graph.*`, `realize.*` | linux | `linux/midi-clips` | 2026-09-24 |
-| `src/adi/settings/**`, `tests/test_settings.cpp`, `docs/SETTINGS.md` | cloud | `cloud/settings-catalogue` | 2026-09-24 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |

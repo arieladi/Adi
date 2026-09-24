@@ -50,6 +50,10 @@ struct Setting {
     bool agentMayChange = false;
 };
 
+/// ADR-0157's ladder, the only rates a sample-rate chooser offers: 44.1 / 48,
+/// 88.2 / 96, 176.4 / 192, 352.8 / 384 and 705.6 / 768 kHz. Nothing lower.
+[[nodiscard]] std::vector<Value> sampleRateLadder();
+
 /// Every setting, in page order and then display order.
 [[nodiscard]] const std::vector<Setting>& registry();
 [[nodiscard]] const Setting* find(std::string_view key);
