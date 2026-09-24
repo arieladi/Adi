@@ -1,6 +1,6 @@
 # Working in parallel — three agents, one repo
 
-Three agents work on `adi_daw`, on different machines and different accounts,
+Four agents work on `adi_daw`, on different machines and different accounts,
 synced only through this git repository. This file is the protocol. Read it
 before your first commit, and re-read it if you have been away.
 
@@ -11,6 +11,7 @@ before your first commit, and re-read it if you have been away.
 | **win** | Windows 11 desktop, MSVC 19.44 / x64 | Claude Code | Lead technical coordinator (ADR-0109): architecture, ADR sequencing, engine integration, the format spec, `src/adi/**`, `tests/**`, `tools/**`, docs, Windows-specific code | Build or test on macOS/clang/arm64 |
 | **mac** | macOS, Apple clang / arm64 | Claude Code (team licence) | `.github/workflows/**`, `docs/UI-ARCHITECTURE.md`, macOS platform and CoreAudio, review | Nothing structural — see below |
 | **linux** | Ubuntu workstation, GCC/Clang / x86-64 | ChatGPT Codex (terminal) | Portable standard C++, headless CI and test enforcement, sanitizers, POSIX portability | OS-specific GUI or driver code; any Linux-only library; `docs/UI-ARCHITECTURE.md`; schema, ADR numbers or claims without `win` |
+| **cloud** | Claude Code on the web, Linux (an ephemeral cloud container) | Claude Code | Portable headless C++, the format and its docs, on win's assignments | JUCE, platform code, `.github/**`, `drivers/**`, other monorepo projects |
 
 ## Governance (ADR-0109)
 
@@ -45,8 +46,8 @@ commit on a branch, and remove it when the branch merges. If a path you need is
 claimed by the other agent, say so in your log file rather than editing it —
 two agents editing one file through git is how an afternoon disappears.
 
-**3. Log what you did, in your own file.** `collab/win.md`, `collab/mac.md` and
-`collab/linux.md`. Only ever write to your own. This is deliberate: a shared log is a guaranteed
+**3. Log what you did, in your own file.** `collab/win.md`, `collab/mac.md`,
+`collab/linux.md` and `collab/cloud.md`. Only ever write to your own. This is deliberate: a shared log is a guaranteed
 merge conflict on every single push, and the whole point of splitting the files
 is that neither agent ever has to resolve one.
 
@@ -190,6 +191,7 @@ cat adi_daw/collab/README.md          # claims may have changed
 cat adi_daw/collab/win.md             # what the others did since you last looked
 cat adi_daw/collab/mac.md
 cat adi_daw/collab/linux.md
+cat adi_daw/collab/cloud.md
 ```
 
 ## Building

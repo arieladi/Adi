@@ -125,7 +125,7 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 38> kTables{{
+    static constexpr std::array<TableCoverage, 39> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
@@ -151,6 +151,7 @@ std::span<const TableCoverage> coverage() {
         {"controller_maps", Coverage::Excluded, "Layer 3"},
         {"snapshots", Coverage::Excluded, "Layer 3"},
         {"adi_meta", Coverage::Excluded, "Layer 0 bookkeeping, not project content"},
+        {"remarks", Coverage::Excluded, "ADR-0131: not yet projected -- needs a rows::Model field and a node syntax; the replay digest covers them meanwhile"},
 
         // --- excluded pending step 6 ----------------------------------------
         // No op can create any of these, so there is no way to build a fixture

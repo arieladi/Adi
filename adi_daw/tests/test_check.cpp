@@ -330,6 +330,43 @@ void testMediaEmbedding() {
           "and so are blob chunks without the flag");
 }
 
+void testRemarkTargets() {
+    section("ADR-0131 -- a remark whose target is gone is a warning, not corruption");
+    Fixture f("remarks");
+    if (!f.store) return;
+    OpJournal j(*f.store);
+    OpRequest r;
+    r.opType = "remark.add";
+    r.payload = {{"id", 1}, {"kind", "clip"}, {"target", 5}, {"author", "user"},
+                 {"text", "comp the second chorus"}, {"created", 1790000000000000}};
+    check(j.commit(r).ok, "a remark on clip 5");
+    check(!has(checkProject(*f.store), "remark.danglingTarget"),
+          "while the clip exists, nothing is reported");
+
+    r.opType = "clip.delete";
+    r.payload = {{"id", 5}};
+    check(j.commit(r).ok, "the clip is deleted by an ordinary op");
+    const auto rep = checkProject(*f.store);
+    check(has(rep, "remark.danglingTarget"), "the orphaned remark is reported: " + describe(rep));
+    check(rep.errors == 0, "as a warning -- undo re-anchors it, so it is not corrupt");
+
+    // A kind a newer minor might add is not claimed to be missing.
+    f.db().exec("PRAGMA ignore_check_constraints = ON");
+    f.db().exec("INSERT INTO remarks(id, target_kind, target_id, author, text, created_utc) "
+                "VALUES (2, 'lane', 99, 'user', 'from the future', 0)");
+    f.db().exec("PRAGMA ignore_check_constraints = OFF");
+    const auto rep2 = checkProject(*f.store);
+    check(std::count_if(rep2.findings.begin(), rep2.findings.end(),
+                        [](const Finding& x) { return x.code == "remark.danglingTarget"; }) == 1,
+          "an unknown target kind is not reported as dangling: " + describe(rep2));
+
+    // A 1.1 file has no remarks table at all, and that is not a finding.
+    f.db().exec("DROP TABLE remarks");
+    const auto rep3 = checkProject(*f.store);
+    check(!has(rep3, "remark.checkFailed") && !has(rep3, "remark.danglingTarget"),
+          "a file without the table (1.0, 1.1) checks clean: " + describe(rep3));
+}
+
 }  // namespace
 
 int main() {
@@ -352,6 +389,7 @@ int main() {
         testTimeBaseMismatch();
         testNoInitialTempo();
         testMediaEmbedding();
+        testRemarkTargets();
     } catch (const std::exception& e) {
         std::printf("\nFAILED -- exception escaped: %s\n", e.what());
         return 1;

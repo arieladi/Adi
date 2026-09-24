@@ -6,7 +6,7 @@ Cubase's arrangement, editing and mixing depth, and an AI agent that can only ac
 through the same undoable operations a human uses.
 
 **Status:** format specified, reference implementation building.
-**3207 checks across 31 suites**, green on 7 ABIs. Nothing is frozen.
+**3269 checks across 32 suites**, green on 7 ABIs. Nothing is frozen.
 **Language:** C++ with JUCE (ADR-0014) · **Licence:** GPLv3 (ADR-0015); a build
 linking JUCE is a combined work with AGPLv3 obligations on the JUCE part (ADR-0048)
 
@@ -54,7 +54,7 @@ than frightening.
 | | |
 |---|---|
 | [`docs/format/SPEC.md`](docs/format/SPEC.md) | The `.adi` format specification, v0.1 draft. Written so a third party can implement a reader from it without reading our source. |
-| [`docs/format/schema.sql`](docs/format/schema.sql) | Normative DDL. Executable, and verified on every change. 38 tables. |
+| [`docs/format/schema.sql`](docs/format/schema.sql) | Normative DDL. Executable, and verified on every change. 39 tables. |
 | [`docs/format/RATIONALE.md`](docs/format/RATIONALE.md) | Why SQLite, what we rejected, and the three errors in the original proposal that must not come back. |
 | [`docs/FEATURES.md`](docs/FEATURES.md) | Ableton ∪ Cubase, prioritised P0–P3, each row checked against the schema. |
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
@@ -64,7 +64,7 @@ than frightening.
 | [`drivers/`](drivers/) | OS-level pieces that are their own programs: the ADI virtual audio device for Windows, built from Microsoft's MS-PL `sysvad` sample fetched at a pinned commit by `drivers/adi-virtual-audio/build.ps1` and `.github/workflows/driver-build.yml`; our own files there are MIT (ADR-0106, 0117 to 0120). Nothing in `src/` includes it. |
 | [`docs/EXTERNAL-CODE.md`](docs/EXTERNAL-CODE.md) | The nine external repos we read or link against, and the licence boundary between them. Read before copying a line out of `reference/`. |
 | [`tools/validate_schema.py`](tools/validate_schema.py) | Proves the DDL executes, FKs resolve, and UNIQUE indexes actually enforce uniqueness. |
-| [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 160-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |
+| [`tools/validate_ops.py`](tools/validate_ops.py) | Checks the 164-op catalogue: unique names, inverses, scope rules, coalescing, and that the prose count matches the tables. |
 | [`tools/fetch_external.sh`](tools/fetch_external.sh) | Clones/refreshes `third_party/` and `reference/`. Both gitignored, pinned by tag and commit. |
 | [`tools/test_all.sh`](tools/test_all.sh) | Every test binary, both validators, and the spec-vs-binary layout check. Binaries are discovered, not listed. |
 | [`tools/build.bat`](tools/build.bat) | Windows build. A `.bat` because `vcvars64` must run in the same shell. |
