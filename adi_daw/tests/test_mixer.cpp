@@ -69,7 +69,7 @@ struct Mix {
     void track(std::int64_t id, const char* kind, const char* name, float tone = 0.0f) {
         OpRequest q;
         q.opType = "track.create";
-        q.payload = {{"id", id}, {"kind", kind}, {"name", name}, {"index", static_cast<std::int64_t>(tones.size() + 10 * id)}};
+        q.payload = {{"id", id}, {"kind", kind}, {"name", name}, {"index", static_cast<std::int64_t>(tones.size()) + 10 * id}};
         op(q);
         if (tone != 0.0f) tones[id] = std::make_unique<ToneNode>(tone);
     }
