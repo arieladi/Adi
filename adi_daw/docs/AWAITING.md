@@ -12,6 +12,18 @@ date, not deleted.
 | 3 | **A project's clips heard** (ADR-0151) | any output device | `adi_play <project.adi>` plays the project's audio clips from 0 (`--from S` to start later). `adi_play <project.adi> --render 3` proves it without speakers: win's 44.1 kHz test clip rendered at -6.0 dBFS in a 48 kHz project, zero underruns, 2026-09-24 | `collab/win.md` |
 | 4 | **High sample rates on real hardware** (ADR-0157) | Adi's interface at 192 kHz, and at 352.8 or 384 kHz if it offers them | `adi_play <project.adi> --rate 192000`, then again at the highest rate the interface lists (`--type` as needed); a project whose clips are 44.1 and 96 kHz files exercises the conversion | `collab/win.md` |
 
+Any listening row can start from a generated project:
+
+```bat
+adi_tool create demo.adi
+python tools\make_demo_project.py demo.adi --project-rate 48000 --clip-rates 44100,96000
+adi_play demo.adi --render 4
+adi_play demo.adi
+```
+
+The first `adi_play` proves the path offline; the second is the one to
+listen to. `--rate 192000` for row 4. `--vst3-uid` adds an instrument track.
+
 ## Measured so far, for comparison
 
 BLAKE3, 1 GiB in memory, MSVC `/O2`, median of five runs (ADR-0153):

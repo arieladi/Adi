@@ -221,8 +221,9 @@ The dependencies are gitignored clones, not submodules. Fetch them first:
 bash adi_daw/tools/fetch_external.sh --build-only
 ```
 
-`--build-only` fetches the two entries the CMake tree actually links. Plain
-`fetch_external.sh` fetches all nine repositories — about 630MB, five of which
+`--build-only` fetches only what the CMake tree compiles or links, and a
+merge that adds a dependency means running it again: configure stops at
+"Missing ..." until you do. Plain `fetch_external.sh` fetches every repository — about 630MB, five of which
 are `reference/` source we read for design and never compile. Everything in
 `third_party/` is pinned by tag and verified against a recorded commit
 (ADR-0024); the fetch fails rather than proceeding if upstream has moved a tag.
@@ -235,12 +236,13 @@ cmake --build adi_daw/build
 bash adi_daw/tools/test_all.sh
 ```
 
-On Windows, use the script:
+On Windows, use the scripts:
 
 ```bat
-adi_daw	oolsuild.bat            :: configure + build
-adi_daw	oolsuild.bat werror     :: with -Werror on our own code
-adi_daw	oolsuild.bat clean      :: wipe the build tree first
+adi_daw\tools\build.bat              :: configure + build the core, no JUCE
+adi_daw\tools\build.bat werror       :: with -Werror on our own code (MSVC /WX)
+adi_daw\tools\build.bat clean        :: wipe the build tree first
+adi_daw\tools\build-juce.bat [target] :: the JUCE tree: adi_play, adi_vst3_probe, the fixture VST3
 ```
 
 It is a `.bat` rather than a shell script for a reason worth knowing before
@@ -249,6 +251,44 @@ up the environment in the *current* shell. Calling it from bash sets variables
 in a subshell that exits immediately, so `cl.exe` is still missing afterwards.
 CMake and Ninja also live inside the Visual Studio install rather than on
 `PATH`.
+
+### Windows, and MSVC with warnings as errors
+
+No CI leg builds MSVC with `/WX`, so win builds it after every merge, and code
+that passes GCC and Clang `-Werror` still fails it. Each of these has failed it:
+
+- **`std::getenv`** (C4996). Use the one-site helper: `envVar` in
+  `tests/test_wav_file.cpp`, `env` in `src/adi/appdata.cpp`. A value that is a
+  path is read wide on Windows (`_wgetenv`), or a Hebrew profile folder arrives
+  as question marks.
+- **`std::setbuf`** (C4996): `std::setvbuf(stdout, nullptr, _IONBF, 0)`.
+- **`fopen`, `strcpy`, the `sprintf` family** (C4996): streams, `std::string`,
+  `snprintf`.
+- **`std::filesystem::u8path`**, deprecated in C++20 (C4996). Hand SQLite a
+  path's `u8string()` bytes; `path::string()` is the ANSI code page on Windows.
+- **Narrowing** `size_t` to `int` (C4267) and signed/unsigned comparisons.
+- **Plants must compile.** MSVC `/WX` refuses the three easy ways to plant a
+  defect: a constant condition (`false &&`, C4127), code left unreachable
+  (C4702), and a parameter left unused (C4100). A plant that does not build
+  proves nothing; weaken a comparison instead.
+- **A check that runs on one platform only** changes the total, and
+  `tools/test_all.sh` compares the total with the README. Give every check to
+  every platform.
+- **Under Claude Code** `NoDefaultCurrentDirectoryInExePath` is set. A `.bat`
+  that calls a program by bare name, `vcvars64.bat` included, unsets it first
+  (`tools/build-juce.bat` and `tools/bench_blake3.bat` do).
+- **Backslashes through Git Bash.** A heredoc, `sed` or `python -c` turns
+  `\t`, `\b` and `\n` into control characters. Write the script to a file.
+  This file's own Windows paths were corrupted that way until 2026-09-24.
+
+### Process rules that have bitten
+
+- A CI run counts only if its head SHA is the PR's head SHA.
+- PR CI skips silently while GitHub's `mergeable` is UNKNOWN: use
+  `workflow_dispatch`.
+- When main moves under you, rebase, keep main's ADRs before yours at the end
+  of `DECISIONS.md`, and recount the README's numbers with `tools/test_all.sh`
+  and `tools/validate_schema.py`.
 
 ## What "done" means here
 
