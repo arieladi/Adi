@@ -172,7 +172,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
 | `src/adi/ops_catalog.cpp` (the `media.*` ops only), `docs/OPS.md`, `src/adi/media/**`, `src/adi/check.*`, `src/main.cpp`, `tests/test_media_ops.cpp`, `tests/test_collect_export.cpp`, `tools/validate_ops.py` | linux | `linux/collect-export` | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; `docs/format/**` lent to cloud; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
-| `src/adi/textproj_store.*`, `src/adi/store_rows.*`, `tests/test_textproj_store.cpp` (lent by win), `docs/format/TEXT-PROJECTION.md`, `docs/DECISIONS.md` (ADR-0139 only) | cloud | `cloud/remarks-projection` | 2026-09-24 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
