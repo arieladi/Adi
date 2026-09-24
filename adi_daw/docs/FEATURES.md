@@ -385,3 +385,12 @@ unless it says so.
 | AudioGridder: local fallback, placeholder, Remap Remote Host | — | P1 | ADR-0134 d3 |
 | **ASIO on Windows**: built (JUCE's bundled headers, GPL-3.0); the audio probe fails CI without it; not yet heard on a real ASIO driver | all | **P0** | ADR-0134 d5, ADR-0137 |
 | Plugin capabilities registry; the chosen expression route stored in the project | — | P1 | ADR-0134 d7 |
+| Plugins unfold to parameter sliders in the device view, as in Live (compact blocks withdrawn) | Ableton | P0 | ADR-0145 d1 |
+| "Zoom on Selection" setting restores Live's wheel-zoom anchor | Ableton | P1 | ADR-0145 d2 |
+| Sample-rate mismatch bar: Switch Hardware / Resample Temporarily, "Don't ask me again" | — | P1 | ADR-0145 d3 |
+| Buffer sizes 64 to 4096 by hand; ASIO through JUCE only, no raw bypass | — | P0 | ADR-0145 d5 |
+| AudioGridder: mDNS discovery; server plugin lists cached per application | AudioGridder | P1 | ADR-0145 d6 |
+| PTP grandmaster whitelist by IP and MAC | — | P1 | ADR-0145 d7 |
+| Pure Data editor inside the DAW, built on plugdata; the agent proposes, the user approves | Max for Live | P1 | ADR-0145 d8 |
+| Propose tier: a queued changeset the user applies | — | P1 | ADR-0145 d9 |
+| Library metadata sync as JSON keyed by BLAKE3 hash; drives recognised by volume | — | P2 | ADR-0145 d11 |
