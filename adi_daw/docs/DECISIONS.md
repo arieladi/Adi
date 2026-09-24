@@ -10242,3 +10242,168 @@ unused parameter it left. It was re-planted to capture the wrong device.
 **Not decided:** Live's Delete warning when the parameter has automation,
 envelopes or mappings is the UI's, checked against those rows before it emits
 `device.setPanel`; recording's panel additions arrive with recording automation.
+
+---
+
+## ADR-0156 — One decoder for imported audio, into the decoding cache keyed by BLAKE3 — `DECIDED` (2026-09-24) — **IMPLEMENTS ADR-0132 d3–d4 FOR WAV, AIFF, FLAC, MP3 AND OGG VORBIS**
+
+**Director's instruction:** decode FLAC, AIFF/AIFC, MP3 and Ogg Vorbis, and any
+WAV the WAV reader refuses, off the audio thread, into the shared cache, as a
+file the existing streaming path reads. Key the cache by the source's BLAKE3.
+Obey the Decoding Cache settings. Evict the least recently used file first, and
+never one a live session is reading. Any rate up to 768 kHz (ADR-0157).
+
+**What held.** ADR-0132 d4 set the design: decoded copies live in the cache,
+not the project, as 32-bit float, keyed by the source's BLAKE3. ADR-0151's clip
+worker opens every media file with the `WavReader`, which reads RIFF, RF64 and
+BW64 holding 16- or 24-bit PCM or 32-bit float, and refuses anything else.
+`appdata::pathsFor(app).cache` is the cache folder all three applications share
+(ADR-0149).
+
+### Decisions
+
+1. **The libraries: dr_libs and stb_vorbis.** `dr_flac` 0.13.3, `dr_mp3` 0.7.3
+   and `dr_wav` 0.14.5 (AIFF, AIFC and the WAV encodings the reader refuses)
+   are public domain (Unlicense) or MIT-0. ADI takes the Unlicense, which the
+   open-source policy's §3 lists beside MIT. `stb_vorbis` 1.22 is MIT or public
+   domain; ADI takes MIT.
+   - **Why these.** Each is a single C file, compiled once as C in
+     `adi_decoders`, with no build system of its own and nothing to link. That
+     keeps adi_core buildable, with no JUCE (ADR-0036), on all seven CI legs.
+   - **Not libsndfile.** Its FLAC, Vorbis and MP3 support needs libFLAC,
+     libogg, libvorbis, mpg123 and LAME built beside it on every leg, and its
+     LGPL escalates to GPLv3 (policy §2). That cost buys nothing these four
+     formats need.
+   - **Not JUCE's readers** (which ADR-0132 d3 names). The clip worker lives
+     in adi_core, which never links JUCE.
+   - **FFmpeg, for the other formats d3 lists,** stays a later decision. It
+     would plug in behind the same `SourceFormat` switch.
+2. **Pinned by tag and commit, as every dependency is (ADR-0024).**
+   - dr_libs tags each library separately. `wav-0.14.5`
+     (`fa931f32…`) is the newest tag, and its tree holds the newest `dr_flac`
+     and `dr_mp3` too.
+   - stb has no tags, and `fetch_external.sh` checks out by tag, then asserts
+     the commit. So stb_vorbis is taken from miniaudio `0.11.25`
+     (`9634bedb…`), whose `extras/stb_vorbis.c` was checked byte-identical to
+     `nothings/stb` master's. Only that file is compiled.
+   - The two rows in `fetch_external.sh` and `docs/EXTERNAL-CODE.md` are the
+     one-line-per-library exception the director granted in mac's area.
+3. **What is decoded, and what is not.**
+   - A file the `WavReader` accepts is returned as it is: no hash, no copy.
+   - Everything else is identified by its first bytes, never its extension:
+     `fLaC`; `OggS` (Vorbis, or FLAC in Ogg by its first packet); `ID3` or an
+     MPEG sync word; `FORM`…`AIFF`/`AIFC`; `RIFF`/`RIFX`/`RF64`/`BW64`/`riff`.
+     It decodes to `<cache>/decoded/<blake3>.wav`: 32-bit float at the
+     source's own rate and channel count, written by `WavWriter`, which
+     promotes to RF64 past 4 GiB.
+   - Rates from 1 Hz to 768 kHz are kept as they are, and the clip path
+     converts (ADR-0157 d1). Above 768 kHz, or 0 or more than 64 channels, is
+     refused as `decode.unsupported`.
+   - A decode is written to `<hash>.wav.partial-<random>` and renamed into
+     place, so a crash or a second decoder never leaves a torn file under a
+     real name.
+4. **Refusals are named problems.** `DecodeError` carries one of:
+   - `decode.audio_thread`
+   - `decode.unreadable`
+   - `decode.unknown_format`
+   - `decode.corrupt` (a known format whose data does not decode: fewer frames
+     than the header states, or none)
+   - `decode.unsupported`
+   - `decode.no_space`
+   - `decode.cache_write`
+
+   The clip worker's existing catch turns it into `clips#N: decode.corrupt: …;
+   silent`.
+5. **8-bit WAV follows dr_wav's mapping, `u / 127.5 − 1`,** to within the
+   last bit of the float: dr_wav computes it as a multiply and a subtract,
+   which Apple clang on arm64 fuses. 16- and 24-bit PCM decode bit-exact to
+   what the `WavReader` gives on every leg: `v / 2^(bits−1)`, a power of two. dr_wav
+   offers a libsndfile-compatible mode that would make 8-bit `(u − 128) / 128`,
+   but it also flips the sign of AIFF A-law and μ-law, so it stays off. Nothing
+   ADI writes is 8-bit.
+6. **The cache.**
+   - Keyed by the source's BLAKE3: a second project using the same bytes, at
+     any path, decodes nothing, and changed bytes at a known path decode
+     afresh.
+   - `index.json` beside the files holds each file's size and last use. It is
+     a hint, and the directory is the truth. A file on disk that the index
+     lacks, decoded by another application or process, is a hit, and an index
+     row without a file is dropped.
+   - Last use is a timestamp in UTC microseconds. It is injectable, and so is
+     the free-space probe, which is how the tests drive eviction exactly.
+7. **Eviction.** Before a decode writes a byte, the cache makes room for its
+   estimated size (`frames × channels × 4`, plus 4 KiB). After it, the cache
+   trims to its limits.
+   - The least recently used file goes first.
+   - A pinned file never goes. `playable()` pins what it returns and
+     `release()` unpins, so a live session's file is safe. The clip worker
+     does not release yet, because that would change linux's code beyond the
+     one call site. So in this process a file it opened stays pinned until the
+     process exits: conservative, never unsafe.
+   - Across processes, a file another application holds open is skipped when
+     the OS refuses to delete it (Windows). On POSIX, an unlinked file stays
+     readable by whoever holds it.
+   - When only pinned files remain over a limit, the cache keeps them and
+     records the reason in `problems()`, rather than refuse the file a session
+     is about to play.
+   - A decode that cannot keep the minimum free space even after eviction is
+     refused as `decode.no_space`.
+8. **The Decoding Cache settings.** The keys are `cache.maxSizeMb` (default
+   10,240, which is 10 GB) and `cache.minFreeSpaceMb` (default 2,048, which is
+   2 GB), in MB. `limitsFromSettings` reads them from a settings object;
+   Live's page offers the same two controls. The defaults are choices, not
+   rulings: 10 GB holds about 15 hours of stereo 48 kHz float, and 2 GB leaves
+   room for a recording to start. The registry rows arrive with the settings
+   catalogue, in cloud's next branch, which amends this entry. The application
+   applies them with `defaultDecodeCache().setLimits`.
+9. **Never on the audio thread.** `playable()` refuses on a thread marked by
+   `CallbackScope` before any file I/O, and the decoders' reads call
+   `fileIoPoint()`, so a decode that slipped onto the callback would be
+   counted by ADR-0151's audit. The clip worker's call runs where the worker
+   already opened files: off the callback, at session load.
+
+**The one change in linux's code** is the worker's media-open line:
+`WavReader(clip->path)` became `WavReader(audio::playableFile(clip->path))`.
+The worker's own bounds, 8–192 kHz, are untouched, so a decoded 768 kHz file
+is still refused there until ADR-0157 d2 lands (linux).
+
+**Tested** by `adi_decode_tests` (56 checks). The fixtures are generated by
+`tests/fixtures/decode/make_fixtures.py`, and their provenance is the README
+beside them. The tests show:
+- FLAC at 16 and 24 bits decodes bit-exact to its source PCM, and so do 768 kHz
+  and 8 kHz FLAC.
+- AIFF (big-endian) and AIFC `sowt` decode bit-exact.
+- An 8-bit WAV the reader refuses decodes.
+- MP3 at 192 kbps measures 30.3 dB SNR against a floor of 25 dB. It is gapless:
+  LAME's header is honoured, so it is 9,600 frames at lag 0.
+- Vorbis at q6 measures 37.7 dB against a floor of 32 dB, and has the exact
+  length.
+- The second open is a cache hit, and a copy at another path hits too.
+- Eviction goes least recently used first, and the size and free-space limits
+  hold.
+- A pinned file survives over the limit.
+- A truncated FLAC is refused as `decode.corrupt`, with no partial file left.
+
+Seven plants, each failing first as named checks:
+- Removing the audio-thread refusal failed "decoding on the audio thread is
+  refused" and "... before any file I/O on the callback".
+- A key hashed from the path failed "the same file at another path decodes
+  nothing: keyed by BLAKE3, not path".
+- Evicting pinned files failed "a file a live session is reading is never
+  evicted".
+- FLAC off by one sample failed "FLAC 16-bit decodes bit-exact" and five more.
+- Ignoring the size limit failed "the least recently used file goes first" and
+  "the size limit holds".
+- Dropping the frame-count check failed "a truncated FLAC is refused as
+  decode.corrupt".
+- Ignoring the minimum free space failed "the minimum free space evicts the
+  least recently used file".
+
+**Not decided:**
+- FFmpeg for ALAC, APE, M4A/AAC, Opus, WMA and the rest (ADR-0132 d3).
+- Releasing pins when a session closes, which is linux's session teardown.
+- A Cleanup button and a cache-folder chooser, the other two controls on the
+  catalogue row, which belong to the UI.
+- Hashing a large compressed file on every session load: a (path, size, mtime)
+  memo could skip it, and would be the first thing to add if load time shows
+  it.

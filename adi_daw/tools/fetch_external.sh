@@ -61,6 +61,8 @@ THIRD_PARTY=(
   "libsndfile/libsamplerate libsamplerate BSD-2-Clause 0.2.2 c96f5e3de9c4488f4e6c97f59f5245f22fda22f7 build"
   "JuliaStrings/utf8proc utf8proc MIT v2.11.3 e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78 build"
   "BLAKE3-team/BLAKE3          BLAKE3      CC0-1.0/Apache-2.0 1.8.7 f3149ec5bb5449af877ba20377a11008ff499fa2 build"
+  "mackron/dr_libs             dr_libs     Unlicense/MIT-0 wav-0.14.5 fa931f3285ced10ace628f7f1ac951e1951e7ea6 build"
+  "mackron/miniaudio           miniaudio   MIT/PD    0.11.25   9634bedb5b5a2ca38c1ee7108a9358a4e233f14d  build"
   "richgel999/miniz            miniz       MIT       3.1.2     77d0dce8627735138c51770d1799a1ef48f2117d build"
   "SRombauts/SQLiteCpp          SQLiteCpp   MIT       3.3.3     59a047b8d3fe8574406ed73ab9fac0474e87bd03  build"
   "nlohmann/json                json        MIT       v3.12.0   55f93686c01528224f448c19128836e7df245f72  build"

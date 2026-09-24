@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/audio/decode.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -302,7 +303,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             else if(auto h=project->hints.find(media->id);h!=project->hints.end()) clip->path=h->second;
             else throw std::runtime_error("no media path; silent");
             // WavReader sniffs RIFF/RF64/BW64; no decoder on the callback.
-            clip->reader=std::make_unique<audio::WavReader>(clip->path);
+            // Any other format is decoded here, off it, into the cache (ADR-0156).
+            clip->reader=std::make_unique<audio::WavReader>(audio::playableFile(clip->path));
             clip->channels=clip->reader->channels(); clip->sourceRate=clip->reader->sampleRate(); clip->rate=static_cast<std::uint32_t>(rate);
             if(clip->channels>64 || clip->sourceRate<8000 || clip->sourceRate>192000) throw std::runtime_error("source format outside supported bounds; silent");
             if(a->srcStartFrames<0 || a->srcLenFrames<=0 || static_cast<std::uint64_t>(a->srcStartFrames)>clip->reader->frames() || static_cast<std::uint64_t>(a->srcLenFrames)>clip->reader->frames()-static_cast<std::uint64_t>(a->srcStartFrames)) throw std::runtime_error("source window outside WAV; silent");
