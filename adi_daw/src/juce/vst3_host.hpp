@@ -203,8 +203,9 @@ public:
     /// Ask for a route. Any thread; the audio thread applies it at the start
     /// of the next process call, ending every sounding note on the channel it
     /// began on first. `Auto` resolves against `expressionCaps()`.
-    void setExpressionRoute(engine::RouteChoice c) noexcept {
+    bool setExpressionRoute(engine::RouteChoice c) noexcept override {
         requestedRoute_.store(static_cast<std::uint8_t>(c), std::memory_order_release);
+        return true;
     }
 
     /// The route in use now. Any thread.

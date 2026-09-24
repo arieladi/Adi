@@ -41,6 +41,7 @@
 #include "adi/engine/events.hpp"
 #include "adi/engine/note_expression.hpp"
 
+#include <string_view>
 #include <array>
 #include <cstdint>
 
@@ -59,6 +60,31 @@ enum class RouteChoice : std::uint8_t {
     MpeMidi        = 2,
     Plain          = 3,
 };
+
+/// The names `device_expression_routes.route` stores (SPEC 7.5, ADR-0146)
+/// and the plugin registry uses. `Auto` has none: it is the absence of a row.
+[[nodiscard]] constexpr const char* routeChoiceName(RouteChoice c) noexcept {
+    switch (c) {
+        case RouteChoice::NoteExpression: return "note_expression";
+        case RouteChoice::MpeMidi:        return "mpe_midi";
+        case RouteChoice::Plain:          return "plain";
+        case RouteChoice::Auto:           break;
+    }
+    return "";
+}
+/// The inverse. An unknown name is `Auto` with `known` false, so a newer
+/// file's route this build does not know plays as the plugin declares.
+[[nodiscard]] inline RouteChoice routeChoiceFromName(std::string_view name,
+                                                    bool* known = nullptr) noexcept {
+    RouteChoice c = RouteChoice::Auto;
+    bool ok = true;
+    if (name == "note_expression") c = RouteChoice::NoteExpression;
+    else if (name == "mpe_midi")   c = RouteChoice::MpeMidi;
+    else if (name == "plain")      c = RouteChoice::Plain;
+    else ok = name.empty();
+    if (known != nullptr) *known = ok;
+    return c;
+}
 
 /// VST3's controller numbers for the two MIDI messages that are not CCs, from
 /// `ivstmidicontrollers.h`. Asserted against the SDK in `vst3_events.hpp`.

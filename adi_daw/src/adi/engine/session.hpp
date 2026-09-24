@@ -97,6 +97,7 @@ public:
         bool retired = false;          ///< the row is gone; the instance is kept
         std::string error;             ///< why the loader refused, when it did
         std::size_t hostIndex = 0;     ///< into `devices()`
+        std::uint8_t route = 0;        ///< the RouteChoice last asked of the instance (ADR-0149)
     };
 
     struct Stats {
@@ -107,6 +108,8 @@ public:
         std::int64_t statesLoaded = 0;   ///< `loadState` calls that succeeded
         std::int64_t paramsApplied = 0;  ///< `setParam` calls made from `plugin_params`
         std::int64_t paramsMatched = 0;  ///< rows a loaded chunk already agreed with (ADR-0142)
+        std::int64_t routesApplied = 0;  ///< recorded routes a device took (ADR-0149)
+        std::int64_t routesRefused = 0;  ///< recorded routes a device could not take
         std::int64_t rebuilds = 0;       ///< graphs this session asked for
         std::int64_t prepares = 0;       ///< `prepare` calls, including no-ops
         std::int64_t formatChanges = 0;  ///< prepares that changed rate or size
@@ -184,6 +187,7 @@ private:
     void resolveOne(const Store& store, const rows::Device& row);
     void retireDepartedRows();
     void syncFlags();
+    void syncRoute(Entry& e, device::DeviceInstance& inst);
     [[nodiscard]] const rows::PluginRef* refFor(const rows::Device& row) const noexcept;
     [[nodiscard]] const rows::DeviceChain* chainOf(std::int64_t chainId) const noexcept;
     [[nodiscard]] std::unique_ptr<device::DeviceInstance> makePlaceholder(

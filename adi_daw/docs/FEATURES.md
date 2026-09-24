@@ -384,7 +384,7 @@ unless it says so.
 | Inactive tabs offline; buses allocated on demand | — | P1 | ADR-0134 d1-d2 |
 | AudioGridder: local fallback, placeholder, Remap Remote Host | — | P1 | ADR-0134 d3 |
 | **ASIO on Windows**: built (JUCE's bundled headers, GPL-3.0); the audio probe fails CI without it; not yet heard on a real ASIO driver | all | **P0** | ADR-0134 d5, ADR-0137 |
-| Plugin capabilities registry; the chosen expression route stored in the project | — | P1 | ADR-0134 d7 |
+| Plugin capabilities registry; the chosen expression route stored in the project. **Built**: the registry, the route op, the session applying it (VST3) | — | P1 | ADR-0134 d7, ADR-0149 |
 | Plugins unfold to parameter sliders in the device view, as in Live (compact blocks withdrawn) | Ableton | P0 | ADR-0145 d1 |
 | "Zoom on Selection" setting restores Live's wheel-zoom anchor | Ableton | P1 | ADR-0145 d2 |
 | Sample-rate mismatch bar: Switch Hardware / Resample Temporarily, "Don't ask me again" | — | P1 | ADR-0145 d3 |

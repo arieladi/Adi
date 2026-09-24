@@ -458,6 +458,7 @@ silent truncation in JSON, a non-issue in CBOR.
 | `device.setParam` | e | S | sym, coalescable | P0 |
 | `device.loadState` | e | S | cap | P0 |
 | `device.setPreset` | e | S | cap | P1 |
+| `device.setExpressionRoute` | e | S | sym | P1 |
 | `device.rename` | e | N | sym | P1 |
 | `device.setLatency` | e | G | sym | P0 |
 | `chain.create` | e | G | pair `chain.delete` | P2 |
@@ -594,7 +595,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**162 ops** — 63 P0, 48 P1, 48 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**163 ops** — 63 P0, 49 P1, 48 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

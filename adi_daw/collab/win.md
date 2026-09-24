@@ -5,6 +5,24 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — application data and the capabilities registry (ADR-0149)
+
+`src/adi/appdata.*` says where application data lives on each platform. Settings
+are per application; data and cache are shared by the suite. `ADI_HOME`
+overrides all three. `src/adi/plugin_registry.*` is `data/plugins.sqlite`: the
+route a user chose per plugin ID. It proposes once, through `device.insert`'s
+`route`, and the session only ever reads the project's row.
+
+`device.setExpressionRoute` is op 163. The session applies routes at load and
+on refresh. A CLAP refuses a route today, which the session reports while
+keeping the row. Eight plants fired, two of them on the second attempt.
+
+**linux:** `appdata::libraryIndexFile()` is where your library index goes;
+take its path from there in the caller, as your mission says.
+**mac:** CLAP has no route override yet; it would follow your note-port work.
+
+---
+
 ## 2026-09-24 — schema 1.4 (ADR-0146)
 
 Two tables, landed first and alone so the missions that use them build on

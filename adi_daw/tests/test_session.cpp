@@ -92,6 +92,10 @@ public:
         values["gain"] = 0.5;                // and whose chunk carries gain at 0.5
         return true;
     }
+    bool setExpressionRoute(engine::RouteChoice c) override {
+        routes.push_back(c);
+        return acceptRoutes;
+    }
     [[nodiscard]] device::ParamValue getParam(const std::string& paramId) const noexcept override {
         const auto it = values.find(paramId);
         return device::ParamValue::fromNormalized(it == values.end() ? 0.0 : it->second);
@@ -112,6 +116,8 @@ public:
     std::vector<std::uint8_t> lastState;
     std::vector<std::string> paramsSet;
     std::map<std::string, double> values;
+    std::vector<engine::RouteChoice> routes;
+    bool acceptRoutes = true;
 
 private:
     device::DeviceIdentity id_;
@@ -119,6 +125,7 @@ private:
 
 struct Loader {
     int calls = 0;
+    bool acceptRoutes = true;   ///< ADR-0149: false makes a device that cannot take a route
     std::vector<HalfDevice*> made;
     std::vector<std::string> asked;
 
@@ -133,6 +140,7 @@ struct Loader {
                 id.uid = rq.ref->uid;
                 id.name = rq.ref->name;
                 auto d = std::make_unique<HalfDevice>(id);
+                d->acceptRoutes = acceptRoutes;
                 made.push_back(d.get());
                 return d;
             }
@@ -615,6 +623,65 @@ void testNothingLoadedIsSilence() {
     check(!s.rebuild() && s.error() == "no project loaded", "rebuild refuses with a reason");
 }
 
+void testTheExpressionRoute() {
+    const adi::test::TempDirectory scratch("session", "route");
+    section("ADR-0146, ADR-0149 -- the project's route, applied at load and on every refresh; never the registry's");
+    auto store = makeProject(scratch.path() / "p.adi");
+    if (!store) return;
+    OpJournal j(*store);
+    OpRequest r;
+    r.opType = "device.setExpressionRoute";
+    r.payload = {{"dev", 100}, {"route", "mpe_midi"}};
+    commits(j, r, "Warm on MPE over MIDI");
+
+    Loader loader;
+    Session s;
+    check(s.load(*store, loader.fn(), SessionSpec{}), "load: " + s.error());
+    HalfDevice* warm = nullptr;
+    HalfDevice* off = nullptr;
+    for (HalfDevice* d : loader.made)
+        if (s.instanceFor(100) == d) warm = d;
+        else off = d;
+    check(warm != nullptr, "Warm was made");
+    if (warm == nullptr) return;
+    check(warm->routes.size() == 1 && warm->routes[0] == engine::RouteChoice::MpeMidi,
+          "Warm was asked for MPE over MIDI, once, at load");
+    check(off == nullptr || off->routes.empty(), "a device with no row is left on Auto: nothing asked");
+    eqi(s.stats().routesApplied, 1, "counted");
+
+    r.payload = {{"dev", 100}, {"route", "plain"}};
+    commits(j, r, "then plain");
+    check(s.refresh(*store), "refresh: " + s.error());
+    check(warm->routes.size() == 2 && warm->routes[1] == engine::RouteChoice::Plain, "a refresh applies the new route");
+    check(s.refresh(*store), "refresh again");
+    check(warm->routes.size() == 2, "and an unchanged route is not asked again");
+    r.payload = {{"dev", 100}, {"route", nullptr}};
+    commits(j, r, "back to Auto");
+    check(s.refresh(*store), "refresh");
+    check(warm->routes.size() == 3 && warm->routes[2] == engine::RouteChoice::Auto, "clearing the row asks for Auto");
+}
+
+void testARouteADeviceCannotTake() {
+    const adi::test::TempDirectory scratch("session", "route_refused");
+    section("SPEC 7.5 -- a device that cannot take the recorded route plays on, the row is kept, and it is said");
+    auto store = makeProject(scratch.path() / "p.adi");
+    if (!store) return;
+    OpJournal j(*store);
+    OpRequest r;
+    r.opType = "device.setExpressionRoute";
+    r.payload = {{"dev", 100}, {"route", "note_expression"}};
+    commits(j, r, "Warm on note expression");
+    Loader loader;
+    loader.acceptRoutes = false;
+    Session s;
+    check(s.load(*store, loader.fn(), SessionSpec{}), "load: " + s.error());
+    eqi(s.stats().routesRefused, 1, "refused, and counted");
+    check(mentions(s.problems(), "devices#100 (Warm): the project plays it on route 'note_expression', which this device cannot take"),
+          "and named");
+    SQLite::Statement st(store->db(), "SELECT route FROM device_expression_routes WHERE device_id = 100");
+    check(st.executeStep() && st.getColumn(0).getString() == "note_expression", "the row is kept");
+}
+
 }  // namespace
 
 int main() {
@@ -626,6 +693,8 @@ int main() {
     testStateAndTheMirror();
     testAProjectWithoutAMasterIsRefusedNotCrashed();
     testNothingLoadedIsSilence();
+    testTheExpressionRoute();
+    testARouteADeviceCannotTake();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

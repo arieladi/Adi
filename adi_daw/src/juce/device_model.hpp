@@ -24,6 +24,7 @@
 #pragma once
 
 #include "adi/engine/graph.hpp"
+#include "adi/engine/mpe_output.hpp"
 #include "adi/engine/param_edits.hpp"
 
 #include <atomic>
@@ -198,6 +199,12 @@ public:
     /// until each has a `clap_host_t` of its own (ADR-0123 C4); the glue's
     /// hash comparison is what tells which plugin actually changed.
     [[nodiscard]] virtual std::uint64_t stateEpoch() const noexcept { return 0; }
+
+    /// ADR-0146, ADR-0149: play per-note expression on this route. Message
+    /// thread; the format applies it where it is safe. False: this device
+    /// cannot take a chosen route (a CLAP's dialect follows its note ports,
+    /// ADR-0099), and the session reports that, keeping the project's row.
+    virtual bool setExpressionRoute(engine::RouteChoice) { return false; }
 
     // --- parameters --------------------------------------------------------
 
