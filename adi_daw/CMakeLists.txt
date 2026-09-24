@@ -47,7 +47,7 @@ set(JSON_Install               OFF CACHE BOOL "" FORCE)
 add_subdirectory("${ADI_THIRD_PARTY}/SQLiteCpp" EXCLUDE_FROM_ALL SYSTEM)
 add_subdirectory("${ADI_THIRD_PARTY}/json"      EXCLUDE_FROM_ALL SYSTEM)
 
-# ADR-0127: pinned C dependencies; portable BLAKE3 only on every ABI.
+# ADR-0127: pinned C dependencies. BLAKE3's SIMD paths: see below.
 foreach(source BLAKE3/c/blake3.c miniz/miniz.c)
     if(NOT EXISTS "${ADI_THIRD_PARTY}/${source}")
         message(FATAL_ERROR "Missing ${source}; run tools/fetch_external.sh --build-only")
@@ -57,19 +57,38 @@ add_library(adi_blake3 STATIC
     "${ADI_THIRD_PARTY}/BLAKE3/c/blake3.c"
     "${ADI_THIRD_PARTY}/BLAKE3/c/blake3_dispatch.c"
     "${ADI_THIRD_PARTY}/BLAKE3/c/blake3_portable.c")
-# ADR-0147: measured SSE2/SSE4.1 benefit, runtime CPU dispatch. Keep
-# unmeasured AVX/NEON disabled and universal Apple builds portable.
-target_compile_definitions(adi_blake3 PRIVATE BLAKE3_NO_AVX2 BLAKE3_NO_AVX512 BLAKE3_USE_NEON=0)
+# ADR-0147, ADR-0150, ADR-0153: every SIMD path the CPU has, chosen at run time
+# by BLAKE3's own dispatcher (cpuid and xgetbv), so one binary runs everywhere
+# and takes the fastest path the machine offers. Measured on a Ryzen 7 5700X3D,
+# 1 GiB in memory: portable 650, SSE4.1 1,726, AVX2 3,381 MiB/s. Each ISA's flag
+# is set on its own source file only, so no instruction leaks into code that
+# runs before the dispatcher has checked. Universal Apple builds (one compile,
+# two architectures) stay portable: a per-file ISA flag cannot apply to both.
+set(_adi_b3 "${ADI_THIRD_PARTY}/BLAKE3/c")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i[3-6]86|x86)$"
    AND NOT CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
-    target_sources(adi_blake3 PRIVATE "${ADI_THIRD_PARTY}/BLAKE3/c/blake3_sse2.c"
-        "${ADI_THIRD_PARTY}/BLAKE3/c/blake3_sse41.c")
-    if(NOT MSVC)
-        set_source_files_properties("${ADI_THIRD_PARTY}/BLAKE3/c/blake3_sse2.c" PROPERTIES COMPILE_OPTIONS "-msse2")
-        set_source_files_properties("${ADI_THIRD_PARTY}/BLAKE3/c/blake3_sse41.c" PROPERTIES COMPILE_OPTIONS "-msse4.1")
+    target_sources(adi_blake3 PRIVATE "${_adi_b3}/blake3_sse2.c" "${_adi_b3}/blake3_sse41.c"
+        "${_adi_b3}/blake3_avx2.c" "${_adi_b3}/blake3_avx512.c")
+    target_compile_definitions(adi_blake3 PRIVATE BLAKE3_USE_NEON=0)
+    if(MSVC)
+        # SSE2 and SSE4.1 intrinsics need no flag on MSVC; AVX2 and AVX-512 do.
+        set_source_files_properties("${_adi_b3}/blake3_avx2.c" PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+        set_source_files_properties("${_adi_b3}/blake3_avx512.c" PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
+    else()
+        set_source_files_properties("${_adi_b3}/blake3_sse2.c" PROPERTIES COMPILE_OPTIONS "-msse2")
+        set_source_files_properties("${_adi_b3}/blake3_sse41.c" PROPERTIES COMPILE_OPTIONS "-msse4.1")
+        set_source_files_properties("${_adi_b3}/blake3_avx2.c" PROPERTIES COMPILE_OPTIONS "-mavx2")
+        set_source_files_properties("${_adi_b3}/blake3_avx512.c" PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512vl")
     endif()
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$"
+       AND NOT CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+    # NEON is part of every 64-bit ARM, Apple Silicon included: no flag.
+    target_sources(adi_blake3 PRIVATE "${_adi_b3}/blake3_neon.c")
+    target_compile_definitions(adi_blake3 PRIVATE BLAKE3_USE_NEON=1
+        BLAKE3_NO_SSE2 BLAKE3_NO_SSE41 BLAKE3_NO_AVX2 BLAKE3_NO_AVX512)
 else()
-    target_compile_definitions(adi_blake3 PRIVATE BLAKE3_NO_SSE2 BLAKE3_NO_SSE41)
+    target_compile_definitions(adi_blake3 PRIVATE BLAKE3_USE_NEON=0
+        BLAKE3_NO_SSE2 BLAKE3_NO_SSE41 BLAKE3_NO_AVX2 BLAKE3_NO_AVX512)
 endif()
 target_include_directories(adi_blake3 SYSTEM PUBLIC "${ADI_THIRD_PARTY}/BLAKE3/c")
 # Select the upstream C sources without introducing its global build options.

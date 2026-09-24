@@ -269,6 +269,71 @@ void testAtomicity() {
     check(j.count() == opsBefore, "and wrote no log row");
 }
 
+void testCommitOptions() {
+    section("ADR-0153: the expected head and the before-commit hook run inside the transaction");
+    Scratch s("options");
+    auto st = freshProject(s / "p.adi");
+    if (!st) return;
+    OpJournal j(*st);
+    OpRequest t;
+    t.opType = "track.create";
+    t.payload = {{"id", 1}, {"kind", "midi"}, {"name", "A"}};
+    check(j.commit(t).ok, "a first op");
+    const auto head = j.headSeq();
+    check(head.has_value(), "the head is on it");
+
+    // Stale: the caller built on the root, the project moved on.
+    OpRequest u;
+    u.opType = "track.create";
+    u.payload = {{"id", 2}, {"kind", "audio"}, {"name", "B"}};
+    CommitOptions stale;
+    stale.expectHead = std::optional<std::int64_t>{};   // the root
+    const std::int64_t before = j.count();
+    const auto sr = j.commit({&u, 1}, stale);
+    check(!sr.ok && sr.stale, "refused as stale: " + sr.error);
+    check(sr.headFound == head, "and it says where the head was found");
+    check(j.count() == before &&
+              st->db().execAndGet("SELECT COUNT(*) FROM tracks").getInt() == 1,
+          "nothing written: no op, no log row");
+
+    // The hook writes in the same transaction and sees the txn id.
+    CommitOptions good;
+    good.expectHead = head;
+    std::int64_t seenTxn = -1;
+    good.beforeCommit = [&seenTxn](SQLite::Database& db, std::int64_t txn, std::string&) {
+        seenTxn = txn;
+        db.exec("INSERT INTO agent_requests(txn_id, request, created_utc) VALUES (" +
+                std::to_string(txn) + ", 'make a bass track', 0)");
+        return true;
+    };
+    const auto gr = j.commit({&u, 1}, good);
+    check(gr.ok, "the expected head matches, so it commits: " + gr.error);
+    check(seenTxn == gr.txnId, "the hook was handed this commit's txn id");
+    check(st->db().execAndGet("SELECT COUNT(*) FROM agent_requests WHERE txn_id = " +
+                              std::to_string(gr.txnId)).getInt() == 1,
+          "and its row committed with the op");
+
+    // The hook refuses: everything goes, its own writes included.
+    OpRequest v;
+    v.opType = "track.create";
+    v.payload = {{"id", 3}, {"kind", "audio"}, {"name", "C"}};
+    CommitOptions refuse;
+    refuse.beforeCommit = [](SQLite::Database& db, std::int64_t txn, std::string& err) {
+        db.exec("INSERT INTO agent_requests(txn_id, request, created_utc) VALUES (" +
+                std::to_string(txn) + ", 'never', 0)");
+        err = "the request could not be recorded";
+        return false;
+    };
+    const std::int64_t before2 = j.count();
+    const auto rr = j.commit({&v, 1}, refuse);
+    check(!rr.ok && !rr.stale && rr.error == "the request could not be recorded", "refused: " + rr.error);
+    check(j.count() == before2 &&
+              st->db().execAndGet("SELECT COUNT(*) FROM tracks WHERE id = 3").getInt() == 0,
+          "the op and its log row were rolled back");
+    check(st->db().execAndGet("SELECT COUNT(*) FROM agent_requests WHERE request = 'never'").getInt() == 0,
+          "and so was the hook's own write");
+}
+
 void testInverseShapes() {
     section("the three inverse shapes (OPS.md 6.2)");
     Scratch s("inverse");
@@ -602,6 +667,7 @@ int runAll() {
     testNonFiniteRejected();
     testApplyAndLog();
     testAtomicity();
+    testCommitOptions();
     testInverseShapes();
     testCallerAllocatedIds();
     testAgentAttribution();

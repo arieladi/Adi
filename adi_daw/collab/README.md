@@ -162,7 +162,7 @@ subject, say so in your log instead of writing it twice.
 | 0150 | win | `win/rulings-0150` | the plug-in panel exactly as Live's; the Parameter List; BLAKE3 SIMD on every CPU | used |
 | 0151 | linux | `linux/clip-playback` | audio clips playing through the session, streamed from disk, if it decides anything | reserved |
 | 0152 | cloud | `cloud/settings` | the settings store, if it decides anything | reserved |
-| 0153 | win | `win/journal-simd` | the journal's in-transaction hook; BLAKE3's AVX2, AVX-512 and NEON | reserved |
+| 0153 | win | `win/journal-simd` | the journal takes a caller inside its transaction; BLAKE3 runs AVX2, AVX-512 and NEON | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -180,7 +180,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp` | win | (standing) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
-| `src/adi/ops.*`, `src/adi/changeset.*`, `tests/test_changeset.cpp`, `tests/test_media_hash.cpp`; the BLAKE3 lines of `CMakeLists.txt` | win | `win/journal-simd` | 2026-09-24 |
 | `src/adi/engine/clip_*` and `src/adi/engine/transport.*` (new, inside win's engine area), `src/adi/audio/**`, `tests/test_clip_playback.cpp` (new); lent for small logged hooks: `src/adi/engine/session.*`, `src/adi/engine/graph.*`, `src/adi/engine/realize.*` | linux | `linux/clip-playback` | 2026-09-24 |
 | `src/adi/settings/**` (new), `tests/test_settings.cpp` (new), `docs/SETTINGS.md` (new) | cloud | `cloud/settings` | 2026-09-24 |
 | **`docs/UI-ARCHITECTURE.md`** | **mac** | `mac/ui` | 2026-09-19 |

@@ -301,8 +301,6 @@ ApplyResult apply(Store& store, const Changeset& cs, const Limits& limits) {
         r.error = "project is open read-only";
         return r;
     }
-    if ((r.refusal = checkHead(store, cs, r.error)) != Refusal::None) return r;
-
     auto& db = store.db();
     try {
         if (db.execAndGet("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
@@ -313,46 +311,48 @@ ApplyResult apply(Store& store, const Changeset& cs, const Limits& limits) {
             return r;
         }
 
-        // ADR-0148: the request row must be written in the SAME transaction as
-        // the ops (SPEC 8.7), and OpJournal::commit owns that transaction. A
-        // TEMP trigger on this connection writes the row when the agent's first
-        // op row is inserted -- inside the commit, so a failure anywhere rolls
-        // back both. The pending request sits in a TEMP table because a
-        // trigger body cannot take parameters. Both are this connection's
-        // alone and vanish with it; nothing reaches the file's schema.
-        db.exec("CREATE TEMP TABLE IF NOT EXISTS adi_pending_request("
-                "request TEXT NOT NULL, actor_detail TEXT NOT NULL, created_utc INTEGER NOT NULL)");
-        db.exec("DELETE FROM adi_pending_request");
-        {
-            SQLite::Statement st(db, "INSERT INTO adi_pending_request VALUES (?,?,?)");
-            st.bind(1, cs.request);
-            st.bind(2, cs.actorDetail);
-            st.bind(3, cs.createdUtc);
-            st.exec();
-        }
-        // It fires once: its own DELETE empties the pending row, so the second
-        // op of the txn finds nothing to write. There is deliberately no
-        // "unless a row already exists" guard -- an existing row for this
-        // txn id must FAIL the insert, and with it the whole commit, not be
-        // skipped and leave the ops committed without their request.
-        db.exec("CREATE TEMP TRIGGER IF NOT EXISTS adi_agent_request AFTER INSERT ON main.ops "
-                "WHEN NEW.actor = 'agent' AND EXISTS (SELECT 1 FROM adi_pending_request) "
-                "BEGIN INSERT INTO agent_requests(txn_id, request, actor_detail, created_utc) "
-                "SELECT NEW.txn_id, request, actor_detail, created_utc FROM adi_pending_request; "
-                "DELETE FROM adi_pending_request; END");
-
+        // ADR-0148, ADR-0153: the request row in the SAME transaction as the
+        // ops (SPEC 8.7), and the stale check inside it too, both through the
+        // journal's own hook. This replaced a connection-local TEMP trigger and
+        // a check made one step before the commit.
         std::vector<OpRequest> reqs = cs.ops;
         for (auto& q : reqs) {
             q.actor = Actor::Agent;
             q.actorDetail = cs.actorDetail;
             if (q.label.empty()) q.label = q.opType;
         }
+        CommitOptions options;
+        options.expectHead = cs.baseHead;
+        options.beforeCommit = [&cs](SQLite::Database& tx, std::int64_t txnId, std::string& err) {
+            try {
+                // No "unless a row exists" guard: a row already there for this
+                // txn id must fail the insert, and with it every op.
+                SQLite::Statement st(tx,
+                    "INSERT INTO agent_requests(txn_id, request, actor_detail, created_utc) "
+                    "VALUES (?,?,?,?)");
+                st.bind(1, txnId);
+                st.bind(2, cs.request);
+                st.bind(3, cs.actorDetail);
+                st.bind(4, cs.createdUtc);
+                st.exec();
+                return true;
+            } catch (const std::exception& e) {
+                err = std::string("agent_requests: ") + e.what();
+                return false;
+            }
+        };
         OpJournal journal(store);
-        const CommitResult res = journal.commit(reqs);   // ONE transaction (§6.2)
-
-        db.exec("DELETE FROM adi_pending_request");
-        db.exec("DROP TRIGGER IF EXISTS temp.adi_agent_request");
-
+        const CommitResult res = journal.commit(reqs, options);   // ONE transaction (§6.2)
+        if (res.stale) {
+            const auto show = [](std::optional<std::int64_t> s) {
+                return s ? std::to_string(*s) : std::string("the root");
+            };
+            r.refusal = Refusal::Stale;
+            r.error = "stale: the changeset was built on " + show(cs.baseHead) +
+                      " and the project is now at " + show(res.headFound) +
+                      "; preview it again on the current project";
+            return r;
+        }
         if (!res.ok) {
             r.refusal = Refusal::Invalid;
             r.error = res.error;
@@ -362,11 +362,6 @@ ApplyResult apply(Store& store, const Changeset& cs, const Limits& limits) {
         r.txnId = res.txnId;
         return r;
     } catch (const std::exception& e) {
-        try {
-            db.exec("DELETE FROM adi_pending_request");
-            db.exec("DROP TRIGGER IF EXISTS temp.adi_agent_request");
-        } catch (const std::exception&) {
-        }
         r.refusal = Refusal::Invalid;
         r.error = e.what();
         return r;
