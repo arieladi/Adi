@@ -9949,7 +9949,10 @@ was added, and a Pro-Q 3 panel carrying thirty-six parameters.
    | SSE2 + SSE4.1 (ADR-0147) | 1,726 |
    | AVX2 (this CPU has no AVX-512) | 3,381 |
 
-   AVX2 is 1.96 times SSE4.1 and 5.2 times portable. Correctness is the official
+   AVX2 is 1.96 times SSE4.1 and 5.2 times portable. **The AVX-512 number waits
+   for the director's Lenovo laptop** (Intel Core i9 11th gen), once Claude Code
+   runs on it: `tools/bench_blake3.bat` prints all four paths, and
+   `docs/AWAITING.md` holds the row. Correctness is the official
    test vectors, on whichever path each machine's dispatcher takes. Speed is
    measured, not asserted, so no test fails if a path is slower; a plant would
    prove nothing there.
