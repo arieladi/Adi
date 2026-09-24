@@ -36,7 +36,6 @@ std::shared_ptr<const ClipProject> readClipProject(const Store& store, const row
     return p;
 }
 namespace {
-constexpr std::int64_t pageFrames = 8192;
 constexpr std::size_t slots = 8;
 static_assert(std::atomic<std::int64_t>::is_always_lock_free);
 // Clip and sample arithmetic is checked off-thread; leave generous headroom
@@ -71,6 +70,7 @@ struct Clip {
     std::int64_t inCurve = 1, outCurve = 1;
     std::uint64_t sourceStart = 0, sourceLength = 0;
     std::uint32_t sourceRate = 0, rate = 0;
+    std::int64_t pageFrames = 8192;
     std::uint16_t channels = 0;
     int mode = 0;
     float gain = 1;
@@ -127,8 +127,8 @@ struct Clip {
             timelineRange(t.sampleAt(0),first);
             if(first<count) timelineRange(t.sampleAt(first),t.contiguousFrames(first,count-first));
         };
-        // Mandatory current-block pages first, then a fixed 16384-frame lead
-        // (341 ms at 48 kHz), independent of a 64-sample callback's duration.
+        // Mandatory current-block pages first, then two scaled pages: at least
+        // 16384/48000 seconds of lead at every session rate.
         horizon(frames);
         horizon(pageFrames*2);
         return out;
@@ -147,6 +147,51 @@ struct Clip {
         }
         return nullptr;
     }
+    std::vector<float> renderRange(std::int64_t first, std::int64_t count, std::uint32_t currentRate) {
+        if (currentRate == sourceRate) {
+            std::vector<float> buf(static_cast<std::size_t>(count)*channels, 0.0f);
+            const auto readBegin = std::max<std::int64_t>(0, first);
+            const auto readEnd = std::min<std::int64_t>(static_cast<std::int64_t>(sourceLength), first + count);
+            if (readEnd > readBegin) {
+                reader->seek(sourceStart + static_cast<std::uint64_t>(readBegin));
+                auto* dst = buf.data() + static_cast<std::size_t>(readBegin - first) * channels;
+                if (reader->read(dst, static_cast<std::uint32_t>(readEnd - readBegin)) != readEnd - readBegin) {
+                    throw std::runtime_error("short conversion read");
+                }
+            }
+            return buf;
+        }
+
+        std::uint32_t priorRate = sourceRate;
+        while (static_cast<double>(currentRate) / priorRate > 256.0) {
+            priorRate *= 128;
+        }
+
+        const std::int64_t divisor=std::gcd(currentRate, priorRate);
+        const std::int64_t inPeriod=priorRate/divisor, outPeriod=currentRate/divisor;
+        const std::int64_t guard=1024*std::max<std::int64_t>(1,(priorRate+currentRate-1)/currentRate);
+        const auto anchor=(first/outPeriod)*inPeriod;
+        const auto begin=anchor-((guard+inPeriod-1)/inPeriod)*inPeriod;
+        const auto outBegin=(begin/inPeriod)*outPeriod;
+        const auto inputCount=static_cast<std::int64_t>(std::ceil(static_cast<double>(first+count-outBegin)*priorRate/currentRate))+guard;
+        const auto outputCount=static_cast<std::int64_t>(std::ceil(static_cast<double>(inputCount)*currentRate/priorRate))+32;
+
+        std::vector<float> input = renderRange(begin, inputCount, priorRate);
+        std::vector<float> output(static_cast<std::size_t>(outputCount)*channels,0.0f);
+
+        SRC_DATA data{};
+        data.data_in=input.data(); data.data_out=output.data();
+        data.input_frames=static_cast<long>(inputCount); data.output_frames=static_cast<long>(outputCount);
+        data.src_ratio=static_cast<double>(currentRate)/priorRate; data.end_of_input=1;
+        const int error=src_simple(&data,SRC_SINC_BEST_QUALITY,channels);
+        if(error!=0 || data.output_frames_gen<first-outBegin+count) throw std::runtime_error("resampler did not fill page");
+
+        std::vector<float> cropped(static_cast<std::size_t>(count)*channels);
+        std::copy_n(output.data()+static_cast<std::size_t>(first-outBegin)*channels,
+                    static_cast<std::size_t>(count)*channels, cropped.data());
+        return cropped;
+    }
+
     void fill(Page& p, std::int64_t number) {
         const auto first=number*pageFrames;
         std::fill(p.data.begin(),p.data.end(),0.0f);
@@ -154,6 +199,9 @@ struct Clip {
         if (rate==sourceRate) {
             reader->seek(sourceStart+static_cast<std::uint64_t>(first));
             if (reader->read(p.data.data(),static_cast<std::uint32_t>(count))!=count) throw std::runtime_error("short WAV read");
+        } else if (static_cast<double>(rate) / sourceRate > 256.0) {
+            std::vector<float> res = renderRange(first, count, rate);
+            std::copy_n(res.begin(), static_cast<std::size_t>(count)*channels, p.data.begin());
         } else {
             // Independent rationally aligned pages with real context either
             // side. Alignment makes the resampler phase identical at a page
@@ -236,12 +284,12 @@ public:
                 const auto time=transport.sampleAt(io.blockOffset+i);
                 const auto n=clip->sourceAt(time);
                 if(n<0) continue;
-                if(n/pageFrames!=number) {
+                if(n/clip->pageFrames!=number) {
                     if(page) page->state.store(2,std::memory_order_release);
-                    number=n/pageFrames; page=clip->acquire(number);
+                    number=n/clip->pageFrames; page=clip->acquire(number);
                 }
                 if(!page) { ++missing; continue; }
-                const auto* sample=page->data.data()+static_cast<std::size_t>(n%pageFrames)*clip->channels;
+                const auto* sample=page->data.data()+static_cast<std::size_t>(n%clip->pageFrames)*clip->channels;
                 const float gain=clip->envelope(time);
                 for(std::int32_t c=0;c<io.channels;++c) {
                     float value=0;
@@ -277,8 +325,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                            double rate,std::int32_t channels,std::int32_t maxFrames)
     :impl_(std::make_shared<Impl>(transport,maxFrames)) {
     if(!project) return;
-    if(!std::isfinite(rate) || rate<8000 || rate>192000 || rate!=std::floor(rate) || channels<1 || channels>64 || maxFrames<1 || maxFrames>4096)
-        throw std::runtime_error("clip playback format outside 8-192 kHz integer rate / 1-64 channels / 1-4096 frames");
+    if(!std::isfinite(rate) || rate<44100 || rate>768000 || rate!=std::floor(rate) || channels<1 || channels>64 || maxFrames<1 || maxFrames>4096)
+        throw std::runtime_error("clip playback format outside 44.1-768 kHz integer rate / 1-64 channels / 1-4096 frames");
     TempoMap tempo;
     for(const auto& e:project->rows.tempo) tempo.events.push_back({e.posTicks,e.bpm,static_cast<int>(e.curve)});
     if(tempo.events.empty()) tempo.events.push_back({0,120,0});
@@ -306,8 +354,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             // Any other format is decoded here, off it, into the cache (ADR-0156).
             clip->reader=std::make_unique<audio::WavReader>(audio::playableFile(clip->path));
             clip->channels=clip->reader->channels(); clip->sourceRate=clip->reader->sampleRate(); clip->rate=static_cast<std::uint32_t>(rate);
-            if(clip->channels>64 || clip->sourceRate<8000 || clip->sourceRate>192000) throw std::runtime_error("source format outside supported bounds; silent");
+            if(clip->channels>64 || clip->sourceRate<1 || clip->sourceRate>768000) throw std::runtime_error("source format outside supported bounds; silent");
+
             if(a->srcStartFrames<0 || a->srcLenFrames<=0 || static_cast<std::uint64_t>(a->srcStartFrames)>clip->reader->frames() || static_cast<std::uint64_t>(a->srcLenFrames)>clip->reader->frames()-static_cast<std::uint64_t>(a->srcStartFrames)) throw std::runtime_error("source window outside WAV; silent");
+            clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*rate/48000.0));
             clip->sourceStart=static_cast<std::uint64_t>(a->srcStartFrames); clip->sourceLength=static_cast<std::uint64_t>(a->srcLenFrames);
             clip->length=samples(static_cast<double>(clip->sourceLength)/clip->sourceRate,rate);
             const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.secondsToTicks(static_cast<double>(row.posNs.value_or(0))*1e-9);
@@ -347,7 +397,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(!std::isfinite(row.gainDb) || std::abs(row.gainDb)>120) throw std::runtime_error("invalid clip gain; silent");
             clip->gain=static_cast<float>(std::pow(10.0,row.gainDb/20)); clip->mode=static_cast<int>(a->channelMode); clip->track=row.trackId;
             if(row.muted) continue;
-            for(auto& p:clip->pages) p.data.resize(static_cast<std::size_t>(pageFrames)*clip->channels);
+            for(auto& p:clip->pages) p.data.resize(static_cast<std::size_t>(clip->pageFrames)*clip->channels);
             auto track=std::find_if(impl_->tracks.begin(),impl_->tracks.end(),[&](const auto& x){return x->track==row.trackId;});
             if(track==impl_->tracks.end()) { impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,row.trackId)); track=impl_->tracks.end()-1; }
             (*track)->clips.push_back(clip.get()); impl_->clips.push_back(std::move(clip));

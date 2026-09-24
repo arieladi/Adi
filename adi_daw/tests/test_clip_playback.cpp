@@ -42,7 +42,7 @@ struct Fixture {
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Audio',0),(9,'master','Master',1)");
         media.resize(static_cast<std::size_t>(frames)*channels);
         for(std::uint32_t i=0;i<frames;++i)for(std::uint16_t c=0;c<channels;++c)
-            media[static_cast<std::size_t>(i)*channels+c]=hz>0?static_cast<float>(0.5*std::sin(2*std::numbers::pi*hz*i/rate)):static_cast<float>((i%997)+1)/1024.0f*(c==0?1.0f:0.5f);
+            media[static_cast<std::size_t>(i)*channels+c]=hz>0?static_cast<float>(0.5*std::sin(2*std::numbers::pi*hz*i/rate)):(hz<0?0.5f:static_cast<float>((i%997)+1)/1024.0f*(c==0?1.0f:0.5f));
         audio::WavWriter w(dir.path()/"audio.wav",rate,channels,audio::WavFormat::Float32);w.write(media.data(),frames);w.close();
         store->db().exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'test','audio.wav','wav')");
     }
@@ -52,9 +52,9 @@ struct Fixture {
         SQLite::Statement a(store->db(),"INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(?,1,?,?)");
         a.bind(1,id);a.bind(2,source);a.bind(3,sourceLength);a.exec();
     }
-    void load(int block) { session.graph().setFadeFrames(0);if(!session.load(*store,{}, {2,48000.0,block}))throw std::runtime_error(session.error());session.transport().play(); }
-    std::vector<float> render(int frames,bool prime=true) {
-        if(prime && !session.clips()->prime())throw std::runtime_error("prime timeout");
+    void load(int block, double rate = 48000.0) { session.graph().setFadeFrames(0);if(!session.load(*store,{}, {2,rate,block}))throw std::runtime_error(session.error());session.transport().play(); }
+    std::vector<float> render(int frames,bool prime=true,std::chrono::milliseconds timeout=std::chrono::seconds(300)) {
+        if(prime && !session.clips()->prime(timeout))throw std::runtime_error("prime timeout");
         std::vector<float> result(static_cast<std::size_t>(frames)*2);
         float* out[2]={result.data(),result.data()+frames};
         session.process({out,nullptr,2,0,frames,0});return result;
@@ -236,6 +236,172 @@ void unsupported() {
         check(!f.session.problems().empty() && std::all_of(o.begin(),o.end(),[](float x){return x==0;}),"unsupported clip is silent with named session problem");
     }
 }
+
+void highRates() {
+    auto nsHigh = [](std::int64_t frames, double rate) {
+        return static_cast<std::int64_t>(std::llround(static_cast<double>(frames)*1e9/rate));
+    };
+
+    try { Fixture f; f.load(1024, 44099.0); check(false, "session below 44.1kHz must reject"); } catch(const std::exception& e) { check(std::string(e.what()).find("44.1-768")!=std::string::npos, "session floor rejection names the valid range"); }
+    try { Fixture f; f.load(1024, 768000.0); check(true, "768k boundary acceptance"); } catch(const std::exception&) { check(false, "768k boundary acceptance failed"); }
+
+        // Cascaded huge upsample: 1Hz source constant 4096 frames, away from the zero-extended edges
+        {
+            Fixture f(1, 1, 4096, -1.0); // constant 0.5
+            SQLite::Statement q(f.store->db(),"INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,?)");
+            q.bind(1, nsHigh(768000LL * 4096, 768000.0)); q.exec(); // length = 4096 seconds
+            SQLite::Statement a(f.store->db(),"INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,4096)");
+            a.exec();
+
+            f.load(4096, 768000.0);
+            f.session.transport().locate(2000LL * 768000); // interior, beyond the sinc support
+            const auto out = f.render(4096,true,std::chrono::seconds(300));
+            double peak = 0;
+            for(int i = 0; i < 4096; ++i) {
+                peak = std::max(peak, std::abs(static_cast<double>(out[static_cast<std::size_t>(i)]) - 0.5));
+            }
+            std::printf("SRC cascaded 1->768000 DC peak %.9g\n",peak);
+            check(peak < 1e-4, "cascaded huge upsample 1Hz->768kHz constant");
+        }
+
+        // Cascaded large upsample: 5Hz sine 100Hz converted to 48k quality interior
+        {
+            Fixture f(100, 1, 100 * 60, 5.0); // 100Hz rate, 60s length, 5Hz sine
+            SQLite::Statement q(f.store->db(),"INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,?)");
+            q.bind(1, nsHigh(48000LL * 60, 48000.0)); q.exec();
+            SQLite::Statement a(f.store->db(),"INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,6000)");
+            a.exec();
+
+            f.load(4096, 48000.0);
+
+            // interior seek, e.g. 10 seconds
+            f.session.transport().locate(10 * 48000);
+            const auto out = f.render(4096,true,std::chrono::seconds(300));
+            double peak = 0, squared = 0;
+            for(int i = 0; i < 4096; ++i) {
+                const double t = (10 * 48000.0 + i) / 48000.0;
+                const double want = 0.5 * std::sin(2 * std::numbers::pi * 5.0 * t);
+                const double error = static_cast<double>(out[static_cast<std::size_t>(i)]) - want;
+                squared += error * error;
+                peak = std::max(peak, std::abs(error));
+            }
+            const double rms = std::sqrt(squared / 4096);
+            std::printf("SRC cascaded 100->48000 5Hz RMS %.9g peak %.9g\n", rms, peak);
+            check(rms < 1e-3 && peak < 1e-2, "cascaded 100Hz->48kHz sine quality interior");
+        }
+
+    for(const auto rate : {192000u, 384000u}) {
+        // exact placement
+        {
+            Fixture f(rate, 2, rate);
+            SQLite::Statement q(f.store->db(),"INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,?,?)");
+            q.bind(1, nsHigh(73, rate)); q.bind(2, nsHigh(21001, rate)); q.exec();
+            SQLite::Statement a(f.store->db(),"INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,11,25000)");
+            a.exec();
+
+            f.load(256, rate);
+
+            bool exact = true; int at = 0;
+            while(at < 24000) {
+                const int n = std::min(256, 24000 - at);
+                const auto out = f.render(n);
+                for(int c=0; c<2; ++c) for(int i=0; i<n; ++i) {
+                    const int t = at + i;
+                    const float want = t >= 73 && t < 21074 ? f.media[static_cast<std::size_t>(t-73+11)*2+static_cast<std::size_t>(c)] : 0;
+                    exact = exact && out[static_cast<std::size_t>(c*n+i)] == want;
+                }
+                at += n;
+            }
+            check(exact, "high rate exact placement");
+        }
+
+        // conversion 22.05/44.1/96k sine accuracy
+        for (const auto sourceRate : {22050u, 44100u, 96000u}) {
+            Fixture f(sourceRate, 1, sourceRate * 2, 997);
+            SQLite::Statement q(f.store->db(),"INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,?)");
+            q.bind(1, nsHigh(rate * 2, rate)); q.exec();
+            SQLite::Statement a(f.store->db(),"INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,?)");
+            a.bind(1, sourceRate * 2); a.exec();
+
+            f.load(4096, rate);
+
+            double squared = 0, peak = 0; std::size_t count = 0;
+            for(int at = 0; at < 90000; at += 4096) {
+                auto out = f.render(4096);
+                for(int i = 0; i < 4096; ++i) {
+                    if(at + i < 512) continue;
+                    const double want = 0.5 * std::sin(2 * std::numbers::pi * 997 * (at + i) / static_cast<double>(rate));
+                    const double error = static_cast<double>(out[static_cast<std::size_t>(i)]) - want;
+                    squared += error * error; peak = std::max(peak, std::abs(error)); ++count;
+                }
+            }
+            const double rms = std::sqrt(squared / static_cast<double>(count));
+            std::printf("SRC %u->%u 997Hz RMS %.9g peak %.9g SNR %.3f dB\n", sourceRate, rate, rms, peak, 20 * std::log10((0.5 / std::sqrt(2.0)) / rms));
+            check(rms < 1e-4 && peak < 1e-3, "high rate sine conversion accurate");
+        }
+
+        // duration-based readahead stalled worker (locate)
+        {
+            Fixture f(rate, 2, rate * 2);
+            SQLite::Statement q(f.store->db(),"INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,?)");
+            q.bind(1, nsHigh(rate * 2, rate)); q.exec();
+            SQLite::Statement a(f.store->db(),"INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,?)");
+            a.bind(1, rate * 2); a.exec();
+
+            f.load(64, rate);
+
+            std::int64_t horizonSamples = 16384LL * rate / 48000LL;
+            f.session.transport().locate(0);
+            f.session.transport().play();
+            if(!f.session.clips()->prime()) throw std::runtime_error("prime timeout");
+            f.session.clips()->stallForTest(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+            // Primed at zero, then no worker progress. The last promised
+            // sample must already be cached, not newly requested by prime().
+            f.session.transport().locate(horizonSamples - 64);
+            const auto out = f.render(64, false);
+            bool exact=true;for(std::size_t i=0;i<64;++i)
+                exact=exact && out[i]==f.media[(static_cast<std::size_t>(horizonSamples-64)+i)*2];
+            check(exact && f.session.clips()->underrunSamples()==0, "high rate duration-based readahead prefetch");
+            f.session.clips()->stallForTest(false);
+            f.session.transport().locate(static_cast<std::int64_t>(rate));
+            const auto located=f.render(64);
+            check(located[0]==f.media[static_cast<std::size_t>(rate)*2],"high rate cold locate refills");
+            f.session.transport().loop(static_cast<std::int64_t>(rate),static_cast<std::int64_t>(rate)+100);
+            f.session.transport().locate(static_cast<std::int64_t>(rate)+80);
+            const auto wrapped=f.render(64);
+            bool wrap=true;for(std::size_t i=0;i<64;++i)
+                wrap=wrap && wrapped[i]==f.media[(static_cast<std::size_t>(rate)+(80+i)%100)*2];
+            check(wrap,"high rate transport loop wraps mid-block");
+        }
+
+        // loop
+        {
+            Fixture f(rate, 2, rate * 2);
+            SQLite::Statement q(f.store->db(),"INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns,loop_enabled,loop_start_ticks,loop_len_ticks,content_offset_ticks) VALUES(1,1,'audio',1,0,?,1,24024,48048,12012)");
+            q.bind(1, nsHigh(rate * 2, rate)); q.exec();
+            SQLite::Statement a(f.store->db(),"INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,?)");
+            a.bind(1, rate * 2); a.exec();
+
+            f.load(2048, rate);
+
+            auto out = f.render(2048);
+            bool exact = true;
+            std::int64_t loopBegin = 100LL * rate / 48000LL;
+            std::int64_t loopLen = 200LL * rate / 48000LL;
+            std::int64_t offset = 50LL * rate / 48000LL;
+            for(int i = 0; i < 2000; ++i) {
+                auto s = i + offset;
+                if(s >= loopBegin) s = loopBegin + (s - loopBegin) % loopLen;
+                exact = exact && out[static_cast<std::size_t>(i)] == f.media[static_cast<std::size_t>(s) * 2];
+            }
+            check(exact, "high rate clip loop and content offset");
+        }
+    }
+}
+
+
 }
 int main(int argc,char** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
@@ -251,6 +417,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="ahead")readAhead();
         if(only=="all" || only=="relative")relativeProject();
         if(only=="all" || only=="endpoint")fractionalEndpoint();
+        if(only=="all" || only=="highRates")highRates();
     }
     catch(const std::exception& e){check(false,e.what());}
     check(callbackAllocations.load()==0,"callback allocates nothing");

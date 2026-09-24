@@ -43,6 +43,7 @@
 
 #include "adi/engine/host.hpp"
 #include "adi/engine/clip_playback.hpp"
+#include "adi/engine/midi_clips.hpp"
 #include "adi/engine/process.hpp"
 #include "adi/engine/realize.hpp"
 #include "adi/store_rows.hpp"
@@ -169,6 +170,7 @@ public:
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
     // Message/offline driver inspection. Pointer valid until the next rebuild.
     [[nodiscard]] ClipPlayback* clips() noexcept { return clips_.get(); }
+    [[nodiscard]] MidiClips* midiClips() noexcept { return midi_.get(); }
 
     [[nodiscard]] device::DeviceHost& devices() noexcept { return devices_; }
     [[nodiscard]] GraphHost& graph() noexcept { return graph_; }
@@ -208,6 +210,8 @@ private:
     std::shared_ptr<const ClipProject> clipProject_;
     // Published graphs retain their own old source generations until reclamation.
     std::unique_ptr<ClipPlayback> clips_;
+    std::shared_ptr<MidiClipState> midiState_ = makeMidiClipState();
+    std::unique_ptr<MidiClips> midi_;
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;

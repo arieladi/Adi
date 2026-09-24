@@ -816,6 +816,10 @@ void Graph::accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& del
 }
 
 void Graph::forwardEvents(std::int32_t frames) noexcept {
+    auto rejected = [&](const Event& e) {
+        if (e.type == EventType::NoteOff)
+            for (auto& source : slots_) if (source.node) source.node->noteOffRejected(e);
+    };
     const std::int64_t end = now_ + frames;
 
     // TOPOLOGICAL ORDER, which is the whole of the correctness argument: when a
@@ -835,7 +839,7 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
                     Event e = p.e;
                     const std::int64_t f = p.due - now_;
                     e.frame = f > 0 ? static_cast<std::int32_t>(f) : 0;
-                    s.events.push(e);            // overflow is counted by the list
+                    if (!s.events.push(e)) rejected(e); // overflow counted by list
                 } else {
                     s.pending[static_cast<std::size_t>(w++)] = p;
                 }
@@ -878,6 +882,7 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
                     Event f = e;
                     f.frame = static_cast<std::int32_t>(due - now_);
                     if (s.events.push(f)) ++stats_.eventsForwarded;
+                    else rejected(f);
                 } else if (s.pendingCount < static_cast<std::int32_t>(s.pending.size())) {
                     s.pending[static_cast<std::size_t>(s.pendingCount++)] =
                         Slot::Pending{due, e};
@@ -888,6 +893,7 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
                     // would be the audio thread allocating on the one path a
                     // plugin latency change makes busiest.
                     ++stats_.eventsDropped;
+                    rejected(e);
                 }
             }
         }
@@ -1094,6 +1100,7 @@ void Graph::process(const AudioIo& io) noexcept {
     // splits were chosen without, and ADR-0042's promise that a value lands on
     // its own segment boundary would hold for pushed events and quietly fail
     // for forwarded ones.
+    for (auto& s : slots_) if (s.node) s.node->sourceEvents(s.events, frames);
     forwardEvents(frames);
 
     // --- segment boundaries (ADR-0042) -------------------------------------
@@ -1136,6 +1143,15 @@ void Graph::process(const AudioIo& io) noexcept {
                     static_cast<std::size_t>(frames) * sizeof(float));
     }
 
+    // A source off may have spent several blocks in a compensation queue.
+    // Acknowledge only after it actually reaches a note consumer or output.
+    for (std::size_t i = 0; i < slots_.size(); ++i) {
+        const auto& delivered = slots_[i];
+        if (!delivered.node || (static_cast<NodeId>(i) != output_ &&
+            delivered.node->eventFlow() != EventFlow::Consume)) continue;
+        for (const auto& e : delivered.events) if (e.type == EventType::NoteOff)
+            for (auto& source : slots_) if (source.node) source.node->noteOffDelivered(e);
+    }
     for (auto& s : slots_) {
         stats_.eventsDropped += s.events.dropped();
         s.events.resetDropped();

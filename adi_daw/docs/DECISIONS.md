@@ -10486,3 +10486,62 @@ plants, each failing first as named checks:
 - The tier default: Observe (the catalogue) or Propose (AI-AGENT §2).
 - Whether list-shaped settings such as the PTP grandmasters and the MIDI
   filters deserve a text-list type. Today they are comma-separated text.
+---
+
+## ADR-0155 — MIDI clip schedules, note ownership across publication, and time-based audio pages — `DECIDED` (2026-09-24)
+
+**Director's assignment:** MIDI clips reach instruments through the graph event
+stream; audio clips support the rate range of ADR-0157.
+
+### Decisions
+
+1. MIDI rows are compiled off the callback into immutable note intervals and
+   ordered on/off boundaries. Musical positions integrate the step-tempo map;
+   nanosecond clip origins retain their absolute placement. Clip content offset
+   and repeats are resolved before publication. Absolute endpoints are rounded
+   once to session samples. The callback performs no SQLite or file operations.
+2. A small `Node::sourceEvents` hook runs once before graph event forwarding and
+   split selection. It fills existing bounded event storage. ADR-0091 routing,
+   compensation, block-relative event frames and ADR-0054's floor are unchanged.
+   Instrument note events consume the stream using the existing contract.
+   Sources acknowledge an off only after a consuming node or graph output has
+   processed it; failed forwarding requests a retry. Thus a graph replacement
+   cannot silently discard source ownership while an off waits in a PDC queue.
+3. Each track has audio-consumer-owned active-note state shared across source
+   generations. Only the published generation runs. A rebuild releases previous
+   ownership before starting its new schedule; even an empty track has a source,
+   so deleting or muting its last clip cannot bypass that release. Driver-owned
+   transport commands carry a revision. Locate, stop and loop changes release
+   owned notes; wraps inside or exactly between callbacks do too. Runtime IDs
+   include a track prefix and monotonically increasing start serial, so a late
+   off cannot match a newly chased or repeated start. A new playing
+   position chases sustained notes. Clip ends and repeat boundaries release notes
+   at the boundary, including notes whose stored duration extends beyond it.
+4. Note-on and release velocity are normalized from ANOT's 0–127 encoding;
+   channel and key are retained. `tuning_cents / 100` becomes a note-expression
+   Pitch event immediately after its note-on, sharing its runtime identity.
+   `rows::Note` currently omits ANOT's stable note ID: runtime identities separate
+   overlapping clips and repeats, but do not claim to preserve that stored ID.
+   Stored AEXP curves, probabilistic triggering and ties are not implemented;
+   affected clips are reported in `problems()`. Probability plays at 100%, ties
+   play as separate notes. Muted notes are silent; selection/ghost flags are
+   editing metadata. No store-row or schema change belongs to this assignment.
+5. Preparation is bounded to one million occurrences per track; an offending
+   clip is refused with a problem rather than expanding forever. Runtime
+   polyphony is bounded to 128 owned notes per track. New ons are admitted only
+   with space reserved for owned offs; an off that cannot be queued retains
+   ownership. `MidiClips::droppedNotes()` counts refused ons. No callback
+   allocation, waiting or reference-count manipulation.
+6. ADR-0157 replaces ADR-0151's fixed-size page/rate limits. Sessions accept
+   integer rates 44,100–768,000 Hz. Eight pages remain; each page contains
+   `ceil(8192 * sessionRate / 48000)` frames and demand covers two pages of time,
+   at least 341⅓ ms at every rate, with current callback demand first. The
+   converter and worker remain off the callback. Positive source rates up to
+   768,000 Hz are accepted, including rates below the session floor. Ratios
+   above libsamplerate's 256:1 limit use recursively padded/cropped intermediate
+   stages, each at most 256:1; only the requested interior feeds the next stage,
+   so scratch stays bounded by the rate/page/channel budget, not file length.
+   Cloud's decoder-open seam is unchanged. This is a memory/time budget change, not a process-path benchmark.
+
+Evidence, planted defects, sanitizer results and remaining limits are recorded
+in `collab/linux.md` with the implementing PR.

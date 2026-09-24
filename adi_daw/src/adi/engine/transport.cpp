@@ -3,8 +3,9 @@
 #include <algorithm>
 #include <limits>
 namespace adi::engine {
-void Transport::locate(std::int64_t sample) noexcept { position_ = std::max<std::int64_t>(0, sample); }
+void Transport::locate(std::int64_t sample) noexcept { position_ = std::max<std::int64_t>(0, sample); ++revision_; }
 void Transport::loop(std::int64_t begin, std::int64_t end, bool enabled) noexcept {
+    ++revision_;
     begin_ = std::max<std::int64_t>(0, begin); end_ = end;
     looping_ = enabled && end_ > begin_;
 }
