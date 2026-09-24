@@ -534,9 +534,20 @@ people's synth patches. They get separate rows.
 
 ### 7.1 The missing-plugin rule
 
-`plugin_params` mirrors every parameter the host can see, by name and value, at
-save time. It is redundant when the plugin loads, and it is the entire reason the
-project is still workable when it doesn't.
+`plugin_params` mirrors the plugin's parameters by name and value: every
+parameter an op has written. It is the entire reason the project is still
+workable when the plugin is missing, and when the plugin loads it can be newer
+than the chunk (ADR-0142), because a chunk is recorded when the plugin signals a
+change, not only at save:
+
+- A writer that records a `plugin_state` chunk **MUST**, in the same
+  transaction, rewrite every `plugin_params` row of that device to the value the
+  plugin reports after the chunk. No row is then older than the chunk.
+- A reader that loads a device's `plugin_state` **SHOULD** then apply every
+  `plugin_params` row whose value differs from what the loaded plugin reports: by
+  the rule above, such a row is an edit made after the chunk. A row the plugin
+  already agrees with is not sent again, so a plugin whose parameters derive
+  from its chunk is not fought.
 
 A reader that encounters a `device` whose plugin is unavailable **MUST**:
 

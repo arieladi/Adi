@@ -5,6 +5,17 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-24 — SPEC §7.1 follows ADR-0142
+
+`docs/format/**` is back from cloud, so §7.1 now states ADR-0142's two rules for
+any implementation. A writer that records a chunk MUST rewrite the device's
+parameter rows in the same transaction. A reader SHOULD apply the rows a
+loaded chunk disagrees with. The old sentence called the mirror "redundant
+when the plugin loads", which ADR-0142 made untrue. The claims lent to cloud
+are marked standing again.
+
+---
+
 ## 2026-09-24 — the director's final rulings (ADR-0145)
 
 Plugins in the device view unfold to sliders as in Live; the compact blocks
