@@ -70,6 +70,8 @@ than frightening.
 | [`tools/fetch_external.sh`](tools/fetch_external.sh) | Clones/refreshes `third_party/` and `reference/`. Both gitignored, pinned by tag and commit. |
 | [`tools/test_all.sh`](tools/test_all.sh) | Every test binary, both validators, and the spec-vs-binary layout check. Binaries are discovered, not listed. |
 | [`tools/build.bat`](tools/build.bat) | Windows build. A `.bat` because `vcvars64` must run in the same shell. |
+| [`tools/build-juce.bat`](tools/build-juce.bat) | Windows build of the JUCE tree: `adi_play`, `adi_vst3_probe`, the fixture VST3. |
+| [`tools/make_demo_project.py`](tools/make_demo_project.py) | Fills an empty `.adi` with audio clips at chosen sample rates, and optionally a VST3, for listening tests and `adi_play --render`. |
 | [`src/adi/`](src/adi/) | The reference implementation: `blob` (SPEC §6.3 layouts), `store` (the `.adi` itself), `ops` + `ops_catalog` (50 ops), `history` (branching undo), `digest` (the replay oracle), `check` (what SQLite cannot enforce), `textproj` (the canonical text projection), `engine/` (snapshot handoff, the audio graph, sub-block scheduling, the routing planner). |
 | [`LICENSE`](LICENSE) | GPLv3. Our code. JUCE is AGPLv3 and a build that links it carries AGPL obligations on that part — ADR-0048. |
 
