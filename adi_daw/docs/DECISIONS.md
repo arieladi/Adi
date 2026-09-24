@@ -9117,6 +9117,7 @@ edit arrives on the message thread and so does everything the test does.
 **Not decided:** nothing new. One API note for the capture layer:
 `ParamEditCapture::stats()` refreshes the producer's counters only when it is
 called, so a held pointer reads a stale `pushed`; the header should say so.
+
 ---
 
 ## ADR-0140 — Schema 1.3: history snapshots live in `history_snapshots`, and a revert names what it leaves — `DECIDED` (2026-09-24) — **IMPLEMENTS ADR-0128 d1, d2, d4, d5**
@@ -9293,6 +9294,7 @@ in ADR-0141.
 - SPEC §7.1 still calls the mirror "redundant when the plugin loads". It
   gains decision 5's reader and writer rules when `docs/format/**` comes back
   from cloud.
+
 ---
 
 ## ADR-0144 — An older 1.x file is upgraded in place when opened for writing; opened read-only, its missing tables read as empty — `DECIDED` (2026-09-24) — **CLOSES THE GAP ADR-0136 AND ADR-0140 LEFT**
@@ -10486,6 +10488,7 @@ plants, each failing first as named checks:
 - The tier default: Observe (the catalogue) or Propose (AI-AGENT §2).
 - Whether list-shaped settings such as the PTP grandmasters and the MIDI
   filters deserve a text-list type. Today they are comma-separated text.
+
 ---
 
 ## ADR-0155 — MIDI clip schedules, note ownership across publication, and time-based audio pages — `DECIDED` (2026-09-24)
@@ -10547,3 +10550,71 @@ stream; audio clips support the rate range of ADR-0157.
 
 Evidence, planted defects, sanitizer results and remaining limits are recorded
 in `collab/linux.md` with the implementing PR.
+
+---
+
+## ADR-0158 — A held note keeps its instrument running — `DECIDED` (2026-09-24) — **AMENDS ADR-0043**
+
+**Found by listening, not by a test.** The first MIDI clip rendered through a
+real plugin (ADR-0155, `adi_play --render`): a C major arpeggio, then the chord
+held for two bars. The fixture synth went silent 10 ms into the chord. Surge XT
+held it for two seconds, dropped out, and came back for a moment at the
+note-off. ADR-0043 suspends a node whose input is silent, that has no events
+this block, and whose declared tail has run out. An instrument holding a chord
+meets all three: nothing reaches it between a note-on and its note-off, it has
+no audio input, and its tail is whatever the plugin reports. That is zero for
+the fixture and about two seconds for Surge XT. `runNode` said "an instrument
+with no audio input at all must run"; the code never did that. Every unit
+test's instrument declared an infinite tail, the conservative default, so no
+test could see it.
+
+### Decisions
+
+1. **A node holding a note is running.** The graph records the notes each
+   node has been handed and not yet released. While one is held the node is
+   neither suspended nor spending its tail, and the tail re-arms, so it counts
+   from the last release, where a release tail actually starts. ADR-0043's
+   other rules stand: a node holding nothing, with silent input and no events,
+   still sleeps once its tail is spent. That is the point of the ADR, and
+   every idle synth in a project goes on costing nothing.
+2. **Ids, not a count.** ADR-0155 resends an off whose delivery it cannot
+   confirm, so a duplicate off is normal, and a counter would let it release a
+   different note that is still held. That is the one failure here anyone
+   would hear. Id 0 is matched by key among the other unassigned notes, as
+   `MpeRouter` matches it. A note-on repeated with an id already held is one
+   note.
+3. **Only a consumer holds; any node releases.** Note-ons count at a node
+   whose `eventFlow()` is `Consume`. An effect that passes a chord on is not
+   playing it. Note-offs count everywhere, so a device bypassed between a
+   note's start and its end still lets it go.
+4. **On the node, not the graph's slot.** Every edit publishes a new graph
+   with new slots, while the plugin behind the node goes on sounding what it
+   holds. `Node::heldNotes()` survives a publication because the node does.
+   Only one graph renders a callback (ADR-0092 has no crossfade), so the audio
+   thread is the table's only writer.
+5. **Bounded, and wrong only in the harmless direction.** 128 ids per node,
+   ADR-0155's polyphony per track, with no allocation. A note-on beyond that is
+   counted, not tracked, and keeps the node awake until an off that matches
+   nothing retires it. The table can leave a node awake that could have slept,
+   for example after a plugin is re-prepared and drops its voices. The node
+   then runs until the offs arrive, which ADR-0155 guarantees. It never puts
+   to sleep a node that is holding a note.
+
+**Evidence.** `adi_graph_tests` +15 checks: the chord, the release, a duplicate
+off, unassigned ids by key, a new graph keeping the note, a passing effect
+holding nothing, bypass mid-note, capacity, and repeated ids.
+`adi_midi_clips_tests` +2: a zero-tail instrument playing a held clip note,
+then sleeping after the clip releases it. Eight plants, each built under MSVC
+`/WX` and failing a named check:
+- H1: suspension ignores held notes.
+- H2: an off releases by position.
+- H3: an unassigned id is not matched by key.
+- H4: the table is reset per graph, as a slot would be.
+- H5: an effect holds what it passes on.
+- H6: offs count only while consuming.
+- H7: a repeated note-on counts as two notes.
+- H8: overflow is dropped instead of counted.
+
+Heard again after the fix: the fixture holds the chord from 4 s to 8 s at
+-13.4 dBFS and is silent after. Surge XT holds it to 8 s, then releases at
+-40 dBFS. `tools/make_demo_project.py --midi` writes that project.

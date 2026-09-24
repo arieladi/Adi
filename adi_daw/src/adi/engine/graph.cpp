@@ -957,6 +957,15 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept 
     // detection suspends every synth in the project.
     const bool hasEvents = !s.events.empty();
 
+    // A HELD NOTE IS NOT SILENCE EITHER (ADR-0158). An instrument holding a
+    // chord gets no events between the note-on and the note-off, and a plugin
+    // declaring no tail used to sleep on the next block: the chord stopped at
+    // once, and came back for a moment when the off woke it. Held notes keep
+    // it running and keep re-arming its tail, so the tail is counted from the
+    // last release -- where a release tail actually starts.
+    if (hasEvents) s.node->heldNotes().take(s.events, s.node->eventFlow() == EventFlow::Consume);
+    const bool holding = s.node->heldNotes().any();
+
     // An infinite tail is a SEPARATE FLAG, not a sentinel in the counter.
     // Storing kInfiniteTail and decrementing it works -- INT64_MAX takes some
     // quadrillions of blocks to reach zero -- but it makes the never-suspend
@@ -965,7 +974,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept 
     // falsified is one nobody can maintain, so it is a branch instead.
     const bool infinite = s.node->tailSamples() == kInfiniteTail;
 
-    if (!inputSilent || hasEvents) {
+    if (!inputSilent || hasEvents || holding) {
         // RE-ARMED WITH WHAT IS STILL IN FLIGHT, not only the node's own tail.
         //
         // A compensated input delays its audio on the way in (ADR-0058). When
@@ -991,7 +1000,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept 
     // block -- up to 85 ms at the 4096-frame blocks this engine is built for.
     // The old test accepted "3 to 6 blocks" for a tail that is exactly 4.
     const bool suspend = !infinite && !s.node->alwaysProcess() &&
-                         inputSilent && !hasEvents && s.tailRemaining == 0;
+                         inputSilent && !hasEvents && !holding && s.tailRemaining == 0;
     if (suspend) {
         ++stats_.nodesSuspended;
         s.silent = true;
@@ -1015,7 +1024,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept 
     s.zeroed = false;   // the node is about to write; what it leaves is its own
 
     // Only a block that actually runs on silence spends tail.
-    if (inputSilent && !hasEvents && !infinite) {
+    if (inputSilent && !hasEvents && !holding && !infinite) {
         s.tailRemaining -= frames;
         if (s.tailRemaining < 0) s.tailRemaining = 0;
     }

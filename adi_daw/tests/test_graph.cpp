@@ -581,6 +581,171 @@ void testEventsAreNotSilence() {
           "suspended, which is the bug this feature ships once");
 }
 
+// ADR-0158: a zero-tail instrument, counting the blocks it is run.
+class ZeroTailSynth final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i)
+                io.out[c][io.blockOffset + i] = 0.0f;
+        ++calls;
+    }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    [[nodiscard]] EventFlow eventFlow() const noexcept override { return flow; }
+    EventFlow flow = EventFlow::Consume;
+    int calls = 0;
+};
+
+Event heldNote(EventType type, std::uint64_t id, std::uint16_t key) {
+    Event e;
+    e.type = type;
+    e.frame = 0;
+    e.noteId = id;
+    e.dim = key;
+    e.value = 0.8;
+    return e;
+}
+
+void testAHeldNoteIsNotSilence() {
+    section("ADR-0158 -- an instrument holding a note is playing, whatever its tail says");
+
+    ZeroTailSynth synth;
+    Graph g;
+    const NodeId ns = g.addNode(synth);
+    g.setOutput(ns);
+    g.prepare(48000.0, 256);
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+
+    g.pushInputEvent(ns, heldNote(EventType::NoteOn, 1, 60));
+    g.process(io);
+    const int afterOn = synth.calls;
+    for (int i = 0; i < 5; ++i) g.process(io);
+    eqi(synth.calls, afterOn + 5,
+        "a chord held with no events after its note-on keeps a zero-tail synth "
+        "running -- it used to sleep on the next block and stop the chord");
+
+    g.pushInputEvent(ns, heldNote(EventType::NoteOff, 1, 60));
+    g.process(io);
+    const int afterOff = synth.calls;
+    check(afterOff == afterOn + 6, "the note-off itself is run, so the synth hears it");
+    g.process(io);
+    g.process(io);
+    eqi(synth.calls, afterOff,
+        "and once nothing is held, the tail is counted from the release: zero here");
+
+    // IDS, NOT A COUNT. ADR-0155 resends an off it cannot confirm.
+    g.pushInputEvent(ns, heldNote(EventType::NoteOn, 2, 60));
+    g.pushInputEvent(ns, heldNote(EventType::NoteOn, 3, 64));
+    g.process(io);
+    g.pushInputEvent(ns, heldNote(EventType::NoteOff, 2, 60));
+    g.process(io);
+    g.pushInputEvent(ns, heldNote(EventType::NoteOff, 2, 60));
+    g.process(io);
+    const int afterDuplicate = synth.calls;
+    g.process(io);
+    eqi(synth.calls, afterDuplicate + 1,
+        "a duplicate note-off does not release a different note still held");
+    g.pushInputEvent(ns, heldNote(EventType::NoteOff, 3, 64));
+    g.process(io);
+    const int released = synth.calls;
+    g.process(io);
+    eqi(synth.calls, released, "the last release lets it sleep");
+
+    // Id 0 is legal without expression, matched by key -- and a duplicate off
+    // of one key must not release another.
+    g.pushInputEvent(ns, heldNote(EventType::NoteOn, 0, 60));
+    g.pushInputEvent(ns, heldNote(EventType::NoteOn, 0, 64));
+    g.process(io);
+    g.pushInputEvent(ns, heldNote(EventType::NoteOff, 0, 60));
+    g.process(io);
+    g.pushInputEvent(ns, heldNote(EventType::NoteOff, 0, 60));
+    g.process(io);
+    const int keyed = synth.calls;
+    g.process(io);
+    eqi(synth.calls, keyed + 1, "unassigned ids are matched by key, not by position");
+    g.pushInputEvent(ns, heldNote(EventType::NoteOff, 0, 64));
+    g.process(io);
+    const int keyedOff = synth.calls;
+    g.process(io);
+    eqi(synth.calls, keyedOff, "and released by key");
+
+    // A NEW GRAPH, THE SAME PLUGIN. Every edit publishes one; the note the
+    // synth is holding does not stop because the slots were rebuilt.
+    g.pushInputEvent(ns, heldNote(EventType::NoteOn, 4, 67));
+    g.process(io);
+    Graph next;
+    const NodeId ns2 = next.addNode(synth);
+    next.setOutput(ns2);
+    next.prepare(48000.0, 256);
+    const int published = synth.calls;
+    next.process(io);
+    next.process(io);
+    eqi(synth.calls, published + 2, "a new graph keeps running a note the old one started");
+    next.pushInputEvent(ns2, heldNote(EventType::NoteOff, 4, 67));
+    next.process(io);
+    const int nextOff = synth.calls;
+    next.process(io);
+    eqi(synth.calls, nextOff, "and lets it sleep after the release");
+
+    // A node that passes notes on holds none: an EQ after a synth is not
+    // playing the chord.
+    ZeroTailSynth eq;
+    eq.flow = EventFlow::Through;
+    Graph fx;
+    const NodeId ne = fx.addNode(eq);
+    fx.setOutput(ne);
+    fx.prepare(48000.0, 256);
+    fx.pushInputEvent(ne, heldNote(EventType::NoteOn, 5, 60));
+    fx.process(io);
+    const int passed = eq.calls;
+    fx.process(io);
+    eqi(eq.calls, passed, "a node that passes notes on does not hold them");
+}
+
+void testHeldNotesTable() {
+    section("ADR-0158 -- the held-notes table: bypass, capacity");
+
+    std::vector<Event> store(512);
+    EventList list(store.data(), 512);
+
+    // Bypassed between the note's start and its end: Consume at the on,
+    // Through at the off. The off must still count.
+    HeldNotes held;
+    list.push(heldNote(EventType::NoteOn, 7, 60));
+    held.take(list, true);
+    list.clear();
+    list.push(heldNote(EventType::NoteOff, 7, 60));
+    held.take(list, false);
+    list.clear();
+    check(!held.any(), "a device bypassed mid-note still lets the note go");
+
+    HeldNotes full;
+    const int n = HeldNotes::kCapacity + 3;
+    for (int i = 1; i <= n; ++i) list.push(heldNote(EventType::NoteOn, static_cast<std::uint64_t>(i), 60));
+    full.take(list, true);
+    list.clear();
+    eqi(full.count(), n, "past its capacity the table still counts every note-on");
+    for (int i = 1; i < n; ++i) list.push(heldNote(EventType::NoteOff, static_cast<std::uint64_t>(i), 60));
+    full.take(list, true);
+    list.clear();
+    check(full.any(), "one note still held after all but one release");
+    list.push(heldNote(EventType::NoteOff, static_cast<std::uint64_t>(n), 60));
+    full.take(list, true);
+    list.clear();
+    check(!full.any(), "and none after the last");
+
+    HeldNotes again;
+    list.push(heldNote(EventType::NoteOn, 9, 60));
+    list.push(heldNote(EventType::NoteOn, 9, 60));
+    again.take(list, true);
+    list.clear();
+    list.push(heldNote(EventType::NoteOff, 9, 60));
+    again.take(list, true);
+    list.clear();
+    check(!again.any(), "a note-on repeated with the same id is one note");
+}
+
 void testTailKeepsRunning() {
     section("ADR-0043 -- a tail is honoured, and an infinite one is never skipped");
 
@@ -2184,6 +2349,8 @@ int main() {
         testMixSkipsSleepingSources();
         testTheAudioThreadNeverAsksALatency();
         testEventsAreNotSilence();
+        testAHeldNoteIsNotSilence();
+        testHeldNotesTable();
         testTailKeepsRunning();
         testAlwaysProcess();
         testGroupSumsAndPropagates();

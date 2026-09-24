@@ -22,7 +22,10 @@ adi_play demo.adi
 ```
 
 The first `adi_play` proves the path offline; the second is the one to
-listen to. `--rate 192000` for row 4. `--vst3-uid` adds an instrument track.
+listen to. `--rate 192000` for row 4. `--vst3-uid` adds an instrument track,
+and `--midi` gives it a four-bar clip, an arpeggio and then a held chord:
+with `--vst3-uid "VST3-Surge XT-1e1bcfb-190e4fbd"` it is Surge XT playing
+(`adi_play --list` prints the UIDs installed).
 
 ## Measured so far, for comparison
 

@@ -284,7 +284,7 @@ this file by hand.
 
 | Setting | ADI | Status |
 |---|---|---|
-| Tier | Observe / Propose / Apply (AI-AGENT.md). Default Observe. Changing the tier is itself logged. At Propose the agent queues a changeset, parameter ops included, and nothing reaches the graph until the user presses **Apply**; applied, it is one undo step. | DECIDED ADR-0145 d9 |
+| Tier | Observe / Propose / Apply (AI-AGENT.md). Default Propose (AI-AGENT §2). Changing the tier is itself logged. At Propose the agent queues a changeset, parameter ops included, and nothing reaches the graph until the user presses **Apply**; applied, it is one undo step. | DECIDED ADR-0145 d9 |
 | Rate cap | Ops per minute the agent may commit at Apply tier (AI-AGENT §6). | DECIDED AI-AGENT |
 | Endpoint | Which model service, where (local RPC or remote), with the key stored in the OS keychain, never in the settings file. | DIRECTION |
 | What the agent may read and change | Reads the project (through ops and the projection, ADR-0021) and application settings; never the file system. Changes UI and workflow settings only, through its own logged pipeline (Part I §6). | DECIDED ADR-0125 R-07 |

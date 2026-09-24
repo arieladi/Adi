@@ -587,6 +587,19 @@ def main() -> int:
     else:
         ok("no ADR number is used twice")
 
+    # A `---` directly under a line of text is not a rule in Markdown: it makes
+    # that line a heading. Three ADRs ended with their last sentence rendered
+    # as a heading before this was checked (2026-09-24). Separators go after a
+    # blank line.
+    lines = decisions.split(chr(10))
+    traps = [i + 1 for i in range(1, len(lines))
+             if lines[i].strip() == "---" and lines[i - 1].strip() != ""]
+    if traps:
+        fail(f"DECISIONS.md has a '---' directly under text at line(s) {traps}: "
+             f"Markdown renders the line above it as a heading; add a blank line")
+    else:
+        ok("every '---' in DECISIONS.md follows a blank line")
+
     # --- 8. the ADR reservation table is kept (ADR-0051) ---------------------
     # A process rule nothing checks is a process rule that decays, and this one
     # exists because three collisions got through a rule that was only advice.
