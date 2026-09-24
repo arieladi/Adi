@@ -50,7 +50,10 @@ and used: `src/adi/store_rows.*`, for the automation rows only.
 exist, so the foreign key refused it. The test now creates the track and the
 clip first. PR 2 was pushed first to a temporary branch,
 `cloud/curves-automation`, so that #116's head was left alone while its CI
-ran. That branch is deleted.
+ran. **That branch is left over and holds nothing new:** its one commit,
+ad28cf3, is this PR's content before the rebase. Deleting it from this
+container returned HTTP 403 (the git proxy refuses branch deletion), so
+whoever tidies branches may delete it.
 
 `test_all`: 4437 checks across 46 suites, validators clean. ASan+UBSan are
 clean on every suite. TSan is clean on the automation and curve suites, which
