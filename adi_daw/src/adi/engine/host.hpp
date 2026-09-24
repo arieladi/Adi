@@ -108,8 +108,18 @@ public:
 
     /// Applied to each graph as it is built. Kept on the host because it
     /// outlives any one graph (ADR-0088).
+    ///
+    /// **Samples at 48 kHz** (ADR-0157 d3). The headroom stands for a time --
+    /// how far a plug-in's latency may swing without a rebuild -- and a plug-in
+    /// reporting a fixed time reports four times the samples at 192 kHz. So a
+    /// graph built at another rate gets it scaled, never below this value:
+    /// 8192 is 171 ms at 48 kHz, 32768 at 192 kHz, 65536 at 384 kHz. The cost
+    /// scales with it: `channels * (delay + headroom) * 4` bytes per edge, so
+    /// 512 KiB of headroom per stereo edge at 384 kHz.
     void setLatencyHeadroom(std::int32_t n) noexcept { headroom_ = n > 0 ? n : 0; }
     [[nodiscard]] std::int32_t latencyHeadroom() const noexcept { return headroom_; }
+    /// What a graph built at `sampleRate` gets (ADR-0157 d3).
+    [[nodiscard]] std::int32_t latencyHeadroomAt(double sampleRate) const noexcept;
 
     /// ADR-0092: at a swap, every edge that exists in both graphs takes the
     /// old one's ring history, so a rebuild that changed nothing audible
