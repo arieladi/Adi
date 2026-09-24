@@ -370,6 +370,66 @@ off  size  type  field
 `dimension`: `0` pitch (semitones, ±48), `1` pressure (0..1), `2` timbre/slide
 (0..1), `3` gain (dB), `4` pan (−1..1), `≥64` plugin-defined.
 
+**Curve shapes (normative, ADR-0159).** A point's `curve` and `tension` shape
+the segment from that point (x = 0, value v0) to the next (x = 1, value v1).
+Every reader — the engine, a converter, the UI — **MUST** draw it with these
+formulas; `src/adi/engine/curves.hpp` is the reference implementation.
+
+```
+v(x) = v0                         x <= 0       (for hold: x < 1)
+v(x) = v1                         x >= 1
+v(x) = v0 + (v1 - v0) * u(x, t)   otherwise    t = tension clamped to [-1, 1]
+
+E(x, t) = (e^(k x) - 1) / (e^k - 1),   k = t · ln 1000        (use expm1)
+
+curve 0  hold      u = 0 for x < 1                (v0 until the next point, then v1)
+curve 1  linear    u = x
+curve 2  exp       u = E(x, t)
+curve 3  log       u = 1 - E(1 - x, t)            (exp reflected through the centre)
+curve 4  s-curve   u = E(2x, t) / 2               for x <= 1/2
+                   u = 1 - E(2 - 2x, t) / 2       for x >  1/2
+curve 5  bezier    the quadratic bezier from (0,0) to (1,1) with its control point
+                   at (1/2 + t/2, 1/2 - t/2):  solve x = (1 + t) s - t s² for s in
+                   [0, 1] (s = 2x / ((1 + t) + sqrt((1 + t)² - 4 t x))), then
+                   u = (1 - t) s (1 - s) + s²
+any curve at t = 0 (except hold) is exactly linear: u = x
+```
+
+- **Tension's sign: positive bends the way the shape's name says.** exp starts
+  slow and ends fast, log starts fast, the s-curve is steepest in the middle, and
+  bezier bows below the line like exp. Negative tension bends the other way;
+  exp at −t is log at +t. An importer that knows no tension writes 0 and gets
+  a straight line for every shape.
+- **Why ln 1000.** At |t| = 1 the exponential spans a 1000:1 range, which is
+  the 60 dB of a classic exponential fade. It is steep enough to draw a fade
+  that sounds even, and not so steep that the curve is a step.
+- **Properties a reader can rely on:**
+  - u(0) = 0 and u(1) = 1 exactly.
+  - Every shape is monotonic for every t in [−1, 1].
+  - The s-curve is symmetric: s(1 − x) = 1 − s(x).
+  - The bezier's control point stays inside the unit square, so the curve
+    never overshoots.
+- **Other inputs.** A `curve` above 5 is refused by a reader (ADR-0159). A NaN
+  tension reads as 0.
+
+Golden values of u, to twelve places, for x = 1/4, 1/2 and 3/4. log at t is
+exp at −t; the negative-tension rows of each shape reflect these through the
+centre.
+
+| shape | t | u(1/4) | u(1/2) | u(3/4) |
+|---|---|---|---|---|
+| exp | +1 | 0.004628041293 | 0.030653430032 | 0.177004945950 |
+| exp | +½ | 0.044782800838 | 0.150979557211 | 0.402811752901 |
+| exp | −1 | 0.822995054050 | 0.969346569968 | 0.995371958707 |
+| s-curve | +1 | 0.015326715016 | 0.5 | 0.984673284984 |
+| s-curve | +½ | 0.075489778606 | 0.5 | 0.924510221394 |
+| s-curve | −1 | 0.484673284984 | 0.5 | 0.515326715016 |
+| bezier | +1 | 0.017949192431 | 0.085786437627 | 0.25 |
+| bezier | +½ | 0.104248688935 | 0.263932022500 | 0.517949192431 |
+| bezier | −1 | 0.75 | 0.914213562373 | 0.982050807569 |
+
+(exp at +1 and x = ½ is 1 / (1 + √1000); bezier at +1 is (1 − √(1 − x))².)
+
 > **This `curve` enum is not the one in `tempo_map.curve`.** That column is a
 > separate, smaller enum — `0` jump, `1` linear, `2` bezier — because a tempo
 > ramp has no use for exponential or logarithmic shapes and a bezier tempo ramp
@@ -395,11 +455,14 @@ off  size  type  field
   0     8  i64   time            ticks or ns per the lane's time_base
   8     8  f64   value           in the lane's declared value_domain
  16     4  f32   tension
- 20     1  u8    curve           as §6.3.2
+ 20     1  u8    curve           as §6.3.2, drawn by its formulas
  21     1  u8    flags           b0 selected, b1 locked
  22     2  u16   reserved
  24     8  u64   point_id        stable identity
 ```
+
+A point's `curve` and `tension` shape the segment to the next point with
+§6.3.2's formulas, the same for automation as for note expression.
 
 `automation_lanes.value_domain` declares whether `value` is `normalized`
 (0.0–1.0, what a plugin API speaks), `real` (dB, Hz, ms — what a human reads), or
