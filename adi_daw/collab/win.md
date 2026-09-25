@@ -25,6 +25,12 @@ Only the `win` agent writes to this file. Newest entry at the top.
 **Found on the way:**
 - **My first ring checked the published count after copying,** which misses
   a block being written. It now uses a seqlock order.
+- **CI's Macs failed the torn-read test once each; the ring was right.** The
+  test's pattern wrapped at 2^23 frames, which only Apple silicon reached in
+  300 ms, and the one window across the wrap read as torn. The stamp is now
+  unwrapped, each sample is checked against it, and the pattern wraps at
+  2^16, so every runner crosses it about ninety times. The old check fails
+  124 times under that; the new one passes.
 - **4× oversampling reads a crest between grid points low,** −0.17 dB at
   fs/4, inherent to the method. The meter is held to EBU Tech 3341's
   tolerance, +0.2/−0.4 dB, over the audible band. I first wrote the figure

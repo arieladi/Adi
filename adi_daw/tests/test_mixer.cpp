@@ -597,10 +597,14 @@ void testScopeTaps() {
             while (!stop.load()) {
                 if (!tap.read(a, b, first)) continue;
                 ++reads;
-                // The writer writes the frame index as the sample and as the
-                // stamp: a consistent window counts up by one from its stamp.
-                bool ok = a[0] == static_cast<float>(first);
-                for (std::size_t i = 1; i < a.size(); ++i) ok = ok && a[i] == a[i - 1] + 1.0f;
+                // The writer stamps the frame index and writes it, wrapped at
+                // 2^16, as the sample: a whole window is its stamp counting up,
+                // frame by frame. The wrap is short so every run crosses it
+                // many times; comparing neighbouring samples instead failed
+                // once per wrap, on runners fast enough to reach the old one.
+                bool ok = true;
+                for (std::size_t i = 0; i < a.size(); ++i)
+                    ok = ok && a[i] == static_cast<float>((first + static_cast<std::int64_t>(i)) % 65536);
                 if (!ok) ++torn;
             }
         });
@@ -608,8 +612,8 @@ void testScopeTaps() {
         std::int64_t frame = 0;
         const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
         while (std::chrono::steady_clock::now() < until) {
-            for (std::size_t i = 0; i < block.size(); ++i) block[i] = static_cast<float>((frame + static_cast<std::int64_t>(i)) % 8388608);
-            tap.write(block.data(), block.data(), 64, frame % 8388608, true);
+            for (std::size_t i = 0; i < block.size(); ++i) block[i] = static_cast<float>((frame + static_cast<std::int64_t>(i)) % 65536);
+            tap.write(block.data(), block.data(), 64, frame, true);
             frame += 64;
         }
         stop.store(true);
