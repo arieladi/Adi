@@ -14,6 +14,7 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -335,6 +336,9 @@ void testAutomationPlays() {
         m.render();
         check(near(m.l[511], 0.5 * std::pow(10.0, -15.0 / 20.0), 0.003),
               "parked at 0.75 s, the strip reads the lane at the playhead: -15 dB");
+        const auto [lo, hi] = std::minmax_element(m.l.begin(), m.l.end());
+        check(*lo == *hi,
+              "and holds one level across the block: a parked playhead is one position, not a block's worth");
     }
     {
         Mix m("pan-mute");

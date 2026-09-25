@@ -45,6 +45,7 @@
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/engine/param_automation.hpp"
 #include "adi/engine/process.hpp"
 #include "adi/engine/realize.hpp"
 #include "adi/store_rows.hpp"
@@ -152,6 +153,12 @@ public:
     /// was not overridden.
     bool reenableAutomation(std::int64_t laneId);
 
+    /// ADR-0165: the device lanes this rebuild plays, per device. Message
+    /// thread, for tests and the UI: null until the first rebuild.
+    [[nodiscard]] const DeviceAutomationBinding* deviceAutomation() const noexcept {
+        return deviceAutomation_.get();
+    }
+
     /// What pushes into each track's junction -- a clip reader, a test tone.
     /// Effective from the next rebuild. The nodes are the caller's and must
     /// outlive every graph that holds them, which means: until the session is
@@ -234,6 +241,11 @@ private:
     // ADR-0164: this rebuild's program, bound to strips. Kept here as well as
     // by every strip and graph that plays it.
     std::shared_ptr<StripAutomation> stripAutomation_;
+    // ADR-0165: this rebuild's device lanes, one EventSource per device, set on
+    // each device's node before the graph that plays them is published.
+    std::shared_ptr<DeviceAutomationBinding> deviceAutomation_;
+    std::vector<std::string> deviceSourceProblems_;
+    void bindDeviceSources();
     std::set<std::int64_t> overridden_;   ///< ADR-0162: lane ids
     device::DeviceHost devices_;
     GraphHost graph_;

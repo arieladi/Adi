@@ -72,7 +72,10 @@ StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame)
     const int law = law_.load(std::memory_order_relaxed);
     bool heard = audible_.load(std::memory_order_relaxed);
     if (lanes != nullptr && transport_ != nullptr) {
-        const std::int64_t at = transport_->sampleAt(frame);
+        // A parked playhead is ONE position. sampleAt answers position + offset
+        // whether the transport is playing or not, and reading a block ahead
+        // of a stopped playhead made a sloped lane saw at the block rate.
+        const std::int64_t at = transport_->sampleAt(transport_->playing() ? frame : 0);
         if (lanes->volume != nullptr) vol = valueAt(*lanes->volume, at);
         if (lanes->pan != nullptr) pan = valueAt(*lanes->pan, at);
         if (lanes->mute != nullptr && valueAt(*lanes->mute, at) >= 0.5) heard = false;
@@ -215,11 +218,7 @@ std::shared_ptr<StripAutomation> bindStripAutomation(std::shared_ptr<const Autom
     if (!out->program) return out;
     for (const AutomationLaneProgram& lane : out->program->lanes()) {
         const std::string who = "automation_lanes#" + std::to_string(lane.laneId);
-        if (lane.ownerKind == "device") {
-            out->problems.push_back(who + ": device automation is not played yet (ADR-0164 d6)");
-            continue;
-        }
-        if (lane.ownerKind != "track") continue;   // the compiler named the rest
+        if (lane.ownerKind != "track") continue;   // devices: ADR-0165's binding; the compiler named the rest
         StripParam param;
         if (lane.paramRef == "volume") param = StripParam::Volume;
         else if (lane.paramRef == "pan") param = StripParam::Pan;

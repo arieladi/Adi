@@ -112,6 +112,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                     continue;
                 }
                 if (auto owner = s->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
+                if (const auto& owner = s->eventSourceLifetime()) r->sourceOwners_.push_back(owner);
                 const NodeId id = r->graph_.addNode(*s);
                 r->graph_.connect(id, head);
             }
@@ -131,6 +132,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 // ADR-0164: a chain node may hold data the audio thread reads
                 // -- a strip's automation lanes -- and this graph keeps it alive.
                 if (auto owner = d->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
+                if (const auto& owner = d->eventSourceLifetime()) r->sourceOwners_.push_back(owner);   // ADR-0165
                 const NodeId id = r->graph_.addNode(*d);
                 r->graph_.connect(tail, id);
                 tail = id;

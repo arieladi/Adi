@@ -97,6 +97,18 @@ enum class EventFlow : std::uint8_t {
     Consume,
 };
 
+/// Addressed events generated FOR a node, once per block (ADR-0165): the
+/// automation of a plug-in's parameters. Set on the node by the session, called
+/// by the graph on the audio thread before forwarding and splitting, so each
+/// event lands on its own segment boundary like any pushed event (ADR-0042).
+class EventSource {
+public:
+    virtual ~EventSource() = default;
+    /// Audio thread. Bounded, allocation-free, no I/O. Push into `out`; a full
+    /// list refuses, and the list counts what it refused.
+    virtual void emit(EventList& out, std::int32_t frames) noexcept = 0;
+};
+
 /// One processing node.
 ///
 /// The three ADR-0043 declarations default to the CONSERVATIVE answer, matching
@@ -198,11 +210,31 @@ public:
     [[nodiscard]] HeldNotes& heldNotes() noexcept { return held_; }
     [[nodiscard]] const HeldNotes& heldNotes() const noexcept { return held_; }
 
+    /// ADR-0165: what generates this node's addressed events each block, and
+    /// what keeps it alive. Message thread, before the graph that plays it is
+    /// published. ON THE NODE, like the held notes: a device outlives every
+    /// graph, and no device class has to know automation exists.
+    void setEventSource(EventSource* source, std::shared_ptr<void> keepAlive) noexcept {
+        eventSourceOwner_ = std::move(keepAlive);
+        eventSource_.store(source, std::memory_order_release);
+    }
+    /// Audio thread.
+    [[nodiscard]] EventSource* eventSource() const noexcept {
+        return eventSource_.load(std::memory_order_acquire);
+    }
+    /// Message thread: the realiser keeps it with the graph, so a source a
+    /// retired graph may still call is never freed under it.
+    [[nodiscard]] const std::shared_ptr<void>& eventSourceLifetime() const noexcept {
+        return eventSourceOwner_;
+    }
+
 protected:
     Node() = default;
 
 private:
     HeldNotes held_;
+    std::atomic<EventSource*> eventSource_{nullptr};
+    std::shared_ptr<void> eventSourceOwner_;
 };
 
 using NodeId = std::int32_t;
