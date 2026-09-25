@@ -12417,7 +12417,9 @@ Paraphrased from pp. 261–263, because the design has to answer to it:
    - **Bungee keeps its job:** scrubbing, and speed through zero (ADR-0061).
 
    **The candidates, once those facts are applied.** The review's second
-   pass converged on them, except for Texture:
+   pass converged on them, except for Texture. **The director approved them
+   as the direction on 2026-09-25,** Texture's native granular player
+   included:
    - **Complex and Complex Pro:** Rubber Band R3. What separates the two is a
      listening question; a shorter window for Complex is one candidate. Live's
      Formants is a percentage and Rubber Band's formant option is on or off,
