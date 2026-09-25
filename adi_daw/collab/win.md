@@ -5,6 +5,29 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — Audio Alignment into the backlog (ADR-0176)
+
+**The director's instruction:** Cubase-style Audio Alignment for the engine
+backlog, with Gemini's plan: Rubber Band, an in-house transient detector that
+a transient shaper would reuse, and transients mapped target to reference.
+Nothing built; the scope taps come first.
+
+**What the Cubase manual changed** (pp. 261–263, 636–638):
+- **No transient mapping.** Cubase's options are Match Words, Prefer Time
+  Shifting and Alignment Precision, and it writes AudioWarp played by the
+  clip's own algorithm. Transient mapping fails on vocals, the main use, and
+  on takes with an extra note. The ADR sets out a time-warping path over
+  audio features, with `bestOffset` tried first for multi-mic takes.
+- **Rubber Band is not new.** ADR-0061 decided it. The real gap is that a
+  warped clip plays silent today (`clip_playback.cpp`), so ADR-0061 comes
+  first when this is taken up.
+- **The detector is the hitpoint detector,** already decided. A transient
+  shaper shares only the envelope follower (ADR-0062), not the detector.
+- **Output is `audioClip.setWarpMarkers`:** no schema change.
+- **Public docs paraphrase the manual,** never copy it (policy §5).
+
+---
+
 ## 2026-09-25 — the scope's engine side (ADR-0175)
 
 **The director's order:** after group summing, the scope's audio taps.

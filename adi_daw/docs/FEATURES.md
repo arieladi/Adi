@@ -79,7 +79,8 @@ flagged, and it is a bug in the format, not in the plan.
 | Track versions | Cubase | P2 | ✅ | `snapshots.kind='track_version'` |
 | Ripple edit / insert-delete time | both | P1 | — | pure op, no schema needed |
 | Warp / elastic audio | Ableton | P1 | ✅ | `audio_clips.warp_markers` (AWRP) |
-| Hitpoints, slice to track | Cubase | P2 | ✅ | hitpoints are warp markers |
+| Hitpoints, slice to track | Cubase | P2 | ✅ | hitpoints are warp markers. One onset detector, cached per media file, serves hitpoints, slicing, Audio Alignment and the agent's `analyze.transients`; its filters are Cubase's Threshold, Intensity, Minimum Length and Beats (p. 637) (ADR-0176) |
+| **Audio Alignment**: target clips' timing matched to a reference clip | Cubase | P2 | ✅ | The result is warp markers: one changeset of `audioClip.setWarpMarkers`, plus a split and a crossfade at a partial overlap; no schema change. The matching is a dynamic time-warping path over audio features, not transient-to-transient mapping, which fails on vocals and on takes with an extra note. Cubase's options (pp. 261–263): Match Words, Prefer Time Shifting (tries the scope's `bestOffset` first) and Alignment Precision; its bounce-first rules are not copied. **Needs warped playback first** (ADR-0061), which the engine does not have yet (ADR-0176) |
 | AudioWarp quantise / groove from audio | Cubase | P2 | 🔶 | groove templates need a table |
 | Groove pool | Ableton | P2 | ❌ | shared groove templates — no schema |
 | VariAudio / pitch-time editing of vocals | Cubase | P3 | ❌ | per-segment pitch model; big, unspecified |
@@ -257,6 +258,7 @@ which is a property of the algorithm and not of where it is compiled.
 | Sub-sample phase utility | P1 | polarity **0**, nudge ~0 | polarity inversion is exactly free; a fractional delay is not. **Part of Utility** (ADR-0169) |
 | Audio-rate envelope follower | P1 | 0 | a modulator under ADR-0046; first real consumer of ADR-0052's `PARAM_MOD` problem |
 | Grid-locked volume shaper | P1 | 0 | reads the tempo map directly — the reason it is native |
+| Transient shaper | P2 | 0 | built on the envelope follower above, not on the hitpoint detector: shaping is a real-time gain, detection is peak picking with look-ahead (ADR-0176 d4) |
 | Frequency shifter | P2 | Hilbert transform is not free | ring-mod / Hilbert, sample-accurate linear shift. **Part of Shifter** (ADR-0169) |
 | Vocoder | P2 | filter-bank dependent | sidechain via `Bus::Sidechain`, no user wiring |
 | Multiband graph splitter | P2 | **thousands of samples in linear phase** | **blocked on N-bus outputs** (ADR-0056). Declares its latency; a minimum-phase mode is a user choice, not a silent default |
@@ -299,7 +301,7 @@ Upstream code, unchanged, each its own binary under its own licence
 | Engine | P | Job |
 |---|---|---|
 | Bungee (MPL-2.0, pinned) | P1 | scrubbing, varispeed, zero and negative speed |
-| Rubber Band (GPL-2.0-**or-later**) | P1 | high-quality warp and pitch-shift; licence to verify under ADR-0024 before use |
+| Rubber Band (GPL-2.0-**or-later**) | P1 | high-quality warp and pitch-shift. The licence is pre-authorised (`OPEN_SOURCE_POLICY.md` §3); confirm the "or later" wording at the pinned commit. **Not built:** a warped clip plays as silence today, and Audio Alignment waits on this (ADR-0176) |
 
 ### Freezing and racks
 

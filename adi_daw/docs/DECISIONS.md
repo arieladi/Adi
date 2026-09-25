@@ -12199,3 +12199,175 @@ The panel:
 - **Readouts:** `correlation` and `bestOffset` over the visible window.
 - **True peak:** `TruePeakMeter` over what is shown.
 - **The fix:** one click proposes `mixer.setDelay`.
+
+---
+
+## ADR-0176 — Audio Alignment joins the backlog: warp markers from a time-warping path; the stretch is ADR-0061's, the detector is the hitpoint detector — `DECIDED (direction)` (2026-09-25) — **DIRECTOR'S BACKLOG ADDITION**
+
+**Director's instruction:** a native clip-warping feature like Cubase's Audio
+Alignment, kept in the C++ engine backlog. A plan from Gemini came with it:
+- Rubber Band for the stretching;
+- an in-house transient detector, modular so that a native transient shaper
+  can later reuse "this exact core";
+- alignment that maps a target clip's transients onto the reference's;
+- settings and manual text modelled on Cubase's manual.
+
+Nothing is built now. The current work is the scope taps (ADR-0175); group
+summing, also named, merged in #127 (ADR-0174). Checked against the Cubase
+Pro 15 manual, pp. 261–263 (*Audio Alignment*) and pp. 636–638
+(*Hitpoints*), against ADR-0061, ADR-0062 and SPEC §6.4, and against the
+engine as it is.
+
+### What Cubase's feature is
+
+Paraphrased from pp. 261–263, because the design has to answer to it:
+- **The selection:** a reference event or range, and one or more target
+  events or ranges on other tracks. Only the overlap is processed, and the
+  panel highlights it. A partial overlap splits the target and crossfades the
+  seam.
+- **Three settings:**
+  - *Match Words* detects phonemes and syllables, for takes that sing or say
+    the same words.
+  - *Prefer Time Shifting* moves the audio instead of stretching it wherever
+    it can, for one performance recorded through several microphones.
+  - *Alignment Precision* sets how closely it aligns; less keeps a more
+    natural sound.
+- **The result is AudioWarp.** The stretching uses whichever warp algorithm
+  the Sample Editor has selected, and changing that algorithm afterwards
+  re-renders the result at once.
+- **Its restrictions:**
+  - a target with real-time processing must be bounced first, or have that
+    processing overwritten;
+  - a target in Musical Mode must be bounced first;
+  - a target already edited with VariAudio or AudioWarp is refused;
+  - reference and target must share the project's sample rate.
+
+### Decisions
+
+1. **A P2 feature, for the editing phase.** It sits beside hitpoints (P2)
+   and cannot work before warped playback. It is Cubase's, so Live parity
+   does not pull it earlier.
+
+2. **The result is warp markers, and the stretching is the clip's, not the
+   alignment's.** Cubase is built this way (above), and ADI already has the
+   same shape:
+   - **The data exists.** `audio_clips.warp_markers` pairs source frames with
+     ticks (SPEC §6.4), and `audioClip.setWarpMarkers` already sets them. An
+     alignment is one changeset: new markers for each target, plus a split
+     and a crossfade where the overlap is partial. It is one undo step, and
+     it can be shown as a proposal under the Propose model (ADR-0145) before
+     it is applied.
+   - **No schema change, and no new stretch engine.** Rubber Band is already
+     decided (ADR-0061), beside Bungee, for warped clips. Gemini's step 1 is
+     ADR-0061's work, and every warped clip needs it, not only aligned ones.
+   - **The real dependency is warped playback, and the engine does not have
+     it yet.** A clip with warp enabled plays as silence and is reported as
+     unsupported (`clip_playback.cpp`). So the first engine item, when this
+     is taken up, is ADR-0061: the stretcher, prepared off the audio thread
+     (its d3), with its latency declared to PDC (its d4).
+   - **Rubber Band's licence is settled by policy.** GPL-2.0-or-later is
+     pre-authorised by `OPEN_SOURCE_POLICY.md` §3. ADR-0061 d2's check comes
+     down to finding "or (at your option) any later version" in the headers
+     at the pinned commit, and recording it in `EXTERNAL-CODE.md`.
+
+3. **The matching is a time-warping path over audio features, not one
+   transient list mapped onto another.** Transient-to-transient mapping fails
+   in each case the feature exists for:
+   - **Vocals and sustained parts** have few clear onsets. Double-tracked
+     vocals are the main use, and Cubase adds Match Words for exactly this.
+   - **Takes differ.** One extra or missing note breaks a one-to-one mapping,
+     so the method must allow insertions and deletions.
+   - **Multi-microphone takes need no stretching at all,** only an offset.
+
+   The method, for whoever builds it:
+   - **One analysis rate.** Both sides are analysed at a common rate, so ADI
+     does not inherit Cubase's same-rate restriction; media keeps each file's
+     own rate and plays converted (SPEC §4.3, ADR-0157).
+   - **The features:** per-frame onset strength and a spectral envelope
+     (MFCCs).
+   - **Dynamic time warping,** within a band that bounds the drift, gives a
+     monotonic map from target time to reference time.
+   - **Warp markers from the map.** The map is thinned to markers, and
+     Precision sets how many: fewer markers, less stretching. Each marker
+     moves to a target onset where one is near, so the stretch falls between
+     transients, never across one.
+   - **Prefer Time Shifting tries one offset first.** Cross-correlation finds
+     it, which the scope's `bestOffset` already computes (ADR-0175). Stretching
+     is used only where the residual after the shift stays above a threshold.
+     A whole-sample offset is enough to begin with; sub-sample alignment waits
+     for ADR-0062's phase utility.
+   - **Match Words stays classical DSP:** syllable nuclei and MFCCs weighted
+     up, no speech model, so it is native, Tier 1 in ADR-0086's terms.
+     Whisper's word timestamps (FEATURES, *Vocal chopping*) could refine it as
+     an optional Tier 2 service; the feature never depends on them (ADR-0064,
+     ADR-0086).
+   - **What is compared** is the clips' audio as placed on the timeline, the
+     reference's own warp included, as in Cubase. It is not a strip's output:
+     plug-in latency is already placed by PDC, and a track delay (ADR-0172) is
+     a mix decision made after alignment. So the scope's taps are not the
+     source.
+   - **Where it runs:** on a worker thread, cancellable, never on the audio
+     thread, and deterministic, so tests can hold it to exact results. The
+     analysis is cached per media file, as hitpoints are.
+   - **How it is proven:** a known, uneven time map is applied to a signal,
+     and the alignment must recover it within a stated error. The planted
+     cases are a drum loop, a sustained vowel with no clear onsets, and a take
+     with one extra note.
+
+4. **The transient detector is the hitpoint detector, and it is not the
+   transient shaper's core.**
+   - **Detection is already decided.** Hitpoints are always detected into
+     the cache (SETTINGS-CATALOGUE, *Editing — Audio*), and hitpoints are warp
+     markers (FEATURES §3). The agent's `analyze.transients` reads the same
+     map. So one onset detector serves hitpoints, slicing, alignment's marker
+     placement and the agent: that is the reuse worth designing for.
+   - **Its filters are Cubase's (p. 637), as behaviour:** Threshold (by
+     peak), Intensity, Minimum Length, and Beats (by musical position).
+   - **A transient shaper cannot share "the exact core".** The two are
+     different processes:
+     - onset detection picks peaks from an onset-strength function against an
+       adaptive threshold, offline or with look-ahead: it answers *where*;
+     - a transient shaper is a real-time gain, usually the difference between
+       a fast and a slow envelope follower: it answers *how much, now*, with
+       no peak picking and no look-ahead to hide behind.
+   - **What they share is small: the envelope follower.** ADR-0062 already
+     puts an audio-rate envelope follower in the native node set. The shaper
+     is built on it, and the detector's onset-strength function uses the same
+     component. A native transient shaper joins the backlog at P2 on that
+     basis.
+
+5. **The settings, in ADI's terms.**
+   - **The selection:** a reference, one or more targets, only the overlap
+     processed, and a split plus crossfade at a partial overlap, as in Cubase.
+   - **The options:** Match Words, Prefer Time Shifting and Alignment
+     Precision, behaving as d3 describes.
+   - **The algorithm** stays the clip's `warp_mode`, changeable afterwards, as
+     in Cubase.
+   - **Deliberately not copied: the bounce-first rules.** They exist because
+     Cubase's processing is baked into the event. ADI's warp is markers, so:
+     - a target that is already warped has its markers replaced within the
+       overlap, and the changeset's inverse restores them;
+     - a clip that follows the tempo is aligned in its warped time, because a
+       marker pairs a source frame with a tick either way;
+     - real-time effects on the track do not matter, because what is compared
+       is the clip's audio (d3).
+   - **The name:** "Audio Alignment" describes the job; it is not a brand.
+     AudioWarp and VariAudio are Steinberg's names, and ADI uses neither.
+
+6. **The manual, and the Cubase reference.**
+   - **"Cubase injection" names nothing in the repository.** This ADR reads
+     it as "work from the Cubase manual in `reference/DOCS`", and has: the
+     pages are cited above.
+   - **When the feature is taken up,** the Master Reference, which is
+     git-ignored and in the director's hands, gets a section with those pages
+     beside ADI's panel.
+   - **Everything published** — this log, FEATURES and the user manual —
+     describes the behaviour in ADI's own words with page references, and
+     never reproduces Steinberg's text. `OPEN_SOURCE_POLICY.md` §5: we clone
+     behaviour; the manual is theirs.
+
+7. **The order, when it is taken up:**
+   1. warped playback (ADR-0061);
+   2. the hitpoint detector;
+   3. the alignment analysis, pure and tested offline;
+   4. the panel, which is the UI owner's.
