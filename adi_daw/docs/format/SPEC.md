@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1006;          -- schema 1.6
+PRAGMA user_version   = 1007;          -- schema 1.7
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -631,6 +631,22 @@ track's devices, and whatever the track feeds takes the strip's output
   other domain rather than guess a curve. While a lane is not overridden
   (ADR-0162), it replaces the stored value; a mute lane joins `muted`
   and solo.
+- **`group_summing`** (since 1.7, ADR-0173, ADR-0174): native analog summing
+  on a group track.
+  - **What it plays:** with `enabled` set, every track whose main output is
+    the group plays through the flavour's channel half, after its own strip,
+    and the group's sum plays through the buss half, before the group's
+    devices.
+  - **The flavour** is a key into the table of `src/adi/summing_flavors.cpp`:
+    `console9`, `console.la`, `console.mc`, `console.md`, `purest3`, `pd`,
+    `c5raw` or `atmosphere`, each an Airwindows channel/buss pair.
+  - **Drive:** `drive_db` goes in before each channel half and comes off
+    after the buss half.
+  - **The level is matched:** a reader that plays summing SHOULD match its
+    level to the plain sum at 1 kHz and a low level, so that turning summing
+    on changes the colour, not the level.
+  - **Refused rows:** a row on a track that is not a group, or with a key the
+    reader does not know, is reported and not played.
 
 ---
 

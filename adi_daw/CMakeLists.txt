@@ -207,6 +207,8 @@ add_library(adi_core STATIC
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
     src/adi/engine/mixer.cpp
+    src/adi/engine/summing.cpp
+    src/adi/summing_flavors.cpp
     src/adi/engine/param_automation.cpp
     src/adi/engine/play_quantize.cpp
     src/adi/engine/param_ops.cpp
@@ -233,6 +235,34 @@ endif()
 target_include_directories(adi_core SYSTEM PUBLIC "${ADI_THIRD_PARTY}/clap/include")
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
 target_link_libraries(adi_core PRIVATE adi_warnings adi_blake3 adi_miniz)
+
+# ADR-0173, ADR-0174: the 16 Airwindows console algorithms behind native group
+# summing, from airwin2rack (MIT), pinned by commit. Built as upstream builds
+# them: their warnings are not this tree's, so they get none of its flags.
+set(ADI_AIRWIN "${ADI_THIRD_PARTY}/airwin2rack/src")
+if(NOT EXISTS "${ADI_AIRWIN}/airwin_consolidated_base.h")
+    message(FATAL_ERROR
+        "third_party/airwin2rack is absent. It is pinned and fetched by:\n"
+        "    bash adi_daw/tools/fetch_external.sh --build-only")
+endif()
+set(ADI_CONSOLE_ALGORITHMS
+    Console9Channel Console9Buss ConsoleLAChannel ConsoleLABuss ConsoleMCChannel ConsoleMCBuss
+    ConsoleMDChannel ConsoleMDBuss PurestConsole3Channel PurestConsole3Buss PDChannel PDBuss
+    C5RawChannel C5RawBuss AtmosphereChannel AtmosphereBuss)
+set(adi_console_sources "${ADI_AIRWIN}/airwin_consolidated_base.cpp")
+foreach(algo IN LISTS ADI_CONSOLE_ALGORITHMS)
+    list(APPEND adi_console_sources "${ADI_AIRWIN}/autogen_airwin/${algo}.cpp"
+                                    "${ADI_AIRWIN}/autogen_airwin/${algo}Proc.cpp")
+endforeach()
+add_library(adi_airwin_console STATIC ${adi_console_sources})
+target_include_directories(adi_airwin_console SYSTEM PUBLIC "${ADI_AIRWIN}")
+target_compile_definitions(adi_airwin_console PUBLIC _USE_MATH_DEFINES)
+if(MSVC)
+    target_compile_options(adi_airwin_console PRIVATE /w /bigobj)
+else()
+    target_compile_options(adi_airwin_console PRIVATE -w)
+endif()
+target_link_libraries(adi_core PRIVATE adi_airwin_console)
 
 # ---------------------------------------------------------------------------
 # adi_tool — headless CLI. The only executable until step 5.

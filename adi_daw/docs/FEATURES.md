@@ -64,7 +64,7 @@ flagged, and it is a bug in the format, not in the plan.
 | Crossfader, DJ-style mixing | Ableton | P3 | 🔶 | needs a master-section table |
 | Channel strip (gate/comp/EQ built in) | Cubase | P2 | ✅ | internal `devices` |
 | Mixer snapshots | Cubase | P2 | ✅ | `snapshots.kind='mixer'` |
-| **Native analog group summing**: on a group, each child through a console's channel half, the sum through its buss half; 14 Airwindows console flavours; drive as gain staging | neither | P1 | — | ADR-0173: `group_summing` (schema 1.7), three ops, the toggle, dial and menu in the group header (mac) |
+| **Native analog group summing**: on a group, each child through a console's channel half, the sum through its buss half; 8 Airwindows console flavours, level-matched; drive as gain staging | neither | P1 | ✅ | Built (ADR-0174): `group_summing` (schema 1.7), `group.setSumming`, `group.setSummingFlavor`, `group.setSummingDrive`. The toggle, dial and flavour menu in the group header are mac's. EveryConsole's six systems wait for an upstream fix |
 | Per-channel delay compensation offset | both | P1 | ✅ | `mixer_strip.delay_samples`. **Plays** (ADR-0172): `mixer.setDelay`, either sign, ±1 s, as latency of the opposite sign, so delay compensation places it |
 
 ## 3. Clips, editing and comping

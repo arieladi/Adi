@@ -96,7 +96,7 @@ std::string body(const rows::Model& m) {
     const std::string head =
         "project \"#0\"\n"
         "  format 0.1\n"
-        "  schema 1.6\n"
+        "  schema 1.7\n"
         "  ppq 5765760\n"
         "  defaults 1\n";
     if (all.rfind(head, 0) == 0) return all.substr(head.size());
@@ -191,6 +191,23 @@ void testDefaultsOmitted() {
         m.strips[0].width = 0.5;
         eq(body(m), "trk Bass\n  vol -3.5\n  width 0.5\n",
            "and a changed fader inlines onto the track");
+    }
+    {
+        // ADR-0174: summing on a group, inlined like the strip, defaults omitted.
+        rows::Model m = oneTrack("Drums");
+        m.tracks[0].kind = "group";
+        rows::GroupSumming g;
+        g.trackId = 1;
+        m.summing.push_back(g);
+        const std::string off = body(m);
+        check(off.find("summing") == std::string::npos, "summing at its defaults adds nothing");
+        m.summing[0].enabled = true;
+        m.summing[0].flavor = "console.la";
+        m.summing[0].driveDb = 6.0;
+        const std::string on = body(m);
+        check(on.find("  summing\n") != std::string::npos && on.find("  summingFlavor console.la\n") != std::string::npos &&
+                  on.find("  summingDrive 6.0\n") != std::string::npos,
+              "and on, a flavour and a drive inline onto the group:\n" + on);
     }
     {
         // Bit comparison, not `!=`. This is the check that fails the moment
@@ -438,7 +455,7 @@ void testEndToEnd() {
     eq(p.text,
        "project \"#0\"\n"
        "  format 0.1\n"
-       "  schema 1.6\n"
+       "  schema 1.7\n"
        "  ppq 5765760\n"
        "  defaults 1\n"
        "trk Keys\n"
@@ -671,7 +688,7 @@ void testRemarksEndToEnd() {
     eq(p.text,
        "project \"#0\"\n"
        "  format 0.1\n"
-       "  schema 1.6\n"
+       "  schema 1.7\n"
        "  ppq 5765760\n"
        "  defaults 1\n"
        "trk Bass\n"

@@ -18,6 +18,7 @@
 #include "adi/ops.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/summing_flavors.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -225,6 +226,80 @@ void appendScalars(std::vector<OpDescriptor>& out, std::index_sequence<Is...>) {
             out.push_back(d);
         }(),
         ...);
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0174: native analog summing on a group. The row is made on first use and
+// an op that finds none reads the DDL's defaults, so "no row" and "a row of
+// defaults" are the same state and the inverse of either restores it.
+// ---------------------------------------------------------------------------
+
+bool summingOnGroup(OpContext& c, std::int64_t id, std::string& err) {
+    SQLite::Statement st(c.db, "SELECT kind FROM tracks WHERE id = ?");
+    st.bind(1, id);
+    if (!st.executeStep()) { err = "no such track"; return false; }
+    if (st.getColumn(0).getString() != "group") {
+        err = "summing is only on a group track";
+        return false;
+    }
+    return true;
+}
+
+template <typename Bind>
+bool summingSet(OpContext& c, const Payload& p, const char* col, Bind bind, std::string& err) {
+    try {
+        const auto id = p.at("id").get<std::int64_t>();
+        if (!summingOnGroup(c, id, err)) return false;
+        SQLite::Statement st(c.db, std::string("INSERT INTO group_summing(track_id, ") + col +
+                                       ") VALUES (?, ?) ON CONFLICT(track_id) DO UPDATE SET " + col +
+                                       " = excluded." + col);
+        st.bind(1, id);
+        bind(st);
+        st.exec();
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool summingInverse(OpContext& c, const Payload& p, const char* col, const char* key, FieldType t,
+                    Payload dflt, Payload& inv, std::string& err) {
+    try {
+        const auto id = p.at("id").get<std::int64_t>();
+        if (!summingOnGroup(c, id, err)) return false;
+        SQLite::Statement st(c.db, std::string("SELECT ") + col + " FROM group_summing WHERE track_id = ?");
+        st.bind(1, id);
+        inv = Payload::object();
+        inv["id"] = id;
+        inv[key] = st.executeStep() ? readValue(st.getColumn(0), t) : std::move(dflt);
+        return true;   // symmetric
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool summingEnabledApply(OpContext& c, const Payload& p, std::string& err) {
+    const bool on = p.at("enabled").get<bool>();
+    return summingSet(c, p, "enabled", [on](SQLite::Statement& st) { st.bind(2, on ? 1 : 0); }, err);
+}
+bool summingEnabledInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    return summingInverse(c, p, "enabled", "enabled", FieldType::Bool, false, inv, err);
+}
+bool summingFlavorApply(OpContext& c, const Payload& p, std::string& err) {
+    const std::string key = p.at("flavor").get<std::string>();
+    if (findSummingFlavor(key) == nullptr) { err = "no summing flavour '" + key + "'"; return false; }
+    return summingSet(c, p, "flavor", [&key](SQLite::Statement& st) { st.bind(2, key); }, err);
+}
+bool summingFlavorInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    return summingInverse(c, p, "flavor", "flavor", FieldType::Text, std::string(kDefaultSummingFlavor),
+                          inv, err);
+}
+bool summingDriveApply(OpContext& c, const Payload& p, std::string& err) {
+    const double db = p.at("db").get<double>();
+    if (!(db >= kSummingDriveMinDb && db <= kSummingDriveMaxDb)) {
+        err = "summing drive must be between -12 and +24 dB";
+        return false;
+    }
+    return summingSet(c, p, "drive_db", [db](SQLite::Statement& st) { st.bind(2, db); }, err);
+}
+bool summingDriveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    return summingInverse(c, p, "drive_db", "db", FieldType::Real, 0.0, inv, err);
 }
 
 // ---------------------------------------------------------------------------
@@ -834,6 +909,9 @@ bool transportNoop(OpContext&, const Payload&, std::string&) { return true; }
 // --- field tables ---------------------------------------------------------------
 
 constexpr Field kFProjectName[] = {{"name", FieldType::Text, true}};
+constexpr Field kFSummingEnabled[] = {{"id", FieldType::Int, true}, {"enabled", FieldType::Bool, true}};
+constexpr Field kFSummingFlavor[] = {{"id", FieldType::Int, true}, {"flavor", FieldType::Text, true}};
+constexpr Field kFSummingDrive[] = {{"id", FieldType::Int, true}, {"db", FieldType::Real, true}};
 constexpr Field kFTrackCreate[] = {{"id", FieldType::Int, true},
                                    {"kind", FieldType::Text, true},
                                    {"name", FieldType::Text, false},
@@ -1720,6 +1798,17 @@ const OpDescriptor kHandWritten[] = {
      kFMediaRelink, false, false, media::relinkApply, media::relinkInverse, ""},
     {"project.setName", "Rename the project", Scope::Edit, EngineImpact::None,
      kFProjectName, false, false, setProjectNameApply, setProjectNameInverse, ""},
+
+    // ADR-0174: native analog summing on a group. Turning it on or choosing a
+    // flavour adds or replaces nodes; the drive is a gain on nodes that exist.
+    {"group.setSumming", "Turn a group's analog summing on or off", Scope::Edit,
+     EngineImpact::GraphRebuild, kFSummingEnabled, false, false, summingEnabledApply,
+     summingEnabledInverse, ""},
+    {"group.setSummingFlavor", "Choose a group's summing console", Scope::Edit,
+     EngineImpact::GraphRebuild, kFSummingFlavor, false, false, summingFlavorApply,
+     summingFlavorInverse, ""},
+    {"group.setSummingDrive", "Set how hard a group's summing is driven", Scope::Edit,
+     EngineImpact::Snapshot, kFSummingDrive, true, false, summingDriveApply, summingDriveInverse, ""},
 
     {"track.create", "Create a track", Scope::Edit, EngineImpact::GraphRebuild,
      kFTrackCreate, false, false, trackCreateApply, trackCreateInverse, "track.delete"},

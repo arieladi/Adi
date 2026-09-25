@@ -71,6 +71,8 @@ const std::vector<MigrationStep>& migrationSteps() {
         {5, {"device_panels", "device_panel_params", "idx_panel_ord"}},
         // 1.6 (ADR-0161): who wrote each op, and its Lamport clock.
         {6, {"op_clients", "op_clocks", "idx_opclk_lamport"}},
+        // 1.7 (ADR-0174): native analog summing on a group.
+        {7, {"group_summing"}},
     };
     return steps;
 }

@@ -99,6 +99,14 @@ struct MixerStrip {
     std::optional<std::int64_t> vcaGroupId;
 };
 
+/// ADR-0174: native analog summing on a group track (schema 1.7).
+struct GroupSumming {
+    std::int64_t trackId = 0;
+    bool enabled = false;
+    std::string flavor = "console9";
+    double driveDb = 0.0;
+};
+
 struct Lane {
     std::int64_t id = 0;
     std::int64_t trackId = 0;
@@ -365,6 +373,7 @@ struct Model {
     std::vector<PluginState> pluginState;
     std::vector<DeviceRoute> deviceRoutes;
     std::vector<DevicePanel> devicePanels;
+    std::vector<GroupSumming> summing;       ///< ADR-0174
     std::vector<Remark> remarks;
     std::vector<AutomationLane> automationLanes;   ///< by id
     std::vector<AutomationData> automationData;    ///< by lane, then clip

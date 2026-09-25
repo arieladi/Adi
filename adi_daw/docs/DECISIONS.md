@@ -12005,3 +12005,102 @@ SPEC §6.9 now defines `delay_samples` rather than listing it as carried.
    three undoable ops: the toggle, the flavour, and a coalescable drive for
    a dragged dial. mac draws the toggle, the dial and the flavour menu in the
    group's header.
+
+## ADR-0174 — Native group summing is built: eight console flavours, level-matched by measurement, in schema 1.7 — `DECIDED` (2026-09-25) — **IMPLEMENTS ADR-0173 d2–d8, WITH THREE CORRECTIONS**
+
+### What is built
+
+1. **Schema 1.7** adds the table `group_summing`:
+   - `track_id` is the primary key, and refers to the track;
+   - `enabled`;
+   - `flavor TEXT`, default `console9`;
+   - `drive_db`, from −12 to +24.
+
+   It is read into `rows::Model::summing`. The text projection inlines
+   `summing`, `summingFlavor` and `summingDrive` on the group, omitting
+   defaults. SPEC §6.9 defines it. 1.6 is frozen in `docs/format/history`,
+   and check 9 proves 1.0 to 1.6 upgrade to 1.7.
+2. **Three ops:**
+   - `group.setSumming`, GraphRebuild;
+   - `group.setSummingFlavor`, GraphRebuild;
+   - `group.setSummingDrive`, Snapshot and coalescable, for a dragged dial.
+
+   Each refuses a track that is not a group, and an unknown key or a drive
+   out of range. Each makes the row on first use. The inverse restores the
+   previous value, or the default where there was no row. 74 ops are
+   registered, and OPS.md designs 168.
+3. **The engine** (`src/adi/engine/summing.*`):
+   - **`ConsoleNode`** is one half: a gain in, the Airwindows algorithm in
+     place, a gain out.
+   - **`GroupSumming`** is session-owned and synced before every build. It
+     places the halves through the chain the session already hands the
+     realiser: the buss half first in the group's chain, and a channel half
+     last in each child's chain, after its strip. Neither the realiser nor
+     the device host changed.
+   - **State:** halves are kept while their flavour stands, so an edit does
+     not reset a console's filters. A replaced half lives on in any retired
+     graph through `sourceLifetime`.
+4. **The source:** 16 algorithms compile into `adi_airwin_console`, without
+   this tree's warning flags. airwin2rack is pinned by commit in
+   `fetch_external.sh`. The fetch script gains a tag of `-`, fetched by
+   commit, for an upstream with no tag at the version needed.
+
+### Corrections to ADR-0173
+
+1. **Eight flavours, not fourteen. EveryConsole is out.**
+   - **The bug:** at the pinned commit its processing reads the console type
+     as `(int) A*11.999`. The cast binds before the multiply, so every
+     setting below 1.0 plays type 0, and no channel/buss pair can be chosen.
+     Its display code reads `(int)(A * 11.999)` correctly.
+   - **What stays:** the six keys (`every.retro` to `every.czero`) are
+     reserved until upstream fixes it. The other eight systems are 16 of the
+     17 algorithms.
+   - **Reporting it:** an upstream report is the director's to send.
+2. **No CHECK over the flavour keys.** A CHECK in 1.7 could never gain a
+   flavour, because a minor adds only whole objects (ADR-0144). The ops
+   validate the key, and a reader names an unknown key and plays none.
+3. **Unity is measured, then made up after the buss half.**
+   - **The problem:** each console carries its designer's gain staging.
+     Console9's channel pans with a sine law and trims by 0.764 before its
+     curve, and LA and MC attenuate by bit shifts. At its defaults Console9
+     played 6.46 dB down, LA 3.21 and MC 1.46.
+   - **The fix:** at first use a fresh pair processes a −40 dBFS sine at
+     1 kHz, where every curve is linear. The inverse of its level becomes the
+     buss half's make-up gain, cached per flavour.
+   - **What it preserves:** the console still sees exactly the level its
+     designer set, and only its output is matched. Turning summing on changes
+     the colour, not the level.
+   - **Frequency response is colour:** at other frequencies a console's own
+     EQ stays. Console MC, "the bright take on MCI", sits 1.4 dB lower at
+     220 Hz by design.
+
+### Evidence
+
+- **`adi_mixer_tests`:** 87 checks, 22 of them new.
+  - **The ops:** refusals; acceptance; three undos back to off, `console9`
+    and 0 dB.
+  - **Placement, for every flavour:** a buss half on the group, a channel
+    half on each child, none elsewhere.
+  - **Every flavour:** finite; not the plain sum bit for bit; within 0.5 dB
+    of it at 1 kHz (+0.08, +0.48, +0.01, +0.01, +0.06, +0.02, +0.03,
+    +0.03 dB).
+  - **Drive:** +18 dB on Console9 raises the deviation from the plain sum
+    from 0.008 to 0.099, at +0.69 dB of level.
+  - **State:** an unrelated edit keeps the same halves; a new flavour is a
+    new half; off removes them.
+  - **Named cases:** a row on a track that is not a group, and an unknown
+    flavour.
+- **`adi_textproj_store_tests`:** summing at its defaults projects nothing,
+  and on, it inlines its three attributes.
+
+The first run, before the measured unity, failed the level check at Console9
+−6.46, LA −3.21 and MC −1.46 dB. It also found EveryConsole's six systems
+identical to four decimals, which is how the bug was found.
+
+### For mac
+
+The three properties come from `rows::Model::summing`, and the flavour list
+from `adi::summingFlavors()` (key and menu name). The three ops set them.
+Draw them in the group's header: a toggle, a drive dial (−12 to +24 dB,
+coalescable), and the flavour in the dial's context menu. No track but a
+group offers them.

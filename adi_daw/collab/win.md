@@ -5,6 +5,42 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — native group summing (ADR-0173, ADR-0174); the eleven suites merged
+
+**The director's instruction:**
+- Drop the Consoles suite and build its consoles into the mixer, as summing
+  on group tracks.
+- The single-insert colours become an eleventh suite, Color (Gemini's split,
+  which the director adopted).
+
+PR #126 merged with eleven suites.
+
+**Built:**
+- **Schema 1.7:** `group_summing`. The rulings recorded against ADR-0173 are
+  no CHECK over the flavour keys and a text key.
+- **Three ops:** group only, refusing unknown keys and a drive out of range,
+  with an inverse to the default.
+- **`ConsoleNode` and `GroupSumming`,** placed through the existing chain
+  hook: the buss half first on the group, the channel half last on each
+  child. Nothing in the realiser or the device host changed.
+- **airwin2rack** is pinned by commit in `fetch_external.sh`, a new tag of
+  `-`, because its newest tag predates Console9.
+
+**Found:**
+- **EveryConsole cannot select a system** at the pinned commit:
+  `(int) A*11.999` casts first. Its six flavours are dropped, leaving eight.
+  An upstream report is the director's call.
+- **Each console carries its own gain staging.** Console9 played 6.46 dB
+  down. Unity is now measured per flavour at 1 kHz and −40 dBFS, and made up
+  after the buss half.
+
+**Checks:**
+- `adi_mixer_tests`: 87, 22 of them new.
+- `adi_textproj_store_tests`: 195.
+- The suites: 4753 checks across 48 suites.
+
+---
+
 ## 2026-09-25 — Airwindows as eleven suites (ADR-0171); mixer.setDelay (ADR-0172)
 
 **The director's rulings:**

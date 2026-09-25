@@ -126,13 +126,14 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 46> kTables{{
+    static constexpr std::array<TableCoverage, 47> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
         {"time_signature_map", Coverage::Projected, ""},
         {"tracks", Coverage::Projected, ""},
         {"mixer_strip", Coverage::Projected, "inlined on its track"},
+        {"group_summing", Coverage::Projected, "inlined on its group track (ADR-0174)"},
         {"lanes", Coverage::Projected, ""},
         {"clips", Coverage::Projected, ""},
         {"audio_clips", Coverage::Projected, "inlined on its clip"},
@@ -273,6 +274,8 @@ Tree buildTree(const rows::Model& m) {
     std::unordered_map<std::int64_t, std::size_t> trackNode;
     std::unordered_map<std::int64_t, const rows::MixerStrip*> stripOf;
     for (const auto& s : m.strips) stripOf[s.trackId] = &s;
+    std::unordered_map<std::int64_t, const rows::GroupSumming*> summingOf;
+    for (const auto& g : m.summing) summingOf[g.trackId] = &g;
 
     std::unordered_map<std::int64_t, const rows::Track*> trackById;
     for (const auto& tr : m.tracks) trackById[tr.id] = &tr;
@@ -338,6 +341,13 @@ Tree buildTree(const rows::Model& m) {
             a.num("panLaw", s.panLaw, 0);
             a.num("delay", s.delaySamples, 0);
             a.flag("phaseInvert", s.phaseInvert);
+        }
+        // ADR-0174: a group's summing, only where a row says something.
+        if (const auto it = summingOf.find(tr.id); it != summingOf.end()) {
+            const rows::GroupSumming& g = *it->second;
+            a.flag("summing", g.enabled);
+            if (g.flavor != "console9") a.text("summingFlavor", g.flavor);
+            a.real("summingDrive", g.driveDb, 0.0);
         }
     }
 

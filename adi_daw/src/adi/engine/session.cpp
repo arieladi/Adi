@@ -364,10 +364,15 @@ void Session::attach() {
     rs.maxFrames = spec_.maxFrames;
     rs.devicesFor = [this](std::int64_t trackId) {
         std::vector<Node*> nodes;
+        // ADR-0174: a summing group's buss half is first, right after its sum.
+        if (Node* buss = summing_.headFor(trackId)) nodes.push_back(buss);
         for (device::DeviceNode* n : chainFor(trackId)) nodes.push_back(n);
         // ADR-0163: the strip is the last node of every chain, after the
         // devices, so whatever the track feeds takes its output.
         if (StripNode* strip = strips_.stripFor(trackId)) nodes.push_back(strip);
+        // ADR-0174: and a child of a summing group leaves through its
+        // channel half, after the strip, on its way into the group's sum.
+        if (Node* channel = summing_.tailFor(trackId)) nodes.push_back(channel);
         return nodes;
     };
     auto* clipSource = clips();
@@ -410,6 +415,7 @@ bool Session::rebuild() {
         it = known ? std::next(it) : overridden_.erase(it);
     }
     strips_.sync(model_, &transport_, stripAutomation_);   // ADR-0163: before the graph names them
+    summing_.sync(model_);                                 // ADR-0174: likewise
     bindDeviceSources();                                   // ADR-0165: likewise
     attach();   // the spec, the sources or the placement may have changed
     ++stats_.rebuilds;
@@ -422,6 +428,7 @@ bool Session::rebuild() {
     if (auto* c = clips()) problems_.insert(problems_.end(), c->problems().begin(), c->problems().end());
     problems_.insert(problems_.end(), sessionProblems_.begin(), sessionProblems_.end());
     problems_.insert(problems_.end(), strips_.problems().begin(), strips_.problems().end());
+    problems_.insert(problems_.end(), summing_.problems().begin(), summing_.problems().end());
     // The program's own findings only when there is automation to find them in:
     // a project with a tempo ramp and no lanes has no automation problem.
     if (stripAutomation_ && stripAutomation_->program && !model_.automationLanes.empty()) {
