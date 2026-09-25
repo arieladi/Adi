@@ -188,6 +188,7 @@ subject, say so in your log instead of writing it twice.
 | 0172 | win | `win/scope-agent-parity` | mixer.setDelay: a track delay, either sign, played as latency (director) | used |
 | 0173 | win | `win/scope-agent-parity` | the consoles leave the plug-ins: eleven suites with Color; native group summing (director) | used |
 | 0174 | win | `win/group-summing` | native group summing built: eight console flavours, measured unity, schema 1.7 | used |
+| 0175 | win | `win/scope-taps` | the scope's engine side: taps stamped when heard, true peak, the compare | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

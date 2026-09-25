@@ -202,12 +202,14 @@ add_library(adi_core STATIC
     src/adi/dsp/limiter.cpp
     src/adi/dsp/rmsc.cpp
     src/adi/dsp/auto_gain.cpp
+    src/adi/dsp/true_peak.cpp
     src/adi/engine/latency.cpp
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
     src/adi/engine/mixer.cpp
     src/adi/engine/summing.cpp
+    src/adi/engine/scope.cpp
     src/adi/summing_flavors.cpp
     src/adi/engine/param_automation.cpp
     src/adi/engine/play_quantize.cpp

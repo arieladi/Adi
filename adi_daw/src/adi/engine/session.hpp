@@ -45,6 +45,7 @@
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/engine/scope.hpp"
 #include "adi/engine/summing.hpp"
 #include "adi/engine/param_automation.hpp"
 #include "adi/engine/process.hpp"
@@ -56,6 +57,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -193,6 +196,14 @@ public:
     /// ADR-0174: the group summing this graph plays. Message thread.
     [[nodiscard]] const GroupSumming& summing() const noexcept { return summing_; }
 
+    /// ADR-0175: the scope's tap on a track's output -- its strip's, after the
+    /// fader -- holding `seconds` of audio. Message thread. A second call
+    /// returns the same tap. Taps live as long as the session, so the audio
+    /// thread can never write into a freed one; closing one only detaches it.
+    /// Null for a track with no strip in the graph.
+    [[nodiscard]] std::shared_ptr<const ScopeTap> openScope(std::int64_t trackId, double seconds = 10.0);
+    void closeScope(std::int64_t trackId);
+
     // Driver thread only, commands between callbacks; see transport.hpp.
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
     // Message/offline driver inspection. Pointer valid until the next rebuild.
@@ -243,6 +254,9 @@ private:
     // the graphs so it outlives every graph that names one of its strips.
     MixerStrips strips_;
     GroupSumming summing_;   ///< ADR-0174: native analog group summing
+    std::map<std::int64_t, std::shared_ptr<ScopeTap>> taps_;   ///< ADR-0175, every tap ever opened
+    std::set<std::int64_t> openTaps_;                         ///< the ones attached
+    void attachTaps();
     // ADR-0164: this rebuild's program, bound to strips. Kept here as well as
     // by every strip and graph that plays it.
     std::shared_ptr<StripAutomation> stripAutomation_;

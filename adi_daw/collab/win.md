@@ -5,6 +5,40 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — the scope's engine side (ADR-0175)
+
+**The director's order:** after group summing, the scope's audio taps.
+
+**Built:**
+- **`ScopeTap`:** a wait-free single-writer ring with a stamp per frame, and
+  a seqlock-ordered read that detects a lap even mid-block.
+- **The tap point:** the strip, after its fader. `Session::openScope` and
+  `closeScope`; taps live as long as the session.
+- **Stamps are when a frame is heard:** transport position minus (the strip's
+  arrival + its reported latency). A +100 track delay stamps 100 later, so
+  matching stamps compares tracks as heard.
+- **`dsp::TruePeakMeter`:** BS.1770-4 Annex 2's method with our own
+  normalised interpolator.
+- **`correlation` and `bestOffset`** for the panel's readouts and its
+  one-click `mixer.setDelay`.
+
+**Found on the way:**
+- **My first ring checked the published count after copying,** which misses
+  a block being written. It now uses a seqlock order.
+- **4× oversampling reads a crest between grid points low,** −0.17 dB at
+  fs/4, inherent to the method. The meter is held to what I take to be EBU
+  Tech 3341's tolerance, +0.2/−0.4 dB, over the audible band; the figure is
+  from memory and should be checked.
+
+**Checks:**
+- `adi_mixer_tests`: 104, 17 of them new. A threaded writer and reader gave
+  43,000 reads with none torn; in a session, delayed A is heard at 1100 and
+  B at 1000.
+- `adi_dsp_tests`: 141.
+- The suites: 4781 checks across 48 suites.
+
+---
+
 ## 2026-09-25 — native group summing (ADR-0173, ADR-0174); the eleven suites merged
 
 **The director's instruction:**
