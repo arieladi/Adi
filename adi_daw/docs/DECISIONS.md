@@ -12104,3 +12104,98 @@ from `adi::summingFlavors()` (key and menu name). The three ops set them.
 Draw them in the group's header: a toggle, a drive dial (−12 to +24 dB,
 coalescable), and the flavour in the dial's context menu. No track but a
 group offers them.
+
+## ADR-0175 — The scope's engine side: taps stamped with when each frame is heard, true peak, and the compare — `DECIDED` (2026-09-25) — **IMPLEMENTS ADR-0167 d2, d3, d5, d7; THE PANEL IS MAC'S**
+
+**Director's instruction:** after group summing, the scope's audio taps.
+ADR-0167 was approved as a native panel with a one-click `mixer.setDelay`
+fix.
+
+### Decisions
+
+1. **The tap is on the strip, after the fader.** `StripNode` hands its output
+   to a `ScopeTap` when one is attached; that is the level the track is heard
+   at. A tap nobody watches costs one relaxed atomic load per block. This is
+   the second audio-to-UI path, the one ADR-0167 d7 added to ADR-0050 d4.
+2. **The ring is wait-free for its one writer, and safe for any reader.**
+   - **Stored per frame:** both channels, plus the frame's stamp.
+   - **Atomic throughout:** every field is a relaxed atomic.
+   - **The write order is a seqlock's:**
+     1. the writer announces how far it will write;
+     2. it fences, then writes;
+     3. it publishes with release.
+   - **The reader** copies the newest frames and then checks the
+     announcement. If the writer lapped the copy, even mid-block, the read
+     says so and the caller tries again.
+   - **No allocation:** only `open` allocates, on the message thread.
+3. **A stamp is when the frame is heard, not only when it was produced.** A
+   tap's latency is set after every rebuild: the strip's input arrival in the
+   graph plus the strip's reported latency. Each frame is stamped with its
+   transport position minus that latency.
+   - **A plug-in's latency:** the stamp is the position the audio represents.
+   - **A track delay** (ADR-0172), reported as −D, moves the stamps D later,
+     which is when that track is heard.
+
+   So frames of two taps with equal stamps are heard at the same instant,
+   and the panel compares tracks as heard by matching stamps. That is ADR-0167
+   d3, with nothing to correct by hand. While parked, the stamp holds still.
+4. **Taps live as long as the session.** `Session::openScope(track, seconds)`
+   returns the track's tap, the same one on a second call. `closeScope`
+   detaches it but never frees it, so the audio thread can never write into
+   freed memory.
+5. **True peak** (`dsp::TruePeakMeter`) follows BS.1770-4 Annex 2's method.
+   - **Oversampling:** 4× at 44.1 and 48 kHz, 2× at 88.2 and 96, none from
+     176.4.
+   - **The filter is ours:** a Kaiser-windowed sinc, 16 taps a phase, each
+     phase at unity DC gain. The Annex's filter is an example, not a
+     requirement.
+   - **Never below the sample peak:** the original samples count too.
+   - **Resetting:** `resetPeak()` releases the hold without disturbing the
+     filter.
+   - **Tolerance:** the method reads low when a crest falls between
+     oversampled points, cos(π/16), or −0.17 dB, at fs/4. That is why EBU
+     Tech 3341 (2023, §2.6 and Table 1, signals 15 to 23) allows a true-peak
+     meter +0.2/−0.4 dB, the error of the upsampling filter included. The
+     tests hold the meter to it across the audible band.
+6. **The compare is pure functions for the UI thread** (ADR-0167 d2):
+   - **`correlation(a, b)`:** from −1 to +1, and 0 when either side is silent.
+   - **`bestOffset(a, b, maxLag)`:** the lag in ±maxLag at which b best
+     matches a, positive when b is late, and its correlation there. A
+     polarity flip counts as a different finding, not a match.
+
+   The one-click fix proposes `mixer.setDelay` on B, of minus that lag, in
+   project samples.
+
+### Evidence
+
+- **`adi_mixer_tests`:** 104 checks, 17 of them new.
+  - **The ring:** the newest frames and their first stamp; more than the ring
+    holds refused; lapping keeps the newest 480 of 1000; a mono strip's one
+    channel on both sides; a parked stamp that does not move.
+  - **Full speed:** a writer thread against a reader thread for 300 ms gave
+    42,986 consistent reads while 5.5 M frames were written, with none torn.
+  - **The compare:** correlation +1 against itself and −1 against its flipped
+    copy; a copy 37 samples late found at 37.
+  - **In a session:** two tracks stepping at frame 1000, A delayed +100.
+    A's tap knows its latency is −100 and B's is 0, and the steps are heard
+    at 1100 and 1000. A closed tap is written no more.
+- **`adi_dsp_tests`:** 141 checks.
+  - **The oversampling factor** at 44.1, 48, 96 and 192 kHz.
+  - **fs/4 at 45°:** the samples sit 3 dB under the crest, and the true peak
+    reads the crest within +0.2/−0.4 dB.
+  - **Every sine to 20 kHz** at 48 and 96 kHz, at four phases: within
+    −0.13 to 0.00 dB, and never under the sample peak.
+  - **At 192 kHz** the true peak is exactly the sample peak.
+  - **No allocation.**
+
+### For mac
+
+The panel:
+- **Sources:** `Session::openScope`, on any track or the master.
+- **Reading:** `ScopeTap::read`, with windows from the tempo map (bars and
+  beats) aligned by stamp.
+- **Views:** overlay, stacked, difference and sum, drawn from two taps'
+  windows at matching stamps.
+- **Readouts:** `correlation` and `bestOffset` over the visible window.
+- **True peak:** `TruePeakMeter` over what is shown.
+- **The fix:** one click proposes `mixer.setDelay`.

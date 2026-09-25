@@ -9,6 +9,7 @@
 #include "adi/blob.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/engine/scope.hpp"
 #include "adi/engine/summing.hpp"
 #include "adi/history.hpp"
 #include "adi/summing_flavors.hpp"
@@ -18,6 +19,9 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -545,6 +549,142 @@ void testGroupSumming() {
     }
 }
 
+void testScopeTaps() {
+    section("ADR-0175 -- the scope's taps: a wait-free ring, stamped with when each frame is heard");
+
+    // --- the ring --------------------------------------------------------------
+    {
+        ScopeTap tap(48000.0, 0.01);   // 480 frames
+        check(tap.capacity() == 480, "0.01 s at 48 kHz is 480 frames");
+        std::vector<float> l(100), r(100);
+        for (int b = 0; b < 3; ++b) {
+            for (int i = 0; i < 100; ++i) {
+                l[static_cast<std::size_t>(i)] = static_cast<float>(b * 100 + i);
+                r[static_cast<std::size_t>(i)] = -l[static_cast<std::size_t>(i)];
+            }
+            tap.write(l.data(), r.data(), 100, 1000 + b * 100, true);
+        }
+        std::vector<float> ol(250), orr(250);
+        std::int64_t first = 0;
+        check(tap.read(ol, orr, first), "250 of the 300 written read back");
+        check(ol[0] == 50.0f && ol[249] == 299.0f && orr[249] == -299.0f && first == 1050,
+              "the newest 250, both channels, and the stamp of the first: 1050");
+        std::vector<float> big(481), big2(481);
+        check(!tap.read(big, big2, first), "more than the ring holds is refused");
+
+        for (int b = 3; b < 10; ++b) {
+            for (int i = 0; i < 100; ++i) l[static_cast<std::size_t>(i)] = static_cast<float>(b * 100 + i);
+            tap.write(l.data(), nullptr, 100, 1000 + b * 100, true);
+        }
+        std::vector<float> all(480), all2(480);
+        check(tap.read(all, all2, first) && all[0] == 520.0f && all[479] == 999.0f && first == 1520,
+              "lapped: the newest 480 of 1000, oldest overwritten");
+        check(all2[479] == 999.0f, "a mono strip's one channel is both sides");
+
+        tap.write(l.data(), nullptr, 100, 5000, false);
+        std::vector<float> p1(100), p2(100);
+        check(tap.read(p1, p2, first) && first == 5000, "parked, the stamp does not move");
+    }
+
+    // --- one writer, one reader, full speed --------------------------------------
+    {
+        ScopeTap tap(48000.0, 0.02);
+        std::atomic<bool> stop{false};
+        std::atomic<long> reads{0}, torn{0};
+        std::thread reader([&] {
+            std::vector<float> a(256), b(256);
+            std::int64_t first = 0;
+            while (!stop.load()) {
+                if (!tap.read(a, b, first)) continue;
+                ++reads;
+                // The writer stamps the frame index and writes it, wrapped at
+                // 2^16, as the sample: a whole window is its stamp counting up,
+                // frame by frame. The wrap is short so every run crosses it
+                // many times; comparing neighbouring samples instead failed
+                // once per wrap, on runners fast enough to reach the old one.
+                bool ok = true;
+                for (std::size_t i = 0; i < a.size(); ++i)
+                    ok = ok && a[i] == static_cast<float>((first + static_cast<std::int64_t>(i)) % 65536);
+                if (!ok) ++torn;
+            }
+        });
+        std::vector<float> block(64);
+        std::int64_t frame = 0;
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+        while (std::chrono::steady_clock::now() < until) {
+            for (std::size_t i = 0; i < block.size(); ++i) block[i] = static_cast<float>((frame + static_cast<std::int64_t>(i)) % 65536);
+            tap.write(block.data(), block.data(), 64, frame, true);
+            frame += 64;
+        }
+        stop.store(true);
+        reader.join();
+        std::printf("        %ld consistent reads while %lld frames were written; %ld torn\n", reads.load(),
+                    static_cast<long long>(frame), torn.load());
+        check(reads.load() > 0 && torn.load() == 0,
+              "every read the ring accepts is whole: never a window the writer lapped mid-copy");
+    }
+
+    // --- the compare ---------------------------------------------------------------
+    {
+        std::vector<float> a(4800), b(4800), inv(4800), late(4800);
+        unsigned seed = 42u;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            a[i] = static_cast<float>(static_cast<double>(seed >> 8) / 16777216.0 - 0.5);
+            b[i] = a[i];
+            inv[i] = -a[i];
+        }
+        for (std::size_t i = 0; i < late.size(); ++i) late[i] = i >= 37 ? a[i - 37] : 0.0f;
+        check(near(correlation(a, b), 1.0, 1e-12), "a signal with itself: correlation +1");
+        check(near(correlation(a, inv), -1.0, 1e-12), "with its polarity flipped: -1");
+        const Offset o = bestOffset(a, late, 960);
+        check(o.samples == 37 && o.correlation > 0.99, "a copy 37 samples late is found 37 samples late");
+        const Offset f = bestOffset(a, inv, 960);
+        check(f.samples != 0 || f.correlation < 0.0, "a flipped copy is not a match at zero lag");
+    }
+
+    // --- in the session: two tracks compared as heard -------------------------------
+    {
+        Mix m("scope-heard");
+        StepNode a(0.5f, 1000), b(0.25f, 1000);
+        m.track(1, "audio", "A");
+        m.track(2, "audio", "B");
+        m.track(9, "master", "Master");
+        m.extra[1] = &a;
+        m.extra[2] = &b;
+        m.set("mixer.setDelay", 1, "samples", 100);
+        m.load();
+        const auto ta = m.session.openScope(1, 1.0);
+        const auto tb = m.session.openScope(2, 1.0);
+        check(ta != nullptr && tb != nullptr && m.session.openScope(1) == ta, "a tap per track, the same on a second call");
+        check(m.session.openScope(77) == nullptr, "no tap for a track the graph does not have");
+        check(ta->latency() == -100 && tb->latency() == 0,
+              "A's tap knows it is heard 100 samples late (the delay as -100 latency); B's, on time");
+        m.session.transport().play();
+        for (int k = 0; k < 8; ++k) m.render(512);
+        auto stepStamp = [](const ScopeTap& t) {
+            // Everything written so far: a session's first block after a
+            // publish may go to the graph before the tap is attached.
+            const auto n = static_cast<std::size_t>(std::min<std::int64_t>(t.written(), t.capacity()));
+            std::vector<float> x(n), y(n);
+            std::int64_t first = 0;
+            if (!t.read(x, y, first)) return std::int64_t{-1};
+            for (std::size_t i = 0; i < x.size(); ++i)
+                if (x[i] > 0.1f) return first + static_cast<std::int64_t>(i);
+            return std::int64_t{-1};
+        };
+        const std::int64_t sa = stepStamp(*ta), sb = stepStamp(*tb);
+        std::printf("        A's step is heard at %lld, B's at %lld\n", static_cast<long long>(sa),
+                    static_cast<long long>(sb));
+        check(sb == 1000 && sa == 1100,
+              "B's step is heard at 1000 and A's, delayed, at 1100: matching stamps is matching what is heard");
+        m.session.closeScope(1);
+        const std::int64_t before = ta->written();
+        m.render(512);
+        check(ta->written() == before && tb->written() > before - 1, "a closed tap is written no more; the open one is");
+    }
+}
+
 void testSolo() {
     section("ADR-0163 d4 -- solo: what feeds a soloed track and what it feeds stay audible");
     Mix m("solo");
@@ -729,6 +869,7 @@ int main() {
         testOverride();
         testTrackDelay();
         testGroupSumming();
+        testScopeTaps();
     } catch (const std::exception& e) {
         check(false, std::string("exception: ") + e.what());
     }

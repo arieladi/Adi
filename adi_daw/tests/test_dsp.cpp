@@ -21,6 +21,7 @@
 #include "adi/dsp/biquad.hpp"
 #include "adi/dsp/limiter.hpp"
 #include "adi/dsp/rmsc.hpp"
+#include "adi/dsp/true_peak.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -806,6 +807,96 @@ void testAutoGainAllocatesNothing() {
 }
 
 // ===========================================================================
+// True peak (ADR-0167 d5, ADR-0175)
+// ===========================================================================
+
+/// The true peak of 0.5 s of a stereo sine at `hz` and `phase`, amplitude 0.5.
+double truePeakOfSine(TruePeakMeter& m, double fs, double hz, double phase, double* samplePeak = nullptr) {
+    const int n = static_cast<int>(fs / 2.0);
+    std::vector<float> x(static_cast<std::size_t>(n));
+    double sp = 0.0;
+    for (int i = 0; i < n; ++i) {
+        x[static_cast<std::size_t>(i)] = static_cast<float>(0.5 * std::sin(2.0 * kPi * hz * i / fs + phase));
+        sp = std::fmax(sp, std::fabs(static_cast<double>(x[static_cast<std::size_t>(i)])));
+    }
+    m.prepare(fs);
+    // Steady state: a sine switched on at sample 0 really does ring past its
+    // crest at the onset, and that is not what is being measured here.
+    const float* ch[2] = {x.data(), x.data()};
+    for (int s = 0; s < n; s += 512) {
+        if (s == 2048) m.resetPeak();
+        m.process(ch, 2, std::min(512, n - s));
+        ch[0] += 512;
+        ch[1] += 512;
+    }
+    if (samplePeak != nullptr) *samplePeak = sp;
+    return m.peak();
+}
+
+void testTruePeakFindsTheCrestBetweenSamples() {
+    section("ADR-0175 -- true peak finds the crest the samples miss (BS.1770-4 Annex 2's method)");
+
+    TruePeakMeter m;
+    m.prepare(44100.0);
+    check(m.oversampling() == 4, "44.1 kHz: 4x");
+    m.prepare(48000.0);
+    check(m.oversampling() == 4, "48 kHz: 4x");
+    m.prepare(96000.0);
+    check(m.oversampling() == 2, "96 kHz: 2x");
+    m.prepare(192000.0);
+    check(m.oversampling() == 1, "192 kHz: none, already past 176.4 kHz");
+
+    // The classic case: a quarter of the rate, sampled 45 degrees off its crest.
+    double sp = 0.0;
+    const double tp = truePeakOfSine(m, 48000.0, 12000.0, kPi / 4.0, &sp);
+    near(20.0 * std::log10(sp), -9.03, 0.02, "fs/4 at 45 degrees: the samples peak 3 dB under the crest");
+    // Oversampling 4x leaves a grid: a crest between two of its points reads
+    // low, by cos(pi / 16) = -0.17 dB at fs/4. That is the Annex's method, and
+    // why EBU Tech 3341 (2023, section 2.6 and Table 1, signals 15 to 23) gives
+    // a true-peak meter +0.2/-0.4 dB, the upsampling filter's error included.
+    const double tpDb = 20.0 * std::log10(tp);
+    check(tpDb > -6.42 && tpDb < -5.82, "and the true peak is the crest, -6.02 dBFS, within EBU Tech 3341's "
+                                        "+0.2/-0.4 dB: " + std::to_string(tpDb));
+
+    // Every frequency in the audible band, to 20 kHz, at four phases: within
+    // EBU Tech 3341's +0.2/-0.4 dB of the crest, and never under the sample
+    // peak. (38.4 kHz at 96 kHz reads 0.44 dB low; nobody hears it.)
+    double worstLow = 0.0, worstHigh = 0.0;
+    bool neverUnder = true;
+    for (double fs : {48000.0, 96000.0}) {
+        for (double frac : {0.002, 0.02, 0.1, 0.2, 0.3, 0.35, 0.4}) {
+            if (frac * fs > 20000.0) continue;
+            for (double phase : {0.0, 0.3, 0.77, 1.3}) {
+                double s = 0.0;
+                const double p = truePeakOfSine(m, fs, frac * fs, phase, &s);
+                const double err = 20.0 * std::log10(p / 0.5);
+                worstLow = std::fmin(worstLow, err);
+                worstHigh = std::fmax(worstHigh, err);
+                neverUnder = neverUnder && p >= s;
+            }
+        }
+    }
+    std::printf("        true-peak error, to 20 kHz at 48 and 96 kHz: %+.3f to %+.3f dB\n", worstLow, worstHigh);
+    check(worstLow > -0.4 && worstHigh < 0.2, "every sine to 20 kHz reads within +0.2/-0.4 dB of its crest");
+    check(neverUnder, "and never under its sample peak");
+
+    // Past 176.4 kHz the samples are dense enough: true peak is sample peak.
+    const double tp192 = truePeakOfSine(m, 192000.0, 1000.0, 0.3, &sp);
+    check(tp192 == sp, "at 192 kHz the true peak is the sample peak, exactly");
+
+    m.prepare(48000.0);
+    std::vector<float> a(256, 0.25f);
+    const float* ch[2] = {a.data(), a.data()};
+    g_allocs.store(0);
+    g_counting.store(true);
+    for (int i = 0; i < 50; ++i) m.process(ch, 2, 256);
+    g_counting.store(false);
+    check(g_allocs.load() == 0, "fifty blocks, no allocation");
+    m.reset();
+    check(m.peak() == 0.0, "reset clears the held peak");
+}
+
+// ===========================================================================
 // The Pd patches, checked structurally (they are unrun: no Pd on this machine)
 // ===========================================================================
 
@@ -1065,6 +1156,7 @@ int main() {
     testAutoGainHoldsThroughSilence();
     testAutoGainLimitsAndSwitchesCleanly();
     testAutoGainAllocatesNothing();
+    testTruePeakFindsTheCrestBetweenSamples();
     testTheLimiterPatchIsWiredAsDesigned();
     testTheEqPatchTakesItsCoefficientsFromTheHost();
     testTheRmscPatchClampsAndMultiplies();

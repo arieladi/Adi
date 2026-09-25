@@ -422,6 +422,7 @@ bool Session::rebuild() {
     const bool ok = devices_.rebuildNow();
     if (!ok) error_ = devices_.lastRebuildError();
     else live_ = true;
+    attachTaps();   // ADR-0175: the new graph's latencies
 
     problems_ = model_.problems;
     if (midi_) problems_.insert(problems_.end(), midi_->problems().begin(), midi_->problems().end());
@@ -531,6 +532,42 @@ bool Session::refresh(const Store& store) {
 }
 
 void Session::setSourcesFor(SourceFn fn) { sources_ = std::move(fn); }
+
+// ---------------------------------------------------------------------------
+// The scope's taps (ADR-0175)
+// ---------------------------------------------------------------------------
+
+std::shared_ptr<const ScopeTap> Session::openScope(std::int64_t trackId, double seconds) {
+    if (strips_.stripFor(trackId) == nullptr) return nullptr;
+    auto& tap = taps_[trackId];
+    if (!tap) tap = std::make_shared<ScopeTap>(spec_.sampleRate, seconds);
+    openTaps_.insert(trackId);
+    attachTaps();
+    return tap;
+}
+
+void Session::closeScope(std::int64_t trackId) {
+    openTaps_.erase(trackId);
+    if (StripNode* strip = strips_.stripFor(trackId)) strip->setTap(nullptr);
+}
+
+void Session::attachTaps() {
+    Graph* g = graph_.currentGraph();
+    for (const std::int64_t id : openTaps_) {
+        StripNode* strip = strips_.stripFor(id);
+        const auto tap = taps_.find(id);
+        if (strip == nullptr || tap == taps_.end()) continue;
+        // Heard, not merely produced: the strip's input arrival plus its own
+        // reported latency, which for a track delay is negative (ADR-0172).
+        std::int32_t latency = strip->latencySamples();
+        if (g != nullptr) {
+            const NodeId n = g->find(*strip);
+            if (n != kInvalidNode) latency += g->arrivalOf(n);
+        }
+        tap->second->setLatency(latency);
+        strip->setTap(tap->second.get());
+    }
+}
 
 void Session::bindDeviceSources() {
     deviceSourceProblems_.clear();

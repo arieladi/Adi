@@ -132,6 +132,18 @@ void StripNode::retarget(const Gains& t) noexcept {
 }
 
 void StripNode::process(const NodeIo& io) noexcept {
+    processGains(io);
+    // ADR-0175: a watched strip hands its output to the scope, stamped with
+    // the timeline position it is heard at. One relaxed load when unwatched.
+    if (ScopeTap* tap = tap_.load(std::memory_order_acquire); tap != nullptr && io.channels > 0) {
+        const bool playing = transport_ != nullptr && transport_->playing();
+        const std::int64_t at = transport_ != nullptr ? transport_->sampleAt(playing ? io.blockOffset : 0) : 0;
+        tap->write(io.out[0] + io.blockOffset, io.channels > 1 ? io.out[1] + io.blockOffset : nullptr, io.frames,
+                   at - tap->latency(), playing);
+    }
+}
+
+void StripNode::processGains(const NodeIo& io) noexcept {
     const StripLanes* lanes = lanes_.load(std::memory_order_acquire);
     const bool moving = lanes != nullptr && transport_ != nullptr &&
                         (lanes->volume != nullptr || lanes->pan != nullptr || lanes->mute != nullptr);
