@@ -12513,3 +12513,23 @@ because ADR-0103 and ADR-0117 already set its direction.
    - **Live's *Retune Set On Loading*,** which is a setting or an op, not
      format.
    - **How the agent names a microtonal note** (ADR-0103's other open item).
+
+6. **Not taken: stub tables for the other five gaps.** The same review
+   proposed writing all six gaps into the schema at once, as empty stubs.
+   The director kept the five on the backlog, for these reasons:
+   - **A shipped table never changes** (ADR-0144 d3). A stub written before
+     its feature is designed freezes a guess.
+   - **None of the five is P0 or P1** (FEATURES §12), so the schema ships
+     without them.
+   - **Every table costs something even when empty:** an op to write it,
+     text-projection coverage and a frozen history copy.
+   - **Specific errors in the stubs as proposed:**
+     - `engraving_data` crosses ADR-0103, which keeps notation out beyond
+       not destroying it;
+     - `variaudio_segments` would put Steinberg's feature name into the
+       format for good (`OPEN_SOURCE_POLICY.md` §5);
+     - `chord_events` stored both a chord's quality and its intervals, so
+       the same fact twice.
+   - **Integer CBOR keys came back with it.** ADR-0025 stands: keys are short
+     strings, because the CBOR library cannot read or write integer keys and
+     one definition serves the agent's schemas.
