@@ -27,6 +27,8 @@ Checks, in order:
      text, and carries a parameter only on a device (ADR-0131).
   5j. A history snapshot names a real op (or the root) on a real branch, has
      a name, and does not collide with the mixer `snapshots` table
+  5k. A tuning's degree 0 is the unison, and a key's degrees need a key tuning
+     that names a real tuning (ADR-0178)
      (ADR-0128, ADR-0140).
   6. The tick base really has the arithmetic properties SPEC 4.2 claims,
      because a specification should not assert what it can check.
@@ -48,7 +50,7 @@ import sqlite3
 import sys
 
 SPEC_APPLICATION_ID = 1094994225  # 0x41444931 == 'ADI1'
-SPEC_USER_VERSION = 1007   # schema 1.7 (group summing, ADR-0174); SPEC §3.1 and the DDL say the same
+SPEC_USER_VERSION = 1008   # schema 1.8 (tuning systems, ADR-0178); SPEC §3.1 and the DDL say the same
 ADI_PPQ = 5765760  # SPEC 4.2
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -502,6 +504,54 @@ def main() -> int:
         ok("the mixer `snapshots` table is unchanged, as a 1.2 reader expects (ADR-0140)")
     else:
         fail(f"`snapshots` lost its 1.2 shape: {cols}")
+
+    # --- 5k. ADR-0178: tuning systems -----------------------------------------
+    # A key over a tuning: Rast on C in 24-TET. What one row can hold, the DDL
+    # holds; what spans rows is the op's to check, when the op exists.
+    print("[5k] tuning systems (ADR-0178)")
+    try:
+        db.execute("INSERT INTO tuning_systems(id, name, source) VALUES (940, '24-TET', 'edo')")
+        db.executemany("INSERT INTO tuning_degrees(tuning_id, degree, cents) VALUES (940, ?, ?)",
+                       [(d, d * 50.0) for d in range(24)])
+        db.execute("UPDATE tuning_degrees SET name = 'E half-flat' WHERE tuning_id = 940 AND degree = 7")
+        db.execute("INSERT INTO key_map(id, pos_ticks, root) VALUES (940, 0, 0)")
+        db.execute("INSERT INTO key_map(id, pos_ticks, root) VALUES (941, 480, 2)")  # untuned
+        db.execute("INSERT INTO key_map_tunings(key_map_id, tuning_id) VALUES (940, 940)")
+        db.executemany("INSERT INTO key_map_degrees(key_map_id, degree) VALUES (940, ?)",
+                       [(d,) for d in (0, 4, 7, 10, 14, 18, 21)])
+        ok("Rast on C in 24-TET: a tuning, its 24 degrees, a key over it with seven members")
+    except sqlite3.Error as exc:
+        fail(f"a valid tuning was refused: {exc}")
+    for label, sql in (
+        ("a source that is neither edo nor scala",
+         "INSERT INTO tuning_systems(id, name, source) VALUES (941, 'x', 'midi')"),
+        ("a period of zero cents",
+         "INSERT INTO tuning_systems(id, name, source, period_cents) VALUES (942, 'x', 'edo', 0.0)"),
+        ("a degree 0 that is not the unison",
+         "INSERT INTO tuning_systems(id, name, source) VALUES (943, 'x', 'scala')"),
+        ("negative cents",
+         "INSERT INTO tuning_degrees(tuning_id, degree, cents) VALUES (940, 30, -1.0)"),
+        ("a key member without a key tuning",
+         "INSERT INTO key_map_degrees(key_map_id, degree) VALUES (999, 0)"),
+        ("a key tuning naming no tuning",
+         "INSERT INTO key_map_tunings(key_map_id, tuning_id) VALUES (941, 999)"),
+    ):
+        try:
+            db.execute(sql)
+            if label == "a degree 0 that is not the unison":
+                db.execute("INSERT INTO tuning_degrees(tuning_id, degree, cents) VALUES (943, 0, 10.0)")
+            fail(f"the tuning tables accepted {label}")
+        except sqlite3.IntegrityError:
+            ok(f"the tuning tables refuse {label}")
+    db.execute("DELETE FROM key_map WHERE id = 940")
+    left = db.execute("SELECT (SELECT COUNT(*) FROM key_map_tunings WHERE key_map_id = 940)"
+                      " + (SELECT COUNT(*) FROM key_map_degrees WHERE key_map_id = 940)").fetchone()[0]
+    if left == 0:
+        ok("deleting the key takes its tuning reference and members with it; the tuning stays")
+    else:
+        fail(f"deleting a key left {left} tuning rows behind")
+    if db.execute("SELECT COUNT(*) FROM tuning_degrees WHERE tuning_id = 940").fetchone()[0] != 24:
+        fail("deleting a key touched its tuning's degrees")
 
     # --- 6. the tick base actually has the properties SPEC 4.2 claims --------
     # These are load-bearing claims in a specification, so they get checked

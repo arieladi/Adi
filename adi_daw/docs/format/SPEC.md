@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1007;          -- schema 1.7
+PRAGMA user_version   = 1008;          -- schema 1.8
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -647,6 +647,34 @@ track's devices, and whatever the track feeds takes the strip's output
     on changes the colour, not the level.
   - **Refused rows:** a row on a track that is not a group, or with a key the
     reader does not know, is reported and not played.
+
+### 6.10 Keys and tuning systems (schema 1.8)
+
+`key_map` is the key over time: a root pitch class and a scale, `scale_mask`,
+whose twelve bits are the twelve 12-TET pitch classes counted from the root.
+
+Since 1.8 (ADR-0103, ADR-0117, ADR-0178), a key may be defined over a
+**tuning system** instead:
+- **`tuning_systems`:** an equal division (`edo`) or a Scala scale
+  (`scala`), and `period_cents`, the interval at which its degrees repeat.
+- **`tuning_degrees`:** the degrees of one period. Degree 0 is the unison, at
+  0 cents; the others rise, each under the period, each with an optional
+  name.
+- **`key_map_tunings`:** a key's tuning. A key without a row is 12-TET.
+- **`key_map_degrees`:** a tuned key's members, counted from its root.
+
+The rules:
+- **Degree 0 sounds the key's root** as 12-TET tunes that pitch class.
+- **A key with a tuning uses its degrees.** A reader that knows tunings
+  ignores its `scale_mask`; a 1.7 reader sees only the mask.
+- **Notes are unchanged:** a MIDI key and `tuning_cents` (§6.3.1). The
+  tuning decides which pitches an editor offers; a note on one carries its
+  offset.
+- **A reader MUST report, and not use,** a tuning whose cents do not rise
+  with the degree or do not stay under the period, and a key degree its
+  tuning lacks.
+- **No op writes these tables yet.** They arrive with scale-aware editing,
+  together with `key_map`'s own ops (ADR-0178 d4).
 
 ---
 
