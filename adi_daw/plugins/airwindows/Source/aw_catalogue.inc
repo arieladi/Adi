@@ -49,35 +49,6 @@
 #include "autogen_airwin/SingleEndedTriode.h"
 #include "autogen_airwin/TransDesk.h"
 #include "autogen_airwin/TubeDesk.h"
-#include "autogen_airwin/Console9Buss.h"
-#include "autogen_airwin/Console9Channel.h"
-#include "autogen_airwin/ConsoleLABuss.h"
-#include "autogen_airwin/ConsoleLAChannel.h"
-#include "autogen_airwin/ConsoleMCBuss.h"
-#include "autogen_airwin/ConsoleMCChannel.h"
-#include "autogen_airwin/ConsoleMDBuss.h"
-#include "autogen_airwin/ConsoleMDChannel.h"
-#include "autogen_airwin/PurestConsole3Buss.h"
-#include "autogen_airwin/PurestConsole3Channel.h"
-#include "autogen_airwin/PDBuss.h"
-#include "autogen_airwin/PDChannel.h"
-#include "autogen_airwin/C5RawBuss.h"
-#include "autogen_airwin/C5RawChannel.h"
-#include "autogen_airwin/AtmosphereBuss.h"
-#include "autogen_airwin/AtmosphereChannel.h"
-#include "autogen_airwin/EveryConsole.h"
-#include "autogen_airwin/ChannelX.h"
-#include "autogen_airwin/WoodenBox.h"
-#include "autogen_airwin/BussColors4.h"
-#include "autogen_airwin/Channel9.h"
-#include "autogen_airwin/Apicolypse.h"
-#include "autogen_airwin/Neverland.h"
-#include "autogen_airwin/Elation.h"
-#include "autogen_airwin/Calibre.h"
-#include "autogen_airwin/Cider.h"
-#include "autogen_airwin/Crystal.h"
-#include "autogen_airwin/Precious.h"
-#include "autogen_airwin/Luxor.h"
 #include "autogen_airwin/ToTape9.h"
 #include "autogen_airwin/TapeHack2.h"
 #include "autogen_airwin/FromTape.h"
@@ -213,153 +184,121 @@ ADI_AW_ROW(0, TransDesk, "TransDesk", "Subtlety", "TransDesk is more of a transi
 ADI_AW_ROW(0, TubeDesk, "TubeDesk", "Subtlety", "TubeDesk is a tube recording console type tone coloring.", true)
 #endif
 #if !defined(ADI_AW_ONLY_SUITE) || ADI_AW_ONLY_SUITE == 1
-ADI_AW_ROW(1, Console9Buss, "Console9Buss", "Consoles", "Console9Buss is just the summing from ConsoleX.", false)
-ADI_AW_ROW(1, Console9Channel, "Console9Channel", "Consoles", "Console9Channel is just the summing from ConsoleX.", false)
-ADI_AW_ROW(1, ConsoleLABuss, "ConsoleLABuss", "Consoles", "ConsoleLABuss is the Airwindows take on the Quad Eight console.", false)
-ADI_AW_ROW(1, ConsoleLAChannel, "ConsoleLAChannel", "Consoles", "ConsoleLAChannel is the Airwindows take on the Quad Eight console.", false)
-ADI_AW_ROW(1, ConsoleMCBuss, "ConsoleMCBuss", "Consoles", "ConsoleMCBuss is the initial, bright take on the MCI console.", false)
-ADI_AW_ROW(1, ConsoleMCChannel, "ConsoleMCChannel", "Consoles", "ConsoleMCChannel is the initial, bright take on the MCI console.", false)
-ADI_AW_ROW(1, ConsoleMDBuss, "ConsoleMDBuss", "Consoles", "ConsoleMDBuss goes for the tone shaping of the classic MCI console!", false)
-ADI_AW_ROW(1, ConsoleMDChannel, "ConsoleMDChannel", "Consoles", "ConsoleMDChannel goes for the tone shaping of the classic MCI console!", false)
-ADI_AW_ROW(1, PurestConsole3Buss, "PurestConsole3Buss", "Consoles", "PurestConsole3Buss is an alternate algorithm for minimalist Console.", false)
-ADI_AW_ROW(1, PurestConsole3Channel, "PurestConsole3Channel", "Consoles", "PurestConsole3Channel is an alternate algorithm for minimalist Console.", false)
-ADI_AW_ROW(1, PDBuss, "PDBuss", "Consoles", "PDBuss is Console5 and PurestDrive, sittin' in a tree... (i.e. both at once, on channels and buss)", false)
-ADI_AW_ROW(1, PDChannel, "PDChannel", "Consoles", "PDChannel is Console5 and PurestDrive, sittin' in a tree... (i.e. both at once, on channels and buss)", false)
-ADI_AW_ROW(1, C5RawBuss, "C5RawBuss", "Consoles", "C5RawBuss is the original Console5 algorithm, with optional very gentle DC suppression.", false)
-ADI_AW_ROW(1, C5RawChannel, "C5RawChannel", "Consoles", "C5RawChannel is the original Console5 algorithm, with optional very gentle DC suppression.", false)
-ADI_AW_ROW(1, AtmosphereBuss, "AtmosphereBuss", "Consoles", "AtmosphereBuss is Console5 processing with powerful new acoustic distance effects.", false)
-ADI_AW_ROW(1, AtmosphereChannel, "AtmosphereChannel", "Consoles", "AtmosphereChannel is Console5 processing with powerful new acoustic distance effects.", false)
-ADI_AW_ROW(1, EveryConsole, "EveryConsole", "Consoles", "EveryConsole is mix-and-match Airwindows Console.", false)
-ADI_AW_ROW(1, ChannelX, "ChannelX", "Tone Color", "ChannelX translates Channel9 into a profusion of wild experiments.", false)
-ADI_AW_ROW(1, WoodenBox, "WoodenBox", "Tone Color", "WoodenBox is like a miniature reverb for converting DI to acoustic.", true)
-ADI_AW_ROW(1, BussColors4, "BussColors4", "Tone Color", "BussColors4 is the Airwindows console emulations, now working up to 192K correctly.", false)
-ADI_AW_ROW(1, Channel9, "Channel9", "Tone Color", "Channel9 is Channel8 with ultrasonic filtering, and new Teac and Mackie 'low end' settings.", false)
-ADI_AW_ROW(1, Apicolypse, "Apicolypse", "Tone Color", "Apicolypse is a re-release of my old API-style color adder, exacly as it was.", false)
-ADI_AW_ROW(1, Neverland, "Neverland", "Tone Color", "Neverland is a re-release of my old Neve-style color adder, exacly as it was.", false)
-ADI_AW_ROW(1, Elation, "Elation", "Tone Color", "Elation is a re-release of another old Character plugin.", false)
-ADI_AW_ROW(1, Calibre, "Calibre", "Tone Color", "Calibre is a re-release of another old Character plugin.", false)
-ADI_AW_ROW(1, Cider, "Cider", "Tone Color", "Cider is a re-release of another old Character plugin.", false)
-ADI_AW_ROW(1, Crystal, "Crystal", "Tone Color", "Crystal is a tone shaper and buss soft-clipper.", false)
-ADI_AW_ROW(1, Precious, "Precious", "Tone Color", "Precious is a re-release of another old Character plugin.", false)
-ADI_AW_ROW(1, Luxor, "Luxor", "Tone Color", "Luxor is a re-release of another old Character plugin.", false)
+ADI_AW_ROW(1, ToTape9, "ToTape9", "Tape", "ToTape9 is Airwindows tape emulation and brightness compression.", false)
+ADI_AW_ROW(1, TapeHack2, "TapeHack2", "Tape", "TapeHack2 brings Airwindows tape to a new level.", false)
+ADI_AW_ROW(1, FromTape, "FromTape", "Tape", "FromTape is a minimalist, cleaner analog tape emulation.", false)
+ADI_AW_ROW(1, Tape, "Tape", "Tape", "Tape is simplified, all-purpose tape mojo: my personal jam.", true)
+ADI_AW_ROW(1, IronOxideClassic2, "IronOxideClassic2", "Tape", "IronOxideClassic2 is my bandpassy tape sim, updated for high sample rate and aliasing control.", false)
+ADI_AW_ROW(1, IronOxide5, "IronOxide5", "Tape", "IronOxide5 is the old school, heavily colored Airwindows tape emulation.", false)
 #endif
 #if !defined(ADI_AW_ONLY_SUITE) || ADI_AW_ONLY_SUITE == 2
-ADI_AW_ROW(2, ToTape9, "ToTape9", "Tape", "ToTape9 is Airwindows tape emulation and brightness compression.", false)
-ADI_AW_ROW(2, TapeHack2, "TapeHack2", "Tape", "TapeHack2 brings Airwindows tape to a new level.", false)
-ADI_AW_ROW(2, FromTape, "FromTape", "Tape", "FromTape is a minimalist, cleaner analog tape emulation.", false)
-ADI_AW_ROW(2, Tape, "Tape", "Tape", "Tape is simplified, all-purpose tape mojo: my personal jam.", true)
-ADI_AW_ROW(2, IronOxideClassic2, "IronOxideClassic2", "Tape", "IronOxideClassic2 is my bandpassy tape sim, updated for high sample rate and aliasing control.", false)
-ADI_AW_ROW(2, IronOxide5, "IronOxide5", "Tape", "IronOxide5 is the old school, heavily colored Airwindows tape emulation.", false)
+ADI_AW_ROW(2, ChimeyDeluxe, "ChimeyDeluxe", "Amp Sims", "ChimeyDeluxe is a very flexible compressed DI conditioner.", true)
+ADI_AW_ROW(2, ChimeyGuitar2, "ChimeyGuitar2", "Amp Sims", "ChimeyGuitar2 is a wilder ChimeyGuitar.", false)
+ADI_AW_ROW(2, Cabs2, "Cabs2", "Amp Sims", "Cabs2 uses really phasey filters to be a speaker cabinet simulator.", true)
+ADI_AW_ROW(2, PointyGuitar, "PointyGuitar", "Amp Sims", "PointyGuitar is a supremely adaptable instrument amp.", false)
+ADI_AW_ROW(2, PointyDeluxe, "PointyDeluxe", "Amp Sims", "PointyDeluxe devours all mix space.", true)
+ADI_AW_ROW(2, GrindAmp, "GrindAmp", "Amp Sims", "GrindAmp is a heavier amp sim for many purposes.", false)
+ADI_AW_ROW(2, FireAmp, "FireAmp", "Amp Sims", "FireAmp is a bright, loud, tubey amp sim for leads and dirt guitar.", false)
+ADI_AW_ROW(2, LeadAmp, "LeadAmp", "Amp Sims", "LeadAmp is an amp sim with a clear, penetrating, vocal tone.", false)
+ADI_AW_ROW(2, CrickBass, "CrickBass", "Amp Sims", "CrickBass is a flexible but aggressive bass tone for dual pickups.", true)
+ADI_AW_ROW(2, Wolfbot, "Wolfbot", "Amp Sims", "Wolfbot is an aggressive Kalman bandpass with evil in its heart.", true)
+ADI_AW_ROW(2, LilAmp, "LilAmp", "Amp Sims", "LilAmp is a tiny amp sim, like a little bitty practice amp without that much gain.", false)
+ADI_AW_ROW(2, MidAmp, "MidAmp", "Amp Sims", "MidAmp is a clean amp sim meant to work like a loud Twin or something of that nature.", false)
+ADI_AW_ROW(2, BigAmp, "BigAmp", "Amp Sims", "BigAmp is a very flexible amplike thing with a taste for the bizarre.", false)
+ADI_AW_ROW(2, BassDrive, "BassDrive", "Amp Sims", "BassDrive is an old secret weapon, like a kind of bass amp.", true)
+ADI_AW_ROW(2, BassAmp, "BassAmp", "Amp Sims", "BassAmp is an old plugin with new tweaks, that gives some bass guitar tones.", true)
 #endif
 #if !defined(ADI_AW_ONLY_SUITE) || ADI_AW_ONLY_SUITE == 3
-ADI_AW_ROW(3, ChimeyDeluxe, "ChimeyDeluxe", "Amp Sims", "ChimeyDeluxe is a very flexible compressed DI conditioner.", true)
-ADI_AW_ROW(3, ChimeyGuitar2, "ChimeyGuitar2", "Amp Sims", "ChimeyGuitar2 is a wilder ChimeyGuitar.", false)
-ADI_AW_ROW(3, Cabs2, "Cabs2", "Amp Sims", "Cabs2 uses really phasey filters to be a speaker cabinet simulator.", true)
-ADI_AW_ROW(3, PointyGuitar, "PointyGuitar", "Amp Sims", "PointyGuitar is a supremely adaptable instrument amp.", false)
-ADI_AW_ROW(3, PointyDeluxe, "PointyDeluxe", "Amp Sims", "PointyDeluxe devours all mix space.", true)
-ADI_AW_ROW(3, GrindAmp, "GrindAmp", "Amp Sims", "GrindAmp is a heavier amp sim for many purposes.", false)
-ADI_AW_ROW(3, FireAmp, "FireAmp", "Amp Sims", "FireAmp is a bright, loud, tubey amp sim for leads and dirt guitar.", false)
-ADI_AW_ROW(3, LeadAmp, "LeadAmp", "Amp Sims", "LeadAmp is an amp sim with a clear, penetrating, vocal tone.", false)
-ADI_AW_ROW(3, CrickBass, "CrickBass", "Amp Sims", "CrickBass is a flexible but aggressive bass tone for dual pickups.", true)
-ADI_AW_ROW(3, Wolfbot, "Wolfbot", "Amp Sims", "Wolfbot is an aggressive Kalman bandpass with evil in its heart.", true)
-ADI_AW_ROW(3, LilAmp, "LilAmp", "Amp Sims", "LilAmp is a tiny amp sim, like a little bitty practice amp without that much gain.", false)
-ADI_AW_ROW(3, MidAmp, "MidAmp", "Amp Sims", "MidAmp is a clean amp sim meant to work like a loud Twin or something of that nature.", false)
-ADI_AW_ROW(3, BigAmp, "BigAmp", "Amp Sims", "BigAmp is a very flexible amplike thing with a taste for the bizarre.", false)
-ADI_AW_ROW(3, BassDrive, "BassDrive", "Amp Sims", "BassDrive is an old secret weapon, like a kind of bass amp.", true)
-ADI_AW_ROW(3, BassAmp, "BassAmp", "Amp Sims", "BassAmp is an old plugin with new tweaks, that gives some bass guitar tones.", true)
+ADI_AW_ROW(3, kRockstar, "kRockstar", "Reverb", "kRockstar is a realistic hall reverb that blends very well.", false)
+ADI_AW_ROW(3, kCyberCity, "kCyberCity", "Reverb", "kCyberCity brings live atmosphere to deep reverb.", false)
+ADI_AW_ROW(3, kWoodRoom, "kWoodRoom", "Reverb", "kWoodRoom is a small wooden performing space.", false)
+ADI_AW_ROW(3, kStation, "kStation", "Reverb", "kStation is a realistic small room modeled after David Bowie's vocal reverb.", false)
+ADI_AW_ROW(3, kGuitarHall2, "kGuitarHall2", "Reverb", "kGuitarHall2 puts things in a Loud Room.", false)
+ADI_AW_ROW(3, kCathedral5, "kCathedral5", "Reverb", "kCathedral5 lets you place yourself anywhere you like in the space.", false)
+ADI_AW_ROW(3, VerbTiny, "VerbTiny", "Reverb", "VerbTiny is a classic artificial reverb that expands reverb shape.", false)
+ADI_AW_ROW(3, kAlienSpaceship, "kAlienSpaceship", "Reverb", "kAlienSpaceship is an unreal realistic reverb.", false)
+ADI_AW_ROW(3, kBeyond, "kBeyond", "Reverb", "kBeyond is a recital hall.", false)
+ADI_AW_ROW(3, kCosmos, "kCosmos", "Reverb", "kCosmos is infinite space ambient, or titanic hall.", false)
+ADI_AW_ROW(3, kPlate140, "kPlate140", "Reverb", "kPlate140 is a next-generation Airwindows plate reverb.", false)
+ADI_AW_ROW(3, kPlate240, "kPlate240", "Reverb", "kPlate240 is for the texture of smaller, gold foil reverb.", false)
+ADI_AW_ROW(3, CreamCoat, "CreamCoat", "Reverb", "CreamCoat is a swiss army knife reverb with soft undersampling.", false)
+ADI_AW_ROW(3, CrunchCoat, "CrunchCoat", "Reverb", "CrunchCoat is a cursed retro digital reverb!", false)
+ADI_AW_ROW(3, Galactic, "Galactic", "Reverb", "Galactic is a super-reverb designed specially for pads and space ambient.", false)
+ADI_AW_ROW(3, Chamber, "Chamber", "Reverb", "Chamber is a feedforward reverb based on the golden ratio.", false)
+ADI_AW_ROW(3, NonlinearSpace, "NonlinearSpace", "Reverb", "NonlinearSpace is a flexible reverb plugin.", false)
 #endif
 #if !defined(ADI_AW_ONLY_SUITE) || ADI_AW_ONLY_SUITE == 4
-ADI_AW_ROW(4, kRockstar, "kRockstar", "Reverb", "kRockstar is a realistic hall reverb that blends very well.", false)
-ADI_AW_ROW(4, kCyberCity, "kCyberCity", "Reverb", "kCyberCity brings live atmosphere to deep reverb.", false)
-ADI_AW_ROW(4, kWoodRoom, "kWoodRoom", "Reverb", "kWoodRoom is a small wooden performing space.", false)
-ADI_AW_ROW(4, kStation, "kStation", "Reverb", "kStation is a realistic small room modeled after David Bowie's vocal reverb.", false)
-ADI_AW_ROW(4, kGuitarHall2, "kGuitarHall2", "Reverb", "kGuitarHall2 puts things in a Loud Room.", false)
-ADI_AW_ROW(4, kCathedral5, "kCathedral5", "Reverb", "kCathedral5 lets you place yourself anywhere you like in the space.", false)
-ADI_AW_ROW(4, VerbTiny, "VerbTiny", "Reverb", "VerbTiny is a classic artificial reverb that expands reverb shape.", false)
-ADI_AW_ROW(4, kAlienSpaceship, "kAlienSpaceship", "Reverb", "kAlienSpaceship is an unreal realistic reverb.", false)
-ADI_AW_ROW(4, kBeyond, "kBeyond", "Reverb", "kBeyond is a recital hall.", false)
-ADI_AW_ROW(4, kCosmos, "kCosmos", "Reverb", "kCosmos is infinite space ambient, or titanic hall.", false)
-ADI_AW_ROW(4, kPlate140, "kPlate140", "Reverb", "kPlate140 is a next-generation Airwindows plate reverb.", false)
-ADI_AW_ROW(4, kPlate240, "kPlate240", "Reverb", "kPlate240 is for the texture of smaller, gold foil reverb.", false)
-ADI_AW_ROW(4, CreamCoat, "CreamCoat", "Reverb", "CreamCoat is a swiss army knife reverb with soft undersampling.", false)
-ADI_AW_ROW(4, CrunchCoat, "CrunchCoat", "Reverb", "CrunchCoat is a cursed retro digital reverb!", false)
-ADI_AW_ROW(4, Galactic, "Galactic", "Reverb", "Galactic is a super-reverb designed specially for pads and space ambient.", false)
-ADI_AW_ROW(4, Chamber, "Chamber", "Reverb", "Chamber is a feedforward reverb based on the golden ratio.", false)
-ADI_AW_ROW(4, NonlinearSpace, "NonlinearSpace", "Reverb", "NonlinearSpace is a flexible reverb plugin.", false)
+ADI_AW_ROW(4, TakeCare, "TakeCare", "Effects", "TakeCare is a lush chorus ensemble universe.", false)
+ADI_AW_ROW(4, Dubly3, "Dubly3", "Effects", "Dubly3 refines and transforms the Dubly sound.", false)
+ADI_AW_ROW(4, PitchNasty, "PitchNasty", "Effects", "PitchNasty is a primitive pitch shifter that also has primitive time-stretch artifacts.", false)
+ADI_AW_ROW(4, Trianglizer, "Trianglizer", "Effects", "Trianglizer is a special waveshaper that can transform sines into triangles.", false)
+ADI_AW_ROW(4, TremoSquare, "TremoSquare", "Effects", "TremoSquare is a squarewave tremolo effect that only switches on zero crossings.", false)
+ADI_AW_ROW(4, Tremolo, "Tremolo", "Effects", "Tremolo is fluctuating saturation curves for a tubey tremolo.", false)
+ADI_AW_ROW(4, GlitchShifter, "GlitchShifter", "Effects", "GlitchShifter is a really gnarly, raw-sounding pitch shifter with a dose of insanity!", false)
+ADI_AW_ROW(4, DeRez4, "DeRez4", "Lo-Fi", "DeRez4 perfects retro digital tones.", false)
+ADI_AW_ROW(4, DeBez, "DeBez", "Lo-Fi", "DeBez gives you retro sampley textures!", true)
+ADI_AW_ROW(4, HipCrush, "HipCrush", "Lo-Fi", "HipCrush is the de-rez section for ConsoleH.", true)
+ADI_AW_ROW(4, Flutter2, "Flutter2", "Lo-Fi", "Flutter2 is the flutter from ToTape7, standalone.", true)
+ADI_AW_ROW(4, Pockey2, "Pockey2", "Lo-Fi", "Pockey2 is more efficient, more intense lo-fi hiphop in a plugin.", true)
+ADI_AW_ROW(4, CrunchyGrooveWear, "CrunchyGrooveWear", "Lo-Fi", "CrunchyGrooveWear is a version of GrooveWear for more edge and distortion.", true)
+ADI_AW_ROW(4, GrooveWear, "GrooveWear", "Lo-Fi", "GrooveWear is for scrubbing highs off mechanically like a stylus would.", true)
+ADI_AW_ROW(4, BitGlitter, "BitGlitter", "Lo-Fi", "BitGlitter is an old-sampler style digital lo-fi plugin.", false)
+ADI_AW_ROW(4, TapeBias, "TapeBias", "Lo-Fi", "TapeBias is a new piece of ToTape allowing you to underbias or overbias.", true)
+ADI_AW_ROW(4, ChromeOxide, "ChromeOxide", "Lo-Fi", "ChromeOxide is an alternate path to vibey old tape sonics.", true)
+ADI_AW_ROW(4, Cojones, "Cojones", "Lo-Fi", "Cojones is a new kind of distorty.", false)
+ADI_AW_ROW(4, Vibrato, "Vibrato", "Lo-Fi", "Vibrato lets you vibrato, chorus, flange, and make odd FM noises.", true)
+ADI_AW_ROW(4, Bite, "Bite", "Lo-Fi", "Bite is an unusual edge-maker.", false)
+ADI_AW_ROW(4, Deckwrecka, "Deckwrecka", "Lo-Fi", "Deckwrecka fattens and dirties up beats.", true)
+ADI_AW_ROW(4, DustBunny, "DustBunny", "Lo-Fi", "DustBunny is unpredictable distorty noise, like dust wedged under your turntable needle.", true)
 #endif
 #if !defined(ADI_AW_ONLY_SUITE) || ADI_AW_ONLY_SUITE == 5
-ADI_AW_ROW(5, TakeCare, "TakeCare", "Effects", "TakeCare is a lush chorus ensemble universe.", false)
-ADI_AW_ROW(5, Dubly3, "Dubly3", "Effects", "Dubly3 refines and transforms the Dubly sound.", false)
-ADI_AW_ROW(5, PitchNasty, "PitchNasty", "Effects", "PitchNasty is a primitive pitch shifter that also has primitive time-stretch artifacts.", false)
-ADI_AW_ROW(5, Trianglizer, "Trianglizer", "Effects", "Trianglizer is a special waveshaper that can transform sines into triangles.", false)
-ADI_AW_ROW(5, TremoSquare, "TremoSquare", "Effects", "TremoSquare is a squarewave tremolo effect that only switches on zero crossings.", false)
-ADI_AW_ROW(5, Tremolo, "Tremolo", "Effects", "Tremolo is fluctuating saturation curves for a tubey tremolo.", false)
-ADI_AW_ROW(5, GlitchShifter, "GlitchShifter", "Effects", "GlitchShifter is a really gnarly, raw-sounding pitch shifter with a dose of insanity!", false)
-ADI_AW_ROW(5, DeRez4, "DeRez4", "Lo-Fi", "DeRez4 perfects retro digital tones.", false)
-ADI_AW_ROW(5, DeBez, "DeBez", "Lo-Fi", "DeBez gives you retro sampley textures!", true)
-ADI_AW_ROW(5, HipCrush, "HipCrush", "Lo-Fi", "HipCrush is the de-rez section for ConsoleH.", true)
-ADI_AW_ROW(5, Flutter2, "Flutter2", "Lo-Fi", "Flutter2 is the flutter from ToTape7, standalone.", true)
-ADI_AW_ROW(5, Pockey2, "Pockey2", "Lo-Fi", "Pockey2 is more efficient, more intense lo-fi hiphop in a plugin.", true)
-ADI_AW_ROW(5, CrunchyGrooveWear, "CrunchyGrooveWear", "Lo-Fi", "CrunchyGrooveWear is a version of GrooveWear for more edge and distortion.", true)
-ADI_AW_ROW(5, GrooveWear, "GrooveWear", "Lo-Fi", "GrooveWear is for scrubbing highs off mechanically like a stylus would.", true)
-ADI_AW_ROW(5, BitGlitter, "BitGlitter", "Lo-Fi", "BitGlitter is an old-sampler style digital lo-fi plugin.", false)
-ADI_AW_ROW(5, TapeBias, "TapeBias", "Lo-Fi", "TapeBias is a new piece of ToTape allowing you to underbias or overbias.", true)
-ADI_AW_ROW(5, ChromeOxide, "ChromeOxide", "Lo-Fi", "ChromeOxide is an alternate path to vibey old tape sonics.", true)
-ADI_AW_ROW(5, Cojones, "Cojones", "Lo-Fi", "Cojones is a new kind of distorty.", false)
-ADI_AW_ROW(5, Vibrato, "Vibrato", "Lo-Fi", "Vibrato lets you vibrato, chorus, flange, and make odd FM noises.", true)
-ADI_AW_ROW(5, Bite, "Bite", "Lo-Fi", "Bite is an unusual edge-maker.", false)
-ADI_AW_ROW(5, Deckwrecka, "Deckwrecka", "Lo-Fi", "Deckwrecka fattens and dirties up beats.", true)
-ADI_AW_ROW(5, DustBunny, "DustBunny", "Lo-Fi", "DustBunny is unpredictable distorty noise, like dust wedged under your turntable needle.", true)
+ADI_AW_ROW(5, Slew4, "Slew4", "Brightness", "Slew4 is tape compression without the tape, for brightness control.", false)
+ADI_AW_ROW(5, DeBess, "DeBess", "Brightness", "DeBess is an improved DeEss, with perfect rejection of non-ess audio.", false)
+ADI_AW_ROW(5, Sinew, "Sinew", "Brightness", "Sinew combines sines and slew clipping for a tape bias effect!", false)
+ADI_AW_ROW(5, Smooth, "Smooth", "Brightness", "Smooth can tame pointy sounds or make drums explode.", false)
+ADI_AW_ROW(5, Slew2, "Slew2", "Brightness", "Slew2 works like a de-esser or acceleration limiter: controls extreme highs.", false)
+ADI_AW_ROW(5, DeHiss, "DeHiss", "Brightness", "DeHiss tries to suppress background hiss, like a hiss gate.", false)
+ADI_AW_ROW(5, DigitalBlack, "DigitalBlack", "Dynamics", "DigitalBlack is a quick, staccato gate.", false)
+ADI_AW_ROW(5, SoftGate, "SoftGate", "Dynamics", "SoftGate is a gate that can mute hiss and smooth sample tails.", false)
+ADI_AW_ROW(5, Gatelope, "Gatelope", "Dynamics", "Gatelope is a special gate that applies filters.", false)
+ADI_AW_ROW(5, DeNoise, "DeNoise", "Noise", "DeNoise can work as a multiband gate and as a wild effect.", false)
+ADI_AW_ROW(5, TapeDust, "TapeDust", "Noise", "TapeDust is just a special treble-erode noise, a 'slew noise' plugin.", false)
+ADI_AW_ROW(5, VoiceTrick, "VoiceTrick", "Utility", "VoiceTrick lets you record vocals while monitoring over speakers.", false)
+ADI_AW_ROW(5, DeCrackle, "DeCrackle", "Utility", "DeCrackle isolates clicks and vinyl crackles to remove them.", false)
 #endif
 #if !defined(ADI_AW_ONLY_SUITE) || ADI_AW_ONLY_SUITE == 6
-ADI_AW_ROW(6, Slew4, "Slew4", "Brightness", "Slew4 is tape compression without the tape, for brightness control.", false)
-ADI_AW_ROW(6, DeBess, "DeBess", "Brightness", "DeBess is an improved DeEss, with perfect rejection of non-ess audio.", false)
-ADI_AW_ROW(6, Sinew, "Sinew", "Brightness", "Sinew combines sines and slew clipping for a tape bias effect!", false)
-ADI_AW_ROW(6, Smooth, "Smooth", "Brightness", "Smooth can tame pointy sounds or make drums explode.", false)
-ADI_AW_ROW(6, Slew2, "Slew2", "Brightness", "Slew2 works like a de-esser or acceleration limiter: controls extreme highs.", false)
-ADI_AW_ROW(6, DeHiss, "DeHiss", "Brightness", "DeHiss tries to suppress background hiss, like a hiss gate.", false)
-ADI_AW_ROW(6, DigitalBlack, "DigitalBlack", "Dynamics", "DigitalBlack is a quick, staccato gate.", false)
-ADI_AW_ROW(6, SoftGate, "SoftGate", "Dynamics", "SoftGate is a gate that can mute hiss and smooth sample tails.", false)
-ADI_AW_ROW(6, Gatelope, "Gatelope", "Dynamics", "Gatelope is a special gate that applies filters.", false)
-ADI_AW_ROW(6, DeNoise, "DeNoise", "Noise", "DeNoise can work as a multiband gate and as a wild effect.", false)
+ADI_AW_ROW(6, Melt, "Melt", "Ambience", "Melt is a wobbly chorusy weird diffuse effect.", false)
+ADI_AW_ROW(6, StarChild2, "StarChild2", "Ambience", "StarChild2 is a weird digital ambience/echo plugin adapted to high sample rates.", false)
+ADI_AW_ROW(6, GrooveWear, "GrooveWear", "Lo-Fi", "GrooveWear is for scrubbing highs off mechanically like a stylus would.", true)
+ADI_AW_ROW(6, Vibrato, "Vibrato", "Lo-Fi", "Vibrato lets you vibrato, chorus, flange, and make odd FM noises.", true)
 ADI_AW_ROW(6, TapeDust, "TapeDust", "Noise", "TapeDust is just a special treble-erode noise, a 'slew noise' plugin.", false)
-ADI_AW_ROW(6, VoiceTrick, "VoiceTrick", "Utility", "VoiceTrick lets you record vocals while monitoring over speakers.", false)
-ADI_AW_ROW(6, DeCrackle, "DeCrackle", "Utility", "DeCrackle isolates clicks and vinyl crackles to remove them.", false)
+ADI_AW_ROW(6, NonlinearSpace, "NonlinearSpace", "Reverb", "NonlinearSpace is a flexible reverb plugin.", false)
 #endif
 #if !defined(ADI_AW_ONLY_SUITE) || ADI_AW_ONLY_SUITE == 7
-ADI_AW_ROW(7, Melt, "Melt", "Ambience", "Melt is a wobbly chorusy weird diffuse effect.", false)
-ADI_AW_ROW(7, StarChild2, "StarChild2", "Ambience", "StarChild2 is a weird digital ambience/echo plugin adapted to high sample rates.", false)
-ADI_AW_ROW(7, GrooveWear, "GrooveWear", "Lo-Fi", "GrooveWear is for scrubbing highs off mechanically like a stylus would.", true)
-ADI_AW_ROW(7, Vibrato, "Vibrato", "Lo-Fi", "Vibrato lets you vibrato, chorus, flange, and make odd FM noises.", true)
-ADI_AW_ROW(7, TapeDust, "TapeDust", "Noise", "TapeDust is just a special treble-erode noise, a 'slew noise' plugin.", false)
-ADI_AW_ROW(7, NonlinearSpace, "NonlinearSpace", "Reverb", "NonlinearSpace is a flexible reverb plugin.", false)
+ADI_AW_ROW(7, ClearCoat, "ClearCoat", "Ambience", "ClearCoat is an array of bright ambience reverbs.", false)
+ADI_AW_ROW(7, TapeDelay2, "TapeDelay2", "Ambience", "TapeDelay2 is a new implementation of a flexible tape echo.", false)
+ADI_AW_ROW(7, PitchDelay, "PitchDelay", "Ambience", "PitchDelay is TapeDelay2 but with pitch shift instead of flutter.", false)
+ADI_AW_ROW(7, TripleSpread, "TripleSpread", "Ambience", "TripleSpread is a stereo tripler with extra wideness and GlitchShifter processing.", false)
 #endif
 #if !defined(ADI_AW_ONLY_SUITE) || ADI_AW_ONLY_SUITE == 8
-ADI_AW_ROW(8, ClearCoat, "ClearCoat", "Ambience", "ClearCoat is an array of bright ambience reverbs.", false)
-ADI_AW_ROW(8, TapeDelay2, "TapeDelay2", "Ambience", "TapeDelay2 is a new implementation of a flexible tape echo.", false)
-ADI_AW_ROW(8, PitchDelay, "PitchDelay", "Ambience", "PitchDelay is TapeDelay2 but with pitch shift instead of flutter.", false)
-ADI_AW_ROW(8, TripleSpread, "TripleSpread", "Ambience", "TripleSpread is a stereo tripler with extra wideness and GlitchShifter processing.", false)
+ADI_AW_ROW(8, Srsly3, "Srsly3", "Stereo", "Srsly3 is Srsly2, with a Nonlin control to analogify the filters.", false)
+ADI_AW_ROW(8, Wider, "Wider", "Stereo", "Wider is Airwindows stereo space shaping.", false)
+ADI_AW_ROW(8, ToVinyl4, "ToVinyl4", "Stereo", "ToVinyl4 is a vinyl-mastering simulator bringing several vinyl-type colors.", false)
 #endif
 #if !defined(ADI_AW_ONLY_SUITE) || ADI_AW_ONLY_SUITE == 9
-ADI_AW_ROW(9, Srsly3, "Srsly3", "Stereo", "Srsly3 is Srsly2, with a Nonlin control to analogify the filters.", false)
-ADI_AW_ROW(9, Wider, "Wider", "Stereo", "Wider is Airwindows stereo space shaping.", false)
-ADI_AW_ROW(9, ToVinyl4, "ToVinyl4", "Stereo", "ToVinyl4 is a vinyl-mastering simulator bringing several vinyl-type colors.", false)
-#endif
-#if !defined(ADI_AW_ONLY_SUITE) || ADI_AW_ONLY_SUITE == 10
-ADI_AW_ROW(10, DubSub2, "DubSub2", "Bass", "DubSub2 is the essence of the Airwindows head bump.", false)
-ADI_AW_ROW(10, OrbitKick, "OrbitKick", "Bass", "OrbitKick is a bass generator and kick drum reinforcer.", false)
+ADI_AW_ROW(9, DubSub2, "DubSub2", "Bass", "DubSub2 is the essence of the Airwindows head bump.", false)
+ADI_AW_ROW(9, OrbitKick, "OrbitKick", "Bass", "OrbitKick is a bass generator and kick drum reinforcer.", false)
 #endif
 #endif
 #ifdef ADI_AW_SUITE
 ADI_AW_SUITE(0, "distortion", "ADI Airwindows - Distortion")
-ADI_AW_SUITE(1, "consoles", "ADI Airwindows - Consoles")
-ADI_AW_SUITE(2, "tape", "ADI Airwindows - Tape")
-ADI_AW_SUITE(3, "ampsims", "ADI Airwindows - Amp Sims")
-ADI_AW_SUITE(4, "reverb", "ADI Airwindows - Reverb")
-ADI_AW_SUITE(5, "lofimod", "ADI Airwindows - Lo-Fi & Mod")
-ADI_AW_SUITE(6, "noisedyn", "ADI Airwindows - Noise & Dynamics")
-ADI_AW_SUITE(7, "secret", "ADI Airwindows - Secret Weapons")
-ADI_AW_SUITE(8, "delay", "ADI Airwindows - Delay")
-ADI_AW_SUITE(9, "stereo", "ADI Airwindows - Stereo")
-ADI_AW_SUITE(10, "sub", "ADI Airwindows - Sub")
+ADI_AW_SUITE(1, "tape", "ADI Airwindows - Tape")
+ADI_AW_SUITE(2, "ampsims", "ADI Airwindows - Amp Sims")
+ADI_AW_SUITE(3, "reverb", "ADI Airwindows - Reverb")
+ADI_AW_SUITE(4, "lofimod", "ADI Airwindows - Lo-Fi & Mod")
+ADI_AW_SUITE(5, "noisedyn", "ADI Airwindows - Noise & Dynamics")
+ADI_AW_SUITE(6, "secret", "ADI Airwindows - Secret Weapons")
+ADI_AW_SUITE(7, "delay", "ADI Airwindows - Delay")
+ADI_AW_SUITE(8, "stereo", "ADI Airwindows - Stereo")
+ADI_AW_SUITE(9, "sub", "ADI Airwindows - Sub")
 #endif

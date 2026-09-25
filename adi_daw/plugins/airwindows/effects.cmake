@@ -47,35 +47,6 @@ set(ADI_AW_EFFECTS
     SingleEndedTriode
     TransDesk
     TubeDesk
-    Console9Buss
-    Console9Channel
-    ConsoleLABuss
-    ConsoleLAChannel
-    ConsoleMCBuss
-    ConsoleMCChannel
-    ConsoleMDBuss
-    ConsoleMDChannel
-    PurestConsole3Buss
-    PurestConsole3Channel
-    PDBuss
-    PDChannel
-    C5RawBuss
-    C5RawChannel
-    AtmosphereBuss
-    AtmosphereChannel
-    EveryConsole
-    ChannelX
-    WoodenBox
-    BussColors4
-    Channel9
-    Apicolypse
-    Neverland
-    Elation
-    Calibre
-    Cider
-    Crystal
-    Precious
-    Luxor
     ToTape9
     TapeHack2
     FromTape
@@ -163,9 +134,8 @@ set(ADI_AW_EFFECTS
 )
 
 # The suites, one CLAP module each: index, key, and the name a host shows.
-set(ADI_AW_SUITE_KEYS distortion consoles tape ampsims reverb lofimod noisedyn secret delay stereo sub)
+set(ADI_AW_SUITE_KEYS distortion tape ampsims reverb lofimod noisedyn secret delay stereo sub)
 set(ADI_AW_SUITE_NAME_distortion "ADI Airwindows - Distortion")
-set(ADI_AW_SUITE_NAME_consoles "ADI Airwindows - Consoles")
 set(ADI_AW_SUITE_NAME_tape "ADI Airwindows - Tape")
 set(ADI_AW_SUITE_NAME_ampsims "ADI Airwindows - Amp Sims")
 set(ADI_AW_SUITE_NAME_reverb "ADI Airwindows - Reverb")

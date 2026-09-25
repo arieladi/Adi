@@ -64,6 +64,7 @@ flagged, and it is a bug in the format, not in the plan.
 | Crossfader, DJ-style mixing | Ableton | P3 | 🔶 | needs a master-section table |
 | Channel strip (gate/comp/EQ built in) | Cubase | P2 | ✅ | internal `devices` |
 | Mixer snapshots | Cubase | P2 | ✅ | `snapshots.kind='mixer'` |
+| **Native analog group summing**: on a group, each child through a console's channel half, the sum through its buss half; 26 Airwindows flavours; drive as gain staging | neither | P1 | — | ADR-0173: `group_summing` (schema 1.7), three ops, the toggle, dial and menu in the group header (mac) |
 | Per-channel delay compensation offset | both | P1 | ✅ | `mixer_strip.delay_samples`. **Plays** (ADR-0172): `mixer.setDelay`, either sign, ±1 s, as latency of the opposite sign, so delay compensation places it |
 
 ## 3. Clips, editing and comping
@@ -290,7 +291,7 @@ Upstream code, unchanged, each its own binary under its own licence
 | ChowCentaur | BSD-3 → GPLv3 (JUCE 6) | `com.adi.chowdsp.chowcentaur` | ✅ |
 | ZL Equalizer 2 | AGPL-3.0 → AGPLv3 | `com.adi.zlaudio.zlequalizer2` | ✅ |
 | Dragonfly Hall, Room, Plate, Early Reflections | GPL-3.0 → GPLv3 | `michaelwillis.dragonfly.*`, theirs | ✅ |
-| **ADI Airwindows**: 160 of 524 by the director's five rules (ADR-0170), in eleven suite plug-ins with the algorithm chosen inside, a 5 ms crossfade and auto gain (ADR-0171); the GUI is mac's | MIT → GPLv3 | `com.adi.airwindows.<suite>` | ✅ |
+| **ADI Airwindows**: 160 of 524 by the director's five rules (ADR-0170), in ten suite plug-ins with the algorithm chosen inside, a 5 ms crossfade and auto gain (ADR-0171, ADR-0173); the GUI is mac's. The console and colour algorithms are the mixer's | MIT → GPLv3 | `com.adi.airwindows.<suite>` | ✅ |
 | **Host-side auto gain** for any plug-in, reusing `dsp::AutoGain` | — | — | idea: needs a per-device flag, which is a schema change |
 
 ### Time-stretch (ADR-0061)

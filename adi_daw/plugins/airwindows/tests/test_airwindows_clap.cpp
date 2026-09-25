@@ -274,18 +274,20 @@ struct Instance {
     }
 };
 
-const char* const kSuites[] = {"distortion", "consoles", "tape", "ampsims", "reverb", "lofimod",
+// ADR-0173: the Consoles suite is gone; its algorithms are the mixer's group summing.
+const char* const kSuites[] = {"distortion", "tape", "ampsims", "reverb", "lofimod",
                                "noisedyn", "secret", "delay", "stereo", "sub"};
-const int kSuiteSizes[] = {47, 29, 6, 15, 17, 22, 13, 6, 4, 3, 2};
+const int kSuiteSizes[] = {47, 6, 15, 17, 22, 13, 6, 4, 3, 2};
+constexpr int kSuiteCount = 10;
 
 // --- the tests -----------------------------------------------------------------
 
-void testTheFactoryHoldsElevenSuites() {
-    section("ADR-0171 -- eleven suites, each one CLAP plug-in holding its group's algorithms");
+void testTheFactoryHoldsTenSuites() {
+    section("ADR-0171, ADR-0173 -- ten suites, each one CLAP plug-in holding its group's algorithms");
 
     check(entryInit(""), "the entry initialises");
     const clap_plugin_factory_t* f = factory();
-    check(f->get_plugin_count(f) == 11, "eleven suites in the binary that carries them all");
+    check(f->get_plugin_count(f) == kSuiteCount, "ten suites in the binary that carries them all");
     std::set<std::string> ids;
     bool named = true;
     for (uint32_t i = 0; i < f->get_plugin_count(f); ++i) {
@@ -293,10 +295,10 @@ void testTheFactoryHoldsElevenSuites() {
         ids.insert(d->id);
         named = named && std::string(d->name).rfind("ADI Airwindows - ", 0) == 0;
     }
-    check(ids.size() == 11, "every suite has its own id");
+    check(ids.size() == kSuiteCount, "every suite has its own id");
     check(named, "every suite is called \"ADI Airwindows - <group>\"");
     int total = 0;
-    for (int s = 0; s < 11; ++s) {
+    for (int s = 0; s < kSuiteCount; ++s) {
         Instance fx(suiteId(kSuites[s]));
         const int n = fx.p != nullptr ? fx.algorithmCount() : -1;
         total += n;
@@ -305,7 +307,9 @@ void testTheFactoryHoldsElevenSuites() {
     }
     // Melt and StarChild2 are Ambience, which is in no other suite; the other
     // four secret weapons are also in their category's suite.
-    check(total == 164, "160 algorithms, four of them in two suites: 164 slots, got " + std::to_string(total));
+    check(total == 135, "131 algorithms, four of them in two suites: 135 slots, got " + std::to_string(total));
+    check(factory()->create_plugin(factory(), &g_host, "com.adi.airwindows.consoles") == nullptr,
+          "and no Consoles suite: the consoles are the mixer's (ADR-0173)");
     Instance secret(suiteId("secret"));
     for (const char* name : {"Melt", "TapeDust", "GrooveWear", "StarChild2", "Vibrato", "NonlinearSpace"})
         check(secret.algorithmNamed(name) >= 0, std::string("Secret Weapons holds ") + name);
@@ -369,12 +373,12 @@ void testEveryAlgorithmPlaysAndTheListNeverMoves() {
             ++restored;
         else bad += std::string(" ") + key + "(state)";
     }
-    check(suites == 11, "all eleven suites create and initialise");
-    check(played == 164 && finite == 164, "all 164 algorithm slots play, switched to mid-block, finite: " +
+    check(suites == kSuiteCount, "all ten suites create and initialise");
+    check(played == 135 && finite == 135, "all 135 algorithm slots play, switched to mid-block, finite: " +
                                               std::to_string(finite));
     check(allocs == 0, "no switch and no algorithm allocates: " + std::to_string(allocs) + " allocation(s)");
-    check(stable == 11, "no suite's parameter list changed, and none asked for a rescan");
-    check(restored == 11, "every suite restores its state exactly, asking only for a values rescan");
+    check(stable == kSuiteCount, "no suite's parameter list changed, and none asked for a rescan");
+    check(restored == kSuiteCount, "every suite restores its state exactly, asking only for a values rescan");
     Instance other(suiteId("tape"));
     Instance dist(suiteId("distortion"));
     check(!other.load(dist.save()), "Tape refuses Distortion's state");
@@ -504,7 +508,7 @@ void testAutoGainFollowsWhatPlays() {
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_airwindows_tests -- the Airwindows suites as CLAP plug-ins\n\n");
-    testTheFactoryHoldsElevenSuites();
+    testTheFactoryHoldsTenSuites();
     testEveryAlgorithmPlaysAndTheListNeverMoves();
     testTheSwitchIsAFiveMillisecondCrossfade();
     testParameterChangesLandOnTheirSample();

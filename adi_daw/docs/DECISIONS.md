@@ -11927,3 +11927,80 @@ A plant that reported the delay as latency of the same sign failed six of
 them.
 
 SPEC §6.9 now defines `delay_samples` rather than listing it as carried.
+
+## ADR-0173 — The consoles leave the plug-ins: ten Airwindows suites, and native group summing in the mixer — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION; AMENDS ADR-0171; THE ENGINE WORK FOLLOWS IN ITS OWN BRANCH**
+
+**Director's instruction:**
+- **Why:** managing a Channel and a Buss plug-in on every track is a bad
+  workflow.
+- **The plug-ins:** drop the Consoles suite. The Airwindows plug-ins become
+  exactly ten suites.
+- **The mixer:** move the 29 console algorithms into the mixer's engine as
+  native group summing. A group track gets three properties:
+  - `analog_summing_enabled`;
+  - `analog_summing_flavor`;
+  - `analog_summing_drive`.
+- **How it plays:** with summing on, each child is encoded, scaled by the
+  drive, before the group's sum, and the sum is decoded.
+- **The UI:** mac draws a toggle and a dial in the group's header, with the
+  flavour in the dial's context menu.
+
+### Decisions
+
+1. **Ten suites** (amends ADR-0171 d1):
+   - **Which:** Distortion 47, Tape 6, Amp Sims 15, Reverb 17, Lo-Fi & Mod
+     22, Noise & Dynamics 13, Secret Weapons 6, Delay 4, Stereo 3, Sub 2.
+   - **Count:** 131 algorithms in 135 slots.
+   - **The Consoles and Tone Color algorithms** are marked in `CATALOGUE.md`
+     as the mixer's.
+2. **The 29 algorithms are 26 flavours, not 29.** Only 17 of the 29 are
+   console systems, a channel half and a buss half. The other twelve are
+   single-insert colour plug-ins with no pair. A flavour says where each
+   half goes:
+
+   | Kind | Flavours | Plays |
+   |---|---|---|
+   | **System** (14) | Console9, ConsoleLA, ConsoleMC, ConsoleMD, PurestConsole3, PD, C5Raw, Atmosphere; and EveryConsole's six: Retro, Sin, C6, C7, BShift, CZero (one plug-in, channel or buss by its ConType) | the channel half on each child, the buss half on the sum |
+   | **Channel colour** (11) | Channel9, ChannelX, Apicolypse, Calibre, Cider, Crystal, Elation, Luxor, Neverland, Precious, WoodenBox | on each child, nothing on the sum |
+   | **Buss colour** (1) | BussColors4 | on the sum only |
+
+3. **The flavour is stored as a text key,** such as `console9` or
+   `every.c7`, not an index into a list. An index changes meaning when the
+   list does. That is the automation-breaking defect ADR-0171 was written
+   against.
+4. **The properties are a table,** `group_summing`, in schema 1.7. A minor
+   version adds only whole objects (ADR-0144), and a track's columns belong
+   to every track, not only to groups. The table:
+   - `track_id` is the primary key, and refers to the track;
+   - `enabled`;
+   - `flavor TEXT` with a CHECK constraint over the keys;
+   - `drive_db`, from −12 to +24.
+
+   The ops refuse any track that is not a group, because summing exists only
+   on groups.
+5. **Drive is gain staging, and means the same on every flavour.**
+   - **How:** the drive in dB is applied into the channel half (or, for a
+     buss colour, into the sum). The same amount comes back off after the
+     buss half.
+   - **The result:** the curve is hit harder while the level stays put.
+   - **Why not each plug-in's own drive or trim knob:** only some have one,
+     so the dial would mean something different per flavour. Native knobs
+     stay at their defaults, and the channel's Pan and Fader stay at unity,
+     because the strip already does both.
+6. **Where it sits in the graph:**
+   - the channel half is on each child's edge into the group, after the
+     child's strip, so after its fader;
+   - the buss half is right after the group's sum, before the group's own
+     devices.
+
+   Each half is its own Airwindows instance, one per child, with its own
+   state. Instances are session-owned like strips (ADR-0163), so a rebuild
+   keeps their filter state. Zero latency.
+7. **The source.** The console sources compile into the engine from a pinned
+   airwin2rack checkout (MIT), fetched by `fetch_external.sh --build-only`
+   for CI. They are built without our warning flags, as upstream builds
+   them.
+8. **For mac:** the three properties are read by the session, and set by
+   three undoable ops: the toggle, the flavour, and a coalescable drive for
+   a dragged dial. mac draws the toggle, the dial and the flavour menu in the
+   group's header.
