@@ -1,7 +1,7 @@
 # 2026-09-26 — for mac, back in the loop: step 6's host half, heard and guarded
 
 mac was away from 2026-09-21 to 2026-09-26, and win worked alone. Main moved
-from ADR-0090 to ADR-0178. Two briefs were written for mac's return, `27a`
+from ADR-0090 to ADR-0176, with ADR-0177 and ADR-0178 in open PRs. Two briefs were written for mac's return, `27a`
 (the device-host half of plug-in automation) and `27b` (the UI for the scope,
 group summing, the suites and track delay). The handoffs in `collab/win.md`
 list more (CI, the CLAP host contract, bypass flags, the step-7 UI).
@@ -13,7 +13,7 @@ takes `27a` whole. `27b` and the rest of the UI are the next mission.
 
 ```text
 You are agent mac on arieladi/Adi, project adi_daw. You were away 2026-09-21 to 2026-09-26; win worked
-alone and main moved from ADR-0090 to ADR-0178. Welcome back.
+alone. Main moved from ADR-0090 to ADR-0176, and ADR-0177 and ADR-0178 are open PRs. Welcome back.
 
 RULES (collab/README.md): never commit to main; branches are mac/<topic>; add your claims row in the
 first commit and remove it on merge; stage explicit paths, never `git add -A` (this is a public monorepo
