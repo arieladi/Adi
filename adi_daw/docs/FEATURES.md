@@ -64,7 +64,8 @@ flagged, and it is a bug in the format, not in the plan.
 | Crossfader, DJ-style mixing | Ableton | P3 | 🔶 | needs a master-section table |
 | Channel strip (gate/comp/EQ built in) | Cubase | P2 | ✅ | internal `devices` |
 | Mixer snapshots | Cubase | P2 | ✅ | `snapshots.kind='mixer'` |
-| Per-channel delay compensation offset | both | P1 | ✅ | `mixer_strip.delay_samples` |
+| **Native analog group summing**: on a group, each child through a console's channel half, the sum through its buss half; 14 Airwindows console flavours; drive as gain staging | neither | P1 | — | ADR-0173: `group_summing` (schema 1.7), three ops, the toggle, dial and menu in the group header (mac) |
+| Per-channel delay compensation offset | both | P1 | ✅ | `mixer_strip.delay_samples`. **Plays** (ADR-0172): `mixer.setDelay`, either sign, ±1 s, as latency of the opposite sign, so delay compensation places it |
 
 ## 3. Clips, editing and comping
 
@@ -156,6 +157,32 @@ Session window is the last step, not a way around that.
 | ~~Plugin sandboxing (crash isolation)~~ | Cubase | **no** | — | **Rejected** (ADR-0047). Not for IPC cost — that amortises over a 171 ms block and is cheapest here — but for latency and complexity. Affordable because a crash loses one gesture, not the session (ADR-0001). |
 | ~~Dedicated Inspector panel~~ | Cubase | **no** | — | **Rejected** (ADR-0047). Mixer strip, device chain and detail editor must carry every property between step 7 and step 9, and must be keyboard-reachable. |
 
+### Live's devices, cloned (ADR-0169)
+
+Behaviour from the Live 12 manual (`reference/DOCS`, chapters 28–32). Names
+are ours where Ableton's is coined. Every one is a native device in the graph,
+for the transport, the tempo map, the groove pool and the track's scale
+(`key_map`). Randomness is seeded, so a render repeats exactly.
+
+| Device | Kind | P | Fmt | Notes |
+|---|---|---|---|---|
+| Arpeggiator | MIDI effect | P1 | ✅ | Styles, including Play Order, Chord Trigger and three random styles; Hold; Offset; Groove; Rate in ms or synced; Distance and Steps, in semitones or scale degrees; Gate; Retrigger (off, note, beat) with Interval; Repeats; velocity decay to a target |
+| Chord | MIDI effect | P1 | ✅ | Six shifts of ±36 st with Learn; per-note velocity or chance; Strum up to 400 ms with Tension and Crescendo; per-note events to the generated notes |
+| Scale | MIDI effect | P1 | ✅ | A 13×13 note matrix, base and scale or the track's own, Transpose ±36, Fold, Lowest and Range |
+| Pitch | MIDI effect | P1 | ✅ | ±128 st or ±30 degrees, step buttons, Lowest and Range with Block, Fold or Limit |
+| Velocity | MIDI effect | P1 | ✅ | A curve with Drive and Compand; output range; Clip, Gate or Fixed; Random; note-on, note-off or both |
+| Note Length | MIDI effect | P1 | ✅ | Trigger on note on or note off; Gate and Length in ms or synced; Latch; release velocity, Decay and Key Scale |
+| Random | MIDI effect | P1 | ✅ | Chance, Choices × Interval, Random or Alt (round robin), Add, Sub or Bi, scale-aware |
+| CC Control | MIDI effect | P2 | ✅ | Mod wheel, pitch bend, pressure, a switch and twelve assignable controls, Learn and Send |
+| Note Echo, MPE Control, Expression Control, MIDI Monitor | MIDI effect | P2 | ✅ | Live Suite's Max for Live MIDI effects, as native devices |
+| Envelope MIDI, Shaper MIDI | modulator | P2 | 🔶 | They map to any parameter, so they wait for the modulation architecture (ADR-0046, ADR-0052) |
+| **Utility** | audio effect | P1 | ✅ | Phase L and R; channel mode; Width and Mid/Side; Mono; Bass Mono 50–500 Hz with audition; Gain −∞ to +35 dB; Balance; Mute; DC filter |
+| **OneShot** (Live's Simpler) | instrument | P1 | ✅ | Classic, 1-Shot and Slice; Start, Loop, Length and Fade; warp; filter; LFO; envelope; voices; the Controls tab |
+| **Sampler** | instrument | P2 | ✅ | OneShot's engine plus multisample zones (key, velocity, sample select), loops with crossfade, a modulation oscillator, modulation, MIDI routing and MPE |
+| **Redux** | audio effect | P2 | ✅ | Rate with Jitter; pre and post filters; Bits with Shape; DC Shift; Dry/Wet |
+| **Shifter** | audio effect | P2 | ✅ | Pitch, Freq and Ring modes; Spread and Wide; a synced delay with Feedback and Tone; an LFO with ten shapes; an envelope follower |
+| Live 12's MIDI Tools (Transform and Generate) | clip ops | P2 | — | Not devices: clip-editing tools (manual chapter 11). Noted by ADR-0169, **not ruled** |
+
 ## 7. Automation
 
 | Feature | From | P | Fmt | Notes |
@@ -202,6 +229,8 @@ Session window is the last step, not a way around that.
 | **Every mutation is a typed, attributed op** | P0 | ✅ | SPEC §8.1 |
 | **AI agent that can only act through ops** | P2 | ✅ | [AI-AGENT.md](AI-AGENT.md) |
 | Agent changes previewable as a diff before commit | P2 | ✅ | |
+| **Agent runtime, `adi-agent`**: pi-mono's loop in a sidecar, three tools over the RPC boundary | P2 | — | ADR-0168. It takes OpenClaw's loop and ideas, not a fork of OpenClaw (**approved** by the director). It needs, in order: the registry's JSON Schema export, with field descriptions; the loopback RPC server (ADR-0039); the sidecar; the chat panel. Its tools are `project_read`, `ops_describe` and `changeset_propose`. |
+| **A scope built in**: any two tracks compared (overlay, stacked, difference, sum), with correlation and offset, aligned by delay compensation, on the grid, true peak | P1 | — | ADR-0167. OScope and PsyScope need routing, and cannot see another track's latency. A measured offset is fixed with `mixer.setDelay` (registered and playing, ADR-0172). It adds a second audio-to-UI path, which amends ADR-0050 d4. |
 | Undo that survives a reboot | P1 | ✅ | |
 | Undo you can *branch*, so exploring costs nothing | P2 | ✅ | |
 | Text projection for version control | P2 | — | ADR-0007 |
@@ -225,10 +254,10 @@ which is a property of the algorithm and not of where it is compiled.
 
 | Node | P | Latency | Notes |
 |---|---|---|---|
-| Sub-sample phase utility | P1 | polarity **0**, nudge ~0 | polarity inversion is exactly free; a fractional delay is not |
+| Sub-sample phase utility | P1 | polarity **0**, nudge ~0 | polarity inversion is exactly free; a fractional delay is not. **Part of Utility** (ADR-0169) |
 | Audio-rate envelope follower | P1 | 0 | a modulator under ADR-0046; first real consumer of ADR-0052's `PARAM_MOD` problem |
 | Grid-locked volume shaper | P1 | 0 | reads the tempo map directly — the reason it is native |
-| Frequency shifter | P2 | Hilbert transform is not free | ring-mod / Hilbert, sample-accurate linear shift |
+| Frequency shifter | P2 | Hilbert transform is not free | ring-mod / Hilbert, sample-accurate linear shift. **Part of Shifter** (ADR-0169) |
 | Vocoder | P2 | filter-bank dependent | sidechain via `Bus::Sidechain`, no user wiring |
 | Multiband graph splitter | P2 | **thousands of samples in linear phase** | **blocked on N-bus outputs** (ADR-0056). Declares its latency; a minimum-phase mode is a user choice, not a silent default |
 
@@ -262,7 +291,7 @@ Upstream code, unchanged, each its own binary under its own licence
 | ChowCentaur | BSD-3 → GPLv3 (JUCE 6) | `com.adi.chowdsp.chowcentaur` | ✅ |
 | ZL Equalizer 2 | AGPL-3.0 → AGPLv3 | `com.adi.zlaudio.zlequalizer2` | ✅ |
 | Dragonfly Hall, Room, Plate, Early Reflections | GPL-3.0 → GPLv3 | `michaelwillis.dragonfly.*`, theirs | ✅ |
-| **ADI Airwindows**: 141 of 524, each its own plug-in, with auto gain | MIT → GPLv3 | `com.adi.airwindows.*` | ✅ |
+| **ADI Airwindows**: 160 of 524 by the director's five rules (ADR-0170), in eleven suite plug-ins (Color among them) with the algorithm chosen inside, a 5 ms crossfade and auto gain (ADR-0171, ADR-0173); the GUI is mac's. The console systems are the mixer's | MIT → GPLv3 | `com.adi.airwindows.<suite>` | ✅ |
 | **Host-side auto gain** for any plug-in, reusing `dsp::AutoGain` | — | — | idea: needs a per-device flag, which is a schema change |
 
 ### Time-stretch (ADR-0061)

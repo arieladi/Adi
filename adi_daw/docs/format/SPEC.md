@@ -608,8 +608,19 @@ track's devices, and whatever the track feeds takes the strip's output
     Joined means in either direction: its group and the master (what a soloed
     track feeds), and a soloed group's children (what feeds it).
   - A sidechain keeps nothing audible.
-- **`width`, `input_gain_db`, `phase_invert`, `delay_samples` and
-  `vca_group_id`** are carried and not yet applied (ADR-0163 d6).
+- **`delay_samples`** (ADR-0172) is the track delay, in samples at the
+  project's rate: positive plays the track late, negative plays it early.
+  - **Units:** a reader running at another rate delays the same time, not
+    the same count.
+  - **The master's** delay is not played: nothing follows the master to delay
+    it against.
+  - **Range:** beyond one second either way it is played at one second.
+    A reader SHOULD report either case.
+  - **How ADI plays it:** as latency of the opposite sign, so delay
+    compensation places the track (ADR-0058). A reader MAY play it another
+    way that gives the same alignment.
+- **`width`, `input_gain_db`, `phase_invert` and `vca_group_id`** are carried
+  and not yet applied (ADR-0163 d6).
 - **Automation** (ADR-0164). A lane with `owner_kind = 'track'` moves its
   strip's `param_ref`:
   - `volume`, in dB;

@@ -11438,3 +11438,570 @@ All of it builds, loads in the DAW and renders.
    - Dragonfly Early into Hall, its tail running 2 s past the clip;
    - Tube2, Density3 and kCathedral5 from ADI Airwindows;
    - ADI RMSC.
+
+## ADR-0167 — The scope is built into the DAW: any two tracks compared, aligned and on the grid, with no routing — `DECIDED` (2026-09-25) — **DIRECTOR'S REQUEST, APPROVED AS A NATIVE PANEL; AMENDS ADR-0050 d4**
+
+**Director's request:** an oscilloscope in the DAW, after Audija's OScope and
+fx23's PsyScope Pro. OScope is a beat-grid-synced, true-peak oscilloscope, and
+compares a sidechain only in its paid version. PsyScope Pro is the director's
+own. The ask is to make a two-channel phase and waveform comparison *easy*, as
+only a DAW can.
+
+**What a plug-in scope cannot do, and why the DAW can.** Both references are
+plug-ins, so each needs signal routed to it:
+- **OScope** compares through a sidechain.
+- **PsyScope** links up to 128 instances.
+
+Neither knows the other tracks' latency. PsyScope offers "latency
+compensation for DAWs lacking PPQ", which is a manual correction. The DAW
+already holds every piece: each track's signal, every path's latency
+(ADR-0058), and the tempo map. A scope in the DAW needs none of the plumbing.
+
+### Decisions
+
+1. **It is a panel, not only a device.**
+   - **The Scope panel** reads any *tap*:
+     - a track, pre- or post-fader;
+     - any device's output in a chain;
+     - a group or return;
+     - the master.
+   - **A Scope device** exists as well, for a chain that wants one in place.
+   - Loading a plug-in scope still works: Smexoscope ships as CLAP
+     (ADR-0166).
+2. **Comparing two tracks is one gesture.**
+   - **Starting it:** select two tracks and choose *Compare in Scope*, or
+     Alt-click a second track's scope button. No sidechain and no routing.
+   - **Layers:** up to 8, each with:
+     - a channel view (L, R, Mid, Side, or L+R);
+     - a polarity flip;
+     - the track's own name and colour, read directly. PsyScope has to ask
+       for these over VST3.
+   - **Views:**
+     - **overlay** and **stacked**;
+     - **difference** (A − B): a null test;
+     - **sum** (A + B): where a kick and a bass cancel.
+   - **Readouts over the visible window:**
+     - **correlation**, −1 to +1;
+     - **offset:** the lag, in ms and in samples, that maximises the
+       cross-correlation within ±20 ms.
+   - **Fixing the offset** is one button. It proposes a `mixer.setDelay`, an
+     ordinary undoable op on B's strip. That op is designed (OPS.md, P1) and
+     not yet registered; the scope work registers it. The measurement and the
+     fix are in the same place, which no plug-in can offer.
+3. **Compared as heard.** A post-fader tap sits where plug-in delay
+   compensation has already aligned the paths (ADR-0058). Two tracks are
+   therefore compared as they arrive at the master, with no correction to
+   apply by hand.
+4. **On the grid:**
+   - **Window lengths** in bars and beats (1/16 to 4 bars) or in ms. They
+     lock to bar lines and follow tempo changes, because they read the tempo
+     map rather than a host's PPQ.
+   - **Triggers:**
+     - the grid;
+     - free-run;
+     - a level edge;
+     - PsyScope's frequency sync: a pitch, from MIDI or detected.
+   - **Stamps:** each captured block carries the timeline position its audio
+     represents, after compensation, so the grid is drawn from positions and
+     not guessed.
+5. **True peak** per ITU-R BS.1770-4 Annex 2:
+   - **Oversampling:** 4× at 44.1 and 48 kHz, 2× at 88.2 and 96 kHz, none at
+     176.4 kHz and above.
+   - **Readouts:** the view's maximum in dBTP beside the sample peak.
+   - **Markers:** wherever an inter-sample peak exceeds the sample peak.
+
+   The same meter serves the mixer and the planned true-peak limiter.
+6. **Inspection:**
+   - freeze;
+   - zoom and pan on both time and dB;
+   - a cursor readout in bars/beats, ms, samples and dB;
+   - at P2, a frozen buffer dragged out as a WAV (PsyScope's bounce).
+7. **A second path from audio to UI. This amends ADR-0050 d4,** which named
+   the meter scalar as the only one.
+   - **What it carries:** a waveform is a stream, not a scalar. Each
+     *subscribed* tap has a single-producer, single-consumer ring of raw
+     samples, sized to the longest window at the session rate, and its block
+     stamps.
+   - **Who writes it:** the audio thread copies wait-free.
+   - **Lifetime:** the ring is allocated when a view subscribes, on the
+     message thread. It is released through the realiser's retirement, as a
+     graph is.
+   - **Cost:** a tap nobody watches costs one relaxed atomic load per block.
+   - **Why the other channels are wrong:** nothing else changes. A scope is
+     not an op and not a snapshot, for ADR-0050's own reasons.
+8. **Priority and split: P1.**
+   - **win (engine):** taps, the ring, true peak, and correlation and offset
+     as pure functions tested headless.
+   - **mac (UI):** the panel, after the device-host work of ADR-0165.
+
+## ADR-0168 — The agent's runtime: depend on OpenClaw's loop, do not fork OpenClaw — `DECIDED` (2026-09-25) — **DIRECTOR'S RULING: APPROVED, DO NOT FORK**
+
+**Director's brief:** fork OpenClaw, strip its bloat, and wire it into the
+DAW's remote architecture:
+- **Keep:**
+  - the runtime (prompts, Markdown skills, the LLM loop);
+  - a tool schema mapped to "160+ undoable ops";
+  - a Node.js container.
+- **Drop:**
+  - the messaging adapters;
+  - the memory modules.
+- **Write:** a TypeScript bridge that encodes the model's action as CBOR and
+  sends it to the DAW's loopback RPC port. There the registry validates it,
+  queues it at the Propose tier, and shows the diff.
+
+**Agreed:** the fit is real. OpenClaw is an agent loop that calls tools, and
+the DAW exposes every action as a typed, documented op (AI-AGENT §3).
+
+**Why not a fork.** OpenClaw is mostly the part the brief throws away:
+- **Its layers:** a gateway (one Node process, WebSocket and HTTP on port
+  18789), channel adapters for more than ten messengers, a per-session lane
+  queue, skills, and file-plus-sqlite-vec memory.
+- **Its agent loop is not its own.** It delegates tool calling and the LLM to
+  **pi-mono** (`pi-agent-core` and `pi-ai`, MIT), which is a separate library.
+- **So "keep the runtime, strip the rest" leaves pi-mono,** inside a fork that
+  diverges from the moment it is made. Every security fix upstream would have
+  to be carried across by hand.
+- **The security record argues against carrying its surfaces:**
+  - **CVE-2026-25253:** the gateway's missing WebSocket origin check let a
+    crafted link steal its token. That is the component class a network
+    bridge would reuse.
+  - **ClawHub:** 12 to 20% of community skills carried malicious instructions
+    (the ClawHavoc campaign).
+  - **Credentials** were stored in plaintext.
+  - **Self-authored skills:** the agent can write its own. That is a prompt
+    injection which persists.
+
+### Decisions
+
+1. **`adi-agent`: a small TypeScript sidecar on pi-mono.**
+   - **What it runs on:** `pi-ai` and `pi-agent-core`, pinned by version and
+     verified when adopted (the packages moved npm scope in 2026).
+   - **Models:** `pi-ai` speaks Anthropic, OpenAI and Google, and any
+     OpenAI-compatible endpoint (llama.cpp, Ollama, vLLM). That covers
+     AI-AGENT §7's local, cloud and self-hosted paths without naming a
+     vendor.
+   - **Lifecycle:** it is ADR-0086's tier 2, a separate process. The DAW
+     launches it on demand and is whole without it (ADR-0064).
+   - **Transport:** it talks to the RPC boundary over loopback with the
+     session's token (ADR-0039 d4).
+2. **Kept from OpenClaw, as ideas rather than code:**
+   - **Markdown skills with progressive disclosure:** names first, content on
+     use. They ship with the DAW, read-only, and are reviewed like code. None
+     is downloaded, and none is written by the agent.
+   - **One lane per project:** a project's requests run one at a time, which
+     matches one transaction per request.
+3. **A few tools, not one per op:**
+   - **The tools:**
+     - `project_read(level, scope)`: the projection, levels 0 to 3
+       (AI-AGENT §4);
+     - `ops_describe(names | query)`: the JSON Schema of the named ops,
+       generated from the registry;
+     - `changeset_propose(ops[], request)`: one transaction at the Propose
+       tier. It becomes ADR-0148's preview, and the user approves it in the
+       DAW.
+     - `analysis_run`, later.
+   - **Why:** sending every op schema on every turn costs tokens and makes
+     the model worse at choosing one. Progressive disclosure is how OpenClaw
+     itself carries thousands of skills.
+   - **The only tools:** OpenClaw's shell, file-system and browser tools do
+     not exist in `adi-agent`.
+   - **Credentials** live in the OS keychain.
+4. **Docker is an option, not the default.**
+   - **Default:** a local child process.
+   - **Why:** a container that reaches the host takes the RPC off loopback.
+     ADR-0039 d4 makes that the user's deliberate act, with the token plus TLS
+     or an SSH tunnel.
+   - **When it fits:** running the agent on another machine of the home lab.
+5. **Build order.** Nothing is built by this ADR.
+   1. **The registry's JSON Schema export,** owed since ADR-0016. It needs
+      richer field metadata than exists today: every `Field` gets a
+      description, enums and ranges, and item schemas for its arrays and
+      objects. Keys are short by ADR-0025 (`pos`, `dev`, `ord`), and a model
+      needs words for them.
+   2. **The RPC server:**
+      - loopback HTTP with JSON and a bearer token;
+      - requests queued to the message thread;
+      - Propose by default.
+
+      Its library choice is decided in that step.
+   3. **`adi-agent`.**
+   4. **The chat panel,** which is mac's.
+
+### Corrections to the brief
+
+1. **JSON on the wire, CBOR at rest** (ADR-0039 d2). The bridge never encodes
+   CBOR. The boundary decodes JSON into the ops a local caller builds.
+2. **Registered ops:** 70 today, of which 64 edit and 6 transport, and none
+   read. OPS.md designs 165. The agent can propose only registered ops, and
+   its vocabulary grows with the DAW's.
+3. **The chat is one surface, not the only one** (AI-AGENT §8).
+   Context-menu actions and buttons backed by a model use the same three
+   tools.
+4. **OpenClaw's memory is not needed.** The projection and the session's own
+   transcript are the context. Remarks follow ADR-0131's rules.
+
+**Ruled (director, 2026-09-25): approved.** Do not fork. Build the minimal
+TypeScript `pi-mono` helper with the three tools, enforcing the Propose
+boundary.
+
+## ADR-0169 — Live parity: all fourteen MIDI effects, and Sampler, OneShot, Redux, Shifter and Utility — `DECIDED` (2026-09-25) — **DIRECTOR'S REQUEST, APPROVED**
+
+**Director's request:** make sure ADI copies all of Live's MIDI effects, and
+five devices: Sampler, Simpler, Redux, Shifter and Utility. The screenshots
+came with the request, and the reference is the Live 12 manual in
+`reference/DOCS` (chapters 28–32).
+
+### Decisions
+
+1. **All fourteen MIDI effects that Live 12 Suite ships:**
+
+   | Effect | Source | P |
+   |---|---|---|
+   | Arpeggiator, Chord, Scale, Pitch, Velocity, Note Length, Random | native | P1 |
+   | CC Control | native | P2 |
+   | Note Echo, MPE Control, Expression Control, MIDI Monitor | Max for Live | P2 |
+   | Envelope MIDI, Shaper MIDI | Max for Live (modulators) | P2, after the modulation architecture (ADR-0046, ADR-0052's `PARAM_MOD`) |
+
+2. **As native devices in the graph** (ADR-0062, ADR-0086 tier 1), with
+   `devices.subtype = 'midi_effect'`. They need what only the graph has:
+   - **the transport and tempo map:** synced rates, and Arpeggiator's Beat
+     retrigger;
+   - **the groove pool:** Arpeggiator's Groove;
+   - **the track's scale:** "Use Current Scale" reads `key_map` and its
+     `scale_mask`;
+   - **sample-accurate events** (ADR-0042).
+3. **Randomness is seeded and repeatable.** Random, Chord's Chance and
+   Velocity's Random draw from a per-device PRNG whose seed is in the
+   device's state. An offline render of the same project is then the same
+   render.
+4. **The five devices:**
+
+   | Device | P | What parity means (Live 12 manual) |
+   |---|---|---|
+   | **Utility** | P1 | Phase L and R; Channel Mode (Left, Right, Swap, Stereo); Width, and Mid/Side mode; Mono; Bass Mono, 50–500 Hz, with audition; Gain −∞ to +35 dB; Balance; Mute; DC filter. It absorbs the "sub-sample phase utility" native node. |
+   | **OneShot** (Live's Simpler) | P1 | Classic, 1-Shot and Slice modes; Start, Loop, Length and Fade; Loop and Snap; voices and retrigger; warp (ADR-0061); filter (12/24 dB, types); LFO; amp envelope; the Controls tab; slicing by transient, beat or region. A DAW needs one sampler early. |
+   | **Sampler** | P2 | OneShot's voice engine, plus multisample zones (key, velocity, sample select). Per zone: reverse, snap, start and end, sustain and release loops with crossfade, detune, interpolation, RAM mode. Also the Pitch/Osc modulation oscillator, Filter/Global, Modulation (auxiliary envelope, LFOs), MIDI routing and MPE. |
+   | **Redux** | P2 | Rate with Jitter; a pre filter and a post filter with Octave; Bits with Shape; DC Shift; Dry/Wet. |
+   | **Shifter** | P2 | Pitch, Freq and Ring modes; Coarse and Fine; Spread and Wide; Window; Delay (Hz or synced) with Feedback and Tone; LFO (ten shapes, duty cycle, Phase/Spin/Width, offset, Hz or synced rate, amount); envelope follower; Dry/Wet. It replaces the "frequency shifter" native node row. |
+
+5. **Behaviour is cloned; coined names are not** (policy; ADR-0093 d4).
+   Generic words may stay. "Simpler" is Ableton's own name: ours is
+   **OneShot** (the director's ruling). Each device is checked against Live by
+   the side-by-side gate (ADR-0108).
+6. **Each device is its own step,** with its own ADR when built. None is
+   built by this one.
+7. **Noted, not ruled:** Live 12's *MIDI Tools* (Transform and Generate,
+   manual chapter 11) are clip-editing tools, not devices. FEATURES now
+   carries them as a row awaiting a ruling.
+
+## ADR-0170 — Airwindows re-curated by the director's five rules: 160 kept, each row naming its rule — `DECIDED` (2026-09-25) — **DIRECTOR'S RULES; REPLACES ADR-0166 d5'S KEEP LIST**
+
+**Director's rules**, replacing Chris Johnson's Recommended and Basic as the
+keep list:
+1. **Drop** every EQ and filter, every dither, every test, utility and MIDI
+   plug-in, and every compressor.
+2. **Keep** every saturation, distortion, tape and console plug-in, newest
+   version of a family only.
+3. **Noise reduction and de-essing:** at most 10.
+4. **Stereo and imaging:** at most 3.
+5. **Include:** Melt, TapeDust, GrooveWear, StarChild2 (as ruled), Vibrato and
+   NonlinearSpace.
+
+### How the rules were applied
+
+`tools/airwindows_catalogue.py` encodes them. Every row of `CATALOGUE.md` now
+names the rule that decided it. Where the rules are silent (reverb, ambience,
+effects, bass, brightness), Chris's picks still apply.
+
+**The calls the rules left open,** each easy to reverse:
+- **Scope of rule 2.** It covers the named categories and the same job under
+  other names: Tone Color (console and channel colour), Subtlety,
+  Amp Sims, Clipping and Lo-Fi.
+- **"Newest" is the date, not the number.**
+  - Console6 was released in 2024, after Console7 (2022) and Console0 (2023).
+    The newest numbered console is **Console9**.
+  - A console is a system: its channel and buss are kept together.
+  - ConsoleLA, ConsoleMC, ConsoleMD and PurestConsole3 are separate
+    families, and all are kept.
+- **Single-version families stay under rule 2,** because each is the newest
+  of its family:
+  - the Console5-era systems Atmosphere, C5Raw and PD, and EveryConsole;
+  - seven old Character re-releases in Tone Color.
+
+  This is the "legacy" the director wanted gone, kept by the letter of the
+  rule. It is one line to drop them.
+- **Rule 3's ten:** DeBess, DeHiss, DeNoise, DeCrackle, VoiceTrick, Slew2,
+  and the gates SoftGate, Gatelope and DigitalBlack, and AQuickVoiceClip.
+  - A gate is not a compressor, and two of these are sold as hiss cleaners.
+  - DeEss is out because DeBess is its improved version.
+- **Rule 1 by function as well as category:** Air4 and Energy2 are EQs;
+  Elliptical and PhaseNudge are filters; SlewSonic solos the brightness.
+
+### Corrections to the examples
+
+1. **The examples name superseded versions:**
+   - Console7: the newest is Console9;
+   - ToTape6: the newest is ToTape9 (2026);
+   - Srsly2: the newest is Srsly3, which is Srsly2 with a Nonlin control.
+
+   The rule ("newest") is followed, not the examples.
+2. **StarChild2, not StarChild.** StarChild2 (2023) is the same effect adapted
+   to high sample rates. The rules named StarChild, and the director then
+   ruled StarChild2 (ADR-0171).
+3. **VoiceTrick is kept because it is named,** but Airwindows files it as a
+   utility: it cancels speaker bleed while recording vocals.
+4. **Pressure5 goes,** under rule 1. It was an ADR-0166 add-back.
+5. **The newest consoles cannot be kept,** because they are unreleased
+   upstream. ConsoleX, X2, X3, ConsoleH and PurestConsole4 have no
+   description, and Consolidated does not register them.
+
+### Result
+
+160 of 524 are kept:
+- 109 under rule 2;
+- 10 under rule 3;
+- 3 under rule 4;
+- 6 under rule 5;
+- 32 as Chris's picks where the rules are silent.
+
+Auto gain starts on for 40 of them: the tone effects with no output control
+(ADR-0166 d8, unchanged).
+
+**Evidence:**
+- `adi_airwindows_tests` has 39 checks. All 160 effects are created,
+  described, processed with zero allocation, and their state restored. The
+  kept and stripped names are checked.
+- `adi_play --list` finds all 160.
+- A chain of Console9Channel, Melt and StarChild renders offline. That was
+  before the suites of ADR-0171; the chain now runs through suites.
+
+## ADR-0171 — Airwindows ships as eleven suite plug-ins: static parameters, a 5 ms crossfade between algorithms, auto gain on whatever plays — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION; REPLACES ADR-0166 d6's ONE PLUG-IN PER EFFECT**
+
+**Director's instruction:** do not ship 160 separate CLAP plug-ins with host-drawn
+sliders. Group the kept algorithms into category suites, one CLAP plug-in
+each, with the algorithm chosen inside a custom GUI that mac designs later.
+The instruction named eight suites, then added three for the algorithms the
+eight left out. Every suite is named "ADI Airwindows - <group>".
+
+| Suite | Algorithms |
+|---|---:|
+| Distortion (Distortion, Saturation, Subtlety, Clipping) | 47 |
+| Consoles (Consoles, Tone Color) | 29 |
+| Tape | 6 |
+| Amp Sims | 15 |
+| Reverb | 17 |
+| Lo-Fi & Mod (Lo-Fi, Effects) | 22 |
+| Noise & Dynamics (the noise reduction and gates of rule 3, and the three brightness tools) | 13 |
+| Secret Weapons (Melt, TapeDust, GrooveWear, StarChild2, Vibrato, NonlinearSpace) | 6 |
+| Delay (ClearCoat, TapeDelay2, PitchDelay, TripleSpread) | 4 |
+| Stereo (Wider, Srsly3, ToVinyl4) | 3 |
+| Sub (DubSub2, OrbitKick) | 2 |
+
+That is all 160 kept algorithms in 164 slots. TapeDust, GrooveWear, Vibrato and
+NonlinearSpace are both in their category's suite and in Secret Weapons.
+StarChild2 replaces StarChild, as the director's list gave it.
+
+### Decisions
+
+1. **One CLAP module per suite:** `ADI Airwindows - Distortion.clap` and so
+   on. Each is compiled with its suite's index (`ADI_AW_ONLY_SUITE`), so it
+   links only its own algorithms. A "&" in a name becomes "and" in the file
+   name. The tests compile every suite into one binary instead.
+2. **Every parameter of every algorithm exists from init, with an id that
+   never changes.** The director's rule was no `CLAP_PARAM_RESCAN_ALL`.
+   - **The ids:**
+     - `0` is Algorithm, stepped: 0 to N−1, the value text the algorithm's
+       name;
+     - `1` is Auto Gain;
+     - algorithm *a*'s parameter *k* is `100 + 64a + k`, in the CLAP module
+       named after the algorithm.
+   - **Why:** switching algorithms changes no parameter's meaning and never
+     asks the host to rescan. An automation lane (ADR-0165) or a stored value
+     (ADR-0142) stays bound to what it was written for.
+   - **The only rescan** is `CLAP_PARAM_RESCAN_VALUES`, after a state load.
+3. **A switch during processing is a 5 ms linear crossfade on the audio
+   thread.**
+   - **How:** the outgoing and incoming algorithms both run on the same input
+     for 240 samples at 48 kHz, weighted `1 − g` and `g`.
+   - **No allocation:** every algorithm is instantiated at init.
+   - **Idle algorithms** are not processed. Their state waits, and the
+     crossfade covers any tail they held.
+   - **A switch arriving through `flush`** is immediate. The host is not
+     running audio then, so there is nothing to fade from.
+4. **Auto gain follows whatever plays.** `dsp::AutoGain`, BS.1770 K-weighted
+   (ADR-0166 d8), runs after the crossfade.
+   - **Default:** on for a suite where most algorithms are tone effects with
+     no output control (ADR-0170's rule, taken over the suite).
+   - **The switch:** one switch per suite, automatable.
+5. **State is text, keyed by names:** the suite, the algorithm, auto gain,
+   and every parameter as `p <algorithm> <index> <value>`. A suite that gains
+   an algorithm, or an algorithm that gains a parameter, still loads what it
+   had. Another suite's state is refused.
+6. **The GUI is mac's.** Until it exists a host draws the parameters, grouped
+   by module. `tools/airwindows_catalogue.py` gives each algorithm its suite,
+   and `CATALOGUE.md` has a Suite column.
+
+### Evidence
+
+`adi_airwindows_tests`: 48 checks.
+- **The factory:** eleven suites with the sizes above, 164 slots, every
+  suite named "ADI Airwindows - …", Secret Weapons holding its six.
+- **Every algorithm played:** in every suite, each of the 164 is chosen by an
+  event in the middle of a block and played. No allocation, finite output.
+  The parameter list is unchanged after all the switching, and no rescan was
+  requested.
+- **Unique ids.** Every suite restores its state byte for byte, asking only
+  for a values rescan. Tape refuses Distortion's state.
+- **The crossfade, sample for sample:**
+  - after a switch the output is `outgoing × (1 − g) + incoming × g` for 240
+    samples, then the incoming algorithm alone, to 1e-6;
+  - before the switch, the outgoing algorithm is untouched;
+  - the references are built with the same calls and seeds (Airwindows
+    seeds dither from `rand()`).
+- **Sample accuracy:** an algorithm's parameter change lands on its sample,
+  bit for bit.
+- **Auto gain:** Tube2 driven in the Distortion suite measures +10.69 dB
+  without auto gain and +0.05 dB with it.
+
+In the DAW, `adi_play --list` finds the eleven suites, and a chain of
+Distortion, Tape and Reverb renders offline with the reverb's tail.
+
+## ADR-0172 — `mixer.setDelay`: a track delay, either sign, played as latency so delay compensation places it — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION; THE SCOPE'S ONE-CLICK FIX (ADR-0167)**
+
+**Director's instruction:** after the Airwindows suites, implement
+`mixer.setDelay`. The scope's alignment fix (ADR-0167 d2) proposes it.
+OPS.md designed it at P1; `mixer_strip.delay_samples` has been in the schema
+since 1.0, "carried and not yet applied".
+
+### Decisions
+
+1. **The op.**
+   - **What it is:** `mixer.setDelay {id: track, samples}`, from the
+     generated scalar table.
+   - **Its classification:** edit scope, symmetric inverse, coalescable (a
+     dragged knob is one undo step).
+   - **Engine impact:** GraphRebuild, for `device.setLatency`'s reason. It
+     moves compensation downstream.
+
+   Registered ops: 71.
+2. **The unit is samples at the project's rate.**
+   - **At another rate:** a session running at a different rate (ADR-0157)
+     delays the same time, not the same count. 100 samples of a 48 kHz project
+     are 200 at 96 kHz.
+   - **Range:** one second either way. Beyond it the engine plays one second
+     and names the track. The value is not refused, because the schema cannot
+     gain a CHECK within a minor (ADR-0144).
+3. **Played as latency of the opposite sign.** This is the whole design.
+   - **The mechanism:** the strip is the last node of its track's chain, and
+     reports `latencySamples() = −delay`. Delay compensation (ADR-0058) then
+     places the track.
+   - **Late (+D):** the strip claims to be D samples early, so the next sum
+     delays it by D to align it. Compensation starts from zero, so a track
+     alone is delayed too.
+   - **Early (−D):** the strip claims D samples of latency, so every other
+     path is delayed by D, as a plug-in's latency would be. There is no other
+     way to play a track early in real time. The graph's latency grows by D,
+     as it does in any DAW.
+   - **Why no new node:** no new delay line exists, and a change is an ordinary
+     latency change: retapped within the headroom and rebuilt beyond it
+     (ADR-0079). Sidechains and sends from the track follow it, because they
+     leave from the same tail.
+4. **The master's delay is not played, and is named.** Nothing follows the
+   master to delay it against. A negative latency there would make the
+   graph's own latency negative.
+
+### Evidence
+
+`adi_mixer_tests` gained 10 checks, 65 in all:
+- **the strip alone:** the sign, the conversion from 48 to 96 kHz, and the
+  one-second limit;
+- **two tracks stepping at frame 1000 into the master:**
+  - no delay: both at 1000;
+  - A at +100: B alone from 1000, A joins at 1100;
+  - A at −100: A alone from 1000, B joins at 1100;
+  - at 96 kHz the same 100 project samples are 200;
+- **a lone track** delayed by 300 steps at 1300;
+- **named cases:** the master's delay, and a delay past one second.
+
+A plant that reported the delay as latency of the same sign failed six of
+them.
+
+SPEC §6.9 now defines `delay_samples` rather than listing it as carried.
+
+## ADR-0173 — The consoles leave the plug-ins: eleven Airwindows suites with Color, and native group summing in the mixer — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION; AMENDS ADR-0171; THE ENGINE WORK FOLLOWS IN ITS OWN BRANCH**
+
+**Director's instruction, in two steps:**
+- **First:**
+  - **Why:** managing a Channel and a Buss plug-in on every track is a bad
+    workflow.
+  - **The plug-ins:** drop the Consoles suite.
+  - **The mixer:** move its 29 algorithms into the mixer as native group
+    summing. A group track gets three properties: enabled, flavour, drive.
+    Each child is encoded, scaled by the drive, before the group's sum, and
+    the sum is decoded.
+  - **The UI:** mac draws a toggle and a dial in the group's header, with the
+    flavour in the dial's context menu.
+- **Then, on the split win raised:** only the true encode/decode consoles
+  become summing. The twelve single-insert colour algorithms become an
+  eleventh suite with the standard suite rules, so they stay usable as
+  inserts on any track.
+
+### Decisions
+
+1. **Eleven suites** (amends ADR-0171 d1):
+   - **Which:** Distortion 47, Tape 6, Amp Sims 15, Reverb 17, Lo-Fi & Mod
+     22, Noise & Dynamics 13, Secret Weapons 6, Delay 4, Stereo 3, Sub 2,
+     and **Color 12**.
+   - **Count:** 143 algorithms in 147 slots.
+   - **Color's contents:** Channel9, ChannelX, BussColors4, Crystal,
+     WoodenBox, and the Character plug-ins Apicolypse, Calibre, Cider,
+     Elation, Luxor, Neverland and Precious.
+   - **Its name** is "ADI Airwindows - Color", by the director's naming rule,
+     rather than the "ADI Color" of the second message.
+2. **The 17 console algorithms are 14 flavours.**
+   - **Eight channel/buss pairs:** Console9, ConsoleLA, ConsoleMC,
+     ConsoleMD, PurestConsole3, PD, C5Raw, Atmosphere.
+   - **EveryConsole's six systems:** Retro, Sin, C6, C7, BShift, CZero.
+     EveryConsole is one plug-in, channel or buss by its ConType.
+   - **How each plays:** its channel half on each child, and its buss half on
+     the group's sum. `CATALOGUE.md` marks the 17 as the mixer's.
+3. **The flavour is stored as a text key,** such as `console9` or
+   `every.c7`, not an index into a list. An index changes meaning when the
+   list does. That is the automation-breaking defect ADR-0171 was written
+   against.
+4. **The properties are a table,** `group_summing`, in schema 1.7. A minor
+   version adds only whole objects (ADR-0144), and a track's columns belong
+   to every track, not only to groups. The table:
+   - `track_id` is the primary key, and refers to the track;
+   - `enabled`;
+   - `flavor TEXT` with a CHECK constraint over the keys;
+   - `drive_db`, from −12 to +24.
+
+   The ops refuse any track that is not a group, because summing exists only
+   on groups.
+5. **Drive is gain staging, and means the same on every flavour.**
+   - **How:** the drive in dB is applied into each child's channel half. The
+     same amount comes back off after the buss half.
+   - **The result:** the curves are hit harder while the level stays put.
+   - **Why not each plug-in's own drive or trim knob:** only some have one,
+     so the dial would mean something different per flavour. Native knobs
+     stay at their defaults, and the channel's Pan and Fader stay at unity,
+     because the strip already does both.
+6. **Where it sits in the graph:**
+   - the channel half is on each child's edge into the group, after the
+     child's strip, so after its fader;
+   - the buss half is right after the group's sum, before the group's own
+     devices.
+
+   Each half is its own Airwindows instance, one per child, with its own
+   state. Instances are session-owned like strips (ADR-0163), so a rebuild
+   keeps their filter state. Zero latency.
+7. **The source.** The 17 console sources compile into the engine from a
+   pinned airwin2rack checkout (MIT), fetched by `fetch_external.sh
+   --build-only`, and built without our warning flags. airwin2rack's newest
+   tag (v2.9.0, 2024) predates Console9. So the pin is upstream's commit,
+   fetched by commit; the commit is the assertion.
+8. **For mac:** the three properties are read by the session, and set by
+   three undoable ops: the toggle, the flavour, and a coalescable drive for
+   a dragged dial. mac draws the toggle, the dial and the flavour menu in the
+   group's header.

@@ -44,6 +44,25 @@ void check(bool cond, const std::string& what) {
 void section(const char* s) { std::printf("[%s]\n", s); }
 bool near(double a, double b, double tol = 1e-5) { return std::fabs(a - b) <= tol; }
 
+/// Silence, then `v` from frame `at` of its own count on (ADR-0172's edge).
+class StepNode final : public Node {
+public:
+    StepNode(float v, std::int64_t at) : v_(v), at_(at) {}
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t i = 0; i < io.frames; ++i) {
+            const float x = (count_ + i >= at_) ? v_ : 0.0f;
+            for (std::int32_t c = 0; c < io.channels; ++c) io.out[c][io.blockOffset + i] = x;
+        }
+        count_ += io.frames;
+    }
+    [[nodiscard]] const char* name() const noexcept override { return "step"; }
+
+private:
+    float v_;
+    std::int64_t at_;
+    std::int64_t count_ = 0;
+};
+
 class ToneNode final : public Node {
 public:
     explicit ToneNode(float v) : v_(v) {}
@@ -87,13 +106,16 @@ struct Mix {
         q.payload = {{"id", id}, {key, std::move(value)}};
         op(q);
     }
-    void load() {
+    /// Sources other than tones: a track id's own node (ADR-0172's steps).
+    std::map<std::int64_t, Node*> extra;
+    void load(double sampleRate = 48000.0) {
         session.setSourcesFor([this](std::int64_t id) {
+            if (const auto e = extra.find(id); e != extra.end()) return std::vector<Node*>{e->second};
             const auto it = tones.find(id);
             return it == tones.end() ? std::vector<Node*>{} : std::vector<Node*>{it->second.get()};
         });
         SessionSpec spec;
-        spec.sampleRate = 48000.0;
+        spec.sampleRate = sampleRate;
         spec.maxFrames = 512;
         if (!session.load(*store, {}, spec)) throw std::runtime_error(session.error());
     }
@@ -249,6 +271,84 @@ void testVolumePanMute() {
     for (const auto& p : m.session.problems())
         if (p.find("tracks#2: pan law 7") != std::string::npos) named = true;
     check(named, "an unknown pan law is named, and Live's is used");
+}
+
+void testTrackDelay() {
+    section("ADR-0172 -- mixer.setDelay: a track delay played as latency, either sign");
+
+    // The strip alone: the sign, the rate and the limit.
+    StripNode s;
+    s.prepare(96000.0, 512);
+    s.setDelay(100, 48000);
+    check(s.latencySamples() == -200, "100 samples late at 48 kHz is 200 at 96 kHz, as latency -200");
+    s.setDelay(-100, 48000);
+    check(s.latencySamples() == 200, "early is positive latency");
+    s.setDelay(10 * 48000, 48000);
+    check(s.latencySamples() == -96000, "held to one second either way");
+
+    // Where the step lands at the master, first sample at or above `level`.
+    auto firstAt = [](const std::vector<float>& h, float level) {
+        for (std::size_t i = 0; i < h.size(); ++i)
+            if (h[i] >= level - 1e-6f) return static_cast<long>(i);
+        return -1L;
+    };
+    auto run = [&](std::int64_t delayA, double rate, const char* name) {
+        Mix m(name);
+        StepNode a(0.5f, 1000), b(0.25f, 1000);
+        m.track(1, "audio", "A");
+        m.track(2, "audio", "B");
+        m.track(9, "master", "Master");
+        m.extra[1] = &a;
+        m.extra[2] = &b;
+        if (delayA != 0) m.set("mixer.setDelay", 1, "samples", delayA);
+        m.load(rate);
+        m.hist.clear();
+        for (int k = 0; k < 8; ++k) {
+            m.render(512);
+            m.hist.insert(m.hist.end(), m.l.begin(), m.l.end());
+        }
+        struct Result {
+            long first, full;
+            float between;   // frame 1050: who plays before the other arrives
+        };
+        return Result{firstAt(m.hist, 0.25f), firstAt(m.hist, 0.75f), m.hist[1050]};
+    };
+    const auto none = run(0, 48000.0, "delay0");
+    check(none.first == 1000 && none.full == 1000, "no delay: both steps at frame 1000");
+    const auto late = run(100, 48000.0, "delay+");
+    check(late.first == 1000 && late.full == 1100 && late.between == 0.25f,
+          "+100: B alone from 1000, A joins 100 samples later at 1100");
+    const auto early = run(-100, 48000.0, "delay-");
+    check(early.first == 1000 && early.full == 1100 && early.between == 0.5f,
+          "-100: A alone from 1000, B joins 100 samples later: A leads by exactly 100");
+    const auto fast = run(100, 96000.0, "delay96");
+    check(fast.full - fast.first == 200, "at 96 kHz the same 100 project samples are 200");
+
+    // Alone, a delayed track is still delayed: delay compensation starts from zero.
+    Mix alone("delay-alone");
+    StepNode a(0.5f, 1000);
+    alone.track(1, "audio", "A");
+    alone.track(9, "master", "Master");
+    alone.extra[1] = &a;
+    alone.set("mixer.setDelay", 1, "samples", 300);
+    alone.load();
+    alone.hist.clear();
+    for (int k = 0; k < 4; ++k) {
+        alone.render(512);
+        alone.hist.insert(alone.hist.end(), alone.l.begin(), alone.l.end());
+    }
+    check(firstAt(alone.hist, 0.5f) == 1300, "a track alone is delayed too: its step at 1300");
+
+    // The master is named, not played; past one second is named and held.
+    Mix named("delay-named");
+    named.track(1, "audio", "A", 0.5f);
+    named.track(9, "master", "Master");
+    named.set("mixer.setDelay", 9, "samples", 480);
+    named.set("mixer.setDelay", 1, "samples", 5 * 48000);
+    named.load();
+    check(named.mentions("tracks#9: the master's delay is not played"), "a delay on the master is named");
+    check(named.mentions("tracks#1: a delay of 240000 samples is past one second"),
+          "a delay past one second is named, and played at one second");
 }
 
 void testSolo() {
@@ -433,6 +533,7 @@ int main() {
         testStripsOutliveGraphs();
         testAutomationPlays();
         testOverride();
+        testTrackDelay();
     } catch (const std::exception& e) {
         check(false, std::string("exception: ") + e.what());
     }
