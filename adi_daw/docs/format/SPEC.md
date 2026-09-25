@@ -471,6 +471,12 @@ missing or its mapping changes between versions, normalized automation becomes
 meaningless, while `real` survives. Where both are knowable, writers SHOULD store
 `real` and let the runtime map.
 
+**A device lane** (`owner_kind = 'device'`, ADR-0165) names its parameter in
+`param_ref` by the plug-in's numeric id, in decimal: a VST3 `ParamID` or a
+CLAP id. The reference runtime plays `normalized` device lanes today. A `real`
+device lane is kept and reported until the plug-in's mapping is available to
+the engine. A track lane's `param_ref` is a strip parameter (§6.9).
+
 ### 6.4 Audio clips and warping
 
 `audio_clips` references a `media_files` row and stores its read window as

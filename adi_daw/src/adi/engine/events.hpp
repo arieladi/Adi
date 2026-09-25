@@ -26,7 +26,10 @@ enum class EventType : std::uint8_t {
     NoteOff = 1,
     /// Per-note pitch / timbre / pressure. `dim` is `adi::ExpressionDim`.
     NoteExpression = 2,
-    /// A parameter's stored value changed: the user turned a knob.
+    /// A parameter's value: the user turned a knob, or its automation moved
+    /// it. Addressed to a DEVICE it is normalized 0..1 (ADR-0124's wire unit,
+    /// ADR-0165), and the device host converts it to its format's unit -- a
+    /// CLAP plain value; a built-in node such as a test gain names its own.
     ParamValue = 3,
     /// A modulation offset applied ON TOP of the stored value, which is not
     /// changed (ADR-0046, ADR-0052). CLAP carries this natively; for VST3 the

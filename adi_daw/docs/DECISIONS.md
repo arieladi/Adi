@@ -11112,3 +11112,128 @@ Five plants were built under MSVC `/WX`, and each failed a named check:
 - A3: an overridden lane stays bound.
 - A4: re-enable forgets to rebuild.
 - A5: lanes are read only at a block's start.
+
+---
+
+## ADR-0165 — A plug-in's parameters follow their automation: the engine side, events on ADR-0054's grid, proved on the audio thread — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION; THE DEVICE-HOST HALF IS MAC'S**
+
+**Director's instruction:** build the engine side of plug-in parameter
+automation, with CTest fixtures that prove the audio thread handles it. Leave
+the device-host integration to mac, back on 2026-09-27.
+
+A strip reads its own lanes (ADR-0164), but a plug-in cannot. Its lanes become
+`ParamValue` events addressed to its node, and the graph treats them as it
+treats every addressed event: it keeps them at the node and splits the block
+at them (ADR-0042).
+
+### Decisions
+
+1. **When an event is sent:**
+   - **On ADR-0054's grid:** at most one event per lane every
+     `sessionRate/500` samples. That is the sub-block floor, so no two events
+     coalesce into one segment.
+   - **At every automation point inside the block, on its own sample.** A step
+     lands where it is drawn, not on the next grid line.
+   - **In time order.** Grid lines and points are merged. Offered out of order,
+     a point between two grid lines would be compared with the later line's
+     value and skipped as unchanged.
+   - **Only when the value changes.** A value equal to the last one sent is not
+     sent again, so a flat lane costs one event, not 500 a second.
+2. **Where the transport is:**
+   - **Playing:** each contiguous run of the block is read from its first
+     sample, so a loop wrap or a locate re-sends the value there. This is the
+     chase, and so is the first block after a rebuild.
+   - **Parked:** the playhead is one position. The transport's
+     `sampleAt(offset)` answers position + offset whether playing or not, so
+     both the emitter and the strip (ADR-0164) now read offset 0 when stopped.
+     *This fixes ADR-0164.* Its strip read a block ahead of a parked playhead,
+     so a sloped lane made a small sawtooth at the block rate. The parked test's
+     tolerance hid it. The mixer suite now demands one level across a parked
+     block.
+3. **What unit, and what is refused:**
+   - **Normalized 0..1**, ADR-0124's wire unit. A device lane must be
+     normalized, because a real value needs the plug-in's own mapping, which
+     the device host holds.
+   - **`param_ref` is the plug-in's numeric parameter id:** a VST3 `ParamID`
+     or a CLAP id, in decimal.
+   - **Refused and named:** a real lane, a non-numeric id, a second lane for
+     one parameter, and a device with lanes that is in no chain. A placeholder
+     is named: its automation waits for the plug-in.
+4. **A full list refuses, and the refusal is counted.** The event is not
+   remembered as sent, so the next grid line offers it again. A value refused
+   once is therefore never lost for ever. Nothing on the path allocates, locks
+   or touches a file.
+5. **The source lives on the node, not in the graph** (`Node::setEventSource`,
+   graph.hpp), beside ADR-0158's held notes:
+   - A device outlives every graph, and no device class has to know that
+     automation exists. `DeviceNode` is untouched.
+   - The session sets each device's source before the graph that plays it is
+     published.
+   - The realiser keeps the source's owner, one immutable binding per rebuild,
+     with the graph, so a retired graph never calls a freed source.
+6. **The override (ADR-0162) for a plug-in's parameter.** A refresh that finds
+   a parameter's stored value changed overrides its lane. A row that appears or
+   disappears counts as a change. The change can come from an op, a knob in
+   ADI, or a gesture in the plug-in's own window turned into an op by ParamOps
+   (ADR-0124). Re-Enable is shared with the strip's lanes.
+
+### The device-host half, which is mac's
+
+Until mac's half lands, **no real plug-in hears these events**. Today:
+- `Vst3Device::process` does not read `ParamValue` from `io.events` at all.
+- `ClapDevice` passes the value through unconverted, when CLAP expects a plain
+  value.
+
+The engine side is complete and tested against a recording device. The brief
+is in `collab/prompts/2026-09-27a-mac-device-automation.md`:
+1. **VST3:** `ParamValue` events in `io.events` become `IParameterChanges`
+   points at their segment-relative offsets, in normalized units, beside the
+   router's mapped CCs.
+2. **CLAP:** convert the normalized value to the plain value through the
+   parameter's declared range, as `setParam` already does, before it becomes
+   a `CLAP_EVENT_PARAM_VALUE`.
+3. **No echo becomes an edit.** `param_edits.hpp` already says it: automation
+   playback is never submitted to `ParamEditCapture`. When the host keeps a
+   plug-in's editor in step with automation, or a plug-in echoes a value the
+   host set, the glue filters it. Otherwise the echo would override its own
+   lane at once.
+4. **The UI:**
+   - an automation LED per automated parameter;
+   - Live's Re-Enable Automation button, over
+     `Session::automationOverridden()` and `reenableAutomation()`;
+   - the per-parameter re-enable, in the context menu.
+5. **A probe:** the fixture VST3 and a CLAP instrument following a lane, with
+   the rendered level checked.
+
+**Evidence.** A new suite, `adi_param_automation_tests`, with 133 checks:
+- **the emitter alone,** at 44.1, 48, 96, 192 and 768 kHz:
+  - every event the lane's value at its own sample, bit for bit, on the grid
+    or at a block's start, rising;
+  - a step at sample 1000 exactly, between grid lines 960 and 1056;
+  - a flat lane sending once in fifty blocks;
+  - a parked playhead sending once, and a locate chasing;
+  - a loop wrap re-sending the loop start's value at the wrap's frame;
+  - a full list refusing, counting, and offering again;
+  - 200 looping blocks at two sizes with no allocation;
+  - two emitters agreeing byte for byte;
+- **through the graph and the session into a recording device,** at five
+  rates and four block sizes (64, 257, 512, 4096): every event on its own
+  segment, carrying the lane's value at its sample, with twenty sessions
+  allocating nothing and touching no file in the callback;
+- **the override and Re-Enable:** after re-enabling, the chase at the
+  playhead;
+- **the named refusals;**
+- **a graph republished twelve times under a running callback:** no
+  allocation, and the lane still plays.
+
+The mixer suite gains its parked-level check.
+
+Eight plants were built under MSVC `/WX`, and each failed a named check:
+- E1: points ignored.
+- E2: no chase.
+- E3: no dedupe.
+- E4: a refused event remembered as sent.
+- E5: a parked playhead read a block ahead.
+- E6: a parameter edit never overrides.
+- E7: sources never set.
+- E8: the strip reading a block ahead of a parked playhead.

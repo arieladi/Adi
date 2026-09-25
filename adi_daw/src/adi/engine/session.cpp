@@ -402,12 +402,15 @@ bool Session::rebuild() {
     // lane the user overrode. An override of a lane that is gone goes with it.
     const std::shared_ptr<const AutomationProgram> program = compileAutomation(model_, spec_.sampleRate);
     stripAutomation_ = bindStripAutomation(program, overridden_);
+    deviceAutomation_ = bindDeviceAutomation(program, overridden_, transport_, spec_.sampleRate);
     for (auto it = overridden_.begin(); it != overridden_.end();) {
         bool known = false;
         for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;
+        for (const auto& [key, laneId] : deviceAutomation_->laneFor) known = known || laneId == *it;
         it = known ? std::next(it) : overridden_.erase(it);
     }
     strips_.sync(model_, &transport_, stripAutomation_);   // ADR-0163: before the graph names them
+    bindDeviceSources();                                   // ADR-0165: likewise
     attach();   // the spec, the sources or the placement may have changed
     ++stats_.rebuilds;
     const bool ok = devices_.rebuildNow();
@@ -426,6 +429,9 @@ bool Session::rebuild() {
         problems_.insert(problems_.end(), found.begin(), found.end());
         problems_.insert(problems_.end(), stripAutomation_->problems.begin(), stripAutomation_->problems.end());
     }
+    if (deviceAutomation_)
+        problems_.insert(problems_.end(), deviceAutomation_->problems.begin(), deviceAutomation_->problems.end());
+    problems_.insert(problems_.end(), deviceSourceProblems_.begin(), deviceSourceProblems_.end());
     const std::vector<std::string>& fromGraph = graph_.problems();
     problems_.insert(problems_.end(), fromGraph.begin(), fromGraph.end());
     return ok;
@@ -455,6 +461,12 @@ struct StripValues {
     double volume = 0.0, pan = 0.0;
     bool muted = false;
 };
+std::map<std::pair<std::int64_t, std::string>, double> paramValues(const rows::Model& m) {
+    std::map<std::pair<std::int64_t, std::string>, double> v;
+    for (const rows::PluginParam& p : m.pluginParams) v[{p.deviceId, p.paramId}] = p.normalized;
+    return v;
+}
+
 std::map<std::int64_t, StripValues> stripValues(const rows::Model& m) {
     std::map<std::int64_t, StripValues> v;
     for (const rows::Track& t : m.tracks) v[t.id].muted = t.muted;
@@ -473,6 +485,7 @@ bool Session::refresh(const Store& store) {
         return false;
     }
     const std::map<std::int64_t, StripValues> before = stripValues(model_);
+    const std::map<std::pair<std::int64_t, std::string>, double> paramsBefore = paramValues(model_);
     model_ = rows::readModel(store);
     // ADR-0162: an automated strip value that changed is overridden. Compared
     // BEFORE the rebuild, so the new graph already plays the manual value.
@@ -489,6 +502,20 @@ bool Session::refresh(const Store& store) {
             if (changed) overridden_.insert(laneId);
         }
     }
+    // ADR-0162 for a plug-in's parameters (ADR-0165): a changed stored value --
+    // an op, a knob in ADI, a gesture in the plug-in's own window turned into
+    // an op by ParamOps (ADR-0124) -- overrides that parameter's lane. A row
+    // that appears or disappears is a change too.
+    if (deviceAutomation_) {
+        const std::map<std::pair<std::int64_t, std::string>, double> paramsAfter = paramValues(model_);
+        for (const auto& [key, laneId] : deviceAutomation_->laneFor) {
+            if (overridden_.count(laneId)) continue;
+            const auto b = paramsBefore.find(key);
+            const auto a = paramsAfter.find(key);
+            const bool had = b != paramsBefore.end(), has = a != paramsAfter.end();
+            if (had != has || (had && b->second != a->second)) overridden_.insert(laneId);
+        }
+    }
     clipProject_ = readClipProject(store, model_);
     resolveNewRows(store);
     retireDepartedRows();
@@ -497,6 +524,34 @@ bool Session::refresh(const Store& store) {
 }
 
 void Session::setSourcesFor(SourceFn fn) { sources_ = std::move(fn); }
+
+void Session::bindDeviceSources() {
+    deviceSourceProblems_.clear();
+    std::set<std::int64_t> attached;
+    for (Entry& e : entries_) {
+        device::DeviceNode& node = devices_.nodeAt(e.hostIndex);
+        DeviceAutomation* source = nullptr;
+        if (!e.retired && deviceAutomation_) {
+            const auto it = deviceAutomation_->byDevice.find(e.deviceId);
+            if (it != deviceAutomation_->byDevice.end()) source = it->second.get();
+        }
+        // The binding itself is the keepAlive: the realiser keeps it with the
+        // graph, so a retired graph never calls a freed source.
+        node.setEventSource(source, source != nullptr ? std::shared_ptr<void>(deviceAutomation_)
+                                                      : std::shared_ptr<void>{});
+        if (source != nullptr) {
+            attached.insert(e.deviceId);
+            if (e.placeholder)
+                deviceSourceProblems_.push_back("devices#" + std::to_string(e.deviceId) +
+                                                ": a placeholder; its automation waits for the plug-in");
+        }
+    }
+    if (deviceAutomation_)
+        for (const auto& [id, source] : deviceAutomation_->byDevice)
+            if (!attached.count(id))
+                deviceSourceProblems_.push_back("devices#" + std::to_string(id) +
+                                                ": has automation but is in no chain; not played");
+}
 
 bool Session::reenableAutomation() {
     if (overridden_.empty()) return true;

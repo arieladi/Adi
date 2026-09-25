@@ -5,6 +5,45 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — plug-in parameter automation, the engine side (ADR-0165); mac's brief
+
+**The director's instruction:** the engine side, with CTest fixtures that
+prove the audio thread; the device-host integration left entirely to mac.
+
+**What is built:**
+- **`Node::setEventSource`:** an `EventSource` kept on the node, like the held
+  notes, so no device class had to change.
+- **The emitter:** `DeviceAutomation` sends normalized `ParamValue` events on
+  ADR-0054's grid and at every point, merged in time order. It sends only
+  changes, chases at every run's start, and reads one position when parked.
+  A full list refuses and counts, and the refused event is not remembered as
+  sent.
+- **The binding:** one per rebuild. Its owner is kept by the realiser.
+- **The override:** a `plugin_params` value that changed overrides its lane.
+
+**Found on the way: a bug in #123 (ADR-0164).** The transport's `sampleAt`
+answers position + offset even when stopped. So the strip read a block ahead
+of a parked playhead, and a sloped lane made a small sawtooth at the block
+rate. The parked test's tolerance hid it. Fixed here, and the mixer suite now
+demands one level across a parked block (plant E8).
+
+**Checks and plants.** A new suite, `adi_param_automation_tests`, with 133
+checks: the emitter at five rates; the graph and session at five rates by
+four block sizes into a recording device, with every event on its own
+segment; no allocation and no file I/O in the callback; a graph republished
+12 times under a running render. +1 mixer check, giving 4667 across 48
+suites. Plants E1 to E8 each fail a named check.
+
+**For mac on the 27th:** `collab/prompts/2026-09-27a-mac-device-automation.md`.
+No real plug-in hears these events yet:
+- `Vst3Device` ignores `ParamValue` in `io.events`;
+- `ClapDevice` passes the value through unconverted, when CLAP wants plain
+  units;
+- echoes must never reach `ParamEditCapture`;
+- the UI still needs the LED and the Re-Enable button.
+
+---
+
 ## 2026-09-25 — automation plays on the strip, with Live's override (ADR-0164); the .amxd pre-flight scan
 
 **Automation.** The strip reads its own lanes (volume, pan, mute) at the

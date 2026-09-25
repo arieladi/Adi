@@ -1109,7 +1109,12 @@ void Graph::process(const AudioIo& io) noexcept {
     // splits were chosen without, and ADR-0042's promise that a value lands on
     // its own segment boundary would hold for pushed events and quietly fail
     // for forwarded ones.
-    for (auto& s : slots_) if (s.node) s.node->sourceEvents(s.events, frames);
+    for (auto& s : slots_) {
+        if (s.node == nullptr) continue;
+        s.node->sourceEvents(s.events, frames);
+        // ADR-0165: automation addressed to this node, beside what it sources.
+        if (EventSource* source = s.node->eventSource()) source->emit(s.events, frames);
+    }
     forwardEvents(frames);
 
     // --- segment boundaries (ADR-0042) -------------------------------------

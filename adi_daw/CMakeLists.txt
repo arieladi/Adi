@@ -206,6 +206,7 @@ add_library(adi_core STATIC
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
     src/adi/engine/mixer.cpp
+    src/adi/engine/param_automation.cpp
     src/adi/engine/play_quantize.cpp
     src/adi/engine/param_ops.cpp
     src/adi/engine/param_edits.cpp
@@ -410,6 +411,11 @@ add_test(NAME adi_session_tests COMMAND adi_session_tests)
 add_executable(adi_mixer_tests tests/test_mixer.cpp)
 target_link_libraries(adi_mixer_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_mixer_tests COMMAND adi_mixer_tests)
+
+# ADR-0165: plug-in parameter automation, the engine side.
+add_executable(adi_param_automation_tests tests/test_param_automation.cpp)
+target_link_libraries(adi_param_automation_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_param_automation_tests COMMAND adi_param_automation_tests)
 
 add_executable(adi_graph_tests tests/test_graph.cpp)
 target_link_libraries(adi_graph_tests PRIVATE adi_core adi_warnings)
