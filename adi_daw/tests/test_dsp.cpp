@@ -852,7 +852,8 @@ void testTruePeakFindsTheCrestBetweenSamples() {
     near(20.0 * std::log10(sp), -9.03, 0.02, "fs/4 at 45 degrees: the samples peak 3 dB under the crest");
     // Oversampling 4x leaves a grid: a crest between two of its points reads
     // low, by cos(pi / 16) = -0.17 dB at fs/4. That is the Annex's method, and
-    // why EBU Tech 3341 gives a true-peak meter +0.2/-0.4 dB.
+    // why EBU Tech 3341 (2023, section 2.6 and Table 1, signals 15 to 23) gives
+    // a true-peak meter +0.2/-0.4 dB, the upsampling filter's error included.
     const double tpDb = 20.0 * std::log10(tp);
     check(tpDb > -6.42 && tpDb < -5.82, "and the true peak is the crest, -6.02 dBFS, within EBU Tech 3341's "
                                         "+0.2/-0.4 dB: " + std::to_string(tpDb));

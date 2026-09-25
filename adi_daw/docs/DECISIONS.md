@@ -12153,9 +12153,9 @@ fix.
    - **Resetting:** `resetPeak()` releases the hold without disturbing the
      filter.
    - **Tolerance:** the method reads low when a crest falls between
-     oversampled points, cos(π/16), or −0.17 dB, at fs/4. That is why, as I
-     understand it, EBU Tech 3341 gives true-peak meters +0.2/−0.4 dB; that
-     figure is from memory and still to be checked against the document. The
+     oversampled points, cos(π/16), or −0.17 dB, at fs/4. That is why EBU
+     Tech 3341 (2023, §2.6 and Table 1, signals 15 to 23) allows a true-peak
+     meter +0.2/−0.4 dB, the error of the upsampling filter included. The
      tests hold the meter to it across the audible band.
 6. **The compare is pure functions for the UI thread** (ADR-0167 d2):
    - **`correlation(a, b)`:** from −1 to +1, and 0 when either side is silent.

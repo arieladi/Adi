@@ -26,9 +26,10 @@ Only the `win` agent writes to this file. Newest entry at the top.
 - **My first ring checked the published count after copying,** which misses
   a block being written. It now uses a seqlock order.
 - **4× oversampling reads a crest between grid points low,** −0.17 dB at
-  fs/4, inherent to the method. The meter is held to what I take to be EBU
-  Tech 3341's tolerance, +0.2/−0.4 dB, over the audible band; the figure is
-  from memory and should be checked.
+  fs/4, inherent to the method. The meter is held to EBU Tech 3341's
+  tolerance, +0.2/−0.4 dB, over the audible band. I first wrote the figure
+  from memory; it is now checked against the 2023 edition (§2.6 and Table 1,
+  signals 15 to 23).
 
 **Checks:**
 - `adi_mixer_tests`: 104, 17 of them new. A threaded writer and reader gave
