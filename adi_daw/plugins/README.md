@@ -43,8 +43,9 @@ under MSVC.
 
 Where the rules are silent (reverb, ambience, effects), Chris Johnson's own
 picks stand. Every row of the catalogue names the rule that decided it.
-`tools/airwindows_catalogue.py` writes the
-catalogue, the C++ table (`Source/aw_catalogue.inc`) and the source list
+`plugins/airwindows/SUITES.md` lists each suite's algorithms in the order of its
+Algorithm parameter. `tools/airwindows_catalogue.py` writes the
+catalogue, the suite list, the C++ table (`Source/aw_catalogue.inc`) and the source list
 (`effects.cmake`). Edit the script, never its output.
 
 **Eleven suites** (ADR-0171, ADR-0173), one CLAP plug-in each, named
@@ -103,5 +104,6 @@ build-juce/adi_play_artefacts/Debug/adi_play --list --search <folder of .clap fi
 ```
 
 The two test suites drive the plug-ins as a host does. `adi_play --list` shows
-what the DAW's scanner finds. `adi_play <project> --search <dir> --render
+what the DAW's scanner finds. `tools/add_clap_chain.py` puts a chain of CLAP
+plug-ins on a demo project's first track (`make_demo_project.py`) for a render. `adi_play <project> --search <dir> --render
 <seconds>` plays a project through them offline, with no audio device.
