@@ -4,44 +4,66 @@ set(ADI_AW_EFFECTS
     TapeDelay2
     PitchDelay
     TripleSpread
+    Melt
+    StarChild
     ChimeyDeluxe
+    ChimeyGuitar2
+    Cabs2
     PointyGuitar
-    ChimeyGuitar
+    PointyDeluxe
+    GrindAmp
+    FireAmp
+    LeadAmp
+    CrickBass
+    Wolfbot
+    LilAmp
+    MidAmp
+    BigAmp
+    BassDrive
+    BassAmp
     DubSub2
     OrbitKick
-    Elliptical
-    BiquadStack
-    Air4
     Slew4
     DeBess
     Sinew
-    SlewSonic
     Smooth
     Slew2
+    DeHiss
+    ADClip9
     ClipOnly3
+    ClipSoftly
     OneCornerClip
+    AQuickVoiceClip
     Console9Buss
     Console9Channel
     ConsoleLABuss
     ConsoleLAChannel
     ConsoleMCBuss
     ConsoleMCChannel
-    Console0Channel
-    Console0Buss
-    PurestConsoleBuss
-    PurestConsoleChannel
+    ConsoleMDBuss
+    ConsoleMDChannel
+    PurestConsole3Buss
+    PurestConsole3Channel
+    PDBuss
+    PDChannel
+    C5RawBuss
+    C5RawChannel
+    AtmosphereBuss
+    AtmosphereChannel
+    EveryConsole
+    Distortion
+    Edge
+    Dirt
     Mackity
     Density3
-    PaulWide
-    PaulDither
-    TPDFDither
-    BeziComp
-    Pop3
-    Pop2
-    Pressure5
-    StoneFireComp
+    ZOutputStage
+    Zoom
+    Drive
+    Loud
+    HardVacuum
+    HighImpact
+    MultiBandDistortion
     DigitalBlack
-    Pyewacket
     SoftGate
     Gatelope
     TakeCare
@@ -51,23 +73,6 @@ set(ADI_AW_EFFECTS
     TremoSquare
     Tremolo
     GlitchShifter
-    Energy2
-    FastDistance
-    Suzan
-    SmoothEQ3
-    PearEQ
-    PearLiteEQ
-    RetroBass
-    FatEQ
-    SmoothEQ2
-    Parametric
-    Dattorro
-    Silken
-    Stonefire
-    Isolator3
-    Distance3
-    Weight
-    ToneSlant
     DeRez4
     DeBez
     HipCrush
@@ -75,7 +80,14 @@ set(ADI_AW_EFFECTS
     Pockey2
     CrunchyGrooveWear
     GrooveWear
+    BitGlitter
+    TapeBias
+    ChromeOxide
+    Cojones
     Vibrato
+    Bite
+    Deckwrecka
+    DustBunny
     DeNoise
     TapeDust
     kRockstar
@@ -95,50 +107,57 @@ set(ADI_AW_EFFECTS
     Galactic
     Chamber
     NonlinearSpace
+    PurestSaturation
+    SquareRoot
     Hypersoft
+    Longhand
+    Creature
+    Huge
+    NCSeventeen
     Tube2
-    Tube
+    Spiral2
+    PurestDrive
+    Focus
+    Mojo
+    Dyno
+    UnBox
+    Desk4
+    Righteous4
     Srsly3
-    Srsly
     Wider
     ToVinyl4
     PurestWarm3
     Mastering2
     Discontapeity
     Discontinuity
+    Hype
     Shape
     Inflamer
     Sweeten
-    PurestWarm2
+    Coils2
     Interstage
+    Remap
     SingleEndedTriode
+    TransDesk
+    TubeDesk
     ToTape9
     TapeHack2
+    FromTape
+    Tape
+    IronOxideClassic2
+    IronOxide5
+    ChannelX
+    WoodenBox
+    BussColors4
     Channel9
-    SoftClock3
-    BitShiftPan
-    BitShiftGain
-    PurestGain
-    PurestDualPan
-    PurestFade
-    Monitoring3
-    DubPlate2
-    DubPlate
-    CansAW
-    Cans
-    Golem
-    ZBandpass2
-    ZHighpass2
-    ZLowpass2
-    ZNotch2
-    ZRegion2
-    YBandpass
-    YHighpass
-    YLowpass
-    YNotch
-    XBandpass
-    XHighpass
-    XLowpass
-    XNotch
-    XRegion
+    Apicolypse
+    Neverland
+    Elation
+    Calibre
+    Cider
+    Crystal
+    Precious
+    Luxor
+    VoiceTrick
+    DeCrackle
 )

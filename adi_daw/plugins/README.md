@@ -7,7 +7,7 @@ its own licence; none links into the DAW.
 | Plug-in | Where | Upstream, pinned | CLAP id | Our build's licence |
 |---|---|---|---|---|
 | **ADI RMSC**: ring-modulation sidechain ducking | [`rmsc/`](rmsc) | ours; DSP in `src/adi/dsp/rmsc.*` | `com.adi.rmsc` | AGPLv3 (JUCE 9) |
-| **ADI Airwindows**: 141 effects, each its own plug-in, auto gain | [`airwindows/`](airwindows) | [airwin2rack](https://github.com/baconpaul/airwin2rack) `b6eef0a`, MIT | `com.adi.airwindows.<name>` | GPLv3 |
+| **ADI Airwindows**: 160 effects, each its own plug-in, auto gain | [`airwindows/`](airwindows) | [airwin2rack](https://github.com/baconpaul/airwin2rack) `b6eef0a`, MIT | `com.adi.airwindows.<name>` | GPLv3 |
 | **Smartelectronix**: Smexoscope, Anechoic Room Simulator, Bitmurderer, Bouncy, Crazy Ivan, Cyanide 2, H2O, MadShifta, One Ping Only, SupaPhaser, SupaTrigga | [`external/smartelectronix/`](external/smartelectronix) | [bdejong/smartelectronix](https://github.com/bdejong/smartelectronix) `248d2c4`, GPL-3.0 | `com.adi.smartelectronix.<name>` | AGPLv3 (JUCE 8) |
 | **ChowTapeModel** | its own tree | [AnalogTapeModel](https://github.com/jatinchowdhury18/AnalogTapeModel) `604372e`, GPL-3.0 | `org.chowdsp.CHOWTapeModel` (theirs) | GPLv3 |
 | **ChowCentaur** | [`external/chowcentaur/`](external/chowcentaur) | [KlonCentaur](https://github.com/jatinchowdhury18/KlonCentaur) `f3bb633`, BSD-3-Clause | `com.adi.chowdsp.chowcentaur` | GPLv3 (JUCE 6) |
@@ -33,8 +33,17 @@ under MSVC.
 - whether it is kept, and why not if it isn't;
 - where auto gain starts on.
 
-141 are kept: Chris Johnson's own Recommended and Basic collections, plus
-Density3, Pressure5 and Channel9. `tools/airwindows_catalogue.py` writes the
+160 are kept, by the director's five rules (ADR-0170):
+1. no EQs, filters, dithers, utilities or compressors;
+2. every saturation, distortion, tape and console family, newest by date;
+3. at most ten noise-reduction and de-essing tools;
+4. three stereo tools;
+5. six secret weapons: Melt, TapeDust, GrooveWear, StarChild, Vibrato and
+   NonlinearSpace.
+
+Where the rules are silent (reverb, ambience, effects), Chris Johnson's own
+picks stand. Every row of the catalogue names the rule that decided it.
+`tools/airwindows_catalogue.py` writes the
 catalogue, the C++ table (`Source/aw_catalogue.inc`) and the source list
 (`effects.cmake`). Edit the script, never its output.
 
@@ -46,7 +55,7 @@ meaning.
 
 **No editor**, as Airwindows never had one: the host draws the parameter panel.
 **Auto gain** (`src/adi/dsp/auto_gain.*`) is a parameter on every effect, and
-starts on for the 19 tone effects that get louder as they colour and have no
+starts on for the 40 tone effects that get louder as they colour and have no
 output control.
 
 ## Build

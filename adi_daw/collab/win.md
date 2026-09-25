@@ -5,6 +5,44 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — the scope, the agent's runtime, Live's devices, and Airwindows re-curated (ADR-0167 to ADR-0170)
+
+**The director's requests:**
+- an OScope-style scope built into the DAW, with an easy two-channel compare;
+- fork OpenClaw, strip it, and wire it to the RPC boundary;
+- all of Live's MIDI effects, plus Sampler, Simpler, Redux, Shifter and
+  Utility;
+- five rules to re-curate Airwindows.
+
+**Decided:**
+- **ADR-0167, the scope:** a panel that taps any track, device or bus with no
+  routing.
+  - Compare A and B as overlay, difference or sum, with correlation and an
+    offset readout. The offset is fixed with `mixer.setDelay`.
+  - Aligned by delay compensation, synced to the tempo map, with BS.1770-4
+    true peak.
+  - It amends ADR-0050 d4: a second audio-to-UI path, a ring per subscribed
+    tap.
+- **ADR-0168, the agent:** depend on OpenClaw's loop (pi-mono), do not fork
+  OpenClaw. **A ruling is requested.**
+  - Corrections to the brief: JSON on the wire, not CBOR; 70 ops registered,
+    not 160; Docker is optional.
+- **ADR-0169, Live parity:** fourteen MIDI effects (eight native, six Max for
+  Live) and the five devices, specified from the Live 12 manual, as native
+  devices with seeded randomness.
+- **ADR-0170, Airwindows:** the director's rules give 160 of 524, and each
+  catalogue row names its rule.
+  - The examples named superseded versions (Console7, ToTape6, Srsly2), and
+    console numbers are not ages: Console6 is from 2024.
+  - StarChild is kept as named, and StarChild2 is flagged.
+  - Pressure5 is dropped by rule 1.
+
+**Checks:** `adi_airwindows_tests`, 39 checks, all 160 effects clean;
+`adi_play` scans 160 and renders Console9Channel into Melt into StarChild.
+Docs and validators pass. There is no engine code in this branch.
+
+---
+
 ## 2026-09-25 — open-source plug-ins as CLAP, ADI Airwindows with auto gain, ADI RMSC (ADR-0166)
 
 **The director's instruction:** smartelectronix (all of it; Smexoscope

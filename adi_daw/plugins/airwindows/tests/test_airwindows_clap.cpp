@@ -252,7 +252,7 @@ void testTheFactoryListsTheKeptEffects() {
     check(f != nullptr, "and hands out the plug-in factory");
     check(adi::airwindows::entryGetFactory("clap.nothing") == nullptr, "and no other factory");
     const uint32_t n = f->get_plugin_count(f);
-    check(n >= 130 && n <= 160, "about the 141 of CATALOGUE.md, not all 524: " + std::to_string(n));
+    check(n >= 140 && n <= 180, "about the 160 of CATALOGUE.md, not all 524: " + std::to_string(n));
     std::set<std::string> ids;
     bool shaped = true;
     for (uint32_t i = 0; i < n; ++i) {
@@ -269,9 +269,14 @@ void testTheFactoryListsTheKeptEffects() {
     }
     check(ids.size() == n, "every id is different");
     check(shaped, "every descriptor: our id from its name, a description, audio-effect ... stereo");
-    for (const char* name : {"Density3", "Pressure5", "Channel9", "ToTape9", "Galactic", "kCathedral5"})
+    // ADR-0170: the newest of every colour family, the named noise, stereo and
+    // secret-weapon sets, Chris's picks elsewhere.
+    for (const char* name : {"Density3", "ToTape9", "Console9Channel", "Console9Buss", "Channel9",
+                             "DeBess", "Wider", "Melt", "StarChild", "kCathedral5"})
         check(ids.count(idOf(name)) == 1, std::string(name) + " is there");
-    for (const char* name : {"Density", "Density2", "Pressure4", "Galactic3"})
+    // And what the rules drop: older versions, EQs, dithers, utilities, compressors.
+    for (const char* name : {"Density", "Console7Channel", "ToTape6", "Air4", "TPDFDither",
+                             "PurestGain", "Pressure5"})
         check(ids.count(idOf(name)) == 0, std::string(name) + " is stripped");
     check(f->create_plugin(f, &g_host, "com.adi.airwindows.nothing") == nullptr,
           "an unknown id creates nothing");
@@ -347,7 +352,7 @@ void testEveryEffectRunsCleanly() {
 void testParameterChangesLandOnTheirSample() {
     section("ADR-0166 -- a parameter change lands on the sample it is stamped with");
 
-    const std::string id = idOf("PurestGain");
+    const std::string id = idOf("Density3");
     const Stereo in = source(kBlock);
     // Airwindows seeds each instance's output dither from rand() when it is
     // constructed; the same seed makes two instances comparable bit for bit.
@@ -400,7 +405,7 @@ void testAutoGainIsOnWhereItIsMissing() {
     check(defaultOf("Tube2") == 1.0, "Tube2 (Input, Tube; no output) starts with auto gain on");
     check(defaultOf("Density3") == 0.0, "Density3 has an Output of its own: off");
     check(defaultOf("kCathedral5") == 0.0, "a reverb: off");
-    check(defaultOf("PurestGain") == 0.0, "a gain utility, whose job is level: off");
+    check(defaultOf("ADClip9") == 0.0, "a clipper, whose job is loudness: off");
 
     // Tube2 driven hard: louder with auto gain off, as loud as its input with it on.
     const Stereo in = source(static_cast<std::size_t>(5 * kFs));
@@ -428,8 +433,8 @@ void testAutoGainIsOnWhereItIsMissing() {
     Instance b(idOf("Tube2").c_str());
     check(b.get(kAutoGainParamId) == 1.0 && b.load(saved) && b.get(kAutoGainParamId) == 0.0,
           "auto gain off survives save and load");
-    Instance other(idOf("Tube").c_str());
-    check(!other.load(saved), "Tube refuses Tube2's state");
+    Instance other(idOf("Spiral2").c_str());
+    check(!other.load(saved), "Spiral2 refuses Tube2's state");
 }
 
 }  // namespace

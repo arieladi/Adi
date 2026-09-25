@@ -11438,3 +11438,337 @@ All of it builds, loads in the DAW and renders.
    - Dragonfly Early into Hall, its tail running 2 s past the clip;
    - Tube2, Density3 and kCathedral5 from ADI Airwindows;
    - ADI RMSC.
+
+## ADR-0167 — The scope is built into the DAW: any two tracks compared, aligned and on the grid, with no routing — `DECIDED (direction)` (2026-09-25) — **DIRECTOR'S REQUEST; AMENDS ADR-0050 d4**
+
+**Director's request:** an oscilloscope in the DAW, after Audija's OScope and
+fx23's PsyScope Pro. OScope is a beat-grid-synced, true-peak oscilloscope, and
+compares a sidechain only in its paid version. PsyScope Pro is the director's
+own. The ask is to make a two-channel phase and waveform comparison *easy*, as
+only a DAW can.
+
+**What a plug-in scope cannot do, and why the DAW can.** Both references are
+plug-ins, so each needs signal routed to it:
+- **OScope** compares through a sidechain.
+- **PsyScope** links up to 128 instances.
+
+Neither knows the other tracks' latency. PsyScope offers "latency
+compensation for DAWs lacking PPQ", which is a manual correction. The DAW
+already holds every piece: each track's signal, every path's latency
+(ADR-0058), and the tempo map. A scope in the DAW needs none of the plumbing.
+
+### Decisions
+
+1. **It is a panel, not only a device.**
+   - **The Scope panel** reads any *tap*:
+     - a track, pre- or post-fader;
+     - any device's output in a chain;
+     - a group or return;
+     - the master.
+   - **A Scope device** exists as well, for a chain that wants one in place.
+   - Loading a plug-in scope still works: Smexoscope ships as CLAP
+     (ADR-0166).
+2. **Comparing two tracks is one gesture.**
+   - **Starting it:** select two tracks and choose *Compare in Scope*, or
+     Alt-click a second track's scope button. No sidechain and no routing.
+   - **Layers:** up to 8, each with:
+     - a channel view (L, R, Mid, Side, or L+R);
+     - a polarity flip;
+     - the track's own name and colour, read directly. PsyScope has to ask
+       for these over VST3.
+   - **Views:**
+     - **overlay** and **stacked**;
+     - **difference** (A − B): a null test;
+     - **sum** (A + B): where a kick and a bass cancel.
+   - **Readouts over the visible window:**
+     - **correlation**, −1 to +1;
+     - **offset:** the lag, in ms and in samples, that maximises the
+       cross-correlation within ±20 ms.
+   - **Fixing the offset** is one button. It proposes a `mixer.setDelay`, an
+     ordinary undoable op on B's strip. That op is designed (OPS.md, P1) and
+     not yet registered; the scope work registers it. The measurement and the
+     fix are in the same place, which no plug-in can offer.
+3. **Compared as heard.** A post-fader tap sits where plug-in delay
+   compensation has already aligned the paths (ADR-0058). Two tracks are
+   therefore compared as they arrive at the master, with no correction to
+   apply by hand.
+4. **On the grid:**
+   - **Window lengths** in bars and beats (1/16 to 4 bars) or in ms. They
+     lock to bar lines and follow tempo changes, because they read the tempo
+     map rather than a host's PPQ.
+   - **Triggers:**
+     - the grid;
+     - free-run;
+     - a level edge;
+     - PsyScope's frequency sync: a pitch, from MIDI or detected.
+   - **Stamps:** each captured block carries the timeline position its audio
+     represents, after compensation, so the grid is drawn from positions and
+     not guessed.
+5. **True peak** per ITU-R BS.1770-4 Annex 2:
+   - **Oversampling:** 4× at 44.1 and 48 kHz, 2× at 88.2 and 96 kHz, none at
+     176.4 kHz and above.
+   - **Readouts:** the view's maximum in dBTP beside the sample peak.
+   - **Markers:** wherever an inter-sample peak exceeds the sample peak.
+
+   The same meter serves the mixer and the planned true-peak limiter.
+6. **Inspection:**
+   - freeze;
+   - zoom and pan on both time and dB;
+   - a cursor readout in bars/beats, ms, samples and dB;
+   - at P2, a frozen buffer dragged out as a WAV (PsyScope's bounce).
+7. **A second path from audio to UI. This amends ADR-0050 d4,** which named
+   the meter scalar as the only one.
+   - **What it carries:** a waveform is a stream, not a scalar. Each
+     *subscribed* tap has a single-producer, single-consumer ring of raw
+     samples, sized to the longest window at the session rate, and its block
+     stamps.
+   - **Who writes it:** the audio thread copies wait-free.
+   - **Lifetime:** the ring is allocated when a view subscribes, on the
+     message thread. It is released through the realiser's retirement, as a
+     graph is.
+   - **Cost:** a tap nobody watches costs one relaxed atomic load per block.
+   - **Why the other channels are wrong:** nothing else changes. A scope is
+     not an op and not a snapshot, for ADR-0050's own reasons.
+8. **Priority and split: P1.**
+   - **win (engine):** taps, the ring, true peak, and correlation and offset
+     as pure functions tested headless.
+   - **mac (UI):** the panel, after the device-host work of ADR-0165.
+
+## ADR-0168 — The agent's runtime: depend on OpenClaw's loop, do not fork OpenClaw — `DECIDED (direction)` (2026-09-25) — **DEVIATES FROM THE DIRECTOR'S BRIEF ON ONE POINT; RULING REQUESTED**
+
+**Director's brief:** fork OpenClaw, strip its bloat, and wire it into the
+DAW's remote architecture:
+- **Keep:**
+  - the runtime (prompts, Markdown skills, the LLM loop);
+  - a tool schema mapped to "160+ undoable ops";
+  - a Node.js container.
+- **Drop:**
+  - the messaging adapters;
+  - the memory modules.
+- **Write:** a TypeScript bridge that encodes the model's action as CBOR and
+  sends it to the DAW's loopback RPC port. There the registry validates it,
+  queues it at the Propose tier, and shows the diff.
+
+**Agreed:** the fit is real. OpenClaw is an agent loop that calls tools, and
+the DAW exposes every action as a typed, documented op (AI-AGENT §3).
+
+**Why not a fork.** OpenClaw is mostly the part the brief throws away:
+- **Its layers:** a gateway (one Node process, WebSocket and HTTP on port
+  18789), channel adapters for more than ten messengers, a per-session lane
+  queue, skills, and file-plus-sqlite-vec memory.
+- **Its agent loop is not its own.** It delegates tool calling and the LLM to
+  **pi-mono** (`pi-agent-core` and `pi-ai`, MIT), which is a separate library.
+- **So "keep the runtime, strip the rest" leaves pi-mono,** inside a fork that
+  diverges from the moment it is made. Every security fix upstream would have
+  to be carried across by hand.
+- **The security record argues against carrying its surfaces:**
+  - **CVE-2026-25253:** the gateway's missing WebSocket origin check let a
+    crafted link steal its token. That is the component class a network
+    bridge would reuse.
+  - **ClawHub:** 12 to 20% of community skills carried malicious instructions
+    (the ClawHavoc campaign).
+  - **Credentials** were stored in plaintext.
+  - **Self-authored skills:** the agent can write its own. That is a prompt
+    injection which persists.
+
+### Decisions
+
+1. **`adi-agent`: a small TypeScript sidecar on pi-mono.**
+   - **What it runs on:** `pi-ai` and `pi-agent-core`, pinned by version and
+     verified when adopted (the packages moved npm scope in 2026).
+   - **Models:** `pi-ai` speaks Anthropic, OpenAI and Google, and any
+     OpenAI-compatible endpoint (llama.cpp, Ollama, vLLM). That covers
+     AI-AGENT §7's local, cloud and self-hosted paths without naming a
+     vendor.
+   - **Lifecycle:** it is ADR-0086's tier 2, a separate process. The DAW
+     launches it on demand and is whole without it (ADR-0064).
+   - **Transport:** it talks to the RPC boundary over loopback with the
+     session's token (ADR-0039 d4).
+2. **Kept from OpenClaw, as ideas rather than code:**
+   - **Markdown skills with progressive disclosure:** names first, content on
+     use. They ship with the DAW, read-only, and are reviewed like code. None
+     is downloaded, and none is written by the agent.
+   - **One lane per project:** a project's requests run one at a time, which
+     matches one transaction per request.
+3. **A few tools, not one per op:**
+   - **The tools:**
+     - `project_read(level, scope)`: the projection, levels 0 to 3
+       (AI-AGENT §4);
+     - `ops_describe(names | query)`: the JSON Schema of the named ops,
+       generated from the registry;
+     - `changeset_propose(ops[], request)`: one transaction at the Propose
+       tier. It becomes ADR-0148's preview, and the user approves it in the
+       DAW.
+     - `analysis_run`, later.
+   - **Why:** sending every op schema on every turn costs tokens and makes
+     the model worse at choosing one. Progressive disclosure is how OpenClaw
+     itself carries thousands of skills.
+   - **The only tools:** OpenClaw's shell, file-system and browser tools do
+     not exist in `adi-agent`.
+   - **Credentials** live in the OS keychain.
+4. **Docker is an option, not the default.**
+   - **Default:** a local child process.
+   - **Why:** a container that reaches the host takes the RPC off loopback.
+     ADR-0039 d4 makes that the user's deliberate act, with the token plus TLS
+     or an SSH tunnel.
+   - **When it fits:** running the agent on another machine of the home lab.
+5. **Build order.** Nothing is built by this ADR.
+   1. **The registry's JSON Schema export,** owed since ADR-0016. It needs
+      richer field metadata than exists today: every `Field` gets a
+      description, enums and ranges, and item schemas for its arrays and
+      objects. Keys are short by ADR-0025 (`pos`, `dev`, `ord`), and a model
+      needs words for them.
+   2. **The RPC server:**
+      - loopback HTTP with JSON and a bearer token;
+      - requests queued to the message thread;
+      - Propose by default.
+
+      Its library choice is decided in that step.
+   3. **`adi-agent`.**
+   4. **The chat panel,** which is mac's.
+
+### Corrections to the brief
+
+1. **JSON on the wire, CBOR at rest** (ADR-0039 d2). The bridge never encodes
+   CBOR. The boundary decodes JSON into the ops a local caller builds.
+2. **Registered ops:** 70 today, of which 64 edit and 6 transport, and none
+   read. OPS.md designs 165. The agent can propose only registered ops, and
+   its vocabulary grows with the DAW's.
+3. **The chat is one surface, not the only one** (AI-AGENT §8).
+   Context-menu actions and buttons backed by a model use the same three
+   tools.
+4. **OpenClaw's memory is not needed.** The projection and the session's own
+   transcript are the context. Remarks follow ADR-0131's rules.
+
+**Ruling requested:** "depend on its loop and reuse its ideas" in place of
+"fork it". A fork remains possible. Its cost is a diverged tree with the
+gateway's attack surface, and every upstream fix ported by hand.
+
+## ADR-0169 — Live parity: all fourteen MIDI effects, and Sampler, Simpler, Redux, Shifter and Utility — `DECIDED (direction)` (2026-09-25) — **DIRECTOR'S REQUEST**
+
+**Director's request:** make sure ADI copies all of Live's MIDI effects, and
+five devices: Sampler, Simpler, Redux, Shifter and Utility. The screenshots
+came with the request, and the reference is the Live 12 manual in
+`reference/DOCS` (chapters 28–32).
+
+### Decisions
+
+1. **All fourteen MIDI effects that Live 12 Suite ships:**
+
+   | Effect | Source | P |
+   |---|---|---|
+   | Arpeggiator, Chord, Scale, Pitch, Velocity, Note Length, Random | native | P1 |
+   | CC Control | native | P2 |
+   | Note Echo, MPE Control, Expression Control, MIDI Monitor | Max for Live | P2 |
+   | Envelope MIDI, Shaper MIDI | Max for Live (modulators) | P2, after the modulation architecture (ADR-0046, ADR-0052's `PARAM_MOD`) |
+
+2. **As native devices in the graph** (ADR-0062, ADR-0086 tier 1), with
+   `devices.subtype = 'midi_effect'`. They need what only the graph has:
+   - **the transport and tempo map:** synced rates, and Arpeggiator's Beat
+     retrigger;
+   - **the groove pool:** Arpeggiator's Groove;
+   - **the track's scale:** "Use Current Scale" reads `key_map` and its
+     `scale_mask`;
+   - **sample-accurate events** (ADR-0042).
+3. **Randomness is seeded and repeatable.** Random, Chord's Chance and
+   Velocity's Random draw from a per-device PRNG whose seed is in the
+   device's state. An offline render of the same project is then the same
+   render.
+4. **The five devices:**
+
+   | Device | P | What parity means (Live 12 manual) |
+   |---|---|---|
+   | **Utility** | P1 | Phase L and R; Channel Mode (Left, Right, Swap, Stereo); Width, and Mid/Side mode; Mono; Bass Mono, 50–500 Hz, with audition; Gain −∞ to +35 dB; Balance; Mute; DC filter. It absorbs the "sub-sample phase utility" native node. |
+   | **Simpler** | P1 | Classic, 1-Shot and Slice modes; Start, Loop, Length and Fade; Loop and Snap; voices and retrigger; warp (ADR-0061); filter (12/24 dB, types); LFO; amp envelope; the Controls tab; slicing by transient, beat or region. A DAW needs one sampler early. |
+   | **Sampler** | P2 | Simpler's voice engine, plus multisample zones (key, velocity, sample select). Per zone: reverse, snap, start and end, sustain and release loops with crossfade, detune, interpolation, RAM mode. Also the Pitch/Osc modulation oscillator, Filter/Global, Modulation (auxiliary envelope, LFOs), MIDI routing and MPE. |
+   | **Redux** | P2 | Rate with Jitter; a pre filter and a post filter with Octave; Bits with Shape; DC Shift; Dry/Wet. |
+   | **Shifter** | P2 | Pitch, Freq and Ring modes; Coarse and Fine; Spread and Wide; Window; Delay (Hz or synced) with Feedback and Tone; LFO (ten shapes, duty cycle, Phase/Spin/Width, offset, Hz or synced rate, amount); envelope follower; Dry/Wet. It replaces the "frequency shifter" native node row. |
+
+5. **Behaviour is cloned; coined names are not** (policy; ADR-0093 d4).
+   Generic words may stay. "Simpler" is Ableton's own name, and ours will
+   differ. Each device is checked against Live by the side-by-side gate
+   (ADR-0108).
+6. **Each device is its own step,** with its own ADR when built. None is
+   built by this one.
+7. **Noted, not ruled:** Live 12's *MIDI Tools* (Transform and Generate,
+   manual chapter 11) are clip-editing tools, not devices. FEATURES now
+   carries them as a row awaiting a ruling.
+
+## ADR-0170 — Airwindows re-curated by the director's five rules: 160 kept, each row naming its rule — `DECIDED` (2026-09-25) — **DIRECTOR'S RULES; REPLACES ADR-0166 d5'S KEEP LIST**
+
+**Director's rules**, replacing Chris Johnson's Recommended and Basic as the
+keep list:
+1. **Drop** every EQ and filter, every dither, every test, utility and MIDI
+   plug-in, and every compressor.
+2. **Keep** every saturation, distortion, tape and console plug-in, newest
+   version of a family only.
+3. **Noise reduction and de-essing:** at most 10.
+4. **Stereo and imaging:** at most 3.
+5. **Include:** Melt, TapeDust, GrooveWear, StarChild, Vibrato and
+   NonlinearSpace.
+
+### How the rules were applied
+
+`tools/airwindows_catalogue.py` encodes them. Every row of `CATALOGUE.md` now
+names the rule that decided it. Where the rules are silent (reverb, ambience,
+effects, bass, brightness), Chris's picks still apply.
+
+**The calls the rules left open,** each easy to reverse:
+- **Scope of rule 2.** It covers the named categories and the same job under
+  other names: Tone Color (console and channel colour), Subtlety,
+  Amp Sims, Clipping and Lo-Fi.
+- **"Newest" is the date, not the number.**
+  - Console6 was released in 2024, after Console7 (2022) and Console0 (2023).
+    The newest numbered console is **Console9**.
+  - A console is a system: its channel and buss are kept together.
+  - ConsoleLA, ConsoleMC, ConsoleMD and PurestConsole3 are separate
+    families, and all are kept.
+- **Single-version families stay under rule 2,** because each is the newest
+  of its family:
+  - the Console5-era systems Atmosphere, C5Raw and PD, and EveryConsole;
+  - seven old Character re-releases in Tone Color.
+
+  This is the "legacy" the director wanted gone, kept by the letter of the
+  rule. It is one line to drop them.
+- **Rule 3's ten:** DeBess, DeHiss, DeNoise, DeCrackle, VoiceTrick, Slew2,
+  and the gates SoftGate, Gatelope and DigitalBlack, and AQuickVoiceClip.
+  - A gate is not a compressor, and two of these are sold as hiss cleaners.
+  - DeEss is out because DeBess is its improved version.
+- **Rule 1 by function as well as category:** Air4 and Energy2 are EQs;
+  Elliptical and PhaseNudge are filters; SlewSonic solos the brightness.
+
+### Corrections to the examples
+
+1. **The examples name superseded versions:**
+   - Console7: the newest is Console9;
+   - ToTape6: the newest is ToTape9 (2026);
+   - Srsly2: the newest is Srsly3, which is Srsly2 with a Nonlin control.
+
+   The rule ("newest") is followed, not the examples.
+2. **StarChild is kept as named.** StarChild2 (2023) is the same effect adapted
+   to high sample rates. It is not substituted without a ruling.
+3. **VoiceTrick is kept because it is named,** but Airwindows files it as a
+   utility: it cancels speaker bleed while recording vocals.
+4. **Pressure5 goes,** under rule 1. It was an ADR-0166 add-back.
+5. **The newest consoles cannot be kept,** because they are unreleased
+   upstream. ConsoleX, X2, X3, ConsoleH and PurestConsole4 have no
+   description, and Consolidated does not register them.
+
+### Result
+
+160 of 524 are kept:
+- 109 under rule 2;
+- 10 under rule 3;
+- 3 under rule 4;
+- 6 under rule 5;
+- 32 as Chris's picks where the rules are silent.
+
+Auto gain starts on for 40 of them: the tone effects with no output control
+(ADR-0166 d8, unchanged).
+
+**Evidence:**
+- `adi_airwindows_tests` has 39 checks. All 160 effects are created,
+  described, processed with zero allocation, and their state restored. The
+  kept and stripped names are checked.
+- `adi_play --list` finds all 160.
+- A chain of Console9Channel, Melt and StarChild renders offline.
