@@ -185,6 +185,7 @@ subject, say so in your log instead of writing it twice.
 | 0169 | win | `win/scope-agent-parity` | Live parity: fourteen MIDI effects; Sampler, OneShot, Redux, Shifter, Utility (director) | used |
 | 0170 | win | `win/scope-agent-parity` | Airwindows re-curated by the director's five rules | used |
 | 0171 | win | `win/scope-agent-parity` | Airwindows as eleven suite plug-ins: static parameters, a 5 ms crossfade, auto gain (director) | used |
+| 0172 | win | `win/scope-agent-parity` | mixer.setDelay: a track delay, either sign, played as latency (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

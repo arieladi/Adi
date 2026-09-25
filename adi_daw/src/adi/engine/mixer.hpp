@@ -100,6 +100,22 @@ public:
 
     [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override { return keepAlive_; }
 
+    /// Message thread: the track delay (ADR-0172), `mixer_strip.delay_samples`,
+    /// in samples at the PROJECT's rate. Positive plays the track late,
+    /// negative plays it early.
+    ///
+    /// It is played as latency, and the sign is the point. A strip that says
+    /// it is D samples EARLIER than it is (latency -D) is delayed by D at the
+    /// next sum by delay compensation, as if everything else were late
+    /// (ADR-0058). One that says it is D samples later (latency +D) has every
+    /// other path delayed by D, which is the only way to play a track early in
+    /// real time. No new delay line, and a change is an ordinary latency
+    /// change: retapped within the headroom, rebuilt past it (ADR-0079).
+    void setDelay(std::int64_t projectSamples, std::int64_t projectRate) noexcept;
+
+    /// Minus the delay, at the rate passed to `prepare`: see setDelay.
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override;
+
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const NodeIo& io) noexcept override;
 
@@ -110,8 +126,13 @@ public:
     static constexpr double kRampSeconds = 0.005;
     /// How often a bound lane is read: 1.5 kHz at 48 kHz, 3x ADR-0054's floor.
     static constexpr std::int32_t kControlFrames = 32;
+    /// A track delay is limited to one second either way (ADR-0172).
+    static constexpr double kMaxDelaySeconds = 1.0;
 
 private:
+    std::atomic<std::int64_t> delayProject_{0};
+    std::atomic<std::int64_t> delayRate_{48000};
+    double sampleRate_ = 48000.0;       ///< message thread, set by prepare
     struct Gains {
         float g[3] = {1.0f, 1.0f, 1.0f};
     };

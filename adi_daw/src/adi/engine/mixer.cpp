@@ -60,7 +60,23 @@ void StripNode::setLanes(const StripLanes* lanes, std::shared_ptr<void> keepAliv
     lanes_.store(lanes, std::memory_order_release);
 }
 
+void StripNode::setDelay(std::int64_t projectSamples, std::int64_t projectRate) noexcept {
+    delayProject_.store(projectSamples, std::memory_order_relaxed);
+    delayRate_.store(projectRate > 0 ? projectRate : 48000, std::memory_order_relaxed);
+}
+
+std::int32_t StripNode::latencySamples() const noexcept {
+    // Samples at the project's rate, played at the session's: a project at
+    // 48 kHz opened at 96 kHz delays the same TIME, twice the samples.
+    const double seconds = static_cast<double>(delayProject_.load(std::memory_order_relaxed)) /
+                           static_cast<double>(delayRate_.load(std::memory_order_relaxed));
+    const double limit = kMaxDelaySeconds * sampleRate_;
+    const double samples = std::clamp(std::round(seconds * sampleRate_), -limit, limit);
+    return static_cast<std::int32_t>(-samples);
+}
+
 void StripNode::prepare(double sampleRate, std::int32_t) {
+    sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
     // A time, not a count: five milliseconds at every rate ADR-0157 allows.
     const auto frames = std::lround(kRampSeconds * sampleRate);
     rampFrames_ = static_cast<std::int32_t>(std::max<long>(1, frames));
@@ -290,6 +306,25 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         }
         const auto heard = audible.find(node.trackId);
         strip->setStatic(volume, pan, law, heard != audible.end() && heard->second);
+
+        // ADR-0172: the track delay, played as latency. The master is the
+        // output: there is nothing after it to delay against, and a negative
+        // latency there would make the graph's own latency negative.
+        std::int64_t delay = 0;
+        if (const auto it = row.find(node.trackId); it != row.end()) delay = it->second->delaySamples;
+        const bool isMaster = plan.output && plan.nodes[*plan.output].trackId == node.trackId;
+        const std::int64_t rate = model.project.sampleRate > 0 ? model.project.sampleRate : 48000;
+        const auto limit = static_cast<std::int64_t>(StripNode::kMaxDelaySeconds * static_cast<double>(rate));
+        if (isMaster && delay != 0) {
+            problems_.push_back(who + ": the master's delay is not played; there is nothing after "
+                                      "the master to delay it against");
+            delay = 0;
+        } else if (delay > limit || delay < -limit) {
+            problems_.push_back(who + ": a delay of " + std::to_string(delay) +
+                                " samples is past one second; it is played at one second");
+            delay = delay > 0 ? limit : -limit;
+        }
+        strip->setDelay(delay, rate);
 
         const StripLanes* lanes = nullptr;
         if (automation) {

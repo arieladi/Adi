@@ -64,7 +64,7 @@ flagged, and it is a bug in the format, not in the plan.
 | Crossfader, DJ-style mixing | Ableton | P3 | 🔶 | needs a master-section table |
 | Channel strip (gate/comp/EQ built in) | Cubase | P2 | ✅ | internal `devices` |
 | Mixer snapshots | Cubase | P2 | ✅ | `snapshots.kind='mixer'` |
-| Per-channel delay compensation offset | both | P1 | ✅ | `mixer_strip.delay_samples` |
+| Per-channel delay compensation offset | both | P1 | ✅ | `mixer_strip.delay_samples`. **Plays** (ADR-0172): `mixer.setDelay`, either sign, ±1 s, as latency of the opposite sign, so delay compensation places it |
 
 ## 3. Clips, editing and comping
 
@@ -229,7 +229,7 @@ for the transport, the tempo map, the groove pool and the track's scale
 | **AI agent that can only act through ops** | P2 | ✅ | [AI-AGENT.md](AI-AGENT.md) |
 | Agent changes previewable as a diff before commit | P2 | ✅ | |
 | **Agent runtime, `adi-agent`**: pi-mono's loop in a sidecar, three tools over the RPC boundary | P2 | — | ADR-0168. It takes OpenClaw's loop and ideas, not a fork of OpenClaw (**approved** by the director). It needs, in order: the registry's JSON Schema export, with field descriptions; the loopback RPC server (ADR-0039); the sidecar; the chat panel. Its tools are `project_read`, `ops_describe` and `changeset_propose`. |
-| **A scope built in**: any two tracks compared (overlay, stacked, difference, sum), with correlation and offset, aligned by delay compensation, on the grid, true peak | P1 | — | ADR-0167. OScope and PsyScope need routing, and cannot see another track's latency. A measured offset is fixed with `mixer.setDelay`, which this work registers. It adds a second audio-to-UI path, which amends ADR-0050 d4. |
+| **A scope built in**: any two tracks compared (overlay, stacked, difference, sum), with correlation and offset, aligned by delay compensation, on the grid, true peak | P1 | — | ADR-0167. OScope and PsyScope need routing, and cannot see another track's latency. A measured offset is fixed with `mixer.setDelay` (registered and playing, ADR-0172). It adds a second audio-to-UI path, which amends ADR-0050 d4. |
 | Undo that survives a reboot | P1 | ✅ | |
 | Undo you can *branch*, so exploring costs nothing | P2 | ✅ | |
 | Text projection for version control | P2 | — | ADR-0007 |

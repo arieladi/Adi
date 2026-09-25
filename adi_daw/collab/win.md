@@ -5,6 +5,40 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — Airwindows as eleven suites (ADR-0171); mixer.setDelay (ADR-0172)
+
+**The director's rulings:**
+- ADR-0167 (scope), ADR-0168 (no fork) and ADR-0169 are approved.
+- Simpler is renamed OneShot, and StarChild2 is in Secret Weapons.
+- Airwindows ships as suites named "ADI Airwindows - <group>": eight at
+  first, then Delay, Stereo and Sub for the nine left out.
+
+**Built:**
+- **Eleven suite CLAP modules,** 160 algorithms in 164 slots.
+  - Every parameter is mapped at init with a fixed id (`100 + 64a + k`) and
+    never rescanned.
+  - A switch inside process() is a 5 ms crossfade. A switch through flush is
+    immediate: there is no signal then to fade from.
+  - Auto gain follows whatever plays.
+- **`mixer.setDelay`** in project samples, either sign, ±1 s, played as
+  latency of the opposite sign so delay compensation places it. The master's
+  delay is named and not played.
+
+**Found on the way:** two of my first crossfade references were wrong, not
+the plug-in.
+- One cut the outgoing algorithm's calls differently.
+- The other chose its algorithm through `flush`, which then crossfaded.
+
+That second one became the flush rule above.
+
+**Checks:**
+- `adi_airwindows_tests`: 48 checks. All 164 slots play through mid-block
+  switches with zero allocation, and the crossfade is exact to 1e-6.
+- `adi_mixer_tests`: 65 checks. A planted same-sign bug fails six.
+- The suites: 4715 checks across 48 suites.
+
+---
+
 ## 2026-09-25 — the scope, the agent's runtime, Live's devices, and Airwindows re-curated (ADR-0167 to ADR-0170)
 
 **The director's requests:**

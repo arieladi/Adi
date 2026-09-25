@@ -117,6 +117,11 @@ constexpr ScalarSpec kScalars[] = {
     {"mixer.setPhaseInvert", "Invert a channel's phase", "mixer_strip",
      "track_id", "phase_invert", "inverted", FieldType::Bool,
      EngineImpact::Snapshot, false},
+    // ADR-0172. Samples at the project's rate, positive late, negative early.
+    // GraphRebuild, for device.setLatency's reason: the engine plays a delay
+    // as latency, and a latency change moves the compensation downstream.
+    {"mixer.setDelay", "Delay or advance a channel", "mixer_strip", "track_id",
+     "delay_samples", "samples", FieldType::Int, EngineImpact::GraphRebuild, true},
 
     // --- routing ----------------------------------------------------------
     {"routing.setGain", "Set a connection's gain", "routing", "id", "gain_db",

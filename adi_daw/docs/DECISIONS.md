@@ -11865,3 +11865,65 @@ StarChild2 replaces StarChild, as the director's list gave it.
 
 In the DAW, `adi_play --list` finds the eleven suites, and a chain of
 Distortion, Tape and Reverb renders offline with the reverb's tail.
+
+## ADR-0172 — `mixer.setDelay`: a track delay, either sign, played as latency so delay compensation places it — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION; THE SCOPE'S ONE-CLICK FIX (ADR-0167)**
+
+**Director's instruction:** after the Airwindows suites, implement
+`mixer.setDelay`. The scope's alignment fix (ADR-0167 d2) proposes it.
+OPS.md designed it at P1; `mixer_strip.delay_samples` has been in the schema
+since 1.0, "carried and not yet applied".
+
+### Decisions
+
+1. **The op.**
+   - **What it is:** `mixer.setDelay {id: track, samples}`, from the
+     generated scalar table.
+   - **Its classification:** edit scope, symmetric inverse, coalescable (a
+     dragged knob is one undo step).
+   - **Engine impact:** GraphRebuild, for `device.setLatency`'s reason. It
+     moves compensation downstream.
+
+   Registered ops: 71.
+2. **The unit is samples at the project's rate.**
+   - **At another rate:** a session running at a different rate (ADR-0157)
+     delays the same time, not the same count. 100 samples of a 48 kHz project
+     are 200 at 96 kHz.
+   - **Range:** one second either way. Beyond it the engine plays one second
+     and names the track. The value is not refused, because the schema cannot
+     gain a CHECK within a minor (ADR-0144).
+3. **Played as latency of the opposite sign.** This is the whole design.
+   - **The mechanism:** the strip is the last node of its track's chain, and
+     reports `latencySamples() = −delay`. Delay compensation (ADR-0058) then
+     places the track.
+   - **Late (+D):** the strip claims to be D samples early, so the next sum
+     delays it by D to align it. Compensation starts from zero, so a track
+     alone is delayed too.
+   - **Early (−D):** the strip claims D samples of latency, so every other
+     path is delayed by D, as a plug-in's latency would be. There is no other
+     way to play a track early in real time. The graph's latency grows by D,
+     as it does in any DAW.
+   - **Why no new node:** no new delay line exists, and a change is an ordinary
+     latency change: retapped within the headroom and rebuilt beyond it
+     (ADR-0079). Sidechains and sends from the track follow it, because they
+     leave from the same tail.
+4. **The master's delay is not played, and is named.** Nothing follows the
+   master to delay it against. A negative latency there would make the
+   graph's own latency negative.
+
+### Evidence
+
+`adi_mixer_tests` gained 10 checks, 65 in all:
+- **the strip alone:** the sign, the conversion from 48 to 96 kHz, and the
+  one-second limit;
+- **two tracks stepping at frame 1000 into the master:**
+  - no delay: both at 1000;
+  - A at +100: B alone from 1000, A joins at 1100;
+  - A at −100: A alone from 1000, B joins at 1100;
+  - at 96 kHz the same 100 project samples are 200;
+- **a lone track** delayed by 300 steps at 1300;
+- **named cases:** the master's delay, and a delay past one second.
+
+A plant that reported the delay as latency of the same sign failed six of
+them.
+
+SPEC §6.9 now defines `delay_samples` rather than listing it as carried.
