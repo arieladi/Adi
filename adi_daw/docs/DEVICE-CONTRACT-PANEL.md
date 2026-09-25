@@ -1,6 +1,8 @@
 # The device/parameter contract — design panel findings
 
-**Status:** research input to an open decision. **Not** a decision. ADR-0035 and
+**Status:** research input to an open decision. **Not** a decision.
+ADR-0177 proposes the contract that follows from it (`[adi.param]` with a
+fixed id), awaiting the director's approval. ADR-0035 and
 ADR-0040 both leave the device/parameter contract open, and ADR-0052 decision 4
 and ADR-0053 decision 1 both say the same thing about it from the other side: it
 must be **format-agnostic**, because CLAP and a remote AudioGridder device go

@@ -190,6 +190,7 @@ subject, say so in your log instead of writing it twice.
 | 0174 | win | `win/group-summing` | native group summing built: eight console flavours, measured unity, schema 1.7 | used |
 | 0175 | win | `win/scope-taps` | the scope's engine side: taps stamped when heard, true peak, the compare | used |
 | 0176 | win | `win/audio-alignment` | Audio Alignment in the backlog: warp markers from a time-warping path; the hitpoint detector; a transient shaper on the envelope follower (director) | used |
+| 0177 | win | `win/pd-param-contract` | the Pd parameter contract: `[adi.param]` with a fixed id, a full declaration, changed only by `device.loadState`, a vanilla abstraction (proposed; awaiting the director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
