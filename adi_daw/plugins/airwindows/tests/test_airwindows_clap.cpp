@@ -274,20 +274,21 @@ struct Instance {
     }
 };
 
-// ADR-0173: the Consoles suite is gone; its algorithms are the mixer's group summing.
+// ADR-0173: the Consoles suite is gone -- the console systems are the mixer's
+// group summing -- and the single-insert colours are the Color suite.
 const char* const kSuites[] = {"distortion", "tape", "ampsims", "reverb", "lofimod",
-                               "noisedyn", "secret", "delay", "stereo", "sub"};
-const int kSuiteSizes[] = {47, 6, 15, 17, 22, 13, 6, 4, 3, 2};
-constexpr int kSuiteCount = 10;
+                               "noisedyn", "secret", "delay", "stereo", "sub", "color"};
+const int kSuiteSizes[] = {47, 6, 15, 17, 22, 13, 6, 4, 3, 2, 12};
+constexpr int kSuiteCount = 11;
 
 // --- the tests -----------------------------------------------------------------
 
-void testTheFactoryHoldsTenSuites() {
-    section("ADR-0171, ADR-0173 -- ten suites, each one CLAP plug-in holding its group's algorithms");
+void testTheFactoryHoldsElevenSuites() {
+    section("ADR-0171, ADR-0173 -- eleven suites, each one CLAP plug-in holding its group's algorithms");
 
     check(entryInit(""), "the entry initialises");
     const clap_plugin_factory_t* f = factory();
-    check(f->get_plugin_count(f) == kSuiteCount, "ten suites in the binary that carries them all");
+    check(f->get_plugin_count(f) == kSuiteCount, "eleven suites in the binary that carries them all");
     std::set<std::string> ids;
     bool named = true;
     for (uint32_t i = 0; i < f->get_plugin_count(f); ++i) {
@@ -307,7 +308,7 @@ void testTheFactoryHoldsTenSuites() {
     }
     // Melt and StarChild2 are Ambience, which is in no other suite; the other
     // four secret weapons are also in their category's suite.
-    check(total == 135, "131 algorithms, four of them in two suites: 135 slots, got " + std::to_string(total));
+    check(total == 147, "143 algorithms, four of them in two suites: 147 slots, got " + std::to_string(total));
     check(factory()->create_plugin(factory(), &g_host, "com.adi.airwindows.consoles") == nullptr,
           "and no Consoles suite: the consoles are the mixer's (ADR-0173)");
     Instance secret(suiteId("secret"));
@@ -373,8 +374,8 @@ void testEveryAlgorithmPlaysAndTheListNeverMoves() {
             ++restored;
         else bad += std::string(" ") + key + "(state)";
     }
-    check(suites == kSuiteCount, "all ten suites create and initialise");
-    check(played == 135 && finite == 135, "all 135 algorithm slots play, switched to mid-block, finite: " +
+    check(suites == kSuiteCount, "all eleven suites create and initialise");
+    check(played == 147 && finite == 147, "all 147 algorithm slots play, switched to mid-block, finite: " +
                                               std::to_string(finite));
     check(allocs == 0, "no switch and no algorithm allocates: " + std::to_string(allocs) + " allocation(s)");
     check(stable == kSuiteCount, "no suite's parameter list changed, and none asked for a rescan");
@@ -508,7 +509,7 @@ void testAutoGainFollowsWhatPlays() {
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_airwindows_tests -- the Airwindows suites as CLAP plug-ins\n\n");
-    testTheFactoryHoldsTenSuites();
+    testTheFactoryHoldsElevenSuites();
     testEveryAlgorithmPlaysAndTheListNeverMoves();
     testTheSwitchIsAFiveMillisecondCrossfade();
     testParameterChangesLandOnTheirSample();

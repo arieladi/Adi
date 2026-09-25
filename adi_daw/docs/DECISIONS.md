@@ -11928,42 +11928,43 @@ them.
 
 SPEC §6.9 now defines `delay_samples` rather than listing it as carried.
 
-## ADR-0173 — The consoles leave the plug-ins: ten Airwindows suites, and native group summing in the mixer — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION; AMENDS ADR-0171; THE ENGINE WORK FOLLOWS IN ITS OWN BRANCH**
+## ADR-0173 — The consoles leave the plug-ins: eleven Airwindows suites with Color, and native group summing in the mixer — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION; AMENDS ADR-0171; THE ENGINE WORK FOLLOWS IN ITS OWN BRANCH**
 
-**Director's instruction:**
-- **Why:** managing a Channel and a Buss plug-in on every track is a bad
-  workflow.
-- **The plug-ins:** drop the Consoles suite. The Airwindows plug-ins become
-  exactly ten suites.
-- **The mixer:** move the 29 console algorithms into the mixer's engine as
-  native group summing. A group track gets three properties:
-  - `analog_summing_enabled`;
-  - `analog_summing_flavor`;
-  - `analog_summing_drive`.
-- **How it plays:** with summing on, each child is encoded, scaled by the
-  drive, before the group's sum, and the sum is decoded.
-- **The UI:** mac draws a toggle and a dial in the group's header, with the
-  flavour in the dial's context menu.
+**Director's instruction, in two steps:**
+- **First:**
+  - **Why:** managing a Channel and a Buss plug-in on every track is a bad
+    workflow.
+  - **The plug-ins:** drop the Consoles suite.
+  - **The mixer:** move its 29 algorithms into the mixer as native group
+    summing. A group track gets three properties: enabled, flavour, drive.
+    Each child is encoded, scaled by the drive, before the group's sum, and
+    the sum is decoded.
+  - **The UI:** mac draws a toggle and a dial in the group's header, with the
+    flavour in the dial's context menu.
+- **Then, on the split win raised:** only the true encode/decode consoles
+  become summing. The twelve single-insert colour algorithms become an
+  eleventh suite with the standard suite rules, so they stay usable as
+  inserts on any track.
 
 ### Decisions
 
-1. **Ten suites** (amends ADR-0171 d1):
+1. **Eleven suites** (amends ADR-0171 d1):
    - **Which:** Distortion 47, Tape 6, Amp Sims 15, Reverb 17, Lo-Fi & Mod
-     22, Noise & Dynamics 13, Secret Weapons 6, Delay 4, Stereo 3, Sub 2.
-   - **Count:** 131 algorithms in 135 slots.
-   - **The Consoles and Tone Color algorithms** are marked in `CATALOGUE.md`
-     as the mixer's.
-2. **The 29 algorithms are 26 flavours, not 29.** Only 17 of the 29 are
-   console systems, a channel half and a buss half. The other twelve are
-   single-insert colour plug-ins with no pair. A flavour says where each
-   half goes:
-
-   | Kind | Flavours | Plays |
-   |---|---|---|
-   | **System** (14) | Console9, ConsoleLA, ConsoleMC, ConsoleMD, PurestConsole3, PD, C5Raw, Atmosphere; and EveryConsole's six: Retro, Sin, C6, C7, BShift, CZero (one plug-in, channel or buss by its ConType) | the channel half on each child, the buss half on the sum |
-   | **Channel colour** (11) | Channel9, ChannelX, Apicolypse, Calibre, Cider, Crystal, Elation, Luxor, Neverland, Precious, WoodenBox | on each child, nothing on the sum |
-   | **Buss colour** (1) | BussColors4 | on the sum only |
-
+     22, Noise & Dynamics 13, Secret Weapons 6, Delay 4, Stereo 3, Sub 2,
+     and **Color 12**.
+   - **Count:** 143 algorithms in 147 slots.
+   - **Color's contents:** Channel9, ChannelX, BussColors4, Crystal,
+     WoodenBox, and the Character plug-ins Apicolypse, Calibre, Cider,
+     Elation, Luxor, Neverland and Precious.
+   - **Its name** is "ADI Airwindows - Color", by the director's naming rule,
+     rather than the "ADI Color" of the second message.
+2. **The 17 console algorithms are 14 flavours.**
+   - **Eight channel/buss pairs:** Console9, ConsoleLA, ConsoleMC,
+     ConsoleMD, PurestConsole3, PD, C5Raw, Atmosphere.
+   - **EveryConsole's six systems:** Retro, Sin, C6, C7, BShift, CZero.
+     EveryConsole is one plug-in, channel or buss by its ConType.
+   - **How each plays:** its channel half on each child, and its buss half on
+     the group's sum. `CATALOGUE.md` marks the 17 as the mixer's.
 3. **The flavour is stored as a text key,** such as `console9` or
    `every.c7`, not an index into a list. An index changes meaning when the
    list does. That is the automation-breaking defect ADR-0171 was written
@@ -11979,10 +11980,9 @@ SPEC §6.9 now defines `delay_samples` rather than listing it as carried.
    The ops refuse any track that is not a group, because summing exists only
    on groups.
 5. **Drive is gain staging, and means the same on every flavour.**
-   - **How:** the drive in dB is applied into the channel half (or, for a
-     buss colour, into the sum). The same amount comes back off after the
-     buss half.
-   - **The result:** the curve is hit harder while the level stays put.
+   - **How:** the drive in dB is applied into each child's channel half. The
+     same amount comes back off after the buss half.
+   - **The result:** the curves are hit harder while the level stays put.
    - **Why not each plug-in's own drive or trim knob:** only some have one,
      so the dial would mean something different per flavour. Native knobs
      stay at their defaults, and the channel's Pan and Fader stay at unity,
@@ -11996,10 +11996,11 @@ SPEC §6.9 now defines `delay_samples` rather than listing it as carried.
    Each half is its own Airwindows instance, one per child, with its own
    state. Instances are session-owned like strips (ADR-0163), so a rebuild
    keeps their filter state. Zero latency.
-7. **The source.** The console sources compile into the engine from a pinned
-   airwin2rack checkout (MIT), fetched by `fetch_external.sh --build-only`
-   for CI. They are built without our warning flags, as upstream builds
-   them.
+7. **The source.** The 17 console sources compile into the engine from a
+   pinned airwin2rack checkout (MIT), fetched by `fetch_external.sh
+   --build-only`, and built without our warning flags. airwin2rack's newest
+   tag (v2.9.0, 2024) predates Console9. So the pin is upstream's commit,
+   fetched by commit; the commit is the assertion.
 8. **For mac:** the three properties are read by the session, and set by
    three undoable ops: the toggle, the flavour, and a coalescable drive for
    a dragged dial. mac draws the toggle, the dial and the flavour menu in the

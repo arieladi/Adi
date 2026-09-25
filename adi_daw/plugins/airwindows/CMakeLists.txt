@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # ADI Airwindows (ADR-0166, ADR-0171): the kept Airwindows algorithms as
-# ten suite CLAP plug-ins (ADR-0173), "ADI Airwindows - <group>.clap". No JUCE
+# eleven suite CLAP plug-ins (ADR-0173), "ADI Airwindows - <group>.clap". No JUCE
 # and no
 # plug-in SDK: CLAP is a header-only C API (third_party/clap, pinned for the
 # DAW's own host).

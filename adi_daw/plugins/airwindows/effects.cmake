@@ -131,10 +131,22 @@ set(ADI_AW_EFFECTS
     ToVinyl4
     DubSub2
     OrbitKick
+    ChannelX
+    WoodenBox
+    BussColors4
+    Channel9
+    Apicolypse
+    Neverland
+    Elation
+    Calibre
+    Cider
+    Crystal
+    Precious
+    Luxor
 )
 
 # The suites, one CLAP module each: index, key, and the name a host shows.
-set(ADI_AW_SUITE_KEYS distortion tape ampsims reverb lofimod noisedyn secret delay stereo sub)
+set(ADI_AW_SUITE_KEYS distortion tape ampsims reverb lofimod noisedyn secret delay stereo sub color)
 set(ADI_AW_SUITE_NAME_distortion "ADI Airwindows - Distortion")
 set(ADI_AW_SUITE_NAME_tape "ADI Airwindows - Tape")
 set(ADI_AW_SUITE_NAME_ampsims "ADI Airwindows - Amp Sims")
@@ -145,3 +157,4 @@ set(ADI_AW_SUITE_NAME_secret "ADI Airwindows - Secret Weapons")
 set(ADI_AW_SUITE_NAME_delay "ADI Airwindows - Delay")
 set(ADI_AW_SUITE_NAME_stereo "ADI Airwindows - Stereo")
 set(ADI_AW_SUITE_NAME_sub "ADI Airwindows - Sub")
+set(ADI_AW_SUITE_NAME_color "ADI Airwindows - Color")

@@ -133,6 +133,18 @@
 #include "autogen_airwin/ToVinyl4.h"
 #include "autogen_airwin/DubSub2.h"
 #include "autogen_airwin/OrbitKick.h"
+#include "autogen_airwin/ChannelX.h"
+#include "autogen_airwin/WoodenBox.h"
+#include "autogen_airwin/BussColors4.h"
+#include "autogen_airwin/Channel9.h"
+#include "autogen_airwin/Apicolypse.h"
+#include "autogen_airwin/Neverland.h"
+#include "autogen_airwin/Elation.h"
+#include "autogen_airwin/Calibre.h"
+#include "autogen_airwin/Cider.h"
+#include "autogen_airwin/Crystal.h"
+#include "autogen_airwin/Precious.h"
+#include "autogen_airwin/Luxor.h"
 #else
 #if !defined(ADI_AW_ONLY_SUITE) || ADI_AW_ONLY_SUITE == 0
 ADI_AW_ROW(0, ADClip9, "ADClip9", "Clipping", "ADClip9 is the ClipOnly3 version of a loudenator/biggenator.", false)
@@ -289,6 +301,20 @@ ADI_AW_ROW(8, ToVinyl4, "ToVinyl4", "Stereo", "ToVinyl4 is a vinyl-mastering sim
 ADI_AW_ROW(9, DubSub2, "DubSub2", "Bass", "DubSub2 is the essence of the Airwindows head bump.", false)
 ADI_AW_ROW(9, OrbitKick, "OrbitKick", "Bass", "OrbitKick is a bass generator and kick drum reinforcer.", false)
 #endif
+#if !defined(ADI_AW_ONLY_SUITE) || ADI_AW_ONLY_SUITE == 10
+ADI_AW_ROW(10, ChannelX, "ChannelX", "Tone Color", "ChannelX translates Channel9 into a profusion of wild experiments.", false)
+ADI_AW_ROW(10, WoodenBox, "WoodenBox", "Tone Color", "WoodenBox is like a miniature reverb for converting DI to acoustic.", true)
+ADI_AW_ROW(10, BussColors4, "BussColors4", "Tone Color", "BussColors4 is the Airwindows console emulations, now working up to 192K correctly.", false)
+ADI_AW_ROW(10, Channel9, "Channel9", "Tone Color", "Channel9 is Channel8 with ultrasonic filtering, and new Teac and Mackie 'low end' settings.", false)
+ADI_AW_ROW(10, Apicolypse, "Apicolypse", "Tone Color", "Apicolypse is a re-release of my old API-style color adder, exacly as it was.", false)
+ADI_AW_ROW(10, Neverland, "Neverland", "Tone Color", "Neverland is a re-release of my old Neve-style color adder, exacly as it was.", false)
+ADI_AW_ROW(10, Elation, "Elation", "Tone Color", "Elation is a re-release of another old Character plugin.", false)
+ADI_AW_ROW(10, Calibre, "Calibre", "Tone Color", "Calibre is a re-release of another old Character plugin.", false)
+ADI_AW_ROW(10, Cider, "Cider", "Tone Color", "Cider is a re-release of another old Character plugin.", false)
+ADI_AW_ROW(10, Crystal, "Crystal", "Tone Color", "Crystal is a tone shaper and buss soft-clipper.", false)
+ADI_AW_ROW(10, Precious, "Precious", "Tone Color", "Precious is a re-release of another old Character plugin.", false)
+ADI_AW_ROW(10, Luxor, "Luxor", "Tone Color", "Luxor is a re-release of another old Character plugin.", false)
+#endif
 #endif
 #ifdef ADI_AW_SUITE
 ADI_AW_SUITE(0, "distortion", "ADI Airwindows - Distortion")
@@ -301,4 +327,5 @@ ADI_AW_SUITE(6, "secret", "ADI Airwindows - Secret Weapons")
 ADI_AW_SUITE(7, "delay", "ADI Airwindows - Delay")
 ADI_AW_SUITE(8, "stereo", "ADI Airwindows - Stereo")
 ADI_AW_SUITE(9, "sub", "ADI Airwindows - Sub")
+ADI_AW_SUITE(10, "color", "ADI Airwindows - Color")
 #endif
