@@ -11439,7 +11439,7 @@ All of it builds, loads in the DAW and renders.
    - Tube2, Density3 and kCathedral5 from ADI Airwindows;
    - ADI RMSC.
 
-## ADR-0167 — The scope is built into the DAW: any two tracks compared, aligned and on the grid, with no routing — `DECIDED (direction)` (2026-09-25) — **DIRECTOR'S REQUEST; AMENDS ADR-0050 d4**
+## ADR-0167 — The scope is built into the DAW: any two tracks compared, aligned and on the grid, with no routing — `DECIDED` (2026-09-25) — **DIRECTOR'S REQUEST, APPROVED AS A NATIVE PANEL; AMENDS ADR-0050 d4**
 
 **Director's request:** an oscilloscope in the DAW, after Audija's OScope and
 fx23's PsyScope Pro. OScope is a beat-grid-synced, true-peak oscilloscope, and
@@ -11534,7 +11534,7 @@ already holds every piece: each track's signal, every path's latency
      as pure functions tested headless.
    - **mac (UI):** the panel, after the device-host work of ADR-0165.
 
-## ADR-0168 — The agent's runtime: depend on OpenClaw's loop, do not fork OpenClaw — `DECIDED (direction)` (2026-09-25) — **DEVIATES FROM THE DIRECTOR'S BRIEF ON ONE POINT; RULING REQUESTED**
+## ADR-0168 — The agent's runtime: depend on OpenClaw's loop, do not fork OpenClaw — `DECIDED` (2026-09-25) — **DIRECTOR'S RULING: APPROVED, DO NOT FORK**
 
 **Director's brief:** fork OpenClaw, strip its bloat, and wire it into the
 DAW's remote architecture:
@@ -11640,11 +11640,11 @@ the DAW exposes every action as a typed, documented op (AI-AGENT §3).
 4. **OpenClaw's memory is not needed.** The projection and the session's own
    transcript are the context. Remarks follow ADR-0131's rules.
 
-**Ruling requested:** "depend on its loop and reuse its ideas" in place of
-"fork it". A fork remains possible. Its cost is a diverged tree with the
-gateway's attack surface, and every upstream fix ported by hand.
+**Ruled (director, 2026-09-25): approved.** Do not fork. Build the minimal
+TypeScript `pi-mono` helper with the three tools, enforcing the Propose
+boundary.
 
-## ADR-0169 — Live parity: all fourteen MIDI effects, and Sampler, Simpler, Redux, Shifter and Utility — `DECIDED (direction)` (2026-09-25) — **DIRECTOR'S REQUEST**
+## ADR-0169 — Live parity: all fourteen MIDI effects, and Sampler, OneShot, Redux, Shifter and Utility — `DECIDED` (2026-09-25) — **DIRECTOR'S REQUEST, APPROVED**
 
 **Director's request:** make sure ADI copies all of Live's MIDI effects, and
 five devices: Sampler, Simpler, Redux, Shifter and Utility. The screenshots
@@ -11679,15 +11679,15 @@ came with the request, and the reference is the Live 12 manual in
    | Device | P | What parity means (Live 12 manual) |
    |---|---|---|
    | **Utility** | P1 | Phase L and R; Channel Mode (Left, Right, Swap, Stereo); Width, and Mid/Side mode; Mono; Bass Mono, 50–500 Hz, with audition; Gain −∞ to +35 dB; Balance; Mute; DC filter. It absorbs the "sub-sample phase utility" native node. |
-   | **Simpler** | P1 | Classic, 1-Shot and Slice modes; Start, Loop, Length and Fade; Loop and Snap; voices and retrigger; warp (ADR-0061); filter (12/24 dB, types); LFO; amp envelope; the Controls tab; slicing by transient, beat or region. A DAW needs one sampler early. |
-   | **Sampler** | P2 | Simpler's voice engine, plus multisample zones (key, velocity, sample select). Per zone: reverse, snap, start and end, sustain and release loops with crossfade, detune, interpolation, RAM mode. Also the Pitch/Osc modulation oscillator, Filter/Global, Modulation (auxiliary envelope, LFOs), MIDI routing and MPE. |
+   | **OneShot** (Live's Simpler) | P1 | Classic, 1-Shot and Slice modes; Start, Loop, Length and Fade; Loop and Snap; voices and retrigger; warp (ADR-0061); filter (12/24 dB, types); LFO; amp envelope; the Controls tab; slicing by transient, beat or region. A DAW needs one sampler early. |
+   | **Sampler** | P2 | OneShot's voice engine, plus multisample zones (key, velocity, sample select). Per zone: reverse, snap, start and end, sustain and release loops with crossfade, detune, interpolation, RAM mode. Also the Pitch/Osc modulation oscillator, Filter/Global, Modulation (auxiliary envelope, LFOs), MIDI routing and MPE. |
    | **Redux** | P2 | Rate with Jitter; a pre filter and a post filter with Octave; Bits with Shape; DC Shift; Dry/Wet. |
    | **Shifter** | P2 | Pitch, Freq and Ring modes; Coarse and Fine; Spread and Wide; Window; Delay (Hz or synced) with Feedback and Tone; LFO (ten shapes, duty cycle, Phase/Spin/Width, offset, Hz or synced rate, amount); envelope follower; Dry/Wet. It replaces the "frequency shifter" native node row. |
 
 5. **Behaviour is cloned; coined names are not** (policy; ADR-0093 d4).
-   Generic words may stay. "Simpler" is Ableton's own name, and ours will
-   differ. Each device is checked against Live by the side-by-side gate
-   (ADR-0108).
+   Generic words may stay. "Simpler" is Ableton's own name: ours is
+   **OneShot** (the director's ruling). Each device is checked against Live by
+   the side-by-side gate (ADR-0108).
 6. **Each device is its own step,** with its own ADR when built. None is
    built by this one.
 7. **Noted, not ruled:** Live 12's *MIDI Tools* (Transform and Generate,
@@ -11704,7 +11704,7 @@ keep list:
    version of a family only.
 3. **Noise reduction and de-essing:** at most 10.
 4. **Stereo and imaging:** at most 3.
-5. **Include:** Melt, TapeDust, GrooveWear, StarChild, Vibrato and
+5. **Include:** Melt, TapeDust, GrooveWear, StarChild2 (as ruled), Vibrato and
    NonlinearSpace.
 
 ### How the rules were applied
@@ -11745,8 +11745,9 @@ effects, bass, brightness), Chris's picks still apply.
    - Srsly2: the newest is Srsly3, which is Srsly2 with a Nonlin control.
 
    The rule ("newest") is followed, not the examples.
-2. **StarChild is kept as named.** StarChild2 (2023) is the same effect adapted
-   to high sample rates. It is not substituted without a ruling.
+2. **StarChild2, not StarChild.** StarChild2 (2023) is the same effect adapted
+   to high sample rates. The rules named StarChild, and the director then
+   ruled StarChild2 (ADR-0171).
 3. **VoiceTrick is kept because it is named,** but Airwindows files it as a
    utility: it cancels speaker bleed while recording vocals.
 4. **Pressure5 goes,** under rule 1. It was an ADR-0166 add-back.
@@ -11771,4 +11772,96 @@ Auto gain starts on for 40 of them: the tone effects with no output control
   described, processed with zero allocation, and their state restored. The
   kept and stripped names are checked.
 - `adi_play --list` finds all 160.
-- A chain of Console9Channel, Melt and StarChild renders offline.
+- A chain of Console9Channel, Melt and StarChild renders offline. That was
+  before the suites of ADR-0171; the chain now runs through suites.
+
+## ADR-0171 — Airwindows ships as eleven suite plug-ins: static parameters, a 5 ms crossfade between algorithms, auto gain on whatever plays — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION; REPLACES ADR-0166 d6's ONE PLUG-IN PER EFFECT**
+
+**Director's instruction:** do not ship 160 separate CLAP plug-ins with host-drawn
+sliders. Group the kept algorithms into category suites, one CLAP plug-in
+each, with the algorithm chosen inside a custom GUI that mac designs later.
+The instruction named eight suites, then added three for the algorithms the
+eight left out. Every suite is named "ADI Airwindows - <group>".
+
+| Suite | Algorithms |
+|---|---:|
+| Distortion (Distortion, Saturation, Subtlety, Clipping) | 47 |
+| Consoles (Consoles, Tone Color) | 29 |
+| Tape | 6 |
+| Amp Sims | 15 |
+| Reverb | 17 |
+| Lo-Fi & Mod (Lo-Fi, Effects) | 22 |
+| Noise & Dynamics (the noise reduction and gates of rule 3, and the three brightness tools) | 13 |
+| Secret Weapons (Melt, TapeDust, GrooveWear, StarChild2, Vibrato, NonlinearSpace) | 6 |
+| Delay (ClearCoat, TapeDelay2, PitchDelay, TripleSpread) | 4 |
+| Stereo (Wider, Srsly3, ToVinyl4) | 3 |
+| Sub (DubSub2, OrbitKick) | 2 |
+
+That is all 160 kept algorithms in 164 slots. TapeDust, GrooveWear, Vibrato and
+NonlinearSpace are both in their category's suite and in Secret Weapons.
+StarChild2 replaces StarChild, as the director's list gave it.
+
+### Decisions
+
+1. **One CLAP module per suite:** `ADI Airwindows - Distortion.clap` and so
+   on. Each is compiled with its suite's index (`ADI_AW_ONLY_SUITE`), so it
+   links only its own algorithms. A "&" in a name becomes "and" in the file
+   name. The tests compile every suite into one binary instead.
+2. **Every parameter of every algorithm exists from init, with an id that
+   never changes.** The director's rule was no `CLAP_PARAM_RESCAN_ALL`.
+   - **The ids:**
+     - `0` is Algorithm, stepped: 0 to N−1, the value text the algorithm's
+       name;
+     - `1` is Auto Gain;
+     - algorithm *a*'s parameter *k* is `100 + 64a + k`, in the CLAP module
+       named after the algorithm.
+   - **Why:** switching algorithms changes no parameter's meaning and never
+     asks the host to rescan. An automation lane (ADR-0165) or a stored value
+     (ADR-0142) stays bound to what it was written for.
+   - **The only rescan** is `CLAP_PARAM_RESCAN_VALUES`, after a state load.
+3. **A switch during processing is a 5 ms linear crossfade on the audio
+   thread.**
+   - **How:** the outgoing and incoming algorithms both run on the same input
+     for 240 samples at 48 kHz, weighted `1 − g` and `g`.
+   - **No allocation:** every algorithm is instantiated at init.
+   - **Idle algorithms** are not processed. Their state waits, and the
+     crossfade covers any tail they held.
+   - **A switch arriving through `flush`** is immediate. The host is not
+     running audio then, so there is nothing to fade from.
+4. **Auto gain follows whatever plays.** `dsp::AutoGain`, BS.1770 K-weighted
+   (ADR-0166 d8), runs after the crossfade.
+   - **Default:** on for a suite where most algorithms are tone effects with
+     no output control (ADR-0170's rule, taken over the suite).
+   - **The switch:** one switch per suite, automatable.
+5. **State is text, keyed by names:** the suite, the algorithm, auto gain,
+   and every parameter as `p <algorithm> <index> <value>`. A suite that gains
+   an algorithm, or an algorithm that gains a parameter, still loads what it
+   had. Another suite's state is refused.
+6. **The GUI is mac's.** Until it exists a host draws the parameters, grouped
+   by module. `tools/airwindows_catalogue.py` gives each algorithm its suite,
+   and `CATALOGUE.md` has a Suite column.
+
+### Evidence
+
+`adi_airwindows_tests`: 48 checks.
+- **The factory:** eleven suites with the sizes above, 164 slots, every
+  suite named "ADI Airwindows - …", Secret Weapons holding its six.
+- **Every algorithm played:** in every suite, each of the 164 is chosen by an
+  event in the middle of a block and played. No allocation, finite output.
+  The parameter list is unchanged after all the switching, and no rescan was
+  requested.
+- **Unique ids.** Every suite restores its state byte for byte, asking only
+  for a values rescan. Tape refuses Distortion's state.
+- **The crossfade, sample for sample:**
+  - after a switch the output is `outgoing × (1 − g) + incoming × g` for 240
+    samples, then the incoming algorithm alone, to 1e-6;
+  - before the switch, the outgoing algorithm is untouched;
+  - the references are built with the same calls and seeds (Airwindows
+    seeds dither from `rand()`).
+- **Sample accuracy:** an algorithm's parameter change lands on its sample,
+  bit for bit.
+- **Auto gain:** Tube2 driven in the Distortion suite measures +10.69 dB
+  without auto gain and +0.05 dB with it.
+
+In the DAW, `adi_play --list` finds the eleven suites, and a chain of
+Distortion, Tape and Reverb renders offline with the reverb's tail.

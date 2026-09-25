@@ -251,7 +251,7 @@ rejected: binding `0.0.0.0` by default, any tokenless "local is fine" mode, and
 any remote path to tier escalation. Exposing it past loopback is the user's
 deliberate act.
 
-**The runtime (ADR-0168, ruling requested).** `adi-agent` is a small
+**The runtime (ADR-0168, approved).** `adi-agent` is a small
 TypeScript sidecar on pi-mono's `pi-ai` and `pi-agent-core`, the loop OpenClaw
 itself uses. It is not a fork of OpenClaw.
 - **Lifecycle:** the DAW launches it on demand, and it speaks JSON to this RPC

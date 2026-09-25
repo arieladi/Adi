@@ -181,9 +181,10 @@ subject, say so in your log instead of writing it twice.
 | 0165 | win | `win/param-automation` | plug-in parameter automation, the engine side; the device-host half is mac's | used |
 | 0166 | win | `win/plugins` | open-source plug-ins as CLAP: five upstreams built unchanged, the kept Airwindows with auto gain, ADI RMSC (director) | used |
 | 0167 | win | `win/scope-agent-parity` | the scope built into the DAW: any two tracks compared, aligned and on the grid (director) | used |
-| 0168 | win | `win/scope-agent-parity` | the agent's runtime: depend on OpenClaw's loop, do not fork it (director's brief, ruling requested) | used |
-| 0169 | win | `win/scope-agent-parity` | Live parity: fourteen MIDI effects; Sampler, Simpler, Redux, Shifter, Utility (director) | used |
+| 0168 | win | `win/scope-agent-parity` | the agent's runtime: depend on OpenClaw's loop, do not fork it (director: approved) | used |
+| 0169 | win | `win/scope-agent-parity` | Live parity: fourteen MIDI effects; Sampler, OneShot, Redux, Shifter, Utility (director) | used |
 | 0170 | win | `win/scope-agent-parity` | Airwindows re-curated by the director's five rules | used |
+| 0171 | win | `win/scope-agent-parity` | Airwindows as eleven suite plug-ins: static parameters, a 5 ms crossfade, auto gain (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

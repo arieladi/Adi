@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ADI Airwindows, driven the way a host drives it (ADR-0166): the factory,
-// every kept effect created, described, run and saved, parameter changes on
-// the sample they are stamped with, and auto gain where the catalogue says.
+// ADI Airwindows' suites, driven the way a host drives them (ADR-0166,
+// ADR-0171): every suite and every algorithm in it, a parameter list that
+// never changes and never asks for a rescan, the 5 ms crossfade checked sample
+// by sample, auto gain on whatever plays, and state.
 //
 // Its own binary: it replaces global operator new to observe that process()
-// allocates nothing, for every effect.
+// allocates nothing -- through every algorithm and every switch.
 
 #include "airwindows_clap.hpp"
 
@@ -40,7 +41,7 @@ void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 namespace {
 
-using adi::airwindows::kAutoGainParamId;
+using namespace adi::airwindows;
 
 int g_failures = 0;
 int g_checks = 0;
@@ -58,10 +59,22 @@ constexpr double kFs = 48000.0;
 constexpr uint32_t kBlock = 512;
 constexpr double kPi = 3.14159265358979323846;
 
-// --- a host, as small as CLAP allows -------------------------------------------
+// --- a host, as small as CLAP allows, that counts rescans ----------------------
 
-const void* hostExtension(const clap_host_t*, const char*) { return nullptr; }
+int g_rescanAll = 0;      // anything that asks the host to rebuild the list
+int g_rescanValues = 0;
+
+void hostRescan(const clap_host_t*, clap_param_rescan_flags flags) {
+    if (flags & (CLAP_PARAM_RESCAN_ALL | CLAP_PARAM_RESCAN_INFO | CLAP_PARAM_RESCAN_TEXT)) ++g_rescanAll;
+    if (flags & CLAP_PARAM_RESCAN_VALUES) ++g_rescanValues;
+}
+void hostClear(const clap_host_t*, clap_id, clap_param_clear_flags) {}
 void hostRequest(const clap_host_t*) {}
+const clap_host_params_t g_hostParams{hostRescan, hostClear, hostRequest};
+
+const void* hostExtension(const clap_host_t*, const char* id) {
+    return std::strcmp(id, CLAP_EXT_PARAMS) == 0 ? &g_hostParams : nullptr;
+}
 
 clap_host_t makeHost() {
     clap_host_t h{};
@@ -105,6 +118,7 @@ struct Events {
         e.value = value;
         list.push_back(e);
     }
+    void clear() { list.clear(); }
 };
 
 bool noPush(const clap_output_events_t*, const clap_event_header_t*) { return true; }
@@ -113,6 +127,12 @@ const clap_output_events_t g_noOut{nullptr, noPush};
 struct Stereo {
     std::vector<float> l, r;
     explicit Stereo(std::size_t n = 0) : l(n), r(n) {}
+    Stereo slice(std::size_t from, std::size_t n) const {
+        Stereo s(n);
+        std::copy(l.begin() + static_cast<long>(from), l.begin() + static_cast<long>(from + n), s.l.begin());
+        std::copy(r.begin() + static_cast<long>(from), r.begin() + static_cast<long>(from + n), s.r.begin());
+        return s;
+    }
 };
 
 /// -20 dBFS of a 220 Hz tone under noise, the same every run.
@@ -136,26 +156,27 @@ double rmsDb(const std::vector<float>& x, std::size_t from, std::size_t to) {
 }
 
 const clap_plugin_factory_t* factory() {
-    return static_cast<const clap_plugin_factory_t*>(
-        adi::airwindows::entryGetFactory(CLAP_PLUGIN_FACTORY_ID));
+    return static_cast<const clap_plugin_factory_t*>(entryGetFactory(CLAP_PLUGIN_FACTORY_ID));
 }
 
-/// One running instance.
+std::string suiteId(const char* key) { return std::string("com.adi.airwindows.") + key; }
+
+/// One running suite.
 struct Instance {
     const clap_plugin_t* p = nullptr;
     const clap_plugin_params_t* params = nullptr;
     const clap_plugin_state_t* state = nullptr;
-    const clap_plugin_audio_ports_t* ports = nullptr;
+    Events none_;
+    Events pending_;       // delivered with the next block
 
-    explicit Instance(const char* id) {
-        p = factory()->create_plugin(factory(), &g_host, id);
+    explicit Instance(const std::string& id) {
+        p = factory()->create_plugin(factory(), &g_host, id.c_str());
         if (p == nullptr || !p->init(p)) {
             p = nullptr;
             return;
         }
         params = static_cast<const clap_plugin_params_t*>(p->get_extension(p, CLAP_EXT_PARAMS));
         state = static_cast<const clap_plugin_state_t*>(p->get_extension(p, CLAP_EXT_STATE));
-        ports = static_cast<const clap_plugin_audio_ports_t*>(p->get_extension(p, CLAP_EXT_AUDIO_PORTS));
         p->activate(p, kFs, 1, kBlock);
         p->start_processing(p);
     }
@@ -169,10 +190,9 @@ struct Instance {
     Instance(const Instance&) = delete;
     Instance& operator=(const Instance&) = delete;
 
-    /// Runs `in` through in blocks into `out` (sized already, so nothing is
-    /// allocated here); `firstBlockEvents` go into the first block.
-    void runInto(const Stereo& in, Stereo& out, Events* firstBlockEvents = nullptr,
-                 uint32_t block = kBlock) {
+    /// Runs `in` into `out` (both sized), in blocks; pending events go with the
+    /// first block. Allocates nothing.
+    void runInto(const Stereo& in, Stereo& out, uint32_t block = kBlock) {
         for (std::size_t s = 0; s < in.l.size(); s += block) {
             const uint32_t n = static_cast<uint32_t>(std::min<std::size_t>(block, in.l.size() - s));
             float* ip[2] = {const_cast<float*>(in.l.data() + s), const_cast<float*>(in.r.data() + s)};
@@ -190,18 +210,17 @@ struct Instance {
             proc.audio_outputs = &ob;
             proc.audio_inputs_count = 1;
             proc.audio_outputs_count = 1;
-            proc.in_events = (s == 0 && firstBlockEvents != nullptr) ? &firstBlockEvents->in : &none_.in;
+            proc.in_events = s == 0 ? &pending_.in : &none_.in;
             proc.out_events = &g_noOut;
             p->process(p, &proc);
         }
+        pending_.clear();
     }
-    Stereo run(const Stereo& in, Events* firstBlockEvents = nullptr, uint32_t block = kBlock) {
+    Stereo run(const Stereo& in, uint32_t block = kBlock) {
         Stereo out(in.l.size());
-        runInto(in, out, firstBlockEvents, block);
+        runInto(in, out, block);
         return out;
     }
-    Events none_;
-
     void set(clap_id id, double value) {
         Events e;
         e.add(0, id, value);
@@ -211,6 +230,25 @@ struct Instance {
         double v = -1.0;
         params->get_value(p, id, &v);
         return v;
+    }
+    int algorithmCount() const {
+        clap_param_info_t info{};
+        params->get_info(p, 0, &info);
+        return static_cast<int>(info.max_value) + 1;
+    }
+    int algorithmNamed(const char* name) const {
+        double v = -1.0;
+        return params->text_to_value(p, kAlgorithmParamId, name, &v) ? static_cast<int>(v) : -1;
+    }
+    /// Every parameter's id, name and module, in order.
+    std::vector<std::string> list() const {
+        std::vector<std::string> out;
+        for (uint32_t i = 0; i < params->count(p); ++i) {
+            clap_param_info_t info{};
+            params->get_info(p, i, &info);
+            out.push_back(std::to_string(info.id) + "|" + info.module + "|" + info.name);
+        }
+        return out;
     }
     std::string save() const {
         std::string out;
@@ -236,216 +274,241 @@ struct Instance {
     }
 };
 
-std::string idOf(const char* name) {
-    std::string id = "com.adi.airwindows.";
-    for (const char* c = name; *c != '\0'; ++c) id += static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
-    return id;
-}
+const char* const kSuites[] = {"distortion", "consoles", "tape", "ampsims", "reverb", "lofimod",
+                               "noisedyn", "secret", "delay", "stereo", "sub"};
+const int kSuiteSizes[] = {47, 29, 6, 15, 17, 22, 13, 6, 4, 3, 2};
 
 // --- the tests -----------------------------------------------------------------
 
-void testTheFactoryListsTheKeptEffects() {
-    section("ADR-0166 -- one binary, every kept effect its own CLAP plug-in");
+void testTheFactoryHoldsElevenSuites() {
+    section("ADR-0171 -- eleven suites, each one CLAP plug-in holding its group's algorithms");
 
-    check(adi::airwindows::entryInit(""), "the entry initialises");
+    check(entryInit(""), "the entry initialises");
     const clap_plugin_factory_t* f = factory();
-    check(f != nullptr, "and hands out the plug-in factory");
-    check(adi::airwindows::entryGetFactory("clap.nothing") == nullptr, "and no other factory");
-    const uint32_t n = f->get_plugin_count(f);
-    check(n >= 140 && n <= 180, "about the 160 of CATALOGUE.md, not all 524: " + std::to_string(n));
+    check(f->get_plugin_count(f) == 11, "eleven suites in the binary that carries them all");
     std::set<std::string> ids;
-    bool shaped = true;
-    for (uint32_t i = 0; i < n; ++i) {
-        const clap_plugin_descriptor_t* d = f->get_plugin_descriptor(f, i);
-        ids.insert(d->id);
-        const char* const* feat = d->features;
-        int k = 0;
-        while (feat[k] != nullptr) ++k;
-        if (std::string(d->id) != idOf(d->name) || std::strlen(d->description) == 0 ||
-            std::strcmp(feat[0], CLAP_PLUGIN_FEATURE_AUDIO_EFFECT) != 0 ||
-            std::strcmp(feat[k - 1], CLAP_PLUGIN_FEATURE_STEREO) != 0 ||
-            !clap_version_is_compatible(d->clap_version))
-            shaped = false;
-    }
-    check(ids.size() == n, "every id is different");
-    check(shaped, "every descriptor: our id from its name, a description, audio-effect ... stereo");
-    // ADR-0170: the newest of every colour family, the named noise, stereo and
-    // secret-weapon sets, Chris's picks elsewhere.
-    for (const char* name : {"Density3", "ToTape9", "Console9Channel", "Console9Buss", "Channel9",
-                             "DeBess", "Wider", "Melt", "StarChild", "kCathedral5"})
-        check(ids.count(idOf(name)) == 1, std::string(name) + " is there");
-    // And what the rules drop: older versions, EQs, dithers, utilities, compressors.
-    for (const char* name : {"Density", "Console7Channel", "ToTape6", "Air4", "TPDFDither",
-                             "PurestGain", "Pressure5"})
-        check(ids.count(idOf(name)) == 0, std::string(name) + " is stripped");
-    check(f->create_plugin(f, &g_host, "com.adi.airwindows.nothing") == nullptr,
-          "an unknown id creates nothing");
-}
-
-void testEveryEffectRunsCleanly() {
-    section("ADR-0166 -- every kept effect: parameters, a second of audio with no allocation, state");
-
-    const clap_plugin_factory_t* f = factory();
-    const Stereo in = source(static_cast<std::size_t>(kFs));
-    int created = 0, described = 0, finite = 0, restored = 0;
-    long allocs = 0;
-    std::string bad;
+    bool named = true;
     for (uint32_t i = 0; i < f->get_plugin_count(f); ++i) {
         const clap_plugin_descriptor_t* d = f->get_plugin_descriptor(f, i);
-        Instance fx(d->id);
-        if (fx.p == nullptr || fx.params == nullptr || fx.state == nullptr || fx.ports == nullptr) {
-            bad += std::string(" ") + d->name + "(create)";
+        ids.insert(d->id);
+        named = named && std::string(d->name).rfind("ADI Airwindows - ", 0) == 0;
+    }
+    check(ids.size() == 11, "every suite has its own id");
+    check(named, "every suite is called \"ADI Airwindows - <group>\"");
+    int total = 0;
+    for (int s = 0; s < 11; ++s) {
+        Instance fx(suiteId(kSuites[s]));
+        const int n = fx.p != nullptr ? fx.algorithmCount() : -1;
+        total += n;
+        check(n == kSuiteSizes[s], std::string(kSuites[s]) + " holds " + std::to_string(kSuiteSizes[s]) +
+                                       " algorithms: " + std::to_string(n));
+    }
+    // Melt and StarChild2 are Ambience, which is in no other suite; the other
+    // four secret weapons are also in their category's suite.
+    check(total == 164, "160 algorithms, four of them in two suites: 164 slots, got " + std::to_string(total));
+    Instance secret(suiteId("secret"));
+    for (const char* name : {"Melt", "TapeDust", "GrooveWear", "StarChild2", "Vibrato", "NonlinearSpace"})
+        check(secret.algorithmNamed(name) >= 0, std::string("Secret Weapons holds ") + name);
+    Instance delay(suiteId("delay"));
+    check(delay.algorithmNamed("Melt") < 0, "Delay does not: it is the four the director named");
+}
+
+void testEveryAlgorithmPlaysAndTheListNeverMoves() {
+    section("ADR-0171 -- every algorithm plays through a switch, allocating nothing, and the list never moves");
+
+    const Stereo in = source(kBlock * 12);
+    long allocs = 0;
+    int played = 0, finite = 0, stable = 0, restored = 0, suites = 0;
+    std::string bad;
+    for (const char* key : kSuites) {
+        Instance fx(suiteId(key));
+        if (fx.p == nullptr) {
+            bad += std::string(" ") + key + "(create)";
             continue;
         }
-        ++created;
+        ++suites;
+        const std::vector<std::string> before = fx.list();
+        std::set<std::string> idset;
+        for (const std::string& s : before) idset.insert(s.substr(0, s.find('|')));
+        check(idset.size() == before.size(), std::string(key) + ": every parameter id is unique");
 
-        const uint32_t np = fx.params->count(fx.p);
-        bool ok = np >= 1;
-        for (uint32_t k = 0; k < np; ++k) {
-            clap_param_info_t info{};
-            ok = ok && fx.params->get_info(fx.p, k, &info) && info.name[0] != '\0' &&
-                 info.min_value == 0.0 && info.max_value == 1.0 && info.default_value >= 0.0 &&
-                 info.default_value <= 1.0;
-            char text[256] = {};
-            ok = ok && fx.params->value_to_text(fx.p, info.id, info.default_value, text, sizeof(text)) &&
-                 text[0] != '\0';
-            if (k + 1 == np) ok = ok && info.id == kAutoGainParamId;
-        }
-        clap_audio_port_info_t port{};
-        ok = ok && fx.ports->count(fx.p, true) == 1 && fx.ports->get(fx.p, 0, true, &port) &&
-             port.channel_count == 2;
-        if (ok) ++described;
-        else bad += std::string(" ") + d->name + "(params)";
-
+        const int n = fx.algorithmCount();
+        const int rescansBefore = g_rescanAll;
         Stereo out(in.l.size());
-        g_allocs.store(0);
-        g_counting.store(true);
-        fx.runInto(in, out);
-        g_counting.store(false);
-        if (g_allocs.load() != 0) bad += std::string(" ") + d->name + "(alloc)";
-        allocs += g_allocs.load();
-        bool fin = true;
-        for (std::size_t k = 0; k < out.l.size(); ++k)
-            if (!std::isfinite(out.l[k]) || !std::isfinite(out.r[k])) fin = false;
-        if (fin) ++finite;
-        else bad += std::string(" ") + d->name + "(nan)";
+        for (int a = 0; a < n; ++a) {
+            fx.pending_.add(100, kAlgorithmParamId, static_cast<double>(a));   // mid-block
+            g_allocs.store(0);
+            g_counting.store(true);
+            fx.runInto(in, out);
+            g_counting.store(false);
+            allocs += g_allocs.load();
+            ++played;
+            bool ok = true;
+            for (std::size_t i = 0; i < out.l.size(); ++i)
+                ok = ok && std::isfinite(out.l[i]) && std::isfinite(out.r[i]);
+            if (ok) ++finite;
+            else bad += std::string(" ") + key + "#" + std::to_string(a) + "(nan)";
+        }
+        if (fx.list() == before && g_rescanAll == rescansBefore) ++stable;
+        else bad += std::string(" ") + key + "(list moved)";
 
-        // Move every parameter off its default, save, load into a fresh one.
-        for (uint32_t k = 0; k + 1 < np; ++k) fx.set(k, 0.25 + 0.5 * ((k * 37) % 11) / 11.0);
-        fx.set(kAutoGainParamId, 1.0);
+        // Every parameter off its default, the last algorithm chosen, auto gain
+        // off; saved, loaded into a fresh suite, saved again.
+        for (uint32_t i = 2; i < fx.params->count(fx.p); ++i) {
+            clap_param_info_t info{};
+            fx.params->get_info(fx.p, i, &info);
+            fx.set(info.id, 0.25 + 0.5 * ((i * 37) % 11) / 11.0);
+        }
+        fx.set(kAlgorithmParamId, static_cast<double>(n - 1));
+        fx.set(kAutoGainParamId, 0.0);
         const std::string saved = fx.save();
-        Instance again(d->id);
-        if (again.p != nullptr && again.load(saved) && again.save() == saved &&
-            again.get(kAutoGainParamId) == 1.0)
+        const int valueRescans = g_rescanValues;
+        Instance again(suiteId(key));
+        if (again.load(saved) && again.save() == saved && again.get(kAlgorithmParamId) == n - 1 &&
+            g_rescanValues == valueRescans + 1)
             ++restored;
-        else bad += std::string(" ") + d->name + "(state)";
+        else bad += std::string(" ") + key + "(state)";
     }
-    const int n = static_cast<int>(f->get_plugin_count(f));
-    check(created == n, "all " + std::to_string(n) + " create and initialise");
-    check(described == n, "all describe their parameters, value texts and stereo ports");
-    check(allocs == 0, "none allocates while processing: " + std::to_string(allocs) + " allocation(s)");
-    check(finite == n, "all produce finite audio");
-    check(restored == n, "all restore their state exactly, auto gain included");
+    check(suites == 11, "all eleven suites create and initialise");
+    check(played == 164 && finite == 164, "all 164 algorithm slots play, switched to mid-block, finite: " +
+                                              std::to_string(finite));
+    check(allocs == 0, "no switch and no algorithm allocates: " + std::to_string(allocs) + " allocation(s)");
+    check(stable == 11, "no suite's parameter list changed, and none asked for a rescan");
+    check(restored == 11, "every suite restores its state exactly, asking only for a values rescan");
+    Instance other(suiteId("tape"));
+    Instance dist(suiteId("distortion"));
+    check(!other.load(dist.save()), "Tape refuses Distortion's state");
     if (!bad.empty()) std::printf("        problems:%s\n", bad.c_str());
 }
 
-void testParameterChangesLandOnTheirSample() {
-    section("ADR-0166 -- a parameter change lands on the sample it is stamped with");
+void testTheSwitchIsAFiveMillisecondCrossfade() {
+    section("ADR-0171 -- a switch is a 5 ms linear crossfade, sample for sample");
 
-    const std::string id = idOf("Density3");
-    const Stereo in = source(kBlock);
     // Airwindows seeds each instance's output dither from rand() when it is
-    // constructed; the same seed makes two instances comparable bit for bit.
-    // A: one block, the change stamped at 256.
+    // constructed, and a suite constructs its algorithms in order: the same
+    // seed makes two suites' instances identical.
+    const std::string id = suiteId("distortion");
+    const Stereo in = source(kBlock * 4);
+    const int from = 0;
     std::srand(1);
-    Instance a(id.c_str());
-    Events ea;
-    ea.add(256, 0, 0.2);
-    const Stereo outA = a.run(in, &ea, kBlock);
-    // B: the same audio as two halves, the change at the start of the second.
+    Instance probe(id);
+    const int to = probe.algorithmNamed("Density3");
+    const uint32_t at = kBlock * 2;
+    const int fade = static_cast<int>(std::lround(kCrossfadeSeconds * kFs));
+
+    // A: algorithm `from`, then a switch to `to` at `at`.
     std::srand(1);
-    Instance b(id.c_str());
-    Stereo first(256), second(256);
-    for (std::size_t i = 0; i < 256; ++i) {
-        first.l[i] = in.l[i];
-        first.r[i] = in.r[i];
-        second.l[i] = in.l[256 + i];
-        second.r[i] = in.r[256 + i];
+    Instance a(id);
+    a.set(kAutoGainParamId, 0.0);
+    a.set(kAlgorithmParamId, from);
+    const Stereo head = in.slice(0, at), tail = in.slice(at, in.l.size() - at);
+    Stereo aHead(head.l.size()), aTail(tail.l.size());
+    a.runInto(head, aHead);
+    a.pending_.add(0, kAlgorithmParamId, to);
+    a.runInto(tail, aTail);
+    // B: `from` alone, called as it is inside A: the head in blocks, then the
+    // fade's 240 frames in one call. (Some algorithms work per call, so a
+    // reference cut differently would differ by that, not by the fade.)
+    std::srand(1);
+    Instance b(id);
+    b.set(kAutoGainParamId, 0.0);
+    b.set(kAlgorithmParamId, from);
+    const Stereo bHead = b.run(head);
+    const Stereo bFade = b.run(tail.slice(0, static_cast<std::size_t>(fade)), static_cast<uint32_t>(fade));
+    // D: `to` alone, fresh, fed from the switch on -- which is what the idle
+    // instance inside A is when it is chosen.
+    std::srand(1);
+    Instance d(id);
+    d.set(kAutoGainParamId, 0.0);
+    d.set(kAlgorithmParamId, to);
+    const Stereo outD = d.run(tail);
+
+    // Checked in two parts, so a failure says which side is wrong.
+    double inFade = 0.0, after = 0.0, incomingInFade = 0.0;
+    for (std::size_t i = 0; i < aTail.l.size(); ++i) {
+        if (static_cast<int>(i) < fade) {
+            const double g = static_cast<double>(i + 1) / static_cast<double>(fade + 1);
+            const double want = bFade.l[i] * (1.0 - g) + outD.l[i] * g;
+            inFade = std::fmax(inFade, std::fabs(aTail.l[i] - want));
+            incomingInFade = std::fmax(incomingInFade, std::fabs(aTail.l[i] - outD.l[i]));
+        } else {
+            after = std::fmax(after, std::fabs(aTail.l[i] - outD.l[i]));
+        }
     }
-    const Stereo b1 = b.run(first);
-    Events eb;
-    eb.add(0, 0, 0.2);
-    const Stereo b2 = b.run(second, &eb);
-    bool same = true;
-    for (std::size_t i = 0; i < 256; ++i)
-        if (outA.l[i] != b1.l[i] || outA.l[256 + i] != b2.l[i] || outA.r[256 + i] != b2.r[i]) same = false;
-    check(same, "stamped at 256 = the block split at 256, bit for bit");
-    // C: the change at 0 instead, to show the stamp mattered.
-    std::srand(1);
-    Instance c(id.c_str());
-    Events ec;
-    ec.add(0, 0, 0.2);
-    const Stereo outC = c.run(in, &ec, kBlock);
-    bool differs = false;
-    for (std::size_t i = 0; i < 256; ++i)
-        if (outC.l[i] != outA.l[i]) differs = true;
-    check(differs, "and differs from the change stamped at 0");
+    check(to > 0, "Density3 is in the Distortion suite, and not its first algorithm");
+    check(fade == 240, "5 ms at 48 kHz is 240 samples");
+    check(after < 1e-6, "after 240 samples, the incoming algorithm alone: worst " + std::to_string(after));
+    check(inFade < 1e-6, "during them, outgoing x (1 - g) + incoming x g: worst " + std::to_string(inFade) +
+                             " (against the incoming alone: " + std::to_string(incomingInFade) + ")");
+    bool before = true;
+    for (std::size_t i = 0; i < head.l.size(); ++i) before = before && aHead.l[i] == bHead.l[i];
+    check(before, "and before the switch, the outgoing algorithm untouched");
 }
 
-void testAutoGainIsOnWhereItIsMissing() {
-    section("ADR-0166 -- auto gain: on for a tone stage with no output control, off elsewhere");
+void testParameterChangesLandOnTheirSample() {
+    section("ADR-0171 -- an algorithm's parameter change lands on the sample it is stamped with");
 
-    auto defaultOf = [](const char* name) {
-        Instance fx(idOf(name).c_str());
-        const uint32_t np = fx.params->count(fx.p);
-        clap_param_info_t info{};
-        fx.params->get_info(fx.p, np - 1, &info);
-        return info.default_value;
+    const std::string id = suiteId("distortion");
+    const Stereo in = source(kBlock);
+    std::srand(2);
+    Instance probe(id);
+    const int algo = probe.algorithmNamed("Density3");
+    const clap_id param = kAlgoParamBase + static_cast<clap_id>(algo) * kAlgoParamStride;   // its first
+    auto make = [&](Instance& fx) {
+        fx.set(kAlgorithmParamId, algo);
+        fx.set(kAutoGainParamId, 0.0);
     };
-    check(defaultOf("Tube2") == 1.0, "Tube2 (Input, Tube; no output) starts with auto gain on");
-    check(defaultOf("Density3") == 0.0, "Density3 has an Output of its own: off");
-    check(defaultOf("kCathedral5") == 0.0, "a reverb: off");
-    check(defaultOf("ADClip9") == 0.0, "a clipper, whose job is loudness: off");
+    std::srand(2);
+    Instance a(id);
+    make(a);
+    a.pending_.add(256, param, 0.9);
+    const Stereo outA = a.run(in);
+    std::srand(2);
+    Instance b(id);
+    make(b);
+    const Stereo b1 = b.run(in.slice(0, 256));
+    b.pending_.add(0, param, 0.9);
+    const Stereo b2 = b.run(in.slice(256, 256));
+    bool same = true;
+    for (std::size_t i = 0; i < 256; ++i)
+        same = same && outA.l[i] == b1.l[i] && outA.l[256 + i] == b2.l[i] && outA.r[256 + i] == b2.r[i];
+    check(same, "stamped at 256 = the block split at 256, bit for bit");
+}
 
-    // Tube2 driven hard: louder with auto gain off, as loud as its input with it on.
+void testAutoGainFollowsWhatPlays() {
+    section("ADR-0171 -- auto gain levels whatever algorithm plays");
+
     const Stereo in = source(static_cast<std::size_t>(5 * kFs));
     const std::size_t n = in.l.size();
     const double inDb = rmsDb(in.l, n - 48000, n);
-    Instance on(idOf("Tube2").c_str());
-    on.set(0, 1.0);
-    on.set(1, 1.0);
-    const Stereo withAg = on.run(in);
-    Instance off(idOf("Tube2").c_str());
-    off.set(0, 1.0);
-    off.set(1, 1.0);
-    off.set(kAutoGainParamId, 0.0);
-    const Stereo without = off.run(in);
-    const double offDb = rmsDb(without.l, n - 48000, n) - inDb;
-    const double onDb = rmsDb(withAg.l, n - 48000, n) - inDb;
-    std::printf("        Tube2 driven: %+.2f dB without auto gain, %+.2f dB with it\n", offDb, onDb);
-    check(std::fabs(offDb) > 2.0, "driven, Tube2 changes the level by more than 2 dB");
-    check(std::fabs(onDb) < 1.0, "auto gain brings it back to within 1 dB of its input");
-
-    // State carries the switch, and refuses another effect's state.
-    Instance a(idOf("Tube2").c_str());
-    a.set(kAutoGainParamId, 0.0);
-    const std::string saved = a.save();
-    Instance b(idOf("Tube2").c_str());
-    check(b.get(kAutoGainParamId) == 1.0 && b.load(saved) && b.get(kAutoGainParamId) == 0.0,
-          "auto gain off survives save and load");
-    Instance other(idOf("Spiral2").c_str());
-    check(!other.load(saved), "Spiral2 refuses Tube2's state");
+    auto driven = [&](bool autoGain) {
+        Instance fx(suiteId("distortion"));
+        const int tube = fx.algorithmNamed("Tube2");
+        const clap_id base = kAlgoParamBase + static_cast<clap_id>(tube) * kAlgoParamStride;
+        fx.set(kAlgorithmParamId, tube);
+        fx.set(base + 0, 1.0);   // Input
+        fx.set(base + 1, 1.0);   // Tube
+        fx.set(kAutoGainParamId, autoGain ? 1.0 : 0.0);
+        const Stereo out = fx.run(in);
+        return rmsDb(out.l, n - 48000, n) - inDb;
+    };
+    const double off = driven(false), on = driven(true);
+    std::printf("        Tube2 driven in the Distortion suite: %+.2f dB without auto gain, %+.2f dB with it\n",
+                off, on);
+    check(std::fabs(off) > 2.0, "driven, Tube2 changes the level by more than 2 dB");
+    check(std::fabs(on) < 1.0, "auto gain brings it back to within 1 dB of its input");
 }
 
 }  // namespace
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    std::printf("adi_airwindows_tests -- the kept Airwindows as CLAP plug-ins\n\n");
-    testTheFactoryListsTheKeptEffects();
-    testEveryEffectRunsCleanly();
+    std::printf("adi_airwindows_tests -- the Airwindows suites as CLAP plug-ins\n\n");
+    testTheFactoryHoldsElevenSuites();
+    testEveryAlgorithmPlaysAndTheListNeverMoves();
+    testTheSwitchIsAFiveMillisecondCrossfade();
     testParameterChangesLandOnTheirSample();
-    testAutoGainIsOnWhereItIsMissing();
+    testAutoGainFollowsWhatPlays();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

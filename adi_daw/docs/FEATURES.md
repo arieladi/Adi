@@ -176,8 +176,8 @@ for the transport, the tempo map, the groove pool and the track's scale
 | Note Echo, MPE Control, Expression Control, MIDI Monitor | MIDI effect | P2 | ✅ | Live Suite's Max for Live MIDI effects, as native devices |
 | Envelope MIDI, Shaper MIDI | modulator | P2 | 🔶 | They map to any parameter, so they wait for the modulation architecture (ADR-0046, ADR-0052) |
 | **Utility** | audio effect | P1 | ✅ | Phase L and R; channel mode; Width and Mid/Side; Mono; Bass Mono 50–500 Hz with audition; Gain −∞ to +35 dB; Balance; Mute; DC filter |
-| **Simpler** (our name) | instrument | P1 | ✅ | Classic, 1-Shot and Slice; Start, Loop, Length and Fade; warp; filter; LFO; envelope; voices; the Controls tab |
-| **Sampler** | instrument | P2 | ✅ | Simpler's engine plus multisample zones (key, velocity, sample select), loops with crossfade, a modulation oscillator, modulation, MIDI routing and MPE |
+| **OneShot** (Live's Simpler) | instrument | P1 | ✅ | Classic, 1-Shot and Slice; Start, Loop, Length and Fade; warp; filter; LFO; envelope; voices; the Controls tab |
+| **Sampler** | instrument | P2 | ✅ | OneShot's engine plus multisample zones (key, velocity, sample select), loops with crossfade, a modulation oscillator, modulation, MIDI routing and MPE |
 | **Redux** | audio effect | P2 | ✅ | Rate with Jitter; pre and post filters; Bits with Shape; DC Shift; Dry/Wet |
 | **Shifter** | audio effect | P2 | ✅ | Pitch, Freq and Ring modes; Spread and Wide; a synced delay with Feedback and Tone; an LFO with ten shapes; an envelope follower |
 | Live 12's MIDI Tools (Transform and Generate) | clip ops | P2 | — | Not devices: clip-editing tools (manual chapter 11). Noted by ADR-0169, **not ruled** |
@@ -228,7 +228,7 @@ for the transport, the tempo map, the groove pool and the track's scale
 | **Every mutation is a typed, attributed op** | P0 | ✅ | SPEC §8.1 |
 | **AI agent that can only act through ops** | P2 | ✅ | [AI-AGENT.md](AI-AGENT.md) |
 | Agent changes previewable as a diff before commit | P2 | ✅ | |
-| **Agent runtime, `adi-agent`**: pi-mono's loop in a sidecar, three tools over the RPC boundary | P2 | — | ADR-0168. It takes OpenClaw's loop and ideas, not a fork of OpenClaw (**ruling requested**). It needs, in order: the registry's JSON Schema export, with field descriptions; the loopback RPC server (ADR-0039); the sidecar; the chat panel. Its tools are `project_read`, `ops_describe` and `changeset_propose`. |
+| **Agent runtime, `adi-agent`**: pi-mono's loop in a sidecar, three tools over the RPC boundary | P2 | — | ADR-0168. It takes OpenClaw's loop and ideas, not a fork of OpenClaw (**approved** by the director). It needs, in order: the registry's JSON Schema export, with field descriptions; the loopback RPC server (ADR-0039); the sidecar; the chat panel. Its tools are `project_read`, `ops_describe` and `changeset_propose`. |
 | **A scope built in**: any two tracks compared (overlay, stacked, difference, sum), with correlation and offset, aligned by delay compensation, on the grid, true peak | P1 | — | ADR-0167. OScope and PsyScope need routing, and cannot see another track's latency. A measured offset is fixed with `mixer.setDelay`, which this work registers. It adds a second audio-to-UI path, which amends ADR-0050 d4. |
 | Undo that survives a reboot | P1 | ✅ | |
 | Undo you can *branch*, so exploring costs nothing | P2 | ✅ | |
@@ -290,7 +290,7 @@ Upstream code, unchanged, each its own binary under its own licence
 | ChowCentaur | BSD-3 → GPLv3 (JUCE 6) | `com.adi.chowdsp.chowcentaur` | ✅ |
 | ZL Equalizer 2 | AGPL-3.0 → AGPLv3 | `com.adi.zlaudio.zlequalizer2` | ✅ |
 | Dragonfly Hall, Room, Plate, Early Reflections | GPL-3.0 → GPLv3 | `michaelwillis.dragonfly.*`, theirs | ✅ |
-| **ADI Airwindows**: 160 of 524 by the director's five rules (ADR-0170), each its own plug-in, with auto gain | MIT → GPLv3 | `com.adi.airwindows.*` | ✅ |
+| **ADI Airwindows**: 160 of 524 by the director's five rules (ADR-0170), in eleven suite plug-ins with the algorithm chosen inside, a 5 ms crossfade and auto gain (ADR-0171); the GUI is mac's | MIT → GPLv3 | `com.adi.airwindows.<suite>` | ✅ |
 | **Host-side auto gain** for any plug-in, reusing `dsp::AutoGain` | — | — | idea: needs a per-device flag, which is a schema change |
 
 ### Time-stretch (ADR-0061)
