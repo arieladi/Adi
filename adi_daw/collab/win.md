@@ -5,6 +5,62 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — open-source plug-ins as CLAP, ADI Airwindows with auto gain, ADI RMSC (ADR-0166)
+
+**The director's instruction:** smartelectronix (all of it; Smexoscope
+first), ChowTapeModel and ChowCentaur, ZL Equalizer (the equalizer's
+baseline), Airwindows (a list, a strip, CLAP, a light UI, auto gain) and
+Dragonfly Reverb as CLAP; and an RMSC plug-in from scratch in JUCE 9.
+
+**What is built,** all in `plugins/`, each loaded and rendered by `adi_play`:
+- **Upstream, unchanged,** through wrappers in `plugins/external/`:
+  - the 11 smartelectronix plug-ins;
+  - ChowCentaur;
+  - ZL Equalizer 2;
+  - the four Dragonfly reverbs;
+  - ChowTape, from its own tree.
+
+  `tools/fetch_plugins.sh` pins the sources by commit. `tools\build-external-plugin.bat`
+  builds each with MSVC.
+- **ADI Airwindows:** one JUCE-free CLAP binary, 141 plug-ins.
+  - The kept set is Chris's Recommended and Basic, plus Density3, Pressure5
+    and Channel9.
+  - `plugins/airwindows/CATALOGUE.md` gives all 524 with the reason for each.
+  - Every effect has an Auto Gain parameter. It is on for the 19 tone effects
+    with no output control.
+- **`dsp::AutoGain`:** K-weighted, a 1 s window, ±24 dB. Silence and muting
+  freeze the measurement.
+- **ADI RMSC:** CLAP, VST3 and standalone, over the engine's
+  `RingModSidechain`. It gains a threshold and a release; the attack stays
+  instant.
+
+**Found on the way:**
+- **JUCE 9.0.2 has no CLAP export.** clap-juce-extensions supplies it.
+- **Centaur:** its JUCE fork says 6.0.8 but predates the context-menu class
+  that clap-juce-extensions assumes at 6.0.8, so it pins an older commit.
+- **Dragonfly:** its git symlinks check out on Windows as text stubs. The
+  wrapper copies around them.
+- **ZL:** builds under MSVC, though upstream uses clang-cl.
+- **My own first auto gain held the gain but not the windows.** A muting
+  effect drained the output's window and came back as a burst. The mute check
+  caught it; a plant of the half-fix fails it at +10.8 dB.
+- **Airwindows seeds each instance's dither from `rand()`,** so bit-exact
+  comparisons between instances must seed it.
+
+**Checks:**
+- `adi_dsp_tests` has 130 checks, up from 92: 8 for RMSC's threshold and
+  release, 30 for auto gain.
+- `adi_airwindows_tests`: 32 checks. All 141 effects are created, described,
+  processed with zero allocation, and their state restored; parameter events
+  are sample-accurate; Tube2 driven goes from +10.69 dB to +0.05 dB.
+- `adi_rmsc_tests`: 14 checks.
+- The core suites: 4705 checks across 48 suites, all passing.
+
+**For mac:** item 6 in `collab/prompts/2026-09-27a-mac-device-automation.md`,
+the generic parameter panel for plug-ins with no editor.
+
+---
+
 ## 2026-09-25 — plug-in parameter automation, the engine side (ADR-0165); mac's brief
 
 **The director's instruction:** the engine side, with CTest fixtures that

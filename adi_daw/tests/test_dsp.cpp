@@ -17,10 +17,12 @@
 // Its own binary: it replaces global `operator new` to observe that the audio-
 // thread paths allocate nothing.
 
+#include "adi/dsp/auto_gain.hpp"
 #include "adi/dsp/biquad.hpp"
 #include "adi/dsp/limiter.hpp"
 #include "adi/dsp/rmsc.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -534,6 +536,275 @@ void testRmscAllocatesNothing() {
     check(g_allocs.load() == 0, "fifty blocks, no allocation");
 }
 
+void testRmscThresholdAndRelease() {
+    section("ADR-0166 -- RMSC's threshold makes the duck total, its release keeps the attack instant");
+
+    // A kick peaking at -12 dBFS against a -12 dB threshold: the bass is muted
+    // outright, where the classic 0 dBFS scale would only take 75 % off it.
+    const float kick = static_cast<float>(std::pow(10.0, -12.0 / 20.0));
+    std::vector<float> main(2000, 0.5f), key(2000, 0.0f);
+    for (std::size_t i = 200; i < 300; ++i) key[i] = kick;
+    {
+        RingModSidechain r;
+        r.prepare(kFs);
+        r.setDepth(1.0);
+        r.setThresholdDb(-12.0);
+        const std::vector<double> out = runRmsc(r, main, key);
+        check(std::fabs(out[250]) < 1e-6, "a kick at the threshold mutes the bass completely");
+        RingModSidechain classic;
+        classic.prepare(kFs);
+        classic.setDepth(1.0);
+        const std::vector<double> c = runRmsc(classic, main, key);
+        check(std::fabs(c[250] - 0.5 * (1.0 - kick)) < 1e-6, "at the default 0 dBFS it takes only |key| off");
+        std::vector<float> quiet(2000, 0.0f);
+        for (std::size_t i = 200; i < 300; ++i) quiet[i] = kick / 2.0f;
+        RingModSidechain half;
+        half.prepare(kFs);
+        half.setDepth(1.0);
+        half.setThresholdDb(-12.0);
+        const std::vector<double> h = runRmsc(half, main, quiet);
+        check(std::fabs(h[250] - 0.25) < 1e-6, "6 dB under the threshold ducks halfway");
+    }
+    {
+        // Release 10 ms: instant down on the kick's first sample, then back up
+        // with a 10 ms time constant: 1/e of the duck left 480 samples later.
+        RingModSidechain r;
+        r.prepare(kFs);
+        r.setDepth(1.0);
+        r.setThresholdDb(-12.0);
+        r.setReleaseMs(10.0);
+        std::vector<float> gain(main.size());
+        std::vector<float> out(main.size());
+        const float* ip[1] = {main.data()};
+        float* op[1] = {out.data()};
+        r.process(ip, op, 1, key.data(), static_cast<int>(main.size()), gain.data());
+        check(gain[199] == 1.0f && std::fabs(gain[200]) < 1e-6f,
+              "the release does not slow the attack: the kick's first sample is ducked fully");
+        check(std::fabs(gain[299 + 480] - (1.0 - std::exp(-1.0))) < 2e-3,
+              "10 ms after the kick ends, 1/e of the duck remains: " + std::to_string(gain[299 + 480]));
+        bool rising = true;
+        for (std::size_t i = 301; i < 1500; ++i)
+            if (gain[i] < gain[i - 1]) rising = false;
+        check(rising, "and the gain only climbs back after it: no ripple, no click");
+        bool matches = true;
+        for (std::size_t i = 0; i < main.size(); ++i)
+            if (std::fabs(out[i] - main[i] * gain[i]) > 1e-6f) matches = false;
+        check(matches, "gainOut is the gain that was applied, sample for sample");
+    }
+    {
+        // Defaults unchanged: threshold 0 dBFS and release 0 are the classic
+        // effect, bit for bit, however they were reached.
+        std::vector<float> k2(4800);
+        for (std::size_t i = 0; i < k2.size(); ++i)
+            k2[i] = static_cast<float>(0.9 * std::sin(2.0 * kPi * 60.0 * static_cast<double>(i) / kFs));
+        std::vector<float> m2(4800, 0.3f);
+        RingModSidechain a, b;
+        a.prepare(kFs);
+        b.prepare(kFs);
+        b.setThresholdDb(-20.0);
+        b.setReleaseMs(50.0);
+        b.setThresholdDb(0.0);
+        b.setReleaseMs(0.0);
+        a.setDepth(0.7);
+        b.setDepth(0.7);
+        const std::vector<double> x = runRmsc(a, m2, k2), y = runRmsc(b, m2, k2);
+        check(x == y, "threshold 0 dBFS and release 0 are the classic RMSC, bit for bit");
+    }
+}
+
+// ===========================================================================
+// Auto gain (ADR-0166)
+// ===========================================================================
+
+/// Deterministic programme material: a 220 Hz tone under white noise, stereo.
+std::vector<std::vector<float>> autoGainSource(int frames, double level) {
+    std::vector<std::vector<float>> x(2, std::vector<float>(static_cast<std::size_t>(frames)));
+    unsigned seed = 12345u;
+    for (int i = 0; i < frames; ++i) {
+        const double tone = std::sin(2.0 * kPi * 220.0 * i / kFs);
+        for (int c = 0; c < 2; ++c) {
+            seed = seed * 1664525u + 1013904223u;
+            const double noise = (static_cast<double>(seed >> 8) / 16777216.0) * 2.0 - 1.0;
+            x[static_cast<std::size_t>(c)][static_cast<std::size_t>(i)] =
+                static_cast<float>(level * (0.7 * tone + 0.3 * noise));
+        }
+    }
+    return x;
+}
+
+/// Runs `effect` on `dry` block by block with auto gain after it; returns the
+/// output and records the gain (dB) at the end of every block.
+template <class Effect>
+std::vector<std::vector<float>> runAutoGain(AutoGain& ag,
+                                            const std::vector<std::vector<float>>& dry,
+                                            Effect effect, std::vector<double>* gains = nullptr,
+                                            int block = 512) {
+    const int frames = static_cast<int>(dry[0].size());
+    std::vector<std::vector<float>> out = dry;
+    for (int s = 0; s < frames; s += block) {
+        const int n = frames - s < block ? frames - s : block;
+        for (auto& ch : out)
+            for (int i = s; i < s + n; ++i)
+                ch[static_cast<std::size_t>(i)] = effect(ch[static_cast<std::size_t>(i)], i);
+        const float* d[2] = {dry[0].data() + s, dry[1].data() + s};
+        float* w[2] = {out[0].data() + s, out[1].data() + s};
+        ag.process(d, w, 2, n);
+        if (gains != nullptr) gains->push_back(ag.gainDb());
+    }
+    return out;
+}
+
+double rmsDb(const std::vector<float>& x, std::size_t from, std::size_t to) {
+    double e = 0.0;
+    for (std::size_t i = from; i < to; ++i) e += static_cast<double>(x[i]) * x[i];
+    return 10.0 * std::log10(e / static_cast<double>(to - from));
+}
+
+void testAutoGainKWeightingIsTheStandard() {
+    section("ADR-0166 -- auto gain K-weights both sides: BS.1770-4's own coefficients at 48 kHz");
+
+    // ITU-R BS.1770-4, Tables 1 and 2.
+    const Biquad s = AutoGain::kShelf(48000.0);
+    near(s.b0, 1.53512485958697, 1e-9, "shelf b0");
+    near(s.b1, -2.69169618940638, 1e-9, "shelf b1");
+    near(s.b2, 1.19839281085285, 1e-9, "shelf b2");
+    near(s.a1, -1.69065929318241, 1e-9, "shelf a1");
+    near(s.a2, 0.73248077421585, 1e-9, "shelf a2");
+    const Biquad h = AutoGain::kHighPass(48000.0);
+    check(h.b0 == 1.0 && h.b1 == -2.0 && h.b2 == 1.0, "high-pass numerator 1, -2, 1");
+    near(h.a1, -1.99004745483398, 1e-9, "high-pass a1");
+    near(h.a2, 0.99007225036621, 1e-9, "high-pass a2");
+    // And the curve, not just the numbers: the same shape at 44.1 and 96 kHz.
+    for (double fs : {44100.0, 96000.0}) {
+        near(magnitudeDb(AutoGain::kShelf(fs), fs, 10000.0),
+             magnitudeDb(AutoGain::kShelf(48000.0), 48000.0, 10000.0), 0.05,
+             "the shelf at 10 kHz is the same at " + std::to_string(static_cast<int>(fs)) + " Hz");
+        near(magnitudeDb(AutoGain::kHighPass(fs), fs, 20.0),
+             magnitudeDb(AutoGain::kHighPass(48000.0), 48000.0, 20.0), 0.05,
+             "the high-pass at 20 Hz is the same at " + std::to_string(static_cast<int>(fs)) + " Hz");
+    }
+}
+
+void testAutoGainUndoesALevelChange() {
+    section("ADR-0166 -- auto gain puts the output back at the input's loudness, and leaves unity alone");
+
+    const auto dry = autoGainSource(static_cast<int>(6 * kFs), 0.1);
+    for (double db : {12.0, -12.0, 6.0}) {
+        AutoGain ag;
+        ag.prepare(kFs);
+        const float g = static_cast<float>(std::pow(10.0, db / 20.0));
+        const auto out = runAutoGain(ag, dry, [g](float x, int) { return x * g; });
+        near(ag.gainDb(), -db, 0.05, "a " + std::to_string(static_cast<int>(db)) +
+                                         " dB effect is answered with the opposite gain");
+        const std::size_t n = dry[0].size();
+        near(rmsDb(out[0], n - 48000, n), rmsDb(dry[0], n - 48000, n), 0.05,
+             "and the last second out is as loud as the last second in");
+    }
+    {
+        // From the first block: both windows start empty together, so their
+        // ratio is right before either has filled.
+        AutoGain ag;
+        ag.prepare(kFs);
+        std::vector<double> gains;
+        runAutoGain(ag, dry, [](float x, int) { return x * 4.0f; }, &gains);
+        near(gains[0], -12.04, 0.05, "right after the first block, not a second later");
+    }
+    {
+        // Unity: the two sides are measured by the same filters from the same
+        // samples, so the ratio is exactly 1 and the output is the input.
+        AutoGain ag;
+        ag.prepare(kFs);
+        const auto out = runAutoGain(ag, dry, [](float x, int) { return x; });
+        check(out == dry, "an effect that changes nothing is passed bit for bit");
+    }
+}
+
+void testAutoGainHoldsThroughSilence() {
+    section("ADR-0166 -- silence holds the gain: no +24 dB at the next note");
+
+    constexpr int sec = static_cast<int>(kFs);
+    auto dry = autoGainSource(26 * sec, 0.1);
+    // Three seconds of programme, twenty of silence, three of programme again.
+    for (auto& ch : dry)
+        for (int i = 3 * sec; i < 23 * sec; ++i) ch[static_cast<std::size_t>(i)] = 0.0f;
+    AutoGain ag;
+    ag.prepare(kFs);
+    std::vector<double> gains;
+    runAutoGain(ag, dry, [](float x, int) { return x * 4.0f; }, &gains);
+    const std::size_t before = static_cast<std::size_t>(3 * sec / 512 - 1);
+    const std::size_t after = static_cast<std::size_t>(23 * sec / 512 + 1);
+    near(gains[before], -12.04, 0.05, "-12 dB before the silence");
+    double worst = 0.0;
+    for (std::size_t b = before; b < gains.size(); ++b)
+        worst = std::fmax(worst, std::fabs(gains[b] + 12.04));
+    check(worst < 0.1, "held through twenty seconds of silence and the restart: worst " +
+                           std::to_string(worst) + " dB off");
+    near(gains[after], -12.04, 0.05, "and right on the first block after it");
+
+    // An effect that mutes (a gate, a kill switch): the input goes on, the
+    // output is silent. The ratio would climb to the limit; it holds instead.
+    AutoGain mute;
+    mute.prepare(kFs);
+    const auto live = autoGainSource(8 * sec, 0.1);
+    std::vector<double> mg;
+    runAutoGain(mute, live, [](float x, int i) { return (i >= 2 * sec && i < 6 * sec) ? 0.0f : x * 2.0f; }, &mg);
+    double loudest = -100.0;
+    for (double g : mg) loudest = std::fmax(loudest, g);
+    check(loudest < -5.9, "a muting effect never drives the gain up: at most " +
+                              std::to_string(loudest) + " dB");
+}
+
+void testAutoGainLimitsAndSwitchesCleanly() {
+    section("ADR-0166 -- auto gain stops at +/-24 dB; off ramps to unity and keeps measuring");
+
+    const auto dry = autoGainSource(static_cast<int>(4 * kFs), 0.1);
+    {
+        // 40 dB is past what the gain corrects and inside what counts as live.
+        AutoGain ag;
+        ag.prepare(kFs);
+        runAutoGain(ag, dry, [](float x, int) { return x * 100.0f; });
+        near(ag.gainDb(), -24.0, 1e-9, "+40 dB is answered with -24 dB, no more");
+        AutoGain up;
+        up.prepare(kFs);
+        runAutoGain(up, dry, [](float x, int) { return x * 0.01f; });
+        near(up.gainDb(), 24.0, 1e-9, "-40 dB is answered with +24 dB, no more");
+    }
+    {
+        AutoGain ag;
+        ag.prepare(kFs);
+        runAutoGain(ag, dry, [](float x, int) { return x * 2.0f; });
+        ag.setEnabled(false);
+        const std::vector<float> in(64, 0.05f);
+        std::vector<float> l(64, 0.1f), r(64, 0.1f);   // the effect: x2
+        const float* d[2] = {in.data(), in.data()};
+        float* w[2] = {l.data(), r.data()};
+        ag.process(d, w, 2, 64);
+        near(ag.gainDb(), 0.0, 1e-12, "off: unity within one 32-frame ramp");
+        check(l[32] == 0.1f && l[63] == 0.1f && r[63] == 0.1f,
+              "and after the ramp the effect's own output passes untouched");
+        ag.setEnabled(true);
+        std::fill(l.begin(), l.end(), 0.1f);
+        std::fill(r.begin(), r.end(), 0.1f);
+        ag.process(d, w, 2, 32);
+        near(ag.gainDb(), -6.02, 0.05, "back on: at the right gain in one ramp, not a second later");
+    }
+}
+
+void testAutoGainAllocatesNothing() {
+    section("ADR-0166 -- auto gain's process() allocates nothing");
+
+    std::vector<float> a(256, 0.25f), b(256, 0.5f);
+    AutoGain ag;
+    ag.prepare(kFs);
+    const float* d[2] = {a.data(), a.data()};
+    float* w[2] = {b.data(), b.data()};
+    g_allocs.store(0);
+    g_counting.store(true);
+    for (int i = 0; i < 50; ++i) ag.process(d, w, 2, 256);
+    g_counting.store(false);
+    check(g_allocs.load() == 0, "fifty blocks, no allocation");
+}
+
 // ===========================================================================
 // The Pd patches, checked structurally (they are unrun: no Pd on this machine)
 // ===========================================================================
@@ -788,6 +1059,12 @@ int main() {
     testAHotKeyNeverInvertsTheMusic();
     testTheSidebandsAreACharacterYouCanTurnOff();
     testRmscAllocatesNothing();
+    testRmscThresholdAndRelease();
+    testAutoGainKWeightingIsTheStandard();
+    testAutoGainUndoesALevelChange();
+    testAutoGainHoldsThroughSilence();
+    testAutoGainLimitsAndSwitchesCleanly();
+    testAutoGainAllocatesNothing();
     testTheLimiterPatchIsWiredAsDesigned();
     testTheEqPatchTakesItsCoefficientsFromTheHost();
     testTheRmscPatchClampsAndMultiplies();
