@@ -13,9 +13,10 @@ before your first commit, and re-read it if you have been away.
 | **linux** | Ubuntu workstation, GCC/Clang / x86-64 | ChatGPT Codex (terminal) | Portable standard C++, headless CI and test enforcement, sanitizers, POSIX portability | OS-specific GUI or driver code; any Linux-only library; `docs/UI-ARCHITECTURE.md`; schema, ADR numbers or claims without `win` |
 | **cloud** | Claude Code on the web, Linux (an ephemeral cloud container) | Claude Code | Portable headless C++, the format and its docs, on win's assignments | JUCE, platform code, `.github/**`, `drivers/**`, other monorepo projects |
 
-**Availability (director, 2026-09-25):** win works alone until mac returns on
-2026-09-27. linux (Codex) returns after 2026-10-01. cloud receives no new
-missions; its last, ADR-0159, is merged.
+**Availability (director, 2026-09-26):** mac is back in the loop, a day
+early, on `collab/prompts/2026-09-26-mac-return-host-half.md`. linux (Codex)
+returns after 2026-10-01. cloud receives no new missions; its last, ADR-0159,
+is merged.
 
 ## Governance (ADR-0109)
 
@@ -190,6 +191,8 @@ subject, say so in your log instead of writing it twice.
 | 0174 | win | `win/group-summing` | native group summing built: eight console flavours, measured unity, schema 1.7 | used |
 | 0175 | win | `win/scope-taps` | the scope's engine side: taps stamped when heard, true peak, the compare | used |
 | 0176 | win | `win/audio-alignment` | Audio Alignment in the backlog: warp markers from a time-warping path; the hitpoint detector; a transient shaper on the envelope follower (director) | used |
+| 0179 | mac | (mac's return mission) | held for mac: the CLAP host contract, automation on the host, the generic panel | reserved |
+| 0180 | mac | (mac's return mission) | held for mac | reserved |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
