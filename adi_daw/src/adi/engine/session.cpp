@@ -398,7 +398,16 @@ bool Session::rebuild() {
                                                 spec_.channels, spec_.maxFrames);
         midi_ = std::make_unique<MidiClips>(model_, transport_, spec_.sampleRate, midiState_);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
-    strips_.sync(model_);   // ADR-0163: every strip's target, before the graph names them
+    // ADR-0164: the automation this graph plays, bound to strips, less every
+    // lane the user overrode. An override of a lane that is gone goes with it.
+    const std::shared_ptr<const AutomationProgram> program = compileAutomation(model_, spec_.sampleRate);
+    stripAutomation_ = bindStripAutomation(program, overridden_);
+    for (auto it = overridden_.begin(); it != overridden_.end();) {
+        bool known = false;
+        for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;
+        it = known ? std::next(it) : overridden_.erase(it);
+    }
+    strips_.sync(model_, &transport_, stripAutomation_);   // ADR-0163: before the graph names them
     attach();   // the spec, the sources or the placement may have changed
     ++stats_.rebuilds;
     const bool ok = devices_.rebuildNow();
@@ -410,6 +419,13 @@ bool Session::rebuild() {
     if (auto* c = clips()) problems_.insert(problems_.end(), c->problems().begin(), c->problems().end());
     problems_.insert(problems_.end(), sessionProblems_.begin(), sessionProblems_.end());
     problems_.insert(problems_.end(), strips_.problems().begin(), strips_.problems().end());
+    // The program's own findings only when there is automation to find them in:
+    // a project with a tempo ramp and no lanes has no automation problem.
+    if (stripAutomation_ && stripAutomation_->program && !model_.automationLanes.empty()) {
+        const auto& found = stripAutomation_->program->problems();
+        problems_.insert(problems_.end(), found.begin(), found.end());
+        problems_.insert(problems_.end(), stripAutomation_->problems.begin(), stripAutomation_->problems.end());
+    }
     const std::vector<std::string>& fromGraph = graph_.problems();
     problems_.insert(problems_.end(), fromGraph.begin(), fromGraph.end());
     return ok;
@@ -433,13 +449,46 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     return rebuild();
 }
 
+namespace {
+// What a user can move on a strip, per track: what an override compares.
+struct StripValues {
+    double volume = 0.0, pan = 0.0;
+    bool muted = false;
+};
+std::map<std::int64_t, StripValues> stripValues(const rows::Model& m) {
+    std::map<std::int64_t, StripValues> v;
+    for (const rows::Track& t : m.tracks) v[t.id].muted = t.muted;
+    for (const rows::MixerStrip& s : m.strips) {
+        v[s.trackId].volume = s.volumeDb;
+        v[s.trackId].pan = s.pan;
+    }
+    return v;
+}
+}  // namespace
+
 bool Session::refresh(const Store& store) {
     error_.clear();
     if (!loaded_) {
         error_ = "no project loaded";
         return false;
     }
+    const std::map<std::int64_t, StripValues> before = stripValues(model_);
     model_ = rows::readModel(store);
+    // ADR-0162: an automated strip value that changed is overridden. Compared
+    // BEFORE the rebuild, so the new graph already plays the manual value.
+    if (stripAutomation_) {
+        const std::map<std::int64_t, StripValues> after = stripValues(model_);
+        for (const auto& [key, laneId] : stripAutomation_->laneFor) {
+            if (overridden_.count(laneId)) continue;
+            const auto b = before.find(key.first);
+            const auto a = after.find(key.first);
+            if (b == before.end() || a == after.end()) continue;
+            const bool changed = key.second == StripParam::Volume ? b->second.volume != a->second.volume
+                               : key.second == StripParam::Pan    ? b->second.pan != a->second.pan
+                                                                  : b->second.muted != a->second.muted;
+            if (changed) overridden_.insert(laneId);
+        }
+    }
     clipProject_ = readClipProject(store, model_);
     resolveNewRows(store);
     retireDepartedRows();
@@ -448,6 +497,17 @@ bool Session::refresh(const Store& store) {
 }
 
 void Session::setSourcesFor(SourceFn fn) { sources_ = std::move(fn); }
+
+bool Session::reenableAutomation() {
+    if (overridden_.empty()) return true;
+    overridden_.clear();
+    return rebuild();
+}
+
+bool Session::reenableAutomation(std::int64_t laneId) {
+    if (overridden_.erase(laneId) == 0) return false;
+    return rebuild();
+}
 
 bool Session::tick(std::int64_t nowMs) { return devices_.tick(nowMs); }
 

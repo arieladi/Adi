@@ -44,10 +44,20 @@ double faderGain(double volumeDb) noexcept {
 
 // ---------------------------------------------------------------------------
 
-void StripNode::setTarget(float left, float right, float other) noexcept {
-    targetL_.store(left, std::memory_order_relaxed);
-    targetR_.store(right, std::memory_order_relaxed);
-    targetOther_.store(other, std::memory_order_relaxed);
+void StripNode::setStatic(double volumeDb, double pan, PanLaw law, bool audible) noexcept {
+    volumeDb_.store(static_cast<float>(volumeDb), std::memory_order_relaxed);
+    pan_.store(static_cast<float>(pan), std::memory_order_relaxed);
+    law_.store(static_cast<int>(law), std::memory_order_relaxed);
+    audible_.store(audible, std::memory_order_relaxed);
+}
+
+void StripNode::setLanes(const StripLanes* lanes, std::shared_ptr<void> keepAlive) noexcept {
+    // The lifetime first, so a graph realised after this sees it; the pointer
+    // is published with release so the audio thread sees a whole StripLanes.
+    // The lanes it replaces stay alive: the retired graph that may still read
+    // them retained their keepAlive when it was realised.
+    keepAlive_ = std::move(keepAlive);
+    lanes_.store(lanes, std::memory_order_release);
 }
 
 void StripNode::prepare(double sampleRate, std::int32_t) {
@@ -56,27 +66,62 @@ void StripNode::prepare(double sampleRate, std::int32_t) {
     rampFrames_ = static_cast<std::int32_t>(std::max<long>(1, frames));
 }
 
-void StripNode::process(const NodeIo& io) noexcept {
-    const float target[3] = {targetL_.load(std::memory_order_relaxed),
-                             targetR_.load(std::memory_order_relaxed),
-                             targetOther_.load(std::memory_order_relaxed)};
+StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame) noexcept {
+    double vol = volumeDb_.load(std::memory_order_relaxed);
+    double pan = pan_.load(std::memory_order_relaxed);
+    const int law = law_.load(std::memory_order_relaxed);
+    bool heard = audible_.load(std::memory_order_relaxed);
+    if (lanes != nullptr && transport_ != nullptr) {
+        const std::int64_t at = transport_->sampleAt(frame);
+        if (lanes->volume != nullptr) vol = valueAt(*lanes->volume, at);
+        if (lanes->pan != nullptr) pan = valueAt(*lanes->pan, at);
+        if (lanes->mute != nullptr && valueAt(*lanes->mute, at) >= 0.5) heard = false;
+    }
+    // Recomputed only when an input moved: a pow and a sin per change, never
+    // per sample.
+    if (haveLast_ && vol == lastVol_ && pan == lastPan_ && law == lastLaw_ && heard == lastHeard_)
+        return lastGains_;
+    const double fader = heard ? faderGain(vol) : 0.0;
+    const StereoGain g = panGains(pan, static_cast<PanLaw>(law));
+    Gains out;
+    out.g[0] = static_cast<float>(fader * g.left);
+    out.g[1] = static_cast<float>(fader * g.right);
+    out.g[2] = static_cast<float>(fader);
+    lastVol_ = vol;
+    lastPan_ = pan;
+    lastLaw_ = law;
+    lastHeard_ = heard;
+    lastGains_ = out;
+    haveLast_ = true;
+    return out;
+}
+
+void StripNode::retarget(const Gains& t) noexcept {
     if (!started_) {
-        for (int k = 0; k < 3; ++k) cur_[k] = rampTo_[k] = target[k];
+        for (int k = 0; k < 3; ++k) cur_[k] = rampTo_[k] = t.g[k];
         remaining_ = 0;
         started_ = true;
-    } else if (target[0] != rampTo_[0] || target[1] != rampTo_[1] || target[2] != rampTo_[2]) {
-        // A new target, from wherever the gain is now -- mid-ramp included.
-        for (int k = 0; k < 3; ++k) {
-            rampTo_[k] = target[k];
-            step_[k] = (target[k] - cur_[k]) / static_cast<float>(rampFrames_);
-        }
-        remaining_ = rampFrames_;
+        return;
     }
+    if (t.g[0] == rampTo_[0] && t.g[1] == rampTo_[1] && t.g[2] == rampTo_[2]) return;
+    // A new target, from wherever the gain is now -- mid-ramp included.
+    for (int k = 0; k < 3; ++k) {
+        rampTo_[k] = t.g[k];
+        step_[k] = (t.g[k] - cur_[k]) / static_cast<float>(rampFrames_);
+    }
+    remaining_ = rampFrames_;
+}
 
+void StripNode::process(const NodeIo& io) noexcept {
+    const StripLanes* lanes = lanes_.load(std::memory_order_acquire);
+    const bool moving = lanes != nullptr && transport_ != nullptr &&
+                        (lanes->volume != nullptr || lanes->pan != nullptr || lanes->mute != nullptr);
     const std::int32_t off = io.blockOffset;
     auto gainIndex = [](std::int32_t c) { return c < 2 ? c : 2; };
 
-    if (remaining_ == 0) {
+    retarget(desired(lanes, off));
+
+    if (!moving && remaining_ == 0) {
         // Steady: one gain per channel for the whole segment.
         for (std::int32_t c = 0; c < io.channels; ++c) {
             float* out = io.out[c] + off;
@@ -90,6 +135,9 @@ void StripNode::process(const NodeIo& io) noexcept {
     }
 
     for (std::int32_t i = 0; i < io.frames; ++i) {
+        // A bound lane is read on a fixed grid of the block, so where a
+        // segment boundary falls does not move where it is read.
+        if (moving && i > 0 && (off + i) % kControlFrames == 0) retarget(desired(lanes, off + i));
         if (remaining_ > 0) {
             for (int k = 0; k < 3; ++k) cur_[k] += step_[k];
             if (--remaining_ == 0)
@@ -160,7 +208,54 @@ std::map<std::int64_t, bool> audibleTracks(const rows::Model& model, const Graph
 
 // ---------------------------------------------------------------------------
 
-void MixerStrips::sync(const rows::Model& model) {
+std::shared_ptr<StripAutomation> bindStripAutomation(std::shared_ptr<const AutomationProgram> program,
+                                                     const std::set<std::int64_t>& overridden) {
+    auto out = std::make_shared<StripAutomation>();
+    out->program = std::move(program);
+    if (!out->program) return out;
+    for (const AutomationLaneProgram& lane : out->program->lanes()) {
+        const std::string who = "automation_lanes#" + std::to_string(lane.laneId);
+        if (lane.ownerKind == "device") {
+            out->problems.push_back(who + ": device automation is not played yet (ADR-0164 d6)");
+            continue;
+        }
+        if (lane.ownerKind != "track") continue;   // the compiler named the rest
+        StripParam param;
+        if (lane.paramRef == "volume") param = StripParam::Volume;
+        else if (lane.paramRef == "pan") param = StripParam::Pan;
+        else if (lane.paramRef == "mute") param = StripParam::Mute;
+        else {
+            out->problems.push_back(who + ": a track has no parameter '" + lane.paramRef +
+                                    "'; volume, pan and mute are automatable (SPEC 6.9)");
+            continue;
+        }
+        // A fader in dB and a pan in -1..1 are real values; normalized has no
+        // meaning for them until a fader curve is decided, and a guess would
+        // play the wrong level.
+        if (param != StripParam::Mute && lane.valueDomain != "real") {
+            out->problems.push_back(who + ": a " + lane.paramRef + " lane must be in real units, not '" +
+                                    lane.valueDomain + "'; not played");
+            continue;
+        }
+        if (!lane.enabled) continue;
+        const auto key = std::make_pair(lane.ownerId, param);
+        if (out->laneFor.count(key)) {
+            out->problems.push_back(who + ": a second " + lane.paramRef + " lane for tracks#" +
+                                    std::to_string(lane.ownerId) + "; the first is played");
+            continue;
+        }
+        out->laneFor[key] = lane.laneId;
+        if (overridden.count(lane.laneId)) continue;   // ADR-0162: known, not bound
+        StripLanes& bound = out->byTrack[lane.ownerId];
+        if (param == StripParam::Volume) bound.volume = &lane;
+        else if (param == StripParam::Pan) bound.pan = &lane;
+        else bound.mute = &lane;
+    }
+    return out;
+}
+
+void MixerStrips::sync(const rows::Model& model, const Transport* transport,
+                       const std::shared_ptr<StripAutomation>& automation) {
     problems_.clear();
     const GraphPlan plan = planGraph(model);
     const std::map<std::int64_t, bool> audible = audibleTracks(model, plan);
@@ -173,6 +268,7 @@ void MixerStrips::sync(const rows::Model& model) {
         present[node.trackId] = true;
         auto& strip = strips_[node.trackId];
         if (!strip) strip = std::make_unique<StripNode>();
+        strip->setTransport(transport);
 
         double volume = 0.0, pan = 0.0;
         PanLaw law = PanLaw::Live;
@@ -194,14 +290,21 @@ void MixerStrips::sync(const rows::Model& model) {
             }
         }
         const auto heard = audible.find(node.trackId);
-        const double fader = (heard != audible.end() && heard->second) ? faderGain(volume) : 0.0;
-        const StereoGain g = panGains(pan, law);
-        strip->setTarget(static_cast<float>(fader * g.left), static_cast<float>(fader * g.right),
-                         static_cast<float>(fader));
+        strip->setStatic(volume, pan, law, heard != audible.end() && heard->second);
+
+        const StripLanes* lanes = nullptr;
+        if (automation) {
+            const auto it = automation->byTrack.find(node.trackId);
+            if (it != automation->byTrack.end()) lanes = &it->second;
+        }
+        strip->setLanes(lanes, lanes != nullptr ? std::shared_ptr<void>(automation) : std::shared_ptr<void>{});
     }
     // A departed track's strip stays, silent, until the session ends.
-    for (auto& [id, strip] : strips_)
-        if (!present.count(id)) strip->setTarget(0.0f, 0.0f, 0.0f);
+    for (auto& [id, strip] : strips_) {
+        if (present.count(id)) continue;
+        strip->setStatic(0.0, 0.0, PanLaw::Live, false);
+        strip->setLanes(nullptr, {});
+    }
 }
 
 StripNode* MixerStrips::stripFor(std::int64_t trackId) noexcept {

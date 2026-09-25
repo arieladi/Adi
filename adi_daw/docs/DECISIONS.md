@@ -11038,3 +11038,77 @@ MSVC `/WX`, and each failed a named check:
 - X4: solo ignores what a soloed track feeds.
 - X5: a fresh strip every rebuild.
 - X6: mute is ignored.
+
+---
+
+## ADR-0164 — Automation plays: a strip follows its own volume, pan and mute lanes, and Live's override applies — `DECIDED` (2026-09-25) — **IMPLEMENTS ADR-0162 FOR THE MIXER STRIP; BUILDS ON ADR-0159 AND ADR-0163**
+
+ADR-0159 compiled automation into the engine and emitted nothing, pending the
+override ruling, which ADR-0162 gave. ADR-0163 gave the strip something to
+move. This is the first automation anyone hears.
+
+### Decisions
+
+1. **A strip reads its own lanes;** no event travels to it.
+   - It evaluates each lane at the playhead every 32 samples (1.5 kHz at
+     48 kHz), on a fixed grid of the block, so where a segment boundary falls
+     does not move where a lane is read.
+   - The value goes through the same 5 ms ramp as every other change. A step
+     in a held lane is click-free and lands within one control interval and
+     one ramp. A continuous sweep follows with under 5 ms of lag.
+   - The strip reads the lane whether the transport is playing or parked, so
+     a locate while stopped moves the fader to the lane's value there, as
+     Live's does.
+2. **Three strip parameters, named by `param_ref`** (SPEC §6.9):
+   - `volume`, in dB;
+   - `pan`, from -1 to +1;
+   - `mute`, where 0.5 or more is muted. Mute joins solo, and never unmutes a
+     track the model mutes.
+
+   Volume and pan lanes must be in `real` units. A `normalized` fader has no
+   meaning until a fader curve is decided, and a guess would play the wrong
+   level, so such a lane is named and not played. A second lane for one
+   parameter is named, and the first plays.
+3. **The override, as ADR-0162 ruled it:**
+   - A refresh that finds an automated strip value changed marks its lane
+     overridden, whoever changed it. The comparison runs before the rebuild,
+     so the new graph already plays the value just set.
+   - An overridden lane is known but not bound, and the model's value stands.
+   - `Session::automationOverridden()` is Live's Re-Enable Automation button:
+     lit while any lane is overridden.
+   - `reenableAutomation()` re-enables every lane, and
+     `reenableAutomation(lane)` re-enables one. Either rebuilds, and the strip
+     follows the lane again at once, from the playhead.
+   - An override of a lane that no longer exists goes with the lane.
+4. **Lifetimes.** One compiled program per rebuild is bound to the strips in an
+   immutable `StripAutomation`. A strip holds its lanes as an atomic pointer
+   into it, and hands it to the realiser as its `sourceLifetime()`. The
+   realiser now retains that token for chain nodes as well as sources, so a
+   retired graph never reads a freed lane.
+5. **Problems only where automation is.** The compiler's findings join the
+   session's problems when the project has lanes. A project with a tempo ramp
+   and no automation reports no automation problem.
+6. **Not yet played:**
+   - **Device lanes.** Each is named as not played yet. They need an event
+     path into a device, through the device host (mac's area), and an override
+     detected from the plug-in's own window through ParamOps (ADR-0124). That
+     is the next change.
+   - **Clip envelopes**, as ADR-0159 says.
+   - **Recording automation**, with the Cubase modes (ADR-0162 d4).
+
+**Evidence.** `adi_mixer_tests` +22 checks, 54 in all:
+- **playback:** a volume sweep reading -10 dB halfway down a linear ramp to
+  -20 dB, holding after its last point, and never stepping back up; a parked
+  playhead reading the lane there; a held pan step; a mute step that lands 100
+  samples off every block grid, within one control interval;
+- **refusals:** a normalized lane and an unknown parameter, each named;
+- **the override:** moving an unautomated fader overrides nothing; moving an
+  automated one lights Re-Enable, and the value just set stands; re-enabling
+  one lane, and then all.
+
+Five plants were built under MSVC `/WX`, and each failed a named check:
+- A1: lanes are never bound.
+- A2: an edit never overrides.
+- A3: an overridden lane stays bound.
+- A4: re-enable forgets to rebuild.
+- A5: lanes are read only at a block's start.

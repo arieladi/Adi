@@ -177,6 +177,7 @@ subject, say so in your log instead of writing it twice.
 | 0161 | win | `win/op-clocks` | every op carries its client and a Lamport clock (schema 1.6); multiplayer sync in the backlog (director) | used |
 | 0162 | win | `win/op-clocks` | automation override is Live's (director's ruling) | used |
 | 0163 | win | `win/mixer-strip` | the mixer strip in the graph: volume, pan, mute, solo; the pan law | used |
+| 0164 | win | `win/automation-play` | automation plays on the strip; Live's override (ADR-0162) applied | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

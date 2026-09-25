@@ -137,6 +137,21 @@ public:
     /// Plan, realise, prepare and publish a new graph from the current model.
     bool rebuild();
 
+    // --- automation override (ADR-0162) -------------------------------------
+    // Live 12 25.4: changing an automated control while not recording turns
+    // that lane off and the manual value stands. Here a refresh that finds an
+    // automated strip value changed -- by a user, an op or the agent -- marks
+    // its lane overridden. Session state: not an op, not saved.
+
+    /// True while any lane is overridden: Live's Re-Enable Automation button lit.
+    [[nodiscard]] bool automationOverridden() const noexcept { return !overridden_.empty(); }
+    [[nodiscard]] const std::set<std::int64_t>& overriddenLanes() const noexcept { return overridden_; }
+    /// Follow every overridden lane again, from the playhead at once. Rebuilds.
+    bool reenableAutomation();
+    /// One lane only: the parameter's context menu in Live. False if that lane
+    /// was not overridden.
+    bool reenableAutomation(std::int64_t laneId);
+
     /// What pushes into each track's junction -- a clip reader, a test tone.
     /// Effective from the next rebuild. The nodes are the caller's and must
     /// outlive every graph that holds them, which means: until the session is
@@ -216,6 +231,10 @@ private:
     // ADR-0163: one strip per track, for the whole session. Declared before
     // the graphs so it outlives every graph that names one of its strips.
     MixerStrips strips_;
+    // ADR-0164: this rebuild's program, bound to strips. Kept here as well as
+    // by every strip and graph that plays it.
+    std::shared_ptr<StripAutomation> stripAutomation_;
+    std::set<std::int64_t> overridden_;   ///< ADR-0162: lane ids
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;
