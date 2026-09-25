@@ -312,6 +312,10 @@ playback decides it first. Live's modes are granular (Live 12 §9.3):
 - Complex and Complex Pro are the natural home for Rubber Band's R3 engine.
   Formants matter only when the clip is transposed.
 
+The candidates in d8: Rubber Band R3 for Complex and Complex Pro, a native
+slice player for Beats, resampling for Re-Pitch, WSOLA (SoundTouch) for
+Tones, a native granular player for Texture, Bungee for scrubbing.
+
 ### Freezing and racks
 
 | Feature | From | P | Fmt | Notes |

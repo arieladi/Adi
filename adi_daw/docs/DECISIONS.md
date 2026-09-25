@@ -12416,5 +12416,25 @@ Paraphrased from pp. 261–263, because the design has to answer to it:
      ignores them.
    - **Bungee keeps its job:** scrubbing, and speed through zero (ADR-0061).
 
+   **The candidates, once those facts are applied.** The review's second
+   pass converged on them, except for Texture:
+   - **Complex and Complex Pro:** Rubber Band R3. What separates the two is a
+     listening question; a shorter window for Complex is one candidate. Live's
+     Formants is a percentage and Rubber Band's formant option is on or off,
+     so the percentage would map through R3's continuous formant scale.
+   - **Beats:** a native slice player on the hitpoint detector.
+   - **Re-Pitch:** variable-rate resampling.
+   - **Tones:** WSOLA, a time-domain overlap-add that seeks the best-matching
+     overlap, which suits pitched material. SoundTouch implements it, and its
+     sequence length stands in for Grain Size.
+   - **Texture:** a native granular player with randomised grain positions,
+     not SoundTouch. WSOLA's search for the best match is the opposite of
+     Texture's grains, which ignore pitch, and SoundTouch has no randomness to
+     give Fluctuation.
+   - **SoundTouch would be a third stretch dependency.** Its README gives
+     LGPL-2.1, and the policy pre-authorises LGPL-2.1 or later, so the
+     headers at the pinned commit are read first, as for Rubber Band. Its
+     time-stretch latency is about 100 ms.
+
    The ADR that builds warped playback decides this, with listening tests
    against Live under ADR-0108's parity gate.
