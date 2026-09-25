@@ -45,6 +45,7 @@
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/engine/summing.hpp"
 #include "adi/engine/param_automation.hpp"
 #include "adi/engine/process.hpp"
 #include "adi/engine/realize.hpp"
@@ -189,6 +190,9 @@ public:
         return problems_;
     }
 
+    /// ADR-0174: the group summing this graph plays. Message thread.
+    [[nodiscard]] const GroupSumming& summing() const noexcept { return summing_; }
+
     // Driver thread only, commands between callbacks; see transport.hpp.
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
     // Message/offline driver inspection. Pointer valid until the next rebuild.
@@ -238,6 +242,7 @@ private:
     // ADR-0163: one strip per track, for the whole session. Declared before
     // the graphs so it outlives every graph that names one of its strips.
     MixerStrips strips_;
+    GroupSumming summing_;   ///< ADR-0174: native analog group summing
     // ADR-0164: this rebuild's program, bound to strips. Kept here as well as
     // by every strip and graph that plays it.
     std::shared_ptr<StripAutomation> stripAutomation_;

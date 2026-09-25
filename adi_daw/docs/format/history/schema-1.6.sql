@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1007;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1006;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '7'),
+    ('schema_minor',        '6'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -219,20 +219,6 @@ CREATE TABLE mixer_strip (
     -- Per-channel delay compensation offset, in samples, positive or negative.
     delay_samples INTEGER NOT NULL DEFAULT 0,
     vca_group_id INTEGER REFERENCES tracks(id) ON DELETE SET NULL
-) STRICT;
-
--- Since 1.7 (ADR-0173, ADR-0174): native analog summing on a GROUP track. Each
--- child is played through the flavour's channel half before the group's sum,
--- and the sum through its buss half. `flavor` is a stable text key
--- ('console9', 'every.c7', ...) with deliberately no CHECK over the list: a
--- later minor adds only whole objects (ADR-0144), so a CHECK would freeze the
--- flavours for ever. A reader names a key it does not know, and plays none.
--- A row on a track that is not a group is named and not played.
-CREATE TABLE group_summing (
-    track_id    INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
-    enabled     INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
-    flavor      TEXT    NOT NULL DEFAULT 'console9',
-    drive_db    REAL    NOT NULL DEFAULT 0.0 CHECK (drive_db BETWEEN -12.0 AND 24.0)
 ) STRICT;
 
 -- One table for every signal connection: outputs, sends, sidechains, cue

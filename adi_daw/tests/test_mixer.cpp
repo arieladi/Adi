@@ -9,6 +9,9 @@
 #include "adi/blob.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/engine/summing.hpp"
+#include "adi/history.hpp"
+#include "adi/summing_flavors.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 
@@ -61,6 +64,25 @@ private:
     float v_;
     std::int64_t at_;
     std::int64_t count_ = 0;
+};
+
+/// A sine at `hz` and `amp`, counted at 48 kHz (ADR-0174's children).
+class SineNode final : public Node {
+public:
+    SineNode(double hz, float amp) : step_(2.0 * std::numbers::pi * hz / 48000.0), amp_(amp) {}
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t i = 0; i < io.frames; ++i) {
+            const float x = amp_ * static_cast<float>(std::sin(phase_));
+            phase_ += step_;
+            for (std::int32_t c = 0; c < io.channels; ++c) io.out[c][io.blockOffset + i] = x;
+        }
+    }
+    [[nodiscard]] const char* name() const noexcept override { return "sine"; }
+
+private:
+    double step_;
+    float amp_;
+    double phase_ = 0.0;
 };
 
 class ToneNode final : public Node {
@@ -351,6 +373,178 @@ void testTrackDelay() {
           "a delay past one second is named, and played at one second");
 }
 
+void testGroupSumming() {
+    section("ADR-0174 -- native analog group summing: a console's channel half on each child, its buss on the sum");
+
+    // --- the ops -------------------------------------------------------------
+    {
+        Mix m("sum-ops");
+        m.track(1, "audio", "A");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        auto tryOp = [&](const char* type, std::int64_t id, const char* key, Payload v) {
+            OpRequest q;
+            q.opType = type;
+            q.payload = {{"id", id}, {key, std::move(v)}};
+            OpJournal j(*m.store);
+            return j.commit(q).ok;
+        };
+        check(!tryOp("group.setSumming", 1, "enabled", true), "an audio track has no summing: refused");
+        check(tryOp("group.setSumming", 5, "enabled", true), "a group does");
+        check(!tryOp("group.setSummingFlavor", 5, "flavor", "console12"), "an unknown flavour is refused");
+        check(!tryOp("group.setSummingFlavor", 5, "flavor", "every.c7"),
+              "EveryConsole's are not flavours: it cannot choose a system at the pinned commit");
+        check(tryOp("group.setSummingFlavor", 5, "flavor", "console.md"), "Console MD is a flavour");
+        check(!tryOp("group.setSummingDrive", 5, "db", 30.0), "a drive past +24 dB is refused");
+        check(tryOp("group.setSummingDrive", 5, "db", 6.0), "+6 dB is not");
+        {
+            SQLite::Statement row(m.store->db(),
+                                  "SELECT enabled, flavor, drive_db FROM group_summing WHERE track_id = 5");
+            check(row.executeStep() && row.getColumn(0).getInt() == 1 &&
+                      row.getColumn(1).getString() == "console.md" && row.getColumn(2).getDouble() == 6.0,
+                  "one row: on, console.md, +6 dB");
+        }
+        History h(*m.store);
+        const bool undone = h.undo().ok && h.undo().ok && h.undo().ok;
+        check(undone, "three undos");
+        SQLite::Statement back(m.store->db(), "SELECT enabled, flavor, drive_db FROM group_summing WHERE track_id = 5");
+        check(back.executeStep() && back.getColumn(0).getInt() == 0 && back.getColumn(1).getString() == "console9" &&
+                  back.getColumn(2).getDouble() == 0.0,
+              "undone to the defaults: off, console9, 0 dB");
+    }
+
+    // --- what it plays --------------------------------------------------------
+    // Two children at -20 dBFS (220 and 330 Hz) into group 5, into the master.
+    struct Played {
+        std::vector<float> out;
+        bool placed = false;
+        std::string what;
+    };
+    auto play = [](const std::string& name, const char* flavor, double drive, double hzA = 220.0,
+                   double hzB = 330.0) {
+        Mix m(name.c_str());
+        SineNode a(hzA, 0.1f), b(hzB, 0.1f);
+        m.track(1, "audio", "A");
+        m.track(2, "audio", "B");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.set("track.setParent", 1, "parent", 5);
+        m.set("track.setParent", 2, "parent", 5);
+        m.extra[1] = &a;
+        m.extra[2] = &b;
+        if (flavor != nullptr) {
+            m.set("group.setSumming", 5, "enabled", true);
+            m.set("group.setSummingFlavor", 5, "flavor", flavor);
+            if (drive != 0.0) m.set("group.setSummingDrive", 5, "db", drive);
+        }
+        m.load();
+        Played p;
+        for (int k = 0; k < 24; ++k) {
+            m.render(512);
+            p.out.insert(p.out.end(), m.l.begin(), m.l.end());
+        }
+        const GroupSumming& s = m.session.summing();
+        p.placed = s.bussOf(5) != nullptr && s.channelOf(1) != nullptr && s.channelOf(2) != nullptr &&
+                   s.channelOf(5) == nullptr && s.channelOf(9) == nullptr && s.bussOf(9) == nullptr;
+        if (s.bussOf(5) != nullptr && s.channelOf(1) != nullptr)
+            p.what = s.channelOf(1)->what() + " / " + s.bussOf(5)->what();
+        return p;
+    };
+    auto rmsDb = [](const std::vector<float>& v) {
+        double e = 0.0;
+        for (std::size_t i = v.size() / 2; i < v.size(); ++i) e += static_cast<double>(v[i]) * v[i];
+        return 10.0 * std::log10(e / static_cast<double>(v.size() / 2) + 1e-30);
+    };
+    auto deviation = [](const std::vector<float>& x, const std::vector<float>& ref) {
+        double d = 0.0, r = 0.0;
+        for (std::size_t i = x.size() / 2; i < x.size(); ++i) {
+            const double e = static_cast<double>(x[i]) - static_cast<double>(ref[i]);
+            d += e * e;
+            r += static_cast<double>(ref[i]) * ref[i];
+        }
+        return std::sqrt(d / (r + 1e-30));
+    };
+
+    const Played plain = play("sum-plain", nullptr, 0.0);
+    const double plainDb = rmsDb(plain.out);
+    // The level is matched at 1 kHz, where it is measured (summing.cpp); at
+    // other frequencies a console's own EQ is part of its colour -- Console MC
+    // is "the bright take on MCI", and sits lower at 220 Hz by design.
+    const Played plainK = play("sum-plain-1k", nullptr, 0.0, 1000.0, 1000.0);
+    const double plainKDb = rmsDb(plainK.out);
+    int placed = 0, level = 0, processed = 0, finite = 0;
+    std::string report;
+    for (const SummingFlavor& f : summingFlavors()) {
+        const std::string key(f.key);
+        const Played p = play("sum-" + key, key.c_str(), 0.0);
+        const Played k = play("sum-1k-" + key, key.c_str(), 0.0, 1000.0, 1000.0);
+        const double delta = rmsDb(k.out) - plainKDb;
+        const double tone = rmsDb(p.out) - plainDb;
+        bool fin = true;
+        for (float x : p.out) fin = fin && std::isfinite(x);
+        placed += p.placed ? 1 : 0;
+        level += std::fabs(delta) < 0.5 ? 1 : 0;
+        processed += p.out != plain.out ? 1 : 0;
+        finite += fin ? 1 : 0;
+        char line[200];
+        std::snprintf(line, sizeof(line), "        %-11s %+5.2f dB at 1 kHz, %+5.2f dB at 220/330 Hz  deviation %.4f  (%s)\n",
+                      key.c_str(), delta, tone, deviation(p.out, plain.out), p.what.c_str());
+        report += line;
+    }
+    std::printf("%s", report.c_str());
+    const int n = static_cast<int>(summingFlavors().size());
+    check(n == 8, "eight flavours, the channel/buss pairs");
+    check(placed == n, "every flavour: a buss half on the group, a channel half on each child, none elsewhere");
+    check(finite == n, "every flavour plays finite audio");
+    check(processed == n, "every flavour is heard: none is the plain sum bit for bit");
+    check(level == n, "every flavour is at unity at 1 kHz, -20 dBFS, its own gain staging made up: within 0.5 dB");
+
+    // Drive: the curves hit harder, the level held.
+    const Played d0 = play("sum-d0", "console9", 0.0);
+    const Played d18 = play("sum-d18", "console9", 18.0);
+    const double dev0 = deviation(d0.out, plain.out);
+    const double dev18 = deviation(d18.out, plain.out);
+    const double lvl18 = rmsDb(d18.out) - plainDb;
+    std::printf("        console9 drive: 0 dB deviation %.4f, +18 dB deviation %.4f at %+.2f dB\n", dev0, dev18,
+                lvl18);
+    check(dev18 > 2.0 * dev0, "+18 dB of drive colours more than 0 dB does");
+    check(std::fabs(lvl18) < 3.0, "and the level stays within 3 dB: the drive comes back off after the buss");
+
+    // --- kept, replaced, named ------------------------------------------------
+    {
+        Mix m("sum-keep");
+        SineNode a(220.0, 0.1f);
+        m.track(1, "audio", "A");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.set("track.setParent", 1, "parent", 5);
+        m.extra[1] = &a;
+        m.set("group.setSumming", 5, "enabled", true);
+        m.load();
+        const ConsoleNode* first = m.session.summing().channelOf(1);
+        m.set("track.rename", 1, "name", "A2");
+        m.refresh();
+        check(first != nullptr && m.session.summing().channelOf(1) == first,
+              "an unrelated edit keeps the same halves, and their state");
+        m.set("group.setSummingFlavor", 5, "flavor", "console.la");
+        m.refresh();
+        const ConsoleNode* la = m.session.summing().channelOf(1);
+        check(la != nullptr && la != first && la->what() == "ConsoleLAChannel", "a new flavour is a new half");
+        m.render();
+        m.set("group.setSumming", 5, "enabled", false);
+        m.refresh();
+        check(m.session.summing().channelOf(1) == nullptr && m.session.summing().bussOf(5) == nullptr,
+              "off: no halves at all");
+        m.render();
+        m.store->db().exec("INSERT INTO group_summing(track_id, enabled) VALUES (1, 1)");
+        m.store->db().exec("UPDATE group_summing SET enabled = 1, flavor = 'nope' WHERE track_id = 5");
+        m.refresh();
+        check(m.mentions("tracks#1: summing is on a track that is not a group"),
+              "a row on a track that is not a group is named, not played");
+        check(m.mentions("tracks#5: summing flavour 'nope' is unknown"), "an unknown flavour is named, not played");
+    }
+}
+
 void testSolo() {
     section("ADR-0163 d4 -- solo: what feeds a soloed track and what it feeds stay audible");
     Mix m("solo");
@@ -534,6 +728,7 @@ int main() {
         testAutomationPlays();
         testOverride();
         testTrackDelay();
+        testGroupSumming();
     } catch (const std::exception& e) {
         check(false, std::string("exception: ") + e.what());
     }

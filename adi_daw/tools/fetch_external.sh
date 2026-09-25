@@ -69,6 +69,7 @@ THIRD_PARTY=(
   "bungee-audio-stretch/bungee  bungee      MPL-2.0   v2.4.30   8cb6977d0c1a1b411ac320493b3c7f5182ed2d22  later"
   "DNedic/lockfree              lockfree    MIT       3.0.1     ae6c4df124536218b0b1adfc21ab4921810a00a5  later"
   "free-audio/clap              clap        MIT       1.2.10    195b42a004144fab0b3cf95e9c067187d15365b7  build"
+  "baconpaul/airwin2rack        airwin2rack MIT       -         b6eef0af60cd32641b09837096e41bbcdb030341  build"
   "juce-framework/JUCE          JUCE        AGPL-3.0  9.0.2     72782788ce18c2d4d760b28e0921d6ffc6431102  juce"
 )
 
@@ -120,12 +121,25 @@ fetch_pinned() {
         return 0
     fi
 
-    # Checkout is always BY TAG, never by the pinned commit. Checking out the
-    # pinned commit directly would force the tree to the right bytes and make
-    # the assertion below tautological -- it would paper over a moved tag
-    # instead of reporting it, which is the one thing this function exists for.
-    # The commit is the assertion, not the source.
-    if [ -d "$path/.git" ]; then
+    # ADR-0174: an upstream with no tag at the version we need (airwin2rack's
+    # newest tag predates Console9) is pinned by commit alone, tag "-", and
+    # fetched by that commit. There the commit is the source and the
+    # assertion below only proves the fetch worked -- the one exception to
+    # the rule that follows, taken because the alternative is no pin at all.
+    #
+    # Otherwise checkout is always BY TAG, never by the pinned commit. Checking
+    # out the pinned commit directly would force the tree to the right bytes
+    # and make the assertion below tautological -- it would paper over a moved
+    # tag instead of reporting it, which is the one thing this function exists
+    # for. The commit is the assertion, not the source.
+    if [ "$tag" = "-" ]; then
+        printf '  %-18s by commit...  ' "$dir"
+        if [ "$(git -C "$path" rev-parse HEAD 2>/dev/null || echo none)" != "$want" ]; then
+            [ -d "$path/.git" ] || { git init -q "$path" && git -C "$path" remote add origin "https://github.com/$repo.git"; }
+            git -C "$path" fetch --depth 1 -q origin "$want" 2>/dev/null || true
+            git -C "$path" -c advice.detachedHead=false checkout -q --detach FETCH_HEAD 2>/dev/null || true
+        fi
+    elif [ -d "$path/.git" ]; then
         printf '  %-18s checking...   ' "$dir"
         if [ "$(git -C "$path" rev-parse HEAD 2>/dev/null || echo none)" != "$want" ]; then
             git -C "$path" fetch --depth 1 -q --force origin \

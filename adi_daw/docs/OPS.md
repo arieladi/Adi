@@ -492,7 +492,10 @@ silent truncation in JSON, a non-issue in CBOR.
 | `mixer.setWidth` | e | S | sym, coalescable | P2 |
 | `mixer.setInputGain` | e | S | sym, coalescable | P1 |
 | `mixer.setPhaseInvert` | e | S | sym | P1 |
-| `mixer.setDelay` | e | G | sym | P1 |
+| `mixer.setDelay` | e | G | sym, coalescable | P1 |
+| `group.setSumming` | e | G | sym | P1 |
+| `group.setSummingFlavor` | e | G | sym | P1 |
+| `group.setSummingDrive` | e | S | sym, coalescable | P1 |
 | `mixer.setPanLaw` | e | S | sym | P2 |
 | `mixer.setVcaGroup` | e | S | sym | P2 |
 
@@ -597,7 +600,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**165 ops** — 64 P0, 49 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**168 ops** — 64 P0, 52 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

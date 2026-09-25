@@ -396,6 +396,17 @@ Model readModel(const Store& store) {
               m.pluginState.push_back(std::move(s));
           });
 
+    query(m, db, "group_summing",
+          "SELECT track_id, enabled, flavor, drive_db FROM group_summing ORDER BY track_id",
+          [&](const SQLite::Statement& st) {
+              GroupSumming g;
+              g.trackId = st.getColumn(0).getInt64();
+              g.enabled = st.getColumn(1).getInt() != 0;
+              g.flavor = st.getColumn(2).getString();
+              g.driveDb = st.getColumn(3).getDouble();
+              m.summing.push_back(std::move(g));
+          });
+
     query(m, db, "device_panels",
           "SELECT device_id FROM device_panels ORDER BY device_id",
           [&](const SQLite::Statement& st) {
