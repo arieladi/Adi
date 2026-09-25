@@ -12342,7 +12342,18 @@ Paraphrased from pp. 261–263, because the design has to answer to it:
    - **The options:** Match Words, Prefer Time Shifting and Alignment
      Precision, behaving as d3 describes.
    - **The algorithm** stays the clip's `warp_mode`, changeable afterwards, as
-     in Cubase.
+     in Cubase. A target whose warp is off is switched on in the project's
+     default warp mode (`record.defaultWarpMode`), which is Beats, as in Live.
+     Beats suits drums, not vocals, so the panel shows the mode it will use
+     and lets it be changed before Align.
+   - **The options live on the panel, not in the Settings window.** Cubase
+     keeps them on the panel (p. 262), and Live has no such feature. The panel
+     remembers its last choices as session UI state (SPEC §8.4). A review
+     proposed a Settings row with defaults, and it was not taken:
+     - Match Words on by default would weight speech features for drums and
+       guitars;
+     - the crossfade at a partial overlap is fixed behaviour in Cubase, not an
+       option.
    - **Deliberately not copied: the bounce-first rules.** They exist because
      Cubase's processing is baked into the event. ADI's warp is markers, so:
      - a target that is already warped has its markers replaced within the
@@ -12367,7 +12378,43 @@ Paraphrased from pp. 261–263, because the design has to answer to it:
      behaviour; the manual is theirs.
 
 7. **The order, when it is taken up:**
-   1. warped playback (ADR-0061);
+   1. warped playback (ADR-0061), which first decides d8;
    2. the hitpoint detector;
    3. the alignment analysis, pure and tested offline;
    4. the panel, which is the UI owner's.
+
+8. **Which engine plays each warp mode is OPEN, and warped playback decides
+   it first.** `record.defaultWarpMode` already offers Live's six modes, and
+   nothing says what plays them. A review proposed a mapping:
+   - Beats on Rubber Band's R2 engine with crisp transients;
+   - Complex and Complex Pro on R3 with formants preserved;
+   - Tones and Texture on R3 with adjustable windows;
+   - varispeed on Bungee.
+
+   The sources disagree with most of it. These facts bound the decision:
+   - **Live's modes are granular** (Live 12 §9.3): they repeat or omit grains
+     of the audio. Rubber Band is a phase vocoder.
+   - **Beats is a slice player.** It plays the segments between transients, or
+     between grid divisions, with *Transient Loop Mode* (off, forward,
+     back-and-forth) and *Transient Envelope*. A stretcher reproduces none of
+     these. Parity means a native slice player on the hitpoint detector (d4),
+     which gives that detector another consumer.
+   - **Tones and Texture expose Grain Size, and Texture adds Fluctuation,** a
+     randomness. Rubber Band offers three window settings and no randomness,
+     so it can only approximate them. Either native granular engines, or a
+     parity gap that is named.
+   - **Re-Pitch changes speed and pitch together.** It is resampling; no
+     stretcher is needed.
+   - **Complex and Complex Pro are R3's natural home** (Rubber Band's
+     "Finer" engine).
+     - **Formants matter only when the clip is transposed.** Live's manual
+       says its Formants control has no effect otherwise, and Rubber Band's
+       formant option applies to pitch-shifting only.
+     - **Complex Pro's *Envelope* control** has no counterpart among Rubber
+       Band's options.
+   - **R2's transient options** (Crisp, Mixed, Smooth) apply to R2 only; R3
+     ignores them.
+   - **Bungee keeps its job:** scrubbing, and speed through zero (ADR-0061).
+
+   The ADR that builds warped playback decides this, with listening tests
+   against Live under ADR-0108's parity gate.

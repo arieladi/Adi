@@ -303,6 +303,15 @@ Upstream code, unchanged, each its own binary under its own licence
 | Bungee (MPL-2.0, pinned) | P1 | scrubbing, varispeed, zero and negative speed |
 | Rubber Band (GPL-2.0-**or-later**) | P1 | high-quality warp and pitch-shift. The licence is pre-authorised (`OPEN_SOURCE_POLICY.md` §3); confirm the "or later" wording at the pinned commit. **Not built:** a warped clip plays as silence today, and Audio Alignment waits on this (ADR-0176) |
 
+**Which engine plays which warp mode is OPEN** (ADR-0176 d8), and warped
+playback decides it first. Live's modes are granular (Live 12 §9.3):
+- Beats is a slice player on transients, so it would sit on the hitpoint
+  detector, not a stretcher;
+- Tones and Texture have grain controls Rubber Band lacks;
+- Re-Pitch is resampling;
+- Complex and Complex Pro are the natural home for Rubber Band's R3 engine.
+  Formants matter only when the clip is transposed.
+
 ### Freezing and racks
 
 | Feature | From | P | Fmt | Notes |

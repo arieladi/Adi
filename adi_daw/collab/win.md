@@ -26,6 +26,15 @@ Nothing built; the scope taps come first.
 - **Output is `audioClip.setWarpMarkers`:** no schema change.
 - **Public docs paraphrase the manual,** never copy it (policy §5).
 
+**Gemini's review of the v0.9 reference doc:**
+- **The title page still said v0.8.** Right, and fixed in the doc.
+- **A Settings row for alignment defaults:** not taken (d5). The options
+  are the panel's, in Cubase too. The real link is `record.defaultWarpMode`:
+  Beats is wrong for a vocal target, so the panel shows the mode first.
+- **A Rubber Band mapping for Live's warp modes:** not taken; it is OPEN
+  (d8). Live's modes are granular, Beats is a slice player, formants only
+  matter when transposing, and Re-Pitch was missing from the mapping.
+
 ---
 
 ## 2026-09-25 — the scope's engine side (ADR-0175)
