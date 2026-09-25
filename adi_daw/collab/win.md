@@ -5,6 +5,28 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-25 — the Pd parameter contract, proposed (ADR-0177)
+
+**The director's instruction:** write up `[adi.param]` with the four fixes
+he approved, for his approval.
+
+**The four fixes, and where each already had a foothold:**
+- **A fixed id, the author's, as CLAP's and VST3's are.** `plugin_params`
+  and every lane, mapping and binding already key on a TEXT `param_id`, so
+  nothing in the schema changes.
+- **The full declaration:** unit, curve and menu items, as M4L's Inspector
+  holds them.
+- **Changes only through `device.loadState`.** ADR-0145 d8 already stores a
+  patch as state and changes it with that op. What the ADR adds: a
+  parameter the new patch drops is kept, shown as missing, never deleted.
+- **A plain Pd abstraction,** MIT, so vanilla Pd opens the patch and plays
+  it at its defaults.
+
+Left open: range changes (keep normalized or real?), modulation, and
+transport messages. The PR stays unmerged until the director approves.
+
+---
+
 ## 2026-09-25 — Audio Alignment into the backlog (ADR-0176)
 
 **The director's instruction:** Cubase-style Audio Alignment for the engine

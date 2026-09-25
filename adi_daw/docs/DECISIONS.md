@@ -12440,3 +12440,136 @@ Paraphrased from pp. 261–263, because the design has to answer to it:
 
    The ADR that builds warped playback decides this, with listening tests
    against Live under ADR-0108's parity gate.
+
+---
+
+## ADR-0177 — The Pure Data parameter contract: `[adi.param]` with a fixed id, a full declaration, changed only by `device.loadState`, and shipped as a vanilla abstraction — `OPEN` (2026-09-25) — **AWAITING THE DIRECTOR'S APPROVAL; WOULD CLOSE THE CONTRACT ADR-0035 AND ADR-0040 LEFT OPEN**
+
+**How it got here.** A plan relayed from Gemini proposed adopting
+`[adi.param cutoff 20 20000 1000]`: the patch author drops the object in, the
+DAW scans the patch, draws the knobs and hooks them to automation and macros.
+That is the *author-symbol* candidate in `DEVICE-CONTRACT-PANEL.md` §2. win
+reviewed it and named four fixes; the director approved the four and asked
+for this ADR, for approval before it is decided.
+
+### What was wrong with the object as proposed
+
+1. **The name was the identity.** Renaming "cutoff" would orphan every
+   automation lane, macro mapping and controller binding that pointed at it.
+2. **The declaration was incomplete.** It had no unit, no curve and no menu
+   items. A 20 to 20,000 Hz cutoff on a linear knob is unusable, and M4L's
+   Inspector carries all three (`DEVICE-CONTRACT-PANEL.md` §6, rule 2).
+3. **"The DAW scans the patch" left the change outside the op log.** A patch
+   that gains or loses a parameter would change the project with no op,
+   which ADR-0003 forbids and the panel named as the fatal flaw (§3).
+4. **An ADI-only object breaks ADR-0035's promise** that a patch is the Pd
+   Miller Puckette wrote: vanilla Pd would not open it meaningfully (§3).
+
+### Decisions (proposed)
+
+1. **The declaration: one object per parameter, in the device's patch.**
+
+   ```
+   [adi.param $0 <id> <min> <max> <default> <unit> <curve> <name> [<item> ...]]
+   ```
+
+   - **`$0`** is the patch's own `$0`, passed in so the object can build a
+     receive name unique to this device instance (ADR-0095's convention).
+     The host learns it from libpd when it opens the patch. So declarations
+     live in the device's top-level patch or its subpatches, which share its
+     `$0`, and never inside another abstraction.
+   - **`<id>`** is a positive integer below 2^31 that the author picks and
+     never changes, as CLAP's `clap_id` and VST3's `ParamID` are. Written as
+     decimal text, it is `plugin_params.param_id`, and so the key every
+     automation lane, macro mapping and controller binding already uses
+     (`automation_lanes.param_ref`, `macro_mappings.target_param_ref` and
+     `controller_maps.target_param` are all TEXT). The DAW allocates
+     nothing: the panel's "determinism by subtraction" (§4, ADR-0021).
+   - **`<min> <max> <default>`** are real values, in the parameter's unit.
+   - **`<unit>`** is a symbol shown after the value (`Hz`, `dB`, `ms`, `%`),
+     or `-` for none.
+   - **`<curve>`** maps the knob to the range:
+     - `lin`;
+     - `log`, for frequencies, with `min` above 0;
+     - a positive number, an exponent, as M4L's;
+     - `int`, whole steps;
+     - `toggle`, 0 or 1;
+     - `menu`.
+   - **`<name>`** is one Pd symbol, and only a label: an underscore shows as
+     a space (`Cutoff_Freq` reads "Cutoff Freq"), and UTF-8 is allowed.
+   - **`<item> ...`** follow the name for a `menu` only: `min` is 0, and
+     there are `max + 1` items.
+
+   For example:
+
+   ```
+   [adi.param $0 1 20 20000 1000 Hz log Cutoff]
+   [adi.param $0 2 -24 24 0 dB lin Drive]
+   [adi.param $0 3 0 2 0 - menu Loop_Mode Off Forward Back_and_forth]
+   ```
+
+2. **Fix 1: the id is the identity, and the name is a label.** Renaming a
+   parameter keeps every lane, mapping and binding. Two declarations with
+   one id: the later one in file order is ignored and reported as a problem,
+   as the engine reports others (ADR-0155). A declaration that does not
+   parse is ignored and reported the same way; the device still loads.
+
+3. **Fix 2: the declaration is complete.** It carries what M4L's Inspector
+   holds: name, range, default, unit, curve and menu items. The DAW draws
+   the knobs from it (ADR-0076), in file order. Live's count rule decides
+   whether the panel unfolds (ADR-0150).
+
+4. **Fix 3: the declared set changes only through an op.** A patch is device
+   state, stored as text in `state_blobs`, and a change to it is a
+   `device.loadState` (ADR-0145 d8, ADR-0142). The DAW reads the
+   declarations from the stored text by a static parse, off the audio thread
+   (ADR-0010), without running Pd. So:
+   - **One op.** Adding, renaming or re-ranging a parameter is part of the
+     one `device.loadState` that changed the patch. Undo restores the old
+     text, and with it the old declarations.
+   - **Nothing is deleted.** A parameter the new patch no longer declares
+     keeps its `plugin_params` row, its lanes, its mappings and its bindings.
+     They are shown as missing and play nothing, as a missing plug-in's
+     parameters do (SPEC §7.1). A later patch that declares the id again
+     picks them up. This is the case the panel set as the test (§4): a
+     deleted parameter with ten thousand automation points loses none of
+     them.
+   - **Outside edits wait for an op.** A `.pd` file edited outside the DAW
+     changes nothing in a project until it is loaded into the device again,
+     and that load is the op.
+
+5. **Fix 4: `adi.param` is a vanilla Pd abstraction.**
+   - **What it is:** `adi.param.pd`, an ordinary patch file. Inside,
+     `[r $1-adi-$2]` (the device's `$0`, then the id) feeds the one outlet,
+     and `[loadbang]` into `[f $5]` sends the default to the same outlet.
+   - **In vanilla Pd:** the file ships with the DAW and is written beside
+     any patch the DAW exports, so vanilla Pd opens the patch and every
+     parameter plays at its default. Without the file, vanilla Pd still
+     opens the patch; the `adi.param` boxes are broken and those parameters
+     silent, and the declarations are still readable text.
+   - **In the DAW:** the host sends the real value, in the declared unit and
+     through the curve, to `<$0>-adi-<id>`. Automation stays normalized on
+     the wire (ADR-0124). The author connects the outlet wherever the value
+     is needed.
+   - **Its licence is MIT,** so a patch that carries it can be shared under
+     any licence.
+
+6. **What follows once this is approved:**
+   - **The shipped patches.** `tools/gen_pd_patches.py` (ADR-0096) emits
+     `[adi.param]` for the limiter, EQ Eight and RMSC in place of their
+     bare `[r $0-release]` receives, with ids fixed in the generator.
+   - **The panel document.** `DEVICE-CONTRACT-PANEL.md` §6 rule 2 points
+     here instead of calling the syntax open.
+   - **The M4L translator** (§6 there) writes an `adi.param` for every
+     `live.*` parameter object, carrying its Inspector's fields.
+
+### Still open
+
+- **A range change.** When a new patch changes a parameter's range, is the
+  stored normalized value kept, so the sound changes, or the real value,
+  clamped into the new range? The schema makes the normalized value
+  authoritative (`plugin_params`, ADR-0057); for Pd, unlike VST3, the real
+  value is always known. Decided with the first implementation.
+- **Modulation** of a Pd parameter (ADR-0046, ADR-0052's `PARAM_MOD`).
+- **Transport messages** into the patch: their names and rate
+  (`DEVICE-CONTRACT-PANEL.md` §6, rule 3).
