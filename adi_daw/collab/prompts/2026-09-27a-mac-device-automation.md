@@ -3,7 +3,7 @@
 The director's instruction, 2026-09-25: win builds the engine side of plug-in
 parameter automation, and the device-host integration is left entirely to
 mac. The engine side is ADR-0165, and it is merged. This is the brief for the
-rest. It touches `src/juce/**`, which is mac's.
+rest. It touches `src/juce/**`, which is mac's. ADR-0166 added item 6.
 
 ```text
 You are agent mac on arieladi/Adi, project adi_daw. ADR-0165 is merged: a plug-in's automation lanes
@@ -31,6 +31,12 @@ THE WORK (src/juce/**)
    menu (reenableAutomation(laneId)). The strip's volume, pan and mute lanes (ADR-0164) share it.
 5. A probe: the fixture VST3 (adi_vst3_probe) and a CLAP instrument following a lane, the rendered
    level checked against the lane.
+6. Added by ADR-0166: the generic parameter panel. ADI Airwindows (plugins/airwindows, 141 CLAP
+   plug-ins in one binary) has no editor, by Airwindows' design: the host draws its sliders. For a
+   plug-in with no gui extension (CLAP) or no IPlugView (VST3), show a panel built from the
+   parameters: each one's name, its value as the plug-in's value_to_text gives it (units included),
+   a stepped parameter as a switch or menu ("Auto Gain" is one), automatable like any other. The
+   same panel serves every plug-in's Parameter List (ADR-0154).
 
 DONE MEANS
 The fixture VST3 and a CLAP plug-in audibly follow a lane in adi_play --render, the probe proves it,

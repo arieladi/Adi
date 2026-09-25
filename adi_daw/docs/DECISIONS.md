@@ -11237,3 +11237,204 @@ Eight plants were built under MSVC `/WX`, and each failed a named check:
 - E6: a parameter edit never overrides.
 - E7: sources never set.
 - E8: the strip reading a block ahead of a parked playhead.
+
+## ADR-0166 — Open-source plug-ins as CLAP: five upstreams built unchanged, a kept Airwindows set with auto gain, and ADI RMSC — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION**
+
+**Director's instruction:** bring these into the project as CLAP plug-ins:
+1. **Bram @ Smartelectronix:** every plug-in, Smexoscope above all.
+2. **ChowDSP:** ChowTapeModel and ChowCentaur.
+3. **ZL Equalizer:** the baseline for our own Pro-Q-class equalizer.
+4. **Airwindows:**
+   - a list of what each does, and what to strip;
+   - the rest as CLAP, with a lightweight UI;
+   - auto gain where it is missing.
+5. **Dragonfly Reverb.**
+6. **A Ring Modulator Sidechain (RMSC)** written from scratch in JUCE 9 as CLAP:
+   - a stereo main input and a sidechain;
+   - a mono-summed, rectified key;
+   - a threshold/clamp curve;
+   - release smoothing;
+   - invert and multiply;
+   - a Merge AUX switch;
+   - an oscilloscope of the inverted envelope.
+
+All of it builds, loads in the DAW and renders.
+
+### Decisions
+
+1. **Where they live:** `adi_daw/plugins/`.
+   - **Ours:** `rmsc/` and `airwindows/`.
+   - **Upstream builds:** `external/<name>/`.
+   - **Separate binaries:** each plug-in is its own binary under its own
+     licence, and nothing links into the DAW.
+   - **Sources:** fetched, pinned by commit, by `tools/fetch_plugins.sh`.
+   - **Windows builds:** `tools/build-external-plugin.bat <name>` and
+     `tools/build-plugins.bat`, with MSVC and Ninja, the DAW's own toolchain.
+     No MinGW and no clang-cl.
+2. **Upstream is built unchanged. We keep wrappers, not patches.**
+   - **The wrapper:** each `external/<name>/CMakeLists.txt` adds upstream's own
+     CMake tree as it is. It then adds a CLAP target with clap-juce-extensions
+     (pinned at `55525c9`), or builds through DPF's own CMake module for
+     Dragonfly. Moving a pin means rebuilding, not re-applying patches.
+   - **Centaur is the one exception to the shared pin.** Its JUCE fork calls
+     itself 6.0.8 from a snapshot older than `juce::HostProvidedContextMenu`.
+     From `a40d845` on, the wrapper assumes that class exists at 6.0.8. So
+     Centaur pins `2536880`, the last commit before it, with the reason in the
+     file.
+   - **Dragonfly's symlinks.** Its per-plug-in `AbstractUI.*` are git
+     symlinks. A Windows checkout without symlink rights writes them as
+     one-line stubs, which the compiler then includes. The wrapper copies each
+     plug-in folder into the build tree without them. The checkout stays as it
+     was fetched.
+   - **ZL Equalizer** releases only from clang-cl, but builds under MSVC. Its
+     `-march` flags are ignored with warning D9002, and highway takes MSVC's
+     `/arch`, SSE2 here, which is upstream's own Windows floor.
+3. **CLAP ids say whose build it is.**
+   - **Upstream's own id** where upstream releases a CLAP itself:
+     - ChowTape: `org.chowdsp.CHOWTapeModel`;
+     - Dragonfly: `michaelwillis.dragonfly.*`.
+
+     Ours is a build of the plug-in they ship, so a project saved with theirs
+     opens with ours.
+   - **`com.adi.*`** where upstream never released a CLAP: smartelectronix,
+     Centaur, ZL, Airwindows and RMSC. An id under their name would claim a
+     release they never made.
+4. **Licences** (OPEN_SOURCE_POLICY.md: a binary takes the strictest licence
+   in it; JUCE 8 and later are AGPL-3.0, ADR-0048):
+
+   | Plug-in | Upstream | Links | Our build |
+   |---|---|---|---|
+   | smartelectronix (11) | GPL-3.0 | JUCE 8.0.12 | AGPLv3 |
+   | ChowTapeModel | GPL-3.0 | JUCE 6.1.6 | GPLv3 |
+   | ChowCentaur | BSD-3-Clause | JUCE 6.0.8 | GPLv3 |
+   | ZL Equalizer 2 | AGPL-3.0 | JUCE 9.0.1 | AGPLv3 (§4, allowed since 2026-09-24) |
+   | Dragonfly Reverb (4) | GPL-3.0 | DPF (ISC) | GPLv3 |
+   | ADI Airwindows (141) | MIT | our auto gain (GPLv3), no JUCE | GPLv3 |
+   | ADI RMSC | ours | JUCE 9.0.2 | AGPLv3 |
+
+   The wrapper files carry `GPL-3.0-or-later`, and ZL's `AGPL-3.0-or-later`.
+5. **Airwindows is kept by Chris Johnson's own selection.**
+   - **What is kept:** 141 of airwin2rack's 524, listed in
+     `plugins/airwindows/CATALOGUE.md`. It gives every effect's description,
+     its controls, and whether it is kept or why not.
+   - **The keep list:** the **Recommended** and **Basic** collections. That is
+     his one current pick per job, and his starter set.
+   - **Three add-backs, each filling a gap:**
+     - **Density3**, the general saturator;
+     - **Pressure5**, the flagship compressor;
+     - **Channel9**, console colour in a single insert, where the kept
+       console systems need a channel/buss pair.
+   - **Why the rest go:** 52 are superseded; 5 are later versions he does not
+     recommend; 35 are console systems not kept; 20 are dithers; 18 are
+     unfinished upstream; 2 are unclassified; 251 are not among his picks.
+   - **How it is produced:** `tools/airwindows_catalogue.py` writes the list,
+     the C++ table and the source list. Only the kept effects are compiled.
+6. **Airwindows ships as `ADI Airwindows.clap`: one binary, 141 plug-ins.**
+   - **Not Consolidated.** Airwindows Consolidated is already a CLAP with a
+     UI. But it is *one* plug-in with a selector, whose parameters are
+     generic slots. A slot's meaning changes with the selection, so an
+     automation lane (ADR-0165) or a stored parameter row (ADR-0142) on "slot
+     3" would silently retarget. The browser would also show one entry
+     instead of 141 searchable names.
+   - **What ours is:**
+     - a JUCE-free CLAP factory over the same MIT sources;
+     - stable parameter ids, and sample-accurate parameter events;
+     - a text state;
+     - a tail report: infinite for reverbs, ambiences and feedback effects;
+     - 1.7 MB, against Consolidated's 12.5 MB for 524.
+   - **Consolidated is still available** for anyone who wants its
+     browser-in-a-plug-in.
+7. **"A lightweight UI" is the host's parameter panel.** Airwindows plug-ins
+   have never had editors, by design. The host draws sliders from the
+   parameter names and value texts, and that is the lightest UI there is. The
+   metadata that makes the panel good is ours: names, ranges, value texts
+   with units, and Auto Gain as a stepped switch. Drawing the generic panel is
+   the device host's job, and so mac's (ADR-0165's split). It goes into mac's
+   2026-09-27 brief.
+8. **Auto gain (`src/adi/dsp/auto_gain.*`) is engine DSP. The Airwindows
+   wrapper is its first user.**
+   - **What it measures:** both sides are K-weighted (BS.1770-4, derived for
+     any rate and checked against the standard's 48 kHz table). Each is a
+     1 s mean square started together, so their ratio is right from the first
+     block.
+   - **The output:** matched to the input within ±24 dB, updated every 32
+     frames, with zero latency.
+   - **Where it starts on:** it is a parameter on every kept effect. It starts
+     **on** for the 19 tone effects that change level as they colour and have
+     no output control. It starts **off** where level is the job: EQ,
+     filters, dynamics, clippers, reverbs, utilities, consoles, and
+     Mastering2.
+   - **Silence and muting freeze the measurement, not just the gain.** Holding
+     only the gain lets the silent side's window drain. A 4 s mute would then
+     come back as a burst of about +17 dB.
+   - **Host-side auto gain** for any plug-in is the obvious next use. It is
+     not decided here: it needs a per-device flag, which is a schema change.
+9. **ADI RMSC** (`plugins/rmsc`, `adi_rmsc`):
+   - **Formats:** CLAP, VST3 and a standalone.
+   - **Buses:** a stereo main and a sidechain, stereo, mono or off.
+   - **Parameters:** threshold (-48..0 dB), release (0..500 ms), depth, and
+     Merge AUX.
+   - **The scope:** a 2 s trace of the applied gain, which is the inverted
+     envelope.
+   - **The DSP is the engine's own** `RingModSidechain`, extended with the
+     threshold and the release, so the DAW and the plug-in cannot drift apart.
+
+### Corrections to the brief
+
+1. **JUCE 9 does not export CLAP natively.** Our pin, 9.0.2, knows VST3, AU,
+   AUv3, AAX, LV2, Standalone and Unity. CLAP comes from clap-juce-extensions,
+   as it does for Surge, ChowDSP and Consolidated. When JUCE adds CLAP, it is
+   one line in `plugins/rmsc/CMakeLists.txt`.
+2. **The RMSC smoother is a release, not a low-pass.** A symmetric low-pass on
+   the control signal slows the attack as much as the release. The duck then
+   arrives late, and the bass transient pokes through every kick. The attack
+   stays instant, and the release has its own time constant (rmsc.hpp, 4).
+3. **RMSC is amplitude modulation.** The key is rectified before it
+   multiplies, so the main signal never changes polarity. True ring
+   modulation multiplies by a bipolar signal. The name stays; FEATURES
+   already judged it this way.
+4. **Mono-summing a stereo key cancels any content in opposite polarity** on
+   the two channels. That is the trap in "polarity tweak". The plug-in sums as
+   asked, (L+R)/2, and its test shows the cancellation, so the behaviour is
+   known rather than discovered.
+5. **Airwindows needed no new UI, and Consolidated is not the answer.** See
+   decisions 6 and 7.
+6. **"Pro-Q3 perfect clone" is a working description.** Pro-Q is FabFilter's
+   trademark. Behaviour may be cloned; the name and artwork may not (policy;
+   ADR-0093 d4). ZL Equalizer 2 builds as CLAP as the baseline, and anything
+   derived from its code is AGPLv3.
+
+### Evidence
+
+1. **`adi_dsp_tests`: 130 checks, up from 92.** Eight cover RMSC's threshold
+   and release. The other 30 cover auto gain:
+   - the BS.1770-4 coefficients, and the same curve at 44.1 and 96 kHz;
+   - ±12 and +6 dB effects answered to within 0.05 dB;
+   - right from the first block;
+   - unity passed bit for bit;
+   - held through 20 s of silence;
+   - a muting effect never raising the gain;
+   - the ±24 dB limits;
+   - off and on without re-settling;
+   - no allocation.
+
+   A plant that fed the windows during a mute failed the muting check at
+   +10.8 dB.
+2. **`adi_airwindows_tests`: 32 checks.**
+   - **All 141 effects:** created, their parameters and ports described, one
+     second processed with **zero allocations**, finite output, and state
+     restored byte for byte, auto gain included.
+   - **Sample accuracy:** a change stamped at 256 equals the block split at
+     256, bit for bit. Airwindows seeds each instance's output dither from
+     `rand()`, so the test seeds it.
+   - **The auto gain defaults.**
+   - **Tube2 driven hard:** +10.69 dB without auto gain, +0.05 dB with it.
+3. **`adi_rmsc_tests`: 14 checks.**
+4. **In the DAW** (`adi_play --list`, then `--render` offline), every plug-in
+   scans and plays:
+   - all 11 smartelectronix plug-ins, and SupaPhaser into Smexoscope;
+   - ZL Equalizer 2, flat, at unity;
+   - ChowCentaur into ChowTape;
+   - Dragonfly Early into Hall, its tail running 2 s past the clip;
+   - Tube2, Density3 and kCathedral5 from ADI Airwindows;
+   - ADI RMSC.

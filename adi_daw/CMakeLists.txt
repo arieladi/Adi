@@ -201,6 +201,7 @@ add_library(adi_core STATIC
     src/adi/dsp/biquad.cpp
     src/adi/dsp/limiter.cpp
     src/adi/dsp/rmsc.cpp
+    src/adi/dsp/auto_gain.cpp
     src/adi/engine/latency.cpp
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp

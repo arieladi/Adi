@@ -234,20 +234,36 @@ which is a property of the algorithm and not of where it is compiled.
 
 ### The DSP plugin line — future (ADR-0093)
 
-Prepared for, not started. References are fetched into `reference/` now; no code
-exists. Working titles only — shipped names are ours (ADR-0093 d4).
+Started with ADR-0166: RMSC is built as a CLAP, and ZL Equalizer 2 builds as
+the equalizer's baseline. The rest are prepared for, with references in
+`reference/`. Working titles only — shipped names are ours (ADR-0093 d4).
 
 | Goal | Form | P | Needs first |
 |---|---|---|---|
-| Dynamic EQ: matched phase, linear phase, per-band dynamics | CLAP | P3 | Plugin-line licence decided; matched phase from Vicanek (2016); ZLEqualizer's code usable since ADR-0138, making the plugin AGPLv3 |
+| Dynamic EQ: matched phase, linear phase, per-band dynamics | CLAP | P3 | Plugin-line licence decided; matched phase from Vicanek (2016); ZLEqualizer's code usable since ADR-0138, making the plugin AGPLv3. **The baseline builds:** ZL Equalizer 2 as CLAP, unchanged (ADR-0166). "Pro-Q3 clone" is a description, never a name |
 | True-peak limiter: lookahead, oversampling, modes | CLAP | P3 | Plugin-line licence decided (the LSP maths is LGPL) |
 | Lookahead brickwall limiter, 1.5 / 3 / 6 ms | Pd | P3 | **A Pd patch able to declare its latency** (ADR-0035 has no such thing), and pinned DSP sort order |
 | Eight-band parametric EQ | Pd | P3 | Pd's inverted `biquad~` feedback signs; four biquads for a 48 dB/oct cut |
 | ADAA clipper, adjustable knee, up to 4x oversampling | CLAP | P3 | Plugin-line licence decided (the chowdsp waveshapers are GPLv3) |
-| Ring-modulation sidechain ducker (RMSC) | Pd | P3 | Judged as amplitude modulation, which is what it is |
+| Ring-modulation sidechain ducker (RMSC) | Pd, **CLAP ✅** | P3 | Judged as amplitude modulation, which is what it is. **ADI RMSC is built** (ADR-0166, `plugins/rmsc`): CLAP, VST3 and standalone; stereo main and sidechain; threshold, release, depth, Merge AUX; a scope of the applied gain. The engine's own DSP, extended with the threshold and the release |
 
 Four of the six carry latency, which makes them the first plugins able to test
 ADR-0079/0085/0092 with source we can read instead of borrowing FabFilter's.
+
+### Open-source plug-ins built as CLAP (ADR-0166)
+
+Upstream code, unchanged, each its own binary under its own licence
+(`plugins/README.md`). All scan and play in the DAW.
+
+| Plug-in | Upstream licence → our build | CLAP id | Status |
+|---|---|---|---|
+| Smartelectronix: Smexoscope and ten more | GPL-3.0 → AGPLv3 (JUCE 8) | `com.adi.smartelectronix.*` | ✅ |
+| ChowTapeModel | GPL-3.0 → GPLv3 | `org.chowdsp.CHOWTapeModel`, theirs | ✅ |
+| ChowCentaur | BSD-3 → GPLv3 (JUCE 6) | `com.adi.chowdsp.chowcentaur` | ✅ |
+| ZL Equalizer 2 | AGPL-3.0 → AGPLv3 | `com.adi.zlaudio.zlequalizer2` | ✅ |
+| Dragonfly Hall, Room, Plate, Early Reflections | GPL-3.0 → GPLv3 | `michaelwillis.dragonfly.*`, theirs | ✅ |
+| **ADI Airwindows**: 141 of 524, each its own plug-in, with auto gain | MIT → GPLv3 | `com.adi.airwindows.*` | ✅ |
+| **Host-side auto gain** for any plug-in, reusing `dsp::AutoGain` | — | — | idea: needs a per-device flag, which is a schema change |
 
 ### Time-stretch (ADR-0061)
 
