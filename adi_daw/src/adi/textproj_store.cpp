@@ -126,7 +126,7 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 47> kTables{{
+    static constexpr std::array<TableCoverage, 51> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
@@ -184,6 +184,10 @@ std::span<const TableCoverage> coverage() {
         {"arranger_sections", Coverage::Excluded, "no op writes it"},
         {"arranger_chain", Coverage::Excluded, "no op writes it"},
         {"key_map", Coverage::Excluded, "no op writes it"},
+        {"tuning_systems", Coverage::Excluded, "no op writes it; arrives with scale-aware editing (ADR-0178)"},
+        {"tuning_degrees", Coverage::Excluded, "no op writes it; arrives with scale-aware editing (ADR-0178)"},
+        {"key_map_tunings", Coverage::Excluded, "no op writes it; arrives with scale-aware editing (ADR-0178)"},
+        {"key_map_degrees", Coverage::Excluded, "no op writes it; arrives with scale-aware editing (ADR-0178)"},
         {"media_blobs", Coverage::Excluded, "retired and locked since 1.1 (ADR-0136); a 1.0 file's bytes are not projected"},
         {"extensions", Coverage::Excluded, "digest projection not designed"},
     }};

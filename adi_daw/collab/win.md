@@ -5,6 +5,34 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-26 — tuning systems in the format: schema 1.8 (ADR-0178)
+
+**The director's instruction:** five format gaps stay on the backlog, and the
+tuning tables are drafted now as schema 1.8, per ADR-0103 and ADR-0117.
+
+**What the rules forced:**
+- **Four tables, not three.** ADR-0103 gave `key_map` a tuning reference,
+  but a minor adds only whole objects (ADR-0144). So `key_map_tunings` sits
+  beside `key_map`, as `op_clocks` sits beside `ops`.
+- **`index` became `degree`,** because INDEX is an SQL keyword.
+- **No ops.** `key_map` has none yet (its text-projection coverage says "no
+  op writes it"), so the four tables join it there. Their ops come with
+  scale-aware editing.
+
+**Checks:**
+- `validate_schema` 5k: Rast on C in 24-TET goes in; six bad rows are
+  refused; deleting the key takes its tuning rows with it.
+- **A case that passed for the wrong reason:** the foreign-key case first
+  reused a key that already had a tuning, so the primary key refused it.
+  It now uses its own key.
+- `schema-1.7.sql` frozen from `7585a9c`; 1.0 to 1.7 upgrade to 1.8.
+- **4805 checks across 48 suites** (+12 migrate, +12 textproj_store).
+
+**For the director's review before merging:** a shipped table can never be
+changed (ADR-0144), so this one waits for his word.
+
+---
+
 ## 2026-09-25 — Audio Alignment into the backlog (ADR-0176)
 
 **The director's instruction:** Cubase-style Audio Alignment for the engine

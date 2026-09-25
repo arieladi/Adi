@@ -73,6 +73,8 @@ const std::vector<MigrationStep>& migrationSteps() {
         {6, {"op_clients", "op_clocks", "idx_opclk_lamport"}},
         // 1.7 (ADR-0174): native analog summing on a group.
         {7, {"group_summing"}},
+        // 1.8 (ADR-0178): tuning systems, and a key's scale over one.
+        {8, {"tuning_systems", "tuning_degrees", "key_map_tunings", "key_map_degrees"}},
     };
     return steps;
 }
