@@ -187,13 +187,43 @@ def git(repo, *args):
 
 def build_prompt(job, repo, files):
     parts = [f"Task: {job['instructions']}", ""]
+    rng = job.get("lines")  # [first, last], 1-based inclusive: a chunk of one big file
+    if rng:
+        parts += [f"This is part {job['chunk'][0]} of {job['chunk'][1]} of the file. "
+                  "Describe only what this excerpt shows; do not guess about the rest.", ""]
     for rel in files:
         path = (repo / rel).resolve()
         if repo.resolve() not in path.parents:
             raise ValueError(f"file outside repo: {rel}")
         text = path.read_text(encoding="utf-8", errors="replace")
-        parts += [f"=== FILE: {rel} ===", text, f"=== END FILE: {rel} ===", ""]
+        label = rel
+        if rng:
+            all_lines = text.splitlines(True)
+            text = "".join(all_lines[rng[0] - 1:rng[1]])
+            label = f"{rel} (lines {rng[0]}-{rng[1]} of {len(all_lines)})"
+        parts += [f"=== FILE: {label} ===", text, f"=== END FILE: {rel} ===", ""]
     return "\n".join(parts)
+
+
+CHUNK_CHARS = 24000  # ~7.5K tokens: fits the budget with room for the instructions
+
+
+def chunk_ranges(text, max_chars=CHUNK_CHARS):
+    """Split into 1-based line ranges under max_chars, preferring to cut after a
+    top-level closing brace or a blank line so functions stay whole."""
+    lines = text.splitlines(True)
+    ranges, start, size, cut = [], 0, 0, None
+    for i, line in enumerate(lines):
+        if size + len(line) > max_chars and i > start:
+            end = cut if cut is not None and cut > start else i
+            ranges.append((start + 1, end))
+            start, cut = end, None
+            size = sum(len(x) for x in lines[start:i])
+        size += len(line)
+        if line.startswith("}") or not line.strip():
+            cut = i + 1
+    ranges.append((start + 1, len(lines)))
+    return ranges
 
 
 def apply_edit_blocks(text, repo, allowed):
@@ -235,6 +265,8 @@ def run_job(job_file):
     system = (KINDS[kind] + ("\n\n" + job["system"] if job.get("system") else "")
               + (EDIT_FORMAT if edits else ""))
     files = job.get("files", [])
+    if job.get("lines") and (edits or len(files) != 1):
+        raise ValueError("line-range jobs are read-only and take exactly one file")
     _, head = git(repo, "rev-parse", "HEAD")
 
     # per_file splits a big batch into one model call per file
@@ -261,7 +293,11 @@ def run_job(job_file):
              f"**Instructions:** {job['instructions']}", ""]
     diff_checks = []
     for i, (group, answer) in enumerate(sections):
-        lines += [f"## {', '.join(group) or '(no files)'}", "", answer, ""]
+        rng = job.get("lines")
+        heading = ", ".join(group) or "(no files)"
+        if rng:
+            heading += f" (lines {rng[0]}-{rng[1]}, part {job['chunk'][0]}/{job['chunk'][1]})"
+        lines += [f"## {heading}", "", answer, ""]
         if edits:
             diff, problems = apply_edit_blocks(answer, repo, set(group))
             check = {"part": i, "problems": problems}
@@ -356,37 +392,59 @@ def cmd_mission(a):
     """Expand globs into one low-priority job per file, so the GPU always has work."""
     repo = Path(a.repo or DEFAULT_REPO)
     name = slugify(a.name, 30)
-    files = sorted({p.relative_to(repo).as_posix()
-                    for g in a.glob for p in repo.glob(g) if p.is_file()})
-    files = [f for f in files if not any(re.search(x, f) for x in a.exclude)]
+    files = {p.relative_to(repo).as_posix()
+             for g in a.glob for p in repo.glob(g) if p.is_file()}
+    files |= {f.replace("\\", "/") for f in a.files}
+    files = [f for f in sorted(files) if not any(re.search(x, f) for x in a.exclude)]
     if not files:
         sys.exit("mission matched no files")
+    if a.chunk and a.kind in EDIT_KINDS:
+        sys.exit("--chunk is for read-only kinds")
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    budget = MAX_PROMPT_TOKENS - est_tokens(KINDS[a.kind] + a.instructions + (a.system or "")) - 300
+    count = 0
     for i, rel in enumerate(files):
-        job = {"kind": a.kind, "instructions": a.instructions, "files": [rel],
-               "mission": name}
-        if a.repo:
-            job["repo"] = a.repo
-        if a.system:
-            job["system"] = a.system
-        job_id = f"{a.priority}-m-{name}-{stamp}-{i:04d}-{slugify(Path(rel).name, 30)}"
-        tmp = QUEUE / f".{job_id}.tmp"
-        tmp.write_text(json.dumps(job, indent=2), encoding="utf-8")
-        tmp.replace(QUEUE / f"{job_id}.json")
-    print(f"mission {name}: {len(files)} jobs queued at priority {a.priority}")
+        text = (repo / rel).read_text(encoding="utf-8", errors="replace")
+        ranges = (chunk_ranges(text) if a.chunk and est_tokens(text) > budget else [None])
+        for k, rng in enumerate(ranges, 1):
+            job = {"kind": a.kind, "instructions": a.instructions, "files": [rel],
+                   "mission": name}
+            if rng:
+                job.update(lines=list(rng), chunk=[k, len(ranges)])
+            if a.repo:
+                job["repo"] = a.repo
+            if a.system:
+                job["system"] = a.system
+            suffix = f"-c{k}" if rng else ""
+            job_id = f"{a.priority}-m-{name}-{stamp}-{i:04d}-{slugify(Path(rel).name, 30)}{suffix}"
+            tmp = QUEUE / f".{job_id}.tmp"
+            tmp.write_text(json.dumps(job, indent=2), encoding="utf-8")
+            tmp.replace(QUEUE / f"{job_id}.json")
+            count += 1
+    print(f"mission {name}: {count} jobs for {len(files)} files queued at priority {a.priority}")
 
 
 def cmd_collect(a):
     """Merge a mission's results into one report under STATE_DIR/missions/."""
     name = slugify(a.name, 30)
     tag = f"-m-{name}-"
-    done = sorted(d for d in DONE.iterdir() if tag in d.name and (d / "result.md").exists())
-    failed = sorted(FAILED.glob(f"*{tag}*.error.txt"))
-    queued = len(list(QUEUE.glob(f"*{tag}*.json"))) + len(list(RUNNING.glob(f"*{tag}*.json")))
+    def key(job):  # group a file's chunks together, in line order
+        return (job["files"][0] if job.get("files") else "", (job.get("lines") or [0])[0])
+
+    done = [(key(json.loads((d / "job.json").read_text(encoding="utf-8"))), d)
+            for d in DONE.iterdir() if tag in d.name and (d / "result.md").exists()]
+    done = [d for _, d in sorted(done)]
+    covered = {json.loads((d / "job.json").read_text(encoding="utf-8"))["files"][0] for d in done}
+    # a failure is stale once a later job (e.g. its chunks) succeeded for the same file
+    failed = [f for f in sorted(FAILED.glob(f"*{tag}*.error.txt"))
+              if json.loads(f.with_name(f.name.replace(".error.txt", ".json"))
+                            .read_text(encoding="utf-8"))["files"][0] not in covered]
+    pending = [*QUEUE.glob(f"*{tag}*.json"), *RUNNING.glob(f"*{tag}*.json")]
     out_dir = STATE_DIR / "missions"
     out_dir.mkdir(exist_ok=True)
     lines = [f"# Mission {name}", "",
-             f"- done: {len(done)}, failed: {len(failed)}, still queued: {queued}",
+             f"- done: {len(done)} results for {len(covered)} files, failed: {len(failed)}, "
+             f"still queued: {len(pending)}",
              f"- collected: {now()}", ""]
     if failed:
         lines += ["## Failed", ""]
@@ -458,7 +516,10 @@ def main():
     s.set_defaults(fn=cmd_submit)
     m = sub.add_parser("mission", help="one job per file matched by --glob")
     m.add_argument("--name", required=True)
-    m.add_argument("--glob", action="append", required=True, help="relative to the repo; repeatable")
+    m.add_argument("--glob", action="append", default=[], help="relative to the repo; repeatable")
+    m.add_argument("--files", nargs="*", default=[], help="explicit paths relative to the repo")
+    m.add_argument("--chunk", action="store_true",
+                   help="split files over the prompt budget into line-range jobs")
     m.add_argument("--exclude", action="append", default=[], help="regex on the relative path")
     m.add_argument("--kind", choices=sorted(KINDS), default="explain")
     m.add_argument("--instructions", required=True)

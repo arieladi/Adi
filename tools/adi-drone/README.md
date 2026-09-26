@@ -27,6 +27,12 @@ python tools/adi-drone/drone.py mission --name adi-daw-file-map --glob "adi_daw/
 python tools/adi-drone/drone.py collect adi-daw-file-map   # -> D:\adi-drone\missions\adi-daw-file-map.md
 ```
 
+`--chunk` splits any file over the prompt budget into line-range jobs of about
+7.5K tokens each, cutting after blank lines or closing braces where possible.
+`--files` takes explicit paths. Chunk jobs are read-only. `collect` groups a
+file's chunks in line order and drops a failure once a later job has covered
+that file, so a rerun lands in the same report.
+
 Policy on the Windows PC: keep a mission queued at all times so the GPU never
 idles. Delegate work that fits the table below, and read everything before using it.
 
