@@ -5,6 +5,47 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-26 — control surfaces and collaboration, as directions (ADR-0181, ADR-0182)
+
+**The director's two directives:**
+- **Control surfaces:** hooks for dial-based hardware, the Stream Deck + XL
+  first.
+- **Collaboration:** local and cloud modes, drive backups, selective media
+  sync, Excel-style awareness, AI summaries and remarks.
+
+**Most of it already had a home:**
+- **Control surfaces:**
+  - `controller_maps` has relative modes and OSC;
+  - ADR-0130 resolves an encoder's modes;
+  - ADR-0039's loopback RPC is the control API.
+- **Collaboration:**
+  - ADR-0128 is the ESXi-style tree;
+  - ADR-0148's rolled-back transaction is the preview;
+  - ADR-0143 is Consolidate;
+  - ADR-0131 is the remarks;
+  - ADR-0161 is the clocks.
+
+**What was corrected:**
+- **Delta ops stay out of the log.** A clamped delta has no inverse, so
+  ticks resolve at the input.
+- **The IPC server is the RPC layer.** A surface is a client class on it,
+  paired once, with an `Origin` check, because any web page can reach
+  localhost.
+- **Git of the text projection cannot carry sync:** eight tables are not
+  projected.
+- **Lamport clocks cannot detect a collision.** Each batch needs its base,
+  a version vector.
+- **Drives get consistent copies plus media,** from a synced folder with no
+  provider API. Never the live SQLite file.
+- **"Keep both" only where an object can exist twice.**
+- **Summaries are built from the ops;** AI prose is optional.
+- **Remark anchors to ops need a new table,** because a minor cannot widen
+  a CHECK.
+
+Nothing built. The Master Reference is v0.9.2 with §6.5 and §11.4.
+
+---
+
 ## 2026-09-26 — mac is back: its mission, and where the loop stands
 
 **The director's instruction:** add anything useful from this session to the

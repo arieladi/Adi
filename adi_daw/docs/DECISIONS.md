@@ -12440,3 +12440,277 @@ Paraphrased from pp. 261–263, because the design has to answer to it:
 
    The ADR that builds warped playback decides this, with listening tests
    against Live under ADR-0108's parity gate.
+
+---
+
+## ADR-0181 — External control surfaces: relative input resolved at the edge, the loopback control API with a surface client, and one parameter feed for the UI and the hardware — `DECIDED (direction)` (2026-09-26) — **DIRECTOR'S DIRECTIVE; THE STREAM DECK + XL FIRST; NOTHING BUILT NOW**
+
+**Director's directive:** architectural support for bi-directional, dial-based
+hardware controllers. The first target is a future Elgato Stream Deck + XL
+integration, the unit the director uses and tests with; supporting others
+matters too. The plug-in for the hardware is not built now, but step 7's UI
+and parameter architecture must accommodate three hooks:
+1. relative delta ops for endless encoders, in the op log and the parameter
+   registry;
+2. a local IPC server (WebSocket or OSC) that receives ops from local scripts;
+3. a state broadcast that sends every parameter change, whether from the
+   mouse, automation or a modulator, out to that layer.
+
+**What already exists:**
+- **`controller_maps`** (SPEC §8.5): absolute, relative and toggle modes,
+  takeover, and MIDI, OSC, Mackie and HUI protocols. A Stream Deck mapping a
+  macro is that table's job (ADR-0060 d5).
+- **The Focus Dial (ADR-0130):** it resolves an encoder's relative modes,
+  and turning it is an edit, coalesced into one `device.setParam` (d4).
+- **The loopback RPC layer (ADR-0039, AI-AGENT §7.1):** off until switched
+  on, `127.0.0.1` only, a bearer token per session, ops as the wire format,
+  applied on the message thread.
+
+### Decisions
+
+1. **Hook 1: relative input, but an absolute log.**
+   - **Where the tick is resolved:** on the message thread, as the current
+     value plus step × ticks, clamped and taken through the parameter's
+     curve. A stepped, integer or menu parameter moves one step per tick; a
+     continuous one moves a fraction of its range, and fine mode divides it
+     by ten (ADR-0130 d7).
+   - **The result is an ordinary edit.** It goes through the same capture as
+     any edit (ADR-0124, ADR-0130 d4), so a turn coalesces into one
+     `device.setParam` per settle, with absolute before and after values:
+     one undo step per turn.
+   - **Why the log holds no deltas:**
+     - a clamped delta has no inverse: +5 at the top of the range moves
+       nothing, and its −5 would undo a change that never happened;
+     - an inverse is captured from the state about to be overwritten (OPS.md
+       §6.1), which an absolute op makes exact.
+   - **The API's form:** `param.nudge {target, ticks, fine}` is a request on
+     the control API, not an op in the registry. The API turns it into
+     `device.setParam`.
+   - **Encoder modes stay in `controller_maps.mode`.** Two's complement,
+     binary offset and signed bit are for MIDI input (ADR-0130 d1). The API
+     sends ticks as signed integers and needs no mode.
+
+2. **Hook 2: the control API is the RPC layer, with a surface client class.
+   There is no second server.**
+   - **Transport:** a WebSocket on loopback, carrying JSON in the registry's
+     own JSON Schema (ADR-0020, ADR-0025). CBOR framing may come later.
+     Elgato's plug-in SDK runs JavaScript and talks WebSocket already. OSC
+     stays an input protocol of `controller_maps`, on loopback unless the
+     user opens it.
+   - **Security:** everything in AI-AGENT §7.1, plus two additions:
+     - **Pairing:** the DAW shows a code, the surface's plug-in sends it
+       once, and then holds a token of its own. The token lives in the OS
+       keychain, never in the `.adi`.
+     - **Origin:** a WebSocket's `Origin` header must be absent or on an
+       allow-list. Any web page can open a socket to localhost; that was the
+       hole behind CVE-2026-25253 (AI-AGENT §7.1).
+   - **A surface is the user's hand, not an agent.**
+     - **Applied at once:** its ops apply immediately, like a click, and are
+       not queued at the Propose tier, which is for agents (ADR-0145 d9).
+     - **Attribution:** `ops.actor = 'user'`, with `actor_detail =
+       'surface:<name>'`. The actor CHECK has no surface value, and a minor
+       cannot widen a CHECK (ADR-0144).
+   - **What a surface may do is an allow-list:**
+     - parameter set and nudge, and gesture begin and end;
+     - transport;
+     - the mixer strip: volume, pan, mute, solo, arm;
+     - device bypass and macros;
+     - the Focus Dial's target, and Re-Enable Automation;
+     - page and bank requests.
+
+     Structural edits are not on it, so a stuck key can destroy nothing. A
+     wider scope is the user's explicit grant, per surface.
+   - **Gestures:** touching a strip or pushing a dial is a gesture begin, and
+     letting go is its end. So automation override follows Live (ADR-0162),
+     and one gesture is one undo step.
+
+3. **Hook 3: one parameter feed for the UI and the surfaces.** It is a
+   publisher on the message thread; no observer ever runs on the audio thread.
+   - **The audio thread calls no one** (ADR-0010). Values that move without an
+     op — automation (ADR-0164, ADR-0165), modulation (ADR-0046), a plug-in's
+     own changes — go into lock-free slots. The audio thread writes them and
+     the message thread reads them, as with meters and the scope's taps
+     (ADR-0050 d4, ADR-0175).
+   - **On the one UI clock (ADR-0050 d1),** the feed compares each subscribed
+     parameter with what it last sent, and emits the changes. Op-driven
+     changes (mouse, undo, a remote op) reach it through the model.
+   - **The UI's controls and the control API subscribe to the same feed,**
+     built once in step 7. A knob and a surface therefore can never disagree.
+   - **A subscription names its parameters,** such as a surface's current
+     page, and never "everything". Changes coalesce to the frame rate, so a
+     lane moving every 32 samples costs at most one message per frame per
+     parameter.
+   - **What is sent:**
+     - the name;
+     - the stored value, and the value playing when that differs (automated
+       or modulated);
+     - the plug-in's own text for the value (`value_to_text`);
+     - the automation state: automated, or overridden (ADR-0162).
+
+     That is enough for a touch strip to draw Bitwig's rings and Live's LED.
+
+4. **The Stream Deck + XL is the test device, not the architecture.**
+   - **The plug-in is a client:** Elgato's plug-in will be a client of the
+     control API, and nothing in the core knows about the Stream Deck.
+   - **Other hardware:** Mackie Control, HUI and OSC surfaces map through
+     `controller_maps`, and generic MIDI encoders through ADR-0130.
+   - **Its name:** the plug-in carries ADI's name; Elgato's name appears
+     only to say what it works with (`OPEN_SOURCE_POLICY.md` §5).
+   - **Priority:** P2, not built now.
+
+5. **What step 7 must not foreclose:**
+   - every control reads the feed, never the model directly;
+   - every value edit goes through the capture (ADR-0124), so a surface, the
+     mouse and the Focus Dial share one undo;
+   - the device panel knows each parameter's step and curve, which a nudge
+     needs.
+
+**Still open:**
+- acceleration for fast turns (ADR-0130's open item);
+- how a surface picks its page: following the selection, or pinned;
+- priority between two surfaces on one parameter.
+
+---
+
+## ADR-0182 — Collaboration, hosting and backups: local by default, an op stream to the user's own bucket, drives for backups only, media chosen by the author, and changes previewed before they apply — `DECIDED (direction)` (2026-09-26) — **DIRECTOR'S DIRECTIVE; P2 AND P3; EXTENDS ADR-0161; NOTHING BUILT NOW**
+
+**Director's directive**, in four parts:
+1. **Hosting, transport and backups:**
+   - a local-only mode with full branching history;
+   - a collaborative cloud mode built on `adi_tool export`, Git, and op
+     streaming to an S3-compatible backend, with the engine on a local
+     cache;
+   - consumer cloud drives only for a "Back up project to cloud" feature.
+2. **Selective media sync:**
+   - generated audio uploads automatically;
+   - external samples are listed with their size, and excluded by default,
+     all, none or per file;
+   - "Consolidate to Cloud" uploads everything.
+3. **Excel-style awareness:**
+   - live visual cues, with a toggle;
+   - incoming changes applied only on demand;
+   - a collision pop-up offering mine, theirs, or both as takes;
+   - an ESXi-style snapshot and branch manager.
+4. **AI and remarks:** AI merge summaries, and Word-style remarks anchored to
+   objects or ops.
+
+Checked against ADR-0007, ADR-0127, ADR-0128, ADR-0131, ADR-0143, ADR-0148
+and ADR-0161, and against the text projection's coverage list.
+
+### Decisions
+
+1. **Local-only is the default, and it is today's behaviour.** A project
+   with no remote is complete: branching history (ADR-0030, ADR-0068),
+   snapshots (ADR-0128), everything. Collaboration is opt-in, per project.
+
+2. **Collaborative mode streams ops, not files.**
+   - **The op log is the only carrier.** Each client uploads its ops, with
+     their clocks (ADR-0161), to an S3-compatible bucket the user controls,
+     and downloads the others'. Work done offline queues and uploads later.
+     Nothing ever waits on the network.
+   - **Not Git of the text projection.** The projection (ADR-0007) is for
+     reading and diffing, and it is not complete. Its coverage list excludes:
+     - automation lanes and their data;
+     - note expression;
+     - the arranger's sections and chain;
+     - `key_map`, and the tuning tables that schema 1.8 proposes;
+     - extensions.
+
+     A project rebuilt from it loses all of those, and two carriers would be
+     two truths. `adi_tool export` stays what a human reads to review a sync.
+   - **The `.adi` stays on a local disk.** A SQLite database in WAL mode must
+     not live in a synced or network folder. The engine plays the local file
+     and its media cache, and remote ops apply into that file like any op.
+   - **A collision needs a base.** A Lamport clock orders ops, but it cannot
+     tell two concurrent edits from two in sequence.
+     - **The base:** each uploaded batch therefore carries what its author
+       had already applied: the highest clock seen from each client, a
+       version vector.
+     - **A collision** is then two batches touching the same object, neither
+       based on the other.
+     - **Where the vector lives:** a new table, added by the minor that
+       builds sync (ADR-0144).
+   - **The bucket is the user's; ADI runs no service.** Credentials live in
+     the OS keychain, never in the `.adi`, like the RPC token (AI-AGENT
+     §7.1).
+
+3. **Consumer drives hold backups, never projects.**
+   - **Why never the live file:** Google Drive, iCloud Drive, OneDrive,
+     Dropbox and IDrive sync clients copy a live SQLite file mid-write.
+   - **What "Back up project to cloud" writes:**
+     - a consistent copy, made with the SQLite backup API or `VACUUM INTO`,
+       never a file copy of the live database;
+     - the media, as Collect and Export's ZIP (ADR-0127, ADR-0143). A backup
+       without the audio is not a backup.
+   - **The target is a folder the provider's own client syncs.** That needs
+     no provider API, no OAuth, and no credentials in ADI. Provider APIs come
+     only if a folder turns out not to be enough.
+   - **When it runs:** on save, on close, or every N minutes, as a setting.
+
+4. **Media: chosen by the author, stored by hash.**
+   - **Stored once:** media is content-addressed already (BLAKE3, SPEC
+     §10.1). The bucket keeps each file once under its hash, and a
+     collaborator downloads only what they lack.
+   - **Generated media uploads automatically:** recordings, freezes, bounces
+     and consolidations.
+   - **Media from outside the project** (sample libraries) is listed with its
+     total size and excluded by default. The author chooses all, none, or
+     file by file. The default protects the bucket, and the licences too:
+     most commercial libraries forbid redistribution, and a shared bucket is
+     redistribution.
+   - **A collaborator who owns the same sample** resolves it locally, because
+     the app-scoped library index is keyed by the same hash (ADR-0104). One
+     who does not see it as missing, as a missing file is today (SPEC
+     §10.2), until the author uploads it.
+   - **"Consolidate to Cloud"** is Collect and Export (ADR-0143) with the
+     bucket as its destination.
+
+5. **Incoming changes are previewed, then applied.**
+   - **Queued and previewed:** incoming ops wait in a queue. The visual layer
+     draws them from a preview, ADR-0148's rolled-back transaction, the same
+     mechanism as the agent's changeset. A collaborator's moved clip shows as
+     an outline, and their notes as ghost notes where the user is looking. A
+     toggle hides the layer.
+   - **Applied on demand:** nothing reaches the engine until Apply/Sync, and
+     Apply is one transaction and one undo step (ADR-0145 d9's shape).
+   - **Collisions are resolved per object,** offering only what that object
+     allows:
+     - mine or theirs, for everything;
+     - **both**, only where the object can exist twice: a clip becomes a take
+       on a take lane, and a device becomes a second device;
+     - never both for a parameter value, a tempo point or a track name.
+   - **Undo after an Apply is open** (ADR-0161 d4). Undoing locally diverges
+     from the collaborator, so an undone Apply is either a new op sent to
+     everyone or a local branch. That is decided with the sync work.
+   - **The history window is ADR-0128's,** already decided as a tree in the
+     manner of ESXi's snapshot manager. Remote batches appear in it as
+     nodes, with their author.
+
+6. **Summaries are deterministic first; AI prose is optional.**
+   - **Every Apply shows a summary built from the ops:** what changed, by
+     whom, and on which objects, named through the projection. It needs no
+     model.
+   - **The agent may add prose on top** (ADR-0064, ADR-0086: AI is
+     optional). It reads the diff at the tier the user set, sends it to a
+     remote model only with that consent, and applies nothing.
+
+7. **Remarks already exist (ADR-0131),** and because they are ops they travel
+   with the stream. Anchoring one to an op or a time range is new:
+   `remarks.target_kind` admits only track, clip and device, and a minor
+   cannot widen a CHECK. It needs a table of its own, with the sync work.
+   Agent remarks stay marked, and are read as context, never obeyed (ADR-0131
+   d5).
+
+8. **Priorities:**
+   - local-only: P0, as it is today;
+   - backups to a drive folder: P2;
+   - the op stream, media selection, the awareness layer, collisions and
+     summaries: P3, where ADR-0161 put multiplayer;
+   - the history tree: unchanged (ADR-0128).
+
+**Still open, for the sync work:**
+- ordering on a plain object store;
+- the version-vector table;
+- shared undo;
+- row ids and concurrent ordering (ADR-0161 d4);
+- remark anchors.

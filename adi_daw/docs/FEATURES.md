@@ -216,6 +216,8 @@ for the transport, the tempo map, the groove pool and the track's scale
 | **Persistent undo across restarts** | neither | P1 | ✅ | `ops` |
 | **Branching undo tree** | neither | P2 | ✅ | `op_branches` |
 | Project-scoped controller maps | partially | P2 | ✅ | `controller_maps` |
+| **External control surfaces, the Stream Deck + XL first**: dials, keys and touch strips with feedback | Bitwig, Live | P2 | ✅ | ADR-0181. A relative tick resolves to a value at the input and a turn coalesces into one absolute `device.setParam`; the log never holds deltas, because a clamped delta has no inverse. A surface is a client of the loopback control API (ADR-0039): paired once, an `Origin` check, an allow-list of ops applied at once as the user's own (`actor_detail = surface:<name>`). Mackie, HUI and OSC go through `controller_maps`. The Elgato plug-in is not built now |
+| **One parameter feed** for the UI and every surface: name, stored and playing value, the plug-in's text, the automation state | neither | P1 | — | ADR-0181 d3. Built with step 7's UI on the one UI clock; the audio thread publishes into lock-free slots and never calls an observer |
 | Templates | both | P1 | — | a `.adi` with a flag |
 | **Swap the docked side of browser and mixer** | Bitwig/Cubase muscle memory | P2 | ✅ | `ui_view` — ADR-0080; width follows the panel, not the side |
 | Named view filters, AI view groups, far/close scaling, collapsible mixer and device strips | Bitwig | P2 | ✅ | `ui_view`; a `view.*` op family (ADR-0112) |
@@ -235,8 +237,11 @@ for the transport, the tempo map, the groove pool and the track's scale
 | Undo that survives a reboot | P1 | ✅ | |
 | Undo you can *branch*, so exploring costs nothing | P2 | ✅ | |
 | Text projection for version control | P2 | — | ADR-0007 |
-| **Multiplayer Remote Sync (CRDT op-based)**: several people editing one project over the internet, Excel or Figma style | P3 | 🔶 | The op log is the substrate. Since schema 1.6 every op carries its client and a Lamport clock (`op_clocks`, ADR-0161). Still to decide, in SPEC §12 item 6: server-ordered as Figma and Excel are, or peer CRDT; row ids from two clients; concurrent reordering; shared undo. Media and plug-in state travel by BLAKE3 hash already. No network or UI code before it is scheduled. |
+| **Multiplayer Remote Sync (CRDT op-based)**: several people editing one project over the internet, Excel or Figma style | P3 | 🔶 | The op log is the substrate. Since schema 1.6 every op carries its client and a Lamport clock (`op_clocks`, ADR-0161). Still to decide, in SPEC §12 item 6: server-ordered as Figma and Excel are, or peer CRDT; row ids from two clients; concurrent reordering; shared undo. Media and plug-in state travel by BLAKE3 hash already. No network or UI code before it is scheduled. **Its shape is decided in ADR-0182.** |
 | Scripting API identical to the agent's op vocabulary | P2 | ✅ | one API, not two |
+| **Local-only projects**, with the full branching history and no network | P0 | ✅ | today's behaviour; collaboration is opt-in per project (ADR-0182 d1) |
+| **Back up project to cloud**: a consistent copy plus its media, into a Google Drive, iCloud Drive, OneDrive, Dropbox or IDrive folder | P2 | — | ADR-0182 d3. The SQLite backup API or `VACUUM INTO`, never a copy of the live file, and Collect and Export's ZIP for the audio. A drive is never a project's home |
+| **Collaborative projects**: ops streamed to the user's own S3-compatible bucket; media chosen by the author and stored by hash; incoming changes previewed, then applied; collisions resolved per object; summaries from the ops, AI prose optional | P3 | — | ADR-0182. Not Git of the text projection, which leaves out eight tables. A collision needs each batch's base, a version vector: Lamport clocks alone cannot tell concurrent from sequential |
 
 ---
 

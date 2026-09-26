@@ -96,6 +96,8 @@ NEXT, not this mission (so you can plan, and say if the order is wrong):
   window over src/adi/settings/, the changeset's Apply (ADR-0148), the Pd editor on plugdata (ADR-0145
   d8, and ADR-0177 once approved), the library browser (ADR-0147, with the macOS volume adapter),
   UI-ARCHITECTURE.md for ADR-0101 and ADR-0112.
+- Step 7's controls read one parameter feed, which the control surfaces share (ADR-0181 d3, d5): no control
+  reads the model directly, and every value edit goes through the capture.
 - DeviceNode's bypass flags as atomics; your review of device_host's RebuildSpec lines (ADR-0122 d10).
 - CoreAudio at 88.2 to 768 kHz where a device offers it (ADR-0157).
 ```
