@@ -197,8 +197,10 @@ def apply_edit_blocks(text, repo, allowed):
 def run_job(job_file):
     job = json.loads(job_file.read_text(encoding="utf-8"))
     job_id = job_file.stem
-    out = DONE / job_id
-    out.mkdir(parents=True, exist_ok=True)
+    # build in a hidden folder so done/ only ever holds finished jobs
+    out = DONE / f".{job_id}.partial"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
     repo = Path(job.get("repo", DEFAULT_REPO))
     kind = job.get("kind", "freeform")
     edits = kind in EDIT_KINDS or job.get("output") == "patch"
@@ -254,8 +256,11 @@ def run_job(job_file):
         {"job": job, "head": head, "calls": meta_calls, "patch_checks": diff_checks},
         indent=2), encoding="utf-8")
     shutil.copy2(job_file, out / "job.json")
+    final = DONE / job_id
+    shutil.rmtree(final, ignore_errors=True)
+    out.rename(final)
     job_file.unlink()
-    return out
+    return final
 
 
 def next_job():
@@ -275,6 +280,7 @@ def process_one():
         out = run_job(running)
         log(f"done  {running.stem} -> {out}")
     except Exception as e:  # noqa: BLE001 - one bad job must not stop the drone
+        shutil.rmtree(DONE / f".{running.stem}.partial", ignore_errors=True)
         dest = FAILED / running.name
         running.replace(dest)
         dest.with_suffix(".error.txt").write_text(f"{type(e).__name__}: {e}\n", encoding="utf-8")
@@ -346,7 +352,7 @@ def cmd_collect(a):
     """Merge a mission's results into one report under STATE_DIR/missions/."""
     name = slugify(a.name, 30)
     tag = f"-m-{name}-"
-    done = sorted(d for d in DONE.iterdir() if tag in d.name)
+    done = sorted(d for d in DONE.iterdir() if tag in d.name and (d / "result.md").exists())
     failed = sorted(FAILED.glob(f"*{tag}*.error.txt"))
     queued = len(list(QUEUE.glob(f"*{tag}*.json"))) + len(list(RUNNING.glob(f"*{tag}*.json")))
     out_dir = STATE_DIR / "missions"
@@ -369,7 +375,8 @@ def cmd_collect(a):
 def cmd_status(_):
     for name, d, pat in (("queued", QUEUE, "*.json"), ("running", RUNNING, "*.json"),
                          ("failed", FAILED, "*.json"), ("done", DONE, "*")):
-        items = sorted(p.stem if p.is_file() else p.name for p in d.glob(pat))
+        items = sorted(p.stem if p.is_file() else p.name for p in d.glob(pat)
+                       if not p.name.startswith("."))
         print(f"{name} ({len(items)})")
         for it in items[-15:]:
             print(f"  {it}")
