@@ -12572,7 +12572,7 @@ and parameter architecture must accommodate three hooks:
 
 ---
 
-## ADR-0182 — Collaboration, hosting and backups: local by default, an op stream to the user's own bucket, drives for backups only, media chosen by the author, and changes previewed before they apply — `DECIDED (direction)` (2026-09-26) — **DIRECTOR'S DIRECTIVE; P2 AND P3; EXTENDS ADR-0161; NOTHING BUILT NOW**
+## ADR-0182 — Collaboration, hosting and backups: local by default, an op stream to the user's own bucket, drives for backups only, media chosen by the author, and changes previewed before they apply — `DECIDED (direction)` (2026-09-26) — **DIRECTOR'S DIRECTIVE, REVISED THE SAME DAY (d9); P2 AND P3; EXTENDS ADR-0161; NOTHING BUILT NOW**
 
 **Director's directive**, in four parts:
 1. **Hosting, transport and backups:**
@@ -12673,12 +12673,15 @@ and ADR-0161, and against the text projection's coverage list.
      toggle hides the layer.
    - **Applied on demand:** nothing reaches the engine until Apply/Sync, and
      Apply is one transaction and one undo step (ADR-0145 d9's shape).
-   - **Collisions are resolved per object,** offering only what that object
-     allows:
-     - mine or theirs, for everything;
-     - **both**, only where the object can exist twice: a clip becomes a take
-       on a take lane, and a device becomes a second device;
-     - never both for a parameter value, a tempo point or a track name.
+   - **Collisions keep both wherever there is a way to hold two** (revised
+     by the director, d9):
+     - **a discrete object becomes a second object:** a clip becomes a take on
+       a take lane, and a device becomes a second device;
+     - **continuous data keeps the collaborator's version as an inactive
+       ghost** (d9): automation lanes, clip envelopes and event volume, and
+       the tempo map;
+     - **a single discrete value** — a name, a switch, a menu choice — has
+       mine or theirs only.
    - **Undo after an Apply is open** (ADR-0161 d4). Undoing locally diverges
      from the collaborator, so an undone Apply is either a new op sent to
      everyone or a local branch. That is decided with the sync work.
@@ -12708,9 +12711,58 @@ and ADR-0161, and against the text projection's coverage list.
      summaries: P3, where ADR-0161 put multiplayer;
    - the history tree: unchanged (ADR-0128).
 
+9. **Continuous data keeps both, as ghost lanes, and Combine blends them.**
+   The director's revision of d5, the same day: automation curves, event
+   volume and tempo must support *keep both*, through inactive alternate
+   states.
+   - **The ghost.** When a synced batch collides with local continuous data,
+     the local curve stays active. The collaborator's version of the
+     colliding region is stored as a ghost.
+     - **What is stored:** the region's start and end, the target, the
+       author's client and clock, and the points in the target's own
+       encoding: an automation lane's AAUT stream, or the tempo map's points.
+     - **Its own table, never a second live lane.** `automation_lanes` has no
+       inactive flag, a minor cannot add one (ADR-0144), and a second lane
+       for the same parameter would play. `tempo_map` allows one point per
+       position. A ghost table that the engine never reads makes "inactive"
+       true by construction. It arrives with the minor that builds sync.
+     - **The region** is the span where the two versions differ, from the
+       first differing point to the last. Outside it the curves agree, so a
+       resolution touches only the region, and the curve stays continuous at
+       its edges.
+   - **The timeline colour-codes the region.** Right-clicking it offers
+     **Keep Mine**, **Adopt Theirs** or **Combine**.
+   - **Combine is a weighted blend, set by a slider from 0 to 100%.** The
+     number is the collaborator's weight, so 0% is Keep Mine and 100% is
+     Adopt Theirs: the three choices are one control.
+     - **Where the blend is taken:** point by point, in the lane's own value
+       domain (`automation_lanes.value_domain`). A volume lane is `real`, in
+       dB, so −6 and −12 dB blended half and half give −9 dB, which is what
+       a fader means.
+     - **How it is sampled:** the result is evaluated at the union of both
+       curves' breakpoints, and densely enough on curved segments (ADR-0159's
+       formulas) to stay within a stated tolerance of the true blend. It is
+       then thinned back to breakpoints, and becomes an ordinary curve.
+     - **Discrete lanes cannot blend.** An `enum` lane, mute, and any stepped
+       parameter offer Keep Mine or Adopt Theirs only; seventy percent of
+       "on" means nothing.
+     - **Tempo blends like any curve, and it re-times the project.** Positions
+       are in ticks, so a blended tempo moves every later event in seconds.
+       The slider therefore plays its preview before anything is committed.
+     - **A parameter's static value is the one-point case:** its ghost is one
+       value, and Combine is a weighted mean, unless the parameter is stepped.
+   - **The slider previews, and releasing it commits.** While it moves, the
+     blend plays from a preview (ADR-0148's rolled-back transaction), and
+     nothing is written. Letting go commits one op, which writes the blended
+     curve and removes the ghost. That is one undo step, and its inverse
+     brings the ghost back.
+   - **A resolution syncs like any edit.** Its batch is based on both of the
+     colliding batches, so on the collaborator's side it follows both of them
+     and is not a collision again.
+
 **Still open, for the sync work:**
 - ordering on a plain object store;
-- the version-vector table;
+- the version-vector table, and the ghost table (d9);
 - shared undo;
 - row ids and concurrent ordering (ADR-0161 d4);
 - remark anchors.

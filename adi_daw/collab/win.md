@@ -37,7 +37,12 @@ Only the `win` agent writes to this file. Newest entry at the top.
   a version vector.
 - **Drives get consistent copies plus media,** from a synced folder with no
   provider API. Never the live SQLite file.
-- **"Keep both" only where an object can exist twice.**
+- **"Keep both" only where an object can exist twice.** The director revised
+  this the same day (d9): continuous data keeps both too, as a ghost of the
+  colliding region. It lives in its own table, because a second live lane
+  would play. It resolves by Keep Mine, Adopt Theirs or Combine, a weighted
+  0 to 100% blend in the lane's own domain (dB for volume), previewed and
+  committed as one op. Discrete lanes do not blend.
 - **Summaries are built from the ops;** AI prose is optional.
 - **Remark anchors to ops need a new table,** because a minor cannot widen
   a CHECK.
