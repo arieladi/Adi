@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1008;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1007;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '8'),
+    ('schema_minor',        '7'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -118,55 +118,6 @@ CREATE TABLE key_map (
     CHECK (pos_ticks >= 0)
 ) STRICT;
 CREATE UNIQUE INDEX idx_key_pos ON key_map(pos_ticks);
-
--- Since 1.8 (ADR-0103, ADR-0117 §3, ADR-0178): tuning systems, and a key's
--- scale over one. scale_mask names only the twelve 12-TET pitch classes, and a
--- maqam's E half-flat is not one of them. A tuning is an equal division or a
--- Scala scale; a key that points at one lists its members as degrees of it.
--- Four whole tables, because a minor adds objects and never columns
--- (ADR-0144): the key's tuning reference sits beside key_map, not in it.
--- Rows rather than a BLOB, so the agent's projection reads them without a
--- decoder and a degree's name is something the agent can say (ADR-0117).
-CREATE TABLE tuning_systems (
-    id           INTEGER PRIMARY KEY,
-    name         TEXT    NOT NULL,
-    -- 'edo': an equal division of the period; 'scala': a Scala .scl scale.
-    source       TEXT    NOT NULL CHECK (source IN ('edo', 'scala')),
-    -- Where the degrees repeat: 1200 for the octave, 1901.955 for the
-    -- Bohlen-Pierce tritave. The next repeat, not a degree.
-    period_cents REAL    NOT NULL DEFAULT 1200.0 CHECK (period_cents > 0.0),
-    description  TEXT    NOT NULL DEFAULT ''      -- a Scala file's description line
-) STRICT;
-
--- Degree 0 is the unison and sits on the key's root; the others rise within
--- the period. A .scl file lists degrees 1..n with the period last, so an
--- importer writes 0..n-1 and moves the last into period_cents. Ratios are
--- stored as cents: one number per degree, so no second truth to disagree.
--- What one row cannot check -- cents rising with the degree and staying under
--- the period -- the op that writes the rows checks (ADR-0178 d2).
-CREATE TABLE tuning_degrees (
-    tuning_id   INTEGER NOT NULL REFERENCES tuning_systems(id) ON DELETE CASCADE,
-    degree      INTEGER NOT NULL CHECK (degree >= 0),
-    cents       REAL    NOT NULL CHECK (cents >= 0.0),
-    name        TEXT    NOT NULL DEFAULT '',       -- 'E half-flat'; '' shows the number
-    PRIMARY KEY (tuning_id, degree),
-    CHECK (degree > 0 OR cents = 0.0)
-) STRICT, WITHOUT ROWID;
-
--- A key's tuning. A key with no row is 12-TET, and its scale_mask is its scale.
-CREATE TABLE key_map_tunings (
-    key_map_id  INTEGER PRIMARY KEY REFERENCES key_map(id) ON DELETE CASCADE,
-    tuning_id   INTEGER NOT NULL REFERENCES tuning_systems(id)
-) STRICT;
-
--- A tuned key's scale: its degrees, counted from its root as scale_mask's bits
--- are. Rast on C in 24-TET is root 0 with degrees {0, 4, 7, 10, 14, 18, 21}.
--- A degree the key's tuning lacks is refused by the op that writes it.
-CREATE TABLE key_map_degrees (
-    key_map_id  INTEGER NOT NULL REFERENCES key_map_tunings(key_map_id) ON DELETE CASCADE,
-    degree      INTEGER NOT NULL CHECK (degree >= 0),
-    PRIMARY KEY (key_map_id, degree)
-) STRICT, WITHOUT ROWID;
 
 CREATE TABLE markers (
     id          INTEGER PRIMARY KEY,

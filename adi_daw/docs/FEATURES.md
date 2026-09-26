@@ -99,7 +99,7 @@ flagged, and it is a bug in the format, not in the plan.
 | **Per-note expression / MPE** | both, partially | **P1** | ✅ | `note_expression` — first-class, SPEC §6.3.2 |
 | **MPE+ (Haken), 14-bit Y and Z at 500 Hz** | neither | **P1** | ✅ | `ExpressionPoint.value` is f32, so bit depth was never the constraint. The binding constraint is ADR-0042's sub-block floor, which MUST NOT exceed `sample_rate/500` (ADR-0054). |
 | **MPE out to plugins, VST3 and CLAP** | both, partially | **P1** | — | CLAP (ADR-0099): the dialect the plugin declares -- CLAP note expression, MIDI-MPE or MIDI. VST3 (ADR-0097): per plugin, VST3 note expression, MPE over MIDI on member channels, or plain MIDI with poly aftertouch. The controller's channel never reaches a plugin. Pitch, pressure and timbre measured by ear per route (ADR-0098, ADR-0100); a fixture VST3 exercises the IMidiMapping parameter path in CI. Surge XT reads MpeMidi, Serum 2 reads note expression, and `Auto` can only be right for one of them -- so the route choice must be remembered: decided, in an application registry per plugin and on the device row per project (ADR-0134 d7), not built yet. |
-| Scale-aware / scale-locked editing, **every scale including Arabic and microtonal** | Ableton 12 + | P2 | 🔶 | reads `key_map`; a 12-bit `scale_mask` cannot name a quarter tone, so `tuning_systems` + `tuning_degrees` + `key_map_degrees` child tables come first (ADR-0103, ADR-0117, gap 6). Notation stays out. |
+| Scale-aware / scale-locked editing, **every scale including Arabic and microtonal** | Ableton 12 + | P2 | 🔶 | reads `key_map`; a 12-bit `scale_mask` cannot name a quarter tone, so `tuning_systems` + `tuning_degrees` + `key_map_degrees` child tables come first (ADR-0103, ADR-0117, gap 6). **In the format since 1.8** (ADR-0178), with `key_map_tunings` beside `key_map`; their ops come with the editing. Notation stays out. |
 | Expression Maps (articulations) | Cubase | P3 | ❌ | needs its own schema; big win for orchestral |
 | Logical Editor / Project Logical Editor | Cubase | P3 | — | query+transform over the model; no schema |
 | Score editor / notation | Cubase | P3 | ❌ | engraving data is **not** derivable from MIDI |
@@ -216,6 +216,8 @@ for the transport, the tempo map, the groove pool and the track's scale
 | **Persistent undo across restarts** | neither | P1 | ✅ | `ops` |
 | **Branching undo tree** | neither | P2 | ✅ | `op_branches` |
 | Project-scoped controller maps | partially | P2 | ✅ | `controller_maps` |
+| **External control surfaces, the Stream Deck + XL first**: dials, keys and touch strips with feedback | Bitwig, Live | P2 | ✅ | ADR-0181. A relative tick resolves to a value at the input and a turn coalesces into one absolute `device.setParam`; the log never holds deltas, because a clamped delta has no inverse. A surface is a client of the loopback control API (ADR-0039): paired once, an `Origin` check, an allow-list of ops applied at once as the user's own (`actor_detail = surface:<name>`). Mackie, HUI and OSC go through `controller_maps`. The Elgato plug-in is not built now |
+| **One parameter feed** for the UI and every surface: name, stored and playing value, the plug-in's text, the automation state | neither | P1 | — | ADR-0181 d3. Built with step 7's UI on the one UI clock; the audio thread publishes into lock-free slots and never calls an observer |
 | Templates | both | P1 | — | a `.adi` with a flag |
 | **Swap the docked side of browser and mixer** | Bitwig/Cubase muscle memory | P2 | ✅ | `ui_view` — ADR-0080; width follows the panel, not the side |
 | Named view filters, AI view groups, far/close scaling, collapsible mixer and device strips | Bitwig | P2 | ✅ | `ui_view`; a `view.*` op family (ADR-0112) |
@@ -235,8 +237,11 @@ for the transport, the tempo map, the groove pool and the track's scale
 | Undo that survives a reboot | P1 | ✅ | |
 | Undo you can *branch*, so exploring costs nothing | P2 | ✅ | |
 | Text projection for version control | P2 | — | ADR-0007 |
-| **Multiplayer Remote Sync (CRDT op-based)**: several people editing one project over the internet, Excel or Figma style | P3 | 🔶 | The op log is the substrate. Since schema 1.6 every op carries its client and a Lamport clock (`op_clocks`, ADR-0161). Still to decide, in SPEC §12 item 6: server-ordered as Figma and Excel are, or peer CRDT; row ids from two clients; concurrent reordering; shared undo. Media and plug-in state travel by BLAKE3 hash already. No network or UI code before it is scheduled. |
+| **Multiplayer Remote Sync (CRDT op-based)**: several people editing one project over the internet, Excel or Figma style | P3 | 🔶 | The op log is the substrate. Since schema 1.6 every op carries its client and a Lamport clock (`op_clocks`, ADR-0161). Still to decide, in SPEC §12 item 6: server-ordered as Figma and Excel are, or peer CRDT; row ids from two clients; concurrent reordering; shared undo. Media and plug-in state travel by BLAKE3 hash already. No network or UI code before it is scheduled. **Its shape is decided in ADR-0182.** |
 | Scripting API identical to the agent's op vocabulary | P2 | ✅ | one API, not two |
+| **Local-only projects**, with the full branching history and no network | P0 | ✅ | today's behaviour; collaboration is opt-in per project (ADR-0182 d1) |
+| **Back up project to cloud**: a consistent copy plus its media, into a Google Drive, iCloud Drive, OneDrive, Dropbox or IDrive folder | P2 | — | ADR-0182 d3. The SQLite backup API or `VACUUM INTO`, never a copy of the live file, and Collect and Export's ZIP for the audio. A drive is never a project's home |
+| **Collaborative projects**: ops streamed to the user's own S3-compatible bucket; media chosen by the author and stored by hash; incoming changes previewed, then applied; collisions resolved per object; summaries from the ops, AI prose optional | P3 | — | ADR-0182. Not Git of the text projection, which leaves out eight tables. A collision needs each batch's base, a version vector: Lamport clocks alone cannot tell concurrent from sequential. **Keep both everywhere two can be held** (the director's revision): a clip becomes a take; continuous data (automation, event volume, tempo) keeps the collaborator's region as an inactive ghost, colour-coded, resolved one region at a time by default (Accept All and Reject All exist in the sync panel's menu, never suggested, one op each) by Keep Mine, Adopt Theirs or Combine, a 0 to 100% weighted blend in the lane's own domain, never a forced 50/50; discrete lanes do not blend (ADR-0182 d9) |
 
 ---
 
@@ -394,7 +399,8 @@ neither:
    *Not in SPEC §12.*
 5. **VariAudio-class pitch-segment editing** — no model. *Not in SPEC §12.*
 6. **Tuning systems and microtonal scale membership** — `scale_mask` is 12
-   bits; a maqam is not a subset of 12-TET (ADR-0103). *Not in SPEC §12.*
+   bits; a maqam is not a subset of 12-TET (ADR-0103). **Closed in schema 1.8**
+   (ADR-0178); the other five stay on the backlog at the director's word.
 
 None of them is P0 or P1. That is the useful result: **the v1.0 schema is
 sufficient for everything in P0 and P1**, which means we can start building

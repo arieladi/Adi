@@ -96,7 +96,7 @@ std::string body(const rows::Model& m) {
     const std::string head =
         "project \"#0\"\n"
         "  format 0.1\n"
-        "  schema 1.7\n"
+        "  schema 1.8\n"
         "  ppq 5765760\n"
         "  defaults 1\n";
     if (all.rfind(head, 0) == 0) return all.substr(head.size());
@@ -455,7 +455,7 @@ void testEndToEnd() {
     eq(p.text,
        "project \"#0\"\n"
        "  format 0.1\n"
-       "  schema 1.7\n"
+       "  schema 1.8\n"
        "  ppq 5765760\n"
        "  defaults 1\n"
        "trk Keys\n"
@@ -688,7 +688,7 @@ void testRemarksEndToEnd() {
     eq(p.text,
        "project \"#0\"\n"
        "  format 0.1\n"
-       "  schema 1.7\n"
+       "  schema 1.8\n"
        "  ppq 5765760\n"
        "  defaults 1\n"
        "trk Bass\n"

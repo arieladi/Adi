@@ -12440,3 +12440,578 @@ Paraphrased from pp. 261–263, because the design has to answer to it:
 
    The ADR that builds warped playback decides this, with listening tests
    against Live under ADR-0108's parity gate.
+
+---
+
+## ADR-0177 — The Pure Data parameter contract: `[adi.param]` with a fixed id, a full declaration, changed only by `device.loadState`, and shipped as a vanilla abstraction — `DECIDED` (2026-09-25) — **APPROVED BY THE DIRECTOR AS WRITTEN, 2026-09-26; CLOSES THE CONTRACT ADR-0035 AND ADR-0040 LEFT OPEN**
+
+**How it got here.** A plan relayed from Gemini proposed adopting
+`[adi.param cutoff 20 20000 1000]`: the patch author drops the object in, the
+DAW scans the patch, draws the knobs and hooks them to automation and macros.
+That is the *author-symbol* candidate in `DEVICE-CONTRACT-PANEL.md` §2. win
+reviewed it and named four fixes; the director approved the four and asked
+for this ADR, for approval before it was decided. He approved it as written
+on 2026-09-26, before mac's return mission began.
+
+### What was wrong with the object as proposed
+
+1. **The name was the identity.** Renaming "cutoff" would orphan every
+   automation lane, macro mapping and controller binding that pointed at it.
+2. **The declaration was incomplete.** It had no unit, no curve and no menu
+   items. A 20 to 20,000 Hz cutoff on a linear knob is unusable, and M4L's
+   Inspector carries all three (`DEVICE-CONTRACT-PANEL.md` §6, rule 2).
+3. **"The DAW scans the patch" left the change outside the op log.** A patch
+   that gains or loses a parameter would change the project with no op,
+   which ADR-0003 forbids and the panel named as the fatal flaw (§3).
+4. **An ADI-only object breaks ADR-0035's promise** that a patch is the Pd
+   Miller Puckette wrote: vanilla Pd would not open it meaningfully (§3).
+
+### Decisions
+
+1. **The declaration: one object per parameter, in the device's patch.**
+
+   ```
+   [adi.param $0 <id> <min> <max> <default> <unit> <curve> <name> [<item> ...]]
+   ```
+
+   - **`$0`** is the patch's own `$0`, passed in so the object can build a
+     receive name unique to this device instance (ADR-0095's convention).
+     The host learns it from libpd when it opens the patch. So declarations
+     live in the device's top-level patch or its subpatches, which share its
+     `$0`, and never inside another abstraction.
+   - **`<id>`** is a positive integer below 2^31 that the author picks and
+     never changes, as CLAP's `clap_id` and VST3's `ParamID` are. Written as
+     decimal text, it is `plugin_params.param_id`, and so the key every
+     automation lane, macro mapping and controller binding already uses
+     (`automation_lanes.param_ref`, `macro_mappings.target_param_ref` and
+     `controller_maps.target_param` are all TEXT). The DAW allocates
+     nothing: the panel's "determinism by subtraction" (§4, ADR-0021).
+   - **`<min> <max> <default>`** are real values, in the parameter's unit.
+   - **`<unit>`** is a symbol shown after the value (`Hz`, `dB`, `ms`, `%`),
+     or `-` for none.
+   - **`<curve>`** maps the knob to the range:
+     - `lin`;
+     - `log`, for frequencies, with `min` above 0;
+     - a positive number, an exponent, as M4L's;
+     - `int`, whole steps;
+     - `toggle`, 0 or 1;
+     - `menu`.
+   - **`<name>`** is one Pd symbol, and only a label: an underscore shows as
+     a space (`Cutoff_Freq` reads "Cutoff Freq"), and UTF-8 is allowed.
+   - **`<item> ...`** follow the name for a `menu` only: `min` is 0, and
+     there are `max + 1` items.
+
+   For example:
+
+   ```
+   [adi.param $0 1 20 20000 1000 Hz log Cutoff]
+   [adi.param $0 2 -24 24 0 dB lin Drive]
+   [adi.param $0 3 0 2 0 - menu Loop_Mode Off Forward Back_and_forth]
+   ```
+
+2. **Fix 1: the id is the identity, and the name is a label.** Renaming a
+   parameter keeps every lane, mapping and binding. Two declarations with
+   one id: the later one in file order is ignored and reported as a problem,
+   as the engine reports others (ADR-0155). A declaration that does not
+   parse is ignored and reported the same way; the device still loads.
+
+3. **Fix 2: the declaration is complete.** It carries what M4L's Inspector
+   holds: name, range, default, unit, curve and menu items. The DAW draws
+   the knobs from it (ADR-0076), in file order. Live's count rule decides
+   whether the panel unfolds (ADR-0150).
+
+4. **Fix 3: the declared set changes only through an op.** A patch is device
+   state, stored as text in `state_blobs`, and a change to it is a
+   `device.loadState` (ADR-0145 d8, ADR-0142). The DAW reads the
+   declarations from the stored text by a static parse, off the audio thread
+   (ADR-0010), without running Pd. So:
+   - **One op.** Adding, renaming or re-ranging a parameter is part of the
+     one `device.loadState` that changed the patch. Undo restores the old
+     text, and with it the old declarations.
+   - **Nothing is deleted.** A parameter the new patch no longer declares
+     keeps its `plugin_params` row, its lanes, its mappings and its bindings.
+     They are shown as missing and play nothing, as a missing plug-in's
+     parameters do (SPEC §7.1). A later patch that declares the id again
+     picks them up. This is the case the panel set as the test (§4): a
+     deleted parameter with ten thousand automation points loses none of
+     them.
+   - **Outside edits wait for an op.** A `.pd` file edited outside the DAW
+     changes nothing in a project until it is loaded into the device again,
+     and that load is the op.
+
+5. **Fix 4: `adi.param` is a vanilla Pd abstraction.**
+   - **What it is:** `adi.param.pd`, an ordinary patch file. Inside,
+     `[r $1-adi-$2]` (the device's `$0`, then the id) feeds the one outlet,
+     and `[loadbang]` into `[f $5]` sends the default to the same outlet.
+   - **In vanilla Pd:** the file ships with the DAW and is written beside
+     any patch the DAW exports, so vanilla Pd opens the patch and every
+     parameter plays at its default. Without the file, vanilla Pd still
+     opens the patch; the `adi.param` boxes are broken and those parameters
+     silent, and the declarations are still readable text.
+   - **In the DAW:** the host sends the real value, in the declared unit and
+     through the curve, to `<$0>-adi-<id>`. Automation stays normalized on
+     the wire (ADR-0124). The author connects the outlet wherever the value
+     is needed.
+   - **Its licence is MIT,** so a patch that carries it can be shared under
+     any licence.
+
+6. **What follows:**
+   - **The shipped patches.** `tools/gen_pd_patches.py` (ADR-0096) emits
+     `[adi.param]` for the limiter, EQ Eight and RMSC in place of their
+     bare `[r $0-release]` receives, with ids fixed in the generator.
+   - **The panel document.** `DEVICE-CONTRACT-PANEL.md` §6 rule 2 points
+     here instead of calling the syntax open.
+   - **The M4L translator** (§6 there) writes an `adi.param` for every
+     `live.*` parameter object, carrying its Inspector's fields.
+
+### Still open
+
+- **A range change.** When a new patch changes a parameter's range, is the
+  stored normalized value kept, so the sound changes, or the real value,
+  clamped into the new range? The schema makes the normalized value
+  authoritative (`plugin_params`, ADR-0057); for Pd, unlike VST3, the real
+  value is always known. Decided with the first implementation.
+- **Modulation** of a Pd parameter (ADR-0046, ADR-0052's `PARAM_MOD`).
+- **Transport messages** into the patch: their names and rate
+  (`DEVICE-CONTRACT-PANEL.md` §6, rule 3).
+
+---
+
+## ADR-0178 — Tuning systems enter the format: schema 1.8 adds four tables, and their ops come with scale-aware editing — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION; BUILDS ADR-0103 AND ADR-0117 §3**
+
+**Director's instruction.** Of FEATURES §12's six format gaps, five stay on
+the backlog. The sixth, tuning systems, is drafted now as schema 1.8,
+because ADR-0103 and ADR-0117 already set its direction.
+
+### Decisions
+
+1. **Four tables, not three.** ADR-0117 §3 named `tuning_systems`,
+   `tuning_degrees` and `key_map_degrees`. ADR-0103 d1 also gave `key_map` "a
+   tuning reference", and a minor adds whole objects only, never a column
+   (ADR-0144 d3). So the reference is a table of its own, `key_map_tunings`,
+   as `op_clocks` sits beside `ops` (ADR-0161).
+   - **`tuning_systems`:** `id`, `name`, `source` (`edo` for an equal
+     division, `scala` for a Scala scale), `period_cents` and
+     `description`, a Scala file's description line.
+   - **`tuning_degrees`:** `tuning_id`, `degree`, `cents` and `name`.
+     ADR-0117's `index` is `degree` here, because INDEX is an SQL keyword.
+   - **`key_map_tunings`:** `key_map_id` and `tuning_id`. A key with no row
+     is 12-TET, and its `scale_mask` is its scale, as before.
+   - **`key_map_degrees`:** `key_map_id` and `degree`, ADR-0117's
+     `degree_index`. Its rows hang off `key_map_tunings`, so a key can list
+     degrees only once it has a tuning.
+
+2. **Degrees.**
+   - **Degree 0 is the unison, at 0 cents.** The others rise within the
+     period.
+   - **The period is the next repeat, not a degree:** 1200 cents for the
+     octave, 1901.955 for Bohlen–Pierce's tritave.
+   - **Scala files:** a `.scl` file lists degrees 1 to n with the period
+     last, so an importer writes degrees 0 to n−1 and moves the last one
+     into `period_cents`.
+   - **Ratios are stored as cents.** A double carries 3/2 far below
+     anything audible, and one number per degree leaves no second truth to
+     disagree with it.
+   - **The CHECKs hold what one row can:** cents are not negative, and
+     degree 0 is 0 cents. The rest spans rows: cents must rise with the
+     degree and stay under the period, and a key's degrees must exist in its
+     tuning. The op that writes the rows checks those, and a reader reports
+     a file that breaks them (SPEC §6.10).
+
+3. **Degree 0 sits on the key's root.** `key_map.root` is a 12-TET pitch
+   class, and a key's degrees count from it, as `scale_mask`'s bits do.
+   - **An example:** Rast on C in 24-TET is root 0 with degrees {0, 4, 7, 10,
+     14, 18, 21}, that is C, D, E half-flat, F, G, A and B half-flat.
+   - **A key with a tuning** uses its degrees. Its `scale_mask` is ignored
+     by a reader that knows tunings, and is all that a 1.7 reader sees.
+   - **One tuning per key-map entry, not one per project as in Live 12.** A
+     piece that moves from one maqam to another can change tuning at the
+     key change. A project with one tuning points every key at the same row.
+   - **Notes are unchanged.** They still carry a MIDI key and `tuning_cents`
+     (SPEC §6.3.1). The tuning decides which pitches the editor offers, and a
+     note placed on one carries its offset (ADR-0103 d3).
+
+4. **No ops in this minor.** `key_map` itself has no op yet: the text
+   projection lists it as *excluded, no op writes it*. The four tables join
+   it there for the same reason. Their ops arrive with scale-aware editing
+   (P2), together with `key_map`'s own: importing a Scala file, and giving a
+   key its tuning and degrees.
+
+5. **Left for later, as tables of their own.** Add-only migration makes this
+   safe: nothing here has to guess them now.
+   - **A Scala `.kbm` keyboard map:** which key plays which degree, and a
+     reference frequency. Live 12 has the same controls: its lowest and
+     highest note, and its reference pitch.
+   - **Live's per-track *Bypass Tuning* and controller layouts** (Live 12
+     §15.3).
+   - **Live's *Retune Set On Loading*,** which is a setting or an op, not
+     format.
+   - **How the agent names a microtonal note** (ADR-0103's other open item).
+
+6. **Not taken: stub tables for the other five gaps.** The same review
+   proposed writing all six gaps into the schema at once, as empty stubs.
+   The director kept the five on the backlog, for these reasons:
+   - **A shipped table never changes** (ADR-0144 d3). A stub written before
+     its feature is designed freezes a guess.
+   - **None of the five is P0 or P1** (FEATURES §12), so the schema ships
+     without them.
+   - **Every table costs something even when empty:** an op to write it,
+     text-projection coverage and a frozen history copy.
+   - **Specific errors in the stubs as proposed:**
+     - `engraving_data` crosses ADR-0103, which keeps notation out beyond
+       not destroying it;
+     - `variaudio_segments` would put Steinberg's feature name into the
+       format for good (`OPEN_SOURCE_POLICY.md` §5);
+     - `chord_events` stored both a chord's quality and its intervals, so
+       the same fact twice.
+   - **Integer CBOR keys came back with it.** ADR-0025 stands: keys are short
+     strings, because the CBOR library cannot read or write integer keys and
+     one definition serves the agent's schemas.
+
+---
+
+## ADR-0181 — External control surfaces: relative input resolved at the edge, the loopback control API with a surface client, and one parameter feed for the UI and the hardware — `DECIDED (direction)` (2026-09-26) — **DIRECTOR'S DIRECTIVE; THE STREAM DECK + XL FIRST; NOTHING BUILT NOW**
+
+**Director's directive:** architectural support for bi-directional, dial-based
+hardware controllers. The first target is a future Elgato Stream Deck + XL
+integration, the unit the director uses and tests with; supporting others
+matters too. The plug-in for the hardware is not built now, but step 7's UI
+and parameter architecture must accommodate three hooks:
+1. relative delta ops for endless encoders, in the op log and the parameter
+   registry;
+2. a local IPC server (WebSocket or OSC) that receives ops from local scripts;
+3. a state broadcast that sends every parameter change, whether from the
+   mouse, automation or a modulator, out to that layer.
+
+**What already exists:**
+- **`controller_maps`** (SPEC §8.5): absolute, relative and toggle modes,
+  takeover, and MIDI, OSC, Mackie and HUI protocols. A Stream Deck mapping a
+  macro is that table's job (ADR-0060 d5).
+- **The Focus Dial (ADR-0130):** it resolves an encoder's relative modes,
+  and turning it is an edit, coalesced into one `device.setParam` (d4).
+- **The loopback RPC layer (ADR-0039, AI-AGENT §7.1):** off until switched
+  on, `127.0.0.1` only, a bearer token per session, ops as the wire format,
+  applied on the message thread.
+
+### Decisions
+
+1. **Hook 1: relative input, but an absolute log.**
+   - **Where the tick is resolved:** on the message thread, as the current
+     value plus step × ticks, clamped and taken through the parameter's
+     curve. A stepped, integer or menu parameter moves one step per tick; a
+     continuous one moves a fraction of its range, and fine mode divides it
+     by ten (ADR-0130 d7).
+   - **The result is an ordinary edit.** It goes through the same capture as
+     any edit (ADR-0124, ADR-0130 d4), so a turn coalesces into one
+     `device.setParam` per settle, with absolute before and after values:
+     one undo step per turn.
+   - **Why the log holds no deltas:**
+     - a clamped delta has no inverse: +5 at the top of the range moves
+       nothing, and its −5 would undo a change that never happened;
+     - an inverse is captured from the state about to be overwritten (OPS.md
+       §6.1), which an absolute op makes exact.
+   - **The API's form:** `param.nudge {target, ticks, fine}` is a request on
+     the control API, not an op in the registry. The API turns it into
+     `device.setParam`.
+   - **Encoder modes stay in `controller_maps.mode`.** Two's complement,
+     binary offset and signed bit are for MIDI input (ADR-0130 d1). The API
+     sends ticks as signed integers and needs no mode.
+
+2. **Hook 2: the control API is the RPC layer, with a surface client class.
+   There is no second server.**
+   - **Transport:** a WebSocket on loopback, carrying JSON in the registry's
+     own JSON Schema (ADR-0020, ADR-0025). CBOR framing may come later.
+     Elgato's plug-in SDK runs JavaScript and talks WebSocket already. OSC
+     stays an input protocol of `controller_maps`, on loopback unless the
+     user opens it.
+   - **Security:** everything in AI-AGENT §7.1, plus two additions:
+     - **Pairing:** the DAW shows a code, the surface's plug-in sends it
+       once, and then holds a token of its own. The token lives in the OS
+       keychain, never in the `.adi`.
+     - **Origin:** a WebSocket's `Origin` header must be absent or on an
+       allow-list. Any web page can open a socket to localhost; that was the
+       hole behind CVE-2026-25253 (AI-AGENT §7.1).
+   - **A surface is the user's hand, not an agent.**
+     - **Applied at once:** its ops apply immediately, like a click, and are
+       not queued at the Propose tier, which is for agents (ADR-0145 d9).
+     - **Attribution:** `ops.actor = 'user'`, with `actor_detail =
+       'surface:<name>'`. The actor CHECK has no surface value, and a minor
+       cannot widen a CHECK (ADR-0144).
+   - **What a surface may do is an allow-list:**
+     - parameter set and nudge, and gesture begin and end;
+     - transport;
+     - the mixer strip: volume, pan, mute, solo, arm;
+     - device bypass and macros;
+     - the Focus Dial's target, and Re-Enable Automation;
+     - page and bank requests.
+
+     Structural edits are not on it, so a stuck key can destroy nothing. A
+     wider scope is the user's explicit grant, per surface.
+   - **Gestures:** touching a strip or pushing a dial is a gesture begin, and
+     letting go is its end. So automation override follows Live (ADR-0162),
+     and one gesture is one undo step.
+
+3. **Hook 3: one parameter feed for the UI and the surfaces.** It is a
+   publisher on the message thread; no observer ever runs on the audio thread.
+   - **The audio thread calls no one** (ADR-0010). Values that move without an
+     op — automation (ADR-0164, ADR-0165), modulation (ADR-0046), a plug-in's
+     own changes — go into lock-free slots. The audio thread writes them and
+     the message thread reads them, as with meters and the scope's taps
+     (ADR-0050 d4, ADR-0175).
+   - **On the one UI clock (ADR-0050 d1),** the feed compares each subscribed
+     parameter with what it last sent, and emits the changes. Op-driven
+     changes (mouse, undo, a remote op) reach it through the model.
+   - **The UI's controls and the control API subscribe to the same feed,**
+     built once in step 7. A knob and a surface therefore can never disagree.
+   - **A subscription names its parameters,** such as a surface's current
+     page, and never "everything". Changes coalesce to the frame rate, so a
+     lane moving every 32 samples costs at most one message per frame per
+     parameter.
+   - **What is sent:**
+     - the name;
+     - the stored value, and the value playing when that differs (automated
+       or modulated);
+     - the plug-in's own text for the value (`value_to_text`);
+     - the automation state: automated, or overridden (ADR-0162).
+
+     That is enough for a touch strip to draw Bitwig's rings and Live's LED.
+
+4. **The Stream Deck + XL is the test device, not the architecture.**
+   - **The plug-in is a client:** Elgato's plug-in will be a client of the
+     control API, and nothing in the core knows about the Stream Deck.
+   - **Other hardware:** Mackie Control, HUI and OSC surfaces map through
+     `controller_maps`, and generic MIDI encoders through ADR-0130.
+   - **Its name:** the plug-in carries ADI's name; Elgato's name appears
+     only to say what it works with (`OPEN_SOURCE_POLICY.md` §5).
+   - **Priority:** P2, not built now.
+
+5. **What step 7 must not foreclose:**
+   - every control reads the feed, never the model directly;
+   - every value edit goes through the capture (ADR-0124), so a surface, the
+     mouse and the Focus Dial share one undo;
+   - the device panel knows each parameter's step and curve, which a nudge
+     needs.
+
+**Still open:**
+- acceleration for fast turns (ADR-0130's open item);
+- how a surface picks its page: following the selection, or pinned;
+- priority between two surfaces on one parameter.
+
+---
+
+## ADR-0182 — Collaboration, hosting and backups: local by default, an op stream to the user's own bucket, drives for backups only, media chosen by the author, and changes previewed before they apply — `DECIDED (direction)` (2026-09-26) — **DIRECTOR'S DIRECTIVE, REVISED THE SAME DAY (d9); P2 AND P3; EXTENDS ADR-0161; NOTHING BUILT NOW**
+
+**Director's directive**, in four parts:
+1. **Hosting, transport and backups:**
+   - a local-only mode with full branching history;
+   - a collaborative cloud mode built on `adi_tool export`, Git, and op
+     streaming to an S3-compatible backend, with the engine on a local
+     cache;
+   - consumer cloud drives only for a "Back up project to cloud" feature.
+2. **Selective media sync:**
+   - generated audio uploads automatically;
+   - external samples are listed with their size, and excluded by default,
+     all, none or per file;
+   - "Consolidate to Cloud" uploads everything.
+3. **Excel-style awareness:**
+   - live visual cues, with a toggle;
+   - incoming changes applied only on demand;
+   - a collision pop-up offering mine, theirs, or both as takes;
+   - an ESXi-style snapshot and branch manager.
+4. **AI and remarks:** AI merge summaries, and Word-style remarks anchored to
+   objects or ops.
+
+Checked against ADR-0007, ADR-0127, ADR-0128, ADR-0131, ADR-0143, ADR-0148
+and ADR-0161, and against the text projection's coverage list.
+
+### Decisions
+
+1. **Local-only is the default, and it is today's behaviour.** A project
+   with no remote is complete: branching history (ADR-0030, ADR-0068),
+   snapshots (ADR-0128), everything. Collaboration is opt-in, per project.
+
+2. **Collaborative mode streams ops, not files.**
+   - **The op log is the only carrier.** Each client uploads its ops, with
+     their clocks (ADR-0161), to an S3-compatible bucket the user controls,
+     and downloads the others'. Work done offline queues and uploads later.
+     Nothing ever waits on the network.
+   - **Not Git of the text projection.** The projection (ADR-0007) is for
+     reading and diffing, and it is not complete. Its coverage list excludes:
+     - automation lanes and their data;
+     - note expression;
+     - the arranger's sections and chain;
+     - `key_map`, and the tuning tables that schema 1.8 proposes;
+     - extensions.
+
+     A project rebuilt from it loses all of those, and two carriers would be
+     two truths. `adi_tool export` stays what a human reads to review a sync.
+   - **The `.adi` stays on a local disk.** A SQLite database in WAL mode must
+     not live in a synced or network folder. The engine plays the local file
+     and its media cache, and remote ops apply into that file like any op.
+   - **A collision needs a base.** A Lamport clock orders ops, but it cannot
+     tell two concurrent edits from two in sequence.
+     - **The base:** each uploaded batch therefore carries what its author
+       had already applied: the highest clock seen from each client, a
+       version vector.
+     - **A collision** is then two batches touching the same object, neither
+       based on the other.
+     - **Where the vector lives:** a new table, added by the minor that
+       builds sync (ADR-0144).
+   - **The bucket is the user's; ADI runs no service.** Credentials live in
+     the OS keychain, never in the `.adi`, like the RPC token (AI-AGENT
+     §7.1).
+
+3. **Consumer drives hold backups, never projects.**
+   - **Why never the live file:** Google Drive, iCloud Drive, OneDrive,
+     Dropbox and IDrive sync clients copy a live SQLite file mid-write.
+   - **What "Back up project to cloud" writes:**
+     - a consistent copy, made with the SQLite backup API or `VACUUM INTO`,
+       never a file copy of the live database;
+     - the media, as Collect and Export's ZIP (ADR-0127, ADR-0143). A backup
+       without the audio is not a backup.
+   - **The target is a folder the provider's own client syncs.** That needs
+     no provider API, no OAuth, and no credentials in ADI. Provider APIs come
+     only if a folder turns out not to be enough.
+   - **When it runs:** on save, on close, or every N minutes, as a setting.
+
+4. **Media: chosen by the author, stored by hash.**
+   - **Stored once:** media is content-addressed already (BLAKE3, SPEC
+     §10.1). The bucket keeps each file once under its hash, and a
+     collaborator downloads only what they lack.
+   - **Generated media uploads automatically:** recordings, freezes, bounces
+     and consolidations.
+   - **Media from outside the project** (sample libraries) is listed with its
+     total size and excluded by default. The author chooses all, none, or
+     file by file. The default protects the bucket, and the licences too:
+     most commercial libraries forbid redistribution, and a shared bucket is
+     redistribution.
+   - **A collaborator who owns the same sample** resolves it locally, because
+     the app-scoped library index is keyed by the same hash (ADR-0104). One
+     who does not see it as missing, as a missing file is today (SPEC
+     §10.2), until the author uploads it.
+   - **"Consolidate to Cloud"** is Collect and Export (ADR-0143) with the
+     bucket as its destination.
+
+5. **Incoming changes are previewed, then applied.**
+   - **Queued and previewed:** incoming ops wait in a queue. The visual layer
+     draws them from a preview, ADR-0148's rolled-back transaction, the same
+     mechanism as the agent's changeset. A collaborator's moved clip shows as
+     an outline, and their notes as ghost notes where the user is looking. A
+     toggle hides the layer.
+   - **Applied on demand:** nothing reaches the engine until Apply/Sync, and
+     Apply is one transaction and one undo step (ADR-0145 d9's shape).
+   - **Collisions keep both wherever there is a way to hold two** (revised
+     by the director, d9):
+     - **a discrete object becomes a second object:** a clip becomes a take on
+       a take lane, and a device becomes a second device;
+     - **continuous data keeps the collaborator's version as an inactive
+       ghost** (d9): automation lanes, clip envelopes and event volume, and
+       the tempo map;
+     - **a single discrete value** — a name, a switch, a menu choice — has
+       mine or theirs only.
+   - **Undo after an Apply is open** (ADR-0161 d4). Undoing locally diverges
+     from the collaborator, so an undone Apply is either a new op sent to
+     everyone or a local branch. That is decided with the sync work.
+   - **The history window is ADR-0128's,** already decided as a tree in the
+     manner of ESXi's snapshot manager. Remote batches appear in it as
+     nodes, with their author.
+
+6. **Summaries are deterministic first; AI prose is optional.**
+   - **Every Apply shows a summary built from the ops:** what changed, by
+     whom, and on which objects, named through the projection. It needs no
+     model.
+   - **The agent may add prose on top** (ADR-0064, ADR-0086: AI is
+     optional). It reads the diff at the tier the user set, sends it to a
+     remote model only with that consent, and applies nothing.
+
+7. **Remarks already exist (ADR-0131),** and because they are ops they travel
+   with the stream. Anchoring one to an op or a time range is new:
+   `remarks.target_kind` admits only track, clip and device, and a minor
+   cannot widen a CHECK. It needs a table of its own, with the sync work.
+   Agent remarks stay marked, and are read as context, never obeyed (ADR-0131
+   d5).
+
+8. **Priorities:**
+   - local-only: P0, as it is today;
+   - backups to a drive folder: P2;
+   - the op stream, media selection, the awareness layer, collisions and
+     summaries: P3, where ADR-0161 put multiplayer;
+   - the history tree: unchanged (ADR-0128).
+
+9. **Continuous data keeps both, as ghost lanes, and Combine blends them.**
+   The director's revision of d5, the same day: automation curves, event
+   volume and tempo must support *keep both*, through inactive alternate
+   states.
+   - **The ghost.** When a synced batch collides with local continuous data,
+     the local curve stays active. The collaborator's version of the
+     colliding region is stored as a ghost.
+     - **What is stored:** the region's start and end, the target, the
+       author's client and clock, and the points in the target's own
+       encoding: an automation lane's AAUT stream, or the tempo map's points.
+     - **Its own table, never a second live lane.** `automation_lanes` has no
+       inactive flag, a minor cannot add one (ADR-0144), and a second lane
+       for the same parameter would play. `tempo_map` allows one point per
+       position. A ghost table that the engine never reads makes "inactive"
+       true by construction. It arrives with the minor that builds sync.
+     - **The region** is the span where the two versions differ, from the
+       first differing point to the last. Outside it the curves agree, so a
+       resolution touches only the region, and the curve stays continuous at
+       its edges.
+   - **The timeline colour-codes the region.** Right-clicking it offers
+     **Keep Mine**, **Adopt Theirs** or **Combine**.
+   - **One region at a time is the default path** (the director's
+     follow-ups, the same day). Each colour-coded region is resolved on its
+     own, and that is what the UI suggests.
+     - **Many regions stay workable:** the sync panel lists the unresolved
+       regions with a count, and a command jumps to the next.
+     - **Accept All and Reject All exist, but are never the suggestion.** They
+       sit in the sync panel's menu, not in a region's menu, and are never the
+       highlighted button.
+       - **What they do:** Accept All adopts theirs, and Reject All keeps mine,
+         in every unresolved region the list shows. The list can be filtered
+         by author or by track.
+       - **Confirmation:** each asks first, naming how many regions it will
+         resolve.
+       - **Undo:** each is one op, so one undo brings every ghost back.
+       - **No Combine All.** A blend is a judgement about one passage.
+     - **An unresolved region is safe for as long as it stays:** the local
+       curve plays, and the ghost waits in the file.
+     - **One ghost per author per region.** A later batch from the same
+       author on the same region replaces that author's ghost. A second
+       collaborator's version is a second ghost, resolved on its own.
+   - **Combine is a weighted blend, set by a slider from 0 to 100%.** The
+     number is the collaborator's weight, so 0% is Keep Mine and 100% is
+     Adopt Theirs: the three choices are one control. It is never a forced
+     50/50 average: the slider opens at 50% only as a starting point, and
+     nothing is committed until the user lets go of it.
+     - **Where the blend is taken:** point by point, in the lane's own value
+       domain (`automation_lanes.value_domain`). A volume lane is `real`, in
+       dB, so −6 and −12 dB blended half and half give −9 dB, which is what
+       a fader means.
+     - **How it is sampled:** the result is evaluated at the union of both
+       curves' breakpoints, and densely enough on curved segments (ADR-0159's
+       formulas) to stay within a stated tolerance of the true blend. It is
+       then thinned back to breakpoints, and becomes an ordinary curve.
+     - **Discrete lanes cannot blend.** An `enum` lane, mute, and any stepped
+       parameter offer Keep Mine or Adopt Theirs only; seventy percent of
+       "on" means nothing.
+     - **Tempo blends like any curve, and it re-times the project.** Positions
+       are in ticks, so a blended tempo moves every later event in seconds.
+       The slider therefore plays its preview before anything is committed.
+     - **A parameter's static value is the one-point case:** its ghost is one
+       value, and Combine is a weighted mean, unless the parameter is stepped.
+   - **The slider previews, and releasing it commits.** While it moves, the
+     blend plays from a preview (ADR-0148's rolled-back transaction), and
+     nothing is written. Letting go commits one op, which writes the blended
+     curve and removes the ghost. That is one undo step, and its inverse
+     brings the ghost back.
+   - **A resolution syncs like any edit.** Its batch is based on both of the
+     colliding batches, so on the collaborator's side it follows both of them
+     and is not a collision again.
+
+**Still open, for the sync work:**
+- ordering on a plain object store;
+- the version-vector table, and the ghost table (d9);
+- shared undo;
+- row ids and concurrent ordering (ADR-0161 d4);
+- remark anchors.
