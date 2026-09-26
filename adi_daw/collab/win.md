@@ -5,6 +5,44 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-26 — mac is back: its mission, and where the loop stands
+
+**The director's instruction:** add anything useful from this session to the
+repo, and write mac's next mission now that mac has returned.
+
+**mac's mission** (`collab/prompts/2026-09-26-mac-return-host-half.md`):
+step 6's host half, as four PRs in order:
+1. CI renders a project through a VST3 and a CLAP;
+2. a `clap_host_t` per CLAP instance (C4), with `RESCAN_ALL`, `request_flush`
+   and `paramsClear` answered;
+3. 27a's automation on the host;
+4. the generic parameter panel, whose first users are the Airwindows suites.
+
+27b and the rest of the step-7 UI come next. ADR-0179 and ADR-0180 are
+reserved for mac.
+
+**Found while writing it,** in `src/juce/clap_host.cpp`:
+- one `ClapHostGlue` per host, so no signal can be traced to one plug-in;
+- `paramsRescan(ALL)` never re-reads the list;
+- `paramsClear` still says the host holds no references, though ADR-0165's
+  lanes now name parameters.
+
+The prompt carries all three.
+
+**Waiting on the director:**
+- **#130, ADR-0177,** the Pd contract: status OPEN, not to be merged until he
+  approves.
+- **#131, ADR-0178,** schema 1.8: held for his review, because a shipped
+  table never changes.
+
+**Kept outside the repo, by design:** the Master Reference (git-ignored,
+`reference/DOCS/WORD/`) is at v0.9.1. It covers ADR-0160 and earlier, plus
+ADR-0176 (§4.9 Audio Alignment, its figure drawn by
+`_build/fig_audio_alignment.py`, and the warp-mode table in §4.2).
+ADR-0161 to ADR-0178 go in as v1.0 when he asks.
+
+---
+
 ## 2026-09-25 — Audio Alignment into the backlog (ADR-0176)
 
 **The director's instruction:** Cubase-style Audio Alignment for the engine
