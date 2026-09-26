@@ -41,6 +41,9 @@ NUM_CTX = 16384          # fits 100% on the GTX 1070 (5.5 GB)
 MAX_PROMPT_TOKENS = 11000  # leaves ~5K for the answer
 CHARS_PER_TOKEN = 3.3    # rough, code-heavy estimate
 POLL_SECONDS = 10
+# Keeps the model loaded between back-to-back jobs; the drone unloads it
+# explicitly the moment the queue empties. This only matters if the drone dies mid-queue.
+KEEP_ALIVE = "10m"
 REQUEST_TIMEOUT = 1800
 
 QUEUE, RUNNING, DONE, FAILED = (STATE_DIR / d for d in ("queue", "running", "done", "failed"))
@@ -138,12 +141,37 @@ def generate(system, prompt):
     body = json.dumps({
         "model": MODEL, "system": system, "prompt": prompt, "stream": False,
         "options": {"num_ctx": NUM_CTX, "temperature": 0.2},
-        "keep_alive": "30m",
+        "keep_alive": KEEP_ALIVE,
     }).encode()
     req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=body,
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
         return json.loads(r.read())
+
+
+def model_loaded():
+    with urllib.request.urlopen(f"{OLLAMA_URL}/api/ps", timeout=5) as r:
+        return any(m.get("name") == MODEL or m.get("model") == MODEL
+                   for m in json.loads(r.read()).get("models", []))
+
+
+def unload_model():
+    """Free the GPU once the queue is empty.
+
+    Checks /api/ps first: an empty-prompt generate on a model that is not
+    loaded would load it from disk just to unload it again.
+    """
+    try:
+        if not ollama_up() or not model_loaded():
+            return
+        body = json.dumps({"model": MODEL, "prompt": "", "keep_alive": 0}).encode()
+        req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60):
+            pass
+        log(f"queue empty, unloaded {MODEL} from VRAM")
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        log(f"unload failed: {e}")
 
 
 # ---------------------------------------------------------------- jobs
@@ -395,9 +423,15 @@ def cmd_watch(_):
     lock = acquire_lock()  # noqa: F841 - held for the process lifetime
     recover_stale()
     log(f"watching {QUEUE} with {MODEL}")
+    busy = True  # so a model left loaded by a previous run is freed on the first idle poll
     while True:
-        if not process_one():
-            time.sleep(POLL_SECONDS)
+        if process_one():
+            busy = True
+            continue
+        if busy:  # unload once, on the busy -> empty transition
+            unload_model()
+            busy = False
+        time.sleep(POLL_SECONDS)
 
 
 def cmd_run_once(_):
@@ -405,6 +439,7 @@ def cmd_run_once(_):
     recover_stale()
     while process_one():
         pass
+    unload_model()
 
 
 def main():

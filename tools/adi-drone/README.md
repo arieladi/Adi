@@ -52,6 +52,9 @@ in memory, builds the diff with `difflib` and runs `git apply --check`.
 
 - Scheduled task `adi-drone` runs `pythonw drone.py watch` at logon and restarts on failure.
 - The drone starts `ollama serve` itself if the server is down.
+- VRAM: the model stays loaded between back-to-back jobs (`keep_alive` 10m). The
+  moment the queue empties, the drone sends `keep_alive: 0` and the 1070 is free for
+  the desktop. The next job reloads it in a few seconds.
 - Models are stored in `D:\ollama\models` (user env var `OLLAMA_MODELS`).
 - State: `D:\adi-drone\{queue,running,done,failed}`, log in `D:\adi-drone\drone.log`.
 - A job left in `running/` after a crash is requeued at the next start.
