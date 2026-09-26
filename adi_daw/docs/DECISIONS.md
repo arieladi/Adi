@@ -12732,9 +12732,21 @@ and ADR-0161, and against the text projection's coverage list.
        its edges.
    - **The timeline colour-codes the region.** Right-clicking it offers
      **Keep Mine**, **Adopt Theirs** or **Combine**.
+   - **One region at a time, and no global override** (the director's
+     follow-up, the same day). Each colour-coded region is resolved on its
+     own. There is no Accept All or Reject All for sync collisions.
+     - **Many regions stay workable without one:** the sync panel lists the
+       unresolved regions with a count, and a command jumps to the next.
+     - **An unresolved region is safe for as long as it stays:** the local
+       curve plays, and the ghost waits in the file.
+     - **One ghost per author per region.** A later batch from the same
+       author on the same region replaces that author's ghost. A second
+       collaborator's version is a second ghost, resolved on its own.
    - **Combine is a weighted blend, set by a slider from 0 to 100%.** The
      number is the collaborator's weight, so 0% is Keep Mine and 100% is
-     Adopt Theirs: the three choices are one control.
+     Adopt Theirs: the three choices are one control. It is never a forced
+     50/50 average: the slider opens at 50% only as a starting point, and
+     nothing is committed until the user lets go of it.
      - **Where the blend is taken:** point by point, in the lane's own value
        domain (`automation_lanes.value_domain`). A volume lane is `real`, in
        dB, so −6 and −12 dB blended half and half give −9 dB, which is what
