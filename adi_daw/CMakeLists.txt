@@ -699,10 +699,18 @@ if(ADI_WITH_JUCE)
     # Every MPE synth on the development machine hides its controller, so the
     # host's capability probe and MpeMidi's IMidiMapping parameter path had
     # never run. This fixture is one class that is both component and
-    # controller. Built only against Steinberg's MIT VST3 SDK -- the copy JUCE
-    # carries -- and only on Windows for now: a macOS bundle needs an
-    # Info.plist and bundle entry points nobody here can test.
-    if(WIN32)
+    # controller. Built against Steinberg's MIT VST3 SDK -- the copy JUCE
+    # carries -- and nothing else.
+    #
+    # WINDOWS AND macOS. This said "only on Windows for now: a macOS bundle
+    # needs an Info.plist and bundle entry points nobody here can test", which
+    # was true when it was written and stopped being true when mac came back
+    # to a Mac. The Info.plist is tests/fixtures/Info.plist.in, the entry
+    # points are `bundleEntry`/`bundleExit` at the bottom of the fixture, and
+    # the test is `adi_play --list` finding all three variants in the built
+    # bundle. Without this, the macOS half of the render CI job could only
+    # ever have covered CLAP.
+    if(WIN32 OR APPLE)
         set(_adi_vst3sdk
             "${ADI_THIRD_PARTY}/JUCE/modules/juce_audio_processors_headless/format_types/VST3_SDK")
         # The SDK's own interface-id definitions, compiled WITHOUT our warning
@@ -719,17 +727,52 @@ if(ADI_WITH_JUCE)
             $<TARGET_OBJECTS:adi_test_vst3_sdk>)
         target_include_directories(adi_test_vst3 SYSTEM PRIVATE "${_adi_vst3sdk}")
         target_compile_features(adi_test_vst3 PRIVATE cxx_std_20)
-        target_link_libraries(adi_test_vst3 PRIVATE adi_warnings ole32)   # ole32: FUID's CoCreateGuid
-        # The DLL is built apart from its bundle: a file and a directory cannot
-        # both be called "ADI Expression Test.vst3" in one folder.
-        set_target_properties(adi_test_vst3 PROPERTIES
-            PREFIX "" SUFFIX ".vst3" OUTPUT_NAME "ADI Expression Test"
-            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixture_dll")
-        set(_adi_fixture "${CMAKE_CURRENT_BINARY_DIR}/fixtures/ADI Expression Test.vst3")
-        add_custom_command(TARGET adi_test_vst3 POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${_adi_fixture}/Contents/x86_64-win"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "$<TARGET_FILE:adi_test_vst3>" "${_adi_fixture}/Contents/x86_64-win/")
+        # ole32 is for FUID's CoCreateGuid on Windows; the same code path uses
+        # CFUUIDCreate on macOS, which is CoreFoundation.
+        if(WIN32)
+            target_link_libraries(adi_test_vst3 PRIVATE adi_warnings ole32)
+        else()
+            target_link_libraries(adi_test_vst3 PRIVATE adi_warnings
+                                  "-framework CoreFoundation")
+        endif()
+        set(ADI_FIXTURE_NAME "ADI Expression Test")
+        set(_adi_fixture
+            "${CMAKE_CURRENT_BINARY_DIR}/fixtures/${ADI_FIXTURE_NAME}.vst3")
+
+        # The binary is built apart from its bundle: a file and a directory
+        # cannot both be called "ADI Expression Test.vst3" in one folder.
+        #
+        # The two platforms put the binary in different places inside the
+        # bundle and only one of them wants the .vst3 suffix ON THE BINARY --
+        # on macOS the suffix belongs to the bundle directory and the
+        # executable inside it is named by CFBundleExecutable, with no
+        # extension at all.
+        if(WIN32)
+            set_target_properties(adi_test_vst3 PROPERTIES
+                PREFIX "" SUFFIX ".vst3" OUTPUT_NAME "${ADI_FIXTURE_NAME}"
+                LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixture_dll")
+            add_custom_command(TARGET adi_test_vst3 POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "${_adi_fixture}/Contents/x86_64-win"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "$<TARGET_FILE:adi_test_vst3>"
+                        "${_adi_fixture}/Contents/x86_64-win/")
+        else()
+            configure_file(tests/fixtures/Info.plist.in
+                           "${CMAKE_CURRENT_BINARY_DIR}/fixtures/Info.plist" @ONLY)
+            set_target_properties(adi_test_vst3 PROPERTIES
+                PREFIX "" SUFFIX "" OUTPUT_NAME "${ADI_FIXTURE_NAME}"
+                LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixture_dll")
+            add_custom_command(TARGET adi_test_vst3 POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "${_adi_fixture}/Contents/MacOS"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${CMAKE_CURRENT_BINARY_DIR}/fixtures/Info.plist"
+                        "${_adi_fixture}/Contents/Info.plist"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "$<TARGET_FILE:adi_test_vst3>"
+                        "${_adi_fixture}/Contents/MacOS/")
+        endif()
         add_dependencies(adi_vst3_probe adi_test_vst3)
         target_compile_definitions(adi_vst3_probe PRIVATE ADI_TEST_VST3="${_adi_fixture}")
     endif()
@@ -739,7 +782,8 @@ if(ADI_WITH_JUCE)
     # exercises exactly the DeviceCore that ships and that the ABI suites test.
     # ADR-0122: a project through a real device -- the session's proof by ear.
     # Links both hosts: VST3 through JUCE, CLAP through ours. The fixture VST3
-    # is reachable with --fixture on Windows, where it is built.
+    # is reachable with --fixture on Windows and macOS, the two platforms it
+    # is built on.
     juce_add_console_app(adi_play PRODUCT_NAME "adi_play")
     target_sources(adi_play PRIVATE
         src/juce/play.cpp
@@ -768,7 +812,7 @@ if(ADI_WITH_JUCE)
     if(_adi_proc_incs)
         target_include_directories(adi_play SYSTEM PRIVATE ${_adi_proc_incs})
     endif()
-    if(WIN32)
+    if(TARGET adi_test_vst3)
         add_dependencies(adi_play adi_test_vst3)
         target_compile_definitions(adi_play PRIVATE ADI_TEST_VST3="${_adi_fixture}")
     endif()

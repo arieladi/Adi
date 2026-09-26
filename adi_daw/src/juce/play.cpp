@@ -111,6 +111,11 @@ struct Options {
     bool dry = false;
     bool list = false;
     bool fixture = false;
+    /// ADR-0011 keeps a plug-in that will not load as a bypassed stand-in, so
+    /// a render through a missing plug-in is a SUCCESS: the project played,
+    /// it just played without the plug-in. That is right for a musician and
+    /// useless for CI, which is checking that hosting works at all.
+    bool requireDevices = false;
     bool saveState = false;   // ADR-0142
     double from = 0.0;        // seconds; where the transport starts (ADR-0151)
     bool noPlay = false;      // leave the transport stopped: devices and the tone only
@@ -124,7 +129,8 @@ int usage() {
     std::printf(
         "adi_play <project.adi> [--block N] [--rate HZ] [--seconds S] [--resize M]\n"
         "                       [--tone [TRACK]] [--type DEVICE-TYPE] [--device NAME]\n"
-        "                       [--search DIR]... [--fixture] [--dry] [--save-state]\n"
+        "                       [--search DIR]... [--fixture] [--require-devices]\n"
+        "                       [--dry] [--save-state]\n"
         "                       [--from SECONDS] [--no-play] [--render SECONDS]\n"
         "adi_play --list [--search DIR]... [--fixture]\n"
         "  Opens a project, resolves its devices, plays it through the default audio\n"
@@ -160,6 +166,7 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--dry")     o.dry = true;
         else if (a == "--list")    o.list = true;
         else if (a == "--fixture") o.fixture = true;
+        else if (a == "--require-devices") o.requireDevices = true;
         else if (a == "--save-state") o.saveState = true;
         else if (a == "--no-play") o.noPlay = true;
         else if (a == "--from") { const char* v = next(i); if (!v) return false; o.from = std::atof(v); }
@@ -351,6 +358,29 @@ int main(int argc, char** argv) {
     if (!loaded) {
         std::printf("\nFAILED -- %s\n", session.error().c_str());
         return 1;
+    }
+
+    // --require-devices: a stand-in is a FAILURE, not a note in the log.
+    //
+    // This is an exit code rather than a string for CI to grep, because the
+    // string is a report meant for a person and the gate is a fact. A grep
+    // for "PLACEHOLDER" passes the day someone rewords the line, and passes
+    // silently -- which is the shape of every CI check that stops checking.
+    if (o.requireDevices) {
+        const auto& st = session.stats();
+        if (st.placeholders > 0 || st.skipped > 0) {
+            std::printf("\nFAILED -- --require-devices: %s placeholder(s) and %s skipped "
+                        "device(s); every device in this project was supposed to load\n",
+                        n(st.placeholders).c_str(), n(st.skipped).c_str());
+            return 2;
+        }
+        if (st.loaded == 0) {
+            // Zero loaded and zero missing is a project with no devices at
+            // all, which passes every count above and proves nothing. CI
+            // asked for a render THROUGH a plug-in.
+            std::printf("\nFAILED -- --require-devices: no devices in this project at all\n");
+            return 2;
+        }
     }
     // ADR-0151: a player plays. The transport belongs to the driver, and its
     // commands go in between callbacks -- here, before any device is open.
