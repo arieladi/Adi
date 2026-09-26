@@ -39,6 +39,9 @@ MODEL = os.environ.get("ADI_DRONE_MODEL", "qwen2.5-coder:7b")
 
 NUM_CTX = 16384          # fits 100% on the GTX 1070 (5.5 GB)
 MAX_PROMPT_TOKENS = 11000  # leaves ~5K for the answer
+# Hard cap on output. Without it a repetition loop never ends (Ollama shifts
+# the context) and the job dies at REQUEST_TIMEOUT after 30 min of wasted GPU.
+NUM_PREDICT = 2048
 CHARS_PER_TOKEN = 3.3    # rough, code-heavy estimate
 POLL_SECONDS = 10
 # Keeps the model loaded between back-to-back jobs; the drone unloads it
@@ -140,7 +143,8 @@ def ensure_ollama():
 def generate(system, prompt):
     body = json.dumps({
         "model": MODEL, "system": system, "prompt": prompt, "stream": False,
-        "options": {"num_ctx": NUM_CTX, "temperature": 0.2},
+        "options": {"num_ctx": NUM_CTX, "temperature": 0.2,
+                    "num_predict": NUM_PREDICT, "repeat_penalty": 1.1},
         "keep_alive": KEEP_ALIVE,
     }).encode()
     req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=body,
@@ -286,6 +290,10 @@ def run_job(job_file):
             "output_tokens": r.get("eval_count"), "seconds": round(time.time() - t0, 1),
             "truncated": r.get("done_reason") == "length",
         })
+        if meta_calls[-1]["truncated"]:
+            answer += (f"\n\n> **drone: output hit the {NUM_PREDICT}-token cap and is cut off, "
+                       "probably a repetition loop. Treat as incomplete.**")
+            log(f"truncated output in {job_id} ({group})")
         sections.append((group, answer))
 
     lines = [f"# {job_id}", "", f"- kind: {kind}", f"- model: {MODEL}",
@@ -434,11 +442,20 @@ def cmd_collect(a):
     done = [(key(json.loads((d / "job.json").read_text(encoding="utf-8"))), d)
             for d in DONE.iterdir() if tag in d.name and (d / "result.md").exists()]
     done = [d for _, d in sorted(done)]
-    covered = {json.loads((d / "job.json").read_text(encoding="utf-8"))["files"][0] for d in done}
-    # a failure is stale once a later job (e.g. its chunks) succeeded for the same file
+    done_jobs = [json.loads((d / "job.json").read_text(encoding="utf-8")) for d in done]
+    covered = {j["files"][0] for j in done_jobs}
+    covered_parts = {(j["files"][0], tuple(j.get("lines") or ())) for j in done_jobs}
+
+    def superseded(job):
+        # a whole-file failure is stale once any later result (e.g. its chunks) exists;
+        # a failed chunk only once that same line range has succeeded
+        if job.get("lines"):
+            return (job["files"][0], tuple(job["lines"])) in covered_parts
+        return job["files"][0] in covered
+
     failed = [f for f in sorted(FAILED.glob(f"*{tag}*.error.txt"))
-              if json.loads(f.with_name(f.name.replace(".error.txt", ".json"))
-                            .read_text(encoding="utf-8"))["files"][0] not in covered]
+              if not superseded(json.loads(f.with_name(f.name.replace(".error.txt", ".json"))
+                                           .read_text(encoding="utf-8")))]
     pending = [*QUEUE.glob(f"*{tag}*.json"), *RUNNING.glob(f"*{tag}*.json")]
     out_dir = STATE_DIR / "missions"
     out_dir.mkdir(exist_ok=True)
