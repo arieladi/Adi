@@ -191,6 +191,7 @@ subject, say so in your log instead of writing it twice.
 | 0174 | win | `win/group-summing` | native group summing built: eight console flavours, measured unity, schema 1.7 | used |
 | 0175 | win | `win/scope-taps` | the scope's engine side: taps stamped when heard, true peak, the compare | used |
 | 0176 | win | `win/audio-alignment` | Audio Alignment in the backlog: warp markers from a time-warping path; the hitpoint detector; a transient shaper on the envelope follower (director) | used |
+| 0177 | win | `win/pd-param-contract` | the Pd parameter contract: `[adi.param]` with a fixed id, a full declaration, changed only by `device.loadState`, a vanilla abstraction (approved by the director) | used |
 | 0178 | win | `win/tuning-schema` | tuning systems in the format: schema 1.8's four tables; ops with scale-aware editing (director) | used |
 | 0179 | mac | (mac's return mission) | held for mac: the CLAP host contract, automation on the host, the generic panel | reserved |
 | 0180 | mac | (mac's return mission) | held for mac | reserved |

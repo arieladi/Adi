@@ -1,7 +1,7 @@
 # 2026-09-26 — for mac, back in the loop: step 6's host half, heard and guarded
 
 mac was away from 2026-09-21 to 2026-09-26, and win worked alone. Main moved
-from ADR-0090 to ADR-0176, with ADR-0177 and ADR-0178 in open PRs. Two briefs were written for mac's return, `27a`
+from ADR-0090 to ADR-0182. Two briefs were written for mac's return, `27a`
 (the device-host half of plug-in automation) and `27b` (the UI for the scope,
 group summing, the suites and track delay). The handoffs in `collab/win.md`
 list more (CI, the CLAP host contract, bypass flags, the step-7 UI).
@@ -13,7 +13,7 @@ takes `27a` whole. `27b` and the rest of the UI are the next mission.
 
 ```text
 You are agent mac on arieladi/Adi, project adi_daw. You were away 2026-09-21 to 2026-09-26; win worked
-alone. Main moved from ADR-0090 to ADR-0176, and ADR-0177 and ADR-0178 are open PRs. Welcome back.
+alone. Main moved from ADR-0090 to ADR-0182 (0179 and 0180 are reserved for you). Welcome back.
 
 RULES (collab/README.md): never commit to main; branches are mac/<topic>; add your claims row in the
 first commit and remove it on merge; stage explicit paths, never `git add -A` (this is a public monorepo
@@ -34,8 +34,9 @@ in your log and adjust rather than act on it.
      device.setPanel; 0157 44.1 to 768 kHz; 0158 a held note keeps its instrument awake; 0162 to 0165
      automation (Live's override, mixer lanes on the strip, device lanes' engine side); 0166 to 0175 the
      open-source plug-in line, ADI Airwindows as eleven suite CLAPs, native group summing, the track
-     delay, the scope's taps; 0176 Audio Alignment (backlog); 0177 the Pd parameter contract (OPEN,
-     awaiting the director); 0178 schema 1.8, tuning (awaiting review).
+     delay, the scope's taps; 0176 Audio Alignment (backlog); 0177 the Pd parameter contract, [adi.param]
+     (decided); 0178 schema 1.8, the tuning tables; 0181 external control surfaces and the one parameter
+     feed your step-7 controls will read; 0182 collaboration and backups (direction only).
    - Your claims rows from 2026-09-19 and 09-20 (mac/vst3, mac/device, mac/ui): delete the ones whose
      branches merged. Keep the standing rows.
 
@@ -67,7 +68,7 @@ PR 2 (mac/clap-per-instance) -- the CLAP host contract (src/juce/clap_host.*)
    d. paramsClear: its comment says the host holds no reference a plug-in could invalidate. That stopped
       being true with ADR-0165, because automation lanes now name parameters. On clear, stop sending
       that parameter's values. Never delete the lane: the project keeps it, and it binds again if the id
-      returns (the rule ADR-0177 proposes for Pd).
+      returns (the rule ADR-0177 sets for Pd).
 
 PR 3 (mac/automation-host) -- 27a items 1 to 5 (collab/prompts/2026-09-27a-mac-device-automation.md)
    VST3 turns ParamValue events into IParameterChanges points at their segment-relative offsets. CLAP
@@ -94,7 +95,7 @@ NEXT, not this mission (so you can plan, and say if the order is wrong):
 - 27b: the scope panel, the group-summing header, the suites' own GUI, the track-delay field.
 - The rest of the step-7 UI: the device view's panel (panel::resolve and panel::search), the Settings
   window over src/adi/settings/, the changeset's Apply (ADR-0148), the Pd editor on plugdata (ADR-0145
-  d8, and ADR-0177 once approved), the library browser (ADR-0147, with the macOS volume adapter),
+  d8, with ADR-0177's [adi.param]), the library browser (ADR-0147, with the macOS volume adapter),
   UI-ARCHITECTURE.md for ADR-0101 and ADR-0112.
 - Step 7's controls read one parameter feed, which the control surfaces share (ADR-0181 d3, d5): no control
   reads the model directly, and every value edit goes through the capture.

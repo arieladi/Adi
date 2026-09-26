@@ -51,7 +51,7 @@ Only the `win` agent writes to this file. Newest entry at the top.
 - **Remark anchors to ops need a new table,** because a minor cannot widen
   a CHECK.
 
-Nothing built. The Master Reference is v0.9.2 with §6.5 and §11.4.
+Nothing built. The Master Reference is v0.9.3 with §6.5 and §11.4.
 
 ---
 
@@ -79,11 +79,9 @@ reserved for mac.
 
 The prompt carries all three.
 
-**Waiting on the director:**
-- **#130, ADR-0177,** the Pd contract: status OPEN, not to be merged until he
-  approves.
-- **#131, ADR-0178,** schema 1.8: held for his review, because a shipped
-  table never changes.
+**The director's word on both, the same day:** ADR-0177 approved as written
+(now DECIDED), and schema 1.8 approved for publishing. Both were published
+with #133 before mac's mission began.
 
 **Kept outside the repo, by design:** the Master Reference (git-ignored,
 `reference/DOCS/WORD/`) is at v0.9.1. It covers ADR-0160 and earlier, plus
@@ -117,7 +115,31 @@ tuning tables are drafted now as schema 1.8, per ADR-0103 and ADR-0117.
 - **4805 checks across 48 suites** (+12 migrate, +12 textproj_store).
 
 **For the director's review before merging:** a shipped table can never be
-changed (ADR-0144), so this one waits for his word.
+changed (ADR-0144), so this one waited for his word. He gave it on
+2026-09-26, and it was published with #133.
+
+---
+
+## 2026-09-25 — the Pd parameter contract, proposed (ADR-0177)
+
+**The director's instruction:** write up `[adi.param]` with the four fixes
+he approved, for his approval.
+
+**The four fixes, and where each already had a foothold:**
+- **A fixed id, the author's, as CLAP's and VST3's are.** `plugin_params`
+  and every lane, mapping and binding already key on a TEXT `param_id`, so
+  nothing in the schema changes.
+- **The full declaration:** unit, curve and menu items, as M4L's Inspector
+  holds them.
+- **Changes only through `device.loadState`.** ADR-0145 d8 already stores a
+  patch as state and changes it with that op. What the ADR adds: a
+  parameter the new patch drops is kept, shown as missing, never deleted.
+- **A plain Pd abstraction,** MIT, so vanilla Pd opens the patch and plays
+  it at its defaults.
+
+Left open: range changes (keep normalized or real?), modulation, and
+transport messages. **Approved as written on 2026-09-26** (status now
+DECIDED), and published with #133 before mac's mission began.
 
 ---
 
