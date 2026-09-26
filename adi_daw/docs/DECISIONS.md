@@ -12732,11 +12732,21 @@ and ADR-0161, and against the text projection's coverage list.
        its edges.
    - **The timeline colour-codes the region.** Right-clicking it offers
      **Keep Mine**, **Adopt Theirs** or **Combine**.
-   - **One region at a time, and no global override** (the director's
-     follow-up, the same day). Each colour-coded region is resolved on its
-     own. There is no Accept All or Reject All for sync collisions.
-     - **Many regions stay workable without one:** the sync panel lists the
-       unresolved regions with a count, and a command jumps to the next.
+   - **One region at a time is the default path** (the director's
+     follow-ups, the same day). Each colour-coded region is resolved on its
+     own, and that is what the UI suggests.
+     - **Many regions stay workable:** the sync panel lists the unresolved
+       regions with a count, and a command jumps to the next.
+     - **Accept All and Reject All exist, but are never the suggestion.** They
+       sit in the sync panel's menu, not in a region's menu, and are never the
+       highlighted button.
+       - **What they do:** Accept All adopts theirs, and Reject All keeps mine,
+         in every unresolved region the list shows. The list can be filtered
+         by author or by track.
+       - **Confirmation:** each asks first, naming how many regions it will
+         resolve.
+       - **Undo:** each is one op, so one undo brings every ghost back.
+       - **No Combine All.** A blend is a judgement about one passage.
      - **An unresolved region is safe for as long as it stays:** the local
        curve plays, and the ghost waits in the file.
      - **One ghost per author per region.** A later batch from the same

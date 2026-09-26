@@ -43,9 +43,10 @@ Only the `win` agent writes to this file. Newest entry at the top.
   would play. It resolves by Keep Mine, Adopt Theirs or Combine, a weighted
   0 to 100% blend in the lane's own domain (dB for volume), previewed and
   committed as one op. Discrete lanes do not blend. His follow-up: one
-  region at a time, with no Accept All or Reject All. A list, a count and a
-  next-collision command keep many regions workable, and an unresolved
-  region is safe.
+  region at a time by default; then Accept All and Reject All as secondary
+  options, never the suggestion: in the panel's menu, confirmed with a count,
+  one op each. A list, a count and a next-collision command keep many
+  regions workable, and an unresolved region is safe.
 - **Summaries are built from the ops;** AI prose is optional.
 - **Remark anchors to ops need a new table,** because a minor cannot widen
   a CHECK.
