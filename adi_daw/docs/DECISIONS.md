@@ -12443,6 +12443,99 @@ Paraphrased from pp. 261–263, because the design has to answer to it:
 
 ---
 
+## ADR-0178 — Tuning systems enter the format: schema 1.8 adds four tables, and their ops come with scale-aware editing — `DECIDED` (2026-09-25) — **DIRECTOR'S INSTRUCTION; BUILDS ADR-0103 AND ADR-0117 §3**
+
+**Director's instruction.** Of FEATURES §12's six format gaps, five stay on
+the backlog. The sixth, tuning systems, is drafted now as schema 1.8,
+because ADR-0103 and ADR-0117 already set its direction.
+
+### Decisions
+
+1. **Four tables, not three.** ADR-0117 §3 named `tuning_systems`,
+   `tuning_degrees` and `key_map_degrees`. ADR-0103 d1 also gave `key_map` "a
+   tuning reference", and a minor adds whole objects only, never a column
+   (ADR-0144 d3). So the reference is a table of its own, `key_map_tunings`,
+   as `op_clocks` sits beside `ops` (ADR-0161).
+   - **`tuning_systems`:** `id`, `name`, `source` (`edo` for an equal
+     division, `scala` for a Scala scale), `period_cents` and
+     `description`, a Scala file's description line.
+   - **`tuning_degrees`:** `tuning_id`, `degree`, `cents` and `name`.
+     ADR-0117's `index` is `degree` here, because INDEX is an SQL keyword.
+   - **`key_map_tunings`:** `key_map_id` and `tuning_id`. A key with no row
+     is 12-TET, and its `scale_mask` is its scale, as before.
+   - **`key_map_degrees`:** `key_map_id` and `degree`, ADR-0117's
+     `degree_index`. Its rows hang off `key_map_tunings`, so a key can list
+     degrees only once it has a tuning.
+
+2. **Degrees.**
+   - **Degree 0 is the unison, at 0 cents.** The others rise within the
+     period.
+   - **The period is the next repeat, not a degree:** 1200 cents for the
+     octave, 1901.955 for Bohlen–Pierce's tritave.
+   - **Scala files:** a `.scl` file lists degrees 1 to n with the period
+     last, so an importer writes degrees 0 to n−1 and moves the last one
+     into `period_cents`.
+   - **Ratios are stored as cents.** A double carries 3/2 far below
+     anything audible, and one number per degree leaves no second truth to
+     disagree with it.
+   - **The CHECKs hold what one row can:** cents are not negative, and
+     degree 0 is 0 cents. The rest spans rows: cents must rise with the
+     degree and stay under the period, and a key's degrees must exist in its
+     tuning. The op that writes the rows checks those, and a reader reports
+     a file that breaks them (SPEC §6.10).
+
+3. **Degree 0 sits on the key's root.** `key_map.root` is a 12-TET pitch
+   class, and a key's degrees count from it, as `scale_mask`'s bits do.
+   - **An example:** Rast on C in 24-TET is root 0 with degrees {0, 4, 7, 10,
+     14, 18, 21}, that is C, D, E half-flat, F, G, A and B half-flat.
+   - **A key with a tuning** uses its degrees. Its `scale_mask` is ignored
+     by a reader that knows tunings, and is all that a 1.7 reader sees.
+   - **One tuning per key-map entry, not one per project as in Live 12.** A
+     piece that moves from one maqam to another can change tuning at the
+     key change. A project with one tuning points every key at the same row.
+   - **Notes are unchanged.** They still carry a MIDI key and `tuning_cents`
+     (SPEC §6.3.1). The tuning decides which pitches the editor offers, and a
+     note placed on one carries its offset (ADR-0103 d3).
+
+4. **No ops in this minor.** `key_map` itself has no op yet: the text
+   projection lists it as *excluded, no op writes it*. The four tables join
+   it there for the same reason. Their ops arrive with scale-aware editing
+   (P2), together with `key_map`'s own: importing a Scala file, and giving a
+   key its tuning and degrees.
+
+5. **Left for later, as tables of their own.** Add-only migration makes this
+   safe: nothing here has to guess them now.
+   - **A Scala `.kbm` keyboard map:** which key plays which degree, and a
+     reference frequency. Live 12 has the same controls: its lowest and
+     highest note, and its reference pitch.
+   - **Live's per-track *Bypass Tuning* and controller layouts** (Live 12
+     §15.3).
+   - **Live's *Retune Set On Loading*,** which is a setting or an op, not
+     format.
+   - **How the agent names a microtonal note** (ADR-0103's other open item).
+
+6. **Not taken: stub tables for the other five gaps.** The same review
+   proposed writing all six gaps into the schema at once, as empty stubs.
+   The director kept the five on the backlog, for these reasons:
+   - **A shipped table never changes** (ADR-0144 d3). A stub written before
+     its feature is designed freezes a guess.
+   - **None of the five is P0 or P1** (FEATURES §12), so the schema ships
+     without them.
+   - **Every table costs something even when empty:** an op to write it,
+     text-projection coverage and a frozen history copy.
+   - **Specific errors in the stubs as proposed:**
+     - `engraving_data` crosses ADR-0103, which keeps notation out beyond
+       not destroying it;
+     - `variaudio_segments` would put Steinberg's feature name into the
+       format for good (`OPEN_SOURCE_POLICY.md` §5);
+     - `chord_events` stored both a chord's quality and its intervals, so
+       the same fact twice.
+   - **Integer CBOR keys came back with it.** ADR-0025 stands: keys are short
+     strings, because the CBOR library cannot read or write integer keys and
+     one definition serves the agent's schemas.
+
+---
+
 ## ADR-0181 — External control surfaces: relative input resolved at the edge, the loopback control API with a surface client, and one parameter feed for the UI and the hardware — `DECIDED (direction)` (2026-09-26) — **DIRECTOR'S DIRECTIVE; THE STREAM DECK + XL FIRST; NOTHING BUILT NOW**
 
 **Director's directive:** architectural support for bi-directional, dial-based
