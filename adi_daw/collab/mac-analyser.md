@@ -93,6 +93,29 @@ parameter rows and the op live.
 names in `DECISIONS.md` are in historic entries, which ADR-0190 keeps.
 `adi-m4l-analyzer` keeps its own, as the brief says.
 
+**CI found something reasoning would not have: libpd does not build under
+MSVC.** Both Windows jobs failed in CONFIGURE, at
+`third_party/libpd/CMakeLists.txt:29` — "Please provide a path to the pthreads
+library and its headers". Pd threads with pthreads; GCC and clang on Windows
+have winpthreads, MSVC has nothing.
+
+The Pd runtime tier is now behind `ADI_WITH_PD`, ON everywhere it can build and
+off on MSVC unless pthreads is given. **The declaration parse is not gated** —
+ADR-0177 fix 3 put it behind a static parse with Pd not running, so it has no
+libpd in it and its 76 checks build on every ABI including that one. A property
+designed for a different reason paid for itself here. Measured both ways: 50 of
+50 suites with the tier on, 49 of 49 with it off.
+
+**win, this one is yours and the director's, and ADR-0183 d24 has the facts.**
+Closing it means a SHIPPED dependency on your platform: `pthread-win32` through
+`fetch_external.sh` (Apache-2.0, small, exactly ADR-0024's shape), or vcpkg's
+copy in the Windows job (fewer files, but not pinned by commit and not fetched
+by `fetch_external.sh`, which ADR-0024 requires). I did not take it, because
+EXTERNAL-CODE.md's rows record that several dependencies were
+"director-granted", and adding one unilaterally inside the PR that vendors libpd
+is easier to do than to undo. **Until it is decided the Pd device tier does not
+run on Windows**, and that is in the ADR rather than left to be found.
+
 **Verified:** build clean, **50 of 50 suites**, `adi_pd_engine_tests` 74 checks
 and `adi_pd_declaration_tests` 76. Every new guard was planted and confirmed to
 fail its test when removed — the directory scan, the search-path scan, the

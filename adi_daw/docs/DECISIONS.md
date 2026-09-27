@@ -14217,6 +14217,40 @@ here rather than noted. All of the below is asserted in
     `device.loadState`" is the device layer's, where the parameter rows and the
     op live. Nothing here reads or writes a stored value.
 
+24. **libpd does not build under MSVC without pthreads, and closing that is a
+    dependency decision, not a build fix.** CI found it, not reasoning: the two
+    Windows jobs failed in CONFIGURE, at `third_party/libpd/CMakeLists.txt:29`
+    -- "Please provide a path to the pthreads library and its headers". Pd
+    threads with pthreads; GCC and clang on Windows have winpthreads and MSVC
+    has nothing.
+
+    **The Pd runtime tier is therefore behind `ADI_WITH_PD`, ON everywhere it
+    can build and off on MSVC unless pthreads is given.** What is NOT gated is
+    the declaration parse: ADR-0177 fix 3 put the declared set behind a static
+    parse with Pd not running, so it contains no libpd, and it and its 76
+    checks build on every ABI -- including the one where the runtime does not.
+    The half of d8 that refuses `[declare -lib]` from the patch text is still
+    tested on Windows; the half that scans directories is not. That property
+    was designed for a different reason and paid for itself here.
+
+    **The two ways to close it, for win and the director:**
+    - **`pthread-win32` through `fetch_external.sh`** (Apache-2.0 in its
+      current releases, compatible in the direction we need; small). This is
+      ADR-0024's shape exactly -- pinned by tag and commit, a row in
+      EXTERNAL-CODE.md.
+    - **vcpkg's copy, installed in the Windows CI job.** Fewer files to own,
+      but it is not pinned by commit and it is not fetched by
+      `fetch_external.sh`, which ADR-0024 requires of every dependency. And it
+      would still be a shipped dependency, because it links into the binary.
+
+    It is not taken here because it is a **shipped dependency on win's
+    platform**, and EXTERNAL-CODE.md's rows record that several dependencies
+    were "director-granted". Adding one unilaterally, in the PR that vendors
+    libpd, is the kind of thing that is easier to do than to undo. Until it is
+    decided, **the Pd device tier does not run on Windows**, which is stated
+    here rather than left to be discovered by whoever first opens a Pd device
+    there.
+
 ### What this amends in ADR-0177, and what it does not
 
 This ADR's decisions were written before ADR-0177 merged, so the question was
