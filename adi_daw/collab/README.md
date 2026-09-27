@@ -229,7 +229,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `tests/fixtures/**`, `tools/make_demo_project.py`, `tools/add_clap_chain.py` | mac | `mac/ci-render` | 2026-09-26 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
