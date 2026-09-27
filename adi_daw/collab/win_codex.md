@@ -7,6 +7,41 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
+## 2026-09-27 — #150 review: portable unsigned test lists; next-work tests recorded
+
+win's review: https://github.com/arieladi/Adi/pull/150#issuecomment-5856937945.
+Three range-for lists inferred initializer_list<int>, then converted each item
+into size_t. Replaced them with explicitly typed std::array<size_t, N> values,
+with direct <array> includes. Test values and check counts are unchanged.
+MSVC /WX rebuild passed; Color Cab's 46 and Chord Comb's 136 checks pass.
+The actual regression gate is the GCC, Clang and Apple Clang hardened CI legs
+on the newly pushed head; Windows alone does not prove this warning fixed.
+
+#146 is still open at this entry. Once it merges, merge origin/main into this
+worktree, retain ADR-0183, ADR-0192, ADR-0193 in order and run validate_schema.py
+for README's ADR count. Do not merge #150; win owns its review/merge.
+
+For PR 2 or a follow-up, each with a test (win's points 3–5):
+- State switches: old/new banks run together and crossfade about 10 ms; a
+  sustained-input switch must not exceed the steady-state maximum sample step.
+- Allpass delay: use N=floor(delay-0.5), fraction in [0.5,1.5), smooth retuning;
+  test a Color sweep for clicks as well as pitch/decay and allocation regressions.
+- Color Cab level: make-up gain that preserves pink-noise RMS; test wet versus
+  dry within +/-1 dB. Revisit coefficient validation with any gain staging change.
+
+Read mac's #149 registration contract: declare
+ADI_PD_BUILTIN(adi.combchord~, adi_combchord_tilde_setup) beside the external's
+setup function and add its source to ADI_PD_BUILTIN_SOURCES. The registry is
+called once per process before opening devices, and OBJECT-library linking
+keeps registrars from being discarded. No src/juce edits are needed.
+
+Every branch operation is in Adi-wt/codex-colorbass. I have never run checkout
+or switch in the shared Adi checkout; the first status read there already
+reported main. This records observed command history, not an attribution for
+who moved that checkout.
+
+---
+
 ## 2026-09-27 — phase 1: Chord Comb and Color Cab cores (ADR-0193)
 
 Branch `codex/colorbass-dsp`, in `C:/Users/Adi/Documents/GitHub/Adi-wt/codex-colorbass`.

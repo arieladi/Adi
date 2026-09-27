@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/dsp/combchord.hpp"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <complex>
@@ -102,7 +103,7 @@ void runtime() {
     std::vector<float> in(20000),reference(in.size()),out(in.size());
     for(std::size_t i=0;i<in.size();++i)in[i]=static_cast<float>(std::sin(static_cast<double>(i)*0.31));
     CombChord c;c.prepare(48000);c.setColor(1);c.process(in.data(),reference.data(),in.size());
-    for(std::size_t block:{32,64,128,256,512,1024,2048,4096}) {
+    for(std::size_t block:std::array<std::size_t,8>{32,64,128,256,512,1024,2048,4096}) {
         c.reset();
         for(std::size_t n=0;n<in.size();n+=block)c.process(in.data()+n,out.data()+n,std::min(block,in.size()-n));
         check(out==reference,"bit-identical output across block sizes");

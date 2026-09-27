@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/dsp/colorcab.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -106,7 +107,7 @@ void design(){
     check(std::all_of(silent.kernel.taps.begin(),silent.kernel.taps.end(),[](double v){return v==0;}),"silent source yields silence");
     o.gamma=0;o.pitchSemitones=0;const auto flat=buildColorCab(x,48000,o);
     check(std::abs(flat.kernel.taps[0]-1)<1e-12 && magnitude(flat.kernel,200)>0.999999,"gamma zero yields identity");
-    for(std::size_t size:{64,128,256,512,1024}){o.size=size;check(buildColorCab(x,48000,o).kernel.size==size,"Size menu supported");}
+    for(std::size_t size:std::array<std::size_t,5>{64,128,256,512,1024}){o.size=size;check(buildColorCab(x,48000,o).kernel.size==size,"Size menu supported");}
     bool rejected=false;try{(void)buildColorCab({},48000);}catch(const std::invalid_argument&){rejected=true;}check(rejected,"empty source rejected");
     auto bad=x;bad.back()=std::numeric_limits<float>::quiet_NaN();rejected=false;
     try{(void)buildColorCab(bad,48000);}catch(const std::invalid_argument&){rejected=true;}check(rejected,"nonfinite source rejected");
@@ -140,7 +141,7 @@ void runtime(){
     }
     for(std::size_t i=0;i<input.size();++i)input[i]=static_cast<float>(std::sin(static_cast<double>(i)*0.1));
     c.prepare(48000);(void)c.setKernel(kernel);std::vector<float> reference(out.size());c.process(input.data(),reference.data(),input.size());
-    for(std::size_t block:{32,64,128,256,512,1024,2048,4096}){
+    for(std::size_t block:std::array<std::size_t,8>{32,64,128,256,512,1024,2048,4096}){
         c.prepare(48000);(void)c.setKernel(kernel);
         for(std::size_t i=0;i<input.size();i+=block)c.process(input.data()+i,out.data()+i,std::min(block,input.size()-i));
         check(out==reference,"crossfade bit-identical across block sizes");
