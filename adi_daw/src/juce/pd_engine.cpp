@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>   // std::lround: libc++ pulls it in transitively, libstdc++ does not
 #include <cstring>
 #include <filesystem>
 #include <fstream>
