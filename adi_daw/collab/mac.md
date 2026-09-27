@@ -80,7 +80,44 @@ calling `delete this` on the concrete type.
 The mirror image of the two MSVC sign-conversions win found in my CLAP search
 paths on 2026-09-21. A warning wall only walls off what it compiles.
 
-### 6. Not mine, but in the tree
+### 6. The macOS CI job hung for five hours, and it was my step
+
+`cmake --build --parallel` **with no count** passes a bare `-j` to make, which
+means UNLIMITED. macOS names no generator, so it gets Makefiles, so it started
+one compiler per source file.
+
+How many source files: `adi_aw_sub` is the SMALLEST suite — two algorithms —
+and picking it saved nothing, because every suite links
+`adi_airwindows_fx`, a static library of `1 + 2 x 143 = 287` sources. So the
+runner tried 287 compilers at once on a three-core box and finished nothing in
+five hours. I cancelled it before the six-hour ceiling; GitHub kept no log
+(BlobNotFound), so the diagnosis had to come from the tree rather than the run.
+
+Windows passed the same step because MSBuild bounds its own parallelism and
+never saw the bug. **A defect that only one generator can express looks exactly
+like a platform difference.**
+
+Measured after bounding it, same 287 sources:
+
+| | |
+|---|---|
+| `--parallel` (unbounded) | 5 h, wedged, killed |
+| `--parallel 3` | **58 s** |
+
+So no caching was warranted and none was added — the volume was never the
+problem. The fix is the job count, computed once from the hardware
+(`NUMBER_OF_PROCESSORS`, else `getconf _NPROCESSORS_ONLN`, else 2) and used by
+every build in the job, plus `timeout-minutes: 20` so the next hang of any kind
+fails in minutes rather than burning to the ceiling.
+
+win called the shape of this from the tree alone before I measured it. His
+estimate was "about 320 heavy sources"; it is 287.
+
+The three unbounded `--parallel` calls in the OTHER jobs are left alone. They
+have been green for weeks and build far fewer files; fixing what is not proven
+broken is how a passing job turns red.
+
+### 7. Not mine, but in the tree
 
 Twenty stray `<name> 2.cpp` / `<name> 2.hpp` files under `src/` and `tests/`,
 all dated 21 Sep 07:21 — copies of the files as they stood at the end of mac's

@@ -645,22 +645,40 @@ jobs:
       - name: Fetch JUCE at its pinned commit
         run: bash adi_daw/tools/fetch_external.sh --with-juce
 
+      # HOW MANY COMPILERS AT ONCE, decided once for this job.
+      #
+      # `cmake --build --parallel` with NO COUNT passes a bare `-j` to make,
+      # which means UNLIMITED. On the Makefiles generator macOS defaults to,
+      # that starts one compiler per source file. The Airwindows step below
+      # compiles 287 of them; the macOS runner thrashed for FIVE HOURS and
+      # finished nothing, while Windows passed because MSBuild bounds its own
+      # parallelism and never saw the bug.
+      #
+      # Measured after bounding it: the same 287 sources build in 58 seconds.
+      # The volume was never the problem.
+      - name: Decide how many compilers at once
+        run: |
+          set -euo pipefail
+          jobs="${NUMBER_OF_PROCESSORS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
+          echo "ADI_JOBS=$jobs" >> "$GITHUB_ENV"
+          echo "building with -j$jobs"
+
       - name: Configure and build the probe
         run: |
           set -euo pipefail
           cmake -S adi_daw -B adi_daw/build-juce \
                 -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON
           cmake --build adi_daw/build-juce --config Debug \
-                --target adi_audio_probe --parallel
+                --target adi_audio_probe --parallel "$ADI_JOBS"
           cmake --build adi_daw/build-juce --config Debug \
-                --target adi_vst3_probe --parallel
+                --target adi_vst3_probe --parallel "$ADI_JOBS"
           # adi_play and the fixture VST3, for the render below. The fixture
           # is a real VST3 bundle on both platforms since ADR-0179; adi_play
           # gets its path compiled in and reaches it with --fixture.
           cmake --build adi_daw/build-juce --config Debug \
-                --target adi_play --parallel
+                --target adi_play --parallel "$ADI_JOBS"
           cmake --build adi_daw/build-juce --config Debug \
-                --target adi_test_vst3 --parallel
+                --target adi_test_vst3 --parallel "$ADI_JOBS"
 
       - name: Locate the probe
         run: |
@@ -744,14 +762,18 @@ jobs:
       # checkout `fetch_external.sh --with-juce` already pins. Sub is the
       # smallest of the eleven (two algorithms), and the point is that the
       # host hosts it, not which one it is.
+      # timeout-minutes so the NEXT hang of any kind fails in minutes rather
+      # than burning to the six-hour ceiling. 58 s measured locally for all
+      # 287 sources; 20 is margin, not an estimate.
       - name: Build an ADI Airwindows suite to render through
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           cmake -S adi_daw/plugins -B adi_daw/build-plugins \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DADI_AIRWIN_SOURCE="$PWD/adi_daw/third_party/airwin2rack"
           cmake --build adi_daw/build-plugins --config Release \
-                --target adi_aw_sub --parallel
+                --target adi_aw_sub --parallel "$ADI_JOBS"
           found=""
           while IFS= read -r cand; do found="$cand"; break; done < <(
             find adi_daw/build-plugins -name '*Sub.clap' -maxdepth 6 2>/dev/null)
@@ -783,7 +805,7 @@ jobs:
             case "$cand" in *adi_tool|*adi_tool.exe) tool="$cand"; break ;; esac
           done < <(find adi_daw/build-juce -type f -name 'adi_tool*' 2>/dev/null)
           if [ -z "$tool" ]; then
-            cmake --build adi_daw/build-juce --config Debug --target adi_tool --parallel
+            cmake --build adi_daw/build-juce --config Debug --target adi_tool --parallel "$ADI_JOBS"
             while IFS= read -r cand; do
               case "$cand" in *adi_tool|*adi_tool.exe) tool="$cand"; break ;; esac
             done < <(find adi_daw/build-juce -type f -name 'adi_tool*' 2>/dev/null)
