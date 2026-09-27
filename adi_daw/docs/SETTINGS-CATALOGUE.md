@@ -76,7 +76,7 @@ this file by hand.
 | Input Latency / Output Latency / Overall Latency | Same three numbers, in samples and ms, plus the compensation headroom (ADR-0088) as a fourth | DECIDED parity |
 | Driver Error Compensation | Same; the built-in loopback measurement (Live's tutorial) becomes a button: *Measure round trip* | DIRECTION |
 | Test Tone, Tone Volume, Tone Frequency, CPU Usage Simulator | Same; the CPU simulator maps to the benchmark's synthetic load (BENCHMARKS.md) | DECIDED parity |
-| Virtual audio device | ADI's own device: install / status / endpoint names ("ADI DAW Stream Output/Input", ADR-0119); signed via SignPath (ADR-0118). Windows first; a BlackHole-derived device on macOS. | DECIDED ADR-0118 |
+| Virtual audio device | ADI's own device: install / status / endpoint names ("ADI Stream Output/Input", ADR-0119, ADR-0190); signed via SignPath (ADR-0118). Windows first; a BlackHole-derived device on macOS. | DECIDED ADR-0118 |
 | Loopback input | The master or any bus as a recordable input (ADR-0106). A chooser here, a track input everywhere else. | DECIDED ADR-0106 |
 | Close device when the app is inactive | REAPER §22.6: close when stopped and inactive; when inactive and armed; when stopped and active. One chooser: *release the device when ADI is in the background: never / when stopped / always*. Exclusive-mode drivers make this necessary, not optional. | DIRECTION |
 | Warn when a device cannot be opened | REAPER §22.6. Always warn; the setting is whether to fall back to the system device silently. | DIRECTION |

@@ -4,9 +4,9 @@
 //
 // Three kinds, each where its platform expects it:
 //
-//   config   settings a user chose. Per APPLICATION: ADI DAW, ADI Live and
-//            ADiJ never read each other's (ADR-0145 d10).
-//   data     what the suite learned on this machine, SHARED by the three
+//   config   settings a user chose. Per APPLICATION: ADI and ADiJ never
+//            read each other's (ADR-0145 d10, ADR-0190).
+//   data     what the suite learned on this machine, SHARED by the two
 //            applications: the library index (ADR-0145 d11), the plugin
 //            capabilities registry, the AudioGridder catalogue.
 //   cache    what can be rebuilt: decoded audio, peaks. Shared.
@@ -30,9 +30,9 @@
 
 namespace adi::appdata {
 
-enum class App { Daw, Live, DJ };
+enum class App { Daw, DJ };   // ADI and ADiJ (ADR-0190)
 
-/// "ADI DAW", "ADI Live", "ADiJ": the folder names on Windows and macOS.
+/// "ADI", "ADiJ": the folder names on Windows and macOS.
 [[nodiscard]] const char* displayName(App app) noexcept;
 
 struct Paths {

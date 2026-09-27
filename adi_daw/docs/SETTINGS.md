@@ -47,10 +47,10 @@ tracking sizes (64 and 128) are one click away.
 
 ```
 <appdata::pathsFor(app).config>/settings.json
-{"schema": 1, "app": "ADI DAW", "values": {"audio.bufferSize": 256, ...}}
+{"schema": 1, "app": "ADI", "values": {"audio.bufferSize": 256, ...}}
 ```
 
-- **One file per application.** ADI DAW, ADI Live and ADiJ each have their own
+- **One file per application.** ADI and ADiJ each have their own
   folder (ADR-0149), and the file names its application. A file naming another
   application is refused and never overwritten (ADR-0145 d10).
 - **Unknown keys survive.** A key a newer build wrote is kept and written back
@@ -100,7 +100,7 @@ A preset is a name, a set of pages, and the values those pages held.
 
 ```
 bundle.zip
-  manifest.json    {"kind": "adi-settings-bundle", "schema": 1, "app": "ADI DAW"}
+  manifest.json    {"kind": "adi-settings-bundle", "schema": 1, "app": "ADI"}
   settings.json    App-scope settings the registry knows
   presets/N.json
 ```

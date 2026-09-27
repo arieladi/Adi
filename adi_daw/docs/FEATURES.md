@@ -102,7 +102,7 @@ flagged, and it is a bug in the format, not in the plan.
 | **MPE out to plugins, VST3 and CLAP** | both, partially | **P1** | — | CLAP (ADR-0099): the dialect the plugin declares -- CLAP note expression, MIDI-MPE or MIDI. VST3 (ADR-0097): per plugin, VST3 note expression, MPE over MIDI on member channels, or plain MIDI with poly aftertouch. The controller's channel never reaches a plugin. Pitch, pressure and timbre measured by ear per route (ADR-0098, ADR-0100); a fixture VST3 exercises the IMidiMapping parameter path in CI. Surge XT reads MpeMidi, Serum 2 reads note expression, and `Auto` can only be right for one of them -- so the route choice must be remembered: decided, in an application registry per plugin and on the device row per project (ADR-0134 d7), not built yet. |
 | **MIDI 2.0 in (UMP)**: 32-bit notes, per-note pitch, pressure and controllers from hardware | MIDI 2.0 | P2 | ✅ | ADR-0185 d2. Parsed into ADI's own events and `AEXP` per-note expression, so MPE channel rotation stops being the only route. Out: a CLAP whose note port declares MIDI 2.0 gets UMP (ADR-0099 left it unbuilt); a VST3 cannot, since JUCE 9.0.2's VST3 host has no UMP path (ADR-0073). In: JUCE 9.0.2's own UMP endpoints (`juce::universal_midi_packets::Endpoints`) on CoreMIDI, ALSA and Windows MIDI Services, with `JUCE_USE_WINDOWS_MIDI_SERVICES` switched on (ADR-0188 d7) |
 | **MIDI-CI property exchange**: a controller discovers the DAW and labels itself from the track in focus | MIDI 2.0 | P3 | — | ADR-0185 d3: moved from WISH. It reads the one parameter feed (ADR-0181 d3), as the control API and OSCQuery do. It waits on the OS MIDI stacks exposing MIDI-CI |
-| **Hardware CV/Gate**: CV Out and CV In nodes in the modulation graph, for Eurorack | Bitwig | ADI DAW 2 | — | **Deferred to ADI DAW 2, unprioritized** (ADR-0188 d7): no settings and no calibration work until then. The design stays ADR-0185 d5's. Audio-rate and sample-accurate. Three safeguards: the user marks DC-coupled outputs; a CV channel is never the main or monitor output and never summed to the master, because DC can damage a speaker; a per-output calibration for 1 V/octave. The round trip is declared as latency. The Lynx E44's coupling is to be confirmed from its manual |
+| **Hardware CV/Gate**: CV Out and CV In nodes in the modulation graph, for Eurorack | Bitwig | ADI 2 | — | **Deferred to ADI 2, unprioritized** (ADR-0188 d7): no settings and no calibration work until then. The design stays ADR-0185 d5's. Audio-rate and sample-accurate. Three safeguards: the user marks DC-coupled outputs; a CV channel is never the main or monitor output and never summed to the master, because DC can damage a speaker; a per-output calibration for 1 V/octave. The round trip is declared as latency. The Lynx E44's coupling is to be confirmed from its manual |
 | Scale-aware / scale-locked editing, **every scale including Arabic and microtonal** | Ableton 12 + | P2 | 🔶 | reads `key_map`; a 12-bit `scale_mask` cannot name a quarter tone, so `tuning_systems` + `tuning_degrees` + `key_map_degrees` child tables come first (ADR-0103, ADR-0117, gap 6). **In the format since 1.8** (ADR-0178), with `key_map_tunings` beside `key_map`; their ops come with the editing. Notation stays out. |
 | Expression Maps (articulations) | Cubase | P3 | ❌ | needs its own schema; big win for orchestral |
 | Logical Editor / Project Logical Editor | Cubase | P3 | — | query+transform over the model; no schema |
@@ -128,7 +128,7 @@ Cubase-style MixConsole view with a toggle between the two.
 |---|---|---|---|---|
 | Session View, docked in the main window Ableton-style, detachable | Ableton | P3 (last) | ❌ | `scenes`, `clip_slots` return to Layer 1 in a schema PR now, mirroring Live's shape: a scene list, one slot per track per scene, launch settings on the clip (ADR-0101, ADR-0117); the 14 ops return with the UI |
 | MixConsole view toggled inside it | Cubase | P3 (last) | ✅ | same strips, reparented; one `TrackOrderModel` (ADR-0063) |
-| Live performance | — | **ADI Live app** | — | a separate product on the same engine, after the DAW (ADR-0105); the suite is ADI DAW, ADI Live and ADiJ (ADR-0133, spelled ADiJ since ADR-0188 d1). ADiJ runs on ADI's engine; Mixxx is a reference, never forked (ADR-0188 d8) |
+| Live performance | — | ~~ADI Live app~~ dropped | — | **Dropped by ADR-0190:** live performance is ADI's own Session view, docked and detachable (ADR-0101, ADR-0117), as in Ableton. The suite is ADI and ADiJ (ADR-0133, ADR-0188 d1, ADR-0190). ADiJ runs on ADI's engine; Mixxx is a reference, never forked (ADR-0188 d8) |
 
 ADI is still an arrangement-first DAW: the timeline is the default screen and the
 first thing built, and what it takes from Cubase is **arrangement and
@@ -392,8 +392,9 @@ Saying no now is cheaper than saying no later.
 - **Mastering suite, spectral repair.** Plugins do this.
 - **Sample library management beyond the app-scoped library index** (ADR-0104).
 - ~~**Being a live-performance instrument.**~~ Reversed by ADR-0101 and
-  ADR-0105: the clip launcher returns as a secondary window, built last, and
-  live performance is the **ADI Live** app on the same engine, after the DAW.
+  ADR-0105: the clip launcher returns as a secondary window, built last. The
+  separate **ADI Live** app was dropped by ADR-0190: live performance is ADI's
+  own Session view.
   Neither is on the path to the first release.
 - **Audio Units and VST2 hosting.** VST3, and CLAP when we write it. A
   project that references an AU still opens, with the device preserved as a

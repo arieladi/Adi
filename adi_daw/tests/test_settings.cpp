@@ -155,14 +155,12 @@ void testStoreBasics() {
     check(again.status() == LoadStatus::Loaded && again.get("audio.bufferSize") == 128,
           "reloaded: 128");
     const auto doc = Value::parse(readText(file));
-    check(doc.at("schema") == kSettingsSchema && doc.at("app") == "ADI DAW",
+    check(doc.at("schema") == kSettingsSchema && doc.at("app") == "ADI",
           "the file carries its schema and its application");
 
     const auto d = AppSettings::forApp(appdata::App::Daw).file();
-    const auto l = AppSettings::forApp(appdata::App::Live).file();
     const auto j = AppSettings::forApp(appdata::App::DJ).file();
-    check((d.empty() && l.empty() && j.empty()) ||
-              (d != l && l != j && d != j && d.filename() == "settings.json"),
+    check((d.empty() && j.empty()) || (d != j && d.filename() == "settings.json"),
           "each application has its own file under its own config folder (ADR-0149)");
 }
 
@@ -170,7 +168,7 @@ void testUnknownKeysSurvive() {
     section("a key from a newer build survives a save");
     adi::test::TempDirectory temp("settings", "unknown");
     const auto file = temp.path() / "settings.json";
-    writeText(file, R"({"schema": 1, "app": "ADI DAW", "values": {
+    writeText(file, R"({"schema": 1, "app": "ADI", "values": {
         "audio.bufferSize": 512, "future.meterBallistics": {"attack": 3, "release": 300}}})");
     AppSettings s(appdata::App::Daw, file);
     check(s.get("audio.bufferSize") == 512, "the known key is read");
@@ -184,7 +182,7 @@ void testUnknownKeysSurvive() {
     check(kept == Value({{"attack", 3}, {"release", 300}}),
           "and the newer build's key is still there, exactly");
 
-    writeText(file, R"({"schema": 3, "app": "ADI DAW", "values": {"lookfeel.theme": "light"}})");
+    writeText(file, R"({"schema": 3, "app": "ADI", "values": {"lookfeel.theme": "light"}})");
     AppSettings newer(appdata::App::Daw, file);
     check(newer.status() == LoadStatus::NewerSchema && newer.get("lookfeel.theme") == "light",
           "a newer schema is read");
@@ -214,7 +212,7 @@ void testCorruptKeptAside() {
 }
 
 void testApplicationsNeverShare() {
-    section("ADI DAW, ADI Live and ADiJ never read each other's settings (ADR-0145 d10)");
+    section("ADI and ADiJ never read each other's settings (ADR-0145 d10, ADR-0190)");
     adi::test::TempDirectory temp("settings", "apps");
     const auto file = temp.path() / "settings.json";
     {
@@ -224,11 +222,11 @@ void testApplicationsNeverShare() {
         daw.save(why);
     }
     const auto before = readText(file);
-    AppSettings live(appdata::App::Live, file);
-    check(live.status() == LoadStatus::ForeignApp, "ADI Live pointed at ADI DAW's file refuses it");
-    check(live.get("lookfeel.theme") == "os", "and reads none of its values");
+    AppSettings dj(appdata::App::DJ, file);
+    check(dj.status() == LoadStatus::ForeignApp, "ADiJ pointed at ADI's file refuses it");
+    check(dj.get("lookfeel.theme") == "os", "and reads none of its values");
     std::string why;
-    check(!live.save(why) && readText(file) == before,
+    check(!dj.save(why) && readText(file) == before,
           "and never overwrites it: " + why);
 }
 
@@ -374,7 +372,7 @@ void testBundles() {
                    : Value();
     };
     check(manifest.is_object() && manifest.value("kind", "") == "adi-settings-bundle" &&
-              manifest.value("app", "") == "ADI DAW",
+              manifest.value("app", "") == "ADI",
           "a manifest names the kind and the application");
     check(!settingsDoc.is_null() && !containsAbsolutePath(settingsDoc),
           "no absolute path anywhere in the bundle's settings");
@@ -405,8 +403,8 @@ void testBundles() {
           "a role this machine lacks is reported, not invented");
     check(in.presets.size() == 1 && in.presets[0].name == "Light", "the preset came across");
 
-    AppSettings live(appdata::App::Live, temp.path() / "c" / "settings.json");
-    check(!importBundle(zip, live, kUser).ok, "ADI Live refuses ADI DAW's bundle");
+    AppSettings dj(appdata::App::DJ, temp.path() / "c" / "settings.json");
+    check(!importBundle(zip, dj, kUser).ok, "ADiJ refuses ADI's bundle");
 
     check(containsAbsolutePath(Value("C:\\Users\\x")) && containsAbsolutePath(Value("\\\\srv\\share")) &&
               containsAbsolutePath(Value::array({"ok", "/abs"})) && !containsAbsolutePath(Value("1/16")) &&

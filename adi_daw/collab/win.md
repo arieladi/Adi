@@ -5,6 +5,53 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-27 — ADR-0190: the DAW is ADI; ADI Live is dropped
+
+**Why:** the director renamed the DAW to ADI (Advanced DAW Infrastructure),
+kept ADiJ, and dropped the separate live app: the Session view stays inside
+ADI, as in Ableton.
+
+**What changed:**
+- **Code:** `appdata::App` is `{ Daw, DJ }`; the display name is "ADI", so a
+  settings file and a bundle say `"app": "ADI"`, and Linux's folder is `adi`.
+  The tests that used ADI Live as the other application use ADiJ; the check
+  count is unchanged (4805).
+- **Driver:** the endpoints are "ADI Stream Output" and "ADI Stream Input",
+  the provider and manufacturer "ADI" (amends ADR-0119). No WDK here, so the
+  driver workflow is the check.
+- **Docs:** README's title, FEATURES, SETTINGS, SPEC, the driver docs, the
+  settings source.
+- **Not renamed, and why:** the `adi_daw/` directory, the targets and the
+  planned repository, because renaming them mid-flight breaks mac's open
+  branches and every path. I recommend doing it with the repository move of
+  ADR-0145 d12. `schema.sql`'s comments wait for the next schema minor,
+  because a comment inside a `CREATE TABLE` is stored in every file.
+- **Flagged:** Analog Devices trades and brands as "ADI" and sells audio DSP
+  chips, so a trademark check belongs before a public release.
+
+---
+
+## 2026-09-27 — ADR-0189: the Pioneer references, and the EPL question closed
+
+**Why:** the director relayed Gemini's five repositories for ADiJ's rekordbox
+and CDJ work. All five exist; I cloned them and crate-digger, the spec they all
+cite, and read each licence and each claim in the code.
+
+**What I found:**
+- **rex has no licence:** read only. Vynull (GPL-3.0) does all it claims: a
+  virtual CDJ on Pro DJ Link, a PDB/ANLZ USB writer, imports.
+- **rekordcrate writes as well as reads** (`binrw`, round-trip tests), which
+  its README does not say.
+- **The key:** go-rekordbox hard-codes Rekordbox's SQLCipher key, and
+  pyrekordbox recovers it from `options.json`. Vynull ships none. The
+  director decides; I recommend XML import first and never shipping or
+  recovering a key.
+- **My ADR-0188 d8 read an old header.** Mixxx's bundled Kaitai specs say
+  EPL-1.0, but crate-digger's current specs are `EPL-2.0 OR MPL-2.0 OR
+  LGPL-3.0-only`. MPL-2.0 is pre-authorised, so the EPL question is closed.
+
+---
+
 ## 2026-09-27 — ADR-0188: the director's rulings on v0.9.5's open questions
 
 **Why:** the director ruled on every open question in Master Reference v0.9.5

@@ -31,7 +31,7 @@ lock-free ring buffer, a header of plain C structs that both may copy.
 
 | Path | What | Base | Status |
 |---|---|---|---|
-| `adi-virtual-audio/` | The ADI virtual audio device for Windows: a kernel-mode virtual endpoint that presents the DAW's master (or any bus) to the OS as **"ADI DAW Stream Output"** (playback, the DAW routes to it) and **"ADI DAW Stream Input"** (recording, what Zoom, Discord or OBS select). Fed by the sink node of ADR-0074 through a shared ring at the DAW's clock, with a declared latency. | Microsoft `sysvad` (MS-PL), fetched at build time | **build pipeline only**: `build.ps1` and `.github/workflows/driver-build.yml` build the unmodified sample with our INF strings and package it unsigned. No ADI driver code exists yet. |
+| `adi-virtual-audio/` | The ADI virtual audio device for Windows: a kernel-mode virtual endpoint that presents the DAW's master (or any bus) to the OS as **"ADI Stream Output"** (playback, the DAW routes to it) and **"ADI Stream Input"** (recording, what Zoom, Discord or OBS select). Fed by the sink node of ADR-0074 through a shared ring at the DAW's clock, with a declared latency. | Microsoft `sysvad` (MS-PL), fetched at build time | **build pipeline only**: `build.ps1` and `.github/workflows/driver-build.yml` build the unmodified sample with our INF strings and package it unsigned. No ADI driver code exists yet. |
 | `adi-virtual-audio-mac/` | The macOS equivalent: a user-space AudioServerPlugIn. | A fork of BlackHole (GPL-3.0; the policy pre-authorises it) — **GPL-3.0, not MIT**, with its own licence file when it exists | not started |
 
 Linux needs nothing: PipeWire and JACK already route application audio.
@@ -48,8 +48,8 @@ pwsh ./adi_daw/drivers/adi-virtual-audio/build.ps1 -Configuration Release -Platf
    licence file is no longer MS-PL.
 2. The INF strings are rewritten: provider, manufacturer, device description,
    and the friendly names of the sample's two always-present endpoints
-   (internal speaker and front microphone array) become "ADI DAW Stream
-   Output" and "ADI DAW Stream Input". Every key must exist exactly once, or
+   (internal speaker and front microphone array) become "ADI Stream
+   Output" and "ADI Stream Input" (ADR-0190). Every key must exist exactly once, or
    the build fails, so an upstream rename is noticed rather than silently kept.
    The sample's other, jack-detected endpoints keep their names until the real
    driver exposes exactly two.
