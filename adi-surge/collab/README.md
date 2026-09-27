@@ -82,7 +82,6 @@ One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `wavetables/**`, `docs/DECISIONS.md`, `ARCHITECTURE.md`, `collab/win.md` | win | `win/adi-surge-gen02` | 2026-09-28 |
 
 ## Reserved ADR numbers
 
@@ -117,7 +116,7 @@ agents writing the same ADR; reading the other agent's subject does.
 | 0008 | win | `win/adi-surge-adr0008` | ADR-0007's context is wrong: old CMake fails configure loudly; its decision stands | used |
 | 0009 | win | `win/adi-surge-wtgen` | goal: in-plugin auto/random wavetable generator, AI-drivable, integrated with adi_daw | used |
 | 0010 | win | `win/adi-surge-wavetables` | a table generated from a reference's descriptor is ours if it does not null against it; first pack `adi-gen-01` | used |
-| 0011 | win | `win/adi-surge-gen02` | the shipped pack is `adi-gen-02`; `adi-gen-01` is removed; Surge's factory set stays | reserved |
+| 0011 | win | `win/adi-surge-gen02` | the shipped pack is `adi-gen-02`; `adi-gen-01` is removed; Surge's factory set stays | used |
 
 ## Before you start work, every time
 
