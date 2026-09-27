@@ -41,6 +41,18 @@ analyser. The reservation table decides (ADR-0051):
 - **0179 stays with the CLAP host contract,** as reserved.
 - **The analyser takes 0183,** reserved now. Renumbering a local commit is
   cheap before anything is pushed.
+- **The Studio OS plug-in is a reference for ADR-0181, not its base** (the
+  director, 2026-09-27). It lives in `tools/elgato_stream_deck_plugins/adi_studio_os`
+  and is built for Ableton and Rekordbox, on the + XL's 36 keys and 6 dials.
+  - **What carries over:** its screen-stack navigation and its tempo-delay
+    calculator, with ADI's reading the tempo map, not a typed BPM.
+  - **Its timing lesson:** hidden-page timers are throttled; a Worker keeps
+    real time.
+  - **Its local WebSocket service** has no `Origin` check. That is worth
+    fixing there, in that plug-in's own session.
+
+  All of it is recorded in FEATURES' control-surfaces row. ADR-0181 is
+  merged, and the log is append-only.
 - **The director keeps it** (2026-09-27). Its own brief
   (`collab/prompts/2026-09-27-mac-analyser.md`):
   - ADR-0183;
