@@ -5,6 +5,53 @@ Only the `mac` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-27 — PR 2: a clap_host_t per instance (ADR-0179), and a gate that covered less than it looked like
+
+Branch `mac/clap-per-instance`, PR #148.
+
+### 1. The same lesson three times in two days: a gate covers only what it compiles
+
+CI failed on both JUCE jobs with `play.cpp:385: no member named 'glue' in
+'adi::device::ClapHost'` — a call site I deleted the member out from under
+and never compiled, because **my local build had `ADI_WITH_JUCE=OFF`**. The
+suite passed 4962 checks and never touched `play.cpp`.
+
+That is the third instance this week of one shape:
+
+| | the gate | what it did not cover |
+|---|---|---|
+| 09-21 | `-Werror` | objects already built before the flag existed |
+| 09-26 | `adi_vst3_probe` | seven `#ifdef ADI_TEST_VST3` blocks, absent on macOS |
+| 09-27 | `test_all.sh` | every JUCE target, at `ADI_WITH_JUCE=OFF` |
+
+**The rule for me: anything touching `src/juce/**` gets a
+`-DADI_WITH_JUCE=ON` build before it is pushed.** A green suite from a build
+tree that does not contain the file I edited is not evidence about that file.
+
+### 2. A planted defect that PASSED, and why that was the right answer
+
+Three defects planted in the per-instance work; two failed the suite. The
+third — deleting `~ClapDevice`'s `unregisterPlugin` call — **passed, and
+should have.** With the glue owned as a member of the device the two die
+together, so the dangling pointer is *unreachable* rather than merely unused.
+
+My own comment had claimed that line was what fixed the use-after-free. It
+is not; the ownership is. Comment corrected, the call kept as explicitly
+defensive, and the reasoning written into ADR-0179 so the next reader does
+not mistake the PASS for a hole in the tests.
+
+I nearly drew the opposite conclusion: an earlier batch of plants reported
+PASS because the edit had **silently failed to apply**. The plants now verify
+the file changed before the suite is believed.
+
+### 3. A conflicting PR has NO CI, not stale CI
+
+#148 sat at `CONFLICTING DIRTY` after #138 merged, and `gh run list` returned
+**zero rows**. "Green by head SHA" cannot be attempted in that state, and it
+looks identical to a branch nobody has pushed to. Merge first, then read CI.
+
+---
+
 ## 2026-09-26 — back after five days; PR 1, CI renders a project through a VST3 and a CLAP
 
 Branch `mac/ci-render`. First of the four PRs in

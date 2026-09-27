@@ -1035,11 +1035,14 @@ int main(int argc, char** argv) {
             // whole point: the contract does not know which format it has.
             adi::device::DeviceHost host;
             adi::device::DeviceNode& node = host.add(std::move(dev), pick->name);
-            // No watchClapGlue: ADR-0179 made DeviceHost::add register this device's
-    // latency, port and restart epochs through the contract, per device.
+            // No watchClapGlue: ADR-0179 made DeviceHost::add register this
+            // device's latency, port and restart epochs through the CONTRACT,
+            // three per device rather than three per host.
             check(host.deviceCount() == 1, "DeviceHost took it like any other device");
-            check(host.coalescer().sourceCount() == 4,
-                  "one device source plus the glue's three (ADR-0084), saw " +
+            check(host.coalescer().sourceCount() == 3,
+                  "three sources for this ONE device -- latency, ports, restart -- "
+                  "all read through the contract (ADR-0084's causes, ADR-0179's "
+                  "per-instance host), saw " +
                   std::to_string(host.coalescer().sourceCount()));
 
             adi::engine::Graph g;
