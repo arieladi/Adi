@@ -13015,3 +13015,396 @@ and ADR-0161, and against the text projection's coverage list.
 - shared undo;
 - row ids and concurrent ordering (ADR-0161 d4);
 - remark anchors.
+
+---
+
+## ADR-0184 — The device strip grows taller than Live's, never shorter; and the control API can stream the engine's visual arrays — `DECIDED (direction)` (2026-09-27) — **DIRECTOR'S DIRECTIVE; A DATED DEPARTURE FROM LIVE (ADR-0108); EXTENDS ADR-0181**
+
+**Director's directive**, a global architecture update in two parts:
+1. **The device strip.** `DeviceChainStrip` is no longer fixed in height. The
+   splitter between the arrangement and the bottom dock stays live while
+   devices are shown, so the strip can be dragged taller, as the MIDI detail
+   editor can. Complex native and Pd views, such as analysers, fill the
+   height; simple devices top-align or centre.
+2. **Visual arrays.** The loopback control API (ADR-0181) may broadcast the
+   engine's high-rate arrays (spectrum, meters, correlation, raw audio) on an
+   opt-in subscription, so a surface with screens, the Stream Deck + XL first,
+   can draw analysers itself.
+
+Two follow-ups the same day: the strip can never be **smaller** than Live's
+default device area; it can only be made bigger.
+
+### Decisions
+
+1. **This departs from Live, and says so.** Live 12 lets the Clip View grow:
+   dragging its split line, or Expand Clip View, Ctrl+Alt+E (Live 12 §10a).
+   Its Device View has a fixed height. Under ADR-0108 a departure from parity
+   is a defect unless the director approves it, dated; this is that approval,
+   2026-09-27.
+
+2. **The strip resizes between two limits.**
+   - **The floor is Live's default device area.** The strip cannot be dragged
+     below the height Live's Device View has by default. That height is taken
+     from a live copy of Live under ADR-0108's side-by-side check, not from
+     memory.
+   - **The ceiling leaves the arrangement usable:** the transport, the ruler
+     and at least one track row stay visible.
+   - **Where it lives:** the height is view state, kept in `ui_view` per
+     project like the other panel sizes (SPEC §8.4). No schema change.
+   - **The splitter:** it is a resizer bar between `MainSplit` and
+     `DeviceChainStrip`. `UI-ARCHITECTURE.md` §1 and §2 are updated to show it.
+
+3. **Devices fill the height only when they say they can.**
+   - **The DAW-drawn panel** (Live's sliders, ADR-0150's count rule) keeps its
+     natural height and top-aligns. Taller does not mean bigger knobs.
+   - **A device that declares a scalable view** fills the space. Examples are
+     a Pd device's second view, such as the analyser (ADR-0116, ADR-0183),
+     and ADI's own scope and meters. It is redrawn at the new size, never
+     stretched as a bitmap.
+   - **Third-party plug-in windows float, as before** (ADR-0076). The strip's
+     height does not touch them.
+
+4. **Visual arrays: subscriptions on the same feed, never raw by default.**
+   - **Opt-in per stream:** a paired client (ADR-0181 d2) asks for a named
+     stream: a track's spectrum, its meters, a correlation, or a scope window.
+     Nothing streams unless asked for.
+   - **From the same slots the UI reads:** the audio thread writes lock-free
+     slots, as meters and the scope's taps already do (ADR-0050 d4,
+     ADR-0175). The message thread, or a worker for an FFT, turns them into
+     arrays. No analysis runs on the audio thread for a client.
+   - **Display-ready and rate-limited:** each stream is sent at the
+     resolution the client asks for (so many bins, so many points) and at no
+     more than the UI clock (ADR-0050 d1). A small screen needs a few hundred
+     values twenty or thirty times a second, not a sample stream.
+   - **Raw audio is a separate stream with a size cap,** and it is marked in
+     the UI while a client holds it: it is the user's music leaving the
+     process. Loopback only, like everything else on this API.
+
+**Still open:**
+- the wire format for arrays: JSON numbers, or a binary frame beside the
+  JSON control messages;
+- the list of named streams;
+- the exact floor in pixels, measured in Live.
+
+---
+
+## ADR-0185 — Control and I/O protocols: MIDI 2.0 and MIDI-CI, OSCQuery, hardware CV, TUIO and Ableton Link, all fed from the one parameter feed — `DECIDED (direction)` (2026-09-27) — **DIRECTOR'S DIRECTIVE; EXTENDS ADR-0181; MIDI-CI LEAVES THE WISH LIST**
+
+**Director's directive:** integrate five control and I/O protocols into the
+architecture:
+- **MIDI 2.0:** UMP input at 32-bit resolution, and MIDI-CI property exchange,
+  moved from a wish to a planned feature;
+- **OSCQuery:** over `controller_maps`' OSC, with the parameter tree served as
+  JSON on the local network for TouchOSC and Lemur;
+- **Hardware CV/Gate:** CV In and CV Out nodes in the modulation graph, for
+  Eurorack through DC-coupled interfaces such as the director's Lynx E44;
+- **TUIO:** multi-touch;
+- **Ableton Link:** reaffirmed as first-class, beside the PTP timebase.
+
+Checked against ADR-0073, ADR-0099, ADR-0107, ADR-0126, ADR-0181 and the
+settings catalogue.
+
+### Decisions
+
+1. **One feed, several doors.** The control API, MIDI-CI property exchange
+   and OSCQuery all publish the same thing: ADR-0181 d3's parameter feed, with
+   its names, values, ranges, value text and automation state. Writes from
+   any of them go through the same allow-list and the same capture (ADR-0181
+   d2, ADR-0124), so every protocol undoes the same way, and a knob, a
+   Stream Deck, an iPad and a MIDI 2.0 controller cannot disagree.
+
+2. **MIDI 2.0: UMP in, per-note expression inside.** P2.
+   - **Input:** a UMP parser turns 32-bit note, per-note pitch, pressure and
+     controller messages into ADI's own events and per-note expression
+     (`AEXP`, SPEC §6.3.2), which already carry more resolution than MIDI
+     1.0. MPE channel rotation stops being the only route for per-note
+     expression from hardware.
+   - **Output to plug-ins:** a CLAP plug-in whose note port declares the MIDI
+     2.0 dialect receives UMP; ADR-0099 left that dialect unbuilt. VST3 does
+     not: JUCE 9.0.2's VST3 host has no UMP path at all (ADR-0073, checked),
+     so a VST3 keeps receiving per-note expression as note expression or MPE,
+     as today.
+   - **From the OS:** whether JUCE 9.0.2 delivers UMP from a device is to be
+     checked before planning. If not, it is a platform adapter per OS
+     (Windows MIDI Services; CoreMIDI's UMP API), in the platform owners'
+     code.
+
+3. **MIDI-CI moves from WISH to BACKLOG P3.** Its heart is property
+   exchange: a controller discovers the DAW, reads the parameters of the
+   track in focus with their ranges and names, and labels itself, with no
+   manual mapping. It reads the feed (d1). It still depends on the OS MIDI
+   stacks exposing MIDI-CI; that dependency is why it was a wish, and it is
+   now a precondition rather than a reason to wait. The Settings Reference's
+   row changes with it (Part V, `SETTINGS-CATALOGUE.md`, the registry's
+   absent list).
+
+4. **OSCQuery: the feed as a tree, off until the user opens it.** P2.
+   - **What it is:** the tree is served as OSCQuery JSON over HTTP, and
+     discovered over DNS-SD (`_oscjson._tcp`). Values travel as OSC, with
+     32-bit floats. TouchOSC and Lemur build their pages from it: track
+     names, macro ranges, plug-in parameters.
+   - **Correction: OSC and OSCQuery have no authentication,** and they run on
+     the local network, not loopback. So they are off by default. The user
+     picks the network interface, and can restrict the service to named
+     client addresses and to read-only. Writes are the same allow-list as a
+     surface (ADR-0181 d2), recorded as `actor_detail = osc:<client>`.
+   - **`controller_maps` keeps plain OSC** (`protocol = 'osc'`, `osc_path`)
+     for fixed mappings. OSCQuery adds discovery and the live tree; it adds
+     no mapping rows.
+
+5. **Hardware CV/Gate: modulation-graph nodes, with three safeguards.** P2.
+   - **The nodes:** HW CV Out writes an audio-rate, sample-accurate
+     modulation signal to a hardware output channel. HW CV In reads an input
+     channel as a modulation source. Both follow Bitwig's family (ADR-0046).
+     Gate and clock are CV Out shapes.
+   - **Safeguard 1, DC coupling:** an AC-coupled output cannot pass slow CV,
+     and the DAW cannot detect coupling. So the user marks which outputs are
+     DC-coupled in Settings. Whether the Lynx E44's outputs are DC-coupled is
+     to be confirmed from its manual, not assumed.
+   - **Safeguard 2, speakers:** a DC signal on a speaker output can damage
+     the speaker. A CV channel is one the user marked as CV. It is never the
+     main or monitor output, and it is never summed into the master.
+   - **Safeguard 3, calibration:** 1 V/octave pitch needs a per-output scale
+     and offset, measured once, as Bitwig's HW CV Instrument does. The
+     hardware round trip is declared as latency, so plugin delay
+     compensation places it.
+
+6. **TUIO: for touch sources the OS does not deliver, not a fix for the OS.**
+   P3.
+   - **Correction:** on Windows, JUCE already delivers native multi-touch;
+     each finger is its own input source, so several faders move at once
+     without TUIO.
+   - **What TUIO is for:** sources that speak it, such as tables
+     (reacTIVision), IR overlays and network touch surfaces, and macOS, which
+     has no touch-screen API.
+   - **How:** TUIO 1.1 arrives as OSC over UDP (port 3333) and joins the same
+     multi-touch input path. It follows the same local-network rule as
+     OSCQuery: off until opened.
+
+7. **Ableton Link: first-class, and a different job from PTP.** P1.
+   - **What it is:** Link shares tempo, beat and phase between applications
+     and peers. PTP (ADR-0107) shares a sample clock for remote processing.
+     They sit side by side, and neither replaces the other.
+   - **Licence:** the Link SDK is GPL-2.0-or-later (its `LICENSE.md`, read
+     2026-09-27), which the policy allows. It goes into `third_party/` pinned
+     by tag and commit when it is built (ADR-0024).
+   - **Link Audio stays a wish** (ADR-0126): it is Ableton's, and not in the
+     open SDK.
+
+**Still open:**
+- JUCE 9.0.2's UMP device I/O;
+- the OSCQuery server: a library, or a small one of our own, since the core
+  has no HTTP server today;
+- the user interface for CV calibration.
+
+---
+
+## ADR-0186 — Real-time neural inference is DSP, not AI: CPU inference that allocates nothing on the audio thread may run inside the binary — `DECIDED` (2026-09-27) — **DIRECTOR'S RULING; AMENDS ADR-0064 d1, d4, d5 AND ADR-0086**
+
+**Director's ruling.** ADR-0064 was written to keep heavy Python and CUDA
+generative models out of the audio thread and out of the download. Its
+blanket words, "no model weights and no inference inside the binary", also
+ban lightweight C++ inference that is ordinary DSP. So real-time DSP
+inference is exempted:
+- **What is allowed:** C++ inference engines that are deterministic,
+  allocate nothing on the audio thread, and need no Python and no GPU memory
+  may run inside `adi_daw`'s core, in `adi-vst`, and as libpd externals for
+  Pd devices.
+- **What stays behind RPC:** heavy generative and analysis models, as
+  before.
+
+The references named with it are RTNeural (BSD-3-Clause), NeuralAmpModelerCore
+(MIT), AIDA-X (GPL-3.0) and Proteus (GPL-3.0). Their licences were read from
+their own files on 2026-09-27 (`EXTERNAL-CODE.md`).
+
+### Decisions
+
+1. **The test is the ADR-0010 test, not the word "neural".** A network may
+   run on the audio thread when it meets the same rules as any other node:
+   - **It allocates in `prepare`,** never in `process`. Its weights are
+     loaded, and its buffers sized, before the first block.
+   - **It is bounded and deterministic:** the same input gives the same
+     output, in bounded time, with no locks, no I/O and no network.
+   - **CPU only:** no GPU and no VRAM, because a GPU call cannot be bounded
+     from the audio thread.
+   - **No Python,** and no second runtime of any kind.
+
+   Such a network is a node like a filter or a waveshaper. That amends
+   ADR-0064 d1, never the audio thread, for this class only.
+
+2. **Tier 1 gains a row; Tier 2 is unchanged** (ADR-0086). Real-time
+   inference joins the embedded libraries. Demucs, Whisper, RAVE,
+   Matchering and every generative model stay behind the RPC boundary, for
+   ADR-0086's three reasons: size, the audio thread, and the crash boundary.
+
+3. **A model is data, and its licence is its own.** That amends ADR-0064 d4,
+   no bundled weights.
+   - **Models are loaded like impulse responses:** a `.nam` capture or an
+     AIDA-X model is a file the user loads, and it is device state
+     (ADR-0038).
+   - **Shipping a default model is allowed** when its own licence allows
+     redistribution and its size is stated. A model someone captured is
+     their work, and the engine's licence says nothing about it.
+   - **The rule that stands:** no gigabyte downloads, and no Python
+     environments.
+
+4. **It is not an AI path, so ADR-0064 d5 holds as written.** A real-time
+   network has no network access, no remote fallback and no service. The
+   DAW is still whole with every Tier 2 service absent, and a guitar amp
+   still plays with the internet unplugged.
+
+5. **Its cost is declared, not hidden.**
+   - **Latency:** a network with no look-ahead (the LSTM and WaveNet shapes
+     NAM and AIDA-X use) adds none.
+   - **CPU:** it is costly, and heavy at 64-sample buffers. A device reports
+     its load, suspends like any other when silent (ADR-0043), and a model
+     too heavy for the buffer is refused at load with a reason, never left
+     to drop out.
+
+6. **Where it goes, and when.**
+   - **The guitar suite is next year's work,** a sibling CLAP project after
+     the DAW. It is not scheduled now (the director, 2026-09-27). Its
+     references are cloned: AmpForge (GPL-3.0), Soundshed Guitar
+     (**AGPL-3.0**), ToobAmp (MIT), with the four engines above.
+   - **Pd externals** that run inference are still a per-library decision
+     (ADR-0035). This ruling permits them; it does not choose one.
+   - **The first native use in the core** is whatever ADR asks for it, not
+     this one.
+
+---
+
+## ADR-0187 — The DSP backlog: Pd devices first, Surge's effects mapped onto Live's, and the references cloned with their licences read — `DECIDED (direction)` (2026-09-27) — **DIRECTOR'S DIRECTIVE; EXTENDS ADR-0093 AND ADR-0169**
+
+**Director's directive:**
+- **Pd devices first.** The adi-surge project has Surge's effects. Make a Pd
+  version of each, replacing Live devices such as Shifter and Redux, and say
+  which Live effects Surge's can replace.
+- **Clone the references** for:
+  - OTT-style multiband compression, and Bitwig device docking;
+  - a frequency shifter, DJ filters, a bitcrusher and a transient designer;
+  - a beatbox-to-MIDI translator with a drum rack;
+  - Mixxx, as aDiJ's baseline;
+  - the guitar engines.
+- **Expand the backlog** with their techniques.
+
+All 19 repositories, plus Ableton Link, are cloned into `reference/`, which
+is git-ignored and unpinned by design (ADR-0024 d3). Each licence was read
+from the repository's own files, and three differed from the directive (d6).
+
+### Decisions
+
+1. **Pd devices first, with two ways to build one.**
+   - **Vanilla Pd, where the DSP is small.** Ring modulation (`*~`), a
+     frequency shifter (the `hilbert~` abstraction Pd ships, and a complex
+     multiply), a bitcrusher (`samphold~`, `phasor~`, `expr~`), mid/side,
+     simple delays, chorus, flanger. These open in plain Pd, as ADR-0177
+     promises.
+   - **An ADI external wrapping Surge's C++, where the DSP is large.**
+     Nimbus, both reverbs, the BBD ensemble, tape, the spring reverb,
+     Combulator, the resonator and the vocoder would take months to rebuild
+     from Pd objects, and would sound worse. Such a patch needs its external,
+     so it does not open meaningfully in plain Pd. That is the trade.
+     Externals are a per-library decision (ADR-0035); ADI's own, compiled
+     from Surge (GPL-3.0), need one ADR before the first.
+   - **Today's route, before either:** the fork builds Surge XT Effects by
+     default (`SURGE_BUILD_FX`), one plug-in that hosts every Surge effect.
+     ADI can host it now.
+
+2. **What Surge's effects cover in Live.** Surge XT has 31 effect types (the
+   fork's `fxt_*` list, read 2026-09-27).
+
+   | Live 12 device | Surge effect | How close |
+   |---|---|---|
+   | Delay, Echo | Delay, Floaty Delay | close for Delay; Echo's wobble and noise are partly Floaty Delay |
+   | Reverb | Reverb 1, Reverb 2 | close |
+   | Hybrid Reverb | Convolution, with a Surge reverb | the convolution half |
+   | Chorus-Ensemble | Chorus, Ensemble (BBD) | close |
+   | Phaser-Flanger | Phaser, Flanger | close |
+   | Shifter | Frequency Shifter, Ring Modulator | Freq and Ring modes only; Pitch mode needs a pitch shifter (d3) |
+   | Vocoder | Vocoder | close |
+   | Resonators | Resonator, Combulator | close to partial |
+   | Grain Delay, Spectral Time | Nimbus | partial: granular, not Live's model |
+   | Saturator, Overdrive, Roar | Distortion, Waveshaper, CHOW | partial |
+   | EQ Eight, Channel EQ | Parametric EQ (3 bands), Graphic EQ (11) | partial: fewer bands |
+   | Utility | Mid-Side Tool, Conditioner | partial |
+   | Redux | none | from elsewhere (d3) |
+   | none in Live | Rotary Speaker, Spring Reverb, Tape, Exciter, Treemonster, Neuron, Bonsai | beyond Live |
+
+   Surge's Airwindows effect duplicates ADI's eleven suites (ADR-0171).
+   Parity is still Live's behaviour, checked side by side (ADR-0108); a
+   Surge effect is a DSP source, not a parity claim.
+
+3. **The Live devices, with sources checked in the code.**
+   - **Shifter** (ADR-0169):
+     - **Freq and Ring modes** come from Surge's Frequency Shifter and Ring
+       Modulator (GPL-3.0), from Speechrezz FrequencyShifter (MIT; a
+       Signalsmith IIR Hilbert filter), or from Pd's `hilbert~`.
+     - **Pitch mode** needs a pitch shifter: ADR-0176 d8's candidates, R3 or
+       WSOLA.
+     - **Live's feedback delay** is its own stage.
+   - **Redux** (ADR-0169):
+     - **Downsampling and bits:** Bespoke's `BitcrushEffect` (GPL-3.0) does
+       sample-and-hold downsampling and bit-depth quantization. Airwindows
+       DeRez is MIT and already compiled into `third_party/airwin2rack`. The
+       p0p bitcrusher is GPL-3.0.
+     - **Correction: jitter.** Neither Bespoke nor p0p has jitter (checked
+       in their code). Live's Jitter, a random variation of the hold period,
+       is ours to write.
+   - **Overdrive:** BYOD's waveshapers (GPL-3.0), a band-pass filter before
+     them, a low-pass tone stage after, and an envelope follower on a VCA
+     for Live's Dynamics. In Pd: `env~` and `*~`. Note ADR-0096's trap:
+     `env~` is RMS in dB, not peak.
+   - **A DJ filter** (aDiJ, and a device):
+     - **Source:** Mixxx's filter effect
+       (`src/effects/backends/builtin/filtereffect.cpp`, GPL-2.0-or-later,
+       so it may be reused).
+     - **The dead zone and crossover:** to be read in that file when the
+       work starts, not assumed.
+     - **The filter core:** JUCE's own `StateVariableTPTFilter`, which ADI
+       already has.
+   - **OTT-style multiband:**
+     - **ANATOMY** separates harmonic and percussive parts with a cos²
+       crossfade (`HpssSeparator`, checked), before three-band upward and
+       downward compression.
+     - **Its licence is AGPL-3.0.** Copying its code makes the receiving
+       project AGPLv3 (`OPEN_SOURCE_POLICY.md` §2, §4). So `adi_daw` clones
+       its behaviour, and any copied code lives in a sibling plug-in.
+       vitOTTx (GPL-3.0, ADR-0093) remains the plain OTT reference.
+   - **A transient designer:** the p0p `trainsient` (GPL-3.0), on the
+     envelope-follower plan of ADR-0176 d4.
+   - **A drum rack tab and beatbox-to-MIDI:** `d33p` (GPL-3.0) is the
+     reference for a new tab of ADI's built-in drum rack. Beatbox-to-MIDI
+     runs natively if it meets ADR-0186, and behind RPC otherwise. P3.
+   - **Device docking:** `bitwig-device-hacks` (MIT) and
+     `bitwig-docked-plugins` are read for how Bitwig chains and docks
+     devices (ADR-0076).
+
+4. **Mixxx is aDiJ's reference, and its code may be reused; a fork is
+   another decision.**
+   - **What is allowed:** Mixxx is GPL-2.0-or-later (its `LICENSE`), so its
+     analysis, effects and DJ behaviour can be reused under GPLv3, and aDiJ
+     should match its feature set.
+   - **What a fork would take:** taking Mixxx as aDiJ's *base* would
+     contradict ADR-0105 d2, one engine for three products with aDiJ as a
+     shell over `adi_core`. A Mixxx fork would bring its own engine. That
+     needs an ADR superseding ADR-0105 d2, and it is the director's call.
+     Until then, Mixxx is the reference.
+
+5. **The guitar references wait for next year** (ADR-0186 d6).
+
+6. **The licences, as read, and three corrections to the directive.**
+   - **No licence at all:** `bitwig-docked-plugins`, `juce-audio-filters` and
+     `LowpassHighpassFilter`. Under the policy (§3) they are read and never
+     copied. The DJ filter loses nothing by this, because its filter is
+     JUCE's own class.
+   - **Soundshed Guitar is AGPL-3.0,** not stated in the directive.
+   - **Mixxx is GPL-2.0-or-later.** Its `COPYING` alone says "version 2";
+     its `LICENSE` has the "or later" that makes it compatible.
+
+   The full table is in `EXTERNAL-CODE.md`.
+
+**Still open:**
+- the ADR for ADI's Pd externals;
+- which Surge effects become Pd devices first. The director names Shifter
+  and Redux;
+- aDiJ: Mixxx as reference or as a fork.

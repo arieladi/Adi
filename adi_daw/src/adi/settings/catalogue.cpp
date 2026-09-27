@@ -351,8 +351,8 @@ const std::vector<AbsentRow>& absentRows() {
          "arrives with Tempo Follower"},
         {"5. Tempo & MIDI / Resync External Hardware: Show Resync Button", Absence::Backlog,
          "arrives with external sync (P2)"},
-        {"5. Tempo & MIDI / MIDI-CI support", Absence::Wish,
-         "MIDI-CI when the OS stacks expose it"},
+        {"5. Tempo & MIDI / MIDI-CI support", Absence::Backlog,
+         "property exchange from the parameter feed (P3, ADR-0185); it waits on the OS MIDI stacks"},
         {"5. Tempo & MIDI / MIDI file import/export options", Absence::Backlog,
          "MIDI file options belong to the export dialog (P2)"},
         {"6. File & Folder / Create Analysis Files", Absence::NotASetting,
@@ -441,6 +441,16 @@ const std::vector<AbsentRow>& absentRows() {
          "the built-in devices have nothing to set (ADR-0062)"},
         {"6. Devices and DSP / Racks and macros", Absence::Backlog,
          "macro curve defaults arrive with racks (ADR-0060)"},
+        {"8. Control and protocols / Control API: paired surfaces and visual streams", Absence::Backlog,
+         "arrives with the control API's surface client (ADR-0181, ADR-0184)"},
+        {"8. Control and protocols / MIDI 2.0 input", Absence::Backlog,
+         "arrives with the UMP parser (P2, ADR-0185)"},
+        {"8. Control and protocols / OSCQuery server", Absence::Backlog,
+         "arrives with OSCQuery (P2, ADR-0185); off by default when it does"},
+        {"8. Control and protocols / Hardware CV channels", Absence::Backlog,
+         "arrives with the HW CV nodes (P2, ADR-0185)"},
+        {"8. Control and protocols / TUIO input", Absence::Backlog,
+         "arrives with TUIO (P3, ADR-0185)"},
     };
     return rows;
 }

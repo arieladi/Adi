@@ -40,7 +40,7 @@ Ableton-shaped, fixed: browser left, timeline top, devices bottom, mixer right.
 │          ├─────────────────┴───────────────────────┤                 │
 │          │ DetailEditor        [collapsible]       │                 │
 ├──────────┴─────────────────────────────────────────┴─────────────────┤
-│ DeviceChainStrip          follows selection, full width              │
+│ DeviceChainStrip   follows selection, full width; drag taller ↕      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -63,9 +63,29 @@ juce::DocumentWindow
     │   │       └── LayerStack          opt-in superimposition (ADR-0047)
     │   └── MixerPanel
     │       └── MixerStrip[]            one per track, in TrackOrderModel order
+    ├── DockResizer                     the strip's top edge: drag it taller (ADR-0184)
     └── DeviceChainStrip
         └── DeviceView[]                one per device on the selected track
 ```
+
+### The device strip's height (ADR-0184)
+
+Live 12 lets its Clip View grow (§10a) and keeps its Device View at one
+height. ADI lets the device strip grow too: a dated departure from Live under
+ADR-0108, approved by the director on 2026-09-27.
+
+- **The floor is Live's default device area.** The strip is never shorter
+  than Live's Device View is by default, measured in a live copy of Live.
+  It can only be made bigger.
+- **The ceiling** leaves the transport, the ruler and one track row visible.
+- **The height is view state,** kept per project in `ui_view` (SPEC §8.4)
+  like the other panel sizes.
+- **What fills the height:**
+  - a device view that declares it scales (a Pd device's second view such as
+    the analyser, the scope, meters) is redrawn at the new size, never
+    stretched as a bitmap;
+  - the DAW-drawn panel (ADR-0150) keeps its natural height and top-aligns;
+  - plug-in windows float, as before (ADR-0076).
 
 ### Three rules the tree exists to enforce
 

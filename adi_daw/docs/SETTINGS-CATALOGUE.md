@@ -111,7 +111,7 @@ this file by hand.
 | Per port: MIDI Clock Sync Delay | Same; Bitwig offers an offset per output path too (§0.2.2.4) — both directions | DECIDED parity |
 | Per port: Sync Type | Same | DECIDED parity |
 | Per port: MTC Frame Rate, MTC Start Offset | Same | DECIDED parity |
-| MIDI-CI support | Cubase p.1609: automatic detection and setup of MIDI-CI devices. MIDI 2.0 property exchange; worth having when the OS stacks expose it. | WISH |
+| MIDI-CI support | Cubase p.1609: automatic detection and setup of MIDI-CI devices. MIDI 2.0 property exchange: a controller reads the parameter feed and labels itself (ADR-0185 d3). Planned; it waits on the OS MIDI stacks exposing MIDI-CI. | BACKLOG P3, ADR-0185 |
 | Chase events | Cubase p.1610: when locating, replay the controllers, program changes and pitch bend that would have been in effect. Not optional for correct playback; a chooser of which event types, default all. | DECIDED ADR-0125 R-15 |
 | MIDI Thru, Reset on Stop, Insert Reset Events after Record | Cubase p.1610. Reset on stop and the recorded reset event are adopted as defaults; MIDI Thru is a track monitor setting, not global (Live §17.1). | DIRECTION |
 | MIDI Filter (record / thru / channels / controllers) | Cubase p.1613. Adopted as a small page: message types and channels never recorded or never echoed. | DIRECTION |
@@ -319,4 +319,14 @@ this file by hand.
 | Freeze | ADR-0059: freeze renders with tails; the tail length and whether muted clips freeze silent (REAPER §22.6.8). | DECIDED ADR-0059 |
 | Racks and macros | ADR-0060, ADR-0114: macro curve editing defaults (breakpoint count). | BACKLOG ADR-0060 |
 
-207 settings.
+## Part IV — The pages only ADI needs / 8. Control and protocols
+
+| Setting | ADI | Status |
+|---|---|---|
+| Control API: paired surfaces and visual streams | ADR-0181 d2, ADR-0184 d4: the paired clients, each revocable, and the streams each one holds. Raw audio is capped, and marked while a client holds it. Loopback only. | BACKLOG ADR-0181, ADR-0184 |
+| MIDI 2.0 input (UMP) | ADR-0185 d2: which ports deliver UMP, parsed into per-note expression. Arrives with the parser. | BACKLOG P2, ADR-0185 |
+| OSCQuery server | ADR-0185 d4: off by default. The network interface, an optional list of client addresses, and read-only. OSC has no authentication, so nothing listens until the user opens it. | BACKLOG P2, ADR-0185 |
+| Hardware CV channels (outputs and inputs) | ADR-0185 d5: which interface channels are CV, each marked DC-coupled by the user; a CV channel is never the main or monitor output; a per-output calibration for 1 V/octave. | BACKLOG P2, ADR-0185 |
+| TUIO input | ADR-0185 d6: off until opened, with its UDP port (3333). Windows touch screens need none of it: JUCE delivers their multi-touch natively. | BACKLOG P3, ADR-0185 |
+
+212 settings.

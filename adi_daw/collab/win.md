@@ -5,6 +5,59 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-27 — the director's directives: ADR-0184 to ADR-0187
+
+**Why:** one batch from the director before mac's next mission: the device
+strip, visual arrays for surfaces with screens, five protocols, Pd devices
+from Surge's effects, a real-time exception to ADR-0064, and twenty
+references to clone.
+
+**What landed** (docs only, plus one settings row):
+- **ADR-0184, the device strip.** It grows taller than Live's and never
+  shorter: the floor is Live's default device area, on the director's two
+  follow-ups. A dated departure from Live (ADR-0108), since Live's Clip View
+  grows and its Device View does not (Live 12 §10a). Views that declare they
+  scale fill the height; the DAW-drawn panel top-aligns; plug-ins float. Its
+  second half: visual array streams on the control API, opt-in, display-ready,
+  no faster than the UI clock, raw audio capped and marked.
+- **`UI-ARCHITECTURE.md` is mac's file.** I changed its §1 drawing, its §2 tree
+  (a `DockResizer` between `MainSplit` and `DeviceChainStrip`) and added a
+  short section, on the director's instruction, with a claims row like
+  ADR-0120's precedent. mac owns the rest, and builds it.
+- **ADR-0185, protocols.** MIDI 2.0 UMP in (P2); MIDI-CI from WISH to
+  BACKLOG P3, so the settings row moved with it (`catalogue.cpp`, the
+  exported catalogue, `SETTINGS.md`'s counts: backlog 13, wish 3); OSCQuery
+  (P2, off by default, because OSC has no authentication); hardware CV (P2,
+  three safeguards: marked DC coupling, never a main or monitor output,
+  calibration); TUIO (P3); Ableton Link (P1, GPL-2.0-or-later).
+- **Settings: a Control and protocols page** (Part V §4.8 of the master): the
+  control API's paired surfaces and streams, MIDI 2.0 input, OSCQuery, CV
+  channels and TUIO, five BACKLOG rows. The catalogue has 212 rows; the
+  test and `SETTINGS.md` moved with it (absent 66, backlog 18).
+- **ADR-0186, real-time inference is DSP.** The ADR-0010 test decides, not
+  the word "neural": CPU only, nothing allocated in `process`, no Python. A
+  model is data with its own licence. Generative models stay behind RPC.
+  The guitar suite is next year's.
+- **ADR-0187, the DSP backlog.** Pd devices first, vanilla where the DSP is
+  small and an ADI external over Surge's C++ where it is large (that needs its
+  own ADR). A table of what Surge's 31 effects cover in Live. Sources for
+  Shifter, Redux, Overdrive, a DJ filter, OTT-style multiband, a transient
+  designer and a drum-rack tab.
+
+**Corrections to the directive, checked in the code or the licence files:**
+- no licence at all in `bitwig-docked-plugins`, `juce-audio-filters` and
+  `LowpassHighpassFilter`: read only;
+- Soundshed Guitar and ANATOMY are AGPL-3.0: behaviour cloned in `adi_daw`;
+- Mixxx is GPL-2.0-or-later by its `LICENSE`; a Mixxx *fork* as aDiJ's base
+  would supersede ADR-0105 d2, so it is the reference until the director says
+  otherwise;
+- neither Bespoke's bitcrusher nor p0p's has Redux's jitter;
+- Windows touch needs no TUIO: JUCE delivers native multi-touch.
+
+**Clones:** all twenty in `reference/`, shallow, git-ignored.
+
+---
+
 ## 2026-09-27 — adi_play watches the parameter-op glue while it plays (the lane mac offered)
 
 **Why:** mac's report said adi_play made a ParamOps only to save state and

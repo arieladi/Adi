@@ -217,6 +217,10 @@ subject, say so in your log instead of writing it twice.
 | 0181 | win | `win/surfaces-collab` | external control surfaces: relative input at the edge, the loopback control API's surface client, one parameter feed; the Stream Deck + XL first (director) | used |
 | 0182 | win | `win/surfaces-collab` | collaboration, hosting and backups: local by default, an op stream to the user's bucket, drives for backups, author-chosen media, previewed application (director) | used |
 | 0183 | mac | `mac/pd-analyser-wip` | the Pd spectrum analyser (ADR-0116), from the second session on the Mac; renumbered from the ADR-0179 it spent locally; the director keeps the work (2026-09-27) | reserved |
+| 0184 | win | `win/directives-0927` | the device strip grows taller than Live's, never shorter; visual array streams on the control API (director) | used |
+| 0185 | win | `win/directives-0927` | control and I/O protocols: MIDI 2.0 and MIDI-CI, OSCQuery, hardware CV, TUIO, Ableton Link, from the one feed (director) | used |
+| 0186 | win | `win/directives-0927` | real-time neural inference is DSP: CPU inference that allocates nothing on the audio thread, inside the binary (director; amends ADR-0064) | used |
+| 0187 | win | `win/directives-0927` | the DSP backlog: Pd devices first, Surge's effects mapped onto Live's, the references cloned with their licences read (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -229,7 +233,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `src/juce/play.cpp` (the edit watch's hooks only), `src/juce/play_edits.hpp` | win | `win/adi-play-drain` | 2026-09-27 |
+| `docs/UI-ARCHITECTURE.md` (the device strip's resizer only, inside mac's area, on the director's instruction, ADR-0184) | win | `win/directives-0927` | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
