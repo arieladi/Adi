@@ -45,7 +45,7 @@ const char* displayName(App app) noexcept {
     switch (app) {
         case App::Daw:  return "ADI DAW";
         case App::Live: return "ADI Live";
-        case App::DJ:   return "aDiJ";
+        case App::DJ:   return "ADiJ";
     }
     return "ADI DAW";
 }

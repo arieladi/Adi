@@ -6,7 +6,7 @@
 //   {"schema": 1, "app": "ADI DAW", "values": {"audio.bufferSize": 256, ...}}
 //
 // Four promises, each with a test that plants its breach:
-//   * ADI DAW, ADI Live and aDiJ never read each other's file (ADR-0145 d10):
+//   * ADI DAW, ADI Live and ADiJ never read each other's file (ADR-0145 d10):
 //     a file naming another application is refused and never overwritten.
 //   * A key this build does not know -- a newer build's -- survives a save.
 //   * A file that does not parse is moved aside, never overwritten silently,

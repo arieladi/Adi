@@ -5,6 +5,48 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-27 — ADR-0188: the director's rulings on v0.9.5's open questions
+
+**Why:** the director ruled on every open question in Master Reference v0.9.5
+in one batch. Checked against the code, the pinned sources and the licences
+before recording. Three points went back to the director and were settled
+the same day; four more carry corrections of fact.
+
+**Settled with the director:**
+- **Re-Pitch plays on libsamplerate,** not Bungee: Bungee's own README says it
+  analyses and resynthesises about a hundred grains a second, a stretcher
+  with a grain's latency. The ruling asked for pure resampling.
+- **A Pd range change keeps the real value.** The ruling's normalized
+  position was meant to prevent jumps and would have caused them: 1000 Hz on
+  20–20000 becomes 455 Hz when the range narrows to 20–5000.
+- **OSCQuery is off by default;** turning it on opens read and write after a
+  "trusted networks only" warning.
+
+**Corrections, each checked in the source:**
+- JUCE 9.0.2 **has** UMP device I/O (`juce_audio_devices/midi_io/ump/`,
+  CoreMIDI, ALSA, Windows MIDI Services behind
+  `JUCE_USE_WINDOWS_MIDI_SERVICES`, off by default). No adapters of ours.
+- Pd messages land at block boundaries, so DAW-side modulation reaches a
+  patch once per 64 samples; audio rate needs an `[adi.param~]`.
+- Pd floats are 32-bit: 5,765,760 PPQ passes 2^24 in three quarter notes, so
+  `[adi.transport]` sends bar, beat and ticks within the quarter.
+- Sync filenames: Lamport zero-padded (lexical listing), `op_clients`' hex id
+  not a UUID; remark anchors use INTEGER ids and `(lamport, client_id)`,
+  since `ops.seq` differs between replicas.
+- Mixxx reads rekordbox USBs and exports only to Engine Prime; its reader
+  comes from Kaitai specs under EPL-1.0, outside the policy.
+
+**What landed:** ADR-0188; FEATURES (ADiJ, the warp table, CV to ADI DAW 2,
+surfaces, sync, Pd rows); EXTERNAL-CODE (libsamplerate, Mixxx);
+UI-ARCHITECTURE's floor, 169 logical px, still to be checked by mac; the
+rename to ADiJ in the code (`appdata.cpp`'s folder name) and its tests;
+settings: the CV row removed (211 rows, absent 65, backlog 17), OSCQuery and
+Pure Data rows rewritten. `tools\build.bat werror` clean, 4805 checks across
+48 suites, and the Release block benchmark self-tests and shows no dropouts
+from 32 to 4096 frames.
+
+---
+
 ## 2026-09-27 — the director's directives: ADR-0184 to ADR-0187
 
 **Why:** one batch from the director before mac's next mission: the device

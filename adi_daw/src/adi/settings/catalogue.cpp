@@ -447,8 +447,6 @@ const std::vector<AbsentRow>& absentRows() {
          "arrives with the UMP parser (P2, ADR-0185)"},
         {"8. Control and protocols / OSCQuery server", Absence::Backlog,
          "arrives with OSCQuery (P2, ADR-0185); off by default when it does"},
-        {"8. Control and protocols / Hardware CV channels", Absence::Backlog,
-         "arrives with the HW CV nodes (P2, ADR-0185)"},
         {"8. Control and protocols / TUIO input", Absence::Backlog,
          "arrives with TUIO (P3, ADR-0185)"},
     };

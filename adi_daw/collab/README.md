@@ -221,6 +221,7 @@ subject, say so in your log instead of writing it twice.
 | 0185 | win | `win/directives-0927` | control and I/O protocols: MIDI 2.0 and MIDI-CI, OSCQuery, hardware CV, TUIO, Ableton Link, from the one feed (director) | used |
 | 0186 | win | `win/directives-0927` | real-time neural inference is DSP: CPU inference that allocates nothing on the audio thread, inside the binary (director; amends ADR-0064) | used |
 | 0187 | win | `win/directives-0927` | the DSP backlog: Pd devices first, Surge's effects mapped onto Live's, the references cloned with their licences read (director) | used |
+| 0188 | win | `win/rulings-0927b` | the director's rulings on v0.9.5's open questions: ADiJ, warp engines, the Pd runtime, surfaces, sync, visual streams, protocols, Pd externals (three points settled with the director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -233,7 +234,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `docs/UI-ARCHITECTURE.md` (the device strip's resizer only, inside mac's area, on the director's instruction, ADR-0184) | win | `win/directives-0927` | 2026-09-27 |
+| `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |

@@ -214,7 +214,7 @@ void testCorruptKeptAside() {
 }
 
 void testApplicationsNeverShare() {
-    section("ADI DAW, ADI Live and aDiJ never read each other's settings (ADR-0145 d10)");
+    section("ADI DAW, ADI Live and ADiJ never read each other's settings (ADR-0145 d10)");
     adi::test::TempDirectory temp("settings", "apps");
     const auto file = temp.path() / "settings.json";
     {
@@ -457,7 +457,7 @@ std::vector<CatalogueRow> readCatalogue() {
 void testCatalogue() {
     section("the catalogue: every row a setting, or deliberately absent with a reason (ADR-0156)");
     const auto rows = readCatalogue();
-    check(rows.size() == 212, "the catalogue has the Settings Reference's 212 rows, read " + std::to_string(rows.size()));
+    check(rows.size() == 211, "the catalogue has the Settings Reference's 211 rows, read " + std::to_string(rows.size()));
 
     std::map<std::string, int> inAnswered, inAbsent;
     for (const auto& a : answeredRows()) ++inAnswered[a.row];
@@ -477,7 +477,7 @@ void testCatalogue() {
     for (const auto& [name, n] : inAbsent) if (!names.count(name)) unknown += "\n        " + name;
     check(unknown.empty(), "every listed row is a row of the catalogue:" + unknown);
     check(answeredRows().size() + absentRows().size() == rows.size(),
-          "answered " + std::to_string(answeredRows().size()) + " + absent " + std::to_string(absentRows().size()) + " = 212");
+          "answered " + std::to_string(answeredRows().size()) + " + absent " + std::to_string(absentRows().size()) + " = 211");
 
     std::string missingKeys;
     bool nonEmpty = true;
