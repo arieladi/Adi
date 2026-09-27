@@ -13918,3 +13918,122 @@ code.
 - which players need Device Library Plus, and the key for writing it (d2);
 - the AAC decoder on Linux (d4);
 - the trademark clearance (d1).
+
+---
+
+## ADR-0183 — The analyser is a Pd device with a published-array contract, a second floating view, and an AGPL escalation taken deliberately — `DECIDED (direction)` (2026-09-27) — **DIRECTOR'S INSTRUCTION; MAKES ADR-0116 EXACT; AMENDS ADR-0050 §"What this does not decide"; DEPENDS ON ADR-0035 AND ADR-0177**
+
+**Director's instruction.** Build the flagship analyser: Adi's Max for Live
+spectrum meter, ported to a Pd DSP tier with a C++ UI, with a big-window mode,
+an EXO tab cloned from sMexoscope, and a spectrogram matching Tritik VISU.
+Four questions were put to him before any code and he ruled on all four; this
+records the rulings and makes ADR-0116 exact where it left the contract open.
+
+### Where this starts from, and what is not there yet
+
+ADR-0116 set the direction — a Pd device may have a second, floating view — and
+left two things open that nothing has since built:
+
+- **libpd is not vendored.** `third_party/` has JUCE, CLAP, airwin2rack and the
+  rest; there is no libpd and no reference to it in `CMakeLists.txt`.
+  `pd_device.hpp` says so itself: the engine adapter "arrives with libpd itself
+  (ADR-0035 has no libpd in the tree yet)". The three patches in `pd/` are
+  artefacts of the direction; nothing opens them.
+- **Published arrays do not exist.** ADR-0116 d2 says the device contract gains
+  them beside parameters. No spelling of `publishedArray` appears in `src/`.
+
+ADR-0177 closes the *parameter* half of that contract and is not merged. So the
+analyser has two hard prerequisites, and neither is the analyser.
+
+### Decisions
+
+1. **The published-array contract is `[adi.array]`, declared exactly as
+   `[adi.param]` is.**
+
+   ```
+   [adi.array $0 <id> <length> <rate> <name>]
+   ```
+
+   It takes ADR-0177's four corrections rather than inventing its own answers,
+   because an author who has learned one declaration should not have to learn a
+   second grammar for the thing beside it:
+
+   - **`$0`** for the same reason — Pd's send/receive names are global within an
+     instance (ADR-0095), so two analysers on two tracks would otherwise write
+     one name.
+   - **`<id>`** is the author's fixed positive integer, never the name. ADR-0177
+     d1's reasoning carries unchanged: a renamed array must not orphan whatever
+     points at it.
+   - **The DAW allocates nothing and scans nothing.** A patch that gains an
+     array changes the project, and a change with no op is what ADR-0003 forbids
+     and what ADR-0177 named as the fatal flaw of "the DAW scans the patch".
+   - **`<rate>`** is how often the patch writes it, in hertz, declared and not
+     guessed. The reader needs it to know what stale means.
+
+2. **Transport is a lock-free double buffer per array, written by the audio
+   thread, read once per frame.** ADR-0116 d3 in its exact form: ADR-0050 d4's
+   meter scalar generalised, not a new mechanism. The array is the unit of
+   atomicity — a reader that saw half of one spectrum and half of the next would
+   draw a frame that never existed in the signal, which is worse than a stale
+   one because it is not wrong in any direction a person could allow for.
+
+3. **OpenGL is approved now, ahead of the step-7 measurement.** ADR-0050 closes
+   with "Whether `ArrangementCanvas` wants an `OpenGLContext` … **Measure it at
+   step 7**, do not assume it now", and ADR-0157 d4 repeats it. The director
+   overrides that deferral for the analyser: the reassigned spectrogram binds
+   its grid to a texture and a fragment shader does the interpolation, colour
+   mapping and scroll. **The deferral stands for `ArrangementCanvas`** — this
+   approval is the analyser's, and the arrangement is still measured at step 7.
+
+4. **There is no second clock.** Rendering is locked to the window's
+   `VBlankAttachment`, which is ADR-0050 §1 unamended. A detached 120 Hz timer
+   was considered and refused: one clock draining coalesced dirt is the decision
+   that makes an agent emitting ops faster than a human survivable, and a
+   spectrogram is not the thing to spend it on. A 120 Hz panel gives 120 frames
+   from the same attachment and needs nothing added.
+
+5. **The EXO tab uses sMexoscope's own buffer, not the scope tap.** It was put
+   to the director that `scope.hpp` already has a lock-free ring with timeline
+   stamps, that ADR-0167 d7 already amended ADR-0050 d4 to permit it, and that a
+   Pd-side buffer would make a third audio-to-UI path in an architecture that
+   counts them. He ruled for the native buffer anyway, and the reason is the
+   stronger one: the tab's value is being a *behavioural clone*, and triggering,
+   freezing and syncing behave the way they do because of the buffer they read.
+   A faithful clone on a different buffer is a different instrument that looks
+   the same. **The count of audio-to-UI paths therefore goes to three**, named
+   here so it stays counted: the meter scalar (ADR-0050 d4), the scope tap
+   (ADR-0167 d7), and this.
+
+6. **The project escalates to AGPL-3.0, deliberately and at project level.**
+   PerceptoMap, whose reassigned-STFT logic is ported directly, is AGPL-3.0.
+   The director accepts it, and the reasoning is that the binary already carries
+   AGPLv3 obligations through JUCE — `CMakeLists.txt` takes the AGPL grant, not
+   the free tier — so declining PerceptoMap to hold a GPLv3 boundary would
+   preserve a boundary that is not there. `LICENSE` says GPL-3.0 and now
+   understates the obligation; correcting it is part of this work, not a
+   footnote to it. The other sources are compatible without escalation:
+   sMexoscope is GPL-3.0, libtfr is `GPL-2.0-or-later` — verified in its
+   headers, not from GitHub's label, which shows only "GPL-2.0" and would have
+   read as a blocker.
+
+7. **What ports from the Max for Live build is the measurement, not the code.**
+   The JS drawing layer is discarded. What carries, with its acceptance numbers,
+   is what was made correct there and would be re-derived wrongly here:
+   coherent-gain calibration (a full-scale sine reads 0.00 dBFS at every block
+   size and window), the 4.5 dB/octave slope pivoting at 1 kHz, RMS ballistics
+   matched to bx_meter, correlation and goniometer, and the autocorrelation
+   period detector with its octave-error and first-local-maximum rules. Each
+   arrives with the test that proved it.
+
+8. **The order is prerequisites first, and the analyser cannot lead.** libpd
+   vendored and running one existing patch end to end; then the array contract
+   above; then the port. Steps that depend on a Pd device the DAW cannot open
+   are not started before it can.
+
+### What this does not decide
+
+Whether the Mel filterbank is applied before or after reassignment. Reassigning
+into mel bins and mel-mapping reassigned coordinates are not the same picture,
+and which is VISU's is a listening-and-looking question, not one to settle from
+the repositories. The ADR that builds the SPG tab decides it, with a reference
+render to compare against.
