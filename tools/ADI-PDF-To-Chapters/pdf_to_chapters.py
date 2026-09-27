@@ -15,9 +15,10 @@ in each file. The rules:
     is a bookmark.
 
 The structure comes from, in order: the PDF's bookmarks; a clickable table of
-contents (link targets; numbering or indentation for depth); heading font sizes.
-Bookmarks that are one- or two-page topics rather than chapters (web-help PDFs)
-are treated as one chapter and cut into balanced parts at topic starts.
+contents (link targets; numbering or indentation for depth); a printed table of
+contents (its page numbers, each checked against the heading on that page); heading
+font sizes. A list of one- or two-page topics rather than chapters (web-help PDFs)
+is treated as one chapter and cut into balanced parts at topic starts.
 
 Two traps it handles. Some PDF writers (WeasyPrint, LibreOffice) give every page
 one resource dictionary naming every image in the book, so a naive split copies
@@ -296,10 +297,16 @@ def set_toc_levels(entries):
     pages (books mirror their margins); else from its type size."""
     nums = [SECTION_NUM_RE.match(e["title"]) for e in entries]
     if sum(1 for m in nums if m) >= 0.8 * len(entries):
+        # some manuals number their chapters "1.0", "2.0": that is still a chapter
+        dot_zero = any(m and m.group(1).endswith(".0") for m in nums)
+
+        def depth(num):
+            return (num[:-2] if dot_zero and num.endswith(".0") else num).count(".") + 1
+
         known = {}  # indent -> level, from the numbered entries, per odd/even page
         for e, m in zip(entries, nums):
             if m:
-                e["level"] = min(m.group(1).count(".") + 1, 4)
+                e["level"] = min(depth(m.group(1)), 4)
                 known.setdefault(e["toc_page"] % 2, []).append((e["x0"], e["level"]))
         for e, m in zip(entries, nums):
             if not m:  # e.g. "Index": the level of the numbered entries nearest its indent
@@ -323,6 +330,74 @@ def set_toc_levels(entries):
         sizes = sorted({e["size"] for e in entries}, reverse=True)
         for e in entries:
             e["level"] = min(sizes.index(e["size"]) + 1, 4)
+
+
+def structure_from_printed_toc(path, reader, pages, n_pages):
+    """Chapters from a printed table of contents (no links): the page numbers it
+    prints, checked by finding each heading on the page it names. Handles a stale
+    contents (entries a page or two out). (None, front_nodes, chapters) or None."""
+    toc_pages, entries = [], []
+    with pdfplumber.open(str(path)) as pdf:
+        for page_no in range(1, min(40, max(6, n_pages // 4)) + 1):
+            lines = []
+            for line in pdf.pages[page_no - 1].extract_text_lines():
+                chars = [c for c in line["chars"] if c["text"].strip()]
+                m = TOC_LINE_RE.match(line["text"].strip())
+                if chars and m and m.group("num").isdigit():
+                    lines.append({"title": m.group("title").strip(" .·…_"), "printed": int(m.group("num")),
+                                  "x0": round(line["x0"]), "toc_page": page_no,
+                                  "size": Counter(round(c["size"], 1) for c in chars).most_common(1)[0][0]})
+            if len(lines) >= 5:
+                toc_pages.append(page_no)
+                entries += [e for e in lines if e["title"]]
+            elif toc_pages:
+                break
+    if len(entries) < 5:
+        return None
+    furthest = 0  # as with a clickable TOC, a big jump back means another list
+    for k, e in enumerate(entries):
+        if e["printed"] < furthest - 2:
+            entries = entries[:k]
+            break
+        furthest = max(furthest, e["printed"])
+
+    def find(e, delta):
+        """Where the entry's heading really is, `delta` pages off its printed number
+        (never on a contents page, where the entry itself is printed)."""
+        page = e["printed"] + delta
+        if not (1 <= page <= n_pages) or page in toc_pages:
+            return None
+        return pages.locate(page, e["title"])
+
+    # printed page numbers need not equal PDF page numbers: find the shift that puts
+    # the first headings on the pages the contents names
+    votes = Counter()
+    for e in entries[:15]:
+        for delta in list(range(0, 9)) + [-1, -2]:
+            if find(e, delta):
+                votes[delta] += 1
+                break
+    if not votes:
+        return None
+    offset = votes.most_common(1)[0][0]
+
+    located, found = 0, []
+    for e in entries:
+        for delta in (offset, offset + 1, offset - 1, offset + 2, offset - 2):
+            top = find(e, delta)
+            if top is not None:
+                located += 1
+                found.append(dict(e, page=e["printed"] + delta, top=top))
+                break
+        else:  # heading not found as text (a picture, or reworded): trust the number
+            page = min(max(e["printed"] + offset, 1), n_pages)
+            found.append(dict(e, page=page, top=None))
+    if located < 0.6 * len(entries):  # the contents doesn't match the pages: don't trust it
+        return None
+    found.sort(key=pos)
+    set_toc_levels(found)
+    front, chapters = nest(found)
+    return (None, front, chapters) if len(chapters) >= 2 else None
 
 
 def structure_from_headings(path, n_pages):
@@ -482,9 +557,10 @@ class Planner:
         def span(c):
             return c["end"] - c["page"] + 1
 
-        # bookmarks that are topics of a page or two, not chapters: treat the whole
-        # book as one chapter and cut it into balanced parts at topic starts
-        if len(chapters) >= 6 and statistics.median(span(c) for c in chapters) <= 3:
+        # a list of topics of a page or two rather than chapters (web help): treat the
+        # whole book as one chapter and cut it into balanced parts at topic starts.
+        # Judged by the longest one -- a real chapter list has some substantial chapters.
+        if len(chapters) >= 6 and max(span(c) for c in chapters) <= 5:
             units = [{"members": chapters, "page": chapters[0]["page"], "top": chapters[0]["top"],
                       "end": chapters[-1]["end"], "packed": True}]
         else:
@@ -535,7 +611,9 @@ class Planner:
                 hi = pos(parts[k + 1][2]) if k + 1 < len(parts) else (10 ** 9, 0)
                 inside = [x for x in entries if lo <= pos(x) < hi] or [{"title": name}]
                 a, b = bare(inside[0]["title"]), bare(inside[-1]["title"])
-                plan.append({"id": f"{uid}{chr(97 + k)}", "name": f"{name} - {a if a == b else f'{a} to {b}'}",
+                full = f"{name} - {a if a == b else f'{a} to {b}'}"
+                plan.append({"id": f"{uid}{chr(97 + k)}", "name": full,
+                             "names": list(dict.fromkeys([full, f"{name} - {a}", name])),
                              "start": s, "end": e, "sections": [x["title"] for x in inside],
                              "cut": None if cut is None else {"title": cut["title"], "above": self.above(cut)}})
         return plan
@@ -638,17 +716,18 @@ def add_bookmarks(writer, lo, hi, top_nodes):
 
 def file_name(p, labels, used_ids, max_len):
     """'06 - Arrangement View [p160-181].pdf', at most max_len characters (Windows
-    paths stop at 260, so the name is shortened to fit the folder it goes in)."""
+    paths stop at 260, so the name is shortened to fit the folder it goes in). A
+    part offers shorter names to fall back on -- "Chapter - First to Last", then
+    "Chapter - First", then "Chapter" -- before anything is cut mid-title."""
     pid = p["id"] if p["id"] is not None else ("00" if "00" not in used_ids else "")
     a, b = labels[p["start"] - 1], labels[p["end"] - 1]
     prefix = f"{pid} - " if pid else ""
     suffix = f" [p{a if p['start'] == p['end'] else f'{a}-{b}'}].pdf"
     room = max(20, max_len - len(prefix) - len(suffix))
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", p["name"].replace(": ", " - "))
-    if len(name) > room and " to " in name:  # "Chapter - First to Last" -> "Chapter - First"
-        name = name.rsplit(" to ", 1)[0]
-    if len(name) > room:
-        name = name[:room - 1].rsplit(" ", 1)[0] + "…"
+    names = [re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", n.replace(": ", " - ")) for n in p.get("names", [p["name"]])]
+    name = next((n for n in names if len(n) <= room), None)
+    if name is None:
+        name = names[-1][:room - 1].rsplit(" ", 1)[0] + "…"
     return prefix + name.rstrip(" .") + suffix
 
 
@@ -677,8 +756,14 @@ def split_pdf(path: Path, max_pages, force, dry_run, verify):
     if not found:
         found, how = structure_from_toc_links(path, reader, pages), "its clickable table of contents"
     if not found:
-        print("  no bookmarks or clickable contents; reading heading sizes...")
-        found, how = structure_from_headings(path, n_pages), "heading type sizes"
+        print("  no bookmarks or clickable contents; reading the printed contents and heading sizes...")
+        from_toc = structure_from_printed_toc(path, reader, pages, n_pages)
+        from_heads = structure_from_headings(path, n_pages)
+        # whichever lists more chapters; on a tie the headings, whose positions are exact
+        if from_toc and (not from_heads or len(from_toc[2]) > len(from_heads[2])):
+            found, how = from_toc, "its printed table of contents"
+        else:
+            found, how = from_heads, "heading type sizes"
     if found:
         doc_title, front, chapters = found
     else:  # nothing to go on: balanced page ranges
