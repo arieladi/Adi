@@ -222,6 +222,7 @@ subject, say so in your log instead of writing it twice.
 | 0186 | win | `win/directives-0927` | real-time neural inference is DSP: CPU inference that allocates nothing on the audio thread, inside the binary (director; amends ADR-0064) | used |
 | 0187 | win | `win/directives-0927` | the DSP backlog: Pd devices first, Surge's effects mapped onto Live's, the references cloned with their licences read (director) | used |
 | 0188 | win | `win/rulings-0927b` | the director's rulings on v0.9.5's open questions: ADiJ, warp engines, the Pd runtime, surfaces, sync, visual streams, protocols, Pd externals (three points settled with the director) | used |
+| 0189 | win | `win/pioneer-refs` | the Pioneer references: six cloned with their licences read; crate-digger's specs under MPL-2.0 close ADR-0188 d8's EPL question | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

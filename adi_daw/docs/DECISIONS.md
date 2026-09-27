@@ -13653,3 +13653,83 @@ was checked against the code, the pinned sources and the licences:
      - ADR-0182's ghost table, and row ids with concurrent ordering;
      - the 169-pixel check against Live;
      - EPL-1.0, if a Pioneer writer ever wants Deep Symmetry's specs.
+
+---
+
+## ADR-0189 — The Pioneer references: six cloned with their licences read, and crate-digger's specs are offered under MPL-2.0, which closes ADR-0188 d8's EPL question — `DECIDED` (2026-09-27) — **REFERENCES ASKED FOR BY THE DIRECTOR; CORRECTS ADR-0188 d8; TWO QUESTIONS FOR THE DIRECTOR**
+
+**The request.** The director relayed five repositories Gemini proposed for
+ADiJ's rekordbox and CDJ work: Vynull, rex, rekordcrate, go-rekordbox and
+pyrekordbox. All five exist.
+- **Cloned into `reference/`:** the five, shallow and unpinned (ADR-0024 d3),
+  plus Deep Symmetry's crate-digger, the source every one of them cites.
+- **Checked:** each licence was read from the repository's own files, and
+  each claim in the code.
+
+### Decisions
+
+1. **What each one is, as checked.** The table is in `EXTERNAL-CODE.md`.
+   - **Vynull** (GPL-3.0, Go, Linux):
+     - a virtual CDJ on the Pro DJ Link network, UDP 50000 to 50002;
+     - a rekordbox USB writer: PDB, ANLZ and settings;
+     - imports from rekordbox XML, from an encrypted `master.db`, and from
+       Traktor.
+
+     Everything the proposal claimed is in the code. It is young: first
+     published in 2026, 19 stars.
+   - **rex** has **no licence at all,** so it is read only. It writes a PDB
+     from a Mixxx library, with no waveforms, beat grids or hot cues, and its
+     author warns against using it at a gig.
+   - **rekordcrate** (MPL-2.0, Rust) parses PDB, ANLZ and settings files.
+     - **It writes them too,** which its README does not say. The structures
+       are `binrw`, which reads and writes, and they have round-trip tests.
+   - **go-rekordbox** (MIT, Go) wraps Rekordbox 6 and 7's desktop
+     `master.db`.
+     - **It hard-codes Rekordbox's SQLCipher key in its source**
+       (`cmd/getencryptionkey`, `internal/schema`).
+     - **Its examples use macOS paths only.**
+   - **pyrekordbox** (MIT, Python) reads `master.db`, XML, ANLZ and
+     MySettings files.
+     - **The key:** it recovers the database key from Rekordbox's own
+       `options.json`, with a de-obfuscation constant in `utils.py`.
+   - **crate-digger** (Deep Symmetry) is a Java library plus the Kaitai specs
+     of the PDB and ANLZ formats.
+     - **Its `LICENSE`** is EPL-2.0 with MPL-2.0 and LGPL-3.0 as secondary
+       licences.
+     - **The spec headers** say `EPL-2.0 OR MPL-2.0 OR LGPL-3.0-only`.
+
+2. **Correction to ADR-0188 d8: the EPL question is closed.**
+   - **What ADR-0188 read:** Mixxx's bundled copy of the specs
+     (`lib/rekordbox-metadata`), which carries an old EPL-1.0 header.
+   - **What upstream offers now:** the same specs under MPL-2.0, which
+     `OPEN_SOURCE_POLICY.md` §3 pre-authorises. MPL-2.0 is file-level
+     copyleft and compatible with GPLv3.
+   - **What ADiJ's Pioneer writer may use:**
+     - crate-digger's specs, taken under MPL-2.0, with those files staying
+       MPL;
+     - rekordcrate (MPL-2.0);
+     - Vynull (GPL-3.0).
+
+     Vynull already does this: it credits rekordcrate for its default PDB
+     table bytes and crate-digger for one format constant.
+   - **Not cloned, and read only if they are:** Deep Symmetry's protocol
+     research, dysentery (EPL-1.0), and beat-link (EPL-2.0, secondary
+     licences not checked). Vynull's own implementation of the protocol is
+     GPL-3.0.
+
+**Still open, for the director:**
+- **The Rekordbox desktop library.** Rekordbox 6 and 7 encrypt `master.db`
+  with SQLCipher. The three tools that read it take three positions on the
+  key:
+  - go-rekordbox ships it;
+  - pyrekordbox recovers it;
+  - Vynull ships none and asks the user.
+
+  This is a legal question, not a licence one. The recommendation:
+  - ADiJ imports Rekordbox's own XML export first, which is not encrypted;
+  - ADiJ never ships or recovers a key;
+  - a `master.db` import, if wanted, takes a key the user supplies, as
+    Vynull does.
+- **ADiJ as a source on Pro DJ Link.** Vynull shows ADiJ could appear to CDJs
+  as a rekordbox source over the network, with no USB stick. It is not in
+  `FEATURES.md` until it is ruled.

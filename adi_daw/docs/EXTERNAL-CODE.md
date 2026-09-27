@@ -103,7 +103,7 @@ Cloned shallow into `reference/`, each licence read from the repository's own fi
 |---|---|---|---|---|
 | [`ANATOMY`](https://github.com/OTODESK4193/ANATOMY) | **AGPL-3.0** | 11 MB | ✅ with attribution — the project that copies it becomes AGPLv3; `adi_daw` clones the behaviour | OTT-style multiband: `HpssSeparator` splits harmonic and percussive parts with a cos² crossfade, before three-band upward and downward compression |
 | [`FrequencyShifter`](https://github.com/Speechrezz/FrequencyShifter) | MIT | 0.2 MB | ✅ with attribution | A frequency shifter on Signalsmith's IIR Hilbert filter: Shifter's Freq mode |
-| [`mixxx`](https://github.com/mixxxdj/mixxx) | GPL-2.0-**or-later** (its `LICENSE`; `COPYING` alone says only "version 2") | 208 MB | ✅ with attribution | ADiJ's reference, never forked (ADR-0188 d8): the filter effect (`src/effects/backends/builtin/filtereffect.cpp`) and the beat-grid heuristics (`src/track/beatutils.cpp`). Its rekordbox reader is generated from Deep Symmetry's Kaitai specs (`lib/rekordbox-metadata/*.ksy`), **EPL-1.0**: not in the policy and GPL-incompatible, so read only |
+| [`mixxx`](https://github.com/mixxxdj/mixxx) | GPL-2.0-**or-later** (its `LICENSE`; `COPYING` alone says only "version 2") | 208 MB | ✅ with attribution | ADiJ's reference, never forked (ADR-0188 d8): the filter effect (`src/effects/backends/builtin/filtereffect.cpp`) and the beat-grid heuristics (`src/track/beatutils.cpp`). Its rekordbox reader is generated from Deep Symmetry's Kaitai specs (`lib/rekordbox-metadata/*.ksy`), whose old header says **EPL-1.0**; upstream crate-digger now offers the same specs under MPL-2.0 (ADR-0189), so take them from there |
 | [`BespokeSynth`](https://github.com/BespokeSynth/BespokeSynth) | GPL-3.0 | 70 MB | ✅ with attribution | Redux: `BitcrushEffect` does sample-and-hold downsampling and bit-depth quantization. It has no jitter |
 | [`bitcrusher`](https://github.com/p0p-vst3/bitcrusher) | GPL-3.0 | 0.2 MB | ✅ with attribution | Redux's bits and rate; no jitter |
 | [`trainsient`](https://github.com/p0p-vst3/trainsient) | GPL-3.0 | 0.2 MB | ✅ with attribution | A transient designer (ADR-0176 d4) |
@@ -121,6 +121,19 @@ Cloned shallow into `reference/`, each licence read from the repository's own fi
 | [`soundshed-guitar`](https://github.com/webprofusion/soundshed-guitar) | **AGPL-3.0** | 190 MB | ✅ with attribution — the project that copies it becomes AGPLv3 | A guitar suite around NAM with a signal graph |
 | [`ToobAmp`](https://github.com/rerdavies/ToobAmp) | MIT (with bundled BSD-3 and MPL-2.0 parts) | 51 MB | ✅ with attribution; check each bundled part's header | Neural amps and classic pedal models |
 | [`link`](https://github.com/Ableton/link) | GPL-2.0-**or-later**, or commercial | small | ✅ — to be pinned into `third_party/` when built (ADR-0185 d7) | Tempo, beat and phase sync |
+
+### The Pioneer references of 2026-09-27 (ADR-0189)
+
+Gemini's five proposals for ADiJ's rekordbox and CDJ work, and the spec they all cite. Cloned shallow into `reference/`, each licence read from the repository's own files. Rekordbox's desktop database key is a legal question, not a licence one, and it waits for the director (ADR-0189).
+
+| Repo | Licence | Size | Copy? | Read it for |
+|---|---|---|---|---|
+| [`vynull`](https://github.com/vynulldev/vynull) | GPL-3.0 | 3.6 MB | ✅ with attribution | A virtual CDJ on Pro DJ Link (UDP 50000–50002); a rekordbox USB writer (PDB, ANLZ, settings); imports from rekordbox XML, an encrypted `master.db` (the user supplies the key) and Traktor. Go, Linux; first published 2026 |
+| [`rex`](https://github.com/kimtore/rex) | **none found** | 0.7 MB | ❌ read only (policy §3) | A PDB writer for a Mixxx library; no waveforms, beat grids or hot cues; not for gigs, by its README |
+| [`rekordcrate`](https://github.com/Holzhaus/rekordcrate) | MPL-2.0 | 6 MB | ✅ file-level: copied files stay MPL | Reads **and writes** PDB, ANLZ and settings files (`binrw`, round-trip tests). Rust |
+| [`go-rekordbox`](https://github.com/dvcrn/go-rekordbox) | MIT | 4.4 MB | ✅ with attribution, **but not its key** | Rekordbox 6/7 desktop `master.db` in Go. It hard-codes Rekordbox's SQLCipher key; its examples use macOS paths only |
+| [`pyrekordbox`](https://github.com/dylanljones/pyrekordbox) | MIT | 8 MB | ✅ with attribution, **but not its key recovery** | Reads `master.db`, XML, ANLZ and MySettings. It recovers the key from Rekordbox's `options.json` with a constant in `utils.py` |
+| [`crate-digger`](https://github.com/Deep-Symmetry/crate-digger) | EPL-2.0, with MPL-2.0 or LGPL-3.0 as secondary licences; the `.ksy` headers say `EPL-2.0 OR MPL-2.0 OR LGPL-3.0-only` | 1.4 MB | ✅ under MPL-2.0 (ADR-0189 d2) | The Kaitai specs of the PDB and ANLZ formats, the source every tool above cites |
 
 **Decided by `OPEN_SOURCE_POLICY.md` (ADR-0094).** Every project is open source:
 MIT by default, GPLv3 once it copies from a GPL or LGPL source. So everything above

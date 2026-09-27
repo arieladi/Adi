@@ -5,6 +5,27 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-27 — ADR-0189: the Pioneer references, and the EPL question closed
+
+**Why:** the director relayed Gemini's five repositories for ADiJ's rekordbox
+and CDJ work. All five exist; I cloned them and crate-digger, the spec they all
+cite, and read each licence and each claim in the code.
+
+**What I found:**
+- **rex has no licence:** read only. Vynull (GPL-3.0) does all it claims: a
+  virtual CDJ on Pro DJ Link, a PDB/ANLZ USB writer, imports.
+- **rekordcrate writes as well as reads** (`binrw`, round-trip tests), which
+  its README does not say.
+- **The key:** go-rekordbox hard-codes Rekordbox's SQLCipher key, and
+  pyrekordbox recovers it from `options.json`. Vynull ships none. The
+  director decides; I recommend XML import first and never shipping or
+  recovering a key.
+- **My ADR-0188 d8 read an old header.** Mixxx's bundled Kaitai specs say
+  EPL-1.0, but crate-digger's current specs are `EPL-2.0 OR MPL-2.0 OR
+  LGPL-3.0-only`. MPL-2.0 is pre-authorised, so the EPL question is closed.
+
+---
+
 ## 2026-09-27 — ADR-0188: the director's rulings on v0.9.5's open questions
 
 **Why:** the director ruled on every open question in Master Reference v0.9.5
