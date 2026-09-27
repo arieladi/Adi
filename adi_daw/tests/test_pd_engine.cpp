@@ -41,6 +41,10 @@ extern "C" {
 
 #include <cmath>
 #include <cstdio>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -407,6 +411,23 @@ void testAClosedEngineStillPassesAudio() {
 // ADR-0188 d8 -- no Pd external is ever loaded from disk
 // ---------------------------------------------------------------------------
 
+/// Makes the Windows loader FAIL rather than ASK, for the length of a scope.
+/// A no-op everywhere else. See the use site for why this test needs it and
+/// the engine does not.
+struct ErrorModeGuard {
+#ifdef _WIN32
+    UINT previous = 0;
+    ErrorModeGuard()
+        : previous(SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX |
+                                SEM_NOOPENFILEERRORBOX)) {}
+    ~ErrorModeGuard() { SetErrorMode(previous); }
+#else
+    ErrorModeGuard() = default;
+#endif
+    ErrorModeGuard(const ErrorModeGuard&) = delete;
+    ErrorModeGuard& operator=(const ErrorModeGuard&) = delete;
+};
+
 /// A temporary directory that cleans itself up, so the fault below is planted
 /// in a place no other test can see.
 struct TempDir {
@@ -522,6 +543,24 @@ void testPdWouldReachAnExternalBesideThePatch() {
     // Raw libpd is driven here rather than LibPdEngine, deliberately: the
     // engine refuses this directory, which is the point, so proving the danger
     // has to go around the engine.
+    // WINDOWS WILL STOP AND ASK, AND ON A CI RUNNER NOBODY ANSWERS. This test
+    // asks Pd to load files that are not libraries, and on Windows that is
+    // `LoadLibrary` on something that is not a PE image. Without
+    // SEM_FAILCRITICALERRORS the loader raises a HARD ERROR and Windows puts a
+    // modal "Bad Image" box on a desktop no one is looking at -- the process
+    // waits for a click that never comes.
+    //
+    // Measured, not guessed at: this section printed its heading on
+    // windows-latest and never printed another line, while the same binary
+    // runs it in milliseconds on macOS and Linux, where `dlopen` on a text
+    // file simply returns an error.
+    //
+    // The ENGINE is not exposed to this -- it refuses the directory before Pd
+    // ever sees it, which is the guard ADR-0188 d8 asks for. Only this test is,
+    // because its whole job is to go around the engine and prove the danger is
+    // real. So the error mode is set here and nowhere else.
+    [[maybe_unused]] const ErrorModeGuard quietLoaderFailures;
+
     TempDir tmp("attack");
     tmp.copyFixture("adi-external-user.pd");
     // One file per extension the engine refuses, so this measures Pd's real

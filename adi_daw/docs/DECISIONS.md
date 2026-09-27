@@ -14301,6 +14301,29 @@ here rather than noted. All of the below is asserted in
       `extern`, is libpd's own knob for it, and it is set unconditionally
       because on ELF and Mach-O `EXTERN` is already plain.
 
+    - **The Pd tier built on MSVC and then a TEST hung for 4h39m**, and the
+      hang is the strongest argument for d8 that has turned up yet. The
+      planted-fault section drops a file named `adi_probe_external.dll` beside
+      a patch and lets Pd's real loader reach it. On Windows that is
+      `LoadLibrary` on something that is not a PE image, and without
+      `SEM_FAILCRITICALERRORS` the loader raises a HARD ERROR: Windows puts a
+      modal "Bad Image" box on a desktop nobody is looking at and the process
+      waits for a click that never comes. The same binary runs that section in
+      milliseconds on macOS and Linux, where `dlopen` on a text file just
+      returns an error.
+
+      **So on Windows, a malformed library beside a patch does not merely load
+      foreign code -- it can HANG THE HOST**, before any of it runs. The engine
+      is not exposed, because it refuses the directory before Pd sees it, which
+      is exactly the guard d8 asks for; only the test is, because its job is to
+      go around the engine and prove the danger is real. The error mode is set
+      there and nowhere else.
+
+      **It cost 4h39m to find because nothing was bounded.** `ctest --timeout`
+      and a `timeout-minutes` on the step now name a hung test in eighteen
+      minutes instead of burning GitHub's six-hour limit in silence -- win's
+      fix for the five-hour macOS job, applied where it was still missing.
+
     **CI needed no change.** The Windows leg already runs
     `fetch_external.sh --build-only`, configures, builds and runs `ctest`, so
     the tier turns itself on when the dependency is present and the Pd suites
