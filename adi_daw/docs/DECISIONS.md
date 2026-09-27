@@ -14030,6 +14030,54 @@ analyser has two hard prerequisites, and neither is the analyser.
    above; then the port. Steps that depend on a Pd device the DAW cannot open
    are not started before it can.
 
+### What building the runtime found, and what it changes
+
+libpd is now vendored, pinned and running, and three things turned up that were
+not visible from the ADRs. All three are measured, in
+`tests/test_pd_engine.cpp`.
+
+9. **`$0` is unique per INSTANCE, not per process, and ADR-0095 decision 1
+   assumed otherwise.** `$0` comes from `canvas_getdollarzero()`, which is
+   per-instance state. With PD_MULTI on -- and it must be on, see the CMake
+   comment -- opening the same patch in two instances returns the SAME `$0`
+   both times, so both build the receive name `1003-report_latency` and one
+   table keyed on `$0` cannot tell them apart. The routing table is therefore
+   per instance, and the float hook asks `libpd_this_instance()` for the only
+   context it has. Inside an instance ADR-0095's reasoning is untouched.
+
+10. **The `[loadbang]` latency report cannot be received, by anyone.** The
+    receive name is built from `$0`; `$0` is only knowable from the opened
+    patch; `[loadbang]` fires inside `libpd_openfile`. So the early report has
+    already been sent to nobody before a host can bind, whatever order the host
+    uses. ADR-0095 decision 2 frames the query after `prepare` as a correction
+    for a value sent at the wrong sample rate. It is not a correction: it is the
+    only report a host ever gets, which makes it load-bearing rather than
+    belt-and-braces -- without it a patch's latency is never learned at all.
+
+11. **The patches in `pd/` are abstractions, and libpd cannot render one.**
+    `adi-rmsc.pd`, `adi-eq8.pd` and `adi-limiter.pd` are `inlet~`/`outlet~` with
+    no `adc~` and no `dac~`. `libpd_openfile` opens a patch as a TOP-LEVEL
+    canvas, where `inlet~` connects to nothing. The patch opens, Pd renders its
+    blocks, and every output sample is zero, with no error anywhere to say why.
+    A device patch has to reach `adc~`/`dac~` somehow and there are three ways
+    -- write device patches as top-level canvases; generate a wrapper per
+    device that instantiates the abstraction between `adc~` and `dac~`; or keep
+    abstractions and pass the wrapper's `$0` in as `$1`, which changes
+    ADR-0177's grammar. **The second breaks the latency protocol** as it
+    stands: the
+    abstraction's `$0` is not the wrapper's, and `libpd_getdollarzero` returns
+    the wrapper's, so the host cannot address the patch it opened. That is the
+    question to settle before any device patch is written, and it is win's,
+    since `tools/gen_pd_patches.py` and ADR-0096 own those patches.
+
+12. **The block adapter costs one Pd block, reported.** `NodeIo` carries a
+    segment, not a block, so an event at frame 100 splits 512 into 100 and 412
+    and the engine practically never sees a multiple of 64. `PdPatchEngine`
+    gains `adapterLatencySamples()`, defaulting to 0 so the contract's own
+    fakes are unaffected, and `PdDevice::latencySamples()` adds it to what the
+    patch reports. A patch reporting 0 through an engine that delays 64 is
+    the misalignment ADR-0058 exists to remove.
+
 ### What this does not decide
 
 Whether the Mel filterbank is applied before or after reassignment. Reassigning

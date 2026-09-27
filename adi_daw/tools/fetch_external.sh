@@ -6,8 +6,10 @@
 #   bash adi_daw/tools/fetch_external.sh --third-party-only
 #
 # Both target directories are gitignored: each clone is its own git repo, the
-# same arrangement as VST-ADI/vital. Submodules are deliberately NOT fetched;
-# none of the reference repos needs to build for us to read it.
+# same arrangement as VST-ADI/vital. Submodules are NOT fetched by default --
+# none of the reference repos needs to build for us to read it -- and an entry
+# that genuinely needs one says `submodules` in a seventh column. libpd is the
+# only one: pure-data is a submodule and is the DSP itself.
 #
 # The licence boundary these two directories encode is not cosmetic. See
 # docs/EXTERNAL-CODE.md before copying a single line out of reference/.
@@ -69,6 +71,11 @@ THIRD_PARTY=(
   "bungee-audio-stretch/bungee  bungee      MPL-2.0   v2.4.30   8cb6977d0c1a1b411ac320493b3c7f5182ed2d22  later"
   "DNedic/lockfree              lockfree    MIT       3.0.1     ae6c4df124536218b0b1adfc21ab4921810a00a5  later"
   "free-audio/clap              clap        MIT       1.2.10    195b42a004144fab0b3cf95e9c067187d15365b7  build"
+  # libpd is the one entry with a submodule, and it is not optional: pure-data
+  # IS the DSP -- libpd without it is a wrapper around nothing. Its commit is
+  # fixed by libpd's own tree, so the pin below still answers "what did we build
+  # against" with one hash. ADR-0035, ADR-0183.
+  "libpd/libpd                  libpd       BSD-3-Clause 0.16.1 ba0dc63262901d658af8bbda5e619a60fa975e78  build submodules"
   "baconpaul/airwin2rack        airwin2rack MIT       -         b6eef0af60cd32641b09837096e41bbcdb030341  build"
   "juce-framework/JUCE          JUCE        AGPL-3.0  9.0.2     72782788ce18c2d4d760b28e0921d6ffc6431102  juce"
 )
@@ -108,8 +115,8 @@ REFERENCE=(
 
 # --- pinned: third_party/ ---------------------------------------------------
 fetch_pinned() {
-    local repo dir lic tag want role path
-    read -r repo dir lic tag want role <<<"$1"
+    local repo dir lic tag want role sub path
+    read -r repo dir lic tag want role sub <<<"$1"
     path="third_party/$dir"
 
     if [ "$role" = juce ] && [ "$WANT_JUCE" = 0 ] && [ "$WANT_ALL_THIRD_PARTY" = 0 ]; then
@@ -151,6 +158,13 @@ fetch_pinned() {
         printf '  %-18s cloning...    ' "$dir"
         git clone --depth 1 --branch "$tag" -c advice.detachedHead=false -q \
             "https://github.com/$repo.git" "$path" 2>/dev/null || true
+    fi
+
+    # A submodule is fetched only where the table asks. Shallow, like the parent:
+    # the gitlink in the parent's tree names the exact commit, so depth 1 still
+    # lands on it.
+    if [ "$sub" = submodules ] && [ -d "$path/.git" ]; then
+        git -C "$path" submodule update --init --depth 1 --recursive -q 2>/dev/null || true
     fi
 
     # A tag is a mutable ref. Matching the tag name proves nothing about the
