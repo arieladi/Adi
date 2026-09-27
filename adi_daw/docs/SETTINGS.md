@@ -121,7 +121,7 @@ bundle.zip
 
 ## 7. The catalogue (ADR-0156)
 
-`docs/SETTINGS-CATALOGUE.md` lists the Settings Reference's 207 rows, and the
+`docs/SETTINGS-CATALOGUE.md` lists the Settings Reference's 212 rows, and the
 registry is filled from it. `catalogue.{hpp,cpp}` puts every row in exactly
 one of two lists, and `tests/test_settings.cpp` reads the catalogue and proves
 the split.
@@ -130,13 +130,13 @@ the split.
   may answer several rows: Part III's Cubase, Bitwig and REAPER rows mostly
   point back to settings on Live's pages, and `audio.bufferSize` answers both
   Audio and Engine.
-- **Absent: 61 rows.** Each has a kind and a reason:
+- **Absent: 66 rows.** Each has a kind and a reason:
 
   | Kind | When | Rows |
   |---|---|---|
   | rejected | the catalogue says REJECTED | 10 |
   | note | NOTE | 2 |
-  | backlog | BACKLOG: arrives with its feature | 13 |
+  | backlog | BACKLOG: arrives with its feature | 18 |
   | wish | WISH: not planned | 3 |
   | not a setting | decided or proposed, but a behaviour, a command, a display or a fixed rule | 33 |
 

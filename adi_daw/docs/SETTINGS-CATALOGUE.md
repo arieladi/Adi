@@ -319,4 +319,14 @@ this file by hand.
 | Freeze | ADR-0059: freeze renders with tails; the tail length and whether muted clips freeze silent (REAPER §22.6.8). | DECIDED ADR-0059 |
 | Racks and macros | ADR-0060, ADR-0114: macro curve editing defaults (breakpoint count). | BACKLOG ADR-0060 |
 
-207 settings.
+## Part IV — The pages only ADI needs / 8. Control and protocols
+
+| Setting | ADI | Status |
+|---|---|---|
+| Control API: paired surfaces and visual streams | ADR-0181 d2, ADR-0184 d4: the paired clients, each revocable, and the streams each one holds. Raw audio is capped, and marked while a client holds it. Loopback only. | BACKLOG ADR-0181, ADR-0184 |
+| MIDI 2.0 input (UMP) | ADR-0185 d2: which ports deliver UMP, parsed into per-note expression. Arrives with the parser. | BACKLOG P2, ADR-0185 |
+| OSCQuery server | ADR-0185 d4: off by default. The network interface, an optional list of client addresses, and read-only. OSC has no authentication, so nothing listens until the user opens it. | BACKLOG P2, ADR-0185 |
+| Hardware CV channels (outputs and inputs) | ADR-0185 d5: which interface channels are CV, each marked DC-coupled by the user; a CV channel is never the main or monitor output; a per-output calibration for 1 V/octave. | BACKLOG P2, ADR-0185 |
+| TUIO input | ADR-0185 d6: off until opened, with its UDP port (3333). Windows touch screens need none of it: JUCE delivers their multi-touch natively. | BACKLOG P3, ADR-0185 |
+
+212 settings.

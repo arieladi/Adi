@@ -30,6 +30,10 @@ references to clone.
   (P2, off by default, because OSC has no authentication); hardware CV (P2,
   three safeguards: marked DC coupling, never a main or monitor output,
   calibration); TUIO (P3); Ableton Link (P1, GPL-2.0-or-later).
+- **Settings: a Control and protocols page** (Part V §4.8 of the master): the
+  control API's paired surfaces and streams, MIDI 2.0 input, OSCQuery, CV
+  channels and TUIO, five BACKLOG rows. The catalogue has 212 rows; the
+  test and `SETTINGS.md` moved with it (absent 66, backlog 18).
 - **ADR-0186, real-time inference is DSP.** The ADR-0010 test decides, not
   the word "neural": CPU only, nothing allocated in `process`, no Python. A
   model is data with its own licence. Generative models stay behind RPC.
