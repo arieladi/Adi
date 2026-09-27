@@ -13918,3 +13918,120 @@ code.
 - which players need Device Library Plus, and the key for writing it (d2);
 - the AAC decoder on Linux (d4);
 - the trademark clearance (d1).
+
+---
+
+## ADR-0192 — Color-bass devices as Pd devices on compiled-in externals, a sample slot in the Pd contract, pthreads4w for Windows, and win_codex joins — `DECIDED (direction)` (2026-09-27) — **DIRECTOR'S DIRECTIVE; EXTENDS ADR-0177, ADR-0187 AND ADR-0188 d8; GRANTS ONE DEPENDENCY**
+
+**Director's directive:**
+- **The request.** Add tools for making color bass, as in Au5's *6 Ways to
+  Color Bass*:
+  - a chord resonator in the manner of Xynth's Rezonator;
+  - a time-stripped formant filter in the manner of Melda's MCabinet.
+
+  A plan relayed from Gemini proposed both as Pd devices.
+- **Pd devices first.** Asked whether to ship them first as CLAP plug-ins,
+  which could be heard today, the director chose Pd devices first
+  (ADR-0187 d1).
+- **pthreads4w** is granted for the Pd tier on Windows.
+- **A new agent.** The work goes to win_codex, a new agent on this PC.
+
+Checked against Surge's code in the adi-surge tree, #138, ADR-0114, ADR-0177,
+ADR-0183 and ADR-0188.
+
+### Decisions
+
+1. **Two devices, each a thin `.pd` wrapper over a C++ external compiled into
+   the engine** (ADR-0188 d8). Working names only: behaviour is cloned and
+   names are not (ADR-0093), so the director names the shipped devices.
+   - **"Chord Comb":** six tuned comb resonators; `[adi.combchord~]`.
+   - **"Color Cab":** a formant filter built from a dropped sample;
+     `[adi.colorcab~]`.
+
+   The DSP lives in `src/adi/dsp/` with unit tests, where ADI RMSC's does.
+   The externals only adapt it to Pd.
+
+2. **Chord Comb, and six corrections to the relayed plan:**
+   - **Surge's Resonator is three band-pass filters, not combs.** The comb
+     bank is Surge's **Combulator**: three tuned combs with bipolar feedback
+     and a tone control, GPL-3.0-or-later. Combulator is the DSP reference.
+     Xynth's internals are not public, so its behaviour is cloned from its
+     documentation and by ear.
+   - **Negative feedback drops the note an octave.** A comb with delay *T* and
+     inverted feedback resonates at the odd harmonics of 1/(2*T*). So the
+     Square mode halves the delay to keep the pitch.
+   - **Vanilla Pd cannot build it.** A `delwrite~`/`delread4~` feedback loop
+     is at least one Pd block long: 64 samples, 750 Hz at 48 kHz. That is why
+     the comb is an external. (`vd~` is `delread4~` today.)
+   - **Decay is a time, not a feedback amount.** A fixed feedback makes high
+     notes die faster. Decay is a T60 in seconds, and each comb's gain is
+     computed from its own loop length: *g* = 10^(−3·*T*/T60).
+   - **Color is a low-pass inside the loop, and it flattens the pitch.** The
+     loop is shortened by the filter's phase delay at the fundamental.
+   - **Tuning:**
+     - **The States are the device's own stepped parameter,** eight stored
+       chords. The Multimapper (ADR-0114) is not built, and its curves would
+       glide the pitches between chords.
+     - **MIDI tuning waits for MIDI into Pd devices,** which is not built
+       (#138 has none). `[adi.transport]` carries no MIDI, and ADR-0177
+       defines no MIDI object.
+     - **When MIDI arrives it lands at block boundaries,** through libpd's
+       `[notein]`.
+
+3. **Color Cab, and three corrections:**
+   - **The pipeline stands:**
+     1. the sample's magnitude spectrum, averaged over the file;
+     2. flattened by a power γ;
+     3. smoothed across frequency;
+     4. shifted by the pitch control;
+     5. turned into a minimum-phase FIR through the real cepstrum;
+     6. convolved directly, with no latency.
+   - **Smoothing is in fractions of an octave, not fixed bins.**
+   - **The kernel length decides the lowest shape it can hold.** 256 taps at
+     48 kHz resolve about 190 Hz; the Size menu reaches 1024 taps (about
+     47 Hz).
+   - **The kernel is never built on the audio thread, and never swapped
+     abruptly.**
+     - **Where it is built:** in ADI, Pd runs on the audio thread, so "the
+       external computes in the background" has no background. The host
+       builds the kernel on a worker.
+     - **How it is swapped:** through a crossfade between two convolvers
+       (about 20 ms), because swapping coefficients in place clicks.
+
+4. **The Pd contract gains a sample slot, `[adi.sample $0 <id> <name>]`.**
+   It is a sibling of `[adi.param]` and `[adi.array]`, with the same fixed-id
+   rule.
+   - **The host decodes the file:** into the cache (ADR-0132), off the audio
+     thread.
+   - **The host hands it over:** the decoded buffer goes to the external's
+     slot through a lock-free handoff, never as Pd messages.
+   - **Device state keeps two things:**
+     - the media's BLAKE3 hash (ADR-0127);
+     - the device's derived data (Color Cab's smoothed magnitude profile).
+
+     So a project still plays when the media file is missing.
+   - **The drop tile** on the DAW-drawn panel is the UI owner's, in step 7.
+
+5. **pthreads4w, version 3, is granted for the Pd tier on Windows.**
+   - **The licence:** Apache-2.0 except four files, which are read at the
+     pinned commit before the pin lands (ADR-0024).
+   - **How it arrives:** it is fetched and pinned by `tools/fetch_external.sh`
+     like every dependency.
+   - **The result:** `ADI_WITH_PD` is then on for MSVC, in CI and on this PC.
+
+6. **win_codex joins the roster.**
+   - **Who it is:** the Codex app on the Windows PC, full access, in its own
+     worktree and on `codex/` branches.
+   - **What it owns:** the color-bass devices' DSP, externals, `.pd` files and
+     tests.
+   - **What it never touches:** `src/juce/**`, CI, `tools/fetch_external.sh`,
+     UI, schema, ADR numbers or claims without win.
+   - **Its PRs:** win reviews and merges them for its first missions.
+   - **The host side it depends on is mac's analyser session,** which owns
+     the Pd engine: the built-ins registration, MIDI into Pd devices, the
+     sample slot, and the Windows tier.
+
+**Still open:**
+- the shipped names;
+- the Chord Comb's MIDI mode, until MIDI into Pd devices exists;
+- the drop tile, in step 7.
