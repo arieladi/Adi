@@ -216,7 +216,7 @@ subject, say so in your log instead of writing it twice.
 | 0180 | mac | (mac's return mission) | held for mac | reserved |
 | 0181 | win | `win/surfaces-collab` | external control surfaces: relative input at the edge, the loopback control API's surface client, one parameter feed; the Stream Deck + XL first (director) | used |
 | 0182 | win | `win/surfaces-collab` | collaboration, hosting and backups: local by default, an op stream to the user's bucket, drives for backups, author-chosen media, previewed application (director) | used |
-| 0183 | mac | `mac/pd-analyser-wip` | the Pd spectrum analyser (ADR-0116), from the second session on the Mac; renumbered from the ADR-0179 it spent locally; the director keeps the work (2026-09-27) | reserved |
+| 0183 | mac | `mac/pd-analyser-wip` | the Pd spectrum analyser (ADR-0116), from the second session on the Mac; renumbered from the ADR-0179 it spent locally; the director keeps the work (2026-09-27) | used |
 | 0184 | win | `win/directives-0927` | the device strip grows taller than Live's, never shorter; visual array streams on the control API (director) | used |
 | 0185 | win | `win/directives-0927` | control and I/O protocols: MIDI 2.0 and MIDI-CI, OSCQuery, hardware CV, TUIO, Ableton Link, from the one feed (director) | used |
 | 0186 | win | `win/directives-0927` | real-time neural inference is DSP: CPU inference that allocates nothing on the audio thread, inside the binary (director; amends ADR-0064) | used |
@@ -245,6 +245,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
+| `src/juce/pd_*`, `src/adi/engine/published_array.hpp`, `pd/**`, `tests/pd/**`, `tests/test_pd_*.cpp`, `collab/mac-analyser.md`, `adi-m4l-analyzer/**` | mac (second session) | `mac/pd-analyser-wip` | 2026-09-27 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`

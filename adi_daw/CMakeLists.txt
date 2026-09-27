@@ -189,6 +189,11 @@ add_library(adi_core STATIC
     src/juce/clap_host.cpp
     src/juce/device_host.cpp
     src/juce/pd_device.cpp
+    # The static declaration parse (ADR-0177 fix 3, ADR-0183): no libpd in it
+    # at all, deliberately -- the declared set must never depend on Pd running,
+    # which is also why it is built on every ABI including the ones where the
+    # runtime below is not.
+    src/juce/pd_declarations.cpp
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
@@ -237,6 +242,95 @@ endif()
 target_include_directories(adi_core SYSTEM PUBLIC "${ADI_THIRD_PARTY}/clap/include")
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
 target_link_libraries(adi_core PRIVATE adi_warnings adi_blake3 adi_miniz)
+
+# ---------------------------------------------------------------------------
+# libpd -- the Pure Data runtime (ADR-0035, ADR-0183).
+#
+# PD_MULTI IS NOT OPTIONAL HERE, and it is the one setting worth explaining.
+# Plain libpd is a SINGLE Pd instance per process: every open patch shares one
+# DSP graph, one sample rate, one block size, and one `libpd_process_float`
+# call that runs all of them together. A DAW needs the opposite -- a device in
+# track 1's chain processed when the graph reaches track 1, at that node's block
+# size, with its own latency (ADR-0095). PD_MULTI compiles pure-data with
+# PDINSTANCE, giving one `t_pdinstance` per device and `libpd_set_instance` to
+# choose it, which is what makes a Pd patch a device rather than a session-wide
+# effect.
+#
+# It lives in adi_core, not behind ADI_WITH_JUCE, for the reason stated above
+# device_core and clap_host: libpd is a C library with no GUI and no plugin SDK,
+# so it compiles on every ABI, and the Pd tier's tests run on all seven rather
+# than in the one JUCE job.
+#
+# Shared is off: we link one static archive and ship no libpd.dylib for anyone
+# to mistake for a plug-in. The C examples follow the shared build and go too.
+#
+# PD_LOCALE is left ON, as upstream has it. Pd parses "1.5" out of patch files
+# with the C library's float parser, so a host process running under a
+# comma-decimal locale would read every float in every patch wrong. It sets
+# LC_NUMERIC process-wide, which is intrusive for a host -- but a DAW that
+# silently misreads its own device patches on a French machine is worse than one
+# that formats a number differently, and every DAW that embeds Pd takes this.
+#
+# ADI_WITH_PD IS ON EVERYWHERE THE DEPENDENCY CAN BE BUILT, and OFF on MSVC
+# unless someone provides pthreads -- which is upstream's requirement, not a
+# choice made here. libpd's own CMakeLists fails hard under MSVC without
+# PTHREADS_LIB and PTHREADS_INCLUDE_DIR ("Please provide a path to the pthreads
+# library and its headers"), because Pd threads with pthreads and MSVC ships no
+# implementation. GCC and clang on Windows would use winpthreads; MSVC has
+# nothing.
+#
+# Closing that means ADDING A SHIPPED DEPENDENCY -- pthread-win32, or vcpkg's
+# copy of it -- and EXTERNAL-CODE.md's rows say who decides that: several are
+# marked "director-granted". So the Pd tier is gated rather than that decision
+# being taken here, and ADR-0183 d24 states the two options and their costs.
+#
+# WHAT IS NOT GATED: the declaration parse. ADR-0177 fix 3 puts the declared set
+# behind a static parse with Pd not running, so it has no libpd in it, and it
+# and its tests build on every ABI including this one. The half of ADR-0188 d8
+# that refuses [declare -lib] from the patch text is therefore still tested on
+# Windows; the half that scans directories is not.
+option(ADI_WITH_PD "Build the Pure Data device tier (needs libpd)" ON)
+if(ADI_WITH_PD AND MSVC AND (NOT PTHREADS_LIB OR NOT PTHREADS_INCLUDE_DIR))
+    message(STATUS
+        "ADI_WITH_PD off: libpd needs pthreads under MSVC and none was given. "
+        "Pass -DPTHREADS_LIB=<...> -DPTHREADS_INCLUDE_DIR=<...> to build it. "
+        "See ADR-0183 d24.")
+    set(ADI_WITH_PD OFF)
+endif()
+
+if(ADI_WITH_PD)
+if(NOT EXISTS "${ADI_THIRD_PARTY}/libpd/libpd_wrapper/z_libpd.h")
+    message(FATAL_ERROR
+        "third_party/libpd is absent. It is pinned and fetched by:\n"
+        "    bash adi_daw/tools/fetch_external.sh --build-only")
+endif()
+if(NOT EXISTS "${ADI_THIRD_PARTY}/libpd/pure-data/src/m_pd.h")
+    message(FATAL_ERROR
+        "third_party/libpd is present but its pure-data submodule is not.\n"
+        "pure-data IS the DSP; libpd without it is a wrapper around nothing.\n"
+        "    bash adi_daw/tools/fetch_external.sh --build-only")
+endif()
+set(PD_MULTI              ON  CACHE BOOL "" FORCE)
+set(PD_UTILS              ON  CACHE BOOL "" FORCE)
+set(PD_EXTRA              ON  CACHE BOOL "" FORCE)
+set(LIBPD_STATIC          ON  CACHE BOOL "" FORCE)
+set(LIBPD_SHARED          OFF CACHE BOOL "" FORCE)
+set(PD_BUILD_C_EXAMPLES   OFF CACHE BOOL "" FORCE)
+add_subdirectory("${ADI_THIRD_PARTY}/libpd" EXCLUDE_FROM_ALL SYSTEM)
+target_include_directories(adi_core SYSTEM PUBLIC
+    "${ADI_THIRD_PARTY}/libpd/libpd_wrapper"
+    "${ADI_THIRD_PARTY}/libpd/libpd_wrapper/util"
+    "${ADI_THIRD_PARTY}/libpd/pure-data/src")
+target_link_libraries(adi_core PUBLIC libpd_static)
+# PDINSTANCE changes struct layouts in m_pd.h, so every translation unit that
+# includes it must agree. It is PUBLIC on the libpd target, but stated here too
+# because a mismatch is not a link error -- it is a silent layout disagreement.
+target_compile_definitions(adi_core PUBLIC PDINSTANCE=1 PDTHREADS=1)
+# The libpd side of PdPatchEngine (ADR-0183), added to adi_core here rather than
+# in its source list, because it is the one Pd source that includes z_libpd.h.
+target_sources(adi_core PRIVATE src/juce/pd_engine.cpp)
+target_compile_definitions(adi_core PUBLIC ADI_WITH_PD=1)
+endif()
 
 # ADR-0173, ADR-0174: the 16 Airwindows console algorithms behind native group
 # summing, from airwin2rack (MIT), pinned by commit. Built as upstream builds
@@ -387,6 +481,25 @@ target_link_libraries(adi_dsp_tests PRIVATE adi_core adi_warnings)
 # The Pd patches are read from the source tree, not copied next to the binary.
 target_compile_definitions(adi_dsp_tests PRIVATE ADI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME adi_dsp_tests COMMAND adi_dsp_tests)
+
+# The declaration parse. Links adi_core but touches no libpd: ADR-0177 fix 3
+# puts the declared set behind a static parse of the patch text, and a test that
+# needed Pd running to read a declaration would not be testing that.
+add_executable(adi_pd_declaration_tests tests/test_pd_declarations.cpp)
+target_link_libraries(adi_pd_declaration_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pd_declaration_tests COMMAND adi_pd_declaration_tests)
+
+# libpd actually running, as against test_pd.cpp's contract-with-a-fake. The
+# patch directory is compiled in rather than found from the working directory,
+# which differs between a local run and CI.
+if(ADI_WITH_PD)
+    add_executable(adi_pd_engine_tests tests/test_pd_engine.cpp)
+    target_link_libraries(adi_pd_engine_tests PRIVATE adi_core adi_warnings)
+    target_compile_definitions(adi_pd_engine_tests PRIVATE
+        ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd"
+        ADI_PD_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/pd")
+    add_test(NAME adi_pd_engine_tests COMMAND adi_pd_engine_tests)
+endif()
 
 add_executable(adi_pd_tests tests/test_pd.cpp)
 target_link_libraries(adi_pd_tests PRIVATE adi_core adi_warnings)
