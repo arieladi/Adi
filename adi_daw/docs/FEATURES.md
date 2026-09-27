@@ -382,6 +382,21 @@ Every one of these lands as **ops** in one `txn_id`, so each is one Ctrl-Z.
 > URL the user supplies and making the import an explicit action on material the
 > user asserts they may use.
 
+## 10.6 ADiJ, the DJ application (ADR-0105, ADR-0133, ADR-0191)
+
+Built after the DAW, on the same engine (roadmap step 13). The rows are its
+backlog; the priorities are within ADiJ.
+
+| Feature | App | P | Notes |
+|---|---|---|---|
+| **USB export for CDJs**: `export.pdb`, the ANLZ files (grid, cues, waveforms) and the settings files, written by ADiJ | ADiJ | P2 | ADR-0191 d2. From crate-digger's Kaitai specs under MPL-2.0 (ADR-0189); rekordcrate (MPL-2.0) and Vynull (GPL-3.0) as references. Before it is called complete, each target player is checked for whether it reads `export.pdb` or the encrypted Device Library Plus (`exportLibrary.db`); writing the latter needs a key, which is the director's question |
+| **Rekordbox XML**, written and read | ADiJ | P2 | ADR-0191 d2. The desktop application's own interchange: tracks, playlists, cues, grids. Reading it brings a Rekordbox library in with no database key |
+| **A source on Pro DJ Link**: CDJs browse and load ADiJ's tracks over Ethernet, with waveforms, grids and cues, no USB stick | ADiJ | P2, after the USB export | ADR-0191 d3. Announcements on UDP 50000–50002, a database server, an NFS v2 file server; the rekordbox mode first (no privileged port 111). Its own threads, off by default, read only; a network fault never stops a deck. Amends ADR-0105 d4's "no network path". Vynull (GPL-3.0) as the reference |
+| **Stems on a deck**: four stems with a level, a mute and a filter each | ADiJ | P2 | ADR-0191 d4. From NI Stems files (`.stem.mp4`: a master and up to four stereo stems, one codec, one rate; Mixxx's `soundsourcestem.cpp`) or from separation at analysis time, behind the RPC boundary and cached by BLAKE3 hash (ADR-0186 d2 keeps Demucs in Tier 2) |
+| **AAC and M4A decoding**: an MP4 demuxer of our own, AAC through the platform decoders | both | P2 | ADR-0191 d4. ADI decodes WAV, AIFF, FLAC, MP3 and Ogg today; a DJ library is full of M4A, so this comes first for ADiJ. Linux's decoder is decided with the Linux DJ app |
+| **Importing an NI Stems file** as a group with one track per stem, time-aligned | ADI | P2 | ADR-0191 d4. Splitting a clip into stems is already P1 (ADR-0064) |
+| **Exporting stems as an NI Stems file** | ADI | P3 | ADR-0191 d4. AAC encoding from the operating system (Media Foundation, Core Audio); Linux is open |
+
 ## 11. Deliberately out of scope
 
 Saying no now is cheaper than saying no later.
