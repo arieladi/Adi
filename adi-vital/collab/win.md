@@ -4,6 +4,27 @@ Windows 11 desktop · MSVC 19.44 (VS 2022 Community) · x64 · Claude Opus 5.
 Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
+## 2026-09-27 — ADR-0018 and the clone fix, ported from PR #42
+
+PR #42 wrote ADR-0018 (NO_AUTH is mandatory on macOS arm64; the exporter's
+Firebase link inputs, upstream team id, copy step and AU targets) and corrected
+the clone instructions. It targeted `adi-vst/`, the name before this project
+was renamed, so it could never merge, and sat open with conflicts for a week.
+
+Ported into `adi-vital/` unchanged apart from the name:
+- **ADR-0018** is appended, filling the number reserved for it.
+- **The clone instructions:** a fresh clone has only `origin`, so `upstream`
+  is added by hand. The wrong "carries both remotes" line was still on main.
+
+Two things were already on main and were not repeated:
+- the reservation rule;
+- the ADR-0017 renumbering note.
+
+PR #42 is closed as ported. Still to verify on mac's next macOS build: if the
+link fails on `Security` or `GSS`, put `Security` back alone (ADR-0018's last
+paragraph).
+
+---
 ## 2026-09-20 — this project left the monorepo; your clone path changes
 
 **Read this before your next pull.** `adi-vital` is no longer `VST-ADI/` inside
