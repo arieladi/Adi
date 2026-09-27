@@ -63,9 +63,54 @@ Options: `--priority 1..9` (1 runs first), `--per-file` (one model call per file
 for batches over the ~11K-token prompt budget), `--system` (extra rules),
 `--repo` (defaults to this monorepo).
 
-Kinds: `explain`, `tests`, `docstrings`, `patch`, `review`, `freeform`.
+Kinds: `explain`, `tests`, `docstrings`, `patch`, `review`, `freeform`. Commands: `submit`, `mission`, `collect`, `verify`, `check`, `retry`, `eta`, `status`, `show`, `watch`, `run-once`.
 `docstrings` and `patch` use SEARCH/REPLACE edit blocks. The drone applies them
 in memory, builds the diff with `difflib` and runs `git apply --check`.
+
+## Trust: names yes, numbers no (measured on 2026-09-27)
+
+Measured over nine missions, 22,000 claims:
+
+- **Names are reliable.** 97–100% of the names it puts in backticks exist in the
+  file it summarised.
+- **Numbers are not.** Headers got invented parameter ranges. Even in the
+  `.cpp` that declares them, 15 of 25 Mixxx defaults were right, and the
+  usual mistake was a maximum reported as the default.
+
+Three rules follow, built into the tool:
+
+1. **Read-only jobs quote instead of stating numbers.**
+   - `explain`, `review` and `freeform` jobs carry a quote rule in their
+     `system` text, so a drone still running older code applies it too. The
+     model must never write a number in its own words; it copies the line that
+     states it, on a line starting `QUOTE:`.
+   - `--no-quote-rule` turns it off.
+2. **`collect` grounds every report.**
+   - A `QUOTE:` line found verbatim in the source (whitespace aside) is kept;
+     any other is replaced by a note that it was removed.
+   - The report is stamped **"names reliable, numbers unverified"**, with the
+     counts.
+   - `verify <mission>` measures any collected report without changing it.
+3. **Prefer jobs a machine can verify, and let the build decide.**
+   - `--patch` makes a job answer as edit blocks.
+   - `check <job-id | mission>` applies each patch in a worktree at
+     `D:\adi-drone\verify-tree` (`adi_daw/third_party` linked in, its own
+     incremental build), builds with `tools\build.bat werror` and runs CTest.
+     The verdict is written beside the patch as `check-N.json` and
+     `check-N.log`, and the user's checkout is never touched.
+   - **A tests patch must only add:** one that removes a `check(` or adds none
+     is rejected before any build. The first pilot showed why: a patch that
+     deleted 33 existing checks could still build and pass.
+
+```bash
+python tools/adi-drone/drone.py verify ref-dsp-backlog
+python tools/adi-drone/drone.py submit --kind tests --patch --files adi_daw/src/x.hpp adi_daw/tests/test_x.cpp --instructions "Add two tests ..."
+python tools/adi-drone/drone.py check <job-id>
+```
+
+A model that copies the format's example path instead of the real one is caught
+too: when the SEARCH text occurs exactly once in exactly one of the job's files,
+that file is the target, and the result says so.
 
 ## What to delegate (measured on 2026-09-26)
 
