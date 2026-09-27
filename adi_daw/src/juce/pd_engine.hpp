@@ -40,9 +40,12 @@
 #pragma once
 
 #include "juce/pd_device.hpp"
+#include "juce/pd_declarations.hpp"
+#include "adi/engine/published_array.hpp"
 
 #include <cstdint>
 #include <string>
+#include <memory>
 #include <vector>
 
 namespace adi::device {
@@ -96,6 +99,11 @@ public:
     LibPdEngine(const LibPdEngine&) = delete;
     LibPdEngine& operator=(const LibPdEngine&) = delete;
 
+    /// Message thread, before `open`. Where libpd looks for abstractions the
+    /// patch instantiates -- `adi.array`, `adi.param` -- when they do not sit
+    /// beside the patch itself. The patch's own directory is always searched.
+    void addSearchPath(const std::string& dir);
+
     bool open(PdLatencyReceiver& latency, std::string& error) override;
     void close() noexcept override;
     void prepare(double sampleRate, std::int32_t maxFrames) override;
@@ -109,6 +117,20 @@ public:
 
     /// The patch's `$0`. Zero until opened.
     [[nodiscard]] int dollarZero() const noexcept { return dollarZero_; }
+
+    /// Message thread, after `prepare`. Gives the engine the arrays the patch
+    /// declares, so it can read them and publish them to the UI.
+    ///
+    /// The declarations come from a STATIC PARSE of the patch text, not from
+    /// asking Pd (ADR-0177 fix 3) -- which is why this takes them rather than
+    /// discovering them. Pd is running by now and could be asked; doing so
+    /// would put the declared set outside the op log, which is the thing that
+    /// contract exists to prevent.
+    void bindArrays(const PdDeclarations& decls);
+
+    /// The published array with this id, or null. The UI reads it once a
+    /// frame; the audio thread writes it (ADR-0183 d2).
+    [[nodiscard]] const engine::PublishedArray* publishedArray(std::int32_t id) const noexcept;
 
     /// Message thread. Sends a float to a receiver in THIS patch's instance,
     /// with `$0-` prefixed: `send("depth", 1.f)` reaches `[r $0-depth]`.
@@ -134,6 +156,7 @@ private:
     int dollarZero_ = 0;
     std::int32_t block_ = 64;
     std::int32_t adapterLatency_ = 0;
+    double sampleRate_ = 44100.0;
     bool dspOn_ = false;
 
     /// The block adapter. `in_` and `out_` are interleaved by channel, sized
@@ -141,6 +164,22 @@ private:
     std::vector<float> in_, out_, tickIn_, tickOut_;
     std::int32_t inFill_ = 0;         ///< frames waiting to be rendered
     std::int32_t outFill_ = 0;        ///< frames rendered and not yet handed back
+
+    /// One published array per declaration, with the Pd table name to read it
+    /// from and the frame countdown that honours its declared rate.
+    struct BoundArray {
+        std::int32_t id = 0;
+        std::string tableName;
+        std::int32_t length = 0;
+        double framesPerRead = 0.0;
+        double due = 0.0;
+        std::vector<float> scratch;
+        engine::PublishedArray buffer;
+    };
+    std::vector<std::unique_ptr<BoundArray>> arrays_;
+
+    /// Paths asked for before the instance existed, applied in `open`.
+    std::vector<std::string> searchPaths_;
 
     /// This instance's routing table. Per engine rather than shared, because
     /// `$0` collides across instances -- see PdRuntime.

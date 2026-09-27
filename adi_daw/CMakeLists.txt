@@ -192,6 +192,9 @@ add_library(adi_core STATIC
     # The libpd side of PdPatchEngine (ADR-0183). In adi_core with the rest:
     # libpd is a C library with no GUI, so it builds on every ABI.
     src/juce/pd_engine.cpp
+    # The static declaration parse (ADR-0177 fix 3, ADR-0183): no libpd in it
+    # at all, deliberately -- the declared set must never depend on Pd running.
+    src/juce/pd_declarations.cpp
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
@@ -445,6 +448,13 @@ target_link_libraries(adi_dsp_tests PRIVATE adi_core adi_warnings)
 # The Pd patches are read from the source tree, not copied next to the binary.
 target_compile_definitions(adi_dsp_tests PRIVATE ADI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME adi_dsp_tests COMMAND adi_dsp_tests)
+
+# The declaration parse. Links adi_core but touches no libpd: ADR-0177 fix 3
+# puts the declared set behind a static parse of the patch text, and a test that
+# needed Pd running to read a declaration would not be testing that.
+add_executable(adi_pd_declaration_tests tests/test_pd_declarations.cpp)
+target_link_libraries(adi_pd_declaration_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pd_declaration_tests COMMAND adi_pd_declaration_tests)
 
 # libpd actually running, as against test_pd.cpp's contract-with-a-fake. The
 # patch directory is compiled in rather than found from the working directory,

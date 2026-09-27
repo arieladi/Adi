@@ -28,10 +28,13 @@
 // prepare reports 64 -- ADR-0095 decision 2, end to end for the first time.
 
 #include "juce/pd_engine.hpp"
+#include "juce/pd_declarations.hpp"
 #include "adi/engine/graph.hpp"
 
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -40,6 +43,7 @@ namespace {
 using namespace adi;
 using adi::device::LibPdEngine;
 using adi::device::PdLatencyReceiver;
+using adi::device::parsePdDeclarations;
 
 int g_failures = 0;
 int g_checks = 0;
@@ -267,6 +271,104 @@ void testADevicePatchIsAnAbstractionAndRendersNothing() {
           "-- not something for this engine to paper over");
 }
 
+std::string readFile(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+void testAPublishedArrayReachesTheReader() {
+    section("ADR-0183 d1/d2 -- [adi.array] declared in text, filled by Pd, read by the frame");
+
+    // The declaration is read from the patch TEXT, with Pd not running. That
+    // is ADR-0177 fix 3 and it is why this parse happens before the engine is
+    // even opened: the declared set is device state, not something learned by
+    // running the patch.
+    const std::string text = readFile(std::string(patchDir()) + "/adi-array-proof.pd");
+    check(!text.empty(), "the fixture patch is readable");
+    const auto decls = parsePdDeclarations(text);
+    eqi(static_cast<long long>(decls.arrays.size()), 1, "one array is declared");
+    eqi(static_cast<long long>(decls.problems.size()), 0, "and nothing is reported");
+    if (decls.arrays.empty()) return;
+    eqi(decls.arrays[0].length, 8, "of eight cells");
+    check(decls.arrays[0].rate > 29.9 && decls.arrays[0].rate < 30.1, "at 30 Hz");
+
+    LibPdEngine eng(patchDir(), "adi-array-proof.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());     // where adi.array.pd lives
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+    eng.prepare(48000.0, 512);
+    eng.bindArrays(decls);
+
+    const auto* pub = eng.publishedArray(1);
+    check(pub != nullptr, "the engine bound the declared array to a buffer");
+    if (pub == nullptr) return;
+    eqi(pub->length(), 8, "of the declared length");
+    eqi(static_cast<long long>(pub->published()), 0,
+        "and nothing is published before any audio runs");
+
+    // 30 Hz at 48 kHz is one publication every 1600 frames. Run well past it.
+    std::vector<float> sig(4096, 0.f);
+    (void)runSegmented(eng, sig, 0.f, {128});
+
+    check(pub->published() > 0,
+          "the audio thread published the array while rendering (" +
+          std::to_string(pub->published()) + " times)");
+
+    std::vector<float> got(8, -99.f);
+    bool ok = false;
+    for (int attempt = 0; attempt < 8 && !ok; ++attempt) ok = pub->read(got.data(), 8);
+    check(ok, "and the reader got a settled copy");
+
+    // The patch writes 0.125 .. 1.0 across the eight cells. Anything else means
+    // the values did not come from Pd's table.
+    bool values = ok;
+    for (int i = 0; i < 8 && values; ++i) {
+        const float want = 0.125f * static_cast<float>(i + 1);
+        if (std::fabs(got[static_cast<std::size_t>(i)] - want) > 1e-5f) values = false;
+    }
+    std::string shown;
+    for (int i = 0; i < 8; ++i) {
+        shown += (i ? " " : "");
+        shown += std::to_string(got[static_cast<std::size_t>(i)]).substr(0, 5);
+    }
+    check(values,
+          "carrying the pattern the PATCH wrote -- 0.125 through 1.0 -- so the "
+          "array came out of Pd's own table and not from anywhere in the host "
+          "(got " + shown + ")");
+}
+
+void testTheBufferIsAtomicPerArray() {
+    section("ADR-0183 d2 -- the array is the unit of atomicity, never half of two");
+
+    adi::engine::PublishedArray buf;
+    buf.prepare(4);
+    std::vector<float> got(4, -1.f);
+    check(!buf.read(got.data(), 4), "nothing published yet, so no read succeeds");
+
+    const std::vector<float> a{1.f, 2.f, 3.f, 4.f};
+    buf.publish(a.data(), 4);
+    check(buf.read(got.data(), 4), "after one publication a read succeeds");
+    check(got[0] == 1.f && got[3] == 4.f, "with that publication's values");
+
+    const std::vector<float> b{5.f, 6.f, 7.f, 8.f};
+    buf.publish(b.data(), 4);
+    check(buf.read(got.data(), 4) && got[0] == 5.f && got[3] == 8.f,
+          "and the next publication replaces it whole -- never three of one "
+          "and one of the other");
+
+    // A short source is refused rather than read past: libpd_read_array does
+    // no bounds checking on either side, so this is the last place to catch it.
+    const std::vector<float> shortSrc{1.f};
+    const auto before = buf.published();
+    buf.publish(shortSrc.data(), 1);
+    eqi(static_cast<long long>(buf.published()), static_cast<long long>(before),
+        "a source shorter than the array publishes nothing");
+    check(!buf.read(got.data(), 2), "and a destination too small reads nothing");
+}
+
 void testAClosedEngineStillPassesAudio() {
     section("ADR-0095 -- a patch that never opened removes no signal");
 
@@ -299,6 +401,8 @@ int main() {
     testTheAdapterCostsOneBlockAndSaysSo();
     testAudioGoesThroughPdAndComesBack();
     testADevicePatchIsAnAbstractionAndRendersNothing();
+    testAPublishedArrayReachesTheReader();
+    testTheBufferIsAtomicPerArray();
     testAClosedEngineStillPassesAudio();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);

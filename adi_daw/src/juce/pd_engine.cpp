@@ -128,6 +128,15 @@ void LibPdEngine::selectInstance() const noexcept {
     if (instance_ != nullptr) libpd_set_instance(static_cast<t_pdinstance*>(instance_));
 }
 
+void LibPdEngine::addSearchPath(const std::string& dir) {
+    // REMEMBERED, not applied. Under PDINSTANCE the search path is per-instance
+    // state, not process-wide, so a path added before this engine's instance
+    // exists lands on whichever instance happened to be current -- or on none.
+    // The only sign is the abstraction failing to create, which Pd reports by
+    // printing the object's text and nothing else.
+    searchPaths_.push_back(dir);
+}
+
 bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
     if (!PdRuntime::initialise(error)) return false;
     if (patch_ != nullptr) return true;
@@ -162,6 +171,12 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
         error = "libpd_init_audio() failed";
         return false;
     }
+
+    // Search paths, now that this instance exists and is selected: its own
+    // directory, then anything the caller asked for -- where the shipped
+    // abstractions live.
+    libpd_add_to_search_path(dir_.c_str());
+    for (const auto& p : searchPaths_) libpd_add_to_search_path(p.c_str());
 
     patch_ = libpd_openfile(file_.c_str(), dir_.c_str());
     if (patch_ == nullptr) {
@@ -215,6 +230,7 @@ void LibPdEngine::prepare(double sampleRate, std::int32_t maxFrames) {
     selectInstance();
 
     const int rate = static_cast<int>(sampleRate > 0 ? sampleRate : 44100);
+    sampleRate_ = static_cast<double>(rate);
     libpd_init_audio(inCh_, outCh_, rate);
 
     // DSP on. Pd renders nothing at all without this, and a patch that opens,
@@ -311,6 +327,20 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
         }
     }
 
+    // --- publish the declared arrays, at the rate each declared ---------------
+    // On the AUDIO thread, which is where ADR-0183 d2 puts the write, and after
+    // the ticks so a reader never sees a table half-written by this block.
+    for (auto& a : arrays_) {
+        if (a->framesPerRead <= 0.0) continue;
+        a->due -= static_cast<double>(n);
+        if (a->due > 0.0) continue;
+        a->due += a->framesPerRead;
+        if (a->due < 0.0) a->due = a->framesPerRead;   // a long segment, not a backlog
+        if (libpd_read_array(a->scratch.data(), a->tableName.c_str(), 0, a->length) == 0) {
+            a->buffer.publish(a->scratch.data(), a->length);
+        }
+    }
+
     // --- pop: interleaved rendered output -> planar segment -------------------
     const std::int32_t pop = std::min(n, outFill_);
     if (pop < n) starved_.fetch_add(1, std::memory_order_relaxed);
@@ -337,6 +367,37 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
                      out_.data() + static_cast<std::size_t>(pop) * static_cast<std::size_t>(outCh_),
                      static_cast<std::size_t>(outFill_) * static_cast<std::size_t>(outCh_) * sizeof(float));
     }
+}
+
+void LibPdEngine::bindArrays(const PdDeclarations& decls) {
+    arrays_.clear();
+    if (patch_ == nullptr) return;
+    selectInstance();
+
+    for (const auto& d : decls.arrays) {
+        auto b = std::make_unique<BoundArray>();
+        b->id = d.id;
+        b->tableName = pdArrayReceiveName(dollarZero_, d.id);
+        b->length = d.length;
+
+        // The table has to exist and be the declared size. A patch that
+        // declares 512 and instantiates a table of 64 would otherwise have its
+        // reads run past the end -- libpd_read_array does no bounds checking on
+        // EITHER side, which its header says plainly.
+        const int actual = libpd_arraysize(b->tableName.c_str());
+        if (actual < b->length) continue;
+
+        b->scratch.assign(static_cast<std::size_t>(b->length), 0.f);
+        b->buffer.prepare(b->length);
+        b->framesPerRead = d.rate > 0.0 ? (sampleRate_ / d.rate) : 0.0;
+        b->due = b->framesPerRead;
+        arrays_.push_back(std::move(b));
+    }
+}
+
+const engine::PublishedArray* LibPdEngine::publishedArray(std::int32_t id) const noexcept {
+    for (const auto& a : arrays_) if (a->id == id) return &a->buffer;
+    return nullptr;
 }
 
 bool LibPdEngine::sendFloat(const char* suffix, float value) noexcept {

@@ -14078,6 +14078,42 @@ not visible from the ADRs. All three are measured, in
     patch reports. A patch reporting 0 through an engine that delays 64 is
     the misalignment ADR-0058 exists to remove.
 
+### What building `[adi.array]` found
+
+13. **The grammar gained min, max and unit**, against decision 1's first
+    sketch of `$0 id length rate name`. That is ADR-0177 fix 2 -- "the
+    declaration is complete" -- applied to arrays rather than an addition: a
+    renderer given a length and a rate still has to guess the value range, and
+    a guess about a dB floor draws a picture that is wrong in a way nobody can
+    see. The patch knows; it says. Final form:
+    `[adi.array $0 <id> <length> <rate> <min> <max> <unit> <name>]`.
+
+14. **Parameters and arrays have separate id spaces.** A parameter's id IS
+    `plugin_params.param_id` (ADR-0177 d1); an array is never automated, mapped
+    or bound. One shared space would make adding a display change what an
+    automation lane points at.
+
+15. **`$0` does not expand in a MESSAGE box.** It expands in an object box
+    only. A message box written `; $0-adiarr-1 0 0.5` targets the receiver
+    `0-adiarr-1` and Pd reports "no such object" -- the patch loads, the array
+    stays at zero, and nothing points at the cause. The `$0` has to live in an
+    object: `[s $0-adiarr-1]` fed by a plain message box. Anything the DAW or
+    its generator writes must follow that, and `tools/gen_pd_patches.py` should
+    learn it before it emits a declaration.
+
+16. **Under PDINSTANCE the search path is per instance, not process-wide.**
+    `libpd_add_to_search_path` called before an instance exists lands on
+    whichever instance happens to be current, or on none. The only symptom is
+    the abstraction failing to create, which Pd reports by printing the
+    object's text and nothing else. `LibPdEngine` remembers paths and applies
+    them after its instance is selected.
+
+17. **One expression decides the double buffer's slot.** Writer and reader
+    derived it separately at first and disagreed, so every read returned the
+    PREVIOUS array -- a display one frame behind, for ever, with nothing to
+    show for it. An even sequence is settled, `seq/2` counts publications, the
+    one being written is `(seq/2)+1`, and both sides take the slot from that.
+
 ### What this does not decide
 
 Whether the Mel filterbank is applied before or after reassignment. Reassigning
