@@ -14477,6 +14477,53 @@ here rather than noted. All of the below is asserted in
     its lifetime contract: valid until the next call for that slot from the
     audio thread, which for a perform routine is the next block.
 
+---
+
+32. **The masking measure, for ADR-0195 d5 and for `analyze.masking`.**
+    `src/adi/dsp/masking.*`, a pure function with no engine, no view and no
+    agent in it. The overlay highlights where one track buries another and the
+    agent returns "band-overlap between two tracks over time"; written
+    separately, a producer would see a highlight the agent never mentions, and
+    neither would be wrong, because there would be two definitions of masking
+    in one program.
+
+    Three choices, each against the simpler thing:
+    - **ERB bands, not third-octave.** Masking is a property of the cochlea's
+      filters, about 35 Hz wide at 100 Hz and 565 Hz at 5 kHz; a third-octave
+      layout gives 23 Hz and 1150 Hz and matches neither end. Both figures are
+      asserted.
+    - **Spreading is ASYMMETRIC**, steep downward and shallow upward, which is
+      the whole point: a bass buries a kick's low mids and the kick does not
+      equally bury the bass's top. Anything built on "how much do these spectra
+      overlap" gets the direction of every real masking problem wrong half the
+      time.
+    - **The single number is `maskedFraction`**, the share of the masked
+      track's own energy sitting under the masker. `worstExcessDb` alone would
+      rank a 2 dB problem across the spectrum below a 20 dB notch nobody hears.
+
+    **It is not a masking THRESHOLD model.** It says one track dominates
+    another by so many dB, not that a band is inaudible: audibility needs
+    absolute level, the listener's system and a calibrated scale, and a DAW has
+    none of the three. ADR-0195 leaves the highlight's threshold open, and this
+    reports the number it will be applied to.
+
+33. **Two documented decisions were not being tested, and planting found both.**
+    Four faults were planted in the measure; two were caught and **two
+    passed**:
+    - **sum instead of maximum** for the spread masker;
+    - **counting bands instead of weighting by energy** in `maskedFraction`.
+
+    The second is the same flaw as d30's, in a new costume. The test used two
+    victim tones of EQUAL energy, so "nine tenths of the energy" and "one band
+    of two" both read 0.5 and the test could not tell them apart. It now uses
+    9:1, where energy-weighting gives 0.9 and a band count would give 0.5.
+
+    **The general rule, now twice earned: a test whose inputs make two
+    candidate implementations agree is not testing which one you wrote.** Equal
+    values, one path passed for two arguments, a default that matches the case
+    under test -- all the same mistake. The check for it is to plant the other
+    implementation and watch the test fail.
+
 ### What this amends in ADR-0177, and what it does not
 
 This ADR's decisions were written before ADR-0177 merged, so the question was
