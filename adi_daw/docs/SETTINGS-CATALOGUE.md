@@ -124,7 +124,7 @@ this file by hand.
 | Create Analysis Files | Analysis (peaks, transients, tempo guess) is stored in the ADI cache, never beside the user's samples. No setting: always cached, cache location below. | DECIDED ADR-0125 R-16 |
 | Sample Editor | Same, plus *open a copy* vs *open in place* (REAPER §22.9 prompts to confirm the filename) | DECIDED parity |
 | Temporary Folder | ADI has no unsaved Set: a new project is a file from its first op (ADR-0003). The equivalent is the *default projects folder*, below. | DECIDED ADR-0003 |
-| Max Application | No Max for Live. The visual patching device is Pure Data (ADR-0035), edited in its own window inside ADI, built on plugdata (ADR-0145 d8); a *Pd externals path* takes this slot in Part IV. | REJECTED ADR-0035 |
+| Max Application | No Max for Live. The visual patching device is Pure Data (ADR-0035), edited in its own window inside ADI, built on plugdata (ADR-0145 d8); ADI's Pd externals are compiled in, so no path takes this slot (ADR-0188 d8). | REJECTED ADR-0035 |
 | Decoding Cache: Minimum Free Space, Maximum Cache Size, Cache Folder, Cleanup | Same four controls; one cache for decoded audio, analysis and waveform peaks (REAPER §22.9.2 stores peaks in an alternate path when the media folder is read-only — ADI always uses the cache). | DECIDED parity |
 | Default projects folder, default render folder, default record folder | REAPER §22.2.5: separate default paths for projects, renders, recordings. Adopted; recordings default to the project's own media folder (SPEC §5). | DIRECTION |
 | Save project file references with relative paths | Always relative. **Media is never embedded in the .adi** (only plugin chunks, wavetables and preset blobs). **Collect and Export** copies every referenced file into the project audio/ folder, checks each BLAKE3 hash, and writes the .adi and audio/ into one ZIP that opens anywhere. A hash mismatch stops the export and names the file. | DECIDED ADR-0127 |
@@ -314,7 +314,7 @@ this file by hand.
 
 | Setting | ADI | Status |
 |---|---|---|
-| Pure Data | ADR-0035, ADR-0040, ADR-0095: the externals path and default patch folder. A patch declares [adi.param name min max default] and gets native controls in the device view. The patch is stored as text in the project and edited in a node-based window inside ADI, built on plugdata. The agent never edits the text: it proposes changes in the editor, the user approves each one, and the undo log is the version history. | DECIDED ADR-0145 d8 |
+| Pure Data | ADR-0035, ADR-0040, ADR-0095, ADR-0188 d8: the default patch folder. There is no externals path: ADI's externals are compiled into the engine, and nothing loads from disk. A patch declares [adi.param $0 id min max default unit curve name] (ADR-0177) and gets native controls in the device view. The patch is stored as text in the project and edited in a node-based window inside ADI, built on plugdata. The agent never edits the text: it proposes changes in the editor, the user approves each one, and the undo log is the version history. | DECIDED ADR-0145 d8 |
 | Native DSP nodes | ADR-0062: none to set; listed so the user knows the built-in devices have no external dependency. | NOTE |
 | Freeze | ADR-0059: freeze renders with tails; the tail length and whether muted clips freeze silent (REAPER §22.6.8). | DECIDED ADR-0059 |
 | Racks and macros | ADR-0060, ADR-0114: macro curve editing defaults (breakpoint count). | BACKLOG ADR-0060 |
@@ -324,9 +324,8 @@ this file by hand.
 | Setting | ADI | Status |
 |---|---|---|
 | Control API: paired surfaces and visual streams | ADR-0181 d2, ADR-0184 d4: the paired clients, each revocable, and the streams each one holds. Raw audio is capped, and marked while a client holds it. Loopback only. | BACKLOG ADR-0181, ADR-0184 |
-| MIDI 2.0 input (UMP) | ADR-0185 d2: which ports deliver UMP, parsed into per-note expression. Arrives with the parser. | BACKLOG P2, ADR-0185 |
-| OSCQuery server | ADR-0185 d4: off by default. The network interface, an optional list of client addresses, and read-only. OSC has no authentication, so nothing listens until the user opens it. | BACKLOG P2, ADR-0185 |
-| Hardware CV channels (outputs and inputs) | ADR-0185 d5: which interface channels are CV, each marked DC-coupled by the user; a CV channel is never the main or monitor output; a per-output calibration for 1 V/octave. | BACKLOG P2, ADR-0185 |
+| MIDI 2.0 input (UMP) | ADR-0185 d2, ADR-0188 d7: which ports deliver UMP, parsed into per-note expression, and the MIDI backend in use (on Windows, Windows MIDI Services when installed). Arrives with the parser. | BACKLOG P2, ADR-0185 |
+| OSCQuery server | ADR-0185 d4, ADR-0188 d7: off by default, because OSC has no authentication. Turning it on opens read and write, after a warning: use this only on trusted networks. The network interface, and an optional list of client addresses. | BACKLOG P2, ADR-0185 |
 | TUIO input | ADR-0185 d6: off until opened, with its UDP port (3333). Windows touch screens need none of it: JUCE delivers their multi-touch natively. | BACKLOG P3, ADR-0185 |
 
-212 settings.
+211 settings.

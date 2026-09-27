@@ -64,10 +64,10 @@ void testThePlatformDefaults() {
     // depend on where it ran (it did: 3,847 on Windows against 3,845).
 #if defined(_WIN32)
     const std::string vendor = "ADI";
-    const std::string dawName = "ADI DAW", djName = "aDiJ";
+    const std::string dawName = "ADI DAW", djName = "ADiJ";
 #elif defined(__APPLE__)
     const std::string vendor = "ADI";
-    const std::string dawName = "ADI DAW", djName = "aDiJ";
+    const std::string dawName = "ADI DAW", djName = "ADiJ";
 #else
     const std::string vendor = "adi";
     const std::string dawName = "adi-daw", djName = "adij";
@@ -114,7 +114,7 @@ void testTheRegistry() {
         check(r.has_value() && *r == engine::RouteChoice::MpeMidi, "and still remembered: across sessions");
         // Two applications of the suite at once (WAL, busy timeout).
         auto other = PluginRegistry::open(file, err);
-        check(other != nullptr, "a second handle, as aDiJ beside ADI DAW: " + err);
+        check(other != nullptr, "a second handle, as ADiJ beside ADI DAW: " + err);
         if (other) {
             check(other->remember("vst3", "VST3-Synth-1", engine::RouteChoice::NoteExpression, 1002, err),
                   "it changes the choice: " + err);

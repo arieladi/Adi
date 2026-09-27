@@ -16,7 +16,7 @@ Permissive licences, all GPLv3-compatible in the direction we need.
 
 | Repo | Licence | Size | Purpose |
 |---|---|---|---|
-| [`libsamplerate`](https://github.com/libsndfile/libsamplerate) | BSD-2-Clause | 5 MB shallow | Off-callback clip rate conversion, sinc best (ADR-0151). Pinned **0.2.2 / `c96f5e3de9c4488f4e6c97f59f5245f22fda22f7`**; director-granted row, fetched by `--build-only`. |
+| [`libsamplerate`](https://github.com/libsndfile/libsamplerate) | BSD-2-Clause | 5 MB shallow | Off-callback clip rate conversion, sinc best (ADR-0151); Re-Pitch's variable-ratio resampler (ADR-0188 d2). Pinned **0.2.2 / `c96f5e3de9c4488f4e6c97f59f5245f22fda22f7`**; director-granted row, fetched by `--build-only`. |
 | [`utf8proc`](https://github.com/JuliaStrings/utf8proc) | MIT and Unicode data licence | 3 MB shallow | Library NFC/case-fold keys (ADR-0147). Pinned **v2.11.3 / `e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78`**, fetched by `--build-only`; director-granted dependency row. |
 | [`BLAKE3`](https://github.com/BLAKE3-team/BLAKE3) | CC0-1.0 or Apache-2.0 | 2.5 MB shallow | Media hashes (ADR-0127). Pinned **1.8.7 / `f3149ec5bb5449af877ba20377a11008ff499fa2`**; official C portable implementation only, SIMD disabled. Official test vectors exercise the 32-byte unkeyed hash. Fetched by `--build-only`. |
 | [`miniz`](https://github.com/richgel999/miniz) | MIT | 2 MB shallow | Streaming STORE/deflate and ZIP64 for Collect and Export (ADR-0127). Pinned **3.1.2 / `77d0dce8627735138c51770d1799a1ef48f2117d`**; C sources with custom path-aware stream callbacks. Fetched by `--build-only`. |
@@ -103,7 +103,7 @@ Cloned shallow into `reference/`, each licence read from the repository's own fi
 |---|---|---|---|---|
 | [`ANATOMY`](https://github.com/OTODESK4193/ANATOMY) | **AGPL-3.0** | 11 MB | ✅ with attribution — the project that copies it becomes AGPLv3; `adi_daw` clones the behaviour | OTT-style multiband: `HpssSeparator` splits harmonic and percussive parts with a cos² crossfade, before three-band upward and downward compression |
 | [`FrequencyShifter`](https://github.com/Speechrezz/FrequencyShifter) | MIT | 0.2 MB | ✅ with attribution | A frequency shifter on Signalsmith's IIR Hilbert filter: Shifter's Freq mode |
-| [`mixxx`](https://github.com/mixxxdj/mixxx) | GPL-2.0-**or-later** (its `LICENSE`; `COPYING` alone says only "version 2") | 208 MB | ✅ with attribution | aDiJ's reference: DJ behaviour, analysis, and the filter effect (`src/effects/backends/builtin/filtereffect.cpp`) |
+| [`mixxx`](https://github.com/mixxxdj/mixxx) | GPL-2.0-**or-later** (its `LICENSE`; `COPYING` alone says only "version 2") | 208 MB | ✅ with attribution | ADiJ's reference, never forked (ADR-0188 d8): the filter effect (`src/effects/backends/builtin/filtereffect.cpp`) and the beat-grid heuristics (`src/track/beatutils.cpp`). Its rekordbox reader is generated from Deep Symmetry's Kaitai specs (`lib/rekordbox-metadata/*.ksy`), **EPL-1.0**: not in the policy and GPL-incompatible, so read only |
 | [`BespokeSynth`](https://github.com/BespokeSynth/BespokeSynth) | GPL-3.0 | 70 MB | ✅ with attribution | Redux: `BitcrushEffect` does sample-and-hold downsampling and bit-depth quantization. It has no jitter |
 | [`bitcrusher`](https://github.com/p0p-vst3/bitcrusher) | GPL-3.0 | 0.2 MB | ✅ with attribution | Redux's bits and rate; no jitter |
 | [`trainsient`](https://github.com/p0p-vst3/trainsient) | GPL-3.0 | 0.2 MB | ✅ with attribution | A transient designer (ADR-0176 d4) |

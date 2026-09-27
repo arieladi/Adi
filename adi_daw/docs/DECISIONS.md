@@ -13408,3 +13408,248 @@ from the repository's own files, and three differed from the directive (d6).
 - which Surge effects become Pd devices first. The director names Shifter
   and Redux;
 - aDiJ: Mixxx as reference or as a fork.
+
+---
+
+## ADR-0188 — The director's rulings on the open questions of Master Reference v0.9.5: ADiJ, the warp engines, the Pd runtime, surfaces, sync, visual streams, protocols and Pd externals — `DECIDED` (2026-09-27) — **DIRECTOR'S RULINGS; AMENDS ADR-0133, ADR-0176 d8, ADR-0177, ADR-0181, ADR-0182, ADR-0184, ADR-0185 AND ADR-0187; THREE POINTS SETTLED WITH THE DIRECTOR THE SAME DAY**
+
+**The director's rulings.** The director ruled on every open question in
+Master Reference v0.9.5 and its decision log. Before recording, each ruling
+was checked against the code, the pinned sources and the licences:
+- **Three went back to the director and were settled the same day:** d2
+  Re-Pitch, d3 range changes, and d7 OSCQuery's default. Each is marked
+  "Settled with the director".
+- **Others carry a correction of fact,** each marked **Correction** and
+  checked in the source it names.
+
+### Decisions
+
+1. **The DJ application is ADiJ.** This replaces ADR-0133's spelling, aDiJ,
+   and the working name adi-dj.
+   - **Old entries keep the old spelling,** because this log is append-only.
+     Every document and the code use ADiJ from now on.
+   - **The application-data folder is named ADiJ** (`appdata.cpp`). Nothing
+     has shipped, so nothing migrates.
+   - **Three products, one engine,** as before (ADR-0105): ADI DAW, ADI Live
+     and ADiJ.
+
+2. **The warp modes and their engines.** This closes ADR-0176 d8. It
+   replaces the direction of 2026-09-25 for Tones, which was WSOLA on
+   SoundTouch, so no third stretch dependency is added.
+
+   | Live mode | Engine | Notes |
+   |---|---|---|
+   | Beats | a native slice player on the hitpoint detector (ADR-0176 d4) | Transient Loop Mode and Transient Envelope render as per-segment envelopes. The agent's `analyze.transients` reads the same onset map |
+   | Tones | Rubber Band R3 | a named parity gap, approved with this entry: Live's Grain Size maps onto R3's window option, a few fixed settings, not a continuous size |
+   | Texture | a native granular player | Fluctuation is random grain jitter, which Rubber Band has no way to give |
+   | Re-Pitch | variable-ratio resampling on libsamplerate | already pinned, BSD-2-Clause |
+   | Complex | Rubber Band R3 | |
+   | Complex Pro | Rubber Band R3, formants preserved when the clip is transposed | Live's Formants percentage maps through R3's formant scale. Envelope has no Rubber Band counterpart: a named parity gap |
+
+   - **Re-Pitch, settled with the director.** The ruling named Bungee, with
+     "zero phase-vocoder latency". Bungee's own README says it works on
+     overlapping grains, about a hundred a second, each analysed and
+     resynthesised. That makes it a stretcher with a grain's latency, not a
+     resampler. The director chose libsamplerate, which gives the tape and
+     turntable varispeed the ruling asked for.
+   - **Bungee keeps ADR-0061's job:** scrubbing, and speed through zero.
+   - **Listening tests** against Live still gate each mode (ADR-0108).
+
+3. **The Pd runtime.** This closes ADR-0177's three open questions.
+   - **A range change keeps the real value. Settled with the director.**
+     - **Why not the ruling's normalized position:** the ruling kept the
+       normalized position "to prevent jump artifacts", but that is the choice
+       that makes the sound jump. A cutoff stored at 1000 Hz on a log
+       20–20000 range sits at 0.566; if the patch narrows the range to
+       20–5000, keeping 0.566 plays 455 Hz.
+     - **The rule:** when a patch re-declares a parameter's bounds, the stored
+       real value is kept, clamped to the new range, and the normalized
+       position is recomputed.
+     - **One op:** both change in the same `device.loadState`, so one undo
+       restores both.
+     - **Automation:** lanes in real units (SPEC §6.3.3) stay valid for the
+       same reason.
+   - **Modulation is evaluated by the DAW.**
+     - **Where it runs:** the graph computes modulation (ADR-0046) and sends
+       the summed, delay-compensated value into the patch's `[adi.param]` on
+       the audio thread, before the block.
+     - **Only declared names:** the host sends only to receive names the patch
+       declared, which Pd has already created. A name Pd has not seen would be
+       created with an allocation on the audio thread.
+     - **Correction: a message reaches a Pd patch at a block boundary.** A
+       modulated value therefore arrives once per Pd block: 64 samples,
+       1.3 ms at 48 kHz, not at audio rate.
+     - **Audio rate inside a patch needs a signal:** an `[adi.param~]` variant,
+       fed through an extra input channel, decided when a patch needs it.
+   - **Transport: `[adi.transport $0]`.** It is a vanilla abstraction under
+     MIT, beside `adi.param.pd`. It delivers, isolated by `$0`: playing or
+     stopped, BPM, time signature, bar, beat, and the position within the
+     quarter note.
+     - **Correction: Pd's numbers are 32-bit floats,** exact for integers only
+       up to 2^24 = 16,777,216. ADI's 5,765,760 ticks per quarter note (SPEC
+       §4.2) pass that within three quarter notes, so an absolute tick count
+       would lose precision.
+     - **The fix:** the abstraction sends bar, beat, and ticks within the
+       quarter note. That last number is always below 5,765,760, so it is
+       exact.
+
+4. **Surfaces.** This closes ADR-0181's three open questions.
+   - **Acceleration** is applied where a tick resolves into a value (ADR-0181
+     d1), on the message thread.
+     - **The curve:** when two ticks arrive less than 30 ms apart, the step is
+       multiplied by 4^((30 − Δt)/30). That is 1 at 30 ms, 4 at 0 ms, and
+       never more than 4.
+     - **The log still holds absolute values.**
+   - **Follow the selection by default; a Pin key on the surface.**
+     - **What pinning does:** the Stream Deck + XL, and every surface that can,
+       gets a Pin key. Pinned, the surface stays on its device or channel
+       while the user arranges or moves between tracks. Unpinned, it follows
+       the selection again at once.
+     - **Pin is view state,** not an op.
+   - **Last touched wins.** The source that sent the most recent change to a
+     parameter owns it, and a gesture from another source takes it over.
+     - **An absolute control that is not the owner,** a motor-less fader for
+       instance, catches up through the Takeover Mode setting and never jumps.
+
+5. **Sync.** This closes four of ADR-0182's six open questions.
+   - **Batches on an object store** are named
+     `batch_<lamport>_<client_id>.cbor`, CBOR like every op payload
+     (ADR-0016). Peers fetch them in that order. Two corrections to the
+     ruling's name:
+     - **The Lamport number is zero-padded to 20 digits.** An object store
+       lists keys in lexical order, so unpadded, `batch_10` sorts before
+       `batch_9`.
+     - **The id is `op_clients.client_id`,** 32 lowercase hex characters, not
+       a UUID.
+
+     A batch from a peer that was offline can arrive with a lower Lamport
+     number than batches already applied. It is concurrent, and the version
+     vectors find it (ADR-0182 d2).
+   - **The version-vector table**, the director's, with its key tied to
+     `op_clients` as `op_clocks` is:
+     ```sql
+     CREATE TABLE sync_vectors (
+         client_id          TEXT    PRIMARY KEY REFERENCES op_clients(client_id),
+         last_applied_clock INTEGER NOT NULL CHECK (last_applied_clock >= 0)
+     ) STRICT;
+     ```
+     It is this replica's own state, a session table beside `op_clients` and
+     `op_clocks`. It lands in the schema minor that builds sync, not now.
+   - **Undoing a synced batch appends a compensating batch.**
+     - **What it covers:** undoing a batch that has left the machine, one's
+       own or a collaborator's, appends a new batch of its inverse ops.
+     - **Why:** the stream only grows, so no peer's history diverges.
+     - **Before a sync:** undoing ops that have not synced yet works as today.
+   - **Remark anchors: a new table, and `remarks.target_kind`'s CHECK stays.**
+     `remark_anchors (remark_id, target_kind, target_id, start_tick,
+     end_tick, op_lamport, op_client_id)`, with ticks as INTEGER at SPEC
+     §4.2's PPQ. Two corrections:
+     - **ADI's rows have INTEGER ids, not UUIDs,** so the column is
+       `target_id INTEGER`, as in `remarks`.
+     - **An op is anchored by `(lamport, client_id)` from `op_clocks`,**
+       because `ops.seq` differs between replicas.
+
+     It lands with sync, like `sync_vectors`.
+   - **Still open:** the ghost table (ADR-0182 d9), and row ids with
+     concurrent ordering (ADR-0161 d4).
+
+6. **The device strip and the visual streams.** This closes ADR-0184's three
+   open questions.
+   - **The floor is 169 pixels,** the director's figure for Live 12's default
+     device area.
+     - **The unit:** logical pixels at 100 % zoom, scaled with ADI's UI zoom
+       and the display's scale factor.
+     - **The check:** the rule is still parity, so mac measures Live under
+       ADR-0108. A difference comes back to the director.
+   - **The wire format: WebSocket binary frames** beside the JSON control
+     messages. A 16-byte little-endian header, then raw IEEE 754 32-bit
+     floats, channel by channel:
+
+     | Bytes | Field |
+     |---|---|
+     | 0–1 | `stream_id`, u16, assigned in the JSON reply to the subscription |
+     | 2–3 | `channel_count`, u16 |
+     | 4–7 | `frame_size`, u32: values per channel |
+     | 8–15 | `timestamp`, u64: the engine's sample position when the audio was heard (ADR-0175) |
+
+     - **The widths are ours:** the ruling named the four fields and the 16
+       bytes, and these widths fit them.
+     - **Alignment:** the header keeps the payload 4-byte aligned, so a
+       browser's `Float32Array` reads it without a copy.
+     - **Byte order in JavaScript:** a `DataView` defaults to big-endian, so
+       the plug-in passes `littleEndian = true`.
+   - **Named streams:** `track.<id>.meter`, `track.<id>.spectrum`,
+     `master.correlation` and `device.<id>.scope`. A new stream is a new name.
+
+7. **Protocols.** This closes ADR-0185's three open questions and amends d4
+   and d5.
+   - **MIDI 2.0 stays P2.**
+     - **Correction: JUCE 9.0.2 has UMP device I/O.**
+       `juce::universal_midi_packets::Endpoints` in
+       `juce_audio_devices/midi_io/ump/` has CoreMIDI, ALSA and Windows MIDI
+       Services backends. So the platform adapters the ruling asked for are
+       JUCE's.
+     - **ADI's part:** switch on `JUCE_USE_WINDOWS_MIDI_SERVICES`, which is
+       off by default, and parse UMP into `AEXP`.
+     - **Windows:** JUCE marks Windows MIDI Services experimental and falls
+       back to WinRT or WinMM MIDI 1.0 where it is not installed, so Settings
+       shows which backend is live.
+   - **OSCQuery: an in-process responder** on nlohmann/json, already pinned
+     (MIT, `third_party/json`, ADR-0016). No web-server library. DNS-SD uses
+     each OS's own service.
+     - **Off by default. Settled with the director.**
+     - **Turning it on** opens read and write together, after a warning: "Use
+       this only on trusted networks."
+     - **What stays from ADR-0185 d4:** the network interface the user picks,
+       and the optional list of client addresses.
+   - **Hardware CV/Gate moves to ADI DAW 2,** a future major version, and is
+     unprioritized.
+     - **Removed now:** its settings row and the calibration work.
+     - **Kept:** ADR-0185 d5's safeguards stay the design for when it
+       returns.
+
+8. **Pd externals, the order of the Pd devices, and ADiJ.** This closes
+   ADR-0187's three open questions.
+   - **ADI's Pd externals are compiled into the engine** and registered with
+     libpd as built-ins. They are verified C++ classes, such as Surge's
+     effects and BYOD's waveshapers.
+     - **Nothing loads from disk:** no `.dll` or `.dylib` external is ever
+       loaded, so a patch cannot bring native code into the process.
+     - **Which ADRs it answers:** this is the ADR that ADR-0187 d1 asked for.
+       It replaces ADR-0035's per-library choice, and the settings lose their
+       externals path.
+     - **The editor must mark missing objects.** The editor built on plugdata
+       (ADR-0145 d8) ships externals of its own, ELSE and cyclone among them.
+       It must mark every object the engine does not have, so a patch never
+       saves what cannot play.
+   - **The order of the Pd devices.**
+     - **First:** Shifter, Redux, Delay and Reverb. They prove a Hilbert
+       shift, sample reduction with jitter, feedback lines and an algorithmic
+       reverb. Convolution follows with Hybrid Reverb.
+     - **Then:** the rest of Surge's 31 effects, and the Live devices mapped
+       in ADR-0187 d2.
+   - **ADiJ runs on ADI's engine. Mixxx is a reference and is never forked.**
+     This keeps ADR-0105 d2. Mixxx's code is reused for two things:
+     - **the DJ filter's curves:** `filtereffect.cpp`, GPL-2.0-or-later;
+     - **the beat-grid heuristics:** `BeatUtils`' constant-tempo regions,
+       phase adjustment and BPM snapping. They run on top of Essentia's
+       tracker (ADR-0145 d10). Mixxx's own tracker, qm-dsp, is
+       GPL-2.0-or-later too.
+   - **Correction: Mixxx does not write Pioneer USBs.**
+     - **What Mixxx does:** `rekordboxfeature.cpp` reads
+       `PIONEER/rekordbox/export.pdb`, and Mixxx exports only to Engine Prime.
+     - **The licence problem:** its reader is generated from Deep Symmetry's
+       Kaitai specs (`lib/rekordbox-metadata/*.ksy`). Their licence is
+       **EPL-1.0**, which is not in the policy's table and is incompatible
+       with the GPL.
+     - **So CDJ export is ADI's own writer.** Before anything of Deep
+       Symmetry's is copied, the EPL question goes to the director.
+
+9. **What this closes, and what stays open.**
+   - **Closed:** ADR-0176 d8; ADR-0177's three questions; ADR-0181's three;
+     four of ADR-0182's six; ADR-0184's three; ADR-0185's three; ADR-0187's
+     three.
+   - **Still open:**
+     - ADR-0182's ghost table, and row ids with concurrent ordering;
+     - the 169-pixel check against Live;
+     - EPL-1.0, if a Pioneer writer ever wants Deep Symmetry's specs.
