@@ -377,7 +377,23 @@ ClapDevice::~ClapDevice() {
         if (plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
         if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     }
+    // DEFENSIVE, AND SAY SO: this line is NOT what closes the use-after-free.
+    //
+    // The ownership is. `glue_` is a member, so it is destroyed with this
+    // device -- the glue cannot outlive the plugin it describes, and the
+    // dangling pointer the old shape allowed is now unreachable rather than
+    // merely unused. Removing this call and running the whole suite passes,
+    // which is exactly what should be expected and is recorded here so the
+    // next person does not read a planted-defect PASS as a hole in the tests.
+    //
+    // It stays because it costs a branch and makes the ordering explicit for
+    // a reader, and because a future refactor that hands the glue somewhere
+    // else would need it and would not think to add it back.
+    if (glue_ != nullptr) glue_->unregisterPlugin(plugin_);
     if (plugin_->destroy != nullptr) plugin_->destroy(plugin_);
+    // `glue_` is a member and is destroyed after this body runs, which is the
+    // order that matters: the plugin it describes is already gone and it has
+    // already forgotten it.
 }
 
 void ClapDevice::rescanParams() {
@@ -554,6 +570,14 @@ bool ClapDevice::loadState(const std::string& role, const std::vector<std::uint8
     return ok;
 }
 
+std::uint64_t ClapDevice::shapeEpoch() const noexcept {
+    return glue_ != nullptr ? glue_->portChanges() : 0;
+}
+
+std::uint64_t ClapDevice::restartEpoch() const noexcept {
+    return glue_ != nullptr ? glue_->unexplainedRestarts() : 0;
+}
+
 std::uint64_t ClapDevice::stateEpoch() const noexcept {
     return glue_ != nullptr ? glue_->stateSignals() : 0;
 }
@@ -641,10 +665,29 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     // The declared BUS LAYOUT is re-read rather than assumed, because a port
     // rescan is the one thing that must not take this path: re-reading is a
     // few `get_extension` calls and no state is lost by asking.
+    // ADR-0179 replaces ADR-0090 d5's `layoutMatches()` here.
+    //
+    // That call asked the plugin for its port layout WHILE IT WAS ACTIVE, to
+    // notice a rescan. `audio-ports.h` line 67 says the scan "has to be done
+    // while the plugin is deactivated", and `plugin.h` says the layout may
+    // not change while active -- so the check was illegal AND could never
+    // see the thing it was added to detect (ADR-0123 item 6).
+    //
+    // The signal it should always have used is a port rescan attributable to
+    // THIS plugin, which needs a `clap_host_t` per instance and so could not
+    // exist until now. `portChanges()` is that: the plugin told us, on the
+    // host object that belongs to it alone.
+    //
+    // Everything ADR-0090 measured still holds -- a rebuild must not reset a
+    // plugin that did not change, because reactivating Pro-Q 3 in linear
+    // phase threw away 5120 samples of FIR history and silenced the master
+    // for 106.7 ms.
+    const std::uint64_t shapeNow = glue_ != nullptr ? glue_->portChanges() : 0;
     if (activated_ && sampleRate == sampleRate_ && maxFrames == maxFrames_ &&
-        layoutMatches()) {
+        shapeNow == shapeSeen_) {
         return;
     }
+    shapeSeen_ = shapeNow;
 
     if (activated_) {
         if (processing_ && plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
@@ -1238,28 +1281,28 @@ void ClapHostGlue::stateMarkDirty(const clap_host_t* h) {
     static_cast<ClapHostGlue*>(h->host_data)->stateSignal();
 }
 
-void ClapHostGlue::registerPlugin(const clap_plugin_t* p) {
-    if (p == nullptr) return;
-    for (const auto* q : plugins_) if (q == p) return;
-    plugins_.push_back(p);
-}
+void ClapHostGlue::registerPlugin(const clap_plugin_t* p) { plugin_ = p; }
 
 void ClapHostGlue::unregisterPlugin(const clap_plugin_t* p) {
-    for (std::size_t i = 0; i < plugins_.size(); ++i) {
-        if (plugins_[i] == p) { plugins_.erase(plugins_.begin() + static_cast<long>(i)); return; }
-    }
+    // Idempotent, and it does not care whether `p` is the one it holds: the
+    // caller is `~ClapDevice`, which owns both, and a mismatch there would be
+    // a bug we want to fail loudly elsewhere rather than silently keep a
+    // pointer here.
+    if (plugin_ == p || p == nullptr) plugin_ = nullptr;
 }
 
 void ClapHostGlue::dispatchMainThread() {
     const std::uint64_t want = callbacks_.load(std::memory_order_acquire);
     if (want == dispatched_) return;
     dispatched_ = want;
-    // Every registered plugin, not just the one that asked: request_callback
-    // carries no identity, so there is no way to know which. Calling
-    // on_main_thread on a plugin that did not ask is explicitly allowed and
-    // costs a no-op; not calling the one that did is silent work never done.
-    for (const auto* p : plugins_)
-        if (p != nullptr && p->on_main_thread != nullptr) p->on_main_thread(p);
+    // ONE plugin, because one glue now serves one plugin (ADR-0179). The
+    // loop this replaced called `on_main_thread` on every plugin registered
+    // with the host, for the honest reason that `request_callback` carries no
+    // identity -- and that loop was a use-after-free, because nothing ever
+    // unregistered a destroyed plugin. Per-instance `host_data` IS the
+    // identity, so the broadcast is neither needed nor possible.
+    if (plugin_ != nullptr && plugin_->on_main_thread != nullptr)
+        plugin_->on_main_thread(plugin_);
 }
 
 void ClapHostGlue::requestRestart(const clap_host_t* h) {
@@ -1433,8 +1476,14 @@ std::unique_ptr<DeviceInstance> ClapHost::makeDevice(const ClapPluginRef& ref,
     id.vendor  = ref.vendor;
     id.version = ref.version;
 
+    // ADR-0179: A GLUE PER INSTANCE, created BEFORE the plugin, because the
+    // `clap_host_t` inside it is an argument to `create` and the plugin may
+    // keep the pointer for its whole life. Its `host_data` is what makes
+    // every later callback attributable to this one device.
+    auto glue = std::make_unique<ClapHostGlue>();
+
     ClapLibrary* lib = libraryFor(ref.bundlePath, error);
-    const clap_plugin_t* p = (lib != nullptr) ? lib->create(glue_.host(), ref.id.c_str())
+    const clap_plugin_t* p = (lib != nullptr) ? lib->create(glue->host(), ref.id.c_str())
                                               : nullptr;
     if (p == nullptr) {
         // ADR-0011 / SPEC 7.1. Not nullptr, not an exception, not a skip:
@@ -1444,9 +1493,11 @@ std::unique_ptr<DeviceInstance> ClapHost::makeDevice(const ClapPluginRef& ref,
         if (error.empty()) error = "the factory refused to create " + ref.id;
         return std::make_unique<MissingDevice>(id);
     }
-    glue_.registerPlugin(p);
+    glue->registerPlugin(p);
     auto dev = std::make_unique<ClapDevice>(p, id);
-    dev->setGlue(&glue_);
+    // Ownership moves to the device, so the glue cannot outlive the plugin it
+    // describes; `~ClapDevice` unregisters before `destroy`.
+    dev->adoptGlue(std::move(glue));
     dev->prepare(sampleRate, blockSize);
     return dev;
 }

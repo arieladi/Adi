@@ -76,7 +76,12 @@ void testOwnershipAndLifetime() {
 
     check(host.deviceCount() == 1, "the host owns the device");
     check(&host.nodeAt(0) == &node, "and the node");
-    check(host.coalescer().sourceCount() == 1, "which registered one source");
+    // THREE, not one, since ADR-0179: latency, ports and restart, all read
+    // through the device contract so DeviceHost never asks what format it
+    // holds (ADR-0052 d4). A device that does not report two of them answers
+    // 0 and the coalescer sees no change.
+    check(host.coalescer().sourceCount() == 3,
+          "which registered three sources: latency, ports, restart");
 
     // THE LIFETIME ARGUMENT, made concrete. A graph is replaced -- ADR-0019
     // swaps one and ADR-0085 rebuilds one -- so a coalescer living inside a
@@ -97,7 +102,7 @@ void testOwnershipAndLifetime() {
     host.attachGraph(g2);
 
     check(host.deviceCount() == 1, "the device survived the graph it was in");
-    check(host.coalescer().sourceCount() == 1, "and so did its registration");
+    check(host.coalescer().sourceCount() == 3, "and so did its registration");
     check(raw->latencyEpoch() == 0, "with no spurious reports");
 }
 

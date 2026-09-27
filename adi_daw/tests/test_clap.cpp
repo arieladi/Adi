@@ -1063,20 +1063,44 @@ void testAPluginsStateSignalIsABoundary() {
     check(glue.flushRequests() == 1 && glue.stateSignals() == 3,
           "a flush request is counted and is not a boundary; clear is neither");
 
+    // ADR-0179: a device OWNS its glue, so the rest of this test drives the
+    // device's own one. Before that, a device pointed at a host-wide glue and
+    // reported a count every other plugin on the host contributed to.
     Fake f;
-    f.host = h;
     DeviceIdentity id;
     id.format = "clap";
     id.name = "Fake";
     ClapDevice d(&f.plugin, id);
     check(d.stateEpoch() == 0, "a device built with no glue never signals");
-    d.setGlue(&glue);
-    check(d.stateEpoch() == 3, "with one, it reports its host's count");
+
+    auto owned = std::make_unique<ClapHostGlue>();
+    ClapHostGlue* mine = owned.get();
+    mine->registerPlugin(&f.plugin);
+    d.adoptGlue(std::move(owned));
+
+    const clap_host_t* mh = mine->host();
+    f.host = mh;                       // the fake answers on ITS OWN host
+    const auto* mhp = static_cast<const clap_host_params_t*>(
+        mh->get_extension(mh, CLAP_EXT_PARAMS));
+    const auto* mhs = static_cast<const clap_host_state_t*>(
+        mh->get_extension(mh, CLAP_EXT_STATE));
+
+    mhp->rescan(mh, CLAP_PARAM_RESCAN_VALUES);
+    mhp->rescan(mh, CLAP_PARAM_RESCAN_ALL);
+    mhs->mark_dirty(mh);
+    check(d.stateEpoch() == 3, "it reports ITS OWN count, not a host-wide one");
+
+    // The other glue, which serves nobody, must have seen none of that. This
+    // is the whole point of the per-instance host: a signal belongs to one
+    // plugin, and the count on another object does not move.
+    check(glue.stateSignals() == 3,
+          "the unrelated glue kept its own 3 and gained nothing from this device");
+
     f.dirtyOnLoad = true;
     check(d.loadState("chunk", {1, 2, 3}), "a load");
     check(d.stateEpoch() == 3, "the plugin's answer to our own load did not move it");
-    check(glue.mutedStateSignals() == 1, "it was counted as muted instead");
-    hs->mark_dirty(h);
+    check(mine->mutedStateSignals() == 1, "it was counted as muted instead");
+    mhs->mark_dirty(mh);
     check(d.stateEpoch() == 4, "and the mute ended with the load");
 }
 
@@ -1493,9 +1517,21 @@ void testClapHostWithoutAnyPlugin() {
     check(dev && dev->tailSamples() == 0, "a placeholder holds nothing back");
     check(dev && dev->latencySamples() == 0, "and delays nothing");
 
-    // The glue is one per host, and it is what DeviceHost watches.
-    check(host.glue().host() != nullptr, "the host exposes its glue for ADR-0084");
-    check(host.glue().restartRequests() == 0, "which has seen nothing yet");
+    // ADR-0179 INVERTED THIS. It read "the glue is one per host, and it is
+    // what DeviceHost watches", and asserted that the HOST exposed one. There
+    // is no host-wide glue any more: one per plugin instance, owned by the
+    // device, so a signal can be traced to the plugin that sent it. A
+    // host-level counter could only ever have answered a zero it could not
+    // leave.
+    // This `dev` is a PLACEHOLDER -- the path was deliberately bogus -- so
+    // the thing to assert is the placeholder's answer, not a device's. It has
+    // no glue to own, and the contract's three epochs all read 0, which is
+    // what "this device does not report here" means (ADR-0011, ADR-0179).
+    check(dev && dev->latencyEpoch() == 0, "a placeholder reports no latency epoch");
+    check(dev && dev->shapeEpoch() == 0, "no shape epoch");
+    check(dev && dev->restartEpoch() == 0, "and no restart epoch");
+    check(dynamic_cast<ClapDevice*>(dev.get()) == nullptr,
+          "and it is not a ClapDevice at all, so there is no glue to look for");
 }
 
 void testAnExtensionWithNullMembers() {
@@ -1677,6 +1713,64 @@ void testTheBusLayoutIsAsked() {
 /// can tell that something DID change -- and a port rescan is precisely the
 /// case where it must reactivate, because re-reading the bus layout is the
 /// reason the rebuild happened at all.
+/// ADR-0179: destroying a device must leave the glue holding nothing.
+///
+/// THE BUG THIS PINS, which was real and is reproduced in
+/// `adi_clap_probe` under AddressSanitizer with a real ADI Airwindows suite:
+/// `ClapHost::makeDevice` registered the raw `clap_plugin_t*` with a
+/// host-wide glue, `~ClapDevice` called `plugin_->destroy`, nothing ever
+/// called `unregisterPlugin`, and `dispatchMainThread` then called
+/// `on_main_thread` through freed memory. Remove a CLAP plug-in from a track,
+/// wait one 20 ms timer tick.
+///
+/// A plain unit test cannot see a use-after-free -- freed memory usually
+/// still reads. So this asserts the INVARIANT that makes it impossible: after
+/// the device is gone, the glue holds no plugin, and a dispatch calls nothing.
+/// The counter proves the dispatch would have called something if it still
+/// held one.
+void testDestroyingADeviceLeavesNoDanglingPlugin() {
+    section("ADR-0179 -- a destroyed device leaves the glue holding nothing");
+
+    Fake f;
+    auto owned = std::make_unique<ClapHostGlue>();
+    ClapHostGlue* glue = owned.get();
+    glue->registerPlugin(&f.plugin);
+
+    const clap_host_t* h = glue->host();
+    h->request_callback(h);
+    glue->dispatchMainThread();
+    check(f.mainThreadCalls == 1,
+          "while the plugin is registered, a requested callback reaches it");
+
+    {
+        DeviceIdentity id;
+        id.format = "clap";
+        id.name = "Fake";
+        ClapDevice d(&f.plugin, id);
+        d.adoptGlue(std::move(owned));
+        // `glue` is still valid: the device owns it and is still alive.
+        h->request_callback(h);
+        glue->dispatchMainThread();
+        check(f.mainThreadCalls == 2, "and still does while the device holds it");
+    }
+    // The device is gone. It unregistered before destroying, and it owned the
+    // glue, so there is nothing left to dispatch THROUGH -- which is the
+    // point: the old shape kept the pointer and the glue outlived the plugin.
+
+    // A second glue, standing in for one whose device died while the glue
+    // lived on, is the case the old code got wrong.
+    ClapHostGlue orphan;
+    orphan.registerPlugin(&f.plugin);
+    orphan.unregisterPlugin(&f.plugin);
+    const clap_host_t* oh = orphan.host();
+    oh->request_callback(oh);
+    const auto before = f.mainThreadCalls;
+    orphan.dispatchMainThread();
+    check(f.mainThreadCalls == before,
+          "a glue that unregistered its plugin dispatches to NOBODY -- the "
+          "call that used to run through freed memory");
+}
+
 void testPrepareReactivatesWhenTheLayoutMoves() {
     section("ADR-0090 -- prepare is idempotent, EXCEPT when the ports moved");
 
@@ -1727,25 +1821,54 @@ void testPrepareReactivatesWhenTheLayoutMoves() {
     id.name = "Shifty";
     ClapDevice d(&f.plugin, id);
 
+    // ADR-0179: the device owns a glue, and the glue's host object is how a
+    // plugin announces a rescan. That announcement is the signal this guard
+    // now uses.
+    auto owned = std::make_unique<ClapHostGlue>();
+    ClapHostGlue* glue = owned.get();
+    glue->registerPlugin(&f.plugin);
+    d.adoptGlue(std::move(owned));
+    const clap_host_t* h = glue->host();
+    const auto* ports = static_cast<const clap_host_audio_ports_t*>(
+        h->get_extension(h, CLAP_EXT_AUDIO_PORTS));
+
     d.prepare(48000.0, 256);
     check(f.activations == 1, "the first prepare activates");
 
     d.prepare(48000.0, 256);
     check(f.activations == 1,
-          "the same rate, size and layout: NOTHING, saw " +
+          "the same rate and size, no rescan announced: NOTHING, saw " +
               std::to_string(f.activations));
 
-    // The rescan a real plugin announces through clap_host_audio_ports.
+    // A SILENT LAYOUT CHANGE IS NOT DETECTED, AND THAT IS THE DECISION.
+    //
+    // This check asserted the opposite until ADR-0179. The old guard called
+    // `layoutMatches()`, which asked an ACTIVE plugin for its port layout --
+    // which `audio-ports.h` line 67 forbids ("the audio ports scan has to be
+    // done while the plugin is deactivated") and which could not have seen a
+    // change anyway, because `plugin.h` says the layout may not move while
+    // active. A plugin that changes its declared ports without announcing a
+    // rescan is misbehaving, and the host is entitled to miss it.
+    //
+    // Pinned here so nobody "fixes" this back into an illegal read.
     f.inputs = 2;
     d.prepare(48000.0, 256);
-    check(f.activations == 2,
-          "a plugin that now declares a SECOND input bus is reactivated, so the "
-          "host allocates the array it will index -- saw " +
+    check(f.activations == 1,
+          "a layout that moved with NO rescan announced does not reactivate -- "
+          "the host may not read ports off an active plugin to find out, saw " +
               std::to_string(f.activations));
+
+    // THE LEGAL SIGNAL: the plugin announces, and the next prepare reactivates
+    // and re-reads. This is the path ADR-0123 item 6 named as the correct one.
+    ports->rescan(h, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT);
+    d.prepare(48000.0, 256);
+    check(f.activations == 2,
+          "an ANNOUNCED rescan reactivates, so the host allocates the array the "
+          "plugin will index -- saw " + std::to_string(f.activations));
     check(f.deactivations == 1, "and was deactivated exactly once to do it");
 
     d.prepare(48000.0, 256);
-    check(f.activations == 2, "and settles again once the layout stops moving");
+    check(f.activations == 2, "and settles again once the announcements stop");
 }
 
 
@@ -1893,6 +2016,7 @@ int main() {
     testActivationBoundsAdmitSegments();
     testAParameterSetBeforeActivationIsFlushed();
     testAPluginsStateSignalIsABoundary();
+    testDestroyingADeviceLeavesNoDanglingPlugin();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

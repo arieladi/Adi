@@ -36,8 +36,23 @@ DeviceNode& DeviceHost::add(std::unique_ptr<DeviceInstance> dev, std::string nam
     // 0, the coalescer sees no change and does nothing -- which costs one
     // lambda call per poll and removes the last reason to ask what format
     // this is.
-    coalescer_.addSource(std::move(name), [inst] { return inst->latencyEpoch(); },
+    // THREE sources per device, all through the contract, none of them
+    // asking what format this is (ADR-0052 d4). ADR-0179 gave the contract
+    // `shapeEpoch` and `restartEpoch` beside `latencyEpoch` precisely so this
+    // could stay format-agnostic: a CLAP device answers from its own glue, a
+    // VST3 answers 0 for the two it does not report, and a device that never
+    // reports keeps returning 0 and costs one lambda call per poll.
+    //
+    // ADR-0084's split is what makes three rather than one: a latency change
+    // is a tap move, a shape change is a different graph, and a restart with
+    // no stated cause is treated as the second, because the conservative
+    // answer is the one that cannot corrupt.
+    coalescer_.addSource(name + " latency", [inst] { return inst->latencyEpoch(); },
                          engine::LatencyCoalescer::Kind::Latency);
+    coalescer_.addSource(name + " ports", [inst] { return inst->shapeEpoch(); },
+                         engine::LatencyCoalescer::Kind::Shape);
+    coalescer_.addSource(std::move(name) + " bare", [inst] { return inst->restartEpoch(); },
+                         engine::LatencyCoalescer::Kind::Shape);
 
     return *devices_.back().node;
 }

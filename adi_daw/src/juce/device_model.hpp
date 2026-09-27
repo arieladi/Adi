@@ -186,6 +186,33 @@ public:
     /// belongs to the host object, not to the plugin (ADR-0084).
     [[nodiscard]] virtual std::uint64_t latencyEpoch() const noexcept { return 0; }
 
+    /// A counter that increases every time this device reports that its
+    /// SHAPE moved — ports, channel counts. ADR-0179.
+    ///
+    /// Same shape and same reason as `latencyEpoch`: every device answers,
+    /// 0 where the concept does not apply, and `DeviceHost` registers a
+    /// source for every device unconditionally. The alternative is asking a
+    /// device what format it is, which is ADR-0052 decision 4's exact
+    /// failure — and which the compiler already caught once, because the
+    /// `dynamic_cast` needs a JUCE header in a file that has none.
+    ///
+    /// **This is what makes ADR-0090 d5's prepare guard legal.** That guard
+    /// re-read the port layout on every prepare to notice a rescan, which
+    /// `audio-ports.h` forbids while the plugin is active AND which cannot
+    /// see a change anyway, because the layout may not move while active
+    /// (ADR-0123 item 6). A per-device epoch is the signal that guard should
+    /// always have used.
+    [[nodiscard]] virtual std::uint64_t shapeEpoch() const noexcept { return 0; }
+
+    /// A counter that increases every time this device asks to be restarted
+    /// without saying why. ADR-0179.
+    ///
+    /// Separate from the two above because the CAUSE is what decides the
+    /// response (ADR-0084): a latency change is a tap move, a shape change is
+    /// a different graph, and a restart nobody explained is treated as the
+    /// second, because the conservative answer is the one that cannot corrupt.
+    [[nodiscard]] virtual std::uint64_t restartEpoch() const noexcept { return 0; }
+
     /// ADR-0142 (ADR-0110 d1): a CAPTURE BOUNDARY. Moves when the plugin says
     /// its state changed in a way its parameter broadcasts do not carry -- a
     /// preset picked in its browser, a sample dropped on it: VST3's
