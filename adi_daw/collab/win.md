@@ -5,6 +5,29 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-27 — ADR-0191: ADiJ's export, Pro DJ Link and stems; the names stand
+
+**Why:** the director answered ADR-0189's questions and asked for stems. The
+names stay ADI and ADiJ, with a trademark clearance before the first public
+release (the director chose it over renaming to ADiJ-DAW now).
+
+**What landed:** ADR-0191, a FEATURES section 10.6 for ADiJ, the Mixxx row in
+EXTERNAL-CODE.
+
+**Corrections, checked in the code:**
+- **"USB plus XML covers every case" leaves one open.** Newer AlphaTheta
+  players read an encrypted Device Library Plus (`exportLibrary.db`).
+  crate-digger only copies it, and rekordcrate and Vynull write `export.pdb`
+  alone.
+- **Pro DJ Link is a network path,** which ADR-0105 d4 excluded from ADiJ.
+  The amendment keeps its intent: own threads, off by default, and a network
+  fault never stops a deck.
+- **ADI cannot decode AAC or M4A today** (`decode.cpp`: WAV, AIFF, FLAC, MP3,
+  Ogg). NI Stems files are AAC in MP4, and DJ libraries are full of M4A, so
+  AAC decoding comes first for ADiJ.
+
+---
+
 ## 2026-09-27 — ADR-0190: the DAW is ADI; ADI Live is dropped
 
 **Why:** the director renamed the DAW to ADI (Advanced DAW Infrastructure),

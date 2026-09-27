@@ -13800,3 +13800,121 @@ pyrekordbox. All five exist.
    - **The search problem:** a three-letter name is also hard to find.
    - **The advice:** a trademark check on "ADI" for audio software belongs
      before the first public release. It is not a reason to wait now.
+
+---
+
+## ADR-0191 — ADiJ writes Pioneer USBs and Rekordbox XML, serves CDJs over Pro DJ Link, and plays stems; the names ADI and ADiJ stand until a trademark clearance — `DECIDED (direction)` (2026-09-27) — **DIRECTOR'S DIRECTIVE; ANSWERS ADR-0189'S TWO QUESTIONS IN PART; AMENDS ADR-0105 d4 AND ADR-0190 d5**
+
+**Director's directive:**
+- **The names.** The DAW is ADI and the DJ application is ADiJ. The repository's
+  folders stay as they are.
+- **Export.** ADiJ writes the physical USB structure itself, using
+  crate-digger's logic, so a DJ can plug straight into a CDJ. It also offers a
+  standard XML file for the Rekordbox desktop application. Between them, the
+  director judged, the two cover every case: the club booth and the laptop at
+  home.
+- **CDJs over the network.** ADiJ as a CDJ network source goes on the feature
+  list, directly after the USB export.
+- **Stems.** Add stem support.
+
+Checked against ADR-0105, ADR-0145 d10, ADR-0186, ADR-0189 and the reference
+code.
+
+### Decisions
+
+1. **The names stand until a trademark clearance.** This makes ADR-0190 d5's
+   advice a step:
+   - **The clearance is a release gate.** A trademark search on "ADI" for
+     audio software (EUIPO, DPMA, USPTO) is done before the first public
+     release, and a conflict renames the product then. RME's converter names
+     (ADI-2, ADI-8 QS) and Analog Devices' marks are the ones to look at.
+   - **Nothing else changes:** directories, targets and the repository keep
+     their names (ADR-0190 d4).
+
+2. **Export: the USB stick and Rekordbox's XML, P2 within ADiJ.**
+   - **The USB structure,** written by ADiJ itself:
+     - `PIONEER/rekordbox/export.pdb`, the DeviceSQL database;
+     - the ANLZ analysis files: beat grid, cues, waveforms;
+     - the settings files.
+
+     It is built from crate-digger's Kaitai specs, taken under MPL-2.0
+     (ADR-0189 d2), with rekordcrate (MPL-2.0; it reads and writes, with
+     round-trip tests) and Vynull's writer (GPL-3.0) as working references.
+   - **`rekordbox.xml`,** the file the Rekordbox desktop application imports
+     and exports itself: tracks, playlists, cues and grids. ADiJ writes it, and
+     reads it too, which brings a Rekordbox library into ADiJ with no database
+     key.
+   - **Correction: "every case" leaves one open.** Newer AlphaTheta hardware
+     reads a second database, Device Library Plus (`exportLibrary.db`), an
+     SQLCipher-encrypted SQLite file.
+     - **What reads it today:** pyrekordbox reads it with a known key.
+     - **What does not write it:** crate-digger only copies it beside
+       `export.pdb` (`Archivist.java`), and rekordcrate and Vynull write
+       `export.pdb` alone.
+     - **The two conditions:** before the USB export is called complete,
+       each target player is checked for which database it reads. And writing
+       Device Library Plus needs the key, which is ADR-0189's legal question,
+       now for writing. It comes back to the director.
+   - **Reading Rekordbox's desktop `master.db` stays as ADR-0189
+     recommended,** because the XML covers the desktop in both directions: no
+     key shipped or recovered unless the director rules otherwise.
+
+3. **ADiJ as a source on Pro DJ Link: P2, directly after the USB export.** It
+   serves what the USB export writes, instead of writing it.
+   - **What the user sees:** ADiJ appears on the booth's Pro DJ Link network
+     as a rekordbox source. CDJs browse and load its tracks over Ethernet,
+     with waveforms, grids and cues, and no USB stick.
+   - **What it takes,** from Vynull (GPL-3.0, reusable), which does it today:
+     - announcements on UDP 50000 to 50002;
+     - a database server the players browse;
+     - an NFS v2 file server for the audio.
+
+     In its CDJ-USB mode Vynull also needs the RPC portmapper on UDP 111, a
+     privileged port, and in its rekordbox mode it does not. So ADiJ builds
+     the rekordbox mode first.
+   - **This amends ADR-0105 d4,** "no AudioGridder or network path in this
+     app, for stability". Pro DJ Link is a network path by nature. It keeps
+     that rule's intent:
+     - **Off the audio thread:** the network runs on its own threads (the
+       rule of ADR-0053).
+     - **Off by default,** until the user enables it.
+     - **A network fault never stops a deck.**
+   - **Read only:** Pro DJ Link has no authentication; it is a booth LAN.
+     Players load tracks, and nothing on the network can change the library.
+   - **The protocol research,** Deep Symmetry's dysentery (EPL-1.0), is read
+     only.
+
+4. **Stems.**
+   - **In ADiJ, P2.** A deck plays a track as four stems, with a level, a mute
+     and a filter on each, as Rekordbox, Serato and Traktor do. The stems come
+     from two sources:
+     - **NI Stems files** (`.stem.mp4`): an MP4 holding a pre-mixed master and
+       up to four stereo stems, all in one codec at one sample rate. That is
+       exactly what Mixxx's reader checks (`soundsourcestem.cpp`,
+       GPL-2.0-or-later). The format is Native Instruments'. ADiJ names it
+       only to say what it reads, as ADR-0181 does with Elgato.
+     - **Separated stems for any track.** Separation is a heavy analysis
+       model, so it runs at analysis time behind the RPC boundary, never on a
+       deck. ADR-0186 d2 keeps Demucs in Tier 2 by name. The result is cached
+       by the track's BLAKE3 hash (ADR-0145 d11) and plays exactly like a stem
+       file.
+   - **In ADI:**
+     - **Splitting a clip into stems** is already P1 (ADR-0064): a group and N
+       tracks.
+     - **Importing an NI Stems file** makes a group with one track per stem,
+       time-aligned: P2.
+     - **Exporting stems as an NI Stems file** is P3. It needs an AAC encoder,
+       which comes from the operating system where one exists (Media
+       Foundation, Core Audio). Linux is open.
+   - **Correction: ADI cannot decode AAC or M4A at all today.**
+     - **What the decoder reads:** WAV, AIFF, FLAC, MP3 and Ogg (`decode.cpp`).
+     - **Why it matters beyond stems:** a DJ library is full of M4A, so AAC
+       decoding is a precondition for ADiJ as a whole, not just for stems.
+     - **The plan:** an MP4 demuxer of our own, with AAC decoded by the
+       platform decoders JUCE wraps. Linux's decoder is decided when the Linux
+       DJ application is (phase 4).
+
+**Still open:**
+- which players need Device Library Plus, and the key for writing it (d2);
+- the AAC decoder on Linux (d4);
+- the trademark clearance (d1).
