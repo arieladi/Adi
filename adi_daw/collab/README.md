@@ -244,7 +244,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 |---|---|---|---|
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/dsp/combchord.*`, `src/adi/dsp/colorcab.*`, `src/adi/pd_builtins/**`, `pd/devices/**`, `tests/test_combchord.cpp`, `tests/test_colorcab.cpp` | win_codex | `codex/colorbass-dsp` | 2026-09-27 |
-| `src/adi/engine/graph.hpp` (`NodeIo` only), `src/adi/engine/session.cpp` (the per-block transport fill), `tests/test_transport_info.cpp`: delegated by win | win_codex | `codex/transport-info` | 2026-09-27 |
+| `src/adi/engine/graph.hpp` (`NodeIo` only), `src/adi/engine/graph.cpp` (the `NodeIo` fill only), `src/adi/engine/process.hpp` (one optional transport pointer on `AudioIo`), `src/adi/engine/session.hpp` and `session.cpp` (the per-block transport fill and the tempo/meter view it reads, published through `publisher.hpp`), `tests/test_transport_info.cpp`: delegated by win, widened 2026-09-27 at win_codex's request | win_codex | `codex/transport-info` | 2026-09-27 |
 | `src/adi/dsp/masking.*`, its test: the band-overlap measure the analyser's overlay and the agent's `analyze.masking` share (ADR-0195 d5) | mac (analyser) | (its round 6) | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
