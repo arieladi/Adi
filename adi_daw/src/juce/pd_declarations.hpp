@@ -116,6 +116,23 @@ struct PdArrayDecl {
     static constexpr double kMaxRate = 1000.0;
 };
 
+/// A `[declare]` in the patch that would reach outside the DAW's own files.
+///
+/// **ADR-0188 d8: ADI loads no Pd external from disk.** `[declare]` is the one
+/// object that can defeat that from inside the patch text, and it has two
+/// separate ways to do it:
+///   * `-lib` / `-stdlib` load a binary external BY NAME at patch-open time;
+///   * `-path` / `-stdpath` add a directory to the canvas's search path, and
+///     Pd then resolves externals through it exactly as it resolves
+///     abstractions.
+/// Both are found here, in the same static parse and with Pd not running, so
+/// the engine can refuse the patch before libpd ever sees it.
+struct PdExternalRequest {
+    std::string flag;    ///< `-path`, `-stdpath`, `-lib` or `-stdlib`
+    std::string value;   ///< what followed it, or empty
+    int box = 0;
+};
+
 struct PdDeclarations {
     std::vector<PdParamDecl> params;
     std::vector<PdArrayDecl> arrays;
@@ -133,6 +150,15 @@ struct PdDeclarations {
 /// parameter -- it is never automated, mapped or bound. Sharing one space
 /// would make adding a display change what an automation lane points at.
 [[nodiscard]] PdDeclarations parsePdDeclarations(std::string_view patchText);
+
+/// Every `[declare]` in the patch that asks for a library or a search path.
+///
+/// Empty is the normal answer. A non-empty one is a patch `LibPdEngine` must
+/// refuse to open: see `PdExternalRequest`. It is deliberately separate from
+/// `parsePdDeclarations`, because a bad `[adi.param]` is ignored and the device
+/// still loads (ADR-0177 d2), while this is not a declaration to ignore -- it
+/// is a reason not to run the patch at all.
+[[nodiscard]] std::vector<PdExternalRequest> pdExternalRequests(std::string_view patchText);
 
 /// The receive name the host sends a parameter's value to: `<$0>-adi-<id>`,
 /// which is what `adi.param.pd` listens on (ADR-0177 decision 5).

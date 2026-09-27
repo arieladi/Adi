@@ -257,6 +257,57 @@ void testTheReceiveNames() {
           "meant fails outright instead of half working");
 }
 
+void testTheExternalRequests() {
+    section("ADR-0188 d8 -- [declare] is read from the text, with Pd not running");
+
+    // This is the half of d8 that does not need a filesystem: whatever the
+    // engine does about files beside a patch, a patch can ask Pd directly.
+    check(pdExternalRequests("#X obj 20 20 adi.param $0 1 0 1 0.5 - lin Depth;").empty(),
+          "an ordinary patch asks for nothing");
+    check(pdExternalRequests("#X obj 20 20 declare;").empty(),
+          "a bare [declare] asks for nothing either, and must not be refused");
+
+    {
+        const auto r = pdExternalRequests("#X obj 20 20 declare -lib zexy;");
+        eqi(static_cast<long long>(r.size()), 1, "-lib is a request");
+        if (r.size() == 1) {
+            eqs(r[0].flag, "-lib", "the flag is kept");
+            eqs(r[0].value, "zexy", "with the library it names");
+        }
+    }
+    {
+        const auto r = pdExternalRequests("#X obj 20 20 declare -path /tmp/x -stdlib else;");
+        eqi(static_cast<long long>(r.size()), 2,
+            "both flags in one [declare] are found -- stopping at the first would "
+            "refuse the patch for the wrong reason and miss the other");
+    }
+    {
+        // A flag may legally end the box. Reading past it is the bug this
+        // catches, and it is the kind that only shows up on someone else's
+        // patch.
+        const auto r = pdExternalRequests("#X obj 20 20 declare -lib;");
+        eqi(static_cast<long long>(r.size()), 1, "a flag with nothing after it is still a request");
+        if (r.size() == 1) eqs(r[0].value, "", "with no value, and no read past the end");
+    }
+    {
+        const auto r = pdExternalRequests(
+            "#N canvas 0 0 450 300 sub 0;\n"
+            "#X obj 20 20 declare -stdpath extra;\n"
+            "#X restore 20 20 pd sub;\n");
+        eqi(static_cast<long long>(r.size()), 1,
+            "a [declare] inside a subpatch counts -- it is the same canvas's path");
+    }
+    {
+        // A message box is not an object box, and `scan` already only returns
+        // object boxes. Stated as a check because "declare" appearing in a
+        // comment or a message must not refuse a patch.
+        const auto r = pdExternalRequests(
+            "#X msg 20 20 declare -lib zexy;\n"
+            "#X text 20 60 declare -lib zexy;\n");
+        check(r.empty(), "a message box and a comment are not declarations");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -267,6 +318,7 @@ int main() {
     testTheArraySchema();
     testTheFileFormat();
     testTheReceiveNames();
+    testTheExternalRequests();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

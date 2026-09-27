@@ -1,0 +1,7 @@
+#N canvas 0 50 660 380 12;
+#X text 20 10 adi-declare-lib -- a top-level patch that asks Pd to load a library by name and to add a directory to its search path (ADR-0188 d8). Both are refused by LibPdEngine::open \, from the patch TEXT \, before libpd sees the file.;
+#X obj 20 130 declare -lib adi_probe_external -path /tmp/adi-probe;
+#X obj 20 190 adc~ 1 2;
+#X obj 20 240 dac~ 1 2;
+#X connect 2 0 3 0;
+#X connect 2 1 3 1;

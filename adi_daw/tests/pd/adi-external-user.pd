@@ -1,0 +1,8 @@
+#N canvas 0 50 660 420 12;
+#X text 20 10 adi-external-user -- a top-level patch that names an object ADI does not have \, so that Pd goes looking for a compiled external to supply it (ADR-0188 d8). The fixture is the ATTACK \, not a device: the test copies it into a directory and drops a file called adi_probe_external.pd_darwin beside it.;
+#X obj 20 130 adc~ 1 2;
+#X obj 20 180 dac~ 1 2;
+#X obj 340 130 adi_probe_external;
+#X text 340 180 Pd resolves this name by asking every loader on every path in turn \, and only tries it as an abstraction when they have all failed. So a loadable file of that name beside the patch is loaded \, and its setup function runs \, before anything else is tried.;
+#X connect 1 0 2 0;
+#X connect 1 1 2 1;

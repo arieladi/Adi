@@ -31,8 +31,18 @@
 #include "juce/pd_declarations.hpp"
 #include "adi/engine/graph.hpp"
 
+// The ONE place in the tree outside pd_engine.cpp that includes libpd, and it
+// is here for a reason: the ADR-0188 d8 section has to drive raw libpd AROUND
+// the engine, because what it proves is that the engine's refusal is refusing
+// something that would otherwise have happened.
+extern "C" {
+#include "z_libpd.h"
+}
+
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -392,6 +402,304 @@ void testAClosedEngineStillPassesAudio() {
           "load must not silence the track");
 }
 
+
+// ---------------------------------------------------------------------------
+// ADR-0188 d8 -- no Pd external is ever loaded from disk
+// ---------------------------------------------------------------------------
+
+/// A temporary directory that cleans itself up, so the fault below is planted
+/// in a place no other test can see.
+struct TempDir {
+    std::filesystem::path path;
+    explicit TempDir(const char* stem) {
+        static int n = 0;
+        path = std::filesystem::temp_directory_path() /
+               (std::string("adi-pd-") + stem + "-" + std::to_string(++n));
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+        std::filesystem::create_directories(path, ec);
+    }
+    ~TempDir() { std::error_code ec; std::filesystem::remove_all(path, ec); }
+    TempDir(const TempDir&) = delete;
+    TempDir& operator=(const TempDir&) = delete;
+
+    void copyFixture(const char* name) const {
+        std::error_code ec;
+        std::filesystem::copy_file(std::filesystem::path(patchDir()) / name, path / name,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+    }
+    void write(const char* name, const std::string& bytes) const {
+        std::ofstream out(path / name, std::ios::binary);
+        out << bytes;
+    }
+    std::string str() const { return path.string(); }
+};
+
+void testAParameterReachesThePatchFromTheAudioThread() {
+    section("ADR-0188 d3 -- a declared parameter, sent on the audio thread, with no gensym and no lock");
+
+    LibPdEngine eng(patchDir(), "adi-param-proof.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    check(eng.open(latency, err), "adi-param-proof.pd opens: " + err);
+
+    // ADR-0177 d5's vanilla-Pd promise, measured rather than taken on trust:
+    // adi.param.pd does not exist yet, so the [adi.param] box cannot create --
+    // and the patch opens anyway, with that parameter silent.
+    std::string joined;
+    for (const auto& line : eng.consoleLines()) joined += line + "\n";
+    check(joined.find("adi.param") != std::string::npos,
+          "Pd reports the [adi.param] box as one it could not make -- "
+          "adi.param.pd is win's and is not written yet\n          console: " + joined);
+
+    // ... and the DECLARATION is readable from the text regardless, which is
+    // the half ADR-0177 fix 3 rests on.
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/adi-param-proof.pd", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eqi(static_cast<long long>(decls.params.size()), 1,
+        "the declaration is still readable text, whether or not the box created");
+    eqi(static_cast<long long>(decls.arrays.size()), 1, "and so is the array's");
+
+    eng.prepare(48000.0, 512);
+    eng.bindArrays(decls);
+    eng.bindParameters(decls);
+
+    check(!eng.sendParameter(99, 0.25f), "an id the patch never declared is refused");
+
+    const auto* arr = eng.publishedArray(1);
+    check(arr != nullptr, "the probe array is bound");
+    if (arr == nullptr) return;
+
+    // The array declares 30 Hz, so a publication is due every 1600 frames at
+    // 48 kHz -- the engine honours the declared rate rather than publishing on
+    // every segment (ADR-0183 d1). Run until one lands.
+    const int n = 128;
+    Buffers b(2, n);
+    const auto runUntilPublished = [&](float value) {
+        const std::uint64_t before = arr->published();
+        check(eng.sendParameter(1, value), "the declared id is sent");
+        for (int i = 0; i < 64 && arr->published() == before; ++i) {
+            auto io = b.io(2, n, 0, n);
+            eng.process(io);
+        }
+        std::vector<float> cells(static_cast<std::size_t>(arr->length()), -99.f);
+        const bool ok = arr->read(cells.data(), arr->length());
+        check(ok, "and a whole array is published");
+        return cells.empty() ? -99.f : cells[0];
+    };
+
+    // The send happens where d3 puts it: on the audio thread, before the
+    // block. `process` is what renders the patch, so this is the order the
+    // engine will really use.
+    const float first = runUntilPublished(0.75f);
+    check(std::fabs(first - 0.75f) < 1e-6f,
+          "the value the host sent came out the other side of Pd -- the receive "
+          "name the patch listens on is exactly the one pdParamReceiveName "
+          "builds\n          got " + std::to_string(first));
+
+    // A second value, so the first cannot have been the array's initial state.
+    const float second = runUntilPublished(-0.5f);
+    check(std::fabs(second + 0.5f) < 1e-6f,
+          "and it followed, so the path is live rather than a one-off\n          got " +
+              std::to_string(second));
+}
+
+void testPdWouldReachAnExternalBesideThePatch() {
+    section("ADR-0188 d8 -- THE FAULT, PLANTED: Pd reaches a file beside the patch");
+
+    // The refusal below is only worth anything if Pd would otherwise have gone
+    // to that file, so this proves it does. The planted file is NOT a valid
+    // library -- it does not need to be. What matters is whether Pd finds it
+    // and hands it to the loader, and it reports that by name when the load
+    // fails. A file it never found produces no such line.
+    //
+    // Raw libpd is driven here rather than LibPdEngine, deliberately: the
+    // engine refuses this directory, which is the point, so proving the danger
+    // has to go around the engine.
+    TempDir tmp("attack");
+    tmp.copyFixture("adi-external-user.pd");
+    // One file per extension the engine refuses, so this measures Pd's real
+    // list on whatever platform it runs rather than a guess about it. Pd
+    // ignores the ones its own list does not name.
+    for (const auto& ext : device::pdLoadableCodeExtensions())
+        tmp.write(("adi_probe_external" + ext).c_str(),
+                  "not a library, and it does not have to be\n");
+
+    std::string err;
+    check(device::PdRuntime::initialise(err), "libpd initialises: " + err);
+
+    static std::string captured;
+    captured.clear();
+    t_pdinstance* const previous = libpd_this_instance();
+    t_pdinstance* const inst = libpd_new_instance();
+    check(inst != nullptr, "a bare Pd instance for the attack");
+    if (inst != nullptr) {
+        libpd_set_instance(inst);
+        libpd_set_printhook(+[](const char* s) { if (s != nullptr) captured += s; });
+        libpd_init_audio(2, 2, 44100);
+        libpd_add_to_search_path(tmp.str().c_str());
+        void* const patch = libpd_openfile("adi-external-user.pd", tmp.str().c_str());
+        check(patch != nullptr, "the patch itself opens");
+        if (patch != nullptr) libpd_closefile(patch);
+        libpd_set_instance(previous);
+        libpd_free_instance(inst);
+    }
+
+    // On this Mac the line reads
+    //     error: <dir>/adi_probe_external.pd_darwin:dlopen(...): tried:
+    //            ... (slice is not valid mach-o file)
+    // -- Pd called dlopen on it. The only reason nothing ran is that the
+    // planted bytes are not a library; a real one would have run its setup
+    // function before any other object in the patch was made.
+    // The NAME ALONE would not prove it: Pd also prints "adi_probe_external ...
+    // couldn't create", which it prints for any missing object. What proves the
+    // LOADER reached the FILE is the name with an EXTENSION after it, which
+    // only the loader ever prints -- and testing for the dot rather than for a
+    // list of extensions keeps this true on every platform's Pd.
+    const bool reached = captured.find("adi_probe_external.") != std::string::npos;
+    check(reached,
+          "Pd handed the planted file to its loader -- it went looking for a "
+          "compiled external on the patch's own path and reached one. THIS is "
+          "what d8 forbids, and what the engine refuses above.\n          console: " +
+              captured);
+}
+
+void testTheEngineRefusesADirectoryHoldingLoadableCode() {
+    section("ADR-0188 d8 -- the engine refuses the directory the fault was planted in");
+
+    TempDir tmp("refused");
+    tmp.copyFixture("adi-external-user.pd");
+    tmp.write("adi_probe_external.pd_darwin", "not a library\n");
+
+    const auto found = device::pdLoadableCodeIn(tmp.str());
+    eqi(static_cast<long long>(found.size()), 1, "the scan finds exactly the planted file");
+
+    LibPdEngine eng(tmp.str(), "adi-external-user.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string err;
+    check(!eng.open(latency, err),
+          "the engine refuses to open a patch from a directory holding loadable code");
+    check(err.find("adi_probe_external.pd_darwin") != std::string::npos,
+          "and names the file rather than failing vaguely: " + err);
+    check(err.find("ADR-0188") != std::string::npos,
+          "and cites the rule, so the refusal is traceable: " + err);
+
+    // Case does not save it: both Windows and macOS default to a
+    // case-insensitive filesystem, so `Evil.DLL` is the same file to the loader.
+    TempDir upper("refused-upper");
+    upper.copyFixture("adi-external-user.pd");
+    upper.write("Adi_Probe_External.DLL", "not a library\n");
+    eqi(static_cast<long long>(device::pdLoadableCodeIn(upper.str()).size()), 1,
+        "an upper-case extension is the same extension");
+}
+
+void testASearchPathHoldingLoadableCodeIsRefusedToo() {
+    section("ADR-0188 d8 -- and a search path is checked exactly as the patch's own directory is");
+
+    TempDir clean("clean-patch");
+    clean.copyFixture("adi-external-user.pd");
+    TempDir dirty("dirty-path");
+    dirty.write("something.dylib", "not a library\n");
+
+    LibPdEngine eng(clean.str(), "adi-external-user.pd", 2, 2);
+    eng.addSearchPath(dirty.str());
+    PdLatencyReceiver latency;
+    std::string err;
+    check(!eng.open(latency, err), "a dirty search path is refused");
+    check(err.find("something.dylib") != std::string::npos, "and named: " + err);
+}
+
+void testADeclareThatAsksForALibraryIsRefused() {
+    section("ADR-0188 d8 -- [declare -lib] and [declare -path] are refused from the TEXT");
+
+    // The static parse sees this with Pd not running, which is the only moment
+    // at which refusing costs nothing.
+    std::ifstream in(std::string(patchDir()) + "/adi-declare-lib.pd", std::ios::binary);
+    std::ostringstream buf;
+    buf << in.rdbuf();
+    const auto requests = device::pdExternalRequests(buf.str());
+    eqi(static_cast<long long>(requests.size()), 2,
+        "both flags in one [declare] are found, not just the first");
+    check(requests[0].flag == "-lib" && requests[0].value == "adi_probe_external",
+          "-lib is read with the library it names");
+    check(requests[1].flag == "-path" && requests[1].value == "/tmp/adi-probe",
+          "-path is read with the directory it adds");
+
+    TempDir tmp("declare");
+    tmp.copyFixture("adi-declare-lib.pd");
+    LibPdEngine eng(tmp.str(), "adi-declare-lib.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string err;
+    check(!eng.open(latency, err), "and the engine refuses the patch");
+    check(err.find("-lib") != std::string::npos, "naming the flag: " + err);
+}
+
+void testAbstractionsStillResolveThroughTheSamePath() {
+    section("ADR-0188 d8 -- refusing externals does not refuse abstractions");
+
+    // The distinction is Pd's own and it is what makes this affordable:
+    // `sys_loadlib_iter` runs every LOADER first and only calls
+    // `sys_do_load_abs` when they have all failed. Blocking the file the
+    // loaders would have found therefore leaves the abstraction path
+    // untouched -- but that is a claim about Pd, so it is measured.
+    LibPdEngine eng(patchDir(), "adi-array-proof.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    check(eng.open(latency, err), "the array fixture still opens: " + err);
+
+    const auto console = eng.consoleLines();
+    std::string joined;
+    for (const auto& line : console) joined += line + "\n";
+    check(joined.find("adi.array") == std::string::npos ||
+          joined.find("couldn't create") == std::string::npos,
+          "and Pd did not report a missing [adi.array] -- the MIT abstraction "
+          "resolved through a path whose externals are refused\n          console: " + joined);
+
+    eng.prepare(48000.0, 512);
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/adi-array-proof.pd", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eng.bindArrays(decls);
+    check(eng.publishedArray(1) != nullptr,
+          "and the array it declares is bound, which is only possible if the "
+          "abstraction created");
+}
+
+void testTheEngineReportsWhatPdPrints() {
+    section("ADR-0188 d8 -- the engine reports it, because Pd reports only to its console");
+
+    // An object Pd cannot make is not an error `open` can return: the patch
+    // opens, with a hole in it. Pd says so once, to its console, and without a
+    // print hook that is the whole report.
+    TempDir tmp("console");
+    tmp.copyFixture("adi-external-user.pd");
+
+    LibPdEngine eng(tmp.str(), "adi-external-user.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string err;
+    check(eng.open(latency, err),
+          "a clean directory opens, even though the patch names an object we "
+          "do not have: " + err);
+
+    std::string joined;
+    for (const auto& line : eng.consoleLines()) joined += line + "\n";
+    check(joined.find("adi_probe_external") != std::string::npos,
+          "and the engine has Pd's report that the object could not be made -- "
+          "without it, a patch missing half its objects looks like a patch that "
+          "opened whole\n          console: " + joined);
+}
+
 }  // namespace
 
 int main() {
@@ -404,6 +712,16 @@ int main() {
     testAPublishedArrayReachesTheReader();
     testTheBufferIsAtomicPerArray();
     testAClosedEngineStillPassesAudio();
+    testTheEngineRefusesADirectoryHoldingLoadableCode();
+    testASearchPathHoldingLoadableCodeIsRefusedToo();
+    testADeclareThatAsksForALibraryIsRefused();
+    testAbstractionsStillResolveThroughTheSamePath();
+    testTheEngineReportsWhatPdPrints();
+    testAParameterReachesThePatchFromTheAudioThread();
+    // Last, and on purpose: it dlopens nothing, but it does put a class name
+    // on Pd's process-wide load list, and a test that runs after it would be
+    // measuring that instead of its own patch.
+    testPdWouldReachAnExternalBesideThePatch();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

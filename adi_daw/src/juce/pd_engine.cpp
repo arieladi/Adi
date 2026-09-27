@@ -7,8 +7,12 @@
 #include "adi/engine/graph.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <sstream>
 
 extern "C" {
 #include "z_libpd.h"
@@ -50,6 +54,14 @@ void floatHook(const char* recv, float value) {
         return;
     }
 }
+
+
+/// instance -> engine, for the print hook. A separate registry from the slots
+/// above, and deliberately so: the float hook runs on the audio thread and may
+/// not touch a mutex, while the print hook runs on the message thread and a
+/// mutex there costs nothing.
+std::mutex g_consoleMutex;
+std::vector<std::pair<void*, LibPdEngine*>> g_consoleOwners;
 
 }  // namespace
 
@@ -141,6 +153,50 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
     if (!PdRuntime::initialise(error)) return false;
     if (patch_ != nullptr) return true;
 
+    // ADR-0188 d8, BEFORE anything is opened. Pd resolves a compiled external
+    // through the same paths it resolves an abstraction through, so the only
+    // portable guarantee is that no such file is on any of them (see note 4 in
+    // the header). The patch's own directory is checked first because it is
+    // the one the DAW does not choose -- it is wherever the project's patch
+    // happens to live, and a `.pd_darwin` dropped beside it is the whole
+    // attack.
+    for (const std::string& dir : { dir_ }) {
+        const auto found = pdLoadableCodeIn(dir);
+        if (!found.empty()) {
+            error = "refusing to open a patch from a directory that holds loadable "
+                    "code (ADR-0188 d8): " + dir + "/" + found.front();
+            return false;
+        }
+    }
+    for (const std::string& dir : searchPaths_) {
+        const auto found = pdLoadableCodeIn(dir);
+        if (!found.empty()) {
+            error = "refusing a search path that holds loadable code "
+                    "(ADR-0188 d8): " + dir + "/" + found.front();
+            return false;
+        }
+    }
+
+    // `[declare -lib ...]` loads a binary by name and `[declare -path ...]`
+    // adds a directory this engine never checked. Both are in the patch TEXT,
+    // so both are found by the same static parse the declarations use, with Pd
+    // not running -- which is the only moment at which refusing still costs
+    // nothing.
+    {
+        std::ifstream in(dir_ + "/" + file_, std::ios::binary);
+        if (in) {
+            std::ostringstream buf;
+            buf << in.rdbuf();
+            const auto requests = pdExternalRequests(buf.str());
+            if (!requests.empty()) {
+                error = "refusing a patch that declares " + requests.front().flag +
+                        " (ADR-0188 d8): box " + std::to_string(requests.front().box);
+                if (!requests.front().value.empty()) error += ", " + requests.front().value;
+                return false;
+            }
+        }
+    }
+
     // The instance is created and SELECTED before anything else. Every libpd
     // call below acts on "the current instance", so an unselected instance
     // would open this patch inside whichever device ran last.
@@ -158,8 +214,14 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
     }
 
     // The float hook is per instance under PDINSTANCE (z_hooks.h), so it is set
-    // on each one rather than once for the process.
+    // on each one rather than once for the process. The print hook is too, and
+    // it is set here rather than in PdRuntime for the same reason.
     libpd_set_floathook(&floatHook);
+    {
+        const std::lock_guard<std::mutex> lock(g_consoleMutex);
+        g_consoleOwners.emplace_back(instance_, this);
+    }
+    libpd_set_printhook(&LibPdEngine::printHookThunk);
 
     block_ = PdRuntime::blockSize();
     if (block_ <= 0) block_ = 64;
@@ -221,6 +283,15 @@ void LibPdEngine::close() noexcept {
         dollarZero_ = 0;
     }
     PdRuntime::forgetInstance(instance_);
+    // The console owner goes before the instance is freed: a hook that fired
+    // after the free would look up a dangling pointer.
+    {
+        const std::lock_guard<std::mutex> lock(g_consoleMutex);
+        g_consoleOwners.erase(
+            std::remove_if(g_consoleOwners.begin(), g_consoleOwners.end(),
+                           [this](const auto& o) { return o.second == this; }),
+            g_consoleOwners.end());
+    }
     libpd_free_instance(static_cast<t_pdinstance*>(instance_));
     instance_ = nullptr;
 }
@@ -407,10 +478,121 @@ bool LibPdEngine::sendFloat(const char* suffix, float value) noexcept {
     return libpd_float(recv.c_str(), value) == 0;
 }
 
+void LibPdEngine::bindParameters(const PdDeclarations& decls) {
+    paramSymbols_.clear();
+    if (patch_ == nullptr) return;
+    selectInstance();
+    paramSymbols_.reserve(decls.params.size());
+    for (const auto& p : decls.params) {
+        // gensym HERE, on the message thread, once. Every later send reads
+        // `s_thing` off the symbol this returns.
+        const std::string name = pdParamReceiveName(dollarZero_, p.id);
+        paramSymbols_.emplace_back(p.id, static_cast<void*>(gensym(name.c_str())));
+    }
+}
+
+bool LibPdEngine::sendParameter(std::int32_t id, float value) noexcept {
+    for (const auto& entry : paramSymbols_) {
+        if (entry.first != id) continue;
+        t_symbol* const sym = static_cast<t_symbol*>(entry.second);
+        if (sym == nullptr || sym->s_thing == nullptr) return false;
+        selectInstance();
+        // `pd_float` is a dispatch through the receiver's class, and nothing
+        // else. No `sys_lock`, deliberately: d3 puts this call on the audio
+        // thread immediately before the block, where it is the only thread
+        // touching this instance. A message-thread send belongs in
+        // `sendFloat`, which does take the lock.
+        pd_float(sym->s_thing, value);
+        return true;
+    }
+    return false;
+}
+
 LibPdEngine::Counters LibPdEngine::counters() const noexcept {
     return {ticks_.load(std::memory_order_relaxed),
             segments_.load(std::memory_order_relaxed),
             starved_.load(std::memory_order_relaxed)};
+}
+
+
+// ---------------------------------------------------------------------------
+// ADR-0188 d8 -- no Pd external is ever loaded from disk
+// ---------------------------------------------------------------------------
+
+const std::vector<std::string>& pdLoadableCodeExtensions() {
+    // Pd's own list is built at runtime and neither exported nor settable, so
+    // this is a superset of every platform's rather than a copy of one. The
+    // deken naming convention puts the architecture BEFORE the extension
+    // (`foo.darwin-amd64-32.so`), so matching the final extension catches
+    // those too.
+    static const std::vector<std::string> kExtensions = {
+        ".pd_darwin", ".pd_linux", ".pd_freebsd", ".pd_irix5", ".pd_irix6",
+        ".d_fat", ".d_ppc", ".d_i386", ".d_amd64", ".d_arm64",
+        ".l_ia64", ".l_i386", ".l_arm", ".l_arm64", ".l_amd64",
+        ".m_i386", ".m_amd64", ".m_arm64",
+        ".w_i386", ".w_amd64", ".b_i386",
+        ".dll", ".so", ".dylib", ".bundle", ".sl",
+    };
+    return kExtensions;
+}
+
+std::vector<std::string> pdLoadableCodeIn(const std::string& dir) {
+    std::vector<std::string> found;
+    if (dir.empty()) return found;
+    std::error_code ec;
+    std::filesystem::directory_iterator it(dir, ec);
+    if (ec) return found;   // an unreadable directory holds nothing Pd can read either
+    for (const auto& entry : it) {
+        std::error_code fe;
+        if (!entry.is_regular_file(fe) || fe) continue;
+        std::string ext = entry.path().extension().string();
+        // Extensions are compared case-insensitively: Windows and macOS both
+        // have case-insensitive filesystems by default, so `Evil.DLL` is the
+        // same file to the loader as `evil.dll`.
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        const auto& exts = pdLoadableCodeExtensions();
+        if (std::find(exts.begin(), exts.end(), ext) != exts.end()) {
+            found.push_back(entry.path().filename().string());
+        }
+    }
+    std::sort(found.begin(), found.end());   // a stable message, whatever the directory order
+    return found;
+}
+
+void LibPdEngine::printHookThunk(const char* line) {
+    void* const self = static_cast<void*>(libpd_this_instance());
+    LibPdEngine* engine = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(g_consoleMutex);
+        for (const auto& owner : g_consoleOwners) {
+            if (owner.first == self) { engine = owner.second; break; }
+        }
+    }
+    if (engine != nullptr) engine->appendConsole(line);
+}
+
+void LibPdEngine::appendConsole(const char* line) {
+    if (line == nullptr) return;
+    const std::lock_guard<std::mutex> lock(consoleMutex_);
+    // Pd prints a line in pieces and ends it with a newline of its own, so the
+    // hook is called several times for one message. They are joined here and
+    // split on the newline, which is what makes a "couldn't create" line
+    // searchable as one string.
+    pending_ += line;
+    std::size_t nl;
+    while ((nl = pending_.find('\n')) != std::string::npos) {
+        if (console_.size() >= kMaxConsoleLines) console_.erase(console_.begin());
+        console_.push_back(pending_.substr(0, nl));
+        pending_.erase(0, nl + 1);
+    }
+}
+
+std::vector<std::string> LibPdEngine::consoleLines() const {
+    const std::lock_guard<std::mutex> lock(consoleMutex_);
+    std::vector<std::string> out = console_;
+    if (!pending_.empty()) out.push_back(pending_);   // a line Pd has not ended yet
+    return out;
 }
 
 }  // namespace adi::device

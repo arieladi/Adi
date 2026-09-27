@@ -33,6 +33,26 @@
 //      conversion, which is why it owns the scratch buffers rather than
 //      borrowing the graph's.
 //
+//   4. **Pd loads externals from the same paths it loads abstractions from,
+//      and neither of the two obvious ways to stop it works.** ADR-0188 d8
+//      says ADI loads no Pd external from disk: a patch must not be able to
+//      bring native code into the process. Both mechanisms that suggest
+//      themselves were read in Pd 0.56's `s_loader.c` at the pinned commit and
+//      both fail:
+//        * **A registered loader cannot refuse.** `sys_register_loader`
+//          APPENDS to the loader list, and `sys_do_load_lib` is the list's
+//          static head, so anything registered runs only after the default has
+//          already tried -- and succeeded or not -- on its own.
+//        * **Building libpd without dynamic loading does not cover Windows.**
+//          `HAVE_LIBDL` gates only the `dlopen` branch; the `#ifdef _WIN32`
+//          branch above it calls `LoadLibrary` whatever `HAVE_LIBDL` says.
+//      So the guarantee here is made where it can be made portably: **nothing
+//      loadable is ever on a path Pd will search**, checked before
+//      `libpd_openfile`, and a patch that asks for one with `[declare]` is
+//      refused. Abstractions are unaffected -- Pd tries loaders first and
+//      `sys_do_load_abs` only after they all fail, so refusing the file never
+//      touches `adi.array.pd`.
+//
 // WHAT IS NOT HERE: patch discovery, parameters and published arrays. The
 // parameter contract is ADR-0177's `[adi.param]`; published arrays are
 // ADR-0183's `[adi.array]`. Both sit on top of this and neither changes it.
@@ -44,11 +64,31 @@
 #include "adi/engine/published_array.hpp"
 
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <memory>
 #include <vector>
 
 namespace adi::device {
+
+/// The file extensions Pd will try to load as native code, as a superset.
+///
+/// Pd builds its own list at runtime from the platform and a deken specifier
+/// (`sys_get_dllextensions`), and that list is neither exported nor settable.
+/// So this one is deliberately WIDER than any single platform's: the cost of
+/// refusing a file that this platform's Pd would not have loaded is a patch
+/// that has to be tidied, and the cost of missing one is native code in the
+/// process. It is also why the check is on the extension and not on the file's
+/// contents -- a file Pd would attempt is a file Pd must not find, whether or
+/// not it turns out to be a valid library.
+[[nodiscard]] const std::vector<std::string>& pdLoadableCodeExtensions();
+
+/// Names of files in `dir` that Pd would attempt to load as native code.
+///
+/// Empty is the answer for every directory the DAW writes itself. A
+/// non-empty one is a directory no patch may be opened from.
+[[nodiscard]] std::vector<std::string> pdLoadableCodeIn(const std::string& dir);
 
 /// Process-wide libpd state: the one-time `libpd_init()`, and the map from a
 /// Pd instance to the receiver table its float hook dispatches through.
@@ -102,7 +142,23 @@ public:
     /// Message thread, before `open`. Where libpd looks for abstractions the
     /// patch instantiates -- `adi.array`, `adi.param` -- when they do not sit
     /// beside the patch itself. The patch's own directory is always searched.
+    ///
+    /// **Every path given here is checked for loadable code in `open`**, and
+    /// so is the patch's own directory. Pd resolves externals through exactly
+    /// these paths (note 4), so a path the DAW would not vouch for is a path
+    /// that must not be added.
     void addSearchPath(const std::string& dir);
+
+    /// What Pd printed for this instance, newest last, capped.
+    ///
+    /// Pd reports almost everything through its console and nothing else:
+    /// "couldn't create" for an object it cannot make, the filename and the
+    /// loader's error for a library it tried and failed to open. Without this
+    /// the engine's only report is the return value of `open`, and a patch
+    /// that opened with half its objects missing looks exactly like one that
+    /// opened whole. **Message thread only** -- Pd prints while opening and
+    /// while sending, never from `process`.
+    [[nodiscard]] std::vector<std::string> consoleLines() const;
 
     bool open(PdLatencyReceiver& latency, std::string& error) override;
     void close() noexcept override;
@@ -128,6 +184,31 @@ public:
     /// contract exists to prevent.
     void bindArrays(const PdDeclarations& decls);
 
+    /// Message thread, after `open`. Resolves the receive symbol for every
+    /// parameter the patch declares, so that `sendParameter` can reach it from
+    /// the audio thread without ever calling `gensym`.
+    ///
+    /// **ADR-0188 d3 says modulation is sent into `[adi.param]` on the audio
+    /// thread, before the block, and only to names the patch declared.** That
+    /// second half is not a style rule, and `libpd_float` is why: it is
+    /// `gensym(name)->s_thing` behind a `sys_lock()`, so sending by name from
+    /// the audio thread takes a MUTEX and, for a name Pd has not seen,
+    /// ALLOCATES -- and it allocates even in the failing case, because the
+    /// symbol is created before the null `s_thing` is noticed. Both were read
+    /// in `z_libpd.c` at the pinned commit.
+    ///
+    /// A `t_symbol*` never moves and is never freed, so resolving once here
+    /// and reading `s_thing` later is safe as well as cheap.
+    void bindParameters(const PdDeclarations& decls);
+
+    /// **AUDIO THREAD**, before `process` for the same block (ADR-0188 d3).
+    /// Allocates nothing, takes no lock, and calls no `gensym`.
+    ///
+    /// False when the id was not declared, or when the patch has no receiver
+    /// of that name -- which is the ordinary case for a patch that declares a
+    /// parameter and does not connect it, and is not an error.
+    bool sendParameter(std::int32_t id, float value) noexcept;
+
     /// The published array with this id, or null. The UI reads it once a
     /// frame; the audio thread writes it (ADR-0183 d2).
     [[nodiscard]] const engine::PublishedArray* publishedArray(std::int32_t id) const noexcept;
@@ -148,6 +229,16 @@ public:
 
 private:
     void selectInstance() const noexcept;
+
+    /// Message thread. One line from Pd's console, capped at
+    /// `kMaxConsoleLines` -- a patch in an error loop must not grow a vector
+    /// without bound.
+    void appendConsole(const char* line);
+    /// libpd's print hook. A bare function pointer with no user data, so like
+    /// the float hook it asks `libpd_this_instance()` who it is printing for.
+    /// A static member rather than a free function because it is the one thing
+    /// outside the class that has to reach `appendConsole`.
+    static void printHookThunk(const char* line);
 
     std::string dir_, file_;
     std::int32_t inCh_ = 0, outCh_ = 0;
@@ -177,6 +268,16 @@ private:
         engine::PublishedArray buffer;
     };
     std::vector<std::unique_ptr<BoundArray>> arrays_;
+
+    /// Pd's console for this instance, filled by the print hook.
+    mutable std::mutex consoleMutex_;
+    std::vector<std::string> console_;
+    std::string pending_;            ///< a line Pd has begun and not ended
+    static constexpr std::size_t kMaxConsoleLines = 256;
+
+    /// Declared parameter id -> its receive `t_symbol*`, resolved once on the
+    /// message thread. `void*` because this header does not include m_pd.h.
+    std::vector<std::pair<std::int32_t, void*>> paramSymbols_;
 
     /// Paths asked for before the instance existed, applied in `open`.
     std::vector<std::string> searchPaths_;

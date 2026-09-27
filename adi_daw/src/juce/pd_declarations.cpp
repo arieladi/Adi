@@ -131,6 +131,28 @@ std::string pdArrayReceiveName(int dollarZero, std::int32_t id) {
     return std::to_string(dollarZero) + "-adiarr-" + std::to_string(id);
 }
 
+std::vector<PdExternalRequest> pdExternalRequests(std::string_view patchText) {
+    std::vector<PdExternalRequest> out;
+    for (const auto& r : scan(patchText)) {
+        if (r.atoms[4] != "declare") continue;
+        // `[declare -path a -lib b]` -- flags and their values alternate, and
+        // a flag may legally end the box with nothing after it.
+        for (std::size_t i = 5; i < r.atoms.size(); ++i) {
+            const std::string& a = r.atoms[i];
+            if (a != "-path" && a != "-stdpath" && a != "-lib" && a != "-stdlib") continue;
+            PdExternalRequest req;
+            req.flag = a;
+            req.box = r.box;
+            if (i + 1 < r.atoms.size() && !r.atoms[i + 1].empty() &&
+                r.atoms[i + 1][0] != '-') {
+                req.value = r.atoms[i + 1];
+            }
+            out.push_back(std::move(req));
+        }
+    }
+    return out;
+}
+
 PdDeclarations parsePdDeclarations(std::string_view patchText) {
     PdDeclarations out;
     const auto records = scan(patchText);

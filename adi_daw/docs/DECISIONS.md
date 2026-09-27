@@ -14123,6 +14123,100 @@ not visible from the ADRs. All three are measured, in
     show for it. An even sequence is settled, `seq/2` counts publications, the
     one being written is `(seq/2)+1`, and both sides take the slot from that.
 
+### What ADR-0188 asked of this engine, and what enforcing it found
+
+ADR-0188 arrived after the runtime did and closed ADR-0177's open questions.
+Two of its decisions land on this engine, d8 and d3, and both were implemented
+here rather than noted. All of the below is asserted in
+`tests/test_pd_engine.cpp`.
+
+18. **ADR-0188 d8 -- "nothing loads from disk" -- cannot be enforced either of
+    the two ways that suggest themselves.** Both were read in Pd 0.56's
+    `s_loader.c` at the pinned commit, and both fail:
+    - **A registered loader cannot refuse.** `sys_register_loader` APPENDS to
+      the loader list, and `sys_do_load_lib` is that list's static head. A
+      loader registered by the host therefore runs only after the default has
+      already searched every path and loaded whatever it found. There is no
+      hook that runs first.
+    - **Building libpd without dynamic loading does not cover Windows.**
+      `HAVE_LIBDL` gates only the `dlopen` branch; the `#ifdef _WIN32` branch
+      above it calls `LoadLibrary` regardless of what `HAVE_LIBDL` says. A
+      guard that holds on two platforms of three is the kind that looks done.
+
+    **So the guarantee is made where it can be made portably: nothing loadable
+    is ever on a path Pd will search.** Before `libpd_openfile`, the engine
+    refuses the patch's own directory and every search path it was given if
+    either holds a file with an extension Pd would try, and it refuses a patch
+    whose text contains `[declare -lib]`, `-stdlib`, `-path` or `-stdpath` --
+    the one object that can defeat the discipline from inside the patch. The
+    extension list is deliberately a superset of every platform's, because Pd
+    builds its own at runtime and neither exports nor accepts one.
+
+    **The danger is measured, not assumed.** With a file called
+    `adi_probe_external.pd_darwin` dropped beside a patch that names that
+    object, Pd called `dlopen` on it -- the console carries the path and the
+    loader's reply. The only reason nothing ran is that the planted bytes are
+    not a library. A real one would have run its setup function before any
+    other object in the patch was made.
+
+19. **Refusing externals does not refuse abstractions, and that is Pd's own
+    ordering rather than luck.** `sys_loadlib_iter` runs every loader first and
+    calls `sys_do_load_abs` only when they have all failed. So blocking the
+    file the loaders would have found leaves the abstraction path untouched,
+    which is what makes d8 affordable at all: `adi.array.pd` and
+    `adi.param.pd` keep resolving through exactly the paths whose externals are
+    refused.
+
+20. **Pd reports almost everything to its console and nowhere else.** An object
+    it cannot make is not an error `libpd_openfile` returns: the patch opens,
+    with a hole in it, and Pd says so once, in a print. Without a hook that is
+    the whole report, and a patch that opened missing half its objects looks
+    exactly like one that opened whole. `LibPdEngine` now keeps a per-instance
+    console -- per instance for the same reason the float hook is, since under
+    PDINSTANCE the hooks live in the instance and `$0` cannot tell two apart.
+
+21. **`libpd_float` cannot be used on the audio thread, twice over, and
+    ADR-0188 d3's "only declared names" is why it matters.** `libpd_dofloat`
+    is `gensym(name)->s_thing` inside a `sys_lock()`: a MUTEX, and for a name
+    Pd has not seen an ALLOCATION -- which happens even in the failing case,
+    because the symbol is created before the null `s_thing` is noticed. So
+    d3's rule is not a style preference; sending by name from the audio thread
+    is a dropout waiting for the first unrecognised parameter.
+
+    `bindParameters` therefore resolves each declared parameter's `t_symbol*`
+    once, on the message thread, and `sendParameter` reads `s_thing` off it
+    from the audio thread with no `gensym` and no lock. A `t_symbol*` never
+    moves and is never freed, so this is cheaper AND safer than the by-name
+    call, not a trade. Proved end to end: a value sent this way comes back out
+    of Pd through a published array, and follows when it changes.
+
+22. **ADR-0177 d5's vanilla-Pd promise, measured.** `adi.param.pd` does not
+    exist yet, so `tests/pd/adi-param-proof.pd` is exactly the case d5
+    describes: the `[adi.param]` box does not create, Pd says so, **the patch
+    opens anyway**, that parameter is silent, and the declaration is still
+    readable text -- which is the half ADR-0177 fix 3 rests on. All four are
+    asserted against that file.
+
+23. **Transport is a follow-up, and the analyser does need it.** ADR-0188 d3
+    specifies `[adi.transport $0]` -- playing or stopped, BPM, time signature,
+    bar, beat, and ticks within the quarter, never an absolute tick count,
+    because Pd's 32-bit floats lose exactness after three quarter notes at
+    ADI's 5,765,760 ticks. The analyser needs it: the DJ-style scope's whole
+    behaviour is a waveform scrolling locked to the bar, and the Max for Live
+    build syncs that scroll to the host tempo.
+
+    It is not built here for two reasons, both about where it belongs rather
+    than what it costs. The abstraction sits "beside `adi.param.pd`" and that
+    file is win's and unwritten; and the host half is the parameter tier's
+    audio-thread send, which is d21 above with a different payload. Building it
+    against an abstraction that does not exist yet would be building half of it
+    twice.
+
+    **ADR-0188 d3's range rule is not this engine's.** "A range change keeps the
+    real value, clamped, and recomputes the normalized position, in the same
+    `device.loadState`" is the device layer's, where the parameter rows and the
+    op live. Nothing here reads or writes a stored value.
+
 ### What this amends in ADR-0177, and what it does not
 
 This ADR's decisions were written before ADR-0177 merged, so the question was

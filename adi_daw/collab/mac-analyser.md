@@ -10,6 +10,96 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-27 — round 4 part B: no Pd external loads from disk, and neither of the two ways to stop it works
+
+win's round-4 brief (`collab/prompts/2026-09-27-mac-round4.md`), part B. #138 is
+rebased on main at `5295c79` and both new rules are implemented rather than
+noted. ADR-0183 gains d18–d23.
+
+**Rebased.** The conflicts were the four win predicted: `DECISIONS.md` (ADR-0183
+appended after ADR-0190 — the log is append-only and numbers need not be in
+order), the README count (188 on main, 189 with this), the 0183 row (`reserved`
+to `used`, now that #136 has merged), and the collab logs. `validate_schema.py`
+passes, checks 7 and 8 included.
+
+**ADR-0188 d8, and the finding that matters: neither mechanism in the brief
+works.** Both were read in Pd 0.56's `s_loader.c` at the pinned commit.
+
+- **A registered loader cannot refuse.** `sys_register_loader` APPENDS, and
+  `sys_do_load_lib` is the list's static head. Anything the host registers runs
+  only after the default has already searched every path and loaded what it
+  found. There is no hook that runs first.
+- **libpd without dynamic loading does not cover Windows.** `HAVE_LIBDL` gates
+  the `dlopen` branch only; the `#ifdef _WIN32` branch above it calls
+  `LoadLibrary` whatever `HAVE_LIBDL` says. A guard that holds on two platforms
+  of three is the kind that looks done.
+
+**So the guarantee is made where it can be made portably: nothing loadable is
+ever on a path Pd will search.** Before `libpd_openfile`, `LibPdEngine` refuses
+the patch's own directory and every search path it was given if either holds a
+file with an extension Pd would try, and it refuses a patch whose text carries
+`[declare -lib]`, `-stdlib`, `-path` or `-stdpath` — the one object that
+defeats the discipline from inside the patch, found by the same static parse the
+declarations use, with Pd not running.
+
+**The danger is measured, not argued.** With `adi_probe_external.pd_darwin`
+dropped beside a patch that names that object, **Pd called `dlopen` on it** —
+the console carries the path and dlopen's reply, "slice is not valid mach-o
+file". The only reason nothing ran is that the planted bytes are not a library.
+That test drives raw libpd deliberately *around* the engine, because what it
+proves is that the refusal is refusing something that would otherwise happen.
+
+**Abstractions are untouched, and that is Pd's ordering, not luck.**
+`sys_loadlib_iter` runs every loader first and calls `sys_do_load_abs` only
+when they have all failed. So `adi.array.pd` and `adi.param.pd` keep resolving
+through exactly the paths whose externals are refused — asserted, not assumed.
+
+**ADR-0188 d3, and a second finding. `libpd_float` cannot be used on the audio
+thread, twice over.** `libpd_dofloat` is `gensym(name)->s_thing` inside a
+`sys_lock()`: a mutex, and for a name Pd has not seen an allocation — which
+happens even in the failing case, because the symbol is created before the null
+`s_thing` is noticed. **win, this is why your d3 sentence "only to receive names
+the patch declared" is load-bearing** rather than tidy: sending by name from the
+audio thread is a dropout waiting for the first unrecognised parameter.
+
+So `bindParameters` resolves each declared parameter's `t_symbol*` once on the
+message thread and `sendParameter` reads `s_thing` from the audio thread — no
+`gensym`, no lock. Cheaper *and* safer than the by-name call, not a trade. A
+value sent that way comes back out of Pd through a published array and follows
+when it changes.
+
+**ADR-0177 d5's vanilla-Pd promise, measured.** `adi.param.pd` does not exist
+yet, so `tests/pd/adi-param-proof.pd` is exactly d5's case: the `[adi.param]`
+box does not create, Pd says so, **the patch opens anyway**, that parameter is
+silent, and the declaration is still readable text. All four asserted.
+
+**Pd reports almost everything only to its console,** so `LibPdEngine` now keeps
+one, per instance — the hooks live in the instance under PDINSTANCE and `$0`
+cannot tell two apart. Without it the engine's only report is the return value
+of `open`, and a patch that opened missing half its objects looks exactly like
+one that opened whole.
+
+**Transport: a follow-up, and the analyser does need it.** The DJ-style scope's
+whole behaviour is a waveform scrolling locked to the bar, and the Max for Live
+build syncs that scroll to the host tempo. It is not built here because the
+abstraction sits beside `adi.param.pd`, which is win's and unwritten, and the
+host half is d21's audio-thread send with a different payload — building it
+against an abstraction that does not exist would be building half of it twice.
+The field list is recorded in ADR-0183 d23 so the follow-up starts from it.
+**d3's range rule is not this engine's**: it is the device layer's, where the
+parameter rows and the op live.
+
+**Names:** nothing this session added says "ADI DAW" or "ADI Live"; the old
+names in `DECISIONS.md` are in historic entries, which ADR-0190 keeps.
+`adi-m4l-analyzer` keeps its own, as the brief says.
+
+**Verified:** build clean, **50 of 50 suites**, `adi_pd_engine_tests` 74 checks
+and `adi_pd_declaration_tests` 76. Every new guard was planted and confirmed to
+fail its test when removed — the directory scan, the search-path scan, the
+`[declare]` refusal, the print hook, and `sendParameter`'s send.
+
+---
+
 ## 2026-09-27 — renumbered to ADR-0183, moved off the mission session's branch, rebased onto main
 
 win's six corrections, all applied. Nothing had been pushed, so all of it was
