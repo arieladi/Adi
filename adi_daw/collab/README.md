@@ -227,7 +227,7 @@ subject, say so in your log instead of writing it twice.
 | 0190 | win | `win/pioneer-refs` | the DAW is named ADI (Advanced DAW Infrastructure); ADiJ stays; ADI Live dropped, the Session view stays inside ADI (director) | used |
 | 0191 | win | `win/adij-features` | ADiJ writes Pioneer USBs and Rekordbox XML, serves CDJs over Pro DJ Link, plays stems; ADI and ADiJ stand until a trademark clearance (director) | used |
 | 0192 | win | `win/color-bass` | color-bass devices as Pd devices on compiled-in externals; `[adi.sample]`; pthreads4w for Windows; win_codex joins (director) | used |
-| 0193 | win_codex | (its first mission) | held for win_codex's DSP decisions (ADR-0192) | reserved |
+| 0193 | win_codex | `codex/colorbass-dsp` | color-bass DSP cores, measurement domain and kernel crossfade (ADR-0192 phase 1) | used |
 | 0194 | mac | (the analyser session's round 5) | MIDI into Pd devices | reserved |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in

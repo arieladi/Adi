@@ -14410,3 +14410,100 @@ ADR-0183 and ADR-0188.
 - the shipped names;
 - the Chord Comb's MIDI mode, until MIDI into Pd devices exists;
 - the drop tile, in step 7.
+
+## ADR-0193 — Color-bass DSP cores: lossless fractional comb delay, bounded Color, and an off-thread minimum-phase FIR builder — `DECIDED` (2026-09-27) — **IMPLEMENTS ADR-0192 PHASE 1; CLARIFIES THE MEASUREMENT DOMAIN**
+
+### Decisions
+
+1. **Chord Comb is six mono combs averaged, with eight stored six-note chords.**
+   Notes are fractional MIDI, clamped to 40–1500 Hz. A channel gets its own core.
+   The eight slots initially contain A minor (45, 48, 52, 57, 60, 64); device
+   state supplies replacements. Selecting a different State or Mode resets
+   the tails: discrete selection, with no promise of click-free chord changes.
+   Prepare supports the engine's 44.1–768 kHz domain; tuning measurements below
+   cover 44.1, 48 and 96 kHz. Mix is linear; output trim is -60 to +12 dB.
+
+2. **Fractional delay uses a first-order allpass.** Linear interpolation adds
+   loop loss and makes Decay pitch-dependent. For integer delay N and fractional
+   phase delay d, solve a = sin(w(1-d)/2) / sin(w(1+d)/2) in
+   A(z) = (a+z^-1)/(1+a*z^-1). Its magnitude is one and its phase is exact at
+   the fundamental. Higher partials are dispersive: this is not an ideal
+   broadband fractional delay. An integer delay bypasses the allpass to avoid
+   the cancelled pole at a=1. Square halves the total loop phase delay and
+   negates feedback, as ADR-0192 requires.
+
+3. **Color's loop filter is (1-p)/(1-p*z^-1), p=Color/2.** This pole range
+   gives unity DC gain, no magnitude above one, and bounded phase delay. The
+   delay line is shortened by atan2(p*sin(w),1-p*cos(w))/w. Feedback is
+   +/-10^(-3*T/Decay), with T the total phase-delay period (half a period in
+   Square). Decay is bounded to 0.05–20 seconds, so |g| is strictly below one.
+   Excitation is scaled by 1-|g|. Recursive values below 1e-30 (-600 dB) are
+   flushed before they become denormals; prepare is the only allocator.
+
+   **Clarification:** Decay is the unfiltered T60. A unity-DC low-pass shortens
+   the decay of nonzero frequencies; compensating that loss by boosting g can
+   exceed unity at DC. We preserve stability and document Color's extra damping.
+   We do not claim that a colored loop preserves the same T60 at every partial.
+
+4. **Color Cab analyzes the whole mono sample at the processing rate.** The
+   pure builder uses 8192-sample Hann frames, hop 4096, including zero-padded
+   edge frames. It sums magnitudes, normalizes their maximum (division by the
+   frame count would cancel), floors at 1e-4 (-80 dB), applies gamma in [0,1],
+   then averages with df/f weights over f*2^(+/-width/2). Width is 0–2 octaves;
+   Pitch is -24 to +24 semitones and samples the profile at f/2^(Pitch/12).
+   Frequencies outside the source band extend the endpoint rather than wrap.
+   The profile is peak-normalized and returned as serializable derived state.
+   A silent source gives silence. Invalid/nonfinite inputs are rejected.
+
+5. **Real-cepstrum spectral factorization precedes truncation.** IFFT(log M),
+   retain DC and Nyquist, double positive quefrencies and zero negative ones,
+   exp(FFT), IFFT. Size is 64–1024 taps. A half-cosine window leaves the first
+   half intact and tap Size-1 zero. Truncation/windowing approximates the ideal
+   minimum-phase factor; the measured claim is energy concentration, not a
+   proof that every arbitrary windowed kernel has all its zeros inside the
+   unit circle. Default Size=256, gamma=0.5, smoothing=1/3 octave, Pitch=0.
+
+   **The accuracy condition:** no finite Size can reproduce every arbitrary
+   narrow formant or deep null within 1 dB. The 256-tap test covers a specified
+   two-formant noisy fixture, gamma 0.5, smoothing 1/2 octave, 200–16000 Hz at
+   48 kHz. Its maximum error is 0.237824 dB. This is a measured fixture bound,
+   not a universal promise; the target profile is returned for inspection.
+
+6. **The convolver retains shared input history for both kernels.** Direct
+   FIR starts at sample zero. A serialized setKernel copies a bounded value;
+   processing crossfades outputs over round(fs*0.020) samples, allocating
+   nothing. A request during a fade returns false: the caller retains and
+   retries the newest request, never interrupts the fade. The host must own
+   the off-thread builder, publication and lifetime; concurrent calls into
+   this core are not a lock-free handoff. reset clears history and completes
+   an accepted transition with audio stopped. There are no worker threads here.
+
+   For a steady sine of amplitude A and angular frequency w, the step bound is
+   2*A*sin(w/2)*max(||h0||1,||h1||1) + A*||h1-h0||1/N, by the triangle
+   inequality on the convex fade, where N is its sample count. Tests include
+   the entry and exit samples and the exact fade duration at three rates.
+
+### Evidence and scope
+
+- Pitch: worst 0.659777 cents, 96 rendered combinations (eight frequencies,
+  both modes, Color 0/1, three rates). Unfiltered 1-second T60 measured
+  1.000000–1.000186 seconds at 40 and 1500 Hz. Square's integer-delay fixture
+  suppresses even partials by 47.296 dB, retains odd partials and rejects the
+  octave-below hypothesis. It isolates feedback polarity from interpolation
+  dispersion rather than claiming exact odd partials for every fractional delay.
+- Color Cab: energy centroid 0.684820 samples; a separately synthesized
+  same-magnitude linear-phase response has centroid 512 samples. First-half
+  energy 99.999934%. Formant shifts -12, +7 and +12 semitones err by at most
+  0.125239%. Rendered impulse matches taps within 1e-7 and begins at sample 0.
+- Both: no measured new allocations in processing, identical blocks 32–4096.
+  Comb: 60 seconds full-scale noise followed by 60 seconds silence in both
+  modes and both endpoint Colors, maximum Decay, 96 kHz, remains finite.
+- Five compiled planted defects are rejected: Square without half-delay,
+  Color without phase compensation, wrong decay exponent, abrupt kernel swap,
+  and missing cepstral doubling. The log records their failure counts.
+- Surge XT's GPL-3.0-or-later Combulator was read as the bipolar parallel-comb
+  reference. No source was copied; these cores add no dependency.
+- Pd adapters, sample publication, registration and Windows libpd are phase 2,
+  after this core PR merges. No host, UI, schema or CI change is made here.
+
+---
