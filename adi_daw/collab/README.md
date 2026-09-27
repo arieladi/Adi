@@ -229,6 +229,7 @@ subject, say so in your log instead of writing it twice.
 | 0192 | win | `win/color-bass` | color-bass devices as Pd devices on compiled-in externals; `[adi.sample]`; pthreads4w for Windows; win_codex joins (director) | used |
 | 0193 | win_codex | (its first mission) | held for win_codex's DSP decisions (ADR-0192) | reserved |
 | 0194 | mac | (the analyser session's round 5) | MIDI into Pd devices | reserved |
+| 0195 | win | `win/directive-0195` | the Dynamic EQ adapts ZL Equalizer 2 under Pro-Q 3's mouse; inline MIDI Learn; Auto Gain Stage; the analyser's multi-track overlay (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

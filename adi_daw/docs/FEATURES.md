@@ -49,6 +49,7 @@ flagged, and it is a bug in the format, not in the plan.
 |---|---|---|---|---|
 | Audio / MIDI / instrument tracks | both | P0 | ✅ | |
 | Volume, pan, mute and solo on every track; solo across groups | both | P0 | ✅ | `mixer_strip`, `tracks.muted/soloed/solo_defeat`. **In the engine** (ADR-0163): a strip after each chain, 5 ms ramps, four pan laws with Live's the default (SPEC §6.9), solo that keeps a soloed track's group and a soloed group's children. Width, input gain, phase, delay offset and VCA are stored, not yet applied. |
+| **Auto Gain Stage Session**: one command stages every track to a headroom target (default −18 dBFS RMS) | neither | P2 | ✅ | ADR-0195 d4. Offline and deterministic: audio tracks from their clips, instrument tracks by rendering the instrument; gated RMS, or integrated LUFS; a −1 dBTP ceiling. One transaction of `mixer.setInputGain`, one undo. No utility plug-in on any track |
 | Group tracks: folder **and** bus, one object | Ableton | P0 | ✅ | `kind='group'`. Grouping auto-routes children into the bus in the same transaction; `routing.origin` protects a manual override (ADR-0044). |
 | ~~Folder (organisational) tracks~~ | Cubase | **no** | — | **Removed** (ADR-0044). One grouping concept. A container whose fader does nothing is the thing users pick by accident. |
 | Hybrid tracks: audio and MIDI on one channel | Bitwig | **P0** | ✅ | `tracks.kind` is a hint, never a constraint (ADR-0045) |
@@ -152,6 +153,7 @@ Session window is the last step, not a way around that.
 | Macros with per-target range and **multi-breakpoint curve**, several mappings per target, per-macro enable | Ableton + | P2 | 🔶 | `macros`, `macro_mappings`; `curve` becomes a breakpoint BLOB (ADR-0114) |
 | Cross-track modulation and macro targets | Bitwig | P2 | 🔶 | arrives with the modulation schema (ADR-0114, ADR-0046) |
 | A Pd device with a second, floating view (the analyser) | neither | P2 | — | published arrays in the device contract (ADR-0116) |
+| **The analyser's multi-track overlay**: tick tracks in its big window to superimpose their spectra, before or after their devices, in their track colours, with masking highlighted | neither | P2 | — | ADR-0195 d5. Drawn by the analyser's C++ view from engine taps, `track.<id>.spectrum.pre` / `.post`; only ticked tracks are analysed, on a worker. Masking uses `analyze.masking`'s measure. mac's analyser session |
 | **`.amxd` translator** with a pre-flight scan: Max for Live devices into ADI Pd | neither | P2 | — | An allowlist scan first. If every box is in the translation table, the device converts automatically, with Max's right-to-left order made explicit. If not, nothing is written, and a dialog hands over the JSON and a prompt for an AI. Whatever comes back passes a second, vanilla-only scan. Needs the device contract (DEVICE-CONTRACT-PANEL §6). |
 | Plugin delay compensation | both | P0 | ✅ | `devices.latency_samples`. Reported in samples and **excludes** the device buffer — ADR-0042. |
 | 2048–4096-sample blocks, tested | — | **P0** | — | runtime. Dense chains, not low-latency tracking (ADR-0042). **4096 is the cap on every platform** and the granted size is the only one that exists (ADR-0049). |
@@ -197,6 +199,7 @@ for the transport, the tempo map, the groove pool and the track's scale
 | Clip envelopes / clip modulation | Ableton | P1 | ✅ | `automation_data.clip_id` |
 | Event volume curves drawn on the clip (Cubase 14) | Cubase | P1 | ✅ | a clip-scoped gain lane rendered on the event (ADR-0115) |
 | Automation modes: touch/latch/cross/overwrite/trim | Cubase | P2 | ✅ | `tracks.automation_mode` |
+| **MIDI Learn on every automation lane header**: arm (amber), turn a knob, bound (cyan) | Ableton, Bitwig | P2 | ✅ | ADR-0195 d3. One `controller.bind` op (new; `controller_maps` exists), one undo. Relative or absolute detected from the stream; the Master Focus Dial's own control is never learnable; no modal overlay. Built with step 7's lane headers |
 | Curved automation segments | both | P1 | ✅ | `curve` + `tension` per point |
 | Automation in real units, not just normalized | neither | P1 | ✅ | `value_domain='real'` — SPEC §6.3.3 |
 
@@ -286,7 +289,7 @@ the equalizer's baseline. The rest are prepared for, with references in
 
 | Goal | Form | P | Needs first |
 |---|---|---|---|
-| Dynamic EQ: matched phase, linear phase, per-band dynamics | CLAP | P3 | Plugin-line licence decided; matched phase from Vicanek (2016); ZLEqualizer's code usable since ADR-0138, making the plugin AGPLv3. **The baseline builds:** ZL Equalizer 2 as CLAP, unchanged (ADR-0166). "Pro-Q3 clone" is a description, never a name |
+| Dynamic EQ: matched phase, linear phase, per-band dynamics | CLAP | P2 | **ADR-0195 d1, d2:** adapts ZL Equalizer 2's DSP directly (ADR-0138), so the plug-in is AGPLv3. The graph takes Pro-Q 3's node gestures, per its manual: drag for frequency and gain (Q on filters with no gain); wheel or Ctrl/Cmd + vertical drag for Q; Alt + drag locks an axis; Shift for fine. ZL's panel dials leave the main view. **The baseline builds:** ZL Equalizer 2 as CLAP, unchanged (ADR-0166). "Pro-Q3 clone" is a description, never a name |
 | True-peak limiter: lookahead, oversampling, modes | CLAP | P3 | Plugin-line licence decided (the LSP maths is LGPL) |
 | Lookahead brickwall limiter, 1.5 / 3 / 6 ms | Pd | P3 | **A Pd patch able to declare its latency** (ADR-0035 has no such thing), and pinned DSP sort order |
 | Eight-band parametric EQ | Pd | P3 | Pd's inverted `biquad~` feedback signs; four biquads for a 48 dB/oct cut |
