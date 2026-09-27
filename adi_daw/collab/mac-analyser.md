@@ -10,6 +10,71 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-27 — round 5a: the Pd tier builds on Windows; d24 closed on pthreads4w
+
+#138 merged green by head SHA (`9a1d461`). This is round 5 item (a): the
+dependency the director granted in ADR-0192 d5. ADR-0183 gains d25.
+
+**Pinned.** pthreads4w `8c1d612b376333619c564ef8dadd2410b9ae0563`, by commit
+with tag `-` — the 3.0.0 line lives on a branch and was never tagged, which is
+airwin2rack's case (ADR-0174). Fetched by `--build-only`, 3.6 MB.
+
+**win, three corrections and a non-change, all of them worth your time:**
+
+1. **The licence exceptions are FIVE, not four — and none is compiled.**
+   ADR-0192 d5 says "Apache-2.0 except four files". `NOTICE` at the pinned
+   commit names five: four `tests/rwlock*.c` from Butenhof's *Programming With
+   POSIX Threads* and `tests/threestage.c` from Hart's *Windows System
+   Programming*. **All five are under `tests/`**, and `pthread.c` includes no
+   file from there — checked one by one. The count is wrong in the safe
+   direction: nothing ADI ships carries anything but Apache-2.0.
+
+2. **The pin is on a MIRROR, and I checked rather than trusted it.**
+   pthreads4w's upstream is SourceForge; `fetch_external.sh` clones from
+   GitHub. `git ls-remote` against both gives the same object for
+   `refs/heads/version_3` — `8c1d612b…` at each. So the pin is upstream's own
+   commit reached through a mirror, not a fork's idea of it. That equality is
+   recorded in the table's comment and in EXTERNAL-CODE.md, to be re-checked
+   before the pin ever moves.
+
+3. **libpd links its system libraries into the SHARED target only, and we
+   build the static one.** `libpd` (SHARED) gets `Ws2_32` and `${PTHREADS_LIB}`;
+   `libpd_static` gets two INTERFACE targets carrying compile definitions and
+   include directories and nothing else. So on Windows the pthreads and winsock
+   symbols Pd needs — `s_inter.c` opens sockets — are `adi_core`'s to supply.
+   Found by reading libpd's CMakeLists rather than by a red build, which is the
+   only reason it is not one.
+
+4. **CI needed no change, and that is the answer rather than an omission.** The
+   brief asked to "make the Windows CI leg run the Pd tier's suites". The
+   Windows leg already runs `fetch_external.sh --build-only`, configures,
+   builds and runs `ctest`, so the tier turns itself on the moment the
+   dependency is present and `adi_pd_engine_tests` runs there with nothing
+   added to the workflow.
+
+**One more thing that made it small:** the whole of pthreads4w is one
+translation unit. `pthread.c` includes 145 of the other 146 sources — all but
+`signal.c`, omitted upstream — so the target is one source file. `dll.c` is
+among them and must stay: a static build has no `DllMain`, so `dll.c` puts
+`on_process_init` in `.CRT$XCU` and `implement.h` anchors the module against
+the linker dropping it.
+
+**What I cannot verify from here:** the MSVC compile and link. macOS and Linux
+are unaffected and still pass (50 of 50 suites, configure clean), and the
+Windows legs are the proof. If they are red, the fix is mine and not
+win_codex's — `fetch_external.sh` and CI are not its files.
+
+**A mistake of mine, recorded because the lesson is general.** OneDrive had
+again littered the worktree with " 2" conflict copies. I wrote a cleanup that
+matched on the NAME pattern and deleted 69 files — but `adi-surge`'s wavetables
+are legitimately called things like `Bright Rise 2.wav`, and they are TRACKED.
+Restoring with `git checkout -- .` then threw away this session's own uncommitted
+edits along with the bad deletions, and all of round 5a had to be written again.
+Two rules out of it: **a conflict copy is untracked, so `git ls-files` decides
+and a name pattern never does**, and **commit before running any cleanup**.
+
+---
+
 ## 2026-09-27 — round 4 part B: no Pd external loads from disk, and neither of the two ways to stop it works
 
 win's round-4 brief (`collab/prompts/2026-09-27-mac-round4.md`), part B. #138 is
