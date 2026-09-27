@@ -5,6 +5,32 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-27 — ADR-0190: the DAW is ADI; ADI Live is dropped
+
+**Why:** the director renamed the DAW to ADI (Advanced DAW Infrastructure),
+kept ADiJ, and dropped the separate live app: the Session view stays inside
+ADI, as in Ableton.
+
+**What changed:**
+- **Code:** `appdata::App` is `{ Daw, DJ }`; the display name is "ADI", so a
+  settings file and a bundle say `"app": "ADI"`, and Linux's folder is `adi`.
+  The tests that used ADI Live as the other application use ADiJ; the check
+  count is unchanged (4805).
+- **Driver:** the endpoints are "ADI Stream Output" and "ADI Stream Input",
+  the provider and manufacturer "ADI" (amends ADR-0119). No WDK here, so the
+  driver workflow is the check.
+- **Docs:** README's title, FEATURES, SETTINGS, SPEC, the driver docs, the
+  settings source.
+- **Not renamed, and why:** the `adi_daw/` directory, the targets and the
+  planned repository, because renaming them mid-flight breaks mac's open
+  branches and every path. I recommend doing it with the repository move of
+  ADR-0145 d12. `schema.sql`'s comments wait for the next schema minor,
+  because a comment inside a `CREATE TABLE` is stored in every file.
+- **Flagged:** Analog Devices trades and brands as "ADI" and sells audio DSP
+  chips, so a trademark check belongs before a public release.
+
+---
+
 ## 2026-09-27 — ADR-0189: the Pioneer references, and the EPL question closed
 
 **Why:** the director relayed Gemini's five repositories for ADiJ's rekordbox

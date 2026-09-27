@@ -43,11 +43,10 @@ fs::path env(const char* name) {
 
 const char* displayName(App app) noexcept {
     switch (app) {
-        case App::Daw:  return "ADI DAW";
-        case App::Live: return "ADI Live";
-        case App::DJ:   return "ADiJ";
+        case App::Daw: return "ADI";
+        case App::DJ:  return "ADiJ";
     }
-    return "ADI DAW";
+    return "ADI";
 }
 
 Paths pathsFor(App app) {
@@ -90,7 +89,7 @@ Paths pathsFor(App app) {
     const fs::path data = xdg("XDG_DATA_HOME", ".local/share");
     const fs::path cache = xdg("XDG_CACHE_HOME", ".cache");
     if (config.empty() || data.empty() || cache.empty()) return {};
-    const char* folder = app == App::Daw ? "adi-daw" : (app == App::Live ? "adi-live" : "adij");
+    const char* folder = app == App::Daw ? "adi" : "adij";
     p.config = config / "adi" / folder;
     p.data = data / "adi" / "shared";
     p.cache = cache / "adi";

@@ -3,7 +3,7 @@
 // Settings bundles: R-05, ADR-0127 d5, ADR-0152.
 //
 // One .zip, no project data:
-//   manifest.json   {"kind": "adi-settings-bundle", "schema": 1, "app": "ADI DAW"}
+//   manifest.json   {"kind": "adi-settings-bundle", "schema": 1, "app": "ADI"}
 //   settings.json   the application's settings, App scope only
 //   presets/N.json  the presets that went with them
 //

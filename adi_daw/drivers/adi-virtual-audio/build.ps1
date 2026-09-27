@@ -69,16 +69,16 @@ function Run($exe, [string[]]$argv) {
 # the others are jack-detected and stay with the sample's names until the real
 # driver exposes exactly two endpoints (ADR-0120).
 $InfStrings = [ordered]@{
-    'ProviderName'                                = 'ADI DAW'
-    'MfgName'                                     = 'ADI DAW'
-    'MsCopyRight'                                 = 'Copyright (c) 2026 ADI DAW contributors. Derived from Microsoft sysvad (MS-PL).'
+    'ProviderName'                                = 'ADI'
+    'MfgName'                                     = 'ADI'
+    'MsCopyRight'                                 = 'Copyright (c) 2026 ADI contributors. Derived from Microsoft sysvad (MS-PL).'
     'SYSVAD_SA.DeviceDesc'                        = 'ADI Virtual Audio Device'
     'SYSVAD_ComponentizedAudioSample.SvcDesc'     = 'ADI Virtual Audio Device Driver'
-    'SYSVAD.WaveSpeaker.szPname'                  = 'ADI DAW Stream Output'
-    'SYSVAD.TopologySpeaker.szPname'              = 'ADI DAW Stream Output'
-    'SYSVAD.WaveMicArray1.szPname'                = 'ADI DAW Stream Input'
-    'SYSVAD.TopologyMicArray1.szPname'            = 'ADI DAW Stream Input'
-    'MicArray1CustomName'                         = 'ADI DAW Stream Input'
+    'SYSVAD.WaveSpeaker.szPname'                  = 'ADI Stream Output'
+    'SYSVAD.TopologySpeaker.szPname'              = 'ADI Stream Output'
+    'SYSVAD.WaveMicArray1.szPname'                = 'ADI Stream Input'
+    'SYSVAD.TopologyMicArray1.szPname'            = 'ADI Stream Input'
+    'MicArray1CustomName'                         = 'ADI Stream Input'
 }
 $CatalogName = 'adi-virtual-audio.cat'
 
@@ -211,7 +211,7 @@ Built:            $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')
 Configuration:    $Configuration / $Platform
 Driver source:    $SysvadRepo @ $SysvadCommit (audio/sysvad; licence: MS-PL, see LICENSE-MS-PL.txt)
 Build script:     adi_daw/drivers/adi-virtual-audio/build.ps1 @ $ourCommit (github.com/arieladi/Adi)
-Endpoints:        "ADI DAW Stream Output" (render), "ADI DAW Stream Input" (capture)
+Endpoints:        "ADI Stream Output" (render), "ADI Stream Input" (capture)
 Signing:          none. See adi_daw/drivers/SIGNING.md.
 "@ | Set-Content -Path (Join-Path $pkg 'PROVENANCE.txt') -Encoding utf8
 

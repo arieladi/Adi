@@ -52,7 +52,7 @@ std::unique_ptr<PluginRegistry> PluginRegistry::open(const std::filesystem::path
     try {
         auto db = std::make_unique<SQLite::Database>(
             utf8(file), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
-        db->setBusyTimeout(2000);   // ADI DAW and ADiJ may both have it open
+        db->setBusyTimeout(2000);   // ADI and ADiJ may both have it open
         const int appId = db->execAndGet("PRAGMA application_id").getInt();
         const int version = db->execAndGet("PRAGMA user_version").getInt();
         const bool fresh = appId == 0 && version == 0;

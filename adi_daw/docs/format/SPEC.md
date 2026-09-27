@@ -12,7 +12,7 @@ Key words **MUST**, **MUST NOT**, **SHOULD**, **MAY** are used as in RFC 2119.
 
 ## 1. Scope and design goals
 
-`.adi` is the native save format of ADI DAW. It is designed to be:
+`.adi` is the native save format of ADI. It is designed to be:
 
 1. **Fast to save incrementally** — a save is proportional to what changed, not
    to the size of the project, so autosave can run during playback.
@@ -136,7 +136,7 @@ did not.
 
 Exactly one process **MAY** have a project open for writing. The writer takes an
 advisory lock row in `session_lock` carrying host name, PID, and a heartbeat
-timestamp, so a second instance can say *"open in ADI DAW on STUDIO-PC since
+timestamp, so a second instance can say *"open in ADI on STUDIO-PC since
 14:32"* rather than silently corrupting expectations. A stale lock (heartbeat
 older than 60 s) MAY be broken by the user after an explicit prompt.
 

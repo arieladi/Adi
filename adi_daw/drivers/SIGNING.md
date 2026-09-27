@@ -46,15 +46,15 @@ Fill in from these; keep them true on the day of sending.
 
 | Field | Answer |
 |---|---|
-| Project name | ADI DAW — virtual audio device (`adi_daw/drivers/adi-virtual-audio`) |
+| Project name | ADI — virtual audio device (`adi_daw/drivers/adi-virtual-audio`) |
 | Project URL | `https://github.com/arieladi/Adi` (path `adi_daw/drivers/`) — or the graduated repository if ADR-0013 has happened by then |
 | Licence | MS-PL for the driver, derived from Microsoft's sysvad sample; MIT for our build and packaging files; the surrounding DAW is GPLv3 |
-| What is signed | A Windows kernel-mode audio driver package (`.sys`, `.inf`, `.cat`) for x64 (and ARM64 if built) exposing two virtual endpoints, "ADI DAW Stream Output" and "ADI DAW Stream Input" |
+| What is signed | A Windows kernel-mode audio driver package (`.sys`, `.inf`, `.cat`) for x64 (and ARM64 if built) exposing two virtual endpoints, "ADI Stream Output" and "ADI Stream Input" |
 | Why it needs signing | Windows 10 and 11 x64 load only signed kernel drivers; users must not enable test-signing mode |
 | Build system | GitHub Actions, workflow `.github/workflows/driver-build.yml`, WDK 10.1.26100 as shipped on `windows-2022`; the artefact uploaded to SignPath is the unsigned package (`.sys`, `.inf`, `.cat`) produced by that workflow and nothing else |
 | Who approves signing requests | Adi Ariel (repository owner), 2FA enabled |
 | Release process | A tag on `main` triggers the release workflow; the workflow submits the artefact to SignPath; the approver reviews the diff since the last signed release and approves; the signed package is attached to the GitHub release |
-| Users | Musicians using ADI DAW who want the DAW's output as an input device in Zoom, Discord, OBS or Parsec without third-party virtual cables |
+| Users | Musicians using ADI who want the DAW's output as an input device in Zoom, Discord, OBS or Parsec without third-party virtual cables |
 | Related projects | `VirtualDrivers/Virtual-Audio-Driver` (same base, Foundation-signed since 2025) — cited as precedent, not as our code |
 
 ## The signing policy this project commits to

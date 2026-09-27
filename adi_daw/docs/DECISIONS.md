@@ -13733,3 +13733,70 @@ pyrekordbox. All five exist.
 - **ADiJ as a source on Pro DJ Link.** Vynull shows ADiJ could appear to CDJs
   as a rekordbox source over the network, with no USB stick. It is not in
   `FEATURES.md` until it is ruled.
+
+---
+
+## ADR-0190 — The DAW is named ADI, Advanced DAW Infrastructure; ADiJ keeps its name; ADI Live is dropped, and the Session view stays inside ADI — `DECIDED` (2026-09-27) — **DIRECTOR'S RULING; AMENDS ADR-0105, ADR-0119, ADR-0133 AND ADR-0145 d10; THE DIRECTORY AND THE REPOSITORY FOR THE DIRECTOR**
+
+**Director's ruling:**
+- **The name.** The DAW is renamed from ADI DAW to **ADI**, meaning
+  *Advanced DAW Infrastructure*.
+- **The DJ software** stays ADiJ (ADR-0188 d1).
+- **The live spin-off is dropped.** The Session view is kept inside ADI, as
+  it is in Ableton, with no standalone version.
+
+### Decisions
+
+1. **The product is ADI.** Every current document, the settings files and
+   the code use the name from now on.
+   - **Old log entries keep "ADI DAW",** because the log is append-only.
+   - **Settings:** a settings file and a settings bundle name their
+     application `"ADI"`.
+   - **Folders:** the configuration folder is `ADI` on Windows and macOS and
+     `adi` on Linux, inside the vendor folder of the same name. That gives
+     `%APPDATA%\ADI\ADI` beside `%APPDATA%\ADI\ADiJ`.
+   - **No migration:** nothing has shipped.
+
+2. **Two products on one engine, not three.** This amends ADR-0105 and
+   ADR-0133: the suite is ADI and ADiJ.
+   - **ADI Live is dropped.** That includes the prepared-project profile and
+     its validator.
+   - **The Session view stays inside ADI.** It docks in place of the
+     arrangement and detaches to a second monitor (ADR-0101, ADR-0117), and
+     it is still built last.
+   - **Settings:** each application keeps its own settings (ADR-0145 d10),
+     so there are now two files.
+   - **In the code:** `appdata::App` loses `Live`, and the tests that used
+     ADI Live as "the other application" use ADiJ.
+   - **The roadmap:** step 13 becomes ADiJ alone.
+
+3. **The virtual audio device takes the name.** This amends ADR-0119's
+   endpoint names.
+   - **The endpoints are "ADI Stream Output" and "ADI Stream Input".**
+   - **The provider and manufacturer strings are "ADI".**
+   - **Checked by the driver CI:** `build.ps1` asserts that every string key
+     exists exactly once, and the driver workflow runs on the change.
+   - **The SignPath application,** not yet sent, carries the new names.
+
+4. **Not renamed now: the directory, the binaries, the repository and the
+   format.** These are for the director.
+   - **What keeps its name:** the `adi_daw/` directory, the targets
+     (`adi_core`, `adi_play`, `adi_tool`) and the planned repository
+     `arieladi/adi_daw` (ADR-0145 d12).
+   - **Why not now:** renaming the directory mid-flight breaks mac's open
+     branches and every path in CI, the prompts and the logs.
+   - **The recommendation:** rename them with the repository move of
+     ADR-0145 d12, which is already a break, so the new home would be
+     `arieladi/adi`.
+   - **The format keeps `.adi`,** which already fits.
+   - **The schema's comments keep "ADI DAW" until the next schema minor.**
+     `schema.sql` is embedded as DDL, and a comment inside a `CREATE TABLE`
+     is stored in every file's `sqlite_master`, so the comments change with
+     real DDL, not alone.
+
+5. **One risk, for the director before a public release.**
+   - **The collision:** Analog Devices trades and brands as "ADI" (its
+     ticker and its own shorthand), and it sells audio DSP chips.
+   - **The search problem:** a three-letter name is also hard to find.
+   - **The advice:** a trademark check on "ADI" for audio software belongs
+     before the first public release. It is not a reason to wait now.

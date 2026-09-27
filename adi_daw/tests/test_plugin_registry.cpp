@@ -50,11 +50,9 @@ void testThePlatformDefaults() {
     clearHome();
     const appdata::Paths daw = appdata::pathsFor(appdata::App::Daw);
     const appdata::Paths dj = appdata::pathsFor(appdata::App::DJ);
-    const appdata::Paths live = appdata::pathsFor(appdata::App::Live);
     check(!daw.config.empty() && daw.config.is_absolute(), "a real, absolute config folder: " + daw.config.string());
-    check(daw.config != dj.config && daw.config != live.config && dj.config != live.config,
-          "three applications, three settings folders: nothing bleeds (ADR-0145 d10)");
-    check(daw.data == dj.data && daw.data == live.data, "one shared data folder for the suite");
+    check(daw.config != dj.config, "two applications, two settings folders: nothing bleeds (ADR-0145 d10)");
+    check(daw.data == dj.data, "one shared data folder for the suite");
     check(daw.cache == dj.cache, "one shared cache");
     check(daw.cache != daw.data && daw.config != daw.data, "config, data and cache are three places");
     check(appdata::pluginRegistryFile() == daw.data / "plugins.sqlite", "the registry lives in shared data");
@@ -64,13 +62,13 @@ void testThePlatformDefaults() {
     // depend on where it ran (it did: 3,847 on Windows against 3,845).
 #if defined(_WIN32)
     const std::string vendor = "ADI";
-    const std::string dawName = "ADI DAW", djName = "ADiJ";
+    const std::string dawName = "ADI", djName = "ADiJ";
 #elif defined(__APPLE__)
     const std::string vendor = "ADI";
-    const std::string dawName = "ADI DAW", djName = "ADiJ";
+    const std::string dawName = "ADI", djName = "ADiJ";
 #else
     const std::string vendor = "adi";
-    const std::string dawName = "adi-daw", djName = "adij";
+    const std::string dawName = "adi", djName = "adij";
 #endif
     check(daw.config.parent_path().filename() == vendor, "settings sit under the suite's folder: " + vendor);
     check(daw.config.filename() == dawName && dj.config.filename() == djName, "named as the platform names them");
@@ -80,8 +78,8 @@ void testAdiHome() {
     const adi::test::TempDirectory scratch("plugin_registry", "home");
     section("ADR-0149 -- ADI_HOME puts everything under one folder (tests, a portable install)");
     setHome(scratch.path());
-    const appdata::Paths p = appdata::pathsFor(appdata::App::Live);
-    check(p.config == scratch.path() / "config" / "ADI Live", "config: " + p.config.string());
+    const appdata::Paths p = appdata::pathsFor(appdata::App::DJ);
+    check(p.config == scratch.path() / "config" / "ADiJ", "config: " + p.config.string());
     check(p.data == scratch.path() / "data" / "Shared", "data: " + p.data.string());
     check(p.cache == scratch.path() / "cache", "cache: " + p.cache.string());
     check(!fs::exists(p.config), "and nothing was created by asking");
@@ -114,7 +112,7 @@ void testTheRegistry() {
         check(r.has_value() && *r == engine::RouteChoice::MpeMidi, "and still remembered: across sessions");
         // Two applications of the suite at once (WAL, busy timeout).
         auto other = PluginRegistry::open(file, err);
-        check(other != nullptr, "a second handle, as ADiJ beside ADI DAW: " + err);
+        check(other != nullptr, "a second handle, as ADiJ beside ADI: " + err);
         if (other) {
             check(other->remember("vst3", "VST3-Synth-1", engine::RouteChoice::NoteExpression, 1002, err),
                   "it changes the choice: " + err);
