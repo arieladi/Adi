@@ -37,6 +37,9 @@
 // Built only against Steinberg's VST3 SDK (MIT, 2025), the copy JUCE carries.
 // No JUCE code is used or linked.
 
+#if defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
+#endif
 #include <pluginterfaces/base/funknown.h>
 #include <pluginterfaces/base/ibstream.h>
 #include <pluginterfaces/base/ipluginbase.h>
@@ -128,7 +131,14 @@ public:
     explicit Synth(Variant v) : variant_(v) {
         for (auto& b : bend_) b = 0.5;
     }
-    virtual ~Synth() = default;
+    // NOT virtual, and not `override` either: Steinberg's FUnknown has no
+    // virtual destructor by design -- lifetime is `release()` calling
+    // `delete this` on the concrete type, which this is, because the class is
+    // final. A `virtual` here declares an override point that cannot exist,
+    // which Apple clang reports as -Wunnecessary-virtual-specifier and
+    // -Werror stops on. MSVC has no such warning, and this file had only ever
+    // been compiled on Windows.
+    ~Synth() = default;
 
     // --- FUnknown ----------------------------------------------------------
     tresult PLUGIN_API queryInterface(const TUID queried, void** obj) override {
@@ -615,3 +625,25 @@ extern "C" SMTG_EXPORT_SYMBOL IPluginFactory* PLUGIN_API GetPluginFactory() {
     static Factory factory;
     return &factory;
 }
+
+#if defined(__APPLE__)
+// A macOS VST3 is a BUNDLE, and a host opens it through CFBundle rather than
+// by dlopen'ing a file. The format requires these two beside the factory:
+// `bundleEntry` is called once after the bundle is loaded and `bundleExit`
+// once before it is unloaded, and a bundle missing them is rejected before
+// `GetPluginFactory` is ever reached.
+//
+// There is nothing for either to do here. The fixture's state is a static
+// factory and three stateless class IDs; the SDK's own reference
+// implementation uses these hooks to retain the CFBundleRef so a plug-in can
+// find its resources, and this one has none. They exist because the loader
+// looks for them.
+//
+// The CMake comment that guarded this file with `if(WIN32)` said a macOS
+// bundle "needs an Info.plist and bundle entry points nobody here can test".
+// The Info.plist is `Info.plist.in` beside this file; these are the entry
+// points; and the test is `adi_play --list`, which now discovers all three
+// variants out of the built bundle on macOS.
+extern "C" SMTG_EXPORT_SYMBOL bool bundleEntry(CFBundleRef) { return true; }
+extern "C" SMTG_EXPORT_SYMBOL bool bundleExit() { return true; }
+#endif

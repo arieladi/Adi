@@ -112,6 +112,21 @@ struct Options {
     bool dry = false;
     bool list = false;
     bool fixture = false;
+    /// ADR-0011 keeps a plug-in that will not load as a bypassed stand-in, so
+    /// a render through a missing plug-in is a SUCCESS: the project played,
+    /// it just played without the plug-in. That is right for a musician and
+    /// useless for CI, which is checking that hosting works at all.
+    bool requireDevices = false;
+    /// A floor in dBFS the master peak must clear, or the render fails.
+    ///
+    /// `--require-devices` proves a plug-in LOADED. It does not prove the
+    /// graph made a sound, and those are different claims -- `dbfs()` twelve
+    /// lines up says so in as many words. A plug-in that loads and outputs
+    /// nothing passes every device count there is.
+    ///
+    /// Unset is the old behaviour: report the peak and gate nothing.
+    double requirePeak = 0.0;
+    bool requirePeakSet = false;
     bool saveState = false;   // ADR-0142
     double from = 0.0;        // seconds; where the transport starts (ADR-0151)
     bool noPlay = false;      // leave the transport stopped: devices and the tone only
@@ -126,7 +141,9 @@ int usage() {
     std::printf(
         "adi_play <project.adi> [--block N] [--rate HZ] [--seconds S] [--resize M]\n"
         "                       [--tone [TRACK]] [--type DEVICE-TYPE] [--device NAME]\n"
-        "                       [--search DIR]... [--fixture] [--dry] [--save-state]\n"
+        "                       [--search DIR]... [--fixture] [--require-devices]\n"
+        "                       [--require-peak DBFS]\n"
+        "                       [--dry] [--save-state]\n"
         "                       [--from SECONDS] [--no-play] [--render SECONDS]\n"
         "adi_play --list [--search DIR]... [--fixture]\n"
         "  Opens a project, resolves its devices, plays it through the default audio\n"
@@ -167,6 +184,11 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--dry")     o.dry = true;
         else if (a == "--list")    o.list = true;
         else if (a == "--fixture") o.fixture = true;
+        else if (a == "--require-devices") o.requireDevices = true;
+        else if (a == "--require-peak") {
+            const char* v = next(i); if (!v) return false;
+            o.requirePeak = std::atof(v); o.requirePeakSet = true;
+        }
         else if (a == "--save-state") o.saveState = true;
         else if (a == "--no-play") o.noPlay = true;
         else if (a == "--from") { const char* v = next(i); if (!v) return false; o.from = std::atof(v); }
@@ -259,7 +281,8 @@ int saveStates(adi::engine::Session& session, adi::Store& store) {
 /// print the master's peak for each second. This is the headless proof that a
 /// project's clips reach the master; it waits for the disk between blocks
 /// (`prime`), which only an offline driver may do.
-int renderOffline(adi::engine::Session& session, double rate, int block, double seconds) {
+int renderOffline(adi::engine::Session& session, double rate, int block, double seconds,
+                  bool requirePeakSet, double requirePeak) {
     const int channels = 2;
     std::vector<std::vector<float>> buf(channels, std::vector<float>(static_cast<std::size_t>(block)));
     std::vector<float*> ptrs;
@@ -295,6 +318,27 @@ int renderOffline(adi::engine::Session& session, double rate, int block, double 
     std::printf("  clips     %s underrun frame(s), %s read error(s)\n",
                 n(clips ? static_cast<std::int64_t>(clips->underrunSamples()) : 0).c_str(),
                 n(clips ? static_cast<std::int64_t>(clips->readErrors()) : 0).c_str());
+    // --require-peak: "the graph ran" and "audio came out" are different
+    // claims, and only the first one has a gate without this.
+    //
+    // A FLOOR, not "is it the word silence". `dbfs()` calls a peak silence
+    // only when it is EXACTLY zero, and a render past the end of the content
+    // measured -142.1 dBFS here -- a plug-in idling on denormals, which any
+    // word-match would have called a pass.
+    if (requirePeakSet) {
+        if (overall <= 0.0f) {
+            std::printf("\nFAILED -- --require-peak %.1f dBFS: the master was SILENT\n",
+                        requirePeak);
+            return 3;
+        }
+        const double db = 20.0 * std::log10(static_cast<double>(overall));
+        if (db < requirePeak) {
+            std::printf("\nFAILED -- --require-peak: master peak %.1f dBFS is below the "
+                        "%.1f dBFS floor; the devices loaded but nothing was heard\n",
+                        db, requirePeak);
+            return 3;
+        }
+    }
     std::printf("\nok -- %.2f s rendered offline; master peak %s\n", seconds, dbfs(overall).c_str());
     return 0;
 }
@@ -359,6 +403,29 @@ int main(int argc, char** argv) {
         std::printf("\nFAILED -- %s\n", session.error().c_str());
         return 1;
     }
+
+    // --require-devices: a stand-in is a FAILURE, not a note in the log.
+    //
+    // This is an exit code rather than a string for CI to grep, because the
+    // string is a report meant for a person and the gate is a fact. A grep
+    // for "PLACEHOLDER" passes the day someone rewords the line, and passes
+    // silently -- which is the shape of every CI check that stops checking.
+    if (o.requireDevices) {
+        const auto& st = session.stats();
+        if (st.placeholders > 0 || st.skipped > 0) {
+            std::printf("\nFAILED -- --require-devices: %s placeholder(s) and %s skipped "
+                        "device(s); every device in this project was supposed to load\n",
+                        n(st.placeholders).c_str(), n(st.skipped).c_str());
+            return 2;
+        }
+        if (st.loaded == 0) {
+            // Zero loaded and zero missing is a project with no devices at
+            // all, which passes every count above and proves nothing. CI
+            // asked for a render THROUGH a plug-in.
+            std::printf("\nFAILED -- --require-devices: no devices in this project at all\n");
+            return 2;
+        }
+    }
     // ADR-0151: a player plays. The transport belongs to the driver, and its
     // commands go in between callbacks -- here, before any device is open.
     // The first pages are read before the first callback, so the opening
@@ -372,7 +439,8 @@ int main(int argc, char** argv) {
     }
     if (o.render > 0.0) {
         adi_play::EditWatch edits(session);   // after the session: destroyed before it
-        return edits.finish(renderOffline(session, rate, o.block, o.render), o.expectNoEdits);
+        return edits.finish(renderOffline(session, rate, o.block, o.render, o.requirePeakSet, o.requirePeak),
+                            o.expectNoEdits);
     }
     if (o.dry) {
         if (o.saveState && saveStates(session, *store) != 0) return 1;

@@ -5,6 +5,155 @@ Only the `mac` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-26 — back after five days; PR 1, CI renders a project through a VST3 and a CLAP
+
+Branch `mac/ci-render`. First of the four PRs in
+`collab/prompts/2026-09-26-mac-return-host-half.md`.
+
+### 1. One claim in the mission prompt did not survive checking
+
+> *"The fixture VST3 (adi_test_vst3) is built already."*
+
+It is built **on Windows only** — `if(WIN32)` at `CMakeLists.txt:706`, whose
+own comment said a macOS bundle "needs an Info.plist and bundle entry points
+nobody here can test". So `adi_play` on macOS was never even given an
+`ADI_TEST_VST3` path, and the mission's DONE — *"CI renders a project through
+a VST3 and a CLAP on macOS and Windows"* — could not have been met.
+
+"Nobody here can test it" stopped being true when mac came back to a Mac. It
+took about ten minutes: two entry points, an `Info.plist`, and a bundle
+layout. Everything else about the fixture already compiled on macOS unchanged.
+
+The other sixteen claims in the prompt held.
+
+### 2. What the fixture on macOS is actually worth
+
+More than the render. `adi_vst3_probe` guards seven blocks with
+`#ifdef ADI_TEST_VST3`, so on macOS they had compiled to nothing. They run now:
+
+    ok  the fixture bundle declares three instruments, saw 3
+    ok  ADI Test MPE: the controller is REACHABLE -- the one arrangement our host can see
+    ok  ADI Test MPE: bend on its own parameter on 16 channel(s), saw 16
+
+ADR-0100 exists because every MPE synth on the development machine hides its
+controller. That whole path had only ever been exercised on one of the two
+platforms we ship.
+
+### 3. `--require-devices`, because ADR-0011 makes a failed render succeed
+
+A plug-in that will not load stays in the chain as a bypassed stand-in, so a
+render through a MISSING plug-in prints a peak and exits 0. Right for a
+musician, useless for CI.
+
+It is an EXIT CODE and not a string for CI to grep. The string is a report
+meant for a person; a grep for `PLACEHOLDER` passes the day someone rewords
+the line, and passes *silently*, which is the shape of every check that stops
+checking. Zero devices is also a failure: a project with no plug-ins passes
+every count and proves nothing.
+
+Proved both ways before it was committed — exit 2 with the CLAP absent, exit 0
+with it present — and CI carries a step that renders with no search path and
+**requires** the failure.
+
+### 4. Measured rather than assumed, before writing any CI
+
+- the eleven ADI Airwindows suites configure and build on macOS, though
+  `tools/build-plugins.bat` is the only script and it is Windows-only;
+- `ADI Airwindows - Sub.clap` loads through our own CLAP host on macOS: 11
+  parameters with real ranges, state byte-identical round trip, 19 checks;
+- the full render works offline with no audio device, and the plug-in is
+  audibly in the path — the dry clip is -6.0 dBFS and reads -11.4 through it.
+
+I also got this wrong once on the way and caught it: after building one suite
+I said "all eleven built on macOS". CMake had created all eleven bundle
+*directories* and put a binary in one. `adi_play --list` found exactly one
+id, which is what a claim about eleven plug-ins should have been checked
+against in the first place.
+
+### 5. A Clang-only `-Werror` failure in a file that had only ever built on MSVC
+
+`virtual ~Synth()` in a `final` class: `-Wunnecessary-virtual-specifier`,
+which MSVC does not have. Not virtual and not `override` either — Steinberg's
+`FUnknown` has no virtual destructor by design, lifetime is `release()`
+calling `delete this` on the concrete type.
+
+The mirror image of the two MSVC sign-conversions win found in my CLAP search
+paths on 2026-09-21. A warning wall only walls off what it compiles.
+
+### 6. The macOS CI job hung for five hours, and it was my step
+
+`cmake --build --parallel` **with no count** passes a bare `-j` to make, which
+means UNLIMITED. macOS names no generator, so it gets Makefiles, so it started
+one compiler per source file.
+
+How many source files: `adi_aw_sub` is the SMALLEST suite — two algorithms —
+and picking it saved nothing, because every suite links
+`adi_airwindows_fx`, a static library of `1 + 2 x 143 = 287` sources. So the
+runner tried 287 compilers at once on a three-core box and finished nothing in
+five hours. I cancelled it before the six-hour ceiling; GitHub kept no log
+(BlobNotFound), so the diagnosis had to come from the tree rather than the run.
+
+Windows passed the same step because MSBuild bounds its own parallelism and
+never saw the bug. **A defect that only one generator can express looks exactly
+like a platform difference.**
+
+Measured after bounding it, same 287 sources:
+
+| | |
+|---|---|
+| `--parallel` (unbounded) | 5 h, wedged, killed |
+| `--parallel 3` | **58 s** |
+
+So no caching was warranted and none was added — the volume was never the
+problem. The fix is the job count, computed once from the hardware
+(`NUMBER_OF_PROCESSORS`, else `getconf _NPROCESSORS_ONLN`, else 2) and used by
+every build in the job, plus `timeout-minutes: 20` so the next hang of any kind
+fails in minutes rather than burning to the ceiling.
+
+win called the shape of this from the tree alone before I measured it. His
+estimate was "about 320 heavy sources"; it is 287.
+
+The three unbounded `--parallel` calls in the OTHER jobs are left alone. They
+have been green for weeks and build far fewer files; fixing what is not proven
+broken is how a passing job turns red.
+
+### 7. A verifier found the hole in my own gate
+
+Re-running the claim-checks the usage limit killed returned six TRUEs and one
+thing worth far more than them:
+
+> *"CI gates only on adi_play's exit code, never on the printed peak, so a
+> silent render would still pass those two steps."*
+
+Correct. `--require-devices` proves a plug-in LOADED. It does not prove the
+graph made a sound, and `play.cpp`'s own `dbfs()` helper says so twelve lines
+above the code I wrote: *"The graph ran" and "audio came out" are different
+claims.* I gated the first and called it done.
+
+`--require-peak DBFS` now gates the second, as an exit code rather than a
+grep, for the same reason as `--require-devices`.
+
+**It is a FLOOR, and the first version in my head was not.** I assumed the
+check could match the word "silence" — until I measured. A render past the end
+of its content reads **-142.1 dBFS**, not silence, because `dbfs()` calls a
+peak silence only when it is EXACTLY zero and an idling plug-in is not zero. A
+word-match would have passed a dead render.
+
+Four exit paths, all proved before committing: 0 audible, 3 loaded-but-silent,
+2 missing plug-in, 0 ungated. CI renders the same project from 8 s and
+REQUIRES the failure, beside the step that requires the stand-in failure.
+
+### 8. Not mine, but in the tree
+
+Twenty stray `<name> 2.cpp` / `<name> 2.hpp` files under `src/` and `tests/`,
+all dated 21 Sep 07:21 — copies of the files as they stood at the end of mac's
+last session, by the look of it a sync conflict rather than anything a build
+made. Nothing globs them, so they do not compile. They are untracked and
+LEFT ALONE: deleting another process's files is not mine to do, and this is
+the public monorepo the "stage explicit paths" rule exists for.
+
+---
+
 ## 2026-09-21 — the rebuild loop closes, and a rebuild was silencing the project for 107 ms
 
 Branch `agent/mac-dev`, fast-forwarded onto win's `be4135d`. ADR-0090.
