@@ -1,0 +1,160 @@
+{
+ "patcher": {
+  "fileversion": 1,
+  "appversion": {
+   "major": 8,
+   "minor": 3,
+   "revision": 1,
+   "architecture": "x64",
+   "modernui": 1
+  },
+  "classnamespace": "jit.gen",
+  "rect": [
+   60.0,
+   90.0,
+   820.0,
+   860.0
+  ],
+  "bglocked": 0,
+  "openinpresentation": 0,
+  "default_fontsize": 12.0,
+  "default_fontface": 0,
+  "default_fontname": "Arial",
+  "gridonopen": 1,
+  "gridsize": [
+   15.0,
+   15.0
+  ],
+  "gridsnaponopen": 1,
+  "objectsnaponopen": 1,
+  "statusbarvisible": 2,
+  "toolbarvisible": 1,
+  "lefttoolbarpinned": 0,
+  "toptoolbarpinned": 0,
+  "righttoolbarpinned": 0,
+  "bottomtoolbarpinned": 0,
+  "toolbars_unpinned_last_save": 0,
+  "tallnewobj": 0,
+  "boxanimatetime": 500,
+  "enablehscroll": 1,
+  "enablevscroll": 1,
+  "devicewidth": 0.0,
+  "description": "",
+  "digest": "",
+  "tags": "",
+  "style": "",
+  "subpatcher_template": "",
+  "boxes": [
+   {
+    "box": {
+     "id": "obj-1",
+     "maxclass": "newobj",
+     "numinlets": 0,
+     "numoutlets": 1,
+     "outlettype": [
+      ""
+     ],
+     "patching_rect": [
+      40.0,
+      40.0,
+      60.0,
+      22.0
+     ],
+     "text": "in 1"
+    }
+   },
+   {
+    "box": {
+     "id": "obj-2",
+     "maxclass": "newobj",
+     "numinlets": 0,
+     "numoutlets": 1,
+     "outlettype": [
+      ""
+     ],
+     "patching_rect": [
+      130.0,
+      40.0,
+      60.0,
+      22.0
+     ],
+     "text": "in 2"
+    }
+   },
+   {
+    "box": {
+     "id": "obj-3",
+     "maxclass": "codebox",
+     "numinlets": 2,
+     "numoutlets": 1,
+     "outlettype": [
+      ""
+     ],
+     "patching_rect": [
+      40.0,
+      90.0,
+      720.0,
+      640.0
+     ],
+     "fontname": "<Monospaced>",
+     "fontsize": 11.0,
+     "code": "// avc.specreduce -- linear bins -> log-frequency display columns.\n// See build/gen_patch.py for the derivation of every line here.\n\nParam wid(600);        // number of display columns (plot width in pixels)\nParam nbins(2048);     // active bins for the current block size = N/2\nParam binhz(10.7666);  // Hz per bin = samplerate / N\nParam flo(10);         // display frequency range, low\nParam fhi(20000);      // display frequency range, high\nParam slope(4.5);      // dB per octave, pivoting at 1 kHz\nParam align(0);        // level-alignment offset in dB\nParam smooth(0);       // smoothing width in octaves, 0 = off\n\nc   = swiz(cell, 0);                       // this column, 0 .. wid-1\n\n// The output matrix is as wide as the ANALYSIS matrix, not as wide as the\n// plot -- see pushGen() in avc.engine.js for why that is not negotiable.\n// Cells past the display width simply repeat the last column; jit.spill only\n// reads the first `wid` of them.\nc   = min(c, wid - 1);\nlr  = log(fhi / flo);                      // total span, natural log\noct = lr * 1.4426950408889634;             // total span in octaves\n\n// octave-proportional smoothing == widening the band in the log domain\nhw  = (smooth > 0) ? (smooth / oct) * wid * 0.5 : 0;\n\nu0  = (c - hw) / wid;\nu1  = (c + 1 + hw) / wid;\nf0  = flo * exp(lr * u0);                  // band edges for this column\nf1  = flo * exp(lr * u1);\nfc  = flo * exp(lr * ((c + 0.5) / wid));   // band centre, used for the slope\n\n// bins whose centre falls inside the band\ni0  = ceil(f0 / binhz);\ni1  = floor(f1 / binhz);\ni0  = max(i0, 1);                          // never display DC\ni1  = min(i1, nbins - 1);\n// Clamp the TOP end too.  The analysis matrix is allocated for the largest\n// block size (8192 cells) but only `nbins` of it is ever written by\n// jit.poke~, so an unclamped index reads cells no poke has ever touched.\n// samplepix's boundmode is `clamp`, so reads past the far edge return the\n// edge cell rather than failing -- silently, as isolated full-scale spikes\n// standing above the real spectrum.  i1 is deliberately NOT raised to 1:\n// leaving it below i0 at the very bottom is what selects the interpolating\n// branch, which is what keeps the lowest octaves smooth.\ni0  = min(i0, nbins - 1);\n\npa = 0; pb = 0; sa = 0; sb = 0; n = 0;\n\nif (i1 >= i0) {\n    // one or more whole bins land in this column: take the max over them.\n    for (i = i0; i <= i1; i += 1) {\n        v  = samplepix(in2, vec(i + 0.5, 0.5));   // pixel centres are at +0.5\n        va = swiz(v, 0);\n        vb = swiz(v, 1);\n        pa = max(pa, va);\n        pb = max(pb, vb);\n        sa = sa + va * va;\n        sb = sb + vb * vb;\n        n  = n + 1;\n    }\n} else {\n    // narrower than one bin: interpolate so the low end stays smooth.\n    bc = min(max(fc / binhz, 1), nbins - 1);   // same clamp, same reason\n    v  = samplepix(in2, vec(bc + 0.5, 0.5));\n    pa = swiz(v, 0);\n    pb = swiz(v, 1);\n    sa = pa * pa;\n    sb = pb * pb;\n    n  = 1;\n}\n\nif (smooth > 0) {\n    pa = sqrt(sa / n);                     // power mean across the band\n    pb = sqrt(sb / n);\n}\n\nkdb = 8.685889638065035;                   // 20 / ln(10)\nsl  = slope * log(fc / 1000) * 1.4426950408889634;   // slope, pivot 1 kHz\n\nda = log(max(pa, 1e-11)) * kdb + align + sl;\ndb = log(max(pb, 1e-11)) * kdb + align + sl;\n\nout1 = vec(da, db);\n"
+    }
+   },
+   {
+    "box": {
+     "id": "obj-4",
+     "maxclass": "newobj",
+     "numinlets": 1,
+     "numoutlets": 0,
+     "patching_rect": [
+      40.0,
+      760.0,
+      60.0,
+      22.0
+     ],
+     "text": "out 1"
+    }
+   }
+  ],
+  "lines": [
+   {
+    "patchline": {
+     "source": [
+      "obj-1",
+      0
+     ],
+     "destination": [
+      "obj-3",
+      0
+     ]
+    }
+   },
+   {
+    "patchline": {
+     "source": [
+      "obj-2",
+      0
+     ],
+     "destination": [
+      "obj-3",
+      1
+     ]
+    }
+   },
+   {
+    "patchline": {
+     "source": [
+      "obj-3",
+      0
+     ],
+     "destination": [
+      "obj-4",
+      0
+     ]
+    }
+   }
+  ],
+  "autosave": 0
+ }
+}
