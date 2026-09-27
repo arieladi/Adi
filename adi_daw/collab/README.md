@@ -56,6 +56,25 @@ two agents editing one file through git is how an afternoon disappears.
 merge conflict on every single push, and the whole point of splitting the files
 is that neither agent ever has to resolve one.
 
+**Two sessions on one machine are one agent, and still keep apart** (the
+director, 2026-09-27). A second session on the Windows PC commits as `win`, and
+one on the Mac as `mac`, so the name is right. What went wrong twice in one
+night was the place:
+- **The drone builder on Windows** committed onto `win/surfaces-collab`, the
+  branch of an open PR, because the two sessions share one checkout.
+- **A second session on the Mac** committed onto `mac/ci-render` and spent
+  ADR-0179, which was reserved for other work.
+
+So, for a second session:
+- **Its own branch:** it checks `git branch --show-current` before every
+  commit, and never commits onto a branch that carries another session's
+  open PR. A worktree per task is safer still (`Adi-wt/<topic>`).
+- **Numbers only from this table:** it takes an ADR number only from the
+  reservation table below, through win.
+- **Its own log file,** so the two sessions' PRs never conflict on one:
+  `collab/mac-analyser.md` for the analyser session on the Mac. The drone
+  builder writes no log here; its record is `tools/adi-drone/README.md`.
+
 ## Reserved ADR numbers
 
 **Claim the number BEFORE writing the entry. Push immediately.** Mark the row
@@ -191,8 +210,13 @@ subject, say so in your log instead of writing it twice.
 | 0174 | win | `win/group-summing` | native group summing built: eight console flavours, measured unity, schema 1.7 | used |
 | 0175 | win | `win/scope-taps` | the scope's engine side: taps stamped when heard, true peak, the compare | used |
 | 0176 | win | `win/audio-alignment` | Audio Alignment in the backlog: warp markers from a time-warping path; the hitpoint detector; a transient shaper on the envelope follower (director) | used |
-| 0179 | mac | (mac's return mission) | held for mac: the CLAP host contract, automation on the host, the generic panel | reserved |
+| 0177 | win | `win/pd-param-contract` | the Pd parameter contract: `[adi.param]` with a fixed id, a full declaration, changed only by `device.loadState`, a vanilla abstraction (approved by the director) | used |
+| 0178 | win | `win/tuning-schema` | tuning systems in the format: schema 1.8's four tables; ops with scale-aware editing (director) | used |
+| 0179 | mac | `mac/clap-per-instance` | the CLAP host contract: a `clap_host_t` per instance (C4); stays mac's, as reserved (win's ruling, 2026-09-27) | reserved |
 | 0180 | mac | (mac's return mission) | held for mac | reserved |
+| 0181 | win | `win/surfaces-collab` | external control surfaces: relative input at the edge, the loopback control API's surface client, one parameter feed; the Stream Deck + XL first (director) | used |
+| 0182 | win | `win/surfaces-collab` | collaboration, hosting and backups: local by default, an op stream to the user's bucket, drives for backups, author-chosen media, previewed application (director) | used |
+| 0183 | mac | `mac/pd-analyser-wip` | the Pd spectrum analyser (ADR-0116), from the second session on the Mac; renumbered from the ADR-0179 it spent locally; the director keeps the work (2026-09-27) | reserved |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

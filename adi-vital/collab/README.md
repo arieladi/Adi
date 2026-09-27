@@ -72,7 +72,7 @@ agents writing the same ADR; reading the other agent's subject does.
 | Number(s) | Agent | Branch | Subject | Status |
 |---|---|---|---|---|
 | 0017 | mac | `mac/vst3-macos` | VST3 only; CLAP dropped from this repo | used |
-| 0018 | mac | `mac/vst3-macos` | the macOS exporter defects (NO_AUTH, copy step, team id) | reserved |
+| 0018 | mac | `mac/vst3-macos` | the macOS exporter defects (NO_AUTH, copy step, team id); written by win from mac's measurements, ported from PR #42 on 2026-09-27 | used |
 
 ## Before you start work, every time
 
@@ -109,10 +109,20 @@ out of the monorepo because vendoring it would lose `git diff upstream/main`,
 currently the only thing that tells us what we have actually forked. (Size is
 not the reason: the working tree is ~180 MB but the packed repo is 31.5 MiB.)
 
-**The fork lives at `arieladi/adi-vital` (public, GPLv3)** — ADR-0016. Clone
-it into `adi-vital/vital`; it carries both `origin` (ours) and `upstream`
-(mtytel), so `git diff upstream/main` shows the whole fork delta. `mac` is no
-longer blocked on the C++.
+**The fork lives at `arieladi/adi-vital` (public, GPLv3)** — ADR-0016.
+
+```bash
+git clone https://github.com/arieladi/adi-vital.git adi-vital/vital
+git -C adi-vital/vital remote add upstream https://github.com/mtytel/vital.git
+git -C adi-vital/vital fetch upstream
+```
+
+**The second line is not optional.** Remotes are per-clone local config, not
+repository content, so a fresh clone has **only `origin`**: `upstream` does not
+come with it. Without adding it back, `git diff upstream/main` fails, and that
+command is the only thing telling us what we have actually forked (ADR-0001). An
+earlier version of this file wrongly said a clone "carries both remotes"; mac
+caught it. `mac` is no longer blocked on the C++.
 
 Do not "fix" this by `git add`-ing `vital/` into the monorepo. The ignore rule is
 deliberate and stops it becoming a stray gitlink.

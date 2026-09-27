@@ -5,6 +5,139 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-27 — mac's first report back; the drone synced; ADR-0179 ruled
+
+**mac's round** (collab/mac.md, 2026-09-26), and what I take from it:
+- **My prompt was wrong about the fixture VST3.** It said `adi_test_vst3`
+  "is built already". It is built on Windows only (`if(WIN32)`), so the
+  stated DONE could not have been met on macOS. mac built the bundle (an
+  Info.plist and two entry points), and seven `#ifdef ADI_TEST_VST3` blocks in
+  `adi_vst3_probe` now run on macOS for the first time. It is mac's own rule,
+  and it binds me too: a claim about a machine I cannot see is a question.
+- **A use-after-free in `clap_host.cpp`,** reproduced under ASan: the glue
+  keeps raw plug-in pointers, `~ClapDevice` destroys the plug-in, and nothing
+  unregisters it. PR 2's per-instance host removes the list and the bug with
+  it.
+- **27a item 2 is live:** `ClapEventList::add` passes a normalized lane value
+  as a plain one. Its trap: the same path carries `setParam`'s plain value,
+  so the conversion belongs with the caller that knows the unit.
+- **27a items 4 and 6 are a host API and a data model.** The repo has no GUI
+  yet (step 7), and mac will not report buttons that do not exist. Agreed.
+- **`add_clap_chain.py`** hard-coded chain id 1 and could not run on a demo
+  made with `--vst3-uid`. Fixed here: `--track`, a free chain id, `plugin_refs`
+  shared by `(format, uid)`, foreign keys on, and a second run changes
+  nothing. Tested on a `--vst3-uid` demo, twice, and on the master track.
+- **The macOS job ran 5 hours in "Build an ADI Airwindows suite".** GitHub kept
+  no log. My guess, for mac to check:
+  - the step names no generator, so macOS uses Makefiles;
+  - `cmake --build --parallel` with no count gives `make -j`, with no limit;
+  - the Sub suite pulls in `adi_airwindows_fx`, about 320 sources.
+
+  `-G Ninja`, or `--parallel 3`, plus a `timeout-minutes`, would test it.
+
+**ADR-0179 is mac's, as reserved.** A second session on the Mac committed
+twice onto `mac/ci-render`, locally only. It spent ADR-0179 on the Pd
+analyser. The reservation table decides (ADR-0051):
+- **0179 stays with the CLAP host contract,** as reserved.
+- **The analyser takes 0183,** reserved now. Renumbering a local commit is
+  cheap before anything is pushed.
+- **The Studio OS plug-in is a reference for ADR-0181, not its base** (the
+  director, 2026-09-27). It lives in `tools/elgato_stream_deck_plugins/adi_studio_os`
+  and is built for Ableton and Rekordbox, on the + XL's 36 keys and 6 dials.
+  - **What carries over:** its screen-stack navigation and its tempo-delay
+    calculator, with ADI's reading the tempo map, not a typed BPM.
+  - **Its timing lesson:** hidden-page timers are throttled; a Worker keeps
+    real time.
+  - **Its local WebSocket service** has no `Origin` check. That is worth
+    fixing there, in that plug-in's own session.
+  - **Its per-plug-in VST controllers** (`adi_ableton_vst_controller`) are a
+    reference too. They drive plug-ins through Ableton, and ADI's will drive
+    them through adi-daw. They are not refined yet; the best-working are the
+    Analog Obsession dBComp and Indeq.
+
+  All of it is recorded in FEATURES' control-surfaces row. ADR-0181 is
+  merged, and the log is append-only.
+- **The director keeps it** (2026-09-27). Its own brief
+  (`collab/prompts/2026-09-27-mac-analyser.md`):
+  - ADR-0183;
+  - a worktree of its own, because it shares the mission session's checkout
+    as the drone shares mine;
+  - its own log, `collab/mac-analyser.md`;
+  - a rebase onto main, with its parameters checked against ADR-0177, decided
+    after it started;
+  - libpd through `fetch_external.sh`, as ADR-0024 requires; `third_party/` is
+    git-ignored.
+
+**The drone, synced.** The drone builder, a second session on this PC,
+committed six `tools/adi-drone` commits onto `win/surfaces-collab`. The two
+sessions share one checkout.
+- **Moved:** the commits went to `win/adi-drone`, and #133 was reset to its
+  reviewed head `795eb78`, then merged.
+- **Merged:** the drone itself is #135.
+- **The rule:** collab/README now carries the two-sessions rule.
+
+**The drone's night.** I collected the six large files that failed before
+chunking existed (0 failures; shallow, as expected). I queued the 19 cut-off
+test ideas again, and 1478 reference jobs:
+- **Tracktion:** time stretch, control surfaces, automation and playback;
+- **Helio:** its version control and temperaments;
+- **Ardour:** its core and its surfaces;
+- **Zrythm:** dsp, engine and structure.
+
+About 7h37m expected, at the director's word.
+
+---
+
+## 2026-09-26 — control surfaces and collaboration, as directions (ADR-0181, ADR-0182)
+
+**The director's two directives:**
+- **Control surfaces:** hooks for dial-based hardware, the Stream Deck + XL
+  first.
+- **Collaboration:** local and cloud modes, drive backups, selective media
+  sync, Excel-style awareness, AI summaries and remarks.
+
+**Most of it already had a home:**
+- **Control surfaces:**
+  - `controller_maps` has relative modes and OSC;
+  - ADR-0130 resolves an encoder's modes;
+  - ADR-0039's loopback RPC is the control API.
+- **Collaboration:**
+  - ADR-0128 is the ESXi-style tree;
+  - ADR-0148's rolled-back transaction is the preview;
+  - ADR-0143 is Consolidate;
+  - ADR-0131 is the remarks;
+  - ADR-0161 is the clocks.
+
+**What was corrected:**
+- **Delta ops stay out of the log.** A clamped delta has no inverse, so
+  ticks resolve at the input.
+- **The IPC server is the RPC layer.** A surface is a client class on it,
+  paired once, with an `Origin` check, because any web page can reach
+  localhost.
+- **Git of the text projection cannot carry sync:** eight tables are not
+  projected.
+- **Lamport clocks cannot detect a collision.** Each batch needs its base,
+  a version vector.
+- **Drives get consistent copies plus media,** from a synced folder with no
+  provider API. Never the live SQLite file.
+- **"Keep both" only where an object can exist twice.** The director revised
+  this the same day (d9): continuous data keeps both too, as a ghost of the
+  colliding region. It lives in its own table, because a second live lane
+  would play. It resolves by Keep Mine, Adopt Theirs or Combine, a weighted
+  0 to 100% blend in the lane's own domain (dB for volume), previewed and
+  committed as one op. Discrete lanes do not blend. His follow-up: one
+  region at a time by default; then Accept All and Reject All as secondary
+  options, never the suggestion: in the panel's menu, confirmed with a count,
+  one op each. A list, a count and a next-collision command keep many
+  regions workable, and an unresolved region is safe.
+- **Summaries are built from the ops;** AI prose is optional.
+- **Remark anchors to ops need a new table,** because a minor cannot widen
+  a CHECK.
+
+Nothing built. The Master Reference is v0.9.3 with §6.5 and §11.4.
+
+---
+
 ## 2026-09-26 — mac is back: its mission, and where the loop stands
 
 **The director's instruction:** add anything useful from this session to the
@@ -29,17 +162,67 @@ reserved for mac.
 
 The prompt carries all three.
 
-**Waiting on the director:**
-- **#130, ADR-0177,** the Pd contract: status OPEN, not to be merged until he
-  approves.
-- **#131, ADR-0178,** schema 1.8: held for his review, because a shipped
-  table never changes.
+**The director's word on both, the same day:** ADR-0177 approved as written
+(now DECIDED), and schema 1.8 approved for publishing. Both were published
+with #133 before mac's mission began.
 
 **Kept outside the repo, by design:** the Master Reference (git-ignored,
 `reference/DOCS/WORD/`) is at v0.9.1. It covers ADR-0160 and earlier, plus
 ADR-0176 (§4.9 Audio Alignment, its figure drawn by
 `_build/fig_audio_alignment.py`, and the warp-mode table in §4.2).
 ADR-0161 to ADR-0178 go in as v1.0 when he asks.
+
+---
+
+## 2026-09-26 — tuning systems in the format: schema 1.8 (ADR-0178)
+
+**The director's instruction:** five format gaps stay on the backlog, and the
+tuning tables are drafted now as schema 1.8, per ADR-0103 and ADR-0117.
+
+**What the rules forced:**
+- **Four tables, not three.** ADR-0103 gave `key_map` a tuning reference,
+  but a minor adds only whole objects (ADR-0144). So `key_map_tunings` sits
+  beside `key_map`, as `op_clocks` sits beside `ops`.
+- **`index` became `degree`,** because INDEX is an SQL keyword.
+- **No ops.** `key_map` has none yet (its text-projection coverage says "no
+  op writes it"), so the four tables join it there. Their ops come with
+  scale-aware editing.
+
+**Checks:**
+- `validate_schema` 5k: Rast on C in 24-TET goes in; six bad rows are
+  refused; deleting the key takes its tuning rows with it.
+- **A case that passed for the wrong reason:** the foreign-key case first
+  reused a key that already had a tuning, so the primary key refused it.
+  It now uses its own key.
+- `schema-1.7.sql` frozen from `7585a9c`; 1.0 to 1.7 upgrade to 1.8.
+- **4805 checks across 48 suites** (+12 migrate, +12 textproj_store).
+
+**For the director's review before merging:** a shipped table can never be
+changed (ADR-0144), so this one waited for his word. He gave it on
+2026-09-26, and it was published with #133.
+
+---
+
+## 2026-09-25 — the Pd parameter contract, proposed (ADR-0177)
+
+**The director's instruction:** write up `[adi.param]` with the four fixes
+he approved, for his approval.
+
+**The four fixes, and where each already had a foothold:**
+- **A fixed id, the author's, as CLAP's and VST3's are.** `plugin_params`
+  and every lane, mapping and binding already key on a TEXT `param_id`, so
+  nothing in the schema changes.
+- **The full declaration:** unit, curve and menu items, as M4L's Inspector
+  holds them.
+- **Changes only through `device.loadState`.** ADR-0145 d8 already stores a
+  patch as state and changes it with that op. What the ADR adds: a
+  parameter the new patch drops is kept, shown as missing, never deleted.
+- **A plain Pd abstraction,** MIT, so vanilla Pd opens the patch and plays
+  it at its defaults.
+
+Left open: range changes (keep normalized or real?), modulation, and
+transport messages. **Approved as written on 2026-09-26** (status now
+DECIDED), and published with #133 before mac's mission began.
 
 ---
 
