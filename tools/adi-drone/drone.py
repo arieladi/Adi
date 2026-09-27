@@ -8,7 +8,10 @@ human (or Claude) to review and apply. Patches are checked with
 Usage:
   drone.py submit --kind review --files adi_daw/src/foo.cpp --instructions "..."
   drone.py mission --name rmsc-docs --glob "adi_daw/plugins/rmsc/**/*.cpp" --instructions "..."
+  drone.py mission ... --dry-run     # job count + measured ETA, queues nothing
   drone.py collect rmsc-docs
+  drone.py retry rmsc-docs --truncated --max-output 4096 [--dry-run]
+  drone.py eta                       # measured time left for the queue
   drone.py status
   drone.py show <job-id>
   drone.py watch            # run forever (what the logon task starts)
@@ -41,7 +44,10 @@ NUM_CTX = 16384          # fits 100% on the GTX 1070 (5.5 GB)
 MAX_PROMPT_TOKENS = 11000  # leaves ~5K for the answer
 # Hard cap on output. Without it a repetition loop never ends (Ollama shifts
 # the context) and the job dies at REQUEST_TIMEOUT after 30 min of wasted GPU.
+# Summaries need ~600 tokens; list-shaped jobs (test ideas) pass --max-output 4096.
 NUM_PREDICT = 2048
+MAX_OUTPUT_LIMIT = 4096  # 16K ctx - 11K prompt budget leaves ~5K
+TRUNC_MARK = "Treat as incomplete."  # collect counts results carrying it
 CHARS_PER_TOKEN = 3.3    # rough, code-heavy estimate
 POLL_SECONDS = 10
 # Keeps the model loaded between back-to-back jobs; the drone unloads it
@@ -140,11 +146,11 @@ def ensure_ollama():
     raise RuntimeError("ollama serve did not come up within 120 s")
 
 
-def generate(system, prompt):
+def generate(system, prompt, num_predict=NUM_PREDICT):
     body = json.dumps({
         "model": MODEL, "system": system, "prompt": prompt, "stream": False,
         "options": {"num_ctx": NUM_CTX, "temperature": 0.2,
-                    "num_predict": NUM_PREDICT, "repeat_penalty": 1.1},
+                    "num_predict": num_predict, "repeat_penalty": 1.1},
         "keep_alive": KEEP_ALIVE,
     }).encode()
     req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=body,
@@ -282,17 +288,18 @@ def run_job(job_file):
         if tokens > MAX_PROMPT_TOKENS:
             raise ValueError(f"prompt ~{tokens} tokens exceeds {MAX_PROMPT_TOKENS}; "
                              f"use per_file or fewer/smaller files ({group})")
+        cap = int(job.get("max_output", NUM_PREDICT))
         t0 = time.time()
-        r = generate(system, prompt)
+        r = generate(system, prompt, cap)
         answer = r.get("response", "")
         meta_calls.append({
             "files": group, "prompt_tokens": r.get("prompt_eval_count"),
             "output_tokens": r.get("eval_count"), "seconds": round(time.time() - t0, 1),
-            "truncated": r.get("done_reason") == "length",
+            "truncated": r.get("done_reason") == "length", "max_output": cap,
         })
         if meta_calls[-1]["truncated"]:
-            answer += (f"\n\n> **drone: output hit the {NUM_PREDICT}-token cap and is cut off, "
-                       "probably a repetition loop. Treat as incomplete.**")
+            answer += (f"\n\n> **drone: output hit the {cap}-token cap and is cut off "
+                       f"(a long list or a repetition loop). {TRUNC_MARK}**")
             log(f"truncated output in {job_id} ({group})")
         sections.append((group, answer))
 
@@ -386,14 +393,101 @@ def cmd_submit(a):
         job["repo"] = a.repo
     if a.system:
         job["system"] = a.system
-    tmp = QUEUE / f".{job_id}.tmp"
-    tmp.write_text(json.dumps(job, indent=2), encoding="utf-8")
-    tmp.replace(QUEUE / f"{job_id}.json")
+    if a.max_output:
+        job["max_output"] = min(a.max_output, MAX_OUTPUT_LIMIT)
+    write_jobs([(job_id, job)])
     print(job_id)
 
 
 def slugify(text, n=40):
     return re.sub(r"[^a-z0-9]+", "-", text.lower())[:n].strip("-")
+
+
+# ---------------------------------------------------------------- estimates
+
+STAMP = re.compile(r"-(\d{8}-\d{6})-")
+
+
+def history():
+    """Measured seconds per model call from every finished job, keyed by mission and kind."""
+    by_mission, by_kind, rows = {}, {}, []
+    for meta in DONE.glob("*/meta.json"):
+        try:
+            m = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        job = m.get("job", {})
+        for c in m.get("calls", []):
+            row = (c["seconds"], c.get("output_tokens") or 0, bool(c.get("truncated")))
+            by_mission.setdefault(job.get("mission"), []).append(row)
+            by_kind.setdefault(job.get("kind", "freeform"), []).append(row)
+            rows.append(row)
+    return by_mission, by_kind, rows
+
+
+MIN_SAMPLES = 10       # fewer measured calls than this is not a mean worth trusting
+PROMPT_SECONDS = 5.0   # prompt eval of a full ~7K-token chunk on the 1070, for the upper bound
+
+
+def gen_tokens_per_second(rows):
+    """Generation speed, from long answers where output time dominates."""
+    rates = sorted(r[1] / r[0] for r in rows if r[1] >= 1000 and r[0] > 0)
+    return rates[len(rates) // 2] if rates else 30.0
+
+
+def estimate_seconds(jobs, hist=None):
+    """Return (expected, upper bound, sources) in seconds for jobs.
+
+    Expected: the job's mission's measured mean, else its kind's, else all jobs'
+    (each needs MIN_SAMPLES calls). It is only as good as that history: a new
+    prompt shape (list-style output) can run several times longer than the
+    average, so the upper bound assumes every job writes up to its output cap.
+    """
+    by_mission, by_kind, rows = hist or history()
+    tok_s = gen_tokens_per_second(rows)
+    total, upper, sources = 0.0, 0.0, {}
+    for job in jobs:
+        for label, ref in ((f"mission {job.get('mission')}", by_mission.get(job.get("mission"))),
+                           (f"kind {job.get('kind')}", by_kind.get(job.get("kind"))),
+                           ("all jobs", rows)):
+            if ref and len(ref) >= MIN_SAMPLES:
+                break
+        else:
+            label, ref = "no history (30 s guess)", [(30.0, 0, False)]
+        mean = sum(r[0] for r in ref) / len(ref)
+        cap = int(job.get("max_output", NUM_PREDICT))
+        if cap > NUM_PREDICT:
+            # calls that hit the old cap can now keep writing
+            capped = sum(r[2] for r in ref) / len(ref)
+            mean += capped * (cap - NUM_PREDICT) / tok_s
+        total += mean
+        upper += max(mean, PROMPT_SECONDS + cap / tok_s)
+        sources[label] = (len(ref), sum(r[0] for r in ref) / len(ref))
+    return total, upper, sources
+
+
+def fmt_hours(sec):
+    return f"{int(sec // 3600)}h{int(sec % 3600 // 60):02d}m"
+
+
+def report_estimate(jobs, what):
+    sec, upper, sources = estimate_seconds(jobs)
+    end = (dt.datetime.now() + dt.timedelta(seconds=sec)).strftime("%a %H:%M")
+    print(f"{what}: {len(jobs)} jobs, expected {fmt_hours(sec)} (done ~{end} if started now), "
+          f"at most {fmt_hours(upper)} if every job writes to its cap")
+    for label, (n, mean) in sources.items():
+        print(f"  based on {label}: {n} measured calls, mean {mean:.1f}s")
+    if not any(label.startswith("mission ") for label in sources):
+        print("  note: no history for this mission yet; list-style prompts can run several "
+              "times the expected figure")
+    return sec
+
+
+def write_jobs(jobs):
+    for job_id, job in jobs:
+        tmp = QUEUE / f".{job_id}.tmp"
+        tmp.write_text(json.dumps(job, indent=2), encoding="utf-8")
+        tmp.replace(QUEUE / f"{job_id}.json")
 
 
 def cmd_mission(a):
@@ -408,9 +502,11 @@ def cmd_mission(a):
         sys.exit("mission matched no files")
     if a.chunk and a.kind in EDIT_KINDS:
         sys.exit("--chunk is for read-only kinds")
+    if a.max_output and not 256 <= a.max_output <= MAX_OUTPUT_LIMIT:
+        sys.exit(f"--max-output must be 256..{MAX_OUTPUT_LIMIT}")
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     budget = MAX_PROMPT_TOKENS - est_tokens(KINDS[a.kind] + a.instructions + (a.system or "")) - 300
-    count = 0
+    jobs = []
     for i, rel in enumerate(files):
         text = (repo / rel).read_text(encoding="utf-8", errors="replace")
         ranges = (chunk_ranges(text) if a.chunk and est_tokens(text) > budget else [None])
@@ -423,45 +519,129 @@ def cmd_mission(a):
                 job["repo"] = a.repo
             if a.system:
                 job["system"] = a.system
+            if a.max_output:
+                job["max_output"] = a.max_output
             suffix = f"-c{k}" if rng else ""
-            job_id = f"{a.priority}-m-{name}-{stamp}-{i:04d}-{slugify(Path(rel).name, 30)}{suffix}"
-            tmp = QUEUE / f".{job_id}.tmp"
-            tmp.write_text(json.dumps(job, indent=2), encoding="utf-8")
-            tmp.replace(QUEUE / f"{job_id}.json")
-            count += 1
-    print(f"mission {name}: {count} jobs for {len(files)} files queued at priority {a.priority}")
+            jobs.append((f"{a.priority}-m-{name}-{stamp}-{i:04d}-"
+                         f"{slugify(Path(rel).name, 30)}{suffix}", job))
+    report_estimate([j for _, j in jobs], f"mission {name} ({len(files)} files)")
+    if a.dry_run:
+        print("dry run: nothing queued")
+        return
+    write_jobs(jobs)
+    print(f"queued at priority {a.priority}")
+
+
+def cmd_retry(a):
+    """Requeue a mission's truncated results and/or failed jobs, optionally with a bigger cap."""
+    name = slugify(a.mission, 30)
+    tag = f"-m-{name}-"
+    if not (a.truncated or a.failed):
+        sys.exit("pass --truncated and/or --failed")
+    if a.max_output and not 256 <= a.max_output <= MAX_OUTPUT_LIMIT:
+        sys.exit(f"--max-output must be 256..{MAX_OUTPUT_LIMIT}")
+    latest = latest_results(tag)
+    picked = []  # (old id, job, failed file or None)
+    if a.truncated:
+        for d in latest.values():
+            meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+            if any(c.get("truncated") for c in meta.get("calls", [])):
+                picked.append((d.name, json.loads((d / "job.json").read_text(encoding="utf-8")), None))
+    if a.failed:
+        for f in sorted(FAILED.glob(f"*{tag}*.json")):
+            job = json.loads(f.read_text(encoding="utf-8"))
+            if result_key(job) not in latest:
+                picked.append((f.stem, job, f))
+    if not picked:
+        print("nothing to retry")
+        return
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    jobs = []
+    for old_id, job, _ in picked:
+        if a.max_output:
+            job["max_output"] = a.max_output
+        rest = STAMP.split(old_id, maxsplit=1)[-1]
+        jobs.append((f"{a.priority}-m-{name}-{stamp}-r-{rest}", job))
+    report_estimate([j for _, j in jobs], f"retry {name}")
+    if a.dry_run:
+        for job_id, _ in jobs:
+            print(f"  would queue {job_id}")
+        print("dry run: nothing queued")
+        return
+    write_jobs(jobs)
+    for _, _, failed_file in picked:
+        if failed_file:  # the retry replaces the failure
+            failed_file.with_name(failed_file.stem + ".error.txt").unlink(missing_ok=True)
+            failed_file.unlink()
+    print(f"queued {len(jobs)} retries at priority {a.priority}")
+
+
+def cmd_eta(_):
+    pending = [*RUNNING.glob("*.json"), *QUEUE.glob("*.json")]
+    if not pending:
+        print("queue empty")
+        return
+    groups = {}
+    for p in pending:
+        job = json.loads(p.read_text(encoding="utf-8"))
+        groups.setdefault(job.get("mission") or "(single jobs)", []).append(job)
+    hist = history()
+    total = top = 0.0
+    for mission, jobs in sorted(groups.items()):
+        sec, upper, _ = estimate_seconds(jobs, hist)
+        total += sec
+        top += upper
+        print(f"  {mission:28} {len(jobs):5} jobs  expected {fmt_hours(sec)}  at most {fmt_hours(upper)}")
+    end = (dt.datetime.now() + dt.timedelta(seconds=total)).strftime("%a %H:%M")
+    print(f"total {len(pending)} jobs, expected {fmt_hours(total)} (done ~{end}), "
+          f"at most {fmt_hours(top)}")
+
+
+def result_key(job):
+    """One report slot: a whole file, or one line range of it."""
+    return (job["files"][0] if job.get("files") else "", tuple(job.get("lines") or ()))
+
+
+def latest_results(tag):
+    """Newest finished result per slot, so a retry replaces what it retried."""
+    best = {}
+    for d in DONE.iterdir():
+        if tag not in d.name or not (d / "result.md").exists():
+            continue
+        key = result_key(json.loads((d / "job.json").read_text(encoding="utf-8")))
+        m = STAMP.search(d.name)
+        stamp = m.group(1) if m else ""
+        if key not in best or stamp > best[key][0]:
+            best[key] = (stamp, d)
+    return {k: d for k, (_, d) in best.items()}
 
 
 def cmd_collect(a):
     """Merge a mission's results into one report under STATE_DIR/missions/."""
     name = slugify(a.name, 30)
     tag = f"-m-{name}-"
-    def key(job):  # group a file's chunks together, in line order
-        return (job["files"][0] if job.get("files") else "", (job.get("lines") or [0])[0])
-
-    done = [(key(json.loads((d / "job.json").read_text(encoding="utf-8"))), d)
-            for d in DONE.iterdir() if tag in d.name and (d / "result.md").exists()]
-    done = [d for _, d in sorted(done)]
-    done_jobs = [json.loads((d / "job.json").read_text(encoding="utf-8")) for d in done]
-    covered = {j["files"][0] for j in done_jobs}
-    covered_parts = {(j["files"][0], tuple(j.get("lines") or ())) for j in done_jobs}
+    latest = latest_results(tag)
+    # a file's chunks together, in line order
+    done = [latest[k] for k in sorted(latest, key=lambda k: (k[0], k[1][:1] or (0,)))]
+    covered = {k[0] for k in latest}
 
     def superseded(job):
         # a whole-file failure is stale once any later result (e.g. its chunks) exists;
         # a failed chunk only once that same line range has succeeded
         if job.get("lines"):
-            return (job["files"][0], tuple(job["lines"])) in covered_parts
+            return result_key(job) in latest
         return job["files"][0] in covered
 
     failed = [f for f in sorted(FAILED.glob(f"*{tag}*.error.txt"))
               if not superseded(json.loads(f.with_name(f.name.replace(".error.txt", ".json"))
                                            .read_text(encoding="utf-8")))]
     pending = [*QUEUE.glob(f"*{tag}*.json"), *RUNNING.glob(f"*{tag}*.json")]
+    incomplete = sum(TRUNC_MARK in (d / "result.md").read_text(encoding="utf-8") for d in done)
     out_dir = STATE_DIR / "missions"
     out_dir.mkdir(exist_ok=True)
     lines = [f"# Mission {name}", "",
-             f"- done: {len(done)} results for {len(covered)} files, failed: {len(failed)}, "
-             f"still queued: {len(pending)}",
+             f"- done: {len(done)} results for {len(covered)} files, incomplete (hit the output "
+             f"cap): {incomplete}, failed: {len(failed)}, still queued: {len(pending)}",
              f"- collected: {now()}", ""]
     if failed:
         lines += ["## Failed", ""]
@@ -530,6 +710,7 @@ def main():
     s.add_argument("--system", help="extra system-prompt text")
     s.add_argument("--priority", default="5", choices=list("123456789"), help="1 runs first")
     s.add_argument("--per-file", action="store_true", help="one model call per file")
+    s.add_argument("--max-output", type=int, help=f"output token cap (default {NUM_PREDICT})")
     s.set_defaults(fn=cmd_submit)
     m = sub.add_parser("mission", help="one job per file matched by --glob")
     m.add_argument("--name", required=True)
@@ -543,7 +724,18 @@ def main():
     m.add_argument("--repo")
     m.add_argument("--system")
     m.add_argument("--priority", default="8", choices=list("123456789"))
+    m.add_argument("--max-output", type=int, help=f"output token cap (default {NUM_PREDICT})")
+    m.add_argument("--dry-run", action="store_true", help="show job count and measured ETA only")
     m.set_defaults(fn=cmd_mission)
+    r = sub.add_parser("retry", help="requeue a mission's truncated and/or failed jobs")
+    r.add_argument("mission")
+    r.add_argument("--truncated", action="store_true", help="results that hit the output cap")
+    r.add_argument("--failed", action="store_true", help="jobs in failed/")
+    r.add_argument("--max-output", type=int)
+    r.add_argument("--priority", default="7", choices=list("123456789"))
+    r.add_argument("--dry-run", action="store_true")
+    r.set_defaults(fn=cmd_retry)
+    sub.add_parser("eta", help="measured time left for the queue").set_defaults(fn=cmd_eta)
     c = sub.add_parser("collect", help="merge a mission's results into one report")
     c.add_argument("name")
     c.set_defaults(fn=cmd_collect)

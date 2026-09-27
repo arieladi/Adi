@@ -33,6 +33,29 @@ python tools/adi-drone/drone.py collect adi-daw-file-map   # -> D:\adi-drone\mis
 file's chunks in line order and drops a failure once a later job has covered
 that file, so a rerun lands in the same report.
 
+### Sizing a run
+
+`mission ... --dry-run` prints the job count and a measured estimate without
+queueing anything. `eta` gives the same for what is already queued. The estimate
+has two figures:
+
+- **expected**: the mean of this mission's own finished jobs, else its kind's,
+  else all jobs' (at least 10 measured calls each). Backtested on the first
+  overnight run: 2h40m expected against 2h59m actual.
+- **at most**: every job writes up to its output cap at the measured speed. A
+  mission with no history yet can land anywhere between the two, because
+  list-style prompts write about 4x as much as summaries.
+
+Measured on the 1070: summaries 15–18 s per job, test ideas ~51 s.
+
+### Output cap and retries
+
+Answers are capped at 2048 tokens (`--max-output` up to 4096, for list-style
+jobs such as test ideas). Capped answers are marked incomplete, and `collect`
+counts them. `retry <mission> --truncated --max-output 4096` requeues just
+those; `--failed` requeues failures. A retry's result replaces the old one in
+the mission report.
+
 Policy on the Windows PC: keep a mission queued at all times so the GPU never
 idles. Delegate work that fits the table below, and read everything before using it.
 
