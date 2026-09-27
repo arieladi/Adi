@@ -14,4 +14,5 @@ what was asked, so a report can be checked against its brief.
 | `2026-09-24e-cloud-curves.md` | (out until 2026-10-01) | curve formulas; automation read into the engine | #116, #117 |
 | `2026-09-27a-mac-device-automation.md` | (mac) | the device-host half of plug-in automation | taken whole into 2026-09-26 (PRs 3 and 4) |
 | `2026-09-27b-mac-scope-summing-suites.md` | (mac) | the UI for the scope, group summing, the Airwindows suites, track delay; the OScope/PsyScope research | mac's next mission, after 2026-09-26 |
-| `2026-09-26-mac-return-host-half.md` | (mac) | back in the loop: CI renders a project; a `clap_host_t` per instance; automation the plug-ins hear; the generic panel | issued 2026-09-26 |
+| `2026-09-26-mac-return-host-half.md` | (mac) | back in the loop: CI renders a project; a `clap_host_t` per instance; automation the plug-ins hear; the generic panel | round 1 reported 2026-09-26: PR 1 is #134 |
+| `2026-09-27-mac-round2.md` | (mac) | win's answers: ADR-0179 stays mac's, the analyser takes 0183; the macOS hang hypothesis; add_clap_chain fixed; 27a items 4 and 6 as API; win takes adi_play's drain | issued 2026-09-27 |
