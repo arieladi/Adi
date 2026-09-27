@@ -72,21 +72,31 @@ run.cmd --dry-run
 It uses the first of these that works:
 
 1. **The PDF's bookmarks.** Cover and contents entries at the front are set aside
-   as front matter, and a single bookmark wrapping everything is unwrapped. If the
-   bookmarks turn out to be topics of a page or two rather than chapters (web-help
-   PDFs such as FabFilter's), the whole manual is treated as one chapter and cut
-   into balanced parts at topic starts.
+   as front matter, and a single bookmark wrapping everything is unwrapped.
 2. **A clickable table of contents.** Each contents line is matched to its link,
    which gives the exact target. The depth comes from the line's numbering (`2.24`
    is level 2) or, for unnumbered contents, from its indent, measured separately on
    odd and even pages because books mirror their margins. Reading stops at the
    first big jump back in target page, which is where a second linked list (a
    "what's new" list, say) starts.
-3. **Heading type sizes.** Every font size clearly above the body text is a
+3. **A printed table of contents** (no links): the titles and page numbers it
+   prints, each confirmed by finding that heading on the page named. It works out
+   how printed numbers line up with PDF pages, and copes with a contents that is
+   out of date by a page or two. Where a heading can't be found as text, because it
+   is part of a picture, the printed number is used.
+4. **Heading type sizes.** Every font size clearly above the body text is a
    heading level, biggest first. A title that appears only once is ignored, and so
    are contents pages. This covers PDFs printed from web pages and word processors.
-4. If none of those finds anything (a scanned PDF, say), it falls back to plain,
+5. If none of those finds anything (a scanned PDF, say), it falls back to plain,
    equal page ranges.
+
+With no bookmarks and no links, 3 and 4 are both tried and whichever finds more
+chapters wins: a manual can set its chapter headings in two sizes (FL Studio does),
+which hides half of them from 4 alone.
+
+If what it finds is a list of topics rather than chapters — six or more of them and
+none longer than five pages, as in web-help PDFs like FabFilter's — the whole manual
+is treated as one chapter and cut into balanced parts at topic starts.
 
 Whether a heading starts at the top of its page is decided from the page text:
 anything between the running header and the heading means the heading is
@@ -111,8 +121,9 @@ dropped.
 - Heading-size detection can't see headings set in body-size type (bold only). It
   also folds sections set in smaller type, such as appendices, into the chapter
   before them.
-- A printed table of contents without links is not parsed; heading sizes are used
-  instead.
+- A chapter whose heading is a picture is placed by the page number its contents
+  prints, and since its position on that page is unknown, that page is put in both
+  files rather than risk cutting text.
 
 ## Git
 
