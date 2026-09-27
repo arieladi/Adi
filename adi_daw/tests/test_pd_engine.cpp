@@ -42,6 +42,14 @@ extern "C" {
 #include <cmath>
 #include <cstdio>
 #ifdef _WIN32
+// NOMINMAX BEFORE windows.h, ALWAYS. Without it windows.h defines `min` and
+// `max` as macros, and the preprocessor then eats every `std::min(` and
+// `std::max(` in the file -- MSVC reports it as C2589, "illegal token on
+// right side of '::'", which names neither min, max, nor windows.h.
+// WIN32_LEAN_AND_MEAN keeps the rest of the Win32 surface out of a test
+// that wants one function from it.
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #endif
 

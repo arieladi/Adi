@@ -14319,6 +14319,13 @@ here rather than noted. All of the below is asserted in
       go around the engine and prove the danger is real. The error mode is set
       there and nowhere else.
 
+      **And the fix cost one more round trip, to `windows.h` itself.**
+      Including it without `NOMINMAX` defines `min` and `max` as macros, which
+      the preprocessor then applies to every `std::min(` and `std::max(` in the
+      file. MSVC reports that as C2589, "illegal token on right side of `::`" --
+      a message that names neither `min`, nor `max`, nor `windows.h`, and would
+      be unguessable to anyone who had not met it before.
+
       **It cost 4h39m to find because nothing was bounded.** `ctest --timeout`
       and a `timeout-minutes` on the step now name a hung test in eighteen
       minutes instead of burning GitHub's six-hour limit in silence -- win's
