@@ -1,0 +1,7 @@
+#N canvas 0 50 700 420 12;
+#X text 20 10 adi.array -- declares a PUBLISHED ARRAY (ADR-0183). Licence MIT \, like adi.param \, so a patch carrying it can be shared under any licence.;
+#X text 20 60 [adi.array \$0 <id> <length> <rate> <min> <max> <unit> <name>];
+#X text 20 100 Write into it by name from the device patch \, which shares the same \$0: [tabwrite~ \$0-adiarr-<id>] \, [array set \$0-adiarr-<id>] \, or anything else that writes a named array.;
+#X text 20 170 IN VANILLA PD the table is simply a table: the patch runs \, the writes land \, nothing reads them. IN THE DAW the host reads it at the declared rate and publishes it to the UI.;
+#X text 20 240 The DECLARATION is the text of this box \, read from the patch file without running Pd (ADR-0177 fix 3). This abstraction is what makes the patch playable in vanilla Pd \; it is not how the DAW learns the array exists.;
+#X obj 20 330 table \$1-adiarr-\$2 \$3;
