@@ -136,8 +136,8 @@ the split.
   |---|---|---|
   | rejected | the catalogue says REJECTED | 10 |
   | note | NOTE | 2 |
-  | backlog | BACKLOG: arrives with its feature | 12 |
-  | wish | WISH: not planned | 4 |
+  | backlog | BACKLOG: arrives with its feature | 13 |
+  | wish | WISH: not planned | 3 |
   | not a setting | decided or proposed, but a behaviour, a command, a display or a fixed rule | 33 |
 
   The test holds the status to the list. A REJECTED, NOTE, BACKLOG or WISH row

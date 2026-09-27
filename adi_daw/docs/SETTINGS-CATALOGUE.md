@@ -111,7 +111,7 @@ this file by hand.
 | Per port: MIDI Clock Sync Delay | Same; Bitwig offers an offset per output path too (§0.2.2.4) — both directions | DECIDED parity |
 | Per port: Sync Type | Same | DECIDED parity |
 | Per port: MTC Frame Rate, MTC Start Offset | Same | DECIDED parity |
-| MIDI-CI support | Cubase p.1609: automatic detection and setup of MIDI-CI devices. MIDI 2.0 property exchange; worth having when the OS stacks expose it. | WISH |
+| MIDI-CI support | Cubase p.1609: automatic detection and setup of MIDI-CI devices. MIDI 2.0 property exchange: a controller reads the parameter feed and labels itself (ADR-0185 d3). Planned; it waits on the OS MIDI stacks exposing MIDI-CI. | BACKLOG P3, ADR-0185 |
 | Chase events | Cubase p.1610: when locating, replay the controllers, program changes and pitch bend that would have been in effect. Not optional for correct playback; a chooser of which event types, default all. | DECIDED ADR-0125 R-15 |
 | MIDI Thru, Reset on Stop, Insert Reset Events after Record | Cubase p.1610. Reset on stop and the recorded reset event are adopted as defaults; MIDI Thru is a track monitor setting, not global (Live §17.1). | DIRECTION |
 | MIDI Filter (record / thru / channels / controllers) | Cubase p.1613. Adopted as a small page: message types and channels never recorded or never echoed. | DIRECTION |

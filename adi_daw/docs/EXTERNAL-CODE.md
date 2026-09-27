@@ -95,6 +95,33 @@ what the roadmap was going to do with them.
 | [`KlonCentaur`](https://github.com/jatinchowdhury18/KlonCentaur) | BSD-3-Clause | 220 MB (training data and PDFs; the code is small) | ✅ with attribution | ChowCentaur. A wave-digital-filter diode clipper and the paper describing it. **It contains no ADAA**, which is what it was requested for. |
 | [`Audio-Soft-Clip-Distortion`](https://github.com/JDSherbert/Audio-Soft-Clip-Distortion) | MIT | 0.1 MB | ✅ with attribution | Basic hard and soft clip curves with oversampling. Introductory, but MIT. |
 
+### The director's references of 2026-09-27 (ADR-0186, ADR-0187)
+
+Cloned shallow into `reference/`, each licence read from the repository's own files. Three have no licence at all, so the policy (§3) allows reading them and nothing more. The guitar references wait for next year's guitar suite (ADR-0186 d6).
+
+| Repo | Licence | Size | Copy? | Read it for |
+|---|---|---|---|---|
+| [`ANATOMY`](https://github.com/OTODESK4193/ANATOMY) | **AGPL-3.0** | 11 MB | ✅ with attribution — the project that copies it becomes AGPLv3; `adi_daw` clones the behaviour | OTT-style multiband: `HpssSeparator` splits harmonic and percussive parts with a cos² crossfade, before three-band upward and downward compression |
+| [`FrequencyShifter`](https://github.com/Speechrezz/FrequencyShifter) | MIT | 0.2 MB | ✅ with attribution | A frequency shifter on Signalsmith's IIR Hilbert filter: Shifter's Freq mode |
+| [`mixxx`](https://github.com/mixxxdj/mixxx) | GPL-2.0-**or-later** (its `LICENSE`; `COPYING` alone says only "version 2") | 208 MB | ✅ with attribution | aDiJ's reference: DJ behaviour, analysis, and the filter effect (`src/effects/backends/builtin/filtereffect.cpp`) |
+| [`BespokeSynth`](https://github.com/BespokeSynth/BespokeSynth) | GPL-3.0 | 70 MB | ✅ with attribution | Redux: `BitcrushEffect` does sample-and-hold downsampling and bit-depth quantization. It has no jitter |
+| [`bitcrusher`](https://github.com/p0p-vst3/bitcrusher) | GPL-3.0 | 0.2 MB | ✅ with attribution | Redux's bits and rate; no jitter |
+| [`trainsient`](https://github.com/p0p-vst3/trainsient) | GPL-3.0 | 0.2 MB | ✅ with attribution | A transient designer (ADR-0176 d4) |
+| [`d33p`](https://github.com/p0p-vst3/d33p) | GPL-3.0 | 0.2 MB | ✅ with attribution | Beatbox-to-MIDI and a drum rack: a new tab of ADI's drum rack |
+| [`BYOD`](https://github.com/Chowdhury-DSP/BYOD) | GPL-3.0 | 14 MB | ✅ with attribution | Overdrive's waveshapers |
+| [`bitwig-device-hacks`](https://github.com/zezic/bitwig-device-hacks) | MIT | 0.1 MB | ✅ with attribution | How Bitwig chains devices |
+| [`bitwig-docked-plugins`](https://github.com/dreddi/bitwig-docked-plugins) | **none found** | 2.9 MB | ❌ read only (policy §3) | Docking plug-in windows in Bitwig (ADR-0076) |
+| [`juce-audio-filters`](https://github.com/w-frank/juce-audio-filters) | **none found** | 0.3 MB | ❌ read only (policy §3) | FIR, IIR and state-variable filters in JUCE |
+| [`LowpassHighpassFilter`](https://github.com/SerZeliuk/LowpassHighpassFilter) | **none found** | 0.1 MB | ❌ read only (policy §3); the filter is JUCE's own `StateVariableTPTFilter`, which we have | A DJ-style low-pass/high-pass |
+| [`RTNeural`](https://github.com/jatinchowdhury18/RTNeural) | BSD-3-Clause | 16 MB | ✅ with attribution | Real-time neural inference (ADR-0186) |
+| [`NeuralAmpModelerCore`](https://github.com/sdatkinson/NeuralAmpModelerCore) | MIT | 5 MB | ✅ with attribution | The NAM engine (ADR-0186) |
+| [`AIDA-X`](https://github.com/AidaDSP/AIDA-X) | GPL-3.0 | 2 MB | ✅ with attribution | A neural amp player (ADR-0186) |
+| [`Proteus`](https://github.com/GuitarML/Proteus) | GPL-3.0 | 13 MB | ✅ with attribution | Neural pedal and amp capture (ADR-0186) |
+| [`AmpForge`](https://github.com/Loursy/AmpForge) | GPL-3.0 | 1.2 MB | ✅ with attribution | A pedalboard, amp and cabinet suite that loads NAM profiles |
+| [`soundshed-guitar`](https://github.com/webprofusion/soundshed-guitar) | **AGPL-3.0** | 190 MB | ✅ with attribution — the project that copies it becomes AGPLv3 | A guitar suite around NAM with a signal graph |
+| [`ToobAmp`](https://github.com/rerdavies/ToobAmp) | MIT (with bundled BSD-3 and MPL-2.0 parts) | 51 MB | ✅ with attribution; check each bundled part's header | Neural amps and classic pedal models |
+| [`link`](https://github.com/Ableton/link) | GPL-2.0-**or-later**, or commercial | small | ✅ — to be pinned into `third_party/` when built (ADR-0185 d7) | Tempo, beat and phase sync |
+
 **Decided by `OPEN_SOURCE_POLICY.md` (ADR-0094).** Every project is open source:
 MIT by default, GPLv3 once it copies from a GPL or LGPL source. So everything above
 may be copied, keeping the original headers — a plugin that takes the LSP

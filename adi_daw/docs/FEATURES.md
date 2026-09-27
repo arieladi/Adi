@@ -38,6 +38,7 @@ flagged, and it is a bug in the format, not in the plan.
 | Markers, marker track, **with a note and an optional agent prompt** | both + | P1 | 🔶 | `markers` gains nullable `note`, `prompt` (ADR-0115) |
 | Arranger track / section playlist | Cubase | P2 | ✅ | `arranger_sections` + `arranger_chain` |
 | Key/scale track | Cubase-ish | P2 | ✅ | `key_map`, with a 12-bit `scale_mask` so any scale fits |
+| **Ableton Link**: tempo, beat and phase shared with other apps and peers | Ableton | P1 | — | ADR-0185 d7. The SDK is GPL-2.0-or-later (its `LICENSE.md`), pinned into `third_party/` when built. It sits beside PTP (ADR-0107), which shares a sample clock, a different job. Link Audio stays a wish (ADR-0126) |
 | Chord track, chord pads, harmonic linking | Cubase | P3 | 🔶 | `key_map` is the anchor; chord events need their own table |
 | Timecode, video sync, pull-up/down | Cubase | P3 | 🔶 | `project.frame_rate_*` exists; video handling unspecified |
 | Tempo detection from audio | both | P2 | ✅ | writes `tempo_map` |
@@ -99,6 +100,9 @@ flagged, and it is a bug in the format, not in the plan.
 | **Per-note expression / MPE** | both, partially | **P1** | ✅ | `note_expression` — first-class, SPEC §6.3.2 |
 | **MPE+ (Haken), 14-bit Y and Z at 500 Hz** | neither | **P1** | ✅ | `ExpressionPoint.value` is f32, so bit depth was never the constraint. The binding constraint is ADR-0042's sub-block floor, which MUST NOT exceed `sample_rate/500` (ADR-0054). |
 | **MPE out to plugins, VST3 and CLAP** | both, partially | **P1** | — | CLAP (ADR-0099): the dialect the plugin declares -- CLAP note expression, MIDI-MPE or MIDI. VST3 (ADR-0097): per plugin, VST3 note expression, MPE over MIDI on member channels, or plain MIDI with poly aftertouch. The controller's channel never reaches a plugin. Pitch, pressure and timbre measured by ear per route (ADR-0098, ADR-0100); a fixture VST3 exercises the IMidiMapping parameter path in CI. Surge XT reads MpeMidi, Serum 2 reads note expression, and `Auto` can only be right for one of them -- so the route choice must be remembered: decided, in an application registry per plugin and on the device row per project (ADR-0134 d7), not built yet. |
+| **MIDI 2.0 in (UMP)**: 32-bit notes, per-note pitch, pressure and controllers from hardware | MIDI 2.0 | P2 | ✅ | ADR-0185 d2. Parsed into ADI's own events and `AEXP` per-note expression, so MPE channel rotation stops being the only route. Out: a CLAP whose note port declares MIDI 2.0 gets UMP (ADR-0099 left it unbuilt); a VST3 cannot, since JUCE 9.0.2's VST3 host has no UMP path (ADR-0073). Whether JUCE delivers UMP from a device is to be checked; otherwise a platform adapter per OS |
+| **MIDI-CI property exchange**: a controller discovers the DAW and labels itself from the track in focus | MIDI 2.0 | P3 | — | ADR-0185 d3: moved from WISH. It reads the one parameter feed (ADR-0181 d3), as the control API and OSCQuery do. It waits on the OS MIDI stacks exposing MIDI-CI |
+| **Hardware CV/Gate**: CV Out and CV In nodes in the modulation graph, for Eurorack | Bitwig | P2 | — | ADR-0185 d5. Audio-rate and sample-accurate. Three safeguards: the user marks DC-coupled outputs; a CV channel is never the main or monitor output and never summed to the master, because DC can damage a speaker; a per-output calibration for 1 V/octave. The round trip is declared as latency. The Lynx E44's coupling is to be confirmed from its manual |
 | Scale-aware / scale-locked editing, **every scale including Arabic and microtonal** | Ableton 12 + | P2 | 🔶 | reads `key_map`; a 12-bit `scale_mask` cannot name a quarter tone, so `tuning_systems` + `tuning_degrees` + `key_map_degrees` child tables come first (ADR-0103, ADR-0117, gap 6). **In the format since 1.8** (ADR-0178), with `key_map_tunings` beside `key_map`; their ops come with the editing. Notation stays out. |
 | Expression Maps (articulations) | Cubase | P3 | ❌ | needs its own schema; big win for orchestral |
 | Logical Editor / Project Logical Editor | Cubase | P3 | — | query+transform over the model; no schema |
@@ -180,8 +184,9 @@ for the transport, the tempo map, the groove pool and the track's scale
 | **Utility** | audio effect | P1 | ✅ | Phase L and R; channel mode; Width and Mid/Side; Mono; Bass Mono 50–500 Hz with audition; Gain −∞ to +35 dB; Balance; Mute; DC filter |
 | **OneShot** (Live's Simpler) | instrument | P1 | ✅ | Classic, 1-Shot and Slice; Start, Loop, Length and Fade; warp; filter; LFO; envelope; voices; the Controls tab |
 | **Sampler** | instrument | P2 | ✅ | OneShot's engine plus multisample zones (key, velocity, sample select), loops with crossfade, a modulation oscillator, modulation, MIDI routing and MPE |
-| **Redux** | audio effect | P2 | ✅ | Rate with Jitter; pre and post filters; Bits with Shape; DC Shift; Dry/Wet |
-| **Shifter** | audio effect | P2 | ✅ | Pitch, Freq and Ring modes; Spread and Wide; a synced delay with Feedback and Tone; an LFO with ten shapes; an envelope follower |
+| **Redux** | audio effect | P2 | ✅ | Rate with Jitter; pre and post filters; Bits with Shape; DC Shift; Dry/Wet Sources (ADR-0187 d3): Bespoke's `BitcrushEffect` (GPL-3.0), Airwindows DeRez (MIT, already in `third_party`), the p0p bitcrusher (GPL-3.0); none has jitter, which is ours to write. |
+| **Shifter** | audio effect | P2 | ✅ | Pitch, Freq and Ring modes; Spread and Wide; a synced delay with Feedback and Tone; an LFO with ten shapes; an envelope follower Sources (ADR-0187 d3): Freq and Ring from Surge's Frequency Shifter and Ring Modulator (GPL-3.0), Speechrezz FrequencyShifter (MIT) or Pd's `hilbert~`; Pitch from ADR-0176 d8's candidates. |
+| **Overdrive** | audio effect | P2 | — | ADR-0187 d3. A band-pass before a waveshaper (BYOD's, GPL-3.0), a low-pass tone stage after it, and an envelope follower on a VCA for Dynamics; Dry/Wet. In Pd: `env~` (RMS in dB, ADR-0096) and `*~` |
 | Live 12's MIDI Tools (Transform and Generate) | clip ops | P2 | — | Not devices: clip-editing tools (manual chapter 11). Noted by ADR-0169, **not ruled** |
 
 ## 7. Automation
@@ -218,6 +223,10 @@ for the transport, the tempo map, the groove pool and the track's scale
 | Project-scoped controller maps | partially | P2 | ✅ | `controller_maps` |
 | **External control surfaces, the Stream Deck + XL first**: dials, keys and touch strips with feedback | Bitwig, Live | P2 | ✅ | ADR-0181. A relative tick resolves to a value at the input and a turn coalesces into one absolute `device.setParam`; the log never holds deltas, because a clamped delta has no inverse. A surface is a client of the loopback control API (ADR-0039): paired once, an `Origin` check, an allow-list of ops applied at once as the user's own (`actor_detail = surface:<name>`). Mackie, HUI and OSC go through `controller_maps`. The Elgato plug-in is not built now. **Reference, not a base:** the director's Studio OS plug-in (`tools/elgato_stream_deck_plugins/adi_studio_os`), built for Ableton and Rekordbox on the same 36 keys and 6 dials as the + XL. ADI's plug-in is new; what carries over: **Its navigation:** a stack of screens whose root cannot be popped, so Back always ends at home (`js/core/nav.js`). **Its timing lesson:** the plug-in's hidden page throttles its own timers (a 500 ms long-press measured 1187 ms), so real delays run in a Worker (`js/core/timing.js`). **Its tempo-delay calculator:** 60000/BPM, times 4/denominator, dotted x3/2, triplet x2/3, kept as exact fractions until they are shown (`js/modules/console.js`). ADI's reads the tempo map instead of a typed BPM. **Its local WebSocket service** (`service/ws-server.js`, 127.0.0.1) has the shape of ADR-0181's client, but it has no `Origin` check, which ADR-0181 requires. **The per-plug-in VST controllers** (`adi_ableton_vst_controller`, copied into Studio OS's `js/ableton/`) are a reference in the same way: they drive plug-ins through Ableton today, and ADI's will drive them through adi-daw, over the control API and the parameter feed. They are not refined yet; the best-working are the two Analog Obsession ones, dBComp and Indeq (`docs/DBCOMP.md`, `docs/INDEQ.md`). |
 | **One parameter feed** for the UI and every surface: name, stored and playing value, the plug-in's text, the automation state | neither | P1 | — | ADR-0181 d3. Built with step 7's UI on the one UI clock; the audio thread publishes into lock-free slots and never calls an observer |
+| **The device strip grows taller than Live's, never shorter** | neither | P1 | — | ADR-0184: a dated departure from Live (ADR-0108), whose Clip View grows and whose Device View does not. The floor is Live's default device area. Views that declare they scale (a Pd analyser, the scope) fill the height; the DAW-drawn panel top-aligns; plug-in windows float. The height is `ui_view` state; no schema change |
+| **Visual array streams for surfaces with screens**: spectrum, meters, correlation, scope windows | neither | P2 | — | ADR-0184 d4. Opt-in per stream on the control API; built from the slots the UI reads, display-ready and no faster than the UI clock. Raw audio is a separate, capped stream, marked while held |
+| **OSCQuery**: the parameter tree served to TouchOSC and Lemur, discovered on the network | OSC | P2 | — | ADR-0185 d4. The one parameter feed as OSCQuery JSON, found over DNS-SD; values as OSC 32-bit floats. OSC has no authentication, so it is off by default: an interface the user picks, an optional client list, and a read-only mode |
+| **TUIO** touch sources: tables, IR overlays, network surfaces, and macOS | TUIO | P3 | — | ADR-0185 d6. Not needed for Windows touch screens, where JUCE already delivers native multi-touch. TUIO 1.1 over OSC (UDP 3333) joins the same input path, off until opened |
 | Templates | both | P1 | — | a `.adi` with a flag |
 | **Swap the docked side of browser and mixer** | Bitwig/Cubase muscle memory | P2 | ✅ | `ui_view` — ADR-0080; width follows the panel, not the side |
 | Named view filters, AI view groups, far/close scaling, collapsible mixer and device strips | Bitwig | P2 | ✅ | `ui_view`; a `view.*` op family (ADR-0112) |
@@ -263,7 +272,7 @@ which is a property of the algorithm and not of where it is compiled.
 | Sub-sample phase utility | P1 | polarity **0**, nudge ~0 | polarity inversion is exactly free; a fractional delay is not. **Part of Utility** (ADR-0169) |
 | Audio-rate envelope follower | P1 | 0 | a modulator under ADR-0046; first real consumer of ADR-0052's `PARAM_MOD` problem |
 | Grid-locked volume shaper | P1 | 0 | reads the tempo map directly — the reason it is native |
-| Transient shaper | P2 | 0 | built on the envelope follower above, not on the hitpoint detector: shaping is a real-time gain, detection is peak picking with look-ahead (ADR-0176 d4) |
+| Transient shaper | P2 | 0 | built on the envelope follower above, not on the hitpoint detector: shaping is a real-time gain, detection is peak picking with look-ahead (ADR-0176 d4) Reference: the p0p `trainsient` (GPL-3.0) (ADR-0187 d3). |
 | Frequency shifter | P2 | Hilbert transform is not free | ring-mod / Hilbert, sample-accurate linear shift. **Part of Shifter** (ADR-0169) |
 | Vocoder | P2 | filter-bank dependent | sidechain via `Bus::Sidechain`, no user wiring |
 | Multiband graph splitter | P2 | **thousands of samples in linear phase** | **blocked on N-bus outputs** (ADR-0056). Declares its latency; a minimum-phase mode is a user choice, not a silent default |
@@ -282,6 +291,11 @@ the equalizer's baseline. The rest are prepared for, with references in
 | Eight-band parametric EQ | Pd | P3 | Pd's inverted `biquad~` feedback signs; four biquads for a 48 dB/oct cut |
 | ADAA clipper, adjustable knee, up to 4x oversampling | CLAP | P3 | Plugin-line licence decided (the chowdsp waveshapers are GPLv3) |
 | Ring-modulation sidechain ducker (RMSC) | Pd, **CLAP ✅** | P3 | Judged as amplitude modulation, which is what it is. **ADI RMSC is built** (ADR-0166, `plugins/rmsc`): CLAP, VST3 and standalone; stereo main and sidechain; threshold, release, depth, Merge AUX; a scope of the applied gain. The engine's own DSP, extended with the threshold and the release |
+| **Pd devices from Surge's effects**, Shifter and Redux first | Pd | P2 | ADR-0187 d1, d2: vanilla Pd where the DSP is small; an ADI external wrapping Surge's C++ where it is large, which needs its own ADR (ADR-0035). Until then Surge XT Effects, built by the fork, hosts every Surge effect as one plug-in |
+| **A DJ filter** (a device, and aDiJ's) | Pd, native | P2 | ADR-0187 d3: Mixxx's filter effect (GPL-2.0-or-later) as the behaviour, JUCE's `StateVariableTPTFilter` as the core |
+| **OTT-style multiband**, harmonic and percussive split first | native | P3 | ADR-0187 d3: ANATOMY's cos² split and three-band upward and downward compression, cloned as behaviour; its code is AGPL-3.0, so copying it makes the receiver AGPLv3 |
+| **A drum rack tab, with beatbox-to-MIDI** | native | P3 | ADR-0187 d3: `d33p` (GPL-3.0) as the reference; beatbox-to-MIDI runs natively only under ADR-0186's rules |
+| **The guitar suite**: neural amps, pedals, cabinets | sibling CLAP | P3, next year | ADR-0186 d6: RTNeural, NeuralAmpModelerCore, AIDA-X, Proteus, AmpForge, Soundshed Guitar (AGPL-3.0), ToobAmp. Not scheduled |
 
 Four of the six carry latency, which makes them the first plugins able to test
 ADR-0079/0085/0092 with source we can read instead of borrowing FabFilter's.
@@ -335,6 +349,8 @@ Tones, a native granular player for Texture, Bungee for scrubbing.
 **Remote APIs only. No bundled Python, no model weights.** Offline these grey
 out and recording, VST3 hosting, graph processing and saving are untouched —
 guaranteed structurally, because nothing in `adi_core` may link an AI path.
+
+**Real-time inference is DSP, not AI** (ADR-0186, amending ADR-0064). A network that runs on the CPU, allocates nothing on the audio thread, and needs no Python and no GPU may run inside the binary as a node: neural amps are the first case. A model is data, loaded like an impulse response, with its own licence. Everything generative stays remote.
 
 Every one of these lands as **ops** in one `txn_id`, so each is one Ctrl-Z.
 
