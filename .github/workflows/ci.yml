@@ -645,15 +645,40 @@ jobs:
       - name: Fetch JUCE at its pinned commit
         run: bash adi_daw/tools/fetch_external.sh --with-juce
 
+      # HOW MANY COMPILERS AT ONCE, decided once for this job.
+      #
+      # `cmake --build --parallel` with NO COUNT passes a bare `-j` to make,
+      # which means UNLIMITED. On the Makefiles generator macOS defaults to,
+      # that starts one compiler per source file. The Airwindows step below
+      # compiles 287 of them; the macOS runner thrashed for FIVE HOURS and
+      # finished nothing, while Windows passed because MSBuild bounds its own
+      # parallelism and never saw the bug.
+      #
+      # Measured after bounding it: the same 287 sources build in 58 seconds.
+      # The volume was never the problem.
+      - name: Decide how many compilers at once
+        run: |
+          set -euo pipefail
+          jobs="${NUMBER_OF_PROCESSORS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
+          echo "ADI_JOBS=$jobs" >> "$GITHUB_ENV"
+          echo "building with -j$jobs"
+
       - name: Configure and build the probe
         run: |
           set -euo pipefail
           cmake -S adi_daw -B adi_daw/build-juce \
                 -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON
           cmake --build adi_daw/build-juce --config Debug \
-                --target adi_audio_probe --parallel
+                --target adi_audio_probe --parallel "$ADI_JOBS"
           cmake --build adi_daw/build-juce --config Debug \
-                --target adi_vst3_probe --parallel
+                --target adi_vst3_probe --parallel "$ADI_JOBS"
+          # adi_play and the fixture VST3, for the render below. The fixture
+          # is a real VST3 bundle on both platforms since ADR-0179; adi_play
+          # gets its path compiled in and reaches it with --fixture.
+          cmake --build adi_daw/build-juce --config Debug \
+                --target adi_play --parallel "$ADI_JOBS"
+          cmake --build adi_daw/build-juce --config Debug \
+                --target adi_test_vst3 --parallel "$ADI_JOBS"
 
       - name: Locate the probe
         run: |
@@ -691,6 +716,15 @@ jobs:
           expect JUCE_PLUGINHOST_AU     0
           expect JUCE_PLUGINHOST_LV2    0
           expect JUCE_PLUGINHOST_LADSPA 0
+          # ADR-0137: ASIO is Windows-only and is compiled in, not detected.
+          # Asserted per platform because the interesting failure is the
+          # SILENT one -- a Windows build that lost JUCE_ASIO still opens a
+          # WASAPI device and passes every other check in this job, and the
+          # first symptom is a user with no ASIO in the device list.
+          case "${{ runner.os }}" in
+            Windows) expect JUCE_ASIO 1 ;;
+            *)       expect JUCE_ASIO 0 ;;
+          esac
           exit "$fail"
 
       # ADR-0042 is a large-block decision, and the probe is how we find out
@@ -719,3 +753,124 @@ jobs:
             exit 1
           fi
           "$found"
+
+      # ADR-0179. The probes above prove the HOST loads; this proves a PROJECT
+      # plays through one. A render needs no audio device, which is what makes
+      # it runnable on a machine that has no sound card.
+      #
+      # The CLAP is ours: one ADI Airwindows suite, built from the airwin2rack
+      # checkout `fetch_external.sh --with-juce` already pins. Sub is the
+      # smallest of the eleven (two algorithms), and the point is that the
+      # host hosts it, not which one it is.
+      # timeout-minutes so the NEXT hang of any kind fails in minutes rather
+      # than burning to the six-hour ceiling. 58 s measured locally for all
+      # 287 sources; 20 is margin, not an estimate.
+      - name: Build an ADI Airwindows suite to render through
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          cmake -S adi_daw/plugins -B adi_daw/build-plugins \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DADI_AIRWIN_SOURCE="$PWD/adi_daw/third_party/airwin2rack"
+          cmake --build adi_daw/build-plugins --config Release \
+                --target adi_aw_sub --parallel "$ADI_JOBS"
+          found=""
+          while IFS= read -r cand; do found="$cand"; break; done < <(
+            find adi_daw/build-plugins -name '*Sub.clap' -maxdepth 6 2>/dev/null)
+          if [ -z "$found" ]; then
+            echo "::error::the ADI Airwindows Sub suite built but no .clap was found"
+            find adi_daw/build-plugins -name '*.clap' | head -20
+            exit 1
+          fi
+          echo "ADI_CLAP_DIR=$(dirname "$found")" >> "$GITHUB_ENV"
+          echo "found $found"
+
+      # ADR-0011 keeps a plug-in that will not load as a bypassed stand-in, so
+      # a render through a MISSING plug-in still succeeds and still prints a
+      # peak. That is right for a musician and useless here, so both renders
+      # pass --require-devices, which exits 2 on a placeholder or a skip.
+      - name: Render a project through a CLAP
+        run: |
+          set -euo pipefail
+          play=""
+          while IFS= read -r cand; do
+            case "$cand" in *adi_play|*adi_play.exe) play="$cand"; break ;; esac
+          done < <(find adi_daw/build-juce -type f -name 'adi_play*' 2>/dev/null)
+          if [ -z "$play" ]; then
+            echo "::error::adi_play was built but cannot be found"
+            exit 1
+          fi
+          tool=""
+          while IFS= read -r cand; do
+            case "$cand" in *adi_tool|*adi_tool.exe) tool="$cand"; break ;; esac
+          done < <(find adi_daw/build-juce -type f -name 'adi_tool*' 2>/dev/null)
+          if [ -z "$tool" ]; then
+            cmake --build adi_daw/build-juce --config Debug --target adi_tool --parallel "$ADI_JOBS"
+            while IFS= read -r cand; do
+              case "$cand" in *adi_tool|*adi_tool.exe) tool="$cand"; break ;; esac
+            done < <(find adi_daw/build-juce -type f -name 'adi_tool*' 2>/dev/null)
+          fi
+          echo "ADI_PLAY=$play" >> "$GITHUB_ENV"
+          mkdir -p render && rm -f render/clap.adi
+          "$tool" create render/clap.adi
+          python3 adi_daw/tools/make_demo_project.py render/clap.adi --clip-rates 48000
+          python3 adi_daw/tools/add_clap_chain.py render/clap.adi \
+                  com.adi.airwindows.sub=Sub
+          "$play" render/clap.adi --search "$ADI_CLAP_DIR" --render 4 \
+                  --require-devices --require-peak -60
+
+      # The fixture VST3 (ADR-0100) is built into the tree and found through
+      # --fixture, so this needs nothing installed on the runner either.
+      - name: Render a project through a VST3
+        run: |
+          set -euo pipefail
+          tool=""
+          while IFS= read -r cand; do
+            case "$cand" in *adi_tool|*adi_tool.exe) tool="$cand"; break ;; esac
+          done < <(find adi_daw/build-juce -type f -name 'adi_tool*' 2>/dev/null)
+          mkdir -p render && rm -f render/vst3.adi
+          "$tool" create render/vst3.adi
+          uid=$("$ADI_PLAY" render/vst3.adi --fixture --list \
+                | grep -o 'VST3-ADI Test NoteExpr-[0-9a-f-]*' | head -1)
+          if [ -z "$uid" ]; then
+            echo "::error::the fixture VST3 did not appear in adi_play --list"
+            "$ADI_PLAY" render/vst3.adi --fixture --list | head -40
+            exit 1
+          fi
+          echo "fixture uid $uid"
+          python3 adi_daw/tools/make_demo_project.py render/vst3.adi \
+                  --clip-rates 48000 --midi --vst3-uid "$uid"
+          "$ADI_PLAY" render/vst3.adi --fixture --render 4 \
+                  --require-devices --require-peak -60
+
+      # PROVE THE GATE CAN FAIL. A render step that passes because its check
+      # stopped checking looks exactly like a render step that passes. This
+      # renders the same CLAP project with NO search path, so the plug-in is a
+      # stand-in, and requires the non-zero exit.
+      - name: --require-devices fails on a stand-in
+        run: |
+          set -euo pipefail
+          if "$ADI_PLAY" render/clap.adi --render 1 --require-devices; then
+            echo "::error::a project whose CLAP is missing rendered as a SUCCESS"
+            exit 1
+          fi
+          echo "ok -- a stand-in is a failure"
+
+      # PROVE THE PEAK GATE CAN FAIL TOO. --require-devices proves a plug-in
+      # LOADED; it cannot prove the graph made a sound, and a plug-in that
+      # loads and outputs nothing passes every device count there is. This
+      # renders the SAME project from 8 s, past the end of its clips: every
+      # device still loads, and the master measures about -142 dBFS.
+      #
+      # Note it is a floor and not a match on the word "silence": adi_play
+      # calls a peak silence only when it is exactly zero, and an idling
+      # plug-in is not exactly zero.
+      - name: --require-peak fails when the devices load but nothing is heard
+        run: |
+          set -euo pipefail
+          if "$ADI_PLAY" render/clap.adi --search "$ADI_CLAP_DIR" \
+                         --from 8 --render 1 --require-devices --require-peak -60; then
+            echo "::error::a silent render passed --require-peak"
+            exit 1
+          fi
+          echo "ok -- devices loaded and nothing heard is a failure"
