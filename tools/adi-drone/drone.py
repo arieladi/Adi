@@ -71,7 +71,10 @@ KINDS = {
     ),
     "tests": (
         "Write unit tests for the code shown, using the test framework already used "
-        "in the repository if visible. Cover edge cases. Output complete test code."
+        "in the repository if visible. Cover edge cases. Output complete test code. "
+        "Only ADD: never delete, move or rewrite an existing test or check. Anchor each "
+        "edit on one short line (for example the line that starts main) and put the new "
+        "code next to it. A new check must test something no existing check tests."
     ),
     "explain": (
         "Explain what this code does, its data flow and its invariants, for a "
@@ -95,12 +98,32 @@ lines copied verbatim from the file, enough to be unique
 the replacement lines
 >>>>>>> REPLACE
 
-Rules: the SEARCH text must match the file character for character, including
+Rules: the first line of each block is the real path of one of the files shown,
+exactly as it appears after "=== FILE:", never the words path/relative/to/repo.ext.
+The SEARCH text must match the file character for character, including
 indentation. Keep each block small. Output only edit blocks, no other text."""
 
 EDIT_BLOCK = re.compile(
     r"^(?P<path>[^\n<>=`]+?)\s*\n(?:```[^\n]*\n)?<<<<<<< SEARCH\n(?P<search>.*?)\n?=======\n"
     r"(?P<replace>.*?)\n?>>>>>>> REPLACE", re.S | re.M)
+
+# Measured 2026-09-27 over 22,000 claims: the model's names are right 97-100% of
+# the time and its numbers are not (15 of 25 Mixxx defaults right in the .cpp it
+# read; ranges invented outright for headers that declare none). So read-only jobs
+# may not state a number in their own words: they quote the line, and collect
+# keeps only the quotes found verbatim in the source. The rule travels in the
+# job's `system` text, so a drone still running older code applies it too.
+QUOTE_RULE = """Rules for facts. A summary that invents a number is worse than none.
+- Never write a number, range, default, size, offset, byte order, constant or
+  unit in your own words.
+- When a fact comes from the code, quote the line that states it, copied
+  character for character from the file, on a line of its own that starts
+  with QUOTE: . For example:
+  QUOTE:     q->setRange(0.4, 0.707106781, 4.0);
+- If the file does not state it, write "not stated in this file". Never fill
+  in a value from memory or from another program.
+- Names of functions, types, variables and files are fine, in backticks."""
+READ_ONLY_KINDS = {"explain", "freeform", "review"}
 
 
 def now():
@@ -236,14 +259,104 @@ def chunk_ranges(text, max_chars=CHUNK_CHARS):
     return ranges
 
 
+# ---------------------------------------------------------------- grounding
+
+QUOTE_LINE = re.compile(r"^(\s*(?:[-*>]\s*)?)QUOTE:\s?(.*)$")
+SECTION_HEAD = re.compile(r"^## (\S+?)(?: \(lines \d+-\d+, part \d+/\d+\))?\s*$", re.M)
+TICKED = re.compile(r"`([^`\n]{2,80})`")
+IDENT = re.compile(r"[A-Za-z_~][A-Za-z0-9_]{2,}")
+NUMBER = re.compile(r"(?<![\w.])(-?\d+(?:\.\d+)?)(?![\w])")
+TRIVIAL_NUMBERS = set("0123456789") | {"10", "100"}
+COMMON_WORDS = {"the", "and", "for", "not", "true", "false", "null", "none", "std", "int", "float",
+                "double", "bool", "void", "const", "auto", "self"}
+
+
+def _ws(s):
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def ground_section(body, source):
+    """Check one summary against the file it summarises; return (body, counts).
+
+    A QUOTE line found verbatim in the source (whitespace aside) is kept and
+    marked; any other QUOTE line is replaced by a note saying it was removed.
+    Backticked names and numbers outside quotes are counted, not changed: a name
+    in its file is almost always right, and a number in its file may still sit
+    in the wrong role (a maximum reported as the default).
+    """
+    counts = {k: 0 for k in ("quote_ok", "quote_bad", "name_ok", "name_bad", "num_ok", "num_bad")}
+    flat = _ws(source)
+    out = []
+    for line in body.splitlines():
+        m = QUOTE_LINE.match(line)
+        if m:
+            q = m.group(2).strip()
+            q = q[1:-1].strip() if len(q) > 1 and q[0] == q[-1] == "`" else q
+            if q and _ws(q) in flat:
+                counts["quote_ok"] += 1
+                out.append(f"{m.group(1)}QUOTE (verbatim in the source): {q}")
+            else:
+                counts["quote_bad"] += 1
+                out.append(f"{m.group(1)}~~QUOTE removed by the drone: not found in the source~~")
+            continue
+        if not line.lstrip().startswith("<!--"):
+            for t in TICKED.findall(line):
+                for tok in IDENT.findall(t):
+                    if tok.lower() in COMMON_WORDS:
+                        continue
+                    counts["name_ok" if tok in source else "name_bad"] += 1
+                    break
+            for n in NUMBER.findall(re.sub(r"^\s*(\d+\.|[-*])\s+", "", line)):
+                if n.lstrip("-") not in TRIVIAL_NUMBERS:
+                    counts["num_ok" if n.lstrip("-") in source else "num_bad"] += 1
+        out.append(line)
+    return "\n".join(out), counts
+
+
+def ground_text(text, repo):
+    """Ground every `## path` section of a result or a mission report."""
+    totals = {k: 0 for k in ("quote_ok", "quote_bad", "name_ok", "name_bad", "num_ok", "num_bad")}
+    heads = list(SECTION_HEAD.finditer(text))
+    if not heads:
+        return text, totals
+    pieces = [text[:heads[0].start()]]
+    for k, h in enumerate(heads):
+        end = heads[k + 1].start() if k + 1 < len(heads) else len(text)
+        body = text[h.end():end]
+        src_path = (Path(repo) / h.group(1)).resolve()
+        if src_path.is_file():
+            body, c = ground_section(body, src_path.read_text(encoding="utf-8", errors="replace"))
+            for key in totals:
+                totals[key] += c[key]
+        pieces += [h.group(0), body]
+    return "".join(pieces), totals
+
+
+def trust_line(t):
+    def part(ok, bad):
+        return f"{t[ok]} of {t[ok] + t[bad]}"
+    return (f"- trust: **names reliable, numbers unverified.** Backticked names found in their files: "
+            f"{part('name_ok', 'name_bad')}. QUOTE lines checked verbatim against the source: "
+            f"{t['quote_ok']} kept, {t['quote_bad']} removed. Numbers outside quotes are the model's: "
+            f"{part('num_ok', 'num_bad')} appear somewhere in their file, which does not make them right.")
+
+
 def apply_edit_blocks(text, repo, allowed):
     """Apply SEARCH/REPLACE blocks in memory; return (unified diff, problems)."""
     originals, edited, problems = {}, {}, []
     for m in EDIT_BLOCK.finditer(text):
         rel = m.group("path").strip().strip("`*").replace("\\", "/")
         if rel not in allowed:
-            problems.append(f"edit targets a file not in the job: {rel}")
-            continue
+            # A 7B model copies the format's example path. The SEARCH text is the
+            # evidence: if it occurs exactly once in exactly one of the job's files,
+            # that file is the target, and the note says the path was resolved.
+            hits = [f for f in allowed
+                    if (repo / f).read_text(encoding="utf-8").count(m.group("search")) == 1]
+            if len(hits) != 1 or not m.group("search"):
+                problems.append(f"edit targets a file not in the job: {rel}")
+                continue
+            problems.append(f"path '{rel}' resolved to {hits[0]} by its SEARCH text")
+            rel = hits[0]
         if rel not in edited:
             originals[rel] = (repo / rel).read_text(encoding="utf-8")
             edited[rel] = originals[rel]
@@ -320,7 +433,8 @@ def run_job(job_file):
                 patch = out / f"patch-{i}.diff"
                 patch.write_bytes(diff.encode("utf-8"))
                 rc, detail = git(repo, "apply", "--check", str(patch))
-                check.update(ok=rc == 0 and not problems, detail=detail or "applies cleanly")
+                real = [p for p in problems if " resolved to " not in p]  # a resolved path is a note
+                check.update(ok=rc == 0 and not real, detail=detail or "applies cleanly")
             else:
                 check.update(ok=False, detail="no changes produced")
             diff_checks.append(check)
@@ -391,12 +505,23 @@ def cmd_submit(a):
            "per_file": a.per_file}
     if a.repo:
         job["repo"] = a.repo
-    if a.system:
-        job["system"] = a.system
+    system = job_system(a.kind, a.system, a.no_quote_rule)
+    if system:
+        job["system"] = system
     if a.max_output:
         job["max_output"] = min(a.max_output, MAX_OUTPUT_LIMIT)
+    if a.patch:
+        job["output"] = "patch"
     write_jobs([(job_id, job)])
     print(job_id)
+
+
+def job_system(kind, extra, no_quote_rule=False):
+    """The job's extra system text: the quote rule first for read-only kinds."""
+    parts = [] if no_quote_rule or kind not in READ_ONLY_KINDS else [QUOTE_RULE]
+    if extra:
+        parts.append(extra)
+    return "\n\n".join(parts)
 
 
 def slugify(text, n=40):
@@ -500,12 +625,13 @@ def cmd_mission(a):
     files = [f for f in sorted(files) if not any(re.search(x, f) for x in a.exclude)]
     if not files:
         sys.exit("mission matched no files")
-    if a.chunk and a.kind in EDIT_KINDS:
+    if a.chunk and (a.kind in EDIT_KINDS or a.patch):
         sys.exit("--chunk is for read-only kinds")
     if a.max_output and not 256 <= a.max_output <= MAX_OUTPUT_LIMIT:
         sys.exit(f"--max-output must be 256..{MAX_OUTPUT_LIMIT}")
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    budget = MAX_PROMPT_TOKENS - est_tokens(KINDS[a.kind] + a.instructions + (a.system or "")) - 300
+    system = job_system(a.kind, a.system, a.no_quote_rule)
+    budget = MAX_PROMPT_TOKENS - est_tokens(KINDS[a.kind] + a.instructions + system) - 300
     jobs = []
     for i, rel in enumerate(files):
         text = (repo / rel).read_text(encoding="utf-8", errors="replace")
@@ -517,10 +643,12 @@ def cmd_mission(a):
                 job.update(lines=list(rng), chunk=[k, len(ranges)])
             if a.repo:
                 job["repo"] = a.repo
-            if a.system:
-                job["system"] = a.system
+            if system:
+                job["system"] = system
             if a.max_output:
                 job["max_output"] = a.max_output
+            if a.patch:
+                job["output"] = "patch"
             suffix = f"-c{k}" if rng else ""
             jobs.append((f"{a.priority}-m-{name}-{stamp}-{i:04d}-"
                          f"{slugify(Path(rel).name, 30)}{suffix}", job))
@@ -639,20 +767,123 @@ def cmd_collect(a):
     incomplete = sum(TRUNC_MARK in (d / "result.md").read_text(encoding="utf-8") for d in done)
     out_dir = STATE_DIR / "missions"
     out_dir.mkdir(exist_ok=True)
+    totals = {k: 0 for k in ("quote_ok", "quote_bad", "name_ok", "name_bad", "num_ok", "num_bad")}
+    bodies = []
+    for d in done:
+        body = (d / "result.md").read_text(encoding="utf-8").split("\n", 8)[-1]
+        job = json.loads((d / "job.json").read_text(encoding="utf-8"))
+        body, t = ground_text(body, job.get("repo", DEFAULT_REPO))
+        for key in totals:
+            totals[key] += t[key]
+        bodies += [f"---\n<!-- {d.name} -->", body, ""]
     lines = [f"# Mission {name}", "",
              f"- done: {len(done)} results for {len(covered)} files, incomplete (hit the output "
              f"cap): {incomplete}, failed: {len(failed)}, still queued: {len(pending)}",
-             f"- collected: {now()}", ""]
+             f"- collected: {now()}", trust_line(totals), ""]
     if failed:
         lines += ["## Failed", ""]
         lines += [f"- {f.name}: {f.read_text(encoding='utf-8').strip()}" for f in failed]
         lines.append("")
-    for d in done:
-        body = (d / "result.md").read_text(encoding="utf-8").split("\n", 8)[-1]
-        lines += [f"---\n<!-- {d.name} -->", body, ""]
+    lines += bodies
     report = out_dir / f"{name}.md"
     report.write_text("\n".join(lines), encoding="utf-8")
     print(report)
+    print(trust_line(totals)[2:])
+
+
+def cmd_verify(a):
+    """Measure how grounded a collected mission report is, without changing it."""
+    report = STATE_DIR / "missions" / f"{slugify(a.name, 30)}.md"
+    if not report.exists():
+        sys.exit(f"no report {report}; run collect first")
+    _, t = ground_text(report.read_text(encoding="utf-8"), a.repo or DEFAULT_REPO)
+    print(trust_line(t)[2:])
+
+
+# ---------------------------------------------------------------- the build decides
+
+VERIFY_TREE = STATE_DIR / "verify-tree"
+# CTest runs every test binary and reports each one; tools/test_all.sh would also
+# compare the total check count with the README, which a patch adding tests changes.
+CTEST = Path(r"C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE"
+             r"\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe")
+
+
+def _run(cmd, cwd, log_file, timeout):
+    env = {k: v for k, v in os.environ.items() if k != "NoDefaultCurrentDirectoryInExePath"}
+    p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, errors="replace",
+                       env=env, timeout=timeout)
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(f"$ {' '.join(map(str, cmd))}  (in {cwd})\n{p.stdout}{p.stderr}\nexit {p.returncode}\n\n")
+    return p.returncode
+
+
+def prepare_tree(repo):
+    """A detached worktree of the monorepo on D:, with adi_daw/third_party linked in.
+
+    third_party is git-ignored and fetched, so a fresh worktree has none; a
+    directory junction lends it the main checkout's copy, read only in use. The
+    tree keeps its own build folder, so each check rebuilds incrementally.
+    """
+    if not (VERIFY_TREE / ".git").exists():
+        rc, out = git(repo, "worktree", "add", "--detach", str(VERIFY_TREE), "HEAD")
+        if rc:
+            sys.exit(f"worktree add failed: {out}")
+    link = VERIFY_TREE / "adi_daw" / "third_party"
+    if not link.exists():
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(Path(repo) / "adi_daw" / "third_party")],
+                       capture_output=True, check=True)
+
+
+def cmd_check(a):
+    """Apply each patch of a job or mission in the verify tree, build, run the tests.
+
+    The verdict is the build's and the tests', written beside the patch as
+    check-N.json and check-N.log. The user's checkout is never touched.
+    """
+    repo = Path(a.repo or DEFAULT_REPO)
+    target = DONE / a.target
+    dirs = [target] if target.is_dir() else sorted(latest_results(f"-m-{slugify(a.target, 30)}-").values())
+    dirs = [d for d in dirs if any(d.glob("patch-*.diff"))]
+    if not dirs:
+        sys.exit("no patches to check")
+    prepare_tree(repo)
+    summary = []
+    for d in dirs:
+        head = json.loads((d / "meta.json").read_text(encoding="utf-8"))["head"]
+        for patch in sorted(d.glob("patch-*.diff")):
+            n = patch.stem.split("-")[-1]
+            log_file = d / f"check-{n}.log"
+            log_file.write_text("", encoding="utf-8")
+            git(VERIFY_TREE, "checkout", "--detach", "--force", head)
+            git(VERIFY_TREE, "clean", "-fd")          # not -x: the build folder survives
+            verdict = {"patch": patch.name, "head": head, "checked": now()}
+            kind = json.loads((d / "job.json").read_text(encoding="utf-8")).get("kind")
+            diff = patch.read_text(encoding="utf-8")
+            removed = [l for l in diff.splitlines() if l.startswith("-") and not l.startswith("---")]
+            added = [l for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++")]
+            if kind == "tests" and (any("check(" in l for l in removed) or not any("check(" in l for l in added)):
+                # A test patch that deletes checks can still build and pass.
+                verdict.update(applies=None, build=None, tests=None,
+                               guard="a tests patch must only add checks: it removes one or adds none")
+            elif git(VERIFY_TREE, "apply", str(patch))[0]:
+                verdict.update(applies=False, build=None, tests=None)
+            else:
+                verdict["applies"] = True
+                verdict["build"] = _run(["cmd", "/c", str(VERIFY_TREE / "adi_daw" / "tools" / "build.bat"), "werror"],
+                                        VERIFY_TREE / "adi_daw", log_file, 3600) == 0
+                verdict["tests"] = (_run([str(CTEST), "--test-dir", "build", "--output-on-failure", "-j", "4"],
+                                         VERIFY_TREE / "adi_daw", log_file, 3600) == 0) if verdict["build"] else None
+            verdict["pass"] = bool(verdict["applies"] and verdict["build"] and verdict["tests"])
+            (d / f"check-{n}.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
+            git(VERIFY_TREE, "checkout", "--force", head)
+            git(VERIFY_TREE, "clean", "-fd")
+            summary.append((d.name, patch.name, verdict))
+            log(f"check {d.name}/{patch.name}: {'PASS' if verdict['pass'] else 'FAIL'}")
+    for job_id, name, v in summary:
+        why = v.get("guard") or ("does not apply" if not v["applies"] else (
+            "build fails" if not v["build"] else ("tests fail" if not v["tests"] else "builds, tests pass")))
+        print(f"{'PASS' if v['pass'] else 'FAIL'}  {job_id}/{name}: {why}")
 
 
 def cmd_status(_):
@@ -711,6 +942,8 @@ def main():
     s.add_argument("--priority", default="5", choices=list("123456789"), help="1 runs first")
     s.add_argument("--per-file", action="store_true", help="one model call per file")
     s.add_argument("--max-output", type=int, help=f"output token cap (default {NUM_PREDICT})")
+    s.add_argument("--patch", action="store_true", help="answer as edit blocks, e.g. tests to check")
+    s.add_argument("--no-quote-rule", action="store_true", help="let a read-only job state numbers")
     s.set_defaults(fn=cmd_submit)
     m = sub.add_parser("mission", help="one job per file matched by --glob")
     m.add_argument("--name", required=True)
@@ -726,6 +959,8 @@ def main():
     m.add_argument("--priority", default="8", choices=list("123456789"))
     m.add_argument("--max-output", type=int, help=f"output token cap (default {NUM_PREDICT})")
     m.add_argument("--dry-run", action="store_true", help="show job count and measured ETA only")
+    m.add_argument("--patch", action="store_true", help="answer as edit blocks, e.g. tests to check")
+    m.add_argument("--no-quote-rule", action="store_true", help="let a read-only job state numbers")
     m.set_defaults(fn=cmd_mission)
     r = sub.add_parser("retry", help="requeue a mission's truncated and/or failed jobs")
     r.add_argument("mission")
@@ -736,9 +971,17 @@ def main():
     r.add_argument("--dry-run", action="store_true")
     r.set_defaults(fn=cmd_retry)
     sub.add_parser("eta", help="measured time left for the queue").set_defaults(fn=cmd_eta)
-    c = sub.add_parser("collect", help="merge a mission's results into one report")
+    c = sub.add_parser("collect", help="merge a mission's results into one report, grounded")
     c.add_argument("name")
     c.set_defaults(fn=cmd_collect)
+    v = sub.add_parser("verify", help="how grounded a collected report is (names, quotes, numbers)")
+    v.add_argument("name")
+    v.add_argument("--repo")
+    v.set_defaults(fn=cmd_verify)
+    k = sub.add_parser("check", help="apply, build and test a job's or mission's patches in a worktree")
+    k.add_argument("target", help="a job id in done/, or a mission name")
+    k.add_argument("--repo")
+    k.set_defaults(fn=cmd_check)
     sub.add_parser("status").set_defaults(fn=cmd_status)
     sh = sub.add_parser("show")
     sh.add_argument("job_id")
