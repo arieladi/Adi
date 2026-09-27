@@ -296,6 +296,8 @@ the equalizer's baseline. The rest are prepared for, with references in
 | **A DJ filter** (a device, and ADiJ's) | Pd, native | P2 | ADR-0187 d3: Mixxx's filter effect (GPL-2.0-or-later) as the behaviour, JUCE's `StateVariableTPTFilter` as the core |
 | **OTT-style multiband**, harmonic and percussive split first | native | P3 | ADR-0187 d3: ANATOMY's cos² split and three-band upward and downward compression, cloned as behaviour; its code is AGPL-3.0, so copying it makes the receiver AGPLv3 |
 | **A drum rack tab, with beatbox-to-MIDI** | native | P3 | ADR-0187 d3: `d33p` (GPL-3.0) as the reference; beatbox-to-MIDI runs natively only under ADR-0186's rules |
+| **Chord Comb** (working name): six tuned combs for color bass, Saw and Square modes, Decay as a T60, Color in the loop, eight stored chord States | Pd | P2 | ADR-0192 d2: `[adi.combchord~]` compiled in, DSP in `src/adi/dsp/`; Surge's Combulator (GPL-3.0-or-later) as the reference. MIDI tuning once MIDI reaches Pd devices. win_codex |
+| **Color Cab** (working name): a time-stripped formant filter built from a dropped sample, zero latency | Pd | P2 | ADR-0192 d3, d4: `[adi.colorcab~]`; a minimum-phase FIR from the sample's smoothed, flattened spectrum, swapped by crossfade; the sample through `[adi.sample]`. win_codex |
 | **The guitar suite**: neural amps, pedals, cabinets | sibling CLAP | P3, next year | ADR-0186 d6: RTNeural, NeuralAmpModelerCore, AIDA-X, Proteus, AmpForge, Soundshed Guitar (AGPL-3.0), ToobAmp. Not scheduled |
 
 Four of the six carry latency, which makes them the first plugins able to test
