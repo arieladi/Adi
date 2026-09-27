@@ -50,6 +50,10 @@ analyser. The reservation table decides (ADR-0051):
     real time.
   - **Its local WebSocket service** has no `Origin` check. That is worth
     fixing there, in that plug-in's own session.
+  - **Its per-plug-in VST controllers** (`adi_ableton_vst_controller`) are a
+    reference too. They drive plug-ins through Ableton, and ADI's will drive
+    them through adi-daw. They are not refined yet; the best-working are the
+    Analog Obsession dBComp and Indeq.
 
   All of it is recorded in FEATURES' control-surfaces row. ADR-0181 is
   merged, and the log is append-only.
