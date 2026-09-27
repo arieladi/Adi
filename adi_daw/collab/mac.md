@@ -117,6 +117,34 @@ The three unbounded `--parallel` calls in the OTHER jobs are left alone. They
 have been green for weeks and build far fewer files; fixing what is not proven
 broken is how a passing job turns red.
 
+### 7b. TSan: the PR 1 obligation I did not meet, logged now
+
+PR 1's brief said of the two TSan items: *"If there is room ... Otherwise log
+them as still open."* I did neither — I did not do the work and I did not log
+it. `grep -ci tsan` over this file returned **0** until this paragraph. The
+completeness critic of the re-sync sweep found it, which is exactly what that
+agent was for.
+
+What is actually true, checked against `origin/main`:
+
+- **The GCC TSan leg does not exist.** A case-sensitive grep for
+  `TSan|TSAN|fsanitize=thread|ThreadSanitizer` over the whole `.github/` tree
+  returns **zero** hits. The only sanitizer in CI is
+  `-fsanitize=fuzzer,address,undefined` in the fuzz job. There is no
+  `ADI_SANITIZE` CMake option. So this is an assigned item that was never
+  started, not a leg that regressed.
+- **The "Clang TSan conflict" is second-hand.** It is prose in
+  `collab/linux.md` with no trace, no reproducer and no failing job in the
+  repo, and it is Linux-clang-only. `tests/test_device.cpp` still defines
+  global `operator new`/`new[]` and four `operator delete` overloads at
+  namespace scope with no `#if` guard of any kind.
+
+**The trap, stated so the next person does not fall in it:** do not "fix"
+that counter on the strength of a macOS run. Darwin ships TSan only as
+`libclang_rt.tsan_osx_dynamic.dylib` and has no static `tsan_cxx` archive to
+collide with, so the conflict cannot reproduce here and a green local run
+proves nothing about it. Reproduce on Linux clang first, or leave it.
+
 ### 7. A verifier found the hole in my own gate
 
 Re-running the claim-checks the usage limit killed returned six TRUEs and one
