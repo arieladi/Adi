@@ -1,6 +1,8 @@
 # The device/parameter contract — design panel findings
 
-**Status:** research input to an open decision. **Not** a decision. ADR-0035 and
+**Status:** research input to a decision that is now taken. ADR-0177
+decides the contract that follows from it (`[adi.param]` with a fixed id),
+approved by the director on 2026-09-26. ADR-0035 and
 ADR-0040 both leave the device/parameter contract open, and ADR-0052 decision 4
 and ADR-0053 decision 1 both say the same thing about it from the other side: it
 must be **format-agnostic**, because CLAP and a remote AudioGridder device go
@@ -122,9 +124,9 @@ that.
 **Status:** a porting guide at the director's request (2026-09-25), written
 against ADR-0035 (the Pd tier), ADR-0076 (Tier 1 devices are headless and the
 DAW draws their knobs), ADR-0095 (the `$0-` message convention) and ADR-0096
-(patches are generated, not hand-edited). The device contract is still open
-(§4), so where a rule needs it, the rule says what the contract must carry,
-not the syntax it will use. No porting tool exists yet; the translator at the end of this section specifies one. An M4L device (`.amxd`) is
+(patches are generated, not hand-edited). When it was written the device
+contract was still open (§4), so its rules said what the contract must carry,
+not the syntax; ADR-0177 has since decided the syntax. No porting tool exists yet; the translator at the end of this section specifies one. An M4L device (`.amxd`) is
 a Max patcher, not Pd text, so a port is a rewrite, object by object, checked
 against the original by ear and by rendering both.
 
@@ -188,17 +190,19 @@ each parameter object, the port declares:
 
 The DAW draws the knobs from that declaration, as Live draws M4L's.
 
-- **The declaration's syntax is the open contract's to decide** (§4). The rule
-  as proposed wrote it `[adi.param name min max default]`. That is one of the
-  panel's candidates (author-symbol, §2), not a decision, and §3 records
-  against every candidate that an ADI-specific object inside the patch breaks
-  ADR-0035's promise that a patch stays vanilla Pd. Until the contract is
-  decided, a port lists its declarations in the generator (ADR-0096), which is
-  where the patch comes from anyway.
+- **The declaration's syntax is ADR-0177's:** one
+  `[adi.param $0 <id> <min> <max> <default> <unit> <curve> <name> [<item> ...]]`
+  per parameter, with a fixed id the author picks. `adi.param` ships as a
+  plain Pd abstraction, which answers §3's objection that an ADI-only object
+  breaks ADR-0035's promise. A port writes one for every `live.*` parameter
+  object, carrying its Inspector's fields, from the generator (ADR-0096).
 - **Values arrive at `$0-` receives: `[r $0-cutoff]`, never a bare
   `[r cutoff]`.** Pd's send and receive names are global within an instance,
   so two copies of one device on two tracks would share a bare name. This is
   ADR-0095's rule, and the shipped patches follow it (`[r $0-release]`).
+  Under ADR-0177 a parameter's value arrives through its `adi.param` object,
+  whose receive is `$0-adi-<id>`; every other host message keeps the `$0-`
+  rule.
 - **UI objects with DSP inside do port.** `[live.gain~]` becomes `[*~]` with
   `[line~]` smoothing, driven by its parameter. A meter the device drew is the
   DAW's to draw.
