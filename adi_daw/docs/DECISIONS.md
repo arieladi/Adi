@@ -13942,7 +13942,10 @@ left two things open that nothing has since built:
 - **Published arrays do not exist.** ADR-0116 d2 says the device contract gains
   them beside parameters. No spelling of `publishedArray` appears in `src/`.
 
-ADR-0177 closes the *parameter* half of that contract and is not merged. So the
+ADR-0177 closes the *parameter* half of that contract. It was decided on
+2026-09-25, approved by the director as written on 2026-09-26 and merged
+before this work rebased onto it — but it shipped **no code**: nothing in
+`src/`, `tests/` or `pd/` on main reads or writes an `[adi.param]`. So the
 analyser has two hard prerequisites, and neither is the analyser.
 
 ### Decisions
@@ -13953,6 +13956,12 @@ analyser has two hard prerequisites, and neither is the analyser.
    ```
    [adi.array $0 <id> <length> <rate> <name>]
    ```
+
+   **This first sketch is superseded by d13 below**, which adds `min`,
+   `max` and `unit` after building it. The final form is
+   `[adi.array $0 <id> <length> <rate> <min> <max> <unit> <name>]`, and
+   that is the one the parser implements. The sketch is left here
+   because d13 is only readable against what it corrects.
 
    It takes ADR-0177's four corrections rather than inventing its own answers,
    because an author who has learned one declaration should not have to learn a
@@ -14113,6 +14122,43 @@ not visible from the ADRs. All three are measured, in
     PREVIOUS array -- a display one frame behind, for ever, with nothing to
     show for it. An even sequence is settled, `seq/2` counts publications, the
     one being written is `(seq/2)+1`, and both sides take the slot from that.
+
+### What this amends in ADR-0177, and what it does not
+
+This ADR's decisions were written before ADR-0177 merged, so the question was
+put directly: where the two touch parameters, which one governs? **ADR-0177
+does, unchanged.** Stated explicitly so nobody has to compare two documents:
+
+- **Nothing in ADR-0177's grammar is amended.** `[adi.param $0 <id> <min>
+  <max> <default> <unit> <curve> <name> [<item> ...]]` is implemented as d1
+  writes it, including `-` for no unit, `_` reading as a space, `log` refusing
+  a min at or below 0, and a menu needing min 0 and `max + 1` items.
+- **`[adi.array]` is a sibling, not a variant.** It has its own grammar (d13),
+  its own id space (d14), and its own receive stem — `<$0>-adiarr-<id>` against
+  the parameter's `<$0>-adi-<id>`. A different stem, deliberately, so a patch
+  cannot address an array where a parameter is meant and have it half work.
+- **One reader, not two.** `parsePdDeclarations()` is one tokeniser, one `$0`
+  check, one id rule and one problem list, with the schemas differing only
+  where they must. ADR-0177 shipped no code, so this is the first
+  implementation of its grammar as well as the array's — which is the point:
+  two parsers that agree today are two parsers that disagree after the next
+  edit. It honours ADR-0177 fix 3 exactly, parsing the stored patch text off
+  the audio thread with no libpd present, and 66 of its checks run with Pd
+  absent.
+- **What stays win's.** `adi.param.pd` itself (ADR-0177 d5) and
+  `tools/gen_pd_patches.py` (d6) are not written here; the parser accepts
+  their declarations today. `pd/adi.array.pd` is this ADR's, and ships MIT for
+  ADR-0177 d5's reason: a patch carrying it can be shared under any licence.
+- **One thing ADR-0177's implementation must inherit:** d15. `$0` does not
+  expand in a message box, so a generator that emits `; $0-adi-1 0.5` writes a
+  patch that loads, reports "no such object", and leaves the parameter at
+  nothing. That applies to `[adi.param]` exactly as it does to `[adi.array]`.
+- **The one place ADR-0177 is genuinely at risk is d11,** and it is flagged
+  rather than settled here: if device patches become abstractions wrapped
+  between `adc~` and `dac~`, the abstraction's `$0` is not the wrapper's, and
+  `[adi.param $0 ...]` would have to become `[adi.param $1 ...]` with the
+  wrapper passing its `$0` in. That changes ADR-0177's grammar, which is why
+  it is win's call and not taken here.
 
 ### What this does not decide
 
