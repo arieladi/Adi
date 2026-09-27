@@ -180,7 +180,7 @@ this file by hand.
 | Start Playback with Record | Same, Shift included | DECIDED parity |
 | Loop/Warp Short Samples | Same | DECIDED parity |
 | Auto-Warp Long Samples | **Off by default**, a director-approved deviation: a dropped file plays raw. Pressing Warp runs Live's Auto-Warp on demand (tempo detected, 1.1.1 on the first downbeat, fitted to the grid), then Bitwig's choices (detect tempo changes or fixed; first beat or sample start); with no clear beat, an inline BPM field. | DECIDED ADR-0132 d6-d7 |
-| Default Warp Mode | Same set; ADI's stretch is its own (ADR-0061), the mode names follow Live | DECIDED ADR-0061 |
+| Default Warp Mode | Same set and names. Behind them: Beats a native slice player, Tones Rubber Band R3, Texture a native granular player, Re-Pitch resampling on libsamplerate, Complex and Complex Pro R3 (ADR-0188 d2) | DECIDED ADR-0061 |
 | Create Fades on Clip Edges | **Off by default**, a director-approved deviation. Stated beside the switch: a clip that starts or ends away from a zero crossing clicks, which the 4 ms edge fade prevents. | DECIDED ADR-0132 d6 |
 | Default Launch Mode | With Session View (ADR-0101) | BACKLOG ADR-0101 |
 | Default Launch Quantization | With Session View | BACKLOG ADR-0101 |
