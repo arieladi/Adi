@@ -39,9 +39,18 @@ Only the `win` agent writes to this file. Newest entry at the top.
 twice onto `mac/ci-render`, locally only. It spent ADR-0179 on the Pd
 analyser. The reservation table decides (ADR-0051):
 - **0179 stays with the CLAP host contract,** as reserved.
-- **The analyser takes 0183,** reserved now, if the director keeps that
-  session's work. Renumbering a local commit is cheap before anything is
-  pushed.
+- **The analyser takes 0183,** reserved now. Renumbering a local commit is
+  cheap before anything is pushed.
+- **The director keeps it** (2026-09-27). Its own brief
+  (`collab/prompts/2026-09-27-mac-analyser.md`):
+  - ADR-0183;
+  - a worktree of its own, because it shares the mission session's checkout
+    as the drone shares mine;
+  - its own log, `collab/mac-analyser.md`;
+  - a rebase onto main, with its parameters checked against ADR-0177, decided
+    after it started;
+  - libpd through `fetch_external.sh`, as ADR-0024 requires; `third_party/` is
+    git-ignored.
 
 **The drone, synced.** The drone builder, a second session on this PC,
 committed six `tools/adi-drone` commits onto `win/surfaces-collab`. The two

@@ -71,6 +71,9 @@ So, for a second session:
   open PR. A worktree per task is safer still (`Adi-wt/<topic>`).
 - **Numbers only from this table:** it takes an ADR number only from the
   reservation table below, through win.
+- **Its own log file,** so the two sessions' PRs never conflict on one:
+  `collab/mac-analyser.md` for the analyser session on the Mac. The drone
+  builder writes no log here; its record is `tools/adi-drone/README.md`.
 
 ## Reserved ADR numbers
 
@@ -213,7 +216,7 @@ subject, say so in your log instead of writing it twice.
 | 0180 | mac | (mac's return mission) | held for mac | reserved |
 | 0181 | win | `win/surfaces-collab` | external control surfaces: relative input at the edge, the loopback control API's surface client, one parameter feed; the Stream Deck + XL first (director) | used |
 | 0182 | win | `win/surfaces-collab` | collaboration, hosting and backups: local by default, an op stream to the user's bucket, drives for backups, author-chosen media, previewed application (director) | used |
-| 0183 | mac | `mac/pd-analyser-wip` | the Pd spectrum analyser (ADR-0116), from the second session on the Mac; renumbered from the ADR-0179 it spent locally, if the director keeps that work | reserved |
+| 0183 | mac | `mac/pd-analyser-wip` | the Pd spectrum analyser (ADR-0116), from the second session on the Mac; renumbered from the ADR-0179 it spent locally; the director keeps the work (2026-09-27) | reserved |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

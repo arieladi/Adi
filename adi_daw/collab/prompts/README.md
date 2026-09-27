@@ -16,3 +16,4 @@ what was asked, so a report can be checked against its brief.
 | `2026-09-27b-mac-scope-summing-suites.md` | (mac) | the UI for the scope, group summing, the Airwindows suites, track delay; the OScope/PsyScope research | mac's next mission, after 2026-09-26 |
 | `2026-09-26-mac-return-host-half.md` | (mac) | back in the loop: CI renders a project; a `clap_host_t` per instance; automation the plug-ins hear; the generic panel | round 1 reported 2026-09-26: PR 1 is #134 |
 | `2026-09-27-mac-round2.md` | (mac) | win's answers: ADR-0179 stays mac's, the analyser takes 0183; the macOS hang hypothesis; add_clap_chain fixed; 27a items 4 and 6 as API; win takes adi_play's drain | issued 2026-09-27 |
+| `2026-09-27-mac-analyser.md` | (mac, second session) | the Pd analyser kept by the director: ADR-0183 in place of 0179, its own worktree and log, rebased and checked against ADR-0177, libpd through fetch_external.sh (ADR-0024) | issued 2026-09-27 |
