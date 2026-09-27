@@ -816,7 +816,8 @@ jobs:
           python3 adi_daw/tools/make_demo_project.py render/clap.adi --clip-rates 48000
           python3 adi_daw/tools/add_clap_chain.py render/clap.adi \
                   com.adi.airwindows.sub=Sub
-          "$play" render/clap.adi --search "$ADI_CLAP_DIR" --render 4 --require-devices
+          "$play" render/clap.adi --search "$ADI_CLAP_DIR" --render 4 \
+                  --require-devices --require-peak -60
 
       # The fixture VST3 (ADR-0100) is built into the tree and found through
       # --fixture, so this needs nothing installed on the runner either.
@@ -839,7 +840,8 @@ jobs:
           echo "fixture uid $uid"
           python3 adi_daw/tools/make_demo_project.py render/vst3.adi \
                   --clip-rates 48000 --midi --vst3-uid "$uid"
-          "$ADI_PLAY" render/vst3.adi --fixture --render 4 --require-devices
+          "$ADI_PLAY" render/vst3.adi --fixture --render 4 \
+                  --require-devices --require-peak -60
 
       # PROVE THE GATE CAN FAIL. A render step that passes because its check
       # stopped checking looks exactly like a render step that passes. This
@@ -853,3 +855,22 @@ jobs:
             exit 1
           fi
           echo "ok -- a stand-in is a failure"
+
+      # PROVE THE PEAK GATE CAN FAIL TOO. --require-devices proves a plug-in
+      # LOADED; it cannot prove the graph made a sound, and a plug-in that
+      # loads and outputs nothing passes every device count there is. This
+      # renders the SAME project from 8 s, past the end of its clips: every
+      # device still loads, and the master measures about -142 dBFS.
+      #
+      # Note it is a floor and not a match on the word "silence": adi_play
+      # calls a peak silence only when it is exactly zero, and an idling
+      # plug-in is not exactly zero.
+      - name: --require-peak fails when the devices load but nothing is heard
+        run: |
+          set -euo pipefail
+          if "$ADI_PLAY" render/clap.adi --search "$ADI_CLAP_DIR" \
+                         --from 8 --render 1 --require-devices --require-peak -60; then
+            echo "::error::a silent render passed --require-peak"
+            exit 1
+          fi
+          echo "ok -- devices loaded and nothing heard is a failure"

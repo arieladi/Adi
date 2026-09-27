@@ -117,7 +117,33 @@ The three unbounded `--parallel` calls in the OTHER jobs are left alone. They
 have been green for weeks and build far fewer files; fixing what is not proven
 broken is how a passing job turns red.
 
-### 7. Not mine, but in the tree
+### 7. A verifier found the hole in my own gate
+
+Re-running the claim-checks the usage limit killed returned six TRUEs and one
+thing worth far more than them:
+
+> *"CI gates only on adi_play's exit code, never on the printed peak, so a
+> silent render would still pass those two steps."*
+
+Correct. `--require-devices` proves a plug-in LOADED. It does not prove the
+graph made a sound, and `play.cpp`'s own `dbfs()` helper says so twelve lines
+above the code I wrote: *"The graph ran" and "audio came out" are different
+claims.* I gated the first and called it done.
+
+`--require-peak DBFS` now gates the second, as an exit code rather than a
+grep, for the same reason as `--require-devices`.
+
+**It is a FLOOR, and the first version in my head was not.** I assumed the
+check could match the word "silence" — until I measured. A render past the end
+of its content reads **-142.1 dBFS**, not silence, because `dbfs()` calls a
+peak silence only when it is EXACTLY zero and an idling plug-in is not zero. A
+word-match would have passed a dead render.
+
+Four exit paths, all proved before committing: 0 audible, 3 loaded-but-silent,
+2 missing plug-in, 0 ungated. CI renders the same project from 8 s and
+REQUIRES the failure, beside the step that requires the stand-in failure.
+
+### 8. Not mine, but in the tree
 
 Twenty stray `<name> 2.cpp` / `<name> 2.hpp` files under `src/` and `tests/`,
 all dated 21 Sep 07:21 — copies of the files as they stood at the end of mac's
