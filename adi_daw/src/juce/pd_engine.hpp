@@ -202,6 +202,36 @@ public:
     /// and reading `s_thing` later is safe as well as cheap.
     void bindParameters(const PdDeclarations& decls);
 
+    /// What `[adi.transport $0]` receives -- ADR-0188 d3's field list exactly.
+    ///
+    /// **NO ABSOLUTE TICK COUNT, and that is the whole shape of it.** Pd's
+    /// numbers are 32-bit floats, exact for integers only to 2^24 =
+    /// 16,777,216, and ADI's 5,765,760 ticks per quarter note (SPEC 4.2) pass
+    /// that within three quarter notes. Bar, beat and ticks-within-the-quarter
+    /// are each small enough to stay exact for as long as anyone plays.
+    struct Transport {
+        bool playing = false;
+        double bpm = 120.0;
+        int timeSigNumerator = 4;
+        int timeSigDenominator = 4;
+        /// 1-based, as a musician counts them.
+        double bar = 1.0;
+        double beat = 1.0;
+        /// 0 .. ADI_PPQ-1.
+        double ticksInQuarter = 0.0;
+    };
+
+    /// **THE ENGINE DOES NOT YET CARRY TRANSPORT TO A NODE.** `NodeIo` has a
+    /// sample rate and nothing else (graph.hpp), so the device host has
+    /// nothing to pass on. That is `src/adi/engine/**`, which is win's, and it
+    /// is the one piece missing: everything from here to the patch is built
+    /// and proved. Until then a caller sets it directly, which is also how the
+    /// test drives it.
+    ///
+    /// Audio thread or message thread, before `process`. Sent into the patch
+    /// at the start of each segment, with the MIDI and before the audio.
+    void setTransport(const Transport& t) noexcept;
+
     /// Message thread, before `prepare`. Which MIDI a patch's `[notein]`,
     /// `[ctlin]` and `[bendin]` receive -- ADR-0194.
     ///
@@ -311,6 +341,15 @@ private:
     /// `sys_lock()` on every call, which is the same reason `sendParameter`
     /// does not use `libpd_float`.
     void deliverMidi(const engine::MpeOut& m) noexcept;
+
+    /// AUDIO THREAD. One list to `<$0>-aditr`, built on the stack.
+    void deliverTransport() noexcept;
+
+    Transport transport_{};
+    bool transportSet_ = false;
+    /// The receive symbol, resolved once in `open` for `sendParameter`'s
+    /// reason: `gensym` on the audio thread allocates for an unseen name.
+    void* transportSymbol_ = nullptr;
 
     /// Engine events -> MIDI, per device and stateful: a member channel is
     /// allocated at note-on and released at note-off.

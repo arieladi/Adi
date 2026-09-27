@@ -167,4 +167,10 @@ struct PdDeclarations {
 /// cannot address an array where a parameter is meant and have it half work.
 [[nodiscard]] std::string pdArrayReceiveName(int dollarZero, std::int32_t id);
 
+/// The receive name the host sends the transport to: `<$0>-aditr`, which is
+/// what `adi.transport.pd` listens on (ADR-0188 d3). A third stem, for the
+/// reason the second one exists: one list arriving where a parameter was meant
+/// should fail outright rather than half work.
+[[nodiscard]] std::string pdTransportReceiveName(int dollarZero);
+
 }  // namespace adi::device

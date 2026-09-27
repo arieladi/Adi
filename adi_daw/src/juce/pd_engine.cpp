@@ -262,6 +262,11 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
         return false;
     }
     dollarZero_ = libpd_getdollarzero(patch_);
+    // Resolved once, here, for `sendParameter`'s reason: `gensym` on the audio
+    // thread allocates for a name Pd has not seen, and `pd_list` by name would
+    // do exactly that every block.
+    transportSymbol_ = static_cast<void*>(
+        gensym(pdTransportReceiveName(dollarZero_).c_str()));
 
     // THE [loadbang] REPORT CANNOT BE CAUGHT, and that is structural rather
     // than an ordering mistake to fix. The receive name is built from `$0`,
@@ -388,6 +393,13 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
 
     selectInstance();
     segments_.fetch_add(1, std::memory_order_relaxed);
+
+    // --- transport, then MIDI, then the audio both belong to ----------------
+    //
+    // Transport first: a patch that reads bar and beat to decide what a note
+    // means must have this block's position before the note arrives, not
+    // after.
+    if (transportSet_) deliverTransport();
 
     // --- MIDI in, before the audio it belongs to (ADR-0194) ------------------
     //
@@ -557,6 +569,31 @@ bool LibPdEngine::sendParameter(std::int32_t id, float value) noexcept {
 
 void LibPdEngine::setExpressionRoute(engine::ExpressionRoute route) noexcept {
     midiRoute_ = route;
+}
+
+void LibPdEngine::setTransport(const Transport& tr) noexcept {
+    transport_ = tr;
+    transportSet_ = true;
+}
+
+void LibPdEngine::deliverTransport() noexcept {
+    t_symbol* const sym = static_cast<t_symbol*>(transportSymbol_);
+    // A patch with no [adi.transport] binds nothing, so this is the whole cost
+    // of transport for every patch that does not ask for it.
+    if (sym == nullptr || sym->s_thing == nullptr) return;
+
+    // On the stack, and `pd_list` rather than `libpd_list`: the libpd entry
+    // point would take `sys_lock()` and build the atoms with its own
+    // allocating message stack. ADR-0188 d3's field list, in order.
+    t_atom at[7];
+    SETFLOAT(at + 0, transport_.playing ? 1.f : 0.f);
+    SETFLOAT(at + 1, static_cast<t_float>(transport_.bpm));
+    SETFLOAT(at + 2, static_cast<t_float>(transport_.timeSigNumerator));
+    SETFLOAT(at + 3, static_cast<t_float>(transport_.timeSigDenominator));
+    SETFLOAT(at + 4, static_cast<t_float>(transport_.bar));
+    SETFLOAT(at + 5, static_cast<t_float>(transport_.beat));
+    SETFLOAT(at + 6, static_cast<t_float>(transport_.ticksInQuarter));
+    pd_list(sym->s_thing, &s_list, 7, at);
 }
 
 void LibPdEngine::deliverMidi(const engine::MpeOut& m) noexcept {

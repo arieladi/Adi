@@ -1,0 +1,14 @@
+#N canvas 0 50 720 500 12;
+#X text 20 10 adi.param -- declares a PARAMETER (ADR-0177 d5). Licence MIT \, like adi.array \, so a patch carrying it can be shared under any licence.;
+#X text 20 60 [adi.param \$0 <id> <min> <max> <default> <unit> <curve> <name> [<item>...]];
+#X text 20 110 The outlet carries the parameter's value \, in its own unit \, through its own curve. Connect it wherever the value is needed.;
+#X text 20 170 IN VANILLA PD nothing sends to the receive name \, so [loadbang] is the only source and the parameter sits at its default for the life of the patch. That is the promise this file exists to keep: vanilla Pd opens the patch and every parameter plays at its default.;
+#X text 20 270 IN THE DAW the host sends the real value to <\$0>-adi-<id> \, on the audio thread \, before the block (ADR-0188 d3). It resolves the receive symbol once and never calls gensym again \, which is why only DECLARED names are ever sent to.;
+#X text 20 370 The DECLARATION is the text of the box above \, read from the patch file without running Pd (ADR-0177 fix 3). This abstraction is what makes the patch playable in vanilla Pd \; it is not how the DAW learns the parameter exists.;
+#X obj 20 440 r \$1-adi-\$2;
+#X obj 180 400 loadbang;
+#X obj 180 440 f \$5;
+#X obj 20 480 outlet;
+#X connect 6 0 9 0;
+#X connect 7 0 8 0;
+#X connect 8 0 9 0;
