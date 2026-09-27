@@ -220,6 +220,18 @@ public:
     /// Audio thread. The `DeviceInstance::process` contract, including
     /// ADR-0078: `io.in`/`io.out` address the BLOCK, `blockOffset` the segment.
     virtual void process(const engine::NodeIo& io) noexcept = 0;
+
+    /// Delay the ENGINE adds, on top of whatever the patch reports.
+    ///
+    /// Zero for an engine that has none, which is why it has a default: the
+    /// fakes in the tests are exactly that, and the contract's own tests must
+    /// not have to know this exists. A real libpd engine is not zero -- Pd's
+    /// block is 64 frames and the graph's segments are any length at all, so
+    /// the adapter between them costs one Pd block. That is latency the graph
+    /// has to compensate for like any other, and a patch reporting 0 while its
+    /// engine silently delays 64 samples is the misalignment ADR-0058 exists
+    /// to remove (ADR-0183).
+    [[nodiscard]] virtual std::int32_t adapterLatencySamples() const noexcept { return 0; }
 };
 
 /// A Pd patch in a chain, wired into delay compensation through the ordinary

@@ -193,7 +193,12 @@ void PdDevice::process(const engine::NodeIo& io) noexcept {
 }
 
 std::int32_t PdDevice::latencySamples() const noexcept {
-    return loaded_ ? latency_.latencySamples() : 0;
+    // The patch's reported delay PLUS the engine's own. A patch that reports 0
+    // through an engine that buffers a Pd block still delays the signal by that
+    // block; claiming 0 would compensate every other track against a delay that
+    // is 64 samples short of the truth (ADR-0183).
+    if (!loaded_) return 0;
+    return latency_.latencySamples() + engine_->adapterLatencySamples();
 }
 
 }  // namespace adi::device

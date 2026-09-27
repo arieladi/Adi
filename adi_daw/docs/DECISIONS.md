@@ -13918,3 +13918,380 @@ code.
 - which players need Device Library Plus, and the key for writing it (d2);
 - the AAC decoder on Linux (d4);
 - the trademark clearance (d1).
+
+---
+
+## ADR-0183 — The analyser is a Pd device with a published-array contract, a second floating view, and an AGPL escalation taken deliberately — `DECIDED (direction)` (2026-09-27) — **DIRECTOR'S INSTRUCTION; MAKES ADR-0116 EXACT; AMENDS ADR-0050 §"What this does not decide"; DEPENDS ON ADR-0035 AND ADR-0177**
+
+**Director's instruction.** Build the flagship analyser: Adi's Max for Live
+spectrum meter, ported to a Pd DSP tier with a C++ UI, with a big-window mode,
+an EXO tab cloned from sMexoscope, and a spectrogram matching Tritik VISU.
+Four questions were put to him before any code and he ruled on all four; this
+records the rulings and makes ADR-0116 exact where it left the contract open.
+
+### Where this starts from, and what is not there yet
+
+ADR-0116 set the direction — a Pd device may have a second, floating view — and
+left two things open that nothing has since built:
+
+- **libpd is not vendored.** `third_party/` has JUCE, CLAP, airwin2rack and the
+  rest; there is no libpd and no reference to it in `CMakeLists.txt`.
+  `pd_device.hpp` says so itself: the engine adapter "arrives with libpd itself
+  (ADR-0035 has no libpd in the tree yet)". The three patches in `pd/` are
+  artefacts of the direction; nothing opens them.
+- **Published arrays do not exist.** ADR-0116 d2 says the device contract gains
+  them beside parameters. No spelling of `publishedArray` appears in `src/`.
+
+ADR-0177 closes the *parameter* half of that contract. It was decided on
+2026-09-25, approved by the director as written on 2026-09-26 and merged
+before this work rebased onto it — but it shipped **no code**: nothing in
+`src/`, `tests/` or `pd/` on main reads or writes an `[adi.param]`. So the
+analyser has two hard prerequisites, and neither is the analyser.
+
+### Decisions
+
+1. **The published-array contract is `[adi.array]`, declared exactly as
+   `[adi.param]` is.**
+
+   ```
+   [adi.array $0 <id> <length> <rate> <name>]
+   ```
+
+   **This first sketch is superseded by d13 below**, which adds `min`,
+   `max` and `unit` after building it. The final form is
+   `[adi.array $0 <id> <length> <rate> <min> <max> <unit> <name>]`, and
+   that is the one the parser implements. The sketch is left here
+   because d13 is only readable against what it corrects.
+
+   It takes ADR-0177's four corrections rather than inventing its own answers,
+   because an author who has learned one declaration should not have to learn a
+   second grammar for the thing beside it:
+
+   - **`$0`** for the same reason — Pd's send/receive names are global within an
+     instance (ADR-0095), so two analysers on two tracks would otherwise write
+     one name.
+   - **`<id>`** is the author's fixed positive integer, never the name. ADR-0177
+     d1's reasoning carries unchanged: a renamed array must not orphan whatever
+     points at it.
+   - **The DAW allocates nothing and scans nothing.** A patch that gains an
+     array changes the project, and a change with no op is what ADR-0003 forbids
+     and what ADR-0177 named as the fatal flaw of "the DAW scans the patch".
+   - **`<rate>`** is how often the patch writes it, in hertz, declared and not
+     guessed. The reader needs it to know what stale means.
+
+2. **Transport is a lock-free double buffer per array, written by the audio
+   thread, read once per frame.** ADR-0116 d3 in its exact form: ADR-0050 d4's
+   meter scalar generalised, not a new mechanism. The array is the unit of
+   atomicity — a reader that saw half of one spectrum and half of the next would
+   draw a frame that never existed in the signal, which is worse than a stale
+   one because it is not wrong in any direction a person could allow for.
+
+3. **OpenGL is approved now, ahead of the step-7 measurement.** ADR-0050 closes
+   with "Whether `ArrangementCanvas` wants an `OpenGLContext` … **Measure it at
+   step 7**, do not assume it now", and ADR-0157 d4 repeats it. The director
+   overrides that deferral for the analyser: the reassigned spectrogram binds
+   its grid to a texture and a fragment shader does the interpolation, colour
+   mapping and scroll. **The deferral stands for `ArrangementCanvas`** — this
+   approval is the analyser's, and the arrangement is still measured at step 7.
+
+4. **There is no second clock.** Rendering is locked to the window's
+   `VBlankAttachment`, which is ADR-0050 §1 unamended. A detached 120 Hz timer
+   was considered and refused: one clock draining coalesced dirt is the decision
+   that makes an agent emitting ops faster than a human survivable, and a
+   spectrogram is not the thing to spend it on. A 120 Hz panel gives 120 frames
+   from the same attachment and needs nothing added.
+
+5. **The EXO tab uses sMexoscope's own buffer, not the scope tap.** It was put
+   to the director that `scope.hpp` already has a lock-free ring with timeline
+   stamps, that ADR-0167 d7 already amended ADR-0050 d4 to permit it, and that a
+   Pd-side buffer would make a third audio-to-UI path in an architecture that
+   counts them. He ruled for the native buffer anyway, and the reason is the
+   stronger one: the tab's value is being a *behavioural clone*, and triggering,
+   freezing and syncing behave the way they do because of the buffer they read.
+   A faithful clone on a different buffer is a different instrument that looks
+   the same. **The count of audio-to-UI paths therefore goes to three**, named
+   here so it stays counted: the meter scalar (ADR-0050 d4), the scope tap
+   (ADR-0167 d7), and this.
+
+6. **The project escalates to AGPL-3.0, deliberately and at project level.**
+   PerceptoMap, whose reassigned-STFT logic is ported directly, is AGPL-3.0.
+   The director accepts it, and the reasoning is that the binary already carries
+   AGPLv3 obligations through JUCE — `CMakeLists.txt` takes the AGPL grant, not
+   the free tier — so declining PerceptoMap to hold a GPLv3 boundary would
+   preserve a boundary that is not there. `LICENSE` says GPL-3.0 and now
+   understates the obligation; correcting it is part of this work, not a
+   footnote to it. The other sources are compatible without escalation:
+   sMexoscope is GPL-3.0, libtfr is `GPL-2.0-or-later` — verified in its
+   headers, not from GitHub's label, which shows only "GPL-2.0" and would have
+   read as a blocker.
+
+7. **What ports from the Max for Live build is the measurement, not the code.**
+   The JS drawing layer is discarded. What carries, with its acceptance numbers,
+   is what was made correct there and would be re-derived wrongly here:
+   coherent-gain calibration (a full-scale sine reads 0.00 dBFS at every block
+   size and window), the 4.5 dB/octave slope pivoting at 1 kHz, RMS ballistics
+   matched to bx_meter, correlation and goniometer, and the autocorrelation
+   period detector with its octave-error and first-local-maximum rules. Each
+   arrives with the test that proved it.
+
+8. **The order is prerequisites first, and the analyser cannot lead.** libpd
+   vendored and running one existing patch end to end; then the array contract
+   above; then the port. Steps that depend on a Pd device the DAW cannot open
+   are not started before it can.
+
+### What building the runtime found, and what it changes
+
+libpd is now vendored, pinned and running, and three things turned up that were
+not visible from the ADRs. All three are measured, in
+`tests/test_pd_engine.cpp`.
+
+9. **`$0` is unique per INSTANCE, not per process, and ADR-0095 decision 1
+   assumed otherwise.** `$0` comes from `canvas_getdollarzero()`, which is
+   per-instance state. With PD_MULTI on -- and it must be on, see the CMake
+   comment -- opening the same patch in two instances returns the SAME `$0`
+   both times, so both build the receive name `1003-report_latency` and one
+   table keyed on `$0` cannot tell them apart. The routing table is therefore
+   per instance, and the float hook asks `libpd_this_instance()` for the only
+   context it has. Inside an instance ADR-0095's reasoning is untouched.
+
+10. **The `[loadbang]` latency report cannot be received, by anyone.** The
+    receive name is built from `$0`; `$0` is only knowable from the opened
+    patch; `[loadbang]` fires inside `libpd_openfile`. So the early report has
+    already been sent to nobody before a host can bind, whatever order the host
+    uses. ADR-0095 decision 2 frames the query after `prepare` as a correction
+    for a value sent at the wrong sample rate. It is not a correction: it is the
+    only report a host ever gets, which makes it load-bearing rather than
+    belt-and-braces -- without it a patch's latency is never learned at all.
+
+11. **The patches in `pd/` are abstractions, and libpd cannot render one.**
+    `adi-rmsc.pd`, `adi-eq8.pd` and `adi-limiter.pd` are `inlet~`/`outlet~` with
+    no `adc~` and no `dac~`. `libpd_openfile` opens a patch as a TOP-LEVEL
+    canvas, where `inlet~` connects to nothing. The patch opens, Pd renders its
+    blocks, and every output sample is zero, with no error anywhere to say why.
+    A device patch has to reach `adc~`/`dac~` somehow and there are three ways
+    -- write device patches as top-level canvases; generate a wrapper per
+    device that instantiates the abstraction between `adc~` and `dac~`; or keep
+    abstractions and pass the wrapper's `$0` in as `$1`, which changes
+    ADR-0177's grammar. **The second breaks the latency protocol** as it
+    stands: the
+    abstraction's `$0` is not the wrapper's, and `libpd_getdollarzero` returns
+    the wrapper's, so the host cannot address the patch it opened. That is the
+    question to settle before any device patch is written, and it is win's,
+    since `tools/gen_pd_patches.py` and ADR-0096 own those patches.
+
+12. **The block adapter costs one Pd block, reported.** `NodeIo` carries a
+    segment, not a block, so an event at frame 100 splits 512 into 100 and 412
+    and the engine practically never sees a multiple of 64. `PdPatchEngine`
+    gains `adapterLatencySamples()`, defaulting to 0 so the contract's own
+    fakes are unaffected, and `PdDevice::latencySamples()` adds it to what the
+    patch reports. A patch reporting 0 through an engine that delays 64 is
+    the misalignment ADR-0058 exists to remove.
+
+### What building `[adi.array]` found
+
+13. **The grammar gained min, max and unit**, against decision 1's first
+    sketch of `$0 id length rate name`. That is ADR-0177 fix 2 -- "the
+    declaration is complete" -- applied to arrays rather than an addition: a
+    renderer given a length and a rate still has to guess the value range, and
+    a guess about a dB floor draws a picture that is wrong in a way nobody can
+    see. The patch knows; it says. Final form:
+    `[adi.array $0 <id> <length> <rate> <min> <max> <unit> <name>]`.
+
+14. **Parameters and arrays have separate id spaces.** A parameter's id IS
+    `plugin_params.param_id` (ADR-0177 d1); an array is never automated, mapped
+    or bound. One shared space would make adding a display change what an
+    automation lane points at.
+
+15. **`$0` does not expand in a MESSAGE box.** It expands in an object box
+    only. A message box written `; $0-adiarr-1 0 0.5` targets the receiver
+    `0-adiarr-1` and Pd reports "no such object" -- the patch loads, the array
+    stays at zero, and nothing points at the cause. The `$0` has to live in an
+    object: `[s $0-adiarr-1]` fed by a plain message box. Anything the DAW or
+    its generator writes must follow that, and `tools/gen_pd_patches.py` should
+    learn it before it emits a declaration.
+
+16. **Under PDINSTANCE the search path is per instance, not process-wide.**
+    `libpd_add_to_search_path` called before an instance exists lands on
+    whichever instance happens to be current, or on none. The only symptom is
+    the abstraction failing to create, which Pd reports by printing the
+    object's text and nothing else. `LibPdEngine` remembers paths and applies
+    them after its instance is selected.
+
+17. **One expression decides the double buffer's slot.** Writer and reader
+    derived it separately at first and disagreed, so every read returned the
+    PREVIOUS array -- a display one frame behind, for ever, with nothing to
+    show for it. An even sequence is settled, `seq/2` counts publications, the
+    one being written is `(seq/2)+1`, and both sides take the slot from that.
+
+### What ADR-0188 asked of this engine, and what enforcing it found
+
+ADR-0188 arrived after the runtime did and closed ADR-0177's open questions.
+Two of its decisions land on this engine, d8 and d3, and both were implemented
+here rather than noted. All of the below is asserted in
+`tests/test_pd_engine.cpp`.
+
+18. **ADR-0188 d8 -- "nothing loads from disk" -- cannot be enforced either of
+    the two ways that suggest themselves.** Both were read in Pd 0.56's
+    `s_loader.c` at the pinned commit, and both fail:
+    - **A registered loader cannot refuse.** `sys_register_loader` APPENDS to
+      the loader list, and `sys_do_load_lib` is that list's static head. A
+      loader registered by the host therefore runs only after the default has
+      already searched every path and loaded whatever it found. There is no
+      hook that runs first.
+    - **Building libpd without dynamic loading does not cover Windows.**
+      `HAVE_LIBDL` gates only the `dlopen` branch; the `#ifdef _WIN32` branch
+      above it calls `LoadLibrary` regardless of what `HAVE_LIBDL` says. A
+      guard that holds on two platforms of three is the kind that looks done.
+
+    **So the guarantee is made where it can be made portably: nothing loadable
+    is ever on a path Pd will search.** Before `libpd_openfile`, the engine
+    refuses the patch's own directory and every search path it was given if
+    either holds a file with an extension Pd would try, and it refuses a patch
+    whose text contains `[declare -lib]`, `-stdlib`, `-path` or `-stdpath` --
+    the one object that can defeat the discipline from inside the patch. The
+    extension list is deliberately a superset of every platform's, because Pd
+    builds its own at runtime and neither exports nor accepts one.
+
+    **The danger is measured, not assumed.** With a file called
+    `adi_probe_external.pd_darwin` dropped beside a patch that names that
+    object, Pd called `dlopen` on it -- the console carries the path and the
+    loader's reply. The only reason nothing ran is that the planted bytes are
+    not a library. A real one would have run its setup function before any
+    other object in the patch was made.
+
+19. **Refusing externals does not refuse abstractions, and that is Pd's own
+    ordering rather than luck.** `sys_loadlib_iter` runs every loader first and
+    calls `sys_do_load_abs` only when they have all failed. So blocking the
+    file the loaders would have found leaves the abstraction path untouched,
+    which is what makes d8 affordable at all: `adi.array.pd` and
+    `adi.param.pd` keep resolving through exactly the paths whose externals are
+    refused.
+
+20. **Pd reports almost everything to its console and nowhere else.** An object
+    it cannot make is not an error `libpd_openfile` returns: the patch opens,
+    with a hole in it, and Pd says so once, in a print. Without a hook that is
+    the whole report, and a patch that opened missing half its objects looks
+    exactly like one that opened whole. `LibPdEngine` now keeps a per-instance
+    console -- per instance for the same reason the float hook is, since under
+    PDINSTANCE the hooks live in the instance and `$0` cannot tell two apart.
+
+21. **`libpd_float` cannot be used on the audio thread, twice over, and
+    ADR-0188 d3's "only declared names" is why it matters.** `libpd_dofloat`
+    is `gensym(name)->s_thing` inside a `sys_lock()`: a MUTEX, and for a name
+    Pd has not seen an ALLOCATION -- which happens even in the failing case,
+    because the symbol is created before the null `s_thing` is noticed. So
+    d3's rule is not a style preference; sending by name from the audio thread
+    is a dropout waiting for the first unrecognised parameter.
+
+    `bindParameters` therefore resolves each declared parameter's `t_symbol*`
+    once, on the message thread, and `sendParameter` reads `s_thing` off it
+    from the audio thread with no `gensym` and no lock. A `t_symbol*` never
+    moves and is never freed, so this is cheaper AND safer than the by-name
+    call, not a trade. Proved end to end: a value sent this way comes back out
+    of Pd through a published array, and follows when it changes.
+
+22. **ADR-0177 d5's vanilla-Pd promise, measured.** `adi.param.pd` does not
+    exist yet, so `tests/pd/adi-param-proof.pd` is exactly the case d5
+    describes: the `[adi.param]` box does not create, Pd says so, **the patch
+    opens anyway**, that parameter is silent, and the declaration is still
+    readable text -- which is the half ADR-0177 fix 3 rests on. All four are
+    asserted against that file.
+
+23. **Transport is a follow-up, and the analyser does need it.** ADR-0188 d3
+    specifies `[adi.transport $0]` -- playing or stopped, BPM, time signature,
+    bar, beat, and ticks within the quarter, never an absolute tick count,
+    because Pd's 32-bit floats lose exactness after three quarter notes at
+    ADI's 5,765,760 ticks. The analyser needs it: the DJ-style scope's whole
+    behaviour is a waveform scrolling locked to the bar, and the Max for Live
+    build syncs that scroll to the host tempo.
+
+    It is not built here for two reasons, both about where it belongs rather
+    than what it costs. The abstraction sits "beside `adi.param.pd`" and that
+    file is win's and unwritten; and the host half is the parameter tier's
+    audio-thread send, which is d21 above with a different payload. Building it
+    against an abstraction that does not exist yet would be building half of it
+    twice.
+
+    **ADR-0188 d3's range rule is not this engine's.** "A range change keeps the
+    real value, clamped, and recomputes the normalized position, in the same
+    `device.loadState`" is the device layer's, where the parameter rows and the
+    op live. Nothing here reads or writes a stored value.
+
+24. **libpd does not build under MSVC without pthreads, and closing that is a
+    dependency decision, not a build fix.** CI found it, not reasoning: the two
+    Windows jobs failed in CONFIGURE, at `third_party/libpd/CMakeLists.txt:29`
+    -- "Please provide a path to the pthreads library and its headers". Pd
+    threads with pthreads; GCC and clang on Windows have winpthreads and MSVC
+    has nothing.
+
+    **The Pd runtime tier is therefore behind `ADI_WITH_PD`, ON everywhere it
+    can build and off on MSVC unless pthreads is given.** What is NOT gated is
+    the declaration parse: ADR-0177 fix 3 put the declared set behind a static
+    parse with Pd not running, so it contains no libpd, and it and its 76
+    checks build on every ABI -- including the one where the runtime does not.
+    The half of d8 that refuses `[declare -lib]` from the patch text is still
+    tested on Windows; the half that scans directories is not. That property
+    was designed for a different reason and paid for itself here.
+
+    **The two ways to close it, for win and the director:**
+    - **`pthread-win32` through `fetch_external.sh`** (Apache-2.0 in its
+      current releases, compatible in the direction we need; small). This is
+      ADR-0024's shape exactly -- pinned by tag and commit, a row in
+      EXTERNAL-CODE.md.
+    - **vcpkg's copy, installed in the Windows CI job.** Fewer files to own,
+      but it is not pinned by commit and it is not fetched by
+      `fetch_external.sh`, which ADR-0024 requires of every dependency. And it
+      would still be a shipped dependency, because it links into the binary.
+
+    It is not taken here because it is a **shipped dependency on win's
+    platform**, and EXTERNAL-CODE.md's rows record that several dependencies
+    were "director-granted". Adding one unilaterally, in the PR that vendors
+    libpd, is the kind of thing that is easier to do than to undo. Until it is
+    decided, **the Pd device tier does not run on Windows**, which is stated
+    here rather than left to be discovered by whoever first opens a Pd device
+    there.
+
+### What this amends in ADR-0177, and what it does not
+
+This ADR's decisions were written before ADR-0177 merged, so the question was
+put directly: where the two touch parameters, which one governs? **ADR-0177
+does, unchanged.** Stated explicitly so nobody has to compare two documents:
+
+- **Nothing in ADR-0177's grammar is amended.** `[adi.param $0 <id> <min>
+  <max> <default> <unit> <curve> <name> [<item> ...]]` is implemented as d1
+  writes it, including `-` for no unit, `_` reading as a space, `log` refusing
+  a min at or below 0, and a menu needing min 0 and `max + 1` items.
+- **`[adi.array]` is a sibling, not a variant.** It has its own grammar (d13),
+  its own id space (d14), and its own receive stem — `<$0>-adiarr-<id>` against
+  the parameter's `<$0>-adi-<id>`. A different stem, deliberately, so a patch
+  cannot address an array where a parameter is meant and have it half work.
+- **One reader, not two.** `parsePdDeclarations()` is one tokeniser, one `$0`
+  check, one id rule and one problem list, with the schemas differing only
+  where they must. ADR-0177 shipped no code, so this is the first
+  implementation of its grammar as well as the array's — which is the point:
+  two parsers that agree today are two parsers that disagree after the next
+  edit. It honours ADR-0177 fix 3 exactly, parsing the stored patch text off
+  the audio thread with no libpd present, and 66 of its checks run with Pd
+  absent.
+- **What stays win's.** `adi.param.pd` itself (ADR-0177 d5) and
+  `tools/gen_pd_patches.py` (d6) are not written here; the parser accepts
+  their declarations today. `pd/adi.array.pd` is this ADR's, and ships MIT for
+  ADR-0177 d5's reason: a patch carrying it can be shared under any licence.
+- **One thing ADR-0177's implementation must inherit:** d15. `$0` does not
+  expand in a message box, so a generator that emits `; $0-adi-1 0.5` writes a
+  patch that loads, reports "no such object", and leaves the parameter at
+  nothing. That applies to `[adi.param]` exactly as it does to `[adi.array]`.
+- **The one place ADR-0177 is genuinely at risk is d11,** and it is flagged
+  rather than settled here: if device patches become abstractions wrapped
+  between `adc~` and `dac~`, the abstraction's `$0` is not the wrapper's, and
+  `[adi.param $0 ...]` would have to become `[adi.param $1 ...]` with the
+  wrapper passing its `$0` in. That changes ADR-0177's grammar, which is why
+  it is win's call and not taken here.
+
+### What this does not decide
+
+Whether the Mel filterbank is applied before or after reassignment. Reassigning
+into mel bins and mel-mapping reassigned coordinates are not the same picture,
+and which is VISU's is a listening-and-looking question, not one to settle from
+the repositories. The ADR that builds the SPG tab decides it, with a reference
+render to compare against.
