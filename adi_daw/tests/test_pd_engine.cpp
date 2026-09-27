@@ -29,6 +29,7 @@
 
 #include "juce/pd_engine.hpp"
 #include "juce/pd_declarations.hpp"
+#include "juce/pd_builtins.hpp"
 #include "adi/engine/graph.hpp"
 
 // The ONE place in the tree outside pd_engine.cpp that includes libpd, and it
@@ -67,6 +68,24 @@ using adi::device::LibPdEngine;
 using adi::device::PdLatencyReceiver;
 using adi::device::parsePdDeclarations;
 
+// --- a compiled-in external, for ADR-0188 d8's other half ----------------
+//
+// A real Pd class with a real setup function, registered the way win_codex's
+// [adi.combchord~] will be: `ADI_PD_BUILTIN` beside its own definition, and
+// nothing in pd_builtins.cpp edited to admit it.
+struct t_adi_probe_builtin { t_object x_obj; };
+t_class* g_probeBuiltinClass = nullptr;
+
+extern "C" void* adiProbeBuiltinNew(void) {
+    return pd_new(g_probeBuiltinClass);
+}
+extern "C" void adi_probe_builtin_setup(void) {
+    g_probeBuiltinClass = class_new(gensym("adi_probe_builtin"),
+                                    reinterpret_cast<t_newmethod>(adiProbeBuiltinNew),
+                                    nullptr, sizeof(t_adi_probe_builtin),
+                                    CLASS_DEFAULT, A_NULL);
+}
+
 int g_failures = 0;
 int g_checks = 0;
 
@@ -82,6 +101,12 @@ void eqi(long long got, long long want, const std::string& what) {
     }
 }
 void section(const char* s) { std::printf("[%s]\n", s); }
+
+}  // namespace
+
+ADI_PD_BUILTIN(adi_probe_builtin, adi_probe_builtin_setup)
+
+namespace {
 
 /// Where `pd/` is. The test binary runs from the build directory, so the path
 /// comes from the build rather than from a guess about the working directory.
@@ -539,6 +564,68 @@ void testAParameterReachesThePatchFromTheAudioThread() {
               std::to_string(second));
 }
 
+void testACompiledInExternalIsRegisteredForEveryInstance() {
+    section("ADR-0188 d8 -- a compiled-in external, registered once, reaching every instance");
+
+    // Declared by ADI_PD_BUILTIN at the top of this file, before main. Nothing
+    // in pd_builtins.cpp names it, which is the property win_codex needs: its
+    // externals are its own files and src/juce/** is not.
+    bool listed = false;
+    for (std::size_t i = 0; i < device::PdBuiltins::count(); ++i) {
+        const char* n = device::PdBuiltins::nameAt(i);
+        if (n != nullptr && std::string(n) == "adi_probe_builtin") listed = true;
+    }
+    check(listed, "the external declared itself into the table");
+
+    std::string err;
+    check(device::PdRuntime::initialise(err), "libpd initialises: " + err);
+    check(device::PdBuiltins::registered(),
+          "and initialise ran the setup functions -- in instance 0, before any "
+          "libpd_new_instance");
+
+    // The ordering rule, refused rather than half applied: a late entry would
+    // reach only whichever instance happened to be current.
+    check(!device::PdBuiltins::add("adi_probe_late", &adi_probe_builtin_setup),
+          "adding after registration is refused");
+    check(!device::PdBuiltins::add("adi_probe_builtin", &adi_probe_builtin_setup),
+          "and so is a duplicate name");
+    check(!device::PdBuiltins::add(nullptr, &adi_probe_builtin_setup), "a null name is refused");
+    check(!device::PdBuiltins::add("adi_probe_null", nullptr), "so is a null function");
+
+    // TWO ENGINES, TWO INSTANCES, both of which must make the object. That is
+    // the whole reason registration goes in instance 0: `pdinstance_new` copies
+    // instance 0's method list into every instance created afterwards, so one
+    // registration reaches all of them. If it did not, the second engine here
+    // would open the patch with a hole in it and say so.
+    const auto consoleOf = [](const LibPdEngine& e) {
+        std::string joined;
+        for (const auto& line : e.consoleLines()) joined += line + "\n";
+        return joined;
+    };
+
+    LibPdEngine first(patchDir(), "adi-builtin-proof.pd", 2, 2);
+    PdLatencyReceiver latencyA;
+    err.clear();
+    check(first.open(latencyA, err), "the first instance opens the patch: " + err);
+    const std::string consoleA = consoleOf(first);
+    check(consoleA.find("adi_probe_builtin") == std::string::npos,
+          "and made the object -- Pd names an object it cannot create, and did "
+          "not name this one\n          console: " + consoleA);
+
+    LibPdEngine second(patchDir(), "adi-builtin-proof.pd", 2, 2);
+    PdLatencyReceiver latencyB;
+    err.clear();
+    check(second.open(latencyB, err), "a second instance opens it too: " + err);
+    const std::string consoleB = consoleOf(second);
+    check(consoleB.find("adi_probe_builtin") == std::string::npos,
+          "and made the object as well, from the same single registration\n"
+          "          console: " + consoleB);
+
+    // The negative is not hypothetical: testTheEngineReportsWhatPdPrints opens
+    // a patch naming an object that is NOT built in, and asserts Pd DOES name
+    // it. The two together are what make the absence above mean something.
+}
+
 void testPdWouldReachAnExternalBesideThePatch() {
     section("ADR-0188 d8 -- THE FAULT, PLANTED: Pd reaches a file beside the patch");
 
@@ -765,6 +852,7 @@ int main() {
     testAbstractionsStillResolveThroughTheSamePath();
     testTheEngineReportsWhatPdPrints();
     testAParameterReachesThePatchFromTheAudioThread();
+    testACompiledInExternalIsRegisteredForEveryInstance();
     // Last, and on purpose: it dlopens nothing, but it does put a class name
     // on Pd's process-wide load list, and a test that runs after it would be
     // measuring that instead of its own patch.

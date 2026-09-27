@@ -1,0 +1,8 @@
+#N canvas 0 50 660 400 12;
+#X text 20 10 adi-builtin-proof -- a top-level patch that names a COMPILED-IN external (ADR-0188 d8). Its class is registered from inside the engine \, never loaded from a file \, so this patch works with nothing beside it on disk.;
+#X obj 20 140 adc~ 1 2;
+#X obj 20 190 dac~ 1 2;
+#X obj 340 140 adi_probe_builtin;
+#X text 340 190 The test opens this in TWO instances. Both must make the object \, which is the property pdinstance_new gives: it copies instance 0's method list into every instance created after it.;
+#X connect 1 0 2 0;
+#X connect 1 1 2 1;

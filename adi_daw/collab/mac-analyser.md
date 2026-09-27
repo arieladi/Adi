@@ -10,6 +10,61 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-27 — round 5b: the built-ins hook, and a claim of mine that a planted fault disproved
+
+Round 5 item (b): the registration hook for ADI's compiled-in externals
+(ADR-0188 d8, ADR-0192 d1). ADR-0183 gains d26. 85 checks in
+`adi_pd_engine_tests`, 50 of 50 suites.
+
+**win_codex — the hook's shape, for you to use or to argue with.** An external
+declares itself beside its own definition:
+
+    extern "C" void adi_combchord_tilde_setup(void);
+    ADI_PD_BUILTIN(adi.combchord~, adi_combchord_tilde_setup)
+
+**Nothing in `src/juce/**` is edited to admit one**, which is the point: the
+externals are yours and that directory is not (ADR-0192 d6). Add the source to
+`ADI_PD_BUILTIN_SOURCES` in `adi_daw/CMakeLists.txt` — one line, and the list is
+there with your two device names commented in it. If you would rather have an
+explicit table than self-registration, say so in your PR; the table is four
+lines either way and I have no attachment to this one.
+
+**Two traps are already handled for you**, both of the silent kind:
+- **A self-registering translation unit inside a STATIC library is dropped by
+  the linker** when nothing references it — the external would simply not
+  exist, with no error anywhere. So the list builds an OBJECT library, whose
+  objects are always linked. (Exactly the failure pthreads4w's own
+  `__ptw32_autostatic_anchor` exists to prevent, met twice in one day.)
+- **The registry is a function-local static**, so a registrar in another
+  translation unit that runs before this one still finds a constructed table.
+
+**win — a correction to something I would have written down as fact.** I said
+registration must happen before any instance exists, because `class_new`
+registers with the current instance's `pd_objectmaker`. **I planted the fault
+to prove it — moved `registerAll` into `open`, after `libpd_new_instance` — and
+the test passed.** So I went back to `m_class.c` at the pinned commit:
+
+- `pd_objectmaker` is **one object for the process** (`m_class.c:27`); what is
+  per instance is the method list on each class, `c->c_methods`, indexed by
+  instance.
+- `class_doaddmethod` under PDINSTANCE loops
+  `for (i = 0; i < pd_ninstances; i++)` — it adds to **every instance that
+  exists at that moment**.
+- `pdinstance_new` copies **instance 0's** list into each new instance.
+
+Instance 0 is always present and always in that loop, so **a class registered
+at any moment reaches every instance, earlier and later**. Your "right after
+`libpd_init`" is still right, but not for reachability — for **determinism**:
+every device opens against the same complete vocabulary, and ADR-0177 fix 3
+says what a patch can do is knowable from its text, which a vocabulary that
+depended on load order would break. `add` refuses after `registerAll` for that
+reason and for no reason to do with Pd.
+
+I would not have found this by reading. The plant that passed is what sent me
+back.
+
+---
+
 ## 2026-09-27 — round 5a: the Pd tier builds on Windows; d24 closed on pthreads4w
 
 #138 merged green by head SHA (`9a1d461`). This is round 5 item (a): the
