@@ -29,6 +29,7 @@
 #include "adi/store_rows.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/juce_device_loader.hpp"
+#include "juce/play_edits.hpp"
 
 #include <juce_audio_devices/juce_audio_devices.h>
 
@@ -118,6 +119,7 @@ struct Options {
     std::string deviceType;   // "Windows Audio (Exclusive Mode)", "DirectSound", "CoreAudio"...
     std::string deviceName;
     std::vector<std::string> searchDirs;
+    bool expectNoEdits = false;   // 27a: exit 4 if a plug-in sent a parameter change back (ADR-0162)
 };
 
 int usage() {
@@ -138,7 +140,11 @@ int usage() {
         "  transaction (ADR-0142); the next run reports it under 'states'.\n"
         "  The project's audio clips play from --from (default 0) through the transport" "\n"
         "  (ADR-0151); --no-play leaves it stopped. --render renders that many seconds" "\n"
-        "  offline with no audio device and prints the master's peak per second." "\n");
+        "  offline with no audio device and prints the master's peak per second." "\n"
+        "  While it plays, the parameter-op glue watches every device and reports what" "\n"
+        "  plug-ins sent back (ADR-0124); --expect-no-edits fails the run with exit code 4" "\n"
+        "  if anything did: an automation value that returns as an edit overrides its" "\n"
+        "  own lane (ADR-0162)." "\n");
     return 2;
 }
 
@@ -153,6 +159,7 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--search")  { const char* v = next(i); if (!v) return false; o.searchDirs.emplace_back(v); }
         else if (a == "--type")    { const char* v = next(i); if (!v) return false; o.deviceType = v; }
         else if (a == "--device")  { const char* v = next(i); if (!v) return false; o.deviceName = v; }
+        else if (a == "--expect-no-edits") o.expectNoEdits = true;
         else if (a == "--tone") {
             o.tone = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.toneTrack = std::atoll(argv[++i]);
@@ -363,7 +370,10 @@ int main(int argc, char** argv) {
         std::printf("  transport playing from %.3f s%s\n", o.from,
                     session.clips() != nullptr ? "" : "  (no audio clips in this project)");
     }
-    if (o.render > 0.0) return renderOffline(session, rate, o.block, o.render);
+    if (o.render > 0.0) {
+        adi_play::EditWatch edits(session);   // after the session: destroyed before it
+        return edits.finish(renderOffline(session, rate, o.block, o.render), o.expectNoEdits);
+    }
     if (o.dry) {
         if (o.saveState && saveStates(session, *store) != 0) return 1;
         std::printf("\nok -- loaded and reported; --dry opens no device.\n");
@@ -410,11 +420,15 @@ int main(int argc, char** argv) {
                 dev->getName().toRawUTF8(), dev->getTypeName().toRawUTF8(),
                 dev->getCurrentBufferSizeSamples(), dev->getCurrentSampleRate(), o.block, rate);
 
+    // Made here, not earlier: the paths above may run --save-state, whose own
+    // glue would take the one sink each device has (DeviceInstance::setParamSink).
+    adi_play::EditWatch edits(session);
     MeteredSession metered(session);
     adi::device::DeviceBridge bridge(metered);
     bridge.setRequestedBlockSize(o.block);
     adi::device::DeviceHostTimer timer(session.devices());
     timer.start(20);
+    edits.start(50);
     mgr.addAudioCallback(&bridge);
 
     juce::MessageManager* mm = juce::MessageManager::getInstance();
@@ -485,6 +499,8 @@ int main(int argc, char** argv) {
                     n(static_cast<std::int64_t>(clips->readErrors())).c_str());
     const juce::String mismatch = bridge.mismatchReport();
     if (mismatch.isNotEmpty()) std::printf("  note      %s\n", mismatch.toRawUTF8());
+    // Before --save-state, which attaches its own glue: finish detaches ours.
+    const int editsRc = edits.finish(0, o.expectNoEdits);
 
     if (core.callbacks() == 0) {
         std::printf("\nFAILED -- the device opened but produced no callbacks.\n");
@@ -498,6 +514,7 @@ int main(int argc, char** argv) {
         std::printf("\nFAILED -- the driver changed its block size and the session saw no format change.\n");
         return 1;
     }
+    if (editsRc != 0) return editsRc;
     if (o.saveState && saveStates(session, *store) != 0) return 1;
     if (o.resize > 0 && resizeExercised)
         std::printf("  resize    exercised: a new graph at the new size on the same instances (ADR-0122 d6)\n");
