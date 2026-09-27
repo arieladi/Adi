@@ -14290,6 +14290,17 @@ here rather than noted. All of the below is asserted in
       and `implement.h` references `__ptw32_autostatic_anchor()` so the linker
       cannot drop the module that holds it.
 
+    - **libpd's headers declare every symbol `dllimport` on Windows unless
+      told otherwise, and we link the static library.** `m_pd.h` makes `EXTERN`
+      `dllexport` for libpd's own sources and `dllimport` for everyone else, so
+      `adi_core` compiled references to `__imp_libpd_init` and two dozen more,
+      and the link failed naming symbols that were in the archive all along.
+      This one was NOT caught by reading -- CI caught it, and the shape of the
+      failure is the tell: the compile was clean and only the link failed,
+      which is what a dllimport mismatch looks like. `PD_DEFINE_EXTERN`, set to
+      `extern`, is libpd's own knob for it, and it is set unconditionally
+      because on ELF and Mach-O `EXTERN` is already plain.
+
     **CI needed no change.** The Windows leg already runs
     `fetch_external.sh --build-only`, configures, builds and runs `ctest`, so
     the tier turns itself on when the dependency is present and the Pd suites

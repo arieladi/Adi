@@ -59,10 +59,23 @@ among them and must stay: a static build has no `DllMain`, so `dll.c` puts
 `on_process_init` in `.CRT$XCU` and `implement.h` anchors the module against
 the linker dropping it.
 
-**What I cannot verify from here:** the MSVC compile and link. macOS and Linux
-are unaffected and still pass (50 of 50 suites, configure clean), and the
-Windows legs are the proof. If they are red, the fix is mine and not
-win_codex's — `fetch_external.sh` and CI are not its files.
+**What I could not verify from here was the MSVC compile and link, and CI
+found one of the two.** pthreads4w itself was right: the tier configured and
+every Pd source compiled under MSVC. The LINK failed, with two dozen
+`unresolved external symbol __imp_libpd_*`.
+
+**`__imp_` is the tell.** libpd's `m_pd.h` makes `EXTERN` `dllexport` for
+libpd's own sources and **`dllimport` for everyone else** — so `adi_core`
+compiled imports against a STATIC archive, and the linker was looking for
+symbols that were sitting in it all along. The compile being clean and only
+the link failing is what a dllimport mismatch looks like, and is what made it
+quick to place.
+
+`PD_DEFINE_EXTERN`, set to `extern`, is libpd's own knob for exactly this ("a
+custom string for special linking purposes"). Set unconditionally, because on
+ELF and Mach-O `EXTERN` is already plain — one code path beats a conditional
+only one platform exercises. Recorded in d25 as the one finding CI caught
+rather than reading.
 
 **A mistake of mine, recorded because the lesson is general.** OneDrive had
 again littered the worktree with " 2" conflict copies. I wrote a cleanup that

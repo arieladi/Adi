@@ -350,6 +350,27 @@ if(NOT EXISTS "${ADI_THIRD_PARTY}/libpd/pure-data/src/m_pd.h")
         "pure-data IS the DSP; libpd without it is a wrapper around nothing.\n"
         "    bash adi_daw/tools/fetch_external.sh --build-only")
 endif()
+# LIBPD'S HEADERS DECLARE EVERY SYMBOL `__declspec(dllimport)` ON WINDOWS
+# UNLESS TOLD OTHERWISE, and we link the static library. `m_pd.h` defines
+# `EXTERN` as `dllexport` for libpd's own sources (`PD_INTERNAL`) and
+# `dllimport` for everyone else, so `adi_core` compiled references to
+# `__imp_libpd_init` and the rest, and the link failed with two dozen LNK2019s
+# naming symbols that were sitting in the archive all along. Measured, in CI:
+# the compile was clean and only the link failed, which is what a dllimport
+# mismatch looks like.
+#
+# `PD_DEFINE_EXTERN` is libpd's own knob for exactly this ("a custom string for
+# special linking purposes"). Setting it to `extern` makes `EXTERN` plain on
+# both sides -- `m_pd.h` guards it with `#ifndef EXTERN`, so this wins -- and
+# libpd's own sources stop emitting `dllexport` too, which is right for an
+# archive nobody imports from.
+#
+# It is set unconditionally rather than under `if(MSVC)`: on ELF and Mach-O
+# `EXTERN` is already plain `extern`, so this changes nothing there, and one
+# code path is worth more than a conditional that only one platform exercises.
+# A NORMAL variable, not a cache entry: libpd declares it with `option()`, and
+# under CMP0077 a normal variable of the same name makes `option()` a no-op.
+set(PD_DEFINE_EXTERN      extern)
 set(PD_MULTI              ON  CACHE BOOL "" FORCE)
 set(PD_UTILS              ON  CACHE BOOL "" FORCE)
 set(PD_EXTRA              ON  CACHE BOOL "" FORCE)
