@@ -570,6 +570,38 @@ bool ClapDevice::loadState(const std::string& role, const std::vector<std::uint8
     return ok;
 }
 
+void ClapDevice::pumpMainThread() {
+    if (glue_ == nullptr) return;
+
+    // 1. Whatever the plugin deferred with `host.request_callback()`.
+    glue_->dispatchMainThread();
+
+    // 2. ANSWER `params.request_flush()`, which was counted and never
+    //    answered before ADR-0179 (`flushRequests_` had one writer and no
+    //    reader but the accessor and a test).
+    //
+    //    params.h: flush is `[active ? audio-thread : main-thread]`. This is
+    //    the main thread, so it may only run while the plugin is NOT
+    //    processing -- and while it IS, the plugin's own process call carries
+    //    its parameter events anyway, which is the whole reason `setParam`
+    //    queues rather than flushing when active.
+    //
+    //    Answering it once per request rather than once per tick: a plugin
+    //    that asks repeatedly gets one flush per ask, and a quiet one costs
+    //    an integer compare.
+    const std::uint64_t want = glue_->flushRequests();
+    if (want == flushSeen_) return;
+    if (processing_) return;              // answer on a later tick
+    flushSeen_ = want;
+
+    if (plugin_ == nullptr || paramsExt_ == nullptr || paramsExt_->flush == nullptr)
+        return;
+    // Nothing of ours to send: the host has no pending values here, so the
+    // flush exists to let the PLUGIN push its own out through `outEvents_`.
+    events_.clear();
+    paramsExt_->flush(plugin_, events_.inputEvents(), &outEvents_);
+}
+
 std::uint64_t ClapDevice::shapeEpoch() const noexcept {
     return glue_ != nullptr ? glue_->portChanges() : 0;
 }

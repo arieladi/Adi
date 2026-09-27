@@ -213,6 +213,23 @@ public:
     /// second, because the conservative answer is the one that cannot corrupt.
     [[nodiscard]] virtual std::uint64_t restartEpoch() const noexcept { return 0; }
 
+    /// MESSAGE THREAD, from the same timer that polls the coalescer. Run
+    /// whatever this device has deferred to the main thread. ADR-0179.
+    ///
+    /// A CLAP plugin defers work with `host.request_callback()` and expects
+    /// `on_main_thread` in return; it also asks for a parameter flush with
+    /// `params.request_flush()`, which `params.h` says the host answers on
+    /// the main thread while the plugin is not processing. Neither is
+    /// something the plugin can do for itself, and NOTHING REPORTS a host
+    /// that never calls them -- the plugin simply does less than it was
+    /// written to do.
+    ///
+    /// On the contract rather than on a list of glues for the same reason
+    /// the three epochs are: `DeviceHost` drives every device it owns and
+    /// never asks what format one is (ADR-0052 d4). A device with nothing
+    /// deferred does nothing here.
+    virtual void pumpMainThread() {}
+
     /// ADR-0142 (ADR-0110 d1): a CAPTURE BOUNDARY. Moves when the plugin says
     /// its state changed in a way its parameter broadcasts do not carry -- a
     /// preset picked in its browser, a sample dropped on it: VST3's

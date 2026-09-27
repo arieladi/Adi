@@ -285,6 +285,10 @@ public:
     [[nodiscard]] std::uint64_t shapeEpoch() const noexcept override;
     [[nodiscard]] std::uint64_t restartEpoch() const noexcept override;
 
+    /// MESSAGE THREAD. Runs this plugin's deferred `on_main_thread` work and
+    /// answers any `params.request_flush()` it asked for (ADR-0179).
+    void pumpMainThread() override;
+
 private:
     /// What the plugin declares RIGHT NOW, asked rather than remembered.
     /// Used by `prepare` to decide whether reactivating is necessary at all.
@@ -378,6 +382,9 @@ private:
     /// `prepare` reactivates when it has moved -- ADR-0179's legal
     /// replacement for reading the port layout off an active plugin.
     std::uint64_t shapeSeen_ = 0;
+
+    /// `glue_->flushRequests()` already answered. Message thread only.
+    std::uint64_t flushSeen_ = 0;
     const clap_plugin_tail_t* tailExt_ = nullptr;
     const clap_plugin_latency_t* latencyExt_ = nullptr;
 

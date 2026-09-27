@@ -35,6 +35,19 @@ void eqi(std::int64_t got, std::int64_t want, const std::string& what) {
     }
 }
 
+/// A device that records whether DeviceHost pumped it. ADR-0179.
+class Pumped final : public DeviceInstance {
+public:
+    [[nodiscard]] const DeviceIdentity& identity() const noexcept override { return id_; }
+    [[nodiscard]] bool loaded() const noexcept override { return true; }
+    void process(const engine::NodeIo& io) noexcept override { passThrough(io); }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    void pumpMainThread() override { ++pumps; }
+    int pumps = 0;
+private:
+    DeviceIdentity id_;
+};
+
 /// A device that reports a latency change on demand.
 class Reporter final : public DeviceInstance {
 public:
@@ -505,6 +518,32 @@ void testChainOrderAndPlacement() {
 
 }  // namespace
 
+/// ADR-0179: every device DeviceHost owns is pumped by the tick.
+///
+/// This nearly shipped broken. `dispatchPluginCallbacks` walked a list of
+/// host-wide glues that only `watchClapGlue` filled; once the glue became
+/// per-instance, nothing filled that list, and a CLAP plugin's deferred work
+/// stopped running at all. Nothing reported it -- a plugin that never gets
+/// `on_main_thread` simply does less than it was written to do.
+void testEveryDeviceIsPumpedByTheTick() {
+    section("ADR-0179 -- the tick pumps every device, through the contract");
+
+    DeviceHost host;
+    auto a = std::make_unique<Pumped>();
+    auto b = std::make_unique<Pumped>();
+    auto* pa = a.get();
+    auto* pb = b.get();
+    host.add(std::move(a), "A", /*trackId=*/1);
+    host.add(std::move(b), "B", /*trackId=*/2);
+
+    check(pa->pumps == 0 && pb->pumps == 0, "nothing is pumped before a tick");
+    host.tick(1000);
+    check(pa->pumps == 1, "the first device was pumped by the tick");
+    check(pb->pumps == 1, "and so was the second -- no watchClapGlue anywhere");
+    host.tick(1020);
+    check(pa->pumps == 2 && pb->pumps == 2, "and again on the next tick");
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_device_host_tests -- ownership, the tick, and the rebuild loop (ADR-0082/0090)\n\n");
@@ -515,6 +554,7 @@ int main() {
     testTheRebuildLoopCloses();
     testAFailedRebuildLeavesTheSessionPlaying();
     testChainOrderAndPlacement();
+    testEveryDeviceIsPumpedByTheTick();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

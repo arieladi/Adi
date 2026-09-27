@@ -111,6 +111,16 @@ void DeviceHost::watchClapGlue(ClapHostGlue& glue, std::string name) {
 }
 
 void DeviceHost::dispatchPluginCallbacks() {
+    // EVERY DEVICE, through the contract (ADR-0179). This used to walk a list
+    // of host-wide glues that `watchClapGlue` filled -- and once the glue
+    // became per-instance, nothing filled that list, so a CLAP plugin's
+    // deferred work stopped being run at all. Nothing reported it: a plugin
+    // that never gets `on_main_thread` just quietly does less.
+    for (auto& p : devices_)
+        if (p.device != nullptr) p.device->pumpMainThread();
+
+    // The legacy list, still fed by `watchClapGlue` for a glue that has no
+    // device (tests, and a probe driving one by hand).
     for (auto* g : glues_)
         if (g != nullptr) g->dispatchMainThread();
 }

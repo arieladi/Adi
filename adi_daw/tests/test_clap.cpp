@@ -1771,6 +1771,58 @@ void testDestroyingADeviceLeavesNoDanglingPlugin() {
           "call that used to run through freed memory");
 }
 
+/// ADR-0179: request_flush is ANSWERED rather than only counted.
+///
+/// `flushRequests_` had one writer and no reader but its own accessor. The
+/// device answers it on the main thread, and only while the plugin is not
+/// processing -- params.h makes flush `[active ? audio-thread : main-thread]`.
+void testRequestFlushIsAnswered() {
+    section("ADR-0179 -- request_flush is answered, not just counted");
+
+    Fake f;
+    DeviceIdentity id;
+    id.format = "clap";
+    id.name = "Fake";
+    ClapDevice d(&f.plugin, id);
+
+    auto owned = std::make_unique<ClapHostGlue>();
+    ClapHostGlue* glue = owned.get();
+    glue->registerPlugin(&f.plugin);
+    d.adoptGlue(std::move(owned));
+
+    const clap_host_t* h = glue->host();
+    const auto* hp = static_cast<const clap_host_params_t*>(
+        h->get_extension(h, CLAP_EXT_PARAMS));
+
+    // Deferred work first: the pump runs it, and nothing else does.
+    const auto callsBefore = f.mainThreadCalls;
+    h->request_callback(h);
+    d.pumpMainThread();
+    check(f.mainThreadCalls == callsBefore + 1,
+          "pumpMainThread runs the plugin's deferred work");
+
+    // PROCESSING: the request stands, and the host does not answer it.
+    d.prepare(48000.0, 256);
+    const int flushesBefore = f.flushes;
+    hp->request_flush(h);
+    d.pumpMainThread();
+    check(f.flushes == flushesBefore,
+          "while the plugin is PROCESSING the host does not flush -- params.h "
+          "gives that to the audio thread");
+
+    // NOT PROCESSING: the same standing request is answered.
+    d.release();
+    d.pumpMainThread();
+    check(f.flushes == flushesBefore + 1,
+          "once it is not processing, the standing request IS answered, saw " +
+              std::to_string(f.flushes));
+
+    // Once per ask, not once per tick.
+    d.pumpMainThread();
+    d.pumpMainThread();
+    check(f.flushes == flushesBefore + 1, "one flush per request, not one per pump");
+}
+
 void testPrepareReactivatesWhenTheLayoutMoves() {
     section("ADR-0090 -- prepare is idempotent, EXCEPT when the ports moved");
 
@@ -2017,6 +2069,7 @@ int main() {
     testAParameterSetBeforeActivationIsFlushed();
     testAPluginsStateSignalIsABoundary();
     testDestroyingADeviceLeavesNoDanglingPlugin();
+    testRequestFlushIsAnswered();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
