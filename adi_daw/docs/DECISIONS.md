@@ -14388,8 +14388,13 @@ ADR-0183 and ADR-0188.
    - **The drop tile** on the DAW-drawn panel is the UI owner's, in step 7.
 
 5. **pthreads4w, version 3, is granted for the Pd tier on Windows.**
-   - **The licence:** Apache-2.0 except four files, which are read at the
-     pinned commit before the pin lands (ADR-0024).
+   - **The licence:** Apache-2.0 except five files, all tests. The `NOTICE`
+     at the pinned commit names four `tests/rwlock*.c` (Butenhof) and
+     `tests/threestage.c` (Hart). `pthread.c` includes none of them, so none
+     is compiled. The mac analyser session read this at the pin; this entry
+     had said four.
+   - **The pin:** the pin is on GitHub's mirror. The upstream is SourceForge,
+     and both give the same object for `refs/heads/version_3`.
    - **How it arrives:** it is fetched and pinned by `tools/fetch_external.sh`
      like every dependency.
    - **The result:** `ADI_WITH_PD` is then on for MSVC, in CI and on this PC.

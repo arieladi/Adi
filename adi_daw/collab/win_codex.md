@@ -7,6 +7,27 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
+## 2026-09-27 — #150 unstacked after #146 merged
+
+#146 merged at 19:01:53 UTC. Merged origin/main at d66313c into
+codex/colorbass-dsp in the isolated worktree. Resolved the two documentation
+conflicts by retaining main's complete decision text (including its corrected
+ADR-0192 d5) and appending our unchanged ADR-0193. Verified the full main text
+is a prefix of the resulting file; ADR-0183, ADR-0192, ADR-0193 occur in that
+order. validate_schema.py passes and counts 192 ADRs, matching README.
+
+Local verification after the merge: tools/build.bat werror passed; Git Bash
+tools/test_all.sh build passed all 5063 checks across 51 suites and all five
+validators. Test and ADR counts therefore remain 5063/51 and 192.
+
+The diff against main now contains only the eleven DSP implementation, test,
+CMake, README, reservation and own-log files; none of #146's prompt, FEATURES,
+or win-log additions remain in the PR diff. No production DSP changes in this
+merge; points 3–5 remain follow-up work. Prior head 496dbca passed all 19 jobs;
+that result does not count for the new merge head, whose CI must pass separately.
+
+---
+
 ## 2026-09-27 — #150 review: portable unsigned test lists; next-work tests recorded
 
 win's review: https://github.com/arieladi/Adi/pull/150#issuecomment-5856937945.
