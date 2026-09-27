@@ -12,6 +12,7 @@ before your first commit, and re-read it if you have been away.
 | **mac** | macOS, Apple clang / arm64 | Claude Code (team licence) | `.github/workflows/**`, `docs/UI-ARCHITECTURE.md`, macOS platform and CoreAudio, review | Nothing structural — see below |
 | **linux** | Ubuntu workstation, GCC/Clang / x86-64 | ChatGPT Codex (terminal) | Portable standard C++, headless CI and test enforcement, sanitizers, POSIX portability | OS-specific GUI or driver code; any Linux-only library; `docs/UI-ARCHITECTURE.md`; schema, ADR numbers or claims without `win` |
 | **cloud** | Claude Code on the web, Linux (an ephemeral cloud container) | Claude Code | Portable headless C++, the format and its docs, on win's assignments | JUCE, platform code, `.github/**`, `drivers/**`, other monorepo projects |
+| **win_codex** | the director's Windows 11 PC, MSVC / x64 | Codex app (OpenAI), full access, in its own worktree | The color-bass Pd devices (ADR-0192): `src/adi/dsp/combchord.*`, `src/adi/dsp/colorcab.*`, `src/adi/pd_builtins/**`, `pd/devices/**`, their tests; work win assigns | `src/juce/**`, `.github/**`, `tools/fetch_external.sh`, UI, the schema, ADR numbers or claims without `win`; the main checkout (win and the drone use it) |
 
 **Availability (director, 2026-09-26):** mac is back in the loop, a day
 early, on `collab/prompts/2026-09-26-mac-return-host-half.md`. linux (Codex)
@@ -225,6 +226,9 @@ subject, say so in your log instead of writing it twice.
 | 0189 | win | `win/pioneer-refs` | the Pioneer references: six cloned with their licences read; crate-digger's specs under MPL-2.0 close ADR-0188 d8's EPL question | used |
 | 0190 | win | `win/pioneer-refs` | the DAW is named ADI (Advanced DAW Infrastructure); ADiJ stays; ADI Live dropped, the Session view stays inside ADI (director) | used |
 | 0191 | win | `win/adij-features` | ADiJ writes Pioneer USBs and Rekordbox XML, serves CDJs over Pro DJ Link, plays stems; ADI and ADiJ stand until a trademark clearance (director) | used |
+| 0192 | win | `win/color-bass` | color-bass devices as Pd devices on compiled-in externals; `[adi.sample]`; pthreads4w for Windows; win_codex joins (director) | used |
+| 0193 | win_codex | (its first mission) | held for win_codex's DSP decisions (ADR-0192) | reserved |
+| 0194 | mac | (the analyser session's round 5) | MIDI into Pd devices | reserved |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -239,6 +243,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 |---|---|---|---|
 | `src/juce/clap_host.*`, `src/juce/device_host.*`, `src/juce/device_model.*`, `tests/test_clap.cpp`, `tests/test_device_host.cpp` | mac | `mac/clap-per-instance` | 2026-09-27 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
+| `src/adi/dsp/combchord.*`, `src/adi/dsp/colorcab.*`, `src/adi/pd_builtins/**`, `pd/devices/**`, `tests/test_combchord.cpp`, `tests/test_colorcab.cpp` | win_codex | `codex/colorbass-dsp` | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |

@@ -3,6 +3,33 @@
 macOS · Apple clang · arm64 · Claude (team licence).
 Only the `mac` agent writes to this file. Newest entry at the top.
 
+## Rules I work to
+
+Each one is here because it cost something, and the cost is named.
+
+1. **A claim in a handoff about the repo is a QUESTION until checked.** It
+   binds the SENDER first: twice I sent win a status claim about his machine
+   as a fact. (2026-09-21, 2026-09-26)
+2. **Anything touching `src/juce/**` gets a `-DADI_WITH_JUCE=ON` build before
+   it is pushed.** A green suite from a build tree that does not contain the
+   file I edited is not evidence about that file. (2026-09-27, win's round 6)
+3. **A gate reports success only over what it actually covers.** One defect,
+   three shapes: `-Werror` over objects built before the flag; a probe's
+   `#ifdef`'d blocks absent on one platform; `test_all.sh` over a build with
+   the JUCE targets switched off. Ask what a green result did NOT compile.
+4. **A planted defect that does not change the file is not evidence.** Verify
+   the bytes changed before believing the suite. And a plant that legitimately
+   PASSES is a result, not a hole — say which it is. (2026-09-27)
+5. **Prove a check can fail**, in CI and not only locally. `--require-devices`
+   and `--require-peak` each have a CI step that REQUIRES the failure.
+6. **Reserve an ADR number and push the reservation ALONE** before writing the
+   entry. A reservation that is not visible before it is spent is not one.
+7. **Stage explicit paths. Never `git add -A`** — this is a public monorepo
+   with other projects' untracked work in it.
+8. **A conflicting PR has NO CI, not stale CI.** Merge first, then read CI;
+   "green by head SHA" cannot be attempted in that state. (2026-09-27)
+
+
 ---
 
 ## 2026-09-27 — PR 2: a clap_host_t per instance (ADR-0179), and a gate that covered less than it looked like

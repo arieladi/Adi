@@ -100,6 +100,22 @@ struct ParamDescriptor {
     bool          hasRealRange = false;
     bool          automatable = true;
     std::uint32_t flags = 0;
+
+    /// The plug-in no longer declares this parameter. ADR-0177 d4, extended
+    /// to CLAP by ADR-0179.
+    ///
+    /// **NOTHING IS DELETED.** The row keeps its place, its lanes, its
+    /// mappings and its bindings; it is shown as missing and PLAYS NOTHING,
+    /// exactly as a missing plug-in's parameters are (SPEC §7.1). A later
+    /// rescan that declares the id again picks it up, with its automation
+    /// intact -- the case ADR-0177 set as the test: a removed parameter with
+    /// ten thousand automation points loses none of them.
+    ///
+    /// It is a FLAG rather than a removal because the index is load-bearing:
+    /// `ParamEdit::paramIndex` and `ParamOps`' mirror are both keyed by it,
+    /// so compacting the list would silently repoint every held index at a
+    /// different parameter.
+    bool          missing = false;
 };
 
 /// Enough to find the plugin again, and to tell the user what is missing when

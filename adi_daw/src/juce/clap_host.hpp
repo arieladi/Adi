@@ -263,6 +263,13 @@ public:
     /// the plugin asks for a rescan.
     void rescanParams();
 
+    /// Re-read the list on `CLAP_PARAM_RESCAN_ALL`, WITHOUT renumbering.
+    /// Indices are held outside this object (`ParamEdit::paramIndex`,
+    /// `ParamOps`' mirror), so the list is reconciled by `clap_id`: a known
+    /// id keeps its index, a vanished one is kept and marked `missing`
+    /// (ADR-0177 d4), a new one is appended. ADR-0179.
+    void rescanParamsPreservingIndices();
+
     /// ADR-0142. The host this plugin was created against, for its
     /// state-signal count. `ClapHost::makeDevice` sets it; a device built
     /// by hand without one reports 0 and never signals.
@@ -299,6 +306,9 @@ private:
     /// Our index for a plugin's `clap_id`, or -1. Audio thread: a linear
     /// scan over the parameter list, no allocation.
     [[nodiscard]] std::int32_t indexOfParam(clap_id id) const noexcept;
+    /// True when this event addresses a parameter the plugin no longer
+    /// declares (ADR-0177 d4). Audio thread; a linear scan, no allocation.
+    [[nodiscard]] bool addressesAMissingParam(const engine::Event& e) const noexcept;
 
 public:
 
@@ -366,6 +376,12 @@ public:
     [[nodiscard]] static bool paramIdFromText(const std::string& s, clap_id& out) noexcept;
 
 private:
+    /// The plugin's parameter list as it declares it right now.
+    void readParamsInto(std::vector<ParamDescriptor>& out,
+                        std::vector<clap_id>& ids) const;
+public:
+
+private:
     const clap_plugin_t* plugin_ = nullptr;
     const clap_plugin_params_t* paramsExt_ = nullptr;
     const clap_plugin_state_t* stateExt_ = nullptr;
@@ -385,6 +401,8 @@ private:
 
     /// `glue_->flushRequests()` already answered. Message thread only.
     std::uint64_t flushSeen_ = 0;
+    /// `glue_->paramListRescans()` already acted on. Message thread only.
+    std::uint64_t listRescanSeen_ = 0;
     const clap_plugin_tail_t* tailExt_ = nullptr;
     const clap_plugin_latency_t* latencyExt_ = nullptr;
 
@@ -559,6 +577,23 @@ public:
     [[nodiscard]] std::uint64_t flushRequests() const noexcept {
         return flushRequests_.load(std::memory_order_acquire);
     }
+    /// `clap_host_params.rescan(CLAP_PARAM_RESCAN_ALL)` calls: the parameter
+    /// LIST itself may have changed. Separate from `stateSignals()` because
+    /// the responses differ -- a state signal means re-save the chunk, this
+    /// means re-read the declarations (ADR-0179).
+    [[nodiscard]] std::uint64_t paramListRescans() const noexcept {
+        return paramListRescans_.load(std::memory_order_acquire);
+    }
+
+    /// Parameters the plugin asked the host to drop references to, with the
+    /// flags it asked under (ADR-0179). Drained by the device on the main
+    /// thread; `clear` itself only records, because the response belongs to
+    /// the device that owns the parameter list, not to the glue.
+    struct ClearRequest {
+        clap_id id = 0;
+        clap_param_clear_flags flags = 0;
+    };
+    [[nodiscard]] std::vector<ClearRequest> takeClearRequests();
     /// MAIN THREAD. Our own `loadState` brackets itself with these, so the
     /// rescan a plugin answers a load with is not taken for the user's.
     void muteStateSignals() noexcept { ++muteDepth_; }
@@ -611,6 +646,10 @@ private:
     std::atomic<std::uint64_t> stateSignals_{0};
     std::atomic<std::uint64_t> mutedStateSignals_{0};
     std::atomic<std::uint64_t> flushRequests_{0};
+    std::atomic<std::uint64_t> paramListRescans_{0};
+    /// MAIN THREAD only: params.h annotates `clear` `[main-thread]`, so this
+    /// needs no lock and no atomic.
+    std::vector<ClearRequest> clears_;
     int muteDepth_ = 0;                          ///< main thread only
     clap_host_latency_t     latencyExt_{};
     clap_host_audio_ports_t portsExt_{};

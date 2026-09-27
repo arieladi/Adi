@@ -5,6 +5,35 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-27 — ADR-0192: color-bass devices, a sample slot, pthreads4w, win_codex
+
+**Why:** the director asked for color-bass tools (Au5's *6 Ways to Color
+Bass*) and chose Pd devices first over CLAP plug-ins that could be heard
+today. He granted pthreads4w for the Windows Pd tier, which mac's analyser
+session had left for him. A new agent, win_codex (the Codex app on this PC),
+takes the devices.
+
+**Corrections to the relayed plan, checked:**
+- Surge's Resonator is three band-pass filters (`rm_bandpass`); the comb
+  bank is Combulator, with bipolar feedback (`ct_percent_bipolar`),
+  GPL-3.0-or-later.
+- Inverted feedback drops the note an octave: Square halves the delay.
+- A Pd feedback loop through `delwrite~` is at least one block (750 Hz at
+  48 kHz), which is why the comb is an external.
+- Decay as a T60, not a feedback amount.
+- Color flattens pitch unless the loop is shortened by its phase delay.
+- No MIDI reaches a Pd device yet (#138 has none).
+- The Multimapper is not built.
+- In ADI, Pd runs on the audio thread, so an external has no "background":
+  the host builds the kernel and swaps it by crossfade.
+
+**What landed:**
+- ADR-0192, and win_codex in the roster, claims and reservations (0193 for
+  it, 0194 for the analyser session's MIDI).
+- Its log and first prompt, and mac's round 5.
+
+---
+
 ## 2026-09-27 — ADR-0191: ADiJ's export, Pro DJ Link and stems; the names stand
 
 **Why:** the director answered ADR-0189's questions and asked for stems. The

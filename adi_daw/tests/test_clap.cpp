@@ -1823,6 +1823,161 @@ void testRequestFlushIsAnswered() {
     check(f.flushes == flushesBefore + 1, "one flush per request, not one per pump");
 }
 
+/// ADR-0179 + ADR-0177 d4: RESCAN_ALL re-reads WITHOUT renumbering, and a
+/// parameter the plug-in drops is kept, marked missing, and plays nothing.
+void testRescanAllPreservesIndicesAndClearKeepsTheLane() {
+    section("ADR-0179 -- RESCAN_ALL re-keys by clap_id; a cleared parameter is kept and silent");
+
+    /// Declares a list the test can change under the host.
+    struct Listy {
+        clap_plugin_t plugin{};
+        clap_plugin_params_t params{};
+        std::vector<std::pair<clap_id, std::string>> list{
+            {10, "Alpha"}, {20, "Beta"}, {30, "Gamma"}};
+        int paramEventsHeard = 0;
+        static Listy& self(const clap_plugin_t* p) {
+            return *static_cast<Listy*>(p->plugin_data);
+        }
+        Listy() {
+            plugin.plugin_data = this;
+            plugin.init = [](const clap_plugin_t*) { return true; };
+            plugin.destroy = [](const clap_plugin_t*) {};
+            plugin.activate = [](const clap_plugin_t*, double, std::uint32_t,
+                                 std::uint32_t) { return true; };
+            plugin.deactivate = [](const clap_plugin_t*) {};
+            plugin.start_processing = [](const clap_plugin_t*) { return true; };
+            plugin.stop_processing = [](const clap_plugin_t*) {};
+            plugin.reset = [](const clap_plugin_t*) {};
+            plugin.on_main_thread = [](const clap_plugin_t*) {};
+            plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd)
+                -> clap_process_status {
+                Listy& l = self(p);
+                if (pd != nullptr && pd->in_events != nullptr) {
+                    const std::uint32_t n = pd->in_events->size(pd->in_events);
+                    for (std::uint32_t i = 0; i < n; ++i) {
+                        const clap_event_header_t* h = pd->in_events->get(pd->in_events, i);
+                        if (h != nullptr && h->type == CLAP_EVENT_PARAM_VALUE)
+                            ++l.paramEventsHeard;
+                    }
+                }
+                return CLAP_PROCESS_CONTINUE;
+            };
+            plugin.get_extension = [](const clap_plugin_t* p, const char* id)
+                -> const void* {
+                if (std::strcmp(id, CLAP_EXT_PARAMS) == 0) return &self(p).params;
+                return nullptr;
+            };
+            params.count = [](const clap_plugin_t* p) -> std::uint32_t {
+                return static_cast<std::uint32_t>(self(p).list.size());
+            };
+            params.get_info = [](const clap_plugin_t* p, std::uint32_t i,
+                                 clap_param_info_t* info) -> bool {
+                Listy& l = self(p);
+                if (i >= l.list.size()) return false;
+                *info = clap_param_info_t{};
+                info->id = l.list[i].first;
+                std::snprintf(info->name, sizeof info->name, "%s", l.list[i].second.c_str());
+                info->min_value = 0.0; info->max_value = 1.0; info->default_value = 0.0;
+                info->flags = CLAP_PARAM_IS_AUTOMATABLE;
+                return true;
+            };
+            params.flush = [](const clap_plugin_t*, const clap_input_events_t*,
+                              const clap_output_events_t*) {};
+        }
+    };
+
+    Listy f;
+    DeviceIdentity id;
+    id.format = "clap";
+    id.name = "Listy";
+    ClapDevice d(&f.plugin, id);
+    auto owned = std::make_unique<ClapHostGlue>();
+    ClapHostGlue* glue = owned.get();
+    glue->registerPlugin(&f.plugin);
+    d.adoptGlue(std::move(owned));
+
+    const clap_host_t* h = glue->host();
+    const auto* hp = static_cast<const clap_host_params_t*>(
+        h->get_extension(h, CLAP_EXT_PARAMS));
+
+    check(d.paramCount() == 3, "three parameters to begin with");
+    const std::string beta = d.paramAt(1) != nullptr ? d.paramAt(1)->id : "";
+    check(d.paramAt(1) != nullptr && d.paramAt(1)->name == "Beta", "Beta is at index 1");
+
+    // THE RENUMBER TRAP: the plug-in drops the FIRST parameter. A plain
+    // re-read would slide Beta to index 0 and Gamma to 1, and every held
+    // index -- ParamEdit::paramIndex, ParamOps' mirror -- would silently
+    // point at a different parameter.
+    f.list.erase(f.list.begin());              // Alpha (id 10) is gone
+    f.list.push_back({40, "Delta"});           // and a new one arrives
+    hp->rescan(h, CLAP_PARAM_RESCAN_ALL);
+    d.pumpMainThread();
+
+    check(d.paramAt(1) != nullptr && d.paramAt(1)->name == "Beta",
+          "Beta is STILL at index 1 after a rescan that removed the one before it");
+    check(d.paramAt(1) != nullptr && d.paramAt(1)->id == beta,
+          "and it is the same parameter, matched by clap_id and not by position");
+    check(d.paramAt(0) != nullptr && d.paramAt(0)->missing,
+          "the dropped one is KEPT at its index and marked missing (ADR-0177 d4)");
+    check(d.paramCount() == 4, "and the new one is appended, saw " +
+                                   std::to_string(d.paramCount()));
+    check(d.paramAt(3) != nullptr && d.paramAt(3)->name == "Delta",
+          "at the end, where nothing was holding an index");
+
+    // A returning id finds its own index back, with its automation intact.
+    f.list.insert(f.list.begin(), {10, "Alpha"});
+    hp->rescan(h, CLAP_PARAM_RESCAN_ALL);
+    d.pumpMainThread();
+    check(d.paramAt(0) != nullptr && !d.paramAt(0)->missing,
+          "a parameter that comes back picks up its OWN index again");
+
+    // --- params.clear(): kept, and silent ---------------------------------
+    hp->clear(h, 20, CLAP_PARAM_CLEAR_MODULATIONS);
+    d.pumpMainThread();
+    check(d.paramAt(1) != nullptr && !d.paramAt(1)->missing,
+          "CLEAR_MODULATIONS alone says nothing about automation: the lane stands");
+
+    // AND IT MUST BE SILENT, not merely flagged. A ParamValue for a live
+    // parameter reaches the plug-in; the same event for a cleared one does
+    // not. Without this the flag would be decorative -- a panel saying "gone"
+    // while the automation kept driving an id the plug-in has disclaimed.
+    auto sendOneValue = [&](clap_id target) {
+        std::vector<float> l(64, 0.0f), r(64, 0.0f);
+        float* outp[2] = {l.data(), r.data()};
+        engine::NodeIo io;
+        io.out = outp; io.channels = 2; io.frames = 64; io.sampleRate = 48000.0;
+        engine::Event e;
+        e.type = engine::EventType::ParamValue;
+        e.paramId = static_cast<decltype(e.paramId)>(target);
+        e.value = 0.5;
+        e.frame = 0;
+        d.pushEvent(e);
+        d.process(io);
+    };
+
+    d.prepare(48000.0, 64);
+    const int heardBefore = f.paramEventsHeard;
+    sendOneValue(20);
+    check(f.paramEventsHeard == heardBefore + 1,
+          "a live parameter's value reaches the plug-in");
+
+    hp->clear(h, 20, CLAP_PARAM_CLEAR_AUTOMATIONS);
+    d.pumpMainThread();
+    check(d.paramAt(1) != nullptr && d.paramAt(1)->missing,
+          "CLEAR_AUTOMATIONS marks it missing -- kept, not deleted");
+    check(d.paramCount() == 4, "nothing was removed from the list");
+
+    const int heardAfter = f.paramEventsHeard;
+    sendOneValue(20);
+    check(f.paramEventsHeard == heardAfter,
+          "and its value now PLAYS NOTHING -- the event never reaches the "
+          "plug-in (ADR-0177 d4), saw " + std::to_string(f.paramEventsHeard - heardAfter));
+
+    sendOneValue(30);
+    check(f.paramEventsHeard == heardAfter + 1,
+          "while its neighbour, untouched, still plays");
+}
+
 void testPrepareReactivatesWhenTheLayoutMoves() {
     section("ADR-0090 -- prepare is idempotent, EXCEPT when the ports moved");
 
@@ -2070,6 +2225,7 @@ int main() {
     testAPluginsStateSignalIsABoundary();
     testDestroyingADeviceLeavesNoDanglingPlugin();
     testRequestFlushIsAnswered();
+    testRescanAllPreservesIndicesAndClearKeepsTheLane();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
