@@ -18,6 +18,10 @@
 
 extern "C" {
 #include "z_libpd.h"
+// The inmidi_* entry points, which are what libpd_noteon and friends call
+// once they have taken sys_lock(). See deliverMidi for why we call them
+// directly.
+#include "s_stuff.h"
 }
 
 namespace adi::device {
@@ -331,6 +335,21 @@ void LibPdEngine::prepare(double sampleRate, std::int32_t maxFrames) {
     tickIn_.assign(static_cast<std::size_t>(block_) * static_cast<std::size_t>(inCh_), 0.f);
     tickOut_.assign(static_cast<std::size_t>(block_) * static_cast<std::size_t>(outCh_), 0.f);
 
+    // The MIDI router, configured here for the same reason the adapter is
+    // sized here: `prepare` is the last message-thread moment before audio.
+    // `reset()` forgets every note, which a re-activated device must -- a note
+    // still marked sounding would send its note-off to a member channel that
+    // is no longer its own.
+    //
+    // The scratch is one segment's worth, generously: MpeMidi turns a single
+    // note-on into a note-on plus up to three control messages, and the
+    // Configuration Message is a burst of six. Overflow is counted rather than
+    // dropped silently.
+    midiRouter_.configure(midiRoute_, engine::ExpressionCaps{}, 15);
+    midiRouter_.reset();
+    midiScratch_.assign(static_cast<std::size_t>(std::max<std::int32_t>(maxFrames, 64)) * 4 + 64,
+                        engine::MpeOut{});
+
     // Prime the output with one block of silence. This is what makes the delay
     // CONSTANT: every segment can then pop exactly as many frames as it pushed,
     // whatever its length, and the engine never has to hand back a short read.
@@ -368,6 +387,22 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
 
     selectInstance();
     segments_.fetch_add(1, std::memory_order_relaxed);
+
+    // --- MIDI in, before the audio it belongs to (ADR-0194) ------------------
+    //
+    // AT THE SEGMENT'S START, and that is as accurate as the engine offers
+    // rather than a rounding-down. The scheduler already splits a block at
+    // every event frame (graph.hpp: an event at frame 100 splits 512 into 100
+    // and 412), so an event that lands in this segment lands at its start.
+    // Pd then quantises again to its own 64-sample block, which is Pd's limit
+    // and is the same one ADR-0188 d3 records for parameters.
+    if (!io.events.empty() && !midiScratch_.empty()) {
+        engine::MpeOutList list(midiScratch_.data(),
+                                static_cast<std::int32_t>(midiScratch_.size()));
+        midiRouter_.route(io.events.first, io.events.count, io.blockOffset, list);
+        for (std::int32_t i = 0; i < list.size(); ++i) deliverMidi(list.at(i));
+        midiDropped_ += list.dropped();
+    }
 
     // --- push: planar segment -> interleaved pending input -------------------
     const std::int32_t cap = static_cast<std::int32_t>(in_.size()) / inCh_;
@@ -517,6 +552,76 @@ bool LibPdEngine::sendParameter(std::int32_t id, float value) noexcept {
         return true;
     }
     return false;
+}
+
+void LibPdEngine::setExpressionRoute(engine::ExpressionRoute route) noexcept {
+    midiRoute_ = route;
+}
+
+void LibPdEngine::deliverMidi(const engine::MpeOut& m) noexcept {
+    // `inmidi_*` rather than `libpd_noteon` and friends, for the reason
+    // `sendParameter` avoids `libpd_float`: every libpd MIDI entry point wraps
+    // its call in `sys_lock()`/`sys_unlock()` (z_libpd.c at the pinned commit),
+    // and this runs on the audio thread. The functions underneath take no lock
+    // and allocate nothing -- `inmidi_noteon` builds three stack atoms and
+    // dispatches to `pd_this->pd_midi->m_notein_sym->s_thing`, a symbol the
+    // instance already holds, so there is no `gensym` either. A patch with no
+    // [notein] costs the null check on `s_thing` and nothing more.
+    //
+    // Port 0 always: one device is one Pd instance, and Pd adds
+    // `(portno << 4)` to the channel it shows. A second port would make a
+    // patch see channel 17.
+    constexpr int kPort = 0;
+    const int channel = static_cast<int>(m.channel);
+
+    // `word` IS ONLY FILLED FOR A CONTROL. `MpeRouter` leaves it zero on a
+    // note and a poly pressure and puts the value in `value`, a 0..1 double
+    // (mpe_output.cpp) -- reading `word` there would have made every note-on a
+    // note-off, which is a stuck-silent instrument rather than a crash. Read,
+    // not discovered.
+    const auto sevenBit = [](double unit) {
+        const long v = std::lround(unit * 127.0);
+        return static_cast<int>(v < 0 ? 0 : (v > 127 ? 127 : v));
+    };
+
+    switch (m.kind) {
+        case engine::MpeOut::Kind::NoteOn: {
+            // A note-on with velocity 0 IS a note-off in MIDI, so a quiet note
+            // must not become one. The floor is 1, which is the convention
+            // every sequencer uses for the same reason.
+            const int velocity = std::max(1, sevenBit(m.value));
+            inmidi_noteon(kPort, channel, static_cast<int>(m.key), velocity);
+            break;
+        }
+        case engine::MpeOut::Kind::NoteOff:
+            // Pd has no note-off: velocity 0 is one, which is what [notein]
+            // patches test for and what every MIDI file writes.
+            inmidi_noteon(kPort, channel, static_cast<int>(m.key), 0);
+            break;
+        case engine::MpeOut::Kind::PolyPressure:
+            inmidi_polyaftertouch(kPort, channel, static_cast<int>(m.key),
+                                  sevenBit(m.value));
+            break;
+        case engine::MpeOut::Kind::Control:
+            if (m.ctrl == engine::kCtrlPitchBend) {
+                // The router's `word` is 14-bit, 0..16383 with 8192 centred.
+                // Pd's `inmidi_pitchbend` wants the same 0..16383 -- it is
+                // `libpd_pitchbend` that takes a signed value and adds 8192,
+                // which is why this does not.
+                inmidi_pitchbend(kPort, channel, static_cast<int>(m.word));
+            } else if (m.ctrl == engine::kCtrlAfterTouch) {
+                inmidi_aftertouch(kPort, channel, static_cast<int>(m.word));
+            } else if (m.ctrl < 128) {
+                inmidi_controlchange(kPort, channel, static_cast<int>(m.ctrl),
+                                     static_cast<int>(m.word));
+            }
+            break;
+        case engine::MpeOut::Kind::Expression:
+            // VST3's own note-expression event. It has no MIDI form at all,
+            // which is exactly why the route is MpeMidi: under it the router
+            // never emits one. Ignored rather than approximated.
+            break;
+    }
 }
 
 LibPdEngine::Counters LibPdEngine::counters() const noexcept {

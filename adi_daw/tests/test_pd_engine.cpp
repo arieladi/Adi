@@ -31,6 +31,7 @@
 #include "juce/pd_declarations.hpp"
 #include "juce/pd_builtins.hpp"
 #include "adi/engine/graph.hpp"
+#include "adi/blob.hpp"
 
 // The ONE place in the tree outside pd_engine.cpp that includes libpd, and it
 // is here for a reason: the ADR-0188 d8 section has to drive raw libpd AROUND
@@ -626,6 +627,120 @@ void testACompiledInExternalIsRegisteredForEveryInstance() {
     // it. The two together are what make the absence above mean something.
 }
 
+// --- ADR-0194: MIDI into a Pd device ---------------------------------------
+
+engine::Event pdNoteOn(std::uint64_t id, int key, double vel, std::int32_t frame = 0) {
+    engine::Event e;
+    e.type = engine::EventType::NoteOn;
+    e.noteId = id;
+    e.dim = static_cast<std::uint16_t>(key);   // notes carry the key in `dim`
+    e.value = vel;
+    e.frame = frame;
+    e.channel = 2;                              // transport, and must not reach Pd
+    return e;
+}
+engine::Event pdNoteOff(std::uint64_t id, int key, std::int32_t frame = 0) {
+    engine::Event e = pdNoteOn(id, key, 0.0, frame);
+    e.type = engine::EventType::NoteOff;
+    return e;
+}
+engine::Event pdExpr(std::uint64_t id, adi::ExpressionDim d, double v,
+                     std::int32_t frame = 0) {
+    engine::Event e;
+    e.type = engine::EventType::NoteExpression;
+    e.noteId = id;
+    e.dim = static_cast<std::uint16_t>(d);
+    e.value = v;
+    e.frame = frame;
+    return e;
+}
+
+void testMidiReachesNoteinCtlinAndBendin() {
+    section("ADR-0194 -- notes, CCs and pitch bend reach [notein], [ctlin] and [bendin]");
+
+    // THE ENGINE HAS NO MIDI TO FORWARD, and that is ADR-0054 working: no MIDI
+    // byte survives the input parser, so there is no CC event and no pitch-bend
+    // event in `engine::Event` at all. A Pd patch is an OUTPUT EDGE like a VST3
+    // plugin, and it is fed by the encoder that edge already has -- MpeRouter,
+    // ADR-0097 -- so the quantisation a patch sees is the same one a JUCE-built
+    // MPE synth sees. Nothing is re-encoded twice.
+    LibPdEngine eng(patchDir(), "adi-midi-proof.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    check(eng.open(latency, err), "adi-midi-proof.pd opens: " + err);
+    eng.prepare(48000.0, 512);
+
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/adi-midi-proof.pd", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eng.bindArrays(decls);
+    const auto* arr = eng.publishedArray(1);
+    check(arr != nullptr, "the probe array is bound");
+    if (arr == nullptr) return;
+
+    const int n = 256;
+    Buffers b(2, n);
+    std::vector<float> cells(static_cast<std::size_t>(arr->length()), -1.f);
+
+    // Runs `events` into the patch and waits for a whole array to be published.
+    const auto play = [&](const std::vector<engine::Event>& events) {
+        const std::uint64_t before = arr->published();
+        auto io = b.io(2, n, 0, n);
+        io.events.first = events.data();
+        io.events.count = static_cast<std::int32_t>(events.size());
+        eng.process(io);
+        for (int i = 0; i < 64 && arr->published() == before; ++i) {
+            auto quiet = b.io(2, n, 0, n);
+            eng.process(quiet);
+        }
+        cells.assign(static_cast<std::size_t>(arr->length()), -1.f);
+        return arr->read(cells.data(), arr->length());
+    };
+
+    check(play({pdNoteOn(1, 60, 0.8)}), "a note-on is published");
+    eqi(static_cast<long long>(cells[0]), 60, "[notein] received the key");
+    eqi(static_cast<long long>(cells[1]), 102,
+        "and the velocity, 0.8 of full scale as 7 bits -- the router's "
+        "quantisation, not a second one invented here");
+
+    // Pitch bend. The note's expression goes to the member channel the router
+    // gave it, which is what makes [bendin] mean this note rather than all of
+    // them.
+    check(play({pdExpr(1, adi::ExpressionDim::Pitch, 1.0)}), "a pitch expression is published");
+    // ABOVE centre, not merely "not 8192". The array starts at 0, so a test
+    // for "moved off centre" passes when NOTHING arrives -- which it did,
+    // under a planted fault that dropped every Control. A bend up must read
+    // above 8192 and below full scale, and 0 satisfies neither.
+    check(cells[4] > 8192.f && cells[4] <= 16383.f,
+          "[bendin] received a bend UP, inside 14 bits -- and 0, which is what "
+          "the cell holds when nothing arrives, is neither\n          got " +
+              std::to_string(cells[4]));
+
+    check(play({pdExpr(1, adi::ExpressionDim::Timbre, 0.5)}), "a timbre expression is published");
+    eqi(static_cast<long long>(cells[2]), 74,
+        "[ctlin] received CC74, which is where MPE 1.0 puts timbre");
+    eqi(static_cast<long long>(cells[3]), 64, "with 0.5 of full scale as 7 bits");
+
+    check(play({pdNoteOff(1, 60)}), "a note-off is published");
+    eqi(static_cast<long long>(cells[1]), 0,
+        "[notein] received velocity 0 -- Pd has no note-off, and a patch tests "
+        "for this");
+
+    // A quiet note must not become a note-off. MIDI has no way to say
+    // "velocity 0.001", and rounding it to 0 would end a note that was
+    // starting.
+    check(play({pdNoteOn(2, 61, 0.001)}), "a very quiet note-on is published");
+    eqi(static_cast<long long>(cells[1]), 1,
+        "and arrived with velocity 1, not 0 -- velocity 0 IS a note-off");
+
+    eqi(eng.midiDropped(), 0, "nothing was dropped on the way");
+}
+
 void testPdWouldReachAnExternalBesideThePatch() {
     section("ADR-0188 d8 -- THE FAULT, PLANTED: Pd reaches a file beside the patch");
 
@@ -853,6 +968,7 @@ int main() {
     testTheEngineReportsWhatPdPrints();
     testAParameterReachesThePatchFromTheAudioThread();
     testACompiledInExternalIsRegisteredForEveryInstance();
+    testMidiReachesNoteinCtlinAndBendin();
     // Last, and on purpose: it dlopens nothing, but it does put a class name
     // on Pd's process-wide load list, and a test that runs after it would be
     // measuring that instead of its own patch.
