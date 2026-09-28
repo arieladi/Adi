@@ -62,6 +62,7 @@
 #include "juce/pd_device.hpp"
 #include "juce/pd_declarations.hpp"
 #include "adi/engine/published_array.hpp"
+#include "adi/engine/mpe_output.hpp"
 
 #include <cstdint>
 #include <mutex>
@@ -201,6 +202,36 @@ public:
     /// and reading `s_thing` later is safe as well as cheap.
     void bindParameters(const PdDeclarations& decls);
 
+    /// Message thread, before `prepare`. Which MIDI a patch's `[notein]`,
+    /// `[ctlin]` and `[bendin]` receive -- ADR-0194.
+    ///
+    /// **THE ENGINE HAS NO MIDI TO FORWARD, AND THAT IS ADR-0054 WORKING AS
+    /// INTENDED.** "No MIDI byte survives" the input parser: bytes go in and
+    /// `engine::Event` comes out, with every expression value a double,
+    /// because 7-bit and 14-bit are encodings of a control surface rather than
+    /// properties of the music. There is no CC event and no pitch-bend event
+    /// to hand to Pd.
+    ///
+    /// So a Pd patch is an OUTPUT EDGE, like a VST3 plugin, and it is fed by
+    /// the encoder that edge already has: `MpeRouter` (ADR-0097). Nothing here
+    /// re-encodes anything -- the quantisation a patch sees is the same one a
+    /// JUCE-built MPE synth sees, decided once and tested once.
+    ///
+    /// `MpeMidi` is the default because it is the only route that delivers
+    /// what a patch asks for: notes on member channels, per-note pitch bend on
+    /// `[bendin]`, timbre as CC74 on `[ctlin]`, pressure as channel pressure.
+    /// `Plain` puts every note on channel 1 and DROPS pitch and timbre
+    /// (counted), so a `[bendin]` under it would simply never fire.
+    void setExpressionRoute(engine::ExpressionRoute route) noexcept;
+
+    /// Events the router had nowhere to put, and MIDI that overflowed the
+    /// per-segment scratch. Both are counted rather than silent, as the engine
+    /// counts elsewhere.
+    [[nodiscard]] std::int64_t midiDropped() const noexcept { return midiDropped_; }
+    /// The router itself, for the counters it keeps: dropped dimensions,
+    /// shared member channels, unknown notes.
+    [[nodiscard]] const engine::MpeRouter& midiRouter() const noexcept { return midiRouter_; }
+
     /// **AUDIO THREAD**, before `process` for the same block (ADR-0188 d3).
     /// Allocates nothing, takes no lock, and calls no `gensym`.
     ///
@@ -274,6 +305,21 @@ private:
     std::vector<std::string> console_;
     std::string pending_;            ///< a line Pd has begun and not ended
     static constexpr std::size_t kMaxConsoleLines = 256;
+
+    /// AUDIO THREAD. One routed MIDI event into this instance's Pd, through
+    /// `inmidi_*` rather than `libpd_*`: the libpd entry points take
+    /// `sys_lock()` on every call, which is the same reason `sendParameter`
+    /// does not use `libpd_float`.
+    void deliverMidi(const engine::MpeOut& m) noexcept;
+
+    /// Engine events -> MIDI, per device and stateful: a member channel is
+    /// allocated at note-on and released at note-off.
+    engine::MpeRouter midiRouter_;
+    engine::ExpressionRoute midiRoute_ = engine::ExpressionRoute::MpeMidi;
+    /// Sized in `prepare`. One segment's worth, never grown on the audio
+    /// thread; overflow is counted.
+    std::vector<engine::MpeOut> midiScratch_;
+    std::int64_t midiDropped_ = 0;
 
     /// Declared parameter id -> its receive `t_symbol*`, resolved once on the
     /// message thread. `void*` because this header does not include m_pd.h.
