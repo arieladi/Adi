@@ -17,9 +17,13 @@ Each one is here because it cost something, and the cost is named.
    three shapes: `-Werror` over objects built before the flag; a probe's
    `#ifdef`'d blocks absent on one platform; `test_all.sh` over a build with
    the JUCE targets switched off. Ask what a green result did NOT compile.
-4. **A planted defect that does not change the file is not evidence.** Verify
-   the bytes changed before believing the suite. And a plant that legitimately
-   PASSES is a result, not a hole — say which it is. (2026-09-27)
+4. **A planted fault counts only when the file CHANGED and the build
+   SUCCEEDED.** Three clauses, and all three have bitten in one sitting:
+   an edit that silently failed to apply reported PASS; a plant that broke
+   the build under `-Werror` printed nothing and read as a pass; and a plant
+   whose *test* failed to compile ran the STALE BINARY and reported a failure
+   that was not real. And a plant that legitimately PASSES is a result, not a
+   hole — say which it is. (2026-09-27, win's round 6)
 5. **Prove a check can fail**, in CI and not only locally. `--require-devices`
    and `--require-peak` each have a CI step that REQUIRES the failure.
 6. **Reserve an ADR number and push the reservation ALONE** before writing the
