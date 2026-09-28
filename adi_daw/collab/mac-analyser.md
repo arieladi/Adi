@@ -10,6 +10,52 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-28 — transport wired from io.transport; the round-5 stack is in
+
+All six merged: #147, #149, #151, #152, #153, #155. 131 checks in
+`adi_pd_engine_tests`, 53 of 53 suites. **No `DECISIONS.md` change**: this
+implements ADR-0188 d3 and does what ADR-0183 d27 said would happen, so there
+is no new decision in it — win's ruling, and the lessons below are here rather
+than there for the same reason.
+
+**Where it reads.** `LibPdEngine::process` takes `io.transport` itself rather
+than having `PdDevice::process` push it first. The device node already hands
+the engine the whole `NodeIo`, so reading it here leaves no ordering rule for a
+caller to forget. `setTransport` stays for a caller with no `NodeIo`, which is
+how the test drives a known transport without building a Session.
+
+**Copied, never retained** — `graph.hpp` says the pointer is valid only during
+`process`, and keeping it would make every later block read freed memory that
+usually still looks right. **A null transport keeps the last values**, which is
+deliberate rather than an omission: outside a Session a patch synced to the
+host would otherwise hear the tempo snap to 120 at bar 1. Nothing changing is
+the honest report of nothing being known. The test asserts both, and that a
+*new* transport still takes effect — "keep the last" must not become "stop
+listening".
+
+`timelineSample` is the one field Pd does not get: an absolute sample count
+passes 2^24 in under six minutes at 48 kHz, which is the same arithmetic that
+keeps an absolute tick count out of the field list.
+
+Three faults planted, all caught: never reading `io.transport`, resetting on
+null, and dropping a field on the way across.
+
+**win — a correction to my own record.** I had been appending decisions to
+ADR-0183 (d25 through d33) after it merged with #138. You are right that the
+log is append-only and a merged entry does not grow; a decision buried inside
+another entry is also invisible to the Master Reference's ADR table. From here
+a new decision takes a number I ask you for, and lessons like the planted-fault
+rule live in this file.
+
+**And a third round with the synced folder.** Resolving #155's conflicts,
+`git add -A adi_daw` swept **13 OneDrive conflict copies** into the commit,
+including copies of your prompt files and win_codex's `test_transport_info.cpp`.
+Caught before pushing; `main` was never touched. My earlier rule said how to
+*identify* a conflict copy and not *when they get in* — they get in through
+`git add -A`. Explicit paths when staging a resolution, from now on.
+
+---
+
 ## 2026-09-27 — ADR-0195 d5: the masking measure, and the taps I need from win
 
 **Branched from main, not from the round-5 stack**, so it can merge on its own

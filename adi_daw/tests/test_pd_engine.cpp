@@ -815,6 +815,85 @@ void testMidiReachesNoteinCtlinAndBendin() {
     eqi(eng.midiDropped(), 0, "nothing was dropped on the way");
 }
 
+void testTransportArrivesOnNodeIo() {
+    section("ADR-0188 d3 -- io.transport reaches the patch, and a null one changes nothing");
+
+    LibPdEngine eng(patchDir(), "adi-transport-proof.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    check(eng.open(latency, err), "adi-transport-proof.pd opens: " + err);
+
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/adi-transport-proof.pd", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eng.prepare(48000.0, 512);
+    eng.bindArrays(decls);
+    const auto* arr = eng.publishedArray(1);
+    check(arr != nullptr, "the probe array is bound");
+    if (arr == nullptr) return;
+
+    const int n = 128;
+    Buffers b(2, n);
+    std::vector<float> cells(static_cast<std::size_t>(arr->length()), -1.f);
+
+    // `transport` is a POINTER on NodeIo, and the object it points at lives
+    // here, on this stack frame -- which is the shape the engine must cope
+    // with: it is told the values are good for this call and no longer.
+    engine::TransportInfo info;
+    info.playing = true;
+    info.timelineSample = 1234567890;      // deliberately past 2^24
+    info.bpm = 174.0;
+    info.timeSigNumerator = 7;
+    info.timeSigDenominator = 8;
+    info.bar = 33;
+    info.beat = 5;
+    info.ticksInQuarter = 2882880;         // half a quarter note
+
+    const auto runUntilPublished = [&](const engine::TransportInfo* tr) {
+        const std::uint64_t before = arr->published();
+        for (int i = 0; i < 64 && arr->published() == before; ++i) {
+            auto io = b.io(2, n, 0, n);
+            io.transport = tr;
+            eng.process(io);
+        }
+        cells.assign(static_cast<std::size_t>(arr->length()), -1.f);
+        return arr->read(cells.data(), arr->length());
+    };
+
+    check(runUntilPublished(&info), "an array is published");
+    eqi(static_cast<long long>(cells[0]), 1, "playing");
+    check(std::fabs(cells[1] - 174.f) < 1e-3f, "bpm");
+    eqi(static_cast<long long>(cells[2]), 7, "time signature numerator");
+    eqi(static_cast<long long>(cells[3]), 8, "denominator");
+    eqi(static_cast<long long>(cells[4]), 33, "bar");
+    eqi(static_cast<long long>(cells[5]), 5, "beat");
+    eqi(static_cast<long long>(cells[6]), 2882880,
+        "ticks on the quarter-note grid -- which in 7/8 is NOT the position "
+        "within the beat, and is why adi.transport.pd's help says so");
+
+    // A NULL TRANSPORT KEEPS THE LAST VALUES. Outside a Session -- an offline
+    // render, a test harness -- `io.transport` is null, and a patch synced to
+    // the host would hear a snap back to 120 BPM at bar 1 as a jump. Nothing
+    // changing is the honest report of nothing being known.
+    check(runUntilPublished(nullptr), "a second array is published with no transport");
+    check(std::fabs(cells[1] - 174.f) < 1e-3f,
+          "the tempo did not snap back to 120\n          got " + std::to_string(cells[1]));
+    eqi(static_cast<long long>(cells[4]), 33, "nor the bar back to 1");
+
+    // And a NEW transport still takes effect, so "keep the last" is not "stop
+    // listening".
+    info.bpm = 90.0;
+    info.bar = 34;
+    check(runUntilPublished(&info), "a third array is published");
+    check(std::fabs(cells[1] - 90.f) < 1e-3f, "a new transport is picked up");
+    eqi(static_cast<long long>(cells[4]), 34, "bar and all");
+}
+
 void testPdWouldReachAnExternalBesideThePatch() {
     section("ADR-0188 d8 -- THE FAULT, PLANTED: Pd reaches a file beside the patch");
 
@@ -1043,6 +1122,7 @@ int main() {
     testAParameterReachesThePatchFromTheAudioThread();
     testACompiledInExternalIsRegisteredForEveryInstance();
     testTransportReachesThePatch();
+    testTransportArrivesOnNodeIo();
     testMidiReachesNoteinCtlinAndBendin();
     // Last, and on purpose: it dlopens nothing, but it does put a class name
     // on Pd's process-wide load list, and a test that runs after it would be

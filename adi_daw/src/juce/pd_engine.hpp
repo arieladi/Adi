@@ -228,13 +228,14 @@ public:
         double ticksInQuarter = 0.0;
     };
 
-    /// **THE ENGINE'S HALF IS win_codex's, IN FLIGHT.** `NodeIo` gains
-    /// `io.transport`: null outside a Session, valid only for the duration of
-    /// `process`, carrying block-start values for every segment. Once it lands
-    /// the Pd device node calls this from `io.transport` and nothing else
-    /// changes -- everything from here to the patch is built and proved
-    /// already. Until then a caller sets it directly, which is also how the
-    /// test drives it.
+    /// **`process` READS `io.transport` ITSELF**, so nothing needs to call
+    /// this in the ordinary path. `NodeIo::transport` is null outside a
+    /// Session and valid only for the duration of `process`, so the fields are
+    /// COPIED and the pointer never kept; a null one leaves the last values
+    /// standing rather than snapping the tempo back to 120.
+    ///
+    /// This remains for a caller that has no `NodeIo` -- which is what the
+    /// test uses to drive a known transport without building a Session.
     ///
     /// Audio thread or message thread, before `process`. Sent into the patch
     /// at the start of each segment, with the MIDI and before the audio.
