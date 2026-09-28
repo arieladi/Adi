@@ -216,6 +216,7 @@ add_library(adi_core STATIC
     src/adi/dsp/rmsc.cpp
     src/adi/dsp/combchord.cpp
     src/adi/dsp/colorcab.cpp
+    src/adi/dsp/masking.cpp
     src/adi/dsp/auto_gain.cpp
     src/adi/dsp/true_peak.cpp
     src/adi/engine/latency.cpp
@@ -599,6 +600,7 @@ add_test(NAME adi_colorcab_tests COMMAND adi_colorcab_tests)
 # The declaration parse. Links adi_core but touches no libpd: ADR-0177 fix 3
 # puts the declared set behind a static parse of the patch text, and a test that
 # needed Pd running to read a declaration would not be testing that.
+
 # [adi.sample] and its handoff. Links adi_core and touches no libpd, for the
 # reason the declaration parse does not: the slot is SnapshotPublisher and the
 # decode is the audio layer, so both are tested on every ABI -- including the
@@ -606,6 +608,13 @@ add_test(NAME adi_colorcab_tests COMMAND adi_colorcab_tests)
 add_executable(adi_pd_sample_tests tests/test_pd_samples.cpp)
 target_link_libraries(adi_pd_sample_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_pd_sample_tests COMMAND adi_pd_sample_tests)
+
+# The masking measure (ADR-0195 d5). Pure: no engine, no view, no agent -- the
+# analyser overlay and analyze.masking are both callers, and this is where they
+# are made to agree.
+add_executable(adi_masking_tests tests/test_masking.cpp)
+target_link_libraries(adi_masking_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_masking_tests COMMAND adi_masking_tests)
 
 add_executable(adi_pd_declaration_tests tests/test_pd_declarations.cpp)
 target_link_libraries(adi_pd_declaration_tests PRIVATE adi_core adi_warnings)
@@ -1002,6 +1011,25 @@ if(ADI_WITH_JUCE)
             set_target_properties(adi_test_vst3 PROPERTIES
                 PREFIX "" SUFFIX "" OUTPUT_NAME "${ADI_FIXTURE_NAME}"
                 LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixture_dll")
+            # STRIP THE EXTENDED ATTRIBUTES, THEN AD-HOC SIGN. Both are
+            # required on macOS and neither is optional folklore.
+            #
+            # A bundle built inside an iCloud-synced folder (this repository
+            # lives under ~/Documents) inherits `com.apple.provenance` and
+            # `com.apple.fileprovider.*`, and Gatekeeper then refuses to load
+            # it with "is damaged and can't be opened. You should move it to
+            # the Trash" -- one modal dialog PER SCAN ATTEMPT. The dylib is
+            # fine; macOS simply will not open an unsigned bundle carrying
+            # provenance it cannot account for.
+            #
+            # `codesign --sign -` is an ad-hoc signature: no certificate, no
+            # identity, nothing to configure, and enough for a locally built
+            # test fixture to load. It is NOT a substitute for real signing
+            # when something ships.
+            #
+            # `|| true` on both: a machine without `xattr` or `codesign`
+            # still gets a working build, and the failure mode there is the
+            # one we already understand rather than a build that stops.
             add_custom_command(TARGET adi_test_vst3 POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E make_directory
                         "${_adi_fixture}/Contents/MacOS"
@@ -1010,7 +1038,9 @@ if(ADI_WITH_JUCE)
                         "${_adi_fixture}/Contents/Info.plist"
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                         "$<TARGET_FILE:adi_test_vst3>"
-                        "${_adi_fixture}/Contents/MacOS/")
+                        "${_adi_fixture}/Contents/MacOS/"
+                COMMAND xattr -cr "${_adi_fixture}" || true
+                COMMAND codesign --force --deep --sign - "${_adi_fixture}" || true)
         endif()
         add_dependencies(adi_vst3_probe adi_test_vst3)
         target_compile_definitions(adi_vst3_probe PRIVATE ADI_TEST_VST3="${_adi_fixture}")

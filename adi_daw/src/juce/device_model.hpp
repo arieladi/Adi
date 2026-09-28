@@ -27,6 +27,7 @@
 #include "adi/engine/mpe_output.hpp"
 #include "adi/engine/param_edits.hpp"
 
+#include <array>
 #include <atomic>
 
 #include <cstdint>
@@ -246,6 +247,27 @@ public:
     /// deferred does nothing here.
     virtual void pumpMainThread() {}
 
+    // --- ADR-0196: which parameters a lane is driving ----------------------
+
+    /// MESSAGE THREAD. Mark a parameter as driven by automation, or not.
+    ///
+    /// This is what `broadcastParam` needs and could not have: the producer
+    /// side runs on the CLAP audio thread and the VST3 message thread, and
+    /// knows only a parameter INDEX, while the knowledge of what is automated
+    /// lives on the message thread as `DeviceAutomationBinding::laneFor`,
+    /// keyed by `(deviceId, param_ref)`. This carries it across.
+    void setParamAutomated(std::int32_t index, bool on) noexcept;
+    [[nodiscard]] bool paramIsAutomated(std::int32_t index) const noexcept;
+    /// Forget every mark. Called before a rebuild re-binds.
+    void clearAutomatedParams() noexcept;
+
+    /// Echoes dropped because the parameter is being driven by a lane.
+    /// Non-zero is normal and healthy; it is the count of ops that would
+    /// otherwise have overridden their own automation.
+    [[nodiscard]] std::uint64_t echoesFiltered() const noexcept {
+        return echoesFiltered_.load(std::memory_order_relaxed);
+    }
+
     /// ADR-0142 (ADR-0110 d1): a CAPTURE BOUNDARY. Moves when the plugin says
     /// its state changed in a way its parameter broadcasts do not carry -- a
     /// preset picked in its browser, a sample dropped on it: VST3's
@@ -312,6 +334,16 @@ protected:
     /// A format's broadcast, on the format's thread: pushed into the sink if
     /// one is set, dropped otherwise. `normalized` is the wire unit; a
     /// gesture begin or end carries no value.
+    /// A FIXED bitmask, never resized, because the audio thread reads it.
+    /// 1024 parameters is past anything measured here (Pro-Q 3 is the widest
+    /// at a few hundred) and a vector that could reallocate under a reader is
+    /// not a trade worth making for the tail. An index past the end is simply
+    /// not automated, which is the safe answer: the echo is let through and
+    /// becomes an op, which is wrong but visible, rather than swallowed.
+    static constexpr std::size_t kAutomatedWords = 16;   ///< 16 x 64 = 1024
+    std::array<std::atomic<std::uint64_t>, kAutomatedWords> automated_{};
+    std::atomic<std::uint64_t> echoesFiltered_{0};
+
     void broadcastParam(std::int32_t index, engine::ParamEventKind kind,
                         double normalized) noexcept;
 

@@ -10,6 +10,136 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-28 — transport wired from io.transport; the round-5 stack is in
+
+All six merged: #147, #149, #151, #152, #153, #155. 131 checks in
+`adi_pd_engine_tests`, 53 of 53 suites. **No `DECISIONS.md` change**: this
+implements ADR-0188 d3 and does what ADR-0183 d27 said would happen, so there
+is no new decision in it — win's ruling, and the lessons below are here rather
+than there for the same reason.
+
+**Where it reads.** `LibPdEngine::process` takes `io.transport` itself rather
+than having `PdDevice::process` push it first. The device node already hands
+the engine the whole `NodeIo`, so reading it here leaves no ordering rule for a
+caller to forget. `setTransport` stays for a caller with no `NodeIo`, which is
+how the test drives a known transport without building a Session.
+
+**Copied, never retained** — `graph.hpp` says the pointer is valid only during
+`process`, and keeping it would make every later block read freed memory that
+usually still looks right. **A null transport keeps the last values**, which is
+deliberate rather than an omission: outside a Session a patch synced to the
+host would otherwise hear the tempo snap to 120 at bar 1. Nothing changing is
+the honest report of nothing being known. The test asserts both, and that a
+*new* transport still takes effect — "keep the last" must not become "stop
+listening".
+
+`timelineSample` is the one field Pd does not get: an absolute sample count
+passes 2^24 in under six minutes at 48 kHz, which is the same arithmetic that
+keeps an absolute tick count out of the field list.
+
+Three faults planted, all caught: never reading `io.transport`, resetting on
+null, and dropping a field on the way across.
+
+**win — a correction to my own record.** I had been appending decisions to
+ADR-0183 (d25 through d33) after it merged with #138. You are right that the
+log is append-only and a merged entry does not grow; a decision buried inside
+another entry is also invisible to the Master Reference's ADR table. From here
+a new decision takes a number I ask you for, and lessons like the planted-fault
+rule live in this file.
+
+**And a third round with the synced folder.** Resolving #155's conflicts,
+`git add -A adi_daw` swept **13 OneDrive conflict copies** into the commit,
+including copies of your prompt files and win_codex's `test_transport_info.cpp`.
+Caught before pushing; `main` was never touched. My earlier rule said how to
+*identify* a conflict copy and not *when they get in* — they get in through
+`git add -A`. Explicit paths when staging a resolution, from now on.
+
+---
+
+## 2026-09-27 — ADR-0195 d5: the masking measure, and the taps I need from win
+
+**Branched from main, not from the round-5 stack**, so it can merge on its own
+while those five waited on Windows. The conflict on this file's first entry is
+resolved as win directed: both kept, newest first.
+
+The shared half of the multi-track overlay: `src/adi/dsp/masking.*`, 74 checks
+in a new `adi_masking_tests`, 51 of 51 suites. ADR-0183 d32–d33, and a claims
+row for those two files.
+
+**Why it is a pure function.** The overlay highlights where one track buries
+another; the agent's `analyze.masking` returns "band-overlap between two tracks
+over time". Written separately, a producer would see a highlight the agent
+never mentions — and neither would be wrong, because there would be two
+definitions of masking in one program. Nothing in this file knows what a track
+is, what a colour is, or that a window exists.
+
+**Three choices, each against the simpler thing:** ERB bands rather than
+third-octave (the ear's filters are ~35 Hz wide at 100 Hz and ~565 Hz at 5 kHz;
+third-octave gives 23 and 1150, and both figures are asserted); asymmetric
+spreading, steep downward and shallow upward, which is why a bass buries a
+kick's low mids and not the reverse; and one number, `maskedFraction`, the
+share of the masked track's own energy sitting under the masker.
+
+**It is not a threshold model, and says so:** one track dominates another by so
+many dB, not "this band is inaudible". Audibility needs absolute level, the
+listener's system and a calibrated scale, and a DAW has none of the three.
+ADR-0195 leaves the highlight's threshold open; this is the number it gets
+applied to.
+
+### win — the taps I need, exactly
+
+`ScopeTap` (ADR-0175) is already the right primitive: a lock-free ring of
+stereo audio with a heard-timeline stamp, written wait-free on the audio thread
+and readable from any other thread. **I need no new mechanism — only more
+instances of that one, at a second point, switchable.**
+
+1. **A `ScopeTap` per track at the strip's INPUT**, before the inserts. This is
+   the only genuinely new tap point.
+2. **A `ScopeTap` per track after the inserts, before the fader.** If the
+   scope's existing tap is already at that point, I need only to read it per
+   track rather than for the focused one.
+3. **Per-track enable, costing nothing when off.** d5 says an unticked track
+   costs nothing; a disabled tap should not copy audio at all.
+4. **Audio, not spectra.** The FFT is mine, on a worker (d5, ADR-0184 d4).
+   Please do not band it on the audio thread.
+5. **The stamp**, which `ScopeTap` already carries. Two tracks' windows have to
+   line up in time, and a stamp is the only thing that makes that true when
+   their latencies differ.
+6. **`tracks.id` and `tracks.color`** reachable from the view — not engine work,
+   but it is what the curves are keyed and coloured by.
+
+One second of ring per tap is enough for a 60 Hz redraw with a large FFT and a
+worker that may be late; more is only memory.
+
+`track.<id>.spectrum.pre` / `.post` are ADR-0188 d6's WebSocket names and that
+surface is step 7's. In-process the view reads the taps directly, and the two
+must agree which point is which — plain `track.<id>.spectrum` being the post
+tap, as d5 says.
+
+**Not asked for, deliberately:** nothing per-track on the audio thread that an
+unticked track pays for, and no spectrum on the wire the view would re-band.
+
+### A rule that has now cost me twice
+
+Four faults planted in the measure; two caught and **two passed** — summing the
+spread instead of taking a maximum, and counting bands instead of weighting by
+energy. The second is d30's flaw in a new costume: the test used two victim
+tones of EQUAL energy, so "nine tenths of the energy" and "one band of two"
+both read 0.5. It now uses 9:1, where the right answer is 0.9 and a band count
+would say 0.5.
+
+**A test whose inputs make two candidate implementations agree is not testing
+which one you wrote.** Equal values, one path passed for two arguments, a
+default that happens to match the case under test — all the same mistake, and
+the check for it is to plant the other implementation and watch the test fail.
+
+**The stale-binary trap caught me again inside the same hour**, exactly as I
+wrote it up last time: I restored a plant, rebuilt the test target, and read a
+failure that belonged to the old object file. `touch` on the source before
+rebuilding is now in the loop.
+
+---
+
 ## 2026-09-27 — round 5d: [adi.sample]'s host side, and the handoff was already written
 
 Round 5 item (d), the last of the five. 55 checks in a new

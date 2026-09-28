@@ -296,6 +296,25 @@ public:
     /// answers any `params.request_flush()` it asked for (ADR-0179).
     void pumpMainThread() override;
 
+    /// MESSAGE THREAD. Tell the plug-in a lane is driving this parameter, so
+    /// its own GUI can show it (ADR-0196, `param-indication.h`).
+    ///
+    /// Keyed by `clap_id`, which is why this extension is the right answer
+    /// and an index-based one would not have been: nothing here has to
+    /// survive a `RESCAN_ALL` renumbering, because ids do not renumber.
+    ///
+    /// Also sets the contract's automated mark, so `broadcastParam` filters
+    /// the plug-in's echo of a value the lane just sent -- one call, both
+    /// halves, and no way to set one and forget the other.
+    void setAutomationIndication(std::int32_t index, bool automated);
+
+    /// The output-event sink CLAP hands this plug-in during `process` -- the
+    /// route a plug-in uses to report its own edits. Exposed so a test can
+    /// broadcast as a plug-in does, rather than reaching past the format.
+    [[nodiscard]] const clap_output_events_t* outEventsForTest() const noexcept {
+        return &outEvents_;
+    }
+
 private:
     /// What the plugin declares RIGHT NOW, asked rather than remembered.
     /// Used by `prepare` to decide whether reactivating is necessary at all.
@@ -309,6 +328,10 @@ private:
     /// True when this event addresses a parameter the plugin no longer
     /// declares (ADR-0177 d4). Audio thread; a linear scan, no allocation.
     [[nodiscard]] bool addressesAMissingParam(const engine::Event& e) const noexcept;
+    /// A device-addressed ParamValue/ParamMod converted from the wire's
+    /// NORMALIZED unit to the PLAIN value CLAP expects (ADR-0196). Anything
+    /// else is returned unchanged. Audio thread; no allocation.
+    [[nodiscard]] engine::Event toPlainUnits(const engine::Event& e) const noexcept;
 
 public:
 
@@ -404,6 +427,7 @@ private:
     /// `glue_->paramListRescans()` already acted on. Message thread only.
     std::uint64_t listRescanSeen_ = 0;
     const clap_plugin_tail_t* tailExt_ = nullptr;
+    const clap_plugin_param_indication_t* indicationExt_ = nullptr;
     const clap_plugin_latency_t* latencyExt_ = nullptr;
 
     /// CLAP_PLUGIN_FEATURE_INSTRUMENT, read once from the descriptor at

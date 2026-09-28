@@ -5,6 +5,29 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-27 — ADR-0195: Dynamic EQ, inline MIDI Learn, Auto Gain Stage, analyser overlay
+
+**Why:** a directive in four parts, with AGPL as its premise.
+
+**Checked, and three corrections:**
+- **No AGPL ban was left to lift.** ADR-0138 did it on 2026-09-24. What was
+  stale was ADR-0093's "ZLEqualizer: design only", which is now retired, and
+  the policy gains one sentence.
+- **The relayed Pro-Q gestures were not Pro-Q's.** The manual (pages 9, 10
+  and 15, in reference/DOCS) says vertical drag is gain on bells and shelves,
+  Ctrl/Cmd is Q, and Alt locks the axis. The director chose the manual.
+- **`mixer_strip.set_pre_gain` does not exist; `mixer.setInputGain` does,**
+  and it is the one to use.
+
+**Also found:**
+- No op writes `controller_maps`, so MIDI Learn needs `controller.bind` and
+  `controller.unbind`.
+- An instrument track can only be gain-staged by rendering it.
+- A Pd device hears only its own track, so the overlay is the analyser's C++
+  view.
+
+---
+
 ## 2026-09-27 — ADR-0192: color-bass devices, a sample slot, pthreads4w, win_codex
 
 **Why:** the director asked for color-bass tools (Au5's *6 Ways to Color
