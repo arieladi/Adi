@@ -146,6 +146,22 @@ std::int64_t idAsNumber(const std::string& id) {
 
 }  // namespace
 
+void finalize(std::vector<Record>& records, double epsilon) {
+    if (!(epsilon >= 0.0)) epsilon = 0.0;   // NaN included
+    for (Record& r : records) {
+        // ADR-0177 d4: kept, shown, and playing nothing.
+        if (r.missing) {
+            r.playing = r.stored;
+            r.driven = false;
+        } else {
+            const double d = r.playing - r.stored;
+            r.driven = (d > epsilon) || (d < -epsilon);
+        }
+        // ADR-0162: override is something done TO a lane.
+        if (!r.automated) r.overridden = false;
+    }
+}
+
 std::vector<std::size_t> activeAlgorithmParams(const std::vector<Record>& records,
                                                std::int32_t algorithm) {
     std::vector<std::size_t> out;

@@ -128,6 +128,50 @@ adi::panel::Record rec(std::int64_t id, const char* name) {
     return r;
 }
 
+void testTheRecordDerivesAndEnforces() {
+    section("ADR-0198 -- what the record derives, and what it refuses to hold");
+
+    using namespace adi::panel;
+    std::vector<Record> rs(4);
+
+    // 0: a lane is driving it away from its stored value.
+    rs[0].stored = 0.25; rs[0].playing = 0.80; rs[0].automated = true;
+    // 1: automated, but the playhead happens to be where the stored value is.
+    rs[1].stored = 0.50; rs[1].playing = 0.50; rs[1].automated = true;
+    // 2: MISSING, with a stored value and a lane that must survive.
+    rs[2].stored = 0.30; rs[2].playing = 0.90; rs[2].automated = true;
+    rs[2].missing = true;
+    // 3: overridden with no lane at all -- not a state.
+    rs[3].stored = 0.10; rs[3].playing = 0.10; rs[3].overridden = true;
+
+    finalize(rs);
+
+    check(rs[0].driven, "a value differing from the stored one is DRIVEN");
+    check(!rs[1].driven,
+          "and one that happens to equal it is not -- a UI must not decide "
+          "that by comparing doubles itself and disagree with a surface");
+
+    check(!rs[2].driven && rs[2].playing == rs[2].stored,
+          "a MISSING parameter plays nothing (ADR-0177 d4)");
+    check(rs[2].automated && rs[2].stored == 0.30,
+          "and keeps its lane and its stored value -- nothing is deleted");
+
+    check(!rs[3].overridden,
+          "overridden without automated is refused: override is something "
+          "done TO a lane (ADR-0162), and with none there is nothing to "
+          "re-enable");
+
+    // The epsilon is a parameter, and a coarse one must not call a real move
+    // undriven by accident -- so it is the caller's to choose and is tested
+    // at both ends.
+    std::vector<Record> tight(1);
+    tight[0].stored = 0.5; tight[0].playing = 0.5 + 1e-7;
+    finalize(tight, 1e-9);
+    check(tight[0].driven, "a tiny move is driven at a tight epsilon");
+    finalize(tight, 1e-6);
+    check(!tight[0].driven, "and is not at a coarse one");
+}
+
 void testAirwindowsActiveAlgorithmFilter() {
     section("ADR-0198 -- a suite shows only the ACTIVE algorithm's parameters");
 
@@ -208,6 +252,7 @@ int main() {
     testLivesRule();
     testAConfiguredPanel();
     testTheParameterList();
+    testTheRecordDerivesAndEnforces();
     testAirwindowsActiveAlgorithmFilter();
     testTheFilterMatchesThePluginsOwnConstants();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks, g_failures);

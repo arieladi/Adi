@@ -130,6 +130,29 @@ struct Record {
     Source lastTouchedBy = Source::None;
 };
 
+/// Derive the fields a record computes from the ones a caller reads off a
+/// device, and enforce the invariants. ADR-0198.
+///
+/// The caller fills `id`, `name`, `stored`, `playing`, `text`, `shape`,
+/// `stepCount`, `automated`, `overridden`, `missing` and `lastTouchedBy` --
+/// those come from the device contract and the session, which this header
+/// cannot see, because it is pure and JUCE-free so that it builds on every
+/// ABI the suite runs on. What is derived here is what would otherwise be
+/// derived differently by each caller:
+///
+/// - **`driven`** is `playing` differing from `stored` by more than
+///   `epsilon`. A UI must not compare two doubles itself and reach a
+///   different answer from a surface doing the same comparison, which is the
+///   disagreement ADR-0181 d3's single feed exists to prevent.
+/// - **A MISSING parameter plays nothing** (ADR-0177 d4): `playing` is forced
+///   to `stored` and `driven` to false. Its lane is kept and its stored value
+///   is kept, and neither is sounding.
+/// - **`overridden` without `automated` is not a state.** Override means a
+///   user took a LANE over (ADR-0162); with no lane there is nothing to
+///   override, and a record claiming it would light Live's Re-Enable button
+///   for a parameter that has nothing to re-enable.
+void finalize(std::vector<Record>& records, double epsilon = 1e-9);
+
 /// ADI Airwindows (ADR-0171): which records belong to the ACTIVE algorithm.
 ///
 /// A suite declares every algorithm's parameters at once, with fixed ids, so
