@@ -382,7 +382,14 @@ int main(int argc, char** argv) {
     const double rate = o.rate > 0.0 ? o.rate : static_cast<double>(peek.project.sampleRate);
 
     adi::engine::Session session;
-    session.devices().watchClapGlue(loader.clap().glue(), "clap");
+    // No watchClapGlue. ADR-0179 gave every CLAP instance its own glue, owned
+    // by its ClapDevice, and `DeviceHost::add` now registers that device's
+    // latency, port and restart epochs through the device CONTRACT -- three
+    // sources per device rather than three per host, and without asking what
+    // format a device is (ADR-0052 d4).
+    //
+    // This line watched a host-wide glue, so one plug-in's port rescan
+    // rebuilt the graph for every plug-in on the host.
     SineNode tone(220.0, 0.125f);
     std::int64_t toneTrack = 0;
     if (o.tone) {

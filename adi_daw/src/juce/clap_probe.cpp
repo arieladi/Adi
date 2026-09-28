@@ -31,6 +31,19 @@
 
 namespace {
 
+/// The glue of a device this probe made through `ClapHost::makeDevice`.
+///
+/// ADR-0179 gave every CLAP instance its own `ClapHostGlue`, owned by the
+/// `ClapDevice`, so the counters are per plugin and there is no host-wide one
+/// left to ask. Getting at it needs a downcast, and that is honest HERE and
+/// would not be inside `DeviceHost`: this file asked a CLAP host for a CLAP
+/// by id and got one back, whereas a format-agnostic device host asking what
+/// format it holds is ADR-0052 decision 4's exact failure.
+[[nodiscard]] adi::device::ClapHostGlue* glueOf(adi::device::DeviceInstance* d) {
+    auto* c = dynamic_cast<adi::device::ClapDevice*>(d);
+    return c != nullptr ? c->glue() : nullptr;
+}
+
 int g_failures = 0;
 int g_checks = 0;
 void check(bool c, const std::string& w) {
@@ -93,8 +106,8 @@ int answerTheLatencyQuestion(const std::string& want) {
     io.out = outp; io.channels = 2; io.frames = 512; io.sampleRate = 48000.0;
 
     const std::int32_t before = dev->latencySamples();
-    const std::uint64_t changesBefore = host.glue().latencyChanges();
-    const std::uint64_t restartsBefore = host.glue().restartRequests();
+    const std::uint64_t changesBefore = glueOf(dev.get())->latencyChanges();
+    const std::uint64_t restartsBefore = glueOf(dev.get())->restartRequests();
 
     // Walk the parameter's real range. Pro-Q 3's modes are discrete points
     // in it, so stepping finds them without knowing the encoding.
@@ -107,18 +120,18 @@ int answerTheLatencyQuestion(const std::string& want) {
     for (int step = 0; step <= 8; ++step) {
         const double v = mode->minReal
                        + (mode->maxReal - mode->minReal) * (double) step / 8.0;
-        const std::uint64_t cBefore = host.glue().latencyChanges();
-        const std::uint64_t rBefore = host.glue().restartRequests();
+        const std::uint64_t cBefore = glueOf(dev.get())->latencyChanges();
+        const std::uint64_t rBefore = glueOf(dev.get())->restartRequests();
         dev->setParam(mode->id, adi::device::ParamValue::withReal(0.0, v));
         std::int32_t now = dev->latencySamples();
         for (int blk = 0; blk < 20; ++blk) {
             dev->process(io);
-            host.glue().dispatchMainThread();
+            glueOf(dev.get())->dispatchMainThread();
             now = dev->latencySamples();
         }
         std::printf("    mode %.3f -> latency %-6d  changed+%llu restart+%llu\n", v, now,
-                    (unsigned long long)(host.glue().latencyChanges() - cBefore),
-                    (unsigned long long)(host.glue().restartRequests() - rBefore));
+                    (unsigned long long)(glueOf(dev.get())->latencyChanges() - cBefore),
+                    (unsigned long long)(glueOf(dev.get())->restartRequests() - rBefore));
         if (now != before && moved < 0) moved = now;
         if (now > largest) largest = now;
     }
@@ -129,9 +142,9 @@ int answerTheLatencyQuestion(const std::string& want) {
     std::printf("  latency after (no re-activate) %s\n",
                 moved < 0 ? "UNCHANGED" : std::to_string(moved).c_str());
     std::printf("  latencyChanges()        %llu\n",
-                (unsigned long long)(host.glue().latencyChanges() - changesBefore));
+                (unsigned long long)(glueOf(dev.get())->latencyChanges() - changesBefore));
     std::printf("  restartRequests()       %llu\n",
-                (unsigned long long)(host.glue().restartRequests() - restartsBefore));
+                (unsigned long long)(glueOf(dev.get())->restartRequests() - restartsBefore));
 
     // Now reactivate and look again. If the value only appears HERE, the
     // cheap path is reading stale and ADR-0084 needs a third case.
@@ -194,7 +207,8 @@ int endToEndCoalescer(const std::string& want) {
 
     adi::device::DeviceHost host;
     adi::device::DeviceNode& node = host.add(std::move(dev), pick->name);
-    host.watchClapGlue(chost.glue(), pick->name);
+    // No watchClapGlue: ADR-0179 made DeviceHost::add register this device's
+    // latency, port and restart epochs through the contract, per device.
     auto& inst = host.deviceAt(0);
 
     // Two paths into one sum, the compensated shape ADR-0058's own test uses.
@@ -311,7 +325,8 @@ int rebuildAgainstARealPlugin(const std::string& want) {
 
     adi::device::DeviceHost host;
     host.add(std::move(dev), pick->name, /*trackId=*/1);
-    host.watchClapGlue(chost.glue(), pick->name);
+    // No watchClapGlue: ADR-0179 made DeviceHost::add register this device's
+    // latency, port and restart epochs through the contract, per device.
 
     // Two audio tracks and a master: the smallest model a session has.
     adi::rows::Model model;
@@ -403,7 +418,10 @@ int rebuildAgainstARealPlugin(const std::string& want) {
     const std::int64_t publishedBefore = gh.stats().published;
 
     // --- THE PORT RESCAN --------------------------------------------------
-    const clap_host_t* h = chost.glue().host();
+    // Through THIS device's own host object (ADR-0179), which is what makes
+    // the rescan attributable to it: the signal a plugin sends now identifies
+    // the plugin that sent it.
+    const clap_host_t* h = glueOf(&host.deviceAt(0))->host();
     const auto* ports = static_cast<const clap_host_audio_ports_t*>(
         h->get_extension(h, CLAP_EXT_AUDIO_PORTS));
     if (ports == nullptr) { std::printf("  FAIL  no audio-ports host extension\n"); return 1; }
@@ -527,7 +545,8 @@ int measureTheSeam(const std::string& want, bool wetOnly) {
 
     adi::device::DeviceHost host;
     host.add(std::move(dev), pick->name, /*trackId=*/1);
-    host.watchClapGlue(chost.glue(), pick->name);
+    // No watchClapGlue: ADR-0179 made DeviceHost::add register this device's
+    // latency, port and restart epochs through the contract, per device.
     auto& inst = host.deviceAt(0);
 
     adi::rows::Model model;
@@ -595,7 +614,10 @@ int measureTheSeam(const std::string& want, bool wetOnly) {
     std::printf("  settled level     %.6f\n", settled);
 
     // --- the rebuild ------------------------------------------------------
-    const clap_host_t* h = chost.glue().host();
+    // Through THIS device's own host object (ADR-0179), which is what makes
+    // the rescan attributable to it: the signal a plugin sends now identifies
+    // the plugin that sent it.
+    const clap_host_t* h = glueOf(&host.deviceAt(0))->host();
     const auto* ports = static_cast<const clap_host_audio_ports_t*>(
         h->get_extension(h, CLAP_EXT_AUDIO_PORTS));
     ports->rescan(h, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT);
@@ -1013,10 +1035,14 @@ int main(int argc, char** argv) {
             // whole point: the contract does not know which format it has.
             adi::device::DeviceHost host;
             adi::device::DeviceNode& node = host.add(std::move(dev), pick->name);
-            host.watchClapGlue(chost.glue(), pick->name);
+            // No watchClapGlue: ADR-0179 made DeviceHost::add register this
+            // device's latency, port and restart epochs through the CONTRACT,
+            // three per device rather than three per host.
             check(host.deviceCount() == 1, "DeviceHost took it like any other device");
-            check(host.coalescer().sourceCount() == 4,
-                  "one device source plus the glue's three (ADR-0084), saw " +
+            check(host.coalescer().sourceCount() == 3,
+                  "three sources for this ONE device -- latency, ports, restart -- "
+                  "all read through the contract (ADR-0084's causes, ADR-0179's "
+                  "per-instance host), saw " +
                   std::to_string(host.coalescer().sourceCount()));
 
             adi::engine::Graph g;

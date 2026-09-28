@@ -100,6 +100,22 @@ struct ParamDescriptor {
     bool          hasRealRange = false;
     bool          automatable = true;
     std::uint32_t flags = 0;
+
+    /// The plug-in no longer declares this parameter. ADR-0177 d4, extended
+    /// to CLAP by ADR-0179.
+    ///
+    /// **NOTHING IS DELETED.** The row keeps its place, its lanes, its
+    /// mappings and its bindings; it is shown as missing and PLAYS NOTHING,
+    /// exactly as a missing plug-in's parameters are (SPEC §7.1). A later
+    /// rescan that declares the id again picks it up, with its automation
+    /// intact -- the case ADR-0177 set as the test: a removed parameter with
+    /// ten thousand automation points loses none of them.
+    ///
+    /// It is a FLAG rather than a removal because the index is load-bearing:
+    /// `ParamEdit::paramIndex` and `ParamOps`' mirror are both keyed by it,
+    /// so compacting the list would silently repoint every held index at a
+    /// different parameter.
+    bool          missing = false;
 };
 
 /// Enough to find the plugin again, and to tell the user what is missing when
@@ -185,6 +201,50 @@ public:
     /// `clap_host_latency.changed` is a HOST callback — the notification
     /// belongs to the host object, not to the plugin (ADR-0084).
     [[nodiscard]] virtual std::uint64_t latencyEpoch() const noexcept { return 0; }
+
+    /// A counter that increases every time this device reports that its
+    /// SHAPE moved — ports, channel counts. ADR-0179.
+    ///
+    /// Same shape and same reason as `latencyEpoch`: every device answers,
+    /// 0 where the concept does not apply, and `DeviceHost` registers a
+    /// source for every device unconditionally. The alternative is asking a
+    /// device what format it is, which is ADR-0052 decision 4's exact
+    /// failure — and which the compiler already caught once, because the
+    /// `dynamic_cast` needs a JUCE header in a file that has none.
+    ///
+    /// **This is what makes ADR-0090 d5's prepare guard legal.** That guard
+    /// re-read the port layout on every prepare to notice a rescan, which
+    /// `audio-ports.h` forbids while the plugin is active AND which cannot
+    /// see a change anyway, because the layout may not move while active
+    /// (ADR-0123 item 6). A per-device epoch is the signal that guard should
+    /// always have used.
+    [[nodiscard]] virtual std::uint64_t shapeEpoch() const noexcept { return 0; }
+
+    /// A counter that increases every time this device asks to be restarted
+    /// without saying why. ADR-0179.
+    ///
+    /// Separate from the two above because the CAUSE is what decides the
+    /// response (ADR-0084): a latency change is a tap move, a shape change is
+    /// a different graph, and a restart nobody explained is treated as the
+    /// second, because the conservative answer is the one that cannot corrupt.
+    [[nodiscard]] virtual std::uint64_t restartEpoch() const noexcept { return 0; }
+
+    /// MESSAGE THREAD, from the same timer that polls the coalescer. Run
+    /// whatever this device has deferred to the main thread. ADR-0179.
+    ///
+    /// A CLAP plugin defers work with `host.request_callback()` and expects
+    /// `on_main_thread` in return; it also asks for a parameter flush with
+    /// `params.request_flush()`, which `params.h` says the host answers on
+    /// the main thread while the plugin is not processing. Neither is
+    /// something the plugin can do for itself, and NOTHING REPORTS a host
+    /// that never calls them -- the plugin simply does less than it was
+    /// written to do.
+    ///
+    /// On the contract rather than on a list of glues for the same reason
+    /// the three epochs are: `DeviceHost` drives every device it owns and
+    /// never asks what format one is (ADR-0052 d4). A device with nothing
+    /// deferred does nothing here.
+    virtual void pumpMainThread() {}
 
     /// ADR-0142 (ADR-0110 d1): a CAPTURE BOUNDARY. Moves when the plugin says
     /// its state changed in a way its parameter broadcasts do not carry -- a
