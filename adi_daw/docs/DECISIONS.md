@@ -14338,6 +14338,53 @@ here rather than noted. All of the below is asserted in
     the brief asked for a CI change and the right answer was that none was
     needed.
 
+26. **The built-ins hook (ADR-0188 d8, ADR-0192 d1), and a correction I had to
+    go back to the source for.** `PdBuiltins` is a table of setup functions
+    that `PdRuntime::initialise` calls once, right after `libpd_init`, which is
+    what the brief asked for. The reason I first gave for the timing was wrong,
+    and a planted fault is what said so.
+
+    **What I claimed:** that `class_new` registers a creator with the CURRENT
+    instance's `pd_objectmaker`, so registering after an instance exists would
+    reach that one and no other. **The plant that should have failed:** moving
+    `registerAll` into `open`, after `libpd_new_instance`. It passed. Both
+    instances still made the object.
+
+    **What `m_class.c` actually says at the pinned commit:**
+    - `pd_objectmaker` is ONE OBJECT FOR THE PROCESS (`m_class.c:27`). What is
+      per instance is the method list on each class, `c->c_methods`, an array
+      indexed by instance.
+    - `class_doaddmethod` under PDINSTANCE loops
+      `for (i = 0; i < pd_ninstances; i++)` and adds the method to **every
+      instance that exists at that moment**.
+    - `pdinstance_new` copies **instance 0's** list into each new instance.
+
+    Instance 0 always exists and is always in that loop, so **a class
+    registered at any moment reaches every instance, earlier and later**.
+    Registering early is not what makes ADI's externals reachable; Pd would
+    have managed either way.
+
+    **What it does buy, and the reason that survives, is determinism.** Every
+    device opens against the same, complete vocabulary. That matters here more
+    than it would elsewhere: ADR-0177 fix 3 says what a patch can do is
+    knowable from its TEXT, and a set of built-in objects that depended on when
+    a device happened to load would let the same patch mean two things in one
+    session. `PdBuiltins::add` refuses after `registerAll` for that reason and
+    for no reason to do with Pd.
+
+    **The shape, agreed to fit ADR-0192 d6's boundary.** An external declares
+    itself with `ADI_PD_BUILTIN(adi.combchord~, adi_combchord_tilde_setup)`
+    beside its own definition; nothing in `src/juce/**` is edited to admit one,
+    because win_codex owns the externals and does not touch that directory.
+    Two traps are handled for it:
+    - **A self-registering translation unit in a static library is dropped by
+      the linker** when nothing references it, taking the external with it and
+      leaving no error anywhere. The externals are therefore built as a CMake
+      OBJECT library, whose objects are always linked.
+    - **The registry is a function-local static**, not a namespace-scope one,
+      so a registrar in another translation unit that runs first still finds a
+      constructed table.
+
 ### What this amends in ADR-0177, and what it does not
 
 This ADR's decisions were written before ADR-0177 merged, so the question was

@@ -245,7 +245,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 |---|---|---|---|
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/dsp/combchord.*`, `src/adi/dsp/colorcab.*`, `src/adi/pd_builtins/**`, `pd/devices/**`, `tests/test_combchord.cpp`, `tests/test_colorcab.cpp` | win_codex | `codex/colorbass-dsp` | 2026-09-27 |
-| `src/adi/engine/graph.hpp` (`NodeIo` only), `src/adi/engine/graph.cpp` (the `NodeIo` fill only), `src/adi/engine/process.hpp` (one optional transport pointer on `AudioIo`), `src/adi/engine/session.hpp` and `session.cpp` (the per-block transport fill and the tempo/meter view it reads, published through `publisher.hpp`), `tests/test_transport_info.cpp`: delegated by win, widened 2026-09-27 at win_codex's request | win_codex | `codex/transport-info` | 2026-09-27 |
 | `src/adi/dsp/masking.*`, its test: the band-overlap measure the analyser's overlay and the agent's `analyze.masking` share (ADR-0195 d5) | mac (analyser) | (its round 6) | 2026-09-27 |
 | `src/adi/engine/mixer.*` (the `StripNode` tap only), `src/adi/engine/session.*` (`openScope`, `closeScope`, `attachTaps`), `src/adi/engine/graph.*` (a node-input tap in `runNode`, if chosen), `src/adi/engine/scope.*` (only if the tap needs an API), `tests/test_analyser_taps.cpp`: the analyser's per-track taps, delegated by win (ADR-0195 d5) | win_codex | `codex/analyser-taps` | 2026-09-28 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
@@ -254,7 +253,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
-| `src/juce/pd_*`, `src/adi/engine/published_array.hpp`, `pd/**`, `tests/pd/**`, `tests/test_pd_*.cpp`, `collab/mac-analyser.md`, `tools/fetch_external.sh`, `adi-m4l-analyzer/**` | mac (second session) | `mac/pd-windows-tier` | 2026-09-27 |
+| `src/juce/pd_*`, `src/adi/engine/published_array.hpp`, `pd/**`, `tests/pd/**`, `tests/test_pd_*.cpp`, `collab/mac-analyser.md`, `tools/fetch_external.sh`, `adi-m4l-analyzer/**` | mac (second session) | `mac/pd-builtins` | 2026-09-27 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`

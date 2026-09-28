@@ -935,7 +935,8 @@ std::int32_t Graph::computeSplits(std::int32_t frames) noexcept {
     return nsplit;
 }
 
-void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept {
+void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
+                    const TransportInfo* transport) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
 
     bool mainSilent = true;
@@ -1051,6 +1052,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept 
         }
 
         NodeIo nio;
+        nio.transport = transport;
         nio.in = anyMain ? mixPtrs_.data() : nullptr;
         nio.sidechain = anySide ? sidePtrs_.data() : nullptr;
         nio.out = s.chanPtrs.data();
@@ -1140,10 +1142,10 @@ void Graph::process(const AudioIo& io) noexcept {
         // asserted. See ADR-0056 and setReverseWithinLevel.
         if (reverseWithinLevel_) {
             for (auto it = level.rbegin(); it != level.rend(); ++it)
-                runNode(slots_[static_cast<std::size_t>(*it)], frames, nsplit);
+                runNode(slots_[static_cast<std::size_t>(*it)], frames, nsplit, io.transport);
         } else {
             for (NodeId id : level)
-                runNode(slots_[static_cast<std::size_t>(id)], frames, nsplit);
+                runNode(slots_[static_cast<std::size_t>(id)], frames, nsplit, io.transport);
         }
     }
 
