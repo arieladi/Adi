@@ -62,6 +62,7 @@
 #include "juce/pd_device.hpp"
 #include "juce/pd_declarations.hpp"
 #include "adi/engine/published_array.hpp"
+#include "adi/engine/mpe_output.hpp"
 
 #include <cstdint>
 #include <mutex>
@@ -201,6 +202,74 @@ public:
     /// and reading `s_thing` later is safe as well as cheap.
     void bindParameters(const PdDeclarations& decls);
 
+    /// What `[adi.transport $0]` receives -- ADR-0188 d3's field list exactly.
+    ///
+    /// **NO ABSOLUTE TICK COUNT, and that is the whole shape of it.** Pd's
+    /// numbers are 32-bit floats, exact for integers only to 2^24 =
+    /// 16,777,216, and ADI's 5,765,760 ticks per quarter note (SPEC 4.2) pass
+    /// that within three quarter notes. Bar, beat and ticks-within-the-quarter
+    /// are each small enough to stay exact for as long as anyone plays.
+    struct Transport {
+        bool playing = false;
+        double bpm = 120.0;
+        int timeSigNumerator = 4;
+        int timeSigDenominator = 4;
+        /// 1-based, as a musician counts them.
+        double bar = 1.0;
+        double beat = 1.0;
+        /// **The QUARTER-NOTE grid, not the position within the beat**, and in
+        /// 5/8 or 7/8 those are different numbers. It is the absolute tick
+        /// count modulo `ADI_PPQ` (5,765,760), counted from bar 1, so it runs
+        /// 0..5,765,759 and wraps once per quarter note whatever the meter
+        /// calls a beat. In 7/8, where the beat is an eighth, it wraps once
+        /// per TWO beats. `bar` and `beat` carry the meter; this carries a
+        /// quarter-note phase, and a patch that confuses them is early or late
+        /// by a factor of two with nothing to say why.
+        double ticksInQuarter = 0.0;
+    };
+
+    /// **THE ENGINE'S HALF IS win_codex's, IN FLIGHT.** `NodeIo` gains
+    /// `io.transport`: null outside a Session, valid only for the duration of
+    /// `process`, carrying block-start values for every segment. Once it lands
+    /// the Pd device node calls this from `io.transport` and nothing else
+    /// changes -- everything from here to the patch is built and proved
+    /// already. Until then a caller sets it directly, which is also how the
+    /// test drives it.
+    ///
+    /// Audio thread or message thread, before `process`. Sent into the patch
+    /// at the start of each segment, with the MIDI and before the audio.
+    void setTransport(const Transport& t) noexcept;
+
+    /// Message thread, before `prepare`. Which MIDI a patch's `[notein]`,
+    /// `[ctlin]` and `[bendin]` receive -- ADR-0194.
+    ///
+    /// **THE ENGINE HAS NO MIDI TO FORWARD, AND THAT IS ADR-0054 WORKING AS
+    /// INTENDED.** "No MIDI byte survives" the input parser: bytes go in and
+    /// `engine::Event` comes out, with every expression value a double,
+    /// because 7-bit and 14-bit are encodings of a control surface rather than
+    /// properties of the music. There is no CC event and no pitch-bend event
+    /// to hand to Pd.
+    ///
+    /// So a Pd patch is an OUTPUT EDGE, like a VST3 plugin, and it is fed by
+    /// the encoder that edge already has: `MpeRouter` (ADR-0097). Nothing here
+    /// re-encodes anything -- the quantisation a patch sees is the same one a
+    /// JUCE-built MPE synth sees, decided once and tested once.
+    ///
+    /// `MpeMidi` is the default because it is the only route that delivers
+    /// what a patch asks for: notes on member channels, per-note pitch bend on
+    /// `[bendin]`, timbre as CC74 on `[ctlin]`, pressure as channel pressure.
+    /// `Plain` puts every note on channel 1 and DROPS pitch and timbre
+    /// (counted), so a `[bendin]` under it would simply never fire.
+    void setExpressionRoute(engine::ExpressionRoute route) noexcept;
+
+    /// Events the router had nowhere to put, and MIDI that overflowed the
+    /// per-segment scratch. Both are counted rather than silent, as the engine
+    /// counts elsewhere.
+    [[nodiscard]] std::int64_t midiDropped() const noexcept { return midiDropped_; }
+    /// The router itself, for the counters it keeps: dropped dimensions,
+    /// shared member channels, unknown notes.
+    [[nodiscard]] const engine::MpeRouter& midiRouter() const noexcept { return midiRouter_; }
+
     /// **AUDIO THREAD**, before `process` for the same block (ADR-0188 d3).
     /// Allocates nothing, takes no lock, and calls no `gensym`.
     ///
@@ -274,6 +343,30 @@ private:
     std::vector<std::string> console_;
     std::string pending_;            ///< a line Pd has begun and not ended
     static constexpr std::size_t kMaxConsoleLines = 256;
+
+    /// AUDIO THREAD. One routed MIDI event into this instance's Pd, through
+    /// `inmidi_*` rather than `libpd_*`: the libpd entry points take
+    /// `sys_lock()` on every call, which is the same reason `sendParameter`
+    /// does not use `libpd_float`.
+    void deliverMidi(const engine::MpeOut& m) noexcept;
+
+    /// AUDIO THREAD. One list to `<$0>-aditr`, built on the stack.
+    void deliverTransport() noexcept;
+
+    Transport transport_{};
+    bool transportSet_ = false;
+    /// The receive symbol, resolved once in `open` for `sendParameter`'s
+    /// reason: `gensym` on the audio thread allocates for an unseen name.
+    void* transportSymbol_ = nullptr;
+
+    /// Engine events -> MIDI, per device and stateful: a member channel is
+    /// allocated at note-on and released at note-off.
+    engine::MpeRouter midiRouter_;
+    engine::ExpressionRoute midiRoute_ = engine::ExpressionRoute::MpeMidi;
+    /// Sized in `prepare`. One segment's worth, never grown on the audio
+    /// thread; overflow is counted.
+    std::vector<engine::MpeOut> midiScratch_;
+    std::int64_t midiDropped_ = 0;
 
     /// Declared parameter id -> its receive `t_symbol*`, resolved once on the
     /// message thread. `void*` because this header does not include m_pd.h.

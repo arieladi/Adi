@@ -123,6 +123,10 @@ const PdArrayDecl* PdDeclarations::array(std::int32_t id) const noexcept {
     for (const auto& a : arrays) if (a.id == id) return &a;
     return nullptr;
 }
+const PdSampleDecl* PdDeclarations::sample(std::int32_t id) const noexcept {
+    for (const auto& s : samples) if (s.id == id) return &s;
+    return nullptr;
+}
 
 std::string pdParamReceiveName(int dollarZero, std::int32_t id) {
     return std::to_string(dollarZero) + "-adi-" + std::to_string(id);
@@ -153,6 +157,10 @@ std::vector<PdExternalRequest> pdExternalRequests(std::string_view patchText) {
     return out;
 }
 
+std::string pdTransportReceiveName(int dollarZero) {
+    return std::to_string(dollarZero) + "-aditr";
+}
+
 PdDeclarations parsePdDeclarations(std::string_view patchText) {
     PdDeclarations out;
     const auto records = scan(patchText);
@@ -165,7 +173,8 @@ PdDeclarations parsePdDeclarations(std::string_view patchText) {
         const std::string& cls = r.atoms[4];
         const bool isParam = (cls == "adi.param");
         const bool isArray = (cls == "adi.array");
-        if (!isParam && !isArray) continue;
+        const bool isSample = (cls == "adi.sample");
+        if (!isParam && !isArray && !isSample) continue;
 
         // Arguments after the class name.
         const std::vector<std::string> a(r.atoms.begin() + 5, r.atoms.end());
@@ -183,6 +192,26 @@ PdDeclarations parsePdDeclarations(std::string_view patchText) {
         if (a.size() < 2 || !parseId(a[1], id)) {
             fail(PdDeclProblem::BadId, r.box,
                  cls + " needs a positive integer id below 2^31");
+            continue;
+        }
+
+        if (isSample) {
+            // [adi.sample $0 <id> <name>]
+            if (a.size() != 3) {
+                fail(PdDeclProblem::WrongArity, r.box,
+                     "adi.sample takes $0, id, name");
+                continue;
+            }
+            if (out.sample(id) != nullptr) {
+                fail(PdDeclProblem::DuplicateId, r.box,
+                     "sample id " + a[1] + " is already declared; this one is ignored");
+                continue;
+            }
+            PdSampleDecl d;
+            d.id = id;
+            d.box = r.box;
+            d.name = label(a[2]);
+            out.samples.push_back(std::move(d));
             continue;
         }
 

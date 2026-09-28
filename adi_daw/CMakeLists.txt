@@ -193,6 +193,10 @@ add_library(adi_core STATIC
     # registry itself, so it builds on every ABI; only the setup functions it
     # calls touch Pd.
     src/juce/pd_builtins.cpp
+    # The sample slot (ADR-0192 d4). No libpd in it either -- the handoff is
+    # SnapshotPublisher and the decode is the audio layer, so it builds on
+    # every ABI.
+    src/juce/pd_samples.cpp
     # The static declaration parse (ADR-0177 fix 3, ADR-0183): no libpd in it
     # at all, deliberately -- the declared set must never depend on Pd running,
     # which is also why it is built on every ABI including the ones where the
@@ -586,6 +590,14 @@ add_test(NAME adi_dsp_tests COMMAND adi_dsp_tests)
 # The declaration parse. Links adi_core but touches no libpd: ADR-0177 fix 3
 # puts the declared set behind a static parse of the patch text, and a test that
 # needed Pd running to read a declaration would not be testing that.
+# [adi.sample] and its handoff. Links adi_core and touches no libpd, for the
+# reason the declaration parse does not: the slot is SnapshotPublisher and the
+# decode is the audio layer, so both are tested on every ABI -- including the
+# ones where the Pd runtime is not built.
+add_executable(adi_pd_sample_tests tests/test_pd_samples.cpp)
+target_link_libraries(adi_pd_sample_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_pd_sample_tests COMMAND adi_pd_sample_tests)
+
 add_executable(adi_pd_declaration_tests tests/test_pd_declarations.cpp)
 target_link_libraries(adi_pd_declaration_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_pd_declaration_tests COMMAND adi_pd_declaration_tests)

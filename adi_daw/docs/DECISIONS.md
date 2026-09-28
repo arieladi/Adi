@@ -14385,6 +14385,98 @@ here rather than noted. All of the below is asserted in
       so a registrar in another translation unit that runs first still finds a
       constructed table.
 
+27. **`adi.param.pd` and `adi.transport.pd` are written, and ADR-0177 d5's
+    vanilla-Pd promise is now a number rather than a claim.** win handed both
+    files over in round 5e.
+
+    - **`adi.param.pd`**: `[r $1-adi-$2]` into the outlet, and `[loadbang]`
+      into `[f $5]` into the same outlet, exactly as d5 specifies. The test
+      fixture's `[adi.param]` box now feeds the published array directly, so
+      what is read back is what the abstraction produced. **It carries 0.5
+      before anything sends to it** -- that is d5's "vanilla Pd opens the patch
+      and every parameter plays at its default", measured. Planted: cutting the
+      `[loadbang]` connection fails that check and nothing else.
+    - **`adi.transport.pd`**: `[r $1-aditr]` into `[unpack f f f f f f f]` and
+      seven outlets, ADR-0188 d3's field list in order. A third receive stem,
+      for the reason the second exists.
+    - **The engine sends it on the stack.** `pd_list` with seven atoms and a
+      symbol resolved once in `open`, never `libpd_list`, which would take
+      `sys_lock()` and build its atoms on libpd's own allocating message stack.
+      A patch with no `[adi.transport]` costs one null check on `s_thing`.
+    - **Exactness, asserted:** 5,765,759 ticks -- the largest a quarter note
+      holds -- survives the 32-bit float round trip intact. An absolute tick
+      count passes 2^24 within three quarter notes and would come back rounded
+      with nothing to say so, which is the whole reason d3's field list is bar,
+      beat and ticks-within-the-quarter.
+
+    **`ticksInQuarter` is the QUARTER-NOTE GRID, not the position within the
+    beat**, and win's correction is worth the paragraph because the two are
+    equal in every meter anyone tests in. It is the absolute tick count modulo
+    `ADI_PPQ` (5,765,760), counted from bar 1, so it wraps once per quarter
+    note whatever the meter calls a beat. In 4/4 that is the beat. **In 7/8 the
+    beat is an eighth, and this wraps once per two of them** -- a patch written
+    against 4/4 and moved to 7/8 would be out by a factor of two, playing
+    perfectly, with nothing anywhere to say why. `bar` and `beat` carry the
+    meter; this carries a quarter-note phase. Said in `adi.transport.pd`'s own
+    help text, because the patch author is who gets it wrong.
+
+    **What is NOT here, and it is one line of someone else's file.** `NodeIo`
+    carries a sample rate and nothing else (`graph.hpp`), so **the engine has
+    no transport to give a device**. Everything from the device host to the
+    patch is built and proved; the missing link is the engine carrying
+    transport to a node, which is `src/adi/engine/**` -- win's, standing.
+    `LibPdEngine::setTransport` is the seam, and it is what the test drives.
+
+28. **`[adi.sample]`'s host side (ADR-0192 d4), and the handoff was already
+    written.** d4 says the buffer reaches the slot "through a lock-free
+    handoff, never as Pd messages". Pd messages are the obvious route and are
+    wrong twice: a list of a million floats is a million dispatches, and it
+    would arrive on whichever thread sent it.
+
+    **The handoff is `SnapshotPublisher`**, the protocol ADR-0010 and ADR-0019
+    settled and `GraphHost` uses to swap a whole graph under a running engine.
+    A sample is the shape it was built for: large, immutable once built,
+    replaced rarely, read by one audio thread that only moves forward. Its
+    header spends a page on why `collect` frees only what is STRICTLY older
+    than the announced sequence, and none of that reasoning was worth writing
+    a second time in a class that would then have to be kept in agreement.
+    That page is now exercised rather than trusted: a buffer the reader is on
+    survives a publish and a collect, and is freed on the collect after the
+    reader moves.
+
+29. **The declaration is the third schema in the one scanner, and the third id
+    space.** `[adi.sample $0 <id> <name>]`. It declares **no length, no rate
+    and no range**, and the asymmetry with `[adi.array]` is the point: an
+    array's shape is the patch's to choose because the patch fills it, while a
+    sample's shape is the FILE's and the patch finds out what it got.
+
+    Three id spaces, not one: a sample is media, a parameter is automation, an
+    array is a display. All three may be id 1 in one patch, and the test asserts
+    exactly that — one space would make dropping a sample in change what an
+    automation lane points at.
+
+30. **The hash is the MEDIA's, not the decoded copy's, and the first version of
+    the test could not have told the difference.** ADR-0127 identifies the file
+    a project refers to so the project still plays when it moves; ADR-0132's
+    cache copy is ours and disposable. The test first passed one path as both
+    source and playable file, which would have passed just as happily with the
+    hash taken from the cache. It now writes a distinct stand-in for the media
+    and asserts the hash matches THAT and demonstrably not the WAV's. The
+    general form of the mistake: **a test that supplies one value for two
+    arguments cannot tell you which one the code used.**
+
+    A file that fails to hash still loads. Losing the hash is bad — the project
+    cannot find the media again later — but refusing to load what the user just
+    dropped in is worse.
+
+31. **Neither the slot nor the declaration needs libpd**, which is the same
+    property ADR-0177 fix 3 put on the parse, and it pays the same way: both
+    build and are tested on every ABI, including the ones where the Pd runtime
+    is not built at all (d24). The external that will read the slot is
+    win_codex's, and the accessor it calls is named in `pd_samples.hpp` with
+    its lifetime contract: valid until the next call for that slot from the
+    audio thread, which for a perform routine is the next block.
+
 ### What this amends in ADR-0177, and what it does not
 
 This ADR's decisions were written before ADR-0177 merged, so the question was
@@ -14637,3 +14729,89 @@ believed — a planted defect that does not change behaviour is not evidence, an
 reading one as evidence is the same error as counting instead of checking.
 
 4812 checks across 48 suites.
+
+---
+
+## ADR-0194 — MIDI into a Pd device comes from the MPE output encoder, not from MIDI the engine kept — `DECIDED` (2026-09-27) — **MAKES ADR-0192's MIDI MODE POSSIBLE; DEPENDS ON ADR-0054 AND ADR-0097; EXTENDS ADR-0183**
+
+**The instruction** (win, round 5c): the track's notes, CCs and pitch bend
+reach `[notein]`, `[ctlin]` and `[bendin]` through libpd, per instance, at block
+boundaries, with no allocation on the audio thread.
+
+### The problem the instruction runs into, and it is ADR-0054 working
+
+**The engine has no MIDI to forward.** ADR-0054's parser is titled "no MIDI byte
+survives it": bytes go in, `engine::Event` comes out, and every expression value
+is a `double`, because 7-bit and 14-bit are encodings of a control surface
+rather than properties of the music. There is no CC event and no pitch-bend
+event in `events.hpp` at all — `EventType` is `NoteOn`, `NoteOff`,
+`NoteExpression`, `ParamValue`, `ParamMod`. A `[ctlin]` wants a controller
+number and a 0..127 value, and the engine holds neither.
+
+So the instruction cannot be met by forwarding. It can only be met by
+**encoding**, and the question is whose encoder.
+
+### Decisions
+
+1. **A Pd patch is an OUTPUT EDGE, like a VST3 plugin, and is fed by the
+   encoder that edge already has.** `MpeRouter` (ADR-0097) turns engine events
+   into MIDI for exactly this reason, and it is per-device, stateful,
+   allocation-free and audio-thread safe already. `LibPdEngine` gives each
+   instance its own and plays its output into Pd.
+
+   **Nothing is re-encoded twice.** The quantisation a patch sees is the one a
+   JUCE-built MPE synth sees, decided once in ADR-0097 and tested once. A
+   second encoder written here would have been a second set of rounding rules
+   to keep in agreement with the first, and the two would have diverged at the
+   first bug fixed in only one of them.
+
+2. **The route is `MpeMidi`, and that is what makes the instruction
+   satisfiable.** It is the only route that produces all three of the objects
+   named: notes on member channels for `[notein]`, per-note pitch bend for
+   `[bendin]`, and timbre as CC74 for `[ctlin]`. `Plain` puts every note on
+   channel 1 and **drops pitch and timbre** (counted), so under it a
+   `[bendin]` would never fire once. `NoteExpression` has no MIDI form at all.
+
+   A patch that ignores channel still hears every note, so the member-channel
+   spread costs a naive patch nothing; a patch that wants per-note expression
+   cannot have it any other way.
+
+3. **`inmidi_*`, not `libpd_*`, for the reason ADR-0183 d21 gives for
+   parameters.** Every libpd MIDI entry point wraps its call in
+   `sys_lock()`/`sys_unlock()` (`z_libpd.c` at the pinned commit) — a mutex on
+   the audio thread. The functions underneath take no lock and allocate
+   nothing: `inmidi_noteon` builds three stack atoms and dispatches through
+   `pd_this->pd_midi->m_notein_sym`, a symbol the instance already holds, so
+   there is no `gensym` either. A patch with no `[notein]` costs one null
+   check.
+
+4. **Delivery is at the segment's start, and that is as fine as the engine
+   offers.** The scheduler already splits a block at every event frame
+   (`graph.hpp`: an event at frame 100 splits 512 into 100 and 412), so an
+   event landing in a segment lands at its start. Pd then quantises again to
+   its own 64-sample block, which is Pd's limit and the same one ADR-0188 d3
+   records for parameters.
+
+5. **Port 0 always.** One device is one Pd instance. Pd adds `(portno << 4)` to
+   the channel it shows, so a second port would make a patch see channel 17.
+
+### What building it found
+
+6. **`MpeOut::word` is filled only for a `Control`.** On a note and a poly
+   pressure the router leaves it zero and puts the value in `value`, a 0..1
+   double. Reading `word` for a note's velocity would have made **every
+   note-on a note-off** — an instrument that is silent rather than one that
+   crashes, and nothing in the log would have said why. Caught by reading
+   `mpe_output.cpp` before it ran.
+
+7. **A quiet note must not become a note-off.** Velocity 0 *is* a note-off in
+   MIDI, so the 7-bit conversion floors at 1. A note at 0.001 of full scale is
+   a quiet note, not the end of one.
+
+8. **A test for "the value changed" passes when nothing arrives.** The bend
+   assertion first read "moved off centre", and the array holds 0 before
+   anything is written — so `|0 - 8192| > 1` was true and the check passed
+   under a planted fault that dropped every control message. It now requires a
+   bend *above* centre and inside 14 bits, which 0 fails. The lesson is
+   general: assert the value that should be there, never merely that the
+   initial one is gone.

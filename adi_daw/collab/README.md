@@ -228,7 +228,7 @@ subject, say so in your log instead of writing it twice.
 | 0191 | win | `win/adij-features` | ADiJ writes Pioneer USBs and Rekordbox XML, serves CDJs over Pro DJ Link, plays stems; ADI and ADiJ stand until a trademark clearance (director) | used |
 | 0192 | win | `win/color-bass` | color-bass devices as Pd devices on compiled-in externals; `[adi.sample]`; pthreads4w for Windows; win_codex joins (director) | used |
 | 0193 | win_codex | (its first mission) | held for win_codex's DSP decisions (ADR-0192) | reserved |
-| 0194 | mac | (the analyser session's round 5) | MIDI into Pd devices | reserved |
+| 0194 | mac | `mac/pd-midi` | MIDI into Pd devices: the MPE output encoder feeds [notein], [ctlin] and [bendin]; no MIDI survives ADR-0054 to forward (win's round 5c) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -251,7 +251,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
-| `src/juce/pd_*`, `src/adi/engine/published_array.hpp`, `pd/**`, `tests/pd/**`, `tests/test_pd_*.cpp`, `collab/mac-analyser.md`, `tools/fetch_external.sh`, `adi-m4l-analyzer/**` | mac (second session) | `mac/pd-builtins` | 2026-09-27 |
+| `src/juce/pd_*`, `src/adi/engine/published_array.hpp`, `pd/**`, `tests/pd/**`, `tests/test_pd_*.cpp`, `collab/mac-analyser.md`, `tools/fetch_external.sh`, `adi-m4l-analyzer/**` | mac (second session) | `mac/pd-sample` | 2026-09-27 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`
