@@ -7,6 +7,16 @@ no reference tables. MIT, in `LICENSE` next to this file.
 **It does not replace Surge's own wavetables.** Surge ships 418 factory tables
 and they stay exactly as they are. This pack sits beside them.
 
+**This is `adi-surge`'s own copy, and it is self-contained.** The same 98
+tables were generated once, elsewhere in Adi's work, and each plugin that uses
+them keeps its own copy — deliberately, so that neither reads the other's
+folder and neither can break the other by changing or deleting files. Nothing
+in this project points outside this directory. The audio is byte-identical
+across copies; only each copy's README differs, because each describes its own
+project. The `clm ` chunk inside every file carries the name of the generator
+that made it, which is why it does not say `adi-surge`: the files are exactly
+as generated, not re-tagged.
+
 | Bank | Tables | What the measurements say |
 |---|---|---|
 | `Chimes/` | 14 | sparse spectra — half the harmonics missing (density 0.52), narrow (about 19 harmonics): bells, chords, struck metal |
