@@ -23,8 +23,9 @@ void ScopeTap::write(const float* l, const float* r, std::int32_t frames, std::i
     std::atomic_thread_fence(std::memory_order_release);
     for (std::int32_t i = 0; i < frames; ++i) {
         const auto at = static_cast<std::size_t>((w + i) % capacity_);
-        l_[at].store(l[i], std::memory_order_relaxed);
-        r_[at].store(r != nullptr ? r[i] : l[i], std::memory_order_relaxed);
+        const float left = l != nullptr ? l[i] : 0.0f;
+        l_[at].store(left, std::memory_order_relaxed);
+        r_[at].store(r != nullptr ? r[i] : left, std::memory_order_relaxed);
         stamp_[at].store(advancing ? stamp + i : stamp, std::memory_order_relaxed);
     }
     written_.store(w + frames, std::memory_order_release);

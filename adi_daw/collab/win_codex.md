@@ -7,6 +7,40 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
+## 2026-09-28 — A2: per-track analyser tap points
+
+Branched codex/analyser-taps from main after #157 merged (31b85b1), reusing
+our idle transport worktree. Read #155's exact tap list and win's translation
+of the whole channel strip versus StripNode. Taps are keyed by (track, point),
+with PostFader the unchanged default. PreFader captures StripNode input before
+its gain; ChainInput captures Graph's compensated summed input at the first
+insert, or the first effect after the instrument (cached EventFlow::Consume).
+Without an effect after it, ChainInput falls back to the strip input.
+
+Consumer calls: openScope(trackId, seconds, ScopePoint::ChainInput) for
+spectrum.pre; openScope(trackId, seconds, ScopePoint::PreFader) for spectrum.post
+and plain spectrum. ScopeTap::read remains unchanged. One second means 48000
+stereo frames at 48 kHz. A repeated key retains its original ring length.
+closeScope(trackId, point) detaches, while Session retains the allocation until
+audio has stopped; one already-started callback may finish its write.
+
+Graph writes ChainInput at its slot's actual arrival, excluding that node's
+own latency. PreFader uses strip arrival; only PostFader adds strip latency.
+Device implementations are untouched. Each off tap costs one relaxed pointer
+load, no copy; the non-null path uses an acquire fence paired with the setter's
+release, so a newly allocated ring is safely published on ARM as well as x86.
+Suspended nodes also write silence to open taps: Graph notifies the strip via a
+scope-only silence hook without running its DSP. ScopeTap::write accepts null
+left audio for that allocation-free silence path. FFT/banding stays off audio.
+
+The new test covers exact insert gain, no-insert and instrument-only fallbacks,
+fader separation, real 32/96-sample delay lines aligned by heard stamps, strip
+latency applying only post-fader, zero writes after closing, 40 open/close
+cycles at each point while rendering (including first allocation), silent
+suspension, and zero callback allocations/file I/O. Also applied win's deferred
+#157 nit: session transport uses textproj::kPPQ/kWhole. No other textproj or
+tempo-builder change. CMake adds only the new test target.
+
 ## 2026-09-27 — mission 2, Task A: transport at the NodeIo boundary
 
 Win delegated Task A and approved the narrow plumbing expansion on this chat

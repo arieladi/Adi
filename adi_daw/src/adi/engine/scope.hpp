@@ -36,6 +36,10 @@
 
 namespace adi::engine {
 
+/// ADR-0195 d5: spectrum.pre is ChainInput; spectrum.post (and spectrum)
+/// is PreFader. PostFader remains ADR-0175's default waveform scope.
+enum class ScopePoint { PostFader, PreFader, ChainInput };
+
 class ScopeTap {
 public:
     /// Message thread: `seconds` of stereo at `sampleRate`, allocated here.
@@ -43,7 +47,8 @@ public:
 
     /// Audio thread, wait-free: `frames` frames; `stamp` is the heard timeline
     /// position of the first. `advancing` is false while the transport is
-    /// parked: every frame then carries the same stamp.
+    /// parked: every frame then carries the same stamp. A null left channel
+    /// writes silence; a null right channel duplicates the left.
     void write(const float* l, const float* r, std::int32_t frames, std::int64_t stamp,
                bool advancing) noexcept;
 

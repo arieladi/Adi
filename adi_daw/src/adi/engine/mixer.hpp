@@ -119,10 +119,12 @@ public:
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const NodeIo& io) noexcept override;
+    void silenceTaps(const NodeIo& io) noexcept override;
 
     /// Message thread: the scope tap this strip's output feeds (ADR-0175), or
     /// null. The tap outlives every graph: the session keeps it.
     void setTap(ScopeTap* tap) noexcept { tap_.store(tap, std::memory_order_release); }
+    void setPreFaderTap(ScopeTap* tap) noexcept { preFaderTap_.store(tap, std::memory_order_release); }
 
     /// Zero, like MixNode's: a strip holds nothing back.
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
@@ -136,8 +138,11 @@ public:
 
 private:
     void processGains(const NodeIo& io) noexcept;
+    void writeTap(std::atomic<ScopeTap*>& slot, const NodeIo& io,
+                  const float* const* audio) noexcept;
 
     std::atomic<ScopeTap*> tap_{nullptr};
+    std::atomic<ScopeTap*> preFaderTap_{nullptr};
     std::atomic<std::int64_t> delayProject_{0};
     std::atomic<std::int64_t> delayRate_{48000};
     double sampleRate_ = 48000.0;       ///< message thread, set by prepare
