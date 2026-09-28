@@ -553,6 +553,10 @@ add_executable(adi_session_tests tests/test_session.cpp)
 target_link_libraries(adi_session_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_session_tests COMMAND adi_session_tests)
 
+add_executable(adi_transport_info_tests tests/test_transport_info.cpp)
+target_link_libraries(adi_transport_info_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_transport_info_tests COMMAND adi_transport_info_tests)
+
 # ADR-0163: the mixer strip in the graph.
 add_executable(adi_mixer_tests tests/test_mixer.cpp)
 target_link_libraries(adi_mixer_tests PRIVATE adi_core adi_warnings)

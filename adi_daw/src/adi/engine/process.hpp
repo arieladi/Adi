@@ -19,6 +19,8 @@
 
 namespace adi::engine {
 
+struct TransportInfo;
+
 /// One callback's worth of audio, as the device hands it over.
 ///
 /// Raw pointers rather than a buffer type, because the buffer type on the other
@@ -41,6 +43,9 @@ struct AudioIo {
     /// and the only clock the audio thread should trust: wall-clock time on the
     /// audio thread is a syscall and a lie in roughly that order.
     std::int64_t streamTimeSamples = 0;
+
+    /// Session-owned, valid for this callback only; device drivers leave null.
+    const TransportInfo* transport = nullptr;
 };
 
 /// What an audio device drives. The graph implements it.
