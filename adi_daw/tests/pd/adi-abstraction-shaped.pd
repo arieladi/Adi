@@ -1,0 +1,9 @@
+#N canvas 0 50 700 380 12;
+#X text 20 10 adi-abstraction-shaped -- the SHAPE a device patch must NOT have (ADR-0197 \, ADR-0183 d11). inlet~ straight to outlet~ \, with no adc~ and no dac~ anywhere.;
+#X text 20 80 Opened as an abstraction inside another patch this passes audio through. Opened as a TOP-LEVEL canvas -- which is the only thing libpd_openfile does -- its inlet connects to nothing \, so it renders blocks and emits pure silence \, with no error at any layer to say why.;
+#X text 20 180 It is kept as a fixture so the finding stays asserted after the three shipped patches stopped having it. A rule nothing exercises is a rule that quietly stops being true.;
+#X obj 20 260 inlet~;
+#X obj 20 300 *~ 1;
+#X obj 20 340 outlet~;
+#X connect 3 0 4 0;
+#X connect 4 0 5 0;

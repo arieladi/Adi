@@ -291,18 +291,23 @@ void testAudioGoesThroughPdAndComesBack() {
           std::to_string(peak) + ")");
 }
 
-void testADevicePatchIsAnAbstractionAndRendersNothing() {
-    section("ADR-0183 -- the patches in pd/ are abstractions, and libpd cannot render one");
+void testAnAbstractionOpenedAsATopLevelPatchRendersSilence() {
+    section("ADR-0197 -- WHY a device patch is top-level: the shape it must not have");
 
-    // This is the finding, asserted so it cannot quietly stop being true.
-    // adi-rmsc.pd is inlet~/outlet~ with no adc~/dac~. Opened as a top-level
-    // canvas -- which is the only thing libpd_openfile does -- its inlets
-    // connect to nothing. It opens, it renders, and it emits silence, with no
-    // error anywhere to say why.
-    LibPdEngine eng(devicePatchDir(), "adi-rmsc.pd", 3, 2);
+    // THE FINDING THAT ADR-0197 SETTLES, kept asserted after the fix removed
+    // every instance of it from pd/. `adi-abstraction-shaped.pd` is inlet~
+    // straight to outlet~ with no adc~ and no dac~ -- the shape the three
+    // shipped patches used to have. Opened as a top-level canvas, which is the
+    // only thing `libpd_openfile` does, its inlet connects to nothing: Pd
+    // renders the blocks and every output sample is zero, with no error at any
+    // layer to say why.
+    //
+    // A rule nothing exercises is a rule that quietly stops being true, which
+    // is exactly how this one got in.
+    LibPdEngine eng(patchDir(), "adi-abstraction-shaped.pd", 2, 2);
     PdLatencyReceiver latency;
     std::string err;
-    if (!eng.open(latency, err)) { check(false, "adi-rmsc.pd opens: " + err); return; }
+    if (!eng.open(latency, err)) { check(false, "the fixture opens: " + err); return; }
     eng.prepare(48000.0, 512);
 
     const int total = 512;
@@ -313,10 +318,9 @@ void testADevicePatchIsAnAbstractionAndRendersNothing() {
     float peak = 0.f;
     for (float v : out) peak = std::max(peak, std::fabs(v));
     check(peak < 1e-9f,
-          "and every output sample is zero: an abstraction opened as a "
-          "top-level patch has nothing connected to its inlet~. A device patch "
-          "has to reach adc~/dac~ somehow, and that is ADR-0183's open question "
-          "-- not something for this engine to paper over");
+          "and every output sample is zero -- which is the whole reason "
+          "ADR-0197 makes a device patch a top-level canvas, and why "
+          "validate_pd.py refuses a top-level inlet~");
 }
 
 std::string readFile(const std::string& path) {
@@ -894,6 +898,77 @@ void testTransportArrivesOnNodeIo() {
     eqi(static_cast<long long>(cells[4]), 34, "bar and all");
 }
 
+void testTheShippedDevicePatchesMakeSound() {
+    section("ADR-0197 -- each patch in pd/ renders a sine, instead of silence");
+
+    // THIS IS THE TEST ADR-0183 d11 WAS MISSING. These three opened, Pd
+    // rendered their blocks, and every output sample was zero -- because a
+    // top-level `inlet~` connects to nothing and libpd opens a patch as a
+    // top-level canvas. Nothing reported it at any layer. Now they are
+    // `[adc~]`/`[dac~]` (ADR-0197), and this asserts the thing that would have
+    // caught it: audio in, audio out.
+    struct Case {
+        const char* file;
+        std::int32_t inCh;      // main + any sidechain key
+        std::int32_t outCh;
+        bool needsCeiling;      // the limiter's gain is 0 until the host sets one
+    };
+    const Case cases[] = {
+        {"adi-rmsc.pd",    3, 2, false},
+        {"adi-limiter.pd", 2, 2, true},
+        {"adi-eq8.pd",     2, 2, false},
+    };
+
+    for (const Case& c : cases) {
+        LibPdEngine eng(devicePatchDir(), c.file, c.inCh, c.outCh);
+        PdLatencyReceiver latency;
+        std::string err;
+        check(eng.open(latency, err), std::string(c.file) + " opens: " + err);
+        eng.prepare(48000.0, 512);
+
+        if (c.needsCeiling) {
+            // Not a workaround: the limiter's gain is
+            // min(1, ceiling / peak), and `[r $0-ceiling]` reads 0 until the
+            // host sends one, so a ceiling of zero is a gain of zero. The host
+            // sets these at load; the test is standing in for the host.
+            check(eng.sendFloat("ceiling", 1.f), "the limiter takes a ceiling");
+            check(eng.sendFloat("release", 0.9999f), "and a release");
+            check(eng.sendFloat("lookahead-ms", 1.5f), "and a lookahead");
+        }
+
+        // A sine, loud enough that nothing here could round it away, and long
+        // enough to clear the adapter's one Pd block of priming.
+        const int n = 512;
+        Buffers b(2, n);
+        double phase = 0.0;
+        const double step = 2.0 * 3.14159265358979 * 440.0 / 48000.0;
+        for (int f = 0; f < n; ++f) {
+            const auto s = static_cast<float>(0.5 * std::sin(phase));
+            phase += step;
+            b.in[0][static_cast<std::size_t>(f)] = s;
+            b.in[1][static_cast<std::size_t>(f)] = s;
+        }
+
+        float peak = 0.f;
+        for (int block = 0; block < 4; ++block) {
+            auto io = b.io(2, n, 0, n);
+            eng.process(io);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int f = 0; f < n; ++f)
+                    peak = std::max(peak, std::fabs(b.out[static_cast<std::size_t>(ch)]
+                                                        [static_cast<std::size_t>(f)]));
+        }
+        check(peak > 0.01f,
+              std::string(c.file) + " renders the sine rather than silence"
+              "\n          peak out " + std::to_string(peak));
+
+        const auto counters = eng.counters();
+        check(counters.ticks > 0,
+              std::string(c.file) + " actually ran Pd blocks, so the peak above "
+              "is Pd's output and not the passthrough a closed engine gives");
+    }
+}
+
 void testPdWouldReachAnExternalBesideThePatch() {
     section("ADR-0188 d8 -- THE FAULT, PLANTED: Pd reaches a file beside the patch");
 
@@ -1110,7 +1185,7 @@ int main() {
     testPdOpensARealPatch();
     testTheAdapterCostsOneBlockAndSaysSo();
     testAudioGoesThroughPdAndComesBack();
-    testADevicePatchIsAnAbstractionAndRendersNothing();
+    testAnAbstractionOpenedAsATopLevelPatchRendersSilence();
     testAPublishedArrayReachesTheReader();
     testTheBufferIsAtomicPerArray();
     testAClosedEngineStillPassesAudio();
@@ -1123,6 +1198,7 @@ int main() {
     testACompiledInExternalIsRegisteredForEveryInstance();
     testTransportReachesThePatch();
     testTransportArrivesOnNodeIo();
+    testTheShippedDevicePatchesMakeSound();
     testMidiReachesNoteinCtlinAndBendin();
     // Last, and on purpose: it dlopens nothing, but it does put a class name
     // on Pd's process-wide load list, and a test that runs after it would be

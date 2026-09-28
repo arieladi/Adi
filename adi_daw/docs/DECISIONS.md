@@ -15096,3 +15096,57 @@ drove `pushEvent` → `injected_` while the plant patched `io.events` — the pa
 automation ACTUALLY uses. The route no lane takes was the only one under test.
 
 5000 checks across 50 suites.
+
+---
+
+## ADR-0197 — A Pd device patch is a top-level canvas: `[adc~]` in, `[dac~]` out — `DECIDED` (2026-09-28) — **win's RULING; CLOSES ADR-0183 d11; CONFIRMS ADR-0177's GRAMMAR AND ADR-0095's LATENCY PROTOCOL UNCHANGED**
+
+**The question, from ADR-0183 d11.** The three patches in `pd/` were written as
+abstractions — `inlet~` and `outlet~`, no `adc~`, no `dac~`. `libpd_openfile`
+opens a patch as a TOP-LEVEL canvas, where an `inlet~` connects to nothing. So
+each of them opened, Pd rendered its blocks, and every output sample was zero,
+with no error at any layer. d11 named three ways out and left the choice to
+win, because `tools/gen_pd_patches.py` and ADR-0096 own those files.
+
+### Decision
+
+**A device patch is a top-level canvas.** `[adc~ 1 2]` is the main input and the
+channels after it are a sidechain key — the order `LibPdEngine` fills its input
+buffer in, so a patch with three inputs gets two of signal and one of key.
+`[dac~ 1 2]` is the output. **Subpatches keep `inlet~`/`outlet~`**: a subpatch is
+part of the same canvas and shares its `$0`, so its inlets are real. Only the
+top level changed.
+
+### Why, against the two alternatives
+
+- **`$0` stays the one `libpd_getdollarzero` returns.** ADR-0177's
+  `[adi.param $0 ...]` grammar and ADR-0095's latency protocol
+  (`$0-query_latency` / `$0-report_latency`) are unchanged, because the patch
+  the host opened is the patch the names are built from.
+- **The generated wrapper breaks the latency protocol** — d11's own finding.
+  The abstraction's `$0` is not the wrapper's, and `libpd_getdollarzero`
+  returns the wrapper's, so the host cannot address the patch it opened.
+- **Passing the wrapper's `$0` in as `$1`** changes ADR-0177's grammar, for
+  nothing this buys.
+- **A top-level patch opens in vanilla Pd and plays through the sound card as
+  it is**, which is the best authoring loop a patch author gets: the file the
+  DAW runs is the file they can hear.
+
+**What it gives up:** nesting one device patch inside another. ADI's graph does
+the chaining — one patch per device.
+
+### What it required
+
+- `tools/gen_pd_patches.py` emits `[adc~]`/`[dac~]`, and the three patches are
+  regenerated.
+- **`validate_pd.py` refuses a top-level `inlet~` or `outlet~`**, by counting
+  canvas depth rather than searching the text, so the limiter's delay-writer
+  and delay-reader subpatches — which correctly have both — still pass. The
+  silent-zero failure is an error now, at the cheapest layer that can see it.
+- **The three patches are proved to make sound.** A 440 Hz sine through each,
+  asserting a non-zero peak and that Pd actually ran blocks. That is the test
+  d11's finding lacked: the patches had been structurally valid and audibly
+  silent for as long as they had existed.
+- The shape that fails is kept as a fixture, `tests/pd/adi-abstraction-shaped.pd`,
+  and still asserted to render silence. A rule nothing exercises is a rule that
+  quietly stops being true, which is how this one got in.
