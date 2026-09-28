@@ -1,0 +1,99 @@
+category,name,frames,description
+Tones,01-Pulse Morph,16,square to narrow pulse
+Tones,02-Sine to Saw,16,one partial opening to a full series
+Tones,03-Tri to Saw,16,odd-squared series filling in
+Tones,04-Slope Sweep,16,spectral tilt from dark to bright
+Tones,05-Harmonic Count,16,brickwall from 1 to 96 partials
+Tones,06-Hollow to Full,16,odd only, filling with evens
+Tones,07-Comb Saw,16,moving comb notches over a saw
+Tones,08-Peak Sweep,16,resonant peak climbing the series
+Tones,09-Octave Stack,12,fundamental to octave balance
+Tones,10-Soft Clip,16,sine driven into a square
+Tones,11-Asym Ramp,16,rise/fall balance sweep
+Tones,12-Phase Spread,16,same spectrum, phases opening out
+Tones,13-Sub Weight,12,low partials swelling under a saw
+Tones,14-Tri Fold,16,triangle folded into brightness
+Core,01-Wide Stack,16,seven phase-offset saws, spread opening
+Core,02-Buzz,16,flat series, width sweeping
+Core,03-Tilt,16,-12 dB/oct to +3 dB/oct
+Core,04-Notch Climb,16,one deep notch walking up
+Core,05-Fifth Stack,12,root and fifth partials
+Core,06-Steps,16,staircase, 2 to 32 levels
+Core,07-Triple Pulse,16,three pulses per cycle, width sweep
+Core,08-Two Octaves,12,octave pair balance
+Core,09-Low Heavy,12,bass-weighted series
+Core,10-Bright Edge,16,presence band lifted
+Core,11-Sync Ramp,16,hard-sync ramp, ratio 1 to 6
+Core,12-Twin Peak,16,two resonances splitting apart
+Core,13-Drive Core,16,saw into progressive saturation
+Core,14-Air,16,top octave opening over a dark core
+Voices,01-Ah to Ee,16,open front vowel glide
+Voices,02-Oh to Oo,16,rounded back vowel glide
+Voices,03-Eh to Ah,16,mid to open
+Voices,04-Ee to Oo,16,front to back, F2 sweeping down
+Voices,05-Ah to Oh,16,open to rounded
+Voices,06-Five Vowels,20,a-e-i-o-u across the table
+Voices,07-Deep Voice,16,formants shifted down
+Voices,08-High Voice,16,formants shifted up
+Voices,09-Small Voice,16,child-sized formants
+Voices,10-Nasal,16,antiformant over a vowel glide
+Voices,11-Breathy,16,vowel with air above the formants
+Voices,12-Open Wide,16,F1 rising, mouth opening
+Voices,13-Chest,16,strong fundamental under the formants
+Voices,14-Two Voices,16,a pair a fifth apart
+Talk,01-Wow,20,w-o-w, the classic talk shape
+Talk,02-Yoi,20,y-o-i, bass-music vowel bend
+Talk,03-Wub,16,w-u-b with a closing thud
+Talk,04-Yeah,16,y-e-a, opening out
+Talk,05-Ow,16,o-w, falling diphthong
+Talk,06-Oi,16,o-i, rising diphthong
+Talk,07-Hey,16,breathy onset into e-i
+Talk,08-Sah,16,fricative onset, then open
+Talk,09-Talk,24,t-a-l-k, four articulations
+Talk,10-Phrase,32,a longer run through the vowel space
+Talk,11-Robot,16,vowel steps quantised to a grid
+Talk,12-Vocode,20,harmonic bands gated by a vowel envelope
+Talk,13-Growl Talk,20,vowel over a subharmonic rasp
+Talk,14-Mouth Sweep,20,formants sliding with the mouth closing
+Grit,01-FM Growl r1,16,FM index sweep
+Grit,02-FM Growl r2,16,FM index sweep
+Grit,03-FM Growl r3,16,FM index sweep
+Grit,04-FM Screech r5,16,FM index sweep
+Grit,05-FM Screech r7,16,FM index sweep
+Grit,06-Ring Snarl,16,carrier times modulator, depth sweep
+Grit,07-Hard Clip,16,saw clipped flat
+Grit,08-Foldback,16,reflected overdrive
+Grit,09-Crush,16,level quantised to few steps
+Grit,10-Comb Cancel,16,dense comb notches, moving
+Grit,11-Phase Warp,16,phase-distortion bend
+Grit,12-Sync Screech,16,sync ratio climbing to 9
+Grit,13-Metal Rasp,16,rectified odd-harmonic grind
+Grit,14-Wavefold,16,sine folded through a triangle
+Chimes,01-Bell,16,sparse partial set, opening
+Chimes,02-Tube,16,odd sparse partials
+Chimes,03-Glass,16,high sparse partials
+Chimes,04-Prime,16,prime-numbered partials
+Chimes,05-Gamelan,16,wide metallic spread
+Chimes,06-Music Box,12,few bright partials
+Chimes,07-Major,12,4:5:6 stacked in one cycle
+Chimes,08-Minor,12,10:12:15
+Chimes,09-Sus,12,6:8:9
+Chimes,10-Seventh,12,8:10:12:14 core
+Chimes,11-Shimmer,20,high partials gated per frame
+Chimes,12-Stretch,16,partials pulled off the harmonic grid
+Chimes,13-Anvil,16,dense metallic cluster
+Chimes,14-Bell Choir,16,bell partials with a vowel colour
+Texture,01-Broad,16,flat noise-like spectrum, width sweep
+Texture,02-Soft Noise,12,1/sqrt(k) tilt
+Texture,03-Band Sweep,20,noise band climbing
+Texture,04-Notch Noise,16,notch travelling through noise
+Texture,05-Noise to Tone,20,random spectrum resolving to harmonic
+Texture,06-Grains,20,sparse random clusters
+Texture,07-Riser,20,spectral weight moving up
+Texture,08-Faller,20,spectral weight moving down
+Texture,09-Wash,16,metallic noise cloud
+Texture,10-Fizz,12,top-only content
+Texture,11-Rumble,12,only the lowest partials
+Texture,12-Glitch,24,per-frame gating, fixed phases
+Texture,13-Whisper,16,vowel formants over noise
+Texture,14-Static,8,dense fixed-phase hash

@@ -14251,6 +14251,93 @@ here rather than noted. All of the below is asserted in
     here rather than left to be discovered by whoever first opens a Pd device
     there.
 
+25. **d24 is closed: the director granted pthreads4w (ADR-0192 d5), and
+    `ADI_WITH_PD` is on for MSVC.** Four things turned up in the doing, and two
+    of them would have been red CI runs rather than reading.
+
+    - **The licence exceptions are five, not four, and none of them is
+      compiled.** ADR-0192 d5 says "Apache-2.0 except four files". `NOTICE` at
+      the pinned commit names five: `tests/rwlock7.c`, `tests/rwlock7_1.c`,
+      `tests/rwlock8.c` and `tests/rwlock8_1.c` from Butenhof's *Programming
+      With POSIX Threads*, and `tests/threestage.c` from Hart's *Windows System
+      Programming*. **All five sit under `tests/`**, and `pthread.c` -- which
+      is the entire library, see below -- includes no file from there. So the
+      count is wrong in the safe direction and nothing ADI ships carries
+      anything but Apache-2.0.
+
+    - **The pin is on a MIRROR, and that was checked rather than trusted.**
+      pthreads4w's upstream is SourceForge and `fetch_external.sh` clones from
+      GitHub. `git ls-remote` was run against both: `refs/heads/version_3` is
+      the same object, `8c1d612b...`, at each. The pin is upstream's own commit
+      reached through a mirror. It is pinned by commit with tag `-`, the
+      airwin2rack case (ADR-0174), because the 3.0.0 line was never tagged.
+
+    - **libpd links its system libraries into the SHARED target only, and we
+      build the static one.** libpd's CMakeLists gives `Ws2_32` and
+      `${PTHREADS_LIB}` to `libpd` (SHARED); `libpd_static` gets nothing but
+      two INTERFACE targets carrying compile definitions and include
+      directories. So on Windows the pthreads and winsock symbols Pd needs --
+      `s_inter.c` opens sockets -- are `adi_core`'s to supply, and without that
+      the link fails with nothing on any path saying why. Found by reading
+      libpd's CMakeLists, not by a red build.
+
+    - **The whole of pthreads4w is one translation unit.** `pthread.c`
+      `#include`s 145 of the other 146 sources -- all but `signal.c`, which
+      upstream omits deliberately -- so the target is one source file and a
+      second would define every symbol twice. `dll.c` is among them and must
+      stay: a static pthreads4w has no `DllMain`, so `dll.c` puts
+      `on_process_init` in `.CRT$XCU` for the C runtime to call before `main`,
+      and `implement.h` references `__ptw32_autostatic_anchor()` so the linker
+      cannot drop the module that holds it.
+
+    - **libpd's headers declare every symbol `dllimport` on Windows unless
+      told otherwise, and we link the static library.** `m_pd.h` makes `EXTERN`
+      `dllexport` for libpd's own sources and `dllimport` for everyone else, so
+      `adi_core` compiled references to `__imp_libpd_init` and two dozen more,
+      and the link failed naming symbols that were in the archive all along.
+      This one was NOT caught by reading -- CI caught it, and the shape of the
+      failure is the tell: the compile was clean and only the link failed,
+      which is what a dllimport mismatch looks like. `PD_DEFINE_EXTERN`, set to
+      `extern`, is libpd's own knob for it, and it is set unconditionally
+      because on ELF and Mach-O `EXTERN` is already plain.
+
+    - **The Pd tier built on MSVC and then a TEST hung for 4h39m**, and the
+      hang is the strongest argument for d8 that has turned up yet. The
+      planted-fault section drops a file named `adi_probe_external.dll` beside
+      a patch and lets Pd's real loader reach it. On Windows that is
+      `LoadLibrary` on something that is not a PE image, and without
+      `SEM_FAILCRITICALERRORS` the loader raises a HARD ERROR: Windows puts a
+      modal "Bad Image" box on a desktop nobody is looking at and the process
+      waits for a click that never comes. The same binary runs that section in
+      milliseconds on macOS and Linux, where `dlopen` on a text file just
+      returns an error.
+
+      **So on Windows, a malformed library beside a patch does not merely load
+      foreign code -- it can HANG THE HOST**, before any of it runs. The engine
+      is not exposed, because it refuses the directory before Pd sees it, which
+      is exactly the guard d8 asks for; only the test is, because its job is to
+      go around the engine and prove the danger is real. The error mode is set
+      there and nowhere else.
+
+      **And the fix cost one more round trip, to `windows.h` itself.**
+      Including it without `NOMINMAX` defines `min` and `max` as macros, which
+      the preprocessor then applies to every `std::min(` and `std::max(` in the
+      file. MSVC reports that as C2589, "illegal token on right side of `::`" --
+      a message that names neither `min`, nor `max`, nor `windows.h`, and would
+      be unguessable to anyone who had not met it before.
+
+      **It cost 4h39m to find because nothing was bounded.** `ctest --timeout`
+      and a `timeout-minutes` on the step now name a hung test in eighteen
+      minutes instead of burning GitHub's six-hour limit in silence -- win's
+      fix for the five-hour macOS job, applied where it was still missing.
+
+    **CI needed no change.** The Windows leg already runs
+    `fetch_external.sh --build-only`, configures, builds and runs `ctest`, so
+    the tier turns itself on when the dependency is present and the Pd suites
+    run there with nothing added to the workflow. That is worth stating because
+    the brief asked for a CI change and the right answer was that none was
+    needed.
+
 ### What this amends in ADR-0177, and what it does not
 
 This ADR's decisions were written before ADR-0177 merged, so the question was
@@ -14415,3 +14502,91 @@ ADR-0183 and ADR-0188.
 - the shipped names;
 - the Chord Comb's MIDI mode, until MIDI into Pd devices exists;
 - the drop tile, in step 7.
+
+---
+
+---
+
+## ADR-0179 — A `clap_host_t` per plug-in instance: the glue is owned by the device, the broadcast loop and its use-after-free go with it, and the port-rescan guard becomes legal — `DECIDED` (2026-09-27) — **ANSWERS ADR-0123 ITEM 6 ("C4"); CORRECTS ADR-0090 d5; EXTENDS ADR-0084**
+
+`ClapHostGlue` was one per `ClapHost`, so every signal a plug-in sent — latency
+changed, ports rescanned, state dirty, flush requested, restart wanted — was
+counted for the **host**, not for the plug-in that sent it. ADR-0123 item 6
+named the consequence and left the design to mac.
+
+### Decision
+
+**1. One glue per plug-in instance, owned by the `ClapDevice`.** `makeDevice`
+creates the glue *before* the plug-in, because the `clap_host_t` inside it is
+an argument to `create_plugin` and the plug-in may keep that pointer for its
+whole life. `host_data` then carries identity by construction rather than by a
+side table, which is the whole of "C4".
+
+**2. The plug-in list is a single pointer, and the broadcast loop is gone.**
+`dispatchMainThread` used to call `on_main_thread` on *every* plug-in
+registered with the host, for the honest reason that `request_callback`
+carries no identity. That loop was a **use-after-free**:
+
+    ERROR: AddressSanitizer: heap-use-after-free
+      READ  in ClapHostGlue::dispatchMainThread()   clap_host.cpp:1262
+      freed by ClapDevice::~ClapDevice()            clap_host.cpp:380
+      alloc by ClapHost::makeDevice()               clap_host.cpp:1437
+
+Reproduced with a real ADI Airwindows suite: load it, destroy the device, wait
+one 20 ms timer tick. `makeDevice` registered the raw pointer, `~ClapDevice`
+destroyed the plug-in, and **nothing ever called `unregisterPlugin`** — it
+existed, and its only callers in the tree were a probe and a test.
+
+**What closes it is the OWNERSHIP, not an unregister call**, and that
+distinction is load-bearing. The glue is a member of the device, so the two die
+together and no dispatch can reach a destroyed plug-in: the dangling pointer is
+*unreachable*, not merely unused. Deleting the `unregisterPlugin` call from the
+destructor and running the whole suite still passes — recorded here because
+that is a planted-defect PASS that means the fix is structural, not a hole in
+the tests. A container was not kept "with one element" for the same reason: a
+container invites the loop back, and the loop was the bug.
+
+**3. The device contract gains `shapeEpoch()` and `restartEpoch()` beside
+`latencyEpoch()`.** Same shape, same reason: every device answers, `0` where
+the concept does not apply, and `DeviceHost` registers three sources for every
+device unconditionally. The alternative is a host asking a device what format
+it is, which is ADR-0052 decision 4's exact failure — and which the compiler
+already caught once, because the `dynamic_cast` needs a JUCE header in a file
+that has none. `watchClapGlue` stops being the main path.
+
+The per-device split also ends two costs ADR-0142 listed as standing "until
+C4": one plug-in's port rescan rebuilt the graph for *every* plug-in, and one
+plug-in's state signal made *every* CLAP device re-save and re-hash its chunk.
+
+**4. ADR-0090 d5's prepare guard is corrected, not removed.** That guard called
+`layoutMatches()`, which asked an **active** plug-in for its port layout.
+`audio-ports.h` line 67: *"the audio ports scan has to be done while the plugin
+is deactivated"*; `plugin.h`: the port configuration may not change while
+active. So the check was **illegal and, by the second rule, incapable of seeing
+the change it was added to detect.**
+
+It now compares this device's own `portChanges()` against the value at its last
+activation. Everything ADR-0090 measured still holds — reactivating Pro-Q 3 in
+linear phase threw away 5120 samples of FIR history and silenced the master for
+106.7 ms, and a rebuild must not do that to a plug-in that did not change.
+
+**A silent layout change is no longer detected, and that is the decision.** A
+plug-in that moves its declared ports without announcing a rescan is
+misbehaving, and the host is entitled to miss it. The test asserts that
+explicitly, so nobody restores the illegal read believing it to be a
+regression.
+
+### Verified non-vacuously
+
+Three defects planted, two caught: the guard ignoring the epoch (3 checks), and
+the guard removed entirely so every rebuild reactivates (8 checks). The third —
+deleting the destructor's `unregisterPlugin` — **passed, and should have**; see
+decision 2. The reproduction that previously reported a heap-use-after-free now
+runs clean against a real ADI Airwindows suite.
+
+One earlier batch of plants reported PASS because the edit had silently failed
+to apply. The plants are now verified to change the file before the suite is
+believed — a planted defect that does not change behaviour is not evidence, and
+reading one as evidence is the same error as counting instead of checking.
+
+4812 checks across 48 suites.

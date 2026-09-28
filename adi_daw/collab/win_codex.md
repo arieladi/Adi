@@ -51,3 +51,9 @@ The full local run completed all **5012 checks across 50 suites** and all five
 validators/layout checks. Its only initial failure was the stale README total
 (4805/48 on main); the README now records the measured total, including this
 suite. No ADR is added or renumbered.
+
+Before CI could start on #157, main advanced through #147/#148 and the README
+conflicted. Merged main (`deff97e`) in this worktree; the engine change is
+unchanged. MSVC /WX and all 131 transport checks pass after the merge. The CLAP
+suite now has 390 checks (25 more); README records 5037 across 50 suites for
+this headless configuration. Main's Pd/JUCE CI tiers have additional suites.
