@@ -210,8 +210,68 @@ void DeviceInstance::setParamSink(engine::ParamEditCapture* capture,
     sink_.store(capture, std::memory_order_release);
 }
 
+void DeviceInstance::setParamAutomated(std::int32_t index, bool on) noexcept {
+    if (index < 0) return;
+    const std::size_t bit = static_cast<std::size_t>(index);
+    const std::size_t w = bit / 64;
+    if (w >= kAutomatedWords) return;
+    const std::uint64_t m = std::uint64_t{1} << (bit % 64);
+    if (on) automated_[w].fetch_or(m, std::memory_order_release);
+    else    automated_[w].fetch_and(~m, std::memory_order_release);
+}
+
+bool DeviceInstance::paramIsAutomated(std::int32_t index) const noexcept {
+    if (index < 0) return false;
+    const std::size_t bit = static_cast<std::size_t>(index);
+    const std::size_t w = bit / 64;
+    if (w >= kAutomatedWords) return false;
+    return (automated_[w].load(std::memory_order_acquire) &
+            (std::uint64_t{1} << (bit % 64))) != 0;
+}
+
+void DeviceInstance::clearAutomatedParams() noexcept {
+    for (auto& w : automated_) w.store(0, std::memory_order_release);
+}
+
 void DeviceInstance::broadcastParam(std::int32_t index, engine::ParamEventKind kind,
                                     double normalized) noexcept {
+    // ADR-0196, 27a item 3: AN ECHO MUST NOT BECOME AN EDIT.
+    //
+    // The loop this breaks: a lane sends a value into the plug-in, the
+    // plug-in broadcasts that value back (CLAP through `outPush` on the audio
+    // thread, VST3 through `audioProcessorParameterChanged` on the message
+    // thread), the broadcast becomes a `ParamEdit`, `ParamOps` drains it into
+    // a `device.setParam` op -- and that op counts as a user edit, so
+    // ADR-0162's override fires and the lane is switched off by its own
+    // playback.
+    //
+    // FILTERED HERE, at the one choke point BOTH formats pass through, and
+    // not at the automation source: automation values never reach this
+    // function in the first place. They go host -> plug-in; only the echo
+    // comes back. Filtering "automation values" would have watched a path
+    // nothing travels.
+    //
+    // NOT A DUPLICATE OF ADR-0110 d3's ECHO GUARD, and the difference is the
+    // shape of the traffic. `ParamEditCapture::expectEcho` is ONE-SHOT: the
+    // op glue arms it on the message thread with the exact value it is about
+    // to set, and it swallows that one broadcast within a TTL. That is right
+    // for a `setParam` -- an undo, a replayed op, a preset.
+    //
+    // Automation is not one value. It is a value every ADR-0054 grid tick
+    // plus one at every point, generated on the AUDIO thread, for as long as
+    // the lane plays. Arming a message-thread one-shot at 500 Hz from the
+    // audio thread is not a smaller version of that problem, it is a
+    // different one. A standing mark on the parameter is the shape that fits.
+    //
+    // A GESTURE IS NOT FILTERED. Begin and End bracket a HUMAN dragging the
+    // plug-in's own control, which is exactly the thing ADR-0162's override
+    // is for -- a user grabbing an automated parameter should take it over.
+    // Only the values are dropped.
+    if (kind == engine::ParamEventKind::Value && paramIsAutomated(index)) {
+        echoesFiltered_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
     engine::ParamEditCapture* c = sink_.load(std::memory_order_acquire);
     if (c == nullptr) return;
     engine::ParamEvent e;

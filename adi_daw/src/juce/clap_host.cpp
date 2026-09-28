@@ -343,6 +343,10 @@ ClapDevice::ClapDevice(const clap_plugin_t* plugin, DeviceIdentity id)
         plugin_->get_extension(plugin_, CLAP_EXT_STATE));
     tailExt_ = static_cast<const clap_plugin_tail_t*>(
         plugin_->get_extension(plugin_, CLAP_EXT_TAIL));
+    // ADR-0196. Optional by design: most plug-ins do not implement it, and a
+    // null here simply means the plug-in's GUI will not light up.
+    indicationExt_ = static_cast<const clap_plugin_param_indication_t*>(
+        plugin_->get_extension(plugin_, CLAP_EXT_PARAM_INDICATION));
     latencyExt_ = static_cast<const clap_plugin_latency_t*>(
         plugin_->get_extension(plugin_, CLAP_EXT_LATENCY));
     notePortsExt_ = static_cast<const clap_plugin_note_ports_t*>(
@@ -617,6 +621,29 @@ bool ClapDevice::loadState(const std::string& role, const std::vector<std::uint8
     const bool ok = stateExt_->load(plugin_, &src.is);
     if (glue_ != nullptr) glue_->unmuteStateSignals();
     return ok;
+}
+
+void ClapDevice::setAutomationIndication(std::int32_t index, bool automated) {
+    // The contract's mark first, because it is what stops the echo becoming
+    // an op (ADR-0196). It must be set whether or not the plug-in implements
+    // the extension -- the filter is ours, the indication is the plug-in's
+    // courtesy.
+    setParamAutomated(index, automated);
+
+    if (indicationExt_ == nullptr || indicationExt_->set_automation == nullptr) return;
+    if (plugin_ == nullptr) return;
+    if (index < 0 || index >= static_cast<std::int32_t>(paramIds_.size())) return;
+
+    // PRESENT rather than PLAYING: the host knows a lane exists for this
+    // parameter, which is what a binding tells us. PLAYING is a transport
+    // question and would have to move with the playhead; nothing here reads
+    // the transport, and a flag that lies while stopped is worse than one
+    // that says only what it knows.
+    indicationExt_->set_automation(
+        plugin_, paramIds_[static_cast<std::size_t>(index)],
+        automated ? CLAP_PARAM_INDICATION_AUTOMATION_PRESENT
+                  : CLAP_PARAM_INDICATION_AUTOMATION_NONE,
+        nullptr);
 }
 
 void ClapDevice::pumpMainThread() {

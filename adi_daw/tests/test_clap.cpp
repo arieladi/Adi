@@ -2113,6 +2113,131 @@ void testAutomationReachesClapInPlainUnits() {
     check(f.heard.empty(), "a ParamMod is not a PARAM_VALUE event");
 }
 
+/// ADR-0196 (27a item 3): the plug-in's echo of an automated value must not
+/// become an edit, and param-indication tells the plug-in which those are.
+void testAnEchoDoesNotBecomeAnEdit() {
+    section("ADR-0196 -- an echo of an automated value is not an edit");
+
+    struct Indicating {
+        clap_plugin_t plugin{};
+        clap_plugin_params_t params{};
+        clap_plugin_param_indication_t indication{};
+        std::vector<std::pair<clap_id, std::uint32_t>> indications;
+        static Indicating& self(const clap_plugin_t* p) {
+            return *static_cast<Indicating*>(p->plugin_data);
+        }
+        Indicating() {
+            plugin.plugin_data = this;
+            plugin.init = [](const clap_plugin_t*) { return true; };
+            plugin.destroy = [](const clap_plugin_t*) {};
+            plugin.activate = [](const clap_plugin_t*, double, std::uint32_t,
+                                 std::uint32_t) { return true; };
+            plugin.deactivate = [](const clap_plugin_t*) {};
+            plugin.start_processing = [](const clap_plugin_t*) { return true; };
+            plugin.stop_processing = [](const clap_plugin_t*) {};
+            plugin.reset = [](const clap_plugin_t*) {};
+            plugin.on_main_thread = [](const clap_plugin_t*) {};
+            plugin.process = [](const clap_plugin_t*, const clap_process_t*)
+                -> clap_process_status { return CLAP_PROCESS_CONTINUE; };
+            plugin.get_extension = [](const clap_plugin_t* p, const char* id)
+                -> const void* {
+                if (std::strcmp(id, CLAP_EXT_PARAMS) == 0) return &self(p).params;
+                if (std::strcmp(id, CLAP_EXT_PARAM_INDICATION) == 0)
+                    return &self(p).indication;
+                return nullptr;
+            };
+            params.count = [](const clap_plugin_t*) -> std::uint32_t { return 2; };
+            params.get_info = [](const clap_plugin_t*, std::uint32_t i,
+                                 clap_param_info_t* info) -> bool {
+                if (i > 1) return false;
+                *info = clap_param_info_t{};
+                info->id = (i == 0) ? 101u : 202u;
+                std::snprintf(info->name, sizeof info->name, "P%u", i);
+                info->min_value = 0.0; info->max_value = 1.0; info->default_value = 0.0;
+                info->flags = CLAP_PARAM_IS_AUTOMATABLE;
+                return true;
+            };
+            params.flush = [](const clap_plugin_t*, const clap_input_events_t*,
+                              const clap_output_events_t*) {};
+            indication.set_automation = [](const clap_plugin_t* p, clap_id id,
+                                           std::uint32_t st, const clap_color_t*) {
+                self(p).indications.push_back({id, st});
+            };
+        }
+    };
+
+    Indicating f;
+    DeviceIdentity id;
+    id.format = "clap";
+    id.name = "Indicating";
+    ClapDevice d(&f.plugin, id);
+    auto owned = std::make_unique<ClapHostGlue>();
+    owned->registerPlugin(&f.plugin);
+    d.adoptGlue(std::move(owned));
+
+    engine::ParamEditCapture capture(64);
+    d.setParamSink(&capture, 7);
+    std::vector<engine::ParamEdit> out;
+    auto drained = [&](std::int64_t ms) {
+        out.clear();
+        return capture.drain(ms, out);
+    };
+    // The plug-in's own broadcast route: `outPush` is the output-events sink
+    // CLAP hands a plug-in during `process`, and it is what a plug-in calls
+    // to report its own edits.
+    auto pluginBroadcasts = [&](clap_id pid, double v, std::uint16_t type) {
+        clap_event_param_value_t ev{};
+        ev.header.size = sizeof ev;
+        ev.header.type = type;
+        ev.header.time = 0;
+        ev.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        ev.param_id = pid;
+        ev.value = v;
+        d.outEventsForTest()->try_push(d.outEventsForTest(), &ev.header);
+    };
+
+    // Nothing automated: the plug-in's broadcast IS a user edit.
+    pluginBroadcasts(101, 0.5, CLAP_EVENT_PARAM_VALUE);
+    check(d.echoesFiltered() == 0,
+          "with no lane, nothing is filtered");
+
+    // A lane takes parameter 0.
+    d.setAutomationIndication(0, true);
+    check(d.paramIsAutomated(0), "the parameter is marked automated");
+    check(f.indications.size() == 1 && f.indications.back().first == 101 &&
+              f.indications.back().second == CLAP_PARAM_INDICATION_AUTOMATION_PRESENT,
+          "and the plug-in was told, by clap_id, that automation is PRESENT");
+
+    const std::uint64_t filteredBefore = d.echoesFiltered();
+    pluginBroadcasts(101, 0.75, CLAP_EVENT_PARAM_VALUE);
+    check(d.echoesFiltered() == filteredBefore + 1,
+          "the plug-in's echo of an AUTOMATED value does NOT reach the capture "
+          "-- it would become an op, and the op would override its own lane");
+    check(d.echoesFiltered() == filteredBefore + 1, "and it is counted, not silent");
+    (void) drained;
+
+    // A HUMAN grabbing the same control still gets through: a gesture is the
+    // thing ADR-0162's override exists for.
+    pluginBroadcasts(101, 0.0, CLAP_EVENT_PARAM_GESTURE_BEGIN);
+    check(d.echoesFiltered() == filteredBefore + 1,
+          "a GESTURE on an automated parameter is NOT filtered -- that is a "
+          "user taking it over, which is what override is for");
+
+    // Its neighbour, unautomated, is untouched by any of this.
+    pluginBroadcasts(202, 0.25, CLAP_EVENT_PARAM_VALUE);
+    check(d.echoesFiltered() == filteredBefore + 1,
+          "and an unautomated parameter is not filtered either");
+
+    // Releasing the lane tells the plug-in, and re-opens the path.
+    d.setAutomationIndication(0, false);
+    check(!d.paramIsAutomated(0), "the mark is cleared");
+    check(f.indications.back().second == CLAP_PARAM_INDICATION_AUTOMATION_NONE,
+          "and the plug-in is told the indication is gone");
+    pluginBroadcasts(101, 0.9, CLAP_EVENT_PARAM_VALUE);
+    check(d.echoesFiltered() == filteredBefore + 1,
+          "with the lane released, its broadcasts are no longer filtered");
+}
+
 void testPrepareReactivatesWhenTheLayoutMoves() {
     section("ADR-0090 -- prepare is idempotent, EXCEPT when the ports moved");
 
@@ -2362,6 +2487,7 @@ int main() {
     testRequestFlushIsAnswered();
     testRescanAllPreservesIndicesAndClearKeepsTheLane();
     testAutomationReachesClapInPlainUnits();
+    testAnEchoDoesNotBecomeAnEdit();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
