@@ -2,8 +2,9 @@
 //
 // The scope's audio taps -- ADR-0167, ADR-0175.
 //
-// A TAP is where the audio thread hands the scope a track's output: the
-// strip's, after its fader, the level the track is heard at. It is the SECOND
+// A TAP is where the audio thread hands a consumer one point on a track.
+// ADR-0175 defaults to the strip output; ADR-0195 adds chain input and the
+// pre-fader strip input for the analyser. It is the SECOND
 // path by which the audio thread writes something the UI reads; ADR-0050 d4
 // named the meter scalar as the only one, and ADR-0167 d7 amends it, because a
 // waveform is a stream, not a scalar.
@@ -16,8 +17,8 @@
 // The writer never waits.
 //
 // A STAMP rides with every frame: the timeline position at which that frame
-// is HEARD. The tap is told its latency after every rebuild -- the strip's
-// input arrival plus the strip's reported latency -- and stamps
+// is HEARD. The tap is told its latency after every rebuild -- that point's
+// input arrival, plus the strip's own latency only for PostFader -- and stamps
 // transport position - latency. A plug-in's latency makes the stamps what the
 // audio represents; a track delay (ADR-0172), reported as negative latency,
 // moves them later, which is when that track is heard. So two taps' frames

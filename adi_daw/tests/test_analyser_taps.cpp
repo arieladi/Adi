@@ -234,4 +234,3 @@ int main() {
     std::printf("%d checks, %d failures\n",checks,failures);
     return failures?1:0;
 }
-

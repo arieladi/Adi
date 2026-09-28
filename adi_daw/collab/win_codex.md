@@ -41,6 +41,13 @@ suspension, and zero callback allocations/file I/O. Also applied win's deferred
 #157 nit: session transport uses textproj::kPPQ/kWhole. No other textproj or
 tempo-builder change. CMake adds only the new test target.
 
+Validation after merging current main through #153 (bbdfc4e): MSVC /WX passes;
+the analyser suite passes **30 checks**; the complete test_all.sh run passes
+**5126 checks across 52 headless suites**, with all validators/layout checks
+clean. README records that measured count. The pointer publication tests include
+nonzero instrument arrival (96 samples) before a 32-sample insert, as well as
+closing/reopening while the render thread runs. The PR's own head must pass CI.
+
 ## 2026-09-27 — mission 2, Task A: transport at the NodeIo boundary
 
 Win delegated Task A and approved the narrow plumbing expansion on this chat
