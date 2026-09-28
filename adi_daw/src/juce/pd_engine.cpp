@@ -399,6 +399,36 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
     // Transport first: a patch that reads bar and beat to decide what a note
     // means must have this block's position before the note arrives, not
     // after.
+    //
+    // READ HERE RATHER THAN PUSHED BY THE DEVICE NODE. `PdDevice::process`
+    // already hands this engine the whole `NodeIo`, so taking `io.transport`
+    // off it leaves no ordering rule for a caller to forget. `setTransport`
+    // stays for callers that have no `NodeIo` -- which is what the test uses.
+    //
+    // COPIED, NEVER RETAINED. `graph.hpp` says `io.transport` is "valid only
+    // during process"; keeping the pointer would make every later block read
+    // freed memory that usually still looks right.
+    if (io.transport != nullptr) {
+        Transport t;
+        t.playing = io.transport->playing;
+        t.bpm = io.transport->bpm;
+        t.timeSigNumerator = io.transport->timeSigNumerator;
+        t.timeSigDenominator = io.transport->timeSigDenominator;
+        t.bar = static_cast<double>(io.transport->bar);
+        t.beat = static_cast<double>(io.transport->beat);
+        t.ticksInQuarter = static_cast<double>(io.transport->ticksInQuarter);
+        // `timelineSample` is deliberately NOT passed on: it is an absolute
+        // sample count, and Pd's 32-bit floats stop being exact for integers
+        // at 2^24 -- under six minutes at 48 kHz. That is the same arithmetic
+        // that keeps an absolute TICK count out of the field list.
+        setTransport(t);
+    }
+    // A NULL TRANSPORT KEEPS THE LAST VALUES, and that is deliberate rather
+    // than an omission. `io.transport` is null outside a Session, so a device
+    // rendered by a test harness or an offline tool would otherwise see the
+    // tempo snap to 120 and the bar to 1 -- a patch synced to the host would
+    // hear that as a jump. Nothing changing is the honest report of nothing
+    // being known.
     if (transportSet_) deliverTransport();
 
     // --- MIDI in, before the audio it belongs to (ADR-0194) ------------------

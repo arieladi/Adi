@@ -214,6 +214,7 @@ add_library(adi_core STATIC
     src/adi/dsp/biquad.cpp
     src/adi/dsp/limiter.cpp
     src/adi/dsp/rmsc.cpp
+    src/adi/dsp/masking.cpp
     src/adi/dsp/auto_gain.cpp
     src/adi/dsp/true_peak.cpp
     src/adi/engine/latency.cpp
@@ -590,6 +591,7 @@ add_test(NAME adi_dsp_tests COMMAND adi_dsp_tests)
 # The declaration parse. Links adi_core but touches no libpd: ADR-0177 fix 3
 # puts the declared set behind a static parse of the patch text, and a test that
 # needed Pd running to read a declaration would not be testing that.
+
 # [adi.sample] and its handoff. Links adi_core and touches no libpd, for the
 # reason the declaration parse does not: the slot is SnapshotPublisher and the
 # decode is the audio layer, so both are tested on every ABI -- including the
@@ -597,6 +599,13 @@ add_test(NAME adi_dsp_tests COMMAND adi_dsp_tests)
 add_executable(adi_pd_sample_tests tests/test_pd_samples.cpp)
 target_link_libraries(adi_pd_sample_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_pd_sample_tests COMMAND adi_pd_sample_tests)
+
+# The masking measure (ADR-0195 d5). Pure: no engine, no view, no agent -- the
+# analyser overlay and analyze.masking are both callers, and this is where they
+# are made to agree.
+add_executable(adi_masking_tests tests/test_masking.cpp)
+target_link_libraries(adi_masking_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_masking_tests COMMAND adi_masking_tests)
 
 add_executable(adi_pd_declaration_tests tests/test_pd_declarations.cpp)
 target_link_libraries(adi_pd_declaration_tests PRIVATE adi_core adi_warnings)

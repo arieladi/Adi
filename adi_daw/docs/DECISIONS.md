@@ -14477,6 +14477,53 @@ here rather than noted. All of the below is asserted in
     its lifetime contract: valid until the next call for that slot from the
     audio thread, which for a perform routine is the next block.
 
+---
+
+32. **The masking measure, for ADR-0195 d5 and for `analyze.masking`.**
+    `src/adi/dsp/masking.*`, a pure function with no engine, no view and no
+    agent in it. The overlay highlights where one track buries another and the
+    agent returns "band-overlap between two tracks over time"; written
+    separately, a producer would see a highlight the agent never mentions, and
+    neither would be wrong, because there would be two definitions of masking
+    in one program.
+
+    Three choices, each against the simpler thing:
+    - **ERB bands, not third-octave.** Masking is a property of the cochlea's
+      filters, about 35 Hz wide at 100 Hz and 565 Hz at 5 kHz; a third-octave
+      layout gives 23 Hz and 1150 Hz and matches neither end. Both figures are
+      asserted.
+    - **Spreading is ASYMMETRIC**, steep downward and shallow upward, which is
+      the whole point: a bass buries a kick's low mids and the kick does not
+      equally bury the bass's top. Anything built on "how much do these spectra
+      overlap" gets the direction of every real masking problem wrong half the
+      time.
+    - **The single number is `maskedFraction`**, the share of the masked
+      track's own energy sitting under the masker. `worstExcessDb` alone would
+      rank a 2 dB problem across the spectrum below a 20 dB notch nobody hears.
+
+    **It is not a masking THRESHOLD model.** It says one track dominates
+    another by so many dB, not that a band is inaudible: audibility needs
+    absolute level, the listener's system and a calibrated scale, and a DAW has
+    none of the three. ADR-0195 leaves the highlight's threshold open, and this
+    reports the number it will be applied to.
+
+33. **Two documented decisions were not being tested, and planting found both.**
+    Four faults were planted in the measure; two were caught and **two
+    passed**:
+    - **sum instead of maximum** for the spread masker;
+    - **counting bands instead of weighting by energy** in `maskedFraction`.
+
+    The second is the same flaw as d30's, in a new costume. The test used two
+    victim tones of EQUAL energy, so "nine tenths of the energy" and "one band
+    of two" both read 0.5 and the test could not tell them apart. It now uses
+    9:1, where energy-weighting gives 0.9 and a band count would give 0.5.
+
+    **The general rule, now twice earned: a test whose inputs make two
+    candidate implementations agree is not testing which one you wrote.** Equal
+    values, one path passed for two arguments, a default that matches the case
+    under test -- all the same mistake. The check for it is to plant the other
+    implementation and watch the test fail.
+
 ### What this amends in ADR-0177, and what it does not
 
 This ADR's decisions were written before ADR-0177 merged, so the question was
@@ -14815,3 +14862,137 @@ So the instruction cannot be met by forwarding. It can only be met by
    bend *above* centre and inside 14 bits, which 0 fails. The lesson is
    general: assert the value that should be there, never merely that the
    initial one is gone.
+
+---
+
+## ADR-0195 — The Dynamic EQ adapts ZL Equalizer 2 under Pro-Q 3's mouse, automation lanes learn MIDI inline, Auto Gain Stage is one command, and the analyser overlays tracks — `DECIDED (direction)` (2026-09-27) — **DIRECTOR'S DIRECTIVE; SUPERSEDES ADR-0093'S "ZLEQUALIZER — DESIGN ONLY"; EXTENDS ADR-0130, ADR-0183, ADR-0184 AND ADR-0188 d6; ONE POINT SETTLED WITH THE DIRECTOR**
+
+**Director's directive:**
+- **AGPL.** Record that the ban on AGPL code is lifted, since `adi_daw` links
+  JUCE (AGPLv3, ADR-0048), and update `OPEN_SOURCE_POLICY.md`.
+- **Four new features:**
+  1. **A native Dynamic EQ CLAP**, adapting ZL Equalizer 2's DSP with Pro-Q 3's
+     node interactions on the graph instead of ZL's panel dials.
+  2. **A MIDI Learn button** on every automation lane header.
+  3. **A global "Auto Gain Stage Session" command** in place of an
+     inter-plugin metering network.
+  4. **A multi-track overlay** in the Adi Spectrum Meter's big window.
+
+Checked against the policy, the Pro-Q 3 manual in `reference/DOCS/Plugins`,
+the schema and the op catalogue.
+
+### Decisions
+
+1. **There is no AGPL ban to lift; one stale line is retired.**
+   - **Already lifted:** ADR-0138 lifted the ban on 2026-09-24, and
+     `OPEN_SOURCE_POLICY.md` §4 has named ZLEqualizer a usable source since
+     then. ZL Equalizer 2 already builds unchanged as a CLAP (ADR-0166).
+   - **The stale line:** ADR-0093's table still calls ZLEqualizer "design
+     only", and says matched phase comes from the literature and not from ZL.
+     Both were written before ADR-0138, and both are superseded here: the
+     Dynamic EQ adapts ZL's DSP directly.
+   - **What copying means:** the Dynamic EQ plug-in is AGPLv3, and its copied
+     files keep ZL's headers (policy §2, §4). `adi_daw` itself changes only if
+     it copies.
+   - **The policy file** gains one sentence recording this first direct
+     adaptation.
+
+2. **The Dynamic EQ: ZL's DSP under Pro-Q 3's mouse. Settled with the
+   director.**
+   - **What it is:** a CLAP in `adi_daw/plugins/`, with its own name (ADR-0093:
+     "Pro-Q 3 clone" is a description, never a name).
+   - **The node interactions follow Pro-Q 3's manual,** printed pages 9 to 10
+     and 15. The manual stays in `reference/DOCS/Plugins`, and these rules are
+     ours in our words:
+
+     | Gesture | Effect |
+     |---|---|
+     | Drag a node | horizontal is frequency. Vertical is gain on bells and shelves; on the filters with no gain (low and high cut, notch, band pass) it is Q |
+     | Mouse wheel, over a node or while dragging | Q |
+     | Ctrl/Cmd + vertical drag | Q |
+     | Alt + drag | locks to one axis: frequency, or gain/Q (by Ctrl/Cmd) |
+     | Shift | fine adjustment, for dragging and for the wheel |
+     | Alt + wheel | dynamic range |
+     | Ctrl/Cmd + wheel | gain |
+     | Alt + Ctrl/Cmd + wheel | gain traded for dynamic range |
+     | Alt + click | bypasses the band |
+     | Ctrl/Cmd + Alt + click | cycles the shape |
+     | Alt + Shift + click | cycles the slope |
+     | Double-click | types exact values |
+     | Right-click | opens the band menu |
+     | Drag the curve | creates a band; with Alt, a dynamic band |
+
+   - **Why the director chose the manual:** the relayed list had vertical as Q
+     on every filter type, Ctrl/Cmd as the axis lock, and Alt as Q. That
+     differs from the manual in three places, and the directive's own goal was
+     "standard Pro-Q 3 interactions".
+   - **ZL's panel dials leave the main view.** Every value stays reachable by
+     double-click, and through the host's panel (ADR-0150).
+   - **Parity is checked side by side** against Pro-Q 3 (ADR-0108).
+
+3. **MIDI Learn on an automation lane header.**
+   - **The flow:** Learn arms the lane (amber). The next CC to arrive on a MIDI
+     port enabled for Remote (Live's role) binds to the lane's target, and the
+     button turns cyan. The binding is one op and one undo step.
+   - **The op is new.** The `controller_maps` table exists and no op writes it
+     yet. `controller.bind` and `controller.unbind` join the vocabulary, each
+     with its inverse.
+   - **The encoder's mode is detected, not asked.**
+     - **Relative:** values clustered at 1/127 or around 64 bind relative, and
+       are resolved at the edge (ADR-0181 d1).
+     - **Absolute:** anything else binds absolute and follows the Takeover Mode
+       setting.
+   - **It coexists with the Master Focus Dial** (ADR-0130). The Dial's own
+     control is never learnable, and learn ignores it. There is no modal
+     overlay: a second click or Esc disarms, and arming another lane moves the
+     arm.
+   - **A hardware move on an automated parameter is a gesture,** so Live's
+     override applies (ADR-0162).
+   - **Bindings are project-scoped,** as `controller_maps` is.
+   - **When:** the button is the lane header's, which is step 7's and the UI
+     owner's. The ops are win's.
+
+4. **Auto Gain Stage Session: one command, deterministic, one undo.**
+   - **Not an AI workflow.** It is metering, done offline. The agent may invoke
+     it like any command, at its tier.
+   - **What is measured:** each track at the mixer strip's input, before the
+     inserts.
+     - **Audio tracks:** from their clips, with clip gain and fades applied.
+     - **Instrument tracks:** by rendering the instrument offline over its MIDI
+       clips, because analysing the clips cannot hear a synth.
+     - **Groups and returns** are not staged; their levels follow their inputs.
+   - **The target** is −18 dBFS RMS by default, the common reference (0 VU at
+     −18 dBFS), and the user can change it.
+     - **Gated:** RMS is measured over the non-silent parts, so a track that
+       plays eight bars of a three-minute song is not read as quiet.
+     - **LUFS option:** integrated LUFS (EBU R128 gating) is the alternative
+       measure.
+     - **A ceiling:** a stage never lifts a track's true peak above −1 dBTP by
+       default.
+   - **The write is one transaction of `mixer.setInputGain` per track.**
+     **Correction:** the directive named `mixer_strip.set_pre_gain`, which does
+     not exist. `input_gain_db` sits before the inserts, so plug-ins see the
+     staged level, which is the point of gain staging.
+   - **Nothing is inserted on any track.**
+
+5. **The analyser's big window overlays other tracks.**
+   - **Who draws it:** the analyser's C++ view, from the engine's per-track
+     taps (ADR-0175). The Pd patch cannot: a Pd device hears only its own
+     track.
+   - **Two tap points per track:** before the inserts (the strip's input) and
+     after them (before the fader).
+     - **The stream names** extend ADR-0188 d6: `track.<id>.spectrum.pre` and
+       `track.<id>.spectrum.post`. The plain `track.<id>.spectrum` remains the
+       post tap.
+   - **Ticking a track subscribes it.** An unticked track costs nothing, and the
+     FFT runs on a worker, never on the audio thread (ADR-0184 d4).
+   - **Curves take their track's colour** (`tracks.color`).
+   - **The masking highlight** reuses `analyze.masking`'s band-overlap measure
+     (AI-AGENT), so the view and the agent agree on what masking is.
+   - **Owner:** mac's analyser session (ADR-0183).
+
+**Still open:**
+- the Dynamic EQ's name;
+- the masking highlight's threshold, once there is something to look at;
+- RMS or LUFS as the Auto Gain Stage's default, if −18 dBFS RMS proves wrong
+  in use.
