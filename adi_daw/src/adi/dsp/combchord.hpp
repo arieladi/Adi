@@ -7,8 +7,8 @@
 namespace adi::dsp {
 // ADR-0192: six voices and eight stored chords. One mono core per channel.
 // All setters and process are serialized by the caller on the audio thread;
-// prepare is the only allocating operation. State changes reset the resonators
-// (a discrete chord selection, not a pitch glide).
+// prepare is the only allocating operation. State changes crossfade two banks
+// for 10 ms. Requests during a fade coalesce to the newest complete state.
 class CombChord {
 public:
     static constexpr std::size_t voices = 6, states = 8;
@@ -35,12 +35,22 @@ private:
         std::vector<double> line;
         std::size_t delay = 1;
         double allpass = 0, previousInput = 0, previousOutput = 0, lowpass = 0, gain = 0;
-        bool fractional = false;
+        double targetAllpass = 0;
     };
-    void tune() noexcept;
+    struct Bank {
+        std::array<Voice, voices> resonators{};
+        double pole = 0;
+    };
+    void tune(Bank& bank) noexcept;
+    void clear(Bank& bank) noexcept;
+    void changed(bool resetBank = false) noexcept;
+    void beginFade() noexcept;
+    double tick(Bank& bank, double x, bool smooth) noexcept;
     std::array<Chord, states> chords_{};
-    std::array<Voice, voices> bank_{};
-    std::size_t state_ = 0, write_ = 0;
+    std::array<Bank, 2> banks_{};
+    std::size_t state_ = 0, write_ = 0, active_ = 0;
+    std::size_t fadeSamples_ = 480, remaining_ = 0;
+    bool processed_ = false, pending_ = false, resetRequested_ = false;
     double rate_ = 48000, decay_ = 1, color_ = 0, mix_ = 1, output_ = 1;
     Mode mode_ = Mode::Saw;
 };
