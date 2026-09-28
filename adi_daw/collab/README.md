@@ -227,7 +227,7 @@ subject, say so in your log instead of writing it twice.
 | 0190 | win | `win/pioneer-refs` | the DAW is named ADI (Advanced DAW Infrastructure); ADiJ stays; ADI Live dropped, the Session view stays inside ADI (director) | used |
 | 0191 | win | `win/adij-features` | ADiJ writes Pioneer USBs and Rekordbox XML, serves CDJs over Pro DJ Link, plays stems; ADI and ADiJ stand until a trademark clearance (director) | used |
 | 0192 | win | `win/color-bass` | color-bass devices as Pd devices on compiled-in externals; `[adi.sample]`; pthreads4w for Windows; win_codex joins (director) | used |
-| 0193 | win_codex | (its first mission) | held for win_codex's DSP decisions (ADR-0192) | reserved |
+| 0193 | win_codex | `codex/colorbass-dsp` | color-bass DSP cores, measurement domain and kernel crossfade (ADR-0192 phase 1) | used |
 | 0194 | mac | `mac/pd-midi` | MIDI into Pd devices: the MPE output encoder feeds [notein], [ctlin] and [bendin]; no MIDI survives ADR-0054 to forward (win's round 5c) | used |
 | 0195 | win | `win/directive-0195` | the Dynamic EQ adapts ZL Equalizer 2 under Pro-Q 3's mouse; inline MIDI Learn; Auto Gain Stage; the analyser's multi-track overlay (director) | used |
 | 0196 | mac | (the host session's step 6, PR 3) | automation on the host: VST3 parameter changes, CLAP value conversion, the echo filter, `param-indication`'s automation half, `--expect-no-edits` | used |
@@ -247,14 +247,13 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `plugins/dynamic-eq/**` (ADR-0195 d1/d2, delegated by win), `plugins/README.md` (entry only), `CMakeLists.txt` (pure gesture test only), `README.md` (measured check count) | win_codex | `codex/dynamic-eq` | 2026-09-28 |
 | `src/adi/dsp/combchord.*`, `src/adi/dsp/colorcab.*`, `src/adi/pd_builtins/**`, `pd/devices/**`, `tests/test_combchord.cpp`, `tests/test_colorcab.cpp` | win_codex | `codex/colorbass-dsp` | 2026-09-27 |
-| `src/adi/engine/mixer.*` (the `StripNode` tap only), `src/adi/engine/session.*` (`openScope`, `closeScope`, `attachTaps`), `src/adi/engine/graph.*` (a node-input tap in `runNode`, if chosen), `src/adi/engine/scope.*` (only if the tap needs an API), `tests/test_analyser_taps.cpp`: the analyser's per-track taps, delegated by win (ADR-0195 d5) | win_codex | `codex/analyser-taps` | 2026-09-28 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
-| `tools/gen_pd_patches.py`, `tools/validate_pd.py`, `pd/adi-*.pd`, `tests/test_pd_engine.cpp`, `tests/pd/**` | mac (second session) | `mac/pd-toplevel` | 2026-09-28 |
+| `src/adi/dsp/spectrum.*`, `tests/test_spectrum.cpp`, `tools/fetch_external.sh`, `third_party/pffft` | mac (second session) | `mac/pffft` | 2026-09-28 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`

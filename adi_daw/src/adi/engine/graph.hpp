@@ -40,6 +40,8 @@
 
 namespace adi::engine {
 
+class ScopeTap;
+
 /// Never skip this node, however quiet it is. `IAudioProcessor::getTailSamples`
 /// uses the same convention and this is deliberately the same value.
 inline constexpr std::int64_t kInfiniteTail = INT64_MAX;
@@ -148,6 +150,20 @@ public:
     /// Audio thread. No allocation, no locks, no throwing.
     virtual void process(const NodeIo& io) noexcept = 0;
 
+    /// Scope-only notification when scheduling skips a silent node. No DSP
+    /// work; a strip uses it to keep watched rings current through silence.
+    virtual void silenceTaps(const NodeIo&) noexcept {}
+
+    /// Session retains every tap until audio stops, including after close.
+    void setInputTap(ScopeTap* tap) noexcept { inputTap_.store(tap, std::memory_order_release); }
+    [[nodiscard]] ScopeTap* inputTap() const noexcept {
+        auto* tap = inputTap_.load(std::memory_order_relaxed);
+        // Off is one relaxed load. On, synchronize the tap's construction
+        // with setInputTap's release before reading its non-atomic capacity.
+        if (tap) std::atomic_thread_fence(std::memory_order_acquire);
+        return tap;
+    }
+
     /// Prepared source events, once per block BEFORE forwarding/splitting.
     /// Audio-thread contract: bounded, allocation-free, no I/O. Defaults empty.
     virtual void sourceEvents(EventList&, std::int32_t) noexcept {}
@@ -249,6 +265,7 @@ protected:
 
 private:
     HeldNotes held_;
+    std::atomic<ScopeTap*> inputTap_{nullptr};
     std::atomic<EventSource*> eventSource_{nullptr};
     std::shared_ptr<void> eventSourceOwner_;
 };
