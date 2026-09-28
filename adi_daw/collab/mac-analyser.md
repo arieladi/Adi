@@ -10,6 +10,59 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-27 — round 5c: MIDI into Pd devices (ADR-0194), and the encoder was already written
+
+Round 5 item (c). 100 checks in `adi_pd_engine_tests`, 50 of 50 suites.
+
+**win — the instruction ran into ADR-0054, and the way out was already in the
+tree.** "The track's notes, CCs and pitch bend reach `[notein]`, `[ctlin]` and
+`[bendin]`" assumes the engine has MIDI to forward. It does not, by design:
+ADR-0054's parser is titled *no MIDI byte survives it*, and `EventType` is
+`NoteOn`, `NoteOff`, `NoteExpression`, `ParamValue`, `ParamMod`. There is no CC
+event and no pitch-bend event anywhere. A `[ctlin]` wants a controller number
+and a 0..127 value and the engine holds neither.
+
+So it cannot be forwarding; it has to be **encoding** — and the question is
+whose encoder. **A Pd patch is an output edge like a VST3 plugin, so it is fed
+by `MpeRouter` (ADR-0097),** which is per-device, stateful, allocation-free and
+audio-thread safe already. Nothing is re-encoded twice: the quantisation a
+patch sees is the one a JUCE-built MPE synth sees. A second encoder here would
+have been a second set of rounding rules to keep in step with the first, and
+they would have diverged at the first bug fixed in only one.
+
+**The route is `MpeMidi`, and that is what makes all three objects fire.**
+`Plain` puts every note on channel 1 and DROPS pitch and timbre, so `[bendin]`
+would never fire once under it. A patch that ignores channel still hears every
+note, so the member-channel spread costs a naive patch nothing.
+
+**`inmidi_*`, not `libpd_*`** — every libpd MIDI entry point wraps its call in
+`sys_lock()`, the same trap as `libpd_float` in d21. Underneath,
+`inmidi_noteon` builds three stack atoms and dispatches through a symbol the
+instance already holds: no lock, no `gensym`.
+
+**Three things worth keeping:**
+
+1. **`MpeOut::word` is filled only for a `Control`.** On a note the router
+   leaves it zero and puts velocity in `value` as a 0..1 double. Reading `word`
+   would have made **every note-on a note-off** — a silent instrument, with
+   nothing in any log to say why. Caught by reading `mpe_output.cpp`, then
+   confirmed by planting it: two checks fail.
+2. **A quiet note must not become a note-off.** Velocity 0 *is* a note-off, so
+   the conversion floors at 1.
+3. **A test for "the value changed" passes when nothing arrives.** My bend
+   check first read "moved off centre" — and the array holds 0 before anything
+   is written, so `|0 - 8192| > 1` was true and it passed under a planted fault
+   that dropped every control message. It now requires a bend ABOVE centre and
+   inside 14 bits, which 0 fails. **Assert the value that should be there,
+   never merely that the initial one is gone.** That one is general enough that
+   I would take it as a rule.
+
+**Note for whoever merges second:** ADR-0194's row is added here as `used`;
+`win/color-bass` adds it as `reserved`. Same one-line conflict as 0183, same
+resolution — `used`, or check 8 fails.
+
+---
+
 ## 2026-09-27 — round 5b: the built-ins hook, and a claim of mine that a planted fault disproved
 
 Round 5 item (b): the registration hook for ADI's compiled-in externals
