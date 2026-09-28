@@ -7,6 +7,58 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
+## 2026-09-28 - Windows Pd crash investigation
+
+CI MSVC 19.51 faults in the console test; local MSVC 19.44 passes with Pd ON
+in Ninja, a fresh Visual Studio project build, a fresh AddressSanitizer build,
+and 80 repeated suite runs. Added a Windows native-stack diagnostic to expose
+the CI fault site rather than guessing at the new sample members. Merged main
+while preserving both log histories; MSVC /WX and the combined test run pass
+5643 checks across 59 suites plus validators. This is
+diagnostic evidence gathering, not a claimed fix.
+
+---
+
+## 2026-09-28 - mission 3, Task B: color-bass Pd devices
+
+On codex/colorbass-pd from main after #150 merged. Both stereo top-level
+canvases use adc~/dac~, declare fixed-id parameters, and answer the intrinsic
+latency query with zero. Both externals self-register through ADI_PD_BUILTIN.
+The real LibPdEngine tests found that the OBJECT target also needs its objects
+propagated to final executables: a static archive discards unreferenced setup
+initializers. They also exposed Win64 dsp_add's int/t_int varargs mismatch;
+the wrappers use typed dsp_addv arguments. CMake now recreates the cached
+pthreads4w target on a second configure rather than dropping its definition.
+
+Review points 3-5: State crossfades two banks for 10 ms; allpass fractions stay
+in [0.5,1.5), coefficients interpolate during the transition, and Color/Decay
+copy ringing history rather than inject cold-start discontinuities. The State
+sine step is bounded by the measured steady step after settling;
+Color sweep steps are below 0.015. Color Cab normalizes the actual truncated
+FIR for 20 Hz..20 kHz pink power, measured within 0.006 dB on three gamma values.
+
+Win approved the narrow mac-owned pd_engine.hpp/.cpp claim, recorded as
+"delegated by win, mac analyser's file" and to be removed on merge. LibPdEngine
+owns PdSampleSlots and exposes message-thread bind/publish/collect calls.
+Prepared Color Cab data derives from PdSampleBuffer (virtual destruction comes
+from Sequenced), so the existing #153 publisher is the only handoff. A segment
+acquires each slot once for both channels. Decoding and kernel construction
+remain off audio. The host helper retains source hash/options/profile. The
+patch exposes realtime Mix; Size/gamma/smoothing/pitch use off-thread host
+rebuild/publication. Panel/drop-tile and state serialization remain UI work.
+
+MSVC /WX and the actual top-level Pd renders pass, with a clean console hook,
+a far bin at the floor before checking peaks, predicted FIR response, sample
+replacement while blocks render, and zero allocations on the audio thread
+(C++ new counters plus the MSVC Debug CRT hook, including Pd malloc/realloc).
+The full measured total is 5613 checks across 58 suites with validators clean.
+All rendering was into memory; no sound device or live drone folder was used.
+The first CI build caught a GCC name collision between Bank::voices and the
+outer voice-count constant. Renamed the bank member to resonators; no behavior
+or test-count change.
+
+---
+
 ## 2026-09-28 — mission 3, Dynamic EQ main refresh
 
 Merged main after the color-bass DSP and analyser taps landed, preserving both
