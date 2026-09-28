@@ -229,7 +229,7 @@ subject, say so in your log instead of writing it twice.
 | 0192 | win | `win/color-bass` | color-bass devices as Pd devices on compiled-in externals; `[adi.sample]`; pthreads4w for Windows; win_codex joins (director) | used |
 | 0193 | win_codex | (its first mission) | held for win_codex's DSP decisions (ADR-0192) | reserved |
 | 0194 | mac | (the analyser session's round 5) | MIDI into Pd devices | reserved |
-| 0196 | mac | `mac/automation-host` | automation on the host: VST3 IParameterChanges, CLAP normalized-to-plain, the echo filter, param-indication (granted by win 2026-09-28; also reserved on #154, which is not merged yet -- one row when it is) | reserved |
+| 0196 | mac | `mac/automation-host` | automation on the host: VST3 IParameterChanges, CLAP normalized-to-plain, the echo filter, param-indication (granted by win 2026-09-28; also reserved on #154, which is not merged yet -- one row when it is) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

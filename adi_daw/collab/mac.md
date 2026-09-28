@@ -73,6 +73,19 @@ file I had just changed. It was the environment, and Adi seeing the dialogs is
 what named it. A probe that cannot load a bundle and a probe that loads a
 broken bundle look identical from the test output.
 
+### 2b. Carried forward to the step-7 plan (ADR-0180)
+
+win's round 7: the analyser session needs the FIRST GUI, for ADR-0183 steps 5
+to 7 — d3's OpenGL context, d4's `VBlankAttachment`, the analyser panel and
+its big floating window. **It builds its view inside my shell rather than
+making its own**, so the plan has to put the shell's seams where a second
+panel can land: the floating-window host, the panel's place in the device
+strip, and one repaint clock (ADR-0050 d1) that an OpenGL view attaches to
+rather than driving itself.
+
+Noted here because the step-7 plan comes after PR 4 and this is the kind of
+requirement that is cheap to design in and expensive to retrofit.
+
 ### 2. PR 3's two conversions
 
 VST3: a device-addressed `ParamValue` becomes an `IParameterChanges` point at
