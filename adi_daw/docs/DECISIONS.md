@@ -14409,6 +14409,17 @@ here rather than noted. All of the below is asserted in
       with nothing to say so, which is the whole reason d3's field list is bar,
       beat and ticks-within-the-quarter.
 
+    **`ticksInQuarter` is the QUARTER-NOTE GRID, not the position within the
+    beat**, and win's correction is worth the paragraph because the two are
+    equal in every meter anyone tests in. It is the absolute tick count modulo
+    `ADI_PPQ` (5,765,760), counted from bar 1, so it wraps once per quarter
+    note whatever the meter calls a beat. In 4/4 that is the beat. **In 7/8 the
+    beat is an eighth, and this wraps once per two of them** -- a patch written
+    against 4/4 and moved to 7/8 would be out by a factor of two, playing
+    perfectly, with nothing anywhere to say why. `bar` and `beat` carry the
+    meter; this carries a quarter-note phase. Said in `adi.transport.pd`'s own
+    help text, because the patch author is who gets it wrong.
+
     **What is NOT here, and it is one line of someone else's file.** `NodeIo`
     carries a sample rate and nothing else (`graph.hpp`), so **the engine has
     no transport to give a device**. Everything from the device host to the

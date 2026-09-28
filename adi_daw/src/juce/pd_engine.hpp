@@ -217,15 +217,23 @@ public:
         /// 1-based, as a musician counts them.
         double bar = 1.0;
         double beat = 1.0;
-        /// 0 .. ADI_PPQ-1.
+        /// **The QUARTER-NOTE grid, not the position within the beat**, and in
+        /// 5/8 or 7/8 those are different numbers. It is the absolute tick
+        /// count modulo `ADI_PPQ` (5,765,760), counted from bar 1, so it runs
+        /// 0..5,765,759 and wraps once per quarter note whatever the meter
+        /// calls a beat. In 7/8, where the beat is an eighth, it wraps once
+        /// per TWO beats. `bar` and `beat` carry the meter; this carries a
+        /// quarter-note phase, and a patch that confuses them is early or late
+        /// by a factor of two with nothing to say why.
         double ticksInQuarter = 0.0;
     };
 
-    /// **THE ENGINE DOES NOT YET CARRY TRANSPORT TO A NODE.** `NodeIo` has a
-    /// sample rate and nothing else (graph.hpp), so the device host has
-    /// nothing to pass on. That is `src/adi/engine/**`, which is win's, and it
-    /// is the one piece missing: everything from here to the patch is built
-    /// and proved. Until then a caller sets it directly, which is also how the
+    /// **THE ENGINE'S HALF IS win_codex's, IN FLIGHT.** `NodeIo` gains
+    /// `io.transport`: null outside a Session, valid only for the duration of
+    /// `process`, carrying block-start values for every segment. Once it lands
+    /// the Pd device node calls this from `io.transport` and nothing else
+    /// changes -- everything from here to the patch is built and proved
+    /// already. Until then a caller sets it directly, which is also how the
     /// test drives it.
     ///
     /// Audio thread or message thread, before `process`. Sent into the patch
