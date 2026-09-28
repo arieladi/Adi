@@ -42,6 +42,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -262,11 +263,38 @@ public:
     /// the plugin asks for a rescan.
     void rescanParams();
 
+    /// Re-read the list on `CLAP_PARAM_RESCAN_ALL`, WITHOUT renumbering.
+    /// Indices are held outside this object (`ParamEdit::paramIndex`,
+    /// `ParamOps`' mirror), so the list is reconciled by `clap_id`: a known
+    /// id keeps its index, a vanished one is kept and marked `missing`
+    /// (ADR-0177 d4), a new one is appended. ADR-0179.
+    void rescanParamsPreservingIndices();
+
     /// ADR-0142. The host this plugin was created against, for its
     /// state-signal count. `ClapHost::makeDevice` sets it; a device built
     /// by hand without one reports 0 and never signals.
-    void setGlue(ClapHostGlue* glue) noexcept { glue_ = glue; }
+    void adoptGlue(std::unique_ptr<ClapHostGlue> glue) noexcept {
+        glue_ = std::move(glue);
+    }
+    /// This device's own host glue, or null for a device built without one.
+    /// Every counter on it belongs to THIS plugin (ADR-0179); before that,
+    /// they were shared by every plugin on the host and no signal could be
+    /// traced to the device that sent it.
+    [[nodiscard]] ClapHostGlue* glue() const noexcept { return glue_.get(); }
     [[nodiscard]] std::uint64_t stateEpoch() const noexcept override;
+
+    /// ADR-0179. These read THIS plugin's own glue, so `DeviceHost` can
+    /// register three sources per DEVICE through the contract instead of
+    /// three per HOST. Before the per-instance glue they could only have
+    /// been host-wide, which is why `watchClapGlue` existed: one plugin's
+    /// port rescan rebuilt the graph for every plugin, and one plugin's
+    /// state signal made every CLAP device save and hash its chunk.
+    [[nodiscard]] std::uint64_t shapeEpoch() const noexcept override;
+    [[nodiscard]] std::uint64_t restartEpoch() const noexcept override;
+
+    /// MESSAGE THREAD. Runs this plugin's deferred `on_main_thread` work and
+    /// answers any `params.request_flush()` it asked for (ADR-0179).
+    void pumpMainThread() override;
 
 private:
     /// What the plugin declares RIGHT NOW, asked rather than remembered.
@@ -278,6 +306,9 @@ private:
     /// Our index for a plugin's `clap_id`, or -1. Audio thread: a linear
     /// scan over the parameter list, no allocation.
     [[nodiscard]] std::int32_t indexOfParam(clap_id id) const noexcept;
+    /// True when this event addresses a parameter the plugin no longer
+    /// declares (ADR-0177 d4). Audio thread; a linear scan, no allocation.
+    [[nodiscard]] bool addressesAMissingParam(const engine::Event& e) const noexcept;
 
 public:
 
@@ -345,10 +376,33 @@ public:
     [[nodiscard]] static bool paramIdFromText(const std::string& s, clap_id& out) noexcept;
 
 private:
+    /// The plugin's parameter list as it declares it right now.
+    void readParamsInto(std::vector<ParamDescriptor>& out,
+                        std::vector<clap_id>& ids) const;
+public:
+
+private:
     const clap_plugin_t* plugin_ = nullptr;
     const clap_plugin_params_t* paramsExt_ = nullptr;
     const clap_plugin_state_t* stateExt_ = nullptr;
-    ClapHostGlue* glue_ = nullptr;   ///< ADR-0142; not owned
+    /// ADR-0179: OWNED, one per plugin instance. `host_data` on the
+    /// `clap_host_t` inside it is what makes every callback attributable to
+    /// this device -- which is the whole of ADR-0123 item 6 ("C4").
+    ///
+    /// Owned by the device rather than by `ClapHost` so that the glue cannot
+    /// outlive the plugin it describes: they are destroyed together, in this
+    /// object's destructor, in that order.
+    std::unique_ptr<ClapHostGlue> glue_;
+
+    /// The value of `glue_->portChanges()` at this device's last activation.
+    /// `prepare` reactivates when it has moved -- ADR-0179's legal
+    /// replacement for reading the port layout off an active plugin.
+    std::uint64_t shapeSeen_ = 0;
+
+    /// `glue_->flushRequests()` already answered. Message thread only.
+    std::uint64_t flushSeen_ = 0;
+    /// `glue_->paramListRescans()` already acted on. Message thread only.
+    std::uint64_t listRescanSeen_ = 0;
     const clap_plugin_tail_t* tailExt_ = nullptr;
     const clap_plugin_latency_t* latencyExt_ = nullptr;
 
@@ -507,8 +561,10 @@ public:
 
     /// ADR-0142: `clap_host_params.rescan` with VALUES or ALL, and
     /// `clap_host_state.mark_dirty` -- a plugin saying its state changed
-    /// outside its parameter events. SHARED by every plugin this glue serves
-    /// (ADR-0123 C4); each `ClapDevice` reports it as its `stateEpoch`.
+    /// outside its parameter events. THIS plugin's, since ADR-0179 gave each
+    /// instance its own glue; `ClapDevice` reports it as its `stateEpoch`.
+    /// It was shared by every plugin on the host until then, which made one
+    /// plugin's rescan re-save and re-hash every other plugin's chunk.
     [[nodiscard]] std::uint64_t stateSignals() const noexcept {
         return stateSignals_.load(std::memory_order_acquire);
     }
@@ -521,6 +577,23 @@ public:
     [[nodiscard]] std::uint64_t flushRequests() const noexcept {
         return flushRequests_.load(std::memory_order_acquire);
     }
+    /// `clap_host_params.rescan(CLAP_PARAM_RESCAN_ALL)` calls: the parameter
+    /// LIST itself may have changed. Separate from `stateSignals()` because
+    /// the responses differ -- a state signal means re-save the chunk, this
+    /// means re-read the declarations (ADR-0179).
+    [[nodiscard]] std::uint64_t paramListRescans() const noexcept {
+        return paramListRescans_.load(std::memory_order_acquire);
+    }
+
+    /// Parameters the plugin asked the host to drop references to, with the
+    /// flags it asked under (ADR-0179). Drained by the device on the main
+    /// thread; `clear` itself only records, because the response belongs to
+    /// the device that owns the parameter list, not to the glue.
+    struct ClearRequest {
+        clap_id id = 0;
+        clap_param_clear_flags flags = 0;
+    };
+    [[nodiscard]] std::vector<ClearRequest> takeClearRequests();
     /// MAIN THREAD. Our own `loadState` brackets itself with these, so the
     /// rescan a plugin answers a load with is not taken for the user's.
     void muteStateSignals() noexcept { ++muteDepth_; }
@@ -532,13 +605,17 @@ public:
         return callbacks_.load(std::memory_order_acquire) != dispatched_;
     }
 
-    /// MESSAGE THREAD. Calls `on_main_thread` on every registered plugin.
-    /// Without this a CLAP plugin that defers work never runs it, and nothing
-    /// reports that -- the plugin simply does less than it was written to do.
+    /// MESSAGE THREAD. Runs THIS plugin's deferred work. Without it a CLAP
+    /// plugin that defers work never runs it, and nothing reports that -- the
+    /// plugin simply does less than it was written to do.
     void dispatchMainThread();
 
-    /// Plugins this glue serves, so `dispatchMainThread` knows who to call.
+    /// The plugin this glue serves. Called once, by `ClapHost::makeDevice`,
+    /// between `create` and handing the glue to the `ClapDevice` that owns it.
     void registerPlugin(const clap_plugin_t* p);
+    /// Forget it. `~ClapDevice` calls this before `plugin_->destroy`, so a
+    /// glue that outlives its plugin by any margin holds nullptr and not a
+    /// dangling pointer (ADR-0179).
     void unregisterPlugin(const clap_plugin_t* p);
     [[nodiscard]] std::uint64_t processRequests() const noexcept {
         return processes_.load(std::memory_order_acquire);
@@ -569,6 +646,10 @@ private:
     std::atomic<std::uint64_t> stateSignals_{0};
     std::atomic<std::uint64_t> mutedStateSignals_{0};
     std::atomic<std::uint64_t> flushRequests_{0};
+    std::atomic<std::uint64_t> paramListRescans_{0};
+    /// MAIN THREAD only: params.h annotates `clear` `[main-thread]`, so this
+    /// needs no lock and no atomic.
+    std::vector<ClearRequest> clears_;
     int muteDepth_ = 0;                          ///< main thread only
     clap_host_latency_t     latencyExt_{};
     clap_host_audio_ports_t portsExt_{};
@@ -578,7 +659,27 @@ private:
     std::atomic<std::uint64_t> portChanges_{0};
     std::atomic<std::uint64_t> unexplained_{0};
     std::uint64_t dispatched_ = 0;
-    std::vector<const clap_plugin_t*> plugins_;
+    /// THE plugin this glue serves, not a list. ADR-0179.
+    ///
+    /// This was a `std::vector<const clap_plugin_t*>` when one glue served
+    /// every plugin on a host, and that vector was a use-after-free:
+    /// `makeDevice` pushed the raw pointer, `~ClapDevice` called
+    /// `plugin_->destroy`, nothing ever called `unregisterPlugin`, and
+    /// `dispatchMainThread` then called `on_main_thread` through freed
+    /// memory. Reproduced under AddressSanitizer with a real ADI Airwindows
+    /// suite: load, destroy, one timer tick.
+    ///
+    /// It is a single pointer rather than a vector with one element because
+    /// a container invites the broadcast loop back, and the broadcast loop
+    /// is the bug. One glue, one plugin, and `unregisterPlugin` has nothing
+    /// left to forget to call.
+    ///
+    /// What actually closes the bug is OWNERSHIP, not the unregister call:
+    /// `ClapDevice` holds its glue by value-semantics `unique_ptr`, so the
+    /// two die together and no dispatch can reach a destroyed plugin. The
+    /// reproduction that used to report a heap-use-after-free now runs clean
+    /// (`adi_clap_probe`'s sibling under ASan, a real ADI Airwindows suite).
+    const clap_plugin_t* plugin_ = nullptr;
     // ATOMIC, because `requestRestart` says in its own comment that the plugin
     // may call it from any thread -- and a plain `++` from an arbitrary thread,
     // read from the message thread, is a data race whatever the width. On the
@@ -658,14 +759,21 @@ public:
     /// The glue every plugin from this host reports through. Registered once
     /// with `DeviceHost::watchClapGlue`, because `clap_host_latency.changed`
     /// is a HOST callback and belongs to the host object (ADR-0084).
-    [[nodiscard]] ClapHostGlue& glue() noexcept { return glue_; }
+    /// GONE with ADR-0179, deliberately, and not replaced by a forwarder.
+    ///
+    /// There is no host-wide glue any more: each `ClapDevice` owns its own,
+    /// and a host-level one would answer every counter with a zero it could
+    /// never leave -- a reading that looks like "nothing happened" and means
+    /// "nobody is asking me". Ask the device: `ClapDevice::glue()`.
+    ///
+    /// [[nodiscard]] ClapHostGlue& glue() noexcept;
 
     [[nodiscard]] std::size_t libraryCount() const noexcept { return libs_.size(); }
 
 private:
     ClapLibrary* libraryFor(const std::string& path, std::string& error);
 
-    ClapHostGlue glue_;
+
     std::vector<ClapPluginRef> found_;
     std::vector<std::pair<std::string, std::unique_ptr<ClapLibrary>>> libs_;
 };

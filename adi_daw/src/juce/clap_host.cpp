@@ -377,18 +377,83 @@ ClapDevice::~ClapDevice() {
         if (plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
         if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     }
+    // DEFENSIVE, AND SAY SO: this line is NOT what closes the use-after-free.
+    //
+    // The ownership is. `glue_` is a member, so it is destroyed with this
+    // device -- the glue cannot outlive the plugin it describes, and the
+    // dangling pointer the old shape allowed is now unreachable rather than
+    // merely unused. Removing this call and running the whole suite passes,
+    // which is exactly what should be expected and is recorded here so the
+    // next person does not read a planted-defect PASS as a hole in the tests.
+    //
+    // It stays because it costs a branch and makes the ordering explicit for
+    // a reader, and because a future refactor that hands the glue somewhere
+    // else would need it and would not think to add it back.
+    if (glue_ != nullptr) glue_->unregisterPlugin(plugin_);
     if (plugin_->destroy != nullptr) plugin_->destroy(plugin_);
+    // `glue_` is a member and is destroyed after this body runs, which is the
+    // order that matters: the plugin it describes is already gone and it has
+    // already forgotten it.
 }
 
 void ClapDevice::rescanParams() {
+    // FIRST READ: build the list from nothing.
     params_.clear();
     paramIds_.clear();
+    readParamsInto(params_, paramIds_);
+}
+
+void ClapDevice::rescanParamsPreservingIndices() {
+    // ADR-0179, answering CLAP_PARAM_RESCAN_ALL.
+    //
+    // WHY NOT JUST `rescanParams()`. Indices are load-bearing outside this
+    // object: `outPush` broadcasts an INDEX, it becomes
+    // `ParamEdit::paramIndex`, and `ParamOps`' mirror is keyed by it. A plain
+    // re-read renumbers everything, so a lane written for parameter 7 would
+    // silently start driving whatever landed at 7 this time. The old code
+    // said so and declined to re-read at all: "a re-read under a live glue
+    // would move every index it holds."
+    //
+    // So the list is RECONCILED BY `clap_id`, never renumbered:
+    //   - an id we already know keeps its index, and takes the new range,
+    //     name and flags;
+    //   - an id we no longer see is marked `missing` and KEPT -- ADR-0177 d4,
+    //     nothing is deleted, it plays nothing and its lanes survive;
+    //   - an id we have never seen is appended, at a new index.
+    // A parameter that comes back finds its own index, and its automation
+    // with it.
+    std::vector<ParamDescriptor> fresh;
+    std::vector<clap_id> freshIds;
+    readParamsInto(fresh, freshIds);
+
+    std::vector<bool> taken(fresh.size(), false);
+    for (std::size_t i = 0; i < paramIds_.size(); ++i) {
+        bool found = false;
+        for (std::size_t j = 0; j < freshIds.size(); ++j) {
+            if (taken[j] || freshIds[j] != paramIds_[i]) continue;
+            params_[i] = std::move(fresh[j]);   // same index, new declaration
+            taken[j] = true;
+            found = true;
+            break;
+        }
+        // Gone. Kept, flagged, and silent.
+        if (!found) params_[i].missing = true;
+    }
+    for (std::size_t j = 0; j < freshIds.size(); ++j) {
+        if (taken[j]) continue;
+        params_.push_back(std::move(fresh[j]));
+        paramIds_.push_back(freshIds[j]);
+    }
+}
+
+void ClapDevice::readParamsInto(std::vector<ParamDescriptor>& out,
+                                std::vector<clap_id>& ids) const {
     if (plugin_ == nullptr || paramsExt_ == nullptr ||
         paramsExt_->count == nullptr || paramsExt_->get_info == nullptr) return;
 
     const std::uint32_t n = paramsExt_->count(plugin_);
-    params_.reserve(n);
-    paramIds_.reserve(n);
+    out.reserve(n);
+    ids.reserve(n);
     for (std::uint32_t i = 0; i < n; ++i) {
         clap_param_info_t info{};
         if (!paramsExt_->get_info(plugin_, i, &info)) continue;
@@ -413,8 +478,8 @@ void ClapDevice::rescanParams() {
         const double norm = (span > 0.0) ? (info.default_value - info.min_value) / span : 0.0;
         d.defaultValue = ParamValue::withReal(norm, info.default_value);
 
-        params_.push_back(std::move(d));
-        paramIds_.push_back(info.id);
+        out.push_back(std::move(d));
+        ids.push_back(info.id);
     }
 }
 
@@ -554,6 +619,95 @@ bool ClapDevice::loadState(const std::string& role, const std::vector<std::uint8
     return ok;
 }
 
+void ClapDevice::pumpMainThread() {
+    if (glue_ == nullptr) return;
+
+    // 1. Whatever the plugin deferred with `host.request_callback()`.
+    glue_->dispatchMainThread();
+
+    // 2. ANSWER `params.request_flush()`, which was counted and never
+    //    answered before ADR-0179 (`flushRequests_` had one writer and no
+    //    reader but the accessor and a test).
+    //
+    //    params.h: flush is `[active ? audio-thread : main-thread]`. This is
+    //    the main thread, so it may only run while the plugin is NOT
+    //    processing -- and while it IS, the plugin's own process call carries
+    //    its parameter events anyway, which is the whole reason `setParam`
+    //    queues rather than flushing when active.
+    //
+    //    Answering it once per request rather than once per tick: a plugin
+    //    that asks repeatedly gets one flush per ask, and a quiet one costs
+    //    an integer compare.
+    // ADR-0179: CLAP_PARAM_RESCAN_ALL -- re-read the declarations.
+    //
+    // params.h VI: a plugin adding or removing parameters calls restart()
+    // while active, and only once it is NOT active does it clear() the gone
+    // ids and rescan(ALL). So this is legal here, and guarded anyway: a
+    // scan while active is the mistake ADR-0090 d5 made with ports.
+    const std::uint64_t wantList = glue_->paramListRescans();
+    if (wantList != listRescanSeen_ && !activated_) {
+        listRescanSeen_ = wantList;
+        rescanParamsPreservingIndices();
+    }
+
+    // ADR-0179: answer `params.clear()` per ADR-0177 d4 -- NOTHING IS DELETED.
+    //
+    // A parameter the plugin says it is dropping keeps its row, its index and
+    // its lanes; it is marked `missing` and plays nothing, exactly as a
+    // missing plug-in's parameters are (SPEC 7.1). A later rescan that
+    // declares the id again picks it up with its automation intact.
+    //
+    // FLAG-AWARE, and this is not a detail. params.h: CLEAR_ALL is "all
+    // possible references", CLEAR_AUTOMATIONS is "all automations", and
+    // CLEAR_MODULATIONS is "all modulations". A plugin clearing only
+    // MODULATIONS has said nothing about automation, and stopping its lane
+    // would silence a parameter the user is still driving.
+    for (const ClapHostGlue::ClearRequest& c : glue_->takeClearRequests()) {
+        const bool stopsAutomation =
+            (c.flags & (CLAP_PARAM_CLEAR_ALL | CLAP_PARAM_CLEAR_AUTOMATIONS)) != 0;
+        if (!stopsAutomation) continue;     // MODULATIONS alone: not ours
+        const std::int32_t i = indexOfParam(c.id);
+        if (i >= 0) params_[static_cast<std::size_t>(i)].missing = true;
+    }
+
+    const std::uint64_t want = glue_->flushRequests();
+    if (want == flushSeen_) return;
+    if (processing_) return;              // answer on a later tick
+    flushSeen_ = want;
+
+    if (plugin_ == nullptr || paramsExt_ == nullptr || paramsExt_->flush == nullptr)
+        return;
+    // Nothing of ours to send: the host has no pending values here, so the
+    // flush exists to let the PLUGIN push its own out through `outEvents_`.
+    events_.clear();
+    paramsExt_->flush(plugin_, events_.inputEvents(), &outEvents_);
+}
+
+bool ClapDevice::addressesAMissingParam(const engine::Event& e) const noexcept {
+    // ADR-0177 d4, extended to CLAP by ADR-0179: a parameter the plugin no
+    // longer declares PLAYS NOTHING. The lane is not deleted and the row is
+    // not removed -- the value simply never reaches the plugin.
+    //
+    // Without this the `missing` flag would be decorative: the row would say
+    // "gone" in a panel while the automation kept driving an id the plugin
+    // has told us it no longer has.
+    //
+    // AUDIO THREAD: a linear scan over the id list, no allocation, the same
+    // shape `indexOfParam` already uses for every outbound event.
+    if (e.type != engine::EventType::ParamValue &&
+        e.type != engine::EventType::ParamMod) return false;
+    const std::int32_t i = indexOfParam(static_cast<clap_id>(e.paramId));
+    return i >= 0 && params_[static_cast<std::size_t>(i)].missing;
+}
+
+std::uint64_t ClapDevice::shapeEpoch() const noexcept {
+    return glue_ != nullptr ? glue_->portChanges() : 0;
+}
+
+std::uint64_t ClapDevice::restartEpoch() const noexcept {
+    return glue_ != nullptr ? glue_->unexplainedRestarts() : 0;
+}
+
 std::uint64_t ClapDevice::stateEpoch() const noexcept {
     return glue_ != nullptr ? glue_->stateSignals() : 0;
 }
@@ -641,10 +795,29 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     // The declared BUS LAYOUT is re-read rather than assumed, because a port
     // rescan is the one thing that must not take this path: re-reading is a
     // few `get_extension` calls and no state is lost by asking.
+    // ADR-0179 replaces ADR-0090 d5's `layoutMatches()` here.
+    //
+    // That call asked the plugin for its port layout WHILE IT WAS ACTIVE, to
+    // notice a rescan. `audio-ports.h` line 67 says the scan "has to be done
+    // while the plugin is deactivated", and `plugin.h` says the layout may
+    // not change while active -- so the check was illegal AND could never
+    // see the thing it was added to detect (ADR-0123 item 6).
+    //
+    // The signal it should always have used is a port rescan attributable to
+    // THIS plugin, which needs a `clap_host_t` per instance and so could not
+    // exist until now. `portChanges()` is that: the plugin told us, on the
+    // host object that belongs to it alone.
+    //
+    // Everything ADR-0090 measured still holds -- a rebuild must not reset a
+    // plugin that did not change, because reactivating Pro-Q 3 in linear
+    // phase threw away 5120 samples of FIR history and silenced the master
+    // for 106.7 ms.
+    const std::uint64_t shapeNow = glue_ != nullptr ? glue_->portChanges() : 0;
     if (activated_ && sampleRate == sampleRate_ && maxFrames == maxFrames_ &&
-        layoutMatches()) {
+        shapeNow == shapeSeen_) {
         return;
     }
+    shapeSeen_ = shapeNow;
 
     if (activated_) {
         if (processing_ && plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
@@ -900,9 +1073,12 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     }
     // Parameters address the plugin and are never a note stream (ADR-0091).
     for (const auto& e : io.events)
-        if (!engine::isNoteStream(e.type)) events_.add(e, io.blockOffset, n);
+        if (!engine::isNoteStream(e.type) && !addressesAMissingParam(e))
+            events_.add(e, io.blockOffset, n);
     for (std::size_t i = 0; i < injectedUsed_; ++i)
-        if (!engine::isNoteStream(injected_[i].type)) events_.add(injected_[i], io.blockOffset, n);
+        if (!engine::isNoteStream(injected_[i].type) &&
+            !addressesAMissingParam(injected_[i]))
+            events_.add(injected_[i], io.blockOffset, n);
     injectedUsed_ = 0;
 
     // Queued parameter changes, at the start of this segment. CLAP parameters
@@ -1218,13 +1394,37 @@ void ClapHostGlue::paramsRescan(const clap_host_t* h, clap_param_rescan_flags fl
     // here -- ALL is legal only while the plugin is deactivated, and a
     // re-read under a live glue would move every index it holds.
     if (h == nullptr) return;
+    auto* self = static_cast<ClapHostGlue*>(h->host_data);
     if ((flags & (CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_ALL)) != 0)
-        static_cast<ClapHostGlue*>(h->host_data)->stateSignal();
+        self->stateSignal();
+    // ADR-0179: ALL is the one that means the LIST moved. Counted apart from
+    // the state signal, because the responses differ -- a state signal means
+    // re-save the chunk, this means re-read the declarations. The device acts
+    // on it from `pumpMainThread`, on the main thread, and params.h VI says
+    // the plugin is not active when it sends this.
+    if ((flags & CLAP_PARAM_RESCAN_ALL) != 0)
+        self->paramListRescans_.fetch_add(1, std::memory_order_release);
 }
 
-void ClapHostGlue::paramsClear(const clap_host_t*, clap_id, clap_param_clear_flags) {
-    // Automation and modulation references to a parameter the plugin is
-    // about to remove. We hold none yet that a plugin could invalidate.
+void ClapHostGlue::paramsClear(const clap_host_t* h, clap_id id,
+                              clap_param_clear_flags flags) {
+    // ADR-0179. This was an empty body, and its comment said "we hold none
+    // yet that a plugin could invalidate" -- true when it was written, and
+    // untrue since ADR-0165 gave automation lanes a `param_ref` that names a
+    // parameter by its numeric id.
+    //
+    // RECORDED, NOT ACTED ON, because the response belongs to the device that
+    // owns the parameter list. params.h annotates this `[main-thread]`, so
+    // the plain vector is legal.
+    if (h == nullptr) return;
+    auto* self = static_cast<ClapHostGlue*>(h->host_data);
+    self->clears_.push_back(ClearRequest{id, flags});
+}
+
+std::vector<ClapHostGlue::ClearRequest> ClapHostGlue::takeClearRequests() {
+    std::vector<ClearRequest> out;
+    out.swap(clears_);
+    return out;
 }
 
 void ClapHostGlue::paramsRequestFlush(const clap_host_t* h) {
@@ -1238,28 +1438,28 @@ void ClapHostGlue::stateMarkDirty(const clap_host_t* h) {
     static_cast<ClapHostGlue*>(h->host_data)->stateSignal();
 }
 
-void ClapHostGlue::registerPlugin(const clap_plugin_t* p) {
-    if (p == nullptr) return;
-    for (const auto* q : plugins_) if (q == p) return;
-    plugins_.push_back(p);
-}
+void ClapHostGlue::registerPlugin(const clap_plugin_t* p) { plugin_ = p; }
 
 void ClapHostGlue::unregisterPlugin(const clap_plugin_t* p) {
-    for (std::size_t i = 0; i < plugins_.size(); ++i) {
-        if (plugins_[i] == p) { plugins_.erase(plugins_.begin() + static_cast<long>(i)); return; }
-    }
+    // Idempotent, and it does not care whether `p` is the one it holds: the
+    // caller is `~ClapDevice`, which owns both, and a mismatch there would be
+    // a bug we want to fail loudly elsewhere rather than silently keep a
+    // pointer here.
+    if (plugin_ == p || p == nullptr) plugin_ = nullptr;
 }
 
 void ClapHostGlue::dispatchMainThread() {
     const std::uint64_t want = callbacks_.load(std::memory_order_acquire);
     if (want == dispatched_) return;
     dispatched_ = want;
-    // Every registered plugin, not just the one that asked: request_callback
-    // carries no identity, so there is no way to know which. Calling
-    // on_main_thread on a plugin that did not ask is explicitly allowed and
-    // costs a no-op; not calling the one that did is silent work never done.
-    for (const auto* p : plugins_)
-        if (p != nullptr && p->on_main_thread != nullptr) p->on_main_thread(p);
+    // ONE plugin, because one glue now serves one plugin (ADR-0179). The
+    // loop this replaced called `on_main_thread` on every plugin registered
+    // with the host, for the honest reason that `request_callback` carries no
+    // identity -- and that loop was a use-after-free, because nothing ever
+    // unregistered a destroyed plugin. Per-instance `host_data` IS the
+    // identity, so the broadcast is neither needed nor possible.
+    if (plugin_ != nullptr && plugin_->on_main_thread != nullptr)
+        plugin_->on_main_thread(plugin_);
 }
 
 void ClapHostGlue::requestRestart(const clap_host_t* h) {
@@ -1433,8 +1633,14 @@ std::unique_ptr<DeviceInstance> ClapHost::makeDevice(const ClapPluginRef& ref,
     id.vendor  = ref.vendor;
     id.version = ref.version;
 
+    // ADR-0179: A GLUE PER INSTANCE, created BEFORE the plugin, because the
+    // `clap_host_t` inside it is an argument to `create` and the plugin may
+    // keep the pointer for its whole life. Its `host_data` is what makes
+    // every later callback attributable to this one device.
+    auto glue = std::make_unique<ClapHostGlue>();
+
     ClapLibrary* lib = libraryFor(ref.bundlePath, error);
-    const clap_plugin_t* p = (lib != nullptr) ? lib->create(glue_.host(), ref.id.c_str())
+    const clap_plugin_t* p = (lib != nullptr) ? lib->create(glue->host(), ref.id.c_str())
                                               : nullptr;
     if (p == nullptr) {
         // ADR-0011 / SPEC 7.1. Not nullptr, not an exception, not a skip:
@@ -1444,9 +1650,11 @@ std::unique_ptr<DeviceInstance> ClapHost::makeDevice(const ClapPluginRef& ref,
         if (error.empty()) error = "the factory refused to create " + ref.id;
         return std::make_unique<MissingDevice>(id);
     }
-    glue_.registerPlugin(p);
+    glue->registerPlugin(p);
     auto dev = std::make_unique<ClapDevice>(p, id);
-    dev->setGlue(&glue_);
+    // Ownership moves to the device, so the glue cannot outlive the plugin it
+    // describes; `~ClapDevice` unregisters before `destroy`.
+    dev->adoptGlue(std::move(glue));
     dev->prepare(sampleRate, blockSize);
     return dev;
 }

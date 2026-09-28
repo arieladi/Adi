@@ -844,11 +844,19 @@ reports `deepest_null_dB` per table.
   −55 dB against each other. Band-limited squares and saws reach about −30 dB.
   The shape is shared, not the data.
 
-**The first pack is `wavetables/adi-gen-01/`**: 80 tables, MIT, in five
-categories of our own. Their names come from each table's own descriptor
-(brightness, then character, then movement). Its deepest null against its
-references is −30.5 dB, only on sine-like or textbook frames (ADR-0010). Two
-steps are still pending:
+**The pack we ship is `wavetables/adi-gen-02/`**: 98 tables, MIT, in seven
+banks of 14 (Chimes, Core, Grit, Talk, Texture, Tones, Voices). It was
+generated from first principles with **no references at all**, so ADR-0010's
+null test does not arise for it; that rule still governs anything generated
+from a reference. `adi-gen-01` was removed when this replaced it (ADR-0011).
+
+**It is an addition to Surge's 418 factory wavetables, not a replacement.**
+
+All 98 were verified to load through Surge's own loader before being added, by
+staging them into the factory wavetable folder and running the upstream test
+"All Factory Wavetables Are Loadable", with a corrupt-file negative control to
+prove the folder was really being read (ADR-0011). Two steps are still
+pending:
 
 - **Surge's user folder:** users copy the pack into
   `<user data>/Wavetables`, which Surge scans (`SurgeStorage.cpp:661`).
@@ -992,11 +1000,13 @@ first (it is the only thing that can generate the contextual per-type schema
         `WtGenService`;
       - whether the patch stores the descriptor and seed, the frames, or both.
       Prototype: `tools/wtgen/`, 15/15 selftest.
-- [ ] Move `wavetables/adi-gen-01/` into Surge's factory wavetables
+- [ ] Move `wavetables/adi-gen-02/` into Surge's factory wavetables
       (`surge/resources/data/wavetables/`) once the fork origin exists
-      (ADR-0006, ADR-0010).
-- [ ] Load a `wtgen` table in a running Surge. So far only its structure has
-      been checked, against `WAVFileSupport.cpp`.
+      (ADR-0006, ADR-0011). Until then users copy it into their user folder.
+- [x] Load our tables in a running Surge. Done 2026-09-28: all 98 of
+      `adi-gen-02` load through Surge's own loader, with a negative control
+      (ADR-0011). A table has still never been *played* through an
+      oscillator, which is a deeper test than loading.
 - [ ] Integration with `adi_daw` — **required by ADR-0009**, still undesigned,
       and deliberately not
       assumed anywhere in this repo (ADR-0003).

@@ -3,6 +3,80 @@
 macOS · Apple clang · arm64 · Claude (team licence).
 Only the `mac` agent writes to this file. Newest entry at the top.
 
+## Rules I work to
+
+Each one is here because it cost something, and the cost is named.
+
+1. **A claim in a handoff about the repo is a QUESTION until checked.** It
+   binds the SENDER first: twice I sent win a status claim about his machine
+   as a fact. (2026-09-21, 2026-09-26)
+2. **Anything touching `src/juce/**` gets a `-DADI_WITH_JUCE=ON` build before
+   it is pushed.** A green suite from a build tree that does not contain the
+   file I edited is not evidence about that file. (2026-09-27, win's round 6)
+3. **A gate reports success only over what it actually covers.** One defect,
+   three shapes: `-Werror` over objects built before the flag; a probe's
+   `#ifdef`'d blocks absent on one platform; `test_all.sh` over a build with
+   the JUCE targets switched off. Ask what a green result did NOT compile.
+4. **A planted defect that does not change the file is not evidence.** Verify
+   the bytes changed before believing the suite. And a plant that legitimately
+   PASSES is a result, not a hole — say which it is. (2026-09-27)
+5. **Prove a check can fail**, in CI and not only locally. `--require-devices`
+   and `--require-peak` each have a CI step that REQUIRES the failure.
+6. **Reserve an ADR number and push the reservation ALONE** before writing the
+   entry. A reservation that is not visible before it is spent is not one.
+7. **Stage explicit paths. Never `git add -A`** — this is a public monorepo
+   with other projects' untracked work in it.
+8. **A conflicting PR has NO CI, not stale CI.** Merge first, then read CI;
+   "green by head SHA" cannot be attempted in that state. (2026-09-27)
+
+
+---
+
+## 2026-09-27 — PR 2: a clap_host_t per instance (ADR-0179), and a gate that covered less than it looked like
+
+Branch `mac/clap-per-instance`, PR #148.
+
+### 1. The same lesson three times in two days: a gate covers only what it compiles
+
+CI failed on both JUCE jobs with `play.cpp:385: no member named 'glue' in
+'adi::device::ClapHost'` — a call site I deleted the member out from under
+and never compiled, because **my local build had `ADI_WITH_JUCE=OFF`**. The
+suite passed 4962 checks and never touched `play.cpp`.
+
+That is the third instance this week of one shape:
+
+| | the gate | what it did not cover |
+|---|---|---|
+| 09-21 | `-Werror` | objects already built before the flag existed |
+| 09-26 | `adi_vst3_probe` | seven `#ifdef ADI_TEST_VST3` blocks, absent on macOS |
+| 09-27 | `test_all.sh` | every JUCE target, at `ADI_WITH_JUCE=OFF` |
+
+**The rule for me: anything touching `src/juce/**` gets a
+`-DADI_WITH_JUCE=ON` build before it is pushed.** A green suite from a build
+tree that does not contain the file I edited is not evidence about that file.
+
+### 2. A planted defect that PASSED, and why that was the right answer
+
+Three defects planted in the per-instance work; two failed the suite. The
+third — deleting `~ClapDevice`'s `unregisterPlugin` call — **passed, and
+should have.** With the glue owned as a member of the device the two die
+together, so the dangling pointer is *unreachable* rather than merely unused.
+
+My own comment had claimed that line was what fixed the use-after-free. It
+is not; the ownership is. Comment corrected, the call kept as explicitly
+defensive, and the reasoning written into ADR-0179 so the next reader does
+not mistake the PASS for a hole in the tests.
+
+I nearly drew the opposite conclusion: an earlier batch of plants reported
+PASS because the edit had **silently failed to apply**. The plants now verify
+the file changed before the suite is believed.
+
+### 3. A conflicting PR has NO CI, not stale CI
+
+#148 sat at `CONFLICTING DIRTY` after #138 merged, and `gh run list` returned
+**zero rows**. "Green by head SHA" cannot be attempted in that state, and it
+looks identical to a branch nobody has pushed to. Merge first, then read CI.
+
 ---
 
 ## 2026-09-26 — back after five days; PR 1, CI renders a project through a VST3 and a CLAP
@@ -116,6 +190,34 @@ estimate was "about 320 heavy sources"; it is 287.
 The three unbounded `--parallel` calls in the OTHER jobs are left alone. They
 have been green for weeks and build far fewer files; fixing what is not proven
 broken is how a passing job turns red.
+
+### 7b. TSan: the PR 1 obligation I did not meet, logged now
+
+PR 1's brief said of the two TSan items: *"If there is room ... Otherwise log
+them as still open."* I did neither — I did not do the work and I did not log
+it. `grep -ci tsan` over this file returned **0** until this paragraph. The
+completeness critic of the re-sync sweep found it, which is exactly what that
+agent was for.
+
+What is actually true, checked against `origin/main`:
+
+- **The GCC TSan leg does not exist.** A case-sensitive grep for
+  `TSan|TSAN|fsanitize=thread|ThreadSanitizer` over the whole `.github/` tree
+  returns **zero** hits. The only sanitizer in CI is
+  `-fsanitize=fuzzer,address,undefined` in the fuzz job. There is no
+  `ADI_SANITIZE` CMake option. So this is an assigned item that was never
+  started, not a leg that regressed.
+- **The "Clang TSan conflict" is second-hand.** It is prose in
+  `collab/linux.md` with no trace, no reproducer and no failing job in the
+  repo, and it is Linux-clang-only. `tests/test_device.cpp` still defines
+  global `operator new`/`new[]` and four `operator delete` overloads at
+  namespace scope with no `#if` guard of any kind.
+
+**The trap, stated so the next person does not fall in it:** do not "fix"
+that counter on the strength of a macOS run. Darwin ships TSan only as
+`libclang_rt.tsan_osx_dynamic.dylib` and has no static `tsan_cxx` archive to
+collide with, so the conflict cannot reproduce here and a green local run
+proves nothing about it. Reproduce on Linux clang first, or leave it.
 
 ### 7. A verifier found the hole in my own gate
 
