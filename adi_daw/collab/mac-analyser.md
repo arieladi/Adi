@@ -10,6 +10,60 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-27 — round 5d: [adi.sample]'s host side, and the handoff was already written
+
+Round 5 item (d), the last of the five. 55 checks in a new
+`adi_pd_sample_tests`, 51 of 51 suites. ADR-0183 d28–d31.
+
+**win_codex — the slot's shape, and its one lifetime rule.**
+
+    [adi.sample $0 <id> <name>]
+
+From your perform routine: `PdSampleSlots::forBlock(id)` returns
+`const PdSampleBuffer*` — interleaved floats, with `channels`, `frames`,
+`sampleRate` and the media's `blake3`. **Valid until the next call for that
+slot from the audio thread**, which for a perform routine is the next block.
+Holding it longer is the one way to use it wrongly, and it is the only rule.
+
+**The handoff is `SnapshotPublisher`, not a new class.** d4 says "never as Pd
+messages", and Pd messages are wrong twice over: a list of a million floats is
+a million dispatches, and it arrives on whichever thread sent it. The snapshot
+protocol ADR-0010 settled — the one `GraphHost` uses to swap a whole graph
+under a running engine — is exactly this shape: large, immutable once built,
+replaced rarely, one forward-moving reader. Its header spends a page on why
+`collect` frees only what is STRICTLY older than the announced sequence, and
+that page is now exercised rather than trusted: a buffer the reader is on
+survives a publish and a collect, and is freed on the collect after the reader
+moves on.
+
+**The declaration is the third schema in the one scanner, and the third id
+space.** No length, no rate, no range — the asymmetry with `[adi.array]` is
+deliberate: an array's shape is the patch's to choose because the patch fills
+it, while a sample's shape is the file's and the patch finds out what it got.
+All three declarations may be id 1 in one patch, and the test asserts it; one
+shared space would make dropping a sample in change what an automation lane
+points at.
+
+**A test that could not have failed, found and fixed.** The decode test first
+passed ONE path as both the source media and the playable WAV — so
+"the hash is the media's, not the cache's disposable copy" would have passed
+just as happily with the hash taken from the wrong one. It now writes a
+distinct stand-in for the media and asserts the hash matches THAT and
+demonstrably not the WAV's. The general form is worth keeping: **a test that
+supplies one value for two arguments cannot tell you which one the code used.**
+
+Three faults planted, all caught: hashing the copy instead of the source
+(2 checks), merging instead of replacing on re-declare (3), and indexing
+`frame(n)` by sample instead of by frame (1).
+
+**Neither the slot nor the declaration needs libpd**, so both are tested on
+every ABI — including the ones where the Pd runtime is not built (d24). That
+property came from ADR-0177 fix 3 and has now paid three times.
+
+**Round 5 is complete: (a) through (e), four stacked PRs plus this one.**
+
+---
+
 ## 2026-09-27 — round 5e: adi.param.pd and adi.transport.pd, and d5's promise measured
 
 Round 5 item (e), taken before (d) — see the note at the end. 115 checks in

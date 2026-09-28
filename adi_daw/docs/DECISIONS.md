@@ -14427,6 +14427,56 @@ here rather than noted. All of the below is asserted in
     transport to a node, which is `src/adi/engine/**` -- win's, standing.
     `LibPdEngine::setTransport` is the seam, and it is what the test drives.
 
+28. **`[adi.sample]`'s host side (ADR-0192 d4), and the handoff was already
+    written.** d4 says the buffer reaches the slot "through a lock-free
+    handoff, never as Pd messages". Pd messages are the obvious route and are
+    wrong twice: a list of a million floats is a million dispatches, and it
+    would arrive on whichever thread sent it.
+
+    **The handoff is `SnapshotPublisher`**, the protocol ADR-0010 and ADR-0019
+    settled and `GraphHost` uses to swap a whole graph under a running engine.
+    A sample is the shape it was built for: large, immutable once built,
+    replaced rarely, read by one audio thread that only moves forward. Its
+    header spends a page on why `collect` frees only what is STRICTLY older
+    than the announced sequence, and none of that reasoning was worth writing
+    a second time in a class that would then have to be kept in agreement.
+    That page is now exercised rather than trusted: a buffer the reader is on
+    survives a publish and a collect, and is freed on the collect after the
+    reader moves.
+
+29. **The declaration is the third schema in the one scanner, and the third id
+    space.** `[adi.sample $0 <id> <name>]`. It declares **no length, no rate
+    and no range**, and the asymmetry with `[adi.array]` is the point: an
+    array's shape is the patch's to choose because the patch fills it, while a
+    sample's shape is the FILE's and the patch finds out what it got.
+
+    Three id spaces, not one: a sample is media, a parameter is automation, an
+    array is a display. All three may be id 1 in one patch, and the test asserts
+    exactly that — one space would make dropping a sample in change what an
+    automation lane points at.
+
+30. **The hash is the MEDIA's, not the decoded copy's, and the first version of
+    the test could not have told the difference.** ADR-0127 identifies the file
+    a project refers to so the project still plays when it moves; ADR-0132's
+    cache copy is ours and disposable. The test first passed one path as both
+    source and playable file, which would have passed just as happily with the
+    hash taken from the cache. It now writes a distinct stand-in for the media
+    and asserts the hash matches THAT and demonstrably not the WAV's. The
+    general form of the mistake: **a test that supplies one value for two
+    arguments cannot tell you which one the code used.**
+
+    A file that fails to hash still loads. Losing the hash is bad — the project
+    cannot find the media again later — but refusing to load what the user just
+    dropped in is worse.
+
+31. **Neither the slot nor the declaration needs libpd**, which is the same
+    property ADR-0177 fix 3 put on the parse, and it pays the same way: both
+    build and are tested on every ABI, including the ones where the Pd runtime
+    is not built at all (d24). The external that will read the slot is
+    win_codex's, and the accessor it calls is named in `pd_samples.hpp` with
+    its lifetime contract: valid until the next call for that slot from the
+    audio thread, which for a perform routine is the next block.
+
 ### What this amends in ADR-0177, and what it does not
 
 This ADR's decisions were written before ADR-0177 merged, so the question was
