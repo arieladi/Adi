@@ -111,6 +111,23 @@ void placement() {
     check(instrument->read(l,r,stamp) && std::abs(l[12]-0.05*std::pow(10.0,-3.0/20.0))<1e-6,
           "instrument input gain follows its audio generation");
 }
+void stale() {
+    Fixture f(4096);
+    bool edit=false;
+    Session s;
+    check(s.load(*f.store,[&](const DeviceRequest&,std::string&) {
+        if(edit) {
+            edit=false;
+            OpRequest rename; rename.opType="track.rename"; rename.payload={{"id",1},{"name","Changed during analysis"}};
+            if(!OpJournal(*f.store).commit(rename).ok) throw std::runtime_error("concurrent edit");
+        }
+        return std::make_unique<Synth>();
+    },{2,48000,4096}),"stale-head project loads");
+    edit=true;
+    const auto result=s.autoGainStage(*f.store);
+    check(!result.commit.ok && result.commit.stale && f.gain(1)==6 && f.gain(2)==-3,
+          "edit during offline load refuses all gains, including initially empty history");
+}
 void modes() {
     Fixture small(32),large(4096);
     auto a=small.session.autoGainStage(*small.store),b=large.session.autoGainStage(*large.store);
@@ -148,7 +165,7 @@ void modes() {
 int main(int argc, char** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
     if(argc==2 && std::string(argv[1])=="--placement") placement();
-    else { transaction(); modes(); placement(); }
+    else { transaction(); modes(); placement(); stale(); }
     std::printf("%s -- %d checks, %d failures\n",failures?"FAIL":"PASS",checks,failures);
     return failures?1:0;
 }

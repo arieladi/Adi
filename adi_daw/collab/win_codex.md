@@ -37,9 +37,9 @@ Ceiling limits the gain before the write; silent tracks retain their setting.
 This is a message-thread/offline API; menu wiring is not part of this PR.
 
 MSVC /WX and full harness: 5632 checks across 59 suites, validators clean.
-One additional instrument-placement check passes in the final focused suite,
-bringing the combined measured total to 5633/59.
-The new suite has 23 checks: exact default RMS, LUFS calibration, peak ceiling,
+Three additional instrument-placement/stale-head checks pass in the final
+focused suite, bringing the combined measured total to 5635/59.
+The new suite has 25 checks: exact default RMS, LUFS calibration, peak ceiling,
 MIDI-driven instrument render, silence gating, clip gain, block independence,
 repeat determinism, atomic media failure and one undo. A nonlinear insert
 proves gain placement: planting unity multiplication caused its check to fail;
