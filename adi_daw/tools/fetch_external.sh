@@ -92,6 +92,19 @@ THIRD_PARTY=(
   # the pin is upstream's own commit, reached through a mirror, not a fork's
   # idea of it. Re-check that equality before ever moving this pin.
   "jwinarske/pthreads4w         pthreads4w  Apache-2.0 -         8c1d612b376333619c564ef8dadd2410b9ae0563  build"
+  # PFFFT, for the analyser's spectrum (ADR-0195 d5) and the overlay's worker.
+  #
+  # PINNED AT THE COMMIT BUNGEE USES, deliberately. bungee -- the warp engine
+  # ADR-0188 d2 chose -- carries PFFFT as a submodule, so when warp lands ADI
+  # links this FFT anyway. A second one, hand-written or otherwise, would be two
+  # FFTs in one program: the same mistake as two definitions of masking. Read
+  # off bungee's own tree at its pinned commit, `submodules/pffft` is
+  # 02fe7715..., which Bitbucket resolves as refs/tags/v1.0.0^{}.
+  #
+  # AND PINNED AT UPSTREAM, not a mirror: PFFFT lives on Bitbucket, which is why
+  # the table now takes a full URL. Nothing here reaches into bungee's submodule
+  # -- a dependency two levels down that nobody fetched is not a pin.
+  "https://bitbucket.org/jpommier/pffft.git pffft PFFFT/FFTPACK-BSD v1.0.0 02fe7715a5bf8bfd914681c53429600f94e0f536  build"
   "juce-framework/JUCE          JUCE        AGPL-3.0  9.0.2     72782788ce18c2d4d760b28e0921d6ffc6431102  juce"
 )
 
@@ -129,6 +142,19 @@ REFERENCE=(
 )
 
 # --- pinned: third_party/ ---------------------------------------------------
+
+# NOT EVERY UPSTREAM IS ON GITHUB. PFFFT's is Bitbucket, and pinning a GitHub
+# mirror instead would mean pinning someone's copy and having to prove, in a
+# comment, that it is the same object as upstream's -- which is what the
+# pthreads4w row has to do. A repo field containing "://" is taken as the whole
+# URL; anything else is still a GitHub path, which is what almost every row is.
+repo_url() {
+    case "$1" in
+        *://*) printf '%s' "$1" ;;
+        *)     printf 'https://github.com/%s.git' "$1" ;;
+    esac
+}
+
 fetch_pinned() {
     local repo dir lic tag want role sub path
     read -r repo dir lic tag want role sub <<<"$1"
@@ -157,7 +183,7 @@ fetch_pinned() {
     if [ "$tag" = "-" ]; then
         printf '  %-18s by commit...  ' "$dir"
         if [ "$(git -C "$path" rev-parse HEAD 2>/dev/null || echo none)" != "$want" ]; then
-            [ -d "$path/.git" ] || { git init -q "$path" && git -C "$path" remote add origin "https://github.com/$repo.git"; }
+            [ -d "$path/.git" ] || { git init -q "$path" && git -C "$path" remote add origin "$(repo_url "$repo")"; }
             git -C "$path" fetch --depth 1 -q origin "$want" 2>/dev/null || true
             git -C "$path" -c advice.detachedHead=false checkout -q --detach FETCH_HEAD 2>/dev/null || true
         fi
@@ -172,7 +198,7 @@ fetch_pinned() {
     else
         printf '  %-18s cloning...    ' "$dir"
         git clone --depth 1 --branch "$tag" -c advice.detachedHead=false -q \
-            "https://github.com/$repo.git" "$path" 2>/dev/null || true
+            "$(repo_url "$repo")" "$path" 2>/dev/null || true
     fi
 
     # A submodule is fetched only where the table asks. Shallow, like the parent:
@@ -215,7 +241,7 @@ fetch_floating() {
             || git -C "$path" reset --hard -q FETCH_HEAD
     else
         printf '  %-18s cloning...    ' "$dir"
-        git clone --depth 1 --single-branch -q "https://github.com/$repo.git" "$path"
+        git clone --depth 1 --single-branch -q "$(repo_url "$repo")" "$path"
     fi
     printf '%s  [%s]\n' "$(git -C "$path" log -1 --format='%h %cs')" "$lic"
 }

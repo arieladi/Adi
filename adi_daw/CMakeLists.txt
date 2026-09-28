@@ -48,7 +48,7 @@ add_subdirectory("${ADI_THIRD_PARTY}/SQLiteCpp" EXCLUDE_FROM_ALL SYSTEM)
 add_subdirectory("${ADI_THIRD_PARTY}/json"      EXCLUDE_FROM_ALL SYSTEM)
 
 # ADR-0127: pinned C dependencies. BLAKE3's SIMD paths: see below.
-foreach(source BLAKE3/c/blake3.c miniz/miniz.c)
+foreach(source BLAKE3/c/blake3.c miniz/miniz.c pffft/pffft.c)
     if(NOT EXISTS "${ADI_THIRD_PARTY}/${source}")
         message(FATAL_ERROR "Missing ${source}; run tools/fetch_external.sh --build-only")
     endif()
@@ -104,6 +104,26 @@ target_include_directories(adi_miniz SYSTEM PUBLIC "${ADI_THIRD_PARTY}/miniz"
 # Filesystem timestamps are not part of this media container contract. Avoid
 # miniz's unused local-time conversion and its process-global CRT timezone state.
 target_compile_definitions(adi_miniz PUBLIC MINIZ_NO_STDIO MINIZ_NO_TIME MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
+
+# PFFFT, the FFT behind dsp::Spectrum (ADR-0024, ADR-0195 d5). Pinned in its own
+# right at the commit bungee carries as a submodule, because when the warp
+# engine lands ADI links this FFT anyway and a second one would be two FFTs in
+# one binary.
+#
+# SIMD is left as PFFFT finds it -- it detects SSE, NEON and Altivec itself and
+# falls back to scalar, and the scalar path gives the same numbers, just slower.
+# The one thing it needs from us is 16-byte alignment on its buffers, which
+# dsp::Spectrum gets from pffft_aligned_malloc rather than from a vector.
+#
+# Its warnings are upstream's, not this tree's, so it is added without
+# adi_warnings -- the same treatment airwin2rack and libpd get.
+add_library(adi_pffft STATIC "${ADI_THIRD_PARTY}/pffft/pffft.c")
+target_include_directories(adi_pffft SYSTEM PUBLIC "${ADI_THIRD_PARTY}/pffft")
+if(MSVC)
+    target_compile_options(adi_pffft PRIVATE /wd4244 /wd4305 /wd4996)
+else()
+    target_compile_options(adi_pffft PRIVATE -Wno-unused-function -Wno-unused-parameter)
+endif()
 
 # ---------------------------------------------------------------------------
 # Warnings. The whole value of choosing C++ here is that layout and lifetime
@@ -215,6 +235,7 @@ add_library(adi_core STATIC
     src/adi/dsp/limiter.cpp
     src/adi/dsp/rmsc.cpp
     src/adi/dsp/masking.cpp
+    src/adi/dsp/spectrum.cpp
     src/adi/dsp/auto_gain.cpp
     src/adi/dsp/true_peak.cpp
     src/adi/engine/latency.cpp
@@ -251,6 +272,8 @@ endif()
 target_include_directories(adi_core SYSTEM PUBLIC "${ADI_THIRD_PARTY}/clap/include")
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
 target_link_libraries(adi_core PRIVATE adi_warnings adi_blake3 adi_miniz)
+# PUBLIC: dsp/spectrum.cpp includes pffft.h, and nothing else in the tree does.
+target_link_libraries(adi_core PRIVATE adi_pffft)
 
 # ---------------------------------------------------------------------------
 # libpd -- the Pure Data runtime (ADR-0035, ADR-0183).
@@ -599,6 +622,13 @@ add_test(NAME adi_dsp_tests COMMAND adi_dsp_tests)
 add_executable(adi_pd_sample_tests tests/test_pd_samples.cpp)
 target_link_libraries(adi_pd_sample_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_pd_sample_tests COMMAND adi_pd_sample_tests)
+
+# dsp::Spectrum (ADR-0183 d7, ADR-0195 d5). The wrapper is what is tested, not
+# PFFFT: its real packing puts DC and Nyquist in the first two slots, and the
+# reference is a direct DFT written from the definition.
+add_executable(adi_spectrum_tests tests/test_spectrum.cpp)
+target_link_libraries(adi_spectrum_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_spectrum_tests COMMAND adi_spectrum_tests)
 
 # The masking measure (ADR-0195 d5). Pure: no engine, no view, no agent -- the
 # analyser overlay and analyze.masking are both callers, and this is where they

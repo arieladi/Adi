@@ -67,6 +67,16 @@ The rows marked "same legal effect" were added when this file was written, so
 that licences behaving like the ones Adi named are handled the same way. Strike
 them if that was not the intent.
 
+**One licence that is BSD without saying so: FFTPACK's.** PFFFT
+(`third_party/pffft`, ADR-0024) carries the FFTPACK v5 licence from NCAR/UCAR,
+which names no SPDX identifier and opens with a paragraph about atmospheric
+research. Read at the pinned commit, its terms are a three-clause BSD: keep the
+notice, reproduce it in binary form, do not use the contributors' names to
+endorse. So it falls under the BSD-3-Clause row above and needs nothing of the
+project. It is written down here because "FFTPACK licence" is not a phrase
+anyone can check against the table, and the next person should not have to read
+it again to find that out.
+
 ## 4. AGPL is allowed
 
 **Ruled by Adi on 2026-09-24; this replaces the earlier ban.** AGPL-3.0 code
