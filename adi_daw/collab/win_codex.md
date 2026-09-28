@@ -7,6 +7,71 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
+## 2026-09-28 — mission 2, Task C: Dynamic EQ CLAP and graph gestures
+
+Win moved Task C ahead of color-bass PR 2 while #150/#159 await his merges.
+Created the isolated `dynamic-eq` worktree and `codex/dynamic-eq` from main.
+Neither existing branch was changed or pushed. No scheduled follow-up was made.
+
+Direct adaptation of ZL Audio/ZLEqualizer, AGPLv3, pinned
+`3468a3ac85f5c1f9d16083acbee5b1339984d53b` (the existing upstream CLAP baseline).
+The reference checkout is newer (`64f8364`); the drone reports helped locate
+code, but all parameter limits were checked in the pinned
+`source/zlp/zlp_definitions.hpp`. Our copied PluginProcessor files keep the
+original headers. They rename the class, replace editor construction and make
+ZL's existing output double-to-float conversion explicit for /W4 /WX. DSP,
+state, sidechain, smoothing and filter structures remain the upstream code,
+compiled from the fetched source without patching it. The plug-in has its own
+AGPL license, ADI identity and separate build; adi_core links none of this DSP.
+
+Read the locally held Pro-Q 3 manual's printed pages 9, 10 and 15 and ADR-0195
+again. Gestures.hpp is pure C++, with one or more tests per table row. The GUI
+uses it for drag/wheel/click/create and handles host gesture lifetimes only
+for changed parameters. Alt-creation has no axis lock; subsequent node drags
+do. Wheel edits during a drag rebase its current values. Dynamic range maps
+to ZL's target gain, preserving the endpoint for the linked wheel gesture,
+including at a bound. The main view has no ZL panel dials. Double-click has
+numeric band fields and an All parameters tab; right-click has band actions.
+The graph explicitly identifies its curve as a static minimum-phase response,
+not a live dynamic/other-phase analyser. No Pro-Q text or images were copied.
+
+ADI choices, tested and documented: Shift scales movement by 0.1; Q wheel is
+one quarter-octave/detent, gain/range wheel is 1 dB; a new dynamic band's target
+starts at unity. Graph scale is 10 Hz..30 kHz (response stops at Nyquist),
++/-30 dB, with a 3-pixel drag threshold. These are our choices, not unverified
+numbers from the drone or claims of matching another plug-in's sensitivity.
+
+Validation: the standalone gesture suite passes 30 checks. Processor tests
+pass 90 checks: every ZL shape at 44.1/48/96 kHz through an independently
+compiled original-processor oracle; actual sample and measured magnitude
+errors are both zero. Dynamic envelopes in Minimum/SVF/Parallel, with internal
+and external sidechain, also have zero sample difference and demonstrably
+attenuate above threshold. Range mapping, source bounds, state restore, GUI
+mouse routing, curve magnitude and zero ordinary operator-new allocations in
+warmed-up Minimum-mode process are covered. The CLAP ABI smoke test loads the
+actual binary, checks its identity, 609 parameters and ports, activates,
+processes and tears down with no audio device; unity error is zero.
+
+The editor was rendered offscreen to a PNG and inspected. Native macOS/Linux
+plug-in builds and interactive comparison against the commercial plug-in
+remain review items; this does not claim them as passed. The new pure gesture
+test is wired into normal headless CI under adi_warnings. Shared CMake change
+is only that test target; README's check count is from the actual fresh run.
+The starting main README said 5317/53; its existing binaries contribute
+5186/52, so adding 30/1 gives 5216 checks across 53 suites (not 5347/54).
+Every suite and validator passed; the first harness run failed only the stale
+headline comparison, which was then corrected. Own processor/editor sources
+also build with /W4 /WX; upstream oracle warnings are not suppressed by editing
+upstream code. Build/test instructions and explicit limitations are in
+plugins/dynamic-eq/README.md.
+
+Local products: `C:/Users/Adi/adi-build/dynamic-eq/`, CLAP under
+`adi_dynamic_eq_artefacts/Release/CLAP/ADI Dynamic EQ.clap`. Never installed or
+played. Win reviews/merges this PR. Task B remains next, gated on #150 merged.
+
+---
+
+
 ## 2026-09-27 — mission 2, Task A: transport at the NodeIo boundary
 
 Win delegated Task A and approved the narrow plumbing expansion on this chat

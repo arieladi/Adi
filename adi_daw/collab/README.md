@@ -244,6 +244,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | Path | Agent | Branch | Since |
 |---|---|---|---|
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
+| `plugins/dynamic-eq/**` (ADR-0195 d1/d2, delegated by win), `plugins/README.md` (entry only), `CMakeLists.txt` (pure gesture test only), `README.md` (measured check count) | win_codex | `codex/dynamic-eq` | 2026-09-28 |
 | `src/adi/dsp/combchord.*`, `src/adi/dsp/colorcab.*`, `src/adi/pd_builtins/**`, `pd/devices/**`, `tests/test_combchord.cpp`, `tests/test_colorcab.cpp` | win_codex | `codex/colorbass-dsp` | 2026-09-27 |
 | `src/adi/engine/mixer.*` (the `StripNode` tap only), `src/adi/engine/session.*` (`openScope`, `closeScope`, `attachTaps`), `src/adi/engine/graph.*` (a node-input tap in `runNode`, if chosen), `src/adi/engine/scope.*` (only if the tap needs an API), `tests/test_analyser_taps.cpp`: the analyser's per-track taps, delegated by win (ADR-0195 d5) | win_codex | `codex/analyser-taps` | 2026-09-28 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |

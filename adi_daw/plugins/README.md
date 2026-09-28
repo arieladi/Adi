@@ -1,12 +1,13 @@
 # Plug-ins
 
-ADI's plug-in line as CLAP (ADR-0166): two of our own, and five open-source
+ADI's plug-in line as CLAP (ADR-0166, ADR-0195): three of our own, and five open-source
 projects built from their upstream code, unchanged. Each is its own binary under
 its own licence; none links into the DAW.
 
 | Plug-in | Where | Upstream, pinned | CLAP id | Our build's licence |
 |---|---|---|---|---|
 | **ADI RMSC**: ring-modulation sidechain ducking | [`rmsc/`](rmsc) | ours; DSP in `src/adi/dsp/rmsc.*` | `com.adi.rmsc` | AGPLv3 (JUCE 9) |
+| **ADI Dynamic EQ** (working name): ZL DSP with graph gestures | [`dynamic-eq/`](dynamic-eq) | directly adapted from ZLEqualizer `3468a3a`; original headers retained | `com.adi.dynamic-eq` | AGPLv3 |
 | **ADI Airwindows**: 143 algorithms in eleven suite plug-ins, auto gain | [`airwindows/`](airwindows) | [airwin2rack](https://github.com/baconpaul/airwin2rack) `b6eef0a`, MIT | `com.adi.airwindows.<suite>` | GPLv3 |
 | **Smartelectronix**: Smexoscope, Anechoic Room Simulator, Bitmurderer, Bouncy, Crazy Ivan, Cyanide 2, H2O, MadShifta, One Ping Only, SupaPhaser, SupaTrigga | [`external/smartelectronix/`](external/smartelectronix) | [bdejong/smartelectronix](https://github.com/bdejong/smartelectronix) `248d2c4`, GPL-3.0 | `com.adi.smartelectronix.<name>` | AGPLv3 (JUCE 8) |
 | **ChowTapeModel** | its own tree | [AnalogTapeModel](https://github.com/jatinchowdhury18/AnalogTapeModel) `604372e`, GPL-3.0 | `org.chowdsp.CHOWTapeModel` (theirs) | GPLv3 |
