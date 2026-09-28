@@ -4,6 +4,8 @@
 
 #include "juce/pd_engine.hpp"
 
+#include "juce/pd_builtins.hpp"
+
 #include "adi/engine/graph.hpp"
 
 #include <algorithm>
@@ -82,6 +84,15 @@ bool PdRuntime::initialise(std::string& error) {
         error = "libpd_init() failed";
         return false;
     }
+
+    // ADR-0188 d8: ADI's externals are compiled in and registered as built-ins.
+    // HERE, for determinism rather than for reachability -- Pd reaches every
+    // instance whenever a class is registered, because `class_doaddmethod`
+    // loops over all of them and `pdinstance_new` copies instance 0's list.
+    // What registering here buys is that every device opens against the same,
+    // complete vocabulary. See pd_builtins.hpp.
+    PdBuiltins::registerAll();
+
     g_initialised = true;
     return true;
 }
