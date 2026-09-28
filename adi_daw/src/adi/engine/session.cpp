@@ -6,6 +6,7 @@
 #include "adi/engine/session.hpp"
 
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 #include "adi/audio/io_audit.hpp"
 
 #include <algorithm>
@@ -550,35 +551,61 @@ void Session::setSourcesFor(SourceFn fn) { sources_ = std::move(fn); }
 // The scope's taps (ADR-0175)
 // ---------------------------------------------------------------------------
 
-std::shared_ptr<const ScopeTap> Session::openScope(std::int64_t trackId, double seconds) {
+std::shared_ptr<const ScopeTap> Session::openScope(std::int64_t trackId, double seconds, ScopePoint point) {
     if (strips_.stripFor(trackId) == nullptr) return nullptr;
-    auto& tap = taps_[trackId];
+    const TapKey key{trackId, point};
+    auto& tap = taps_[key];
     if (!tap) tap = std::make_shared<ScopeTap>(spec_.sampleRate, seconds);
-    openTaps_.insert(trackId);
+    openTaps_.insert(key);
     attachTaps();
     return tap;
 }
 
-void Session::closeScope(std::int64_t trackId) {
-    openTaps_.erase(trackId);
-    if (StripNode* strip = strips_.stripFor(trackId)) strip->setTap(nullptr);
+void Session::closeScope(std::int64_t trackId, ScopePoint point) {
+    openTaps_.erase({trackId, point});
+    if (point == ScopePoint::ChainInput) {
+        const auto node = chainTapNodes_.find(trackId);
+        if (node != chainTapNodes_.end()) {
+            node->second->setInputTap(nullptr);
+            chainTapNodes_.erase(node);
+        }
+    } else if (StripNode* strip = strips_.stripFor(trackId)) {
+        if (point == ScopePoint::PreFader) strip->setPreFaderTap(nullptr);
+        else strip->setTap(nullptr);
+    }
 }
 
 void Session::attachTaps() {
     Graph* g = graph_.currentGraph();
-    for (const std::int64_t id : openTaps_) {
+    for (const auto& key : openTaps_) {
+        const auto [id, point] = key;
         StripNode* strip = strips_.stripFor(id);
-        const auto tap = taps_.find(id);
+        const auto tap = taps_.find(key);
         if (strip == nullptr || tap == taps_.end()) continue;
-        // Heard, not merely produced: the strip's input arrival plus its own
-        // reported latency, which for a track delay is negative (ADR-0172).
-        std::int32_t latency = strip->latencySamples();
+        // Heard timeline: this point's arrival. Only PostFader adds the
+        // strip's own reported latency (negative for ADR-0172 track delay).
+        Node* tapped = strip;
+        if (point == ScopePoint::ChainInput) {
+            const auto chain = chainFor(id);
+            // Consume is the cached instrument contract (ADR-0091). Tap the
+            // first effect after the instrument, or the strip if there is none.
+            std::size_t first = 0;
+            for (std::size_t i = 0; i < chain.size(); ++i)
+                if (chain[i]->eventFlow() == EventFlow::Consume) first = i + 1;
+            if (first < chain.size()) tapped = chain[first];
+            auto& previous = chainTapNodes_[id];
+            if (previous && previous != tapped) previous->setInputTap(nullptr);
+            previous = tapped;
+        }
+        std::int32_t latency = point == ScopePoint::PostFader ? strip->latencySamples() : 0;
         if (g != nullptr) {
-            const NodeId n = g->find(*strip);
+            const NodeId n = g->find(*tapped);
             if (n != kInvalidNode) latency += g->arrivalOf(n);
         }
         tap->second->setLatency(latency);
-        strip->setTap(tap->second.get());
+        if (point == ScopePoint::ChainInput) tapped->setInputTap(tap->second.get());
+        else if (point == ScopePoint::PreFader) strip->setPreFaderTap(tap->second.get());
+        else strip->setTap(tap->second.get());
     }
 }
 
@@ -654,8 +681,8 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     info.timelineSample = transport.sampleAt(0);
     const auto ticks = tempo.secondsToTicks(static_cast<double>(info.timelineSample) / sampleRate);
     info.bpm = tempo.bpmAt(ticks);
-    constexpr std::int64_t ppq = 5765760; // SPEC 4.2; exactly representable in Pd's float
-    constexpr auto whole = 4 * ppq;
+    constexpr auto ppq = textproj::kPPQ; // SPEC 4.2; exact as Pd float
+    constexpr auto whole = textproj::kWhole;
     info.ticksInQuarter = ticks % ppq;
 
     // Allocation-free counterpart of renderPosition(metersOf(signatures)).
