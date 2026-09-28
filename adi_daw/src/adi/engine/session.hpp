@@ -197,13 +197,15 @@ public:
     /// ADR-0174: the group summing this graph plays. Message thread.
     [[nodiscard]] const GroupSumming& summing() const noexcept { return summing_; }
 
-    /// ADR-0175: the scope's tap on a track's output -- its strip's, after the
-    /// fader -- holding `seconds` of audio. Message thread. A second call
-    /// returns the same tap. Taps live as long as the session, so the audio
+    /// ADR-0175/0195: a track/point tap holding `seconds` of audio. The default
+    /// is after the fader; spectrum.post is PreFader, spectrum.pre ChainInput.
+    /// Message thread. A second call for the same key returns the same tap
+    /// with its original ring length. Taps live as long as the session, so audio
     /// thread can never write into a freed one; closing one only detaches it.
     /// Null for a track with no strip in the graph.
-    [[nodiscard]] std::shared_ptr<const ScopeTap> openScope(std::int64_t trackId, double seconds = 10.0);
-    void closeScope(std::int64_t trackId);
+    [[nodiscard]] std::shared_ptr<const ScopeTap> openScope(std::int64_t trackId, double seconds = 10.0,
+                                                         ScopePoint point = ScopePoint::PostFader);
+    void closeScope(std::int64_t trackId, ScopePoint point = ScopePoint::PostFader);
 
     // Driver thread only, commands between callbacks; see transport.hpp.
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
@@ -264,8 +266,10 @@ private:
     // the graphs so it outlives every graph that names one of its strips.
     MixerStrips strips_;
     GroupSumming summing_;   ///< ADR-0174: native analog group summing
-    std::map<std::int64_t, std::shared_ptr<ScopeTap>> taps_;   ///< ADR-0175, every tap ever opened
-    std::set<std::int64_t> openTaps_;                         ///< the ones attached
+    using TapKey = std::pair<std::int64_t, ScopePoint>;
+    std::map<TapKey, std::shared_ptr<ScopeTap>> taps_; ///< all taps live until audio stops
+    std::set<TapKey> openTaps_;
+    std::map<std::int64_t, Node*> chainTapNodes_; ///< detach even after chain edits
     void attachTaps();
     // ADR-0164: this rebuild's program, bound to strips. Kept here as well as
     // by every strip and graph that plays it.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/graph.hpp"
+#include "adi/engine/scope.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -938,6 +939,9 @@ std::int32_t Graph::computeSplits(std::int32_t frames) noexcept {
 void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
                     const TransportInfo* transport) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
+    ScopeTap* const inputTap = s.node->inputTap();
+    const bool advancing = transport != nullptr && transport->playing;
+    const auto firstSample = transport != nullptr ? transport->timelineSample : 0;
 
     bool mainSilent = true;
     for (NodeId in : s.inputs)
@@ -1003,6 +1007,13 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
     const bool suspend = !infinite && !s.node->alwaysProcess() &&
                          inputSilent && !hasEvents && !holding && s.tailRemaining == 0;
     if (suspend) {
+        if (inputTap)
+            inputTap->write(nullptr, nullptr, frames, firstSample - s.arrival, advancing);
+        NodeIo silence;
+        silence.frames = frames;
+        silence.channels = channels_;
+        silence.transport = transport;
+        s.node->silenceTaps(silence);
         ++stats_.nodesSuspended;
         s.silent = true;
         // ONCE, TO CAPACITY, not every block to `frames`. Consumers read this
@@ -1062,6 +1073,13 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
         nio.inputSilent = mainSilent;
         nio.sidechainSilent = sideSilent;
         nio.sampleRate = sampleRate_;
+
+        // The summed, compensated input belongs to this graph's arrival,
+        // before the node's own latency. No device implementation is involved.
+        if (inputTap && channels_ > 0)
+            inputTap->write(anyMain ? mixPtrs_[0] + begin : nullptr,
+                            anyMain && channels_ > 1 ? mixPtrs_[1] + begin : nullptr,
+                            n, firstSample + (advancing ? begin : 0) - s.arrival, advancing);
 
         const Event* first = nullptr;
         std::int32_t count = 0;

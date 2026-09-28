@@ -10,6 +10,112 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-28 — PFFFT pinned, and dsp::Spectrum as the one definition
+
+Step 4's foundation. 39 checks in a new `adi_spectrum_tests`. No `DECISIONS.md`
+change: this implements ADR-0183 d7 and ADR-0195 d5 on win's ruling, and there
+is no new decision in it.
+
+**PFFFT, pinned in its own right at the commit bungee uses.** Read off bungee's
+own tree at its pinned commit — `submodules/pffft` is `02fe7715…` — which
+Bitbucket resolves as `refs/tags/v1.0.0^{}`. Nothing reaches into bungee's
+submodule: a dependency two levels down that nobody fetched is not a pin.
+
+**The first row whose upstream is not GitHub**, so `fetch_external.sh` now takes
+a full URL when the repo field contains `://`. Better than pinning a mirror and
+arguing in a comment that it is the same object, which is what the pthreads4w
+row has to do.
+
+### Three things the wrapper hides, all measured
+
+1. **PFFFT's real packing puts DC in `out[0]` and NYQUIST in `out[1]`** — not a
+   complex pair. Measured before a line of the wrapper was written: an all-ones
+   frame puts N in `out[0]`, alternating ±1 puts N in `out[1]`, a cosine at bin
+   3 puts N/2 in `out[6]`. A caller reaching for `hypot(out[0], out[1])` gets
+   both wrong and produces a plausible picture.
+2. **`pffft_new_setup` ASSERTS on a bad size; it does not return NULL.** Its
+   header only promises NULL "if N is not suitable", which is true of the
+   FACTORISATION and not of the SIMD multiple. N=1000 aborts the process; N=224
+   returns NULL; with `NDEBUG` the abort becomes undefined behaviour instead.
+   The wrapper checks `N % (2 * pffft_simd_size()^2)` itself, before PFFFT sees
+   it. **win, this is the clearest vindication of your "the wrapper is where
+   the real bugs are"** — the crash is in the constructor, not the transform.
+3. **DC and Nyquist take half the calibration**, having no negative-frequency
+   partner, so a full-scale DC offset reads 0.00 dBFS — its amplitude — rather
+   than +6.
+
+### A test of mine that was wrong twice, and code that was right
+
+I asserted a Hann-windowed DC offset leaves bin 1 silent, then that bin 1 sits
+6 dB down. Both wrong: **bin 1 reads 0.00 dBFS too.** Hann's transform is 0.5N
+at bin 0 with 0.25N at bins ±1, so the skirt *is* 6 dB down in raw terms — but
+bin 0 takes DC's half-calibration and bin 1 takes the sinusoid's, and the two
+cancel exactly. It shows only for pure DC, which is not a musical signal.
+Asserted now *with* the reason, so nobody later corrects it into a wrong
+number.
+
+The reference is a direct DFT written from the definition, at N = 32, 64 and
+96, compared bin for bin — including DC and Nyquist, where the packing bug
+would hide. Four faults planted, all caught: the naive unpack, the missing
+half, no window, and removing the size guard.
+
+**Not here yet:** the one-sine cross-check you asked for, because it needs the
+Pd side to exist. That is the next PR — the analyser patch generated from these
+same constants, and one sine through both paths asserting 0.00 dBFS in each.
+
+**The stale-binary trap, a third time**, now from building and running in one
+shell pipeline: the run started before the link finished and I read the old
+binary's failures. Build and run as separate steps.
+
+---
+
+## 2026-09-28 — ADR-0197: device patches are top-level canvases, and they make sound now
+
+win's ruling on ADR-0183 d11, recorded as ADR-0197 with its reservation row.
+143 checks in `adi_pd_engine_tests`, **5313 across 53 suites**.
+
+**What changed.** `tools/gen_pd_patches.py` emits `[adc~ 1 2]` and `[dac~ 1 2]`
+instead of top-level `inlet~`/`outlet~`; RMSC's key is `[adc~ 3]`, which is the
+order `LibPdEngine` fills its input buffer in. The three patches are
+regenerated. Subpatches keep `inlet~`/`outlet~` — the limiter's delay writer and
+reader still have them, correctly, because a subpatch shares the parent's `$0`.
+
+**`validate_pd.py` refuses a top-level `inlet~` now**, by counting canvas depth
+rather than searching the text — which is what lets the limiter's subpatches
+pass while the top level cannot. Planted and confirmed: a top-level `inlet~` in
+`adi-rmsc.pd` fails with the reason, and the clean tree passes.
+
+**And the three patches are proved to make sound** — a 440 Hz sine through each,
+asserting a non-zero peak and that Pd actually ran blocks. That is the test d11
+lacked: these were structurally valid and audibly silent for as long as they
+existed, and nothing at any layer said so. The limiter needs a ceiling sent
+first, which is not a workaround — its gain is `min(1, ceiling / peak)` and
+`[r $0-ceiling]` reads 0 until the host sends one.
+
+**The old test asserted the bug, so it moved.** `testADevicePatchIsAnAbstraction
+AndRendersNothing` asserted that `adi-rmsc.pd` renders silence — true when it
+was written, and now exactly backwards. The finding is still worth keeping, so
+it lives on a dedicated fixture, `tests/pd/adi-abstraction-shaped.pd`, which is
+`inlet~` straight to `outlet~` and still renders silence. **A rule nothing
+exercises is a rule that quietly stops being true**, which is how this one got
+in to begin with.
+
+### win — two things
+
+**`test_all.sh`'s README check is not in CI, and it has been red on main.** It
+compares the README's headline "N checks across M suites" against a real run,
+and CI runs `ctest` and the `validate_*.py` glob but never `test_all.sh`. So it
+drifted the moment I started adding suites: main said 5041 across 50 while the
+truth was 5313 across 53. Corrected here. **Whether CI should run it is yours,
+not mine to take** — it would catch this class of drift, and it would also add a
+second full run of the suite to a leg that already has one. `.github/**` is my
+area but the cost is everyone's.
+
+**Steps 5 to 7 are parked on your ruling**, and win_codex's taps (#159) give the
+overlay its input when they land. Step 4's DSP is next.
+
+---
+
 ## 2026-09-28 — transport wired from io.transport; the round-5 stack is in
 
 All six merged: #147, #149, #151, #152, #153, #155. 131 checks in
