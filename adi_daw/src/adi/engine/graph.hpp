@@ -53,6 +53,19 @@ inline constexpr std::int64_t kInfiniteTail = INT64_MAX;
 /// this one; it arrives when something needs it.
 enum class Bus : std::uint8_t { Main = 0, Sidechain = 1 };
 
+/// Session transport at the first sample of a BLOCK, shared by all segments.
+/// ADR-0188 d3: only the quarter-note remainder goes to Pd, never absolute ticks.
+struct TransportInfo {
+    bool playing = false;
+    std::int64_t timelineSample = 0;
+    double bpm = 120.0;
+    int timeSigNumerator = 4;
+    int timeSigDenominator = 4;
+    std::int64_t bar = 1;             ///< one-based, as in the text projection
+    std::int64_t beat = 1;            ///< one-based, in the signature's beat unit
+    std::int64_t ticksInQuarter = 0;  ///< absolute musical ticks modulo ADI_PPQ
+};
+
 /// What a node is handed for one SEGMENT of one block.
 struct NodeIo {
     /// Summed inputs. Null when the node has none — an instrument or a clip
@@ -85,6 +98,9 @@ struct NodeIo {
     bool sidechainSilent = true;
 
     double sampleRate = 0.0;
+    /// Valid only during process; null without a Session. All segments see
+    /// the same block-start values, not values shifted by blockOffset.
+    const TransportInfo* transport = nullptr;
 };
 
 /// What a node does with the note stream passing through it (ADR-0091).
@@ -728,7 +744,8 @@ private:
                     std::int32_t begin, std::int32_t frames, bool first) noexcept;
     void computeCompensation();
     void prepareLine(DelayLine& line, std::int32_t delaySamples);
-    void runNode(Slot& s, std::int32_t frames, std::int32_t nsplit) noexcept;
+    void runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
+                 const TransportInfo* transport) noexcept;
 
     /// ADR-0091, before the splits are computed: carry each slot's note events
     /// to the slots it feeds, delayed by what the audio beside them is delayed

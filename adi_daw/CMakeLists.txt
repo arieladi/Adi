@@ -189,6 +189,10 @@ add_library(adi_core STATIC
     src/juce/clap_host.cpp
     src/juce/device_host.cpp
     src/juce/pd_device.cpp
+    # The table of compiled-in Pd externals (ADR-0188 d8). No libpd in the
+    # registry itself, so it builds on every ABI; only the setup functions it
+    # calls touch Pd.
+    src/juce/pd_builtins.cpp
     # The static declaration parse (ADR-0177 fix 3, ADR-0183): no libpd in it
     # at all, deliberately -- the declared set must never depend on Pd running,
     # which is also why it is built on every ABI including the ones where the
@@ -406,6 +410,29 @@ target_compile_definitions(adi_core PUBLIC PDINSTANCE=1 PDTHREADS=1)
 # in its source list, because it is the one Pd source that includes z_libpd.h.
 target_sources(adi_core PRIVATE src/juce/pd_engine.cpp)
 target_compile_definitions(adi_core PUBLIC ADI_WITH_PD=1)
+
+# ADI'S COMPILED-IN Pd EXTERNALS (ADR-0188 d8, ADR-0192 d1). One source each,
+# listed here; each declares itself with ADI_PD_BUILTIN beside its own setup
+# function, so `src/juce/pd_builtins.cpp` is never edited to admit one -- the
+# externals are win_codex's and `src/juce/**` is not (ADR-0192 d6).
+#
+# AN OBJECT LIBRARY, not sources added to adi_core, and that is the whole point.
+# A self-registering translation unit inside a STATIC library is dropped by the
+# linker when nothing references it, which would remove the external and print
+# nothing. An OBJECT library's objects are always linked.
+#
+# Empty until the first external lands; the guard keeps CMake happy until then,
+# because an OBJECT library with no sources is an error.
+set(ADI_PD_BUILTIN_SOURCES
+    # src/adi/dsp/adi_combchord_tilde.cpp
+    # src/adi/dsp/adi_colorcab_tilde.cpp
+)
+if(ADI_PD_BUILTIN_SOURCES)
+    add_library(adi_pd_builtins OBJECT ${ADI_PD_BUILTIN_SOURCES})
+    target_link_libraries(adi_pd_builtins PRIVATE libpd_static adi_warnings)
+    target_include_directories(adi_pd_builtins PRIVATE src)
+    target_link_libraries(adi_core PUBLIC adi_pd_builtins)
+endif()
 endif()
 
 # ADR-0173, ADR-0174: the 16 Airwindows console algorithms behind native group
@@ -635,6 +662,10 @@ add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
 add_executable(adi_session_tests tests/test_session.cpp)
 target_link_libraries(adi_session_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_session_tests COMMAND adi_session_tests)
+
+add_executable(adi_transport_info_tests tests/test_transport_info.cpp)
+target_link_libraries(adi_transport_info_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_transport_info_tests COMMAND adi_transport_info_tests)
 
 # ADR-0163: the mixer strip in the graph.
 add_executable(adi_mixer_tests tests/test_mixer.cpp)
