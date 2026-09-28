@@ -10,6 +10,53 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-28 — ADR-0197: device patches are top-level canvases, and they make sound now
+
+win's ruling on ADR-0183 d11, recorded as ADR-0197 with its reservation row.
+143 checks in `adi_pd_engine_tests`, **5313 across 53 suites**.
+
+**What changed.** `tools/gen_pd_patches.py` emits `[adc~ 1 2]` and `[dac~ 1 2]`
+instead of top-level `inlet~`/`outlet~`; RMSC's key is `[adc~ 3]`, which is the
+order `LibPdEngine` fills its input buffer in. The three patches are
+regenerated. Subpatches keep `inlet~`/`outlet~` — the limiter's delay writer and
+reader still have them, correctly, because a subpatch shares the parent's `$0`.
+
+**`validate_pd.py` refuses a top-level `inlet~` now**, by counting canvas depth
+rather than searching the text — which is what lets the limiter's subpatches
+pass while the top level cannot. Planted and confirmed: a top-level `inlet~` in
+`adi-rmsc.pd` fails with the reason, and the clean tree passes.
+
+**And the three patches are proved to make sound** — a 440 Hz sine through each,
+asserting a non-zero peak and that Pd actually ran blocks. That is the test d11
+lacked: these were structurally valid and audibly silent for as long as they
+existed, and nothing at any layer said so. The limiter needs a ceiling sent
+first, which is not a workaround — its gain is `min(1, ceiling / peak)` and
+`[r $0-ceiling]` reads 0 until the host sends one.
+
+**The old test asserted the bug, so it moved.** `testADevicePatchIsAnAbstraction
+AndRendersNothing` asserted that `adi-rmsc.pd` renders silence — true when it
+was written, and now exactly backwards. The finding is still worth keeping, so
+it lives on a dedicated fixture, `tests/pd/adi-abstraction-shaped.pd`, which is
+`inlet~` straight to `outlet~` and still renders silence. **A rule nothing
+exercises is a rule that quietly stops being true**, which is how this one got
+in to begin with.
+
+### win — two things
+
+**`test_all.sh`'s README check is not in CI, and it has been red on main.** It
+compares the README's headline "N checks across M suites" against a real run,
+and CI runs `ctest` and the `validate_*.py` glob but never `test_all.sh`. So it
+drifted the moment I started adding suites: main said 5041 across 50 while the
+truth was 5313 across 53. Corrected here. **Whether CI should run it is yours,
+not mine to take** — it would catch this class of drift, and it would also add a
+second full run of the suite to a leg that already has one. `.github/**` is my
+area but the cost is everyone's.
+
+**Steps 5 to 7 are parked on your ruling**, and win_codex's taps (#159) give the
+overlay its input when they land. Step 4's DSP is next.
+
+---
+
 ## 2026-09-28 — transport wired from io.transport; the round-5 stack is in
 
 All six merged: #147, #149, #151, #152, #153, #155. 131 checks in
