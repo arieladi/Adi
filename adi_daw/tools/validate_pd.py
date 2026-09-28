@@ -8,6 +8,12 @@ Pd file wires objects by creation index and a hand edit silently re-points every
 connection after it. That only protects anything if nobody edits the generator
 and forgets to regenerate -- this is the check that notices.
 
+It also checks the one structural rule ADR-0197 settles: a DEVICE PATCH IS A
+TOP-LEVEL CANVAS, [adc~] in and [dac~] out, never inlet~/outlet~ at the top.
+That failure is invisible at every other layer -- libpd opens the patch, Pd
+renders its blocks, every output sample is zero, and nothing anywhere reports
+it (ADR-0183 d11). It cost a day to find once. It is an error here now.
+
 Found by test_all.sh and by CI through their `validate_*.py` glob, so it needs
 no registration anywhere.
 """
@@ -21,8 +27,37 @@ sys.path.insert(0, HERE)
 import gen_pd_patches  # noqa: E402
 
 
+SIGNAL_IO = ('inlet~', 'outlet~')
+
+
+def top_level_signal_io(text):
+    """Every inlet~/outlet~ sitting on the patch's OWN canvas, not in a
+    subpatch.
+
+    Depth counting, not a plain search: the limiter's delay writer and reader
+    ARE subpatches with real inlet~/outlet~, and they are correct -- a subpatch
+    is part of the same canvas and shares its $0. Only the top level is wrong,
+    so only the top level is checked.
+    """
+    depth = 0
+    found = []
+    for record in text.split(';'):
+        s = record.strip()
+        if s.startswith('#N canvas'):
+            depth += 1
+        elif s.startswith('#X restore'):
+            depth -= 1
+        elif s.startswith('#X obj') and depth == 1:
+            atoms = s.split()
+            # `#X obj <x> <y> <class>` -- the class is atom 4.
+            if len(atoms) > 4 and atoms[4] in SIGNAL_IO:
+                found.append(atoms[4])
+    return found
+
+
 def main():
     stale = []
+    wrong_shape = []
     for name, make in gen_pd_patches.PATCHES.items():
         path = os.path.join(gen_pd_patches.OUT, name)
         try:
@@ -35,12 +70,23 @@ def main():
         # and a byte-for-byte comparison would call every fresh checkout stale.
         if on_disk.replace('\r\n', '\n') != make():
             stale.append(name)
+        bad = top_level_signal_io(on_disk)
+        if bad:
+            wrong_shape.append('%s: %s at the top level' % (name, ', '.join(sorted(set(bad)))))
+    if wrong_shape:
+        print('device patches must be TOP-LEVEL canvases -- [adc~] in, [dac~] out (ADR-0197).')
+        print('A top-level inlet~ connects to nothing: the patch opens, renders, and')
+        print('emits silence with no error anywhere (ADR-0183 d11).')
+        for s in wrong_shape:
+            print('  ' + s)
+        return 1
     if stale:
         print('stale Pd patches -- run: python adi_daw/tools/gen_pd_patches.py')
         for s in stale:
             print('  ' + s)
         return 1
-    print('ok    %d Pd patches match their generator' % len(gen_pd_patches.PATCHES))
+    print('ok    %d Pd patches match their generator, and are top-level canvases'
+          % len(gen_pd_patches.PATCHES))
     return 0
 
 

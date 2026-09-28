@@ -7,6 +7,16 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
+## 2026-09-28 — Dynamic EQ PR integration after #162
+
+Main advanced to include mac's top-level Pd canvas ruling while PR #163 was
+being opened. Merged it into codex/dynamic-eq; only README's check count
+conflicted. Kept the measured 5216/53 headless total: #162 changes optional
+Pd-engine tests, not the headless suites. Main's ADR and other text are
+preserved. No changes to either old color-bass or analyser branch.
+
+---
+
 ## 2026-09-28 — mission 2, Task C: Dynamic EQ CLAP and graph gestures
 
 Win moved Task C ahead of color-bass PR 2 while #150/#159 await his merges.

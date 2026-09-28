@@ -231,6 +231,7 @@ subject, say so in your log instead of writing it twice.
 | 0194 | mac | `mac/pd-midi` | MIDI into Pd devices: the MPE output encoder feeds [notein], [ctlin] and [bendin]; no MIDI survives ADR-0054 to forward (win's round 5c) | used |
 | 0195 | win | `win/directive-0195` | the Dynamic EQ adapts ZL Equalizer 2 under Pro-Q 3's mouse; inline MIDI Learn; Auto Gain Stage; the analyser's multi-track overlay (director) | used |
 | 0196 | mac | (the host session's step 6, PR 3) | automation on the host: VST3 parameter changes, CLAP value conversion, the echo filter, `param-indication`'s automation half, `--expect-no-edits` | used |
+| 0197 | mac | `mac/pd-toplevel` | a Pd device patch is a top-level canvas: [adc~] in, [dac~] out; subpatches keep inlet~/outlet~ (win's ruling, closes ADR-0183 d11) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -253,7 +254,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
-| `src/juce/pd_engine.*`, `tests/test_pd_engine.cpp` | mac (second session) | `mac/pd-transport-wiring` | 2026-09-28 |
+| `tools/gen_pd_patches.py`, `tools/validate_pd.py`, `pd/adi-*.pd`, `tests/test_pd_engine.cpp`, `tests/pd/**` | mac (second session) | `mac/pd-toplevel` | 2026-09-28 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`
