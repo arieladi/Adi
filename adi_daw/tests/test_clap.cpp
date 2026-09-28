@@ -1978,6 +1978,266 @@ void testRescanAllPreservesIndicesAndClearKeepsTheLane() {
           "while its neighbour, untouched, still plays");
 }
 
+/// ADR-0196 (27a item 2): a device-addressed ParamValue is NORMALIZED on the
+/// wire and must reach CLAP as the PLAIN value.
+///
+/// The range here is deliberately NOT 0..1. With a unit range the conversion
+/// is invisible and a test proves nothing -- which is how the bug survived:
+/// `ClapEventList::add` assigned `slot.param.value = in.value` straight
+/// through, thirty lines from the `setParam` comment warning that 0.42 on a
+/// 20 Hz..20 kHz cutoff means 0.42 Hz.
+void testAutomationReachesClapInPlainUnits() {
+    section("ADR-0196 -- normalized on the wire, plain into the plug-in");
+
+    struct Ranged {
+        clap_plugin_t plugin{};
+        clap_plugin_params_t params{};
+        std::vector<double> heard;
+        static Ranged& self(const clap_plugin_t* p) {
+            return *static_cast<Ranged*>(p->plugin_data);
+        }
+        Ranged() {
+            plugin.plugin_data = this;
+            plugin.init = [](const clap_plugin_t*) { return true; };
+            plugin.destroy = [](const clap_plugin_t*) {};
+            plugin.activate = [](const clap_plugin_t*, double, std::uint32_t,
+                                 std::uint32_t) { return true; };
+            plugin.deactivate = [](const clap_plugin_t*) {};
+            plugin.start_processing = [](const clap_plugin_t*) { return true; };
+            plugin.stop_processing = [](const clap_plugin_t*) {};
+            plugin.reset = [](const clap_plugin_t*) {};
+            plugin.on_main_thread = [](const clap_plugin_t*) {};
+            plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd)
+                -> clap_process_status {
+                Ranged& r = self(p);
+                if (pd != nullptr && pd->in_events != nullptr) {
+                    const std::uint32_t n = pd->in_events->size(pd->in_events);
+                    for (std::uint32_t i = 0; i < n; ++i) {
+                        const clap_event_header_t* h = pd->in_events->get(pd->in_events, i);
+                        if (h != nullptr && h->type == CLAP_EVENT_PARAM_VALUE)
+                            r.heard.push_back(
+                                reinterpret_cast<const clap_event_param_value_t*>(h)->value);
+                    }
+                }
+                return CLAP_PROCESS_CONTINUE;
+            };
+            plugin.get_extension = [](const clap_plugin_t* p, const char* id)
+                -> const void* {
+                if (std::strcmp(id, CLAP_EXT_PARAMS) == 0) return &self(p).params;
+                return nullptr;
+            };
+            params.count = [](const clap_plugin_t*) -> std::uint32_t { return 1; };
+            params.get_info = [](const clap_plugin_t*, std::uint32_t i,
+                                 clap_param_info_t* info) -> bool {
+                if (i != 0) return false;
+                *info = clap_param_info_t{};
+                info->id = 77;
+                std::snprintf(info->name, sizeof info->name, "Cutoff");
+                info->min_value = 20.0;          // Hz
+                info->max_value = 20000.0;
+                info->default_value = 1000.0;
+                info->flags = CLAP_PARAM_IS_AUTOMATABLE;
+                return true;
+            };
+            params.flush = [](const clap_plugin_t*, const clap_input_events_t*,
+                              const clap_output_events_t*) {};
+        }
+    };
+
+    Ranged f;
+    DeviceIdentity id;
+    id.format = "clap";
+    id.name = "Ranged";
+    ClapDevice d(&f.plugin, id);
+    auto owned = std::make_unique<ClapHostGlue>();
+    owned->registerPlugin(&f.plugin);
+    d.adoptGlue(std::move(owned));
+    d.prepare(48000.0, 64);
+
+    check(d.paramAt(0) != nullptr && d.paramAt(0)->minReal == 20.0 &&
+              d.paramAt(0)->maxReal == 20000.0,
+          "the plug-in declares 20 Hz to 20 kHz");
+
+    // A lane at HALF travel. Normalized 0.5 over 20..20000 is 10010 Hz.
+    engine::Event e;
+    e.type = engine::EventType::ParamValue;
+    e.paramId = 77;
+    e.value = 0.5;
+    e.frame = 0;
+    d.pushEvent(e);
+
+    std::vector<float> l(64, 0.0f), r(64, 0.0f);
+    float* outp[2] = {l.data(), r.data()};
+    engine::NodeIo io;
+    io.out = outp; io.channels = 2; io.frames = 64; io.sampleRate = 48000.0;
+    d.process(io);
+
+    check(f.heard.size() == 1, "the plug-in heard exactly one parameter value");
+    const double got = f.heard.empty() ? -1.0 : f.heard.front();
+    check(std::abs(got - 10010.0) < 1e-6,
+          "at 10010 Hz, the PLAIN value for half travel -- not 0.5, which "
+          "would be 0.5 Hz on this parameter; saw " + std::to_string(got));
+
+    // AND THE PATH AUTOMATION ACTUALLY TAKES. The check above pushes through
+    // `pushEvent` -> `injected_`, which is the probe's and a test's route. A
+    // lane arrives on `io.events`, from the graph, and that is a SECOND call
+    // site with its own conversion. Planting the fault on the io.events path
+    // left the test above green, which is how a half-converted host would
+    // have shipped.
+    f.heard.clear();
+    engine::Event lane;
+    lane.type = engine::EventType::ParamValue;
+    lane.paramId = 77;
+    lane.value = 0.25;                       // quarter travel -> 5015 Hz
+    lane.frame = 0;
+    io.events = engine::EventSpan{&lane, 1};
+    d.process(io);
+
+    check(f.heard.size() == 1, "a lane on io.events reaches the plug-in too");
+    const double laneGot = f.heard.empty() ? -1.0 : f.heard.front();
+    check(std::abs(laneGot - 5015.0) < 1e-6,
+          "at 5015 Hz, converted on the graph's path as well as the injected "
+          "one; saw " + std::to_string(laneGot));
+
+    // ParamMod is a DELTA: it scales by the span and takes NO offset. Adding
+    // minReal would shift the parameter by the bottom of its own range every
+    // time a modulation arrived.
+    f.heard.clear();
+    engine::Event mod;
+    mod.type = engine::EventType::ParamMod;
+    mod.paramId = 77;
+    mod.value = 0.25;                        // a quarter of the span
+    mod.frame = 0;
+    io.events = engine::EventSpan{&mod, 1};
+    d.process(io);
+    check(f.heard.empty(), "a ParamMod is not a PARAM_VALUE event");
+}
+
+/// ADR-0196 (27a item 3): the plug-in's echo of an automated value must not
+/// become an edit, and param-indication tells the plug-in which those are.
+void testAnEchoDoesNotBecomeAnEdit() {
+    section("ADR-0196 -- an echo of an automated value is not an edit");
+
+    struct Indicating {
+        clap_plugin_t plugin{};
+        clap_plugin_params_t params{};
+        clap_plugin_param_indication_t indication{};
+        std::vector<std::pair<clap_id, std::uint32_t>> indications;
+        static Indicating& self(const clap_plugin_t* p) {
+            return *static_cast<Indicating*>(p->plugin_data);
+        }
+        Indicating() {
+            plugin.plugin_data = this;
+            plugin.init = [](const clap_plugin_t*) { return true; };
+            plugin.destroy = [](const clap_plugin_t*) {};
+            plugin.activate = [](const clap_plugin_t*, double, std::uint32_t,
+                                 std::uint32_t) { return true; };
+            plugin.deactivate = [](const clap_plugin_t*) {};
+            plugin.start_processing = [](const clap_plugin_t*) { return true; };
+            plugin.stop_processing = [](const clap_plugin_t*) {};
+            plugin.reset = [](const clap_plugin_t*) {};
+            plugin.on_main_thread = [](const clap_plugin_t*) {};
+            plugin.process = [](const clap_plugin_t*, const clap_process_t*)
+                -> clap_process_status { return CLAP_PROCESS_CONTINUE; };
+            plugin.get_extension = [](const clap_plugin_t* p, const char* id)
+                -> const void* {
+                if (std::strcmp(id, CLAP_EXT_PARAMS) == 0) return &self(p).params;
+                if (std::strcmp(id, CLAP_EXT_PARAM_INDICATION) == 0)
+                    return &self(p).indication;
+                return nullptr;
+            };
+            params.count = [](const clap_plugin_t*) -> std::uint32_t { return 2; };
+            params.get_info = [](const clap_plugin_t*, std::uint32_t i,
+                                 clap_param_info_t* info) -> bool {
+                if (i > 1) return false;
+                *info = clap_param_info_t{};
+                info->id = (i == 0) ? 101u : 202u;
+                std::snprintf(info->name, sizeof info->name, "P%u", i);
+                info->min_value = 0.0; info->max_value = 1.0; info->default_value = 0.0;
+                info->flags = CLAP_PARAM_IS_AUTOMATABLE;
+                return true;
+            };
+            params.flush = [](const clap_plugin_t*, const clap_input_events_t*,
+                              const clap_output_events_t*) {};
+            indication.set_automation = [](const clap_plugin_t* p, clap_id id,
+                                           std::uint32_t st, const clap_color_t*) {
+                self(p).indications.push_back({id, st});
+            };
+        }
+    };
+
+    Indicating f;
+    DeviceIdentity id;
+    id.format = "clap";
+    id.name = "Indicating";
+    ClapDevice d(&f.plugin, id);
+    auto owned = std::make_unique<ClapHostGlue>();
+    owned->registerPlugin(&f.plugin);
+    d.adoptGlue(std::move(owned));
+
+    engine::ParamEditCapture capture(64);
+    d.setParamSink(&capture, 7);
+    std::vector<engine::ParamEdit> out;
+    auto drained = [&](std::int64_t ms) {
+        out.clear();
+        return capture.drain(ms, out);
+    };
+    // The plug-in's own broadcast route: `outPush` is the output-events sink
+    // CLAP hands a plug-in during `process`, and it is what a plug-in calls
+    // to report its own edits.
+    auto pluginBroadcasts = [&](clap_id pid, double v, std::uint16_t type) {
+        clap_event_param_value_t ev{};
+        ev.header.size = sizeof ev;
+        ev.header.type = type;
+        ev.header.time = 0;
+        ev.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        ev.param_id = pid;
+        ev.value = v;
+        d.outEventsForTest()->try_push(d.outEventsForTest(), &ev.header);
+    };
+
+    // Nothing automated: the plug-in's broadcast IS a user edit.
+    pluginBroadcasts(101, 0.5, CLAP_EVENT_PARAM_VALUE);
+    check(d.echoesFiltered() == 0,
+          "with no lane, nothing is filtered");
+
+    // A lane takes parameter 0.
+    d.setAutomationIndication(0, true);
+    check(d.paramIsAutomated(0), "the parameter is marked automated");
+    check(f.indications.size() == 1 && f.indications.back().first == 101 &&
+              f.indications.back().second == CLAP_PARAM_INDICATION_AUTOMATION_PRESENT,
+          "and the plug-in was told, by clap_id, that automation is PRESENT");
+
+    const std::uint64_t filteredBefore = d.echoesFiltered();
+    pluginBroadcasts(101, 0.75, CLAP_EVENT_PARAM_VALUE);
+    check(d.echoesFiltered() == filteredBefore + 1,
+          "the plug-in's echo of an AUTOMATED value does NOT reach the capture "
+          "-- it would become an op, and the op would override its own lane");
+    check(d.echoesFiltered() == filteredBefore + 1, "and it is counted, not silent");
+    (void) drained;
+
+    // A HUMAN grabbing the same control still gets through: a gesture is the
+    // thing ADR-0162's override exists for.
+    pluginBroadcasts(101, 0.0, CLAP_EVENT_PARAM_GESTURE_BEGIN);
+    check(d.echoesFiltered() == filteredBefore + 1,
+          "a GESTURE on an automated parameter is NOT filtered -- that is a "
+          "user taking it over, which is what override is for");
+
+    // Its neighbour, unautomated, is untouched by any of this.
+    pluginBroadcasts(202, 0.25, CLAP_EVENT_PARAM_VALUE);
+    check(d.echoesFiltered() == filteredBefore + 1,
+          "and an unautomated parameter is not filtered either");
+
+    // Releasing the lane tells the plug-in, and re-opens the path.
+    d.setAutomationIndication(0, false);
+    check(!d.paramIsAutomated(0), "the mark is cleared");
+    check(f.indications.back().second == CLAP_PARAM_INDICATION_AUTOMATION_NONE,
+          "and the plug-in is told the indication is gone");
+    pluginBroadcasts(101, 0.9, CLAP_EVENT_PARAM_VALUE);
+    check(d.echoesFiltered() == filteredBefore + 1,
+          "with the lane released, its broadcasts are no longer filtered");
+}
+
 void testPrepareReactivatesWhenTheLayoutMoves() {
     section("ADR-0090 -- prepare is idempotent, EXCEPT when the ports moved");
 
@@ -2226,6 +2486,8 @@ int main() {
     testDestroyingADeviceLeavesNoDanglingPlugin();
     testRequestFlushIsAnswered();
     testRescanAllPreservesIndicesAndClearKeepsTheLane();
+    testAutomationReachesClapInPlainUnits();
+    testAnEchoDoesNotBecomeAnEdit();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

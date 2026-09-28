@@ -305,6 +305,77 @@ private:
 /// glue the real plugin is registered with. That is the honest split, and
 /// saying it here is cheaper than someone later believing the plugin moved
 /// its own ports.
+/// ADR-0196, 27a item 5: a REAL plug-in following a lane.
+///
+/// The unit tests prove the conversion arithmetic (half travel on a
+/// 20 Hz..20 kHz parameter is 10010 Hz) against a fake. This proves a real
+/// plug-in, loaded from disk, actually ENDS UP at the value the lane asked
+/// for -- read back through the device contract after the render, which is a
+/// number rather than an impression of a level.
+int laneDrivesARealPlugin(const std::string& want, const std::string& searchDir) {
+    adi::device::ClapHost chost;
+    chost.scan(searchDir.empty() ? adi::device::ClapHost::defaultSearchPaths()
+                                 : std::vector<std::string>{searchDir});
+
+    const adi::device::ClapPluginRef* pick = nullptr;
+    for (const auto& r : chost.plugins())
+        if (r.name.find(want) != std::string::npos) { pick = &r; break; }
+    if (pick == nullptr) { std::printf("  skip  no CLAP '%s'\n", want.c_str()); return 0; }
+
+    std::string err;
+    auto dev = chost.makeDevice(*pick, 48000.0, 256, err);
+    if (dev == nullptr || !dev->loaded()) { std::printf("  FAIL  %s\n", err.c_str()); return 1; }
+    std::printf("  plugin            %s, %d parameters\n",
+                pick->name.c_str(), dev->paramCount());
+
+    // A parameter with a real range wider than 0..1, so the conversion is
+    // VISIBLE. On a unit range plain and normalized are the same number and
+    // the check would pass whether or not anything converted.
+    std::int32_t idx = -1;
+    for (std::int32_t i = 0; i < dev->paramCount(); ++i) {
+        const auto* d = dev->paramAt(i);
+        if (d != nullptr && d->hasRealRange && (d->maxReal - d->minReal) > 1.5) { idx = i; break; }
+    }
+    if (idx < 0) {
+        std::printf("  skip  %s declares no parameter with a range wider than 1.0, "
+                    "so a conversion would be invisible here\n", pick->name.c_str());
+        return 0;
+    }
+    const adi::device::ParamDescriptor& pd = *dev->paramAt(idx);
+    std::printf("  parameter         #%d '%s'  %.3f .. %.3f\n",
+                idx, pd.name.c_str(), pd.minReal, pd.maxReal);
+
+    std::vector<float> l(256, 0.0f), r(256, 0.0f);
+    float* outp[2] = {l.data(), r.data()};
+    adi::engine::NodeIo io;
+    io.out = outp; io.channels = 2; io.frames = 256; io.sampleRate = 48000.0;
+
+    // Drive the lane to three positions and read the plug-in back each time.
+    bool allGood = true;
+    for (const double travel : {0.0, 0.25, 1.0}) {
+        adi::engine::Event e;
+        e.type = adi::engine::EventType::ParamValue;
+        e.paramId = static_cast<decltype(e.paramId)>(std::stoul(pd.id, nullptr, 16));
+        e.value = travel;
+        e.frame = 0;
+        io.events = adi::engine::EventSpan{&e, 1};
+        dev->process(io);
+
+        const double want_plain = pd.minReal + travel * (pd.maxReal - pd.minReal);
+        const adi::device::ParamValue got = dev->getParam(pd.id);
+        const double tol = std::max(1e-6, std::abs(want_plain) * 1e-4);
+        const bool ok = got.hasReal && std::abs(got.real - want_plain) <= tol;
+        allGood = allGood && ok;
+        std::printf("  lane %.2f -> want %.4f, plug-in holds %.4f  %s\n",
+                    travel, want_plain, got.real, ok ? "ok" : "MISMATCH");
+    }
+    check(allGood,
+          "a real CLAP plug-in ENDS UP at the plain value the lane asked for -- "
+          "normalized on the wire, converted at the host, read back through the "
+          "device contract (ADR-0196)");
+    return 0;
+}
+
 int rebuildAgainstARealPlugin(const std::string& want) {
     adi::device::ClapHost chost;
     chost.scan(adi::device::ClapHost::defaultSearchPaths());
@@ -928,6 +999,7 @@ int main(int argc, char** argv) {
     std::printf("adi_clap_probe -- a real .clap, and ADR-0084's open question\n\n");
 
     std::string path = "/Library/Audio/Plug-Ins/CLAP/Surge XT.clap";
+    std::string laneWant, laneDir;
     std::string latencyWant, coalesceWant, rebuildWant, seamWant, mpeWant, dimWant;
     bool wetOnly = false;
     for (int i = 1; i < argc; ++i)
@@ -938,6 +1010,8 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--coalesce") coalesceWant = argv[i + 1];
         if (std::string(argv[i]) == "--rebuild") rebuildWant = argv[i + 1];
         if (std::string(argv[i]) == "--seam") seamWant = argv[i + 1];
+        if (std::string(argv[i]) == "--lane") laneWant = argv[i + 1];
+        if (std::string(argv[i]) == "--search") laneDir = argv[i + 1];
         if (std::string(argv[i]) == "--mpe") mpeWant = argv[i + 1];
         if (std::string(argv[i]) == "--dimensions") dimWant = argv[i + 1];
     }
@@ -971,6 +1045,13 @@ int main(int argc, char** argv) {
     if (!mpeWant.empty()) {
         std::printf("[ADR-0098] per-note expression through the CLAP host, measured\n");
         const int rc = clapMpeAcceptance(mpeWant);
+        std::printf("\n%s -- %d checks, %d failure(s)\n",
+                    g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : rc;
+    }
+    if (!laneWant.empty()) {
+        std::printf("[ADR-0196] a real plug-in following an automation lane\n");
+        const int rc = laneDrivesARealPlugin(laneWant, laneDir);
         std::printf("\n%s -- %d checks, %d failure(s)\n",
                     g_failures ? "FAILED" : "PASS", g_checks, g_failures);
         return g_failures ? 1 : rc;

@@ -343,6 +343,10 @@ ClapDevice::ClapDevice(const clap_plugin_t* plugin, DeviceIdentity id)
         plugin_->get_extension(plugin_, CLAP_EXT_STATE));
     tailExt_ = static_cast<const clap_plugin_tail_t*>(
         plugin_->get_extension(plugin_, CLAP_EXT_TAIL));
+    // ADR-0196. Optional by design: most plug-ins do not implement it, and a
+    // null here simply means the plug-in's GUI will not light up.
+    indicationExt_ = static_cast<const clap_plugin_param_indication_t*>(
+        plugin_->get_extension(plugin_, CLAP_EXT_PARAM_INDICATION));
     latencyExt_ = static_cast<const clap_plugin_latency_t*>(
         plugin_->get_extension(plugin_, CLAP_EXT_LATENCY));
     notePortsExt_ = static_cast<const clap_plugin_note_ports_t*>(
@@ -619,6 +623,29 @@ bool ClapDevice::loadState(const std::string& role, const std::vector<std::uint8
     return ok;
 }
 
+void ClapDevice::setAutomationIndication(std::int32_t index, bool automated) {
+    // The contract's mark first, because it is what stops the echo becoming
+    // an op (ADR-0196). It must be set whether or not the plug-in implements
+    // the extension -- the filter is ours, the indication is the plug-in's
+    // courtesy.
+    setParamAutomated(index, automated);
+
+    if (indicationExt_ == nullptr || indicationExt_->set_automation == nullptr) return;
+    if (plugin_ == nullptr) return;
+    if (index < 0 || index >= static_cast<std::int32_t>(paramIds_.size())) return;
+
+    // PRESENT rather than PLAYING: the host knows a lane exists for this
+    // parameter, which is what a binding tells us. PLAYING is a transport
+    // question and would have to move with the playhead; nothing here reads
+    // the transport, and a flag that lies while stopped is worse than one
+    // that says only what it knows.
+    indicationExt_->set_automation(
+        plugin_, paramIds_[static_cast<std::size_t>(index)],
+        automated ? CLAP_PARAM_INDICATION_AUTOMATION_PRESENT
+                  : CLAP_PARAM_INDICATION_AUTOMATION_NONE,
+        nullptr);
+}
+
 void ClapDevice::pumpMainThread() {
     if (glue_ == nullptr) return;
 
@@ -681,6 +708,38 @@ void ClapDevice::pumpMainThread() {
     // flush exists to let the PLUGIN push its own out through `outEvents_`.
     events_.clear();
     paramsExt_->flush(plugin_, events_.inputEvents(), &outEvents_);
+}
+
+engine::Event ClapDevice::toPlainUnits(const engine::Event& e) const noexcept {
+    // ADR-0196, 27a item 2. The wire unit is NORMALIZED 0..1 (ADR-0124,
+    // ADR-0165 d3). CLAP parameter events carry the PLAIN value. Sending
+    // 0.42 to a 20 Hz..20 kHz cutoff sets it to 0.42 Hz -- a valid number in
+    // the wrong unit, which `setParam` guards against thirty lines away and
+    // which an automation lane walked straight past until now.
+    //
+    // CONVERTED HERE AND NOT INSIDE `ClapEventList::add`, and that is the
+    // whole point. `add` is format plumbing with three callers and they do
+    // not agree on units: `setParam`'s not-activated flush already passes a
+    // PLAIN value, and so does the queued `pending_` path below. Converting
+    // inside `add` would convert those twice. The conversion belongs where
+    // the caller knows what it is holding.
+    if (e.type != engine::EventType::ParamValue &&
+        e.type != engine::EventType::ParamMod) return e;
+
+    const std::int32_t i = indexOfParam(static_cast<clap_id>(e.paramId));
+    if (i < 0) return e;
+    const ParamDescriptor& d = params_[static_cast<std::size_t>(i)];
+    if (!d.hasRealRange) return e;
+
+    engine::Event out = e;
+    const double span = d.maxReal - d.minReal;
+    // ParamMod is a DELTA, so it scales by the span and takes no offset;
+    // adding minReal to a modulation would shift the parameter by the bottom
+    // of its own range every time one arrived.
+    out.value = (e.type == engine::EventType::ParamMod)
+                    ? e.value * span
+                    : d.minReal + e.value * span;
+    return out;
 }
 
 bool ClapDevice::addressesAMissingParam(const engine::Event& e) const noexcept {
@@ -1074,11 +1133,11 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     // Parameters address the plugin and are never a note stream (ADR-0091).
     for (const auto& e : io.events)
         if (!engine::isNoteStream(e.type) && !addressesAMissingParam(e))
-            events_.add(e, io.blockOffset, n);
+            events_.add(toPlainUnits(e), io.blockOffset, n);
     for (std::size_t i = 0; i < injectedUsed_; ++i)
         if (!engine::isNoteStream(injected_[i].type) &&
             !addressesAMissingParam(injected_[i]))
-            events_.add(injected_[i], io.blockOffset, n);
+            events_.add(toPlainUnits(injected_[i]), io.blockOffset, n);
     injectedUsed_ = 0;
 
     // Queued parameter changes, at the start of this segment. CLAP parameters

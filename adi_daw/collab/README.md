@@ -230,7 +230,7 @@ subject, say so in your log instead of writing it twice.
 | 0193 | win_codex | (its first mission) | held for win_codex's DSP decisions (ADR-0192) | reserved |
 | 0194 | mac | `mac/pd-midi` | MIDI into Pd devices: the MPE output encoder feeds [notein], [ctlin] and [bendin]; no MIDI survives ADR-0054 to forward (win's round 5c) | used |
 | 0195 | win | `win/directive-0195` | the Dynamic EQ adapts ZL Equalizer 2 under Pro-Q 3's mouse; inline MIDI Learn; Auto Gain Stage; the analyser's multi-track overlay (director) | used |
-| 0196 | mac | (the host session's step 6, PR 3) | automation on the host: VST3 parameter changes, CLAP value conversion, the echo filter, `param-indication`'s automation half, `--expect-no-edits` | reserved |
+| 0196 | mac | (the host session's step 6, PR 3) | automation on the host: VST3 parameter changes, CLAP value conversion, the echo filter, `param-indication`'s automation half, `--expect-no-edits` | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
