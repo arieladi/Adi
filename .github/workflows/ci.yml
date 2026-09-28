@@ -194,8 +194,21 @@ jobs:
       - name: Build
         run: cmake --build adi_daw/build --config Debug --parallel
 
+      # A HUNG TEST MUST NAME ITSELF, and before this step it could not. Turning
+      # the Pd tier on for MSVC (ADR-0192 d5) left this step running for 4h39m
+      # on windows-latest -- configure took 22s and the build 3m48s, so the
+      # hang was a test, and the job would have been killed at GitHub's six-hour
+      # limit having printed nothing about which one. win's diagnosis of the
+      # five-hour macOS job was the same shape and the same fix: bound it.
+      #
+      #   --timeout 180   kills any single test at three minutes and reports it
+      #                   by name. The slowest suite here finishes in seconds.
+      #   timeout-minutes bounds the step itself, so a hang outside a test --
+      #                   ctest's own startup, or a test that ignores its
+      #                   timeout -- fails in minutes rather than hours.
       - name: adi_tests
-        run: ctest --test-dir adi_daw/build --build-config Debug --output-on-failure
+        timeout-minutes: 20
+        run: ctest --test-dir adi_daw/build --build-config Debug --output-on-failure --timeout 180
 
       # The Visual Studio generator puts binaries in build/Debug/, everything
       # else puts them in build/. Resolve it once, loudly, rather than letting a
