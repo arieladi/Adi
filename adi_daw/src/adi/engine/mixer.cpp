@@ -132,13 +132,26 @@ void StripNode::retarget(const Gains& t) noexcept {
 }
 
 void StripNode::process(const NodeIo& io) noexcept {
+    writeTap(preFaderTap_, io, io.in);
     processGains(io);
+    writeTap(tap_, io, io.out);
+}
+
+void StripNode::silenceTaps(const NodeIo& io) noexcept {
+    writeTap(preFaderTap_, io, nullptr);
+    writeTap(tap_, io, nullptr);
+}
+
+void StripNode::writeTap(std::atomic<ScopeTap*>& slot, const NodeIo& io,
+                         const float* const* audio) noexcept {
     // ADR-0175: a watched strip hands its output to the scope, stamped with
     // the timeline position it is heard at. One relaxed load when unwatched.
-    if (ScopeTap* tap = tap_.load(std::memory_order_acquire); tap != nullptr && io.channels > 0) {
+    if (ScopeTap* tap = slot.load(std::memory_order_relaxed); tap != nullptr && io.channels > 0) {
+        std::atomic_thread_fence(std::memory_order_acquire);
         const bool playing = transport_ != nullptr && transport_->playing();
         const std::int64_t at = transport_ != nullptr ? transport_->sampleAt(playing ? io.blockOffset : 0) : 0;
-        tap->write(io.out[0] + io.blockOffset, io.channels > 1 ? io.out[1] + io.blockOffset : nullptr, io.frames,
+        tap->write(audio != nullptr && audio[0] != nullptr ? audio[0] + io.blockOffset : nullptr,
+                   audio != nullptr && io.channels > 1 && audio[1] != nullptr ? audio[1] + io.blockOffset : nullptr, io.frames,
                    at - tap->latency(), playing);
     }
 }
