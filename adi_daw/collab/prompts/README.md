@@ -23,3 +23,4 @@ what was asked, so a report can be checked against its brief.
 | `2026-09-27-mac-round5.md` | (mac, both sessions) | host: PR 2 design confirmed, then the step-7 plan after PR 4; analyser: pthreads4w, the built-ins hook, MIDI into Pd, `[adi.sample]`'s host side, `adi.param.pd` and `adi.transport.pd` | issued 2026-09-27 |
 | `2026-09-27-mac-round6.md` | (mac, both sessions) | host: the JUCE gate lesson, order unchanged, MIDI Learn in the step-7 plan; analyser: merge the stack, transport delegated to win_codex, the multi-track overlay and a shared masking measure (ADR-0195 d5) | issued 2026-09-27 |
 | `2026-09-27-win-codex-mission2.md` | (win_codex) | transport on `NodeIo` (delegated from win), the color-bass devices' PR 2, then the Dynamic EQ (ADR-0195) | issued 2026-09-27 |
+| `2026-09-28-win-codex-mission2b.md` | (win_codex) | #157 approved; the analyser's per-track taps (ChainInput, PreFader) before the color-bass PR 2 (ADR-0195 d5) | issued 2026-09-28 |
