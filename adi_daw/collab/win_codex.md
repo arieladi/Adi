@@ -7,6 +7,23 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
+## 2026-09-28 - mission 3, Task D: concurrent drone requests
+
+Win delegated tools/adi-drone/drone.py for this change. On codex/drone-parallel
+from main, added --parallel N to watch/run-once with N request workers, default
+1 on the original calling thread. Claims use queue-to-running atomic rename
+plus a short intra-process lock: a forced race demonstrated that two concurrent
+Win32 rename calls can both open the source before either move completes.
+Logs retain their format and are serialized per line; timing/eta/collect are
+unchanged. All workers join before idle unload. Recovery still uses running/
+and the existing partial-result replacement. No live drone directories changed.
+
+Six temporary-folder tests pass: duplicate claim, four requests in flight,
+crash/recovery, byte-for-byte serial comparison with 92eb485, watch idle/unload,
+and invalid parallel counts. No Ollama requests or scheduled tasks were created.
+
+---
+
 ## 2026-09-28 — A2: per-track analyser tap points
 
 Branched codex/analyser-taps from main after #157 merged (31b85b1), reusing
