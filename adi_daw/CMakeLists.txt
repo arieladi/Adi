@@ -234,6 +234,8 @@ add_library(adi_core STATIC
     src/adi/dsp/biquad.cpp
     src/adi/dsp/limiter.cpp
     src/adi/dsp/rmsc.cpp
+    src/adi/dsp/combchord.cpp
+    src/adi/dsp/colorcab.cpp
     src/adi/dsp/masking.cpp
     src/adi/dsp/spectrum.cpp
     src/adi/dsp/auto_gain.cpp
@@ -610,6 +612,13 @@ target_link_libraries(adi_dsp_tests PRIVATE adi_core adi_warnings)
 # The Pd patches are read from the source tree, not copied next to the binary.
 target_compile_definitions(adi_dsp_tests PRIVATE ADI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME adi_dsp_tests COMMAND adi_dsp_tests)
+
+add_executable(adi_combchord_tests tests/test_combchord.cpp)
+target_link_libraries(adi_combchord_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_combchord_tests COMMAND adi_combchord_tests)
+add_executable(adi_colorcab_tests tests/test_colorcab.cpp)
+target_link_libraries(adi_colorcab_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_colorcab_tests COMMAND adi_colorcab_tests)
 
 # The declaration parse. Links adi_core but touches no libpd: ADR-0177 fix 3
 # puts the declared set behind a static parse of the patch text, and a test that
