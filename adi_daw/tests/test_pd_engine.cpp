@@ -53,6 +53,7 @@ extern "C" {
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <dbghelp.h>
 #endif
 
 #include <cstdint>
@@ -1179,7 +1180,46 @@ void testTheEngineReportsWhatPdPrints() {
 
 }  // namespace
 
+#ifdef _WIN32
+// Print a useful stack if a Windows-only native Pd failure reaches the OS.
+// Runs only on a fatal exception, never in the audio path.
+LONG WINAPI reportNativeFailure(EXCEPTION_POINTERS* exception) {
+    const auto process = GetCurrentProcess();
+    SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
+    SymInitialize(process, nullptr, TRUE);
+    CONTEXT context = *exception->ContextRecord;
+    STACKFRAME64 frame{};
+#if defined(_M_X64)
+    frame.AddrPC.Offset = context.Rip;
+    frame.AddrStack.Offset = context.Rsp;
+    frame.AddrFrame.Offset = context.Rbp;
+    constexpr DWORD machine = IMAGE_FILE_MACHINE_AMD64;
+#else
+    constexpr DWORD machine = 0;
+    return EXCEPTION_EXECUTE_HANDLER;
+#endif
+    frame.AddrPC.Mode = frame.AddrStack.Mode = frame.AddrFrame.Mode = AddrModeFlat;
+    std::fprintf(stderr, "NATIVE FAILURE code=%lx address=%p\n",
+        exception->ExceptionRecord->ExceptionCode, exception->ExceptionRecord->ExceptionAddress);
+    for (int i = 0; i < 32 && frame.AddrPC.Offset; ++i) {
+        alignas(SYMBOL_INFO) unsigned char storage[sizeof(SYMBOL_INFO) + MAX_SYM_NAME]{};
+        auto* symbol = reinterpret_cast<SYMBOL_INFO*>(storage);
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFO); symbol->MaxNameLen = MAX_SYM_NAME;
+        DWORD64 displacement = 0;
+        if (SymFromAddr(process, frame.AddrPC.Offset, &displacement, symbol))
+            std::fprintf(stderr, "  %s + %llu\n", symbol->Name, static_cast<unsigned long long>(displacement));
+        if (!StackWalk64(machine, process, GetCurrentThread(), &frame, &context,
+            nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr)) break;
+    }
+    std::fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
 int main() {
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(reportNativeFailure);
+#endif
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_pd_engine_tests -- libpd, actually running\n\n");
     testPdOpensARealPatch();

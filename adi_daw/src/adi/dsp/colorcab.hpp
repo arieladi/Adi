@@ -21,7 +21,7 @@ struct ColorCabOptions {
 };
 struct ColorCabDesign {
     ColorCabKernel kernel;
-    // Positive-frequency target INCLUDING DC and Nyquist; normalized peak=1,
+    // Positive-frequency target INCLUDING DC and Nyquist; with pink-power make-up gain,
     // at uniformly spaced frequencies, useful as saved derived device state.
     std::vector<double> target;
     double sampleRate = 48000;

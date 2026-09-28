@@ -1,0 +1,2 @@
+#N canvas 0 0 500 120 12;
+#X text 20 20 Sample declaration only. The host statically reads the parent box and publishes immutable data. No Pd messages carry the sample.;
