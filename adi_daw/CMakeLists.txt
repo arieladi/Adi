@@ -1253,3 +1253,10 @@ target_sources(adi_core PRIVATE src/adi/engine/automation.cpp)
 add_executable(adi_automation_tests tests/test_automation.cpp)
 target_link_libraries(adi_automation_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_automation_tests COMMAND adi_automation_tests)
+
+# ADR-0195 d2: graph gestures are pure C++; every headless ABI tests them.
+# No ZL/JUCE/AGPL DSP code is linked into adi_core by this standalone test.
+add_executable(adi_dynamic_eq_gesture_tests plugins/dynamic-eq/tests/test_gestures.cpp)
+target_include_directories(adi_dynamic_eq_gesture_tests PRIVATE plugins/dynamic-eq/Source)
+target_link_libraries(adi_dynamic_eq_gesture_tests PRIVATE adi_warnings)
+add_test(NAME adi_dynamic_eq_gesture_tests COMMAND adi_dynamic_eq_gesture_tests)
