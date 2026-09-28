@@ -153,6 +153,10 @@ std::vector<PdExternalRequest> pdExternalRequests(std::string_view patchText) {
     return out;
 }
 
+std::string pdTransportReceiveName(int dollarZero) {
+    return std::to_string(dollarZero) + "-aditr";
+}
+
 PdDeclarations parsePdDeclarations(std::string_view patchText) {
     PdDeclarations out;
     const auto records = scan(patchText);

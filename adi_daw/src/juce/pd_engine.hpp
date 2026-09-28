@@ -202,6 +202,44 @@ public:
     /// and reading `s_thing` later is safe as well as cheap.
     void bindParameters(const PdDeclarations& decls);
 
+    /// What `[adi.transport $0]` receives -- ADR-0188 d3's field list exactly.
+    ///
+    /// **NO ABSOLUTE TICK COUNT, and that is the whole shape of it.** Pd's
+    /// numbers are 32-bit floats, exact for integers only to 2^24 =
+    /// 16,777,216, and ADI's 5,765,760 ticks per quarter note (SPEC 4.2) pass
+    /// that within three quarter notes. Bar, beat and ticks-within-the-quarter
+    /// are each small enough to stay exact for as long as anyone plays.
+    struct Transport {
+        bool playing = false;
+        double bpm = 120.0;
+        int timeSigNumerator = 4;
+        int timeSigDenominator = 4;
+        /// 1-based, as a musician counts them.
+        double bar = 1.0;
+        double beat = 1.0;
+        /// **The QUARTER-NOTE grid, not the position within the beat**, and in
+        /// 5/8 or 7/8 those are different numbers. It is the absolute tick
+        /// count modulo `ADI_PPQ` (5,765,760), counted from bar 1, so it runs
+        /// 0..5,765,759 and wraps once per quarter note whatever the meter
+        /// calls a beat. In 7/8, where the beat is an eighth, it wraps once
+        /// per TWO beats. `bar` and `beat` carry the meter; this carries a
+        /// quarter-note phase, and a patch that confuses them is early or late
+        /// by a factor of two with nothing to say why.
+        double ticksInQuarter = 0.0;
+    };
+
+    /// **THE ENGINE'S HALF IS win_codex's, IN FLIGHT.** `NodeIo` gains
+    /// `io.transport`: null outside a Session, valid only for the duration of
+    /// `process`, carrying block-start values for every segment. Once it lands
+    /// the Pd device node calls this from `io.transport` and nothing else
+    /// changes -- everything from here to the patch is built and proved
+    /// already. Until then a caller sets it directly, which is also how the
+    /// test drives it.
+    ///
+    /// Audio thread or message thread, before `process`. Sent into the patch
+    /// at the start of each segment, with the MIDI and before the audio.
+    void setTransport(const Transport& t) noexcept;
+
     /// Message thread, before `prepare`. Which MIDI a patch's `[notein]`,
     /// `[ctlin]` and `[bendin]` receive -- ADR-0194.
     ///
@@ -311,6 +349,15 @@ private:
     /// `sys_lock()` on every call, which is the same reason `sendParameter`
     /// does not use `libpd_float`.
     void deliverMidi(const engine::MpeOut& m) noexcept;
+
+    /// AUDIO THREAD. One list to `<$0>-aditr`, built on the stack.
+    void deliverTransport() noexcept;
+
+    Transport transport_{};
+    bool transportSet_ = false;
+    /// The receive symbol, resolved once in `open` for `sendParameter`'s
+    /// reason: `gensym` on the audio thread allocates for an unseen name.
+    void* transportSymbol_ = nullptr;
 
     /// Engine events -> MIDI, per device and stateful: a member channel is
     /// allocated at note-on and released at note-off.

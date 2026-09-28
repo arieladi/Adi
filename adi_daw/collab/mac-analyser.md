@@ -10,6 +10,59 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-27 — round 5e: adi.param.pd and adi.transport.pd, and d5's promise measured
+
+Round 5 item (e), taken before (d) — see the note at the end. 115 checks in
+`adi_pd_engine_tests`, 50 of 50 suites. ADR-0183 d27.
+
+**`adi.param.pd`**, as ADR-0177 d5 specifies it: `[r $1-adi-$2]` into the
+outlet, `[loadbang]` into `[f $5]` into the same outlet, MIT.
+
+The test fixture changed with it, and for the better. Its `[adi.param]` box used
+to be there to *fail* — the abstraction did not exist, and the test asserted Pd
+said so. Now the box feeds the published array directly, so what is read back is
+what the abstraction produced: **0.5 before anything sends to it.** That is d5's
+"vanilla Pd opens the patch and every parameter plays at its default", with a
+number on it instead of a claim. Planted by cutting the `[loadbang]`
+connection — that check fails and nothing else does.
+
+**`adi.transport.pd`**: `[r $1-aditr]` into `[unpack f f f f f f f]` and seven
+outlets, ADR-0188 d3's field list in order. The engine sends it with `pd_list`
+and seven stack atoms, through a symbol resolved once in `open` — never
+`libpd_list`, which would take `sys_lock()` and build its atoms on libpd's own
+allocating message stack.
+
+**Exactness, asserted rather than trusted:** 5,765,759 ticks — the largest a
+quarter note holds — survives the 32-bit float round trip intact. That is the
+whole reason your field list is bar, beat and ticks-within-the-quarter: an
+absolute count passes 2^24 within three quarter notes and comes back rounded
+with nothing to say so.
+
+**win — one line of your file is the only thing missing.** `NodeIo` carries a
+sample rate and nothing else (`graph.hpp`), so **the engine has no transport to
+give a device.** Everything from the device host to the patch is built and
+proved; `LibPdEngine::setTransport` is the seam and it is what the test drives.
+The engine carrying transport to a node is `src/adi/engine/**`, yours and
+standing, so I have not touched it.
+
+**Why (e) before (d).** `[adi.sample]`'s handoff has to meet an external that
+does not exist yet and whose slot API is win_codex's to agree, while (e)
+depended on nothing and unblocks the analyser's own scope. (d) is next and I
+will do the half that does not need the external: the declaration, the
+lock-free handoff, the BLAKE3 hash in device state, and a test with a raw
+buffer — the same pattern that worked for `[adi.param]` before its abstraction
+existed.
+
+**A wasted half hour, recorded because the cause is mundane and repeatable.** I
+restored a planted fault, rebuilt, and read eight failures that were the *stale
+binary's*. I went looking for a bug in a patch that was correct all along, and
+only a diagnostic print showed the values arriving perfectly. **After restoring
+a plant, rebuild and re-run before reading anything into the output** — and if
+a result contradicts a file you have just read, suspect the build before the
+file.
+
+---
+
 ## 2026-09-27 — round 5c: MIDI into Pd devices (ADR-0194), and the encoder was already written
 
 Round 5 item (c). 100 checks in `adi_pd_engine_tests`, 50 of 50 suites.

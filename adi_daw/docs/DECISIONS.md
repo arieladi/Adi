@@ -14385,6 +14385,48 @@ here rather than noted. All of the below is asserted in
       so a registrar in another translation unit that runs first still finds a
       constructed table.
 
+27. **`adi.param.pd` and `adi.transport.pd` are written, and ADR-0177 d5's
+    vanilla-Pd promise is now a number rather than a claim.** win handed both
+    files over in round 5e.
+
+    - **`adi.param.pd`**: `[r $1-adi-$2]` into the outlet, and `[loadbang]`
+      into `[f $5]` into the same outlet, exactly as d5 specifies. The test
+      fixture's `[adi.param]` box now feeds the published array directly, so
+      what is read back is what the abstraction produced. **It carries 0.5
+      before anything sends to it** -- that is d5's "vanilla Pd opens the patch
+      and every parameter plays at its default", measured. Planted: cutting the
+      `[loadbang]` connection fails that check and nothing else.
+    - **`adi.transport.pd`**: `[r $1-aditr]` into `[unpack f f f f f f f]` and
+      seven outlets, ADR-0188 d3's field list in order. A third receive stem,
+      for the reason the second exists.
+    - **The engine sends it on the stack.** `pd_list` with seven atoms and a
+      symbol resolved once in `open`, never `libpd_list`, which would take
+      `sys_lock()` and build its atoms on libpd's own allocating message stack.
+      A patch with no `[adi.transport]` costs one null check on `s_thing`.
+    - **Exactness, asserted:** 5,765,759 ticks -- the largest a quarter note
+      holds -- survives the 32-bit float round trip intact. An absolute tick
+      count passes 2^24 within three quarter notes and would come back rounded
+      with nothing to say so, which is the whole reason d3's field list is bar,
+      beat and ticks-within-the-quarter.
+
+    **`ticksInQuarter` is the QUARTER-NOTE GRID, not the position within the
+    beat**, and win's correction is worth the paragraph because the two are
+    equal in every meter anyone tests in. It is the absolute tick count modulo
+    `ADI_PPQ` (5,765,760), counted from bar 1, so it wraps once per quarter
+    note whatever the meter calls a beat. In 4/4 that is the beat. **In 7/8 the
+    beat is an eighth, and this wraps once per two of them** -- a patch written
+    against 4/4 and moved to 7/8 would be out by a factor of two, playing
+    perfectly, with nothing anywhere to say why. `bar` and `beat` carry the
+    meter; this carries a quarter-note phase. Said in `adi.transport.pd`'s own
+    help text, because the patch author is who gets it wrong.
+
+    **What is NOT here, and it is one line of someone else's file.** `NodeIo`
+    carries a sample rate and nothing else (`graph.hpp`), so **the engine has
+    no transport to give a device**. Everything from the device host to the
+    patch is built and proved; the missing link is the engine carrying
+    transport to a node, which is `src/adi/engine/**` -- win's, standing.
+    `LibPdEngine::setTransport` is the seam, and it is what the test drives.
+
 ### What this amends in ADR-0177, and what it does not
 
 This ADR's decisions were written before ADR-0177 merged, so the question was
