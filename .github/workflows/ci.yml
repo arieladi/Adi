@@ -201,14 +201,21 @@ jobs:
       # limit having printed nothing about which one. win's diagnosis of the
       # five-hour macOS job was the same shape and the same fix: bound it.
       #
-      #   --timeout 180   kills any single test at three minutes and reports it
-      #                   by name. The slowest suite here finishes in seconds.
-      #   timeout-minutes bounds the step itself, so a hang outside a test --
-      #                   ctest's own startup, or a test that ignores its
-      #                   timeout -- fails in minutes rather than hours.
+      #   --timeout 600   kills any single test at ten minutes and reports it
+      #                   by name. GENEROUS ON PURPOSE: this exists to catch a
+      #                   HANG, which is unbounded, not to police how long a
+      #                   test takes. The first try at 180 was too tight and
+      #                   failed adi_midi_clips_tests, which takes 159 s in a
+      #                   Debug MSVC build -- a 12% margin on a shared runner is
+      #                   no margin, and a timeout that fires on healthy work
+      #                   teaches everyone to ignore it.
+      #   timeout-minutes bounds the STEP, which is where being tight pays: a
+      #                   hang outside any test -- ctest's own startup, or a
+      #                   test that ignores its timeout -- still fails in
+      #                   minutes rather than at GitHub's six-hour limit.
       - name: adi_tests
-        timeout-minutes: 20
-        run: ctest --test-dir adi_daw/build --build-config Debug --output-on-failure --timeout 180
+        timeout-minutes: 25
+        run: ctest --test-dir adi_daw/build --build-config Debug --output-on-failure --timeout 600
 
       # The Visual Studio generator puts binaries in build/Debug/, everything
       # else puts them in build/. Resolve it once, loudly, rather than letting a

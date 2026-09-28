@@ -29,7 +29,9 @@
 
 #include "juce/pd_engine.hpp"
 #include "juce/pd_declarations.hpp"
+#include "juce/pd_builtins.hpp"
 #include "adi/engine/graph.hpp"
+#include "adi/blob.hpp"
 
 // The ONE place in the tree outside pd_engine.cpp that includes libpd, and it
 // is here for a reason: the ADR-0188 d8 section has to drive raw libpd AROUND
@@ -67,6 +69,24 @@ using adi::device::LibPdEngine;
 using adi::device::PdLatencyReceiver;
 using adi::device::parsePdDeclarations;
 
+// --- a compiled-in external, for ADR-0188 d8's other half ----------------
+//
+// A real Pd class with a real setup function, registered the way win_codex's
+// [adi.combchord~] will be: `ADI_PD_BUILTIN` beside its own definition, and
+// nothing in pd_builtins.cpp edited to admit it.
+struct t_adi_probe_builtin { t_object x_obj; };
+t_class* g_probeBuiltinClass = nullptr;
+
+extern "C" void* adiProbeBuiltinNew(void) {
+    return pd_new(g_probeBuiltinClass);
+}
+extern "C" void adi_probe_builtin_setup(void) {
+    g_probeBuiltinClass = class_new(gensym("adi_probe_builtin"),
+                                    reinterpret_cast<t_newmethod>(adiProbeBuiltinNew),
+                                    nullptr, sizeof(t_adi_probe_builtin),
+                                    CLASS_DEFAULT, A_NULL);
+}
+
 int g_failures = 0;
 int g_checks = 0;
 
@@ -82,6 +102,12 @@ void eqi(long long got, long long want, const std::string& what) {
     }
 }
 void section(const char* s) { std::printf("[%s]\n", s); }
+
+}  // namespace
+
+ADI_PD_BUILTIN(adi_probe_builtin, adi_probe_builtin_setup)
+
+namespace {
 
 /// Where `pd/` is. The test binary runs from the build directory, so the path
 /// comes from the build rather than from a guess about the working directory.
@@ -465,7 +491,7 @@ struct TempDir {
 };
 
 void testAParameterReachesThePatchFromTheAudioThread() {
-    section("ADR-0188 d3 -- a declared parameter, sent on the audio thread, with no gensym and no lock");
+    section("ADR-0177 d5 / ADR-0188 d3 -- [adi.param] end to end: its default, then the host's value");
 
     LibPdEngine eng(patchDir(), "adi-param-proof.pd", 2, 2);
     eng.addSearchPath(devicePatchDir());
@@ -473,17 +499,14 @@ void testAParameterReachesThePatchFromTheAudioThread() {
     std::string err;
     check(eng.open(latency, err), "adi-param-proof.pd opens: " + err);
 
-    // ADR-0177 d5's vanilla-Pd promise, measured rather than taken on trust:
-    // adi.param.pd does not exist yet, so the [adi.param] box cannot create --
-    // and the patch opens anyway, with that parameter silent.
+    // The abstraction now exists, so the box CREATES. Pd names an object it
+    // cannot make; this one is not named.
     std::string joined;
     for (const auto& line : eng.consoleLines()) joined += line + "\n";
-    check(joined.find("adi.param") != std::string::npos,
-          "Pd reports the [adi.param] box as one it could not make -- "
-          "adi.param.pd is win's and is not written yet\n          console: " + joined);
+    check(joined.find("adi.param") == std::string::npos,
+          "[adi.param] was created -- adi.param.pd is on the search path\n"
+          "          console: " + joined);
 
-    // ... and the DECLARATION is readable from the text regardless, which is
-    // the half ADR-0177 fix 3 rests on.
     device::PdDeclarations decls;
     {
         std::ifstream in(std::string(patchDir()) + "/adi-param-proof.pd", std::ios::binary);
@@ -492,51 +515,383 @@ void testAParameterReachesThePatchFromTheAudioThread() {
         decls = parsePdDeclarations(buf.str());
     }
     eqi(static_cast<long long>(decls.params.size()), 1,
-        "the declaration is still readable text, whether or not the box created");
-    eqi(static_cast<long long>(decls.arrays.size()), 1, "and so is the array's");
+        "and the declaration is readable from the text either way (ADR-0177 fix 3)");
 
     eng.prepare(48000.0, 512);
     eng.bindArrays(decls);
     eng.bindParameters(decls);
 
-    check(!eng.sendParameter(99, 0.25f), "an id the patch never declared is refused");
-
     const auto* arr = eng.publishedArray(1);
     check(arr != nullptr, "the probe array is bound");
     if (arr == nullptr) return;
 
-    // The array declares 30 Hz, so a publication is due every 1600 frames at
-    // 48 kHz -- the engine honours the declared rate rather than publishing on
-    // every segment (ADR-0183 d1). Run until one lands.
     const int n = 128;
     Buffers b(2, n);
-    const auto runUntilPublished = [&](float value) {
+    const auto runUntilPublished = [&]() {
         const std::uint64_t before = arr->published();
-        check(eng.sendParameter(1, value), "the declared id is sent");
         for (int i = 0; i < 64 && arr->published() == before; ++i) {
             auto io = b.io(2, n, 0, n);
             eng.process(io);
         }
         std::vector<float> cells(static_cast<std::size_t>(arr->length()), -99.f);
-        const bool ok = arr->read(cells.data(), arr->length());
-        check(ok, "and a whole array is published");
+        check(arr->read(cells.data(), arr->length()), "a whole array is published");
         return cells.empty() ? -99.f : cells[0];
     };
 
-    // The send happens where d3 puts it: on the audio thread, before the
-    // block. `process` is what renders the patch, so this is the order the
-    // engine will really use.
-    const float first = runUntilPublished(0.75f);
-    check(std::fabs(first - 0.75f) < 1e-6f,
-          "the value the host sent came out the other side of Pd -- the receive "
-          "name the patch listens on is exactly the one pdParamReceiveName "
-          "builds\n          got " + std::to_string(first));
+    // ADR-0177 d5'S VANILLA-PD PROMISE, MEASURED. Nothing has sent anything:
+    // the only thing that has run is the abstraction's own [loadbang] into
+    // [f $5], during libpd_openfile. A patch opened in vanilla Pd plays at its
+    // defaults, and this is that claim with a number on it.
+    const float atLoad = runUntilPublished();
+    check(std::fabs(atLoad - 0.5f) < 1e-6f,
+          "the parameter carries its DEFAULT before anything sends to it -- "
+          "0.5, from [loadbang] into [f $5]\n          got " + std::to_string(atLoad));
 
-    // A second value, so the first cannot have been the array's initial state.
-    const float second = runUntilPublished(-0.5f);
+    check(!eng.sendParameter(99, 0.25f), "an id the patch never declared is refused");
+
+    // Then the host's value, on the audio thread, through the same outlet.
+    check(eng.sendParameter(1, 0.75f), "a declared id is sent");
+    const float sent = runUntilPublished();
+    check(std::fabs(sent - 0.75f) < 1e-6f,
+          "and it came out of [adi.param]'s outlet -- the receive name the "
+          "abstraction listens on is exactly the one pdParamReceiveName builds\n"
+          "          got " + std::to_string(sent));
+
+    check(eng.sendParameter(1, -0.5f), "a second value is sent");
+    const float second = runUntilPublished();
     check(std::fabs(second + 0.5f) < 1e-6f,
           "and it followed, so the path is live rather than a one-off\n          got " +
               std::to_string(second));
+}
+
+void testTransportReachesThePatch() {
+    section("ADR-0188 d3 -- [adi.transport] receives the whole field list, and no absolute tick");
+
+    LibPdEngine eng(patchDir(), "adi-transport-proof.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    check(eng.open(latency, err), "adi-transport-proof.pd opens: " + err);
+
+    std::string joined;
+    for (const auto& line : eng.consoleLines()) joined += line + "\n";
+    check(joined.find("adi.transport") == std::string::npos,
+          "[adi.transport] was created\n          console: " + joined);
+
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/adi-transport-proof.pd", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eng.prepare(48000.0, 512);
+    eng.bindArrays(decls);
+    const auto* arr = eng.publishedArray(1);
+    check(arr != nullptr, "the probe array is bound");
+    if (arr == nullptr) return;
+
+    LibPdEngine::Transport tr;
+    tr.playing = true;
+    tr.bpm = 128.5;
+    tr.timeSigNumerator = 7;
+    tr.timeSigDenominator = 8;
+    tr.bar = 41.0;
+    tr.beat = 3.0;
+    tr.ticksInQuarter = 5765759.0;   // the largest a quarter holds (SPEC 4.2)
+    eng.setTransport(tr);
+
+    const int n = 128;
+    Buffers b(2, n);
+    std::vector<float> cells(static_cast<std::size_t>(arr->length()), -1.f);
+    const std::uint64_t before = arr->published();
+    for (int i = 0; i < 64 && arr->published() == before; ++i) {
+        auto io = b.io(2, n, 0, n);
+        eng.process(io);
+    }
+    check(arr->read(cells.data(), arr->length()), "a whole array is published");
+    eqi(static_cast<long long>(cells[0]), 1, "playing");
+    check(std::fabs(cells[1] - 128.5f) < 1e-3f,
+          "bpm\n          got " + std::to_string(cells[1]));
+    eqi(static_cast<long long>(cells[2]), 7, "time signature numerator");
+    eqi(static_cast<long long>(cells[3]), 8, "time signature denominator");
+    eqi(static_cast<long long>(cells[4]), 41, "bar");
+    eqi(static_cast<long long>(cells[5]), 3, "beat");
+
+    // THE REASON THERE IS NO ABSOLUTE TICK COUNT. Pd's numbers are 32-bit
+    // floats, exact for integers to 2^24 = 16,777,216. 5,765,759 is inside
+    // that and survives exactly; an absolute tick count passes it within three
+    // quarter notes and would come back rounded, silently.
+    eqi(static_cast<long long>(cells[6]), 5765759,
+        "ticks within the quarter, exact -- which is why the field list has no "
+        "absolute tick count");
+
+    tr.playing = false;
+    tr.beat = 4.0;
+    eng.setTransport(tr);
+    const std::uint64_t before2 = arr->published();
+    for (int i = 0; i < 64 && arr->published() == before2; ++i) {
+        auto io = b.io(2, n, 0, n);
+        eng.process(io);
+    }
+    check(arr->read(cells.data(), arr->length()), "a second array is published");
+    eqi(static_cast<long long>(cells[0]), 0, "and it follows: stopped");
+    eqi(static_cast<long long>(cells[5]), 4, "and the beat moved");
+}
+
+void testACompiledInExternalIsRegisteredForEveryInstance() {
+    section("ADR-0188 d8 -- a compiled-in external, registered once, reaching every instance");
+
+    // Declared by ADI_PD_BUILTIN at the top of this file, before main. Nothing
+    // in pd_builtins.cpp names it, which is the property win_codex needs: its
+    // externals are its own files and src/juce/** is not.
+    bool listed = false;
+    for (std::size_t i = 0; i < device::PdBuiltins::count(); ++i) {
+        const char* n = device::PdBuiltins::nameAt(i);
+        if (n != nullptr && std::string(n) == "adi_probe_builtin") listed = true;
+    }
+    check(listed, "the external declared itself into the table");
+
+    std::string err;
+    check(device::PdRuntime::initialise(err), "libpd initialises: " + err);
+    check(device::PdBuiltins::registered(),
+          "and initialise ran the setup functions -- in instance 0, before any "
+          "libpd_new_instance");
+
+    // The ordering rule, refused rather than half applied: a late entry would
+    // reach only whichever instance happened to be current.
+    check(!device::PdBuiltins::add("adi_probe_late", &adi_probe_builtin_setup),
+          "adding after registration is refused");
+    check(!device::PdBuiltins::add("adi_probe_builtin", &adi_probe_builtin_setup),
+          "and so is a duplicate name");
+    check(!device::PdBuiltins::add(nullptr, &adi_probe_builtin_setup), "a null name is refused");
+    check(!device::PdBuiltins::add("adi_probe_null", nullptr), "so is a null function");
+
+    // TWO ENGINES, TWO INSTANCES, both of which must make the object. That is
+    // the whole reason registration goes in instance 0: `pdinstance_new` copies
+    // instance 0's method list into every instance created afterwards, so one
+    // registration reaches all of them. If it did not, the second engine here
+    // would open the patch with a hole in it and say so.
+    const auto consoleOf = [](const LibPdEngine& e) {
+        std::string joined;
+        for (const auto& line : e.consoleLines()) joined += line + "\n";
+        return joined;
+    };
+
+    LibPdEngine first(patchDir(), "adi-builtin-proof.pd", 2, 2);
+    PdLatencyReceiver latencyA;
+    err.clear();
+    check(first.open(latencyA, err), "the first instance opens the patch: " + err);
+    const std::string consoleA = consoleOf(first);
+    check(consoleA.find("adi_probe_builtin") == std::string::npos,
+          "and made the object -- Pd names an object it cannot create, and did "
+          "not name this one\n          console: " + consoleA);
+
+    LibPdEngine second(patchDir(), "adi-builtin-proof.pd", 2, 2);
+    PdLatencyReceiver latencyB;
+    err.clear();
+    check(second.open(latencyB, err), "a second instance opens it too: " + err);
+    const std::string consoleB = consoleOf(second);
+    check(consoleB.find("adi_probe_builtin") == std::string::npos,
+          "and made the object as well, from the same single registration\n"
+          "          console: " + consoleB);
+
+    // The negative is not hypothetical: testTheEngineReportsWhatPdPrints opens
+    // a patch naming an object that is NOT built in, and asserts Pd DOES name
+    // it. The two together are what make the absence above mean something.
+}
+
+// --- ADR-0194: MIDI into a Pd device ---------------------------------------
+
+engine::Event pdNoteOn(std::uint64_t id, int key, double vel, std::int32_t frame = 0) {
+    engine::Event e;
+    e.type = engine::EventType::NoteOn;
+    e.noteId = id;
+    e.dim = static_cast<std::uint16_t>(key);   // notes carry the key in `dim`
+    e.value = vel;
+    e.frame = frame;
+    e.channel = 2;                              // transport, and must not reach Pd
+    return e;
+}
+engine::Event pdNoteOff(std::uint64_t id, int key, std::int32_t frame = 0) {
+    engine::Event e = pdNoteOn(id, key, 0.0, frame);
+    e.type = engine::EventType::NoteOff;
+    return e;
+}
+engine::Event pdExpr(std::uint64_t id, adi::ExpressionDim d, double v,
+                     std::int32_t frame = 0) {
+    engine::Event e;
+    e.type = engine::EventType::NoteExpression;
+    e.noteId = id;
+    e.dim = static_cast<std::uint16_t>(d);
+    e.value = v;
+    e.frame = frame;
+    return e;
+}
+
+void testMidiReachesNoteinCtlinAndBendin() {
+    section("ADR-0194 -- notes, CCs and pitch bend reach [notein], [ctlin] and [bendin]");
+
+    // THE ENGINE HAS NO MIDI TO FORWARD, and that is ADR-0054 working: no MIDI
+    // byte survives the input parser, so there is no CC event and no pitch-bend
+    // event in `engine::Event` at all. A Pd patch is an OUTPUT EDGE like a VST3
+    // plugin, and it is fed by the encoder that edge already has -- MpeRouter,
+    // ADR-0097 -- so the quantisation a patch sees is the same one a JUCE-built
+    // MPE synth sees. Nothing is re-encoded twice.
+    LibPdEngine eng(patchDir(), "adi-midi-proof.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    check(eng.open(latency, err), "adi-midi-proof.pd opens: " + err);
+    eng.prepare(48000.0, 512);
+
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/adi-midi-proof.pd", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eng.bindArrays(decls);
+    const auto* arr = eng.publishedArray(1);
+    check(arr != nullptr, "the probe array is bound");
+    if (arr == nullptr) return;
+
+    const int n = 256;
+    Buffers b(2, n);
+    std::vector<float> cells(static_cast<std::size_t>(arr->length()), -1.f);
+
+    // Runs `events` into the patch and waits for a whole array to be published.
+    const auto play = [&](const std::vector<engine::Event>& events) {
+        const std::uint64_t before = arr->published();
+        auto io = b.io(2, n, 0, n);
+        io.events.first = events.data();
+        io.events.count = static_cast<std::int32_t>(events.size());
+        eng.process(io);
+        for (int i = 0; i < 64 && arr->published() == before; ++i) {
+            auto quiet = b.io(2, n, 0, n);
+            eng.process(quiet);
+        }
+        cells.assign(static_cast<std::size_t>(arr->length()), -1.f);
+        return arr->read(cells.data(), arr->length());
+    };
+
+    check(play({pdNoteOn(1, 60, 0.8)}), "a note-on is published");
+    eqi(static_cast<long long>(cells[0]), 60, "[notein] received the key");
+    eqi(static_cast<long long>(cells[1]), 102,
+        "and the velocity, 0.8 of full scale as 7 bits -- the router's "
+        "quantisation, not a second one invented here");
+
+    // Pitch bend. The note's expression goes to the member channel the router
+    // gave it, which is what makes [bendin] mean this note rather than all of
+    // them.
+    check(play({pdExpr(1, adi::ExpressionDim::Pitch, 1.0)}), "a pitch expression is published");
+    // ABOVE centre, not merely "not 8192". The array starts at 0, so a test
+    // for "moved off centre" passes when NOTHING arrives -- which it did,
+    // under a planted fault that dropped every Control. A bend up must read
+    // above 8192 and below full scale, and 0 satisfies neither.
+    check(cells[4] > 8192.f && cells[4] <= 16383.f,
+          "[bendin] received a bend UP, inside 14 bits -- and 0, which is what "
+          "the cell holds when nothing arrives, is neither\n          got " +
+              std::to_string(cells[4]));
+
+    check(play({pdExpr(1, adi::ExpressionDim::Timbre, 0.5)}), "a timbre expression is published");
+    eqi(static_cast<long long>(cells[2]), 74,
+        "[ctlin] received CC74, which is where MPE 1.0 puts timbre");
+    eqi(static_cast<long long>(cells[3]), 64, "with 0.5 of full scale as 7 bits");
+
+    check(play({pdNoteOff(1, 60)}), "a note-off is published");
+    eqi(static_cast<long long>(cells[1]), 0,
+        "[notein] received velocity 0 -- Pd has no note-off, and a patch tests "
+        "for this");
+
+    // A quiet note must not become a note-off. MIDI has no way to say
+    // "velocity 0.001", and rounding it to 0 would end a note that was
+    // starting.
+    check(play({pdNoteOn(2, 61, 0.001)}), "a very quiet note-on is published");
+    eqi(static_cast<long long>(cells[1]), 1,
+        "and arrived with velocity 1, not 0 -- velocity 0 IS a note-off");
+
+    eqi(eng.midiDropped(), 0, "nothing was dropped on the way");
+}
+
+void testTransportArrivesOnNodeIo() {
+    section("ADR-0188 d3 -- io.transport reaches the patch, and a null one changes nothing");
+
+    LibPdEngine eng(patchDir(), "adi-transport-proof.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    check(eng.open(latency, err), "adi-transport-proof.pd opens: " + err);
+
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/adi-transport-proof.pd", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eng.prepare(48000.0, 512);
+    eng.bindArrays(decls);
+    const auto* arr = eng.publishedArray(1);
+    check(arr != nullptr, "the probe array is bound");
+    if (arr == nullptr) return;
+
+    const int n = 128;
+    Buffers b(2, n);
+    std::vector<float> cells(static_cast<std::size_t>(arr->length()), -1.f);
+
+    // `transport` is a POINTER on NodeIo, and the object it points at lives
+    // here, on this stack frame -- which is the shape the engine must cope
+    // with: it is told the values are good for this call and no longer.
+    engine::TransportInfo info;
+    info.playing = true;
+    info.timelineSample = 1234567890;      // deliberately past 2^24
+    info.bpm = 174.0;
+    info.timeSigNumerator = 7;
+    info.timeSigDenominator = 8;
+    info.bar = 33;
+    info.beat = 5;
+    info.ticksInQuarter = 2882880;         // half a quarter note
+
+    const auto runUntilPublished = [&](const engine::TransportInfo* tr) {
+        const std::uint64_t before = arr->published();
+        for (int i = 0; i < 64 && arr->published() == before; ++i) {
+            auto io = b.io(2, n, 0, n);
+            io.transport = tr;
+            eng.process(io);
+        }
+        cells.assign(static_cast<std::size_t>(arr->length()), -1.f);
+        return arr->read(cells.data(), arr->length());
+    };
+
+    check(runUntilPublished(&info), "an array is published");
+    eqi(static_cast<long long>(cells[0]), 1, "playing");
+    check(std::fabs(cells[1] - 174.f) < 1e-3f, "bpm");
+    eqi(static_cast<long long>(cells[2]), 7, "time signature numerator");
+    eqi(static_cast<long long>(cells[3]), 8, "denominator");
+    eqi(static_cast<long long>(cells[4]), 33, "bar");
+    eqi(static_cast<long long>(cells[5]), 5, "beat");
+    eqi(static_cast<long long>(cells[6]), 2882880,
+        "ticks on the quarter-note grid -- which in 7/8 is NOT the position "
+        "within the beat, and is why adi.transport.pd's help says so");
+
+    // A NULL TRANSPORT KEEPS THE LAST VALUES. Outside a Session -- an offline
+    // render, a test harness -- `io.transport` is null, and a patch synced to
+    // the host would hear a snap back to 120 BPM at bar 1 as a jump. Nothing
+    // changing is the honest report of nothing being known.
+    check(runUntilPublished(nullptr), "a second array is published with no transport");
+    check(std::fabs(cells[1] - 174.f) < 1e-3f,
+          "the tempo did not snap back to 120\n          got " + std::to_string(cells[1]));
+    eqi(static_cast<long long>(cells[4]), 33, "nor the bar back to 1");
+
+    // And a NEW transport still takes effect, so "keep the last" is not "stop
+    // listening".
+    info.bpm = 90.0;
+    info.bar = 34;
+    check(runUntilPublished(&info), "a third array is published");
+    check(std::fabs(cells[1] - 90.f) < 1e-3f, "a new transport is picked up");
+    eqi(static_cast<long long>(cells[4]), 34, "bar and all");
 }
 
 void testPdWouldReachAnExternalBesideThePatch() {
@@ -765,6 +1120,10 @@ int main() {
     testAbstractionsStillResolveThroughTheSamePath();
     testTheEngineReportsWhatPdPrints();
     testAParameterReachesThePatchFromTheAudioThread();
+    testACompiledInExternalIsRegisteredForEveryInstance();
+    testTransportReachesThePatch();
+    testTransportArrivesOnNodeIo();
+    testMidiReachesNoteinCtlinAndBendin();
     // Last, and on purpose: it dlopens nothing, but it does put a class name
     // on Pd's process-wide load list, and a test that runs after it would be
     // measuring that instead of its own patch.

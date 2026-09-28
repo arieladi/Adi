@@ -398,6 +398,16 @@ bool Session::rebuild() {
         error_ = "no project loaded";
         return false;
     }
+    auto timing = std::make_unique<TimingView>();
+    timing->sampleRate = spec_.sampleRate;
+    // Same construction as MidiClips: TempoMap integrates STEP tempos, even
+    // when a stored event requests a ramp. Do not create a second converter.
+    for (const auto& e : model_.tempo)
+        timing->tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
+    if (timing->tempo.events.empty()) timing->tempo.events.push_back({0, 120.0, 0});
+    // Snapshot has tempo but no meter data. rows::readModel reads this vector
+    // from time_signature_map, sorted by position and id.
+    timing->signatures = model_.signatures;
     try {
         clips_ = std::make_unique<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
                                                 spec_.channels, spec_.maxFrames);
@@ -421,7 +431,10 @@ bool Session::rebuild() {
     ++stats_.rebuilds;
     const bool ok = devices_.rebuildNow();
     if (!ok) error_ = devices_.lastRebuildError();
-    else live_ = true;
+    else {
+        timing_.publish(std::move(timing));
+        live_ = true;
+    }
     attachTaps();   // ADR-0175: the new graph's latencies
 
     problems_ = model_.problems;
@@ -608,7 +621,10 @@ bool Session::reenableAutomation(std::int64_t laneId) {
     return rebuild();
 }
 
-bool Session::tick(std::int64_t nowMs) { return devices_.tick(nowMs); }
+bool Session::tick(std::int64_t nowMs) {
+    timing_.collect();
+    return devices_.tick(nowMs);
+}
 
 // ---------------------------------------------------------------------------
 // BlockProcessor
@@ -632,9 +648,48 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     rebuild();
 }
 
+TransportInfo Session::TimingView::at(const Transport& transport) const noexcept {
+    TransportInfo info;
+    info.playing = transport.playing();
+    info.timelineSample = transport.sampleAt(0);
+    const auto ticks = tempo.secondsToTicks(static_cast<double>(info.timelineSample) / sampleRate);
+    info.bpm = tempo.bpmAt(ticks);
+    constexpr std::int64_t ppq = 5765760; // SPEC 4.2; exactly representable in Pd's float
+    constexpr auto whole = 4 * ppq;
+    info.ticksInQuarter = ticks % ppq;
+
+    // Allocation-free counterpart of renderPosition(metersOf(signatures)).
+    // Default 4/4 from zero; a change truncating a bar still counts that bar.
+    std::int64_t start = 0, barsBefore = 0;
+    std::int64_t barTicks = whole;
+    for (const auto& meter : signatures) {
+        if (meter.posTicks > ticks) break;
+        const auto span = meter.posTicks - start;
+        barsBefore += span / barTicks + (span % barTicks != 0 ? 1 : 0);
+        start = meter.posTicks;
+        info.timeSigNumerator = static_cast<int>(meter.numerator);
+        info.timeSigDenominator = static_cast<int>(meter.denominator);
+        barTicks = whole * meter.numerator / meter.denominator;
+    }
+    const auto into = ticks - start;
+    const auto beatTicks = whole / info.timeSigDenominator;
+    info.bar = barsBefore + into / barTicks + 1;
+    info.beat = (into % barTicks) / beatTicks + 1;
+    return info;
+}
+
 void Session::process(const AudioIo& io) noexcept {
     audio::CallbackScope callback;
-    graph_.process(io);
+    SnapshotPublisher<TimingView>::AudioRead timing(timing_);
+    TransportInfo info;
+    if (timing.valid()) info = timing->at(transport_);
+    else {
+        info.playing = transport_.playing();
+        info.timelineSample = transport_.sampleAt(0);
+    }
+    AudioIo block = io;
+    block.transport = &info;
+    graph_.process(block);
     transport_.advance(io.frames);
 }
 

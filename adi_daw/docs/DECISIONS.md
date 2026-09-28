@@ -14338,6 +14338,192 @@ here rather than noted. All of the below is asserted in
     the brief asked for a CI change and the right answer was that none was
     needed.
 
+26. **The built-ins hook (ADR-0188 d8, ADR-0192 d1), and a correction I had to
+    go back to the source for.** `PdBuiltins` is a table of setup functions
+    that `PdRuntime::initialise` calls once, right after `libpd_init`, which is
+    what the brief asked for. The reason I first gave for the timing was wrong,
+    and a planted fault is what said so.
+
+    **What I claimed:** that `class_new` registers a creator with the CURRENT
+    instance's `pd_objectmaker`, so registering after an instance exists would
+    reach that one and no other. **The plant that should have failed:** moving
+    `registerAll` into `open`, after `libpd_new_instance`. It passed. Both
+    instances still made the object.
+
+    **What `m_class.c` actually says at the pinned commit:**
+    - `pd_objectmaker` is ONE OBJECT FOR THE PROCESS (`m_class.c:27`). What is
+      per instance is the method list on each class, `c->c_methods`, an array
+      indexed by instance.
+    - `class_doaddmethod` under PDINSTANCE loops
+      `for (i = 0; i < pd_ninstances; i++)` and adds the method to **every
+      instance that exists at that moment**.
+    - `pdinstance_new` copies **instance 0's** list into each new instance.
+
+    Instance 0 always exists and is always in that loop, so **a class
+    registered at any moment reaches every instance, earlier and later**.
+    Registering early is not what makes ADI's externals reachable; Pd would
+    have managed either way.
+
+    **What it does buy, and the reason that survives, is determinism.** Every
+    device opens against the same, complete vocabulary. That matters here more
+    than it would elsewhere: ADR-0177 fix 3 says what a patch can do is
+    knowable from its TEXT, and a set of built-in objects that depended on when
+    a device happened to load would let the same patch mean two things in one
+    session. `PdBuiltins::add` refuses after `registerAll` for that reason and
+    for no reason to do with Pd.
+
+    **The shape, agreed to fit ADR-0192 d6's boundary.** An external declares
+    itself with `ADI_PD_BUILTIN(adi.combchord~, adi_combchord_tilde_setup)`
+    beside its own definition; nothing in `src/juce/**` is edited to admit one,
+    because win_codex owns the externals and does not touch that directory.
+    Two traps are handled for it:
+    - **A self-registering translation unit in a static library is dropped by
+      the linker** when nothing references it, taking the external with it and
+      leaving no error anywhere. The externals are therefore built as a CMake
+      OBJECT library, whose objects are always linked.
+    - **The registry is a function-local static**, not a namespace-scope one,
+      so a registrar in another translation unit that runs first still finds a
+      constructed table.
+
+27. **`adi.param.pd` and `adi.transport.pd` are written, and ADR-0177 d5's
+    vanilla-Pd promise is now a number rather than a claim.** win handed both
+    files over in round 5e.
+
+    - **`adi.param.pd`**: `[r $1-adi-$2]` into the outlet, and `[loadbang]`
+      into `[f $5]` into the same outlet, exactly as d5 specifies. The test
+      fixture's `[adi.param]` box now feeds the published array directly, so
+      what is read back is what the abstraction produced. **It carries 0.5
+      before anything sends to it** -- that is d5's "vanilla Pd opens the patch
+      and every parameter plays at its default", measured. Planted: cutting the
+      `[loadbang]` connection fails that check and nothing else.
+    - **`adi.transport.pd`**: `[r $1-aditr]` into `[unpack f f f f f f f]` and
+      seven outlets, ADR-0188 d3's field list in order. A third receive stem,
+      for the reason the second exists.
+    - **The engine sends it on the stack.** `pd_list` with seven atoms and a
+      symbol resolved once in `open`, never `libpd_list`, which would take
+      `sys_lock()` and build its atoms on libpd's own allocating message stack.
+      A patch with no `[adi.transport]` costs one null check on `s_thing`.
+    - **Exactness, asserted:** 5,765,759 ticks -- the largest a quarter note
+      holds -- survives the 32-bit float round trip intact. An absolute tick
+      count passes 2^24 within three quarter notes and would come back rounded
+      with nothing to say so, which is the whole reason d3's field list is bar,
+      beat and ticks-within-the-quarter.
+
+    **`ticksInQuarter` is the QUARTER-NOTE GRID, not the position within the
+    beat**, and win's correction is worth the paragraph because the two are
+    equal in every meter anyone tests in. It is the absolute tick count modulo
+    `ADI_PPQ` (5,765,760), counted from bar 1, so it wraps once per quarter
+    note whatever the meter calls a beat. In 4/4 that is the beat. **In 7/8 the
+    beat is an eighth, and this wraps once per two of them** -- a patch written
+    against 4/4 and moved to 7/8 would be out by a factor of two, playing
+    perfectly, with nothing anywhere to say why. `bar` and `beat` carry the
+    meter; this carries a quarter-note phase. Said in `adi.transport.pd`'s own
+    help text, because the patch author is who gets it wrong.
+
+    **What is NOT here, and it is one line of someone else's file.** `NodeIo`
+    carries a sample rate and nothing else (`graph.hpp`), so **the engine has
+    no transport to give a device**. Everything from the device host to the
+    patch is built and proved; the missing link is the engine carrying
+    transport to a node, which is `src/adi/engine/**` -- win's, standing.
+    `LibPdEngine::setTransport` is the seam, and it is what the test drives.
+
+28. **`[adi.sample]`'s host side (ADR-0192 d4), and the handoff was already
+    written.** d4 says the buffer reaches the slot "through a lock-free
+    handoff, never as Pd messages". Pd messages are the obvious route and are
+    wrong twice: a list of a million floats is a million dispatches, and it
+    would arrive on whichever thread sent it.
+
+    **The handoff is `SnapshotPublisher`**, the protocol ADR-0010 and ADR-0019
+    settled and `GraphHost` uses to swap a whole graph under a running engine.
+    A sample is the shape it was built for: large, immutable once built,
+    replaced rarely, read by one audio thread that only moves forward. Its
+    header spends a page on why `collect` frees only what is STRICTLY older
+    than the announced sequence, and none of that reasoning was worth writing
+    a second time in a class that would then have to be kept in agreement.
+    That page is now exercised rather than trusted: a buffer the reader is on
+    survives a publish and a collect, and is freed on the collect after the
+    reader moves.
+
+29. **The declaration is the third schema in the one scanner, and the third id
+    space.** `[adi.sample $0 <id> <name>]`. It declares **no length, no rate
+    and no range**, and the asymmetry with `[adi.array]` is the point: an
+    array's shape is the patch's to choose because the patch fills it, while a
+    sample's shape is the FILE's and the patch finds out what it got.
+
+    Three id spaces, not one: a sample is media, a parameter is automation, an
+    array is a display. All three may be id 1 in one patch, and the test asserts
+    exactly that — one space would make dropping a sample in change what an
+    automation lane points at.
+
+30. **The hash is the MEDIA's, not the decoded copy's, and the first version of
+    the test could not have told the difference.** ADR-0127 identifies the file
+    a project refers to so the project still plays when it moves; ADR-0132's
+    cache copy is ours and disposable. The test first passed one path as both
+    source and playable file, which would have passed just as happily with the
+    hash taken from the cache. It now writes a distinct stand-in for the media
+    and asserts the hash matches THAT and demonstrably not the WAV's. The
+    general form of the mistake: **a test that supplies one value for two
+    arguments cannot tell you which one the code used.**
+
+    A file that fails to hash still loads. Losing the hash is bad — the project
+    cannot find the media again later — but refusing to load what the user just
+    dropped in is worse.
+
+31. **Neither the slot nor the declaration needs libpd**, which is the same
+    property ADR-0177 fix 3 put on the parse, and it pays the same way: both
+    build and are tested on every ABI, including the ones where the Pd runtime
+    is not built at all (d24). The external that will read the slot is
+    win_codex's, and the accessor it calls is named in `pd_samples.hpp` with
+    its lifetime contract: valid until the next call for that slot from the
+    audio thread, which for a perform routine is the next block.
+
+---
+
+32. **The masking measure, for ADR-0195 d5 and for `analyze.masking`.**
+    `src/adi/dsp/masking.*`, a pure function with no engine, no view and no
+    agent in it. The overlay highlights where one track buries another and the
+    agent returns "band-overlap between two tracks over time"; written
+    separately, a producer would see a highlight the agent never mentions, and
+    neither would be wrong, because there would be two definitions of masking
+    in one program.
+
+    Three choices, each against the simpler thing:
+    - **ERB bands, not third-octave.** Masking is a property of the cochlea's
+      filters, about 35 Hz wide at 100 Hz and 565 Hz at 5 kHz; a third-octave
+      layout gives 23 Hz and 1150 Hz and matches neither end. Both figures are
+      asserted.
+    - **Spreading is ASYMMETRIC**, steep downward and shallow upward, which is
+      the whole point: a bass buries a kick's low mids and the kick does not
+      equally bury the bass's top. Anything built on "how much do these spectra
+      overlap" gets the direction of every real masking problem wrong half the
+      time.
+    - **The single number is `maskedFraction`**, the share of the masked
+      track's own energy sitting under the masker. `worstExcessDb` alone would
+      rank a 2 dB problem across the spectrum below a 20 dB notch nobody hears.
+
+    **It is not a masking THRESHOLD model.** It says one track dominates
+    another by so many dB, not that a band is inaudible: audibility needs
+    absolute level, the listener's system and a calibrated scale, and a DAW has
+    none of the three. ADR-0195 leaves the highlight's threshold open, and this
+    reports the number it will be applied to.
+
+33. **Two documented decisions were not being tested, and planting found both.**
+    Four faults were planted in the measure; two were caught and **two
+    passed**:
+    - **sum instead of maximum** for the spread masker;
+    - **counting bands instead of weighting by energy** in `maskedFraction`.
+
+    The second is the same flaw as d30's, in a new costume. The test used two
+    victim tones of EQUAL energy, so "nine tenths of the energy" and "one band
+    of two" both read 0.5 and the test could not tell them apart. It now uses
+    9:1, where energy-weighting gives 0.9 and a band count would give 0.5.
+
+    **The general rule, now twice earned: a test whose inputs make two
+    candidate implementations agree is not testing which one you wrote.** Equal
+    values, one path passed for two arguments, a default that matches the case
+    under test -- all the same mistake. The check for it is to plant the other
+    implementation and watch the test fail.
+
 ### What this amends in ADR-0177, and what it does not
 
 This ADR's decisions were written before ADR-0177 merged, so the question was
@@ -14590,6 +14776,226 @@ believed — a planted defect that does not change behaviour is not evidence, an
 reading one as evidence is the same error as counting instead of checking.
 
 4812 checks across 48 suites.
+
+---
+
+## ADR-0194 — MIDI into a Pd device comes from the MPE output encoder, not from MIDI the engine kept — `DECIDED` (2026-09-27) — **MAKES ADR-0192's MIDI MODE POSSIBLE; DEPENDS ON ADR-0054 AND ADR-0097; EXTENDS ADR-0183**
+
+**The instruction** (win, round 5c): the track's notes, CCs and pitch bend
+reach `[notein]`, `[ctlin]` and `[bendin]` through libpd, per instance, at block
+boundaries, with no allocation on the audio thread.
+
+### The problem the instruction runs into, and it is ADR-0054 working
+
+**The engine has no MIDI to forward.** ADR-0054's parser is titled "no MIDI byte
+survives it": bytes go in, `engine::Event` comes out, and every expression value
+is a `double`, because 7-bit and 14-bit are encodings of a control surface
+rather than properties of the music. There is no CC event and no pitch-bend
+event in `events.hpp` at all — `EventType` is `NoteOn`, `NoteOff`,
+`NoteExpression`, `ParamValue`, `ParamMod`. A `[ctlin]` wants a controller
+number and a 0..127 value, and the engine holds neither.
+
+So the instruction cannot be met by forwarding. It can only be met by
+**encoding**, and the question is whose encoder.
+
+### Decisions
+
+1. **A Pd patch is an OUTPUT EDGE, like a VST3 plugin, and is fed by the
+   encoder that edge already has.** `MpeRouter` (ADR-0097) turns engine events
+   into MIDI for exactly this reason, and it is per-device, stateful,
+   allocation-free and audio-thread safe already. `LibPdEngine` gives each
+   instance its own and plays its output into Pd.
+
+   **Nothing is re-encoded twice.** The quantisation a patch sees is the one a
+   JUCE-built MPE synth sees, decided once in ADR-0097 and tested once. A
+   second encoder written here would have been a second set of rounding rules
+   to keep in agreement with the first, and the two would have diverged at the
+   first bug fixed in only one of them.
+
+2. **The route is `MpeMidi`, and that is what makes the instruction
+   satisfiable.** It is the only route that produces all three of the objects
+   named: notes on member channels for `[notein]`, per-note pitch bend for
+   `[bendin]`, and timbre as CC74 for `[ctlin]`. `Plain` puts every note on
+   channel 1 and **drops pitch and timbre** (counted), so under it a
+   `[bendin]` would never fire once. `NoteExpression` has no MIDI form at all.
+
+   A patch that ignores channel still hears every note, so the member-channel
+   spread costs a naive patch nothing; a patch that wants per-note expression
+   cannot have it any other way.
+
+3. **`inmidi_*`, not `libpd_*`, for the reason ADR-0183 d21 gives for
+   parameters.** Every libpd MIDI entry point wraps its call in
+   `sys_lock()`/`sys_unlock()` (`z_libpd.c` at the pinned commit) — a mutex on
+   the audio thread. The functions underneath take no lock and allocate
+   nothing: `inmidi_noteon` builds three stack atoms and dispatches through
+   `pd_this->pd_midi->m_notein_sym`, a symbol the instance already holds, so
+   there is no `gensym` either. A patch with no `[notein]` costs one null
+   check.
+
+4. **Delivery is at the segment's start, and that is as fine as the engine
+   offers.** The scheduler already splits a block at every event frame
+   (`graph.hpp`: an event at frame 100 splits 512 into 100 and 412), so an
+   event landing in a segment lands at its start. Pd then quantises again to
+   its own 64-sample block, which is Pd's limit and the same one ADR-0188 d3
+   records for parameters.
+
+5. **Port 0 always.** One device is one Pd instance. Pd adds `(portno << 4)` to
+   the channel it shows, so a second port would make a patch see channel 17.
+
+### What building it found
+
+6. **`MpeOut::word` is filled only for a `Control`.** On a note and a poly
+   pressure the router leaves it zero and puts the value in `value`, a 0..1
+   double. Reading `word` for a note's velocity would have made **every
+   note-on a note-off** — an instrument that is silent rather than one that
+   crashes, and nothing in the log would have said why. Caught by reading
+   `mpe_output.cpp` before it ran.
+
+7. **A quiet note must not become a note-off.** Velocity 0 *is* a note-off in
+   MIDI, so the 7-bit conversion floors at 1. A note at 0.001 of full scale is
+   a quiet note, not the end of one.
+
+8. **A test for "the value changed" passes when nothing arrives.** The bend
+   assertion first read "moved off centre", and the array holds 0 before
+   anything is written — so `|0 - 8192| > 1` was true and the check passed
+   under a planted fault that dropped every control message. It now requires a
+   bend *above* centre and inside 14 bits, which 0 fails. The lesson is
+   general: assert the value that should be there, never merely that the
+   initial one is gone.
+
+---
+
+## ADR-0195 — The Dynamic EQ adapts ZL Equalizer 2 under Pro-Q 3's mouse, automation lanes learn MIDI inline, Auto Gain Stage is one command, and the analyser overlays tracks — `DECIDED (direction)` (2026-09-27) — **DIRECTOR'S DIRECTIVE; SUPERSEDES ADR-0093'S "ZLEQUALIZER — DESIGN ONLY"; EXTENDS ADR-0130, ADR-0183, ADR-0184 AND ADR-0188 d6; ONE POINT SETTLED WITH THE DIRECTOR**
+
+**Director's directive:**
+- **AGPL.** Record that the ban on AGPL code is lifted, since `adi_daw` links
+  JUCE (AGPLv3, ADR-0048), and update `OPEN_SOURCE_POLICY.md`.
+- **Four new features:**
+  1. **A native Dynamic EQ CLAP**, adapting ZL Equalizer 2's DSP with Pro-Q 3's
+     node interactions on the graph instead of ZL's panel dials.
+  2. **A MIDI Learn button** on every automation lane header.
+  3. **A global "Auto Gain Stage Session" command** in place of an
+     inter-plugin metering network.
+  4. **A multi-track overlay** in the Adi Spectrum Meter's big window.
+
+Checked against the policy, the Pro-Q 3 manual in `reference/DOCS/Plugins`,
+the schema and the op catalogue.
+
+### Decisions
+
+1. **There is no AGPL ban to lift; one stale line is retired.**
+   - **Already lifted:** ADR-0138 lifted the ban on 2026-09-24, and
+     `OPEN_SOURCE_POLICY.md` §4 has named ZLEqualizer a usable source since
+     then. ZL Equalizer 2 already builds unchanged as a CLAP (ADR-0166).
+   - **The stale line:** ADR-0093's table still calls ZLEqualizer "design
+     only", and says matched phase comes from the literature and not from ZL.
+     Both were written before ADR-0138, and both are superseded here: the
+     Dynamic EQ adapts ZL's DSP directly.
+   - **What copying means:** the Dynamic EQ plug-in is AGPLv3, and its copied
+     files keep ZL's headers (policy §2, §4). `adi_daw` itself changes only if
+     it copies.
+   - **The policy file** gains one sentence recording this first direct
+     adaptation.
+
+2. **The Dynamic EQ: ZL's DSP under Pro-Q 3's mouse. Settled with the
+   director.**
+   - **What it is:** a CLAP in `adi_daw/plugins/`, with its own name (ADR-0093:
+     "Pro-Q 3 clone" is a description, never a name).
+   - **The node interactions follow Pro-Q 3's manual,** printed pages 9 to 10
+     and 15. The manual stays in `reference/DOCS/Plugins`, and these rules are
+     ours in our words:
+
+     | Gesture | Effect |
+     |---|---|
+     | Drag a node | horizontal is frequency. Vertical is gain on bells and shelves; on the filters with no gain (low and high cut, notch, band pass) it is Q |
+     | Mouse wheel, over a node or while dragging | Q |
+     | Ctrl/Cmd + vertical drag | Q |
+     | Alt + drag | locks to one axis: frequency, or gain/Q (by Ctrl/Cmd) |
+     | Shift | fine adjustment, for dragging and for the wheel |
+     | Alt + wheel | dynamic range |
+     | Ctrl/Cmd + wheel | gain |
+     | Alt + Ctrl/Cmd + wheel | gain traded for dynamic range |
+     | Alt + click | bypasses the band |
+     | Ctrl/Cmd + Alt + click | cycles the shape |
+     | Alt + Shift + click | cycles the slope |
+     | Double-click | types exact values |
+     | Right-click | opens the band menu |
+     | Drag the curve | creates a band; with Alt, a dynamic band |
+
+   - **Why the director chose the manual:** the relayed list had vertical as Q
+     on every filter type, Ctrl/Cmd as the axis lock, and Alt as Q. That
+     differs from the manual in three places, and the directive's own goal was
+     "standard Pro-Q 3 interactions".
+   - **ZL's panel dials leave the main view.** Every value stays reachable by
+     double-click, and through the host's panel (ADR-0150).
+   - **Parity is checked side by side** against Pro-Q 3 (ADR-0108).
+
+3. **MIDI Learn on an automation lane header.**
+   - **The flow:** Learn arms the lane (amber). The next CC to arrive on a MIDI
+     port enabled for Remote (Live's role) binds to the lane's target, and the
+     button turns cyan. The binding is one op and one undo step.
+   - **The op is new.** The `controller_maps` table exists and no op writes it
+     yet. `controller.bind` and `controller.unbind` join the vocabulary, each
+     with its inverse.
+   - **The encoder's mode is detected, not asked.**
+     - **Relative:** values clustered at 1/127 or around 64 bind relative, and
+       are resolved at the edge (ADR-0181 d1).
+     - **Absolute:** anything else binds absolute and follows the Takeover Mode
+       setting.
+   - **It coexists with the Master Focus Dial** (ADR-0130). The Dial's own
+     control is never learnable, and learn ignores it. There is no modal
+     overlay: a second click or Esc disarms, and arming another lane moves the
+     arm.
+   - **A hardware move on an automated parameter is a gesture,** so Live's
+     override applies (ADR-0162).
+   - **Bindings are project-scoped,** as `controller_maps` is.
+   - **When:** the button is the lane header's, which is step 7's and the UI
+     owner's. The ops are win's.
+
+4. **Auto Gain Stage Session: one command, deterministic, one undo.**
+   - **Not an AI workflow.** It is metering, done offline. The agent may invoke
+     it like any command, at its tier.
+   - **What is measured:** each track at the mixer strip's input, before the
+     inserts.
+     - **Audio tracks:** from their clips, with clip gain and fades applied.
+     - **Instrument tracks:** by rendering the instrument offline over its MIDI
+       clips, because analysing the clips cannot hear a synth.
+     - **Groups and returns** are not staged; their levels follow their inputs.
+   - **The target** is −18 dBFS RMS by default, the common reference (0 VU at
+     −18 dBFS), and the user can change it.
+     - **Gated:** RMS is measured over the non-silent parts, so a track that
+       plays eight bars of a three-minute song is not read as quiet.
+     - **LUFS option:** integrated LUFS (EBU R128 gating) is the alternative
+       measure.
+     - **A ceiling:** a stage never lifts a track's true peak above −1 dBTP by
+       default.
+   - **The write is one transaction of `mixer.setInputGain` per track.**
+     **Correction:** the directive named `mixer_strip.set_pre_gain`, which does
+     not exist. `input_gain_db` sits before the inserts, so plug-ins see the
+     staged level, which is the point of gain staging.
+   - **Nothing is inserted on any track.**
+
+5. **The analyser's big window overlays other tracks.**
+   - **Who draws it:** the analyser's C++ view, from the engine's per-track
+     taps (ADR-0175). The Pd patch cannot: a Pd device hears only its own
+     track.
+   - **Two tap points per track:** before the inserts (the strip's input) and
+     after them (before the fader).
+     - **The stream names** extend ADR-0188 d6: `track.<id>.spectrum.pre` and
+       `track.<id>.spectrum.post`. The plain `track.<id>.spectrum` remains the
+       post tap.
+   - **Ticking a track subscribes it.** An unticked track costs nothing, and the
+     FFT runs on a worker, never on the audio thread (ADR-0184 d4).
+   - **Curves take their track's colour** (`tracks.color`).
+   - **The masking highlight** reuses `analyze.masking`'s band-overlap measure
+     (AI-AGENT), so the view and the agent agree on what masking is.
+   - **Owner:** mac's analyser session (ADR-0183).
+
+**Still open:**
+- the Dynamic EQ's name;
+- the masking highlight's threshold, once there is something to look at;
+- RMS or LUFS as the Auto Gain Stage's default, if −18 dBFS RMS proves wrong
+  in use.
 
 ---
 

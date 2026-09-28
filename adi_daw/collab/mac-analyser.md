@@ -10,6 +10,351 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-28 — transport wired from io.transport; the round-5 stack is in
+
+All six merged: #147, #149, #151, #152, #153, #155. 131 checks in
+`adi_pd_engine_tests`, 53 of 53 suites. **No `DECISIONS.md` change**: this
+implements ADR-0188 d3 and does what ADR-0183 d27 said would happen, so there
+is no new decision in it — win's ruling, and the lessons below are here rather
+than there for the same reason.
+
+**Where it reads.** `LibPdEngine::process` takes `io.transport` itself rather
+than having `PdDevice::process` push it first. The device node already hands
+the engine the whole `NodeIo`, so reading it here leaves no ordering rule for a
+caller to forget. `setTransport` stays for a caller with no `NodeIo`, which is
+how the test drives a known transport without building a Session.
+
+**Copied, never retained** — `graph.hpp` says the pointer is valid only during
+`process`, and keeping it would make every later block read freed memory that
+usually still looks right. **A null transport keeps the last values**, which is
+deliberate rather than an omission: outside a Session a patch synced to the
+host would otherwise hear the tempo snap to 120 at bar 1. Nothing changing is
+the honest report of nothing being known. The test asserts both, and that a
+*new* transport still takes effect — "keep the last" must not become "stop
+listening".
+
+`timelineSample` is the one field Pd does not get: an absolute sample count
+passes 2^24 in under six minutes at 48 kHz, which is the same arithmetic that
+keeps an absolute tick count out of the field list.
+
+Three faults planted, all caught: never reading `io.transport`, resetting on
+null, and dropping a field on the way across.
+
+**win — a correction to my own record.** I had been appending decisions to
+ADR-0183 (d25 through d33) after it merged with #138. You are right that the
+log is append-only and a merged entry does not grow; a decision buried inside
+another entry is also invisible to the Master Reference's ADR table. From here
+a new decision takes a number I ask you for, and lessons like the planted-fault
+rule live in this file.
+
+**And a third round with the synced folder.** Resolving #155's conflicts,
+`git add -A adi_daw` swept **13 OneDrive conflict copies** into the commit,
+including copies of your prompt files and win_codex's `test_transport_info.cpp`.
+Caught before pushing; `main` was never touched. My earlier rule said how to
+*identify* a conflict copy and not *when they get in* — they get in through
+`git add -A`. Explicit paths when staging a resolution, from now on.
+
+---
+
+## 2026-09-27 — ADR-0195 d5: the masking measure, and the taps I need from win
+
+**Branched from main, not from the round-5 stack**, so it can merge on its own
+while those five waited on Windows. The conflict on this file's first entry is
+resolved as win directed: both kept, newest first.
+
+The shared half of the multi-track overlay: `src/adi/dsp/masking.*`, 74 checks
+in a new `adi_masking_tests`, 51 of 51 suites. ADR-0183 d32–d33, and a claims
+row for those two files.
+
+**Why it is a pure function.** The overlay highlights where one track buries
+another; the agent's `analyze.masking` returns "band-overlap between two tracks
+over time". Written separately, a producer would see a highlight the agent
+never mentions — and neither would be wrong, because there would be two
+definitions of masking in one program. Nothing in this file knows what a track
+is, what a colour is, or that a window exists.
+
+**Three choices, each against the simpler thing:** ERB bands rather than
+third-octave (the ear's filters are ~35 Hz wide at 100 Hz and ~565 Hz at 5 kHz;
+third-octave gives 23 and 1150, and both figures are asserted); asymmetric
+spreading, steep downward and shallow upward, which is why a bass buries a
+kick's low mids and not the reverse; and one number, `maskedFraction`, the
+share of the masked track's own energy sitting under the masker.
+
+**It is not a threshold model, and says so:** one track dominates another by so
+many dB, not "this band is inaudible". Audibility needs absolute level, the
+listener's system and a calibrated scale, and a DAW has none of the three.
+ADR-0195 leaves the highlight's threshold open; this is the number it gets
+applied to.
+
+### win — the taps I need, exactly
+
+`ScopeTap` (ADR-0175) is already the right primitive: a lock-free ring of
+stereo audio with a heard-timeline stamp, written wait-free on the audio thread
+and readable from any other thread. **I need no new mechanism — only more
+instances of that one, at a second point, switchable.**
+
+1. **A `ScopeTap` per track at the strip's INPUT**, before the inserts. This is
+   the only genuinely new tap point.
+2. **A `ScopeTap` per track after the inserts, before the fader.** If the
+   scope's existing tap is already at that point, I need only to read it per
+   track rather than for the focused one.
+3. **Per-track enable, costing nothing when off.** d5 says an unticked track
+   costs nothing; a disabled tap should not copy audio at all.
+4. **Audio, not spectra.** The FFT is mine, on a worker (d5, ADR-0184 d4).
+   Please do not band it on the audio thread.
+5. **The stamp**, which `ScopeTap` already carries. Two tracks' windows have to
+   line up in time, and a stamp is the only thing that makes that true when
+   their latencies differ.
+6. **`tracks.id` and `tracks.color`** reachable from the view — not engine work,
+   but it is what the curves are keyed and coloured by.
+
+One second of ring per tap is enough for a 60 Hz redraw with a large FFT and a
+worker that may be late; more is only memory.
+
+`track.<id>.spectrum.pre` / `.post` are ADR-0188 d6's WebSocket names and that
+surface is step 7's. In-process the view reads the taps directly, and the two
+must agree which point is which — plain `track.<id>.spectrum` being the post
+tap, as d5 says.
+
+**Not asked for, deliberately:** nothing per-track on the audio thread that an
+unticked track pays for, and no spectrum on the wire the view would re-band.
+
+### A rule that has now cost me twice
+
+Four faults planted in the measure; two caught and **two passed** — summing the
+spread instead of taking a maximum, and counting bands instead of weighting by
+energy. The second is d30's flaw in a new costume: the test used two victim
+tones of EQUAL energy, so "nine tenths of the energy" and "one band of two"
+both read 0.5. It now uses 9:1, where the right answer is 0.9 and a band count
+would say 0.5.
+
+**A test whose inputs make two candidate implementations agree is not testing
+which one you wrote.** Equal values, one path passed for two arguments, a
+default that happens to match the case under test — all the same mistake, and
+the check for it is to plant the other implementation and watch the test fail.
+
+**The stale-binary trap caught me again inside the same hour**, exactly as I
+wrote it up last time: I restored a plant, rebuilt the test target, and read a
+failure that belonged to the old object file. `touch` on the source before
+rebuilding is now in the loop.
+
+---
+
+## 2026-09-27 — round 5d: [adi.sample]'s host side, and the handoff was already written
+
+Round 5 item (d), the last of the five. 55 checks in a new
+`adi_pd_sample_tests`, 51 of 51 suites. ADR-0183 d28–d31.
+
+**win_codex — the slot's shape, and its one lifetime rule.**
+
+    [adi.sample $0 <id> <name>]
+
+From your perform routine: `PdSampleSlots::forBlock(id)` returns
+`const PdSampleBuffer*` — interleaved floats, with `channels`, `frames`,
+`sampleRate` and the media's `blake3`. **Valid until the next call for that
+slot from the audio thread**, which for a perform routine is the next block.
+Holding it longer is the one way to use it wrongly, and it is the only rule.
+
+**The handoff is `SnapshotPublisher`, not a new class.** d4 says "never as Pd
+messages", and Pd messages are wrong twice over: a list of a million floats is
+a million dispatches, and it arrives on whichever thread sent it. The snapshot
+protocol ADR-0010 settled — the one `GraphHost` uses to swap a whole graph
+under a running engine — is exactly this shape: large, immutable once built,
+replaced rarely, one forward-moving reader. Its header spends a page on why
+`collect` frees only what is STRICTLY older than the announced sequence, and
+that page is now exercised rather than trusted: a buffer the reader is on
+survives a publish and a collect, and is freed on the collect after the reader
+moves on.
+
+**The declaration is the third schema in the one scanner, and the third id
+space.** No length, no rate, no range — the asymmetry with `[adi.array]` is
+deliberate: an array's shape is the patch's to choose because the patch fills
+it, while a sample's shape is the file's and the patch finds out what it got.
+All three declarations may be id 1 in one patch, and the test asserts it; one
+shared space would make dropping a sample in change what an automation lane
+points at.
+
+**A test that could not have failed, found and fixed.** The decode test first
+passed ONE path as both the source media and the playable WAV — so
+"the hash is the media's, not the cache's disposable copy" would have passed
+just as happily with the hash taken from the wrong one. It now writes a
+distinct stand-in for the media and asserts the hash matches THAT and
+demonstrably not the WAV's. The general form is worth keeping: **a test that
+supplies one value for two arguments cannot tell you which one the code used.**
+
+Three faults planted, all caught: hashing the copy instead of the source
+(2 checks), merging instead of replacing on re-declare (3), and indexing
+`frame(n)` by sample instead of by frame (1).
+
+**Neither the slot nor the declaration needs libpd**, so both are tested on
+every ABI — including the ones where the Pd runtime is not built (d24). That
+property came from ADR-0177 fix 3 and has now paid three times.
+
+**Round 5 is complete: (a) through (e), four stacked PRs plus this one.**
+
+---
+
+## 2026-09-27 — round 5e: adi.param.pd and adi.transport.pd, and d5's promise measured
+
+Round 5 item (e), taken before (d) — see the note at the end. 115 checks in
+`adi_pd_engine_tests`, 50 of 50 suites. ADR-0183 d27.
+
+**`adi.param.pd`**, as ADR-0177 d5 specifies it: `[r $1-adi-$2]` into the
+outlet, `[loadbang]` into `[f $5]` into the same outlet, MIT.
+
+The test fixture changed with it, and for the better. Its `[adi.param]` box used
+to be there to *fail* — the abstraction did not exist, and the test asserted Pd
+said so. Now the box feeds the published array directly, so what is read back is
+what the abstraction produced: **0.5 before anything sends to it.** That is d5's
+"vanilla Pd opens the patch and every parameter plays at its default", with a
+number on it instead of a claim. Planted by cutting the `[loadbang]`
+connection — that check fails and nothing else does.
+
+**`adi.transport.pd`**: `[r $1-aditr]` into `[unpack f f f f f f f]` and seven
+outlets, ADR-0188 d3's field list in order. The engine sends it with `pd_list`
+and seven stack atoms, through a symbol resolved once in `open` — never
+`libpd_list`, which would take `sys_lock()` and build its atoms on libpd's own
+allocating message stack.
+
+**Exactness, asserted rather than trusted:** 5,765,759 ticks — the largest a
+quarter note holds — survives the 32-bit float round trip intact. That is the
+whole reason your field list is bar, beat and ticks-within-the-quarter: an
+absolute count passes 2^24 within three quarter notes and comes back rounded
+with nothing to say so.
+
+**win — one line of your file is the only thing missing.** `NodeIo` carries a
+sample rate and nothing else (`graph.hpp`), so **the engine has no transport to
+give a device.** Everything from the device host to the patch is built and
+proved; `LibPdEngine::setTransport` is the seam and it is what the test drives.
+The engine carrying transport to a node is `src/adi/engine/**`, yours and
+standing, so I have not touched it.
+
+**Why (e) before (d).** `[adi.sample]`'s handoff has to meet an external that
+does not exist yet and whose slot API is win_codex's to agree, while (e)
+depended on nothing and unblocks the analyser's own scope. (d) is next and I
+will do the half that does not need the external: the declaration, the
+lock-free handoff, the BLAKE3 hash in device state, and a test with a raw
+buffer — the same pattern that worked for `[adi.param]` before its abstraction
+existed.
+
+**A wasted half hour, recorded because the cause is mundane and repeatable.** I
+restored a planted fault, rebuilt, and read eight failures that were the *stale
+binary's*. I went looking for a bug in a patch that was correct all along, and
+only a diagnostic print showed the values arriving perfectly. **After restoring
+a plant, rebuild and re-run before reading anything into the output** — and if
+a result contradicts a file you have just read, suspect the build before the
+file.
+
+---
+
+## 2026-09-27 — round 5c: MIDI into Pd devices (ADR-0194), and the encoder was already written
+
+Round 5 item (c). 100 checks in `adi_pd_engine_tests`, 50 of 50 suites.
+
+**win — the instruction ran into ADR-0054, and the way out was already in the
+tree.** "The track's notes, CCs and pitch bend reach `[notein]`, `[ctlin]` and
+`[bendin]`" assumes the engine has MIDI to forward. It does not, by design:
+ADR-0054's parser is titled *no MIDI byte survives it*, and `EventType` is
+`NoteOn`, `NoteOff`, `NoteExpression`, `ParamValue`, `ParamMod`. There is no CC
+event and no pitch-bend event anywhere. A `[ctlin]` wants a controller number
+and a 0..127 value and the engine holds neither.
+
+So it cannot be forwarding; it has to be **encoding** — and the question is
+whose encoder. **A Pd patch is an output edge like a VST3 plugin, so it is fed
+by `MpeRouter` (ADR-0097),** which is per-device, stateful, allocation-free and
+audio-thread safe already. Nothing is re-encoded twice: the quantisation a
+patch sees is the one a JUCE-built MPE synth sees. A second encoder here would
+have been a second set of rounding rules to keep in step with the first, and
+they would have diverged at the first bug fixed in only one.
+
+**The route is `MpeMidi`, and that is what makes all three objects fire.**
+`Plain` puts every note on channel 1 and DROPS pitch and timbre, so `[bendin]`
+would never fire once under it. A patch that ignores channel still hears every
+note, so the member-channel spread costs a naive patch nothing.
+
+**`inmidi_*`, not `libpd_*`** — every libpd MIDI entry point wraps its call in
+`sys_lock()`, the same trap as `libpd_float` in d21. Underneath,
+`inmidi_noteon` builds three stack atoms and dispatches through a symbol the
+instance already holds: no lock, no `gensym`.
+
+**Three things worth keeping:**
+
+1. **`MpeOut::word` is filled only for a `Control`.** On a note the router
+   leaves it zero and puts velocity in `value` as a 0..1 double. Reading `word`
+   would have made **every note-on a note-off** — a silent instrument, with
+   nothing in any log to say why. Caught by reading `mpe_output.cpp`, then
+   confirmed by planting it: two checks fail.
+2. **A quiet note must not become a note-off.** Velocity 0 *is* a note-off, so
+   the conversion floors at 1.
+3. **A test for "the value changed" passes when nothing arrives.** My bend
+   check first read "moved off centre" — and the array holds 0 before anything
+   is written, so `|0 - 8192| > 1` was true and it passed under a planted fault
+   that dropped every control message. It now requires a bend ABOVE centre and
+   inside 14 bits, which 0 fails. **Assert the value that should be there,
+   never merely that the initial one is gone.** That one is general enough that
+   I would take it as a rule.
+
+**Note for whoever merges second:** ADR-0194's row is added here as `used`;
+`win/color-bass` adds it as `reserved`. Same one-line conflict as 0183, same
+resolution — `used`, or check 8 fails.
+
+---
+
+## 2026-09-27 — round 5b: the built-ins hook, and a claim of mine that a planted fault disproved
+
+Round 5 item (b): the registration hook for ADI's compiled-in externals
+(ADR-0188 d8, ADR-0192 d1). ADR-0183 gains d26. 85 checks in
+`adi_pd_engine_tests`, 50 of 50 suites.
+
+**win_codex — the hook's shape, for you to use or to argue with.** An external
+declares itself beside its own definition:
+
+    extern "C" void adi_combchord_tilde_setup(void);
+    ADI_PD_BUILTIN(adi.combchord~, adi_combchord_tilde_setup)
+
+**Nothing in `src/juce/**` is edited to admit one**, which is the point: the
+externals are yours and that directory is not (ADR-0192 d6). Add the source to
+`ADI_PD_BUILTIN_SOURCES` in `adi_daw/CMakeLists.txt` — one line, and the list is
+there with your two device names commented in it. If you would rather have an
+explicit table than self-registration, say so in your PR; the table is four
+lines either way and I have no attachment to this one.
+
+**Two traps are already handled for you**, both of the silent kind:
+- **A self-registering translation unit inside a STATIC library is dropped by
+  the linker** when nothing references it — the external would simply not
+  exist, with no error anywhere. So the list builds an OBJECT library, whose
+  objects are always linked. (Exactly the failure pthreads4w's own
+  `__ptw32_autostatic_anchor` exists to prevent, met twice in one day.)
+- **The registry is a function-local static**, so a registrar in another
+  translation unit that runs before this one still finds a constructed table.
+
+**win — a correction to something I would have written down as fact.** I said
+registration must happen before any instance exists, because `class_new`
+registers with the current instance's `pd_objectmaker`. **I planted the fault
+to prove it — moved `registerAll` into `open`, after `libpd_new_instance` — and
+the test passed.** So I went back to `m_class.c` at the pinned commit:
+
+- `pd_objectmaker` is **one object for the process** (`m_class.c:27`); what is
+  per instance is the method list on each class, `c->c_methods`, indexed by
+  instance.
+- `class_doaddmethod` under PDINSTANCE loops
+  `for (i = 0; i < pd_ninstances; i++)` — it adds to **every instance that
+  exists at that moment**.
+- `pdinstance_new` copies **instance 0's** list into each new instance.
+
+Instance 0 is always present and always in that loop, so **a class registered
+at any moment reaches every instance, earlier and later**. Your "right after
+`libpd_init`" is still right, but not for reachability — for **determinism**:
+every device opens against the same complete vocabulary, and ADR-0177 fix 3
+says what a patch can do is knowable from its text, which a vocabulary that
+depended on load order would break. `add` refuses after `registerAll` for that
+reason and for no reason to do with Pd.
+
+I would not have found this by reading. The plant that passed is what sent me
+back.
+
+---
+
 ## 2026-09-27 — round 5a: the Pd tier builds on Windows; d24 closed on pthreads4w
 
 #138 merged green by head SHA (`9a1d461`). This is round 5 item (a): the
