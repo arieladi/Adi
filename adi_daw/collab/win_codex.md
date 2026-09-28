@@ -7,6 +7,18 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
+## 2026-09-28 — #150 refreshed after #147 and #148
+
+At win's request, merged origin/main (`deff97e`) into codex/colorbass-dsp.
+Only README and the appended decisions conflicted. Retained main's complete
+decision text, including ADR-0179, and appended the unchanged ADR-0193; checked
+the bytes and ADR-0183/0192/0193 order. validate_schema.py now counts 193 ADRs.
+README reflects that and the measured **5092 checks across 51 headless suites**.
+MSVC /WX and the full Git Bash test_all.sh run pass, all validators clean.
+The diff against main is still only our eleven DSP/test/doc files. No DSP or
+host changes were added; review points 3–5 remain for PR 2 with tests.
+The replacement head requires its own CI verification before win merges #150.
+
 ## 2026-09-27 — #150 unstacked after #146 merged
 
 #146 merged at 19:01:53 UTC. Merged origin/main at d66313c into

@@ -5,6 +5,50 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-28 — ADR-0011: `adi-gen-02` replaces `adi-gen-01`, and it loads in Surge
+
+Branch `win/adi-surge-gen02`. Adi's call: ship one pack — a fresh 98-table set
+generated from first principles with no references — plus everything Surge
+already ships, and **do not generate anything again**. `adi-gen-01` is out.
+
+**Nothing was regenerated.** The 98 files were taken as they are.
+
+**They were verified before being added**, because Adi's instruction was that
+if the only doubt is whether they fit Surge, then don't add them at all:
+
+- **Surge's own loader reads all 98.** I staged them into Surge's factory
+  wavetable folder and ran upstream's "All Factory Wavetables Are Loadable".
+  Passed in 5.1 s.
+- **With a negative control**, because that test passes when the folder is
+  empty too, so passing alone proves nothing. I put a corrupt `.wav` in the
+  staged folder: the test failed. Removed it: passed. So the folder really is
+  being read and every file really is being loaded.
+- **The Surge tree was left pristine.** Staged copy deleted,
+  `git -C surge status` empty, `git diff upstream/main` still empty.
+- **No silent or clipped tables:** 8–32 frames, peaks 0.33–0.999.
+
+**One thing I nearly got wrong.** My `motion` figure called 14 tables static,
+including three named as vowel morphs, which looked like a defect in the pack.
+It is not: `motion` measures change **per frame step**, and a smooth morph
+across 16 frames moves in small steps. Checked against their keypoints, "Oh to
+Oo" travels from brightness 5.5 to 3.1 and its formant from 15.8 to 8.9 dB.
+Only `Texture/14-Static` is genuinely frame-identical, and its name says so.
+
+**Build re-verified on current main** (`d66313c`, six days on from the last
+build): CLAP builds, `ctest` **145/145**, `clap_smoke` **9/9**.
+
+**Housekeeping.** This worktree still had a stale, dirty tree from the
+previous session: old copies of five files and two deletions, which would have
+reverted ADR-0010 and deleted `adi-gen-01`'s metadata had I committed them.
+Diff saved, then restored from `HEAD`. Worth remembering that a long-lived
+worktree is not clean just because the last session finished.
+
+**Still not done:** a table has never been *played* through an oscillator,
+only loaded. That needs either `surgepy` or an in-plugin path, and the deeper
+plugin work still waits on the fork origin (ADR-0006).
+
+---
+
 ## 2026-09-21 — ADR-0010 and the first pack, `wavetables/adi-gen-01/`
 
 Branch `win/adi-surge-wavetables`.

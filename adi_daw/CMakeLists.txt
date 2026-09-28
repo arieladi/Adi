@@ -293,11 +293,51 @@ target_link_libraries(adi_core PRIVATE adi_warnings adi_blake3 adi_miniz)
 # Windows; the half that scans directories is not.
 option(ADI_WITH_PD "Build the Pure Data device tier (needs libpd)" ON)
 if(ADI_WITH_PD AND MSVC AND (NOT PTHREADS_LIB OR NOT PTHREADS_INCLUDE_DIR))
-    message(STATUS
-        "ADI_WITH_PD off: libpd needs pthreads under MSVC and none was given. "
-        "Pass -DPTHREADS_LIB=<...> -DPTHREADS_INCLUDE_DIR=<...> to build it. "
-        "See ADR-0183 d24.")
-    set(ADI_WITH_PD OFF)
+    # pthreads4w, granted by the director for exactly this (ADR-0192 d5).
+    #
+    # THE WHOLE LIBRARY IS ONE TRANSLATION UNIT. `pthread.c` #includes 145 of
+    # the other 146 sources -- everything except `signal.c`, which upstream
+    # leaves out on purpose. So this target is one source file, and adding a
+    # second would define every symbol twice.
+    #
+    # `dll.c` IS among them and must stay, because a STATIC pthreads4w has no
+    # DllMain to initialise it. Instead `dll.c` puts `on_process_init` in
+    # `.CRT$XCU` so the C runtime calls it before main, and `implement.h`
+    # references `__ptw32_autostatic_anchor()` so the linker cannot drop the
+    # module that holds it. Compiling `pthread.c` alone carries both.
+    #
+    # `__PTW32_STATIC_LIB` is PUBLIC because it changes `__PTW32_DLLPORT` in
+    # `_ptw32.h`, which every consumer's `pthread.h` reads: a library built
+    # static and a consumer expecting a DLL disagree about `dllimport` and the
+    # link fails. `HAVE_CONFIG_H` is PRIVATE -- `config.h` defines
+    # `__PTW32_BUILD`, which is true of the library and false of its users.
+    # The cleanup style is left alone: `pthread.h` defaults to
+    # `__PTW32_CLEANUP_C`, which is the flavour we want, and a default both
+    # sides read beats a definition one side might miss.
+    if(EXISTS "${ADI_THIRD_PARTY}/pthreads4w/pthread.c")
+        add_library(adi_pthreads4w STATIC "${ADI_THIRD_PARTY}/pthreads4w/pthread.c")
+        target_compile_definitions(adi_pthreads4w
+            PUBLIC  __PTW32_STATIC_LIB
+            PRIVATE HAVE_CONFIG_H _CRT_SECURE_NO_WARNINGS)
+        target_include_directories(adi_pthreads4w SYSTEM PUBLIC
+            "${ADI_THIRD_PARTY}/pthreads4w")
+        # Upstream's own warnings, not this tree's: 2017 C against MSVC 19.4x.
+        target_compile_options(adi_pthreads4w PRIVATE
+            /wd4100 /wd4127 /wd4189 /wd4244 /wd4267 /wd4996)
+        # libpd tests these two and calls FATAL_ERROR if either is empty, then
+        # uses PTHREADS_LIB in target_link_libraries -- where a TARGET name is
+        # better than a path, because it carries the include directory and the
+        # PUBLIC definition above with it.
+        set(PTHREADS_LIB adi_pthreads4w CACHE STRING "" FORCE)
+        set(PTHREADS_INCLUDE_DIR "${ADI_THIRD_PARTY}/pthreads4w" CACHE PATH "" FORCE)
+        message(STATUS "ADI_WITH_PD on for MSVC: pthreads4w from third_party (ADR-0192 d5)")
+    else()
+        message(STATUS
+            "ADI_WITH_PD off: libpd needs pthreads under MSVC, and "
+            "third_party/pthreads4w is absent. It is pinned and fetched by:\n"
+            "    bash adi_daw/tools/fetch_external.sh --build-only")
+        set(ADI_WITH_PD OFF)
+    endif()
 endif()
 
 if(ADI_WITH_PD)
@@ -312,6 +352,27 @@ if(NOT EXISTS "${ADI_THIRD_PARTY}/libpd/pure-data/src/m_pd.h")
         "pure-data IS the DSP; libpd without it is a wrapper around nothing.\n"
         "    bash adi_daw/tools/fetch_external.sh --build-only")
 endif()
+# LIBPD'S HEADERS DECLARE EVERY SYMBOL `__declspec(dllimport)` ON WINDOWS
+# UNLESS TOLD OTHERWISE, and we link the static library. `m_pd.h` defines
+# `EXTERN` as `dllexport` for libpd's own sources (`PD_INTERNAL`) and
+# `dllimport` for everyone else, so `adi_core` compiled references to
+# `__imp_libpd_init` and the rest, and the link failed with two dozen LNK2019s
+# naming symbols that were sitting in the archive all along. Measured, in CI:
+# the compile was clean and only the link failed, which is what a dllimport
+# mismatch looks like.
+#
+# `PD_DEFINE_EXTERN` is libpd's own knob for exactly this ("a custom string for
+# special linking purposes"). Setting it to `extern` makes `EXTERN` plain on
+# both sides -- `m_pd.h` guards it with `#ifndef EXTERN`, so this wins -- and
+# libpd's own sources stop emitting `dllexport` too, which is right for an
+# archive nobody imports from.
+#
+# It is set unconditionally rather than under `if(MSVC)`: on ELF and Mach-O
+# `EXTERN` is already plain `extern`, so this changes nothing there, and one
+# code path is worth more than a conditional that only one platform exercises.
+# A NORMAL variable, not a cache entry: libpd declares it with `option()`, and
+# under CMP0077 a normal variable of the same name makes `option()` a no-op.
+set(PD_DEFINE_EXTERN      extern)
 set(PD_MULTI              ON  CACHE BOOL "" FORCE)
 set(PD_UTILS              ON  CACHE BOOL "" FORCE)
 set(PD_EXTRA              ON  CACHE BOOL "" FORCE)
@@ -324,6 +385,19 @@ target_include_directories(adi_core SYSTEM PUBLIC
     "${ADI_THIRD_PARTY}/libpd/libpd_wrapper/util"
     "${ADI_THIRD_PARTY}/libpd/pure-data/src")
 target_link_libraries(adi_core PUBLIC libpd_static)
+# LIBPD ONLY LINKS ITS SYSTEM LIBRARIES INTO THE SHARED TARGET, and we build the
+# static one. Read, not discovered in a red build: libpd's CMakeLists gives
+# `Ws2_32` and `${PTHREADS_LIB}` to `libpd` (SHARED) and gives `libpd_static`
+# nothing but its two INTERFACE settings targets, which carry compile
+# definitions and include directories only. So on Windows the pthreads and
+# winsock symbols Pd uses -- `s_inter.c` opens sockets -- are this target's to
+# supply, or `adi_core` fails to link with nothing on any path saying why.
+if(WIN32)
+    target_link_libraries(adi_core PUBLIC Ws2_32)
+    if(MSVC AND TARGET adi_pthreads4w)
+        target_link_libraries(adi_core PUBLIC adi_pthreads4w)
+    endif()
+endif()
 # PDINSTANCE changes struct layouts in m_pd.h, so every translation unit that
 # includes it must agree. It is PUBLIC on the libpd target, but stated here too
 # because a mismatch is not a link error -- it is a silent layout disagreement.

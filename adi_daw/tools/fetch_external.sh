@@ -77,6 +77,21 @@ THIRD_PARTY=(
   # against" with one hash. ADR-0035, ADR-0183.
   "libpd/libpd                  libpd       BSD-3-Clause 0.16.1 ba0dc63262901d658af8bbda5e619a60fa975e78  build submodules"
   "baconpaul/airwin2rack        airwin2rack MIT       -         b6eef0af60cd32641b09837096e41bbcdb030341  build"
+  # pthreads4w 3.0.0, for the Pd tier on Windows (ADR-0192 d5). Pd threads with
+  # pthreads and MSVC ships no implementation, so without this libpd's own
+  # CMakeLists refuses to configure and ADI_WITH_PD stays off.
+  #
+  # PINNED BY COMMIT, tag "-", like airwin2rack and for the same reason: the
+  # 3.0.0 release line lives on the branch `version_3` and was never tagged.
+  #
+  # AND PINNED ON A MIRROR, which is the part to check rather than trust.
+  # Upstream is SourceForge (`https://git.code.sf.net/p/pthreads4w/code`) and
+  # this script clones from GitHub. The commit below was read off BOTH on
+  # 2026-09-27 and they are the same object -- `git ls-remote` gives
+  # 8c1d612b... for refs/heads/version_3 at SourceForge and at this mirror. So
+  # the pin is upstream's own commit, reached through a mirror, not a fork's
+  # idea of it. Re-check that equality before ever moving this pin.
+  "jwinarske/pthreads4w         pthreads4w  Apache-2.0 -         8c1d612b376333619c564ef8dadd2410b9ae0563  build"
   "juce-framework/JUCE          JUCE        AGPL-3.0  9.0.2     72782788ce18c2d4d760b28e0921d6ffc6431102  juce"
 )
 

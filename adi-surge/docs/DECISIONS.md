@@ -587,3 +587,56 @@ canonical artifact.** The pack cannot be regenerated, and does not need to be.
 - Factory placement in `surge/resources/data/wavetables/` waits for the fork
   origin (ADR-0006). Until then the pack lives in `wavetables/` in the
   monorepo, and users copy it into Surge's user `Wavetables` folder.
+
+---
+
+## ADR-0011 — The shipped pack is `adi-gen-02`; `adi-gen-01` is removed; Surge's own tables stay
+
+**Date:** 2026-09-28 · **Agent:** win · **Directed by:** Adi · **Supersedes:**
+ADR-0010's "first pack" paragraph only — its null rule stands
+
+**Context.** ADR-0010 shipped `adi-gen-01`: 80 tables generated from the
+descriptors of reference tables that were deleted afterwards. Since then a
+fresh pack of 98 tables was generated **from first principles, with no
+references at all**, elsewhere in Adi's work. Adi's call: ship only the new
+pack plus everything Surge already has, and do not generate anything again.
+In his words, asked whether to regenerate: *"why would we want to generate now
+again? ... surge have great wavetables already."*
+
+**Decision.**
+
+1. **`wavetables/adi-gen-02/` is the pack this project ships.** 98 tables in
+   seven banks of 14: Chimes, Core, Grit, Talk, Texture, Tones, Voices. MIT.
+2. **`wavetables/adi-gen-01/` is removed.** It was made from references; the
+   new pack was not, which makes its provenance simpler, and Adi asked for one
+   pack rather than two.
+3. **Surge's 418 factory wavetables are untouched.** Ours are an addition, not
+   a replacement. Nothing is written into `surge/resources/data/wavetables/`.
+4. **Nothing is regenerated.** `tools/wtgen` stays as the prototype for the
+   in-plugin generator (ADR-0009) and as an analysis tool. It is not run to
+   make ship-ready packs any more.
+5. **ADR-0010's null rule still governs** anything generated from a reference
+   in future, in the plugin or out of it.
+
+**Verification before adoption**, because a pack Surge cannot read is worse
+than no pack (Windows, 2026-09-28):
+
+- **All 98 load through Surge's own loader.** They were staged into Surge's
+  factory wavetable folder and the upstream test "All Factory Wavetables Are
+  Loadable" was run: passed. The staged copy was then removed and
+  `git -C surge status` confirmed clean, with the fork delta still empty.
+- **With a negative control.** A deliberately corrupt `.wav` was added to the
+  staged folder first and the test failed, which proves it reads that folder.
+  It passed again once the file was removed. A test that would pass either way
+  proves nothing.
+- **None is silent, clipped or empty**: 8 to 32 frames, peaks 0.33 to 0.999.
+  One table is deliberately static and named so.
+
+**Consequences.**
+
+- The pack has no descriptors or sources in this repo, exactly as
+  `adi-gen-01` had none. **The files are the canonical artifact.**
+- 13 MB of `.wav` enters the monorepo. That is the cost of shipping audio
+  content in-repo, and it replaces the 80 tables removed here.
+- The in-plugin generator (ADR-0009) is unaffected: it generates on demand
+  from a descriptor and does not ship tables.
