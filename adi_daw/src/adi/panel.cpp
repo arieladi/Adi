@@ -119,4 +119,62 @@ std::vector<Match> search(const std::vector<Declared>& declared, std::string_vie
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// ADR-0198: the ADI Airwindows active-algorithm filter.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A record's id as a number, or -1 when it is not one.
+///
+/// CLAP ids reach the panel as the device contract's TEXT form -- fixed-width
+/// lowercase hex (`ClapDevice::paramIdToText`, "%08x") -- so this parses hex.
+/// Anything that is not a clean id is -1, and the caller keeps it.
+std::int64_t idAsNumber(const std::string& id) {
+    if (id.empty() || id.size() > 16) return -1;
+    std::int64_t v = 0;
+    for (const char c : id) {
+        int d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else return -1;
+        v = v * 16 + d;
+    }
+    return v;
+}
+
+}  // namespace
+
+std::vector<std::size_t> activeAlgorithmParams(const std::vector<Record>& records,
+                                               std::int32_t algorithm) {
+    std::vector<std::size_t> out;
+    out.reserve(records.size());
+
+    const std::int64_t lo = kAwParamBase +
+                            static_cast<std::int64_t>(algorithm) * kAwParamStride;
+    const std::int64_t hi = lo + kAwParamStride;   // exclusive
+
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        const std::int64_t id = idAsNumber(records[i].id);
+
+        // NOT A NUMBER: keep it. This filter exists for one plug-in family,
+        // and a record it cannot parse belongs to something else. Hiding a
+        // control the user needs is worse than showing one they do not.
+        if (id < 0) { out.push_back(i); continue; }
+
+        // BELOW THE FIRST BLOCK IS SHARED, and that covers the two named
+        // parameters -- Algorithm is 0 and Auto Gain is 1, both under 100 --
+        // so they need no special case. There was one here and it was dead
+        // code: a planted defect that deleted it changed nothing, which is
+        // how it was found. A suite that grows a third shared parameter
+        // tomorrow is kept by the same rule.
+        if (id < kAwParamBase) { out.push_back(i); continue; }
+
+        // Inside some algorithm's block: shown only if it is THIS one.
+        if (id >= lo && id < hi) out.push_back(i);
+    }
+    return out;
+}
+
 }  // namespace adi::panel
