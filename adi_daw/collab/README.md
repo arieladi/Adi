@@ -244,6 +244,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `../tools/adi-drone/drone.py`, retry tests and README | win_codex - delegated by win | `codex/drone-connection-retry` (stacked on #167) | 2026-09-28 |
 | `../tools/adi-drone/drone.py`, its parallel-worker tests and README | win_codex - delegated by win | `codex/drone-parallel` | 2026-09-28 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `plugins/dynamic-eq/**` (ADR-0195 d1/d2, delegated by win), `plugins/README.md` (entry only), `CMakeLists.txt` (pure gesture test only), `README.md` (measured check count) | win_codex | `codex/dynamic-eq` | 2026-09-28 |
