@@ -38,7 +38,7 @@ private:
         double targetAllpass = 0;
     };
     struct Bank {
-        std::array<Voice, voices> voices{};
+        std::array<Voice, voices> resonators{};
         double pole = 0;
     };
     void tune(Bank& bank) noexcept;

@@ -28,12 +28,12 @@ void CombChord::prepare(double sampleRate) {
     rate_ = bounded(sampleRate, 44100, 768000, 48000);
     // Lowest supported note is 40 Hz; two guard samples cover rounding.
     const auto size = static_cast<std::size_t>(std::ceil(rate_ / 40)) + 2;
-    for (auto& b : banks_) for (auto& v : b.voices) v.line.assign(size, 0);
+    for (auto& b : banks_) for (auto& v : b.resonators) v.line.assign(size, 0);
     fadeSamples_ = static_cast<std::size_t>(std::llround(rate_ * 0.010));
     reset();
 }
 void CombChord::clear(Bank& bank) noexcept {
-    for (auto& v : bank.voices) {
+    for (auto& v : bank.resonators) {
         std::fill(v.line.begin(), v.line.end(), 0);
         v.previousInput = v.previousOutput = v.lowpass = 0;
     }
@@ -53,8 +53,8 @@ void CombChord::beginFade() noexcept {
     tune(next);
     if (resetRequested_) clear(next);
     for (std::size_t i = 0; i < voices; ++i) {
-        const auto& old = banks_[active_].voices[i];
-        auto& voice = next.voices[i];
+        const auto& old = banks_[active_].resonators[i];
+        auto& voice = next.resonators[i];
         if (!resetRequested_) {
             // Color/Decay preserve the ringing history. Restarting it every
             // control update would inject a new delayed step once per period.
@@ -105,7 +105,7 @@ void CombChord::tune(Bank& bank) noexcept {
     const double pole = color_ / 2;
     bank.pole = pole;
     for (std::size_t i = 0; i < voices; ++i) {
-        auto& v = bank.voices[i];
+        auto& v = bank.resonators[i];
         const double hz = 440 * std::exp2((chords_[state_][i] - 69) / 12);
         const double w = 2 * std::numbers::pi * hz / rate_;
         const double period = rate_ / hz / (mode_ == Mode::Square ? 2 : 1);
@@ -129,9 +129,9 @@ void CombChord::tune(Bank& bank) noexcept {
     }
 }
 double CombChord::tick(Bank& bank, double x, bool smooth) noexcept {
-    const auto size = bank.voices[0].line.size();
+    const auto size = bank.resonators[0].line.size();
     double sum = 0;
-    for (auto& v : bank.voices) {
+    for (auto& v : bank.resonators) {
         if (smooth) v.allpass += (v.targetAllpass - v.allpass) / static_cast<double>(remaining_);
         const auto index = (write_ + size - v.delay) % size;
         const double d = v.line[index];
@@ -146,11 +146,11 @@ double CombChord::tick(Bank& bank, double x, bool smooth) noexcept {
     return sum / voices;
 }
 void CombChord::process(const float* input, float* output, std::size_t frames) noexcept {
-    if (banks_[active_].voices[0].line.empty()) {
+    if (banks_[active_].resonators[0].line.empty()) {
         std::copy_n(input, frames, output);
         return;
     }
-    const auto size = banks_[active_].voices[0].line.size();
+    const auto size = banks_[active_].resonators[0].line.size();
     for (std::size_t n = 0; n < frames; ++n) {
         if (pending_ && !remaining_) beginFade();
         const double x = std::isfinite(input[n]) ? input[n] : 0;

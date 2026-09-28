@@ -41,6 +41,9 @@ replacement while blocks render, and zero allocations on the audio thread
 (C++ new counters plus the MSVC Debug CRT hook, including Pd malloc/realloc).
 The full measured total is 5613 checks across 58 suites with validators clean.
 All rendering was into memory; no sound device or live drone folder was used.
+The first CI build caught a GCC name collision between Bank::voices and the
+outer voice-count constant. Renamed the bank member to resonators; no behavior
+or test-count change.
 
 ---
 
