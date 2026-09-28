@@ -10,6 +10,109 @@ handover notes addressed to you.
 
 ---
 
+## 2026-09-28 — re-landing a stranded commit, a fork left unignored by the rename, and the orphans removed
+
+### Owning three of my own mistakes first
+
+**win is right that it is ADR-0018, not an amendment to ADR-0006.** I cited the
+append-only rule to justify writing superseding ADRs and then, in the same
+document, asked for an existing ADR's consequences to be edited. Those cannot
+both be right. His scripted byte-identical assertion on ADR-0006 is the better
+habit and I have adopted it below.
+
+**The 0017 collision was mine** — claimed for the CLAP decision on a branch that
+was not visible when he began drafting. That is precisely the window ADR-0051
+describes, and I had added the reservation table in the very commit that
+collided.
+
+**And my 2026-09-21 verification commit never landed.** `2593ef1` was committed
+onto `mac/adi-surge-adr0005` — a branch about something else entirely — against
+the pre-rename `adi-vst/` path, and it is in no remote. Same class of near-miss
+win reported when his docs commit went to `agent/win-dev`. Its content is
+restored below; the stranded commit can be discarded.
+
+On the garbled relay: my log had it as win reconstructed it. A preprocessor
+define cannot strip frameworks from a link line. **Emptying the four attributes
+removes the dead frameworks; `NO_AUTH=1` is what makes the remainder link.** Two
+independent changes; the acceptance test needs both.
+
+### A real hazard the rename left behind — fixed
+
+`adi-vst/` became `adi-vital/` in `78106cb`, and `.gitignore` moved with it:
+`adi-vital/vital/`, with **no rule left for `adi-vst/vital/`**. The fork was still
+physically at `adi-vst/vital`. So checking out `main` left 216 MB of C++
+**untracked and unignored** — I confirmed it, `git status` listed it immediately
+after checkout. One `git add -A` from the stray-vendoring accident ADR-0001 exists
+to prevent.
+
+Fixed by moving the fork to `adi-vital/vital`, which the existing rule already
+covers. `git check-ignore` confirms it, and `git status` is clean again. Anyone
+else with a clone from before the rename has this hazard sitting in their working
+tree right now and should do the same `mv`.
+
+Also: the fork's GitHub repo was renamed `adi-vst-synth` → `adi-vital`, so a push
+only succeeded via GitHub's redirect. I have repointed `origin` at the real URL.
+The clone instructions in `README.md` still name the old repo.
+
+### win's exporter changes: all fifteen verified
+
+Checked `e5cfe66` attribute by attribute rather than trusting the summary.
+**`<XCODE_MAC>` 10/10** — `extraDefs` now `JUCE_OPENGL3=1 NO_AUTH=1
+JUCE_VST3_CAN_REPLACE_VST2=0`; `extraCustomFrameworks`, `frameworkSearchPaths`,
+`externalLibraries`, `extraFrameworks`, `iosDevelopmentTeamID`,
+`postbuildCommand`, `customPList`, `vst3Folder` all empty; `vstLegacyFolder`
+deleted. **Both `<CONFIGURATION>`s 3/3** — `enablePluginBinaryCopyStep="0"`,
+`osxCompatibility="10.13 SDK"`, and `fastMath` correctly left at `1`. **Format
+flags 4/4.** It propagated into the regenerated `project.pbxproj` too: zero
+`firebase`, zero `EFXDM6K3KJ`, zero VST3 `INSTALL_PATH`, zero `REQUIRE_AUTH`,
+zero `auval`, `MACOSX_DEPLOYMENT_TARGET = 10.13`.
+
+### The eight orphans — removed in `7064765`
+
+The resave left plists and entitlements for AU, AUv3, Standalone Plugin and VST2,
+and **four still carried the `tytel.org` ATS exception** that came out of the
+`.jucer` — `NSTemporaryExceptionAllowsInsecureHTTPLoads` with a TLS 1.1 minimum,
+for a domain §7 forbids contacting. Nothing shipping was affected
+(`Info-VST3.plist` and `VST3.entitlements` are clean), but they sat one
+`buildAU="1"` from restoring it silently. Same shape as the orphaned
+`Vial_VST.vcxproj{,.filters}` ADR-0007 deleted on Windows.
+
+Verified safe before deleting: `grep -c` against the regenerated pbxproj returns
+**0 for each of the eight**; the only referenced files are `Info-VST3.plist`,
+`VST3.entitlements` and `Shared_Code.entitlements`. Taken as macOS build output,
+which the roster puts in my lane. Pushed to `ai-preset-generator`.
+
+### Still blocked: Xcode is still gone
+
+```
+xcode-select: error: tool 'xcodebuild' requires Xcode, but active developer
+directory '/Library/Developer/CommandLineTools' is a command line tools instance
+```
+
+`/Applications/Xcode*.app` absent, `mdfind` finds no copy, a week on. So:
+
+| | |
+|---|---|
+| arm64 VST3 builds — 0 errors, no Firebase symbols, `_GetPluginFactory` exported | **verified 2026-09-20**, with six overrides |
+| all 15 `.jucer` changes present and propagated | **verified**, needs no Xcode |
+| the same build with **zero** overrides — the real acceptance test | **STILL UNRUN** |
+
+Every override I needed maps to a defect now fixed, so it should pass. **That
+remains a prediction, not a result.** And with win's validator tree gone too, no
+platform currently holds a live 15/15.
+
+**Adi: this needs Xcode reinstalled** (~17 GB plus build space; 28 GiB free of
+228 GiB last I looked). Not working around it — a CMake path would violate
+ADR-0002 and ADR-0017 and would not test the build that ships.
+
+Order once it is back: zero-override acceptance test; rebuild `tools/validator`
+against stock JUCE 6.0.5 and run 15/15 against the macOS arm64 VST3, never
+validated on this platform; then the deferred NaN-injection test on
+`GCC_FAST_MATH`. That middle step also settles whether `CMakeLists.txt:7`'s
+hardcoded Windows JUCE path really is overridable by `-DJUCE_PATH`, which I
+asserted and have not proven.
+
+
 ## 2026-09-20 (later still) — INSTRUCTIONS FOR win: the macOS exporter in `plugin/vital.jucer`
 
 Adi's call: **win is sole owner of `Vital.jucer`.** I am not building Projucer
