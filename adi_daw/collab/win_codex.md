@@ -7,6 +7,46 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
+
+## 2026-09-28 - mission 3, Auto Gain Stage Session
+
+Task E delegated by win. Claimed session, new gain-stage/input-gain files and
+their tests. Session::autoGainStage renders an isolated session from the Store,
+using the same loader, clip renderer and MIDI source, with ChainInput taps.
+No driver is opened and the live transport/plugins are not processed. Track
+mute/solo and strip automation are monitoring choices; clip gain/fades/mutes
+and instrument automation remain. Groups/returns are not staged. Missing media,
+unresolved devices, unsupported playback, nonfinite audio and stale undo heads
+refuse the write. One OpJournal batch of mixer.setInputGain ops is one undo.
+
+Found a necessary engine gap: inputGainDb was only read/projected, never applied
+to audio. Session now inserts a persistent, atomic-target input-gain node before
+audio inserts and after an instrument. Existing zero-gain graphs gain no node;
+a node survives later zeroing for retired graph safety. Edits ramp for 5 ms.
+ChainInput taps remain before this gain, so repeated staging sets an absolute
+gain rather than accumulating it. No schema or op catalog change was needed.
+
+Metering: 400 ms windows / 100 ms hops, absolute -70 and relative -10 gates.
+RMS averages stereo channel energies; LUFS sums K-weighted energies with the
+-0.691 calibration. Reuses existing K filters and TruePeakMeter, flushing its
+interpolator. Mixxx's report pointed to libebur128; constants were verified in
+https://github.com/jiixyj/libebur128/blob/master/ebur128/ebur128.c (no copied code).
+Short selections pad to 400 ms; longer ones use complete windows. Default range
+ends at the last unmuted clip, explicit ranges are allowed, at most one day.
+Ceiling limits the gain before the write; silent tracks retain their setting.
+This is a message-thread/offline API; menu wiring is not part of this PR.
+
+MSVC /WX and full harness: 5632 checks across 59 suites, validators clean.
+One additional instrument-placement check passes in the final focused suite,
+bringing the combined measured total to 5633/59.
+The new suite has 23 checks: exact default RMS, LUFS calibration, peak ceiling,
+MIDI-driven instrument render, silence gating, clip gain, block independence,
+repeat determinism, atomic media failure and one undo. A nonlinear insert
+proves gain placement: planting unity multiplication caused its check to fail;
+restoring the gain passed. No live drone directory or audio device was used.
+
+---
+
 ## 2026-09-28 — mission 3, Dynamic EQ main refresh
 
 Merged main after the color-bass DSP and analyser taps landed, preserving both

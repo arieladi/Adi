@@ -42,6 +42,8 @@
 #pragma once
 
 #include "adi/engine/host.hpp"
+#include "adi/engine/gain_stage.hpp"
+#include "adi/engine/input_gain.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
@@ -207,6 +209,9 @@ public:
                                                          ScopePoint point = ScopePoint::PostFader);
     void closeScope(std::int64_t trackId, ScopePoint point = ScopePoint::PostFader);
 
+    /// Message thread: isolated offline analysis, then one undoable transaction.
+    [[nodiscard]] GainStageResult autoGainStage(Store& store, const GainStageOptions& options = {});
+
     // Driver thread only, commands between callbacks; see transport.hpp.
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
     // Message/offline driver inspection. Pointer valid until the next rebuild.
@@ -265,6 +270,7 @@ private:
     // ADR-0163: one strip per track, for the whole session. Declared before
     // the graphs so it outlives every graph that names one of its strips.
     MixerStrips strips_;
+    std::map<std::int64_t, std::unique_ptr<InputGainNode>> inputGains_;
     GroupSumming summing_;   ///< ADR-0174: native analog group summing
     using TapKey = std::pair<std::int64_t, ScopePoint>;
     std::map<TapKey, std::shared_ptr<ScopeTap>> taps_; ///< all taps live until audio stops
