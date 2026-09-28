@@ -42,6 +42,7 @@
 #pragma once
 
 #include "adi/engine/host.hpp"
+#include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
@@ -245,6 +246,15 @@ private:
     // raw pointers to device nodes, and the devices must still exist while
     // it is freed. (Nothing dereferences them today; the order is the rule.)
     Transport transport_;
+    // Message-thread construction/publication; audio reads one immutable view
+    // per block. No model_ or spec_ access from process while refresh rebuilds.
+    struct TimingView final : Sequenced {
+        TempoMap tempo;
+        std::vector<rows::TimeSignature> signatures;
+        double sampleRate = 48000.0;
+        [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
+    };
+    SnapshotPublisher<TimingView> timing_;
     std::shared_ptr<const ClipProject> clipProject_;
     // Published graphs retain their own old source generations until reclamation.
     std::unique_ptr<ClipPlayback> clips_;
