@@ -10,6 +10,166 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-27 — round 5d: [adi.sample]'s host side, and the handoff was already written
+
+Round 5 item (d), the last of the five. 55 checks in a new
+`adi_pd_sample_tests`, 51 of 51 suites. ADR-0183 d28–d31.
+
+**win_codex — the slot's shape, and its one lifetime rule.**
+
+    [adi.sample $0 <id> <name>]
+
+From your perform routine: `PdSampleSlots::forBlock(id)` returns
+`const PdSampleBuffer*` — interleaved floats, with `channels`, `frames`,
+`sampleRate` and the media's `blake3`. **Valid until the next call for that
+slot from the audio thread**, which for a perform routine is the next block.
+Holding it longer is the one way to use it wrongly, and it is the only rule.
+
+**The handoff is `SnapshotPublisher`, not a new class.** d4 says "never as Pd
+messages", and Pd messages are wrong twice over: a list of a million floats is
+a million dispatches, and it arrives on whichever thread sent it. The snapshot
+protocol ADR-0010 settled — the one `GraphHost` uses to swap a whole graph
+under a running engine — is exactly this shape: large, immutable once built,
+replaced rarely, one forward-moving reader. Its header spends a page on why
+`collect` frees only what is STRICTLY older than the announced sequence, and
+that page is now exercised rather than trusted: a buffer the reader is on
+survives a publish and a collect, and is freed on the collect after the reader
+moves on.
+
+**The declaration is the third schema in the one scanner, and the third id
+space.** No length, no rate, no range — the asymmetry with `[adi.array]` is
+deliberate: an array's shape is the patch's to choose because the patch fills
+it, while a sample's shape is the file's and the patch finds out what it got.
+All three declarations may be id 1 in one patch, and the test asserts it; one
+shared space would make dropping a sample in change what an automation lane
+points at.
+
+**A test that could not have failed, found and fixed.** The decode test first
+passed ONE path as both the source media and the playable WAV — so
+"the hash is the media's, not the cache's disposable copy" would have passed
+just as happily with the hash taken from the wrong one. It now writes a
+distinct stand-in for the media and asserts the hash matches THAT and
+demonstrably not the WAV's. The general form is worth keeping: **a test that
+supplies one value for two arguments cannot tell you which one the code used.**
+
+Three faults planted, all caught: hashing the copy instead of the source
+(2 checks), merging instead of replacing on re-declare (3), and indexing
+`frame(n)` by sample instead of by frame (1).
+
+**Neither the slot nor the declaration needs libpd**, so both are tested on
+every ABI — including the ones where the Pd runtime is not built (d24). That
+property came from ADR-0177 fix 3 and has now paid three times.
+
+**Round 5 is complete: (a) through (e), four stacked PRs plus this one.**
+
+---
+
+## 2026-09-27 — round 5e: adi.param.pd and adi.transport.pd, and d5's promise measured
+
+Round 5 item (e), taken before (d) — see the note at the end. 115 checks in
+`adi_pd_engine_tests`, 50 of 50 suites. ADR-0183 d27.
+
+**`adi.param.pd`**, as ADR-0177 d5 specifies it: `[r $1-adi-$2]` into the
+outlet, `[loadbang]` into `[f $5]` into the same outlet, MIT.
+
+The test fixture changed with it, and for the better. Its `[adi.param]` box used
+to be there to *fail* — the abstraction did not exist, and the test asserted Pd
+said so. Now the box feeds the published array directly, so what is read back is
+what the abstraction produced: **0.5 before anything sends to it.** That is d5's
+"vanilla Pd opens the patch and every parameter plays at its default", with a
+number on it instead of a claim. Planted by cutting the `[loadbang]`
+connection — that check fails and nothing else does.
+
+**`adi.transport.pd`**: `[r $1-aditr]` into `[unpack f f f f f f f]` and seven
+outlets, ADR-0188 d3's field list in order. The engine sends it with `pd_list`
+and seven stack atoms, through a symbol resolved once in `open` — never
+`libpd_list`, which would take `sys_lock()` and build its atoms on libpd's own
+allocating message stack.
+
+**Exactness, asserted rather than trusted:** 5,765,759 ticks — the largest a
+quarter note holds — survives the 32-bit float round trip intact. That is the
+whole reason your field list is bar, beat and ticks-within-the-quarter: an
+absolute count passes 2^24 within three quarter notes and comes back rounded
+with nothing to say so.
+
+**win — one line of your file is the only thing missing.** `NodeIo` carries a
+sample rate and nothing else (`graph.hpp`), so **the engine has no transport to
+give a device.** Everything from the device host to the patch is built and
+proved; `LibPdEngine::setTransport` is the seam and it is what the test drives.
+The engine carrying transport to a node is `src/adi/engine/**`, yours and
+standing, so I have not touched it.
+
+**Why (e) before (d).** `[adi.sample]`'s handoff has to meet an external that
+does not exist yet and whose slot API is win_codex's to agree, while (e)
+depended on nothing and unblocks the analyser's own scope. (d) is next and I
+will do the half that does not need the external: the declaration, the
+lock-free handoff, the BLAKE3 hash in device state, and a test with a raw
+buffer — the same pattern that worked for `[adi.param]` before its abstraction
+existed.
+
+**A wasted half hour, recorded because the cause is mundane and repeatable.** I
+restored a planted fault, rebuilt, and read eight failures that were the *stale
+binary's*. I went looking for a bug in a patch that was correct all along, and
+only a diagnostic print showed the values arriving perfectly. **After restoring
+a plant, rebuild and re-run before reading anything into the output** — and if
+a result contradicts a file you have just read, suspect the build before the
+file.
+
+---
+
+## 2026-09-27 — round 5c: MIDI into Pd devices (ADR-0194), and the encoder was already written
+
+Round 5 item (c). 100 checks in `adi_pd_engine_tests`, 50 of 50 suites.
+
+**win — the instruction ran into ADR-0054, and the way out was already in the
+tree.** "The track's notes, CCs and pitch bend reach `[notein]`, `[ctlin]` and
+`[bendin]`" assumes the engine has MIDI to forward. It does not, by design:
+ADR-0054's parser is titled *no MIDI byte survives it*, and `EventType` is
+`NoteOn`, `NoteOff`, `NoteExpression`, `ParamValue`, `ParamMod`. There is no CC
+event and no pitch-bend event anywhere. A `[ctlin]` wants a controller number
+and a 0..127 value and the engine holds neither.
+
+So it cannot be forwarding; it has to be **encoding** — and the question is
+whose encoder. **A Pd patch is an output edge like a VST3 plugin, so it is fed
+by `MpeRouter` (ADR-0097),** which is per-device, stateful, allocation-free and
+audio-thread safe already. Nothing is re-encoded twice: the quantisation a
+patch sees is the one a JUCE-built MPE synth sees. A second encoder here would
+have been a second set of rounding rules to keep in step with the first, and
+they would have diverged at the first bug fixed in only one.
+
+**The route is `MpeMidi`, and that is what makes all three objects fire.**
+`Plain` puts every note on channel 1 and DROPS pitch and timbre, so `[bendin]`
+would never fire once under it. A patch that ignores channel still hears every
+note, so the member-channel spread costs a naive patch nothing.
+
+**`inmidi_*`, not `libpd_*`** — every libpd MIDI entry point wraps its call in
+`sys_lock()`, the same trap as `libpd_float` in d21. Underneath,
+`inmidi_noteon` builds three stack atoms and dispatches through a symbol the
+instance already holds: no lock, no `gensym`.
+
+**Three things worth keeping:**
+
+1. **`MpeOut::word` is filled only for a `Control`.** On a note the router
+   leaves it zero and puts velocity in `value` as a 0..1 double. Reading `word`
+   would have made **every note-on a note-off** — a silent instrument, with
+   nothing in any log to say why. Caught by reading `mpe_output.cpp`, then
+   confirmed by planting it: two checks fail.
+2. **A quiet note must not become a note-off.** Velocity 0 *is* a note-off, so
+   the conversion floors at 1.
+3. **A test for "the value changed" passes when nothing arrives.** My bend
+   check first read "moved off centre" — and the array holds 0 before anything
+   is written, so `|0 - 8192| > 1` was true and it passed under a planted fault
+   that dropped every control message. It now requires a bend ABOVE centre and
+   inside 14 bits, which 0 fails. **Assert the value that should be there,
+   never merely that the initial one is gone.** That one is general enough that
+   I would take it as a rule.
+
+**Note for whoever merges second:** ADR-0194's row is added here as `used`;
+`win/color-bass` adds it as `reserved`. Same one-line conflict as 0183, same
+resolution — `used`, or check 8 fails.
+
+---
+
 ## 2026-09-27 — round 5b: the built-ins hook, and a claim of mine that a planted fault disproved
 
 Round 5 item (b): the registration hook for ADI's compiled-in externals

@@ -133,19 +133,38 @@ struct PdExternalRequest {
     int box = 0;
 };
 
+/// `[adi.sample $0 <id> <name>]`
+///
+/// ADR-0192 d4: a sibling of `[adi.param]` and `[adi.array]`, with the same
+/// fixed-id rule and for the same reason -- renaming a slot must not orphan the
+/// media a project refers to.
+///
+/// **It declares no length, no rate and no range**, and that asymmetry is the
+/// point rather than an omission. An array's shape is the patch's to choose,
+/// because the patch fills it; a sample's shape is the FILE's, and the patch
+/// finds out what it got. What the host puts in the slot is what the media
+/// turned out to be.
+struct PdSampleDecl {
+    std::int32_t id = 0;
+    std::string name;
+    int box = 0;
+};
+
 struct PdDeclarations {
     std::vector<PdParamDecl> params;
     std::vector<PdArrayDecl> arrays;
+    std::vector<PdSampleDecl> samples;
     std::vector<PdDeclProblemReport> problems;
 
     /// In file order, as ADR-0177 decision 3 requires for drawing the panel.
     [[nodiscard]] const PdParamDecl* param(std::int32_t id) const noexcept;
     [[nodiscard]] const PdArrayDecl* array(std::int32_t id) const noexcept;
+    [[nodiscard]] const PdSampleDecl* sample(std::int32_t id) const noexcept;
 };
 
 /// Reads every `[adi.param]` and `[adi.array]` in a patch's text.
 ///
-/// **Parameters and arrays have SEPARATE id spaces.** A parameter's id is
+/// **Parameters, arrays and samples have THREE SEPARATE id spaces.** A parameter's id is
 /// `plugin_params.param_id` (ADR-0177 decision 1) and an array is not a
 /// parameter -- it is never automated, mapped or bound. Sharing one space
 /// would make adding a display change what an automation lane points at.
@@ -166,5 +185,11 @@ struct PdDeclarations {
 /// The array's counterpart: `<$0>-adiarr-<id>`. A different stem, so a patch
 /// cannot address an array where a parameter is meant and have it half work.
 [[nodiscard]] std::string pdArrayReceiveName(int dollarZero, std::int32_t id);
+
+/// The receive name the host sends the transport to: `<$0>-aditr`, which is
+/// what `adi.transport.pd` listens on (ADR-0188 d3). A third stem, for the
+/// reason the second one exists: one list arriving where a parameter was meant
+/// should fail outright rather than half work.
+[[nodiscard]] std::string pdTransportReceiveName(int dollarZero);
 
 }  // namespace adi::device

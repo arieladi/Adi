@@ -7,6 +7,19 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
+## 2026-09-28 — #150 refreshed through transport and the Pd sample host
+
+Merged main through #157 (31b85b1), then through #151/#152/#153 (bbdfc4e),
+as win requested. Both agents' log entries are preserved; only this log was
+edited. Main's full decision text remains unchanged, followed by unchanged
+ADR-0193; both 0193 and 0194 reservations remain used. Validator counts 194
+ADRs. The full combined run measures **5278 checks across 53 headless suites**
+(including DSP, transport, and the new pure sample-host suite), all passing.
+The initial harness exit only flagged the old README total, now corrected
+against that run. All validators/layout checks and MSVC /WX pass. The diff
+against main remains our eleven DSP/test/doc files. No DSP changes in this
+refresh; the new head needs its own CI result before win merges.
+
 ## 2026-09-28 — #150 refreshed after #147 and #148
 
 At win's request, merged origin/main (`deff97e`) into codex/colorbass-dsp.
