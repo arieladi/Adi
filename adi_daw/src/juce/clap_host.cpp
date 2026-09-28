@@ -476,6 +476,26 @@ void ClapDevice::readParamsInto(std::vector<ParamDescriptor>& out,
         d.automatable  = (info.flags & CLAP_PARAM_IS_AUTOMATABLE) != 0;
         d.flags        = static_cast<std::uint32_t>(info.flags);
 
+        // ADR-0181 d3's shape, from what the plug-in DECLARES. params.h:
+        // IS_ENUM requires IS_STEPPED, so enum is checked first -- a menu is
+        // a stepped parameter whose steps have names, and calling it a switch
+        // because it happens to have two would hide those names.
+        if ((info.flags & CLAP_PARAM_IS_ENUM) != 0) {
+            d.shape = ParamShape::Menu;
+        } else if ((info.flags & CLAP_PARAM_IS_STEPPED) != 0) {
+            // CLAP counts steps by the RANGE, not by a count field: a stepped
+            // parameter's min and max are the first and last step.
+            const double steps = info.max_value - info.min_value + 1.0;
+            d.stepCount = (steps > 0.0 && steps < 4096.0)
+                              ? static_cast<std::int32_t>(steps) : 0;
+            d.shape = (d.stepCount == 2) ? ParamShape::Switch : ParamShape::Menu;
+        }
+        if (d.shape != ParamShape::Continuous && d.stepCount == 0) {
+            const double steps = info.max_value - info.min_value + 1.0;
+            if (steps > 0.0 && steps < 4096.0)
+                d.stepCount = static_cast<std::int32_t>(steps);
+        }
+
         // Normalised alongside the real value, because the contract carries
         // both and a zero-width range would otherwise divide by zero.
         const double span = info.max_value - info.min_value;
@@ -759,6 +779,29 @@ bool ClapDevice::addressesAMissingParam(const engine::Event& e) const noexcept {
     return i >= 0 && params_[static_cast<std::size_t>(i)].missing;
 }
 
+std::string ClapDevice::paramText(const std::string& paramId,
+                                 double normalized) const {
+    if (plugin_ == nullptr || paramsExt_ == nullptr ||
+        paramsExt_->value_to_text == nullptr) return {};
+    const std::int32_t i = indexOfParamByText(paramId);
+    if (i < 0) return {};
+    const ParamDescriptor& d = params_[static_cast<std::size_t>(i)];
+
+    // PLAIN, because that is the unit CLAP's own text function takes -- the
+    // same conversion ADR-0196 does for events, and the same trap if it is
+    // skipped: `value_to_text(0.25)` on a 20 Hz..20 kHz cutoff would be asked
+    // to name 0.25 Hz.
+    const double plain = d.hasRealRange
+                             ? d.minReal + normalized * (d.maxReal - d.minReal)
+                             : normalized;
+
+    char buf[CLAP_NAME_SIZE]{};
+    if (!paramsExt_->value_to_text(plugin_, paramIds_[static_cast<std::size_t>(i)],
+                                   plain, buf, sizeof buf)) return {};
+    buf[sizeof buf - 1] = '\0';   // a plug-in that fills the buffer and forgets
+    return buf;
+}
+
 std::uint64_t ClapDevice::shapeEpoch() const noexcept {
     return glue_ != nullptr ? glue_->portChanges() : 0;
 }
@@ -1029,6 +1072,12 @@ void ClapDevice::release() {
     processing_ = false;
     if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     activated_ = false;
+}
+
+std::int32_t ClapDevice::indexOfParamByText(const std::string& id) const noexcept {
+    for (std::size_t i = 0; i < params_.size(); ++i)
+        if (params_[i].id == id) return static_cast<std::int32_t>(i);
+    return -1;
 }
 
 std::int32_t ClapDevice::indexOfParam(clap_id id) const noexcept {
