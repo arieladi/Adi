@@ -464,6 +464,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         // expression, member channels and channel messages, or plain MIDI.
         router_.route(io.events.first, io.events.count, off, routed_);
         router_.route(injected_.data(), static_cast<std::int32_t>(injectedUsed_), off, routed_);
+        const std::size_t injectedThisSegment = injectedUsed_;
         injectedUsed_ = 0;
 
         // ADR-0081: Event::frame is BLOCK-relative and the plugin is handed
@@ -480,6 +481,37 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
                 events_.addOut(o, off, n);
             }
         }
+
+        // ADR-0196, 27a item 1: AUTOMATION. A device-addressed ParamValue
+        // becomes an IParameterChanges point, beside the router's mapped CCs
+        // that already ride this same queue (ADR-0073: the process call is
+        // indivisible, so taking the events means taking the parameters).
+        //
+        // The router DROPS these on purpose -- `mpe_output.cpp` calls them
+        // "addressed, not a note stream" -- so until now an automation lane
+        // reached a VST3 plug-in and stopped at the door. `Vst3Device::process`
+        // never looked at `EventType::ParamValue` at all.
+        //
+        // SEGMENT-RELATIVE, like everything else here (ADR-0081): the event's
+        // frame is BLOCK-relative and the plug-in is handed one segment, so
+        // the offset comes off and a mismatch is COUNTED rather than clamped
+        // into the wrong place.
+        //
+        // The value goes through UNCONVERTED because the wire unit is already
+        // what VST3 wants: ADR-0124 puts normalized 0..1 on the wire, and
+        // `IParamValueQueue::addPoint` takes a normalized double. CLAP is the
+        // format that needs a conversion, not this one.
+        auto queueParamValue = [&](const engine::Event& e) {
+            if (e.type != engine::EventType::ParamValue) return;
+            const std::int32_t t = e.frame - off;
+            if (t < 0 || t >= n) { ++routedOutOfRange_; return; }
+            paramChanges_.set(static_cast<SV::ParamID>(e.paramId), e.value, t);
+        };
+        for (const auto& e : io.events) queueParamValue(e);
+        // The injected list too, and BEFORE it was cleared -- the router
+        // consumes it and zeroes the count, so reading it after the reset
+        // would silently drop every parameter a caller pushed by hand.
+        for (std::size_t i = 0; i < injectedThisSegment; ++i) queueParamValue(injected_[i]);
 
         for (std::int32_t c = 0; c < ch; ++c) {
             rawIn_[static_cast<std::size_t>(c)]  = scratch_.getWritePointer(c);

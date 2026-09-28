@@ -1002,6 +1002,25 @@ if(ADI_WITH_JUCE)
             set_target_properties(adi_test_vst3 PROPERTIES
                 PREFIX "" SUFFIX "" OUTPUT_NAME "${ADI_FIXTURE_NAME}"
                 LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixture_dll")
+            # STRIP THE EXTENDED ATTRIBUTES, THEN AD-HOC SIGN. Both are
+            # required on macOS and neither is optional folklore.
+            #
+            # A bundle built inside an iCloud-synced folder (this repository
+            # lives under ~/Documents) inherits `com.apple.provenance` and
+            # `com.apple.fileprovider.*`, and Gatekeeper then refuses to load
+            # it with "is damaged and can't be opened. You should move it to
+            # the Trash" -- one modal dialog PER SCAN ATTEMPT. The dylib is
+            # fine; macOS simply will not open an unsigned bundle carrying
+            # provenance it cannot account for.
+            #
+            # `codesign --sign -` is an ad-hoc signature: no certificate, no
+            # identity, nothing to configure, and enough for a locally built
+            # test fixture to load. It is NOT a substitute for real signing
+            # when something ships.
+            #
+            # `|| true` on both: a machine without `xattr` or `codesign`
+            # still gets a working build, and the failure mode there is the
+            # one we already understand rather than a build that stops.
             add_custom_command(TARGET adi_test_vst3 POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E make_directory
                         "${_adi_fixture}/Contents/MacOS"
@@ -1010,7 +1029,9 @@ if(ADI_WITH_JUCE)
                         "${_adi_fixture}/Contents/Info.plist"
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                         "$<TARGET_FILE:adi_test_vst3>"
-                        "${_adi_fixture}/Contents/MacOS/")
+                        "${_adi_fixture}/Contents/MacOS/"
+                COMMAND xattr -cr "${_adi_fixture}" || true
+                COMMAND codesign --force --deep --sign - "${_adi_fixture}" || true)
         endif()
         add_dependencies(adi_vst3_probe adi_test_vst3)
         target_compile_definitions(adi_vst3_probe PRIVATE ADI_TEST_VST3="${_adi_fixture}")

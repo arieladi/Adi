@@ -14996,3 +14996,103 @@ the schema and the op catalogue.
 - the masking highlight's threshold, once there is something to look at;
 - RMS or LUFS as the Auto Gain Stage's default, if −18 dBFS RMS proves wrong
   in use.
+
+---
+
+## ADR-0196 — Automation on the host: normalized on the wire, plain into CLAP, and an echo is not an edit — `DECIDED` (2026-09-28) — **COMPLETES ADR-0165's DEVICE-HOST HALF; BUILDS ON ADR-0124, ADR-0162 AND ADR-0179**
+
+ADR-0165 made a plug-in's automation lanes into `ParamValue` events addressed
+to its `DeviceNode`, generated on the audio thread, and proved it against a
+recording device. **No real plug-in heard them.** This is the other half.
+
+### Decision
+
+**1. VST3: a `ParamValue` becomes an `IParameterChanges` point at its
+SEGMENT-relative offset,** beside the router's mapped CCs that already ride
+that queue (ADR-0073: the process call is indivisible, so taking the events
+means taking the parameters). The router drops these on purpose —
+`mpe_output.cpp` calls them *"addressed, not a note stream"* — so a lane
+reached a VST3 plug-in and stopped at the door.
+
+The value is **not converted**: ADR-0124 puts normalized 0..1 on the wire and
+`IParamValueQueue::addPoint` takes a normalized double. The injected list is
+read *before* the router zeroes it, or a hand-pushed value vanishes.
+
+**2. CLAP: normalized → plain, converted at the CALL SITE and not inside
+`ClapEventList::add`.** That function has three callers and they do not agree
+on units: `setParam`'s not-activated flush and the queued `pending_` path both
+pass a PLAIN value already, so converting there would convert them twice. The
+conversion belongs where the caller knows what it is holding.
+
+`ParamMod` scales by the span and takes **no** offset. Adding `minReal` to a
+modulation would shift the parameter by the bottom of its own range every time
+one arrived.
+
+**3. An echo is filtered at `broadcastParam`, the one choke point both formats
+pass through — and NOT at the automation source.**
+
+The loop: a lane sends a value in, the plug-in broadcasts it back, the
+broadcast becomes a `ParamEdit`, `ParamOps` drains it into a `device.setParam`
+op, and that op counts as a user edit — so ADR-0162's override fires and the
+lane is switched off **by its own playback**.
+
+27a item 3 says *"no automation value reaches `ParamEditCapture`"*. Automation
+values never reach it: they go host → plug-in, and only the echo comes back.
+Built to that wording, the filter would have watched a path nothing travels.
+
+**This is not a duplicate of ADR-0110 d3's echo guard.** `expectEcho` is
+ONE-SHOT: armed on the message thread with the exact value about to be set,
+swallowing that one broadcast within a TTL, which fits an undo, a replayed op
+or a preset. Automation is a value every ADR-0054 grid tick for as long as the
+lane plays, generated on the audio thread. Arming a message-thread one-shot at
+500 Hz from the audio thread is a different problem, not a smaller one. A
+standing mark on the parameter is the shape that fits.
+
+**A gesture is not filtered.** Begin and End bracket a human dragging the
+plug-in's own control, which is exactly what ADR-0162's override is for.
+
+The mark is a FIXED 1024-bit mask, never resized, because the audio thread
+reads it. An index past the end reads as *not* automated — the echo is let
+through and becomes an op, which is wrong but VISIBLE, rather than swallowed.
+
+**4. `param-indication` carries the same fact to the plug-in, keyed by
+`clap_id`.** That is why this extension is the right answer and an
+index-based one would not have been: ids do not renumber, so nothing here has
+to survive a `RESCAN_ALL`. One call sets the filter and the indication
+together, so there is no way to set one and forget the other. `PRESENT`, not
+`PLAYING`: `PLAYING` is a transport question, nothing here reads the
+transport, and a flag that lies while stopped is worse than one that says only
+what it knows.
+
+### Verified against a real plug-in
+
+`adi_clap_probe --lane "Pro-Q 3"`, Band 1 Frequency, declared 3.322..14.873:
+
+| lane | want | the plug-in holds |
+|---|---|---|
+| 0.00 | 3.3219 | 3.3219 |
+| 0.25 | 6.2096 | 6.2096 |
+| 1.00 | 14.8727 | 14.8727 |
+
+Read back through the device contract after the render — a number, not an
+impression of a level. With the conversion removed, 0.25 and 1.00 both read
+**3.3219**: below the parameter's minimum, the plug-in silently pins at the
+bottom of its range. That is the failure in the wild — not a crash, a
+parameter that never moves.
+
+The probe **skips** a plug-in whose parameters are all 0..1 (the ADI
+Airwindows suites, Surge XT Effects, Vital) and says why: plain and normalized
+are the same number there, so the check would pass whether or not anything
+converted.
+
+### Verified non-vacuously
+
+Seven defects planted, all caught: no conversion on the graph path, none on
+the injected path, `ParamMod` given the offset, no echo filter, gestures
+filtered too, and the two probe cases above.
+
+**Two of the first plants PASSED and neither was a false alarm.** The test
+drove `pushEvent` → `injected_` while the plant patched `io.events` — the path
+automation ACTUALLY uses. The route no lane takes was the only one under test.
+
+5000 checks across 50 suites.

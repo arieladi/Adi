@@ -837,7 +837,7 @@ jobs:
           python3 adi_daw/tools/add_clap_chain.py render/clap.adi \
                   com.adi.airwindows.sub=Sub
           "$play" render/clap.adi --search "$ADI_CLAP_DIR" --render 4 \
-                  --require-devices --require-peak -60
+                  --require-devices --require-peak -60 --expect-no-edits
 
       # The fixture VST3 (ADR-0100) is built into the tree and found through
       # --fixture, so this needs nothing installed on the runner either.
@@ -861,7 +861,7 @@ jobs:
           python3 adi_daw/tools/make_demo_project.py render/vst3.adi \
                   --clip-rates 48000 --midi --vst3-uid "$uid"
           "$ADI_PLAY" render/vst3.adi --fixture --render 4 \
-                  --require-devices --require-peak -60
+                  --require-devices --require-peak -60 --expect-no-edits
 
       # PROVE THE GATE CAN FAIL. A render step that passes because its check
       # stopped checking looks exactly like a render step that passes. This
