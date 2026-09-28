@@ -10,6 +10,142 @@ handover notes addressed to you.
 
 ---
 
+## 2026-09-28 (later) — the acceptance test PASSES; and the macOS VST3 builds but will not load
+
+### Headline: win's fifteen `.jucer` changes are complete and correct
+
+Xcode 27.0 / Apple clang 21, clean room (`rm -rf build`, `xcodebuild clean build`),
+**zero command-line overrides**:
+
+```
+** BUILD SUCCEEDED **   errors=0   TUs=50
+Vial.vst3/Contents/MacOS/Vial — x86_64 + arm64 universal, 16 MB
+  minos 12.0    firebase symbols: 0    _GetPluginFactory: exported
+```
+
+All four original blockers — signing, the dependency cycle, the copy step, the
+Firebase link — are fixed at source. It now builds **universal** rather than
+arm64-only, because Xcode 27's `ARCHS_STANDARD` covers both slices.
+
+### One `.jucer` change still needed, and it is not win's mistake
+
+Xcode 27 raised the minimum deployment target to **12.0**. win set `10.13`, which
+was correct for Xcode 16.4's supported range of 10.13–15.5.99. The toolchain moved
+under a correct decision. Proven by isolation: with
+`MACOSX_DEPLOYMENT_TARGET=12.0` as the *only* override, the build succeeds; without
+it, it fails with exactly two errors, both that message.
+
+**win — the caveat I cannot resolve without Projucer.** JUCE 6.0.5 predates
+macOS 12, so `osxCompatibility` may not offer a 12.0 option; the three values in
+use across our `.jucer` files are `10.7 SDK`, `10.12 SDK` and `10.13 SDK`. If the
+dropdown tops out below 12.0, this is a per-configuration **custom Xcode flags**
+change (`MACOSX_DEPLOYMENT_TARGET=12.0`) rather than a one-value edit. Your call
+which survives a resave.
+
+### `tools/validator` cannot use JUCE 6.0.5 on macOS at all
+
+ADR-0009 builds the validator against *stock* JUCE. On this machine 6.0.5 does not
+compile:
+
+```
+error: 'CGWindowListCreateImage' is unavailable: obsoleted in macOS 15.0
+       — Please use ScreenCaptureKit instead.
+  → Failed to build juceaide → CMake configure aborts
+```
+
+`juce_gui_basics.mm` calls it unguarded. Pinning
+`CMAKE_OSX_DEPLOYMENT_TARGET=12.0` does **not** help — "obsoleted" means the symbol
+is gone from the SDK, not merely gated by availability.
+
+JUCE **8.0.4** configures and builds clean. That is defensible on ADR-0009's own
+reasoning — it wanted stock JUCE because the validator is a host over the VST3 ABI
+and "neither needs nor wants Vital's DSP patches"; the *version* was incidental.
+But it means the validator can no longer use one JUCE on both platforms, which is
+an ADR, not a build tweak. **I have not written it** — `tools/validator/**` is
+win's per the roster.
+
+Two changes are needed, both verified locally and then **reverted** (the files are
+byte-identical to HEAD again; I only patched them to get a real result rather than
+report a blocked build):
+
+1. `CMakeLists.txt:2` — `project(VitalValidator ... LANGUAGES CXX)` →
+   **`LANGUAGES CXX C`**. JUCE 8 ships `juce_graphics_Sheenbidi.c`; 6.0.5 had no C
+   sources, so C was never enabled. Symptom is an obscure missing-`.o` error.
+2. `Main.cpp:106-107` — `desc.uid` → `desc.uniqueId`, guarded on
+   `JUCE_MAJOR_VERSION`. Your own comment predicted this: *"JUCE 6.0.5 spells this
+   `uid`; `uniqueId` only arrives in 6.1."*
+
+Plus a platform-conditional `JUCE_PATH`, since Windows keeps 6.0.5.
+
+**A confound to record now so nobody misattributes it later:** if the macOS
+validator ever reports a different state size or check count than the Windows one,
+the JUCE version difference has to be ruled out before the plugin is blamed.
+
+### The gate is still unrun, and the reason is new: the plugin builds but will not load
+
+With the validator built, the run hung at 0% CPU inside
+`RefCountedDllHandle::getHandle` → `dlopen` → `dyld4::Loader::mapSegments` →
+`fcntl`. Not slow — blocked. A minimal `dlopen` via `ctypes` gave the real error:
+
+```
+code signature ... not valid for use in process:
+library load disallowed by system policy
+```
+
+It was never a hang. macOS was holding the load open waiting on a **Gatekeeper
+dialog** — *"Vial.vst3 Not Opened — Apple could not verify…"*, with **Move to
+Trash** as the default button. Adi got one per attempt while I was diagnosing;
+my fault, and worth writing down so the next person does not repeat it.
+
+**Root cause.** `plugin/vital.jucer` sets `hardenedRuntime="1"`, which requires a
+real signature — but `iosDevelopmentTeamID` was emptied (correctly; it was
+Tytel's), so nothing signs the output. `codesign -dv` reports
+`Signature=adhoc`, `linker-signed`, `Sealed Resources=none`, and `codesign -v`
+says outright *"code object is not signed at all"*. `spctl --assess` →
+`rejected (source=Insufficient Context)`. Clearing `com.apple.quarantine` and
+re-signing ad-hoc with `codesign --force --deep --sign -` was **not** sufficient:
+a hardened process will not load an ad-hoc-signed library.
+
+So the macOS target stands at:
+
+| | |
+|---|---|
+| builds clean, zero overrides, universal | **verified** |
+| loads in a host | **no** — blocked by system policy |
+| 15/15 validator gate | **unrun**, blocked by the above |
+
+**This needs a decision, not a workaround.** Either a Developer ID certificate
+(Apple Developer Program) signing it properly for local use and distribution
+alike, or a Gatekeeper exception scoped to this bundle for local dev. I did not
+disable any system security setting to force a green check — that affects the
+whole machine and is Adi's call. Note this also means the plugin will not load in
+Ableton or Bitwig as currently produced, so it is not a test-rig artefact.
+
+### Corrections to my own earlier claims
+
+- Xcode needed **29 GiB**, not the ~40 GiB I estimated.
+- git was **never** blocked by the Xcode licence gate — only `xcodebuild` was. I
+  said otherwise and it was wrong.
+- **"Zero warnings in Vital's own code" was an artefact of my own grep**, which
+  matched absolute paths against a log using relative ones, so it would have
+  reported zero regardless. On clang 21 the real figure is **252 of 755**: 126
+  `unused-function` (unity-build noise), 80 `enum-float-conversion`, 36
+  `enum-enum-conversion`, 6 deprecated, 4 `shorten-64-to-32`. The narrow claim
+  does survive: still **0** `nan-infinity` warnings in Vital's code.
+
+### One corroboration worth keeping
+
+clang 21 independently flags the exact lines the review identified as producing
+the out-of-range maxima: `synth_parameters.cpp:516`
+(`kNumSourceDestinations + kNumEffects` = the `destination` max of 14 against a
+14-entry table) as *"arithmetic between different enumeration types"*, and `:431`
+(the `filter_*_style` max of 9 against 5 labels) as *"arithmetic between
+enumeration type and floating-point"*. Separately `load_save.cpp:493/510/529/546`
+compare a float against a `SynthOscillator` enum, inside the preset-load path
+ADR-0012 depends on. The compiler is pointing at the same arithmetic the review
+reached by reading the tables.
+
+
 ## 2026-09-28 — re-landing a stranded commit, a fork left unignored by the rename, and the orphans removed
 
 ### Owning three of my own mistakes first
