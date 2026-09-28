@@ -658,6 +658,9 @@ add_test(NAME adi_pd_declaration_tests COMMAND adi_pd_declaration_tests)
 if(ADI_WITH_PD)
     add_executable(adi_pd_engine_tests tests/test_pd_engine.cpp)
     target_link_libraries(adi_pd_engine_tests PRIVATE adi_core adi_warnings)
+    if(WIN32)
+        target_link_libraries(adi_pd_engine_tests PRIVATE dbghelp)
+    endif()
     target_compile_definitions(adi_pd_engine_tests PRIVATE
         ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd"
         ADI_PD_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/pd")

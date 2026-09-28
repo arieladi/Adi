@@ -7,6 +7,16 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
+## 2026-09-28 - Windows Pd crash investigation
+
+CI MSVC 19.51 faults in the console test; local MSVC 19.44 passes with Pd ON
+in Ninja, a fresh Visual Studio project build, a fresh AddressSanitizer build,
+and 80 repeated suite runs. Added a Windows native-stack diagnostic to expose
+the CI fault site rather than guessing at the new sample members. This is
+diagnostic evidence gathering, not a claimed fix.
+
+---
+
 ## 2026-09-28 - mission 3, Task B: color-bass Pd devices
 
 On codex/colorbass-pd from main after #150 merged. Both stereo top-level
