@@ -309,6 +309,10 @@ private:
     /// True when this event addresses a parameter the plugin no longer
     /// declares (ADR-0177 d4). Audio thread; a linear scan, no allocation.
     [[nodiscard]] bool addressesAMissingParam(const engine::Event& e) const noexcept;
+    /// A device-addressed ParamValue/ParamMod converted from the wire's
+    /// NORMALIZED unit to the PLAIN value CLAP expects (ADR-0196). Anything
+    /// else is returned unchanged. Audio thread; no allocation.
+    [[nodiscard]] engine::Event toPlainUnits(const engine::Event& e) const noexcept;
 
 public:
 

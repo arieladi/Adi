@@ -23,7 +23,9 @@ Each one is here because it cost something, and the cost is named.
    the build under `-Werror` printed nothing and read as a pass; and a plant
    whose *test* failed to compile ran the STALE BINARY and reported a failure
    that was not real. And a plant that legitimately PASSES is a result, not a
-   hole — say which it is. (2026-09-27, win's round 6)
+   hole — say which it is. **Verify the RESTORE the same way**: a green run
+   after a restore is only meaningful if the file and the binary both went
+   back. (2026-09-27, win's round 6; fourth clause 2026-09-28)
 5. **Prove a check can fail**, in CI and not only locally. `--require-devices`
    and `--require-peak` each have a CI step that REQUIRES the failure.
 6. **Reserve an ADR number and push the reservation ALONE** before writing the
@@ -33,6 +35,71 @@ Each one is here because it cost something, and the cost is named.
 8. **A conflicting PR has NO CI, not stale CI.** Merge first, then read CI;
    "green by head SHA" cannot be attempted in that state. (2026-09-27)
 
+
+---
+
+## 2026-09-28 — PR 3 begins; and PR 1's macOS fixture put ~20 Gatekeeper dialogs on Adi's screen
+
+Branch `mac/automation-host`, ADR-0196.
+
+### 1. The fixture I added in PR 1 is unsigned, and this repo lives in iCloud
+
+Adi reported "many errors opening on the mac on damaged" and cancelled about
+twenty of them:
+
+> *"ADI Expression Test.vst3" is damaged and can't be opened. You should move
+> it to the Trash.*
+
+**Mine.** PR 1 added the macOS VST3 bundle and nothing signed it. The repo sits
+under `~/Documents`, which is iCloud-synced, so every freshly built bundle
+inherits `com.apple.provenance` and `com.apple.fileprovider.*` — and Gatekeeper
+refuses to load an unsigned bundle carrying provenance it cannot account for,
+with one MODAL DIALOG PER SCAN ATTEMPT. A plug-in scan touches it repeatedly,
+so one build produced a screenful.
+
+It also explains the twenty stray `<name> 2.cpp` files I noticed on 2026-09-26
+and could not account for: iCloud conflict copies, not a build artefact.
+
+Fixed in the build rather than by hand, so it cannot recur: the POST_BUILD step
+now runs `xattr -cr` then `codesign --force --deep --sign -` (ad-hoc; no
+certificate, no identity, enough for a local test fixture and explicitly not a
+substitute for real signing when something ships). Both are `|| true` so a
+machine without those tools still builds.
+
+**What I should have noticed sooner.** The symptom reached me first as
+`adi_vst3_probe` reporting "the fixture bundle declares three instruments,
+saw 0" — six failures I was about to investigate as a code regression, in a
+file I had just changed. It was the environment, and Adi seeing the dialogs is
+what named it. A probe that cannot load a bundle and a probe that loads a
+broken bundle look identical from the test output.
+
+### 2. PR 3's two conversions
+
+VST3: a device-addressed `ParamValue` becomes an `IParameterChanges` point at
+its SEGMENT-relative offset, beside the router's mapped CCs. The router drops
+these on purpose ("addressed, not a note stream"), so a lane reached a VST3
+plug-in and stopped at the door. The value goes through unconverted because
+normalized 0..1 is already what `addPoint` wants.
+
+CLAP: normalized -> plain, and **not inside `ClapEventList::add`**. That
+function has three callers and they do not agree on units — `setParam`'s
+not-activated flush and the queued `pending_` path both pass PLAIN already, so
+converting there would convert them twice. It belongs where the caller knows
+what it is holding.
+
+### 3. Two plants that passed, and what they exposed
+
+The first pair of plants on the conversion both PASSED, and neither was a
+false alarm about the code: my test drove `pushEvent` -> `injected_`, while
+the plant patched the `io.events` path — **the one automation actually uses.**
+I was testing the route no lane takes. The test now covers both, plus
+`ParamMod`, which scales by the span and takes no offset (adding `minReal` to
+a modulation would shift the parameter by the bottom of its own range every
+time one arrived).
+
+Then a "restored" run reported FAILED with the source visibly correct: a
+**stale binary** again, the third time in two days. Rule 4's third clause
+needs a fourth: verify the RESTORE too, not only the plant.
 
 ---
 

@@ -1978,6 +1978,141 @@ void testRescanAllPreservesIndicesAndClearKeepsTheLane() {
           "while its neighbour, untouched, still plays");
 }
 
+/// ADR-0196 (27a item 2): a device-addressed ParamValue is NORMALIZED on the
+/// wire and must reach CLAP as the PLAIN value.
+///
+/// The range here is deliberately NOT 0..1. With a unit range the conversion
+/// is invisible and a test proves nothing -- which is how the bug survived:
+/// `ClapEventList::add` assigned `slot.param.value = in.value` straight
+/// through, thirty lines from the `setParam` comment warning that 0.42 on a
+/// 20 Hz..20 kHz cutoff means 0.42 Hz.
+void testAutomationReachesClapInPlainUnits() {
+    section("ADR-0196 -- normalized on the wire, plain into the plug-in");
+
+    struct Ranged {
+        clap_plugin_t plugin{};
+        clap_plugin_params_t params{};
+        std::vector<double> heard;
+        static Ranged& self(const clap_plugin_t* p) {
+            return *static_cast<Ranged*>(p->plugin_data);
+        }
+        Ranged() {
+            plugin.plugin_data = this;
+            plugin.init = [](const clap_plugin_t*) { return true; };
+            plugin.destroy = [](const clap_plugin_t*) {};
+            plugin.activate = [](const clap_plugin_t*, double, std::uint32_t,
+                                 std::uint32_t) { return true; };
+            plugin.deactivate = [](const clap_plugin_t*) {};
+            plugin.start_processing = [](const clap_plugin_t*) { return true; };
+            plugin.stop_processing = [](const clap_plugin_t*) {};
+            plugin.reset = [](const clap_plugin_t*) {};
+            plugin.on_main_thread = [](const clap_plugin_t*) {};
+            plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd)
+                -> clap_process_status {
+                Ranged& r = self(p);
+                if (pd != nullptr && pd->in_events != nullptr) {
+                    const std::uint32_t n = pd->in_events->size(pd->in_events);
+                    for (std::uint32_t i = 0; i < n; ++i) {
+                        const clap_event_header_t* h = pd->in_events->get(pd->in_events, i);
+                        if (h != nullptr && h->type == CLAP_EVENT_PARAM_VALUE)
+                            r.heard.push_back(
+                                reinterpret_cast<const clap_event_param_value_t*>(h)->value);
+                    }
+                }
+                return CLAP_PROCESS_CONTINUE;
+            };
+            plugin.get_extension = [](const clap_plugin_t* p, const char* id)
+                -> const void* {
+                if (std::strcmp(id, CLAP_EXT_PARAMS) == 0) return &self(p).params;
+                return nullptr;
+            };
+            params.count = [](const clap_plugin_t*) -> std::uint32_t { return 1; };
+            params.get_info = [](const clap_plugin_t*, std::uint32_t i,
+                                 clap_param_info_t* info) -> bool {
+                if (i != 0) return false;
+                *info = clap_param_info_t{};
+                info->id = 77;
+                std::snprintf(info->name, sizeof info->name, "Cutoff");
+                info->min_value = 20.0;          // Hz
+                info->max_value = 20000.0;
+                info->default_value = 1000.0;
+                info->flags = CLAP_PARAM_IS_AUTOMATABLE;
+                return true;
+            };
+            params.flush = [](const clap_plugin_t*, const clap_input_events_t*,
+                              const clap_output_events_t*) {};
+        }
+    };
+
+    Ranged f;
+    DeviceIdentity id;
+    id.format = "clap";
+    id.name = "Ranged";
+    ClapDevice d(&f.plugin, id);
+    auto owned = std::make_unique<ClapHostGlue>();
+    owned->registerPlugin(&f.plugin);
+    d.adoptGlue(std::move(owned));
+    d.prepare(48000.0, 64);
+
+    check(d.paramAt(0) != nullptr && d.paramAt(0)->minReal == 20.0 &&
+              d.paramAt(0)->maxReal == 20000.0,
+          "the plug-in declares 20 Hz to 20 kHz");
+
+    // A lane at HALF travel. Normalized 0.5 over 20..20000 is 10010 Hz.
+    engine::Event e;
+    e.type = engine::EventType::ParamValue;
+    e.paramId = 77;
+    e.value = 0.5;
+    e.frame = 0;
+    d.pushEvent(e);
+
+    std::vector<float> l(64, 0.0f), r(64, 0.0f);
+    float* outp[2] = {l.data(), r.data()};
+    engine::NodeIo io;
+    io.out = outp; io.channels = 2; io.frames = 64; io.sampleRate = 48000.0;
+    d.process(io);
+
+    check(f.heard.size() == 1, "the plug-in heard exactly one parameter value");
+    const double got = f.heard.empty() ? -1.0 : f.heard.front();
+    check(std::abs(got - 10010.0) < 1e-6,
+          "at 10010 Hz, the PLAIN value for half travel -- not 0.5, which "
+          "would be 0.5 Hz on this parameter; saw " + std::to_string(got));
+
+    // AND THE PATH AUTOMATION ACTUALLY TAKES. The check above pushes through
+    // `pushEvent` -> `injected_`, which is the probe's and a test's route. A
+    // lane arrives on `io.events`, from the graph, and that is a SECOND call
+    // site with its own conversion. Planting the fault on the io.events path
+    // left the test above green, which is how a half-converted host would
+    // have shipped.
+    f.heard.clear();
+    engine::Event lane;
+    lane.type = engine::EventType::ParamValue;
+    lane.paramId = 77;
+    lane.value = 0.25;                       // quarter travel -> 5015 Hz
+    lane.frame = 0;
+    io.events = engine::EventSpan{&lane, 1};
+    d.process(io);
+
+    check(f.heard.size() == 1, "a lane on io.events reaches the plug-in too");
+    const double laneGot = f.heard.empty() ? -1.0 : f.heard.front();
+    check(std::abs(laneGot - 5015.0) < 1e-6,
+          "at 5015 Hz, converted on the graph's path as well as the injected "
+          "one; saw " + std::to_string(laneGot));
+
+    // ParamMod is a DELTA: it scales by the span and takes NO offset. Adding
+    // minReal would shift the parameter by the bottom of its own range every
+    // time a modulation arrived.
+    f.heard.clear();
+    engine::Event mod;
+    mod.type = engine::EventType::ParamMod;
+    mod.paramId = 77;
+    mod.value = 0.25;                        // a quarter of the span
+    mod.frame = 0;
+    io.events = engine::EventSpan{&mod, 1};
+    d.process(io);
+    check(f.heard.empty(), "a ParamMod is not a PARAM_VALUE event");
+}
+
 void testPrepareReactivatesWhenTheLayoutMoves() {
     section("ADR-0090 -- prepare is idempotent, EXCEPT when the ports moved");
 
@@ -2226,6 +2361,7 @@ int main() {
     testDestroyingADeviceLeavesNoDanglingPlugin();
     testRequestFlushIsAnswered();
     testRescanAllPreservesIndicesAndClearKeepsTheLane();
+    testAutomationReachesClapInPlainUnits();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
