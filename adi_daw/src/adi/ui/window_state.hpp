@@ -38,9 +38,16 @@ struct WindowState {
     // The strip expands upward only: a height below the floor becomes the floor.
     void setDeviceHeight(int h) noexcept { deviceHeight = h < deviceFloor ? deviceFloor : h; }
 };
+struct FloatingState {
+    std::string monitor;
+    int x=100,y=100,width=800,height=420;
+    bool open=false;
+};
 class ViewStateStore {
   public:
     explicit ViewStateStore(Store &s) : store_(s) {}
+    FloatingState loadFloating(const std::string& key) const;
+    bool saveFloating(const std::string& key,const FloatingState&,std::string& error);
     WindowState load(const std::string &window, DesktopDefaults defaults = {}) const;
     bool save(const std::string &window, const WindowState &, std::string &error);
 

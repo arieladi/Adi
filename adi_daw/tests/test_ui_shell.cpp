@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_shell.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <thread>
 namespace {
 thread_local bool audit = false;
 std::atomic<unsigned> allocations{0};
@@ -694,6 +696,87 @@ int main(int argc, char **argv) {
               "selection changes strip even with same parameter publication");
         check(!document->parameterGesture(99, "0", engine::ParamEventKind::Value, .5),
               "a gesture for no device is refused");
+        // Step 7.5 (#204): the floating-window host, built before anything needs two.
+        {
+            FloatingState saved;
+            saved.monitor = "disconnected";
+            saved.x = 3200;
+            saved.y = -800;
+            saved.width = 1400;
+            saved.height = 900;
+            check(restoreFloating(saved, {{"primary", {0, 0, 1000, 700}}}) ==
+                      juce::Rectangle<int>(0, 0, 1000, 700),
+                  "lost monitor restores fully on available screen");
+            saved.monitor = "left";
+            saved.x = -1600;
+            saved.y = 100;
+            saved.width = 400;
+            saved.height = 300;
+            check(restoreFloating(
+                      saved, {{"primary", {0, 0, 1000, 700}}, {"left", {-1920, 0, 1920, 1080}}})
+                          .getX() == -1600,
+                  "monitor identity preserves negative desktop coordinates");
+            check(settings.set("lookfeel.showTooltips", true, {}, why), "tooltips back on");
+            commands.reload();
+            bool alive = true;
+            juce::Component dock, content;
+            dock.addAndMakeVisible(content);
+            content.setBounds(10, 20, 300, 180);
+            FloatingHost host(
+                integrated, commands, document->views(), document->view(),
+                [&](std::int64_t) { return alive; }, false);
+            check(host.detach("test", 11, content, dock), "detach existing component");
+            check(host.content("test") == &content && content.getParentComponent() != &dock,
+                  "detach reparents same identity");
+            check(host.hasTooltips("test"), "a floating window has its own tooltips");
+            host.frame("test");
+            host.frame("test");
+            check(host.drains("test") == 2, "window drains on its own clock");
+            host.close("test");
+            check(content.getParentComponent() == &dock &&
+                      content.getBounds() == juce::Rectangle<int>(10, 20, 300, 180),
+                  "dock restores exact component and bounds");
+            check(!document->views().loadFloating("test").open, "close clears saved open state");
+            host.detach("deleted", 11, content, dock);
+            alive = false;
+            host.frame("deleted");
+            host.collect();
+            check(host.count() == 0 && !document->views().loadFloating("deleted").open,
+                  "deleting the device closes its window and remembers it closed");
+            alive = true;
+            host.collect();
+            check(host.count() == 0, "undo restores the device, not the window");
+            auto tap = std::make_shared<engine::ScopeTap>(48000, 1.);
+            std::array<float, 1024> sine{};
+            for (std::size_t i = 0; i < sine.size(); ++i)
+                sine[i] = static_cast<float>(
+                    std::sin(2 * 3.141592653589793 * 32 * static_cast<double>(i) / 1024.));
+            tap->write(sine.data(), sine.data(), 1024, 0, true);
+            auto model = std::make_shared<AnalyserModel>(tap);
+            AnalyserView small(model);
+            auto big = std::make_unique<AnalyserView>(model);
+            auto *bigPtr = big.get();
+            check(host.openView("analyser", 11, std::move(big),
+                                [bigPtr](const SnapshotReader &) { bigPtr->frame(); }),
+                  "a second view opens through the generic host");
+            check(small.model() == bigPtr->model(),
+                  "the docked and the big view share one measurement model");
+            std::array<float, 513> bins{};
+            std::uint64_t revision = 0;
+            for (int retry = 0; retry < 100 && !model->read(bins, revision); ++retry)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            check(revision > 0 && bins[100] < -90 && std::abs(bins[32]) < .01,
+                  "analyser worker calibrated floor before 0 dB sine");
+            const std::string analyserKey = "analyser";
+            host.frame(analyserKey);
+            allocations = 0;
+            audit = true;
+            for (int i = 0; i < 20; ++i)
+                host.frame(analyserKey);
+            audit = false;
+            check(allocations == 0, "floating analyser frame allocates zero");
+            host.close("analyser");
+        }
         integrated.devices.publication = {};
         arrangement.geometry.selectedTrack = 2;
         integrated.frame();
