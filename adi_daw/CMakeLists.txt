@@ -236,6 +236,8 @@ add_library(adi_core STATIC
     src/adi/dsp/limiter.cpp
     src/adi/dsp/rmsc.cpp
     src/adi/dsp/redux.cpp
+    src/adi/dsp/live_delay.cpp
+    src/adi/dsp/live_reverb.cpp
     src/adi/dsp/combchord.cpp
     src/adi/dsp/colorcab.cpp
     src/adi/dsp/masking.cpp
@@ -456,6 +458,8 @@ target_compile_definitions(adi_core PUBLIC ADI_WITH_PD=1)
 # because an OBJECT library with no sources is an error.
 set(ADI_PD_BUILTIN_SOURCES
     src/adi/pd_builtins/redux_tilde.cpp
+    src/adi/pd_builtins/delay_tilde.cpp
+    src/adi/pd_builtins/reverb_tilde.cpp
     src/adi/pd_builtins/combchord_tilde.cpp
     src/adi/pd_builtins/colorcab_tilde.cpp
 )
@@ -1130,6 +1134,20 @@ if(ADI_WITH_JUCE)
     if(_adi_proc_incs)
         target_include_directories(adi_play SYSTEM PRIVATE ${_adi_proc_incs})
     endif()
+    # Compile the real player into its channel regression test, with its CLI
+    # entry point renamed by the test; never open a hardware driver.
+    juce_add_console_app(adi_play_render_tests PRODUCT_NAME "adi_play_render_tests")
+    target_sources(adi_play_render_tests PRIVATE tests/test_play_render.cpp
+        src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp)
+    target_compile_features(adi_play_render_tests PRIVATE cxx_std_20)
+    get_target_property(_adi_play_defs adi_play COMPILE_DEFINITIONS)
+    target_compile_definitions(adi_play_render_tests PRIVATE ${_adi_play_defs})
+    target_link_libraries(adi_play_render_tests PRIVATE adi_core adi_warnings
+        juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices)
+    if(_adi_proc_incs)
+        target_include_directories(adi_play_render_tests SYSTEM PRIVATE ${_adi_proc_incs})
+    endif()
+    add_test(NAME adi_play_render_tests COMMAND adi_play_render_tests)
     if(TARGET adi_test_vst3)
         add_dependencies(adi_play adi_test_vst3)
         target_compile_definitions(adi_play PRIVATE ADI_TEST_VST3="${_adi_fixture}")
@@ -1260,6 +1278,9 @@ add_test(NAME adi_midi_clips_tests COMMAND adi_midi_clips_tests)
 
 # ADR-0159: the curve formulas of SPEC §6.3.2, one evaluator for every reader.
 target_sources(adi_core PRIVATE src/adi/engine/curves.cpp)
+add_executable(adi_transport_tests tests/test_transport.cpp)
+target_link_libraries(adi_transport_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_transport_tests COMMAND adi_transport_tests)
 add_executable(adi_curves_tests tests/test_curves.cpp)
 target_link_libraries(adi_curves_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_curves_tests COMMAND adi_curves_tests)
@@ -1293,4 +1314,22 @@ if(ADI_WITH_PD)
         ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd"
         ADI_REDUX_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
     add_test(NAME adi_redux_pd_tests COMMAND adi_redux_pd_tests)
+endif()
+add_executable(adi_delay_tests tests/test_delay.cpp)
+target_link_libraries(adi_delay_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_delay_tests COMMAND adi_delay_tests)
+if(ADI_WITH_PD)
+add_executable(adi_delay_pd_tests tests/test_delay_pd.cpp)
+target_link_libraries(adi_delay_pd_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_delay_pd_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd" ADI_DELAY_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
+add_test(NAME adi_delay_pd_tests COMMAND adi_delay_pd_tests)
+endif()
+add_executable(adi_reverb_tests tests/test_reverb.cpp)
+target_link_libraries(adi_reverb_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_reverb_tests COMMAND adi_reverb_tests)
+if(ADI_WITH_PD)
+add_executable(adi_reverb_pd_tests tests/test_reverb_pd.cpp)
+target_link_libraries(adi_reverb_pd_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_reverb_pd_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd" ADI_REVERB_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
+add_test(NAME adi_reverb_pd_tests COMMAND adi_reverb_pd_tests)
 endif()
