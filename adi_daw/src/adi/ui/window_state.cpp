@@ -45,6 +45,9 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.timelineLeft = j.value("timelineLeft", 0.);
         state.pixelsPerQuarter = j.value("pixelsPerQuarter", 48.);
         state.laneHeight = j.value("laneHeight", 64);
+        if (j.contains("folded"))
+            for (const auto &id : j.at("folded"))
+                state.foldedDevices.insert(id.get<std::int64_t>());
         if (j.contains("laneHeights"))
             for (const auto &pair : j.at("laneHeights")) {
                 const auto id = pair.at(0).get<std::int64_t>();
@@ -94,6 +97,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
             j["panels"].push_back({{"id", static_cast<int>(p.panel)},
                                    {"width", p.width},
                                    {"collapsed", p.collapsed}});
+        j["folded"] = state.foldedDevices;
         j["laneHeights"] = nlohmann::json::array();
         for (const auto &[id, h] : state.laneHeights) {
             if (id <= 0 || h < 24 || h > 512) {

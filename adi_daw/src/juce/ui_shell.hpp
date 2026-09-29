@@ -6,6 +6,7 @@
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
+#include "ui_devices.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <memory>
@@ -143,6 +144,11 @@ class AdiRootComponent final : public juce::Component {
     StatusBar status;
     juce::TextButton aiTab{"AI"};
     ArrangementView arrangement;
+    DeviceChainStrip devices;
+    DockResizer dockResizer;
+    // Drag the strip's top edge: never below the floor, never past the ceiling that
+    // leaves the transport, the ruler and one track row (ADR-0184, ADR-0203 d7).
+    void resizeDevices(int height);
 
   private:
     bool insertTrack(bool midi);
