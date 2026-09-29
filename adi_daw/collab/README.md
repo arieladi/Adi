@@ -227,7 +227,8 @@ subject, say so in your log instead of writing it twice.
 | 0190 | win | `win/pioneer-refs` | the DAW is named ADI (Advanced DAW Infrastructure); ADiJ stays; ADI Live dropped, the Session view stays inside ADI (director) | used |
 | 0191 | win | `win/adij-features` | ADiJ writes Pioneer USBs and Rekordbox XML, serves CDJs over Pro DJ Link, plays stems; ADI and ADiJ stand until a trademark clearance (director) | used |
 | 0192 | win | `win/color-bass` | color-bass devices as Pd devices on compiled-in externals; `[adi.sample]`; pthreads4w for Windows; win_codex joins (director) | used |
-| 0193 | win_codex | `codex/colorbass-dsp` | color-bass DSP cores, measurement domain and kernel crossfade (ADR-0192 phase 1) | used |
+| 0193 | win_codex | codex/step7-arrangement | Mission 8 standing UI ownership; src/adi/ui/**, src/juce/ui_*, UI tests; narrow engine/snapshot metadata, media/media_ops request preparation, ops_catalog audio binding and tests for playable drop | active |
+| win_codex | `codex/colorbass-dsp` | color-bass DSP cores, measurement domain and kernel crossfade (ADR-0192 phase 1) | used |
 | 0194 | mac | `mac/pd-midi` | MIDI into Pd devices: the MPE output encoder feeds [notein], [ctlin] and [bendin]; no MIDI survives ADR-0054 to forward (win's round 5c) | used |
 | 0195 | win | `win/directive-0195` | the Dynamic EQ adapts ZL Equalizer 2 under Pro-Q 3's mouse; inline MIDI Learn; Auto Gain Stage; the analyser's multi-track overlay (director) | used |
 | 0196 | mac | (the host session's step 6, PR 3) | automation on the host: VST3 parameter changes, CLAP value conversion, the echo filter, `param-indication`'s automation half, `--expect-no-edits` | used |
