@@ -1,3 +1,39 @@
+## 2026-09-28 — MIDI Learn ops (ADR-0195 d3), delegated by win
+
+`controller.bind` and `controller.unbind` write project `controller_maps` through
+the existing journal transaction. Bind captures an entire previous row, so
+relearning the same id undoes in one step. Null is the absent-row inverse;
+unbind captures every nullable and protocol-specific column. The store schema
+and other store readers are unchanged; storage helpers live in controller_maps.*.
+Claims cover these helpers, the catalogue, docs and tests.
+
+Learn receives an explicit Remote/Focus Dial/takeover snapshot, resolves the
+lane's owner and param_ref, and rejects the reserved CC before making an op.
+Only the resolved binding enters the journal: no Focus Dial identity or settings
+read during replay. Relative detection recognizes 1/127 and 63..65 clusters
+(with neutral values); other/mixed or neutral-only observations are absolute.
+A single relative code is necessarily ambiguous with a stationary absolute
+knob; callers may supply a longer observation window. Absolute uses the passed
+takeover mode; relative uses jump.
+
+For mac's step 7: call learnController, commit the returned request, then read
+controller bindings. Feed the current incoming port policy to dispatchController;
+Focus receives its CC before the Remote role or any project binding. Use
+controllerBindingShadowed for the binding list. Changing the live reservation
+immediately changes that status without rewriting project data. These are
+message-thread seams; the caller still owns parameter gestures/Live override
+and takeover. No UI button or hardware driver is added here.
+
+The focused suite passes 44 checks: Learn guards, detection, complete-row undo,
+rebind, null fields, invalid payload rollback, settings-independent replay,
+imported shadowed bindings and live reservation changes. Replay corpus now
+contains bind, replacement and unbind, including full undo/redo and reopen.
+Planting a wrong-CC reservation comparison failed three Learn/dispatch checks;
+restoring it passed all 44. MSVC /WX passes. The full harness measured
+5689 checks across 60 suites, all tests and validators passing. Its sole
+failure was the old README count; corrected it to the measured total and
+verified the headline against the captured suite results.
+
 ## 2026-09-28 — Auto Gain Stage: merge main after #166
 
 Merged main 74990b1, retaining both log histories and removing the merged Color Bass claims. MSVC /WX and the complete harness passed 5668 checks across 60 suites, with all validators clean. README records that measured total. The intermittent Pd crash is handed to the analyser session; this update adds no workaround.
