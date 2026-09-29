@@ -14,6 +14,8 @@ before your first commit, and re-read it if you have been away.
 | **cloud** | Claude Code on the web, Linux (an ephemeral cloud container) | Claude Code | Portable headless C++, the format and its docs, on win's assignments | JUCE, platform code, `.github/**`, `drivers/**`, other monorepo projects |
 | **win_codex** | the director's Windows 11 PC, MSVC / x64 | Codex app (OpenAI), full access, in its own worktree | The color-bass Pd devices (ADR-0192): `src/adi/dsp/combchord.*`, `src/adi/dsp/colorcab.*`, `src/adi/pd_builtins/**`, `pd/devices/**`, their tests; since ADR-0202 also step 7's UI (`src/adi/ui/**`, `src/juce/ui_*`, their tests) and the Pd tier (`src/juce/pd_*`, `pd/**`) on win's missions, win reviewing; work win assigns | `src/juce/**`, `.github/**`, `tools/fetch_external.sh`, UI, the schema, ADR numbers or claims without `win`; the main checkout (win and the drone use it) |
 
+**Claims since ADR-0202:** with two agents left, win_codex holds its areas through its roster row and adds **no per-branch claim rows**. Every open PR adding a row was the last source of merge conflicts. Only a delegation outside its roster areas gets a row, from win.
+
 **Retired (director, 2026-09-30):** mac, both sessions (the host/UI session and the analyser session), until the director decides otherwise (ADR-0202). Its step-7 handoff is `collab/handoff/2026-09-29-step7.md`.
 
 **Availability (director, 2026-09-26):** mac is back in the loop, a day
