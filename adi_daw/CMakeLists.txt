@@ -236,12 +236,7 @@ add_library(adi_core STATIC
     src/adi/dsp/biquad.cpp
     src/adi/dsp/limiter.cpp
     src/adi/dsp/rmsc.cpp
-    src/adi/dsp/redux.cpp
-    src/adi/dsp/live_delay.cpp
-    src/adi/dsp/live_reverb.cpp
-    src/adi/dsp/shifter.cpp
-    src/adi/dsp/combchord.cpp
-    src/adi/dsp/colorcab.cpp
+
     src/adi/dsp/masking.cpp
     src/adi/dsp/spectrum.cpp
     src/adi/dsp/auto_gain.cpp
@@ -446,34 +441,13 @@ target_compile_definitions(adi_core PUBLIC PDINSTANCE=1 PDTHREADS=1)
 target_sources(adi_core PRIVATE src/juce/pd_engine.cpp)
 target_compile_definitions(adi_core PUBLIC ADI_WITH_PD=1)
 
-# ADI'S COMPILED-IN Pd EXTERNALS (ADR-0188 d8, ADR-0192 d1). One source each,
-# listed here; each declares itself with ADI_PD_BUILTIN beside its own setup
-# function, so `src/juce/pd_builtins.cpp` is never edited to admit one -- the
-# externals are win_codex's and `src/juce/**` is not (ADR-0192 d6).
-#
-# AN OBJECT LIBRARY, not sources added to adi_core, and that is the whole point.
-# A self-registering translation unit inside a STATIC library is dropped by the
-# linker when nothing references it, which would remove the external and print
-# nothing. An OBJECT library's objects are always linked.
-#
-# Empty until the first external lands; the guard keeps CMake happy until then,
-# because an OBJECT library with no sources is an error.
-set(ADI_PD_BUILTIN_SOURCES
-    src/adi/pd_builtins/redux_tilde.cpp
-    src/adi/pd_builtins/delay_tilde.cpp
-    src/adi/pd_builtins/reverb_tilde.cpp
-    src/adi/pd_builtins/shifter_tilde.cpp
-    src/adi/pd_builtins/combchord_tilde.cpp
-    src/adi/pd_builtins/colorcab_tilde.cpp
-)
-if(ADI_PD_BUILTIN_SOURCES)
-    add_library(adi_pd_builtins OBJECT ${ADI_PD_BUILTIN_SOURCES})
-    target_link_libraries(adi_pd_builtins PRIVATE libpd_static adi_warnings)
-    target_include_directories(adi_pd_builtins PRIVATE src)
-    # Carry objects to the final executable too: burying them only in the
-    # adi_core archive lets the linker discard their registration initializers.
-    target_link_libraries(adi_core PUBLIC adi_pd_builtins "$<TARGET_OBJECTS:adi_pd_builtins>")
-endif()
+# Compiled-in externals stay in an OBJECT library so registration constructors
+# survive static linking. cmake/devices/*.cmake adds sources after this target
+# exists; no per-device source list or shared registration edit is required.
+add_library(adi_pd_builtins OBJECT)
+target_link_libraries(adi_pd_builtins PRIVATE libpd_static adi_warnings)
+target_include_directories(adi_pd_builtins PRIVATE src)
+target_link_libraries(adi_core PUBLIC adi_pd_builtins "$<TARGET_OBJECTS:adi_pd_builtins>")
 endif()
 
 # ADR-0173, ADR-0174: the 16 Airwindows console algorithms behind native group
@@ -626,12 +600,6 @@ target_link_libraries(adi_dsp_tests PRIVATE adi_core adi_warnings)
 target_compile_definitions(adi_dsp_tests PRIVATE ADI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME adi_dsp_tests COMMAND adi_dsp_tests)
 
-add_executable(adi_combchord_tests tests/test_combchord.cpp)
-target_link_libraries(adi_combchord_tests PRIVATE adi_core adi_warnings)
-add_test(NAME adi_combchord_tests COMMAND adi_combchord_tests)
-add_executable(adi_colorcab_tests tests/test_colorcab.cpp)
-target_link_libraries(adi_colorcab_tests PRIVATE adi_core adi_warnings)
-add_test(NAME adi_colorcab_tests COMMAND adi_colorcab_tests)
 
 # The declaration parse. Links adi_core but touches no libpd: ADR-0177 fix 3
 # puts the declared set behind a static parse of the patch text, and a test that
@@ -676,12 +644,8 @@ if(ADI_WITH_PD)
         ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd"
         ADI_PD_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/pd")
     add_test(NAME adi_pd_engine_tests COMMAND adi_pd_engine_tests)
-    add_executable(adi_colorbass_pd_tests tests/test_colorbass_pd.cpp)
-    target_link_libraries(adi_colorbass_pd_tests PRIVATE adi_core adi_warnings)
-    target_compile_definitions(adi_colorbass_pd_tests PRIVATE
-        ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd"
-        ADI_COLORBASS_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
-    add_test(NAME adi_colorbass_pd_tests COMMAND adi_colorbass_pd_tests)
+
+
 endif()
 
 add_executable(adi_pd_tests tests/test_pd.cpp)
@@ -1308,45 +1272,16 @@ add_executable(adi_gain_stage_tests tests/test_gain_stage.cpp)
 target_link_libraries(adi_gain_stage_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)
 
-add_executable(adi_shifter_tests tests/test_shifter.cpp)
-target_link_libraries(adi_shifter_tests PRIVATE adi_core adi_warnings)
-add_test(NAME adi_shifter_tests COMMAND adi_shifter_tests)
-if(ADI_WITH_PD)
-add_executable(adi_shifter_pd_tests tests/test_shifter_pd.cpp)
-target_link_libraries(adi_shifter_pd_tests PRIVATE adi_core adi_warnings)
-target_compile_definitions(adi_shifter_pd_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd" ADI_SHIFTER_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
-add_test(NAME adi_shifter_pd_tests COMMAND adi_shifter_pd_tests)
-endif()
+
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
 target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_controller_maps_tests COMMAND adi_controller_maps_tests)
 
-add_executable(adi_redux_tests tests/test_redux.cpp)
-target_link_libraries(adi_redux_tests PRIVATE adi_core adi_warnings)
-add_test(NAME adi_redux_tests COMMAND adi_redux_tests)
-if(ADI_WITH_PD)
-    add_executable(adi_redux_pd_tests tests/test_redux_pd.cpp)
-    target_link_libraries(adi_redux_pd_tests PRIVATE adi_core adi_warnings)
-    target_compile_definitions(adi_redux_pd_tests PRIVATE
-        ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd"
-        ADI_REDUX_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
-    add_test(NAME adi_redux_pd_tests COMMAND adi_redux_pd_tests)
-endif()
-add_executable(adi_delay_tests tests/test_delay.cpp)
-target_link_libraries(adi_delay_tests PRIVATE adi_core adi_warnings)
-add_test(NAME adi_delay_tests COMMAND adi_delay_tests)
-if(ADI_WITH_PD)
-add_executable(adi_delay_pd_tests tests/test_delay_pd.cpp)
-target_link_libraries(adi_delay_pd_tests PRIVATE adi_core adi_warnings)
-target_compile_definitions(adi_delay_pd_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd" ADI_DELAY_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
-add_test(NAME adi_delay_pd_tests COMMAND adi_delay_pd_tests)
-endif()
-add_executable(adi_reverb_tests tests/test_reverb.cpp)
-target_link_libraries(adi_reverb_tests PRIVATE adi_core adi_warnings)
-add_test(NAME adi_reverb_tests COMMAND adi_reverb_tests)
-if(ADI_WITH_PD)
-add_executable(adi_reverb_pd_tests tests/test_reverb_pd.cpp)
-target_link_libraries(adi_reverb_pd_tests PRIVATE adi_core adi_warnings)
-target_compile_definitions(adi_reverb_pd_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd" ADI_REVERB_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
-add_test(NAME adi_reverb_pd_tests COMMAND adi_reverb_pd_tests)
-endif()
+
+
+# One file per device owns its DSP, built-in registration unit and tests.
+# CONFIGURE_DEPENDS makes adding/removing a module trigger reconfiguration.
+file(GLOB ADI_DEVICE_MODULES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/devices/*.cmake")
+foreach(ADI_DEVICE_MODULE IN LISTS ADI_DEVICE_MODULES)
+    include("${ADI_DEVICE_MODULE}")
+endforeach()
