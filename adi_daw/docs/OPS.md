@@ -566,12 +566,25 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `transport.setLoop` | t | N | — | P0 |
 | `transport.setRecord` | t | G | — | P0 |
 | `transport.setMetronome` | t | S | — | P1 |
+| `controller.bind` | e | N | cap | P1 |
+| `controller.unbind` | e | N | pair `controller.bind` | P1 |
 | `controller.map` | h | N | pair `controller.unmap` | P2 |
 | `controller.unmap` | h | N | cap | P2 |
 | `controller.setRange` | h | N | sym | P2 |
 | `controller.setTakeover` | h | N | sym | P2 |
 | `extension.write` | e | N | cap | P1 |
 | `extension.delete` | e | N | cap | P1 |
+
+`controller.bind` (ADR-0195 d3) takes `{id, binding}`; binding names all
+14 non-id columns of `controller_maps`, including explicit nulls. It inserts
+or replaces that project row and captures the previous row for one-step undo.
+An explicit null binding clears the row (the inverse of first Learn).
+`controller.unbind {id}` captures the complete removed row. Both replay only
+resolved data; neither reads machine settings. Learn resolves an automation
+lane to its owner and parameter, requires the port Remote role, and refuses
+the current Focus Dial CC before constructing an op. Runtime dispatch checks
+the live reservation first; a project binding that collides is reported as
+shadowed and cannot fire. Hardware-scope map/unmap remain separate planned ops.
 
 ### 9.12 Remarks (ADR-0131)
 
@@ -600,7 +613,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**168 ops** — 64 P0, 52 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**170 ops** — 64 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

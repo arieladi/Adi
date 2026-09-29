@@ -16,6 +16,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/ops.hpp"
+#include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/summing_flavors.hpp"
@@ -1789,7 +1790,12 @@ bool deviceSetPresetInverse(OpContext& c, const Payload& p, Payload& inv, std::s
 // ADR-0143: path-taking media APIs capture these replayable payloads.
 constexpr Field kFMediaRow[] = {{"id", FieldType::Int}, {"row", FieldType::Object}};
 constexpr Field kFMediaRelink[] = {{"id", FieldType::Int}, {"hash", FieldType::Text}, {"paths", FieldType::Object}};
+constexpr Field kFControllerBind[] = {{"id", FieldType::Int}, {"binding", FieldType::Object, false}};
 const OpDescriptor kHandWritten[] = {
+    {"controller.bind", "Learn or replace a project controller binding", Scope::Edit, EngineImpact::None,
+     kFControllerBind, false, false, controllerBindApply, controllerBindInverse, ""},
+    {"controller.unbind", "Remove a project controller binding", Scope::Edit, EngineImpact::None,
+     kFId, false, false, controllerUnbindApply, controllerUnbindInverse, "controller.bind"},
     {"media.import", "Import captured media metadata", Scope::Edit, EngineImpact::None,
      kFMediaRow, false, false, media::importApply, media::importInverse, "media.unlink"},
     {"media.unlink", "Unlink unreferenced media without deleting files", Scope::Edit, EngineImpact::None,
