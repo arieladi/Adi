@@ -227,7 +227,8 @@ subject, say so in your log instead of writing it twice.
 | 0190 | win | `win/pioneer-refs` | the DAW is named ADI (Advanced DAW Infrastructure); ADiJ stays; ADI Live dropped, the Session view stays inside ADI (director) | used |
 | 0191 | win | `win/adij-features` | ADiJ writes Pioneer USBs and Rekordbox XML, serves CDJs over Pro DJ Link, plays stems; ADI and ADiJ stand until a trademark clearance (director) | used |
 | 0192 | win | `win/color-bass` | color-bass devices as Pd devices on compiled-in externals; `[adi.sample]`; pthreads4w for Windows; win_codex joins (director) | used |
-| 0193 | win_codex | codex/eq-eight-pd | Mission 8: dsp/eq_eight.*, dsp/surge_eq_coefficients.hpp, pd_builtins/eq_eight_tilde.cpp, pd/devices/EQEight.pd, cmake/devices/eq_eight.cmake, EQ tests | active |
+| 0193 | win_codex | codex/auto-filter-pd | Mission 8: dsp/auto_filter.*, dsp/surge_auto_filters.hpp, pd_builtins/auto_filter_tilde.cpp, pd/devices/AutoFilter.pd, cmake/devices/auto_filter.cmake, Auto Filter tests | active |
+| win_codex | codex/eq-eight-pd | Mission 8: dsp/eq_eight.*, dsp/surge_eq_coefficients.hpp, pd_builtins/eq_eight_tilde.cpp, pd/devices/EQEight.pd, cmake/devices/eq_eight.cmake, EQ tests | active |
 | win_codex | codex/overdrive-pd | Mission 8: dsp/overdrive.*, dsp/byod_ojd.hpp, pd_builtins/overdrive_tilde.cpp, pd/devices/Overdrive.pd, cmake/devices/overdrive.cmake, overdrive tests | active |
 | win_codex | `codex/colorbass-dsp` | color-bass DSP cores, measurement domain and kernel crossfade (ADR-0192 phase 1) | used |
 | 0194 | mac | `mac/pd-midi` | MIDI into Pd devices: the MPE output encoder feeds [notein], [ctlin] and [bendin]; no MIDI survives ADR-0054 to forward (win's round 5c) | used |
