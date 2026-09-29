@@ -29,3 +29,5 @@ All numeric control mappings below are **ADI, unverified against Live**; the man
 | Oversampling | off/on | off | boolean | discrete |
 
 Tests: centre gains/shelves/notch, 12/48 dB slopes, band summation/disable, L/R and M/S separation, Scale and Adaptive Q, HQ latency, all block sizes 32–4096 identical, allocations zero; LibPdEngine floor before boosted peak, clean console and WAV only.
+
+Implementation supplies stable parameter IDs for both A/B curves; Edit is panel selection state, not a remapping of automation IDs. Peak coefficients retain the Surge Orfanidis design; Q maps to octave bandwidth. Scalar smoothing is per sample, independent of host block size. Oversampling is a 33-tap half-band interpolation/decimation pair, with measured 16-frame latency. Native MSVC /WX tests measure low-cut slopes 12.035/48.168 dB per octave and high-cut 12.102/49.380 in the selected octave (bilinear warping explains the high-frequency difference). The real Pd +6 dB peak is 0.798104934 from a 0.4 sine; far bin below 1e-12, zero allocations, clean console. Panel graph/analyser rendering is explicitly not supplied by this DSP patch.
