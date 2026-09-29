@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import difflib
 import json
@@ -29,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -130,11 +132,17 @@ def now():
     return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+_claim_lock = threading.Lock()
+_log_lock = threading.Lock()
+_ollama_lock = threading.Lock()
+
+
 def log(msg):
     line = f"{now()} {msg}"
-    print(line, flush=True)
-    with open(STATE_DIR / "drone.log", "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    with _log_lock:
+        print(line, flush=True)
+        with open(STATE_DIR / "drone.log", "a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
 
 def ensure_dirs():
@@ -462,14 +470,26 @@ def next_job():
 
 
 def process_one():
-    job_file = next_job()
-    if job_file is None:
-        return False
-    running = RUNNING / job_file.name
-    job_file.replace(running)
+    with _claim_lock:
+        while True:
+            job_file = next_job()
+            if job_file is None:
+                return False
+            running = RUNNING / job_file.name
+            try:
+                # Rename is the persistent claim. Serialize the short claim
+                # operation too: concurrent Win32 MoveFileEx calls can open
+                # the same source before either renames it. The process lock
+                # excludes other drones; this lock excludes sibling workers.
+                job_file.replace(running)
+                break
+            except FileNotFoundError:
+                if job_file.exists():
+                    raise  # missing destination folder, not a lost claim
     log(f"start {running.stem}")
     try:
-        ensure_ollama()
+        with _ollama_lock:
+            ensure_ollama()
         out = run_job(running)
         log(f"done  {running.stem} -> {out}")
     except Exception as e:  # noqa: BLE001 - one bad job must not stop the drone
@@ -479,6 +499,32 @@ def process_one():
         dest.with_suffix(".error.txt").write_text(f"{type(e).__name__}: {e}\n", encoding="utf-8")
         log(f"FAIL  {running.stem}: {type(e).__name__}: {e}")
     return True
+
+
+def process_queue(parallel=1):
+    def drain():
+        busy = False
+        while process_one():
+            busy = True
+        return busy
+
+    # Keep the serial path on the calling thread, with identical per-job
+    # execution, logs and result bytes. No executor is created for N=1.
+    if parallel == 1:
+        return drain()
+    with ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="adi-drone") as workers:
+        futures = [workers.submit(drain) for _ in range(parallel)]
+        # Read every result (no short circuit), including a worker's fatal
+        # exception. Never unload Ollama until all workers have joined.
+        results = [future.result() for future in futures]
+    return any(results)
+
+
+def positive_parallel(value):
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError("--parallel must be at least 1")
+    return n
 
 
 def acquire_lock():
@@ -905,13 +951,13 @@ def cmd_show(a):
     sys.exit(f"no result for {a.job_id}")
 
 
-def cmd_watch(_):
+def cmd_watch(a):
     lock = acquire_lock()  # noqa: F841 - held for the process lifetime
     recover_stale()
     log(f"watching {QUEUE} with {MODEL}")
     busy = True  # so a model left loaded by a previous run is freed on the first idle poll
     while True:
-        if process_one():
+        if process_queue(a.parallel):
             busy = True
             continue
         if busy:  # unload once, on the busy -> empty transition
@@ -920,11 +966,10 @@ def cmd_watch(_):
         time.sleep(POLL_SECONDS)
 
 
-def cmd_run_once(_):
+def cmd_run_once(a):
     lock = acquire_lock()  # noqa: F841
     recover_stale()
-    while process_one():
-        pass
+    process_queue(a.parallel)
     unload_model()
 
 
@@ -986,8 +1031,11 @@ def main():
     sh = sub.add_parser("show")
     sh.add_argument("job_id")
     sh.set_defaults(fn=cmd_show)
-    sub.add_parser("watch").set_defaults(fn=cmd_watch)
-    sub.add_parser("run-once").set_defaults(fn=cmd_run_once)
+    for command, function in (("watch", cmd_watch), ("run-once", cmd_run_once)):
+        worker = sub.add_parser(command)
+        worker.add_argument("--parallel", type=positive_parallel, default=1,
+                            help="concurrent job workers (default: 1)")
+        worker.set_defaults(fn=function)
     a = ap.parse_args()
     a.fn(a)
 
