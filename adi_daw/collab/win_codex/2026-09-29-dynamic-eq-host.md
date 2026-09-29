@@ -44,3 +44,22 @@ headless CI suite count. The top-level README count and win_codex.md index
 were left untouched, per win's new rules. mac DAW session: existing CI calls
 keep their prior behavior; only the new flag writes audio, after the existing
 edit guard returns success.
+
+## Channel-count review fix
+
+Pulled win's main merge (12bf114) before editing. The CLI currently configures
+stereo, but the renderer now takes SessionSpec.channels explicitly and allocates
+capture inside renderOffline using the same channel count as AudioIo and the
+copy loop. There is no independent two-channel capture assumption.
+
+The JUCE-only adi_play_render_tests compiles the production player with its CLI
+entry point renamed. Actual mono, four-channel and six-channel Sessions render
+into an initially two-channel buffer, then round-trip every sample through a
+32-bit float WAV. No audio driver is opened. An injected fixed two-channel
+allocation makes the regression return 1; restored before committing.
+
+MSVC /WX Release build passes. The channel regression and the existing Dynamic
+EQ adi_play integration test both pass (including legacy flags, failure output
+preservation, peak/floor assertions and exact sample comparisons). CMake's new
+JUCE-only regression target and tests/test_play_render.cpp are included in the
+narrow claim delegated by win. README count untouched.

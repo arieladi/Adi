@@ -246,6 +246,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `src/juce/play.cpp` (offline capture only), `tests/test_play_render.cpp`, `CMakeLists.txt` (regression target), `collab/win_codex/2026-09-29-dynamic-eq-host.md` | win_codex — channel-count fix delegated by win, mac DAW session's file | `codex/dynamic-eq-host` | 2026-09-29 |
 | `../tools/adi-drone/drone.py`, its parallel-worker tests and README | win_codex - delegated by win | `codex/drone-parallel` | 2026-09-28 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |

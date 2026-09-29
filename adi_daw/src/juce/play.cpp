@@ -287,10 +287,19 @@ int saveStates(adi::engine::Session& session, adi::Store& store) {
 /// print the master's peak for each second. This is the headless proof that a
 /// project's clips reach the master; it waits for the disk between blocks
 /// (`prime`), which only an offline driver may do.
-int renderOffline(adi::engine::Session& session, double rate, int block, double seconds,
+int renderOffline(adi::engine::Session& session, int channels, double rate, int block, double seconds,
                   bool requirePeakSet, double requirePeak, juce::AudioBuffer<float>* capture = nullptr) {
-    const int channels = 2;
-    std::vector<std::vector<float>> buf(channels, std::vector<float>(static_cast<std::size_t>(block)));
+    if (capture != nullptr) {
+        const double frames = seconds * rate;
+        if (channels < 1 || !std::isfinite(frames) || frames < 1 || frames > std::numeric_limits<int>::max()) {
+            std::printf("FAILED -- render output exceeds the capture frame limit\n"); return 1;
+        }
+        try { capture->setSize(channels, static_cast<int>(frames)); }
+        catch (const std::bad_alloc&) {
+            std::printf("FAILED -- insufficient memory for render output\n"); return 1;
+        }
+    }
+    std::vector<std::vector<float>> buf(static_cast<std::size_t>(channels), std::vector<float>(static_cast<std::size_t>(block)));
     std::vector<float*> ptrs;
     for (auto& b : buf) ptrs.push_back(b.data());
     const auto total = static_cast<std::int64_t>(seconds * rate);
@@ -484,17 +493,7 @@ int main(int argc, char** argv) {
     if (o.render > 0.0) {
         adi_play::EditWatch edits(session);   // after the session: destroyed before it
         juce::AudioBuffer<float> capture;
-        if (!o.renderOutput.empty()) {
-            const double frames = o.render * rate;
-            if (!std::isfinite(frames) || frames < 1 || frames > std::numeric_limits<int>::max()) {
-                std::printf("FAILED -- render output exceeds the capture frame limit\n"); return 1;
-            }
-            try { capture.setSize(2, static_cast<int>(frames)); }
-            catch (const std::bad_alloc&) {
-                std::printf("FAILED -- insufficient memory for render output\n"); return 1;
-            }
-        }
-        const int rc = edits.finish(renderOffline(session, rate, o.block, o.render, o.requirePeakSet,
+        const int rc = edits.finish(renderOffline(session, spec.channels, rate, o.block, o.render, o.requirePeakSet,
                                                   o.requirePeak, o.renderOutput.empty() ? nullptr : &capture),
                                     o.expectNoEdits);
         // In particular, preserve EditWatch's exit 4 and publish nothing for it.
