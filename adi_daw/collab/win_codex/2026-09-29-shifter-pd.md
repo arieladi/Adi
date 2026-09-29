@@ -62,44 +62,44 @@ parity gaps for the supplied checklist follow-up, not silently omitted controls.
 ## One provisional values table
 
 **Every range, default, unit and curve below is unverified against Live.**
-PB's 0–24-semitone range is stated in the chapter; its default/curve remain
+PB's 0â€“24-semitone range is stated in the chapter; its default/curve remain
 provisional. The director's supplied rows will replace this table and controls.
 
 | Live control | ADI range | Default | Unit | ADI curve / interpretation |
 |---|---|---|---|---|
-| Mode | 0–2 | 0 | - | Pitch Freq Ring |
-| Coarse | -48–48 | 0 | - | Linear; semitones in Pitch, kHz in Freq/Ring |
-| Fine | -100–100 | 0 | - | Linear; cents in Pitch, Hz in Freq/Ring |
-| Spread | 0–100 | 0 | - | Linear; cents in Pitch, Hz in Freq/Ring; opposite sign on R when Wide |
-| Wide | 0–1 | 0 | - | int |
-| Window | 5–170 | 40 | ms | Log control; nearest power-of-two window, 256–8192 samples; 4x overlap |
-| Delay | 0–1 | 0 | - | int |
-| Delay Mode | 0–1 | 0 | - | int |
-| Delay (free) | 0.1–1000 | 4 | Hz | Log; delay seconds = 1/Hz |
-| Delay (synced) | 0.0625–8 | 1 | beats | Log quarter-note multiplier; 60×beats/BPM |
-| Feedback | 0–95 | 0 | % | lin |
-| Tone | 20–20000 | 10000 | Hz | Log Hz; one-pole feedback lowpass |
-| LFO waveform | 0–9 | 0 | - | Sine Triangle TriangleAnalog Triangle8 Triangle16 SawUp SawDown Rectangle Random RandomSH |
-| Duty | 1–99 | 50 | % | lin |
-| Phase/Spin/Width mode | 0–2 | 0 | - | Phase Spin Width |
-| Phase | 0–360 | 0 | deg | lin |
-| Spin | 0–20 | 0 | % | Linear; right LFO speed increase |
-| Width | 0–100 | 0 | % | Linear; 0 shared random, 100 inverted random |
-| LFO Rate mode | 0–1 | 0 | - | int |
-| Offset | 0–360 | 0 | deg | lin |
-| LFO Rate (free) | 0.01–40 | 1 | Hz | log |
-| LFO Rate (synced) | 0.0625–16 | 1 | beats | Log; LFO Hz = BPM/(60×beats) |
-| LFO Amount | 0–24 | 0 | - | Linear; semitones in Pitch, kHz in Freq/Ring |
-| Env Fol | 0–1 | 0 | - | int |
-| Attack | 0.1–1000 | 10 | ms | Log ms; one-pole peak envelope |
-| Release | 1–5000 | 100 | ms | Log ms; one-pole peak envelope |
-| Envelope Amount | -24–24 | 0 | - | Linear peak-envelope scaling; semitones/kHz by mode |
-| Drive enable | 0–1 | 0 | - | int |
-| Drive | 0–36 | 0 | dB | Linear dB; tanh drive only in Ring |
-| Dry/Wet | 0–100 | 100 | % | lin |
-| Internal/MIDI | 0–1 | 0 | - | Toggle; last positive-velocity note, C4=zero Pitch shift; concert-A frequency for Freq/Ring |
-| Glide | 0–2000 | 0 | ms | Linear ms; exponential note glide |
-| PB | 0–24 | 2 | st | lin |
+| Mode | 0â€“2 | 0 | - | Pitch Freq Ring |
+| Coarse | -48â€“48 | 0 | - | Linear; semitones in Pitch, kHz in Freq/Ring |
+| Fine | -100â€“100 | 0 | - | Linear; cents in Pitch, Hz in Freq/Ring |
+| Spread | 0â€“100 | 0 | - | Linear; cents in Pitch, Hz in Freq/Ring; opposite sign on R when Wide |
+| Wide | 0â€“1 | 0 | - | int |
+| Window | 5â€“170 | 40 | ms | Log control; nearest power-of-two window, 256â€“8192 samples; 4x overlap |
+| Delay | 0â€“1 | 0 | - | int |
+| Delay Mode | 0â€“1 | 0 | - | int |
+| Delay (free) | 0.1â€“1000 | 4 | Hz | Log; delay seconds = 1/Hz |
+| Delay (synced) | 0.0625â€“8 | 1 | beats | Log quarter-note multiplier; 60Ã—beats/BPM |
+| Feedback | 0â€“95 | 0 | % | lin |
+| Tone | 20â€“20000 | 10000 | Hz | Log Hz; one-pole feedback lowpass |
+| LFO waveform | 0â€“9 | 0 | - | Sine Triangle TriangleAnalog Triangle8 Triangle16 SawUp SawDown Rectangle Random RandomSH |
+| Duty | 1â€“99 | 50 | % | lin |
+| Phase/Spin/Width mode | 0â€“2 | 0 | - | Phase Spin Width |
+| Phase | 0â€“360 | 0 | deg | lin |
+| Spin | 0â€“20 | 0 | % | Linear; right LFO speed increase |
+| Width | 0â€“100 | 0 | % | Linear; 0 shared random, 100 inverted random |
+| LFO Rate mode | 0â€“1 | 0 | - | int |
+| Offset | 0â€“360 | 0 | deg | lin |
+| LFO Rate (free) | 0.01â€“40 | 1 | Hz | log |
+| LFO Rate (synced) | 0.0625â€“16 | 1 | beats | Log; LFO Hz = BPM/(60Ã—beats) |
+| LFO Amount | 0â€“24 | 0 | - | Linear; semitones in Pitch, kHz in Freq/Ring |
+| Env Fol | 0â€“1 | 0 | - | int |
+| Attack | 0.1â€“1000 | 10 | ms | Log ms; one-pole peak envelope |
+| Release | 1â€“5000 | 100 | ms | Log ms; one-pole peak envelope |
+| Envelope Amount | -24â€“24 | 0 | - | Linear peak-envelope scaling; semitones/kHz by mode |
+| Drive enable | 0â€“1 | 0 | - | int |
+| Drive | 0â€“36 | 0 | dB | Linear dB; tanh drive only in Ring |
+| Dry/Wet | 0â€“100 | 100 | % | lin |
+| Internal/MIDI | 0â€“1 | 0 | - | Toggle; last positive-velocity note, C4=zero Pitch shift; concert-A frequency for Freq/Ring |
+| Glide | 0â€“2000 | 0 | ms | Linear ms; exponential note glide |
+| PB | 0â€“24 | 2 | st | lin |
 
 ## Validation
 
@@ -108,7 +108,7 @@ measurement at -1200/-700/+13/+700/+1200 cents has worst error 0.04 cents
 (tolerance 2 cents). Freq's 250 Hz translation rejects its other sideband;
 Ring produces both, and Drive creates harmonics. MIDI note/bend, synced delay,
 Wide/Spread, all LFO shapes, Window latency and block equivalence are covered.
-Blocks 32–4096 are sample-identical. Core and real-Pd Pitch/Freq allocate zero
+Blocks 32â€“4096 are sample-identical. Core and real-Pd Pitch/Freq allocate zero
 (including Windows Debug CRT). Real Pd's 7-to-8 kHz translation measures
 0.399999834 amplitude after checking its far bin, with a clean console.
 
