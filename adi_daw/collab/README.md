@@ -246,6 +246,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `src/adi/ui/**`, `tests/test_ui_seams.cpp` (step 7.1's seams, ADR-0180) | mac | `mac/step7-seams` | 2026-09-29 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
