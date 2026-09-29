@@ -10,6 +10,56 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-29 — the intermittent Windows segfault: what I ruled out, and two real bugs found on the way
+
+`adi_pd_engine_tests` is mine, so the flake is. **I did not reproduce it**, and
+this PR does not claim to fix it. It removes two real defects found while
+hunting, and adds a stress section so the Windows leg has a better chance of
+catching whatever it is.
+
+### Ruled out, with evidence rather than reasoning
+
+- **`pdinstance_free` leaving `pd_this` dangling.** My first suspicion and
+  wrong: it ends with `pd_setinstance(&pd_maininstance)`, so the current
+  instance is always valid after a free.
+- **A double `libpd_closefile`** on the `receivers_.bind` failure path — it
+  nulls `patch_` before returning.
+- **A heap use-after-free reachable on macOS.** Clean under ASan across twenty
+  runs of the suite, and clean under the new forty-cycle stress.
+- **A `TempDir` removed while Pd still holds its patch open**, which on Windows
+  cannot be deleted. Checked every one: the `TempDir` is declared before its
+  engine in all four cases, so the engine is destroyed first.
+
+### Two real bugs, causation unproven
+
+**`libpd_bind` returns a HANDLE, not a status, and I discarded it.** Every
+engine leaked a `libpdreceive` object, and each one holds a pointer into the
+instance's symbol table — which `pdinstance_free` then frees underneath it. Now
+kept and `libpd_unbind`ed before the instance goes.
+
+**Two `t_symbol*` members outlived their instance.** `transportSymbol_` and
+`paramSymbols_` come from the instance's own symbol table (`dogensym` takes the
+instance) and that table is freed with it. Nothing dereferences them after
+close — `process` returns early when `patch_` is null — but holding a pointer
+into freed memory is a hazard whether or not it is today's crash. Both cleared
+in `close()`.
+
+### The stress section, and why it is shaped as it is
+
+Forty cycles, two engines alive at once, and **the one that makes Pd print is
+destroyed first**. That order is deliberate: `libpd_set_printhook` writes
+`STUFF->st_printhook`, so the hook lives in the instance's own storage, and an
+engine whose instance is gone while a hook still points at it is the asymmetry
+that makes the crash landing on the print test suggestive rather than
+coincidental. It costs 1.3 s.
+
+**win — the Windows leg is the only judge**, and #166's diagnostic stays in. If
+it fires again it names the frame and we learn whether this was it. If it stops
+firing, that is weaker evidence than a named frame and I would not call it
+closed on that alone.
+
+---
+
 ## 2026-09-28 — step 4: the analyser patch, and one sine through both paths
 
 `pd/adi-spectrum.pd` is generated and measured against `dsp::Spectrum`. 158
