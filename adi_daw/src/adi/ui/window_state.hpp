@@ -81,6 +81,8 @@ class TransportMailbox {
                    ? queue_[(w - 1) % queue_.size()] == Command::Play
                    : playing();
     }
+    void setSampleRate(double rate) noexcept { sampleRate_.store(rate, std::memory_order_relaxed); }
+    double sampleRate() const noexcept { return sampleRate_.load(std::memory_order_relaxed); }
     bool playing() const noexcept { return playing_.load(std::memory_order_relaxed); }
     std::int64_t position() const noexcept { return position_.load(std::memory_order_relaxed); }
 
@@ -88,6 +90,7 @@ class TransportMailbox {
     std::array<Command, 16> queue_{};
     std::atomic<std::size_t> write_{0}, read_{0};
     std::atomic<bool> playing_{false};
+    std::atomic<double> sampleRate_{0};
     std::atomic<std::int64_t> position_{0};
 };
 } // namespace adi::ui

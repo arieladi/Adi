@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/ui_shell.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
+#include "adi/ui/project_document.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <atomic>
@@ -260,6 +262,59 @@ int main(int argc, char **argv) {
     check(!readRoot.command(AppCommands::SwapPanels) &&
               readRoot.state().panels.slots()[0].panel == roOrder,
           "failed persistence rolls back visible order");
+    std::string documentError;
+    auto document = ProjectDocument::open(temp.path() / "integrated.adi", true, {}, documentError);
+    check(document != nullptr, "application document opens");
+    if (document) {
+        AdiRootComponent integrated(document->view(), document->ops(), document->mailbox(),
+                                    commands, document->views(), "main");
+        integrated.afterEdit = [&] { document->synchronise(); };
+        integrated.applicationCommand = [&](int id) {
+            return id == AppCommands::SaveProject && document->save(documentError);
+        };
+        check(document->ops().submit(track(2)).ok && document->synchronise(),
+              "application edit reaches engine");
+        check(integrated.undoTitle(false).find("Create track") != std::string::npos,
+              "undo menu includes actual history label");
+        check(integrated.keyPressed(juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0)),
+              "application undo key");
+        check(document->session().model().tracks.size() == 1,
+              "undo callback updates Session synchronously");
+        check(integrated.command(AppCommands::Redo) &&
+                  document->session().model().tracks.size() == 2,
+              "redo callback restores engine track");
+        document->prepare(48000, 64);
+        std::array<float, 64> left{}, right{};
+        float *channels[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = channels;
+        io.numOut = 2;
+        io.frames = 64;
+        check(integrated.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)),
+              "application play key");
+        document->process(io);
+        integrated.frame();
+        check(integrated.playing() && document->mailbox().position() == 64,
+              "TransportBar reflects actual engine playback");
+        check(integrated.command(AppCommands::Stop), "application stop");
+        document->process(io);
+        integrated.frame();
+        check(!integrated.playing() && document->mailbox().position() == 64,
+              "engine stop reaches bar");
+        check(integrated.keyPressed(juce::KeyPress('s', juce::ModifierKeys::commandModifier, 0)),
+              "Save key reaches live project checkpoint");
+        OpRequest tempoChange;
+        tempoChange.opType = "project.insertTempoEvent";
+        tempoChange.payload = {{"pos", 2 * textproj::kPPQ}, {"bpm", 60.0}, {"curve", 0}};
+        check(document->ops().submit(tempoChange).ok && document->synchronise(),
+              "tempo change for hardware-rate test");
+        document->prepare(96000, 64);
+        document->session().transport().locate(72000); // offline driver, 0.75 seconds
+        document->process(io);
+        integrated.frame();
+        check(integrated.bpm() == 120, "TransportBar uses granted device rate at tempo boundaries");
+        document->release();
+    }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
