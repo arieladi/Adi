@@ -34,7 +34,7 @@ void Echo::prepare(double sr) {
         auto &l = lanes_[c];
         l = Lane{};
         l.random = 0x12345678u + static_cast<std::uint32_t>(c);
-        l.ring.assign(static_cast<std::size_t>(rate_ * 25) + 8, 0.f);
+        l.ring.assign(static_cast<std::size_t>(rate_ * 26) + 8, 0.f);
         for (std::size_t j = 0; j < 4; ++j)
             l.room[j].assign(static_cast<std::size_t>(rate_ * ms[j] / 1000) + 1, 0.f);
     }
@@ -199,6 +199,7 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
             if (wave == 5)
                 mod = commonNoise;
             mod += (env_ - mod) * p_[EnvMix] / 100;
+            mod = std::clamp(mod, -1., 1.);
             const double localNoise = l.noiseFrom + (l.noiseTo - l.noiseFrom) * wobble_;
             const double warp = std::sin(2 * pi * wobble_) +
                                 commonNoise * (1 - p_[WobbleMorph] / 100) +
