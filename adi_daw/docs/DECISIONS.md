@@ -15249,3 +15249,104 @@ the chaining — one patch per device.
   after this core PR merges. No host, UI, schema or CI change is made here.
 
 ---
+
+---
+
+## ADR-0198 — The parameter feed's per-parameter record: the plug-in's own words, the shape of a control, and which source touched it last — `DECIDED` (2026-09-28) — **BUILDS ADR-0181 d3's RECORD; ANSWERS 27a ITEM 6; CARRIES ADR-0188 d4**
+
+ADR-0181 d3 says what the feed sends and leaves the record to whoever builds
+it. 27a item 6 asks for a panel for a plug-in with no editor. This is the
+record both need, and it is a **data model, not UI** — step 7 has not started
+and there is no GUI in the tree.
+
+### Decision
+
+**1. The record lives in `panel.hpp`, which is pure and JUCE-free.** It
+therefore builds on every ABI the suite runs on, and the device layer adapts
+into it. That is why `panel::Shape` duplicates `device::ParamShape` rather
+than including it: the alternative is a header that only compiles where JUCE
+does, for a model that has nothing to do with JUCE.
+
+**2. It carries the plug-in's OWN text, not our formatting of a number.**
+CLAP's `value_to_text`, VST3's `getParamStringByValue`. A host that prints
+`547.72` where the plug-in says `547.72 Hz`, or `0` where it says `Unused`,
+shows the user a number they cannot match to the plug-in's own window. On
+VST3 this is the *only* way to a real value at all — the same fact that made
+`ParamValue` carry `hasReal`.
+
+**3. The shape of a control is DECLARED, never inferred from the range.**
+CLAP's `IS_ENUM`/`IS_STEPPED`, VST3's step count. A three-step parameter and
+a continuous 0..2 one are identical from min and max alone, and drawing the
+second as a menu takes away every value between. `IS_ENUM` is checked first
+because `params.h` requires both flags, and a two-step enum is a menu whose
+steps have names rather than a switch.
+
+Measured: Pro-Q 3 declares **234 of its 358 parameters stepped**. Drawing them
+all as sliders would have been wrong for two thirds of the plug-in.
+
+**4. `lastTouchedBy` is here from the start, before anything writes it.**
+ADR-0188 d4's "last touched wins": the source that sent the latest change owns
+the parameter, a gesture from another takes it over, and an absolute control
+that is not the owner catches up by Takeover Mode. None of that is decidable
+without knowing who moved it last. One field on a record nobody writes to yet;
+a retrofit across every writer later.
+
+**5. What the record DERIVES, so that two readers cannot disagree.**
+`driven` is `playing` differing from `stored` by more than an epsilon —
+computed once, because a knob and a surface comparing two doubles separately
+is exactly the disagreement d3's single feed exists to prevent. A **missing**
+parameter plays nothing (ADR-0177 d4): `playing` is forced to `stored`, and
+its lane and stored value are kept. **`overridden` without `automated` is
+refused**: override is something done to a LANE (ADR-0162), and a record
+claiming it with no lane would light Live's Re-Enable button for a parameter
+with nothing to re-enable.
+
+**6. The ADI Airwindows filter shows one algorithm's parameters.** A suite
+declares every algorithm's at once with fixed ids, so that a lane never
+silently retargets when the algorithm changes (ADR-0171): parameter 0 is
+Algorithm, 1 is Auto Gain, and algorithm *a*'s parameter *k* is
+`100 + 64a + k`. A panel showing all of them would show 147 algorithms' worth
+on the Distortion suite.
+
+**Anything the filter cannot place is KEPT** — an unparseable id, or one below
+the first block. Hiding a control the user needs is worse than showing one
+they do not.
+
+The constants are declared in two places, unavoidably: `panel.hpp` is JUCE-free
+and the plug-ins build as a separate CMake project. A `static_assert` against
+`airwindows_clap.hpp` is what stops them drifting. **The authority is that
+header and `plugins/README.md`; `SUITES.md` does not document the scheme**,
+which cost a wrong turn when a brief said it did.
+
+### Verified
+
+Against real plug-ins, printed rather than asserted — asserting `"547.72 Hz"`
+would pin FabFilter's formatting into our suite and test their product:
+
+| | | |
+|---|---|---|
+| Pro-Q 3 | `Band 1 Used` | switch, *"Unused"* |
+| | `Band 1 Frequency` | slider, *"547.72 Hz"* |
+| ADI Airwindows – Sub | `Algorithm` | menu, *"OrbitKick"* |
+| | `Auto Gain` | switch, *"On"* |
+
+The last two are 27a item 6's requirement verbatim, on the plug-ins it was
+written for.
+
+### Verified non-vacuously
+
+Six defects planted, all caught once they were valid experiments: the block
+bound ignored (6 checks), the shared rule removed (7), an unparseable id
+dropped (1), a missing parameter still playing (1), override surviving with no
+lane (1), and `driven` ignoring its epsilon (1).
+
+**A seventh passed, and that was the finding.** Deleting the special case for
+ids 0 and 1 changed nothing — both are below the base, so the shared rule
+already kept them. It was dead code, written minutes earlier. It is gone, and
+the comment says why there is no special case so that nobody adds one back.
+
+Three of those plants were not experiments at all on the first attempt: they
+broke the build under `-Werror` rather than the test. A plant counts only when
+the file changed **and** the build succeeded.
+
+5588 checks across 57 suites.

@@ -88,6 +88,13 @@ struct ParamValue {
 /// parameter set can change while the project is CLOSED because the patch is a
 /// text file someone edited. A string that the source owns is the only identity
 /// that survives all three.
+/// What a control for a parameter looks like (ADR-0181 d3, 27a item 6).
+enum class ParamShape {
+    Continuous,   ///< a slider or a knob
+    Switch,       ///< two steps: on or off ("Auto Gain" is one)
+    Menu,         ///< an enumerated set, drawn by the plug-in's own text
+};
+
 struct ParamDescriptor {
     std::string   id;
     std::string   name;
@@ -101,6 +108,20 @@ struct ParamDescriptor {
     bool          hasRealRange = false;
     bool          automatable = true;
     std::uint32_t flags = 0;
+
+    /// How a control for this parameter should be DRAWN, not what it means.
+    /// ADR-0181 d3's record needs it: a continuous parameter is a slider, a
+    /// two-step one is a switch, an enumerated one is a menu.
+    ///
+    /// Read from what the plug-in declares -- CLAP's `IS_STEPPED`/`IS_ENUM`,
+    /// VST3's step count -- and never guessed from the range. A parameter
+    /// with three steps and one with a continuous 0..2 range look identical
+    /// from min and max alone, and drawing the second as a menu would take
+    /// away every value between.
+    ParamShape    shape = ParamShape::Continuous;
+    /// Steps INCLUDING both ends, when `shape` is not Continuous. 2 is a
+    /// switch. 0 when unknown.
+    std::int32_t  stepCount = 0;
 
     /// The plug-in no longer declares this parameter. ADR-0177 d4, extended
     /// to CLAP by ADR-0179.
@@ -301,6 +322,21 @@ public:
         const std::string& paramId) const noexcept;
 
     [[nodiscard]] virtual ParamValue getParam(const std::string& paramId) const noexcept;
+
+    /// The PLUG-IN'S OWN TEXT for a value, units and all -- CLAP's
+    /// `value_to_text`, VST3's `getParamStringByValue`. Empty when the
+    /// plug-in offers none, and then the caller formats the number itself.
+    ///
+    /// ADR-0181 d3 puts this in the parameter feed on purpose: a host that
+    /// formats "4800.0" where the plug-in would say "4.80 kHz" is showing a
+    /// number the user cannot match to the plug-in's own window. VST3 has
+    /// only ever been able to give a string, which is why the contract asks
+    /// for one rather than for a unit and a scale.
+    [[nodiscard]] virtual std::string paramText(const std::string& paramId,
+                                                double normalized) const {
+        (void) paramId; (void) normalized;
+        return {};
+    }
 
     /// Message thread. The op log is the source of truth (ADR-0038); this
     /// pushes a value the log has already recorded into the live plugin.

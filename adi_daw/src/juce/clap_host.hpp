@@ -253,6 +253,8 @@ public:
     }
     [[nodiscard]] const ParamDescriptor* paramAt(std::int32_t i) const noexcept override;
     [[nodiscard]] ParamValue getParam(const std::string& paramId) const noexcept override;
+    [[nodiscard]] std::string paramText(const std::string& paramId,
+                                        double normalized) const override;
     bool setParam(const std::string& paramId, const ParamValue& v) override;
 
     [[nodiscard]] std::vector<std::string> stateRoles() const override;
@@ -325,6 +327,8 @@ private:
     /// Our index for a plugin's `clap_id`, or -1. Audio thread: a linear
     /// scan over the parameter list, no allocation.
     [[nodiscard]] std::int32_t indexOfParam(clap_id id) const noexcept;
+    /// Our index for a parameter's TEXT id (the fixed-width hex), or -1.
+    [[nodiscard]] std::int32_t indexOfParamByText(const std::string& id) const noexcept;
     /// True when this event addresses a parameter the plugin no longer
     /// declares (ADR-0177 d4). Audio thread; a linear scan, no allocation.
     [[nodiscard]] bool addressesAMissingParam(const engine::Event& e) const noexcept;
