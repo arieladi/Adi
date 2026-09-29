@@ -249,6 +249,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 |---|---|---|---|
 | `src/adi/ui/**`, `tests/test_ui_seams.cpp`, `tests/test_panel_layout.cpp`, `docs/UI-ARCHITECTURE.md` (step 7.2, ADR-0080 and ADR-0180) | mac | `mac/step7-shell` | 2026-09-29 |
 | `src/adi/ui/**`, `tests/test_ui_seams.cpp` (step 7.1's seams, ADR-0180) | mac | `mac/step7-seams` | 2026-09-29 |
+| `src/adi/ui/**`, `tests/test_ui_seams.cpp` (step 7.1's seams wired to ProjectView, ADR-0180 and ADR-0201) | mac | `mac/step7-projectview` | 2026-09-29 |
 | Utility DSP/builtin/patch, tests/test_utility*.cpp, cmake/devices/utility.cmake | win_codex - mission 5 delegated by win | `codex/utility-pd` | 2026-09-29 |
 | Saturator DSP/builtin/patch, tests/test_saturator*.cpp, cmake/devices/saturator.cmake | win_codex - mission 5 delegated by win | `codex/saturator-pd` | 2026-09-29 |
 | Echo DSP/builtin/patch, tests/test_echo*.cpp, cmake/devices/echo.cmake | win_codex - mission 5 delegated by win | `codex/echo-pd` | 2026-09-29 |
