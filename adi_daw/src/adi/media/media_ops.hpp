@@ -11,6 +11,9 @@ struct MediaResult {
 };
 // Off-thread path-taking entry points. Relative inputs are project-folder
 // relative. Hashing and metadata capture precede deterministic journal apply.
+// Captures without committing, so media plus clip can form one undo transaction.
+MediaResult prepareImport(Store&, const std::filesystem::path&, std::int64_t id,
+                          std::int64_t importedUtc, OpRequest&);
 MediaResult importMedia(Store&, const std::filesystem::path&, std::int64_t id,
                         std::int64_t importedUtc, Actor actor = Actor::User);
 MediaResult relinkMedia(Store&, std::int64_t id, const std::filesystem::path&,

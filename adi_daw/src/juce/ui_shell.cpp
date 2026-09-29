@@ -12,17 +12,37 @@ void AppCommands::reload(const settings::AppSettings &settings) {
     manager.getKeyMappings()->resetToDefaultMappings();
 }
 void AppCommands::getAllCommands(juce::Array<juce::CommandID> &ids) {
-    for (int id = PlayStop; id <= AudioSettings; ++id)
+    for (int id = PlayStop; id <= ContinuePlay; ++id)
         ids.add(id);
 }
 void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInfo &info) {
-    if (id < PlayStop || id > AudioSettings) {
+    if (id < PlayStop || id > ContinuePlay) {
         info.setActive(false);
         return;
     }
-    static const char *names[] = {"Play / stop",      "Stop",        "Undo",         "Redo",
-                                  "Swap side panels", "New project", "Open project", "Save",
-                                  "Audio settings"};
+    static const char *names[] = {"Play / stop",
+                                  "Stop",
+                                  "Undo",
+                                  "Redo",
+                                  "Swap side panels",
+                                  "New project",
+                                  "Open project",
+                                  "Save",
+                                  "Audio settings",
+                                  "Zoom in",
+                                  "Zoom out",
+                                  "Fit selection",
+                                  "Previous zoom",
+                                  "Fit width",
+                                  "Fit height",
+                                  "Scroll left",
+                                  "Scroll right",
+                                  "Taller tracks",
+                                  "Shorter tracks",
+                                  "Go to start",
+                                  "Scroll up",
+                                  "Scroll down",
+                                  "Continue playback"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         info.setInfo(active_ ? juce::String(active_->undoTitle(id == Redo))
@@ -32,6 +52,30 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     }
     const auto cmd = juce::ModifierKeys::commandModifier;
     switch (id) {
+    case ZoomIn:
+        info.addDefaultKeypress('+', 0);
+        break;
+    case ZoomOut:
+        info.addDefaultKeypress('-', 0);
+        break;
+    case FitSelection:
+        info.addDefaultKeypress('z', 0);
+        break;
+    case PreviousZoom:
+        info.addDefaultKeypress('x', 0);
+        break;
+    case FitWidth:
+        info.addDefaultKeypress('w', 0);
+        break;
+    case FitHeight:
+        info.addDefaultKeypress('h', 0);
+        break;
+    case ContinuePlay:
+        info.addDefaultKeypress(juce::KeyPress::spaceKey, juce::ModifierKeys::shiftModifier);
+        break;
+    case GoStart:
+        info.addDefaultKeypress(juce::KeyPress::homeKey, 0);
+        break;
     case NewProject:
         info.addDefaultKeypress('n', cmd);
         break;
@@ -103,13 +147,18 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
                                    TransportMailbox &mailbox, AppCommands &commands,
                                    ViewStateStore &persistence, std::string window,
                                    DesktopDefaults defaults)
-    : transport(*this), view_(view), submitter_(submitter), mailbox_(mailbox), commands_(commands),
-      persistence_(persistence), window_(std::move(window)),
+    : transport(*this), arrangement(*this), view_(view), submitter_(submitter), mailbox_(mailbox),
+      commands_(commands), persistence_(persistence), window_(std::move(window)),
       state_(persistence.load(window_, defaults)) {
     setOpaque(true);
     setWantsKeyboardFocus(true);
     addAndMakeVisible(transport);
+    addAndMakeVisible(arrangement);
     reader_.emplace(view_.current());
+    arrangement.geometry.left = state_.timelineLeft;
+    arrangement.geometry.scale = state_.pixelsPerQuarter;
+    arrangement.geometry.height = state_.laneHeight;
+    arrangement.geometry.heights = state_.laneHeights;
     setSize(1200, 720);
     frame();
 }
@@ -133,6 +182,7 @@ void AdiRootComponent::frame() noexcept {
         dirty_.mark(DirtySet::Transport);
     }
     lastDrain_ = dirty_.drain();
+    arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (lastDrain_ & DirtySet::Transport)
         transport.repaint();
     if (lastDrain_ & (DirtySet::Layout | DirtySet::Content))
@@ -145,8 +195,29 @@ double AdiRootComponent::bpm() const noexcept {
                        tempo->secondsToTicks(rate > 0 ? static_cast<double>(position_) / rate : 0))
                  : 120.;
 }
+std::int64_t AdiRootComponent::timelineTick() const noexcept {
+    const auto *tempo = reader_->tempo();
+    const double rate = sampleRate_ > 0 ? sampleRate_ : reader_->sampleRate();
+    return tempo && rate > 0 ? tempo->secondsToTicks(static_cast<double>(position_) / rate) : 0;
+}
+bool AdiRootComponent::locate(std::int64_t tick) {
+    // Landing reads the current cell, not a retained drag publication.
+    const auto current = view_.current();
+    const double rate = mailbox_.sampleRate() > 0 ? mailbox_.sampleRate() : current->sampleRate;
+    if (!current->tempo || !mailbox_.hasRoom())
+        return false;
+    return mailbox_.post(TransportMailbox::Command::Locate,
+                         static_cast<std::int64_t>(current->tempo->ticksToSeconds(tick) * rate));
+}
 void AdiRootComponent::resized() {
     transport.setBounds(0, 0, getWidth(), 44);
+    const auto &slots = state_.panels.slots();
+    const int left = std::min(state_.panels.occupied(slots[0]), getWidth() / 3);
+    const int right = std::min(state_.panels.occupied(slots[1]), getWidth() / 3);
+    const int dock =
+        state_.docked ? std::min(state_.deviceHeight, std::max(0, getHeight() - 100)) : 0;
+    arrangement.setBounds(left, 44, std::max(0, getWidth() - left - right),
+                          std::max(0, getHeight() - 44 - dock));
     dirty_.mark(DirtySet::All);
 }
 void AdiRootComponent::paint(juce::Graphics &g) {
@@ -194,16 +265,18 @@ void AdiRootComponent::paint(juce::Graphics &g) {
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) { return commands_.key(key, *this); }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
 bool AdiRootComponent::command(int id) {
+    if (id >= AppCommands::ZoomIn && id <= AppCommands::ScrollDown)
+        return arrangement.command(id);
     if (id >= AppCommands::NewProject && id <= AppCommands::AudioSettings)
         return applicationCommand && applicationCommand(id);
     // No action carries the presented frame into an edit: OpSubmitter resolves
     // current store/history state on arrival, even when this window is a frame behind.
-    if (id == AppCommands::PlayStop || id == AppCommands::Stop) {
-        if (!mailbox_.hasRoom()) {
+    if (id == AppCommands::PlayStop || id == AppCommands::Stop || id == AppCommands::ContinuePlay) {
+        const bool play = id != AppCommands::Stop && !mailbox_.desiredPlaying();
+        if (!mailbox_.hasRoom(play && id != AppCommands::ContinuePlay ? 2 : 1)) {
             error_ = "Transport command queue is full";
             return false;
         }
-        const bool play = id == AppCommands::PlayStop && !mailbox_.desiredPlaying();
         OpRequest request;
         request.opType = play ? "transport.play" : "transport.stop";
         request.payload = Payload::object();
@@ -212,6 +285,8 @@ bool AdiRootComponent::command(int id) {
             error_ = result.error;
             return false;
         }
+        if (play && id != AppCommands::ContinuePlay)
+            locate(arrangement.geometry.insert);
         mailbox_.post(play ? TransportMailbox::Command::Play : TransportMailbox::Command::Stop);
     } else if (id == AppCommands::Undo || id == AppCommands::Redo) {
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
@@ -231,6 +306,8 @@ bool AdiRootComponent::command(int id) {
         }
     } else
         return false;
+    if (id == AppCommands::SwapPanels)
+        resized();
     if (afterEdit)
         afterEdit();
     error_.clear();
