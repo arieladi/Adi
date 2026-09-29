@@ -7,6 +7,7 @@
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
 #include "ui_devices.hpp"
+#include "ui_mixer.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <optional>
 namespace adi::ui {
@@ -84,6 +85,7 @@ class AdiRootComponent final : public juce::Component {
     const std::string &error() const noexcept { return error_; }
     WindowState &state() noexcept { return state_; }
     bool persist();
+    bool submit(const std::string&, Payload);
     void resizeDevices(int height);
     bool canUndo(bool redo) const { return redo ? submitter_.canRedo() : submitter_.canUndo(); }
     std::string undoTitle(bool redo) const {
@@ -97,6 +99,7 @@ class AdiRootComponent final : public juce::Component {
     ArrangementView arrangement;
     DeviceChainStrip devices;
     DockResizer dockResizer;
+    MixerPanel mixer;
 
   private:
     engine::ProjectView &view_;

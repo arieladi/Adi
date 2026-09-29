@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/controller_maps.hpp"
 #include "adi/engine/param_ops.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/media/media_ops.hpp"
@@ -18,6 +19,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool addAudioTrack(std::int64_t &id);
     bool dropAudio(const std::filesystem::path &, std::int64_t track, std::int64_t tick);
     bool save(std::string &error);
+    bool autoGainStage(bool lufs);
+    bool learnTrack(std::int64_t, const std::string &, const ControllerCc &, std::span<const int>,
+                    const ControllerPolicy &);
+    bool unbindTrack(std::int64_t, const std::string &);
+    std::vector<ControllerBinding> bindings() const { return readControllerBindings(*store_); }
     ParameterFeed &parameterFeed() noexcept { return feed_; }
     bool parameterGesture(std::int64_t, const std::string &, engine::ParamEventKind, double);
     bool deviceAction(const std::string &op, Payload payload);

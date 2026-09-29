@@ -31,6 +31,9 @@ struct ControllerBinding {
 // (64 neutral), is relative. A neutral-only or mixed/other trace is absolute.
 // A single distinctive CC can bind immediately; an absolute knob parked at a
 // relative code is inherently ambiguous. Additional observed values refine it.
+[[nodiscard]] std::optional<OpRequest> learnControllerTarget(std::int64_t bindingId,
+    const std::string& kind,std::int64_t target,const std::string& param,const ControllerCc&,
+    std::span<const int> values,const ControllerPolicy&,std::string& error);
 [[nodiscard]] ControllerMode detectControllerMode(std::span<const int> values) noexcept;
 // Reads the lane's actual owner/param_ref, not its display name. Returns one
 // resolved controller.bind request; rejects non-Remote and reserved controls.

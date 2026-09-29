@@ -104,6 +104,15 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
                     g.fillRect(b.getX() + 4, b.getY() + 20, b.getWidth() - 8, 22);
             }
         }
+        const auto mixerArea=root.mixer.getBounds();
+        g.fillRect(mixerArea.getX()+6,mixerArea.getY()+5,mixerArea.getWidth()-12,26);
+        for(const auto& strip:root.mixer.strips()) {
+            if(!strip->isVisible())continue;
+            const auto b=root.getLocalArea(strip.get(),strip->getLocalBounds());
+            g.fillRect(b.getX()+2,b.getY()+2,b.getWidth()-4,22);
+            g.fillRect(b.getRight()-72,b.getY()+27,54,52);
+            g.fillRect(b.getX()+4,b.getY()+86,b.getWidth()-22,24);
+        }
         const int dock = root.state().docked ? root.state().deviceHeight : 0;
         g.fillRect(0, root.getHeight() - dock + 10, root.getWidth(), 30);
     }
@@ -572,6 +581,29 @@ int main(int argc, char **argv) {
             check(allocations == 0, "floating analyser frame allocates zero");
             host.close("analyser");
         }
+        integrated.frame();
+        auto& mixer=integrated.mixer;
+        check(!mixer.strips().empty() && mixer.strips()[0]->track()==integrated.reader().tracks()[0]->id,"mixer follows the arrangement snapshot order");
+        auto& strip=*mixer.strips()[0];
+        const auto id=strip.track();
+        strip.volume.onDragStart();strip.volume.setValue(-12,juce::sendNotificationSync);
+        mixer.scroll(100);
+        check(strip.track()==id,"scroll cannot retarget an active fader");
+        strip.volume.onDragEnd();integrated.frame();
+        check(std::abs(document->view().current()->findTrack(id)->volumeDb+12)<.01,"fader commits an undoable op");
+        integrated.command(AppCommands::Undo);integrated.frame();
+        check(std::abs(document->view().current()->findTrack(id)->volumeDb)<.01,"undo restores fader");
+        strip.pan.setValue(.4,juce::sendNotificationSync);integrated.frame();
+        check(std::abs(document->view().current()->findTrack(id)->pan-.4)<.01,"pan text or keyboard edit commits");
+        strip.pan.setValue(0,juce::sendNotificationSync);integrated.frame();
+        strip.active.onClick();integrated.frame();
+        check(document->view().current()->findTrack(id)->muted,"activator commits mute");
+        strip.active.onClick();integrated.frame();
+        check(mixer.strips().size()<=static_cast<std::size_t>(mixer.getHeight()/132+1),"mixer realises only visible span and margin");
+        reference(integrated,"mixer",write);
+        allocations=0;audit=true;
+        for(int i=0;i<50;++i)integrated.frame();
+        audit=false;check(allocations==0,"steady mixer frame allocates zero");
         document->release();
     }
     std::printf("%d checks, %d failures\n", checks, failures);
