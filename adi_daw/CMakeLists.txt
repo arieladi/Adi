@@ -234,6 +234,7 @@ add_library(adi_core STATIC
     src/adi/dsp/biquad.cpp
     src/adi/dsp/limiter.cpp
     src/adi/dsp/rmsc.cpp
+    src/adi/dsp/redux.cpp
     src/adi/dsp/combchord.cpp
     src/adi/dsp/colorcab.cpp
     src/adi/dsp/masking.cpp
@@ -453,6 +454,7 @@ target_compile_definitions(adi_core PUBLIC ADI_WITH_PD=1)
 # Empty until the first external lands; the guard keeps CMake happy until then,
 # because an OBJECT library with no sources is an error.
 set(ADI_PD_BUILTIN_SOURCES
+    src/adi/pd_builtins/redux_tilde.cpp
     src/adi/pd_builtins/combchord_tilde.cpp
     src/adi/pd_builtins/colorcab_tilde.cpp
 )
@@ -1276,3 +1278,15 @@ add_test(NAME adi_dynamic_eq_gesture_tests COMMAND adi_dynamic_eq_gesture_tests)
 add_executable(adi_gain_stage_tests tests/test_gain_stage.cpp)
 target_link_libraries(adi_gain_stage_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)
+
+add_executable(adi_redux_tests tests/test_redux.cpp)
+target_link_libraries(adi_redux_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_redux_tests COMMAND adi_redux_tests)
+if(ADI_WITH_PD)
+    add_executable(adi_redux_pd_tests tests/test_redux_pd.cpp)
+    target_link_libraries(adi_redux_pd_tests PRIVATE adi_core adi_warnings)
+    target_compile_definitions(adi_redux_pd_tests PRIVATE
+        ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd"
+        ADI_REDUX_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
+    add_test(NAME adi_redux_pd_tests COMMAND adi_redux_pd_tests)
+endif()
