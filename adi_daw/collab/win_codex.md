@@ -49,6 +49,20 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
+## 2026-09-28 - connection retries stacked on #167
+
+Branched codex/drone-connection-retry from the refreshed #167 head. Only an
+incomplete /api/generate transport failure can retry, at most twice after 2 s
+then 5 s. HTTP errors, JSON errors and post-body errors are excluded. Each
+worker keeps its running claim and the final failure retains its original type.
+Six loopback-server tests pass, including four concurrent workers; all six
+parallel-worker tests still pass. No live drone directory or endpoint touched.
+This PR targets codex/drone-parallel; retarget to main after #167 merges.
+
+---
+
+## 2026-09-28 - drone main refresh after Windows runner timeout
+
 
 ## 2026-09-28 - mission 3, Auto Gain Stage Session
 
