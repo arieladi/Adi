@@ -10,3 +10,5 @@ Source: STEP-7-PLAN §3/4, handoff rulings and ADR-0063/0116/0183. Device View's
 - Test identity, second-view shared model, missing-monitor clamp, close/delete/undo, independent drains, software render and frame allocations.
 
 Validation: MSVC /WX application build; 104 UI checks pass. Identity survives detach/dock; two analyser views share one worker; retirement closes and undo never reopens; lost-monitor/negative-coordinate restoration is tested. The worker reads a one-second PreFader tap and its 0 dB sine is checked after a far-bin floor check. Floating-frame allocation count is zero. Software analyser render is written to a file. JUCE exposes no EDID/stable display identifier: persisted portable identity is logical bounds plus DPI, with primary-area fallback/clamp when it no longer matches; no offscreen restore is accepted. The worker is analysis-only (33 ms cadence), never a repaint clock.
+
+Linux exact-head GUI CI found 247 pixels of platform-font difference in the new Analyse button. The structural golden now masks that button with the other header labels; its activation remains separately tested. Native MSVC /WX: 104 checks pass.

@@ -95,7 +95,7 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         for (const auto &device : root.devices.panels) {
             const auto bounds = root.getLocalArea(device.get(), device->getLocalBounds());
             g.fillRect(bounds.getX() + 2, bounds.getY() + 2, std::max(0, bounds.getWidth() - 4),
-                       80);
+                       104);
             for (const auto &c : device->controls) {
                 const auto b = root.getLocalArea(c.get(), c->getLocalBounds());
                 g.fillRect(b.getX(), b.getY(), b.getWidth(), 20);
