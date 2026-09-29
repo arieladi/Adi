@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+target_sources(adi_core PRIVATE src/adi/dsp/echo.cpp)
+add_executable(adi_echo_tests tests/test_echo.cpp)
+target_link_libraries(adi_echo_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_echo_tests COMMAND adi_echo_tests)
+if(ADI_WITH_PD)
+    target_sources(adi_pd_builtins PRIVATE src/adi/pd_builtins/echo_tilde.cpp)
+    add_executable(adi_echo_pd_tests tests/test_echo_pd.cpp)
+    target_link_libraries(adi_echo_pd_tests PRIVATE adi_core adi_warnings)
+    target_compile_definitions(adi_echo_pd_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd" ADI_DEVICE_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
+    add_test(NAME adi_echo_pd_tests COMMAND adi_echo_pd_tests)
+endif()

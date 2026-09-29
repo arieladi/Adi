@@ -19,11 +19,10 @@ that document in **three** named places (§2) and otherwise builds what it says.
 | 3 | Add a UI test strategy: offscreen render and compare, synthesised interaction, GUI built in CI on Windows and Linux too | §5 |
 | 4 | **Ruled:** deleting a device closes its floating window; undo restores the device, not the window | §4 |
 
-**Still open, and not assumed:** two things this plan put to the director are
-not in his reply, so they are carried as open rather than counted as approved —
-the **third** amendment (§2.3) and the **key map's home** (§7.3). His message
-says *"Both of your amendments to `UI-ARCHITECTURE.md` are right"* and names
-two; §2.3 arrived in the same PR and awaits his word.
+**Both items this plan carried as open are now RULED** (director, 2026-09-29):
+the **third** amendment (§2.3) is approved, and the **key map** (§7.3) is
+settled as *two* homes rather than one. All three amendments to
+`UI-ARCHITECTURE.md` are applied in that document.
 
 ---
 
@@ -109,11 +108,11 @@ via ADR-0195's Auto Gain Stage). So step 7.1 is not wiring an established
 mechanism — it is the **first** user of the publish side, and the first place
 its epoch discipline is exercised at all.
 
-### 2.3 `MainSplit` is a panel→slot map, not a `StretchableLayoutManager` — NOT YET ACKNOWLEDGED
+### 2.3 `MainSplit` is a panel→slot map, not a `StretchableLayoutManager` — APPROVED
 
-> **For the director.** This amendment was in the reviewed PR but his approval
-> names two amendments, not three. It is carried as open. Nothing in §3 depends
-> on it before 7.2, so a ruling any time before 7.2 starts costs nothing.
+*(Director, 2026-09-29. `UI-ARCHITECTURE.md:55` is amended, and the map is built
+as `adi::ui::PanelLayout` — headless, because the arithmetic of "does this swap
+fit" is where a layout is actually wrong.)*
 
 `UI-ARCHITECTURE.md:55` specifies `MainSplit` as a
 `juce::StretchableLayoutManager` with three columns. **ADR-0080 — a `DECIDED
@@ -202,7 +201,9 @@ an application-level command target installed on every window the host creates,
 spacebar stops the transport in one window and does nothing in the other.
 
 `ApplicationCommandManager` / `KeyPressMappingSet` appear nowhere in `docs/`.
-The key map's home is **proposed, not decided** (§7.3).
+The key map's two homes are settled (§7.3): app-scoped command shortcuts in
+`src/adi/settings/`, and project-scoped Key Map assignments in `controller_maps`
+with a keyboard source.
 
 *Exposes:* whether the frame really takes one snapshot reference that every
 component shares — a mixer and a timeline rendering different snapshots in one
@@ -534,12 +535,17 @@ Named so they are visible rather than silently resolved:
    (ADR-0184 d1–d2, approved and dated 2026-09-27).
 2. **Whether `ArrangementCanvas` gets an `OpenGLContext`** — deferred to a
    step-7 profile, and the deferral survives ADR-0183.
-3. **Where the keyboard map lives — PROPOSED, not ruled.** `src/adi/settings/`
-   already carries a `shortcuts.*` page (`registry.cpp:506`), and ADR-0047 §1
-   says the map is app-scoped and needs a home outside the `.adi`. That is the
-   proposal. **The director's reply does not address it**, so it stays open —
-   and ADR-0129's gate cannot be fully met while it is, because every row of
-   that gate is a keyboard gesture. Needed before 7.2 completes.
+3. ~~Where the keyboard map lives~~ — **RULED (director, 2026-09-29), as TWO
+   homes.** *Command* shortcuts (play, stop, undo, zoom, every ADR-0129 gesture)
+   are **app-scoped**, in `src/adi/settings/`'s `shortcuts` page (ADR-0047 §1):
+   they belong to the person, so a colleague opening the same `.adi` keeps their
+   own keys. Live's **Key Map mode** — computer keys assigned to *parameters* —
+   is saved in the Set in Live, so it is **project-scoped**, stored in
+   `controller_maps` beside the MIDI Learn bindings (ADR-0195 d3) with a
+   keyboard source. Collapsing the two into one home was the trap: app-scoped
+   keys in the `.adi` would travel between users, and project-scoped parameter
+   assignments in the settings page would not travel with the project.
+   ADR-0129's gate can now be met.
 4. **The source of `Record::playing`** — ADR-0181 d3 says values that move
    without an op go into lock-free slots; which slot, and who owns it, is not
    built.
