@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 namespace adi {
 class Store;
@@ -23,6 +24,7 @@ struct WindowState {
     double timelineLeft = 0, pixelsPerQuarter = 48;
     int laneHeight = 64;
     std::map<std::int64_t, int> laneHeights;
+    std::set<std::int64_t> foldedDevices;
     int deviceHeight;
     bool docked = true;
 };

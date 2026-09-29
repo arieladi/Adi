@@ -103,6 +103,10 @@ public:
     ParamOps(const ParamOps&) = delete;
     ParamOps& operator=(const ParamOps&) = delete;
 
+    // Message-thread UI producer, separate from each plug-in callback's SPSC ring.
+    // Begin/Value/End capture reuses the exact same first-touch opener machinery.
+    bool uiEvent(std::int64_t device, const std::string& param, ParamEventKind kind,
+                 double value, std::int64_t nowMs, std::vector<OpRequest>& out);
     // --- message thread -----------------------------------------------------
 
     /// Give a device a ring, seed the ring with every parameter's current
@@ -230,6 +234,7 @@ private:
     std::set<std::pair<std::int64_t, std::int32_t>> touched_;   ///< decision 4
     std::vector<ParamEdit> scratch_;
     std::vector<StateBlob> blobs_;
+    ParamEditCapture uiCapture_{1024};
     std::int32_t capacity_;
     double tolerance_ = 1e-6;
     Stats stats_;

@@ -147,13 +147,15 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
                                    TransportMailbox &mailbox, AppCommands &commands,
                                    ViewStateStore &persistence, std::string window,
                                    DesktopDefaults defaults)
-    : transport(*this), arrangement(*this), view_(view), submitter_(submitter), mailbox_(mailbox),
-      commands_(commands), persistence_(persistence), window_(std::move(window)),
-      state_(persistence.load(window_, defaults)) {
+    : transport(*this), arrangement(*this), devices(*this), dockResizer(*this), view_(view),
+      submitter_(submitter), mailbox_(mailbox), commands_(commands), persistence_(persistence),
+      window_(std::move(window)), state_(persistence.load(window_, defaults)), defaults_(defaults) {
     setOpaque(true);
     setWantsKeyboardFocus(true);
     addAndMakeVisible(transport);
     addAndMakeVisible(arrangement);
+    addAndMakeVisible(devices);
+    addAndMakeVisible(dockResizer);
     reader_.emplace(view_.current());
     arrangement.geometry.left = state_.timelineLeft;
     arrangement.geometry.scale = state_.pixelsPerQuarter;
@@ -181,6 +183,7 @@ void AdiRootComponent::frame() noexcept {
         position_ = position;
         dirty_.mark(DirtySet::Transport);
     }
+    devices.frame(arrangement.geometry.selectedTrack);
     lastDrain_ = dirty_.drain();
     arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (lastDrain_ & DirtySet::Transport)
@@ -209,6 +212,12 @@ bool AdiRootComponent::locate(std::int64_t tick) {
     return mailbox_.post(TransportMailbox::Command::Locate,
                          static_cast<std::int64_t>(current->tempo->ticksToSeconds(tick) * rate));
 }
+void AdiRootComponent::resizeDevices(int height) {
+    const int ceiling = std::max(0, getHeight() - 44 - 28 - state_.laneHeight);
+    const int floor = std::min(ceiling, static_cast<int>(defaults_.deviceHeight * state_.zoom));
+    state_.deviceHeight = std::clamp(height, floor, ceiling);
+    resized();
+}
 void AdiRootComponent::resized() {
     transport.setBounds(0, 0, getWidth(), 44);
     const auto &slots = state_.panels.slots();
@@ -216,6 +225,9 @@ void AdiRootComponent::resized() {
     const int right = std::min(state_.panels.occupied(slots[1]), getWidth() / 3);
     const int dock =
         state_.docked ? std::min(state_.deviceHeight, std::max(0, getHeight() - 100)) : 0;
+    devices.setBounds(0, getHeight() - dock, getWidth(), dock);
+    dockResizer.setBounds(0, getHeight() - dock - 3, getWidth(), 6);
+    dockResizer.toFront(false);
     arrangement.setBounds(left, 44, std::max(0, getWidth() - left - right),
                           std::max(0, getHeight() - 44 - dock));
     dirty_.mark(DirtySet::All);

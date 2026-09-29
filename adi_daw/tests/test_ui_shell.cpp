@@ -90,6 +90,16 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             g.fillRect(area.getX() + 4, laneY + 4, std::max(0, area.getWidth() - 8), 24);
             laneY += root.arrangement.geometry.heightFor(trackNode->id);
         }
+        for (const auto& device : root.devices.panels) {
+            const auto bounds=root.getLocalArea(device.get(),device->getLocalBounds());
+            g.fillRect(bounds.getX()+2,bounds.getY()+2,std::max(0,bounds.getWidth()-4),80);
+            for(const auto& c:device->controls){
+                const auto b=root.getLocalArea(c.get(),c->getLocalBounds());
+                g.fillRect(b.getX(),b.getY(),b.getWidth(),20);
+                g.fillRect(b.getX(),b.getY()+42,b.getWidth(),18);
+                if(c->menu.isVisible())g.fillRect(b.getX()+4,b.getY()+20,b.getWidth()-8,22);
+            }
+        }
         const int dock = root.state().docked ? root.state().deviceHeight : 0;
         g.fillRect(0, root.getHeight() - dock + 10, root.getWidth(), 30);
     }
@@ -406,6 +416,69 @@ int main(int argc, char **argv) {
             peerRoot.removeChildComponent(&integrated);
             peerRoot.removeFromDesktop();
         }
+        auto publication = std::make_shared<ParameterPublication>();
+        DevicePanelData panel;
+        panel.id = 11;
+        panel.track = 2;
+        panel.name = "Test device";
+        for (int i = 0; i < 3; ++i) {
+            panel::Record record;
+            record.id = std::to_string(i);
+            record.name = "Control " + record.id;
+            record.playing = .5;
+            record.stored = .25;
+            record.shape = static_cast<panel::Shape>(i);
+            record.stepCount = i == 1 ? 2 : 4;
+            record.text = "Plugin value";
+            panel.records.push_back(record);
+            panel.resolved.entries.push_back({record.id, false});
+        }
+        panel::finalize(panel.records);
+        publication->push_back(panel);
+        integrated.devices.publication = [publication] { return publication; };
+        int gestures = 0;
+        integrated.devices.gesture = [&](auto, const auto &, auto, double) {
+            ++gestures;
+            return true;
+        };
+        integrated.frame();
+        check(integrated.devices.panels.size() == 1 &&
+                  integrated.devices.panels[0]->controls.size() == 3,
+              "selected chain presents all three declared shapes");
+        auto &controls = integrated.devices.panels[0]->controls;
+        check(controls[0]->slider.isVisible() && controls[1]->toggle.isVisible() &&
+                  controls[2]->menu.isVisible(),
+              "continuous switch menu use distinct controls");
+        controls[1]->toggle.setToggleState(true, juce::dontSendNotification);
+        controls[1]->toggle.onClick();
+        check(gestures == 3, "switch sends bounded begin/value/end capture");
+        integrated.devices.fold(11);
+        check(document->views().load("main").foldedDevices.contains(11),
+              "fold persists outside history");
+        integrated.devices.fold(11);
+        integrated.resizeDevices(1);
+        check(integrated.state().deviceHeight == DesktopDefaults{}.deviceHeight,
+              "strip minimum comes from desktop defaults");
+        integrated.resizeDevices(10000);
+        check(integrated.arrangement.getHeight() >= 28 + integrated.state().laneHeight,
+              "strip ceiling leaves ruler and a row");
+        integrated.resizeDevices(240);
+        reference(integrated, "devices", write);
+        allocations = 0;
+        audit = true;
+        for (int i = 0; i < 50; ++i)
+            integrated.frame();
+        audit = false;
+        check(allocations == 0, "unchanged parameter publication frame allocates zero");
+        arrangement.geometry.selectedTrack = 1;
+        integrated.frame();
+        check(integrated.devices.panels.empty(),
+              "selection changes strip even with same parameter publication");
+        arrangement.geometry.selectedTrack = 2;
+        integrated.devices.publication = {};
+        integrated.frame();
+        integrated.state().deviceHeight = 200;
+        integrated.resized();
         reference(integrated, "arrangement", write);
         document->release();
     }

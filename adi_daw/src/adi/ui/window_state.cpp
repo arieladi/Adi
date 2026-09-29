@@ -54,6 +54,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
             !std::isfinite(state.pixelsPerQuarter) || state.pixelsPerQuarter < 1 ||
             state.pixelsPerQuarter > 4096 || state.laneHeight < 24 || state.laneHeight > 512)
             return WindowState(defaults);
+        state.foldedDevices = j.value("foldedDevices", std::set<std::int64_t>{});
         state.deviceHeight = height;
         state.docked = j.at("docked").get<bool>();
         return state;
@@ -88,6 +89,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"deviceHeight", state.deviceHeight},
                             {"docked", state.docked},
                             {"panels", nlohmann::json::array()}};
+        j["foldedDevices"] = state.foldedDevices;
         j["laneHeights"] = nlohmann::json::array();
         for (const auto &[id, h] : state.laneHeights) {
             if (id <= 0 || h < 24 || h > 512) {

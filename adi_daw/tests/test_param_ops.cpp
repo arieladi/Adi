@@ -938,9 +938,23 @@ void testTheStateLoopThroughTheJournal() {
 
 }  // namespace
 
+void testUiGestureCapture() {
+    Knobs knobs; ParamOps ops;
+    ops.attach(91,knobs);
+    std::vector<OpRequest> out;
+    check(ops.uiEvent(91,"cutoff",ParamEventKind::Begin,.5,0,out),"UI begins on dedicated producer");
+    check(ops.uiEvent(91,"cutoff",ParamEventKind::Value,.8,1,out),"UI value reaches instance");
+    check(out.empty() && near(knobs.getParam("cutoff").normalized,.8),"drag previews without journal edits");
+    check(ops.uiEvent(91,"cutoff",ParamEventKind::End,.8,2,out),"UI ends gesture");
+    check(out.size()==2 && near(out[0].payload.at("norm").get<double>(),.5) && near(out[1].payload.at("norm").get<double>(),.8),"first gesture includes exact original opener");
+    out.clear(); ops.drain(500,out);
+    check(out.empty(),"plugin echo produces no duplicate UI edit");
+    check(!ops.uiEvent(91,"absent",ParamEventKind::Begin,0,501,out),"unknown UI parameter refused");
+}
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_param_ops_tests -- broadcasts in, ops out (ADR-0124)\n\n");
+    testUiGestureCapture();
     testAGestureBecomesOneOp();
     testAppliedArmsTheEcho();
     testOwnOpsComeBackEqual();
