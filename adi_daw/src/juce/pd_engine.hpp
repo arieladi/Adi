@@ -61,6 +61,7 @@
 
 #include "juce/pd_device.hpp"
 #include "juce/pd_declarations.hpp"
+#include "adi/pd_builtins/sample_bridge.hpp"
 #include "adi/engine/published_array.hpp"
 #include "adi/engine/mpe_output.hpp"
 
@@ -185,6 +186,13 @@ public:
     /// contract exists to prevent.
     void bindArrays(const PdDeclarations& decls);
 
+    // Message thread, audio stopped: fixed sample declarations, like arrays.
+    void bindSamples(const PdDeclarations& decls);
+    // Message thread. Decode/build derived data before this immutable handoff.
+    bool publishSample(std::int32_t id, std::unique_ptr<PdSampleBuffer> sample);
+    // Message-thread timer: retire buffers passed by the audio reader.
+    std::size_t collectSamples() { return samples_.collect(); }
+
     /// Message thread, after `open`. Resolves the receive symbol for every
     /// parameter the patch declares, so that `sendParameter` can reach it from
     /// the audio thread without ever calling `gensym`.
@@ -283,6 +291,19 @@ public:
     /// frame; the audio thread writes it (ADR-0183 d2).
     [[nodiscard]] const engine::PublishedArray* publishedArray(std::int32_t id) const noexcept;
 
+    /// Message thread. Reads a named table out of THIS patch's instance,
+    /// `$0-` prefixed: `readArray("window", v)` reads `[table $0-window]`.
+    ///
+    /// For tests and for diagnosis, not for the frame -- a display reads a
+    /// PUBLISHED array, which the audio thread fills and which is atomic per
+    /// frame (ADR-0183 d2). This walks Pd's own memory on the message thread
+    /// and would tear against a running patch.
+    ///
+    /// False when the table does not exist. `out` is filled with as much as it
+    /// holds and is not resized: a caller asking for more than the table has
+    /// gets false and an untouched tail, rather than a quietly short answer.
+    bool readArray(const char* suffix, std::vector<float>& out) noexcept;
+
     /// Message thread. Sends a float to a receiver in THIS patch's instance,
     /// with `$0-` prefixed: `send("depth", 1.f)` reaches `[r $0-depth]`.
     /// False when the patch is not open or the receiver does not exist.
@@ -338,6 +359,8 @@ private:
         engine::PublishedArray buffer;
     };
     std::vector<std::unique_ptr<BoundArray>> arrays_;
+    PdSampleSlots samples_;
+    PdSampleBlock sampleBlock_;
 
     /// Pd's console for this instance, filled by the print hook.
     mutable std::mutex consoleMutex_;

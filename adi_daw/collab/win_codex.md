@@ -1,3 +1,9 @@
+## 2026-09-28 — Auto Gain Stage: merge main after #166
+
+Merged main 74990b1, retaining both log histories and removing the merged Color Bass claims. MSVC /WX and the complete harness passed 5668 checks across 60 suites, with all validators clean. README records that measured total. The intermittent Pd crash is handed to the analyser session; this update adds no workaround.
+
+---
+
 # win_codex — log
 
 The Codex app on the director's Windows 11 PC (MSVC / x64), full access, in its own worktree.
@@ -21,26 +27,95 @@ This PR targets codex/drone-parallel; retarget to main after #167 merges.
 
 ## 2026-09-28 - drone main refresh after Windows runner timeout
 
-Merged main into codex/drone-parallel, preserving both log histories. The six
-temporary-folder drone tests pass again. Prior Windows CI timed out in existing
-C++ suites; this merge requests a fresh run without changing those tests.
+
+## 2026-09-28 - mission 3, Auto Gain Stage Session
+
+Task E delegated by win. Claimed session, new gain-stage/input-gain files and
+their tests. Session::autoGainStage renders an isolated session from the Store,
+using the same loader, clip renderer and MIDI source, with ChainInput taps.
+No driver is opened and the live transport/plugins are not processed. Track
+mute/solo and strip automation are monitoring choices; clip gain/fades/mutes
+and instrument automation remain. Groups/returns are not staged. Missing media,
+unresolved devices, unsupported playback, nonfinite audio and stale undo heads
+refuse the write. One OpJournal batch of mixer.setInputGain ops is one undo.
+
+Found a necessary engine gap: inputGainDb was only read/projected, never applied
+to audio. Session now inserts a persistent, atomic-target input-gain node before
+audio inserts and after an instrument. Existing zero-gain graphs gain no node;
+a node survives later zeroing for retired graph safety. Edits ramp for 5 ms.
+ChainInput taps remain before this gain, so repeated staging sets an absolute
+gain rather than accumulating it. No schema or op catalog change was needed.
+
+Metering: 400 ms windows / 100 ms hops, absolute -70 and relative -10 gates.
+RMS averages stereo channel energies; LUFS sums K-weighted energies with the
+-0.691 calibration. Reuses existing K filters and TruePeakMeter, flushing its
+interpolator. Mixxx's report pointed to libebur128; constants were verified in
+https://github.com/jiixyj/libebur128/blob/master/ebur128/ebur128.c (no copied code).
+Short selections pad to 400 ms; longer ones use complete windows. Default range
+ends at the last unmuted clip, explicit ranges are allowed, at most one day.
+Ceiling limits the gain before the write; silent tracks retain their setting.
+This is a message-thread/offline API; menu wiring is not part of this PR.
+
+MSVC /WX and full harness: 5632 checks across 59 suites, validators clean.
+Three additional instrument-placement/stale-head checks pass in the final
+focused suite, bringing the combined measured total to 5635/59.
+The new suite has 25 checks: exact default RMS, LUFS calibration, peak ceiling,
+MIDI-driven instrument render, silence gating, clip gain, block independence,
+repeat determinism, atomic media failure and one undo. A nonlinear insert
+proves gain placement: planting unity multiplication caused its check to fail;
+restoring the gain passed. No live drone directory or audio device was used.
 
 ---
 
-## 2026-09-28 - mission 3, Task D: concurrent drone requests
+## 2026-09-28 - Windows Pd crash investigation
 
-Win delegated tools/adi-drone/drone.py for this change. On codex/drone-parallel
-from main, added --parallel N to watch/run-once with N request workers, default
-1 on the original calling thread. Claims use queue-to-running atomic rename
-plus a short intra-process lock: a forced race demonstrated that two concurrent
-Win32 rename calls can both open the source before either move completes.
-Logs retain their format and are serialized per line; timing/eta/collect are
-unchanged. All workers join before idle unload. Recovery still uses running/
-and the existing partial-result replacement. No live drone directories changed.
+CI MSVC 19.51 faults in the console test; local MSVC 19.44 passes with Pd ON
+in Ninja, a fresh Visual Studio project build, a fresh AddressSanitizer build,
+and 80 repeated suite runs. Added a Windows native-stack diagnostic to expose
+the CI fault site rather than guessing at the new sample members. Merged main
+while preserving both log histories; MSVC /WX and the combined test run pass
+5643 checks across 59 suites plus validators. This is
+diagnostic evidence gathering, not a claimed fix.
 
-Six temporary-folder tests pass: duplicate claim, four requests in flight,
-crash/recovery, byte-for-byte serial comparison with 92eb485, watch idle/unload,
-and invalid parallel counts. No Ollama requests or scheduled tasks were created.
+---
+
+## 2026-09-28 - mission 3, Task B: color-bass Pd devices
+
+On codex/colorbass-pd from main after #150 merged. Both stereo top-level
+canvases use adc~/dac~, declare fixed-id parameters, and answer the intrinsic
+latency query with zero. Both externals self-register through ADI_PD_BUILTIN.
+The real LibPdEngine tests found that the OBJECT target also needs its objects
+propagated to final executables: a static archive discards unreferenced setup
+initializers. They also exposed Win64 dsp_add's int/t_int varargs mismatch;
+the wrappers use typed dsp_addv arguments. CMake now recreates the cached
+pthreads4w target on a second configure rather than dropping its definition.
+
+Review points 3-5: State crossfades two banks for 10 ms; allpass fractions stay
+in [0.5,1.5), coefficients interpolate during the transition, and Color/Decay
+copy ringing history rather than inject cold-start discontinuities. The State
+sine step is bounded by the measured steady step after settling;
+Color sweep steps are below 0.015. Color Cab normalizes the actual truncated
+FIR for 20 Hz..20 kHz pink power, measured within 0.006 dB on three gamma values.
+
+Win approved the narrow mac-owned pd_engine.hpp/.cpp claim, recorded as
+"delegated by win, mac analyser's file" and to be removed on merge. LibPdEngine
+owns PdSampleSlots and exposes message-thread bind/publish/collect calls.
+Prepared Color Cab data derives from PdSampleBuffer (virtual destruction comes
+from Sequenced), so the existing #153 publisher is the only handoff. A segment
+acquires each slot once for both channels. Decoding and kernel construction
+remain off audio. The host helper retains source hash/options/profile. The
+patch exposes realtime Mix; Size/gamma/smoothing/pitch use off-thread host
+rebuild/publication. Panel/drop-tile and state serialization remain UI work.
+
+MSVC /WX and the actual top-level Pd renders pass, with a clean console hook,
+a far bin at the floor before checking peaks, predicted FIR response, sample
+replacement while blocks render, and zero allocations on the audio thread
+(C++ new counters plus the MSVC Debug CRT hook, including Pd malloc/realloc).
+The full measured total is 5613 checks across 58 suites with validators clean.
+All rendering was into memory; no sound device or live drone folder was used.
+The first CI build caught a GCC name collision between Bank::voices and the
+outer voice-count constant. Renamed the bank member to resonators; no behavior
+or test-count change.
 
 ---
 

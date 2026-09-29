@@ -244,6 +244,7 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/gain_stage.cpp
     src/adi/engine/mixer.cpp
     src/adi/engine/summing.cpp
     src/adi/engine/scope.cpp
@@ -324,7 +325,7 @@ target_link_libraries(adi_core PRIVATE adi_pffft)
 # that refuses [declare -lib] from the patch text is therefore still tested on
 # Windows; the half that scans directories is not.
 option(ADI_WITH_PD "Build the Pure Data device tier (needs libpd)" ON)
-if(ADI_WITH_PD AND MSVC AND (NOT PTHREADS_LIB OR NOT PTHREADS_INCLUDE_DIR))
+if(ADI_WITH_PD AND MSVC AND (NOT PTHREADS_LIB OR NOT PTHREADS_INCLUDE_DIR OR PTHREADS_LIB STREQUAL "adi_pthreads4w"))
     # pthreads4w, granted by the director for exactly this (ADR-0192 d5).
     #
     # THE WHOLE LIBRARY IS ONE TRANSLATION UNIT. `pthread.c` #includes 145 of
@@ -452,14 +453,16 @@ target_compile_definitions(adi_core PUBLIC ADI_WITH_PD=1)
 # Empty until the first external lands; the guard keeps CMake happy until then,
 # because an OBJECT library with no sources is an error.
 set(ADI_PD_BUILTIN_SOURCES
-    # src/adi/dsp/adi_combchord_tilde.cpp
-    # src/adi/dsp/adi_colorcab_tilde.cpp
+    src/adi/pd_builtins/combchord_tilde.cpp
+    src/adi/pd_builtins/colorcab_tilde.cpp
 )
 if(ADI_PD_BUILTIN_SOURCES)
     add_library(adi_pd_builtins OBJECT ${ADI_PD_BUILTIN_SOURCES})
     target_link_libraries(adi_pd_builtins PRIVATE libpd_static adi_warnings)
     target_include_directories(adi_pd_builtins PRIVATE src)
-    target_link_libraries(adi_core PUBLIC adi_pd_builtins)
+    # Carry objects to the final executable too: burying them only in the
+    # adi_core archive lets the linker discard their registration initializers.
+    target_link_libraries(adi_core PUBLIC adi_pd_builtins "$<TARGET_OBJECTS:adi_pd_builtins>")
 endif()
 endif()
 
@@ -656,10 +659,19 @@ add_test(NAME adi_pd_declaration_tests COMMAND adi_pd_declaration_tests)
 if(ADI_WITH_PD)
     add_executable(adi_pd_engine_tests tests/test_pd_engine.cpp)
     target_link_libraries(adi_pd_engine_tests PRIVATE adi_core adi_warnings)
+    if(WIN32)
+        target_link_libraries(adi_pd_engine_tests PRIVATE dbghelp)
+    endif()
     target_compile_definitions(adi_pd_engine_tests PRIVATE
         ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd"
         ADI_PD_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/pd")
     add_test(NAME adi_pd_engine_tests COMMAND adi_pd_engine_tests)
+    add_executable(adi_colorbass_pd_tests tests/test_colorbass_pd.cpp)
+    target_link_libraries(adi_colorbass_pd_tests PRIVATE adi_core adi_warnings)
+    target_compile_definitions(adi_colorbass_pd_tests PRIVATE
+        ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd"
+        ADI_COLORBASS_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
+    add_test(NAME adi_colorbass_pd_tests COMMAND adi_colorbass_pd_tests)
 endif()
 
 add_executable(adi_pd_tests tests/test_pd.cpp)
@@ -1260,3 +1272,7 @@ add_executable(adi_dynamic_eq_gesture_tests plugins/dynamic-eq/tests/test_gestur
 target_include_directories(adi_dynamic_eq_gesture_tests PRIVATE plugins/dynamic-eq/Source)
 target_link_libraries(adi_dynamic_eq_gesture_tests PRIVATE adi_warnings)
 add_test(NAME adi_dynamic_eq_gesture_tests COMMAND adi_dynamic_eq_gesture_tests)
+
+add_executable(adi_gain_stage_tests tests/test_gain_stage.cpp)
+target_link_libraries(adi_gain_stage_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)

@@ -393,6 +393,7 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
 
     selectInstance();
     segments_.fetch_add(1, std::memory_order_relaxed);
+    const PdSampleBlock::Read sampleRead(sampleBlock_, samples_);
 
     // --- transport, then MIDI, then the audio both belong to ----------------
     //
@@ -567,6 +568,14 @@ bool LibPdEngine::sendFloat(const char* suffix, float value) noexcept {
     return libpd_float(recv.c_str(), value) == 0;
 }
 
+void LibPdEngine::bindSamples(const PdDeclarations& decls) {
+    samples_.declare(decls.samples);
+    sampleBlock_.declare(decls.samples);
+}
+bool LibPdEngine::publishSample(std::int32_t id, std::unique_ptr<PdSampleBuffer> sample) {
+    return samples_.publish(id, std::move(sample));
+}
+
 void LibPdEngine::bindParameters(const PdDeclarations& decls) {
     paramSymbols_.clear();
     if (patch_ == nullptr) return;
@@ -690,6 +699,18 @@ void LibPdEngine::deliverMidi(const engine::MpeOut& m) noexcept {
             // never emits one. Ignored rather than approximated.
             break;
     }
+}
+
+bool LibPdEngine::readArray(const char* suffix, std::vector<float>& out) noexcept {
+    if (patch_ == nullptr || suffix == nullptr) return false;
+    selectInstance();
+    const std::string name = std::to_string(dollarZero_) + "-" + suffix;
+    const int len = libpd_arraysize(name.c_str());
+    if (len < 0) return false;
+    if (out.size() > static_cast<std::size_t>(len)) return false;
+    if (out.empty()) return true;
+    return libpd_read_array(out.data(), name.c_str(), 0,
+                            static_cast<int>(out.size())) == 0;
 }
 
 LibPdEngine::Counters LibPdEngine::counters() const noexcept {

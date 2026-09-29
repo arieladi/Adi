@@ -15249,3 +15249,215 @@ the chaining — one patch per device.
   after this core PR merges. No host, UI, schema or CI change is made here.
 
 ---
+
+---
+
+## ADR-0198 — The parameter feed's per-parameter record: the plug-in's own words, the shape of a control, and which source touched it last — `DECIDED` (2026-09-28) — **BUILDS ADR-0181 d3's RECORD; ANSWERS 27a ITEM 6; CARRIES ADR-0188 d4**
+
+ADR-0181 d3 says what the feed sends and leaves the record to whoever builds
+it. 27a item 6 asks for a panel for a plug-in with no editor. This is the
+record both need, and it is a **data model, not UI** — step 7 has not started
+and there is no GUI in the tree.
+
+### Decision
+
+**1. The record lives in `panel.hpp`, which is pure and JUCE-free.** It
+therefore builds on every ABI the suite runs on, and the device layer adapts
+into it. That is why `panel::Shape` duplicates `device::ParamShape` rather
+than including it: the alternative is a header that only compiles where JUCE
+does, for a model that has nothing to do with JUCE.
+
+**2. It carries the plug-in's OWN text, not our formatting of a number.**
+CLAP's `value_to_text`, VST3's `getParamStringByValue`. A host that prints
+`547.72` where the plug-in says `547.72 Hz`, or `0` where it says `Unused`,
+shows the user a number they cannot match to the plug-in's own window. On
+VST3 this is the *only* way to a real value at all — the same fact that made
+`ParamValue` carry `hasReal`.
+
+**3. The shape of a control is DECLARED, never inferred from the range.**
+CLAP's `IS_ENUM`/`IS_STEPPED`, VST3's step count. A three-step parameter and
+a continuous 0..2 one are identical from min and max alone, and drawing the
+second as a menu takes away every value between. `IS_ENUM` is checked first
+because `params.h` requires both flags, and a two-step enum is a menu whose
+steps have names rather than a switch.
+
+Measured: Pro-Q 3 declares **234 of its 358 parameters stepped**. Drawing them
+all as sliders would have been wrong for two thirds of the plug-in.
+
+**4. `lastTouchedBy` is here from the start, before anything writes it.**
+ADR-0188 d4's "last touched wins": the source that sent the latest change owns
+the parameter, a gesture from another takes it over, and an absolute control
+that is not the owner catches up by Takeover Mode. None of that is decidable
+without knowing who moved it last. One field on a record nobody writes to yet;
+a retrofit across every writer later.
+
+**5. What the record DERIVES, so that two readers cannot disagree.**
+`driven` is `playing` differing from `stored` by more than an epsilon —
+computed once, because a knob and a surface comparing two doubles separately
+is exactly the disagreement d3's single feed exists to prevent. A **missing**
+parameter plays nothing (ADR-0177 d4): `playing` is forced to `stored`, and
+its lane and stored value are kept. **`overridden` without `automated` is
+refused**: override is something done to a LANE (ADR-0162), and a record
+claiming it with no lane would light Live's Re-Enable button for a parameter
+with nothing to re-enable.
+
+**6. The ADI Airwindows filter shows one algorithm's parameters.** A suite
+declares every algorithm's at once with fixed ids, so that a lane never
+silently retargets when the algorithm changes (ADR-0171): parameter 0 is
+Algorithm, 1 is Auto Gain, and algorithm *a*'s parameter *k* is
+`100 + 64a + k`. A panel showing all of them would show 147 algorithms' worth
+on the Distortion suite.
+
+**Anything the filter cannot place is KEPT** — an unparseable id, or one below
+the first block. Hiding a control the user needs is worse than showing one
+they do not.
+
+The constants are declared in two places, unavoidably: `panel.hpp` is JUCE-free
+and the plug-ins build as a separate CMake project. A `static_assert` against
+`airwindows_clap.hpp` is what stops them drifting. **The authority is that
+header and `plugins/README.md`; `SUITES.md` does not document the scheme**,
+which cost a wrong turn when a brief said it did.
+
+### Verified
+
+Against real plug-ins, printed rather than asserted — asserting `"547.72 Hz"`
+would pin FabFilter's formatting into our suite and test their product:
+
+| | | |
+|---|---|---|
+| Pro-Q 3 | `Band 1 Used` | switch, *"Unused"* |
+| | `Band 1 Frequency` | slider, *"547.72 Hz"* |
+| ADI Airwindows – Sub | `Algorithm` | menu, *"OrbitKick"* |
+| | `Auto Gain` | switch, *"On"* |
+
+The last two are 27a item 6's requirement verbatim, on the plug-ins it was
+written for.
+
+### Verified non-vacuously
+
+Six defects planted, all caught once they were valid experiments: the block
+bound ignored (6 checks), the shared rule removed (7), an unparseable id
+dropped (1), a missing parameter still playing (1), override surviving with no
+lane (1), and `driven` ignoring its epsilon (1).
+
+**A seventh passed, and that was the finding.** Deleting the special case for
+ids 0 and 1 changed nothing — both are below the base, so the shared rule
+already kept them. It was dead code, written minutes earlier. It is gone, and
+the comment says why there is no special case so that nobody adds one back.
+
+Three of those plants were not experiments at all on the first attempt: they
+broke the build under `-Werror` rather than the test. A plant counts only when
+the file changed **and** the build succeeded.
+
+5588 checks across 57 suites.
+
+---
+
+## ADR-0200 — ADI Mobile is designed now and built last: the same engine and format on iOS and Android, three modes, and what the desktop must not foreclose — `DECIDED (direction)` (2026-09-29) — **DIRECTOR'S DIRECTIVE; AMENDS FEATURES §11 ("Mobile. Not until desktop is genuinely good"); ADDS ROADMAP STEP 15; THREE CORRECTIONS; iOS OUTSIDE THE APP STORE (DIRECTOR)**
+
+**Director's directive:**
+- Define ADI Mobile's architecture now, and build it last.
+- It runs the same C++/JUCE engine and opens the same `.adi` projects as the desktop, so a project moves between phone and desktop without conversion.
+- ADI's own plug-ins and the Pd tier are compiled for ARM iOS and Android.
+- There are three modes:
+  1. Arrangement, in the style of BandLab;
+  2. Session, in the style of Ableton Note;
+  3. Loop/Focus, which only mobile has: an audio clip through a Simpler-style device, loop take comping by swipe, a synth and a piano roll side by side, and sampling from the microphone straight into a device.
+
+### Decisions
+
+1. **Build last, design now.** FEATURES §11's rule stands for the building. ADI Mobile is **roadmap step 15**, after
+   the Linux desktop (step 14). It starts only when the desktop DAW, its Session view and ADiJ are mature. What
+   starts now is a set of requirements the desktop must meet, so the phone never forces a rewrite (d5). This ADR
+   records only those.
+
+2. **One engine, one format.** ADI Mobile links the same `adi_core` and opens the same SQLite `.adi` files. That
+   is already the shape of the code:
+   - `adi_core` is headless and JUCE-free (ADR-0036);
+   - the engine builds and passes CI on arm64 (macOS);
+   - the Pd tier refuses to load externals from disk, compiling its externals in instead (ADR-0188 d8), which is
+     exactly what iOS demands of an app.
+
+   Projects travel the way SPEC §10.4 already defines: media is never embedded, and a shareable project is a
+   ZIP of the project plus its media. A project opened on the phone opens as itself, not as an export.
+
+3. **Correction: "without conversion or freezing" holds for ADI's own devices, not for other people's plug-ins.**
+   - **Why:** iOS does not let an app load plug-in binaries from files. Its plug-ins are AUv3 app extensions,
+     and Android has no plug-in format at all. So a desktop project that uses a third-party VST3 or CLAP cannot
+     play that plug-in on the phone.
+   - **What the phone can run:**
+     - ADI's own plug-ins, compiled into the mobile app as built-in devices, not loaded as CLAPs;
+     - the Pd tier;
+     - native devices.
+   - **What happens to a device it cannot host:**
+     - it opens as a placeholder that keeps all its state, as an AU does on desktop today (ADR-0041, ADR-0011);
+     - its track plays the freeze render if one exists (`tracks.freeze_media_id`, ADR-0059), with the freeze
+       fingerprint so a stale render is shown as stale;
+     - back on the desktop, the plug-in is live again, unchanged.
+   - **What the desktop does:** it offers to freeze such tracks before a project is shared to a phone. This is
+     the one place freezing is part of moving a project, and the director should know that now rather than
+     at step 15.
+
+4. **Correction: ADI Live does not exist.** ADR-0190 dropped the separate live app; live performance is ADI's own
+   Session view (roadmap step 12). The directive's "after … ADI Live" means after the Session view.
+
+5. **What the desktop must not foreclose, from today.** These are the real content of "design now". Each goes to
+   its owner as a requirement, not a feature:
+   - **Input (step 7, mac):**
+     - every action reachable by mouse and keyboard also has a way that needs no hover, no right button and no
+       modifier key: a long press, a menu, or an on-screen control;
+     - gestures stay pure functions from input to parameter change, as the Dynamic EQ's already are (ADR-0195
+       d2), so a touch mapping is a new table, not a rewrite;
+     - nothing is shown only on hover.
+   - **Layout (step 7, mac):**
+     - components take their size from their parent and never assume a desktop minimum;
+     - the device strip's floor (ADR-0184, 169 logical pixels, unverified) is a desktop default, not a
+       constant in the component.
+   - **Engine (win):**
+     - no desktop-only API in `adi_core`;
+     - the transport survives an audio-session interruption (a phone call, another app taking the device): it
+       stops cleanly and resumes, rather than assuming the driver is always there;
+     - the engine runs at the block sizes and sample rates phones give it (ADR-0102 already requires 32 to
+       4096).
+   - **DSP (everyone):**
+     - built-in externals and ADI's plug-ins keep their DSP in plain C++, separate from any GUI, as the
+       color-bass devices and the Dynamic EQ do;
+     - "renders identically" means within the tolerance the tests already state. Bit-identical output across
+       x86 and ARM is not promised, because FMA and SIMD differ.
+   - **Format (win):** anything the phone modes create is stored in the schema's existing tables where one
+     fits, so a phone-made project opens on the desktop with nothing lost. Where no table fits, it gets a row
+     in FEATURES §12 before it is built, like every other format gap.
+
+6. **The three modes are the phone's screens over one engine.**
+   - **Arrangement** is ADI's arrangement.
+   - **Session** is ADI's Session view (step 12).
+   - **Loop/Focus** is a new screen, but its abilities are engine features the desktop gets too:
+     - playing a clip through a sampler device and printing the result to new clips;
+     - loop recording with take lanes (comping, FEATURES §3);
+     - a synth's controls beside a piano roll;
+     - sampling from an input straight into a device's sample slot. `[adi.sample]` (ADR-0192) and the
+       native sampler are the targets; the recording lands in a clip as well, so nothing captured exists only
+       inside a device.
+
+   Only the layout is mobile-exclusive.
+
+7. **iOS ships only through alternative app marketplaces, never the Apple App Store** (the director, 2026-09-29).
+   - **Why:** the App Store's terms are widely held to conflict with GPLv3 (VLC was removed over it in 2011).
+     ADI is GPLv3, a JUCE build is AGPLv3 (ADR-0048), Surge's DSP is GPLv3, and ZL Equalizer's is AGPLv3.
+     Alternative marketplaces, such as those the EU's Digital Markets Act allows, do not impose those terms.
+   - **Consequence 1:** ADI's licences and every GPL/AGPL adaptation stay as they are. No App Store exception is
+     sought, no "App Store edition" without the third-party devices is built, and a GPL source is not rejected
+     because of iOS.
+   - **Consequence 2:** ADI Mobile on iOS is available only where alternative distribution is legal (the EU
+     today). Android is unaffected: Google Play and other stores.
+   - **Before step 15:** confirm each marketplace's terms against GPLv3/AGPLv3, one by one, as the first task
+     of that step.
+
+### Still open, before step 15
+
+- **adi-vst on the phone.** adi-vst's AI tools run behind the RPC boundary on the desktop (ADR-0039, ADR-0186).
+  On a phone they need on-device inference or a connection to the desktop. That is decided with adi-vst, at
+  step 15.
+
+- **Which phones.** The minimum iOS and Android versions, and the CPU budget a phone must meet. These are
+  measured, not guessed, at step 15.

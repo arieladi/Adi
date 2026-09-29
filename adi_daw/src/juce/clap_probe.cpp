@@ -336,14 +336,20 @@ int laneDrivesARealPlugin(const std::string& want, const std::string& searchDir)
         const auto* d = dev->paramAt(i);
         if (d != nullptr && d->hasRealRange && (d->maxReal - d->minReal) > 1.5) { idx = i; break; }
     }
-    if (idx < 0) {
+    // The record below does NOT depend on a wide range, so it is printed
+    // whether or not the conversion can be shown. The ADI Airwindows suites
+    // are the generic panel's first users and are all unit-range, so putting
+    // the record behind this skip would hide it from exactly the plug-ins it
+    // was written for.
+    const bool canShowConversion = idx >= 0;
+    if (!canShowConversion)
         std::printf("  skip  %s declares no parameter with a range wider than 1.0, "
-                    "so a conversion would be invisible here\n", pick->name.c_str());
-        return 0;
+                    "so a CONVERSION would be invisible here\n", pick->name.c_str());
+    if (canShowConversion) {
+        const adi::device::ParamDescriptor& pd0 = *dev->paramAt(idx);
+        std::printf("  parameter         #%d '%s'  %.3f .. %.3f\n",
+                    idx, pd0.name.c_str(), pd0.minReal, pd0.maxReal);
     }
-    const adi::device::ParamDescriptor& pd = *dev->paramAt(idx);
-    std::printf("  parameter         #%d '%s'  %.3f .. %.3f\n",
-                idx, pd.name.c_str(), pd.minReal, pd.maxReal);
 
     std::vector<float> l(256, 0.0f), r(256, 0.0f);
     float* outp[2] = {l.data(), r.data()};
@@ -352,7 +358,11 @@ int laneDrivesARealPlugin(const std::string& want, const std::string& searchDir)
 
     // Drive the lane to three positions and read the plug-in back each time.
     bool allGood = true;
-    for (const double travel : {0.0, 0.25, 1.0}) {
+    const adi::device::ParamDescriptor& pd =
+        *dev->paramAt(canShowConversion ? idx : 0);
+    for (const double travel : canShowConversion
+                                   ? std::vector<double>{0.0, 0.25, 1.0}
+                                   : std::vector<double>{}) {
         adi::engine::Event e;
         e.type = adi::engine::EventType::ParamValue;
         e.paramId = static_cast<decltype(e.paramId)>(std::stoul(pd.id, nullptr, 16));
@@ -369,10 +379,38 @@ int laneDrivesARealPlugin(const std::string& want, const std::string& searchDir)
         std::printf("  lane %.2f -> want %.4f, plug-in holds %.4f  %s\n",
                     travel, want_plain, got.real, ok ? "ok" : "MISMATCH");
     }
-    check(allGood,
-          "a real CLAP plug-in ENDS UP at the plain value the lane asked for -- "
-          "normalized on the wire, converted at the host, read back through the "
-          "device contract (ADR-0196)");
+    if (canShowConversion)
+        check(allGood,
+              "a real CLAP plug-in ENDS UP at the plain value the lane asked for -- "
+              "normalized on the wire, converted at the host, read back through the "
+              "device contract (ADR-0196)");
+
+    // ADR-0181 d3 / 27a item 6: the plug-in's OWN text for a value, and the
+    // shape a control should take. Printed rather than asserted against a
+    // fixed string -- the text is the plug-in's, and asserting "4.80 kHz"
+    // would be asserting FabFilter's formatting, not our contract.
+    std::printf("\n  --- the panel's record (ADR-0181 d3) ---\n");
+    int withText = 0, stepped = 0;
+    for (std::int32_t i = 0; i < dev->paramCount() && i < 6; ++i) {
+        const auto* d2 = dev->paramAt(i);
+        if (d2 == nullptr) continue;
+        const std::string t = dev->paramText(d2->id, 0.5);
+        if (!t.empty()) ++withText;
+        const char* shape = d2->shape == adi::device::ParamShape::Switch ? "switch"
+                          : d2->shape == adi::device::ParamShape::Menu   ? "menu"
+                                                                         : "slider";
+        std::printf("  #%d %-28s %-7s %s\n", i, d2->name.c_str(), shape,
+                    t.empty() ? "(no text)" : t.c_str());
+    }
+    for (std::int32_t i = 0; i < dev->paramCount(); ++i) {
+        const auto* d2 = dev->paramAt(i);
+        if (d2 != nullptr && d2->shape != adi::device::ParamShape::Continuous) ++stepped;
+    }
+    std::printf("  %d of the first 6 gave their own text; %d of %d are stepped\n",
+                withText, stepped, dev->paramCount());
+    check(withText > 0,
+          "the plug-in answers value_to_text, so the panel shows ITS words and "
+          "not our formatting of a number (ADR-0181 d3)");
     return 0;
 }
 
