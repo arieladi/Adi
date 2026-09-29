@@ -106,3 +106,48 @@ sample difference**, the compared frequency magnitudes had **zero difference**,
 and CLAP unity-path error was **zero**. Native macOS/Linux plug-in builds and
 interactive side-by-side checking against the commercial plug-in remain for
 review; the manual contract is covered by tests here.
+
+## ADI host integration
+
+The external build driver now accepts `dynamic-eq`, through
+`plugins/external/dynamic-eq`. It delegates to this same pinned adaptation.
+It does not build the upstream ZL product under ADI's identity.
+
+On Windows, set `ADI_PLUGIN_SOURCES` to the fetched plug-in directory and
+`ADI_PLUGIN_BUILD` to a short build path, then run:
+
+```bat
+tools\build-external-plugin.bat dynamic-eq dynamic_eq_clap
+```
+
+Build ADI with `ADI_WITH_JUCE=ON` and targets `adi_play` and `adi_tool`.
+Configure the external EQ build with `-DADI_PLAY=/absolute/path/to/adi_play`
+and `-DADI_TOOL=/absolute/path/to/adi_tool` (include `.exe` on Windows).
+Then build `dynamic_eq_clap` and run:
+
+```sh
+ctest --test-dir /path/to/external-build/dynamic-eq -R dynamic_eq_adi_play --output-on-failure
+```
+
+The opt-in test creates isolated `.adi` fixtures and runs the real loader,
+Session graph and CLAP adapter. It resolves the first band's parameter IDs
+and values through the delivered CLAP ABI, using ADI's eight-digit lowercase
+hex ID representation in the store. A 220 Hz tone is rendered dry, with a
+-12 dB bell, and with that band bypassed at 48 kHz (32/512 samples) and 96 kHz
+(4096 samples). No audio device is opened. Projects, logs and 32-bit float WAVs
+are retained under the build's `dynamic-eq/host-render/run-*` directory.
+
+The reader requires IEEE float, stereo, exact rate/frame count and finite
+samples. It checks a 7011 Hz bin at the floor before requiring the wanted tone;
+it compares the settled samples with the dry signal times the expected gain.
+Bypass must preserve samples. A missing plug-in must fail rather than silently
+pass through. Tests also exercise output usage errors, failed peak gates,
+preserving an old destination, replacing it on success, and an unwritable path.
+This separate integration test does not change the headless README count.
+
+`adi_play --render SECONDS --render-output result.wav` captures offline audio
+in memory, then writes a temporary 32-bit float WAV beside the destination and
+renames it only after rendering and `--expect-no-edits` succeed. Large captures
+must fit memory and the capture buffer's signed-int frame limit; without the
+new option there is no capture allocation or file I/O. The current offline
+Session output is stereo. Existing render and edit-guard exit codes are retained.

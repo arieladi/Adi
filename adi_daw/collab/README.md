@@ -234,6 +234,7 @@ subject, say so in your log instead of writing it twice.
 | 0197 | mac | `mac/pd-toplevel` | a Pd device patch is a top-level canvas: [adc~] in, [dac~] out; subpatches keep inlet~/outlet~ (win's ruling, closes ADR-0183 d11) | used |
 | 0198 | mac | `mac/generic-panel` | the parameter feed's per-parameter record: the plug-in's own text, the shape of a control, automated/overridden, and which source touched it last | used |
 | 0200 | win | `win/adi-mobile-0200` | ADI Mobile designed now, built last: same engine and format on iOS and Android, three modes, what the desktop must not foreclose (director) | used |
+| 0201 | win | `win/project-view` | the UI reads project state from one message-thread cell, `ProjectView`; no publisher, no epoch (answers mac on #187) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -247,6 +248,9 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | Path | Agent | Branch | Since |
 |---|---|---|---|
 | `src/adi/ui/**`, `tests/test_ui_seams.cpp` (step 7.1's seams, ADR-0180) | mac | `mac/step7-seams` | 2026-09-29 |
+| Utility DSP/builtin/patch, tests/test_utility*.cpp, cmake/devices/utility.cmake | win_codex - mission 5 delegated by win | `codex/utility-pd` | 2026-09-29 |
+| Saturator DSP/builtin/patch, tests/test_saturator*.cpp, cmake/devices/saturator.cmake | win_codex - mission 5 delegated by win | `codex/saturator-pd` | 2026-09-29 |
+| Echo DSP/builtin/patch, tests/test_echo*.cpp, cmake/devices/echo.cmake | win_codex - mission 5 delegated by win | `codex/echo-pd` | 2026-09-29 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |

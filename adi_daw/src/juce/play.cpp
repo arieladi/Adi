@@ -32,12 +32,14 @@
 #include "juce/play_edits.hpp"
 
 #include <juce_audio_devices/juce_audio_devices.h>
+#include <juce_audio_formats/juce_audio_formats.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -131,6 +133,7 @@ struct Options {
     double from = 0.0;        // seconds; where the transport starts (ADR-0151)
     bool noPlay = false;      // leave the transport stopped: devices and the tone only
     double render = 0.0;      // seconds rendered offline, no audio device
+    std::string renderOutput; // publish a float WAV only after every render gate passes
     std::string deviceType;   // "Windows Audio (Exclusive Mode)", "DirectSound", "CoreAudio"...
     std::string deviceName;
     std::vector<std::string> searchDirs;
@@ -145,6 +148,7 @@ int usage() {
         "                       [--require-peak DBFS]\n"
         "                       [--dry] [--save-state]\n"
         "                       [--from SECONDS] [--no-play] [--render SECONDS]\n"
+        "                       [--render-output WAV] (requires --render; 32-bit float)\n"
         "adi_play --list [--search DIR]... [--fixture]\n"
         "  Opens a project, resolves its devices, plays it through the default audio\n"
         "  device at the granted block size. --resize changes the block size half way\n"
@@ -193,11 +197,13 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--no-play") o.noPlay = true;
         else if (a == "--from") { const char* v = next(i); if (!v) return false; o.from = std::atof(v); }
         else if (a == "--render") { const char* v = next(i); if (!v) return false; o.render = std::atof(v); }
+        else if (a == "--render-output") { const char* v = next(i); if (!v || !*v) return false; o.renderOutput = v; }
         else if (a == "--help" || a == "-h") return false;
         else if (!a.empty() && a[0] == '-') { std::printf("unknown option %s\n", a.c_str()); return false; }
         else o.file = a;
     }
     if (o.block <= 0 || o.seconds <= 0) return false;
+    if (!o.renderOutput.empty() && (!(o.render > 0.0) || !std::isfinite(o.render) || o.list)) return false;
     return o.list || !o.file.empty();
 }
 
@@ -281,10 +287,19 @@ int saveStates(adi::engine::Session& session, adi::Store& store) {
 /// print the master's peak for each second. This is the headless proof that a
 /// project's clips reach the master; it waits for the disk between blocks
 /// (`prime`), which only an offline driver may do.
-int renderOffline(adi::engine::Session& session, double rate, int block, double seconds,
-                  bool requirePeakSet, double requirePeak) {
-    const int channels = 2;
-    std::vector<std::vector<float>> buf(channels, std::vector<float>(static_cast<std::size_t>(block)));
+int renderOffline(adi::engine::Session& session, int channels, double rate, int block, double seconds,
+                  bool requirePeakSet, double requirePeak, juce::AudioBuffer<float>* capture = nullptr) {
+    if (capture != nullptr) {
+        const double frames = seconds * rate;
+        if (channels < 1 || !std::isfinite(frames) || frames < 1 || frames > std::numeric_limits<int>::max()) {
+            std::printf("FAILED -- render output exceeds the capture frame limit\n"); return 1;
+        }
+        try { capture->setSize(channels, static_cast<int>(frames)); }
+        catch (const std::bad_alloc&) {
+            std::printf("FAILED -- insufficient memory for render output\n"); return 1;
+        }
+    }
+    std::vector<std::vector<float>> buf(static_cast<std::size_t>(channels), std::vector<float>(static_cast<std::size_t>(block)));
     std::vector<float*> ptrs;
     for (auto& b : buf) ptrs.push_back(b.data());
     const auto total = static_cast<std::int64_t>(seconds * rate);
@@ -301,6 +316,9 @@ int renderOffline(adi::engine::Session& session, double rate, int block, double 
         io.frames = frames;
         io.streamTimeSamples = stream;
         session.process(io);
+        if (capture != nullptr)
+            for (int c = 0; c < channels; ++c)
+                capture->copyFrom(c, static_cast<int>(done), ptrs[static_cast<std::size_t>(c)], frames);
         for (int c = 0; c < channels; ++c)
             for (std::int32_t i = 0; i < frames; ++i)
                 secondPeak = std::max(secondPeak, std::fabs(buf[static_cast<std::size_t>(c)][static_cast<std::size_t>(i)]));
@@ -341,6 +359,34 @@ int renderOffline(adi::engine::Session& session, double rate, int block, double 
     }
     std::printf("\nok -- %.2f s rendered offline; master peak %s\n", seconds, dbfs(overall).c_str());
     return 0;
+}
+
+// Rendering and the edit guard must succeed before any file is opened.
+// A failed writer/rename leaves the previous destination untouched.
+bool writeRender(const std::string& path, double rate, const juce::AudioBuffer<float>& capture) {
+    const auto target = juce::File::getCurrentWorkingDirectory().getChildFile(juce::String(path));
+    juce::TemporaryFile temporary(target);
+    auto file = temporary.getFile().createOutputStream();
+    if (!file || file->failedToOpen()) {
+        std::printf("FAILED -- cannot create temporary render output\n"); return false;
+    }
+    auto* status = file.get();
+    std::unique_ptr<juce::OutputStream> stream(std::move(file));
+    juce::WavAudioFormat format;
+    const auto options = juce::AudioFormatWriterOptions().withSampleRate(rate)
+        .withNumChannels(capture.getNumChannels()).withBitsPerSample(32)
+        .withSampleFormat(juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
+    auto writer = format.createWriterFor(stream, options);
+    if (!writer || !writer->writeFromAudioSampleBuffer(capture, 0, capture.getNumSamples()) ||
+        !writer->flush() || status->getStatus().failed()) {
+        std::printf("FAILED -- could not write complete float WAV\n"); return false;
+    }
+    writer.reset(); // finish header and close before replacing the destination
+    if (!temporary.overwriteTargetFileWithTemporary()) {
+        std::printf("FAILED -- could not publish render output\n"); return false;
+    }
+    std::printf("  output    %s (32-bit float WAV)\n", path.c_str());
+    return true;
 }
 
 int main(int argc, char** argv) {
@@ -446,8 +492,13 @@ int main(int argc, char** argv) {
     }
     if (o.render > 0.0) {
         adi_play::EditWatch edits(session);   // after the session: destroyed before it
-        return edits.finish(renderOffline(session, rate, o.block, o.render, o.requirePeakSet, o.requirePeak),
-                            o.expectNoEdits);
+        juce::AudioBuffer<float> capture;
+        const int rc = edits.finish(renderOffline(session, spec.channels, rate, o.block, o.render, o.requirePeakSet,
+                                                  o.requirePeak, o.renderOutput.empty() ? nullptr : &capture),
+                                    o.expectNoEdits);
+        // In particular, preserve EditWatch's exit 4 and publish nothing for it.
+        if (rc != 0 || o.renderOutput.empty()) return rc;
+        return writeRender(o.renderOutput, rate, capture) ? 0 : 1;
     }
     if (o.dry) {
         if (o.saveState && saveStates(session, *store) != 0) return 1;

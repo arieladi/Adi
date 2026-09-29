@@ -79,3 +79,21 @@ add_executable(dynamic_eq_clap tests/test_clap.cpp)
 target_link_libraries(dynamic_eq_clap PRIVATE clap ${CMAKE_DL_LIBS})
 add_dependencies(dynamic_eq_clap adi_dynamic_eq_CLAP)
 add_test(NAME dynamic_eq_clap COMMAND dynamic_eq_clap $<TARGET_FILE:adi_dynamic_eq_CLAP>)
+
+# Opt-in real DAW render, separate from the ABI test and headless suite count.
+set(ADI_PLAY "" CACHE FILEPATH "Built ADI JUCE host executable for integration test")
+set(ADI_TOOL "" CACHE FILEPATH "Built ADI store CLI for integration test")
+if(ADI_PLAY AND ADI_TOOL)
+    if(NOT EXISTS "${ADI_PLAY}" OR NOT EXISTS "${ADI_TOOL}")
+        message(FATAL_ERROR "ADI_PLAY and ADI_TOOL must name built executables")
+    endif()
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME dynamic_eq_adi_play COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_adi_play.py"
+        --play "${ADI_PLAY}" --tool "${ADI_TOOL}"
+        --probe $<TARGET_FILE:dynamic_eq_clap> --plugin $<TARGET_FILE:adi_dynamic_eq_CLAP>
+        --output "${CMAKE_CURRENT_BINARY_DIR}/host-render")
+    set_tests_properties(dynamic_eq_adi_play PROPERTIES TIMEOUT 600)
+elseif(ADI_PLAY OR ADI_TOOL)
+    message(FATAL_ERROR "Supply both ADI_PLAY and ADI_TOOL for the integration test")
+endif()
