@@ -21,3 +21,5 @@ Every range/default/unit/curve below is **ADI, unverified against Live**, except
 | Dry/Wet | 0–100 | 100 | percent | linear |
 
 Tests planned: pre-band selectivity, zero-drive harmonics, drive increase, tone roll-off, Dynamics input/output ratios, exact dry; block sizes 32–4096 identical; core/Pd allocation audit; LibPdEngine far-bin floor before audible fundamental/harmonics, clean console; render only to WAV.
+
+Implemented six smoothed controls, native constant-peak band-pass, BYOD OJD scalar knees (original copyright header retained), post low-pass/DC removal, RMS-preserving gain blend. Native MSVC /WX: 17 core and 17 LibPdEngine checks pass. Measured loud/quiet fundamental ratio is 1.186670 at low Dynamics versus 9.706549 at high Dynamics for a 10:1 input ratio. Real Pd fundamental 1.268425870, far bin below 1e-12; clean console and zero process allocations. Float WAV artifact stays in the build folder.
