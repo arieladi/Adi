@@ -246,6 +246,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `src/adi/dsp/shifter*`, `src/adi/pd_builtins/shifter_tilde.cpp`, `pd/devices/Shifter.pd`, `tests/test_shifter*.cpp`, `CMakeLists.txt` (Shifter registration/targets), `collab/win_codex/2026-09-29-shifter-pd.md` | win_codex — Mission 4, delegated by win | `codex/shifter-pd` | 2026-09-29 |
 | `../tools/adi-drone/drone.py`, its parallel-worker tests and README | win_codex - delegated by win | `codex/drone-parallel` | 2026-09-28 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
