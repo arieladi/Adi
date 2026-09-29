@@ -6,7 +6,7 @@ Cubase's arrangement, editing and mixing depth, and an AI agent that can only ac
 through the same undoable operations a human uses.
 
 **Status:** format specified, reference implementation building.
-**5658 checks across 59 suites**, green on 7 ABIs. Nothing is frozen.
+**5683 checks across 60 suites**, green on 7 ABIs. Nothing is frozen.
 **Language:** C++ with JUCE (ADR-0014) · **Licence:** GPLv3 (ADR-0015); a build
 linking JUCE is a combined work with AGPLv3 obligations on the JUCE part (ADR-0048)
 
@@ -60,7 +60,7 @@ than frightening.
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
 | [`docs/UI-ARCHITECTURE.md`](docs/UI-ARCHITECTURE.md) | The Ableton-shaped shell, the component tree, and how the graph carries a hybrid track. |
 | [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 198 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 199 entries. |
 | [`docs/SETTINGS-CATALOGUE.md`](docs/SETTINGS-CATALOGUE.md) | Every setting the Settings Reference describes, generated from it by `tools/export_settings_catalogue.py`, for the settings registry to fill from. |
 | [`docs/AWAITING.md`](docs/AWAITING.md) | Tests only the director's own hardware can run: AVX-512 on his i9 laptop, ASIO on his interface. |
 | [`drivers/`](drivers/) | OS-level pieces that are their own programs: the ADI virtual audio device for Windows, built from Microsoft's MS-PL `sysvad` sample fetched at a pinned commit by `drivers/adi-virtual-audio/build.ps1` and `.github/workflows/driver-build.yml`; our own files there are MIT (ADR-0106, 0117 to 0120). Nothing in `src/` includes it. |
@@ -161,6 +161,7 @@ Each step gates the next. No step starts before the previous one is written down
 | **12** | The Session View and MixConsole window (F3), last (ADR-0101) | |
 | **13** | **ADiJ**, the DJ application on the same engine (ADR-0105, ADR-0133, ADR-0190). There is no separate live app: the Session view is inside ADI | |
 | **14** | Linux desktop: ALSA/PipeWire, LV2, Wayland/X11, packaging (ADR-0109 phase 3) | |
+| **15** | **ADI Mobile**, iOS and Android: the same engine and `.adi` projects, three modes; built last, designed for now (ADR-0200) | requirements recorded |
 
 From step 7 on, a step is finished when its parity checklists pass against the
 live reference DAWs and Adi has signed the session — "verified", not "done"

@@ -32,6 +32,7 @@
 #include "juce/pd_builtins.hpp"
 #include "adi/engine/graph.hpp"
 #include "adi/blob.hpp"
+#include "adi/dsp/spectrum.hpp"
 
 // The ONE place in the tree outside pd_engine.cpp that includes libpd, and it
 // is here for a reason: the ADR-0188 d8 section has to drive raw libpd AROUND
@@ -970,6 +971,150 @@ void testTheShippedDevicePatchesMakeSound() {
     }
 }
 
+void testTheAnalyserAgreesWithTheCppSpectrum() {
+    section("ADR-0183 d7 -- one sine, both paths, 0.00 dBFS from each");
+
+    // THE TEST THAT KEEPS TWO PROGRAMS HONEST. The analyser's Pd patch
+    // publishes a spectrum through [adi.array]; the big window's overlay
+    // re-analyses other tracks in C++ on a worker. Nothing at run time keeps
+    // their numbers equal -- a Pd patch is a file, not a caller -- so this is
+    // what does: the same sine into both, and the same answer out.
+    //
+    // If they ever disagree, a producer sees one track's curve sit above
+    // another's because of which path measured it, and nothing on screen says
+    // which is which.
+    using namespace adi::dsp;
+
+    LibPdEngine eng(devicePatchDir(), "adi-spectrum.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    check(eng.open(latency, err), "adi-spectrum.pd opens: " + err);
+    eng.prepare(48000.0, 512);
+
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(devicePatchDir()) + "/adi-spectrum.pd", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eqi(static_cast<long long>(decls.arrays.size()), 1, "the patch declares one array");
+    if (!decls.arrays.empty()) {
+        eqi(decls.arrays[0].length, analyser::kBins,
+            "as many cells as the FFT has bins, from the same constant");
+        check(decls.arrays[0].unit == "dB", "in dB, so a renderer is told the unit");
+        check(decls.arrays[0].min <= analyser::kFloorDb + 1e-6 &&
+              decls.arrays[0].max >= analyser::kCeilingDb - 1e-6,
+              "over the range the patch clamps to, so nothing guesses the floor");
+    }
+    eng.bindArrays(decls);
+    const auto* arr = eng.publishedArray(1);
+    check(arr != nullptr, "and the array is bound");
+    if (arr == nullptr) return;
+
+    // A full-scale sine ON a bin centre. Off-centre is scalloping loss, which
+    // both paths have equally and neither is wrong about.
+    const std::int32_t bin = analyser::kFftSize / 8;
+    const double hz = static_cast<double>(bin) * 48000.0 / analyser::kFftSize;
+    const int n = 512;
+    Buffers b(2, n);
+
+    double phase = 0.0;
+    const double step = 2.0 * 3.14159265358979 * hz / 48000.0;
+    const auto fill = [&] {
+        for (int f = 0; f < n; ++f) {
+            const auto s = static_cast<float>(std::sin(phase));
+            phase += step;
+            b.in[0][static_cast<std::size_t>(f)] = s;
+            b.in[1][static_cast<std::size_t>(f)] = s;
+        }
+    };
+
+    // Long enough for the window to fill and a frame to be published at the
+    // declared rate.
+    std::vector<float> cells(static_cast<std::size_t>(arr->length()), -999.f);
+    const std::uint64_t before = arr->published();
+    for (int i = 0; i < 200 && arr->published() == before; ++i) {
+        fill();
+        auto io = b.io(2, n, 0, n);
+        eng.process(io);
+    }
+    check(arr->read(cells.data(), arr->length()), "a frame is published");
+
+    // A SILENT BIN FIRST, because 0.00 dBFS is also what an UNWRITTEN array
+    // reads: the table starts at zero and zero is the expected answer, so
+    // "the peak bin is 0.00" passes just as happily when the patch never ran.
+    // Caught by planting a doubled calibration and watching the test pass.
+    //
+    // A bin nowhere near the tone must be down at the clamp. An untouched
+    // array reads 0 there, which is 120 dB away from what it should be.
+    const std::int32_t quiet = analyser::kBins - 8;
+    check(cells[static_cast<std::size_t>(quiet)] < -60.f,
+          "a bin far from the tone is near the floor -- which is how this test "
+          "tells a real frame from an array nobody wrote\n          got " +
+              std::to_string(cells[static_cast<std::size_t>(quiet)]));
+
+    const float pdDb = cells[static_cast<std::size_t>(bin)];
+    check(std::fabs(pdDb) < 0.1f,
+          "and the Pd patch reads 0.00 dBFS for a full-scale sine\n          got " +
+              std::to_string(pdDb));
+
+    // The same sine through the C++ path, from the same constants.
+    Spectrum spec(analyser::kFftSize, analyser::kWindow);
+    check(spec.valid(), "the C++ spectrum is built from the same constants");
+    std::vector<float> frame(static_cast<std::size_t>(analyser::kFftSize));
+    for (std::int32_t i = 0; i < analyser::kFftSize; ++i)
+        frame[static_cast<std::size_t>(i)] =
+            static_cast<float>(std::sin(2.0 * 3.14159265358979 * bin * i / analyser::kFftSize));
+    std::vector<float> mag(static_cast<std::size_t>(spec.bins()), 0.f);
+    spec.analyse(frame, mag);
+    const float cppDb = toDbfs(mag[static_cast<std::size_t>(bin)]);
+    check(std::fabs(cppDb) < 0.1f,
+          "and so does the C++ spectrum\n          got " + std::to_string(cppDb));
+
+    // AND THEY AGREE WITH EACH OTHER, which is the point: both being near zero
+    // would also be true of two paths that were each wrong by a different
+    // fraction of a dB.
+    check(std::fabs(pdDb - cppDb) < 0.1f,
+          "and the two agree to within a tenth of a dB\n          Pd " +
+              std::to_string(pdDb) + ", C++ " + std::to_string(cppDb));
+}
+
+void testThePatchWindowIsTheCppWindow() {
+    section("ADR-0183 d7 -- the window the patch builds IS dsp::fillWindow's");
+
+    // The other half of "one definition": the calibration above would agree
+    // for the wrong reason if the two windows differed and the constants had
+    // been tuned to compensate. So the window itself is compared, sample for
+    // sample, through Pd's own table.
+    using namespace adi::dsp;
+
+    LibPdEngine eng(devicePatchDir(), "adi-spectrum.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    check(eng.open(latency, err), "adi-spectrum.pd opens: " + err);
+
+    std::vector<float> fromPd(static_cast<std::size_t>(analyser::kFftSize), -1.f);
+    check(eng.readArray("window", fromPd),
+          "the patch's window table is readable");
+
+    std::vector<float> fromCpp(static_cast<std::size_t>(analyser::kFftSize), 0.f);
+    fillWindow(analyser::kWindow, fromCpp);
+
+    double worst = 0.0;
+    std::int32_t worstAt = -1;
+    for (std::size_t i = 0; i < fromCpp.size(); ++i) {
+        const double d = std::fabs(static_cast<double>(fromPd[i]) - fromCpp[i]);
+        if (d > worst) { worst = d; worstAt = static_cast<std::int32_t>(i); }
+    }
+    check(worst < 1e-6,
+          "and it matches dsp::fillWindow sample for sample -- PERIODIC, which "
+          "is what Pd's cosinesum does and what fillWindow does\n          worst at " +
+              std::to_string(worstAt) + ", off by " + std::to_string(worst));
+}
+
 void testPdWouldReachAnExternalBesideThePatch() {
     section("ADR-0188 d8 -- THE FAULT, PLANTED: Pd reaches a file beside the patch");
 
@@ -1239,6 +1384,8 @@ int main() {
     testTransportReachesThePatch();
     testTransportArrivesOnNodeIo();
     testTheShippedDevicePatchesMakeSound();
+    testThePatchWindowIsTheCppWindow();
+    testTheAnalyserAgreesWithTheCppSpectrum();
     testMidiReachesNoteinCtlinAndBendin();
     // Last, and on purpose: it dlopens nothing, but it does put a class name
     // on Pd's process-wide load list, and a test that runs after it would be

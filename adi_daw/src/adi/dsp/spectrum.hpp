@@ -61,6 +61,31 @@ enum class Window : std::uint8_t {
     Rectangular,
 };
 
+/// THE ANALYSER'S OWN SETTINGS, in one place because two programs read them.
+///
+/// `tools/gen_pd_patches.py` writes these numbers into `pd/adi-spectrum.pd`,
+/// and `dsp::Spectrum` uses them here. They are not passed between the two at
+/// run time -- a Pd patch is a file -- so the only thing keeping them equal is
+/// that a test reads both and compares. `adi_pd_engine_tests` does exactly
+/// that, with one sine through both paths (ADR-0183 d7).
+namespace analyser {
+
+/// 1024 at 48 kHz is 46.9 Hz per bin and 21 ms of latency: fine enough to see
+/// a kick's fundamental apart from its click, short enough that the display
+/// still feels attached to the sound. The Max for Live build settled here too.
+inline constexpr std::int32_t kFftSize = 1024;
+/// Four, so a Hann window's overlap-add is flat and a transient cannot fall
+/// between two frames and read quiet in both.
+inline constexpr std::int32_t kOverlap = 4;
+inline constexpr Window kWindow = Window::Hann;
+/// The array `[adi.array]` declares, and what a renderer is told about it.
+inline constexpr std::int32_t kBins = kFftSize / 2 + 1;
+inline constexpr std::int32_t kPublishHz = 30;
+inline constexpr double kFloorDb = -120.0;
+inline constexpr double kCeilingDb = 0.0;
+
+}  // namespace analyser
+
 /// Fills `out` with the window, `out.size()` points long. Periodic, not
 /// symmetric: the point at the end would repeat the point at the start, and an
 /// overlapping analysis would then double-count it.
