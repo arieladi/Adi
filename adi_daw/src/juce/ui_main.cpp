@@ -2,6 +2,7 @@
 #include "adi/ui/project_document.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/juce_device_loader.hpp"
+#include "ui_floating.hpp"
 #include "ui_shell.hpp"
 #include <juce_audio_utils/juce_audio_utils.h>
 namespace adi::ui {
@@ -70,7 +71,10 @@ class AdiApplication final : public juce::JUCEApplication,
             delete audioDialog_.getComponent();
         manager_.removeChangeListener(this);
         detachAudio();
+        floating_.reset();
         window_.reset();
+        analysers_.clear();
+        analyserTracks_.clear();
         document_.reset();
         commands_.reset();
         settings_.reset();
@@ -120,7 +124,10 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
+        floating_.reset();
         window_.reset();
+        analysers_.clear();
+        analyserTracks_.clear();
         document_ = std::move(next);
         auto root = std::make_unique<AdiRootComponent>(document_->view(), document_->ops(),
                                                        document_->mailbox(), *commands_,
@@ -163,10 +170,49 @@ class AdiApplication final : public juce::JUCEApplication,
         window_->onClose = [this] { systemRequestedQuit(); };
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
         window_->centreWithSize(1200, 720);
+        floating_ = std::make_unique<FloatingHost>(
+            *root_, *commands_, document_->views(), document_->view(), [this](std::int64_t id) {
+                const auto *e = document_->session().entryFor(id);
+                return e && !e->retired;
+            });
+        root_->devices.makeAnalyser = [this](std::int64_t id) -> std::unique_ptr<ClockedView> {
+            auto m = analyser(id);
+            return m ? std::make_unique<AnalyserView>(m) : nullptr;
+        };
+        root_->devices.expandAnalyser = [this](std::int64_t id) { openAnalyser(id); };
+        for (std::size_t i = 0; i < document_->session().entryCount(); ++i) {
+            const auto &e = document_->session().entryAt(i);
+            if (!e.retired &&
+                document_->views().loadFloating("analyser." + std::to_string(e.deviceId)).open)
+                openAnalyser(e.deviceId);
+        }
         window_->setVisible(true);
         if (!noAudio_)
             attachAudio();
         return true;
+    }
+    std::shared_ptr<AnalyserModel> analyser(std::int64_t id) {
+        if (auto it = analysers_.find(id); it != analysers_.end())
+            return it->second;
+        const auto *e = document_->session().entryFor(id);
+        if (!e || e->retired)
+            return {};
+        auto tap = document_->session().openScope(e->trackId, 1., engine::ScopePoint::PreFader);
+        if (!tap)
+            return {};
+        auto model = std::make_shared<AnalyserModel>(tap);
+        analysers_[id] = model;
+        analyserTracks_[id] = e->trackId;
+        return model;
+    }
+    void openAnalyser(std::int64_t id) {
+        auto model = analyser(id);
+        if (!model)
+            return;
+        auto view = std::make_unique<AnalyserView>(model);
+        auto *raw = view.get();
+        floating_->openView("analyser." + std::to_string(id), id, std::move(view),
+                            [raw](const SnapshotReader &) { raw->frame(); });
     }
     void attachAudio() {
         juce::AudioDeviceManager::AudioDeviceSetup setup;
@@ -281,6 +327,22 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!document_)
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        if (floating_)
+            floating_->collect();
+        for (auto it = analysers_.begin(); it != analysers_.end();) {
+            const auto *e = document_->session().entryFor(it->first);
+            if (!e || e->retired || it->second.use_count() == 1) {
+                const auto track = analyserTracks_[it->first];
+                analyserTracks_.erase(it->first);
+                it = analysers_.erase(it);
+                bool used = false;
+                for (const auto &pair : analyserTracks_)
+                    used |= pair.second == track;
+                if (!used)
+                    document_->session().closeScope(track, engine::ScopePoint::PreFader);
+            } else
+                ++it;
+        }
         if (smokeOutput_ != juce::File{}) {
             // Native-window smoke: software screenshot only, never an audio device.
             if (!window_->isShowing() || window_->getPeer() == nullptr) {
@@ -313,6 +375,9 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<device::DeviceBridge> bridge_;
     std::unique_ptr<AdiWindow> window_;
     AdiRootComponent *root_ = nullptr;
+    std::map<std::int64_t, std::shared_ptr<AnalyserModel>> analysers_;
+    std::map<std::int64_t, std::int64_t> analyserTracks_;
+    std::unique_ptr<FloatingHost> floating_;
     std::unique_ptr<juce::FileChooser> chooser_;
     juce::Component::SafePointer<juce::DialogWindow> audioDialog_;
 };

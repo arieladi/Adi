@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_shell.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <thread>
 namespace {
 thread_local bool audit = false;
 std::atomic<unsigned> allocations{0};
@@ -90,14 +92,16 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             g.fillRect(area.getX() + 4, laneY + 4, std::max(0, area.getWidth() - 8), 24);
             laneY += root.arrangement.geometry.heightFor(trackNode->id);
         }
-        for (const auto& device : root.devices.panels) {
-            const auto bounds=root.getLocalArea(device.get(),device->getLocalBounds());
-            g.fillRect(bounds.getX()+2,bounds.getY()+2,std::max(0,bounds.getWidth()-4),80);
-            for(const auto& c:device->controls){
-                const auto b=root.getLocalArea(c.get(),c->getLocalBounds());
-                g.fillRect(b.getX(),b.getY(),b.getWidth(),20);
-                g.fillRect(b.getX(),b.getY()+42,b.getWidth(),18);
-                if(c->menu.isVisible())g.fillRect(b.getX()+4,b.getY()+20,b.getWidth()-8,22);
+        for (const auto &device : root.devices.panels) {
+            const auto bounds = root.getLocalArea(device.get(), device->getLocalBounds());
+            g.fillRect(bounds.getX() + 2, bounds.getY() + 2, std::max(0, bounds.getWidth() - 4),
+                       104);
+            for (const auto &c : device->controls) {
+                const auto b = root.getLocalArea(c.get(), c->getLocalBounds());
+                g.fillRect(b.getX(), b.getY(), b.getWidth(), 20);
+                g.fillRect(b.getX(), b.getY() + 42, b.getWidth(), 18);
+                if (c->menu.isVisible())
+                    g.fillRect(b.getX() + 4, b.getY() + 20, b.getWidth() - 8, 22);
             }
         }
         const int dock = root.state().docked ? root.state().deviceHeight : 0;
@@ -480,6 +484,94 @@ int main(int argc, char **argv) {
         integrated.state().deviceHeight = 200;
         integrated.resized();
         reference(integrated, "arrangement", write);
+        {
+            FloatingState saved;
+            saved.monitor = "disconnected";
+            saved.x = 3200;
+            saved.y = -800;
+            saved.width = 1400;
+            saved.height = 900;
+            check(restoreFloating(saved, {{"primary", {0, 0, 1000, 700}}}) ==
+                      juce::Rectangle<int>(0, 0, 1000, 700),
+                  "lost monitor restores fully on available screen");
+            saved.monitor = "left";
+            saved.x = -1600;
+            saved.y = 100;
+            saved.width = 400;
+            saved.height = 300;
+            check(restoreFloating(
+                      saved, {{"primary", {0, 0, 1000, 700}}, {"left", {-1920, 0, 1920, 1080}}})
+                          .getX() == -1600,
+                  "monitor identity preserves negative desktop coordinates");
+            bool alive = true;
+            juce::Component dock, content;
+            dock.addAndMakeVisible(content);
+            content.setBounds(10, 20, 300, 180);
+            FloatingHost host(
+                integrated, commands, document->views(), document->view(),
+                [&](std::int64_t) { return alive; }, false);
+            check(host.detach("test", 11, content, dock), "detach existing component");
+            check(host.content("test") == &content && content.getParentComponent() != &dock,
+                  "detach reparents same identity");
+            host.frame("test");
+            host.frame("test");
+            check(host.drains("test") == 2, "window drains on its own clock");
+            host.close("test");
+            check(content.getParentComponent() == &dock &&
+                      content.getBounds() == juce::Rectangle<int>(10, 20, 300, 180),
+                  "dock restores exact component and bounds");
+            check(!document->views().loadFloating("test").open, "close clears saved open state");
+            host.detach("deleted", 11, content, dock);
+            alive = false;
+            host.frame("deleted");
+            host.collect();
+            check(host.count() == 0 && !document->views().loadFloating("deleted").open,
+                  "device retirement closes and persists closed");
+            alive = true;
+            host.collect();
+            check(host.count() == 0, "undo does not resurrect a window");
+            auto tap = std::make_shared<engine::ScopeTap>(48000, 1.);
+            std::array<float, 1024> sine{};
+            for (std::size_t i = 0; i < sine.size(); ++i)
+                sine[i] = static_cast<float>(
+                    std::sin(2 * 3.141592653589793 * 32 * static_cast<double>(i) / 1024.));
+            tap->write(sine.data(), sine.data(), 1024, 0, true);
+            auto model = std::make_shared<AnalyserModel>(tap);
+            AnalyserView small(model);
+            auto big = std::make_unique<AnalyserView>(model);
+            auto *bigPtr = big.get();
+            check(host.openView("analyser", 11, std::move(big),
+                                [bigPtr](const SnapshotReader &) { bigPtr->frame(); }),
+                  "analyser second view opens through generic host");
+            check(small.model() == bigPtr->model(),
+                  "docked and big analyser share one measurement model");
+            std::array<float, 513> bins{};
+            std::uint64_t revision = 0;
+            for (int retry = 0; retry < 30 && !model->read(bins, revision); ++retry)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            check(revision > 0 && bins[100] < -90 && std::abs(bins[32]) < .01,
+                  "analyser worker calibrated floor before 0 dB sine");
+            small.setSize(500, 200);
+            small.frame();
+            juce::Image render(juce::Image::ARGB, 500, 200, true, juce::SoftwareImageType{});
+            juce::Graphics g(render);
+            small.paintEntireComponent(g, true);
+            auto stream = juce::File::getCurrentWorkingDirectory()
+                              .getChildFile("analyser-actual.png")
+                              .createOutputStream();
+            check(stream && juce::PNGImageFormat{}.writeImageToStream(render, *stream),
+                  "analyser software render saved to file");
+            const std::string analyserKey="analyser";
+            host.frame(analyserKey);
+            allocations = 0;
+            audit = true;
+            for (int i = 0; i < 20; ++i)
+                host.frame(analyserKey);
+            audit = false;
+            std::printf("METRIC floating frame allocations %u\n",allocations.load());
+            check(allocations == 0, "floating analyser frame allocates zero");
+            host.close("analyser");
+        }
         document->release();
     }
     std::printf("%d checks, %d failures\n", checks, failures);

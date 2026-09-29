@@ -4,6 +4,10 @@
 #include "adi/ui/parameter_feed.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 namespace adi::ui {
+class ClockedView : public juce::Component {
+  public:
+    virtual void frame() noexcept = 0;
+};
 class AdiRootComponent;
 class DeviceChainStrip;
 class ParameterControl final : public juce::Component {
@@ -37,6 +41,8 @@ class DevicePanelView final : public juce::Component {
     juce::TextButton title, configureButton{"Configure"};
     juce::ToggleButton enabled;
     juce::TextEditor search;
+    juce::TextButton expand{"Analyse"};
+    std::unique_ptr<ClockedView> analyser;
     std::vector<std::unique_ptr<ParameterControl>> controls;
 
   private:
@@ -54,6 +60,8 @@ class DeviceChainStrip final : public juce::Component {
     bool edit(std::int64_t, const std::string &, engine::ParamEventKind, double);
     bool action(const std::string &, Payload);
     AdiRootComponent &root;
+    std::function<std::unique_ptr<ClockedView>(std::int64_t)> makeAnalyser;
+    std::function<void(std::int64_t)> expandAnalyser;
     std::function<std::shared_ptr<const ParameterPublication>()> publication;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double)> gesture;
     std::function<bool(const std::string &, Payload)> submit;
