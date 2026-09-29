@@ -15810,3 +15810,36 @@ original order did.
 - a refresh with no change shares everything.
 
 A planted refresh that rebuilds without sharing fails two checks.
+
+---
+
+## ADR-0202 — mac is retired until the director decides otherwise; its areas move to win and win_codex — `DECIDED` (2026-09-30) — **DIRECTOR'S DECISION; AMENDS ADR-0109's ROSTER**
+
+**Director's decision:** retire the mac agent from the project until he decides otherwise. This covers both
+of its sessions: the host/UI session and the analyser session. The Team plan's weekly limit had left mac
+unavailable until Saturday; the retirement makes that the arrangement rather than an interruption.
+
+### Decisions
+
+1. **Nothing mac owned is left without an owner.**
+
+   | Area | New owner |
+   |---|---|
+   | Step 7's UI: `src/adi/ui/**`, `src/juce/ui_*`, their tests | win_codex builds it on win's missions; win reviews |
+   | `docs/UI-ARCHITECTURE.md`, `docs/STEP-7-PLAN.md` | win |
+   | The plug-in host: `src/juce/**` (CLAP, VST3, `adi_play`), `third_party/JUCE`, `cmake/**` | win |
+   | The Pd tier and the analyser: `src/juce/pd_*`, `pd/**`, `src/adi/dsp/spectrum.*` | win_codex on win's missions; win reviews |
+   | CI: `.github/**`, `tools/fetch_external.sh`, the fuzz files | win |
+
+2. **macOS stays covered by CI.** Every PR still builds and tests on GitHub's macOS runners, arm64 and
+   x86_64. What needs a physical Mac waits for a release or for mac's return:
+   - Gatekeeper and codesign on real bundles;
+   - CoreAudio against real devices;
+   - measuring Live 12 on the Mac. The director can measure Live himself, on either machine.
+
+3. **mac's record stands.** Its ADRs (0179, 0180, 0183, 0194, 0196 to 0198 among them), its logs and its
+   step-7 handoff (`collab/handoff/2026-09-29-step7.md`) are the basis for whoever continues. Nothing it
+   decided is reopened by its absence.
+
+4. **Recall is one sentence from the director.** On recall, mac re-reads its log, the handoff and every ADR
+   after 0202 before touching code, and takes back only what the director assigns.

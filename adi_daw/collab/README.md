@@ -8,11 +8,13 @@ before your first commit, and re-read it if you have been away.
 
 | Agent | Machine | Model | Owns | Cannot |
 |---|---|---|---|---|
-| **win** | Windows 11 desktop, MSVC 19.44 / x64 | Claude Code | Lead technical coordinator (ADR-0109): architecture, ADR sequencing, engine integration, the format spec, `src/adi/**`, `tests/**`, `tools/**`, docs, Windows-specific code | Build or test on macOS/clang/arm64 |
-| **mac** | macOS, Apple clang / arm64 | Claude Code (team licence) | `.github/workflows/**`, `docs/UI-ARCHITECTURE.md`, macOS platform and CoreAudio, review | Nothing structural — see below |
+| **win** | Windows 11 desktop, MSVC 19.44 / x64 | Claude Code | Lead technical coordinator (ADR-0109): architecture, ADR sequencing, engine integration, the format spec, `src/adi/**`, `tests/**`, `tools/**`, docs, Windows-specific code; since ADR-0202 also `.github/**`, `src/juce/**` (the plug-in host), `cmake/**`, `third_party/JUCE`, `docs/UI-ARCHITECTURE.md` and `docs/STEP-7-PLAN.md` | Build or test on macOS/clang/arm64 |
+| **mac** | macOS, Apple clang / arm64 | Claude Code (team licence) | **Retired by the director on 2026-09-30, until he decides otherwise (ADR-0202).** Its areas moved to win and win_codex; its history and ADRs stand | Everything, until recalled |
 | **linux** | Ubuntu workstation, GCC/Clang / x86-64 | ChatGPT Codex (terminal) | Portable standard C++, headless CI and test enforcement, sanitizers, POSIX portability | OS-specific GUI or driver code; any Linux-only library; `docs/UI-ARCHITECTURE.md`; schema, ADR numbers or claims without `win` |
 | **cloud** | Claude Code on the web, Linux (an ephemeral cloud container) | Claude Code | Portable headless C++, the format and its docs, on win's assignments | JUCE, platform code, `.github/**`, `drivers/**`, other monorepo projects |
-| **win_codex** | the director's Windows 11 PC, MSVC / x64 | Codex app (OpenAI), full access, in its own worktree | The color-bass Pd devices (ADR-0192): `src/adi/dsp/combchord.*`, `src/adi/dsp/colorcab.*`, `src/adi/pd_builtins/**`, `pd/devices/**`, their tests; work win assigns | `src/juce/**`, `.github/**`, `tools/fetch_external.sh`, UI, the schema, ADR numbers or claims without `win`; the main checkout (win and the drone use it) |
+| **win_codex** | the director's Windows 11 PC, MSVC / x64 | Codex app (OpenAI), full access, in its own worktree | The color-bass Pd devices (ADR-0192): `src/adi/dsp/combchord.*`, `src/adi/dsp/colorcab.*`, `src/adi/pd_builtins/**`, `pd/devices/**`, their tests; since ADR-0202 also step 7's UI (`src/adi/ui/**`, `src/juce/ui_*`, their tests) and the Pd tier (`src/juce/pd_*`, `pd/**`) on win's missions, win reviewing; work win assigns | `src/juce/**`, `.github/**`, `tools/fetch_external.sh`, UI, the schema, ADR numbers or claims without `win`; the main checkout (win and the drone use it) |
+
+**Retired (director, 2026-09-30):** mac, both sessions (the host/UI session and the analyser session), until the director decides otherwise (ADR-0202). Its step-7 handoff is `collab/handoff/2026-09-29-step7.md`.
 
 **Availability (director, 2026-09-26):** mac is back in the loop, a day
 early, on `collab/prompts/2026-09-26-mac-return-host-half.md`. linux (Codex)
@@ -235,6 +237,7 @@ subject, say so in your log instead of writing it twice.
 | 0198 | mac | `mac/generic-panel` | the parameter feed's per-parameter record: the plug-in's own text, the shape of a control, automated/overridden, and which source touched it last | used |
 | 0200 | win | `win/adi-mobile-0200` | ADI Mobile designed now, built last: same engine and format on iOS and Android, three modes, what the desktop must not foreclose (director) | used |
 | 0201 | win | `win/project-view` | the UI reads project state from one message-thread cell, `ProjectView`; no publisher, no epoch (answers mac on #187) | used |
+| 0202 | win | `win/mac-retired` | the director retires mac (both sessions) until he decides otherwise; its areas move to win and win_codex (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -247,7 +250,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `src/adi/ui/**`, `tests/test_ui_seams.cpp` (step 7.1's seams wired to ProjectView, ADR-0180 and ADR-0201) | mac | `mac/step7-projectview` | 2026-09-29 |
 | Utility DSP/builtin/patch, tests/test_utility*.cpp, cmake/devices/utility.cmake | win_codex - mission 5 delegated by win | `codex/utility-pd` | 2026-09-29 |
 | Saturator DSP/builtin/patch, tests/test_saturator*.cpp, cmake/devices/saturator.cmake | win_codex - mission 5 delegated by win | `codex/saturator-pd` | 2026-09-29 |
 | Echo DSP/builtin/patch, tests/test_echo*.cpp, cmake/devices/echo.cmake | win_codex - mission 5 delegated by win | `codex/echo-pd` | 2026-09-29 |
@@ -255,10 +257,9 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
 | `docs/DECISIONS.md`, `docs/format/**`, `docs/FEATURES.md` | win | (standing; anyone appends their own reserved ADR to `DECISIONS.md`) | 2026-09-19 |
-| `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
-| `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
+| `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | win (from mac, ADR-0202) | (standing) | 2026-09-19 |
+| `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | win (from mac, ADR-0202) | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
-| `src/adi/dsp/spectrum.*`, `tools/gen_pd_patches.py`, `pd/adi-spectrum.pd`, `src/juce/pd_engine.*`, `tests/test_pd_engine.cpp` | mac (second session) | `mac/pd-spectrum` | 2026-09-28 |
 
 **README's check count is win's, on main (2026-09-29).** PRs never edit the "N checks across M suites"
 line: every PR touched it, so each merge turned the next PR red. `tools/test_all.sh` reports a
