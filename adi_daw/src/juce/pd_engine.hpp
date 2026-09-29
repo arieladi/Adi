@@ -61,6 +61,7 @@
 
 #include "juce/pd_device.hpp"
 #include "juce/pd_declarations.hpp"
+#include "adi/pd_builtins/sample_bridge.hpp"
 #include "adi/engine/published_array.hpp"
 #include "adi/engine/mpe_output.hpp"
 
@@ -184,6 +185,13 @@ public:
     /// would put the declared set outside the op log, which is the thing that
     /// contract exists to prevent.
     void bindArrays(const PdDeclarations& decls);
+
+    // Message thread, audio stopped: fixed sample declarations, like arrays.
+    void bindSamples(const PdDeclarations& decls);
+    // Message thread. Decode/build derived data before this immutable handoff.
+    bool publishSample(std::int32_t id, std::unique_ptr<PdSampleBuffer> sample);
+    // Message-thread timer: retire buffers passed by the audio reader.
+    std::size_t collectSamples() { return samples_.collect(); }
 
     /// Message thread, after `open`. Resolves the receive symbol for every
     /// parameter the patch declares, so that `sendParameter` can reach it from
@@ -338,6 +346,8 @@ private:
         engine::PublishedArray buffer;
     };
     std::vector<std::unique_ptr<BoundArray>> arrays_;
+    PdSampleSlots samples_;
+    PdSampleBlock sampleBlock_;
 
     /// Pd's console for this instance, filled by the print hook.
     mutable std::mutex consoleMutex_;

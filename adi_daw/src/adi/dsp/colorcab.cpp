@@ -125,6 +125,20 @@ ColorCabDesign buildColorCab(std::span<const float> sample, double sampleRate, C
                                                      / static_cast<double>(o.size - 1 - o.size / 2);
         result.kernel.taps[k] = data[k].real() * (1 + std::cos(std::numbers::pi * t)) / 2;
     }
+    std::fill(data.begin(), data.end(), Complex{});
+    for (std::size_t k = 0; k < o.size; ++k) data[k] = result.kernel.taps[k];
+    fft(data, false);
+    double dryPower = 0, wetPower = 0;
+    for (std::size_t k = 1; k <= half; ++k) {
+        const double hz = static_cast<double>(k) * sampleRate / n;
+        if (hz < 20 || hz > 20000) continue;
+        const double weight = 1 / hz; // pink noise: power density proportional to 1/f
+        dryPower += weight;
+        wetPower += weight * std::norm(data[k]);
+    }
+    const double makeup = wetPower > 0 ? std::sqrt(dryPower / wetPower) : 1;
+    for (auto& tap : result.kernel.taps) tap *= makeup;
+    for (auto& magnitude : result.target) magnitude *= makeup;
     return result;
 }
 void ColorCab::prepare(double sampleRate) noexcept {
@@ -149,7 +163,7 @@ void ColorCab::setMix(double mix) noexcept {
 bool ColorCab::setKernel(const ColorCabKernel& kernel) noexcept {
     if (remaining_ || kernel.size == 0 || kernel.size > ColorCabKernel::capacity) return false;
     for (std::size_t i = 0; i < kernel.size; ++i)
-        if (!std::isfinite(kernel.taps[i]) || std::abs(kernel.taps[i]) > 1) return false;
+        if (!std::isfinite(kernel.taps[i]) || std::abs(kernel.taps[i]) > static_cast<double>(ColorCabKernel::capacity)) return false;
     next_ = kernel;
     remaining_ = fadeSamples_;
     return true;

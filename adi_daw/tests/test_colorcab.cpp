@@ -149,5 +149,29 @@ void runtime(){
     c.setMix(0);c.process(input.data(),out.data(),input.size());check(out==input,"dry mix identity");
     auto bad=kernel;bad.taps[0]=std::numeric_limits<double>::infinity();check(!c.setKernel(bad),"invalid kernel refused");
 }
+void makeup() {
+    // Deterministic random-phase, logarithmically spaced coherent tones model
+    // equal power per octave (pink), without depending on a noise filter.
+    constexpr std::size_t period = 32768;
+    std::vector<float> input(period*2), output(input.size());
+    for (int tone = 0; tone < 160; ++tone) {
+        const auto bin = std::llround(20*std::pow(1000.,static_cast<double>(tone)/159)*period/48000);
+        const double phase = std::fmod(static_cast<double>(tone*tone)*1.618,2*pi);
+        for (std::size_t i = 0; i < input.size(); ++i)
+            input[i] += static_cast<float>(0.01*std::sin(2*pi*static_cast<double>(bin)*static_cast<double>(i)/period+phase));
+    }
+    for (double gamma : {0.,0.5,1.}) {
+        ColorCabOptions options; options.gamma = gamma;
+        const auto design = buildColorCab(sample(),48000,options);
+        ColorCab cab; cab.prepare(48000); check(cab.setKernel(design.kernel),"make-up kernel accepted"); cab.reset();
+        cab.process(input.data(),output.data(),input.size());
+        double dry = 0, wet = 0;
+        for (std::size_t i = period; i < input.size(); ++i) { dry += input[i]*input[i]; wet += output[i]*output[i]; }
+        const double db = 10*std::log10(wet/dry);
+        std::printf("METRIC pink RMS make-up gamma %.1f: %.6f dB\n",gamma,db);
+        check(std::abs(db) <= 1,"pink RMS wet matches dry within 1 dB");
+    }
 }
-int main(){design();runtime();std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
+
+}
+int main(){makeup();design();runtime();std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

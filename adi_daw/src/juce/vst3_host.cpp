@@ -245,6 +245,18 @@ void Vst3Device::readParameters() {
         d.defaultValue = ParamValue::fromNormalized(
             static_cast<double>(p->getDefaultValue()));
         d.automatable = p->isAutomatable();
+
+        // ADR-0181 d3's shape. JUCE reports a VST3 parameter's step count;
+        // 0 or 1 means continuous. Read rather than inferred: a three-step
+        // parameter and a continuous 0..2 one are indistinguishable from the
+        // range alone, and drawing the second as a menu would take away every
+        // value between.
+        const int steps = p->getNumSteps();
+        if (p->isDiscrete() && steps > 1 && steps < 4096) {
+            d.stepCount = steps;
+            d.shape = (steps == 2) ? ParamShape::Switch : ParamShape::Menu;
+        }
+
         params_.push_back(std::move(d));
         handles_.push_back(p);
     }
@@ -310,6 +322,21 @@ void Vst3Device::audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*, 
     if (index < 0 || static_cast<std::size_t>(index) >= juceToOurs_.size()) return;
     const std::int32_t ours = juceToOurs_[static_cast<std::size_t>(index)];
     if (ours >= 0) broadcastParam(ours, engine::ParamEventKind::End, 0.0);
+}
+
+std::string Vst3Device::paramText(const std::string& paramId,
+                                 double normalized) const {
+    // ADR-0181 d3: the plug-in's OWN text. On VST3 this is the only way to
+    // get a real value at all -- `getParamStringByValue` hands back a
+    // localised display string, which is exactly what the feed wants and
+    // exactly what cannot be parsed back into a number (see the scan above).
+    for (std::size_t i = 0; i < params_.size() && i < handles_.size(); ++i) {
+        if (params_[i].id != paramId) continue;
+        const auto* h = handles_[i];
+        if (h == nullptr) return {};
+        return h->getText(static_cast<float>(normalized), 128).toStdString();
+    }
+    return {};
 }
 
 void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {

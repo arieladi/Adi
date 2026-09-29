@@ -393,6 +393,7 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
 
     selectInstance();
     segments_.fetch_add(1, std::memory_order_relaxed);
+    const PdSampleBlock::Read sampleRead(sampleBlock_, samples_);
 
     // --- transport, then MIDI, then the audio both belong to ----------------
     //
@@ -565,6 +566,14 @@ bool LibPdEngine::sendFloat(const char* suffix, float value) noexcept {
     selectInstance();
     const std::string recv = std::to_string(dollarZero_) + "-" + suffix;
     return libpd_float(recv.c_str(), value) == 0;
+}
+
+void LibPdEngine::bindSamples(const PdDeclarations& decls) {
+    samples_.declare(decls.samples);
+    sampleBlock_.declare(decls.samples);
+}
+bool LibPdEngine::publishSample(std::int32_t id, std::unique_ptr<PdSampleBuffer> sample) {
+    return samples_.publish(id, std::move(sample));
 }
 
 void LibPdEngine::bindParameters(const PdDeclarations& decls) {

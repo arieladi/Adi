@@ -7,28 +7,55 @@ Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` 
 
 ---
 
-## 2026-09-28 - drone main refresh after Windows runner timeout
+## 2026-09-28 - Windows Pd crash investigation
 
-Merged main into codex/drone-parallel, preserving both log histories. The six
-temporary-folder drone tests pass again. Prior Windows CI timed out in existing
-C++ suites; this merge requests a fresh run without changing those tests.
+CI MSVC 19.51 faults in the console test; local MSVC 19.44 passes with Pd ON
+in Ninja, a fresh Visual Studio project build, a fresh AddressSanitizer build,
+and 80 repeated suite runs. Added a Windows native-stack diagnostic to expose
+the CI fault site rather than guessing at the new sample members. Merged main
+while preserving both log histories; MSVC /WX and the combined test run pass
+5643 checks across 59 suites plus validators. This is
+diagnostic evidence gathering, not a claimed fix.
 
 ---
 
-## 2026-09-28 - mission 3, Task D: concurrent drone requests
+## 2026-09-28 - mission 3, Task B: color-bass Pd devices
 
-Win delegated tools/adi-drone/drone.py for this change. On codex/drone-parallel
-from main, added --parallel N to watch/run-once with N request workers, default
-1 on the original calling thread. Claims use queue-to-running atomic rename
-plus a short intra-process lock: a forced race demonstrated that two concurrent
-Win32 rename calls can both open the source before either move completes.
-Logs retain their format and are serialized per line; timing/eta/collect are
-unchanged. All workers join before idle unload. Recovery still uses running/
-and the existing partial-result replacement. No live drone directories changed.
+On codex/colorbass-pd from main after #150 merged. Both stereo top-level
+canvases use adc~/dac~, declare fixed-id parameters, and answer the intrinsic
+latency query with zero. Both externals self-register through ADI_PD_BUILTIN.
+The real LibPdEngine tests found that the OBJECT target also needs its objects
+propagated to final executables: a static archive discards unreferenced setup
+initializers. They also exposed Win64 dsp_add's int/t_int varargs mismatch;
+the wrappers use typed dsp_addv arguments. CMake now recreates the cached
+pthreads4w target on a second configure rather than dropping its definition.
 
-Six temporary-folder tests pass: duplicate claim, four requests in flight,
-crash/recovery, byte-for-byte serial comparison with 92eb485, watch idle/unload,
-and invalid parallel counts. No Ollama requests or scheduled tasks were created.
+Review points 3-5: State crossfades two banks for 10 ms; allpass fractions stay
+in [0.5,1.5), coefficients interpolate during the transition, and Color/Decay
+copy ringing history rather than inject cold-start discontinuities. The State
+sine step is bounded by the measured steady step after settling;
+Color sweep steps are below 0.015. Color Cab normalizes the actual truncated
+FIR for 20 Hz..20 kHz pink power, measured within 0.006 dB on three gamma values.
+
+Win approved the narrow mac-owned pd_engine.hpp/.cpp claim, recorded as
+"delegated by win, mac analyser's file" and to be removed on merge. LibPdEngine
+owns PdSampleSlots and exposes message-thread bind/publish/collect calls.
+Prepared Color Cab data derives from PdSampleBuffer (virtual destruction comes
+from Sequenced), so the existing #153 publisher is the only handoff. A segment
+acquires each slot once for both channels. Decoding and kernel construction
+remain off audio. The host helper retains source hash/options/profile. The
+patch exposes realtime Mix; Size/gamma/smoothing/pitch use off-thread host
+rebuild/publication. Panel/drop-tile and state serialization remain UI work.
+
+MSVC /WX and the actual top-level Pd renders pass, with a clean console hook,
+a far bin at the floor before checking peaks, predicted FIR response, sample
+replacement while blocks render, and zero allocations on the audio thread
+(C++ new counters plus the MSVC Debug CRT hook, including Pd malloc/realloc).
+The full measured total is 5613 checks across 58 suites with validators clean.
+All rendering was into memory; no sound device or live drone folder was used.
+The first CI build caught a GCC name collision between Bank::voices and the
+outer voice-count constant. Renamed the bank member to resonators; no behavior
+or test-count change.
 
 ---
 

@@ -136,5 +136,40 @@ void runtime() {
     c.process(silence.data(),tail.data(),tail.size());
     check(std::all_of(tail.begin(),tail.end(),[](float x){return std::isfinite(x);}),"nonfinite parameters use finite defaults");
 }
+void transitions() {
+    CombChord c; c.prepare(48000); note(c, 110);
+    auto next = c.chord(0); for (auto& n : next) n += 12; c.setChord(1, next);
+    std::vector<float> in(96000), out(in.size());
+    for (std::size_t i = 0; i < in.size(); ++i)
+        in[i] = static_cast<float>(std::sin(2*pi*110*static_cast<double>(i)/48000));
+    c.process(in.data(), out.data(), in.size()); // two seconds to settle before measuring
+    c.process(in.data(), out.data(), 48000);
+    double steady = 0;
+    for (std::size_t i = 24001; i < 48000; ++i)
+        steady = std::max(steady, std::abs(static_cast<double>(out[i]-out[i-1])));
+    c.setState(1); c.process(in.data()+48000, out.data()+48000, 48000);
+    double step = 0;
+    for (std::size_t i = 48000; i < 48960; ++i)
+        step = std::max(step, std::abs(static_cast<double>(out[i]-out[i-1])));
+    std::printf("METRIC State transition step %.9f; steady step %.9f\n", step, steady);
+    check(step <= steady, "State crossfade on sustained sine never exceeds steady-state step");
+    // Sweep across integer-delay boundaries in both feedback polarities.
+    for (auto mode : {CombChord::Mode::Saw, CombChord::Mode::Square}) {
+        c.prepare(48000); note(c, 110); c.setState(0); c.setColor(0); c.setMode(mode);
+        c.process(in.data(), out.data(), 48000);
+        double maximum = 0; bool finite = true;
+        for (std::size_t i = 48000; i < in.size(); i += 32) {
+            c.setColor(static_cast<double>(i-48000)/48000);
+            c.process(in.data()+i, out.data()+i, std::min<std::size_t>(32,in.size()-i));
+        }
+        for (std::size_t i = 48000; i < in.size(); ++i) {
+            maximum = std::max(maximum,std::abs(static_cast<double>(out[i]-out[i-1])));
+            finite &= std::isfinite(out[i]);
+        }
+        std::printf("METRIC Color sweep step %.9f square %d\n",maximum,mode==CombChord::Mode::Square);
+        check(finite && maximum < 0.02, "Color sweep through integer tap changes stays finite and click-free");
+    }
 }
-int main(){tuning();decay();runtime();std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
+
+}
+int main(){transitions();tuning();decay();runtime();std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
