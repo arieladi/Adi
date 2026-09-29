@@ -1,0 +1,5 @@
+# Finish step 7.2 — application integration
+
+Mission 8 grants standing UI/Pd ownership (ADR-0202, #197), win reviewing. Stacked on #196's corrected Apple Clang head. Checklist before code: native ADI application entry and window; safe project/window/driver lifetime; New/Open/Save; real Session playback/stop through the existing bridge, with transport commands consumed only by the driver; successful ops/undo refresh both ProjectView and Session; menus and keys; audio-device chooser uses app settings and reports errors; file-only offline integration tests and all-three-OS GUI build. No README count edits.
+
+Project creation must insert the initial project row (the plan's known gap). A save checkpoints the already-transactional edit journal and reports SQLite's busy result, without closing the Store underneath its readers. Opens construct the replacement before retiring the current project, so a bad file leaves the current session intact. Device callbacks are detached and stopped before destroying their Session. Save As/bundle relocation is a separate file-management operation, not a silent database copy.

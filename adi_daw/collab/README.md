@@ -432,3 +432,5 @@ A branch is ready to merge when:
 - **Taking something from the other agent's claimed paths is allowed when it is
   blocking them** — say so plainly in your log rather than quietly. It has
   happened twice, both times to unblock a merge, both times recorded.
+
+| `src/adi/ui/**`, `src/juce/ui_*`, step-7 tests, UI CMake/workflow integration | win_codex — standing UI ownership, ADR-0202; win reviewing | `codex/step7-application` | 2026-09-30 |
