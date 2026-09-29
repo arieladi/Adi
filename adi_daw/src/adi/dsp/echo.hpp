@@ -71,7 +71,8 @@ class Echo {
         std::array<std::vector<float>, 4> room;
         std::array<std::size_t, 4> roomPos{};
         std::array<std::array<double, 2>, 2> filter{};
-        double time = 0, oldTime = 0, target = 0, fade = 1, noiseFrom = 0, noiseTo = 0, brown = 0;
+        double time = 0, oldTime = 0, target = 0, fade = 1, noiseFrom = 0, noiseTo = 0, brown = 0,
+               lfoFrom = 0, lfoTo = 0;
         std::uint32_t random = 1;
     };
     std::array<Lane, 2> lanes_;

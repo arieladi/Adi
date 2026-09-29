@@ -160,6 +160,10 @@ void measurements() {
     c.prepare(48000);
     auto wobble = render(c, x);
     check(error(wobble, plain) > .001, "Floaty-derived wobble changes delayed pitch");
+    c.set(C::WobbleMorph, 100);
+    c.prepare(48000);
+    check(error(render(c, x), wobble) > .001,
+          "Wobble Morph changes periodic versus irregular character on left too");
     c.set(C::WobbleOn, 0);
     c.set(C::ModDelay, 80);
     c.set(C::LfoSync, 1);
@@ -170,6 +174,13 @@ void measurements() {
     c.set(C::LfoRate, .75);
     c.prepare(48000);
     check(render(c, x) == sync, "LFO tempo sync matches 90 BPM / two quarter notes");
+    c.set(C::Wave, 5);
+    c.set(C::LfoRate, 1);
+    c.prepare(48000);
+    auto slowNoise = render(c, x);
+    c.set(C::LfoRate, 2);
+    c.prepare(48000);
+    check(error(render(c, x), slowNoise) > 1e-5, "noise waveform rate changes with LFO Rate");
     c.set(C::ModDelay, 0);
     c.set(C::Reverb, 50);
     for (int location = 0; location < 3; ++location) {
