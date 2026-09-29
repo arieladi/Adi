@@ -701,6 +701,18 @@ void LibPdEngine::deliverMidi(const engine::MpeOut& m) noexcept {
     }
 }
 
+bool LibPdEngine::readArray(const char* suffix, std::vector<float>& out) noexcept {
+    if (patch_ == nullptr || suffix == nullptr) return false;
+    selectInstance();
+    const std::string name = std::to_string(dollarZero_) + "-" + suffix;
+    const int len = libpd_arraysize(name.c_str());
+    if (len < 0) return false;
+    if (out.size() > static_cast<std::size_t>(len)) return false;
+    if (out.empty()) return true;
+    return libpd_read_array(out.data(), name.c_str(), 0,
+                            static_cast<int>(out.size())) == 0;
+}
+
 LibPdEngine::Counters LibPdEngine::counters() const noexcept {
     return {ticks_.load(std::memory_order_relaxed),
             segments_.load(std::memory_order_relaxed),
