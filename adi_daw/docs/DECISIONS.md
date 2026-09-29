@@ -15621,10 +15621,26 @@ the feature**, as the acceptance test rather than a report afterwards. Decision
 substitute for the signed session.
 
 **ADR-0129's table is adopted as-is.** It is already the first checklist under
-ADR-0108 and cites §6.1, §6.2, §6.9, §41, §41.9 and §41.16 with three dated
-approvals. A second navigation checklist beside it is the duplication ADR-0108
-exists to prevent. Chapter numbers for the remaining pieces are filled in with
-the director before each is built; this entry invents none.
+ADR-0108 and cites the manual's §6.1, §6.2, §6.9, §41, §41.9 and §41.16 with
+three dated approvals. A second navigation checklist beside it is the
+duplication ADR-0108 exists to prevent. Chapter numbers for the remaining
+pieces are filled in with the director before each is built; this entry invents
+none.
+
+**The rows are requested, not written** (win, 2026-09-29). The A2000 is turning
+the Live 12 manual into checklist rows — behaviour, page, verbatim quote — and
+win sends them checked. Before each piece is built, mac asks win for that
+chapter's rows. Writing one here that the A2000 has already produced is
+ADR-0108's duplication arriving from a new direction: two checklists for one
+behaviour, and the second one unchecked.
+
+**GUI reference maps exist and are asked, not guessed.** win holds the drone's
+summaries of helio-sequencer (a JUCE app, the closest cousin), Ardour's editor,
+zrythm's GUI and JUCE's own `gui_basics`/`graphics`/`opengl`, and answers a
+specific question from them checked against the source. `STEP-7-PLAN.md` §6
+lists the questions step 7 already knows it has. A reference map is
+corroboration, not authority: where one disagrees with an ADR, the ADR wins and
+the disagreement is recorded rather than quietly followed.
 
 ### Why a plan at all
 

@@ -21,7 +21,7 @@ that document in **three** named places (§2) and otherwise builds what it says.
 
 **Still open, and not assumed:** two things this plan put to the director are
 not in his reply, so they are carried as open rather than counted as approved —
-the **third** amendment (§2.3) and the **key map's home** (§6.3). His message
+the **third** amendment (§2.3) and the **key map's home** (§7.3). His message
 says *"Both of your amendments to `UI-ARCHITECTURE.md` are right"* and names
 two; §2.3 arrived in the same PR and awaits his word.
 
@@ -202,7 +202,7 @@ an application-level command target installed on every window the host creates,
 spacebar stops the transport in one window and does nothing in the other.
 
 `ApplicationCommandManager` / `KeyPressMappingSet` appear nowhere in `docs/`.
-The key map's home is **proposed, not decided** (§6.3).
+The key map's home is **proposed, not decided** (§7.3).
 
 *Exposes:* whether the frame really takes one snapshot reference that every
 component shares — a mixer and a timeline rendering different snapshots in one
@@ -245,11 +245,11 @@ director moved it here.
 ### Step 7.4 — `DeviceChainStrip` + the DAW-drawn panel
 
 The first consumer of **ADR-0198's `panel::Record`** and the first place a
-control reads the *parameter feed* (§7.3) rather than the model (ADR-0181 d5).
+control reads the *parameter feed* (step 7.3) rather than the model (ADR-0181 d5).
 Calls `panel::resolve` for Live's count rule — it does not re-derive
 64-or-fewer — and `panel::activeAlgorithmParams` for the ADI Airwindows suites.
 
-Includes the **strip resizer** (ADR-0184) with the floor of §6.1.
+Includes the **strip resizer** (ADR-0184) with the floor of §7.1.
 
 *Exposes:* whether `panel::Record` carries what a control actually needs. If a
 field is missing, it is missing now, before three call sites write to it.
@@ -474,12 +474,42 @@ not that what it was built to do is right.
 all five of §3.0's capabilities as well as the components.
 
 **ADR-0129's table is adopted, not duplicated.** It is already marked *first
-checklist under ADR-0108* and cites §6.1, §6.2, §6.9, §41, §41.9 and §41.16,
+checklist under ADR-0108* and cites the **manual's** §6.1, §6.2, §6.9, §41,
+§41.9 and §41.16,
 with three dated director-approved deviations. Writing a second navigation
 checklist beside it is the failure ADR-0108 exists to prevent.
 
 Remaining chapters are filled in with the director before each piece is built —
 this plan does **not** invent chapter numbers.
+
+**The rows are requested, not written from scratch** (win, 2026-09-29). The
+A2000 is turning the Live 12 manual into checklist rows — behaviour, page, and a
+verbatim quote — and win sends them checked. **Before each piece is built, ask
+win for that chapter's rows.** Writing a checklist here that the A2000 has
+already produced is the same duplication ADR-0108 forbids, arriving from a new
+direction: two checklists for one behaviour, and the second one unchecked.
+
+### The GUI reference maps — ask, do not guess
+
+win holds summaries the drone produced of four codebases, on the Windows box:
+**helio-sequencer** (a JUCE app, the closest cousin this project has), **Ardour's
+editor**, **zrythm's GUI**, and **JUCE's own `gui_basics` / `graphics` /
+`opengl`**. win answers a specific question from them, checked against the
+source.
+
+This is the intended first move for the questions step 7 already knows it has,
+rather than deriving them alone:
+
+| Step | The question to ask |
+|---|---|
+| 7.3 | How does helio draw its **playhead** — its own component, or painted into the canvas? (ADR-0050 d2 says its own; corroboration is cheap.) |
+| 7.3 | How does helio **hit-test clips** inside one big component? (ADR-0044's known price is hand-written hit-testing.) |
+| 7.2, 7.3 | How does it **coalesce repaints**, and does anything there keep a per-window clock? (ADR-0180 d1.) |
+| 7.5 | How do Ardour and zrythm handle a **second view of one model, both alive at once**? (ADR-0116 d1/d4, the shape a reparent-only host cannot express.) |
+| 7.4 | How does any of them lay out a **generic parameter panel** for an arbitrary plug-in? (ADR-0198's `Record`.) |
+
+A reference map is corroboration, not authority: where one disagrees with an
+ADR, the ADR wins and the disagreement is recorded rather than quietly followed.
 
 Every difference from Live is a **defect** unless (a) Adi approved it, dated,
 in the checklist, or (b) an ADR rejects the Live behaviour — only ADR-0072

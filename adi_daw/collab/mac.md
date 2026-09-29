@@ -2139,3 +2139,20 @@ such: the third `UI-ARCHITECTURE.md` amendment (ADR-0080 rules out
 of your amendments" and names two — and the key map's home. ADR-0129's gate
 cannot be fully met while the second is open. Both are needed before 7.2
 completes; nothing blocks 7.1.
+
+### Two resources from win (2026-09-29) — use them before deriving anything
+
+- **Parity checklist rows come from the A2000, checked.** It is turning the Live
+  12 manual into rows (behaviour, page, verbatim quote). **Ask win for the
+  chapter's rows before building a piece**; do not write them from scratch.
+  Writing a second checklist for a behaviour the A2000 has already covered is
+  ADR-0108's duplication arriving from a new direction — and mine would be the
+  unchecked one.
+- **GUI reference maps** of helio-sequencer (JUCE, the closest cousin), Ardour's
+  editor, zrythm's GUI and JUCE's `gui_basics`/`graphics`/`opengl` live on the
+  Windows box. Ask win a *specific* question and he answers from them, checked
+  against the source. The plan (§6) lists the five questions step 7 already
+  knows it has — playhead as its own component, clip hit-testing inside one big
+  component, repaint coalescing, two live views of one model, and a generic
+  parameter panel's layout. A map is corroboration, not authority: where one
+  disagrees with an ADR, the ADR wins and the disagreement gets recorded.
