@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# adi_daw â€” step 4: the headless reference implementation.
+# adi_daw — step 4: the headless reference implementation.
 #
 # JUCE is deliberately NOT a dependency of this tree. The .adi reader/writer is
 # a pure, portable data layer with no audio, no GUI and no realtime code, and
 # keeping JUCE out is what enforces that (ADR-0010: the format is a persistence
 # layer, not the runtime model). JUCE arrives in step 5, in a separate target
-# that links adi_core â€” not the other way round.
+# that links adi_core — not the other way round.
 
 # 3.25, not 3.21: the SYSTEM argument to add_subdirectory below was added in
 # 3.25, so a 3.21 CMake would fail to configure this file with
@@ -32,7 +32,7 @@ set(ADI_THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 foreach(dep SQLiteCpp json)
     if(NOT EXISTS "${ADI_THIRD_PARTY}/${dep}/CMakeLists.txt")
         message(FATAL_ERROR
-            "third_party/${dep} is missing. These are gitignored clones â€” run:\n"
+            "third_party/${dep} is missing. These are gitignored clones — run:\n"
             "    bash adi_daw/tools/fetch_external.sh")
     endif()
 endforeach()
@@ -168,7 +168,7 @@ if(ADI_WERROR)
 endif()
 
 # ---------------------------------------------------------------------------
-# adi_core â€” the format library. No JUCE, no audio, no threads.
+# adi_core — the format library. No JUCE, no audio, no threads.
 # ---------------------------------------------------------------------------
 # The DDL is generated from docs/format/schema.sql rather than pasted, so the
 # binary and tools/validate_schema.py exercise the same bytes. A hand-copied
@@ -480,7 +480,7 @@ endif()
 target_link_libraries(adi_core PRIVATE adi_airwin_console)
 
 # ---------------------------------------------------------------------------
-# adi_tool â€” headless CLI. The only executable until step 5.
+# adi_tool — headless CLI. The only executable until step 5.
 # ---------------------------------------------------------------------------
 # The Propose-tier changeset (ADR-0145 d9, ADR-0148): its own library so the
 # agent's staging layer is a separate unit from the core it drives.
@@ -491,7 +491,7 @@ add_executable(adi_tool src/main.cpp)
 target_link_libraries(adi_tool PRIVATE adi_core adi_changeset adi_warnings)
 
 # ---------------------------------------------------------------------------
-# Tests. No framework yet on purpose â€” a dependency we would have to justify,
+# Tests. No framework yet on purpose — a dependency we would have to justify,
 # for asserts we can write in plain C++. Revisit if this grows past one file.
 # ---------------------------------------------------------------------------
 enable_testing()
@@ -515,7 +515,7 @@ add_executable(adi_history_tests tests/test_history.cpp)
 target_link_libraries(adi_history_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_history_tests COMMAND adi_history_tests)
 
-# The round-trip corpus (ADR-0021 Â§7.4). Its own binary because it is an
+# The round-trip corpus (ADR-0021 §7.4). Its own binary because it is an
 # INTEGRATION test -- store, ops and history together -- and a failure here
 # means something different from a failure in any of the three unit suites.
 add_executable(adi_replay_tests tests/test_replay.cpp)
@@ -778,7 +778,7 @@ if(ADI_BUILD_BENCHMARKS)
 endif()
 
 # ---------------------------------------------------------------------------
-# Fuzzing â€” optional, clang-only, OFF by default.
+# Fuzzing — optional, clang-only, OFF by default.
 #
 # StreamReader is the only thing in the tree that parses bytes it did not write,
 # so it is the only thing that can be handed a hostile file. Four defects were
@@ -873,7 +873,7 @@ if(ADI_BUILD_FUZZERS)
 endif()
 
 # ---------------------------------------------------------------------------
-# JUCE â€” optional, OFF by default. Step 6 infrastructure (ADR-0048).
+# JUCE — optional, OFF by default. Step 6 infrastructure (ADR-0048).
 #
 # ADR-0036 built the engine headless on purpose, and those tests are how the
 # snapshot handoff is proved. So JUCE must never become a hard dependency of
@@ -1248,7 +1248,7 @@ add_executable(adi_midi_clips_tests tests/test_midi_clips.cpp)
 target_link_libraries(adi_midi_clips_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_midi_clips_tests COMMAND adi_midi_clips_tests)
 
-# ADR-0159: the curve formulas of SPEC Â§6.3.2, one evaluator for every reader.
+# ADR-0159: the curve formulas of SPEC §6.3.2, one evaluator for every reader.
 target_sources(adi_core PRIVATE src/adi/engine/curves.cpp)
 add_executable(adi_transport_tests tests/test_transport.cpp)
 target_link_libraries(adi_transport_tests PRIVATE adi_core adi_warnings)
