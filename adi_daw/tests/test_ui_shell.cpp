@@ -1,0 +1,265 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#include "../src/juce/ui_shell.hpp"
+#include "adi/store.hpp"
+#include "temp_directory.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#include <new>
+namespace {
+thread_local bool audit = false;
+std::atomic<unsigned> allocations{0};
+} // namespace
+void *operator new(std::size_t n) {
+    if (audit)
+        ++allocations;
+    if (auto *p = std::malloc(n ? n : 1))
+        return p;
+    throw std::bad_alloc();
+}
+void *operator new[](std::size_t n) { return operator new(n); }
+void *operator new(std::size_t n, const std::nothrow_t &) noexcept {
+    try {
+        return operator new(n);
+    } catch (...) {
+        return nullptr;
+    }
+}
+void *operator new[](std::size_t n, const std::nothrow_t &t) noexcept { return operator new(n, t); }
+void operator delete(void *p) noexcept { std::free(p); }
+void operator delete[](void *p) noexcept { std::free(p); }
+void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void *p, std::size_t) noexcept { std::free(p); }
+void operator delete(void *p, const std::nothrow_t &) noexcept { std::free(p); }
+void operator delete[](void *p, const std::nothrow_t &) noexcept { std::free(p); }
+using namespace adi;
+using namespace adi::ui;
+namespace {
+int checks = 0, failures = 0;
+void check(bool ok, const char *what) {
+    ++checks;
+    if (!ok) {
+        ++failures;
+        std::printf("FAIL %s\n", what);
+    }
+}
+OpRequest track(int id) {
+    OpRequest r;
+    r.opType = "track.create";
+    r.payload = {{"id", id}, {"kind", "audio"}, {"name", "Track"}};
+    r.label = "Create track";
+    return r;
+}
+void reference(AdiRootComponent &root, const char *name, bool write) {
+    // Explicit software rasterisation, no peer, OpenGL, display, or audio device.
+    juce::Image image(juce::Image::ARGB, root.getWidth(), root.getHeight(), true,
+                      juce::SoftwareImageType{});
+    {
+        juce::Graphics g(image);
+        root.paintEntireComponent(g, true);
+    }
+    const auto output =
+        juce::File::getCurrentWorkingDirectory().getChildFile(juce::String(name) + "-actual.png");
+    {
+        auto stream = output.createOutputStream();
+        check(stream != nullptr, "open render file");
+        if (stream) {
+            stream->setPosition(0);
+            stream->truncate();
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        }
+    }
+    // Platform font metrics and native button fonts are deliberately outside this
+    // structural golden. Their labels and activation are checked independently.
+    {
+        juce::Graphics g(image);
+        g.setColour(juce::Colours::black);
+        g.fillRect(8, 5, 190, 34);
+        g.fillRect(228, 5, root.getWidth() - 228, 34);
+        g.fillRect(0, 54, root.getWidth(), 30);
+        const int dock = root.state().docked ? root.state().deviceHeight : 0;
+        g.fillRect(0, root.getHeight() - dock + 10, root.getWidth(), 30);
+    }
+    const auto file = juce::File(ADI_UI_REFERENCES).getChildFile(juce::String(name) + ".png");
+    if (write) {
+        file.getParentDirectory().createDirectory();
+        auto stream = file.createOutputStream();
+        check(stream != nullptr, "write reference");
+        if (stream) {
+            stream->setPosition(0);
+            stream->truncate();
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        }
+        return;
+    }
+    auto expected = juce::ImageFileFormat::loadFrom(file);
+    check(expected.isValid(), "reference exists");
+    if (!expected.isValid())
+        return;
+    bool equal =
+        expected.getWidth() == image.getWidth() && expected.getHeight() == image.getHeight();
+    int differences = 0;
+    if (equal)
+        for (int y = 0; y < image.getHeight(); ++y)
+            for (int x = 0; x < image.getWidth(); ++x)
+                if (image.getPixelAt(x, y) != expected.getPixelAt(x, y))
+                    ++differences;
+    check(equal && differences == 0, name);
+    if (differences)
+        std::printf("%s: %d differing pixels\n", name, differences);
+}
+} // namespace
+int main(int argc, char **argv) {
+    juce::ScopedJuceInitialiser_GUI init;
+    const bool write = argc == 2 && std::string(argv[1]) == "--write-references";
+    test::TempDirectory temp("ui_shell", "root");
+    StoreError err{};
+    auto store = Store::create(temp.path() / "p.adi", err);
+    if (!store)
+        return 2;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Shell test')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    engine::Transport driver;
+    settings::AppSettings settings(appdata::App::Daw, temp.path() / "settings.json");
+    AppCommands commands(settings);
+    ViewStateStore persistence(*store);
+    AdiRootComponent a(view, submitter, mailbox, commands, persistence, "main"),
+        b(view, submitter, mailbox, commands, persistence, "floating");
+    a.setSize(960, 540);
+    b.setSize(960, 540);
+    a.frame();
+    b.frame();
+    check(a.reader().get() == b.reader().get() && a.generation() == b.generation(),
+          "windows initially present same generation");
+    check(a.bpm() == 120, "TransportBar reads initial BPM from ProjectView");
+    check(a.transport.play.getButtonText() == "Play / stop" &&
+              a.transport.stop.getButtonText() == "Stop",
+          "button labels");
+    reference(a, "root-default", write);
+    check(submitter.submit(track(1)).ok, "commit between window frames");
+    const auto before = b.generation();
+    a.frame();
+    check(a.generation() > before && b.generation() == before,
+          "windows can differ by one presentation frame");
+    check(a.reader().trackCount() == 1 && b.reader().trackCount() == 0,
+          "all reads within one root use its presented snapshot");
+    // b's frame is stale, but the action must undo the actual latest edit.
+    check(b.command(AppCommands::Undo), "undo from stale window uses current history");
+    check(view.current()->tracks.empty(), "stale-window undo removes current track");
+    b.frame();
+    a.frame();
+    check(a.reader().get() == b.reader().get(), "windows converge on next frames");
+    check(b.command(AppCommands::Redo), "redo via OpSubmitter");
+    a.frame();
+    b.frame();
+    check(a.reader().trackCount() == 1, "redo refreshes ProjectView");
+    check(a.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)),
+          "synthesised Space reaches app command layer");
+    check(!driver.playing(), "UI command does not touch driver state");
+    mailbox.drain(driver);
+    a.frame();
+    check(driver.playing() && a.playing(), "driver starts and frame reads feedback");
+    reference(a, "root-playing", write);
+    check(a.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)), "queue stop");
+    check(a.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)),
+          "queue immediate play before driver drains");
+    mailbox.drain(driver);
+    check(driver.playing(), "two rapid toggles preserve order");
+    check(b.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)), "other window routes stop");
+    mailbox.drain(driver);
+    b.frame();
+    check(!driver.playing() && !b.playing(), "stop feedback");
+    const auto opCount = store->db().execAndGet("SELECT count(*) FROM ops").getInt();
+    for (int i = 0; i < 16; ++i)
+        mailbox.post(TransportMailbox::Command::Stop);
+    check(!a.command(AppCommands::PlayStop), "queue overflow reported");
+    check(store->db().execAndGet("SELECT count(*) FROM ops").getInt() == opCount,
+          "queue refusal does not journal a command");
+    mailbox.drain(driver);
+    std::string why;
+    check(settings.set("shortcuts.preset", "cubase", {}, why), "change app preset");
+    commands.reload(settings);
+    check(a.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)),
+          "transport shortcut remains available after app preset reload");
+    mailbox.drain(driver);
+    check(a.keyPressed(juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0)),
+          "preset undo key");
+    check(a.keyPressed(juce::KeyPress(
+              'z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
+          "Cubase redo key");
+#if !JUCE_MAC
+    check(commands.manager.getKeyMappings()->findCommandForKeyPress(
+              juce::KeyPress('y', juce::ModifierKeys::commandModifier, 0)) == 0,
+          "old Live redo mapping removed");
+#endif
+    a.state().zoom = 1.25;
+    check(a.persist(), "view zoom persisted for arrangement consumer");
+    check(persistence.load("main").zoom == 1.25 && persistence.load("floating").zoom == 1,
+          "per-window zoom persistence");
+    check(a.command(AppCommands::SwapPanels), "swap command");
+    check(a.state().panels.slots()[0].panel == Panel::Mixer &&
+              a.state().panels.find(Panel::Browser)->width == 240,
+          "panel widths follow identity");
+    a.frame();
+    reference(a, "root-swapped", write);
+    a.setSize(400, 540);
+    const auto order = a.state().panels.slots()[0].panel;
+    check(!a.command(AppCommands::SwapPanels) && a.state().panels.slots()[0].panel == order,
+          "too narrow swap refuses without mutation");
+    a.setSize(960, 540);
+    a.frame();
+    b.frame();
+    a.mark(DirtySet::Transport);
+    a.mark(DirtySet::Transport);
+    a.frame();
+    b.frame();
+    check(a.lastDrain() == DirtySet::Transport && b.lastDrain() == 0,
+          "dirty set coalesces per window");
+    allocations = 0;
+    audit = true;
+    for (int i = 0; i < 1000; ++i) {
+        a.mark(DirtySet::Transport);
+        a.frame();
+        b.frame();
+    }
+    audit = false;
+    check(allocations == 0, "steady and dirty frame paths allocate zero");
+    check(submitter.submit(track(2)).ok, "new model for changed frame audit");
+    allocations = 0;
+    audit = true;
+    a.frame();
+    b.frame();
+    audit = false;
+    check(allocations == 0, "generation-change frame allocates zero");
+    OpRequest tempo;
+    tempo.opType = "project.insertTempoEvent";
+    tempo.payload = {{"pos", 0}, {"bpm", 90.0}, {"curve", 0}};
+    check(submitter.submit(std::move(tempo)).ok, "tempo edit through OpSubmitter");
+    a.frame();
+    check(a.bpm() == 90 && b.bpm() == 120, "BPM follows each window's own frame");
+    b.frame();
+    check(b.bpm() == 90, "second window catches up with committed tempo");
+    allocations = 0;
+    audit = true;
+    mailbox.post(TransportMailbox::Command::Stop);
+    mailbox.drain(driver);
+    audit = false;
+    check(allocations == 0, "driver command handoff allocates zero");
+    auto ro = Store::open(temp.path() / "p.adi", err, true);
+    ViewStateStore readonly(*ro);
+    engine::ProjectView roView;
+    roView.refresh(*ro);
+    OpSubmitter roSubmit(*ro, roView);
+    TransportMailbox roMailbox;
+    AdiRootComponent readRoot(roView, roSubmit, roMailbox, commands, readonly, "main");
+    const auto roOrder = readRoot.state().panels.slots()[0].panel;
+    check(!readRoot.command(AppCommands::SwapPanels) &&
+              readRoot.state().panels.slots()[0].panel == roOrder,
+          "failed persistence rolls back visible order");
+    std::printf("%d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+}
