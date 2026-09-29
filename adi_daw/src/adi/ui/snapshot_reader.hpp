@@ -26,32 +26,42 @@
 // this shape and `tests/test_host.cpp` regression-tests it. Hence: this type
 // never holds a raw published pointer, and nothing in `adi::ui` publishes.
 //
-// WHAT THIS DOES NOT DO, AND WHY (step 7.1's scope, `docs/STEP-7-PLAN.md`)
+// WHERE THE SNAPSHOT COMES FROM: `engine::ProjectView` (ADR-0201).
 //
-//   * It does not publish, and does not own the cell it reads. WHO owns the
-//     frozen `shared_ptr`, who calls `ProjectPublisher::collect()`, and how the
-//     engine's own rebuild paths reach the UI is THE BRIDGE. The bridge decides
-//     who owns engine state, and the plan sends that to win rather than letting
-//     step 7 absorb it. It is deliberately not built here.
+// This type asked who owns the cell it reads and who calls
+// `ProjectPublisher::collect()`. ADR-0201 answered it, and the answer dissolved
+// the question rather than picking a side: NOTHING CROSSES THREADS. The audio
+// thread never reads an `engine::Snapshot` -- it plays from the realised graph
+// (ADR-0077) -- so there is no publisher here, no epoch and no `collect()`. An
+// old snapshot lives exactly as long as the last `shared_ptr` to it, which is
+// the frame that took it. That is precisely the lifetime this type already
+// relied on, so the read half needed no change.
+//
+//   * `engine::ProjectView` holds the cell. `refresh(store)` rebuilds it with
+//     structural sharing; `current()` is what a frame takes ONCE and hands to
+//     every component. Construct readers from it: `SnapshotReader{view.current()}`.
+//   * Nothing in `adi::ui` publishes, and this type still never names a
+//     publisher. If a second thread ever needs a snapshot, ADR-0201 d5 says
+//     `SnapshotPublisher` is the tool and it gets its own ADR.
 //   * It is not the control read path. ADR-0181 d5 says every control reads the
 //     parameter FEED, never the model directly. This is the MODEL path. The
 //     feed is a separate message-thread coalescer built at 7.4, and this type
 //     must not grow into it.
 //
-// ONE OPEN QUESTION, NAMED RATHER THAN DECIDED HERE
+// WHAT ADR-0201 CLOSES, AND THE ONE THING IT DOES NOT
 //
-// ADR-0050 d3 says "one reference at the top of the frame, shared by every
-// component". ADR-0180 d1 then gave every WINDOW its own frame clock, so
-// "the frame" no longer names one moment in the shell. ADR-0180 d5 reconciled
-// this for the PARAMETER FEED — one shared publication that each window drains
-// — but did not say what the MODEL path does when two windows drain different
-// publications and render different snapshots in the same wall-clock instant,
-// which is the failure d3 exists to prevent.
+// ADR-0050 d3's rule -- one reference per frame, shared by every component --
+// is CLOSED by ADR-0201 d2: a frame calls `current()` once and hands that one
+// pointer down, so a timeline and a mixer in one frame cannot disagree. That
+// was the failure d3 exists to prevent, and it is now structural.
 //
-// This type does not decide it. What it does is make the question CHECKABLE:
-// two readers over one publication are pointer-identical (`sameAs`), so a skew
-// is observable rather than theoretical. Closing it is for the director, and it
-// belongs to whatever owns the publication — not to this type.
+// What remains is narrower and is NOT that failure. ADR-0180 d1 gives every
+// WINDOW its own frame clock, so two windows drain at different moments and may
+// briefly hold consecutive generations. Both read the same cell, so the skew is
+// bounded by one refresh and resolves on the next drain. Whether a DAW should
+// show two windows one generation apart is a question for the director about
+// `ProjectView`, not about this type -- and `sameAs` keeps it observable rather
+// than theoretical.
 
 #pragma once
 

@@ -8,6 +8,21 @@
 // It owns no project state and caches nothing, so it is the write half of the
 // same rule `SnapshotReader` is the read half of.
 //
+// IT ALSO REFRESHES THE PROJECT VIEW, AND THAT IS WHY IT EXISTS RATHER THAN
+// CALLING `OpJournal` DIRECTLY. ADR-0201 makes `ProjectView` the UI's one cell
+// of project state and requires a refresh "after a load and after every
+// committed op, undo and redo". A commit that does not refresh leaves every
+// window drawing the previous project, silently and permanently -- so the
+// refresh belongs to the thing that commits, not to each of its callers.
+//
+// Only a SUCCESSFUL write refreshes. A refused op wrote nothing, so rebuilding
+// would burn a generation and tell every component to re-read an unchanged
+// project.
+//
+// Undo and redo live here for the same reason: they are writes, they are the
+// two whose omission ADR-0201 names, and routing them anywhere else would put
+// the refresh back on the call site.
+//
 // ONE UNDO STEP IS A BATCH, AND THAT IS ALREADY THE ENGINE'S RULE.
 // `OpJournal::commit` takes a span and applies it as one transaction: however
 // many ops it contains they share a txn_id and revert together, and a failure
@@ -49,6 +64,8 @@
 
 #pragma once
 
+#include "adi/engine/project_view.hpp"
+#include "adi/history.hpp"
 #include "adi/ops.hpp"
 
 #include <cstdint>
@@ -82,6 +99,10 @@ struct SubmitResult {
     /// and the UI should re-read and re-ask rather than retrying blindly.
     bool stale = false;
     std::optional<std::int64_t> headFound;
+    /// The `ProjectView` generation after the refresh this write triggered.
+    /// 0 when nothing was written, so a caller can tell "the project moved"
+    /// from "it did not" without comparing snapshots.
+    std::uint64_t generation = 0;
 
     explicit operator bool() const noexcept { return ok; }
 };
@@ -92,8 +113,9 @@ struct SubmitResult {
 /// cached selection. Construct it where the store lives and pass it down.
 class OpSubmitter {
 public:
-    explicit OpSubmitter(Store& store, Actor actor = Actor::User, std::string actorDetail = {})
-        : store_(store), actor_(actor), actorDetail_(std::move(actorDetail)) {}
+    OpSubmitter(Store& store, engine::ProjectView& view, Actor actor = Actor::User,
+                std::string actorDetail = {})
+        : store_(store), view_(view), actor_(actor), actorDetail_(std::move(actorDetail)) {}
 
     OpSubmitter(const OpSubmitter&) = delete;
     OpSubmitter& operator=(const OpSubmitter&) = delete;
@@ -103,6 +125,30 @@ public:
         stamp(request);
         return run(OpJournal(store_).commit(request));
     }
+
+    /// Undo the last transaction and rebuild the view (ADR-0201).
+    ///
+    /// `selBefore` comes back untouched: restoring the selection is the view's
+    /// business and ignoring it is always correct.
+    History::Result undo() {
+        auto r = History(store_).undo();
+        if (r.ok) view_.refresh(store_);
+        return r;
+    }
+
+    History::Result redo() {
+        auto r = History(store_).redo();
+        if (r.ok) view_.refresh(store_);
+        return r;
+    }
+
+    /// What the undo and redo menu items show and whether they are enabled.
+    /// Passed through rather than wrapped: `History::Step::label` is already
+    /// "what the undo menu shows".
+    [[nodiscard]] bool canUndo() const { return History(store_).canUndo(); }
+    [[nodiscard]] bool canRedo() const { return History(store_).canRedo(); }
+    [[nodiscard]] std::optional<History::Step> nextUndo() const { return History(store_).nextUndo(); }
+    [[nodiscard]] std::optional<History::Step> nextRedo() const { return History(store_).nextRedo(); }
 
     /// Several ops as ONE undo step. Empty is a no-op that reports success
     /// without opening a transaction, because "the user selected nothing and
@@ -136,7 +182,7 @@ private:
         if (r.actorDetail.empty()) r.actorDetail = actorDetail_;
     }
 
-    static SubmitResult run(CommitResult c) {
+    SubmitResult run(CommitResult c) {
         SubmitResult s;
         s.ok = c.ok;
         s.txnId = c.txnId;
@@ -145,10 +191,12 @@ private:
         s.issues = std::move(c.issues);
         s.stale = c.stale;
         s.headFound = c.headFound;
+        if (s.ok) s.generation = view_.refresh(store_);
         return s;
     }
 
     Store& store_;
+    engine::ProjectView& view_;
     Actor actor_;
     std::string actorDetail_;
 };

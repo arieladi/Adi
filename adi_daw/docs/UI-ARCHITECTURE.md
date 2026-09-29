@@ -52,7 +52,7 @@ juce::DocumentWindow
     │     owns: SnapshotReader (ADR-0019), OpSubmitter, TrackOrderModel,
     │           ViewState. Owns no project data of its own.
     ├── TransportBar
-    ├── MainSplit                       juce::StretchableLayoutManager, 3 cols
+    ├── MainSplit                       panel->slot map, 3 slots (ADR-0080)
     │   ├── BrowserPanel                collapsible
     │   ├── CentreSplit                 vertical, resizable
     │   │   ├── ArrangementView
@@ -67,6 +67,31 @@ juce::DocumentWindow
     └── DeviceChainStrip
         └── DeviceView[]                one per device on the selected track
 ```
+
+### `MainSplit` is a panel→slot map, not a `StretchableLayoutManager` (ADR-0080)
+
+*(Amended by ADR-0180 §2.3, approved 2026-09-29. The tree above said
+`juce::StretchableLayoutManager, 3 cols`; ADR-0080 rules that out.)*
+
+A `StretchableLayoutManager` is slot-indexed and holds the widths itself, which
+is exactly the `leftWidth`/`rightWidth` shape ADR-0080 d2 names as the bug. What
+the layout is instead:
+
+- an ordered **panel→slot** mapping, never a `bool swapped` (d1);
+- **a width belongs to the PANEL and follows it across a side swap** (d2),
+  stored in `ui_view` beside ADR-0063's dock state;
+- minimum widths are **per panel**; a swap that does not fit clamps, takes the
+  remainder from the arrangement, and **refuses with a message** rather than
+  silently (d3);
+- a swap **reorders, never reconstructs** (d4) — which is ADR-0063 d1's rule
+  arriving for a second reason;
+- FlexBox/Grid at the top with **splitters owning the widths** (d5), because
+  JUCE flex has no draggable divider.
+
+The map and its refusal are `adi::ui::PanelLayout`
+(`src/adi/ui/panel_layout.hpp`), which is pure logic and tested headless: the
+arithmetic of "does this swap fit" is where a layout is actually wrong, and it
+needs no window to be checked.
 
 ### The device strip's height (ADR-0184)
 
@@ -245,8 +270,16 @@ decision that determines whether the UI is usable. A shell that repaints on
 every change is correct and unusable; the arrangement is the largest surface in
 the window and the playhead moves 60 times a second across it.
 
-**One clock, draining coalesced dirt.** A single `juce::VBlankAttachment` on the
-root drives the whole shell at display rate. Components never call `repaint()`
+**One clock PER WINDOW, draining coalesced dirt.** *(Amended by ADR-0180 d1,
+approved 2026-09-29. This paragraph previously said a single
+`juce::VBlankAttachment` on the root drives the whole shell; ADR-0063 d3 says
+per-window and it is right, because a window on a second monitor has a
+different refresh rate.)*
+
+Each window owns a `juce::VBlankAttachment` and its own coalesced dirty set; the
+source of truth is shared. An OpenGL view **attaches to its window's clock and
+never drives its own repaint** — `setContinuousRepainting` is the second clock
+ADR-0183 d4 considered and refused. Components never call `repaint()`
 in response to a model change; they set a dirty bit and the frame drains it.
 Two changes to one track between frames cost one repaint, and an op storm —
 which ADR-0039's remote actor can produce — costs one repaint per frame rather
@@ -263,6 +296,27 @@ takes one reference at the top of the frame and every component reads that same
 one. Otherwise two panels can render different snapshots in one frame and the
 mixer disagrees with the timeline — the §4 failure, arriving through timing
 rather than through a second model.
+
+*(Amended by ADR-0180 d2 and ADR-0201, approved 2026-09-29.)* `SnapshotReader`
+is **not** `SnapshotPublisher::AudioRead`. `AudioRead`'s reclamation requires
+exactly one reader, moving only forward, announcing before it dereferences; a
+second reader storing into `inUse_` frees the graph the audio thread is
+rendering. The UI's reader is built instead: it holds a
+`shared_ptr<const engine::Snapshot>` and never names a publisher
+(`src/adi/ui/snapshot_reader.hpp`).
+
+Where that reference comes from is `engine::ProjectView` (ADR-0201): one
+message-thread cell, refreshed by whatever commits, whose `current()` a frame
+takes ONCE. There is no publisher and no `collect()` on this path, because
+**nothing crosses threads** — the audio thread plays from the realised graph and
+never reads an `engine::Snapshot`.
+
+Under the per-window clocks above, two windows drain at different moments and
+may briefly hold consecutive generations. **Accepted** (director, 2026-09-29):
+each window's frame is consistent within itself and the skew is bounded by one
+refresh. Anything that crosses windows — a drag from a floating window — **re-reads
+`ProjectView::current()` when it lands and never carries a snapshot between
+windows.**
 
 **Open:** whether `ArrangementCanvas` wants an `OpenGLContext`. It would help a
 large canvas on Windows and is worth measuring rather than assuming; on macOS
