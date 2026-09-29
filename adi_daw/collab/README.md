@@ -245,6 +245,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `src/adi/dsp/redux.*`, `src/adi/pd_builtins/redux_tilde.cpp`, `pd/devices/Redux.pd`, `tests/test_redux*.cpp`, `CMakeLists.txt` (Redux source/targets), `collab/win_codex/2026-09-29-redux-pd.md` | win_codex — Mission 4, delegated by win | `codex/redux-pd` | 2026-09-29 |
 | `src/adi/engine/session.*`, `src/adi/engine/gain_stage.*`, `src/adi/engine/input_gain.hpp`, `tests/test_gain_stage.cpp`, `CMakeLists.txt` (target), `README.md` (count) | win_codex - Task E delegated by win | `codex/auto-gain-stage` | 2026-09-28 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
