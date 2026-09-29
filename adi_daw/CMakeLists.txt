@@ -235,6 +235,8 @@ add_library(adi_core STATIC
     src/adi/dsp/biquad.cpp
     src/adi/dsp/limiter.cpp
     src/adi/dsp/rmsc.cpp
+    src/adi/dsp/redux.cpp
+    src/adi/dsp/live_delay.cpp
     src/adi/dsp/live_reverb.cpp
     src/adi/dsp/combchord.cpp
     src/adi/dsp/colorcab.cpp
@@ -455,6 +457,8 @@ target_compile_definitions(adi_core PUBLIC ADI_WITH_PD=1)
 # Empty until the first external lands; the guard keeps CMake happy until then,
 # because an OBJECT library with no sources is an error.
 set(ADI_PD_BUILTIN_SOURCES
+    src/adi/pd_builtins/redux_tilde.cpp
+    src/adi/pd_builtins/delay_tilde.cpp
     src/adi/pd_builtins/reverb_tilde.cpp
     src/adi/pd_builtins/combchord_tilde.cpp
     src/adi/pd_builtins/colorcab_tilde.cpp
@@ -1260,6 +1264,9 @@ add_test(NAME adi_midi_clips_tests COMMAND adi_midi_clips_tests)
 
 # ADR-0159: the curve formulas of SPEC §6.3.2, one evaluator for every reader.
 target_sources(adi_core PRIVATE src/adi/engine/curves.cpp)
+add_executable(adi_transport_tests tests/test_transport.cpp)
+target_link_libraries(adi_transport_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_transport_tests COMMAND adi_transport_tests)
 add_executable(adi_curves_tests tests/test_curves.cpp)
 target_link_libraries(adi_curves_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_curves_tests COMMAND adi_curves_tests)
@@ -1283,6 +1290,26 @@ add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
 target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_controller_maps_tests COMMAND adi_controller_maps_tests)
 
+add_executable(adi_redux_tests tests/test_redux.cpp)
+target_link_libraries(adi_redux_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_redux_tests COMMAND adi_redux_tests)
+if(ADI_WITH_PD)
+    add_executable(adi_redux_pd_tests tests/test_redux_pd.cpp)
+    target_link_libraries(adi_redux_pd_tests PRIVATE adi_core adi_warnings)
+    target_compile_definitions(adi_redux_pd_tests PRIVATE
+        ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd"
+        ADI_REDUX_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
+    add_test(NAME adi_redux_pd_tests COMMAND adi_redux_pd_tests)
+endif()
+add_executable(adi_delay_tests tests/test_delay.cpp)
+target_link_libraries(adi_delay_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_delay_tests COMMAND adi_delay_tests)
+if(ADI_WITH_PD)
+add_executable(adi_delay_pd_tests tests/test_delay_pd.cpp)
+target_link_libraries(adi_delay_pd_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_delay_pd_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd" ADI_DELAY_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
+add_test(NAME adi_delay_pd_tests COMMAND adi_delay_pd_tests)
+endif()
 add_executable(adi_reverb_tests tests/test_reverb.cpp)
 target_link_libraries(adi_reverb_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_reverb_tests COMMAND adi_reverb_tests)
