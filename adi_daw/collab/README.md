@@ -246,6 +246,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `src/adi/dsp/live_reverb.*`, `src/adi/pd_builtins/reverb_tilde.cpp`, `pd/devices/Reverb.pd`, `tests/test_reverb*.cpp`, `CMakeLists.txt` (Reverb entries), `collab/win_codex/2026-09-29-reverb-pd.md` | win_codex — Mission 4 delegated by win | `codex/reverb-pd` | 2026-09-29 |
 | `../tools/adi-drone/drone.py`, retry tests and README | win_codex - delegated by win | `codex/drone-connection-retry` (stacked on #167) | 2026-09-28 |
 | `../tools/adi-drone/drone.py`, its parallel-worker tests and README | win_codex - delegated by win | `codex/drone-parallel` | 2026-09-28 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
