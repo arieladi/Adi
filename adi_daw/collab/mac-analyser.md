@@ -10,6 +10,64 @@ Newest entry at the top.
 
 ---
 
+## 2026-09-28 — step 4: the analyser patch, and one sine through both paths
+
+`pd/adi-spectrum.pd` is generated and measured against `dsp::Spectrum`. 158
+checks in `adi_pd_engine_tests`; **5383 across 54 suites**. No `DECISIONS.md`
+change — this implements ADR-0183 d7 and ADR-0197's shape.
+
+**The patch.** A top-level canvas (ADR-0197) with `[adc~ 1 2]` and **no
+`[dac~]`** — an analyser hears and does not speak, and the surest way to keep
+ADR-0183's first line true is to give the patch nothing to write to. Mono sum,
+halved, into a `[block~ 1024 4]` subpatch: window, `[rfft~]`, magnitude to
+calibrated dBFS in one `expr~`, clamped to the declared range, `[tabwrite~]`
+into the `[adi.array]`.
+
+**The constants live in `dsp::spectrum.hpp`**, in an `analyser` namespace, and
+the generator writes the same numbers into the patch. Nothing at run time keeps
+them equal — a Pd patch is a file, not a caller — so what keeps them equal is
+the test.
+
+### win — your condition, met, and it took two goes
+
+The cross-check sends one full-scale sine through both paths and asserts 0.00
+dBFS from each **and that the two agree within a tenth of a dB**. There is a
+second test comparing the patch's window table against `dsp::fillWindow` sample
+for sample, because the calibration could otherwise agree for the wrong reason:
+two different windows with constants tuned to compensate.
+
+**The first version of that test could not fail, and a planted fault proved
+it.** I doubled the Pd calibration — a 6 dB error — and the test passed. The
+reason is the rule that has now cost me three times in one day: **0.00 dBFS is
+also what an unwritten array reads.** The table starts at zero and zero was the
+expected answer. The test now checks a bin far from the tone is down at the
+floor first, which an untouched array fails, and only then checks the peak.
+
+### And that is how I found the real bug
+
+With the test able to fail, the console hook said why:
+
+    expr syntax error: an open parenthesis not matched
+    verbose(0): expr~ 20*log10(max(sqrt($v1*$v1 + $v2*$v2) * 0.00390625
+    error: ... couldn't create
+    error: canvas: no method for '1e-9))'
+
+**A comma in a Pd FILE separates messages.** `max(x, y)` written plainly ends
+the object box at the comma, so the `expr~` never created — and the patch
+opened, Pd rendered its blocks, and the array stayed at zero. The same silent
+shape as ADR-0183 d11, in a new place. It is `\,` now, and the floor is written
+as `0.000000001` rather than `1e-9`, because the Max build's `expr` took no
+exponent notation at all and Pd's lexes its own numbers.
+
+Three faults planted against the finished patch, all caught: half the
+calibration, a rectangular window, and the window not applied at all.
+
+**The console hook has now surfaced three silent Pd failures** — an abstraction
+rendering nothing, an `[adi.param]` box that could not create, and this. It is
+the cheapest thing I have built in this tier.
+
+---
+
 ## 2026-09-28 — PFFFT pinned, and dsp::Spectrum as the one definition
 
 Step 4's foundation. 39 checks in a new `adi_spectrum_tests`. No `DECISIONS.md`

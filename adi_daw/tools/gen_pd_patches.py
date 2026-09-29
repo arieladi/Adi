@@ -310,10 +310,130 @@ def eq8():
     return p.render()
 
 
+# ---------------------------------------------------------------------------
+# The analyser
+# ---------------------------------------------------------------------------
+
+# THESE FOUR NUMBERS ARE ALSO IN src/adi/dsp/spectrum.hpp, and nothing at run
+# time keeps them equal -- a Pd patch is a file, not a caller. What keeps them
+# equal is a test: adi_pd_engine_tests reads the window this patch builds,
+# compares it with dsp::fillWindow sample for sample, and sends one sine
+# through both paths expecting 0.00 dBFS from each (ADR-0183 d7). Change one
+# side and that test fails; change neither and a producer sees one curve.
+FFT_SIZE = 1024
+OVERLAP = 4
+BINS = FFT_SIZE // 2 + 1
+PUBLISH_HZ = 30
+FLOOR_DB = -120
+
+
+def spectrum():
+    """The analyser's DSP tier: one calibrated dBFS spectrum in an [adi.array].
+
+    A TOP-LEVEL CANVAS (ADR-0197): [adc~ 1 2] in, and no [dac~] -- an analyser
+    hears and does not speak. That is not an oversight; ADR-0183's first line is
+    that this device never touches the audio, and the surest way to keep that
+    true is to give the patch nothing to write to.
+    """
+    p = Patch(1000, 760)
+    p.text(20, 10, pd_comment(
+        'adi-spectrum -- the analyser DSP tier (ADR-0183, ADR-0195 d5). '
+        'Generated: do not edit by hand.'))
+    p.text(20, 40, pd_comment(
+        'NO dac~. An analyser hears and does not speak (ADR-0183): the patch '
+        'has nothing to write to, so it cannot touch the audio even by mistake.'))
+
+    adc = p.obj(20, 90, 'adc~ 1 2')
+    # MONO SUM, and halved. A spectrum of the stereo pair is one picture, and
+    # summing without the half would read +6 dB on anything centred -- which is
+    # most of a mix.
+    sum_ = p.obj(20, 140, '+~')
+    half = p.obj(20, 180, '*~ 0.5')
+
+    # The window table. `cosinesum <n> 0.5 -0.5` is 0.5 - 0.5cos(2pi i / n):
+    # Pd's phase increment is 2*pi/npoints, so it is PERIODIC, which is the same
+    # convention dsp::fillWindow uses. Checked in g_array.c rather than assumed.
+    #
+    # It resizes the array to n + 3 -- Pd keeps three interpolation guard points
+    # -- so the table is 1027 long and [tabreceive~] reads the first 1024. That
+    # is not an off-by-three.
+    #
+    # The message goes through [s], because $0 DOES NOT EXPAND IN A MESSAGE BOX
+    # (ADR-0183 d15): a message beginning "; $0-window ..." would address a
+    # receiver literally called "0-window".
+    p.text(520, 90, pd_comment(
+        'The window, built once at load. cosinesum is periodic (2pi/n), which '
+        'is what dsp::fillWindow does; it resizes to n+3 for Pd\'s guard points.'))
+    arr = p.obj(520, 150, 'table \$0-window %d' % FFT_SIZE)
+    lb = p.obj(520, 190, 'loadbang')
+    msg = p.msg(520, 230, 'cosinesum %d 0.5 -0.5' % FFT_SIZE)
+    swin = p.obj(520, 270, 's \$0-window')
+    p.connect(lb, 0, msg, 0)
+    p.connect(msg, 0, swin, 0)
+
+    # The declaration. min/max/unit are ADR-0177 fix 2 applied: a renderer given
+    # only a length and a rate would have to guess that these are decibels and
+    # where the floor is, and a guess about a dB floor draws a picture that is
+    # wrong in a way nobody can see.
+    p.obj(520, 330, 'adi.array \$0 1 %d %d %d 0 dB Spectrum'
+          % (BINS, PUBLISH_HZ, FLOOR_DB))
+
+    # --- the analysis, in its own block ------------------------------------
+    a = Patch()
+    a.obj(20, 20, 'block~ %d %d' % (FFT_SIZE, OVERLAP))
+    ain = a.obj(20, 60, 'inlet~')
+    win = a.obj(160, 60, 'tabreceive~ \$0-window')
+    wm = a.obj(20, 100, '*~')
+    fft = a.obj(20, 140, 'rfft~')
+    # CALIBRATED dBFS IN ONE EXPRESSION. 2/sum(w) is the coherent-gain
+    # correction, and for a periodic Hann of N points sum(w) is exactly N/2, so
+    # the constant is 4/N. A full-scale sine then reads 0.00 (ADR-0183 d7).
+    # max() keeps log10 away from zero, which every silent bin is.
+    #
+    # THE COMMA IS ESCAPED, and it has to be. In a Pd FILE a comma separates
+    # messages, so `max(x, y)` written plainly ends the object box at the
+    # comma: Pd reports "an open parenthesis not matched", the expr~ never
+    # creates, the patch opens anyway, and the array stays at zero. Exactly the
+    # shape of ADR-0183 d11 -- valid file, silent result, nothing that fails.
+    # Found by the console hook, after a test that could not fail was made to.
+    #
+    # The floor is written out rather than as 1e-9: Pd's expr lexes its own
+    # numbers, and the Max build's `expr` did not take exponent notation at all
+    # (adi-m4l-analyzer/PROJECT.md). Nine zeros cost nothing and ask no
+    # questions.
+    mag = a.obj(20, 190,
+                'expr~ 20*log10(max(sqrt($v1*$v1 + $v2*$v2) * %.10g \\, 0.000000001))'
+                % (4.0 / FFT_SIZE))
+    # Clamped to the range the declaration promises: a renderer told the floor
+    # is -120 should never be handed -180.
+    clamp = a.obj(20, 240, 'clip~ %d 0' % FLOOR_DB)
+    bang = a.obj(300, 190, 'bang~')
+    tab = a.obj(20, 290, 'tabwrite~ \$0-adiarr-1')
+    a.connect(ain, 0, wm, 0)
+    a.connect(win, 0, wm, 1)
+    a.connect(wm, 0, fft, 0)
+    a.connect(fft, 0, mag, 0)
+    a.connect(fft, 1, mag, 1)
+    a.connect(mag, 0, clamp, 0)
+    a.connect(clamp, 0, tab, 0)
+    # One bang per block writes the frame. [tabwrite~] takes the first `bins`
+    # samples of the block, which are exactly the bins rfft~ fills; the rest of
+    # a real transform's output is the mirror nobody plots.
+    a.connect(bang, 0, tab, 0)
+    analysis = p.subpatch(20, 240, 'analysis', a)
+
+    p.connect(adc, 0, sum_, 0)
+    p.connect(adc, 1, sum_, 1)
+    p.connect(sum_, 0, half, 0)
+    p.connect(half, 0, analysis, 0)
+    return p.render()
+
+
 PATCHES = {
     'adi-rmsc.pd': rmsc,
     'adi-limiter.pd': limiter,
     'adi-eq8.pd': eq8,
+    'adi-spectrum.pd': spectrum,
 }
 
 
