@@ -12,14 +12,35 @@ void AppCommands::reload(const settings::AppSettings &settings) {
     manager.getKeyMappings()->resetToDefaultMappings();
 }
 void AppCommands::getAllCommands(juce::Array<juce::CommandID> &ids) {
-    for (int id = PlayStop; id <= SwapPanels; ++id)
+    for (int id = PlayStop; id <= AudioSettings; ++id)
         ids.add(id);
 }
 void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInfo &info) {
-    static const char *names[] = {"Play / stop", "Stop", "Undo", "Redo", "Swap side panels"};
+    if (id < PlayStop || id > AudioSettings) {
+        info.setActive(false);
+        return;
+    }
+    static const char *names[] = {"Play / stop",      "Stop",        "Undo",         "Redo",
+                                  "Swap side panels", "New project", "Open project", "Save",
+                                  "Audio settings"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
+    if (id == Undo || id == Redo) {
+        info.setInfo(active_ ? juce::String(active_->undoTitle(id == Redo))
+                             : juce::String(names[id - PlayStop]),
+                     names[id - PlayStop], "ADI", 0);
+        info.setActive(active_ && active_->canUndo(id == Redo));
+    }
     const auto cmd = juce::ModifierKeys::commandModifier;
     switch (id) {
+    case NewProject:
+        info.addDefaultKeypress('n', cmd);
+        break;
+    case OpenProject:
+        info.addDefaultKeypress('o', cmd);
+        break;
+    case SaveProject:
+        info.addDefaultKeypress('s', cmd);
+        break;
     case PlayStop:
         info.addDefaultKeypress(juce::KeyPress::spaceKey, 0);
         break;
@@ -44,8 +65,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     }
 }
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
-    active_ = &root;
+    activate(root);
     return manager.getKeyMappings()->keyPressed(key, &root);
+}
+void AppCommands::activate(AdiRootComponent &root) {
+    active_ = &root;
+    manager.registerAllCommandsForTarget(this);
 }
 void AppCommands::detach(AdiRootComponent &root) {
     if (active_ == &root)
@@ -100,7 +125,9 @@ void AdiRootComponent::frame() noexcept {
     }
     const bool playing = mailbox_.playing();
     const auto position = mailbox_.position();
-    if (playing != playing_ || position != position_) {
+    const double rate = mailbox_.sampleRate();
+    if (playing != playing_ || position != position_ || rate != sampleRate_) {
+        sampleRate_ = rate;
         playing_ = playing;
         position_ = position;
         dirty_.mark(DirtySet::Transport);
@@ -113,7 +140,7 @@ void AdiRootComponent::frame() noexcept {
 }
 double AdiRootComponent::bpm() const noexcept {
     const auto *tempo = reader_->tempo();
-    const auto rate = reader_->sampleRate();
+    const double rate = sampleRate_ > 0 ? sampleRate_ : reader_->sampleRate();
     return tempo ? tempo->bpmAt(
                        tempo->secondsToTicks(rate > 0 ? static_cast<double>(position_) / rate : 0))
                  : 120.;
@@ -167,6 +194,8 @@ void AdiRootComponent::paint(juce::Graphics &g) {
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) { return commands_.key(key, *this); }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
 bool AdiRootComponent::command(int id) {
+    if (id >= AppCommands::NewProject && id <= AppCommands::AudioSettings)
+        return applicationCommand && applicationCommand(id);
     // No action carries the presented frame into an edit: OpSubmitter resolves
     // current store/history state on arrival, even when this window is a frame behind.
     if (id == AppCommands::PlayStop || id == AppCommands::Stop) {
@@ -202,10 +231,45 @@ bool AdiRootComponent::command(int id) {
         }
     } else
         return false;
+    if (afterEdit)
+        afterEdit();
     error_.clear();
     dirty_.mark(DirtySet::All);
     return true;
 }
+class ShellMenu final : public juce::MenuBarModel {
+  public:
+    ShellMenu(AdiRootComponent &r, AppCommands &c) : root(r), commands(c) {}
+    juce::StringArray getMenuBarNames() override { return {"File", "Edit", "Transport"}; }
+    juce::PopupMenu getMenuForIndex(int index, const juce::String &) override {
+        commands.activate(root);
+        juce::PopupMenu menu;
+        auto add = [&](int id) { menu.addCommandItem(&commands.manager, id); };
+        if (index == 0) {
+            add(AppCommands::NewProject);
+            add(AppCommands::OpenProject);
+            add(AppCommands::SaveProject);
+            menu.addSeparator();
+            add(AppCommands::AudioSettings);
+        }
+        if (index == 1) {
+            add(AppCommands::Undo);
+            add(AppCommands::Redo);
+            menu.addSeparator();
+            add(AppCommands::SwapPanels);
+        }
+        if (index == 2) {
+            add(AppCommands::PlayStop);
+            add(AppCommands::Stop);
+        }
+        return menu;
+    }
+    void menuItemSelected(int, int) override {}
+
+  private:
+    AdiRootComponent &root;
+    AppCommands &commands;
+};
 AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &commands)
     : DocumentWindow("ADI", juce::Colour(0xff171a20), DocumentWindow::allButtons),
       root_(root.get()), commands_(commands), clock_(this, [this](double) { root_->frame(); }) {
@@ -213,8 +277,14 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
     setResizable(true, false);
     setResizeLimits(520, 180, 10000, 10000);
     addKeyListener(this);
+    commands_.activate(*root_);
+    menu_ = std::make_unique<ShellMenu>(*root_, commands_);
+    setMenuBar(menu_.get());
 }
-AdiWindow::~AdiWindow() { removeKeyListener(this); }
+AdiWindow::~AdiWindow() {
+    setMenuBar(nullptr);
+    removeKeyListener(this);
+}
 bool AdiWindow::keyPressed(const juce::KeyPress &key, juce::Component *) {
     return commands_.key(key, *root_);
 }

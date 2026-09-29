@@ -1,5 +1,8 @@
 # Step 7.2: persistence has no GUI dependency; the window tier is optional.
-target_sources(adi_core PRIVATE src/adi/ui/window_state.cpp)
+target_sources(adi_core PRIVATE src/adi/ui/window_state.cpp src/adi/ui/project_document.cpp)
+add_executable(adi_ui_document_tests tests/test_ui_document.cpp)
+target_link_libraries(adi_ui_document_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_ui_document_tests COMMAND adi_ui_document_tests)
 add_executable(adi_ui_window_state_tests tests/test_ui_window_state.cpp)
 target_link_libraries(adi_ui_window_state_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ui_window_state_tests COMMAND adi_ui_window_state_tests)
@@ -22,4 +25,12 @@ if(ADI_WITH_JUCE)
     set_source_files_properties(src/juce/ui_shell.cpp tests/test_ui_shell.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_shell_tests COMMAND adi_ui_shell_tests)
+    juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw")
+    target_sources(adi_app PRIVATE src/juce/ui_main.cpp src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp)
+    # Reuse the player's host-format/ASIO switches, not its console entry or fixture.
+    get_target_property(adi_ui_host_defs adi_play COMPILE_DEFINITIONS)
+    list(FILTER adi_ui_host_defs EXCLUDE REGEX "^(_CONSOLE|ADI_TEST_VST3)")
+    target_compile_definitions(adi_app PRIVATE ${adi_ui_host_defs})
+    target_link_libraries(adi_app PRIVATE adi_ui_shell juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices)
+    set_source_files_properties(src/juce/ui_main.cpp PROPERTIES COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
 endif()
