@@ -15350,3 +15350,176 @@ broke the build under `-Werror` rather than the test. A plant counts only when
 the file changed **and** the build succeeded.
 
 5588 checks across 57 suites.
+
+---
+
+## ADR-0180 — Step 7's shell: one frame clock per window, a UI read path that is not `AudioRead`, and the floating-window host built before anything needs two — `PROPOSED` (2026-09-29) — **AMENDS `UI-ARCHITECTURE.md` §8; DEPENDS ON ADR-0050, ADR-0063, ADR-0108, ADR-0181 AND ADR-0183**
+
+**PROPOSED, not decided.** The director reviews `docs/STEP-7-PLAN.md` before
+any UI code is written (win's round 5). This entry records the decisions that
+plan rests on, so that what he is approving is stated rather than implied.
+
+Step 7 is the minimal arrangement UI. `UI-ARCHITECTURE.md` §1–§2 already give
+the layout and the component tree and §8–§11 are decided in ADR-0050, so this
+does not redesign the shell. It settles four things that plan cannot proceed
+without, and names what it refuses to decide.
+
+### Decision
+
+**1. One frame clock PER WINDOW, not one on the root.**
+
+`UI-ARCHITECTURE.md:248` says a single `juce::VBlankAttachment` on the root
+drives the whole shell. **ADR-0063 d3 says per-window, and it is right:** a
+window on a second monitor has a different refresh rate. That ADR calls this
+*"the interaction worth catching now rather than at step 7"* and says *"this
+lands in mac's lane"* — and step 7 is where it lands.
+
+Each window owns a clock and a coalesced dirty set; the source of truth is
+shared. **An OpenGL view attaches to its window's clock and never drives its
+own repaint** — `setContinuousRepainting` is the second clock ADR-0183 d4
+already considered and refused.
+
+Cheap now, expensive later: a dirty set written as one global set cannot be
+split per window without touching every component that marks dirt. The
+analyser's big floating window (ADR-0183 d4) and every plug-in editor
+(ADR-0076) sit on this seam.
+
+**2. The UI's `SnapshotReader` is NOT `SnapshotPublisher::AudioRead`.**
+
+`AudioRead`'s safety argument requires **exactly one reader**, moving only
+forward, announcing before it dereferences (`publisher.hpp:38-41, 147-170`).
+A second reader storing into `inUse_` breaks epoch reclamation: the retired
+graph is freed while the UI still holds it.
+
+The obvious implementation is three lines and is wrong, which is why this is
+written down before someone writes them. The UI gets its own read path. ADR-0050
+d3's rule is unchanged: **one reference at the top of the frame, shared by every
+component**, because a mixer and a timeline rendering different snapshots in one
+frame is that ADR's failure arriving through timing.
+
+**3. The floating-window host is built once, before anything needs two.**
+
+The analyser's window (ADR-0183 d4), plug-in editors (ADR-0076) and any undock
+(ADR-0063 d1) are one mechanism. Three properties belong to the host and not to
+its callers:
+
+- **Undocking REPARENTS the same component** into a `juce::DocumentWindow`
+  (ADR-0063 d1). Never a second instance — that is two views of one thing, free
+  to disagree.
+- **A restored rectangle carries monitor identity and clamps to the current
+  display arrangement** (SPEC §8.4, a MUST). Restoring `x=3200` on a machine
+  that lost its second monitor puts the window offscreen, and the clamp has to
+  live wherever windows are created.
+- Each window owns its clock, per decision 1.
+
+**4. `MainSplit` is a panel→slot map, not a `StretchableLayoutManager`.**
+
+`UI-ARCHITECTURE.md:55` specifies one; **ADR-0080 rules it out**, and nobody
+had read that ADR until a completeness pass went looking for what nobody had
+read. A `StretchableLayoutManager` is slot-indexed and holds the widths
+itself, which is the `leftWidth`/`rightWidth` shape ADR-0080 d2 names as the
+bug. A width belongs to the PANEL and follows it across a side swap (d2);
+minima are per panel and a swap that does not fit refuses **with a message**
+(d3); a swap reorders and never reconstructs (d4); splitters own the widths
+because JUCE flex has no draggable divider (d5).
+
+**5. The parameter feed is a message-thread coalescer, not any window's frame.**
+
+ADR-0181 d3 says the feed emits *"on the one UI clock (ADR-0050 d1)"* —
+which decision 1 replaces. Two things force it: the control API's surface
+client is **in no window at all**, and two windows would otherwise drain
+different frames. The feed coalesces on the message thread over one shared
+publication; each window and the control API drain it. Meter and scope-tap
+reads are per window over that same publication, or ADR-0050 d3's "one
+snapshot per frame" holds inside a window and breaks between them.
+
+ADR-0129 d3 is independent corroboration for per-window that neither this
+entry nor the plan had cited: every native window keeps its own zoom and scale
+multiplier, persisted per window per display.
+
+**6. The key map lives in `src/adi/settings/`, and step 7 installs a command
+layer on every window.**
+
+Every row of ADR-0129's checklist — the gate step 7 is measured by — is a
+keyboard gesture. Under decision 1 a key pressed while the analyser's window
+has focus reaches **that** peer, so without an application-level command
+target on every window the host creates, spacebar stops the transport in one
+window and does nothing in the other. `ApplicationCommandManager` and
+`KeyPressMappingSet` appear nowhere in `docs/`.
+
+ADR-0047 §1 left the map's home open and said it is app-scoped and belongs
+outside the `.adi`. `src/adi/settings/` already carries a `shortcuts.*` page
+(`registry.cpp:506`). **That is the home** — proposed here so the director can
+reject it, because ADR-0129's gate cannot be met while it is open.
+
+**7. The analyser builds inside this shell, and one question is open.**
+
+Three seams exist before it starts: the floating-window host, a place in the
+device strip, and a per-window clock an OpenGL view attaches to.
+
+ADR-0116 d1/d4 fixes a shape this entry first got wrong: the analyser's panel
+stays **docked and never undocks**, and the big view is a **second view** in a
+floating window, with **both alive at once**. That is neither ADR-0063's
+reparenting (which moves one component) nor ADR-0076's plug-in-owned window.
+A host built only for reparenting cannot express two views of one model, so
+the host is designed for both from the start.
+
+**What happens when the device whose panel is shown is deleted while its
+floating window is open** is owned by nobody today. An earlier draft proposed
+"the window closes". **That is not implementable**, for a reason that belongs
+to the engine and not the UI: `Session::refresh` does not destroy a deleted
+device, it **RETIRES** it — kept alive, out of every chain
+(`session.hpp:106`, `session.cpp:291-304`) — and `instanceFor()` returns a
+pointer that stays valid forever. So there is no crash and **no event to close
+on**. And **undo brings the device back**, which is the case the engine was
+built for (`session.cpp:280-287`); a closed window has no answer for where it
+reopens, and `window_state` is keyed `ref_id = device_id` with no `kind` for a
+DAW-drawn view (`schema.sql:931`).
+
+**Proposed: the window stays open and goes INERT** — showing the device as
+retired and refusing edits, as ADR-0011 keeps a missing plug-in in the chain
+rather than dropping it, so an undo makes it live again with its geometry
+intact. The alternative (close on retire, and accept that undo does not
+restore the window) is named beside it. **For the director.**
+
+### What this refuses to decide
+
+1. **The 169-pixel floor is the director's figure and is UNVERIFIED.** The
+   measurement against a live Live 12 is with him. The plan carries it as
+   unverified and does not harden it into a constant. It is also a deliberate
+   departure — Live's Device View is fixed height (ADR-0184 d1–d2, dated
+   2026-09-27).
+2. Whether `ArrangementCanvas` gets an `OpenGLContext` — deferred to a step-7
+   profile, and the deferral survives ADR-0183.
+3. ~~Where the keyboard map lives~~ — **proposed in decision 6**, because
+   ADR-0129's gate cannot be met while it is open.
+4. The source of `Record::playing`, and who calls `ParamOps::drain` at run
+   time — both named as not decided by ADR-0181 d3 and ADR-0124.
+5. Live's Delete warning before `device.setPanel`, which ADR-0154 names as the
+   UI's job and leaves open.
+
+### The parity gate is adopted, not rewritten
+
+ADR-0108: step 7 closes as **verified, not done** — the checklists pass *and*
+Adi signs a side-by-side session against a live Live 12, dated, with every
+deviation recorded. The checklist is written **from the manual chapter before
+the feature**, as the acceptance test rather than a report afterwards.
+
+**ADR-0129's table is adopted as-is.** It is already the first checklist under
+ADR-0108 and cites §6.1, §6.2, §6.9, §41, §41.9 and §41.16 with three dated
+approvals. A second navigation checklist beside it is the duplication ADR-0108
+exists to prevent. Chapter numbers for the remaining pieces are filled in with
+the director before each is built; this entry invents none.
+
+### Why a plan at all
+
+Step 6's host half merged four PRs, and **four of its defects were found by
+building the next piece rather than by reviewing the previous one**: a commit
+that silently stopped every CLAP main-thread callback, a `missing` flag that
+was decorative, dead code in the Airwindows filter, and a guard that was both
+illegal and blind. Re-reading the diffs found none of them.
+
+So the build order in the plan is chosen on one property: **each step is the
+thing that would expose the step before it being wrong.** That is the only
+review mechanism that has demonstrably worked here, and it is why the order is
+seams-first and window-second rather than the reverse.
