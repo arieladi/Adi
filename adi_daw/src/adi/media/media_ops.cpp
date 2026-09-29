@@ -180,7 +180,8 @@ bool relinkInverse(OpContext& c, const Payload& p, Payload& inverse, std::string
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
-MediaResult importMedia(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, Actor actor) {
+MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, OpRequest& request) {
+    request = {};
     try {
         if (store.readOnly()) return {false, "project is read-only"};
         const auto source = path.is_absolute() ? path : projectFolder(store) / path;
@@ -198,10 +199,17 @@ MediaResult importMedia(Store& store, const fs::path& path, std::int64_t id, std
         const auto size = fs::file_size(source);
         if (size > static_cast<std::uintmax_t>(std::numeric_limits<std::int64_t>::max())) return {false, "media size exceeds signed 64-bit range"};
         row["size_bytes"] = static_cast<std::int64_t>(size); row["imported_utc"] = time;
-        OpRequest request; request.opType = "media.import"; request.payload = {{"id", id}, {"row", row}}; request.actor = actor;
-        const auto result = OpJournal(store).commit(request);
-        return {result.ok, result.error, id};
+        request.opType = "media.import"; request.payload = {{"id", id}, {"row", row}};
+        return {true, {}, id};
     } catch (const std::exception& e) { return {false, e.what()}; }
+}
+MediaResult importMedia(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, Actor actor) {
+    OpRequest request;
+    auto prepared = prepareImport(store, path, id, time, request);
+    if (!prepared.ok || prepared.existing) return prepared;
+    request.actor = actor;
+    const auto result = OpJournal(store).commit(request);
+    return {result.ok, result.error, id};
 }
 MediaResult relinkMedia(Store& store, std::int64_t id, const fs::path& path, Actor actor) {
     try {

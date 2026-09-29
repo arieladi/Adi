@@ -4,9 +4,11 @@
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
+#include <thread>
 using namespace adi;
 namespace {
 int checks = 0, failures = 0;
@@ -149,6 +151,88 @@ int main(int argc, char **argv) {
             opened->process(io);
             opened->release();
         }
+    }
+    {
+        auto dropped = ui::ProjectDocument::open(temp.path() / "drop.adi", true, {}, error);
+        std::int64_t track = 0;
+        check(dropped->addAudioTrack(track), "Add audio track through op");
+        const auto path = temp.path() / "tone.wav";
+        std::array<float, 2048> samples{};
+        for (int i = 0; i < 1024; ++i)
+            samples[static_cast<std::size_t>(i) * 2] =
+                samples[static_cast<std::size_t>(i) * 2 + 1] =
+                    static_cast<float>(.2 * std::sin(2 * 3.141592653589793 * 16 * i / 1024.));
+        {
+            audio::WavWriter w(path, 48000, 2, audio::WavFormat::Float32);
+            w.write(samples.data(), 1024);
+            w.close();
+        }
+        check(dropped->dropAudio(path, track, 0), "Drop creates media, clip and audio attachment");
+        if (!dropped->error().empty())
+            std::printf("drop: %s\n", dropped->error().c_str());
+        auto &db = dropped->store().db();
+        check(db.execAndGet("SELECT count(*) FROM audio_clips").getInt() == 1,
+              "audio attachment exists");
+        check(db.execAndGet("SELECT frames FROM media_files").getInt64() == 1024,
+              "drop captures source metadata");
+        check(dropped->view().current()->findTrack(track)->clips[0]->name == "tone",
+              "snapshot supplies clip name");
+        check(dropped->ops().undo().ok && dropped->synchronise(), "one undo removes complete drop");
+        check(db.execAndGet("SELECT (SELECT count(*) FROM clips)+(SELECT count(*) FROM "
+                            "audio_clips)+(SELECT count(*) FROM media_files)")
+                      .getInt() == 0,
+              "undo leaves no orphan media or clip");
+        check(dropped->ops().redo().ok && dropped->synchronise(), "redo restores playable drop");
+        check(!dropped->dropAudio(path, 1, 0), "master refuses audio drop");
+        const auto beforeOps = db.execAndGet("SELECT count(*) FROM ops").getInt64();
+        OpRequest invalidAttach;
+        invalidAttach.opType = "clip.attachAudio";
+        invalidAttach.payload = {{"id", 1}, {"media", 1}, {"frames", 0}};
+        check(!dropped->ops().submit(invalidAttach).ok, "zero-frame attachment refused");
+        check(db.execAndGet("SELECT count(*) FROM ops").getInt64() == beforeOps,
+              "refused attachment leaves journal unchanged");
+        OpRequest detach;
+        detach.opType = "clip.detachAudio";
+        detach.payload = {{"id", 1}};
+        check(dropped->ops().submit(detach).ok, "direct detach commits");
+        check(db.execAndGet("SELECT count(*) FROM audio_clips").getInt() == 0,
+              "detach removes attachment without deleting clip");
+        check(dropped->ops().undo().ok && dropped->synchronise(),
+              "detach inverse restores attachment");
+        check(db.execAndGet("SELECT src_len_frames FROM audio_clips").getInt64() == 1024,
+              "inverse preserves source frame window");
+        dropped->session().graph().setFadeFrames(0);
+        dropped->prepare(48000, 64);
+        dropped->mailbox().post(ui::TransportMailbox::Command::Play);
+        // File read-ahead prepares on the session service, not in process.
+        dropped->mailbox().drain(dropped->session().transport());
+        check(dropped->session().clips()->prime(std::chrono::seconds(10)),
+              "offline clip read-ahead primes");
+        std::array<float, 64> dropLeft{}, dropRight{};
+        float *outputs[] = {dropLeft.data(), dropRight.data()};
+        engine::AudioIo dropIo{};
+        dropIo.out = outputs;
+        dropIo.numOut = 2;
+        dropIo.frames = 64;
+        std::array<float, 2048> rendered{};
+        for (int b = 0; b < 16; ++b) {
+            dropped->process(dropIo);
+            for (int i = 0; i < 64; ++i) {
+                rendered[static_cast<std::size_t>(b * 64 + i) * 2] =
+                    dropLeft[static_cast<std::size_t>(i)];
+                rendered[static_cast<std::size_t>(b * 64 + i) * 2 + 1] =
+                    dropRight[static_cast<std::size_t>(i)];
+            }
+        }
+        {
+            audio::WavWriter w(temp.path() / "drop-dropIo.wav", 48000, 2,
+                               audio::WavFormat::Float32);
+            w.write(rendered.data(), 1024);
+            w.close();
+        }
+        check(bin(rendered, 157) < 1e-5, "dropped clip far bin at floor");
+        check(bin(rendered, 16) > .05, "dropped audio actually plays through Session");
+        dropped->release();
     }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

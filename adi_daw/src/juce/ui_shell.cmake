@@ -14,7 +14,7 @@ if(ADI_WITH_JUCE)
             message(FATAL_ERROR "Step 7 JUCE build needs a short Windows build path (under 100 characters).")
         endif()
     endif()
-    add_library(adi_ui_shell STATIC src/juce/ui_shell.cpp)
+    add_library(adi_ui_shell STATIC src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp)
     target_link_libraries(adi_ui_shell PUBLIC adi_settings juce::juce_gui_basics)
     target_compile_definitions(adi_ui_shell PUBLIC JUCE_STANDALONE_APPLICATION=1 JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
     juce_add_console_app(adi_ui_shell_tests PRODUCT_NAME "adi_ui_shell_tests")
@@ -22,7 +22,7 @@ if(ADI_WITH_JUCE)
     target_link_libraries(adi_ui_shell_tests PRIVATE adi_ui_shell)
     target_compile_definitions(adi_ui_shell_tests PRIVATE ADI_UI_REFERENCES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ui")
     # Apply our warning policy to our code, not JUCE's module translation units.
-    set_source_files_properties(src/juce/ui_shell.cpp tests/test_ui_shell.cpp PROPERTIES
+    set_source_files_properties(src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp tests/test_ui_shell.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_shell_tests COMMAND adi_ui_shell_tests)
     juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw")

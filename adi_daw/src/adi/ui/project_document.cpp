@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
+#include "adi/audio/decode.hpp"
+#include "adi/audio/wav_file.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <chrono>
+#include <limits>
 namespace adi::ui {
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s)
     : store_(std::move(s)), ops_(*store_, view_), views_(*store_) {}
@@ -40,6 +44,85 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
     } catch (const std::exception &e) {
         error = e.what();
         return {};
+    }
+}
+bool ProjectDocument::addAudioTrack(std::int64_t &id) {
+    try {
+        id = store_->db().execAndGet("SELECT COALESCE(MAX(id),0)+1 FROM tracks").getInt64();
+        OpRequest request;
+        request.opType = "track.create";
+        request.payload = {
+            {"id", id}, {"kind", "audio"}, {"name", "Audio " + std::to_string(id)}, {"index", id}};
+        auto result = ops_.submit(request);
+        error_ = result.error;
+        return result.ok && synchronise();
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
+    }
+}
+bool ProjectDocument::dropAudio(const std::filesystem::path &source, std::int64_t track,
+                                std::int64_t tick) {
+    try {
+        const auto current = view_.current(); // Re-read on landing, never retain a drag's snapshot.
+        const auto *target = current->findTrack(track);
+        if (!target || target->kind != "audio" || tick < 0) {
+            error_ = "Drop needs an audio track and nonnegative position";
+            return false;
+        }
+        audio::DecodeCache cache(media::projectFolder(*store_) / ".adi-decode");
+        const auto playable = cache.playable(source);
+        audio::WavReader wav(playable);
+        if (wav.frames() == 0 ||
+            wav.frames() > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+            error_ = "Invalid audio length";
+            return false;
+        }
+        auto mediaId =
+            store_->db().execAndGet("SELECT COALESCE(MAX(id),0)+1 FROM media_files").getInt64();
+        auto clipId = store_->db().execAndGet("SELECT COALESCE(MAX(id),0)+1 FROM clips").getInt64();
+        OpRequest import;
+        const auto time = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::system_clock::now().time_since_epoch())
+                              .count();
+        auto prepared = media::prepareImport(*store_, source, mediaId, time, import);
+        if (!prepared.ok) {
+            error_ = prepared.error;
+            return false;
+        }
+        mediaId = prepared.mediaId;
+        std::vector<OpRequest> requests;
+        if (!prepared.existing) {
+            auto &row = import.payload["row"];
+            row["sample_rate"] = wav.sampleRate();
+            row["channels"] = wav.channels();
+            row["frames"] = wav.frames();
+            row["duration_ns"] = static_cast<std::int64_t>(static_cast<double>(wav.frames()) /
+                                                           wav.sampleRate() * 1e9);
+            // Encoding remains the original container; decoded PCM precision is not original bit
+            // depth.
+            row["format"] = media::pathUtf8(source.extension());
+            requests.push_back(std::move(import));
+        }
+        const auto end =
+            current->tempo->secondsToTicks(current->tempo->ticksToSeconds(tick) +
+                                           static_cast<double>(wav.frames()) / wav.sampleRate());
+        OpRequest clip;
+        clip.opType = "clip.create";
+        clip.payload = {{"id", clipId},    {"track", track},
+                        {"kind", "audio"}, {"name", media::pathUtf8(source.stem())},
+                        {"pos", tick},     {"length", std::max<std::int64_t>(1, end - tick)}};
+        requests.push_back(std::move(clip));
+        OpRequest audio;
+        audio.opType = "clip.attachAudio";
+        audio.payload = {{"id", clipId}, {"media", mediaId}, {"frames", wav.frames()}};
+        requests.push_back(std::move(audio));
+        auto result = ops_.submit(requests);
+        error_ = result.error;
+        return result.ok && synchronise();
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
     }
 }
 bool ProjectDocument::save(std::string &error) {

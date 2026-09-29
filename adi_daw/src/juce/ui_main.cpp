@@ -130,6 +130,23 @@ class AdiApplication final : public juce::JUCEApplication,
             if (!document_->synchronise())
                 report(document_->error());
         };
+        root->arrangement.addTrack = [this] {
+            std::int64_t id = 0;
+            if (!document_->addAudioTrack(id))
+                report(document_->error());
+            else {
+                root_->arrangement.geometry.selectedTrack = id;
+                root_->mark(DirtySet::All);
+            }
+        };
+        root->arrangement.drop = [this](const juce::String &file, std::int64_t track,
+                                        std::int64_t tick) {
+            const bool ok = document_->dropAudio(pathFromUtf8(file.toStdString()), track, tick);
+            if (!ok)
+                report(document_->error());
+            root_->mark(DirtySet::All);
+            return ok;
+        };
         root->applicationCommand = [this](int id) { return applicationCommand(id); };
         window_ = std::make_unique<AdiWindow>(std::move(root), *commands_);
         window_->onClose = [this] { systemRequestedQuit(); };

@@ -4,6 +4,7 @@
 #include "adi/textproj.hpp"
 #include "adi/ui/project_document.hpp"
 #include "temp_directory.hpp"
+#include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <atomic>
 #include <cstdio>
@@ -80,6 +81,15 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         g.fillRect(8, 5, 190, 34);
         g.fillRect(228, 5, root.getWidth() - 228, 34);
         g.fillRect(0, 54, root.getWidth(), 30);
+        const auto area = root.arrangement.getBounds();
+        g.fillRect(area.getX(), area.getY(), area.getWidth(), 28);
+        int laneY = area.getY() + 28 - root.arrangement.geometry.scrollY;
+        for (const auto &trackNode : root.reader().tracks()) {
+            if (trackNode->kind == "master")
+                continue;
+            g.fillRect(area.getX() + 4, laneY + 4, std::max(0, area.getWidth() - 8), 24);
+            laneY += root.arrangement.geometry.heightFor(trackNode->id);
+        }
         const int dock = root.state().docked ? root.state().deviceHeight : 0;
         g.fillRect(0, root.getHeight() - dock + 10, root.getWidth(), 30);
     }
@@ -313,6 +323,90 @@ int main(int argc, char **argv) {
         document->process(io);
         integrated.frame();
         check(integrated.bpm() == 120, "TransportBar uses granted device rate at tempo boundaries");
+        auto &arrangement = integrated.arrangement;
+        arrangement.geometry.selectedTrack = 2;
+        OpRequest clip;
+        clip.opType = "clip.create";
+        clip.payload = {{"id", 1},         {"track", 2},
+                        {"kind", "audio"}, {"name", "Rendered clip"},
+                        {"pos", 0},        {"length", 4 * textproj::kPPQ}};
+        check(document->ops().submit(clip).ok, "arrangement clip created through op");
+        integrated.frame();
+        const auto *hitTrack = arrangement.geometry.trackAt(integrated.reader(), 4);
+        check(hitTrack && hitTrack->id == 2, "header and canvas rows exclude master");
+        check(hitTrack && arrangement.geometry.hit(*hitTrack, 0) &&
+                  !arrangement.geometry.hit(*hitTrack, 4 * textproj::kPPQ),
+              "hit-test includes start and excludes end");
+        arrangement.geometry.selectedClip = 1;
+        arrangement.geometry.selectionStart = 0;
+        arrangement.geometry.selectionEnd = 4 * textproj::kPPQ;
+        const double beforeScale = arrangement.geometry.scale;
+        check(integrated.keyPressed(juce::KeyPress('z')),
+              "synthesised Z reaches fit-selection command");
+        check(arrangement.geometry.scale != beforeScale, "Z changes visible range");
+        check(integrated.keyPressed(juce::KeyPress('x')) &&
+                  arrangement.geometry.scale == beforeScale,
+              "X restores previous zoom");
+        auto geometry = arrangement.geometry;
+        const auto anchor = geometry.tick(70);
+        geometry.zoom(2., 70);
+        check(std::abs(geometry.tick(70) - anchor) <= 1, "pointer-anchored zoom preserves time");
+        arrangement.geometry.insert = 0;
+        arrangement.locate();
+        document->process(io);
+        integrated.frame();
+        const auto paints = arrangement.canvasPaints;
+        allocations = 0;
+        audit = true;
+        for (int i = 0; i < 100; ++i) {
+            document->mailbox().post(TransportMailbox::Command::Locate, i * 100);
+            document->process(io);
+            integrated.frame();
+        }
+        audit = false;
+        check(allocations == 0, "moving arrangement playhead frame allocates zero");
+        check(arrangement.canvasPaints == paints && arrangement.playhead.getWidth() == 1 &&
+                  !arrangement.playhead.hitTest(0, 1),
+              "one-pixel playhead never repaints canvas and ignores hits");
+        arrangement.geometry.selectionStart = arrangement.geometry.selectionEnd = 0;
+        arrangement.geometry.wheelHeight(integrated.reader(), 2, 8);
+        check(arrangement.geometry.heightFor(2) == 72 && arrangement.geometry.height == 64,
+              "Alt-wheel changes only target track");
+        arrangement.changed();
+        check(document->views().load("main").laneHeights.at(2) == 72,
+              "track height persists in ui_view");
+        arrangement.geometry.resizeTrack(2, 64);
+        arrangement.changed();
+        {
+            UiPeerRoot peerRoot;
+            peerRoot.setSize(integrated.getWidth(), integrated.getHeight());
+            peerRoot.addAndMakeVisible(integrated);
+            peerRoot.setVisible(true);
+            peerRoot.addToDesktop(0);
+            auto *peer = peerRoot.getPeer();
+            check(peer != nullptr, "fake peer created without OS window");
+            const auto origin =
+                peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, 35}).toFloat();
+            juce::int64 when = 100000;
+            auto mouse = [&](juce::Point<float> point, int mods) {
+                peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, point,
+                                       juce::ModifierKeys(mods), 1.f, 0.f, when += 100);
+            };
+            arrangement.geometry.selectedClip = 0;
+            mouse(origin, 0);
+            mouse(origin, juce::ModifierKeys::leftButtonModifier);
+            mouse(origin, 0);
+            check(arrangement.geometry.selectedClip == 1,
+                  "peer dispatch hit-tests and selects painted clip");
+            mouse(origin, juce::ModifierKeys::leftButtonModifier);
+            mouse(origin.translated(48, 0), juce::ModifierKeys::leftButtonModifier);
+            mouse(origin.translated(48, 0), 0);
+            check(arrangement.geometry.selectionEnd == arrangement.geometry.tick(58),
+                  "peer drag capture updates time selection");
+            peerRoot.removeChildComponent(&integrated);
+            peerRoot.removeFromDesktop();
+        }
+        reference(integrated, "arrangement", write);
         document->release();
     }
     std::printf("%d checks, %d failures\n", checks, failures);

@@ -5,6 +5,7 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
+#include "ui_arrangement.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <optional>
 namespace adi::ui {
@@ -20,7 +21,21 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         NewProject,
         OpenProject,
         SaveProject,
-        AudioSettings
+        AudioSettings,
+        ZoomIn,
+        ZoomOut,
+        FitSelection,
+        PreviousZoom,
+        FitWidth,
+        FitHeight,
+        ScrollLeft,
+        ScrollRight,
+        TallerTracks,
+        ShorterTracks,
+        GoStart,
+        ScrollUp,
+        ScrollDown,
+        ContinuePlay
     };
     explicit AppCommands(const settings::AppSettings &);
     void reload(const settings::AppSettings &);
@@ -61,6 +76,8 @@ class AdiRootComponent final : public juce::Component {
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
     double bpm() const noexcept;
+    std::int64_t timelineTick() const noexcept;
+    bool locate(std::int64_t tick);
     std::uint64_t generation() const noexcept { return generation_; }
     unsigned lastDrain() const noexcept { return lastDrain_; }
     const std::string &error() const noexcept { return error_; }
@@ -75,6 +92,7 @@ class AdiRootComponent final : public juce::Component {
     std::function<bool(int)> applicationCommand;
     std::function<void()> afterEdit;
     TransportBar transport;
+    ArrangementView arrangement;
 
   private:
     engine::ProjectView &view_;

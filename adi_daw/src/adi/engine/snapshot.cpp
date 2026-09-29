@@ -19,12 +19,12 @@ constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 /// dirty flag is a second source of truth about what changed, and it is wrong
 /// the first time someone forgets to set it.
 bool same(const ClipNode& a, const ClipNode& b) {
-    return a.id == b.id && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
+    return a.name == b.name && a.id == b.id && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
            a.muted == b.muted && a.gainDb == b.gainDb;
 }
 
 bool same(const TrackNode& a, const TrackNode& b) {
-    if (a.id != b.id || a.name != b.name || a.muted != b.muted || a.soloed != b.soloed ||
+    if (a.kind != b.kind || a.id != b.id || a.name != b.name || a.muted != b.muted || a.soloed != b.soloed ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.clips.size() != b.clips.size())
         return false;
     for (std::size_t i = 0; i < a.clips.size(); ++i)
@@ -157,12 +157,17 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             snap->tempo = std::move(tempo);
     }
 
+    {
+        SQLite::Statement meter(db,"SELECT pos_ticks,numerator,denominator FROM time_signature_map ORDER BY pos_ticks,id");
+        while(meter.executeStep())snap->meters.push_back({meter.getColumn(0).getInt64(),static_cast<std::uint16_t>(meter.getColumn(1).getInt()),static_cast<std::uint16_t>(meter.getColumn(2).getInt())});
+    }
+
     // --- clips, grouped by track -------------------------------------------------
     std::map<std::int64_t, std::vector<std::shared_ptr<const ClipNode>>> clipsByTrack;
     try {
         SQLite::Statement st(db,
             "SELECT id, track_id, IFNULL(pos_ticks,0), IFNULL(length_ticks,0), muted, "
-            "gain_db FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
+            "gain_db, name FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
             c.id = st.getColumn(0).getInt64();
@@ -171,6 +176,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.lengthTicks = st.getColumn(3).getInt64();
             c.muted = st.getColumn(4).getInt() != 0;
             c.gainDb = static_cast<float>(st.getColumn(5).getDouble());
+            c.name = st.getColumn(6).getString();
 
             const auto prev = prevClips.find(c.id);
             if (prev != prevClips.end() && same(*prev->second, c))
@@ -185,7 +191,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     try {
         SQLite::Statement st(db,
             "SELECT t.id, t.name, t.muted, t.soloed, "
-            "  IFNULL(m.volume_db, 0.0), IFNULL(m.pan, 0.0) "
+            "  IFNULL(m.volume_db, 0.0), IFNULL(m.pan, 0.0), t.kind "
             "FROM tracks t LEFT JOIN mixer_strip m ON m.track_id = t.id "
             "ORDER BY t.index_in_parent, t.id");
         while (st.executeStep()) {
@@ -196,6 +202,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             t.soloed = st.getColumn(3).getInt() != 0;
             t.volumeDb = static_cast<float>(st.getColumn(4).getDouble());
             t.pan = static_cast<float>(st.getColumn(5).getDouble());
+            t.kind = st.getColumn(6).getString();
             if (auto it = clipsByTrack.find(t.id); it != clipsByTrack.end())
                 t.clips = it->second;
 

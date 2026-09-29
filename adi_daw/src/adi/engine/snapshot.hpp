@@ -26,6 +26,7 @@
 #pragma once
 
 #include "adi/engine/publisher.hpp"
+#include "adi/textproj.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -62,6 +63,7 @@ struct TempoMap {
 };
 
 struct ClipNode {
+    std::string name;
     std::int64_t id = 0;
     std::int64_t posTicks = 0;
     std::int64_t lengthTicks = 0;
@@ -70,6 +72,7 @@ struct ClipNode {
 };
 
 struct TrackNode {
+    std::string kind;
     std::int64_t id = 0;
     std::string name;            // owned; the audio thread only reads it
     bool muted = false;
@@ -85,6 +88,7 @@ struct Snapshot : Sequenced {
     std::shared_ptr<const TempoMap> tempo;
     std::vector<std::shared_ptr<const TrackNode>> tracks;
     int sampleRate = 48000;
+    std::vector<textproj::Meter> meters;
 
     [[nodiscard]] const TrackNode* findTrack(std::int64_t id) const noexcept;
     [[nodiscard]] bool anySoloed() const noexcept;
