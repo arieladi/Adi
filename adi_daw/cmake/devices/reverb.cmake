@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+target_sources(adi_core PRIVATE src/adi/dsp/live_reverb.cpp)
+add_executable(adi_reverb_tests tests/test_reverb.cpp)
+target_link_libraries(adi_reverb_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_reverb_tests COMMAND adi_reverb_tests)
+if(ADI_WITH_PD)
+    target_sources(adi_pd_builtins PRIVATE src/adi/pd_builtins/reverb_tilde.cpp)
+    add_executable(adi_reverb_pd_tests tests/test_reverb_pd.cpp)
+    target_link_libraries(adi_reverb_pd_tests PRIVATE adi_core adi_warnings)
+    target_compile_definitions(adi_reverb_pd_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd" ADI_REVERB_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
+    add_test(NAME adi_reverb_pd_tests COMMAND adi_reverb_pd_tests)
+endif()
