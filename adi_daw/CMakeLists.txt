@@ -238,6 +238,7 @@ add_library(adi_core STATIC
     src/adi/dsp/redux.cpp
     src/adi/dsp/live_delay.cpp
     src/adi/dsp/live_reverb.cpp
+    src/adi/dsp/shifter.cpp
     src/adi/dsp/combchord.cpp
     src/adi/dsp/colorcab.cpp
     src/adi/dsp/masking.cpp
@@ -460,6 +461,7 @@ set(ADI_PD_BUILTIN_SOURCES
     src/adi/pd_builtins/redux_tilde.cpp
     src/adi/pd_builtins/delay_tilde.cpp
     src/adi/pd_builtins/reverb_tilde.cpp
+    src/adi/pd_builtins/shifter_tilde.cpp
     src/adi/pd_builtins/combchord_tilde.cpp
     src/adi/pd_builtins/colorcab_tilde.cpp
 )
@@ -1300,6 +1302,16 @@ add_test(NAME adi_dynamic_eq_gesture_tests COMMAND adi_dynamic_eq_gesture_tests)
 add_executable(adi_gain_stage_tests tests/test_gain_stage.cpp)
 target_link_libraries(adi_gain_stage_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)
+
+add_executable(adi_shifter_tests tests/test_shifter.cpp)
+target_link_libraries(adi_shifter_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_shifter_tests COMMAND adi_shifter_tests)
+if(ADI_WITH_PD)
+add_executable(adi_shifter_pd_tests tests/test_shifter_pd.cpp)
+target_link_libraries(adi_shifter_pd_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_shifter_pd_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd" ADI_SHIFTER_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
+add_test(NAME adi_shifter_pd_tests COMMAND adi_shifter_pd_tests)
+endif()
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
 target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_controller_maps_tests COMMAND adi_controller_maps_tests)
