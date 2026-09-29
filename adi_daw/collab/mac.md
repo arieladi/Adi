@@ -2073,3 +2073,69 @@ unfixed. Neither was the bug; both cost more than it.
   because that cast needs a JUCE header in a file with none.
 - **24 CLAP plugins installed here**, not one — FabFilter ships CLAP. Vital,
   Surge XT and Twin are instruments, so MPE+ has real targets on both formats.
+
+---
+
+## 2026-09-29 — the step-7 plan approved, and four changes applied (ADR-0180)
+
+The director approved `docs/STEP-7-PLAN.md` with four changes. All four are in.
+ADR-0180 is now `DECIDED (direction)`.
+
+**The ruling that reversed me.** I had argued that "deleting a device closes its
+floating window" was *not implementable*, because `Session::refresh` retires
+rather than destroys and `instanceFor()` stays valid forever — so there is no
+event to close on. The director ruled the close anyway. **He was right and my
+conclusion was wrong**: the engine facts were correct, but "no push event" does
+not mean "not implementable", it means **the close is a poll**. The host reads
+`entryFor(id)->retired` at the top of its frame. There is precedent in shipped
+code — `ParamOps::attachSession` already polls exactly that flag
+(`param_ops.cpp:154`), with the contract documented in its header.
+
+Worth keeping: I nearly wrote the poll as "check after the op we submitted".
+That would be wrong as of 2026-09-29, because `Session::refresh` stopped being
+UI-initiated only — `Session::autoGainStage` calls it (`gain_stage.cpp:171`,
+ADR-0195), so a retire can fire inside an engine call no frame scheduled.
+
+**What the merge nearly cost me.** Main moved 22 commits mid-task. It shifted
+`session.hpp` by two lines, so every citation I had verified an hour earlier
+(`retired` at :106, `entryFor` at :221) was stale before I wrote it down. Re-pin
+citations *after* the merge, not before.
+
+**ADR-0200 landed while I worked, and it is partly mine.** Its d5 assigns
+requirements to "step 7, mac" by name. One of them — the 169 px floor is a
+desktop default, not a constant in the component — is my own §7.1 arriving from
+a second direction. One creates real work: ADR-0129's gate is **entirely
+modifier gestures**, and ADR-0200 requires every action to also have a path with
+no hover, no right button and no modifier. Every row of that gate now needs a
+second row.
+
+**Measured, not assumed, for the UI test strategy:**
+- Vendored JUCE is **9.0.2**, not the 7 or 8 I would have recalled.
+- `createComponentSnapshot` needs no peer, no display, no run loop. JUCE even
+  names the concession: `JUCE_ASSERT_MESSAGE_MANAGER_IS_LOCKED_OR_OFFSCREEN`.
+- **xvfb is not needed** for offscreen rendering on Linux — X11 is `dlopen`'d,
+  never linked. That is a *source* conclusion; nobody has run a `DISPLAY`-less
+  JUCE binary here, and the plan says so and names the experiment.
+- **JUCE ships no mock peer.** Synthesised *mouse* interaction through the public
+  virtuals bypasses hit-testing, capture and click counting — it tests the
+  handler, not the interaction. Keyboard is real, which is lucky, because
+  ADR-0129's gate is entirely keyboard.
+- `SoftwareImageType{}` must be passed explicitly or macOS and Linux snapshots
+  differ in pixel format for reasons that have nothing to do with the UI.
+
+**Two engine gaps found by asking what "make a track" needs**, sent back rather
+than absorbed: `Store::create` never inserts the `project` row (so
+`project.setName` silently does nothing on a new file), and **no op in the
+73-op catalogue writes an `audio_clips` row** — there is no undoable path from
+a file and a track to a clip that plays, which is 7.3's headline gesture.
+
+**A check proved it can fail, without a plant.** After the merge the schema
+validator failed on its own: `README says 199 ADRs, DECISIONS.md has 200`.
+Fixed the count, re-ran, green. Observed rather than constructed.
+
+**Two things are open and are NOT approved**, and I have not counted them as
+such: the third `UI-ARCHITECTURE.md` amendment (ADR-0080 rules out
+`MainSplit` as a `StretchableLayoutManager`) — the director's reply says "both
+of your amendments" and names two — and the key map's home. ADR-0129's gate
+cannot be fully met while the second is open. Both are needed before 7.2
+completes; nothing blocks 7.1.
