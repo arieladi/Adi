@@ -82,6 +82,7 @@ overrun MAX_PATH from deep ones.
 | What | Command |
 |---|---|
 | RMSC, and ADI Airwindows when `ADI_AIRWIN_SOURCE` is set | `tools\build-plugins.bat [target]` |
+| ADI Dynamic EQ (same pinned adaptation; optional `adi_play` render test) | `tools\build-external-plugin.bat dynamic-eq dynamic_eq_clap` |
 | One upstream: `smartelectronix`, `chowtape`, `chowcentaur`, `zlequalizer`, `dragonfly` | `tools\build-external-plugin.bat <name> [target]` |
 
 `build-external-plugin.bat` reads `ADI_PLUGIN_SOURCES` (the fetch directory)

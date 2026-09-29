@@ -245,6 +245,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `plugins/external/dynamic-eq/**`, `plugins/dynamic-eq/CMakeLists.txt`, `plugins/dynamic-eq/tests/**`, `plugins/dynamic-eq/README.md`, `plugins/README.md`, `tools/build-external-plugin.bat`, `src/juce/play.cpp` (`--render-output`, narrowly delegated by win, mac DAW session's file) | win_codex — Dynamic EQ host proof, delegated by win | `codex/dynamic-eq-host` | 2026-09-29 |
 | `src/juce/pd_engine.hpp`, `src/juce/pd_engine.cpp`, their tests | win_codex - delegated by win, mac analyser's file | `codex/colorbass-pd` | 2026-09-28 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/dsp/combchord.*`, `src/adi/dsp/colorcab.*`, `src/adi/pd_builtins/**`, `pd/devices/**`, `tests/test_combchord.cpp`, `tests/test_colorcab.cpp` | win_codex | `codex/colorbass-pd` | 2026-09-28 |
