@@ -10,6 +10,7 @@ REM   smartelectronix  all eleven, through plugins\external\smartelectronix
 REM   chowtape         ChowTapeModel's own tree, which makes its own CLAP
 REM   chowcentaur      through plugins\external\chowcentaur
 REM   zlequalizer      through plugins\external\zlequalizer
+REM   dynamic-eq     our adapted EQ, through plugins\external\dynamic-eq
 REM   dragonfly        the four reverbs, through plugins\external\dragonfly
 REM
 REM Sources: tools/fetch_plugins.sh. ADI_PLUGIN_SOURCES names its DEST (default
@@ -40,9 +41,10 @@ if /i "%NAME%"=="smartelectronix" set "SRC=%ROOT%\plugins\external\smartelectron
 if /i "%NAME%"=="chowtape" set "SRC=%ADI_PLUGIN_SOURCES%\AnalogTapeModel\Plugin" & set "ARG=-DCHOWTAPE_BUILD_CLAP=ON"
 if /i "%NAME%"=="chowcentaur" set "SRC=%ROOT%\plugins\external\chowcentaur" & set "ARG=-DKLON_SOURCE=%PS%/KlonCentaur"
 if /i "%NAME%"=="zlequalizer" set "SRC=%ROOT%\plugins\external\zlequalizer" & set "ARG=-DZL_SOURCE=%PS%/ZLEqualizer"
+if /i "%NAME%"=="dynamic-eq" set "SRC=%ROOT%\plugins\external\dynamic-eq" & set "ARG=-DZL_SOURCE=%PS%/ZLEqualizer"
 if /i "%NAME%"=="dragonfly" set "SRC=%ROOT%\plugins\external\dragonfly" & set "ARG=-DDRAGONFLY_SOURCE=%PS%/dragonfly-reverb"
 if "%SRC%"=="" (
-    echo usage: %~nx0 smartelectronix^|chowtape^|chowcentaur^|zlequalizer^|dragonfly [target]
+    echo usage: %~nx0 smartelectronix^|chowtape^|chowcentaur^|zlequalizer^|dynamic-eq^|dragonfly [target]
     exit /b 2
 )
 

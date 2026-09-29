@@ -214,7 +214,7 @@ subject, say so in your log instead of writing it twice.
 | 0177 | win | `win/pd-param-contract` | the Pd parameter contract: `[adi.param]` with a fixed id, a full declaration, changed only by `device.loadState`, a vanilla abstraction (approved by the director) | used |
 | 0178 | win | `win/tuning-schema` | tuning systems in the format: schema 1.8's four tables; ops with scale-aware editing (director) | used |
 | 0179 | mac | `mac/clap-per-instance` | the CLAP host contract: a `clap_host_t` per instance (C4); stays mac's, as reserved (win's ruling, 2026-09-27) | used |
-| 0180 | mac | (mac's return mission) | held for mac | reserved |
+| 0180 | mac | `mac/step7-plan` | step 7's shell: one frame clock per window, a UI read path that is not AudioRead, the floating-window host built once, and how the UI is tested; DECIDED (direction) | used |
 | 0181 | win | `win/surfaces-collab` | external control surfaces: relative input at the edge, the loopback control API's surface client, one parameter feed; the Stream Deck + XL first (director) | used |
 | 0182 | win | `win/surfaces-collab` | collaboration, hosting and backups: local by default, an op stream to the user's bucket, drives for backups, author-chosen media, previewed application (director) | used |
 | 0183 | mac | `mac/pd-analyser-wip` | the Pd spectrum analyser (ADR-0116), from the second session on the Mac; renumbered from the ADR-0179 it spent locally; the director keeps the work (2026-09-27) | used |
@@ -246,9 +246,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `src/adi/dsp/shifter*`, `src/adi/pd_builtins/shifter_tilde.cpp`, `pd/devices/Shifter.pd`, `tests/test_shifter*.cpp`, `CMakeLists.txt` (Shifter registration/targets), `collab/win_codex/2026-09-29-shifter-pd.md` | win_codex — Mission 4, delegated by win | `codex/shifter-pd` | 2026-09-29 |
-| `../tools/adi-drone/drone.py`, retry tests and README | win_codex - delegated by win | `codex/drone-connection-retry` (stacked on #167) | 2026-09-28 |
-| `../tools/adi-drone/drone.py`, its parallel-worker tests and README | win_codex - delegated by win | `codex/drone-parallel` | 2026-09-28 |
+| `src/juce/play.cpp` (offline capture only), `tests/test_play_render.cpp`, `CMakeLists.txt` (regression target), `collab/win_codex/2026-09-29-dynamic-eq-host.md` | win_codex — channel-count fix delegated by win, mac DAW session's file | `codex/dynamic-eq-host` | 2026-09-29 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
@@ -257,6 +255,10 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
 | `src/adi/dsp/spectrum.*`, `tools/gen_pd_patches.py`, `pd/adi-spectrum.pd`, `src/juce/pd_engine.*`, `tests/test_pd_engine.cpp` | mac (second session) | `mac/pd-spectrum` | 2026-09-28 |
+
+**README's check count is win's, on main (2026-09-29).** PRs never edit the "N checks across M suites"
+line: every PR touched it, so each merge turned the next PR red. `tools/test_all.sh` reports a
+mismatch as a note, not a failure; win measures main after merges and updates the line.
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`

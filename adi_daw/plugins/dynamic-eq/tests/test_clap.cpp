@@ -14,7 +14,8 @@
 #include <dlfcn.h>
 #endif
 int main(int argc, char **argv) {
-    if (argc != 2)
+    const bool fixture = argc == 3 && std::strcmp(argv[2], "--host-fixture") == 0;
+    if (argc != 2 && !fixture)
         return 2;
 #if defined(_WIN32)
     const auto library = LoadLibraryA(argv[1]);
@@ -64,6 +65,28 @@ int main(int argc, char **argv) {
             !params->get_value(plugin, info.id, &current) || !std::isfinite(current) ||
             current < info.min_value || current > info.max_value)
             return 12;
+        // Resolve the host fixture through the binary's ABI. No copied JUCE
+        // hash algorithm or hard-coded CLAP ids/normalization in the test.
+        if (fixture) {
+            const char* text = nullptr;
+            if (std::strcmp(info.name, "Filter Status0") == 0) text = "On";
+            if (std::strcmp(info.name, "Freq0") == 0) text = "220";
+            if (std::strcmp(info.name, "Gain0") == 0) text = "-12";
+            if (std::strcmp(info.name, "Q0") == 0) text = "1";
+            if (text) {
+                double plain = 0;
+                if (!params->text_to_value(plugin, info.id, text, &plain) ||
+                    !std::isfinite(plain) || info.max_value <= info.min_value ||
+                    plain < info.min_value || plain > info.max_value) return 13;
+                std::printf("HOST_PARAM\t%u\t%.17g\t%s\n", info.id,
+                    (plain-info.min_value)/(info.max_value-info.min_value), info.name);
+                if (std::strcmp(info.name, "Filter Status0") == 0) {
+                    if (!params->text_to_value(plugin, info.id, "Bypass", &plain)) return 14;
+                    std::printf("HOST_BYPASS\t%u\t%.17g\n", info.id,
+                        (plain-info.min_value)/(info.max_value-info.min_value));
+                }
+            }
+        }
     }
     if (!plugin->activate(plugin, 48000, 1, 256) || !plugin->start_processing(plugin))
         return 8;

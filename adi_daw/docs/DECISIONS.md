@@ -15353,6 +15353,312 @@ the file changed **and** the build succeeded.
 
 ---
 
+## ADR-0180 — Step 7's shell: one frame clock per window, a UI read path that is not `AudioRead`, the floating-window host built before anything needs two, and how the UI is tested — `DECIDED (direction)` (2026-09-29) — **DIRECTOR'S APPROVAL WITH FOUR CHANGES; AMENDS `UI-ARCHITECTURE.md` §2 AND §8; CARRIES ADR-0200 d5's STEP-7 REQUIREMENTS; DEPENDS ON ADR-0050, ADR-0063, ADR-0108, ADR-0181 AND ADR-0183**
+
+**`DECIDED (direction)`.** The director reviewed `docs/STEP-7-PLAN.md` and
+approved it on 2026-09-29 with four changes, all of which are folded in below.
+The direction is settled; the per-piece detail is filled in with him as each is
+built (ADR-0108's checklists).
+
+**The four changes:** (1) the arrangement is built before the device strip —
+step 7 is "the first thing you can make a track in", so the track comes first,
+and the arrangement is also the first thing that moves every frame, so it tests
+the per-window clock earliest; (2) the plan carries what "make a track" actually
+needs; (3) the plan carries a UI test strategy, including a GUI build on Linux
+and Windows as well as macOS; (4) **deleting a device closes its floating
+window, and undo restores the device, not the window.**
+
+Step 7 is the minimal arrangement UI. `UI-ARCHITECTURE.md` §1–§2 already give
+the layout and the component tree and §8–§11 are decided in ADR-0050, so this
+does not redesign the shell. It settles what that plan cannot proceed without,
+and names what it refuses to decide.
+
+### Decision
+
+**1. One frame clock PER WINDOW, not one on the root.** *(Approved.)*
+
+`UI-ARCHITECTURE.md:248-249` says a single `juce::VBlankAttachment` on the root
+drives the whole shell. **ADR-0063 d3 says per-window, and it is right:** a
+window on a second monitor has a different refresh rate. That ADR calls this
+*"the interaction worth catching now rather than at step 7"* and says *"this
+lands in mac's lane"* — and step 7 is where it lands.
+
+Each window owns a clock and a coalesced dirty set; the source of truth is
+shared. **An OpenGL view attaches to its window's clock and never drives its
+own repaint** — `setContinuousRepainting` is the second clock ADR-0183 d4
+already considered and refused.
+
+Cheap now, expensive later: a dirty set written as one global set cannot be
+split per window without touching every component that marks dirt. The
+analyser's big floating window (ADR-0183 d4) and every plug-in editor
+(ADR-0076) sit on this seam.
+
+**2. The UI's `SnapshotReader` is NOT `SnapshotPublisher::AudioRead`.** *(Approved.)*
+
+`AudioRead`'s safety argument requires **exactly one reader**, moving only
+forward, announcing before it dereferences (`publisher.hpp:38-41, 147-170`).
+A second reader storing into `inUse_` breaks epoch reclamation: the retired
+graph is freed while the UI still holds it.
+
+The obvious implementation is three lines and is wrong, which is why this is
+written down before someone writes them. The UI gets its own read path. ADR-0050
+d3's rule is unchanged: **one reference at the top of the frame, shared by every
+component**, because a mixer and a timeline rendering different snapshots in one
+frame is that ADR's failure arriving through timing.
+
+**Measured 2026-09-29, and it raises the stakes:** `ProjectPublisher` — the
+alias at `engine/snapshot.hpp:114` — has **zero references anywhere in the
+repository**, tests included. Nothing has ever published an `engine::Snapshot`.
+`SnapshotBuilder` gained its first production caller only on 2026-09-29
+(`engine/gain_stage.cpp:93`, ADR-0195's Auto Gain Stage). Step 7.1 is therefore
+the **first** user of the publish side, not a second user of an established one.
+
+**3. The floating-window host is built once, before anything needs two.**
+*(Approved; built at step 7.5 under the director's reordering.)*
+
+The analyser's window (ADR-0183 d4), plug-in editors (ADR-0076) and any undock
+(ADR-0063 d1) are one mechanism. Three properties belong to the host and not to
+its callers:
+
+- **Undocking REPARENTS the same component** into a `juce::DocumentWindow`
+  (ADR-0063 d1). Never a second instance — that is two views of one thing, free
+  to disagree. **But ADR-0116 d1/d4 requires a genuine second view as well**:
+  the analyser's panel stays docked and its big view is a separate view of the
+  same model, **both alive at once**. The host expresses both shapes, because a
+  reparent-only host cannot express the second.
+- **A restored rectangle carries monitor identity and clamps to the current
+  display arrangement** (SPEC §8.4, a MUST). Restoring `x=3200` on a machine
+  that lost its second monitor puts the window offscreen, and the clamp has to
+  live wherever windows are created.
+- Each window owns its clock, per decision 1.
+
+**4. `MainSplit` is a panel→slot map, not a `StretchableLayoutManager`.**
+*(NOT YET ACKNOWLEDGED — see "Open" below.)*
+
+`UI-ARCHITECTURE.md:55` specifies one; **ADR-0080 rules it out**, and nobody
+had read that ADR until a completeness pass went looking for what nobody had
+read. A `StretchableLayoutManager` is slot-indexed and holds the widths
+itself, which is the `leftWidth`/`rightWidth` shape ADR-0080 d2 names as the
+bug. A width belongs to the PANEL and follows it across a side swap (d2);
+minima are per panel and a swap that does not fit refuses **with a message**
+(d3); a swap reorders and never reconstructs (d4); splitters own the widths
+because JUCE flex has no draggable divider (d5).
+
+Note that this amendment touches `UI-ARCHITECTURE.md:55`, inside **§2, the
+component tree** — not §8. The earlier title of this entry said §8 and was
+wrong about its own scope.
+
+**5. The parameter feed is a message-thread coalescer, not any window's frame.**
+
+ADR-0181 d3 says the feed emits *"on the one UI clock (ADR-0050 d1)"* —
+which decision 1 replaces. Two things force it: the control API's surface
+client is **in no window at all**, and two windows would otherwise drain
+different frames. The feed coalesces on the message thread over one shared
+publication; each window and the control API drain it. Meter and scope-tap
+reads are per window over that same publication, or ADR-0050 d3's "one
+snapshot per frame" holds inside a window and breaks between them.
+
+ADR-0129 d3 is independent corroboration for per-window that neither this
+entry nor the plan had cited: every native window keeps its own zoom and scale
+multiplier, persisted per window per display.
+
+**6. The key map lives in `src/adi/settings/`, and step 7 installs a command
+layer on every window.** *(The command layer is decided; the map's home is
+PROPOSED — see "Open".)*
+
+Every row of ADR-0129's checklist — the gate step 7 is measured by — is a
+keyboard gesture. Under decision 1 a key pressed while the analyser's window
+has focus reaches **that** peer, so without an application-level command
+target on every window the host creates, spacebar stops the transport in one
+window and does nothing in the other. `ApplicationCommandManager` and
+`KeyPressMappingSet` appear nowhere in `docs/`. **The command layer is not
+optional and is built at 7.2.**
+
+ADR-0047 §1 left the map's home open and said it is app-scoped and belongs
+outside the `.adi`. `src/adi/settings/` already carries a `shortcuts.*` page
+(`registry.cpp:506`). That is the proposal, and it is still a proposal.
+
+**7. Deleting a device CLOSES its floating window. Undo restores the device,
+not the window.** *(The director's ruling, 2026-09-29. It reverses this entry's
+own earlier proposal.)*
+
+This entry previously argued the close was *not implementable* and proposed an
+inert window instead. **The ruling stands and the argument was wrong** — not
+about the engine, but about what follows from it. The engine facts are
+unchanged, and they decide *how* the close is implemented:
+
+- `Session::refresh` does not destroy a deleted device; it **RETIRES** the row —
+  kept alive, out of every chain (`session.hpp:108`, `session.cpp:291-305`),
+  `trackId` zeroed (`session.hpp:105`) — and `instanceFor()` returns a pointer
+  that stays valid forever and is **not guarded by `retired`**
+  (`session.cpp:60-73`). So there is no crash, and **no push event**.
+- **Undo brings the device back** (`session.cpp:280-287`).
+
+**Therefore the close is a poll.** The host holds a `deviceId` and reads
+`Session::entryFor(deviceId)->retired` (`session.hpp:226`, `session.cpp:60-63`)
+at the top of its frame; `false → true` closes the window; `true → false` is an
+undo and does nothing, per the ruling.
+
+**Why a poll and not a check after the UI's own op:** `Session::refresh` is no
+longer UI-initiated only. `Session::autoGainStage` calls it at
+`engine/gain_stage.cpp:171` (ADR-0195, merged 2026-09-29), so a retire can fire
+inside an engine call the frame loop did not schedule. There is precedent for
+exactly this poll in shipped code: `ParamOps::attachSession` skips entries on
+`e.placeholder || e.retired` (`param_ops.cpp:154`), its header documenting the
+contract as *"Call again after `Session::refresh`"* (`param_ops.hpp:116-118`).
+
+**One consequence, decided here as the cheapest reading of the ruling:** the
+`window_state` row (`schema.sql:931`, keyed `ref_id = device_id`) is **left in
+place** when the window closes. The ruling says undo does not reopen the window;
+it does not say the geometry is forgotten. Keeping the row costs nothing and
+means reopening that device's window later lands where it was. `window_state`
+has no reader or writer in shipped code today; step 7 is its first.
+
+**8. How the UI is tested.** *(The director's third change.)*
+
+Three mechanisms, all greenfield — there is no UI test target, no offscreen
+harness, no image comparison and no synthesised-event driver in `tests/` today.
+
+- **Offscreen render and compare.** `Component::createComponentSnapshot`
+  (vendored JUCE **9.0.2**, `juce_Component.h:1163`) reads no peer, no display
+  and no run loop. **`SoftwareImageType{}` is passed explicitly**, because the
+  default `NativeImageType` substitutes ARGB for RGB on macOS
+  (`juce_CoreGraphicsContext_mac.mm:297-300`) but not on Linux
+  (`juce_Image.cpp:644-648`) — comparing bytes across platforms without it
+  produces differences that have nothing to do with the UI.
+- **Synthesised interaction, in two honest tiers.** JUCE ships **no mock peer**:
+  `Component::internalMouseDown`/`Up` are private and friended to
+  `ComponentPeer` alone (`juce_Component.h:2719-2720`), so calling the public
+  `mouseDown` virtual bypasses hit-testing, capture, click counting and
+  listeners — it tests the handler, not the interaction. **Keyboard is real**
+  (`keyPressed` is public, `juce_Component.h:1928`), which is the tier that
+  matters, because ADR-0129's gate is entirely keyboard. A fake `ComponentPeer`
+  (29 pure virtuals; `createNewPeer` is a protected virtual built for it,
+  `juce_Component.h:2761`) is **deferred to 7.3**, when real hit-testing exists
+  to justify it.
+- **CI on three platforms.** Today one job builds with JUCE (`ci.yml:653`,
+  macOS and Windows only; Linux absent on purpose, `ci.yml:648-651`). The GUI
+  modules **already compile** there, because `juce_audio_processors` depends on
+  `juce_gui_extra` → `juce_gui_basics` — so "add Linux" and "add a GUI build"
+  are the same apt problem. **xvfb is not needed for the offscreen tier**: on
+  Linux both image types produce `SoftwarePixelData` rasterised in software
+  (`juce_Image.cpp:625-648`) and X11 is `dlopen`'d, never linked
+  (`juce_XSymbols_linux.h:645`). That is a **source-level conclusion, not an
+  executed one**, and it is settled by one experiment — a small console app
+  snapshotting under `env -u DISPLAY` — before the Linux leg is written.
+
+**A GUI test binary lives behind `ADI_WITH_JUCE` and cannot join the default
+required matrix.** `ADI_WITH_JUCE` defaults OFF (`CMakeLists.txt:908`) and
+`CMakeLists.txt:900-905` states that the JUCE-off build must stay green on every
+ABI; the harness deliberately does not link JUCE today.
+
+**9. ADR-0200 d5's step-7 requirements are carried by this plan.**
+
+ADR-0200 landed after this entry was first written and assigns requirements to
+**"step 7, mac"** by name: every action also reachable without hover, right
+button or modifier; gestures as pure functions from input to parameter change;
+nothing shown only on hover; components sized by their parent with no desktop
+minimum; and the device strip's floor **a desktop default, not a constant in
+the component** — which is this entry's own unverified-169 rule arriving from a
+second direction.
+
+**The one real consequence:** ADR-0129's checklist is **entirely modifier
+gestures**. ADR-0200 does not ask for them to be removed, but each now needs a
+no-modifier equivalent, so every row of that gate acquires a second row. The
+table is written with the director at 7.2, alongside the manual checklists.
+
+### Open — put to the director, not answered
+
+1. **Decision 4 (`MainSplit`).** The approval of 2026-09-29 says *"Both of your
+   amendments to `UI-ARCHITECTURE.md` are right"* and names the per-window clock
+   and `SnapshotReader`. The `MainSplit` amendment was in the same PR and is not
+   mentioned. It is carried as **not yet acknowledged** rather than counted as
+   approved. Nothing depends on it before 7.2.
+2. **Decision 6's map home** (`src/adi/settings/`, `shortcuts.*`). Not addressed
+   in the reply. ADR-0129's gate cannot be fully met while it is open, so it is
+   needed before 7.2 completes.
+
+### What this refuses to decide
+
+1. **The 169-pixel floor is the director's figure and is UNVERIFIED**, confirmed
+   as such in his reply of 2026-09-29. The measurement against a live Live 12 is
+   with him. The plan carries it as unverified and does not harden it into a
+   constant — now required twice over, by ADR-0184 and by ADR-0200 d5. It is
+   also a deliberate departure: Live's Device View is fixed height (ADR-0184
+   d1–d2, dated 2026-09-27).
+2. Whether `ArrangementCanvas` gets an `OpenGLContext` — deferred to a step-7
+   profile, and the deferral survives ADR-0183.
+3. The source of `Record::playing`, and who calls `ParamOps::drain` at run
+   time — both named as not decided by ADR-0181 d3 and ADR-0124.
+4. Live's Delete warning before `device.setPanel`, which ADR-0154 names as the
+   UI's job and leaves open.
+5. Whether the fake `ComponentPeer` of decision 8 is written at all — decided at
+   7.3.
+
+### Two engine gaps this plan sends back rather than absorbing
+
+Measuring what "make a track" needs (the director's second change) found two
+things missing in the engine, not in the UI. Step 7 must not paper over either
+with raw SQL:
+
+- **`Store::create` never inserts the `project` row.** So `project.setName`
+  silently updates nothing on a brand-new file (`ops_catalog.cpp:309-315`) and
+  the snapshot falls back to 48 kHz (`snapshot.cpp:130-134`). **Save As does not
+  exist in any form**, though SPEC §107 and §1070 both assume it.
+- **No op in the 73-op catalogue writes an `audio_clips` row.** Every such row
+  in the tree is raw SQL in a test or in `tools/make_demo_project.py:104`. So
+  there is no undoable path from "a file and a track" to "a clip that plays" —
+  which is step 7.3's headline gesture — and `importMedia` leaves `sample_rate`,
+  `channels`, `frames` and `bit_depth` NULL (`media/media_ops.cpp:191-199`).
+
+### The parity gate is adopted, not rewritten
+
+ADR-0108: step 7 closes as **verified, not done** — the checklists pass *and*
+Adi signs a side-by-side session against a live Live 12, dated, with every
+deviation recorded. The checklist is written **from the manual chapter before
+the feature**, as the acceptance test rather than a report afterwards. Decision
+8's tests check that the code does what it was built to do; they are not a
+substitute for the signed session.
+
+**ADR-0129's table is adopted as-is.** It is already the first checklist under
+ADR-0108 and cites the manual's §6.1, §6.2, §6.9, §41, §41.9 and §41.16 with
+three dated approvals. A second navigation checklist beside it is the
+duplication ADR-0108 exists to prevent. Chapter numbers for the remaining
+pieces are filled in with the director before each is built; this entry invents
+none.
+
+**The rows are requested, not written** (win, 2026-09-29). The A2000 is turning
+the Live 12 manual into checklist rows — behaviour, page, verbatim quote — and
+win sends them checked. Before each piece is built, mac asks win for that
+chapter's rows. Writing one here that the A2000 has already produced is
+ADR-0108's duplication arriving from a new direction: two checklists for one
+behaviour, and the second one unchecked.
+
+**GUI reference maps exist and are asked, not guessed.** win holds the drone's
+summaries of helio-sequencer (a JUCE app, the closest cousin), Ardour's editor,
+zrythm's GUI and JUCE's own `gui_basics`/`graphics`/`opengl`, and answers a
+specific question from them checked against the source. `STEP-7-PLAN.md` §6
+lists the questions step 7 already knows it has. A reference map is
+corroboration, not authority: where one disagrees with an ADR, the ADR wins and
+the disagreement is recorded rather than quietly followed.
+
+### Why a plan at all
+
+Step 6's host half merged four PRs, and **four of its defects were found by
+building the next piece rather than by reviewing the previous one**: a commit
+that silently stopped every CLAP main-thread callback, a `missing` flag that
+was decorative, dead code in the Airwindows filter, and a guard that was both
+illegal and blind. Re-reading the diffs found none of them.
+
+So the build order in the plan is chosen on one property: **each step is the
+thing that would expose the step before it being wrong.** That is the only
+review mechanism that has demonstrably worked here. The director's reordering
+serves the same property: the arrangement is the first thing that moves every
+frame, so building it at 7.3 tests the per-window clock earlier than the
+original order did.
+
+---
+
 ## ADR-0200 — ADI Mobile is designed now and built last: the same engine and format on iOS and Android, three modes, and what the desktop must not foreclose — `DECIDED (direction)` (2026-09-29) — **DIRECTOR'S DIRECTIVE; AMENDS FEATURES §11 ("Mobile. Not until desktop is genuinely good"); ADDS ROADMAP STEP 15; THREE CORRECTIONS; iOS OUTSIDE THE APP STORE (DIRECTOR)**
 
 **Director's directive:**
