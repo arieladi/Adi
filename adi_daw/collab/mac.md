@@ -2156,3 +2156,53 @@ completes; nothing blocks 7.1.
   component, repaint coalescing, two live views of one model, and a generic
   parameter panel's layout. A map is corroboration, not authority: where one
   disagrees with an ADR, the ADR wins and the disagreement gets recorded.
+
+## 2026-09-29 — step 7.1: the seams, and two plants that earned their keep
+
+`src/adi/ui/snapshot_reader.hpp`, `src/adi/ui/op_submitter.hpp`,
+`tests/test_ui_seams.cpp`. 69 checks, headless, no JUCE.
+
+**The design failed review twice before any of it was written, and that was the
+point.** v1 invented a `ProjectSource` that published, and three of its four
+blockers followed from that one overreach. The worst was a use-after-free:
+it took its copy through `publisher.peek()`, which hands back a bare pointer
+under a section header that says *audio thread*, and whose own comment says the
+rule making it safe belongs to the announcing caller. Two critics independently
+built the same interleaving. `host.hpp` already guards this exact shape and
+`test_host.cpp` regression-tests it — v1 cited that guard to justify its
+`shared_ptr`, then did the forbidden thing two lines later.
+
+The fix was scope, not cleverness: the plan defines 7.1 as a reader and a
+submitter *tested against a hand-built `Snapshot`*, and never asked 7.1 to own
+publishing. Nothing in `adi::ui` publishes. The bridge — who owns the frozen
+cell, who calls `collect()` — goes to win, because it decides who owns engine
+state.
+
+**Plant A passed, which means it found dead code.** I had the submitter strip
+`selBefore` from every op after the first. Removing the line changed nothing:
+`ops.cpp:389` already writes the column only when `i == 0`. My line was a second
+implementation of a rule the journal owns, and the check that "covered" it was
+testing the engine, not me. Line deleted; the check kept and reworded to say
+honestly that it pins the journal's guarantee.
+
+**Plant B failed correctly, on the second attempt.** Making the reader hold a
+raw pointer instead of a `shared_ptr` broke exactly the seven checks in
+`outlivesItsOwner` and nothing else. The first attempt was inconclusive because
+the plant did not compile — and my script printed "BUILD OK" and ran a STALE
+binary reporting PASS. Same trap as before. The gate is: the file changed AND
+the build succeeded AND then the test failed, and the restore verified
+byte-identical.
+
+**A correction I had to make twice.** I told the director that
+`tools/test_all.sh` fails on a README headline mismatch, having read `exit
+"$fail"` myself. win changed it on 2026-09-29 — it is now a note, because
+"every PR touched this one line and each merge turned the next PR red." I read
+the file before that change merged and did not re-read after. The merged plan
+carried the wrong instruction and told a future reader to do the thing win's
+comment forbids; fixed here. **Re-pin every citation after a merge, including
+the ones you verified yourself an hour ago.**
+
+**Housekeeping:** there are 14 iCloud conflict copies in `adi_daw/tools/`
+(`validate_pd 2.py` and friends). All untracked — confirmed with `git ls-files`,
+not by name — but `test_all.sh`'s validator glob picks them up and runs them, so
+a local run reports more validators than exist.
