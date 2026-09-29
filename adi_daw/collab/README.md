@@ -253,6 +253,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | Saturator DSP/builtin/patch, tests/test_saturator*.cpp, cmake/devices/saturator.cmake | win_codex - mission 5 delegated by win | `codex/saturator-pd` | 2026-09-29 |
 | Echo DSP/builtin/patch, tests/test_echo*.cpp, cmake/devices/echo.cmake | win_codex - mission 5 delegated by win | `codex/echo-pd` | 2026-09-29 |
 | `CMakeLists.txt`, `cmake/devices/*.cmake` (migration only) | win_codex — delegated by win | `codex/pd-device-cmake` | 2026-09-29 |
+| `src/adi/dsp/vocoder.*`, `src/adi/pd_builtins/vocoder_tilde.cpp`, `pd/devices/Vocoder.pd`, `tests/test_vocoder*.cpp`, `cmake/devices/vocoder.cmake` | win_codex — delegated by win | `codex/vocoder-pd` | 2026-09-29 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
