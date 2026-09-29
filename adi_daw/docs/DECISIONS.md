@@ -15767,3 +15767,46 @@ original order did.
 
 - **Which phones.** The minimum iOS and Android versions, and the CPU budget a phone must meet. These are
   measured, not guessed, at step 15.
+
+---
+
+## ADR-0201 — The UI reads project state from one message-thread cell, `ProjectView`; no publisher, no epoch — `DECIDED` (2026-09-29) — **ANSWERS mac's open question on #187 (step 7.1); AMENDS ADR-0050 d3's "snapshot handoff" for the UI**
+
+**The question (mac, #187):** who owns the frozen cell the UI's `SnapshotReader` copies from, and who calls
+`ProjectPublisher::collect()`? `ProjectPublisher` has never been used, so the decision was free.
+
+### Decisions
+
+1. **Nobody calls `collect()`, because nothing crosses threads.** The audio thread never reads an
+   `engine::Snapshot`: it plays from the realised graph (ADR-0077, ADR-0122). Ops commit on the message
+   thread, and the UI renders on it. A single thread needs no epoch reclamation. An old snapshot lives exactly
+   as long as the last `shared_ptr` to it, which is the frame that took it.
+
+2. **`engine::ProjectView` is the cell** (`src/adi/engine/project_view.*`, win's).
+   - It holds one `shared_ptr<const Snapshot>` and a generation counter.
+   - `refresh(store)` rebuilds from the store, sharing every unchanged node (SnapshotBuilder, ADR-0019).
+   - `current()` returns the snapshot.
+   - A frame calls `current()` once and hands that pointer to every component (ADR-0050 d3), so a timeline and
+     a mixer in one frame never disagree.
+
+3. **Who calls `refresh`:** whatever commits.
+   - `ui::OpSubmitter` calls it after each successful commit, undo and redo, and the shell calls it after a
+     load.
+   - Engine paths that change the project without an op don't exist today. If one appears, it calls `refresh`
+     too.
+
+4. **What is not in it:** values that move without an op. The playhead, meters, and a parameter's playing value
+   (`Record::playing`) are lock-free slots written by the audio thread (ADR-0050 d4, ADR-0181 d3), not snapshot
+   fields.
+
+5. **If a second thread ever needs a snapshot** (a device-thread commit, a background reader),
+   `SnapshotPublisher` is the tool, and that change gets its own ADR. `ProjectView` is message-thread only by
+   construction, and its header says so.
+
+**Tested** (`tests/test_project_view.cpp`, 14 checks):
+- a commit, an undo and a redo each show after refresh;
+- a snapshot a frame holds never changes under it;
+- unchanged tracks are shared;
+- a refresh with no change shares everything.
+
+A planted refresh that rebuilds without sharing fails two checks.

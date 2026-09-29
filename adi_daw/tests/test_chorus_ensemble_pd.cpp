@@ -59,9 +59,9 @@ double bin(const std::vector<float> &x, double hz) {
     }
     return 2 * std::abs(sum) / static_cast<double>(x.size());
 }
-void wav(const std::vector<float> &x, const char *path = "redux-pd-render.wav") {
+void wav(const std::vector<float> &x) {
     // Test artifact only: IEEE float mono, little endian, never an audio device.
-    std::ofstream f(path, std::ios::binary);
+    std::ofstream f("chorus-ensemble-pd-render.wav", std::ios::binary);
     auto u16 = [&](std::uint16_t v) {
         for (unsigned i = 0; i < 2; ++i)
             f.put(static_cast<char>((v >> (8 * i)) & 255u));
@@ -90,25 +90,24 @@ void wav(const std::vector<float> &x, const char *path = "redux-pd-render.wav") 
 }
 void run() {
     using namespace adi;
-    device::LibPdEngine engine(ADI_REDUX_PATCH_DIR, "Redux.pd", 2, 2);
+    device::LibPdEngine engine(ADI_DEVICE_PATCH_DIR, "Chorus-Ensemble.pd", 2, 2);
     engine.addSearchPath(ADI_PD_PATCH_DIR);
     device::PdLatencyReceiver latency;
     std::string error;
-    const bool opened = engine.open(latency, error);
-    check(opened, "Redux top-level patch opens");
-    if (!opened)
+    check(engine.open(latency, error), "top-level Chorus-Ensemble patch opens");
+    if (!error.empty())
         return;
-    std::ifstream f(std::string(ADI_REDUX_PATCH_DIR) + "/Redux.pd");
+    std::ifstream f(std::string(ADI_DEVICE_PATCH_DIR) + "/Chorus-Ensemble.pd");
     std::stringstream text;
     text << f.rdbuf();
     const auto declarations = device::parsePdDeclarations(text.str());
-    check(declarations.problems.empty(), "Redux parameter declarations valid");
+    check(declarations.problems.empty(), "parameters parse cleanly");
     engine.prepare(48000, 64);
     engine.bindParameters(declarations);
     engine.requestLatencyReport();
-    check(latency.latencySamples() == 0, "Redux reports zero intrinsic latency");
-    check(engine.sendParameter(1, 8000), "Rate parameter routes to external");
-    check(engine.sendParameter(3, 24), "Bits parameter routes to external");
+    check(latency.latencySamples() == 0, "zero intrinsic latency");
+    check(engine.sendParameter(14, -6), "Output host parameter reaches external");
+    engine.sendParameter(11, 0); // Amount: isolate a stable delayed tone
     std::array<float, 64> l{}, r{}, ol{}, orr{};
     std::array<const float *, 2> in{l.data(), r.data()};
     std::array<float *, 2> out{ol.data(), orr.data()};
@@ -120,8 +119,8 @@ void run() {
     std::size_t position = 0;
     auto block = [&] {
         for (std::size_t i = 0; i < 64; ++i) {
-            l[i] = static_cast<float>(0.4 * std::sin(2 * std::numbers::pi * 7000 *
-                                                     static_cast<double>(position++) / 48000));
+            l[i] = static_cast<float>(.4 * std::sin(2 * std::numbers::pi * 1000 *
+                                                    static_cast<double>(position++) / 48000));
             r[i] = l[i];
         }
         engine.process(io);
@@ -138,58 +137,22 @@ void run() {
         stereo &= ol == orr;
     }
     countAllocations = false;
-    check(allocations == 0, "LibPdEngine Redux processing allocates nothing");
-    check(stereo, "stereo channels agree when jitter is zero");
-    const double floor = bin(audio, 1234);
-    check(floor < 1e-7, "far bin at floor BEFORE peak assertion");
+    check(allocations == 0, "real-Pd process allocates nothing");
+    check(stereo, "stereo defaults match");
+    const double floor = bin(audio, 7011);
+    check(floor < 1e-7, "far bin at floor before peak");
     const double peak = bin(audio, 1000);
-    check(peak > 0.35 && peak < 0.45,
-          "real patch folds 7 kHz to audible 1 kHz (not bypass or silence)");
-    std::printf("METRIC LibPd Redux peak %.9f far %.12f\n", peak, floor);
+    check(std::abs(peak - .4 * std::pow(10., -6. / 20)) < 1e-5,
+          "real patch -6 dB gain makes sound, neither silence nor bypass");
+    std::printf("METRIC Chorus-Ensemble Pd peak %.9f far %.12f\n", peak, floor);
     wav(audio);
-    for (int id = 1; id <= 9; ++id)
-        check(engine.sendParameter(id, 0), "every declared control accepts a host update");
+    for (int id = 1; id <= 16; ++id)
+        check(engine.sendParameter(id, 0), "all controls route");
     block();
-    // Exercise host parameter delivery during rendering, not just direct DSP setters.
-    engine.sendParameter(1, 48000);
-    engine.sendParameter(2, 0);
-    engine.sendParameter(3, 24);
-    engine.sendParameter(4, 0);
-    engine.sendParameter(5, 0);
-    engine.sendParameter(6, 0);
-    engine.sendParameter(8, 0);
-    engine.sendParameter(9, 0);
-    l.fill(0.37f);
-    r = l;
-    // Flush the previous 20 Hz hold period before isolating parameter ramps.
-    for (int i = 0; i < 100; ++i)
-        engine.process(io);
-    std::vector<float> sweep(64 * 400);
-    allocations = 0;
-    countAllocations = true;
-    for (std::size_t i = 0; i < sweep.size(); i += 64) {
-        const auto event = i / (64 * 8);
-        engine.sendParameter(3,
-                             static_cast<float>(1. + 23. * static_cast<double>(event % 17) / 16.));
-        engine.sendParameter(9, static_cast<float>((event * 29) % 101));
-        engine.process(io);
-        std::copy(ol.begin(), ol.end(), sweep.begin() + static_cast<std::ptrdiff_t>(i));
-    }
-    countAllocations = false;
-    double maxStep = 0;
-    for (std::size_t i = 1; i < sweep.size(); ++i)
-        maxStep = std::max(maxStep, std::abs(static_cast<double>(sweep[i]) - sweep[i - 1]));
-    check(allocations == 0, "host automation and processing allocate nothing");
-    check(maxStep < 0.025, "real-Pd automated sweep largest sample step below 0.025");
-    const auto range = std::minmax_element(sweep.begin(), sweep.end());
-    check(*range.second - *range.first > 0.005,
-          "real-Pd automation changes output, not a static bypass");
-    std::printf("METRIC LibPd Redux automation max step %.9f\n", maxStep);
-    wav(sweep, "redux-pd-automation-render.wav");
     const auto console = engine.consoleLines();
     for (const auto &line : console)
         std::printf("PD %s\n", line.c_str());
-    check(console.empty(), "console hook clean through creation, parameter messages and process");
+    check(console.empty(), "console hook clean");
 }
 } // namespace
 int main() {

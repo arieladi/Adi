@@ -230,6 +230,7 @@ add_library(adi_core STATIC
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
+    src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
     src/adi/dsp/biquad.cpp
@@ -748,6 +749,10 @@ add_test(NAME adi_param_edits_tests COMMAND adi_param_edits_tests)
 
 target_link_libraries(adi_engine_tests PRIVATE Threads::Threads)
 add_test(NAME adi_engine_tests COMMAND adi_engine_tests)
+# ADR-0201: the UI's project-state cell, message thread only.
+add_executable(adi_project_view_tests tests/test_project_view.cpp)
+target_link_libraries(adi_project_view_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_project_view_tests COMMAND adi_project_view_tests)
 
 # A second binary rather than a second file in adi_tests: the projection has no
 # dependency on the blob layer and testing it in isolation keeps that true. If
@@ -1250,6 +1255,12 @@ add_test(NAME adi_transport_tests COMMAND adi_transport_tests)
 add_executable(adi_curves_tests tests/test_curves.cpp)
 target_link_libraries(adi_curves_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_curves_tests COMMAND adi_curves_tests)
+# Step 7.1 (ADR-0180): the UI's two seams, headless. No JUCE -- the read half is
+# a shared_ptr over engine::Snapshot and the write half wraps OpJournal, so this
+# builds and runs on every ABI like the rest of the suite.
+add_executable(adi_ui_seams_tests tests/test_ui_seams.cpp)
+target_link_libraries(adi_ui_seams_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_ui_seams_tests COMMAND adi_ui_seams_tests)
 # ADR-0159 part two: automation read into the engine, not yet played.
 target_sources(adi_core PRIVATE src/adi/engine/automation.cpp)
 add_executable(adi_automation_tests tests/test_automation.cpp)
