@@ -225,6 +225,7 @@ add_library(adi_core STATIC
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
+    src/adi/controller_maps.cpp
     src/adi/history.cpp
     src/adi/digest.cpp
     src/adi/check.cpp
@@ -1278,6 +1279,9 @@ add_test(NAME adi_dynamic_eq_gesture_tests COMMAND adi_dynamic_eq_gesture_tests)
 add_executable(adi_gain_stage_tests tests/test_gain_stage.cpp)
 target_link_libraries(adi_gain_stage_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)
+add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
+target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_controller_maps_tests COMMAND adi_controller_maps_tests)
 
 add_executable(adi_redux_tests tests/test_redux.cpp)
 target_link_libraries(adi_redux_tests PRIVATE adi_core adi_warnings)

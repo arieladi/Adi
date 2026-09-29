@@ -122,6 +122,15 @@ std::vector<OpRequest> corpus() {
     // that quietly used rowid order instead would diverge.
     op("track.create", {{"id", 7}, {"kind", "midi"}, {"name", "Drums"},
                         {"parent", 12}, {"index", 3}}, "Add Drums under Bus");
+    Payload binding={{"device_name","Keys"},{"protocol","midi"},{"channel",1},
+        {"msg_type","cc"},{"msg_num",7},{"osc_path",nullptr},{"target_kind","track"},
+        {"target_id",10},{"target_param","volume"},{"mode",0},{"takeover",1},
+        {"range_min",0.0},{"range_max",1.0},{"enabled",true}};
+    op("controller.bind", {{"id",81},{"binding",binding}}, "Learn volume");
+    binding["target_param"]="pan";
+    op("controller.bind", {{"id",81},{"binding",binding}}, "Relearn pan");
+    op("controller.unbind", {{"id",81}}, "Unlearn pan");
+    op("controller.bind", {{"id",82},{"binding",binding}}, "Keep project binding");
     op("track.rename", {{"id", 11}, {"name", "Lead Vocal"}}, "Rename Vox");
     op("track.setMute", {{"id", 7}, {"muted", true}}, "Mute Drums");
     op("track.setMute", {{"id", 10}, {"muted", false}}, "Unmute Keys");
