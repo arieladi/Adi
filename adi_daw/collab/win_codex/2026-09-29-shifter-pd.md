@@ -36,3 +36,83 @@ ADR-0187 explicitly says Surge's mapping covers Freq/Ring, not Pitch. Pitch
 requires an additional algorithm, and the Live LFO/envelope/delay/MIDI behavior
 requires adaptation rather than exposing Surge's original controls. Any such
 choice is recorded with its measurements, not advertised as verified Live parity.
+
+## Implementation and parity boundaries
+
+Freq adapts SST's analytic modulation and scalar Hilbert network (upstream
+notices retained), with a sine/cosine sign convention verified by positive and
+negative sideband measurements. Ring follows Live's sine product with optional
+Drive, rather than Surge's diode/unison model. Pitch is an ADI phase-vocoder
+using the already-pinned PFFFT, with all six windows prepared off audio. This
+avoids introducing another dependency and provides a bounded, allocation-free
+pitch path where the Surge-to-Live map has no Pitch equivalent. Pitch reports
+its selected FFT size as latency and delays dry to match; Freq/Ring report zero
+fixed latency (their allpass phase response is not a fixed delay).
+
+These algorithms are functional approximations pending the director's session,
+not a claim of sample-equivalent Live audio. Phase-vocoder transients, ring
+Drive, envelope law and LFO curves remain unverified. MIDI uses the existing
+Pd notein/bendin routing, last-note priority, no new source chooser in the core.
+Sync rates follow the existing io.transport -> adi.transport BPM seam; LFOs
+free-run at that rate, with Offset applying phase. Host source selection is
+outside this DSP/patch PR. Random Phase behavior is approximate; Width mode
+interpolates between a shared and inverted random waveform. These are named
+parity gaps for the supplied checklist follow-up, not silently omitted controls.
+
+## One provisional values table
+
+**Every range, default, unit and curve below is unverified against Live.**
+PB's 0–24-semitone range is stated in the chapter; its default/curve remain
+provisional. The director's supplied rows will replace this table and controls.
+
+| Live control | ADI range | Default | Unit | ADI curve / interpretation |
+|---|---|---|---|---|
+| Mode | 0–2 | 0 | - | Pitch Freq Ring |
+| Coarse | -48–48 | 0 | - | Linear; semitones in Pitch, kHz in Freq/Ring |
+| Fine | -100–100 | 0 | - | Linear; cents in Pitch, Hz in Freq/Ring |
+| Spread | 0–100 | 0 | - | Linear; cents in Pitch, Hz in Freq/Ring; opposite sign on R when Wide |
+| Wide | 0–1 | 0 | - | int |
+| Window | 5–170 | 40 | ms | Log control; nearest power-of-two window, 256–8192 samples; 4x overlap |
+| Delay | 0–1 | 0 | - | int |
+| Delay Mode | 0–1 | 0 | - | int |
+| Delay (free) | 0.1–1000 | 4 | Hz | Log; delay seconds = 1/Hz |
+| Delay (synced) | 0.0625–8 | 1 | beats | Log quarter-note multiplier; 60×beats/BPM |
+| Feedback | 0–95 | 0 | % | lin |
+| Tone | 20–20000 | 10000 | Hz | Log Hz; one-pole feedback lowpass |
+| LFO waveform | 0–9 | 0 | - | Sine Triangle TriangleAnalog Triangle8 Triangle16 SawUp SawDown Rectangle Random RandomSH |
+| Duty | 1–99 | 50 | % | lin |
+| Phase/Spin/Width mode | 0–2 | 0 | - | Phase Spin Width |
+| Phase | 0–360 | 0 | deg | lin |
+| Spin | 0–20 | 0 | % | Linear; right LFO speed increase |
+| Width | 0–100 | 0 | % | Linear; 0 shared random, 100 inverted random |
+| LFO Rate mode | 0–1 | 0 | - | int |
+| Offset | 0–360 | 0 | deg | lin |
+| LFO Rate (free) | 0.01–40 | 1 | Hz | log |
+| LFO Rate (synced) | 0.0625–16 | 1 | beats | Log; LFO Hz = BPM/(60×beats) |
+| LFO Amount | 0–24 | 0 | - | Linear; semitones in Pitch, kHz in Freq/Ring |
+| Env Fol | 0–1 | 0 | - | int |
+| Attack | 0.1–1000 | 10 | ms | Log ms; one-pole peak envelope |
+| Release | 1–5000 | 100 | ms | Log ms; one-pole peak envelope |
+| Envelope Amount | -24–24 | 0 | - | Linear peak-envelope scaling; semitones/kHz by mode |
+| Drive enable | 0–1 | 0 | - | int |
+| Drive | 0–36 | 0 | dB | Linear dB; tanh drive only in Ring |
+| Dry/Wet | 0–100 | 100 | % | lin |
+| Internal/MIDI | 0–1 | 0 | - | Toggle; last positive-velocity note, C4=zero Pitch shift; concert-A frequency for Freq/Ring |
+| Glide | 0–2000 | 0 | ms | Linear ms; exponential note glide |
+| PB | 0–24 | 2 | st | lin |
+
+## Validation
+
+MSVC Debug /WX, Pd enabled: 40 DSP checks and 48 real-Pd checks pass. FFT pitch
+measurement at -1200/-700/+13/+700/+1200 cents has worst error 0.04 cents
+(tolerance 2 cents). Freq's 250 Hz translation rejects its other sideband;
+Ring produces both, and Drive creates harmonics. MIDI note/bend, synced delay,
+Wide/Spread, all LFO shapes, Window latency and block equivalence are covered.
+Blocks 32–4096 are sample-identical. Core and real-Pd Pitch/Freq allocate zero
+(including Windows Debug CRT). Real Pd's 7-to-8 kHz translation measures
+0.399999834 amplitude after checking its far bin, with a clean console.
+
+The real-Pd stereo assertion caught an input/output buffer alias: both stereo
+inputs are now sampled before either output is written. Exact stereo equality
+passes afterward. All audio is rendered offline; shifter-pd-render.wav is a
+float file in the test working directory. Human side-by-side remains pending.
