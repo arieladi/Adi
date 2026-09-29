@@ -83,6 +83,18 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     addAndMakeVisible(title);
     addAndMakeVisible(enabled);
     addAndMakeVisible(configureButton);
+    addAndMakeVisible(expand);
+    expand.onClick = [this] {
+        if (!analyser && strip.makeAnalyser) {
+            analyser = strip.makeAnalyser(id);
+            if (analyser)
+                addAndMakeVisible(*analyser);
+        }
+        if (strip.expandAnalyser)
+            strip.expandAnalyser(id);
+        strip.resized();
+        resized();
+    };
     addAndMakeVisible(search);
     search.setTextToShowWhenEmpty("Find parameter", juce::Colours::grey);
     search.setTitle("Find parameter");
@@ -130,7 +142,12 @@ void DevicePanelView::resized() {
     configureButton.setBounds(4, 29, std::max(0, getWidth() - 8), 24);
     search.setBounds(4, 56, std::max(0, getWidth() - 8), 24);
     search.setVisible(!strip.folded(id));
-    int y = 84;
+    expand.setBounds(4, 82, std::max(0, getWidth() - 8), 22);
+    int y = 108;
+    if (analyser) {
+        analyser->setBounds(4, y, getWidth() - 8, 140);
+        y += 144;
+    }
     for (auto &c : controls) {
         c->setVisible(!strip.folded(id));
         c->setBounds(4, y, std::max(0, getWidth() - 8), 66);
@@ -208,6 +225,9 @@ DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
 }
 void DeviceChainStrip::frame(std::int64_t track) {
     auto next = publication ? publication() : nullptr;
+    for (auto &p : panels)
+        if (p->analyser)
+            p->analyser->frame();
     if (next == presented && track == selectedTrack)
         return;
     selectedTrack = track;
@@ -243,7 +263,9 @@ void DeviceChainStrip::resized() {
     int x = 0, h = 80;
     for (auto &p : panels) {
         int width = folded(p->id) ? 100 : 220;
-        int height = folded(p->id) ? 56 : 84 + static_cast<int>(p->controls.size()) * 66;
+        int height = folded(p->id) ? 56
+                                   : 108 + (p->analyser ? 144 : 0) +
+                                         static_cast<int>(p->controls.size()) * 66;
         p->setBounds(x, 0, width, height);
         x += width + 6;
         h = std::max(h, height);
