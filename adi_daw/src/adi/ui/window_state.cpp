@@ -42,6 +42,21 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.setDeviceHeight(height);
         state.docked = j.at("docked").get<bool>();
         state.aiChatOpen = j.value("aiChat", false);
+        state.timelineLeft = j.value("timelineLeft", 0.);
+        state.pixelsPerQuarter = j.value("pixelsPerQuarter", 48.);
+        state.laneHeight = j.value("laneHeight", 64);
+        if (j.contains("laneHeights"))
+            for (const auto &pair : j.at("laneHeights")) {
+                const auto id = pair.at(0).get<std::int64_t>();
+                const auto h = pair.at(1).get<int>();
+                if (id <= 0 || h < 24 || h > 512)
+                    return WindowState(defaults);
+                state.laneHeights[id] = h;
+            }
+        if (!std::isfinite(state.timelineLeft) || state.timelineLeft < 0 ||
+            !std::isfinite(state.pixelsPerQuarter) || state.pixelsPerQuarter < 1 ||
+            state.pixelsPerQuarter > 4096 || state.laneHeight < 24 || state.laneHeight > 512)
+            return WindowState(defaults);
         return state;
     } catch (const std::exception &) {
         return WindowState(defaults);
@@ -53,7 +68,10 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
             error = "Project is read-only";
             return false;
         }
-        if (!std::isfinite(state.zoom) || state.zoom < .25 || state.zoom > 8 ||
+        if (!std::isfinite(state.timelineLeft) || state.timelineLeft < 0 ||
+            !std::isfinite(state.pixelsPerQuarter) || state.pixelsPerQuarter < 1 ||
+            state.pixelsPerQuarter > 4096 || state.laneHeight < 24 || state.laneHeight > 512 ||
+            !std::isfinite(state.zoom) || state.zoom < .25 || state.zoom > 8 ||
             state.deviceHeight < state.deviceFloor || state.deviceHeight > 4000) {
             error = "Invalid view geometry";
             return false;
@@ -68,11 +86,22 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"deviceHeight", state.deviceHeight},
                             {"docked", state.docked},
                             {"aiChat", state.aiChatOpen},
+                            {"timelineLeft", state.timelineLeft},
+                            {"pixelsPerQuarter", state.pixelsPerQuarter},
+                            {"laneHeight", state.laneHeight},
                             {"panels", nlohmann::json::array()}};
         for (const auto &p : state.panels.slots())
             j["panels"].push_back({{"id", static_cast<int>(p.panel)},
                                    {"width", p.width},
                                    {"collapsed", p.collapsed}});
+        j["laneHeights"] = nlohmann::json::array();
+        for (const auto &[id, h] : state.laneHeights) {
+            if (id <= 0 || h < 24 || h > 512) {
+                error = "Invalid lane height";
+                return false;
+            }
+            j["laneHeights"].push_back({id, h});
+        }
         SQLite::Transaction transaction(store_.db());
         SQLite::Statement st(store_.db(),
                              "INSERT INTO ui_view(scope_kind,scope_id,key,value) VALUES "

@@ -4,6 +4,7 @@
 #include "adi/textproj.hpp"
 #include "adi/ui/project_document.hpp"
 #include "temp_directory.hpp"
+#include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <atomic>
 #include <cstdio>
@@ -46,6 +47,11 @@ void check(bool ok, const char *what) {
         std::printf("FAIL %s\n", what);
     }
 }
+// One value from the store, or empty when the query finds no row.
+std::string value(Store &store, const char *sql) {
+    SQLite::Statement q(store.db(), sql);
+    return q.executeStep() ? q.getColumn(0).getString() : std::string();
+}
 OpRequest track(int id) {
     OpRequest r;
     r.opType = "track.create";
@@ -80,6 +86,15 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         g.fillRect(8, 5, 190, 34);
         g.fillRect(228, 5, root.getWidth() - 228, 34);
         g.fillRect(0, 54, root.getWidth(), 30);
+        // The ruler's numbers and the headers' track names are typography as well.
+        const auto area = root.arrangement.getBounds();
+        g.fillRect(area.getX(), area.getY(), area.getWidth(), ArrangementView::kRulerHeight);
+        const auto headers = root.arrangement.headers.getBounds() + area.getPosition();
+        int laneY = headers.getY() - root.arrangement.geometry.scrollY;
+        for (const auto &trackNode : root.reader().tracks()) {
+            g.fillRect(headers.getX() + 6, laneY + 4, std::max(0, headers.getWidth() - 8), 24);
+            laneY += root.arrangement.geometry.heightFor(trackNode->id);
+        }
         const auto devices = root.deviceArea();
         if (!devices.isEmpty())
             g.fillRect(devices.getX(), devices.getY() + 10, devices.getWidth(), 30);
@@ -449,6 +464,147 @@ int main(int argc, char **argv) {
         document->process(io);
         integrated.frame();
         check(integrated.bpm() == 120, "TransportBar uses granted device rate at tempo boundaries");
+        // Step 7.3 (#199): the arrangement, its keys and its one-component canvas.
+        auto &arrangement = integrated.arrangement;
+        integrated.setSize(1200, 720);
+        const auto cmdKey = juce::ModifierKeys::commandModifier;
+        arrangement.geometry.selectedTrack = 2;
+        check(integrated.keyPressed(juce::KeyPress('t', cmdKey, 0)),
+              "Ctrl/Cmd+T inserts an audio track");
+        check(value(document->store(), "SELECT kind||' '||name FROM tracks WHERE id=3") ==
+                      "audio 3-Audio" &&
+                  arrangement.geometry.selectedTrack == 3,
+              "after the selected track, named by position, and selected");
+        if (!integrated.error().empty())
+            std::printf("status: %s\n", integrated.error().c_str());
+        check(integrated.keyPressed(
+                  juce::KeyPress('t', cmdKey | juce::ModifierKeys::shiftModifier, 0)) &&
+                  value(document->store(), "SELECT kind FROM tracks WHERE id=4") == "midi",
+              "Ctrl/Cmd+Shift+T inserts a MIDI track");
+        check(integrated.undoTitle(false) == "Undo Insert MIDI Track",
+              "an insertion is one named undo step");
+        check(integrated.command(AppCommands::DeleteTrack) &&
+                  document->store().db().execAndGet("SELECT count(*) FROM tracks WHERE id=4")
+                          .getInt() == 0,
+              "Delete Track removes the selected track through its op");
+        check(integrated.command(AppCommands::Undo) && document->synchronise(),
+              "and undo brings it back");
+        integrated.frame();
+        OpRequest clip;
+        clip.opType = "clip.create";
+        clip.payload = {{"id", 1},         {"track", 2},
+                        {"kind", "audio"}, {"name", "Rendered clip"},
+                        {"pos", 0},        {"length", 4 * textproj::kPPQ}};
+        check(document->ops().submit(clip).ok, "arrangement clip created through op");
+        integrated.frame();
+        const auto *mainRow = arrangement.geometry.trackAt(integrated.reader(), 4);
+        const auto *hitTrack = arrangement.geometry.trackAt(integrated.reader(), 64 + 4);
+        check(mainRow && mainRow->id == 1 && hitTrack && hitTrack->id == 2,
+              "every track is a row, in the snapshot's order");
+        check(hitTrack && arrangement.geometry.hit(*hitTrack, 0) &&
+                  !arrangement.geometry.hit(*hitTrack, 4 * textproj::kPPQ),
+              "hit-test includes start and excludes end");
+        check(arrangement.headers.getX() > arrangement.canvas.getX() &&
+                  arrangement.headers.getRight() == arrangement.getWidth() &&
+                  arrangement.canvas.getX() == 0,
+              "the track headers sit to the right of the clips, as Live's");
+        arrangement.geometry.selectedClip = 1;
+        arrangement.geometry.selectionStart = 0;
+        arrangement.geometry.selectionEnd = 4 * textproj::kPPQ;
+        const double beforeScale = arrangement.geometry.scale;
+        check(integrated.keyPressed(juce::KeyPress('z')),
+              "synthesised Z reaches zoom-to-selection");
+        check(arrangement.geometry.scale != beforeScale, "Z changes visible range");
+        check(integrated.keyPressed(juce::KeyPress('x')) &&
+                  arrangement.geometry.scale == beforeScale,
+              "X restores previous zoom");
+        const auto middle = arrangement.geometry.anchor(0);
+        const auto middleX = arrangement.geometry.x(middle);
+        check(integrated.keyPressed(juce::KeyPress('=')) &&
+                  arrangement.geometry.scale > beforeScale &&
+                  std::abs(arrangement.geometry.x(middle) - middleX) < 1,
+              "+ zooms around the selection's middle, which stays put");
+        check(integrated.keyPressed(juce::KeyPress('-')) &&
+                  std::abs(arrangement.geometry.scale - beforeScale) < 1e-9,
+              "- zooms back out around it");
+        auto geometry = arrangement.geometry;
+        geometry.selectionStart = geometry.selectionEnd = 0;
+        geometry.marked = false;
+        check(geometry.anchor(777) == 777, "with no selection or marker, the playhead anchors");
+        const auto anchor = geometry.tick(70);
+        geometry.zoom(2., 70);
+        check(std::abs(geometry.tick(70) - anchor) <= 1, "pointer-anchored zoom preserves time");
+        check(commands.zoomOnSelection(), "Ctrl/Cmd+wheel zooms around the selection by default");
+        check(integrated.keyPressed(juce::KeyPress('w')) && arrangement.geometry.left == 0,
+              "W optimises the width");
+        check(integrated.keyPressed(juce::KeyPress('h')) && arrangement.geometry.heights.empty(),
+              "H optimises the height");
+        arrangement.geometry.resizeTrack(0, 64, true);
+        arrangement.geometry.insert = 0;
+        arrangement.locate();
+        document->process(io);
+        integrated.frame();
+        const auto paints = arrangement.canvasPaints;
+        allocations = 0;
+        audit = true;
+        for (int i = 0; i < 100; ++i) {
+            document->mailbox().post(TransportMailbox::Command::Locate, i * 100);
+            document->process(io);
+            integrated.frame();
+        }
+        audit = false;
+        check(allocations == 0, "moving arrangement playhead frame allocates zero");
+        check(arrangement.canvasPaints == paints && arrangement.playhead.getWidth() == 1 &&
+                  !arrangement.playhead.hitTest(0, 1),
+              "one-pixel playhead never repaints canvas and ignores hits");
+        arrangement.geometry.selectionStart = arrangement.geometry.selectionEnd = 0;
+        arrangement.geometry.wheelHeight(integrated.reader(), 2, 8);
+        check(arrangement.geometry.heightFor(2) == 72 && arrangement.geometry.height == 64,
+              "Alt-wheel changes only target track");
+        arrangement.changed();
+        check(document->views().load("main").laneHeights.at(2) == 72,
+              "track height persists in ui_view");
+        arrangement.geometry.resizeTrack(2, 64);
+        arrangement.changed();
+        const auto opsBeforeDrop =
+            document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+        arrangement.canvas.filesDropped(juce::StringArray{"kick.wav"}, 10, 70);
+        check(!integrated.error().empty() &&
+                  document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() ==
+                      opsBeforeDrop,
+              "an audio drop says it waits for the engine and writes nothing");
+        {
+            UiPeerRoot peerRoot;
+            peerRoot.setSize(integrated.getWidth(), integrated.getHeight());
+            peerRoot.addAndMakeVisible(integrated);
+            peerRoot.setVisible(true);
+            peerRoot.addToDesktop(0);
+            auto *peer = peerRoot.getPeer();
+            check(peer != nullptr, "fake peer created without OS window");
+            const auto origin =
+                peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, 64 + 35})
+                    .toFloat();
+            juce::int64 when = 100000;
+            auto mouse = [&](juce::Point<float> point, int mods) {
+                peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, point,
+                                       juce::ModifierKeys(mods), 1.f, 0.f, when += 100);
+            };
+            arrangement.geometry.selectedClip = 0;
+            mouse(origin, 0);
+            mouse(origin, juce::ModifierKeys::leftButtonModifier);
+            mouse(origin, 0);
+            check(arrangement.geometry.selectedClip == 1 && arrangement.geometry.marked,
+                  "peer dispatch hit-tests, selects the painted clip and places the marker");
+            mouse(origin, juce::ModifierKeys::leftButtonModifier);
+            mouse(origin.translated(48, 0), juce::ModifierKeys::leftButtonModifier);
+            mouse(origin.translated(48, 0), 0);
+            check(arrangement.geometry.selectionEnd == arrangement.geometry.tick(58),
+                  "peer drag capture updates time selection");
+            peerRoot.removeChildComponent(&integrated);
+            peerRoot.removeFromDesktop();
+        }
+        integrated.frame();
+        reference(integrated, "arrangement", write);
         document->release();
     }
     std::printf("%d checks, %d failures\n", checks, failures);
