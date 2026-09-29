@@ -284,7 +284,10 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
         patch_ = nullptr;
         return false;
     }
-    libpd_bind(PdLatencyReceiver::nameFor(dollarZero_).c_str());
+    // KEPT, because it is a handle. `libpd_bind` returns a `libpdreceive`
+    // object and only `libpd_unbind` frees it; the return value reads like a
+    // status and is not one.
+    latencyBinding_ = libpd_bind(PdLatencyReceiver::nameFor(dollarZero_).c_str());
     return true;
 }
 
@@ -303,6 +306,18 @@ void LibPdEngine::close() noexcept {
         patch_ = nullptr;
         dollarZero_ = 0;
     }
+    // UNBIND BEFORE THE INSTANCE GOES, and drop every pointer that lived in
+    // it. A `t_symbol*` comes from the instance's own symbol table
+    // (`dogensym` takes the instance), and `pdinstance_free` frees that table
+    // -- so holding one past this point is a pointer into freed memory, even
+    // if nothing dereferences it today.
+    if (latencyBinding_ != nullptr) {
+        libpd_unbind(latencyBinding_);
+        latencyBinding_ = nullptr;
+    }
+    transportSymbol_ = nullptr;
+    paramSymbols_.clear();
+
     PdRuntime::forgetInstance(instance_);
     // The console owner goes before the instance is freed: a hook that fired
     // after the free would look up a dangling pointer.

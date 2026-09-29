@@ -377,6 +377,13 @@ private:
     /// AUDIO THREAD. One list to `<$0>-aditr`, built on the stack.
     void deliverTransport() noexcept;
 
+    /// What `libpd_bind` handed back for the latency receive name. **It is a
+    /// HANDLE, not a status**: `libpd_bind` returns a `libpdreceive` object
+    /// that only `libpd_unbind` frees, and discarding it leaks one object per
+    /// engine -- each holding a pointer into the instance's symbol table,
+    /// which `pdinstance_free` then frees underneath it.
+    void* latencyBinding_ = nullptr;
+
     Transport transport_{};
     bool transportSet_ = false;
     /// The receive symbol, resolved once in `open` for `sendParameter`'s

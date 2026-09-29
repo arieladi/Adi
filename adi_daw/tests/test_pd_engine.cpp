@@ -1115,6 +1115,54 @@ void testThePatchWindowIsTheCppWindow() {
               std::to_string(worstAt) + ", off by " + std::to_string(worst));
 }
 
+void testManyEnginesOpenedAndClosed() {
+    section("a stress on open/close, because the flake is not reproducible by reading");
+
+    // WHY THIS EXISTS. adi_pd_engine_tests segfaults intermittently on the
+    // Windows MSVC leg and nowhere else -- clean under ASan on macOS over
+    // twenty runs, and a hundred local MSVC runs without it. A fault that only
+    // shows on one runner is usually memory that is free but still readable,
+    // and whether it is readable depends on the allocator. The way to raise
+    // the odds of catching it is to do the thing that frees and reuses, many
+    // times, with instances alive at once.
+    //
+    // Each cycle holds TWO engines, and the one that makes Pd PRINT is
+    // destroyed first. That order is the shape being hunted: the print hook
+    // lives in the instance's own STUFF (z_libpd.c sets
+    // `STUFF->st_printhook`), so an engine whose instance is gone while a hook
+    // still points at it is the asymmetry that makes the crash landing on the
+    // print test suggestive rather than coincidental.
+    std::string err;
+    check(device::PdRuntime::initialise(err), "libpd initialises: " + err);
+
+    constexpr int kCycles = 40;
+    std::int64_t opened = 0, printed = 0;
+    for (int i = 0; i < kCycles; ++i) {
+        LibPdEngine a(patchDir(), "adi-proof.pd", 2, 2);
+        PdLatencyReceiver la;
+        err.clear();
+        if (a.open(la, err)) ++opened;
+
+        {
+            LibPdEngine b(patchDir(), "adi-external-user.pd", 2, 2);
+            PdLatencyReceiver lb;
+            std::string berr;
+            if (b.open(lb, berr)) {
+                for (const auto& line : b.consoleLines())
+                    if (line.find("adi_probe_external") != std::string::npos) { ++printed; break; }
+            }
+        }
+
+        a.prepare(48000.0, 256);
+        Buffers buf(2, 128);
+        auto io = buf.io(2, 128, 0, 128);
+        a.process(io);
+    }
+
+    eqi(opened, kCycles, "every cycle opened its engine");
+    eqi(printed, kCycles, "and every cycle's second engine reported Pd's print");
+}
+
 void testPdWouldReachAnExternalBesideThePatch() {
     section("ADR-0188 d8 -- THE FAULT, PLANTED: Pd reaches a file beside the patch");
 
@@ -1387,6 +1435,7 @@ int main() {
     testThePatchWindowIsTheCppWindow();
     testTheAnalyserAgreesWithTheCppSpectrum();
     testMidiReachesNoteinCtlinAndBendin();
+    testManyEnginesOpenedAndClosed();
     // Last, and on purpose: it dlopens nothing, but it does put a class name
     // on Pd's process-wide load list, and a test that runs after it would be
     // measuring that instead of its own patch.
