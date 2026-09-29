@@ -142,6 +142,15 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        root->mixer.tap = [this](std::int64_t track) {
+            return document_->session().openScope(track, .1, engine::ScopePoint::PostFader);
+        };
+        root->mixer.autoGain = [this](bool lufs) {
+            const bool ok = document_->autoGainStage(lufs);
+            if (root_)
+                root_->say(ok ? "Auto Gain Stage done; one undo step." : document_->error());
+            return ok;
+        };
         root->afterEdit = [this] {
             if (!document_->synchronise())
                 report(document_->error());
@@ -194,6 +203,9 @@ class AdiApplication final : public juce::JUCEApplication,
         bridge_ = std::make_unique<device::DeviceBridge>(*document_);
         bridge_->setRequestedBlockSize(setup.bufferSize);
         manager_.addAudioCallback(bridge_.get());
+        // The meters read taps the running session holds; take them again.
+        if (root_)
+            root_->mixer.retap();
         if (bridge_->mismatchReport().isNotEmpty())
             report(bridge_->mismatchReport().toStdString());
     }
