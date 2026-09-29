@@ -247,6 +247,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `src/adi/ui/**`, `src/juce/ui_*`, step-7 tests, `CMakeLists.txt`, `.github/workflows/ui.yml` (GUI build/test integration) | win_codex — delegated by win while mac is offline | `codex/step7-root-window` | 2026-09-29 |
 | `src/adi/ui/**`, `tests/test_ui_seams.cpp`, `tests/test_panel_layout.cpp`, `docs/UI-ARCHITECTURE.md` (step 7.2, ADR-0080 and ADR-0180) | mac | `mac/step7-shell` | 2026-09-29 |
 | `src/adi/ui/**`, `tests/test_ui_seams.cpp` (step 7.1's seams, ADR-0180) | mac | `mac/step7-seams` | 2026-09-29 |
 | `src/adi/ui/**`, `tests/test_ui_seams.cpp` (step 7.1's seams wired to ProjectView, ADR-0180 and ADR-0201) | mac | `mac/step7-projectview` | 2026-09-29 |
