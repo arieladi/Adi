@@ -160,8 +160,8 @@ void filters() {
 void partitions() {
     std::vector<float> l(16384), r(l.size()), ol(l.size()), orr(l.size()), expected;
     for (std::size_t i = 0; i < l.size(); ++i) {
-        l[i] = static_cast<float>(.3 * std::sin(i * .017));
-        r[i] = static_cast<float>(.2 * std::cos(i * .037));
+        l[i] = static_cast<float>(.3 * std::sin(static_cast<double>(i) * .017));
+        r[i] = static_cast<float>(.2 * std::cos(static_cast<double>(i) * .037));
     }
     for (std::size_t block : {32u, 64u, 128u, 256u, 512u, 1024u, 2048u, 4096u}) {
         U u;

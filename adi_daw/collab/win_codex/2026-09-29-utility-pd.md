@@ -38,3 +38,5 @@ ADI ranges/defaults/units/curves below are unverified against Live except Bass F
 ## Validation
 
 MSVC /WX: 42 native DSP checks and 24 real-Pd checks pass. Both 48/96 kHz cover DC removal, bass/treble separation and complementary mid reconstruction. All channel modes, polarity, Width and M/S extrema, gain, balance and mute are tested. Blocks 32..4096 agree exactly; no process allocations. Real-Pd -6 dB gain produces a 0.200474897 tone from 0.4 input, after a far bin at the floor; all controls route and console is clean. Float WAV only, build/utility-pd-render.wav. Gain smoothing is exponential with exact silence once within 1e-12, not a claim of Live parameter-ramp parity. No README count edited.
+
+Rebased onto #189 and both targets run through committed discovery. Hardened GCC/Apple Clang caught two implicit size_t-to-double conversions in test signal generation; made these explicit and verified with a 64-bit Clang frontend plus the native suites.
