@@ -257,6 +257,10 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
 | `src/adi/dsp/spectrum.*`, `tools/gen_pd_patches.py`, `pd/adi-spectrum.pd`, `src/juce/pd_engine.*`, `tests/test_pd_engine.cpp` | mac (second session) | `mac/pd-spectrum` | 2026-09-28 |
 
+**README's check count is win's, on main (2026-09-29).** PRs never edit the "N checks across M suites"
+line: every PR touched it, so each merge turned the next PR red. `tools/test_all.sh` reports a
+mismatch as a note, not a failure; win measures main after merges and updates the line.
+
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`
 is released — win held it for `adi_tool check` and that branch merged.

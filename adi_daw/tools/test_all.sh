@@ -123,9 +123,10 @@ if [ -f "$readme" ]; then
     claimed=$(grep -oE '\*\*[0-9]+ checks across [0-9]+ suites\*\*' "$readme" | head -1)
     want="**$total checks across $suites suites**"
     if [ -n "$claimed" ] && [ "$claimed" != "$want" ]; then
+        # Not a failure (win, 2026-09-29): every PR touched this one line and each
+        # merge turned the next PR red. PRs leave it alone; win updates it on main.
         echo
-        echo "  README says '$claimed', this run is '$want'"
-        fail=1
+        echo "  note: README says '$claimed', this run is '$want' (win updates it on main)"
     fi
 fi
 

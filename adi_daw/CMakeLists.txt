@@ -1258,6 +1258,9 @@ add_test(NAME adi_midi_clips_tests COMMAND adi_midi_clips_tests)
 
 # ADR-0159: the curve formulas of SPEC §6.3.2, one evaluator for every reader.
 target_sources(adi_core PRIVATE src/adi/engine/curves.cpp)
+add_executable(adi_transport_tests tests/test_transport.cpp)
+target_link_libraries(adi_transport_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_transport_tests COMMAND adi_transport_tests)
 add_executable(adi_curves_tests tests/test_curves.cpp)
 target_link_libraries(adi_curves_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_curves_tests COMMAND adi_curves_tests)
