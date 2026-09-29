@@ -1261,6 +1261,12 @@ add_test(NAME adi_curves_tests COMMAND adi_curves_tests)
 add_executable(adi_ui_seams_tests tests/test_ui_seams.cpp)
 target_link_libraries(adi_ui_seams_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ui_seams_tests COMMAND adi_ui_seams_tests)
+# Step 7.2 (ADR-0080 via ADR-0180 2.3): MainSplit's panel->slot map. Pure
+# arithmetic, so it is tested without a window -- which is where a layout is
+# actually wrong.
+add_executable(adi_panel_layout_tests tests/test_panel_layout.cpp)
+target_link_libraries(adi_panel_layout_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_panel_layout_tests COMMAND adi_panel_layout_tests)
 # ADR-0159 part two: automation read into the engine, not yet played.
 target_sources(adi_core PRIVATE src/adi/engine/automation.cpp)
 add_executable(adi_automation_tests tests/test_automation.cpp)
