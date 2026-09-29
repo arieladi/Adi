@@ -1255,6 +1255,12 @@ add_test(NAME adi_transport_tests COMMAND adi_transport_tests)
 add_executable(adi_curves_tests tests/test_curves.cpp)
 target_link_libraries(adi_curves_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_curves_tests COMMAND adi_curves_tests)
+# Step 7.1 (ADR-0180): the UI's two seams, headless. No JUCE -- the read half is
+# a shared_ptr over engine::Snapshot and the write half wraps OpJournal, so this
+# builds and runs on every ABI like the rest of the suite.
+add_executable(adi_ui_seams_tests tests/test_ui_seams.cpp)
+target_link_libraries(adi_ui_seams_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_ui_seams_tests COMMAND adi_ui_seams_tests)
 # ADR-0159 part two: automation read into the engine, not yet played.
 target_sources(adi_core PRIVATE src/adi/engine/automation.cpp)
 add_executable(adi_automation_tests tests/test_automation.cpp)

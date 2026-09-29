@@ -450,9 +450,13 @@ So a GUI test binary is the first of its kind here. It **lives behind
 breaking that invariant. It reaches for `juce_audio_processors_headless` so the
 GUI binary never pulls in audio devices. Two mechanical consequences: a new
 suite is one file plus three CMake lines and its target name must contain
-`tests`; and `README.md:9`'s headline count is enforced by
-`tools/test_all.sh:122-129`, so every new suite fails the run until that line is
-updated by hand.
+`tests`; and a new suite **leaves `README.md:9`'s headline count ALONE**.
+`tools/test_all.sh` prints a note on a mismatch and does **not** fail — win
+changed it on 2026-09-29 for the reason its own comment gives: *"every PR
+touched this one line and each merge turned the next PR red. PRs leave it
+alone; win updates it on main."* An earlier revision of this plan said the
+opposite; it was read off the script before that change merged and was wrong by
+the time it landed.
 
 There is already one JUCE-linked suite against this vendored copy —
 `adi_rmsc_tests` (`plugins/rmsc/CMakeLists.txt:46-48`) — which escapes the
