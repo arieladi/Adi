@@ -247,6 +247,12 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | Path | Agent | Branch | Since |
 |---|---|---|---|
 | `src/juce/play.cpp` (offline capture only), `tests/test_play_render.cpp`, `CMakeLists.txt` (regression target), `collab/win_codex/2026-09-29-dynamic-eq-host.md` | win_codex — channel-count fix delegated by win, mac DAW session's file | `codex/dynamic-eq-host` | 2026-09-29 |
+| Utility DSP/builtin/patch, tests/test_utility*.cpp, cmake/devices/utility.cmake | win_codex - mission 5 delegated by win | `codex/utility-pd` | 2026-09-29 |
+| Chorus-Ensemble DSP/builtin/patch, tests/test_chorus_ensemble*.cpp, cmake/devices/chorus_ensemble.cmake | win_codex - mission 5 delegated by win | `codex/chorus-ensemble-pd` | 2026-09-29 |
+| Phaser-Flanger DSP/builtin/patch, tests/test_phaser_flanger*.cpp, cmake/devices/phaser_flanger.cmake | win_codex - mission 5 delegated by win | `codex/phaser-flanger-pd` | 2026-09-29 |
+| Saturator DSP/builtin/patch, tests/test_saturator*.cpp, cmake/devices/saturator.cmake | win_codex - mission 5 delegated by win | `codex/saturator-pd` | 2026-09-29 |
+| Echo DSP/builtin/patch, tests/test_echo*.cpp, cmake/devices/echo.cmake | win_codex - mission 5 delegated by win | `codex/echo-pd` | 2026-09-29 |
+| `CMakeLists.txt`, `cmake/devices/*.cmake` (migration only) | win_codex — delegated by win | `codex/pd-device-cmake` | 2026-09-29 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
