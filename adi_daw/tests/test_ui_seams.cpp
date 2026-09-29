@@ -16,6 +16,7 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/engine/project_view.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -199,7 +200,8 @@ void submitsOneOp() {
     check(store != nullptr, "store created");
     if (!store) return;
 
-    ui::OpSubmitter sub(*store);
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
     const auto r = sub.submit(trackCreate(1, "Drums"));
     check(r.ok, "submit succeeded");
     check(static_cast<bool>(r), "and is truthy");
@@ -216,7 +218,8 @@ void batchIsOneUndoStep() {
     auto store = freshProject(temp.path() / "p.adi");
     if (!store) { check(false, "store created"); return; }
 
-    ui::OpSubmitter sub(*store);
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
     std::vector<OpRequest> batch{trackCreate(1, "Drums"), trackCreate(2, "Bass")};
     batch[0].selBefore = Payload{{"tracks", Payload::array()}};
     batch[1].selBefore = Payload{{"tracks", Payload::array({1})}};
@@ -226,18 +229,17 @@ void batchIsOneUndoStep() {
     check(r.seqs.size() == 2, "two ops");
     check(countTracks(*store) == 2, "both tracks exist");
 
-    History h(*store);
-    check(h.canUndo(), "there is something to undo");
-    const auto step = h.nextUndo();
+    check(sub.canUndo(), "there is something to undo");
+    const auto step = sub.nextUndo();
     check(step.has_value(), "and the history can describe it");
     check(step && step->opCount == 2, "ONE undo step covering both ops");
     check(step && step->txnId == r.txnId, "and it is the transaction we committed");
 
-    const auto undone = h.undo();
+    const auto undone = sub.undo();
     check(undone.ok, "undo applied");
     check(countTracks(*store) == 0, "both tracks went together");
 
-    const auto redone = h.redo();
+    const auto redone = sub.redo();
     check(redone.ok, "redo applied");
     check(countTracks(*store) == 2, "and both came back together");
 }
@@ -253,7 +255,8 @@ void selBeforeOnlyOnTheFirst() {
     auto store = freshProject(temp.path() / "p.adi");
     if (!store) { check(false, "store created"); return; }
 
-    ui::OpSubmitter sub(*store);
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
     std::vector<OpRequest> batch{trackCreate(1, "A"), trackCreate(2, "B")};
     batch[0].selBefore = Payload{{"tracks", Payload::array()}};
     batch[1].selBefore = Payload{{"tracks", Payload::array({1})}};
@@ -273,14 +276,14 @@ void emptyBatchWritesNothing() {
     auto store = freshProject(temp.path() / "p.adi");
     if (!store) { check(false, "store created"); return; }
 
-    ui::OpSubmitter sub(*store);
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
     const auto r = sub.submit(std::vector<OpRequest>{});
     check(r.ok, "reports success");
     check(r.txnId == 0, "opened no transaction");
     check(r.seqs.empty(), "wrote no ops");
 
-    History h(*store);
-    check(!h.canUndo(), "and left nothing to undo");
+    check(!sub.canUndo(), "and left nothing to undo");
 }
 
 void stampsTheActor() {
@@ -289,7 +292,8 @@ void stampsTheActor() {
     auto store = freshProject(temp.path() / "p.adi");
     if (!store) { check(false, "store created"); return; }
 
-    ui::OpSubmitter agent(*store, Actor::Agent, "adi-vst");
+    engine::ProjectView view;
+    ui::OpSubmitter agent(*store, view, Actor::Agent, "adi-vst");
     check(agent.actor() == Actor::Agent, "the submitter reports its actor");
     const auto r = agent.submit(trackCreate(1, "Agent track"));
     check(r.ok, "committed");
@@ -311,7 +315,8 @@ void aRefusedOpWritesNothing() {
     auto store = freshProject(temp.path() / "p.adi");
     if (!store) { check(false, "store created"); return; }
 
-    ui::OpSubmitter sub(*store);
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
     OpRequest bad;
     bad.opType = "track.create";
     bad.payload = {{"id", 1}};   // no `kind`, which the catalogue requires
@@ -320,8 +325,82 @@ void aRefusedOpWritesNothing() {
     check(!r.error.empty() || !r.issues.empty(), "and said why");
     check(countTracks(*store) == 0, "no track was written");
 
-    History h(*store);
-    check(!h.canUndo(), "and no undo entry was left behind");
+    check(!sub.canUndo(), "and no undo entry was left behind");
+}
+
+
+// --- the ADR-0201 refresh contract -------------------------------------------
+
+void everyWriteRefreshesTheView() {
+    section("ADR-0201: a successful write rebuilds the view, a refused one does not");
+    adi::test::TempDirectory temp("ui_seams", "refresh");
+    auto store = freshProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+
+    check(view.generation() == 0, "nothing published before the first write");
+    check(view.current() == nullptr, "and current() is null");
+    check(!ui::SnapshotReader{view.current()}.valid(), "a reader over it is simply invalid");
+
+    const auto a = sub.submit(trackCreate(1, "Drums"));
+    check(a.ok, "committed");
+    check(view.generation() == 1, "the commit refreshed the view");
+    check(a.generation == 1, "and the result reports the generation it produced");
+    {
+        const ui::SnapshotReader r{view.current()};
+        check(r.valid(), "the frame now has a snapshot");
+        check(r.trackCount() == 1, "which contains the new track");
+        check(r.findTrack(1) != nullptr, "by id");
+    }
+
+    // A refused op must not burn a generation: nothing was written, so telling
+    // every component to re-read would be a lie about the project moving.
+    OpRequest bad;
+    bad.opType = "track.create";
+    bad.payload = {{"id", 2}};   // no `kind`
+    const auto refused = sub.submit(std::move(bad));
+    check(!refused.ok, "refused");
+    check(refused.generation == 0, "a refused write reports no generation");
+    check(view.generation() == 1, "and did NOT refresh the view");
+
+    const auto undone = sub.undo();
+    check(undone.ok, "undo applied");
+    check(view.generation() == 2, "undo refreshed the view too");
+    check(ui::SnapshotReader{view.current()}.trackCount() == 0, "and the track is gone from it");
+
+    const auto redone = sub.redo();
+    check(redone.ok, "redo applied");
+    check(view.generation() == 3, "redo refreshed the view too");
+    check(ui::SnapshotReader{view.current()}.trackCount() == 1, "and the track is back");
+}
+
+void aFrameKeepsItsSnapshot() {
+    section("ADR-0201: a snapshot a frame holds never changes under it");
+    adi::test::TempDirectory temp("ui_seams", "frame");
+    auto store = freshProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    check(sub.submit(trackCreate(1, "Drums")).ok, "first track");
+
+    // The frame takes ONE reference and every component shares it (ADR-0050 d3,
+    // closed by ADR-0201 d2). A commit lands while the frame is still drawing.
+    const ui::SnapshotReader frame{view.current()};
+    const ui::SnapshotReader alsoThisFrame{view.current()};
+    check(frame.sameAs(alsoThisFrame), "two components in one frame read one snapshot");
+    check(frame.trackCount() == 1, "the frame sees one track");
+
+    check(sub.submit(trackCreate(2, "Bass")).ok, "a second track commits mid-frame");
+    check(frame.trackCount() == 1, "the frame STILL sees one track");
+    check(frame.findTrack(2) == nullptr, "and cannot see the new one");
+    check(view.generation() == 2, "while the view has moved on");
+
+    const ui::SnapshotReader nextFrame{view.current()};
+    check(nextFrame.trackCount() == 2, "the next frame sees both");
+    check(!frame.sameAs(nextFrame), "and is a different publication");
 }
 
 }  // namespace
@@ -339,6 +418,8 @@ int main() {
     emptyBatchWritesNothing();
     stampsTheActor();
     aRefusedOpWritesNothing();
+    everyWriteRefreshesTheView();
+    aFrameKeepsItsSnapshot();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

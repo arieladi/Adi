@@ -2206,3 +2206,51 @@ the ones you verified yourself an hour ago.**
 (`validate_pd 2.py` and friends). All untracked — confirmed with `git ls-files`,
 not by name — but `test_all.sh`'s validator glob picks them up and runs them, so
 a local run reports more validators than exist.
+
+## 2026-09-29 — the seams wired to `ProjectView` (ADR-0201)
+
+win answered the bridge question, and the answer dissolved it rather than
+picking a side: **nothing crosses threads.** The audio thread never reads an
+`engine::Snapshot` — it plays from the realised graph — so there is no
+publisher, no epoch and no `collect()`. An old snapshot lives exactly as long as
+the last `shared_ptr` to it.
+
+**The read half needed no change at all.** `ProjectView::current()` returns
+`shared_ptr<const Snapshot>`, which is already `ui::SnapshotPtr`. That is the
+payoff for refusing to hold a raw pointer: the type that was built to survive
+its owner also survived the owner being replaced by a different design. Only its
+comments changed, because they described an open question that is now answered.
+
+**The write half gained the refresh, and that is why `OpSubmitter` exists rather
+than call sites using `OpJournal` directly.** ADR-0201 requires a refresh after
+every committed op, undo and redo. A commit that does not refresh leaves every
+window drawing the previous project — silently, permanently. Putting it on each
+call site is putting it where it will eventually be forgotten. Undo and redo
+moved here for the same reason.
+
+**Only a successful write refreshes.** A refused op wrote nothing, so refreshing
+would burn a generation and tell every component to re-read an unchanged
+project. The plant for this was refreshing unconditionally: it broke exactly the
+four checks that assert it, and nothing else.
+
+**What ADR-0201 closes, and the one thing it does not.** ADR-0050 d3 — one
+reference per frame, shared by every component — is now structural: a frame
+takes `current()` once and hands that pointer down, so a timeline and a mixer
+cannot disagree. What remains is narrower and is NOT that failure: under
+ADR-0180 d1's per-window clocks, two windows drain at different moments and may
+briefly hold consecutive generations. Both read the same cell, so the skew is
+bounded by one refresh. Whether that is acceptable is a question about
+`ProjectView` for the director, and `sameAs` keeps it observable.
+
+**Housekeeping done.** The 14 iCloud conflict copies in `adi_daw/tools/` are
+deleted. Every one was untracked with a tracked original — verified with
+`git ls-files`, not by name — and the only one whose content differed was the
+OLDER version (it lacked win_codex's `dynamic-eq` lines), so nothing was lost.
+`test_all.sh` no longer runs `validate_pd 2.py` and friends.
+
+**Still outstanding, and it is the director's:** the checkout lives in
+iCloud-synced `~/Documents`, which is what creates these copies and what made
+Gatekeeper refuse the unsigned fixture bundles earlier. Deleting the copies
+treats the symptom. There are more of them outside `adi_daw/tools/`
+(`adi-surge/ARCHITECTURE 2.md`, `adi-vital/ARCHITECTURE 2.md`,
+`collab/prompts/...2.md` among them); I left those alone as outside this task.
