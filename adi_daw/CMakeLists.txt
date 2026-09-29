@@ -230,6 +230,7 @@ add_library(adi_core STATIC
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
+    src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
     src/adi/dsp/biquad.cpp
@@ -782,6 +783,10 @@ add_test(NAME adi_param_edits_tests COMMAND adi_param_edits_tests)
 
 target_link_libraries(adi_engine_tests PRIVATE Threads::Threads)
 add_test(NAME adi_engine_tests COMMAND adi_engine_tests)
+# ADR-0201: the UI's project-state cell, message thread only.
+add_executable(adi_project_view_tests tests/test_project_view.cpp)
+target_link_libraries(adi_project_view_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_project_view_tests COMMAND adi_project_view_tests)
 
 # A second binary rather than a second file in adi_tests: the projection has no
 # dependency on the blob layer and testing it in isolation keeps that true. If
