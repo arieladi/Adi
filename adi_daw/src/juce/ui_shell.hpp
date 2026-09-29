@@ -6,6 +6,7 @@
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
+#include "ui_devices.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <optional>
 namespace adi::ui {
@@ -83,6 +84,7 @@ class AdiRootComponent final : public juce::Component {
     const std::string &error() const noexcept { return error_; }
     WindowState &state() noexcept { return state_; }
     bool persist();
+    void resizeDevices(int height);
     bool canUndo(bool redo) const { return redo ? submitter_.canRedo() : submitter_.canUndo(); }
     std::string undoTitle(bool redo) const {
         auto step = redo ? submitter_.nextRedo() : submitter_.nextUndo();
@@ -93,6 +95,8 @@ class AdiRootComponent final : public juce::Component {
     std::function<void()> afterEdit;
     TransportBar transport;
     ArrangementView arrangement;
+    DeviceChainStrip devices;
+    DockResizer dockResizer;
 
   private:
     engine::ProjectView &view_;
@@ -102,6 +106,7 @@ class AdiRootComponent final : public juce::Component {
     ViewStateStore &persistence_;
     std::string window_;
     WindowState state_;
+    DesktopDefaults defaults_;
     DirtySet dirty_;
     std::optional<SnapshotReader> reader_;
     std::uint64_t generation_ = 0;

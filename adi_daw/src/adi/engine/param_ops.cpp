@@ -209,6 +209,36 @@ std::size_t ParamOps::emitEdits(std::int64_t id, Attached& a, std::vector<OpRequ
     return appended;
 }
 
+bool ParamOps::uiEvent(std::int64_t id, const std::string& param, ParamEventKind kind,
+                       double value, std::int64_t now, std::vector<OpRequest>& out) {
+    auto it = devices_.find(id);
+    if (it == devices_.end() || !it->second.active || !std::isfinite(value)) return false;
+    auto& a = it->second;
+    const auto index = indexOf(*a.inst, param);
+    const auto* d = index >= 0 ? a.inst->paramAt(index) : nullptr;
+    if (!d || d->missing || !d->automatable) return false;
+    if (kind == ParamEventKind::Begin)
+        uiCapture_.seed(id, index, a.inst->getParam(param).normalized);
+    value = std::clamp(value, 0., 1.);
+    if (kind == ParamEventKind::Value) {
+        OpRequest request;
+        fillRequest(request, id, a.name, *d, value);
+        applied(request.payload, now); // echo guard, never a second producer in a.capture
+    }
+    if (!uiCapture_.push({id, index, kind, value})) return false;
+    scratch_.clear();
+    uiCapture_.drain(now, scratch_);
+    // Explicit UI gestures end synchronously; group by device to reuse emitEdits.
+    const auto edits = scratch_;
+    for (const auto& edit : edits) {
+        auto target = devices_.find(edit.deviceId);
+        if (target == devices_.end() || !target->second.active) continue;
+        scratch_.assign(1, edit);
+        emitEdits(edit.deviceId, target->second, out);
+    }
+    return true;
+}
+
 std::size_t ParamOps::drain(std::int64_t nowMs, std::vector<OpRequest>& out) {
     std::size_t appended = 0;
     for (auto& [id, a] : devices_) {

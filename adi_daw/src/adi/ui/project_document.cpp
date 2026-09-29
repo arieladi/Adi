@@ -39,6 +39,8 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
             return {};
         }
         document->realisedGeneration_ = document->view_.generation();
+        document->parameterOps_.attachSession(document->session_);
+        document->feed_.publish(document->session_);
         error.clear();
         return document;
     } catch (const std::exception &e) {
@@ -153,12 +155,63 @@ bool ProjectDocument::synchronise() {
         return false;
     }
     realisedGeneration_ = view_.generation();
+    for (std::size_t i = 0; i < session_.entryCount(); ++i) {
+        const auto &entry = session_.entryAt(i);
+        if (entry.retired)
+            parameterOps_.detach(entry.deviceId);
+    }
+    parameterOps_.attachSession(session_);
     error_.clear();
     return true;
 }
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
+    std::vector<OpRequest> requests;
+    const auto captureNow = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count();
+    parameterOps_.drain(captureNow, requests);
+    if (!requests.empty() && parameterOps_.writeBlobs(*store_, error_)) {
+        const auto result = ops_.submit(requests);
+        if (!result.ok)
+            error_ = result.error;
+        else
+            synchronise();
+    }
+    feed_.publish(session_);
+}
+bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
+    OpRequest r;
+    r.opType = op;
+    r.payload = std::move(payload);
+    const auto result = ops_.submit(r);
+    error_ = result.error;
+    if (!result.ok || !synchronise())
+        return false;
+    feed_.publish(session_);
+    return true;
+}
+bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param,
+                                       engine::ParamEventKind kind, double value) {
+    const auto *entry = session_.entryFor(id);
+    if (!entry || entry->retired)
+        return false; // re-read on landing
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+    std::vector<OpRequest> requests;
+    if (!parameterOps_.uiEvent(id, param, kind, value, now, requests))
+        return false;
+    feed_.touched(id, param);
+    if (!requests.empty()) {
+        const auto result = ops_.submit(requests);
+        error_ = result.error;
+        if (!result.ok || !synchronise())
+            return false;
+    }
+    feed_.publish(session_);
+    return true;
 }
 void ProjectDocument::prepare(double rate, std::int32_t frames) {
     session_.prepare(rate, frames);

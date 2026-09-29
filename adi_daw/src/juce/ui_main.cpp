@@ -126,6 +126,17 @@ class AdiApplication final : public juce::JUCEApplication,
                                                        document_->mailbox(), *commands_,
                                                        document_->views(), "main");
         root_ = root.get();
+        root->devices.publication = [this] { return document_->parameterFeed().current(); };
+        root->devices.gesture = [this](std::int64_t id, const std::string &param,
+                                       engine::ParamEventKind kind, double value) {
+            return document_->parameterGesture(id, param, kind, value);
+        };
+        root->devices.submit = [this](const std::string &op, Payload p) {
+            const bool ok = document_->deviceAction(op, std::move(p));
+            if (!ok)
+                report(document_->error());
+            return ok;
+        };
         root->afterEdit = [this] {
             if (!document_->synchronise())
                 report(document_->error());
