@@ -15353,7 +15353,7 @@ the file changed **and** the build succeeded.
 
 ---
 
-## ADR-0200 — ADI Mobile is designed now and built last: the same engine and format on iOS and Android, three modes, and what the desktop must not foreclose — `DECIDED (direction)` (2026-09-29) — **DIRECTOR'S DIRECTIVE; AMENDS FEATURES §11 ("Mobile. Not until desktop is genuinely good"); ADDS ROADMAP STEP 15; THREE CORRECTIONS; ONE QUESTION FOR THE DIRECTOR AND A LAWYER**
+## ADR-0200 — ADI Mobile is designed now and built last: the same engine and format on iOS and Android, three modes, and what the desktop must not foreclose — `DECIDED (direction)` (2026-09-29) — **DIRECTOR'S DIRECTIVE; AMENDS FEATURES §11 ("Mobile. Not until desktop is genuinely good"); ADDS ROADMAP STEP 15; THREE CORRECTIONS; iOS OUTSIDE THE APP STORE (DIRECTOR)**
 
 **Director's directive:**
 - Define ADI Mobile's architecture now, and build it last.
@@ -15441,26 +15441,19 @@ the file changed **and** the build succeeded.
 
    Only the layout is mobile-exclusive.
 
-### Still open, for the director (and a lawyer, before step 15)
+7. **iOS ships only through alternative app marketplaces, never the Apple App Store** (the director, 2026-09-29).
+   - **Why:** the App Store's terms are widely held to conflict with GPLv3 (VLC was removed over it in 2011).
+     ADI is GPLv3, a JUCE build is AGPLv3 (ADR-0048), Surge's DSP is GPLv3, and ZL Equalizer's is AGPLv3.
+     Alternative marketplaces, such as those the EU's Digital Markets Act allows, do not impose those terms.
+   - **Consequence 1:** ADI's licences and every GPL/AGPL adaptation stay as they are. No App Store exception is
+     sought, no "App Store edition" without the third-party devices is built, and a GPL source is not rejected
+     because of iOS.
+   - **Consequence 2:** ADI Mobile on iOS is available only where alternative distribution is legal (the EU
+     today). Android is unaffected: Google Play and other stores.
+   - **Before step 15:** confirm each marketplace's terms against GPLv3/AGPLv3, one by one, as the first task
+     of that step.
 
-- **The Apple App Store and the GPL.**
-  - **The problem:** the App Store's terms add restrictions that GPLv3 forbids, so GPL code in an App Store app
-    is widely held to be a licence conflict. VLC was removed from the App Store over exactly this in 2011.
-  - **Which of ADI's code it touches:**
-    - ADI is GPLv3;
-    - a JUCE build is AGPLv3 (ADR-0048);
-    - Surge's DSP, behind adi-surge and the planned Pd effects, is GPLv3;
-    - ZL Equalizer's DSP, behind the Dynamic EQ, is AGPLv3.
-  - **Where it does not apply:**
-    - **Android** (Google Play and others) has no such conflict.
-  - **The possible routes for iOS:**
-    - distribution outside the App Store where the law allows it, for example the EU's alternative
-      marketplaces;
-    - an App Store exception granted by the copyright holders. That is possible for ADI's own code and JUCE (a
-      commercial licence), but not for third-party GPL code such as Surge's DSP, unless its authors agree;
-    - an iOS build without the third-party GPL/AGPL devices.
-  - **Why it matters now:** this doesn't change today's work. It is recorded now because every GPL adaptation
-    added from here on is one more device an App Store build could not ship.
+### Still open, before step 15
 
 - **adi-vst on the phone.** adi-vst's AI tools run behind the RPC boundary on the desktop (ADR-0039, ADR-0186).
   On a phone they need on-device inference or a connection to the desktop. That is decided with adi-vst, at

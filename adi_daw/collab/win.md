@@ -20,8 +20,8 @@ right-click or modifier as the only path) and the layout rule go to mac's step-7
 - ADI Live was dropped by ADR-0190;
 - "identical" rendering means within tolerance, not bit-identical across ARM and x86.
 
-**For the director and a lawyer:** the App Store and GPL/AGPL code (Surge, ZL, JUCE, ADI itself). Android
-is unaffected.
+**The director decided (d7):** iOS ships only through alternative marketplaces such as the EU's, never the
+App Store, so the GPL/AGPL licences stay. Android is unaffected.
 
 ---
 

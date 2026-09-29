@@ -419,7 +419,7 @@ backlog.
 | Synth controls beside a piano roll, playing live | P3 | |
 | Microphone straight into a device's sample slot | P3 | Into `[adi.sample]` (ADR-0192) or the native sampler; the take lands in a clip as well |
 | Freeze-before-share on the desktop, for third-party plug-ins | P3 | ADR-0200 d3 |
-| App Store distribution | open | GPL/AGPL code and the App Store's terms: the director's and a lawyer's question (ADR-0200) |
+| iOS through alternative app marketplaces only (e.g. the EU's), never the Apple App Store | P3 (step 15) | The director's decision (ADR-0200 d7): the App Store's terms conflict with GPLv3/AGPLv3; ADI's licences stay as they are. Android through Google Play and others |
 
 ## 11. Deliberately out of scope
 
