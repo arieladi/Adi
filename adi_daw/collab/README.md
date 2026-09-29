@@ -233,6 +233,7 @@ subject, say so in your log instead of writing it twice.
 | 0196 | mac | (the host session's step 6, PR 3) | automation on the host: VST3 parameter changes, CLAP value conversion, the echo filter, `param-indication`'s automation half, `--expect-no-edits` | used |
 | 0197 | mac | `mac/pd-toplevel` | a Pd device patch is a top-level canvas: [adc~] in, [dac~] out; subpatches keep inlet~/outlet~ (win's ruling, closes ADR-0183 d11) | used |
 | 0198 | mac | `mac/generic-panel` | the parameter feed's per-parameter record: the plug-in's own text, the shape of a control, automated/overridden, and which source touched it last | used |
+| 0200 | win | `win/adi-mobile-0200` | ADI Mobile designed now, built last: same engine and format on iOS and Android, three modes, what the desktop must not foreclose (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
