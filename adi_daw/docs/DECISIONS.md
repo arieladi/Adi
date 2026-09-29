@@ -15433,7 +15433,8 @@ its callers:
 - Each window owns its clock, per decision 1.
 
 **4. `MainSplit` is a panel→slot map, not a `StretchableLayoutManager`.**
-*(NOT YET ACKNOWLEDGED — see "Open" below.)*
+*(APPROVED by the director, 2026-09-29. `UI-ARCHITECTURE.md:55` is amended and
+the map is built as `adi::ui::PanelLayout`.)*
 
 `UI-ARCHITECTURE.md:55` specifies one; **ADR-0080 rules it out**, and nobody
 had read that ADR until a completeness pass went looking for what nobody had
@@ -15474,9 +15475,26 @@ window and does nothing in the other. `ApplicationCommandManager` and
 `KeyPressMappingSet` appear nowhere in `docs/`. **The command layer is not
 optional and is built at 7.2.**
 
-ADR-0047 §1 left the map's home open and said it is app-scoped and belongs
-outside the `.adi`. `src/adi/settings/` already carries a `shortcuts.*` page
-(`registry.cpp:506`). That is the proposal, and it is still a proposal.
+**RULED (director, 2026-09-29), and it is TWO homes, not one.** The proposal
+asked where "the key map" lives and the answer is that there are two different
+things under that name, with different scopes:
+
+- **Command shortcuts** — play, stop, undo, zoom, the ADR-0129 gestures — are
+  **app-scoped**, in `src/adi/settings/`'s `shortcuts` page (ADR-0047 §1). They
+  belong to the person, not to the project: a colleague opening the same `.adi`
+  keeps their own keys, which is the same reason ADR-0047 put the map outside
+  the `.adi` in the first place.
+- **Live's Key Map mode** — computer keys assigned to *parameters* — is saved in
+  the Set in Live, so those assignments are **project-scoped**. They are stored
+  in `controller_maps` beside the MIDI Learn bindings (ADR-0195 d3) with a
+  **keyboard source**, because a key bound to a device's parameter is the same
+  kind of thing as a CC bound to it and differs only in where the event came
+  from.
+
+Collapsing these two into one home would have been the error: app-scoped
+shortcuts in the `.adi` would travel between users, and project-scoped parameter
+assignments in the settings page would not travel with the project that needs
+them.
 
 **7. Deleting a device CLOSES its floating window. Undo restores the device,
 not the window.** *(The director's ruling, 2026-09-29. It reverses this entry's
@@ -15567,16 +15585,22 @@ gestures**. ADR-0200 does not ask for them to be removed, but each now needs a
 no-modifier equivalent, so every row of that gate acquires a second row. The
 table is written with the director at 7.2, alongside the manual checklists.
 
-### Open — put to the director, not answered
+### Ruled since this entry was written (director, 2026-09-29)
 
-1. **Decision 4 (`MainSplit`).** The approval of 2026-09-29 says *"Both of your
-   amendments to `UI-ARCHITECTURE.md` are right"* and names the per-window clock
-   and `SnapshotReader`. The `MainSplit` amendment was in the same PR and is not
-   mentioned. It is carried as **not yet acknowledged** rather than counted as
-   approved. Nothing depends on it before 7.2.
-2. **Decision 6's map home** (`src/adi/settings/`, `shortcuts.*`). Not addressed
-   in the reply. ADR-0129's gate cannot be fully met while it is open, so it is
-   needed before 7.2 completes.
+Both items this entry carried as open are now closed, and a third question that
+arose during 7.1 is answered:
+
+1. **Decision 4 (`MainSplit`) is APPROVED.** `UI-ARCHITECTURE.md:55` is amended
+   and the map is built as `adi::ui::PanelLayout`, headless.
+2. **Decision 6 (the key map) is RULED, as two homes** — see decision 6. The
+   ADR-0129 gate can now be met, because the command shortcuts it is made of
+   have a settled home.
+3. **Two windows at consecutive generations: ACCEPTED.** Each window's frame is
+   consistent within itself and the skew is bounded by one refresh. The
+   condition that makes it safe is stated as a rule rather than a hope:
+   **anything crossing windows — a drag from a floating window — re-reads
+   `ProjectView::current()` when it LANDS, and never carries a snapshot between
+   windows.** That is what keeps the skew from turning into a stale write.
 
 ### What this refuses to decide
 
