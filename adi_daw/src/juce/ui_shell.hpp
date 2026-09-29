@@ -78,6 +78,7 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
   public:
     AdiWindow(std::unique_ptr<AdiRootComponent>, AppCommands &);
     ~AdiWindow() override;
+    using juce::DocumentWindow::keyPressed;
     void closeButtonPressed() override { setVisible(false); }
 
   private:
