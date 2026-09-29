@@ -5,6 +5,26 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-09-29 — ADR-0200: ADI Mobile, designed now and built last
+
+**Why:** a directive to define ADI Mobile's architecture now and lock its build to the end of the roadmap.
+
+**Recorded:** roadmap step 15; the same engine and `.adi` format; the three modes; FEATURES §10.7.
+
+**The value is d5:** what step 7, the engine and the DSP must not foreclose. The input rule (no hover,
+right-click or modifier as the only path) and the layout rule go to mac's step-7 plan.
+
+**Three corrections:**
+- third-party plug-ins cannot run on a phone, so "without freezing" holds only for ADI's own devices;
+  the rest play their freeze render;
+- ADI Live was dropped by ADR-0190;
+- "identical" rendering means within tolerance, not bit-identical across ARM and x86.
+
+**The director decided (d7):** iOS ships only through alternative marketplaces such as the EU's, never the
+App Store, so the GPL/AGPL licences stay. Android is unaffected.
+
+---
+
 ## 2026-09-27 — ADR-0195: Dynamic EQ, inline MIDI Learn, Auto Gain Stage, analyser overlay
 
 **Why:** a directive in four parts, with AGPL as its premise.

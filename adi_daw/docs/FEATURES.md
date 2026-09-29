@@ -402,6 +402,25 @@ backlog; the priorities are within ADiJ.
 | **Importing an NI Stems file** as a group with one track per stem, time-aligned | ADI | P2 | ADR-0191 d4. Splitting a clip into stems is already P1 (ADR-0064) |
 | **Exporting stems as an NI Stems file** | ADI | P3 | ADR-0191 d4. AAC encoding from the operating system (Media Foundation, Core Audio); Linux is open |
 
+## 10.7 ADI Mobile, iOS and Android (ADR-0200)
+
+Built last: roadmap step 15, after the Linux desktop. The same engine and the same `.adi` projects. What the
+desktop must do **now** so the phone never needs a rewrite is ADR-0200 d5; the rows below are the phone's own
+backlog.
+
+| Feature | P | Notes |
+|---|---|---|
+| Opens desktop projects as themselves, shared as SPEC §10.4's ZIP | P3 (step 15) | ADI's own devices, the Pd tier and native devices play; a third-party plug-in is a placeholder that keeps its state and plays its freeze render (ADR-0200 d3) |
+| **Arrangement mode** (BandLab-style) | P3 (step 15) | ADI's arrangement on a phone |
+| **Session mode** (Ableton Note-style) | P3 (step 15) | ADI's Session view (step 12) on a phone |
+| **Loop/Focus mode**: one instrument or sample, deep | P3 (step 15) | The layout is mobile-only; its abilities are engine features the desktop also gets (ADR-0200 d6) |
+| Audio clip through a sampler device, the result printed to new clips | P3 | ADR-0200 d6 |
+| Loop take comping with swipe gestures | P3 | Take lanes are FEATURES §3's comping; the swipe is the phone's gesture table |
+| Synth controls beside a piano roll, playing live | P3 | |
+| Microphone straight into a device's sample slot | P3 | Into `[adi.sample]` (ADR-0192) or the native sampler; the take lands in a clip as well |
+| Freeze-before-share on the desktop, for third-party plug-ins | P3 | ADR-0200 d3 |
+| iOS through alternative app marketplaces only (e.g. the EU's), never the Apple App Store | P3 (step 15) | The director's decision (ADR-0200 d7): the App Store's terms conflict with GPLv3/AGPLv3; ADI's licences stay as they are. Android through Google Play and others |
+
 ## 11. Deliberately out of scope
 
 Saying no now is cheaper than saying no later.
@@ -419,7 +438,7 @@ Saying no now is cheaper than saying no later.
 - **Audio Units and VST2 hosting.** VST3, and CLAP when we write it. A
   project that references an AU still opens, with the device preserved as a
   bypassed placeholder — never dropped. (ADR-0041, ADR-0011)
-- **Mobile.** Not until desktop is genuinely good.
+- **Mobile, before the desktop is genuinely good.** ADI Mobile is designed now and built last, as roadmap step 15 (ADR-0200, §10.7).
 
 ---
 
