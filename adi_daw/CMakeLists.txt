@@ -1297,3 +1297,6 @@ file(GLOB ADI_DEVICE_MODULES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmak
 foreach(ADI_DEVICE_MODULE IN LISTS ADI_DEVICE_MODULES)
     include("${ADI_DEVICE_MODULE}")
 endforeach()
+
+# Step 7: headless state and the optional JUCE window shell.
+include(src/juce/ui_shell.cmake)
