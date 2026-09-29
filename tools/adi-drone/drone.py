@@ -19,9 +19,11 @@ Usage:
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import difflib
 import json
+import http.client
 import msvcrt
 import os
 import re
@@ -29,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -130,11 +133,17 @@ def now():
     return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+_claim_lock = threading.Lock()
+_log_lock = threading.Lock()
+_ollama_lock = threading.Lock()
+
+
 def log(msg):
     line = f"{now()} {msg}"
-    print(line, flush=True)
-    with open(STATE_DIR / "drone.log", "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    with _log_lock:
+        print(line, flush=True)
+        with open(STATE_DIR / "drone.log", "a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
 
 def ensure_dirs():
@@ -169,6 +178,22 @@ def ensure_ollama():
     raise RuntimeError("ollama serve did not come up within 120 s")
 
 
+class GenerationConnectionError(Exception):
+    """Only a transport failure before /api/generate's body completed."""
+    def __init__(self, error):
+        super().__init__(str(error))
+        self.error = error
+
+
+def retryable_connection(error):
+    if isinstance(error, urllib.error.HTTPError):
+        return False
+    if isinstance(error, urllib.error.URLError):
+        error = error.reason
+    return isinstance(error, (http.client.RemoteDisconnected, ConnectionResetError,
+                              ConnectionAbortedError, ConnectionRefusedError, TimeoutError))
+
+
 def generate(system, prompt, num_predict=NUM_PREDICT):
     body = json.dumps({
         "model": MODEL, "system": system, "prompt": prompt, "stream": False,
@@ -178,8 +203,19 @@ def generate(system, prompt, num_predict=NUM_PREDICT):
     }).encode()
     req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=body,
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
-        return json.loads(r.read())
+    body_complete = False
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
+            response = r.read()
+            body_complete = True
+    except Exception as error:
+        if isinstance(error, urllib.error.HTTPError):
+            error.close()
+        if not body_complete and retryable_connection(error):
+            raise GenerationConnectionError(error) from error
+        raise
+    # Parsing (and anything after a fully read body) is never retried.
+    return json.loads(response)
 
 
 def model_loaded():
@@ -403,7 +439,16 @@ def run_job(job_file):
                              f"use per_file or fewer/smaller files ({group})")
         cap = int(job.get("max_output", NUM_PREDICT))
         t0 = time.time()
-        r = generate(system, prompt, cap)
+        for attempt in range(1, 4):
+            try:
+                r = generate(system, prompt, cap)
+                break
+            except GenerationConnectionError as failure:
+                if attempt == 3:
+                    raise failure.error
+                error = failure.error
+                log(f"retry {job_id} attempt {attempt + 1}/3: {type(error).__name__}: {error}")
+                time.sleep((2, 5)[attempt - 1])
         answer = r.get("response", "")
         meta_calls.append({
             "files": group, "prompt_tokens": r.get("prompt_eval_count"),
@@ -462,14 +507,26 @@ def next_job():
 
 
 def process_one():
-    job_file = next_job()
-    if job_file is None:
-        return False
-    running = RUNNING / job_file.name
-    job_file.replace(running)
+    with _claim_lock:
+        while True:
+            job_file = next_job()
+            if job_file is None:
+                return False
+            running = RUNNING / job_file.name
+            try:
+                # Rename is the persistent claim. Serialize the short claim
+                # operation too: concurrent Win32 MoveFileEx calls can open
+                # the same source before either renames it. The process lock
+                # excludes other drones; this lock excludes sibling workers.
+                job_file.replace(running)
+                break
+            except FileNotFoundError:
+                if job_file.exists():
+                    raise  # missing destination folder, not a lost claim
     log(f"start {running.stem}")
     try:
-        ensure_ollama()
+        with _ollama_lock:
+            ensure_ollama()
         out = run_job(running)
         log(f"done  {running.stem} -> {out}")
     except Exception as e:  # noqa: BLE001 - one bad job must not stop the drone
@@ -479,6 +536,32 @@ def process_one():
         dest.with_suffix(".error.txt").write_text(f"{type(e).__name__}: {e}\n", encoding="utf-8")
         log(f"FAIL  {running.stem}: {type(e).__name__}: {e}")
     return True
+
+
+def process_queue(parallel=1):
+    def drain():
+        busy = False
+        while process_one():
+            busy = True
+        return busy
+
+    # Keep the serial path on the calling thread, with identical per-job
+    # execution, logs and result bytes. No executor is created for N=1.
+    if parallel == 1:
+        return drain()
+    with ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="adi-drone") as workers:
+        futures = [workers.submit(drain) for _ in range(parallel)]
+        # Read every result (no short circuit), including a worker's fatal
+        # exception. Never unload Ollama until all workers have joined.
+        results = [future.result() for future in futures]
+    return any(results)
+
+
+def positive_parallel(value):
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError("--parallel must be at least 1")
+    return n
 
 
 def acquire_lock():
@@ -905,13 +988,13 @@ def cmd_show(a):
     sys.exit(f"no result for {a.job_id}")
 
 
-def cmd_watch(_):
+def cmd_watch(a):
     lock = acquire_lock()  # noqa: F841 - held for the process lifetime
     recover_stale()
     log(f"watching {QUEUE} with {MODEL}")
     busy = True  # so a model left loaded by a previous run is freed on the first idle poll
     while True:
-        if process_one():
+        if process_queue(a.parallel):
             busy = True
             continue
         if busy:  # unload once, on the busy -> empty transition
@@ -920,11 +1003,10 @@ def cmd_watch(_):
         time.sleep(POLL_SECONDS)
 
 
-def cmd_run_once(_):
+def cmd_run_once(a):
     lock = acquire_lock()  # noqa: F841
     recover_stale()
-    while process_one():
-        pass
+    process_queue(a.parallel)
     unload_model()
 
 
@@ -986,8 +1068,11 @@ def main():
     sh = sub.add_parser("show")
     sh.add_argument("job_id")
     sh.set_defaults(fn=cmd_show)
-    sub.add_parser("watch").set_defaults(fn=cmd_watch)
-    sub.add_parser("run-once").set_defaults(fn=cmd_run_once)
+    for command, function in (("watch", cmd_watch), ("run-once", cmd_run_once)):
+        worker = sub.add_parser(command)
+        worker.add_argument("--parallel", type=positive_parallel, default=1,
+                            help="concurrent job workers (default: 1)")
+        worker.set_defaults(fn=function)
     a = ap.parse_args()
     a.fn(a)
 

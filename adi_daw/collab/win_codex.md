@@ -1,9 +1,105 @@
+## 2026-09-28 — MIDI Learn ops (ADR-0195 d3), delegated by win
+
+`controller.bind` and `controller.unbind` write project `controller_maps` through
+the existing journal transaction. Bind captures an entire previous row, so
+relearning the same id undoes in one step. Null is the absent-row inverse;
+unbind captures every nullable and protocol-specific column. The store schema
+and other store readers are unchanged; storage helpers live in controller_maps.*.
+Claims cover these helpers, the catalogue, docs and tests.
+
+Learn receives an explicit Remote/Focus Dial/takeover snapshot, resolves the
+lane's owner and param_ref, and rejects the reserved CC before making an op.
+Only the resolved binding enters the journal: no Focus Dial identity or settings
+read during replay. Relative detection recognizes 1/127 and 63..65 clusters
+(with neutral values); other/mixed or neutral-only observations are absolute.
+A single relative code is necessarily ambiguous with a stationary absolute
+knob; callers may supply a longer observation window. Absolute uses the passed
+takeover mode; relative uses jump.
+
+For mac's step 7: call learnController, commit the returned request, then read
+controller bindings. Feed the current incoming port policy to dispatchController;
+Focus receives its CC before the Remote role or any project binding. Use
+controllerBindingShadowed for the binding list. Changing the live reservation
+immediately changes that status without rewriting project data. These are
+message-thread seams; the caller still owns parameter gestures/Live override
+and takeover. No UI button or hardware driver is added here.
+
+The focused suite passes 44 checks: Learn guards, detection, complete-row undo,
+rebind, null fields, invalid payload rollback, settings-independent replay,
+imported shadowed bindings and live reservation changes. Replay corpus now
+contains bind, replacement and unbind, including full undo/redo and reopen.
+Planting a wrong-CC reservation comparison failed three Learn/dispatch checks;
+restoring it passed all 44. MSVC /WX passes. The full harness measured
+5689 checks across 60 suites, all tests and validators passing. Its sole
+failure was the old README count; corrected it to the measured total and
+verified the headline against the captured suite results.
+
+## 2026-09-28 — Auto Gain Stage: merge main after #166
+
+Merged main 74990b1, retaining both log histories and removing the merged Color Bass claims. MSVC /WX and the complete harness passed 5668 checks across 60 suites, with all validators clean. README records that measured total. The intermittent Pd crash is handed to the analyser session; this update adds no workaround.
+
+---
+
 # win_codex — log
 
 The Codex app on the director's Windows 11 PC (MSVC / x64), full access, in its own worktree.
 Only the `win_codex` agent writes to this file. Newest entry at the top.
 
 Onboarding and first mission: `collab/prompts/2026-09-27-win-codex-mission1.md` (ADR-0192).
+
+---
+
+## 2026-09-28 - connection retries stacked on #167
+
+Branched codex/drone-connection-retry from the refreshed #167 head. Only an
+incomplete /api/generate transport failure can retry, at most twice after 2 s
+then 5 s. HTTP errors, JSON errors and post-body errors are excluded. Each
+worker keeps its running claim and the final failure retains its original type.
+Six loopback-server tests pass, including four concurrent workers; all six
+parallel-worker tests still pass. No live drone directory or endpoint touched.
+This PR targets codex/drone-parallel; retarget to main after #167 merges.
+
+---
+
+## 2026-09-28 - drone main refresh after Windows runner timeout
+
+
+## 2026-09-28 - mission 3, Auto Gain Stage Session
+
+Task E delegated by win. Claimed session, new gain-stage/input-gain files and
+their tests. Session::autoGainStage renders an isolated session from the Store,
+using the same loader, clip renderer and MIDI source, with ChainInput taps.
+No driver is opened and the live transport/plugins are not processed. Track
+mute/solo and strip automation are monitoring choices; clip gain/fades/mutes
+and instrument automation remain. Groups/returns are not staged. Missing media,
+unresolved devices, unsupported playback, nonfinite audio and stale undo heads
+refuse the write. One OpJournal batch of mixer.setInputGain ops is one undo.
+
+Found a necessary engine gap: inputGainDb was only read/projected, never applied
+to audio. Session now inserts a persistent, atomic-target input-gain node before
+audio inserts and after an instrument. Existing zero-gain graphs gain no node;
+a node survives later zeroing for retired graph safety. Edits ramp for 5 ms.
+ChainInput taps remain before this gain, so repeated staging sets an absolute
+gain rather than accumulating it. No schema or op catalog change was needed.
+
+Metering: 400 ms windows / 100 ms hops, absolute -70 and relative -10 gates.
+RMS averages stereo channel energies; LUFS sums K-weighted energies with the
+-0.691 calibration. Reuses existing K filters and TruePeakMeter, flushing its
+interpolator. Mixxx's report pointed to libebur128; constants were verified in
+https://github.com/jiixyj/libebur128/blob/master/ebur128/ebur128.c (no copied code).
+Short selections pad to 400 ms; longer ones use complete windows. Default range
+ends at the last unmuted clip, explicit ranges are allowed, at most one day.
+Ceiling limits the gain before the write; silent tracks retain their setting.
+This is a message-thread/offline API; menu wiring is not part of this PR.
+
+MSVC /WX and full harness: 5632 checks across 59 suites, validators clean.
+Three additional instrument-placement/stale-head checks pass in the final
+focused suite, bringing the combined measured total to 5635/59.
+The new suite has 25 checks: exact default RMS, LUFS calibration, peak ceiling,
+MIDI-driven instrument render, silence gating, clip gain, block independence,
+repeat determinism, atomic media failure and one undo. A nonlinear insert
+proves gain placement: planting unity multiplication caused its check to fail;
+restoring the gain passed. No live drone directory or audio device was used.
 
 ---
 

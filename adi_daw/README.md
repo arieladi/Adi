@@ -6,7 +6,7 @@ Cubase's arrangement, editing and mixing depth, and an AI agent that can only ac
 through the same undoable operations a human uses.
 
 **Status:** format specified, reference implementation building.
-**5658 checks across 59 suites**, green on 7 ABIs. Nothing is frozen.
+**5683 checks across 60 suites**, green on 7 ABIs. Nothing is frozen.
 **Language:** C++ with JUCE (ADR-0014) · **Licence:** GPLv3 (ADR-0015); a build
 linking JUCE is a combined work with AGPLv3 obligations on the JUCE part (ADR-0048)
 
@@ -161,6 +161,7 @@ Each step gates the next. No step starts before the previous one is written down
 | **12** | The Session View and MixConsole window (F3), last (ADR-0101) | |
 | **13** | **ADiJ**, the DJ application on the same engine (ADR-0105, ADR-0133, ADR-0190). There is no separate live app: the Session view is inside ADI | |
 | **14** | Linux desktop: ALSA/PipeWire, LV2, Wayland/X11, packaging (ADR-0109 phase 3) | |
+| **15** | **ADI Mobile**, iOS and Android: the same engine and `.adi` projects, three modes; built last, designed for now (ADR-0200) | requirements recorded |
 
 From step 7 on, a step is finished when its parity checklists pass against the
 live reference DAWs and Adi has signed the session — "verified", not "done"

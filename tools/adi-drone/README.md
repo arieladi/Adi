@@ -133,3 +133,44 @@ that file is the target, and the result says so.
 - State: `D:\adi-drone\{queue,running,done,failed}`, log in `D:\adi-drone\drone.log`.
 - A job left in `running/` after a crash is requeued at the next start.
 - Stop: `Stop-ScheduledTask adi-drone`. Remove: `Unregister-ScheduledTask adi-drone`.
+
+## Concurrent requests
+
+`watch --parallel N` and `run-once --parallel N` run up to N job workers;
+the default is 1 and retains serial ordering and result bytes. For the Ubuntu
+Ollama endpoint, use the existing `OLLAMA_HOST_URL` and `ADI_DRONE_HOME`
+environment variables and choose 2 or 4 workers to match its configured capacity.
+This changes no endpoint or state-folder defaults and installs no scheduled task.
+
+Each job moves atomically from `queue/` to `running/` before its request starts.
+A short claim lock also serializes Windows rename calls: two calls can otherwise
+open the same source before either move completes. The existing process lock
+still excludes a second drone using the same state directory. Requests and
+per-job result writing run concurrently; log lines retain their existing format.
+The model unloads only after all workers have finished and the queue is empty.
+Interrupted jobs remain in `running/`; the existing startup recovery requeues
+them and the existing partial-output replacement handles the retry.
+
+Timing records, `eta` and `collect` are unchanged. ETA remains its existing sum
+of measured call times; it is not divided by N or presented as a parallel-speedup
+prediction. Completion/log ordering naturally follows the workers at N > 1.
+
+Run `python tools/adi-drone/test_parallel.py -v` on Windows. The tests use only
+temporary state folders and stub all model calls. The serial regression compares
+all result/log bytes against the implementation at `92eb485`; that commit must
+be present in the local Git history. No live drone directory is used.
+
+
+### Transient connection retries
+
+Only /api/generate transport failures before the response body is complete are
+retried: disconnect, reset, abort, refusal or timeout (including URLError wrapping
+one of those exceptions). There are at most three attempts, with 2 s then 5 s
+backoff. Each retry logs `retry <job> attempt n/3: <error>`, where n is the next
+attempt (2 or 3). The last original error is reported if all attempts fail.
+HTTP status errors, malformed JSON and failures after a complete body never
+retry. Each worker retains its own running job across retries. Result publication
+still happens only after a complete response; timing includes the retry delay.
+
+`python tools/adi-drone/test_retry.py -v` uses a loopback HTTP fault server and
+temporary folders, without connecting to either live Ollama endpoint.

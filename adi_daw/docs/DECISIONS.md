@@ -15523,3 +15523,113 @@ So the build order in the plan is chosen on one property: **each step is the
 thing that would expose the step before it being wrong.** That is the only
 review mechanism that has demonstrably worked here, and it is why the order is
 seams-first and window-second rather than the reverse.
+---
+
+## ADR-0200 — ADI Mobile is designed now and built last: the same engine and format on iOS and Android, three modes, and what the desktop must not foreclose — `DECIDED (direction)` (2026-09-29) — **DIRECTOR'S DIRECTIVE; AMENDS FEATURES §11 ("Mobile. Not until desktop is genuinely good"); ADDS ROADMAP STEP 15; THREE CORRECTIONS; iOS OUTSIDE THE APP STORE (DIRECTOR)**
+
+**Director's directive:**
+- Define ADI Mobile's architecture now, and build it last.
+- It runs the same C++/JUCE engine and opens the same `.adi` projects as the desktop, so a project moves between phone and desktop without conversion.
+- ADI's own plug-ins and the Pd tier are compiled for ARM iOS and Android.
+- There are three modes:
+  1. Arrangement, in the style of BandLab;
+  2. Session, in the style of Ableton Note;
+  3. Loop/Focus, which only mobile has: an audio clip through a Simpler-style device, loop take comping by swipe, a synth and a piano roll side by side, and sampling from the microphone straight into a device.
+
+### Decisions
+
+1. **Build last, design now.** FEATURES §11's rule stands for the building. ADI Mobile is **roadmap step 15**, after
+   the Linux desktop (step 14). It starts only when the desktop DAW, its Session view and ADiJ are mature. What
+   starts now is a set of requirements the desktop must meet, so the phone never forces a rewrite (d5). This ADR
+   records only those.
+
+2. **One engine, one format.** ADI Mobile links the same `adi_core` and opens the same SQLite `.adi` files. That
+   is already the shape of the code:
+   - `adi_core` is headless and JUCE-free (ADR-0036);
+   - the engine builds and passes CI on arm64 (macOS);
+   - the Pd tier refuses to load externals from disk, compiling its externals in instead (ADR-0188 d8), which is
+     exactly what iOS demands of an app.
+
+   Projects travel the way SPEC §10.4 already defines: media is never embedded, and a shareable project is a
+   ZIP of the project plus its media. A project opened on the phone opens as itself, not as an export.
+
+3. **Correction: "without conversion or freezing" holds for ADI's own devices, not for other people's plug-ins.**
+   - **Why:** iOS does not let an app load plug-in binaries from files. Its plug-ins are AUv3 app extensions,
+     and Android has no plug-in format at all. So a desktop project that uses a third-party VST3 or CLAP cannot
+     play that plug-in on the phone.
+   - **What the phone can run:**
+     - ADI's own plug-ins, compiled into the mobile app as built-in devices, not loaded as CLAPs;
+     - the Pd tier;
+     - native devices.
+   - **What happens to a device it cannot host:**
+     - it opens as a placeholder that keeps all its state, as an AU does on desktop today (ADR-0041, ADR-0011);
+     - its track plays the freeze render if one exists (`tracks.freeze_media_id`, ADR-0059), with the freeze
+       fingerprint so a stale render is shown as stale;
+     - back on the desktop, the plug-in is live again, unchanged.
+   - **What the desktop does:** it offers to freeze such tracks before a project is shared to a phone. This is
+     the one place freezing is part of moving a project, and the director should know that now rather than
+     at step 15.
+
+4. **Correction: ADI Live does not exist.** ADR-0190 dropped the separate live app; live performance is ADI's own
+   Session view (roadmap step 12). The directive's "after … ADI Live" means after the Session view.
+
+5. **What the desktop must not foreclose, from today.** These are the real content of "design now". Each goes to
+   its owner as a requirement, not a feature:
+   - **Input (step 7, mac):**
+     - every action reachable by mouse and keyboard also has a way that needs no hover, no right button and no
+       modifier key: a long press, a menu, or an on-screen control;
+     - gestures stay pure functions from input to parameter change, as the Dynamic EQ's already are (ADR-0195
+       d2), so a touch mapping is a new table, not a rewrite;
+     - nothing is shown only on hover.
+   - **Layout (step 7, mac):**
+     - components take their size from their parent and never assume a desktop minimum;
+     - the device strip's floor (ADR-0184, 169 logical pixels, unverified) is a desktop default, not a
+       constant in the component.
+   - **Engine (win):**
+     - no desktop-only API in `adi_core`;
+     - the transport survives an audio-session interruption (a phone call, another app taking the device): it
+       stops cleanly and resumes, rather than assuming the driver is always there;
+     - the engine runs at the block sizes and sample rates phones give it (ADR-0102 already requires 32 to
+       4096).
+   - **DSP (everyone):**
+     - built-in externals and ADI's plug-ins keep their DSP in plain C++, separate from any GUI, as the
+       color-bass devices and the Dynamic EQ do;
+     - "renders identically" means within the tolerance the tests already state. Bit-identical output across
+       x86 and ARM is not promised, because FMA and SIMD differ.
+   - **Format (win):** anything the phone modes create is stored in the schema's existing tables where one
+     fits, so a phone-made project opens on the desktop with nothing lost. Where no table fits, it gets a row
+     in FEATURES §12 before it is built, like every other format gap.
+
+6. **The three modes are the phone's screens over one engine.**
+   - **Arrangement** is ADI's arrangement.
+   - **Session** is ADI's Session view (step 12).
+   - **Loop/Focus** is a new screen, but its abilities are engine features the desktop gets too:
+     - playing a clip through a sampler device and printing the result to new clips;
+     - loop recording with take lanes (comping, FEATURES §3);
+     - a synth's controls beside a piano roll;
+     - sampling from an input straight into a device's sample slot. `[adi.sample]` (ADR-0192) and the
+       native sampler are the targets; the recording lands in a clip as well, so nothing captured exists only
+       inside a device.
+
+   Only the layout is mobile-exclusive.
+
+7. **iOS ships only through alternative app marketplaces, never the Apple App Store** (the director, 2026-09-29).
+   - **Why:** the App Store's terms are widely held to conflict with GPLv3 (VLC was removed over it in 2011).
+     ADI is GPLv3, a JUCE build is AGPLv3 (ADR-0048), Surge's DSP is GPLv3, and ZL Equalizer's is AGPLv3.
+     Alternative marketplaces, such as those the EU's Digital Markets Act allows, do not impose those terms.
+   - **Consequence 1:** ADI's licences and every GPL/AGPL adaptation stay as they are. No App Store exception is
+     sought, no "App Store edition" without the third-party devices is built, and a GPL source is not rejected
+     because of iOS.
+   - **Consequence 2:** ADI Mobile on iOS is available only where alternative distribution is legal (the EU
+     today). Android is unaffected: Google Play and other stores.
+   - **Before step 15:** confirm each marketplace's terms against GPLv3/AGPLv3, one by one, as the first task
+     of that step.
+
+### Still open, before step 15
+
+- **adi-vst on the phone.** adi-vst's AI tools run behind the RPC boundary on the desktop (ADR-0039, ADR-0186).
+  On a phone they need on-device inference or a connection to the desktop. That is decided with adi-vst, at
+  step 15.
+
+- **Which phones.** The minimum iOS and Android versions, and the CPU budget a phone must meet. These are
+  measured, not guessed, at step 15.
