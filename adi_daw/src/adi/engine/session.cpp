@@ -367,7 +367,17 @@ void Session::attach() {
         std::vector<Node*> nodes;
         // ADR-0174: a summing group's buss half is first, right after its sum.
         if (Node* buss = summing_.headFor(trackId)) nodes.push_back(buss);
-        for (device::DeviceNode* n : chainFor(trackId)) nodes.push_back(n);
+        const auto chain = chainFor(trackId);
+        std::size_t firstAudio = 0;
+        for (std::size_t i = 0; i < chain.size(); ++i)
+            if (chain[i]->eventFlow() == EventFlow::Consume) firstAudio = i + 1;
+        for (std::size_t i = 0; i <= chain.size(); ++i) {
+            if (i == firstAudio) {
+                const auto gain = inputGains_.find(trackId);
+                if (gain != inputGains_.end()) nodes.push_back(gain->second.get());
+            }
+            if (i < chain.size()) nodes.push_back(chain[i]);
+        }
         // ADR-0163: the strip is the last node of every chain, after the
         // devices, so whatever the track feeds takes its output.
         if (StripNode* strip = strips_.stripFor(trackId)) nodes.push_back(strip);
@@ -424,6 +434,16 @@ bool Session::rebuild() {
         for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;
         for (const auto& [key, laneId] : deviceAutomation_->laneFor) known = known || laneId == *it;
         it = known ? std::next(it) : overridden_.erase(it);
+    }
+    for (const auto& track : model_.tracks) {
+        double db = 0.0;
+        for (const auto& strip : model_.strips)
+            if (strip.trackId == track.id) db = strip.inputGainDb;
+        if (db != 0.0 || inputGains_.contains(track.id)) {
+            auto& gain = inputGains_[track.id];
+            if (!gain) gain = std::make_unique<InputGainNode>();
+            gain->setDb(db);
+        }
     }
     strips_.sync(model_, &transport_, stripAutomation_);   // ADR-0163: before the graph names them
     summing_.sync(model_);                                 // ADR-0174: likewise
@@ -587,12 +607,12 @@ void Session::attachTaps() {
         Node* tapped = strip;
         if (point == ScopePoint::ChainInput) {
             const auto chain = chainFor(id);
-            // Consume is the cached instrument contract (ADR-0091). Tap the
-            // first effect after the instrument, or the strip if there is none.
             std::size_t first = 0;
             for (std::size_t i = 0; i < chain.size(); ++i)
                 if (chain[i]->eventFlow() == EventFlow::Consume) first = i + 1;
             if (first < chain.size()) tapped = chain[first];
+            const auto gain = inputGains_.find(id);
+            if (gain != inputGains_.end()) tapped = gain->second.get();
             auto& previous = chainTapNodes_[id];
             if (previous && previous != tapped) previous->setInputTap(nullptr);
             previous = tapped;

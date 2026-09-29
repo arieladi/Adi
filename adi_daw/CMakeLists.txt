@@ -245,6 +245,7 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/gain_stage.cpp
     src/adi/engine/mixer.cpp
     src/adi/engine/summing.cpp
     src/adi/engine/scope.cpp
@@ -1273,6 +1274,9 @@ target_include_directories(adi_dynamic_eq_gesture_tests PRIVATE plugins/dynamic-
 target_link_libraries(adi_dynamic_eq_gesture_tests PRIVATE adi_warnings)
 add_test(NAME adi_dynamic_eq_gesture_tests COMMAND adi_dynamic_eq_gesture_tests)
 
+add_executable(adi_gain_stage_tests tests/test_gain_stage.cpp)
+target_link_libraries(adi_gain_stage_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
 target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_controller_maps_tests COMMAND adi_controller_maps_tests)

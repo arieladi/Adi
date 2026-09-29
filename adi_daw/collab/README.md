@@ -232,6 +232,7 @@ subject, say so in your log instead of writing it twice.
 | 0195 | win | `win/directive-0195` | the Dynamic EQ adapts ZL Equalizer 2 under Pro-Q 3's mouse; inline MIDI Learn; Auto Gain Stage; the analyser's multi-track overlay (director) | used |
 | 0196 | mac | (the host session's step 6, PR 3) | automation on the host: VST3 parameter changes, CLAP value conversion, the echo filter, `param-indication`'s automation half, `--expect-no-edits` | used |
 | 0197 | mac | `mac/pd-toplevel` | a Pd device patch is a top-level canvas: [adc~] in, [dac~] out; subpatches keep inlet~/outlet~ (win's ruling, closes ADR-0183 d11) | used |
+| 0198 | mac | `mac/generic-panel` | the parameter feed's per-parameter record: the plug-in's own text, the shape of a control, automated/overridden, and which source touched it last | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -244,7 +245,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `src/adi/ops_catalog.cpp`, `src/adi/controller_maps.*`, `tests/test_controller_maps.cpp`, `tests/test_replay.cpp`, `docs/OPS.md`, `CMakeLists.txt` (target), `README.md` (count) | win_codex - MIDI Learn delegated by win | `codex/midi-learn` | 2026-09-28 |
 | `docs/UI-ARCHITECTURE.md` (the device strip's section only, inside mac's area, on the director's instruction, ADR-0184, ADR-0188) | win | `win/rulings-0927b` | 2026-09-27 |
 | `src/adi/store_rows.*`, `src/adi/textproj_store.*`, `tests/test_textproj_store.cpp` | win | (standing) | 2026-09-19 |
 | `src/adi/engine/**`, `tests/test_engine.cpp`, `tests/test_session.cpp`, `tests/test_param_ops.cpp`, `tests/test_graph.cpp`, `tests/test_midi_clips.cpp`, `tests/test_clip_playback.cpp` | win | (standing; linux takes the MIDI and clip files back on its return) | 2026-09-24 |
@@ -252,7 +252,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 | `third_party/JUCE`, `docs/EXTERNAL-CODE.md`, `src/juce/**`, `cmake/**` | mac | (standing) | 2026-09-19 |
 | `.github/**`, `tools/fetch_external.sh`, `tests/fuzz_blob.cpp`, `tests/fuzz_seeds.py` | mac | (standing) | 2026-09-18 |
 | `.github/workflows/driver-build.yml` (one file inside mac's area, on the director's instruction, ADR-0120), `adi_daw/drivers/**` | win | `agent/win-dev` | 2026-09-22 |
-| `src/adi/dsp/spectrum.*`, `tests/test_spectrum.cpp`, `tools/fetch_external.sh`, `third_party/pffft` | mac (second session) | `mac/pffft` | 2026-09-28 |
+| `src/adi/dsp/spectrum.*`, `tools/gen_pd_patches.py`, `pd/adi-spectrum.pd`, `src/juce/pd_engine.*`, `tests/test_pd_engine.cpp` | mac (second session) | `mac/pd-spectrum` | 2026-09-28 |
 
 `src/adi/textproj.*` stays mac's even while win writes the adapter against it:
 the adapter builds a `Tree` and never reaches into the pure layer. `src/adi/check.*`

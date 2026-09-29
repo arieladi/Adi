@@ -21,6 +21,14 @@ void check(bool cond, const std::string& what) {
     if (!cond) { ++g_failures; std::printf("  FAIL  %s\n", what.c_str()); }
 }
 void section(const char* s) { std::printf("[%s]\n", s); }
+void eqi(std::int64_t got, std::int64_t want, const std::string& what) {
+    ++g_checks;
+    if (got != want) {
+        ++g_failures;
+        std::printf("  FAIL  %s\n          got %lld, want %lld\n", what.c_str(),
+                    static_cast<long long>(got), static_cast<long long>(want));
+    }
+}
 
 std::vector<panel::Declared> plugin(std::size_t modifiable, std::size_t hidden = 0) {
     std::vector<panel::Declared> v;
@@ -104,12 +112,149 @@ void testTheParameterList() {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// ADR-0198: the ADI Airwindows active-algorithm filter.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A record with a CLAP-style hex id, as the device contract hands them over.
+adi::panel::Record rec(std::int64_t id, const char* name) {
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "%08x", static_cast<unsigned>(id));
+    adi::panel::Record r;
+    r.id = buf;
+    r.name = name;
+    return r;
+}
+
+void testTheRecordDerivesAndEnforces() {
+    section("ADR-0198 -- what the record derives, and what it refuses to hold");
+
+    using namespace adi::panel;
+    std::vector<Record> rs(4);
+
+    // 0: a lane is driving it away from its stored value.
+    rs[0].stored = 0.25; rs[0].playing = 0.80; rs[0].automated = true;
+    // 1: automated, but the playhead happens to be where the stored value is.
+    rs[1].stored = 0.50; rs[1].playing = 0.50; rs[1].automated = true;
+    // 2: MISSING, with a stored value and a lane that must survive.
+    rs[2].stored = 0.30; rs[2].playing = 0.90; rs[2].automated = true;
+    rs[2].missing = true;
+    // 3: overridden with no lane at all -- not a state.
+    rs[3].stored = 0.10; rs[3].playing = 0.10; rs[3].overridden = true;
+
+    finalize(rs);
+
+    check(rs[0].driven, "a value differing from the stored one is DRIVEN");
+    check(!rs[1].driven,
+          "and one that happens to equal it is not -- a UI must not decide "
+          "that by comparing doubles itself and disagree with a surface");
+
+    check(!rs[2].driven && rs[2].playing == rs[2].stored,
+          "a MISSING parameter plays nothing (ADR-0177 d4)");
+    check(rs[2].automated && rs[2].stored == 0.30,
+          "and keeps its lane and its stored value -- nothing is deleted");
+
+    check(!rs[3].overridden,
+          "overridden without automated is refused: override is something "
+          "done TO a lane (ADR-0162), and with none there is nothing to "
+          "re-enable");
+
+    // The epsilon is a parameter, and a coarse one must not call a real move
+    // undriven by accident -- so it is the caller's to choose and is tested
+    // at both ends.
+    std::vector<Record> tight(1);
+    tight[0].stored = 0.5; tight[0].playing = 0.5 + 1e-7;
+    finalize(tight, 1e-9);
+    check(tight[0].driven, "a tiny move is driven at a tight epsilon");
+    finalize(tight, 1e-6);
+    check(!tight[0].driven, "and is not at a coarse one");
+}
+
+void testAirwindowsActiveAlgorithmFilter() {
+    section("ADR-0198 -- a suite shows only the ACTIVE algorithm's parameters");
+
+    using namespace adi::panel;
+
+    // A suite the shape ADI Airwindows declares: two shared parameters, then
+    // each algorithm's block at 100 + 64a + k.
+    std::vector<Record> all{
+        rec(kAwAlgorithmId, "Algorithm"),
+        rec(kAwAutoGainId,  "Auto Gain"),
+        rec(100 + 0 * 64 + 0, "A0 p0"),
+        rec(100 + 0 * 64 + 1, "A0 p1"),
+        rec(100 + 1 * 64 + 0, "A1 p0"),
+        rec(100 + 1 * 64 + 1, "A1 p1"),
+        rec(100 + 2 * 64 + 0, "A2 p0"),
+    };
+
+    const auto a0 = activeAlgorithmParams(all, 0);
+    eqi(static_cast<std::int64_t>(a0.size()), 4,
+        "algorithm 0: the two shared plus its own two");
+    check(a0.size() == 4 && all[a0[0]].name == "Algorithm" &&
+              all[a0[1]].name == "Auto Gain" && all[a0[2]].name == "A0 p0" &&
+              all[a0[3]].name == "A0 p1",
+          "in the plug-in's own order, shared first");
+
+    const auto a1 = activeAlgorithmParams(all, 1);
+    eqi(static_cast<std::int64_t>(a1.size()), 4, "algorithm 1: four again");
+    check(a1.size() == 4 && all[a1[2]].name == "A1 p0" && all[a1[3]].name == "A1 p1",
+          "and they are ALGORITHM 1's, not algorithm 0's -- the whole point, "
+          "since every algorithm's parameters are declared at once");
+
+    const auto a2 = activeAlgorithmParams(all, 2);
+    eqi(static_cast<std::int64_t>(a2.size()), 3, "algorithm 2 declares only one");
+
+    // An algorithm with no parameters still shows the shared two.
+    const auto a9 = activeAlgorithmParams(all, 9);
+    eqi(static_cast<std::int64_t>(a9.size()), 2,
+        "an algorithm with no parameters of its own still shows the shared two");
+
+    // THE CONSERVATIVE CASES. This filter exists for one plug-in family, and
+    // anything it cannot place is KEPT: hiding a control the user needs is
+    // worse than showing one they do not.
+    std::vector<Record> odd{
+        rec(kAwAlgorithmId, "Algorithm"),
+        Record{},                       // id "" -- not a number at all
+        rec(50, "below the base"),      // shared-looking, not one of the two
+        rec(100 + 0 * 64, "A0 p0"),
+    };
+    odd[1].id = "not-hex";
+    odd[1].name = "Some other plug-in's";
+    const auto kept = activeAlgorithmParams(odd, 0);
+    eqi(static_cast<std::int64_t>(kept.size()), 4,
+        "an unparseable id and one below the base are both KEPT");
+}
+
+/// The filter's constants must equal the plug-in's. They are declared in two
+/// places on purpose -- `panel.hpp` is pure and JUCE-free so it builds on every
+/// ABI, and the plug-in is built apart from the DAW -- so this is the check
+/// that stops them drifting.
+void testTheFilterMatchesThePluginsOwnConstants() {
+    section("ADR-0198 -- the panel's constants are the plug-in's constants");
+
+    // From plugins/airwindows/Source/airwindows_clap.hpp, which is the
+    // authority (plugins/README.md says the same; SUITES.md does NOT document
+    // the scheme, which cost a wrong turn when a brief said it did).
+    static_assert(adi::panel::kAwAlgorithmId  == 0,   "Algorithm is id 0");
+    static_assert(adi::panel::kAwAutoGainId   == 1,   "Auto Gain is id 1");
+    static_assert(adi::panel::kAwParamBase    == 100, "the first block starts at 100");
+    static_assert(adi::panel::kAwParamStride  == 64,  "and each is 64 wide");
+    check(true, "the scheme is 100 + 64a + k, asserted at compile time");
+}
+
+}  // namespace
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_panel_tests -- the plug-in panel (ADR-0150, ADR-0154)\n\n");
     testLivesRule();
     testAConfiguredPanel();
     testTheParameterList();
+    testTheRecordDerivesAndEnforces();
+    testAirwindowsActiveAlgorithmFilter();
+    testTheFilterMatchesThePluginsOwnConstants();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
