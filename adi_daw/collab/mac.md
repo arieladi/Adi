@@ -33,7 +33,11 @@ Each one is here because it cost something, and the cost is named.
 7. **Stage explicit paths. Never `git add -A`** — this is a public monorepo
    with other projects' untracked work in it.
 8. **A conflicting PR has NO CI, not stale CI.** Merge first, then read CI;
-   "green by head SHA" cannot be attempted in that state. (2026-09-27)
+   "green by head SHA" cannot be attempted in that state. With three agents
+   on one trunk — win, win_codex and the analyser session — a branch can go
+   `CONFLICTING` between a push and its CI, so **merge main BEFORE pushing**
+   rather than after CI complains. It happened on four PRs running.
+   (2026-09-27, extended 2026-09-28)
 
 
 ---

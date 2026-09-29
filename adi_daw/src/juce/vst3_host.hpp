@@ -133,6 +133,8 @@ public:
     }
     [[nodiscard]] const ParamDescriptor* paramAt(std::int32_t i) const noexcept override;
     [[nodiscard]] ParamValue getParam(const std::string& paramId) const noexcept override;
+    [[nodiscard]] std::string paramText(const std::string& paramId,
+                                        double normalized) const override;
     bool setParam(const std::string& paramId, const ParamValue& v) override;
 
     // --- state (ADR-0038) ---------------------------------------------------
