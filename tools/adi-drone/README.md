@@ -159,3 +159,18 @@ Run `python tools/adi-drone/test_parallel.py -v` on Windows. The tests use only
 temporary state folders and stub all model calls. The serial regression compares
 all result/log bytes against the implementation at `92eb485`; that commit must
 be present in the local Git history. No live drone directory is used.
+
+
+### Transient connection retries
+
+Only /api/generate transport failures before the response body is complete are
+retried: disconnect, reset, abort, refusal or timeout (including URLError wrapping
+one of those exceptions). There are at most three attempts, with 2 s then 5 s
+backoff. Each retry logs `retry <job> attempt n/3: <error>`, where n is the next
+attempt (2 or 3). The last original error is reported if all attempts fail.
+HTTP status errors, malformed JSON and failures after a complete body never
+retry. Each worker retains its own running job across retries. Result publication
+still happens only after a complete response; timing includes the retry delay.
+
+`python tools/adi-drone/test_retry.py -v` uses a loopback HTTP fault server and
+temporary folders, without connecting to either live Ollama endpoint.

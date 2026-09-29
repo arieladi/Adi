@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import difflib
 import json
+import http.client
 import msvcrt
 import os
 import re
@@ -177,6 +178,22 @@ def ensure_ollama():
     raise RuntimeError("ollama serve did not come up within 120 s")
 
 
+class GenerationConnectionError(Exception):
+    """Only a transport failure before /api/generate's body completed."""
+    def __init__(self, error):
+        super().__init__(str(error))
+        self.error = error
+
+
+def retryable_connection(error):
+    if isinstance(error, urllib.error.HTTPError):
+        return False
+    if isinstance(error, urllib.error.URLError):
+        error = error.reason
+    return isinstance(error, (http.client.RemoteDisconnected, ConnectionResetError,
+                              ConnectionAbortedError, ConnectionRefusedError, TimeoutError))
+
+
 def generate(system, prompt, num_predict=NUM_PREDICT):
     body = json.dumps({
         "model": MODEL, "system": system, "prompt": prompt, "stream": False,
@@ -186,8 +203,19 @@ def generate(system, prompt, num_predict=NUM_PREDICT):
     }).encode()
     req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=body,
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
-        return json.loads(r.read())
+    body_complete = False
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
+            response = r.read()
+            body_complete = True
+    except Exception as error:
+        if isinstance(error, urllib.error.HTTPError):
+            error.close()
+        if not body_complete and retryable_connection(error):
+            raise GenerationConnectionError(error) from error
+        raise
+    # Parsing (and anything after a fully read body) is never retried.
+    return json.loads(response)
 
 
 def model_loaded():
@@ -411,7 +439,16 @@ def run_job(job_file):
                              f"use per_file or fewer/smaller files ({group})")
         cap = int(job.get("max_output", NUM_PREDICT))
         t0 = time.time()
-        r = generate(system, prompt, cap)
+        for attempt in range(1, 4):
+            try:
+                r = generate(system, prompt, cap)
+                break
+            except GenerationConnectionError as failure:
+                if attempt == 3:
+                    raise failure.error
+                error = failure.error
+                log(f"retry {job_id} attempt {attempt + 1}/3: {type(error).__name__}: {error}")
+                time.sleep((2, 5)[attempt - 1])
         answer = r.get("response", "")
         meta_calls.append({
             "files": group, "prompt_tokens": r.get("prompt_eval_count"),
