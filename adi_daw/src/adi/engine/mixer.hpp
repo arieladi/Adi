@@ -84,6 +84,8 @@ struct StripLanes {
     const AutomationLaneProgram* mute = nullptr;     ///< 0.5 or more is muted
 };
 
+struct StripMeter { std::atomic<float> peak{0}, rms{0}; };
+
 class StripNode final : public Node {
 public:
     /// Message thread: the model's values. `audible` is mute and solo together.
@@ -120,6 +122,7 @@ public:
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const NodeIo& io) noexcept override;
     void silenceTaps(const NodeIo& io) noexcept override;
+    const StripMeter& meter() const noexcept {return meter_;}
 
     /// Message thread: the scope tap this strip's output feeds (ADR-0175), or
     /// null. The tap outlives every graph: the session keeps it.
@@ -141,6 +144,7 @@ private:
     void writeTap(std::atomic<ScopeTap*>& slot, const NodeIo& io,
                   const float* const* audio) noexcept;
 
+    StripMeter meter_;
     std::atomic<ScopeTap*> tap_{nullptr};
     std::atomic<ScopeTap*> preFaderTap_{nullptr};
     std::atomic<std::int64_t> delayProject_{0};

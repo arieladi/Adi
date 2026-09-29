@@ -147,7 +147,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
                                    TransportMailbox &mailbox, AppCommands &commands,
                                    ViewStateStore &persistence, std::string window,
                                    DesktopDefaults defaults)
-    : transport(*this), arrangement(*this), devices(*this), dockResizer(*this), view_(view),
+    : transport(*this), arrangement(*this), devices(*this), dockResizer(*this), mixer(*this), view_(view),
       submitter_(submitter), mailbox_(mailbox), commands_(commands), persistence_(persistence),
       window_(std::move(window)), state_(persistence.load(window_, defaults)), defaults_(defaults) {
     setOpaque(true);
@@ -156,6 +156,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(arrangement);
     addAndMakeVisible(devices);
     addAndMakeVisible(dockResizer);
+    addAndMakeVisible(mixer);
     reader_.emplace(view_.current());
     arrangement.geometry.left = state_.timelineLeft;
     arrangement.geometry.scale = state_.pixelsPerQuarter;
@@ -185,6 +186,7 @@ void AdiRootComponent::frame() noexcept {
     }
     devices.frame(arrangement.geometry.selectedTrack);
     lastDrain_ = dirty_.drain();
+    mixer.frame((lastDrain_ & DirtySet::Content) != 0);
     arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (lastDrain_ & DirtySet::Transport)
         transport.repaint();
@@ -230,6 +232,8 @@ void AdiRootComponent::resized() {
     dockResizer.toFront(false);
     arrangement.setBounds(left, 44, std::max(0, getWidth() - left - right),
                           std::max(0, getHeight() - 44 - dock));
+    const bool mixerLeft = slots[0].panel == Panel::Mixer;
+    mixer.setBounds(mixerLeft ? 0 : getWidth()-right,44,mixerLeft ? left : right,std::max(0,getHeight()-44-dock));
     dirty_.mark(DirtySet::All);
 }
 void AdiRootComponent::paint(juce::Graphics &g) {
@@ -275,6 +279,12 @@ void AdiRootComponent::paint(juce::Graphics &g) {
     g.drawText("Devices", 12, getHeight() - dock + 12, 160, 24, juce::Justification::centredLeft);
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) { return commands_.key(key, *this); }
+bool AdiRootComponent::submit(const std::string& op, Payload payload) {
+    OpRequest r; r.opType=op;r.payload=std::move(payload);
+    const auto result=submitter_.submit(r);error_=result.error;
+    if(result.ok){if(afterEdit)afterEdit();mark(DirtySet::All);}
+    return result.ok;
+}
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
 bool AdiRootComponent::command(int id) {
     if (id >= AppCommands::ZoomIn && id <= AppCommands::ScrollDown)

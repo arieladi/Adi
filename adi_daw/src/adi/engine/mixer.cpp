@@ -135,9 +135,14 @@ void StripNode::process(const NodeIo& io) noexcept {
     writeTap(preFaderTap_, io, io.in);
     processGains(io);
     writeTap(tap_, io, io.out);
+    float peak=0;double energy=0;std::int64_t count=0;
+    for(int c=0;c<io.channels;++c)if(io.out&&io.out[c])for(int i=0;i<io.frames;++i){const float v=io.out[c][io.blockOffset+i];peak=std::max(peak,std::abs(v));energy+=static_cast<double>(v)*v;++count;}
+    meter_.peak.store(peak,std::memory_order_relaxed);
+    meter_.rms.store(count?static_cast<float>(std::sqrt(energy/static_cast<double>(count))):0.f,std::memory_order_relaxed);
 }
 
 void StripNode::silenceTaps(const NodeIo& io) noexcept {
+    meter_.peak.store(0,std::memory_order_relaxed);meter_.rms.store(0,std::memory_order_relaxed);
     writeTap(preFaderTap_, io, nullptr);
     writeTap(tap_, io, nullptr);
 }

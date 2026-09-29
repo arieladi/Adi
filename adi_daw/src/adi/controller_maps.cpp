@@ -95,6 +95,14 @@ ControllerMode detectControllerMode(std::span<const int> values) noexcept {
 }
 std::optional<OpRequest> learnController(const Store& store,std::int64_t id,std::int64_t lane,
     const ControllerCc& source,std::span<const int> values,const ControllerPolicy& policy,std::string& error) {
+    SQLite::Statement target(store.db(),"SELECT owner_kind,owner_id,param_ref FROM automation_lanes WHERE id=?");
+    target.bind(1,lane);
+    if(!target.executeStep()) { error="no automation lane to learn"; return std::nullopt; }
+    return learnControllerTarget(id,target.getColumn(0).getString(),target.getColumn(1).getInt64(),target.getColumn(2).getString(),source,values,policy,error);
+}
+std::optional<OpRequest> learnControllerTarget(std::int64_t id,const std::string& kind,
+    std::int64_t targetId,const std::string& param,const ControllerCc& source,std::span<const int> values,
+    const ControllerPolicy& policy,std::string& error) {
     error.clear();
     if(!policy.remoteEnabled) { error="MIDI port is not enabled for Remote"; return std::nullopt; }
     if(policy.focusDial && *policy.focusDial==source) { error="Focus Dial is reserved"; return std::nullopt; }
@@ -102,14 +110,11 @@ std::optional<OpRequest> learnController(const Store& store,std::int64_t id,std:
         std::any_of(values.begin(),values.end(),[](int v){return v<0 || v>127;})) {
         error="invalid Learn CC or binding id"; return std::nullopt;
     }
-    SQLite::Statement target(store.db(),"SELECT owner_kind,owner_id,param_ref FROM automation_lanes WHERE id=?");
-    target.bind(1,lane);
-    if(!target.executeStep()) { error="no automation lane to learn"; return std::nullopt; }
     const auto mode=detectControllerMode(values);
     Payload binding={{"device_name",source.port},{"protocol","midi"},{"channel",source.channel},
         {"msg_type","cc"},{"msg_num",source.number},{"osc_path",nullptr},
-        {"target_kind",target.getColumn(0).getString()},{"target_id",target.getColumn(1).getInt64()},
-        {"target_param",target.getColumn(2).getString()},{"mode",static_cast<int>(mode)},
+        {"target_kind",kind},{"target_id",targetId},
+        {"target_param",param},{"mode",static_cast<int>(mode)},
         {"takeover",static_cast<int>(mode==ControllerMode::Absolute?policy.takeover:ControllerTakeover::Jump)},
         {"range_min",0.0},{"range_max",1.0},{"enabled",true}};
     OpRequest op; op.opType="controller.bind"; op.label="MIDI Learn";

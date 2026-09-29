@@ -218,6 +218,8 @@ public:
     [[nodiscard]] ClipPlayback* clips() noexcept { return clips_.get(); }
     [[nodiscard]] MidiClips* midiClips() noexcept { return midi_.get(); }
 
+    [[nodiscard]] const StripMeter* meterFor(std::int64_t track) noexcept {auto* strip=strips_.stripFor(track);return strip?&strip->meter():nullptr;}
+
     [[nodiscard]] device::DeviceHost& devices() noexcept { return devices_; }
     [[nodiscard]] GraphHost& graph() noexcept { return graph_; }
 

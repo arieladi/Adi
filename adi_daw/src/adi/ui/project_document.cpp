@@ -127,6 +127,49 @@ bool ProjectDocument::dropAudio(const std::filesystem::path &source, std::int64_
         return false;
     }
 }
+bool ProjectDocument::autoGainStage(bool lufs) {
+    engine::GainStageOptions options;
+    options.measure =
+        lufs ? engine::GainStageMeasure::IntegratedLufs : engine::GainStageMeasure::GatedRms;
+    const auto result = session_.autoGainStage(*store_, options);
+    error_ = result.commit.error;
+    if (!result.commit.ok)
+        return false;
+    view_.refresh(*store_);
+    return synchronise();
+}
+bool ProjectDocument::learnTrack(std::int64_t track, const std::string &param,
+                                 const ControllerCc &cc, std::span<const int> values,
+                                 const ControllerPolicy &policy) {
+    if (!view_.current()->findTrack(track)) {
+        error_ = "Track no longer exists";
+        return false;
+    }
+    const auto id =
+        store_->db().execAndGet("SELECT COALESCE(MAX(id),0)+1 FROM controller_maps").getInt64();
+    auto op = learnControllerTarget(id, "track", track, param, cc, values, policy, error_);
+    if (!op)
+        return false;
+    const auto result = ops_.submit(*op);
+    error_ = result.error;
+    return result.ok;
+}
+bool ProjectDocument::unbindTrack(std::int64_t track, const std::string &param) {
+    std::vector<OpRequest> ops;
+    for (const auto &b : bindings())
+        if (b.binding.at("target_kind") == "track" && b.binding.at("target_id") == track &&
+            b.binding.at("target_param") == param) {
+            OpRequest r;
+            r.opType = "controller.unbind";
+            r.payload = {{"id", b.id}};
+            ops.push_back(std::move(r));
+        }
+    if (ops.empty())
+        return true;
+    const auto result = ops_.submit(ops);
+    error_ = result.error;
+    return result.ok;
+}
 bool ProjectDocument::save(std::string &error) {
     if (store_->readOnly()) {
         error = "Project is read-only";

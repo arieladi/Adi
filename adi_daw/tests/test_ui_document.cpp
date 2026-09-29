@@ -232,6 +232,17 @@ int main(int argc, char **argv) {
         }
         check(bin(rendered, 157) < 1e-5, "dropped clip far bin at floor");
         check(bin(rendered, 16) > .05, "dropped audio actually plays through Session");
+        const auto* meter=dropped->session().meterFor(track);
+        check(meter && meter->peak.load()>0 && meter->rms.load()>0,"strip publishes peak and RMS after real clip audio");
+        ControllerPolicy policy;policy.remoteEnabled=true;policy.focusDial=ControllerCc{"Remote",1,7};
+        const std::array<int,3> trace{10,50,100};
+        check(!dropped->learnTrack(track,"volume",{"Remote",1,7},trace,policy),"mixer Learn refuses reserved Focus Dial");
+        check(dropped->learnTrack(track,"volume",{"Remote",1,8},trace,policy),"mixer Learn needs no automation lane");
+        check(dropped->bindings().size()==1,"resolved binding stored");
+        policy.focusDial=ControllerCc{"Remote",1,8};
+        check(controllerBindingShadowed(dropped->bindings()[0],policy),"mixer list can report imported or moved reservation as shadowed");
+        check(dropped->unbindTrack(track,"volume") && dropped->bindings().empty(),"mixer Unbind removes matching binding");
+        check(dropped->ops().undo().ok && dropped->bindings().size()==1,"Unbind inverse restores complete binding");
         dropped->release();
     }
     std::printf("%d checks, %d failures\n", checks, failures);

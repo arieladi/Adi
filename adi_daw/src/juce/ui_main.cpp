@@ -8,7 +8,8 @@
 namespace adi::ui {
 class AdiApplication final : public juce::JUCEApplication,
                              private juce::Timer,
-                             private juce::ChangeListener {
+                             private juce::ChangeListener,
+                             private juce::MidiInputCallback {
   public:
     const juce::String getApplicationName() override { return "ADI"; }
     const juce::String getApplicationVersion() override { return ADI_VERSION_STRING; }
@@ -70,6 +71,8 @@ class AdiApplication final : public juce::JUCEApplication,
         if (audioDialog_ != nullptr)
             delete audioDialog_.getComponent();
         manager_.removeChangeListener(this);
+        midiInput_.reset();
+        learnTrack_ = 0;
         detachAudio();
         floating_.reset();
         window_.reset();
@@ -123,6 +126,8 @@ class AdiApplication final : public juce::JUCEApplication,
             return false;
         }
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
+        midiInput_.reset();
+        learnTrack_ = 0;
         detachAudio();
         floating_.reset();
         window_.reset();
@@ -143,6 +148,29 @@ class AdiApplication final : public juce::JUCEApplication,
             if (!ok)
                 report(document_->error());
             return ok;
+        };
+        root->mixer.meter = [this](std::int64_t id) { return document_->session().meterFor(id); };
+        root->mixer.autoGain = [this](bool lufs) {
+            if (!document_->autoGainStage(lufs))
+                report(document_->error());
+            root_->mark(DirtySet::All);
+        };
+        root->mixer.midiLearn = [this](std::int64_t track, const std::string &param, bool unbind) {
+            if (unbind) {
+                if (!document_->unbindTrack(track, param))
+                    report(document_->error());
+            } else
+                armLearn(track, param);
+        };
+        root->mixer.shadowed = [this](std::int64_t id, const std::string &param) {
+            const auto policy = controllerPolicy();
+            for (const auto &b : document_->bindings())
+                if (b.binding.value("target_kind", "") == "track" &&
+                    b.binding.value("target_id", std::int64_t{}) == id &&
+                    b.binding.value("target_param", "") == param &&
+                    controllerBindingShadowed(b, policy))
+                    return true;
+            return false;
         };
         root->afterEdit = [this] {
             if (!document_->synchronise())
@@ -213,6 +241,148 @@ class AdiApplication final : public juce::JUCEApplication,
         auto *raw = view.get();
         floating_->openView("analyser." + std::to_string(id), id, std::move(view),
                             [raw](const SnapshotReader &) { raw->frame(); });
+    }
+    ControllerPolicy controllerPolicy() const {
+        ControllerPolicy p;
+        p.remoteEnabled = midiInput_ != nullptr;
+        const auto port = settings_->get("midi.focusDialPort").get<std::string>();
+        if (!port.empty())
+            p.focusDial = ControllerCc{port, settings_->get("midi.focusDialChannel").get<int>(),
+                                       settings_->get("midi.focusDialCc").get<int>()};
+        const auto takeover = settings_->get("midi.takeoverMode").get<std::string>();
+        p.takeover = takeover == "none"           ? ControllerTakeover::Jump
+                     : takeover == "valueScaling" ? ControllerTakeover::Scale
+                                                  : ControllerTakeover::Pickup;
+        return p;
+    }
+    void armLearn(std::int64_t track, const std::string &param) {
+        if (noAudio_) {
+            report("MIDI input is disabled in this file-only run");
+            return;
+        }
+        const auto ports = juce::MidiInput::getAvailableDevices();
+        if (ports.isEmpty()) {
+            report("No MIDI input ports are available");
+            return;
+        }
+        juce::PopupMenu menu;
+        for (int i = 0; i < ports.size(); ++i)
+            menu.addItem(i + 1, "Enable Remote and learn: " + ports[i].name);
+        menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(root_),
+                           [this, ports, track, param](int id) {
+                               if (id <= 0 || id > ports.size() || !document_)
+                                   return;
+                               midiInput_.reset();
+                               midiFifo_.reset();
+                               midiInput_ =
+                                   juce::MidiInput::openDevice(ports[id - 1].identifier, this);
+                               if (!midiInput_) {
+                                   report("Cannot open MIDI input");
+                                   return;
+                               }
+                               midiPort_ = ports[id - 1].identifier.toStdString();
+                               learnTrack_ = track;
+                               learnParam_ = param;
+                               learnCount_ = 0;
+                               pickup_.clear();
+                               midiInput_->start();
+                           });
+    }
+    void handleIncomingMidiMessage(juce::MidiInput *, const juce::MidiMessage &m) override {
+        if (!m.isController())
+            return;
+        int a, n, b, k;
+        midiFifo_.prepareToWrite(1, a, n, b, k);
+        if (n) {
+            midiEvents_[static_cast<std::size_t>(a)] = {m.getChannel(), m.getControllerNumber(),
+                                                        m.getControllerValue()};
+            midiFifo_.finishedWrite(1);
+        }
+    }
+    void drainMidi() {
+        int a, n, b, k;
+        midiFifo_.prepareToRead(256, a, n, b, k);
+        for (int part = 0; part < 2; ++part)
+            for (int i = 0; i < (part ? k : n); ++i) {
+                const auto e = midiEvents_[static_cast<std::size_t>((part ? b : a) + i)];
+                ControllerCc cc{midiPort_, e.channel, e.cc};
+                auto policy = controllerPolicy();
+                if (learnTrack_) {
+                    if (policy.focusDial && *policy.focusDial == cc) {
+                        learnTrack_ = 0;
+                        report("The Focus Dial is reserved and cannot be learned");
+                        continue;
+                    }
+                    if (learnCount_ == 0 || learnCc_ != cc) {
+                        learnCc_ = cc;
+                        learnCount_ = 0;
+                    }
+                    learnValues_[static_cast<std::size_t>(learnCount_++)] = e.value;
+                    if (learnCount_ == 3) {
+                        if (!document_->learnTrack(learnTrack_, learnParam_, cc, learnValues_,
+                                                   policy))
+                            report(document_->error());
+                        learnTrack_ = 0;
+                    }
+                    continue;
+                }
+                const auto bindings = document_->bindings();
+                (void)dispatchController(
+                    cc, e.value, policy, bindings, [](int) {},
+                    [this](const ControllerBinding &binding, int value) {
+                        const auto &p = binding.binding;
+                        if (p.value("target_kind", "") != "track")
+                            return;
+                        const auto id = p.value("target_id", std::int64_t{});
+                        const auto param = p.value("target_param", "");
+                        const auto *track = document_->view().current()->findTrack(id);
+                        if (!track || (param != "volume" && param != "pan"))
+                            return;
+                        const double current = param == "volume" ? (track->volumeDb + 90.) / 96.
+                                                                 : (track->pan + 1.) / 2.;
+                        double next = value / 127.;
+                        if (p.value("mode", 0) == static_cast<int>(ControllerMode::Relative)) {
+                            const int delta = value == 64   ? 0
+                                              : value == 63 ? -1
+                                              : value == 65 ? 1
+                                              : value > 64  ? value - 128
+                                                            : value;
+                            next = current + delta / 127.;
+                        } else if (p.value("takeover", 1) ==
+                                   static_cast<int>(ControllerTakeover::Scale)) {
+                            auto &state = pickup_[binding.id];
+                            if (state.previous < 0) {
+                                state.previous = next;
+                                return;
+                            }
+                            const auto previous = state.previous;
+                            state.previous = next;
+                            const double distance = next > previous ? 1 - previous : previous;
+                            next = current + (next - previous) *
+                                                 (next > previous ? 1 - current : current) /
+                                                 std::max(distance, 1. / 127.);
+                        } else if (p.value("takeover", 1) ==
+                                   static_cast<int>(ControllerTakeover::Pickup)) {
+                            auto &state = pickup_[binding.id];
+                            if (!state.latched) {
+                                state.latched =
+                                    std::abs(next - current) < 1. / 127. ||
+                                    (state.previous >= 0 &&
+                                     (state.previous - current) * (next - current) <= 0);
+                                state.previous = next;
+                                if (!state.latched)
+                                    return;
+                            }
+                        }
+                        next = std::clamp(next, 0., 1.);
+                        document_->deviceAction(
+                            param == "volume" ? "mixer.setVolume" : "mixer.setPan",
+                            {{"id", id},
+                             {param == "volume" ? "db" : "pan",
+                              param == "volume" ? next * 96 - 90 : next * 2 - 1}});
+                    });
+            }
+        midiFifo_.finishedRead(n + k);
     }
     void attachAudio() {
         juce::AudioDeviceManager::AudioDeviceSetup setup;
@@ -326,6 +496,7 @@ class AdiApplication final : public juce::JUCEApplication,
     void timerCallback() override {
         if (!document_)
             return;
+        drainMidi();
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (floating_)
             floating_->collect();
@@ -365,6 +536,22 @@ class AdiApplication final : public juce::JUCEApplication,
             quit();
         }
     }
+    struct MidiCc {
+        int channel = 1, cc = 0, value = 0;
+    };
+    std::array<MidiCc, 256> midiEvents_{};
+    juce::AbstractFifo midiFifo_{256};
+    std::unique_ptr<juce::MidiInput> midiInput_;
+    std::string midiPort_, learnParam_;
+    std::int64_t learnTrack_ = 0;
+    ControllerCc learnCc_;
+    std::array<int, 3> learnValues_{};
+    int learnCount_ = 0;
+    struct Pickup {
+        double previous = -1;
+        bool latched = false;
+    };
+    std::map<std::int64_t, Pickup> pickup_;
     bool noAudio_ = false;
     juce::File smokeOutput_;
     std::unique_ptr<settings::AppSettings> settings_;
