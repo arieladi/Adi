@@ -46,3 +46,5 @@ Every range/default/unit/curve below is **ADI, unverified against Live**. The 25
 | IR Attack (host preparation) | 0..20 | 0 | seconds / linear envelope |
 | IR Decay (host preparation) | 0 disabled, otherwise 0..60 | 0 | seconds to -60 dB / exponential envelope |
 | IR Size (host preparation) | 0.25..4 | 1 | time scale / linear interpolation |
+
+Final stack integration check: the real Session now loads native Pitch before Sampler; its MIDI clip renders exactly one octave higher, with the original bin absent and the far bin at the floor. Sampler suite: 30 checks, all passing. This test is also carried only on the top.
