@@ -110,6 +110,14 @@ bool noteExpressionOut(const Event& in, const ExpressionCaps& caps, MpeOut& out)
             return true;
         }
 
+        case EventType::Control:
+            if(in.channel>15 || in.dim>kCtrlPitchBend || !std::isfinite(in.value)) return false;
+            out.kind=MpeOut::Kind::Control;out.channel=in.channel;out.ctrl=in.dim;
+            out.value=in.dim==kCtrlPitchBend?semitonesToBendExact(in.value,kMpeOutBendSemitones)/16383.:clampUnit(in.value);
+            out.word=static_cast<std::uint16_t>(std::lround(out.value*(in.dim==kCtrlPitchBend?16383.:127.)));
+            return true;
+        case EventType::MappedValue:
+        case EventType::MappedMod:
         case EventType::ParamValue:
         case EventType::ParamMod:
             return false;
@@ -255,7 +263,12 @@ void MpeRouter::route(const Event* events, std::int32_t n, std::int32_t segmentS
             case EventType::NoteOn:         noteOn(events, n, i, out); break;
             case EventType::NoteOff:        noteOff(events[i], out); break;
             case EventType::NoteExpression: expression(events[i], out); break;
-            case EventType::ParamValue:
+            case EventType::Control:
+                if(events[i].channel<16 && events[i].dim<=kCtrlPitchBend && std::isfinite(events[i].value)) control(events[i].channel,events[i].dim,events[i].value,events[i].frame,0,out);
+                break;
+            case EventType::MappedValue:
+        case EventType::MappedMod:
+        case EventType::ParamValue:
             case EventType::ParamMod:       break;   // addressed, not a note stream (ADR-0091)
         }
     }

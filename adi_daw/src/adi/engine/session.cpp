@@ -5,6 +5,7 @@
 
 #include "adi/engine/session.hpp"
 #include "adi/dsp/oneshot.hpp"
+#include "adi/dsp/midi_notes.hpp"
 
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -240,6 +241,8 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
         err = "no plugin reference";
     } else if (ref->format == "internal" && ref->uid == "adi.oneshot") {
         inst = std::make_unique<device::OneShot>();
+    } else if (ref->format == "internal" && (inst = device::MidiNotes::create(ref->uid))) {
+        // Native event processors are available without a plug-in loader.
     } else if (!loader_) {
         err = "no device loader";
     } else {
@@ -266,6 +269,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
 
     // UNPLACED (track 0): the session places from the rows -- decision 1.
     device::DeviceNode& node = devices_.add(std::move(inst), e.name, /*trackId=*/0);
+    node.setEventAddress(row.id);
     node.setBypassed(e.placeholder || !row.enabled);
     node.setAlwaysProcess(row.alwaysProcess);
     e.hostIndex = devices_.deviceCount() - 1;

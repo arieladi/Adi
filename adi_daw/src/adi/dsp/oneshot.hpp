@@ -104,6 +104,7 @@ class OneShot final : public DeviceInstance {
     std::array<ParamDescriptor, Count> params_;
     std::array<std::atomic<double>, Count> values_{};
     std::array<Voice, 32> voices_{};
+    std::array<double,Count> modulation_{};
     engine::SnapshotPublisher<Publication> publisher_;
     std::shared_ptr<const Sample> sample_; // message thread only, including saveState
     std::uint64_t sampleSeq_ = 0, age_ = 0;

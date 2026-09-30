@@ -164,7 +164,7 @@ struct DeviceIdentity {
 /// the difference. The set of virtuals is deliberately small: anything a
 /// particular format cannot do is answered conservatively here rather than
 /// leaking a capability query upward.
-class DeviceInstance {
+class DeviceInstance : public engine::EventOwner {
 public:
     virtual ~DeviceInstance() = default;
     DeviceInstance(const DeviceInstance&) = delete;
@@ -186,6 +186,10 @@ public:
 
     /// Audio thread. Same contract as `engine::Node::process`.
     virtual void process(const engine::NodeIo& io) noexcept = 0;
+    virtual void refreshMappedOutput() noexcept {}
+    virtual std::vector<std::int64_t> eventTargets() const { return {}; }
+    virtual bool transformsEvents() const noexcept { return false; }
+    virtual void transformEvents(engine::EventSpan,engine::EventList&,std::int32_t,double,const engine::TransportInfo*) noexcept {}
 
     // --- what the scheduler asks (ADR-0043, ADR-0058) ----------------------
 
@@ -476,6 +480,10 @@ public:
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
+    void refreshMappedOutput() noexcept override { if(inst_) inst_->refreshMappedOutput(); }
+    std::vector<std::int64_t> eventTargets() const override { return inst_?inst_->eventTargets():std::vector<std::int64_t>{}; }
+    bool transformsEvents() const noexcept override { return inst_ && inst_->transformsEvents(); }
+    void transformEvents(engine::EventSpan,engine::EventList&,std::int32_t,double,const engine::TransportInfo*) noexcept override;
 
     [[nodiscard]] std::int64_t tailSamples() const noexcept override;
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
