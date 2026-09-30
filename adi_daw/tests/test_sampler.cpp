@@ -2,6 +2,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/blob.hpp"
 #include "adi/dsp/sampler.hpp"
+#include "adi/dsp/midi_notes.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
 #include "temp_directory.hpp"
@@ -238,9 +239,9 @@ int main(int argc, char **argv) {
         "INSERT INTO tracks(id,kind,name,index_in_parent) "
         "VALUES(1,'midi','Sampler',0),(9,'master','Master',1);INSERT INTO mixer_strip(track_id) "
         "VALUES(1),(9);INSERT INTO plugin_refs(id,format,uid,name,subtype) "
-        "VALUES(1,'internal','adi.sampler','Sampler','instrument');INSERT INTO "
+        "VALUES(1,'internal','adi.sampler','Sampler','instrument'),(2,'internal','adi.pitch','Pitch','midi_effect');INSERT INTO "
         "device_chains(id,track_id) VALUES(1,1);INSERT INTO "
-        "devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Sampler');INSERT INTO "
+        "devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,1,1,'Sampler'),(2,1,0,2,'Pitch');INSERT INTO "
         "clips(id,track_id,kind,time_base,pos_ticks,length_ticks) VALUES(1,1,'midi',0,0,5765760)");
     NoteRecord note{};
     note.note_id = 1;
@@ -256,6 +257,9 @@ int main(int argc, char **argv) {
     check(session.load(*store, {}, {2, 48000, 64}), "Session loads native sampler");
     auto *native = dynamic_cast<device::Sampler *>(session.instanceFor(1));
     check(native != nullptr, "native device is not placeholder");
+    auto* pitch=dynamic_cast<device::MidiNotes*>(session.instanceFor(2));
+    check(pitch!=nullptr,"Session resolves native MIDI processor before sampler");
+    if(pitch)pitch->setParam("pitch",device::ParamValue::fromNormalized(140./256.));
     if (native) {
         set(*native, "volume", 0);
         set(*native, "attack", 0);
@@ -275,7 +279,8 @@ int main(int argc, char **argv) {
             std::copy(l.begin(), l.end(), output.begin() + b * 64);
         }
         check(bin(output, 733) < 1e-6, "Session render far bin floor first");
-        check(bin(output, 64) > .1, "native sampler makes sound through ADI Session");
+        check(bin(output, 64)<1e-6,"untransposed bin absent after native MIDI effect");
+        check(bin(output, 128) > .1, "native Pitch transposes Sampler through actual Session event path");
         audio::WavWriter w(dir.path() / "sampler-session.wav", 48000, 1, audio::WavFormat::Float32);
         w.write(output.data(), 4096);
         w.close();

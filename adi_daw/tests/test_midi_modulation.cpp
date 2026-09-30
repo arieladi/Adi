@@ -3,6 +3,7 @@
 #include "adi/dsp/midi_notes.hpp"
 #include "adi/dsp/oneshot.hpp"
 #include <array>
+#include <cmath>
 #include <bit>
 #include <cstdio>
 #include <cstdlib>
