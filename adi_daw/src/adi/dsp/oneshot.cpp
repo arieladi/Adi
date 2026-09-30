@@ -463,7 +463,7 @@ void OneShot::process(const engine::NodeIo &io) noexcept {
                             v.random = static_cast<double>(v.rng) / 2147483648. - 1;
                         }
                     }
-                    const double pitch = (p[Mode] == 2 ? 0 : v.key - 60) + p[Transpose] +
+                    const double pitch = (p[Mode] == 2 ? 0 : v.key - rootKey_) + p[Transpose] +
                                          p[Detune] / 100. + v.tuning + lfo * p[LfoPitch];
                     const double increment = s->rate / rate_ * std::exp2(pitch / 12.);
                     double amplitude = v.env * v.velocity *

@@ -69,6 +69,8 @@ class OneShot final : public DeviceInstance {
     // Message thread. Copies/validates/analyses before the immutable publication.
     bool publishSample(std::span<const float> interleaved, int channels, double rate,
                        std::span<const std::size_t> manualSlices = {});
+    // Set only before this voice engine is published by Sampler.
+    void setRootKey(int key) noexcept { rootKey_ = std::clamp(key, 0, 127); }
     bool loadSample(const std::filesystem::path &, std::string &error);
 
   private:
@@ -108,6 +110,7 @@ class OneShot final : public DeviceInstance {
     engine::SnapshotPublisher<Publication> publisher_;
     std::shared_ptr<const Sample> sample_; // message thread only, including saveState
     std::uint64_t sampleSeq_ = 0, age_ = 0;
+    int rootKey_ = 60;
     double rate_ = 48000;
     DeviceIdentity identity_{"internal", "adi.oneshot", "OneShot", "ADI", "1"};
 };
