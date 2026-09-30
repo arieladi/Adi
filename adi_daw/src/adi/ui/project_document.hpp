@@ -17,6 +17,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     static std::unique_ptr<ProjectDocument> open(const std::filesystem::path &, bool create,
                                                  engine::DeviceLoader, std::string &error);
     bool addAudioTrack(std::int64_t &id);
+    bool addOneShot(const std::filesystem::path&,std::int64_t& track);
     bool dropAudio(const std::filesystem::path &, std::int64_t track, std::int64_t tick);
     bool save(std::string &error);
     bool autoGainStage(bool lufs);

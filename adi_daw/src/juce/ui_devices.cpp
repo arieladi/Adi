@@ -276,7 +276,7 @@ void DeviceChainStrip::paint(juce::Graphics &g) {
     g.fillAll(juce::Colour(0xff20232b));
     if (panels.empty()) {
         g.setColour(juce::Colours::lightgrey);
-        g.drawText("Devices — select a track", 12, 12, 250, 24, juce::Justification::centredLeft);
+        g.drawText("Devices - select a track", 12, 12, 250, 24, juce::Justification::centredLeft);
     }
 }
 void DeviceChainStrip::fold(std::int64_t id) {

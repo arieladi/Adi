@@ -37,7 +37,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         GoStart,
         ScrollUp,
         ScrollDown,
-        ContinuePlay
+        ContinuePlay,
+        AddOneShot
     };
     explicit AppCommands(const settings::AppSettings &);
     void reload(const settings::AppSettings &);

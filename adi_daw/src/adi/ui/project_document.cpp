@@ -2,6 +2,8 @@
 #include "project_document.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/dsp/oneshot.hpp"
+#include "adi/media/blake3.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <chrono>
 #include <limits>
@@ -56,6 +58,85 @@ bool ProjectDocument::addAudioTrack(std::int64_t &id) {
         request.payload = {
             {"id", id}, {"kind", "audio"}, {"name", "Audio " + std::to_string(id)}, {"index", id}};
         auto result = ops_.submit(request);
+        error_ = result.error;
+        return result.ok && synchronise();
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
+    }
+}
+bool ProjectDocument::addOneShot(const std::filesystem::path &source, std::int64_t &track) {
+    try {
+        audio::DecodeCache cache(media::projectFolder(*store_) / ".adi-decode");
+        device::OneShot sampler;
+        if (!sampler.loadSample(cache.playable(source), error_))
+            return false;
+        const auto bytes = sampler.saveState("component");
+        const auto hash = media::blake3Bytes(std::as_bytes(std::span(bytes.data(), bytes.size())));
+        if (!hash) {
+            error_ = "Cannot hash sample state";
+            return false;
+        }
+        auto &db = store_->db();
+        // Content-addressed bytes and plugin identity are facts, not editable project rows.
+        SQLite::Statement blob(
+            db, "INSERT OR IGNORE INTO state_blobs(hash_blake3,data,size_bytes) VALUES(?,?,?)");
+        blob.bind(1, hash.hex);
+        blob.bind(2, bytes.data(), static_cast<int>(bytes.size()));
+        blob.bind(3, static_cast<std::int64_t>(bytes.size()));
+        blob.exec();
+        SQLite::Statement find(
+            db, "SELECT id FROM plugin_refs WHERE format='internal' AND uid='adi.oneshot'");
+        std::int64_t ref = 0;
+        if (find.executeStep())
+            ref = find.getColumn(0).getInt64();
+        else {
+            ref = db.execAndGet("SELECT COALESCE(MAX(id),0)+1 FROM plugin_refs").getInt64();
+            SQLite::Statement q(
+                db, "INSERT INTO plugin_refs(id,format,uid,name,vendor,version,subtype) "
+                    "VALUES(?,'internal','adi.oneshot','OneShot','ADI','1','instrument')");
+            q.bind(1, ref);
+            q.exec();
+        }
+        track = db.execAndGet("SELECT COALESCE(MAX(id),0)+1 FROM tracks").getInt64();
+        const auto chain =
+            db.execAndGet("SELECT COALESCE(MAX(id),0)+1 FROM device_chains").getInt64();
+        const auto dev = db.execAndGet("SELECT COALESCE(MAX(id),0)+1 FROM devices").getInt64();
+        std::vector<OpRequest> batch;
+        auto append = [&](const char *op, Payload payload) {
+            OpRequest r;
+            r.opType = op;
+            r.payload = std::move(payload);
+            r.label = "Add OneShot";
+            batch.push_back(std::move(r));
+        };
+        append("track.create",
+               {{"id", track}, {"kind", "midi"}, {"name", "OneShot"}, {"index", track}});
+        append("chain.create", {{"id", chain}, {"track", track}});
+        Payload params = Payload::array();
+        for (int i = 0; i < sampler.paramCount(); ++i) {
+            const auto &p = *sampler.paramAt(i);
+            const auto v = sampler.getParam(p.id);
+            params.push_back({{"param", p.id},
+                              {"name", p.name},
+                              {"norm", v.normalized},
+                              {"real", v.real},
+                              {"unit", p.unit}});
+        }
+        append("device.insert",
+               {{"id", dev},
+                {"chain", chain},
+                {"ord", 0},
+                {"ref", ref},
+                {"name", "OneShot"},
+                {"params", params},
+                {"state", Payload::array({{{"role", "component"}, {"hash", hash.hex}}})}});
+        append("device.setPanel",
+               {{"dev", dev},
+                {"params", Payload::array({"mode", "start", "end", "length", "loop_on",
+                                           "loop_length", "fade", "gate", "slice_by", "regions",
+                                           "filter_on", "cutoff", "lfo_on", "volume"})}});
+        const auto result = ops_.submit(batch);
         error_ = result.error;
         return result.ok && synchronise();
     } catch (const std::exception &e) {
