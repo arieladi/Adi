@@ -52,8 +52,8 @@ enum class EventType : std::uint8_t {
 /// exactly that with any matching id -- so they are delivered where they were
 /// pushed and nowhere else.
 [[nodiscard]] constexpr bool isNoteStream(EventType t) noexcept {
-    return t == EventType::NoteOn || t == EventType::NoteOff ||
-           t == EventType::NoteExpression || t == EventType::Control;
+    return t == EventType::NoteOn || t == EventType::NoteOff || t == EventType::NoteExpression ||
+           t == EventType::Control;
 }
 
 struct Event;
@@ -63,8 +63,8 @@ struct Event;
 /// unrelated source with a coincidentally equal note id.
 struct EventOwner {
     virtual ~EventOwner() = default;
-    virtual void noteOffDelivered(const Event&) noexcept {}
-    virtual void noteOffRejected(const Event&) noexcept {}
+    virtual void noteOffDelivered(const Event &) noexcept {}
+    virtual void noteOffRejected(const Event &) noexcept {}
 };
 
 struct Event {
@@ -92,7 +92,7 @@ struct Event {
     /// Floating point, always. See the header comment.
     double value = 0.0;
     std::int64_t targetDevice = 0;
-    EventOwner* owner = nullptr; // runtime-only; never persisted
+    EventOwner *owner = nullptr; // runtime-only; never persisted
 };
 
 /// A fixed-capacity list over storage someone else owns.
@@ -129,13 +129,17 @@ public:
         return true;
     }
 
-    void assignOwner(EventOwner* owner) noexcept {
-        for(std::int32_t i=0;i<size_;++i) if(data_[i].owner==nullptr) data_[i].owner=owner;
+    void assignOwner(EventOwner *owner) noexcept {
+        for (std::int32_t i = 0; i < size_; ++i)
+            if (data_[i].owner == nullptr)
+                data_[i].owner = owner;
     }
     void removeMapped() noexcept {
-        std::int32_t write=0;
-        for(std::int32_t i=0;i<size_;++i) if(data_[i].type!=EventType::MappedValue && data_[i].type!=EventType::MappedMod) data_[write++]=data_[i];
-        size_=write;
+        std::int32_t write = 0;
+        for (std::int32_t i = 0; i < size_; ++i)
+            if (data_[i].type != EventType::MappedValue && data_[i].type != EventType::MappedMod)
+                data_[write++] = data_[i];
+        size_ = write;
     }
     void clear() noexcept { size_ = 0; }
     void resetDropped() noexcept { dropped_ = 0; }
