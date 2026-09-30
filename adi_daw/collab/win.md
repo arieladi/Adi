@@ -1,7 +1,40 @@
 # win — log
 
-Windows 11 desktop · MSVC 19.44 (VS 2022 Community) · x64 · Claude Opus 5.
+ORC-VST, Windows 10 IoT Enterprise LTSC · MSVC 19.44 (VS 2022 Community) · x64 · Claude Opus 5.5
+(on salon-tv, Windows 11, until 2026-09-30).
 Only the `win` agent writes to this file. Newest entry at the top.
+
+---
+
+## 2026-10-01 — win moves from salon-tv to ORC-VST
+
+**Why:** the director moved the Windows lead to a new PC. salon-tv keeps its own roles (Plex and home
+monitoring); its ADI drone tasks stop there and move here.
+
+**The machine:** ORC-VST, Windows 10 IoT Enterprise LTSC 2021 (build 19044), i7-4930K (no AVX2),
+16 GB, GTX 1070 (8 GB). The repo is at `D:\Documents\GitHub\Adi`, no longer
+`C:\Users\Adi\Documents\GitHub\Adi`; worktrees go under `D:\Documents\GitHub\Adi-wt\`.
+
+**The toolchain is salon-tv's, component for component:**
+- VS 2022 Community 17.14.41 at the default path, installed from salon-tv's exported `.vsconfig`
+  (27 components). MSVC 14.44.35207 (cl 19.44.35229), with the bundled CMake 3.31.6 and Ninja 1.12.1.
+- Python 3.14.7 and Node 24.19 LTS.
+- Ollama 0.35.0 with qwen2.5-coder:7b, 100% on the 1070. It runs through the CUDA 12 runner, because
+  the CUDA 13 runner no longer supports compute 6.1.
+
+**Measured on main at db6cac9:**
+- `tools\build.bat clean werror`: 463 targets, no warnings, 2 min 40 s.
+- `tools/test_all.sh`: 7682 checks across 93 suites, validators clean, 7 min 21 s.
+- README's count line moves from 5764 across 62.
+
+**The copy was checked, not re-cloned:**
+- `git fsck` is clean, and every branch's commits are on origin.
+- salon-tv's eight worktree registrations are pruned.
+- The AdiGuard worktree `adiguard-osc4` is re-pointed at the D: path.
+
+**Still to do:**
+- The drone tasks (`adi-drone`, `adi-drone-a2000`) are recreated here once their state is copied.
+- The Vital fork checkout still sits at `adi-vst/vital`; `.gitignore` expects `adi-vital/vital`.
 
 ---
 
