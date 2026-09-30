@@ -37,7 +37,9 @@ import urllib.request
 from pathlib import Path
 
 STATE_DIR = Path(os.environ.get("ADI_DRONE_HOME", r"D:\adi-drone"))
-DEFAULT_REPO = Path(r"C:\Users\Adi\Documents\GitHub\Adi")
+# The checkout this file runs from (tools/adi-drone/drone.py -> the repo root), not a fixed
+# path: the checkout moved from C:\Users\Adi\Documents\GitHub\Adi (salon-tv) to D: (ORC-VST).
+DEFAULT_REPO = Path(__file__).resolve().parents[2]
 OLLAMA_URL = os.environ.get("OLLAMA_HOST_URL", "http://127.0.0.1:11434")
 OLLAMA_EXE = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Ollama" / "ollama.exe"
 OLLAMA_MODELS = r"D:\ollama\models"
