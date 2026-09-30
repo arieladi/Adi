@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+target_sources(adi_core PRIVATE src/adi/dsp/overdrive.cpp)
+add_executable(adi_overdrive_tests tests/test_overdrive.cpp)
+target_link_libraries(adi_overdrive_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_overdrive_tests COMMAND adi_overdrive_tests)
+if(ADI_WITH_PD)
+    target_sources(adi_pd_builtins PRIVATE src/adi/pd_builtins/overdrive_tilde.cpp)
+    add_executable(adi_overdrive_pd_tests tests/test_overdrive_pd.cpp)
+    target_link_libraries(adi_overdrive_pd_tests PRIVATE adi_core adi_warnings)
+    target_compile_definitions(adi_overdrive_pd_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd" ADI_DEVICE_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
+    add_test(NAME adi_overdrive_pd_tests COMMAND adi_overdrive_pd_tests)
+endif()
