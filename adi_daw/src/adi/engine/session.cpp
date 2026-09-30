@@ -4,6 +4,7 @@
 // mechanics. ADR-0122.
 
 #include "adi/engine/session.hpp"
+#include "adi/dsp/oneshot.hpp"
 
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -237,6 +238,8 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
     std::string err;
     if (ref == nullptr) {
         err = "no plugin reference";
+    } else if (ref->format == "internal" && ref->uid == "adi.oneshot") {
+        inst = std::make_unique<device::OneShot>();
     } else if (!loader_) {
         err = "no device loader";
     } else {

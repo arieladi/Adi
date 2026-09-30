@@ -12,11 +12,11 @@ void AppCommands::reload(const settings::AppSettings &settings) {
     manager.getKeyMappings()->resetToDefaultMappings();
 }
 void AppCommands::getAllCommands(juce::Array<juce::CommandID> &ids) {
-    for (int id = PlayStop; id <= ContinuePlay; ++id)
+    for (int id = PlayStop; id <= AddOneShot; ++id)
         ids.add(id);
 }
 void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInfo &info) {
-    if (id < PlayStop || id > ContinuePlay) {
+    if (id < PlayStop || id > AddOneShot) {
         info.setActive(false);
         return;
     }
@@ -42,7 +42,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Go to start",
                                   "Scroll up",
                                   "Scroll down",
-                                  "Continue playback"};
+                                  "Continue playback", "Add OneShot from sample"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         info.setInfo(active_ ? juce::String(active_->undoTitle(id == Redo))
@@ -289,7 +289,7 @@ bool AdiRootComponent::persist() { return persistence_.save(window_, state_, err
 bool AdiRootComponent::command(int id) {
     if (id >= AppCommands::ZoomIn && id <= AppCommands::ScrollDown)
         return arrangement.command(id);
-    if (id >= AppCommands::NewProject && id <= AppCommands::AudioSettings)
+    if (id == AppCommands::AddOneShot || (id >= AppCommands::NewProject && id <= AppCommands::AudioSettings))
         return applicationCommand && applicationCommand(id);
     // No action carries the presented frame into an edit: OpSubmitter resolves
     // current store/history state on arrival, even when this window is a frame behind.
@@ -350,6 +350,7 @@ class ShellMenu final : public juce::MenuBarModel {
             add(AppCommands::SaveProject);
             menu.addSeparator();
             add(AppCommands::AudioSettings);
+            add(AppCommands::AddOneShot);
         }
         if (index == 1) {
             add(AppCommands::Undo);

@@ -418,6 +418,15 @@ class AdiApplication final : public juce::JUCEApplication,
             report(bridge_->mismatchReport().toStdString());
     }
     bool applicationCommand(int id) {
+        if(id==AppCommands::AddOneShot) {
+            if(chooser_)return false;
+            chooser_=std::make_unique<juce::FileChooser>("OneShot sample",juce::File{},"*.wav;*.flac;*.mp3");
+            chooser_->launchAsync(juce::FileBrowserComponent::openMode|juce::FileBrowserComponent::canSelectFiles,[this](const juce::FileChooser& chooser){
+                const auto file=chooser.getResult();std::int64_t track=0;
+                if(file!=juce::File{}){if(document_->addOneShot(pathFromUtf8(file.getFullPathName().toStdString()),track)){root_->arrangement.geometry.selectedTrack=track;root_->mark(DirtySet::All);}else report(document_->error());}
+                juce::MessageManager::callAsync([this]{if(juce::JUCEApplicationBase::getInstance()==this)chooser_.reset();});
+            });return true;
+        }
         if (id == AppCommands::SaveProject) {
             std::string error;
             const bool ok = document_->save(error);

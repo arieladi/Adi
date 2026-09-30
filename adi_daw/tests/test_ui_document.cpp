@@ -243,6 +243,13 @@ int main(int argc, char **argv) {
         check(controllerBindingShadowed(dropped->bindings()[0],policy),"mixer list can report imported or moved reservation as shadowed");
         check(dropped->unbindTrack(track,"volume") && dropped->bindings().empty(),"mixer Unbind removes matching binding");
         check(dropped->ops().undo().ok && dropped->bindings().size()==1,"Unbind inverse restores complete binding");
+        std::int64_t samplerTrack=0;
+        const auto tracksBefore=dropped->view().current()->tracks.size();
+        check(dropped->addOneShot(path,samplerTrack),"Add OneShot imports sample and creates complete instrument track");
+        if(!dropped->error().empty())std::printf("OneShot import: %s\n",dropped->error().c_str());
+        check(dropped->view().current()->tracks.size()==tracksBefore+1,"native sampler track visible in project");
+        check(dropped->ops().undo().ok && dropped->synchronise() && dropped->view().current()->tracks.size()==tracksBefore,"one undo removes sampler track, chain and device");
+        check(dropped->ops().redo().ok && dropped->synchronise(),"redo restores native sample state");
         dropped->release();
     }
     std::printf("%d checks, %d failures\n", checks, failures);
