@@ -414,6 +414,7 @@ set(LIBPD_STATIC          ON  CACHE BOOL "" FORCE)
 set(LIBPD_SHARED          OFF CACHE BOOL "" FORCE)
 set(PD_BUILD_C_EXAMPLES   OFF CACHE BOOL "" FORCE)
 add_subdirectory("${ADI_THIRD_PARTY}/libpd" EXCLUDE_FROM_ALL SYSTEM)
+include(src/juce/pd_loader_fix.cmake)
 target_include_directories(adi_core SYSTEM PUBLIC
     "${ADI_THIRD_PARTY}/libpd/libpd_wrapper"
     "${ADI_THIRD_PARTY}/libpd/libpd_wrapper/util"

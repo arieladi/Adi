@@ -1323,6 +1323,31 @@ void testTheEngineReportsWhatPdPrints() {
           "opened whole\n          console: " + joined);
 }
 
+void testRepeatedAbstractionLifetimes() {
+    section("Pd abstraction loader survives instance destruction and allocator reuse");
+    TempDir tmp("loader-lifetimes");
+    for(int cycle=0;cycle<200;++cycle){
+        const std::string name="probe_abs_"+std::to_string(cycle);
+        tmp.write((name+".pd").c_str(),"#N canvas 0 0 100 100 12;\n#X obj 0 0 inlet;\n#X obj 0 30 outlet;\n#X connect 0 0 1 0;\n");
+        tmp.write("loader.pd",("#N canvas 0 0 200 100 12;\n#X obj 0 0 "+name+";\n#X obj 0 40 adi.param \\$0 1 0 1 0 - lin Test;\n").c_str());
+        LibPdEngine engine(tmp.str(),"loader.pd",2,2);engine.addSearchPath(ADI_PD_PATCH_DIR);
+        PdLatencyReceiver latency;std::string error;
+        check(engine.open(latency,error),"stress engine opens: "+error);
+        const auto console=engine.consoleLines();
+        bool clean=true;for(const auto& line:console){if(line.find("couldn't create")!=std::string::npos||line.find("maximum object loading")!=std::string::npos){std::printf("STRESS cycle=%d PD: %s\n",cycle,line.c_str());clean=false;}}
+        check(clean,"fresh abstraction after retiring earlier engines resolves");
+        if(!clean)break;
+        if(cycle%10==0){
+            for(const char* patch:{"Chord Comb.pd","Color Cab.pd"}){
+                LibPdEngine device(std::string(ADI_PD_PATCH_DIR)+"/devices",patch,2,2);
+                device.addSearchPath(ADI_PD_PATCH_DIR);PdLatencyReceiver deviceLatency;
+                check(device.open(deviceLatency,error),"stress device opens: "+error);
+                for(const auto& line:device.consoleLines())check(line.find("couldn't create")==std::string::npos&&line.find("maximum object loading")==std::string::npos,"device stress console: "+line);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 #ifdef _WIN32
@@ -1367,6 +1392,7 @@ int main() {
 #endif
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_pd_engine_tests -- libpd, actually running\n\n");
+    testRepeatedAbstractionLifetimes();
     testPdOpensARealPatch();
     testTheAdapterCostsOneBlockAndSaysSo();
     testAudioGoesThroughPdAndComesBack();
