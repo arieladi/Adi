@@ -19,7 +19,7 @@ The algorithm reuses `live_reverb.cpp`, the GPL-3 Surge/SST Reverb1 adaptation (
 
 MSVC /WX: 13 core checks, 11 LibPdEngine checks, 158 Pd-engine regression checks. Direct time-domain convolution oracle spans several partitions; all integer block sizes 32–4096 yield identical output. Exact dry latency, free/synced predelay, four-route endpoints, stereo IR and allocation audit pass. Pd tests decode an actual impulse WAV on the host, prepare/publish it, check a far bin at the floor before comparing the expected response, read the output float WAV back exactly, and replace IRs while rendering with no allocations and a clean console. CI/Pd validators pass.
 
-Earlier stack CI identified `-Wdangling-else` and `-Wmisleading-indentation` in MIDI graph additions. Explicit braces and formatting are fixed HERE at the stack top, without pushing #207/#208 or intermediate UI branches. These are control-flow clarification only.
+Earlier stack CI identified `-Wdangling-else` and `-Wmisleading-indentation` in MIDI graph additions. Explicit braces and formatting are fixed HERE at the stack top, without pushing #207/#208 or intermediate UI branches. These are control-flow clarification only. The Linux build also found an indirect `<cmath>` dependency in the modulation test; the explicit include is carried on this top.
 
 Limits: maximum IR 262144 frames (reject, never truncate); independent stereo channel convolution, not four-channel true-stereo; replacing an IR changes the kernel at the next convolution partition, not a dual-kernel tail crossfade. IR attack/decay/size are host-side preparation options. Live's named algorithms, EQ/Vintage/Bass Mono remain explicit parity extensions; this PR does not mislabel Surge as those algorithms.
 
