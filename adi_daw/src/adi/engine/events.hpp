@@ -35,6 +35,12 @@ enum class EventType : std::uint8_t {
     /// changed (ADR-0046, ADR-0052). CLAP carries this natively; for VST3 the
     /// host resolves it into a value and keeps the user's setting shadowed.
     ParamMod = 4,
+    /// Channel controller: dim 0..127 = CC, 128 = pressure, 129 = pitch
+    /// bend in semitones. CC/pressure values remain normalized doubles.
+    Control = 5,
+    /// Explicit modulation destination, resolved by Graph before audio runs.
+    MappedValue = 6,
+    MappedMod = 7,
 };
 
 /// Does this event belong to a NOTE STREAM, and so travel along the chain until
@@ -47,8 +53,19 @@ enum class EventType : std::uint8_t {
 /// pushed and nowhere else.
 [[nodiscard]] constexpr bool isNoteStream(EventType t) noexcept {
     return t == EventType::NoteOn || t == EventType::NoteOff ||
-           t == EventType::NoteExpression;
+           t == EventType::NoteExpression || t == EventType::Control;
 }
+
+struct Event;
+/// Runtime ownership of a release, retained across latency queues. A native
+/// event processor acknowledges its input when it takes responsibility for
+/// generated releases; rejection returns only to that processor, not to an
+/// unrelated source with a coincidentally equal note id.
+struct EventOwner {
+    virtual ~EventOwner() = default;
+    virtual void noteOffDelivered(const Event&) noexcept {}
+    virtual void noteOffRejected(const Event&) noexcept {}
+};
 
 struct Event {
     /// Offset from the start of the BLOCK, not of the segment. Segment-relative
@@ -74,6 +91,8 @@ struct Event {
 
     /// Floating point, always. See the header comment.
     double value = 0.0;
+    std::int64_t targetDevice = 0;
+    EventOwner* owner = nullptr; // runtime-only; never persisted
 };
 
 /// A fixed-capacity list over storage someone else owns.
@@ -110,6 +129,14 @@ public:
         return true;
     }
 
+    void assignOwner(EventOwner* owner) noexcept {
+        for(std::int32_t i=0;i<size_;++i) if(data_[i].owner==nullptr) data_[i].owner=owner;
+    }
+    void removeMapped() noexcept {
+        std::int32_t write=0;
+        for(std::int32_t i=0;i<size_;++i) if(data_[i].type!=EventType::MappedValue && data_[i].type!=EventType::MappedMod) data_[write++]=data_[i];
+        size_=write;
+    }
     void clear() noexcept { size_ = 0; }
     void resetDropped() noexcept { dropped_ = 0; }
 

@@ -27,6 +27,9 @@
 
 #pragma once
 
+#include <array>
+#include <algorithm>
+
 #include "adi/engine/events.hpp"
 #include "adi/engine/held_notes.hpp"
 #include "adi/engine/process.hpp"
@@ -133,7 +136,7 @@ public:
 /// ADR-0040's rule that a device declaring nothing is never suspended. A node
 /// that says nothing keeps running, which is the behaviour that is merely slow
 /// rather than the one that is wrong.
-class Node {
+class Node : public EventOwner {
 public:
     virtual ~Node() = default;
     Node(const Node&) = delete;
@@ -149,6 +152,30 @@ public:
 
     /// Audio thread. No allocation, no locks, no throwing.
     virtual void process(const NodeIo& io) noexcept = 0;
+    // Complete-block note transform, before downstream forwarding and split selection.
+    // Storage belongs to Graph; implementations allocate only during prepare.
+    void setEventAddress(std::int64_t id) noexcept { eventAddress_=id; }
+    std::int64_t eventAddress() const noexcept { return eventAddress_; }
+    /// Message thread, graph construction: event-only DAG dependencies.
+    virtual void refreshMappedOutput() noexcept {}
+    bool rememberModulation(std::uint32_t parameter) noexcept {
+        for(std::size_t i=0;i<mappedCount_;++i) if(mappedParameters_[i]==parameter)return true;
+        if(mappedCount_==mappedParameters_.size())return false;
+        mappedParameters_[mappedCount_++]=parameter;return true;
+    }
+    void beginModulationGeneration() noexcept {
+        resetCount_=mappedCount_;std::copy_n(mappedParameters_.begin(),mappedCount_,resetParameters_.begin());mappedCount_=0;
+    }
+    bool flushModulationResets(EventList& out) noexcept {
+        std::size_t done=0;
+        while(done<resetCount_) {Event e;e.type=EventType::ParamMod;e.paramId=resetParameters_[done];if(!out.push(e))break;++done;}
+        for(std::size_t i=done;i<resetCount_;++i)resetParameters_[i-done]=resetParameters_[i];resetCount_-=done;
+        return resetCount_==0;
+    }
+    virtual std::vector<std::int64_t> eventTargets() const { return {}; }
+    virtual bool transformsEvents() const noexcept { return false; }
+    virtual void transformEvents(EventSpan, EventList&, std::int32_t, double, const TransportInfo*) noexcept {}
+
 
     /// Scope-only notification when scheduling skips a silent node. No DSP
     /// work; a strip uses it to keep watched rings current through silence.
@@ -264,6 +291,9 @@ protected:
     Node() = default;
 
 private:
+    std::array<std::uint32_t,256> mappedParameters_{},resetParameters_{};
+    std::size_t mappedCount_=0,resetCount_=0;
+    std::int64_t eventAddress_=0;
     HeldNotes held_;
     std::atomic<ScopeTap*> inputTap_{nullptr};
     std::atomic<EventSource*> eventSource_{nullptr};
@@ -719,6 +749,8 @@ private:
         Node* node = nullptr;
         std::vector<NodeId> inputs;
         std::vector<NodeId> sidechains;
+        std::vector<NodeId> eventInputs;
+        std::vector<std::pair<std::int64_t,NodeId>> eventRoutes;
         std::vector<DelayLine> inDelays;     ///< parallel to `inputs`
         std::vector<DelayLine> sideDelays;   ///< parallel to `sidechains`
         std::int32_t arrival = 0;            ///< ADR-0058: when this node's input is whole
@@ -726,6 +758,7 @@ private:
         std::vector<float> audio;       ///< channels * maxFrames, interleaved by channel
         std::vector<float*> chanPtrs;
         std::vector<Event> eventStore;
+        std::vector<Event> transformStore;
         EventList events;
 
         /// ADR-0091: note events delayed past the end of this block, by a
@@ -769,7 +802,7 @@ private:
     /// by. Doing it up front is what keeps a forwarded event on a segment
     /// boundary -- forwarding as nodes run would put it in a segment chosen
     /// before it existed.
-    void forwardEvents(std::int32_t frames) noexcept;
+    void forwardEvents(std::int32_t frames, const TransportInfo*) noexcept;
 
     /// ADR-0042's split points, computed from a per-frame mark rather than
     /// while walking slots. See the comment at the call.
@@ -804,6 +837,7 @@ private:
     std::int32_t channels_ = 2;
     std::int32_t eventCapacity_ = 0;      ///< 0 = derive at prepare
     std::int32_t maxPolyphony_ = 16;
+    bool mappingActivation_=true,mappingResetPending_=false;
     std::int32_t floor_ = 64;
     // ATOMIC, because `retapLatency` writes it from the message thread while
     // the transport may be reading it to compensate the playhead. A torn read

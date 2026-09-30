@@ -134,6 +134,7 @@ void OneShot::prepare(double rate, std::int32_t) {
     rate_ = std::isfinite(rate) && rate >= 1000 && rate <= 768000 ? rate : 48000;
     voices_ = {};
     age_ = 0;
+    modulation_.fill(0);
 }
 void OneShot::pumpMainThread() { publisher_.collect(); }
 bool OneShot::publishSample(std::span<const float> audio, int channels, double rate,
@@ -362,10 +363,10 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
 }
 void OneShot::event(const engine::Event &e, const Sample *s,
                     std::array<double, Count> &p) noexcept {
-    if (e.type == engine::EventType::ParamValue && e.paramId < Count && std::isfinite(e.value)) {
-        p[e.paramId] = real(static_cast<int>(e.paramId), e.value);
-        values_[e.paramId].store(normal(static_cast<int>(e.paramId), p[e.paramId]),
-                                 std::memory_order_relaxed);
+    if ((e.type == engine::EventType::ParamValue || e.type==engine::EventType::ParamMod) && e.paramId < Count && std::isfinite(e.value)) {
+        if(e.type==engine::EventType::ParamMod) modulation_[e.paramId]=e.value;
+        else values_[e.paramId].store(normal(static_cast<int>(e.paramId),real(static_cast<int>(e.paramId),e.value)),std::memory_order_relaxed);
+        p[e.paramId]=real(static_cast<int>(e.paramId),values_[e.paramId].load(std::memory_order_relaxed)+modulation_[e.paramId]);
     } else if (e.type == engine::EventType::NoteOn && s)
         noteOn(e, *s, p);
     else if (e.type == engine::EventType::NoteOff) {
@@ -395,7 +396,7 @@ void OneShot::process(const engine::NodeIo &io) noexcept {
     std::array<double, Count> p{};
     for (int i = 0; i < Count; ++i)
         p[static_cast<std::size_t>(i)] =
-            real(i, values_[static_cast<std::size_t>(i)].load(std::memory_order_relaxed));
+            real(i, values_[static_cast<std::size_t>(i)].load(std::memory_order_relaxed)+modulation_[static_cast<std::size_t>(i)]);
     int next = 0;
     for (int i = 0; i < io.frames; ++i) {
         const int frame = io.blockOffset + i;

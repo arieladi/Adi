@@ -170,6 +170,10 @@ std::int64_t DeviceNode::tailSamples() const noexcept {
     return inst_->tailSamples();
 }
 
+void DeviceNode::transformEvents(engine::EventSpan input,engine::EventList& output,std::int32_t frames,double rate,const engine::TransportInfo* transport) noexcept {
+    if(!bypassed_ && inst_) inst_->transformEvents(input,output,frames,rate,transport);
+    else for(const auto& e:input) output.push(e);
+}
 engine::EventFlow DeviceNode::eventFlow() const noexcept {
     // A bypassed instrument is not running, so it consumes nothing -- the same
     // transparency that makes bypass report no tail and no latency. Notes then

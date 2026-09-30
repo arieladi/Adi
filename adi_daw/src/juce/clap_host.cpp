@@ -90,8 +90,12 @@ bool ClapEventList::add(const engine::Event& in, std::int32_t blockOffset,
         case engine::EventType::NoteOn:
         case engine::EventType::NoteOff:
         case engine::EventType::NoteExpression:
+        case engine::EventType::Control:
             return false;                 // handled above
 
+        case engine::EventType::MappedValue:
+        case engine::EventType::MappedMod:
+        return false;
         case engine::EventType::ParamValue:
         case engine::EventType::ParamMod: {
             slot.param = clap_event_param_value_t{};

@@ -82,11 +82,25 @@ bool Graph::topoSort() {
     order_.clear();
     order_.reserve(static_cast<std::size_t>(n));
 
+    for(auto& slot:slots_) {slot.eventInputs.clear();slot.eventRoutes.clear();}
+    for(NodeId from=0;from<n;++from) {
+        auto& source=slots_[static_cast<std::size_t>(from)];if(!source.node) continue;
+        for(const auto target:source.node->eventTargets()) {
+            if(target<=0) continue;
+            for(NodeId to=0;to<n;++to) {
+                auto& destination=slots_[static_cast<std::size_t>(to)];
+                if(destination.node && destination.node->eventAddress()==target) {
+                    if(std::find(destination.eventInputs.begin(),destination.eventInputs.end(),from)==destination.eventInputs.end()) destination.eventInputs.push_back(from);
+                    source.eventRoutes.emplace_back(target,to);break;
+                }
+            }
+        }
+    }
     std::vector<std::int32_t> indegree(static_cast<std::size_t>(n), 0);
     for (std::int32_t i = 0; i < n; ++i) {
         const Slot& sl = slots_[static_cast<std::size_t>(i)];
         indegree[static_cast<std::size_t>(i)] =
-            static_cast<std::int32_t>(sl.inputs.size() + sl.sidechains.size());
+            static_cast<std::int32_t>(sl.inputs.size() + sl.sidechains.size() + sl.eventInputs.size());
     }
 
     // Kahn's algorithm. Ready nodes are taken in id order rather than from a
@@ -107,6 +121,7 @@ bool Graph::topoSort() {
             std::int32_t edges = 0;
             for (NodeId in : sj.inputs)     if (in == id) ++edges;
             for (NodeId in : sj.sidechains) if (in == id) ++edges;
+            for (NodeId in : sj.eventInputs) if (in == id) ++edges;
             if (edges == 0) continue;
             indegree[static_cast<std::size_t>(j)] -= edges;
             if (indegree[static_cast<std::size_t>(j)] == 0) ready.push_back(j);
@@ -125,6 +140,8 @@ bool Graph::topoSort() {
             for (NodeId in : sl.inputs)
                 depth = (std::max)(depth, slots_[static_cast<std::size_t>(in)].level + 1);
             for (NodeId in : sl.sidechains)
+                depth = (std::max)(depth, slots_[static_cast<std::size_t>(in)].level + 1);
+            for (NodeId in : sl.eventInputs)
                 depth = (std::max)(depth, slots_[static_cast<std::size_t>(in)].level + 1);
             sl.level = depth;
             if (static_cast<std::int32_t>(levels_.size()) <= depth)
@@ -648,6 +665,7 @@ std::int32_t Graph::compensationFor(NodeId from, NodeId to, Bus bus) const noexc
 // ---------------------------------------------------------------------------
 
 void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
+    mappingActivation_=true;
     ok_ = false;
     prepared_ = false;
     error_.clear();
@@ -683,6 +701,7 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         for (std::size_t c = 0; c < ch; ++c) s.chanPtrs[c] = s.audio.data() + c * fr;
         s.eventStore.assign(static_cast<std::size_t>(eventCapacity_), Event{});
         s.events = EventList(s.eventStore.data(), eventCapacity_);
+        if(s.node && s.node->transformsEvents()) s.transformStore.resize(static_cast<std::size_t>(eventCapacity_));
         // Same capacity as the live list. A deferred event is one that WOULD
         // have been in the list if its delay had been shorter, so the two
         // share one budget rather than one being an afterthought.
@@ -816,12 +835,15 @@ void Graph::accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& del
     delay.endEdge();
 }
 
-void Graph::forwardEvents(std::int32_t frames) noexcept {
+void Graph::forwardEvents(std::int32_t frames, const TransportInfo* transport) noexcept {
     auto rejected = [&](const Event& e) {
-        if (e.type == EventType::NoteOff)
-            for (auto& source : slots_) if (source.node) source.node->noteOffRejected(e);
+        if (e.type == EventType::NoteOff) {
+            if(e.owner) e.owner->noteOffRejected(e);
+            else for (auto& source : slots_) if (source.node) source.node->noteOffRejected(e);
+        }
     };
     const std::int64_t end = now_ + frames;
+    for(auto& slot:slots_) slot.events.assignOwner(slot.node);
 
     // TOPOLOGICAL ORDER, which is the whole of the correctness argument: when a
     // slot is reached, every slot feeding it has already received everything it
@@ -897,6 +919,23 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
                     rejected(e);
                 }
             }
+        }
+        if(s.node && s.node->transformsEvents()) {
+            s.events.sortByFrame();
+            const auto count=s.events.size();
+            std::copy_n(s.events.begin(),count,s.transformStore.data());
+            s.events.clear();
+            s.node->transformEvents({s.transformStore.data(),count},s.events,frames,sampleRate_,transport);
+            for(const auto& e:s.events) {
+                if(e.type!=EventType::MappedValue && e.type!=EventType::MappedMod) continue;
+                const auto route=std::find_if(s.eventRoutes.begin(),s.eventRoutes.end(),[&](const auto& r){return r.first==e.targetDevice;});
+                if(route==s.eventRoutes.end()) {++stats_.eventsDropped;continue;}
+                auto addressed=e;addressed.type=e.type==EventType::MappedValue?EventType::ParamValue:EventType::ParamMod;addressed.targetDevice=0;
+                auto& destination=slots_[static_cast<std::size_t>(route->second)];
+                if(addressed.type==EventType::ParamMod && destination.node && !destination.node->rememberModulation(addressed.paramId)) {++stats_.eventsDropped;continue;}
+                if(!destination.events.push(addressed)) ++stats_.eventsDropped;
+            }
+            s.events.removeMapped();
         }
     }
 }
@@ -1135,7 +1174,18 @@ void Graph::process(const AudioIo& io) noexcept {
         // ADR-0165: automation addressed to this node, beside what it sources.
         if (EventSource* source = s.node->eventSource()) source->emit(s.events, frames);
     }
-    forwardEvents(frames);
+    if(mappingActivation_) {
+        for(auto& slot:slots_) if(slot.node) slot.node->beginModulationGeneration();
+        mappingActivation_=false;mappingResetPending_=true;
+    }
+    if(mappingResetPending_) {
+        mappingResetPending_=false;
+        for(auto& slot:slots_) if(slot.node) {
+            slot.node->refreshMappedOutput();
+            if(!slot.node->flushModulationResets(slot.events)) mappingResetPending_=true;
+        }
+    }
+    forwardEvents(frames, io.transport);
 
     // --- segment boundaries (ADR-0042) -------------------------------------
     //
@@ -1184,7 +1234,8 @@ void Graph::process(const AudioIo& io) noexcept {
         if (!delivered.node || (static_cast<NodeId>(i) != output_ &&
             delivered.node->eventFlow() != EventFlow::Consume)) continue;
         for (const auto& e : delivered.events) if (e.type == EventType::NoteOff)
-            for (auto& source : slots_) if (source.node) source.node->noteOffDelivered(e);
+            if(e.owner) e.owner->noteOffDelivered(e);
+            else for (auto& source : slots_) if (source.node) source.node->noteOffDelivered(e);
     }
     for (auto& s : slots_) {
         stats_.eventsDropped += s.events.dropped();
