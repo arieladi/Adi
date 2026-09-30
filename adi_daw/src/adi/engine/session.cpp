@@ -5,6 +5,7 @@
 
 #include "adi/engine/session.hpp"
 #include "adi/dsp/oneshot.hpp"
+#include "adi/dsp/sampler.hpp"
 #include "adi/dsp/midi_notes.hpp"
 
 #include "adi/store.hpp"
@@ -241,6 +242,8 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
         err = "no plugin reference";
     } else if (ref->format == "internal" && ref->uid == "adi.oneshot") {
         inst = std::make_unique<device::OneShot>();
+    } else if (ref->format == "internal" && ref->uid == "adi.sampler") {
+        inst = std::make_unique<device::Sampler>();
     } else if (ref->format == "internal" && (inst = device::MidiNotes::create(ref->uid))) {
         // Native event processors are available without a plug-in loader.
     } else if (!loader_) {
