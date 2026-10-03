@@ -127,7 +127,7 @@ class MultibandDynamics {
         double step() noexcept;
     };
     struct Detector {
-        float env = 0;
+        float env = 0.01f; // Live's starting level (see reset())
     };
     void derive() noexcept;
     void designFilters() noexcept;

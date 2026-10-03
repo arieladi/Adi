@@ -143,7 +143,9 @@ void run() {
     level = 0;
     for (int i = 0; i < 300; ++i)
         block();
-    check(std::abs(ol[63] - .125f) < 1e-5f, "adc~ channels 3/4 carry the sidechain to Listen");
+    // Listen plays the band-split trigger summed back, so it carries the crossovers'
+    // allpass sum and its DC gain (Live's own: 0.9985 at the default splits)
+    check(std::abs(ol[63] - .125f) < 5e-4f, "adc~ channels 3/4 carry the sidechain to Listen");
     for (int id = 1; id <= 43; ++id)
         check(engine.sendParameter(id, 0), "every control routes");
     block();

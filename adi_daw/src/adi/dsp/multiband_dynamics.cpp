@@ -18,6 +18,9 @@ constexpr double kQ = 0.707;
 // asking for more (upward compression, upward expansion, both at once).
 const double kGainCap = 20.0 * std::log10(64.0);
 constexpr double kKnee = 20.0;
+// Every detector starts at 0.01 in its own units (-40 dB peak, -20 dB RMS, since
+// the RMS detector holds a mean square), not at silence: a 50 s attack shows it.
+constexpr float kEnvelopeStart = 0.01f;
 using P = MultibandDynamics::Param;
 struct Range {
     double min, max;
@@ -189,7 +192,10 @@ double MultibandDynamics::staticGain(double level, double aboveThreshold, double
     return side(level - aboveThreshold, aboveRatio) + side(belowThreshold - level, belowRatio);
 }
 
-// Live's attack and release reach -80 dB (1e-4) of the way in the set time.
+// Live's attack and release reach -80 dB (1e-4) of the way in the set time, at the
+// oversampled rate, with the time already multiplied by Time scaling and no clamp
+// at either end (0.01 ms and 50 s both measured). Rounded to float, this is Live's
+// coefficient to the last bit: one ulp either way shows in the 1000 ms probes.
 double MultibandDynamics::envelopeCoefficient(double ms, double rate) noexcept {
     return std::exp(std::log(1e-4) / (ms * 0.001 * rate));
 }
@@ -296,7 +302,7 @@ void MultibandDynamics::reset() noexcept {
         for (auto &b : *s)
             b.clear();
     for (auto &d : detector_)
-        d.env = 0;
+        d.env = kEnvelopeStart;
 }
 
 void MultibandDynamics::set(Param p, double v) noexcept {
@@ -395,7 +401,7 @@ void MultibandDynamics::process(const float *inL, const float *inR, float *outL,
                 upSc_[static_cast<std::size_t>(c)].step(mixed, sc[c][0], sc[c][1]);
             }
         }
-        float out[2][2];
+        float out[2][2], heard[2][2] = {{0, 0}, {0, 0}};
         const bool crossed = smooth_[LowMidCrossover].out >= smooth_[MidHighCrossover].out;
         for (int k = 0; k < 2; ++k) { // the two oversampled samples
             float band[2][3], trig[2][3];
@@ -406,6 +412,10 @@ void MultibandDynamics::process(const float *inL, const float *inR, float *outL,
                 if (sidechain)
                     splitSc_[ci].step(sc[c][k], lowOn, highOn, crossed, trig[c][0], trig[c][1],
                                       trig[c][2]);
+                // Listen plays the band-split trigger summed back (AP(fL)*AP(fH) with three
+                // bands), not the raw trigger: measured, sc_bands_5k_listen.
+                if (listen)
+                    heard[c][k] = trig[c][0] + trig[c][1] + trig[c][2];
             }
             float sum[2] = {0, 0};
             for (int b = 0; b < 3; ++b) {
@@ -429,8 +439,14 @@ void MultibandDynamics::process(const float *inL, const float *inR, float *outL,
                     d = 0.5f * s;
                 }
                 float &env = detector_[bi].env;
+                // c*env + (1-c)*d with the product c*env rounded to float on its own. At
+                // long times each step is only a few ulps of env, so the update stalls
+                // short of d and the rounding decides where: d + c*(env-d) (or a fused
+                // multiply-add) lands up to 0.02 dB away from Live at 5 s and 50 s.
                 const float coef = d > env ? attack_[bi] : release_[bi];
-                env = d + coef * (env - d);
+                const float kept = coef * env;
+                const float taken = (1.0f - coef) * d;
+                env = kept + taken;
                 const double level = env > 0 ? (peak ? 20.0 : 10.0) * std::log10(env) : -1000.0;
                 double g = staticGain(level, aboveT_[bi], aboveR_[bi], belowT_[bi], belowR_[bi], knee);
                 g = std::min(g, kGainCap);
@@ -444,9 +460,9 @@ void MultibandDynamics::process(const float *inL, const float *inR, float *outL,
         if (listen) {
             for (int c = 0; c < 2; ++c) {
                 const auto ci = static_cast<std::size_t>(c);
-                const float heard = downListen_[ci].step(sc[c][0], sc[c][1]);
+                const float played = downListen_[ci].step(heard[c][0], heard[c][1]);
                 down_[ci].step(out[c][0], out[c][1]);
-                (c == 0 ? outL : outR)[i] = heard;
+                (c == 0 ? outL : outR)[i] = played;
             }
         } else {
             outL[i] = down_[0].step(out[0][0], out[0][1]);
