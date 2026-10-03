@@ -62,6 +62,28 @@ const std::array<float, 64> kLiveImpulse{
     0x1.d59ec8p-7f, -0x1.db86c4p-7f, 0x1.df0e42p-7f, -0x1.e06f88p-7f,
     0x1.dfe174p-7f, -0x1.dd9778p-7f, 0x1.d9c184p-7f, -0x1.d48c46p-7f,
 };
+// Live 11.2.7 at 44100 Hz (engine and export): the same response, 32 samples.
+const std::array<float, 32> kLiveImpulse44k{
+    0x1.9791e6p-13f, 0x1.81108p-7f, 0x1.be1d54p-4f, 0x1.3bc95p-2f,
+    0x1.a17cb4p-3f, -0x1.62f288p-3f, 0x1.df0c8p-9f, 0x1.9b5f12p-4f,
+    -0x1.ebf88ep-4f, 0x1.6efec8p-4f, -0x1.5752eap-5f, -0x1.88311p-9f,
+    0x1.297644p-5f, -0x1.cbde4p-5f, 0x1.062428p-4f, -0x1.00ec0ap-4f,
+    0x1.c4d054p-5f, -0x1.6a41cep-5f, 0x1.029cb4p-5f, -0x1.336bfep-6f,
+    0x1.bb62ep-8f, 0x1.f836f8p-9f, -0x1.a2c658p-7f, 0x1.46b7bcp-6f,
+    -0x1.9fb3d8p-6f, 0x1.de6668p-6f, -0x1.02d19p-5f, 0x1.0c4aeep-5f,
+    -0x1.0d3c78p-5f, 0x1.07330cp-5f, -0x1.f73a2ep-6f, 0x1.d78628p-6f,
+};
+// Live 11.2.7 at 96000 Hz (engine and export): the same response, 32 samples.
+const std::array<float, 32> kLiveImpulse96k{
+    0x1.9791e6p-13f, 0x1.81108p-7f, 0x1.be1d54p-4f, 0x1.3bc95p-2f,
+    0x1.a17cb4p-3f, -0x1.62f288p-3f, 0x1.df0c8p-9f, 0x1.9b5f12p-4f,
+    -0x1.ebf88ep-4f, 0x1.6efec8p-4f, -0x1.5752eap-5f, -0x1.88311p-9f,
+    0x1.297644p-5f, -0x1.cbde4p-5f, 0x1.062428p-4f, -0x1.00ec0ap-4f,
+    0x1.c4d054p-5f, -0x1.6a41cep-5f, 0x1.029cb4p-5f, -0x1.336bfep-6f,
+    0x1.bb62ep-8f, 0x1.f836f8p-9f, -0x1.a2c658p-7f, 0x1.46b7bcp-6f,
+    -0x1.9fb3d8p-6f, 0x1.de6668p-6f, -0x1.02d19p-5f, 0x1.0c4aeep-5f,
+    -0x1.0d3c78p-5f, 0x1.07330cp-5f, -0x1.f73a2ep-6f, 0x1.d78628p-6f,
+};
 // Band magnitudes (dB) of Live's solo impulse responses at kFreqs.
 const std::array<double, 7> kFreqs{50, 120, 500, 1000, 2500, 5000, 10000};
 const std::array<double, 7> k_n_soloLow{-0.272263, -6.038481, -49.636954, -73.676140, -105.484711, -130.379894, -151.100811};
@@ -155,6 +177,23 @@ void resampler() {
     for (std::size_t i = 0; i < kLiveImpulse.size(); ++i)
         exact &= y.l[i] == kLiveImpulse[i] && y.r[i] == kLiveImpulse[i];
     check(exact, "single-band impulse response equals Live's render bit for bit");
+    // 2x at any host rate: Live rendered at 44.1 and 96 kHz agrees just as exactly
+    const auto atRate = [](double rate, const std::array<float, 32> &want) {
+        MD r;
+        neutral(r);
+        r.set(MD::LowBandOn, 0);
+        r.set(MD::HighBandOn, 0);
+        r.prepare(rate);
+        std::vector<float> in(64);
+        in[0] = 0.5f;
+        const auto got = render(r, mono(in));
+        bool same = true;
+        for (std::size_t i = 0; i < want.size(); ++i)
+            same &= got.l[i] == want[i];
+        return same;
+    };
+    check(atRate(44100, kLiveImpulse44k), "44.1 kHz single-band impulse equals Live's bit for bit");
+    check(atRate(96000, kLiveImpulse96k), "96 kHz single-band impulse equals Live's bit for bit");
 }
 
 void crossovers() {
