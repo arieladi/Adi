@@ -46,7 +46,7 @@ python3 nulltest.py mbd_a mbd_b mbd_c               # residual per probe, dB re 
 | `mbd_render.cpp` | Offline renderer: WAV in, the C++ core with `-p Name=value` parameters, WAV out. |
 | `nulltest.py` | Replays every probe of a set through `mbd_render`, applying Live's clip declick first, and prints RMS and peak residuals. |
 | `extract_refs.py` | Pulls the reference numbers the unit test embeds out of Live's renders. |
-| `clipfade.txt` | Live's clip declick, measured: 192 samples in, 192 out. Not the device: Live fades every clip edge, `Fade` off or not. |
+| `clipfade_<rate>.txt` | Live's clip declick, measured: 192 samples in, 192 out. Not the device: Live fades every clip edge, `Fade` off or not. |
 | `wsc.py` | Reads Live's own parameter names, values and display text through the AdiVST bridge, if it is running. |
 
 ## Traps it already fell into
@@ -60,7 +60,7 @@ python3 nulltest.py mbd_a mbd_b mbd_c               # residual per probe, dB re 
 - **Background clicks do not reach Live's dialogs**; posted keys do. The save
   panel is out of process, so Return must be a real key event, sent only
   after checking that Live is frontmost.
-- **Clip edges are faded** by Live (see `clipfade.txt`). A probe that starts or
+- **Clip edges are faded** by Live (see `clipfade_<rate>.txt`). A probe that starts or
   ends on a non-zero sample must model that or start and end in silence.
 - **Live saves only into a Project folder**, so a set opened from a bare path
   asks for Save As.

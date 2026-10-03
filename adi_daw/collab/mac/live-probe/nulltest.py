@@ -27,15 +27,19 @@ def to_args(params, sidechain):
                 "-p", f"SidechainMix={100.0*sidechain.get('drywet', 1.0)!r}"]
         if sidechain.get("listen"): out += ["-p", "SidechainListen=1.0"]
     return out
-_fade = np.array([float.fromhex(l) for l in open(os.path.join(HERE, "clipfade.txt")) if not l.startswith("#")], np.float32)
-FIN, FEND = _fade[:192], _fade[192:]
+def _fades(rate):
+    """Live declicks every clip over ~4 ms (176/192/384 samples at 44.1/48/96 kHz), measured."""
+    v = np.array([float.fromhex(l) for l in open(os.path.join(HERE, "clipfade_%d.txt" % rate))
+                  if not l.startswith("#")], np.float32)
+    return v[:len(v) // 2], v[len(v) // 2:]
 _faded = {}
 def faded(path, tmp):
     """Live declicks every clip: 192-sample linear-ish fades at both ends (measured)."""
     if path in _faded: return _faded[path]
-    x, _ = als.wav_read(path); x = x.astype(np.float32)
-    x[:192] = (x[:192] * FIN[:, None]).astype(np.float32); x[-192:] = (x[-192:] * FEND[:, None]).astype(np.float32)
-    out = os.path.join(tmp, "f%d.wav" % len(_faded)); als.wav_write(out, x); _faded[path] = out
+    x, rate = als.wav_read(path); x = x.astype(np.float32)
+    fin, fend = _fades(rate); a, b = len(fin), len(fend)
+    x[:a] = (x[:a] * fin[:, None]).astype(np.float32); x[-b:] = (x[-b:] * fend[:, None]).astype(np.float32)
+    out = os.path.join(tmp, "f%d.wav" % len(_faded)); als.wav_write(out, x, sr=rate); _faded[path] = out
     return out
 def run(sets, only=None, binary=MBD_RENDER, skip_auto=True):
     res = {}
