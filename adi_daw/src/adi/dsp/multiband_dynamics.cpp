@@ -149,6 +149,93 @@ bool isSwitch(P p) noexcept {
     }
 }
 float dbToGain(double db) noexcept { return static_cast<float>(std::pow(10.0, db / 20.0)); }
+// The S/C gain is a fader. Live stores it as a linear factor (the set's sidechain
+// Volume, from 0.000316227757 = -70 dB to 15.8489332 = 24 dB; dbToGain gives that float
+// back for our dB value), turns the factor into a float fader position u in [0, 1], and
+// plays the gain at u, both ways through one table of 101 nodes at u = j/100, linear in
+// amplitude between them:
+//   u = float((j + (g - g[j]) / (g[j+1] - g[j])) / 100)   with g[j] <= g < g[j+1],
+//   gain = float(g[j] + (g[j+1] - g[j]) * (100u - j))     with j = floor(100u),
+// each in double from the float nodes. That round trip is the whole difference between
+// the stored factor and the one Live multiplies by (battery mbd_scg: exact for nearly
+// everything up to 2^-8, then -2 .. +2 ulps with no smooth trend, 0.5 one ulp high, 2.0
+// two low, 22 dB four high), and it depends on the stored float alone (the same through
+// a constant automation envelope, from "0.1" or "0.10000000149011612" in the set). A
+// position within 2^-17 of a node, in units of 1/100, plays the node itself: Live snaps
+// at distances up to 7.15e-6 (stored factors from four ulps under the 22 dB node to four
+// over it, and up to three over 0 dB) and interpolates from 9.54e-6 on (four ulps over
+// 0 dB, five over the 22 dB node); 2^-17 lies in between, no probe pins it further.
+// All 429 static values of batteries mbd_scg and mbd_scg2 (with mbd_rt's rt_g_*)
+// reproduce to the bit this way.
+// The nodes are Live's own floats, read off mbd_scg2's automation ramp (ramp_min_max,
+// minimum to maximum over six beats: Live updates the gain every 14 samples, and every
+// update between two node times decodes to the line between the same two floats). In
+// dB they are 0.4 (j - 40) from j = 40 up (0 dB at u = 0.4, 24 dB at 1) and
+// -(0.42 m + 0.02 m^2) with m = 40 - j down to j = 3 (-10.8 dB at u = 0.25, -29 dB at
+// 0.11, -42.92 dB at 0.03). Nodes 2 and 1 are measured at -48.3733 and -57.40 dB, and
+// node 0 is the -70 dB minimum's float: the ramp does not pin it, but every static value
+// between the cut and node 1 agrees with it. The floats are not those dB values rounded:
+// from j = 41 up they lie 0.1e-6 .. 1.8e-6 (relative) above them, below 0 dB up to
+// 0.4e-6 under, so they are kept as measured.
+constexpr std::array<float, 101> kSidechainNodes{
+    0x1.4b96bep-12f, 0x1.619f64p-10f, 0x1.f3daacp-9f, 0x1.d4408ep-8f, 0x1.22b408p-7f,
+    0x1.674b40p-7f, 0x1.ba072ep-7f, 0x1.0ea846p-6f, 0x1.49edb2p-6f, 0x1.9054e2p-6f,
+    0x1.e386aap-6f, 0x1.22a9bcp-5f, 0x1.5bd928p-5f, 0x1.9e5f18p-5f, 0x1.eb5946p-5f,
+    0x1.21f97ap-4f, 0x1.54b0b8p-4f, 0x1.8e6fecp-4f, 0x1.cfd4c2p-4f, 0x1.0cbd0ep-3f,
+    0x1.35fa2ep-3f, 0x1.63e6cep-3f, 0x1.96c08ep-3f, 0x1.cebb7cp-3f, 0x1.05ffc8p-2f,
+    0x1.275324p-2f, 0x1.4b5c20p-2f, 0x1.72156ap-2f, 0x1.9b6f0ap-2f, 0x1.c74d68p-2f,
+    0x1.f58892p-2f, 0x1.12f5d4p-1f, 0x1.2c1a4cp-1f, 0x1.460a10p-1f, 0x1.609708p-1f,
+    0x1.7b8d04p-1f, 0x1.96b230p-1f, 0x1.b1c7cap-1f, 0x1.cc8af2p-1f, 0x1.e6b5acp-1f,
+    0x1.000000p+0f, 0x1.0c10bap+0f, 0x1.18b2eap+0f, 0x1.25ed84p+0f, 0x1.33c7bap+0f,
+    0x1.424912p+0f, 0x1.51796ap+0f, 0x1.616102p+0f, 0x1.72087ep+0f, 0x1.8378eap+0f,
+    0x1.95bbbcp+0f, 0x1.a8dadep+0f, 0x1.bce0b4p+0f, 0x1.d1d81ep+0f, 0x1.e7cc7cp+0f,
+    0x1.fec9bep+0f, 0x1.0b6e2cp+1f, 0x1.1808b2p+1f, 0x1.253b48p+1f, 0x1.330d18p+1f,
+    0x1.4185a4p+1f, 0x1.50acc6p+1f, 0x1.608ab8p+1f, 0x1.71281ap+1f, 0x1.828df0p+1f,
+    0x1.94c5acp+1f, 0x1.a7d934p+1f, 0x1.bbd2e4p+1f, 0x1.d0bd94p+1f, 0x1.e6a4a0p+1f,
+    0x1.fd93eep+1f, 0x1.0acbf8p+2f, 0x1.175ed8p+2f, 0x1.24896ap+2f, 0x1.3252d8p+2f,
+    0x1.40c29ap+2f, 0x1.4fe08ap+2f, 0x1.5fb4dep+2f, 0x1.70482ap+2f, 0x1.81a374p+2f,
+    0x1.93d024p+2f, 0x1.a6d81ap+2f, 0x1.bac5acp+2f, 0x1.cfa3acp+2f, 0x1.e57d70p+2f,
+    0x1.fc5ed2p+2f, 0x1.0a2a20p+3f, 0x1.16b560p+3f, 0x1.23d7f8p+3f, 0x1.319908p+3f,
+    0x1.40000cp+3f, 0x1.4f14d0p+3f, 0x1.5edf8ap+3f, 0x1.6f68c8p+3f, 0x1.80b98ap+3f,
+    0x1.92db34p+3f, 0x1.a5d7a0p+3f, 0x1.b9b91cp+3f, 0x1.ce8a74p+3f, 0x1.e456f4p+3f,
+    0x1.fb2a76p+3f};
+constexpr double kSidechainSnap = 0x1p-17;
+float sidechainPosition(float g) noexcept {
+    const auto &n = kSidechainNodes;
+    if (g <= n.front())
+        return 0.0f;
+    if (g >= n.back())
+        return 1.0f;
+    const auto j = static_cast<std::size_t>(std::upper_bound(n.begin(), n.end(), g) - n.begin() - 1);
+    const double lo = n[j], hi = n[j + 1];
+    const double frac = (static_cast<double>(g) - lo) / (hi - lo);
+    return static_cast<float>((static_cast<double>(j) + frac) / 100.0);
+}
+float sidechainFader(float u) noexcept {
+    const auto &n = kSidechainNodes;
+    const double x = static_cast<double>(u) * 100.0;
+    const auto j = std::min(static_cast<std::size_t>(x), n.size() - 1);
+    const double frac = x - static_cast<double>(j); // exact
+    if (frac < kSidechainSnap || j + 1 == n.size())
+        return n[j];
+    if (1.0 - frac < kSidechainSnap)
+        return n[j + 1];
+    const double lo = n[j], hi = n[j + 1];
+    return static_cast<float>(lo + (hi - lo) * frac);
+}
+// Below the fader's travel the S/C is off (-inf, like Live's mixer volume), and not
+// only at its -70 dB minimum: a stored factor up to 0.00032f (0x1.4f8b58p-12, -69.897
+// dB) silences the trigger, the next float up plays as its value. Listen plays exactly
+// 0 for 0x1.4f8b56p-12 and 0x1.4f8b58p-12 (mbd_scg2 cutlin_0.000319999963,
+// cutlin_0.000319999992), at -69.9 and -69.99 dB (rt_g_db-69.9, rt_g_db-69.99), and
+// sc_gm70 shows no gain reduction where a -76 dB trigger would take 2 dB off at a -80 dB
+// threshold; 0x1.4f8b5ap-12 (cutlin_0.000320000021), cut-69.89 .. cut-69.81 and
+// scg_cut-69.8 .. scg_cut-69.55 are bit-exact through the fader.
+constexpr float kSidechainOff = 0.00032f;
+float sidechainGain(double db) noexcept {
+    const float stored = dbToGain(db);
+    return stored <= kSidechainOff ? 0.0f : sidechainFader(sidechainPosition(stored));
+}
 // Live renders with denormals flushed to zero: only then do the impulse probes
 // null with a maximum error of exactly 0 (x30_300_soloLow, x30_soloLow_imp1e-6,
 // n_small ...); without it their decaying tails part from Live's near 1e-38.
@@ -180,18 +267,7 @@ class FlushDenormals {
 // two ulps), and with powf rather than the double pow for the plain gains of mbd_gain
 // (output 5.87 dB = 0x1.f733p+0, master -2.13 dB = 0x1.90a788p-1: double pow lands one
 // ulp high on both); input 11.42 dB = 0x1.dca954p+1 needs the product (dB/20f with
-// either pow gives ...94e or ...950). The S/C gain is no such knob: Live stores it as
-// a linear factor (the set's sidechain Volume, ranging from this formula's -70 dB to
-// its 24 dB, 15.8489332) and multiplies by a float within four ulps of it, which
-// dbToGain returns for our dB value. Battery mbd_scg reads Live's factor off to the
-// bit in all 161 of its probes: it is a fixed function of the stored float alone (the
-// same through a constant automation envelope, from "0.1" or "0.10000000149011612"
-// in the set), exact for every value up to 2^-8 (-48 dB) but one (0.00146484375, one
-// ulp high), and from about -40 dB up off by -2 .. +2 ulps (+22 dB: four high) with
-// no smooth trend: 0.25 and 1 exact, 0.5 one ulp high, 2.0 two low, 4 and 8 one low,
-// 24 dB as 15.8489332 (sc_gp24). Not reproduced yet: no float in a dB, log or
-// normalised domain lies upstream (none reaches the exact bottom), and no linear
-// normalisation, smoother, ramp or near-1 correction factor fits all values.
+// either pow gives ...94e or ...950). The S/C gain is no such knob (see sidechainGain).
 float MultibandDynamics::knobGain(double db) noexcept {
     return std::pow(10.0f, static_cast<float>(db) * 0.05f);
 }
@@ -638,17 +714,8 @@ void MultibandDynamics::derive() noexcept {
         release_[i] = static_cast<float>(envelopeCoefficient(value_[i + ReleaseLow] * time, os));
     }
     master_ = knobGain(at(MasterOutput));
-    // The bottom of the S/C gain is off (-inf, like Live's mixer volume), and not only
-    // its -70 dB minimum: sc_gm70 shows no gain reduction at all while a -76 dB trigger
-    // should take 2 dB off at a -80 dB threshold, and Listen plays exactly 0 at -69.99
-    // and -69.9 dB (rt_g_db-69.99, rt_g_db-69.9: stored 0x1.4f6db0p-12), while -69.8
-    // dB (0x1.535002p-12) and everything above acts as its linear value (scg_cut-69.8
-    // .. scg_cut-69.55, rt_g_db-69.5 bit-exact). The cut lies in (-69.9, -69.8] dB,
-    // i.e. 1.0116 .. 1.0233 times the -70 dB minimum; no probe sits inside, so it is
-    // put midway in dB until one pins it (no round constant in that interval stands
-    // out: 0.00032 linear and 2^-22 of the normalised range both fall in it too).
-    constexpr double kSidechainGainOffDb = -69.85;
-    scGain_ = at(SidechainGain) < kSidechainGainOffDb ? 0.0f : dbToGain(at(SidechainGain));
+    // The S/C gain goes through Live's fader table, off at the bottom (sidechainGain).
+    scGain_ = sidechainGain(at(SidechainGain));
     // Equal-power mix, the dry gain DERIVED from the wet one: wet = sin(m*pi/2) of the
     // float mix value, in double, rounded to float; dry = sqrt(1 - wet*wet) in float
     // (wet*wet and 1 - that each rounded). Bit-exact for all 15 mix values of battery

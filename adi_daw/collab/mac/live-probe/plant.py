@@ -25,6 +25,7 @@ PLANTS = [
  ("solo ignores band existence", "if (!exists[bi] || (anySolo && !solo[bi]))", "if ((anySolo && !solo[bi]) || (!anySolo && !exists[bi]))"),
  ("RMS level by sqrtf", "const float level = fastLog2(peak ? env : rmsAmplitude(env));", "const float level = fastLog2(peak ? env : std::sqrt(env));"),
  ("inactive band adds to Listen", "if (!active[bi]) {", "if (!active[bi] && !listen) {"),
+ ("S/C gain without Live's fader table", "scGain_ = sidechainGain(at(SidechainGain));", "scGain_ = dbToGain(at(SidechainGain));"),
 ]
 def run():
     src = open(f"{W}/src/adi/dsp/multiband_dynamics.cpp").read()

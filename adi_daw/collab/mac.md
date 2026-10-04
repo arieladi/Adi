@@ -2264,9 +2264,11 @@ instruction. Branch `mac/multiband-dynamics-pd`, worktree `Adi-wt/multiband-dyna
 
 **Measured, not read.** Live 11.2.7 on this Mac rendered ~650 probes through its
 own device (`collab/mac/live-probe/`: sets generated as XML, Live driven to
-export every track, the C++ core nulled against each render). 447 of 468 static
+export every track, the C++ core nulled against each render). 886 of 887 static
 probes and 17 of 23 switch-automation probes are identical to the bit, at 44.1,
-48 and 96 kHz. The findings and what is still short are in
+48 and 96 kHz; the rest are host behaviour. The last device detail, the S/C
+gain, turned out to be Live's fader table: runs of consecutive stored floats
+showed a staircase, and an automation ramp gave all 101 nodes. The findings and what is still short are in
 `collab/mac/2026-10-03-multiband-dynamics-pd.md`.
 
 **Traps worth keeping:**
@@ -2280,7 +2282,7 @@ probes and 17 of 23 switch-automation probes are identical to the bit, at 44.1,
   disk twice (112 MB a run). The harness deletes its renders now.
 - Bit-exact claims need the platform's float libm to match Live's: exact on
   macOS, a tolerance elsewhere, and the same check count on every platform.
-- Every new check was planted against (`live-probe/plant.py`): 19 of 20 plants
-  caught; the 20th is behaviour-identical.
+- Every new check was planted against (`live-probe/plant.py`): 20 of 21 plants
+  caught; the 21st is behaviour-identical.
 
 Not touched: the README check count (win's).

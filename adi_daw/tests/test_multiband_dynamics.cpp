@@ -889,6 +889,44 @@ void silenceAndDenormals() {
     check(std::all_of(heard.begin(), heard.end(), [](float v) { return v == 0; }),
           "Listen with every band inactive is silent");
 }
+
+// The S/C gain goes through Live's fader table (101 nodes, linear between them, a snap
+// to a node within 2^-17): 22 dB plays node 95, four ulps above the stored float, and
+// 0.5 plays one ulp high (mbd_scg2 staircases and ramp, mbd_scg, mbd_b sc_listen).
+void sidechainFader() {
+    struct Case {
+        double db;
+        float live;
+        const char *what;
+    } cases[] = {{22.0, 0x1.92db34p+3f, "S/C gain 22 dB plays Live's fader node 95"},
+                 {20 * std::log10(0.5), 0x1.000002p-1f, "S/C gain 0.5 plays one ulp high, as in Live"},
+                 {20 * std::log10(2.0), 0x1.fffffcp+0f, "S/C gain 2.0 plays 1.99999976, as in Live"}};
+    for (const auto &c : cases) {
+        const double gainDb = c.db;
+        MD m;
+        neutral(m);
+        m.set(MD::LowBandOn, 0), m.set(MD::HighBandOn, 0);
+        m.set(MD::SidechainOn, 1), m.set(MD::SidechainListen, 1), m.set(MD::SidechainGain, gainDb);
+        m.prepare(48000);
+        const std::size_t n = 2048;
+        std::vector<float> main(n, 0.0f), side(n, 0.25f), out(n), outR(n);
+        m.process(main.data(), main.data(), out.data(), outR.data(), n, side.data(), side.data());
+        MD::HalfbandUp up;
+        MD::HalfbandDown down;
+        for (std::size_t i = 0; i < 4; ++i) {
+            up.even.c[i] = down.even.c[i] = MD::kHalfbandCoefficients[2 * i];
+            up.odd.c[i] = down.odd.c[i] = MD::kHalfbandCoefficients[2 * i + 1];
+        }
+        bool same = true;
+        for (std::size_t i = 0; i < n; ++i) {
+            const float trigger = c.live * 0.25f; // dry is exactly 0 at 100 %
+            float a, b;
+            up.step(trigger, a, b);
+            same &= out[i] == down.step(a, b);
+        }
+        check(same, c.what);
+    }
+}
 } // namespace
 int main() {
     resampler();
@@ -907,6 +945,7 @@ int main() {
     detectorState();
     gainComputerBits();
     silenceAndDenormals();
+    sidechainFader();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

@@ -6,12 +6,12 @@ Multiband Dynamics and does exactly what Live's does, one to one. Done by
 claim row in `collab/README.md`.
 
 Nothing here is read off the manual. Live 11.2.7 Suite on this Mac rendered
-about 650 probe signals through its own Multiband Dynamics, at 44.1, 48 and
+about 900 probe signals through its own Multiband Dynamics, at 44.1, 48 and
 96 kHz (`live-probe/`), and every claim below is a measurement of those renders.
 The C++ core replays the same probes and is held to Live's output sample by
-sample: **447 of 468 static probes and 17 of 23 switch-automation probes are
-identical to Live's to the last bit.** The rest are named under "Not yet the
-bit" with their size.
+sample: **886 of 887 static probes and 17 of 23 switch-automation probes are
+identical to Live's to the last bit.** The seven that are not are host
+behaviour (below), not the device.
 
 ## The signal path
 
@@ -65,8 +65,15 @@ bands; soloing a band whose split is off is silence.
 **Sidechain.** Trigger = `dry * input + (wet * gain) * sidechain` at the host
 rate, before the resampler; `wet = sin(m pi/2)` of the float mix,
 `dry = sqrtf(1 - wet^2)` (at 99.9 % that is 0.00158221, not cos's 0.00157080).
-The trigger is band-split like the input. S/C Gain below -69.7 dB is off: Live
-is silent at -69.9 dB and on at -69.5 dB. **Listen** plays whenever it is on,
+The trigger is band-split like the input. The S/C Gain is a fader, not a plain
+factor: Live holds it as a float fader position through a 101-node table (nodes
+every 0.01 of travel, linear in amplitude between them, snapped to a node within
+2^-17), so the gain it multiplies by sits up to four ulps from the stored one.
+22 dB plays node 95 (12.5892574), 0.5 plays one ulp high and 2.0 as 1.99999976;
+runs of consecutive stored floats come out as a staircase. The node floats were
+read off Live's own automation ramp. In dB they are 0.4(j - 40) above j = 40 and
+-(0.42m + 0.02m^2), m = 40 - j, below, with the bottom three nodes measured: the
+mixer fader's curve, 18 dB higher. A stored gain <= 0.00032 is off. **Listen** plays whenever it is on,
 S/C on or off: Master x the sum of input gain x split trigger over the bands
 that compress (inactive bands add nothing, output gains are not applied).
 
@@ -96,10 +103,13 @@ Measured, and left to ADI's host because Live's host does them, not the device:
 
 ## Not yet the bit
 
-- **S/C Gain's last ulp.** Live multiplies by a float one or two ulps from the
-  stored gain for some values (2.0 acts as 1.99999976). Twenty probes null at
-  -128 to -178 dB instead of exactly. Battery `mbd_scg` (162 probes) is built to
-  pin the mapping and waits for a render.
+- **Host, not device.** The seven probes that are not exact are one 1e-36 tail
+  Live's host zeroes after a clip ends and six device-On fade last ulps (the
+  fade is ADI's host's).
+- **Choices inside proven bounds.** The fader snap is 2^-17 (every probe allows
+  anything in (7.15e-6, 9.54e-6]); node 0 is taken as the -70 dB minimum.
+- **Automation delivery.** Live steps S/C Gain automation in fader position every
+  14 samples; the core smooths the dB parameter like every other.
 - **Platform libm.** Live's numbers come from macOS. The crossovers, knobs and
   frequency mapping use the platform's float sin/cos/pow/log as Live's do, so
   on another libm they can round an ulp differently. At a 30 Hz split that moves
@@ -114,9 +124,9 @@ order and names: Live's 37 automatable parameters (Device On is the host's) and
 the six it keeps unautomated (Low/High split buttons, three Solos, S/C Listen).
 Ranges, defaults and curves are Live's; the ratio parameters carry Live's r.
 
-`tests/test_multiband_dynamics.cpp` (86 checks) holds the core to Live's own
-samples. `live-probe/plant.py` plants 20 defects, one per finding: 19 are
-caught; the 20th is the same behaviour (soloing a band whose split is off
+`tests/test_multiband_dynamics.cpp` (91 checks) holds the core to Live's own
+samples. `live-probe/plant.py` plants 21 defects, one per finding: 20 are
+caught; the 21st is the same behaviour (soloing a band whose split is off
 silences it either way). `tests/test_multiband_dynamics_pd.cpp` (53 checks)
 opens the real patch in libpd; removing the sidechain wiring or one
 `[adi.param]` makes it fail.
