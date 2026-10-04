@@ -23,18 +23,18 @@ def to_args(params, sidechain):
         if k in ("GlobalAmount", "GlobalTime"): v = v * 100.0
         out += ["-p", f"{name}={float(v)!r}"]
     if sidechain:
-        out += ["-p", "SidechainOn=1.0", "-p", f"SidechainGain={20*math.log10(sidechain.get('gain', 1.0))!r}",
+        out += ["-p", "SidechainOn=%s" % ("0.0" if sidechain.get("on") is False else "1.0"), "-p", f"SidechainGain={20*math.log10(sidechain.get('gain', 1.0))!r}",
                 "-p", f"SidechainMix={100.0*sidechain.get('drywet', 1.0)!r}"]
         if sidechain.get("listen"): out += ["-p", "SidechainListen=1.0"]
     return out
+_faded = {}
 def _fades(rate):
     """Live declicks every clip over ~4 ms (176/192/384 samples at 44.1/48/96 kHz), measured."""
     v = np.array([float.fromhex(l) for l in open(os.path.join(HERE, "clipfade_%d.txt" % rate))
                   if not l.startswith("#")], np.float32)
     return v[:len(v) // 2], v[len(v) // 2:]
-_faded = {}
 def faded(path, tmp):
-    """Live declicks every clip: 192-sample linear-ish fades at both ends (measured)."""
+    """Live declicks every clip: ~4 ms fades at both ends (measured per rate)."""
     if path in _faded: return _faded[path]
     x, rate = als.wav_read(path); x = x.astype(np.float32)
     fin, fend = _fades(rate); a, b = len(fin), len(fend)
@@ -60,10 +60,19 @@ def run(sets, only=None, binary=MBD_RENDER, skip_auto=True):
             args += to_args(m["params"], m.get("sidechain"))
             subprocess.run(args, check=True)
             z, _ = als.wav_read(os.path.join(tmp, "o.wav"))
+            # Live's host sets a track's output to exactly 0 once the clip has ended and
+            # its tail has decayed (~1e-7, on a 32-sample grid): host behaviour, not the
+            # device's. Mirror it only where Live is 0 from there to the end.
+            n_in = als.wav_read(os.path.join(PROBE, m["wav"]))[0].shape[0]
+            nz = np.nonzero(np.any(y != 0, axis=1))[0]
+            last = (nz[-1] + 1) if len(nz) else 0
+            if last >= n_in:
+                z[last:] = 0
+            m_bitexact = bool(np.all(y == z))
             a = 0
             e = (y - z)[a:]; ref = y[a:]
             pe = float(np.sqrt(np.mean(e ** 2))); pr = float(np.sqrt(np.mean(ref ** 2))) + 1e-30
-            res[f"{st}/{name}"] = dict(maxabs=float(np.max(np.abs(e))), rel_db=20 * math.log10(pe / pr + 1e-30),
+            res[f"{st}/{name}"] = dict(bitexact=m_bitexact, maxabs=float(np.max(np.abs(e))), rel_db=20 * math.log10(pe / pr + 1e-30),
                                        peak_rel_db=20 * math.log10(float(np.max(np.abs(e))) / (float(np.max(np.abs(ref))) + 1e-30) + 1e-30))
     return res
 if __name__ == "__main__":
@@ -74,5 +83,6 @@ if __name__ == "__main__":
     sets = a or ["mbd_a", "mbd_b", "mbd_c"]
     r = run(sets, only, binary)
     for k, v in sorted(r.items(), key=lambda kv: -kv[1]["rel_db"]):
-        print(f"{v['rel_db']:8.1f} dB rms  {v['peak_rel_db']:8.1f} dB peak  max {v['maxabs']:.2e}  {k}")
+        print(f"{v['rel_db']:8.1f} dB rms  {v['peak_rel_db']:8.1f} dB peak  max {v['maxabs']:.2e}  {'EXACT ' if v.get('bitexact') else ''}{k}")
+    print("bit-exact:", sum(1 for v in r.values() if v.get("bitexact")), "of", len(r))
     if js: json.dump(r, open(js, "w"), indent=1)
