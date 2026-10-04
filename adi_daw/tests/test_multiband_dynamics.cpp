@@ -575,6 +575,18 @@ void routing() {
     crossed.set(MD::LowMidCrossover, 2000), crossed.set(MD::MidHighCrossover, 1000), crossed.set(MD::SoloLow, 1);
     crossed.prepare(48000);
     near(db(magnitude(render(crossed, mono(x)).l, 0, 1000) / 0.5), -6.02, 0.05, "crossed splits both sit at the high split");
+    // crossed splits with one split switched off still clamp to the lower one (mbd_f2
+    // c_lowonly_3000_300_soloLow and c_highonly_3000_300_soloHigh, both bit-exact)
+    for (int off = 0; off < 2; ++off) {
+        MD one;
+        neutral(one);
+        one.set(MD::LowMidCrossover, 3000), one.set(MD::MidHighCrossover, 300);
+        one.set(off ? MD::LowBandOn : MD::HighBandOn, 0);
+        one.set(off ? MD::SoloHigh : MD::SoloLow, 1);
+        one.prepare(48000);
+        near(db(magnitude(render(one, mono(x)).l, 0, 300) / 0.5), -6.02, 0.05,
+             off ? "low split off: the high split stays at 300 Hz" : "high split off: the low split clamps to 300 Hz");
+    }
     MD inactive;
     neutral(inactive);
     inactive.set(MD::OutputGainHigh, 6), inactive.set(MD::InputGainHigh, 6), inactive.set(MD::ActiveHigh, 0);
