@@ -68,6 +68,13 @@ class MultibandDynamics {
     MultibandDynamics();
     void prepare(double sampleRate);
     void reset() noexcept;
+    // For the host's device On switch. Live bypasses a switched-off device by not
+    // processing it (state frozen) after a 48-sample raised-cosine wet->dry fade, and
+    // on switching back on clears the detectors and the crossover filters but keeps
+    // the 2x resampler state, then fades dry->wet over 48 samples (auto_devon_dyn
+    // -154 dB, auto_devon_3b -120 dB). Call this before the first process() after
+    // the device was off.
+    void resumeAfterBypass() noexcept;
     void set(Param, double) noexcept;
     [[nodiscard]] double get(Param p) const noexcept { return value_[p]; }
     [[nodiscard]] int latency() const noexcept { return 0; }
@@ -89,18 +96,26 @@ class MultibandDynamics {
         float held = 0;
         float step(float first, float second) noexcept;
     };
+    // Direct form I, in float: y = b0*x + b1*x1 + b2*x2 - a1*y1 - a2*y2, summed in that order.
     struct Biquad {
-        float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, s1 = 0, s2 = 0;
+        enum class Kind { LowPass, HighPass, AllPass };
+        float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+        void design(float frequency, float rate, Kind kind) noexcept;
         float step(float v) noexcept;
+        void clear() noexcept { x1 = x2 = y1 = y2 = 0; }
     };
     struct Lr4 {
         std::array<Biquad, 2> stage;
-        void design(double frequency, double rate, bool high) noexcept;
+        void design(float frequency, float rate, bool high) noexcept;
         float step(float v) noexcept { return stage[1].step(stage[0].step(v)); }
         void clear() noexcept;
     };
     struct BandSplit {
-        Lr4 lowL, highL, lowOfLow, highOfLow, lowOfHigh, highOfHigh, lowH, highH;
+        Lr4 lowL, highL, lowOfHigh, highOfAllpass, lowH, highH;
+        Biquad allpassOfLow, allpassL;
+        float midGain = 1;
+        // Live keeps a crossover as a float log10 and filters at 10^that.
+        static float liveFrequency(double hz) noexcept;
         void design(double low, double high, double rate) noexcept;
         void clear() noexcept;
         // low/mid/high of one sample, for the current switch state
@@ -136,12 +151,21 @@ class MultibandDynamics {
     std::array<double, Count> value_{};
     std::array<Smoother, Count> smooth_{};
     std::array<HalfbandUp, 2> up_{}, upSc_{};
-    std::array<HalfbandDown, 2> down_{}, downListen_{};
+    std::array<HalfbandDown, 2> down_{};
     std::array<BandSplit, 2> split_{}, splitSc_{};
     std::array<Detector, 3> detector_{};
     double rate_ = 48000, designedLow_ = -1, designedHigh_ = -1;
     std::size_t smoothing_ = 94, activeSmoothers_ = 0;
     int redesignCountdown_ = 0;
+    // Switching S/C On moves the detector's trigger between the main input and the
+    // sidechain mix along a smoothstep (3t^2 - 2t^3) over 72 samples, starting at the
+    // switch (auto_scon_3b: both edges null at the -105 dB floor of the static-curve
+    // model; 70 or 74 samples, a raised cosine, a linear or an equal-power ramp all
+    // leave -60..-88 dB). Samples since it last moved (settled at the ramp length) and
+    // the state process() last saw.
+    static constexpr int kSidechainRamp = 72;
+    int sidechainRamp_ = kSidechainRamp;
+    bool sidechainOn_ = false;
     // derived, refreshed when a parameter moves
     std::array<float, 3> inGain_{}, outGain_{};
     std::array<double, 3> aboveT_{}, aboveR_{}, belowT_{}, belowR_{};

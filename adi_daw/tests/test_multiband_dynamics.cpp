@@ -488,7 +488,7 @@ void engineering() {
     m.process(l.data(), r.data(), ol.data(), orr.data(), l.size(), sl.data(), sr.data());
     countAllocations = false;
     check(allocations == 0, "set and process allocate nothing");
-    // a parameter jump is Live's S-curve: half way at 94 samples, done at 188
+    // a parameter jump is Live's S-curve, two 94-sample boxcars: half way at 93, done at 187
     MD s;
     neutral(s);
     s.set(MD::LowBandOn, 0), s.set(MD::HighBandOn, 0);
@@ -498,8 +498,8 @@ void engineering() {
     s.set(MD::MasterOutput, -20);
     s.process(one.data() + 4800, one.data() + 4800, out.data() + 4800, outR.data() + 4800, 1200);
     near(db(out[4799]), 0, 1e-4, "before the jump");
-    near(db(out[4800 + 94 + 4]), -10, 1.0, "half way after ~2 ms");
-    near(db(out[4800 + 300]), -20, 1e-3, "settled after ~4 ms");
+    near(db(out[4800 + 93]), -10, 0.25, "half way after ~2 ms");
+    near(db(out[4800 + 187]), -20, 1e-3, "settled after ~4 ms");
     MD clamp;
     clamp.set(MD::AttackLow, 1e9);
     clamp.set(MD::LowMidCrossover, std::nan(""));
