@@ -129,28 +129,23 @@ constexpr std::array<Range, P::Count> kRange{{{30, 3000},     {300, 15000},  {0,
                                              {0, 100},       {0, 1},        {0, 1},
                                              {0, 1},         {0, 1},        {0, 1},
                                              {0, 1}}};
-// Live's gain knobs (band input and output gains, master) round the exponent dB/20
-// to float before raising 10 to it: 12 dB is 3.98107195, one ulp above 10^0.6
-// rounded (3.98107171); 6 dB is 1.99526238 and -2.9 dB 0.71614337. Bit-exact this
-// way, not with a double exponent: input gains 12, -12, 6 dB in Listen
-// (lis_single_inMid12, lis_3b_inLowm12_inHigh6), band output gain 6 dB
-// (gainLow6_inMidm6_out3), master 6 and -2.9 dB (out_global_6,
-// fine_out_global_-2.9, lis_3b_outMid12_master6; with the gain computer in place
-// also st_ingain6_out-3_peak, cap_in24_up, cap_out24_up, cap_in-24_down,
-// out_global_m24_in24 and fine_gain_only_in3.3_out-1.7). powf(10.0f, exponent) gives
-// the same floats for every measured value but is not correctly rounded on macOS
-// (one ulp off on 32 of the 4801 0.01 dB steps in +-24 dB, e.g. -2.13, 5.87, 11.42 dB),
-// so no probe yet says which of the two Live uses; this one gives the same bits on
-// every platform. The S/C gain is no such knob:
-// Live stores it as a linear factor and multiplies by that float (lis_3b_g0.25 is
-// bit-exact with 0.25 and nulls at only -77 dB with 0.25000003, through the 120 Hz
-// filters), which dbToGain returns for our dB value. Not yet explained there: a
-// stored 2.0 acts as 1.99999976 (2 ulps low: sc_listen, sc_g2) and 15.8489319 (24 dB)
-// as 15.8489332 (1 ulp high: sc_gp24), while 1.0 and 0.25 act as themselves.
-float knobGain(double db) noexcept {
-    const float exponent = static_cast<float>(db) / 20.0f;
-    return static_cast<float>(std::pow(10.0, static_cast<double>(exponent)));
-}
+// Live's gain knobs (band input and output gains, master) are powf(10, dB*0.05f):
+// the float dB times the float 0.05, rounded, then the platform's powf (macOS libm,
+// which is not correctly rounded). Each half is pinned: all 15 input gains of battery
+// mbd_rt (rt_in-24 .. rt_in24) and all 10 masters (rt_master-24 .. rt_master24) are
+// bit-exact in Listen with the product dB*0.05f (dB/20f fails -18, 9 and 18 dB, one or
+// two ulps), and with powf rather than the double pow for the plain gains of mbd_gain
+// (output 5.87 dB = 0x1.f733p+0, master -2.13 dB = 0x1.90a788p-1: double pow lands one
+// ulp high on both); input 11.42 dB = 0x1.dca954p+1 needs the product (dB/20f with
+// either pow gives ...94e or ...950). The S/C gain is no such knob: Live stores it as
+// a linear factor (the set's sidechain Volume, ranging from this formula's -70 dB to
+// its 24 dB, 15.8489332) and multiplies by a float within two ulps of it, which
+// dbToGain returns for our dB value. Exact for 0.25, 0.7, 1, 1.5, 3 and -69.5 .. -40 dB
+// (lis_3b_g0.25 nulls at only -77 dB one ulp off, through the 120 Hz filters); not yet
+// explained: 0.5 acts one ulp high, 2.0 two ulps low (sc_listen, sc_g2), 4 and 8 one
+// low, 24 dB as 15.8489332 (sc_gp24). This formula cannot produce 0.25 or 8 at all, and
+// no round trip through dB, ln, log2 or a normalised value matches (battery mbd_rt).
+float knobGain(double db) noexcept { return std::pow(10.0f, static_cast<float>(db) * 0.05f); }
 bool isSwitch(P p) noexcept {
     switch (p) {
     case P::SoftKnee:
@@ -242,14 +237,20 @@ float MultibandDynamics::Biquad::step(float v) noexcept {
     return y;
 }
 
-// The RBJ cookbook section, all in float: w = 2*pi*f/fs evaluated left to right in
-// float (a double w is off by an ulp at 3000 Hz and 2999 Hz), cosf/sinf,
-// alpha = sin/(2Q), and every coefficient multiplied by 1/a0 rather than divided by
-// a0 (dividing nulls only to -54 dB at 120 Hz). The allpass is the same section's
-// denominator turned round: b = (a2, a1, 1).
+// The RBJ cookbook section, all in float: w = 2*pi*f times the float reciprocal of
+// the (oversampled) rate, left to right (a double w is off by an ulp at 3000 Hz and
+// 2999 Hz), cosf/sinf, alpha = sin/(2Q), and every coefficient multiplied by 1/a0
+// rather than divided by a0 (dividing nulls only to -54 dB at 120 Hz). The allpass
+// is the same section's denominator turned round: b = (a2, a1, 1).
+// Multiplying by 1/fs is not dividing by fs: at a 96 kHz host (192 kHz inside) the
+// division puts w for 2500 Hz an ulp high and a2 an ulp low, and the 120/2500 probes
+// null only to -97..-107 dB (sr96_neutral, sr96_solo*, sr96_lis_3b); with 1/fs they
+// are exact. At 44.1 and 48 kHz both spellings give the same coefficients at every
+// measured split. A float w taken from the ratio f/fs (2*pi in double) is exact at
+// 96 kHz too, but moves the 200 Hz section: mb_x200_5000_dyn -84.9 -> -72.4 dB.
 void MultibandDynamics::Biquad::design(float frequency, float rate, Kind kind) noexcept {
     const float q = static_cast<float>(kQ);
-    const float w = 2.0f * static_cast<float>(kPi) * frequency / rate;
+    const float w = 2.0f * static_cast<float>(kPi) * frequency * (1.0f / rate);
     const float cs = std::cos(w);
     const float sn = std::sin(w);
     const float alpha = sn / (2.0f * q);
@@ -287,6 +288,10 @@ void MultibandDynamics::Lr4::clear() noexcept {
 
 // The XML's 2000 Hz filters at 1999.9996 (10^log10f(2000)), 15000 at 14999.998:
 // without this step 500/2000 and 3000/15000 null only to -110 dB, with it exactly.
+// The value is rounded to float before the log, and the power is taken in float:
+// log10 of the double value (dec_*_131.6/160.3/306.2/312.9, -50..-92 dB) and
+// (float)pow(10.0, ...) (pow_*_1602/2491/4122/5293, -92..-122 dB) each move these
+// one-split probes off the last bit, which this spelling hits (probe set mbd_f).
 float MultibandDynamics::BandSplit::liveFrequency(double hz) noexcept {
     return std::pow(10.0f, std::log10(static_cast<float>(hz)));
 }
@@ -302,12 +307,18 @@ void MultibandDynamics::BandSplit::design(double low, double high, double rate) 
         f->design(fh, fs, false);
     for (Lr4 *f : {&highOfAllpass, &highH})
         f->design(fh, fs, true);
-    // Live scales the mid band by 1 - 10^(-24 dB per octave of split distance / 20).
-    // This float formula nulls all five measured pairs to the last bit (120/2500,
-    // 500/2000, 1000/8000, 30/300, 3000/15000); other float spellings of it agree
-    // there too but not everywhere (see the filters agent's battery_next.py). It is
+    // Live scales the mid band by 1 minus the amplitude of -24 dB per octave of split
+    // distance, in float: octaves = log2 of the ratio of the two filter frequencies
+    // above, and the dB go to amplitude as 10^(dB * 0.05f). Multiplying by 0.05f is
+    // not dividing by 20 (0.05f is not 1/20): at 2161/2848 Hz the exponent differs by
+    // an ulp and so does the gain, and only the * 0.05f gain nulls g_2161_2848_soloMid
+    // (+1 ulp of the / 20 one; a scan of the gain proves one value per probe). All
+    // eleven measured pairs null to the last bit (120/2500, 500/2000, 1000/8000,
+    // 30/300, 3000/15000 and mbd_f's g_* probes); octaves from the raw XML values, from
+    // a difference of logs, or -24 * (octaves / 20) each miss at least one. The gain is
     // 0 when the splits meet, which is why crossed splits leave the mid band silent.
-    midGain = 1.0f - std::pow(10.0f, -24.0f * std::log2(fh / fl) / 20.0f);
+    const float decibels = -24.0f * std::log2(fh / fl);
+    midGain = 1.0f - std::pow(10.0f, decibels * 0.05f);
 }
 
 void MultibandDynamics::BandSplit::clear() noexcept {
@@ -529,6 +540,12 @@ bool MultibandDynamics::smoothed(Param p) const noexcept {
 void MultibandDynamics::prepare(double sampleRate) {
     rate_ = sampleRate > 0 ? sampleRate : 48000.0;
     smoothing_ = std::max<std::size_t>(1, static_cast<std::size_t>(std::lround(rate_ * 94.0 / 48000.0)));
+    // The S/C On ramp lasts 1.5 ms in whole samples (66, 72, 144 at 44.1, 48, 96 kHz:
+    // sr44_scsw_dc_listen, scsw_dc_listen and sr96_scsw_dc_listen are bit-exact with
+    // these and no other lengths; 66.15 at 44.1 kHz does not say whether Live rounds or
+    // truncates). Its step is the float reciprocal of that length.
+    sidechainRampLength_ = std::max(1, static_cast<int>(std::lround(rate_ * 0.0015)));
+    sidechainStep_ = 1.0f / static_cast<float>(sidechainRampLength_);
     for (std::size_t i = 0; i < Count; ++i) {
         smooth_[i].target = value_[i];
         smooth_[i].resize(smoothing_);
@@ -551,7 +568,8 @@ void MultibandDynamics::reset() noexcept {
     }
     resumeAfterBypass();
     sidechainOn_ = value_[SidechainOn] >= 0.5;
-    sidechainRamp_ = kSidechainRamp;
+    sidechainRamp_ = sidechainRampLength_;
+    sidechainFade_ = sidechainOn_ ? 1.0f : 0.0f;
 }
 
 void MultibandDynamics::resumeAfterBypass() noexcept {
@@ -613,17 +631,32 @@ void MultibandDynamics::derive() noexcept {
         release_[i] = static_cast<float>(envelopeCoefficient(value_[i + ReleaseLow] * time, os));
     }
     master_ = knobGain(at(MasterOutput));
-    // The S/C gain's minimum, -70 dB, is off (-inf, like Live's mixer volume): sc_gm70
-    // shows no gain reduction at all while a -76 dB trigger should take 2 dB off at a
-    // -80 dB threshold.
-    scGain_ = at(SidechainGain) <= kRange[SidechainGain].min ? 0.0f : dbToGain(at(SidechainGain));
-    // Equal-power mix with both ends exact: at 100 % the main is exactly 0 in the trigger
-    // (cos(pi/2) in double would leak 6e-17 of it; Live's Listen output is exactly 0
-    // wherever the sidechain is silent, lis_single_inMid12), at 50 % both gains are
-    // float(sqrt(0.5)) (sc_listen_dw0.5 bit-exact).
-    const double mix = at(SidechainMix) / 100.0;
-    scDry_ = static_cast<float>(std::sin((1.0 - mix) * kPi / 2));
-    scWet_ = static_cast<float>(std::sin(mix * kPi / 2));
+    // The bottom of the S/C gain is off (-inf, like Live's mixer volume), and not only
+    // its -70 dB minimum: sc_gm70 shows no gain reduction at all while a -76 dB trigger
+    // should take 2 dB off at a -80 dB threshold, and Listen plays exactly 0 at -69.99
+    // and -69.9 dB (rt_g_db-69.99, rt_g_db-69.9), while -69.5 dB acts as its linear
+    // value (rt_g_db-69.5 bit-exact). The probes bound the cut to (-69.9, -69.5] dB; it
+    // sits midway until one pins it.
+    constexpr double kSidechainGainOffDb = -69.7;
+    scGain_ = at(SidechainGain) < kSidechainGainOffDb ? 0.0f : dbToGain(at(SidechainGain));
+    // Equal-power mix, the dry gain DERIVED from the wet one: wet = sin(m*pi/2) of the
+    // float mix value, in double, rounded to float; dry = sqrt(1 - wet*wet) in float
+    // (wet*wet and 1 - that each rounded). Bit-exact for all 15 mix values of battery
+    // mbd_rt (rt_mix0.001 .. rt_mix0.999) in Listen. Near 100 % the float subtraction
+    // shows: at 99.9 % dry is 0.00158221 where cos(0.999*pi/2) = 0.00157080 (+0.7 %,
+    // rt_mix0.999 nulled at only -92 dB with the cosine). Both ends are exact: at 100 %
+    // the main is exactly 0 in the trigger (Listen output is exactly 0 wherever the
+    // sidechain is silent) and at 50 % both gains are float(sqrt(0.5)).
+    const auto mix = static_cast<float>(at(SidechainMix) / 100.0);
+    scWet_ = static_cast<float>(std::sin(static_cast<double>(mix) * kPi / 2));
+    const float wetSquared = scWet_ * scWet_;
+    scDry_ = std::sqrt(1.0f - wetSquared);
+    // The S/C gain multiplies the wet gain, not the sidechain signal: the trigger is
+    // dry*main + (wet*gain)*sidechain with wet*gain rounded to float first. Only this
+    // order is bit-exact in rt_g1.5_mix0.3, rt_g0.7_mix0.8, rt_g3.0_mix0.5,
+    // rt_g0.5_mix0.25, rt_g1.25_mix0.6 and rt_in6_g1.5_mix0.3; wet*(gain*sc) or
+    // gain*(wet*sc) leave about 75 000 samples an ulp apart in each.
+    scWetGain_ = scWet_ * scGain_;
 }
 
 void MultibandDynamics::designFilters() noexcept {
@@ -649,12 +682,7 @@ void MultibandDynamics::process(const float *inL, const float *inR, float *outL,
                              value_[SoloHigh] >= 0.5};
     const bool anySolo = solo[0] || solo[1] || solo[2];
     const bool peak = value_[PeakMode] >= 0.5, knee = value_[SoftKnee] >= 0.5;
-    if ((value_[SidechainOn] >= 0.5) != sidechainOn_) {
-        sidechainOn_ = !sidechainOn_;
-        // a switch back before the ramp has finished turns it around where it is
-        // (smoothstep is point-symmetric; Live's behaviour here is not measured)
-        sidechainRamp_ = kSidechainRamp - std::min(sidechainRamp_, kSidechainRamp);
-    }
+    const bool sidechainWanted = value_[SidechainOn] >= 0.5;
     const bool listenOn = value_[SidechainListen] >= 0.5;
     for (std::size_t i = 0; i < n; ++i) {
         if (activeSmoothers_ > 0) {
@@ -676,27 +704,51 @@ void MultibandDynamics::process(const float *inL, const float *inR, float *outL,
         for (int c = 0; c < 2; ++c)
             up_[static_cast<std::size_t>(c)].step(x[c], os[c][0], os[c][1]);
         float sc[2][2] = {{0, 0}, {0, 0}};
+        // S/C On acts at its own sample (no block grid: scsw_dc_listen switches at
+        // +7, +13 and +1 samples into a 32-sample block). A ramp, once started, runs to
+        // its end: a switch back 40 samples into it (scsw_dc_listen at 48041) waits for
+        // it and then ramps back from the far end, as if it arrived when the ramp ended
+        // (turning the ramp round where it is: 0.23 off).
+        if (sidechainRamp_ >= sidechainRampLength_ && sidechainWanted != sidechainOn_) {
+            sidechainOn_ = sidechainWanted;
+            sidechainRamp_ = 0;
+            sidechainFade_ = sidechainOn_ ? 0.0f : 1.0f;
+        }
         // The sidechain path (its upsampler and crossovers) only runs while S/C is on
         // or its ramp is moving; while off it is not processed at all, so the first
-        // switch-on starts it from silence (lis_scon_1_2s: -123 dB over the switch;
-        // feeding it the main input while off: -12 dB).
-        const bool ramping = sidechainRamp_ < kSidechainRamp;
+        // switch-on starts it from silence (scsw_dc_listen at 24007: the cold upsampler
+        // rings, bit-exact; running it on the main input while off: -12 dB in
+        // lis_scon_1_2s), and a later switch-on resumes the state it stopped in
+        // (scsw_dc_listen at 48001 and 60000 bit-exact; a DC main cannot tell this
+        // from a path that keeps running while off, but a cold restart would ring as
+        // at 24007).
+        const bool ramping = sidechainRamp_ < sidechainRampLength_;
         const bool sidechain = sidechainOn_ || ramping;
-        // Listen plays only while that path runs (lis_scoff: S/C off = normal output).
-        const bool listen = sidechain && listenOn;
+        // Listen plays whenever it is on, S/C on or off: with S/C off the detectors hear
+        // the main input, so Listen plays the main's bands (times input gain, summed,
+        // master), not the normal output. Bit-exact with compressing settings in
+        // rt_scoff_listen_single and rt_scoff_listen_3b_out12 (normal output there:
+        // -0.6 and -24 dB). lis_scoff could not tell: nothing compressed it.
+        const bool listen = listenOn;
         if (sidechain) {
             const float s[2] = {scL ? scL[i] : 0.0f, scR ? scR[i] : 0.0f};
             float toward = 1.0f;
             if (ramping) {
-                const double t = static_cast<double>(sidechainRamp_) / kSidechainRamp;
-                const double w = t * t * (3.0 - 2.0 * t);
-                toward = static_cast<float>(sidechainOn_ ? w : 1.0 - w);
+                // The trigger's share of the sidechain mix is a smoothstep of a float
+                // position that steps by 1/length per sample, accumulated (0 up for On,
+                // 1 down for Off), and is spelled t*t*3 - t*t*t*2 in float. Exactly this
+                // makes every edge of scsw_dc_listen (Listen plays the trigger, single
+                // band) bit-exact; a position k/length computed afresh each sample is
+                // up to 30 ulps off mid-ramp (a ~3.6e-7 bump: the accumulated rounding
+                // of the step), t*t*(3-2t) or double arithmetic 1..2 ulps.
+                const float t = sidechainFade_;
+                toward = t * t * 3.0f - t * t * t * 2.0f;
+                sidechainFade_ = sidechainOn_ ? t + sidechainStep_ : t - sidechainStep_;
                 ++sidechainRamp_;
             }
             for (int c = 0; c < 2; ++c) {
                 const float dry = scDry_ * x[c];
-                const float boosted = scGain_ * s[c];
-                const float wet = scWet_ * boosted;
+                const float wet = scWetGain_ * s[c];
                 float mixed = dry + wet;
                 if (ramping) {
                     const float main = (1.0f - toward) * x[c];
@@ -759,11 +811,12 @@ void MultibandDynamics::process(const float *inL, const float *inR, float *outL,
                 const float coef = d > env ? attack_[bi] : release_[bi];
                 const float kept = coef * env;
                 const float taken = (1.0f - coef) * d;
-                // While Listen plays, the detectors hold still: after S/C goes off from
-                // Listen, Live's high band is uncompressed (0.0000 dB) although the
-                // trigger had driven it to -8.4 dB (lis_scon_1_2s).
-                if (!listen)
-                    env = kept + taken;
+                // The detectors run on while Listen plays; no render can show otherwise,
+                // since Live cannot automate Listen (SideListen has no automation target),
+                // so a render listens from start to end or not at all. (lis_scon_1_2s,
+                // once read as detectors frozen in Listen, is Listen playing the main
+                // input after S/C Off.)
+                env = kept + taken;
                 // The level in log2 units, of the amplitude in both modes (an RMS
                 // detector holds a mean square; sqrtf instead breaks 62 probes), the gain
                 // back through 2^x. The band output gain multiplies last,
@@ -781,12 +834,13 @@ void MultibandDynamics::process(const float *inL, const float *inR, float *outL,
             for (int c = 0; c < 2; ++c)
                 out[c][k] = sum[c];
         }
-        // Listen and the normal output share one downsampler: Live switches what it
-        // is fed at the oversampled rate, so leaving Listen continues smoothly from
-        // the listened signal (two downsamplers: a -24 dB click, lis_scon_1_2s). The
-        // master gain multiplies at the host rate, after the downsampler, in Listen as
-        // well: bit-exact in out_global_6, fine_out_global_-2.9 and
-        // lis_3b_outMid12_master6; applied before downsampling, 47 000 to 320 000
+        // One downsampler: what it is fed switches at the oversampled rate, in Listen
+        // between the main input's bands and the sidechain path's (scsw_dc_listen is
+        // bit-exact across every S/C edge only so). Listen and the normal output share
+        // it too, which no render can tell from two (Listen is never switched in one,
+        // see above). The master gain multiplies at the host rate, after the
+        // downsampler, in Listen as well: bit-exact in out_global_6, fine_out_global_-2.9
+        // and lis_3b_outMid12_master6; applied before downsampling, 47 000 to 320 000
         // samples differ by an ulp.
         const auto &fed = listen ? heard : out;
         outL[i] = down_[0].step(fed[0][0], fed[0][1]) * master_;

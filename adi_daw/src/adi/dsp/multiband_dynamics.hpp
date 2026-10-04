@@ -68,12 +68,19 @@ class MultibandDynamics {
     MultibandDynamics();
     void prepare(double sampleRate);
     void reset() noexcept;
-    // For the host's device On switch. Live bypasses a switched-off device by not
-    // processing it (state frozen) after a 48-sample raised-cosine wet->dry fade, and
-    // on switching back on clears the detectors and the crossover filters but keeps
-    // the 2x resampler state, then fades dry->wet over 48 samples (auto_devon_dyn
-    // -154 dB, auto_devon_3b -120 dB). Call this before the first process() after
-    // the device was off.
+    // For the host's device On switch, which Live handles outside the device
+    // (devsw_sine at 44.1, 48 and 96 kHz, devsw_dc_short, auto_devon_*). A switch
+    // crossfades from its own sample over 1 ms in whole samples (44, 48, 96):
+    // out = g*wet + (1 - g)*dry in float, g = 0.5*(1 + cos(pi*k/length)) rounded to
+    // float towards Off, 1 minus that towards On (an ulp or two off Live on a fifth of
+    // the fade samples). The device runs through a fade; after a fade to Off it is not
+    // processed at all (its state freezes) and the output is the dry input. A switch
+    // that comes during a fade waits for its end, then the fade back starts at once.
+    // Switching On after at least one skipped sample, call this before the next
+    // process(): it puts the detectors back to their start and clears the crossover
+    // filters but keeps the 2x resampler state (exact on a sine after 1 s off; keeping
+    // the detectors or clearing the resampler is not). With no sample skipped there is
+    // no call (devsw_dc_short is back fully compressed at once).
     void resumeAfterBypass() noexcept;
     void set(Param, double) noexcept;
     [[nodiscard]] double get(Param p) const noexcept { return value_[p]; }
@@ -168,18 +175,17 @@ class MultibandDynamics {
     std::size_t smoothing_ = 94, activeSmoothers_ = 0;
     int redesignCountdown_ = 0;
     // Switching S/C On moves the detector's trigger between the main input and the
-    // sidechain mix along a smoothstep (3t^2 - 2t^3) over 72 samples, starting at the
-    // switch (auto_scon_3b: both edges null at the -105 dB floor of the static-curve
-    // model; 70 or 74 samples, a raised cosine, a linear or an equal-power ramp all
-    // leave -60..-88 dB). Samples since it last moved (settled at the ramp length) and
-    // the state process() last saw.
-    static constexpr int kSidechainRamp = 72;
-    int sidechainRamp_ = kSidechainRamp;
+    // sidechain mix along a smoothstep over 1.5 ms (see process()): the ramp's length
+    // in samples, the samples it has run (== the length when settled), its float
+    // position and step, and the state it is heading for.
+    int sidechainRampLength_ = 72;
+    int sidechainRamp_ = 72;
+    float sidechainFade_ = 0, sidechainStep_ = 1.0f / 72.0f;
     bool sidechainOn_ = false;
     // derived, refreshed when a parameter moves
     std::array<float, 3> inGain_{}, outGain_{};
     std::array<float, 3> aboveT_{}, aboveR_{}, belowT_{}, belowR_{}; // T in log2 units
     std::array<float, 3> attack_{}, release_{};
-    float master_ = 1, scGain_ = 1, scDry_ = 0, scWet_ = 1;
+    float master_ = 1, scGain_ = 1, scDry_ = 0, scWet_ = 1, scWetGain_ = 1;
 };
 } // namespace adi::dsp
