@@ -144,6 +144,8 @@ class MultibandDynamics {
     static float staticGainLog2(float level, float aboveThreshold, float aboveRatio,
                                 float belowThreshold, float belowRatio, bool knee) noexcept;
     static double envelopeCoefficient(double ms, double rate) noexcept;
+    // A gain knob in dB (band input and output gains, Master) as the factor Live applies.
+    static float knobGain(double db) noexcept;
 
   private:
     // Live softens every parameter jump with a short S-curve (a triangle kernel,

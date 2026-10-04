@@ -93,6 +93,140 @@ const std::array<double, 7> k_n_neutral{-0.015994, -0.015803, -0.001327, -0.0009
 const std::array<double, 7> k_x1000_8000_soloLow{-0.000317, -0.002122, -0.527485, -6.023348, -32.119376, -56.231647, -81.260439};
 const std::array<double, 7> k_x1000_8000_soloMid{-104.004670, -73.658445, -24.620125, -6.027311, -0.297221, -1.187124, -11.072846};
 const std::array<double, 7> k_x1000_8000_soloHigh{-128.411800, -127.717585, -97.110802, -73.056695, -41.217503, -17.995622, -2.851559};
+// mbd_a/n_neutral.wav: Live's response to a 0.5 impulse, 64 samples
+const std::array<float, 64> kLiveNeutral3Band{
+    0x1.3fcb38p-13f, 0x1.11bffep-7f, 0x1.0d30e4p-4f, 0x1.efcb1ep-4f,
+    -0x1.c0e2d8p-4f, -0x1.3ee328p-2f, 0x1.15ba08p-4f, 0x1.e871b8p-4f,
+    -0x1.e587bcp-6f, 0x1.98e57ap-3f, 0x1.6a46ap-6f, 0x1.9f7e18p-4f,
+    0x1.37277cp-4f, 0x1.069598p-8f, 0x1.5a9d6p-4f, -0x1.805fd2p-5f,
+    0x1.fae7ap-5f, -0x1.e0d744p-5f, 0x1.d9467p-6f, -0x1.8dc304p-5f,
+    -0x1.60b5ep-10f, -0x1.efc618p-6f, -0x1.852244p-6f, -0x1.8b819p-7f,
+    -0x1.35f44cp-5f, 0x1.15c6a4p-9f, -0x1.70acb8p-5f, 0x1.6ecd0ep-7f,
+    -0x1.81ae0cp-5f, 0x1.fd3dap-7f, -0x1.764ddep-5f, 0x1.092bccp-6f,
+    -0x1.58e5bp-5f, 0x1.d3dfap-7f, -0x1.3100f4p-5f, 0x1.635a28p-7f,
+    -0x1.03f8d8p-5f, 0x1.b5b948p-8f, -0x1.ab1344p-6f, 0x1.33482p-9f,
+    -0x1.5084acp-6f, -0x1.d7011p-10f, -0x1.f74982p-7f, -0x1.6a979cp-8f,
+    -0x1.5d0248p-7f, -0x1.1f0022p-7f, -0x1.a8a224p-8f, -0x1.76d798p-7f,
+    -0x1.776e24p-9f, -0x1.bd187p-7f, 0x1.b096p-13f, -0x1.f2daccp-7f,
+    0x1.6a6e0cp-9f, -0x1.0cd23p-6f, 0x1.3e5412p-8f, -0x1.19951ep-6f,
+    0x1.ac31ap-8f, -0x1.20951ap-6f, 0x1.011ddp-7f, -0x1.22a9ap-6f,
+    0x1.21e16ep-7f, -0x1.209c34p-6f, 0x1.39eeap-7f, -0x1.1b24fep-6f,
+};
+// mbd_b/x30_300_soloLow.wav: Live's response to a 0.5 impulse, 64 samples
+const std::array<float, 64> kLiveLow30Hz{
+    0x1.8b4edp-53f, 0x1.14fd9cp-45f, 0x1.003656p-40f, 0x1.750528p-37f,
+    0x1.1e1fcap-34f, 0x1.1028c4p-32f, 0x1.6b9668p-31f, 0x1.7d06a6p-30f,
+    0x1.55dc58p-29f, 0x1.14aa62p-28f, 0x1.9f98f2p-28f, 0x1.2737c2p-27f,
+    0x1.919d44p-27f, 0x1.07dc24p-26f, 0x1.5107fap-26f, 0x1.a4700cp-26f,
+    0x1.010fa6p-25f, 0x1.35005cp-25f, 0x1.6df77p-25f, 0x1.abd5ecp-25f,
+    0x1.ee755cp-25f, 0x1.1ad33ep-24f, 0x1.4099ap-24f, 0x1.686ff8p-24f,
+    0x1.92355ap-24f, 0x1.bdc744p-24f, 0x1.eb00c4p-24f, 0x1.0cde2p-23f,
+    0x1.24e91cp-23f, 0x1.3d8db8p-23f, 0x1.56b7aep-23f, 0x1.7053p-23f,
+    0x1.8a4b66p-23f, 0x1.a48d24p-23f, 0x1.bf04bp-23f, 0x1.d99f26p-23f,
+    0x1.f449d4p-23f, 0x1.077974p-22f, 0x1.14c492p-22f, 0x1.21fe48p-22f,
+    0x1.2f1ed2p-22f, 0x1.3c1f04p-22f, 0x1.48f844p-22f, 0x1.55a48p-22f,
+    0x1.621dcep-22f, 0x1.6e5f84p-22f, 0x1.7a656p-22f, 0x1.862b8cp-22f,
+    0x1.91aef8p-22f, 0x1.9ced26p-22f, 0x1.a7e478p-22f, 0x1.b293ecp-22f,
+    0x1.bcfb38p-22f, 0x1.c71abep-22f, 0x1.d0f38ep-22f, 0x1.da874ap-22f,
+    0x1.e3d8aap-22f, 0x1.ecebp-22f, 0x1.f5c1a8p-22f, 0x1.fe6128p-22f,
+    0x1.036776p-21f, 0x1.07888p-21f, 0x1.0b96fap-21f, 0x1.0f9694p-21f,
+};
+// mbd_dsr96/sr96_neutral.wav: Live's response to a 0.5 impulse, 32 samples
+const std::array<float, 32> kLiveNeutral96k{
+    0x1.6905e2p-13f, 0x1.44d5a8p-7f, 0x1.5b8b6ap-4f, 0x1.96acecp-3f,
+    -0x1.82928p-9f, -0x1.4d9f5ap-2f, -0x1.ac87ap-5f, 0x1.d72fc2p-6f,
+    -0x1.2c8c44p-3f, 0x1.7d10bcp-4f, -0x1.66e0bcp-5f, 0x1.1deb84p-5f,
+    0x1.ea499cp-5f, -0x1.129d64p-7f, 0x1.af66f2p-4f, -0x1.09d218p-6f,
+    0x1.ab5b9cp-4f, -0x1.c24ap-9f, 0x1.47ab02p-4f, 0x1.e2ca58p-7f,
+    0x1.91f21cp-5f, 0x1.e79a9p-6f, 0x1.50ae74p-6f, 0x1.3c5c18p-5f,
+    -0x1.ea4998p-10f, 0x1.52ba6p-5f, -0x1.1e564ep-6f, 0x1.41daacp-5f,
+    -0x1.b994c4p-6f, 0x1.170a54p-5f, -0x1.01fc7cp-5f, 0x1.bc3984p-6f,
+};
+// mbd_d/coef_rel5000_pk: DC -6 dB for 1 s then -80 dB; Live's output 10, 100, 1000 and 4000 ms after the drop
+const std::array<float, 4> kLiveRelease5000{0x1.d96626p-20f, 0x1.9f80bap-20f, 0x1.dc1c44p-19f, 0x1.9bbc58p-15f};
+// mbd_d/init_lead0.05_up_pk: 50 ms of silence then DC -60 dB; Live's output 1, 10, 100 and 500 ms after the DC starts
+const std::array<float, 4> kLiveInitUpward{0x1.cbe1p-9f, 0x1.ce224p-9f, 0x1.0b23bp-8f, 0x1.ea11ecp-8f};
+
+// Live's clip declick at 48 kHz, measured: the first 192 gains of every clip (not the device)
+const std::array<float, 192> kLiveClipFade{
+    0.0f, 0x1.2f684ep-9f, 0x1.2f684ep-8f, 0x1.c71c74p-8f,
+    0x1.2f684ep-7f, 0x1.7b4262p-7f, 0x1.c71c74p-7f, 0x1.097b44p-6f,
+    0x1.2f684ep-6f, 0x1.555558p-6f, 0x1.7b4262p-6f, 0x1.a12f6cp-6f,
+    0x1.c71c74p-6f, 0x1.ed097ep-6f, 0x1.097b44p-5f, 0x1.1c71cap-5f,
+    0x1.2f684ep-5f, 0x1.425ed2p-5f, 0x1.555558p-5f, 0x1.684bdcp-5f,
+    0x1.7b4262p-5f, 0x1.8e38e6p-5f, 0x1.a12f6cp-5f, 0x1.b425fp-5f,
+    0x1.c71c74p-5f, 0x1.da12fap-5f, 0x1.ed097ep-5f, 0x1.000002p-4f,
+    0x1.097b44p-4f, 0x1.12f686p-4f, 0x1.1c71cap-4f, 0x1.25ed0cp-4f,
+    0x1.2f684ep-4f, 0x1.471c74p-4f, 0x1.5ed09ap-4f, 0x1.7684cp-4f,
+    0x1.8e38e6p-4f, 0x1.a5ed0cp-4f, 0x1.bda132p-4f, 0x1.d55558p-4f,
+    0x1.ed097ep-4f, 0x1.025ed2p-3f, 0x1.0e38e6p-3f, 0x1.1a12f8p-3f,
+    0x1.25ed0cp-3f, 0x1.31c71ep-3f, 0x1.3da132p-3f, 0x1.497b44p-3f,
+    0x1.555558p-3f, 0x1.612f6ap-3f, 0x1.6d097ep-3f, 0x1.78e39p-3f,
+    0x1.84bda4p-3f, 0x1.9097b6p-3f, 0x1.9c71cap-3f, 0x1.a84bdcp-3f,
+    0x1.b425fp-3f, 0x1.c00002p-3f, 0x1.cbda16p-3f, 0x1.d7b428p-3f,
+    0x1.e38e3cp-3f, 0x1.ef684ep-3f, 0x1.fb4262p-3f, 0x1.038e3ap-2f,
+    0x1.097b44p-2f, 0x1.112f6ap-2f, 0x1.18e39p-2f, 0x1.2097b6p-2f,
+    0x1.284bdcp-2f, 0x1.300002p-2f, 0x1.37b428p-2f, 0x1.3f684ep-2f,
+    0x1.471c74p-2f, 0x1.4ed098p-2f, 0x1.5684bep-2f, 0x1.5e38e4p-2f,
+    0x1.65ed0ap-2f, 0x1.6da13p-2f, 0x1.755556p-2f, 0x1.7d097cp-2f,
+    0x1.84bda2p-2f, 0x1.8c71c8p-2f, 0x1.9425eep-2f, 0x1.9bda14p-2f,
+    0x1.a38e3ap-2f, 0x1.ab426p-2f, 0x1.b2f686p-2f, 0x1.baaaacp-2f,
+    0x1.c25edp-2f, 0x1.ca12f6p-2f, 0x1.d1c71cp-2f, 0x1.d97b42p-2f,
+    0x1.e12f68p-2f, 0x1.e8e38ep-2f, 0x1.f097b4p-2f, 0x1.f84bdap-2f,
+    0x1.p-1f, 0x1.03da14p-1f, 0x1.07b426p-1f, 0x1.0b8e38p-1f,
+    0x1.0f684cp-1f, 0x1.13426p-1f, 0x1.171c72p-1f, 0x1.1af684p-1f,
+    0x1.1ed098p-1f, 0x1.22aaacp-1f, 0x1.2684bep-1f, 0x1.2a5edp-1f,
+    0x1.2e38e4p-1f, 0x1.3212f8p-1f, 0x1.35ed0ap-1f, 0x1.39c71cp-1f,
+    0x1.3da13p-1f, 0x1.417b44p-1f, 0x1.455556p-1f, 0x1.492f68p-1f,
+    0x1.4d097cp-1f, 0x1.50e39p-1f, 0x1.54bda2p-1f, 0x1.5897b4p-1f,
+    0x1.5c71c8p-1f, 0x1.604bdcp-1f, 0x1.6425eep-1f, 0x1.68p-1f,
+    0x1.6bda14p-1f, 0x1.6fb428p-1f, 0x1.738e3ap-1f, 0x1.77684cp-1f,
+    0x1.7b426p-1f, 0x1.7e38e4p-1f, 0x1.812f6ap-1f, 0x1.8425eep-1f,
+    0x1.871c72p-1f, 0x1.8a12f8p-1f, 0x1.8d097cp-1f, 0x1.9p-1f,
+    0x1.92f686p-1f, 0x1.95ed0ap-1f, 0x1.98e38ep-1f, 0x1.9bda14p-1f,
+    0x1.9ed098p-1f, 0x1.a1c71cp-1f, 0x1.a4bda2p-1f, 0x1.a7b426p-1f,
+    0x1.aaaaacp-1f, 0x1.ada13p-1f, 0x1.b097b4p-1f, 0x1.b38e3ap-1f,
+    0x1.b684bep-1f, 0x1.b97b42p-1f, 0x1.bc71c8p-1f, 0x1.bf684cp-1f,
+    0x1.c25edp-1f, 0x1.c55556p-1f, 0x1.c84bdap-1f, 0x1.cb425ep-1f,
+    0x1.ce38e4p-1f, 0x1.d12f68p-1f, 0x1.d425ecp-1f, 0x1.d71c72p-1f,
+    0x1.da12f6p-1f, 0x1.db425ep-1f, 0x1.dc71c6p-1f, 0x1.dda12ep-1f,
+    0x1.ded098p-1f, 0x1.ep-1f, 0x1.e12f68p-1f, 0x1.e25edp-1f,
+    0x1.e38e38p-1f, 0x1.e4bdap-1f, 0x1.e5ed0ap-1f, 0x1.e71c72p-1f,
+    0x1.e84bdap-1f, 0x1.e97b42p-1f, 0x1.eaaaaap-1f, 0x1.ebda12p-1f,
+    0x1.ed097cp-1f, 0x1.ee38e4p-1f, 0x1.ef684cp-1f, 0x1.f097b4p-1f,
+    0x1.f1c71cp-1f, 0x1.f2f684p-1f, 0x1.f425ecp-1f, 0x1.f55556p-1f,
+    0x1.f684bep-1f, 0x1.f7b426p-1f, 0x1.f8e38ep-1f, 0x1.fa12f6p-1f,
+    0x1.fb425ep-1f, 0x1.fc71c8p-1f, 0x1.fda13p-1f, 0x1.fed098p-1f,
+};
+
+// mbd_a/st_above-20_r-0.75_peak_knee.wav: Live's output mid-stair at -28, -24, -20, -16 dB
+const std::array<float, 4> kLiveKneeStairs{0x1.43534p-5f, 0x1.de416cp-5f, 0x1.49ffe8p-4f, 0x1.a92acp-4f};
+// mbd_a/st_above-20_r-0.75_rms.wav: Live's output mid-stair at -16, -8, 0, 6 dB
+const std::array<float, 4> kLiveRmsStairs{0x1.cb82ccp-4f, 0x1.2124e4p-3f, 0x1.6c190cp-3f, 0x1.b0cd28p-3f};
+
+#if defined(__APPLE__)
+// Live's reference renders were made on macOS. The crossovers, gain knobs and frequency
+// mapping go through the platform's float sinf, cosf, powf, log10f and log2f, as Live's
+// own do, so there they agree to the bit. A libm that rounds one of those an ulp the
+// other way moves a low-frequency biquad (Live on Windows differs the same way), so
+// elsewhere the same checks run against a tolerance.
+constexpr bool kLiveLibm = true;
+#else
+constexpr bool kLiveLibm = false;
+#endif
+template <std::size_t N>
+bool sameAsLive(const std::vector<float> &got, const std::array<float, N> &want, double elsewhere) {
+    for (std::size_t i = 0; i < N; ++i) {
+        const double d = std::abs(static_cast<double>(got[i]) - want[i]);
+        if (kLiveLibm ? got[i] != want[i] : d > elsewhere) {
+            std::printf("     sample %zu: got %a want %a\n", i, static_cast<double>(got[i]),
+                        static_cast<double>(want[i]));
+            return false;
+        }
+    }
+    return true;
+}
+
 // The probes' baseline: every band active and neutral, RMS, hard knee, 10/100 ms.
 void neutral(MD &m) {
     m.set(MD::SoftKnee, 0);
@@ -506,6 +640,242 @@ void engineering() {
     check(clamp.get(MD::AttackLow) == 5000 && clamp.get(MD::LowMidCrossover) == 120,
           "values clamp to Live's ranges and NaN is ignored");
 }
+
+// Live's crossover network to the bit: RBJ sections in float, direct form I, splits held
+// as float log10, one biquad allpass per outer band, the mid band scaled.
+void liveNetwork() {
+    const auto impulse = [](double rate, std::size_t n, void (*setup)(MD &)) {
+        MD m;
+        neutral(m);
+        setup(m);
+        m.prepare(rate);
+        std::vector<float> x(n);
+        x[0] = 0.5f;
+        return render(m, mono(x)).l;
+    };
+    check(sameAsLive(impulse(48000, 256, [](MD &) {}), kLiveNeutral3Band, 2e-6),
+          "three-band neutral impulse response is Live's");
+    check(sameAsLive(impulse(48000, 256, [](MD &m) {
+              m.set(MD::LowMidCrossover, 30), m.set(MD::MidHighCrossover, 300), m.set(MD::SoloLow, 1);
+          }),
+          kLiveLow30Hz, 2e-6),
+          "30 Hz low band, Live's float artefacts included");
+    check(sameAsLive(impulse(96000, 256, [](MD &) {}), kLiveNeutral96k, 2e-6),
+          "three-band neutral at 96 kHz (192 kHz inside) is Live's");
+}
+
+void knobs() {
+    struct Knob {
+        double db;
+        float live;
+        const char *what;
+    } knobs[] = {{11.42, 0x1.dca954p+1f, "input gain 11.42 dB (mbd_gain): powf(10, dB*0.05f)"},
+                 {5.87, 0x1.f733p+0f, "output gain 5.87 dB (mbd_gain)"},
+                 {-2.13, 0x1.90a788p-1f, "master -2.13 dB (mbd_gain)"}};
+    for (const auto &k : knobs) {
+        const float got = MD::knobGain(k.db);
+        check(kLiveLibm ? got == k.live : std::abs(got / k.live - 1) < 3e-7, k.what);
+        if (kLiveLibm && got != k.live)
+            std::printf("     got %a want %a\n", static_cast<double>(got), static_cast<double>(k.live));
+    }
+}
+
+// Single band, Listen on, S/C on: what the detector hears plays, through the resampler.
+std::vector<float> listened(void (*setup)(MD &), double main, double side, std::size_t n = 9600) {
+    MD m;
+    neutral(m);
+    m.set(MD::LowBandOn, 0), m.set(MD::HighBandOn, 0);
+    m.set(MD::SidechainOn, 1), m.set(MD::SidechainListen, 1);
+    setup(m);
+    m.prepare(48000);
+    const Stereo sc = mono(std::vector<float>(n, static_cast<float>(side)));
+    return render(m, mono(std::vector<float>(n, static_cast<float>(main))), 64, &sc).l;
+}
+void sidechainLaw() {
+    // Mix 99.9 %: the dry share is sqrtf(1 - wet^2), not cos -- Live measured 0.00158221
+    // where the equal-power cos would be 0.00157080 (mbd_rt rt_mix0.999)
+    const double resampler = 0.9999974; // the HIIR chain's own DC gain, measured
+    const auto y = listened([](MD &m) { m.set(MD::SidechainMix, 99.9); }, 0.5, 0.0);
+    near(y.back() / (0.5 * resampler), 0.00158221, 2e-8, "S/C mix: dry = sqrtf(1 - wet^2) (Live 0.00158221)");
+    // the -70 dB end is off: -69.9 dB is silent in Live, -69.5 dB is not
+    check(listened([](MD &m) { m.set(MD::SidechainGain, -69.8); }, 0.0, 0.5).back() == 0,
+          "S/C gain just above -70 dB is off (Live: silent at -69.9 dB)");
+    check(listened([](MD &m) { m.set(MD::SidechainGain, -69.5); }, 0.0, 0.5).back() > 0,
+          "S/C gain at -69.5 dB is on");
+    // Listen plays whenever it is on: with S/C off, the main input's bands, uncompressed
+    // (mbd_rt rt_scoff_listen_single: Live's output there is not the normal output)
+    MD q;
+    neutral(q);
+    q.set(MD::LowBandOn, 0), q.set(MD::HighBandOn, 0), q.set(MD::PeakMode, 1);
+    q.set(MD::AboveThresholdMid, -40), q.set(MD::AboveRatioMid, -1), q.set(MD::SidechainListen, 1);
+    q.prepare(48000);
+    const auto heard = render(q, mono(dc(9600, -12))).l;
+    near(db(heard.back()) + 12, 0, 1e-3, "Listen with S/C off plays the main, uncompressed");
+}
+
+// S/C On moves the trigger from the main to the sidechain over 1.5 ms of smoothstep:
+// 72 samples at 48 kHz, 66 at 44.1 (mbd_audit scsw_dc_listen, sr44/sr96 variants).
+void sidechainRamp() {
+    for (double rate : {48000.0, 44100.0}) {
+        MD m;
+        neutral(m);
+        m.set(MD::LowBandOn, 0), m.set(MD::HighBandOn, 0), m.set(MD::SidechainListen, 1);
+        m.prepare(rate);
+        const std::size_t n = 4096;
+        std::vector<float> main(n, 0.25f), side(n, 0.02f), out(n), outR(n);
+        m.process(main.data(), main.data(), out.data(), outR.data(), 2048, side.data(), side.data());
+        m.set(MD::SidechainOn, 1);
+        m.process(main.data() + 2048, main.data() + 2048, out.data() + 2048, outR.data() + 2048,
+                  n - 2048, side.data() + 2048, side.data() + 2048);
+        // the expected trigger, run through the same resampler
+        const auto length = static_cast<std::size_t>(std::lround(rate * 0.0015));
+        // Listen played the main through its own upsampler until the switch; from the
+        // switch on it plays the sidechain path, whose upsampler starts cold (Live: the
+        // ringing at the first switch-on is reproduced to the bit, scsw_dc_listen)
+        MD::HalfbandUp mainUp, scUp;
+        MD::HalfbandDown down;
+        for (std::size_t i = 0; i < 4; ++i) {
+            mainUp.even.c[i] = scUp.even.c[i] = down.even.c[i] = MD::kHalfbandCoefficients[2 * i];
+            mainUp.odd.c[i] = scUp.odd.c[i] = down.odd.c[i] = MD::kHalfbandCoefficients[2 * i + 1];
+        }
+        double worst = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            double s = 0;
+            if (i >= 2048) {
+                const double t = std::min(1.0, static_cast<double>(i - 2048) / static_cast<double>(length));
+                s = t * t * (3 - 2 * t);
+            }
+            const auto trigger = static_cast<float>((1 - s) * 0.25 + s * 0.02);
+            float a, b;
+            (i < 2048 ? mainUp : scUp).step(trigger, a, b);
+            const float want = down.step(a, b);
+            worst = std::max(worst, std::abs(static_cast<double>(out[i]) - want));
+        }
+        check(worst < 2e-6, rate == 48000 ? "S/C On ramp: 72-sample smoothstep at 48 kHz"
+                                          : "S/C On ramp: 66 samples at 44.1 kHz (1.5 ms)");
+        if (worst >= 2e-6)
+            std::printf("     worst %.3g\n", worst);
+    }
+}
+
+// Flipping Peak/RMS mid-stream carries the envelope over: Live's output does not move
+// (mbd_d auto_rms_to_peak / auto_peak_to_rms, mbd_audit pksw_*).
+void peakRmsSwitch() {
+    MD m;
+    neutral(m);
+    m.set(MD::LowBandOn, 0), m.set(MD::HighBandOn, 0), m.set(MD::PeakMode, 1);
+    m.set(MD::AboveThresholdMid, -32), m.set(MD::AboveRatioMid, -1);
+    m.prepare(48000);
+    const auto x = dc(24000, -12);
+    std::vector<float> a(24000), ar(24000), b(24000), br(24000);
+    m.process(x.data(), x.data(), a.data(), ar.data(), 24000);
+    m.set(MD::PeakMode, 0);
+    m.process(x.data(), x.data(), b.data(), br.data(), 24000);
+    // the oversampled pair alternates two values; the switch continues the pair as is
+    check(b[0] == a[a.size() - 2] && b[1] == a.back(),
+          "Peak -> RMS keeps the gain (the envelope is squared, not restarted)");
+}
+
+// The detector starts at 0.01 in its own units and updates as c*env + (1-c)*d with
+// c*env rounded on its own: Live's samples from battery D.
+void detectorState() {
+    {
+        MD m;
+        neutral(m);
+        m.set(MD::LowBandOn, 0), m.set(MD::HighBandOn, 0), m.set(MD::PeakMode, 1);
+        m.set(MD::BelowThresholdMid, -30), m.set(MD::BelowRatioMid, 1);
+        m.set(MD::AttackMid, 1), m.set(MD::ReleaseMid, 5000);
+        m.prepare(48000);
+        std::vector<float> x(48000, 0.0f);
+        std::fill(x.begin() + 2400, x.end(), static_cast<float>(std::pow(10.0, -60 / 20.0)));
+        const auto y = render(m, mono(x)).l;
+        const std::array<std::size_t, 4> at{2400 + 48, 2400 + 480, 2400 + 4800, 2400 + 24000};
+        std::vector<float> got;
+        for (auto i : at)
+            got.push_back(y[i]);
+        check(sameAsLive(got, kLiveInitUpward, 1e-8), "envelope starts at 0.01 (Live, init_lead0.05_up_pk)");
+    }
+    {
+        MD m;
+        neutral(m);
+        m.set(MD::LowBandOn, 0), m.set(MD::HighBandOn, 0), m.set(MD::PeakMode, 1);
+        m.set(MD::AboveThresholdMid, -80), m.set(MD::AboveRatioMid, -0.5);
+        m.set(MD::AttackMid, 0.1), m.set(MD::ReleaseMid, 5000);
+        m.prepare(48000);
+        std::vector<float> x(48000 * 6, static_cast<float>(std::pow(10.0, -80 / 20.0)));
+        std::fill(x.begin(), x.begin() + 48000, static_cast<float>(std::pow(10.0, -6 / 20.0)));
+        // as Live played it: a 5 s release creeps a few ulps a step, so even the clip's
+        // 4 ms fade-in a second earlier decides the path (1.5 % apart without it)
+        for (std::size_t i = 0; i < kLiveClipFade.size(); ++i)
+            x[i] *= kLiveClipFade[i];
+        const auto y = render(m, mono(x)).l;
+        const std::array<std::size_t, 4> at{48000 + 480, 48000 + 4800, 48000 + 48000, 48000 + 192000};
+        std::vector<float> got;
+        for (auto i : at)
+            got.push_back(y[i]);
+        check(sameAsLive(got, kLiveRelease5000, 1e-9), "5 s release, Live's rounding (coef_rel5000_pk)");
+    }
+}
+
+// Bit-level static curve: DC stairs (100 ms lead, 150 ms per 2 dB from -84), peak/RMS,
+// 0.1 ms times, 4:1 above -20 dB; Live's own output mid-stair.
+std::vector<float> stairsAt(bool peak, bool knee, std::initializer_list<double> levels) {
+    std::vector<float> x(4800 + 46 * 7200);
+    for (int i = 0; i < 46; ++i)
+        std::fill(x.begin() + 4800 + i * 7200, x.begin() + 4800 + (i + 1) * 7200,
+                  static_cast<float>(std::pow(10.0, (-84 + 2 * i) / 20.0)));
+    MD m;
+    neutral(m);
+    m.set(MD::LowBandOn, 0), m.set(MD::HighBandOn, 0), m.set(MD::PeakMode, peak ? 1 : 0);
+    m.set(MD::SoftKnee, knee ? 1 : 0), m.set(MD::AttackMid, 0.1), m.set(MD::ReleaseMid, 0.1);
+    m.set(MD::AboveThresholdMid, -20), m.set(MD::AboveRatioMid, -0.75);
+    m.prepare(48000);
+    const auto y = render(m, mono(x)).l;
+    std::vector<float> got;
+    for (double level : levels)
+        got.push_back(y[4800 + static_cast<std::size_t>(std::lround((level + 84) / 2)) * 7200 + 3600]);
+    return got;
+}
+void gainComputerBits() {
+    check(sameAsLive(stairsAt(true, true, {-28, -24, -20, -16}), kLiveKneeStairs, 1e-9),
+          "soft knee to the bit (st_above-20_r-0.75_peak_knee)");
+    check(sameAsLive(stairsAt(false, false, {-16, -8, 0, 6}), kLiveRmsStairs, 1e-9),
+          "RMS level through Live's rsqrt/recip estimates (st_above-20_r-0.75_rms)");
+    // the mid band's scale at 2161/2848 Hz: the g that nulls mbd_f g_2161_2848_soloMid
+    MD::BandSplit split;
+    split.design(2161, 2848, 96000);
+    check(kLiveLibm ? split.midGain == 0x1.55a39cp-1f : std::abs(split.midGain / 0x1.55a39cp-1f - 1) < 3e-7,
+          "mid band gain 1 - 10^(-24 dB/oct * octaves * 0.05f) (g_2161_2848_soloMid)");
+}
+
+void silenceAndDenormals() {
+    // Live renders with denormals flushed: none of its outputs holds a subnormal, and a
+    // 30 Hz low band's decaying tail goes to exact zero (x30_soloLow_imp1e-6)
+    MD m;
+    neutral(m);
+    m.set(MD::LowMidCrossover, 30), m.set(MD::MidHighCrossover, 300), m.set(MD::SoloLow, 1);
+    m.prepare(48000);
+    std::vector<float> x(48000 * 4);
+    x[0] = 1e-30f;
+    const auto y = render(m, mono(x)).l;
+    bool subnormal = false;
+    for (float v : y)
+        subnormal |= std::fpclassify(v) == FP_SUBNORMAL;
+    check(!subnormal && y.back() == 0, "denormals flushed: a 30 Hz tail ends in exact zero");
+    // Listen with every band inactive plays nothing at all (lis_3b_inactAll: exactly 0)
+    MD q;
+    neutral(q);
+    q.set(MD::ActiveLow, 0), q.set(MD::ActiveMid, 0), q.set(MD::ActiveHigh, 0);
+    q.set(MD::SidechainOn, 1), q.set(MD::SidechainListen, 1);
+    q.prepare(48000);
+    std::vector<float> noise(9600);
+    for (std::size_t i = 0; i < noise.size(); ++i)
+        noise[i] = static_cast<float>(std::sin(static_cast<double>(i) * 0.37) * 0.3);
+    const Stereo sc = mono(noise);
+    const auto heard = render(q, mono(noise), 64, &sc).l;
+    check(std::all_of(heard.begin(), heard.end(), [](float v) { return v == 0; }),
+          "Listen with every band inactive is silent");
+}
 } // namespace
 int main() {
     resampler();
@@ -516,6 +886,14 @@ int main() {
     sidechain();
     routing();
     engineering();
+    liveNetwork();
+    knobs();
+    sidechainLaw();
+    sidechainRamp();
+    peakRmsSwitch();
+    detectorState();
+    gainComputerBits();
+    silenceAndDenormals();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

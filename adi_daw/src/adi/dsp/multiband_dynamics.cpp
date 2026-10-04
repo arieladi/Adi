@@ -129,23 +129,6 @@ constexpr std::array<Range, P::Count> kRange{{{30, 3000},     {300, 15000},  {0,
                                              {0, 100},       {0, 1},        {0, 1},
                                              {0, 1},         {0, 1},        {0, 1},
                                              {0, 1}}};
-// Live's gain knobs (band input and output gains, master) are powf(10, dB*0.05f):
-// the float dB times the float 0.05, rounded, then the platform's powf (macOS libm,
-// which is not correctly rounded). Each half is pinned: all 15 input gains of battery
-// mbd_rt (rt_in-24 .. rt_in24) and all 10 masters (rt_master-24 .. rt_master24) are
-// bit-exact in Listen with the product dB*0.05f (dB/20f fails -18, 9 and 18 dB, one or
-// two ulps), and with powf rather than the double pow for the plain gains of mbd_gain
-// (output 5.87 dB = 0x1.f733p+0, master -2.13 dB = 0x1.90a788p-1: double pow lands one
-// ulp high on both); input 11.42 dB = 0x1.dca954p+1 needs the product (dB/20f with
-// either pow gives ...94e or ...950). The S/C gain is no such knob: Live stores it as
-// a linear factor (the set's sidechain Volume, ranging from this formula's -70 dB to
-// its 24 dB, 15.8489332) and multiplies by a float within two ulps of it, which
-// dbToGain returns for our dB value. Exact for 0.25, 0.7, 1, 1.5, 3 and -69.5 .. -40 dB
-// (lis_3b_g0.25 nulls at only -77 dB one ulp off, through the 120 Hz filters); not yet
-// explained: 0.5 acts one ulp high, 2.0 two ulps low (sc_listen, sc_g2), 4 and 8 one
-// low, 24 dB as 15.8489332 (sc_gp24). This formula cannot produce 0.25 or 8 at all, and
-// no round trip through dB, ln, log2 or a normalised value matches (battery mbd_rt).
-float knobGain(double db) noexcept { return std::pow(10.0f, static_cast<float>(db) * 0.05f); }
 bool isSwitch(P p) noexcept {
     switch (p) {
     case P::SoftKnee:
@@ -188,6 +171,26 @@ class FlushDenormals {
 #endif
 };
 } // namespace
+
+// Live's gain knobs (band input and output gains, master) are powf(10, dB*0.05f):
+// the float dB times the float 0.05, rounded, then the platform's powf (macOS libm,
+// which is not correctly rounded). Each half is pinned: all 15 input gains of battery
+// mbd_rt (rt_in-24 .. rt_in24) and all 10 masters (rt_master-24 .. rt_master24) are
+// bit-exact in Listen with the product dB*0.05f (dB/20f fails -18, 9 and 18 dB, one or
+// two ulps), and with powf rather than the double pow for the plain gains of mbd_gain
+// (output 5.87 dB = 0x1.f733p+0, master -2.13 dB = 0x1.90a788p-1: double pow lands one
+// ulp high on both); input 11.42 dB = 0x1.dca954p+1 needs the product (dB/20f with
+// either pow gives ...94e or ...950). The S/C gain is no such knob: Live stores it as
+// a linear factor (the set's sidechain Volume, ranging from this formula's -70 dB to
+// its 24 dB, 15.8489332) and multiplies by a float within two ulps of it, which
+// dbToGain returns for our dB value. Exact for 0.25, 0.7, 1, 1.5, 3 and -69.5 .. -40 dB
+// (lis_3b_g0.25 nulls at only -77 dB one ulp off, through the 120 Hz filters); not yet
+// explained: 0.5 acts one ulp high, 2.0 two ulps low (sc_listen, sc_g2), 4 and 8 one
+// low, 24 dB as 15.8489332 (sc_gp24). This formula cannot produce 0.25 or 8 at all, and
+// no round trip through dB, ln, log2 or a normalised value matches (battery mbd_rt).
+float MultibandDynamics::knobGain(double db) noexcept {
+    return std::pow(10.0f, static_cast<float>(db) * 0.05f);
+}
 
 // HIIR's design (de Soras) for 8 coefficients and a transition band of 0.01,
 // as float. Live's 2x resampler reproduces with these to the last bit.
