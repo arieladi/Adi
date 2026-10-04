@@ -123,9 +123,19 @@ class MultibandDynamics {
                   float &high) noexcept;
     };
     static const std::array<float, 8> kHalfbandCoefficients;
-    // Gain in dB for a detector level in dB, before the +36.12 dB cap.
-    static double staticGain(double level, double aboveThreshold, double aboveRatio,
-                             double belowThreshold, double belowRatio, bool knee) noexcept;
+    // The gain computer runs in log2 units of amplitude, in float, with Live's own
+    // approximations of log2 and 2^x (see the .cpp for how each was measured).
+    // A threshold in dB becomes T * (1 / kDbPerOctave), in float: Live's factor is
+    // 6.02, not 20*log10(2) = 6.0206.
+    static constexpr float kDbPerOctave = 6.02f;
+    static float fastLog2(float v) noexcept;
+    static float fastExp2(float x) noexcept;
+    // The amplitude Live reads off an RMS detector's mean square (its sqrt estimate).
+    static float rmsAmplitude(float meanSquare) noexcept;
+    // Dynamic gain in log2 units for a level in log2 units: thresholds in log2 units,
+    // ratios already scaled by Amount, capped at 6 (64x, +36.12 dB).
+    static float staticGainLog2(float level, float aboveThreshold, float aboveRatio,
+                                float belowThreshold, float belowRatio, bool knee) noexcept;
     static double envelopeCoefficient(double ms, double rate) noexcept;
 
   private:
@@ -168,7 +178,7 @@ class MultibandDynamics {
     bool sidechainOn_ = false;
     // derived, refreshed when a parameter moves
     std::array<float, 3> inGain_{}, outGain_{};
-    std::array<double, 3> aboveT_{}, aboveR_{}, belowT_{}, belowR_{};
+    std::array<float, 3> aboveT_{}, aboveR_{}, belowT_{}, belowR_{}; // T in log2 units
     std::array<float, 3> attack_{}, release_{};
     float master_ = 1, scGain_ = 1, scDry_ = 0, scWet_ = 1;
 };

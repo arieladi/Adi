@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #if defined(__SSE__) || defined(_M_X64)
 #include <xmmintrin.h>
 #endif
@@ -18,10 +20,93 @@ constexpr double kPi = 3.14159265358979323846;
 // Live's Butterworth sections use 0.707, not 1/sqrt(2): the measured dip of
 // -0.0026 dB at every crossover is exactly 20*log10(2*0.707^2).
 constexpr double kQ = 0.707;
-// The dynamic gain never exceeds 64x: +36.12 dB, measured with every way of
-// asking for more (upward compression, upward expansion, both at once).
-const double kGainCap = 20.0 * std::log10(64.0);
-constexpr double kKnee = 20.0;
+// The gain computer's constants, all in log2 units (see staticGainLog2):
+// the dynamic gain never exceeds 64x = 2^6 exactly (+36.12 dB), measured with every
+// way of asking for more (upward compression, upward expansion, both at once, with
+// +-24 dB around it). A cap of 20*log10(64) dB converted like a threshold (6.0006)
+// breaks 25 probes (cap_*, up_*_bm40, st_below-50_r*, st_both_peak, fine_b0_*,
+// gap_up_*, loud_upx_cap, denorm_up, thr_cross_*, ...). Capping 2^x at 64 afterwards
+// is the same thing; whether Live caps the sum of the two sides or each side, no
+// probe can tell yet (they never push both at once). The soft knee spans
+// 10 dB either side of the threshold, converted like a threshold (10 / 6.02), and
+// its quadratic r*t^2/(4*half) is computed as r*(t*t*0.1505): 6.02/40 and
+// 0.25/half are that same float.
+constexpr float kGainCapLog2 = 6.0f;
+constexpr float kOctavesPerDb = 1.0f / MultibandDynamics::kDbPerOctave;
+constexpr float kKneeHalf = 10.0f * kOctavesPerDb; // the same float as 10 / 6.02f
+constexpr float kKneeCurve = MultibandDynamics::kDbPerOctave / 40.0f;
+// Live's log2 and 2^x approximations: the continuous least-squares cubics (endpoints
+// pinned, p(0) = 0, p(1) = 1 and q(0) = 1, q(1) = 2) of log2(1 + t) and 2^f on [0, 1],
+// rounded to float -- 1.4208645374, -0.5772506508, 0.1563861134 and 0.6959284704,
+// 0.2249463111, 0.0791252185. Not the minimax cubics (log2 would be 1.42286524,
+// -0.58208523, 0.15921999). Found by fitting Live's periodic static error (6.3 mdB
+// humps per octave of level, 1.2 mdB per octave of gain) on the 0.02 dB sweeps
+// fine_*, then confirmed to the last bit there.
+constexpr float kLog1 = 0x1.6bbdc8p+0f, kLog2 = -0x1.278d66p-1f, kLog3 = 0x1.40475cp-3f;
+constexpr float kExp1 = 0x1.6450bcp-1f, kExp2 = 0x1.ccb0a6p-3f, kExp3 = 0x1.4418cep-4f;
+float floatFromBits(std::uint32_t bits) noexcept {
+    float f;
+    std::memcpy(&f, &bits, sizeof f);
+    return f;
+}
+std::uint32_t bitsOfFloat(float f) noexcept {
+    std::uint32_t bits;
+    std::memcpy(&bits, &f, sizeof bits);
+    return bits;
+}
+// ARMv8's 8-bit reciprocal square root and reciprocal estimates (FRSQRTE and FRECPE),
+// as the ARM Architecture Reference Manual defines them (RecipSqrtEstimate and
+// RecipEstimate on a 9-bit fraction), tabulated at compile time. Live's RMS level
+// goes through both (see rmsAmplitude); this emulation matches an Apple M1's
+// instructions for every positive float.
+constexpr int rsqrtEstimate9(int a) noexcept { // a in 128..511: [0.25, 1) in 1/512ths
+    a = a < 256 ? a * 2 + 1 : ((a >> 1) << 1) * 2 + 2;
+    int lo = 512, hi = 1448; // the largest b with a*b^2 < 2^28 (ARM counts up; same b)
+    while (lo < hi) {
+        const int mid = (lo + hi + 1) / 2;
+        if (static_cast<long long>(a) * mid * mid < (1LL << 28))
+            lo = mid;
+        else
+            hi = mid - 1;
+    }
+    return (lo + 1) / 2;
+}
+constexpr int recipEstimate9(int a) noexcept { // a in 256..511: [0.5, 1) in 1/512ths
+    return ((1 << 19) / (a * 2 + 1) + 1) / 2;
+}
+constexpr auto kRsqrtEstimate = [] {
+    std::array<std::uint8_t, 512> t{};
+    for (int a = 128; a < 512; ++a)
+        t[static_cast<std::size_t>(a)] = static_cast<std::uint8_t>(rsqrtEstimate9(a) & 255);
+    return t;
+}();
+constexpr auto kRecipEstimate = [] {
+    std::array<std::uint8_t, 256> t{};
+    for (int a = 256; a < 512; ++a)
+        t[static_cast<std::size_t>(a - 256)] = static_cast<std::uint8_t>(recipEstimate9(a) & 255);
+    return t;
+}();
+float frsqrte(float x) noexcept { // x > 0 and finite
+    const std::uint32_t bits = bitsOfFloat(x);
+    int exponent = static_cast<int>((bits >> 23) & 255u);
+    std::uint32_t fraction = bits & 0x7fffffu;
+    if (exponent == 0) { // subnormal: normalise (exponent goes to 0, -1, ...)
+        while ((fraction & 0x400000u) == 0) {
+            fraction <<= 1;
+            --exponent;
+        }
+        fraction = (fraction << 1) & 0x7fffffu;
+    }
+    const std::size_t scaled = (exponent & 1) == 0 ? 256u | (fraction >> 15) : 128u | (fraction >> 16);
+    const auto resultExponent = static_cast<std::uint32_t>((380 - exponent) / 2);
+    return floatFromBits((resultExponent << 23) | (std::uint32_t{kRsqrtEstimate[scaled]} << 15));
+}
+float frecpe(float x) noexcept { // normal x > 0 below 2^126 (here: about 1/sqrt of a level)
+    const std::uint32_t bits = bitsOfFloat(x);
+    const auto exponent = (bits >> 23) & 255u;
+    const std::uint32_t estimate = kRecipEstimate[(bits & 0x7fffffu) >> 15];
+    return floatFromBits(((253u - exponent) << 23) | (estimate << 15));
+}
 // Every detector starts at 0.01 in its own units (-40 dB peak, -20 dB RMS, since
 // the RMS detector holds a mean square), not at silence: a 50 s attack shows it.
 constexpr float kEnvelopeStart = 0.01f;
@@ -50,11 +135,18 @@ constexpr std::array<Range, P::Count> kRange{{{30, 3000},     {300, 15000},  {0,
 // way, not with a double exponent: input gains 12, -12, 6 dB in Listen
 // (lis_single_inMid12, lis_3b_inLowm12_inHigh6), band output gain 6 dB
 // (gainLow6_inMidm6_out3), master 6 and -2.9 dB (out_global_6,
-// fine_out_global_-2.9, lis_3b_outMid12_master6). The S/C gain is no such knob:
+// fine_out_global_-2.9, lis_3b_outMid12_master6; with the gain computer in place
+// also st_ingain6_out-3_peak, cap_in24_up, cap_out24_up, cap_in-24_down,
+// out_global_m24_in24 and fine_gain_only_in3.3_out-1.7). powf(10.0f, exponent) gives
+// the same floats for every measured value but is not correctly rounded on macOS
+// (one ulp off on 32 of the 4801 0.01 dB steps in +-24 dB, e.g. -2.13, 5.87, 11.42 dB),
+// so no probe yet says which of the two Live uses; this one gives the same bits on
+// every platform. The S/C gain is no such knob:
 // Live stores it as a linear factor and multiplies by that float (lis_3b_g0.25 is
 // bit-exact with 0.25 and nulls at only -77 dB with 0.25000003, through the 120 Hz
 // filters), which dbToGain returns for our dB value. Not yet explained there: a
-// stored 2.0 acts as 1.99999976 (2 ulps low, sc_listen).
+// stored 2.0 acts as 1.99999976 (2 ulps low: sc_listen, sc_g2) and 15.8489319 (24 dB)
+// as 15.8489332 (1 ulp high: sc_gp24), while 1.0 and 0.25 act as themselves.
 float knobGain(double db) noexcept {
     const float exponent = static_cast<float>(db) / 20.0f;
     return static_cast<float>(std::pow(10.0, static_cast<double>(exponent)));
@@ -259,20 +351,98 @@ void MultibandDynamics::BandSplit::step(float v, bool lowOn, bool highOn, bool c
     }
 }
 
-double MultibandDynamics::staticGain(double level, double aboveThreshold, double aboveRatio,
-                                     double belowThreshold, double belowRatio,
-                                     bool knee) noexcept {
-    // Each side is r times the distance past its threshold; a soft knee is a
-    // quadratic over 20 dB centred on the threshold. The two sides simply add,
-    // even when the thresholds cross or the knees overlap (all measured).
-    const auto side = [knee](double over, double ratio) {
-        if (knee && std::abs(over) < kKnee / 2) {
-            const double t = over + kKnee / 2;
-            return ratio * t * t / (2 * kKnee);
+// log2 of a level the way Live takes it: the exponent field plus a cubic in the
+// mantissa m = 1 + t, evaluated (c1*t + c2*t^2) + c3*t^3 in float. Exact at powers of
+// two, up to 1.05e-3 (6.3 mdB) off in between; zero (and anything subnormal) reads
+// as -127 plus the cubic, never -inf. The 0.02 dB DC sweeps of battery C
+// (fine_a-60_r-1, fine_a-60_r-0.5, fine_a-31_r1, fine_b0_r1, fine_b0_r0.3,
+// fine_a-60.3_r-0.77) null to the last bit with it; the exact log2 leaves 7 mdB.
+float MultibandDynamics::fastLog2(float v) noexcept {
+    const std::uint32_t bits = bitsOfFloat(v);
+    const auto exponent = static_cast<float>(static_cast<int>((bits >> 23) & 255u) - 127);
+    const float t = floatFromBits((bits & 0x7fffffu) | 0x3f800000u) - 1.0f;
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    const float linear = kLog1 * t;
+    const float square = kLog2 * t2;
+    const float cube = kLog3 * t3;
+    const float sum = linear + square;
+    return exponent + (sum + cube);
+}
+
+// 2^x the way Live takes it: x + 127 is split into the exponent field (truncated)
+// and a fraction f, so x is first rounded to the float grid of 127 + x (which
+// shows: splitting x itself is up to 2e-6 off on the same sweeps), and 2^f is a
+// cubic evaluated ((1 + q1*f) + q2*f^2) + q3*f^3. Integers come out exact, so the
+// 2^6 cap is exactly 64. Below 2^-126 (an expander on near silence) the gain is 0,
+// which is what flush-to-zero arithmetic makes of a denormal gain anyway; this way
+// a platform without FlushDenormals gives the same output.
+float MultibandDynamics::fastExp2(float x) noexcept {
+    const float biased = x + 127.0f;
+    if (!(biased >= 1.0f))
+        return 0.0f;
+    const auto whole = static_cast<int>(biased);
+    const float f = biased - static_cast<float>(whole);
+    const float f2 = f * f;
+    const float f3 = f2 * f;
+    const float linear = kExp1 * f;
+    const float square = kExp2 * f2;
+    const float cube = kExp3 * f3;
+    const float q = ((1.0f + linear) + square) + cube;
+    return std::ldexp(q, whole - 127);
+}
+
+// Live's RMS level is not sqrtf of the mean square but the reciprocal of its
+// reciprocal square root, each an ARMv8 8-bit estimate refined by one fused Newton
+// step, as an SSE-style rcp(rsqrt(x)) built on NEON would compute it:
+//   e0 = FRSQRTE(ms), e1 = e0 * FRSQRTS(e0*e0, ms)   FRSQRTS(a, b) = (3 - a*b) / 2
+//   r0 = FRECPE(e1),  r1 = r0 * FRECPS(r0, e1)       FRECPS(a, b)  = 2 - a*b
+// with a*b unrounded inside both steps. Up to 2e-5 off sqrt, and it shows: the RMS
+// sweep fine_a-60_r-1_rms nulls on 16 % of its samples with sqrtf and on all of
+// them with this (FRSQRTS(ms*e0, e0) instead: 91 %); 62 probes in all need it. The
+// emulation is plain integer, float and double arithmetic, so any compiler and CPU
+// give the same bits: it matches this M1's instructions for every positive float.
+float MultibandDynamics::rmsAmplitude(float meanSquare) noexcept {
+    if (!(meanSquare > 0.0f))
+        return 0.0f; // rcp(rsqrt(0)) = rcp(inf) = 0
+    const float e0 = frsqrte(meanSquare);
+    const float square = e0 * e0;
+    // Below 2^-128 the square overflows and the hardware chain ends in -0 (-inf
+    // through FRSQRTS, FRECPE(-inf) = -0); log2 reads both zeros alike.
+    if (square > std::numeric_limits<float>::max())
+        return 0.0f;
+    // Each step's a*b is near 1 and exact in double (two 24-bit mantissas); 3 - a*b
+    // and 2 - a*b are then exact too (at most 50 significant bits), so rounding them
+    // to float rounds once, like the fused hardware step, without needing an fma.
+    const double rsqrtStep = 3.0 - static_cast<double>(square) * static_cast<double>(meanSquare);
+    const float e1 = e0 * (static_cast<float>(rsqrtStep) * 0.5f);
+    const float r0 = frecpe(e1);
+    const double recipStep = 2.0 - static_cast<double>(r0) * static_cast<double>(e1);
+    return r0 * static_cast<float>(recipStep);
+}
+
+// Live's gain computer, in log2 units with every step in float. Each side is its
+// ratio times the distance past its threshold, r*(L - Ta) above and r*(Tb - L)
+// below; the two simply add, even when the thresholds cross or the knees overlap
+// (thr_cross_*, thr_close_*, thr_equal_*). With the soft knee, within 10 dB of a
+// threshold (|L - T| < half, half = 10/6.02) a side is r*t^2/(4*half), t measured
+// from where the knee starts: t = L - (Ta - half) above, (Tb + half) - L below. That
+// spelling is bit-exact on all 13 knee probes (knee_*, *_knee, *_knee_rms, mb_knee_rms,
+// amt0.5_knee); t = (L - T) + half breaks 11 of them. The sum is capped at 6 (64x);
+// there is no lower limit.
+float MultibandDynamics::staticGainLog2(float level, float aboveThreshold, float aboveRatio,
+                                        float belowThreshold, float belowRatio,
+                                        bool knee) noexcept {
+    const auto side = [knee](float over, float t, float ratio) {
+        if (knee && std::fabs(over) < kKneeHalf) {
+            const float square = t * t;
+            return ratio * (square * kKneeCurve);
         }
-        return over > 0 ? ratio * over : 0.0;
+        return over > 0.0f ? ratio * over : 0.0f;
     };
-    return side(level - aboveThreshold, aboveRatio) + side(belowThreshold - level, belowRatio);
+    const float above = side(level - aboveThreshold, level - (aboveThreshold - kKneeHalf), aboveRatio);
+    const float below = side(belowThreshold - level, (belowThreshold + kKneeHalf) - level, belowRatio);
+    return std::min(above + below, kGainCapLog2);
 }
 
 // Live's attack and release reach -80 dB (1e-4) of the way in the set time, at the
@@ -421,17 +591,24 @@ void MultibandDynamics::set(Param p, double v) noexcept {
 
 void MultibandDynamics::derive() noexcept {
     const auto at = [this](int p) { return smooth_[static_cast<std::size_t>(p)].out; };
-    const double amount = at(Amount) / 100.0;
+    // Live's parameters are floats. A threshold goes to log2 units as float(T) times
+    // the float 1/6.02 (the measured -T*1e-4 dB offset of every threshold against
+    // 20*log10(2)); dividing by 6.02f gives another float for 1 threshold in 6, and of
+    // the measured ones for -45 dB: sc_3b_rms_below (BelowThresholdMid -45) is
+    // bit-exact only with the multiplication. Amount scales each ratio as float(r) *
+    // float(amount), the one spelling the probes cannot pin down: every measured
+    // Amount is 0, 0.25, 0.5 or 1.
+    const auto amount = static_cast<float>(at(Amount) / 100.0);
     const double time = value_[TimeScaling] / 100.0;
     const double os = 2.0 * rate_;
     for (int b = 0; b < 3; ++b) {
         const auto i = static_cast<std::size_t>(b);
         inGain_[i] = knobGain(at(InputGainLow + b));
         outGain_[i] = knobGain(at(OutputGainLow + b));
-        aboveT_[i] = at(AboveThresholdLow + b);
-        belowT_[i] = at(BelowThresholdLow + b);
-        aboveR_[i] = at(AboveRatioLow + b) * amount;
-        belowR_[i] = at(BelowRatioLow + b) * amount;
+        aboveT_[i] = static_cast<float>(at(AboveThresholdLow + b)) * kOctavesPerDb;
+        belowT_[i] = static_cast<float>(at(BelowThresholdLow + b)) * kOctavesPerDb;
+        aboveR_[i] = static_cast<float>(at(AboveRatioLow + b)) * amount;
+        belowR_[i] = static_cast<float>(at(BelowRatioLow + b)) * amount;
         attack_[i] = static_cast<float>(envelopeCoefficient(value_[i + AttackLow] * time, os));
         release_[i] = static_cast<float>(envelopeCoefficient(value_[i + ReleaseLow] * time, os));
     }
@@ -587,12 +764,19 @@ void MultibandDynamics::process(const float *inL, const float *inR, float *outL,
                 // trigger had driven it to -8.4 dB (lis_scon_1_2s).
                 if (!listen)
                     env = kept + taken;
-                const double level = env > 0 ? (peak ? 20.0 : 10.0) * std::log10(env) : -1000.0;
-                double g = staticGain(level, aboveT_[bi], aboveR_[bi], belowT_[bi], belowR_[bi], knee);
-                g = std::min(g, kGainCap);
-                const float gain = dbToGain(g) * outGain_[bi];
-                sum[0] += l * gain;
-                sum[1] += r * gain;
+                // The level in log2 units, of the amplitude in both modes (an RMS
+                // detector holds a mean square; sqrtf instead breaks 62 probes), the gain
+                // back through 2^x. The band output gain multiplies last,
+                // ((band * in) * G) * out: band * (G * out) breaks st_ingain6_out-3_peak,
+                // cap_out24_up and mb_gains, (band * (in * G)) * out ten others (sc_in12*,
+                // cap_in24_up, cap_in-24_down, out_global_m24_in24, ...).
+                const float level = fastLog2(peak ? env : rmsAmplitude(env));
+                const float g = staticGainLog2(level, aboveT_[bi], aboveR_[bi], belowT_[bi],
+                                               belowR_[bi], knee);
+                const float gain = fastExp2(g);
+                const float yl = l * gain, yr = r * gain;
+                sum[0] += yl * outGain_[bi];
+                sum[1] += yr * outGain_[bi];
             }
             for (int c = 0; c < 2; ++c)
                 out[c][k] = sum[c];

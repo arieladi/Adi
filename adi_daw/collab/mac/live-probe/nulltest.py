@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Replay every Live probe through the C++ core and report the null depth.
 usage: nulltest.py [set ...] [--only substr] [--bin path] [--json out.json]"""
-import json, os, subprocess, sys, math, tempfile
+import json, os, shutil, subprocess, sys, math, tempfile
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import als
@@ -43,7 +43,14 @@ def faded(path, tmp):
     return out
 def run(sets, only=None, binary=MBD_RENDER, skip_auto=True):
     res = {}
-    tmp = tempfile.mkdtemp()
+    tmp = tempfile.mkdtemp(prefix="mbdnull_")
+    try:
+        return _run(sets, only, binary, skip_auto, res, tmp)
+    finally:
+        # every faded input and render is ~1 MB: 300 probes left 112 MB per run behind
+        shutil.rmtree(tmp, ignore_errors=True)
+        _faded.clear()
+def _run(sets, only, binary, skip_auto, res, tmp):
     for st in sets:
         man = json.load(open(os.path.join(PROBE, "sets", st + ".json")))
         byid = {v["id"]: (k, v) for k, v in man.items()}
