@@ -182,12 +182,16 @@ class FlushDenormals {
 // ulp high on both); input 11.42 dB = 0x1.dca954p+1 needs the product (dB/20f with
 // either pow gives ...94e or ...950). The S/C gain is no such knob: Live stores it as
 // a linear factor (the set's sidechain Volume, ranging from this formula's -70 dB to
-// its 24 dB, 15.8489332) and multiplies by a float within two ulps of it, which
-// dbToGain returns for our dB value. Exact for 0.25, 0.7, 1, 1.5, 3 and -69.5 .. -40 dB
-// (lis_3b_g0.25 nulls at only -77 dB one ulp off, through the 120 Hz filters); not yet
-// explained: 0.5 acts one ulp high, 2.0 two ulps low (sc_listen, sc_g2), 4 and 8 one
-// low, 24 dB as 15.8489332 (sc_gp24). This formula cannot produce 0.25 or 8 at all, and
-// no round trip through dB, ln, log2 or a normalised value matches (battery mbd_rt).
+// its 24 dB, 15.8489332) and multiplies by a float within four ulps of it, which
+// dbToGain returns for our dB value. Battery mbd_scg reads Live's factor off to the
+// bit in all 161 of its probes: it is a fixed function of the stored float alone (the
+// same through a constant automation envelope, from "0.1" or "0.10000000149011612"
+// in the set), exact for every value up to 2^-8 (-48 dB) but one (0.00146484375, one
+// ulp high), and from about -40 dB up off by -2 .. +2 ulps (+22 dB: four high) with
+// no smooth trend: 0.25 and 1 exact, 0.5 one ulp high, 2.0 two low, 4 and 8 one low,
+// 24 dB as 15.8489332 (sc_gp24). Not reproduced yet: no float in a dB, log or
+// normalised domain lies upstream (none reaches the exact bottom), and no linear
+// normalisation, smoother, ramp or near-1 correction factor fits all values.
 float MultibandDynamics::knobGain(double db) noexcept {
     return std::pow(10.0f, static_cast<float>(db) * 0.05f);
 }
@@ -637,10 +641,13 @@ void MultibandDynamics::derive() noexcept {
     // The bottom of the S/C gain is off (-inf, like Live's mixer volume), and not only
     // its -70 dB minimum: sc_gm70 shows no gain reduction at all while a -76 dB trigger
     // should take 2 dB off at a -80 dB threshold, and Listen plays exactly 0 at -69.99
-    // and -69.9 dB (rt_g_db-69.99, rt_g_db-69.9), while -69.5 dB acts as its linear
-    // value (rt_g_db-69.5 bit-exact). The probes bound the cut to (-69.9, -69.5] dB; it
-    // sits midway until one pins it.
-    constexpr double kSidechainGainOffDb = -69.7;
+    // and -69.9 dB (rt_g_db-69.99, rt_g_db-69.9: stored 0x1.4f6db0p-12), while -69.8
+    // dB (0x1.535002p-12) and everything above acts as its linear value (scg_cut-69.8
+    // .. scg_cut-69.55, rt_g_db-69.5 bit-exact). The cut lies in (-69.9, -69.8] dB,
+    // i.e. 1.0116 .. 1.0233 times the -70 dB minimum; no probe sits inside, so it is
+    // put midway in dB until one pins it (no round constant in that interval stands
+    // out: 0.00032 linear and 2^-22 of the normalised range both fall in it too).
+    constexpr double kSidechainGainOffDb = -69.85;
     scGain_ = at(SidechainGain) < kSidechainGainOffDb ? 0.0f : dbToGain(at(SidechainGain));
     // Equal-power mix, the dry gain DERIVED from the wet one: wet = sin(m*pi/2) of the
     // float mix value, in double, rounded to float; dry = sqrt(1 - wet*wet) in float

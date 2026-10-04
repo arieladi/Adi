@@ -709,11 +709,12 @@ void sidechainLaw() {
     const double resampler = 0.9999974; // the HIIR chain's own DC gain, measured
     const auto y = listened([](MD &m) { m.set(MD::SidechainMix, 99.9); }, 0.5, 0.0);
     near(y.back() / (0.5 * resampler), 0.00158221, 2e-8, "S/C mix: dry = sqrtf(1 - wet^2) (Live 0.00158221)");
-    // the -70 dB end is off: -69.9 dB is silent in Live, -69.5 dB is not
-    check(listened([](MD &m) { m.set(MD::SidechainGain, -69.8); }, 0.0, 0.5).back() == 0,
+    // the -70 dB end is off: -69.9 dB is silent in Live, -69.8 dB is not
+    // (mbd_rt rt_g_db-69.9, mbd_scg scg_cut-69.8)
+    check(listened([](MD &m) { m.set(MD::SidechainGain, -69.9); }, 0.0, 0.5).back() == 0,
           "S/C gain just above -70 dB is off (Live: silent at -69.9 dB)");
-    check(listened([](MD &m) { m.set(MD::SidechainGain, -69.5); }, 0.0, 0.5).back() > 0,
-          "S/C gain at -69.5 dB is on");
+    check(listened([](MD &m) { m.set(MD::SidechainGain, -69.8); }, 0.0, 0.5).back() > 0,
+          "S/C gain at -69.8 dB is on");
     // Listen plays whenever it is on: with S/C off, the main input's bands, uncompressed
     // (mbd_rt rt_scoff_listen_single: Live's output there is not the normal output)
     MD q;
