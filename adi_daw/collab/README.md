@@ -255,7 +255,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| Multiband Dynamics DSP/builtin/patch, tests/test_multiband_dynamics*.cpp, cmake/devices/multiband_dynamics.cmake, collab/mac/** | mac - the director's direct instruction (2026-10-03), inside win_codex's Pd-device area | `mac/multiband-dynamics-pd` | 2026-10-03 |
 | Utility DSP/builtin/patch, tests/test_utility*.cpp, cmake/devices/utility.cmake | win_codex - mission 5 delegated by win | `codex/utility-pd` | 2026-09-29 |
 | Saturator DSP/builtin/patch, tests/test_saturator*.cpp, cmake/devices/saturator.cmake | win_codex - mission 5 delegated by win | `codex/saturator-pd` | 2026-09-29 |
 | Echo DSP/builtin/patch, tests/test_echo*.cpp, cmake/devices/echo.cmake | win_codex - mission 5 delegated by win | `codex/echo-pd` | 2026-09-29 |
