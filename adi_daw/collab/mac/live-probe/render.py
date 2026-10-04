@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
 """Drive Ableton Live 11 to export every track of a generated set (All Individual Tracks,
 48 kHz, 32-bit float -- the dialog remembers those settings)."""
 import glob, os, shutil, subprocess, sys, time

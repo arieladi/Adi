@@ -16,6 +16,17 @@ func flags(_ m: String) -> CGEventFlags {
     return f
 }
 
+func clearModifiers() {
+    // a key event carrying modifier flags leaves the window server believing they are
+    // still held (a later click arrived as a ctrl-click): release them explicitly
+    let src = CGEventSource(stateID: .hidSystemState)
+    for code: CGKeyCode in [59, 62, 55, 54, 56, 60, 58, 61] {
+        let up = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: false)!
+        up.type = .flagsChanged
+        up.flags = []
+        up.post(tap: .cghidEventTap)
+    }
+}
 func requireFront(_ pid: Int32) {
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
         FileHandle.standardError.write("refused: pid \(pid) is not frontmost\n".data(using: .utf8)!); exit(3)
@@ -51,9 +62,13 @@ case "hclick":
     let src = CGEventSource(stateID: .hidSystemState)
     CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)!.post(tap: .cghidEventTap)
     usleep(80000)
-    CGEvent(mouseEventSource: src, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left)!.post(tap: .cghidEventTap)
+    let down = CGEvent(mouseEventSource: src, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left)!
+    down.flags = []
+    down.post(tap: .cghidEventTap)
     usleep(60000)
-    CGEvent(mouseEventSource: src, mouseType: .leftMouseUp, mouseCursorPosition: p, mouseButton: .left)!.post(tap: .cghidEventTap)
+    let upEvent = CGEvent(mouseEventSource: src, mouseType: .leftMouseUp, mouseCursorPosition: p, mouseButton: .left)!
+    upEvent.flags = []
+    upEvent.post(tap: .cghidEventTap)
     usleep(80000)
     if a.count > 4 && a[4] == "stay" { break }
     CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: old, mouseButton: .left)!.post(tap: .cghidEventTap)
@@ -65,6 +80,7 @@ case "hkey":
     let d = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: true)!; d.flags = f
     let u = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: false)!; u.flags = f
     d.post(tap: .cghidEventTap); usleep(40000); u.post(tap: .cghidEventTap)
+    if !f.isEmpty { usleep(20000); clearModifiers() }
 case "frontname":
     print(NSWorkspace.shared.frontmostApplication?.localizedName ?? "")
 case "hclickpid":
@@ -77,9 +93,13 @@ case "hclickpid":
     CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)!.post(tap: .cghidEventTap)
     usleep(80000)
     requireFront(pid)
-    CGEvent(mouseEventSource: src, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left)!.post(tap: .cghidEventTap)
+    let down = CGEvent(mouseEventSource: src, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left)!
+    down.flags = []
+    down.post(tap: .cghidEventTap)
     usleep(60000)
-    CGEvent(mouseEventSource: src, mouseType: .leftMouseUp, mouseCursorPosition: p, mouseButton: .left)!.post(tap: .cghidEventTap)
+    let upEvent = CGEvent(mouseEventSource: src, mouseType: .leftMouseUp, mouseCursorPosition: p, mouseButton: .left)!
+    upEvent.flags = []
+    upEvent.post(tap: .cghidEventTap)
     usleep(80000)
     CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: old, mouseButton: .left)!.post(tap: .cghidEventTap)
 case "hkeypid":
