@@ -2254,3 +2254,35 @@ Gatekeeper refuse the unsigned fixture bundles earlier. Deleting the copies
 treats the symptom. There are more of them outside `adi_daw/tools/`
 (`adi-surge/ARCHITECTURE 2.md`, `adi-vital/ARCHITECTURE 2.md`,
 `collab/prompts/...2.md` among them); I left those alone as outside this task.
+
+## 2026-10-03/04 — Multiband Dynamics, one to one with Live (director's direct instruction)
+
+The director asked for a Pd device that does exactly what Ableton's Multiband
+Dynamics does. mac is retired (ADR-0202), but a direct instruction overrides
+that; the work sits in win_codex's Pd-device area with a claim row naming the
+instruction. Branch `mac/multiband-dynamics-pd`, worktree `Adi-wt/multiband-dynamics`.
+
+**Measured, not read.** Live 11.2.7 on this Mac rendered ~650 probes through its
+own device (`collab/mac/live-probe/`: sets generated as XML, Live driven to
+export every track, the C++ core nulled against each render). 886 of 887 static
+probes and 17 of 23 switch-automation probes are identical to the bit, at 44.1,
+48 and 96 kHz; the rest are host behaviour. The last device detail, the S/C
+gain, turned out to be Live's fader table: runs of consecutive stored floats
+showed a staircase, and an automation ramp gave all 101 nodes. The findings and what is still short are in
+`collab/mac/2026-10-03-multiband-dynamics-pd.md`.
+
+**Traps worth keeping:**
+- Live fades every clip edge (~4 ms) and zeroes a decayed track. A probe that
+  starts on a non-zero sample must model the fade: a 5 s release carries a
+  rounding difference from the first 4 ms to 1.5 % four seconds later.
+- A key event sent with modifier flags leaves the window server believing the
+  modifier is held. The next "click" was a ctrl-click. The driver now releases
+  modifiers and refuses to click unless Live is frontmost at that instant.
+- `tempfile.mkdtemp` without cleanup, run by several agents at once, filled the
+  disk twice (112 MB a run). The harness deletes its renders now.
+- Bit-exact claims need the platform's float libm to match Live's: exact on
+  macOS, a tolerance elsewhere, and the same check count on every platform.
+- Every new check was planted against (`live-probe/plant.py`): 20 of 21 plants
+  caught; the 21st is behaviour-identical.
+
+Not touched: the README check count (win's).
