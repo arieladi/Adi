@@ -687,8 +687,12 @@ void knobs() {
     for (const auto &k : knobs) {
         const float got = MD::knobGain(k.db);
         check(kLiveLibm ? got == k.live : std::abs(got / k.live - 1) < 3e-7, k.what);
-        if (kLiveLibm && got != k.live)
-            std::printf("     got %a want %a\n", static_cast<double>(got), static_cast<double>(k.live));
+        // `if constexpr`: with kLiveLibm false the plain `&&` is a constant condition, which MSVC
+        // /W4 reports (C4127) and /WX turns into an error. No CI leg builds MSVC with /WX.
+        if constexpr (kLiveLibm) {
+            if (got != k.live)
+                std::printf("     got %a want %a\n", static_cast<double>(got), static_cast<double>(k.live));
+        }
     }
 }
 
