@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+# The coefficient design is ported from HIIR's PolyphaseIir2Designer by Laurent de Soras
+# (http://ldesoras.free.fr/prod.html, WTFPL-2.0); see docs/EXTERNAL-CODE.md.
 import math, numpy as np
 def _num(q, order, c):
     acc, i, j = 0.0, 0, 1

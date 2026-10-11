@@ -262,7 +262,9 @@ double magnitude(const std::vector<float> &x, std::size_t from, double hz) {
     return std::abs(sum);
 }
 
-// HIIR's coefficient design, re-derived here so the constant in the core is checked.
+// HIIR's coefficient design, re-derived here so the constant in the core is checked. Ported from
+// PolyphaseIir2Designer in HIIR by Laurent de Soras (http://ldesoras.free.fr/prod.html, WTFPL-2.0);
+// see docs/EXTERNAL-CODE.md.
 std::array<double, 8> halfbandDesign() {
     const double tbw = 0.01;
     double k = std::tan((1 - tbw * 2) * std::numbers::pi / 4);
