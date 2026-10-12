@@ -7,8 +7,8 @@ through the same undoable operations a human uses.
 
 **Status:** format specified, reference implementation building.
 **7682 checks across 93 suites**, green on 7 ABIs. Nothing is frozen.
-**Language:** C++ with JUCE (ADR-0014) · **Licence:** GPLv3 (ADR-0015); a build
-linking JUCE is a combined work with AGPLv3 obligations on the JUCE part (ADR-0048)
+**Language:** C++ with JUCE (ADR-0014) · **Licence:** AGPLv3, all of it (ADR-0203 d25, the
+director's ruling of 2026-10-12; it was GPLv3 under ADR-0015 until then)
 
 A long-term project built step by step. The format came first because it is the
 only part that is genuinely expensive to change later; the store, op log, undo
@@ -60,7 +60,7 @@ than frightening.
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
 | [`docs/UI-ARCHITECTURE.md`](docs/UI-ARCHITECTURE.md) | The Ableton-shaped shell, the component tree, and how the graph carries a hybrid track. |
 | [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 202 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 203 entries. |
 | [`docs/SETTINGS-CATALOGUE.md`](docs/SETTINGS-CATALOGUE.md) | Every setting the Settings Reference describes, generated from it by `tools/export_settings_catalogue.py`, for the settings registry to fill from. |
 | [`docs/AWAITING.md`](docs/AWAITING.md) | Tests only the director's own hardware can run: AVX-512 on his i9 laptop, ASIO on his interface. |
 | [`drivers/`](drivers/) | OS-level pieces that are their own programs: the ADI virtual audio device for Windows, built from Microsoft's MS-PL `sysvad` sample fetched at a pinned commit by `drivers/adi-virtual-audio/build.ps1` and `.github/workflows/driver-build.yml`; our own files there are MIT (ADR-0106, 0117 to 0120). Nothing in `src/` includes it. |
@@ -73,7 +73,7 @@ than frightening.
 | [`tools/build-juce.bat`](tools/build-juce.bat) | Windows build of the JUCE tree: `adi_play`, `adi_vst3_probe`, the fixture VST3. |
 | [`tools/make_demo_project.py`](tools/make_demo_project.py) | Fills an empty `.adi` with audio clips at chosen sample rates, and optionally a VST3, for listening tests and `adi_play --render`. |
 | [`src/adi/`](src/adi/) | The reference implementation: `blob` (SPEC §6.3 layouts), `store` (the `.adi` itself), `ops` + `ops_catalog` (50 ops), `history` (branching undo), `digest` (the replay oracle), `check` (what SQLite cannot enforce), `textproj` (the canonical text projection), `engine/` (snapshot handoff, the audio graph, sub-block scheduling, the routing planner). |
-| [`LICENSE`](LICENSE) | GPLv3. Our code. JUCE is AGPLv3 and a build that links it carries AGPL obligations on that part — ADR-0048. |
+| [`LICENSE`](LICENSE) | AGPLv3 (`AGPL-3.0-or-later`), all of ADI — ADR-0203 d25. Any open-source code may be used; only non-commercial-only and proprietary code are refused (`OPEN_SOURCE_POLICY.md` §4a). |
 
 ## The tool
 
@@ -148,19 +148,19 @@ Each step gates the next. No step starts before the previous one is written down
 | | Step | Status |
 |---|---|---|
 | **1** | Format spec, schema, feature scope, agent design | **done, draft** |
-| **2** | Choose implementation language and licence | **done** — C++/JUCE, GPLv3 |
+| **2** | Choose implementation language and licence | **done** — C++/JUCE, AGPLv3 (ADR-0203) |
 | **3** | The op vocabulary: every op type, payload, inverse | **done** — 165 ops, `docs/OPS.md` |
 | **4** | Reference reader/writer library + round-trip test corpus | **done** — store, ops, undo, digest, check |
 | **5** | Audio engine skeleton: snapshot handoff, model, transport | **done** — headless, no JUCE (ADR-0036) |
-| **6** | JUCE: audio device, the graph, VST3 hosting (ADR-0041), CLAP hosting (ADR-0075), the engine at 32 to 4096 samples (ADR-0042, ADR-0102), plugin parameter ops (ADR-0110) | **in progress** — the session runtime is built and tested headless (ADR-0122); the plugin loader, `adi_play` and the parameter-op layer follow |
-| **7** | Minimal arrangement UI — the first thing you can make a track in | |
+| **6** | JUCE: audio device, the graph, VST3 hosting (ADR-0041), CLAP hosting (ADR-0075), the engine at 32 to 4096 samples (ADR-0042, ADR-0102), plugin parameter ops (ADR-0110) | **in progress** — the session runtime, both hosts, `adi_play`, plug-in parameter ops, automation playback, track delay and group summing are built and tested; **sends and return tracks must play before it closes** (ADR-0203 d3) |
+| **7** | Minimal arrangement UI — the first thing you can make a track in | **in progress** — 7.1 merged (the seams, headless), 7.2 begun, no window yet (`docs/STEP-7-PLAN.md`); built purely as Live (ADR-0203 d5) |
 | **8** | The agent, at Observe tier only | |
 | **9** | Propose and Apply tiers, and the RPC boundary (ADR-0039) | |
-| **10** | Visual patching devices — Pure Data via `libpd` (ADR-0035, ADR-0040) | direction decided, contract not designed |
+| **10** | Visual patching devices — Pure Data via `libpd` (ADR-0035, ADR-0040) | **under way** — Pd runs inside the engine (ADR-0177, ADR-0197); fifteen of Live's audio effects, the two color-bass devices and the analyser are built as Pd devices; Live's MIDI effects, OneShot and Sampler are native; the wrapper's fixed delay is engineered out of the built-ins (ADR-0203 d4); the patch editor remains |
 | **11** | The arrangement DAW complete and **verified side by side** against Live, Cubase and Bitwig (ADR-0108) | |
-| **12** | The Session View and MixConsole window (F3), last (ADR-0101) | |
+| **12** | The Session View and MixConsole window (F3) (ADR-0101) | **P2, no longer last** (ADR-0203 d10) |
 | **13** | **ADiJ**, the DJ application on the same engine (ADR-0105, ADR-0133, ADR-0190). There is no separate live app: the Session view is inside ADI | |
-| **14** | Linux desktop: ALSA/PipeWire, LV2, Wayland/X11, packaging (ADR-0109 phase 3) | |
+| **14** | Linux desktop: ALSA/PipeWire, LV2, Wayland/X11, packaging (ADR-0109 phase 3) | **built immediately after the Windows version works, with the Mac version, and alongside it where easier** (ADR-0203 d23, the director's D-09) |
 | **15** | **ADI Mobile**, iOS and Android: the same engine and `.adi` projects, three modes; built last, designed for now (ADR-0200) | requirements recorded |
 
 From step 7 on, a step is finished when its parity checklists pass against the

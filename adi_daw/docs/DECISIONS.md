@@ -15867,3 +15867,497 @@ unavailable until Saturday; the retirement makes that the arrangement rather tha
 
 4. **Recall is one sentence from the director.** On recall, mac re-reads its log, the handoff and every ADR
    after 0202 before touching code, and takes back only what the director assigns.
+
+## ADR-0203 — The director's rulings on Master Reference v1.0: Live is the way, additions are first-class, sends and returns come back, and ADI is AGPLv3 — `DECIDED` (2026-10-12) — **DIRECTOR'S RULINGS (1 TO 12 OCTOBER); THE STANDING RULE; REVERSES ADR-0072 AND ADR-0145 d2; AMENDS ADR-0057 d6, ADR-0064 d4, ADR-0101/0117, ADR-0104 d3, ADR-0112, ADR-0128, ADR-0152 d7, ADR-0155 d3, ADR-0156 d8/d16/d18, ADR-0157, ADR-0173 d4, ADR-0183 d12, ADR-0200 d5; RESTORES ADR-0183 d6; LICENSING CLOSED**
+
+**The review.** Master Reference v0.9.9 (the director's one document: the DAW, the Settings window,
+the plug-in catalogue) was audited against this log, FEATURES.md, the code and the Live 12 manual:
+374 findings in five parts (refuted claims; code-coupled rows; catch-ups; conflicts; duplicates).
+The director ruled on every one between 1 and 12 October 2026, item by item, in his own words
+where he gave them. win kept a ledger of the verdicts and the lines they settle; the ledger and
+its two companions are committed with this entry under `docs/review/` (`v1.0-verdicts.md`,
+`v1.0-catchups-final.md`, `v1.0-ableton-rule.md`) and are the evidence for every decision below.
+The audit's ids (A1-10, B4-22, D-04 and so on) are theirs. Where this entry and the ledger differ,
+the ledger is right and this entry is corrected.
+
+**How to read this entry.** It is long because the rulings reach every part of the DAW. The order:
+the rule that governs all the rest (d1, d2); what ADI does Live's way (d3 to d12); what ADI adds
+(d13 to d20); the numbers and defaults (d21, d22); the roadmap (d23, d24); licensing (d25); what
+still has to be measured in Live (d26). The amendments to earlier entries are listed at the end.
+
+### Decisions
+
+1. **The standing rule (the director, 2026-10-04).** *"Assume I always want the Ableton way unless
+   it doesn't have this ability, in which case we are adding. Don't do something Ableton already does
+   in a different way if we can do it the Ableton way."*
+   - Ableton Live is the sole parity base: its layout, gestures and defaults are ADI's baseline.
+     Cubase is referenced for editing and mixing depth; Bitwig and REAPER for specific modular and
+     routing behaviours; FL Studio only for the ghost-channel quick-switch and Make Unique (A1-10).
+     A feature taken from Cubase, Bitwig or REAPER is still gated against that application
+     (ADR-0108 d1 unchanged).
+   - Where ADI's behaviour, default or priority differed from Live's on something Live does, Live's
+     way is taken and recorded as an amendment of the entry that differed. The agents apply this
+     without asking. The director is asked only about an addition Live lacks (a yes and a priority),
+     or where Live's way would undo something he explicitly directed.
+   - Live's behaviour is read in the Live 12 manual (`reference/DOCS/_text/Ableton_live12/`) or
+     measured on a copy of Live, never recalled from memory. His Mac runs Live 11; every measurement
+     is labelled with its Live version and re-checked on Live 12 (d26).
+
+2. **Additions are first-class (clarified 2026-10-05).** On the phrase "extras stay, but switched off
+   or behind an option" the director said: *"No! … things like that should not hide in settings"*,
+   and *"make sure we are not destroying the dream DAW on the way."* So: an ability Live lacks is an
+   addition, shown where a user looks for it (double-click a fade for Cubase's fade editor; F7 for
+   offline processing; VariAudio in the audio editor; the scope). Only the default behaviour of
+   something Live already does stays Live's. His own deliberate deviations stay, each confirmed by
+   name (d12). Nothing he asked for from Cubase, REAPER or Bitwig is unsafe or dropped by this rule.
+
+3. **Return tracks and sends come back, as Live (B4-22, 2026-10-02). This reverses ADR-0072**
+   (aux sends abolished), which had itself overruled ADR-0067; FEATURES.md's two P0 rows (return
+   tracks; sends with Pre/Post) stand. The details, each settled under d1:
+   - Live's layout: one send knob per return on every clip track and group; Pre/Post is one switch
+     on each return, not on each send. A new send starts where Live's does (believed fully down;
+     measured, d26). There is no "default send level" setting (the two the registry had go).
+   - A return's own send knobs are off until Enable Send / Enable All Sends; once on, a return may
+     feed another return, or itself for feedback, as Live. That loop is built with the sends (P0);
+     every other routing loop is still refused, and "does Live allow any other loop" is measured.
+   - Solo is exactly Live's: Solo in Place keeps a soloed track's returns audible; a soloed return
+     hears what others send to it; Exclusive Solo stays on. ADI also gets Live's Solo/Cue switch,
+     Cue Out and Cue Volume (the metronome goes to Cue Out). Solo defeat (Cubase), Solo in front and
+     a dedicated solo bus (REAPER) stay as options that do nothing until switched on.
+   - A sidechain, and track-to-track routing, get Live's three tap points, Pre FX, Post FX and
+     Post Mixer; only Post Mixer follows the fader, mute and solo. The tap chooser sits under the
+     source chooser as Live lays it out. The two early taps are P1, with sidechain routing.
+   - A send is tapped before the console colouring of d14 (win's engineering consequence, so a
+     reverb never hears a half-processed signal).
+   - **ADI's addition (sends-choice-4, 2026-10-05): the user can also create a send into a track
+     that is not a return, and a pan on a send, as Cubase and Bitwig do.** It is first-class, made
+     from the send slot; Live's one-knob-per-return layout stays the default look. A converted
+     project holding such sends therefore plays as written (the test that proves today's refusal is
+     reversed, not cited).
+   - The engine must plan sends and returns with delay compensation across them; the planner that
+     refuses a send row today is changed. **Step 6 is not closed until sends and returns play.**
+     The mixer of step 7.6 shows send knobs and return strips.
+   - Freeze keeps volume, pan and sends live (d16). "Sends Only" is the fourth state of the
+     default-route rule of ADR-0065 (an output switched off).
+
+4. **No added delay, anywhere (A4-08).** The director: *"unnecessary delay is just an extra delay for
+   no reason"*; if Live adds none, ADI adds none, for anything.
+   - The Pd adapter's fixed 64-sample block of delay (ADR-0183 d12) is engineered out of ADI's own
+     devices: the built-ins run their native DSP directly and add no delay beyond what the effect
+     itself needs. Their patch files stay openable (ADR-0187's "Pd devices first" bends only in how
+     the built-ins are run). For user-built Pd patches, whole blocks that are multiples of 64 run
+     without added delay; any case with an unavoidable remainder is brought back by win.
+   - **A switched-off device is not calculated, and its delay stays in the compensation** (a plain
+     delay line in its place), so toggling it, or automating its switch, never moves the timing
+     (B1-08, as Live). The delay is released when the device is deleted. This amends ADR-0057 d6.
+   - Shifter's Pitch mode adds exactly as much delay as Live's and no more; Live is measured first
+     (today it is late by its window, about 46 ms at the default).
+   - Track Delay is built, shown and typed in milliseconds as Live; ADI gains Live's Delay
+     Compensation on/off switch (Options menu), and Track Delay is unavailable while it is off.
+     The sub-sample fine step (ADR-0062) stays an addition at P2, outside Utility, arriving with
+     Audio Alignment (ADR-0176); the Scope's compare view measures the offset between two tracks.
+   - **The one named exception: a plug-in the user sends to an AudioGridder server** runs outside
+     the DAW one buffer late (A4-24; ADR-0053; fallback as ADR-0134 d3, P1).
+   - Recording: the 10 ms threshold that bypasses slow plug-ins on armed tracks (R-12) **starts
+     off, as Live, which bypasses nothing**; it stays as an option. **Live's "Reduced Latency When
+     Monitoring" switch is added** beside it: input-monitored tracks skip delay compensation.
+
+5. **The desktop is built purely as Live (A7-21, settling A1-25).** Full right-click menus, hover
+   states and modifier keys as Live's. Touch-friendly paths wait for ADI Mobile: ADR-0200 d5's two
+   Input rules ("a way that needs no hover, no right button and no modifier key"; "nothing shown only
+   on hover") move to step 15, and ADR-0180 d9's second gate rows are not written at step 7.
+   Display profiles are not adopted on the desktop. Loopback is simply an audio input channel
+   (A1-19). The optional side swap stays (ADR-0080), Live's sides the default.
+
+6. **Keys and views (A1-08, A1-11, the reach-back of 2026-10-05).**
+   - **The function keys do functions; a deliberate deviation from Live** (whose F1 to F8 switch
+     tracks 1 to 8 on and off): F3 shows Session View (ADR-0117), F7 opens offline processing. His
+     reason: his smallest project has more than a hundred channels, so eight track keys are useless.
+   - Tab switches the two views as in Live; Alt+1 / Alt+2 and the view buttons as Live. The
+     Arrangement stays the opening screen.
+   - **Ctrl+I / Cmd+I does what it does in Live** (Insert Silence, Insert Warp Marker, Insert
+     Scene). **The floating palette moves to Ctrl+P / Cmd+P**, which Live does not use (amends
+     ADR-0104 d3; win had wrongly said Ctrl+I cost no Live shortcut).
+   - **Ctrl+S is "Take Snapshot"**, a named point in the history (d13), a deliberate deviation.
+     **Ctrl+Shift+S is Save As, a true one that writes a new `.adi` file and carries on in it, as
+     Live**; Save a Copy writes a copy and stays in the current file (both P1). **Collect All and
+     Save** (Live's command, copies the files into the project folder) is the plain command; the
+     ZIP export (ADR-0127, ADR-0143) stays beside it in the File menu as ADI's extra, with no key.
+   - Create Fade / Crossfade on Ctrl+Alt+F / Cmd+Option+F, as Live. Interface zoom per window
+     with Ctrl/Cmd and plus or minus, as Live (A5-01); ADR-0112's two remembered zoom presets are
+     dropped; plug-in windows are not scaled by ADI, with one per-plug-in override.
+   - The Info View stays as Live's; the AI chat is a tab at the foot of the browser, collapsed by
+     default, so the column looks as Live's (A1-17, A1-11). The remark marks (ADR-0131) stay.
+
+7. **Editing, as Live, with the additions marked.**
+   - Selecting a time range as Live does is P0 with the Arrangement; the cut, copy, delete and
+     silence commands over a range are P1 (A1-14). Tempo detection from audio moves to P0, with
+     warping (B4-18); the chord track and timecode/video sync stay P3.
+   - **Fades:** Live's fade handles on the clip at P0 (a length handle and a curve handle, one fade
+     for all selected clips). No automatic fade on clip edges: Live's own switch, Create Fades on
+     Clip Edges, starts off (A7-30, the director's ruling of 24 September kept so a render nulls
+     against its source). Fading is made easy: select clips and use the key or the right-click
+     command. **Double-clicking a fade opens Cubase's fade editor (P2), an addition** (A2-09).
+   - **Zoom is exactly Live's**: Ctrl/Cmd+wheel zooms around the current selection (Live 12 manual
+     6.2). This reverses ADR-0145 d2's cursor-centred default; cursor-centred zoom stays an option,
+     off. The device strip has a fixed minimum height, the same as Live's device area at the same
+     zoom (169 zoom-independent units at 100 %, unverified: measured, d26); it expands upward only.
+     No screen-pixel count is binding, because the interface scales (A1-15).
+   - Automation: moving an automated control pauses its automation until Re-Enable Automation, as
+     Live; recording uses Automation Arm; Cubase's modes (touch, latch and the rest) are a visible
+     addition at P2. On screen Alt-drag bends a segment and Alt-double-click straightens it; ADI
+     draws Live's curve once measured. **Automation shapes at P1, exactly Live's set** (sine,
+     triangle, sawtooth, inverse sawtooth, square, the two sets of ramps, the ADSR). MIDI Learn on
+     lane headers P2. Live's "thin out while recording" and return-speed options, yes.
+   - MIDI: step input exactly Live's, P2 (A2-05); Humanize and Randomize exactly Live's two
+     controls, P2 (A2-06); Live 12's MIDI Tools (Transform, Generate) as Live has them, P2
+     (closes ADR-0169 d7); a pattern editor as another view of a clip's notes, P3 (A2-07); the
+     Logical Editor and Expression Maps P3 (A2-16). Capture is P1 for both MIDI (as Live) and the
+     30-second audio memory per armed or monitored input (ADR-0132 d9), an addition (A2-03).
+     MIDI file import and export exactly Live's, no options box, P2 (A6-03); Cubase's MIDI-file
+     options sit behind an Options button. MIDI clips: 128 held notes per track, as Live.
+   - **Scale Mode and tunings, both P1** (2026-10-05): basic Scale Mode exactly as Live 12 (root,
+     scale, in-scale notes highlighted, the editor folded to the scale, devices following it), with
+     the note editor; microtonal and custom tunings (ADR-0178), a tuning per key change (schema
+     1.8), P1 as well. This raises FEATURES.md's scale row from P2. Note naming: English is the
+     default (he uses English only); German (H) and solfège stay as options at the lowest priority.
+     Middle C is C3 by default, as Live.
+   - Warp: a file dropped on a track arrives with no warp (his deviation, d12); pressing Warp then
+     does what Live's Auto-Warp does on import, finds the tempo and the transients, and places a
+     marker on the first beat of each bar (Live 12 manual 9.2.3), so `record.warpDetectTempoChanges`
+     defaults to true. Bitwig's two import choices stay as optional settings.
+   - Whether a recorded MIDI clip snaps to whole bars, scrub behaviour, whether muting a group
+     mutes its tracks, notes starting slightly before a clip: each follows Live once measured.
+   - Random MIDI effects (Random, Chord's Chance, Velocity's Random): Live's behaviour by default
+     (each pass may differ) **plus a visible switch on the device that repeats the result**, so a
+     perfect random run is kept with one click (A2-12; same words cover A4-13, B3-03, B4-06, B4-07).
+
+8. **Devices, plug-ins and hosting.**
+   - Live's fourteen MIDI effects and its devices become built-in ADI devices at P1 and P2, working
+     as Live's; OneShot stays ADI's name for Simpler (ADR-0169 d5). Utility is exactly Live's (no
+     nudge); there is one Vocoder, Live's; Shifter is one device; the phase tool and the frequency
+     shifter are inside Utility and Shifter (A4-12).
+   - Auto Filter gets its FEATURES row at P2; it is Live's device, built with all ten types, DJ
+     among them. **In addition, a simple DJ Filter device for the DAW: a clone of the filter knob on
+     a DJ controller, with the kind of filter settings rekordbox offers, where the curve can be
+     changed a little** (A4-19). win's placement, to strike if wrong: P2, beside Auto Filter;
+     rekordbox's exact options are read before it is specified.
+   - EQ Match lives in the Dynamic EQ plug-in (no channel has an EQ by default). Auto gain-match
+     for any plug-in, as the Airwindows suites already do per device: **added at P2** (A4-14).
+   - **All plug-ins (VST3, CLAP, internal) run in-process at runtime; only the scanner runs out of
+     process, always, with no switch** (D-03, A6-37): `plugins.scanOutOfProcess` leaves the registry;
+     the out-of-process scan is approved (R-17) but not built, and enters FEATURES.md at P1.
+   - Audio Units stay out (ADR-0041 stands; A1-07): he sees no need for AU on any system with VST3,
+     CLAP and the improved AudioGridder. LV2 stays P2 with the Linux desktop (ADR-0109). VST2 cannot
+     come back. CLAP and LV2 are additions Live lacks.
+   - A plug-in that refuses to start passes its sound through and is named as a problem on the
+     device and in the Status Bar (which ADI gets, as Live's, with step 7); never only counted
+     (B1-14). A failed graph rebuild keeps the old sound playing and is shown by name (B1-13).
+     ADI warns, as Live, before a control with automation, envelopes or mappings leaves a plug-in's
+     panel (ADR-0150 d2); a plug-in with no window cannot have parameters deleted (B3-31).
+   - A device that learned from a reference sample (Color Cab's tone profile) keeps its learned
+     tone when the file is missing and shows a small missing-file mark; a device that plays a
+     sample behaves as Live, offline and silent (A4-07).
+   - The Pure Data tier: the DAW uses embedded libpd only; no Max application path, no external
+     Pd/externals folder (A6-31, A7-01): `devices.pdExternalsFolders` leaves the registry. A patch
+     with a loadable library beside it is refused. A Max for Live translator is an addition at P2:
+     simple devices convert automatically, others are handed to an AI with a prompt, then checked
+     (A4-11). A Pd device receives the same notes and per-note expression a plug-in gets (ADR-0194).
+   - Multi-threaded graph processing: a FEATURES row at **P1** (A7-06; ADR-0102 d4). The
+     compensation headroom is 8,192 samples, 171 ms at 48 kHz, scaling with the rate (ADR-0157 d3).
+     A node holding a note never sleeps; its tail counts from the last release (ADR-0158).
+   - **Stem separation is built in and works offline, as Live 12** (A7-12): a model optimised for
+     local use runs natively, no Python, in its own process; four stems as Live. An external
+     service (the user's own on this machine or network, or a cloud API) may do the job instead and
+     is where more stems (N, no hard limit of 4: A2-17; ADiJ's decks keep four) or better models come
+     from. **The standard 4-stem model ships in the installer** (about 100 MB); the 6-stem and
+     high-quality models are optional downloads. This amends ADR-0064 d4 ("no bundled weights, remote
+     APIs only") for stem separation only; other AI jobs stay service-only. `agent.asyncServices`
+     becomes Built-in | local | remote. The rule for model files is d25.
+   - MPE routing (`device.setExpressionRoute`) is "Built for VST3" (A6-27). The plug-in panel's core
+     is built (ADR-0154); the library index is built (ADR-0147). ARA is P3 (A7-04).
+
+9. **Monitoring and I/O, as Live.** The Control Room waits for version 2; until then monitoring is
+   Live's (Cue Out, Solo/Cue, a headphone mix with Pre sends). The pan law is Live's unless changed,
+   one of four per track in `mixer_strip.pan_law` (ADR-0163). Live's Split Stereo Pan Mode is added
+   at P1, with the mixer screen; Width and the two phase switches stay in Utility. Sync with outside
+   gear over MIDI exactly as Live (clock in and out, timecode in only, per-port delay, Song or Pattern
+   clock, the EXT button, Resync), P2; Bitwig's "sync in" chooser goes because Live lets Link and MIDI
+   sync run together; sending timecode out stays an option. **The Tempo Follower is not needed**
+   (A6-01, A8-22): no FEATURES row, no mention in the document. System audio as a track input P1 and
+   the ADI virtual audio device P2 keep their priorities (A3-27). Templates stay where Live keeps
+   them, the User Library (A6-16).
+
+10. **Session View moves to P2** (A7-16), beside external control surfaces, racks and macros and
+    the multimapper curves, all P2. This amends FEATURES.md's "P3 (last)" and the "built last" of
+    ADR-0101 / ADR-0117. The crossfader is P2 with Session View, as in Live (curves, A/B per track,
+    mappable; B4-20); the launch settings sit on Record, Warp & Launch as in Live and arrive with it.
+
+11. **The Settings window takes Live's shape (A6-19, A7-29, and the 49 proposal rows of A6-22).**
+    - Live's ten tab names in Live's order; a setting Live has sits on the tab where Live has it;
+      ADI's own pages come after the ten. Look & Feel splits into Display & Input and Theme &
+      Colors; Link gets its own tab; Updates and Privacy become Licenses & Updates with a Privacy
+      group; the LAN audio node sits on the Link tab, labelled as not Link Audio. No Session page.
+      The Link switch is shown in the control bar by default.
+    - **The "New track" page is dropped; Live's "Save as Default Audio/MIDI Track" is added
+      instead** (replaces A7-02, B2-13, ADR-0156 d16's page). **A Settings "Export" page is added**,
+      App scope, holding export defaults only: file type, name template, and the loudness target of
+      d14; the destination stays on File & Folder and the freeze render settings on Devices (A7-03).
+      The default author name is an App setting that each new project copies into `project.author`.
+    - The Find box also matches related words ("beat" finds "tempo"), the word list being the
+      baseline so it works offline, and the AI can help find a setting (A6-17). Settings changes are
+      logged by default, with a switch; the nine settings the agent may change stand; **settings
+      can be saved and loaded as named profiles** (A6-20; an extension of ADR-0125 d3's bundle).
+      A Scripts page at P2, with the Scripting API (A7-05).
+    - The 49 proposal rows, each ruled yes on 2026-10-05 with these corrections under d1: the mouse
+      wheel over a knob only scrolls by default (Live's way; Cubase's three-way choice stays an
+      option); track colours follow Live's one switch and a default colour (Cubase's five modes
+      dropped); an accent colour; a default colour per track type, off; waveform display options; a
+      "Measure round trip" button beside Driver Error Compensation; release the audio device in the
+      background, default never; a device that cannot be opened always warns, never switches
+      silently; automatic mute above a level limit, default off; MIDI reset on stop and after
+      recording, on; a MIDI filter page, nothing filtered; separate default folders for projects,
+      renders and recordings (recordings default to the project's own folder, as Live); copy
+      imported media default never, as Live; open on start: the template, as Live; browser scanning
+      in the background with a results limit that starts unlimited; a per-plug-in window scale;
+      arm on select kept as an option, its default following Live once checked; a fourth monitoring
+      mode, tape machine; updates checked on launch with release notes, manual download, no
+      auto-install, a beta channel; note-naming options; middle C as C3 or C4; Solo in front and
+      a dedicated solo bus; extract the audio of an imported video; rewind/fast-forward speed;
+      REAPER's editing options each defaulting to Live's behaviour; the automation options; a
+      high-resolution display mode and dialog positioning; a typed value commits on Enter; a click
+      in the ruler or an empty area does what it does in Live; **effects keep running when stopped,
+      always, with no setting**; stop at end of project off; default tempo and time signature from
+      the default template; the wheel over a clip scrolls; the metronome goes to Cue Out; no default
+      send level; **Live's own "MIDI Envelope Auto-Reset" option is added**; discarding incomplete
+      loop-recording takes starts off (Live keeps every pass); the history window opens and behaves
+      as Live's Undo History, with ADI's branches and snapshots as additions. **The one deliberate
+      deviation (row q): audio and video import, and bounce, DO prompt by default**, because ADI
+      offers more there (format conversion, the advanced export page), with a "don't show this
+      again" box and a setting that brings the prompt back; a MIDI file still imports with no box.
+    - Settings that belong to an audio interface, a MIDI port or a plug-in carry a Device mark and
+      are stored with that device (A6-14). Command shortcuts are App scope; Key Map assignments are
+      Project scope in `controller_maps` (ADR-0180 d6). Interface zoom is kept with the application.
+    - The registry changes that follow from this entry are one PR of win's
+      (`win/v1.0-settings`), listed key by key in its commit; SETTINGS.md's counts follow it.
+
+12. **The director's deliberate deviations from Live, confirmed by name (2026-10-05 and 12).**
+    These stay and are never undone by d1: import with no warp (ADR-0132 d6); a frozen or flattened
+    render placed with Warp off (d16); Ctrl+S takes a named snapshot and asks for the name; floating
+    tooltips on by default (600 ms; ADR-0131); MIDI record quantize 1/16 by default (ADR-0132 d8;
+    audio is never quantized on recording); import and bounce prompt by default (d11); the function
+    keys do functions (d6); Create Fades on Clip Edges off (d7).
+
+13. **History and saving (D-01, with its details of 1 and 5 October; D-02 withdrawn).**
+    - Active undo (Ctrl+Z): capped at **2000 steps or 1000 MB**, whichever is reached first; a step
+      is one transaction (ADR-0003, ADR-0111 d2). At the cap the oldest steps are compacted, never
+      past a named snapshot nor a reachable branch point. This replaces SPEC §8.3's 10,000 ops / 90
+      days. Going back to a snapshot is not undone with Ctrl+Z; the work left behind stays as a
+      branch (ADR-0128, ADR-0140: a snapshot is a name on a point, copying nothing).
+    - **Ctrl+S is "Take Snapshot"**: the name prompt is pre-filled with the project name and time;
+      no command is called Save. An automatic snapshot is taken once a day, only on a day the
+      project was open and changed (decides ADR-0128's "none until asked for"). At most **10,000**
+      persistent snapshots: the oldest automatic one is dropped, never a named one. In collaboration
+      mode the limit is **100,000**, and an op not yet uploaded is never compacted.
+    - No auto-save timer: every op is committed as it happens (ADR-0003, ADR-0010). No "immediate
+      save on a destructive edit": nothing in ADI is destructive, since flatten, freeze and bounce
+      are undoable ops (ADR-0059 d5).
+    - Three tiers (A6-07): local state, instant, always-on SQLite; **"Back up project to cloud"**, a
+      manual File-menu command that writes the Collect-and-Export ZIP into a cloud-sync folder
+      (Google Drive, OneDrive, Dropbox, iCloud), no scheduler, no credentials, asks for the folder
+      each time for now, P2 (A6-08); S3 collaboration, the "Excel-style" multiplayer mode that
+      streams atomic ops to the user's bucket (ADR-0182), **P2** (raised from P3; D-08).
+    - Third-party subscription stores (Splice) and cloud packs are a [WISH], not rejected (A6-23).
+
+14. **The channels' expanded abilities (D-04, with its details of 1 and 2 October).** The director
+    did not ask for a channel strip: no compressor, no gate, and no EQ on each channel by default;
+    FEATURES.md's "Channel strip (gate/comp/EQ built in), Cubase, P2" row goes. What he wants:
+    - **Loudness Drive, the replacement for "the VCA trick"** (Mixing LOUD with CTZ, episode 8):
+      one control that scales every track's level into the whole clipper cascade (tracks, buses and
+      master) together, so the mix is auditioned and exported at any loudness target consistently,
+      without altering the mix balance. Pairs with export LUFS targeting. win's note: the format's
+      VCA group (ADR-0077) and the pre-FX input gain (`mixer.setInputGain`) are its mechanism; the
+      drive is a VCA over the leaf tracks' input gain. **No VCA fader tracks** (A3-14): Cubase-style
+      VCA faders are not wanted; FEATURES.md's VCA row becomes the Loudness Drive. win's placement,
+      to strike if wrong: P1, with the mixer screen.
+    - **Export: customisable LUFS targeting, retaining "0 dB peak"**; the default is no normalising,
+      as Live's export dialog (win's proposal, not contradicted: Normalize to peak works as Live's;
+      the loudness mode defaults to −14 LUFS with a −1 dB true-peak ceiling, both editable; the
+      target is a property of each export job, with its defaults on the Export page).
+    - **Auto Gain Stage** stays the one offline command, one undo, −18 dBFS RMS default (ADR-0195
+      d4): no real-time rider was ever requested.
+    - **Group Analog Summing on the master too**: the master is admitted beside groups (amends
+      ADR-0173 d4's groups-only rule and the ops that refuse other tracks); the eight console
+      flavours the repo built stand (ADR-0174; EveryConsole dropped for a fault in its source);
+      **a real "Crosstalk" option is added at P2**, a new model, since none of the eight has one.
+    - **A small live scope and spectrum inside every channel strip**, drawn only while the strip is
+      on screen, a click opening the big Scope or the analyser on that track: **P1, with the Scope**
+      (ADR-0167). The oscilloscope is an editor-style window, like the MIDI editor, where tracks are
+      compared easily; the analyser is the Pd device of ADR-0183 (his Max for Live analyser's
+      measurements), with its oscilloscope tab and spectrogram.
+    - **A loudness meter (LUFS and true peak) at P1, with the mixer screen, on the master channel
+      only**, and in the scope, the analyser and the export dialog; not on every bus; on condition
+      that it does not degrade performance (A3-24).
+    - **Render matrix (D-07)**: a grid of sources (tracks, groups, master) against regions; ticking
+      cells adds jobs to the export queue of ADR-0071, beside the form and the AI. REAPER-style
+      abilities, Cubase-style design; P2.
+
+15. **Macros replicate adi_multimapper natively (D-06, confirmed 2026-10-02 and 05).** A breakpoint
+    curve editor per assigned parameter; several macros may target one parameter (N:1), their
+    results summing in the parameter's own unit up to a user-defined cap (a ceiling and a floor);
+    past the cap further movement is ignored; ADR-0114's other per-target rule, last writer, stays
+    available. His example: the filter dial mapped to macro 1 (0 to 100 %), macro 2 (reversed) and
+    macro 3 (along a curve), summing as in his device, so one EQ Eight acts as filters of every
+    kind. Live's Min and Max is the simplest case. A device's on switch may be a target. He supplies
+    the device file so the sum is matched exactly. Racks and macros are P2 (d10).
+
+16. **Freeze and bounce (D-05, with its details of 2 and 5 October).** Freeze records the whole
+    chain's output, exactly as it sounds (ADR-0059). **A frozen or flattened render is placed with
+    Warp off**, so it nulls against its source (Live places it with Warp on). Two group commands,
+    the aim being to beat Live 12's experimental Options.txt group freeze with the newer
+    architecture: **"Freeze All Channels"** renders every sub-group and channel inside the group
+    separately, so sidechains, sends and solo of a single track keep working; **"Freeze Group"** is
+    the lighter option, one render of the group with its effects baked in and a warning that the
+    sidechains and sends of the channels inside it are muted until it is unfrozen. Both keep the
+    group's fader and pan live. Dedicated **Bounce in Place** and **Bounce to New Track** (Live's
+    command) at P1. Freeze tail 4 s, changeable (`devices.freezeTailSeconds`). Freeze is designed,
+    not built.
+
+17. **Remarks and collaboration (D-08).** Remarks work as Word's comments, at P2: on any object,
+    note, marker or time range; replies in a thread; resolve; a Remarks panel that lists them and
+    jumps to each; in a shared project every remark shows its author. This extends ADR-0131 and
+    ADR-0188 d5's range anchors. The AI must always confirm any action it proposes because a remark
+    asked for it (A5-12). Collaboration is P2 (d13).
+
+18. **Files, media and the library.** Every file type the director asked ADI to support and
+    convert is P1, AAC and M4A included (B2-11; Sound Designer II P3; a file may play before its
+    decoding has finished, as Live; Ogg FLAC is tested before it is claimed). Media is never
+    embedded. **Analysis files: one "analysed" folder in ADI's own data folder holds every analysis
+    file, one per sample** (he dislikes `.asd` files beside his samples, and one cache file too);
+    that is ADR-0156's cache as built, R-16 unchanged. Warp markers and clip settings saved with a
+    sample, as `.asd` keeps them, are the user's data and live in the library, where the clean-up
+    never deletes them. The Decoding Cache: 20 GB maximum, 2 GB minimum free, least recently used
+    first, never a file in use (ADR-0156 d8 amended from 10 GB). The sample-rate ladder is strict
+    (44.1, 48, 88.2, 96, 176.4, 192, 352.8, 384, 705.6, 768 kHz), hard floor 44.1 (lower files are
+    converted up), **default 44.1 kHz** for the device and new projects (A6-09; amends ADR-0157's 48;
+    the project schema default changes in the next minor). The development folders and repository
+    stay `adi_daw`; the published product is ADI (A5-26); the move to its own repository waits for
+    the director's go.
+
+19. **Sync and network.** Ableton Link is P1, first-class (ADR-0185 d7), on the open SDK
+    (GPL-2.0-or-later, usable under d25); PTP is distinct. The LAN audio node (based on SonoBus)
+    streams audio across the network at P2, behind Link; Link Audio stays a [WISH] (ADR-0126).
+    AudioGridder is his own addition and wanted, fallback at P1 (d4). Keep Monitoring Latency
+    defaults on (ADR-0132).
+
+20. **The AI.** The rate cap is **6000 ops a minute** (amends ADR-0156 d18's 600) and **6000 per
+    request** (was 256): the agent must be able to make a lot of changes when needed; a request is
+    still shown first and applied as one undo step. The agent runs as a small separate helper,
+    adi-agent, with three tools, P2 (ADR-0168). The engine filters echoes from undos and presets
+    (A6-13). Crash reports are opt-in, off (R-20). The quarantine is approved (R-17).
+
+21. **The defaults ruled (A7-15 and others), for the record:** buffer size **512** (the director:
+    "I will probably use 2048 anyways"; turns ADR-0152 d7's "256, a choice" into a ruling); sample
+    rate 44.1 kHz; decoding cache 20 GB; freeze tail 4 s; LAN jitter buffer 40 ms; recording
+    threshold off (10 ms when on); Reduced Latency When Monitoring off; Chase MIDI Notes on (a new
+    switch, as Live's Options menu; amends ADR-0155 d3, where notes were always chased); chase of
+    controllers, program change and pitch bend on for now, measured in Live (A6-35); takeover mode
+    Pick-Up until measured (A6-30 reopened); MIDI Envelope Auto-Reset on; Warp: detect tempo changes
+    on; zoom on selection on; discard incomplete takes off; browser results unlimited; copy imported
+    media never; wheel changes parameters never; tooltips on; record quantize 1/16; middle C C3;
+    Solo in Place as Live once measured; Master Focus Dial assignable by MIDI Learn from the global
+    preferences, with mutual exclusion (a project binding on the Dial's control is shown shadowed
+    and cannot fire; A6-28). No benchmark claim the C++ tests disproved: the claim true on both
+    compilers is that a 64-track project with 63 silent tracks costs less than an 8-track project
+    playing in full **from 512 samples up** (A6-06, B5-18).
+
+22. **Cloud, backups and the suite.** The File & Folder "Back up project to cloud" row is strictly
+    the d13 design (A6-08). ADI and ADiJ each keep their own settings folder and share the library
+    index, the plug-in capability record and a cache (A7-23). The application owns the audio
+    device, not the active project (A5-02).
+
+23. **Roadmap directive D-09 (2026-10-05): the Mac and Linux versions are built immediately after
+    the Windows version works, and alongside it wherever that is easier than later.** This replaces
+    the roadmap's "Linux after the suite ships". macOS stays covered by CI builds meanwhile
+    (ADR-0202 d2). Step 7 is built purely as Live (d5). Step 10 continues: Pd runs in the engine,
+    the devices and the analyser are built; the wrapper's delay (d4) and the patch editor remain.
+
+24. **What is measured in Live before the text calls it finished (the list is `docs/AWAITING.md`,
+    rows 6 onward, each labelled with the Live version it needs).** Among them: the device strip's
+    height at 100 % zoom; a new send knob's start and top; Solo in Place in a fresh Set; Pre sends
+    under solo; the sidechain chooser's starting tap; Track Delay's range and which tracks have one;
+    return feedback latency and whether any other loop is allowed; Bounce Group's sends (Live 12);
+    Shifter's Pitch-mode latency; Auto Filter side by side (Live 12); where a missing plug-in is
+    shown; the Configure-mode warning's words; Undo and a deleted plug-in's window; whether an
+    override survives save; the curve Alt-drag draws; Save As / Save a Copy; MIDI file import and
+    export; timecode frame rates; Create Fades in a fresh install; the Windows driver order; Link
+    Audio peers (Live 12); the Settings tabs on Live 12; tunings in the note ruler (Live 12);
+    takeover mode, record quantization and chase in a fresh install; the Main track's mute and
+    solo; group mute; snap of recorded MIDI clips; scrub.
+
+25. **Licensing is closed (the director, 2026-10-12: "1").** *ADI (adi_daw) is AGPLv3, all of it.*
+    - `LICENSE` becomes the GNU Affero General Public License, version 3 (`AGPL-3.0-or-later`).
+      The ADI section of the monorepo's `OPEN_SOURCE_POLICY.md` is reduced to this paragraph.
+      The per-file SPDX headers of ADI's own files are switched to `AGPL-3.0-or-later` by a
+      mechanical follow-up PR that leaves every file with a third-party provenance line (those in
+      `docs/EXTERNAL-CODE.md`) exactly as it is.
+    - Any open-source code may go into ADI, under any open-source licence: MIT, BSD, Apache,
+      WTFPL, Unlicense, LGPL, GPL-2.0-or-later, GPLv3, AGPLv3. Keeping notices, naming the source in
+      the commit and adding the row to `docs/EXTERNAL-CODE.md` is the agents' housekeeping.
+    - **Only two things are refused, by the agents, without asking the director:** code that
+      forbids commercial use (CC-NC and the like), and anything proprietary (Ableton's, Serum's, any
+      closed binary or decompiled code). GPL-2.0-only is refused the same way, being incompatible.
+      Behaviour may be cloned; their code never. A refusal is reported as "not usable", nothing more.
+    - Model files (A7-12's homework) follow the same two refusals: weights ship in the installer or
+      as a download only under terms that allow redistribution and commercial use; a model under a
+      non-commercial or proprietary licence is "not usable", however good.
+    - **This supersedes A4-23's "core stays GPLv3" (ruled 2026-10-01, withdrawn here).** ADR-0183 d6
+      stands again: PerceptoMap may be ported directly into the analyser. ADR-0187 d3's sibling
+      placement of copied code is structure only, no longer a licence wall. ADR-0138's "AGPL in
+      separate plug-ins" is simply "AGPL is fine". The Master Reference's licence lines (the
+      cover, section 15, Appendix C) say AGPLv3 and announce no further change.
+    - **The director is never asked about licensing again.** His reasons, in his words: he makes
+      things for himself and shares them; he pays nothing and intends no profit; he is not sensitive
+      about his work; he wants others to be able to improve it and to merge what helps. There is no
+      contributor licence agreement: a contribution is accepted under the project's licence as
+      submitted (A5-21).
+
+26. **The document and the spec.** Master Reference v1.0 is built from this entry and the ledgers:
+    every "ADI declines sends" sentence goes; §8.2 is rewritten for sends and returns; the counts
+    (tests, ADRs, schema, devices) are read off main on the build day; the licence lines follow
+    d25; the rulings' priorities land in FEATURES.md in win's PR (`win/v1.0-rulings`). The ordered
+    work plan for whoever builds next, `docs/BUILD-BRIEF.md`, is derived from this entry, FEATURES.md
+    and the roadmap, and names what is built, what the rulings change in built code, and the order.
+
+### Amendments to earlier entries, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0041 | stands: no Audio Units, no VST2 (A1-07) |
+| ADR-0057 d6 | amended: a bypassed device keeps its delay in the compensation (d4) |
+| ADR-0059 | extended: Freeze All Channels, Freeze Group with warning, Bounce to New Track, renders placed Warp off (d16) |
+| ADR-0064 d4 | amended for stem separation only: the 4-stem model ships in the installer (d8) |
+| ADR-0072 | **reversed**: return tracks and sends as Live, plus ADI's sends into any track and pan on a send (d3) |
+| ADR-0101, ADR-0117 | amended: Session View P2, not last (d10); F3 stays (d6) |
+| ADR-0104 d3 | amended: the palette is Ctrl+P / Cmd+P (d6) |
+| ADR-0112 | amended: no remembered zoom presets; per-window zoom as Live (d6) |
+| ADR-0114 | confirmed and detailed: N:1 summing with a cap; last writer stays (d15) |
+| ADR-0125 d3 | extended: named settings profiles; a change log (d11) |
+| ADR-0128 | decided: a daily automatic snapshot on a day the project changed (d13) |
+| ADR-0131, ADR-0188 d5 | extended: remarks as Word's comments, threads, resolve, a panel, authors (d17) |
+| ADR-0132 d6, d7, d8, d9 | stand as the director's deviations and additions (d7, d12) |
+| ADR-0138 | simplified: AGPL is fine anywhere in ADI (d25) |
+| ADR-0145 d2 | **reversed**: Live's zoom anchor is the default; cursor-centred an option, off (d7) |
+| ADR-0152 d7 | ruled: buffer 512 (d21) |
+| ADR-0155 d3 | amended: Chase MIDI Notes is a switch, on (d21) |
+| ADR-0156 d8, d16, d18 | amended: cache 20 GB; the New track page dropped; 6000 ops a minute (d11, d18, d20) |
+| ADR-0157 | amended: default 44.1 kHz (d18) |
+| ADR-0169 d5, d7 | d5 stands (OneShot); d7 closed: MIDI Tools at P2 (d7) |
+| ADR-0173 d4 | amended: the master is summed too; Crosstalk P2 (d14) |
+| ADR-0180 d9, ADR-0200 d5 | the desktop's touch rules move to step 15 (d5) |
+| ADR-0182 | raised: collaboration P2 (d13, d17) |
+| ADR-0183 d6, d12 | d6 restored (PerceptoMap may be ported); d12's fixed delay engineered out (d4, d25) |
+| ADR-0187 d3 | structure only, no licence wall (d25) |
+| ADR-0195 d4 | confirmed: Auto Gain Stage offline, −18 dBFS RMS (d14) |
+| FEATURES.md | rows added, raised, struck as d3 to d20 say; done in `win/v1.0-rulings` |
+| SPEC §8.3 | replaced: 2000 steps or 1000 MB (d13) |

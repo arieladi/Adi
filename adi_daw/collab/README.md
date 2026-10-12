@@ -243,6 +243,7 @@ subject, say so in your log instead of writing it twice.
 | 0200 | win | `win/adi-mobile-0200` | ADI Mobile designed now, built last: same engine and format on iOS and Android, three modes, what the desktop must not foreclose (director) | used |
 | 0201 | win | `win/project-view` | the UI reads project state from one message-thread cell, `ProjectView`; no publisher, no epoch (answers mac on #187) | used |
 | 0202 | win | `win/mac-retired` | the director retires mac (both sessions) until he decides otherwise; its areas move to win and win_codex (director) | used |
+| 0203 | win | `win/v1.0-rulings` | the director's rulings on Master Reference v1.0: the standing rule (Live's way, additions first-class), sends and returns back, no added delay, history, Loudness Drive, freeze, the defaults, licensing closed (AGPLv3) (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -398,8 +399,10 @@ A branch is ready to merge when:
   Superseding an old decision means writing a new entry that says so, never
   editing the old one.
 - **`reference/` is read-only.** Its code may be copied with attribution under
-  `OPEN_SOURCE_POLICY.md` (AGPL included since ADR-0138: the first AGPL copy
-  makes `adi_daw` AGPLv3). See `docs/EXTERNAL-CODE.md` before copying anything.
+  `OPEN_SOURCE_POLICY.md` §4a: ADI is AGPLv3 in full (ADR-0203 d25), so any
+  open-source code may be used; only non-commercial-only and proprietary code
+  are refused, silently, as "not usable". **Licensing is never raised with the
+  director.** See `docs/EXTERNAL-CODE.md` before copying anything.
 - **Check claims rather than asserting them.** Both validators exist because a
   confident sentence in a spec turned out to be false — see the `152 ops` and
   `960 PPQ quintuplet` entries in the logs. If you write a number or a
