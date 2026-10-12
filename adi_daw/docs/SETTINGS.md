@@ -2,8 +2,8 @@
 
 The core library every Settings page reads and writes: `src/adi/settings/**`,
 tested by `tests/test_settings.cpp`. It has no UI. The rulings are ADR-0125
-(R-01 to R-07, d1 to d3), ADR-0127 d5, ADR-0145 and ADR-0149. The decisions
-this library adds are ADR-0152.
+(R-01 to R-07, d1 to d3), ADR-0127 d5, ADR-0145, ADR-0149 and, for the
+defaults, ADR-0203 (§8). The decisions this library adds are ADR-0152.
 
 ## 1. The registry (`registry.hpp`)
 
@@ -31,23 +31,23 @@ unknown key from a caller.
 
 | Key | Page | Default | Ruling |
 |---|---|---|---|
-| `lookfeel.zoomOnSelection` | Look & Feel | off | d2: Ctrl/Cmd + wheel zooms around the selection, as Live does |
+| `lookfeel.zoomOnSelection` | Look & Feel | on | d2 as amended by ADR-0203: Ctrl/Cmd + wheel zooms around the selection, as Live does; off zooms around the cursor |
 | `audio.silentResampling` | Audio | off | d3: resample without the mismatch bar |
-| `audio.bufferSize` | Audio | 256 | d5: 64, 128, 256, 512, 1024, 2048 or 4096. No 32 and no automatic switching |
+| `audio.bufferSize` | Audio | 512 | d5: 64, 128, 256, 512, 1024, 2048 or 4096. No 32 and no automatic switching |
 | `audio.driverType` | Audio | system default | d5: ASIO is one choice, opened through JUCE's wrapper. No raw bypass is offered |
 | `audio.linuxBackend` | Audio | PipeWire/JACK | d4: ALSA or PipeWire/JACK |
 | `audio.jackTransportSync` | Audio | off | d4 |
 | `plugins.clapFolders`, `plugins.lv2Folders` | Plug-ins | none | d4: custom folders on Linux |
 
-The buffer default of 256 is a choice, not a ruling. ADR-0145 names the sizes
-offered, not the default. 256 is the middle of ADR-0102's safe range; the
-tracking sizes (64 and 128) are one click away.
+ADR-0145 names the sizes offered, not the default. The default is 512, a
+ruling (ADR-0203); it was 256 before. The tracking sizes (64 and 128) are two
+clicks away.
 
 ## 2. The file (`store.hpp`)
 
 ```
 <appdata::pathsFor(app).config>/settings.json
-{"schema": 1, "app": "ADI", "values": {"audio.bufferSize": 256, ...}}
+{"schema": 1, "app": "ADI", "values": {"audio.bufferSize": 512, ...}}
 ```
 
 - **One file per application.** ADI and ADiJ each have their own
@@ -68,8 +68,11 @@ tracking sizes (64 and 128) are one click away.
 `time`, `actor` (`user` or `agent`), `key`, `before`, `after`, and `detail` for
 the agent's model. The time is passed in by the caller. **An agent's change is
 always logged.** A person's is logged too, by default: ADR-0125 left that open
-and recommended it, and ADR-0152 d3 decides it. There is no undo (ADR-0125 d3);
-recovery is a bundle or the page's Defaults button (`resetPage`).
+and recommended it, and ADR-0152 d3 decides it. The switch is a setting,
+`settings.logChanges` on the Privacy page, on (A6-20, ADR-0203); the store
+reads it before each write, so the change that turns the log off is the log's
+last line. There is no undo (ADR-0125 d3); recovery is a bundle or the page's
+Defaults button (`resetPage`).
 
 ## 4. The agent's pipeline
 
@@ -126,11 +129,11 @@ registry is filled from it. `catalogue.{hpp,cpp}` puts every row in exactly
 one of two lists, and `tests/test_settings.cpp` reads the catalogue and proves
 the split.
 
-- **Answered: 146 rows.** Each names the registry keys that answer it. A key
+- **Answered: 145 rows.** Each names the registry keys that answer it. A key
   may answer several rows: Part III's Cubase, Bitwig and REAPER rows mostly
   point back to settings on Live's pages, and `audio.bufferSize` answers both
   Audio and Engine.
-- **Absent: 65 rows.** Each has a kind and a reason:
+- **Absent: 66 rows.** Each has a kind and a reason:
 
   | Kind | When | Rows |
   |---|---|---|
@@ -138,7 +141,7 @@ the split.
   | note | NOTE | 2 |
   | backlog | BACKLOG: arrives with its feature | 17 |
   | wish | WISH: not planned | 3 |
-  | not a setting | decided or proposed, but a behaviour, a command, a display or a fixed rule | 33 |
+  | not a setting | decided or proposed, but a behaviour, a command, a display or a fixed rule | 34 |
 
   The test holds the status to the list. A REJECTED, NOTE, BACKLOG or WISH row
   is never answered, and "not a setting" is only for a DECIDED or DIRECTION
@@ -148,28 +151,28 @@ A row is named `<section> / <setting>`: the section as the catalogue heads it,
 and the setting cell up to its first ` (`. Two settings, PTP and AudioGridder
 servers, appear in two sections each, so the section is part of the name.
 
-**222 settings on 21 pages:**
+**225 settings on 21 pages:**
 
 | Page | Settings | Notes |
 |---|---|---|
 | Look & Feel | 48 | Live's Display & Input and Theme & Colors |
-| Audio | 24 | 2 Device scope |
+| Audio | 26 | 2 Device scope |
 | Record | 18 | |
-| MIDI | 23 | 8 Device scope (per port) |
+| MIDI | 25 | 8 Device scope (per port) |
 | Editing | 20 | |
-| Plug-ins | 12 | 2 Device scope (per plug-in) |
-| Library | 6 | |
-| Privacy | 3 | |
+| Plug-ins | 11 | 2 Device scope (per plug-in) |
+| Library | 5 | |
+| Privacy | 4 | |
 | AI | 6 | |
-| File & Folder | 11 | |
-| Mixing | 5 | |
-| New track | 5 | |
-| Transport | 6 | |
+| File & Folder | 12 | |
+| Export | 7 | the export dialog's defaults (A7-03 c, ADR-0203) |
+| Mixing | 4 | |
+| Transport | 5 | |
 | Sync | 13 | |
 | Engine | 1 | |
 | Updates | 2 | |
 | Windows | 3 | |
-| Devices | 5 | |
+| Devices | 4 | |
 | Music | 5 | |
 | Shortcuts | 2 | |
 | Project | 4 | |
@@ -178,10 +181,15 @@ servers, appear in two sections each, so the section is part of the name.
 from ADR-0157's ladder: 44.1 / 48, 88.2 / 96, 176.4 / 192, 352.8 / 384 and
 705.6 / 768 kHz. Nothing below 44.1 kHz is offered; a media file below it
 still plays, converted (ADR-0157 d1). `sampleRateLadder()` is the one list.
+The device opens at 44.1 kHz by default (ADR-0203); the project's default
+stays 48 kHz because it is the `.adi` schema's column default
+(`docs/format/schema.sql`, `project.sample_rate`), which moves only with a
+schema bump.
 
-**The Decoding Cache.** `cache.maxSizeMb` (10,240) and `cache.minFreeSpaceMb`
-(2,048) are the keys the decoder reads (`audio::limitsFromSettings`), and the
-test checks that their defaults are the decoder's own.
+**The Decoding Cache.** `cache.maxSizeMb` (20,480; ADR-0203) and
+`cache.minFreeSpaceMb` (2,048) are the keys the decoder reads
+(`audio::limitsFromSettings`), and the test checks that their defaults are the
+decoder's own.
 
 **Decisions this fill made** (ADR-0156, part two):
 - **The theme follows the OS by default**, as the catalogue decides.
@@ -192,12 +200,53 @@ test checks that their defaults are the decoder's own.
   AI-AGENT itself), and now reads Propose.
 - **The catalogue adds nothing to the agent's whitelist.** The same nine
   settings as before are marked. The Engine page joins the structural "never".
-- **New-track defaults are App scope,** on a *New track* page. The catalogue
-  calls R-26's page Project scope, but no op sets them in the `.adi`, and a
-  Project setting must name its op.
+- **New-track defaults were App scope,** on a *New track* page: the catalogue
+  called R-26's page Project scope, but no op sets them in the `.adi`, and a
+  Project setting must name its op. ADR-0203 drops the page (§8).
 - **Per-port MIDI switches and per-plug-in overrides are Device scope:**
   listed for the badge and stored with the port or device.
 - **Where the catalogue names no default, the default is Live's where Live
   has one, and otherwise stated in the help.** For example: the PDC threshold
-  when recording is 10 ms, the rate cap is 600 ops a minute, and the freeze
-  tail is 4 s.
+  when recording is 10 ms (behind a switch since ADR-0203), the rate cap is
+  6000 ops a minute (ADR-0203; it was 600), and the freeze tail is 4 s.
+
+## 8. The v1.0 rulings (ADR-0203)
+
+The director's rulings on Master Reference v1.0, applied to the registry.
+Where a default moved, the help says so and cites ADR-0203; where Live has
+the behaviour, Live's is the default and the other way stays the option.
+
+**Defaults that moved** (old → new): `audio.bufferSize` 256 → 512;
+`audio.sampleRate` 48 → 44.1 kHz; `cache.maxSizeMb` 10,240 → 20,480;
+`agent.maxOpsPerMinute` 600 → 6000; `agent.maxOpsPerRequest` 256 → 6000 (its
+maximum 10,000 → 100,000); `record.warpDetectTempoChanges` off → on (Live's
+Auto-Warp); `lookfeel.zoomOnSelection` off → on; `record.discardIncompleteTakes`
+on → off; `library.maxResults` 10,000 → 0, which is unlimited (0 is now
+legal); `files.copyImportedMedia` ask → never; `lookfeel.wheelChangesParameters`
+not in scrollable areas → never. `lookfeel.autoTrackColor` is Live's switch
+(on) instead of Cubase's five modes. `agent.asyncServices` gains `builtin`,
+the default: stem separation runs built in, in its own process (ADR-0064 d4
+amended). `audio.metronomeOutput` empty is Live's Cue Out.
+
+**Removed:** `plugins.scanOutOfProcess` (the scan always runs out of process,
+D-03 / A6-37), `devices.pdExternalsFolders` (embedded libpd only, A6-31),
+`mixing.defaultSendLevelDb`, `transport.runFxWhenStoppedMs` (effects always
+keep running when stopped, as Live) and the five `newtrack.*` keys with their
+page (Live's Save as Default Audio/MIDI Track replaces it, a later feature).
+`library.recordFolder` is now `files.recordFolder`, on File & Folder; empty
+means the project's own folder, as Live.
+
+**Added:** `midi.chaseNotes` (on; amends ADR-0155 d3), `midi.envelopeAutoReset`
+(on), `audio.reducedLatencyWhenMonitoring` (off), `audio.recordPdcThresholdEnabled`
+(off, as Live: nothing is bypassed while recording; the 10 ms threshold applies
+only when it is on), `settings.logChanges` (on, §3), and the Export page:
+`export.fileType` (wav), `export.bitDepth` (24), `export.dither` (triangular,
+Live's default), `export.nameTemplate`, `export.normalize` (off; peak is Live's
+Normalize, loudness aims at `export.loudnessTargetLufs`, -14, under
+`export.truePeakCeilingDb`, -1; D-04 a). The destination stays
+`files.renderFolder`; freeze render settings stay on Devices.
+
+**Registry-only for now:** the engine chases notes unconditionally and reads no
+setting for reduced-latency monitoring, the PDC bypass, envelope auto-reset or
+the export defaults; wiring each is a follow-up. The switches exist so the
+pages, presets and bundles are already right.

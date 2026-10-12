@@ -13,6 +13,9 @@ namespace {
 
 const char* actorName(Actor a) { return a == Actor::Agent ? "agent" : "user"; }
 
+/// The switch for a person's changes in the log (A6-20, ADR-0203).
+constexpr const char* kLogChangesKey = "settings.logChanges";
+
 bool readText(const std::filesystem::path& p, std::string& out) {
     std::ifstream in(p, std::ios::binary);
     if (!in) return false;
@@ -101,8 +104,11 @@ bool AppSettings::write(const std::string& key, const Value& value, const Change
     if (s->scope == Scope::Device) { why = key + " belongs to a device"; return false; }
     if (!validate(*s, value, why)) return false;
     const Value before = get(key);
+    // Read before the write, so the change that turns the log off is the log's
+    // last line and explains its own silence (A6-20, ADR-0203).
+    const bool logged = who.actor != Actor::User || get(kLogChangesKey) != false;
     values_[key] = value;
-    if (before != value) log(key, before, value, who);
+    if (logged && before != value) log(key, before, value, who);
     return true;
 }
 

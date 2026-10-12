@@ -91,9 +91,10 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "How a slider takes a click: jump to it, touch, ramp or relative (R-09).",
                        {"jump", "touch", "ramp", "relative"}, "jump"));
     r.push_back(choice("lookfeel.wheelChangesParameters", lf, "Mouse wheel changes parameters",
-                       "Whether the mouse wheel moves a control under it. Default: not in "
-                       "scrollable areas, so scrolling never nudges a fader.",
-                       {"never", "notInScrollableAreas", "always"}, "notInScrollableAreas"));
+                       "Whether the mouse wheel moves a control under it. Never, as Live: the "
+                       "wheel only scrolls (ADR-0203). Cubase's three-way choice stays: not in "
+                       "scrollable areas, or always.",
+                       {"never", "notInScrollableAreas", "always"}, "never"));
     r.push_back(make("lookfeel.showTooltips", Type::Bool, lf, "Floating tooltips",
                      "Show floating tooltips after the delay; the Info View is instant (ADR-0131).", true));
 
@@ -109,9 +110,10 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(ranged("lookfeel.colorIntensity", Type::Int, lf, "Colour intensity",
                        "Saturation of track and clip colours.", 50, 0, 100));
     r.push_back(ranged("lookfeel.hue", Type::Int, lf, "Hue", "Rotates the theme's hues, in degrees.", 0, -180, 180));
-    r.push_back(choice("lookfeel.autoTrackColor", lf, "Auto-assign track colours",
-                       "Cubase's five modes. Live's on is previous + 1, its off is default.",
-                       {"default", "previous", "previousPlusOne", "lastApplied", "random"}, "previousPlusOne"));
+    r.push_back(make("lookfeel.autoTrackColor", Type::Bool, lf, "Auto-assign track colours",
+                     "Live's switch: a new track takes the previous track's colour plus one; off: "
+                     "the default colour (ADR-0203).",
+                     true));
     r.push_back(choice("lookfeel.clipColor", lf, "Clip colour", "New clips take the track's colour, or a random one.",
                        {"track", "random"}, "track"));
     r.push_back(make("lookfeel.accentColor", Type::Text, lf, "Accent colour",
@@ -159,8 +161,9 @@ void catalogueSettings(std::vector<Setting>& r) {
                        ""));
     r.push_back(choice("audio.sampleRate", "Audio", "Sample rate",
                        "The rate the device is opened at: 44.1 to 768 kHz, nothing lower "
-                       "(ADR-0157). A project at another rate raises the mismatch bar.",
-                       sampleRateLadder(), 48000));
+                       "(ADR-0157). Default 44.1 kHz (ADR-0203). A project at another rate "
+                       "raises the mismatch bar.",
+                       sampleRateLadder(), 44100));
     r.push_back(choice("audio.srcQuality", "Audio", "Sample-rate conversion",
                        "Default quality of sample-rate and pitch conversion, as Live.", {"normal", "high"}, "high"));
     r.push_back(ranged("audio.driverErrorCompensationMs", Type::Real, "Audio", "Driver error compensation",
@@ -185,9 +188,14 @@ void catalogueSettings(std::vector<Setting>& r) {
                      "When a device cannot be opened, open the system device silently. ADI "
                      "always warns; this decides whether it also falls back.",
                      false));
+    r.push_back(make("audio.recordPdcThresholdEnabled", Type::Bool, "Audio", "Bypass slow plug-ins when recording",
+                     "Off, as Live: nothing is bypassed while recording. On: plug-ins with more "
+                     "latency than the threshold are bypassed on armed tracks (R-12, ADR-0203).",
+                     false));
     r.push_back(ranged("audio.recordPdcThresholdMs", Type::Real, "Audio", "Delay compensation threshold when recording",
-                       "Plug-ins with more latency than this are bypassed on armed tracks while "
-                       "recording; the mix is otherwise fully compensated (R-12).",
+                       "With the switch above on, plug-ins with more latency than this are "
+                       "bypassed on armed tracks while recording; the mix is otherwise fully "
+                       "compensated (R-12).",
                        10.0, 0, 500));
     r.push_back(make("audio.autoMute", Type::Bool, "Audio", "Automatic mute at a limit",
                      "Mute the output when it passes the limit: the one setting between a "
@@ -196,7 +204,7 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(ranged("audio.autoMuteLimitDb", Type::Real, "Audio", "Automatic mute limit",
                        "The level, in dBFS, above which the output mutes.", 12.0, 0, 24));
     r.push_back(make("audio.metronomeOutput", Type::Text, "Audio", "Metronome output",
-                     "The output the metronome plays to. Empty: the main output.", ""));
+                     "The output the metronome plays to. Empty: Live's Cue Out (ADR-0203).", ""));
 
     // --- File & Folder (catalogue II §6) ----------------------------------------------------------
     const std::string ff = "File & Folder";
@@ -206,8 +214,9 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "Open a copy of the sample, or the file in place.", {"copy", "inPlace"}, "copy"));
     r.push_back(ranged("cache.maxSizeMb", Type::Int, ff, "Maximum cache size",
                        "Decoding cache: decoded audio, analysis and peaks. The least recently "
-                       "used goes first, never a file in use (ADR-0156). In MB.",
-                       10240, 0, 16777216));
+                       "used goes first, never a file in use (ADR-0156). In MB; default 20 GB "
+                       "(ADR-0203).",
+                       20480, 0, 16777216));
     r.push_back(ranged("cache.minFreeSpaceMb", Type::Int, ff, "Minimum free space",
                        "Decoding cache: the free space kept on its disk; files are evicted to "
                        "keep it (ADR-0156). In MB.",
@@ -218,9 +227,14 @@ void catalogueSettings(std::vector<Setting>& r) {
                      "Where new projects are saved (REAPER).", ""));
     r.push_back(make("files.renderFolder", Type::Path, ff, "Default render folder",
                      "Where exports are written.", ""));
+    r.push_back(make("files.recordFolder", Type::Path, ff, "Default record folder",
+                     "Where a new project records audio. Empty: the project's own folder, as "
+                     "Live (ADR-0203).",
+                     ""));
     r.push_back(choice("files.copyImportedMedia", ff, "Copy imported media into the project",
-                       "Always, ask, or never, in Live's Collect Files wording. Default: ask.",
-                       {"always", "ask", "never"}, "ask"));
+                       "Always, ask, or never, in Live's Collect Files wording. Default: never, "
+                       "as Live (ADR-0203).",
+                       {"always", "ask", "never"}, "never"));
     r.push_back(choice("files.openOnStart", ff, "Open on start",
                        "What opens when ADI starts: nothing, the last project, or a template.",
                        {"nothing", "lastProject", "template"}, "template"));
@@ -229,13 +243,43 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("files.defaultAuthor", Type::Text, ff, "Default author",
                      "The author new projects are given (Cubase).", ""));
 
+    // --- Export (A7-03 c, ADR-0203): the export dialog's defaults, App scope. The
+    // destination is files.renderFolder above; freeze renders are on Devices.
+    const std::string ex = "Export";
+    r.push_back(choice("export.fileType", ex, "File type",
+                       "The format the export dialog starts with (A7-03 c). WAV, as Live.",
+                       {"wav", "aiff", "flac", "mp3", "aac"}, "wav"));
+    r.push_back(choice("export.bitDepth", ex, "Bit depth",
+                       "The PCM depth the export dialog starts with: 16, 24 or 32, Live's three "
+                       "(A7-03 c).",
+                       {16, 24, 32}, 24));
+    r.push_back(choice("export.dither", ex, "Dither",
+                       "The dither the export dialog starts with when the depth is below 32-bit. "
+                       "Triangular is Live's default (Live 12 manual 5.1.3.3).",
+                       {"none", "triangular", "rectangular", "pow-r1", "pow-r2", "pow-r3"}, "triangular"));
+    r.push_back(make("export.nameTemplate", Type::Text, ex, "File name template",
+                     "How exported files are named; {project} and {track} are filled in.",
+                     "{project} - {track}"));
+    r.push_back(choice("export.normalize", ex, "Normalize",
+                       "Off, as Live's export dialog. Peak: Live's Normalize. Loudness: to the "
+                       "LUFS target below (D-04 a).",
+                       {"off", "peak", "loudness"}, "off"));
+    r.push_back(ranged("export.loudnessTargetLufs", Type::Real, ex, "Loudness target",
+                       "The integrated loudness a Loudness normalize aims for, in LUFS (D-04 a).",
+                       -14.0, -36, 0));
+    r.push_back(ranged("export.truePeakCeilingDb", Type::Real, ex, "True-peak ceiling",
+                       "The true-peak level a Loudness normalize never passes, in dBTP (D-04 a).",
+                       -1.0, -12, 0));
+
     // --- Library (catalogue II §7) ---------------------------------------------------------------
     r.push_back(choice("library.collectOnExport", "Library", "Collect files on export",
                        "Same three, same wording as Live.", {"always", "ask", "never"}, "ask"));
     r.push_back(make("library.backgroundIndexing", Type::Bool, "Library", "Index content folders in the background",
                      "Keep the browser's index current while ADI runs.", true));
     r.push_back(ranged("library.maxResults", Type::Int, "Library", "Maximum browser results",
-                       "The most results a browser search shows.", 10000, 100, 1000000));
+                       "The most results a browser search shows. 0: unlimited (the default, so "
+                       "nothing Live would show is hidden; ADR-0203).",
+                       0, 0, 1000000));
 
     // --- Plug-ins (catalogue II §8) --------------------------------------------------------------
     r.push_back(make("plugins.useVst3SystemFolders", Type::Bool, "Plug-ins", "Use VST3 system folders",
@@ -277,9 +321,9 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "names follow Live.",
                        {"beats", "tones", "texture", "re-pitch", "complex", "complexPro"}, "beats"));
     r.push_back(make("record.warpDetectTempoChanges", Type::Bool, "Record", "Warp: detect tempo changes",
-                     "When Warp runs on a raw clip, follow tempo changes rather than assume one "
-                     "tempo (ADR-0132 d7).",
-                     false));
+                     "On: Live's Auto-Warp places a marker on the first beat of each bar (Live "
+                     "12 manual 9.2.3). Off: Warp From Here (Straight) (ADR-0132 d7, ADR-0203).",
+                     true));
     r.push_back(choice("record.warpInsertFrom", "Record", "Warp: insert from",
                        "When Warp runs, 1.1.1 goes on the first beat or at the sample start (ADR-0132 d7).",
                        {"firstBeat", "sampleStart"}, "firstBeat"));
@@ -287,7 +331,9 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "Which tracks arm when selected (Bitwig).", {"none", "instrumentAndMidi", "all"},
                        "instrumentAndMidi"));
     r.push_back(make("record.discardIncompleteTakes", Type::Bool, "Record", "Discard incomplete takes",
-                     "In loop recording, drop a first or last take shorter than the threshold (REAPER).", true));
+                     "In loop recording, drop a first or last take shorter than the threshold "
+                     "(REAPER). Off, as Live keeps every loop-recording pass (ADR-0203).",
+                     false));
     r.push_back(ranged("record.completeTakePercent", Type::Int, "Record", "Complete take threshold",
                        "The share of the loop a take must cover to be kept, in percent.", 50, 0, 100));
     r.push_back(make("record.snapMidiPartsToBars", Type::Bool, "Record", "Snap MIDI clips to bars",
@@ -336,6 +382,10 @@ void catalogueSettings(std::vector<Setting>& r) {
                      "Message types and channels never echoed, comma-separated (Cubase).", ""));
     r.push_back(make("midi.extendEarlyNotes", Type::Bool, "MIDI", "Play notes that start before the clip",
                      "A note a few ticks before a clip starts still sounds (Cubase).", true));
+    r.push_back(make("midi.envelopeAutoReset", Type::Bool, "MIDI", "MIDI Envelope Auto-Reset",
+                     "Resets certain MIDI control messages at the start of a new clip, as Live's "
+                     "Options entry (Live 12 manual 26.1; ADR-0203).",
+                     true));
 
     // --- Editing (catalogue III: Cubase and REAPER) ---------------------------------------------
     r.push_back(make("editing.autoSelectUnderCursor", Type::Bool, "Editing", "Select clips under the cursor",
@@ -377,9 +427,10 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("editing.splitAllWithNoSelection", Type::Bool, "Editing", "Split all at the cursor",
                      "With nothing selected, Split splits every track at the cursor (REAPER).", true));
 
-    // --- Mixing and new tracks (catalogue III) -------------------------------------------------
-    r.push_back(ranged("mixing.defaultSendLevelDb", Type::Real, "Mixing", "Default send level",
-                       "The level a new send starts at, in dB (Cubase; ADR-0072).", 0.0, -144, 6));
+    // --- Mixing (catalogue III). No default send level and no New track page: a
+    // new send starts at -inf and a new track at Live's defaults (fader 0 dB, in
+    // the mixer, envelopes hidden); Live's Save as Default Track is the way to
+    // change them (ADR-0203).
     r.push_back(make("mixing.groupMuteMutesSources", Type::Bool, "Mixing", "Group mute mutes sources",
                      "Muting a group mutes the tracks that feed it (Cubase; ADR-0044).", true));
     r.push_back(make("mixing.soloInFront", Type::Bool, "Mixing", "Solo in front",
@@ -388,18 +439,9 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "How far the rest of the mix is lowered, in dB.", -18.0, -60, 0));
     r.push_back(make("mixing.soloBus", Type::Bool, "Mixing", "Solo through a dedicated bus",
                      "Soloed tracks play through a solo bus (REAPER).", false));
-    r.push_back(ranged("newtrack.faderGainDb", Type::Real, "New track", "Fader",
-                       "The fader a new track starts at, in dB (REAPER's track defaults, R-26).", 0.0, -144, 6));
-    r.push_back(make("newtrack.showInMixer", Type::Bool, "New track", "Show in mixer",
-                     "A new track shows in the mixer (R-26).", true));
-    r.push_back(choice("newtrack.meterMode", "New track", "Meter",
-                       "The meter a new track shows (R-26).", {"peak", "rms", "peakAndRms"}, "peak"));
-    r.push_back(ranged("newtrack.sendLevelDb", Type::Real, "New track", "Send level",
-                       "The send level a new track's sends start at, in dB (R-26).", 0.0, -144, 6));
-    r.push_back(make("newtrack.showEnvelopes", Type::Bool, "New track", "Show automation lanes",
-                     "A new track opens with its automation lanes shown (R-26).", false));
 
-    // --- Transport (catalogue III) ------------------------------------------------------------
+    // --- Transport (catalogue III). Effects always keep running when the transport
+    // stops, so tails ring out, as Live; there is no run-for-N-ms setting (ADR-0203).
     r.push_back(ranged("transport.windSpeed", Type::Real, "Transport", "Wind speed",
                        "How fast fast-forward and rewind move, in bars per second (Cubase).", 4.0, 0.25, 64));
     r.push_back(make("transport.locateOnClick", Type::Bool, "Transport", "Locate on click in empty space",
@@ -407,9 +449,6 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(choice("transport.seekOnClick", "Transport", "Seek on click",
                        "Where a click moves the playhead during playback (REAPER).",
                        {"ruler", "rulerAndEmptyArea", "anywhere"}, "rulerAndEmptyArea"));
-    r.push_back(ranged("transport.runFxWhenStoppedMs", Type::Int, "Transport", "Run effects when stopped",
-                       "Milliseconds effects keep running after stop, so tails ring out (REAPER). 0: stop at once.",
-                       500, 0, 60000));
     r.push_back(make("transport.stopAtProjectEnd", Type::Bool, "Transport", "Stop at the end of the project",
                      "Playback stops after the last clip (REAPER).", false));
     r.push_back(make("transport.commitFieldsAfterPause", Type::Bool, "Transport", "Commit fields after a pause",
@@ -456,16 +495,26 @@ void catalogueSettings(std::vector<Setting>& r) {
                        {"stable", "beta"}, "stable"));
     r.push_back(make("privacy.diagnosticLog", Type::Bool, "Privacy", "Write a diagnostic log",
                      "A local log for support; nothing is sent (R-20).", false));
+    r.push_back(make("settings.logChanges", Type::Bool, "Privacy", "Log settings changes",
+                     "Settings changes are logged, with the time and the old and new value "
+                     "(A6-20, ADR-0203). Off: a person's changes are not logged; the agent's "
+                     "always are (ADR-0125 d3).",
+                     true));
 
     // --- AI agent (catalogue IV §3) ------------------------------------------------------------------
     r.push_back(ranged("agent.maxOpsPerMinute", Type::Int, "AI", "Rate cap",
-                       "Ops per minute the agent may commit at Apply tier (AI-AGENT 6).", 600, 1, 100000));
+                       "Ops per minute the agent may commit at Apply tier (AI-AGENT 6). Default "
+                       "6000 (ADR-0203).",
+                       6000, 1, 100000));
     r.push_back(make("agent.endpoint", Type::Text, "AI", "Model endpoint",
                      "Which model service, local RPC or remote. The key is kept in the OS "
                      "keychain, never here.",
                      ""));
     r.push_back(choice("agent.asyncServices", "AI", "Stem separation and other services",
-                       "Run async AI jobs locally or remotely (ADR-0064).", {"local", "remote"}, "local"));
+                       "Stem separation runs built in, offline, in its own process (Live 12's "
+                       "four stems); or a named service on this machine or network, or a cloud "
+                       "API, for more stems or other models (ADR-0064 d4 amended by ADR-0203).",
+                       {"builtin", "local", "remote"}, "builtin"));
     r.push_back(make("agent.resultsFolder", Type::Path, "AI", "Results folder",
                      "Where async AI jobs keep their results (ADR-0064). Empty: the cache.", ""));
 
@@ -494,9 +543,8 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("music.defaultTimeSignature", Type::Text, "Music", "Default time signature",
                      "The time signature new projects start in.", "4/4"));
 
-    // --- Devices and DSP (catalogue IV §6) ------------------------------------------------------
-    r.push_back(make("devices.pdExternalsFolders", Type::PathList, "Devices", "Pd externals",
-                     "Folders Pure Data loads externals from (ADR-0145 d8).", Value::array()));
+    // --- Devices and DSP (catalogue IV §6). No externals path: the DAW uses embedded
+    // libpd only, and nothing loads from disk (A6-31, ADR-0188 d8, ADR-0203).
     r.push_back(make("devices.pdPatchFolder", Type::Path, "Devices", "Pd patch folder",
                      "Where new Pd patches are saved (ADR-0145 d8).", ""));
     r.push_back(ranged("devices.freezeTailSeconds", Type::Real, "Devices", "Freeze tail",
@@ -523,9 +571,10 @@ std::vector<Setting> build() {
                        "(ADR-0125 d4).",
                        {"en", "he"}, "en"));
     r.push_back(make("lookfeel.zoomOnSelection", Type::Bool, "Look & Feel", "Zoom on Selection",
-                     "Ctrl/Cmd + wheel zooms around the selection, as Live does, instead of "
-                     "around the cursor (ADR-0145 d2).",
-                     false, true));
+                     "On, as Live: Ctrl/Cmd + wheel zooms around the current selection (Live 12 "
+                     "manual 6.2). Off: it zooms around the cursor (ADR-0145 d2 as amended by "
+                     "ADR-0203).",
+                     true, true));
     r.push_back(choice("lookfeel.knobMode", "Look & Feel", "Knob drag mode",
                        "How a knob follows the mouse. Vertical is Live's (R-09).",
                        {"vertical", "horizontal", "rotary"}, "vertical", true));
@@ -551,8 +600,8 @@ std::vector<Setting> build() {
     r.push_back(choice("audio.bufferSize", "Audio", "Buffer size",
                        "Samples per block, chosen by hand: 64 to 4096. There is no 32 and no "
                        "automatic switching; a driver that grants less still runs and is shown "
-                       "as granted (ADR-0145 d5).",
-                       {64, 128, 256, 512, 1024, 2048, 4096}, 256));
+                       "as granted (ADR-0145 d5). Default 512 (ADR-0203).",
+                       {64, 128, 256, 512, 1024, 2048, 4096}, 512));
     r.push_back(make("audio.silentResampling", Type::Bool, "Audio", "Resample silently",
                      "When the project and the hardware disagree on sample rate, resample "
                      "without showing the mismatch bar (ADR-0145 d3).",
@@ -561,6 +610,12 @@ std::vector<Setting> build() {
                      "Keep monitoring latency in recordings",
                      "Record what you heard, latency included, as Live does (ADR-0132 d10).",
                      true));
+    r.push_back(make("audio.reducedLatencyWhenMonitoring", Type::Bool, "Audio",
+                     "Reduced latency when monitoring",
+                     "Input-monitored tracks skip delay compensation, so they have the lowest "
+                     "latency and may be out of sync with compensated tracks (Live 12 manual, "
+                     "Options menu; ADR-0203). Nothing is bypassed.",
+                     false));
     r.push_back(choice("audio.linuxBackend", "Audio", "Linux backend",
                        "ALSA directly, or PipeWire through its JACK interface (ADR-0145 d4).",
                        {"ALSA", "PipeWire/JACK"}, "PipeWire/JACK"));
@@ -583,6 +638,10 @@ std::vector<Setting> build() {
                      "Add short fades to imported clips. Off by default (ADR-0132 d6).", false));
 
     // --- MIDI and controllers ------------------------------------------------------------
+    r.push_back(make("midi.chaseNotes", Type::Bool, "MIDI", "Chase MIDI Notes",
+                     "Notes already sounding at the point playback starts are played, as Live's "
+                     "Options > Chase MIDI Notes. Amends ADR-0155 d3 (ADR-0203).",
+                     true));
     r.push_back(make("midi.chaseControllers", Type::Bool, "MIDI", "Chase controllers",
                      "Send the controller values in effect when playback starts mid-song (R-15).",
                      true));
@@ -600,13 +659,11 @@ std::vector<Setting> build() {
     r.push_back(make("editing.snapToGrid", Type::Bool, "Editing", "Snap to grid",
                      "Moves and resizes snap to the grid by default.", true, true));
 
-    // --- Plug-ins: paths and scanning are never the agent's --------------------------------
+    // --- Plug-ins: paths and scanning are never the agent's. The scan always runs
+    // out of process, with quarantine and a blocklist (R-17); there is no switch
+    // (D-03 / A6-37, ADR-0203).
     r.push_back(make("plugins.preferClap", Type::Bool, "Plug-ins", "Prefer CLAP",
                      "When a plug-in exists as CLAP and VST3, load the CLAP (R-18).", true));
-    r.push_back(make("plugins.scanOutOfProcess", Type::Bool, "Plug-ins", "Scan out of process",
-                     "Scan plug-ins in a separate process, with quarantine and a blocklist "
-                     "(R-17).",
-                     true));
     r.push_back(make("plugins.vst3Folders", Type::PathList, "Plug-ins", "VST3 folders",
                      "Extra folders scanned for VST3 plug-ins.", Value::array()));
     r.push_back(make("plugins.clapFolders", Type::PathList, "Plug-ins", "CLAP folders",
@@ -622,8 +679,7 @@ std::vector<Setting> build() {
                      "Your own presets, samples and clips.", ""));
     r.push_back(make("library.contentFolders", Type::PathList, "Library", "Content folders",
                      "Sample and content folders the browser shows.", Value::array()));
-    r.push_back(make("library.recordFolder", Type::Path, "Library", "Default record folder",
-                     "Where a new project records audio before it is saved.", ""));
+    // The default record folder is files.recordFolder, on File & Folder (ADR-0203).
 
     // --- Privacy: opt-in, off (R-20) ---------------------------------------------------------
     r.push_back(make("privacy.crashReports", Type::Bool, "Privacy", "Send crash reports",
@@ -637,8 +693,9 @@ std::vector<Setting> build() {
                        "(AI-AGENT 2). The agent can never change this itself.",
                        {"observe", "propose", "apply"}, "propose"));
     r.push_back(ranged("agent.maxOpsPerRequest", Type::Int, "AI", "Changes per request",
-                       "The most ops one agent request may contain (AI-AGENT 6.6).",
-                       256, 1, 10000));
+                       "The most ops one agent request may contain (AI-AGENT 6.6). Default "
+                       "6000 (ADR-0203).",
+                       6000, 1, 100000));
 
     catalogueSettings(r);
 
