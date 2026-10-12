@@ -1,7 +1,9 @@
 # External code — inventory and licence boundary
 
-We are GPLv3 (ADR-0015). That makes *what we may copy from* a design constraint,
-not a footnote, so external code lives in two directories with different rules.
+We are AGPLv3, all of it (ADR-0203 d25; GPLv3 under ADR-0015 until 2026-10-12). Any
+open-source code may be copied in; only non-commercial-only and proprietary code are
+refused (`OPEN_SOURCE_POLICY.md` §4a). *Where it came from* is still recorded here,
+so external code lives in two directories with different rules.
 
 Both are gitignored — each clone is its own git repo, same arrangement as
 `VST-ADI/vital`. Nothing here is committed to the monorepo.
@@ -12,7 +14,7 @@ Refresh everything with `tools/fetch_external.sh`.
 
 ## `third_party/` — we link against these and ship them
 
-Permissive licences, all GPLv3-compatible in the direction we need.
+Permissive licences, all AGPLv3-compatible in the direction we need.
 
 | Repo | Licence | Size | Purpose |
 |---|---|---|---|
@@ -140,19 +142,17 @@ Gemini's five proposals for ADiJ's rekordbox and CDJ work, and the spec they all
 | [`pyrekordbox`](https://github.com/dylanljones/pyrekordbox) | MIT | 8 MB | ✅ with attribution, **but not its key recovery** | Reads `master.db`, XML, ANLZ and MySettings. It recovers the key from Rekordbox's `options.json` with a constant in `utils.py` |
 | [`crate-digger`](https://github.com/Deep-Symmetry/crate-digger) | EPL-2.0, with MPL-2.0 or LGPL-3.0 as secondary licences; the `.ksy` headers say `EPL-2.0 OR MPL-2.0 OR LGPL-3.0-only` | 1.4 MB | ✅ under MPL-2.0 (ADR-0189 d2) | The Kaitai specs of the PDB and ANLZ formats, the source every tool above cites |
 
-**Decided by `OPEN_SOURCE_POLICY.md` (ADR-0094).** Every project is open source:
-MIT by default, GPLv3 once it copies from a GPL or LGPL source. So everything above
-may be copied, keeping the original headers — a plugin that takes the LSP
-limiter, the chowdsp waveshapers or vitOTTx is a GPLv3 plugin, and one that
-takes ZLEqualizer is an AGPLv3 plugin (ADR-0138: the AGPL ban is lifted).
+**Decided by `OPEN_SOURCE_POLICY.md` (ADR-0094) and closed by ADR-0203 d25.** ADI is
+AGPLv3 in full, so everything above may be copied, keeping the original headers and
+adding its row here; where a copy lands (the core, a sibling plug-in) is a matter of
+structure, not of licence (ADR-0187 d3 as read by ADR-0203).
 
 ### The Zrythm rule, as of ADR-0138
 
 Zrythm is **AGPLv3**. Until 2026-09-24 that made it design-only; Adi lifted the
-AGPL ban (ADR-0138, `OPEN_SOURCE_POLICY.md` §4). Its code may now be copied with
-attribution, and the first copy makes `adi_daw` **AGPLv3** — which changes little,
-because every build that links JUCE already carries AGPL obligations. Its
-trademark clause (AGPL §7) still applies: never its name.
+AGPL ban (ADR-0138, `OPEN_SOURCE_POLICY.md` §4), and since 2026-10-12 ADI is AGPLv3
+in full (ADR-0203 d25), so its code may be copied anywhere in ADI with attribution.
+Its trademark clause (AGPL §7) still applies: never its name.
 
 ### Licence corrections worth recording
 

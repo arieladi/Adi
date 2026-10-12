@@ -29,7 +29,7 @@ Where each project stands today:
 
 | Project | Licence | Why |
 |---|---|---|
-| `adi_daw/` | GPLv3 | ADR-0015; reads and copies from GPL references |
+| `adi_daw/` | **AGPLv3, all of it** | ruled by Adi on 2026-10-12 (ADR-0203 d25); see §4a |
 | `adi-surge/` | GPLv3 | a fork of Surge XT, which is GPLv3 |
 | `adi-vital/` | GPLv3 | contains a fork of Vital, which is GPLv3 |
 | AdiGuard (own repository) | to be applied — see §6 | was private/proprietary under its ADR-0018; this mandate supersedes that |
@@ -77,13 +77,42 @@ project. It is written down here because "FFTPACK licence" is not a phrase
 anyone can check against the table, and the next person should not have to read
 it again to find that out.
 
+## 4a. ADI (`adi_daw/`) is AGPLv3, all of it — ruled 2026-10-12, final
+
+**Adi's ruling, ADR-0203 d25, closes the subject for the DAW.** `adi_daw/LICENSE`
+is the GNU Affero General Public License, version 3 (`AGPL-3.0-or-later`), for
+every file the project owns: the core, the engine, the Pure Data tier, the
+plug-ins, the tools and the tests alike. There is no "GPLv3 core" any more.
+
+What it means for anyone working on ADI:
+
+- **Any open-source code may go in, under any open-source licence:** MIT, BSD,
+  ISC, Zlib, Boost, Unlicense, WTFPL, Apache-2.0, MPL-2.0, LGPL, GPL-2.0-or-later,
+  GPL-3.0, AGPL-3.0. Keep the notices, name the source in the commit, add the row
+  to `adi_daw/docs/EXTERNAL-CODE.md`. That housekeeping is the agents' job.
+- **Only two things are refused, by the agents, without asking Adi:** code that
+  forbids commercial use (Creative Commons NC and the like), and anything
+  proprietary (Ableton's, Serum's, any closed binary or decompiled code).
+  GPL-2.0-only is refused the same way, being incompatible with AGPLv3. Behaviour
+  may be cloned; their code never. A refusal is reported as "not usable", nothing
+  more. The same two refusals apply to model files: weights ship only under terms
+  that allow redistribution and commercial use.
+- **Adi is never asked about licensing again.** In his words: he makes things for
+  himself and shares them; he pays nothing and intends no profit; he is not
+  sensitive about his work; he wants others to be able to improve it and to
+  merge what helps. There is no contributor licence agreement: a contribution is
+  accepted under the project's licence as submitted.
+
+§2 and §3 still govern the other projects in this repository. For ADI they are
+superseded by this section wherever they say less.
+
 ## 4. AGPL is allowed
 
 **Ruled by Adi on 2026-09-24; this replaces the earlier ban.** AGPL-3.0 code
 may be copied, adapted and reused like GPL code. Today that means
 **ZLEqualizer** and **Zrythm** are usable sources, not only design references.
 The first direct adaptation is the Dynamic EQ (ADR-0195). It adapts ZL Equalizer 2's DSP, so it is AGPLv3.
-Every `adi_daw` build that links JUCE is AGPLv3 already (ADR-0048), so an AGPL source changes nothing there.
+`adi_daw` is AGPLv3 in full since 2026-10-12 (§4a), so an AGPL source changes nothing there.
 
 Why it is safe: AGPL is GPLv3 plus one extra rule — if someone runs the program
 as a **network service**, its users must be able to get the source. GPLv3 §13
