@@ -98,6 +98,7 @@ what the roadmap was going to do with them.
 | [`chowdsp_utils`](https://github.com/Chowdhury-DSP/chowdsp_utils) | **per module**; `chowdsp_waveshapers` is GPL-3.0 | 19 MB | ✅ waveshapers, with attribution — **check each module's own header first** | `ADAAHardClipper`, `ADAASoftClipper`, `ADAASineClipper`: production ADAA, the part a clipper actually ships. |
 | [`KlonCentaur`](https://github.com/jatinchowdhury18/KlonCentaur) | BSD-3-Clause | 220 MB (training data and PDFs; the code is small) | ✅ with attribution | ChowCentaur. A wave-digital-filter diode clipper and the paper describing it. **It contains no ADAA**, which is what it was requested for. |
 | [`Audio-Soft-Clip-Distortion`](https://github.com/JDSherbert/Audio-Soft-Clip-Distortion) | MIT | 0.1 MB | ✅ with attribution | Basic hard and soft clip curves with oversampling. Introductory, but MIT. |
+| [HIIR](http://ldesoras.free.fr/prod.html) (Laurent de Soras) | WTFPL-2.0 | read, not cloned | ✅ with attribution — public-domain-equivalent, GPL-compatible | The polyphase half-band IIR designer (`PolyphaseIir2Designer`). Its coefficient design is ported in `collab/mac/live-probe/hiir.py` and `tests/test_multiband_dynamics.cpp`, and the eight coefficients it yields sit in `src/adi/dsp/multiband_dynamics.cpp` (the Multiband Dynamics device's 2x oversampler, as Live's). |
 
 ### The director's references of 2026-09-27 (ADR-0186, ADR-0187)
 
