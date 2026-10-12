@@ -7,6 +7,10 @@ mistake and reserving it now is nearly free. Every row here is checked against
 [`format/SPEC.md`](format/SPEC.md): if the format can't already carry it, that's
 flagged, and it is a bug in the format, not in the plan.
 
+**The director's rulings of October 2026 (ADR-0203)** reach most sections below: Ableton Live
+is the sole parity base, additions Live lacks are first-class, sends and returns are back, and
+the priorities were re-ruled row by row. A row that cites ADR-0203 was changed by them.
+
 **Priority key**
 
 | | Meaning |
@@ -31,6 +35,7 @@ flagged, and it is a bug in the format, not in the plan.
 | Feature | From | P | Fmt | Notes |
 |---|---|---|---|---|
 | Arrangement timeline | both | P0 | ✅ | `clips`, `tracks` |
+| **Tempo detection from audio** (Live's Auto-Warp finds the tempo and the transients) | Ableton | **P0** | ✅ | ADR-0203 d7 (B4-18): raised to P0 with warping, because Warp on a clean import runs what Live's Auto-Warp runs on import. No Tempo Follower: the director does not need it (ADR-0203 d9) |
 | Tempo map with ramps | both | P0 | ✅ | `tempo_map.curve` covers jump/linear/bezier |
 | Time signature map | both | P0 | ✅ | separate table, deliberately (SPEC §4.4) |
 | Musical **and** linear time per track | Cubase | P0 | ✅ | `time_base`; the reason for the dual-domain model |
@@ -53,20 +58,27 @@ flagged, and it is a bug in the format, not in the plan.
 | Group tracks: folder **and** bus, one object | Ableton | P0 | ✅ | `kind='group'`. Grouping auto-routes children into the bus in the same transaction; `routing.origin` protects a manual override (ADR-0044). |
 | ~~Folder (organisational) tracks~~ | Cubase | **no** | — | **Removed** (ADR-0044). One grouping concept. A container whose fader does nothing is the thing users pick by accident. |
 | Hybrid tracks: audio and MIDI on one channel | Bitwig | **P0** | ✅ | `tracks.kind` is a hint, never a constraint (ADR-0045) |
-| Return tracks / FX channels | both | P0 | ✅ | `kind='return'` + `routing.kind='send'` |
-| Sends, pre/post fader | both | P0 | ✅ | |
+| Return tracks / FX channels | both | P0 | ✅ | `kind='return'` + `routing.kind='send'`. **Back as Live** (ADR-0203 d3 reverses ADR-0072): one send knob per return on every track and group; Pre/Post is a switch on each return; a return's own sends are off until Enable Send, then a return may feed another return, or itself. The engine must plan and play them, with delay compensation across them; step 6 is not closed until it does |
+| Sends, pre/post fader | both | P0 | ✅ | ADR-0203 d3. A new send starts where Live's does (fully down; measured, AWAITING). No "default send level" setting. **ADI's addition, first-class (sends-choice-4): a send into a track that is not a return, and a pan on a send**, as Cubase and Bitwig, made from the send slot; a converted project holding such sends plays as written |
+| **Sidechain and track-to-track tap points**: Pre FX, Post FX, Post Mixer, as Live; only Post Mixer follows fader, mute and solo | Ableton | P1 | ✅ | ADR-0203 d3. Post Mixer plays today; the two early taps come with sidechain routing |
+| **Solo as Live**: Solo in Place keeps a soloed track's returns; Solo/Cue switch, Cue Out and Cue Volume; the metronome to Cue Out | Ableton | P1 | ✅ | ADR-0203 d3, d9. Solo defeat (Cubase), Solo in front and a dedicated solo bus (REAPER) stay as options that do nothing until switched on |
+| **Split Stereo Pan Mode**: two sliders place left and right separately | Ableton | P1 | ✅ | ADR-0203 d9, with the mixer screen. Width and the two phase switches stay in Utility, as Live |
 | Sidechain routing | both | P1 | ✅ | `routing.kind='sidechain'` |
-| VCA faders | Cubase | P2 | ✅ | `kind='vca'`, `mixer_strip.vca_group_id` |
+| ~~VCA faders~~ **Loudness Drive, the "VCA trick" as one control**: scales every track's level into the whole clipper cascade (tracks, buses, master) together, so the mix is auditioned and exported at any loudness target without altering the balance | neither (CTZ's VCA trick) | P1 | ✅ | ADR-0203 d14 (D-04 c). **No VCA fader tracks**: Cubase-style VCA faders are not wanted (A3-14). The format's VCA group (`kind='vca'`, `mixer_strip.vca_group_id`, ADR-0077) and the pre-FX input gain are its mechanism. Pairs with export LUFS targeting. P1 is win's placement, to strike if wrong |
 | Direct Routing (multiple simultaneous outs) | Cubase | P2 | ✅ | falls out of `routing` being a table |
 | Up to 64 buses per node; no cable UI | REAPER (engine), Ableton (UI) | P2 | ✅ | replaces ADR-0056's two buses; routing stays Ableton's menus and auto-grouping (ADR-0113) |
 | System-audio (loopback) input on any track | neither | P1 | — | WASAPI loopback, Core Audio process taps; a resampler with declared latency (ADR-0106) |
 | ADI virtual audio device out (master or any bus as an OS input) | REAPER (ReaRoute) | P2 | — | an OS driver: BlackHole fork on macOS; on Windows our own `sysvad`-based kernel driver (sysvad is MS-PL, fetched at build time, never vendored; the ruling on shipping MS-PL-derived code is the director's, ADR-0120) signed for free through SignPath Foundation, the route Virtual-Audio-Driver has used since 2025; bundling VB-CABLE was proposed and rejected (ADR-0106, ADR-0117, ADR-0118). Build workflow: `driver-build.yml` |
-| Track freeze / bounce in place | both | P1 | ✅ | `tracks.frozen`, `freeze_media_id` |
+| Track freeze / bounce in place | both | P1 | ✅ | `tracks.frozen`, `freeze_media_id`. ADR-0203 d16: freeze records the whole chain's output; a frozen or flattened render is placed with Warp off, so it nulls against its source (Live places it with Warp on; the director's deviation) |
+| **Bounce to New Track** (Live's command) and Bounce in Place | Ableton | P1 | — | ADR-0203 d16 (D-05). Bounce prompts by default, with "don't show this again" (the director's deviation, ADR-0203 d11) |
+| **Freeze All Channels** (every sub-group and channel inside a group rendered separately, so sidechains, sends and single-track solo keep working) and **Freeze Group** (one render, effects baked in, a warning that the children's sidechains and sends are muted until unfrozen); fader and pan stay live on both | neither (Live 12's group freeze is experimental, behind Options.txt) | P1 | ✅ | ADR-0203 d16. Freeze tail 4 s (`devices.freezeTailSeconds`). Designed (ADR-0059), not built |
 | Control Room (separate monitor path, cue mixes, talkback) | Cubase | P3 | 🔶 | `routing.kind='cue'` reserved; no monitor-section model |
-| Crossfader, DJ-style mixing | Ableton | P3 | 🔶 | needs a master-section table |
-| Channel strip (gate/comp/EQ built in) | Cubase | P2 | ✅ | internal `devices` |
+| Crossfader, DJ-style mixing | Ableton | P2 | 🔶 | needs a master-section table. ADR-0203 d10: P2, arriving with Session View, as in Live (curves, A/B assign per track, mappable) |
+| ~~Channel strip (gate/comp/EQ built in)~~ | Cubase | **no** | — | **Struck (ADR-0203 d14):** the director did not ask for a channel strip; no compressor, no gate, no EQ on a channel by default. EQ Match lives in the Dynamic EQ plug-in. What the channels gain instead: the summing dial, the Loudness Drive, Auto Gain Stage, the strip's small scope |
+| **A small live scope and spectrum in every channel strip**, drawn only while the strip is on screen; a click opens the big Scope or the analyser on that track | neither | P1 | — | ADR-0203 d14 (D-04 d), with the Scope (ADR-0167) |
+| **Loudness meter (LUFS and true peak) on the master channel only**, and in the Scope, the analyser and the export dialog | both | P1 | — | ADR-0203 d14 (A3-24), with the mixer screen; not on every bus; on condition that it does not degrade performance |
 | Mixer snapshots | Cubase | P2 | ✅ | `snapshots.kind='mixer'` |
-| **Native analog group summing**: on a group, each child through a console's channel half, the sum through its buss half; 8 Airwindows console flavours, level-matched; drive as gain staging | neither | P1 | ✅ | Built (ADR-0174): `group_summing` (schema 1.7), `group.setSumming`, `group.setSummingFlavor`, `group.setSummingDrive`. The toggle, dial and flavour menu in the group header are mac's. EveryConsole's six systems wait for an upstream fix |
+| **Native analog group summing**: on a group, each child through a console's channel half, the sum through its buss half; 8 Airwindows console flavours, level-matched; drive as gain staging | neither | P1 | ✅ | Built (ADR-0174): `group_summing` (schema 1.7), `group.setSumming`, `group.setSummingFlavor`, `group.setSummingDrive`. The toggle, dial and flavour menu in the group header come with step 7. EveryConsole is dropped for a fault in its source; the eight flavours stand (ADR-0203 d14). **The master is summed too** (amends ADR-0173 d4; not built), **and a real "Crosstalk" option is added at P2**, a new model, since none of the eight has one. A send is tapped before the console colouring |
 | Per-channel delay compensation offset | both | P1 | ✅ | `mixer_strip.delay_samples`. **Plays** (ADR-0172): `mixer.setDelay`, either sign, ±1 s, as latency of the opposite sign, so delay compensation places it |
 
 ## 3. Clips, editing and comping
@@ -74,7 +86,8 @@ flagged, and it is a bug in the format, not in the plan.
 | Feature | From | P | Fmt | Notes |
 |---|---|---|---|---|
 | Clip loop window separate from placement | Ableton | P0 | ✅ | one object, not N repeats (SPEC §6.2) |
-| Fades, crossfades, fade curves | both | P0 | ✅ | |
+| Fades, crossfades, fade curves | both | P0 | ✅ | ADR-0203 d7: Live's fade handles on the clip at P0 (a length handle and a curve handle, one fade for all selected clips); Create Fade/Crossfade on Ctrl+Alt+F / Cmd+Option+F. No automatic fade on clip edges: Live's own switch starts off (the director's deviation). **Double-clicking a fade opens Cubase's fade editor, P2, an addition** |
+| **Time-range selection** as Live's, and the cut, copy, delete and silence commands over a range | Ableton, Cubase | P0 selection, P1 commands | — | ADR-0203 d7 (A1-14). Ctrl+I / Cmd+I is Live's Insert Silence |
 | Take lanes and comping | both | P1 | ✅ | `lanes` |
 | Linked / aliased clips (edit one, change all) | Cubase, FL Studio | P2 | ✅ | `clips.alias_of`. Cubase's *shared copies*; in FL every Playlist clip is an instance of its pattern. Live has none (this row said "both" until ADR-0160). **Stays P2** (ADR-0160). The engine plays no alias yet and reports one as a problem (ADR-0155). |
 | **Make unique**: one linked clip becomes an independent copy | FL Studio, Cubase | P2 | ✅ | One op, `clip.makeUnique`: the source's content and settings are copied into the clip and `alias_of` is cleared; an audio clip keeps the same media file. Not a toggle: undo re-links, and `clip.setAlias` links again. Cubase: *Convert to Real Copy* (p. 272). FL's *Make unique as sample*, a new audio file, is `clip.consolidate`. FL's *Select all similar Clips* comes with it. **Ships with linked clips, never after them** (ADR-0160). |
@@ -104,12 +117,15 @@ flagged, and it is a bug in the format, not in the plan.
 | **MIDI 2.0 in (UMP)**: 32-bit notes, per-note pitch, pressure and controllers from hardware | MIDI 2.0 | P2 | ✅ | ADR-0185 d2. Parsed into ADI's own events and `AEXP` per-note expression, so MPE channel rotation stops being the only route. Out: a CLAP whose note port declares MIDI 2.0 gets UMP (ADR-0099 left it unbuilt); a VST3 cannot, since JUCE 9.0.2's VST3 host has no UMP path (ADR-0073). In: JUCE 9.0.2's own UMP endpoints (`juce::universal_midi_packets::Endpoints`) on CoreMIDI, ALSA and Windows MIDI Services, with `JUCE_USE_WINDOWS_MIDI_SERVICES` switched on (ADR-0188 d7) |
 | **MIDI-CI property exchange**: a controller discovers the DAW and labels itself from the track in focus | MIDI 2.0 | P3 | — | ADR-0185 d3: moved from WISH. It reads the one parameter feed (ADR-0181 d3), as the control API and OSCQuery do. It waits on the OS MIDI stacks exposing MIDI-CI |
 | **Hardware CV/Gate**: CV Out and CV In nodes in the modulation graph, for Eurorack | Bitwig | ADI 2 | — | **Deferred to ADI 2, unprioritized** (ADR-0188 d7): no settings and no calibration work until then. The design stays ADR-0185 d5's. Audio-rate and sample-accurate. Three safeguards: the user marks DC-coupled outputs; a CV channel is never the main or monitor output and never summed to the master, because DC can damage a speaker; a per-output calibration for 1 V/octave. The round trip is declared as latency. The Lynx E44's coupling is to be confirmed from its manual |
-| Scale-aware / scale-locked editing, **every scale including Arabic and microtonal** | Ableton 12 + | P2 | 🔶 | reads `key_map`; a 12-bit `scale_mask` cannot name a quarter tone, so `tuning_systems` + `tuning_degrees` + `key_map_degrees` child tables come first (ADR-0103, ADR-0117, gap 6). **In the format since 1.8** (ADR-0178), with `key_map_tunings` beside `key_map`; their ops come with the editing. Notation stays out. |
+| Scale-aware / scale-locked editing, **every scale including Arabic and microtonal** | Ableton 12 + | **P1** | 🔶 | reads `key_map`; a 12-bit `scale_mask` cannot name a quarter tone, so `tuning_systems` + `tuning_degrees` + `key_map_degrees` child tables come first (ADR-0103, ADR-0117, gap 6). **In the format since 1.8** (ADR-0178), with `key_map_tunings` beside `key_map`; their ops come with the editing. Notation stays out. **ADR-0203 d7: Scale Mode exactly as Live 12 at P1, with the note editor; microtonal and custom tunings, a tuning per key change, P1 as well** |
+| **Step input** exactly Live's (track armed, Preview on, hold notes, right arrow advances by the grid, left arrow deletes) | Ableton | P2 | — | ADR-0203 d7 (A2-05) |
+| **Humanize** (note starts) and **Randomize** (velocity), exactly Live's two controls | Ableton | P2 | — | ADR-0203 d7 (A2-06) |
+| **Pattern editor**: another view of a clip's ordinary notes; no change to the file | Bitwig-ish | P3 | ✅ | ADR-0203 d7 (A2-07) |
 | Expression Maps (articulations) | Cubase | P3 | ❌ | needs its own schema; big win for orchestral |
 | Logical Editor / Project Logical Editor | Cubase | P3 | — | query+transform over the model; no schema |
 | Score editor / notation | Cubase | P3 | ❌ | engraving data is **not** derivable from MIDI |
 | MIDI effects / devices in chain | both | P1 | ✅ | `devices` with `subtype='midi_effect'` |
-| Capture MIDI (retroactive record) | Ableton | P2 | — | runtime buffer, no schema |
+| Capture MIDI (retroactive record), and the 30-second audio memory per armed or monitored input | Ableton; the audio half is ADI's | **P1** | — | runtime buffer, no schema. ADR-0203 d7 (A2-03): both P1; the audio memory is an addition (ADR-0132 d9) |
 
 > **Why per-note expression is P1 and not P3.** A Continuum, Osmose or Seaboard
 > produces continuous per-note pitch, pressure and timbre. Cubase VST Note
@@ -118,7 +134,7 @@ flagged, and it is a bug in the format, not in the plan.
 > no later version can recover it. This is the one place where being late is
 > equivalent to being wrong.
 
-## 5. Session View — returns last, as a secondary window
+## 5. Session View — P2, as a secondary window (ADR-0203 d10; it was "last")
 
 ADR-0037 removed the clip-launching matrix; **ADR-0101 brings it back as a
 secondary, undockable window** (F3, like Cubase's MixConsole), built after the
@@ -127,7 +143,7 @@ Cubase-style MixConsole view with a toggle between the two.
 
 | Feature | From | P | Fmt | Notes |
 |---|---|---|---|---|
-| Session View, docked in the main window Ableton-style, detachable | Ableton | P3 (last) | ❌ | `scenes`, `clip_slots` return to Layer 1 in a schema PR now, mirroring Live's shape: a scene list, one slot per track per scene, launch settings on the clip (ADR-0101, ADR-0117); the 14 ops return with the UI |
+| Session View, docked in the main window Ableton-style, detachable | Ableton | **P2** (ADR-0203 d10; was P3, last) | ❌ | `scenes`, `clip_slots` return to Layer 1 in a schema PR now, mirroring Live's shape: a scene list, one slot per track per scene, launch settings on the clip (ADR-0101, ADR-0117); the 14 ops return with the UI |
 | MixConsole view toggled inside it | Cubase | P3 (last) | ✅ | same strips, reparented; one `TrackOrderModel` (ADR-0063) |
 | Live performance | — | ~~ADI Live app~~ dropped | — | **Dropped by ADR-0190:** live performance is ADI's own Session view, docked and detachable (ADR-0101, ADR-0117), as in Ableton. The suite is ADI and ADiJ (ADR-0133, ADR-0188 d1, ADR-0190). ADiJ runs on ADI's engine; Mixxx is a reference, never forked (ADR-0188 d8) |
 
@@ -150,12 +166,16 @@ Session window is the last step, not a way around that.
 | **A project, live: the session runtime** | — | **P0** | ✅ | `engine::Session` (ADR-0122): a `.adi` read, its device rows resolved through an injected loader, the graph published to the device callback. The rows place devices — an edit re-read follows `ord` on the same instances; a removed device retires rather than dies, and an undo finds it waiting. Sources (a clip reader, a tone) inject like devices. Headless, all seven ABIs; JUCE supplies only the callback and the loader. Racks are skipped and named until ADR-0060's node exists. `adi_play` (`src/juce/play.cpp`) proves it through a real device: a project with the fixture VST3 and a real CLAP, a tone through the CLAP at the level it went in, a 512 → 2048 block-size change mid-run on the same instances. |
 | **Plugin parameter edits inside the plugin's window are ops** (global Ctrl-Z) | neither | **P0** | ✅ | one gesture, one op; chunk snapshots for what is not a parameter (ADR-0110, amends ADR-0038). Built: the capture layer (linux, #70) and the glue `engine::ParamOps` (ADR-0124) — CLAP output events and JUCE's VST3 listener in, `device.setParam` out, undo back through the plugin with the echo swallowed; the first edit of a parameter writes where it started. Proved on a real VST3 through JUCE (the fixture's in-window drag is one op; ADR-0141). A preset picked in the plugin's own browser is one `device.loadState`, VST3 and CLAP, and the state round-trips through the project (ADR-0142). |
 | Racks: instrument / effect / drum | Ableton | P2 | ✅ | `device_chains` with key/vel/chain zones |
-| Macros with per-target range and **multi-breakpoint curve**, several mappings per target, per-macro enable | Ableton + | P2 | 🔶 | `macros`, `macro_mappings`; `curve` becomes a breakpoint BLOB (ADR-0114) |
+| Macros with per-target range and **multi-breakpoint curve**, several mappings per target, per-macro enable | Ableton + | P2 | 🔶 | `macros`, `macro_mappings`; `curve` becomes a breakpoint BLOB (ADR-0114). ADR-0203 d15 (D-06): adi_multimapper natively; several macros on one parameter sum in the parameter's own unit up to a ceiling and a floor; Live's Min/Max is the simplest case; the director supplies the device file so the sum is matched exactly |
 | Cross-track modulation and macro targets | Bitwig | P2 | 🔶 | arrives with the modulation schema (ADR-0114, ADR-0046) |
 | A Pd device with a second, floating view (the analyser) | neither | P2 | — | published arrays in the device contract (ADR-0116) |
 | **The analyser's multi-track overlay**: tick tracks in its big window to superimpose their spectra, before or after their devices, in their track colours, with masking highlighted | neither | P2 | — | ADR-0195 d5. Drawn by the analyser's C++ view from engine taps, `track.<id>.spectrum.pre` / `.post`; only ticked tracks are analysed, on a worker. Masking uses `analyze.masking`'s measure. mac's analyser session |
 | **`.amxd` translator** with a pre-flight scan: Max for Live devices into ADI Pd | neither | P2 | — | An allowlist scan first. If every box is in the translation table, the device converts automatically, with Max's right-to-left order made explicit. If not, nothing is written, and a dialog hands over the JSON and a prompt for an AI. Whatever comes back passes a second, vanilla-only scan. Needs the device contract (DEVICE-CONTRACT-PANEL §6). |
 | Plugin delay compensation | both | P0 | ✅ | `devices.latency_samples`. Reported in samples and **excludes** the device buffer — ADR-0042. |
+| **Plug-in scanner out of process, always**; plug-ins run in-process at runtime | both | P1 | — | ADR-0203 d8 (D-03, A6-37): approved R-17, not built (the scan runs in process today); no switch |
+| **Multi-threaded graph processing** | both | P1 | — | ADR-0203 d8 (A7-06), ADR-0102 d4 |
+| **Stem separation built in**, offline, four stems as Live 12, a model in its own process; the 4-stem model ships in the installer (~100 MB), 6-stem and high-quality models as downloads; a named service (local or cloud) instead, for N stems or other models | Ableton 12 | P1 | — | ADR-0203 d8 (A7-12, A2-17); amends ADR-0064 d4 for stem separation only |
+| **Automatic gain-match for any plug-in**, as the Airwindows suites do per device | neither | P2 | 🔶 | ADR-0203 d8 (A4-14); needs a per-device flag |
 | 2048–4096-sample blocks, tested | — | **P0** | — | runtime. Dense chains, not low-latency tracking (ADR-0042). **4096 is the cap on every platform** and the granted size is the only one that exists (ADR-0049). |
 | Sub-block automation and MIDI accuracy | both | **P0** | ✅ | runtime. At 8192 a block is 171 ms; per-block updates would step audibly. The price of the row above (ADR-0042). |
 | Change block size without reloading | both | **P0** | — | runtime. At 8192 overdubbing is impossible, so moving between sizes mid-session is not optional (ADR-0042). **Built at the engine** (ADR-0122 d6): `Session::prepare` at a new size rebuilds the graph on the same instances, tested at every size from 32 to 4096; a same-format restart is a no-op. |
@@ -169,7 +189,7 @@ Session window is the last step, not a way around that.
 Behaviour from the Live 12 manual (`reference/DOCS`, chapters 28–32). Names
 are ours where Ableton's is coined. Every one is a native device in the graph,
 for the transport, the tempo map, the groove pool and the track's scale
-(`key_map`). Randomness is seeded, so a render repeats exactly.
+(`key_map`). Randomness is Live's by default (each pass may differ); a visible switch on the device keeps a result, so a render repeats exactly when asked (ADR-0203 d7).
 
 | Device | Kind | P | Fmt | Notes |
 |---|---|---|---|---|
@@ -189,7 +209,10 @@ for the transport, the tempo map, the groove pool and the track's scale
 | **Redux** | audio effect | P2 | ✅ | Rate with Jitter; pre and post filters; Bits with Shape; DC Shift; Dry/Wet Sources (ADR-0187 d3): Bespoke's `BitcrushEffect` (GPL-3.0), Airwindows DeRez (MIT, already in `third_party`), the p0p bitcrusher (GPL-3.0); none has jitter, which is ours to write. |
 | **Shifter** | audio effect | P2 | ✅ | Pitch, Freq and Ring modes; Spread and Wide; a synced delay with Feedback and Tone; an LFO with ten shapes; an envelope follower Sources (ADR-0187 d3): Freq and Ring from Surge's Frequency Shifter and Ring Modulator (GPL-3.0), Speechrezz FrequencyShifter (MIT) or Pd's `hilbert~`; Pitch from ADR-0176 d8's candidates. |
 | **Overdrive** | audio effect | P2 | — | ADR-0187 d3. A band-pass before a waveshaper (BYOD's, GPL-3.0), a low-pass tone stage after it, and an envelope follower on a VCA for Dynamics; Dry/Wet. In Pd: `env~` (RMS in dB, ADR-0096) and `*~` |
-| Live 12's MIDI Tools (Transform and Generate) | clip ops | P2 | — | Not devices: clip-editing tools (manual chapter 11). Noted by ADR-0169, **not ruled** |
+| Live 12's MIDI Tools (Transform and Generate) | clip ops | P2 | — | Not devices: clip-editing tools (manual chapter 11). **Ruled (ADR-0203 d7): built as Live has them, at P2** |
+| **Random MIDI effects repeat on demand**: Live's behaviour by default (each pass may differ), plus a visible switch on Random, Chord's Chance and Velocity's Random that keeps the result | neither | P1, with the devices | ✅ | ADR-0203 d7 (A2-12): a stored seed per device |
+| **Auto Filter** (Live's, ten types, DJ among them) | Ableton | P2 | ✅ | ADR-0203 d8 (A4-19): built; the row it owed |
+| **DJ Filter device**: a clone of the filter knob on a DJ controller, with rekordbox's kind of filter settings, the curve changeable a little | neither | P2 | ✅ | ADR-0203 d8, the director's addition for the DAW; rekordbox's options are read before it is specified. ADiJ's own DJ filter stays §10.5's |
 
 ## 7. Automation
 
@@ -198,7 +221,8 @@ for the transport, the tempo map, the groove pool and the track's scale
 | Track and device automation | both | P0 | ✅ | `automation_lanes`. **Track lanes play** (ADR-0164): volume, pan and mute, read by the strip every 32 samples at the playhead, with Live's override and Re-Enable (ADR-0162). **Device lanes play in the engine** (ADR-0165): normalized `ParamValue` events on ADR-0054's grid and at every point, on their own segments, with the same override. Real plug-ins hear them once the device host translates them, which is mac's (VST3 `IParameterChanges`, CLAP plain values). |
 | Clip envelopes / clip modulation | Ableton | P1 | ✅ | `automation_data.clip_id` |
 | Event volume curves drawn on the clip (Cubase 14) | Cubase | P1 | ✅ | a clip-scoped gain lane rendered on the event (ADR-0115) |
-| Automation modes: touch/latch/cross/overwrite/trim | Cubase | P2 | ✅ | `tracks.automation_mode` |
+| Automation modes: touch/latch/cross/overwrite/trim | Cubase | P2 | ✅ | `tracks.automation_mode`. ADR-0203 d7: Live's Automation Arm is the default; Cubase's modes are a visible addition |
+| **Automation shapes, exactly Live's set**: sine, triangle, sawtooth, inverse sawtooth, square, the two sets of ramps, the ADSR | Ableton | P1 | ✅ | ADR-0203 d7 (A3-06) |
 | **MIDI Learn on every automation lane header**: arm (amber), turn a knob, bound (cyan) | Ableton, Bitwig | P2 | ✅ | ADR-0195 d3. One `controller.bind` op (new; `controller_maps` exists), one undo. Relative or absolute detected from the stream; the Master Focus Dial's own control is never learnable; no modal overlay. Built with step 7's lane headers |
 | Curved automation segments | both | P1 | ✅ | `curve` + `tension` per point |
 | Automation in real units, not just normalized | neither | P1 | ✅ | `value_domain='real'` — SPEC §6.3.3 |
@@ -213,7 +237,12 @@ for the transport, the tempo map, the groove pool and the track's scale
 | Media pool with content addressing | Cubase-ish | P1 | ✅ | BLAKE3, SPEC §10.1 |
 | ~~Collect & Embed~~ **Collect and Export to ZIP** | both | P1 | ✅ | media is never embedded (ADR-0127); `media_blobs` and `media_files.embedded` retired and locked in schema 1.1, removed at 2.0 (ADR-0136); SPEC §10.4 |
 | Missing-file relink by content hash | neither | P1 | ✅ | SPEC §10.2 |
-| Stem / batch / queued export | Cubase | P2 | — | runtime |
+| Stem / batch / queued export | Cubase | P2 | — | runtime. ADR-0203 d14 (D-07): **the render matrix**, a grid of sources (tracks, groups, master) against regions whose ticked cells fill the same queue (ADR-0071), beside the form and the AI; REAPER-style abilities, Cubase-style design, P2 |
+| **Export LUFS targeting**, retaining "0 dB peak"; default no normalising, as Live's export dialog | neither | P1 | — | ADR-0203 d14 (D-04 a): −14 LUFS / −1 dB true peak as the editable defaults on the Settings Export page; a property of each export job |
+| **Live's "Reduced Latency When Monitoring"** switch, and the 10 ms recording threshold (R-12) off by default | Ableton | P1 | — | ADR-0203 d4 (A7-15). Live's Delay Compensation on/off switch too (Options menu); Track Delay unavailable while it is off |
+| **Save As** (a new `.adi`, carry on in it; Ctrl+Shift+S) and **Save a Copy**; **Collect All and Save** as the plain command, the ZIP export beside it | Ableton | P1 | — | ADR-0203 d6 (B5-25, the reach-back of 2026-10-05). Ctrl+S is Take Snapshot (ADR-0203 d13) |
+| **Save as Default Audio/MIDI Track** | Ableton | P2 | — | ADR-0203 d11: replaces the "New track" settings page, which is dropped |
+| **Every file type the director asked for imports and converts**, AAC and M4A included | both | P1 | — | ADR-0203 d18 (B2-11). Sound Designer II P3. A file may play before its decoding has finished, as Live |
 
 ## 9. Session and workspace
 
@@ -233,7 +262,7 @@ for the transport, the tempo map, the groove pool and the track's scale
 | Templates | both | P1 | — | a `.adi` with a flag |
 | **Swap the docked side of browser and mixer** | Bitwig/Cubase muscle memory | P2 | ✅ | `ui_view` — ADR-0080; width follows the panel, not the side |
 | Named view filters, AI view groups, far/close scaling, collapsible mixer and device strips | Bitwig | P2 | ✅ | `ui_view`; a `view.*` op family (ADR-0112) |
-| App-scoped sample library and the floating palette (Cmd+I), usable with no project open | neither | P1 | — | an app-level SQLite store; a preview path in the engine (ADR-0104) |
+| App-scoped sample library and the floating palette (**Ctrl+P / Cmd+P**, ADR-0203 d6; Cmd+I is Live's Insert Silence), usable with no project open | neither | P1 | — | an app-level SQLite store; a preview path in the engine (ADR-0104) |
 | Open a historical undo node in a silent, read-only tab | neither | P2 | — | a materialised copy by replay; paste back is the ordinary transaction (ADR-0111) |
 
 ## 10. What neither DAW has — the actual reason to build this
@@ -250,10 +279,11 @@ for the transport, the tempo map, the groove pool and the track's scale
 | Undo you can *branch*, so exploring costs nothing | P2 | ✅ | |
 | Text projection for version control | P2 | — | ADR-0007 |
 | **Multiplayer Remote Sync (CRDT op-based)**: several people editing one project over the internet, Excel or Figma style | P3 | 🔶 | The op log is the substrate. Since schema 1.6 every op carries its client and a Lamport clock (`op_clocks`, ADR-0161). Still to decide, in SPEC §12 item 6: server-ordered as Figma and Excel are, or peer CRDT; row ids from two clients; concurrent reordering; shared undo. Media and plug-in state travel by BLAKE3 hash already. No network or UI code before it is scheduled. **Its shape is decided in ADR-0182.** |
-| Scripting API identical to the agent's op vocabulary | P2 | ✅ | one API, not two |
+| Scripting API identical to the agent's op vocabulary | P2 | ✅ | one API, not two. ADR-0203 d11 (A7-05): a Settings Scripts page at P2 lists installed scripts and how much each may do |
+| **Settings as named profiles**, saved and loaded; settings changes logged by default, with a switch | P2 | — | ADR-0203 d11 (A6-20); an extension of ADR-0125 d3's bundle |
 | **Local-only projects**, with the full branching history and no network | P0 | ✅ | today's behaviour; collaboration is opt-in per project (ADR-0182 d1) |
 | **Back up project to cloud**: a consistent copy plus its media, into a Google Drive, iCloud Drive, OneDrive, Dropbox or IDrive folder | P2 | — | ADR-0182 d3. The SQLite backup API or `VACUUM INTO`, never a copy of the live file, and Collect and Export's ZIP for the audio. A drive is never a project's home |
-| **Collaborative projects**: ops streamed to the user's own S3-compatible bucket; media chosen by the author and stored by hash; incoming changes previewed, then applied; collisions resolved per object; summaries from the ops, AI prose optional | P3 | — | ADR-0182. Not Git of the text projection, which leaves out eight tables. A collision needs each batch's base, a version vector: Lamport clocks alone cannot tell concurrent from sequential. **Keep both everywhere two can be held** (the director's revision): a clip becomes a take; continuous data (automation, event volume, tempo) keeps the collaborator's region as an inactive ghost, colour-coded, resolved one region at a time by default (Accept All and Reject All exist in the sync panel's menu, never suggested, one op each) by Keep Mine, Adopt Theirs or Combine, a 0 to 100% weighted blend in the lane's own domain, never a forced 50/50; discrete lanes do not blend (ADR-0182 d9) |
+| **Collaborative projects**: ops streamed to the user's own S3-compatible bucket; media chosen by the author and stored by hash; incoming changes previewed, then applied; collisions resolved per object; summaries from the ops, AI prose optional | **P2** (ADR-0203 d13, d17; was P3) | — | ADR-0182. Not Git of the text projection, which leaves out eight tables. A collision needs each batch's base, a version vector: Lamport clocks alone cannot tell concurrent from sequential. **Keep both everywhere two can be held** (the director's revision): a clip becomes a take; continuous data (automation, event volume, tempo) keeps the collaborator's region as an inactive ghost, colour-coded, resolved one region at a time by default (Accept All and Reject All exist in the sync panel's menu, never suggested, one op each) by Keep Mine, Adopt Theirs or Combine, a 0 to 100% weighted blend in the lane's own domain, never a forced 50/50; discrete lanes do not blend (ADR-0182 d9) |
 | **Sync, in detail**: batches named `batch_<lamport>_<client_id>.cbor`, the Lamport number zero-padded to 20 digits; a `sync_vectors` version-vector table; undoing a synced batch appends a compensating batch; remarks anchored to ranges and ops through `remark_anchors` | P2 | — | ADR-0188 d5. Both tables land with sync's schema minor |
 
 ---
@@ -273,7 +303,7 @@ which is a property of the algorithm and not of where it is compiled.
 
 | Node | P | Latency | Notes |
 |---|---|---|---|
-| Sub-sample phase utility | P1 | polarity **0**, nudge ~0 | polarity inversion is exactly free; a fractional delay is not. **Part of Utility** (ADR-0169) |
+| Sub-sample phase utility | P2 | polarity **0**, nudge ~0 | polarity inversion is exactly free; a fractional delay is not. The polarity switches are **part of Utility** (ADR-0169), which stays exactly Live's; **the sub-sample nudge is not in Utility**: a fine step on Track Delay, and the Scope's compare view applies the measured offset in one click; arrives with Audio Alignment (ADR-0203 d4, A4-12) |
 | Audio-rate envelope follower | P1 | 0 | a modulator under ADR-0046; first real consumer of ADR-0052's `PARAM_MOD` problem |
 | Grid-locked volume shaper | P1 | 0 | reads the tempo map directly — the reason it is native |
 | Transient shaper | P2 | 0 | built on the envelope follower above, not on the hitpoint detector: shaping is a real-time gain, detection is peak picking with look-ahead (ADR-0176 d4) Reference: the p0p `trainsient` (GPL-3.0) (ADR-0187 d3). |
@@ -319,7 +349,7 @@ Upstream code, unchanged, each its own binary under its own licence
 | ZL Equalizer 2 | AGPL-3.0 → AGPLv3 | `com.adi.zlaudio.zlequalizer2` | ✅ |
 | Dragonfly Hall, Room, Plate, Early Reflections | GPL-3.0 → GPLv3 | `michaelwillis.dragonfly.*`, theirs | ✅ |
 | **ADI Airwindows**: 160 of 524 by the director's five rules (ADR-0170), in eleven suite plug-ins (Color among them) with the algorithm chosen inside, a 5 ms crossfade and auto gain (ADR-0171, ADR-0173); the GUI is mac's. The console systems are the mixer's | MIT → GPLv3 | `com.adi.airwindows.<suite>` | ✅ |
-| **Host-side auto gain** for any plug-in, reusing `dsp::AutoGain` | — | — | idea: needs a per-device flag, which is a schema change |
+| **Host-side auto gain** for any plug-in, reusing `dsp::AutoGain` | — | P2 | ADR-0203 d8 (A4-14): ruled in at P2; needs a per-device flag, which is a schema change |
 
 ### Time-stretch (ADR-0061)
 
@@ -347,7 +377,7 @@ Listening tests against Live gate each mode (ADR-0108). No SoundTouch.
 | Feature | From | P | Fmt | Notes |
 |---|---|---|---|---|
 | Track freeze | both | P1 | ✅ | `tracks.frozen`, `freeze_media_id` — present since the first draft |
-| **Group** freeze | Ableton | P1 | ✅ | renders the summed bus; children leave the graph entirely (ADR-0059) |
+| **Group** freeze | neither (Live cannot freeze a group) | P1 | ✅ | ADR-0203 d16: two commands, Freeze All Channels and Freeze Group (see §2); the summed-bus render is Freeze Group, with its warning (ADR-0059) |
 | Freeze fingerprint | neither | **P1** | ✅ | an unfreeze against a changed chain is silently stale audio, which sounds fine and is wrong (ADR-0059) |
 | Racks with 8–16 macros | Ableton | P2 | ✅ | a rack is a node owning a nested graph; a macro is a modulator (ADR-0060) |
 
@@ -398,7 +428,7 @@ backlog; the priorities are within ADiJ.
 | **Rekordbox XML**, written and read | ADiJ | P2 | ADR-0191 d2. The desktop application's own interchange: tracks, playlists, cues, grids. Reading it brings a Rekordbox library in with no database key |
 | **A source on Pro DJ Link**: CDJs browse and load ADiJ's tracks over Ethernet, with waveforms, grids and cues, no USB stick | ADiJ | P2, after the USB export | ADR-0191 d3. Announcements on UDP 50000–50002, a database server, an NFS v2 file server; the rekordbox mode first (no privileged port 111). Its own threads, off by default, read only; a network fault never stops a deck. Amends ADR-0105 d4's "no network path". Vynull (GPL-3.0) as the reference |
 | **Stems on a deck**: four stems with a level, a mute and a filter each | ADiJ | P2 | ADR-0191 d4. From NI Stems files (`.stem.mp4`: a master and up to four stereo stems, one codec, one rate; Mixxx's `soundsourcestem.cpp`) or from separation at analysis time, behind the RPC boundary and cached by BLAKE3 hash (ADR-0186 d2 keeps Demucs in Tier 2) |
-| **AAC and M4A decoding**: an MP4 demuxer of our own, AAC through the platform decoders | both | P2 | ADR-0191 d4. ADI decodes WAV, AIFF, FLAC, MP3 and Ogg today; a DJ library is full of M4A, so this comes first for ADiJ. Linux's decoder is decided with the Linux DJ app |
+| **AAC and M4A decoding**: an MP4 demuxer of our own, AAC through the platform decoders | both | **P1** (ADR-0203 d18; was P2) | ADR-0191 d4. ADI decodes WAV, AIFF, FLAC, MP3 and Ogg today; a DJ library is full of M4A, so this comes first for ADiJ. Linux's decoder is decided with the Linux DJ app |
 | **Importing an NI Stems file** as a group with one track per stem, time-aligned | ADI | P2 | ADR-0191 d4. Splitting a clip into stems is already P1 (ADR-0064) |
 | **Exporting stems as an NI Stems file** | ADI | P3 | ADR-0191 d4. AAC encoding from the operating system (Media Foundation, Core Audio); Linux is open |
 
@@ -479,8 +509,9 @@ Copying the look of a reference is not the feature; the behaviour is.
   DAW**, by the developer, and Adi signs the session. A roadmap step is
   "verified", not "done", when that has happened.
 - Every deviation is a **defect** unless Adi approved it (dated, in the
-  checklist) or an ADR explicitly rejects it (ADR-0072 for sends, ADR-0047 for
-  the Inspector).
+  checklist) or an ADR explicitly rejects it (ADR-0047 for the Inspector; the
+  director's deviations are listed in ADR-0203 d12). ADR-0072's rejection of
+  sends is reversed (ADR-0203 d3).
 - Enhancements layer on top of parity, never instead of it.
 
 ## 14. Decided in the Settings review (ADR-0125 to ADR-0135)
@@ -502,12 +533,19 @@ unless it says so.
 | Per-window UI scaling; plugin windows never scaled by us | — | P1 | ADR-0129 d3-d4 |
 | Master Focus Dial: hover for native controls, touch for plugins, lock, HUD, fine mode | Steinberg / REAPER + | P1 | ADR-0130 |
 | Info View and delayed tooltips | Ableton | P0 | ADR-0131 |
-| Remarks anchored to tracks, clips, devices, parameters; agent remarks marked | Word | P2 | ADR-0131 |
+| Remarks anchored to tracks, clips, devices, parameters; agent remarks marked | Word | P2 | ADR-0131. **ADR-0203 d17 (D-08): as Word's comments: on any object, note, marker or time range; threads, resolve, authors, a Remarks panel** |
 | Recording 32-bit float, WAV promoted to RF64 at 4 GiB; `bext` and iXML | Cubase | P0 | ADR-0132 d1-d2 |
 | Import of every common format through one decoder, decoded into the cache | — | P1 | ADR-0132 d3-d4 |
-| Import defaults: no warp, no fade (deviations from Live, approved); Warp = Auto-Warp on demand | Ableton + Bitwig | P0 | ADR-0132 d6-d7 |
+| Import defaults: no warp, no fade (deviations from Live, approved); Warp = Auto-Warp on demand | Ableton + Bitwig | P0 | ADR-0132 d6-d7; confirmed by name, ADR-0203 d12. Warp then detects tempo changes (a marker on the first beat of each bar), as Live's Auto-Warp |
 | Rec-Q toggle on the MIDI track header; quantize is its own undo step | Bitwig + Ableton | P1 | ADR-0132 d8 |
-| Retrospective capture: MIDI always, audio 30 s ring per armed input | Ableton + Cubase | P1 | ADR-0132 d9 |
+| Retrospective capture: MIDI always, audio 30 s ring per armed or monitored input | Ableton + Cubase | P1 | ADR-0132 d9; ADR-0203 d7 |
+| Settings window takes Live's ten tab names and order; ADI's pages after them; no New track page; an Export page; Find matches related words, the AI can help | Ableton | P1 | ADR-0203 d11 |
+| History: 2000 undo steps or 1000 MB; Ctrl+S = Take Snapshot; a daily snapshot; 10,000 snapshots (100,000 in collaboration) | — | P1 | ADR-0203 d13 (D-01) |
+| Keys: function keys do functions (F3 Session View, F7 offline processing), Tab switches views, Ctrl+P palette, Ctrl+I as Live | — | P0 | ADR-0203 d6; the F-keys are the director's deviation |
+| Zoom exactly Live's (around the selection); interface zoom per window; the device strip's minimum height is Live's | Ableton | P0 | ADR-0203 d7 (reverses ADR-0145 d2; amends ADR-0112) |
+| No added delay anywhere: built-in Pd devices run their DSP directly; a bypassed device keeps its delay in the compensation; AudioGridder the one exception | Ableton | P0 | ADR-0203 d4 (amends ADR-0057 d6, ADR-0183 d12) |
+| Analysis files in one "analysed" folder in ADI's data folder, one per sample; warp markers and clip settings saved with a sample live in the library | — | P1 | ADR-0203 d18 |
+| Mac and Linux builds immediately after Windows works | — | roadmap | ADR-0203 d23 (D-09) |
 | Control room | Cubase | **v2** | deferred, ADR-0125 d5 |
 | Play-Q: live input released on the grid, late forgiveness, amber warning | — | P2 | ADR-0133 d4 |
 | Inactive tabs offline; buses allocated on demand | — | P1 | ADR-0134 d1-d2 |

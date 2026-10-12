@@ -6,6 +6,59 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-10-12 — The v1.0 review closes: ADR-0203, the rulings applied, the build brief; PR #213 merged
+
+**ADR-0203 (`win/v1.0-rulings`).** The director ruled on every one of the audit's 374 findings
+between 1 and 12 October; the ledger (`docs/review/v1.0-verdicts.md`) and its two companions are
+committed as the evidence. The entry is long by design: the standing rule (Live's way; additions
+first-class), the reversal of ADR-0072 (sends and returns back, plus ADI's sends into any track),
+no added delay anywhere (ADR-0057 d6 and ADR-0183 d12 amended), the keys (F-keys do functions, Tab
+switches views, Ctrl+P palette, Ctrl+S snapshot, Ctrl+Shift+S Save As), history caps, the
+Loudness Drive instead of VCA faders, freeze's two group commands, macros as adi_multimapper, the
+Settings window in Live's shape, the defaults, D-09 (Mac and Linux right after Windows), and
+**licensing closed: ADI is AGPLv3, all of it; never raised with the director again.**
+`LICENSE` is now AGPL-3.0; `OPEN_SOURCE_POLICY.md` §4a carries the ruling; README,
+EXTERNAL-CODE.md and the collab rules follow. FEATURES.md took every priority change row by row
+(sends rows annotated, VCA row → Loudness Drive, channel strip struck, Session View P2, scale P1,
+Capture P1, AAC P1, collaboration P2, the new rows for the scope in strips, the loudness meter,
+Freeze All Channels, Bounce to New Track, range editing, automation shapes, step input, Humanize,
+the pattern editor, the DJ Filter, the scanner, multi-threading, stem separation, auto gain-match,
+Save As, the Export page, profiles, the render matrix). `docs/AWAITING.md` rows 6 to 15 are the
+Live readings the rulings wait for, labelled by Live version.
+
+**The build brief, `docs/BUILD-BRIEF.md`,** is the spec the director asked for: what is built on
+main today, what the rulings change in built code, the order of work (A: sends play; B: step 7
+purely as Live; C: P0 editing; D: the P1 set; E: Mac and Linux at once; F: P2; G: P3 and Mobile),
+the rules every agent works under, and what the orchestrator must not do.
+
+**The Settings registry (`win/v1.0-settings`, a subagent on a worktree)** applies the ruled defaults
+key by key (buffer 512, 44.1 kHz, cache 20 GB, caps 6000/6000, warp tempo detection on, zoom on
+selection on, discard takes off, results unlimited, copy media never, wheel never), removes
+`plugins.scanOutOfProcess`, `devices.pdExternalsFolders`, `mixing.defaultSendLevelDb`,
+`transport.runFxWhenStoppedMs` and the five `newtrack.*` keys, and adds Chase MIDI Notes, Reduced
+Latency When Monitoring, the threshold switch, MIDI Envelope Auto-Reset, the Export page and the
+change-log switch. It also raises `adi_changeset_tests`' preview bound from 20 s to 60 s: on this
+idle i7-4930K the preview takes 22 to 24 s with code identical to main.
+
+**PR #213 (mac's Multiband Dynamics as a Pd device, bit-exact against Live 11) merged at `cf20417`.**
+Reviewed from five angles with adversarial verification (27 findings, no blocker); fixed before
+merging: an MSVC `/WX` C4127 at `test_multiband_dynamics.cpp:690` that CI's compilers did not
+raise (now `if constexpr`), unbuffered stdout in the test, a 30 Hz tolerance of 5e-9, HIIR named as
+the half-band designer's source (WTFPL-2.0, now in EXTERNAL-CODE.md), the jump path of `set()`
+re-deriving and re-designing, SPDX headers and a `.gitignore` for `collab/mac/live-probe/`. Follow-ups
+listed in 1b8b112's message: `derive()`'s per-sample libm cost, crossover design above 352.8 kHz,
+`FlushDenormals` on MSVC ARM64/x86, a latency-report check that cannot fail, NaN sanitising as the
+siblings do, the FEATURES rows for the ten devices merged since 29 September. mac was recalled for
+this one task only; it stays retired (ADR-0202).
+
+**Measured on main at `cf20417`:** 7826 checks across 95 suites (README still says 7682/93; win
+updates it with the next merge to main, as the rule says).
+
+**Worktrees on this PC** are at `D:\wt-<topic>` rather than `Adi-wt\<topic>`: JUCE builds need
+short paths, and the main checkout is the drone's.
+
+---
+
 ## 2026-10-01 — win moves from salon-tv to ORC-VST
 
 **Why:** the director moved the Windows lead to a new PC. salon-tv keeps its own roles (Plex and home
