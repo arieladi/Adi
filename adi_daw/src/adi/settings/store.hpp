@@ -90,6 +90,8 @@ public:
     [[nodiscard]] const Value& stored() const { return values_; }
 
     /// The change log beside the file (settings-changes.jsonl); on by default.
+    /// A person's changes are logged while this is on AND the setting
+    /// `settings.logChanges` (A6-20, ADR-0203) is on; the agent's always are.
     void setLogUserChanges(bool on) { logUsers_ = on; }
     [[nodiscard]] std::filesystem::path changeLogFile() const;
 

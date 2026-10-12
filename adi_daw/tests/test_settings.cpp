@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The settings store: ADR-0125 R-01 to R-07 and d1-d3, ADR-0127 d5, ADR-0145,
-// ADR-0149, ADR-0152.
+// ADR-0149, ADR-0152, and the director's v1.0 rulings on the registry
+// (ADR-0203).
 //
 // Every check here runs on every platform, whatever the environment: the
 // check count is compared with the README's, so nothing is platform-only.
@@ -95,9 +96,9 @@ void testRegistry() {
 
     // ADR-0145's settings.
     const auto* zoom = find("lookfeel.zoomOnSelection");
-    check(zoom && zoom->type == Type::Bool && zoom->defaultValue == false && zoom->scope == Scope::App &&
+    check(zoom && zoom->type == Type::Bool && zoom->defaultValue == true && zoom->scope == Scope::App &&
               zoom->page == "Look & Feel",
-          "Zoom on Selection: an [App] switch under Look & Feel, off (ADR-0145 d2)");
+          "Zoom on Selection: an [App] switch under Look & Feel, on as Live (ADR-0145 d2 amended by ADR-0203)");
     const auto* resample = find("audio.silentResampling");
     check(resample && resample->type == Type::Bool && resample->page == "Audio" &&
               resample->defaultValue == false,
@@ -132,6 +133,115 @@ void testRegistry() {
           "nothing matches nonsense, or an empty query");
 }
 
+// --- the director's v1.0 rulings (ADR-0203) ---------------------------------------------------
+
+/// A setting's default, or null when the key is not in the registry.
+Value dflt(const char* key) {
+    const auto* s = find(key);
+    return s ? s->defaultValue : Value();
+}
+
+void testRulings() {
+    section("the v1.0 rulings: defaults, removals, additions (ADR-0203)");
+    check(dflt("audio.bufferSize") == 512 && dflt("audio.sampleRate") == 44100,
+          "the device opens at 512 samples and 44.1 kHz by default");
+    check(dflt("cache.maxSizeMb") == 20480, "the decoding cache is 20 GB by default");
+    const auto* perRequest = find("agent.maxOpsPerRequest");
+    check(dflt("agent.maxOpsPerMinute") == 6000 && perRequest && perRequest->defaultValue == 6000 &&
+              perRequest->max == 100000,
+          "the agent's rate cap and per-request cap are 6000, the latter up to 100000");
+    check(dflt("record.warpDetectTempoChanges") == true && dflt("record.discardIncompleteTakes") == false,
+          "Warp detects tempo changes, as Auto-Warp; every loop-recording pass is kept, as Live");
+    const auto* results = find("library.maxResults");
+    check(results && results->defaultValue == 0 && results->min == 0,
+          "browser results are unlimited by default: 0 is legal and the default");
+    check(dflt("files.copyImportedMedia") == "never" && dflt("lookfeel.wheelChangesParameters") == "never",
+          "imported media is never copied and the wheel never moves a control, as Live");
+    const auto* metronome = find("audio.metronomeOutput");
+    check(metronome && metronome->defaultValue == "" && metronome->help.find("Cue Out") != std::string::npos,
+          "the metronome's empty output is Live's Cue Out");
+    const auto* colour = find("lookfeel.autoTrackColor");
+    check(colour && colour->type == Type::Bool && colour->defaultValue == true && colour->choices.empty(),
+          "auto track colours is Live's switch, on, no longer Cubase's five modes");
+    const auto* services = find("agent.asyncServices");
+    check(services && services->choices == std::vector<Value>{"builtin", "local", "remote"} &&
+              services->defaultValue == "builtin",
+          "stem separation is built in by default; local and remote stay (ADR-0064 d4 amended)");
+
+    // Removed: no switch for the out-of-process scan, no Pd externals path, no
+    // default send level, no run-effects-when-stopped, and no New track page.
+    bool gone = true;
+    for (const char* key : {"plugins.scanOutOfProcess", "devices.pdExternalsFolders", "mixing.defaultSendLevelDb",
+                            "transport.runFxWhenStoppedMs", "newtrack.faderGainDb", "newtrack.showInMixer",
+                            "newtrack.meterMode", "newtrack.sendLevelDb", "newtrack.showEnvelopes",
+                            "library.recordFolder"})
+        gone = gone && !find(key);
+    const auto pageList = pages();
+    check(gone && std::find(pageList.begin(), pageList.end(), "New track") == pageList.end(),
+          "the removed keys are gone, and the New track page with them");
+    const auto* recordFolder = find("files.recordFolder");
+    check(recordFolder && recordFolder->type == Type::Path && recordFolder->page == "File & Folder" &&
+              recordFolder->defaultValue == "",
+          "the default record folder is files.recordFolder on File & Folder, empty for the project's own");
+
+    // Added.
+    const auto onPage = [](const char* key, const char* page, const Value& v) {
+        const auto* s = find(key);
+        return s && s->type == Type::Bool && s->page == page && s->defaultValue == v && s->scope == Scope::App;
+    };
+    check(onPage("midi.chaseNotes", "MIDI", true) && onPage("midi.envelopeAutoReset", "MIDI", true),
+          "Chase MIDI Notes and MIDI Envelope Auto-Reset: MIDI switches, on as Live's Options");
+    check(onPage("audio.reducedLatencyWhenMonitoring", "Audio", false) &&
+              onPage("audio.recordPdcThresholdEnabled", "Audio", false),
+          "reduced latency when monitoring, and the PDC bypass when recording: Audio switches, off");
+    std::size_t enabledAt = 0, thresholdAt = 0;
+    for (std::size_t i = 0; i < registry().size(); ++i) {
+        if (registry()[i].key == "audio.recordPdcThresholdEnabled") enabledAt = i;
+        if (registry()[i].key == "audio.recordPdcThresholdMs") thresholdAt = i;
+    }
+    check(enabledAt + 1 == thresholdAt && dflt("audio.recordPdcThresholdMs") == 10.0,
+          "the switch sits right before the 10 ms threshold");
+    check(onPage("settings.logChanges", "Privacy", true), "settings.logChanges: a Privacy switch, on (A6-20)");
+
+    // The Export page: the dialog's defaults, and nothing else.
+    const auto* fileType = find("export.fileType");
+    const auto* depth = find("export.bitDepth");
+    const auto* dither = find("export.dither");
+    const auto* normalize = find("export.normalize");
+    check(fileType && fileType->page == "Export" && fileType->defaultValue == "wav" &&
+              fileType->choices == std::vector<Value>{"wav", "aiff", "flac", "mp3", "aac"},
+          "export: WAV, AIFF, FLAC, MP3 or AAC, WAV by default");
+    check(depth && depth->choices == std::vector<Value>{16, 24, 32} && depth->defaultValue == 24 &&
+              dither && dither->defaultValue == "triangular" && dither->choices.size() == 6,
+          "export: 16, 24 or 32 bit, 24 by default; Live's six dither choices, Triangular by default");
+    check(normalize && normalize->choices == std::vector<Value>{"off", "peak", "loudness"} &&
+              normalize->defaultValue == "off" && dflt("export.loudnessTargetLufs") == -14.0 &&
+              dflt("export.truePeakCeilingDb") == -1.0 && dflt("export.nameTemplate") == "{project} - {track}",
+          "export: normalize off, peak or loudness; -14 LUFS and -1 dBTP; the name template");
+    std::size_t exportCount = 0;
+    bool exportApp = true, noFolder = true;
+    for (const auto& s : registry()) {
+        if (s.page != "Export") continue;
+        ++exportCount;
+        exportApp = exportApp && s.scope == Scope::App;
+        noFolder = noFolder && s.type != Type::Path;
+    }
+    check(exportCount == 7 && exportApp && noFolder && find("files.renderFolder"),
+          "the Export page holds seven App settings and no folder: the destination stays files.renderFolder");
+
+    // The defaults the rulings confirmed.
+    check(dflt("midi.takeoverMode") == "pickup" && dflt("devices.freezeTailSeconds") == 4.0 &&
+              dflt("sync.lanJitterBufferMs") == 40 && dflt("privacy.crashReports") == false &&
+              dflt("record.quantize") == "1/16" && dflt("record.importAutoWarp") == false &&
+              dflt("lookfeel.showTooltips") == true && dflt("music.middleC") == "C3" &&
+              dflt("music.pitchNaming") == "english" && dflt("files.openOnStart") == "template" &&
+              dflt("library.backgroundIndexing") == true && dflt("audio.releaseDeviceInBackground") == "never" &&
+              dflt("audio.autoMute") == false && dflt("midi.resetOnStop") == true &&
+              dflt("midi.insertResetAfterRecord") == true && dflt("transport.stopAtProjectEnd") == false &&
+              dflt("editing.bounceReplaces") == "ask" && dflt("editing.importOptions") == "ask",
+          "the defaults the rulings confirmed are as ruled");
+}
+
 // --- the file -------------------------------------------------------------------------------
 
 void testStoreBasics() {
@@ -141,7 +251,7 @@ void testStoreBasics() {
     {
         AppSettings s(appdata::App::Daw, file);
         check(s.status() == LoadStatus::Defaults, "no file: defaults");
-        check(s.get("audio.bufferSize") == 256, "the default buffer is 256");
+        check(s.get("audio.bufferSize") == 512, "the default buffer is 512 (ADR-0203)");
         std::string why;
         check(s.set("audio.bufferSize", 128, kUser, why), "set 128");
         check(!s.set("audio.bufferSize", 32, kUser, why), "32 is refused: " + why);
@@ -169,9 +279,9 @@ void testUnknownKeysSurvive() {
     adi::test::TempDirectory temp("settings", "unknown");
     const auto file = temp.path() / "settings.json";
     writeText(file, R"({"schema": 1, "app": "ADI", "values": {
-        "audio.bufferSize": 512, "future.meterBallistics": {"attack": 3, "release": 300}}})");
+        "audio.bufferSize": 1024, "future.meterBallistics": {"attack": 3, "release": 300}}})");
     AppSettings s(appdata::App::Daw, file);
-    check(s.get("audio.bufferSize") == 512, "the known key is read");
+    check(s.get("audio.bufferSize") == 1024, "the known key is read");
     check(s.get("future.meterBallistics").is_null(), "the unknown key has no meaning here");
     std::string why;
     check(s.set("lookfeel.theme", "light", kUser, why) && s.save(why), "change something else, save");
@@ -198,7 +308,7 @@ void testCorruptKeptAside() {
     writeText(file, broken);
     AppSettings s(appdata::App::Daw, file);
     check(s.status() == LoadStatus::CorruptKept, "reported as corrupt");
-    check(s.get("audio.bufferSize") == 256, "and defaults are in use");
+    check(s.get("audio.bufferSize") == 512, "and defaults are in use");
     check(s.keptAside() && fs::exists(*s.keptAside()) && readText(*s.keptAside()) == broken,
           "the broken file is kept, byte for byte, beside it");
     check(!fs::exists(file), "and nothing has been written in its place yet");
@@ -255,6 +365,19 @@ void testChangeLog() {
     l = lines();
     check(l.size() == 2 && l[1].at("actor") == "agent" && l[1].at("detail") == "model-x 1.0",
           "an agent's change is always logged, with the model");
+
+    // ADR-0203: the switch is a setting, on by default (A6-20).
+    s.setLogUserChanges(true);
+    check(s.get("settings.logChanges") == true, "settings.logChanges is on by default");
+    s.set("settings.logChanges", false, kUser, why);
+    l = lines();
+    check(l.size() == 3 && l[2].at("key") == "settings.logChanges" && l[2].at("after") == false,
+          "the change that turns the log off is the log's last line");
+    s.set("lookfeel.theme", "os", kUser, why);
+    check(lines().size() == 3, "with it off a person's change is not logged");
+    check(agentSet(s, AgentTier::Apply, "lookfeel.theme", "dark", "model-x 1.0", kT0 + 2).ok &&
+              lines().size() == 4,
+          "and the agent's still is");
 }
 
 // --- the agent's pipeline -----------------------------------------------------------------
@@ -265,8 +388,8 @@ void testAgentWhitelist() {
     AppSettings s(appdata::App::Daw, temp.path() / "settings.json");
     check(!agentSet(s, AgentTier::Propose, "lookfeel.theme", "light", "m", kT0).ok,
           "at Propose tier it changes nothing");
-    check(agentSet(s, AgentTier::Apply, "lookfeel.zoomOnSelection", true, "m", kT0).ok &&
-              s.get("lookfeel.zoomOnSelection") == true,
+    check(agentSet(s, AgentTier::Apply, "lookfeel.zoomOnSelection", false, "m", kT0).ok &&
+              s.get("lookfeel.zoomOnSelection") == false,
           "at Apply it may change Zoom on Selection");
     for (const char* key : {"audio.bufferSize", "audio.driverType", "audio.silentResampling",
                             "library.userLibrary", "plugins.vst3Folders", "privacy.crashReports",
@@ -275,7 +398,7 @@ void testAgentWhitelist() {
         const auto r = agentSet(s, AgentTier::Apply, key, v, "m", kT0);
         check(!r.ok, std::string("refused: ") + key);
     }
-    check(s.get("audio.bufferSize") == 256 && s.get("agent.tier") == "propose",
+    check(s.get("audio.bufferSize") == 512 && s.get("agent.tier") == "propose",
           "and none of them changed");
     bool consistent = true;
     int whitelisted = 0;
@@ -354,7 +477,7 @@ void testBundles() {
     from.set("lookfeel.theme", "light", kUser, why);
     from.set("library.userLibrary", "/home/ana/Music/ADI", kUser, why);
     from.set("library.contentFolders", Value::array({"/data/samples", "/data/loops"}), kUser, why);
-    from.set("library.recordFolder", "/home/ana/Music/ADI/Recordings", kUser, why);
+    from.set("files.recordFolder", "/home/ana/Music/ADI/Recordings", kUser, why);
     from.set("plugins.vst3Folders", Value::array({"/opt/vst3"}), kUser, why);
     const Preset look = makePreset(from, "Light", {"Look & Feel"});
 
@@ -376,7 +499,7 @@ void testBundles() {
           "a manifest names the kind and the application");
     check(!settingsDoc.is_null() && !containsAbsolutePath(settingsDoc),
           "no absolute path anywhere in the bundle's settings");
-    check(value("library.recordFolder") == "role:user library/Recordings",
+    check(value("files.recordFolder") == "role:user library/Recordings",
           "a folder under the user library travels as that role");
     check(value("library.contentFolders") ==
               Value::array({"role:content folder 1", "role:content folder 2"}),
@@ -393,7 +516,7 @@ void testBundles() {
     const auto in = importBundle(zip, to, kUser);
     check(in.ok, "imported: " + in.why);
     check(to.get("lookfeel.theme") == "light", "the theme came across");
-    check(to.get("library.recordFolder") == "/mnt/work/ADI/Recordings",
+    check(to.get("files.recordFolder") == "/mnt/work/ADI/Recordings",
           "the record folder resolved against THIS machine's user library");
     check(to.get("library.userLibrary") == "/mnt/work/ADI",
           "and this machine's own user library is its own");
@@ -518,8 +641,9 @@ void testCatalogue() {
     const auto* project = find("project.sampleRate");
     const auto* device = find("audio.sampleRate");
     check(project && project->type == Type::Choice && project->choices == ladder && project->defaultValue == 48000,
-          "the project's rate chooser offers the ladder, 48 kHz by default");
-    check(device && device->type == Type::Choice && device->choices == ladder, "the device's rate chooser offers the ladder");
+          "the project's rate chooser offers the ladder, 48 kHz by default (the schema's column default)");
+    check(device && device->type == Type::Choice && device->choices == ladder && device->defaultValue == 44100,
+          "the device's rate chooser offers the ladder, 44.1 kHz by default (ADR-0203)");
     std::string why;
     check(project && device && !validate(*project, 32000, why) && !validate(*device, 22050, why) &&
               validate(*device, 768000, why) && !validate(*device, 1536000, why),
@@ -547,8 +671,9 @@ void testCatalogue() {
 }
 
 int runAll() {
-    std::printf("adi_settings_tests -- ADR-0125, ADR-0127 d5, ADR-0145, ADR-0152\n\n");
+    std::printf("adi_settings_tests -- ADR-0125, ADR-0127 d5, ADR-0145, ADR-0152, ADR-0203\n\n");
     testRegistry();
+    testRulings();
     testCatalogue();
     testStoreBasics();
     testUnknownKeysSurvive();
