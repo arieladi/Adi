@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Offline renderer for the Multiband Dynamics core with switch automation:
 //   mbd_auto in.wav out.wav [-s sc.wav] [-n len] [-p Name=value]... [-e <sample>:<Name>=<value>]...
 // An -e event takes effect from that sample on (applied before it is processed). "DeviceOn" is

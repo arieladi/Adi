@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Probe battery requested by the audit agent (switch automation and host behaviour), in the battery_d.py style.
 
   battery_audit()          -> sets/mbd_audit.als + mbd_audit.json  (48 kHz; export like A-D: All Individual Tracks,

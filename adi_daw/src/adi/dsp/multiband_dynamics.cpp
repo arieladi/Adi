@@ -688,6 +688,7 @@ void MultibandDynamics::set(Param p, double v) noexcept {
     }
     smooth_[p].jump(v);
     derive();
+    designFilters();  // a crossover set before prepare() must not keep the constructor's design
 }
 
 void MultibandDynamics::derive() noexcept {

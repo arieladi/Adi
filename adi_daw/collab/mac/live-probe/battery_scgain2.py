@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """S/C gain mapping, round 2 (evidence the scg agents asked for).
   1. staircases: runs of CONSECUTIVE float32 stored gains at five levels (does Live's gain step?)
   2. the off cut bisected inside (-69.9, -69.8] dB, plus linear and normalised candidates

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // livectl: background control of a macOS app by pid (window list, key/mouse post, window capture)
 import Foundation
 import CoreGraphics

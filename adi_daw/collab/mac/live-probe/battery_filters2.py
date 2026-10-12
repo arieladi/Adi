@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Probe battery "filters 2" (crossover agent, round 5): confirmation probes for what the crossovers still
 rest on single probes for, plus the one switch case no render covers. NOT yet rendered.
 

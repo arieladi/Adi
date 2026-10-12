@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """nulltest.py with switch-automation replay: every probe, automated or not, through a binary built from
 mbd_render_auto.cpp (agents/audit/final). Same fades, host tail cut, EXACT marks and bit-exact count as
 harness/nulltest.py; automation points (beats at 120 BPM) become sample-exact '-e' events at the clip's rate,

@@ -25,6 +25,7 @@ Bulky files never enter the repo. Signals, sets and Live's renders live under
 
 ```bash
 cd adi_daw/collab/mac/live-probe
+python3 -c 'import paths'   # creates $ADI_LIVE_PROBE_WORK (default ~/adi-live-probe) and its bin/ sig/ sets/ out/ cache/
 swiftc -O -o ~/adi-live-probe/bin/livectl livectl.swift
 clang++ -std=c++20 -O2 -ffp-contract=off -I ../../../src mbd_render.cpp ../../../src/adi/dsp/multiband_dynamics.cpp -o ~/adi-live-probe/bin/mbd_render
 python3 battery.py            # battery A -> sets/mbd_a.als + mbd_a.json
@@ -46,7 +47,7 @@ python3 nulltest.py mbd_a mbd_b mbd_c               # residual per probe, dB re 
 | `mbd_render.cpp` | Offline renderer: WAV in, the C++ core with `-p Name=value` parameters, WAV out. |
 | `nulltest.py` | Replays every probe of a set through `mbd_render`, applying Live's clip declick first, and prints RMS and peak residuals. |
 | `extract_refs.py` | Pulls the reference numbers the unit test embeds out of Live's renders. |
-| `clipfade_<rate>.txt` | Live's clip declick, measured: 192 samples in, 192 out. Not the device: Live fades every clip edge, `Fade` off or not. |
+| `clipfade_<rate>.txt` | Live's clip declick, measured: 176, 192 and 384 samples in and out at 44.1, 48 and 96 kHz. Not the device: Live fades every clip edge, `Fade` off or not. |
 | `wsc.py` | Reads Live's own parameter names, values and display text through the AdiVST bridge, if it is running. |
 
 ## Traps it already fell into

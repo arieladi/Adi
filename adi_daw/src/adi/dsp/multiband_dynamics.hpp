@@ -9,7 +9,7 @@ namespace adi::dsp {
 // host rate between a polyphase IIR half-band upsampler and downsampler.
 class MultibandDynamics {
   public:
-    // Live's own parameter order (its LOM list without Device On), then the four
+    // Live's own parameter order (its LOM list without Device On), then the six
     // switches Live keeps in the set but does not automate.
     enum Param {
         LowMidCrossover,

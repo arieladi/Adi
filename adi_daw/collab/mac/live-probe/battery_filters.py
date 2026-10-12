@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Probe battery "filters" (crossover agent): pins the two crossover details the A-D renders cannot.
 
   battery_filters() -> sets/mbd_f.als + mbd_f.json   (48 kHz, export like A-D: All Individual Tracks,

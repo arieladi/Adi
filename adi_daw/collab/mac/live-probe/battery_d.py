@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Probe battery D (completeness critic): the reachable behaviours batteries A-C leave untested.
 
   battery_d()          -> sets/mbd_d.als + mbd_d.json   (48 kHz, export like A-C: All Individual Tracks,

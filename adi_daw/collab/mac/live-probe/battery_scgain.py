@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """S/C gain mapping battery (lead, for the routing agent's open item A).
 Single-band Listen, mix 100 %: the output is down(up(gain*sc))*master, so Live's effective float S/C gain
 reads off to the last bit. Every stored gain is float32-exact (the XML decimal IS a float).

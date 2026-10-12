@@ -156,6 +156,7 @@ void run() {
 }
 } // namespace
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // a crash must not lose the lines before it
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetAllocHook(allocationHook);
 #endif

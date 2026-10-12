@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Offline renderer for the Multiband Dynamics core: mbd_render in.wav out.wav [-s sc.wav] [-p Name=value]...
 #include "adi/dsp/multiband_dynamics.hpp"
 #include <cstdint>

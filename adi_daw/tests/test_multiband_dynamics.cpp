@@ -672,7 +672,7 @@ void liveNetwork() {
     check(sameAsLive(impulse(48000, 256, [](MD &m) {
               m.set(MD::LowMidCrossover, 30), m.set(MD::MidHighCrossover, 300), m.set(MD::SoloLow, 1);
           }),
-          kLiveLow30Hz, 2e-6),
+          kLiveLow30Hz, 5e-9),  // the reference peaks at 5.06e-7: a bound an all-zero band cannot pass
           "30 Hz low band, Live's float artefacts included");
     check(sameAsLive(impulse(96000, 256, [](MD &) {}), kLiveNeutral96k, 2e-6),
           "three-band neutral at 96 kHz (192 kHz inside) is Live's");
@@ -935,6 +935,7 @@ void sidechainFader() {
 }
 } // namespace
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // a crash must not lose the lines before it
     resampler();
     crossovers();
     statics();

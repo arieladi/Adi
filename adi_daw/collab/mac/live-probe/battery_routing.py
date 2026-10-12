@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Probe battery requested by the routing agent: sidechain gain / mix mapping, Listen gains, Listen logic.
 
     battery_rt()  -> sets/mbd_rt.als + mbd_rt.json   (48 kHz; export like A-D: All Individual Tracks,
