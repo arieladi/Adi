@@ -16377,7 +16377,9 @@ if wrong when he reads v1.1.
 1. **The channel EQ is the director's Pro-Q 4 behaviour clone; ZL Equalizer leaves the project.**
    - He is building clones of FabFilter Pro-Q 4 and Pro-L 2, and clones in the soothe2 and Serum
      class, with Codex, **from measurements only**: his own code, his own names and interfaces.
-     They join the ADI suite under their names when he hands them over.
+     They join the ADI suite under their names when he hands them over. **The names (ruled the same
+     day): ADI-Q** (the Pro-Q 4 clone), **ADI-L** (the Pro-L 2 clone), **ADI Still** (the soothe2
+     class), **ADI Prism** (the Serum 2 class).
    - The ZL Equalizer-based Dynamic EQ plug-in (ADR-0195 d1, d2; `plugins/dynamic-eq`, the
      `zlequalizer` clone) is **retired** and removed from the tree; nothing of ZL remains. Its
      Pro-Q 3 gesture table, dynamic bands, linear phase, EQ Match, the masking highlight and the
@@ -16391,8 +16393,17 @@ if wrong when he reads v1.1.
    - **One EQ window shows every channel's EQ** (FabFilter's "show all instances", native, so it
      works across the whole project), where he sees them all and switches on what he wants.
    - EQ Match lives in the channel EQ. The DJ Filter device (ADR-0203 d8) shares its filter cores
-     and is a pure bypass at centre. The Pro-L 2-class limiter is the end of the Loudness Drive's
-     cascade (ADR-0203 d14 c). The Loudness Drive stays separate from the EQ.
+     and is a pure bypass at centre. The Loudness Drive stays separate from the EQ.
+   - **ADI-L is baked into every channel and group as well, off by default, beside ADI-Q** (the
+     director, the same day: "after Q and L are ready I want them together baked in each channel
+     with off by default and hopefully, because integrated in the DAW in each channel, also very
+     efficient"). Both slots obey the present-but-off rule: not calculated, bit-transparent, a
+     click-free switch, the lookahead added to the compensation only once engaged. The per-channel
+     ADI-L instances are the stages of the Loudness Drive's clipper/limiter cascade across tracks,
+     buses and master (ADR-0203 d14 c), engaged when the Drive is used; the master's ADI-L is the
+     cascade's end. **win's placement, to strike if wrong:** a channel's ADI-L starts in a light
+     mode (no oversampling, short lookahead), the master's in the full mode; the EQ window lists the
+     limiters too, so the cascade is seen in one view.
    - His reasons, recorded: in Live an EQ on every channel costs CPU and changes phase; switching
      a device on can pop; effects on groups (kick and bass) break automation, sometimes at export.
      A native, light, click-free channel EQ is the fix — *"only please not for the price of a too
@@ -16428,9 +16439,10 @@ if wrong when he reads v1.1.
    - A Live measurement is not an open question: each (AWAITING rows 6 to 16) states ADI's working
      default and the row that confirms it. Takeover mode's working default is Pick-Up (row 14); a
      new send starts fully down (row 7); the device strip's minimum is 169 units (row 6).
-   - **Color-bass devices** (ADR-0192's open): the names **Chord Comb** and **Color Cab** stand
-     unless he renames them on reading v1.1; the Chord Comb's MIDI mode is built with the devices
-     (P2); the drop tile comes with step 7. **win's closure.**
+   - **Color-bass devices** (ADR-0192's open): the director delegated the names to win; **Chord
+     Comb** and **Color Cab** stand (built-in devices carry plain names like Live's; the suite
+     plug-ins carry the ADI prefix). The Chord Comb's MIDI mode is built with the devices (P2); the
+     drop tile comes with step 7. Decided.
    - **Collaboration's ghost table and concurrent row ordering** (ADR-0182 d9, ADR-0161 d4): design
      work for when collaboration is built (P2); a direction, not a question. **win's closure.**
    - **Third-party stores and cloud packs** (Splice; Live's Cloud and Packs; A6-23's wish): **P3**,

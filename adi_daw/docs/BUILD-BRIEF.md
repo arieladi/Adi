@@ -95,7 +95,7 @@ these; it never contradicts them on purpose.
 | VST3 and CLAP hosting, plug-in parameter ops (one undo step per gesture), the plug-in panel contract, MPE routing (VST3), missing-plug-in placeholders, `adi_play` | built | `src/juce/` |
 | The Pure Data tier: libpd inside the engine, top-level patches, `[adi.param]`, `[adi.transport]`, `[adi.array]`, `[adi.sample]`, MIDI into patches | built | `src/juce/pd_*`, `pd/` |
 | Live's devices: 15 audio effects as Pd devices (Auto Filter, Chorus-Ensemble, Delay, EQ Eight, Echo, Multiband Dynamics, Overdrive, Phaser-Flanger, Redux, Resonators, Reverb, Saturator, Shifter, Utility, Vocoder), bit-exact or measured against Live; the MIDI effects, OneShot (Simpler) and Sampler native; the two color-bass devices; the analyser | built, each with a test against Live's render | `pd/devices/`, `src/adi/dsp/`, `src/adi/pd_builtins/` |
-| The plug-in line: ADI RMSC, Smartelectronix ×11, ADI Airwindows (160 algorithms in 11 suites, auto gain). The ZL-based Dynamic EQ was retired on 2026-10-18 (ADR-0204 d1); the director's own clones (Pro-Q 4 → the channel EQ; Pro-L 2 → the cascade's limiter; soothe2-class; Serum-class), built from measurements, join when he hands them over | built as CLAP | `plugins/` |
+| The plug-in line: ADI RMSC, Smartelectronix ×11, ADI Airwindows (160 algorithms in 11 suites, auto gain). The ZL-based Dynamic EQ was retired on 2026-10-18 (ADR-0204 d1); the director's own clones (ADI-Q, the Pro-Q 4 clone → the channel EQ; ADI-L, the Pro-L 2 clone → the channel limiter and the cascade's end; ADI Still, soothe2-class; ADI Prism, Serum 2-class), built from measurements, join when he hands them over | built as CLAP | `plugins/` |
 | The Settings registry (App, Project, Device scopes), the catalogue, bundles, Safe Mode, the Find box's matching | built, no window | `src/adi/settings/`, `docs/SETTINGS.md` |
 | The library index (`.adi-volume-id`), the decoding cache, relink by content hash | built | `src/adi/library/`, `src/adi/media/` |
 | The control API, the one parameter feed, surface clients (Stream Deck first), MIDI 2.0/MIDI-CI/OSCQuery/CV/TUIO/Link protocol design | designed; the feed built | ADR-0181, ADR-0184, ADR-0185 |
@@ -109,7 +109,7 @@ Do these as their phase comes; each is a small ADR-cited PR with a test that can
 
 | Change | Ruling | Where |
 |---|---|---|
-| The channel EQ (the director's Pro-Q 4 clone) built into every channel and group, present but off: a device node that is not calculated while flat, bit-transparent at unity, 5 ms ramps on switching, its delay kept in compensation; one EQ window for all instances; EQ Match in it; the DJ Filter on its cores | ADR-0204 d1 (amends ADR-0203 d14) | the strip's device chain, `src/adi/engine/`, step 7's mixer and a new EQ window |
+| ADI-Q (the EQ) and ADI-L (the limiter) built into every channel and group, present but off: device nodes not calculated while off, bit-transparent at unity, 5 ms ramps on switching, their delay added to compensation only once engaged; one window for all instances; EQ Match in ADI-Q; the DJ Filter on its cores; the per-channel ADI-L instances are the Loudness Drive's cascade | ADR-0204 d1 (amends ADR-0203 d14) | the strip's device chain, `src/adi/engine/`, step 7's mixer and a new EQ window |
 | Sends and returns play: the planner accepts send rows, compensates across them, allows the Live loop (a return's enabled send to a return or itself), refuses every other loop; Pre/Post per return; Enable Send; Solo in Place; the three tap points; sends into any track and a pan on a send (ADI's addition) | ADR-0203 d3 | `src/adi/engine/` (the planner), the `mixer.*` and routing ops in `src/adi/ops*.cpp` |
 | A bypassed device is not calculated and keeps its delay as a plain delay line | d4 (amends ADR-0057 d6) | the graph's device node |
 | The Pd adapter's fixed 64-sample block removed for the built-ins; user patches in 64-multiples run without it; remainders reported | d4 (ADR-0183 d12) | `src/juce/pd_*` |
@@ -178,8 +178,9 @@ In this order unless a dependency says otherwise:
 7. The Loudness Drive (VCA over the leaf tracks' input gain, the whole cascade), with export LUFS
    targeting (default no normalising) and the Export settings page; the Pro-L 2-class limiter (the
    director's clone) as the cascade's end.
-7a. The channel EQ, present but off on every channel and group, and the EQ window (ADR-0204 d1),
-   once the director hands over his Pro-Q 4 clone; until then the EQ slot exists and is empty.
+7a. ADI-Q and ADI-L, present but off on every channel and group, and the window that lists them
+   all (ADR-0204 d1), once the director hands over the two clones; until then both slots exist and
+   are empty.
 7b. The installer with tiers (ADR-0204 d2): base · + tools · + ADI plug-ins · + local AI · + AI on
    another machine; Windows first, the other two systems with Phase E.
 8. Freeze (track; Freeze All Channels; Freeze Group with its warning), Bounce in Place, Bounce to
@@ -244,8 +245,8 @@ registry default that says "once measured" changes on the reading, as an amendme
 - `adi_changeset_tests`' preview bound, raised in `win/v1.0-settings`.
 - The Vital fork's folder (`adi-vst/vital` → `adi-vital/vital`), outside this project.
 - The director's macro device file, for matching D-06's summing exactly.
-- The director's clones (Pro-Q 4, Pro-L 2, soothe2-class, Serum-class): their names and hand-over
-  dates; they are measurement-based and are never re-questioned (ADR-0204 d3).
+- The director's clones ADI-Q, ADI-L, ADI Still and ADI Prism: their hand-over dates; they are
+  measurement-based and are never re-questioned (ADR-0204 d3).
 - The registry help of `record.warpDetectTempoChanges` cites Live 12 manual 9.2.3; the sentence is
   in 9.2.1 (one-line fix with the next registry PR).
 
