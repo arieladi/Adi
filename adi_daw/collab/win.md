@@ -6,6 +6,16 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-10-18 — Master Reference v1.0 built (152 pages); the README count; AWAITING row 16
+
+**The document.** `reference/DOCS/WORD/5_Adi-Daw Master Reference (claude draft v1.0).docx` and its preview PDF, 152 pages (v0.9.9 was 112), built from ADR-0203 and the ledgers in `docs/review/`. The four content scripts were revised in three passes by subagents (audit, complete, verify from two lenses, fix, recheck), each pass checked against the ledger first and the Live 12 manual text for anything about Live; a text scan of the built PDF finds no "declines sends", no "GPLv3 core", no Tempo Follower, no Cmd+I palette, no stale count. Section 8.2 is now "Sends and returns, as Live, and ADI's extra sends"; section 15 says ADI is AGPLv3 in full; Part V prints no counts and takes Live's ten tab names. Two placements in it are win's, marked "to strike if wrong": the Loudness Drive at P1 and the DJ Filter device at P2. The document points at `docs/AWAITING.md` rows 6 to 16 for every reading still to take off Live (Live 11 on the director's Mac now, Live 12 on the PC when it arrives).
+
+**Repository.** #216 merged the README count (7850 checks across 95 suites, measured on the settings branch at its merge point). This branch adds AWAITING row 16, the five Settings defaults Part V could not read in the manual (track-colour switch, MIDI port on stop, plug-in window scaling, export dialog defaults, Post send and the crossfader).
+
+**Found on the way, not fixed:** ADR-0203 d7 and the registry's `record.warpDetectTempoChanges` help cite Live 12 manual 9.2.3 for "a marker on the first beat of each bar"; the sentence is in 9.2.1 (Warping Options in Settings). The document cites 9.2.1. A one-line help-text fix rides with the next registry PR; the ADR is append-only and keeps its slip. The drone's queue was empty; `adi-daw-file-map-2` (220 source files, explain kind) is queued.
+
+---
+
 ## 2026-10-12 — The v1.0 review closes: ADR-0203, the rulings applied, the build brief; PR #213 merged
 
 **ADR-0203 (`win/v1.0-rulings`).** The director ruled on every one of the audit's 374 findings
