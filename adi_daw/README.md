@@ -6,7 +6,7 @@ Cubase's arrangement, editing and mixing depth, and an AI agent that can only ac
 through the same undoable operations a human uses.
 
 **Status:** format specified, reference implementation building.
-**7850 checks across 95 suites**, green on 7 ABIs. Nothing is frozen.
+**7820 checks across 94 suites**, green on 7 ABIs. Nothing is frozen.
 **Language:** C++ with JUCE (ADR-0014) · **Licence:** AGPLv3, all of it (ADR-0203 d25, the
 director's ruling of 2026-10-12; it was GPLv3 under ADR-0015 until then)
 
