@@ -129,9 +129,6 @@ REFERENCE=(
   #     is a wave-digital-filter diode pair. The ADAA maths is in the ADAA repo
   #     (the derivations) and chowdsp_utils (the production waveshapers). Both
   #     are fetched; KlonCentaur stays, for what it actually is.
-  # ZLEqualizer is AGPL-3.0: the Zrythm rule applies. Read the design, implement
-  # matched-phase from the published papers, copy nothing.
-  "ZL-Audio/ZLEqualizer                   ZLEqualizer         AGPL-3.0  READ-ONLY"
   "lsp-plugins/lsp-dsp-units              lsp-dsp-units       LGPL-3.0-or-later"
   "lsp-plugins/lsp-plugins-limiter        lsp-plugins-limiter LGPL-3.0-or-later"
   "Sakhnovkrg/vitOTTx                     vitOTTx             GPL-3.0"

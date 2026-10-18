@@ -26,7 +26,6 @@ PLUGINS=(
   "smartelectronix  https://github.com/bdejong/smartelectronix.git     248d2c4044930d732766b522573531edc3656300  2026-04-15  GPL-3.0       no"
   "AnalogTapeModel  https://github.com/jatinchowdhury18/AnalogTapeModel.git 604372e4ffd9690c3e283362e4598cb43edbb475 2023-11-05 GPL-3.0 yes"
   "KlonCentaur      https://github.com/jatinchowdhury18/KlonCentaur.git f3bb633a593b6fbb22a44c1ef9d1dbedbfe92d5b  2021-07-02  BSD-3-Clause  yes"
-  "ZLEqualizer      https://github.com/ZL-Audio/ZLEqualizer.git        3468a3ac85f5c1f9d16083acbee5b1339984d53b  2026-09-22  AGPL-3.0      yes"
   "dragonfly-reverb https://github.com/michaelwillis/dragonfly-reverb.git 440ec7b3b3db2fec34b9f80cf4890102ca14d1c3 2026-05-21 GPL-3.0     yes"
   "airwin2rack      https://github.com/baconpaul/airwin2rack.git       b6eef0af60cd32641b09837096e41bbcdb030341  2026-09-19  MIT           no"
 )
