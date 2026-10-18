@@ -92,7 +92,7 @@ what the roadmap was going to do with them.
 
 | Repo | Licence | Size | Copy? | Read it for |
 |---|---|---|---|---|
-| [`ZLEqualizer`](https://github.com/ZL-Audio/ZLEqualizer) | **AGPL-3.0** | 6 MB | ✅ with attribution — the plugin that copies it is AGPLv3 | Dynamic EQ structure, matched-phase ("de-cramped") bells, linear-phase mode. Vicanek, *Matched Second Order Digital Filters* (2016), remains the maths behind the bells. |
+| [`ZLEqualizer`](https://github.com/ZL-Audio/ZLEqualizer) | **AGPL-3.0** | 6 MB | **retired 2026-10-18 (ADR-0204)**: the director's own Pro-Q 4 clone replaces it; nothing of ZL remains in the tree. No longer fetched, as reference or as a pinned plug-in source. | Was read for (ADR-0093, ADR-0195): Dynamic EQ structure, matched-phase ("de-cramped") bells, linear-phase mode. Vicanek, *Matched Second Order Digital Filters* (2016), remains the maths behind the bells. |
 | [`lsp-dsp-units`](https://github.com/lsp-plugins/lsp-dsp-units) | LGPL-3.0-or-later | 19 MB | ✅ with attribution | `dynamics/Limiter.h`, `util/Oversampler.h`, `meters/TruePeakMeter.h`, `meters/LoudnessMeter.h` — the true-peak limiter maths. LGPL is GPL-compatible. |
 | [`lsp-plugins-limiter`](https://github.com/lsp-plugins/lsp-plugins-limiter) | LGPL-3.0-or-later | 4 MB | ✅ with attribution | How the limiter core is driven: lookahead, oversampling ratio, and its Classic/Mixed/Modern modes. |
 | [`vitOTTx`](https://github.com/Sakhnovkrg/vitOTTx) | GPL-3.0 | 1 MB | ✅ with attribution | Vital's OTT multiband upward/downward compressor, extracted standalone. Matt Tytel's original is also in `adi-vst/`'s Vital fork. |

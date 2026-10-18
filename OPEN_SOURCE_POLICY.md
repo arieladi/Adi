@@ -111,7 +111,7 @@ superseded by this section wherever they say less.
 **Ruled by Adi on 2026-09-24; this replaces the earlier ban.** AGPL-3.0 code
 may be copied, adapted and reused like GPL code. Today that means
 **ZLEqualizer** and **Zrythm** are usable sources, not only design references.
-The first direct adaptation is the Dynamic EQ (ADR-0195). It adapts ZL Equalizer 2's DSP, so it is AGPLv3.
+The first direct adaptation was the Dynamic EQ (ADR-0195), which adapted ZL Equalizer 2's DSP; it was retired 2026-10-18 (ADR-0204) and nothing of ZL remains in the tree.
 `adi_daw` is AGPLv3 in full since 2026-10-12 (§4a), so an AGPL source changes nothing there.
 
 Why it is safe: AGPL is GPLv3 plus one extra rule — if someone runs the program
