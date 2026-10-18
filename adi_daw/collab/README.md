@@ -244,6 +244,7 @@ subject, say so in your log instead of writing it twice.
 | 0201 | win | `win/project-view` | the UI reads project state from one message-thread cell, `ProjectView`; no publisher, no epoch (answers mac on #187) | used |
 | 0202 | win | `win/mac-retired` | the director retires mac (both sessions) until he decides otherwise; its areas move to win and win_codex (director) | used |
 | 0203 | win | `win/v1.0-rulings` | the director's rulings on Master Reference v1.0: the standing rule (Live's way, additions first-class), sends and returns back, no added delay, history, Loudness Drive, freeze, the defaults, licensing closed (AGPLv3) (director) | used |
+| 0204 | win | `win/adr-0204` | the director's rulings on v1.0: the channel EQ is his Pro-Q 4 clone and ZL leaves; one installer with tiers; measurement clones welcome; the document's shape; every open item closed (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

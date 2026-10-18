@@ -16361,3 +16361,131 @@ still has to be measured in Live (d26). The amendments to earlier entries are li
 | ADR-0195 d4 | confirmed: Auto Gain Stage offline, −18 dBFS RMS (d14) |
 | FEATURES.md | rows added, raised, struck as d3 to d20 say; done in `win/v1.0-rulings` |
 | SPEC §8.3 | replaced: 2000 steps or 1000 MB (d13) |
+
+## ADR-0204 — The director's rulings on Master Reference v1.0: the channel EQ is his Pro-Q 4 clone and ZL Equalizer leaves; one installer with tiers; clones from measurements are welcome; the document's shape; every open item closed — `DECIDED` (2026-10-18) — **DIRECTOR'S RULINGS; AMENDS ADR-0203 d14 (EQ ON EVERY CHANNEL, PRESENT BUT OFF), ADR-0195 d1/d2 (DYNAMIC EQ RETIRED), ADR-0126 (LINK AUDIO CLOSED), ADR-0109 (FRAMED AS THE MEANS); CLOSES THE OPEN POINTS OF ADR-0182, ADR-0183, ADR-0191, ADR-0192, ADR-0195, ADR-0200**
+
+**Where this comes from.** The director read Master Reference v1.0 (built the morning of 2026-10-18
+from ADR-0203) and ruled the same day: the document's first eight pages are for the agents, the
+rest must describe his dream DAW in full; the commitments it lists are the agents', not his; his
+end goal is a tiered installer; his own plug-in clones, built with Codex from measurements, join
+the suite, and his Pro-Q 4 clone replaces the ZL-based Dynamic EQ; and the finished reference may
+carry no open item. Every decision below is his unless marked **win's closure**, which he strikes
+if wrong when he reads v1.1.
+
+### Decisions
+
+1. **The channel EQ is the director's Pro-Q 4 behaviour clone; ZL Equalizer leaves the project.**
+   - He is building clones of FabFilter Pro-Q 4 and Pro-L 2, and clones in the soothe2 and Serum
+     class, with Codex, **from measurements only**: his own code, his own names and interfaces.
+     They join the ADI suite under their names when he hands them over. **The names (ruled the same
+     day): ADI-Q** (the Pro-Q 4 clone), **ADI-L** (the Pro-L 2 clone), **ADI Still** (the soothe2
+     class), **ADI Prism** (the Serum 2 class).
+   - The ZL Equalizer-based Dynamic EQ plug-in (ADR-0195 d1, d2; `plugins/dynamic-eq`, the
+     `zlequalizer` clone) is **retired** and removed from the tree; nothing of ZL remains. Its
+     Pro-Q 3 gesture table, dynamic bands, linear phase, EQ Match, the masking highlight and the
+     multi-track analyser overlay (ADR-0195 d4) carry over to his EQ as behaviour targets.
+   - **Every channel and group has the EQ built in, present but off.** It costs nothing until a
+     band is touched: a switched-off device is not calculated (ADR-0203 d4) and a flat band is
+     bit-for-bit unity; it switches on without a click (the strips' 5 ms ramps) and without moving
+     the timing (its delay stays in the compensation). This amends ADR-0203 d14's "no EQ on a
+     channel by default" by its author: nothing is *active* by default, and the EQ is one click
+     away everywhere. No compressor and no gate on the channels; that part of d14 stands.
+   - **One EQ window shows every channel's EQ** (FabFilter's "show all instances", native, so it
+     works across the whole project), where he sees them all and switches on what he wants.
+   - EQ Match lives in the channel EQ. The DJ Filter device (ADR-0203 d8) shares its filter cores
+     and is a pure bypass at centre. The Loudness Drive stays separate from the EQ.
+   - **ADI-L is baked into every channel and group as well, off by default, beside ADI-Q** (the
+     director, the same day: "after Q and L are ready I want them together baked in each channel
+     with off by default and hopefully, because integrated in the DAW in each channel, also very
+     efficient"). Both slots obey the present-but-off rule: not calculated, bit-transparent, a
+     click-free switch, the lookahead added to the compensation only once engaged. The per-channel
+     ADI-L instances are the stages of the Loudness Drive's clipper/limiter cascade across tracks,
+     buses and master (ADR-0203 d14 c), engaged when the Drive is used; the master's ADI-L is the
+     cascade's end. **win's placement, to strike if wrong:** a channel's ADI-L starts in a light
+     mode (no oversampling, short lookahead), the master's in the full mode; the EQ window lists the
+     limiters too, so the cascade is seen in one view.
+   - His reasons, recorded: in Live an EQ on every channel costs CPU and changes phase; switching
+     a device on can pop; effects on groups (kick and bass) break automation, sometimes at export.
+     A native, light, click-free channel EQ is the fix — *"only please not for the price of a too
+     heavy DAW"*: the present-but-off rule is the budget.
+   - FEATURES.md: the Dynamic EQ row becomes the channel EQ row (P1, with the mixer screen); his
+     four clones get rows in the plug-in line, names to come; the DJ Filter row names the shared
+     cores. `docs/EXTERNAL-CODE.md` marks ZL retired; its history stays.
+
+2. **One installer with tiers is the director's end goal, and a directive.** The tiers: **base
+   DAW** · base **+ tools** · base + tools **+ ADI plug-ins** · base + tools + ADI plug-ins **+ local
+   AI features** · the same with the **AI features on another PC or server** (the AudioGridder-style
+   remote and the agent's remote endpoint, ADR-0168). The roadmap carries it; the installer work
+   starts with the Windows release and is built for all three systems together where that is
+   easier (ADR-0203 d23). "Write for portability first" (ADR-0109, README commitment 8) is the
+   agents' means to this goal, not a goal of his; the README says so.
+
+3. **Clones built from measurements are always welcome in the suite.** Only decompiled or copied
+   proprietary code is "not usable" (`OPEN_SOURCE_POLICY.md` §4a). The agents do not re-question a
+   clone he declares measurement-based. (His words: "you should never block me on this.")
+
+4. **The document's shape (Master Reference v1.1).** A Part 0, "For the agents, and for the
+   project's sanity", about eight pages, holds once everything that exists for machines or for
+   consistency: the facts table, the tags, how the document is kept, the rules every agent works
+   under, what ADI deliberately is not, the eight engineering commitments re-framed as the agents'
+   means, the roster, the history of the document and of the briefs, and pointers to the
+   appendices. Part I is the dream DAW, written for him and complete: every ability named, his
+   end goal included, with the figures. The appendices stay at the back as reference tables.
+   Previous versions of the document are deleted once v1.1 is built; v1.1 is split into chapters
+   in `reference/DOCS/Adi Master Reference/` and is rebuilt from `_build/` from then on.
+
+5. **The finished reference carries no open item.** Rulings on everything v1.0 still tagged
+   {OPEN:} or {WISH:}, and the "still open" table of its Appendix B:
+   - A Live measurement is not an open question: each (AWAITING rows 6 to 16) states ADI's working
+     default and the row that confirms it. Takeover mode's working default is Pick-Up (row 14); a
+     new send starts fully down (row 7); the device strip's minimum is 169 units (row 6).
+   - **Color-bass devices** (ADR-0192's open): the director delegated the names to win; **Chord
+     Comb** and **Color Cab** stand (built-in devices carry plain names like Live's; the suite
+     plug-ins carry the ADI prefix). The Chord Comb's MIDI mode is built with the devices (P2); the
+     drop tile comes with step 7. Decided.
+   - **Collaboration's ghost table and concurrent row ordering** (ADR-0182 d9, ADR-0161 d4): design
+     work for when collaboration is built (P2); a direction, not a question. **win's closure.**
+   - **Third-party stores and cloud packs** (Splice; Live's Cloud and Packs; A6-23's wish): **P3**,
+     allowed, long tail. **win's closure.**
+   - **Link Audio** (ADR-0126's wish): closed. Ableton's SDK is not open, so it cannot be built;
+     the LAN audio node (P2) is ADI's answer. **win's closure.**
+   - **A global sample library folder set** (the V0.2 wish): it is the content folders of the
+     app-scoped library (ADR-0104, ADR-0147; `library.contentFolders`), built. **win's closure.**
+   - **The rejected items stay rejected, with their reasons:** Audio Units and VST2 hosting
+     (ADR-0041, ADR-0015); a dedicated Inspector panel (ADR-0047); plug-in sandboxing at runtime
+     (ADR-0047, D-03); bundling VB-CABLE (ADR-0118); an external Pd or Max path (ADR-0035, A6-31);
+     Cubase's "removing a modified effect" warning and its instrument-track setting (ADR-0003, the
+     model). They are decisions, not open items.
+   - **Appendix B's "still open, by design" table is emptied.** The iOS marketplace terms are the
+     first task of step 15 (ADR-0200 d7); ADiJ writes the open device library, and the encrypted
+     Device Library Plus only if a clean source for its key exists, else it is "not usable"
+     (closes ADR-0191 d2); AAC on Linux decodes through FFmpeg's libavcodec (LGPL), loaded
+     dynamically, the platform decoders on Windows and macOS (closes ADR-0191 d4); the trademark
+     clearance on "ADI" is the director's release-checklist item (ADR-0191 d1), not a design
+     question; the masking highlight's threshold is −6 dB until measured (ADR-0195); Auto Gain
+     Stage keeps −18 dBFS RMS (closed by ADR-0203 d14); the spectrogram's Mel filterbank is applied
+     after reassignment, sharpen then bin (closes ADR-0183's open); the Vital fork's AI tools reach
+     a phone by a link to the desktop first, on-device later (ADR-0200, step 15); which phones and
+     what CPU budget are measured at step 15, a task. All but the first and last are **win's
+     closures**.
+
+6. **What follows in the repository.** `plugins/dynamic-eq` and the ZL clone are removed
+   (`win/retire-dynamic-eq`); FEATURES.md, `docs/BUILD-BRIEF.md` and the README follow this entry;
+   the registry's `record.warpDetectTempoChanges` help cites Live 12 manual 9.2.1, not 9.2.3, with
+   the next registry PR (ADR-0203 d7's slip, noted in win's log).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0109 | stands; framed as the agents' means to the tiered installer (d2) |
+| ADR-0126 | Link Audio closed: not open to ADI; the LAN node is the answer (d5) |
+| ADR-0182 d9, ADR-0161 d4 | the open points become design work at P2 (d5) |
+| ADR-0183 | the Mel filterbank question closed: after reassignment (d5) |
+| ADR-0191 d1, d2, d4 | closed: release-checklist item; open library only unless a clean key source; FFmpeg on Linux (d5) |
+| ADR-0192 | the names stand unless renamed; MIDI mode P2; drop tile with step 7 (d5) |
+| ADR-0195 d1, d2, d4 | the Dynamic EQ retired; its features carry to the director's EQ; the overlay belongs to it (d1) |
+| ADR-0200 d7 | a dated task of step 15, not an open question (d5) |
+| ADR-0203 d8 | the DJ Filter shares the channel EQ's cores (d1) |
+| ADR-0203 d14 | amended: the EQ is on every channel, present but off; no compressor, no gate (d1) |
+| A6-23 (ADR-0203 d13) | the stores wish becomes P3 (d5) |

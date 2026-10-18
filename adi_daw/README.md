@@ -6,7 +6,7 @@ Cubase's arrangement, editing and mixing depth, and an AI agent that can only ac
 through the same undoable operations a human uses.
 
 **Status:** format specified, reference implementation building.
-**7850 checks across 95 suites**, green on 7 ABIs. Nothing is frozen.
+**7820 checks across 94 suites**, green on 7 ABIs. Nothing is frozen.
 **Language:** C++ with JUCE (ADR-0014) · **Licence:** AGPLv3, all of it (ADR-0203 d25, the
 director's ruling of 2026-10-12; it was GPLv3 under ADR-0015 until then)
 
@@ -60,7 +60,7 @@ than frightening.
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
 | [`docs/UI-ARCHITECTURE.md`](docs/UI-ARCHITECTURE.md) | The Ableton-shaped shell, the component tree, and how the graph carries a hybrid track. |
 | [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 203 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 204 entries. |
 | [`docs/SETTINGS-CATALOGUE.md`](docs/SETTINGS-CATALOGUE.md) | Every setting the Settings Reference describes, generated from it by `tools/export_settings_catalogue.py`, for the settings registry to fill from. |
 | [`docs/AWAITING.md`](docs/AWAITING.md) | Tests only the director's own hardware can run: AVX-512 on his i9 laptop, ASIO on his interface. |
 | [`drivers/`](drivers/) | OS-level pieces that are their own programs: the ADI virtual audio device for Windows, built from Microsoft's MS-PL `sysvad` sample fetched at a pinned commit by `drivers/adi-virtual-audio/build.ps1` and `.github/workflows/driver-build.yml`; our own files there are MIT (ADR-0106, 0117 to 0120). Nothing in `src/` includes it. |
@@ -135,9 +135,10 @@ These are the load-bearing ones. Full reasoning in
    paths. Claiming otherwise would be naive. (RATIONALE §4)
 8. **Write for portability first, target platforms later.** Everything shared —
    the store, the graph, the op log and undo, the Pd bridge, the CLAP host — is
-   standard, portable C++. Windows and macOS are the shipping targets through
-   the whole ADI Suite; Linux is headless-only now (build, test, ABI, sanitizers)
-   and a desktop target only after the suite ships. (ADR-0109)
+   standard, portable C++. This is the agents' means to the director's end goal,
+   **one installer with tiers** (base DAW · + tools · + ADI plug-ins · + local AI
+   · + AI on another PC or server; ADR-0204 d2), on Windows first and on macOS
+   and Linux immediately after (ADR-0203 d23). (ADR-0109)
 
 ---
 
