@@ -43,7 +43,7 @@ the priorities were re-ruled row by row. A row that cites ADR-0203 was changed b
 | Markers, marker track, **with a note and an optional agent prompt** | both + | P1 | 🔶 | `markers` gains nullable `note`, `prompt` (ADR-0115) |
 | Arranger track / section playlist | Cubase | P2 | ✅ | `arranger_sections` + `arranger_chain` |
 | Key/scale track | Cubase-ish | P2 | ✅ | `key_map`, with a 12-bit `scale_mask` so any scale fits |
-| **Ableton Link**: tempo, beat and phase shared with other apps and peers | Ableton | P1 | — | ADR-0185 d7. The SDK is GPL-2.0-or-later (its `LICENSE.md`), pinned into `third_party/` when built. It sits beside PTP (ADR-0107), which shares a sample clock, a different job. Link Audio stays a wish (ADR-0126) |
+| **Ableton Link**: tempo, beat and phase shared with other apps and peers | Ableton | P1 | — | **Link Audio is closed (ADR-0204 d5): Ableton's SDK is not open, so it cannot be built; the LAN audio node (P2) is ADI's answer.** ADR-0185 d7. The SDK is GPL-2.0-or-later (its `LICENSE.md`), pinned into `third_party/` when built. It sits beside PTP (ADR-0107), which shares a sample clock, a different job. Link Audio stays a wish (ADR-0126) |
 | Chord track, chord pads, harmonic linking | Cubase | P3 | 🔶 | `key_map` is the anchor; chord events need their own table |
 | Timecode, video sync, pull-up/down | Cubase | P3 | 🔶 | `project.frame_rate_*` exists; video handling unspecified |
 | Tempo detection from audio | both | P2 | ✅ | writes `tempo_map` |
@@ -74,7 +74,8 @@ the priorities were re-ruled row by row. A row that cites ADR-0203 was changed b
 | **Freeze All Channels** (every sub-group and channel inside a group rendered separately, so sidechains, sends and single-track solo keep working) and **Freeze Group** (one render, effects baked in, a warning that the children's sidechains and sends are muted until unfrozen); fader and pan stay live on both | neither (Live 12's group freeze is experimental, behind Options.txt) | P1 | ✅ | ADR-0203 d16. Freeze tail 4 s (`devices.freezeTailSeconds`). Designed (ADR-0059), not built |
 | Control Room (separate monitor path, cue mixes, talkback) | Cubase | P3 | 🔶 | `routing.kind='cue'` reserved; no monitor-section model |
 | Crossfader, DJ-style mixing | Ableton | P2 | 🔶 | needs a master-section table. ADR-0203 d10: P2, arriving with Session View, as in Live (curves, A/B assign per track, mappable) |
-| ~~Channel strip (gate/comp/EQ built in)~~ | Cubase | **no** | — | **Struck (ADR-0203 d14):** the director did not ask for a channel strip; no compressor, no gate, no EQ on a channel by default. EQ Match lives in the Dynamic EQ plug-in. What the channels gain instead: the summing dial, the Loudness Drive, Auto Gain Stage, the strip's small scope |
+| ~~Channel strip (gate/comp/EQ built in)~~ | Cubase | **no** | — | **Struck (ADR-0203 d14):** the director did not ask for a channel strip; no compressor, no gate on a channel. **The EQ is the exception since ADR-0204 d1: built into every channel, present but off** (the row below).
+| **Channel EQ built in, present but off**: the director's Pro-Q 4 behaviour clone on every channel and group, costing nothing until a band is touched (a switched-off device is not calculated; a flat band is unity), switching on without a click or a timing jump; **one EQ window shows every channel's EQ**; EQ Match lives in it; the DJ Filter shares its cores | neither (FabFilter's "show all instances" as the model) | P1 | — | ADR-0204 d1, with the mixer screen. Replaces the ZL-based Dynamic EQ (retired). Working name until the director names it EQ Match lives in the Dynamic EQ plug-in. What the channels gain instead: the summing dial, the Loudness Drive, Auto Gain Stage, the strip's small scope |
 | **A small live scope and spectrum in every channel strip**, drawn only while the strip is on screen; a click opens the big Scope or the analyser on that track | neither | P1 | — | ADR-0203 d14 (D-04 d), with the Scope (ADR-0167) |
 | **Loudness meter (LUFS and true peak) on the master channel only**, and in the Scope, the analyser and the export dialog | both | P1 | — | ADR-0203 d14 (A3-24), with the mixer screen; not on every bus; on condition that it does not degrade performance |
 | Mixer snapshots | Cubase | P2 | ✅ | `snapshots.kind='mixer'` |
@@ -212,7 +213,7 @@ for the transport, the tempo map, the groove pool and the track's scale
 | Live 12's MIDI Tools (Transform and Generate) | clip ops | P2 | — | Not devices: clip-editing tools (manual chapter 11). **Ruled (ADR-0203 d7): built as Live has them, at P2** |
 | **Random MIDI effects repeat on demand**: Live's behaviour by default (each pass may differ), plus a visible switch on Random, Chord's Chance and Velocity's Random that keeps the result | neither | P1, with the devices | ✅ | ADR-0203 d7 (A2-12): a stored seed per device |
 | **Auto Filter** (Live's, ten types, DJ among them) | Ableton | P2 | ✅ | ADR-0203 d8 (A4-19): built; the row it owed |
-| **DJ Filter device**: a clone of the filter knob on a DJ controller, with rekordbox's kind of filter settings, the curve changeable a little | neither | P2 | ✅ | ADR-0203 d8, the director's addition for the DAW; rekordbox's options are read before it is specified. ADiJ's own DJ filter stays §10.5's |
+| **DJ Filter device**: a clone of the filter knob on a DJ controller, with rekordbox's kind of filter settings, the curve changeable a little; shares the channel EQ's filter cores and is a pure bypass at centre (ADR-0204 d1) | neither | P2 | ✅ | ADR-0203 d8, the director's addition for the DAW; rekordbox's options are read before it is specified. ADiJ's own DJ filter stays §10.5's |
 
 ## 7. Automation
 
@@ -250,6 +251,7 @@ for the transport, the tempo map, the groove pool and the track's scale
 |---|---|---|---|---|
 | Restore zoom, scroll, selection, playhead | partially | P1 | ✅ | `ui_view`, `session_state` |
 | Restore plugin windows *with monitor identity* | neither, well | P1 | ✅ | `window_state` — SPEC §8.4 |
+| **One installer with tiers**: base DAW · + tools · + ADI plug-ins · + local AI features · + the AI features on another PC or server | neither | P1 | — | ADR-0204 d2, the director's end goal; Windows first, macOS and Linux immediately after (ADR-0203 d23); "portability first" (ADR-0109) is the agents' means to it |
 | **Persistent undo across restarts** | neither | P1 | ✅ | `ops` |
 | **Branching undo tree** | neither | P2 | ✅ | `op_branches` |
 | Project-scoped controller maps | partially | P2 | ✅ | `controller_maps` |
@@ -319,8 +321,9 @@ the equalizer's baseline. The rest are prepared for, with references in
 
 | Goal | Form | P | Needs first |
 |---|---|---|---|
-| Dynamic EQ: matched phase, linear phase, per-band dynamics | CLAP | P2 | **ADR-0195 d1, d2:** adapts ZL Equalizer 2's DSP directly (ADR-0138), so the plug-in is AGPLv3. The graph takes Pro-Q 3's node gestures, per its manual: drag for frequency and gain (Q on filters with no gain); wheel or Ctrl/Cmd + vertical drag for Q; Alt + drag locks an axis; Shift for fine. ZL's panel dials leave the main view. **The baseline builds:** ZL Equalizer 2 as CLAP, unchanged (ADR-0166). "Pro-Q3 clone" is a description, never a name |
-| True-peak limiter: lookahead, oversampling, modes | CLAP | P3 | Plugin-line licence decided (the LSP maths is LGPL) |
+| ~~Dynamic EQ (ZL Equalizer 2's DSP)~~ **ADI's channel EQ: the director's Pro-Q 4 behaviour clone** (working name), built from measurements with Codex; matched and linear phase, dynamic bands, EQ Match, the masking highlight, the multi-track analyser overlay | native, and a CLAP for the suite | P1 | **ADR-0204 d1: the ZL-based Dynamic EQ is retired and removed; its gesture table and features carry over as behaviour targets.** The earlier row, for the record — ADR-0195 d1, d2: adapted ZL Equalizer 2's DSP directly (ADR-0138), so the plug-in was AGPLv3. The graph takes Pro-Q 3's node gestures, per its manual: drag for frequency and gain (Q on filters with no gain); wheel or Ctrl/Cmd + vertical drag for Q; Alt + drag locks an axis; Shift for fine. ZL's panel dials leave the main view. **The baseline builds:** ZL Equalizer 2 as CLAP, unchanged (ADR-0166). "Pro-Q3 clone" is a description, never a name |
+| True-peak limiter: lookahead, oversampling, modes — **the director's Pro-L 2 behaviour clone**, the end of the Loudness Drive's cascade | CLAP, native | P1 | ADR-0204 d1 (was P3 on the LSP maths); built from measurements with Codex, working name |
+| **The director's other clones, joining the suite when handed over**: a soothe2-class resonance suppressor; a Serum-class wavetable synth | CLAP | P2 | ADR-0204 d1, d3: built from measurements, his own code, names and interfaces; measurement clones are always welcome (`OPEN_SOURCE_POLICY.md` §4a) |
 | Lookahead brickwall limiter, 1.5 / 3 / 6 ms | Pd | P3 | **A Pd patch able to declare its latency** (ADR-0035 has no such thing), and pinned DSP sort order |
 | Eight-band parametric EQ | Pd | P3 | Pd's inverted `biquad~` feedback signs; four biquads for a 48 dB/oct cut |
 | ADAA clipper, adjustable knee, up to 4x oversampling | CLAP | P3 | Plugin-line licence decided (the chowdsp waveshapers are GPLv3) |
