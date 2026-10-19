@@ -667,6 +667,25 @@ def main() -> int:
             text, re.M)
         if not rows:
             fail("no reservation rows parsed -- has the table shape changed?")
+        # Every row INSIDE the table must be a reservation row. On 2026-09-29
+        # claim rows were pasted into this table and one overwrote ADR-0193's
+        # row; the regex above simply skipped them, so nothing failed.
+        start = text.find("## Reserved ADR numbers")
+        end = text.find("\n## ", start + 1)
+        section = text[start:end if end != -1 else len(text)] if start != -1 else ""
+        stray = [ln for ln in section.splitlines()
+                 if ln.startswith("|") and not re.match(r"^\|\s*(Number|-|\d{4})", ln)]
+        for ln in stray:
+            fail("a row in the reservation table is not a reservation: " + ln[:80])
+        # And every ADR written since the table began has its row.
+        first = min((int(n[:4]) for n, _, _ in rows), default=0)
+        listed = set()
+        for nums, _, _ in rows:
+            listed.update(range(int(nums[:4]), int(nums[-4:]) + 1))
+        for name in sorted(used):
+            n = int(re.sub(r"\D", "", name))
+            if n >= first and n not in listed:
+                fail(f"{name} is in DECISIONS.md but has no row in the reservation table")
         for nums, agent, status in rows:
             lo, hi = int(nums[:4]), int(nums[-4:])
             for n in range(lo, hi + 1):
