@@ -4,8 +4,10 @@ Writes a session directory in the layout AIComputerInteractionLogger's
 dataset_exporter.py reads:
 
     <session>/events.csv        Timestamp,EventType,Data
-    <session>/screenshots/*.png
+    <session>/screenshots/*.png (or .webp/.jpg plus one frame_reference.png)
     <session>/session.json      our own metadata (description, target window, stats)
+    <session>/live_events.jsonl what changed inside Live, when the ADI_Logger
+                                remote script is enabled (see livelink.py)
 
 The Data column formats match that repo exactly, so its exporters
 (Claude computer-use / OSWorld / HuggingFace) work on these sessions unchanged.
@@ -14,12 +16,18 @@ Coordinates: events are stored in *frame* pixels, i.e. translated by the virtual
 desktop origin and multiplied by the capture scale, so a recorded (x, y) indexes
 straight into the saved screenshot. session.json carries the exact transform to
 get back to raw screen coordinates.
+
+The pynput hooks live in this process and only queue events. Frames are grabbed
+and encoded in a separate, lower-priority process (capture.py) so a 4K frame
+never holds the GIL while a mouse event waits.
 """
 from __future__ import annotations
 
 import csv
+import fnmatch
 import json
 import logging
+import multiprocessing
 import queue
 import re
 import threading
@@ -29,11 +37,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-import mss
-from PIL import Image, ImageChops
 from pynput import keyboard, mouse
 
+import capture
 import winutil
+from livelink import LiveLink
 
 log = logging.getLogger("recorder")
 
@@ -41,20 +49,13 @@ _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WS = re.compile(r"\s+")
 _SENTINEL = object()
 
-_THUMB = (160, 90)  # motion comparison size
-_THUMB_PIXELS = _THUMB[0] * _THUMB[1]
-_THUMB_NOISE = 8  # per-pixel luma delta ignored as noise
-
 _FORMATS = {
     "png": ".png",
     "jpeg": ".jpg",
     "webp": ".webp",
 }
 
-
-def _open_mss():
-    """mss 10 renamed the factory; keep working on either."""
-    return getattr(mss, "MSS", mss.mss)()
+_FLUSH_EVERY = 2.0  # seconds; a crash loses at most this much of events.csv
 
 
 def slugify(description: str, max_len: int = 60) -> str:
@@ -75,13 +76,26 @@ class RecorderConfig:
     png_compress_level: int = 6
     jpeg_quality: int = 88
     webp_quality: int = 85
+    webp_method: int = 2
     mouse_move_throttle: float = 0.05
     window_poll_interval: float = 0.5
     capture_mouse_moves: bool = True
     dedupe_screenshots: bool = True
     motion_threshold: float = 0.001  # fraction of the thumbnail that must change
     mask_text_keys: bool = False
-    frame_queue_size: int = 8
+    # "interval": screenshot_freq frames a second. "events": a frame after each
+    # click/key (at most one per event_frame_min_gap) plus a keyframe.
+    capture_trigger: str = "interval"
+    event_frame_delay: float = 0.3
+    event_frame_min_gap: float = 1.0
+    keyframe_interval: float = 60.0
+    # fnmatch patterns on the foreground process name. Empty = record everywhere.
+    # Otherwise input and frames are only taken while a matching window has
+    # focus, and other windows' titles are blanked in window_change rows.
+    input_scope: list[str] = field(default_factory=list)
+    live_log: str = "off"  # "off" | "simple" | "deep"
+    live_control_dir: Path | None = None
+    mode: str = "default"
 
 
 @dataclass
@@ -91,6 +105,7 @@ class SessionResult:
     started_at: float
     ended_at: float
     stats: Counter = field(default_factory=Counter)
+    live: dict | None = None
 
     @property
     def duration(self) -> float:
@@ -118,7 +133,6 @@ class SessionRecorder:
 
         self._running = threading.Event()
         self._event_q: queue.Queue = queue.Queue()
-        self._frame_q: queue.Queue = queue.Queue(maxsize=config.frame_queue_size)
         self._threads: list[threading.Thread] = []
         self._mouse_listener: mouse.Listener | None = None
         self._key_listener: keyboard.Listener | None = None
@@ -127,6 +141,16 @@ class SessionRecorder:
         self._csv_writer = None
         self._stats = Counter()
         self._stats_lock = threading.Lock()
+
+        # capture process plumbing, created in start()
+        self._proc = None
+        self._frame_wanted = None
+        self._scope_flag = None
+        self._stop_capture = None
+        self._frames_q = None
+        self._in_scope = True
+        self._live: LiveLink | None = None
+        self._live_result: dict | None = None
 
         # geometry, resolved in start()
         self._origin = (0, 0)
@@ -138,14 +162,11 @@ class SessionRecorder:
 
         self._last_move_emit = 0.0
         self._last_window_info: dict | None = None
-        self._last_thumb: Image.Image | None = None
-        self._last_frame_name: str | None = None
-        self._wrote_reference_png = False
 
     # ---------------------------------------------------------------- geometry
 
     def _resolve_geometry(self) -> None:
-        with _open_mss() as sct:
+        with capture.open_mss() as sct:
             virtual = sct.monitors[0]
         self._origin = (virtual["left"], virtual["top"])
         in_w, in_h = virtual["width"], virtual["height"]
@@ -174,33 +195,66 @@ class SessionRecorder:
             round((y - self._origin[1]) * self._scale[1]),
         )
 
+    # ------------------------------------------------------------------- scope
+
+    def _matches_scope(self, info: dict | None) -> bool:
+        if not self.config.input_scope:
+            return True
+        name = ((info or {}).get("process_name") or "").lower()
+        return any(fnmatch.fnmatch(name, p.lower()) for p in self.config.input_scope)
+
+    def _set_scope(self, info: dict | None) -> None:
+        self._in_scope = self._matches_scope(info)
+        if self._scope_flag is not None:
+            self._scope_flag.value = int(self._in_scope)
+
+    def _window_row(self, info: dict) -> str:
+        if not self._matches_scope(info):
+            info = dict(info, title="")  # another app: keep which one, not what is in it
+        return json.dumps(info, ensure_ascii=False)
+
     # --------------------------------------------------------------- lifecycle
 
     def start(self) -> Path:
-        if self.config.screenshot_format not in _FORMATS:
+        cfg = self.config
+        if cfg.screenshot_format not in _FORMATS:
             raise ValueError(f"screenshot_format must be one of {sorted(_FORMATS)}")
+        if cfg.capture_trigger not in ("interval", "events"):
+            raise ValueError("capture_trigger must be 'interval' or 'events'")
 
         self._resolve_geometry()
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.session_dir = self.config.base_output_dir / f"{slugify(self.description)}_{stamp}"
-        (self.session_dir / "screenshots").mkdir(parents=True, exist_ok=True)
+        self.session_dir = cfg.base_output_dir / f"{slugify(self.description)}_{stamp}"
+        shots_dir = self.session_dir / "screenshots"
+        shots_dir.mkdir(parents=True, exist_ok=True)
 
         self._csv_file = open(self.session_dir / "events.csv", "w", newline="", encoding="utf-8")
         self._csv_writer = csv.writer(self._csv_file)
         self._csv_writer.writerow(["Timestamp", "EventType", "Data"])
+
+        ctx = multiprocessing.get_context("spawn")
+        self._frame_wanted = ctx.Event()
+        self._stop_capture = ctx.Event()
+        self._scope_flag = ctx.Value("b", 1, lock=False)
+        self._frames_q = ctx.Queue()
+        self._set_scope(self.target_window or winutil.window_info()[1])
+        self._proc = ctx.Process(
+            target=capture.run, name="frame-capture", daemon=True,
+            args=(self._capture_settings(), str(shots_dir), self._frame_wanted,
+                  self._scope_flag, self._stop_capture, self._frames_q))
+        self._proc.start()
+        self._await_capture_ready()
 
         self.started_at = time.time()
         self._running.set()
 
         if self.target_window:
             self._last_window_info = self.target_window
-            self._event_q.put((self.started_at, "window_change",
-                               json.dumps(self.target_window, ensure_ascii=False)))
+            self._event_q.put((self.started_at, "window_change", self._window_row(self.target_window)))
 
         self._spawn(self._writer_loop, "writer")
-        self._spawn(self._frame_writer_loop, "frame-writer")
-        self._spawn(self._capture_loop, "capture")
+        self._spawn(self._frames_loop, "frames")
         self._spawn(self._window_loop, "window")
 
         self._mouse_listener = mouse.Listener(
@@ -210,8 +264,50 @@ class SessionRecorder:
         self._mouse_listener.start()
         self._key_listener.start()
 
+        if cfg.live_log != "off" and cfg.live_control_dir is not None:
+            self._live = LiveLink(cfg.live_control_dir, cfg.mode, cfg.live_log,
+                                  self.session_dir, self.description)
+            self._live.start()
+
+        self._write_metadata(None)  # a crash still leaves a described session
         log.info("recording %dx%d -> %s", *self._frame_size, self.session_dir)
         return self.session_dir
+
+    def _capture_settings(self) -> dict:
+        cfg = self.config
+        return {
+            "trigger": cfg.capture_trigger,
+            "fps": cfg.screenshot_freq,
+            "event_delay": cfg.event_frame_delay,
+            "min_gap": cfg.event_frame_min_gap,
+            "keyframe_interval": cfg.keyframe_interval,
+            "frame_size": self._frame_size,
+            "reduce_factor": self._reduce_factor,
+            "suffix": self._suffix,
+            "format": cfg.screenshot_format,
+            "png_compress_level": cfg.png_compress_level,
+            "jpeg_quality": cfg.jpeg_quality,
+            "webp_quality": cfg.webp_quality,
+            "webp_method": cfg.webp_method,
+            "dedupe": cfg.dedupe_screenshots,
+            "motion_threshold": cfg.motion_threshold,
+        }
+
+    def _await_capture_ready(self, timeout: float = 20.0) -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                message = self._frames_q.get(timeout=0.5)
+            except queue.Empty:
+                if not self._proc.is_alive():
+                    break
+                continue
+            if message[0] == "ready":
+                return
+            if message[0] == "error":
+                log.error("%s", message[1])
+        self._proc.kill()
+        raise RuntimeError("capture process did not start")
 
     def stop(self) -> SessionResult:
         if not self._running.is_set():
@@ -223,11 +319,17 @@ class SessionRecorder:
             if listener:
                 listener.stop()
 
-        # Frames first: the frame writer still needs to queue its CSV rows.
-        for name in ("capture", "window", "frame-writer"):
+        self._stop_capture.set()
+        self._frame_wanted.set()  # wake an event-triggered worker
+        # Frames first: the frames thread still needs to queue its CSV rows.
+        for name in ("frames", "window"):
             for t in self._threads:
                 if t.name == name:
-                    t.join(timeout=10)
+                    t.join(timeout=15)
+        self._proc.join(timeout=5)
+        if self._proc.is_alive():
+            log.warning("capture process did not exit; killing it")
+            self._proc.kill()
 
         self._event_q.put(_SENTINEL)
         for t in self._threads:
@@ -237,12 +339,16 @@ class SessionRecorder:
         if self._csv_file:
             self._csv_file.close()
 
+        if self._live is not None:
+            self._live_result = self._live.stop()
+
         result = SessionResult(
             session_dir=self.session_dir,
             description=self.description,
             started_at=self.started_at,
             ended_at=self.ended_at,
             stats=Counter(self._stats),
+            live=self._live_result,
         )
         self._write_metadata(result)
         log.info("stopped after %.1fs -> %s", result.duration, self.session_dir)
@@ -264,8 +370,20 @@ class SessionRecorder:
 
     # ------------------------------------------------------------ input events
 
+    def _accepting(self) -> bool:
+        if not self._running.is_set():
+            return False
+        if not self._in_scope:
+            self._count("input_out_of_scope")
+            return False
+        return True
+
+    def _want_frame(self) -> None:
+        if self.config.capture_trigger == "events":
+            self._frame_wanted.set()
+
     def _on_move(self, x, y):
-        if not (self._running.is_set() and self.config.capture_mouse_moves):
+        if not (self.config.capture_mouse_moves and self._running.is_set() and self._in_scope):
             return
         now = time.time()
         if now - self._last_move_emit < self.config.mouse_move_throttle:
@@ -275,16 +393,19 @@ class SessionRecorder:
         self._event_q.put((now, "mouse_move", f"x={fx}, y={fy}"))
 
     def _on_click(self, x, y, button, pressed):
-        if self._running.is_set():
+        if self._accepting():
             fx, fy = self._to_frame(x, y)
             self._event_q.put((time.time(), "mouse_click",
                                f"x={fx}, y={fy}, button={button}, pressed={pressed}"))
+            if not pressed:
+                self._want_frame()
 
     def _on_scroll(self, x, y, dx, dy):
-        if self._running.is_set():
+        if self._accepting():
             fx, fy = self._to_frame(x, y)
             self._event_q.put((time.time(), "mouse_scroll",
                                f"x={fx}, y={fy}, dx={dx}, dy={dy}"))
+            self._want_frame()
 
     def _key_repr(self, key) -> str:
         text = str(key)
@@ -293,98 +414,37 @@ class SessionRecorder:
         return text
 
     def _on_press(self, key):
-        if self._running.is_set():
+        if self._accepting():
             self._event_q.put((time.time(), "key_press", f"key={self._key_repr(key)}"))
+            self._want_frame()
 
     def _on_release(self, key):
-        if self._running.is_set():
+        if self._accepting():
             self._event_q.put((time.time(), "key_release", f"key={self._key_repr(key)}"))
 
     # ----------------------------------------------------------------- capture
 
-    def _capture_loop(self) -> None:
-        interval = 1.0 / max(0.1, self.config.screenshot_freq)
-        try:
-            with _open_mss() as sct:
-                monitor = sct.monitors[0]  # whole virtual desktop
-                next_at = time.perf_counter()
-                while self._running.is_set():
-                    shot = sct.grab(monitor)
-                    stamp = time.time()
-                    try:
-                        self._frame_q.put_nowait((stamp, shot.size, bytes(shot.rgb)))
-                    except queue.Full:
-                        self._count("frames_dropped")
-                    next_at += interval
-                    delay = next_at - time.perf_counter()
-                    if delay > 0:
-                        time.sleep(delay)
-                    else:
-                        next_at = time.perf_counter()  # fell behind; don't burst
-        except Exception as exc:
-            log.error("capture loop died: %s", exc)
-
-    def _frame_writer_loop(self) -> None:
-        shots_dir = self.session_dir / "screenshots"
+    def _frames_loop(self) -> None:
+        """Forward the capture process's reports into the CSV until it says done."""
         while True:
             try:
-                stamp, size, rgb = self._frame_q.get(timeout=0.2)
+                message = self._frames_q.get(timeout=1.0)
             except queue.Empty:
-                if not self._running.is_set():
+                if not self._proc.is_alive():
+                    log.error("capture process exited unexpectedly")
                     return
                 continue
-            try:
-                name = self._persist_frame(shots_dir, stamp, size, rgb)
+            kind = message[0]
+            if kind == "done":
+                return
+            if kind == "frame":
+                _, stamp, name, saved = message
+                self._count("frames_saved" if saved else "frames_deduped")
                 self._event_q.put((stamp, "screenshot", name))
-            except Exception as exc:
-                log.error("failed to save frame: %s", exc)
-
-    def _downscale(self, image: Image.Image) -> Image.Image:
-        if self._reduce_factor > 1:
-            return image.reduce(self._reduce_factor)
-        if image.size != self._frame_size:
-            return image.resize(self._frame_size, Image.BOX)
-        return image
-
-    def _is_still(self, image: Image.Image) -> bool:
-        """True when this frame is visually the same as the one we just wrote."""
-        thumb = image.resize(_THUMB, Image.BOX).convert("L")
-        previous, self._last_thumb = self._last_thumb, thumb
-        if previous is None:
-            return False
-        histogram = ImageChops.difference(thumb, previous).histogram()
-        changed = sum(histogram[_THUMB_NOISE + 1:]) / _THUMB_PIXELS
-        return changed <= self.config.motion_threshold
-
-    def _persist_frame(self, shots_dir: Path, stamp: float, size, rgb: bytes) -> str:
-        image = self._downscale(Image.frombytes("RGB", (size.width, size.height), rgb))
-
-        if self.config.dedupe_screenshots and self._last_frame_name and self._is_still(image):
-            # Screen did not change: log the tick, reuse the file already on disk.
-            self._count("frames_deduped")
-            return self._last_frame_name
-
-        name = f"screenshot_{int(stamp * 1000)}{self._suffix}"
-        self._save_image(image, shots_dir / name)
-
-        if self._suffix != ".png" and not self._wrote_reference_png:
-            # Upstream's exporter sniffs resolution from the first *.png it finds;
-            # leave it exactly one to find.
-            image.save(shots_dir / "frame_reference.png", "PNG", compress_level=6)
-            self._wrote_reference_png = True
-
-        self._last_frame_name = name
-        self._count("frames_saved")
-        return name
-
-    def _save_image(self, image: Image.Image, path: Path) -> None:
-        fmt = self.config.screenshot_format
-        if fmt == "png":
-            image.save(path, "PNG", compress_level=self.config.png_compress_level)
-        elif fmt == "jpeg":
-            image.save(path, "JPEG", quality=self.config.jpeg_quality, subsampling=0)
-        else:
-            image.save(path, "WEBP", quality=self.config.webp_quality, method=2)
+            elif kind == "count":
+                self._count(message[1])
+            elif kind == "error":
+                log.error("%s", message[1])
 
     # ------------------------------------------------------------ window watch
 
@@ -394,8 +454,8 @@ class SessionRecorder:
                 _, info = winutil.window_info()
                 if info and info != self._last_window_info:
                     self._last_window_info = info
-                    self._event_q.put((time.time(), "window_change",
-                                       json.dumps(info, ensure_ascii=False)))
+                    self._set_scope(info)
+                    self._event_q.put((time.time(), "window_change", self._window_row(info)))
             except Exception as exc:
                 log.debug("window poll failed: %s", exc)
             time.sleep(self.config.window_poll_interval)
@@ -403,43 +463,58 @@ class SessionRecorder:
     # ------------------------------------------------------------- csv writing
 
     def _writer_loop(self) -> None:
+        last_flush = time.time()
         while True:
-            item = self._event_q.get()
+            try:
+                item = self._event_q.get(timeout=_FLUSH_EVERY)
+            except queue.Empty:
+                item = None
             if item is _SENTINEL:
                 return
-            stamp, event_type, data = item
-            try:
-                self._csv_writer.writerow([stamp, event_type, data])
-                self._count(event_type)
-            except Exception as exc:
-                log.error("failed to write %s: %s", event_type, exc)
+            if item is not None:
+                stamp, event_type, data = item
+                try:
+                    self._csv_writer.writerow([stamp, event_type, data])
+                    self._count(event_type)
+                except Exception as exc:
+                    log.error("failed to write %s: %s", event_type, exc)
+            if time.time() - last_flush >= _FLUSH_EVERY:
+                self._csv_file.flush()
+                last_flush = time.time()
 
     # ---------------------------------------------------------------- metadata
 
-    def _write_metadata(self, result: SessionResult) -> None:
-        with _open_mss() as sct:
+    def _write_metadata(self, result: SessionResult | None) -> None:
+        """Written at start (complete=false) and again at stop."""
+        cfg = self.config
+        with capture.open_mss() as sct:
             monitors = [dict(m) for m in sct.monitors]
-        size_bytes = sum(f.stat().st_size for f in self.session_dir.rglob("*") if f.is_file())
         meta = {
             "description": self.description,
             "session_dir": self.session_dir.name,
+            "mode": cfg.mode,
+            "complete": result is not None,
             "started_at": self.started_at,
             "started_at_iso": datetime.fromtimestamp(self.started_at, timezone.utc).isoformat(),
-            "ended_at": self.ended_at,
-            "duration_seconds": round(result.duration, 3),
+            "ended_at": result.ended_at if result else None,
+            "duration_seconds": round(result.duration, 3) if result else None,
             "target_window": self.target_window,
             "target_hwnd": self.target_hwnd,
             "capture": {
                 "scope": "full_screen",
-                "screenshot_freq": self.config.screenshot_freq,
-                "screenshot_format": self.config.screenshot_format,
+                "trigger": cfg.capture_trigger,
+                "screenshot_freq": cfg.screenshot_freq if cfg.capture_trigger == "interval" else None,
+                "event_frame_min_gap": cfg.event_frame_min_gap if cfg.capture_trigger == "events" else None,
+                "keyframe_interval": cfg.keyframe_interval if cfg.capture_trigger == "events" else None,
+                "screenshot_format": cfg.screenshot_format,
                 "source_size": {"width": self._source_size[0], "height": self._source_size[1]},
                 "frame_size": {"width": self._frame_size[0], "height": self._frame_size[1]},
-                "mouse_move_throttle": self.config.mouse_move_throttle,
-                "capture_mouse_moves": self.config.capture_mouse_moves,
-                "dedupe_screenshots": self.config.dedupe_screenshots,
-                "motion_threshold": self.config.motion_threshold,
-                "mask_text_keys": self.config.mask_text_keys,
+                "mouse_move_throttle": cfg.mouse_move_throttle,
+                "capture_mouse_moves": cfg.capture_mouse_moves,
+                "dedupe_screenshots": cfg.dedupe_screenshots,
+                "motion_threshold": cfg.motion_threshold,
+                "mask_text_keys": cfg.mask_text_keys,
+                "input_scope": cfg.input_scope,
                 "audio": False,
                 "cursor_in_frames": False,
             },
@@ -451,10 +526,12 @@ class SessionRecorder:
             },
             "virtual_screen": monitors[0] if monitors else None,
             "monitors": monitors[1:],
-            "event_counts": dict(sorted(result.stats.items())),
-            "size_bytes": size_bytes,
+            "live": result.live if result else {"level": cfg.live_log},
             "format": "AIComputerInteractionLogger events.csv v1",
         }
+        if result is not None:
+            meta["event_counts"] = dict(sorted(result.stats.items()))
+            meta["size_bytes"] = sum(f.stat().st_size for f in self.session_dir.rglob("*") if f.is_file())
         (self.session_dir / "session.json").write_text(
             json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
         (self.session_dir / "label.txt").write_text(self.description + "\n", encoding="utf-8")

@@ -3,3 +3,5 @@ sessions/
 *.log
 __pycache__/
 .venv/
+config.local.json
+icons/
